@@ -1,0 +1,7 @@
+# Стабільні діфи між Windows-дев і Linux-CI (§18, §19.8)
+* text=auto eol=lf
+
+# Бінарні — без нормалізації
+*.png binary
+*.jpg binary
+*.ico binary
