@@ -12,6 +12,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "dry-run": "tsx src/orchestrator.ts --dry-run",
     "start": "tsx src/orchestrator.ts"
   },
