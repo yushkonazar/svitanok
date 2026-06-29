@@ -44,6 +44,18 @@ modules:
       - 'Mock-питання з KB'
       - 'Оновити резюме під вакансію'
   weeklyReview: { enabled: true, day: 'sunday' }
+  fact:
+    enabled: true
+    batchSize: 15 # один виклик генерує 15 фактів (~38с) -> ~1 виклик на 2 тижні
+  jobs:
+    enabled: true
+    perRun: 3
+    dedupDays: 7
+    # DOU RSS, junior (exp 0-1). Work.ua/LinkedIn без відкритого RSS — відкладено.
+    sources:
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Full%20Stack&exp=0-1'
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Front%20End&exp=0-1'
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Back%20End&exp=0-1'
 
 llm:
   # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p

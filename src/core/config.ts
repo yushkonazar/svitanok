@@ -42,6 +42,16 @@ const ConfigSchema = z
         enabled: z.boolean(),
         day: z.string(),
       }),
+      fact: z.object({
+        enabled: z.boolean(),
+        batchSize: z.number().int().positive().default(30),
+      }),
+      jobs: z.object({
+        enabled: z.boolean(),
+        perRun: z.number().int().positive().default(3),
+        dedupDays: z.number().int().nonnegative().default(7),
+        sources: z.array(z.string()).default([]),
+      }),
     }),
     llm: z.object({
       model: z.string().min(1),
