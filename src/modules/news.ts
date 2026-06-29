@@ -8,6 +8,9 @@ import type { AppConfig } from '../core/config.js';
 import { canonicalizeUrl } from '../core/url.js';
 
 const NEWS_PRIORITY = 50;
+// Беремо лише найсвіжіші N записів із кожного фіда (RSS — у зворотному
+// хронопорядку), щоб не роздути LLM-промпт широкими фідами (напр. 200 записів).
+const MAX_ITEMS_PER_FEED = 12;
 
 // --- preferenceWeights (§6.1) ---
 export const WEIGHT_MIN = 0.5;
@@ -145,7 +148,7 @@ export const newsModule: Module<AppConfig> = {
           ctx.log.warn(`news: фід впав (${category}/${i})`);
           return;
         }
-        for (const item of parseRss(r.value)) {
+        for (const item of parseRss(r.value).slice(0, MAX_ITEMS_PER_FEED)) {
           const canon = canonicalizeUrl(item.url);
           fetchedUrls.push(canon);
           const shownAt = shown[canon] ? Date.parse(shown[canon]!) : 0;
