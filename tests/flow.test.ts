@@ -25,6 +25,8 @@ const baseConfig = {
     },
     nextStep: { enabled: true, steps: ['x'] },
     weeklyReview: { enabled: true, day: 'sunday' },
+    fact: { enabled: false, batchSize: 30 },
+    jobs: { enabled: false, perRun: 3, dedupDays: 7, sources: [] },
   },
   llm: { model: 'm', maxCallsPerRun: 2, timeoutMs: 1000 },
   fetch: { timeoutMs: 1000, retries: 0 },

@@ -32,6 +32,8 @@ import { createWeatherModule } from './modules/weather.js';
 import { createCalendarModule } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 import { newsModule } from './modules/news.js';
+import { jobsModule } from './modules/jobs.js';
+import { factModule } from './modules/fact.js';
 import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
 import { buildPruners } from './core/prune.js';
@@ -162,24 +164,26 @@ function buildModules(): Module<AppConfig>[] {
     createWeatherModule(),
     createCalendarModule(),
     stoicModule,
+    factModule,
     newsModule,
+    jobsModule,
     nextStepModule,
     weeklyReviewModule,
   ];
 }
 
-/** Хости allowlist для SourceFetcher — з config.modules.news.sources (§8). */
-function newsAllowlist(config: AppConfig): string[] {
+/** Хости allowlist для SourceFetcher — з news.sources + jobs.sources (§8). */
+function fetchAllowlist(config: AppConfig): string[] {
   const hosts = new Set<string>();
-  for (const urls of Object.values(config.modules.news.sources)) {
-    for (const url of urls) {
-      try {
-        hosts.add(new URL(url).hostname.toLowerCase());
-      } catch {
-        /* ігноруємо невалідний source URL */
-      }
+  const add = (url: string) => {
+    try {
+      hosts.add(new URL(url).hostname.toLowerCase());
+    } catch {
+      /* ігноруємо невалідний source URL */
     }
-  }
+  };
+  for (const urls of Object.values(config.modules.news.sources)) urls.forEach(add);
+  config.modules.jobs.sources.forEach(add);
   return [...hosts];
 }
 
@@ -228,7 +232,7 @@ async function main(): Promise<void> {
       log,
     }),
     fetcher: createFetcher({
-      allowlist: newsAllowlist(config),
+      allowlist: fetchAllowlist(config),
       timeoutMs: config.fetch.timeoutMs,
       retries: config.fetch.retries,
       log,
