@@ -20,6 +20,8 @@ jobs:
   # Guard-гейт РАНО на системному node (без npm ci): дешево й не палить хвилини (§19.1).
   guard:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout приватного репо (код + гілка state)
     outputs:
       send: ${{ steps.g.outputs.send }}
     steps:
