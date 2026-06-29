@@ -52,7 +52,9 @@ function readLastSentDate(path) {
 const force = process.argv.includes('--force');
 const { sendHour, sendWindowHours } = readConfigNumbers(join(ROOT, 'config.yml'));
 const { todayKey, kyivHour } = kyivParts();
-const lastSentDate = readLastSentDate(join(ROOT, 'state.json'));
+// STATE_FILE дозволяє читати стан із окремої гілки `state` (brief.yml, §4.3).
+const statePath = process.env.STATE_FILE ?? join(ROOT, 'state.json');
+const lastSentDate = readLastSentDate(statePath);
 
 const { send, reason } = decideSend({
   sendHour,

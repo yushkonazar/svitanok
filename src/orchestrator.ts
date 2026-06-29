@@ -192,7 +192,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const state = createStateStore({ log });
+  // STATE_FILE -> стан із окремої гілки `state` у CI (§4.3); локально — state.json.
+  const state = createStateStore({ path: process.env.STATE_FILE ?? 'state.json', log });
   const notifier = secrets
     ? createNotifier({ token: secrets.botToken, chatId: secrets.chatId, log })
     : null;
