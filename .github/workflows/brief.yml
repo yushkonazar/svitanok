@@ -55,9 +55,19 @@ jobs:
       # claude CLI потрібен модулю news (llm.ts: spawn 'claude -p'). Пін версії (§2.1, §8).
       - name: install claude CLI
         run: npm install -g @anthropic-ai/claude-code@2.1.195
-      # Неінтерактивність claude -p (§2.1): без onboarding/trust-промпта.
+      # Неінтерактивність claude -p (§2.1): onboarding + ДОВІРА до теки.
+      # Свіжий checkout не «довірений» -> діалог довіри -> claude -p exit 1.
+      # hasTrustDialogAccepted per-project знімає це.
       - name: preseed claude non-interactive
-        run: printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
+        run: |
+          cat > "$HOME/.claude.json" <<JSON
+          {
+            "hasCompletedOnboarding": true,
+            "projects": {
+              "${{ github.workspace }}": { "hasTrustDialogAccepted": true }
+            }
+          }
+          JSON
       - name: run briefing
         env:
           STATE_FILE: ${{ github.workspace }}/state-data/state.json
