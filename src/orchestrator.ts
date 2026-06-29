@@ -34,6 +34,8 @@ import { stoicModule } from './modules/stoic.js';
 import { todayModule } from './modules/today.js';
 import { newsModule } from './modules/news.js';
 import { nextStepModule } from './modules/next-step.js';
+import { weeklyReviewModule } from './modules/weekly-review.js';
+import { buildPruners } from './core/prune.js';
 
 export interface RunOptions {
   dryRun?: boolean;
@@ -128,7 +130,8 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   await runPhase(producers, ctx, blocks, producedIds); // Фаза 1
   await runPhase(consumers, ctx, blocks, producedIds); // Фаза 2
 
-  const quiet = isQuietDay(config, producedIds);
+  // Неділя — ніколи не «тихий день»: weekly-review показується повністю (§4.1 п.5).
+  const quiet = isQuietDay(config, producedIds) && !clock.isSunday();
   const header = formatKyivDateHeader(clock.now());
   const messages = renderBriefing(blocks, {
     maxChars: config.telegram.maxMessageChars,
@@ -163,6 +166,7 @@ function buildModules(): Module<AppConfig>[] {
     stoicModule,
     newsModule,
     nextStepModule,
+    weeklyReviewModule,
   ];
 }
 
@@ -205,7 +209,11 @@ async function main(): Promise<void> {
   }
 
   // STATE_FILE -> стан із окремої гілки `state` у CI (§4.3); локально — state.json.
-  const state = createStateStore({ path: process.env.STATE_FILE ?? 'state.json', log });
+  const state = createStateStore({
+    path: process.env.STATE_FILE ?? 'state.json',
+    log,
+    pruners: buildPruners(config, clock.now().getTime()),
+  });
   const notifier = secrets
     ? createNotifier({ token: secrets.botToken, chatId: secrets.chatId, log })
     : null;
