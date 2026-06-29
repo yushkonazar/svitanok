@@ -1,0 +1,4 @@
+# Гарантує «зелений» кожен коміт (§17.2): lint-staged (eslint+prettier на staged)
+# -> typecheck -> тести. Бот комітить стан із HUSKY=0 у brief.yml, тож хук його
+# не блокує ([skip ci]-коміти, §18).
+npx lint-staged && npm run typecheck && npm test
