@@ -145,18 +145,16 @@ function signed(n: number): string {
   return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${n}°` : '—';
 }
 
-/** Рядок summary (завжди видно): емодзі, температура, стан, дії. */
+/** Рядок summary (завжди видно): мінімум — емодзі, температура, мітки дії. */
 function formatSummaryLine(w: WeatherToday): string {
-  const actions: string[] = [];
-  if (w.willRain) actions.push(`☔ парасолька (${w.popPercent}%)`);
-  if (w.willBeCold) actions.push('🧥 вдягнись тепло');
-  const tail = actions.length ? ` — ${actions.join(', ')}` : '';
-  return `${w.emoji} ${w.name}: ${signed(w.tempC)}, ${w.condition}${tail}`;
+  const marks = `${w.willRain ? ' ☔' : ''}${w.willBeCold ? ' 🧥' : ''}`;
+  return `${w.emoji} ${w.name}: ${signed(w.tempC)}${marks}`;
 }
 
-/** Рядок detail (expandable): відчувається, мін/макс дня, вітер. */
+/** Рядок detail (expandable, за натисканням): стан, відчувається, мін/макс, вітер, опади. */
 function formatDetailLine(w: WeatherToday): string {
-  return `${w.name}: відч. ${signed(w.feelsLikeC)}, ${signed(w.minC)}…${signed(w.maxC)}, 💨 ${w.windMps} м/с`;
+  const rain = w.willRain ? `, ☔ ${w.popPercent}%` : '';
+  return `${w.name}: ${w.condition}, відч. ${signed(w.feelsLikeC)}, ${signed(w.minC)}…${signed(w.maxC)}, 💨 ${w.windMps} м/с${rain}`;
 }
 
 export interface WeatherModuleOptions {

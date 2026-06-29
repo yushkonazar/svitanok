@@ -31,7 +31,6 @@ import type {
 import { createWeatherModule } from './modules/weather.js';
 import { createCalendarModule } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
-import { todayModule } from './modules/today.js';
 import { newsModule } from './modules/news.js';
 import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
@@ -162,7 +161,6 @@ function buildModules(): Module<AppConfig>[] {
   return [
     createWeatherModule(),
     createCalendarModule(),
-    todayModule,
     stoicModule,
     newsModule,
     nextStepModule,
