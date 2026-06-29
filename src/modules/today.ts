@@ -8,10 +8,31 @@ import type { AppConfig } from '../core/config.js';
 import { slugFor, weatherBusKey, type WeatherToday } from './weather.js';
 import { CALENDAR_BUS_KEY, type CalendarEvent } from './calendar.js';
 
-function tempStr(w: WeatherToday): string {
-  if (!Number.isFinite(w.tempC)) return `${w.name} —`;
-  const sign = w.tempC > 0 ? '+' : '';
-  return `${w.name} ${sign}${w.tempC}°`;
+function signed(n: number): string {
+  return `${n > 0 ? '+' : ''}${n}°`;
+}
+
+function describeTemp(maxC: number): string {
+  if (maxC >= 30) return 'спекотно';
+  if (maxC >= 20) return 'тепло';
+  if (maxC >= 10) return 'прохолодно';
+  return 'холодно';
+}
+
+/**
+ * Якісний синтез погоди БЕЗ дублювання блоку «Погода»: опис + одна температура
+ * (або діапазон по локаціях) + мітки дії. Деталь по локаціях лишається в weather.
+ */
+function weatherSynth(weathers: WeatherToday[]): string {
+  const temps = weathers.map((w) => w.tempC).filter((t) => Number.isFinite(t));
+  const anyRain = weathers.some((w) => w.willRain);
+  const anyCold = weathers.some((w) => w.willBeCold);
+  const marks = `${anyRain ? ' ☔' : ''}${anyCold ? ' 🧥' : ''}`;
+  if (temps.length === 0) return `погода${marks}`.trim();
+  const min = Math.min(...temps);
+  const max = Math.max(...temps);
+  const tempPart = min === max ? signed(max) : `${signed(min)}…${signed(max)}`;
+  return `${describeTemp(max)} ${tempPart}${marks}`;
 }
 
 function eventsPhrase(events: CalendarEvent[]): string {
@@ -40,12 +61,7 @@ export const todayModule: Module<AppConfig> = {
     if (weathers.length === 0 && events.length === 0) return null;
 
     const parts: string[] = [];
-    if (weathers.length > 0) {
-      const anyRain = weathers.some((w) => w.willRain);
-      const anyCold = weathers.some((w) => w.willBeCold);
-      const marks = `${anyRain ? ' ☔' : ''}${anyCold ? ' 🧥' : ''}`;
-      parts.push(weathers.map(tempStr).join(', ') + marks);
-    }
+    if (weathers.length > 0) parts.push(weatherSynth(weathers));
     const ev = eventsPhrase(events);
     if (ev) parts.push(ev);
 

@@ -37,19 +37,22 @@ const w = (name: string, tempC: number, willRain = false, willBeCold = false): W
   condition: 'x',
   willRain,
   willBeCold,
+  popPercent: willRain ? 60 : 0,
 });
 
 describe('today — синтез', () => {
-  it('згортає обидві локації за тими ж slug + події', async () => {
+  it('зводить локації у якісний рядок (без дублювання блоку Погода) + події', async () => {
     const ctx = ctxWith((bus) => {
       bus.set(weatherBusKey(slugFor(locations[0]!, 0)), w('Львів', 12, true));
       bus.set(weatherBusKey(slugFor(locations[1]!, 1)), w('Немовичі', 9));
       bus.set(CALENDAR_BUS_KEY, [{ title: 'Стендап', time: '10:00' }]);
     });
     const block = await todayModule.run(ctx);
-    expect(block!.summary).toContain('Львів +12°');
-    expect(block!.summary).toContain('Немовичі +9°');
-    expect(block!.summary).toContain('☔'); // якась локація з дощем
+    // Синтез: діапазон по локаціях, опис, мітка дощу — БЕЗ переліку «Львів +12°».
+    expect(block!.summary).toContain('+9°…+12°');
+    expect(block!.summary).toContain('прохолодно');
+    expect(block!.summary).not.toContain('Львів'); // деталь — у блоці weather
+    expect(block!.summary).toContain('☔');
     expect(block!.summary).toContain('перша о 10:00');
     expect(block!.priority).toBe(20);
   });
@@ -59,7 +62,8 @@ describe('today — синтез', () => {
       bus.set(weatherBusKey(slugFor(locations[0]!, 0)), w('Львів', 5, false, true));
     });
     const block = await todayModule.run(ctx);
-    expect(block!.summary).toContain('Львів +5°');
+    expect(block!.summary).toContain('+5°');
+    expect(block!.summary).toContain('холодно');
     expect(block!.summary).toContain('🧥');
   });
 

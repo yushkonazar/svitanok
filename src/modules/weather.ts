@@ -10,6 +10,12 @@ import { canonicalizeUrl } from '../core/url.js';
 
 // Пороги дії — явні константи (§6).
 export const COLD_THRESHOLD_C = 10; // willBeCold = tempC < 10
+// Парасолька — лише коли ймовірність опадів удень достатня. Раніше «будь-який
+// слот доби має код опадів» давав парасольку в спекотний день з грозовим слотом
+// надвечір — хибний сигнал.
+export const RAIN_POP_THRESHOLD = 0.5; // willRain = pop удень >= 50%
+const DAY_START_HOUR = 6; // активний день (київські години) — нічні слоти ігноруємо
+const DAY_END_HOUR = 21;
 const REPRESENTATIVE_HOUR = 12; // денний показник: запис, найближчий до полудня
 
 /** Коди опадів OpenWeather: 2xx гроза, 3xx мряка, 5xx дощ, 6xx сніг (§6). */
@@ -23,6 +29,7 @@ export interface WeatherToday {
   condition: string;
   willRain: boolean;
   willBeCold: boolean;
+  popPercent: number; // макс. ймовірність опадів удень, % (для прозорості парасольки)
 }
 
 /** Детермінований slug локації (індекс) — today відтворює його так само (§6). */
@@ -38,6 +45,13 @@ interface ForecastEntry {
   dt: number;
   main?: { temp?: number };
   weather?: { id?: number; description?: string }[];
+  pop?: number; // ймовірність опадів 0..1 (OpenWeather forecast)
+}
+
+/** Сигнал опадів для слоту: pop, якщо є; інакше похідна з коду (1/0). */
+function rainSignal(e: ForecastEntry): number {
+  if (typeof e.pop === 'number') return e.pop;
+  return isPrecipCode(e.weather?.[0]?.id ?? 0) ? 1 : 0;
 }
 
 function entryKyiv(dtSeconds: number): { dateKey: string; hour: number } {
@@ -76,14 +90,22 @@ export function parseForecast(json: unknown, name: string, todayKey: string): We
 
   const tempC = Math.round(rep.main?.temp ?? NaN);
   const condition = rep.weather?.[0]?.description ?? '—';
-  const willRain = pool.some((e) => isPrecipCode(e.weather?.[0]?.id ?? 0));
+
+  // willRain — за денними слотами (нічний дощ не змушує брати парасольку вдень).
+  const daySlots = pool.filter((e) => {
+    const h = entryKyiv(e.dt).hour;
+    return h >= DAY_START_HOUR && h <= DAY_END_HOUR;
+  });
+  const slots = daySlots.length ? daySlots : pool;
+  const maxRain = slots.reduce((m, e) => Math.max(m, rainSignal(e)), 0);
 
   return {
     name,
     tempC,
     condition,
-    willRain,
+    willRain: maxRain >= RAIN_POP_THRESHOLD,
     willBeCold: Number.isFinite(tempC) && tempC < COLD_THRESHOLD_C,
+    popPercent: Math.round(maxRain * 100),
   };
 }
 
@@ -91,7 +113,7 @@ function formatLine(w: WeatherToday): string {
   const sign = w.tempC > 0 ? '+' : '';
   const temp = Number.isFinite(w.tempC) ? `${sign}${w.tempC}°` : '—';
   const actions: string[] = [];
-  if (w.willRain) actions.push('☔ парасолька');
+  if (w.willRain) actions.push(`☔ парасолька (${w.popPercent}%)`);
   if (w.willBeCold) actions.push('🧥 вдягнись тепло');
   const tail = actions.length ? ` — ${actions.join(', ')}` : '';
   return `${w.name}: ${temp}, ${w.condition}${tail}`;
