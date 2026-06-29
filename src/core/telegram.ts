@@ -11,6 +11,11 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** Клікабельне посилання у словах: <a href="url">text</a>. Обидва поля екрануються. */
+export function link(url: string, text: string): string {
+  return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
+}
+
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
 }

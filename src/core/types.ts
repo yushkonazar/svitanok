@@ -13,8 +13,12 @@ export interface Block {
   id: string;
   title: string;
   icon?: string;
-  summary: string; // показується завжди
-  detail?: string; // ховається в expandable
+  summary: string; // показується завжди (плейн-текст; render екранує)
+  detail?: string; // ховається в expandable (плейн-текст; render екранує)
+  // Готовий БЕЗПЕЧНИЙ HTML (модуль уже екранував динаміку через escapeHtml) —
+  // для лінків у словах тощо. Якщо заданий, render бере його замість summary/detail.
+  summaryHtml?: string;
+  detailHtml?: string;
   buttons?: Button[];
   priority: number; // порядок ВІДОБРАЖЕННЯ (менше = вище)
   // Поля `fresh` немає. Єдиний сигнал «нічого свіжого» — run() повертає null.

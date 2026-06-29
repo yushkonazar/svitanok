@@ -15,24 +15,41 @@ export interface RenderOptions {
   quiet?: boolean;
 }
 
+/** Обрізати ГОТОВИЙ HTML по межі рядків (кожен рядок блоку — цілісний HTML-юніт),
+ *  щоб не лишити відкритого тега. Якщо й перший рядок не влазить — лише «…». */
+function truncateHtmlByLines(html: string, budget: number): string {
+  if (html.length <= budget) return html;
+  let acc = '';
+  for (const ln of html.split('\n')) {
+    const next = acc ? `${acc}\n${ln}` : ln;
+    if (next.length + 1 > budget) break; // +1 під «…»
+    acc = next;
+  }
+  return acc ? `${acc}\n…` : '…';
+}
+
 function renderBlock(b: Block, maxChars: number, quiet: boolean): string {
   const icon = b.icon ? `${b.icon} ` : '';
   const titleLine = `<b>${escapeHtml(icon + b.title)}</b>`;
-  const summary = escapeHtml(b.summary);
+  const summary = b.summaryHtml ?? escapeHtml(b.summary);
   let html = `${titleLine}\n${summary}`;
 
-  if (!quiet && b.detail) {
-    html += `\n<blockquote expandable>${escapeHtml(b.detail)}</blockquote>`;
+  const detail = b.detailHtml ?? (b.detail ? escapeHtml(b.detail) : undefined);
+  if (!quiet && detail) {
+    html += `\n<blockquote expandable>${detail}</blockquote>`;
   }
 
   if (html.length > maxChars) {
     // 1) прибрати detail
     html = `${titleLine}\n${summary}`;
     if (html.length > maxChars) {
-      // 2) entity-safe обрізати summary, щоб блок усе одно йшов окремо (не 400)
+      // 2) обрізати summary, щоб блок усе одно йшов окремо (не 400)
       const overhead = titleLine.length + 1; // titleLine + '\n'
       const budget = Math.max(maxChars - overhead, 8);
-      html = `${titleLine}\n${fitEscaped(b.summary, budget)}`;
+      const fitted = b.summaryHtml
+        ? truncateHtmlByLines(b.summaryHtml, budget)
+        : fitEscaped(b.summary, budget);
+      html = `${titleLine}\n${fitted}`;
     }
   }
   return html;

@@ -36,6 +36,40 @@ describe('renderBriefing — escape + структура', () => {
     expect(msg).not.toContain('blockquote');
   });
 
+  it('summaryHtml/detailHtml — беруться як готовий HTML (не екрануються)', () => {
+    const [msg] = renderBriefing(
+      [
+        block({
+          id: 'news',
+          priority: 0,
+          title: 'Новини',
+          summary: 'плейн',
+          summaryHtml: '• <a href="https://x/a">Заголовок</a>',
+          detailHtml: '<i>деталь</i>',
+        }),
+      ],
+      { maxChars: 3900 },
+    );
+    expect(msg).toContain('<a href="https://x/a">Заголовок</a>');
+    expect(msg).not.toContain('плейн'); // summaryHtml перекриває summary
+    expect(msg).toContain('<blockquote expandable><i>деталь</i></blockquote>');
+  });
+
+  it('summaryHtml > ліміту — обрізає по межі рядків, не рве тег', () => {
+    const line = '• <a href="https://x/aaaaaaaaaa">Заголовок новини</a>';
+    const html = Array.from({ length: 6 }, () => line).join('\n');
+    const [msg] = renderBriefing(
+      [block({ id: 'n', priority: 0, title: 'Tt', summary: 's', summaryHtml: html })],
+      { maxChars: 120 },
+    );
+    expect(msg!.length).toBeLessThanOrEqual(120);
+    // немає обірваного тега: кількість <a> == кількість </a>
+    const opens = (msg!.match(/<a /g) ?? []).length;
+    const closes = (msg!.match(/<\/a>/g) ?? []).length;
+    expect(opens).toBe(closes);
+    expect(msg!.endsWith('…')).toBe(true);
+  });
+
   it('header лише в першому повідомленні', () => {
     const msgs = renderBriefing([block({ id: 'a', priority: 0 })], {
       maxChars: 3900,
