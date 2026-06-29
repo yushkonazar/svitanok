@@ -1,0 +1,73 @@
+timezone: Europe/Kyiv
+
+# ТЕСТОВИЙ ПЕРІОД на час розробки: вікно [1, 23) = 01:00–22:59 Київ
+# (верхня межа невключна: kyivHour < sendHour + sendWindowHours).
+# Наприкінці розробки окремим PR -> sendHour: 8, sendWindowHours: 4 (бойові 08:00–12:00).
+sendHour: 1
+sendWindowHours: 22
+
+locations:
+  - { lat: 49.8397, lon: 24.0297, name: 'Львів' }
+  - { lat: 51.1200, lon: 26.4600, name: 'Немовичі' } # ⚠️ звірити координати перед бойовим
+
+quietDay:
+  triggerOn: ['news', 'calendar']
+
+modules:
+  stoic: { enabled: true }
+  weather: { enabled: true }
+  calendar: { enabled: false } # увімкнути після Google OAuth (Production)
+  news:
+    enabled: true
+    categories: ['Україна та світ', 'Технології / IT', 'Спорт', 'Наука / економіка']
+    perCategory: 2
+    dedupDays: 3
+    retentionDays: 7
+    # Джерела мають віддаватись із датацентрових IP GitHub Actions. Більшість
+    # .ua-сайтів за Cloudflare віддають 403 раннеру, тож для покриття — Google News
+    # (датацентр-дружній); BBC та itc.ua підтверджено працюють у CI.
+    sources:
+      'Україна та світ':
+        - 'https://feeds.bbci.co.uk/ukrainian/rss.xml'
+        - 'https://news.google.com/rss?hl=uk&gl=UA&ceid=UA:uk'
+      'Технології / IT':
+        - 'https://itc.ua/feed/'
+        - 'https://news.google.com/rss/search?q=технології%20україна&hl=uk&gl=UA&ceid=UA:uk'
+      'Спорт':
+        - 'https://news.google.com/rss/search?q=спорт%20україна&hl=uk&gl=UA&ceid=UA:uk'
+      'Наука / економіка':
+        - 'https://news.google.com/rss/search?q=економіка%20україна&hl=uk&gl=UA&ceid=UA:uk'
+  nextStep:
+    enabled: true
+    steps:
+      - 'Пофіксити OG-теги'
+      - 'Mock-питання з KB'
+      - 'Оновити резюме під вакансію'
+  weeklyReview: { enabled: true, day: 'sunday' }
+  fact:
+    enabled: true
+    batchSize: 15 # один виклик генерує 15 фактів (~38с) -> ~1 виклик на 2 тижні
+  jobs:
+    enabled: true
+    perRun: 3
+    dedupDays: 7
+    # DOU RSS, junior (exp 0-1). Work.ua/LinkedIn без відкритого RSS — відкладено.
+    sources:
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Full%20Stack&exp=0-1'
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Front%20End&exp=0-1'
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Back%20End&exp=0-1'
+
+llm:
+  # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p
+  # (>120с таймаут), Haiku завершує надійно. Латентність claude -p різко росте з
+  # розміром промпта, тож тримаємо мало кандидатів (MAX_ITEMS_PER_FEED). Звірено (§0).
+  model: 'claude-haiku-4-5'
+  maxCallsPerRun: 2 # стеля викликів за ран (news = 1; запас на ретрай/майбутній модуль)
+  timeoutMs: 150000 # запас під latency claude -p у CI
+
+fetch:
+  timeoutMs: 30000
+  retries: 2
+
+telegram:
+  maxMessageChars: 3900 # запас під ліміт 4096

@@ -1,0 +1,95 @@
+name: brief
+
+# Продакшн-джоба (§2, §4.3, §18). Cron у UTC; 08:00 Київ = 05:00 (літо) / 06:00
+# (зима) UTC. Guard-ідемпотентність гарантує одну відправку на день.
+on:
+  schedule:
+    - cron: '0 5 * * *' # 08:00 Київ влітку (EEST = UTC+3)
+    - cron: '0 6 * * *' # 08:00 Київ узимку (EET = UTC+2)
+  workflow_dispatch: # ручний запуск завжди форсує (--force, §19.2)
+
+# Мінімальні права за замовчуванням (§8).
+permissions: {}
+
+# Ручний запуск під час scheduled не дає гонки; не скасовуємо поточний (§2).
+concurrency:
+  group: svitanok-brief
+  cancel-in-progress: false
+
+jobs:
+  # Guard-гейт РАНО на системному node (без npm ci): дешево й не палить хвилини (§19.1).
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout приватного репо (код + гілка state)
+    outputs:
+      send: ${{ steps.g.outputs.send }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: state
+          path: state-data
+      - id: g
+        env:
+          STATE_FILE: ${{ github.workspace }}/state-data/state.json
+        run: node scripts/guard.mjs ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+
+  brief:
+    needs: guard
+    if: needs.guard.outputs.send == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # лише ця джоба пише (коміт стану в гілку state)
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: state
+          path: state-data
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # claude CLI потрібен модулю news (llm.ts: spawn 'claude -p'). Пін версії (§2.1, §8).
+      - name: install claude CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.195
+      # Неінтерактивність claude -p (§2.1): onboarding + ДОВІРА до теки.
+      # Свіжий checkout не «довірений» -> діалог довіри -> claude -p exit 1.
+      # hasTrustDialogAccepted per-project знімає це.
+      - name: preseed claude non-interactive
+        run: |
+          cat > "$HOME/.claude.json" <<JSON
+          {
+            "hasCompletedOnboarding": true,
+            "projects": {
+              "${{ github.workspace }}": { "hasTrustDialogAccepted": true }
+            }
+          }
+          JSON
+      - name: run briefing
+        env:
+          STATE_FILE: ${{ github.workspace }}/state-data/state.json
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        run: npx tsx src/orchestrator.ts ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+      # Коміт стану в незахищену гілку state (§4.3); main лишається захищеним.
+      - name: commit state
+        working-directory: state-data
+        run: |
+          git config user.name "svitanok-bot"
+          git config user.email "svitanok-bot@users.noreply.github.com"
+          [ -f state.json ] && git add -f state.json
+          if git diff --cached --quiet; then
+            echo "state.json без змін — нема що комітити"
+          else
+            git commit -m "chore(state): brief $(date -u +%F) [skip ci]"
+            git pull --rebase origin state
+            git push origin HEAD:state
+          fi
