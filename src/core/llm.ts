@@ -50,8 +50,10 @@ function runClaude(
       if (code === 0) {
         resolve(stdout.trim());
       } else {
-        log?.warn(`claude -p exit ${code}`);
-        reject(new Error(`claude -p exit ${code}: ${stderr.slice(0, 500)}`));
+        // stderr часто порожній — додаємо stdout для діагностики (напр. trust-діалог).
+        const diag = (stderr || stdout).trim().slice(0, 500) || '(порожній вивід)';
+        log?.warn(`claude -p exit ${code}: ${diag}`);
+        reject(new Error(`claude -p exit ${code}: ${diag}`));
       }
     });
 

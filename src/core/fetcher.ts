@@ -55,7 +55,8 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
           return await once(url);
         } catch (e) {
           lastErr = e;
-          opts.log?.warn(`fetch спроба ${attempt + 1} впала для ${host}`);
+          const why = e instanceof Error ? e.message : String(e);
+          opts.log?.warn(`fetch спроба ${attempt + 1} впала для ${host}: ${why}`);
           if (attempt < opts.retries) await delay(backoffMs(attempt));
         }
       }
