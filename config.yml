@@ -23,17 +23,20 @@ modules:
     perCategory: 2
     dedupDays: 3
     retentionDays: 7
+    # Джерела мають віддаватись із датацентрових IP GitHub Actions. Більшість
+    # .ua-сайтів за Cloudflare віддають 403 раннеру, тож для покриття — Google News
+    # (датацентр-дружній); BBC та itc.ua підтверджено працюють у CI.
     sources:
       'Україна та світ':
         - 'https://feeds.bbci.co.uk/ukrainian/rss.xml'
-        - 'https://suspilne.media/rss/all.rss'
+        - 'https://news.google.com/rss?hl=uk&gl=UA&ceid=UA:uk'
       'Технології / IT':
         - 'https://itc.ua/feed/'
-        - 'https://ain.ua/feed/'
+        - 'https://news.google.com/rss/search?q=технології%20україна&hl=uk&gl=UA&ceid=UA:uk'
       'Спорт':
-        - 'https://champion.com.ua/rss/'
+        - 'https://news.google.com/rss/search?q=спорт%20україна&hl=uk&gl=UA&ceid=UA:uk'
       'Наука / економіка':
-        - 'https://www.epravda.com.ua/rss/'
+        - 'https://news.google.com/rss/search?q=економіка%20україна&hl=uk&gl=UA&ceid=UA:uk'
   nextStep:
     enabled: true
     steps:
