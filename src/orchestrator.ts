@@ -29,6 +29,7 @@ import type {
   Logger,
 } from './core/types.js';
 import { createWeatherModule } from './modules/weather.js';
+import { createCalendarModule } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 
 export interface RunOptions {
@@ -152,7 +153,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
 
 /** Зібрати всі модулі MVP. Нові додаються тут (consumer-и після producer-ів). */
 function buildModules(): Module<AppConfig>[] {
-  return [createWeatherModule(), stoicModule];
+  return [createWeatherModule(), createCalendarModule(), stoicModule];
 }
 
 /** Хости allowlist для SourceFetcher — з config.modules.news.sources (§8). */
