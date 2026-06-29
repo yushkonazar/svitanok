@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Стан живе лише в гілці `state` (§4.3) — не комітимо на гілках коду.
+# brief.yml форсує git add -f у власному checkout гілки state.
+/state.json
+
 # Secrets — НІКОЛИ не комітимо (§8)
 .env
 .env.*
