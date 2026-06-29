@@ -23,10 +23,28 @@ function isPrecipCode(id: number): boolean {
   return id >= 200 && id < 700;
 }
 
+/** Емодзі-стан за кодом погоди OpenWeather. */
+function emojiFor(id: number): string {
+  if (id >= 200 && id < 300) return '⛈'; // гроза
+  if (id >= 300 && id < 400) return '🌦'; // мряка
+  if (id >= 500 && id < 600) return '🌧'; // дощ
+  if (id >= 600 && id < 700) return '🌨'; // сніг
+  if (id >= 700 && id < 800) return '🌫'; // туман/імла
+  if (id === 800) return '☀️'; // ясно
+  if (id === 801) return '🌤'; // мало хмар
+  if (id === 802) return '⛅'; // розсіяні хмари
+  return '☁️'; // 803/804 — хмарно
+}
+
 export interface WeatherToday {
   name: string;
-  tempC: number;
+  tempC: number; // представницька (≈полудень)
+  minC: number; // денний мінімум
+  maxC: number; // денний максимум
+  feelsLikeC: number; // відчувається як
+  windMps: number; // швидкість вітру, м/с
   condition: string;
+  emoji: string; // емодзі-стан
   willRain: boolean;
   willBeCold: boolean;
   popPercent: number; // макс. ймовірність опадів удень, % (для прозорості парасольки)
@@ -43,8 +61,9 @@ export function weatherBusKey(slug: string): string {
 
 interface ForecastEntry {
   dt: number;
-  main?: { temp?: number };
+  main?: { temp?: number; feels_like?: number };
   weather?: { id?: number; description?: string }[];
+  wind?: { speed?: number };
   pop?: number; // ймовірність опадів 0..1 (OpenWeather forecast)
 }
 
@@ -88,8 +107,16 @@ export function parseForecast(json: unknown, name: string, todayKey: string): We
       : best,
   );
 
+  const repId = rep.weather?.[0]?.id ?? 0;
   const tempC = Math.round(rep.main?.temp ?? NaN);
   const condition = rep.weather?.[0]?.description ?? '—';
+  const feelsLikeC = Math.round(rep.main?.feels_like ?? rep.main?.temp ?? NaN);
+  const windMps = Math.round(rep.wind?.speed ?? 0);
+
+  // Денний мін/макс за наявними температурами пулу.
+  const temps = pool.map((e) => e.main?.temp).filter((t): t is number => typeof t === 'number');
+  const minC = temps.length ? Math.round(Math.min(...temps)) : tempC;
+  const maxC = temps.length ? Math.round(Math.max(...temps)) : tempC;
 
   // willRain — за денними слотами (нічний дощ не змушує брати парасольку вдень).
   const daySlots = pool.filter((e) => {
@@ -102,21 +129,34 @@ export function parseForecast(json: unknown, name: string, todayKey: string): We
   return {
     name,
     tempC,
+    minC,
+    maxC,
+    feelsLikeC,
+    windMps,
     condition,
+    emoji: emojiFor(repId),
     willRain: maxRain >= RAIN_POP_THRESHOLD,
     willBeCold: Number.isFinite(tempC) && tempC < COLD_THRESHOLD_C,
     popPercent: Math.round(maxRain * 100),
   };
 }
 
-function formatLine(w: WeatherToday): string {
-  const sign = w.tempC > 0 ? '+' : '';
-  const temp = Number.isFinite(w.tempC) ? `${sign}${w.tempC}°` : '—';
+function signed(n: number): string {
+  return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${n}°` : '—';
+}
+
+/** Рядок summary (завжди видно): емодзі, температура, стан, дії. */
+function formatSummaryLine(w: WeatherToday): string {
   const actions: string[] = [];
   if (w.willRain) actions.push(`☔ парасолька (${w.popPercent}%)`);
   if (w.willBeCold) actions.push('🧥 вдягнись тепло');
   const tail = actions.length ? ` — ${actions.join(', ')}` : '';
-  return `${w.name}: ${temp}, ${w.condition}${tail}`;
+  return `${w.emoji} ${w.name}: ${signed(w.tempC)}, ${w.condition}${tail}`;
+}
+
+/** Рядок detail (expandable): відчувається, мін/макс дня, вітер. */
+function formatDetailLine(w: WeatherToday): string {
+  return `${w.name}: відч. ${signed(w.feelsLikeC)}, ${signed(w.minC)}…${signed(w.maxC)}, 💨 ${w.windMps} м/с`;
 }
 
 export interface WeatherModuleOptions {
@@ -188,7 +228,8 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
         id: 'weather',
         title: 'Погода',
         icon: '🌦',
-        summary: ok.map(formatLine).join('\n'),
+        summary: ok.map(formatSummaryLine).join('\n'),
+        detail: ok.map(formatDetailLine).join('\n'),
         priority: 40,
       };
     },
