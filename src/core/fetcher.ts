@@ -16,6 +16,10 @@ export interface FetcherOptions {
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const backoffMs = (attempt: number) => Math.min(500 * 2 ** attempt, 5000);
 
+// Деякі RSS-сервери віддають 403 без User-Agent — шлемо явний.
+const USER_AGENT =
+  'Mozilla/5.0 (compatible; svitanok-bot/1.0; +https://github.com/yushkonazar/svitanok)';
+
 export function createFetcher(opts: FetcherOptions): SourceFetcher {
   const allow = new Set(opts.allowlist.map((h) => h.toLowerCase()));
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -24,7 +28,14 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
     try {
-      const res = await fetchImpl(url, { signal: ctrl.signal, redirect: 'follow' });
+      const res = await fetchImpl(url, {
+        signal: ctrl.signal,
+        redirect: 'follow',
+        headers: {
+          'user-agent': USER_AGENT,
+          accept: 'application/rss+xml, application/xml, text/xml, */*',
+        },
+      });
       if (!res.ok) throw new Error(`fetch HTTP ${res.status} для ${url}`);
       return await res.text();
     } finally {

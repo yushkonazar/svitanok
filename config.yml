@@ -18,12 +18,22 @@ modules:
   weather: { enabled: true }
   calendar: { enabled: false } # увімкнути після Google OAuth (Production)
   news:
-    enabled: false # увімкнути після джерел
+    enabled: true
     categories: ['Україна та світ', 'Технології / IT', 'Спорт', 'Наука / економіка']
     perCategory: 2
     dedupDays: 3
     retentionDays: 7
-    sources: {}
+    sources:
+      'Україна та світ':
+        - 'https://feeds.bbci.co.uk/ukrainian/rss.xml'
+        - 'https://suspilne.media/rss/all.rss'
+      'Технології / IT':
+        - 'https://itc.ua/feed/'
+        - 'https://ain.ua/feed/'
+      'Спорт':
+        - 'https://champion.com.ua/rss/'
+      'Наука / економіка':
+        - 'https://www.epravda.com.ua/rss/'
   nextStep:
     enabled: true
     steps:
