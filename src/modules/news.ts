@@ -9,8 +9,9 @@ import { canonicalizeUrl } from '../core/url.js';
 
 const NEWS_PRIORITY = 50;
 // Беремо лише найсвіжіші N записів із кожного фіда (RSS — у зворотному
-// хронопорядку), щоб не роздути LLM-промпт широкими фідами (напр. 200 записів).
-const MAX_ITEMS_PER_FEED = 12;
+// хронопорядку). Тримаємо малим: latency claude -p різко росте з розміром
+// промпта (70 канд ~2.5хв, 18 канд ~45с), а на квоту Pro це теж економніше.
+const MAX_ITEMS_PER_FEED = 3;
 
 // --- preferenceWeights (§6.1) ---
 export const WEIGHT_MIN = 0.5;

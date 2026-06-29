@@ -46,11 +46,12 @@ modules:
   weeklyReview: { enabled: true, day: 'sunday' }
 
 llm:
-  # Sonnet для курації новин: якісно й швидко. Opus давав таймаут (>90с) + зайва
-  # квота; новинам глибина Opus не потрібна. Звірено через claude -p (§0).
-  model: 'claude-sonnet-4-6'
+  # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p
+  # (>120с таймаут), Haiku завершує надійно. Латентність claude -p різко росте з
+  # розміром промпта, тож тримаємо мало кандидатів (MAX_ITEMS_PER_FEED). Звірено (§0).
+  model: 'claude-haiku-4-5'
   maxCallsPerRun: 2 # стеля викликів за ран (news = 1; запас на ретрай/майбутній модуль)
-  timeoutMs: 120000 # запас: старт CLI (~10с) + інференс Sonnet
+  timeoutMs: 150000 # запас під latency claude -p у CI
 
 fetch:
   timeoutMs: 30000
