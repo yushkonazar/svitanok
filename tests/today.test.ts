@@ -34,7 +34,12 @@ function ctxWith(setup: (bus: RunBus) => void): Ctx<AppConfig> {
 const w = (name: string, tempC: number, willRain = false, willBeCold = false): WeatherToday => ({
   name,
   tempC,
+  minC: tempC,
+  maxC: tempC,
+  feelsLikeC: tempC,
+  windMps: 0,
   condition: 'x',
+  emoji: '☀️',
   willRain,
   willBeCold,
   popPercent: willRain ? 60 : 0,

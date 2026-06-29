@@ -16,14 +16,16 @@ const forecast = {
   list: [
     {
       dt: sec('2026-07-01T06:00:00Z'), // 09:00 Kyiv
-      main: { temp: 15 },
+      main: { temp: 15, feels_like: 14 },
       weather: [{ id: 800, description: 'ясно' }],
+      wind: { speed: 3 },
       pop: 0,
     },
     {
       dt: sec('2026-07-01T09:00:00Z'), // 12:00 Kyiv (представницький)
-      main: { temp: 8 },
+      main: { temp: 8, feels_like: 6 },
       weather: [{ id: 500, description: 'дощ' }],
+      wind: { speed: 5 },
       pop: 0.8,
     },
     {
@@ -44,6 +46,31 @@ describe('parseForecast', () => {
     expect(w!.willRain).toBe(true); // pop 0.8 >= 0.5
     expect(w!.popPercent).toBe(80);
     expect(w!.willBeCold).toBe(true); // 8 < 10
+  });
+
+  it('збагачені поля: емодзі, відчувається, вітер, мін/макс дня', () => {
+    const w = parseForecast(forecast, 'Львів', '2026-07-01')!;
+    expect(w.emoji).toBe('🌧'); // rep id 500 = дощ
+    expect(w.feelsLikeC).toBe(6);
+    expect(w.windMps).toBe(5);
+    expect(w.minC).toBe(8); // min(15, 8)
+    expect(w.maxC).toBe(15); // max(15, 8)
+  });
+
+  it('фолбек відч.=temp і вітер=0, коли полів немає', () => {
+    const bare = {
+      list: [
+        {
+          dt: sec('2026-07-01T09:00:00Z'),
+          main: { temp: 20 },
+          weather: [{ id: 800, description: 'ясно' }],
+        },
+      ],
+    };
+    const w = parseForecast(bare, 'Львів', '2026-07-01')!;
+    expect(w.emoji).toBe('☀️');
+    expect(w.feelsLikeC).toBe(20);
+    expect(w.windMps).toBe(0);
   });
 
   it('willRain false, коли сьогодні без опадів', () => {
