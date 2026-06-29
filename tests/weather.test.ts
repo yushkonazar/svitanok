@@ -15,19 +15,22 @@ const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
 const forecast = {
   list: [
     {
-      dt: sec('2026-07-01T06:00:00Z'),
+      dt: sec('2026-07-01T06:00:00Z'), // 09:00 Kyiv
       main: { temp: 15 },
       weather: [{ id: 800, description: 'ясно' }],
+      pop: 0,
     },
     {
-      dt: sec('2026-07-01T09:00:00Z'),
+      dt: sec('2026-07-01T09:00:00Z'), // 12:00 Kyiv (представницький)
       main: { temp: 8 },
       weather: [{ id: 500, description: 'дощ' }],
+      pop: 0.8,
     },
     {
       dt: sec('2026-07-02T09:00:00Z'),
       main: { temp: 20 },
       weather: [{ id: 800, description: 'ясно' }],
+      pop: 0,
     },
   ],
 };
@@ -38,7 +41,8 @@ describe('parseForecast', () => {
     expect(w).not.toBeNull();
     expect(w!.tempC).toBe(8); // запис 12:00 Kyiv
     expect(w!.condition).toBe('дощ');
-    expect(w!.willRain).toBe(true);
+    expect(w!.willRain).toBe(true); // pop 0.8 >= 0.5
+    expect(w!.popPercent).toBe(80);
     expect(w!.willBeCold).toBe(true); // 8 < 10
   });
 
@@ -49,12 +53,71 @@ describe('parseForecast', () => {
           dt: sec('2026-07-01T09:00:00Z'),
           main: { temp: 22 },
           weather: [{ id: 800, description: 'ясно' }],
+          pop: 0.1,
         },
       ],
     };
     const w = parseForecast(sunny, 'Львів', '2026-07-01')!;
     expect(w.willRain).toBe(false);
+    expect(w.popPercent).toBe(10);
     expect(w.willBeCold).toBe(false);
+  });
+
+  it('спекотний день із грозовим слотом надвечір (низький pop) — БЕЗ парасольки', () => {
+    // Реальний баг: рвані хмари вдень + гроза з pop 0.2 надвечір давали парасольку.
+    const hotStormy = {
+      list: [
+        {
+          dt: sec('2026-07-01T09:00:00Z'), // 12:00 Kyiv
+          main: { temp: 36 },
+          weather: [{ id: 803, description: 'рвані хмари' }],
+          pop: 0.1,
+        },
+        {
+          dt: sec('2026-07-01T15:00:00Z'), // 18:00 Kyiv
+          main: { temp: 34 },
+          weather: [{ id: 200, description: 'гроза' }],
+          pop: 0.2,
+        },
+      ],
+    };
+    const w = parseForecast(hotStormy, 'Львів', '2026-07-01')!;
+    expect(w.willRain).toBe(false); // maxRain 0.2 < 0.5
+    expect(w.popPercent).toBe(20);
+  });
+
+  it('нічний дощ не змушує брати парасольку вдень', () => {
+    const nightRain = {
+      list: [
+        {
+          dt: sec('2026-07-01T00:00:00Z'), // 03:00 Kyiv (ніч — ігнор)
+          main: { temp: 18 },
+          weather: [{ id: 500, description: 'дощ' }],
+          pop: 0.9,
+        },
+        {
+          dt: sec('2026-07-01T09:00:00Z'), // 12:00 Kyiv (день)
+          main: { temp: 25 },
+          weather: [{ id: 800, description: 'ясно' }],
+          pop: 0.1,
+        },
+      ],
+    };
+    const w = parseForecast(nightRain, 'Львів', '2026-07-01')!;
+    expect(w.willRain).toBe(false); // денний maxRain 0.1
+  });
+
+  it('фолбек на код опадів, коли pop відсутній', () => {
+    const noPop = {
+      list: [
+        {
+          dt: sec('2026-07-01T09:00:00Z'),
+          main: { temp: 14 },
+          weather: [{ id: 500, description: 'дощ' }],
+        },
+      ],
+    };
+    expect(parseForecast(noPop, 'Львів', '2026-07-01')!.willRain).toBe(true);
   });
 
   it('фільтрує по київській даті (наступний день не впливає)', () => {
