@@ -23,17 +23,20 @@ modules:
     perCategory: 2
     dedupDays: 3
     retentionDays: 7
+    # Джерела мають віддаватись із датацентрових IP GitHub Actions. Більшість
+    # .ua-сайтів за Cloudflare віддають 403 раннеру, тож для покриття — Google News
+    # (датацентр-дружній); BBC та itc.ua підтверджено працюють у CI.
     sources:
       'Україна та світ':
         - 'https://feeds.bbci.co.uk/ukrainian/rss.xml'
-        - 'https://suspilne.media/rss/all.rss'
+        - 'https://news.google.com/rss?hl=uk&gl=UA&ceid=UA:uk'
       'Технології / IT':
         - 'https://itc.ua/feed/'
-        - 'https://ain.ua/feed/'
+        - 'https://news.google.com/rss/search?q=технології%20україна&hl=uk&gl=UA&ceid=UA:uk'
       'Спорт':
-        - 'https://champion.com.ua/rss/'
+        - 'https://news.google.com/rss/search?q=спорт%20україна&hl=uk&gl=UA&ceid=UA:uk'
       'Наука / економіка':
-        - 'https://www.epravda.com.ua/rss/'
+        - 'https://news.google.com/rss/search?q=економіка%20україна&hl=uk&gl=UA&ceid=UA:uk'
   nextStep:
     enabled: true
     steps:
@@ -43,9 +46,12 @@ modules:
   weeklyReview: { enabled: true, day: 'sunday' }
 
 llm:
-  model: 'claude-opus-4-8' # пін моделі, доступної на Pro через claude -p; звірити при сетапі news (§0)
+  # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p
+  # (>120с таймаут), Haiku завершує надійно. Латентність claude -p різко росте з
+  # розміром промпта, тож тримаємо мало кандидатів (MAX_ITEMS_PER_FEED). Звірено (§0).
+  model: 'claude-haiku-4-5'
   maxCallsPerRun: 2 # стеля викликів за ран (news = 1; запас на ретрай/майбутній модуль)
-  timeoutMs: 90000
+  timeoutMs: 150000 # запас під latency claude -p у CI
 
 fetch:
   timeoutMs: 30000
