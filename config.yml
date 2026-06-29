@@ -46,9 +46,11 @@ modules:
   weeklyReview: { enabled: true, day: 'sunday' }
 
 llm:
-  model: 'claude-opus-4-8' # пін моделі, доступної на Pro через claude -p; звірити при сетапі news (§0)
+  # Sonnet для курації новин: якісно й швидко. Opus давав таймаут (>90с) + зайва
+  # квота; новинам глибина Opus не потрібна. Звірено через claude -p (§0).
+  model: 'claude-sonnet-4-6'
   maxCallsPerRun: 2 # стеля викликів за ран (news = 1; запас на ретрай/майбутній модуль)
-  timeoutMs: 90000
+  timeoutMs: 120000 # запас: старт CLI (~10с) + інференс Sonnet
 
 fetch:
   timeoutMs: 30000
