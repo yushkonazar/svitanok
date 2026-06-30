@@ -3,7 +3,7 @@
 // обрізати summary. Лічильник довжини — string.length (UTF-16, як Telegram).
 
 import type { Block } from './types.js';
-import { escapeHtml, fitEscaped } from './telegram.js';
+import { escapeHtml, fitEscaped, visibleLength } from './telegram.js';
 
 const SEP = '\n\n'; // тонкий роздільник між блоками (today/weather не впритул, §9)
 
@@ -39,10 +39,10 @@ function renderBlock(b: Block, maxChars: number, quiet: boolean): string {
     html += `\n<blockquote expandable>${detail}</blockquote>`;
   }
 
-  if (html.length > maxChars) {
+  if (visibleLength(html) > maxChars) {
     // 1) прибрати detail
     html = `${titleLine}\n${summary}`;
-    if (html.length > maxChars) {
+    if (visibleLength(html) > maxChars) {
       // 2) обрізати summary, щоб блок усе одно йшов окремо (не 400)
       const overhead = titleLine.length + 1; // titleLine + '\n'
       const budget = Math.max(maxChars - overhead, 8);
@@ -79,7 +79,7 @@ export function renderBriefing(blocks: Block[], options: RenderOptions): string[
 
   for (const part of parts) {
     const candidate = cur ? cur + SEP + part : part;
-    if (candidate.length <= maxChars) {
+    if (visibleLength(candidate) <= maxChars) {
       cur = candidate;
     } else {
       if (cur) messages.push(cur);

@@ -16,6 +16,15 @@ export function link(url: string, text: string): string {
   return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
 }
 
+/**
+ * ВИДИМА довжина HTML — як рахує Telegram ліміт 4096 («after entities parsing»):
+ * теги відкидаємо, кожну HTML-сутність рахуємо як 1 символ. Тобто довгі href у
+ * <a> НЕ рахуються (інакше Google News-редіректи дають хибне розбиття).
+ */
+export function visibleLength(html: string): number {
+  return html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;|&#\d+;/gi, 'x').length;
+}
+
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
 }
