@@ -51,18 +51,25 @@ modules:
     enabled: true
     perRun: 3
     dedupDays: 7
-    # DOU RSS, junior (exp 0-1). Work.ua/LinkedIn без відкритого RSS — відкладено.
+    # Профіль для LLM-скорингу релевантності вакансій (fit %).
+    profile: >-
+      Full Stack веброзробник (Frontend + Backend), рівень Trainee/Junior.
+      Стек: JavaScript/TypeScript, React, Node.js, HTML/CSS.
+      Цікавлять junior-дружні вакансії під цей стек.
+    # DOU (junior exp 0-1) + Djinni (no_exp/1y). Work.ua/robota/LinkedIn — 403 з датацентру.
     sources:
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Full%20Stack&exp=0-1'
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Front%20End&exp=0-1'
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Back%20End&exp=0-1'
+      - 'https://djinni.co/jobs/rss/?primary_keyword=Fullstack&exp_level=no_exp&exp_level=1y'
+      - 'https://djinni.co/jobs/rss/?primary_keyword=JavaScript&exp_level=no_exp&exp_level=1y'
 
 llm:
   # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p
   # (>120с таймаут), Haiku завершує надійно. Латентність claude -p різко росте з
   # розміром промпта, тож тримаємо мало кандидатів (MAX_ITEMS_PER_FEED). Звірено (§0).
   model: 'claude-haiku-4-5'
-  maxCallsPerRun: 2 # стеля викликів за ран (news = 1; запас на ретрай/майбутній модуль)
+  maxCallsPerRun: 4 # jobs-скоринг (1/день) + fact/mock (батч-кеш, зрідка) + запас
   timeoutMs: 150000 # запас під latency claude -p у CI
 
 fetch:

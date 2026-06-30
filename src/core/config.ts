@@ -50,6 +50,7 @@ const ConfigSchema = z
         enabled: z.boolean(),
         perRun: z.number().int().positive().default(3),
         dedupDays: z.number().int().nonnegative().default(7),
+        profile: z.string().default(''), // для LLM-скорингу релевантності
         sources: z.array(z.string()).default([]),
       }),
     }),
