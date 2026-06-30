@@ -134,6 +134,7 @@ export const newsModule: Module<AppConfig> = {
       icon: '🗞',
       summary,
       summaryHtml,
+      data: { groups },
       priority: NEWS_PRIORITY,
     };
   },

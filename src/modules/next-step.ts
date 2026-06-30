@@ -40,6 +40,7 @@ export const nextStepModule: Module<AppConfig> = {
       title: 'Крок до офера',
       icon: '🎯',
       summary: step,
+      data: { step },
       priority: 60,
     };
   },

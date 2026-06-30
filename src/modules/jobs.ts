@@ -151,6 +151,7 @@ export const jobsModule: Module<AppConfig> = {
       summary,
       summaryHtml,
       detailHtml,
+      data: { items: picked },
       priority: JOBS_PRIORITY,
     };
   },

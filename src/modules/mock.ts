@@ -47,6 +47,7 @@ export const mockModule: Module<AppConfig> = {
       title: 'Питання дня',
       icon: '🎤',
       summary: question,
+      data: { question },
       priority: MOCK_PRIORITY,
     };
   },

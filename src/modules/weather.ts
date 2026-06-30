@@ -228,6 +228,7 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
         icon: '🌦',
         summary: ok.map(formatSummaryLine).join('\n'),
         detail: ok.map(formatDetailLine).join('\n'),
+        data: { locations: ok },
         priority: 40,
       };
     },
