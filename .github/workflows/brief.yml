@@ -82,15 +82,23 @@ jobs:
         run: npx tsx src/orchestrator.ts ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
       # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
       # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
+      # Прямий виклик CF API замість wrangler: скоуплений токен ламає wrangler-
+      # preflight (code 10015); PUT за явними account+namespace надійніший і швидший.
       - name: publish briefing to KV
-        working-directory: web
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NAMESPACE_ID: '389ff22c124a476bb18d2f5e6a5334c0' # namespace BRIEFING (не секрет)
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then echo "CF_API_TOKEN відсутній — пропуск"; exit 0; fi
+          if [ -z "$CF_API_TOKEN" ]; then echo "CF_API_TOKEN відсутній — пропуск"; exit 0; fi
           if [ ! -f "$GITHUB_WORKSPACE/briefing.json" ]; then echo "briefing.json немає — пропуск"; exit 0; fi
-          npx wrangler@4 kv key put latest --path="$GITHUB_WORKSPACE/briefing.json" --binding BRIEFING --remote || echo "KV-публікація не вдалася (не критично)"
+          code=$(curl -s -o /tmp/kv_resp.json -w "%{http_code}" -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/latest" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @"$GITHUB_WORKSPACE/briefing.json")
+          echo "CF API HTTP $code"; cat /tmp/kv_resp.json; echo
+          if [ "$code" != "200" ]; then echo "KV-публікація не вдалася (не критично)"; fi
       # Коміт стану в незахищену гілку state (§4.3); main лишається захищеним.
       - name: commit state
         working-directory: state-data
