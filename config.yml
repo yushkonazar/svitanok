@@ -47,6 +47,10 @@ modules:
   fact:
     enabled: true
     batchSize: 15 # один виклик генерує 15 фактів (~38с) -> ~1 виклик на 2 тижні
+  mock:
+    enabled: true
+    batchSize: 15 # питання співбесіди, батч-кеш (як fact)
+    profile: 'Junior/Trainee Full Stack: JavaScript/TypeScript, React, Node.js, HTTP, SQL'
   jobs:
     enabled: true
     perRun: 3

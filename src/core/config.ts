@@ -46,6 +46,11 @@ const ConfigSchema = z
         enabled: z.boolean(),
         batchSize: z.number().int().positive().default(30),
       }),
+      mock: z.object({
+        enabled: z.boolean(),
+        batchSize: z.number().int().positive().default(15),
+        profile: z.string().default(''),
+      }),
       jobs: z.object({
         enabled: z.boolean(),
         perRun: z.number().int().positive().default(3),

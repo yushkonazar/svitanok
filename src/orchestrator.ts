@@ -34,6 +34,7 @@ import { stoicModule } from './modules/stoic.js';
 import { newsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
 import { factModule } from './modules/fact.js';
+import { mockModule } from './modules/mock.js';
 import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
 import { buildPruners } from './core/prune.js';
@@ -167,6 +168,7 @@ function buildModules(): Module<AppConfig>[] {
     factModule,
     newsModule,
     jobsModule,
+    mockModule,
     nextStepModule,
     weeklyReviewModule,
   ];
