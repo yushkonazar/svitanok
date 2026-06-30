@@ -71,6 +71,7 @@ jobs:
       - name: run briefing
         env:
           STATE_FILE: ${{ github.workspace }}/state-data/state.json
+          BRIEFING_FILE: ${{ github.workspace }}/briefing.json # дані для Mini App
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
@@ -79,6 +80,17 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: npx tsx src/orchestrator.ts ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+      # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
+      # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
+      - name: publish briefing to KV
+        working-directory: web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then echo "CF_API_TOKEN відсутній — пропуск"; exit 0; fi
+          if [ ! -f "$GITHUB_WORKSPACE/briefing.json" ]; then echo "briefing.json немає — пропуск"; exit 0; fi
+          npx wrangler@4 kv key put latest --path="$GITHUB_WORKSPACE/briefing.json" --binding BRIEFING --remote || echo "KV-публікація не вдалася (не критично)"
       # Коміт стану в незахищену гілку state (§4.3); main лишається захищеним.
       - name: commit state
         working-directory: state-data
