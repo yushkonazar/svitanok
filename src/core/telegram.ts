@@ -96,8 +96,12 @@ export function createNotifier(opts: NotifierOptions): Notifier {
   return {
     async send(messages: string[]): Promise<void> {
       for (const msg of messages) {
-        if (msg.length > TELEGRAM_HARD_LIMIT) {
-          log?.warn(`повідомлення ${msg.length} > ${TELEGRAM_HARD_LIMIT} — render мав чанкувати`);
+        // Ліміт Telegram — за ВИДИМИМ текстом (href у <a> не рахується, §9).
+        const vis = visibleLength(msg);
+        if (vis > TELEGRAM_HARD_LIMIT) {
+          log?.warn(
+            `повідомлення ${vis} (видимих) > ${TELEGRAM_HARD_LIMIT} — render мав чанкувати`,
+          );
         }
         await call('sendMessage', {
           chat_id: chatId,
