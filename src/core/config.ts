@@ -58,6 +58,8 @@ const ConfigSchema = z
         profile: z.string().default(''), // для LLM-скорингу релевантності
         sources: z.array(z.string()).default([]),
       }),
+      currency: z.object({ enabled: z.boolean() }),
+      onthisday: z.object({ enabled: z.boolean() }),
     }),
     llm: z.object({
       model: z.string().min(1),

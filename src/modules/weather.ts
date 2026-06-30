@@ -48,6 +48,8 @@ export interface WeatherToday {
   willRain: boolean;
   willBeCold: boolean;
   popPercent: number; // макс. ймовірність опадів удень, % (для прозорості парасольки)
+  sunrise: number; // unix сек, схід сонця (0 якщо невідомо)
+  sunset: number; // unix сек, захід сонця (0 якщо невідомо)
 }
 
 /** Детермінований slug локації (індекс) — today відтворює його так само (§6). */
@@ -126,8 +128,12 @@ export function parseForecast(json: unknown, name: string, todayKey: string): We
   const slots = daySlots.length ? daySlots : pool;
   const maxRain = slots.reduce((m, e) => Math.max(m, rainSignal(e)), 0);
 
+  const city = (json as { city?: { sunrise?: number; sunset?: number } }).city;
+
   return {
     name,
+    sunrise: typeof city?.sunrise === 'number' ? city.sunrise : 0,
+    sunset: typeof city?.sunset === 'number' ? city.sunset : 0,
     tempC,
     minC,
     maxC,

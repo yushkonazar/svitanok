@@ -39,6 +39,8 @@ import { factModule } from './modules/fact.js';
 import { mockModule } from './modules/mock.js';
 import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
+import { createCurrencyModule } from './modules/currency.js';
+import { createOnThisDayModule } from './modules/onthisday.js';
 import { buildPruners } from './core/prune.js';
 
 export interface RunOptions {
@@ -188,6 +190,8 @@ function buildModules(): Module<AppConfig>[] {
     newsModule,
     jobsModule,
     mockModule,
+    createCurrencyModule(),
+    createOnThisDayModule(),
     nextStepModule,
     weeklyReviewModule,
   ];

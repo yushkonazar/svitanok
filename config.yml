@@ -51,6 +51,8 @@ modules:
     enabled: true
     batchSize: 15 # питання співбесіди, батч-кеш (як fact)
     profile: 'Junior/Trainee Full Stack: JavaScript/TypeScript, React, Node.js, HTTP, SQL'
+  currency: { enabled: true } # курс НБУ, лише дашборд
+  onthisday: { enabled: true } # «у цей день» (Wikipedia), лише дашборд
   jobs:
     enabled: true
     perRun: 3
