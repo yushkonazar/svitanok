@@ -83,6 +83,25 @@ describe('renderBriefing — escape + структура', () => {
     expect(msgs).toHaveLength(1); // не розбило, попри ~3200 «сирих» символів href
   });
 
+  it('inMessage:false — блок НЕ йде в повідомлення', () => {
+    const msgs = renderBriefing(
+      [
+        block({ id: 'a', priority: 0, title: 'Видимий', summary: 'у повідомленні' }),
+        block({
+          id: 'fact',
+          priority: 1,
+          title: 'Факт',
+          summary: 'ЛИШЕ В ДАШБОРДІ',
+          inMessage: false,
+        }),
+      ],
+      { maxChars: 3900 },
+    );
+    const all = msgs.join('\n');
+    expect(all).toContain('Видимий');
+    expect(all).not.toContain('ЛИШЕ В ДАШБОРДІ');
+  });
+
   it('header лише в першому повідомленні', () => {
     const msgs = renderBriefing([block({ id: 'a', priority: 0 })], {
       maxChars: 3900,

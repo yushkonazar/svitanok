@@ -56,22 +56,28 @@ function renderBlock(b: Block, maxChars: number, quiet: boolean): string {
 }
 
 /** Дата + день тижня українською (uk-UA), як безпечний bold-заголовок (§9). */
-export function formatKyivDateHeader(date: Date): string {
-  const fmt = new Intl.DateTimeFormat('uk-UA', {
+/** Плейн-рядок дати «Вівторок, 30 червня» (uk-UA, Київ) — для briefing.json. */
+export function formatKyivDateLabel(date: Date): string {
+  const s = new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
     weekday: 'long',
     day: 'numeric',
     month: 'long',
-  });
-  const s = fmt.format(date);
-  const cap = s.charAt(0).toUpperCase() + s.slice(1);
-  return `<b>${escapeHtml(cap)}</b>`;
+  }).format(date);
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export function formatKyivDateHeader(date: Date): string {
+  return `<b>${escapeHtml(formatKyivDateLabel(date))}</b>`;
 }
 
 /** Зібрати блоки у повідомлення, розбиваючи на межі блоків за лімітом. */
 export function renderBriefing(blocks: Block[], options: RenderOptions): string[] {
   const { maxChars, header, quiet = false } = options;
-  const sorted = [...blocks].sort((a, b) => a.priority - b.priority);
+  // inMessage:false -> блок лише в Mini App, не в Telegram-повідомленні.
+  const sorted = blocks
+    .filter((b) => b.inMessage !== false)
+    .sort((a, b) => a.priority - b.priority);
   const parts = sorted.map((b) => renderBlock(b, maxChars, quiet));
 
   const messages: string[] = [];
