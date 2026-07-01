@@ -3,5 +3,5 @@
   "compatibility_date": "2025-06-01",
   "main": "worker.js",
   "assets": { "directory": "./public", "binding": "ASSETS" },
-  "kv_namespaces": [{ "binding": "BRIEFING", "id": "389ff22c124a476bb18d2f5e6a5334c0" }]
+  "kv_namespaces": [{ "binding": "BRIEFING", "id": "389ff22c124a476bb18d2f5e6a5334c0" }],
 }
