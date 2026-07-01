@@ -98,7 +98,12 @@ jobs:
             -H "Content-Type: application/json" \
             --data-binary @"$GITHUB_WORKSPACE/briefing.json")
           echo "CF API HTTP $code"; cat /tmp/kv_resp.json; echo
-          if [ "$code" != "200" ]; then echo "KV-публікація не вдалася (не критично)"; fi
+          if [ "$code" != "200" ]; then
+            echo "KV-публікація не вдалася (не критично). Діагностика — акаунти токена:"
+            curl -s "https://api.cloudflare.com/client/v4/accounts" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              | jq -r '"token-success=" + (.success|tostring), (.result[]? | "ACCT " + .id + "  " + .name), (.errors[]? | "ERR " + (.code|tostring) + " " + .message)'
+          fi
       # Коміт стану в незахищену гілку state (§4.3); main лишається захищеним.
       - name: commit state
         working-directory: state-data
