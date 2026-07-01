@@ -46,12 +46,20 @@ const ConfigSchema = z
         enabled: z.boolean(),
         batchSize: z.number().int().positive().default(30),
       }),
+      mock: z.object({
+        enabled: z.boolean(),
+        batchSize: z.number().int().positive().default(15),
+        profile: z.string().default(''),
+      }),
       jobs: z.object({
         enabled: z.boolean(),
         perRun: z.number().int().positive().default(3),
         dedupDays: z.number().int().nonnegative().default(7),
+        profile: z.string().default(''), // для LLM-скорингу релевантності
         sources: z.array(z.string()).default([]),
       }),
+      currency: z.object({ enabled: z.boolean() }),
+      onthisday: z.object({ enabled: z.boolean() }),
     }),
     llm: z.object({
       model: z.string().min(1),

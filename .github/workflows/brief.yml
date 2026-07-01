@@ -71,6 +71,7 @@ jobs:
       - name: run briefing
         env:
           STATE_FILE: ${{ github.workspace }}/state-data/state.json
+          BRIEFING_FILE: ${{ github.workspace }}/briefing.json # дані для Mini App
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
@@ -79,6 +80,33 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: npx tsx src/orchestrator.ts ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+      # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
+      # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
+      # Прямий виклик CF API замість wrangler: скоуплений токен ламає wrangler-
+      # preflight (code 10015); PUT за явними account+namespace надійніший і швидший.
+      - name: publish briefing to KV
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NAMESPACE_ID: '389ff22c124a476bb18d2f5e6a5334c0' # namespace BRIEFING (не секрет)
+        run: |
+          if [ -z "$CF_API_TOKEN" ]; then echo "CF_API_TOKEN відсутній — пропуск"; exit 0; fi
+          if [ ! -f "$GITHUB_WORKSPACE/briefing.json" ]; then echo "briefing.json немає — пропуск"; exit 0; fi
+          # Захисне обрізання пробілів/переносів (секрет міг містити зайвий \r\n).
+          CF_ACCOUNT_ID=$(printf '%s' "$CF_ACCOUNT_ID" | tr -d '[:space:]')
+          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN" | tr -d '[:space:]')
+          code=$(curl -s -o /tmp/kv_resp.json -w "%{http_code}" -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/latest" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @"$GITHUB_WORKSPACE/briefing.json")
+          echo "CF API HTTP $code"; cat /tmp/kv_resp.json; echo
+          if [ "$code" != "200" ]; then
+            echo "KV-публікація не вдалася (не критично). Діагностика — акаунти токена:"
+            curl -s "https://api.cloudflare.com/client/v4/accounts" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              | jq -r '"token-success=" + (.success|tostring), (.result[]? | "ACCT " + .id + "  " + .name), (.errors[]? | "ERR " + (.code|tostring) + " " + .message)'
+          fi
       # Коміт стану в незахищену гілку state (§4.3); main лишається захищеним.
       - name: commit state
         working-directory: state-data

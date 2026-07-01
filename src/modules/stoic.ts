@@ -50,6 +50,7 @@ export const stoicModule: Module<AppConfig> = {
       title: 'Думка дня',
       icon: '🏛',
       summary: `«${q.text}»\n— ${q.author}`,
+      data: { text: q.text, author: q.author },
       priority: 10, // одразу під заголовком-датою (§5)
     };
   },

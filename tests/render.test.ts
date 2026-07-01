@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderBriefing, formatKyivDateHeader } from '../src/core/render.js';
+import { visibleLength } from '../src/core/telegram.js';
 import type { Block } from '../src/core/types.js';
 
 const block = (over: Partial<Block> & { id: string; priority: number }): Block => ({
@@ -55,19 +56,50 @@ describe('renderBriefing — escape + структура', () => {
     expect(msg).toContain('<blockquote expandable><i>деталь</i></blockquote>');
   });
 
-  it('summaryHtml > ліміту — обрізає по межі рядків, не рве тег', () => {
-    const line = '• <a href="https://x/aaaaaaaaaa">Заголовок новини</a>';
+  it('summaryHtml понад ліміт (за видимим) — обрізає по межі рядків, не рве тег', () => {
+    const line = '• <a href="https://x/a">Заголовок новини дня доволі довгий</a>';
     const html = Array.from({ length: 6 }, () => line).join('\n');
     const [msg] = renderBriefing(
       [block({ id: 'n', priority: 0, title: 'Tt', summary: 's', summaryHtml: html })],
-      { maxChars: 120 },
+      { maxChars: 60 },
     );
-    expect(msg!.length).toBeLessThanOrEqual(120);
-    // немає обірваного тега: кількість <a> == кількість </a>
     const opens = (msg!.match(/<a /g) ?? []).length;
     const closes = (msg!.match(/<\/a>/g) ?? []).length;
-    expect(opens).toBe(closes);
+    expect(opens).toBe(closes); // немає обірваного тега
     expect(msg!.endsWith('…')).toBe(true);
+  });
+
+  it('довгі href НЕ спричиняють розбиття (рахуємо видимий текст, не href)', () => {
+    // 8 лінків із величезними href, але коротким видимим текстом -> одне повідомлення.
+    const bigHref = 'https://news.google.com/rss/articles/' + 'A'.repeat(400);
+    const summaryHtml = Array.from(
+      { length: 8 },
+      (_, i) => `• <a href="${bigHref}${i}">Коротка новина ${i}</a>`,
+    ).join('\n');
+    const msgs = renderBriefing(
+      [block({ id: 'news', priority: 0, title: 'Новини', summary: 's', summaryHtml })],
+      { maxChars: 3900 },
+    );
+    expect(msgs).toHaveLength(1); // не розбило, попри ~3200 «сирих» символів href
+  });
+
+  it('inMessage:false — блок НЕ йде в повідомлення', () => {
+    const msgs = renderBriefing(
+      [
+        block({ id: 'a', priority: 0, title: 'Видимий', summary: 'у повідомленні' }),
+        block({
+          id: 'fact',
+          priority: 1,
+          title: 'Факт',
+          summary: 'ЛИШЕ В ДАШБОРДІ',
+          inMessage: false,
+        }),
+      ],
+      { maxChars: 3900 },
+    );
+    const all = msgs.join('\n');
+    expect(all).toContain('Видимий');
+    expect(all).not.toContain('ЛИШЕ В ДАШБОРДІ');
   });
 
   it('header лише в першому повідомленні', () => {
@@ -86,7 +118,7 @@ describe('renderBriefing — ліміт 4096', () => {
     );
     const msgs = renderBriefing(blocks, { maxChars: 120 });
     expect(msgs.length).toBeGreaterThan(1);
-    for (const m of msgs) expect(m.length).toBeLessThanOrEqual(120);
+    for (const m of msgs) expect(visibleLength(m)).toBeLessThanOrEqual(120);
     const all = msgs.join('\n');
     for (let i = 0; i < 6; i++) expect(all).toContain(`Блок${i}`);
   });

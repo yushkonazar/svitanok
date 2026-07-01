@@ -62,6 +62,7 @@ export const factModule: Module<AppConfig> = {
       title: 'Факт дня',
       icon: '🧠',
       summary: fact,
+      data: { fact },
       priority: FACT_PRIORITY,
     };
   },

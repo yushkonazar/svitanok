@@ -5,6 +5,7 @@
 //
 // runBriefing виділено для тестів (інжектовані залежності); main() зшиває реальні.
 
+import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, type AppConfig } from './core/config.js';
 import { createClock, type Clock } from './core/clock.js';
@@ -14,7 +15,8 @@ import { createRunBus } from './core/bus.js';
 import { createLLMClient } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
 import { createNotifier, type Notifier } from './core/telegram.js';
-import { renderBriefing, formatKyivDateHeader } from './core/render.js';
+import { renderBriefing, formatKyivDateHeader, formatKyivDateLabel } from './core/render.js';
+import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
 import { requireCriticalSecrets, optionalSecret, MissingSecretsError } from './core/secrets.js';
@@ -34,8 +36,11 @@ import { stoicModule } from './modules/stoic.js';
 import { newsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
 import { factModule } from './modules/fact.js';
+import { mockModule } from './modules/mock.js';
 import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
+import { createCurrencyModule } from './modules/currency.js';
+import { createOnThisDayModule } from './modules/onthisday.js';
 import { buildPruners } from './core/prune.js';
 
 export interface RunOptions {
@@ -62,6 +67,7 @@ export interface RunResult {
   reason: string;
   messages: string[];
   quiet: boolean;
+  briefing: BriefingData; // дані для Mini App (briefing.json)
 }
 
 /** Тихий день (§6): ВСІ активні trigger-джерела порожні. Якщо жодне з trigger-
@@ -109,8 +115,19 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   });
   log.info(`[guard] send=${decision.send} :: ${decision.reason}`);
 
+  const emptyBriefing = buildBriefingData(
+    [],
+    formatKyivDateLabel(clock.now()),
+    clock.now().toISOString(),
+  );
   if (!decision.send && !dryRun) {
-    return { status: 'skipped', reason: decision.reason, messages: [], quiet: false };
+    return {
+      status: 'skipped',
+      reason: decision.reason,
+      messages: [],
+      quiet: false,
+      briefing: emptyBriefing,
+    };
   }
 
   const ctx: Ctx<AppConfig> = {
@@ -139,9 +156,14 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     header,
     quiet,
   });
+  const briefing = buildBriefingData(
+    blocks,
+    formatKyivDateLabel(clock.now()),
+    clock.now().toISOString(),
+  );
 
   if (dryRun) {
-    return { status: 'dry-run', reason: decision.reason, messages, quiet };
+    return { status: 'dry-run', reason: decision.reason, messages, quiet, briefing };
   }
 
   if (!deps.notifier) {
@@ -155,7 +177,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   await state.flush();
   log.info(`брифінг надіслано (${messages.length} повідомл.), стан оновлено`);
 
-  return { status: 'sent', reason: decision.reason, messages, quiet };
+  return { status: 'sent', reason: decision.reason, messages, quiet, briefing };
 }
 
 /** Зібрати всі модулі MVP. Нові додаються тут (consumer-и після producer-ів). */
@@ -167,6 +189,9 @@ function buildModules(): Module<AppConfig>[] {
     factModule,
     newsModule,
     jobsModule,
+    mockModule,
+    createCurrencyModule(),
+    createOnThisDayModule(),
     nextStepModule,
     weeklyReviewModule,
   ];
@@ -244,6 +269,12 @@ async function main(): Promise<void> {
 
   try {
     const result = await runBriefing(deps, { dryRun, force });
+    // briefing.json для Mini App (публікує brief.yml у гілку дашборда).
+    const briefingFile = process.env.BRIEFING_FILE;
+    if (briefingFile && result.status !== 'skipped') {
+      writeFileSync(briefingFile, JSON.stringify(result.briefing, null, 2));
+      log.info(`briefing.json записано: ${briefingFile}`);
+    }
     if (result.status === 'dry-run') {
       log.info(`--- DRY RUN (${result.messages.length} повідомл., quiet=${result.quiet}) ---`);
       result.messages.forEach((m, i) => console.log(`\n[повідомлення ${i + 1}]\n${m}`));
