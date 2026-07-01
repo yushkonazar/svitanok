@@ -48,6 +48,7 @@ export const mockModule: Module<AppConfig> = {
       icon: '🎤',
       summary: question,
       data: { question },
+      inMessage: false, // глибина — в дашборді; повідомлення лаконічне
       priority: MOCK_PRIORITY,
     };
   },

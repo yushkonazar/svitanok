@@ -235,6 +235,7 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
         summary: ok.map(formatSummaryLine).join('\n'),
         detail: ok.map(formatDetailLine).join('\n'),
         data: { locations: ok },
+        inMessage: false, // глибина — в дашборді; повідомлення лаконічне
         priority: 40,
       };
     },

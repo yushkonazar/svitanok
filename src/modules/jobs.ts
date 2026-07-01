@@ -6,12 +6,13 @@
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 import { canonicalizeUrl } from '../core/url.js';
-import { escapeHtml, link } from '../core/telegram.js';
+import { link } from '../core/telegram.js';
 import { parseRss, type RssItem } from './news.js';
 
 const JOBS_PRIORITY = 55;
 const MAX_ITEMS_PER_FEED = 12;
 const POOL_SIZE = 14; // кандидатів на скоринг (малий промпт claude -p)
+const MESSAGE_ITEMS = 2; // у Telegram — лише топ-збіги; повний список у дашборді
 
 type ShownJobs = Record<string, string>; // canonicalUrl -> ISO date
 
@@ -137,12 +138,13 @@ export const jobsModule: Module<AppConfig> = {
     for (const p of picked) nextShown[p.url] = today;
     ctx.state.set('shownJobs', nextShown);
 
-    const summaryHtml = picked
+    // Коротка версія для повідомлення: топ-MESSAGE_ITEMS збігів (бейдж % + лінк).
+    // Повний список і «чому» лишаються в дашборді (data.items).
+    const shortPicks = picked.slice(0, MESSAGE_ITEMS);
+    const summaryHtml = shortPicks
       .map((p) => `• ${p.score >= 0 ? `<b>${p.score}%</b> ` : ''}${link(p.url, p.title)}`)
       .join('\n');
-    const summary = picked.map((p) => p.title).join('\n');
-    const detailLines = picked.filter((p) => p.why).map((p) => escapeHtml(`${p.title} — ${p.why}`));
-    const detailHtml = detailLines.length ? detailLines.join('\n') : undefined;
+    const summary = shortPicks.map((p) => p.title).join('\n');
 
     return {
       id: 'jobs',
@@ -150,7 +152,6 @@ export const jobsModule: Module<AppConfig> = {
       icon: '💼',
       summary,
       summaryHtml,
-      detailHtml,
       data: { items: picked },
       priority: JOBS_PRIORITY,
     };

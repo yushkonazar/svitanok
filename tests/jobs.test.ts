@@ -106,7 +106,10 @@ describe('jobs — скоринг і сортування', () => {
       '<b>95%</b> <a href="https://jobs.dou.ua/be1">Backend A</a>',
     );
     expect(block!.summaryHtml!.indexOf('95%')).toBeLessThan(block!.summaryHtml!.indexOf('90%'));
-    expect(block!.detailHtml).toContain('ідеально'); // «чому» у expandable
+    // «Чому» лишається в дашборді (data.items), не в Telegram-повідомленні.
+    expect(block!.detailHtml).toBeUndefined();
+    const items = (block!.data as { items: { why: string }[] }).items;
+    expect(items[0]!.why).toBe('ідеально');
     expect(Object.keys(state.get('shownJobs') as object)).toContain('https://jobs.dou.ua/be1');
   });
 

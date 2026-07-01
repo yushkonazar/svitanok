@@ -41,6 +41,7 @@ export const nextStepModule: Module<AppConfig> = {
       icon: '🎯',
       summary: step,
       data: { step },
+      inMessage: false, // глибина — в дашборді; повідомлення лаконічне
       priority: 60,
     };
   },

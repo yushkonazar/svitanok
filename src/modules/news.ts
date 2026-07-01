@@ -135,6 +135,7 @@ export const newsModule: Module<AppConfig> = {
       summary,
       summaryHtml,
       data: { groups },
+      inMessage: false, // глибина — в дашборді; повідомлення лаконічне
       priority: NEWS_PRIORITY,
     };
   },
