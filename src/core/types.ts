@@ -21,6 +21,10 @@ export interface Block {
   detailHtml?: string;
   buttons?: Button[];
   priority: number; // порядок ВІДОБРАЖЕННЯ (менше = вище)
+  // Структуровані дані блоку для Mini App (briefing.json). Серіалізовний JSON.
+  data?: unknown;
+  // false -> блок НЕ йде в Telegram-повідомлення (лише в Mini App). Дефолт true.
+  inMessage?: boolean;
   // Поля `fresh` немає. Єдиний сигнал «нічого свіжого» — run() повертає null.
 }
 

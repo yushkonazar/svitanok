@@ -134,6 +134,8 @@ export const newsModule: Module<AppConfig> = {
       icon: '🗞',
       summary,
       summaryHtml,
+      data: { groups },
+      inMessage: false, // глибина — в дашборді; повідомлення лаконічне
       priority: NEWS_PRIORITY,
     };
   },

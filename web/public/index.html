@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Svitanok</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      :root {
+        --bg: #17212b;
+        --card: #1d2733;
+        --card2: #232f3d;
+        --text: #f5f5f5;
+        --muted: #8a99a8;
+        --accent: #6ab3f3;
+        --good: #4dd0a0;
+        --warn: #f0a93b;
+        --line: #2a3744;
+        --radius: 14px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 15px;
+        line-height: 1.5;
+        padding: 12px 12px 32px;
+        max-width: 560px;
+        margin: 0 auto;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      header h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0;
+      }
+      header .when {
+        color: var(--muted);
+        font-size: 13px;
+        margin-left: auto;
+      }
+      nav {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 14px;
+      }
+      nav button {
+        flex: 1;
+        background: var(--card);
+        color: var(--muted);
+        border: 0;
+        border-radius: 20px;
+        padding: 8px 0;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      nav button.active {
+        background: var(--accent);
+        color: #0b1620;
+        font-weight: 600;
+      }
+      section {
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+      }
+      section.active {
+        display: flex;
+      }
+      .card {
+        background: var(--card);
+        border-radius: var(--radius);
+        padding: 12px 14px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .grid3 {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .tile {
+        background: var(--card2);
+        border-radius: 12px;
+        padding: 10px 12px;
+      }
+      .tile .lbl {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .tile .big {
+        font-size: 22px;
+        font-weight: 600;
+      }
+      .tile .sub {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      a {
+        color: var(--text);
+        text-decoration: none;
+      }
+      .item {
+        display: block;
+        padding: 9px 0;
+        border-top: 1px solid var(--line);
+      }
+      .item:first-of-type {
+        border-top: 0;
+      }
+      .badge {
+        display: inline-block;
+        border-radius: 20px;
+        padding: 1px 8px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-right: 6px;
+      }
+      .b-good {
+        background: rgba(77, 208, 160, 0.18);
+        color: var(--good);
+      }
+      .b-mid {
+        background: rgba(106, 179, 243, 0.18);
+        color: var(--accent);
+      }
+      .why {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 2px;
+      }
+      .cat {
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+        margin: 8px 0 2px;
+      }
+      .quote {
+        font-style: italic;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .empty {
+        color: var(--muted);
+        text-align: center;
+        padding: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>🌅 Svitanok</h1>
+      <span class="when" id="when"></span>
+    </header>
+    <nav id="nav"></nav>
+    <section id="today" class="active"></section>
+    <section id="news"></section>
+    <section id="jobs"></section>
+
+    <script>
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+        const p = tg.themeParams || {};
+        const set = (k, v) => v && document.documentElement.style.setProperty(k, v);
+        set('--bg', p.bg_color);
+        set('--card', p.secondary_bg_color);
+        set('--card2', p.bg_color);
+        set('--text', p.text_color);
+        set('--muted', p.hint_color);
+        set('--accent', p.button_color || p.link_color);
+      }
+
+      const esc = (s) =>
+        String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+      const byId = (blocks, id) => blocks.find((b) => b.id === id);
+      const fmtTime = (unix) =>
+        unix
+          ? new Date(unix * 1000).toLocaleTimeString('uk-UA', {
+              timeZone: 'Europe/Kyiv',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : '—';
+      const dayLen = (a, b) => {
+        if (!a || !b || b <= a) return '—';
+        const m = Math.round((b - a) / 60);
+        return `${Math.floor(m / 60)}г ${m % 60}хв`;
+      };
+      const card = (title, inner) =>
+        `<div class="card">${title ? `<h3>${esc(title)}</h3>` : ''}${inner}</div>`;
+
+      function renderToday(blocks) {
+        const out = [];
+        const w = byId(blocks, 'weather');
+        if (w?.data?.locations?.length) {
+          const tiles = w.data.locations
+            .map(
+              (l) => `<div class="tile">
+                <div class="lbl">${esc(l.emoji || '')} ${esc(l.name)}</div>
+                <div class="big">${l.tempC > 0 ? '+' : ''}${l.tempC}°</div>
+                <div class="sub">${esc(l.condition)}${l.willRain ? ' · ☔ ' + l.popPercent + '%' : ''}</div>
+                <div class="sub">відч. ${l.feelsLikeC > 0 ? '+' : ''}${l.feelsLikeC}° · ${l.minC}…${l.maxC}° · 💨 ${l.windMps} м/с</div>
+                <div class="sub">🌅 ${fmtTime(l.sunrise)} · 🌇 ${fmtTime(l.sunset)} · ${dayLen(l.sunrise, l.sunset)}</div>
+              </div>`,
+            )
+            .join('');
+          out.push(card('Погода', `<div class="grid2">${tiles}</div>`));
+        }
+        const cur = byId(blocks, 'currency');
+        const onthis = byId(blocks, 'onthisday');
+        const tiles = [];
+        if (cur?.data) {
+          tiles.push(
+            `<div class="tile"><div class="lbl">USD</div><div class="big">${cur.data.usd}</div></div>`,
+            `<div class="tile"><div class="lbl">EUR</div><div class="big">${cur.data.eur}</div></div>`,
+          );
+        }
+        if (tiles.length) out.push(card('Курс НБУ', `<div class="grid2">${tiles.join('')}</div>`));
+
+        const stoic = byId(blocks, 'stoic');
+        if (stoic?.data)
+          out.push(
+            card(
+              '🏛 Думка дня',
+              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:6px">— ${esc(stoic.data.author)}</div>`,
+            ),
+          );
+        const fact = byId(blocks, 'fact');
+        if (fact?.data) out.push(card('🧠 Факт дня', esc(fact.data.fact)));
+        const mock = byId(blocks, 'mock');
+        if (mock?.data) out.push(card('🎤 Питання дня', esc(mock.data.question)));
+        if (onthis?.data?.events?.length) {
+          const ev = onthis.data.events
+            .map((e) => `<div class="item"><b>${e.year}</b> — ${esc(e.text)}</div>`)
+            .join('');
+          out.push(card('📜 У цей день', ev));
+        }
+        const ns = byId(blocks, 'next-step');
+        if (ns?.data) out.push(card('🎯 Крок до офера', esc(ns.data.step)));
+        return out.join('') || '<div class="empty">Немає даних</div>';
+      }
+
+      function renderNews(blocks) {
+        const n = byId(blocks, 'news');
+        if (!n?.data?.groups?.length) return '<div class="empty">Новин немає</div>';
+        const inner = n.data.groups
+          .map(
+            (g) =>
+              `<div class="cat">${esc(g.category)}</div>` +
+              g.items
+                .map(
+                  (it) =>
+                    `<a class="item" href="${esc(it.url)}" target="_blank">${esc(it.title)}</a>`,
+                )
+                .join(''),
+          )
+          .join('');
+        return card('🗞 Новини', inner);
+      }
+
+      function renderJobs(blocks) {
+        const j = byId(blocks, 'jobs');
+        if (!j?.data?.items?.length) return '<div class="empty">Вакансій немає</div>';
+        const inner = j.data.items
+          .map((it) => {
+            const badge =
+              it.score >= 0
+                ? `<span class="badge ${it.score >= 80 ? 'b-good' : 'b-mid'}">${it.score}%</span>`
+                : '';
+            return `<a class="item" href="${esc(it.url)}" target="_blank">${badge}${esc(it.title)}${it.why ? `<div class="why">${esc(it.why)}</div>` : ''}</a>`;
+          })
+          .join('');
+        return card('💼 Вакансії під твій стек', inner);
+      }
+
+      const SAMPLE = {
+        dateLabel: 'Демо-режим',
+        generatedAt: new Date().toISOString(),
+        blocks: [
+          { id: 'stoic', data: { text: 'Жоден не зашкодить мені.', author: 'Марк Аврелій' } },
+          {
+            id: 'weather',
+            data: {
+              locations: [
+                {
+                  name: 'Львів',
+                  emoji: '⛅',
+                  tempC: 24,
+                  feelsLikeC: 24,
+                  minC: 16,
+                  maxC: 26,
+                  windMps: 3,
+                  condition: 'хмарно',
+                  willRain: false,
+                  popPercent: 0,
+                  sunrise: 1751255000,
+                  sunset: 1751313000,
+                },
+              ],
+            },
+          },
+          { id: 'currency', data: { usd: 44.79, eur: 51.03 } },
+          { id: 'fact', data: { fact: 'Медузи бувають біологічно безсмертними.' } },
+          { id: 'mock', data: { question: 'Що таке замикання в JavaScript?' } },
+          {
+            id: 'news',
+            data: {
+              groups: [
+                { category: 'Україна та світ', items: [{ title: 'Демо-новина', url: '#' }] },
+              ],
+            },
+          },
+          {
+            id: 'jobs',
+            data: {
+              items: [
+                {
+                  title: 'Intern Full Stack (Node + Angular)',
+                  url: '#',
+                  score: 92,
+                  why: 'збіг стеку',
+                },
+                { title: 'Junior Frontend', url: '#', score: 78, why: 'фронтенд-фокус' },
+              ],
+            },
+          },
+          { id: 'onthisday', data: { events: [{ year: 2022, text: 'Демо-подія.' }] } },
+          { id: 'next-step', data: { step: 'Оновити резюме під вакансію' } },
+        ],
+      };
+
+      function render(b) {
+        document.getElementById('when').textContent = b.dateLabel || '';
+        document.getElementById('today').innerHTML = renderToday(b.blocks);
+        document.getElementById('news').innerHTML = renderNews(b.blocks);
+        document.getElementById('jobs').innerHTML = renderJobs(b.blocks);
+        const tabs = [
+          ['today', 'Сьогодні'],
+          ['news', 'Новини'],
+          ['jobs', 'Вакансії'],
+        ];
+        document.getElementById('nav').innerHTML = tabs
+          .map(
+            ([id, t], i) =>
+              `<button data-t="${id}" class="${i === 0 ? 'active' : ''}">${t}</button>`,
+          )
+          .join('');
+        document.querySelectorAll('nav button').forEach((btn) =>
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('nav button').forEach((x) => x.classList.remove('active'));
+            document.querySelectorAll('section').forEach((x) => x.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById(btn.dataset.t).classList.add('active');
+          }),
+        );
+      }
+
+      fetch('./briefing.json', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then(render)
+        .catch(() => render(SAMPLE));
+    </script>
+  </body>
+</html>

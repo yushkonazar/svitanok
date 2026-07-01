@@ -1,8 +1,34 @@
-import { describe, it, expect } from 'vitest';
-import { jobsModule } from '../src/modules/jobs.js';
+import { describe, it, expect, vi } from 'vitest';
+import { jobsModule, parseScores, buildScorePrompt } from '../src/modules/jobs.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+
+describe('jobs — parseScores', () => {
+  it('парсить масив із прози, клампить 0..100, тримить why', () => {
+    const m = parseScores(
+      'Ось: [{"i":1,"score":150,"why":" добре "},{"i":2,"score":-5,"why":"ні"}] ',
+    );
+    expect(m.get(1)).toEqual({ score: 100, why: 'добре' });
+    expect(m.get(2)).toEqual({ score: 0, why: 'ні' });
+  });
+  it('малформат -> порожня map', () => {
+    expect(parseScores('нема').size).toBe(0);
+    expect(parseScores('[зламано').size).toBe(0);
+  });
+});
+
+describe('jobs — buildScorePrompt', () => {
+  it('містить профіль і нумеровані вакансії', () => {
+    const p = buildScorePrompt('Junior Full Stack', [
+      { title: 'A', url: 'u1' },
+      { title: 'B', url: 'u2' },
+    ]);
+    expect(p).toContain('Junior Full Stack');
+    expect(p).toContain('1. A');
+    expect(p).toContain('2. B');
+  });
+});
 
 function memState(initial: Record<string, unknown> = {}): StateStore {
   const data = { ...initial };
@@ -23,16 +49,14 @@ const FS = feed([
   ['Full Stack A', 'https://jobs.dou.ua/fs1'],
   ['Full Stack B', 'https://jobs.dou.ua/fs2'],
 ]);
-const FE = feed([
-  ['Frontend A', 'https://jobs.dou.ua/fe1'],
-  ['Frontend B', 'https://jobs.dou.ua/fe2'],
-]);
-const BE = feed([
-  ['Backend A', 'https://jobs.dou.ua/be1'],
-  ['Backend B', 'https://jobs.dou.ua/be2'],
-]);
+const FE = feed([['Frontend A', 'https://jobs.dou.ua/fe1']]);
+const BE = feed([['Backend A', 'https://jobs.dou.ua/be1']]);
 
-function makeCtx(over: { state?: StateStore; fetcher?: Ctx['fetcher'] } = {}): Ctx<AppConfig> {
+const byUrl: Ctx['fetcher'] = {
+  fetch: async (u: string) => (u.includes('/fs') ? FS : u.includes('/fe') ? FE : BE),
+};
+
+function makeCtx(over: { state?: StateStore; llm?: Ctx['llm']; fetcher?: Ctx['fetcher'] } = {}) {
   const noop = () => {};
   return {
     bus: createRunBus(),
@@ -44,50 +68,67 @@ function makeCtx(over: { state?: StateStore; fetcher?: Ctx['fetcher'] } = {}): C
     },
     log: { debug: noop, info: noop, warn: noop, error: noop },
     config: {
+      llm: { timeoutMs: 1000 },
       modules: {
         jobs: {
           enabled: true,
           perRun: 3,
           dedupDays: 7,
+          profile: 'Junior Full Stack',
           sources: ['https://jobs.dou.ua/fs', 'https://jobs.dou.ua/fe', 'https://jobs.dou.ua/be'],
         },
       },
     } as unknown as AppConfig,
     state: over.state ?? memState(),
-    llm: {} as Ctx['llm'],
-    fetcher: over.fetcher ?? { fetch: async () => '' },
-  };
+    llm: over.llm ?? ({} as Ctx['llm']),
+    fetcher: over.fetcher ?? byUrl,
+  } as Ctx<AppConfig>;
 }
 
-const byUrl = (map: Record<string, string>): Ctx['fetcher'] => ({
-  fetch: async (u: string) => {
-    if (u.includes('/fs')) return map.fs ?? '';
-    if (u.includes('/fe')) return map.fe ?? '';
-    if (u.includes('/be')) return map.be ?? '';
-    return '';
-  },
-});
-
-describe('jobs — DOU round-robin', () => {
-  it('по одній свіжій із кожного фіда, клікабельні, зберігає shownJobs', async () => {
+describe('jobs — скоринг і сортування', () => {
+  it('сортує за fit %, бейдж і «чому», зберігає shownJobs', async () => {
+    // Пул round-robin: 1=FS-A, 2=FE-A, 3=BE-A, 4=FS-B
+    const llm = {
+      complete: vi.fn(async () =>
+        JSON.stringify([
+          { i: 1, score: 90, why: 'добрий фулстек' },
+          { i: 2, score: 50, why: 'фронт' },
+          { i: 3, score: 95, why: 'ідеально' },
+          { i: 4, score: 20, why: 'нижче' },
+        ]),
+      ),
+    };
     const state = memState();
-    const ctx = makeCtx({ state, fetcher: byUrl({ fs: FS, fe: FE, be: BE }) });
-    const block = await jobsModule.run(ctx);
-    expect(block!.title).toBe('Вакансії');
-    expect(block!.summaryHtml).toContain('<a href="https://jobs.dou.ua/fs1">Full Stack A</a>');
-    expect(block!.summaryHtml).toContain('<a href="https://jobs.dou.ua/fe1">Frontend A</a>');
-    expect(block!.summaryHtml).toContain('<a href="https://jobs.dou.ua/be1">Backend A</a>');
-    // perRun=3 -> другі елементи не йдуть
-    expect(block!.summaryHtml).not.toContain('Full Stack B');
-    expect(Object.keys(state.get('shownJobs') as object)).toContain('https://jobs.dou.ua/fs1');
+    const block = await jobsModule.run(makeCtx({ state, llm }));
+    expect(llm.complete).toHaveBeenCalledTimes(1);
+    // BE-A (95) перший, FS-A (90), FE-A (50)
+    expect(block!.summaryHtml).toContain(
+      '<b>95%</b> <a href="https://jobs.dou.ua/be1">Backend A</a>',
+    );
+    expect(block!.summaryHtml!.indexOf('95%')).toBeLessThan(block!.summaryHtml!.indexOf('90%'));
+    // «Чому» лишається в дашборді (data.items), не в Telegram-повідомленні.
+    expect(block!.detailHtml).toBeUndefined();
+    const items = (block!.data as { items: { why: string }[] }).items;
+    expect(items[0]!.why).toBe('ідеально');
+    expect(Object.keys(state.get('shownJobs') as object)).toContain('https://jobs.dou.ua/be1');
   });
 
-  it('дедуп: показана вакансія пропускається', async () => {
+  it('скоринг впав -> фолбек на свіжість, без бейджів %', async () => {
+    const llm = {
+      complete: vi.fn(async () => {
+        throw new Error('таймаут');
+      }),
+    };
+    const block = await jobsModule.run(makeCtx({ llm }));
+    expect(block!.summaryHtml).toContain('<a href="https://jobs.dou.ua/fs1">Full Stack A</a>');
+    expect(block!.summaryHtml).not.toContain('%'); // без скорингу — без бейджа
+  });
+
+  it('дедуп: показана вакансія не потрапляє в пул', async () => {
     const state = memState({ shownJobs: { 'https://jobs.dou.ua/fs1': '2026-07-01' } });
-    const ctx = makeCtx({ state, fetcher: byUrl({ fs: FS, fe: FE, be: BE }) });
-    const block = await jobsModule.run(ctx);
+    const llm = { complete: vi.fn(async () => '[]') }; // порожній скоринг -> фолбек
+    const block = await jobsModule.run(makeCtx({ state, llm }));
     expect(block!.summaryHtml).not.toContain('Full Stack A');
-    expect(block!.summaryHtml).toContain('Full Stack B'); // взяли наступну з фіда
   });
 
   it('порожні sources -> null', async () => {

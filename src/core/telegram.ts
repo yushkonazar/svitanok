@@ -16,6 +16,15 @@ export function link(url: string, text: string): string {
   return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
 }
 
+/**
+ * ВИДИМА довжина HTML — як рахує Telegram ліміт 4096 («after entities parsing»):
+ * теги відкидаємо, кожну HTML-сутність рахуємо як 1 символ. Тобто довгі href у
+ * <a> НЕ рахуються (інакше Google News-редіректи дають хибне розбиття).
+ */
+export function visibleLength(html: string): number {
+  return html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;|&#\d+;/gi, 'x').length;
+}
+
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
 }
@@ -87,8 +96,12 @@ export function createNotifier(opts: NotifierOptions): Notifier {
   return {
     async send(messages: string[]): Promise<void> {
       for (const msg of messages) {
-        if (msg.length > TELEGRAM_HARD_LIMIT) {
-          log?.warn(`повідомлення ${msg.length} > ${TELEGRAM_HARD_LIMIT} — render мав чанкувати`);
+        // Ліміт Telegram — за ВИДИМИМ текстом (href у <a> не рахується, §9).
+        const vis = visibleLength(msg);
+        if (vis > TELEGRAM_HARD_LIMIT) {
+          log?.warn(
+            `повідомлення ${vis} (видимих) > ${TELEGRAM_HARD_LIMIT} — render мав чанкувати`,
+          );
         }
         await call('sendMessage', {
           chat_id: chatId,
