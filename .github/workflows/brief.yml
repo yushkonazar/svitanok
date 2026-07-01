@@ -92,6 +92,9 @@ jobs:
         run: |
           if [ -z "$CF_API_TOKEN" ]; then echo "CF_API_TOKEN відсутній — пропуск"; exit 0; fi
           if [ ! -f "$GITHUB_WORKSPACE/briefing.json" ]; then echo "briefing.json немає — пропуск"; exit 0; fi
+          # Захисне обрізання пробілів/переносів (секрет міг містити зайвий \r\n).
+          CF_ACCOUNT_ID=$(printf '%s' "$CF_ACCOUNT_ID" | tr -d '[:space:]')
+          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN" | tr -d '[:space:]')
           code=$(curl -s -o /tmp/kv_resp.json -w "%{http_code}" -X PUT \
             "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/latest" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
