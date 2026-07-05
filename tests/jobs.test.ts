@@ -63,7 +63,7 @@ function makeCtx(over: { state?: StateStore; llm?: Ctx['llm']; fetcher?: Ctx['fe
     clock: {
       todayKey: () => '2026-07-01',
       kyivHour: () => 8,
-      now: () => new Date(),
+      now: () => new Date('2026-07-01T08:00:00+03:00'),
       isSunday: () => false,
     },
     log: { debug: noop, info: noop, warn: noop, error: noop },

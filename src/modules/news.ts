@@ -82,7 +82,8 @@ export const newsModule: Module<AppConfig> = {
     if (!sources || Object.keys(sources).length === 0) return null;
 
     const shown = ctx.state.get<ShownNews>('shownNews') ?? {};
-    const dedupCutoff = Date.now() - cfg.dedupDays * 86400_000;
+    // Час — з інжектованого годинника (детерміновано в тестах, консистентно з todayKey).
+    const dedupCutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;
     const today = ctx.clock.todayKey();
     const nextShown: ShownNews = { ...shown };
 

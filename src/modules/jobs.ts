@@ -96,7 +96,8 @@ export const jobsModule: Module<AppConfig> = {
     if (!cfg.sources || cfg.sources.length === 0) return null;
 
     const shown = ctx.state.get<ShownJobs>('shownJobs') ?? {};
-    const cutoff = Date.now() - cfg.dedupDays * 86400_000;
+    // Час — з інжектованого годинника (детерміновано в тестах, консистентно з todayKey).
+    const cutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;
     const today = ctx.clock.todayKey();
 
     const settled = await Promise.allSettled(cfg.sources.map((u) => ctx.fetcher.fetch(u)));
