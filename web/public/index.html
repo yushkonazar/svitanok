@@ -154,6 +154,34 @@
         font-size: 12px;
         font-weight: 600;
         margin: 8px 0 2px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .vote {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .vote button {
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        font-size: 15px;
+        line-height: 1;
+        padding: 2px 4px;
+        border-radius: 6px;
+        opacity: 0.65;
+      }
+      .vote button:hover {
+        background: var(--card2);
+        opacity: 1;
+      }
+      .vote button:disabled {
+        cursor: default;
+      }
+      .vote button.voted {
+        opacity: 1;
+        transform: scale(1.15);
       }
       .quote {
         font-style: italic;
@@ -269,7 +297,9 @@
         const inner = n.data.groups
           .map(
             (g) =>
-              `<div class="cat">${esc(g.category)}</div>` +
+              `<div class="cat"><span>${esc(g.category)}</span>` +
+              `<span class="vote"><button data-cat="${esc(g.category)}" data-dir="up" aria-label="Більше">👍</button>` +
+              `<button data-cat="${esc(g.category)}" data-dir="down" aria-label="Менше">👎</button></span></div>` +
               g.items
                 .map(
                   (it) =>
@@ -352,10 +382,46 @@
         ],
       };
 
+      // 👍/👎 -> /api/vote (автентифікація через Telegram initData). Оновлює
+      // preferenceWeights у KV; наступний брифінг дасть більше/менше цієї категорії.
+      function wireVotes() {
+        document.querySelectorAll('#news .vote button').forEach((btn) => {
+          btn.addEventListener('click', () => vote(btn));
+        });
+      }
+      async function vote(btn) {
+        if (!tg || !tg.initData) {
+          alert('Оцінка доступна лише при відкритті через Telegram.');
+          return;
+        }
+        const cat = btn.dataset.cat;
+        const dir = btn.dataset.dir;
+        const pair = btn.parentElement;
+        pair.querySelectorAll('button').forEach((b) => (b.disabled = true));
+        try {
+          const r = await fetch('/api/vote', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ category: cat, dir, initData: tg.initData }),
+          });
+          const d = await r.json();
+          if (d.ok) {
+            tg.HapticFeedback?.notificationOccurred?.('success');
+            btn.classList.add('voted');
+          } else {
+            alert('Не вдалося зберегти оцінку.');
+            pair.querySelectorAll('button').forEach((b) => (b.disabled = false));
+          }
+        } catch {
+          pair.querySelectorAll('button').forEach((b) => (b.disabled = false));
+        }
+      }
+
       function render(b) {
         document.getElementById('when').textContent = b.dateLabel || '';
         document.getElementById('today').innerHTML = renderToday(b.blocks);
         document.getElementById('news').innerHTML = renderNews(b.blocks);
+        wireVotes();
         document.getElementById('jobs').innerHTML = renderJobs(b.blocks);
         const tabs = [
           ['today', 'Сьогодні'],

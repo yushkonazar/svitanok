@@ -117,6 +117,21 @@ describe('news — пайплайн run (без LLM)', () => {
     expect(block!.summaryHtml).toContain('Новина Б');
   });
 
+  it('preferenceWeights: вага 2.0 збільшує квоту (третій заголовок проходить)', async () => {
+    const state = memState({ preferenceWeights: { Тех: 2.0 } });
+    const ctx = makeCtx({ state, fetcher: { fetch: async () => rss } });
+    const block = await newsModule.run(ctx);
+    expect(block!.summaryHtml).toContain('Новина В'); // квота round(2*2.0)=4
+  });
+
+  it('preferenceWeights: вага 0.5 зменшує квоту до 1', async () => {
+    const state = memState({ preferenceWeights: { Тех: 0.5 } });
+    const ctx = makeCtx({ state, fetcher: { fetch: async () => rss } });
+    const block = await newsModule.run(ctx);
+    expect(block!.summaryHtml).toContain('Новина А');
+    expect(block!.summaryHtml).not.toContain('Новина Б'); // квота round(2*0.5)=1
+  });
+
   it('порожні sources -> null', async () => {
     const ctx = makeCtx();
     (ctx.config.modules.news as { sources: object }).sources = {};
