@@ -11,6 +11,7 @@ import { loadConfig, type AppConfig } from './core/config.js';
 import { createClock, type Clock } from './core/clock.js';
 import { createLogger } from './core/logger.js';
 import { createStateStore } from './core/state.js';
+import { createKvStateStore, readKvEnv } from './core/state-kv.js';
 import { createRunBus } from './core/bus.js';
 import { createLLMClient } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
@@ -235,12 +236,13 @@ async function main(): Promise<void> {
     }
   }
 
-  // STATE_FILE -> стан із окремої гілки `state` у CI (§4.3); локально — state.json.
-  const state = createStateStore({
-    path: process.env.STATE_FILE ?? 'state.json',
-    log,
-    pruners: buildPruners(config, clock.now().getTime()),
-  });
+  // Стан: KV (CF env присутні — CI/прод) або файл (локально). KV прибирає крихку
+  // git-гілку `state`. Асинхронне завантаження блоба перед реєстрацією модулів.
+  const pruners = buildPruners(config, clock.now().getTime());
+  const kvEnv = readKvEnv();
+  const state = kvEnv
+    ? await createKvStateStore({ ...kvEnv, log, pruners })
+    : createStateStore({ path: process.env.STATE_FILE ?? 'state.json', log, pruners });
   const notifier = secrets
     ? createNotifier({ token: secrets.botToken, chatId: secrets.chatId, log })
     : null;
