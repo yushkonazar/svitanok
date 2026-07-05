@@ -183,6 +183,18 @@
         opacity: 1;
         transform: scale(1.15);
       }
+      .more-btn {
+        display: block;
+        margin: 6px 0 2px;
+        padding: 4px 10px;
+        border: none;
+        border-radius: 8px;
+        background: var(--card2);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
       .quote {
         font-style: italic;
       }
@@ -305,7 +317,17 @@
                   (it) =>
                     `<a class="item" href="${esc(it.url)}" target="_blank">${esc(it.title)}</a>`,
                 )
-                .join(''),
+                .join('') +
+              (g.more?.length
+                ? `<div class="more" hidden>` +
+                  g.more
+                    .map(
+                      (it) =>
+                        `<a class="item" href="${esc(it.url)}" target="_blank">${esc(it.title)}</a>`,
+                    )
+                    .join('') +
+                  `</div><button class="more-btn" type="button">Більше (${g.more.length})</button>`
+                : ''),
           )
           .join('');
         return card('🗞 Новини', inner);
@@ -359,7 +381,14 @@
             id: 'news',
             data: {
               groups: [
-                { category: 'Україна та світ', items: [{ title: 'Демо-новина', url: '#' }] },
+                {
+                  category: 'Україна та світ',
+                  items: [{ title: 'Демо-новина', url: '#' }],
+                  more: [
+                    { title: 'Ще одна новина', url: '#' },
+                    { title: 'І третя', url: '#' },
+                  ],
+                },
               ],
             },
           },
@@ -387,6 +416,13 @@
       function wireVotes() {
         document.querySelectorAll('#news .vote button').forEach((btn) => {
           btn.addEventListener('click', () => vote(btn));
+        });
+        document.querySelectorAll('#news .more-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const box = btn.previousElementSibling;
+            if (box && box.classList.contains('more')) box.hidden = false;
+            btn.remove();
+          });
         });
       }
       async function vote(btn) {

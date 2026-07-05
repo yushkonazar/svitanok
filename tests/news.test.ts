@@ -117,6 +117,15 @@ describe('news — пайплайн run (без LLM)', () => {
     expect(block!.summaryHtml).toContain('Новина Б');
   });
 
+  it('надлишок понад квоту йде в group.more (для кнопки «Більше»)', async () => {
+    const ctx = makeCtx({ fetcher: { fetch: async () => rss } }); // perCategory=2, 3 items
+    const block = await newsModule.run(ctx);
+    const g = (block!.data as { groups: { items: unknown[]; more: { title: string }[] }[] })
+      .groups[0]!;
+    expect(g.items).toHaveLength(2); // А, Б у добірці
+    expect(g.more.map((x) => x.title)).toContain('Новина В'); // третій — у запасі
+  });
+
   it('preferenceWeights: вага 2.0 збільшує квоту (третій заголовок проходить)', async () => {
     const state = memState({ preferenceWeights: { Тех: 2.0 } });
     const ctx = makeCtx({ state, fetcher: { fetch: async () => rss } });
