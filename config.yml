@@ -16,7 +16,7 @@ quietDay:
 modules:
   stoic: { enabled: true }
   weather: { enabled: true }
-  calendar: { enabled: false } # увімкнути після Google OAuth (Production)
+  calendar: { enabled: true } # у повідомленні; активний коли є GOOGLE_* секрети
   news:
     enabled: true
     categories: ['Україна та світ', 'Технології / IT', 'Спорт', 'Наука / економіка']
