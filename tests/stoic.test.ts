@@ -1,29 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { resolveQuote, mmdd, stoicModule } from '../src/modules/stoic.js';
+import { resolveQuote, dayOfYear, stoicModule } from '../src/modules/stoic.js';
 import type { Ctx } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
 
-describe('stoic — вибір цитати', () => {
-  it('mmdd зрізає рік', () => {
-    expect(mmdd('2026-06-29')).toBe('06-29');
+describe('stoic — вибір цитати (ротація за днем року)', () => {
+  it('dayOfYear рахує день року', () => {
+    expect(dayOfYear('2026-01-01')).toBe(1);
+    expect(dayOfYear('2026-02-01')).toBe(32);
+    expect(dayOfYear('2024-12-31')).toBe(366); // 2024 високосний
   });
 
-  it('точний MM-DD повертає свою цитату', () => {
-    const q = resolveQuote('2025-06-29'); // 06-29 є у даних (Марк Аврелій)
-    expect(q?.author).toContain('Марк Аврелій');
-  });
-
-  it('02-29 у невисокосний рік -> фолбек на 02-28', () => {
-    const leap = resolveQuote('2025-02-29'); // 2025 невисокосний; має дати 02-28
-    const feb28 = resolveQuote('2025-02-28');
-    expect(leap).toEqual(feb28);
-  });
-
-  it('дата без точного запису -> детермінований фолбек (не null, стабільний)', () => {
-    const a = resolveQuote('2026-03-03');
-    const b = resolveQuote('2026-03-03');
+  it('перший день року -> перша цитата (стабільно між роками)', () => {
+    const a = resolveQuote('2026-01-01');
     expect(a).not.toBeNull();
-    expect(a).toEqual(b);
+    expect(a).toEqual(resolveQuote('2027-01-01'));
+  });
+
+  it('щодня є цитата, вибір детермінований', () => {
+    const a = resolveQuote('2026-03-03');
+    expect(a).not.toBeNull();
+    expect(a).toEqual(resolveQuote('2026-03-03'));
+  });
+
+  it('сусідні дні дають різні цитати', () => {
+    expect(resolveQuote('2026-01-01')).not.toEqual(resolveQuote('2026-01-02'));
   });
 });
 
