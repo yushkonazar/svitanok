@@ -87,21 +87,36 @@ export const newsModule: Module<AppConfig> = {
     const today = ctx.clock.todayKey();
     const nextShown: ShownNews = { ...shown };
 
+    // preferenceWeights (👍/👎 з дашборда): вага категорії масштабує к-сть заголовків
+    // і порядок. Недільний decay тягне ваги назад до 1.0 (§6.1).
+    let weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
+    if (ctx.clock.isSunday()) {
+      weights = applyWeeklyDecay(weights);
+      ctx.state.set('preferenceWeights', weights);
+    }
+    const weightFor = (cat: string) => weights[cat] ?? 1.0;
+    const countFor = (cat: string) =>
+      Math.max(1, Math.min(MAX_ITEMS_PER_FEED, Math.round(cfg.perCategory * weightFor(cat))));
+
+    // Улюблені категорії (вища вага) — вище й із більшою квотою.
+    const categories = Object.entries(sources).sort((a, b) => weightFor(b[0]) - weightFor(a[0]));
+
     const groups: { category: string; items: PickedItem[] }[] = [];
 
-    for (const [category, urls] of Object.entries(sources)) {
+    for (const [category, urls] of categories) {
+      const quota = countFor(category);
       const settled = await Promise.allSettled(urls.map((u) => ctx.fetcher.fetch(u)));
       const seen = new Set<string>();
       const picked: PickedItem[] = [];
 
       for (const r of settled) {
-        if (picked.length >= cfg.perCategory) break;
+        if (picked.length >= quota) break;
         if (r.status !== 'fulfilled') {
           ctx.log.warn(`news: фід впав (${category})`);
           continue;
         }
         for (const item of parseRss(r.value).slice(0, MAX_ITEMS_PER_FEED)) {
-          if (picked.length >= cfg.perCategory) break;
+          if (picked.length >= quota) break;
           const canon = canonicalizeUrl(item.url);
           if (seen.has(canon)) continue;
           const shownAt = shown[canon] ? Date.parse(shown[canon]!) : 0;
