@@ -3,10 +3,19 @@ name: brief
 # Продакшн-джоба (§2, §4.3, §18). Cron у UTC; 08:00 Київ = 05:00 (літо) / 06:00
 # (зима) UTC. Guard-ідемпотентність гарантує одну відправку на день.
 on:
+  # ТОЧНИЙ час дає Cloudflare-cron -> workflow_dispatch (без force -> нормальний
+  # guard). GitHub-schedule лишається РЕЗЕРВОМ на випадок відмови CF: спрацьовує
+  # пізно, але guard-ідемпотентність не дасть дубль. Обидва cron у UTC покривають
+  # DST; guard-вікно [8,12) ловить типову затримку schedule.
   schedule:
     - cron: '0 5 * * *' # 08:00 Київ влітку (EEST = UTC+3)
     - cron: '0 6 * * *' # 08:00 Київ узимку (EET = UTC+2)
-  workflow_dispatch: # ручний запуск завжди форсує (--force, §19.2)
+  workflow_dispatch: # CF-планувальник або ручний запуск
+    inputs:
+      force:
+        description: 'Форсувати доставку (обійти вікно+ідемпотентність; для тестів)'
+        type: boolean
+        default: false
 
 # Мінімальні права за замовчуванням (§8).
 permissions: {}
@@ -33,7 +42,7 @@ jobs:
       - id: g
         env:
           STATE_FILE: ${{ github.workspace }}/state-data/state.json
-        run: node scripts/guard.mjs ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+        run: node scripts/guard.mjs ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
 
   brief:
     needs: guard
@@ -79,7 +88,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-        run: npx tsx src/orchestrator.ts ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+        run: npx tsx src/orchestrator.ts ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
       # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
       # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
       # Прямий виклик CF API замість wrangler: скоуплений токен ламає wrangler-
