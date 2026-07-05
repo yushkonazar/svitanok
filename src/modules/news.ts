@@ -10,6 +10,7 @@ import { escapeHtml, link } from '../core/telegram.js';
 
 const NEWS_PRIORITY = 50;
 const MAX_ITEMS_PER_FEED = 12; // свіжі кандидати; з них беремо perCategory не показаних
+const EXTRA_MORE = 5; // запас заголовків на категорію для кнопки «Більше» у дашборді
 
 // --- preferenceWeights (Phase B 👍/👎; кнопки оживуть із вебхуком) ---
 export const WEIGHT_MIN = 0.5;
@@ -101,32 +102,37 @@ export const newsModule: Module<AppConfig> = {
     // Улюблені категорії (вища вага) — вище й із більшою квотою.
     const categories = Object.entries(sources).sort((a, b) => weightFor(b[0]) - weightFor(a[0]));
 
-    const groups: { category: string; items: PickedItem[] }[] = [];
+    const groups: { category: string; items: PickedItem[]; more: PickedItem[] }[] = [];
 
     for (const [category, urls] of categories) {
       const quota = countFor(category);
       const settled = await Promise.allSettled(urls.map((u) => ctx.fetcher.fetch(u)));
       const seen = new Set<string>();
       const picked: PickedItem[] = [];
+      const more: PickedItem[] = []; // запас для «Більше» у дашборді
 
       for (const r of settled) {
-        if (picked.length >= quota) break;
+        if (picked.length >= quota && more.length >= EXTRA_MORE) break;
         if (r.status !== 'fulfilled') {
           ctx.log.warn(`news: фід впав (${category})`);
           continue;
         }
         for (const item of parseRss(r.value).slice(0, MAX_ITEMS_PER_FEED)) {
-          if (picked.length >= quota) break;
+          if (picked.length >= quota && more.length >= EXTRA_MORE) break;
           const canon = canonicalizeUrl(item.url);
           if (seen.has(canon)) continue;
           const shownAt = shown[canon] ? Date.parse(shown[canon]!) : 0;
           if (shownAt && shownAt >= dedupCutoff) continue; // показували в вікні
           seen.add(canon);
-          picked.push({ title: item.title, url: canon });
-          nextShown[canon] = today;
+          if (picked.length < quota) {
+            picked.push({ title: item.title, url: canon });
+            nextShown[canon] = today; // дедупимо лише показані в добірці
+          } else {
+            more.push({ title: item.title, url: canon }); // запас без дедупу
+          }
         }
       }
-      if (picked.length) groups.push({ category, items: picked });
+      if (picked.length) groups.push({ category, items: picked, more });
     }
 
     if (groups.length === 0) return null;
