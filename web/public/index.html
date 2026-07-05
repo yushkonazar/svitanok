@@ -46,7 +46,29 @@
       header .when {
         color: var(--muted);
         font-size: 13px;
+        min-width: 96px;
+        text-align: center;
+      }
+      .datenav {
         margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .datenav button {
+        border: none;
+        background: var(--card);
+        color: var(--accent);
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .datenav button:disabled {
+        opacity: 0.35;
+        cursor: default;
       }
       nav {
         display: flex;
@@ -183,6 +205,18 @@
         opacity: 1;
         transform: scale(1.15);
       }
+      .more-btn {
+        display: block;
+        margin: 6px 0 2px;
+        padding: 4px 10px;
+        border: none;
+        border-radius: 8px;
+        background: var(--card2);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
       .quote {
         font-style: italic;
       }
@@ -199,7 +233,11 @@
   <body>
     <header>
       <h1>🌅 Svitanok</h1>
-      <span class="when" id="when"></span>
+      <div class="datenav">
+        <button id="prevDay" aria-label="Попередній день">‹</button>
+        <span class="when" id="when"></span>
+        <button id="nextDay" aria-label="Наступний день">›</button>
+      </div>
     </header>
     <nav id="nav"></nav>
     <section id="today" class="active"></section>
@@ -305,7 +343,17 @@
                   (it) =>
                     `<a class="item" href="${esc(it.url)}" target="_blank">${esc(it.title)}</a>`,
                 )
-                .join(''),
+                .join('') +
+              (g.more?.length
+                ? `<div class="more" hidden>` +
+                  g.more
+                    .map(
+                      (it) =>
+                        `<a class="item" href="${esc(it.url)}" target="_blank">${esc(it.title)}</a>`,
+                    )
+                    .join('') +
+                  `</div><button class="more-btn" type="button">Більше (${g.more.length})</button>`
+                : ''),
           )
           .join('');
         return card('🗞 Новини', inner);
@@ -359,7 +407,14 @@
             id: 'news',
             data: {
               groups: [
-                { category: 'Україна та світ', items: [{ title: 'Демо-новина', url: '#' }] },
+                {
+                  category: 'Україна та світ',
+                  items: [{ title: 'Демо-новина', url: '#' }],
+                  more: [
+                    { title: 'Ще одна новина', url: '#' },
+                    { title: 'І третя', url: '#' },
+                  ],
+                },
               ],
             },
           },
@@ -387,6 +442,13 @@
       function wireVotes() {
         document.querySelectorAll('#news .vote button').forEach((btn) => {
           btn.addEventListener('click', () => vote(btn));
+        });
+        document.querySelectorAll('#news .more-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const box = btn.previousElementSibling;
+            if (box && box.classList.contains('more')) box.hidden = false;
+            btn.remove();
+          });
         });
       }
       async function vote(btn) {
@@ -444,10 +506,47 @@
         );
       }
 
-      fetch('./briefing.json', { cache: 'no-store' })
+      // Історія: гортання днів. /api/history дає список дат; стрілки ‹ › міняють день.
+      let dates = [];
+      let idx = 0; // 0 = найновіший
+      const prevBtn = document.getElementById('prevDay');
+      const nextBtn = document.getElementById('nextDay');
+
+      async function loadDay() {
+        const q = dates.length && dates[idx] ? `?date=${dates[idx]}` : '';
+        try {
+          const r = await fetch(`./briefing.json${q}`, { cache: 'no-store' });
+          if (!r.ok) throw new Error();
+          render(await r.json());
+        } catch {
+          render(SAMPLE);
+        }
+        prevBtn.disabled = !dates.length || idx >= dates.length - 1;
+        nextBtn.disabled = !dates.length || idx <= 0;
+      }
+
+      prevBtn.addEventListener('click', () => {
+        if (idx < dates.length - 1) {
+          idx++;
+          loadDay();
+        }
+      });
+      nextBtn.addEventListener('click', () => {
+        if (idx > 0) {
+          idx--;
+          loadDay();
+        }
+      });
+
+      fetch('./api/history')
         .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then(render)
-        .catch(() => render(SAMPLE));
+        .then((d) => {
+          dates = Array.isArray(d.dates) ? d.dates : [];
+        })
+        .catch(() => {
+          dates = [];
+        })
+        .finally(loadDay);
     </script>
   </body>
 </html>

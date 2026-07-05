@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { jobsModule, parseScores, buildScorePrompt } from '../src/modules/jobs.js';
+import { jobsModule, parseScores, buildScorePrompt, parseWorkUa } from '../src/modules/jobs.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
@@ -15,6 +15,21 @@ describe('jobs — parseScores', () => {
   it('малформат -> порожня map', () => {
     expect(parseScores('нема').size).toBe(0);
     expect(parseScores('[зламано').size).toBe(0);
+  });
+});
+
+describe('jobs — parseWorkUa', () => {
+  it('витягує заголовки + абсолютні URL, дедуп, пропуск порожніх/іконкових', () => {
+    const html = `
+      <a href="/jobs/111/"><img alt=""></a>
+      <a href="/jobs/111/">Junior Full Stack Developer</a>
+      <a href="/company/5/">не вакансія</a>
+      <a href="/jobs/222/">Trainee React Developer &amp; more</a>
+      <a href="/jobs/333/">   </a>`;
+    expect(parseWorkUa(html)).toEqual([
+      { title: 'Junior Full Stack Developer', url: 'https://www.work.ua/jobs/111/' },
+      { title: 'Trainee React Developer & more', url: 'https://www.work.ua/jobs/222/' },
+    ]);
   });
 });
 
