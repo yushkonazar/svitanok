@@ -1,5 +1,6 @@
 // Worker: статика дашборда (ASSETS) + /briefing.json із KV + ТОЧНИЙ планувальник
-// ранкового брифінгу (scheduled -> GitHub workflow_dispatch). Той самий Worker
+// ранкового брифінгу (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH
+// (10:00 Київ: якщо KV не оновлено сьогодні -> алерт у Telegram). Той самий Worker
 // згодом отримає API для A2-інтерактиву (Telegram-вебхук).
 
 const GH_DISPATCH_URL =
@@ -13,6 +14,68 @@ function kyivHour(now = new Date()) {
     hour12: false,
   }).format(now);
   return Number(h);
+}
+
+/** Київська дата "YYYY-MM-DD" (для порівняння «свіжості» брифінгу). */
+function kyivDateKey(now = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+/** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
+async function dispatchBrief(env) {
+  if (!env.GH_DISPATCH_TOKEN) {
+    console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
+    return;
+  }
+  const resp = await fetch(GH_DISPATCH_URL, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
+      accept: 'application/vnd.github+json',
+      'x-github-api-version': '2022-11-28',
+      'user-agent': 'svitanok-scheduler',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
+  });
+  if (!resp.ok) {
+    console.error('workflow_dispatch failed', resp.status, await resp.text());
+  }
+}
+
+/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram (тиха відмова видима). */
+async function deadMansCheck(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+    console.error('TELEGRAM_* відсутні — dead-man пропущено');
+    return;
+  }
+  const raw = await env.BRIEFING.get('latest');
+  const today = kyivDateKey();
+  let fresh = false;
+  try {
+    const d = JSON.parse(raw ?? '{}');
+    fresh = typeof d.generatedAt === 'string' && kyivDateKey(new Date(d.generatedAt)) === today;
+  } catch {
+    /* биття JSON -> вважаємо несвіжим -> алерт */
+  }
+  if (fresh) return; // брифінг сьогодні є — усе добре
+
+  const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: env.TELEGRAM_CHAT_ID,
+      text: '⚠️ Свiтанок: ранковий брифінг сьогодні не доставлено (KV не оновлено). Перевір GitHub Actions → workflow «brief».',
+    }),
+  });
+  if (!resp.ok) {
+    console.error('dead-man alert failed', resp.status, await resp.text());
+  }
 }
 
 export default {
@@ -31,32 +94,13 @@ export default {
     return env.ASSETS.fetch(request); // статичні файли (дашборд)
   },
 
-  // Точний тригер: cron у UTC (05:00+06:00) покриває обидва DST-зсуви; хендлер
-  // пускає dispatch ЛИШЕ коли в Києві саме 08:00 -> рівно один запуск/день.
-  // GitHub-schedule у brief.yml лишається резервом (спрацьовує пізно, але guard-
-  // ідемпотентність не дасть дубль). Без --force -> guard сам вирішує (вікно+ідемп.).
+  // Cron у UTC покриває обидва DST-зсуви; за київською годиною обираємо дію:
+  //   08:00 -> точний dispatch брифінгу;  10:00 -> dead-man-перевірка.
+  // GitHub-schedule у brief.yml лишається резервом (пізно, але без дубля завдяки
+  // guard-ідемпотентності).
   async scheduled(_event, env, ctx) {
-    if (kyivHour() !== 8) return; // «не та» cron-година (резервна) — ігноруємо
-    if (!env.GH_DISPATCH_TOKEN) {
-      console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
-      return;
-    }
-    const run = async () => {
-      const resp = await fetch(GH_DISPATCH_URL, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
-          accept: 'application/vnd.github+json',
-          'x-github-api-version': '2022-11-28',
-          'user-agent': 'svitanok-scheduler',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
-      });
-      if (!resp.ok) {
-        console.error('workflow_dispatch failed', resp.status, await resp.text());
-      }
-    };
-    ctx.waitUntil(run());
+    const h = kyivHour();
+    if (h === 8) ctx.waitUntil(dispatchBrief(env));
+    else if (h === 10) ctx.waitUntil(deadMansCheck(env));
   },
 };
