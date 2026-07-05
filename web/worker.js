@@ -1,10 +1,20 @@
 // Worker: статика дашборда (ASSETS) + /briefing.json із KV + ТОЧНИЙ планувальник
-// ранкового брифінгу (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH
-// (10:00 Київ: якщо KV не оновлено сьогодні -> алерт у Telegram). Той самий Worker
-// згодом отримає API для A2-інтерактиву (Telegram-вебхук).
+// (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH (10:00 Київ) +
+// /api/vote (👍/👎 з дашборда -> preferenceWeights у KV, автентифікація через
+// Telegram WebApp initData). Стан — KV namespace BRIEFING, ключі `latest`/`state`.
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
+
+// preferenceWeights (дзеркало src/modules/news.ts — Worker не імпортує TS).
+const WEIGHT_MIN = 0.5;
+const WEIGHT_MAX = 2.0;
+const WEIGHT_STEP = 0.15;
+const clampWeight = (w) => Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, w));
+function applyVote(weights, category, dir) {
+  const cur = weights[category] ?? 1.0;
+  return { ...weights, [category]: clampWeight(cur + (dir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP)) };
+}
 
 /** Київська година (0..23) зараз, з урахуванням DST через Intl. */
 function kyivHour(now = new Date()) {
@@ -24,6 +34,81 @@ function kyivDateKey(now = new Date()) {
     month: '2-digit',
     day: '2-digit',
   }).format(now);
+}
+
+const json = (obj, status = 200) =>
+  new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+  });
+
+// --- Telegram WebApp initData validation (HMAC-SHA256, WebCrypto) ---
+async function hmac(keyBytes, msgBytes) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
+}
+const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+/** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
+async function validateInitData(initData, botToken) {
+  if (!initData) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  if (!hash) return null;
+  params.delete('hash');
+  const dataCheck = [...params.entries()]
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join('\n');
+  const enc = new TextEncoder();
+  const secret = await hmac(enc.encode('WebAppData'), enc.encode(botToken));
+  const computed = toHex(await hmac(secret, enc.encode(dataCheck)));
+  if (computed !== hash) return null;
+  const authDate = Number(params.get('auth_date') ?? 0);
+  if (!authDate || Date.now() / 1000 - authDate > 86400) return null; // старіше 24 год
+  try {
+    return { user: JSON.parse(params.get('user') ?? 'null') };
+  } catch {
+    return { user: null };
+  }
+}
+
+/** POST /api/vote {category, dir, initData} -> оновити preferenceWeights у KV. */
+async function handleVote(request, env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: 'bad-json' }, 400);
+  }
+  const { category, dir, initData } = body ?? {};
+  if (typeof category !== 'string' || !category || (dir !== 'up' && dir !== 'down')) {
+    return json({ ok: false, error: 'bad-params' }, 400);
+  }
+  const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
+  if (!v) return json({ ok: false, error: 'auth' }, 401);
+  // Одноосібний бот: голосувати може лише власник (user.id == chat_id приватного чату).
+  if (env.TELEGRAM_CHAT_ID && v.user && String(v.user.id) !== String(env.TELEGRAM_CHAT_ID)) {
+    return json({ ok: false, error: 'forbidden' }, 403);
+  }
+  let state = {};
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
+    if (parsed && typeof parsed === 'object') state = parsed;
+  } catch {
+    /* биття JSON -> порожній стан */
+  }
+  const weights = applyVote(state.preferenceWeights ?? {}, category, dir);
+  state.preferenceWeights = weights;
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return json({ ok: true, category, weight: weights[category] });
 }
 
 /** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
@@ -48,7 +133,7 @@ async function dispatchBrief(env) {
   }
 }
 
-/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram (тиха відмова видима). */
+/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram. */
 async function deadMansCheck(env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
     console.error('TELEGRAM_* відсутні — dead-man пропущено');
@@ -63,7 +148,7 @@ async function deadMansCheck(env) {
   } catch {
     /* биття JSON -> вважаємо несвіжим -> алерт */
   }
-  if (fresh) return; // брифінг сьогодні є — усе добре
+  if (fresh) return;
 
   const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: 'POST',
@@ -91,13 +176,14 @@ export default {
         },
       });
     }
+    if (url.pathname === '/api/vote' && request.method === 'POST') {
+      return handleVote(request, env);
+    }
     return env.ASSETS.fetch(request); // статичні файли (дашборд)
   },
 
   // Cron у UTC покриває обидва DST-зсуви; за київською годиною обираємо дію:
   //   08:00 -> точний dispatch брифінгу;  10:00 -> dead-man-перевірка.
-  // GitHub-schedule у brief.yml лишається резервом (пізно, але без дубля завдяки
-  // guard-ідемпотентності).
   async scheduled(_event, env, ctx) {
     const h = kyivHour();
     if (h === 8) ctx.waitUntil(dispatchBrief(env));
