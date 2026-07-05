@@ -167,7 +167,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/briefing.json') {
-      const data = await env.BRIEFING.get('latest');
+      // ?date=YYYY-MM-DD -> історичний брифінг; інакше — latest.
+      const date = url.searchParams.get('date');
+      const key = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? `briefing:${date}` : 'latest';
+      const data = await env.BRIEFING.get(key);
       return new Response(data ?? '{}', {
         headers: {
           'content-type': 'application/json; charset=utf-8',
@@ -175,6 +178,15 @@ export default {
           'access-control-allow-origin': '*',
         },
       });
+    }
+    if (url.pathname === '/api/history') {
+      // Список наявних дат (для гортання в Mini App), новіші перші.
+      const list = await env.BRIEFING.list({ prefix: 'briefing:' });
+      const dates = list.keys
+        .map((k) => k.name.slice('briefing:'.length))
+        .sort()
+        .reverse();
+      return json({ dates });
     }
     if (url.pathname === '/api/vote' && request.method === 'POST') {
       return handleVote(request, env);

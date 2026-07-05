@@ -119,6 +119,14 @@ jobs:
             -H "Content-Type: application/json" \
             --data-binary @"$GITHUB_WORKSPACE/briefing.json")
           echo "CF API HTTP $code"; cat /tmp/kv_resp.json; echo
+          # Історія: копія під ключем briefing:<київська дата> для гортання в Mini App.
+          if [ "$code" = "200" ]; then
+            DAY=$(TZ=Europe/Kyiv date +%F)
+            curl -s -o /dev/null -X PUT \
+              "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/briefing:${DAY}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+              --data-binary @"$GITHUB_WORKSPACE/briefing.json" && echo "історія: briefing:${DAY} записано"
+          fi
           if [ "$code" != "200" ]; then
             echo "KV-публікація не вдалася (не критично). Діагностика — акаунти токена:"
             curl -s "https://api.cloudflare.com/client/v4/accounts" \
