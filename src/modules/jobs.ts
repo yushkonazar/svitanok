@@ -13,8 +13,46 @@ const JOBS_PRIORITY = 55;
 const MAX_ITEMS_PER_FEED = 12;
 const POOL_SIZE = 14; // кандидатів на скоринг (малий промпт claude -p)
 const MESSAGE_ITEMS = 2; // у Telegram — лише топ-збіги; повний список у дашборді
+const WORKUA_BASE = 'https://www.work.ua';
 
 type ShownJobs = Record<string, string>; // canonicalUrl -> ISO date
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&#0?39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&mdash;/g, '—')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
+}
+
+/** Best-effort парсер пошуку Work.ua (RSS немає): `<a href="/jobs/ID/">Заголовок</a>`.
+ *  Крихко до змін розмітки; порожні/дублі відкидаємо; помилка -> [] -> фолбек. */
+export function parseWorkUa(html: string): RssItem[] {
+  const out: RssItem[] = [];
+  const seen = new Set<string>();
+  const re = /<a[^>]+href="(\/jobs\/\d+\/?)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const path = m[1]!;
+    const title = decodeEntities(
+      m[2]!
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    );
+    if (title.length < 5) continue; // порожні/іконкові лінки
+    if (seen.has(path)) continue;
+    seen.add(path);
+    out.push({ title, url: WORKUA_BASE + path });
+  }
+  return out;
+}
+
+/** Обрати парсер за джерелом: Work.ua — HTML, решта — RSS/Atom. */
+function parseSource(url: string, body: string): RssItem[] {
+  return url.includes('work.ua') ? parseWorkUa(body) : parseRss(body);
+}
 
 interface Candidate {
   title: string;
@@ -102,10 +140,17 @@ export const jobsModule: Module<AppConfig> = {
 
     const settled = await Promise.allSettled(cfg.sources.map((u) => ctx.fetcher.fetch(u)));
     const lists: RssItem[][] = [];
-    for (const r of settled) {
-      if (r.status === 'fulfilled') lists.push(parseRss(r.value).slice(0, MAX_ITEMS_PER_FEED));
-      else ctx.log.warn('jobs: фід впав');
-    }
+    settled.forEach((r, i) => {
+      const src = cfg.sources[i]!;
+      const host = URL.canParse(src) ? new URL(src).host : src;
+      if (r.status !== 'fulfilled') {
+        ctx.log.warn(`jobs: фід впав (${host})`);
+        return;
+      }
+      const items = parseSource(src, r.value).slice(0, MAX_ITEMS_PER_FEED);
+      ctx.log.info(`jobs: ${items.length} з ${host}`);
+      lists.push(items);
+    });
 
     const pool = collectPool(lists, shown, cutoff);
     if (pool.length === 0) return null;

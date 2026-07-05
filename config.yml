@@ -62,13 +62,17 @@ modules:
       Full Stack веброзробник (Frontend + Backend), рівень Trainee/Junior.
       Стек: JavaScript/TypeScript, React, Node.js, HTML/CSS.
       Цікавлять junior-дружні вакансії під цей стек.
-    # DOU (junior exp 0-1) + Djinni (no_exp/1y). Work.ua/robota/LinkedIn — 403 з датацентру.
+    # DOU (junior exp 0-1) + Djinni (no_exp/1y) — RSS. Work.ua — HTML-парсер
+    # (parseWorkUa; RSS немає). Work.ua може віддати 403 раннеру -> тоді джерело
+    # дає 0, решта лишається (graceful). robota/LinkedIn — без відкритого фіду.
     sources:
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Full%20Stack&exp=0-1'
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Front%20End&exp=0-1'
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Back%20End&exp=0-1'
       - 'https://djinni.co/jobs/rss/?primary_keyword=Fullstack&exp_level=no_exp&exp_level=1y'
       - 'https://djinni.co/jobs/rss/?primary_keyword=JavaScript&exp_level=no_exp&exp_level=1y'
+      - 'https://www.work.ua/jobs-junior+developer/'
+      - 'https://www.work.ua/jobs-junior+full+stack/'
 
 llm:
   # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p
