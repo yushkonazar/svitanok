@@ -376,6 +376,51 @@
         color: var(--muted);
         font-size: 13px;
       }
+      /* Розкриття погоди — 2 колонки: текст ліворуч, дуга сонця+графік праворуч */
+      .wx-grid {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        align-items: start;
+      }
+      .wx-grid .wx-l {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .wx-grid .wx-r {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        width: 200px;
+        max-width: 46vw;
+      }
+      @media (max-width: 380px) {
+        .wx-grid {
+          grid-template-columns: 1fr;
+        }
+        .wx-grid .wx-r {
+          width: 100%;
+          max-width: 100%;
+        }
+      }
+      /* Кнопка «Вивчити» (питання дня) */
+      .learn-btn {
+        display: inline-block;
+        margin-top: 10px;
+        padding: 9px 15px;
+        border-radius: 10px;
+        background: var(--grad, linear-gradient(90deg, #ff6b57, #ffb03a));
+        color: var(--on-accent, #1a1206);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .answer {
+        margin-top: 8px;
+        line-height: 1.5;
+      }
 
       a {
         color: var(--text);
@@ -505,39 +550,48 @@
       }
 
       /* ── Новини ─────────────────────────────────────────────────────────── */
+      /* заголовок теми з емодзі — більше «повітря» між категоріями */
       .cat {
         font-family: 'Golos Text', system-ui, sans-serif;
-        font-size: 12.5px;
+        font-size: 13px;
         font-weight: 600;
-        letter-spacing: 0.2px;
+        letter-spacing: 0.3px;
         text-transform: uppercase;
         color: var(--accent-2);
-        margin: 16px 0 4px;
+        margin: 24px 0 6px;
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 7px;
       }
       .cat:first-child {
         margin-top: 0;
       }
-      /* рядок однієї новини: текст + дії (голоси/збереження) справа */
+      /* блок теми: тонкий роздільник між категоріями (більше «повітря») */
+      .news-topic {
+        padding-top: 4px;
+      }
+      .news-topic + .news-topic,
+      .expandable + .expandable {
+        margin-top: 6px;
+      }
+      /* рядок однієї новини: текст + дії (голоси/збереження) справа. Більше повітря. */
       .news-item {
         display: flex;
-        align-items: flex-start;
-        gap: 8px;
+        align-items: center;
+        gap: 10px;
         border-top: 1px solid var(--line);
-        padding-top: 11px;
-        margin-top: 11px;
+        padding-top: 14px;
+        margin-top: 14px;
       }
       .news-item:first-of-type {
         border-top: 0;
-        padding-top: 2px;
-        margin-top: 2px;
+        padding-top: 4px;
+        margin-top: 4px;
       }
       .exp-more .news-item {
         border-top: 1px solid var(--line);
-        padding-top: 11px;
-        margin-top: 11px;
+        padding-top: 14px;
+        margin-top: 14px;
       }
       .exp-more .news-item:first-of-type {
         border-top: 1px solid var(--line);
@@ -547,7 +601,7 @@
         min-width: 0;
         padding: 2px 0;
       }
-      /* ВИРАЗНИЙ заголовок новини (≥15, medium) — не дрібніший за кнопки */
+      /* ВИРАЗНИЙ заголовок новини (Golos 15/500) — не дрібніший за кнопки */
       .news-item .htext .ntitle {
         display: block;
         font-size: 15px;
@@ -555,43 +609,63 @@
         line-height: 1.4;
         color: var(--text);
       }
+      /* «чому» під заголовком — 13/muted */
+      .news-item .htext .why {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.4;
+        margin-top: 4px;
+      }
+      /* рівний ряд дій: ≥44px, з невеликим проміжком (не тісно) */
       .item-actions {
         display: inline-flex;
-        gap: 0;
+        align-items: center;
+        gap: 4px;
         flex: 0 0 auto;
       }
       .item-actions button {
-        border: none;
+        border: 1px solid transparent;
         background: transparent;
         cursor: pointer;
-        font-size: 16px;
+        font-size: 17px;
         line-height: 1;
         min-width: 44px;
         min-height: 44px;
-        border-radius: 10px;
-        opacity: 0.45;
+        border-radius: 12px;
+        opacity: 0.5;
         transition:
           opacity 0.15s,
           transform 0.12s,
-          background 0.15s;
+          background 0.15s,
+          border-color 0.15s,
+          box-shadow 0.15s;
       }
       .item-actions button:hover {
         background: var(--glass-2);
-        opacity: 0.8;
+        opacity: 0.85;
       }
-      /* обраний варіант лишається залитим/кольоровим після ре-рендеру */
+      /* ── ВИРАЗНА підсвітка обраної реакції — ЗАЛИТИЙ стан (переживає ре-рендер) ── */
       .item-actions button.on {
         opacity: 1;
-        transform: scale(1.14);
       }
       .item-actions button.up.on {
-        color: var(--good);
+        color: var(--on-accent);
+        background: linear-gradient(135deg, #34d17f 0%, #46e0a0 100%);
+        border-color: rgba(70, 224, 160, 0.6);
+        box-shadow: 0 3px 12px rgba(70, 224, 160, 0.32);
       }
       .item-actions button.down.on {
-        color: var(--bad);
+        color: #fff;
+        background: linear-gradient(135deg, #ff5470 0%, #ff6b86 100%);
+        border-color: rgba(255, 107, 134, 0.6);
+        box-shadow: 0 3px 12px rgba(255, 107, 134, 0.32);
       }
+      /* 🔖 обраний — залите золоте */
       .item-actions button.save.on {
-        color: var(--accent-2);
+        color: var(--on-accent);
+        background: var(--grad);
+        border-color: rgba(255, 176, 58, 0.6);
+        box-shadow: 0 3px 12px rgba(255, 122, 89, 0.32);
       }
 
       .more-btn {
@@ -609,32 +683,38 @@
         cursor: pointer;
       }
 
-      /* під-таби новин (світові/укр) */
+      /* під-таби новин: 2 ВИРАЗНІ сегмент-кнопки Світ/Україна */
       .subnav {
         display: flex;
         gap: 6px;
-        margin-bottom: 14px;
-        padding: 4px;
-        border-radius: 13px;
-        background: rgba(255, 255, 255, 0.04);
+        margin-bottom: 18px;
+        padding: 5px;
+        border-radius: 15px;
+        background: rgba(255, 255, 255, 0.05);
         border: 1px solid var(--border-2);
       }
       .subnav button {
         flex: 1;
-        min-height: 40px;
+        min-height: 46px;
         background: transparent;
         color: var(--muted);
         border: 0;
-        border-radius: 10px;
+        border-radius: 11px;
         font-family: 'Golos Text', system-ui, sans-serif;
-        font-size: 13px;
-        font-weight: 500;
+        font-size: 14.5px;
+        font-weight: 600;
+        letter-spacing: 0.1px;
         cursor: pointer;
+        transition:
+          color 0.15s,
+          background 0.15s,
+          box-shadow 0.15s;
       }
       .subnav button.active {
         color: var(--on-accent);
-        font-weight: 600;
+        font-weight: 700;
         background: var(--grad);
+        box-shadow: 0 4px 14px rgba(255, 122, 89, 0.3);
       }
 
       /* ── Вакансії ───────────────────────────────────────────────────────── */
@@ -1128,6 +1208,20 @@
         const arr = dd > 0 ? '↑' : dd < 0 ? '↓' : '→';
         return `<span class="${cls}">${arr} ${Math.abs(dd).toFixed(digits)}${unit}</span>`;
       }
+      // Дуга сонця: півколо схід→захід + позиція сонця за поточним часом.
+      function sunArc(sr, ss) {
+        if (!has(sr) || !has(ss) || ss <= sr) return '';
+        const now = Math.floor(Date.now() / 1000);
+        const t = Math.max(0, Math.min(1, (now - sr) / (ss - sr)));
+        const x = 12 + 96 * t;
+        const y = 52 - Math.sin(Math.PI * t) * 42;
+        return `<svg viewBox="0 0 120 64" width="100%" style="max-width:200px" role="img" aria-label="схід і захід сонця">
+          <path d="M12 52 Q60 -18 108 52" fill="none" stroke="var(--muted)" stroke-width="1.4" stroke-dasharray="3 3" opacity="0.55" />
+          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="#ffb03a" />
+          <text x="12" y="62" font-size="9" fill="var(--muted)" text-anchor="middle">🌅 ${fmtClock(sr)}</text>
+          <text x="108" y="62" font-size="9" fill="var(--muted)" text-anchor="middle">🌇 ${fmtClock(ss)}</text>
+        </svg>`;
+      }
 
       /* ── Бейджі рівнів ───────────────────────────────────────────────────── */
       function uvBadge(uv) {
@@ -1178,14 +1272,20 @@
         // 2) Курс — ОДНА валюта в рядок (повноширинні рядки, кожен свій toggle-графік).
         out.push(currencyCard(byId(blocks, 'currency')?.data));
 
-        // 3) Питання дня.
+        // 3) Питання дня. Розкриття: відповідь + кнопка «Вивчити» (ресурс).
         const mock = byId(blocks, 'mock');
         if (mock?.data) {
-          const extra = has(mock.data.hint) || has(mock.data.answer);
           const base = `<div class="exp-base">${esc(mock.data.question)}</div>`;
-          const more = extra
-            ? `<div class="exp-more">${has(mock.data.hint) ? `<div class="why">💡 ${esc(mock.data.hint)}</div>` : ''}${has(mock.data.answer) ? `<div style="margin-top:8px">${esc(mock.data.answer)}</div>` : ''}</div>`
-            : `<div class="exp-more"><div class="muted">Спробуй відповісти вголос — тренування до співбесіди.</div></div>`;
+          const hint = has(mock.data.hint)
+            ? `<div class="why">💡 ${esc(mock.data.hint)}</div>`
+            : '';
+          const answer = has(mock.data.answer)
+            ? `<div class="answer">${esc(mock.data.answer)}</div>`
+            : `<div class="muted">Відповідь з’явиться згодом. Спробуй відповісти вголос — тренування до співбесіди.</div>`;
+          const learn = has(mock.data.resourceUrl)
+            ? `<a class="learn-btn" href="${esc(mock.data.resourceUrl)}" target="_blank" rel="noopener">📚 Вивчити</a>`
+            : '';
+          const more = `<div class="exp-more">${hint}${answer}${learn}</div>`;
           out.push(card('🎤 Питання дня', expandable(base + more)));
         }
 
@@ -1212,7 +1312,7 @@
         if (onthis?.data?.events?.length) {
           const evs = onthis.data.events;
           const row = (e) => `<div class="item"><b>${esc(e.year)}</b> — ${esc(e.text)}</div>`;
-          const SHOW = 6;
+          const SHOW = 8;
           if (evs.length <= SHOW) {
             out.push(card('📜 У цей день', evs.map(row).join('')));
           } else {
@@ -1237,39 +1337,42 @@
           </div>
         </div>`;
 
-        const rows = [];
-        // — БЛОК ЗАВЖДИ-НАЯВНОГО (не з'їжджає без опційних полів) —
-        rows.push(`<div class="lbl">${esc(l.emoji || '')} ${esc(l.name)}</div>`);
-        rows.push(
+        // ── ЛІВА колонка: текст (незмінне вгорі, умовний дощ у кінці) ──
+        const L = [];
+        L.push(`<div class="lbl">${esc(l.emoji || '')} ${esc(l.name)}</div>`);
+        L.push(
           `<div class="big">${signTemp(l.tempC)} <span class="sub" style="font-weight:400">відч. ${signTemp(l.feelsLikeC)}</span></div>`,
         );
-        rows.push(`<div class="sub">${esc(l.condition)}</div>`);
-        rows.push(`<div class="sub">🌡 ${l.minC}…${l.maxC}°</div>`);
+        L.push(`<div class="sub">${esc(l.condition)}</div>`);
+        L.push(`<div class="sub">🌡 ${l.minC}…${l.maxC}°</div>`);
         const gust = has(l.gustMps) ? ` (пориви ${l.gustMps})` : '';
-        rows.push(
+        L.push(
           `<div class="sub">💨 ${l.windMps} м/с${gust}${has(l.humidity) ? ` · 💧 ${l.humidity}%` : ''}</div>`,
         );
-        // — УМОВНІ ПОЛЯ (додаткові, приїдуть пізніше) —
         const badges = [uvBadge(l.uv), aqiBadge(l.aqi)].filter(Boolean).join(' ');
-        if (badges) rows.push(`<div style="margin:4px 0">${badges}</div>`);
-        if (has(l.advice)) rows.push(`<div class="why">🧥 ${esc(l.advice)}</div>`);
-        // схід/захід + довжина дня + дельта
+        if (badges) L.push(`<div style="margin:4px 0">${badges}</div>`);
+        if (has(l.advice)) L.push(`<div class="why">🧥 ${esc(l.advice)}</div>`);
+        if (has(l.rainWindow)) L.push(`<div class="sub">🌧 Дощ: ${esc(l.rainWindow)}</div>`);
+        else if (l.willRain) L.push(`<div class="sub">🌧 Імовірність опадів ${l.popPercent}%</div>`);
+
+        // ── ПРАВА колонка: інтерактив — дуга сонця + погодинний графік ──
         const delta =
           has(l.dayLenDeltaMin) && l.dayLenDeltaMin !== 0
             ? ` (${l.dayLenDeltaMin > 0 ? '+' : ''}${l.dayLenDeltaMin} хв)`
             : '';
-        rows.push(`<div class="sub">🌅 ${fmtClock(l.sunrise)} · 🌇 ${fmtClock(l.sunset)}</div>`);
-        rows.push(`<div class="sub">☀️ День: ${dayLen(l.sunrise, l.sunset)}${delta}</div>`);
+        const R = [];
+        R.push(
+          `<div class="sub" style="text-align:center">☀️ День ${dayLen(l.sunrise, l.sunset)}${delta}</div>`,
+        );
+        const arc = sunArc(l.sunrise, l.sunset);
+        if (arc) R.push(arc);
         if (Array.isArray(l.hourlyTemp) && l.hourlyTemp.length >= 2)
-          rows.push(
-            `<div style="margin-top:6px">${sparkline(l.hourlyTemp, { w: 250, h: 44, label: 'температура по годинах' })}</div>`,
+          R.push(
+            `<div class="sub" style="text-align:center;margin-top:2px">Температура по годинах</div>${sparkline(l.hourlyTemp, { w: 220, h: 44, label: 'температура по годинах' })}`,
           );
-        // — ДОЩ В САМОМУ КІНЦІ (умовне) —
-        if (has(l.rainWindow)) rows.push(`<div class="sub">🌧 Дощ: ${esc(l.rainWindow)}</div>`);
-        else if (l.willRain)
-          rows.push(`<div class="sub">🌧 Імовірність опадів ${l.popPercent}%</div>`);
 
-        return `<div class="tile">${expandable(base + `<div class="exp-more">${rows.join('')}</div>`, { swap: true })}</div>`;
+        const grid = `<div class="wx-grid"><div class="wx-l">${L.join('')}</div><div class="wx-r">${R.join('')}</div></div>`;
+        return `<div class="tile">${expandable(base + `<div class="exp-more">${grid}</div>`, { swap: true })}</div>`;
       }
 
       // Курс: ОДНА валюта В РЯДОК (повноширинні рядки USD/EUR/PLN/GBP).
@@ -1329,8 +1432,8 @@
 
         const active = groups.filter((g) => g.scope === (NEWS_SCOPE === 'ua' ? 'ua' : 'world'));
         const subnav = `<div class="subnav">
-          <button data-scope="world" class="${NEWS_SCOPE === 'world' ? 'active' : ''}">🌍 Світові</button>
-          <button data-scope="ua" class="${NEWS_SCOPE === 'ua' ? 'active' : ''}">🇺🇦 Українські</button>
+          <button data-scope="world" class="${NEWS_SCOPE === 'world' ? 'active' : ''}">🌍 Світ</button>
+          <button data-scope="ua" class="${NEWS_SCOPE === 'ua' ? 'active' : ''}">🇺🇦 Україна</button>
         </div>`;
         const body = active.length
           ? active.map(newsTopicBlock).join('')
@@ -1359,11 +1462,11 @@
         const topic = g.topic || g.category || 'Інше';
         const head = `<div class="cat">${topicEmoji(topic)} ${esc(topic)}</div>`;
         const main = (g.items || []).map((it) => newsItem(it, topic)).join('');
-        if (!g.more?.length) return head + main;
+        if (!g.more?.length) return `<div class="news-topic">${head}${main}</div>`;
         const more =
           `<div class="exp-more">${g.more.map((it) => newsItem(it, topic)).join('')}</div>` +
           `<button class="more-btn" type="button" data-toggle="1" data-label="Більше (${g.more.length})">Більше (${g.more.length})</button>`;
-        return `<div class="expandable">${head}${main}${more}</div>`;
+        return `<div class="expandable news-topic">${head}${main}${more}</div>`;
       }
 
       function topicEmoji(t) {
@@ -1912,6 +2015,7 @@
               hint: 'Функція, що «пам’ятає» змінні свого лексичного оточення.',
               answer:
                 'Замикання — функція разом зі збереженим посиланням на змінні зовнішньої області, де її створено.',
+              resourceUrl: 'https://developer.mozilla.org/uk/docs/Web/JavaScript/Closures',
             },
           },
           {
@@ -2012,8 +2116,10 @@
                 { year: 2004, text: 'Демо-подія четверта.' },
                 { year: 1961, text: 'Демо-подія п’ята.' },
                 { year: 1789, text: 'Демо-подія шоста.' },
-                { year: 1945, text: 'Демо-подія сьома (під toggle).' },
-                { year: 2010, text: 'Демо-подія восьма (під toggle).' },
+                { year: 1945, text: 'Демо-подія сьома.' },
+                { year: 2010, text: 'Демо-подія восьма.' },
+                { year: 1996, text: 'Демо-подія дев’ята (під toggle).' },
+                { year: 1863, text: 'Демо-подія десята (під toggle).' },
               ],
             },
           },
