@@ -1,7 +1,10 @@
 // Worker: статика дашборда (ASSETS) + /briefing.json із KV + ТОЧНИЙ планувальник
 // (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH (10:00 Київ) +
-// /api/vote (👍/👎 з дашборда -> preferenceWeights у KV, автентифікація через
-// Telegram WebApp initData). Стан — KV namespace BRIEFING, ключі `latest`/`state`.
+// /api/vote, /api/event (запис подій — авторизація власника через Telegram
+// WebApp initData), /api/stats (читання агрегату). KV namespace BRIEFING, ключі
+// `latest`/`state`/`stats`/`briefing:<date>`.
+
+import { recordEvent, aggregateStats } from './stats-core.mjs';
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
@@ -79,7 +82,40 @@ async function validateInitData(initData, botToken) {
   }
 }
 
-/** POST /api/vote {category, dir, initData} -> оновити preferenceWeights у KV. */
+/** Валідація initData + власник. -> {ok:true,user} або {ok:false,status,error}. */
+async function checkOwner(initData, env) {
+  const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
+  if (!v) return { ok: false, status: 401, error: 'auth' };
+  if (env.TELEGRAM_CHAT_ID && v.user && String(v.user.id) !== String(env.TELEGRAM_CHAT_ID)) {
+    return { ok: false, status: 403, error: 'forbidden' };
+  }
+  return { ok: true, user: v.user };
+}
+
+/** Хвилини після 08:00 Київ зараз (метрика «час до відкриття»); поза ранком -> null. */
+function kyivMinAfter8(now = new Date()) {
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Kyiv',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const h = Number(p.find((x) => x.type === 'hour')?.value);
+  const m = Number(p.find((x) => x.type === 'minute')?.value);
+  const mins = h * 60 + m - 480;
+  return mins >= 0 && mins <= 720 ? mins : null;
+}
+
+/** Прочитати стор статистики з KV (ключ `stats`); биття -> {}. */
+async function loadStats(env) {
+  try {
+    return JSON.parse((await env.BRIEFING.get('stats')) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+/** POST /api/vote {category, dir, url, initData} -> preferenceWeights + інтерес. */
 async function handleVote(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   let body;
@@ -92,12 +128,9 @@ async function handleVote(request, env) {
   if (typeof category !== 'string' || !category || (dir !== 'up' && dir !== 'down')) {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
-  const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
-  if (!v) return json({ ok: false, error: 'auth' }, 401);
-  // Одноосібний бот: голосувати може лише власник (user.id == chat_id приватного чату).
-  if (env.TELEGRAM_CHAT_ID && v.user && String(v.user.id) !== String(env.TELEGRAM_CHAT_ID)) {
-    return json({ ok: false, error: 'forbidden' }, 403);
-  }
+  const auth = await checkOwner(initData, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
   let state = {};
   try {
     const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
@@ -108,7 +141,33 @@ async function handleVote(request, env) {
   const weights = applyVote(state.preferenceWeights ?? {}, category, dir);
   state.preferenceWeights = weights;
   await env.BRIEFING.put('state', JSON.stringify(state));
+  // Інтерес у stats (для табу «Статистика» → «твої інтереси»).
+  const stats = recordEvent(await loadStats(env), { type: 'vote', category, dir }, kyivDateKey());
+  await env.BRIEFING.put('stats', JSON.stringify(stats));
   return json({ ok: true, category, weight: weights[category] });
+}
+
+/** POST /api/event {type, …, initData} -> записати подію у стор статистики. */
+async function handleEvent(request, env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: 'bad-json' }, 400);
+  }
+  if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
+  const auth = await checkOwner(body.initData, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
+  const stats = recordEvent(await loadStats(env), body, kyivDateKey(), nowMin);
+  await env.BRIEFING.put('stats', JSON.stringify(stats));
+  return json({ ok: true });
+}
+
+/** GET /api/stats -> агрегат для табу «Статистика» (читання, без auth). */
+async function handleStats(env) {
+  return json(aggregateStats(await loadStats(env), kyivDateKey()));
 }
 
 /** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
@@ -190,6 +249,12 @@ export default {
     }
     if (url.pathname === '/api/vote' && request.method === 'POST') {
       return handleVote(request, env);
+    }
+    if (url.pathname === '/api/event' && request.method === 'POST') {
+      return handleEvent(request, env);
+    }
+    if (url.pathname === '/api/stats') {
+      return handleStats(env);
     }
     return env.ASSETS.fetch(request); // статичні файли (дашборд)
   },
