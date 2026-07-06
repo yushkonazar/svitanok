@@ -6,6 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Svitanok</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Google Fonts: Golos Text (текст) + Unbounded (wordmark/заголовки) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
     <style>
       /* ══════════════════════════════════════════════════════════════════════
          ПАЛІТРА «СВІТАНОК»
@@ -14,34 +21,42 @@
          синхронізується з themeParams; поза Telegram — fallback нижче.
          ══════════════════════════════════════════════════════════════════════ */
       :root {
-        /* база (fallback поза Telegram — темна) */
-        --bg: #0f1424;
-        --card: #191f33;
-        --card2: #212844;
-        --text: #f5f6fa;
-        --muted: #94a0b8;
-        --line: #2a3350;
+        /* ── БАЗА (fallback поза Telegram — темна, «світанковий» нейтрал) ── */
+        --bg: #10131f; /* глибокий синьо-графітовий, не сірий */
+        --text: #f4f6fb;
+        --muted: #9aa3b8;
 
-        /* АКЦЕНТ «Світанок» — застосовується завжди */
+        /* СКЛО: напівпрозорий fill + рамка + тінь (наші, не з теми) */
+        --glass: rgba(255, 255, 255, 0.06);
+        --glass-2: rgba(255, 255, 255, 0.045); /* вкладені елементи (плитки) */
+        --glass-strong: rgba(255, 255, 255, 0.1); /* fallback без backdrop-filter */
+        --border: rgba(255, 255, 255, 0.09);
+        --border-2: rgba(255, 255, 255, 0.06);
+        --line: rgba(255, 255, 255, 0.08);
+        --shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+
+        /* АКЦЕНТ «Світанок» — ПРИГЛУШЕНО, лише як акцент */
         --accent: #ff7a59; /* primary корал */
         --accent-2: #ffb03a; /* амбер (кінець градієнта) */
-        --link: #ffc24b; /* золото для лінків/дельт-нейтралі */
+        --link: #ffc76b; /* тепле золото для дельт-нейтралі */
         --grad: linear-gradient(135deg, #ff6b57 0%, #ffb03a 100%);
         --grad-soft: linear-gradient(
           135deg,
           rgba(255, 107, 87, 0.16) 0%,
           rgba(255, 176, 58, 0.16) 100%
         );
-        --on-accent: #1a1206; /* текст поверх градієнта (темний, читабельний і в світлій темі) */
+        --on-accent: #241203; /* текст поверх градієнта (темний, читабельний і в світлій темі) */
 
         /* семантика */
-        --good: #3ddc97;
+        --good: #46e0a0;
         --warn: #ffb03a;
-        --bad: #ff5c7a;
+        --bad: #ff6b86;
 
-        --radius: 14px;
+        --radius: 16px;
         --safe-top: env(safe-area-inset-top, 0px);
         --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+        color-scheme: dark;
       }
       * {
         box-sizing: border-box;
@@ -53,51 +68,120 @@
       body {
         margin: 0 auto;
         max-width: 560px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: var(--bg);
+        /* Golos Text для тіла; фолбек — системний */
+        font-family:
+          'Golos Text',
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
         color: var(--text);
         font-size: 15px;
+        font-weight: 400;
         line-height: 1.5;
-        padding: calc(12px + var(--safe-top)) 12px calc(40px + var(--safe-bottom));
+        padding: calc(12px + var(--safe-top)) 14px calc(48px + var(--safe-bottom));
+        position: relative;
+        z-index: 0;
         /* перенос довгих слів/URL — щоб нічого не вилазило */
         overflow-wrap: anywhere;
         word-break: break-word;
       }
 
-      /* ── Банер свіжості (sticky, градієнт-акцент) ───────────────────────── */
+      /* ── ФІКСОВАНИЙ ФОН: нейтральний темний градієнт + світанковий glow згори ── */
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background:
+          radial-gradient(
+            120% 62% at 78% -8%,
+            rgba(255, 122, 89, 0.22) 0%,
+            rgba(255, 176, 58, 0.1) 34%,
+            rgba(255, 176, 58, 0) 62%
+          ),
+          radial-gradient(
+            90% 50% at 8% 2%,
+            rgba(126, 108, 255, 0.12) 0%,
+            rgba(126, 108, 255, 0) 55%
+          ),
+          linear-gradient(180deg, #141826 0%, #0e111b 46%, #0b0e17 100%);
+      }
+
+      /* спільна «скляна» поверхня */
+      .glass {
+        background: var(--glass);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        -webkit-backdrop-filter: blur(14px);
+        backdrop-filter: blur(14px);
+      }
+      /* fallback: без backdrop-filter — трохи щільніший fill */
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        .glass {
+          background: var(--glass-strong);
+        }
+      }
+
+      /* ── Банер свіжості (sticky, приглушене скло з тонким акцентом) ─────── */
       .freshness {
         position: sticky;
         top: 0;
         z-index: 20;
-        margin: calc(-12px - var(--safe-top)) -12px 12px;
-        padding: calc(8px + var(--safe-top)) 14px 8px;
-        font-size: 13px;
-        font-weight: 700;
+        margin: calc(-12px - var(--safe-top)) -14px 14px;
+        padding: calc(9px + var(--safe-top)) 14px 9px;
+        font-size: 12.5px;
+        font-weight: 500;
         text-align: center;
-        background: var(--grad);
-        color: var(--on-accent);
-        box-shadow: 0 1px 8px rgba(255, 122, 89, 0.25);
+        color: var(--text);
+        background: rgba(20, 24, 38, 0.72);
+        -webkit-backdrop-filter: blur(12px);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+      }
+      .freshness::before {
+        content: '';
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        margin-right: 7px;
+        vertical-align: middle;
+        background: linear-gradient(135deg, #ff6b57, #ffb03a);
+        box-shadow: 0 0 8px rgba(255, 122, 89, 0.55);
       }
       .freshness.stale {
-        background: none;
-        background-color: var(--card);
         color: var(--warn);
+      }
+      .freshness.stale::before {
+        background: var(--warn);
         box-shadow: none;
-        border-bottom: 1px solid var(--line);
       }
 
       /* ── Хедер + навігація по датах ─────────────────────────────────────── */
       header {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 8px;
-        margin-bottom: 12px;
+        margin-bottom: 14px;
       }
       header h1 {
-        font-size: 18px;
+        font-family: 'Unbounded', 'Golos Text', system-ui, sans-serif;
+        font-size: 20px;
         font-weight: 700;
+        letter-spacing: -0.3px;
         margin: 0;
-        /* градієнтний текст назви */
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+        flex: 0 0 auto;
+      }
+      header h1 .wm {
+        /* градієнтний wordmark */
         background: var(--grad);
         -webkit-background-clip: text;
         background-clip: text;
@@ -107,27 +191,34 @@
         margin-left: auto;
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 3px;
+        min-width: 0;
       }
       .datenav .when {
         color: var(--muted);
-        font-size: 13px;
-        min-width: 120px;
+        font-size: 12.5px;
+        min-width: 0;
+        max-width: 108px;
         text-align: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .datenav button {
-        border: none;
-        background: var(--card);
-        color: var(--accent);
+        border: 1px solid var(--border);
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(10px);
+        backdrop-filter: blur(10px);
+        color: var(--accent-2);
         width: 44px;
         height: 44px;
-        border-radius: 10px;
+        border-radius: 12px;
         font-size: 20px;
         line-height: 1;
         cursor: pointer;
       }
       .datenav button:disabled {
-        opacity: 0.35;
+        opacity: 0.3;
         cursor: default;
       }
 
@@ -135,96 +226,155 @@
       nav {
         display: flex;
         gap: 6px;
-        margin-bottom: 14px;
+        margin-bottom: 16px;
         position: sticky;
-        top: calc(37px + var(--safe-top));
+        top: calc(40px + var(--safe-top));
         z-index: 15;
-        background: var(--bg);
-        padding: 4px 0;
+        padding: 5px;
+        border-radius: 999px;
+        background: rgba(18, 22, 34, 0.66);
+        -webkit-backdrop-filter: blur(12px);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--border-2);
       }
       nav button {
         flex: 1;
-        min-height: 44px;
-        background: var(--card);
+        min-height: 42px;
+        background: transparent;
         color: var(--muted);
         border: 0;
-        border-radius: 22px;
+        border-radius: 999px;
         padding: 8px 2px;
+        font-family: 'Golos Text', system-ui, sans-serif;
         font-size: 13px;
+        font-weight: 500;
         cursor: pointer;
+        transition: color 0.15s;
       }
       nav button.active {
         background: var(--grad);
         color: var(--on-accent);
-        font-weight: 700;
+        font-weight: 600;
+        box-shadow: 0 4px 14px rgba(255, 122, 89, 0.3);
       }
 
       section {
         display: none;
         flex-direction: column;
-        gap: 10px;
+        gap: 12px;
       }
       section.active {
         display: flex;
       }
 
-      /* ── Картки ─────────────────────────────────────────────────────────── */
+      /* ── Картки (скло) ──────────────────────────────────────────────────── */
       .card {
-        background: var(--card);
+        background: var(--glass);
+        border: 1px solid var(--border);
         border-radius: var(--radius);
-        padding: 12px 14px;
+        box-shadow: var(--shadow);
+        -webkit-backdrop-filter: blur(14px);
+        backdrop-filter: blur(14px);
+        padding: 15px 16px;
+      }
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        .card {
+          background: var(--glass-strong);
+        }
       }
       .card h3 {
-        margin: 0 0 8px;
-        font-size: 13px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-        /* градієнтні підписи карток */
-        background: var(--grad);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+        margin: 0 0 11px;
+        font-family: 'Unbounded', 'Golos Text', system-ui, sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: -0.1px;
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        gap: 7px;
       }
-      /* заголовок групи секцій */
-      .group-label {
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0.6px;
-        text-transform: uppercase;
-        margin: 6px 2px 0;
+      /* акцент лише як тонка «іскра» зліва від заголовка картки */
+      .card > h3::before {
+        content: '';
+        flex: 0 0 auto;
+        width: 3px;
+        height: 15px;
+        border-radius: 2px;
         background: var(--grad);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-        opacity: 0.95;
       }
-      .group-label:first-child {
-        margin-top: 0;
+      /* заголовки без «іскри» (де емодзі несе акцент) */
+      .card > h3.plain::before {
+        display: none;
       }
 
+      /* вкладені «плитки» (напр. погода) — легше скло */
       .grid2 {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 8px;
+        gap: 10px;
+      }
+      /* повноширинні рядки (курс/погода) — колонка на всю ширину */
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
       }
       .tile {
-        background: var(--card2);
-        border-radius: 12px;
-        padding: 10px 12px;
+        background: var(--glass-2);
+        border: 1px solid var(--border-2);
+        border-radius: 13px;
+        padding: 12px 14px;
         min-width: 0;
       }
       .tile .lbl {
         color: var(--muted);
-        font-size: 12px;
+        font-size: 13px;
+        font-weight: 500;
       }
       .tile .big {
-        font-size: 22px;
-        font-weight: 700;
+        font-size: 23px;
+        font-weight: 600;
       }
       .tile .sub {
         color: var(--muted);
-        font-size: 12px;
+        font-size: 13px;
+      }
+      /* повноширинний рядок курсу: прапор+код зліва, значення справа */
+      .row-lead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .row-lead .lbl {
+        font-size: 15px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .row-lead .big {
+        font-size: 22px;
+        font-weight: 600;
+      }
+      /* повноширинний рядок погоди: місто+темп зліва, стан справа */
+      .wx-lead {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .wx-lead .wx-temp {
+        font-size: 30px;
+        font-weight: 600;
+        line-height: 1;
+      }
+      .wx-lead .wx-city {
+        font-size: 15px;
+        font-weight: 500;
+      }
+      .wx-lead .wx-cond {
+        margin-left: auto;
+        text-align: right;
+        color: var(--muted);
+        font-size: 13px;
       }
 
       a {
@@ -233,7 +383,7 @@
       }
       .item {
         display: block;
-        padding: 9px 0;
+        padding: 10px 0;
         border-top: 1px solid var(--line);
       }
       .item:first-of-type {
@@ -244,14 +394,14 @@
       .badge {
         display: inline-block;
         border-radius: 20px;
-        padding: 1px 8px;
+        padding: 2px 9px;
         font-size: 12px;
-        font-weight: 700;
-        margin-right: 6px;
+        font-weight: 600;
+        margin-right: 7px;
         white-space: nowrap;
       }
       .b-good {
-        background: rgba(61, 220, 151, 0.18);
+        background: rgba(70, 224, 160, 0.16);
         color: var(--good);
       }
       .b-mid {
@@ -259,15 +409,15 @@
         color: var(--accent-2);
       }
       .b-warn {
-        background: rgba(255, 176, 58, 0.18);
+        background: rgba(255, 176, 58, 0.16);
         color: var(--warn);
       }
       .b-bad {
-        background: rgba(255, 92, 122, 0.18);
+        background: rgba(255, 107, 134, 0.16);
         color: var(--bad);
       }
       .b-muted {
-        background: var(--card2);
+        background: rgba(255, 255, 255, 0.06);
         color: var(--muted);
       }
       /* fit%-бейдж високого збігу — заливка градієнтом */
@@ -278,53 +428,69 @@
 
       .why {
         color: var(--muted);
-        font-size: 13px;
-        margin-top: 2px;
+        font-size: 13.5px;
+        line-height: 1.45;
+        margin-top: 3px;
       }
       .muted {
         color: var(--muted);
       }
       .quote {
+        font-size: 15.5px;
         font-style: italic;
+        line-height: 1.5;
       }
       .empty {
         color: var(--muted);
         text-align: center;
-        padding: 24px;
+        padding: 26px;
       }
       .ph {
         color: var(--muted);
         font-size: 13px;
         text-align: center;
         padding: 14px;
-        border: 1px dashed var(--line);
+        border: 1px dashed var(--border);
         border-radius: 12px;
       }
 
-      /* ── Тап-toggle ─────────────────────────────────────────────────────── */
+      /* ── Тап-toggle (делікатний афорданс, БЕЗ стрілок) ───────────────────── */
       .expandable {
         cursor: pointer;
         position: relative;
+        transition: background 0.15s;
       }
-      .exp-hint {
+      /* делікатний натяк: тонка «ручка» знизу картки/плитки, що клікабельна */
+      .card > .expandable::after,
+      .tile > .expandable::after {
+        content: '';
         position: absolute;
-        top: 10px;
-        right: 12px;
-        font-size: 12px;
-        color: var(--muted);
-        opacity: 0.7;
-        transition: transform 0.15s;
+        left: 50%;
+        bottom: -3px;
+        transform: translateX(-50%);
+        width: 26px;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--border);
+        opacity: 0.9;
+        transition:
+          width 0.15s,
+          background 0.15s,
+          opacity 0.15s;
         pointer-events: none;
       }
-      .expandable.expanded > .exp-hint {
-        transform: rotate(180deg);
+      .card > .expandable.expanded::after,
+      .tile > .expandable.expanded::after {
+        width: 34px;
+        background: var(--grad);
+        opacity: 0.85;
       }
       .exp-base {
         display: block;
       }
       .exp-more {
         display: none;
-        margin-top: 10px;
+        margin-top: 12px;
       }
       .expandable.expanded > .exp-more {
         display: block;
@@ -340,16 +506,16 @@
 
       /* ── Новини ─────────────────────────────────────────────────────────── */
       .cat {
-        font-size: 12px;
-        font-weight: 800;
-        margin: 12px 0 2px;
+        font-family: 'Golos Text', system-ui, sans-serif;
+        font-size: 12.5px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+        color: var(--accent-2);
+        margin: 16px 0 4px;
         display: flex;
         align-items: center;
         gap: 6px;
-        background: var(--grad);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
       }
       .cat:first-child {
         margin-top: 0;
@@ -358,20 +524,20 @@
       .news-item {
         display: flex;
         align-items: flex-start;
-        gap: 6px;
+        gap: 8px;
         border-top: 1px solid var(--line);
-        padding-top: 9px;
-        margin-top: 9px;
+        padding-top: 11px;
+        margin-top: 11px;
       }
       .news-item:first-of-type {
         border-top: 0;
-        padding-top: 0;
-        margin-top: 0;
+        padding-top: 2px;
+        margin-top: 2px;
       }
       .exp-more .news-item {
         border-top: 1px solid var(--line);
-        padding-top: 9px;
-        margin-top: 9px;
+        padding-top: 11px;
+        margin-top: 11px;
       }
       .exp-more .news-item:first-of-type {
         border-top: 1px solid var(--line);
@@ -380,6 +546,14 @@
         flex: 1;
         min-width: 0;
         padding: 2px 0;
+      }
+      /* ВИРАЗНИЙ заголовок новини (≥15, medium) — не дрібніший за кнопки */
+      .news-item .htext .ntitle {
+        display: block;
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 1.4;
+        color: var(--text);
       }
       .item-actions {
         display: inline-flex;
@@ -390,21 +564,25 @@
         border: none;
         background: transparent;
         cursor: pointer;
-        font-size: 15px;
+        font-size: 16px;
         line-height: 1;
-        min-width: 40px;
-        min-height: 40px;
-        border-radius: 8px;
-        opacity: 0.5;
+        min-width: 44px;
+        min-height: 44px;
+        border-radius: 10px;
+        opacity: 0.45;
+        transition:
+          opacity 0.15s,
+          transform 0.12s,
+          background 0.15s;
       }
       .item-actions button:hover {
-        background: var(--card2);
-        opacity: 0.85;
+        background: var(--glass-2);
+        opacity: 0.8;
       }
-      /* обраний варіант лишається залитим/кольоровим */
+      /* обраний варіант лишається залитим/кольоровим після ре-рендеру */
       .item-actions button.on {
         opacity: 1;
-        transform: scale(1.12);
+        transform: scale(1.14);
       }
       .item-actions button.up.on {
         color: var(--good);
@@ -418,15 +596,16 @@
 
       .more-btn {
         display: inline-block;
-        margin: 8px 0 2px;
-        padding: 8px 12px;
+        margin: 12px 0 2px;
+        padding: 9px 14px;
         min-height: 40px;
-        border: none;
-        border-radius: 10px;
+        border: 1px solid var(--border);
+        border-radius: 11px;
         background: var(--grad-soft);
         color: var(--accent-2);
+        font-family: 'Golos Text', system-ui, sans-serif;
         font-size: 13px;
-        font-weight: 700;
+        font-weight: 600;
         cursor: pointer;
       }
 
@@ -434,46 +613,53 @@
       .subnav {
         display: flex;
         gap: 6px;
-        margin-bottom: 8px;
+        margin-bottom: 14px;
+        padding: 4px;
+        border-radius: 13px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border-2);
       }
       .subnav button {
         flex: 1;
         min-height: 40px;
-        background: var(--card2);
+        background: transparent;
         color: var(--muted);
         border: 0;
-        border-radius: 12px;
+        border-radius: 10px;
+        font-family: 'Golos Text', system-ui, sans-serif;
         font-size: 13px;
+        font-weight: 500;
         cursor: pointer;
       }
       .subnav button.active {
         color: var(--on-accent);
-        font-weight: 700;
+        font-weight: 600;
         background: var(--grad);
       }
 
       /* ── Вакансії ───────────────────────────────────────────────────────── */
       .funnel {
         display: flex;
-        gap: 6px;
+        gap: 8px;
         align-items: flex-start;
       }
       .funnel .stage {
         flex: 1;
-        background: var(--card2);
-        border-radius: 12px;
-        padding: 8px 4px;
+        background: var(--glass-2);
+        border-radius: 13px;
+        padding: 11px 4px;
         text-align: center;
         cursor: pointer;
-        border: 1.5px solid transparent;
+        border: 1.5px solid var(--border-2);
         min-width: 0;
       }
       .funnel .stage.expanded {
         border-color: var(--accent);
       }
       .funnel .stage .n {
-        font-size: 20px;
-        font-weight: 800;
+        font-family: 'Unbounded', 'Golos Text', sans-serif;
+        font-size: 21px;
+        font-weight: 700;
         background: var(--grad);
         -webkit-background-clip: text;
         background-clip: text;
@@ -484,45 +670,59 @@
         color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.3px;
+        margin-top: 2px;
       }
       /* розкритий список вакансій стадії */
       .stage-list {
-        margin-top: 4px;
+        margin-top: 8px;
         text-align: left;
       }
       .stage-list .item {
-        font-size: 12px;
-        padding: 6px 0;
+        font-size: 13px;
+        padding: 7px 0;
       }
       .stage-list .item a {
+        color: var(--text);
+      }
+      /* домінантний тайтл вакансії (≥15–16, medium) */
+      .job-title {
+        display: block;
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.35;
         color: var(--text);
       }
       .job-actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
-        margin-top: 10px;
+        gap: 7px;
+        margin-top: 12px;
       }
+      /* кнопки-стадії ВТОРИННІ */
       .job-actions button {
         flex: 1 1 auto;
         min-height: 40px;
         min-width: 64px;
-        border: 1px solid var(--line);
-        background: var(--card2);
-        color: var(--text);
-        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--glass-2);
+        color: var(--muted);
+        border-radius: 11px;
+        font-family: 'Golos Text', system-ui, sans-serif;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 500;
         cursor: pointer;
         padding: 6px 8px;
       }
       .job-actions button.on {
         border-color: var(--accent);
         color: var(--accent);
+        background: var(--grad-soft);
+        font-weight: 600;
       }
       .job-actions button[data-stage='irrelevant'].on {
         border-color: var(--bad);
         color: var(--bad);
+        background: rgba(255, 107, 134, 0.12);
       }
       .job-card.hidden {
         display: none;
@@ -531,19 +731,19 @@
       /* ── Статистика ─────────────────────────────────────────────────────── */
       .streak-row {
         display: flex;
-        gap: 8px;
+        gap: 10px;
       }
       .streak {
         flex: 1;
-        background: var(--card2);
-        border-radius: 12px;
-        padding: 12px;
+        background: var(--glass-2);
+        border: 1px solid var(--border-2);
+        border-radius: 13px;
+        padding: 14px 12px;
         text-align: center;
       }
       .streak .fire {
-        font-size: 22px;
+        font-size: 24px;
         line-height: 1;
-        /* полум'я — градієнт */
         background: var(--grad);
         -webkit-background-clip: text;
         background-clip: text;
@@ -551,25 +751,26 @@
         filter: saturate(1.3);
       }
       .streak .n {
-        font-size: 26px;
-        font-weight: 800;
-        line-height: 1.1;
+        font-family: 'Unbounded', 'Golos Text', sans-serif;
+        font-size: 27px;
+        font-weight: 700;
+        line-height: 1.15;
       }
       .streak .t {
-        font-size: 11px;
+        font-size: 11.5px;
         color: var(--muted);
       }
       .streak .rec {
         font-size: 11px;
         color: var(--accent-2);
-        margin-top: 2px;
+        margin-top: 3px;
       }
       .weekbars {
         display: flex;
         align-items: flex-end;
         gap: 6px;
-        height: 72px;
-        margin-top: 8px;
+        height: 74px;
+        margin-top: 12px;
       }
       .weekbars .col {
         flex: 1;
@@ -581,13 +782,13 @@
         justify-content: flex-end;
       }
       .weekbars .bar {
-        width: 70%;
+        width: 68%;
         background: var(--grad);
-        border-radius: 4px 4px 0 0;
+        border-radius: 5px 5px 0 0;
         min-height: 3px;
       }
       .weekbars .bar.off {
-        background: var(--line);
+        background: rgba(255, 255, 255, 0.09);
       }
       .weekbars .d {
         font-size: 10px;
@@ -596,8 +797,8 @@
       .bar-row {
         display: flex;
         align-items: center;
-        gap: 8px;
-        margin: 6px 0;
+        gap: 10px;
+        margin: 8px 0;
       }
       .bar-row .name {
         flex: 0 0 42%;
@@ -610,7 +811,7 @@
       .bar-row .track {
         flex: 1;
         height: 8px;
-        background: var(--card2);
+        background: rgba(255, 255, 255, 0.06);
         border-radius: 4px;
         overflow: hidden;
       }
@@ -629,26 +830,27 @@
       .chips {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
+        gap: 7px;
       }
       .chip {
-        background: var(--card2);
+        background: var(--glass-2);
+        border: 1px solid var(--border-2);
         border-radius: 16px;
-        padding: 5px 10px;
+        padding: 6px 11px;
         font-size: 13px;
       }
       .chip .c {
         color: var(--accent-2);
-        margin-left: 4px;
-        font-weight: 700;
+        margin-left: 5px;
+        font-weight: 600;
       }
       .statline {
         display: flex;
         justify-content: space-between;
         gap: 8px;
-        padding: 6px 0;
+        padding: 8px 0;
         border-top: 1px solid var(--line);
-        font-size: 13px;
+        font-size: 13.5px;
       }
       .statline.first,
       .card > .statline:first-child {
@@ -658,15 +860,15 @@
         color: var(--muted);
       }
       .statline .v {
-        font-weight: 700;
+        font-weight: 600;
       }
       /* прогрес до цілі */
       .goalbar {
         height: 12px;
-        background: var(--card2);
+        background: rgba(255, 255, 255, 0.06);
         border-radius: 6px;
         overflow: hidden;
-        margin: 6px 0;
+        margin: 8px 0;
       }
       .goalbar .fill {
         height: 100%;
@@ -681,19 +883,101 @@
       }
       .delta-up {
         color: var(--good);
+        font-weight: 600;
       }
       .delta-down {
         color: var(--bad);
+        font-weight: 600;
       }
       .delta-flat {
         color: var(--link);
+        font-weight: 600;
+      }
+
+      /* ══════════════════════════════════════════════════════════════════════
+         СВІТЛА ТЕМА (prefers-color-scheme + .theme-light із Telegram)
+         Скло/градієнт лишаються наші; база світлішає, текст темніє.
+         ══════════════════════════════════════════════════════════════════════ */
+      @media (prefers-color-scheme: light) {
+        :root:not(.theme-dark) {
+          --bg: #f3f1f6;
+          --text: #1c2130;
+          --muted: #5c6478;
+          --glass: rgba(255, 255, 255, 0.55);
+          --glass-2: rgba(255, 255, 255, 0.42);
+          --glass-strong: rgba(255, 255, 255, 0.78);
+          --border: rgba(20, 24, 40, 0.1);
+          --border-2: rgba(20, 24, 40, 0.07);
+          --line: rgba(20, 24, 40, 0.09);
+          --shadow: 0 8px 26px rgba(60, 50, 80, 0.12);
+          --on-accent: #241203;
+          color-scheme: light;
+        }
+        :root:not(.theme-dark) body::before {
+          background:
+            radial-gradient(
+              120% 60% at 80% -10%,
+              rgba(255, 138, 92, 0.28) 0%,
+              rgba(255, 190, 120, 0.14) 36%,
+              rgba(255, 190, 120, 0) 64%
+            ),
+            radial-gradient(
+              90% 48% at 6% 0%,
+              rgba(150, 130, 255, 0.14) 0%,
+              rgba(150, 130, 255, 0) 55%
+            ),
+            linear-gradient(180deg, #fbf6f2 0%, #f1eef5 52%, #ece9f2 100%);
+        }
+        :root:not(.theme-dark) .freshness {
+          background: rgba(255, 255, 255, 0.7);
+        }
+        :root:not(.theme-dark) nav,
+        :root:not(.theme-dark) .subnav {
+          background: rgba(255, 255, 255, 0.5);
+        }
+      }
+      /* Явна світла тема з Telegram (перекриває навіть у dark-OS) */
+      :root.theme-light {
+        --bg: #f3f1f6;
+        --text: #1c2130;
+        --muted: #5c6478;
+        --glass: rgba(255, 255, 255, 0.55);
+        --glass-2: rgba(255, 255, 255, 0.42);
+        --glass-strong: rgba(255, 255, 255, 0.78);
+        --border: rgba(20, 24, 40, 0.1);
+        --border-2: rgba(20, 24, 40, 0.07);
+        --line: rgba(20, 24, 40, 0.09);
+        --shadow: 0 8px 26px rgba(60, 50, 80, 0.12);
+        color-scheme: light;
+      }
+      :root.theme-light body::before {
+        background:
+          radial-gradient(
+            120% 60% at 80% -10%,
+            rgba(255, 138, 92, 0.28) 0%,
+            rgba(255, 190, 120, 0.14) 36%,
+            rgba(255, 190, 120, 0) 64%
+          ),
+          radial-gradient(
+            90% 48% at 6% 0%,
+            rgba(150, 130, 255, 0.14) 0%,
+            rgba(150, 130, 255, 0) 55%
+          ),
+          linear-gradient(180deg, #fbf6f2 0%, #f1eef5 52%, #ece9f2 100%);
+      }
+      :root.theme-light .freshness {
+        background: rgba(255, 255, 255, 0.7);
+      }
+      :root.theme-light nav,
+      :root.theme-light .subnav {
+        background: rgba(255, 255, 255, 0.5);
       }
     </style>
   </head>
   <body>
     <div class="freshness" id="freshness">Завантаження…</div>
     <header>
-      <h1>🌅 Svitanok</h1>
+      <h1>🌅 <span class="wm">Svitanok</span></h1>
       <div class="datenav">
         <button id="prevDay" aria-label="Попередній день">‹</button>
         <span class="when" id="when"></span>
@@ -718,14 +1002,23 @@
          «Світанок» (не перезаписуємо градієнт/акценти). ────────────────────── */
       const tg = window.Telegram && window.Telegram.WebApp;
       function syncBase(p) {
-        const set = (k, v) => v && document.documentElement.style.setProperty(k, v);
-        // синхронізуємо лише нейтральну базу — акцент/градієнт лишаються фірмові
-        set('--bg', p.bg_color);
-        set('--card', p.secondary_bg_color);
-        set('--card2', p.bg_color);
+        const root = document.documentElement;
+        const set = (k, v) => v && root.style.setProperty(k, v);
+        // Тему (світла/темна) визначаємо за colorScheme — керує CSS-класом.
+        // Скло/градієнт/фон — НАШІ (не з themeParams), лише текст синхронізуємо.
+        const scheme = tg && tg.colorScheme;
+        if (scheme === 'light') {
+          root.classList.add('theme-light');
+          root.classList.remove('theme-dark');
+        } else if (scheme === 'dark') {
+          root.classList.add('theme-dark');
+          root.classList.remove('theme-light');
+        }
+        // Текст/приглушений синхронізуємо з темою для читабельності;
+        // --bg лишаємо нашому фону (body::before), тож НЕ чіпаємо базовий градієнт.
         set('--text', p.text_color);
-        set('--muted', p.hint_color);
-        // --accent, --accent-2, --link, --grad НЕ чіпаємо: бренд «Світанок» завжди
+        set('--muted', p.hint_color || p.subtitle_text_color);
+        // --accent, --accent-2, --link, --grad, --glass* НЕ чіпаємо: бренд «Світанок» завжди.
       }
       if (tg) {
         tg.ready();
@@ -765,8 +1058,11 @@
             tg.HapticFeedback.impactOccurred(type || 'light');
         } catch {}
       };
+      // Заголовок з емодзі → без градієнт-«іскри» (емодзі вже несе акцент);
+      // текстовий заголовок (Погода/Курс) → тонка «іскра» зліва.
+      const leadsWithEmoji = (s) => /^\s*[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/u.test(s);
       const card = (title, inner, attrs = '') =>
-        `<div class="card" ${attrs}>${title ? `<h3>${esc(title)}</h3>` : ''}${inner}</div>`;
+        `<div class="card" ${attrs}>${title ? `<h3${leadsWithEmoji(title) ? ' class="plain"' : ''}>${esc(title)}</h3>` : ''}${inner}</div>`;
       const ph = (txt) => `<div class="ph">${esc(txt)}</div>`;
 
       /* ══════════════════════════════════════════════════════════════════════
@@ -774,15 +1070,19 @@
          .expandable > .exp-base (видно) + .exp-more (приховано). .swap → заміна.
          Кліки по a/button ігноруються тут (у них свої дії + stopPropagation).
          ══════════════════════════════════════════════════════════════════════ */
-      const expandable = (inner, { swap = false, hint = true, cls = '' } = {}) =>
-        `<div class="expandable${swap ? ' swap' : ''}${cls ? ' ' + cls : ''}">${
-          hint ? '<span class="exp-hint">⌄</span>' : ''
-        }${inner}</div>`;
+      // Афорданс делікатний (тонка «ручка» через CSS ::after), БЕЗ стрілок/chevron.
+      const expandable = (inner, { swap = false, cls = '' } = {}) =>
+        `<div class="expandable${swap ? ' swap' : ''}${cls ? ' ' + cls : ''}">${inner}</div>`;
 
+      // ІЗОЛЯЦІЯ РОЗКРИТТЯ: closest() повертає САМЕ клікнутий (найглибший) .expandable,
+      // toggle мутує ЛИШЕ його. Сусідні картки (курс/погода) мають кожна свій .expandable,
+      // тож ніколи не співтоглять. CSS-селектори — прямі нащадки (> .exp-more), тож
+      // розкриття одного контейнера НЕ показує вміст іншого/вкладеного.
       document.body.addEventListener('click', (e) => {
         if (e.target.closest('a, button')) return; // інтерактив має власну логіку
         const box = e.target.closest('.expandable');
         if (!box) return;
+        e.stopPropagation(); // не даємо події «текти» до предків-expandable
         box.classList.toggle('expanded');
         haptic('light');
       });
@@ -861,59 +1161,53 @@
 
       /* ══════════════════════════════════════════════════════════════════════
          ТАБ «СЬОГОДНІ»
-         Практичне (Погода, Курс) → Питання дня → Факт дня → Крок → Натхнення
+         Порядок: Погода → Курс → Питання дня → Факт дня → Крок → Думка → У цей день
+         (без підписів-груп Практичне/Розвиток/Натхнення)
          ══════════════════════════════════════════════════════════════════════ */
       function renderToday(blocks) {
         const out = [];
 
-        /* ── ПРАКТИЧНЕ ── */
-        out.push('<div class="group-label">Практичне</div>');
-
+        // 1) Погода — кожна локація окрема повноширинна клікабельна картка (ізольовано).
         const w = byId(blocks, 'weather');
         if (w?.data?.locations?.length)
           out.push(
-            card(
-              'Погода',
-              `<div class="grid2">${w.data.locations.map(weatherTile).join('')}</div>`,
-            ),
+            card('Погода', `<div class="rows">${w.data.locations.map(weatherTile).join('')}</div>`),
           );
         else out.push(card('Погода', ph('Дані про погоду з’являться в найближчому брифінгу')));
 
-        // Курс: КОЖНА валюта — окрема картка-плитка з власним toggle-графіком.
+        // 2) Курс — ОДНА валюта в рядок (повноширинні рядки, кожен свій toggle-графік).
         out.push(currencyCard(byId(blocks, 'currency')?.data));
 
-        // Питання дня — ОДРАЗУ після курсу.
+        // 3) Питання дня.
         const mock = byId(blocks, 'mock');
         if (mock?.data) {
           const extra = has(mock.data.hint) || has(mock.data.answer);
           const base = `<div class="exp-base">${esc(mock.data.question)}</div>`;
           const more = extra
-            ? `<div class="exp-more">${has(mock.data.hint) ? `<div class="why">💡 ${esc(mock.data.hint)}</div>` : ''}${has(mock.data.answer) ? `<div style="margin-top:6px">${esc(mock.data.answer)}</div>` : ''}</div>`
+            ? `<div class="exp-more">${has(mock.data.hint) ? `<div class="why">💡 ${esc(mock.data.hint)}</div>` : ''}${has(mock.data.answer) ? `<div style="margin-top:8px">${esc(mock.data.answer)}</div>` : ''}</div>`
             : `<div class="exp-more"><div class="muted">Спробуй відповісти вголос — тренування до співбесіди.</div></div>`;
           out.push(card('🎤 Питання дня', expandable(base + more)));
         }
 
-        // Факт дня — під питанням.
+        // 4) Факт дня.
         const fact = byId(blocks, 'fact');
         if (fact?.data) out.push(card('🧠 Факт дня', esc(fact.data.fact)));
 
-        // Крок до офера.
+        // 5) Крок до офера.
         const ns = byId(blocks, 'next-step');
         if (ns?.data) out.push(card('🎯 Крок до офера', esc(ns.data.step)));
 
-        /* ── НАТХНЕННЯ ── */
-        out.push('<div class="group-label">Натхнення</div>');
-
+        // 6) Думка дня.
         const stoic = byId(blocks, 'stoic');
         if (stoic?.data)
           out.push(
             card(
               '🏛 Думка дня',
-              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:6px">— ${esc(stoic.data.author)}</div>`,
+              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:8px">— ${esc(stoic.data.author)}</div>`,
             ),
           );
 
-        // «У цей день»: показуємо до 6, решта — під toggle.
+        // 7) «У цей день»: показуємо до 6, решта — під toggle.
         const onthis = byId(blocks, 'onthisday');
         if (onthis?.data?.events?.length) {
           const evs = onthis.data.events;
@@ -924,23 +1218,23 @@
           } else {
             const base = `<div class="exp-base">${evs.slice(0, SHOW).map(row).join('')}</div>`;
             const more = `<div class="exp-more">${evs.slice(SHOW).map(row).join('')}</div><button class="more-btn" type="button" data-toggle="1" data-label="Показати ще (${evs.length - SHOW})">Показати ще (${evs.length - SHOW})</button>`;
-            out.push(card('📜 У цей день', expandable(base + more, { hint: false })));
+            out.push(card('📜 У цей день', expandable(base + more)));
           }
         }
 
         return out.join('');
       }
 
-      // Плитка погоди: ЗАВЖДИ-наявні поля вгорі, УМОВНІ (дощ) — в кінці.
+      // Погода: ПОВНОШИРИННА картка-рядок. Незмінні поля вгорі, умовний дощ у кінці.
+      // swap: розкриття ЗАМІНЮЄ згорнутий рядок деталями (макет не з'їжджає).
       function weatherTile(l) {
-        // exp-base: емодзі+місто, велика темп, стан, відч. (все завжди-наявне);
-        // дощ-індикатор у кінці — не з'їжджає, коли дощу нема (умовний рядок).
+        // exp-base (згорнуто): місто + велика темп зліва, стан + відч. справа.
         const base = `<div class="exp-base">
-          <div class="lbl">${esc(l.emoji || '')} ${esc(l.name)}</div>
-          <div class="big">${signTemp(l.tempC)}</div>
-          <div class="sub">${esc(l.condition)}</div>
-          <div class="sub">відч. ${signTemp(l.feelsLikeC)}</div>
-          ${l.willRain ? `<div class="sub">☔ ${l.popPercent}%</div>` : ''}
+          <div class="wx-lead">
+            <span class="wx-temp">${signTemp(l.tempC)}</span>
+            <span class="wx-city">${esc(l.emoji || '')} ${esc(l.name)}</span>
+            <span class="wx-cond">${esc(l.condition)}<br>відч. ${signTemp(l.feelsLikeC)}${l.willRain ? ` · ☔ ${l.popPercent}%` : ''}</span>
+          </div>
         </div>`;
 
         const rows = [];
@@ -978,7 +1272,8 @@
         return `<div class="tile">${expandable(base + `<div class="exp-more">${rows.join('')}</div>`, { swap: true })}</div>`;
       }
 
-      // Курс: 4 окремі картки-плитки (USD/EUR/PLN/GBP) у сітці; графік всередині кожної.
+      // Курс: ОДНА валюта В РЯДОК (повноширинні рядки USD/EUR/PLN/GBP).
+      // Тап розкриває спарклайн+дельту ВСЕРЕДИНІ лише цього рядка (ізольовано).
       function currencyCard(d) {
         if (!d) return card('Курс НБУ', ph('Курс валют недоступний'));
         const defs = [
@@ -987,20 +1282,22 @@
           { key: 'pln', flag: '🇵🇱', label: 'PLN', hk: 'plnHistory' },
           { key: 'gbp', flag: '🇬🇧', label: 'GBP', hk: 'gbpHistory' },
         ];
-        const tiles = defs
+        const rows = defs
           .filter((c) => has(d[c.key]))
           .map((c) => {
             const hist = Array.isArray(d[c.hk]) ? d[c.hk] : null;
             const base = `<div class="exp-base">
-              <div class="lbl">${c.flag} ${c.label}</div>
-              <div class="big">${esc(d[c.key])}</div>
+              <div class="row-lead">
+                <span class="lbl">${c.flag} ${c.label}</span>
+                <span class="big">${esc(d[c.key])}</span>
+              </div>
             </div>`;
             let more;
             if (hist && hist.length >= 2) {
               const prev = hist[hist.length - 2];
               more = `<div class="exp-more">
                 <div class="sub">${deltaBadge(d[c.key], prev, 2, ' грн')} <span class="muted">за ${hist.length} дн.</span></div>
-                ${sparkline(hist, { w: 250, h: 44, label: `${c.label} за ${hist.length} днів` })}
+                ${sparkline(hist, { w: 480, h: 48, label: `${c.label} за ${hist.length} днів` })}
               </div>`;
             } else {
               more = `<div class="exp-more">${ph('Історія з’явиться згодом')}</div>`;
@@ -1010,7 +1307,7 @@
           .join('');
         return card(
           'Курс НБУ',
-          tiles ? `<div class="grid2">${tiles}</div>` : ph('Курс валют недоступний'),
+          rows ? `<div class="rows">${rows}</div>` : ph('Курс валют недоступний'),
         );
       }
 
@@ -1049,7 +1346,7 @@
         const saveOn = st.saved ? ' on' : '';
         const saveIcon = st.saved ? '✅' : '🔖';
         return `<div class="news-item">
-          <a class="htext" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}${has(it.why) ? `<div class="why">${esc(it.why)}</div>` : ''}</a>
+          <a class="htext" href="${esc(it.url)}" target="_blank" rel="noopener"><span class="ntitle">${esc(it.title)}</span>${has(it.why) ? `<div class="why">${esc(it.why)}</div>` : ''}</a>
           <span class="item-actions" data-cat="${esc(topic)}" data-url="${esc(it.url)}" data-title="${esc(it.title)}">
             <button class="up${upOn}" data-dir="up" aria-label="Більше таких">👍</button>
             <button class="down${downOn}" data-dir="down" aria-label="Менше таких">👎</button>
@@ -1151,7 +1448,8 @@
         else if (it.score >= 50) badge = `<span class="badge b-mid">${it.score}% fit</span>`;
         else badge = `<span class="badge b-warn">${it.score}% fit</span>`;
 
-        const title = `<a href="${esc(it.url)}" target="_blank" rel="noopener">${badge}${esc(it.title)}</a>`;
+        // Тайтл ДОМІНУЄ (≥16/600); бейдж fit% — над тайтлом; кнопки-стадії вторинні.
+        const title = `<a href="${esc(it.url)}" target="_blank" rel="noopener"><div style="margin-bottom:6px">${badge}</div><span class="job-title">${esc(it.title)}</span></a>`;
         const why = has(it.why)
           ? `<div class="exp-more"><div class="why">${esc(it.why)}</div></div>`
           : '';
