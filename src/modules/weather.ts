@@ -1,7 +1,9 @@
-// weather (producer, кілька локацій, §6). OpenWeather 5-day/3-hour forecast.
-// Пише в RunBus weather.today.<slug> для кожної локації, повертає ОДИН Block з
-// рядками-діями. Один впалий фетч локації не валить інші. API-ключ (appid) —
-// НІКОЛИ в лог/стан (§19.4): логуємо лише канонізований URL.
+// weather (producer, кілька локацій, §6). OpenWeather **One Call 3.0** (актуальне+
+// погодинне+добове+алерти) + безкоштовний Air Pollution (AQI). Пише в RunBus
+// weather.today.<slug> для кожної локації, повертає ОДИН Block. Один впалий фетч
+// локації не валить інші. API-ключ (appid) — НІКОЛИ в лог/стан (§19.4): логуємо
+// лише канонізований URL. **Жорсткий денний ліміт запитів** (лічильник у стані) —
+// захист від циклів/збоїв, які могли б спалити квоту One Call (§B роадмепу).
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig, LocationConfig } from '../core/config.js';
@@ -10,13 +12,15 @@ import { canonicalizeUrl } from '../core/url.js';
 
 // Пороги дії — явні константи (§6).
 export const COLD_THRESHOLD_C = 10; // willBeCold = tempC < 10
-// Парасолька — лише коли ймовірність опадів удень достатня. Раніше «будь-який
-// слот доби має код опадів» давав парасольку в спекотний день з грозовим слотом
-// надвечір — хибний сигнал.
+// Парасолька — лише коли ймовірність опадів удень достатня (нічний/вечірній
+// грозовий слот із низьким pop не дає хибного сигналу вдень).
 export const RAIN_POP_THRESHOLD = 0.5; // willRain = pop удень >= 50%
 const DAY_START_HOUR = 6; // активний день (київські години) — нічні слоти ігноруємо
 const DAY_END_HOUR = 21;
-const REPRESENTATIVE_HOUR = 12; // денний показник: запис, найближчий до полудня
+
+// Жорсткий денний ліміт запитів до OpenWeather (One Call 3.0 free = 1000/день).
+// Реально ~4-8/день; ліміт — суто запобіжник від циклів (§B роадмепу).
+export const DAILY_REQUEST_LIMIT = 1000;
 
 /** Коди опадів OpenWeather: 2xx гроза, 3xx мряка, 5xx дощ, 6xx сніг (§6). */
 function isPrecipCode(id: number): boolean {
@@ -38,18 +42,28 @@ function emojiFor(id: number): string {
 
 export interface WeatherToday {
   name: string;
-  tempC: number; // представницька (≈полудень)
+  tempC: number; // актуальна (current.temp)
   minC: number; // денний мінімум
   maxC: number; // денний максимум
   feelsLikeC: number; // відчувається як
   windMps: number; // швидкість вітру, м/с
+  gustMps?: number; // пориви, м/с (One Call current.wind_gust)
+  humidity?: number; // вологість, %
+  uv?: number; // UV-індекс (current.uvi), округлений
+  aqi?: number; // якість повітря 1..5 (окремий Air Pollution ендпоінт)
   condition: string;
   emoji: string; // емодзі-стан
   willRain: boolean;
   willBeCold: boolean;
-  popPercent: number; // макс. ймовірність опадів удень, % (для прозорості парасольки)
+  popPercent: number; // макс. ймовірність опадів удень, %
+  rainWindow?: string; // «14:00–17:00» коли саме дощ (з погодинного)
+  advice?: string; // «одягтися»-підказка (похідна від відч.)
   sunrise: number; // unix сек, схід сонця (0 якщо невідомо)
   sunset: number; // unix сек, захід сонця (0 якщо невідомо)
+  dayLenDeltaMin?: number; // зміна довжини дня vs учора, хв (обчислюється в run зі стану)
+  hourlyTemp?: number[]; // денна температура по годинах (для спарклайна дашборда)
+  alerts?: string[]; // офіційні попередження негоди (One Call alerts[].event)
+  summary?: string; // людиночитне резюме дня (One Call daily[0].summary)
 }
 
 /** Детермінований slug локації (індекс) — today відтворює його так само (§6). */
@@ -61,19 +75,45 @@ export function weatherBusKey(slug: string): string {
   return `weather.today.${slug}`;
 }
 
-interface ForecastEntry {
+// --- One Call 3.0 форма відповіді (лише потрібні поля) ---
+interface OwWeather {
+  id?: number;
+  description?: string;
+}
+interface OwCurrent {
+  sunrise?: number;
+  sunset?: number;
+  temp?: number;
+  feels_like?: number;
+  humidity?: number;
+  uvi?: number;
+  wind_speed?: number;
+  wind_gust?: number;
+  weather?: OwWeather[];
+}
+interface OwHour {
   dt: number;
-  main?: { temp?: number; feels_like?: number };
-  weather?: { id?: number; description?: string }[];
-  wind?: { speed?: number };
-  pop?: number; // ймовірність опадів 0..1 (OpenWeather forecast)
+  temp?: number;
+  pop?: number;
+  weather?: OwWeather[];
+}
+interface OwDay {
+  sunrise?: number;
+  sunset?: number;
+  summary?: string;
+  temp?: { min?: number; max?: number };
+  pop?: number;
+  weather?: OwWeather[];
+}
+interface OneCallResponse {
+  current?: OwCurrent;
+  hourly?: OwHour[];
+  daily?: OwDay[];
+  alerts?: { event?: string }[];
 }
 
-/** Сигнал опадів для слоту: pop, якщо є; інакше похідна з коду (1/0). */
-function rainSignal(e: ForecastEntry): number {
-  if (typeof e.pop === 'number') return e.pop;
-  return isPrecipCode(e.weather?.[0]?.id ?? 0) ? 1 : 0;
-}
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const round = (v: number) => Math.round(v);
 
 function entryKyiv(dtSeconds: number): { dateKey: string; hour: number } {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -92,58 +132,132 @@ function entryKyiv(dtSeconds: number): { dateKey: string; hour: number } {
   };
 }
 
-/** Звести forecast-відповідь до WeatherToday для київської дати todayKey. */
-export function parseForecast(json: unknown, name: string, todayKey: string): WeatherToday | null {
-  const list = (json as { list?: ForecastEntry[] })?.list;
-  if (!Array.isArray(list)) return null;
+/** Сигнал опадів для години: pop, якщо є; інакше похідна з коду (1/0). */
+function rainSignalHour(h: OwHour): number {
+  if (isNum(h.pop)) return h.pop;
+  return isPrecipCode(h.weather?.[0]?.id ?? 0) ? 1 : 0;
+}
 
-  const today = list.filter((e) => entryKyiv(e.dt).dateKey === todayKey);
-  const pool = today.length ? today : list.slice(0, 1); // фолбек: найближчий запис
-  if (pool.length === 0) return null;
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
-  // Представницький запис — найближчий до полудня.
-  const rep = pool.reduce((best, e) =>
-    Math.abs(entryKyiv(e.dt).hour - REPRESENTATIVE_HOUR) <
-    Math.abs(entryKyiv(best.dt).hour - REPRESENTATIVE_HOUR)
-      ? e
-      : best,
-  );
+/** «14:00–17:00» з дощових годин (перша..остання+1). Один слот → «14:00–15:00». */
+function formatRainWindow(rainyHours: number[]): string | undefined {
+  if (rainyHours.length === 0) return undefined;
+  const first = Math.min(...rainyHours);
+  const last = Math.min(Math.max(...rainyHours) + 1, 24);
+  return `${pad2(first)}:00–${pad2(last)}:00`;
+}
 
-  const repId = rep.weather?.[0]?.id ?? 0;
-  const tempC = Math.round(rep.main?.temp ?? NaN);
-  const condition = rep.weather?.[0]?.description ?? '—';
-  const feelsLikeC = Math.round(rep.main?.feels_like ?? rep.main?.temp ?? NaN);
-  const windMps = Math.round(rep.wind?.speed ?? 0);
+/** Похідна «одягтися»-підказка за відчутною температурою. */
+export function adviceFor(feelsLikeC: number): string {
+  if (!Number.isFinite(feelsLikeC)) return '';
+  if (feelsLikeC < 0) return 'Морозно — тепла куртка, шапка, рукавиці';
+  if (feelsLikeC < 10) return 'Прохолодно — куртка';
+  if (feelsLikeC < 18) return 'Легка куртка або светр';
+  if (feelsLikeC < 27) return 'Комфортно — без верхнього одягу';
+  return 'Спекотно — легкий одяг, більше води';
+}
 
-  // Денний мін/макс за наявними температурами пулу.
-  const temps = pool.map((e) => e.main?.temp).filter((t): t is number => typeof t === 'number');
-  const minC = temps.length ? Math.round(Math.min(...temps)) : tempC;
-  const maxC = temps.length ? Math.round(Math.max(...temps)) : tempC;
+/** Довжина світлового дня в секундах (0, якщо дані некоректні). */
+export function dayLenSec(sunrise: number, sunset: number): number {
+  return sunset > sunrise ? sunset - sunrise : 0;
+}
 
-  // willRain — за денними слотами (нічний дощ не змушує брати парасольку вдень).
-  const daySlots = pool.filter((e) => {
-    const h = entryKyiv(e.dt).hour;
-    return h >= DAY_START_HOUR && h <= DAY_END_HOUR;
+/** AQI 1..5 з відповіді Air Pollution (list[0].main.aqi). */
+export function mergeAqi(json: unknown): number | undefined {
+  const aqi = (json as { list?: { main?: { aqi?: number } }[] })?.list?.[0]?.main?.aqi;
+  return isNum(aqi) && aqi >= 1 && aqi <= 5 ? aqi : undefined;
+}
+
+/** Звести One Call 3.0-відповідь до WeatherToday для київської дати todayKey. */
+export function parseOneCall(json: unknown, name: string, todayKey: string): WeatherToday | null {
+  const oc = json as OneCallResponse;
+  const cur = oc?.current;
+  if (!cur || !isNum(cur.temp)) return null;
+
+  const daily = Array.isArray(oc.daily) ? oc.daily : [];
+  const day0 = daily[0];
+  const hourly = Array.isArray(oc.hourly) ? oc.hourly : [];
+
+  const repId = cur.weather?.[0]?.id ?? day0?.weather?.[0]?.id ?? 0;
+  const tempC = round(cur.temp);
+  const feelsLikeC = round(isNum(cur.feels_like) ? cur.feels_like : cur.temp);
+  const condition = cur.weather?.[0]?.description ?? day0?.weather?.[0]?.description ?? '—';
+  const windMps = round(isNum(cur.wind_speed) ? cur.wind_speed : 0);
+  const gustMps = isNum(cur.wind_gust) ? round(cur.wind_gust) : undefined;
+  const humidity = isNum(cur.humidity) ? round(cur.humidity) : undefined;
+  const uv = isNum(cur.uvi) ? round(cur.uvi) : undefined;
+
+  // Схід/захід — беремо з добового запису (день), фолбек — з current.
+  const sunrise = day0 && isNum(day0.sunrise) ? day0.sunrise : isNum(cur.sunrise) ? cur.sunrise : 0;
+  const sunset = day0 && isNum(day0.sunset) ? day0.sunset : isNum(cur.sunset) ? cur.sunset : 0;
+
+  // Погодинні записи сьогодні (київська дата) для мін/макс, вікна дощу, спарклайна.
+  const todayHours = hourly.filter((h) => entryKyiv(h.dt).dateKey === todayKey);
+  const dayHours = todayHours.filter((h) => {
+    const hr = entryKyiv(h.dt).hour;
+    return hr >= DAY_START_HOUR && hr <= DAY_END_HOUR;
   });
-  const slots = daySlots.length ? daySlots : pool;
-  const maxRain = slots.reduce((m, e) => Math.max(m, rainSignal(e)), 0);
 
-  const city = (json as { city?: { sunrise?: number; sunset?: number } }).city;
+  // Денний мін/макс: з daily[0].temp, фолбек — з погодинних температур доби.
+  const hourTemps = todayHours.map((h) => h.temp).filter(isNum);
+  let minC: number;
+  let maxC: number;
+  if (isNum(day0?.temp?.min) && isNum(day0?.temp?.max)) {
+    minC = round(day0!.temp!.min!);
+    maxC = round(day0!.temp!.max!);
+  } else if (hourTemps.length) {
+    minC = round(Math.min(...hourTemps));
+    maxC = round(Math.max(...hourTemps));
+  } else {
+    minC = tempC;
+    maxC = tempC;
+  }
+
+  // Дощ удень: максимум pop за денними слотами (фолбек — усі слоти доби, далі daily.pop).
+  const rainScope = dayHours.length ? dayHours : todayHours;
+  let maxRain = rainScope.reduce((m, h) => Math.max(m, rainSignalHour(h)), 0);
+  if (rainScope.length === 0 && isNum(day0?.pop)) maxRain = day0!.pop!;
+  const willRain = maxRain >= RAIN_POP_THRESHOLD;
+  const popPercent = round(maxRain * 100);
+  const rainyHours = rainScope
+    .filter((h) => rainSignalHour(h) >= RAIN_POP_THRESHOLD)
+    .map((h) => entryKyiv(h.dt).hour);
+  const rainWindow = willRain ? formatRainWindow(rainyHours) : undefined;
+
+  // Спарклайн температури: денні слоти, фолбек — усі слоти доби; лише якщо ≥2 точки.
+  const sparkSource = dayHours.length >= 2 ? dayHours : todayHours;
+  const hourlyTemp = sparkSource
+    .map((h) => h.temp)
+    .filter(isNum)
+    .map(round);
+
+  const alerts = (Array.isArray(oc.alerts) ? oc.alerts : [])
+    .map((a) => a.event)
+    .filter((e): e is string => typeof e === 'string' && e.length > 0);
 
   return {
     name,
-    sunrise: typeof city?.sunrise === 'number' ? city.sunrise : 0,
-    sunset: typeof city?.sunset === 'number' ? city.sunset : 0,
     tempC,
     minC,
     maxC,
     feelsLikeC,
     windMps,
+    ...(gustMps !== undefined ? { gustMps } : {}),
+    ...(humidity !== undefined ? { humidity } : {}),
+    ...(uv !== undefined ? { uv } : {}),
     condition,
     emoji: emojiFor(repId),
-    willRain: maxRain >= RAIN_POP_THRESHOLD,
-    willBeCold: Number.isFinite(tempC) && tempC < COLD_THRESHOLD_C,
-    popPercent: Math.round(maxRain * 100),
+    willRain,
+    willBeCold: tempC < COLD_THRESHOLD_C,
+    popPercent,
+    ...(rainWindow ? { rainWindow } : {}),
+    advice: adviceFor(feelsLikeC),
+    sunrise,
+    sunset,
+    ...(hourlyTemp.length >= 2 ? { hourlyTemp } : {}),
+    ...(alerts.length ? { alerts } : {}),
+    ...(day0?.summary ? { summary: day0.summary } : {}),
   };
 }
 
@@ -151,16 +265,29 @@ function signed(n: number): string {
   return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${n}°` : '—';
 }
 
-/** Рядок summary (завжди видно): мінімум — емодзі, температура, мітки дії. */
+/** Рядок summary (плейн-текст): емодзі, локація, температура, мітки дії. */
 function formatSummaryLine(w: WeatherToday): string {
   const marks = `${w.willRain ? ' ☔' : ''}${w.willBeCold ? ' 🧥' : ''}`;
   return `${w.emoji} ${w.name}: ${signed(w.tempC)}${marks}`;
 }
 
-/** Рядок detail (expandable, за натисканням): стан, відчувається, мін/макс, вітер, опади. */
+/** Рядок detail: стан, відчувається, мін/макс, вітер, вологість, UV, дощ-вікно. */
 function formatDetailLine(w: WeatherToday): string {
-  const rain = w.willRain ? `, ☔ ${w.popPercent}%` : '';
-  return `${w.name}: ${w.condition}, відч. ${signed(w.feelsLikeC)}, ${signed(w.minC)}…${signed(w.maxC)}, 💨 ${w.windMps} м/с${rain}`;
+  const parts = [
+    `${w.name}: ${w.condition}`,
+    `відч. ${signed(w.feelsLikeC)}`,
+    `${signed(w.minC)}…${signed(w.maxC)}`,
+    `💨 ${w.windMps} м/с${w.gustMps !== undefined ? ` (пориви ${w.gustMps})` : ''}`,
+  ];
+  if (w.humidity !== undefined) parts.push(`💧 ${w.humidity}%`);
+  if (w.uv !== undefined) parts.push(`UV ${w.uv}`);
+  if (w.willRain) parts.push(`☔ ${w.popPercent}%${w.rainWindow ? ` (${w.rainWindow})` : ''}`);
+  return parts.join(', ');
+}
+
+interface RequestCounter {
+  date: string;
+  count: number;
 }
 
 export interface WeatherModuleOptions {
@@ -172,31 +299,6 @@ export interface WeatherModuleOptions {
 export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<AppConfig> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 30000;
-
-  async function fetchLocation(loc: LocationConfig, apiKey: string, todayKey: string) {
-    const url = new URL('https://api.openweathermap.org/data/2.5/forecast');
-    url.searchParams.set('lat', String(loc.lat));
-    url.searchParams.set('lon', String(loc.lon));
-    url.searchParams.set('units', 'metric');
-    url.searchParams.set('lang', 'ua');
-    url.searchParams.set('appid', apiKey);
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetchImpl(url.toString(), { signal: ctrl.signal });
-      if (!res.ok) {
-        // Лог БЕЗ ключа (§19.4).
-        throw new Error(`OpenWeather HTTP ${res.status} для ${canonicalizeUrl(url.toString())}`);
-      }
-      const data: unknown = await res.json();
-      const parsed = parseForecast(data, loc.name, todayKey);
-      if (!parsed) throw new Error(`порожній forecast для ${loc.name}`);
-      return parsed;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
 
   return {
     id: 'weather',
@@ -211,16 +313,96 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
       const locs = ctx.config.locations;
       const todayKey = ctx.clock.todayKey();
 
-      const results = await Promise.allSettled(
-        locs.map((loc) => fetchLocation(loc, apiKey, todayKey)),
-      );
+      // Денний лічильник запитів (скидається на нову добу). Захист від циклів (§B).
+      const stored = ctx.state.get<RequestCounter>('weatherRequests');
+      const counter: RequestCounter =
+        stored && stored.date === todayKey ? { ...stored } : { date: todayKey, count: 0 };
+      let limitHit = false;
+
+      // Кожен запит проходить через лічильник; понад ліміт — кидаємо, не фетчимо.
+      const guardedFetch = async (u: string): Promise<Response> => {
+        if (counter.count >= DAILY_REQUEST_LIMIT) {
+          limitHit = true;
+          throw new Error(`денний ліміт запитів OpenWeather вичерпано (${DAILY_REQUEST_LIMIT})`);
+        }
+        counter.count++;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        try {
+          return await fetchImpl(u, { signal: ctrl.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
+      const fetchOneCall = async (loc: LocationConfig): Promise<WeatherToday> => {
+        const url = new URL('https://api.openweathermap.org/data/3.0/onecall');
+        url.searchParams.set('lat', String(loc.lat));
+        url.searchParams.set('lon', String(loc.lon));
+        url.searchParams.set('units', 'metric');
+        url.searchParams.set('lang', 'ua');
+        url.searchParams.set('exclude', 'minutely');
+        url.searchParams.set('appid', apiKey);
+        const res = await guardedFetch(url.toString());
+        if (!res.ok) {
+          // Лог БЕЗ ключа (§19.4).
+          throw new Error(`OpenWeather HTTP ${res.status} для ${canonicalizeUrl(url.toString())}`);
+        }
+        const parsed = parseOneCall(await res.json(), loc.name, todayKey);
+        if (!parsed) throw new Error(`порожній onecall для ${loc.name}`);
+        return parsed;
+      };
+
+      // AQI — окремий БЕЗКОШТОВНИЙ ендпоінт; його збій не валить локацію.
+      const fetchAqi = async (loc: LocationConfig): Promise<number | undefined> => {
+        try {
+          const url = new URL('https://api.openweathermap.org/data/2.5/air_pollution');
+          url.searchParams.set('lat', String(loc.lat));
+          url.searchParams.set('lon', String(loc.lon));
+          url.searchParams.set('appid', apiKey);
+          const res = await guardedFetch(url.toString());
+          if (!res.ok) return undefined;
+          return mergeAqi(await res.json());
+        } catch {
+          return undefined;
+        }
+      };
+
+      const fetchLocation = async (loc: LocationConfig): Promise<WeatherToday> => {
+        const w = await fetchOneCall(loc);
+        const aqi = await fetchAqi(loc);
+        if (aqi !== undefined) w.aqi = aqi;
+        return w;
+      };
+
+      const results = await Promise.allSettled(locs.map((loc) => fetchLocation(loc)));
+
+      // Персистимо лічильник запитів завжди (навіть якщо всі впали).
+      ctx.state.set('weatherRequests', counter);
+      if (limitHit) {
+        ctx.log.warn(
+          `weather: денний ліміт запитів OpenWeather (${DAILY_REQUEST_LIMIT}) вичерпано — частину локацій пропущено`,
+        );
+      }
 
       const ok: WeatherToday[] = [];
       results.forEach((r, i) => {
         const loc = locs[i]!;
         if (r.status === 'fulfilled') {
-          ctx.bus.set(weatherBusKey(slugFor(loc, i)), r.value);
-          ok.push(r.value);
+          const w = r.value;
+          // Дельта довжини дня vs учора — зі стану (per slug). Оновлюємо стан.
+          const slug = slugFor(loc, i);
+          const len = dayLenSec(w.sunrise, w.sunset);
+          if (len > 0) {
+            const key = `weatherDayLen:${slug}`;
+            const prev = ctx.state.get<{ date: string; lenSec: number }>(key);
+            if (prev && prev.date !== todayKey) {
+              w.dayLenDeltaMin = round((len - prev.lenSec) / 60);
+            }
+            ctx.state.set(key, { date: todayKey, lenSec: len });
+          }
+          ctx.bus.set(weatherBusKey(slug), w);
+          ok.push(w);
         } else {
           ctx.log.warn(`погода для ${loc.name} впала: ${String(r.reason).slice(0, 120)}`);
         }
