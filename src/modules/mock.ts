@@ -55,11 +55,13 @@ export const mockModule: Module<AppConfig> = {
 
   async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
     const cfg = ctx.config.modules.mock;
-    // Нормалізуємо старий формат (string[]) на випадок кешу з попередніх версій.
+    // Старий формат кешу (string[] без відповідей) -> відкидаємо, щоб одразу
+    // регенерувати з відповідями. Новий формат ({q,a}) — лишаємо.
     const raw = ctx.state.get<unknown[]>('mockCache') ?? [];
-    let cache: MockQA[] = raw
-      .map((x) => (typeof x === 'string' ? { q: x, a: '' } : (x as MockQA)))
-      .filter((x) => x && typeof x.q === 'string' && x.q.length > 0);
+    const isNewFormat =
+      raw.length > 0 &&
+      raw.every((x) => !!x && typeof x === 'object' && typeof (x as MockQA).q === 'string');
+    let cache: MockQA[] = isNewFormat ? (raw as MockQA[]).filter((x) => x.q && x.q.length > 0) : [];
 
     if (cache.length === 0) {
       try {
