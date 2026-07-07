@@ -163,6 +163,7 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       // Улюблені теми (вища вага) — вище.
       const topics = [...cfg.topics].sort((a, b) => weightFor(b.topic) - weightFor(a.topic));
 
+      const runSeen = new Set<string>(); // глобальний дедуп прогону: без повторів між темами
       const groups: Group[] = [];
       for (const t of topics) {
         const ctrl = new AbortController();
@@ -180,16 +181,15 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         }
 
         const quota = quotaFor(t.topic);
-        const seen = new Set<string>();
         const picked: NewsItem[] = [];
         const more: NewsItem[] = [];
         for (const it of items) {
           if (picked.length >= quota && more.length >= EXTRA_MORE) break;
           const canon = canonicalizeUrl(it.url);
-          if (seen.has(canon)) continue;
+          if (runSeen.has(canon)) continue; // уже взято в іншій темі цього прогону
           const shownAt = shown[canon] ? Date.parse(shown[canon]!) : 0;
           if (shownAt && shownAt >= dedupCutoff) continue; // показували в вікні
-          seen.add(canon);
+          runSeen.add(canon);
           const entry: NewsItem = { title: it.title, url: canon, why: it.why };
           if (picked.length < quota) {
             picked.push(entry);
