@@ -1,24 +1,44 @@
-// currency (consumer). Курс НБУ (USD/EUR). Лише дашборд (inMessage:false).
-// Фіксований ендпоінт НБУ (не з контенту) -> прямий fetch, без allowlist.
+// currency (consumer). Курс НБУ (USD/EUR/PLN/GBP) + історія (rolling 14 днів у
+// стані для спарклайнів дашборда). Лише дашборд (inMessage:false). Фіксований
+// ендпоінт НБУ (не з контенту) -> прямий fetch, без allowlist.
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 
 const CURRENCY_PRIORITY = 30;
 const NBU_URL = 'https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?json';
+const HISTORY_DAYS = 14;
 
 interface NbuRate {
   cc?: string;
   rate?: number;
 }
 
-export function pickRates(json: unknown): { usd: number; eur: number } | null {
+export interface Rates {
+  usd: number;
+  eur: number;
+  pln?: number;
+  gbp?: number;
+}
+
+interface HistEntry extends Rates {
+  date: string; // YYYY-MM-DD
+}
+
+/** Витягти USD/EUR (обов'язкові) + PLN/GBP (опційні), округлити до копійок. */
+export function pickRates(json: unknown): Rates | null {
   if (!Array.isArray(json)) return null;
-  const find = (cc: string) => (json as NbuRate[]).find((x) => x?.cc === cc)?.rate;
+  const r2 = (v: unknown) => (typeof v === 'number' ? Math.round(v * 100) / 100 : undefined);
+  const find = (cc: string) => r2((json as NbuRate[]).find((x) => x?.cc === cc)?.rate);
   const usd = find('USD');
   const eur = find('EUR');
-  if (typeof usd !== 'number' || typeof eur !== 'number') return null;
-  return { usd: Math.round(usd * 100) / 100, eur: Math.round(eur * 100) / 100 };
+  if (usd === undefined || eur === undefined) return null;
+  const out: Rates = { usd, eur };
+  const pln = find('PLN');
+  const gbp = find('GBP');
+  if (pln !== undefined) out.pln = pln;
+  if (gbp !== undefined) out.gbp = gbp;
+  return out;
 }
 
 export interface CurrencyModuleOptions {
@@ -43,12 +63,30 @@ export function createCurrencyModule(opts: CurrencyModuleOptions = {}): Module<A
         if (!res.ok) throw new Error(`НБУ HTTP ${res.status}`);
         const rates = pickRates(await res.json());
         if (!rates) return null;
+
+        // Історія в стані: додаємо сьогодні (дедуп за датою), тримаємо останні 14 днів.
+        const today = ctx.clock.todayKey();
+        const prev = ctx.state.get<HistEntry[]>('currencyHistory') ?? [];
+        const hist = [...prev.filter((h) => h.date !== today), { date: today, ...rates }].slice(
+          -HISTORY_DAYS,
+        );
+        ctx.state.set('currencyHistory', hist);
+
+        const series = (k: keyof Rates) =>
+          hist.map((h) => h[k]).filter((v): v is number => typeof v === 'number');
+
         return {
           id: 'currency',
           title: 'Курс',
           icon: '💱',
           summary: `USD ${rates.usd} · EUR ${rates.eur}`,
-          data: rates,
+          data: {
+            ...rates,
+            usdHistory: series('usd'),
+            eurHistory: series('eur'),
+            plnHistory: series('pln'),
+            gbpHistory: series('gbp'),
+          },
           inMessage: false, // лише дашборд
           priority: CURRENCY_PRIORITY,
         };

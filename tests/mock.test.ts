@@ -44,21 +44,37 @@ function makeCtx(over: { state?: StateStore; llm?: Ctx['llm'] }): Ctx<AppConfig>
 }
 
 describe('mock — батч-кеш', () => {
-  it('кеш порожній -> один виклик, віддає перше питання, решта в кеш', async () => {
-    const llm = { complete: vi.fn(async () => '["Що таке замикання?","Подія?","REST?"]') };
+  it('кеш порожній -> один виклик; питання+відповідь+resourceUrl; решта в кеш', async () => {
+    const llm = {
+      complete: vi.fn(
+        async () =>
+          '[{"q":"Що таке замикання?","a":"Функція + її оточення."},{"q":"Подія?","a":"…"}]',
+      ),
+    };
     const state = memState();
     const block = await mockModule.run(makeCtx({ state, llm }));
     expect(block!.summary).toBe('Що таке замикання?');
-    expect(block!.title).toBe('Питання дня');
+    const d = block!.data as { question: string; answer?: string; resourceUrl?: string };
+    expect(d.answer).toBe('Функція + її оточення.');
+    expect(d.resourceUrl).toContain('google.com/search');
     expect(llm.complete).toHaveBeenCalledTimes(1);
-    expect(state.get('mockCache')).toEqual(['Подія?', 'REST?']);
+    expect(state.get('mockCache')).toEqual([{ q: 'Подія?', a: '…' }]);
   });
 
   it('кеш не порожній -> без LLM', async () => {
     const llm = { complete: vi.fn() };
-    const state = memState({ mockCache: ['Готове питання'] });
+    const state = memState({ mockCache: [{ q: 'Готове питання', a: 'Відповідь' }] });
     const block = await mockModule.run(makeCtx({ state, llm }));
     expect(block!.summary).toBe('Готове питання');
+    expect((block!.data as { answer?: string }).answer).toBe('Відповідь');
+    expect(llm.complete).not.toHaveBeenCalled();
+  });
+
+  it('старий формат кешу (string[]) мігрує без падіння', async () => {
+    const llm = { complete: vi.fn() };
+    const state = memState({ mockCache: ['Старе питання'] });
+    const block = await mockModule.run(makeCtx({ state, llm }));
+    expect(block!.summary).toBe('Старе питання');
     expect(llm.complete).not.toHaveBeenCalled();
   });
 
