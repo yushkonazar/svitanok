@@ -34,7 +34,7 @@ import type {
 import { createWeatherModule } from './modules/weather.js';
 import { createCalendarModule } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
-import { newsModule } from './modules/news.js';
+import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
 import { factModule } from './modules/fact.js';
 import { mockModule } from './modules/mock.js';
@@ -188,7 +188,7 @@ function buildModules(): Module<AppConfig>[] {
     createCalendarModule(),
     stoicModule,
     factModule,
-    newsModule,
+    createNewsModule(),
     jobsModule,
     mockModule,
     createCurrencyModule(),
@@ -198,7 +198,8 @@ function buildModules(): Module<AppConfig>[] {
   ];
 }
 
-/** Хости allowlist для SourceFetcher — з news.sources + jobs.sources (§8). */
+/** Хости allowlist для SourceFetcher — з jobs.sources (§8). Новини тепер через
+ *  фіксований NewsData API (прямий fetch, не allowlisted). */
 function fetchAllowlist(config: AppConfig): string[] {
   const hosts = new Set<string>();
   const add = (url: string) => {
@@ -208,7 +209,6 @@ function fetchAllowlist(config: AppConfig): string[] {
       /* ігноруємо невалідний source URL */
     }
   };
-  for (const urls of Object.values(config.modules.news.sources)) urls.forEach(add);
   config.modules.jobs.sources.forEach(add);
   return [...hosts];
 }

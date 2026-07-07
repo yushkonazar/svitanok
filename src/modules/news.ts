@@ -1,18 +1,20 @@
-// news (consumer, §6). БЕЗ LLM: топ-N найсвіжіших із топ-фідів на категорію,
-// клікабельний заголовок (лінк у слові, не «простирадло» URL). Дедуп проти
-// показаних (state.shownNews, вікно dedupDays). Зберігаємо ПУБЛІЧНІ канонізовані
-// URL без ключа (§19.4). Без квоти/латентності LLM — «звичний топ новин».
+// news (consumer). NewsData.io: теми scope(world/ua)×category, language=uk (укр-
+// контент і для світу; датацентр-дружній API — знімає 403 на .ua). Групи
+// {scope,topic,items[{title,url,why?}],more} для дашборда (таб Новини: под-таби
+// 🌍/🇺🇦 × теми). Дедуп проти показаних (state.shownNews). Ваги 👍/👎 масштабують
+// квоту й порядок тем. `parseRss`/`RssItem` лишаються — їх юзає jobs.
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 import { canonicalizeUrl } from '../core/url.js';
 import { escapeHtml, link } from '../core/telegram.js';
+import { optionalSecret } from '../core/secrets.js';
 
 const NEWS_PRIORITY = 50;
-const MAX_ITEMS_PER_FEED = 12; // свіжі кандидати; з них беремо perCategory не показаних
-const EXTRA_MORE = 5; // запас заголовків на категорію для кнопки «Більше» у дашборді
+const EXTRA_MORE = 5; // запас заголовків на тему для кнопки «Більше» у дашборді
+const WHY_MAX = 140;
 
-// --- preferenceWeights (Phase B 👍/👎; кнопки оживуть із вебхуком) ---
+// --- preferenceWeights (👍/👎 з дашборда) ---
 export const WEIGHT_MIN = 0.5;
 export const WEIGHT_MAX = 2.0;
 const WEIGHT_STEP = 0.15;
@@ -34,7 +36,7 @@ export function applyWeeklyDecay(weights: Weights): Weights {
   return out;
 }
 
-// --- RSS/Atom парсинг (без залежностей) ---
+// --- RSS/Atom парсинг (без залежностей) — використовує jobs ---
 const stripCdata = (s: string) => s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
 function decodeXml(s: string): string {
   return s
@@ -65,108 +67,170 @@ export function parseRss(xml: string): RssItem[] {
   return out;
 }
 
-type ShownNews = Record<string, string>; // canonicalUrl -> ISO date
-
-interface PickedItem {
+// --- NewsData.io ---
+export interface NewsItem {
   title: string;
   url: string;
+  why?: string;
 }
 
-export const newsModule: Module<AppConfig> = {
-  id: 'news',
-  kind: 'consumer',
-  enabled: (config) => config.modules.news.enabled,
-
-  async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
-    const cfg = ctx.config.modules.news;
-    const sources = cfg.sources;
-    if (!sources || Object.keys(sources).length === 0) return null;
-
-    const shown = ctx.state.get<ShownNews>('shownNews') ?? {};
-    // Час — з інжектованого годинника (детерміновано в тестах, консистентно з todayKey).
-    const dedupCutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;
-    const today = ctx.clock.todayKey();
-    const nextShown: ShownNews = { ...shown };
-
-    // preferenceWeights (👍/👎 з дашборда): вага категорії масштабує к-сть заголовків
-    // і порядок. Недільний decay тягне ваги назад до 1.0 (§6.1).
-    let weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
-    if (ctx.clock.isSunday()) {
-      weights = applyWeeklyDecay(weights);
-      ctx.state.set('preferenceWeights', weights);
+/** Розпарсити відповідь NewsData (results[]) у наші айтеми. */
+export function parseNewsData(json: unknown): NewsItem[] {
+  const results = (json as { results?: unknown[] })?.results;
+  if (!Array.isArray(results)) return [];
+  const out: NewsItem[] = [];
+  for (const r of results) {
+    const o = r as { title?: unknown; link?: unknown; description?: unknown };
+    if (
+      typeof o.title === 'string' &&
+      typeof o.link === 'string' &&
+      o.title.trim() &&
+      o.link.trim()
+    ) {
+      const why =
+        typeof o.description === 'string' && o.description.trim()
+          ? o.description.trim().slice(0, WHY_MAX)
+          : undefined;
+      out.push({ title: o.title.trim(), url: o.link.trim(), why });
     }
-    const weightFor = (cat: string) => weights[cat] ?? 1.0;
-    const countFor = (cat: string) =>
-      Math.max(1, Math.min(MAX_ITEMS_PER_FEED, Math.round(cfg.perCategory * weightFor(cat))));
+  }
+  return out;
+}
 
-    // Улюблені категорії (вища вага) — вище й із більшою квотою.
-    const categories = Object.entries(sources).sort((a, b) => weightFor(b[0]) - weightFor(a[0]));
+interface TopicCfg {
+  scope: 'world' | 'ua';
+  topic: string;
+  category: string;
+  country?: string;
+  language: string;
+}
 
-    const groups: { category: string; items: PickedItem[]; more: PickedItem[] }[] = [];
+function buildNewsUrl(apiKey: string, t: TopicCfg): string {
+  const u = new URL('https://newsdata.io/api/1/latest');
+  u.searchParams.set('apikey', apiKey);
+  u.searchParams.set('category', t.category);
+  u.searchParams.set('language', t.language);
+  if (t.country) u.searchParams.set('country', t.country);
+  return u.toString();
+}
 
-    for (const [category, urls] of categories) {
-      const quota = countFor(category);
-      const settled = await Promise.allSettled(urls.map((u) => ctx.fetcher.fetch(u)));
-      const seen = new Set<string>();
-      const picked: PickedItem[] = [];
-      const more: PickedItem[] = []; // запас для «Більше» у дашборді
+type ShownNews = Record<string, string>; // canonicalUrl -> ISO date
+interface Group {
+  scope: 'world' | 'ua';
+  topic: string;
+  items: NewsItem[];
+  more: NewsItem[];
+}
 
-      for (const r of settled) {
-        if (picked.length >= quota && more.length >= EXTRA_MORE) break;
-        if (r.status !== 'fulfilled') {
-          ctx.log.warn(`news: фід впав (${category})`);
+export interface NewsModuleOptions {
+  fetchImpl?: typeof fetch;
+  apiKey?: string;
+  timeoutMs?: number;
+}
+
+export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 30000;
+
+  return {
+    id: 'news',
+    kind: 'consumer',
+    enabled: (config) => config.modules.news.enabled,
+
+    async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
+      const cfg = ctx.config.modules.news;
+      const apiKey = opts.apiKey ?? optionalSecret('NEWSDATA_API_KEY');
+      if (!apiKey || cfg.topics.length === 0) {
+        ctx.log.warn('news: NEWSDATA_API_KEY або topics відсутні — пропуск');
+        return null;
+      }
+
+      const shown = ctx.state.get<ShownNews>('shownNews') ?? {};
+      const dedupCutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;
+      const today = ctx.clock.todayKey();
+      const nextShown: ShownNews = { ...shown };
+
+      // preferenceWeights: вага теми масштабує квоту й порядок. Недільний decay -> 1.0.
+      let weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
+      if (ctx.clock.isSunday()) {
+        weights = applyWeeklyDecay(weights);
+        ctx.state.set('preferenceWeights', weights);
+      }
+      const weightFor = (t: string) => weights[t] ?? 1.0;
+      const quotaFor = (t: string) =>
+        Math.max(1, Math.min(cfg.perTopic + EXTRA_MORE, Math.round(cfg.perTopic * weightFor(t))));
+
+      // Улюблені теми (вища вага) — вище.
+      const topics = [...cfg.topics].sort((a, b) => weightFor(b.topic) - weightFor(a.topic));
+
+      const groups: Group[] = [];
+      for (const t of topics) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        let items: NewsItem[];
+        try {
+          const res = await fetchImpl(buildNewsUrl(apiKey, t as TopicCfg), { signal: ctrl.signal });
+          if (!res.ok) throw new Error(`NewsData HTTP ${res.status}`);
+          items = parseNewsData(await res.json());
+        } catch (e) {
+          ctx.log.warn(`news: тема «${t.topic}» — ${e instanceof Error ? e.message : String(e)}`);
           continue;
+        } finally {
+          clearTimeout(timer);
         }
-        for (const item of parseRss(r.value).slice(0, MAX_ITEMS_PER_FEED)) {
+
+        const quota = quotaFor(t.topic);
+        const seen = new Set<string>();
+        const picked: NewsItem[] = [];
+        const more: NewsItem[] = [];
+        for (const it of items) {
           if (picked.length >= quota && more.length >= EXTRA_MORE) break;
-          const canon = canonicalizeUrl(item.url);
+          const canon = canonicalizeUrl(it.url);
           if (seen.has(canon)) continue;
           const shownAt = shown[canon] ? Date.parse(shown[canon]!) : 0;
           if (shownAt && shownAt >= dedupCutoff) continue; // показували в вікні
           seen.add(canon);
+          const entry: NewsItem = { title: it.title, url: canon, why: it.why };
           if (picked.length < quota) {
-            picked.push({ title: item.title, url: canon });
-            nextShown[canon] = today; // дедупимо лише показані в добірці
+            picked.push(entry);
+            nextShown[canon] = today;
           } else {
-            more.push({ title: item.title, url: canon }); // запас без дедупу
+            more.push(entry);
           }
         }
+        if (picked.length) groups.push({ scope: t.scope, topic: t.topic, items: picked, more });
       }
-      if (picked.length) groups.push({ category, items: picked, more });
-    }
 
-    if (groups.length === 0) return null;
-    ctx.state.set('shownNews', nextShown);
+      if (groups.length === 0) return null;
+      ctx.state.set('shownNews', nextShown);
 
-    // summaryHtml: заголовок-лінк у слові; категорія — bold-підзаголовок.
-    const summaryHtml = groups
-      .map((g) => {
-        const head = `<b>${escapeHtml(g.category)}</b>`;
-        const lines = g.items.map((it) => `• ${link(it.url, it.title)}`).join('\n');
-        return `${head}\n${lines}`;
-      })
-      .join('\n\n');
+      const summaryHtml = groups
+        .map((g) => {
+          const head = `<b>${escapeHtml(g.topic)}</b>`;
+          const lines = g.items.map((it) => `• ${link(it.url, it.title)}`).join('\n');
+          return `${head}\n${lines}`;
+        })
+        .join('\n\n');
+      const summary = groups.flatMap((g) => g.items.map((it) => it.title)).join('\n');
 
-    // Плейн-фолбек (failNotify / без HTML): заголовки.
-    const summary = groups.flatMap((g) => g.items.map((it) => it.title)).join('\n');
+      return {
+        id: 'news',
+        title: 'Новини',
+        icon: '🗞',
+        summary,
+        summaryHtml,
+        data: { groups },
+        inMessage: false, // глибина — в дашборді; повідомлення лаконічне
+        priority: NEWS_PRIORITY,
+      };
+    },
 
-    return {
-      id: 'news',
-      title: 'Новини',
-      icon: '🗞',
-      summary,
-      summaryHtml,
-      data: { groups },
-      inMessage: false, // глибина — в дашборді; повідомлення лаконічне
-      priority: NEWS_PRIORITY,
-    };
-  },
-
-  // Phase B: 👍/👎 змінює preferenceWeights (оживе з вебхуком).
-  async handleCallback(action: string, ctx: Ctx<AppConfig>): Promise<void> {
-    const m = action.match(/^news:(up|down):(.+)$/);
-    if (!m) return;
-    const weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
-    ctx.state.set('preferenceWeights', applyVote(weights, m[2]!, m[1] as 'up' | 'down'));
-  },
-};
+    // 👍/👎 змінює preferenceWeights теми (через дашборд /api/vote або in-chat callback).
+    async handleCallback(action: string, ctx: Ctx<AppConfig>): Promise<void> {
+      const m = action.match(/^news:(up|down):(.+)$/);
+      if (!m) return;
+      const weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
+      ctx.state.set('preferenceWeights', applyVote(weights, m[2]!, m[1] as 'up' | 'down'));
+    },
+  };
+}

@@ -28,11 +28,21 @@ const ConfigSchema = z
       calendar: z.object({ enabled: z.boolean() }),
       news: z.object({
         enabled: z.boolean(),
-        categories: z.array(z.string()),
-        perCategory: z.number().int().positive(),
+        perTopic: z.number().int().positive().default(3),
         dedupDays: z.number().int().nonnegative(),
         retentionDays: z.number().int().nonnegative(),
-        sources: z.record(z.string(), z.array(z.string())).default({}),
+        // NewsData.io: теми = scope (world/ua) × category (+опц. country/language).
+        topics: z
+          .array(
+            z.object({
+              scope: z.enum(['world', 'ua']),
+              topic: z.string(),
+              category: z.string(),
+              country: z.string().optional(),
+              language: z.string().default('uk'),
+            }),
+          )
+          .default([]),
       }),
       nextStep: z.object({
         enabled: z.boolean(),
