@@ -70,12 +70,13 @@ describe('mock — батч-кеш', () => {
     expect(llm.complete).not.toHaveBeenCalled();
   });
 
-  it('старий формат кешу (string[]) мігрує без падіння', async () => {
-    const llm = { complete: vi.fn() };
-    const state = memState({ mockCache: ['Старе питання'] });
+  it('старий формат кешу (string[]) регенерує з відповідями через LLM', async () => {
+    const llm = { complete: vi.fn(async () => '[{"q":"Нове","a":"Відповідь"}]') };
+    const state = memState({ mockCache: ['Старе питання без відповіді'] });
     const block = await mockModule.run(makeCtx({ state, llm }));
-    expect(block!.summary).toBe('Старе питання');
-    expect(llm.complete).not.toHaveBeenCalled();
+    expect(block!.summary).toBe('Нове');
+    expect((block!.data as { answer?: string }).answer).toBe('Відповідь');
+    expect(llm.complete).toHaveBeenCalledTimes(1);
   });
 
   it('LLM кинув -> null', async () => {
