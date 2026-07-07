@@ -19,24 +19,20 @@ modules:
   calendar: { enabled: true } # у повідомленні; активний коли є GOOGLE_* секрети
   news:
     enabled: true
-    categories: ['Україна та світ', 'Технології / IT', 'Спорт', 'Наука / економіка']
-    perCategory: 2
+    perTopic: 3 # заголовків на тему (масштабується вагами 👍/👎)
     dedupDays: 3
     retentionDays: 7
-    # Джерела мають віддаватись із датацентрових IP GitHub Actions. Більшість
-    # .ua-сайтів за Cloudflare віддають 403 раннеру, тож для покриття — Google News
-    # (датацентр-дружній); BBC та itc.ua підтверджено працюють у CI.
-    sources:
-      'Україна та світ':
-        - 'https://feeds.bbci.co.uk/ukrainian/rss.xml'
-        - 'https://news.google.com/rss?hl=uk&gl=UA&ceid=UA:uk'
-      'Технології / IT':
-        - 'https://itc.ua/feed/'
-        - 'https://news.google.com/rss/search?q=технології%20україна&hl=uk&gl=UA&ceid=UA:uk'
-      'Спорт':
-        - 'https://news.google.com/rss/search?q=спорт%20україна&hl=uk&gl=UA&ceid=UA:uk'
-      'Наука / економіка':
-        - 'https://news.google.com/rss/search?q=економіка%20україна&hl=uk&gl=UA&ceid=UA:uk'
+    # NewsData.io (ключ NEWSDATA_API_KEY): теми = scope × category. Датацентр-
+    # дружній API (знімає 403 на .ua). language=uk дає укр-контент і для світу.
+    topics:
+      # 🇺🇦 Українські
+      - { scope: ua, topic: Головне, category: top, country: ua, language: uk }
+      - { scope: ua, topic: Політика, category: politics, country: ua, language: uk }
+      - { scope: ua, topic: Технології, category: technology, country: ua, language: uk }
+      # 🌍 Світові
+      - { scope: world, topic: Наука, category: science, language: uk }
+      - { scope: world, topic: Технології, category: technology, language: uk }
+      - { scope: world, topic: Спорт, category: sports, language: uk }
   nextStep:
     enabled: true
     steps:
