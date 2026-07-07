@@ -30,7 +30,7 @@ export interface OnThisDayOptions {
 export function createOnThisDayModule(opts: OnThisDayOptions = {}): Module<AppConfig> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 30000;
-  const limit = opts.limit ?? 4;
+  const limit = opts.limit ?? 10; // дашборд показує 8 + «показати ще»
 
   return {
     id: 'onthisday',
