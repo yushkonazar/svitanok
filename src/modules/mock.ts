@@ -37,7 +37,7 @@ export function parseMockCache(text: string): MockQA[] {
           !!x && typeof x === 'object' && typeof (x as { q?: unknown }).q === 'string',
       )
       .map((x) => ({ q: x.q.trim(), a: typeof x.a === 'string' ? x.a.trim() : '' }))
-      .filter((x) => x.q.length > 0);
+      .filter((x) => x.q.length > 0 && x.a.length > 0); // лише повні пари
   } catch {
     return [];
   }
@@ -55,13 +55,18 @@ export const mockModule: Module<AppConfig> = {
 
   async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
     const cfg = ctx.config.modules.mock;
-    // Старий формат кешу (string[] без відповідей) -> відкидаємо, щоб одразу
-    // регенерувати з відповідями. Новий формат ({q,a}) — лишаємо.
+    // Лишаємо лише ПОВНІ пари {q,a}. Старий string[]-кеш і мігровані порожні
+    // {q,a:''} відкидаються -> регенеруємо з відповідями.
     const raw = ctx.state.get<unknown[]>('mockCache') ?? [];
-    const isNewFormat =
-      raw.length > 0 &&
-      raw.every((x) => !!x && typeof x === 'object' && typeof (x as MockQA).q === 'string');
-    let cache: MockQA[] = isNewFormat ? (raw as MockQA[]).filter((x) => x.q && x.q.length > 0) : [];
+    let cache: MockQA[] = (Array.isArray(raw) ? raw : []).filter(
+      (x): x is MockQA =>
+        !!x &&
+        typeof x === 'object' &&
+        typeof (x as MockQA).q === 'string' &&
+        (x as MockQA).q.length > 0 &&
+        typeof (x as MockQA).a === 'string' &&
+        (x as MockQA).a.length > 0,
+    );
 
     if (cache.length === 0) {
       try {
