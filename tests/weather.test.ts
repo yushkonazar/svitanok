@@ -86,6 +86,16 @@ describe('parseOneCall', () => {
     expect(w.hourlyTemp).toEqual([10, 8, 12, 11]); // 09/12/15/18 Kyiv, без завтра
   });
 
+  it('hourly {година, температура} за сьогодні (для графіка з віссю годин)', () => {
+    const w = parseOneCall(oneCall, 'Львів', '2026-07-01')!;
+    expect(w.hourly).toEqual([
+      { h: 9, t: 10 },
+      { h: 12, t: 8 },
+      { h: 15, t: 12 },
+      { h: 18, t: 11 },
+    ]);
+  });
+
   it('advice, alerts, summary, схід/захід з добового запису', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01')!;
     expect(w.advice).toBe('Прохолодно — куртка'); // відч. 6

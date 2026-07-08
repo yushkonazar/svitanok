@@ -376,35 +376,194 @@
         color: var(--muted);
         font-size: 13px;
       }
-      /* Розкриття погоди — 2 колонки: текст ліворуч, дуга сонця+графік праворуч */
-      .wx-grid {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 14px;
-        align-items: start;
+      /* ── Розкритий віджет погоди (дизайн Погода.dc.html) ─────────────── */
+      .wxc {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
       }
-      .wx-grid .wx-l {
+      .wxc-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .wxc-place {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        min-width: 0;
+      }
+      .wxc-emoji {
+        font-size: 32px;
+        line-height: 1;
+      }
+      .wxc-city {
+        font-size: 19px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .wxc-cond {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 1px;
+      }
+      .wxc-daypill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        background: var(--grad-soft);
+        color: var(--accent-2);
+        font-size: 12.5px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 7px 13px;
+        white-space: nowrap;
+      }
+      .wxc-daydelta {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .wxc-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      @media (min-width: 460px) {
+        .wxc-grid {
+          grid-template-columns: 1fr 1fr;
+          align-items: stretch;
+        }
+      }
+      .wxc-left {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .wxc-temp {
+        font-size: 52px;
+        font-weight: 800;
+        line-height: 0.92;
+        letter-spacing: -0.02em;
+      }
+      .wxc-feels {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--muted);
+        letter-spacing: 0;
+      }
+      .wxc-metrics {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .wxc-m {
+        background: var(--glass-2);
+        border: 1px solid var(--border-2);
+        border-radius: 15px;
+        padding: 11px 13px;
+        min-width: 0;
+      }
+      .wxc-m-l {
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .wxc-m-v {
+        font-size: 16px;
+        font-weight: 700;
+        margin-top: 3px;
+      }
+      .wxc-sun {
+        background: var(--glass-2);
+        border: 1px solid var(--border-2);
+        border-radius: 18px;
+        padding: 13px 15px 11px;
         display: flex;
         flex-direction: column;
         gap: 4px;
-        min-width: 0;
       }
-      .wx-grid .wx-r {
+      .wxc-sun-lbl {
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .wxc-sun-svg {
+        width: 100%;
+        height: auto;
+        overflow: visible;
+        margin: 2px 0;
+      }
+      .wxc-sun-times {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        font-weight: 700;
+        margin-top: auto;
+      }
+      .wxc-sun-times span:last-child {
+        text-align: right;
+      }
+      .wxc-sun-times em {
+        display: block;
+        font-style: normal;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--muted);
+        margin-top: 1px;
+      }
+      .wxc-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .wxc-chart-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 6px;
+      }
+      .wxc-chart-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+      .wxc-chart-mm {
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .wxc-chart-svg {
+        width: 100%;
+        height: auto;
+        display: block;
+        overflow: visible;
+      }
+      .wxc-foot {
+        border-top: 1px solid var(--border-2);
+        padding-top: 13px;
         display: flex;
         flex-direction: column;
-        align-items: center;
-        gap: 2px;
-        width: 200px;
-        max-width: 46vw;
+        gap: 9px;
       }
-      @media (max-width: 380px) {
-        .wx-grid {
-          grid-template-columns: 1fr;
-        }
-        .wx-grid .wx-r {
-          width: 100%;
-          max-width: 100%;
-        }
+      .wxc-foot-row {
+        display: flex;
+        gap: 9px;
+        align-items: flex-start;
+        font-size: 14px;
+        color: var(--text);
+        line-height: 1.4;
+      }
+      .wxc-foot-row .ic {
+        font-size: 17px;
+        line-height: 1.35;
+        flex: none;
+      }
+      .wxc-foot-row b {
+        font-weight: 700;
       }
       /* Кнопка «Вивчити» (питання дня) */
       .learn-btn {
@@ -1325,8 +1484,91 @@
         return out.join('');
       }
 
-      // Погода: ПОВНОШИРИННА картка-рядок. Незмінні поля вгорі, умовний дощ у кінці.
-      // swap: розкриття ЗАМІНЮЄ згорнутий рядок деталями (макет не з'їжджає).
+      // Дуга сходу→заходу (дизайн): півколо + сонце на позиції за поточним часом.
+      function wxSunArc(sr, ss) {
+        const P0 = [16, 86],
+          P1 = [120, -8],
+          P2 = [224, 86];
+        let sx = 182,
+          sy = 56;
+        if (has(sr) && has(ss) && ss > sr) {
+          const u = Math.max(0, Math.min(1, (Date.now() / 1000 - sr) / (ss - sr)));
+          const k = 1 - u;
+          sx = k * k * P0[0] + 2 * k * u * P1[0] + u * u * P2[0];
+          sy = k * k * P0[1] + 2 * k * u * P1[1] + u * u * P2[1];
+        }
+        return `<svg class="wxc-sun-svg" viewBox="0 0 240 100" role="img" aria-label="схід і захід сонця">
+          <path d="M16 86 Q120 -8 224 86" fill="none" stroke="var(--muted)" stroke-opacity="0.45" stroke-width="2.5" stroke-dasharray="1.5 8" stroke-linecap="round" />
+          <circle cx="16" cy="86" r="4.5" fill="var(--muted)" opacity="0.5" />
+          <circle cx="224" cy="86" r="4.5" fill="var(--muted)" opacity="0.5" />
+          <circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="var(--accent-2)" opacity="0.18" />
+          <circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="8.5" fill="var(--accent-2)" />
+        </svg>`;
+      }
+
+      // Графік температури по годинах (дизайн): згладжена крива area+line, точки,
+      // вісь годин (кратні 3), дощ-бенд за вікном опадів. hourly = [{h,t}].
+      function wxChart(hourly, rainWindow) {
+        const W = 620,
+          H = 138,
+          x0 = 14,
+          x1 = 606,
+          yTop = 22,
+          yBot = 108;
+        const pts = (hourly || []).filter((p) => p && typeof p.t === 'number' && isFinite(p.t));
+        if (pts.length < 2) return ph('Недостатньо даних для графіка');
+        const temps = pts.map((p) => p.t);
+        const min = Math.min(...temps),
+          max = Math.max(...temps),
+          span = max - min || 1;
+        const X = (h) => x0 + (Math.max(0, Math.min(24, h)) / 24) * (x1 - x0);
+        const Y = (t) => yTop + (1 - (t - min) / span) * (yBot - yTop);
+        const P = pts.map((p) => [X(p.h), Y(p.t)]);
+        // Згладжування через середини відрізків (control = попередня точка).
+        let d = `M ${P[0][0].toFixed(1)} ${P[0][1].toFixed(1)}`;
+        for (let i = 1; i < P.length; i++) {
+          const mx = (P[i - 1][0] + P[i][0]) / 2,
+            my = (P[i - 1][1] + P[i][1]) / 2;
+          d += ` Q ${P[i - 1][0].toFixed(1)} ${P[i - 1][1].toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)}`;
+        }
+        d += ` L ${P[P.length - 1][0].toFixed(1)} ${P[P.length - 1][1].toFixed(1)}`;
+        const area = `${d} L ${P[P.length - 1][0].toFixed(1)} ${yBot} L ${P[0][0].toFixed(1)} ${yBot} Z`;
+        const gid = 'wxa' + GRAD_SEQ,
+          lid = 'wxl' + GRAD_SEQ;
+        GRAD_SEQ++;
+        // Дощ-бенд за вікном (напр. «15:00–17:00»).
+        let band = '';
+        const m = has(rainWindow) ? String(rainWindow).match(/(\d{1,2}):\d{2}\D+(\d{1,2}):\d{2}/) : null;
+        if (m) {
+          const rx0 = X(+m[1]),
+            rw = Math.max(7, X(+m[2]) - rx0);
+          band = `<rect x="${rx0.toFixed(1)}" y="4" width="${rw.toFixed(1)}" height="118" rx="6" fill="#4c9bff" opacity="0.13" /><text x="${(rx0 + 4).toFixed(1)}" y="17" fill="#4c9bff" font-size="11" font-weight="700">☔ дощ</text>`;
+        }
+        const dots = P.map(
+          (p) =>
+            `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="var(--bg)" stroke="var(--accent)" stroke-width="2" />`,
+        ).join('');
+        const ticks = pts
+          .filter((p) => p.h % 3 === 0)
+          .map(
+            (p) =>
+              `<text x="${X(p.h).toFixed(1)}" y="134" fill="var(--muted)" font-size="11" font-weight="600" text-anchor="middle">${String(p.h).padStart(2, '0')}</text>`,
+          )
+          .join('');
+        return `<svg class="wxc-chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="температура по годинах">
+          <defs>
+            <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8a3d" stop-opacity="0.32" /><stop offset="1" stop-color="#ff8a3d" stop-opacity="0" /></linearGradient>
+            <linearGradient id="${lid}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffb03a" /><stop offset="0.55" stop-color="#ff7a59" /><stop offset="1" stop-color="#ff6b86" /></linearGradient>
+          </defs>
+          ${band}
+          <path d="${area}" fill="url(#${gid})" />
+          <path d="${d}" fill="none" stroke="url(#${lid})" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          ${dots}
+          ${ticks}
+        </svg>`;
+      }
+
+      // Погода: згорнутий рядок (temp+місто+стан), розкриття = дизайн Погода.dc.html.
       function weatherTile(l) {
         // exp-base (згорнуто): місто + велика темп зліва, стан + відч. справа.
         const base = `<div class="exp-base">
@@ -1337,42 +1579,71 @@
           </div>
         </div>`;
 
-        // ── ЛІВА колонка: текст (незмінне вгорі, умовний дощ у кінці) ──
-        const L = [];
-        L.push(`<div class="lbl">${esc(l.emoji || '')} ${esc(l.name)}</div>`);
-        L.push(
-          `<div class="big">${signTemp(l.tempC)} <span class="sub" style="font-weight:400">відч. ${signTemp(l.feelsLikeC)}</span></div>`,
-        );
-        L.push(`<div class="sub">${esc(l.condition)}</div>`);
-        L.push(`<div class="sub">🌡 ${l.minC}…${l.maxC}°</div>`);
-        const gust = has(l.gustMps) ? ` (пориви ${l.gustMps})` : '';
-        L.push(
-          `<div class="sub">💨 ${l.windMps} м/с${gust}${has(l.humidity) ? ` · 💧 ${l.humidity}%` : ''}</div>`,
-        );
-        const badges = [uvBadge(l.uv), aqiBadge(l.aqi)].filter(Boolean).join(' ');
-        if (badges) L.push(`<div style="margin:4px 0">${badges}</div>`);
-        if (has(l.advice)) L.push(`<div class="why">🧥 ${esc(l.advice)}</div>`);
-        if (has(l.rainWindow)) L.push(`<div class="sub">🌧 Дощ: ${esc(l.rainWindow)}</div>`);
-        else if (l.willRain) L.push(`<div class="sub">🌧 Імовірність опадів ${l.popPercent}%</div>`);
-
-        // ── ПРАВА колонка: інтерактив — дуга сонця + погодинний графік ──
+        // Пігулка довжини дня (+дельта vs учора).
         const delta =
           has(l.dayLenDeltaMin) && l.dayLenDeltaMin !== 0
-            ? ` (${l.dayLenDeltaMin > 0 ? '+' : ''}${l.dayLenDeltaMin} хв)`
+            ? `<span class="wxc-daydelta">${l.dayLenDeltaMin > 0 ? '+' : '−'}${Math.abs(l.dayLenDeltaMin)} хв</span>`
             : '';
-        const R = [];
-        R.push(
-          `<div class="sub" style="text-align:center">☀️ День ${dayLen(l.sunrise, l.sunset)}${delta}</div>`,
-        );
-        const arc = sunArc(l.sunrise, l.sunset);
-        if (arc) R.push(arc);
-        if (Array.isArray(l.hourlyTemp) && l.hourlyTemp.length >= 2)
-          R.push(
-            `<div class="sub" style="text-align:center;margin-top:2px">Температура по годинах</div>${sparkline(l.hourlyTemp, { w: 220, h: 44, label: 'температура по годинах' })}`,
-          );
+        const dl = dayLen(l.sunrise, l.sunset);
+        const dayPill = dl ? `<div class="wxc-daypill">☀️ День ${dl} ${delta}</div>` : '';
 
-        const grid = `<div class="wx-grid"><div class="wx-l">${L.join('')}</div><div class="wx-r">${R.join('')}</div></div>`;
-        return `<div class="tile">${expandable(base + `<div class="exp-more">${grid}</div>`, { swap: true })}</div>`;
+        // Ліва зона: велика темп + 2×2 сітка метрик.
+        const gust = has(l.gustMps) ? ` · пориви ${l.gustMps}` : '';
+        const rainVal = has(l.rainWindow)
+          ? esc(l.rainWindow)
+          : l.willRain
+            ? `${l.popPercent}%`
+            : 'без опадів';
+        const left = `<div class="wxc-left">
+          <div class="wxc-temp">${signTemp(l.tempC)} <span class="wxc-feels">відч. ${signTemp(l.feelsLikeC)}</span></div>
+          <div class="wxc-metrics">
+            <div class="wxc-m"><div class="wxc-m-l">🌡 Мін / Макс</div><div class="wxc-m-v">${l.minC}° … ${l.maxC}°</div></div>
+            <div class="wxc-m"><div class="wxc-m-l">💨 Вітер</div><div class="wxc-m-v">${l.windMps} м/с${gust}</div></div>
+            <div class="wxc-m"><div class="wxc-m-l">💧 Вологість</div><div class="wxc-m-v">${has(l.humidity) ? l.humidity + '%' : '—'}</div></div>
+            <div class="wxc-m"><div class="wxc-m-l">🌧 Опади</div><div class="wxc-m-v">${rainVal}</div></div>
+          </div>
+        </div>`;
+
+        // Права зона: панель сходу/заходу з дугою.
+        const sun = `<div class="wxc-sun">
+          <div class="wxc-sun-lbl">Схід і захід сонця</div>
+          ${wxSunArc(l.sunrise, l.sunset)}
+          <div class="wxc-sun-times">
+            <span>🌅 ${fmtClock(l.sunrise)}<em>схід</em></span>
+            <span>🌇 ${fmtClock(l.sunset)}<em>захід</em></span>
+          </div>
+        </div>`;
+
+        const badges = [uvBadge(l.uv), aqiBadge(l.aqi)].filter(Boolean).join('');
+        const badgeRow = badges ? `<div class="wxc-badges">${badges}</div>` : '';
+
+        const chart =
+          Array.isArray(l.hourly) && l.hourly.length >= 2
+            ? `<div>
+                <div class="wxc-chart-head"><div class="wxc-chart-title">Температура по годинах</div><div class="wxc-chart-mm">макс ${l.maxC}° · мін ${l.minC}°</div></div>
+                ${wxChart(l.hourly, l.rainWindow)}
+              </div>`
+            : '';
+
+        const F = [];
+        if (has(l.advice))
+          F.push(`<div class="wxc-foot-row"><span class="ic">🧥</span><div><b>Одяг:</b> ${esc(l.advice)}</div></div>`);
+        if (has(l.rainWindow))
+          F.push(`<div class="wxc-foot-row"><span class="ic">☔</span><div><b>Опади:</b> очікується ${esc(l.rainWindow)}.</div></div>`);
+        const foot = F.length ? `<div class="wxc-foot">${F.join('')}</div>` : '';
+
+        const design = `<div class="wxc">
+          <div class="wxc-head">
+            <div class="wxc-place"><span class="wxc-emoji">${esc(l.emoji || '⛅')}</span><div><div class="wxc-city">${esc(l.name)}</div><div class="wxc-cond">${esc(l.condition)}</div></div></div>
+            ${dayPill}
+          </div>
+          <div class="wxc-grid">${left}${sun}</div>
+          ${badgeRow}
+          ${chart}
+          ${foot}
+        </div>`;
+
+        return `<div class="tile">${expandable(base + `<div class="exp-more">${design}</div>`, { swap: true })}</div>`;
       }
 
       // Курс: ОДНА валюта В РЯДОК (повноширинні рядки USD/EUR/PLN/GBP).
@@ -1969,6 +2240,11 @@
                   sunrise: 1751255000,
                   sunset: 1751313000,
                   hourlyTemp: [17, 18, 20, 22, 24, 25, 24, 22, 20, 18],
+                  hourly: [
+                    { h: 6, t: 17 }, { h: 8, t: 18 }, { h: 10, t: 20 }, { h: 12, t: 22 },
+                    { h: 14, t: 24 }, { h: 16, t: 25 }, { h: 18, t: 24 }, { h: 20, t: 22 },
+                    { h: 22, t: 20 }, { h: 24, t: 18 },
+                  ],
                 },
                 {
                   name: 'Київ',
@@ -1990,6 +2266,11 @@
                   sunrise: 1751253000,
                   sunset: 1751311000,
                   hourlyTemp: [19, 21, 23, 25, 27, 28, 27, 25, 23, 21],
+                  hourly: [
+                    { h: 6, t: 19 }, { h: 8, t: 21 }, { h: 10, t: 23 }, { h: 12, t: 25 },
+                    { h: 14, t: 27 }, { h: 16, t: 28 }, { h: 18, t: 27 }, { h: 20, t: 25 },
+                    { h: 22, t: 23 }, { h: 24, t: 21 },
+                  ],
                 },
               ],
             },

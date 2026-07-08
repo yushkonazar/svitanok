@@ -62,6 +62,7 @@ export interface WeatherToday {
   sunset: number; // unix сек, захід сонця (0 якщо невідомо)
   dayLenDeltaMin?: number; // зміна довжини дня vs учора, хв (обчислюється в run зі стану)
   hourlyTemp?: number[]; // денна температура по годинах (для спарклайна дашборда)
+  hourly?: { h: number; t: number }[]; // {київська година, температура} за сьогодні (графік)
   alerts?: string[]; // офіційні попередження негоди (One Call alerts[].event)
   summary?: string; // людиночитне резюме дня (One Call daily[0].summary)
 }
@@ -232,6 +233,11 @@ export function parseOneCall(json: unknown, name: string, todayKey: string): Wea
     .filter(isNum)
     .map(round);
 
+  // Погодинний ряд {година, температура} за сьогодні — для графіка з віссю годин.
+  const hourlySeries = todayHours
+    .filter((h) => isNum(h.temp))
+    .map((h) => ({ h: entryKyiv(h.dt).hour, t: round(h.temp as number) }));
+
   const alerts = (Array.isArray(oc.alerts) ? oc.alerts : [])
     .map((a) => a.event)
     .filter((e): e is string => typeof e === 'string' && e.length > 0);
@@ -256,6 +262,7 @@ export function parseOneCall(json: unknown, name: string, todayKey: string): Wea
     sunrise,
     sunset,
     ...(hourlyTemp.length >= 2 ? { hourlyTemp } : {}),
+    ...(hourlySeries.length >= 2 ? { hourly: hourlySeries } : {}),
     ...(alerts.length ? { alerts } : {}),
     ...(day0?.summary ? { summary: day0.summary } : {}),
   };
