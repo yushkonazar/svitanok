@@ -1484,25 +1484,57 @@
         return out.join('');
       }
 
-      // Дуга сходу→заходу (дизайн): півколо + сонце на позиції за поточним часом.
+      // Дуга сходу→заходу з ДИНАМІЧНИМ станом за поточним часом (момент відкриття):
+      //  • день (схід ≤ зараз ≤ захід) — Сонце на дузі в позиції поточної години;
+      //  • ніч — місяць-серп + зорі + приглушений «підземний» глоу Сонця на тому
+      //    боці горизонту, куди воно зайшло / звідки зійде;
+      //  • невідомі схід/захід — Сонце в зеніті (нейтральний фолбек).
       function wxSunArc(sr, ss) {
         const P0 = [16, 86],
           P1 = [120, -8],
           P2 = [224, 86];
-        let sx = 182,
-          sy = 56;
-        if (has(sr) && has(ss) && ss > sr) {
-          const u = Math.max(0, Math.min(1, (Date.now() / 1000 - sr) / (ss - sr)));
+        const nowSec = Date.now() / 1000;
+        const valid = has(sr) && has(ss) && ss > sr;
+        const isNight = valid && (nowSec < sr || nowSec > ss);
+
+        let scene;
+        if (!isNight) {
+          // День (або невідомо → зеніт u=0.5). Сонце на квадратичній дузі.
+          const u = valid ? Math.max(0, Math.min(1, (nowSec - sr) / (ss - sr))) : 0.5;
           const k = 1 - u;
-          sx = k * k * P0[0] + 2 * k * u * P1[0] + u * u * P2[0];
-          sy = k * k * P0[1] + 2 * k * u * P1[1] + u * u * P2[1];
+          const sx = k * k * P0[0] + 2 * k * u * P1[0] + u * u * P2[0];
+          const sy = k * k * P0[1] + 2 * k * u * P1[1] + u * u * P2[1];
+          scene = `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="var(--accent-2)" opacity="0.18" />
+            <circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="8.5" fill="var(--accent-2)" />`;
+        } else {
+          // Ніч. Сонце під горизонтом: до сходу — ліворуч, після заходу — праворуч.
+          const preDawn = nowSec < sr;
+          const gx = preDawn ? 20 : 220;
+          const glow = `<circle cx="${gx}" cy="95" r="14" fill="var(--accent-2)" opacity="0.16" /><circle cx="${gx}" cy="94" r="6" fill="var(--accent-2)" opacity="0.32" />`;
+          // Місяць-серп через маску (не залежить від кольору фону).
+          const mmid = 'moon' + GRAD_SEQ++;
+          const mx = 118,
+            my = 28;
+          const moon = `<defs><mask id="${mmid}"><rect x="0" y="0" width="240" height="100" fill="#fff" /><circle cx="${mx + 5}" cy="${my - 2}" r="10.5" fill="#000" /></mask></defs>
+            <circle cx="${mx}" cy="${my}" r="13" fill="#f6d98a" opacity="0.16" />
+            <circle cx="${mx}" cy="${my}" r="10.5" fill="#f6d98a" mask="url(#${mmid})" />`;
+          const stars = [
+            [58, 38, 1.5, 0.75],
+            [172, 30, 1.7, 0.7],
+            [150, 55, 1.1, 0.5],
+            [86, 22, 1.1, 0.5],
+            [198, 52, 1.2, 0.55],
+          ]
+            .map(([x, y, r, o]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="var(--muted)" opacity="${o}" />`)
+            .join('');
+          scene = glow + stars + moon;
         }
-        return `<svg class="wxc-sun-svg" viewBox="0 0 240 100" role="img" aria-label="схід і захід сонця">
-          <path d="M16 86 Q120 -8 224 86" fill="none" stroke="var(--muted)" stroke-opacity="0.45" stroke-width="2.5" stroke-dasharray="1.5 8" stroke-linecap="round" />
+        const arcOpacity = isNight ? '0.22' : '0.45';
+        return `<svg class="wxc-sun-svg" viewBox="0 0 240 100" role="img" aria-label="${isNight ? 'ніч — сонце під горизонтом' : 'схід і захід сонця'}">
+          <path d="M16 86 Q120 -8 224 86" fill="none" stroke="var(--muted)" stroke-opacity="${arcOpacity}" stroke-width="2.5" stroke-dasharray="1.5 8" stroke-linecap="round" />
           <circle cx="16" cy="86" r="4.5" fill="var(--muted)" opacity="0.5" />
           <circle cx="224" cy="86" r="4.5" fill="var(--muted)" opacity="0.5" />
-          <circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="var(--accent-2)" opacity="0.18" />
-          <circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="8.5" fill="var(--accent-2)" />
+          ${scene}
         </svg>`;
       }
 
