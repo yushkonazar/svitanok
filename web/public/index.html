@@ -393,9 +393,30 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 2px;
-        width: 200px;
+        gap: 4px;
+        width: 210px;
         max-width: 46vw;
+      }
+      .wx-grid .wx-l .big {
+        margin-bottom: 2px;
+      }
+      /* Смуга під сіткою на всю ширину: бейджі + порада + дощ (заповнює низ). */
+      .wx-grid .wx-foot {
+        grid-column: 1 / -1;
+        margin-top: 4px;
+        padding-top: 11px;
+        border-top: 1px solid var(--border-2);
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .wx-badges {
+        display: flex;
+        flex-wrap: wrap;
+        row-gap: 7px;
+      }
+      .wx-foot .why {
+        margin-top: 0;
       }
       @media (max-width: 380px) {
         .wx-grid {
@@ -1218,8 +1239,8 @@
         return `<svg viewBox="0 0 120 64" width="100%" style="max-width:200px" role="img" aria-label="схід і захід сонця">
           <path d="M12 52 Q60 -18 108 52" fill="none" stroke="var(--muted)" stroke-width="1.4" stroke-dasharray="3 3" opacity="0.55" />
           <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="#ffb03a" />
-          <text x="12" y="62" font-size="9" fill="var(--muted)" text-anchor="middle">🌅 ${fmtClock(sr)}</text>
-          <text x="108" y="62" font-size="9" fill="var(--muted)" text-anchor="middle">🌇 ${fmtClock(ss)}</text>
+          <text x="1" y="62" font-size="9" fill="var(--muted)" text-anchor="start">🌅 ${fmtClock(sr)}</text>
+          <text x="119" y="62" font-size="9" fill="var(--muted)" text-anchor="end">🌇 ${fmtClock(ss)}</text>
         </svg>`;
       }
 
@@ -1337,7 +1358,7 @@
           </div>
         </div>`;
 
-        // ── ЛІВА колонка: текст (незмінне вгорі, умовний дощ у кінці) ──
+        // ── ЛІВА колонка: базові числові метрики ──
         const L = [];
         L.push(`<div class="lbl">${esc(l.emoji || '')} ${esc(l.name)}</div>`);
         L.push(
@@ -1346,16 +1367,10 @@
         L.push(`<div class="sub">${esc(l.condition)}</div>`);
         L.push(`<div class="sub">🌡 ${l.minC}…${l.maxC}°</div>`);
         const gust = has(l.gustMps) ? ` (пориви ${l.gustMps})` : '';
-        L.push(
-          `<div class="sub">💨 ${l.windMps} м/с${gust}${has(l.humidity) ? ` · 💧 ${l.humidity}%` : ''}</div>`,
-        );
-        const badges = [uvBadge(l.uv), aqiBadge(l.aqi)].filter(Boolean).join(' ');
-        if (badges) L.push(`<div style="margin:4px 0">${badges}</div>`);
-        if (has(l.advice)) L.push(`<div class="why">🧥 ${esc(l.advice)}</div>`);
-        if (has(l.rainWindow)) L.push(`<div class="sub">🌧 Дощ: ${esc(l.rainWindow)}</div>`);
-        else if (l.willRain) L.push(`<div class="sub">🌧 Імовірність опадів ${l.popPercent}%</div>`);
+        L.push(`<div class="sub">💨 ${l.windMps} м/с${gust}</div>`);
+        if (has(l.humidity)) L.push(`<div class="sub">💧 Вологість ${l.humidity}%</div>`);
 
-        // ── ПРАВА колонка: інтерактив — дуга сонця + погодинний графік ──
+        // ── ПРАВА колонка: графіки — дуга сонця + погодинна температура ──
         const delta =
           has(l.dayLenDeltaMin) && l.dayLenDeltaMin !== 0
             ? ` (${l.dayLenDeltaMin > 0 ? '+' : ''}${l.dayLenDeltaMin} хв)`
@@ -1368,10 +1383,19 @@
         if (arc) R.push(arc);
         if (Array.isArray(l.hourlyTemp) && l.hourlyTemp.length >= 2)
           R.push(
-            `<div class="sub" style="text-align:center;margin-top:2px">Температура по годинах</div>${sparkline(l.hourlyTemp, { w: 220, h: 44, label: 'температура по годинах' })}`,
+            `<div class="sub" style="text-align:center;margin-top:4px">Температура по годинах</div>${sparkline(l.hourlyTemp, { w: 220, h: 44, label: 'температура по годинах' })}`,
           );
 
-        const grid = `<div class="wx-grid"><div class="wx-l">${L.join('')}</div><div class="wx-r">${R.join('')}</div></div>`;
+        // ── НИЖНЯ смуга на всю ширину: бейджі UV/AQI + порада + дощ ──
+        const F = [];
+        const badges = [uvBadge(l.uv), aqiBadge(l.aqi)].filter(Boolean).join('');
+        if (badges) F.push(`<div class="wx-badges">${badges}</div>`);
+        if (has(l.advice)) F.push(`<div class="why">🧥 ${esc(l.advice)}</div>`);
+        if (has(l.rainWindow)) F.push(`<div class="sub">🌧 Дощ: ${esc(l.rainWindow)}</div>`);
+        else if (l.willRain) F.push(`<div class="sub">🌧 Імовірність опадів ${l.popPercent}%</div>`);
+        const foot = F.length ? `<div class="wx-foot">${F.join('')}</div>` : '';
+
+        const grid = `<div class="wx-grid"><div class="wx-l">${L.join('')}</div><div class="wx-r">${R.join('')}</div>${foot}</div>`;
         return `<div class="tile">${expandable(base + `<div class="exp-more">${grid}</div>`, { swap: true })}</div>`;
       }
 
