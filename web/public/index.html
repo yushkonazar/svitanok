@@ -1507,23 +1507,44 @@
       }
 
       // Графік температури по годинах (дизайн): згладжена крива area+line, точки,
-      // вісь годин (кратні 3), дощ-бенд за вікном опадів. hourly = [{h,t}].
+      // вісь Y (позначки °C + сітка), вісь годин, дощ-бенд. hourly = [{h,t}].
+      // viewBox тягнеться на всю ширину контейнера (width:100%).
       function wxChart(hourly, rainWindow) {
         const W = 620,
-          H = 138,
-          x0 = 14,
-          x1 = 606,
-          yTop = 22,
-          yBot = 108;
+          H = 150,
+          xL = 34, // лівий відступ під підписи осі Y
+          xR = 614,
+          yTop = 18,
+          yBot = 116;
         const pts = (hourly || []).filter((p) => p && typeof p.t === 'number' && isFinite(p.t));
         if (pts.length < 2) return ph('Недостатньо даних для графіка');
         const temps = pts.map((p) => p.t);
         const min = Math.min(...temps),
           max = Math.max(...temps),
           span = max - min || 1;
-        const X = (h) => x0 + (Math.max(0, Math.min(24, h)) / 24) * (x1 - x0);
+        // Вісь X — за РЕАЛЬНИМ діапазоном годин даних (крива на всю ширину, навіть
+        // якщо ряд закінчується до 24:00). Години поза діапазоном — притиснуті.
+        const hs = pts.map((p) => p.h);
+        const hMin = Math.min(...hs),
+          hMax = Math.max(...hs),
+          hSpan = hMax - hMin || 1;
+        const X = (h) => xL + ((Math.max(hMin, Math.min(hMax, h)) - hMin) / hSpan) * (xR - xL);
         const Y = (t) => yTop + (1 - (t - min) / span) * (yBot - yTop);
         const P = pts.map((p) => [X(p.h), Y(p.t)]);
+
+        // Вісь Y: позначки max / середина / min + горизонтальні лінії сітки.
+        const mid = Math.round((min + max) / 2);
+        const marks = [...new Set([max, mid, min])];
+        const yAxis = marks
+          .map((v) => {
+            const y = Y(v);
+            return (
+              `<line x1="${xL}" y1="${y.toFixed(1)}" x2="${xR}" y2="${y.toFixed(1)}" stroke="var(--border-2)" stroke-width="1" />` +
+              `<text x="${xL - 7}" y="${(y + 3.6).toFixed(1)}" fill="var(--muted)" font-size="11" font-weight="600" text-anchor="end">${v}°</text>`
+            );
+          })
+          .join('');
+
         // Згладжування через середини відрізків (control = попередня точка).
         let d = `M ${P[0][0].toFixed(1)} ${P[0][1].toFixed(1)}`;
         for (let i = 1; i < P.length; i++) {
@@ -1536,13 +1557,14 @@
         const gid = 'wxa' + GRAD_SEQ,
           lid = 'wxl' + GRAD_SEQ;
         GRAD_SEQ++;
+
         // Дощ-бенд за вікном (напр. «15:00–17:00»).
         let band = '';
         const m = has(rainWindow) ? String(rainWindow).match(/(\d{1,2}):\d{2}\D+(\d{1,2}):\d{2}/) : null;
         if (m) {
           const rx0 = X(+m[1]),
             rw = Math.max(7, X(+m[2]) - rx0);
-          band = `<rect x="${rx0.toFixed(1)}" y="4" width="${rw.toFixed(1)}" height="118" rx="6" fill="#4c9bff" opacity="0.13" /><text x="${(rx0 + 4).toFixed(1)}" y="17" fill="#4c9bff" font-size="11" font-weight="700">☔ дощ</text>`;
+          band = `<rect x="${rx0.toFixed(1)}" y="${yTop - 2}" width="${rw.toFixed(1)}" height="${yBot - yTop + 2}" rx="6" fill="#4c9bff" opacity="0.13" /><text x="${(rx0 + 4).toFixed(1)}" y="${yTop + 9}" fill="#4c9bff" font-size="11" font-weight="700">☔ дощ</text>`;
         }
         const dots = P.map(
           (p) =>
@@ -1552,7 +1574,7 @@
           .filter((p) => p.h % 3 === 0)
           .map(
             (p) =>
-              `<text x="${X(p.h).toFixed(1)}" y="134" fill="var(--muted)" font-size="11" font-weight="600" text-anchor="middle">${String(p.h).padStart(2, '0')}</text>`,
+              `<text x="${X(p.h).toFixed(1)}" y="${H - 4}" fill="var(--muted)" font-size="11" font-weight="600" text-anchor="middle">${String(p.h).padStart(2, '0')}</text>`,
           )
           .join('');
         return `<svg class="wxc-chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="температура по годинах">
@@ -1560,6 +1582,7 @@
             <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8a3d" stop-opacity="0.32" /><stop offset="1" stop-color="#ff8a3d" stop-opacity="0" /></linearGradient>
             <linearGradient id="${lid}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffb03a" /><stop offset="0.55" stop-color="#ff7a59" /><stop offset="1" stop-color="#ff6b86" /></linearGradient>
           </defs>
+          ${yAxis}
           ${band}
           <path d="${area}" fill="url(#${gid})" />
           <path d="${d}" fill="none" stroke="url(#${lid})" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
@@ -1620,17 +1643,14 @@
         const chart =
           Array.isArray(l.hourly) && l.hourly.length >= 2
             ? `<div>
-                <div class="wxc-chart-head"><div class="wxc-chart-title">Температура по годинах</div><div class="wxc-chart-mm">макс ${l.maxC}° · мін ${l.minC}°</div></div>
+                <div class="wxc-chart-head"><div class="wxc-chart-title">Температура по годинах</div></div>
                 ${wxChart(l.hourly, l.rainWindow)}
               </div>`
             : '';
 
-        const F = [];
-        if (has(l.advice))
-          F.push(`<div class="wxc-foot-row"><span class="ic">🧥</span><div><b>Одяг:</b> ${esc(l.advice)}</div></div>`);
-        if (has(l.rainWindow))
-          F.push(`<div class="wxc-foot-row"><span class="ic">☔</span><div><b>Опади:</b> очікується ${esc(l.rainWindow)}.</div></div>`);
-        const foot = F.length ? `<div class="wxc-foot">${F.join('')}</div>` : '';
+        const foot = has(l.advice)
+          ? `<div class="wxc-foot"><div class="wxc-foot-row"><span class="ic">🧥</span><div><b>Порада:</b> ${esc(l.advice)}</div></div></div>`
+          : '';
 
         const design = `<div class="wxc">
           <div class="wxc-head">
