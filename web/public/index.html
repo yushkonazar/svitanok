@@ -1495,8 +1495,14 @@
       ];
       // ефемерно приховані сьогодні (не шлемо як стадію в постійний список)
       const HIDDEN_JOBS = new Set();
+      // Жива мапа url→стадія з /api/stats (funnelList) — щоб стадії трималися після
+      // перезавантаження (briefing.json — знімок о 08:00, тапи бувають пізніше).
+      let JOB_STAGE_BY_URL = {};
 
       function renderJobs(blocks, stats) {
+        JOB_STAGE_BY_URL = {};
+        const fl = stats && Array.isArray(stats.funnelList) ? stats.funnelList : null;
+        if (fl) for (const e of fl) if (e && e.url && e.stage) JOB_STAGE_BY_URL[e.url] = e.stage;
         const j = byId(blocks, 'jobs');
         const out = [];
         out.push(funnelWidget(stats, j?.data?.items));
@@ -1510,17 +1516,32 @@
 
       // Воронка: 4 тапабельні стадії (без irrelevant). Тап розкриває список вакансій стадії.
       function funnelWidget(stats, items) {
+        const fl = stats && Array.isArray(stats.funnelList) ? stats.funnelList : null;
         let f = stats && stats.funnel ? stats.funnel : null;
+        if (!f && fl) {
+          f = {};
+          for (const e of fl) if (e.stage) f[e.stage] = (f[e.stage] || 0) + 1;
+        }
         if (!f && Array.isArray(items)) {
           f = {};
           for (const it of items)
             if (it.funnelStage) f[it.funnelStage] = (f[it.funnelStage] || 0) + 1;
         }
-        // список вакансій за стадією для розкриття (із поточних items)
+        // Список вакансій за стадією для розкриття: з живого funnelList (наскрізь по
+        // днях), фолбек — funnelStage поточних items (офлайн/старий контракт).
         const byStage = {};
-        (items || []).forEach((it) => {
-          if (it.funnelStage) (byStage[it.funnelStage] = byStage[it.funnelStage] || []).push(it);
-        });
+        if (fl) {
+          for (const e of fl)
+            if (e.stage)
+              (byStage[e.stage] = byStage[e.stage] || []).push({
+                url: e.url,
+                title: e.title || e.url,
+              });
+        } else {
+          (items || []).forEach((it) => {
+            if (it.funnelStage) (byStage[it.funnelStage] = byStage[it.funnelStage] || []).push(it);
+          });
+        }
         const cells = JOB_STAGES.filter((s) => s.key !== 'irrelevant')
           .map((s) => {
             const cnt = f && has(f[s.key]) ? f[s.key] : 0;
@@ -1556,9 +1577,10 @@
         const why = has(it.why)
           ? `<div class="exp-more"><div class="why">${esc(it.why)}</div></div>`
           : '';
+        const curStage = JOB_STAGE_BY_URL[it.url] || it.funnelStage;
         const btns = JOB_STAGES.map(
           (s) =>
-            `<button class="${it.funnelStage === s.key ? 'on' : ''}" data-stage="${s.key}" data-url="${esc(it.url)}" data-title="${esc(it.title)}">${esc(s.short)}</button>`,
+            `<button class="${curStage === s.key ? 'on' : ''}" data-stage="${s.key}" data-url="${esc(it.url)}" data-title="${esc(it.title)}">${esc(s.short)}</button>`,
         ).join('');
         const inner = `<div class="exp-base">${title}</div>${why}<div class="job-actions">${btns}</div>`;
         return `<div class="card job-card${hidden}" data-url="${esc(it.url)}"><div class="expandable">${inner}</div></div>`;
@@ -1851,7 +1873,10 @@
             { url: btn.dataset.url, title: btn.dataset.title, stage: active ? null : stage },
             () => {
               group.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
-              if (!active) btn.classList.add('on');
+              if (!active) {
+                btn.classList.add('on');
+                JOB_STAGE_BY_URL[btn.dataset.url] = stage;
+              } else delete JOB_STAGE_BY_URL[btn.dataset.url];
             },
           );
         });
@@ -2139,6 +2164,11 @@
           { day: 'Нд', value: 2, active: true },
         ],
         funnel: { saved: 4, applied: 3, interview: 1, offer: 0 },
+        funnelList: [
+          { url: 'https://example.com/job1', stage: 'saved', title: 'Junior Frontend (React)', ts: '2026-07-06' },
+          { url: 'https://example.com/job2', stage: 'applied', title: 'Trainee Full Stack', ts: '2026-07-05' },
+          { url: 'https://example.com/job3', stage: 'interview', title: 'Node.js Developer', ts: '2026-07-04' },
+        ],
         goal: { weeklyTarget: 5, weeklyApplied: 3 },
         conversion: { appliedToInterview: 33, interviewToOffer: 0 },
         avgFitApplied: 84,

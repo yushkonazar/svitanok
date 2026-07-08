@@ -33,9 +33,31 @@ describe('stats-core — recordEvent', () => {
     expect(s.funnel['j1']).toBe('applied');
     expect(s.appliedLog).toHaveLength(1);
     expect(s.fitApplied).toEqual([80]);
-    // stage null знімає
+    // мета (title+дата) для списку стадії
+    expect(s.funnelMeta['j1']).toMatchObject({ ts: '2026-07-07' });
+    // stage null знімає стадію ТА мету
     s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: null }, '2026-07-07');
     expect(s.funnel['j1']).toBeUndefined();
+    expect(s.funnelMeta['j1']).toBeUndefined();
+  });
+
+  it('job_stage зберігає title; зміна стадії не втрачає title', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      { type: 'job_stage', url: 'j2', stage: 'saved', title: 'Junior Dev' },
+      '2026-07-07',
+    );
+    expect(s.funnelMeta['j2'].title).toBe('Junior Dev');
+    // подальший перехід без title у події — тайтл зберігається зі стану
+    s = recordEvent(s, { type: 'job_stage', url: 'j2', stage: 'applied' }, '2026-07-08');
+    expect(s.funnel['j2']).toBe('applied');
+    expect(s.funnelMeta['j2']).toEqual({ title: 'Junior Dev', ts: '2026-07-08' });
+  });
+
+  it('normalize терпить старий стор без funnelMeta', () => {
+    const legacy = { funnel: { x: 'saved' } };
+    expect(normalize(legacy).funnelMeta).toEqual({});
   });
 
   it('job_dismiss ефемерне — стор не змінюється', () => {
@@ -88,11 +110,27 @@ describe('stats-core — aggregateStats', () => {
     expect(st.timeToOpenMin).toBe(20);
   });
 
+  it('funnelList: живий список стадій із title, впорядкований за стадіями', () => {
+    let s = seed(); // a=applied(fit90), b=interview — без title у seed
+    s = recordEvent(
+      s,
+      { type: 'job_stage', url: 'c', stage: 'saved', title: 'React Trainee' },
+      '2026-07-07',
+    );
+    const st = aggregateStats(s, '2026-07-07');
+    expect(st.funnelList).toEqual([
+      { url: 'c', stage: 'saved', title: 'React Trainee', ts: '2026-07-07' },
+      { url: 'a', stage: 'applied', title: '', ts: '2026-07-07' },
+      { url: 'b', stage: 'interview', title: '', ts: '2026-07-07' },
+    ]);
+  });
+
   it('порожній стор -> валідна форма з нулями', () => {
     const st = aggregateStats(emptyStore(), '2026-07-07');
     expect(st.streaks.openDays).toBe(0);
     expect(st.weekly).toHaveLength(7);
     expect(st.funnel).toEqual({ saved: 0, applied: 0, interview: 0, offer: 0 });
+    expect(st.funnelList).toEqual([]);
     expect(st.interests).toEqual([]);
     expect(st.timeToOpenMin).toBeNull();
   });
