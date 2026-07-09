@@ -474,44 +474,45 @@
         font-weight: 700;
         margin-top: 3px;
       }
-      .wxc-sun {
-        background: var(--glass-2);
-        border: 1px solid var(--border-2);
+      /* Добово-нічний циферблат (self-contained; фон/тінь — інлайн за станом). */
+      .wxc-dial {
         border-radius: 18px;
-        padding: 13px 15px 11px;
+        padding: 16px 16px 14px;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 8px;
+        justify-content: center;
       }
-      .wxc-sun-lbl {
-        font-size: 10.5px;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--muted);
-      }
-      .wxc-sun-svg {
+      .wxc-dial-svg {
         width: 100%;
+        max-width: 260px;
         height: auto;
+        display: block;
+        margin: 0 auto;
         overflow: visible;
-        margin: 2px 0;
       }
-      .wxc-sun-times {
+      .wxc-dial-times {
         display: flex;
         justify-content: space-between;
-        font-size: 13px;
-        font-weight: 700;
-        margin-top: auto;
+        width: 100%;
+        max-width: 260px;
+        margin: 0 auto;
       }
-      .wxc-sun-times span:last-child {
-        text-align: right;
+      .wxc-dial-times .rs {
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
-      .wxc-sun-times em {
-        display: block;
-        font-style: normal;
+      .wxc-dial-times .ic {
+        font-size: 15px;
+      }
+      .wxc-dial-times .v {
+        font-size: 13.5px;
+        font-weight: 800;
+      }
+      .wxc-dial-times .l {
         font-size: 10.5px;
         font-weight: 600;
-        color: var(--muted);
         margin-top: 1px;
       }
       .wxc-badges {
@@ -1285,6 +1286,11 @@
               minute: '2-digit',
             })
           : '—';
+      const fmtDur = (min) => {
+        const h = Math.floor(min / 60),
+          m = min % 60;
+        return h > 0 ? `${h} год ${m} хв` : `${m} хв`;
+      };
       const dayLen = (a, b) => {
         if (!a || !b || b <= a) return '—';
         const m = Math.round((b - a) / 60);
@@ -1484,58 +1490,176 @@
         return out.join('');
       }
 
-      // Дуга сходу→заходу з ДИНАМІЧНИМ станом за поточним часом (момент відкриття):
-      //  • день (схід ≤ зараз ≤ захід) — Сонце на дузі в позиції поточної години;
-      //  • ніч — місяць-серп + зорі + приглушений «підземний» глоу Сонця на тому
-      //    боці горизонту, куди воно зайшло / звідки зійде;
-      //  • невідомі схід/захід — Сонце в зеніті (нейтральний фолбек).
-      function wxSunArc(sr, ss) {
-        const P0 = [16, 86],
-          P1 = [120, -8],
-          P2 = [224, 86];
+      // Добово-нічний ЦИФЕРБЛАТ (дизайн Sun/Moon Day-Night Dial). Коло 260×232:
+      // верхня півкуля — день (схід→зеніт→захід), нижня — ніч (захід→надир→схід);
+      // маркер їде повним колом за поточним часом. Стани день/ніч мають власні
+      // палітри (self-contained «прилад неба»). Формули — з README (стилізовано:
+      // полудень/північ рівно в середині фази). Повертає повну панель.
+      const DIAL_DAY = {
+        card: '#F1F2F6',
+        shadow: '0 16px 36px -26px rgba(31,36,48,0.28)',
+        progA: '#D2D5DE',
+        progB: '#FF7A00',
+        bezel: '#D8DBE4',
+        hairline: '#F2F3F6',
+        ticks: '#E3E5EC',
+        horizon: '#E8D9BE',
+        glossOp: 0.5,
+        glow: '#FF9F1C',
+        marker: '#FF7A00',
+        timeText: '#1F2430',
+        subText: '#B87400',
+        rsVal: '#1F2430',
+        rsLabel: '#8A90A2',
+      };
+      const DIAL_NIGHT = {
+        card: '#20222E',
+        shadow: '0 16px 36px -26px rgba(10,12,30,0.5)',
+        progA: '#3A4380',
+        progB: '#8C95C4',
+        bezel: '#454E8A',
+        hairline: '#242A52',
+        ticks: '#333B6E',
+        horizon: '#2A3163',
+        glossOp: 0.1,
+        glow: '#C9D2FF',
+        marker: '#5B65A8',
+        timeText: '#F2F3FF',
+        subText: '#9AA6E8',
+        rsVal: '#E7E9F7',
+        rsLabel: '#8C95C4',
+      };
+      const DIAL_STARS = [
+        [100, 150, 1.3, 0.9],
+        [160, 145, 1.1, 0.8],
+        [130, 185, 1.3, 0.85],
+        [85, 175, 1.1, 0.75],
+        [175, 170, 1.1, 0.8],
+        [65, 140, 1, 0.6],
+        [195, 140, 1, 0.6],
+        [150, 122, 1, 0.65],
+      ];
+
+      function wxDial(sr, ss) {
         const nowSec = Date.now() / 1000;
         const valid = has(sr) && has(ss) && ss > sr;
-        const isNight = valid && (nowSec < sr || nowSec > ss);
 
-        let scene;
-        if (!isNight) {
-          // День (або невідомо → зеніт u=0.5). Сонце на квадратичній дузі.
-          const u = valid ? Math.max(0, Math.min(1, (nowSec - sr) / (ss - sr))) : 0.5;
-          const k = 1 - u;
-          const sx = k * k * P0[0] + 2 * k * u * P1[0] + u * u * P2[0];
-          const sy = k * k * P0[1] + 2 * k * u * P1[1] + u * u * P2[1];
-          scene = `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="var(--accent-2)" opacity="0.18" />
-            <circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="8.5" fill="var(--accent-2)" />`;
-        } else {
-          // Ніч. Сонце під горизонтом: до сходу — ліворуч, після заходу — праворуч.
-          const preDawn = nowSec < sr;
-          const gx = preDawn ? 20 : 220;
-          const glow = `<circle cx="${gx}" cy="95" r="14" fill="var(--accent-2)" opacity="0.16" /><circle cx="${gx}" cy="94" r="6" fill="var(--accent-2)" opacity="0.32" />`;
-          // Місяць-серп через маску (не залежить від кольору фону).
-          const mmid = 'moon' + GRAD_SEQ++;
-          const mx = 118,
-            my = 28;
-          const moon = `<defs><mask id="${mmid}"><rect x="0" y="0" width="240" height="100" fill="#fff" /><circle cx="${mx + 5}" cy="${my - 2}" r="10.5" fill="#000" /></mask></defs>
-            <circle cx="${mx}" cy="${my}" r="13" fill="#f6d98a" opacity="0.16" />
-            <circle cx="${mx}" cy="${my}" r="10.5" fill="#f6d98a" mask="url(#${mmid})" />`;
-          const stars = [
-            [58, 38, 1.5, 0.75],
-            [172, 30, 1.7, 0.7],
-            [150, 55, 1.1, 0.5],
-            [86, 22, 1.1, 0.5],
-            [198, 52, 1.2, 0.55],
-          ]
-            .map(([x, y, r, o]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="var(--muted)" opacity="${o}" />`)
-            .join('');
-          scene = glow + stars + moon;
+        // Фаза + частка f у поточній фазі + наступна подія.
+        let isDay = true,
+          f = 0.5,
+          nextEventSec = null,
+          nextLabel = '';
+        if (valid) {
+          if (nowSec >= sr && nowSec <= ss) {
+            isDay = true;
+            f = (nowSec - sr) / (ss - sr);
+            nextEventSec = ss;
+            nextLabel = 'заходу';
+          } else {
+            isDay = false;
+            if (nowSec < sr) {
+              // Досвіток: учорашній захід (≈ss−24год) → сьогоднішній схід.
+              const prevSunset = ss - 86400;
+              f = (nowSec - prevSunset) / (sr - prevSunset);
+              nextEventSec = sr;
+            } else {
+              // Після заходу: сьогоднішній захід → завтрашній схід (≈sr+24год).
+              const nextSunrise = sr + 86400;
+              f = (nowSec - ss) / (nextSunrise - ss);
+              nextEventSec = nextSunrise;
+            }
+            nextLabel = 'сходу';
+          }
         }
-        const arcOpacity = isNight ? '0.22' : '0.45';
-        return `<svg class="wxc-sun-svg" viewBox="0 0 240 100" role="img" aria-label="${isNight ? 'ніч — сонце під горизонтом' : 'схід і захід сонця'}">
-          <path d="M16 86 Q120 -8 224 86" fill="none" stroke="var(--muted)" stroke-opacity="${arcOpacity}" stroke-width="2.5" stroke-dasharray="1.5 8" stroke-linecap="round" />
-          <circle cx="16" cy="86" r="4.5" fill="var(--muted)" opacity="0.5" />
-          <circle cx="224" cy="86" r="4.5" fill="var(--muted)" opacity="0.5" />
-          ${scene}
+        f = Math.max(0, Math.min(1, f));
+
+        // Кут (екранні координати, y вниз) і позиція маркера.
+        const deg = (isDay ? 180 : 0) + 180 * f;
+        const rad = (deg * Math.PI) / 180;
+        const nowX = 130 + 84 * Math.cos(rad);
+        const nowY = 110 + 84 * Math.sin(rad);
+        const startX = isDay ? 46 : 214;
+        const largeArc = 180 * f > 180 ? 1 : 0;
+
+        const P = isDay ? DIAL_DAY : DIAL_NIGHT;
+        const q = GRAD_SEQ++;
+
+        // Зорі (нічна півкуля): вдень — груповий dim 0.55, вночі — власні opacity.
+        const stars =
+          DIAL_STARS.map(
+            ([x, y, r, o]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="#B9C2F0" opacity="${o}" />`,
+          ).join('') +
+          // Зоря-«фіча» з ореолом.
+          `<circle cx="115" cy="128" r="10" fill="#B9C2F0" opacity="0.12" /><circle cx="115" cy="128" r="1.3" fill="#E4E9FF" opacity="0.95" />`;
+
+        // Кінцеві крапки: минула подія — нейтральна, майбутня — акцент+ореол.
+        const upPt = isDay ? [214, 110] : [46, 110];
+        const pastPt = isDay ? [46, 110] : [214, 110];
+        const pastCol = isDay ? '#C9CDD8' : '#3A4380';
+        const upCol = isDay ? '#FF9F1C' : '#FFD59A';
+        const upHalo = isDay ? 0.25 : 0.3;
+        const endDots = `<circle cx="${pastPt[0]}" cy="${pastPt[1]}" r="4" fill="${pastCol}" />
+          <circle cx="${upPt[0]}" cy="${upPt[1]}" r="8" fill="${upCol}" opacity="${upHalo}" />
+          <circle cx="${upPt[0]}" cy="${upPt[1]}" r="4.5" fill="${upCol}" />`;
+
+        // Референс-іконки: Сонце в зеніті, Місяць-серп у надирі (активна — з ореолом).
+        const sunIcon = isDay
+          ? `<circle cx="130" cy="26" r="15" fill="url(#glow${q})" /><circle cx="130" cy="26" r="7" fill="#FFB020" />`
+          : `<g opacity="0.35"><circle cx="130" cy="26" r="7" fill="#FFB020" /></g>`;
+        const moonBase = `<circle cx="130" cy="194" r="9" fill="#E4E9FF" /><circle cx="134" cy="191" r="7.5" fill="#0D1128" />`;
+        const moonIcon = isDay
+          ? `<g opacity="0.4">${moonBase}</g>`
+          : `<circle cx="130" cy="194" r="17" fill="url(#glow${q})" />${moonBase}`;
+
+        // Маркер «зараз» + центральний зчитувач (у активній півкулі).
+        const marker = `<circle cx="${nowX.toFixed(2)}" cy="${nowY.toFixed(2)}" r="11" fill="url(#glow${q})" /><circle cx="${nowX.toFixed(2)}" cy="${nowY.toFixed(2)}" r="5.5" fill="#FFFFFF" stroke="${P.marker}" stroke-width="2.5" />`;
+        const cyTime = isDay ? 72 : 148;
+        const sub = valid
+          ? `до ${nextLabel} ${fmtDur(Math.max(0, Math.round((nextEventSec - nowSec) / 60)))}`
+          : '';
+        const readout = `<text x="130" y="${cyTime}" text-anchor="middle" font-size="26" font-weight="800" fill="${P.timeText}" style="letter-spacing:-0.01em">${fmtClock(nowSec)}</text>${sub ? `<text x="130" y="${cyTime + 16}" text-anchor="middle" font-size="11" font-weight="700" fill="${P.subText}">${esc(sub)}</text>` : ''}`;
+
+        const aria = valid
+          ? `Зараз ${isDay ? 'день' : 'ніч'}. Схід о ${fmtClock(sr)}, захід о ${fmtClock(ss)}. ${sub}`
+          : 'Схід і захід сонця';
+
+        const svg = `<svg class="wxc-dial-svg" viewBox="0 0 260 232" role="img" aria-label="${esc(aria)}">
+          <defs>
+            <clipPath id="ct${q}"><rect x="0" y="0" width="260" height="110" /></clipPath>
+            <clipPath id="cb${q}"><rect x="0" y="110" width="260" height="122" /></clipPath>
+            <clipPath id="cf${q}"><circle cx="130" cy="110" r="84" /></clipPath>
+            <linearGradient id="domeD${q}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" /><stop offset="1" stop-color="#FFE3B8" /></linearGradient>
+            <linearGradient id="domeN${q}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1B2140" /><stop offset="1" stop-color="#0D1128" /></linearGradient>
+            <linearGradient id="prog${q}" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${P.progA}" /><stop offset="1" stop-color="${P.progB}" /></linearGradient>
+            <radialGradient id="gloss${q}" cx="0.32" cy="0.28" r="0.6"><stop offset="0" stop-color="#FFFFFF" stop-opacity="${P.glossOp}" /><stop offset="1" stop-color="#FFFFFF" stop-opacity="0" /></radialGradient>
+            <radialGradient id="glow${q}" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="${P.glow}" stop-opacity="0.45" /><stop offset="1" stop-color="${P.glow}" stop-opacity="0" /></radialGradient>
+          </defs>
+          <circle cx="130" cy="110" r="84" fill="url(#domeD${q})" clip-path="url(#ct${q})" />
+          <circle cx="130" cy="110" r="84" fill="url(#domeN${q})" clip-path="url(#cb${q})" />
+          <g clip-path="url(#cf${q})" opacity="${isDay ? 0.55 : 1}">${stars}</g>
+          <circle cx="130" cy="110" r="84" fill="url(#gloss${q})" clip-path="url(#cf${q})" />
+          <circle cx="130" cy="110" r="84" fill="none" stroke="${P.bezel}" stroke-width="2" />
+          <circle cx="130" cy="110" r="88" fill="none" stroke="${P.hairline}" stroke-width="1" />
+          <g stroke="${P.ticks}" stroke-width="1.5" stroke-linecap="round">
+            <line x1="190.81" y1="170.81" x2="195.76" y2="175.76" /><line x1="69.19" y1="170.81" x2="64.24" y2="175.76" />
+            <line x1="69.19" y1="49.19" x2="64.24" y2="44.24" /><line x1="190.81" y1="49.19" x2="195.76" y2="44.24" />
+          </g>
+          <line x1="46" y1="110" x2="214" y2="110" stroke="${P.horizon}" stroke-width="1.5" />
+          <path d="M ${startX},110 A 84,84 0 ${largeArc} 1 ${nowX.toFixed(2)},${nowY.toFixed(2)}" fill="none" stroke="url(#prog${q})" stroke-width="3" stroke-linecap="round" />
+          ${endDots}
+          ${sunIcon}
+          ${moonIcon}
+          ${marker}
+          ${readout}
         </svg>`;
+
+        return `<div class="wxc-dial" style="background:${P.card};box-shadow:${P.shadow}">
+          ${svg}
+          <div class="wxc-dial-times">
+            <div class="rs"><span class="ic">🌅</span><div><div class="v" style="color:${P.rsVal}">${fmtClock(sr)}</div><div class="l" style="color:${P.rsLabel}">схід</div></div></div>
+            <div class="rs"><div style="text-align:right"><div class="v" style="color:${P.rsVal}">${fmtClock(ss)}</div><div class="l" style="color:${P.rsLabel}">захід</div></div><span class="ic">🌇</span></div>
+          </div>
+        </div>`;
       }
 
       // Графік температури по годинах (дизайн): згладжена крива area+line, точки,
@@ -1659,15 +1783,8 @@
           </div>
         </div>`;
 
-        // Права зона: панель сходу/заходу з дугою.
-        const sun = `<div class="wxc-sun">
-          <div class="wxc-sun-lbl">Схід і захід сонця</div>
-          ${wxSunArc(l.sunrise, l.sunset)}
-          <div class="wxc-sun-times">
-            <span>🌅 ${fmtClock(l.sunrise)}<em>схід</em></span>
-            <span>🌇 ${fmtClock(l.sunset)}<em>захід</em></span>
-          </div>
-        </div>`;
+        // Права зона: добово-нічний циферблат (self-contained панель).
+        const sun = wxDial(l.sunrise, l.sunset);
 
         const badges = [uvBadge(l.uv), aqiBadge(l.aqi)].filter(Boolean).join('');
         const badgeRow = badges ? `<div class="wxc-badges">${badges}</div>` : '';
@@ -2259,6 +2376,12 @@
       /* ══════════════════════════════════════════════════════════════════════
          ДЕМО-ДАНІ (усі нові поля, щоб бачити повну версію поза Telegram)
          ══════════════════════════════════════════════════════════════════════ */
+      // Демо схід/захід — СЬОГОДНІШНІ (щоб циферблат показував живий стан і відлік).
+      const _demoSun = (h, m) => {
+        const d = new Date();
+        d.setHours(h, m, 0, 0);
+        return Math.floor(d.getTime() / 1000);
+      };
       const SAMPLE = {
         dateLabel: 'Демо-режим',
         generatedAt: new Date().toISOString(),
@@ -2289,8 +2412,8 @@
                   advice: 'Легка куртка на вечір; удень футболка.',
                   rainWindow: '15:00–17:00',
                   dayLenDeltaMin: -2,
-                  sunrise: 1751255000,
-                  sunset: 1751313000,
+                  sunrise: _demoSun(6, 43),
+                  sunset: _demoSun(22, 50),
                   hourlyTemp: [17, 18, 20, 22, 24, 25, 24, 22, 20, 18],
                   hourly: [
                     { h: 6, t: 17 }, { h: 8, t: 18 }, { h: 10, t: 20 }, { h: 12, t: 22 },
@@ -2315,8 +2438,8 @@
                   aqi: 3,
                   advice: 'Сонцезахист обов’язково, пий воду.',
                   dayLenDeltaMin: -2,
-                  sunrise: 1751253000,
-                  sunset: 1751311000,
+                  sunrise: _demoSun(6, 10),
+                  sunset: _demoSun(22, 16),
                   hourlyTemp: [19, 21, 23, 25, 27, 28, 27, 25, 23, 21],
                   hourly: [
                     { h: 6, t: 19 }, { h: 8, t: 21 }, { h: 10, t: 23 }, { h: 12, t: 25 },
