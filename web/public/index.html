@@ -1730,13 +1730,18 @@
           lid = 'wxl' + GRAD_SEQ;
         GRAD_SEQ++;
 
-        // Дощ-бенд за вікном (напр. «15:00–17:00»).
+        // Дощ-бенд за вікном (напр. «15:00–17:00»): вертикальна смуга (кореляція з
+        // кривою) + компактний підпис «☔ 15–17» ПІД кривою, у вільній зоні над
+        // віссю годин (не перетинає лінію, центрований під смугою).
         let band = '';
         const m = has(rainWindow) ? String(rainWindow).match(/(\d{1,2}):\d{2}\D+(\d{1,2}):\d{2}/) : null;
         if (m) {
           const rx0 = X(+m[1]),
             rw = Math.max(7, X(+m[2]) - rx0);
-          band = `<rect x="${rx0.toFixed(1)}" y="${yTop - 2}" width="${rw.toFixed(1)}" height="${yBot - yTop + 2}" rx="6" fill="#4c9bff" opacity="0.13" /><text x="${(rx0 + 4).toFixed(1)}" y="${yTop + 9}" fill="#4c9bff" font-size="11" font-weight="700">☔ дощ</text>`;
+          const rcx = Math.max(xL + 20, Math.min(xR - 20, rx0 + rw / 2));
+          band =
+            `<rect x="${rx0.toFixed(1)}" y="${yTop - 2}" width="${rw.toFixed(1)}" height="${yBot - yTop + 2}" rx="6" fill="#4c9bff" opacity="0.16" />` +
+            `<text x="${rcx.toFixed(1)}" y="128" fill="#4c9bff" font-size="11" font-weight="700" text-anchor="middle">☔ ${+m[1]}–${+m[2]}</text>`;
         }
         const dots = P.map(
           (p) =>
