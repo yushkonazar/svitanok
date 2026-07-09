@@ -1731,25 +1731,40 @@
           lid = 'wxl' + GRAD_SEQ;
         GRAD_SEQ++;
 
-        // Дощ-бенд за вікном (напр. «15:00–17:00»): вертикальна смуга (кореляція з
-        // кривою) + компактний підпис «☔ 15–17» ПІД кривою, у вільній зоні над
-        // віссю годин (не перетинає лінію, центрований під смугою).
+        // Дощ-вікно (напр. «15:00–17:00»): ПУНКТИРНІ межі вікна + плаваюча пігулка
+        // «☔ 15–17» під кривою (замість суцільної заливки — та «замулювалась»
+        // під помаранчевим градієнтом area через z-order і кольоровий конфлікт).
+        // Малюється ПІСЛЯ area+лінії — межі лишаються чіткими на будь-якій ділянці.
         let band = '';
         const m = has(rainWindow)
           ? String(rainWindow).match(/(\d{1,2}):\d{2}\D+(\d{1,2}):\d{2}/)
           : null;
         if (m) {
-          const rx0 = X(+m[1]),
-            rw = Math.max(7, X(+m[2]) - rx0);
-          const rcx = Math.max(xL + 20, Math.min(xR - 20, rx0 + rw / 2));
-          band =
-            `<rect x="${rx0.toFixed(1)}" y="${yTop - 2}" width="${rw.toFixed(1)}" height="${yBot - yTop + 2}" rx="6" fill="#4c9bff" opacity="0.16" />` +
-            `<text x="${rcx.toFixed(1)}" y="128" fill="#4c9bff" font-size="11" font-weight="700" text-anchor="middle">☔ ${+m[1]}–${+m[2]}</text>`;
+          const rx0 = X(+m[1]);
+          const rx1 = X(+m[2]);
+          const label = `☔ ${+m[1]}–${+m[2]}`;
+          const pillW = Math.max(46, label.length * 6.6 + 16);
+          const rcx = Math.max(xL + pillW / 2, Math.min(xR - pillW / 2, (rx0 + rx1) / 2));
+          band = `<line x1="${rx0.toFixed(1)}" y1="${yTop}" x2="${rx0.toFixed(1)}" y2="${yBot}" stroke="#4c9bff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.65" />
+            <line x1="${rx1.toFixed(1)}" y1="${yTop}" x2="${rx1.toFixed(1)}" y2="${yBot}" stroke="#4c9bff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.65" />
+            <rect x="${(rcx - pillW / 2).toFixed(1)}" y="119" width="${pillW.toFixed(1)}" height="18" rx="9" fill="#4c9bff" opacity="0.18" />
+            <text x="${rcx.toFixed(1)}" y="131.5" fill="#4c9bff" font-size="11" font-weight="700" text-anchor="middle">${label}</text>`;
         }
-        const dots = P.map(
-          (p) =>
-            `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="var(--bg)" stroke="var(--accent)" stroke-width="2" />`,
-        ).join('');
+        // Маркери (кружечки) — лише на годинах з підписом осі (+ перша/остання
+        // точка), а не на кожній. Лінія лишається повної роздільності (гладка),
+        // але щільні майже-однакові ділянки (напр. рівна вранці) не «зливаються»
+        // у пляму з маркерів — це саме те, що виглядало як точки, що «з'їжджають».
+        const dotHours = new Set(pts.filter((p) => p.h % 3 === 0).map((p) => p.h));
+        dotHours.add(pts[0].h);
+        dotHours.add(pts[pts.length - 1].h);
+        const dots = pts
+          .map((p, i) => (dotHours.has(p.h) ? P[i] : null))
+          .filter(Boolean)
+          .map(
+            (p) =>
+              `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="var(--bg)" stroke="var(--accent)" stroke-width="2" />`,
+          )
+          .join('');
         const ticks = pts
           .filter((p) => p.h % 3 === 0)
           .map(
@@ -1763,9 +1778,9 @@
             <linearGradient id="${lid}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffb03a" /><stop offset="0.55" stop-color="#ff7a59" /><stop offset="1" stop-color="#ff6b86" /></linearGradient>
           </defs>
           ${yAxis}
-          ${band}
           <path d="${area}" fill="url(#${gid})" />
           <path d="${d}" fill="none" stroke="url(#${lid})" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          ${band}
           ${dots}
           ${ticks}
         </svg>`;
