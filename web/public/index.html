@@ -1275,6 +1275,23 @@
         );
       const byId = (blocks, id) => (blocks || []).find((b) => b.id === id);
       const has = (v) => v !== undefined && v !== null && v !== '';
+      const truncate = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+      // Стабільний детермінований id для обраного без url (факт/цитата/питання).
+      const textHash = (s) => {
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+        return (h >>> 0).toString(36);
+      };
+      // Пам'ять підсвітки 🔖 для факту/цитати/питання (kind:id → {saved:bool}).
+      const ITEM_STATE = new Map();
+      function saveItemBtn(kind, id, title) {
+        const st = ITEM_STATE.get(kind + ':' + id) || {};
+        const on = st.saved ? ' on' : '';
+        const icon = st.saved ? '✅' : '🔖';
+        return `<span class="item-actions" data-kind="${esc(kind)}" data-id="${esc(id)}" data-title="${esc(truncate(title))}">
+          <button class="save${on}" data-act="save-item" aria-label="Зберегти">${icon}</button>
+        </span>`;
+      }
       const signTemp = (t) => (t > 0 ? '+' : '') + t + '°';
       const KYIV = 'Europe/Kyiv';
 
@@ -1451,12 +1468,23 @@
             ? `<a class="learn-btn" href="${esc(mock.data.resourceUrl)}" target="_blank" rel="noopener">📚 Вивчити</a>`
             : '';
           const more = `<div class="exp-more">${hint}${answer}${learn}</div>`;
-          out.push(card('🎤 Питання дня', expandable(base + more)));
+          const qId = textHash(mock.data.question);
+          out.push(
+            card(
+              '🎤 Питання дня',
+              expandable(base + more) + saveItemBtn('question', qId, mock.data.question),
+            ),
+          );
         }
 
         // 4) Факт дня.
         const fact = byId(blocks, 'fact');
-        if (fact?.data) out.push(card('🧠 Факт дня', esc(fact.data.fact)));
+        if (fact?.data) {
+          const fId = textHash(fact.data.fact);
+          out.push(
+            card('🧠 Факт дня', esc(fact.data.fact) + saveItemBtn('fact', fId, fact.data.fact)),
+          );
+        }
 
         // 5) Крок до офера.
         const ns = byId(blocks, 'next-step');
@@ -1464,13 +1492,16 @@
 
         // 6) Думка дня.
         const stoic = byId(blocks, 'stoic');
-        if (stoic?.data)
+        if (stoic?.data) {
+          const quoteTitle = `«${stoic.data.text}» — ${stoic.data.author}`;
+          const qtId = textHash(quoteTitle);
           out.push(
             card(
               '🏛 Думка дня',
-              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:8px">— ${esc(stoic.data.author)}</div>`,
+              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:8px">— ${esc(stoic.data.author)}</div>${saveItemBtn('quote', qtId, quoteTitle)}`,
             ),
           );
+        }
 
         // 7) «У цей день»: показуємо до 6, решта — під toggle.
         const onthis = byId(blocks, 'onthisday');
@@ -1901,6 +1932,24 @@
       const NEWS_STATE = new Map();
       const nk = (url) => 'n:' + url;
 
+      // Гідрувати 🔖 з /api/stats.savedList — переживає релоуд (на відміну від
+      // NEWS_STATE/ITEM_STATE, які самі по собі лише сесійна пам'ять).
+      function hydrateSaved(stats) {
+        const list = stats && Array.isArray(stats.savedList) ? stats.savedList : [];
+        for (const it of list) {
+          if (!it || !it.kind || !it.id) continue;
+          if (it.kind === 'news') {
+            const st = NEWS_STATE.get(nk(it.id)) || {};
+            st.saved = true;
+            NEWS_STATE.set(nk(it.id), st);
+          } else {
+            const st = ITEM_STATE.get(it.kind + ':' + it.id) || {};
+            st.saved = true;
+            ITEM_STATE.set(it.kind + ':' + it.id, st);
+          }
+        }
+      }
+
       function renderNews(blocks) {
         const n = byId(blocks, 'news');
         if (!n?.data?.groups?.length) return '<div class="empty">Новин немає</div>';
@@ -2111,12 +2160,26 @@
 
         /* ── D · ІНТЕРЕСИ ── */
         const interests = stats.interests || [];
+        const savedKindIcon = { news: '📰', fact: '🧠', quote: '🏛', question: '🎤' };
+        const savedRow = (x) => {
+          const icon = savedKindIcon[x.kind] || '🔖';
+          const label = esc(truncate(x.title || '', 80));
+          return x.kind === 'news' && x.url
+            ? `<div class="item"><a href="${esc(x.url)}" target="_blank" rel="noopener">${icon} ${label}</a></div>`
+            : `<div class="item">${icon} ${label}</div>`;
+        };
+        const savedList = Array.isArray(stats.savedList) ? stats.savedList : [];
         const dBlock = `${
           interests.length
             ? `<div class="chips">${interests.map((x) => `<span class="chip">${topicEmoji(x.topic)} ${esc(x.topic)}<span class="c">${x.score}</span></span>`).join('')}</div>`
             : ph('Лайкай новини — і тут з’являться твої теми')
         }
-          ${has(stats.readPerDay) ? `<div class="statline" style="margin-top:8px"><span class="k">Новин на день (середнє)</span><span class="v">${stats.readPerDay}</span></div>` : ''}`;
+          ${has(stats.readPerDay) ? `<div class="statline" style="margin-top:8px"><span class="k">Новин на день (середнє)</span><span class="v">${stats.readPerDay}</span></div>` : ''}
+          ${
+            has(stats.savedCount) && stats.savedCount > 0
+              ? `<div class="statline" style="margin-top:8px"><span class="k">🔖 Ти зберіг</span><span class="v">${stats.savedCount}</span></div><div style="margin-top:4px">${savedList.map(savedRow).join('')}</div>`
+              : ''
+          }`;
         out.push(card('❤️ D · Інтереси', dBlock));
 
         /* ── E · НАДІЙНІСТЬ (міні-рядок) ── */
@@ -2257,6 +2320,17 @@
         return false;
       }
 
+      // Пасивний трекінг (клік по заголовку новини) — мовчки, без alert на
+      // помилку/поза Telegram: навігація за посиланням не має блокуватись.
+      function trackClick(type, payload) {
+        if (!tg || !tg.initData) return;
+        fetch('/api/event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type, ...payload, initData: tg.initData }),
+        }).catch(() => {});
+      }
+
       // Навішування дій (делеговано на контейнери секцій — переживає ре-рендер).
       let ACTIONS_WIRED = false;
       function wireActions() {
@@ -2265,7 +2339,7 @@
         const newsEl = document.getElementById('news');
         const jobsEl = document.getElementById('jobs');
 
-        // Новини: під-таби + голоси + збереження (per-item) + «Більше».
+        // Новини: під-таби + голоси + збереження (per-item) + «Більше» + клік-трекінг.
         newsEl.addEventListener('click', (e) => {
           const sub = e.target.closest('.subnav button');
           if (sub) {
@@ -2274,6 +2348,14 @@
             rerenderNews();
             haptic('light');
             return;
+          }
+
+          const link = e.target.closest('a.htext');
+          if (link) {
+            const actions = link.closest('.news-item')?.querySelector('.item-actions');
+            if (actions)
+              trackClick('news_click', { category: actions.dataset.cat, url: actions.dataset.url });
+            return; // навігація за посиланням — не блокуємо
           }
 
           const voteBtn = e.target.closest('.item-actions button[data-dir]');
@@ -2315,8 +2397,27 @@
           }
         });
 
-        // «Показати ще» подій у «Сьогодні» (той самий патерн more-btn).
+        // «Показати ще» подій + 🔖 на факт/цитату/питання у «Сьогодні».
         document.getElementById('today').addEventListener('click', (e) => {
+          const saveBtn = e.target.closest('.item-actions button[data-act="save-item"]');
+          if (saveBtn) {
+            e.stopPropagation();
+            const wrap = saveBtn.closest('.item-actions');
+            const key = wrap.dataset.kind + ':' + wrap.dataset.id;
+            sendEvent(
+              'save_item',
+              { kind: wrap.dataset.kind, id: wrap.dataset.id, title: wrap.dataset.title },
+              () => {
+                const st = ITEM_STATE.get(key) || {};
+                st.saved = !st.saved;
+                ITEM_STATE.set(key, st);
+                saveBtn.classList.toggle('on', st.saved);
+                saveBtn.textContent = st.saved ? '✅' : '🔖';
+              },
+            );
+            return;
+          }
+
           const moreBtn = e.target.closest('.more-btn[data-toggle]');
           if (!moreBtn) return;
           e.stopPropagation();
@@ -2406,6 +2507,7 @@
 
       function render(brief, stats) {
         CURRENT = { blocks: brief.blocks || [], stats: stats || null };
+        hydrateSaved(CURRENT.stats);
         renderFreshness(brief.generatedAt);
         document.getElementById('when').textContent = brief.dateLabel || '';
         document.getElementById('today').innerHTML = renderToday(CURRENT.blocks);
@@ -2710,6 +2812,30 @@
           { topic: 'Технології', score: 12 },
           { topic: 'Наука', score: 7 },
           { topic: 'Політика', score: 3 },
+        ],
+        savedCount: 5,
+        savedList: [
+          {
+            kind: 'question',
+            id: 'q1',
+            title: 'Чим відрізняється let від var?',
+            url: null,
+            ts: '2026-07-08',
+          },
+          {
+            kind: 'news',
+            id: 'https://example.com/news1',
+            url: 'https://example.com/news1',
+            title: 'Стартап із Києва підняв $2М',
+            ts: '2026-07-07',
+          },
+          {
+            kind: 'quote',
+            id: 'qt1',
+            title: '«Дій, а не бажай» — Марк Аврелій',
+            url: null,
+            ts: '2026-07-06',
+          },
         ],
         readPerDay: 6,
         reliability: { onTime: 28, total: 30, deadman: 1 },
