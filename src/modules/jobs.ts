@@ -63,6 +63,62 @@ interface ScoredJob extends Candidate {
   why: string;
 }
 
+// --- jobPrefs (памʼять скорера з живої воронки: dismiss/applied→interview→offer) ---
+export interface JobPrefs {
+  liked: string[];
+  disliked: string[];
+}
+export const JOB_PREFS_CAP = 20;
+
+const JOB_STOP_WORDS = new Set([
+  'job',
+  'jobs',
+  'vacancy',
+  'вакансія',
+  'вакансии',
+  'developer',
+  'розробник',
+  'engineer',
+  'інженер',
+  'junior',
+  'trainee',
+  'intern',
+  'стажист',
+  'джуніор',
+  'full',
+  'part',
+  'time',
+  'remote',
+  'hybrid',
+  'офіс',
+  'дистанційно',
+  'stack',
+]);
+
+function titleTokens(title: string): string[] {
+  return (title.toLowerCase().match(/[a-zа-яїієґ0-9+#.]{3,}/gi) ?? []).filter(
+    (t) => !JOB_STOP_WORDS.has(t),
+  );
+}
+
+/** Оновити памʼять скорера за сигналом з живої воронки (чиста функція, cap+decay найстаріших). */
+export function updateJobPrefs(
+  prefs: JobPrefs,
+  signal: 'dismiss' | 'applied' | 'interview' | 'offer',
+  title: string,
+): JobPrefs {
+  const tokens = titleTokens(title);
+  if (tokens.length === 0) return prefs;
+  const toAdd = signal === 'dismiss' ? 'disliked' : 'liked';
+  const toRemove = toAdd === 'liked' ? 'disliked' : 'liked';
+  const merged = [...tokens, ...prefs[toAdd].filter((t) => !tokens.includes(t))].slice(
+    0,
+    JOB_PREFS_CAP,
+  );
+  const filtered = prefs[toRemove].filter((t) => !tokens.includes(t));
+  return { ...prefs, [toAdd]: merged, [toRemove]: filtered };
+}
+
 /** Пул round-robin по фідах (різноманіття), дедуп проти показаних, cap POOL_SIZE. */
 function collectPool(lists: RssItem[][], shown: ShownJobs, cutoff: number): Candidate[] {
   const seen = new Set<string>();
@@ -83,10 +139,20 @@ function collectPool(lists: RssItem[][], shown: ShownJobs, cutoff: number): Cand
   return pool;
 }
 
-export function buildScorePrompt(profile: string, candidates: Candidate[]): string {
+export function buildScorePrompt(
+  profile: string,
+  candidates: Candidate[],
+  prefs?: JobPrefs,
+): string {
+  const prefLines: string[] = [];
+  if (prefs?.liked?.length)
+    prefLines.push(`Із попереднього фідбоку цінує: ${prefs.liked.join(', ')}.`);
+  if (prefs?.disliked?.length)
+    prefLines.push(`Із попереднього фідбоку зазвичай ігнорує: ${prefs.disliked.join(', ')}.`);
   return [
     'Ти — кар’єрний асистент. Профіль кандидата:',
     profile,
+    ...prefLines,
     'Оціни релевантність КОЖНОЇ вакансії профілю від 0 до 100',
     '(рівень trainee/junior, збіг стеку, junior-дружність).',
     'Вакансії:',
@@ -156,9 +222,11 @@ export const jobsModule: Module<AppConfig> = {
     if (pool.length === 0) return null;
 
     // LLM-скоринг релевантності; збій -> фолбек на свіжість (порядок пулу).
+    // jobPrefs — памʼять із живої воронки (dismiss/applied→interview→offer), §D2.
+    const jobPrefs = ctx.state.get<JobPrefs>('jobPrefs');
     let ranked: ScoredJob[];
     try {
-      const out = await ctx.llm.complete(buildScorePrompt(cfg.profile, pool), {
+      const out = await ctx.llm.complete(buildScorePrompt(cfg.profile, pool, jobPrefs), {
         timeoutMs: ctx.config.llm.timeoutMs,
       });
       const scores = parseScores(out);

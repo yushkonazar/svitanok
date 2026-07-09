@@ -294,7 +294,8 @@
         gap: 7px;
       }
       /* акцент лише як тонка «іскра» зліва від заголовка картки */
-      .card > h3::before {
+      .card > h3::before,
+      .card-head > h3::before {
         content: '';
         flex: 0 0 auto;
         width: 3px;
@@ -303,8 +304,24 @@
         background: var(--grad);
       }
       /* заголовки без «іскри» (де емодзі несе акцент) */
-      .card > h3.plain::before {
+      .card > h3.plain::before,
+      .card-head > h3.plain::before {
         display: none;
+      }
+      /* заголовок + кутова дія (напр. 🔖) в один рядок; відступ знизу — на
+         обгортці, а не на h3 (щоб кнопка центрувалась по висоті без перекосу) */
+      .card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 0 0 11px;
+      }
+      .card .card-head h3 {
+        margin: 0;
+      }
+      .card-head .item-actions {
+        flex: 0 0 auto;
       }
 
       /* вкладені «плитки» (напр. погода) — легше скло */
@@ -576,6 +593,24 @@
         color: var(--on-accent, #1a1206);
         font-weight: 600;
         font-size: 13px;
+      }
+      .step-done-btn {
+        display: inline-block;
+        margin-top: 10px;
+        padding: 9px 15px;
+        border: none;
+        border-radius: 10px;
+        background: var(--grad, linear-gradient(90deg, #ff6b57, #ffb03a));
+        color: var(--on-accent, #1a1206);
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .step-done-btn.on,
+      .step-done-btn:disabled {
+        background: var(--glass-2);
+        color: var(--muted);
+        cursor: default;
       }
       .answer {
         margin-top: 8px;
@@ -893,8 +928,21 @@
         border: 1.5px solid var(--border-2);
         min-width: 0;
       }
-      .funnel .stage.expanded {
+      .funnel .stage.active {
         border-color: var(--accent);
+      }
+      /* панель деталей воронки — ПІД рядком стадій (не inline у вузькій комірці) */
+      .funnel-detail {
+        margin-top: 10px;
+      }
+      .funnel-detail:empty {
+        display: none;
+      }
+      .funnel-detail-head {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
       }
       .funnel .stage .n {
         font-family: 'Unbounded', 'Golos Text', sans-serif;
@@ -1275,6 +1323,23 @@
         );
       const byId = (blocks, id) => (blocks || []).find((b) => b.id === id);
       const has = (v) => v !== undefined && v !== null && v !== '';
+      const truncate = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+      // Стабільний детермінований id для обраного без url (факт/цитата/питання).
+      const textHash = (s) => {
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+        return (h >>> 0).toString(36);
+      };
+      // Пам'ять підсвітки 🔖 для факту/цитати/питання (kind:id → {saved:bool}).
+      const ITEM_STATE = new Map();
+      function saveItemBtn(kind, id, title) {
+        const st = ITEM_STATE.get(kind + ':' + id) || {};
+        const on = st.saved ? ' on' : '';
+        const icon = st.saved ? '✅' : '🔖';
+        return `<span class="item-actions" data-kind="${esc(kind)}" data-id="${esc(id)}" data-title="${esc(truncate(title))}">
+          <button class="save${on}" data-act="save-item" aria-label="Зберегти">${icon}</button>
+        </span>`;
+      }
       const signTemp = (t) => (t > 0 ? '+' : '') + t + '°';
       const KYIV = 'Europe/Kyiv';
 
@@ -1306,8 +1371,13 @@
       // Заголовок з емодзі → без градієнт-«іскри» (емодзі вже несе акцент);
       // текстовий заголовок (Погода/Курс) → тонка «іскра» зліва.
       const leadsWithEmoji = (s) => /^\s*[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/u.test(s);
-      const card = (title, inner, attrs = '') =>
-        `<div class="card" ${attrs}>${title ? `<h3${leadsWithEmoji(title) ? ' class="plain"' : ''}>${esc(title)}</h3>` : ''}${inner}</div>`;
+      const card = (title, inner, attrs = '', headerAction = '') => {
+        const h3 = title
+          ? `<h3${leadsWithEmoji(title) ? ' class="plain"' : ''}>${esc(title)}</h3>`
+          : '';
+        const head = headerAction ? `<div class="card-head">${h3}${headerAction}</div>` : h3;
+        return `<div class="card" ${attrs}>${head}${inner}</div>`;
+      };
       const ph = (txt) => `<div class="ph">${esc(txt)}</div>`;
 
       /* ══════════════════════════════════════════════════════════════════════
@@ -1423,7 +1493,12 @@
          Порядок: Погода → Курс → Питання дня → Факт дня → Крок → Думка → У цей день
          (без підписів-груп Практичне/Розвиток/Натхнення)
          ══════════════════════════════════════════════════════════════════════ */
-      function renderToday(blocks) {
+      // «У цей день»: скільки подій показано зараз (зростає на ONTHISDAY_STEP за
+      // клік «Показати ще», доки не покаже всі з резерву). Скидається loadDay().
+      let ONTHISDAY_SHOWN = 8;
+      const ONTHISDAY_STEP = 2;
+
+      function renderToday(blocks, stats) {
         const out = [];
 
         // 1) Погода — кожна локація окрема повноширинна клікабельна картка (ізольовано).
@@ -1451,40 +1526,61 @@
             ? `<a class="learn-btn" href="${esc(mock.data.resourceUrl)}" target="_blank" rel="noopener">📚 Вивчити</a>`
             : '';
           const more = `<div class="exp-more">${hint}${answer}${learn}</div>`;
-          out.push(card('🎤 Питання дня', expandable(base + more)));
+          const qId = textHash(mock.data.question);
+          out.push(
+            card(
+              '🎤 Питання дня',
+              expandable(base + more),
+              '',
+              saveItemBtn('question', qId, mock.data.question),
+            ),
+          );
         }
 
         // 4) Факт дня.
         const fact = byId(blocks, 'fact');
-        if (fact?.data) out.push(card('🧠 Факт дня', esc(fact.data.fact)));
+        if (fact?.data) {
+          const fId = textHash(fact.data.fact);
+          out.push(
+            card('🧠 Факт дня', esc(fact.data.fact), '', saveItemBtn('fact', fId, fact.data.fact)),
+          );
+        }
 
-        // 5) Крок до офера.
+        // 5) Крок до офера. Кнопка «Зробив» -> step_done (жива, персистить стрік).
         const ns = byId(blocks, 'next-step');
-        if (ns?.data) out.push(card('🎯 Крок до офера', esc(ns.data.step)));
+        if (ns?.data) {
+          const done = !!(stats && stats.stepDoneToday);
+          const stepBtn = `<button class="step-done-btn${done ? ' on' : ''}" type="button" data-act="step-done"${done ? ' disabled' : ''}>${done ? '✅ Зроблено' : 'Позначити зробленим'}</button>`;
+          out.push(card('🎯 Крок до офера', `<div>${esc(ns.data.step)}</div>${stepBtn}`));
+        }
 
         // 6) Думка дня.
         const stoic = byId(blocks, 'stoic');
-        if (stoic?.data)
+        if (stoic?.data) {
+          const quoteTitle = `«${stoic.data.text}» — ${stoic.data.author}`;
+          const qtId = textHash(quoteTitle);
           out.push(
             card(
               '🏛 Думка дня',
               `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:8px">— ${esc(stoic.data.author)}</div>`,
+              '',
+              saveItemBtn('quote', qtId, quoteTitle),
             ),
           );
+        }
 
-        // 7) «У цей день»: показуємо до 6, решта — під toggle.
+        // 7) «У цей день»: показуємо 8 одразу, «Показати ще» додає по 2 з резерву.
         const onthis = byId(blocks, 'onthisday');
         if (onthis?.data?.events?.length) {
           const evs = onthis.data.events;
           const row = (e) => `<div class="item"><b>${esc(e.year)}</b> — ${esc(e.text)}</div>`;
-          const SHOW = 8;
-          if (evs.length <= SHOW) {
-            out.push(card('📜 У цей день', evs.map(row).join('')));
-          } else {
-            const base = `<div class="exp-base">${evs.slice(0, SHOW).map(row).join('')}</div>`;
-            const more = `<div class="exp-more">${evs.slice(SHOW).map(row).join('')}</div><button class="more-btn" type="button" data-toggle="1" data-label="Показати ще (${evs.length - SHOW})">Показати ще (${evs.length - SHOW})</button>`;
-            out.push(card('📜 У цей день', expandable(base + more)));
-          }
+          const shown = Math.min(ONTHISDAY_SHOWN, evs.length);
+          const remaining = evs.length - shown;
+          const btn =
+            remaining > 0
+              ? `<button class="more-btn" type="button" data-act="onthisday-more">Показати ще (${Math.min(ONTHISDAY_STEP, remaining)})</button>`
+              : '';
+          out.push(card('📜 У цей день', evs.slice(0, shown).map(row).join('') + btn));
         }
 
         return out.join('');
@@ -1901,6 +1997,24 @@
       const NEWS_STATE = new Map();
       const nk = (url) => 'n:' + url;
 
+      // Гідрувати 🔖 з /api/stats.savedList — переживає релоуд (на відміну від
+      // NEWS_STATE/ITEM_STATE, які самі по собі лише сесійна пам'ять).
+      function hydrateSaved(stats) {
+        const list = stats && Array.isArray(stats.savedList) ? stats.savedList : [];
+        for (const it of list) {
+          if (!it || !it.kind || !it.id) continue;
+          if (it.kind === 'news') {
+            const st = NEWS_STATE.get(nk(it.id)) || {};
+            st.saved = true;
+            NEWS_STATE.set(nk(it.id), st);
+          } else {
+            const st = ITEM_STATE.get(it.kind + ':' + it.id) || {};
+            st.saved = true;
+            ITEM_STATE.set(it.kind + ':' + it.id, st);
+          }
+        }
+      }
+
       function renderNews(blocks) {
         const n = byId(blocks, 'news');
         if (!n?.data?.groups?.length) return '<div class="empty">Новин немає</div>';
@@ -1977,6 +2091,11 @@
       // Жива мапа url→стадія з /api/stats (funnelList) — щоб стадії трималися після
       // перезавантаження (briefing.json — знімок о 08:00, тапи бувають пізніше).
       let JOB_STAGE_BY_URL = {};
+      // Список вакансій по стадії (для панелі деталей воронки) + яка стадія зараз
+      // розкрита (null = жодна). Тап по комірці перемикає; список — ПІД воронкою,
+      // не всередині вузької комірки (розкриття inline ламало компактний рядок).
+      let FUNNEL_BY_STAGE = {};
+      let FUNNEL_ACTIVE_STAGE = null;
 
       function renderJobs(blocks, stats) {
         JOB_STAGE_BY_URL = {};
@@ -2006,8 +2125,8 @@
           for (const it of items)
             if (it.funnelStage) f[it.funnelStage] = (f[it.funnelStage] || 0) + 1;
         }
-        // Список вакансій за стадією для розкриття: з живого funnelList (наскрізь по
-        // днях), фолбек — funnelStage поточних items (офлайн/старий контракт).
+        // Список вакансій за стадією для панелі деталей: з живого funnelList
+        // (наскрізь по днях), фолбек — funnelStage поточних items (старий контракт).
         const byStage = {};
         if (fl) {
           for (const e of fl)
@@ -2021,25 +2140,37 @@
             if (it.funnelStage) (byStage[it.funnelStage] = byStage[it.funnelStage] || []).push(it);
           });
         }
+        FUNNEL_BY_STAGE = byStage;
+
         const cells = JOB_STAGES.filter((s) => s.key !== 'irrelevant')
           .map((s) => {
             const cnt = f && has(f[s.key]) ? f[s.key] : 0;
-            const list = byStage[s.key] || [];
-            const listHtml = list.length
-              ? list
-                  .map(
-                    (it) =>
-                      `<div class="item"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></div>`,
-                  )
-                  .join('')
-              : ph('Список цієї стадії з’явиться, коли будуть дані');
-            return `<div class="stage expandable">
+            const activeCls = FUNNEL_ACTIVE_STAGE === s.key ? ' active' : '';
+            return `<div class="stage${activeCls}" data-stage="${s.key}">
               <span class="n">${cnt}</span><div class="t">${esc(s.label)}</div>
-              <div class="exp-more stage-list">${listHtml}</div>
             </div>`;
           })
           .join('');
-        return card('Воронка', `<div class="funnel">${cells}</div>`);
+        const detail = FUNNEL_ACTIVE_STAGE ? funnelDetailHtml(FUNNEL_ACTIVE_STAGE) : '';
+        return card(
+          'Воронка',
+          `<div class="funnel">${cells}</div><div class="funnel-detail">${detail}</div>`,
+        );
+      }
+
+      // Панель деталей воронки: список вакансій обраної стадії, ПІД рядком воронки.
+      function funnelDetailHtml(stageKey) {
+        const label = JOB_STAGES.find((s) => s.key === stageKey)?.label || '';
+        const list = FUNNEL_BY_STAGE[stageKey] || [];
+        const listHtml = list.length
+          ? list
+              .map(
+                (it) =>
+                  `<div class="item"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></div>`,
+              )
+              .join('')
+          : ph('Список цієї стадії з’явиться, коли будуть дані');
+        return `<div class="funnel-detail-head">${esc(label)}</div><div class="stage-list">${listHtml}</div>`;
       }
 
       function jobCard(it) {
@@ -2111,12 +2242,26 @@
 
         /* ── D · ІНТЕРЕСИ ── */
         const interests = stats.interests || [];
+        const savedKindIcon = { news: '📰', fact: '🧠', quote: '🏛', question: '🎤' };
+        const savedRow = (x) => {
+          const icon = savedKindIcon[x.kind] || '🔖';
+          const label = esc(truncate(x.title || '', 80));
+          return x.kind === 'news' && x.url
+            ? `<div class="item"><a href="${esc(x.url)}" target="_blank" rel="noopener">${icon} ${label}</a></div>`
+            : `<div class="item">${icon} ${label}</div>`;
+        };
+        const savedList = Array.isArray(stats.savedList) ? stats.savedList : [];
         const dBlock = `${
           interests.length
             ? `<div class="chips">${interests.map((x) => `<span class="chip">${topicEmoji(x.topic)} ${esc(x.topic)}<span class="c">${x.score}</span></span>`).join('')}</div>`
             : ph('Лайкай новини — і тут з’являться твої теми')
         }
-          ${has(stats.readPerDay) ? `<div class="statline" style="margin-top:8px"><span class="k">Новин на день (середнє)</span><span class="v">${stats.readPerDay}</span></div>` : ''}`;
+          ${has(stats.readPerDay) ? `<div class="statline" style="margin-top:8px"><span class="k">Новин на день (середнє)</span><span class="v">${stats.readPerDay}</span></div>` : ''}
+          ${
+            has(stats.savedCount) && stats.savedCount > 0
+              ? `<div class="statline" style="margin-top:8px"><span class="k">🔖 Ти зберіг</span><span class="v">${stats.savedCount}</span></div><div style="margin-top:4px">${savedList.map(savedRow).join('')}</div>`
+              : ''
+          }`;
         out.push(card('❤️ D · Інтереси', dBlock));
 
         /* ── E · НАДІЙНІСТЬ (міні-рядок) ── */
@@ -2257,6 +2402,17 @@
         return false;
       }
 
+      // Пасивний трекінг (клік по заголовку новини) — мовчки, без alert на
+      // помилку/поза Telegram: навігація за посиланням не має блокуватись.
+      function trackClick(type, payload) {
+        if (!tg || !tg.initData) return;
+        fetch('/api/event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type, ...payload, initData: tg.initData }),
+        }).catch(() => {});
+      }
+
       // Навішування дій (делеговано на контейнери секцій — переживає ре-рендер).
       let ACTIONS_WIRED = false;
       function wireActions() {
@@ -2265,7 +2421,7 @@
         const newsEl = document.getElementById('news');
         const jobsEl = document.getElementById('jobs');
 
-        // Новини: під-таби + голоси + збереження (per-item) + «Більше».
+        // Новини: під-таби + голоси + збереження (per-item) + «Більше» + клік-трекінг.
         newsEl.addEventListener('click', (e) => {
           const sub = e.target.closest('.subnav button');
           if (sub) {
@@ -2274,6 +2430,14 @@
             rerenderNews();
             haptic('light');
             return;
+          }
+
+          const link = e.target.closest('a.htext');
+          if (link) {
+            const actions = link.closest('.news-item')?.querySelector('.item-actions');
+            if (actions)
+              trackClick('news_click', { category: actions.dataset.cat, url: actions.dataset.url });
+            return; // навігація за посиланням — не блокуємо
           }
 
           const voteBtn = e.target.closest('.item-actions button[data-dir]');
@@ -2315,22 +2479,59 @@
           }
         });
 
-        // «Показати ще» подій у «Сьогодні» (той самий патерн more-btn).
+        // «Показати ще» подій + 🔖 на факт/цитату/питання у «Сьогодні».
         document.getElementById('today').addEventListener('click', (e) => {
-          const moreBtn = e.target.closest('.more-btn[data-toggle]');
-          if (!moreBtn) return;
-          e.stopPropagation();
-          const box = moreBtn.closest('.expandable');
-          if (box) {
-            box.classList.toggle('expanded');
-            moreBtn.textContent = box.classList.contains('expanded')
-              ? 'Згорнути'
-              : moreBtn.dataset.label || 'Показати ще';
+          const saveBtn = e.target.closest('.item-actions button[data-act="save-item"]');
+          if (saveBtn) {
+            e.stopPropagation();
+            const wrap = saveBtn.closest('.item-actions');
+            const key = wrap.dataset.kind + ':' + wrap.dataset.id;
+            sendEvent(
+              'save_item',
+              { kind: wrap.dataset.kind, id: wrap.dataset.id, title: wrap.dataset.title },
+              () => {
+                const st = ITEM_STATE.get(key) || {};
+                st.saved = !st.saved;
+                ITEM_STATE.set(key, st);
+                saveBtn.classList.toggle('on', st.saved);
+                saveBtn.textContent = st.saved ? '✅' : '🔖';
+              },
+            );
+            return;
+          }
+
+          const stepBtn = e.target.closest('[data-act="step-done"]');
+          if (stepBtn) {
+            e.stopPropagation();
+            sendEvent('step_done', {}, () => {
+              stepBtn.classList.add('on');
+              stepBtn.textContent = '✅ Зроблено';
+              stepBtn.disabled = true;
+            });
+            return;
+          }
+
+          const moreEvBtn = e.target.closest('[data-act="onthisday-more"]');
+          if (moreEvBtn) {
+            e.stopPropagation();
+            ONTHISDAY_SHOWN += ONTHISDAY_STEP;
+            document.getElementById('today').innerHTML = renderToday(CURRENT.blocks, CURRENT.stats);
+            haptic('light');
           }
         });
 
-        // Вакансії: дії воронки на картці. «Не релевантно» ефемерне.
+        // Вакансії: тап по стадії воронки + дії на картці. «Не релевантно» ефемерне.
         jobsEl.addEventListener('click', (e) => {
+          const stageCell = e.target.closest('.funnel .stage');
+          if (stageCell) {
+            e.stopPropagation();
+            const key = stageCell.dataset.stage;
+            FUNNEL_ACTIVE_STAGE = FUNNEL_ACTIVE_STAGE === key ? null : key;
+            document.getElementById('jobs').innerHTML = renderJobs(CURRENT.blocks, CURRENT.stats);
+            haptic('light');
+            return;
+          }
+
           const btn = e.target.closest('.job-actions button');
           if (!btn) return;
           e.stopPropagation();
@@ -2406,9 +2607,11 @@
 
       function render(brief, stats) {
         CURRENT = { blocks: brief.blocks || [], stats: stats || null };
+        ONTHISDAY_SHOWN = 8; // нове завантаження дня -> скинути розкриття
+        hydrateSaved(CURRENT.stats);
         renderFreshness(brief.generatedAt);
         document.getElementById('when').textContent = brief.dateLabel || '';
-        document.getElementById('today').innerHTML = renderToday(CURRENT.blocks);
+        document.getElementById('today').innerHTML = renderToday(CURRENT.blocks, CURRENT.stats);
         document.getElementById('news').innerHTML = renderNews(CURRENT.blocks);
         document.getElementById('jobs').innerHTML = renderJobs(CURRENT.blocks, CURRENT.stats);
         document.getElementById('stats').innerHTML = renderStats(CURRENT.stats);
@@ -2655,6 +2858,8 @@
                 { year: 2004, text: 'Демо-подія: XXI ст. (під toggle).' },
                 { year: 1961, text: 'Демо-подія: rollover XX ст. (під toggle).' },
                 { year: 1945, text: 'Демо-подія: rollover XX ст. (під toggle).' },
+                { year: 1918, text: 'Демо-подія: резерв (2-й клік «Показати ще»).' },
+                { year: 1905, text: 'Демо-подія: резерв (2-й клік «Показати ще»).' },
               ],
             },
           },
@@ -2710,6 +2915,30 @@
           { topic: 'Технології', score: 12 },
           { topic: 'Наука', score: 7 },
           { topic: 'Політика', score: 3 },
+        ],
+        savedCount: 5,
+        savedList: [
+          {
+            kind: 'question',
+            id: 'q1',
+            title: 'Чим відрізняється let від var?',
+            url: null,
+            ts: '2026-07-08',
+          },
+          {
+            kind: 'news',
+            id: 'https://example.com/news1',
+            url: 'https://example.com/news1',
+            title: 'Стартап із Києва підняв $2М',
+            ts: '2026-07-07',
+          },
+          {
+            kind: 'quote',
+            id: 'qt1',
+            title: '«Дій, а не бажай» — Марк Аврелій',
+            url: null,
+            ts: '2026-07-06',
+          },
         ],
         readPerDay: 6,
         reliability: { onTime: 28, total: 30, deadman: 1 },
