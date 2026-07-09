@@ -5,6 +5,7 @@
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
 //   funnel:    { '<url>': 'saved'|'applied'|'interview'|'offer' }  // стадія вакансії
+//   funnelMeta:{ '<url>': { title, ts } }                    // мета стадії (для списку)
 //   saved:     [ { url, title, category, ts } ]              // збережені новини
 //   interests: { '<topic>': score }                          // з голосів/кліків
 //   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock
@@ -21,6 +22,7 @@ export function emptyStore() {
   return {
     days: {},
     funnel: {},
+    funnelMeta: {},
     saved: [],
     interests: {},
     mockTopics: {},
@@ -39,6 +41,7 @@ export function normalize(s) {
   return {
     days: s.days && typeof s.days === 'object' ? s.days : e.days,
     funnel: s.funnel && typeof s.funnel === 'object' ? s.funnel : e.funnel,
+    funnelMeta: s.funnelMeta && typeof s.funnelMeta === 'object' ? s.funnelMeta : e.funnelMeta,
     saved: Array.isArray(s.saved) ? s.saved : e.saved,
     interests: s.interests && typeof s.interests === 'object' ? s.interests : e.interests,
     mockTopics: s.mockTopics && typeof s.mockTopics === 'object' ? s.mockTopics : e.mockTopics,
@@ -100,12 +103,19 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       if (ev.url) {
         if (ev.stage && STAGES.includes(ev.stage)) {
           s.funnel[ev.url] = ev.stage;
+          // Мета (title+дата) — щоб дашборд показував СПИСОК вакансій стадії наскрізь
+          // по днях, а не лише з поточного брифінгу (вакансії дедупляться на 7 днів).
+          s.funnelMeta[ev.url] = {
+            title: ev.title || s.funnelMeta[ev.url]?.title || '',
+            ts: dateKey,
+          };
           if (ev.stage === 'applied') {
             s.appliedLog.push({ url: ev.url, ts: dateKey });
             if (typeof ev.fit === 'number' && ev.fit >= 0) s.fitApplied.push(ev.fit);
           }
         } else {
           delete s.funnel[ev.url]; // stage null -> зняти
+          delete s.funnelMeta[ev.url];
         }
       }
       break;
@@ -188,9 +198,21 @@ export function aggregateStats(store, todayKey) {
     wd.setUTCDate(wd.getUTCDate() + 1);
   }
 
-  // воронка
+  // воронка: лічильники + список вакансій за стадією (з title/дати у funnelMeta).
   const funnel = { saved: 0, applied: 0, interview: 0, offer: 0 };
   for (const st of Object.values(s.funnel)) if (funnel[st] != null) funnel[st]++;
+  const stageOrder = { saved: 0, applied: 1, interview: 2, offer: 3 };
+  const funnelList = Object.entries(s.funnel)
+    .filter(([, st]) => stageOrder[st] != null)
+    .map(([url, st]) => ({
+      url,
+      stage: st,
+      title: s.funnelMeta[url]?.title || '',
+      ts: s.funnelMeta[url]?.ts || '',
+    }))
+    .sort(
+      (a, b) => stageOrder[a.stage] - stageOrder[b.stage] || (b.ts || '').localeCompare(a.ts || ''),
+    );
 
   // тижневі відгуки (за 7 днів)
   const weekAgo = new Date(todayKey + 'T00:00:00Z');
@@ -238,6 +260,7 @@ export function aggregateStats(store, todayKey) {
       interviewToOffer: conv(funnel.interview + funnel.offer, funnel.offer),
     },
     avgFitApplied: avgFit,
+    funnelList,
     mock: { weakTopics, streak: streak(s.days, todayKey, mocked) },
     roadmap: { done: 0, total: 0 }, // з форум-групи (пізніше)
     interests,
