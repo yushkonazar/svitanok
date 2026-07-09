@@ -287,5 +287,6 @@ export function aggregateStats(store, todayKey) {
     interests,
     readPerDay: Math.round(totalReads / activeDays),
     reliability: s.reliability,
+    stepDoneToday: stepped(s.days[todayKey]),
   };
 }
