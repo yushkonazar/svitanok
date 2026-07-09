@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { jobsModule, parseScores, buildScorePrompt, parseWorkUa } from '../src/modules/jobs.js';
+import {
+  jobsModule,
+  parseScores,
+  buildScorePrompt,
+  parseWorkUa,
+  updateJobPrefs,
+  JOB_PREFS_CAP,
+  type JobPrefs,
+} from '../src/modules/jobs.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
@@ -42,6 +50,63 @@ describe('jobs — buildScorePrompt', () => {
     expect(p).toContain('Junior Full Stack');
     expect(p).toContain('1. A');
     expect(p).toContain('2. B');
+  });
+
+  it('без prefs -> без згадки уподобань (сумісність)', () => {
+    const p = buildScorePrompt('Junior Full Stack', [{ title: 'A', url: 'u1' }]);
+    expect(p).not.toContain('цінує');
+    expect(p).not.toContain('ігнорує');
+  });
+
+  it('з prefs -> додає рядки цінує/ігнорує', () => {
+    const p = buildScorePrompt('Junior Full Stack', [{ title: 'A', url: 'u1' }], {
+      liked: ['react', 'remote'],
+      disliked: ['java'],
+    });
+    expect(p).toContain('цінує: react, remote');
+    expect(p).toContain('ігнорує: java');
+  });
+});
+
+describe('jobs — updateJobPrefs', () => {
+  it('dismiss -> токени тайтла в disliked; стоп-слова відфільтровані', () => {
+    const prefs = updateJobPrefs(
+      { liked: [], disliked: [] },
+      'dismiss',
+      'Junior Java Backend Developer',
+    );
+    expect(prefs.disliked).toEqual(['java', 'backend']);
+    expect(prefs.liked).toEqual([]);
+  });
+
+  it('applied/interview/offer -> токени в liked', () => {
+    let prefs: JobPrefs = { liked: [], disliked: [] };
+    prefs = updateJobPrefs(prefs, 'applied', 'React Frontend Trainee');
+    expect(prefs.liked).toEqual(['react', 'frontend']);
+    prefs = updateJobPrefs(prefs, 'interview', 'Node Backend');
+    expect(prefs.liked).toEqual(['node', 'backend', 'react', 'frontend']);
+  });
+
+  it('суперечливий сигнал переносить токен між списками', () => {
+    let prefs = updateJobPrefs({ liked: [], disliked: [] }, 'dismiss', 'PHP Legacy');
+    expect(prefs.disliked).toContain('php');
+    prefs = updateJobPrefs(prefs, 'applied', 'PHP Symfony');
+    expect(prefs.liked).toContain('php');
+    expect(prefs.disliked).not.toContain('php');
+  });
+
+  it('cap: список не перевищує JOB_PREFS_CAP, найновіші зверху', () => {
+    let prefs: JobPrefs = { liked: [], disliked: [] };
+    for (let i = 0; i < JOB_PREFS_CAP + 5; i++) {
+      prefs = updateJobPrefs(prefs, 'applied', `Skill${i}xyz`);
+    }
+    expect(prefs.liked.length).toBeLessThanOrEqual(JOB_PREFS_CAP);
+    expect(prefs.liked[0]).toBe(`skill${JOB_PREFS_CAP + 4}xyz`);
+  });
+
+  it('порожній тайтл після фільтра стоп-слів -> без змін', () => {
+    const prefs = { liked: [], disliked: [] };
+    expect(updateJobPrefs(prefs, 'dismiss', 'Junior Trainee Full Time')).toEqual(prefs);
   });
 });
 

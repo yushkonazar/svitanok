@@ -19,6 +19,50 @@ function applyVote(weights, category, dir) {
   return { ...weights, [category]: clampWeight(cur + (dir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP)) };
 }
 
+// jobPrefs (дзеркало src/modules/jobs.ts — Worker не імпортує TS).
+const JOB_PREFS_CAP = 20;
+const JOB_STOP_WORDS = new Set([
+  'job',
+  'jobs',
+  'vacancy',
+  'вакансія',
+  'вакансии',
+  'developer',
+  'розробник',
+  'engineer',
+  'інженер',
+  'junior',
+  'trainee',
+  'intern',
+  'стажист',
+  'джуніор',
+  'full',
+  'part',
+  'time',
+  'remote',
+  'hybrid',
+  'офіс',
+  'дистанційно',
+  'stack',
+]);
+function titleTokens(title) {
+  return (title.toLowerCase().match(/[a-zа-яїієґ0-9+#.]{3,}/gi) ?? []).filter(
+    (t) => !JOB_STOP_WORDS.has(t),
+  );
+}
+function updateJobPrefs(prefs, signal, title) {
+  const tokens = titleTokens(title);
+  if (tokens.length === 0) return prefs;
+  const toAdd = signal === 'dismiss' ? 'disliked' : 'liked';
+  const toRemove = toAdd === 'liked' ? 'disliked' : 'liked';
+  const merged = [...tokens, ...prefs[toAdd].filter((t) => !tokens.includes(t))].slice(
+    0,
+    JOB_PREFS_CAP,
+  );
+  const filtered = prefs[toRemove].filter((t) => !tokens.includes(t));
+  return { ...prefs, [toAdd]: merged, [toRemove]: filtered };
+}
+
 /** Київська година (0..23) зараз, з урахуванням DST через Intl. */
 function kyivHour(now = new Date()) {
   const h = new Intl.DateTimeFormat('en-GB', {
@@ -115,6 +159,15 @@ async function loadStats(env) {
   }
 }
 
+async function loadState(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {}; // биття JSON -> порожній стан
+  }
+}
+
 /** POST /api/vote {category, dir, url, initData} -> preferenceWeights + інтерес. */
 async function handleVote(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
@@ -131,13 +184,7 @@ async function handleVote(request, env) {
   const auth = await checkOwner(initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  let state = {};
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
-    if (parsed && typeof parsed === 'object') state = parsed;
-  } catch {
-    /* биття JSON -> порожній стан */
-  }
+  const state = await loadState(env);
   const weights = applyVote(state.preferenceWeights ?? {}, category, dir);
   state.preferenceWeights = weights;
   await env.BRIEFING.put('state', JSON.stringify(state));
@@ -159,6 +206,21 @@ async function handleEvent(request, env) {
   if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
   const auth = await checkOwner(body.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
+  const jobSignal =
+    body.type === 'job_dismiss'
+      ? 'dismiss'
+      : body.type === 'job_stage' && ['applied', 'interview', 'offer'].includes(body.stage)
+        ? body.stage
+        : null;
+  if (jobSignal && typeof body.title === 'string' && body.title) {
+    const state = await loadState(env);
+    const prefs = state.jobPrefs ?? { liked: [], disliked: [] };
+    state.jobPrefs = updateJobPrefs(prefs, jobSignal, body.title);
+    await env.BRIEFING.put('state', JSON.stringify(state));
+  }
+
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
   const stats = recordEvent(await loadStats(env), body, kyivDateKey(), nowMin);
   await env.BRIEFING.put('stats', JSON.stringify(stats));
