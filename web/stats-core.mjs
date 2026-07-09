@@ -6,7 +6,7 @@
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
 //   funnel:    { '<url>': 'saved'|'applied'|'interview'|'offer' }  // стадія вакансії
 //   funnelMeta:{ '<url>': { title, ts } }                    // мета стадії (для списку)
-//   saved:     [ { url, title, category, ts } ]              // збережені новини
+//   saved:     [ { kind, url?, title, category?, ts } ]       // обране: news/fact/quote/question
 //   interests: { '<topic>': score }                          // з голосів/кліків
 //   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock
 //   goal:      { weeklyTarget }
@@ -67,8 +67,9 @@ const dayBucket = (store, dateKey) => {
 
 /**
  * Застосувати подію до стору (мутує й повертає його). `ev.type`:
- *  open · tab · news_click · save_news · unsave_news · job_stage · job_dismiss ·
- *  mock_answer · vote. `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
+ *  open · tab · news_click · save_news · unsave_news · save_item · unsave_item ·
+ *  job_stage · job_dismiss · mock_answer · vote. `dateKey`="YYYY-MM-DD" київський,
+ *  `nowMin`=хв після 08:00.
  */
 export function recordEvent(store, ev, dateKey, nowMin = null) {
   const s = normalize(store);
@@ -85,6 +86,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'save_news':
       if (ev.url && !s.saved.some((x) => x.url === ev.url)) {
         s.saved.unshift({
+          kind: 'news',
           url: ev.url,
           title: ev.title || '',
           category: ev.category || '',
@@ -95,6 +97,17 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       break;
     case 'unsave_news':
       s.saved = s.saved.filter((x) => x.url !== ev.url);
+      break;
+    case 'save_item':
+      // Обране для нетекстових-з-url блоків (факт/цитата/питання): id рахує
+      // клієнт (детермінований хеш тексту) — стабільний ключ дедупу замість url.
+      if (ev.kind && ev.id && !s.saved.some((x) => x.kind === ev.kind && x.id === ev.id)) {
+        s.saved.unshift({ kind: ev.kind, id: ev.id, title: ev.title || '', ts: dateKey });
+        if (ev.topic) bump(s.interests, ev.topic, 2);
+      }
+      break;
+    case 'unsave_item':
+      s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
     case 'vote':
       if (ev.category) bump(s.interests, ev.category, ev.dir === 'down' ? -1 : 1);
@@ -261,6 +274,14 @@ export function aggregateStats(store, todayKey) {
     },
     avgFitApplied: avgFit,
     funnelList,
+    savedCount: s.saved.length,
+    savedList: s.saved.slice(0, 8).map((x) => ({
+      kind: x.kind || 'news',
+      id: x.id || x.url || null,
+      title: x.title || '',
+      url: x.url || null,
+      ts: x.ts || '',
+    })),
     mock: { weakTopics, streak: streak(s.days, todayKey, mocked) },
     roadmap: { done: 0, total: 0 }, // з форум-групи (пізніше)
     interests,

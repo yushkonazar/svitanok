@@ -79,6 +79,37 @@ describe('stats-core — recordEvent', () => {
     expect(() => recordEvent(null, { type: 'wat' }, '2026-07-07')).not.toThrow();
     expect(normalize('bad')).toEqual(emptyStore());
   });
+
+  it('save_item додає в обране за kind+id; дедуп; інтерес лише з topic', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'save_item', kind: 'fact', id: 'f1', title: 'Факт' }, '2026-07-07');
+    s = recordEvent(s, { type: 'save_item', kind: 'fact', id: 'f1', title: 'Факт' }, '2026-07-07');
+    expect(s.saved).toHaveLength(1);
+    expect(s.saved[0]).toEqual({ kind: 'fact', id: 'f1', title: 'Факт', ts: '2026-07-07' });
+    expect(s.interests).toEqual({});
+    // той самий id, інший kind — не дедуп
+    s = recordEvent(
+      s,
+      { type: 'save_item', kind: 'question', id: 'f1', title: 'Питання', topic: 'Алгоритми' },
+      '2026-07-07',
+    );
+    expect(s.saved).toHaveLength(2);
+    expect(s.interests['Алгоритми']).toBe(2);
+  });
+
+  it('unsave_item знімає лише збіг kind+id', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'save_item', kind: 'quote', id: 'q1', title: 'Q' }, '2026-07-07');
+    s = recordEvent(s, { type: 'save_item', kind: 'fact', id: 'q1', title: 'F' }, '2026-07-07');
+    s = recordEvent(s, { type: 'unsave_item', kind: 'quote', id: 'q1' }, '2026-07-07');
+    expect(s.saved).toEqual([{ kind: 'fact', id: 'q1', title: 'F', ts: '2026-07-07' }]);
+  });
+
+  it('save_news позначає kind:"news"', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'save_news', url: 'u1', title: 'T' }, '2026-07-07');
+    expect(s.saved[0].kind).toBe('news');
+  });
 });
 
 describe('stats-core — aggregateStats', () => {
@@ -133,5 +164,32 @@ describe('stats-core — aggregateStats', () => {
     expect(st.funnelList).toEqual([]);
     expect(st.interests).toEqual([]);
     expect(st.timeToOpenMin).toBeNull();
+    expect(st.savedCount).toBe(0);
+    expect(st.savedList).toEqual([]);
+  });
+
+  it('savedCount/savedList: news має url, item-типи мають id; cap 8, найновіші перші', () => {
+    let s = seed(); // seed вже містить save_news('n1')
+    s = recordEvent(
+      s,
+      { type: 'save_item', kind: 'fact', id: 'f1', title: 'Факт дня' },
+      '2026-07-08',
+    );
+    const st = aggregateStats(s, '2026-07-08');
+    expect(st.savedCount).toBe(2);
+    expect(st.savedList[0]).toEqual({
+      kind: 'fact',
+      id: 'f1',
+      title: 'Факт дня',
+      url: null,
+      ts: '2026-07-08',
+    });
+    expect(st.savedList[1]).toEqual({
+      kind: 'news',
+      id: 'n1',
+      title: '',
+      url: 'n1',
+      ts: '2026-07-07',
+    });
   });
 });
