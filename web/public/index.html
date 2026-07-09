@@ -294,7 +294,8 @@
         gap: 7px;
       }
       /* акцент лише як тонка «іскра» зліва від заголовка картки */
-      .card > h3::before {
+      .card > h3::before,
+      .card-head > h3::before {
         content: '';
         flex: 0 0 auto;
         width: 3px;
@@ -303,8 +304,24 @@
         background: var(--grad);
       }
       /* заголовки без «іскри» (де емодзі несе акцент) */
-      .card > h3.plain::before {
+      .card > h3.plain::before,
+      .card-head > h3.plain::before {
         display: none;
+      }
+      /* заголовок + кутова дія (напр. 🔖) в один рядок; відступ знизу — на
+         обгортці, а не на h3 (щоб кнопка центрувалась по висоті без перекосу) */
+      .card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 0 0 11px;
+      }
+      .card .card-head h3 {
+        margin: 0;
+      }
+      .card-head .item-actions {
+        flex: 0 0 auto;
       }
 
       /* вкладені «плитки» (напр. погода) — легше скло */
@@ -576,6 +593,24 @@
         color: var(--on-accent, #1a1206);
         font-weight: 600;
         font-size: 13px;
+      }
+      .step-done-btn {
+        display: inline-block;
+        margin-top: 10px;
+        padding: 9px 15px;
+        border: none;
+        border-radius: 10px;
+        background: var(--grad, linear-gradient(90deg, #ff6b57, #ffb03a));
+        color: var(--on-accent, #1a1206);
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .step-done-btn.on,
+      .step-done-btn:disabled {
+        background: var(--glass-2);
+        color: var(--muted);
+        cursor: default;
       }
       .answer {
         margin-top: 8px;
@@ -893,8 +928,21 @@
         border: 1.5px solid var(--border-2);
         min-width: 0;
       }
-      .funnel .stage.expanded {
+      .funnel .stage.active {
         border-color: var(--accent);
+      }
+      /* панель деталей воронки — ПІД рядком стадій (не inline у вузькій комірці) */
+      .funnel-detail {
+        margin-top: 10px;
+      }
+      .funnel-detail:empty {
+        display: none;
+      }
+      .funnel-detail-head {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
       }
       .funnel .stage .n {
         font-family: 'Unbounded', 'Golos Text', sans-serif;
@@ -1323,8 +1371,13 @@
       // Заголовок з емодзі → без градієнт-«іскри» (емодзі вже несе акцент);
       // текстовий заголовок (Погода/Курс) → тонка «іскра» зліва.
       const leadsWithEmoji = (s) => /^\s*[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/u.test(s);
-      const card = (title, inner, attrs = '') =>
-        `<div class="card" ${attrs}>${title ? `<h3${leadsWithEmoji(title) ? ' class="plain"' : ''}>${esc(title)}</h3>` : ''}${inner}</div>`;
+      const card = (title, inner, attrs = '', headerAction = '') => {
+        const h3 = title
+          ? `<h3${leadsWithEmoji(title) ? ' class="plain"' : ''}>${esc(title)}</h3>`
+          : '';
+        const head = headerAction ? `<div class="card-head">${h3}${headerAction}</div>` : h3;
+        return `<div class="card" ${attrs}>${head}${inner}</div>`;
+      };
       const ph = (txt) => `<div class="ph">${esc(txt)}</div>`;
 
       /* ══════════════════════════════════════════════════════════════════════
@@ -1440,7 +1493,12 @@
          Порядок: Погода → Курс → Питання дня → Факт дня → Крок → Думка → У цей день
          (без підписів-груп Практичне/Розвиток/Натхнення)
          ══════════════════════════════════════════════════════════════════════ */
-      function renderToday(blocks) {
+      // «У цей день»: скільки подій показано зараз (зростає на ONTHISDAY_STEP за
+      // клік «Показати ще», доки не покаже всі з резерву). Скидається loadDay().
+      let ONTHISDAY_SHOWN = 8;
+      const ONTHISDAY_STEP = 2;
+
+      function renderToday(blocks, stats) {
         const out = [];
 
         // 1) Погода — кожна локація окрема повноширинна клікабельна картка (ізольовано).
@@ -1472,7 +1530,9 @@
           out.push(
             card(
               '🎤 Питання дня',
-              expandable(base + more) + saveItemBtn('question', qId, mock.data.question),
+              expandable(base + more),
+              '',
+              saveItemBtn('question', qId, mock.data.question),
             ),
           );
         }
@@ -1482,13 +1542,17 @@
         if (fact?.data) {
           const fId = textHash(fact.data.fact);
           out.push(
-            card('🧠 Факт дня', esc(fact.data.fact) + saveItemBtn('fact', fId, fact.data.fact)),
+            card('🧠 Факт дня', esc(fact.data.fact), '', saveItemBtn('fact', fId, fact.data.fact)),
           );
         }
 
-        // 5) Крок до офера.
+        // 5) Крок до офера. Кнопка «Зробив» -> step_done (жива, персистить стрік).
         const ns = byId(blocks, 'next-step');
-        if (ns?.data) out.push(card('🎯 Крок до офера', esc(ns.data.step)));
+        if (ns?.data) {
+          const done = !!(stats && stats.stepDoneToday);
+          const stepBtn = `<button class="step-done-btn${done ? ' on' : ''}" type="button" data-act="step-done"${done ? ' disabled' : ''}>${done ? '✅ Зроблено' : 'Позначити зробленим'}</button>`;
+          out.push(card('🎯 Крок до офера', `<div>${esc(ns.data.step)}</div>${stepBtn}`));
+        }
 
         // 6) Думка дня.
         const stoic = byId(blocks, 'stoic');
@@ -1498,24 +1562,25 @@
           out.push(
             card(
               '🏛 Думка дня',
-              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:8px">— ${esc(stoic.data.author)}</div>${saveItemBtn('quote', qtId, quoteTitle)}`,
+              `<div class="quote">«${esc(stoic.data.text)}»</div><div class="muted" style="margin-top:8px">— ${esc(stoic.data.author)}</div>`,
+              '',
+              saveItemBtn('quote', qtId, quoteTitle),
             ),
           );
         }
 
-        // 7) «У цей день»: показуємо до 6, решта — під toggle.
+        // 7) «У цей день»: показуємо 8 одразу, «Показати ще» додає по 2 з резерву.
         const onthis = byId(blocks, 'onthisday');
         if (onthis?.data?.events?.length) {
           const evs = onthis.data.events;
           const row = (e) => `<div class="item"><b>${esc(e.year)}</b> — ${esc(e.text)}</div>`;
-          const SHOW = 8;
-          if (evs.length <= SHOW) {
-            out.push(card('📜 У цей день', evs.map(row).join('')));
-          } else {
-            const base = `<div class="exp-base">${evs.slice(0, SHOW).map(row).join('')}</div>`;
-            const more = `<div class="exp-more">${evs.slice(SHOW).map(row).join('')}</div><button class="more-btn" type="button" data-toggle="1" data-label="Показати ще (${evs.length - SHOW})">Показати ще (${evs.length - SHOW})</button>`;
-            out.push(card('📜 У цей день', expandable(base + more)));
-          }
+          const shown = Math.min(ONTHISDAY_SHOWN, evs.length);
+          const remaining = evs.length - shown;
+          const btn =
+            remaining > 0
+              ? `<button class="more-btn" type="button" data-act="onthisday-more">Показати ще (${Math.min(ONTHISDAY_STEP, remaining)})</button>`
+              : '';
+          out.push(card('📜 У цей день', evs.slice(0, shown).map(row).join('') + btn));
         }
 
         return out.join('');
@@ -2026,6 +2091,11 @@
       // Жива мапа url→стадія з /api/stats (funnelList) — щоб стадії трималися після
       // перезавантаження (briefing.json — знімок о 08:00, тапи бувають пізніше).
       let JOB_STAGE_BY_URL = {};
+      // Список вакансій по стадії (для панелі деталей воронки) + яка стадія зараз
+      // розкрита (null = жодна). Тап по комірці перемикає; список — ПІД воронкою,
+      // не всередині вузької комірки (розкриття inline ламало компактний рядок).
+      let FUNNEL_BY_STAGE = {};
+      let FUNNEL_ACTIVE_STAGE = null;
 
       function renderJobs(blocks, stats) {
         JOB_STAGE_BY_URL = {};
@@ -2055,8 +2125,8 @@
           for (const it of items)
             if (it.funnelStage) f[it.funnelStage] = (f[it.funnelStage] || 0) + 1;
         }
-        // Список вакансій за стадією для розкриття: з живого funnelList (наскрізь по
-        // днях), фолбек — funnelStage поточних items (офлайн/старий контракт).
+        // Список вакансій за стадією для панелі деталей: з живого funnelList
+        // (наскрізь по днях), фолбек — funnelStage поточних items (старий контракт).
         const byStage = {};
         if (fl) {
           for (const e of fl)
@@ -2070,25 +2140,37 @@
             if (it.funnelStage) (byStage[it.funnelStage] = byStage[it.funnelStage] || []).push(it);
           });
         }
+        FUNNEL_BY_STAGE = byStage;
+
         const cells = JOB_STAGES.filter((s) => s.key !== 'irrelevant')
           .map((s) => {
             const cnt = f && has(f[s.key]) ? f[s.key] : 0;
-            const list = byStage[s.key] || [];
-            const listHtml = list.length
-              ? list
-                  .map(
-                    (it) =>
-                      `<div class="item"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></div>`,
-                  )
-                  .join('')
-              : ph('Список цієї стадії з’явиться, коли будуть дані');
-            return `<div class="stage expandable">
+            const activeCls = FUNNEL_ACTIVE_STAGE === s.key ? ' active' : '';
+            return `<div class="stage${activeCls}" data-stage="${s.key}">
               <span class="n">${cnt}</span><div class="t">${esc(s.label)}</div>
-              <div class="exp-more stage-list">${listHtml}</div>
             </div>`;
           })
           .join('');
-        return card('Воронка', `<div class="funnel">${cells}</div>`);
+        const detail = FUNNEL_ACTIVE_STAGE ? funnelDetailHtml(FUNNEL_ACTIVE_STAGE) : '';
+        return card(
+          'Воронка',
+          `<div class="funnel">${cells}</div><div class="funnel-detail">${detail}</div>`,
+        );
+      }
+
+      // Панель деталей воронки: список вакансій обраної стадії, ПІД рядком воронки.
+      function funnelDetailHtml(stageKey) {
+        const label = JOB_STAGES.find((s) => s.key === stageKey)?.label || '';
+        const list = FUNNEL_BY_STAGE[stageKey] || [];
+        const listHtml = list.length
+          ? list
+              .map(
+                (it) =>
+                  `<div class="item"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></div>`,
+              )
+              .join('')
+          : ph('Список цієї стадії з’явиться, коли будуть дані');
+        return `<div class="funnel-detail-head">${esc(label)}</div><div class="stage-list">${listHtml}</div>`;
       }
 
       function jobCard(it) {
@@ -2418,20 +2500,38 @@
             return;
           }
 
-          const moreBtn = e.target.closest('.more-btn[data-toggle]');
-          if (!moreBtn) return;
-          e.stopPropagation();
-          const box = moreBtn.closest('.expandable');
-          if (box) {
-            box.classList.toggle('expanded');
-            moreBtn.textContent = box.classList.contains('expanded')
-              ? 'Згорнути'
-              : moreBtn.dataset.label || 'Показати ще';
+          const stepBtn = e.target.closest('[data-act="step-done"]');
+          if (stepBtn) {
+            e.stopPropagation();
+            sendEvent('step_done', {}, () => {
+              stepBtn.classList.add('on');
+              stepBtn.textContent = '✅ Зроблено';
+              stepBtn.disabled = true;
+            });
+            return;
+          }
+
+          const moreEvBtn = e.target.closest('[data-act="onthisday-more"]');
+          if (moreEvBtn) {
+            e.stopPropagation();
+            ONTHISDAY_SHOWN += ONTHISDAY_STEP;
+            document.getElementById('today').innerHTML = renderToday(CURRENT.blocks, CURRENT.stats);
+            haptic('light');
           }
         });
 
-        // Вакансії: дії воронки на картці. «Не релевантно» ефемерне.
+        // Вакансії: тап по стадії воронки + дії на картці. «Не релевантно» ефемерне.
         jobsEl.addEventListener('click', (e) => {
+          const stageCell = e.target.closest('.funnel .stage');
+          if (stageCell) {
+            e.stopPropagation();
+            const key = stageCell.dataset.stage;
+            FUNNEL_ACTIVE_STAGE = FUNNEL_ACTIVE_STAGE === key ? null : key;
+            document.getElementById('jobs').innerHTML = renderJobs(CURRENT.blocks, CURRENT.stats);
+            haptic('light');
+            return;
+          }
+
           const btn = e.target.closest('.job-actions button');
           if (!btn) return;
           e.stopPropagation();
@@ -2507,10 +2607,11 @@
 
       function render(brief, stats) {
         CURRENT = { blocks: brief.blocks || [], stats: stats || null };
+        ONTHISDAY_SHOWN = 8; // нове завантаження дня -> скинути розкриття
         hydrateSaved(CURRENT.stats);
         renderFreshness(brief.generatedAt);
         document.getElementById('when').textContent = brief.dateLabel || '';
-        document.getElementById('today').innerHTML = renderToday(CURRENT.blocks);
+        document.getElementById('today').innerHTML = renderToday(CURRENT.blocks, CURRENT.stats);
         document.getElementById('news').innerHTML = renderNews(CURRENT.blocks);
         document.getElementById('jobs').innerHTML = renderJobs(CURRENT.blocks, CURRENT.stats);
         document.getElementById('stats').innerHTML = renderStats(CURRENT.stats);
@@ -2757,6 +2858,8 @@
                 { year: 2004, text: 'Демо-подія: XXI ст. (під toggle).' },
                 { year: 1961, text: 'Демо-подія: rollover XX ст. (під toggle).' },
                 { year: 1945, text: 'Демо-подія: rollover XX ст. (під toggle).' },
+                { year: 1918, text: 'Демо-подія: резерв (2-й клік «Показати ще»).' },
+                { year: 1905, text: 'Демо-подія: резерв (2-й клік «Показати ще»).' },
               ],
             },
           },

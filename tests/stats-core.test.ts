@@ -166,6 +166,13 @@ describe('stats-core — aggregateStats', () => {
     expect(st.timeToOpenMin).toBeNull();
     expect(st.savedCount).toBe(0);
     expect(st.savedList).toEqual([]);
+    expect(st.stepDoneToday).toBe(false);
+  });
+
+  it('stepDoneToday: true лише після step_done СЬОГОДНІ', () => {
+    const s = seed(); // seed вже містить step_done на 05/06/07
+    expect(aggregateStats(s, '2026-07-07').stepDoneToday).toBe(true);
+    expect(aggregateStats(s, '2026-07-08').stepDoneToday).toBe(false); // інший день
   });
 
   it('savedCount/savedList: news має url, item-типи мають id; cap 8, найновіші перші', () => {
