@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mockModule, buildMockPrompt } from '../src/modules/mock.js';
+import {
+  mockModule,
+  buildMockPrompt,
+  parseMockCache,
+  updateMockWeight,
+  type MockWeights,
+} from '../src/modules/mock.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
@@ -9,6 +15,49 @@ describe('mock — buildMockPrompt', () => {
     const p = buildMockPrompt(15, 'Junior Full Stack');
     expect(p).toContain('15');
     expect(p).toContain('Junior Full Stack');
+  });
+
+  it('без слабких тем (усі ваги <=1.0) -> без підказки', () => {
+    const p = buildMockPrompt(5, 'Junior', { Алгоритми: 1.0, HTTP: 0.5 });
+    expect(p).not.toContain('слабким темам');
+  });
+
+  it('зі слабкими темами (вага >1.0) -> підказка, сортована спадаюче', () => {
+    const p = buildMockPrompt(5, 'Junior', { HTTP: 1.4, Алгоритми: 1.8, Мова: 1.0 });
+    expect(p).toContain('слабким темам кандидата: Алгоритми, HTTP');
+    expect(p).not.toContain('Мова.');
+  });
+});
+
+describe('mock — parseMockCache', () => {
+  it('парсить topic; порожній/відсутній topic -> undefined', () => {
+    const items = parseMockCache(
+      '[{"q":"Q1","a":"A1","topic":"HTTP"},{"q":"Q2","a":"A2","topic":""},{"q":"Q3","a":"A3"}]',
+    );
+    expect(items).toEqual([
+      { q: 'Q1', a: 'A1', topic: 'HTTP' },
+      { q: 'Q2', a: 'A2', topic: undefined },
+      { q: 'Q3', a: 'A3', topic: undefined },
+    ]);
+  });
+});
+
+describe('mock — updateMockWeight', () => {
+  it('hard -> вага росте; easy -> спадає; clamp [0.5,2.0]', () => {
+    let w: MockWeights = {};
+    w = updateMockWeight(w, 'Алгоритми', 'hard');
+    expect(w['Алгоритми']).toBeCloseTo(1.2);
+    w = updateMockWeight(w, 'Алгоритми', 'easy');
+    expect(w['Алгоритми']).toBeCloseTo(1.0);
+    for (let i = 0; i < 20; i++) w = updateMockWeight(w, 'Алгоритми', 'easy');
+    expect(w['Алгоритми']).toBe(0.5);
+    for (let i = 0; i < 20; i++) w = updateMockWeight(w, 'Алгоритми', 'hard');
+    expect(w['Алгоритми']).toBe(2.0);
+  });
+
+  it('порожня тема -> без змін', () => {
+    const w: MockWeights = { HTTP: 1.0 };
+    expect(updateMockWeight(w, '', 'hard')).toBe(w);
   });
 });
 
@@ -86,5 +135,21 @@ describe('mock — батч-кеш', () => {
       }),
     };
     expect(await mockModule.run(makeCtx({ state: memState(), llm }))).toBeNull();
+  });
+
+  it('topic з кешу потрапляє в data.topic', async () => {
+    const state = memState({ mockCache: [{ q: 'Q', a: 'A', topic: 'HTTP' }] });
+    const block = await mockModule.run(makeCtx({ state, llm: { complete: vi.fn() } }));
+    expect((block!.data as { topic?: string }).topic).toBe('HTTP');
+  });
+
+  it('mockWeights зі стану потрапляють у промпт при регенерації (слабкі теми)', async () => {
+    const llm = { complete: vi.fn(async () => '[{"q":"Q","a":"A","topic":"Алгоритми"}]') };
+    const state = memState({ mockWeights: { Алгоритми: 1.6, HTTP: 1.0 } });
+    await mockModule.run(makeCtx({ state, llm }));
+    expect(llm.complete).toHaveBeenCalledWith(
+      expect.stringContaining('слабким темам кандидата: Алгоритми'),
+      expect.anything(),
+    );
   });
 });

@@ -288,5 +288,6 @@ export function aggregateStats(store, todayKey) {
     readPerDay: Math.round(totalReads / activeDays),
     reliability: s.reliability,
     stepDoneToday: stepped(s.days[todayKey]),
+    mockRatedToday: mocked(s.days[todayKey]),
   };
 }
