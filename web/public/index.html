@@ -1015,6 +1015,34 @@
       .job-card.hidden {
         display: none;
       }
+      /* самооцінка mock-питання (Блок F) — той самий вторинний патерн, що job-actions */
+      .mock-rate {
+        display: flex;
+        gap: 7px;
+        margin-top: 10px;
+      }
+      .mock-rate .rate-btn {
+        flex: 1 1 auto;
+        min-height: 40px;
+        border: 1px solid var(--border);
+        background: var(--glass-2);
+        color: var(--muted);
+        border-radius: 11px;
+        font-family: 'Golos Text', system-ui, sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        padding: 6px 8px;
+      }
+      .mock-rate .rate-btn.on {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--grad-soft);
+        font-weight: 600;
+      }
+      .mock-rate .rate-btn:disabled {
+        cursor: default;
+      }
 
       /* ── Статистика ─────────────────────────────────────────────────────── */
       .streak-row {
@@ -1512,7 +1540,7 @@
         // 2) Курс — ОДНА валюта в рядок (повноширинні рядки, кожен свій toggle-графік).
         out.push(currencyCard(byId(blocks, 'currency')?.data));
 
-        // 3) Питання дня. Розкриття: відповідь + кнопка «Вивчити» (ресурс).
+        // 3) Питання дня. Розкриття: відповідь + самооцінка (легко/важко) + «Вивчити».
         const mock = byId(blocks, 'mock');
         if (mock?.data) {
           const base = `<div class="exp-base">${esc(mock.data.question)}</div>`;
@@ -1522,10 +1550,17 @@
           const answer = has(mock.data.answer)
             ? `<div class="answer">${esc(mock.data.answer)}</div>`
             : `<div class="muted">Відповідь з’явиться згодом. Спробуй відповісти вголос — тренування до співбесіди.</div>`;
+          const rated = !!(stats && stats.mockRatedToday);
+          const rateBtns = has(mock.data.answer)
+            ? `<div class="mock-rate" data-topic="${esc(mock.data.topic || '')}">
+                <button class="rate-btn${rated ? ' on' : ''}" type="button" data-act="mock-rate" data-rating="easy"${rated ? ' disabled' : ''}>😌 Легко</button>
+                <button class="rate-btn${rated ? ' on' : ''}" type="button" data-act="mock-rate" data-rating="hard"${rated ? ' disabled' : ''}>😰 Важко</button>
+              </div>`
+            : '';
           const learn = has(mock.data.resourceUrl)
             ? `<a class="learn-btn" href="${esc(mock.data.resourceUrl)}" target="_blank" rel="noopener">📚 Вивчити</a>`
             : '';
-          const more = `<div class="exp-more">${hint}${answer}${learn}</div>`;
+          const more = `<div class="exp-more">${hint}${answer}${rateBtns}${learn}</div>`;
           const qId = textHash(mock.data.question);
           out.push(
             card(
@@ -2511,6 +2546,23 @@
             return;
           }
 
+          const mockRateBtn = e.target.closest('[data-act="mock-rate"]');
+          if (mockRateBtn) {
+            e.stopPropagation();
+            const wrap = mockRateBtn.closest('.mock-rate');
+            sendEvent(
+              'mock_answer',
+              { topic: wrap?.dataset.topic || '', rating: mockRateBtn.dataset.rating },
+              () => {
+                wrap?.querySelectorAll('.rate-btn').forEach((b) => {
+                  b.classList.add('on');
+                  b.disabled = true;
+                });
+              },
+            );
+            return;
+          }
+
           const moreEvBtn = e.target.closest('[data-act="onthisday-more"]');
           if (moreEvBtn) {
             e.stopPropagation();
@@ -2753,6 +2805,7 @@
               answer:
                 'Замикання — функція разом зі збереженим посиланням на змінні зовнішньої області, де її створено.',
               resourceUrl: 'https://developer.mozilla.org/uk/docs/Web/JavaScript/Closures',
+              topic: 'Мова',
             },
           },
           {

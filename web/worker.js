@@ -63,6 +63,18 @@ function updateJobPrefs(prefs, signal, title) {
   return { ...prefs, [toAdd]: merged, [toRemove]: filtered };
 }
 
+// mockWeights (дзеркало src/modules/mock.ts — Worker не імпортує TS).
+const MOCK_WEIGHT_MIN = 0.5;
+const MOCK_WEIGHT_MAX = 2.0;
+const MOCK_WEIGHT_STEP = 0.2;
+const clampMockWeight = (w) => Math.min(MOCK_WEIGHT_MAX, Math.max(MOCK_WEIGHT_MIN, w));
+function updateMockWeight(weights, topic, rating) {
+  if (!topic) return weights;
+  const cur = weights[topic] ?? 1.0;
+  const next = clampMockWeight(cur + (rating === 'hard' ? MOCK_WEIGHT_STEP : -MOCK_WEIGHT_STEP));
+  return { ...weights, [topic]: next };
+}
+
 /** Київська година (0..23) зараз, з урахуванням DST через Intl. */
 function kyivHour(now = new Date()) {
   const h = new Intl.DateTimeFormat('en-GB', {
@@ -218,6 +230,19 @@ async function handleEvent(request, env) {
     const state = await loadState(env);
     const prefs = state.jobPrefs ?? { liked: [], disliked: [] };
     state.jobPrefs = updateJobPrefs(prefs, jobSignal, body.title);
+    await env.BRIEFING.put('state', JSON.stringify(state));
+  }
+
+  // mockWeights: слабкі теми самооцінки (Блок F) -> частіше в наступному батчі.
+  if (
+    body.type === 'mock_answer' &&
+    typeof body.topic === 'string' &&
+    body.topic &&
+    (body.rating === 'easy' || body.rating === 'hard')
+  ) {
+    const state = await loadState(env);
+    const weights = state.mockWeights ?? {};
+    state.mockWeights = updateMockWeight(weights, body.topic, body.rating);
     await env.BRIEFING.put('state', JSON.stringify(state));
   }
 
