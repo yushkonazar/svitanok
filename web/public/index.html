@@ -1653,7 +1653,7 @@
           ${readout}
         </svg>`;
 
-        return `<div class="wxc-dial" style="background:${P.card};box-shadow:${P.shadow}">
+        return `<div class="wxc-dial" data-sr="${has(sr) ? sr : ''}" data-ss="${has(ss) ? ss : ''}" style="background:${P.card};box-shadow:${P.shadow}">
           ${svg}
           <div class="wxc-dial-times">
             <div class="rs"><span class="ic">🌅</span><div><div class="v" style="color:${P.rsVal}">${fmtClock(sr)}</div><div class="l" style="color:${P.rsLabel}">схід</div></div></div>
@@ -1661,6 +1661,22 @@
           </div>
         </div>`;
       }
+
+      // Живий рух: переоновлюємо кожен циферблат на місці (маркер повзе, відлік
+      // цокає, автоперехід день↔ніч). Дешево — SVG малий; тик раз на 30 с + при
+      // поверненні фокуса на апку. data-sr/ss несуть ті самі схід/захід.
+      function tickDials() {
+        if (document.hidden) return;
+        document.querySelectorAll('.wxc-dial[data-sr]').forEach((el) => {
+          const sr = el.getAttribute('data-sr');
+          const ss = el.getAttribute('data-ss');
+          el.outerHTML = wxDial(sr ? +sr : undefined, ss ? +ss : undefined);
+        });
+      }
+      setInterval(tickDials, 30000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) tickDials();
+      });
 
       // Графік температури по годинах (дизайн): згладжена крива area+line, точки,
       // вісь Y (позначки °C + сітка), вісь годин, дощ-бенд. hourly = [{h,t}].
