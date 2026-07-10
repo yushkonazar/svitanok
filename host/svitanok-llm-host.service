@@ -1,0 +1,28 @@
+[Unit]
+Description=Svitanok LLM host (claude CLI relay, Worker->host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=svitanok
+Group=svitanok
+WorkingDirectory=/opt/svitanok-llm-host
+EnvironmentFile=/opt/svitanok-llm-host/.env
+ExecStart=/usr/bin/node /opt/svitanok-llm-host/server.mjs
+Restart=on-failure
+RestartSec=5
+
+# Базове гарднення (некореневий виділений юзер + без нових привілеїв).
+# ProtectSystem=strict робить ВЕСЬ FS read-only, окрім ReadWritePaths — тому
+# ~/.claude(.json) (де CLI тримає OAuth-сесію) МУСИТЬ бути в цьому списку,
+# інакше claude -p не зможе прочитати/оновити свій auth-стан.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/svitanok-llm-host
+ReadWritePaths=-/home/svitanok/.claude
+ReadWritePaths=-/home/svitanok/.claude.json
+
+[Install]
+WantedBy=multi-user.target
