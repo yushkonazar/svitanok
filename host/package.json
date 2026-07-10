@@ -1,0 +1,13 @@
+{
+  "name": "svitanok-llm-host",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Тонкий HTTP-реле на claude CLI (підписка) для real-time LLM-викликів з Worker'а Svitanok.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
