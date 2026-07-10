@@ -12,6 +12,12 @@ const {
   parseCallbackData,
   resolveCallback,
   markButtonDone,
+  parseCommand,
+  formatStatsMessage,
+  formatJobsMessage,
+  formatSavedMessage,
+  COMMANDS,
+  REPLY_KEYBOARD,
 } = tg;
 
 describe('tg-core — verifyWebhookSecret', () => {
@@ -177,5 +183,92 @@ describe('tg-core — markButtonDone', () => {
     expect(markButtonDone(out, 'v1:2026-07-09:js:0').inline_keyboard[0][0].text).toBe(
       '✓ 💾 Зберегти',
     );
+  });
+});
+
+describe('tg-core — parseCommand (Блок P4)', () => {
+  it('slash-команда, з опційним "@botname" та аргументами', () => {
+    expect(parseCommand('/stats')).toEqual({ cmd: 'stats', args: '' });
+    expect(parseCommand('/stats@svitanok_bot')).toEqual({ cmd: 'stats', args: '' });
+    expect(parseCommand('/plan  завтра о 10')).toEqual({ cmd: 'plan', args: 'завтра о 10' });
+    expect(parseCommand('/STATS')).toEqual({ cmd: 'stats', args: '' }); // регістр-нечутливо
+  });
+
+  it('лейбл reply-keyboard мапиться на ту саму команду, що й "/xxx"', () => {
+    expect(parseCommand('📋 Статистика')).toEqual({ cmd: 'stats', args: '' });
+    expect(parseCommand('💼 Вакансії')).toEqual({ cmd: 'jobs', args: '' });
+    expect(parseCommand('🔖 Збережене')).toEqual({ cmd: 'save', args: '' });
+    expect(parseCommand('🔄 Брифінг')).toEqual({ cmd: 'brief', args: '' });
+  });
+
+  it('звичайний текст/порожнє/не-рядок -> null (майбутній асистент, P2)', () => {
+    expect(parseCommand('привіт, як справи?')).toBeNull();
+    expect(parseCommand('')).toBeNull();
+    expect(parseCommand('   ')).toBeNull();
+    expect(parseCommand('/')).toBeNull();
+    expect(parseCommand(undefined)).toBeNull();
+  });
+
+  it('COMMANDS/REPLY_KEYBOARD — узгоджені реєстри (немає дублів, валідні імена)', () => {
+    const names = COMMANDS.map((c: { command: string }) => c.command);
+    expect(new Set(names).size).toBe(names.length);
+    for (const n of names) expect(n).toMatch(/^[a-z0-9_]{1,32}$/);
+    expect(REPLY_KEYBOARD.flat().length).toBeGreaterThan(0);
+  });
+
+  it('кожен лейбл REPLY_KEYBOARD резолвиться в команду з COMMANDS (без дрейфу двох реєстрів)', () => {
+    const known = new Set(COMMANDS.map((c: { command: string }) => c.command));
+    for (const label of REPLY_KEYBOARD.flat() as string[]) {
+      const parsed = parseCommand(label);
+      expect(parsed, `лейбл "${label}" не мапиться на команду`).not.toBeNull();
+      expect(known.has(parsed!.cmd), `"${label}" -> "${parsed!.cmd}" немає в COMMANDS`).toBe(true);
+    }
+  });
+});
+
+describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (Блок P4)', () => {
+  it('formatStatsMessage — базові поля + слабкі теми (лише value>0) + fit', () => {
+    const msg = formatStatsMessage({
+      streaks: { openDays: 3, bestOpenDays: 7, mockDays: 1 },
+      funnel: { saved: 2, applied: 1, interview: 0, offer: 0 },
+      goal: { weeklyApplied: 1, weeklyTarget: 5 },
+      avgFitApplied: 82,
+      mock: {
+        weakTopics: [
+          { name: 'React', value: 40 },
+          { name: 'Дате', value: 0 },
+        ],
+      },
+    });
+    expect(msg).toContain('Стрік відкриттів: 3 дн. (рекорд 7)');
+    expect(msg).toContain('1/5 подано');
+    expect(msg).toContain('82%');
+    expect(msg).toContain('React');
+    expect(msg).not.toContain('Дате'); // value:0 відфільтровано
+  });
+
+  it('formatStatsMessage — порожній стор не падає (дефолти)', () => {
+    expect(() => formatStatsMessage({})).not.toThrow();
+    expect(formatStatsMessage({})).toContain('Статистика');
+  });
+
+  it('formatJobsMessage — групує за стадією; порожньо -> заглушка', () => {
+    const msg = formatJobsMessage([
+      { url: 'https://x/1', stage: 'applied', title: 'Junior FS' },
+      { url: 'https://x/2', stage: 'saved', title: '<script>x</script>' },
+    ]);
+    expect(msg.indexOf('💾 Збережено')).toBeLessThan(msg.indexOf('✅ Подано'));
+    expect(msg).toContain('&lt;script&gt;'); // екранування динамічного title
+    expect(formatJobsMessage([])).toContain('порожньо');
+  });
+
+  it('formatSavedMessage — іконка за kind; порожньо -> заглушка', () => {
+    const msg = formatSavedMessage([
+      { kind: 'fact', title: 'Медузи безсмертні' },
+      { kind: 'quote', title: 'Дій' },
+    ]);
+    expect(msg).toContain('🧠 Медузи безсмертні');
+    expect(msg).toContain('🏛 Дій');
+    expect(formatSavedMessage([])).toContain('Поки нічого');
   });
 });
