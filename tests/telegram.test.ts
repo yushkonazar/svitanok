@@ -77,6 +77,30 @@ describe('createNotifier', () => {
     expect(calls[1]).not.toHaveProperty('reply_markup');
   });
 
+  it('threadId (Блок «Теми») -> message_thread_id у sendMessage; не задано -> відсутнє', async () => {
+    const calls: unknown[] = [];
+    const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      calls.push(JSON.parse(init.body as string));
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    const withThread = createNotifier({
+      token: 'T',
+      chatId: '42',
+      threadId: '7',
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    });
+    await withThread.send(['з темою']);
+    expect(calls[0]).toMatchObject({ message_thread_id: '7' });
+
+    const withoutThread = createNotifier({
+      token: 'T',
+      chatId: '42',
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    });
+    await withoutThread.send(['без теми (DM)']);
+    expect(calls[1]).not.toHaveProperty('message_thread_id');
+  });
+
   it('failNotify шле плейн-текст (без HTML)', async () => {
     let body: Record<string, unknown> = {};
     const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {

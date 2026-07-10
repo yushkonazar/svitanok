@@ -16,6 +16,7 @@ const {
   formatStatsMessage,
   formatJobsMessage,
   formatSavedMessage,
+  formatWhereAmI,
   COMMANDS,
   REPLY_KEYBOARD,
 } = tg;
@@ -270,5 +271,24 @@ describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (�
     expect(msg).toContain('🧠 Медузи безсмертні');
     expect(msg).toContain('🏛 Дій');
     expect(formatSavedMessage([])).toContain('Поки нічого');
+  });
+});
+
+describe('tg-core — formatWhereAmI (Блок «Теми»)', () => {
+  it('показує chat_id і thread_id, коли задані', () => {
+    const msg = formatWhereAmI(-1001234567890, 42);
+    expect(msg).toContain('-1001234567890');
+    expect(msg).toContain('42');
+  });
+
+  it('DM (без теми форуму) -> thread_id "немає"', () => {
+    const msg = formatWhereAmI(123456, null);
+    expect(msg).toContain('123456');
+    expect(msg).toContain('немає');
+  });
+
+  it('екранує потенційно небезпечний вміст (захисно, хоч chat/thread id завжди числа)', () => {
+    const msg = formatWhereAmI('<script>x</script>', null);
+    expect(msg).toContain('&lt;script&gt;');
   });
 });
