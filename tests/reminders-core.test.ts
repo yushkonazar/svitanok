@@ -13,6 +13,7 @@ const {
   LLM_REWRITE_SCHEMA,
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
+  isAmbiguousRewrite,
 } = rem;
 
 // Літо (EEST, UTC+3): 2026-07-10 11:00 Київ.
@@ -186,5 +187,44 @@ describe('reminders-core — LLM-фолбек: buildLlmRewriteSystemPrompt/extra
       whenMs: Date.parse('2026-07-10T10:00:00Z'), // 13:00-3 (літо)
       remainder: 'забрати посилку',
     });
+  });
+});
+
+describe('reminders-core — isAmbiguousRewrite (захист від ненадійного LLM-rewrite)', () => {
+  it('РЕГРЕС: живий збій — модель лишила "ввечері" не конвертованим у 24-год формат', () => {
+    // Реальний інцидент: rewritten="о 8:00 ввечері полити квіти" (мало бути
+    // "о 20:00 полити квіти") -> без guard'а parseReminderTime тихо ставив
+    // нагадування на 08:00 замість 20:00. isAmbiguousRewrite мусить це впіймати.
+    expect(isAmbiguousRewrite('о 8:00 ввечері полити квіти')).toBe(true);
+  });
+
+  it('усі слова частини доби, які rewrite мав усунути', () => {
+    for (const word of [
+      'вранці',
+      'зранку',
+      'вдень',
+      'ввечері',
+      'вночі',
+      'опівдні',
+      'опівночі',
+      'в обід',
+    ]) {
+      expect(isAmbiguousRewrite(`о 10:00 ${word} щось зробити`)).toBe(true);
+    }
+  });
+
+  it('коректний rewrite (частина доби вже конвертована в годину) -> не спрацьовує', () => {
+    expect(isAmbiguousRewrite('завтра о 20:00 полити квіти')).toBe(false);
+    expect(isAmbiguousRewrite('через 20 хвилин зробити паузу')).toBe(false);
+    expect(isAmbiguousRewrite('о 13:00 забрати посилку')).toBe(false);
+  });
+
+  it('інтеграція: tryLlmReminderRewrite-подібний потік — ambiguous rewrite відхиляється до parseReminderTime', () => {
+    const badRewrite = 'о 8:00 ввечері полити квіти';
+    // Симулює логіку worker.js: перевірка ambiguous ПЕРЕД parseReminderTime.
+    const accepted = isAmbiguousRewrite(badRewrite)
+      ? null
+      : parseReminderTime(badRewrite, SUMMER_NOW);
+    expect(accepted).toBeNull();
   });
 });
