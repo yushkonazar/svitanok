@@ -33,6 +33,7 @@ import {
   LLM_REWRITE_SCHEMA,
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
+  isAmbiguousRewrite,
 } from './reminders-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
@@ -413,6 +414,9 @@ const REMINDER_HELP =
  * VPS-хост ПЕРЕПИСАТИ її в канонічний патерн (LLM НЕ рахує час сам — ненадійна
  * арифметика дат), тоді прогонюємо результат через ТОЙ САМИЙ parseReminderTime.
  * Хост недоступний/не налаштований -> callLlmHost сам поверне null, тихо.
+ * isAmbiguousRewrite — захист від ненадійного rewrite (модель не завжди
+ * до кінця виконує інструкцію «прибери слово частини доби») — якщо лишилось
+ * "ввечері"/"вранці" тощо, НЕ довіряємо, а не мовчки ставимо хибний час.
  */
 async function tryLlmReminderRewrite(env, text) {
   const now = Date.now();
@@ -422,7 +426,8 @@ async function tryLlmReminderRewrite(env, text) {
     jsonSchema: LLM_REWRITE_SCHEMA,
   });
   const rewritten = extractLlmRewrite(res?.structured);
-  return rewritten ? parseReminderTime(rewritten, now) : null;
+  if (!rewritten || isAmbiguousRewrite(rewritten)) return null;
+  return parseReminderTime(rewritten, now);
 }
 
 /** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
