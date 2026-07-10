@@ -2,8 +2,15 @@
 // рветься). Один блок > ліміту: спершу прибрати detail, далі entity-safe
 // обрізати summary. Лічильник довжини — string.length (UTF-16, як Telegram).
 
-import type { Block } from './types.js';
-import { escapeHtml, fitEscaped, visibleLength } from './telegram.js';
+import type { Block, Button } from './types.js';
+import {
+  escapeHtml,
+  fitEscaped,
+  visibleLength,
+  buildCallbackData,
+  type OutboundMessage,
+  type TgButton,
+} from './telegram.js';
 
 const SEP = '\n\n'; // тонкий роздільник між блоками (today/weather не впритул, §9)
 
@@ -13,6 +20,8 @@ export interface RenderOptions {
   header?: string;
   /** Тихий день: лише summary, без detail (§6). */
   quiet?: boolean;
+  /** "YYYY-MM-DD" — потрібен лише для кодування callback_data кнопок (Блок P1). */
+  dateKey?: string;
 }
 
 /** Обрізати ГОТОВИЙ HTML по межі рядків (кожен рядок блоку — цілісний HTML-юніт),
@@ -71,27 +80,65 @@ export function formatKyivDateHeader(date: Date): string {
   return `<b>${escapeHtml(formatKyivDateLabel(date))}</b>`;
 }
 
-/** Зібрати блоки у повідомлення, розбиваючи на межі блоків за лімітом. */
-export function renderBriefing(blocks: Block[], options: RenderOptions): string[] {
-  const { maxChars, header, quiet = false } = options;
+/** Button[][] (короткі коди) -> TgButton[][] (callback_data). Без dateKey/кнопок -> undefined. */
+function buildInlineKeyboard(
+  buttons: Button[][] | undefined,
+  dateKey: string | undefined,
+): TgButton[][] | undefined {
+  if (!buttons || buttons.length === 0 || !dateKey) return undefined;
+  const rows = buttons
+    .map((row) =>
+      row
+        .map((b) => {
+          const callback_data = buildCallbackData(dateKey, b.action);
+          return callback_data ? { text: b.label, callback_data } : null;
+        })
+        .filter((x): x is TgButton => x !== null),
+    )
+    .filter((row) => row.length > 0);
+  return rows.length > 0 ? rows : undefined;
+}
+
+/**
+ * Зібрати блоки у повідомлення, розбиваючи на межі блоків за лімітом. Блок із
+ * `buttons` ЗАВЖДИ йде окремим повідомленням (клавіатура прив'язана до
+ * конкретного sendMessage — не можна «розмазати» на злиті блоки).
+ */
+export function renderBriefingMessages(blocks: Block[], options: RenderOptions): OutboundMessage[] {
+  const { maxChars, header, quiet = false, dateKey } = options;
   // inMessage:false -> блок лише в Mini App, не в Telegram-повідомленні.
   const sorted = blocks
     .filter((b) => b.inMessage !== false)
     .sort((a, b) => a.priority - b.priority);
-  const parts = sorted.map((b) => renderBlock(b, maxChars, quiet));
 
-  const messages: string[] = [];
+  const messages: OutboundMessage[] = [];
   let cur = header ?? '';
+  const flush = () => {
+    if (cur) messages.push({ text: cur });
+    cur = '';
+  };
 
-  for (const part of parts) {
+  for (const b of sorted) {
+    const part = renderBlock(b, maxChars, quiet);
+    const keyboard = buildInlineKeyboard(b.buttons, dateKey);
+    if (keyboard) {
+      flush();
+      messages.push({ text: part, buttons: keyboard });
+      continue;
+    }
     const candidate = cur ? cur + SEP + part : part;
     if (visibleLength(candidate) <= maxChars) {
       cur = candidate;
     } else {
-      if (cur) messages.push(cur);
+      flush();
       cur = part; // part гарантовано <= maxChars (renderBlock це забезпечує)
     }
   }
-  if (cur) messages.push(cur);
+  flush();
   return messages;
+}
+
+/** Той самий пакінг, лише текст (без кнопок) — для дашборда/тестів/dry-run-виводу. */
+export function renderBriefing(blocks: Block[], options: RenderOptions): string[] {
+  return renderBriefingMessages(blocks, options).map((m) => m.text);
 }

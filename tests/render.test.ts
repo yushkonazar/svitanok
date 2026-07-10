@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { renderBriefing, formatKyivDateHeader } from '../src/core/render.js';
-import { visibleLength } from '../src/core/telegram.js';
+import {
+  renderBriefing,
+  renderBriefingMessages,
+  formatKyivDateHeader,
+} from '../src/core/render.js';
+import { visibleLength, buildCallbackData, CB_VERSION } from '../src/core/telegram.js';
 import type { Block } from '../src/core/types.js';
 
 const block = (over: Partial<Block> & { id: string; priority: number }): Block => ({
@@ -139,5 +143,81 @@ describe('formatKyivDateHeader', () => {
     const h = formatKyivDateHeader(new Date('2026-06-29T09:00:00Z')); // понеділок
     expect(h.startsWith('<b>')).toBe(true);
     expect(h.toLowerCase()).toContain('червня');
+  });
+});
+
+describe('renderBriefingMessages — кнопки (Блок P1)', () => {
+  it('блок із buttons -> окреме повідомлення з callback_data-кодованою клавіатурою', () => {
+    const msgs = renderBriefingMessages(
+      [
+        block({
+          id: 'fact',
+          priority: 0,
+          title: 'Факт',
+          buttons: [[{ label: '🔖 Зберегти', action: 'sf' }]],
+        }),
+      ],
+      { maxChars: 3900, dateKey: '2026-07-09' },
+    );
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.buttons).toEqual([
+      [{ text: '🔖 Зберегти', callback_data: `${CB_VERSION}:2026-07-09:sf` }],
+    ]);
+  });
+
+  it('без dateKey -> кнопки не серіалізуються (безпечний дефолт)', () => {
+    const msgs = renderBriefingMessages(
+      [block({ id: 'fact', priority: 0, buttons: [[{ label: 'X', action: 'sf' }]] })],
+      { maxChars: 3900 },
+    );
+    expect(msgs[0]!.buttons).toBeUndefined();
+  });
+
+  it('блок із кнопками НЕ зливається із сусідніми блоками (форсує межу повідомлення)', () => {
+    const msgs = renderBriefingMessages(
+      [
+        block({ id: 'a', priority: 0, title: 'A', summary: 'перед' }),
+        block({
+          id: 'jobs',
+          priority: 1,
+          title: 'Вакансії',
+          summary: 'з кнопками',
+          buttons: [[{ label: '💾', action: 'js:0' }]],
+        }),
+        block({ id: 'c', priority: 2, title: 'C', summary: 'після' }),
+      ],
+      { maxChars: 3900, dateKey: '2026-07-09' },
+    );
+    expect(msgs).toHaveLength(3);
+    expect(msgs[0]!.text).toContain('перед');
+    expect(msgs[0]!.buttons).toBeUndefined();
+    expect(msgs[1]!.buttons).toHaveLength(1);
+    expect(msgs[2]!.text).toContain('після');
+    expect(msgs[2]!.buttons).toBeUndefined();
+  });
+
+  it('renderBriefing (сумісний рядковий wrapper) повертає лише текст', () => {
+    const msgs = renderBriefing(
+      [
+        block({
+          id: 'fact',
+          priority: 0,
+          summary: 'X',
+          buttons: [[{ label: 'B', action: 'sf' }]],
+        }),
+      ],
+      { maxChars: 3900, dateKey: '2026-07-09' },
+    );
+    expect(typeof msgs[0]).toBe('string');
+  });
+});
+
+describe('buildCallbackData', () => {
+  it('кодує v1:<dateKey>:<action>', () => {
+    expect(buildCallbackData('2026-07-09', 'ja:0')).toBe('v1:2026-07-09:ja:0');
+  });
+
+  it('> 64 байти (UTF-8) -> null', () => {
+    expect(buildCallbackData('2026-07-09', 'я'.repeat(40))).toBeNull();
   });
 });

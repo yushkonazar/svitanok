@@ -37,6 +37,7 @@ describe('stoic — модуль', () => {
     expect(block).not.toBeNull();
     expect(block!.priority).toBe(10);
     expect(block!.summary).toContain('«');
+    expect(block!.buttons).toEqual([[{ label: '🔖 Зберегти', action: 'sq' }]]);
   });
 
   it('enabled читає config.modules.stoic.enabled', () => {

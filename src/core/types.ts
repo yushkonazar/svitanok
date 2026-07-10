@@ -6,6 +6,8 @@ import type { Clock } from './clock.js';
 
 export interface Button {
   label: string;
+  // Короткий callback-код (напр. 'ja:0'); повний callback_data (з датою, версією,
+  // Telegram-лімітом 64 байти) кодує render.ts на момент відправки (§ Блок P1).
   action: string;
 }
 
@@ -19,7 +21,7 @@ export interface Block {
   // для лінків у словах тощо. Якщо заданий, render бере його замість summary/detail.
   summaryHtml?: string;
   detailHtml?: string;
-  buttons?: Button[];
+  buttons?: Button[][]; // рядки inline-клавіатури (Telegram reply_markup)
   priority: number; // порядок ВІДОБРАЖЕННЯ (менше = вище)
   // Структуровані дані блоку для Mini App (briefing.json). Серіалізовний JSON.
   data?: unknown;
