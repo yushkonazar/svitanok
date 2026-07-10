@@ -1,10 +1,20 @@
 // Worker: статика дашборда (ASSETS) + /briefing.json із KV + ТОЧНИЙ планувальник
 // (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH (10:00 Київ) +
 // /api/vote, /api/event (запис подій — авторизація власника через Telegram
-// WebApp initData), /api/stats (читання агрегату). KV namespace BRIEFING, ключі
-// `latest`/`state`/`stats`/`briefing:<date>`.
+// WebApp initData), /api/stats (читання агрегату), /api/telegram (вебхук —
+// Блок P0/P1, авторизація через X-Telegram-Bot-Api-Secret-Token). KV namespace
+// BRIEFING, ключі `latest`/`state`/`stats`/`briefing:<date>`.
 
 import { recordEvent, aggregateStats } from './stats-core.mjs';
+import {
+  verifyWebhookSecret,
+  parseUpdate,
+  isOwner,
+  isDuplicate,
+  parseCallbackData,
+  resolveCallback,
+  markButtonDone,
+} from './tg-core.mjs';
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
@@ -206,19 +216,12 @@ async function handleVote(request, env) {
   return json({ ok: true, category, weight: weights[category] });
 }
 
-/** POST /api/event {type, …, initData} -> записати подію у стор статистики. */
-async function handleEvent(request, env) {
-  if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: 'bad-json' }, 400);
-  }
-  if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
-  const auth = await checkOwner(body.initData, env);
-  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
-
+/**
+ * Спільне ядро запису події — і /api/event (Mini App), і Telegram-callback
+ * (Блок P1) проходять через ЦЕ, щоб jobPrefs/mockWeights/stats не дублювались
+ * і не розходились між двома джерелами подій.
+ */
+async function applyEvent(env, body) {
   // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
   const jobSignal =
     body.type === 'job_dismiss'
@@ -249,12 +252,148 @@ async function handleEvent(request, env) {
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
   const stats = recordEvent(await loadStats(env), body, kyivDateKey(), nowMin);
   await env.BRIEFING.put('stats', JSON.stringify(stats));
+}
+
+/** POST /api/event {type, …, initData} -> записати подію у стор статистики. */
+async function handleEvent(request, env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: 'bad-json' }, 400);
+  }
+  if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
+  const auth = await checkOwner(body.initData, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  await applyEvent(env, body);
   return json({ ok: true });
 }
 
 /** GET /api/stats -> агрегат для табу «Статистика» (читання, без auth). */
 async function handleStats(env) {
   return json(aggregateStats(await loadStats(env), kyivDateKey()));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   TELEGRAM-ВЕБХУК (Блок P0+P1) — прийом callback-кнопок з брифінгу.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/** Тонкий клієнт Telegram Bot API (порт src/core/telegram.ts:call — Worker не імпортує TS). */
+async function tgCall(env, method, body) {
+  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    console.error(`Telegram ${method} HTTP ${res.status}`, await res.text().catch(() => ''));
+  }
+  return res;
+}
+
+/** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
+ *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
+async function loadBriefingForDate(env, dateKey) {
+  try {
+    return JSON.parse((await env.BRIEFING.get(`briefing:${dateKey}`)) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+/** Обробити callback: застосувати подію (якщо валідна) + позначити кнопку ✓;
+ *  повертає текст тосту для answerCallbackQuery (успіх/застаріло/невідомо). */
+async function resolveCallbackToast(env, parsed) {
+  const cb = parseCallbackData(parsed.data);
+  if (!cb) return '⚠️ Застаріла кнопка.';
+
+  const briefing = await loadBriefingForDate(env, cb.dateKey);
+  const resolved = resolveCallback(briefing, cb.code, cb.idx);
+  if (resolved.error === 'stale') return '⚠️ Ця кнопка вже застаріла.';
+  if (resolved.error) return '⚠️ Невідома дія.';
+
+  // applyEvent сам читає/пише 'state' (jobPrefs/mockWeights) — виклик тут не
+  // конфліктує з lastUpdateId-записом у handleTelegramWebhook (той перечитує
+  // 'state' ПІСЛЯ цього виклику, а не переносить сюди свою стару копію).
+  await applyEvent(env, resolved.event);
+  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+    });
+  }
+  return resolved.toast;
+}
+
+/** POST /api/telegram — Telegram Bot API webhook. Secret-token + owner + дедуп. */
+async function handleTelegramWebhook(request, env) {
+  if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
+    return json({ ok: false, error: 'no-webhook-secret' }, 500);
+  }
+  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  if (!verifyWebhookSecret(header, env.TELEGRAM_WEBHOOK_SECRET)) {
+    return json({ ok: false, error: 'bad-secret' }, 401);
+  }
+
+  let update;
+  try {
+    update = await request.json();
+  } catch {
+    return json({ ok: false, error: 'bad-json' }, 400);
+  }
+  const parsed = parseUpdate(update);
+
+  if (!isOwner(parsed, env.TELEGRAM_CHAT_ID)) {
+    // Не власник — тихо ігноруємо (бот однокористувацький; не палимо деталі стороннім).
+    return json({ ok: true });
+  }
+
+  const preState = await loadState(env); // лише для дедуп-перевірки (read-only)
+  if (isDuplicate(preState.lastUpdateId, parsed.updateId)) {
+    return json({ ok: true }); // Telegram передоставляє апдейти — не обробляємо двічі.
+  }
+
+  if (parsed.kind === 'callback') {
+    const toast = await resolveCallbackToast(env, parsed);
+    if (parsed.callbackId) {
+      await tgCall(env, 'answerCallbackQuery', {
+        callback_query_id: parsed.callbackId,
+        text: toast,
+      });
+    }
+  }
+  // kind:'message' — команди/асистент з'являться у наступних фазах (P2-P4).
+
+  if (typeof parsed.updateId === 'number') {
+    // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
+    const state = await loadState(env);
+    state.lastUpdateId = parsed.updateId;
+    await env.BRIEFING.put('state', JSON.stringify(state));
+  }
+  return json({ ok: true });
+}
+
+/** POST /api/telegram/setup -> одноразовий setWebhook. Auth тим самим заголовком,
+ *  що й вебхук (X-Telegram-Bot-Api-Secret-Token) — не query-param (не осідає в логах). */
+async function handleTelegramSetup(request, env) {
+  if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
+    return json({ ok: false, error: 'no-webhook-secret' }, 500);
+  }
+  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  if (!verifyWebhookSecret(header, env.TELEGRAM_WEBHOOK_SECRET)) {
+    return json({ ok: false, error: 'bad-secret' }, 401);
+  }
+  const url = new URL(request.url);
+  const webhookUrl = `${url.origin}/api/telegram`;
+  const res = await tgCall(env, 'setWebhook', {
+    url: webhookUrl,
+    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+  });
+  return json({ ok: res.ok, webhookUrl });
 }
 
 /** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
@@ -342,6 +481,12 @@ export default {
     }
     if (url.pathname === '/api/stats') {
       return handleStats(env);
+    }
+    if (url.pathname === '/api/telegram' && request.method === 'POST') {
+      return handleTelegramWebhook(request, env);
+    }
+    if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
+      return handleTelegramSetup(request, env);
     }
     return env.ASSETS.fetch(request); // статичні файли (дашборд)
   },
