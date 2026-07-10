@@ -250,8 +250,16 @@ async function main(): Promise<void> {
   const state = kvEnv
     ? await createKvStateStore({ ...kvEnv, log, pruners })
     : createStateStore({ path: process.env.STATE_FILE ?? 'state.json', log, pruners });
+  // TOPIC_BRIEFING — опційний thread_id теми «☀️ Брифінг» forum-супергрупи
+  // (Блок «Теми»). Не задано -> дефолтна тема/DM, як і зараз.
+  const topicBriefing = optionalSecret('TOPIC_BRIEFING');
   const notifier = secrets
-    ? createNotifier({ token: secrets.botToken, chatId: secrets.chatId, log })
+    ? createNotifier({
+        token: secrets.botToken,
+        chatId: secrets.chatId,
+        threadId: topicBriefing,
+        log,
+      })
     : null;
 
   const deps: RunDeps = {

@@ -169,6 +169,7 @@ export const COMMANDS = [
   { command: 'mock', description: '🚧 Співбесіда — скоро' },
   { command: 'plan', description: '🚧 План дня — скоро' },
   { command: 'roadmap', description: '🚧 IT-роадмеп — скоро' },
+  { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
 ];
 
 // Reply-keyboard «пад» швидких дій (персистентний, шлеться раз на /start).
@@ -265,5 +266,21 @@ export function formatStatsMessage(stats) {
   if (weak.length > 0) {
     lines.push(`⚠️ Слабкі теми: ${weak.map((t) => escapeHtml(t.name)).join(', ')}`);
   }
+  return lines.join('\n');
+}
+
+/**
+ * /whereami — chat_id + thread_id ПОТОЧНОГО чату/теми. Головний спосіб
+ * знайти реальні id тем після створення forum-супергрупи (натиснути в
+ * кожній темі, скопіювати значення для TOPIC_*-секретів) — без потреби
+ * грепати логи Worker'а.
+ */
+export function formatWhereAmI(chatId, threadId) {
+  const lines = [
+    '📍 <b>Де я</b>',
+    '',
+    `chat_id: <code>${escapeHtml(String(chatId ?? '?'))}</code>`,
+    `thread_id: <code>${threadId == null ? 'немає (не тема форуму)' : escapeHtml(String(threadId))}</code>`,
+  ];
   return lines.join('\n');
 }

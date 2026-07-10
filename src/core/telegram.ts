@@ -87,13 +87,15 @@ type FetchImpl = typeof fetch;
 export interface NotifierOptions {
   token: string;
   chatId: string;
+  /** thread_id теми forum-супергрупи (Блок «Теми»); не задано -> дефолтна тема/DM. */
+  threadId?: string;
   log?: Logger;
   fetchImpl?: FetchImpl;
   timeoutMs?: number;
 }
 
 export function createNotifier(opts: NotifierOptions): Notifier {
-  const { token, chatId, log, fetchImpl = fetch, timeoutMs = 30000 } = opts;
+  const { token, chatId, threadId, log, fetchImpl = fetch, timeoutMs = 30000 } = opts;
 
   async function call(method: string, body: Record<string, unknown>): Promise<void> {
     const ctrl = new AbortController();
@@ -131,6 +133,7 @@ export function createNotifier(opts: NotifierOptions): Notifier {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
         };
+        if (threadId) body.message_thread_id = threadId;
         if (msg.buttons && msg.buttons.length > 0) {
           body.reply_markup = { inline_keyboard: msg.buttons };
         }
