@@ -92,6 +92,7 @@ jobs:
           BRIEFING_FILE: ${{ github.workspace }}/briefing.json # дані для Mini App
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOPIC_BRIEFING: ${{ secrets.TOPIC_BRIEFING }} # опційно, Блок «Теми» (forum-супергрупа)
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
