@@ -165,7 +165,7 @@ export const COMMANDS = [
   { command: 'jobs', description: 'Активна воронка вакансій' },
   { command: 'save', description: 'Збережене (факти/цитати/новини)' },
   { command: 'settings', description: 'Відкрити Mini App' },
-  { command: 'remind', description: '🚧 Нагадування — скоро' },
+  { command: 'remind', description: 'Нагадування (напр. через 20 хв ...)' },
   { command: 'mock', description: '🚧 Співбесіда — скоро' },
   { command: 'plan', description: '🚧 План дня — скоро' },
   { command: 'roadmap', description: '🚧 IT-роадмеп — скоро' },
