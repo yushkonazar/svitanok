@@ -15,6 +15,11 @@ export function textHash(s) {
   return (h >>> 0).toString(36);
 }
 
+// Дзеркало escapeHtml з src/core/telegram.ts — Worker не імпортує TS.
+export function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 /** Константний-час порівняння secret-token (X-Telegram-Bot-Api-Secret-Token). */
 export function verifyWebhookSecret(header, secret) {
   if (typeof header !== 'string' || typeof secret !== 'string' || !secret) return false;
@@ -146,4 +151,119 @@ export function markButtonDone(replyMarkup, tappedData) {
         : row,
     ),
   };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Команди / Налаштування (Блок P4) — parseCommand + текстові форматери.
+   ══════════════════════════════════════════════════════════════════════ */
+
+// Реєстр для Telegram "/" меню (setMyCommands) — команда без "/" + короткий опис.
+export const COMMANDS = [
+  { command: 'start', description: 'Почати / список команд' },
+  { command: 'brief', description: 'Запустити ранковий брифінг' },
+  { command: 'stats', description: 'Стрік і статистика' },
+  { command: 'jobs', description: 'Активна воронка вакансій' },
+  { command: 'save', description: 'Збережене (факти/цитати/новини)' },
+  { command: 'settings', description: 'Відкрити Mini App' },
+  { command: 'remind', description: '🚧 Нагадування — скоро' },
+  { command: 'mock', description: '🚧 Співбесіда — скоро' },
+  { command: 'plan', description: '🚧 План дня — скоро' },
+  { command: 'roadmap', description: '🚧 IT-роадмеп — скоро' },
+];
+
+// Reply-keyboard «пад» швидких дій (персистентний, шлеться раз на /start).
+export const REPLY_KEYBOARD = [
+  ['📋 Статистика', '💼 Вакансії'],
+  ['🔖 Збережене', '🔄 Брифінг'],
+];
+
+// Лейбл reply-keyboard кнопки -> та сама команда, що й відповідний "/xxx".
+const KEYBOARD_ALIASES = {
+  '📋 Статистика': 'stats',
+  '💼 Вакансії': 'jobs',
+  '🔖 Збережене': 'save',
+  '🔄 Брифінг': 'brief',
+};
+
+/**
+ * Розібрати вхідне повідомлення на команду: slash-команда (з опційним
+ * "@botname" у групових чатах) АБО лейбл reply-keyboard — обидва мапляться
+ * в один канонічний {cmd, args}. Звичайний текст (майбутній асистент, P2) -> null.
+ */
+export function parseCommand(text) {
+  if (typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (KEYBOARD_ALIASES[trimmed]) return { cmd: KEYBOARD_ALIASES[trimmed], args: '' };
+  if (!trimmed.startsWith('/')) return null;
+  const [head, ...rest] = trimmed.slice(1).split(/\s+/);
+  const cmd = head ? head.split('@')[0].toLowerCase() : '';
+  if (!cmd) return null;
+  return { cmd, args: rest.join(' ') };
+}
+
+const STAGE_LABEL = {
+  saved: '💾 Збережено',
+  applied: '✅ Подано',
+  interview: '🗣 Співбесіда',
+  offer: '🎉 Офер',
+};
+const STAGE_ORDER = ['saved', 'applied', 'interview', 'offer'];
+
+/** /jobs — активна воронка вакансій, згрупована за стадією (з /api/stats.funnelList). */
+export function formatJobsMessage(funnelList) {
+  const list = Array.isArray(funnelList) ? funnelList : [];
+  if (list.length === 0) {
+    return '💼 <b>Воронка вакансій</b>\n\nПоки порожньо — тисни 💾/✅ під вакансіями в брифінгу.';
+  }
+  const byStage = new Map(STAGE_ORDER.map((st) => [st, []]));
+  for (const it of list) if (byStage.has(it.stage)) byStage.get(it.stage).push(it);
+
+  const lines = ['💼 <b>Воронка вакансій</b>', ''];
+  for (const st of STAGE_ORDER) {
+    const items = byStage.get(st);
+    if (items.length === 0) continue;
+    lines.push(STAGE_LABEL[st]);
+    for (const it of items) lines.push(`• ${escapeHtml(it.title || it.url || '?')}`);
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd();
+}
+
+const KIND_ICON = { news: '🗞', fact: '🧠', quote: '🏛', question: '🎤' };
+
+/** /save — останнє збережене (факти/цитати/новини/питання), з /api/stats.savedList. */
+export function formatSavedMessage(savedList) {
+  const list = Array.isArray(savedList) ? savedList : [];
+  if (list.length === 0) {
+    return '🔖 <b>Збережене</b>\n\nПоки нічого — тисни 🔖/💾 в брифінгу.';
+  }
+  const lines = ['🔖 <b>Збережене</b>', ''];
+  for (const it of list) lines.push(`${KIND_ICON[it.kind] || '🔖'} ${escapeHtml(it.title || '?')}`);
+  return lines.join('\n');
+}
+
+/** /stats — стрік+ціль+воронка+слабкі mock-теми, з /api/stats (aggregateStats). */
+export function formatStatsMessage(stats) {
+  const s = stats || {};
+  const streaks = s.streaks || {};
+  const funnel = s.funnel || {};
+  const goal = s.goal || {};
+  const lines = [
+    '📊 <b>Статистика</b>',
+    '',
+    `🔥 Стрік відкриттів: ${streaks.openDays ?? 0} дн. (рекорд ${streaks.bestOpenDays ?? 0})`,
+    `🎯 Тижнева ціль: ${goal.weeklyApplied ?? 0}/${goal.weeklyTarget ?? 0} подано`,
+    `💼 Воронка: ${funnel.saved ?? 0} збережено · ${funnel.applied ?? 0} подано · ` +
+      `${funnel.interview ?? 0} співбесід · ${funnel.offer ?? 0} офер(и)`,
+    `🎤 Mock-стрік: ${streaks.mockDays ?? 0} дн.`,
+  ];
+  if (typeof s.avgFitApplied === 'number') {
+    lines.push(`📈 Середній fit поданих: ${s.avgFitApplied}%`);
+  }
+  const weak = (s.mock?.weakTopics ?? []).filter((t) => t.value > 0).slice(0, 3);
+  if (weak.length > 0) {
+    lines.push(`⚠️ Слабкі теми: ${weak.map((t) => escapeHtml(t.name)).join(', ')}`);
+  }
+  return lines.join('\n');
 }
