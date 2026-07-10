@@ -54,6 +54,29 @@ describe('createNotifier', () => {
     expect(calls[0]!.body).toMatchObject({ chat_id: '42', parse_mode: 'HTML', text: '<b>hi</b>' });
   });
 
+  it('send з buttons -> reply_markup.inline_keyboard; без buttons -> без reply_markup', async () => {
+    const calls: unknown[] = [];
+    const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      calls.push(JSON.parse(init.body as string));
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    const n = createNotifier({
+      token: 'T',
+      chatId: '42',
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    });
+    await n.send([
+      { text: 'з кнопками', buttons: [[{ text: '💾', callback_data: 'v1:2026-07-09:js:0' }]] },
+      { text: 'без кнопок' },
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      text: 'з кнопками',
+      reply_markup: { inline_keyboard: [[{ text: '💾', callback_data: 'v1:2026-07-09:js:0' }]] },
+    });
+    expect(calls[1]).not.toHaveProperty('reply_markup');
+  });
+
   it('failNotify шле плейн-текст (без HTML)', async () => {
     let body: Record<string, unknown> = {};
     const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {

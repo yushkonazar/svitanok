@@ -57,6 +57,7 @@ describe('fact — батч-кеш', () => {
     expect(block!.title).toBe('Факт дня');
     expect(llm.complete).toHaveBeenCalledTimes(1);
     expect(state.get('factCache')).toEqual(['Факт2', 'Факт3']);
+    expect(block!.buttons).toEqual([[{ label: '🔖 Зберегти', action: 'sf' }]]);
   });
 
   it('кеш не порожній -> БЕЗ виклику LLM', async () => {

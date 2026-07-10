@@ -63,6 +63,7 @@ export const factModule: Module<AppConfig> = {
       icon: '🧠',
       summary: fact,
       data: { fact },
+      buttons: [[{ label: '🔖 Зберегти', action: 'sf' }]],
       priority: FACT_PRIORITY,
     };
   },
