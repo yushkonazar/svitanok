@@ -1,9 +1,10 @@
 // Worker: статика дашборда (ASSETS) + /briefing.json із KV + ТОЧНИЙ планувальник
 // (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH (10:00 Київ) +
-// /api/vote, /api/event (запис подій — авторизація власника через Telegram
-// WebApp initData), /api/stats (читання агрегату), /api/telegram (вебхук —
-// Блок P0/P1, авторизація через X-Telegram-Bot-Api-Secret-Token). KV namespace
-// BRIEFING, ключі `latest`/`state`/`stats`/`briefing:<date>`.
+// НАГАДУВАННЯ (кожні ~5 хв, Блок P2a) + /api/vote, /api/event (запис подій —
+// авторизація власника через Telegram WebApp initData), /api/stats (читання
+// агрегату), /api/telegram (вебхук — Блок P0/P1/P4, авторизація через
+// X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
+// `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
 import { recordEvent, aggregateStats } from './stats-core.mjs';
 import {
@@ -21,6 +22,17 @@ import {
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
+import {
+  parseReminderTime,
+  addReminder,
+  dueReminders,
+  markFired,
+  snoozeReminder,
+  formatReminderConfirm,
+  formatReminderFired,
+} from './reminders-core.mjs';
+
+const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
@@ -346,17 +358,42 @@ const START_TEXT = [
   '/stats — стрік і статистика',
   '/jobs — активна воронка вакансій',
   '/save — збережене',
+  '/remind — нагадування (напр. "через 20 хв ..." або "завтра о 10:00 ...")',
   '/settings — відкрити Mini App',
   '',
-  '🚧 У розробці: /remind /mock /plan /roadmap — прийдуть у наступних фазах.',
+  '🚧 У розробці: /mock /plan /roadmap — прийдуть у наступних фазах.',
   '',
-  'Кнопки під ранковим брифінгом (💾 ✅ 🔖) теж працюють.',
+  'Кнопки під ранковим брифінгом (💾 ✅ 🔖) теж працюють. Нагадати можна й без',
+  'команди — просто напиши "нагадай ...".',
 ].join('\n');
 
-const STUB_COMMANDS = new Set(['remind', 'mock', 'plan', 'roadmap']);
-const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступних фазах (нагадування/асистент/роадмеп).';
+const STUB_COMMANDS = new Set(['mock', 'plan', 'roadmap']);
+const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступних фазах (асистент/роадмеп).';
 const UNKNOWN_REPLY =
   '🤖 Асистент-діалог ще не підключений (зʼявиться пізніше). Натисни /start, щоб побачити доступні команди.';
+const REMINDER_HELP =
+  '🤔 Не зрозумів час. Приклади: "через 20 хвилин", "завтра о 10:00", "о 15:30".';
+
+/** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
+async function createReminderFromText(env, parsed, text) {
+  const sendText = (t, extra) =>
+    tgCall(env, 'sendMessage', { chat_id: parsed.chatId, text: t, ...extra });
+
+  const parsedTime = parseReminderTime(text, Date.now());
+  if (!parsedTime) return sendText(REMINDER_HELP);
+
+  const state = await loadState(env);
+  state.reminders = addReminder(state.reminders, {
+    id: crypto.randomUUID(),
+    text: parsedTime.remainder,
+    whenMs: parsedTime.whenMs,
+    nowMs: Date.now(),
+  });
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return sendText(formatReminderConfirm(parsedTime.whenMs, parsedTime.remainder), {
+    parse_mode: 'HTML',
+  });
+}
 
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
 async function handleCommand(env, parsed, origin) {
@@ -364,7 +401,11 @@ async function handleCommand(env, parsed, origin) {
     tgCall(env, 'sendMessage', { chat_id: parsed.chatId, text, ...extra });
 
   const cmd = parseCommand(parsed.text);
-  if (!cmd) return sendText(UNKNOWN_REPLY);
+  if (!cmd) {
+    // Вільний текст (майбутній асистент, P2) — крім тригера нагадування (P2a).
+    if (/нагад/i.test(parsed.text)) return createReminderFromText(env, parsed, parsed.text);
+    return sendText(UNKNOWN_REPLY);
+  }
   if (STUB_COMMANDS.has(cmd.cmd)) return sendText(STUB_REPLY);
 
   switch (cmd.cmd) {
@@ -392,6 +433,8 @@ async function handleCommand(env, parsed, origin) {
         formatSavedMessage(aggregateStats(await loadStats(env), kyivDateKey()).savedList),
         { parse_mode: 'HTML' },
       );
+    case 'remind':
+      return createReminderFromText(env, parsed, cmd.args);
     case 'settings':
       return sendText(
         '⚙️ Налаштування (тихі/робочі години, конектори) зʼявляться в Mini App разом із нагадуваннями й календарем. Поки що — сам дашборд:',
@@ -403,6 +446,50 @@ async function handleCommand(env, parsed, origin) {
       );
     default:
       return sendText(UNKNOWN_REPLY);
+  }
+}
+
+/** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
+async function resolveReminderSnooze(env, parsed, reminderId) {
+  const state = await loadState(env);
+  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
+  if (!reminders.some((r) => r.id === reminderId)) return '⚠️ Це нагадування вже неактуальне.';
+
+  state.reminders = snoozeReminder(reminders, reminderId, Date.now());
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+    });
+  }
+  return '😴 Відкладено на 10 хв';
+}
+
+/**
+ * Знайти прострочені нагадування, надіслати + позначити спрацьованими.
+ * Пише KV ПІСЛЯ КОЖНОГО надісланого — якщо tgCall впаде посеред циклу (мережа),
+ * уже надіслані не втратять firedTs і не задублюються наступним тіком.
+ */
+async function checkReminders(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const now = Date.now();
+  const due = dueReminders((await loadState(env)).reminders, now);
+  if (due.length === 0) return;
+
+  for (const r of due) {
+    await tgCall(env, 'sendMessage', {
+      chat_id: env.TELEGRAM_CHAT_ID,
+      text: formatReminderFired(r.text),
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: '😴 +10 хв', callback_data: `${REMINDER_CB_PREFIX}${r.id}` }]],
+      },
+    });
+    const fresh = await loadState(env); // перечитати — попередня ітерація вже писала
+    fresh.reminders = markFired(fresh.reminders, r.id, now);
+    await env.BRIEFING.put('state', JSON.stringify(fresh));
   }
 }
 
@@ -435,7 +522,11 @@ async function handleTelegramWebhook(request, env) {
   }
 
   if (parsed.kind === 'callback') {
-    const toast = await resolveCallbackToast(env, parsed);
+    const isReminderSnooze =
+      typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
+    const toast = isReminderSnooze
+      ? await resolveReminderSnooze(env, parsed, parsed.data.slice(REMINDER_CB_PREFIX.length))
+      : await resolveCallbackToast(env, parsed);
     if (parsed.callbackId) {
       await tgCall(env, 'answerCallbackQuery', {
         callback_query_id: parsed.callbackId,
@@ -443,7 +534,8 @@ async function handleTelegramWebhook(request, env) {
       });
     }
   } else if (parsed.kind === 'message' && parsed.chatId != null) {
-    // Асистент (LLM-діалог, вільний текст) — наступна фаза (P2); команди — тут.
+    // Асистент (LLM-діалог, вільний текст) — повна версія в наступній фазі
+    // (P2); команди+нагадування (P2a) — тут.
     await handleCommand(env, parsed, new URL(request.url).origin);
   }
 
@@ -578,9 +670,14 @@ export default {
 
   // Cron у UTC покриває обидва DST-зсуви; за київською годиною обираємо дію:
   //   08:00 -> точний dispatch брифінгу;  10:00 -> dead-man-перевірка.
-  async scheduled(_event, env, ctx) {
+  // Нагадування (P2a) -> лише за event.cron "*/5 * * * *": ці й погодинні
+  // крони інколи збігаються по хвилині (05:00/06:00/07:00/08:00 УТС кратні 5) —
+  // без цієї умови checkReminders викликався б ДВІЧІ в ту саму мить (два окремі
+  // спрацювання scheduled()), надсилаючи дубль нагадування.
+  async scheduled(event, env, ctx) {
     const h = kyivHour();
     if (h === 8) ctx.waitUntil(dispatchBrief(env));
     else if (h === 10) ctx.waitUntil(deadMansCheck(env));
+    if (event.cron === '*/5 * * * *') ctx.waitUntil(checkReminders(env));
   },
 };
