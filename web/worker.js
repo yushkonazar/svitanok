@@ -19,6 +19,7 @@ import {
   formatStatsMessage,
   formatJobsMessage,
   formatSavedMessage,
+  formatWhereAmI,
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
@@ -170,11 +171,20 @@ async function validateInitData(initData, botToken) {
   }
 }
 
-/** Валідація initData + власник. -> {ok:true,user} або {ok:false,status,error}. */
+/**
+ * Валідація initData + власник. -> {ok:true,user} або {ok:false,status,error}.
+ * Звіряємо з TELEGRAM_OWNER_USER_ID (персональний user id, НЕ TELEGRAM_CHAT_ID —
+ * той тепер лише «куди слати», в супергрупі це вже груповий id, ніколи не рівний
+ * user id власника). Fail-closed: не задано -> forbidden, не fail-open.
+ */
 async function checkOwner(initData, env) {
   const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
   if (!v) return { ok: false, status: 401, error: 'auth' };
-  if (env.TELEGRAM_CHAT_ID && v.user && String(v.user.id) !== String(env.TELEGRAM_CHAT_ID)) {
+  if (
+    !env.TELEGRAM_OWNER_USER_ID ||
+    !v.user ||
+    String(v.user.id) !== String(env.TELEGRAM_OWNER_USER_ID)
+  ) {
     return { ok: false, status: 403, error: 'forbidden' };
   }
   return { ok: true, user: v.user };
@@ -433,7 +443,12 @@ async function tryLlmReminderRewrite(env, text) {
 /** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
 async function createReminderFromText(env, parsed, text) {
   const sendText = (t, extra) =>
-    tgCall(env, 'sendMessage', { chat_id: parsed.chatId, text: t, ...extra });
+    tgCall(env, 'sendMessage', {
+      chat_id: parsed.chatId,
+      message_thread_id: parsed.threadId ?? undefined,
+      text: t,
+      ...extra,
+    });
 
   let parsedTime = parseReminderTime(text, Date.now());
   if (!parsedTime && env.LLM_HOST_URL) {
@@ -458,7 +473,12 @@ async function createReminderFromText(env, parsed, text) {
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
 async function handleCommand(env, parsed, origin) {
   const sendText = (text, extra) =>
-    tgCall(env, 'sendMessage', { chat_id: parsed.chatId, text, ...extra });
+    tgCall(env, 'sendMessage', {
+      chat_id: parsed.chatId,
+      message_thread_id: parsed.threadId ?? undefined,
+      text,
+      ...extra,
+    });
 
   const cmd = parseCommand(parsed.text);
   if (!cmd) {
@@ -495,6 +515,8 @@ async function handleCommand(env, parsed, origin) {
       );
     case 'remind':
       return createReminderFromText(env, parsed, cmd.args);
+    case 'whereami':
+      return sendText(formatWhereAmI(parsed.chatId, parsed.threadId), { parse_mode: 'HTML' });
     case 'settings':
       return sendText(
         '⚙️ Налаштування (тихі/робочі години, конектори) зʼявляться в Mini App разом із нагадуваннями й календарем. Поки що — сам дашборд:',
@@ -541,6 +563,7 @@ async function checkReminders(env) {
   for (const r of due) {
     await tgCall(env, 'sendMessage', {
       chat_id: env.TELEGRAM_CHAT_ID,
+      message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
       text: formatReminderFired(r.text),
       parse_mode: 'HTML',
       reply_markup: {
@@ -571,7 +594,7 @@ async function handleTelegramWebhook(request, env) {
   }
   const parsed = parseUpdate(update);
 
-  if (!isOwner(parsed, env.TELEGRAM_CHAT_ID)) {
+  if (!isOwner(parsed, env.TELEGRAM_OWNER_USER_ID)) {
     // Не власник — тихо ігноруємо (бот однокористувацький; не палимо деталі стороннім).
     return json({ ok: true });
   }
@@ -677,6 +700,7 @@ async function deadMansCheck(env) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       chat_id: env.TELEGRAM_CHAT_ID,
+      message_thread_id: env.TOPIC_BRIEFING ?? undefined,
       text: '⚠️ Свiтанок: ранковий брифінг сьогодні не доставлено (KV не оновлено). Перевір GitHub Actions → workflow «brief».',
     }),
   });
