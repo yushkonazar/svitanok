@@ -14,6 +14,12 @@ import {
   parseCallbackData,
   resolveCallback,
   markButtonDone,
+  parseCommand,
+  formatStatsMessage,
+  formatJobsMessage,
+  formatSavedMessage,
+  COMMANDS,
+  REPLY_KEYBOARD,
 } from './tg-core.mjs';
 
 const GH_DISPATCH_URL =
@@ -328,6 +334,78 @@ async function resolveCallbackToast(env, parsed) {
   return resolved.toast;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   Команди / Налаштування (Блок P4) — маршрутизація текстових повідомлень.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const START_TEXT = [
+  '👋 Привіт! Я асистент <b>Світанок</b>.',
+  '',
+  'Команди:',
+  '/brief — запустити ранковий брифінг',
+  '/stats — стрік і статистика',
+  '/jobs — активна воронка вакансій',
+  '/save — збережене',
+  '/settings — відкрити Mini App',
+  '',
+  '🚧 У розробці: /remind /mock /plan /roadmap — прийдуть у наступних фазах.',
+  '',
+  'Кнопки під ранковим брифінгом (💾 ✅ 🔖) теж працюють.',
+].join('\n');
+
+const STUB_COMMANDS = new Set(['remind', 'mock', 'plan', 'roadmap']);
+const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступних фазах (нагадування/асистент/роадмеп).';
+const UNKNOWN_REPLY =
+  '🤖 Асистент-діалог ще не підключений (зʼявиться пізніше). Натисни /start, щоб побачити доступні команди.';
+
+/** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
+async function handleCommand(env, parsed, origin) {
+  const sendText = (text, extra) =>
+    tgCall(env, 'sendMessage', { chat_id: parsed.chatId, text, ...extra });
+
+  const cmd = parseCommand(parsed.text);
+  if (!cmd) return sendText(UNKNOWN_REPLY);
+  if (STUB_COMMANDS.has(cmd.cmd)) return sendText(STUB_REPLY);
+
+  switch (cmd.cmd) {
+    case 'start':
+      return sendText(START_TEXT, {
+        parse_mode: 'HTML',
+        reply_markup: { keyboard: REPLY_KEYBOARD, resize_keyboard: true },
+      });
+    case 'brief':
+      await dispatchBrief(env);
+      return sendText(
+        '🔄 Запустив генерацію брифінгу — якщо сьогодні ще не надсилався, прийде за кілька хвилин.',
+      );
+    case 'stats':
+      return sendText(formatStatsMessage(aggregateStats(await loadStats(env), kyivDateKey())), {
+        parse_mode: 'HTML',
+      });
+    case 'jobs':
+      return sendText(
+        formatJobsMessage(aggregateStats(await loadStats(env), kyivDateKey()).funnelList),
+        { parse_mode: 'HTML' },
+      );
+    case 'save':
+      return sendText(
+        formatSavedMessage(aggregateStats(await loadStats(env), kyivDateKey()).savedList),
+        { parse_mode: 'HTML' },
+      );
+    case 'settings':
+      return sendText(
+        '⚙️ Налаштування (тихі/робочі години, конектори) зʼявляться в Mini App разом із нагадуваннями й календарем. Поки що — сам дашборд:',
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: '📊 Відкрити Mini App', web_app: { url: origin } }]],
+          },
+        },
+      );
+    default:
+      return sendText(UNKNOWN_REPLY);
+  }
+}
+
 /** POST /api/telegram — Telegram Bot API webhook. Secret-token + owner + дедуп. */
 async function handleTelegramWebhook(request, env) {
   if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
@@ -364,8 +442,10 @@ async function handleTelegramWebhook(request, env) {
         text: toast,
       });
     }
+  } else if (parsed.kind === 'message' && parsed.chatId != null) {
+    // Асистент (LLM-діалог, вільний текст) — наступна фаза (P2); команди — тут.
+    await handleCommand(env, parsed, new URL(request.url).origin);
   }
-  // kind:'message' — команди/асистент з'являться у наступних фазах (P2-P4).
 
   if (typeof parsed.updateId === 'number') {
     // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
@@ -392,6 +472,11 @@ async function handleTelegramSetup(request, env) {
     url: webhookUrl,
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,
     allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+  });
+  // "/" меню команд + menu-button (кнопка біля поля вводу) -> запуск Mini App (Блок P4).
+  await tgCall(env, 'setMyCommands', { commands: COMMANDS });
+  await tgCall(env, 'setChatMenuButton', {
+    menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: url.origin } },
   });
   return json({ ok: res.ok, webhookUrl });
 }
