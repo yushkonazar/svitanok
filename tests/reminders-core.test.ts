@@ -10,6 +10,9 @@ const {
   snoozeReminder,
   formatReminderConfirm,
   formatReminderFired,
+  LLM_REWRITE_SCHEMA,
+  buildLlmRewriteSystemPrompt,
+  extractLlmRewrite,
 } = rem;
 
 // Літо (EEST, UTC+3): 2026-07-10 11:00 Київ.
@@ -146,5 +149,42 @@ describe('reminders-core — форматери', () => {
   it('formatReminderFired — HTML-екранує динамічний текст', () => {
     expect(formatReminderFired('<b>тест</b>')).toContain('&lt;b&gt;тест&lt;/b&gt;');
     expect(formatReminderFired('звичайний текст')).toContain('⏰ <b>Нагадування</b>');
+  });
+});
+
+describe('reminders-core — LLM-фолбек: buildLlmRewriteSystemPrompt/extractLlmRewrite', () => {
+  it('buildLlmRewriteSystemPrompt — містить поточний київський час і канонічні приклади', () => {
+    const prompt = buildLlmRewriteSystemPrompt(SUMMER_NOW);
+    expect(prompt).toContain('через 20 хвилин');
+    expect(prompt).toContain('завтра о 9:30');
+    expect(prompt).toContain('2026');
+    expect(prompt).toContain('unclear');
+  });
+
+  it('extractLlmRewrite — валідний рядок проходить, порожній/відсутній/чужий тип -> null', () => {
+    expect(extractLlmRewrite({ rewritten: 'о 15:00 подзвонити' })).toBe('о 15:00 подзвонити');
+    expect(extractLlmRewrite({ rewritten: '  о 15:00 подзвонити  ' })).toBe('о 15:00 подзвонити');
+    expect(extractLlmRewrite({ rewritten: '' })).toBeNull();
+    expect(extractLlmRewrite({ rewritten: '   ' })).toBeNull();
+    expect(extractLlmRewrite({ error: 'unclear' })).toBeNull();
+    expect(extractLlmRewrite({ rewritten: 42 })).toBeNull();
+    expect(extractLlmRewrite(null)).toBeNull();
+    expect(extractLlmRewrite(undefined)).toBeNull();
+  });
+
+  it('LLM_REWRITE_SCHEMA — валідна JSON Schema форма', () => {
+    expect(LLM_REWRITE_SCHEMA.type).toBe('object');
+    expect(LLM_REWRITE_SCHEMA.properties).toHaveProperty('rewritten');
+    expect(LLM_REWRITE_SCHEMA.properties).toHaveProperty('error');
+  });
+
+  it('інтеграційний контракт: rewritten із канонічного прикладу -> parseReminderTime його розуміє', () => {
+    // Симулює повний ланцюг: LLM переписує "в обід" -> канонічний патерн ->
+    // parseReminderTime (вже перевірений іншими тестами) парсить БЕЗ змін.
+    const rewritten = extractLlmRewrite({ rewritten: 'о 13:00 забрати посилку' });
+    expect(parseReminderTime(rewritten!, SUMMER_NOW)).toEqual({
+      whenMs: Date.parse('2026-07-10T10:00:00Z'), // 13:00-3 (літо)
+      remainder: 'забрати посилку',
+    });
   });
 });
