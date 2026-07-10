@@ -59,7 +59,7 @@ function fakeNotifier(): NotifierType & { sent: string[][] } {
   const sent: string[][] = [];
   return {
     sent,
-    send: async (m: string[]) => void sent.push(m),
+    send: async (m) => void sent.push(m.map((x) => (typeof x === 'string' ? x : x.text))),
     failNotify: async () => {},
   };
 }

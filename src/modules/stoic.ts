@@ -38,6 +38,7 @@ export const stoicModule: Module<AppConfig> = {
       icon: '🏛',
       summary: `«${q.text}»\n— ${q.author}`,
       data: { text: q.text, author: q.author },
+      buttons: [[{ label: '🔖 Зберегти', action: 'sq' }]],
       priority: 10, // одразу під заголовком-датою (§5)
     };
   },

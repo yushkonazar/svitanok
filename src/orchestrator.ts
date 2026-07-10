@@ -16,7 +16,11 @@ import { createRunBus } from './core/bus.js';
 import { createLLMClient } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
 import { createNotifier, type Notifier } from './core/telegram.js';
-import { renderBriefing, formatKyivDateHeader, formatKyivDateLabel } from './core/render.js';
+import {
+  renderBriefingMessages,
+  formatKyivDateHeader,
+  formatKyivDateLabel,
+} from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
@@ -152,11 +156,14 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // Неділя — ніколи не «тихий день»: weekly-review показується повністю (§4.1 п.5).
   const quiet = isQuietDay(config, producedIds) && !clock.isSunday();
   const header = formatKyivDateHeader(clock.now());
-  const messages = renderBriefing(blocks, {
+  // dateKey — потрібен лише для кодування callback_data кнопок (Блок P1).
+  const rendered = renderBriefingMessages(blocks, {
     maxChars: config.telegram.maxMessageChars,
     header,
     quiet,
+    dateKey: clock.todayKey(),
   });
+  const messages = rendered.map((m) => m.text); // для RunResult/dry-run — лише текст
   const briefing = buildBriefingData(
     blocks,
     formatKyivDateLabel(clock.now()),
@@ -171,7 +178,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     throw new Error('Notifier відсутній у бойовому прогоні (немає критичних секретів)');
   }
 
-  await deps.notifier.send(messages);
+  await deps.notifier.send(rendered);
   // at-least-once: send пройшов -> фіксуємо стан (§4.2).
   state.set('lastSentDate', clock.todayKey());
   state.prune();

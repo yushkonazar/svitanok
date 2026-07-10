@@ -55,8 +55,29 @@ export function fitEscaped(plain: string, budget: number): string {
   return escapeHtml(safeSlice(lo)) + ELLIPSIS;
 }
 
+// callback_data (Блок P1, вебхук): `v1:<dateKey>:<action>`. МАЄ збігатися символ-у-
+// символ з дзеркалом web/tg-core.mjs (буквально та сама версія/формат) — інакше
+// Worker не розпарсить кнопки, надіслані Actions-раном.
+export const CB_VERSION = 'v1';
+
+/** Закодувати callback_data; ≤64 байти (UTF-8, Telegram-ліміт) — інакше null (кнопку відкидаємо). */
+export function buildCallbackData(dateKey: string, action: string): string | null {
+  const s = `${CB_VERSION}:${dateKey}:${action}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+export interface TgButton {
+  text: string;
+  callback_data: string;
+}
+
+export interface OutboundMessage {
+  text: string;
+  buttons?: TgButton[][]; // reply_markup.inline_keyboard
+}
+
 export interface Notifier {
-  send(messages: string[]): Promise<void>;
+  send(messages: (string | OutboundMessage)[]): Promise<void>;
   /** Мінімальне попередження власнику напряму (top-level catch, §4.1). */
   failNotify(text: string): Promise<void>;
 }
@@ -94,21 +115,26 @@ export function createNotifier(opts: NotifierOptions): Notifier {
   }
 
   return {
-    async send(messages: string[]): Promise<void> {
-      for (const msg of messages) {
+    async send(messages: (string | OutboundMessage)[]): Promise<void> {
+      for (const raw of messages) {
+        const msg: OutboundMessage = typeof raw === 'string' ? { text: raw } : raw;
         // Ліміт Telegram — за ВИДИМИМ текстом (href у <a> не рахується, §9).
-        const vis = visibleLength(msg);
+        const vis = visibleLength(msg.text);
         if (vis > TELEGRAM_HARD_LIMIT) {
           log?.warn(
             `повідомлення ${vis} (видимих) > ${TELEGRAM_HARD_LIMIT} — render мав чанкувати`,
           );
         }
-        await call('sendMessage', {
+        const body: Record<string, unknown> = {
           chat_id: chatId,
-          text: msg,
+          text: msg.text,
           parse_mode: 'HTML',
           disable_web_page_preview: true,
-        });
+        };
+        if (msg.buttons && msg.buttons.length > 0) {
+          body.reply_markup = { inline_keyboard: msg.buttons };
+        }
+        await call('sendMessage', body);
       }
     },
     async failNotify(text: string): Promise<void> {

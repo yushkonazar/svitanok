@@ -86,7 +86,11 @@ describe('buildPruners', () => {
 // --- неділя у runBriefing: weekly-review навіть у «тихий день» ---
 function fakeNotifier(): Notifier & { sent: string[][] } {
   const sent: string[][] = [];
-  return { sent, send: async (m) => void sent.push(m), failNotify: async () => {} };
+  return {
+    sent,
+    send: async (m) => void sent.push(m.map((x) => (typeof x === 'string' ? x : x.text))),
+    failNotify: async () => {},
+  };
 }
 
 const baseConfig = {

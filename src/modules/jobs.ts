@@ -260,6 +260,13 @@ export const jobsModule: Module<AppConfig> = {
       .join('\n');
     const summary = shortPicks.map((p) => p.title).join('\n');
 
+    // Кнопки в чаті (Блок P1): idx збігається з позицією в data.items (shortPicks
+    // = префікс picked), резолвиться в Worker проти briefing:<dateKey>.
+    const buttons = shortPicks.map((_, i) => [
+      { label: '💾 Зберегти', action: `js:${i}` },
+      { label: '✅ Подав', action: `ja:${i}` },
+    ]);
+
     return {
       id: 'jobs',
       title: 'Вакансії',
@@ -267,6 +274,7 @@ export const jobsModule: Module<AppConfig> = {
       summary,
       summaryHtml,
       data: { items: picked },
+      buttons,
       priority: JOBS_PRIORITY,
     };
   },

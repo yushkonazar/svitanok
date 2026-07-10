@@ -191,6 +191,17 @@ describe('jobs — скоринг і сортування', () => {
     const items = (block!.data as { items: { why: string }[] }).items;
     expect(items[0]!.why).toBe('ідеально');
     expect(Object.keys(state.get('shownJobs') as object)).toContain('https://jobs.dou.ua/be1');
+    // Кнопки в чаті (Блок P1) — по одному рядку [💾,✅] на кожен пункт summary (top-2).
+    expect(block!.buttons).toEqual([
+      [
+        { label: '💾 Зберегти', action: 'js:0' },
+        { label: '✅ Подав', action: 'ja:0' },
+      ],
+      [
+        { label: '💾 Зберегти', action: 'js:1' },
+        { label: '✅ Подав', action: 'ja:1' },
+      ],
+    ]);
   });
 
   it('скоринг впав -> фолбек на свіжість, без бейджів %', async () => {
