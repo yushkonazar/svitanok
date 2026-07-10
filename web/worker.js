@@ -30,6 +30,9 @@ import {
   snoozeReminder,
   formatReminderConfirm,
   formatReminderFired,
+  LLM_REWRITE_SCHEMA,
+  buildLlmRewriteSystemPrompt,
+  extractLlmRewrite,
 } from './reminders-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
@@ -311,6 +314,37 @@ async function tgCall(env, method, body) {
   return res;
 }
 
+/**
+ * Тонкий клієнт власного LLM-хоста (host/, VPS на claude CLI — Блок P2, підписка,
+ * не платний API). Graceful degradation: без LLM_HOST_URL/LLM_HOST_SECRET, або
+ * при будь-якій мережевій/таймаут-помилці — просто null, виклик іде далі без LLM
+ * (rule-based фолбек не блокується на доступності хоста).
+ */
+async function callLlmHost(env, { prompt, systemPrompt, jsonSchema }) {
+  if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25_000); // менше за таймаут хоста (30с)
+  try {
+    const res = await fetch(env.LLM_HOST_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-llm-host-secret': env.LLM_HOST_SECRET },
+      body: JSON.stringify({ prompt, systemPrompt, jsonSchema }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      console.error('llm-host HTTP', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    const data = await res.json();
+    return data.ok ? data : null;
+  } catch (err) {
+    console.error('llm-host call failed', err.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
  *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
 async function loadBriefingForDate(env, dateKey) {
@@ -374,12 +408,33 @@ const UNKNOWN_REPLY =
 const REMINDER_HELP =
   '🤔 Не зрозумів час. Приклади: "через 20 хвилин", "завтра о 10:00", "о 15:30".';
 
+/**
+ * LLM-фолбек, коли rule-based parseReminderTime не впізнав фразу: питаємо
+ * VPS-хост ПЕРЕПИСАТИ її в канонічний патерн (LLM НЕ рахує час сам — ненадійна
+ * арифметика дат), тоді прогонюємо результат через ТОЙ САМИЙ parseReminderTime.
+ * Хост недоступний/не налаштований -> callLlmHost сам поверне null, тихо.
+ */
+async function tryLlmReminderRewrite(env, text) {
+  const now = Date.now();
+  const res = await callLlmHost(env, {
+    prompt: text,
+    systemPrompt: buildLlmRewriteSystemPrompt(now),
+    jsonSchema: LLM_REWRITE_SCHEMA,
+  });
+  const rewritten = extractLlmRewrite(res?.structured);
+  return rewritten ? parseReminderTime(rewritten, now) : null;
+}
+
 /** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
 async function createReminderFromText(env, parsed, text) {
   const sendText = (t, extra) =>
     tgCall(env, 'sendMessage', { chat_id: parsed.chatId, text: t, ...extra });
 
-  const parsedTime = parseReminderTime(text, Date.now());
+  let parsedTime = parseReminderTime(text, Date.now());
+  if (!parsedTime && env.LLM_HOST_URL) {
+    await sendText('🤔 Хвилинку, розбираюсь...');
+    parsedTime = await tryLlmReminderRewrite(env, text);
+  }
   if (!parsedTime) return sendText(REMINDER_HELP);
 
   const state = await loadState(env);

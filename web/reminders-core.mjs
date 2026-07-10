@@ -1,9 +1,14 @@
-// Чиста логіка нагадувань (Блок P2a, частина 1 — rule-based, без LLM-фолбеку):
-// парс українського часу з тексту ("через 20 хв", "завтра о 10", "о 15:30"),
-// стор у state.reminders, вибірка «на видачу», snooze. Без I/O — Worker робить
-// KV/HTTP; cron у Worker кличе dueReminders/markFired кожні 5 хв.
-// LLM-фолбек для складніших формулювань — наступна фаза (потребує
-// ANTHROPIC_API_KEY, свідомо не додано в цій частині — менший, безпечніший PR).
+// Чиста логіка нагадувань (Блок P2a): парс українського часу з тексту
+// ("через 20 хв", "завтра о 10", "о 15:30"), стор у state.reminders, вибірка
+// «на видачу», snooze. Без I/O — Worker робить KV/HTTP; cron у Worker кличе
+// dueReminders/markFired кожні 5 хв.
+//
+// LLM-фолбек (для формулювань, які rule-based не впізнає, напр. "в обід",
+// "післязавтра"): LLM НЕ рахує час сам (ненадійна арифметика дат) — лише
+// ПЕРЕПИСУЄ нечітку фразу в один із канонічних патернів, які parseReminderTime
+// вже вміє парсити (уся DST-aware математика лишається в одному, перевіреному
+// місці). Worker кличе VPS-хост (host/) із buildLlmRewriteSystemPrompt, тоді
+// прогонює відповідь через ЦЕЙ САМИЙ parseReminderTime вдруге.
 
 import { escapeHtml } from './tg-core.mjs';
 
@@ -160,4 +165,56 @@ export function formatReminderConfirm(whenMs, remainder) {
 /** Текст самого нагадування, коли час настав. */
 export function formatReminderFired(text) {
   return `⏰ <b>Нагадування</b>\n${escapeHtml(text)}`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   LLM-фолбек: перепис нечіткої фрази в канонічний патерн (не рахує час сам).
+   ══════════════════════════════════════════════════════════════════════ */
+
+/** JSON Schema для LLM-хоста — валідується сервером, форсує строгий формат. */
+export const LLM_REWRITE_SCHEMA = {
+  type: 'object',
+  properties: {
+    rewritten: { type: 'string' },
+    error: { type: 'string' },
+  },
+};
+
+const CANONICAL_EXAMPLES = [
+  'через 20 хвилин ЗАВДАННЯ',
+  'через 2 години ЗАВДАННЯ',
+  'завтра о 9:30 ЗАВДАННЯ',
+  'сьогодні о 18:00 ЗАВДАННЯ',
+  'о 15:00 ЗАВДАННЯ',
+].join(', ');
+
+/**
+ * Системний промпт для LLM-хоста: переписати нечітку фразу в один із
+ * канонічних патернів (з поточним київським часом як контекст — потрібен
+ * лише для відносних понять на кшталт «післязавтра»/«в обід», НЕ для того,
+ * щоб LLM сама рахувала UTC — це робить parseReminderTime вдруге, надійно).
+ */
+export function buildLlmRewriteSystemPrompt(nowMs) {
+  const kyivNow = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    weekday: 'long',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(nowMs));
+  return (
+    `Ти переписуєш нечіткі українські фрази-нагадування в один із чітких форматів: ` +
+    `${CANONICAL_EXAMPLES}. Заміни "ЗАВДАННЯ" на суть прохання, збережену з фрази ` +
+    `користувача. Поточний момент у Києві: ${kyivNow}. Якщо не можеш однозначно ` +
+    `визначити час — виведи {"error":"unclear"}. Відповідай ЛИШЕ JSON-обʼєктом ` +
+    `за схемою: {"rewritten":"..."} або {"error":"unclear"}. Без пояснень, без markdown.`
+  );
+}
+
+/** Витягнути валідний rewritten-рядок зі structured-відповіді хоста; інакше null. */
+export function extractLlmRewrite(structured) {
+  const rewritten = structured?.rewritten;
+  return typeof rewritten === 'string' && rewritten.trim() ? rewritten.trim() : null;
 }
