@@ -264,8 +264,26 @@ describe('mail module', () => {
         title: 'Співбесіда — Acme',
         whenMs: Date.parse('2026-07-14T12:00:00Z'),
         durationMin: 60,
+        from: 'hr@acme.com', // M4: відправник у пропозиції
       },
     ]);
+  });
+
+  it('збій LLM (throw) -> null і shownMail НЕ позначено (лист не втрачається)', async () => {
+    const fetchImpl = mkFetch(['m1'], {
+      m1: { subject: 'Запрошення', from: 'hr@acme.com', snippet: 'вітаємо' },
+    });
+    const state = memState();
+    const llm = {
+      complete: vi.fn(async () => {
+        throw new Error('claude -p таймаут');
+      }),
+    };
+    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
+    const block = await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }));
+    expect(block).toBeNull();
+    // На відміну від малформед-відповіді: throw -> НЕ позначаємо (ретрай завтра).
+    expect(state.get('shownMail')).toBeUndefined();
   });
 
   it('interview:true але дата поза діапазоном/малий формат -> без bus-запису', async () => {

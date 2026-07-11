@@ -35,6 +35,7 @@ export interface MailProposalItem {
   title: string;
   whenMs: number;
   durationMin: number;
+  from: string; // відправник листа — показуємо у пропозиції (захист від спуфнутих «запрошень», M4)
 }
 
 type ShownMail = Record<string, string>; // Gmail message id -> ISO дата, коли розглянуто
@@ -172,6 +173,8 @@ export function formatMailProposalMessage(items: MailProposalItem[]): string {
   });
   items.forEach((it, i) => {
     lines.push(`${i + 1}. 📅 ${escapeHtml(it.title)} — ${fmt.format(new Date(it.whenMs))}`);
+    // Від кого — щоб не сплутати спуфнуте «запрошення» зі справжнім (M4).
+    if (it.from) lines.push(`   <i>від ${escapeHtml(it.from)}</i>`);
   });
   return lines.join('\n');
 }
@@ -254,7 +257,8 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
 
       if (candidates.length === 0) return null;
 
-      let importantCount = 0;
+      // Присвоюється в try; при throw -> catch return (нижче не читається).
+      let importantCount: number;
       try {
         const profile = ctx.config.modules.jobs.profile;
         const out = await ctx.llm.complete(buildMailPrompt(profile, candidates), {
@@ -265,32 +269,43 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
 
         const nowMs = ctx.clock.now().getTime();
         const proposalItems: MailProposalItem[] = [];
-        candidates.forEach((_, i) => {
+        candidates.forEach((cand, i) => {
           const cls = classified.get(i + 1);
           if (!cls?.interview || !cls.title) return;
           const whenMs = sanitizeInterviewWhen(cls.dateISO, cls.time, nowMs);
           if (whenMs === null) return;
-          proposalItems.push({ kind: 'event', title: cls.title, whenMs, durationMin: 60 });
+          proposalItems.push({
+            kind: 'event',
+            title: cls.title,
+            whenMs,
+            durationMin: 60,
+            from: cand.from,
+          });
         });
         if (proposalItems.length > 0) {
           ctx.bus.set(MAIL_PROPOSAL_BUS_KEY, {
             items: proposalItems.slice(0, MAX_PROPOSAL_ITEMS),
           });
         }
-      } catch (e) {
-        ctx.log.warn(
-          `mail: класифікація не вдалась (0 важливих цього разу): ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
 
-      // Дедуп по РОЗГЛЯНУТИХ листах (не лише «важливих») — на відміну від
-      // jobs.ts (позначає лише «picked», бо вакансії конкурують за обмежений
-      // слот і мають сенс переоцінюватись завтра); лист один раз прочитаний
-      // LLM не стає завтра важливішим — повторний розгляд лише витрачає виклик.
-      const today = ctx.clock.todayKey();
-      const nextShown: ShownMail = { ...shown };
-      for (const cand of candidates) nextShown[cand.id] = today;
-      ctx.state.set('shownMail', nextShown);
+        // Дедуп по РОЗГЛЯНУТИХ листах — ЛИШЕ якщо LLM реально відповів (навіть
+        // малформед: повторний розгляд не допоможе). При ЗБОЇ виклику (throw
+        // нижче: таймаут/мережа) НЕ позначаємо — інакше лист випав би з вікна
+        // query (newer_than) і був би втрачений назавжди через одну помилку.
+        // На відміну від jobs.ts (позначає лише «picked») лист, раз прочитаний
+        // LLM, не стає завтра важливішим — повторний розгляд лише палить виклик.
+        const today = ctx.clock.todayKey();
+        const nextShown: ShownMail = { ...shown };
+        for (const cand of candidates) nextShown[cand.id] = today;
+        ctx.state.set('shownMail', nextShown);
+      } catch (e) {
+        // Класифікація впала -> НЕ позначаємо shownMail: листи розглянуться
+        // знову наступного рану (не втрачаємо через транзієнтну LLM-помилку).
+        ctx.log.warn(
+          `mail: класифікація не вдалась (ретрай наступного разу): ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return null;
+      }
 
       if (importantCount === 0) return null;
 
