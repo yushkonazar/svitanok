@@ -38,6 +38,7 @@ export const weeklyReviewModule: Module<AppConfig> = {
       icon: '📊',
       summary,
       detail,
+      data: { newsCount, steps }, // Mini App (чат тепер лише [дата]+кнопка, без detail)
       priority: 5, // зверху в неділю (замінює звичайний набір, §5)
     };
   },
