@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createKvStateStore, readKvEnv } from '../src/core/state-kv.js';
+import { createKvStateStore, readKvEnv, overlayChanged } from '../src/core/state-kv.js';
 
 const OPTS = {
   accountId: 'acc',
@@ -49,32 +49,84 @@ describe('state-kv — createKvStateStore', () => {
     expect(s.get('x')).toBeUndefined();
   });
 
-  it('flush робить PUT з тілом; чистий стан -> без запиту', async () => {
+  it('flush робить re-read GET + PUT; чистий стан -> без запиту', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
-      return okResp('{}'); // load -> порожній стан
+      return okResp('{}'); // load + re-read -> порожній стан
     });
     const s = await createKvStateStore({
       ...OPTS,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     // load = 1 виклик
-    await s.flush(); // нічого не змінено -> без PUT
+    await s.flush(); // нічого не змінено -> без re-read/PUT
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     s.set('lastSentDate', '2026-07-02');
-    await s.flush();
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const put = calls[1]!;
+    await s.flush(); // re-read GET (2) + PUT (3)
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const put = calls[2]!;
     expect(put.init.method).toBe('PUT');
     expect(JSON.parse(String(put.init.body))).toEqual({ lastSentDate: '2026-07-02' });
+  });
+
+  it('merge-before-flush: НЕ затирає ключі, дописані Worker під час рану (H2)', async () => {
+    let put: RequestInit | null = null;
+    let n = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      n += 1;
+      if (n === 1) return okResp(JSON.stringify({ lastSentDate: '2026-07-01' })); // load
+      if (n === 2) {
+        // re-read: Worker за час рану дописав нагадування + голос.
+        return okResp(
+          JSON.stringify({
+            lastSentDate: '2026-07-01',
+            reminders: [{ id: 'r1' }],
+            preferenceWeights: { Спорт: 1.3 },
+          }),
+        );
+      }
+      put = init ?? {}; // PUT
+      return okResp('{}');
+    });
+    const s = await createKvStateStore({
+      ...OPTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    // Оркестратор змінює лише свій ключ.
+    s.set('lastSentDate', '2026-07-02');
+    await s.flush();
+    const body = JSON.parse(String(put!.body));
+    expect(body.lastSentDate).toBe('2026-07-02'); // своя зміна перемагає
+    expect(body.reminders).toEqual([{ id: 'r1' }]); // Worker-запис збережено
+    expect(body.preferenceWeights).toEqual({ Спорт: 1.3 }); // не чіпав -> зі свіжого
+  });
+
+  it('re-read впав -> фолбек на повний блоб (свій стан не втрачається)', async () => {
+    let put: RequestInit | null = null;
+    let n = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      n += 1;
+      if (n === 1) return okResp('{}'); // load
+      if (n === 2) throw new Error('network'); // re-read впав
+      put = init ?? {};
+      return okResp('{}'); // PUT
+    });
+    const s = await createKvStateStore({
+      ...OPTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    s.set('lastSentDate', '2026-07-02');
+    await s.flush();
+    expect(JSON.parse(String(put!.body))).toEqual({ lastSentDate: '2026-07-02' });
   });
 
   it('помилка запису -> throw (видимий failed)', async () => {
     let n = 0;
     const fetchImpl = vi.fn(async () => {
       n += 1;
-      return n === 1 ? okResp('{}') : okResp('forbidden', 403);
+      // load(1) ok, re-read(2) ok, PUT(3) 403.
+      return n === 3 ? okResp('forbidden', 403) : okResp('{}');
     });
     const s = await createKvStateStore({
       ...OPTS,
@@ -82,6 +134,24 @@ describe('state-kv — createKvStateStore', () => {
     });
     s.set('k', 1);
     await expect(s.flush()).rejects.toThrow(/403/);
+  });
+});
+
+describe('state-kv — overlayChanged (per-key merge, H2)', () => {
+  it('накладає лише змінені ключі поверх свіжого блоба', () => {
+    const fresh = { a: 1, b: 2, worker: 'kept' };
+    const mine = { a: 99, b: 2, worker: 'stale', c: 3 };
+    expect(overlayChanged(fresh, mine, ['a', 'c'])).toEqual({
+      a: 99, // змінений -> мій
+      b: 2, // не в changed -> свіжий
+      worker: 'kept', // не в changed -> свіжий (не затерто моїм stale)
+      c: 3, // новий змінений ключ
+    });
+  });
+
+  it('порожній changed -> повертає свіжий блоб як є', () => {
+    const fresh = { x: 1 };
+    expect(overlayChanged(fresh, { x: 2 }, [])).toEqual({ x: 1 });
   });
 });
 

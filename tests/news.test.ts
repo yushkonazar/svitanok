@@ -27,15 +27,27 @@ describe('news — parseRss', () => {
     const xml = `<feed><entry><title>Atom</title><link href="https://y.com/1"/></entry></feed>`;
     expect(parseRss(xml)).toEqual([{ title: 'Atom', url: 'https://y.com/1' }]);
   });
+  it('відкидає небезпечну схему (javascript:), M2', () => {
+    const xml = `<rss><channel>
+      <item><title>Bad</title><link>javascript:alert(1)</link></item>
+      <item><title>Good</title><link>https://x.com/a</link></item>
+    </channel></rss>`;
+    expect(parseRss(xml)).toEqual([{ title: 'Good', url: 'https://x.com/a' }]);
+  });
 });
 
 describe('news — parseNewsData', () => {
   it('парсить results -> {title,url,why}; відкидає порожні/малформат', () => {
-    expect(parseNewsData({ results: [{ title: 'T', link: 'u', description: 'd' }] })).toEqual([
-      { title: 'T', url: 'u', why: 'd' },
-    ]);
-    expect(parseNewsData({ results: [{ title: '', link: 'u' }, { title: 'X' }] })).toEqual([]);
+    expect(
+      parseNewsData({ results: [{ title: 'T', link: 'https://x.com/a', description: 'd' }] }),
+    ).toEqual([{ title: 'T', url: 'https://x.com/a', why: 'd' }]);
+    expect(
+      parseNewsData({ results: [{ title: '', link: 'https://x.com/a' }, { title: 'X' }] }),
+    ).toEqual([]);
     expect(parseNewsData('нема')).toEqual([]);
+  });
+  it('відкидає небезпечну схему (javascript:), M2', () => {
+    expect(parseNewsData({ results: [{ title: 'T', link: 'javascript:alert(1)' }] })).toEqual([]);
   });
 });
 

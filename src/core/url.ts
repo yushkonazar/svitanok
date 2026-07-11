@@ -73,3 +73,18 @@ export function canonicalizeUrl(input: string): string {
 export function sameUrl(a: string, b: string): boolean {
   return canonicalizeUrl(a) === canonicalizeUrl(b);
 }
+
+/**
+ * Чи це безпечний http(s)-URL для показу/кліку. Відкидає `javascript:`,
+ * `data:` тощо — лінки зі стрічок/NewsData потрапляють у дашборд як
+ * <a href>, і хоч esc() не дає вирватись з атрибута, небезпечна СХЕМА
+ * лишалась би клікабельною. Фільтруємо на вході (news/jobs), до збереження.
+ */
+export function isHttpUrl(input: string): boolean {
+  try {
+    const p = new URL(input).protocol.toLowerCase();
+    return p === 'http:' || p === 'https:';
+  } catch {
+    return false;
+  }
+}

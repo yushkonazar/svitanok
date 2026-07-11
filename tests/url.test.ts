@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalizeUrl, sameUrl } from '../src/core/url.js';
+import { canonicalizeUrl, sameUrl, isHttpUrl } from '../src/core/url.js';
 
 describe('url — зрізання ключів (§19.4)', () => {
   it('OpenWeather appid вирізається, секрет не лишається', () => {
@@ -45,6 +45,22 @@ describe('url — канонізація', () => {
 
   it('невалідний URL повертається як є (trim)', () => {
     expect(canonicalizeUrl('  not a url  ')).toBe('not a url');
+  });
+});
+
+describe('url — isHttpUrl (безпечна схема лінка, M2)', () => {
+  it('приймає http/https (у т.ч. верхній регістр)', () => {
+    expect(isHttpUrl('https://x.com/a')).toBe(true);
+    expect(isHttpUrl('http://x.com')).toBe(true);
+    expect(isHttpUrl('HTTPS://X.COM')).toBe(true);
+  });
+
+  it('відкидає javascript:/data:/file: та сміття', () => {
+    expect(isHttpUrl('javascript:alert(1)')).toBe(false);
+    expect(isHttpUrl('data:text/html,<script>')).toBe(false);
+    expect(isHttpUrl('file:///etc/passwd')).toBe(false);
+    expect(isHttpUrl('  not a url  ')).toBe(false);
+    expect(isHttpUrl('')).toBe(false);
   });
 });
 

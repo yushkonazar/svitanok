@@ -11,6 +11,12 @@ describe('escapeHtml', () => {
   it('екранує &, <, >', () => {
     expect(escapeHtml('a & b < c > <script>')).toBe('a &amp; b &lt; c &gt; &lt;script&gt;');
   });
+
+  it('екранує " (атрибут-безпека href, M1)', () => {
+    expect(escapeHtml('a"b')).toBe('a&quot;b');
+    // URL із лапкою не ламає href="...".
+    expect(escapeHtml('https://x/a?q="evil"')).toBe('https://x/a?q=&quot;evil&quot;');
+  });
 });
 
 describe('fitEscaped — entity-safe обрізання (§9)', () => {
