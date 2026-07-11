@@ -4,6 +4,8 @@ import {
   buildMailPrompt,
   parseMailClassification,
   pluralizeLysty,
+  sanitizeInterviewWhen,
+  MAIL_PROPOSAL_BUS_KEY,
 } from '../src/modules/mail.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
@@ -37,15 +39,68 @@ describe('buildMailPrompt', () => {
 });
 
 describe('parseMailClassification', () => {
-  it('парсить масив із прози', () => {
+  it('парсить масив із прози (important-only -> interview:false, решта undefined)', () => {
     const m = parseMailClassification('Ось: [{"i":1,"important":true},{"i":2,"important":false}]');
-    expect(m.get(1)).toEqual({ important: true });
-    expect(m.get(2)).toEqual({ important: false });
+    expect(m.get(1)).toEqual({
+      important: true,
+      interview: false,
+      dateISO: undefined,
+      time: undefined,
+      title: undefined,
+    });
+    expect(m.get(2)?.important).toBe(false);
+  });
+
+  it('парсить interview+dateISO+time+title', () => {
+    const m = parseMailClassification(
+      '[{"i":1,"important":true,"interview":true,"dateISO":"2026-07-14","time":"15:00","title":"Співбесіда — Acme"}]',
+    );
+    expect(m.get(1)).toEqual({
+      important: true,
+      interview: true,
+      dateISO: '2026-07-14',
+      time: '15:00',
+      title: 'Співбесіда — Acme',
+    });
   });
 
   it('малформат -> порожня map', () => {
     expect(parseMailClassification('нема').size).toBe(0);
     expect(parseMailClassification('[зламано').size).toBe(0);
+  });
+});
+
+describe('sanitizeInterviewWhen', () => {
+  const NOW = Date.parse('2026-07-10T08:00:00Z'); // 2026-07-10 11:00 Київ (EEST)
+
+  it('валідні dateISO+time -> whenMs (Kyiv EEST, +3)', () => {
+    const whenMs = sanitizeInterviewWhen('2026-07-14', '15:00', NOW);
+    expect(whenMs).toBe(Date.parse('2026-07-14T12:00:00Z'));
+  });
+
+  it('відсутні/малий формат -> null', () => {
+    expect(sanitizeInterviewWhen(undefined, '15:00', NOW)).toBeNull();
+    expect(sanitizeInterviewWhen('2026-07-14', undefined, NOW)).toBeNull();
+    expect(sanitizeInterviewWhen('14-07-2026', '15:00', NOW)).toBeNull();
+    expect(sanitizeInterviewWhen('2026-07-14', '3pm', NOW)).toBeNull();
+  });
+
+  it('невалідна година/хвилина -> null', () => {
+    expect(sanitizeInterviewWhen('2026-07-14', '25:00', NOW)).toBeNull();
+    expect(sanitizeInterviewWhen('2026-07-14', '10:70', NOW)).toBeNull();
+  });
+
+  it('поза розумним діапазоном (>60 днів наперед чи в минулому) -> null', () => {
+    expect(sanitizeInterviewWhen('2026-10-01', '10:00', NOW)).toBeNull(); // >60 днів
+    expect(sanitizeInterviewWhen('2026-01-01', '10:00', NOW)).toBeNull(); // в минулому
+  });
+
+  it('неіснуюча календарна дата -> null (Date.parse мовчки "перекочує", а не відхиляє)', () => {
+    // Регресія: Date.parse('2026-02-30') не кидає — тихо стає 2026-03-02.
+    // isValidCalendarDate у mail.ts має ловити це ДО kyivLocalToUtcMs.
+    expect(sanitizeInterviewWhen('2026-02-30', '10:00', NOW)).toBeNull();
+    expect(sanitizeInterviewWhen('2026-04-31', '10:00', NOW)).toBeNull();
+    expect(sanitizeInterviewWhen('2026-13-01', '10:00', NOW)).toBeNull();
   });
 });
 
@@ -179,6 +234,62 @@ describe('mail module', () => {
     expect(serialized).not.toContain('Запрошення');
     expect(serialized).not.toContain('вітаємо');
     expect(block).not.toHaveProperty('data');
+  });
+
+  it('запрошення на співбесіду з валідною датою -> MAIL_PROPOSAL_BUS_KEY', async () => {
+    const fetchImpl = mkFetch(['m1'], {
+      m1: { subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
+    });
+    const llm = {
+      complete: vi.fn(async () =>
+        JSON.stringify([
+          {
+            i: 1,
+            important: true,
+            interview: true,
+            dateISO: '2026-07-14',
+            time: '15:00',
+            title: 'Співбесіда — Acme',
+          },
+        ]),
+      ),
+    };
+    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
+    const ctx = makeCtx({ llm: llm as Ctx['llm'] });
+    await mod.run(ctx);
+    const proposal = ctx.bus.get<{ items: unknown[] }>(MAIL_PROPOSAL_BUS_KEY);
+    expect(proposal?.items).toEqual([
+      {
+        kind: 'event',
+        title: 'Співбесіда — Acme',
+        whenMs: Date.parse('2026-07-14T12:00:00Z'),
+        durationMin: 60,
+      },
+    ]);
+  });
+
+  it('interview:true але дата поза діапазоном/малий формат -> без bus-запису', async () => {
+    const fetchImpl = mkFetch(['m1'], {
+      m1: { subject: 'Запрошення', from: 'hr@acme.com', snippet: 'вітаємо' },
+    });
+    const llm = {
+      complete: vi.fn(async () =>
+        JSON.stringify([
+          {
+            i: 1,
+            important: true,
+            interview: true,
+            dateISO: '2030-01-01',
+            time: '15:00',
+            title: 'X',
+          },
+        ]),
+      ),
+    };
+    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
+    const ctx = makeCtx({ llm: llm as Ctx['llm'] });
+    await mod.run(ctx);
+    expect(ctx.bus.get(MAIL_PROPOSAL_BUS_KEY)).toBeUndefined();
   });
 
   it('дедуп: лист у вікні shownMail не потрапляє в кандидатів', async () => {

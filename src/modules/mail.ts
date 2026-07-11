@@ -18,8 +18,24 @@ import {
   withTimeout,
   type GoogleOAuthCreds,
 } from '../core/google-auth.js';
+import { kyivLocalToUtcMs } from '../core/tz.js';
+import { escapeHtml } from '../core/telegram.js';
 
 const MAIL_PRIORITY = 56; // після jobs (55), перед mock
+const MAX_PROPOSAL_ITEMS = 5;
+const PROPOSAL_MAX_FUTURE_DAYS = 60;
+
+// Bus-ключ для детектованих запрошень на співбесіду (Блок P2c) — consume у
+// runBriefing() (src/orchestrator.ts), НЕ з середини цього модуля: Ctx
+// навмисно не має notifier, усе відправлення централізоване.
+export const MAIL_PROPOSAL_BUS_KEY = 'mail.interviewProposal';
+
+export interface MailProposalItem {
+  kind: 'event';
+  title: string;
+  whenMs: number;
+  durationMin: number;
+}
 
 type ShownMail = Record<string, string>; // Gmail message id -> ISO дата, коли розглянуто
 
@@ -46,23 +62,37 @@ export function pluralizeLysty(n: number): string {
   return 'листів';
 }
 
+export interface MailClassification {
+  important: boolean;
+  interview: boolean;
+  dateISO?: string;
+  time?: string;
+  title?: string;
+}
+
 export function buildMailPrompt(profile: string, candidates: MailCandidate[]): string {
   return [
     'Ти — асистент, що сортує пошту кандидата на роботу. Профіль кандидата:',
     profile,
-    'Для КОЖНОГО листа визнач, чи він ВАЖЛИВИЙ (стосується пошуку роботи: відповідь',
-    'на заявку, запрошення на співбесіду, тестове завдання, відмова тощо).',
-    'Спам/реклама/розсилки/новини — НЕ важливі.',
+    'Для КОЖНОГО листа визнач:',
+    '- important: чи він ВАЖЛИВИЙ (стосується пошуку роботи: відповідь на заявку,',
+    '  запрошення на співбесіду, тестове завдання, відмова тощо). Спам/реклама/',
+    '  розсилки/новини — НЕ важливі.',
+    '- interview: чи це КОНКРЕТНЕ запрошення на співбесіду з датою й часом.',
+    '  Якщо так — додай dateISO ("YYYY-MM-DD"), time ("HH:MM", 24-годинний,',
+    '  КИЇВСЬКИЙ час) і коротке title (напр. "Співбесіда — Назва компанії").',
+    '  Не вгадуй дату/час, якщо їх немає в листі явно — тоді interview:false.',
     'Листи:',
     ...candidates.map((c, i) => `${i + 1}. Від: ${c.from}\nТема: ${c.subject}\n${c.snippet}`),
     'Поверни ЛИШЕ JSON-масив без прози:',
-    '[{"i":1,"important":true}]',
+    '[{"i":1,"important":true,"interview":true,"dateISO":"2026-07-14","time":"15:00",' +
+      '"title":"Співбесіда — Acme"}]',
   ].join('\n');
 }
 
-/** Розпарсити класифікацію у map index(1-based) -> {important}; малформат -> порожньо. */
-export function parseMailClassification(text: string): Map<number, { important: boolean }> {
-  const out = new Map<number, { important: boolean }>();
+/** Розпарсити класифікацію у map index(1-based) -> MailClassification; малформат -> порожньо. */
+export function parseMailClassification(text: string): Map<number, MailClassification> {
+  const out = new Map<number, MailClassification>();
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
   if (start === -1 || end <= start) return out;
@@ -73,13 +103,77 @@ export function parseMailClassification(text: string): Map<number, { important: 
       if (x && typeof x === 'object') {
         const o = x as Record<string, unknown>;
         const i = typeof o.i === 'number' ? o.i : NaN;
-        if (Number.isInteger(i)) out.set(i, { important: o.important === true });
+        if (Number.isInteger(i)) {
+          out.set(i, {
+            important: o.important === true,
+            interview: o.interview === true,
+            dateISO: typeof o.dateISO === 'string' ? o.dateISO : undefined,
+            time: typeof o.time === 'string' ? o.time : undefined,
+            title: typeof o.title === 'string' ? o.title.trim() : undefined,
+          });
+        }
       }
     }
   } catch {
     /* малформат -> порожня map -> 0 важливих (не валимо) */
   }
   return out;
+}
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}$/;
+
+/**
+ * Календарна валідність (не лише формат) — Date.parse/Date.UTC МОВЧКИ
+ * "перекочують" неіснуючі дати (напр. 2026-02-30 -> 2026-03-02), тож самого
+ * DATE_RE недостатньо: перевіряємо round-trip через компоненти.
+ */
+function isValidCalendarDate(dateISO: string): boolean {
+  if (!DATE_RE.test(dateISO)) return false;
+  const [y, m, d] = dateISO.split('-').map(Number) as [number, number, number];
+  const asDate = new Date(Date.UTC(y, m - 1, d));
+  return (
+    asDate.getUTCFullYear() === y && asDate.getUTCMonth() === m - 1 && asDate.getUTCDate() === d
+  );
+}
+
+/**
+ * Санітарна перевірка dateISO+time від LLM -> whenMs, або null (галюцинація,
+ * малий формат, неіснуюча дата, поза розумним діапазоном). LLM НІКОЛИ сам не
+ * рахує фінальний час (той самий інваріант, що P2a/P2b) — лише дає
+ * структуровані dateISO+time, конвертацію в UTC робить kyivLocalToUtcMs
+ * (DST-aware, детерміновано).
+ */
+export function sanitizeInterviewWhen(
+  dateISO: string | undefined,
+  time: string | undefined,
+  nowMs: number,
+): number | null {
+  if (!dateISO || !time || !isValidCalendarDate(dateISO) || !TIME_RE.test(time)) return null;
+  const [hh, mm] = time.split(':').map(Number);
+  if (hh === undefined || mm === undefined || hh > 23 || mm > 59) return null;
+  const whenMs = kyivLocalToUtcMs(dateISO, hh, mm);
+  if (!Number.isFinite(whenMs)) return null;
+  const minMs = nowMs - 3600_000; // трохи запасу в минуле (годинні пояси/затримка)
+  const maxMs = nowMs + PROPOSAL_MAX_FUTURE_DAYS * 86400_000;
+  if (whenMs < minMs || whenMs > maxMs) return null;
+  return whenMs;
+}
+
+/** Telegram-текст пропозиції (HTML, ескейпнуті назви) — над кнопками ✅/❌ (orchestrator.ts). */
+export function formatMailProposalMessage(items: MailProposalItem[]): string {
+  const lines = ['📧 <b>Знайшов запрошення на співбесіду:</b>', ''];
+  const fmt = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  items.forEach((it, i) => {
+    lines.push(`${i + 1}. 📅 ${escapeHtml(it.title)} — ${fmt.format(new Date(it.whenMs))}`);
+  });
+  return lines.join('\n');
 }
 
 export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig> {
@@ -168,6 +262,21 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
         });
         const classified = parseMailClassification(out);
         importantCount = candidates.filter((_, i) => classified.get(i + 1)?.important).length;
+
+        const nowMs = ctx.clock.now().getTime();
+        const proposalItems: MailProposalItem[] = [];
+        candidates.forEach((_, i) => {
+          const cls = classified.get(i + 1);
+          if (!cls?.interview || !cls.title) return;
+          const whenMs = sanitizeInterviewWhen(cls.dateISO, cls.time, nowMs);
+          if (whenMs === null) return;
+          proposalItems.push({ kind: 'event', title: cls.title, whenMs, durationMin: 60 });
+        });
+        if (proposalItems.length > 0) {
+          ctx.bus.set(MAIL_PROPOSAL_BUS_KEY, {
+            items: proposalItems.slice(0, MAX_PROPOSAL_ITEMS),
+          });
+        }
       } catch (e) {
         ctx.log.warn(
           `mail: класифікація не вдалась (0 важливих цього разу): ${e instanceof Error ? e.message : String(e)}`,
