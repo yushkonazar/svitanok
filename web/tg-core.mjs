@@ -16,8 +16,13 @@ export function textHash(s) {
 }
 
 // Дзеркало escapeHtml з src/core/telegram.ts — Worker не імпортує TS.
+// Екранує й `"` (атрибут-безпека href, як у TS-оригіналі).
 export function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /** Константний-час порівняння secret-token (X-Telegram-Bot-Api-Secret-Token). */

@@ -6,9 +6,14 @@ import type { Logger } from './types.js';
 
 export const TELEGRAM_HARD_LIMIT = 4096;
 
-/** Escape ВСІХ динамічних полів для HTML parse mode (§8). */
+/** Escape ВСІХ динамічних полів для HTML parse mode (§8). Включно з `"` —
+ *  інакше URL/текст із лапкою ламає атрибут href у link() (400 від Telegram). */
 export function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /** Клікабельне посилання у словах: <a href="url">text</a>. Обидва поля екрануються. */
