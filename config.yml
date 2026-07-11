@@ -50,7 +50,7 @@ modules:
   currency: { enabled: true } # курс НБУ, лише дашборд
   onthisday: { enabled: true } # «у цей день» (Wikipedia), лише дашборд
   mail:
-    enabled: false # увімкнути після Gmail OAuth ре-консенту (Блок P2c)
+    enabled: true # Gmail OAuth ре-консент (gmail.readonly) завершено, Блок P2c
     dedupDays: 3
     maxCandidates: 15
     query: 'in:inbox newer_than:3d -category:promotions -category:social'
