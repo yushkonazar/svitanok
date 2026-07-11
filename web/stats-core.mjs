@@ -283,7 +283,9 @@ export function aggregateStats(store, todayKey) {
       ts: x.ts || '',
     })),
     mock: { weakTopics, streak: streak(s.days, todayKey, mocked) },
-    roadmap: { done: 0, total: 0 }, // з форум-групи (пізніше)
+    // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
+    // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб
+    // цей чистий агрегатор не знав про roadmap-контент.
     interests,
     readPerDay: Math.round(totalReads / activeDays),
     reliability: s.reliability,
