@@ -1,0 +1,146 @@
+// Чиста логіка IT-роадмепу (Блок P3, 🗺Роадмеп): callback_data кодек,
+// прогрес (чистий state-transform), форматування Telegram-повідомлень.
+// Без I/O — Worker робить KV/editMessageText (worker.js:resolveRoadmapCallback).
+// 100% Worker-side — жодного orchestrator-модуля, roadmap.json нема,
+// TOPIC_ROADMAP не читається (усі відповіді реактивні, echo в чат/тему
+// вхідного апдейту, той самий sendTo-патерн що й решта команд).
+
+import { escapeHtml } from './tg-core.mjs';
+import { ROADMAP_TOPICS } from './roadmap-data.mjs';
+
+// Окремий простір callback_data від v1:<dateKey>:... (P1), rm:<id> (P2a),
+// pd:<action>:<id> (P2b/P2c).
+export const ROADMAP_CB_PREFIX = 'rd:';
+
+/** Глобальний ключ прогресу — ОДНЕ джерело істини (дерево ROADMAP_TOPICS), не дублювати в даних. */
+export function progressKey(topicId, subtopicId) {
+  return `${topicId}.${subtopicId}`;
+}
+
+/** Знайти тему за id; null якщо невідома (застарілий контент/чужа кнопка). */
+export function findTopic(topicId) {
+  return ROADMAP_TOPICS.find((t) => t.id === topicId) ?? null;
+}
+
+/** Знайти підпункт у вже знайденій темі; null якщо тема відсутня чи підпункт невідомий. */
+export function findSubtopic(topic, subtopicId) {
+  if (!topic) return null;
+  return topic.subtopics.find((s) => s.id === subtopicId) ?? null;
+}
+
+/** callback_data кореня («список тем»). */
+export function buildRootCallbackData() {
+  return `${ROADMAP_CB_PREFIX}r`;
+}
+
+/** callback_data теми («список підпунктів»); ≤64 байти (Telegram-ліміт), інакше null. */
+export function buildTopicCallbackData(topicId) {
+  const s = `${ROADMAP_CB_PREFIX}t:${topicId}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** callback_data toggle конкретного підпункту; ≤64 байти, інакше null. */
+export function buildToggleCallbackData(topicId, subtopicId) {
+  const s = `${ROADMAP_CB_PREFIX}s:${topicId}:${subtopicId}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/**
+ * Розібрати `rd:...` callback_data ->
+ * {kind:'root'} | {kind:'topic',topicId} | {kind:'toggle',topicId,subtopicId} | null.
+ */
+export function parseRoadmapCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(ROADMAP_CB_PREFIX)) return null;
+  const rest = data.slice(ROADMAP_CB_PREFIX.length);
+  if (rest === 'r') return { kind: 'root' };
+  const parts = rest.split(':');
+  if (parts[0] === 't' && parts.length === 2 && parts[1]) {
+    return { kind: 'topic', topicId: parts[1] };
+  }
+  if (parts[0] === 's' && parts.length === 3 && parts[1] && parts[2]) {
+    return { kind: 'toggle', topicId: parts[1], subtopicId: parts[2] };
+  }
+  return null;
+}
+
+/** Чистий touch — справжній toggle (додає якщо нема, прибирає якщо є). Новий об'єкт. */
+export function toggleProgress(progress, topicId, subtopicId, nowIso) {
+  const key = progressKey(topicId, subtopicId);
+  const next = { ...progress };
+  if (key in next) delete next[key];
+  else next[key] = nowIso;
+  return next;
+}
+
+/** {done,total} для однієї теми. */
+export function topicProgress(progress, topic) {
+  const total = topic.subtopics.length;
+  const done = topic.subtopics.filter((s) => progressKey(topic.id, s.id) in progress).length;
+  return { done, total };
+}
+
+/** {done,total} по всіх темах разом. */
+export function totalProgress(progress) {
+  let done = 0;
+  let total = 0;
+  for (const topic of ROADMAP_TOPICS) {
+    const p = topicProgress(progress, topic);
+    done += p.done;
+    total += p.total;
+  }
+  return { done, total };
+}
+
+/** Перший невідмічений підпункт у канонічному порядку тем/підпунктів; null якщо все зроблено. */
+export function findNextIncomplete(progress) {
+  for (const topic of ROADMAP_TOPICS) {
+    for (const sub of topic.subtopics) {
+      if (!(progressKey(topic.id, sub.id) in progress)) {
+        return { topicId: topic.id, subtopicId: sub.id };
+      }
+    }
+  }
+  return null;
+}
+
+/** Повідомлення кореня: загальний прогрес + список тем. */
+export function formatRootMessage(progress) {
+  const { done, total } = totalProgress(progress);
+  return `🗺 <b>IT-роадмеп</b> — ${done}/${total}\n\nОбери тему:`;
+}
+
+/** Inline-клавіатура кореня: рядок на тему + рядок «▶️ Наступний». */
+export function buildRootKeyboard(progress) {
+  const rows = ROADMAP_TOPICS.map((topic) => {
+    const { done, total } = topicProgress(progress, topic);
+    const cb = buildTopicCallbackData(topic.id);
+    return cb ? [{ text: `${topic.title} (${done}/${total})`, callback_data: cb }] : [];
+  }).filter((row) => row.length > 0);
+
+  const next = findNextIncomplete(progress);
+  if (next) {
+    const cb = buildTopicCallbackData(next.topicId);
+    if (cb) rows.push([{ text: '▶️ Наступний', callback_data: cb }]);
+  }
+  return { inline_keyboard: rows };
+}
+
+/** Повідомлення теми: назва+прогрес теми + інструкція. */
+export function formatTopicMessage(topic, progress) {
+  const { done, total } = topicProgress(progress, topic);
+  return `${escapeHtml(topic.title)} — ${done}/${total}\n\nТисни на пункт, щоб позначити пройденим:`;
+}
+
+/** Inline-клавіатура теми: рядок на підпункт (✅/▫️+назва) + «⬅️ Назад». */
+export function buildTopicKeyboard(topic, progress) {
+  const rows = topic.subtopics
+    .map((sub) => {
+      const done = progressKey(topic.id, sub.id) in progress;
+      const cb = buildToggleCallbackData(topic.id, sub.id);
+      if (!cb) return [];
+      return [{ text: `${done ? '✅' : '▫️'} ${sub.title}`, callback_data: cb }];
+    })
+    .filter((row) => row.length > 0);
+  rows.push([{ text: '⬅️ Назад', callback_data: buildRootCallbackData() }]);
+  return { inline_keyboard: rows };
+}

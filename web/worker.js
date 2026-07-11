@@ -52,6 +52,18 @@ import {
   buildProposalCallbackData,
   parseProposalCallbackData,
 } from './agent-core.mjs';
+import {
+  findTopic,
+  findSubtopic,
+  progressKey,
+  parseRoadmapCallbackData,
+  toggleProgress,
+  totalProgress,
+  formatRootMessage,
+  formatTopicMessage,
+  buildRootKeyboard,
+  buildTopicKeyboard,
+} from './roadmap-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
 
@@ -321,7 +333,11 @@ async function handleEvent(request, env) {
 
 /** GET /api/stats -> агрегат для табу «Статистика» (читання, без auth). */
 async function handleStats(env) {
-  return json(aggregateStats(await loadStats(env), kyivDateKey()));
+  const stats = aggregateStats(await loadStats(env), kyivDateKey());
+  // roadmap — окремий KV-блоб (state, не stats); aggregateStats лишається
+  // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
+  stats.roadmap = totalProgress((await loadState(env)).roadmapProgress ?? {});
+  return json(stats);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -500,17 +516,18 @@ const START_TEXT = [
   '/save — збережене',
   '/remind — нагадування (напр. "через 20 хв ..." або "завтра о 10:00 ...")',
   '/plan — план дня (LLM прочитає календар і запропонує таймлайн)',
+  '/roadmap — IT-роадмеп (теми → підпункти, прогрес)',
   '/settings — відкрити Mini App',
   '',
-  '🚧 У розробці: /mock /roadmap — прийдуть у наступних фазах.',
+  '🚧 У розробці: /mock — прийде в наступній фазі.',
   '',
   'Кнопки під ранковим брифінгом (💾 ✅ 🔖) теж працюють. Нагадати можна й без',
   'команди — просто напиши "нагадай ...". У темі 🤖Асистент можна й просто',
   'написати вільним текстом — календар, нагадування, план дня.',
 ].join('\n');
 
-const STUB_COMMANDS = new Set(['mock', 'roadmap']);
-const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступних фазах (асистент/роадмеп).';
+const STUB_COMMANDS = new Set(['mock']);
+const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступній фазі.';
 const UNKNOWN_REPLY =
   '🤖 Асистент-діалог ще не підключений (зʼявиться пізніше). Натисни /start, щоб побачити доступні команди.';
 const REMINDER_HELP =
@@ -697,6 +714,13 @@ async function handleCommand(env, parsed, origin) {
       return createReminderFromText(env, parsed, cmd.args);
     case 'plan':
       return runAssistantAgent(env, parsed, cmd.args || 'Склади план дня');
+    case 'roadmap': {
+      const progress = (await loadState(env)).roadmapProgress ?? {};
+      return sendText(formatRootMessage(progress), {
+        parse_mode: 'HTML',
+        reply_markup: buildRootKeyboard(progress),
+      });
+    }
     case 'whereami':
       return sendText(formatWhereAmI(parsed.chatId, parsed.threadId), { parse_mode: 'HTML' });
     case 'settings':
@@ -791,6 +815,63 @@ async function resolveProposalCallback(env, parsed, cb) {
 }
 
 /**
+ * Обробити rd:r / rd:t:<topicId> / rd:s:<topicId>:<subtopicId> — навігація
+ * теми→підпункти→toggle (Блок P3, 🗺Роадмеп). editMessageText В ОДНОМУ
+ * виклику з reply_markup у тому самому тілі (не два окремих API-виклики) —
+ * ре-рендерить те саме повідомлення на місці замість нового. root/topic —
+ * лише ре-рендер (без KV-запису); toggle — ОДИН запис state.roadmapProgress,
+ * тоді ре-рендер тієї самої теми. Невідомий topicId/subtopicId (застарілий
+ * контент) -> toast замість крашу.
+ */
+async function resolveRoadmapCallback(env, parsed, cb) {
+  if (parsed.chatId == null || parsed.messageId == null) return '';
+  const editText = (text, replyMarkup) =>
+    tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text,
+      parse_mode: 'HTML',
+      reply_markup: replyMarkup,
+    });
+
+  if (cb.kind === 'root') {
+    const progress = (await loadState(env)).roadmapProgress ?? {};
+    await editText(formatRootMessage(progress), buildRootKeyboard(progress));
+    return '';
+  }
+
+  if (cb.kind === 'topic') {
+    const topic = findTopic(cb.topicId);
+    if (!topic) return '⚠️ Ця тема більше не існує.';
+    const progress = (await loadState(env)).roadmapProgress ?? {};
+    await editText(formatTopicMessage(topic, progress), buildTopicKeyboard(topic, progress));
+    return '';
+  }
+
+  // toggle
+  const topic = findTopic(cb.topicId);
+  const subtopic = findSubtopic(topic, cb.subtopicId);
+  if (!topic || !subtopic) return '⚠️ Цей підпункт більше не існує.';
+
+  const state = await loadState(env);
+  const before = state.roadmapProgress ?? {};
+  const wasDone = progressKey(cb.topicId, cb.subtopicId) in before;
+  state.roadmapProgress = toggleProgress(
+    before,
+    cb.topicId,
+    cb.subtopicId,
+    new Date().toISOString(),
+  );
+  await env.BRIEFING.put('state', JSON.stringify(state));
+
+  await editText(
+    formatTopicMessage(topic, state.roadmapProgress),
+    buildTopicKeyboard(topic, state.roadmapProgress),
+  );
+  return wasDone ? '↩️ Знято позначку' : '✅ Позначено';
+}
+
+/**
  * Знайти прострочені нагадування, надіслати + позначити спрацьованими.
  * Пише KV ПІСЛЯ КОЖНОГО надісланого — якщо tgCall впаде посеред циклу (мережа),
  * уже надіслані не втратять firedTs і не задублюються наступним тіком.
@@ -832,13 +913,16 @@ async function processTelegramUpdate(env, parsed, origin) {
   try {
     if (parsed.kind === 'callback') {
       const proposalCb = parseProposalCallbackData(parsed.data);
+      const roadmapCb = parseRoadmapCallbackData(parsed.data);
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const toast = proposalCb
         ? await resolveProposalCallback(env, parsed, proposalCb)
-        : isReminderSnooze
-          ? await resolveReminderSnooze(env, parsed, parsed.data.slice(REMINDER_CB_PREFIX.length))
-          : await resolveCallbackToast(env, parsed);
+        : roadmapCb
+          ? await resolveRoadmapCallback(env, parsed, roadmapCb)
+          : isReminderSnooze
+            ? await resolveReminderSnooze(env, parsed, parsed.data.slice(REMINDER_CB_PREFIX.length))
+            : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,
