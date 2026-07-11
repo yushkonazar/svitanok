@@ -14,12 +14,29 @@ const {
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
   isAmbiguousRewrite,
+  addDaysToDateKey,
 } = rem;
 
 // Літо (EEST, UTC+3): 2026-07-10 11:00 Київ.
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 // Зима (EET, UTC+2): 2026-01-10 11:00 Київ.
 const WINTER_NOW = Date.parse('2026-01-10T09:00:00Z');
+
+describe('addDaysToDateKey — чиста Y-M-D арифметика (Блок P2b, worker.js:runAssistantAgent)', () => {
+  it('звичайний зсув і зсув через межу місяця', () => {
+    expect(addDaysToDateKey('2026-07-10', 1)).toBe('2026-07-11');
+    expect(addDaysToDateKey('2026-07-31', 1)).toBe('2026-08-01');
+  });
+
+  it('через весняний DST-перехід (2026-03-29) — усе одно точна календарна дата', () => {
+    // Раніше worker.js рахував "завтра" через +86_400_000мс на інстант — це
+    // ламалось саме тут (запит пізно ввечері 28.03 стрибав одразу на 30.03,
+    // бо +1год DST-переходу комбінувалась зі зсувом доби). addDaysToDateKey
+    // рахує лише Y-M-D, тому інстант/офсет тут узагалі не задіяні.
+    expect(addDaysToDateKey('2026-03-28', 1)).toBe('2026-03-29');
+    expect(addDaysToDateKey('2026-03-29', 1)).toBe('2026-03-30');
+  });
+});
 
 describe('reminders-core — parseReminderTime: відносний час', () => {
   it('"через N хв/хвилин/хвилину" — усі відмінки', () => {
