@@ -46,6 +46,7 @@ import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
 import { createCurrencyModule } from './modules/currency.js';
 import { createOnThisDayModule } from './modules/onthisday.js';
+import { createMailModule } from './modules/mail.js';
 import { buildPruners } from './core/prune.js';
 
 export interface RunOptions {
@@ -193,6 +194,7 @@ function buildModules(): Module<AppConfig>[] {
   return [
     createWeatherModule(),
     createCalendarModule(),
+    createMailModule(),
     stoicModule,
     factModule,
     createNewsModule(),

@@ -30,6 +30,7 @@ const baseConfig = {
     currency: { enabled: false },
     onthisday: { enabled: false },
     jobs: { enabled: false, perRun: 3, dedupDays: 7, sources: [] },
+    mail: { enabled: false, dedupDays: 3, maxCandidates: 15, query: '' },
   },
   llm: { model: 'm', maxCallsPerRun: 2, timeoutMs: 1000 },
   fetch: { timeoutMs: 1000, retries: 0 },
