@@ -15,6 +15,7 @@ export interface FetcherOptions {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const backoffMs = (attempt: number) => Math.min(500 * 2 ** attempt, 5000);
+const MAX_REDIRECTS = 5;
 
 // Деякі RSS-сервери віддають 403 без User-Agent — шлемо явний.
 const USER_AGENT =
@@ -24,31 +25,55 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
   const allow = new Set(opts.allowlist.map((h) => h.toLowerCase()));
   const fetchImpl = opts.fetchImpl ?? fetch;
 
-  async function once(url: string): Promise<string> {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
-    try {
-      const res = await fetchImpl(url, {
-        signal: ctrl.signal,
-        redirect: 'follow',
-        headers: {
-          'user-agent': USER_AGENT,
-          accept: 'application/rss+xml, application/xml, text/xml, */*',
-        },
-      });
+  const ensureAllowed = (u: string): string => {
+    const host = new URL(u).hostname.toLowerCase();
+    if (!allow.has(host)) {
+      throw new Error(`fetch заблоковано (не в allowlist): ${host}`);
+    }
+    return host;
+  };
+
+  // Ручне слідування редиректам: КОЖЕН хоп звіряємо з allowlist (анти-SSRF §8).
+  // `redirect: 'follow'` йшов би куди завгодно поза allowlist — це послаблювало
+  // б задекларовану гарантію (M3). У Node (undici) `manual` віддає 3xx+Location.
+  async function once(startUrl: string): Promise<string> {
+    let url = startUrl;
+    for (let hop = 0; ; hop++) {
+      ensureAllowed(url);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
+      let res: Response;
+      try {
+        res = await fetchImpl(url, {
+          signal: ctrl.signal,
+          redirect: 'manual',
+          headers: {
+            'user-agent': USER_AGENT,
+            accept: 'application/rss+xml, application/xml, text/xml, */*',
+          },
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('location');
+        if (!loc) throw new Error(`fetch редирект ${res.status} без Location для ${url}`);
+        if (hop >= MAX_REDIRECTS) {
+          throw new Error(`fetch забагато редиректів (>${MAX_REDIRECTS}) від ${startUrl}`);
+        }
+        url = new URL(loc, url).toString(); // відносний Location -> абсолютний
+        continue;
+      }
       if (!res.ok) throw new Error(`fetch HTTP ${res.status} для ${url}`);
       return await res.text();
-    } finally {
-      clearTimeout(timer);
     }
   }
 
   return {
     async fetch(url: string): Promise<string> {
-      const host = new URL(url).hostname.toLowerCase();
-      if (!allow.has(host)) {
-        throw new Error(`fetch заблоковано (не в allowlist): ${host}`);
-      }
+      // Швидкий відсів заблокованого хоста ДО ретрай-циклу (кожен хоп once()
+      // теж перевіряє — редиректи).
+      ensureAllowed(url);
       let lastErr: unknown;
       for (let attempt = 0; attempt <= opts.retries; attempt++) {
         try {
@@ -56,7 +81,7 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
         } catch (e) {
           lastErr = e;
           const why = e instanceof Error ? e.message : String(e);
-          opts.log?.warn(`fetch спроба ${attempt + 1} впала для ${host}: ${why}`);
+          opts.log?.warn(`fetch спроба ${attempt + 1} впала для ${url}: ${why}`);
           if (attempt < opts.retries) await delay(backoffMs(attempt));
         }
       }

@@ -17,6 +17,35 @@ describe('fetcher — allowlist (анти-SSRF)', () => {
     const f = mk(fetchImpl as unknown as typeof fetch);
     await expect(f.fetch('https://x.com/feed')).resolves.toBe('BODY');
   });
+
+  it('слідує редиректу в межах allowlist (M3)', async () => {
+    let n = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      n += 1;
+      if (n === 1) {
+        expect(String(url)).toBe('https://x.com/a');
+        return new Response('', { status: 302, headers: { location: 'https://x.com/b' } });
+      }
+      expect(String(url)).toBe('https://x.com/b');
+      return new Response('MOVED', { status: 200 });
+    });
+    const f = mk(fetchImpl as unknown as typeof fetch);
+    await expect(f.fetch('https://x.com/a')).resolves.toBe('MOVED');
+  });
+
+  it('блокує редирект на хост поза allowlist (анти-SSRF, M3)', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('', { status: 302, headers: { location: 'https://evil.com/x' } }),
+    );
+    // retries=0 -> без ретраю на заблокованому редиректі.
+    const f = createFetcher({
+      allowlist: ['x.com'],
+      timeoutMs: 1000,
+      retries: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(f.fetch('https://x.com/a')).rejects.toThrow(/allowlist.*evil\.com/);
+  });
 });
 
 describe('fetcher — ретрай з бекофом', () => {
