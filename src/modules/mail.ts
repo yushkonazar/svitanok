@@ -6,9 +6,9 @@
 // на цьому боці). Дедуп проти shownMail. Деградує тихо (§6): без GOOGLE_*
 // секретів чи при 401/мережевій помилці -> null, не валить брифінг.
 //
-// ⚠️ /briefing.json НЕАВТЕНТИФІКОВАНИЙ (web/worker.js, немає owner-check на
-// відміну від /api/vote чи /api/event) — Block тут НІКОЛИ не несе
-// subject/from/snippet у `data`, лише агрегований лічильник у `summary`.
+// /briefing.json тепер під owner-auth (H1, web/worker.js checkOwnerRead), але
+// Block тут ВСЕ ОДНО не несе subject/from/snippet у `data`, лише агрегований
+// лічильник у `summary` — захист углиб (менше приватного в KV-історії брифінгів).
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
