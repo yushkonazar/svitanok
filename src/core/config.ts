@@ -70,6 +70,12 @@ const ConfigSchema = z
       }),
       currency: z.object({ enabled: z.boolean() }),
       onthisday: z.object({ enabled: z.boolean() }),
+      mail: z.object({
+        enabled: z.boolean(),
+        dedupDays: z.number().int().nonnegative().default(3), // коротший за jobs(7) — листи не «переоцінюємо»
+        maxCandidates: z.number().int().positive().default(15),
+        query: z.string().default('in:inbox newer_than:3d -category:promotions -category:social'),
+      }),
     }),
     llm: z.object({
       model: z.string().min(1),

@@ -27,6 +27,7 @@ const valid = {
     currency: { enabled: false },
     onthisday: { enabled: false },
     jobs: { enabled: false, perRun: 3, dedupDays: 7, sources: [] },
+    mail: { enabled: false, dedupDays: 3, maxCandidates: 15, query: '' },
   },
   llm: { model: 'claude-x', maxCallsPerRun: 2, timeoutMs: 90000 },
   fetch: { timeoutMs: 30000, retries: 2 },

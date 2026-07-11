@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { runBriefing, isQuietDay, type RunDeps } from '../src/orchestrator.js';
 import { parseConfig, type AppConfig } from '../src/core/config.js';
 import { createRunBus } from '../src/core/bus.js';
+import { MAIL_PROPOSAL_BUS_KEY } from '../src/modules/mail.js';
 import type { Module, Block, StateStore, Clock } from '../src/core/types.js';
-import type { Notifier as NotifierType } from '../src/core/telegram.js';
+import type { Notifier as NotifierType, TgButton } from '../src/core/telegram.js';
 
 const baseConfig = {
   timezone: 'Europe/Kyiv',
@@ -30,6 +31,7 @@ const baseConfig = {
     currency: { enabled: false },
     onthisday: { enabled: false },
     jobs: { enabled: false, perRun: 3, dedupDays: 7, sources: [] },
+    mail: { enabled: false, dedupDays: 3, maxCandidates: 15, query: '' },
   },
   llm: { model: 'm', maxCallsPerRun: 2, timeoutMs: 1000 },
   fetch: { timeoutMs: 1000, retries: 0 },
@@ -55,11 +57,16 @@ function memState(initial: Record<string, unknown> = {}): StateStore {
   };
 }
 
-function fakeNotifier(): NotifierType & { sent: string[][] } {
+function fakeNotifier(): NotifierType & { sent: string[][]; buttons: TgButton[][][] } {
   const sent: string[][] = [];
+  const buttons: TgButton[][][] = [];
   return {
     sent,
-    send: async (m) => void sent.push(m.map((x) => (typeof x === 'string' ? x : x.text))),
+    buttons,
+    send: async (m) => {
+      sent.push(m.map((x) => (typeof x === 'string' ? x : x.text)));
+      for (const x of m) if (typeof x !== 'string' && x.buttons) buttons.push(x.buttons);
+    },
     failNotify: async () => {},
   };
 }
@@ -84,6 +91,7 @@ function deps(over: Partial<RunDeps> = {}): RunDeps {
     log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
     modules: [],
     notifier: fakeNotifier(),
+    assistantNotifier: null,
     ...over,
   };
 }
@@ -155,6 +163,72 @@ describe('runBriefing — dry-run', () => {
 describe('runBriefing — бойовий без секретів', () => {
   it('notifier=null + не dry-run -> кидає (видимий fail у main)', async () => {
     await expect(runBriefing(deps({ notifier: null, modules: [] }))).rejects.toThrow(/Notifier/);
+  });
+});
+
+describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
+  const proposalItems = [
+    {
+      kind: 'event' as const,
+      title: 'Співбесіда — Acme',
+      whenMs: Date.parse('2026-07-14T12:00:00Z'),
+      durationMin: 60,
+    },
+  ];
+  const mailModule: Module<AppConfig> = {
+    id: 'mail',
+    kind: 'producer',
+    enabled: () => true,
+    async run(ctx) {
+      ctx.bus.set(MAIL_PROPOSAL_BUS_KEY, { items: proposalItems });
+      return null;
+    },
+  };
+
+  it('dry-run -> assistantNotifier не викликається', async () => {
+    const assistantNotifier = fakeNotifier();
+    await runBriefing(deps({ modules: [mailModule], assistantNotifier }), { dryRun: true });
+    expect(assistantNotifier.sent).toHaveLength(0);
+  });
+
+  it('успішний send -> state.assistantPending записаний, callback_data кнопок містить ТОЙ САМИЙ id', async () => {
+    const assistantNotifier = fakeNotifier();
+    const state = memState();
+    await runBriefing(deps({ modules: [mailModule], assistantNotifier, state }));
+    expect(assistantNotifier.sent).toHaveLength(1);
+    const pending = state.get<{ id: string; items: unknown[] }>('assistantPending');
+    expect(pending?.items).toEqual(proposalItems);
+    expect(pending?.id).toMatch(/^[0-9a-f]{8}$/);
+    // Крос-перевірка: id, вшитий у callback_data кнопок, МАЄ збігатися з тим,
+    // що записано в assistantPending — інакше тап ✅ у Telegram резолвиться
+    // проти чужого/неіснуючого pending (тихий "⚠️ Застаріла пропозиція").
+    const [accept, cancel] = assistantNotifier.buttons[0]![0]!;
+    expect(accept!.callback_data).toBe(`pd:a:${pending!.id}`);
+    expect(cancel!.callback_data).toBe(`pd:c:${pending!.id}`);
+  });
+
+  it('assistantNotifier=null (TOPIC_ASSISTANT не задано) -> нічого не падає, брифінг усе одно sent', async () => {
+    const res = await runBriefing(deps({ modules: [mailModule], assistantNotifier: null }));
+    expect(res.status).toBe('sent');
+  });
+
+  it('send пропозиції падає -> assistantPending НЕ записаний, основний брифінг усе одно sent', async () => {
+    const assistantNotifier: NotifierType = {
+      send: async () => {
+        throw new Error('Telegram 500');
+      },
+      failNotify: async () => {},
+    };
+    const state = memState();
+    const res = await runBriefing(deps({ modules: [mailModule], assistantNotifier, state }));
+    expect(res.status).toBe('sent');
+    expect(state.get('assistantPending')).toBeUndefined();
+  });
+
+  it('без пропозиції (bus порожній) -> assistantNotifier не викликається', async () => {
+    const assistantNotifier = fakeNotifier();
+    await runBriefing(deps({ modules: [], assistantNotifier }));
+    expect(assistantNotifier.sent).toHaveLength(0);
   });
 });
 

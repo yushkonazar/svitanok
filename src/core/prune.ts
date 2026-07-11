@@ -13,6 +13,7 @@ export function buildPruners(config: AppConfig, now: number): Pruner[] {
   const newsCutoff =
     now - Math.max(config.modules.news.dedupDays, config.modules.news.retentionDays) * DAY_MS;
   const logCutoff = now - 7 * DAY_MS;
+  const mailCutoff = now - config.modules.mail.dedupDays * DAY_MS;
 
   const pruneShownNews: Pruner = (data) => {
     const shown = data['shownNews'] as Record<string, string> | undefined;
@@ -32,5 +33,16 @@ export function buildPruners(config: AppConfig, now: number): Pruner[] {
     });
   };
 
-  return [pruneShownNews, pruneNextStepLog];
+  // shownMail (Блок P2c) — той самий патерн, що shownNews: без прунінгу зростав
+  // би необмежено (по запису на кожен колись розглянутий лист).
+  const pruneShownMail: Pruner = (data) => {
+    const shown = data['shownMail'] as Record<string, string> | undefined;
+    if (!shown) return;
+    for (const [id, d] of Object.entries(shown)) {
+      const t = Date.parse(d);
+      if (!Number.isFinite(t) || t < mailCutoff) delete shown[id];
+    }
+  };
+
+  return [pruneShownNews, pruneNextStepLog, pruneShownMail];
 }

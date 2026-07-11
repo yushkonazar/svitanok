@@ -66,6 +66,19 @@ export function buildCallbackData(dateKey: string, action: string): string | nul
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
+// pd:a:<id>/pd:c:<id> (Блок P2b, окремий простір від v1:<dateKey>:...) — TS-
+// дзеркало web/agent-core.mjs (`PROPOSAL_CB_PREFIX`/`buildProposalCallbackData`).
+// МАЄ збігатися символ-у-символ — той самий webhook-обробник
+// (`resolveProposalCallback`, web/worker.js) резолвить пропозиції незалежно
+// від того, ХТО їх записав (Worker-агент чи, Блок P2c, orchestrator).
+export const PROPOSAL_CB_PREFIX = 'pd:';
+
+/** `pd:a:<id>` (прийняти) / `pd:c:<id>` (скасувати); ≤64 байти (Telegram-ліміт). */
+export function buildProposalCallbackData(action: 'a' | 'c', id: string): string | null {
+  const s = `${PROPOSAL_CB_PREFIX}${action}:${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
 export interface TgButton {
   text: string;
   callback_data: string;
