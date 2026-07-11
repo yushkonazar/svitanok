@@ -79,9 +79,13 @@ export function buildProposalCallbackData(action: 'a' | 'c', id: string): string
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-export interface TgButton {
-  text: string;
-  callback_data: string;
+export type TgButton =
+  { text: string; callback_data: string } | { text: string; web_app: { url: string } };
+
+/** Кнопка запуску Mini App (реактивна, не callback) — дзеркало web/worker.js's
+ *  `web_app: { url }` (settings-кнопка, menu-button). */
+export function buildMiniAppButton(text: string, url: string): TgButton {
+  return { text, web_app: { url } };
 }
 
 export interface OutboundMessage {

@@ -92,6 +92,7 @@ function deps(over: Partial<RunDeps> = {}): RunDeps {
     modules: [],
     notifier: fakeNotifier(),
     assistantNotifier: null,
+    miniAppUrl: null,
     ...over,
   };
 }
@@ -129,7 +130,7 @@ describe('runBriefing — деградація', () => {
     expect(res.messages[0]).toContain('червня'); // header
   });
 
-  it('producer кидає виняток -> graceful, решта блоків доходить', async () => {
+  it('producer кидає виняток -> graceful, решта блоків доходить у briefing (Mini App)', async () => {
     const notifier = fakeNotifier();
     const res = await runBriefing(
       deps({
@@ -143,7 +144,34 @@ describe('runBriefing — деградація', () => {
       }),
     );
     expect(res.status).toBe('sent');
-    expect(notifier.sent[0]!.join('\n')).toContain('stoic');
+    // Контент блоків більше НЕ йде в чат — лише в briefing.json (Mini App).
+    expect(res.briefing.blocks.map((b) => b.id)).toEqual(['stoic']);
+    expect(notifier.sent[0]!.join('\n')).not.toContain('stoic');
+  });
+});
+
+describe('runBriefing — єдине сповіщення (дата + Mini App кнопка)', () => {
+  it('без miniAppUrl -> лише текст дати, без кнопки', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(deps({ notifier, modules: [], miniAppUrl: null }));
+    expect(res.status).toBe('sent');
+    expect(notifier.sent).toHaveLength(1);
+    expect(notifier.sent[0]!.join('')).toContain('червня'); // header
+    expect(notifier.buttons).toHaveLength(0);
+  });
+
+  it('з miniAppUrl -> одна кнопка web_app, що відкриває той самий URL', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({ notifier, modules: [], miniAppUrl: 'https://svitanok.example.workers.dev' }),
+    );
+    expect(res.status).toBe('sent');
+    expect(notifier.sent).toHaveLength(1);
+    const btn = notifier.buttons[0]![0]![0]!;
+    expect(btn).toEqual({
+      text: '📊 Відкрити Mini App',
+      web_app: { url: 'https://svitanok.example.workers.dev' },
+    });
   });
 });
 
@@ -202,7 +230,10 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
     // Крос-перевірка: id, вшитий у callback_data кнопок, МАЄ збігатися з тим,
     // що записано в assistantPending — інакше тап ✅ у Telegram резолвиться
     // проти чужого/неіснуючого pending (тихий "⚠️ Застаріла пропозиція").
-    const [accept, cancel] = assistantNotifier.buttons[0]![0]!;
+    const [accept, cancel] = assistantNotifier.buttons[0]![0]! as {
+      text: string;
+      callback_data: string;
+    }[];
     expect(accept!.callback_data).toBe(`pd:a:${pending!.id}`);
     expect(cancel!.callback_data).toBe(`pd:c:${pending!.id}`);
   });

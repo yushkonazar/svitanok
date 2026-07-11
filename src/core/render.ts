@@ -93,7 +93,7 @@ function buildInlineKeyboard(
           const callback_data = buildCallbackData(dateKey, b.action);
           return callback_data ? { text: b.label, callback_data } : null;
         })
-        .filter((x): x is TgButton => x !== null),
+        .filter((x): x is { text: string; callback_data: string } => x !== null),
     )
     .filter((row) => row.length > 0);
   return rows.length > 0 ? rows : undefined;
