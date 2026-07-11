@@ -167,7 +167,7 @@ export const COMMANDS = [
   { command: 'settings', description: 'Відкрити Mini App' },
   { command: 'remind', description: 'Нагадування (напр. через 20 хв ...)' },
   { command: 'mock', description: '🚧 Співбесіда — скоро' },
-  { command: 'plan', description: '🚧 План дня — скоро' },
+  { command: 'plan', description: 'План дня (LLM читає календар, пропонує таймлайн)' },
   { command: 'roadmap', description: '🚧 IT-роадмеп — скоро' },
   { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
 ];

@@ -35,7 +35,23 @@ import {
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
   isAmbiguousRewrite,
+  addDaysToDateKey,
 } from './reminders-core.mjs';
+import {
+  kyivDayBoundsUtc,
+  parseEvents,
+  buildCreateEventBody,
+  formatEventsForPrompt,
+} from './calendar-core.mjs';
+import {
+  ASSISTANT_ACTION_SCHEMA,
+  buildAssistantSystemPrompt,
+  extractAssistantAction,
+  sanitizeProposal,
+  formatProposalMessage,
+  buildProposalCallbackData,
+  parseProposalCallbackData,
+} from './agent-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
 
@@ -356,6 +372,85 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema }) {
   }
 }
 
+/**
+ * OAuth access token через refresh_token grant (Google) — порт
+ * src/modules/calendar.ts:93-115 під Worker-секрети GOOGLE_CLIENT_ID/
+ * GOOGLE_CLIENT_SECRET/GOOGLE_REFRESH_TOKEN (Блок P2b). Відсутні секрети або
+ * будь-яка мережева помилка -> null (graceful, той самий стиль що calendar.ts
+ * і callLlmHost — виклик іде далі без календаря, не валить обробку апдейту).
+ */
+async function googleAccessToken(env) {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
+  const body = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    client_secret: env.GOOGLE_CLIENT_SECRET,
+    refresh_token: env.GOOGLE_REFRESH_TOKEN,
+    grant_type: 'refresh_token',
+  });
+  try {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (!res.ok) {
+      console.error('google token HTTP', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    const json = await res.json();
+    return typeof json.access_token === 'string' ? json.access_token : null;
+  } catch (err) {
+    console.error('google token failed', err.message);
+    return null;
+  }
+}
+
+/** Події дня dateKey (Київ) через Google Calendar API (read). null при будь-якому збої. */
+async function readCalendarEvents(env, dateKey) {
+  const token = await googleAccessToken(env);
+  if (!token) return null;
+  const { timeMin, timeMax } = kyivDayBoundsUtc(dateKey);
+  const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+  url.searchParams.set('timeMin', timeMin);
+  url.searchParams.set('timeMax', timeMax);
+  url.searchParams.set('singleEvents', 'true');
+  url.searchParams.set('orderBy', 'startTime');
+  url.searchParams.set('timeZone', 'Europe/Kyiv');
+  try {
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      console.error('google calendar read HTTP', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    return parseEvents(await res.json());
+  } catch (err) {
+    console.error('google calendar read failed', err.message);
+    return null;
+  }
+}
+
+/** Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає — {ok:false} при збої. */
+async function createCalendarEvent(env, { title, startIso, endIso }) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false };
+  try {
+    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(buildCreateEventBody({ title, startIso, endIso })),
+    });
+    if (!res.ok) {
+      console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
+      return { ok: false };
+    }
+    const json = await res.json();
+    return { ok: true, id: typeof json.id === 'string' ? json.id : null };
+  } catch (err) {
+    console.error('google calendar create failed', err.message);
+    return { ok: false };
+  }
+}
+
 /** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
  *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
 async function loadBriefingForDate(env, dateKey) {
@@ -404,20 +499,28 @@ const START_TEXT = [
   '/jobs — активна воронка вакансій',
   '/save — збережене',
   '/remind — нагадування (напр. "через 20 хв ..." або "завтра о 10:00 ...")',
+  '/plan — план дня (LLM прочитає календар і запропонує таймлайн)',
   '/settings — відкрити Mini App',
   '',
-  '🚧 У розробці: /mock /plan /roadmap — прийдуть у наступних фазах.',
+  '🚧 У розробці: /mock /roadmap — прийдуть у наступних фазах.',
   '',
   'Кнопки під ранковим брифінгом (💾 ✅ 🔖) теж працюють. Нагадати можна й без',
-  'команди — просто напиши "нагадай ...".',
+  'команди — просто напиши "нагадай ...". У темі 🤖Асистент можна й просто',
+  'написати вільним текстом — календар, нагадування, план дня.',
 ].join('\n');
 
-const STUB_COMMANDS = new Set(['mock', 'plan', 'roadmap']);
+const STUB_COMMANDS = new Set(['mock', 'roadmap']);
 const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступних фазах (асистент/роадмеп).';
 const UNKNOWN_REPLY =
   '🤖 Асистент-діалог ще не підключений (зʼявиться пізніше). Натисни /start, щоб побачити доступні команди.';
 const REMINDER_HELP =
   '🤔 Не зрозумів час. Приклади: "через 20 хвилин", "завтра о 10:00", "о 15:30".';
+
+// Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
+// (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
+const MAX_ROUNDS = 3;
+const ASSISTANT_FALLBACK_REPLY = '🤔 Не зміг розібратись до кінця — спробуй сформулювати простіше.';
+const PENDING_TTL_MS = 30 * 60_000; // застаріла кнопка ✅/❌ під пропозицією
 
 /**
  * LLM-фолбек, коли rule-based parseReminderTime не впізнав фразу: питаємо
@@ -440,15 +543,20 @@ async function tryLlmReminderRewrite(env, text) {
   return parseReminderTime(rewritten, now);
 }
 
-/** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
-async function createReminderFromText(env, parsed, text) {
-  const sendText = (t, extra) =>
+/** sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4 хендлерів нижче). */
+function sendTo(env, parsed) {
+  return (text, extra) =>
     tgCall(env, 'sendMessage', {
       chat_id: parsed.chatId,
       message_thread_id: parsed.threadId ?? undefined,
-      text: t,
+      text,
       ...extra,
     });
+}
+
+/** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
+async function createReminderFromText(env, parsed, text) {
+  const sendText = sendTo(env, parsed);
 
   let parsedTime = parseReminderTime(text, Date.now());
   if (!parsedTime && env.LLM_HOST_URL) {
@@ -470,20 +578,92 @@ async function createReminderFromText(env, parsed, text) {
   });
 }
 
+/**
+ * LLM tool-use агент (Блок P2b, 🤖Асистент): Worker сам оркеструє обмежений
+ * цикл раундів callLlmHost — host/ навмисно stateless, без справжнього
+ * tool-calling усередині CLI (`--tools ''` — задокументована найважливіша
+ * межа безпеки хоста, host/llm-host-core.mjs) — тому кожен раунд модель
+ * обирає РІВНО ОДНУ дію зі схеми ASSISTANT_ACTION_SCHEMA, Worker виконує її
+ * детерміновано. readCalendar дописує результат у transcript і триває цикл;
+ * решта дій (createReminder/proposeCalendarChanges/reply) — термінальні.
+ */
+async function runAssistantAgent(env, parsed, userText) {
+  const sendText = sendTo(env, parsed);
+  if (!userText || !userText.trim()) return sendText(UNKNOWN_REPLY); // стікер/фото/порожнє — не LLM
+  if (!env.LLM_HOST_URL) return sendText(UNKNOWN_REPLY); // хост не налаштований — graceful
+
+  const nowMs = Date.now();
+  let transcript = `Користувач написав: "${userText}"`;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const res = await callLlmHost(env, {
+      prompt: transcript,
+      systemPrompt: buildAssistantSystemPrompt(nowMs),
+      jsonSchema: ASSISTANT_ACTION_SCHEMA,
+    });
+    const action = extractAssistantAction(res?.structured);
+    if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
+
+    if (action.action === 'reply') return sendText(action.replyText || ASSISTANT_FALLBACK_REPLY);
+    if (action.action === 'createReminder') {
+      return createReminderFromText(env, parsed, action.reminderText);
+    }
+    if (action.action === 'proposeCalendarChanges') {
+      return proposeCalendarChanges(env, parsed, action.proposal);
+    }
+    // readCalendar — дописати результат дня nowMs+calendarRangeDays, продовжити цикл.
+    // Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на інстант — те
+    // ламається на DST-переході, коли зсув доби і +1год стрибок комбінуються).
+    const dateKey = addDaysToDateKey(kyivDateKey(new Date(nowMs)), action.calendarRangeDays);
+    const events = await readCalendarEvents(env, dateKey);
+    transcript += `\n\nКалендар (${dateKey}): ${formatEventsForPrompt(events ?? [])}`;
+  }
+  return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка, чесний фолбек
+}
+
+/** Зберегти пропозицію (state.assistantPending, ОДИН слот) + кнопки ✅/❌ підтвердження. */
+async function proposeCalendarChanges(env, parsed, rawProposal) {
+  const sendText = sendTo(env, parsed);
+
+  const { items, droppedCount } = sanitizeProposal(rawProposal, Date.now());
+  if (items.length === 0) {
+    return sendText(
+      '🤔 Не зрозумів час жодного пункту — спробуй точніше (напр. "завтра о 15:00").',
+    );
+  }
+
+  const id = crypto.randomUUID().slice(0, 8);
+  const state = await loadState(env);
+  state.assistantPending = { id, items, createdMs: Date.now() };
+  await env.BRIEFING.put('state', JSON.stringify(state));
+
+  const warn = droppedCount > 0 ? `\n\n⚠️ пропущено ${droppedCount} — незрозумілий час` : '';
+  return sendText(formatProposalMessage(items) + warn, {
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Прийняти', callback_data: buildProposalCallbackData('a', id) },
+          { text: '❌ Скасувати', callback_data: buildProposalCallbackData('c', id) },
+        ],
+      ],
+    },
+  });
+}
+
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
 async function handleCommand(env, parsed, origin) {
-  const sendText = (text, extra) =>
-    tgCall(env, 'sendMessage', {
-      chat_id: parsed.chatId,
-      message_thread_id: parsed.threadId ?? undefined,
-      text,
-      ...extra,
-    });
+  const sendText = sendTo(env, parsed);
 
   const cmd = parseCommand(parsed.text);
   if (!cmd) {
-    // Вільний текст (майбутній асистент, P2) — крім тригера нагадування (P2a).
+    // Тригер нагадування (P2a) — першим, як і раніше.
     if (/нагад/i.test(parsed.text)) return createReminderFromText(env, parsed, parsed.text);
+    // Вільний текст у 🤖Асистент (чи DM, без тем) -> LLM tool-use агент (Блок
+    // P2b). Інші теми (Роадмеп/Брифінг/Команди) — тема-специфічна поведінка
+    // там свідомо поза межами, лишається стара заглушка.
+    if (parsed.threadId == null || String(parsed.threadId) === String(env.TOPIC_ASSISTANT)) {
+      return runAssistantAgent(env, parsed, parsed.text);
+    }
     return sendText(UNKNOWN_REPLY);
   }
   if (STUB_COMMANDS.has(cmd.cmd)) return sendText(STUB_REPLY);
@@ -515,6 +695,8 @@ async function handleCommand(env, parsed, origin) {
       );
     case 'remind':
       return createReminderFromText(env, parsed, cmd.args);
+    case 'plan':
+      return runAssistantAgent(env, parsed, cmd.args || 'Склади план дня');
     case 'whereami':
       return sendText(formatWhereAmI(parsed.chatId, parsed.threadId), { parse_mode: 'HTML' });
     case 'settings':
@@ -550,6 +732,65 @@ async function resolveReminderSnooze(env, parsed, reminderId) {
 }
 
 /**
+ * Обробити pd:a:<id>/pd:c:<id> — прийняти чи скасувати пропозицію асистента
+ * (`state.assistantPending`, ОДИН слот). "Claim" (видалити зі стану) ОДРАЗУ
+ * після перевірки, ще ДО повільного циклу запису — інакше подвійний тап на
+ * ✅ (чи паралельна нова пропозиція, що перезаписала слот, поки ця ще
+ * оброблялась — цикл тепер може тривати довше через ctx.waitUntil) або
+ * встигає задублювати нагадування/події (createCalendarEvent — зовнішній
+ * незворотний запис, не KV-стан), або стирає ЧУЖУ (новішу) пропозицію
+ * непроконтрольовано. Прийняти -> записати кожен пункт; KV після КОЖНОГО
+ * нагадування (crash-safe, той самий патерн, що checkReminders); часткові
+ * провали -> комбінований toast, не тихе ковтання.
+ */
+async function resolveProposalCallback(env, parsed, cb) {
+  const state = await loadState(env);
+  const pending = state.assistantPending;
+  const stale = !pending || pending.id !== cb.id || Date.now() - pending.createdMs > PENDING_TTL_MS;
+  if (stale) return '⚠️ Застаріла пропозиція.';
+
+  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+    });
+  }
+
+  // Claim: видалити ЛИШЕ якщо це досі той самий id (не чужа новіша пропозиція),
+  // ОДРАЗУ, до будь-якого повільного запису — звужує вікно подвійного тапу.
+  const claim = await loadState(env);
+  if (claim.assistantPending?.id !== cb.id) return '⚠️ Застаріла пропозиція.';
+  delete claim.assistantPending;
+  await env.BRIEFING.put('state', JSON.stringify(claim));
+
+  if (cb.action === 'c') return '❌ Скасовано';
+
+  let ok = 0;
+  let fail = 0;
+  for (const item of pending.items) {
+    if (item.kind === 'reminder') {
+      const fresh = await loadState(env);
+      fresh.reminders = addReminder(fresh.reminders, {
+        id: crypto.randomUUID(),
+        text: item.title,
+        whenMs: item.whenMs,
+        nowMs: Date.now(),
+      });
+      await env.BRIEFING.put('state', JSON.stringify(fresh));
+      ok++;
+    } else {
+      const startIso = new Date(item.whenMs).toISOString();
+      const endIso = new Date(item.whenMs + item.durationMin * 60_000).toISOString();
+      const res = await createCalendarEvent(env, { title: item.title, startIso, endIso });
+      if (res.ok) ok++;
+      else fail++;
+    }
+  }
+  return fail > 0 ? `✅ Додано ${ok}, ⚠️ не вдалось ${fail}` : `✅ Додано ${ok}`;
+}
+
+/**
  * Знайти прострочені нагадування, надіслати + позначити спрацьованими.
  * Пише KV ПІСЛЯ КОЖНОГО надісланого — якщо tgCall впаде посеред циклу (мережа),
  * уже надіслані не втратять firedTs і не задублюються наступним тіком.
@@ -576,8 +817,51 @@ async function checkReminders(env) {
   }
 }
 
+/**
+ * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
+ * lastUpdateId — викликається через ctx.waitUntil (Блок P2b): agent-цикл
+ * (runAssistantAgent) може тривати до ~75с (3×25с callLlmHost-таймаут),
+ * задовго для синхронної відповіді на вебхук (ризик Telegram-ретраю того
+ * самого апдейту). Порядок дій ІДЕНТИЧНИЙ попередньому синхронному коду —
+ * lastUpdateId пишеться ОСТАННІМ (не раніше!), щоб не затерти
+ * jobPrefs/mockWeights, які міг оновити applyEvent усередині обробки.
+ * Try/catch — waitUntil мовчки ковтає необроблені reject, лишаючи слід лише
+ * в логах.
+ */
+async function processTelegramUpdate(env, parsed, origin) {
+  try {
+    if (parsed.kind === 'callback') {
+      const proposalCb = parseProposalCallbackData(parsed.data);
+      const isReminderSnooze =
+        typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
+      const toast = proposalCb
+        ? await resolveProposalCallback(env, parsed, proposalCb)
+        : isReminderSnooze
+          ? await resolveReminderSnooze(env, parsed, parsed.data.slice(REMINDER_CB_PREFIX.length))
+          : await resolveCallbackToast(env, parsed);
+      if (parsed.callbackId) {
+        await tgCall(env, 'answerCallbackQuery', {
+          callback_query_id: parsed.callbackId,
+          text: toast,
+        });
+      }
+    } else if (parsed.kind === 'message' && parsed.chatId != null) {
+      await handleCommand(env, parsed, origin);
+    }
+
+    if (typeof parsed.updateId === 'number') {
+      // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
+      const state = await loadState(env);
+      state.lastUpdateId = parsed.updateId;
+      await env.BRIEFING.put('state', JSON.stringify(state));
+    }
+  } catch (err) {
+    console.error('processTelegramUpdate failed', err);
+  }
+}
+
 /** POST /api/telegram — Telegram Bot API webhook. Secret-token + owner + дедуп. */
-async function handleTelegramWebhook(request, env) {
+async function handleTelegramWebhook(request, env, ctx) {
   if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
     return json({ ok: false, error: 'no-webhook-secret' }, 500);
   }
@@ -604,30 +888,8 @@ async function handleTelegramWebhook(request, env) {
     return json({ ok: true }); // Telegram передоставляє апдейти — не обробляємо двічі.
   }
 
-  if (parsed.kind === 'callback') {
-    const isReminderSnooze =
-      typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
-    const toast = isReminderSnooze
-      ? await resolveReminderSnooze(env, parsed, parsed.data.slice(REMINDER_CB_PREFIX.length))
-      : await resolveCallbackToast(env, parsed);
-    if (parsed.callbackId) {
-      await tgCall(env, 'answerCallbackQuery', {
-        callback_query_id: parsed.callbackId,
-        text: toast,
-      });
-    }
-  } else if (parsed.kind === 'message' && parsed.chatId != null) {
-    // Асистент (LLM-діалог, вільний текст) — повна версія в наступній фазі
-    // (P2); команди+нагадування (P2a) — тут.
-    await handleCommand(env, parsed, new URL(request.url).origin);
-  }
-
-  if (typeof parsed.updateId === 'number') {
-    // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
-    const state = await loadState(env);
-    state.lastUpdateId = parsed.updateId;
-    await env.BRIEFING.put('state', JSON.stringify(state));
-  }
+  // Ack одразу, обробка (може бути повільною — agent-цикл) — у фоні.
+  ctx.waitUntil(processTelegramUpdate(env, parsed, new URL(request.url).origin));
   return json({ ok: true });
 }
 
@@ -710,7 +972,7 @@ async function deadMansCheck(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/briefing.json') {
       // ?date=YYYY-MM-DD -> історичний брифінг; інакше — latest.
@@ -744,7 +1006,7 @@ export default {
       return handleStats(env);
     }
     if (url.pathname === '/api/telegram' && request.method === 'POST') {
-      return handleTelegramWebhook(request, env);
+      return handleTelegramWebhook(request, env, ctx);
     }
     if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
       return handleTelegramSetup(request, env);
