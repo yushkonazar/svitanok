@@ -7,11 +7,33 @@
 // failed-ран замість тихої втрати). KV має eventual consistency (~до 60с), але
 // backup-schedule спрацьовує на години пізніше за точний CF-dispatch, тож гонка
 // ідемпотентності практично неможлива.
+//
+// H2 (merge-before-flush): цей блоб пише ДВА незалежні писарі — оркестратор
+// (тут) і Worker (web/worker.js: голоси, нагадування, roadmap, lastUpdateId,
+// jobPrefs/mockWeights). Оркестратор тримає блоб у памʼяті ХВИЛИНАМИ (LLM-
+// виклики), тож наївний PUT усього блоба на flush затирав би записи Worker,
+// зроблені за цей час. Рішення: на flush перечитати СВІЖИЙ блоб і накласти
+// ЛИШЕ ключі, які оркестратор реально змінив цього рану (`changed`) — per-key
+// last-write-wins. Вікно гонки звужується з усього рану до GET→PUT (мс).
+// Ключі, які оркестратор лише читав (jobPrefs/mockWeights) чи не чіпав,
+// зберігаються зі свіжого блоба. KV не має CAS, тож залишковий мс-window і
+// гонки Worker-vs-Worker — межа інструменту (стратегічний фікс — Durable Object).
 
 import type { StateStore, Logger } from './types.js';
 import type { Pruner } from './state.js';
 
 type StateData = Record<string, unknown>;
+
+/** Накласти змінені оркестратором ключі поверх свіжого блоба (per-key merge, H2). */
+export function overlayChanged(
+  fresh: StateData,
+  mine: StateData,
+  changed: Iterable<string>,
+): StateData {
+  const merged: StateData = { ...fresh };
+  for (const k of changed) merged[k] = mine[k];
+  return merged;
+}
 
 export interface KvStateOptions {
   accountId: string;
@@ -55,6 +77,8 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
   }
 
   let dirty = false;
+  // Ключі, які цей ран реально змінив (для per-key merge на flush, H2).
+  const changed = new Set<string>();
 
   return {
     get<T>(k: string): T | undefined {
@@ -62,25 +86,57 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
     },
     set<T>(k: string, value: T): void {
       data[k] = value;
+      changed.add(k);
       dirty = true;
     },
     prune(): void {
       if (pruners.length === 0) return;
+      // Пруна чистить лише оркестратор-ексклюзивні агрегати (shownNews/
+      // shownMail/nextStepLog), які в типовому прогоні вже в `changed` через
+      // set() свого модуля — тож окремо їх тут не позначаємо. Якщо модуль не
+      // запускався, прунінг цього ключа відкладається до наступного разу
+      // (housekeeping, не коректність) — не тягнемо його поверх свіжого блоба.
       for (const p of pruners) p(data);
       dirty = true;
     },
     async flush(): Promise<void> {
       if (!dirty) return;
+
+      // Merge-before-flush (H2): перечитати свіжий блоб і накласти лише свої
+      // змінені ключі, щоб не затерти записи Worker під час довгого рану.
+      let fresh: StateData | null = null;
+      try {
+        const resp = await f(url, { headers: auth });
+        if (resp.ok) {
+          const parsed: unknown = JSON.parse(await resp.text());
+          if (parsed && typeof parsed === 'object') fresh = parsed as StateData;
+        } else if (resp.status !== 404) {
+          // 404 = ключа ще нема (перший запис) -> пишемо повний блоб.
+          opts.log?.warn(
+            `KV state: re-read HTTP ${resp.status} перед merge — пишу свою копію повністю`,
+          );
+        }
+      } catch (e) {
+        opts.log?.warn(
+          `KV state: re-read впав перед merge (${e instanceof Error ? e.message : String(e)}) — пишу свою копію повністю`,
+        );
+      }
+
+      // fresh === null (404/збій re-read) -> фолбек на повний блоб (стара
+      // поведінка: краще зберегти свій стан, ніж кинути). Інакше — per-key merge.
+      const body = fresh ? overlayChanged(fresh, data, changed) : data;
+
       const resp = await f(url, {
         method: 'PUT',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(body),
       });
       if (!resp.ok) {
         // Видимий failed замість тихої втрати стану (§19.12).
         throw new Error(`KV state: запис HTTP ${resp.status} ${await resp.text()}`);
       }
       dirty = false;
+      changed.clear();
     },
   };
 }
