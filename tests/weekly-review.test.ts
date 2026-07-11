@@ -142,6 +142,7 @@ describe('runBriefing — неділя', () => {
       log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       modules: [weeklyReviewModule],
       notifier,
+      assistantNotifier: null,
     };
     const res = await runBriefing(deps);
     expect(res.quiet).toBe(false); // неділя ніколи не тиха

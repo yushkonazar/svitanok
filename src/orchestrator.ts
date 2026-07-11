@@ -15,7 +15,7 @@ import { createKvStateStore, readKvEnv } from './core/state-kv.js';
 import { createRunBus } from './core/bus.js';
 import { createLLMClient } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
-import { createNotifier, type Notifier } from './core/telegram.js';
+import { createNotifier, buildProposalCallbackData, type Notifier } from './core/telegram.js';
 import {
   renderBriefingMessages,
   formatKyivDateHeader,
@@ -46,7 +46,12 @@ import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
 import { createCurrencyModule } from './modules/currency.js';
 import { createOnThisDayModule } from './modules/onthisday.js';
-import { createMailModule } from './modules/mail.js';
+import {
+  createMailModule,
+  MAIL_PROPOSAL_BUS_KEY,
+  formatMailProposalMessage,
+  type MailProposalItem,
+} from './modules/mail.js';
 import { buildPruners } from './core/prune.js';
 
 export interface RunOptions {
@@ -64,6 +69,11 @@ export interface RunDeps {
   log: Logger;
   modules: Module<AppConfig>[];
   notifier: Notifier | null;
+  // Другий Notifier, зіскопований на TOPIC_ASSISTANT (Блок P2c) — для
+  // проактивних пропозицій (mail.ts's MAIL_PROPOSAL_BUS_KEY), окремо від
+  // основного брифінгу (TOPIC_BRIEFING). null -> TOPIC_ASSISTANT не задано
+  // (DM/без тем) чи немає критичних секретів — пропозиція просто не шлеться.
+  assistantNotifier: Notifier | null;
 }
 
 export type RunStatus = 'sent' | 'skipped' | 'dry-run';
@@ -180,6 +190,41 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   }
 
   await deps.notifier.send(rendered);
+
+  // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
+  // подібна пропозиція (той самий формат state.assistantPending, що агент P2b пише
+  // з Worker-боку; resolveProposalCallback у web/worker.js резолвить її незалежно
+  // від того, ХТО записав). state.set — ЛИШЕ після успішного send (не лишати
+  // «мертву» пропозицію без видимих кнопок).
+  const proposal = ctx.bus.get<{ items: MailProposalItem[] }>(MAIL_PROPOSAL_BUS_KEY);
+  const proposalId = crypto.randomUUID().slice(0, 8);
+  const acceptCb = buildProposalCallbackData('a', proposalId);
+  const cancelCb = buildProposalCallbackData('c', proposalId);
+  if (proposal && proposal.items.length > 0 && deps.assistantNotifier && acceptCb && cancelCb) {
+    try {
+      await deps.assistantNotifier.send([
+        {
+          text: formatMailProposalMessage(proposal.items),
+          buttons: [
+            [
+              { text: '✅ Додати в календар', callback_data: acceptCb },
+              { text: '❌ Ні', callback_data: cancelCb },
+            ],
+          ],
+        },
+      ]);
+      state.set('assistantPending', {
+        id: proposalId,
+        items: proposal.items,
+        createdMs: clock.now().getTime(),
+      });
+    } catch (e) {
+      log.warn(
+        `mail: пропозицію співбесіди не надіслано: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   // at-least-once: send пройшов -> фіксуємо стан (§4.2).
   state.set('lastSentDate', clock.todayKey());
   state.prune();
@@ -263,6 +308,20 @@ async function main(): Promise<void> {
         log,
       })
     : null;
+  // TOPIC_ASSISTANT — та сама тема, куди Worker-агент (Блок P2b) шле пропозиції;
+  // тут orchestrator (Блок P2c, mail.ts) шле СВОЇ (запрошення на співбесіду) тим
+  // самим шляхом. Не задано -> пропозиція просто не надсилається (mail.ts і далі
+  // рахує "N листів" у брифінг, лише без interactive-кнопок).
+  const topicAssistant = optionalSecret('TOPIC_ASSISTANT');
+  const assistantNotifier =
+    secrets && topicAssistant
+      ? createNotifier({
+          token: secrets.botToken,
+          chatId: secrets.chatId,
+          threadId: topicAssistant,
+          log,
+        })
+      : null;
 
   const deps: RunDeps = {
     config,
@@ -284,6 +343,7 @@ async function main(): Promise<void> {
     log,
     modules: buildModules(),
     notifier,
+    assistantNotifier,
   };
 
   try {

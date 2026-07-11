@@ -4,7 +4,12 @@ import {
   renderBriefingMessages,
   formatKyivDateHeader,
 } from '../src/core/render.js';
-import { visibleLength, buildCallbackData, CB_VERSION } from '../src/core/telegram.js';
+import {
+  visibleLength,
+  buildCallbackData,
+  buildProposalCallbackData,
+  CB_VERSION,
+} from '../src/core/telegram.js';
 import type { Block } from '../src/core/types.js';
 
 const block = (over: Partial<Block> & { id: string; priority: number }): Block => ({
@@ -219,5 +224,16 @@ describe('buildCallbackData', () => {
 
   it('> 64 байти (UTF-8) -> null', () => {
     expect(buildCallbackData('2026-07-09', 'я'.repeat(40))).toBeNull();
+  });
+});
+
+describe('buildProposalCallbackData (дзеркало web/agent-core.mjs, Блок P2b/P2c)', () => {
+  it('кодує pd:a:<id> / pd:c:<id>', () => {
+    expect(buildProposalCallbackData('a', 'ab12cd34')).toBe('pd:a:ab12cd34');
+    expect(buildProposalCallbackData('c', 'ab12cd34')).toBe('pd:c:ab12cd34');
+  });
+
+  it('> 64 байти (UTF-8) -> null', () => {
+    expect(buildProposalCallbackData('a', 'я'.repeat(40))).toBeNull();
   });
 });

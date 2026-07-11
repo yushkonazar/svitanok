@@ -11,6 +11,7 @@ import {
   withTimeout,
   type GoogleOAuthCreds,
 } from '../core/google-auth.js';
+import { kyivLocalToUtcMs } from '../core/tz.js';
 
 export const CALENDAR_BUS_KEY = 'calendar.today';
 
@@ -19,19 +20,9 @@ export interface CalendarEvent {
   time: string | null; // "HH:MM" Київ, або null для подій на весь день
 }
 
-/** Зсув TZ у мс для конкретного інстанту (через toLocaleString-трюк). */
-function tzOffsetMs(timeZone: string, date: Date): number {
-  const utc = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
-  const tz = new Date(date.toLocaleString('en-US', { timeZone }));
-  return tz.getTime() - utc.getTime();
-}
-
 /** Межі київської доби todayKey як UTC-інстанти (RFC3339, DST-коректно §19.11). */
 export function kyivDayBoundsUtc(todayKey: string): { timeMin: string; timeMax: string } {
-  const [y, m, d] = todayKey.split('-').map(Number);
-  const asUtcMidnight = Date.UTC(y!, m! - 1, d!, 0, 0, 0);
-  const offset = tzOffsetMs('Europe/Kyiv', new Date(asUtcMidnight));
-  const startUtc = asUtcMidnight - offset; // київська 00:00 у реальному UTC
+  const startUtc = kyivLocalToUtcMs(todayKey, 0, 0); // київська 00:00 у реальному UTC
   const endUtc = startUtc + 24 * 3600 * 1000;
   return { timeMin: new Date(startUtc).toISOString(), timeMax: new Date(endUtc).toISOString() };
 }
