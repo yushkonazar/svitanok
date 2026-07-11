@@ -6,7 +6,7 @@
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
-import { canonicalizeUrl } from '../core/url.js';
+import { canonicalizeUrl, isHttpUrl } from '../core/url.js';
 import { escapeHtml, link } from '../core/telegram.js';
 import { optionalSecret } from '../core/secrets.js';
 
@@ -62,7 +62,7 @@ export function parseRss(xml: string): RssItem[] {
     if (!url) url = b.match(/<link[^>]*href=["']([^"']+)["']/i)?.[1] ?? ''; // Atom
     const title = decodeXml(stripCdata(rawTitle)).trim();
     url = decodeXml(stripCdata(url)).trim();
-    if (title && url) out.push({ title, url });
+    if (title && url && isHttpUrl(url)) out.push({ title, url }); // лише http(s) (M2)
   }
   return out;
 }
@@ -85,7 +85,8 @@ export function parseNewsData(json: unknown): NewsItem[] {
       typeof o.title === 'string' &&
       typeof o.link === 'string' &&
       o.title.trim() &&
-      o.link.trim()
+      o.link.trim() &&
+      isHttpUrl(o.link.trim()) // лише http(s) (M2)
     ) {
       const why =
         typeof o.description === 'string' && o.description.trim()
