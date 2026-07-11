@@ -11,6 +11,14 @@
 // колізію ключів прогресу двох різних пунктів). Глобальний ключ прогресу
 // збирається окремо (progressKey), тут не дублюється. Обидва обмеження
 // перевірені тестом (tests/roadmap-core.test.ts).
+//
+// Ревізія 2026-07 (аудит): додано TypeScript/Безпека/HTTP-мережі/Тестування
+// (поглиблено)/Тулінг-екосистему/AI-у-розробці/Продуктивність+a11y — сучасні
+// теми співбесід 2026 (roadmap.sh), яких бракувало (профіль скрізь TS, а
+// роадмеп його не мав). Наявні react/backend/tools доповнено (Next.js/React
+// Query, черги/rate-limiting, Docker глибше/serverless). MOCK_TOPICS
+// (src/modules/mock.ts) розширено дзеркально (Безпека, AI/LLM) — той самий
+// словник тем для інтерв'ю-питань і роадмепу, без окремої логіки звʼязку.
 
 export const ROADMAP_TOPICS = [
   {
@@ -27,6 +35,17 @@ export const ROADMAP_TOPICS = [
     ],
   },
   {
+    id: 'typescript',
+    title: '🟦 TypeScript',
+    subtopics: [
+      { id: 'ts-types-basics', title: 'Типи, інтерфейси, generics' },
+      { id: 'ts-narrowing', title: 'Звуження типів, union/intersection' },
+      { id: 'ts-react-typing', title: 'Типізація React (props, hooks)' },
+      { id: 'ts-strict-config', title: 'tsconfig: strict-режим' },
+      { id: 'ts-runtime-validation', title: 'Валідація API-відповідей (zod)' },
+    ],
+  },
+  {
     id: 'react',
     title: '⚛️ React',
     subtopics: [
@@ -37,6 +56,8 @@ export const ROADMAP_TOPICS = [
       { id: 'forms', title: 'Форми і валідація' },
       { id: 'routing', title: 'Маршрутизація (react-router)' },
       { id: 'state-management', title: 'Керування станом (Context/бібліотеки)' },
+      { id: 'nextjs-ssr', title: 'Next.js: SSR/RSC — огляд' },
+      { id: 'server-state', title: 'Серверний стан (React Query/SWR)' },
     ],
   },
   {
@@ -50,6 +71,8 @@ export const ROADMAP_TOPICS = [
       { id: 'error-handling', title: 'Обробка помилок і валідація вводу' },
       { id: 'env-config', title: 'Конфігурація, змінні середовища, секрети' },
       { id: 'logging', title: 'Логування й базовий моніторинг' },
+      { id: 'queues-jobs', title: 'Черги й фонові задачі' },
+      { id: 'rate-limiting', title: 'Rate limiting' },
     ],
   },
   {
@@ -77,6 +100,38 @@ export const ROADMAP_TOPICS = [
     ],
   },
   {
+    id: 'security',
+    title: '🔐 Веб-безпека',
+    subtopics: [
+      { id: 'owasp-top10', title: 'OWASP Top 10 — огляд' },
+      { id: 'xss-csrf', title: 'XSS/CSRF на практиці' },
+      { id: 'secrets-storage', title: 'Зберігання секретів, env' },
+      { id: 'oauth-oidc', title: 'OAuth2/OIDC — флоу авторизації' },
+      { id: 'input-validation', title: 'Валідація і санітизація вводу' },
+    ],
+  },
+  {
+    id: 'networking',
+    title: '📡 HTTP / мережі (поглиблено)',
+    subtopics: [
+      { id: 'http-caching', title: 'Кешування: ETag, Cache-Control' },
+      { id: 'cors-deep', title: 'CORS по-справжньому' },
+      { id: 'websockets-sse', title: 'WebSockets/SSE' },
+      { id: 'http2-http3', title: 'HTTP/2, HTTP/3 — огляд' },
+    ],
+  },
+  {
+    id: 'testing-adv',
+    title: '🧪 Тестування (поглиблено)',
+    subtopics: [
+      { id: 'integration-tests', title: 'Інтеграційні тести' },
+      { id: 'e2e-playwright', title: 'E2E (Playwright/Cypress)' },
+      { id: 'mocking', title: 'Мокування залежностей' },
+      { id: 'api-testing', title: 'Тестування API' },
+      { id: 'tdd-mindset', title: 'TDD: мислення тестами наперед' },
+    ],
+  },
+  {
     id: 'tools',
     title: '🛠 Git / Тестування / Деплой',
     subtopics: [
@@ -85,6 +140,37 @@ export const ROADMAP_TOPICS = [
       { id: 'testing-basics', title: 'Юніт-тести основи' },
       { id: 'ci-basics', title: 'CI/CD основи' },
       { id: 'deployment', title: 'Деплой (Docker/хмарний хостинг)' },
+      { id: 'docker-deep', title: 'Docker глибше (multi-stage, compose)' },
+      { id: 'serverless-workers', title: 'Serverless (Cloudflare Workers)' },
+    ],
+  },
+  {
+    id: 'ecosystem',
+    title: '📦 Тулінг / екосистема',
+    subtopics: [
+      { id: 'package-managers', title: 'npm/pnpm, semver, lock-файли' },
+      { id: 'bundlers', title: 'Vite/бандлінг' },
+      { id: 'lint-format', title: 'ESLint/Prettier' },
+      { id: 'monorepo-basics', title: 'Основи монорепо' },
+    ],
+  },
+  {
+    id: 'ai-dev',
+    title: '🤖 AI-у-розробці',
+    subtopics: [
+      { id: 'ai-assisted-coding', title: 'Ефективна робота з AI-асистентами' },
+      { id: 'llm-api-basics', title: 'LLM API: промпти, структуровані відповіді' },
+      { id: 'rag-embeddings', title: 'Основи RAG/embeddings' },
+      { id: 'llm-output-limits', title: 'Межі й перевірка виводу LLM' },
+    ],
+  },
+  {
+    id: 'perf-a11y',
+    title: '⚡ Продуктивність і доступність',
+    subtopics: [
+      { id: 'core-web-vitals', title: 'Core Web Vitals' },
+      { id: 'lazy-loading', title: 'Lazy loading, code splitting' },
+      { id: 'a11y-basics', title: 'Доступність: семантика, клавіатура, ARIA' },
     ],
   },
 ];
