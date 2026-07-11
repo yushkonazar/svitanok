@@ -15,12 +15,14 @@ import { createKvStateStore, readKvEnv } from './core/state-kv.js';
 import { createRunBus } from './core/bus.js';
 import { createLLMClient } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
-import { createNotifier, buildProposalCallbackData, type Notifier } from './core/telegram.js';
 import {
-  renderBriefingMessages,
-  formatKyivDateHeader,
-  formatKyivDateLabel,
-} from './core/render.js';
+  createNotifier,
+  buildProposalCallbackData,
+  buildMiniAppButton,
+  type Notifier,
+  type OutboundMessage,
+} from './core/telegram.js';
+import { formatKyivDateHeader, formatKyivDateLabel } from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
@@ -74,6 +76,9 @@ export interface RunDeps {
   // основного брифінгу (TOPIC_BRIEFING). null -> TOPIC_ASSISTANT не задано
   // (DM/без тем) чи немає критичних секретів — пропозиція просто не шлеться.
   assistantNotifier: Notifier | null;
+  // URL Mini App для кнопки в щоденному сповіщенні. null -> сповіщення йде
+  // лише з датою, без кнопки (graceful — не блокує брифінг).
+  miniAppUrl: string | null;
 }
 
 export type RunStatus = 'sent' | 'skipped' | 'dry-run';
@@ -81,9 +86,9 @@ export type RunStatus = 'sent' | 'skipped' | 'dry-run';
 export interface RunResult {
   status: RunStatus;
   reason: string;
-  messages: string[];
+  messages: string[]; // текст того, що йде в чат (тепер: [header]) — не блоки
   quiet: boolean;
-  briefing: BriefingData; // дані для Mini App (briefing.json)
+  briefing: BriefingData; // дані для Mini App (briefing.json) — повний вміст блоків
 }
 
 /** Тихий день (§6): ВСІ активні trigger-джерела порожні. Якщо жодне з trigger-
@@ -164,22 +169,27 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   await runPhase(producers, ctx, blocks, producedIds); // Фаза 1
   await runPhase(consumers, ctx, blocks, producedIds); // Фаза 2
 
-  // Неділя — ніколи не «тихий день»: weekly-review показується повністю (§4.1 п.5).
+  // quiet лишається метаданим (тестується напряму) — контент блоків більше не
+  // йде в чат, тож на рендер сповіщення вже не впливає.
   const quiet = isQuietDay(config, producedIds) && !clock.isSunday();
   const header = formatKyivDateHeader(clock.now());
-  // dateKey — потрібен лише для кодування callback_data кнопок (Блок P1).
-  const rendered = renderBriefingMessages(blocks, {
-    maxChars: config.telegram.maxMessageChars,
-    header,
-    quiet,
-    dateKey: clock.todayKey(),
-  });
-  const messages = rendered.map((m) => m.text); // для RunResult/dry-run — лише текст
   const briefing = buildBriefingData(
     blocks,
     formatKyivDateLabel(clock.now()),
     clock.now().toISOString(),
   );
+
+  // Єдине сповіщення в чат: дата + кнопка відкрити Mini App (усі блоки — лише
+  // в briefing.json, дашборд лишається єдиним місцем перегляду вмісту).
+  // messages — те, що РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю);
+  // повний вміст блоків для локальної перевірки дивись у briefing.blocks.
+  const dailyMessage: OutboundMessage = {
+    text: header,
+    ...(deps.miniAppUrl
+      ? { buttons: [[buildMiniAppButton('📊 Відкрити Mini App', deps.miniAppUrl)]] }
+      : {}),
+  };
+  const messages = [header];
 
   if (dryRun) {
     return { status: 'dry-run', reason: decision.reason, messages, quiet, briefing };
@@ -189,7 +199,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     throw new Error('Notifier відсутній у бойовому прогоні (немає критичних секретів)');
   }
 
-  await deps.notifier.send(rendered);
+  await deps.notifier.send([dailyMessage]);
 
   // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
   // подібна пропозиція (той самий формат state.assistantPending, що агент P2b пише
@@ -322,6 +332,10 @@ async function main(): Promise<void> {
           log,
         })
       : null;
+  // MINI_APP_URL — origin розгорнутого Worker/Mini App (напр. https://svitanok.
+  // <акаунт>.workers.dev), для кнопки в щоденному сповіщенні. Не задано ->
+  // сповіщення йде без кнопки (graceful, не блокує брифінг).
+  const miniAppUrl = optionalSecret('MINI_APP_URL') ?? null;
 
   const deps: RunDeps = {
     config,
@@ -344,6 +358,7 @@ async function main(): Promise<void> {
     modules: buildModules(),
     notifier,
     assistantNotifier,
+    miniAppUrl,
   };
 
   try {
@@ -355,8 +370,12 @@ async function main(): Promise<void> {
       log.info(`briefing.json записано: ${briefingFile}`);
     }
     if (result.status === 'dry-run') {
-      log.info(`--- DRY RUN (${result.messages.length} повідомл., quiet=${result.quiet}) ---`);
-      result.messages.forEach((m, i) => console.log(`\n[повідомлення ${i + 1}]\n${m}`));
+      log.info(`--- DRY RUN (${result.briefing.blocks.length} блоків, quiet=${result.quiet}) ---`);
+      // Повний вміст блоків — лише для локальної перевірки (у чат тепер не йде).
+      result.briefing.blocks.forEach((b) =>
+        console.log(`\n[${b.icon ?? ''} ${b.title}]\n${b.summary}`),
+      );
+      console.log(`\n[повідомлення в чат]\n${result.messages.join('\n')}`);
     }
   } catch (e) {
     log.error(`оркестратор впав: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);

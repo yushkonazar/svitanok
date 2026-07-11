@@ -143,11 +143,15 @@ describe('runBriefing — неділя', () => {
       modules: [weeklyReviewModule],
       notifier,
       assistantNotifier: null,
+      miniAppUrl: null,
     };
     const res = await runBriefing(deps);
     expect(res.quiet).toBe(false); // неділя ніколи не тиха
-    const msg = notifier.sent[0]!.join('\n');
-    expect(msg).toContain('Підсумок тижня');
-    expect(msg).toContain('OG-теги'); // detail НЕ скорочено
+    // Контент тижневого підсумку — у briefing.json (Mini App), НЕ в чаті
+    // (чат тепер лише [дата]).
+    const reviewBlock = res.briefing.blocks.find((b) => b.id === 'weekly-review');
+    expect(reviewBlock?.title).toBe('Підсумок тижня');
+    expect((reviewBlock?.data as { steps: string[] })?.steps).toContain('OG-теги');
+    expect(notifier.sent[0]!.join('\n')).not.toContain('Підсумок тижня');
   });
 });

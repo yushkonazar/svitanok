@@ -3,6 +3,7 @@ import {
   escapeHtml,
   fitEscaped,
   createNotifier,
+  buildMiniAppButton,
   TELEGRAM_HARD_LIMIT,
 } from '../src/core/telegram.js';
 
@@ -33,6 +34,15 @@ describe('fitEscaped — entity-safe обрізання (§9)', () => {
     expect(fitEscaped('👍👍👍', 3)).toBe('👍…'); // один емодзі (2 units) + …
     const tiny = fitEscaped('👍👍', 2); // не влазить жоден повний емодзі
     expect(tiny).toBe('…');
+  });
+});
+
+describe('buildMiniAppButton', () => {
+  it('будує кнопку web_app (не callback_data)', () => {
+    expect(buildMiniAppButton('📊 Відкрити', 'https://svitanok.example.workers.dev')).toEqual({
+      text: '📊 Відкрити',
+      web_app: { url: 'https://svitanok.example.workers.dev' },
+    });
   });
 });
 
@@ -75,6 +85,31 @@ describe('createNotifier', () => {
       reply_markup: { inline_keyboard: [[{ text: '💾', callback_data: 'v1:2026-07-09:js:0' }]] },
     });
     expect(calls[1]).not.toHaveProperty('reply_markup');
+  });
+
+  it('send з web_app-кнопкою (Mini App) -> те саме reply_markup.inline_keyboard', async () => {
+    const calls: unknown[] = [];
+    const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      calls.push(JSON.parse(init.body as string));
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    const n = createNotifier({
+      token: 'T',
+      chatId: '42',
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    });
+    await n.send([
+      {
+        text: 'Субота, 11 липня',
+        buttons: [[buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app')]],
+      },
+    ]);
+    expect(calls[0]).toMatchObject({
+      text: 'Субота, 11 липня',
+      reply_markup: {
+        inline_keyboard: [[{ text: '📊 Відкрити Mini App', web_app: { url: 'https://x/app' } }]],
+      },
+    });
   });
 
   it('threadId (Блок «Теми») -> message_thread_id у sendMessage; не задано -> відсутнє', async () => {
