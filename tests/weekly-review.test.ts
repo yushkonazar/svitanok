@@ -67,19 +67,23 @@ describe('weekly-review — модуль', () => {
 });
 
 describe('buildPruners', () => {
-  const config = { modules: { news: { dedupDays: 3, retentionDays: 7 } } } as AppConfig;
+  const config = {
+    modules: { news: { dedupDays: 3, retentionDays: 7 }, mail: { dedupDays: 3 } },
+  } as AppConfig;
 
-  it('чистить старі shownNews і nextStepLog', () => {
+  it('чистить старі shownNews, nextStepLog і shownMail', () => {
     const data: Record<string, unknown> = {
       shownNews: { recent: iso(2), old: iso(40) },
       nextStepLog: [
         { step: 'a', date: iso(1) },
         { step: 'b', date: iso(20) },
       ],
+      shownMail: { recent: iso(1), old: iso(10) },
     };
     for (const p of buildPruners(config, Date.now())) p(data);
     expect(Object.keys(data.shownNews as object)).toEqual(['recent']);
     expect(data.nextStepLog).toHaveLength(1);
+    expect(Object.keys(data.shownMail as object)).toEqual(['recent']);
   });
 });
 
