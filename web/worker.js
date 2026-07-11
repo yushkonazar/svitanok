@@ -218,6 +218,17 @@ async function checkOwner(initData, env) {
   return { ok: true, user: v.user };
 }
 
+/**
+ * Auth для GET-читань дашборда: initData з заголовка X-Telegram-Init-Data
+ * (НЕ query-param — персональні дані власника й hash не осідають у логах/URL).
+ * Той самий власник-чек, що й POST-и (/api/vote|/api/event). Дашборд — дані
+ * одного власника (події календаря, воронка вакансій, збережене), тож
+ * читання НЕ публічне: без валідного initData -> 401/403, фронт деградує на SAMPLE.
+ */
+async function checkOwnerRead(request, env) {
+  return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
+}
+
 /** Хвилини після 08:00 Київ зараз (метрика «час до відкриття»); поза ранком -> null. */
 function kyivMinAfter8(now = new Date()) {
   const p = new Intl.DateTimeFormat('en-GB', {
@@ -331,8 +342,11 @@ async function handleEvent(request, env) {
   return json({ ok: true });
 }
 
-/** GET /api/stats -> агрегат для табу «Статистика» (читання, без auth). */
-async function handleStats(env) {
+/** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
+ *  воронка, інтереси — приватні; без initData -> 401/403 (фронт ховає таб). */
+async function handleStats(request, env) {
+  const auth = await checkOwnerRead(request, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   const stats = aggregateStats(await loadStats(env), kyivDateKey());
   // roadmap — окремий KV-блоб (state, не stats); aggregateStats лишається
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
@@ -1059,6 +1073,10 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/briefing.json') {
+      // Приватні дані власника (події календаря, воронка, збережене) — лише
+      // власнику через initData; без нього фронт деградує на SAMPLE (H1).
+      const auth = await checkOwnerRead(request, env);
+      if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
       // ?date=YYYY-MM-DD -> історичний брифінг; інакше — latest.
       const date = url.searchParams.get('date');
       const key = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? `briefing:${date}` : 'latest';
@@ -1067,11 +1085,12 @@ export default {
         headers: {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'no-store',
-          'access-control-allow-origin': '*',
         },
       });
     }
     if (url.pathname === '/api/history') {
+      const auth = await checkOwnerRead(request, env);
+      if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
       // Список наявних дат (для гортання в Mini App), новіші перші.
       const list = await env.BRIEFING.list({ prefix: 'briefing:' });
       const dates = list.keys
@@ -1087,7 +1106,7 @@ export default {
       return handleEvent(request, env);
     }
     if (url.pathname === '/api/stats') {
-      return handleStats(env);
+      return handleStats(request, env);
     }
     if (url.pathname === '/api/telegram' && request.method === 'POST') {
       return handleTelegramWebhook(request, env, ctx);
