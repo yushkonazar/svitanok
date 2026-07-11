@@ -38,7 +38,12 @@ function kyivDateKeyOf(nowMs) {
   }).format(new Date(nowMs));
 }
 
-function addDaysToDateKey(dateKey, days) {
+// Експортовано — worker.js (Блок P2b, runAssistantAgent) переюзує для
+// readCalendar "N днів від сьогодні": чиста Y-M-D арифметика через UTC-
+// північ, а НЕ +N*86400000мс на реальний інстант (те друге ламається на
+// DST-переході, коли Y-M-D зсув і +1год стрибок комбінуються і "перестрибують"
+// через межу доби двічі — перевірено на весняному переході).
+export function addDaysToDateKey(dateKey, days) {
   const d = new Date(dateKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
@@ -180,7 +185,10 @@ export const LLM_REWRITE_SCHEMA = {
   },
 };
 
-const CANONICAL_EXAMPLES = [
+// Експортовано — agent-core.mjs (Блок P2b) переописує ТОЙ САМИЙ список у
+// системному промпті асистента, щоб "when" у пропозиціях парсився цим самим
+// parseReminderTime без розходження форматів.
+export const CANONICAL_EXAMPLES = [
   'через 20 хвилин ЗАВДАННЯ',
   'через 2 години ЗАВДАННЯ',
   'завтра о 9:30 ЗАВДАННЯ',
