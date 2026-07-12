@@ -1345,6 +1345,10 @@
         tg.expand();
         syncBase(tg.themeParams || {});
         tg.onEvent && tg.onEvent('themeChanged', () => syncBase(tg.themeParams || {}));
+        // Подія 'open' — раз на завантаження Mini App, тихо (trackClick сам no-op
+        // без initData). Живить days.opens: стрік відкриттів, тижневу сітку і
+        // «час до відкриття» (nowMin рахує Worker на своєму боці).
+        trackClick('open', {});
       }
 
       /* ── Утиліти ─────────────────────────────────────────────────────────── */
@@ -2304,11 +2308,13 @@
         out.push(card('❤️ D · Інтереси', dBlock));
 
         /* ── E · НАДІЙНІСТЬ (міні-рядок) ── */
+        // total>0 — лічильники живі (Worker пише їх з dead-man-перевірки о 10:00);
+        // доти чесний плейсхолдер замість «0/0 днів».
         const r = stats.reliability;
         out.push(
           card(
             '🛡 E · Надійність',
-            r && has(r.onTime) && has(r.total)
+            r && has(r.total) && r.total > 0
               ? `<div class="statline"><span class="k">Доставка вчасно</span><span class="v">${r.onTime}/${r.total} днів</span></div>${has(r.deadman) ? `<div class="statline"><span class="k">Dead-man спрацювань</span><span class="v">${r.deadman}</span></div>` : ''}`
               : ph('Дані про стабільність доставки з’являться згодом'),
           ),
