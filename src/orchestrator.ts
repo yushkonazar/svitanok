@@ -44,7 +44,7 @@ import type {
   SourceFetcher,
   Logger,
 } from './core/types.js';
-import { createWeatherModule, type WeatherToday } from './modules/weather.js';
+import { createWeatherModule, signed, type WeatherToday } from './modules/weather.js';
 import { createCalendarModule, CALENDAR_BUS_KEY, type CalendarEvent } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 import { createNewsModule } from './modules/news.js';
@@ -103,7 +103,7 @@ export type RunStatus = 'sent' | 'skipped' | 'dry-run';
 export interface RunResult {
   status: RunStatus;
   reason: string;
-  messages: string[]; // текст того, що йде в чат (тепер: [header]) — не блоки
+  messages: string[]; // текст того, що йде в чат ([header] або [header, weekly] у неділю) — не блоки
   quiet: boolean;
   briefing: BriefingData; // дані для Mini App (briefing.json) — повний вміст блоків
 }
@@ -200,15 +200,16 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // календаря сьогодні + «N листів» — усі блоки вже прораховані (Фаза
   // producers+consumers вище), реордеринг не потрібен. Кожен сегмент
   // опційний (graceful — відсутній блок просто не додає сегмент).
-  const weatherLoc = (
-    blocks.find((b) => b.id === 'weather')?.data as { locations?: WeatherToday[] } | undefined
-  )?.locations?.[0];
+  // blockData — одна точка небезпечного каста Block.data (тип навмисно
+  // unknown, §core/types.ts) замість дубльованого inline-каста на кожен блок.
+  const blockData = <T>(id: string): T | undefined =>
+    blocks.find((b) => b.id === id)?.data as T | undefined;
+  const weatherLoc = blockData<{ locations?: WeatherToday[] }>('weather')?.locations?.[0];
   const firstEvent = ctx.bus.get<CalendarEvent[]>(CALENDAR_BUS_KEY)?.[0];
-  const mailCount = (blocks.find((b) => b.id === 'mail')?.data as { count?: number } | undefined)
-    ?.count;
+  const mailCount = blockData<{ count?: number }>('mail')?.count;
   const summaryLine = joinSummarySegments([
     weatherLoc
-      ? `${weatherLoc.emoji} ${escapeHtml(weatherLoc.name)} ${weatherLoc.tempC > 0 ? '+' : ''}${weatherLoc.tempC}°`
+      ? `${weatherLoc.emoji} ${escapeHtml(weatherLoc.name)} ${signed(weatherLoc.tempC)}`
       : null,
     firstEvent
       ? `📅 ${firstEvent.time ? `${firstEvent.time} ` : ''}${escapeHtml(firstEvent.title)}`
@@ -219,10 +220,11 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   ]);
   const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
 
-  // Єдине сповіщення в чат: дата(+рядок дня) + кнопка відкрити Mini App (усі
+  // Щоденне сповіщення в чат: дата(+рядок дня) + кнопка відкрити Mini App (усі
   // блоки — лише в briefing.json, дашборд лишається єдиним місцем перегляду
-  // повного вмісту). messages — те, що РЕАЛЬНО йде в чат (і для sent, і для
-  // dry-run-превʼю).
+  // повного вмісту). У неділю додається окреме недільне повідомлення (Фаза
+  // B5, нижче) — messages може містити 1 або 2 елементи. messages — те, що
+  // РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю).
   const dailyMessage: OutboundMessage = {
     text: headerFull,
     ...(deps.miniAppUrl
@@ -243,11 +245,10 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // Фаза B5: недільний підсумок тижня — окреме HTML-повідомлення в ТУ САМУ
   // тему (topicBriefing), одразу після щоденного. weekly-review вже в blocks
   // (Фаза 2, лише в неділю) — просто читаємо його data, без нового I/O.
-  const weeklyBlock = blocks.find((b) => b.id === 'weekly-review');
-  const weeklyMessage: OutboundMessage | undefined =
-    clock.isSunday() && weeklyBlock?.data
-      ? { text: formatWeeklyReviewMessage(weeklyBlock.data as WeeklyReviewData) }
-      : undefined;
+  const weeklyData = clock.isSunday() ? blockData<WeeklyReviewData>('weekly-review') : undefined;
+  const weeklyMessage: OutboundMessage | undefined = weeklyData
+    ? { text: formatWeeklyReviewMessage(weeklyData) }
+    : undefined;
   const toSend: OutboundMessage[] = weeklyMessage ? [dailyMessage, weeklyMessage] : [dailyMessage];
   const messages = toSend.map((m) => m.text);
 
