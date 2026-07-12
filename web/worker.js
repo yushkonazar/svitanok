@@ -65,6 +65,7 @@ import {
   buildRootKeyboard,
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
+import { masteryHints, themeOfWeek } from './mastery-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
 
@@ -349,9 +350,16 @@ async function handleStats(request, env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   const stats = aggregateStats(await loadStats(env), kyivDateKey());
-  // roadmap — окремий KV-блоб (state, не stats); aggregateStats лишається
+  // roadmap/mastery — окремий KV-блоб (state, не stats); aggregateStats лишається
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
-  stats.roadmap = totalProgress((await loadState(env)).roadmapProgress ?? {});
+  const progress = (await loadState(env)).roadmapProgress ?? {};
+  stats.roadmap = totalProgress(progress);
+  // A4: звʼязка mock↔roadmap для дашборда — слабкі теми -> «куди вчитись»,
+  // «тема тижня» -> фокус наступного mock-батчу.
+  stats.mastery = {
+    hints: masteryHints(stats.mock?.weakTopics ?? [], progress),
+    themeOfWeek: themeOfWeek(progress, kyivDateKey()),
+  };
   return json(stats);
 }
 
@@ -1029,6 +1037,22 @@ async function handleTelegramSetup(request, env) {
   return json({ ok: res.ok, webhookUrl });
 }
 
+/** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
+ *  оркестратор (src/modules/mock.ts) читає її як готові рядки й СІДИТЬ наступний
+ *  mock-батч темою з роадмепу (web-код у src/ не імпортується — межа src/↔web/).
+ *  Ротація детермінована за тижнем, тож щоденний перезапис безпечний;
+ *  оркестратор masteryFocus не пише -> merge-гонок класу H2 нема. */
+async function updateMasteryFocus(env) {
+  try {
+    const state = await loadState(env);
+    const focus = themeOfWeek(state.roadmapProgress ?? {}, kyivDateKey());
+    state.masteryFocus = focus; // null коли роадмеп завершено — теж валідний стан
+    await env.BRIEFING.put('state', JSON.stringify(state));
+  } catch (e) {
+    console.error('updateMasteryFocus failed', e); // не блокує dispatch
+  }
+}
+
 /** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
 async function dispatchBrief(env) {
   if (!env.GH_DISPATCH_TOKEN) {
@@ -1150,7 +1174,9 @@ export default {
       return;
     }
     const h = kyivHour();
-    if (h === 8) ctx.waitUntil(dispatchBrief(env));
+    // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
+    // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
+    if (h === 8) ctx.waitUntil(updateMasteryFocus(env).then(() => dispatchBrief(env)));
     else if (h === 10) ctx.waitUntil(deadMansCheck(env));
   },
 };

@@ -2406,11 +2406,26 @@
         /* ── C · МАЙСТЕРНІСТЬ ── */
         const mk = stats.mock || {};
         const rm = stats.roadmap;
-        const mastery = `${barList(
+        // A4: звʼязка mock↔roadmap — «тема тижня» (сідить наступний mock-батч)
+        // і підказки «куди вчитись» для слабких тем.
+        const mst = stats.mastery || {};
+        const towRow = mst.themeOfWeek
+          ? `<div class="statline first"><span class="k">🗓 Тема тижня</span><span class="v">${esc(mst.themeOfWeek.title)} · ${mst.themeOfWeek.done}/${mst.themeOfWeek.total}</span></div>`
+          : '';
+        const hintRows = Array.isArray(mst.hints)
+          ? mst.hints
+              .slice(0, 3)
+              .map(
+                (h) =>
+                  `<div class="why">↳ ${esc(h.mockTopic)}: вчити ${(h.themes || []).map((t) => `${esc(t.title)} (${t.done}/${t.total})`).join(', ')}</div>`,
+              )
+              .join('')
+          : '';
+        const mastery = `${towRow}${barList(
           (mk.weakTopics || []).map((t) => ({ name: t.name, value: t.value })),
           '%',
           'Слабких тем поки не виявлено',
-        )}
+        )}${hintRows}
           ${has(mk.streak) ? `<div class="statline"><span class="k">Стрік mock</span><span class="v">🔥 ${mk.streak} дн.</span></div>` : ''}
           ${
             rm && has(rm.done) && has(rm.total)
@@ -3135,13 +3150,35 @@
         avgFitApplied: 84,
         mock: {
           weakTopics: [
-            { name: 'Алгоритми', value: 40 },
-            { name: 'Бекенд', value: 55 },
-            { name: 'CSS', value: 65 },
+            { name: 'Алгоритми', value: 65 },
+            { name: 'Патерни', value: 55 },
+            { name: 'HTTP', value: 40 },
           ],
           streak: 4,
         },
         roadmap: { done: 12, total: 74 },
+        mastery: {
+          themeOfWeek: {
+            week: '',
+            topicId: 'react',
+            title: '⚛️ React',
+            done: 3,
+            total: 6,
+            mockTopics: ['Фреймворк'],
+          },
+          hints: [
+            {
+              mockTopic: 'Алгоритми',
+              themes: [
+                { id: 'algorithms', title: '🧮 Алгоритми та структури даних', done: 2, total: 6 },
+              ],
+            },
+            {
+              mockTopic: 'Патерни',
+              themes: [{ id: 'backend', title: '🖥 Backend / Node.js', done: 4, total: 7 }],
+            },
+          ],
+        },
         interests: [
           { topic: 'Технології', score: 12 },
           { topic: 'Наука', score: 7 },
