@@ -96,17 +96,32 @@ export type TgButton =
  * (проявилось на проді 2026-07-12: щоденний брифінг падав щоранку, бо
  * TELEGRAM_CHAT_ID тепер id супергрупи, §4.3 «Блок Теми»).
  *
- * chatId — стандартна конвенція Telegram: групи/супергрупи/канали мають
- * ВІД'ЄМНИЙ chat_id, приватні чати — додатний. Тому: chatId < 0 (група) ->
- * звичайна `url`-кнопка (завжди валідна, БЕЗ initData — дашборд відкриється як
- * звичайне посилання і деградує на SAMPLE-фолбек, §H1); інакше (приватний чат
- * або chatId не передано) -> `web_app` (повний Mini App з initData).
+ * Пріоритет вибору типу кнопки:
+ * 1. **botUsername заданий** -> Direct Link Mini App: `https://t.me/<username>
+ *    ?startapp` (Telegram Bot API, розділ Web Apps). Цей формат ЗАВЖДИ
+ *    launch-ить повноцінний Mini App із `Telegram.WebApp.initData` — і з
+ *    групи, і з приватного чату (обходить обмеження `web_app`-кнопки).
+ *    Потребує ОДНОРАЗОВОГО owner-кроку: @BotFather -> Bot Settings ->
+ *    Configure Mini App -> URL = те саме значення, що MINI_APP_URL
+ *    (`.env.example`). Без цього кроку посилання відкриє «звичайний» сайт
+ *    без ін'єкції Telegram.WebApp (як і фолбек нижче).
+ * 2. **botUsername не заданий** (owner ще не зробив крок 1) -> фолбек за
+ *    знаком chatId (стандартна конвенція Telegram: групи/супергрупи/канали —
+ *    ВІД'ЄМНИЙ chat_id, приватні чати — додатний): chatId < 0 (група) ->
+ *    звичайна `url`-кнопка (завжди валідна, БЕЗ initData -> дашборд
+ *    деградує на SAMPLE-фолбек, §H1); інакше -> `web_app` (initData є, бо
+ *    приватний чат — єдиний контекст, де ця кнопка легальна).
  */
 export function buildMiniAppButton(
   text: string,
   url: string,
   chatId?: string | number | null,
+  botUsername?: string | null,
 ): TgButton {
+  const username = botUsername?.trim().replace(/^@/, '');
+  if (username) {
+    return { text, url: `https://t.me/${username}?startapp` };
+  }
   const isGroup = chatId != null && Number(chatId) < 0;
   return isGroup ? { text, url } : { text, web_app: { url } };
 }

@@ -743,10 +743,19 @@ async function handleCommand(env, parsed, origin) {
         '⚙️ Налаштування (тихі/робочі години, конектори) зʼявляться в Mini App разом із нагадуваннями й календарем. Поки що — сам дашборд:',
         {
           reply_markup: {
-            // web_app лише в приватних чатах (Telegram Bot API) — у групі/темі
-            // (parsed.chatId<0) buildMiniAppButton деградує на url (BUTTON_TYPE_INVALID
-            // інакше, §core/telegram.ts).
-            inline_keyboard: [[buildMiniAppButton('📊 Відкрити Mini App', origin, parsed.chatId)]],
+            // TELEGRAM_BOT_USERNAME (Direct Link Mini App) заданий -> initData
+            // працює і в групі; інакше фолбек за parsed.chatId (web_app лише в
+            // приватних чатах — BUTTON_TYPE_INVALID у групі/темі інакше, §core/telegram.ts).
+            inline_keyboard: [
+              [
+                buildMiniAppButton(
+                  '📊 Відкрити Mini App',
+                  origin,
+                  parsed.chatId,
+                  env.TELEGRAM_BOT_USERNAME,
+                ),
+              ],
+            ],
           },
         },
       );

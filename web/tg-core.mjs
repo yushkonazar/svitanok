@@ -142,13 +142,20 @@ export function resolveCallback(briefing, code, idx) {
 }
 
 /**
- * Дзеркало buildMiniAppButton з src/core/telegram.ts. Telegram Bot API:
- * `web_app`-кнопки дозволені ЛИШЕ в приватних чатах — у групі/супергрупі
- * (chatId від'ємний, стандартна конвенція Telegram) сервер відповідає
- * `BUTTON_TYPE_INVALID` (400). chatId < 0 -> звичайна url-кнопка (без
- * initData, дашборд деградує на SAMPLE); інакше -> web_app.
+ * Дзеркало buildMiniAppButton з src/core/telegram.ts. Пріоритет:
+ * 1. botUsername заданий -> Direct Link Mini App (t.me/<username>?startapp) —
+ *    завжди launch-ить повноцінний Mini App з initData, і з групи, і з
+ *    приватного чату (обходить обмеження web_app-кнопки нижче). Потребує
+ *    одноразового owner-кроку в @BotFather (Configure Mini App).
+ * 2. botUsername не заданий -> фолбек за chatId (стандартна конвенція
+ *    Telegram: групи/супергрупи від'ємні): chatId < 0 -> звичайна url-кнопка
+ *    (без initData, дашборд деградує на SAMPLE, §H1); інакше -> web_app
+ *    (Telegram Bot API дозволяє web_app ЛИШЕ в приватних чатах —
+ *    BUTTON_TYPE_INVALID у групі інакше).
  */
-export function buildMiniAppButton(text, url, chatId) {
+export function buildMiniAppButton(text, url, chatId, botUsername) {
+  const username = botUsername ? String(botUsername).trim().replace(/^@/, '') : '';
+  if (username) return { text, url: `https://t.me/${username}?startapp` };
   const isGroup = chatId != null && Number(chatId) < 0;
   return isGroup ? { text, url } : { text, web_app: { url } };
 }

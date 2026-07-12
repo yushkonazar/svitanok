@@ -191,6 +191,25 @@ describe('runBriefing — єдине сповіщення (дата + Mini App �
       url: 'https://svitanok.example.workers.dev',
     });
   });
+
+  it('groupChatId + botUsername -> Direct Link Mini App (initData зберігається з групи)', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        miniAppUrl: 'https://svitanok.example.workers.dev',
+        chatId: '-1001234567890',
+        botUsername: 'svitanok_bot',
+      }),
+    );
+    expect(res.status).toBe('sent');
+    const btn = notifier.buttons[0]![0]![0]!;
+    expect(btn).toEqual({
+      text: '📊 Відкрити Mini App',
+      url: 'https://t.me/svitanok_bot?startapp',
+    });
+  });
 });
 
 describe('runBriefing — dry-run', () => {

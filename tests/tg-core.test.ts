@@ -315,4 +315,16 @@ describe('tg-core — buildMiniAppButton (дзеркало src/core/telegram.ts,
       web_app: { url: 'https://x/app' },
     });
   });
+
+  it('botUsername заданий -> Direct Link Mini App, навіть з групи (initData зберігається)', () => {
+    expect(
+      buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', -1001234567890, 'svitanok_bot'),
+    ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
+  });
+
+  it('botUsername з "@" -> обрізається', () => {
+    expect(
+      buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', null, '@svitanok_bot'),
+    ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
+  });
 });

@@ -69,6 +69,32 @@ describe('buildMiniAppButton', () => {
       url: 'https://x/app',
     });
   });
+
+  it('botUsername заданий -> Direct Link Mini App (t.me/<username>?startapp), незалежно від chatId', () => {
+    // Група — саме той контекст, де web_app недійсний; Direct Link це вирішує.
+    expect(
+      buildMiniAppButton('📊 Відкрити', 'https://x/app', '-1001234567890', 'svitanok_bot'),
+    ).toEqual({ text: '📊 Відкрити', url: 'https://t.me/svitanok_bot?startapp' });
+    // Приватний чат теж отримує Direct Link (initData так само зберігається).
+    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '123456', 'svitanok_bot')).toEqual({
+      text: '📊 Відкрити',
+      url: 'https://t.me/svitanok_bot?startapp',
+    });
+  });
+
+  it('botUsername з провідним "@" -> обрізається', () => {
+    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', null, '@svitanok_bot')).toEqual({
+      text: '📊 Відкрити',
+      url: 'https://t.me/svitanok_bot?startapp',
+    });
+  });
+
+  it('botUsername порожній/не заданий -> фолбек за chatId (стара поведінка)', () => {
+    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '-100', '')).toEqual({
+      text: '📊 Відкрити',
+      url: 'https://x/app',
+    });
+  });
 });
 
 describe('createNotifier', () => {
