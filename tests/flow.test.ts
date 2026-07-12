@@ -3,6 +3,7 @@ import { runBriefing, isQuietDay, type RunDeps } from '../src/orchestrator.js';
 import { parseConfig, type AppConfig } from '../src/core/config.js';
 import { createRunBus } from '../src/core/bus.js';
 import { MAIL_PROPOSAL_BUS_KEY } from '../src/modules/mail.js';
+import { CALENDAR_BUS_KEY, type CalendarEvent } from '../src/modules/calendar.js';
 import type { Module, Block, StateStore, Clock } from '../src/core/types.js';
 import type { Notifier as NotifierType, TgButton } from '../src/core/telegram.js';
 
@@ -209,6 +210,105 @@ describe('runBriefing — єдине сповіщення (дата + Mini App �
       text: '📊 Відкрити Mini App',
       url: 'https://t.me/svitanok_bot?startapp',
     });
+  });
+});
+
+describe('runBriefing — короткий рядок дня (Фаза B3)', () => {
+  const weatherBlock = (locations: unknown[]): Block => ({
+    id: 'weather',
+    title: 'Погода',
+    summary: 's',
+    priority: 40,
+    data: { locations },
+  });
+  const mailBlock = (count: number): Block => ({
+    id: 'mail',
+    title: 'Пошта',
+    summary: 's',
+    priority: 56,
+    data: { count },
+  });
+  const calMod = (events: CalendarEvent[]): Module<AppConfig> => ({
+    id: 'calendar',
+    kind: 'producer',
+    enabled: () => true,
+    async run(ctx) {
+      ctx.bus.set(CALENDAR_BUS_KEY, events);
+      return events.length ? block('calendar', 30) : null;
+    },
+  });
+
+  it('усі три сегменти присутні -> об’єднані " · "-роздільником, у тому ж порядку', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(
+      deps({
+        notifier,
+        modules: [
+          mod('weather', 'producer', async () =>
+            weatherBlock([{ emoji: '⛅', name: 'Львів', tempC: 18 }]),
+          ),
+          calMod([{ title: 'Дзвінок з клієнтом', time: '10:00' }]),
+          mod('mail', 'producer', async () => mailBlock(2)),
+        ],
+      }),
+    );
+    expect(notifier.sent[0]![0]).toBe(
+      '<b>Понеділок, 29 червня</b>\n⛅ Львів +18° · 📅 10:00 Дзвінок з клієнтом · 📧 2 листи',
+    );
+  });
+
+  it('частково відсутні дані -> лише наявні сегменти (graceful)', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(
+      deps({
+        notifier,
+        modules: [
+          mod('weather', 'producer', async () =>
+            weatherBlock([{ emoji: '☀️', name: 'Київ', tempC: -3 }]),
+          ),
+        ],
+      }),
+    );
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>\n☀️ Київ -3°');
+  });
+
+  it('подія на весь день (time:null) -> без часу в сегменті', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(deps({ notifier, modules: [calMod([{ title: 'Відпустка', time: null }])] }));
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>\n📅 Відпустка');
+  });
+
+  it('назва події екранується (HTML-safe)', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(
+      deps({
+        notifier,
+        modules: [calMod([{ title: '<b>Злий</b> тайтл', time: '09:00' }])],
+      }),
+    );
+    expect(notifier.sent[0]![0]).toContain('&lt;b&gt;Злий&lt;/b&gt; тайтл');
+  });
+
+  it('mailCount=0 -> сегмент не додається (не «0 листів»)', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(
+      deps({ notifier, modules: [mod('mail', 'producer', async () => mailBlock(0))] }),
+    );
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>');
+  });
+
+  it('немає жодного блока -> лише дата (стара поведінка не зламана)', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(deps({ notifier, modules: [] }));
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>');
+  });
+
+  it('порожня погода.locations -> без сегмента (crash-safe)', async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(
+      deps({ notifier, modules: [mod('weather', 'producer', async () => weatherBlock([]))] }),
+    );
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>');
   });
 });
 

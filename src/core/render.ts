@@ -80,6 +80,12 @@ export function formatKyivDateHeader(date: Date): string {
   return `<b>${escapeHtml(formatKyivDateLabel(date))}</b>`;
 }
 
+/** Об'єднати непорожні сегменти короткого рядка дня (Фаза B3) " · "-роздільником;
+ *  усі порожні -> ''. */
+export function joinSummarySegments(segments: (string | null | undefined)[]): string {
+  return segments.filter((s): s is string => !!s).join(' · ');
+}
+
 /** Button[][] (короткі коди) -> TgButton[][] (callback_data). Без dateKey/кнопок -> undefined. */
 function buildInlineKeyboard(
   buttons: Button[][] | undefined,

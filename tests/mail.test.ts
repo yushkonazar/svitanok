@@ -229,11 +229,13 @@ describe('mail module', () => {
     const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
     const block = await mod.run(makeCtx({ llm: llm as Ctx['llm'] }));
     expect(block).toMatchObject({ id: 'mail', icon: '📧', summary: '2 листи про вакансії' });
+    // data несе ЛИШЕ агрегований лічильник (Фаза B3, короткий рядок дня) —
+    // жодних subject/from/snippet ні тут, ні деінде в блоці.
+    expect(block?.data).toEqual({ count: 2 });
     const serialized = JSON.stringify(block);
     expect(serialized).not.toContain('acme.com');
     expect(serialized).not.toContain('Запрошення');
     expect(serialized).not.toContain('вітаємо');
-    expect(block).not.toHaveProperty('data');
   });
 
   it('запрошення на співбесіду з валідною датою -> MAIL_PROPOSAL_BUS_KEY', async () => {

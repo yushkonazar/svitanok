@@ -314,6 +314,8 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
         title: 'Пошта',
         icon: '📧',
         summary: `${importantCount} ${pluralizeLysty(importantCount)} про вакансії`,
+        // Число окремо (Фаза B3, щоденний рядок) — щоб не парсити summary-текст.
+        data: { count: importantCount },
         priority: MAIL_PRIORITY,
       };
     },

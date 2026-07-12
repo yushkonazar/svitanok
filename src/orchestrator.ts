@@ -19,10 +19,11 @@ import {
   createNotifier,
   buildProposalCallbackData,
   buildMiniAppButton,
+  escapeHtml,
   type Notifier,
   type OutboundMessage,
 } from './core/telegram.js';
-import { formatKyivDateHeader, formatKyivDateLabel } from './core/render.js';
+import { formatKyivDateHeader, formatKyivDateLabel, joinSummarySegments } from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
@@ -37,8 +38,8 @@ import type {
   SourceFetcher,
   Logger,
 } from './core/types.js';
-import { createWeatherModule } from './modules/weather.js';
-import { createCalendarModule } from './modules/calendar.js';
+import { createWeatherModule, type WeatherToday } from './modules/weather.js';
+import { createCalendarModule, CALENDAR_BUS_KEY, type CalendarEvent } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
@@ -52,6 +53,7 @@ import {
   createMailModule,
   MAIL_PROPOSAL_BUS_KEY,
   formatMailProposalMessage,
+  pluralizeLysty,
   type MailProposalItem,
 } from './modules/mail.js';
 import { buildPruners } from './core/prune.js';
@@ -188,12 +190,35 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     clock.now().toISOString(),
   );
 
-  // Єдине сповіщення в чат: дата + кнопка відкрити Mini App (усі блоки — лише
-  // в briefing.json, дашборд лишається єдиним місцем перегляду вмісту).
-  // messages — те, що РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю);
-  // повний вміст блоків для локальної перевірки дивись у briefing.blocks.
+  // Короткий рядок дня (Фаза B3): погода (перша локація) + перша подія
+  // календаря сьогодні + «N листів» — усі блоки вже прораховані (Фаза
+  // producers+consumers вище), реордеринг не потрібен. Кожен сегмент
+  // опційний (graceful — відсутній блок просто не додає сегмент).
+  const weatherLoc = (
+    blocks.find((b) => b.id === 'weather')?.data as { locations?: WeatherToday[] } | undefined
+  )?.locations?.[0];
+  const firstEvent = ctx.bus.get<CalendarEvent[]>(CALENDAR_BUS_KEY)?.[0];
+  const mailCount = (blocks.find((b) => b.id === 'mail')?.data as { count?: number } | undefined)
+    ?.count;
+  const summaryLine = joinSummarySegments([
+    weatherLoc
+      ? `${weatherLoc.emoji} ${weatherLoc.name} ${weatherLoc.tempC > 0 ? '+' : ''}${weatherLoc.tempC}°`
+      : null,
+    firstEvent
+      ? `📅 ${firstEvent.time ? `${firstEvent.time} ` : ''}${escapeHtml(firstEvent.title)}`
+      : null,
+    typeof mailCount === 'number' && mailCount > 0
+      ? `📧 ${mailCount} ${pluralizeLysty(mailCount)}`
+      : null,
+  ]);
+  const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
+
+  // Єдине сповіщення в чат: дата(+рядок дня) + кнопка відкрити Mini App (усі
+  // блоки — лише в briefing.json, дашборд лишається єдиним місцем перегляду
+  // повного вмісту). messages — те, що РЕАЛЬНО йде в чат (і для sent, і для
+  // dry-run-превʼю).
   const dailyMessage: OutboundMessage = {
-    text: header,
+    text: headerFull,
     ...(deps.miniAppUrl
       ? {
           buttons: [
@@ -209,7 +234,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
         }
       : {}),
   };
-  const messages = [header];
+  const messages = [headerFull];
 
   if (dryRun) {
     return { status: 'dry-run', reason: decision.reason, messages, quiet, briefing };
