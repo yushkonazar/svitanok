@@ -551,6 +551,15 @@ const START_TEXT = [
   'написати вільним текстом — календар, нагадування, план дня.',
 ].join('\n');
 
+// Фаза B2: профіль бота (setMyDescription/setMyShortDescription) — те, що
+// власник бачить ДО першого /start (порожній чат) і в прев'ю/шарінгу. Разом
+// із розширеним REPLY_KEYBOARD (tg-core.mjs) компенсує видалену тему
+// «Команди» (та ніколи не мала прив'язки в коді, суто організаційна).
+const BOT_DESCRIPTION =
+  'Персональний ранковий брифінг: погода, курс, новини, вакансії, IT-роадмеп. ' +
+  'Плюс асистент — нагадування, календар, план дня. Напиши /start, щоб побачити всі команди.';
+const BOT_SHORT_DESCRIPTION = 'Ранковий брифінг + асистент для пошуку роботи в IT.';
+
 const STUB_COMMANDS = new Set(['mock']);
 const STUB_REPLY = '🚧 Ще в розробці — зʼявиться в наступній фазі.';
 const UNKNOWN_REPLY =
@@ -1033,6 +1042,10 @@ async function handleTelegramSetup(request, env) {
   });
   // "/" меню команд + menu-button (кнопка біля поля вводу) -> запуск Mini App (Блок P4).
   await tgCall(env, 'setMyCommands', { commands: COMMANDS });
+  // Фаза B2: профіль бота видно ДО /start (порожній чат) і в прев'ю — не
+  // потребує окремої теми «Команди» для пояснення «що це».
+  await tgCall(env, 'setMyDescription', { description: BOT_DESCRIPTION });
+  await tgCall(env, 'setMyShortDescription', { short_description: BOT_SHORT_DESCRIPTION });
   await tgCall(env, 'setChatMenuButton', {
     menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: url.origin } },
   });

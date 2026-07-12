@@ -219,6 +219,14 @@ describe('tg-core — parseCommand (Блок P4)', () => {
     expect(REPLY_KEYBOARD.flat().length).toBeGreaterThan(0);
   });
 
+  it('REPLY_KEYBOARD містить Налаштування+Роадмеп (Фаза B2, компенсація видаленої теми «Команди»)', () => {
+    const labels = REPLY_KEYBOARD.flat();
+    expect(labels).toContain('⚙️ Налаштування');
+    expect(labels).toContain('🗺 Роадмеп');
+    expect(parseCommand('⚙️ Налаштування')).toEqual({ cmd: 'settings', args: '' });
+    expect(parseCommand('🗺 Роадмеп')).toEqual({ cmd: 'roadmap', args: '' });
+  });
+
   it('кожен лейбл REPLY_KEYBOARD резолвиться в команду з COMMANDS (без дрейфу двох реєстрів)', () => {
     const known = new Set(COMMANDS.map((c: { command: string }) => c.command));
     for (const label of REPLY_KEYBOARD.flat() as string[]) {
