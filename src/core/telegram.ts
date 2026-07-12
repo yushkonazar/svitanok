@@ -85,12 +85,30 @@ export function buildProposalCallbackData(action: 'a' | 'c', id: string): string
 }
 
 export type TgButton =
-  { text: string; callback_data: string } | { text: string; web_app: { url: string } };
+  | { text: string; callback_data: string }
+  | { text: string; web_app: { url: string } }
+  | { text: string; url: string };
 
-/** Кнопка запуску Mini App (реактивна, не callback) — дзеркало web/worker.js's
- *  `web_app: { url }` (settings-кнопка, menu-button). */
-export function buildMiniAppButton(text: string, url: string): TgButton {
-  return { text, web_app: { url } };
+/**
+ * Кнопка запуску Mini App. Telegram Bot API: `web_app`-кнопки в inline_keyboard
+ * дозволені ЛИШЕ в приватних чатах з ботом — у групі/супергрупі Telegram
+ * відповідає `BUTTON_TYPE_INVALID` (400), і повідомлення НЕ надсилається
+ * (проявилось на проді 2026-07-12: щоденний брифінг падав щоранку, бо
+ * TELEGRAM_CHAT_ID тепер id супергрупи, §4.3 «Блок Теми»).
+ *
+ * chatId — стандартна конвенція Telegram: групи/супергрупи/канали мають
+ * ВІД'ЄМНИЙ chat_id, приватні чати — додатний. Тому: chatId < 0 (група) ->
+ * звичайна `url`-кнопка (завжди валідна, БЕЗ initData — дашборд відкриється як
+ * звичайне посилання і деградує на SAMPLE-фолбек, §H1); інакше (приватний чат
+ * або chatId не передано) -> `web_app` (повний Mini App з initData).
+ */
+export function buildMiniAppButton(
+  text: string,
+  url: string,
+  chatId?: string | number | null,
+): TgButton {
+  const isGroup = chatId != null && Number(chatId) < 0;
+  return isGroup ? { text, url } : { text, web_app: { url } };
 }
 
 export interface OutboundMessage {

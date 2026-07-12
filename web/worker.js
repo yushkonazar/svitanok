@@ -20,6 +20,7 @@ import {
   formatJobsMessage,
   formatSavedMessage,
   formatWhereAmI,
+  buildMiniAppButton,
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
@@ -742,7 +743,10 @@ async function handleCommand(env, parsed, origin) {
         '⚙️ Налаштування (тихі/робочі години, конектори) зʼявляться в Mini App разом із нагадуваннями й календарем. Поки що — сам дашборд:',
         {
           reply_markup: {
-            inline_keyboard: [[{ text: '📊 Відкрити Mini App', web_app: { url: origin } }]],
+            // web_app лише в приватних чатах (Telegram Bot API) — у групі/темі
+            // (parsed.chatId<0) buildMiniAppButton деградує на url (BUTTON_TYPE_INVALID
+            // інакше, §core/telegram.ts).
+            inline_keyboard: [[buildMiniAppButton('📊 Відкрити Mini App', origin, parsed.chatId)]],
           },
         },
       );

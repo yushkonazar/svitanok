@@ -44,10 +44,29 @@ describe('fitEscaped — entity-safe обрізання (§9)', () => {
 });
 
 describe('buildMiniAppButton', () => {
-  it('будує кнопку web_app (не callback_data)', () => {
+  it('без chatId -> web_app (приватний чат за замовчуванням)', () => {
     expect(buildMiniAppButton('📊 Відкрити', 'https://svitanok.example.workers.dev')).toEqual({
       text: '📊 Відкрити',
       web_app: { url: 'https://svitanok.example.workers.dev' },
+    });
+  });
+
+  it('додатний chatId (приватний чат) -> web_app', () => {
+    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '123456')).toEqual({
+      text: '📊 Відкрити',
+      web_app: { url: 'https://x/app' },
+    });
+  });
+
+  it("від'ємний chatId (група/супергрупа) -> url (BUTTON_TYPE_INVALID у групах, §H1)", () => {
+    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '-1001234567890')).toEqual({
+      text: '📊 Відкрити',
+      url: 'https://x/app',
+    });
+    // Числовий chatId теж коректно розпізнається (не лише рядок).
+    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', -42)).toEqual({
+      text: '📊 Відкрити',
+      url: 'https://x/app',
     });
   });
 });

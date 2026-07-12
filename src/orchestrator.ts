@@ -76,6 +76,10 @@ export interface RunDeps {
   // основного брифінгу (TOPIC_BRIEFING). null -> TOPIC_ASSISTANT не задано
   // (DM/без тем) чи немає критичних секретів — пропозиція просто не шлеться.
   assistantNotifier: Notifier | null;
+  // chat_id, куди йде сповіщення — визначає тип кнопки Mini App (web_app лише
+  // в приватних чатах, url у групі/супергрупі; §core/telegram.ts buildMiniAppButton).
+  // null -> невідомо/немає критичних секретів -> трактується як приватний чат.
+  chatId?: string | null;
   // URL Mini App для кнопки в щоденному сповіщенні. null -> сповіщення йде
   // лише з датою, без кнопки (graceful — не блокує брифінг).
   miniAppUrl: string | null;
@@ -186,7 +190,9 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   const dailyMessage: OutboundMessage = {
     text: header,
     ...(deps.miniAppUrl
-      ? { buttons: [[buildMiniAppButton('📊 Відкрити Mini App', deps.miniAppUrl)]] }
+      ? {
+          buttons: [[buildMiniAppButton('📊 Відкрити Mini App', deps.miniAppUrl, deps.chatId)]],
+        }
       : {}),
   };
   const messages = [header];
@@ -358,6 +364,7 @@ async function main(): Promise<void> {
     modules: buildModules(),
     notifier,
     assistantNotifier,
+    chatId: secrets?.chatId ?? null,
     miniAppUrl,
   };
 

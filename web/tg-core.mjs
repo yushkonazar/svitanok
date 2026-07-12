@@ -141,6 +141,18 @@ export function resolveCallback(briefing, code, idx) {
   }
 }
 
+/**
+ * Дзеркало buildMiniAppButton з src/core/telegram.ts. Telegram Bot API:
+ * `web_app`-кнопки дозволені ЛИШЕ в приватних чатах — у групі/супергрупі
+ * (chatId від'ємний, стандартна конвенція Telegram) сервер відповідає
+ * `BUTTON_TYPE_INVALID` (400). chatId < 0 -> звичайна url-кнопка (без
+ * initData, дашборд деградує на SAMPLE); інакше -> web_app.
+ */
+export function buildMiniAppButton(text, url, chatId) {
+  const isGroup = chatId != null && Number(chatId) < 0;
+  return isGroup ? { text, url } : { text, web_app: { url } };
+}
+
 /** Позначити натиснуту кнопку галкою (✓) у reply_markup — легкий зворотний звʼязок. */
 export function markButtonDone(replyMarkup, tappedData) {
   const rows = replyMarkup?.inline_keyboard;

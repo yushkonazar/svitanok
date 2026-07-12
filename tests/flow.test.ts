@@ -160,7 +160,7 @@ describe('runBriefing — єдине сповіщення (дата + Mini App �
     expect(notifier.buttons).toHaveLength(0);
   });
 
-  it('з miniAppUrl -> одна кнопка web_app, що відкриває той самий URL', async () => {
+  it('з miniAppUrl, без chatId -> одна кнопка web_app, що відкриває той самий URL', async () => {
     const notifier = fakeNotifier();
     const res = await runBriefing(
       deps({ notifier, modules: [], miniAppUrl: 'https://svitanok.example.workers.dev' }),
@@ -171,6 +171,24 @@ describe('runBriefing — єдине сповіщення (дата + Mini App �
     expect(btn).toEqual({
       text: '📊 Відкрити Mini App',
       web_app: { url: 'https://svitanok.example.workers.dev' },
+    });
+  });
+
+  it("групова chatId (від'ємний, TELEGRAM_CHAT_ID=супергрупа) -> url-кнопка, не web_app (§H1: BUTTON_TYPE_INVALID у групах)", async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        miniAppUrl: 'https://svitanok.example.workers.dev',
+        chatId: '-1001234567890',
+      }),
+    );
+    expect(res.status).toBe('sent');
+    const btn = notifier.buttons[0]![0]![0]!;
+    expect(btn).toEqual({
+      text: '📊 Відкрити Mini App',
+      url: 'https://svitanok.example.workers.dev',
     });
   });
 });
