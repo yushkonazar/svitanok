@@ -13,7 +13,7 @@
 //   fitApplied:[ int ]                                       // fit% поданих вакансій
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
 //   appliedLog:[ { url, ts } ]                               // для тижневого лічильника
-//   reliability:{ onTime, total, deadman }                   // з прогонів brief
+//   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 const STAGES = ['saved', 'applied', 'interview', 'offer'];
@@ -53,6 +53,9 @@ export function normalize(s) {
       onTime: Number(s.reliability?.onTime) || 0,
       total: Number(s.reliability?.total) || 0,
       deadman: Number(s.reliability?.deadman) || 0,
+      ...(typeof s.reliability?.lastCheckDate === 'string'
+        ? { lastCheckDate: s.reliability.lastCheckDate }
+        : {}),
     },
   };
 }
@@ -149,6 +152,24 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     default:
       break; // невідома подія — ігноруємо (не валимо)
   }
+  return s;
+}
+
+/**
+ * Записати результат щоденної dead-man-перевірки доставки (мутує й повертає стор).
+ * Викликає Worker о 10:00 Київ: `delivered`=true, якщо `latest` свіжий за сьогодні.
+ * onTime = «доставлено до dead-man дедлайну»; спізнення в межах вікна після 10:00
+ * свідомо рахується як deadman (алерт тоді вже відправлено). Ідемпотентно за день
+ * через reliability.lastCheckDate — повторний виклик тим самим dateKey — no-op.
+ */
+export function recordReliability(store, dateKey, delivered) {
+  const s = normalize(store);
+  const r = s.reliability;
+  if (r.lastCheckDate === dateKey) return s;
+  r.lastCheckDate = dateKey;
+  r.total += 1;
+  if (delivered) r.onTime += 1;
+  else r.deadman += 1;
   return s;
 }
 
@@ -288,7 +309,12 @@ export function aggregateStats(store, todayKey) {
     // цей чистий агрегатор не знав про roadmap-контент.
     interests,
     readPerDay: Math.round(totalReads / activeDays),
-    reliability: s.reliability,
+    // Контракт /api/stats — лише лічильники; lastCheckDate — внутрішній маркер стору.
+    reliability: {
+      onTime: s.reliability.onTime,
+      total: s.reliability.total,
+      deadman: s.reliability.deadman,
+    },
     stepDoneToday: stepped(s.days[todayKey]),
     mockRatedToday: mocked(s.days[todayKey]),
   };

@@ -6,7 +6,7 @@
 // X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
-import { recordEvent, aggregateStats } from './stats-core.mjs';
+import { recordEvent, aggregateStats, recordReliability } from './stats-core.mjs';
 import {
   verifyWebhookSecret,
   parseUpdate,
@@ -1051,12 +1051,10 @@ async function dispatchBrief(env) {
   }
 }
 
-/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram. */
+/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
+ *  Побічно веде облік надійності (reliability у stats): Worker — ЄДИНИЙ писар
+ *  stats-блоба (жодних нових гонок класу H2), запис ідемпотентний за день. */
 async function deadMansCheck(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    console.error('TELEGRAM_* відсутні — dead-man пропущено');
-    return;
-  }
   const raw = await env.BRIEFING.get('latest');
   const today = kyivDateKey();
   let fresh = false;
@@ -1066,7 +1064,14 @@ async function deadMansCheck(env) {
   } catch {
     /* биття JSON -> вважаємо несвіжим -> алерт */
   }
+  // Облік доставки — до гейта секретів (не потребує Telegram-крендів).
+  const stats = recordReliability(await loadStats(env), today, fresh);
+  await env.BRIEFING.put('stats', JSON.stringify(stats));
   if (fresh) return;
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+    console.error('TELEGRAM_* відсутні — dead-man пропущено');
+    return;
+  }
 
   const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: 'POST',

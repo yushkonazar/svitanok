@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, normalize, recordEvent, aggregateStats } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
+import { recordReliability } from '../web/stats-core.mjs';
 
 describe('stats-core — recordEvent', () => {
   it('open рахує відкриття дня + час до відкриття', () => {
@@ -206,5 +208,56 @@ describe('stats-core — aggregateStats', () => {
       url: 'n1',
       ts: '2026-07-07',
     });
+  });
+});
+
+describe('stats-core — recordReliability', () => {
+  it('доставлено -> onTime+total; пропущено -> deadman+total', () => {
+    let s = emptyStore();
+    s = recordReliability(s, '2026-07-07', true);
+    expect(s.reliability).toEqual({
+      onTime: 1,
+      total: 1,
+      deadman: 0,
+      lastCheckDate: '2026-07-07',
+    });
+    s = recordReliability(s, '2026-07-08', false);
+    expect(s.reliability).toEqual({
+      onTime: 1,
+      total: 2,
+      deadman: 1,
+      lastCheckDate: '2026-07-08',
+    });
+  });
+
+  it('ідемпотентно за день: повторний виклик тим самим dateKey — no-op', () => {
+    let s = emptyStore();
+    s = recordReliability(s, '2026-07-07', true);
+    const before = JSON.stringify(s);
+    s = recordReliability(s, '2026-07-07', true);
+    s = recordReliability(s, '2026-07-07', false); // навіть з іншим вердиктом
+    expect(JSON.stringify(s)).toBe(before);
+  });
+
+  it('normalize зберігає lastCheckDate і терпить старий стор без нього', () => {
+    const n = normalize({ reliability: { onTime: 3, total: 4, deadman: 1, lastCheckDate: 'x' } });
+    expect(n.reliability.lastCheckDate).toBe('x');
+    expect(normalize({ reliability: { onTime: 3, total: 4 } }).reliability.lastCheckDate).toBe(
+      undefined,
+    );
+    // битий стор -> нулі, лічильник стартує з чистого аркуша
+    const s = recordReliability('bad', '2026-07-07', false);
+    expect(s.reliability).toEqual({
+      onTime: 0,
+      total: 1,
+      deadman: 1,
+      lastCheckDate: '2026-07-07',
+    });
+  });
+
+  it('aggregateStats віддає лише лічильники (без lastCheckDate)', () => {
+    const s = recordReliability(emptyStore(), '2026-07-07', true);
+    const st = aggregateStats(s, '2026-07-07');
+    expect(st.reliability).toEqual({ onTime: 1, total: 1, deadman: 0 });
   });
 });
