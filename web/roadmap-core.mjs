@@ -5,7 +5,7 @@
 // TOPIC_ROADMAP не читається (усі відповіді реактивні, echo в чат/тему
 // вхідного апдейту, той самий sendTo-патерн що й решта команд).
 
-import { escapeHtml } from './tg-core.mjs';
+import { escapeHtml, progressBar } from './tg-core.mjs';
 import { ROADMAP_TOPICS } from './roadmap-data.mjs';
 
 // Окремий простір callback_data від v1:<dateKey>:... (P1), rm:<id> (P2a),
@@ -106,7 +106,8 @@ export function findNextIncomplete(progress) {
 /** Повідомлення кореня: загальний прогрес + список тем. */
 export function formatRootMessage(progress) {
   const { done, total } = totalProgress(progress);
-  return `🗺 <b>IT-роадмеп</b> — ${done}/${total}\n\nОбери тему:`;
+  const bar = progressBar(done, total);
+  return `🗺 <b>IT-роадмеп</b> — ${bar ? bar + ' ' : ''}${done}/${total}\n\nОбери тему:`;
 }
 
 /** Inline-клавіатура кореня: рядок на тему + рядок «▶️ Наступний». */
@@ -128,7 +129,8 @@ export function buildRootKeyboard(progress) {
 /** Повідомлення теми: назва+прогрес теми + інструкція. */
 export function formatTopicMessage(topic, progress) {
   const { done, total } = topicProgress(progress, topic);
-  return `${escapeHtml(topic.title)} — ${done}/${total}\n\nТисни на пункт, щоб позначити пройденим:`;
+  const bar = progressBar(done, total);
+  return `${escapeHtml(topic.title)} — ${bar ? bar + ' ' : ''}${done}/${total}\n\nТисни на пункт, щоб позначити пройденим:`;
 }
 
 /** Inline-клавіатура теми: рядок на підпункт (✅/▫️+назва) + «⬅️ Назад». */

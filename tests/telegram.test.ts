@@ -203,6 +203,37 @@ describe('createNotifier', () => {
     expect(body.text).toBe('щось зламалось');
   });
 
+  it('failNotify з threadId -> message_thread_id у тілі (Фаза B, TOPIC_SYSTEM)', async () => {
+    let body: Record<string, unknown> = {};
+    const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string);
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    const n = createNotifier({
+      token: 'T',
+      chatId: '42',
+      threadId: '9',
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    });
+    await n.failNotify('впало');
+    expect(body.message_thread_id).toBe('9');
+  });
+
+  it('failNotify без threadId -> без message_thread_id (стара unscoped-поведінка)', async () => {
+    let body: Record<string, unknown> = {};
+    const fakeFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string);
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    const n = createNotifier({
+      token: 'T',
+      chatId: '42',
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    });
+    await n.failNotify('впало');
+    expect(body).not.toHaveProperty('message_thread_id');
+  });
+
   it('кидає на HTTP-помилці', async () => {
     const fakeFetch = vi.fn(async () => new Response('bad', { status: 400 }));
     const n = createNotifier({

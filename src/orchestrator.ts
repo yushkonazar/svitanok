@@ -19,10 +19,17 @@ import {
   createNotifier,
   buildProposalCallbackData,
   buildMiniAppButton,
+  escapeHtml,
   type Notifier,
   type OutboundMessage,
 } from './core/telegram.js';
-import { formatKyivDateHeader, formatKyivDateLabel } from './core/render.js';
+import {
+  formatKyivDateHeader,
+  formatKyivDateLabel,
+  joinSummarySegments,
+  formatWeeklyReviewMessage,
+  type WeeklyReviewData,
+} from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
@@ -37,8 +44,8 @@ import type {
   SourceFetcher,
   Logger,
 } from './core/types.js';
-import { createWeatherModule } from './modules/weather.js';
-import { createCalendarModule } from './modules/calendar.js';
+import { createWeatherModule, signed, type WeatherToday } from './modules/weather.js';
+import { createCalendarModule, CALENDAR_BUS_KEY, type CalendarEvent } from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
@@ -52,6 +59,7 @@ import {
   createMailModule,
   MAIL_PROPOSAL_BUS_KEY,
   formatMailProposalMessage,
+  pluralizeLysty,
   type MailProposalItem,
 } from './modules/mail.js';
 import { buildPruners } from './core/prune.js';
@@ -95,7 +103,7 @@ export type RunStatus = 'sent' | 'skipped' | 'dry-run';
 export interface RunResult {
   status: RunStatus;
   reason: string;
-  messages: string[]; // текст того, що йде в чат (тепер: [header]) — не блоки
+  messages: string[]; // текст того, що йде в чат ([header] або [header, weekly] у неділю) — не блоки
   quiet: boolean;
   briefing: BriefingData; // дані для Mini App (briefing.json) — повний вміст блоків
 }
@@ -188,12 +196,37 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     clock.now().toISOString(),
   );
 
-  // Єдине сповіщення в чат: дата + кнопка відкрити Mini App (усі блоки — лише
-  // в briefing.json, дашборд лишається єдиним місцем перегляду вмісту).
-  // messages — те, що РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю);
-  // повний вміст блоків для локальної перевірки дивись у briefing.blocks.
+  // Короткий рядок дня (Фаза B3): погода (перша локація) + перша подія
+  // календаря сьогодні + «N листів» — усі блоки вже прораховані (Фаза
+  // producers+consumers вище), реордеринг не потрібен. Кожен сегмент
+  // опційний (graceful — відсутній блок просто не додає сегмент).
+  // blockData — одна точка небезпечного каста Block.data (тип навмисно
+  // unknown, §core/types.ts) замість дубльованого inline-каста на кожен блок.
+  const blockData = <T>(id: string): T | undefined =>
+    blocks.find((b) => b.id === id)?.data as T | undefined;
+  const weatherLoc = blockData<{ locations?: WeatherToday[] }>('weather')?.locations?.[0];
+  const firstEvent = ctx.bus.get<CalendarEvent[]>(CALENDAR_BUS_KEY)?.[0];
+  const mailCount = blockData<{ count?: number }>('mail')?.count;
+  const summaryLine = joinSummarySegments([
+    weatherLoc
+      ? `${weatherLoc.emoji} ${escapeHtml(weatherLoc.name)} ${signed(weatherLoc.tempC)}`
+      : null,
+    firstEvent
+      ? `📅 ${firstEvent.time ? `${firstEvent.time} ` : ''}${escapeHtml(firstEvent.title)}`
+      : null,
+    typeof mailCount === 'number' && mailCount > 0
+      ? `📧 ${mailCount} ${pluralizeLysty(mailCount)}`
+      : null,
+  ]);
+  const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
+
+  // Щоденне сповіщення в чат: дата(+рядок дня) + кнопка відкрити Mini App (усі
+  // блоки — лише в briefing.json, дашборд лишається єдиним місцем перегляду
+  // повного вмісту). У неділю додається окреме недільне повідомлення (Фаза
+  // B5, нижче) — messages може містити 1 або 2 елементи. messages — те, що
+  // РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю).
   const dailyMessage: OutboundMessage = {
-    text: header,
+    text: headerFull,
     ...(deps.miniAppUrl
       ? {
           buttons: [
@@ -209,7 +242,15 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
         }
       : {}),
   };
-  const messages = [header];
+  // Фаза B5: недільний підсумок тижня — окреме HTML-повідомлення в ТУ САМУ
+  // тему (topicBriefing), одразу після щоденного. weekly-review вже в blocks
+  // (Фаза 2, лише в неділю) — просто читаємо його data, без нового I/O.
+  const weeklyData = clock.isSunday() ? blockData<WeeklyReviewData>('weekly-review') : undefined;
+  const weeklyMessage: OutboundMessage | undefined = weeklyData
+    ? { text: formatWeeklyReviewMessage(weeklyData) }
+    : undefined;
+  const toSend: OutboundMessage[] = weeklyMessage ? [dailyMessage, weeklyMessage] : [dailyMessage];
+  const messages = toSend.map((m) => m.text);
 
   if (dryRun) {
     return { status: 'dry-run', reason: decision.reason, messages, quiet, briefing };
@@ -219,7 +260,20 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     throw new Error('Notifier відсутній у бойовому прогоні (немає критичних секретів)');
   }
 
+  // Щоденне — критичне: провал кидає далі й блокує lastSentDate (§4.2, нижче).
+  // Недільний підсумок шлемо ОКРЕМИМ send() best-effort — його провал (напр.
+  // транзиєнтна HTTP-помилка чи задовгий текст) не має ретригерити повторну
+  // відправку вже доставленого щоденного повідомлення при наступному запуску.
   await deps.notifier.send([dailyMessage]);
+  if (weeklyMessage) {
+    try {
+      await deps.notifier.send([weeklyMessage]);
+    } catch (e) {
+      log.warn(
+        `weekly-review: недільний підсумок не надіслано: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 
   // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
   // подібна пропозиція (той самий формат state.assistantPending, що агент P2b пише
@@ -352,6 +406,9 @@ async function main(): Promise<void> {
           log,
         })
       : null;
+  // TOPIC_SYSTEM — тема «⚠️ Система» (Фаза B): fail-notify (нижче) сюди замість
+  // завжди-General. Не задано -> лишається стара поведінка (unscoped/General).
+  const topicSystem = optionalSecret('TOPIC_SYSTEM');
   // MINI_APP_URL — origin розгорнутого Worker/Mini App (напр. https://svitanok.
   // <акаунт>.workers.dev), для кнопки в щоденному сповіщенні. Не задано ->
   // сповіщення йде без кнопки (graceful, не блокує брифінг).
@@ -404,13 +461,14 @@ async function main(): Promise<void> {
     }
   } catch (e) {
     log.error(`оркестратор впав: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
-    await failNotify(e, log);
+    await failNotify(e, log, topicSystem);
     process.exitCode = 1;
   }
 }
 
-/** Top-level fail-notify напряму через bot token (§4.1). */
-async function failNotify(error: unknown, log: Logger): Promise<void> {
+/** Top-level fail-notify напряму через bot token (§4.1). threadId — тема
+ *  «⚠️ Система» (TOPIC_SYSTEM), якщо задано; інакше unscoped/General. */
+async function failNotify(error: unknown, log: Logger, threadId?: string): Promise<void> {
   const token = optionalSecret('TELEGRAM_BOT_TOKEN');
   const chatId = optionalSecret('TELEGRAM_CHAT_ID');
   if (!token || !chatId) {
@@ -418,7 +476,7 @@ async function failNotify(error: unknown, log: Logger): Promise<void> {
     return;
   }
   try {
-    const notifier = createNotifier({ token, chatId, log });
+    const notifier = createNotifier({ token, chatId, threadId, log });
     const msg = error instanceof Error ? error.message : String(error);
     await notifier.failNotify(`⚠️ Svitanok: брифінг впав — ${msg}`);
   } catch (e) {

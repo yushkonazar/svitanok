@@ -5,6 +5,7 @@ import {
   parseMockCache,
   updateMockWeight,
   sanitizeMasteryFocus,
+  weakMockTopics,
   type MockWeights,
 } from '../src/modules/mock.js';
 import { createRunBus } from '../src/core/bus.js';
@@ -27,6 +28,21 @@ describe('mock — buildMockPrompt', () => {
     const p = buildMockPrompt(5, 'Junior', { HTTP: 1.4, Алгоритми: 1.8, Мова: 1.0 });
     expect(p).toContain('слабким темам кандидата: Алгоритми, HTTP');
     expect(p).not.toContain('Мова.');
+  });
+});
+
+describe('mock — weakMockTopics (Фаза B5: спільна точка для weekly-review)', () => {
+  it('лише вага>1.0, спадаюче; без входу -> []', () => {
+    expect(weakMockTopics(undefined)).toEqual([]);
+    expect(weakMockTopics({ Алгоритми: 1.0, HTTP: 0.5 })).toEqual([]);
+    expect(weakMockTopics({ HTTP: 1.4, Алгоритми: 1.8, Мова: 1.0 })).toEqual(['Алгоритми', 'HTTP']);
+  });
+
+  it('buildMockPrompt дає ту саму сортовану підмножину у промпті', () => {
+    const weights = { HTTP: 1.4, Алгоритми: 1.8, Мова: 1.0 };
+    expect(buildMockPrompt(5, 'Junior', weights)).toContain(
+      `слабким темам кандидата: ${weakMockTopics(weights).join(', ')}`,
+    );
   });
 });
 

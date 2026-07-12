@@ -185,6 +185,17 @@ describe('formatRootMessage / formatTopicMessage — HTML-escape регресі�
     expect(msg).toContain('0/');
     expect(msg).toContain('IT-роадмеп');
   });
+
+  it('formatRootMessage/formatTopicMessage містять прогрес-бар (Фаза B4)', () => {
+    const evil = {
+      id: 'x',
+      title: 'X',
+      subtopics: [{ id: 'a', title: 'A' }],
+    };
+    // порожній прогрес, total>0 -> бар усіх ░ присутній
+    expect(formatRootMessage({})).toMatch(/[█░]{10} 0\//);
+    expect(formatTopicMessage(evil, {})).toMatch(/[█░]{10} 0\/1/);
+  });
 });
 
 describe('buildRootKeyboard / buildTopicKeyboard', () => {

@@ -199,7 +199,9 @@ export function createNotifier(opts: NotifierOptions): Notifier {
       // Без HTML — на випадок проблем із розміткою; обрізати під ліміт.
       const plain =
         text.length > TELEGRAM_HARD_LIMIT ? `${text.slice(0, TELEGRAM_HARD_LIMIT - 1)}…` : text;
-      await call('sendMessage', { chat_id: chatId, text: plain });
+      const body: Record<string, unknown> = { chat_id: chatId, text: plain };
+      if (threadId) body.message_thread_id = threadId;
+      await call('sendMessage', body);
     },
   };
 }

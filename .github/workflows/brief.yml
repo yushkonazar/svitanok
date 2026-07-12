@@ -94,6 +94,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TOPIC_BRIEFING: ${{ secrets.TOPIC_BRIEFING }} # опційно, Блок «Теми» (forum-супергрупа)
           TOPIC_ASSISTANT: ${{ secrets.TOPIC_ASSISTANT }} # опційно, Блок P2c (пропозиції співбесід)
+          TOPIC_SYSTEM: ${{ secrets.TOPIC_SYSTEM }} # опційно, Фаза B (fail-notify окремо від контенту)
           MINI_APP_URL: ${{ secrets.MINI_APP_URL }} # опційно, кнопка «Відкрити Mini App» у сповіщенні
           TELEGRAM_BOT_USERNAME: ${{ secrets.TELEGRAM_BOT_USERNAME }} # опційно, Direct Link Mini App (initData з групи)
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
