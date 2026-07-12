@@ -23,7 +23,13 @@ import {
   type Notifier,
   type OutboundMessage,
 } from './core/telegram.js';
-import { formatKyivDateHeader, formatKyivDateLabel, joinSummarySegments } from './core/render.js';
+import {
+  formatKyivDateHeader,
+  formatKyivDateLabel,
+  joinSummarySegments,
+  formatWeeklyReviewMessage,
+  type WeeklyReviewData,
+} from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
@@ -234,7 +240,15 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
         }
       : {}),
   };
-  const messages = [headerFull];
+  // Фаза B5: недільний підсумок тижня — окреме HTML-повідомлення в ТУ САМУ
+  // тему (topicBriefing), одразу після щоденного. weekly-review вже в blocks
+  // (Фаза 2, лише в неділю) — просто читаємо його data, без нового I/O.
+  const weeklyBlock = blocks.find((b) => b.id === 'weekly-review');
+  const toSend: OutboundMessage[] = [dailyMessage];
+  if (clock.isSunday() && weeklyBlock?.data) {
+    toSend.push({ text: formatWeeklyReviewMessage(weeklyBlock.data as WeeklyReviewData) });
+  }
+  const messages = toSend.map((m) => m.text);
 
   if (dryRun) {
     return { status: 'dry-run', reason: decision.reason, messages, quiet, briefing };
@@ -244,7 +258,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     throw new Error('Notifier відсутній у бойовому прогоні (немає критичних секретів)');
   }
 
-  await deps.notifier.send([dailyMessage]);
+  await deps.notifier.send(toSend);
 
   // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
   // подібна пропозиція (той самий формат state.assistantPending, що агент P2b пише

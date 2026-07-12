@@ -85,18 +85,23 @@ export function sanitizeMasteryFocus(raw: unknown): MasteryFocus | null {
   };
 }
 
+/** Слабкі теми (вага>1.0), спадаюче за вагою — та сама логіка, що buildMockPrompt
+ *  і Фаза A stats-core weakTopics; тепер спільна точка (нема дублювання). */
+export function weakMockTopics(weights?: MockWeights): string[] {
+  if (!weights) return [];
+  return Object.entries(weights)
+    .filter(([, w]) => w > 1.0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t]) => t);
+}
+
 export function buildMockPrompt(
   n: number,
   profile: string,
   weights?: MockWeights,
   focus?: MasteryFocus | null,
 ): string {
-  const weak = weights
-    ? Object.entries(weights)
-        .filter(([, w]) => w > 1.0)
-        .sort((a, b) => b[1] - a[1])
-        .map(([t]) => t)
-    : [];
+  const weak = weakMockTopics(weights);
   return [
     `Згенеруй рівно ${n} пар «питання–відповідь» для технічної співбесіди.`,
     `Профіль кандидата: ${profile}.`,

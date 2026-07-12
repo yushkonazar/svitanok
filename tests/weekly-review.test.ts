@@ -64,6 +64,27 @@ describe('weekly-review — модуль', () => {
     expect(block!.detail).toContain('OG-теги');
     expect(block!.detail).not.toContain('старе');
   });
+
+  it('Фаза B5: roadmapDone/weakTopics — читає ВЖЕ наявні ключі state без нового I/O', async () => {
+    const state = memState({
+      roadmapProgress: {
+        'frontend.html': '2026-07-01T00:00:00Z',
+        'react.hooks': '2026-07-02T00:00:00Z',
+      },
+      mockWeights: { Алгоритми: 1.6, HTTP: 1.0, Патерни: 1.2 },
+    });
+    const block = await weeklyReviewModule.run(ctx(state, sundayClock));
+    const data = block!.data as { roadmapDone: number; weakTopics: string[] };
+    expect(data.roadmapDone).toBe(2);
+    expect(data.weakTopics).toEqual(['Алгоритми', 'Патерни']); // спадаюче за вагою, HTTP(1.0) не слабка
+  });
+
+  it('порожній state -> roadmapDone=0, weakTopics=[] (не валить)', async () => {
+    const block = await weeklyReviewModule.run(ctx(memState(), sundayClock));
+    const data = block!.data as { roadmapDone: number; weakTopics: string[] };
+    expect(data.roadmapDone).toBe(0);
+    expect(data.weakTopics).toEqual([]);
+  });
 });
 
 describe('buildPruners', () => {
@@ -130,7 +151,7 @@ const baseConfig = {
 };
 
 describe('runBriefing — неділя', () => {
-  it('weekly-review показується навіть у «тихий день» (quiet=false)', async () => {
+  it('weekly-review показується навіть у «тихий день» (quiet=false); Фаза B5: окремий Telegram-пост', async () => {
     const notifier = fakeNotifier();
     const deps: RunDeps = {
       config: parseConfig(baseConfig),
@@ -147,11 +168,35 @@ describe('runBriefing — неділя', () => {
     };
     const res = await runBriefing(deps);
     expect(res.quiet).toBe(false); // неділя ніколи не тиха
-    // Контент тижневого підсумку — у briefing.json (Mini App), НЕ в чаті
-    // (чат тепер лише [дата]).
     const reviewBlock = res.briefing.blocks.find((b) => b.id === 'weekly-review');
     expect(reviewBlock?.title).toBe('Підсумок тижня');
     expect((reviewBlock?.data as { steps: string[] })?.steps).toContain('OG-теги');
-    expect(notifier.sent[0]!.join('\n')).not.toContain('Підсумок тижня');
+    // Фаза B5: тепер СПРАВДІ йде другим повідомленням у чат (той самий send-
+    // виклик, той самий topicBriefing) — раніше чат отримував лише [дата].
+    expect(notifier.sent).toHaveLength(1); // один виклик .send() з 2 повідомленнями
+    expect(notifier.sent[0]).toHaveLength(2);
+    expect(notifier.sent[0]![1]).toContain('Підсумок тижня');
+    expect(notifier.sent[0]![1]).toContain('Кроків до офера: 1');
+  });
+
+  it('НЕ неділя -> weekly-review блок відсутній, чат отримує лише [дата] (без регресії)', async () => {
+    const notifier = fakeNotifier();
+    const notSunday: Clock = { ...sundayClock, isSunday: () => false };
+    const deps: RunDeps = {
+      config: parseConfig(baseConfig),
+      clock: notSunday,
+      state: memState(),
+      bus: createRunBus(),
+      llm: { complete: async () => '' },
+      fetcher: { fetch: async () => '' },
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      modules: [weeklyReviewModule],
+      notifier,
+      assistantNotifier: null,
+      miniAppUrl: null,
+    };
+    await runBriefing(deps);
+    expect(notifier.sent[0]).toHaveLength(1);
+    expect(notifier.sent[0]![0]).not.toContain('Підсумок тижня');
   });
 });
