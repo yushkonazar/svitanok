@@ -1123,7 +1123,11 @@ async function deadMansCheck(env) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       chat_id: env.TELEGRAM_CHAT_ID,
-      message_thread_id: env.TOPIC_BRIEFING ?? undefined,
+      // Фаза B: тема «⚠️ Система» (операційні алерти окремо від контенту
+      // брифінгу). TOPIC_SYSTEM не заведено -> фолбек на стару поведінку
+      // (TOPIC_BRIEFING), щоб алерт не «загубився» для власників, які ще
+      // не створили нову тему.
+      message_thread_id: env.TOPIC_SYSTEM ?? env.TOPIC_BRIEFING ?? undefined,
       text: '⚠️ Свiтанок: ранковий брифінг сьогодні не доставлено (KV не оновлено). Перевір GitHub Actions → workflow «brief».',
     }),
   });

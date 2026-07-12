@@ -352,6 +352,9 @@ async function main(): Promise<void> {
           log,
         })
       : null;
+  // TOPIC_SYSTEM — тема «⚠️ Система» (Фаза B): fail-notify (нижче) сюди замість
+  // завжди-General. Не задано -> лишається стара поведінка (unscoped/General).
+  const topicSystem = optionalSecret('TOPIC_SYSTEM');
   // MINI_APP_URL — origin розгорнутого Worker/Mini App (напр. https://svitanok.
   // <акаунт>.workers.dev), для кнопки в щоденному сповіщенні. Не задано ->
   // сповіщення йде без кнопки (graceful, не блокує брифінг).
@@ -404,13 +407,14 @@ async function main(): Promise<void> {
     }
   } catch (e) {
     log.error(`оркестратор впав: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
-    await failNotify(e, log);
+    await failNotify(e, log, topicSystem);
     process.exitCode = 1;
   }
 }
 
-/** Top-level fail-notify напряму через bot token (§4.1). */
-async function failNotify(error: unknown, log: Logger): Promise<void> {
+/** Top-level fail-notify напряму через bot token (§4.1). threadId — тема
+ *  «⚠️ Система» (TOPIC_SYSTEM), якщо задано; інакше unscoped/General. */
+async function failNotify(error: unknown, log: Logger, threadId?: string): Promise<void> {
   const token = optionalSecret('TELEGRAM_BOT_TOKEN');
   const chatId = optionalSecret('TELEGRAM_CHAT_ID');
   if (!token || !chatId) {
@@ -418,7 +422,7 @@ async function failNotify(error: unknown, log: Logger): Promise<void> {
     return;
   }
   try {
-    const notifier = createNotifier({ token, chatId, log });
+    const notifier = createNotifier({ token, chatId, threadId, log });
     const msg = error instanceof Error ? error.message : String(error);
     await notifier.failNotify(`⚠️ Svitanok: брифінг впав — ${msg}`);
   } catch (e) {
