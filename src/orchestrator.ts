@@ -208,7 +208,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     ?.count;
   const summaryLine = joinSummarySegments([
     weatherLoc
-      ? `${weatherLoc.emoji} ${weatherLoc.name} ${weatherLoc.tempC > 0 ? '+' : ''}${weatherLoc.tempC}°`
+      ? `${weatherLoc.emoji} ${escapeHtml(weatherLoc.name)} ${weatherLoc.tempC > 0 ? '+' : ''}${weatherLoc.tempC}°`
       : null,
     firstEvent
       ? `📅 ${firstEvent.time ? `${firstEvent.time} ` : ''}${escapeHtml(firstEvent.title)}`
@@ -244,10 +244,11 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // тему (topicBriefing), одразу після щоденного. weekly-review вже в blocks
   // (Фаза 2, лише в неділю) — просто читаємо його data, без нового I/O.
   const weeklyBlock = blocks.find((b) => b.id === 'weekly-review');
-  const toSend: OutboundMessage[] = [dailyMessage];
-  if (clock.isSunday() && weeklyBlock?.data) {
-    toSend.push({ text: formatWeeklyReviewMessage(weeklyBlock.data as WeeklyReviewData) });
-  }
+  const weeklyMessage: OutboundMessage | undefined =
+    clock.isSunday() && weeklyBlock?.data
+      ? { text: formatWeeklyReviewMessage(weeklyBlock.data as WeeklyReviewData) }
+      : undefined;
+  const toSend: OutboundMessage[] = weeklyMessage ? [dailyMessage, weeklyMessage] : [dailyMessage];
   const messages = toSend.map((m) => m.text);
 
   if (dryRun) {
@@ -258,7 +259,20 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     throw new Error('Notifier відсутній у бойовому прогоні (немає критичних секретів)');
   }
 
-  await deps.notifier.send(toSend);
+  // Щоденне — критичне: провал кидає далі й блокує lastSentDate (§4.2, нижче).
+  // Недільний підсумок шлемо ОКРЕМИМ send() best-effort — його провал (напр.
+  // транзиєнтна HTTP-помилка чи задовгий текст) не має ретригерити повторну
+  // відправку вже доставленого щоденного повідомлення при наступному запуску.
+  await deps.notifier.send([dailyMessage]);
+  if (weeklyMessage) {
+    try {
+      await deps.notifier.send([weeklyMessage]);
+    } catch (e) {
+      log.warn(
+        `weekly-review: недільний підсумок не надіслано: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 
   // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
   // подібна пропозиція (той самий формат state.assistantPending, що агент P2b пише

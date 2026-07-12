@@ -289,6 +289,21 @@ describe('runBriefing — короткий рядок дня (Фаза B3)', () 
     expect(notifier.sent[0]![0]).toContain('&lt;b&gt;Злий&lt;/b&gt; тайтл');
   });
 
+  it("назва локації погоди екранується (HTML-safe, §код-рев'ю)", async () => {
+    const notifier = fakeNotifier();
+    await runBriefing(
+      deps({
+        notifier,
+        modules: [
+          mod('weather', 'producer', async () =>
+            weatherBlock([{ emoji: '⛅', name: '<b>Львів</b> & area', tempC: 18 }]),
+          ),
+        ],
+      }),
+    );
+    expect(notifier.sent[0]![0]).toContain('&lt;b&gt;Львів&lt;/b&gt; &amp; area');
+  });
+
   it('mailCount=0 -> сегмент не додається (не «0 листів»)', async () => {
     const notifier = fakeNotifier();
     await runBriefing(

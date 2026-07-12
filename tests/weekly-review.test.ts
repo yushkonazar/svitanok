@@ -171,12 +171,15 @@ describe('runBriefing — неділя', () => {
     const reviewBlock = res.briefing.blocks.find((b) => b.id === 'weekly-review');
     expect(reviewBlock?.title).toBe('Підсумок тижня');
     expect((reviewBlock?.data as { steps: string[] })?.steps).toContain('OG-теги');
-    // Фаза B5: тепер СПРАВДІ йде другим повідомленням у чат (той самий send-
-    // виклик, той самий topicBriefing) — раніше чат отримував лише [дата].
-    expect(notifier.sent).toHaveLength(1); // один виклик .send() з 2 повідомленнями
-    expect(notifier.sent[0]).toHaveLength(2);
-    expect(notifier.sent[0]![1]).toContain('Підсумок тижня');
-    expect(notifier.sent[0]![1]).toContain('Кроків до офера: 1');
+    // Фаза B5: тепер СПРАВДІ йде другим повідомленням у чат (той самий
+    // topicBriefing) — раніше чат отримував лише [дата]. Окремий .send()-
+    // виклик (best-effort, §код-рев'ю): провал недільного посту не має
+    // блокувати вже доставлене щоденне (lastSentDate).
+    expect(notifier.sent).toHaveLength(2); // два виклики .send() — щоденний + недільний
+    expect(notifier.sent[0]).toHaveLength(1);
+    expect(notifier.sent[1]).toHaveLength(1);
+    expect(notifier.sent[1]![0]).toContain('Підсумок тижня');
+    expect(notifier.sent[1]![0]).toContain('Кроків до офера: 1');
   });
 
   it('НЕ неділя -> weekly-review блок відсутній, чат отримує лише [дата] (без регресії)', async () => {
