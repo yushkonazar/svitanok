@@ -1306,6 +1306,7 @@
           --border: rgba(20, 24, 40, 0.1);
           --border-2: rgba(20, 24, 40, 0.07);
           --line: rgba(20, 24, 40, 0.09);
+          --track: rgba(20, 24, 40, 0.08);
           --shadow: 0 8px 26px rgba(60, 50, 80, 0.12);
           --on-accent: #241203;
           color-scheme: light;
@@ -1332,9 +1333,6 @@
         :root:not(.theme-dark) .subnav {
           background: rgba(255, 255, 255, 0.5);
         }
-        :root:not(.theme-dark) {
-          --track: rgba(20, 24, 40, 0.08);
-        }
       }
       /* Явна світла тема з Telegram (перекриває навіть у dark-OS) */
       :root.theme-light {
@@ -1347,6 +1345,7 @@
         --border: rgba(20, 24, 40, 0.1);
         --border-2: rgba(20, 24, 40, 0.07);
         --line: rgba(20, 24, 40, 0.09);
+        --track: rgba(20, 24, 40, 0.08);
         --shadow: 0 8px 26px rgba(60, 50, 80, 0.12);
         color-scheme: light;
       }
@@ -1371,9 +1370,6 @@
       :root.theme-light nav,
       :root.theme-light .subnav {
         background: rgba(255, 255, 255, 0.5);
-      }
-      :root.theme-light {
-        --track: rgba(20, 24, 40, 0.08);
       }
     </style>
   </head>
@@ -1597,18 +1593,28 @@
         return `<div class="heatmap" role="img" aria-label="теплокарта активності за 12 тижнів"><div class="hm-labels">${labels}</div>${colHtml}</div>`;
       }
 
-      // Гістограма: bars = [{label, count}] — каркас weekbars + лічильник згори.
-      function histogram(bars) {
-        if (!Array.isArray(bars) || !bars.some((b) => (b.count || 0) > 0)) return '';
-        const max = Math.max(1, ...bars.map((b) => b.count || 0));
-        const cols = bars
-          .map((b) => {
-            const off = !(b.count > 0);
-            const hpct = Math.round(((b.count || 0) / max) * 100);
-            return `<div class="col"><div class="cnt">${b.count || ''}</div><div class="bar ${off ? 'off' : ''}" style="height:${off ? 3 : Math.max(6, hpct)}%"></div><div class="d">${esc(b.label)}</div></div>`;
+      // Спільний каркас вертикальних барів (тижнева сітка + гістограма):
+      // items = [{label, value}] — одна геометрія, щоб чарти не розїжджались.
+      function barsChart(items, { showCount = false, cls = '' } = {}) {
+        const max = Math.max(1, ...items.map((x) => x.value || 0));
+        const cols = items
+          .map((x) => {
+            const off = !(x.value > 0);
+            const hpct = Math.round(((x.value || 0) / max) * 100);
+            const cnt = showCount ? `<div class="cnt">${x.value || ''}</div>` : '';
+            return `<div class="col">${cnt}<div class="bar ${off ? 'off' : ''}" style="height:${off ? 3 : Math.max(6, hpct)}%"></div><div class="d">${esc(x.label)}</div></div>`;
           })
           .join('');
-        return `<div class="weekbars hist">${cols}</div>`;
+        return `<div class="weekbars${cls ? ' ' + cls : ''}">${cols}</div>`;
+      }
+
+      // Гістограма: bars = [{label, count}] — каркас barsChart + лічильник згори.
+      function histogram(bars) {
+        if (!Array.isArray(bars) || !bars.some((b) => (b.count || 0) > 0)) return '';
+        return barsChart(
+          bars.map((b) => ({ label: b.label, value: b.count || 0 })),
+          { showCount: true, cls: 'hist' },
+        );
       }
 
       function deltaBadge(curr, prev, digits = 2, unit = '') {
@@ -2555,15 +2561,7 @@
 
       function weekbars(weekly) {
         if (!Array.isArray(weekly) || !weekly.length) return ph('Немає даних за тиждень');
-        const max = Math.max(1, ...weekly.map((d) => d.value || 0));
-        const cols = weekly
-          .map((d) => {
-            const hpct = Math.round(((d.value || 0) / max) * 100);
-            const off = !d.value;
-            return `<div class="col"><div class="bar ${off ? 'off' : ''}" style="height:${off ? 3 : Math.max(6, hpct)}%"></div><div class="d">${esc(d.day)}</div></div>`;
-          })
-          .join('');
-        return `<div class="weekbars">${cols}</div>`;
+        return barsChart(weekly.map((d) => ({ label: d.day, value: d.value || 0 })));
       }
 
       function barList(arr, unit = '', emptyTxt = 'Поки порожньо') {
@@ -3219,17 +3217,32 @@
         readPerDay: 6,
         reliability: { onTime: 28, total: 30, deadman: 1 },
         heatmap: (() => {
-          // Демо-теплокарта: детермінований візерунок, вирівняний на понеділок,
-          // ті самі пороги рівнів, що на сервері (stats-core buildHeatmap).
+          // Демо-теплокарта: детермінований візерунок, вирівняний на понеділок.
+          // Рівні l — ГОТОВІ літерали (пораховані за порогами stats-core
+          // buildHeatmap), щоб не дублювати серверну формулу на клієнті.
           const out = [];
           const d = new Date();
           d.setDate(d.getDate() - 83);
           d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
           const today = new Date();
-          const pattern = [0, 1, 3, 2, 0, 4, 1, 2, 7, 0, 1, 5, 2, 3];
+          const pattern = [
+            [0, 0],
+            [1, 1],
+            [3, 2],
+            [2, 2],
+            [0, 0],
+            [4, 3],
+            [1, 1],
+            [2, 2],
+            [7, 4],
+            [0, 0],
+            [1, 1],
+            [5, 3],
+            [2, 2],
+            [3, 2],
+          ];
           for (let i = 0; d <= today; d.setDate(d.getDate() + 1), i++) {
-            const v = pattern[i % pattern.length];
-            const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
+            const [v, l] = pattern[i % pattern.length];
             out.push({ d: d.toISOString().slice(0, 10), v, l });
           }
           return out;

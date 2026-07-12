@@ -349,10 +349,12 @@ async function handleEvent(request, env) {
 async function handleStats(request, env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
-  const stats = aggregateStats(await loadStats(env), kyivDateKey());
+  // Два незалежні KV-читання — паралельно (найгарячіший читальний шлях).
+  const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
+  const stats = aggregateStats(store, kyivDateKey());
   // roadmap/mastery — окремий KV-блоб (state, не stats); aggregateStats лишається
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
-  const progress = (await loadState(env)).roadmapProgress ?? {};
+  const progress = state.roadmapProgress ?? {};
   stats.roadmap = totalProgress(progress);
   // A4: звʼязка mock↔roadmap для дашборда — слабкі теми -> «куди вчитись»,
   // «тема тижня» -> фокус наступного mock-батчу.
@@ -1046,6 +1048,14 @@ async function updateMasteryFocus(env) {
   try {
     const state = await loadState(env);
     const focus = themeOfWeek(state.roadmapProgress ?? {}, kyivDateKey());
+    // Тема детермінована на тиждень -> 6/7 щоденних записів були б ідентичні.
+    // Пропускаємо no-op: кожен зайвий read-modify-write усього state-блоба —
+    // дармове вікно клобберу конкурентних писарів (вебхук/події).
+    const cur = state.masteryFocus;
+    const same =
+      (focus === null && cur === null) ||
+      (focus && cur && cur.week === focus.week && cur.topicId === focus.topicId);
+    if (same) return;
     state.masteryFocus = focus; // null коли роадмеп завершено — теж валідний стан
     await env.BRIEFING.put('state', JSON.stringify(state));
   } catch (e) {
@@ -1089,8 +1099,12 @@ async function deadMansCheck(env) {
     /* биття JSON -> вважаємо несвіжим -> алерт */
   }
   // Облік доставки — до гейта секретів (не потребує Telegram-крендів).
-  const stats = recordReliability(await loadStats(env), today, fresh);
-  await env.BRIEFING.put('stats', JSON.stringify(stats));
+  // ПИШЕМО лише коли день ще не облікований: зайвий read-modify-write ідентичного
+  // блоба — дармове вікно клобберу конкурентних /api/event (та сама дисципліна, що H2).
+  const store = await loadStats(env);
+  if (store?.reliability?.lastCheckDate !== today) {
+    await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
+  }
   if (fresh) return;
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
     console.error('TELEGRAM_* відсутні — dead-man пропущено');

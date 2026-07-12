@@ -96,7 +96,10 @@ export function weekStartKey(dateKey) {
 
 // Тижневих кошиків інтересів тримаємо пів року — тренду вистачає 6 тижнів.
 const WEEKLY_CAP = 26;
-const bumpInterestWeekly = (s, dateKey, topic, by) => {
+/** ЄДИНА точка інкременту інтересу: сумарний бал + тижневий кошик разом —
+ *  щоб нова подія не могла підняти чипи, забувши тренд (або навпаки). */
+const bumpInterest = (s, dateKey, topic, by = 1) => {
+  bump(s.interests, topic, by);
   const wk = weekStartKey(dateKey);
   if (!s.interestsWeekly[wk] || typeof s.interestsWeekly[wk] !== 'object')
     s.interestsWeekly[wk] = {};
@@ -122,10 +125,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       break;
     case 'news_click':
       bump(dayBucket(s, dateKey), 'news');
-      if (ev.category) {
-        bump(s.interests, ev.category);
-        bumpInterestWeekly(s, dateKey, ev.category, 1);
-      }
+      if (ev.category) bumpInterest(s, dateKey, ev.category, 1);
       break;
     case 'save_news':
       if (ev.url && !s.saved.some((x) => x.url === ev.url)) {
@@ -136,10 +136,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
           category: ev.category || '',
           ts: dateKey,
         });
-        if (ev.category) {
-          bump(s.interests, ev.category, 2);
-          bumpInterestWeekly(s, dateKey, ev.category, 2);
-        }
+        if (ev.category) bumpInterest(s, dateKey, ev.category, 2);
       }
       break;
     case 'unsave_news':
@@ -150,21 +147,14 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       // клієнт (детермінований хеш тексту) — стабільний ключ дедупу замість url.
       if (ev.kind && ev.id && !s.saved.some((x) => x.kind === ev.kind && x.id === ev.id)) {
         s.saved.unshift({ kind: ev.kind, id: ev.id, title: ev.title || '', ts: dateKey });
-        if (ev.topic) {
-          bump(s.interests, ev.topic, 2);
-          bumpInterestWeekly(s, dateKey, ev.topic, 2);
-        }
+        if (ev.topic) bumpInterest(s, dateKey, ev.topic, 2);
       }
       break;
     case 'unsave_item':
       s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
     case 'vote':
-      if (ev.category) {
-        const by = ev.dir === 'down' ? -1 : 1;
-        bump(s.interests, ev.category, by);
-        bumpInterestWeekly(s, dateKey, ev.category, by);
-      }
+      if (ev.category) bumpInterest(s, dateKey, ev.category, ev.dir === 'down' ? -1 : 1);
       break;
     case 'job_stage':
       if (ev.url) {
@@ -275,7 +265,8 @@ const median = (arr) => {
 function buildHeatmap(days, todayKey) {
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 83);
-  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); // до понеділка
+  // до понеділка — тим самим weekStartKey, що й тижневі кошики (одна конвенція)
+  d.setTime(Date.parse(weekStartKey(d.toISOString().slice(0, 10)) + 'T00:00:00Z'));
   const out = [];
   for (;;) {
     const k = d.toISOString().slice(0, 10);

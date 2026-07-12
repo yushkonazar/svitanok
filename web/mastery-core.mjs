@@ -27,14 +27,21 @@ export const MOCK_TO_ROADMAP = {
   'AI/LLM': ['ai-dev'],
 };
 
-/** Зворотна мапа: id теми роадмепу -> mock-теми (порожньо для roadmap-only тем). */
-export function roadmapToMock() {
+/** Зворотна мапа: id теми роадмепу -> mock-теми (порожньо для roadmap-only тем).
+ *  Обидва входи — модульні константи, тож рахуємо раз і заморожуємо (Worker
+ *  кличе це на кожен /api/stats). */
+const ROADMAP_TO_MOCK = (() => {
   const out = {};
   for (const t of ROADMAP_TOPICS) out[t.id] = [];
   for (const [mockTopic, ids] of Object.entries(MOCK_TO_ROADMAP)) {
     for (const id of ids) if (out[id]) out[id].push(mockTopic);
   }
-  return out;
+  for (const k of Object.keys(out)) Object.freeze(out[k]);
+  return Object.freeze(out);
+})();
+
+export function roadmapToMock() {
+  return ROADMAP_TO_MOCK;
 }
 
 /**
@@ -67,18 +74,21 @@ export function masteryHints(weakTopics, progress) {
  */
 export function themeOfWeek(progress, dateKey) {
   const p = progress && typeof progress === 'object' ? progress : {};
-  const incomplete = ROADMAP_TOPICS.filter((t) => topicProgress(p, t).done < t.subtopics.length);
+  // Один прохід topicProgress: і фільтр незавершеності, і done/total звідси —
+  // щоб визначення «завершено» не розійшлося з тим, що показує UI.
+  const incomplete = ROADMAP_TOPICS.map((t) => ({ t, ...topicProgress(p, t) })).filter(
+    (x) => x.done < x.total,
+  );
   if (!incomplete.length) return null;
   const week = weekStartKey(dateKey);
   const weekIdx = Math.round(Date.parse(week + 'T00:00:00Z') / 604800000);
-  const t = incomplete[((weekIdx % incomplete.length) + incomplete.length) % incomplete.length];
-  const { done, total } = topicProgress(p, t);
+  const pick = incomplete[((weekIdx % incomplete.length) + incomplete.length) % incomplete.length];
   return {
     week,
-    topicId: t.id,
-    title: t.title,
-    done,
-    total,
-    mockTopics: roadmapToMock()[t.id] ?? [],
+    topicId: pick.t.id,
+    title: pick.t.title,
+    done: pick.done,
+    total: pick.total,
+    mockTopics: ROADMAP_TO_MOCK[pick.t.id] ?? [],
   };
 }
