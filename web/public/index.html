@@ -52,6 +52,10 @@
         --warn: #ffb03a;
         --bad: #ff6b86;
 
+        /* рецесивний «трек» під графіками (порожні бари/доріжки/клітинки) —
+           одна змінна, темується разом із базою (у світлій темі білі альфи невидимі) */
+        --track: rgba(255, 255, 255, 0.07);
+
         --radius: 16px;
         --safe-top: env(safe-area-inset-top, 0px);
         --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -1054,7 +1058,7 @@
         background: var(--glass-2);
         border: 1px solid var(--border-2);
         border-radius: 13px;
-        padding: 14px 12px;
+        padding: 16px 12px 14px;
         text-align: center;
       }
       .streak .fire {
@@ -1068,9 +1072,11 @@
       }
       .streak .n {
         font-family: 'Unbounded', 'Golos Text', sans-serif;
-        font-size: 27px;
+        font-size: 28px;
         font-weight: 700;
         line-height: 1.15;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
       }
       .streak .t {
         font-size: 11.5px;
@@ -1104,7 +1110,7 @@
         min-height: 3px;
       }
       .weekbars .bar.off {
-        background: rgba(255, 255, 255, 0.09);
+        background: var(--track);
       }
       .weekbars .d {
         font-size: 10px;
@@ -1127,7 +1133,7 @@
       .bar-row .track {
         flex: 1;
         height: 8px;
-        background: rgba(255, 255, 255, 0.06);
+        background: var(--track);
         border-radius: 4px;
         overflow: hidden;
       }
@@ -1159,6 +1165,7 @@
         color: var(--accent-2);
         margin-left: 5px;
         font-weight: 600;
+        font-variant-numeric: tabular-nums;
       }
       .statline {
         display: flex;
@@ -1177,11 +1184,12 @@
       }
       .statline .v {
         font-weight: 600;
+        font-variant-numeric: tabular-nums;
       }
       /* прогрес до цілі */
       .goalbar {
         height: 12px;
-        background: rgba(255, 255, 255, 0.06);
+        background: var(--track);
         border-radius: 6px;
         overflow: hidden;
         margin: 8px 0;
@@ -1229,8 +1237,8 @@
         width: 11px;
         height: 11px;
         border-radius: 3px;
-        /* порожня клітинка — через змінну (перекривається темою без гонки специфічності) */
-        background: var(--hm-empty, rgba(255, 255, 255, 0.07));
+        /* порожня клітинка — той самий темований трек, що й бари/доріжки */
+        background: var(--track);
       }
       .hm-c.l1 {
         background: rgba(255, 122, 89, 0.28);
@@ -1325,7 +1333,7 @@
           background: rgba(255, 255, 255, 0.5);
         }
         :root:not(.theme-dark) {
-          --hm-empty: rgba(20, 24, 40, 0.08);
+          --track: rgba(20, 24, 40, 0.08);
         }
       }
       /* Явна світла тема з Telegram (перекриває навіть у dark-OS) */
@@ -1365,7 +1373,7 @@
         background: rgba(255, 255, 255, 0.5);
       }
       :root.theme-light {
-        --hm-empty: rgba(20, 24, 40, 0.08);
+        --track: rgba(20, 24, 40, 0.08);
       }
     </style>
   </head>
