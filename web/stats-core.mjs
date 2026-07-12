@@ -8,6 +8,7 @@
 //   funnelMeta:{ '<url>': { title, ts } }                    // мета стадії (для списку)
 //   saved:     [ { kind, url?, title, category?, ts } ]       // обране: news/fact/quote/question
 //   interests: { '<topic>': score }                          // з голосів/кліків
+//   interestsWeekly:{ '<пн-YYYY-MM-DD>': { topic: score } }  // тижневі кошики інтересів (тренд)
 //   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock
 //   goal:      { weeklyTarget }
 //   fitApplied:[ int ]                                       // fit% поданих вакансій
@@ -25,6 +26,7 @@ export function emptyStore() {
     funnelMeta: {},
     saved: [],
     interests: {},
+    interestsWeekly: {},
     mockTopics: {},
     goal: { weeklyTarget: 5 },
     fitApplied: [],
@@ -44,6 +46,10 @@ export function normalize(s) {
     funnelMeta: s.funnelMeta && typeof s.funnelMeta === 'object' ? s.funnelMeta : e.funnelMeta,
     saved: Array.isArray(s.saved) ? s.saved : e.saved,
     interests: s.interests && typeof s.interests === 'object' ? s.interests : e.interests,
+    interestsWeekly:
+      s.interestsWeekly && typeof s.interestsWeekly === 'object'
+        ? s.interestsWeekly
+        : e.interestsWeekly,
     mockTopics: s.mockTopics && typeof s.mockTopics === 'object' ? s.mockTopics : e.mockTopics,
     goal: { weeklyTarget: Number(s.goal?.weeklyTarget) || e.goal.weeklyTarget },
     fitApplied: Array.isArray(s.fitApplied) ? s.fitApplied : e.fitApplied,
@@ -81,6 +87,24 @@ const capPush = (arr, v) => {
   if (arr.length > HISTORY_CAP) arr.splice(0, arr.length - HISTORY_CAP);
 };
 
+/** Понеділок тижня, що містить dateKey (ключ тижневих кошиків/трендів). */
+export function weekStartKey(dateKey) {
+  const d = new Date(dateKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+// Тижневих кошиків інтересів тримаємо пів року — тренду вистачає 6 тижнів.
+const WEEKLY_CAP = 26;
+const bumpInterestWeekly = (s, dateKey, topic, by) => {
+  const wk = weekStartKey(dateKey);
+  if (!s.interestsWeekly[wk] || typeof s.interestsWeekly[wk] !== 'object')
+    s.interestsWeekly[wk] = {};
+  bump(s.interestsWeekly[wk], topic, by);
+  const keys = Object.keys(s.interestsWeekly).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - WEEKLY_CAP))) delete s.interestsWeekly[k];
+};
+
 /**
  * Застосувати подію до стору (мутує й повертає його). `ev.type`:
  *  open · news_click · save_news · unsave_news · save_item · unsave_item ·
@@ -98,7 +122,10 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       break;
     case 'news_click':
       bump(dayBucket(s, dateKey), 'news');
-      if (ev.category) bump(s.interests, ev.category);
+      if (ev.category) {
+        bump(s.interests, ev.category);
+        bumpInterestWeekly(s, dateKey, ev.category, 1);
+      }
       break;
     case 'save_news':
       if (ev.url && !s.saved.some((x) => x.url === ev.url)) {
@@ -109,7 +136,10 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
           category: ev.category || '',
           ts: dateKey,
         });
-        if (ev.category) bump(s.interests, ev.category, 2);
+        if (ev.category) {
+          bump(s.interests, ev.category, 2);
+          bumpInterestWeekly(s, dateKey, ev.category, 2);
+        }
       }
       break;
     case 'unsave_news':
@@ -120,14 +150,21 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       // клієнт (детермінований хеш тексту) — стабільний ключ дедупу замість url.
       if (ev.kind && ev.id && !s.saved.some((x) => x.kind === ev.kind && x.id === ev.id)) {
         s.saved.unshift({ kind: ev.kind, id: ev.id, title: ev.title || '', ts: dateKey });
-        if (ev.topic) bump(s.interests, ev.topic, 2);
+        if (ev.topic) {
+          bump(s.interests, ev.topic, 2);
+          bumpInterestWeekly(s, dateKey, ev.topic, 2);
+        }
       }
       break;
     case 'unsave_item':
       s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
     case 'vote':
-      if (ev.category) bump(s.interests, ev.category, ev.dir === 'down' ? -1 : 1);
+      if (ev.category) {
+        const by = ev.dir === 'down' ? -1 : 1;
+        bump(s.interests, ev.category, by);
+        bumpInterestWeekly(s, dateKey, ev.category, by);
+      }
       break;
     case 'job_stage':
       if (ev.url) {
@@ -232,6 +269,82 @@ const median = (arr) => {
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
 
+/** Теплокарта активності: від понеділка ~12 тижнів тому до сьогодні (вкл.).
+ *  value = сума дій дня (opens+mock+step+news), level 0..4 — фіксовані пороги,
+ *  щоб колір мав стале значення день у день. */
+function buildHeatmap(days, todayKey) {
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 83);
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); // до понеділка
+  const out = [];
+  for (;;) {
+    const k = d.toISOString().slice(0, 10);
+    if (k > todayKey) break;
+    const day = days[k];
+    const v = (day?.opens || 0) + (day?.mock || 0) + (day?.step || 0) + (day?.news || 0);
+    const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
+    out.push({ d: k, v, l });
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
+function lastWeekStarts(todayKey, n) {
+  const d = new Date(weekStartKey(todayKey) + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 7 * (n - 1));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 7);
+  }
+  return out;
+}
+
+/** Подачі по тижнях (останні 8, нульові тижні присутні; поточний — частковий). */
+function buildAppliedWeekly(appliedLog, todayKey, weeks = 8) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const counts = Object.fromEntries(starts.map((k) => [k, 0]));
+  for (const a of appliedLog) {
+    const wk = isDateKey(a?.ts) ? weekStartKey(a.ts) : null;
+    if (wk && counts[wk] != null) counts[wk]++;
+  }
+  return starts.map((k) => ({ week: k, count: counts[k] }));
+}
+
+/** Розподіл fit% поданих вакансій за фіксованими кошиками. */
+const FIT_BUCKETS = [
+  ['<50', 0, 49],
+  ['50–59', 50, 59],
+  ['60–69', 60, 69],
+  ['70–79', 70, 79],
+  ['80–89', 80, 89],
+  ['90+', 90, Infinity],
+];
+function buildFitHistogram(fitApplied) {
+  return FIT_BUCKETS.map(([label, lo, hi]) => ({
+    label,
+    count: fitApplied.filter((f) => Number(f) >= lo && Number(f) <= hi).length,
+  }));
+}
+
+/** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів. */
+function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, topN = 5) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const topics = Object.entries(interests)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([t]) => t);
+  return {
+    weeks: starts,
+    topics: topics.map((topic) => ({
+      topic,
+      series: starts.map((wk) => Number(interestsWeekly[wk]?.[topic]) || 0),
+    })),
+  };
+}
+
 /** Агрегувати стор у контракт /api/stats. `todayKey`="YYYY-MM-DD" київський. */
 export function aggregateStats(store, todayKey) {
   const s = normalize(store);
@@ -328,6 +441,12 @@ export function aggregateStats(store, todayKey) {
       ts: x.ts || '',
     })),
     mock: { weakTopics, streak: streak(s.days, todayKey, mocked) },
+    // A2: розширені метрики (питання власника: стабільність / темп подач /
+    // на що подаюсь / як змінюються інтереси).
+    heatmap: buildHeatmap(s.days, todayKey),
+    appliedWeekly: buildAppliedWeekly(s.appliedLog, todayKey),
+    fitHistogram: buildFitHistogram(s.fitApplied),
+    interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey),
     // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
     // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб
     // цей чистий агрегатор не знав про roadmap-контент.
