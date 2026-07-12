@@ -211,6 +211,59 @@ describe('stats-core — aggregateStats', () => {
   });
 });
 
+describe('stats-core — межі й стійкість (аудит A5)', () => {
+  it('грейс стріку: сьогодні ще без дії -> стрік від учора, не 0', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'open' }, '2026-07-05');
+    s = recordEvent(s, { type: 'open' }, '2026-07-06');
+    // 07-го ще не відкривав — стрік не зламано
+    expect(aggregateStats(s, '2026-07-07').streaks.openDays).toBe(2);
+    // відкрив 07-го — стрік включає сьогодні
+    s = recordEvent(s, { type: 'open' }, '2026-07-07');
+    expect(aggregateStats(s, '2026-07-07').streaks.openDays).toBe(3);
+  });
+
+  it('грейс НЕ рятує розрив: пропущений учорашній день ламає стрік', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'open' }, '2026-07-05'); // позавчора
+    expect(aggregateStats(s, '2026-07-07').streaks.openDays).toBe(0);
+  });
+
+  it('readPerDay: день із news_click без open рахується у знаменнику', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'open' }, '2026-07-06');
+    for (let i = 0; i < 3; i++)
+      s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
+    for (let i = 0; i < 3; i++)
+      s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-07'); // без open
+    expect(aggregateStats(s, '2026-07-07').readPerDay).toBe(3); // 6 кліків / 2 дні
+  });
+
+  it('битий dateKey не валить і не засмічує стор ключем "undefined"', () => {
+    let s = emptyStore();
+    expect(() => (s = recordEvent(s, { type: 'open' }, undefined as never))).not.toThrow();
+    expect(Object.keys(s.days)).toEqual([]);
+    expect(() => aggregateStats(s, 'сміття' as never)).not.toThrow();
+    const st = aggregateStats(s, undefined as never);
+    expect(st.weekly).toHaveLength(7);
+    expect(st.streaks.openDays).toBe(0);
+  });
+
+  it('битий day-bucket (примітив у days) пересоздається, не кидає', () => {
+    const corrupt = { days: { '2026-07-07': 5 } };
+    const s = recordEvent(corrupt, { type: 'open' }, '2026-07-07');
+    expect(s.days['2026-07-07'].opens).toBe(1);
+  });
+
+  it('opensMin капиться (історія не росте безмежно)', () => {
+    let s = emptyStore();
+    for (let i = 0; i < 370; i++) s = recordEvent(s, { type: 'open' }, '2026-07-07', i);
+    expect(s.opensMin).toHaveLength(365);
+    expect(s.opensMin[0]).toBe(5); // найстаріші зрізано, останні 365 лишились
+    expect(s.opensMin[364]).toBe(369);
+  });
+});
+
 describe('stats-core — recordReliability', () => {
   it('доставлено -> onTime+total; пропущено -> deadman+total', () => {
     let s = emptyStore();

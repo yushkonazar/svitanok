@@ -64,23 +64,37 @@ const bump = (obj, key, by = 1) => {
   obj[key] = (Number(obj[key]) || 0) + by;
 };
 const dayBucket = (store, dateKey) => {
-  if (!store.days[dateKey]) store.days[dateKey] = { opens: 0, mock: 0, step: 0, news: 0 };
+  // Пересоздаємо бакет і коли він битий (примітив зі старого/зіпсутого стору) —
+  // bump по примітиву в strict mode кидає TypeError.
+  const cur = store.days[dateKey];
+  if (!cur || typeof cur !== 'object')
+    store.days[dateKey] = { opens: 0, mock: 0, step: 0, news: 0 };
   return store.days[dateKey];
+};
+/** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
+const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
+// Кап історійних масивів (opensMin/fitApplied/appliedLog): медіані/трендам
+// достатньо останнього року, стор не росте безмежно.
+const HISTORY_CAP = 365;
+const capPush = (arr, v) => {
+  arr.push(v);
+  if (arr.length > HISTORY_CAP) arr.splice(0, arr.length - HISTORY_CAP);
 };
 
 /**
  * Застосувати подію до стору (мутує й повертає його). `ev.type`:
- *  open · tab · news_click · save_news · unsave_news · save_item · unsave_item ·
- *  job_stage · job_dismiss · mock_answer · vote. `dateKey`="YYYY-MM-DD" київський,
- *  `nowMin`=хв після 08:00.
+ *  open · news_click · save_news · unsave_news · save_item · unsave_item ·
+ *  job_stage · job_dismiss · mock_answer · step_done · vote.
+ *  `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
  */
 export function recordEvent(store, ev, dateKey, nowMin = null) {
   const s = normalize(store);
+  if (!isDateKey(dateKey)) return s; // без валідної дати подію не приймаємо (не валимо)
   const t = ev?.type;
   switch (t) {
     case 'open':
       bump(dayBucket(s, dateKey), 'opens');
-      if (typeof nowMin === 'number' && nowMin >= 0) s.opensMin.push(Math.round(nowMin));
+      if (typeof nowMin === 'number' && nowMin >= 0) capPush(s.opensMin, Math.round(nowMin));
       break;
     case 'news_click':
       bump(dayBucket(s, dateKey), 'news');
@@ -126,8 +140,8 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
             ts: dateKey,
           };
           if (ev.stage === 'applied') {
-            s.appliedLog.push({ url: ev.url, ts: dateKey });
-            if (typeof ev.fit === 'number' && ev.fit >= 0) s.fitApplied.push(ev.fit);
+            capPush(s.appliedLog, { url: ev.url, ts: dateKey });
+            if (typeof ev.fit === 'number' && ev.fit >= 0) capPush(s.fitApplied, ev.fit);
           }
         } else {
           delete s.funnel[ev.url]; // stage null -> зняти
@@ -173,10 +187,14 @@ export function recordReliability(store, dateKey, delivered) {
   return s;
 }
 
-/** Обчислити стрік «днів поспіль» до сьогодні за предикатом дня. */
+/** Обчислити стрік «днів поспіль» до сьогодні за предикатом дня.
+ *  Грейс: якщо сьогодні ще «не зіграно», стрік НЕ зламано — рахуємо від учора
+ *  (інакше лічильник обнулявся б щоночі до першої дії, а /api/stats при
+ *  завантаженні гнався б із асинхронною подією open). */
 function streak(days, dateKey, pred) {
   let cur = 0;
   const d = new Date(dateKey + 'T00:00:00Z');
+  if (!pred(days[dateKey])) d.setUTCDate(d.getUTCDate() - 1);
   for (;;) {
     const k = d.toISOString().slice(0, 10);
     if (pred(days[k])) {
@@ -217,6 +235,9 @@ const median = (arr) => {
 /** Агрегувати стор у контракт /api/stats. `todayKey`="YYYY-MM-DD" київський. */
 export function aggregateStats(store, todayKey) {
   const s = normalize(store);
+  // Битий todayKey не валить агрегат (RangeError у date-математиці) — детермінований
+  // фолбек: форма валідна, стріки/тиждень порожні.
+  if (!isDateKey(todayKey)) todayKey = '1970-01-01';
   const opened = (x) => (x?.opens || 0) > 0;
   const stepped = (x) => (x?.step || 0) > 0;
   const mocked = (x) => (x?.mock || 0) > 0;
@@ -271,8 +292,11 @@ export function aggregateStats(store, todayKey) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
 
-  const totalReads = Object.values(s.days).reduce((a, d) => a + (d.news || 0), 0);
-  const activeDays = Object.values(s.days).filter((d) => opened(d)).length || 1;
+  const totalReads = Object.values(s.days).reduce((a, d) => a + (d?.news || 0), 0);
+  // Знаменник: дні з відкриттям АБО кліками новин — інакше день з news_click без
+  // open інфлює середнє (чисельник росте, знаменник ні).
+  const activeDays =
+    Object.values(s.days).filter((d) => opened(d) || (d?.news || 0) > 0).length || 1;
 
   return {
     streaks: {
