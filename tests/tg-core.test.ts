@@ -17,6 +17,7 @@ const {
   formatJobsMessage,
   formatSavedMessage,
   formatWhereAmI,
+  buildMiniAppButton,
   COMMANDS,
   REPLY_KEYBOARD,
 } = tg;
@@ -290,5 +291,40 @@ describe('tg-core — formatWhereAmI (Блок «Теми»)', () => {
   it('екранує потенційно небезпечний вміст (захисно, хоч chat/thread id завжди числа)', () => {
     const msg = formatWhereAmI('<script>x</script>', null);
     expect(msg).toContain('&lt;script&gt;');
+  });
+});
+
+describe('tg-core — buildMiniAppButton (дзеркало src/core/telegram.ts, §H1 хотфікс)', () => {
+  it("групова chatId (від'ємна) -> url, не web_app (BUTTON_TYPE_INVALID у групах)", () => {
+    expect(buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', -1001234567890)).toEqual({
+      text: '📊 Відкрити Mini App',
+      url: 'https://x/app',
+    });
+  });
+
+  it('приватний чат (додатний chatId) -> web_app', () => {
+    expect(buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', 123456)).toEqual({
+      text: '📊 Відкрити Mini App',
+      web_app: { url: 'https://x/app' },
+    });
+  });
+
+  it('chatId не передано -> web_app (за замовчуванням, приватний)', () => {
+    expect(buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app')).toEqual({
+      text: '📊 Відкрити Mini App',
+      web_app: { url: 'https://x/app' },
+    });
+  });
+
+  it('botUsername заданий -> Direct Link Mini App, навіть з групи (initData зберігається)', () => {
+    expect(
+      buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', -1001234567890, 'svitanok_bot'),
+    ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
+  });
+
+  it('botUsername з "@" -> обрізається', () => {
+    expect(
+      buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', null, '@svitanok_bot'),
+    ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
   });
 });

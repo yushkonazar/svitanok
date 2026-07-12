@@ -76,6 +76,15 @@ export interface RunDeps {
   // основного брифінгу (TOPIC_BRIEFING). null -> TOPIC_ASSISTANT не задано
   // (DM/без тем) чи немає критичних секретів — пропозиція просто не шлеться.
   assistantNotifier: Notifier | null;
+  // chat_id, куди йде сповіщення — фолбек-логіка кнопки Mini App, коли
+  // botUsername не задано (web_app лише в приватних чатах, url у групі;
+  // §core/telegram.ts buildMiniAppButton). null -> трактується як приватний чат.
+  chatId?: string | null;
+  // Username бота (без "@") -> Direct Link Mini App (t.me/<username>?startapp),
+  // працює з initData і в групі, і в приватному чаті. Потребує одноразового
+  // owner-кроку в @BotFather (Configure Mini App, .env.example). Не задано ->
+  // фолбек за chatId (стара поведінка).
+  botUsername?: string | null;
   // URL Mini App для кнопки в щоденному сповіщенні. null -> сповіщення йде
   // лише з датою, без кнопки (graceful — не блокує брифінг).
   miniAppUrl: string | null;
@@ -186,7 +195,18 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   const dailyMessage: OutboundMessage = {
     text: header,
     ...(deps.miniAppUrl
-      ? { buttons: [[buildMiniAppButton('📊 Відкрити Mini App', deps.miniAppUrl)]] }
+      ? {
+          buttons: [
+            [
+              buildMiniAppButton(
+                '📊 Відкрити Mini App',
+                deps.miniAppUrl,
+                deps.chatId,
+                deps.botUsername,
+              ),
+            ],
+          ],
+        }
       : {}),
   };
   const messages = [header];
@@ -336,6 +356,9 @@ async function main(): Promise<void> {
   // <акаунт>.workers.dev), для кнопки в щоденному сповіщенні. Не задано ->
   // сповіщення йде без кнопки (graceful, не блокує брифінг).
   const miniAppUrl = optionalSecret('MINI_APP_URL') ?? null;
+  // TELEGRAM_BOT_USERNAME — Direct Link Mini App (t.me/<username>?startapp),
+  // зберігає initData з групи (.env.example). Не задано -> фолбек за chatId.
+  const botUsername = optionalSecret('TELEGRAM_BOT_USERNAME') ?? null;
 
   const deps: RunDeps = {
     config,
@@ -358,6 +381,8 @@ async function main(): Promise<void> {
     modules: buildModules(),
     notifier,
     assistantNotifier,
+    chatId: secrets?.chatId ?? null,
+    botUsername,
     miniAppUrl,
   };
 

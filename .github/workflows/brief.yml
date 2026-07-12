@@ -95,6 +95,7 @@ jobs:
           TOPIC_BRIEFING: ${{ secrets.TOPIC_BRIEFING }} # опційно, Блок «Теми» (forum-супергрупа)
           TOPIC_ASSISTANT: ${{ secrets.TOPIC_ASSISTANT }} # опційно, Блок P2c (пропозиції співбесід)
           MINI_APP_URL: ${{ secrets.MINI_APP_URL }} # опційно, кнопка «Відкрити Mini App» у сповіщенні
+          TELEGRAM_BOT_USERNAME: ${{ secrets.TELEGRAM_BOT_USERNAME }} # опційно, Direct Link Mini App (initData з групи)
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
