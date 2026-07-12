@@ -4,6 +4,7 @@ import {
   buildMockPrompt,
   parseMockCache,
   updateMockWeight,
+  sanitizeMasteryFocus,
   type MockWeights,
 } from '../src/modules/mock.js';
 import { createRunBus } from '../src/core/bus.js';
@@ -149,6 +150,56 @@ describe('mock — батч-кеш', () => {
     await mockModule.run(makeCtx({ state, llm }));
     expect(llm.complete).toHaveBeenCalledWith(
       expect.stringContaining('слабким темам кандидата: Алгоритми'),
+      expect.anything(),
+    );
+  });
+});
+
+describe('mock — masteryFocus («тема тижня», A4)', () => {
+  it('sanitizeMasteryFocus: фільтрує теми поза словником; без валідних -> null', () => {
+    expect(sanitizeMasteryFocus(null)).toBeNull();
+    expect(sanitizeMasteryFocus('сміття')).toBeNull();
+    // roadmap-only тема (tools/ecosystem) без mock-тем -> без зсуву батчу
+    expect(sanitizeMasteryFocus({ title: '🛠 Git', mockTopics: [] })).toBeNull();
+    expect(
+      sanitizeMasteryFocus({ title: '⚛️ React', mockTopics: ['Фреймворк', 'Вигадана'] }),
+    ).toMatchObject({ title: '⚛️ React', mockTopics: ['Фреймворк'] });
+  });
+
+  it('buildMockPrompt із фокусом містить тему тижня та її mock-теми', () => {
+    const p = buildMockPrompt(5, 'Junior', undefined, {
+      week: '2026-07-06',
+      topicId: 'react',
+      title: '⚛️ React',
+      done: 3,
+      total: 6,
+      mockTopics: ['Фреймворк'],
+    });
+    expect(p).toContain('Тема тижня з навчального роадмепу: «⚛️ React»');
+    expect(p).toContain('Фреймворк');
+    // без фокуса — рядка нема
+    expect(buildMockPrompt(5, 'Junior')).not.toContain('Тема тижня');
+  });
+
+  it('masteryFocus зі state потрапляє в промпт регенерації', async () => {
+    const llm = { complete: vi.fn(async () => '[{"q":"Q","a":"A"}]') };
+    const state = memState({
+      masteryFocus: { title: '⚛️ React', mockTopics: ['Фреймворк'] },
+    });
+    await mockModule.run(makeCtx({ state, llm }));
+    expect(llm.complete).toHaveBeenCalledWith(
+      expect.stringContaining('Тема тижня'),
+      expect.anything(),
+    );
+  });
+
+  it('битий masteryFocus у state не ламає генерацію (без зсуву)', async () => {
+    const llm = { complete: vi.fn(async () => '[{"q":"Q","a":"A"}]') };
+    const state = memState({ masteryFocus: { broken: true } });
+    const block = await mockModule.run(makeCtx({ state, llm }));
+    expect(block!.summary).toBe('Q');
+    expect(llm.complete).toHaveBeenCalledWith(
+      expect.not.stringContaining('Тема тижня'),
       expect.anything(),
     );
   });

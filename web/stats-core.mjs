@@ -8,12 +8,13 @@
 //   funnelMeta:{ '<url>': { title, ts } }                    // мета стадії (для списку)
 //   saved:     [ { kind, url?, title, category?, ts } ]       // обране: news/fact/quote/question
 //   interests: { '<topic>': score }                          // з голосів/кліків
+//   interestsWeekly:{ '<пн-YYYY-MM-DD>': { topic: score } }  // тижневі кошики інтересів (тренд)
 //   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock
 //   goal:      { weeklyTarget }
 //   fitApplied:[ int ]                                       // fit% поданих вакансій
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
 //   appliedLog:[ { url, ts } ]                               // для тижневого лічильника
-//   reliability:{ onTime, total, deadman }                   // з прогонів brief
+//   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 const STAGES = ['saved', 'applied', 'interview', 'offer'];
@@ -25,6 +26,7 @@ export function emptyStore() {
     funnelMeta: {},
     saved: [],
     interests: {},
+    interestsWeekly: {},
     mockTopics: {},
     goal: { weeklyTarget: 5 },
     fitApplied: [],
@@ -44,6 +46,10 @@ export function normalize(s) {
     funnelMeta: s.funnelMeta && typeof s.funnelMeta === 'object' ? s.funnelMeta : e.funnelMeta,
     saved: Array.isArray(s.saved) ? s.saved : e.saved,
     interests: s.interests && typeof s.interests === 'object' ? s.interests : e.interests,
+    interestsWeekly:
+      s.interestsWeekly && typeof s.interestsWeekly === 'object'
+        ? s.interestsWeekly
+        : e.interestsWeekly,
     mockTopics: s.mockTopics && typeof s.mockTopics === 'object' ? s.mockTopics : e.mockTopics,
     goal: { weeklyTarget: Number(s.goal?.weeklyTarget) || e.goal.weeklyTarget },
     fitApplied: Array.isArray(s.fitApplied) ? s.fitApplied : e.fitApplied,
@@ -53,6 +59,9 @@ export function normalize(s) {
       onTime: Number(s.reliability?.onTime) || 0,
       total: Number(s.reliability?.total) || 0,
       deadman: Number(s.reliability?.deadman) || 0,
+      ...(typeof s.reliability?.lastCheckDate === 'string'
+        ? { lastCheckDate: s.reliability.lastCheckDate }
+        : {}),
     },
   };
 }
@@ -61,27 +70,68 @@ const bump = (obj, key, by = 1) => {
   obj[key] = (Number(obj[key]) || 0) + by;
 };
 const dayBucket = (store, dateKey) => {
-  if (!store.days[dateKey]) store.days[dateKey] = { opens: 0, mock: 0, step: 0, news: 0 };
+  // Пересоздаємо бакет і коли він битий (примітив зі старого/зіпсутого стору) —
+  // bump по примітиву в strict mode кидає TypeError.
+  const cur = store.days[dateKey];
+  if (!cur || typeof cur !== 'object')
+    store.days[dateKey] = { opens: 0, mock: 0, step: 0, news: 0 };
   return store.days[dateKey];
+};
+/** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
+const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
+// Кап історійних масивів (opensMin/fitApplied/appliedLog): медіані/трендам
+// достатньо останнього року, стор не росте безмежно.
+const HISTORY_CAP = 365;
+const capPush = (arr, v) => {
+  arr.push(v);
+  if (arr.length > HISTORY_CAP) arr.splice(0, arr.length - HISTORY_CAP);
+};
+
+/** Понеділок тижня, що містить dateKey (ключ тижневих кошиків/трендів). */
+export function weekStartKey(dateKey) {
+  const d = new Date(dateKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+// Тижневих кошиків інтересів тримаємо пів року — тренду вистачає 6 тижнів.
+const WEEKLY_CAP = 26;
+/** ЄДИНА точка інкременту інтересу: сумарний бал + тижневий кошик разом —
+ *  щоб нова подія не могла підняти чипи, забувши тренд (або навпаки). */
+const bumpInterest = (s, dateKey, topic, by = 1) => {
+  bump(s.interests, topic, by);
+  const wk = weekStartKey(dateKey);
+  if (!s.interestsWeekly[wk] || typeof s.interestsWeekly[wk] !== 'object')
+    s.interestsWeekly[wk] = {};
+  bump(s.interestsWeekly[wk], topic, by);
+  const keys = Object.keys(s.interestsWeekly).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - WEEKLY_CAP))) delete s.interestsWeekly[k];
 };
 
 /**
  * Застосувати подію до стору (мутує й повертає його). `ev.type`:
- *  open · tab · news_click · save_news · unsave_news · save_item · unsave_item ·
- *  job_stage · job_dismiss · mock_answer · vote. `dateKey`="YYYY-MM-DD" київський,
- *  `nowMin`=хв після 08:00.
+ *  open · news_click · save_news · unsave_news · save_item · unsave_item ·
+ *  job_stage · job_dismiss · mock_answer · step_done · vote.
+ *  `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
  */
 export function recordEvent(store, ev, dateKey, nowMin = null) {
   const s = normalize(store);
+  if (!isDateKey(dateKey)) return s; // без валідної дати подію не приймаємо (не валимо)
   const t = ev?.type;
   switch (t) {
-    case 'open':
-      bump(dayBucket(s, dateKey), 'opens');
-      if (typeof nowMin === 'number' && nowMin >= 0) s.opensMin.push(Math.round(nowMin));
+    case 'open': {
+      const day = dayBucket(s, dateKey);
+      // «Час до відкриття» — лише ПЕРШЕ відкриття дня: клієнт шле open на кожне
+      // завантаження, і без цього гейта повторні заходи (обід/вечір) тягнуть
+      // медіану в сотні хвилин, знецінюючи метрику.
+      if (!(day.opens > 0) && typeof nowMin === 'number' && nowMin >= 0)
+        capPush(s.opensMin, Math.round(nowMin));
+      bump(day, 'opens');
       break;
+    }
     case 'news_click':
       bump(dayBucket(s, dateKey), 'news');
-      if (ev.category) bump(s.interests, ev.category);
+      if (ev.category) bumpInterest(s, dateKey, ev.category, 1);
       break;
     case 'save_news':
       if (ev.url && !s.saved.some((x) => x.url === ev.url)) {
@@ -92,7 +142,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
           category: ev.category || '',
           ts: dateKey,
         });
-        if (ev.category) bump(s.interests, ev.category, 2);
+        if (ev.category) bumpInterest(s, dateKey, ev.category, 2);
       }
       break;
     case 'unsave_news':
@@ -103,14 +153,14 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       // клієнт (детермінований хеш тексту) — стабільний ключ дедупу замість url.
       if (ev.kind && ev.id && !s.saved.some((x) => x.kind === ev.kind && x.id === ev.id)) {
         s.saved.unshift({ kind: ev.kind, id: ev.id, title: ev.title || '', ts: dateKey });
-        if (ev.topic) bump(s.interests, ev.topic, 2);
+        if (ev.topic) bumpInterest(s, dateKey, ev.topic, 2);
       }
       break;
     case 'unsave_item':
       s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
     case 'vote':
-      if (ev.category) bump(s.interests, ev.category, ev.dir === 'down' ? -1 : 1);
+      if (ev.category) bumpInterest(s, dateKey, ev.category, ev.dir === 'down' ? -1 : 1);
       break;
     case 'job_stage':
       if (ev.url) {
@@ -123,8 +173,8 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
             ts: dateKey,
           };
           if (ev.stage === 'applied') {
-            s.appliedLog.push({ url: ev.url, ts: dateKey });
-            if (typeof ev.fit === 'number' && ev.fit >= 0) s.fitApplied.push(ev.fit);
+            capPush(s.appliedLog, { url: ev.url, ts: dateKey });
+            if (typeof ev.fit === 'number' && ev.fit >= 0) capPush(s.fitApplied, ev.fit);
           }
         } else {
           delete s.funnel[ev.url]; // stage null -> зняти
@@ -152,10 +202,32 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
   return s;
 }
 
-/** Обчислити стрік «днів поспіль» до сьогодні за предикатом дня. */
+/**
+ * Записати результат щоденної dead-man-перевірки доставки (мутує й повертає стор).
+ * Викликає Worker о 10:00 Київ: `delivered`=true, якщо `latest` свіжий за сьогодні.
+ * onTime = «доставлено до dead-man дедлайну»; спізнення в межах вікна після 10:00
+ * свідомо рахується як deadman (алерт тоді вже відправлено). Ідемпотентно за день
+ * через reliability.lastCheckDate — повторний виклик тим самим dateKey — no-op.
+ */
+export function recordReliability(store, dateKey, delivered) {
+  const s = normalize(store);
+  const r = s.reliability;
+  if (r.lastCheckDate === dateKey) return s;
+  r.lastCheckDate = dateKey;
+  r.total += 1;
+  if (delivered) r.onTime += 1;
+  else r.deadman += 1;
+  return s;
+}
+
+/** Обчислити стрік «днів поспіль» до сьогодні за предикатом дня.
+ *  Грейс: якщо сьогодні ще «не зіграно», стрік НЕ зламано — рахуємо від учора
+ *  (інакше лічильник обнулявся б щоночі до першої дії, а /api/stats при
+ *  завантаженні гнався б із асинхронною подією open). */
 function streak(days, dateKey, pred) {
   let cur = 0;
   const d = new Date(dateKey + 'T00:00:00Z');
+  if (!pred(days[dateKey])) d.setUTCDate(d.getUTCDate() - 1);
   for (;;) {
     const k = d.toISOString().slice(0, 10);
     if (pred(days[k])) {
@@ -193,9 +265,89 @@ const median = (arr) => {
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
 
+/** Теплокарта активності: від понеділка ~12 тижнів тому до сьогодні (вкл.).
+ *  value = сума дій дня (opens+mock+step+news), level 0..4 — фіксовані пороги,
+ *  щоб колір мав стале значення день у день. */
+function buildHeatmap(days, todayKey) {
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 83);
+  // до понеділка — тим самим weekStartKey, що й тижневі кошики (одна конвенція)
+  d.setTime(Date.parse(weekStartKey(d.toISOString().slice(0, 10)) + 'T00:00:00Z'));
+  const out = [];
+  for (;;) {
+    const k = d.toISOString().slice(0, 10);
+    if (k > todayKey) break;
+    const day = days[k];
+    const v = (day?.opens || 0) + (day?.mock || 0) + (day?.step || 0) + (day?.news || 0);
+    const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
+    out.push({ d: k, v, l });
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
+function lastWeekStarts(todayKey, n) {
+  const d = new Date(weekStartKey(todayKey) + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 7 * (n - 1));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 7);
+  }
+  return out;
+}
+
+/** Подачі по тижнях (останні 8, нульові тижні присутні; поточний — частковий). */
+function buildAppliedWeekly(appliedLog, todayKey, weeks = 8) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const counts = Object.fromEntries(starts.map((k) => [k, 0]));
+  for (const a of appliedLog) {
+    const wk = isDateKey(a?.ts) ? weekStartKey(a.ts) : null;
+    if (wk && counts[wk] != null) counts[wk]++;
+  }
+  return starts.map((k) => ({ week: k, count: counts[k] }));
+}
+
+/** Розподіл fit% поданих вакансій за фіксованими кошиками. */
+const FIT_BUCKETS = [
+  ['<50', 0, 49],
+  ['50–59', 50, 59],
+  ['60–69', 60, 69],
+  ['70–79', 70, 79],
+  ['80–89', 80, 89],
+  ['90+', 90, Infinity],
+];
+function buildFitHistogram(fitApplied) {
+  return FIT_BUCKETS.map(([label, lo, hi]) => ({
+    label,
+    count: fitApplied.filter((f) => Number(f) >= lo && Number(f) <= hi).length,
+  }));
+}
+
+/** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів. */
+function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, topN = 5) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const topics = Object.entries(interests)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([t]) => t);
+  return {
+    weeks: starts,
+    topics: topics.map((topic) => ({
+      topic,
+      series: starts.map((wk) => Number(interestsWeekly[wk]?.[topic]) || 0),
+    })),
+  };
+}
+
 /** Агрегувати стор у контракт /api/stats. `todayKey`="YYYY-MM-DD" київський. */
 export function aggregateStats(store, todayKey) {
   const s = normalize(store);
+  // Битий todayKey не валить агрегат (RangeError у date-математиці) — детермінований
+  // фолбек: форма валідна, стріки/тиждень порожні.
+  if (!isDateKey(todayKey)) todayKey = '1970-01-01';
   const opened = (x) => (x?.opens || 0) > 0;
   const stepped = (x) => (x?.step || 0) > 0;
   const mocked = (x) => (x?.mock || 0) > 0;
@@ -250,8 +402,11 @@ export function aggregateStats(store, todayKey) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
 
-  const totalReads = Object.values(s.days).reduce((a, d) => a + (d.news || 0), 0);
-  const activeDays = Object.values(s.days).filter((d) => opened(d)).length || 1;
+  const totalReads = Object.values(s.days).reduce((a, d) => a + (d?.news || 0), 0);
+  // Знаменник: дні з відкриттям АБО кліками новин — інакше день з news_click без
+  // open інфлює середнє (чисельник росте, знаменник ні).
+  const activeDays =
+    Object.values(s.days).filter((d) => opened(d) || (d?.news || 0) > 0).length || 1;
 
   return {
     streaks: {
@@ -283,12 +438,23 @@ export function aggregateStats(store, todayKey) {
       ts: x.ts || '',
     })),
     mock: { weakTopics, streak: streak(s.days, todayKey, mocked) },
+    // A2: розширені метрики (питання власника: стабільність / темп подач /
+    // на що подаюсь / як змінюються інтереси).
+    heatmap: buildHeatmap(s.days, todayKey),
+    appliedWeekly: buildAppliedWeekly(s.appliedLog, todayKey),
+    fitHistogram: buildFitHistogram(s.fitApplied),
+    interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey),
     // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
     // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб
     // цей чистий агрегатор не знав про roadmap-контент.
     interests,
     readPerDay: Math.round(totalReads / activeDays),
-    reliability: s.reliability,
+    // Контракт /api/stats — лише лічильники; lastCheckDate — внутрішній маркер стору.
+    reliability: {
+      onTime: s.reliability.onTime,
+      total: s.reliability.total,
+      deadman: s.reliability.deadman,
+    },
     stepDoneToday: stepped(s.days[todayKey]),
     mockRatedToday: mocked(s.days[todayKey]),
   };

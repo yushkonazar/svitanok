@@ -6,7 +6,7 @@
 // X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
-import { recordEvent, aggregateStats } from './stats-core.mjs';
+import { recordEvent, aggregateStats, recordReliability } from './stats-core.mjs';
 import {
   verifyWebhookSecret,
   parseUpdate,
@@ -65,6 +65,7 @@ import {
   buildRootKeyboard,
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
+import { masteryHints, themeOfWeek } from './mastery-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
 
@@ -348,10 +349,19 @@ async function handleEvent(request, env) {
 async function handleStats(request, env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
-  const stats = aggregateStats(await loadStats(env), kyivDateKey());
-  // roadmap — окремий KV-блоб (state, не stats); aggregateStats лишається
+  // Два незалежні KV-читання — паралельно (найгарячіший читальний шлях).
+  const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
+  const stats = aggregateStats(store, kyivDateKey());
+  // roadmap/mastery — окремий KV-блоб (state, не stats); aggregateStats лишається
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
-  stats.roadmap = totalProgress((await loadState(env)).roadmapProgress ?? {});
+  const progress = state.roadmapProgress ?? {};
+  stats.roadmap = totalProgress(progress);
+  // A4: звʼязка mock↔roadmap для дашборда — слабкі теми -> «куди вчитись»,
+  // «тема тижня» -> фокус наступного mock-батчу.
+  stats.mastery = {
+    hints: masteryHints(stats.mock?.weakTopics ?? [], progress),
+    themeOfWeek: themeOfWeek(progress, kyivDateKey()),
+  };
   return json(stats);
 }
 
@@ -1029,6 +1039,30 @@ async function handleTelegramSetup(request, env) {
   return json({ ok: res.ok, webhookUrl });
 }
 
+/** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
+ *  оркестратор (src/modules/mock.ts) читає її як готові рядки й СІДИТЬ наступний
+ *  mock-батч темою з роадмепу (web-код у src/ не імпортується — межа src/↔web/).
+ *  Ротація детермінована за тижнем, тож щоденний перезапис безпечний;
+ *  оркестратор masteryFocus не пише -> merge-гонок класу H2 нема. */
+async function updateMasteryFocus(env) {
+  try {
+    const state = await loadState(env);
+    const focus = themeOfWeek(state.roadmapProgress ?? {}, kyivDateKey());
+    // Тема детермінована на тиждень -> 6/7 щоденних записів були б ідентичні.
+    // Пропускаємо no-op: кожен зайвий read-modify-write усього state-блоба —
+    // дармове вікно клобберу конкурентних писарів (вебхук/події).
+    const cur = state.masteryFocus;
+    const same =
+      (focus === null && cur === null) ||
+      (focus && cur && cur.week === focus.week && cur.topicId === focus.topicId);
+    if (same) return;
+    state.masteryFocus = focus; // null коли роадмеп завершено — теж валідний стан
+    await env.BRIEFING.put('state', JSON.stringify(state));
+  } catch (e) {
+    console.error('updateMasteryFocus failed', e); // не блокує dispatch
+  }
+}
+
 /** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
 async function dispatchBrief(env) {
   if (!env.GH_DISPATCH_TOKEN) {
@@ -1051,12 +1085,10 @@ async function dispatchBrief(env) {
   }
 }
 
-/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram. */
+/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
+ *  Побічно веде облік надійності (reliability у stats): Worker — ЄДИНИЙ писар
+ *  stats-блоба (жодних нових гонок класу H2), запис ідемпотентний за день. */
 async function deadMansCheck(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    console.error('TELEGRAM_* відсутні — dead-man пропущено');
-    return;
-  }
   const raw = await env.BRIEFING.get('latest');
   const today = kyivDateKey();
   let fresh = false;
@@ -1066,7 +1098,25 @@ async function deadMansCheck(env) {
   } catch {
     /* биття JSON -> вважаємо несвіжим -> алерт */
   }
+  // Облік доставки — до гейта секретів (не потребує Telegram-крендів), але в
+  // try/catch: транзієнтна KV-помилка НЕ сміє заблокувати алерт нижче (це його
+  // день). Пишемо лише коли день ще не облікований. Чесно про гонки: Worker —
+  // єдиний СЕРВІС-писар stats-блоба, проте конкурентні інвокації (цей cron vs
+  // fetch /api/event) — усе одно last-write-wins без CAS; вікно тут µs і раз на
+  // день, стратегічний фікс — Durable Object (див. SPEC/аудит H2).
+  try {
+    const store = await loadStats(env);
+    if (store?.reliability?.lastCheckDate !== today) {
+      await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
+    }
+  } catch (e) {
+    console.error('reliability write failed', e);
+  }
   if (fresh) return;
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+    console.error('TELEGRAM_* відсутні — dead-man пропущено');
+    return;
+  }
 
   const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: 'POST',
@@ -1145,7 +1195,9 @@ export default {
       return;
     }
     const h = kyivHour();
-    if (h === 8) ctx.waitUntil(dispatchBrief(env));
+    // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
+    // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
+    if (h === 8) ctx.waitUntil(updateMasteryFocus(env).then(() => dispatchBrief(env)));
     else if (h === 10) ctx.waitUntil(deadMansCheck(env));
   },
 };
