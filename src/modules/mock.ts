@@ -54,7 +54,43 @@ export function updateMockWeight(
   return { ...weights, [topic]: next };
 }
 
-export function buildMockPrompt(n: number, profile: string, weights?: MockWeights): string {
+// «Тема тижня» з роадмепу (A4): Worker пише state.masteryFocus (web/mastery-core.mjs
+// themeOfWeek — дзеркало ФОРМИ, не логіки; src/ web-код не імпортує). Тут лише
+// читаємо готові рядки й сідимо ними наступний батч.
+export interface MasteryFocus {
+  week: string;
+  topicId: string;
+  title: string;
+  done: number;
+  total: number;
+  mockTopics: string[];
+}
+
+/** Валідний фокус із mock-темами зі словника; інакше null (батч без зсуву). */
+export function sanitizeMasteryFocus(raw: unknown): MasteryFocus | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const f = raw as Partial<MasteryFocus>;
+  if (typeof f.title !== 'string' || !f.title) return null;
+  const topics = (Array.isArray(f.mockTopics) ? f.mockTopics : []).filter(
+    (t): t is string => typeof t === 'string' && MOCK_TOPICS.includes(t),
+  );
+  if (topics.length === 0) return null; // roadmap-only тема (tools/ecosystem) — без зсуву
+  return {
+    week: typeof f.week === 'string' ? f.week : '',
+    topicId: typeof f.topicId === 'string' ? f.topicId : '',
+    title: f.title,
+    done: Number(f.done) || 0,
+    total: Number(f.total) || 0,
+    mockTopics: topics,
+  };
+}
+
+export function buildMockPrompt(
+  n: number,
+  profile: string,
+  weights?: MockWeights,
+  focus?: MasteryFocus | null,
+): string {
   const weak = weights
     ? Object.entries(weights)
         .filter(([, w]) => w > 1.0)
@@ -66,6 +102,9 @@ export function buildMockPrompt(n: number, profile: string, weights?: MockWeight
     `Профіль кандидата: ${profile}.`,
     `Теми лише з цього списку: ${MOCK_TOPICS.join(', ')}.`,
     weak.length ? `Приділи більше уваги слабким темам кандидата: ${weak.join(', ')}.` : '',
+    focus
+      ? `Тема тижня з навчального роадмепу: «${focus.title}» — включи 2–3 питання з тем: ${focus.mockTopics.join(', ')}.`
+      : '',
     'Питання — одне речення. Відповідь — 1–2 речення, стисло й точно, українською.',
     "Поверни ЛИШЕ валідний JSON-масив об'єктів без прози:",
     '[{"q":"питання","a":"відповідь","topic":"одна з тем зі списку"}, ...]',
@@ -126,10 +165,13 @@ export const mockModule: Module<AppConfig> = {
     if (cache.length === 0) {
       // mockWeights (Блок F): слабкі теми з самооцінки -> LLM генерує більше з них.
       const weights = ctx.state.get<MockWeights>('mockWeights');
+      // masteryFocus (A4): «тема тижня» з роадмепу (пише Worker) сідить батч.
+      const focus = sanitizeMasteryFocus(ctx.state.get<unknown>('masteryFocus'));
       try {
-        const out = await ctx.llm.complete(buildMockPrompt(cfg.batchSize, cfg.profile, weights), {
-          timeoutMs: ctx.config.llm.timeoutMs,
-        });
+        const out = await ctx.llm.complete(
+          buildMockPrompt(cfg.batchSize, cfg.profile, weights, focus),
+          { timeoutMs: ctx.config.llm.timeoutMs },
+        );
         cache = parseMockCache(out);
       } catch (e) {
         ctx.log.warn(`mock: генерація не вдалася: ${e instanceof Error ? e.message : String(e)}`);
