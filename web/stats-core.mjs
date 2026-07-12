@@ -119,10 +119,16 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
   if (!isDateKey(dateKey)) return s; // без валідної дати подію не приймаємо (не валимо)
   const t = ev?.type;
   switch (t) {
-    case 'open':
-      bump(dayBucket(s, dateKey), 'opens');
-      if (typeof nowMin === 'number' && nowMin >= 0) capPush(s.opensMin, Math.round(nowMin));
+    case 'open': {
+      const day = dayBucket(s, dateKey);
+      // «Час до відкриття» — лише ПЕРШЕ відкриття дня: клієнт шле open на кожне
+      // завантаження, і без цього гейта повторні заходи (обід/вечір) тягнуть
+      // медіану в сотні хвилин, знецінюючи метрику.
+      if (!(day.opens > 0) && typeof nowMin === 'number' && nowMin >= 0)
+        capPush(s.opensMin, Math.round(nowMin));
+      bump(day, 'opens');
       break;
+    }
     case 'news_click':
       bump(dayBucket(s, dateKey), 'news');
       if (ev.category) bumpInterest(s, dateKey, ev.category, 1);

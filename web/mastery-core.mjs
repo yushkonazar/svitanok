@@ -74,21 +74,28 @@ export function masteryHints(weakTopics, progress) {
  */
 export function themeOfWeek(progress, dateKey) {
   const p = progress && typeof progress === 'object' ? progress : {};
-  // Один прохід topicProgress: і фільтр незавершеності, і done/total звідси —
-  // щоб визначення «завершено» не розійшлося з тим, що показує UI.
-  const incomplete = ROADMAP_TOPICS.map((t) => ({ t, ...topicProgress(p, t) })).filter(
-    (x) => x.done < x.total,
-  );
-  if (!incomplete.length) return null;
   const week = weekStartKey(dateKey);
   const weekIdx = Math.round(Date.parse(week + 'T00:00:00Z') / 604800000);
-  const pick = incomplete[((weekIdx % incomplete.length) + incomplete.length) % incomplete.length];
-  return {
-    week,
-    topicId: pick.t.id,
-    title: pick.t.title,
-    done: pick.done,
-    total: pick.total,
-    mockTopics: ROADMAP_TO_MOCK[pick.t.id] ?? [],
-  };
+  // Ротація по ПОВНОМУ списку тем (стала довжина!) з переходом до наступної
+  // незавершеної. Модуль від кількості незавершених НЕ підходить: завершення
+  // будь-якої НЕдотичної теми серед тижня зсувало б вибір — дашборд, state
+  // і вже згенерований mock-батч розходилися б. Тут тема стабільна в межах
+  // тижня; зміщується лише коли завершили САМУ тему тижня (перехід далі).
+  const n = ROADMAP_TOPICS.length;
+  const start = ((weekIdx % n) + n) % n;
+  for (let i = 0; i < n; i++) {
+    const t = ROADMAP_TOPICS[(start + i) % n];
+    const { done, total } = topicProgress(p, t);
+    if (done < total) {
+      return {
+        week,
+        topicId: t.id,
+        title: t.title,
+        done,
+        total,
+        mockTopics: ROADMAP_TO_MOCK[t.id] ?? [],
+      };
+    }
+  }
+  return null;
 }

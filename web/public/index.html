@@ -2376,9 +2376,13 @@
           ? `<div class="exp-more"><div class="why">${esc(it.why)}</div></div>`
           : '';
         const curStage = JOB_STAGE_BY_URL[it.url] || it.funnelStage;
+        // data-fit: щоб «Подав» з Mini App живив гістограму fit% так само, як
+        // Telegram-кнопка «✅ Подав» (tg-core додає fit з callback). -1/відсутній
+        // score («оцінюється») -> порожньо, подія піде без fit.
+        const fitAttr = typeof it.score === 'number' && it.score >= 0 ? it.score : '';
         const btns = JOB_STAGES.map(
           (s) =>
-            `<button class="${curStage === s.key ? 'on' : ''}" data-stage="${s.key}" data-url="${esc(it.url)}" data-title="${esc(it.title)}">${esc(s.short)}</button>`,
+            `<button class="${curStage === s.key ? 'on' : ''}" data-stage="${s.key}" data-url="${esc(it.url)}" data-title="${esc(it.title)}" data-fit="${fitAttr}">${esc(s.short)}</button>`,
         ).join('');
         const inner = `<div class="exp-base">${title}</div>${why}<div class="job-actions">${btns}</div>`;
         return `<div class="card job-card${hidden}" data-url="${esc(it.url)}"><div class="expandable">${inner}</div></div>`;
@@ -2799,9 +2803,20 @@
             });
             return;
           }
+          // Number('') === 0 — порожній data-fit не сміє стати fit:0
+          const fit = btn.dataset.fit === '' ? NaN : Number(btn.dataset.fit);
           sendEvent(
             'job_stage',
-            { url: btn.dataset.url, title: btn.dataset.title, stage: active ? null : stage },
+            {
+              url: btn.dataset.url,
+              title: btn.dataset.title,
+              stage: active ? null : stage,
+              // fit лише при встановленні applied (recordEvent пише його в
+              // fitApplied саме тоді); зняття стадії/інші стадії — без fit.
+              ...(stage === 'applied' && !active && Number.isFinite(fit) && fit >= 0
+                ? { fit }
+                : {}),
+            },
             () => {
               group.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
               if (!active) {
@@ -3225,6 +3240,10 @@
           d.setDate(d.getDate() - 83);
           d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
           const today = new Date();
+          // Ключ — ЛОКАЛЬНА дата (арифметика вище теж локальна): toISOString дав
+          // би UTC-дату й зсував демо-тултіпи на день у частині часових поясів.
+          const key = (dt) =>
+            `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
           const pattern = [
             [0, 0],
             [1, 1],
@@ -3243,7 +3262,7 @@
           ];
           for (let i = 0; d <= today; d.setDate(d.getDate() + 1), i++) {
             const [v, l] = pattern[i % pattern.length];
-            out.push({ d: d.toISOString().slice(0, 10), v, l });
+            out.push({ d: key(d), v, l });
           }
           return out;
         })(),

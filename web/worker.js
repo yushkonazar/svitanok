@@ -1098,12 +1098,19 @@ async function deadMansCheck(env) {
   } catch {
     /* биття JSON -> вважаємо несвіжим -> алерт */
   }
-  // Облік доставки — до гейта секретів (не потребує Telegram-крендів).
-  // ПИШЕМО лише коли день ще не облікований: зайвий read-modify-write ідентичного
-  // блоба — дармове вікно клобберу конкурентних /api/event (та сама дисципліна, що H2).
-  const store = await loadStats(env);
-  if (store?.reliability?.lastCheckDate !== today) {
-    await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
+  // Облік доставки — до гейта секретів (не потребує Telegram-крендів), але в
+  // try/catch: транзієнтна KV-помилка НЕ сміє заблокувати алерт нижче (це його
+  // день). Пишемо лише коли день ще не облікований. Чесно про гонки: Worker —
+  // єдиний СЕРВІС-писар stats-блоба, проте конкурентні інвокації (цей cron vs
+  // fetch /api/event) — усе одно last-write-wins без CAS; вікно тут µs і раз на
+  // день, стратегічний фікс — Durable Object (див. SPEC/аудит H2).
+  try {
+    const store = await loadStats(env);
+    if (store?.reliability?.lastCheckDate !== today) {
+      await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
+    }
+  } catch (e) {
+    console.error('reliability write failed', e);
   }
   if (fresh) return;
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {

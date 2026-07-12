@@ -5,11 +5,13 @@ import { emptyStore, normalize, recordEvent, aggregateStats } from '../web/stats
 import { recordReliability, weekStartKey } from '../web/stats-core.mjs';
 
 describe('stats-core — recordEvent', () => {
-  it('open рахує відкриття дня + час до відкриття', () => {
+  it('open рахує відкриття дня; час до відкриття — лише ПЕРШЕ відкриття дня', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'open' }, '2026-07-07', 23);
-    s = recordEvent(s, { type: 'open' }, '2026-07-07', 31);
+    s = recordEvent(s, { type: 'open' }, '2026-07-07', 420); // повторний захід удень
     expect(s.days['2026-07-07'].opens).toBe(2);
+    expect(s.opensMin).toEqual([23]); // 420 НЕ тягне медіану — метрика про перший захід
+    s = recordEvent(s, { type: 'open' }, '2026-07-08', 31);
     expect(s.opensMin).toEqual([23, 31]);
   });
 
@@ -355,7 +357,12 @@ describe('stats-core — межі й стійкість (аудит A5)', () => 
 
   it('opensMin капиться (історія не росте безмежно)', () => {
     let s = emptyStore();
-    for (let i = 0; i < 370; i++) s = recordEvent(s, { type: 'open' }, '2026-07-07', i);
+    // 370 РІЗНИХ днів (у opensMin падає лише перше відкриття дня)
+    const d = new Date('2025-01-01T00:00:00Z');
+    for (let i = 0; i < 370; i++) {
+      s = recordEvent(s, { type: 'open' }, d.toISOString().slice(0, 10), i);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
     expect(s.opensMin).toHaveLength(365);
     expect(s.opensMin[0]).toBe(5); // найстаріші зрізано, останні 365 лишились
     expect(s.opensMin[364]).toBe(369);

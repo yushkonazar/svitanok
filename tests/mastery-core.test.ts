@@ -91,4 +91,19 @@ describe('mastery-core — themeOfWeek', () => {
     expect(t.total).toBeGreaterThan(0);
     expect(Array.isArray(t.mockTopics)).toBe(true);
   });
+
+  it('завершення НЕдотичної теми серед тижня не перемикає тему тижня', () => {
+    const before = themeOfWeek({}, '2026-07-08');
+    // повністю завершуємо будь-яку іншу тему
+    const other = TOPICS.find((t) => t.id !== before.topicId)!;
+    const progress: Record<string, string> = {};
+    for (const s of other.subtopics) progress[progressKey(other.id, s.id)] = '2026-07-08T00:00:00Z';
+    expect(themeOfWeek(progress, '2026-07-08').topicId).toBe(before.topicId);
+    // а завершення САМОЇ теми тижня — переводить до наступної незавершеної
+    const own: Record<string, string> = {};
+    const theme = TOPICS.find((t) => t.id === before.topicId)!;
+    for (const s of theme.subtopics) own[progressKey(theme.id, s.id)] = '2026-07-08T00:00:00Z';
+    const next = themeOfWeek(own, '2026-07-08');
+    expect(next.topicId).not.toBe(before.topicId);
+  });
 });
