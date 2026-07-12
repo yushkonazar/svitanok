@@ -1192,6 +1192,79 @@
         border-radius: 6px;
       }
 
+      /* дрібний підзаголовок усередині картки (розділи метрик) */
+      .subhead {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        margin-top: 14px;
+        margin-bottom: 6px;
+      }
+      /* ── Теплокарта активності (GitHub-стиль): колонка = тиждень (Пн→Нд) ── */
+      .heatmap {
+        display: flex;
+        gap: 3px;
+        margin-top: 12px;
+        justify-content: flex-start;
+      }
+      .hm-labels {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin-right: 3px;
+      }
+      .hm-labels .l {
+        height: 11px;
+        font-size: 8.5px;
+        line-height: 11px;
+        color: var(--muted);
+      }
+      .hm-col {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .hm-c {
+        width: 11px;
+        height: 11px;
+        border-radius: 3px;
+        /* порожня клітинка — через змінну (перекривається темою без гонки специфічності) */
+        background: var(--hm-empty, rgba(255, 255, 255, 0.07));
+      }
+      .hm-c.l1 {
+        background: rgba(255, 122, 89, 0.28);
+      }
+      .hm-c.l2 {
+        background: rgba(255, 122, 89, 0.5);
+      }
+      .hm-c.l3 {
+        background: rgba(255, 140, 70, 0.75);
+      }
+      .hm-c.l4 {
+        background: linear-gradient(135deg, #ff6b57, #ffb03a);
+      }
+      /* гістограма — той самий каркас, що weekbars, + лічильник над стовпчиком */
+      .weekbars .cnt {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .weekbars.hist {
+        height: 88px;
+      }
+      /* рядок тренду: назва | спарклайн | значення */
+      .bar-row .spark-cell {
+        flex: 1;
+        min-width: 0;
+      }
+      /* донат прогресу поруч із текстом */
+      .donut-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 10px;
+      }
+
       svg.spark {
         display: block;
         width: 100%;
@@ -1251,6 +1324,9 @@
         :root:not(.theme-dark) .subnav {
           background: rgba(255, 255, 255, 0.5);
         }
+        :root:not(.theme-dark) {
+          --hm-empty: rgba(20, 24, 40, 0.08);
+        }
       }
       /* Явна світла тема з Telegram (перекриває навіть у dark-OS) */
       :root.theme-light {
@@ -1287,6 +1363,9 @@
       :root.theme-light nav,
       :root.theme-light .subnav {
         background: rgba(255, 255, 255, 0.5);
+      }
+      :root.theme-light {
+        --hm-empty: rgba(20, 24, 40, 0.08);
       }
     </style>
   </head>
@@ -1472,6 +1551,58 @@
           <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" fill="#ffb03a" />
         </svg>`;
       }
+      // Кільце прогресу (донат): r=15.9155 -> довжина кола = 100 (відсотки як dasharray).
+      function donut(pct, opts = {}) {
+        const p = Math.max(0, Math.min(100, Math.round(pct)));
+        const gid = 'dn' + GRAD_SEQ++;
+        const size = opts.size || 62;
+        return `<svg viewBox="0 0 42 42" width="${size}" height="${size}" role="img" aria-label="${esc(opts.label || 'прогрес')}">
+          <defs><linearGradient id="${gid}" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#ff6b57"/><stop offset="100%" stop-color="#ffb03a"/>
+          </linearGradient></defs>
+          <circle cx="21" cy="21" r="15.9155" fill="none" stroke="var(--line)" stroke-width="4.5"/>
+          <circle cx="21" cy="21" r="15.9155" fill="none" stroke="url(#${gid})" stroke-width="4.5"
+            stroke-dasharray="${p} ${100 - p}" stroke-dashoffset="25" stroke-linecap="round"/>
+          <text x="21" y="24.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--text)">${p}%</text>
+        </svg>`;
+      }
+
+      // Теплокарта активності: cells = [{d,v,l}] від понеділка (сервер вирівнює),
+      // колонка = тиждень Пн→Нд, остання — частковий поточний тиждень.
+      function heatmapGrid(cells) {
+        if (!Array.isArray(cells) || !cells.length) return '';
+        const cols = [];
+        for (let i = 0; i < cells.length; i += 7) cols.push(cells.slice(i, i + 7));
+        const colHtml = cols
+          .map(
+            (col) =>
+              `<div class="hm-col">${col
+                .map(
+                  (c) => `<span class="hm-c l${c.l || 0}" title="${esc(c.d)}: ${c.v || 0}"></span>`,
+                )
+                .join('')}</div>`,
+          )
+          .join('');
+        const labels = ['Пн', '', 'Ср', '', 'Пт', '', 'Нд']
+          .map((t) => `<span class="l">${t}</span>`)
+          .join('');
+        return `<div class="heatmap" role="img" aria-label="теплокарта активності за 12 тижнів"><div class="hm-labels">${labels}</div>${colHtml}</div>`;
+      }
+
+      // Гістограма: bars = [{label, count}] — каркас weekbars + лічильник згори.
+      function histogram(bars) {
+        if (!Array.isArray(bars) || !bars.some((b) => (b.count || 0) > 0)) return '';
+        const max = Math.max(1, ...bars.map((b) => b.count || 0));
+        const cols = bars
+          .map((b) => {
+            const off = !(b.count > 0);
+            const hpct = Math.round(((b.count || 0) / max) * 100);
+            return `<div class="col"><div class="cnt">${b.count || ''}</div><div class="bar ${off ? 'off' : ''}" style="height:${off ? 3 : Math.max(6, hpct)}%"></div><div class="d">${esc(b.label)}</div></div>`;
+          })
+          .join('');
+        return `<div class="weekbars hist">${cols}</div>`;
+      }
+
       function deltaBadge(curr, prev, digits = 2, unit = '') {
         if (!has(curr) || !has(prev)) return '';
         const dd = curr - prev;
@@ -2261,6 +2392,11 @@
             <div class="streak"><div class="fire">✅</div><div class="n">${has(s.stepDays) ? s.stepDays : 0}</div><div class="t">днів крок зроблено</div>${has(s.bestStepDays) ? `<div class="rec">рекорд ${s.bestStepDays}</div>` : ''}</div>
           </div>
           ${weekbars(stats.weekly)}
+          ${
+            Array.isArray(stats.heatmap) && stats.heatmap.some((c) => c.v > 0)
+              ? `<div class="subhead">Активність · 12 тижнів</div>${heatmapGrid(stats.heatmap)}`
+              : ''
+          }
           ${has(stats.timeToOpenMin) ? `<div class="statline"><span class="k">Час до відкриття (медіана)</span><span class="v">+${stats.timeToOpenMin} хв після 08:00</span></div>` : ''}`;
         out.push(card('🔥 A · Звички', habits));
 
@@ -2278,7 +2414,7 @@
           ${has(mk.streak) ? `<div class="statline"><span class="k">Стрік mock</span><span class="v">🔥 ${mk.streak} дн.</span></div>` : ''}
           ${
             rm && has(rm.done) && has(rm.total)
-              ? `<div class="statline"><span class="k">🗺 Роадмеп тем</span><span class="v">${rm.done}/${rm.total}</span></div><div class="goalbar"><div class="fill" style="width:${Math.round((rm.done / Math.max(1, rm.total)) * 100)}%"></div></div>`
+              ? `<div class="donut-row">${donut((rm.done / Math.max(1, rm.total)) * 100, { label: 'прогрес роадмепу' })}<div><div style="font-weight:600">🗺 Роадмеп тем</div><div class="muted" style="font-size:13px">${rm.done}/${rm.total} підпунктів</div></div></div>`
               : `<div class="statline"><span class="k">🗺 Роадмеп тем</span><span class="v muted">скоро</span></div>`
           }`;
         out.push(card('🎤 C · Майстерність', mastery));
@@ -2294,11 +2430,26 @@
             : `<div class="item">${icon} ${label}</div>`;
         };
         const savedList = Array.isArray(stats.savedList) ? stats.savedList : [];
+        // тренд топ-тем по тижнях: назва | спарклайн | сумарний бал
+        const trend = stats.interestsTrend;
+        const scoreBy = Object.fromEntries(interests.map((x) => [x.topic, x.score]));
+        const trendRows =
+          trend && Array.isArray(trend.topics)
+            ? trend.topics
+                .filter((t) => Array.isArray(t.series) && t.series.some((v) => v > 0))
+                .slice(0, 5)
+                .map(
+                  (t) =>
+                    `<div class="bar-row"><div class="name">${topicEmoji(t.topic)} ${esc(t.topic)}</div><div class="spark-cell">${sparkline(t.series, { w: 200, h: 22, label: `тренд ${t.topic}` })}</div><div class="val">${has(scoreBy[t.topic]) ? scoreBy[t.topic] : ''}</div></div>`,
+                )
+                .join('')
+            : '';
         const dBlock = `${
           interests.length
             ? `<div class="chips">${interests.map((x) => `<span class="chip">${topicEmoji(x.topic)} ${esc(x.topic)}<span class="c">${x.score}</span></span>`).join('')}</div>`
             : ph('Лайкай новини — і тут з’являться твої теми')
         }
+          ${trendRows ? `<div class="subhead">Тренд · 6 тижнів</div>${trendRows}` : ''}
           ${has(stats.readPerDay) ? `<div class="statline" style="margin-top:8px"><span class="k">Новин на день (середнє)</span><span class="v">${stats.readPerDay}</span></div>` : ''}
           ${
             has(stats.savedCount) && stats.savedCount > 0
@@ -2358,6 +2509,23 @@
           const pct = Math.min(100, Math.round((applied / Math.max(1, g.weeklyTarget)) * 100));
           html += `<div class="statline"><span class="k">Тижневі відгуки (ціль)</span><span class="v">${applied} / ${g.weeklyTarget}</span></div>
             <div class="goalbar"><div class="fill" style="width:${pct}%"></div></div>`;
+        }
+
+        // темп подач за 8 тижнів (спарклайн; показуємо коли є хоч одна подача)
+        const aw = stats.appliedWeekly;
+        if (Array.isArray(aw) && aw.some((w) => w.count > 0)) {
+          const total = aw.reduce((a, w) => a + (w.count || 0), 0);
+          html += `<div class="subhead">Подачі · 8 тижнів (разом ${total})</div>
+            ${sparkline(
+              aw.map((w) => w.count || 0),
+              { w: 480, h: 44, label: 'подачі по тижнях' },
+            )}`;
+        }
+
+        // розподіл fit% поданих — на які вакансії реально подаюсь
+        const fh = stats.fitHistogram;
+        if (Array.isArray(fh) && fh.some((b) => b.count > 0)) {
+          html += `<div class="subhead">Розподіл fit% поданих</div>${histogram(fh)}`;
         }
         return html;
       }
@@ -3005,6 +3173,48 @@
         ],
         readPerDay: 6,
         reliability: { onTime: 28, total: 30, deadman: 1 },
+        heatmap: (() => {
+          // Демо-теплокарта: детермінований візерунок, вирівняний на понеділок,
+          // ті самі пороги рівнів, що на сервері (stats-core buildHeatmap).
+          const out = [];
+          const d = new Date();
+          d.setDate(d.getDate() - 83);
+          d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+          const today = new Date();
+          const pattern = [0, 1, 3, 2, 0, 4, 1, 2, 7, 0, 1, 5, 2, 3];
+          for (let i = 0; d <= today; d.setDate(d.getDate() + 1), i++) {
+            const v = pattern[i % pattern.length];
+            const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
+            out.push({ d: d.toISOString().slice(0, 10), v, l });
+          }
+          return out;
+        })(),
+        appliedWeekly: [
+          { week: '', count: 1 },
+          { week: '', count: 2 },
+          { week: '', count: 0 },
+          { week: '', count: 3 },
+          { week: '', count: 2 },
+          { week: '', count: 4 },
+          { week: '', count: 3 },
+          { week: '', count: 5 },
+        ],
+        fitHistogram: [
+          { label: '<50', count: 0 },
+          { label: '50–59', count: 1 },
+          { label: '60–69', count: 2 },
+          { label: '70–79', count: 4 },
+          { label: '80–89', count: 5 },
+          { label: '90+', count: 2 },
+        ],
+        interestsTrend: {
+          weeks: ['', '', '', '', '', ''],
+          topics: [
+            { topic: 'Технології', series: [2, 4, 3, 6, 5, 8] },
+            { topic: 'Наука', series: [1, 2, 0, 3, 2, 4] },
+            { topic: 'Політика', series: [0, 1, 1, 0, 2, 1] },
+          ],
+        },
       };
 
       /* ══════════════════════════════════════════════════════════════════════
