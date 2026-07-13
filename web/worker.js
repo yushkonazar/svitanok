@@ -65,6 +65,7 @@ import {
   parseProposalCallbackData,
 } from './agent-core.mjs';
 import { buildOwnDataDigest } from './assistant-data-core.mjs';
+import { renderHistoryForPrompt, appendTurn } from './assistant-memory-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -300,6 +301,18 @@ async function loadSentMessages(env) {
 async function loadLatest(env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get('latest')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Історія діалогу асистента per-thread (ключ `assistantHistory`, CM) — ОКРЕМИЙ
+ *  KV-ключ від 'state' (як sentMessages: запис на кожен обмін не ділить гонку
+ *  писарів state-блоба). Биття -> {}. */
+async function loadAssistantHistory(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('assistantHistory')) ?? '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
@@ -731,7 +744,23 @@ async function runAssistantAgent(env, parsed, userText) {
   if (!env.LLM_HOST_URL) return sendText(UNKNOWN_REPLY); // хост не налаштований — graceful
 
   const nowMs = Date.now();
-  let transcript = `Користувач написав: "${userText}"`;
+  const priorContext = renderHistoryForPrompt(
+    await loadAssistantHistory(env),
+    parsed.chatId,
+    parsed.threadId,
+  );
+  // Зберегти обмін у памʼять треду (CM): перечитуємо перед put (merge-before-flush,
+  // той самий патерн, що /clear) — щоб конкурентний запис у ті ж секунди не
+  // затерло. assistantSummary — короткий опис відповіді для контексту наступних
+  // реплік (для reply — сам текст; для дій — маркер типу дії).
+  const remember = async (assistantSummary) => {
+    let h = await loadAssistantHistory(env);
+    h = appendTurn(h, parsed.chatId, parsed.threadId, 'user', userText);
+    h = appendTurn(h, parsed.chatId, parsed.threadId, 'assistant', assistantSummary);
+    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+  };
+
+  let transcript = `${priorContext}Користувач написав: "${userText}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await callLlmHost(env, {
       prompt: transcript,
@@ -740,13 +769,22 @@ async function runAssistantAgent(env, parsed, userText) {
       model: ASSISTANT_MODEL,
     });
     const action = extractAssistantAction(res?.structured);
-    if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
+    if (!action) {
+      await remember('[не зрозумів]');
+      return sendText(ASSISTANT_FALLBACK_REPLY);
+    }
 
-    if (action.action === 'reply') return sendText(action.replyText || ASSISTANT_FALLBACK_REPLY);
+    if (action.action === 'reply') {
+      const text = action.replyText || ASSISTANT_FALLBACK_REPLY;
+      await remember(text);
+      return sendText(text);
+    }
     if (action.action === 'createReminder') {
+      await remember('[поставив нагадування]');
       return createReminderFromText(env, parsed, action.reminderText);
     }
     if (action.action === 'proposeCalendarChanges') {
+      await remember('[запропонував зміни календаря]');
       return proposeCalendarChanges(env, parsed, action.proposal);
     }
     if (action.action === 'readOwnData') {
@@ -788,6 +826,7 @@ async function runAssistantAgent(env, parsed, userText) {
       : formatRangeEventsForPrompt(events ?? []);
     transcript += `\n\nКалендар (${label}): ${body}`;
   }
+  await remember('[не зрозумів]');
   return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка, чесний фолбек
 }
 
