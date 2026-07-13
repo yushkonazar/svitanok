@@ -308,6 +308,24 @@ describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (�
     expect(msg).toContain('🏛 Дій');
     expect(formatSavedMessage([])).toContain('Поки нічого');
   });
+
+  it('formatSavedMessage — news з url -> клікабельне посилання (Фаза C2); без url -> плейн', () => {
+    const msg = formatSavedMessage([
+      { kind: 'news', title: 'Стартап підняв $2М', url: 'https://x.example/a?q=1&b=2' },
+      { kind: 'fact', title: 'Без URL' },
+    ]);
+    expect(msg).toContain('🗞 <a href="https://x.example/a?q=1&amp;b=2">Стартап підняв $2М</a>');
+    expect(msg).toContain('🧠 Без URL');
+  });
+
+  it('formatSavedMessage — url і title екрануються ОКРЕМО (лапка в url не ламає href)', () => {
+    const msg = formatSavedMessage([
+      { kind: 'news', title: '<script>x</script>', url: 'https://x/"onmouseover="evil()' },
+    ]);
+    expect(msg).toContain('&quot;onmouseover=&quot;evil()');
+    expect(msg).toContain('&lt;script&gt;x&lt;/script&gt;');
+    expect(msg).not.toContain('<script>');
+  });
 });
 
 describe('tg-core — formatWhereAmI (Блок «Теми»)', () => {

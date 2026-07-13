@@ -25,6 +25,12 @@ export function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+/** Дзеркало link() з src/core/telegram.ts — url і text екрануються ОКРЕМО
+ *  (не конкатенувати перед екрануванням — інакше лапка в url ламає href). */
+export function link(url, text) {
+  return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
+}
+
 /** Константний-час порівняння secret-token (X-Telegram-Bot-Api-Secret-Token). */
 export function verifyWebhookSecret(header, secret) {
   if (typeof header !== 'string' || typeof secret !== 'string' || !secret) return false;
@@ -182,17 +188,22 @@ export function markButtonDone(replyMarkup, tappedData) {
    ══════════════════════════════════════════════════════════════════════ */
 
 // Реєстр для Telegram "/" меню (setMyCommands) — команда без "/" + короткий опис.
+// Фаза C: /mock прибрано (був літеральним STUB_REPLY, обіцяв неготову функцію);
+// /help відокремлено від /start (§C3); /reminders (список+скасувати, §C4) і
+// /clear (§C5) додано за рекомендацією аудиту команд vs Mini App.
 export const COMMANDS = [
-  { command: 'start', description: 'Почати / список команд' },
+  { command: 'start', description: 'Почати роботу з ботом' },
+  { command: 'help', description: 'Список усіх команд' },
   { command: 'brief', description: 'Запустити ранковий брифінг' },
   { command: 'stats', description: 'Стрік і статистика' },
   { command: 'jobs', description: 'Активна воронка вакансій' },
   { command: 'save', description: 'Збережене (факти/цитати/новини)' },
   { command: 'settings', description: 'Відкрити Mini App' },
   { command: 'remind', description: 'Нагадування (напр. через 20 хв ...)' },
-  { command: 'mock', description: '🚧 Співбесіда — скоро' },
+  { command: 'reminders', description: 'Список активних нагадувань' },
   { command: 'plan', description: 'План дня (LLM читає календар, пропонує таймлайн)' },
   { command: 'roadmap', description: 'IT-роадмеп (теми, прогрес)' },
+  { command: 'clear', description: 'Видалити останні N моїх повідомлень (за замовч. 20)' },
   { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
 ];
 
@@ -282,14 +293,21 @@ export function formatJobsMessage(funnelList) {
 
 const KIND_ICON = { news: '🗞', fact: '🧠', quote: '🏛', question: '🎤' };
 
-/** /save — останнє збережене (факти/цитати/новини/питання), з /api/stats.savedList. */
+/** /save — останнє збережене (факти/цитати/новини/питання), з /api/stats.savedList.
+ *  Фаза C2: news-записи мають url (Mini App-версія лінкує) — тепер клікабельні
+ *  й тут; fact/quote/question url не мають (dedup по id=textHash), лишаються
+ *  плейн-текстом, як і раніше. */
 export function formatSavedMessage(savedList) {
   const list = Array.isArray(savedList) ? savedList : [];
   if (list.length === 0) {
     return '🔖 <b>Збережене</b>\n\nПоки нічого — тисни 🔖/💾 в брифінгу.';
   }
   const lines = ['🔖 <b>Збережене</b>', ''];
-  for (const it of list) lines.push(`${KIND_ICON[it.kind] || '🔖'} ${escapeHtml(it.title || '?')}`);
+  for (const it of list) {
+    const icon = KIND_ICON[it.kind] || '🔖';
+    const label = it.title || '?';
+    lines.push(it.url ? `${icon} ${link(it.url, label)}` : `${icon} ${escapeHtml(label)}`);
+  }
   return lines.join('\n');
 }
 
