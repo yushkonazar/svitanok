@@ -21,6 +21,11 @@ import {
   formatSavedMessage,
   formatWhereAmI,
   buildMiniAppButton,
+  sentMessagesKey,
+  recordSentMessage,
+  lastSentMessages,
+  parseClearCount,
+  formatClearResult,
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
@@ -267,6 +272,18 @@ async function loadState(env) {
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {}; // биття JSON -> порожній стан
+  }
+}
+
+/** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
+ *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
+ *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state'). */
+async function loadSentMessages(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('sentMessages')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
 }
 
@@ -607,15 +624,40 @@ async function tryLlmReminderRewrite(env, text) {
   return parseReminderTime(rewritten, now);
 }
 
-/** sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4 хендлерів нижче). */
+/**
+ * sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4
+ * хендлерів нижче). Успішний sendMessage трекається в `sentMessages` (§C5,
+ * /clear) — res.clone() перед .json(), щоб не спожити тіло Response для
+ * можливих майбутніх консюмерів повернутого значення (сьогодні жоден
+ * виклик sendText(...) тіло не читає, але краще не покладатись на це мовчки).
+ */
 function sendTo(env, parsed) {
-  return (text, extra) =>
-    tgCall(env, 'sendMessage', {
+  return async (text, extra) => {
+    const res = await tgCall(env, 'sendMessage', {
       chat_id: parsed.chatId,
       message_thread_id: parsed.threadId ?? undefined,
       text,
       ...extra,
     });
+    if (res.ok) {
+      try {
+        const json = await res.clone().json();
+        const messageId = json?.result?.message_id;
+        if (typeof messageId === 'number') {
+          const sentMessages = recordSentMessage(
+            await loadSentMessages(env),
+            parsed.chatId,
+            parsed.threadId,
+            messageId,
+          );
+          await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+        }
+      } catch (e) {
+        console.error('sentMessages tracking failed (не блокує відповідь)', e);
+      }
+    }
+    return res;
+  };
 }
 
 /** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
@@ -777,6 +819,23 @@ async function handleCommand(env, parsed, origin) {
         parse_mode: 'HTML',
         reply_markup: buildRootKeyboard(progress),
       });
+    }
+    case 'clear': {
+      const n = parseClearCount(cmd.args);
+      const sentMessages = await loadSentMessages(env);
+      const ids = lastSentMessages(sentMessages, parsed.chatId, parsed.threadId, n);
+      let deleted = 0;
+      for (const id of ids) {
+        const res = await tgCall(env, 'deleteMessage', { chat_id: parsed.chatId, message_id: id });
+        if (res.ok) deleted++;
+      }
+      // Прибрати спробувані id з ring buffer — не намагатись видалити їх
+      // повторно наступного /clear (незалежно від того, чи справді видалились:
+      // старіші за 48 год і так НІКОЛИ не видаляться, тримати їх сенсу нема).
+      const key = sentMessagesKey(parsed.chatId, parsed.threadId);
+      sentMessages[key] = (sentMessages[key] ?? []).filter((id) => !ids.includes(id));
+      await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+      return sendText(formatClearResult(deleted, ids.length));
     }
     case 'whereami':
       return sendText(formatWhereAmI(parsed.chatId, parsed.threadId), { parse_mode: 'HTML' });

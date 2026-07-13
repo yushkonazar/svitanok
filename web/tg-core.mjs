@@ -184,6 +184,52 @@ export function markButtonDone(replyMarkup, tappedData) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   /clear (§C5) — ring-buffer message_id надісланих БОТОМ повідомлень, per
+   чат+тема. Дозволяє видалити N останніх, не читаючи всю історію чату
+   (Telegram Bot API не дає прочитати/перелічити чужу історію взагалі —
+   бот пам'ятає лише те, що сам надіслав). Зберігається в ОКРЕМОМУ KV-
+   ключі ('sentMessages', worker.js), не в 'state' — щоб не додавати
+   зайвий read-modify-write (і вікно гонки) на КОЖНУ відповідь бота до
+   блоба, який і так ділять reminders/roadmapProgress/mockWeights/...
+   ══════════════════════════════════════════════════════════════════════ */
+
+// На чат+тему; більш ніж достатньо для будь-якого розумного /clear N (max 50).
+const SENT_MESSAGES_CAP = 50;
+
+/** Ключ ring-buffer-а в об'єкті sentMessages: один на чат+тему. */
+export function sentMessagesKey(chatId, threadId) {
+  return `${chatId}:${threadId ?? ''}`;
+}
+
+/** Додати message_id у ring buffer (чиста — повертає новий об'єкт, капнутий). */
+export function recordSentMessage(sentMessages, chatId, threadId, messageId) {
+  const key = sentMessagesKey(chatId, threadId);
+  const store = sentMessages && typeof sentMessages === 'object' ? sentMessages : {};
+  const list = Array.isArray(store[key]) ? store[key] : [];
+  return { ...store, [key]: [...list, messageId].slice(-SENT_MESSAGES_CAP) };
+}
+
+/** Останні N message_id для чат+теми (найновіші останні) — кандидати на /clear. */
+export function lastSentMessages(sentMessages, chatId, threadId, n) {
+  const list = sentMessages?.[sentMessagesKey(chatId, threadId)];
+  return Array.isArray(list) ? list.slice(-n) : [];
+}
+
+/** Розібрати аргумент /clear -> клампована кількість [1,maxN]; невалідне/відсутнє -> defaultN. */
+export function parseClearCount(args, defaultN = 20, maxN = 50) {
+  const n = parseInt(args, 10);
+  if (!Number.isFinite(n) || n <= 0) return defaultN;
+  return Math.min(maxN, n);
+}
+
+/** Підсумкове повідомлення після спроби видалення (Telegram не дає видалити
+ *  повідомлення старші за 48 год — deleted може бути менше за attempted). */
+export function formatClearResult(deleted, attempted) {
+  if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю своїх повідомлень тут.';
+  return `🗑 Видалено ${deleted} із ${attempted} повідомлень (старші за 48 год Telegram не дає видалити).`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    Команди / Налаштування (Блок P4) — parseCommand + текстові форматери.
    ══════════════════════════════════════════════════════════════════════ */
 
