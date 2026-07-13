@@ -642,6 +642,9 @@ const MAX_ROUNDS = 3;
 // лишається на haiku (проста задача перепису фрази). Вартість тримає жорсткий
 // --max-budget-usd 0.20/виклик на хості; бот однокористувацький (низький обсяг).
 const ASSISTANT_MODEL = 'sonnet';
+// Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
+// (≤1500)+календар(≤900)+текст має лишатись під MAX_PROMPT_LEN=4000 хоста.
+const MAX_USER_TEXT = 500;
 const ASSISTANT_FALLBACK_REPLY = '🤔 Не зміг розібратись до кінця — спробуй сформулювати простіше.';
 const PENDING_TTL_MS = 30 * 60_000; // застаріла кнопка ✅/❌ під пропозицією
 
@@ -786,7 +789,8 @@ async function runAssistantAgent(env, parsed, userText) {
     await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
   };
 
-  let transcript = `${priorContext}Користувач написав: "${userText}"`;
+  const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
+  let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await callLlmHost(env, {
       prompt: transcript,
@@ -795,10 +799,10 @@ async function runAssistantAgent(env, parsed, userText) {
       model: ASSISTANT_MODEL,
     });
     const action = extractAssistantAction(res?.structured);
-    if (!action) {
-      await remember('[не зрозумів]');
-      return sendText(ASSISTANT_FALLBACK_REPLY);
-    }
+    // Хост недоступний/невалідна дія -> чесний фолбек. Історію НЕ чіпаємо (ревʼю
+    // CM): провалений (часто оверсайз) обмін інакше отруював би priorContext
+    // наступних повідомлень і сузив би бюджет ще більше (компаундинг).
+    if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
 
     if (action.action === 'reply') {
       const text = action.replyText || ASSISTANT_FALLBACK_REPLY;
@@ -856,8 +860,7 @@ async function runAssistantAgent(env, parsed, userText) {
       : formatRangeEventsForPrompt(events ?? []);
     transcript += `\n\nКалендар (${label}): ${body}`;
   }
-  await remember('[не зрозумів]');
-  return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка, чесний фолбек
+  return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка (історію не чіпаємо)
 }
 
 /** Зберегти пропозицію (state.assistantPending, ОДИН слот) + кнопки ✅/❌ підтвердження. */

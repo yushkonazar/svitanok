@@ -6,12 +6,14 @@
 // кожне повідомлення не має ділити гонку писарів `state`-блоба).
 //
 // Ключовий інваріант бюджету: історія йде в transcript (user-prompt хоста,
-// MAX_PROMPT_LEN=4000) РАЗОМ із own-data дайджестом (до 1800) — тому тримаємо
-// коротко: ≤MAX_HISTORY_TURNS реплік, кожна ≤MAX_TURN_LEN, рендер ≤MAX_RENDER_LEN.
+// MAX_PROMPT_LEN=4000) РАЗОМ із own-data дайджестом (до 1500) і календарем
+// (до 900) — тому тримаємо коротко: ≤MAX_HISTORY_TURNS реплік, кожна
+// ≤MAX_TURN_LEN, рендер ≤MAX_RENDER_LEN (бюджети зведено так, щоб сума
+// історія+дайджест+календар+текст користувача лишалась під 4000, ревʼю CM).
 
 export const MAX_HISTORY_TURNS = 6; // ~3 обміни
 const MAX_TURN_LEN = 200;
-const MAX_RENDER_LEN = 700;
+const MAX_RENDER_LEN = 500;
 
 /** Ключ історії за (chatId, threadId) — той самий формат, що sentMessagesKey. */
 export function historyKey(chatId, threadId) {

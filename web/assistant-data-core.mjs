@@ -17,7 +17,7 @@ import { listActive } from './reminders-core.mjs';
 
 // Сумарний кап дайджесту — бюджет промпту хоста (4000) ділиться між системним
 // промптом (~1.5к), транскриптом розмови й цим дайджестом.
-export const MAX_DIGEST_LEN = 1800;
+export const MAX_DIGEST_LEN = 1500;
 const MAX_SUMMARY_LEN = 140; // на один блок брифінгу
 const MAX_REMINDER_LEN = 60; // на текст одного нагадування
 const MAX_LIST_ITEMS = 8;
