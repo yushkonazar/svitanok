@@ -451,3 +451,19 @@ describe('tg-core — buildMiniAppButton (дзеркало src/core/telegram.ts,
     ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
   });
 });
+
+describe('briefCooldownRemainingMs (SL2)', () => {
+  const HOUR = 60 * 60_000;
+  it('перший запуск (немає/некоректний lastMs) -> 0 (дозволено)', () => {
+    expect(tg.briefCooldownRemainingMs(undefined, 1_000_000, HOUR)).toBe(0);
+    expect(tg.briefCooldownRemainingMs(0, 1_000_000, HOUR)).toBe(0);
+    expect(tg.briefCooldownRemainingMs(-5, 1_000_000, HOUR)).toBe(0);
+    expect(tg.briefCooldownRemainingMs('nope', 1_000_000, HOUR)).toBe(0);
+  });
+  it('у межах кулдауну -> лишок мс; після -> 0', () => {
+    const last = 1_000_000;
+    expect(tg.briefCooldownRemainingMs(last, last + 10 * 60_000, HOUR)).toBe(50 * 60_000); // 10хв минуло
+    expect(tg.briefCooldownRemainingMs(last, last + HOUR, HOUR)).toBe(0); // рівно година
+    expect(tg.briefCooldownRemainingMs(last, last + 2 * HOUR, HOUR)).toBe(0); // давно
+  });
+});

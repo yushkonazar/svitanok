@@ -27,6 +27,7 @@ import {
   parseClearCount,
   chunkArray,
   formatClearResult,
+  briefCooldownRemainingMs,
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
@@ -918,11 +919,24 @@ async function handleCommand(env, parsed, origin) {
       });
     case 'help':
       return sendText(HELP_TEXT, { parse_mode: 'HTML' });
-    case 'brief':
+    case 'brief': {
+      // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
+      // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
+      const state = await loadState(env);
+      const remainMs = briefCooldownRemainingMs(state.lastBriefDispatchMs, Date.now(), 60 * 60_000);
+      if (remainMs > 0) {
+        const mins = Math.ceil(remainMs / 60_000);
+        return sendText(
+          `⏳ Брифінг нещодавно запускався. Спробуй за ${mins} хв (або дочекайся щоденного о 08:00).`,
+        );
+      }
+      state.lastBriefDispatchMs = Date.now();
+      await env.BRIEFING.put('state', JSON.stringify(state));
       await dispatchBrief(env);
       return sendText(
         '🔄 Запустив генерацію брифінгу — якщо сьогодні ще не надсилався, прийде за кілька хвилин.',
       );
+    }
     case 'stats':
       return sendText(formatStatsMessage(aggregateStats(await loadStats(env), kyivDateKey())), {
         parse_mode: 'HTML',
