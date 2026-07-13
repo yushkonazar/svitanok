@@ -513,12 +513,19 @@ async function googleAccessToken(env) {
     const json = await res.json();
     const token = typeof json.access_token === 'string' ? json.access_token : null;
     if (token) {
-      // expires_in (сек) мінус 60с запасу; фолбек 55хв, якщо поле відсутнє.
-      const ttlSec = Number.isFinite(json.expires_in) ? Math.max(60, json.expires_in - 60) : 3300;
-      await env.BRIEFING.put(
-        'googleToken',
-        JSON.stringify({ token, expMs: Date.now() + ttlSec * 1000 }),
-      );
+      // Кеш — BEST-EFFORT (ревʼю SL): збій KV-запису (rate-limit 1/сек на ключ /
+      // денний кап Free) НЕ сміє відкинути щойно виданий валідний токен, інакше
+      // календар мовчки недоступний попри успішний OAuth. Тому окремий try.
+      try {
+        // expires_in (сек) мінус 60с запасу; фолбек 55хв, якщо поле відсутнє.
+        const ttlSec = Number.isFinite(json.expires_in) ? Math.max(60, json.expires_in - 60) : 3300;
+        await env.BRIEFING.put(
+          'googleToken',
+          JSON.stringify({ token, expMs: Date.now() + ttlSec * 1000 }),
+        );
+      } catch (e) {
+        console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
+      }
     }
     return token;
   } catch (err) {
@@ -941,20 +948,27 @@ async function handleCommand(env, parsed, origin) {
     case 'brief': {
       // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
       // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
-      const state = await loadState(env);
-      const remainMs = briefCooldownRemainingMs(state.lastBriefDispatchMs, Date.now(), 60 * 60_000);
+      const remainMs = briefCooldownRemainingMs(
+        (await loadState(env)).lastBriefDispatchMs,
+        Date.now(),
+        60 * 60_000,
+      );
       if (remainMs > 0) {
         const mins = Math.ceil(remainMs / 60_000);
         return sendText(
           `⏳ Брифінг нещодавно запускався. Спробуй за ${mins} хв (або дочекайся щоденного о 08:00).`,
         );
       }
-      state.lastBriefDispatchMs = Date.now();
-      await env.BRIEFING.put('state', JSON.stringify(state));
-      await dispatchBrief(env);
-      return sendText(
-        '🔄 Запустив генерацію брифінгу — якщо сьогодні ще не надсилався, прийде за кілька хвилин.',
-      );
+      // Мітку кулдауну сіємо ЛИШЕ після успішного dispatch (ревʼю SL): інакше
+      // транзієнтний збій GitHub блокував би повтор на годину + брехливе «Запустив».
+      const ok = await dispatchBrief(env);
+      if (!ok) {
+        return sendText(
+          '⚠️ Не вдалося запустити генерацію (тимчасова помилка GitHub). Спробуй ще раз за хвилину.',
+        );
+      }
+      await recordBriefDispatch(env);
+      return sendText('🔄 Запустив генерацію брифінгу — прийде за кілька хвилин.');
     }
     case 'stats':
       return sendText(formatStatsMessage(aggregateStats(await loadStats(env), kyivDateKey())), {
@@ -1384,26 +1398,44 @@ async function updateMasteryFocus(env) {
   }
 }
 
-/** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
+/** Точний ранковий тригер: dispatch brief (без force -> нормальний guard).
+ *  Повертає true, якщо workflow_dispatch прийнято (SL2 — /brief сіє кулдаун
+ *  ЛИШЕ після успіху; ніколи не кидає — false при будь-якому збої). */
 async function dispatchBrief(env) {
   if (!env.GH_DISPATCH_TOKEN) {
     console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
-    return;
+    return false;
   }
-  const resp = await fetch(GH_DISPATCH_URL, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
-      accept: 'application/vnd.github+json',
-      'x-github-api-version': '2022-11-28',
-      'user-agent': 'svitanok-scheduler',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
-  });
-  if (!resp.ok) {
-    console.error('workflow_dispatch failed', resp.status, await resp.text());
+  try {
+    const resp = await fetch(GH_DISPATCH_URL, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        'user-agent': 'svitanok-scheduler',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
+    });
+    if (!resp.ok) {
+      console.error('workflow_dispatch failed', resp.status, await resp.text());
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('workflow_dispatch error', e?.message);
+    return false;
   }
+}
+
+/** Записати мітку кулдауну /brief (merge-before-flush) — після УСПІШНОГО
+ *  dispatch, і з cron-гілки 08:00, щоб кулдаун перекривав і ранковий авто-brief
+ *  (ревʼю SL). */
+async function recordBriefDispatch(env) {
+  const fresh = await loadState(env);
+  fresh.lastBriefDispatchMs = Date.now();
+  await env.BRIEFING.put('state', JSON.stringify(fresh));
 }
 
 /** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
@@ -1524,7 +1556,12 @@ export default {
     const h = kyivHour();
     // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
     // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
-    if (h === 8) ctx.waitUntil(updateMasteryFocus(env).then(() => dispatchBrief(env)));
+    if (h === 8)
+      ctx.waitUntil(
+        updateMasteryFocus(env)
+          .then(() => dispatchBrief(env))
+          .then((ok) => (ok ? recordBriefDispatch(env) : undefined)), // сіє кулдаун (ревʼю SL)
+      );
     else if (h === 10) ctx.waitUntil(deadMansCheck(env));
   },
 };

@@ -82,16 +82,23 @@ describe('pickAssistantModel (SL1)', () => {
     expect(pickAssistantModel('нагадай через 20 хвилин купити хліб')).toBe('haiku');
     expect(pickAssistantModel('скільки в мене вакансій на співбесіді?')).toBe('haiku');
     expect(pickAssistantModel('що завтра в календарі')).toBe('haiku');
+    // ревʼю SL: голе «розклад» у простому лукапі має лишатись haiku
+    expect(pickAssistantModel('покажи мій розклад на завтра')).toBe('haiku');
+    expect(pickAssistantModel('який у мене розклад сьогодні')).toBe('haiku');
     expect(pickAssistantModel('')).toBe('haiku');
     expect(pickAssistantModel(null)).toBe('haiku');
   });
 
-  it('sonnet для планувальних/міркувальних запитів', () => {
+  it('sonnet для планувальних запитів — і імператив, і інфінітив (ревʼю SL)', () => {
     expect(pickAssistantModel('склади план дня')).toBe('sonnet');
     expect(pickAssistantModel('Склади план дня: зустрічі + спортзал')).toBe('sonnet');
     expect(pickAssistantModel('сплануй мені завтрашній день')).toBe('sonnet');
     expect(pickAssistantModel('організуй мій розклад на тиждень')).toBe('sonnet');
     expect(pickAssistantModel('розпиши план підготовки')).toBe('sonnet');
+    // інфінітивні форми (раніше падали в haiku)
+    expect(pickAssistantModel('допоможи спланувати день')).toBe('sonnet');
+    expect(pickAssistantModel('треба розпланувати тиждень')).toBe('sonnet');
+    expect(pickAssistantModel('запланувати підготовку до співбесіди')).toBe('sonnet');
   });
 });
 
