@@ -18,6 +18,7 @@ const {
   formatSavedMessage,
   formatWhereAmI,
   buildMiniAppButton,
+  progressBar,
   COMMANDS,
   REPLY_KEYBOARD,
 } = tg;
@@ -218,6 +219,14 @@ describe('tg-core — parseCommand (Блок P4)', () => {
     expect(REPLY_KEYBOARD.flat().length).toBeGreaterThan(0);
   });
 
+  it('REPLY_KEYBOARD містить Налаштування+Роадмеп (Фаза B2, компенсація видаленої теми «Команди»)', () => {
+    const labels = REPLY_KEYBOARD.flat();
+    expect(labels).toContain('⚙️ Налаштування');
+    expect(labels).toContain('🗺 Роадмеп');
+    expect(parseCommand('⚙️ Налаштування')).toEqual({ cmd: 'settings', args: '' });
+    expect(parseCommand('🗺 Роадмеп')).toEqual({ cmd: 'roadmap', args: '' });
+  });
+
   it('кожен лейбл REPLY_KEYBOARD резолвиться в команду з COMMANDS (без дрейфу двох реєстрів)', () => {
     const known = new Set(COMMANDS.map((c: { command: string }) => c.command));
     for (const label of REPLY_KEYBOARD.flat() as string[]) {
@@ -225,6 +234,32 @@ describe('tg-core — parseCommand (Блок P4)', () => {
       expect(parsed, `лейбл "${label}" не мапиться на команду`).not.toBeNull();
       expect(known.has(parsed!.cmd), `"${label}" -> "${parsed!.cmd}" немає в COMMANDS`).toBe(true);
     }
+  });
+});
+
+describe('tg-core — progressBar (Фаза B4)', () => {
+  it('пропорція заповнення, фіксована ширина 10', () => {
+    expect(progressBar(0, 10)).toBe('░░░░░░░░░░');
+    expect(progressBar(5, 10)).toBe('█████░░░░░');
+    expect(progressBar(10, 10)).toBe('██████████');
+  });
+
+  it('округлення до найближчого символу', () => {
+    expect(progressBar(1, 3)).toBe('███░░░░░░░'); // 1/3*10=3.33 -> round 3
+    expect(progressBar(2, 3)).toBe('███████░░░'); // 2/3*10=6.67 -> round 7
+  });
+
+  it('done>total не переповнює бар (clamp)', () => {
+    expect(progressBar(15, 10)).toBe('██████████');
+  });
+
+  it('total<=0 -> порожній рядок (немає сенсу малювати без знаменника)', () => {
+    expect(progressBar(0, 0)).toBe('');
+    expect(progressBar(5, -1)).toBe('');
+  });
+
+  it('нестандартна ширина', () => {
+    expect(progressBar(2, 4, 4)).toBe('██░░');
   });
 });
 
@@ -243,7 +278,7 @@ describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (�
       },
     });
     expect(msg).toContain('Стрік відкриттів: 3 дн. (рекорд 7)');
-    expect(msg).toContain('1/5 подано');
+    expect(msg).toContain('██░░░░░░░░ 1/5 подано'); // прогрес-бар (Фаза B4): 1/5*10=2
     expect(msg).toContain('82%');
     expect(msg).toContain('React');
     expect(msg).not.toContain('Дате'); // value:0 відфільтровано

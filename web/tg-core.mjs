@@ -197,9 +197,14 @@ export const COMMANDS = [
 ];
 
 // Reply-keyboard «пад» швидких дій (персистентний, шлеться раз на /start).
+// Фаза B2: 3-й рядок (Налаштування/Роадмеп) — компенсація видаленої теми
+// «Команди» (та ніколи не мала прив'язки в коді — команди топік-агностичні,
+// forum-тема була суто організаційною), щоб більше команд лишалось під рукою
+// без окремої теми.
 export const REPLY_KEYBOARD = [
   ['📋 Статистика', '💼 Вакансії'],
   ['🔖 Збережене', '🔄 Брифінг'],
+  ['⚙️ Налаштування', '🗺 Роадмеп'],
 ];
 
 // Лейбл reply-keyboard кнопки -> та сама команда, що й відповідний "/xxx".
@@ -208,6 +213,8 @@ const KEYBOARD_ALIASES = {
   '💼 Вакансії': 'jobs',
   '🔖 Збережене': 'save',
   '🔄 Брифінг': 'brief',
+  '⚙️ Налаштування': 'settings',
+  '🗺 Роадмеп': 'roadmap',
 };
 
 /**
@@ -225,6 +232,14 @@ export function parseCommand(text) {
   const cmd = head ? head.split('@')[0].toLowerCase() : '';
   if (!cmd) return null;
   return { cmd, args: rest.join(' ') };
+}
+
+/** Unicode прогрес-бар (█ заповнено/░ порожньо), фіксована ширина. total<=0 -> ''
+ *  (немає сенсу малювати бар без знаменника). */
+export function progressBar(done, total, width = 10) {
+  if (!(total > 0)) return '';
+  const filled = Math.max(0, Math.min(width, Math.round((done / total) * width)));
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
 const STAGE_LABEL = {
@@ -274,11 +289,12 @@ export function formatStatsMessage(stats) {
   const streaks = s.streaks || {};
   const funnel = s.funnel || {};
   const goal = s.goal || {};
+  const goalBar = progressBar(goal.weeklyApplied ?? 0, goal.weeklyTarget ?? 0);
   const lines = [
     '📊 <b>Статистика</b>',
     '',
     `🔥 Стрік відкриттів: ${streaks.openDays ?? 0} дн. (рекорд ${streaks.bestOpenDays ?? 0})`,
-    `🎯 Тижнева ціль: ${goal.weeklyApplied ?? 0}/${goal.weeklyTarget ?? 0} подано`,
+    `🎯 Тижнева ціль: ${goalBar ? goalBar + ' ' : ''}${goal.weeklyApplied ?? 0}/${goal.weeklyTarget ?? 0} подано`,
     `💼 Воронка: ${funnel.saved ?? 0} збережено · ${funnel.applied ?? 0} подано · ` +
       `${funnel.interview ?? 0} співбесід · ${funnel.offer ?? 0} офер(и)`,
     `🎤 Mock-стрік: ${streaks.mockDays ?? 0} дн.`,

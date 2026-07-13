@@ -80,6 +80,39 @@ export function formatKyivDateHeader(date: Date): string {
   return `<b>${escapeHtml(formatKyivDateLabel(date))}</b>`;
 }
 
+/** Об'єднати непорожні сегменти короткого рядка дня (Фаза B3) " · "-роздільником;
+ *  усі порожні -> ''. */
+export function joinSummarySegments(segments: (string | null | undefined)[]): string {
+  return segments.filter((s): s is string => !!s).join(' · ');
+}
+
+export interface WeeklyReviewData {
+  newsCount: number;
+  steps: string[];
+  roadmapDone: number;
+  weakTopics: string[];
+}
+
+/**
+ * Недільне повідомлення підсумку тижня (Фаза B5, тема Брифінг) — узгоджена
+ * конвенція з web/tg-core.mjs formatStatsMessage (bold-заголовок, порожній
+ * рядок-роздільник, емодзі-мітки, escapeHtml на динаміку). roadmapDone —
+ * загальний лічильник (не лише за тиждень, §weekly-review.ts коментар).
+ */
+export function formatWeeklyReviewMessage(d: WeeklyReviewData): string {
+  const lines = [
+    '📊 <b>Підсумок тижня</b>',
+    '',
+    `🗞 Новин показано: ${d.newsCount}`,
+    `✅ Кроків до офера: ${d.steps.length}`,
+  ];
+  if (d.roadmapDone > 0) lines.push(`🗺 Роадмеп: ${d.roadmapDone} пунктів позначено (загалом)`);
+  if (d.weakTopics.length > 0) {
+    lines.push(`🎤 Слабкі теми mock: ${d.weakTopics.map(escapeHtml).join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
 /** Button[][] (короткі коди) -> TgButton[][] (callback_data). Без dateKey/кнопок -> undefined. */
 function buildInlineKeyboard(
   buttons: Button[][] | undefined,

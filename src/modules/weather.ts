@@ -268,7 +268,8 @@ export function parseOneCall(json: unknown, name: string, todayKey: string): Wea
   };
 }
 
-function signed(n: number): string {
+/** Температура зі знаком+° ("+18°"/"−3°"); NaN/Infinity -> "—" (не валить рендер). */
+export function signed(n: number): string {
   return Number.isFinite(n) ? `${n > 0 ? '+' : ''}${n}°` : '—';
 }
 
