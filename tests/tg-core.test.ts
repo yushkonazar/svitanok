@@ -237,20 +237,20 @@ describe('tg-core — parseCommand (Блок P4)', () => {
   });
 });
 
-describe('tg-core — progressBar (Фаза B4)', () => {
-  it('пропорція заповнення, фіксована ширина 10', () => {
-    expect(progressBar(0, 10)).toBe('░░░░░░░░░░');
-    expect(progressBar(5, 10)).toBe('█████░░░░░');
-    expect(progressBar(10, 10)).toBe('██████████');
+describe('tg-core — progressBar (Фаза B4, обгортка [..]+<code> — фікс «хатчованої плями»)', () => {
+  it('пропорція заповнення, фіксована ширина 10, у <code>[...]</code>', () => {
+    expect(progressBar(0, 10)).toBe('<code>[░░░░░░░░░░]</code>');
+    expect(progressBar(5, 10)).toBe('<code>[█████░░░░░]</code>');
+    expect(progressBar(10, 10)).toBe('<code>[██████████]</code>');
   });
 
   it('округлення до найближчого символу', () => {
-    expect(progressBar(1, 3)).toBe('███░░░░░░░'); // 1/3*10=3.33 -> round 3
-    expect(progressBar(2, 3)).toBe('███████░░░'); // 2/3*10=6.67 -> round 7
+    expect(progressBar(1, 3)).toBe('<code>[███░░░░░░░]</code>'); // 1/3*10=3.33 -> round 3
+    expect(progressBar(2, 3)).toBe('<code>[███████░░░]</code>'); // 2/3*10=6.67 -> round 7
   });
 
   it('done>total не переповнює бар (clamp)', () => {
-    expect(progressBar(15, 10)).toBe('██████████');
+    expect(progressBar(15, 10)).toBe('<code>[██████████]</code>');
   });
 
   it('total<=0 -> порожній рядок (немає сенсу малювати без знаменника)', () => {
@@ -259,7 +259,7 @@ describe('tg-core — progressBar (Фаза B4)', () => {
   });
 
   it('нестандартна ширина', () => {
-    expect(progressBar(2, 4, 4)).toBe('██░░');
+    expect(progressBar(2, 4, 4)).toBe('<code>[██░░]</code>');
   });
 });
 
@@ -278,7 +278,7 @@ describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (�
       },
     });
     expect(msg).toContain('Стрік відкриттів: 3 дн. (рекорд 7)');
-    expect(msg).toContain('██░░░░░░░░ 1/5 подано'); // прогрес-бар (Фаза B4): 1/5*10=2
+    expect(msg).toContain('<code>[██░░░░░░░░]</code> 1/5 подано'); // прогрес-бар (Фаза B4): 1/5*10=2
     expect(msg).toContain('82%');
     expect(msg).toContain('React');
     expect(msg).not.toContain('Дате'); // value:0 відфільтровано
