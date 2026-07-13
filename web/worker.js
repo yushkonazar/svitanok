@@ -419,7 +419,7 @@ async function tgCall(env, method, body) {
  * при будь-якій мережевій/таймаут-помилці — просто null, виклик іде далі без LLM
  * (rule-based фолбек не блокується на доступності хоста).
  */
-async function callLlmHost(env, { prompt, systemPrompt, jsonSchema }) {
+async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
   if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) return null;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 25_000); // менше за таймаут хоста (30с)
@@ -427,7 +427,10 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema }) {
     const res = await fetch(env.LLM_HOST_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-llm-host-secret': env.LLM_HOST_SECRET },
-      body: JSON.stringify({ prompt, systemPrompt, jsonSchema }),
+      // model опційна — undefined випадає з JSON.stringify, хост тоді бере свій
+      // DEFAULT_MODEL (haiku). Так reminder-rewrite лишається на haiku, а
+      // асистент-агент передає 'sonnet' явно (CC2).
+      body: JSON.stringify({ prompt, systemPrompt, jsonSchema, model }),
       signal: ctrl.signal,
     });
     if (!res.ok) {
@@ -608,6 +611,11 @@ const REMINDER_HELP =
 // Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
 // (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
 const MAX_ROUNDS = 3;
+// Асистент-агент на Sonnet (складніші міркування: own-data Q&A, план дня, вибір
+// дії) — хост дефолтить на haiku, тож передаємо явно (CC2). Reminder-rewrite
+// лишається на haiku (проста задача перепису фрази). Вартість тримає жорсткий
+// --max-budget-usd 0.20/виклик на хості; бот однокористувацький (низький обсяг).
+const ASSISTANT_MODEL = 'sonnet';
 const ASSISTANT_FALLBACK_REPLY = '🤔 Не зміг розібратись до кінця — спробуй сформулювати простіше.';
 const PENDING_TTL_MS = 30 * 60_000; // застаріла кнопка ✅/❌ під пропозицією
 
@@ -717,6 +725,7 @@ async function runAssistantAgent(env, parsed, userText) {
       prompt: transcript,
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
+      model: ASSISTANT_MODEL,
     });
     const action = extractAssistantAction(res?.structured);
     if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
