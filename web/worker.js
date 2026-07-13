@@ -25,6 +25,7 @@ import {
   recordSentMessage,
   lastSentMessages,
   parseClearCount,
+  chunkArray,
   formatClearResult,
   COMMANDS,
   REPLY_KEYBOARD,
@@ -80,6 +81,11 @@ const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір ві�
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
 // reminders-core.mjs (REMINDER_CANCEL_CB_PREFIX) — НЕ підпростір усередині
 // 'rm:', бо resolveReminderSnooze бере ВЕСЬ залишок після 'rm:' як id.
+
+// /clear (§C5): скільки deleteMessage-викликів паралельно за раз — компроміс
+// між швидкістю (не повністю послідовно) і обережністю до rate-limit
+// Telegram/Cloudflare (не бурст усіх 40 водночас).
+const DELETE_CHUNK_SIZE = 10;
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
@@ -625,12 +631,32 @@ async function tryLlmReminderRewrite(env, text) {
 }
 
 /**
- * sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4
- * хендлерів нижче). Успішний sendMessage трекається в `sentMessages` (§C5,
- * /clear) — res.clone() перед .json(), щоб не спожити тіло Response для
- * можливих майбутніх консюмерів повернутого значення (сьогодні жоден
- * виклик sendText(...) тіло не читає, але краще не покладатись на це мовчки).
+ * Спільна логіка трекінгу для /clear (§C5): якщо sendMessage вдався, записати
+ * message_id у ring buffer. Викликається і з sendTo() (webhook-контекст), і з
+ * checkReminders() (cron-контекст, немає вхідного parsed) — тому приймає
+ * chatId/threadId явно, а не через parsed. res.clone() перед .json(), щоб не
+ * спожити тіло Response для можливих майбутніх консюмерів повернутого значення.
  */
+async function trackSentMessage(env, res, chatId, threadId) {
+  if (!res.ok) return;
+  try {
+    const json = await res.clone().json();
+    const messageId = json?.result?.message_id;
+    if (typeof messageId === 'number') {
+      const sentMessages = recordSentMessage(
+        await loadSentMessages(env),
+        chatId,
+        threadId,
+        messageId,
+      );
+      await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+    }
+  } catch (e) {
+    console.error('sentMessages tracking failed (не блокує відповідь)', e);
+  }
+}
+
+/** sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4 хендлерів нижче). */
 function sendTo(env, parsed) {
   return async (text, extra) => {
     const res = await tgCall(env, 'sendMessage', {
@@ -639,23 +665,7 @@ function sendTo(env, parsed) {
       text,
       ...extra,
     });
-    if (res.ok) {
-      try {
-        const json = await res.clone().json();
-        const messageId = json?.result?.message_id;
-        if (typeof messageId === 'number') {
-          const sentMessages = recordSentMessage(
-            await loadSentMessages(env),
-            parsed.chatId,
-            parsed.threadId,
-            messageId,
-          );
-          await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
-        }
-      } catch (e) {
-        console.error('sentMessages tracking failed (не блокує відповідь)', e);
-      }
-    }
+    await trackSentMessage(env, res, parsed.chatId, parsed.threadId);
     return res;
   };
 }
@@ -822,19 +832,40 @@ async function handleCommand(env, parsed, origin) {
     }
     case 'clear': {
       const n = parseClearCount(cmd.args);
-      const sentMessages = await loadSentMessages(env);
-      const ids = lastSentMessages(sentMessages, parsed.chatId, parsed.threadId, n);
+      const ids = lastSentMessages(await loadSentMessages(env), parsed.chatId, parsed.threadId, n);
       let deleted = 0;
-      for (const id of ids) {
-        const res = await tgCall(env, 'deleteMessage', { chat_id: parsed.chatId, message_id: id });
-        if (res.ok) deleted++;
+      const forget = []; // остаточно відмовлені id (>48г/без прав) — не пробувати знову
+      // Пачками по DELETE_CHUNK_SIZE (не всі N одразу) — компроміс між швидкістю
+      // (не повністю послідовно) і обережністю до rate-limit Telegram/Worker.
+      for (const chunk of chunkArray(ids, DELETE_CHUNK_SIZE)) {
+        const settled = await Promise.allSettled(
+          chunk.map((id) =>
+            tgCall(env, 'deleteMessage', { chat_id: parsed.chatId, message_id: id }),
+          ),
+        );
+        settled.forEach((r, i) => {
+          const id = chunk[i];
+          if (r.status !== 'fulfilled') return; // мережева помилка -> ретрай наступного /clear
+          if (r.value.ok) {
+            deleted++;
+            forget.push(id);
+          } else if (r.value.status !== 429) {
+            // Не rate-limit -> постійна відмова (найімовірніше >48г) -> не тримати id далі.
+            forget.push(id);
+          }
+          // 429 -> НЕ forget: спробувати цей id ще раз наступного /clear.
+        });
       }
-      // Прибрати спробувані id з ring buffer — не намагатись видалити їх
-      // повторно наступного /clear (незалежно від того, чи справді видалились:
-      // старіші за 48 год і так НІКОЛИ не видаляться, тримати їх сенсу нема).
+      // Merge-before-flush (той самий патерн, що src/core/state-kv.ts): цикл
+      // видалення міг тривати секунди — перечитуємо ЗАРАЗ і прибираємо ЛИШЕ
+      // forget із ЦЬОГО ключа, а не перезаписуємо весь блоб застарілим
+      // знімком (інакше конкурентний sendTo()/checkReminders() запис у ті ж
+      // секунди був би мовчки затертий — саме той H2-клас гонки, заради
+      // якого sentMessages узагалі живе в окремому ключі від 'state').
       const key = sentMessagesKey(parsed.chatId, parsed.threadId);
-      sentMessages[key] = (sentMessages[key] ?? []).filter((id) => !ids.includes(id));
-      await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+      const fresh = await loadSentMessages(env);
+      fresh[key] = (fresh[key] ?? []).filter((id) => !forget.includes(id));
+      await env.BRIEFING.put('sentMessages', JSON.stringify(fresh));
       return sendText(formatClearResult(deleted, ids.length));
     }
     case 'whereami':
@@ -865,13 +896,20 @@ async function handleCommand(env, parsed, origin) {
   }
 }
 
-/** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
-async function resolveReminderSnooze(env, parsed, reminderId) {
+/**
+ * Спільна логіка snooze/cancel (§C4): завантажити стан, перевірити існування
+ * нагадування, мутувати (mutate — snoozeReminder чи cancelReminder), зберегти,
+ * тікнути кнопку (markButtonDone+editMessageReplyMarkup — одноразовий статус-
+ * тік, не перерендер усього повідомлення, на відміну від roadmap, де
+ * editMessageText доречний для навігації меню). Розрізняються лише mutate-
+ * функцією й текстом тосту.
+ */
+async function resolveReminderAction(env, parsed, reminderId, mutate, successToast) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
   if (!reminders.some((r) => r.id === reminderId)) return '⚠️ Це нагадування вже неактуальне.';
 
-  state.reminders = snoozeReminder(reminders, reminderId, Date.now());
+  state.reminders = mutate(reminders, reminderId, Date.now());
   await env.BRIEFING.put('state', JSON.stringify(state));
   if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
     await tgCall(env, 'editMessageReplyMarkup', {
@@ -880,28 +918,17 @@ async function resolveReminderSnooze(env, parsed, reminderId) {
       reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
     });
   }
-  return '😴 Відкладено на 10 хв';
+  return successToast;
 }
 
-/** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди.
- *  Той самий markButtonDone+editMessageReplyMarkup патерн, що й snooze —
- *  одноразовий статус-тік кнопки, не перерендер усього повідомлення (на
- *  відміну від roadmap, де editMessageText доречний для навігації меню). */
-async function resolveReminderCancel(env, parsed, reminderId) {
-  const state = await loadState(env);
-  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  if (!reminders.some((r) => r.id === reminderId)) return '⚠️ Це нагадування вже неактуальне.';
+/** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
+async function resolveReminderSnooze(env, parsed, reminderId) {
+  return resolveReminderAction(env, parsed, reminderId, snoozeReminder, '😴 Відкладено на 10 хв');
+}
 
-  state.reminders = cancelReminder(reminders, reminderId);
-  await env.BRIEFING.put('state', JSON.stringify(state));
-  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
-    });
-  }
-  return '🗑 Нагадування скасовано';
+/** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди. */
+async function resolveReminderCancel(env, parsed, reminderId) {
+  return resolveReminderAction(env, parsed, reminderId, cancelReminder, '🗑 Нагадування скасовано');
 }
 
 /**
@@ -1031,16 +1058,21 @@ async function checkReminders(env) {
   const due = dueReminders((await loadState(env)).reminders, now);
   if (due.length === 0) return;
 
+  const chatId = env.TELEGRAM_CHAT_ID;
+  const threadId = env.TOPIC_ASSISTANT ?? undefined;
   for (const r of due) {
-    await tgCall(env, 'sendMessage', {
-      chat_id: env.TELEGRAM_CHAT_ID,
-      message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+    const res = await tgCall(env, 'sendMessage', {
+      chat_id: chatId,
+      message_thread_id: threadId,
       text: formatReminderFired(r.text),
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [[{ text: '😴 +10 хв', callback_data: `${REMINDER_CB_PREFIX}${r.id}` }]],
       },
     });
+    // §C5: трекаємо для /clear — cron-контекст, немає вхідного parsed, тож
+    // chatId/threadId явні (той самий trackSentMessage, що й sendTo()).
+    await trackSentMessage(env, res, chatId, threadId);
     const fresh = await loadState(env); // перечитати — попередня ітерація вже писала
     fresh.reminders = markFired(fresh.reminders, r.id, now);
     await env.BRIEFING.put('state', JSON.stringify(fresh));

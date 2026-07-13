@@ -23,6 +23,7 @@ const {
   recordSentMessage,
   lastSentMessages,
   parseClearCount,
+  chunkArray,
   formatClearResult,
   COMMANDS,
   REPLY_KEYBOARD,
@@ -302,7 +303,7 @@ describe('tg-core — sentMessages ring buffer (§C5: /clear)', () => {
 
   it('parseClearCount: валідне число клампується [1,maxN]; невалідне -> default', () => {
     expect(parseClearCount('5')).toBe(5);
-    expect(parseClearCount('999')).toBe(50); // clamp до maxN=50
+    expect(parseClearCount('999')).toBe(40); // clamp до maxN=40 (запас перед лімітом subrequests)
     expect(parseClearCount('0')).toBe(20); // <=0 -> default
     expect(parseClearCount('-3')).toBe(20);
     expect(parseClearCount('')).toBe(20);
@@ -316,6 +317,19 @@ describe('tg-core — sentMessages ring buffer (§C5: /clear)', () => {
     expect(formatClearResult(0, 0)).toContain('Нема що очищати');
     expect(formatClearResult(5, 5)).toContain('Видалено 5 із 5');
     expect(formatClearResult(3, 10)).toContain('Видалено 3 із 10'); // старіші за 48г не видалились
+  });
+
+  it('chunkArray: розбиває на шматки заданого розміру, останній коротший', () => {
+    expect(chunkArray([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+    expect(chunkArray([1, 2, 3, 4], 2)).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+  });
+
+  it('chunkArray: size >= length -> один шматок; порожній масив -> []', () => {
+    expect(chunkArray([1, 2], 10)).toEqual([[1, 2]]);
+    expect(chunkArray([], 10)).toEqual([]);
   });
 });
 

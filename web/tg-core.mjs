@@ -215,11 +215,23 @@ export function lastSentMessages(sentMessages, chatId, threadId, n) {
   return Array.isArray(list) ? list.slice(-n) : [];
 }
 
-/** Розібрати аргумент /clear -> клампована кількість [1,maxN]; невалідне/відсутнє -> defaultN. */
-export function parseClearCount(args, defaultN = 20, maxN = 50) {
+/** Розібрати аргумент /clear -> клампована кількість [1,maxN]; невалідне/відсутнє -> defaultN.
+ *  maxN=40 (не 50) — запас перед типовим лімітом ~50 subrequests/інвокацію
+ *  Cloudflare Worker: /clear ще й читає+пише sentMessages (±2) і шле
+ *  підсумкове повідомлення (ще ±2) поверх самих deleteMessage-викликів. */
+export function parseClearCount(args, defaultN = 20, maxN = 40) {
   const n = parseInt(args, 10);
   if (!Number.isFinite(n) || n <= 0) return defaultN;
   return Math.min(maxN, n);
+}
+
+/** Розбити масив на шматки розміром size (останній може бути коротшим) —
+ *  для /clear: видаляти пачками, не всі N одразу (обережність до rate-limit
+ *  Telegram) і не повністю послідовно (менше wall-clock часу в ctx.waitUntil). */
+export function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 /** Підсумкове повідомлення після спроби видалення (Telegram не дає видалити
