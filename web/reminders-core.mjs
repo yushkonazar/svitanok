@@ -155,6 +155,79 @@ export function snoozeReminder(reminders, id, nowMs) {
   );
 }
 
+/**
+ * Скасувати (§C4): видалити нагадування з масиву назавжди — не спрацює
+ * ані зараз, ані після snooze. На відміну від markFired/snoozeReminder це
+ * СПРАВЖНЄ видалення (немає окремого поля cancelled/done — статус лише
+ * через firedTs), бо скасоване нагадування не повинно лишати сліду. No-op,
+ * якщо id невідомий (та сама ідемпотентна поведінка, що markFired).
+ */
+export function cancelReminder(reminders, id) {
+  return (Array.isArray(reminders) ? reminders : []).filter((r) => r.id !== id);
+}
+
+/** Активні (ще не спрацювали) нагадування, за зростанням часу спрацювання —
+ *  для /reminders (список+скасувати, §C4). */
+export function listActive(reminders) {
+  return (Array.isArray(reminders) ? reminders : [])
+    .filter((r) => r && !r.firedTs)
+    .sort((a, b) => a.whenMs - b.whenMs);
+}
+
+// Окремий простір callback_data від rm:<id> (snooze, worker.js) — 'rm:' бере
+// ВЕСЬ залишок як id (без internal split), тож підпростір усередині нього
+// зламав би snooze-парсинг. 'rc:' (reminder-cancel) — новий, не перетинається
+// з v1:/rm:/pd:/rd: (жоден не є префіксом іншого).
+export const REMINDER_CANCEL_CB_PREFIX = 'rc:';
+
+/** callback_data «скасувати нагадування id»; ≤64 байти (Telegram-ліміт), інакше null. */
+export function buildReminderCancelCallbackData(id) {
+  const s = `${REMINDER_CANCEL_CB_PREFIX}${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** Розібрати `rc:<id>` -> id; не той префікс чи порожній id -> null. */
+export function parseReminderCancelCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(REMINDER_CANCEL_CB_PREFIX)) return null;
+  const id = data.slice(REMINDER_CANCEL_CB_PREFIX.length);
+  return id ? id : null;
+}
+
+/** /reminders — список активних нагадувань (найближче спершу), Київський час. */
+export function formatRemindersListMessage(reminders) {
+  const active = listActive(reminders);
+  if (active.length === 0) {
+    return '⏰ <b>Нагадування</b>\n\nАктивних нагадувань немає.';
+  }
+  const fmt = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const lines = ['⏰ <b>Нагадування</b>', ''];
+  active.forEach((r, i) => {
+    lines.push(`${i + 1}. ${fmt.format(new Date(r.whenMs))} — ${escapeHtml(r.text)}`);
+  });
+  return lines.join('\n');
+}
+
+/** Inline-клавіатура /reminders: по кнопці «❌ Скасувати N» на активне нагадування
+ *  (у тому ж порядку, що й у formatRemindersListMessage — номер відповідає рядку).
+ *  Порожньо, якщо активних немає — виклик не додає reply_markup у цьому випадку. */
+export function buildRemindersKeyboard(reminders) {
+  const active = listActive(reminders);
+  return {
+    inline_keyboard: active
+      .map((r, i) => {
+        const cb = buildReminderCancelCallbackData(r.id);
+        return cb ? [{ text: `❌ Скасувати ${i + 1}`, callback_data: cb }] : null;
+      })
+      .filter((row) => row !== null),
+  };
+}
+
 /** Підтвердження одразу після створення нагадування ("/remind"-відповідь). */
 export function formatReminderConfirm(whenMs, remainder) {
   const time = new Intl.DateTimeFormat('uk-UA', {

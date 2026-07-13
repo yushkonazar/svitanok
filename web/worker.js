@@ -30,8 +30,12 @@ import {
   dueReminders,
   markFired,
   snoozeReminder,
+  cancelReminder,
   formatReminderConfirm,
   formatReminderFired,
+  formatRemindersListMessage,
+  buildRemindersKeyboard,
+  parseReminderCancelCallbackData,
   LLM_REWRITE_SCHEMA,
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
@@ -67,7 +71,10 @@ import {
 } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek } from './mastery-core.mjs';
 
-const REMINDER_CB_PREFIX = 'rm:'; // окремий простір callback_data від v1:<dateKey>:... (P1)
+const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
+// 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
+// reminders-core.mjs (REMINDER_CANCEL_CB_PREFIX) — НЕ підпростір усередині
+// 'rm:', бо resolveReminderSnooze бере ВЕСЬ залишок після 'rm:' як id.
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
@@ -753,6 +760,15 @@ async function handleCommand(env, parsed, origin) {
       );
     case 'remind':
       return createReminderFromText(env, parsed, cmd.args);
+    case 'reminders': {
+      const reminders = (await loadState(env)).reminders ?? [];
+      const keyboard = buildRemindersKeyboard(reminders);
+      return sendText(formatRemindersListMessage(reminders), {
+        parse_mode: 'HTML',
+        // reply_markup лише коли є що скасовувати — Telegram не любить порожній inline_keyboard.
+        ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
+      });
+    }
     case 'plan':
       return runAssistantAgent(env, parsed, cmd.args || 'Склади план дня');
     case 'roadmap': {
@@ -806,6 +822,27 @@ async function resolveReminderSnooze(env, parsed, reminderId) {
     });
   }
   return '😴 Відкладено на 10 хв';
+}
+
+/** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди.
+ *  Той самий markButtonDone+editMessageReplyMarkup патерн, що й snooze —
+ *  одноразовий статус-тік кнопки, не перерендер усього повідомлення (на
+ *  відміну від roadmap, де editMessageText доречний для навігації меню). */
+async function resolveReminderCancel(env, parsed, reminderId) {
+  const state = await loadState(env);
+  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
+  if (!reminders.some((r) => r.id === reminderId)) return '⚠️ Це нагадування вже неактуальне.';
+
+  state.reminders = cancelReminder(reminders, reminderId);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+    });
+  }
+  return '🗑 Нагадування скасовано';
 }
 
 /**
@@ -967,15 +1004,22 @@ async function processTelegramUpdate(env, parsed, origin) {
     if (parsed.kind === 'callback') {
       const proposalCb = parseProposalCallbackData(parsed.data);
       const roadmapCb = parseRoadmapCallbackData(parsed.data);
+      const reminderCancelId = parseReminderCancelCallbackData(parsed.data); // 'rc:' — §C4
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const toast = proposalCb
         ? await resolveProposalCallback(env, parsed, proposalCb)
         : roadmapCb
           ? await resolveRoadmapCallback(env, parsed, roadmapCb)
-          : isReminderSnooze
-            ? await resolveReminderSnooze(env, parsed, parsed.data.slice(REMINDER_CB_PREFIX.length))
-            : await resolveCallbackToast(env, parsed);
+          : reminderCancelId
+            ? await resolveReminderCancel(env, parsed, reminderCancelId)
+            : isReminderSnooze
+              ? await resolveReminderSnooze(
+                  env,
+                  parsed,
+                  parsed.data.slice(REMINDER_CB_PREFIX.length),
+                )
+              : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,

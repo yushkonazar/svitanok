@@ -8,6 +8,13 @@ const {
   dueReminders,
   markFired,
   snoozeReminder,
+  cancelReminder,
+  listActive,
+  REMINDER_CANCEL_CB_PREFIX,
+  buildReminderCancelCallbackData,
+  parseReminderCancelCallbackData,
+  formatRemindersListMessage,
+  buildRemindersKeyboard,
   formatReminderConfirm,
   formatReminderFired,
   LLM_REWRITE_SCHEMA,
@@ -154,6 +161,131 @@ describe('reminders-core — стор: addReminder/dueReminders/markFired/snooze
     });
     expect(markFired(reminders, 'ghost', SUMMER_NOW)).toEqual(reminders);
     expect(snoozeReminder(reminders, 'ghost', SUMMER_NOW)).toEqual(reminders);
+  });
+});
+
+describe('reminders-core — cancelReminder/listActive (§C4: /reminders список+скасувати)', () => {
+  it('cancelReminder видаляє назавжди (не лишає сліду, на відміну від markFired)', () => {
+    let reminders = addReminder([], { id: 'r1', text: 'X', whenMs: SUMMER_NOW, nowMs: SUMMER_NOW });
+    reminders = addReminder(reminders, {
+      id: 'r2',
+      text: 'Y',
+      whenMs: SUMMER_NOW + 1000,
+      nowMs: SUMMER_NOW,
+    });
+    reminders = cancelReminder(reminders, 'r1');
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].id).toBe('r2');
+  });
+
+  it('cancelReminder: невідомий id — no-op', () => {
+    const reminders = addReminder([], {
+      id: 'r1',
+      text: 'X',
+      whenMs: SUMMER_NOW,
+      nowMs: SUMMER_NOW,
+    });
+    expect(cancelReminder(reminders, 'ghost')).toEqual(reminders);
+  });
+
+  it('listActive: лише !firedTs, за зростанням whenMs; fired виключено', () => {
+    let reminders = addReminder([], {
+      id: 'later',
+      text: 'B',
+      whenMs: SUMMER_NOW + 2000,
+      nowMs: SUMMER_NOW,
+    });
+    reminders = addReminder(reminders, {
+      id: 'sooner',
+      text: 'A',
+      whenMs: SUMMER_NOW + 1000,
+      nowMs: SUMMER_NOW,
+    });
+    reminders = addReminder(reminders, {
+      id: 'gone',
+      text: 'C',
+      whenMs: SUMMER_NOW,
+      nowMs: SUMMER_NOW,
+    });
+    reminders = markFired(reminders, 'gone', SUMMER_NOW);
+    const active = listActive(reminders);
+    expect(active.map((r: { id: string }) => r.id)).toEqual(['sooner', 'later']);
+  });
+
+  it('listActive: порожній стор -> []', () => {
+    expect(listActive([])).toEqual([]);
+    expect(listActive(undefined)).toEqual([]);
+  });
+});
+
+describe('reminders-core — rc: callback_data (скасувати нагадування, §C4)', () => {
+  it('build+parse round-trip', () => {
+    const cb = buildReminderCancelCallbackData('abc-123');
+    expect(cb).toBe('rc:abc-123');
+    expect(parseReminderCancelCallbackData(cb)).toBe('abc-123');
+  });
+
+  it('не той префікс/порожній id/не-рядок -> null', () => {
+    expect(parseReminderCancelCallbackData('rm:abc-123')).toBeNull();
+    expect(parseReminderCancelCallbackData('rc:')).toBeNull();
+    expect(parseReminderCancelCallbackData(undefined)).toBeNull();
+  });
+
+  it('64-байтовий ліміт (кирилиця=2 байти) — надто довгий id -> null', () => {
+    expect(buildReminderCancelCallbackData('я'.repeat(35))).toBeNull(); // rc: + 70 байт > 64
+    expect(buildReminderCancelCallbackData('a'.repeat(61))).toBe(
+      `${REMINDER_CANCEL_CB_PREFIX}${'a'.repeat(61)}`,
+    ); // рівно 64
+    expect(buildReminderCancelCallbackData('a'.repeat(62))).toBeNull(); // 65 > 64
+  });
+});
+
+describe('reminders-core — formatRemindersListMessage/buildRemindersKeyboard (§C4)', () => {
+  it('порожньо -> заглушка, без кнопок', () => {
+    expect(formatRemindersListMessage([])).toContain('Активних нагадувань немає');
+    expect(buildRemindersKeyboard([]).inline_keyboard).toEqual([]);
+  });
+
+  it('нумерація списку відповідає нумерації кнопок скасування (той самий порядок — найближче спершу)', () => {
+    let reminders = addReminder([], {
+      id: 'later',
+      text: 'Друге',
+      whenMs: SUMMER_NOW + 2000,
+      nowMs: SUMMER_NOW,
+    });
+    reminders = addReminder(reminders, {
+      id: 'sooner',
+      text: 'Перше',
+      whenMs: SUMMER_NOW + 1000,
+      nowMs: SUMMER_NOW,
+    });
+    const msg = formatRemindersListMessage(reminders);
+    expect(msg.indexOf('Перше')).toBeLessThan(msg.indexOf('Друге'));
+    expect(msg).toContain('1. ');
+    expect(msg).toContain('2. ');
+
+    const kb = buildRemindersKeyboard(reminders);
+    expect(kb.inline_keyboard).toHaveLength(2);
+    expect(kb.inline_keyboard[0][0].text).toBe('❌ Скасувати 1');
+    expect(kb.inline_keyboard[0][0].callback_data).toBe(buildReminderCancelCallbackData('sooner'));
+    expect(kb.inline_keyboard[1][0].text).toBe('❌ Скасувати 2');
+  });
+
+  it('HTML-екранує текст нагадування', () => {
+    const reminders = addReminder([], {
+      id: 'r1',
+      text: '<b>зле</b>',
+      whenMs: SUMMER_NOW,
+      nowMs: SUMMER_NOW,
+    });
+    expect(formatRemindersListMessage(reminders)).toContain('&lt;b&gt;зле&lt;/b&gt;');
+  });
+
+  it('спрацьовані (fired) не показуються ні в списку, ні в клавіатурі', () => {
+    let reminders = addReminder([], { id: 'r1', text: 'X', whenMs: SUMMER_NOW, nowMs: SUMMER_NOW });
+    reminders = markFired(reminders, 'r1', SUMMER_NOW);
+    expect(formatRemindersListMessage(reminders)).toContain('Активних нагадувань немає');
+    expect(buildRemindersKeyboard(reminders).inline_keyboard).toEqual([]);
   });
 });
 
