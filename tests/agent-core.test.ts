@@ -17,12 +17,13 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 4 дії', () => {
+  it('дозволяє рівно 5 дій (CC4: +readOwnData)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
       'proposeCalendarChanges',
       'reply',
+      'readOwnData',
     ]);
   });
 });
@@ -46,6 +47,13 @@ describe('buildAssistantSystemPrompt', () => {
     expect(p).toContain('calendarStartDay');
     expect(p).toContain('calendarEndDay');
     expect(p).toContain('через тиждень');
+  });
+
+  it('описує readOwnData зі scope-ами й розширює prompt-injection на власні дані (CC4)', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('readOwnData');
+    expect(p).toContain('dataScope');
+    expect(p).toContain('власних даних');
   });
 });
 
@@ -111,6 +119,22 @@ describe('extractAssistantAction', () => {
       replyText: 'Привіт!',
     });
     expect(extractAssistantAction({ action: 'reply' })).toEqual({ action: 'reply', replyText: '' });
+  });
+
+  it('readOwnData — пропускає dataScope-рядок, нормалізацію лишає дайджесту (CC4)', () => {
+    expect(extractAssistantAction({ action: 'readOwnData', dataScope: 'jobs' })).toEqual({
+      action: 'readOwnData',
+      dataScope: 'jobs',
+    });
+    // невалідний тип / відсутній -> undefined (buildOwnDataDigest впорядкує в 'all')
+    expect(extractAssistantAction({ action: 'readOwnData', dataScope: 42 })).toEqual({
+      action: 'readOwnData',
+      dataScope: undefined,
+    });
+    expect(extractAssistantAction({ action: 'readOwnData' })).toEqual({
+      action: 'readOwnData',
+      dataScope: undefined,
+    });
   });
 
   it('невідома/відсутня дія -> null', () => {

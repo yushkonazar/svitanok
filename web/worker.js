@@ -64,6 +64,7 @@ import {
   buildProposalCallbackData,
   parseProposalCallbackData,
 } from './agent-core.mjs';
+import { buildOwnDataDigest } from './assistant-data-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -288,6 +289,17 @@ async function loadState(env) {
 async function loadSentMessages(env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get('sentMessages')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
+ *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}. */
+async function loadLatest(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('latest')) ?? '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
@@ -736,6 +748,27 @@ async function runAssistantAgent(env, parsed, userText) {
     }
     if (action.action === 'proposeCalendarChanges') {
       return proposeCalendarChanges(env, parsed, action.proposal);
+    }
+    if (action.action === 'readOwnData') {
+      // Прочитати ВЛАСНІ дані користувача (CC4), стиснути в компактний дайджест,
+      // дописати в transcript, продовжити цикл (як readCalendar). Читаємо всі три
+      // блоби завжди (KV-читання дешеві; buildOwnDataDigest бере лише потрібне за
+      // scope) — простіше за розгалуження по scope. Дайджест — ЛИШЕ ДАНІ для LLM
+      // (плоский текст, prompt-injection застереження в системному промпті).
+      const [state, stats, latest] = await Promise.all([
+        loadState(env),
+        loadStats(env),
+        loadLatest(env),
+      ]);
+      const digest = buildOwnDataDigest({
+        scope: action.dataScope,
+        reminders: state.reminders,
+        agg: aggregateStats(stats, kyivDateKey(new Date(nowMs))),
+        roadmap: totalProgress(state.roadmapProgress ?? {}),
+        latest,
+      });
+      transcript += `\n\nТвої дані: ${digest}`;
+      continue;
     }
     // readCalendar — дописати події діапазону [startDay,endDay] від сьогодні (CC1),
     // продовжити цикл. Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на
