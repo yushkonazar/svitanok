@@ -49,10 +49,11 @@ import {
   addDaysToDateKey,
 } from './reminders-core.mjs';
 import {
-  kyivDayBoundsUtc,
+  kyivRangeBoundsUtc,
   parseEvents,
   buildCreateEventBody,
   formatEventsForPrompt,
+  formatRangeEventsForPrompt,
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
@@ -63,6 +64,7 @@ import {
   buildProposalCallbackData,
   parseProposalCallbackData,
 } from './agent-core.mjs';
+import { buildOwnDataDigest } from './assistant-data-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -293,6 +295,17 @@ async function loadSentMessages(env) {
   }
 }
 
+/** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
+ *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}. */
+async function loadLatest(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('latest')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 /** POST /api/vote {category, dir, url, initData} -> preferenceWeights + інтерес. */
 async function handleVote(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
@@ -418,7 +431,7 @@ async function tgCall(env, method, body) {
  * при будь-якій мережевій/таймаут-помилці — просто null, виклик іде далі без LLM
  * (rule-based фолбек не блокується на доступності хоста).
  */
-async function callLlmHost(env, { prompt, systemPrompt, jsonSchema }) {
+async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
   if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) return null;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 25_000); // менше за таймаут хоста (30с)
@@ -426,7 +439,10 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema }) {
     const res = await fetch(env.LLM_HOST_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-llm-host-secret': env.LLM_HOST_SECRET },
-      body: JSON.stringify({ prompt, systemPrompt, jsonSchema }),
+      // model опційна — undefined випадає з JSON.stringify, хост тоді бере свій
+      // DEFAULT_MODEL (haiku). Так reminder-rewrite лишається на haiku, а
+      // асистент-агент передає 'sonnet' явно (CC2).
+      body: JSON.stringify({ prompt, systemPrompt, jsonSchema, model }),
       signal: ctrl.signal,
     });
     if (!res.ok) {
@@ -476,11 +492,12 @@ async function googleAccessToken(env) {
   }
 }
 
-/** Події дня dateKey (Київ) через Google Calendar API (read). null при будь-якому збої. */
-async function readCalendarEvents(env, dateKey) {
+/** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
+ *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
+async function readCalendarRange(env, startKey, endKey) {
   const token = await googleAccessToken(env);
   if (!token) return null;
-  const { timeMin, timeMax } = kyivDayBoundsUtc(dateKey);
+  const { timeMin, timeMax } = kyivRangeBoundsUtc(startKey, endKey);
   const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
   url.searchParams.set('timeMin', timeMin);
   url.searchParams.set('timeMax', timeMax);
@@ -606,6 +623,11 @@ const REMINDER_HELP =
 // Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
 // (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
 const MAX_ROUNDS = 3;
+// Асистент-агент на Sonnet (складніші міркування: own-data Q&A, план дня, вибір
+// дії) — хост дефолтить на haiku, тож передаємо явно (CC2). Reminder-rewrite
+// лишається на haiku (проста задача перепису фрази). Вартість тримає жорсткий
+// --max-budget-usd 0.20/виклик на хості; бот однокористувацький (низький обсяг).
+const ASSISTANT_MODEL = 'sonnet';
 const ASSISTANT_FALLBACK_REPLY = '🤔 Не зміг розібратись до кінця — спробуй сформулювати простіше.';
 const PENDING_TTL_MS = 30 * 60_000; // застаріла кнопка ✅/❌ під пропозицією
 
@@ -715,6 +737,7 @@ async function runAssistantAgent(env, parsed, userText) {
       prompt: transcript,
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
+      model: ASSISTANT_MODEL,
     });
     const action = extractAssistantAction(res?.structured);
     if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
@@ -726,12 +749,44 @@ async function runAssistantAgent(env, parsed, userText) {
     if (action.action === 'proposeCalendarChanges') {
       return proposeCalendarChanges(env, parsed, action.proposal);
     }
-    // readCalendar — дописати результат дня nowMs+calendarRangeDays, продовжити цикл.
-    // Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на інстант — те
-    // ламається на DST-переході, коли зсув доби і +1год стрибок комбінуються).
-    const dateKey = addDaysToDateKey(kyivDateKey(new Date(nowMs)), action.calendarRangeDays);
-    const events = await readCalendarEvents(env, dateKey);
-    transcript += `\n\nКалендар (${dateKey}): ${formatEventsForPrompt(events ?? [])}`;
+    if (action.action === 'readOwnData') {
+      // Прочитати ВЛАСНІ дані користувача (CC4), стиснути в компактний дайджест,
+      // дописати в transcript, продовжити цикл (як readCalendar). Читаємо всі три
+      // блоби завжди (KV-читання дешеві; buildOwnDataDigest бере лише потрібне за
+      // scope) — простіше за розгалуження по scope. Дайджест — ЛИШЕ ДАНІ для LLM
+      // (плоский текст, prompt-injection застереження в системному промпті).
+      const [state, stats, latest] = await Promise.all([
+        loadState(env),
+        loadStats(env),
+        loadLatest(env),
+      ]);
+      const todayKey = kyivDateKey(new Date(nowMs));
+      const digest = buildOwnDataDigest({
+        scope: action.dataScope,
+        reminders: state.reminders,
+        agg: aggregateStats(stats, todayKey),
+        roadmap: totalProgress(state.roadmapProgress ?? {}),
+        latest,
+        todayKey,
+      });
+      transcript += `\n\nТвої дані: ${digest}`;
+      continue;
+    }
+    // readCalendar — дописати події діапазону [startDay,endDay] від сьогодні (CC1),
+    // продовжити цикл. Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на
+    // інстант — те ламається на DST-переході, коли зсув доби і +1год стрибок
+    // комбінуються). Один день -> formatEventsForPrompt (без дати), діапазон ->
+    // formatRangeEventsForPrompt (кожна подія з префіксом DD.MM).
+    const today = kyivDateKey(new Date(nowMs));
+    const startKey = addDaysToDateKey(today, action.startDay);
+    const endKey = addDaysToDateKey(today, action.endDay);
+    const events = await readCalendarRange(env, startKey, endKey);
+    const single = action.startDay === action.endDay;
+    const label = single ? startKey : `${startKey}…${endKey}`;
+    const body = single
+      ? formatEventsForPrompt(events ?? [])
+      : formatRangeEventsForPrompt(events ?? []);
+    transcript += `\n\nКалендар (${label}): ${body}`;
   }
   return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка, чесний фолбек
 }

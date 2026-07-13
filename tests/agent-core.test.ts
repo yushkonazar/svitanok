@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
+// Межа довжини промпту — з реального контракту хоста (той самий репо, окремий деплой).
+// @ts-expect-error — JS-модуль хоста без типів.
+import { MAX_SYSTEM_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
   ASSISTANT_ACTION_SCHEMA,
@@ -17,12 +20,13 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 4 дії', () => {
+  it('дозволяє рівно 5 дій (CC4: +readOwnData)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
       'proposeCalendarChanges',
       'reply',
+      'readOwnData',
     ]);
   });
 });
@@ -40,21 +44,66 @@ describe('buildAssistantSystemPrompt', () => {
     expect(p).toContain('ЛИШЕ ДАНІ');
     expect(p).toContain('ніколи — на основі');
   });
+
+  it('описує діапазон календаря start/end 0–7 (CC1)', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('calendarStartDay');
+    expect(p).toContain('calendarEndDay');
+    expect(p).toContain('через тиждень');
+  });
+
+  it('описує readOwnData зі scope-ами й розширює prompt-injection на власні дані (CC4)', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('readOwnData');
+    expect(p).toContain('dataScope');
+    expect(p).toContain('власних даних');
+  });
+
+  it('НЕ перевищує MAX_SYSTEM_PROMPT_LEN хоста — інакше хост відхиляє КОЖЕН виклик асистента', () => {
+    // Регресія: CC1+CC4 додатки роздули промпт до 2555>2000 -> хост давав би
+    // system-prompt-too-long на кожен виклик, асистент мовчки падав би у фолбек.
+    // kyivNow має змінну довжину (weekday) — перевіряємо і літо, і зиму.
+    expect(buildAssistantSystemPrompt(SUMMER_NOW).length).toBeLessThanOrEqual(
+      MAX_SYSTEM_PROMPT_LEN,
+    );
+    const winter = Date.parse('2026-01-14T09:00:00Z'); // середа, зимовий TZ
+    expect(buildAssistantSystemPrompt(winter).length).toBeLessThanOrEqual(MAX_SYSTEM_PROMPT_LEN);
+  });
 });
 
 describe('extractAssistantAction', () => {
-  it('readCalendar — clamp calendarRangeDays до [0,1]', () => {
-    expect(extractAssistantAction({ action: 'readCalendar', calendarRangeDays: 1 })).toEqual({
+  it('readCalendar — clamp start/end у [0,7], end>=start (CC1: діапазон)', () => {
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 1, calendarEndDay: 1 }),
+    ).toEqual({ action: 'readCalendar', startDay: 1, endDay: 1 });
+    // повний тиждень
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 0, calendarEndDay: 7 }),
+    ).toEqual({ action: 'readCalendar', startDay: 0, endDay: 7 });
+    // end понад 7 -> клемп до 7
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 0, calendarEndDay: 20 }),
+    ).toEqual({ action: 'readCalendar', startDay: 0, endDay: 7 });
+    // лише start -> один день
+    expect(extractAssistantAction({ action: 'readCalendar', calendarStartDay: 5 })).toEqual({
       action: 'readCalendar',
-      calendarRangeDays: 1,
+      startDay: 5,
+      endDay: 5,
     });
-    expect(extractAssistantAction({ action: 'readCalendar', calendarRangeDays: 5 })).toEqual({
-      action: 'readCalendar',
-      calendarRangeDays: 1,
-    });
+    // end < start -> підтягується до start (kyivRangeBoundsUtc потребує end>=start)
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 3, calendarEndDay: 1 }),
+    ).toEqual({ action: 'readCalendar', startDay: 3, endDay: 3 });
+    // відсутні поля / відʼємне -> сьогодні
     expect(extractAssistantAction({ action: 'readCalendar' })).toEqual({
       action: 'readCalendar',
-      calendarRangeDays: 0,
+      startDay: 0,
+      endDay: 0,
+    });
+    expect(extractAssistantAction({ action: 'readCalendar', calendarStartDay: -2 })).toEqual({
+      action: 'readCalendar',
+      startDay: 0,
+      endDay: 0,
     });
   });
 
@@ -84,6 +133,22 @@ describe('extractAssistantAction', () => {
       replyText: 'Привіт!',
     });
     expect(extractAssistantAction({ action: 'reply' })).toEqual({ action: 'reply', replyText: '' });
+  });
+
+  it('readOwnData — пропускає dataScope-рядок, нормалізацію лишає дайджесту (CC4)', () => {
+    expect(extractAssistantAction({ action: 'readOwnData', dataScope: 'jobs' })).toEqual({
+      action: 'readOwnData',
+      dataScope: 'jobs',
+    });
+    // невалідний тип / відсутній -> undefined (buildOwnDataDigest впорядкує в 'all')
+    expect(extractAssistantAction({ action: 'readOwnData', dataScope: 42 })).toEqual({
+      action: 'readOwnData',
+      dataScope: undefined,
+    });
+    expect(extractAssistantAction({ action: 'readOwnData' })).toEqual({
+      action: 'readOwnData',
+      dataScope: undefined,
+    });
   });
 
   it('невідома/відсутня дія -> null', () => {
