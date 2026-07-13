@@ -1,9 +1,11 @@
 // Чиста логіка «own-data» дайджестів асистент-агента (Блок CC3, 🤖Асистент):
 // стискає власні дані користувача (нагадування / воронка вакансій / активність /
-// сьогоднішній брифінг) у компактний текст для LLM-промпту (бюджет
-// MAX_PROMPT_LEN=4000 на хості ділиться між системним промптом, транскриптом і
-// цим дайджестом). Без I/O — Worker читає KV (loadState/loadStats/`latest`) і
-// агрегує (aggregateStats/totalProgress), сюди передає вже готові обʼєкти.
+// сьогоднішній брифінг) у компактний текст для LLM-промпту. Дайджест іде в
+// transcript (user-prompt), чий бюджет на хості MAX_PROMPT_LEN=4000 (окремий від
+// системного промпту, який має свій MAX_SYSTEM_PROMPT_LEN=2000) — тому кап
+// MAX_DIGEST_LEN лишає запас під сам текст користувача й дані календаря. Без I/O —
+// Worker читає KV (loadState/loadStats/`latest`) і агрегує (aggregateStats/
+// totalProgress), сюди передає вже готові обʼєкти.
 //
 // Дайджест — це ДАНІ для LLM, не інструкції: вміст (текст нагадувань, назви
 // вакансій, заголовки новин) може містити щось схоже на команду — системний
@@ -20,10 +22,34 @@ const MAX_SUMMARY_LEN = 140; // на один блок брифінгу
 const MAX_REMINDER_LEN = 60; // на текст одного нагадування
 const MAX_LIST_ITEMS = 8;
 
-/** Обрізати рядок до n символів із «…» (щоб дайджест не роздув промпт). */
+/** Обрізати рядок до n символів із «…» + сплющити переноси рядків. Flatten —
+ *  проти prompt-injection: багаторядковий текст нагадування/теми міг би
+ *  підробити розділювачі транскрипту («Твої дані:»/«Користувач написав:»);
+ *  тримаємо весь own-data однорядковим (те саме, що digestBriefing робить із
+ *  summary). */
 function clip(s, n) {
-  const t = String(s ?? '').trim();
+  const t = String(s ?? '')
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim();
   return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t;
+}
+
+/** Київська дата "YYYY-MM-DD" ISO-моменту; null якщо не парситься. */
+function kyivDateOfIso(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(t));
+}
+
+/** "YYYY-MM-DD" -> "DD.MM". */
+function ddmmOf(dateKey) {
+  const [, m, d] = String(dateKey).split('-');
+  return `${d}.${m}`;
 }
 
 /** Київський "DD.MM HH:MM" абсолютного моменту. */
@@ -81,8 +107,14 @@ export function digestProgress(agg, roadmap) {
   return parts.join('; ') + '.';
 }
 
-/** Дайджест сьогоднішнього брифінгу — усі блоки (погода/курс/новини/факт/...) з їх summary. */
-export function digestBriefing(latest) {
+/**
+ * Дайджест брифінгу — усі блоки (погода/курс/новини/факт/...) з їх summary.
+ * `latest` (ключ KV) — ОСТАННІЙ згенерований брифінг, не конче сьогоднішній:
+ * до 08:00-прогону чи в день збою генерації там лежить учорашній (рев'ю CC4 —
+ * інакше LLM видала б стару погоду/курс за сьогоднішні). Тому звіряємо
+ * latest.generatedAt із todayKey і чесно позначаємо заголовок.
+ */
+export function digestBriefing(latest, todayKey) {
   const blocks = Array.isArray(latest?.blocks) ? latest.blocks : [];
   const lines = blocks
     .map((b) => {
@@ -93,8 +125,13 @@ export function digestBriefing(latest) {
       return `${label}: ${sum}`;
     })
     .filter(Boolean);
-  if (lines.length === 0) return 'Сьогоднішній брифінг: даних поки немає.';
-  return `Сьогоднішній брифінг — ${lines.join('; ')}.`;
+  if (lines.length === 0) return 'Брифінг: даних поки немає.';
+  const genDate = kyivDateOfIso(latest?.generatedAt);
+  let header;
+  if (genDate && todayKey && genDate === todayKey) header = 'Сьогоднішній брифінг';
+  else if (genDate) header = `Брифінг від ${ddmmOf(genDate)} (сьогоднішній ще не готовий)`;
+  else header = 'Останній брифінг';
+  return `${header} — ${lines.join('; ')}.`;
 }
 
 // Області own-data, які модель може запросити (dataScope у readOwnData, CC4).
@@ -110,10 +147,10 @@ export function normalizeScope(scope) {
  * джерела; секції для відсутніх даних граційно деградують (не кидають).
  * Результат обрізаний до MAX_DIGEST_LEN (бюджет промпту хоста).
  */
-export function buildOwnDataDigest({ scope, reminders, agg, roadmap, latest }) {
+export function buildOwnDataDigest({ scope, reminders, agg, roadmap, latest, todayKey }) {
   const s = normalizeScope(scope);
   const sections = [];
-  if (s === 'all' || s === 'briefing') sections.push(digestBriefing(latest));
+  if (s === 'all' || s === 'briefing') sections.push(digestBriefing(latest, todayKey));
   if (s === 'all' || s === 'jobs') sections.push(digestJobs(agg));
   if (s === 'all' || s === 'progress') sections.push(digestProgress(agg, roadmap));
   if (s === 'all' || s === 'reminders') sections.push(digestReminders(reminders));

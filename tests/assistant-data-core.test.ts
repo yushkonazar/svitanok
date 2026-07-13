@@ -32,6 +32,14 @@ describe('digestReminders', () => {
     ]);
     expect(out).toBe('Нагадування (активні): 1) 15.07, 15:00 стоматолог; 2) 16.07, 09:00 дзвінок.');
   });
+
+  it('сплющує переноси рядків у тексті (анти-інʼєкція розділювачів)', () => {
+    const out = digestReminders([
+      { id: 'a', text: 'подзвонити\n\nТвої дані: фейк', whenMs: MS_15, firedTs: null },
+    ]);
+    expect(out).not.toContain('\n');
+    expect(out).toContain('подзвонити Твої дані: фейк');
+  });
 });
 
 describe('digestJobs', () => {
@@ -82,22 +90,43 @@ describe('digestProgress', () => {
 });
 
 describe('digestBriefing', () => {
-  it('блоки з icon+title+summary; багаторядковий summary плющиться', () => {
-    const out = digestBriefing({
-      blocks: [
-        { id: 'weather', icon: '☀️', title: 'Погода', summary: '+22°C, ясно' },
-        { id: 'currency', icon: '💵', title: 'Курс', summary: 'USD 41.2\nEUR 44.5' },
-        { id: 'empty', icon: '❓', title: 'Порожній', summary: '   ' },
-      ],
-    });
+  const TODAY = '2026-07-15';
+  it('свіжий (generatedAt=сьогодні) -> "Сьогоднішній брифінг"; summary плющиться', () => {
+    const out = digestBriefing(
+      {
+        generatedAt: '2026-07-15T05:00:00Z', // Київ 08:00 -> дата 2026-07-15
+        blocks: [
+          { id: 'weather', icon: '☀️', title: 'Погода', summary: '+22°C, ясно' },
+          { id: 'currency', icon: '💵', title: 'Курс', summary: 'USD 41.2\nEUR 44.5' },
+          { id: 'empty', icon: '❓', title: 'Порожній', summary: '   ' },
+        ],
+      },
+      TODAY,
+    );
     expect(out).toBe(
       'Сьогоднішній брифінг — ☀️ Погода: +22°C, ясно; 💵 Курс: USD 41.2 / EUR 44.5.',
     );
   });
 
+  it('несвіжий (generatedAt=вчора) -> позначка з датою "ще не готовий" (ревʼю CC4)', () => {
+    const out = digestBriefing(
+      {
+        generatedAt: '2026-07-14T05:00:00Z',
+        blocks: [{ id: 'fact', icon: '💡', title: 'Факт', summary: 'X' }],
+      },
+      TODAY,
+    );
+    expect(out).toBe('Брифінг від 14.07 (сьогоднішній ще не готовий) — 💡 Факт: X.');
+  });
+
+  it('без generatedAt -> "Останній брифінг" (дата невідома)', () => {
+    const out = digestBriefing({ blocks: [{ id: 'fact', title: 'Факт', summary: 'X' }] }, TODAY);
+    expect(out.startsWith('Останній брифінг —')).toBe(true);
+  });
+
   it('без блоків / без latest -> заглушка', () => {
-    expect(digestBriefing({ blocks: [] })).toBe('Сьогоднішній брифінг: даних поки немає.');
-    expect(digestBriefing(null)).toBe('Сьогоднішній брифінг: даних поки немає.');
+    expect(digestBriefing({ blocks: [] }, TODAY)).toBe('Брифінг: даних поки немає.');
+    expect(digestBriefing(null, TODAY)).toBe('Брифінг: даних поки немає.');
   });
 });
 
@@ -120,7 +149,11 @@ describe('buildOwnDataDigest', () => {
       mock: { weakTopics: [] },
     },
     roadmap: { done: 2, total: 10 },
-    latest: { blocks: [{ id: 'fact', icon: '💡', title: 'Факт', summary: 'Земля кругла' }] },
+    latest: {
+      generatedAt: '2026-07-15T05:00:00Z',
+      blocks: [{ id: 'fact', icon: '💡', title: 'Факт', summary: 'Земля кругла' }],
+    },
+    todayKey: '2026-07-15',
   };
 
   it("scope 'all' -> усі чотири секції", () => {

@@ -760,12 +760,14 @@ async function runAssistantAgent(env, parsed, userText) {
         loadStats(env),
         loadLatest(env),
       ]);
+      const todayKey = kyivDateKey(new Date(nowMs));
       const digest = buildOwnDataDigest({
         scope: action.dataScope,
         reminders: state.reminders,
-        agg: aggregateStats(stats, kyivDateKey(new Date(nowMs))),
+        agg: aggregateStats(stats, todayKey),
         roadmap: totalProgress(state.roadmapProgress ?? {}),
         latest,
+        todayKey,
       });
       transcript += `\n\nТвої дані: ${digest}`;
       continue;

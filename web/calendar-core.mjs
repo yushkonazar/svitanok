@@ -62,6 +62,21 @@ function ddmm(dateKey) {
   return `${d}.${m}`;
 }
 
+const MAX_EVENT_TITLE = 80;
+const MAX_RANGE_EVENTS = 30;
+const MAX_RANGE_LEN = 1200;
+
+/** Назва події для промпту: сплющити переноси рядків (подія може бути
+ *  третьосторонньою — спільна/запрошення — багаторядкова назва інакше могла б
+ *  підробити розділювачі транскрипту «Користувач написав:»/«Твої дані:»,
+ *  prompt-injection) і обрізати довжину. Порожня -> заглушка. */
+function cleanTitle(summary) {
+  const t = String(summary ?? '')
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim();
+  return t ? t.slice(0, MAX_EVENT_TITLE) : '(без назви)';
+}
+
 /**
  * Google Calendar events.list JSON -> [{id,title,time,date}]. Без items -> [].
  * `date` ("YYYY-MM-DD" Київ) додано в CC1 для багатоденних діапазонів — timed-
@@ -74,7 +89,7 @@ export function parseEvents(json) {
   if (!Array.isArray(items)) return [];
   return items.map((e) => ({
     id: typeof e.id === 'string' ? e.id : null,
-    title: e.summary?.trim() || '(без назви)',
+    title: cleanTitle(e.summary),
     time: e.start?.dateTime ? kyivHhMm(e.start.dateTime) : null,
     date: e.start?.date ? e.start.date : e.start?.dateTime ? kyivDateKeyOf(e.start.dateTime) : null,
   }));
@@ -99,13 +114,23 @@ export function formatEventsForPrompt(events) {
  * Компактний текст подій ДІАПАЗОНУ днів (CC1) — кожна з префіксом "DD.MM",
  * щоб LLM розрізняла дні при запиті на кшталт «що цього тижня». Порожньо ->
  * "подій немає". Події вже відсортовані Google (orderBy=startTime).
+ *
+ * Кап (рев'ю CC1): діапазон до 7 днів може дати десятки подій — без обмеження
+ * transcript ризикує перевищити MAX_PROMPT_LEN=4000 хоста (-> prompt-too-long
+ * -> тихий фолбек замість відповіді). Тому ≤MAX_RANGE_EVENTS подій і ≤MAX_RANGE_LEN
+ * символів; надлишок -> маркер «…(ще N)».
  */
 export function formatRangeEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
-  return events
+  const shown = events.slice(0, MAX_RANGE_EVENTS);
+  const hidden = events.length - shown.length;
+  let out = shown
     .map((e) => {
       const prefix = e.date ? `${ddmm(e.date)} ` : '';
       return e.time ? `${prefix}${e.time} ${e.title}` : `${prefix}увесь день: ${e.title}`;
     })
     .join('; ');
+  if (out.length > MAX_RANGE_LEN) return out.slice(0, MAX_RANGE_LEN - 1).trimEnd() + '…';
+  if (hidden > 0) out += `; …(ще ${hidden})`;
+  return out;
 }
