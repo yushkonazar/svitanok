@@ -19,6 +19,21 @@ const MIN_DURATION_MIN = 15;
 const MAX_DURATION_MIN = 480;
 const DEFAULT_DURATION_MIN = 60;
 
+// Планувальні/міркувальні тригери — лише вони підіймають модель до sonnet (SL1).
+const PLANNING_HINTS =
+  /(сплануй|розплануй|заплануй|склади план|план дня|розклад|організуй|розпиш)/i;
+
+/**
+ * Вибір моделі асистента (SL1): дефолт 'haiku' — дешево і НЕ проїдає спільний
+ * пул підписки Pro (та сама підписка, що дев-робота власника). 'sonnet' лише
+ * для планувальних запитів (план дня, розклад), де слабша модель помітно
+ * програє в міркуванні. Детермінована евристика по тексту — тестована; проста
+ * Q&A/нагадування/календар-лукап чудово тягне haiku.
+ */
+export function pickAssistantModel(userText) {
+  return PLANNING_HINTS.test(String(userText ?? '')) ? 'sonnet' : 'haiku';
+}
+
 /** JSON Schema для LLM-хоста — один раунд агента обирає РІВНО одну дію. */
 export const ASSISTANT_ACTION_SCHEMA = {
   type: 'object',

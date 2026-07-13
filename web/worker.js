@@ -60,6 +60,7 @@ import {
   ASSISTANT_ACTION_SCHEMA,
   buildAssistantSystemPrompt,
   extractAssistantAction,
+  pickAssistantModel,
   sanitizeProposal,
   formatProposalMessage,
   buildProposalCallbackData,
@@ -637,11 +638,9 @@ const REMINDER_HELP =
 // Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
 // (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
 const MAX_ROUNDS = 3;
-// Асистент-агент на Sonnet (складніші міркування: own-data Q&A, план дня, вибір
-// дії) — хост дефолтить на haiku, тож передаємо явно (CC2). Reminder-rewrite
-// лишається на haiku (проста задача перепису фрази). Вартість тримає жорсткий
-// --max-budget-usd 0.20/виклик на хості; бот однокористувацький (низький обсяг).
-const ASSISTANT_MODEL = 'sonnet';
+// Модель асистента обирає pickAssistantModel(userText) (SL1): дефолт haiku,
+// sonnet лише для планувальних запитів — щоб не проїдати спільний пул підписки
+// Pro (та сама, що дев-робота власника). Reminder-rewrite лишається на haiku.
 // Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
 // (≤1500)+календар(≤900)+текст має лишатись під MAX_PROMPT_LEN=4000 хоста.
 const MAX_USER_TEXT = 500;
@@ -790,13 +789,14 @@ async function runAssistantAgent(env, parsed, userText) {
   };
 
   const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
+  const model = pickAssistantModel(userText); // SL1: haiku за замовч., sonnet для планування
   let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await callLlmHost(env, {
       prompt: transcript,
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
-      model: ASSISTANT_MODEL,
+      model,
     });
     const action = extractAssistantAction(res?.structured);
     // Хост недоступний/невалідна дія -> чесний фолбек. Історію НЕ чіпаємо (ревʼю
@@ -949,7 +949,13 @@ async function handleCommand(env, parsed, origin) {
       });
     }
     case 'plan':
-      return runAssistantAgent(env, parsed, cmd.args || 'Склади план дня');
+      // Префікс «Склади план дня» завжди присутній -> pickAssistantModel дає sonnet
+      // (SL1), навіть якщо аргументи не містять планувальних слів.
+      return runAssistantAgent(
+        env,
+        parsed,
+        cmd.args ? `Склади план дня: ${cmd.args}` : 'Склади план дня',
+      );
     case 'roadmap': {
       const progress = (await loadState(env)).roadmapProgress ?? {};
       return sendText(formatRootMessage(progress), {
