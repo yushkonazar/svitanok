@@ -7,6 +7,7 @@ import {
   createNewsModule,
   WEIGHT_MIN,
   WEIGHT_MAX,
+  DAILY_NEWS_LIMIT,
 } from '../src/modules/news.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
@@ -171,5 +172,43 @@ describe('news — пайплайн run (NewsData)', () => {
       }),
     ).run(makeCtx());
     expect(block).toBeNull();
+  });
+});
+
+describe('news — денний лічильник NewsData (SL4)', () => {
+  it('інкрементує newsRequests за прогін (1 тема -> +1)', async () => {
+    const state = memState();
+    await mod(vi.fn(async () => resp(sample))).run(makeCtx(state));
+    expect(state.get('newsRequests')).toEqual({ date: '2026-07-01', count: 1 });
+  });
+
+  it('скидається на нову добу', async () => {
+    const state = memState({ newsRequests: { date: '2026-06-30', count: 150 } });
+    await mod(vi.fn(async () => resp(sample))).run(makeCtx(state));
+    expect(state.get('newsRequests')).toEqual({ date: '2026-07-01', count: 1 });
+  });
+
+  it('понад ліміт -> не фетчить, лічильник не росте, блок null', async () => {
+    const state = memState({ newsRequests: { date: '2026-07-01', count: DAILY_NEWS_LIMIT } });
+    const fetchSpy = vi.fn(async () => resp(sample));
+    const block = await mod(fetchSpy).run(makeCtx(state));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(block).toBeNull();
+    expect(state.get('newsRequests')).toEqual({ date: '2026-07-01', count: DAILY_NEWS_LIMIT });
+  });
+
+  it('лічильник персиститься, навіть коли нічого не взято (усе дедуплено) — кредит витрачено', async () => {
+    const state = memState({
+      shownNews: {
+        'https://feed.example.com/a': '2026-07-01',
+        'https://feed.example.com/b': '2026-07-01',
+        'https://feed.example.com/c': '2026-07-01',
+      },
+    });
+    const fetchSpy = vi.fn(async () => resp(sample));
+    const block = await mod(fetchSpy).run(makeCtx(state));
+    expect(block).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(state.get('newsRequests')).toEqual({ date: '2026-07-01', count: 1 });
   });
 });

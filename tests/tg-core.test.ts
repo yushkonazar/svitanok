@@ -19,6 +19,12 @@ const {
   formatWhereAmI,
   buildMiniAppButton,
   progressBar,
+  sentMessagesKey,
+  recordSentMessage,
+  lastSentMessages,
+  parseClearCount,
+  chunkArray,
+  formatClearResult,
   COMMANDS,
   REPLY_KEYBOARD,
 } = tg;
@@ -263,6 +269,70 @@ describe('tg-core — progressBar (Фаза B4, обгортка [..]+<code> —
   });
 });
 
+describe('tg-core — sentMessages ring buffer (§C5: /clear)', () => {
+  it('sentMessagesKey: чат+тема окремо; null/undefined thread -> той самий ключ', () => {
+    expect(sentMessagesKey('1', '2')).toBe('1:2');
+    expect(sentMessagesKey('1', null)).toBe('1:');
+    expect(sentMessagesKey('1', undefined)).toBe('1:');
+    expect(sentMessagesKey('1', '2')).not.toBe(sentMessagesKey('1', '3'));
+  });
+
+  it('recordSentMessage: додає в правильний ключ, не чіпає інші чат/теми', () => {
+    let store = recordSentMessage({}, '1', '2', 100);
+    store = recordSentMessage(store, '1', '2', 101);
+    store = recordSentMessage(store, '1', '3', 999); // інша тема — окремий ключ
+    expect(store['1:2']).toEqual([100, 101]);
+    expect(store['1:3']).toEqual([999]);
+  });
+
+  it('recordSentMessage: капається на 50 (найстаріші відкидаються)', () => {
+    let store: Record<string, number[]> = {};
+    for (let i = 0; i < 55; i++) store = recordSentMessage(store, '1', null, i);
+    expect(store['1:']).toHaveLength(50);
+    expect(store['1:']?.[0]).toBe(5); // перші 5 (0..4) зрізано
+    expect(store['1:']?.[49]).toBe(54);
+  });
+
+  it('lastSentMessages: останні N (найновіші останні); відсутній ключ -> []', () => {
+    const store = { '1:2': [10, 11, 12, 13, 14] };
+    expect(lastSentMessages(store, '1', '2', 3)).toEqual([12, 13, 14]);
+    expect(lastSentMessages(store, '1', '2', 100)).toEqual([10, 11, 12, 13, 14]);
+    expect(lastSentMessages(store, 'ghost', null, 5)).toEqual([]);
+    expect(lastSentMessages(undefined, '1', '2', 5)).toEqual([]);
+  });
+
+  it('parseClearCount: валідне число клампується [1,maxN]; невалідне -> default', () => {
+    expect(parseClearCount('5')).toBe(5);
+    expect(parseClearCount('999')).toBe(40); // clamp до maxN=40 (запас перед лімітом subrequests)
+    expect(parseClearCount('0')).toBe(20); // <=0 -> default
+    expect(parseClearCount('-3')).toBe(20);
+    expect(parseClearCount('')).toBe(20);
+    expect(parseClearCount('щось')).toBe(20);
+    expect(parseClearCount(undefined)).toBe(20);
+    expect(parseClearCount('7', 10, 15)).toBe(7); // нестандартні default/max
+    expect(parseClearCount('20', 10, 15)).toBe(15); // clamp до кастомного maxN
+  });
+
+  it('formatClearResult: 0 спроб -> "нема що очищати"; частковий успіх -> X із Y', () => {
+    expect(formatClearResult(0, 0)).toContain('Нема що очищати');
+    expect(formatClearResult(5, 5)).toContain('Видалено 5 із 5');
+    expect(formatClearResult(3, 10)).toContain('Видалено 3 із 10'); // старіші за 48г не видалились
+  });
+
+  it('chunkArray: розбиває на шматки заданого розміру, останній коротший', () => {
+    expect(chunkArray([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+    expect(chunkArray([1, 2, 3, 4], 2)).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+  });
+
+  it('chunkArray: size >= length -> один шматок; порожній масив -> []', () => {
+    expect(chunkArray([1, 2], 10)).toEqual([[1, 2]]);
+    expect(chunkArray([], 10)).toEqual([]);
+  });
+});
+
 describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (Блок P4)', () => {
   it('formatStatsMessage — базові поля + слабкі теми (лише value>0) + fit', () => {
     const msg = formatStatsMessage({
@@ -307,6 +377,24 @@ describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (�
     expect(msg).toContain('🧠 Медузи безсмертні');
     expect(msg).toContain('🏛 Дій');
     expect(formatSavedMessage([])).toContain('Поки нічого');
+  });
+
+  it('formatSavedMessage — news з url -> клікабельне посилання (Фаза C2); без url -> плейн', () => {
+    const msg = formatSavedMessage([
+      { kind: 'news', title: 'Стартап підняв $2М', url: 'https://x.example/a?q=1&b=2' },
+      { kind: 'fact', title: 'Без URL' },
+    ]);
+    expect(msg).toContain('🗞 <a href="https://x.example/a?q=1&amp;b=2">Стартап підняв $2М</a>');
+    expect(msg).toContain('🧠 Без URL');
+  });
+
+  it('formatSavedMessage — url і title екрануються ОКРЕМО (лапка в url не ламає href)', () => {
+    const msg = formatSavedMessage([
+      { kind: 'news', title: '<script>x</script>', url: 'https://x/"onmouseover="evil()' },
+    ]);
+    expect(msg).toContain('&quot;onmouseover=&quot;evil()');
+    expect(msg).toContain('&lt;script&gt;x&lt;/script&gt;');
+    expect(msg).not.toContain('<script>');
   });
 });
 
@@ -361,5 +449,21 @@ describe('tg-core — buildMiniAppButton (дзеркало src/core/telegram.ts,
     expect(
       buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app', null, '@svitanok_bot'),
     ).toEqual({ text: '📊 Відкрити Mini App', url: 'https://t.me/svitanok_bot?startapp' });
+  });
+});
+
+describe('briefCooldownRemainingMs (SL2)', () => {
+  const HOUR = 60 * 60_000;
+  it('перший запуск (немає/некоректний lastMs) -> 0 (дозволено)', () => {
+    expect(tg.briefCooldownRemainingMs(undefined, 1_000_000, HOUR)).toBe(0);
+    expect(tg.briefCooldownRemainingMs(0, 1_000_000, HOUR)).toBe(0);
+    expect(tg.briefCooldownRemainingMs(-5, 1_000_000, HOUR)).toBe(0);
+    expect(tg.briefCooldownRemainingMs('nope', 1_000_000, HOUR)).toBe(0);
+  });
+  it('у межах кулдауну -> лишок мс; після -> 0', () => {
+    const last = 1_000_000;
+    expect(tg.briefCooldownRemainingMs(last, last + 10 * 60_000, HOUR)).toBe(50 * 60_000); // 10хв минуло
+    expect(tg.briefCooldownRemainingMs(last, last + HOUR, HOUR)).toBe(0); // рівно година
+    expect(tg.briefCooldownRemainingMs(last, last + 2 * HOUR, HOUR)).toBe(0); // давно
   });
 });
