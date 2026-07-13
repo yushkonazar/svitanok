@@ -20,10 +20,11 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 5 дій (CC4: +readOwnData)', () => {
+  it('дозволяє рівно 6 дій (CM3: +cancelReminder)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
+      'cancelReminder',
       'proposeCalendarChanges',
       'reply',
       'readOwnData',
@@ -116,6 +117,14 @@ describe('extractAssistantAction', () => {
     });
     expect(extractAssistantAction({ action: 'createReminder', reminderText: '  ' })).toBeNull();
     expect(extractAssistantAction({ action: 'createReminder' })).toBeNull();
+  });
+
+  it('cancelReminder — потребує непорожній reminderText (опис для збігу, CM3)', () => {
+    expect(
+      extractAssistantAction({ action: 'cancelReminder', reminderText: ' стоматолог ' }),
+    ).toEqual({ action: 'cancelReminder', reminderText: 'стоматолог' });
+    expect(extractAssistantAction({ action: 'cancelReminder', reminderText: '' })).toBeNull();
+    expect(extractAssistantAction({ action: 'cancelReminder' })).toBeNull();
   });
 
   it('proposeCalendarChanges — потребує масив proposal (навіть порожній)', () => {

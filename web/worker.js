@@ -37,6 +37,7 @@ import {
   markFired,
   snoozeReminder,
   cancelReminder,
+  listActive,
   formatReminderConfirm,
   formatReminderFired,
   formatRemindersListMessage,
@@ -730,6 +731,31 @@ async function createReminderFromText(env, parsed, text) {
 }
 
 /**
+ * Скасувати активне нагадування за описом (CM3, дія cancelReminder агента):
+ * збіг по підрядку тексту серед активних. 0 -> не знайшов; 1 -> скасувати +
+ * підтвердити; >1 -> уточнити (не вгадуємо, яке саме). Плоский текст (без
+ * parse_mode) — текст нагадування довільний, Telegram не інтерпретує розмітку.
+ */
+async function cancelReminderByText(env, parsed, matchText) {
+  const sendText = sendTo(env, parsed);
+  const state = await loadState(env);
+  const active = listActive(state.reminders);
+  const q = matchText.toLowerCase();
+  const matches = active.filter((r) => String(r.text).toLowerCase().includes(q));
+
+  if (matches.length === 0) {
+    return sendText(`🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.`);
+  }
+  if (matches.length > 1) {
+    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    return sendText(`🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}`);
+  }
+  state.reminders = cancelReminder(state.reminders, matches[0].id);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return sendText(`🗑 Скасував нагадування: ${matches[0].text}`);
+}
+
+/**
  * LLM tool-use агент (Блок P2b, 🤖Асистент): Worker сам оркеструє обмежений
  * цикл раундів callLlmHost — host/ навмисно stateless, без справжнього
  * tool-calling усередині CLI (`--tools ''` — задокументована найважливіша
@@ -782,6 +808,10 @@ async function runAssistantAgent(env, parsed, userText) {
     if (action.action === 'createReminder') {
       await remember('[поставив нагадування]');
       return createReminderFromText(env, parsed, action.reminderText);
+    }
+    if (action.action === 'cancelReminder') {
+      await remember('[скасував нагадування]');
+      return cancelReminderByText(env, parsed, action.reminderText);
     }
     if (action.action === 'proposeCalendarChanges') {
       await remember('[запропонував зміни календаря]');
