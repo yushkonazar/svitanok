@@ -14,6 +14,13 @@ const NEWS_PRIORITY = 50;
 const EXTRA_MORE = 5; // запас заголовків на тему для кнопки «Більше» у дашборді
 const WHY_MAX = 140;
 
+// Денний ліміт запитів NewsData (SL4) — за зразком weather.ts DAILY_REQUEST_LIMIT.
+// Free-тариф = 200 кредитів/добу (1 кредит = 1 запит = 1 тема). Норма ~6/добу;
+// навіть максимум форс-ранів (кулдаун /brief 1/год -> ~25 ранів × 6 ≈ 150) під
+// цим капом. Тобто це запобіжник від рант-аут-циклів + буфер під 200, а не
+// обмежувач нормального використання.
+export const DAILY_NEWS_LIMIT = 180;
+
 // --- preferenceWeights (👍/👎 з дашборда) ---
 export const WEIGHT_MIN = 0.5;
 export const WEIGHT_MAX = 2.0;
@@ -151,6 +158,13 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       const today = ctx.clock.todayKey();
       const nextShown: ShownNews = { ...shown };
 
+      // Денний лічильник запитів NewsData (SL4, скид на нову добу) — той самий
+      // патерн, що weatherRequests. Захищає free-тариф 200/добу від форс-спаму.
+      const storedNews = ctx.state.get<{ date: string; count: number }>('newsRequests');
+      const newsCounter =
+        storedNews && storedNews.date === today ? { ...storedNews } : { date: today, count: 0 };
+      let newsLimitHit = false;
+
       // preferenceWeights: вага теми масштабує квоту й порядок. Недільний decay -> 1.0.
       let weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
       if (ctx.clock.isSunday()) {
@@ -167,6 +181,12 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       const runSeen = new Set<string>(); // глобальний дедуп прогону: без повторів між темами
       const groups: Group[] = [];
       for (const t of topics) {
+        // Понад денний ліміт — стоп (не фетчимо решту тем), лічильник++ до fetch.
+        if (newsCounter.count >= DAILY_NEWS_LIMIT) {
+          newsLimitHit = true;
+          break;
+        }
+        newsCounter.count++;
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         let items: NewsItem[];
@@ -200,6 +220,14 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
           }
         }
         if (picked.length) groups.push({ scope: t.scope, topic: t.topic, items: picked, more });
+      }
+
+      // Персист лічильника ЗАВЖДИ (кредити витрачено навіть коли нічого не взято).
+      ctx.state.set('newsRequests', newsCounter);
+      if (newsLimitHit) {
+        ctx.log.warn(
+          `news: денний ліміт NewsData (${DAILY_NEWS_LIMIT}) вичерпано — решту тем пропущено`,
+        );
       }
 
       if (groups.length === 0) return null;

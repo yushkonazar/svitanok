@@ -241,6 +241,18 @@ export function formatClearResult(deleted, attempted) {
   return `🗑 Видалено ${deleted} із ${attempted} повідомлень (старші за 48 год Telegram не дає видалити).`;
 }
 
+/**
+ * Скільки мс кулдауну /brief ще лишилось (0 = можна запускати) — SL2. Захищає
+ * від спаму `workflow_dispatch` (палить хвилини Actions + квоту KV/новин), бо
+ * guard гасить лише подвійну ВІДПРАВКУ, а джоба однаково стартує. Некоректний
+ * lastMs (не число / ≤0) -> 0 (дозволити, перший запуск).
+ */
+export function briefCooldownRemainingMs(lastMs, nowMs, cooldownMs) {
+  if (typeof lastMs !== 'number' || !(lastMs > 0)) return 0;
+  const elapsed = nowMs - lastMs;
+  return elapsed >= cooldownMs ? 0 : cooldownMs - elapsed;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    Команди / Налаштування (Блок P4) — parseCommand + текстові форматери.
    ══════════════════════════════════════════════════════════════════════ */

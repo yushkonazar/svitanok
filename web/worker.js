@@ -27,6 +27,7 @@ import {
   parseClearCount,
   chunkArray,
   formatClearResult,
+  briefCooldownRemainingMs,
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
@@ -55,11 +56,13 @@ import {
   buildCreateEventBody,
   formatEventsForPrompt,
   formatRangeEventsForPrompt,
+  isAccessTokenFresh,
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
   buildAssistantSystemPrompt,
   extractAssistantAction,
+  pickAssistantModel,
   sanitizeProposal,
   formatProposalMessage,
   buildProposalCallbackData,
@@ -482,6 +485,15 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
  */
 async function googleAccessToken(env) {
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
+  // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
+  // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
+  // KV-namespace — прийнятно. Биття кешу -> перевидати.
+  try {
+    const cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
+    if (isAccessTokenFresh(cached, Date.now())) return cached.token;
+  } catch {
+    /* биття -> перевидати нижче */
+  }
   const body = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
     client_secret: env.GOOGLE_CLIENT_SECRET,
@@ -499,7 +511,23 @@ async function googleAccessToken(env) {
       return null;
     }
     const json = await res.json();
-    return typeof json.access_token === 'string' ? json.access_token : null;
+    const token = typeof json.access_token === 'string' ? json.access_token : null;
+    if (token) {
+      // Кеш — BEST-EFFORT (ревʼю SL): збій KV-запису (rate-limit 1/сек на ключ /
+      // денний кап Free) НЕ сміє відкинути щойно виданий валідний токен, інакше
+      // календар мовчки недоступний попри успішний OAuth. Тому окремий try.
+      try {
+        // expires_in (сек) мінус 60с запасу; фолбек 55хв, якщо поле відсутнє.
+        const ttlSec = Number.isFinite(json.expires_in) ? Math.max(60, json.expires_in - 60) : 3300;
+        await env.BRIEFING.put(
+          'googleToken',
+          JSON.stringify({ token, expMs: Date.now() + ttlSec * 1000 }),
+        );
+      } catch (e) {
+        console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
+      }
+    }
+    return token;
   } catch (err) {
     console.error('google token failed', err.message);
     return null;
@@ -637,11 +665,9 @@ const REMINDER_HELP =
 // Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
 // (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
 const MAX_ROUNDS = 3;
-// Асистент-агент на Sonnet (складніші міркування: own-data Q&A, план дня, вибір
-// дії) — хост дефолтить на haiku, тож передаємо явно (CC2). Reminder-rewrite
-// лишається на haiku (проста задача перепису фрази). Вартість тримає жорсткий
-// --max-budget-usd 0.20/виклик на хості; бот однокористувацький (низький обсяг).
-const ASSISTANT_MODEL = 'sonnet';
+// Модель асистента обирає pickAssistantModel(userText) (SL1): дефолт haiku,
+// sonnet лише для планувальних запитів — щоб не проїдати спільний пул підписки
+// Pro (та сама, що дев-робота власника). Reminder-rewrite лишається на haiku.
 // Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
 // (≤1500)+календар(≤900)+текст має лишатись під MAX_PROMPT_LEN=4000 хоста.
 const MAX_USER_TEXT = 500;
@@ -790,13 +816,14 @@ async function runAssistantAgent(env, parsed, userText) {
   };
 
   const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
+  const model = pickAssistantModel(userText); // SL1: haiku за замовч., sonnet для планування
   let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await callLlmHost(env, {
       prompt: transcript,
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
-      model: ASSISTANT_MODEL,
+      model,
     });
     const action = extractAssistantAction(res?.structured);
     // Хост недоступний/невалідна дія -> чесний фолбек. Історію НЕ чіпаємо (ревʼю
@@ -918,11 +945,31 @@ async function handleCommand(env, parsed, origin) {
       });
     case 'help':
       return sendText(HELP_TEXT, { parse_mode: 'HTML' });
-    case 'brief':
-      await dispatchBrief(env);
-      return sendText(
-        '🔄 Запустив генерацію брифінгу — якщо сьогодні ще не надсилався, прийде за кілька хвилин.',
+    case 'brief': {
+      // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
+      // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
+      const remainMs = briefCooldownRemainingMs(
+        (await loadState(env)).lastBriefDispatchMs,
+        Date.now(),
+        60 * 60_000,
       );
+      if (remainMs > 0) {
+        const mins = Math.ceil(remainMs / 60_000);
+        return sendText(
+          `⏳ Брифінг нещодавно запускався. Спробуй за ${mins} хв (або дочекайся щоденного о 08:00).`,
+        );
+      }
+      // Мітку кулдауну сіємо ЛИШЕ після успішного dispatch (ревʼю SL): інакше
+      // транзієнтний збій GitHub блокував би повтор на годину + брехливе «Запустив».
+      const ok = await dispatchBrief(env);
+      if (!ok) {
+        return sendText(
+          '⚠️ Не вдалося запустити генерацію (тимчасова помилка GitHub). Спробуй ще раз за хвилину.',
+        );
+      }
+      await recordBriefDispatch(env);
+      return sendText('🔄 Запустив генерацію брифінгу — прийде за кілька хвилин.');
+    }
     case 'stats':
       return sendText(formatStatsMessage(aggregateStats(await loadStats(env), kyivDateKey())), {
         parse_mode: 'HTML',
@@ -949,7 +996,13 @@ async function handleCommand(env, parsed, origin) {
       });
     }
     case 'plan':
-      return runAssistantAgent(env, parsed, cmd.args || 'Склади план дня');
+      // Префікс «Склади план дня» завжди присутній -> pickAssistantModel дає sonnet
+      // (SL1), навіть якщо аргументи не містять планувальних слів.
+      return runAssistantAgent(
+        env,
+        parsed,
+        cmd.args ? `Склади план дня: ${cmd.args}` : 'Склади план дня',
+      );
     case 'roadmap': {
       const progress = (await loadState(env)).roadmapProgress ?? {};
       return sendText(formatRootMessage(progress), {
@@ -1345,26 +1398,44 @@ async function updateMasteryFocus(env) {
   }
 }
 
-/** Точний ранковий тригер: dispatch brief (без force -> нормальний guard). */
+/** Точний ранковий тригер: dispatch brief (без force -> нормальний guard).
+ *  Повертає true, якщо workflow_dispatch прийнято (SL2 — /brief сіє кулдаун
+ *  ЛИШЕ після успіху; ніколи не кидає — false при будь-якому збої). */
 async function dispatchBrief(env) {
   if (!env.GH_DISPATCH_TOKEN) {
     console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
-    return;
+    return false;
   }
-  const resp = await fetch(GH_DISPATCH_URL, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
-      accept: 'application/vnd.github+json',
-      'x-github-api-version': '2022-11-28',
-      'user-agent': 'svitanok-scheduler',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
-  });
-  if (!resp.ok) {
-    console.error('workflow_dispatch failed', resp.status, await resp.text());
+  try {
+    const resp = await fetch(GH_DISPATCH_URL, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        'user-agent': 'svitanok-scheduler',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
+    });
+    if (!resp.ok) {
+      console.error('workflow_dispatch failed', resp.status, await resp.text());
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('workflow_dispatch error', e?.message);
+    return false;
   }
+}
+
+/** Записати мітку кулдауну /brief (merge-before-flush) — після УСПІШНОГО
+ *  dispatch, і з cron-гілки 08:00, щоб кулдаун перекривав і ранковий авто-brief
+ *  (ревʼю SL). */
+async function recordBriefDispatch(env) {
+  const fresh = await loadState(env);
+  fresh.lastBriefDispatchMs = Date.now();
+  await env.BRIEFING.put('state', JSON.stringify(fresh));
 }
 
 /** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
@@ -1485,7 +1556,12 @@ export default {
     const h = kyivHour();
     // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
     // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
-    if (h === 8) ctx.waitUntil(updateMasteryFocus(env).then(() => dispatchBrief(env)));
+    if (h === 8)
+      ctx.waitUntil(
+        updateMasteryFocus(env)
+          .then(() => dispatchBrief(env))
+          .then((ok) => (ok ? recordBriefDispatch(env) : undefined)), // сіє кулдаун (ревʼю SL)
+      );
     else if (h === 10) ctx.waitUntil(deadMansCheck(env));
   },
 };
