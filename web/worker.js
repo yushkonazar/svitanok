@@ -37,6 +37,7 @@ import {
   markFired,
   snoozeReminder,
   cancelReminder,
+  listActive,
   formatReminderConfirm,
   formatReminderFired,
   formatRemindersListMessage,
@@ -65,6 +66,7 @@ import {
   parseProposalCallbackData,
 } from './agent-core.mjs';
 import { buildOwnDataDigest } from './assistant-data-core.mjs';
+import { renderHistoryForPrompt, appendTurn } from './assistant-memory-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -300,6 +302,18 @@ async function loadSentMessages(env) {
 async function loadLatest(env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get('latest')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Історія діалогу асистента per-thread (ключ `assistantHistory`, CM) — ОКРЕМИЙ
+ *  KV-ключ від 'state' (як sentMessages: запис на кожен обмін не ділить гонку
+ *  писарів state-блоба). Биття -> {}. */
+async function loadAssistantHistory(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('assistantHistory')) ?? '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
@@ -628,6 +642,9 @@ const MAX_ROUNDS = 3;
 // лишається на haiku (проста задача перепису фрази). Вартість тримає жорсткий
 // --max-budget-usd 0.20/виклик на хості; бот однокористувацький (низький обсяг).
 const ASSISTANT_MODEL = 'sonnet';
+// Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
+// (≤1500)+календар(≤900)+текст має лишатись під MAX_PROMPT_LEN=4000 хоста.
+const MAX_USER_TEXT = 500;
 const ASSISTANT_FALLBACK_REPLY = '🤔 Не зміг розібратись до кінця — спробуй сформулювати простіше.';
 const PENDING_TTL_MS = 30 * 60_000; // застаріла кнопка ✅/❌ під пропозицією
 
@@ -717,6 +734,31 @@ async function createReminderFromText(env, parsed, text) {
 }
 
 /**
+ * Скасувати активне нагадування за описом (CM3, дія cancelReminder агента):
+ * збіг по підрядку тексту серед активних. 0 -> не знайшов; 1 -> скасувати +
+ * підтвердити; >1 -> уточнити (не вгадуємо, яке саме). Плоский текст (без
+ * parse_mode) — текст нагадування довільний, Telegram не інтерпретує розмітку.
+ */
+async function cancelReminderByText(env, parsed, matchText) {
+  const sendText = sendTo(env, parsed);
+  const state = await loadState(env);
+  const active = listActive(state.reminders);
+  const q = matchText.toLowerCase();
+  const matches = active.filter((r) => String(r.text).toLowerCase().includes(q));
+
+  if (matches.length === 0) {
+    return sendText(`🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.`);
+  }
+  if (matches.length > 1) {
+    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    return sendText(`🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}`);
+  }
+  state.reminders = cancelReminder(state.reminders, matches[0].id);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return sendText(`🗑 Скасував нагадування: ${matches[0].text}`);
+}
+
+/**
  * LLM tool-use агент (Блок P2b, 🤖Асистент): Worker сам оркеструє обмежений
  * цикл раундів callLlmHost — host/ навмисно stateless, без справжнього
  * tool-calling усередині CLI (`--tools ''` — задокументована найважливіша
@@ -731,7 +773,24 @@ async function runAssistantAgent(env, parsed, userText) {
   if (!env.LLM_HOST_URL) return sendText(UNKNOWN_REPLY); // хост не налаштований — graceful
 
   const nowMs = Date.now();
-  let transcript = `Користувач написав: "${userText}"`;
+  const priorContext = renderHistoryForPrompt(
+    await loadAssistantHistory(env),
+    parsed.chatId,
+    parsed.threadId,
+  );
+  // Зберегти обмін у памʼять треду (CM): перечитуємо перед put (merge-before-flush,
+  // той самий патерн, що /clear) — щоб конкурентний запис у ті ж секунди не
+  // затерло. assistantSummary — короткий опис відповіді для контексту наступних
+  // реплік (для reply — сам текст; для дій — маркер типу дії).
+  const remember = async (assistantSummary) => {
+    let h = await loadAssistantHistory(env);
+    h = appendTurn(h, parsed.chatId, parsed.threadId, 'user', userText);
+    h = appendTurn(h, parsed.chatId, parsed.threadId, 'assistant', assistantSummary);
+    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+  };
+
+  const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
+  let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await callLlmHost(env, {
       prompt: transcript,
@@ -740,13 +799,26 @@ async function runAssistantAgent(env, parsed, userText) {
       model: ASSISTANT_MODEL,
     });
     const action = extractAssistantAction(res?.structured);
+    // Хост недоступний/невалідна дія -> чесний фолбек. Історію НЕ чіпаємо (ревʼю
+    // CM): провалений (часто оверсайз) обмін інакше отруював би priorContext
+    // наступних повідомлень і сузив би бюджет ще більше (компаундинг).
     if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
 
-    if (action.action === 'reply') return sendText(action.replyText || ASSISTANT_FALLBACK_REPLY);
+    if (action.action === 'reply') {
+      const text = action.replyText || ASSISTANT_FALLBACK_REPLY;
+      await remember(text);
+      return sendText(text);
+    }
     if (action.action === 'createReminder') {
+      await remember('[поставив нагадування]');
       return createReminderFromText(env, parsed, action.reminderText);
     }
+    if (action.action === 'cancelReminder') {
+      await remember('[скасував нагадування]');
+      return cancelReminderByText(env, parsed, action.reminderText);
+    }
     if (action.action === 'proposeCalendarChanges') {
+      await remember('[запропонував зміни календаря]');
       return proposeCalendarChanges(env, parsed, action.proposal);
     }
     if (action.action === 'readOwnData') {
@@ -788,7 +860,7 @@ async function runAssistantAgent(env, parsed, userText) {
       : formatRangeEventsForPrompt(events ?? []);
     transcript += `\n\nКалендар (${label}): ${body}`;
   }
-  return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка, чесний фолбек
+  return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка (історію не чіпаємо)
 }
 
 /** Зберегти пропозицію (state.assistantPending, ОДИН слот) + кнопки ✅/❌ підтвердження. */

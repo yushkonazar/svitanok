@@ -64,7 +64,7 @@ function ddmm(dateKey) {
 
 const MAX_EVENT_TITLE = 80;
 const MAX_RANGE_EVENTS = 30;
-const MAX_RANGE_LEN = 1200;
+const MAX_RANGE_LEN = 900;
 
 /** Назва події для промпту: сплющити переноси рядків (подія може бути
  *  третьосторонньою — спільна/запрошення — багаторядкова назва інакше могла б
