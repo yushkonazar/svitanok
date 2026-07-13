@@ -192,9 +192,9 @@ describe('formatRootMessage / formatTopicMessage — HTML-escape регресі�
       title: 'X',
       subtopics: [{ id: 'a', title: 'A' }],
     };
-    // порожній прогрес, total>0 -> бар усіх ░ присутній
-    expect(formatRootMessage({})).toMatch(/[█░]{10} 0\//);
-    expect(formatTopicMessage(evil, {})).toMatch(/[█░]{10} 0\/1/);
+    // порожній прогрес, total>0 -> бар усіх ░ у <code>[..]</code> присутній
+    expect(formatRootMessage({})).toMatch(/<code>\[[█░]{10}\]<\/code> 0\//);
+    expect(formatTopicMessage(evil, {})).toMatch(/<code>\[[█░]{10}\]<\/code> 0\/1/);
   });
 });
 
