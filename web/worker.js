@@ -56,6 +56,7 @@ import {
   buildCreateEventBody,
   formatEventsForPrompt,
   formatRangeEventsForPrompt,
+  isAccessTokenFresh,
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
@@ -484,6 +485,15 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
  */
 async function googleAccessToken(env) {
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
+  // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
+  // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
+  // KV-namespace — прийнятно. Биття кешу -> перевидати.
+  try {
+    const cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
+    if (isAccessTokenFresh(cached, Date.now())) return cached.token;
+  } catch {
+    /* биття -> перевидати нижче */
+  }
   const body = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
     client_secret: env.GOOGLE_CLIENT_SECRET,
@@ -501,7 +511,16 @@ async function googleAccessToken(env) {
       return null;
     }
     const json = await res.json();
-    return typeof json.access_token === 'string' ? json.access_token : null;
+    const token = typeof json.access_token === 'string' ? json.access_token : null;
+    if (token) {
+      // expires_in (сек) мінус 60с запасу; фолбек 55хв, якщо поле відсутнє.
+      const ttlSec = Number.isFinite(json.expires_in) ? Math.max(60, json.expires_in - 60) : 3300;
+      await env.BRIEFING.put(
+        'googleToken',
+        JSON.stringify({ token, expMs: Date.now() + ttlSec * 1000 }),
+      );
+    }
+    return token;
   } catch (err) {
     console.error('google token failed', err.message);
     return null;

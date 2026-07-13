@@ -134,3 +134,19 @@ export function formatRangeEventsForPrompt(events) {
   if (hidden > 0) out += `; …(ще ${hidden})`;
   return out;
 }
+
+/**
+ * Чи кешований Google access-токен ще свіжий (SL3): є непорожній token-рядок і
+ * expMs у майбутньому. Worker кешує токен у KV, щоб N раундів агента (кожен
+ * читає календар) НЕ робили N окремих OAuth-обмінів. Биття/відсутність -> false
+ * (перевидати). Час рахує викликач (чистота).
+ */
+export function isAccessTokenFresh(cached, nowMs) {
+  return (
+    !!cached &&
+    typeof cached.token === 'string' &&
+    cached.token.length > 0 &&
+    typeof cached.expMs === 'number' &&
+    cached.expMs > nowMs
+  );
+}

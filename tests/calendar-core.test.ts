@@ -8,6 +8,7 @@ const {
   buildCreateEventBody,
   formatEventsForPrompt,
   formatRangeEventsForPrompt,
+  isAccessTokenFresh,
 } = cal;
 
 describe('kyivDayBoundsUtc — DST межі дня (той самий трюк, що src/modules/calendar.ts)', () => {
@@ -81,6 +82,23 @@ describe('kyivRangeBoundsUtc — межі діапазону діб (CC1)', () =
 
   it('один день -> той самий діапазон, що kyivDayBoundsUtc', () => {
     expect(kyivRangeBoundsUtc('2026-01-01', '2026-01-01')).toEqual(kyivDayBoundsUtc('2026-01-01'));
+  });
+});
+
+describe('isAccessTokenFresh (SL3)', () => {
+  const NOW = 1_000_000;
+  it('свіжий: непорожній token + expMs у майбутньому', () => {
+    expect(isAccessTokenFresh({ token: 'ya29.abc', expMs: NOW + 60_000 }, NOW)).toBe(true);
+  });
+  it('прострочений / рівно зараз -> false', () => {
+    expect(isAccessTokenFresh({ token: 'ya29.abc', expMs: NOW - 1 }, NOW)).toBe(false);
+    expect(isAccessTokenFresh({ token: 'ya29.abc', expMs: NOW }, NOW)).toBe(false);
+  });
+  it('биття/відсутність/порожній token -> false', () => {
+    expect(isAccessTokenFresh(null, NOW)).toBe(false);
+    expect(isAccessTokenFresh({ expMs: NOW + 60_000 }, NOW)).toBe(false);
+    expect(isAccessTokenFresh({ token: '', expMs: NOW + 60_000 }, NOW)).toBe(false);
+    expect(isAccessTokenFresh({ token: 'x' }, NOW)).toBe(false);
   });
 });
 
