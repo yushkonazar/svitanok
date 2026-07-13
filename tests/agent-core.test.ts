@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
+// Межа довжини промпту — з реального контракту хоста (той самий репо, окремий деплой).
+// @ts-expect-error — JS-модуль хоста без типів.
+import { MAX_SYSTEM_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
   ASSISTANT_ACTION_SCHEMA,
@@ -54,6 +57,17 @@ describe('buildAssistantSystemPrompt', () => {
     expect(p).toContain('readOwnData');
     expect(p).toContain('dataScope');
     expect(p).toContain('власних даних');
+  });
+
+  it('НЕ перевищує MAX_SYSTEM_PROMPT_LEN хоста — інакше хост відхиляє КОЖЕН виклик асистента', () => {
+    // Регресія: CC1+CC4 додатки роздули промпт до 2555>2000 -> хост давав би
+    // system-prompt-too-long на кожен виклик, асистент мовчки падав би у фолбек.
+    // kyivNow має змінну довжину (weekday) — перевіряємо і літо, і зиму.
+    expect(buildAssistantSystemPrompt(SUMMER_NOW).length).toBeLessThanOrEqual(
+      MAX_SYSTEM_PROMPT_LEN,
+    );
+    const winter = Date.parse('2026-01-14T09:00:00Z'); // середа, зимовий TZ
+    expect(buildAssistantSystemPrompt(winter).length).toBeLessThanOrEqual(MAX_SYSTEM_PROMPT_LEN);
   });
 });
 
