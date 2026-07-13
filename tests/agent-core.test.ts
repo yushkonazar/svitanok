@@ -40,21 +40,48 @@ describe('buildAssistantSystemPrompt', () => {
     expect(p).toContain('ЛИШЕ ДАНІ');
     expect(p).toContain('ніколи — на основі');
   });
+
+  it('описує діапазон календаря start/end 0–7 (CC1)', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('calendarStartDay');
+    expect(p).toContain('calendarEndDay');
+    expect(p).toContain('через тиждень');
+  });
 });
 
 describe('extractAssistantAction', () => {
-  it('readCalendar — clamp calendarRangeDays до [0,1]', () => {
-    expect(extractAssistantAction({ action: 'readCalendar', calendarRangeDays: 1 })).toEqual({
+  it('readCalendar — clamp start/end у [0,7], end>=start (CC1: діапазон)', () => {
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 1, calendarEndDay: 1 }),
+    ).toEqual({ action: 'readCalendar', startDay: 1, endDay: 1 });
+    // повний тиждень
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 0, calendarEndDay: 7 }),
+    ).toEqual({ action: 'readCalendar', startDay: 0, endDay: 7 });
+    // end понад 7 -> клемп до 7
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 0, calendarEndDay: 20 }),
+    ).toEqual({ action: 'readCalendar', startDay: 0, endDay: 7 });
+    // лише start -> один день
+    expect(extractAssistantAction({ action: 'readCalendar', calendarStartDay: 5 })).toEqual({
       action: 'readCalendar',
-      calendarRangeDays: 1,
+      startDay: 5,
+      endDay: 5,
     });
-    expect(extractAssistantAction({ action: 'readCalendar', calendarRangeDays: 5 })).toEqual({
-      action: 'readCalendar',
-      calendarRangeDays: 1,
-    });
+    // end < start -> підтягується до start (kyivRangeBoundsUtc потребує end>=start)
+    expect(
+      extractAssistantAction({ action: 'readCalendar', calendarStartDay: 3, calendarEndDay: 1 }),
+    ).toEqual({ action: 'readCalendar', startDay: 3, endDay: 3 });
+    // відсутні поля / відʼємне -> сьогодні
     expect(extractAssistantAction({ action: 'readCalendar' })).toEqual({
       action: 'readCalendar',
-      calendarRangeDays: 0,
+      startDay: 0,
+      endDay: 0,
+    });
+    expect(extractAssistantAction({ action: 'readCalendar', calendarStartDay: -2 })).toEqual({
+      action: 'readCalendar',
+      startDay: 0,
+      endDay: 0,
     });
   });
 

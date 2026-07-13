@@ -26,7 +26,8 @@ export const ASSISTANT_ACTION_SCHEMA = {
       type: 'string',
       enum: ['readCalendar', 'createReminder', 'proposeCalendarChanges', 'reply'],
     },
-    calendarRangeDays: { type: 'number' },
+    calendarStartDay: { type: 'number' },
+    calendarEndDay: { type: 'number' },
     reminderText: { type: 'string' },
     proposal: {
       type: 'array',
@@ -64,8 +65,11 @@ export function buildAssistantSystemPrompt(nowMs) {
     `Ти — теплий персональний асистент українською в Telegram-темі 🤖Асистент. ` +
     `Користувач пише вільним текстом (нагадування, календар, план дня). ` +
     `Обирай РІВНО ОДНУ дію й відповідай ЛИШЕ JSON-обʼєктом за схемою:\n` +
-    `- {"action":"readCalendar","calendarRangeDays":0|1} — прочитати календар ` +
-    `(0=сьогодні,1=завтра), якщо для відповіді треба знати наявні події (напр. план дня).\n` +
+    `- {"action":"readCalendar","calendarStartDay":0,"calendarEndDay":0} — прочитати календар ` +
+    `на діапазон днів від сьогодні (0=сьогодні, 1=завтра, ... 7=через тиждень). Для одного дня ` +
+    `став calendarStartDay=calendarEndDay (напр. «завтра» -> 1,1); для періоду — різні (напр. ` +
+    `«що цього тижня» -> 0,7). Обирай, коли для відповіді треба знати наявні події (план дня, ` +
+    `«що в мене заплановано»).\n` +
     `- {"action":"createReminder","reminderText":"..."} — просте одиничне нагадування.\n` +
     `- {"action":"proposeCalendarChanges","proposal":[{"kind":"event"|"reminder","title":"...",` +
     `"when":"...","durationMin":60}]} — запропонувати одну чи кілька подій/нагадувань (план дня ` +
@@ -99,9 +103,13 @@ export function extractAssistantAction(structured) {
   if (typeof action !== 'string' || !VALID_ACTIONS.has(action)) return null;
 
   if (action === 'readCalendar') {
-    const raw = structured.calendarRangeDays;
-    const days = Number.isFinite(raw) ? Math.min(1, Math.max(0, Math.round(raw))) : 0;
-    return { action, calendarRangeDays: days };
+    // Клемп кожного офсету до [0,7] (CC1: діапазон днів наперед, було [0,1]).
+    // end >= start завжди (інакше kyivRangeBoundsUtc дала б timeMax<timeMin).
+    const clampDay = (v) => (Number.isFinite(v) ? Math.min(7, Math.max(0, Math.round(v))) : null);
+    const start = clampDay(structured.calendarStartDay) ?? 0;
+    const endRaw = clampDay(structured.calendarEndDay);
+    const end = endRaw == null ? start : Math.max(start, endRaw);
+    return { action, startDay: start, endDay: end };
   }
   if (action === 'createReminder') {
     const text = structured.reminderText;

@@ -22,6 +22,20 @@ export function kyivDayBoundsUtc(dateKey) {
   return { timeMin: new Date(startUtc).toISOString(), timeMax: new Date(endUtc).toISOString() };
 }
 
+/**
+ * Межі діапазону київських діб [startKey..endKey] як UTC-інстанти (Блок CC1):
+ * timeMin — початок startKey, timeMax — кінець endKey. Google Calendar
+ * events.list бере timeMin/timeMax в ОДНОМУ запиті, тож увесь тиждень читається
+ * одним subrequest'ом (а не по дню в циклі). endKey МАЄ бути >= startKey
+ * (гарантує викликач — extractAssistantAction клампить end до >= start).
+ */
+export function kyivRangeBoundsUtc(startKey, endKey) {
+  return {
+    timeMin: kyivDayBoundsUtc(startKey).timeMin,
+    timeMax: kyivDayBoundsUtc(endKey).timeMax,
+  };
+}
+
 function kyivHhMm(iso) {
   const fmt = new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
@@ -32,7 +46,29 @@ function kyivHhMm(iso) {
   return fmt.format(new Date(iso));
 }
 
-/** Google Calendar events.list JSON -> [{id,title,time}]. Без items -> []. */
+/** Київська дата "YYYY-MM-DD" інстанту (для date-поля timed-подій). */
+function kyivDateKeyOf(iso) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(iso));
+}
+
+/** "YYYY-MM-DD" -> "DD.MM" (компактна дата для багатоденного промпту). */
+function ddmm(dateKey) {
+  const [, m, d] = dateKey.split('-');
+  return `${d}.${m}`;
+}
+
+/**
+ * Google Calendar events.list JSON -> [{id,title,time,date}]. Без items -> [].
+ * `date` ("YYYY-MM-DD" Київ) додано в CC1 для багатоденних діапазонів — timed-
+ * подія конвертується в київську дату, all-day (start.date) береться дослівно
+ * (floating date без TZ — не зсуваємо). Для однодневного readCalendar не
+ * використовується (formatEventsForPrompt його ігнорує).
+ */
 export function parseEvents(json) {
   const items = json?.items;
   if (!Array.isArray(items)) return [];
@@ -40,6 +76,7 @@ export function parseEvents(json) {
     id: typeof e.id === 'string' ? e.id : null,
     title: e.summary?.trim() || '(без назви)',
     time: e.start?.dateTime ? kyivHhMm(e.start.dateTime) : null,
+    date: e.start?.date ? e.start.date : e.start?.dateTime ? kyivDateKeyOf(e.start.dateTime) : null,
   }));
 }
 
@@ -52,8 +89,23 @@ export function buildCreateEventBody({ title, startIso, endIso }) {
   };
 }
 
-/** Компактний текст подій дня для наступного раунду LLM-промпту (бюджет MAX_PROMPT_LEN). */
+/** Компактний текст подій ОДНОГО дня для наступного раунду LLM-промпту (бюджет MAX_PROMPT_LEN). */
 export function formatEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
   return events.map((e) => (e.time ? `${e.time} ${e.title}` : `увесь день: ${e.title}`)).join('; ');
+}
+
+/**
+ * Компактний текст подій ДІАПАЗОНУ днів (CC1) — кожна з префіксом "DD.MM",
+ * щоб LLM розрізняла дні при запиті на кшталт «що цього тижня». Порожньо ->
+ * "подій немає". Події вже відсортовані Google (orderBy=startTime).
+ */
+export function formatRangeEventsForPrompt(events) {
+  if (!Array.isArray(events) || events.length === 0) return 'подій немає';
+  return events
+    .map((e) => {
+      const prefix = e.date ? `${ddmm(e.date)} ` : '';
+      return e.time ? `${prefix}${e.time} ${e.title}` : `${prefix}увесь день: ${e.title}`;
+    })
+    .join('; ');
 }

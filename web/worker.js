@@ -49,10 +49,11 @@ import {
   addDaysToDateKey,
 } from './reminders-core.mjs';
 import {
-  kyivDayBoundsUtc,
+  kyivRangeBoundsUtc,
   parseEvents,
   buildCreateEventBody,
   formatEventsForPrompt,
+  formatRangeEventsForPrompt,
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
@@ -476,11 +477,12 @@ async function googleAccessToken(env) {
   }
 }
 
-/** Події дня dateKey (Київ) через Google Calendar API (read). null при будь-якому збої. */
-async function readCalendarEvents(env, dateKey) {
+/** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
+ *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
+async function readCalendarRange(env, startKey, endKey) {
   const token = await googleAccessToken(env);
   if (!token) return null;
-  const { timeMin, timeMax } = kyivDayBoundsUtc(dateKey);
+  const { timeMin, timeMax } = kyivRangeBoundsUtc(startKey, endKey);
   const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
   url.searchParams.set('timeMin', timeMin);
   url.searchParams.set('timeMax', timeMax);
@@ -726,12 +728,21 @@ async function runAssistantAgent(env, parsed, userText) {
     if (action.action === 'proposeCalendarChanges') {
       return proposeCalendarChanges(env, parsed, action.proposal);
     }
-    // readCalendar — дописати результат дня nowMs+calendarRangeDays, продовжити цикл.
-    // Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на інстант — те
-    // ламається на DST-переході, коли зсув доби і +1год стрибок комбінуються).
-    const dateKey = addDaysToDateKey(kyivDateKey(new Date(nowMs)), action.calendarRangeDays);
-    const events = await readCalendarEvents(env, dateKey);
-    transcript += `\n\nКалендар (${dateKey}): ${formatEventsForPrompt(events ?? [])}`;
+    // readCalendar — дописати події діапазону [startDay,endDay] від сьогодні (CC1),
+    // продовжити цикл. Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на
+    // інстант — те ламається на DST-переході, коли зсув доби і +1год стрибок
+    // комбінуються). Один день -> formatEventsForPrompt (без дати), діапазон ->
+    // formatRangeEventsForPrompt (кожна подія з префіксом DD.MM).
+    const today = kyivDateKey(new Date(nowMs));
+    const startKey = addDaysToDateKey(today, action.startDay);
+    const endKey = addDaysToDateKey(today, action.endDay);
+    const events = await readCalendarRange(env, startKey, endKey);
+    const single = action.startDay === action.endDay;
+    const label = single ? startKey : `${startKey}…${endKey}`;
+    const body = single
+      ? formatEventsForPrompt(events ?? [])
+      : formatRangeEventsForPrompt(events ?? []);
+    transcript += `\n\nКалендар (${label}): ${body}`;
   }
   return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка, чесний фолбек
 }
