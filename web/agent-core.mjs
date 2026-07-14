@@ -50,7 +50,9 @@ export function pickAssistantModel(userText) {
 
 const USAGE_LIMIT_RE =
   /(usage limit reached|hit your (?:session|weekly|usage) limit|(?:session|weekly|5-hour) limit reached|limit will reset|upgrade to increase your usage limit)/i;
-const RESET_EPOCH_RE = /limit reached\|(\d{10,13})\b/i;
+// Рівно 10 цифр (секунди) або 13 (мс). 11–12-значне число — двозначне: ×1000 дало б
+// дату в 25-му столітті, тож просто не показуємо час (ревʼю A).
+const RESET_EPOCH_RE = /limit reached\|(\d{13}|\d{10})(?!\d)/i;
 const BUSY_RE = /(rate-?limit|overloaded|too many requests)/i;
 
 export const ASSISTANT_FALLBACK_REPLY =
@@ -87,17 +89,24 @@ export function classifyLlmFailure(res) {
   return { kind: 'unknown' };
 }
 
+const kyivDay = (ms) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date(ms));
+
 /** Текст користувачу за причиною відмови LLM (нічого не вигадуємо: годину
- *  скидання показуємо ЛИШЕ якщо її назвав сам CLI і вона ще попереду). */
+ *  скидання показуємо ЛИШЕ якщо її назвав сам CLI і вона ще попереду).
+ *  Якщо скидання не сьогодні — показуємо і ДАТУ: тижневий ліміт із голим «09:00»
+ *  читався б як «за годину», хоча чекати кілька днів (ревʼю A). */
 export function assistantErrorReply(res, nowMs = Date.now()) {
   const { kind, resetAtMs } = classifyLlmFailure(res);
   if (kind === 'limit') {
+    const sameDay = Number.isFinite(resetAtMs) && kyivDay(resetAtMs) === kyivDay(nowMs);
     const when =
       Number.isFinite(resetAtMs) && resetAtMs > nowMs
         ? ` Спробуй після ${new Intl.DateTimeFormat('uk-UA', {
             timeZone: 'Europe/Kyiv',
             hour: '2-digit',
             minute: '2-digit',
+            ...(sameDay ? {} : { day: '2-digit', month: '2-digit' }),
           }).format(new Date(resetAtMs))}.`
         : ' Спробуй трохи пізніше.';
     return `⏳ Ліміти Claude вичерпані — асистент тимчасово не працює.${when}`;

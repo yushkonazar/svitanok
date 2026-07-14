@@ -469,33 +469,49 @@ describe('briefCooldownRemainingMs (SL2)', () => {
 });
 
 describe('shouldAutoDispatchBrief (A2)', () => {
+  const NOW = Date.parse('2026-07-15T06:00:00Z'); // 09:00 Київ
   const base = {
     todayKey: '2026-07-15',
-    lastAutoDispatchDate: '2026-07-14',
+    nowMs: NOW,
+    lastAutoDate: '2026-07-14',
+    lastDispatchMs: NOW - 24 * 3_600_000, // учора
     lastSentDate: '2026-07-14',
   };
   const at = (kyivHour: number, over: Record<string, unknown> = {}) =>
     tg.shouldAutoDispatchBrief({ ...base, kyivHour, ...over });
 
-  it('усередині вікна [8,12) -> так (кожні 5 хв, поки не вийшло)', () => {
+  it('усередині вікна [8,11) -> так (спроба кожні 5 хв, поки не вийшло)', () => {
     expect(at(8)).toBe(true);
     expect(at(9)).toBe(true);
-    expect(at(11)).toBe(true);
+    expect(at(10)).toBe(true);
   });
 
-  it('поза вікном -> ні (оркестратор однаково скіпнув би — sendGuard)', () => {
+  it('вікно закривається о 11:00 — на годину раніше за guard (ревʼю A)', () => {
+    // Між dispatch і sendGuard стоять черга Actions + npm ci + install claude CLI.
+    // Спроба об 11:xx доїхала б до guard'а вже після 12:00 -> «after window» ->
+    // скіп, а мітка вже стоїть -> день БЕЗ брифінгу взагалі.
+    expect(at(11)).toBe(false);
+    expect(at(12)).toBe(false);
     expect(at(7)).toBe(false);
-    expect(at(12)).toBe(false); // верхня межа НЕвключна
     expect(at(0)).toBe(false);
     expect(at(23)).toBe(false);
   });
 
-  it('уже диспатчили сьогодні -> ні (жодних холостих Actions-ранів)', () => {
-    expect(at(9, { lastAutoDispatchDate: '2026-07-15' })).toBe(false);
+  it('уже успішно диспатчили сьогодні -> ні (жодних холостих Actions-ранів)', () => {
+    expect(at(9, { lastAutoDate: '2026-07-15' })).toBe(false);
   });
 
-  it('брифінг уже надіслано сьогодні (напр. ручний /brief) -> ні', () => {
+  it('брифінг уже надіслано сьогодні -> ні', () => {
     expect(at(9, { lastSentDate: '2026-07-15' })).toBe(false);
+  });
+
+  it('ручний /brief щойно (< 15 хв) -> ні; за 20 хв -> знову можна (ревʼю A)', () => {
+    // /brief не ставить денну мітку (може бути й поза вікном), тож від дубля
+    // рятує саме проміжок. Але ретрай зберігається: якщо той ран впав, авто-
+    // спроба повернеться за 15 хв, а не «завтра».
+    expect(at(9, { lastDispatchMs: NOW - 5 * 60_000 })).toBe(false);
+    expect(at(9, { lastDispatchMs: NOW - 14 * 60_000 })).toBe(false);
+    expect(at(9, { lastDispatchMs: NOW - 20 * 60_000 })).toBe(true);
   });
 
   it('перший запуск (міток немає) -> так', () => {
@@ -503,7 +519,9 @@ describe('shouldAutoDispatchBrief (A2)', () => {
       tg.shouldAutoDispatchBrief({
         kyivHour: 8,
         todayKey: '2026-07-15',
-        lastAutoDispatchDate: undefined,
+        nowMs: NOW,
+        lastAutoDate: undefined,
+        lastDispatchMs: undefined,
         lastSentDate: undefined,
       }),
     ).toBe(true);

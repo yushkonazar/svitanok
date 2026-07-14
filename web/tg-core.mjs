@@ -253,34 +253,53 @@ export function briefCooldownRemainingMs(lastMs, nowMs, cooldownMs) {
   return elapsed >= cooldownMs ? 0 : cooldownMs - elapsed;
 }
 
-// Вікно ранкового авто-dispatch (київські години, кінець НЕвключний) — те саме
-// [8,12), що й sendGuard оркестратора (config.sendHour/sendWindowHours): поза ним
-// джоба однаково скіпнула б відправку, тож і диспатчити нема сенсу.
+// Вікно ранкового авто-dispatch (київські години, кінець НЕвключний).
+// sendGuard оркестратора має вікно [8,12) (config.sendHour/sendWindowHours), але
+// наше вікно закривається НА ГОДИНУ РАНІШЕ (ревʼю A): між workflow_dispatch і
+// самим sendGuard стоїть черга Actions + завантаження раннера + npm ci + install
+// claude CLI — хвилини. Спроба об 11:57 доїхала б до guard'а вже о 12:0x
+// («after window») і скіпнулась би, а мітка dispatch була б поставлена -> день
+// БЕЗ брифінгу взагалі. Остання спроба о 10:55 лишає guard'у ~годину запасу.
 export const BRIEF_WINDOW_START_HOUR = 8;
-export const BRIEF_WINDOW_END_HOUR = 12;
+export const BRIEF_WINDOW_END_HOUR = 11;
+// Мінімальний проміжок між двома dispatch (ревʼю A): ручний /brief не ставить
+// денну мітку (він може бути й поза вікном), тож без цього гейта авто-спроба за
+// 5 хв після /brief вистрілила б ДРУГИЙ workflow_dispatch — холостий Actions-ран.
+// Водночас це НЕ вбиває ретрай: якщо dispatch впав, наступна спроба буде за 15 хв.
+export const MIN_DISPATCH_GAP_MS = 15 * 60_000;
 
 /**
  * A2: чи має цей тік пʼятихвилинного крону вистрілити workflow_dispatch брифінгу.
  *
  * Раніше dispatch висів на ЄДИНІЙ спробі (погодинний крон, kyivHour()===8).
  * 14.07 jitter крону Cloudflare (Free) відсунув її на ~50 хв — брифінг прийшов
- * о 08:56. Тепер спроб до 48 у вікні, а ідемпотентність тримають дві дати:
- *   lastAutoDispatchDate — ми вже диспатчили сьогодні (пишемо ЛИШЕ після
- *     підтвердженого 204 від GitHub, тож збій дає ретрай наступним тіком);
- *   lastSentDate        — оркестратор уже надіслав брифінг (напр. ручний
- *     /brief), диспатчити нема чого.
+ * о 08:56. Тепер спроб до 36 у вікні, а від дублів тримають три умови:
+ *   lastSentDate  — оркестратор уже надіслав брифінг сьогодні (нема чого диспатчити);
+ *   lastAutoDate  — ми вже успішно диспатчили сьогодні (мітка ставиться ЛИШЕ
+ *                   після підтвердження GitHub, тож збій ретраїться наступним тіком);
+ *   lastDispatchMs — БУДЬ-ЯКИЙ dispatch (у т.ч. ручний /brief) свіжіший за 15 хв.
  */
 export function shouldAutoDispatchBrief({
   kyivHour,
   todayKey,
-  lastAutoDispatchDate,
+  nowMs,
+  lastAutoDate,
+  lastDispatchMs,
   lastSentDate,
 }) {
   if (!Number.isFinite(kyivHour)) return false;
   if (kyivHour < BRIEF_WINDOW_START_HOUR || kyivHour >= BRIEF_WINDOW_END_HOUR) return false;
   if (typeof todayKey !== 'string' || !todayKey) return false;
-  if (lastAutoDispatchDate === todayKey) return false;
   if (lastSentDate === todayKey) return false;
+  if (lastAutoDate === todayKey) return false;
+  if (
+    Number.isFinite(nowMs) &&
+    Number.isFinite(lastDispatchMs) &&
+    lastDispatchMs > 0 &&
+    nowMs - lastDispatchMs < MIN_DISPATCH_GAP_MS
+  ) {
+    return false;
+  }
   return true;
 }
 

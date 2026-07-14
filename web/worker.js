@@ -979,7 +979,7 @@ async function handleCommand(env, parsed, origin) {
       // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
       // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
       const remainMs = briefCooldownRemainingMs(
-        (await loadState(env)).lastBriefDispatchMs,
+        (await loadBriefDispatch(env)).lastMs,
         Date.now(),
         60 * 60_000,
       );
@@ -1459,32 +1459,53 @@ async function dispatchBrief(env) {
   }
 }
 
-/** Записати мітку кулдауну /brief (merge-before-flush) — після УСПІШНОГО
- *  dispatch, і з cron-гілки 08:00, щоб кулдаун перекривав і ранковий авто-brief
- *  (ревʼю SL). autoDispatchDate (A2) ставиться разом із кулдауном, коли dispatch
- *  прийшов з авто-вікна: одна мітка = «сьогодні вже диспатчили». */
-async function recordBriefDispatch(env, autoDispatchDate) {
-  const fresh = await loadState(env);
-  fresh.lastBriefDispatchMs = Date.now();
-  if (autoDispatchDate) fresh.lastAutoDispatchDate = autoDispatchDate;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
+/**
+ * Мітки dispatch брифінгу — ОКРЕМИЙ KV-ключ, не блоб 'state' (ревʼю A; той самий
+ * привід, що й у sentMessages вище). Було: recordBriefDispatch робив
+ * read-modify-write усього 'state', тож конкурентний писар того ж блоба
+ * (checkReminders на тому ж тіку крону, вебхук, багатохвилинний flush
+ * оркестратора) міг просто затерти щойно поставлену денну мітку — і наступний
+ * 5-хвилинний тік вистрілив би ДРУГИЙ workflow_dispatch. Тепер мітки живуть самі:
+ *   {lastMs: <коли будь-який dispatch>, lastAutoDate: 'YYYY-MM-DD' | null}
+ * Після деплою ключа ще немає -> кулдаун /brief один раз стартує «з нуля»
+ * (нешкідливо: максимум один зайвий ручний запуск).
+ */
+async function loadBriefDispatch(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('briefDispatch')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Записати мітку dispatch — ЛИШЕ після підтвердженого workflow_dispatch (SL2).
+ *  autoDate (A2) ставиться тільки з авто-гілки: ручний /brief може бути й поза
+ *  вікном, тож «сьогодні вже диспатчили» — не про нього. Від дубля відразу після
+ *  ручного /brief захищає lastMs (MIN_DISPATCH_GAP_MS, tg-core.mjs). */
+async function recordBriefDispatch(env, autoDate) {
+  const cur = await loadBriefDispatch(env);
+  const next = { ...cur, lastMs: Date.now() };
+  if (autoDate) next.lastAutoDate = autoDate;
+  await env.BRIEFING.put('briefDispatch', JSON.stringify(next));
 }
 
 /**
- * A2: ранковий авто-dispatch із пʼятихвилинного крону, у вікні [08:00, 12:00)
+ * A2: ранковий авто-dispatch із пʼятихвилинного крону, у вікні [08:00, 11:00)
  * Києва. Замінює єдину погодинну спробу (kyivHour()===8), яку 14.07 jitter крону
  * Cloudflare (Free) відсунув на ~50 хв — брифінг прийшов о 08:56 замість 08:0x.
- * Тепер до 48 спроб; дубль неможливий (shouldAutoDispatchBrief: lastAutoDispatchDate
- * / lastSentDate), а помилка GitHub ретраїться вже за 5 хв замість «завтра».
- * Мітка — ЛИШЕ після підтвердженого dispatch (той самий інваріант, що SL2).
+ * Тепер до 36 спроб; помилка GitHub ретраїться за 15 хв, а не «завтра».
+ * Умови дубля — shouldAutoDispatchBrief (tg-core.mjs, тестовано).
  */
 async function autoBriefDispatch(env) {
   const today = kyivDateKey();
-  const state = await loadState(env);
+  const [state, dispatch] = await Promise.all([loadState(env), loadBriefDispatch(env)]);
   const due = shouldAutoDispatchBrief({
     kyivHour: kyivHour(),
     todayKey: today,
-    lastAutoDispatchDate: state.lastAutoDispatchDate,
+    nowMs: Date.now(),
+    lastAutoDate: dispatch.lastAutoDate,
+    lastDispatchMs: dispatch.lastMs,
     lastSentDate: state.lastSentDate,
   });
   if (!due) return;
@@ -1494,12 +1515,27 @@ async function autoBriefDispatch(env) {
   if (await dispatchBrief(env)) await recordBriefDispatch(env, today);
 }
 
+// Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
+// END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
+// усередині вікна ретраїв: збій GitHub, що минув об 10:30, дав би хибний алерт
+// «не доставлено» й хибний промах у reliability за день, який зрештою доставили.
+const DEAD_MAN_HOUR = 12;
+
 /** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
- *  Побічно веде облік надійності (reliability у stats): Worker — ЄДИНИЙ писар
- *  stats-блоба (жодних нових гонок класу H2), запис ідемпотентний за день. */
+ *  Веде й облік надійності (reliability у stats). Ідемпотентний за добу — та сама
+ *  мітка reliability.lastCheckDate гейтить і алерт (ревʼю A: перевірку перенесено
+ *  на пʼятихвилинний крон, бо погодинний із гейтом kyivHour()===10 гинув від того
+ *  самого jitter'а, від якого ми щойно врятували dispatch — зсув на годину, і
+ *  сторож просто мовчав би цілий день). */
 async function deadMansCheck(env) {
-  const raw = await env.BRIEFING.get('latest');
+  if (kyivHour() < DEAD_MAN_HOUR) return;
   const today = kyivDateKey();
+  // Дешевий гейт «уже перевіряли сьогодні» ПЕРЕД будь-якою іншою роботою: без
+  // нього алерт летів би на кожен 5-хвилинний тік до кінця доби.
+  const store = await loadStats(env);
+  if (store?.reliability?.lastCheckDate === today) return;
+
+  const raw = await env.BRIEFING.get('latest');
   let fresh = false;
   try {
     const d = JSON.parse(raw ?? '{}');
@@ -1509,15 +1545,12 @@ async function deadMansCheck(env) {
   }
   // Облік доставки — до гейта секретів (не потребує Telegram-крендів), але в
   // try/catch: транзієнтна KV-помилка НЕ сміє заблокувати алерт нижче (це його
-  // день). Пишемо лише коли день ще не облікований. Чесно про гонки: Worker —
-  // єдиний СЕРВІС-писар stats-блоба, проте конкурентні інвокації (цей cron vs
-  // fetch /api/event) — усе одно last-write-wins без CAS; вікно тут µs і раз на
-  // день, стратегічний фікс — Durable Object (див. SPEC/аудит H2).
+  // день). Чесно про гонки: Worker — єдиний СЕРВІС-писар stats-блоба, проте
+  // конкурентні інвокації (цей cron vs fetch /api/event) — усе одно
+  // last-write-wins без CAS; вікно тут µs і раз на день, стратегічний фікс —
+  // Durable Object (див. SPEC/аудит H2).
   try {
-    const store = await loadStats(env);
-    if (store?.reliability?.lastCheckDate !== today) {
-      await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
-    }
+    await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
   } catch (e) {
     console.error('reliability write failed', e);
   }
@@ -1595,22 +1628,21 @@ export default {
     return env.ASSETS.fetch(request); // статичні файли (дашборд)
   },
 
-  // 5-хвилинний крон: нагадування + ранковий авто-dispatch брифінгу (A2 —
-  // раніше dispatch висів на ОДНІЙ погодинній спробі, і jitter крону Cloudflare
-  // Free 14.07 відсунув брифінг на ~50 хв). Дубля немає: shouldAutoDispatchBrief
-  // пропускає рівно один успішний dispatch на добу (мітка lastAutoDispatchDate),
-  // тож холостих Actions-ранів теж немає — на відміну від наївного «диспатчити
-  // кожен тік у 08-й годині», якого цей гейт колись і уникав.
+  // Єдиний крон (кожні 5 хв) — три задачі, кожна сама себе гейтить за київською
+  // годиною і сама ідемпотентна за добу. Жодних DST-костилів із набором погодинних
+  // кронів: годину рахує kyivHour() у момент виконання, а не хвилина крону.
   //
-  // Погодинні крони (0 5/6/7/8 UTC — покриття обох DST-зсувів) лишаються ЛИШЕ
-  // під dead-man о 10:00 Київ: він шле алерт при кожному виклику, тож мусить
-  // спрацювати раз, а не 12 разів на годину.
-  async scheduled(event, env, ctx) {
-    if (event.cron === '*/5 * * * *') {
-      ctx.waitUntil(checkReminders(env));
-      ctx.waitUntil(autoBriefDispatch(env));
-      return;
-    }
-    if (kyivHour() === 10) ctx.waitUntil(deadMansCheck(env));
+  // ПОСЛІДОВНО (await, не два waitUntil — ревʼю A): checkReminders і решта роблять
+  // read-modify-write KV без CAS, тож паралельні гілки в одному ізоляті вільно
+  // перетинали б вікна GET->PUT і затирали одна одну (втрачений firedTs -> дубль
+  // нагадування; втрачена мітка dispatch -> зайвий Actions-ран).
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(
+      (async () => {
+        await checkReminders(env); // будь-яка хвилина
+        await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
+        await deadMansCheck(env); // від 12:00 Київ, раз на добу
+      })(),
+    );
   },
 };

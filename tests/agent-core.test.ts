@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
 // Межа довжини промпту — з реального контракту хоста (той самий репо, окремий деплой).
@@ -139,6 +140,24 @@ describe('classifyLlmFailure / assistantErrorReply (A1)', () => {
     const res = { ok: false, status: 400, error: 'system-prompt-too-long' };
     expect(classifyLlmFailure(res).kind).toBe('unknown');
     expect(assistantErrorReply(res, NOW)).toBe(ASSISTANT_FALLBACK_REPLY);
+  });
+
+  it('скидання НЕ сьогодні -> показуємо й дату (ревʼю A)', () => {
+    // Тижневий ліміт із голим «09:00» читався б як «за годину», а чекати 4 дні.
+    const inFourDays = Date.parse('2026-07-19T06:00:00Z'); // 09:00 Київ, неділя
+    const res = { ok: false, status: 502, error: 'usage-limit', resetAtMs: inFourDays };
+    const text = assistantErrorReply(res, NOW); // NOW = 15.07
+    expect(text).toContain('19.07');
+    expect(text).toContain('09:00');
+  });
+
+  it('паритет зі спільним фікстур-набором (web vs host vs src)', () => {
+    for (const t of USAGE_LIMIT_TEXTS) {
+      expect(classifyLlmFailure({ ok: false, status: 502, error: t }).kind, t).toBe('limit');
+    }
+    for (const t of NON_LIMIT_TEXTS) {
+      expect(classifyLlmFailure({ ok: false, status: 502, error: t }).kind, t).not.toBe('limit');
+    }
   });
 });
 

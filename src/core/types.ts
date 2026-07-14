@@ -45,7 +45,12 @@ export interface RunBus {
 }
 
 export interface LLMClient {
-  complete(prompt: string, opts?: { maxTokens?: number; timeoutMs?: number }): Promise<string>;
+  /** tag — ідентифікатор модуля-викликача (A3): якщо виклик упаде, оркестратор
+   *  назве в попередженні саме той блок, що деградував. */
+  complete(
+    prompt: string,
+    opts?: { maxTokens?: number; timeoutMs?: number; tag?: string },
+  ): Promise<string>;
 }
 
 export interface SourceFetcher {

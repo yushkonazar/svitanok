@@ -132,8 +132,9 @@ export const USAGE_LIMIT_ERROR = 'usage-limit';
 // лише точніший текст користувачу, хибний негатив — знову невиразне «не зміг».
 const USAGE_LIMIT_RE =
   /(usage limit reached|hit your (?:session|weekly|usage) limit|(?:session|weekly|5-hour) limit reached|limit will reset|upgrade to increase your usage limit)/i;
-// Epoch у «...reached|1752620400» — секунди (10 цифр) або мс (13).
-const RESET_EPOCH_RE = /limit reached\|(\d{10,13})\b/i;
+// Epoch у «...reached|1752620400» — рівно 10 цифр (секунди) або 13 (мс).
+// 11–12-значне число двозначне (×1000 дало б 25-те століття) -> ігноруємо час.
+const RESET_EPOCH_RE = /limit reached\|(\d{13}|\d{10})(?!\d)/i;
 
 /**
  * Чи текст CLI означає вичерпаний ліміт підписки -> {limit, resetAtMs?}.
