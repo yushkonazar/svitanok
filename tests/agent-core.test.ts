@@ -2,15 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
-// Межа довжини промпту — з реального контракту хоста (той самий репо, окремий деплой).
+// Межі довжини — з реального контракту хоста (той самий репо, окремий деплой).
 // @ts-expect-error — JS-модуль хоста без типів.
-import { MAX_SYSTEM_PROMPT_LEN } from '../host/llm-host-core.mjs';
+import { MAX_SYSTEM_PROMPT_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
   ASSISTANT_ACTION_SCHEMA,
   ASSISTANT_FALLBACK_REPLY,
+  MAX_TRANSCRIPT_LEN,
   assistantErrorReply,
   classifyLlmFailure,
+  clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
   pickAssistantModel,
@@ -25,7 +27,7 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 6 дій (CM3: +cancelReminder)', () => {
+  it('дозволяє рівно 7 дій (B3: +readMail)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -33,6 +35,7 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'proposeCalendarChanges',
       'reply',
       'readOwnData',
+      'readMail',
     ]);
   });
 });
@@ -77,6 +80,36 @@ describe('buildAssistantSystemPrompt', () => {
         MAX_SYSTEM_PROMPT_LEN,
       );
     }
+  });
+});
+
+describe('readMail + бюджет транскрипту (B3/B4)', () => {
+  it('extractAssistantAction приймає readMail; порожній запит валідний', () => {
+    expect(extractAssistantAction({ action: 'readMail', mailQuery: 'kontramarka' })).toEqual({
+      action: 'readMail',
+      mailQuery: 'kontramarka',
+    });
+    // Дефолт (свіжий inbox) підставить sanitizeMailQuery — не відкидаємо дію.
+    expect(extractAssistantAction({ action: 'readMail' })).toEqual({
+      action: 'readMail',
+      mailQuery: '',
+    });
+  });
+
+  it('системний промпт описує пошту й позначає листи як ЛИШЕ ДАНІ', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('readMail');
+    expect(p).toContain('ЛИСТИ'); // anti-injection застереження охоплює пошту
+    expect(p).toContain('ПРОДОВЖЕННЯ РОЗМОВИ'); // B2: відповідь на уточнення — не новий запит
+  });
+
+  it('clipTranscript тримає промпт ПІД лімітом хоста (інакше 400 і мовчазний фолбек)', () => {
+    expect(MAX_TRANSCRIPT_LEN).toBeLessThan(MAX_PROMPT_LEN);
+    const huge = 'я'.repeat(MAX_PROMPT_LEN * 2);
+    const out = clipTranscript(huge);
+    expect(out.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_LEN);
+    expect(out).toContain('обрізано'); // модель бачить, що дані неповні
+    expect(clipTranscript('коротко')).toBe('коротко'); // короткий — без змін
   });
 });
 

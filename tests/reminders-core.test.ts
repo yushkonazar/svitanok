@@ -22,6 +22,8 @@ const {
   extractLlmRewrite,
   isAmbiguousRewrite,
   addDaysToDateKey,
+  DEFAULT_DATE_HOUR,
+  CANONICAL_EXAMPLES,
 } = rem;
 
 // Літо (EEST, UTC+3): 2026-07-10 11:00 Київ.
@@ -92,6 +94,64 @@ describe('reminders-core — parseReminderTime: завтра/сьогодні о
 
   it('невалідна година/хвилина ("завтра о 25:99") -> null', () => {
     expect(parseReminderTime('завтра о 25:99', SUMMER_NOW)).toBeNull();
+  });
+});
+
+describe('reminders-core — parseReminderTime: календарна дата (B1)', () => {
+  // Сценарій із fix.md: «Нагадай 24 липня скасувати підписку на канал webDev» ->
+  // раніше глухе «🤔 Не зрозумів час» (патерну не було ні в парсері, ні серед
+  // канонічних прикладів для LLM-рерайту).
+  it('«24 липня» без часу -> 10:00 Київ того дня, залишок = текст нагадування', () => {
+    const r = parseReminderTime('нагадай 24 липня скасувати підписку на канал webDev', SUMMER_NOW);
+    expect(r.remainder).toBe('скасувати підписку на канал webDev');
+    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-24T07:00:00.000Z'); // 10:00 EEST
+    expect(DEFAULT_DATE_HOUR).toBe(10);
+  });
+
+  it('«24 липня о 18:30» -> саме той час (а не «о 18:30» на сьогодні)', () => {
+    const r = parseReminderTime('24 липня о 18:30 зустріч', SUMMER_NOW);
+    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-24T15:30:00.000Z');
+    expect(r.remainder).toBe('зустріч');
+  });
+
+  it('числова форма «24.07» і «24.07.2027»', () => {
+    expect(new Date(parseReminderTime('24.07 подзвонити', SUMMER_NOW).whenMs).toISOString()).toBe(
+      '2026-07-24T07:00:00.000Z',
+    );
+    expect(new Date(parseReminderTime('24.07.2027 о 9:00', SUMMER_NOW).whenMs).toISOString()).toBe(
+      '2027-07-24T06:00:00.000Z',
+    );
+  });
+
+  it('зимова дата з літа -> DST-коректно (EET, UTC+2)', () => {
+    // 3 січня вже минуло цього року -> котиться на наступний, і о 10:00 за EET.
+    expect(new Date(parseReminderTime('3 січня подарунки', SUMMER_NOW).whenMs).toISOString()).toBe(
+      '2027-01-03T08:00:00.000Z',
+    );
+  });
+
+  it('дата без року, що вже минула -> наступний рік (і це видно в підтвердженні)', () => {
+    const r = parseReminderTime('1 січня вітання', SUMMER_NOW); // SUMMER_NOW = липень
+    expect(new Date(r.whenMs).getUTCFullYear()).toBe(2027);
+    // formatReminderConfirm показує рік, коли він не поточний — інакше «01.01»
+    // виглядало б як щось за пів року, а не за пів року НАСТУПНОГО.
+    expect(formatReminderConfirm(r.whenMs, r.remainder, SUMMER_NOW)).toContain('2027');
+    expect(
+      formatReminderConfirm(parseReminderTime('24 липня x', SUMMER_NOW).whenMs, 'x', SUMMER_NOW),
+    ).not.toContain('2026');
+  });
+
+  it('«через 1.5 години» НЕ читається як дата 1 травня (одноцифровий місяць не беремо)', () => {
+    // Регресія-охоронець: NUM_DATE_RE вимагає двоцифровий місяць саме через це.
+    expect(parseReminderTime('через 1.5 години кава', SUMMER_NOW)).toBeNull();
+  });
+
+  it('безглузда дата (31.02) -> null, не вгадуємо', () => {
+    expect(parseReminderTime('31.02 щось', SUMMER_NOW)).toBeNull();
+  });
+
+  it('канонічні приклади для LLM містять календарну дату (інакше рерайт нікуди переписувати)', () => {
+    expect(CANONICAL_EXAMPLES).toContain('24 липня');
   });
 });
 

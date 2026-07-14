@@ -5,8 +5,13 @@
 // command injection неможливий незалежно від вмісту prompt), rate-limit,
 // парсинг виводу. І/O (HTTP-сервер, сам spawn) — server.mjs.
 
-export const MAX_PROMPT_LEN = 4000;
-export const MAX_SYSTEM_PROMPT_LEN = 2000;
+// Ліміти — САМОнакладені (не обмеження Anthropic): хост спавнить процеси і стоїть
+// в інтернеті, тож розмір payload'а тримаємо під контролем. B3/B4 підняли їх один
+// раз під реальну потребу асистента: системний промпт із 6-ма діями вже впирався
+// в 1953/2000, а транскрипт може накопичити календар + own-data + пошту за 3 раунди.
+// Захист від зловживання лишається на секреті + rate-limiter'і, не на цих цифрах.
+export const MAX_PROMPT_LEN = 6000;
+export const MAX_SYSTEM_PROMPT_LEN = 3000;
 export const MAX_SCHEMA_LEN = 2000;
 const DEFAULT_MODEL = 'haiku';
 
