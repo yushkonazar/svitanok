@@ -1,0 +1,47 @@
+# Автооновлення залежностей (Фаза F — борг зі SPEC.md §8 «Dependabot; мінімум
+# залежностей»). Три екосистеми: npm у корені та в host/ (VPS-реле — окремий
+# package.json), і GitHub Actions (usiх пінимо по SHA у workflow'ах, dependabot
+# оновлює SHA+коментар версії). Розклад тижневий, згруповано, щоб не плодити PR.
+version: 2
+updates:
+  # --- npm: корінь (оркестратор + Worker-тести) ---
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Kyiv
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      prod-dependencies:
+        dependency-type: production
+    commit-message:
+      prefix: chore(deps)
+      prefix-development: chore(dev-deps)
+
+  # --- npm: host/ (VPS LLM-реле) ---
+  - package-ecosystem: npm
+    directory: /host
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Kyiv
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore(deps-host)
+
+  # --- GitHub Actions (SHA-пінінг у .github/workflows/) ---
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Kyiv
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore(ci-deps)
