@@ -467,3 +467,51 @@ describe('briefCooldownRemainingMs (SL2)', () => {
     expect(tg.briefCooldownRemainingMs(last, last + 2 * HOUR, HOUR)).toBe(0); // давно
   });
 });
+
+describe('shouldAutoDispatchBrief (A2)', () => {
+  const base = {
+    todayKey: '2026-07-15',
+    lastAutoDispatchDate: '2026-07-14',
+    lastSentDate: '2026-07-14',
+  };
+  const at = (kyivHour: number, over: Record<string, unknown> = {}) =>
+    tg.shouldAutoDispatchBrief({ ...base, kyivHour, ...over });
+
+  it('усередині вікна [8,12) -> так (кожні 5 хв, поки не вийшло)', () => {
+    expect(at(8)).toBe(true);
+    expect(at(9)).toBe(true);
+    expect(at(11)).toBe(true);
+  });
+
+  it('поза вікном -> ні (оркестратор однаково скіпнув би — sendGuard)', () => {
+    expect(at(7)).toBe(false);
+    expect(at(12)).toBe(false); // верхня межа НЕвключна
+    expect(at(0)).toBe(false);
+    expect(at(23)).toBe(false);
+  });
+
+  it('уже диспатчили сьогодні -> ні (жодних холостих Actions-ранів)', () => {
+    expect(at(9, { lastAutoDispatchDate: '2026-07-15' })).toBe(false);
+  });
+
+  it('брифінг уже надіслано сьогодні (напр. ручний /brief) -> ні', () => {
+    expect(at(9, { lastSentDate: '2026-07-15' })).toBe(false);
+  });
+
+  it('перший запуск (міток немає) -> так', () => {
+    expect(
+      tg.shouldAutoDispatchBrief({
+        kyivHour: 8,
+        todayKey: '2026-07-15',
+        lastAutoDispatchDate: undefined,
+        lastSentDate: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it('невалідні вхідні -> ні (fail-closed, не спамимо dispatch)', () => {
+    expect(at(NaN)).toBe(false);
+    expect(tg.shouldAutoDispatchBrief({ kyivHour: 9, todayKey: null })).toBe(false);
+    expect(tg.shouldAutoDispatchBrief({})).toBe(false);
+  });
+});

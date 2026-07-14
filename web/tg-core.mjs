@@ -253,6 +253,37 @@ export function briefCooldownRemainingMs(lastMs, nowMs, cooldownMs) {
   return elapsed >= cooldownMs ? 0 : cooldownMs - elapsed;
 }
 
+// Вікно ранкового авто-dispatch (київські години, кінець НЕвключний) — те саме
+// [8,12), що й sendGuard оркестратора (config.sendHour/sendWindowHours): поза ним
+// джоба однаково скіпнула б відправку, тож і диспатчити нема сенсу.
+export const BRIEF_WINDOW_START_HOUR = 8;
+export const BRIEF_WINDOW_END_HOUR = 12;
+
+/**
+ * A2: чи має цей тік пʼятихвилинного крону вистрілити workflow_dispatch брифінгу.
+ *
+ * Раніше dispatch висів на ЄДИНІЙ спробі (погодинний крон, kyivHour()===8).
+ * 14.07 jitter крону Cloudflare (Free) відсунув її на ~50 хв — брифінг прийшов
+ * о 08:56. Тепер спроб до 48 у вікні, а ідемпотентність тримають дві дати:
+ *   lastAutoDispatchDate — ми вже диспатчили сьогодні (пишемо ЛИШЕ після
+ *     підтвердженого 204 від GitHub, тож збій дає ретрай наступним тіком);
+ *   lastSentDate        — оркестратор уже надіслав брифінг (напр. ручний
+ *     /brief), диспатчити нема чого.
+ */
+export function shouldAutoDispatchBrief({
+  kyivHour,
+  todayKey,
+  lastAutoDispatchDate,
+  lastSentDate,
+}) {
+  if (!Number.isFinite(kyivHour)) return false;
+  if (kyivHour < BRIEF_WINDOW_START_HOUR || kyivHour >= BRIEF_WINDOW_END_HOUR) return false;
+  if (typeof todayKey !== 'string' || !todayKey) return false;
+  if (lastAutoDispatchDate === todayKey) return false;
+  if (lastSentDate === todayKey) return false;
+  return true;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    Команди / Налаштування (Блок P4) — parseCommand + текстові форматери.
    ══════════════════════════════════════════════════════════════════════ */
