@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+/* Тема дашборда (роадмеп v3, E0). Темна скляна естетика — та сама, що у vanilla-
+   версії, але як Tailwind v4 @theme-токени, щоб класи (bg-surface, text-muted…)
+   були семантичними. Telegram передає власну тему через CSS-змінні
+   (--tg-theme-*), але ми тримаємо свій вигляд сталим (бренд), лише акуратно
+   вписуючись у світлу/темну схему пристрою. */
+@theme {
+  --color-bg: #0e1016;
+  --color-surface: #171a22;
+  --color-surface-2: #1f2430;
+  --color-border: #272d3a;
+  --color-fg: #eef1f6;
+  --color-muted: #97a1b2;
+  --color-accent: #ff8a4c;
+  --color-accent-2: #ffb03a;
+  --color-on-accent: #1a1206;
+  --color-up: #4ade80;
+  --color-down: #f87171;
+
+  --radius-card: 16px;
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Безпечні зони iOS (Telegram fullscreen) */
+#root {
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}

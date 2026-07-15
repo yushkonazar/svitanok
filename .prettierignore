@@ -4,3 +4,7 @@ coverage/
 package-lock.json
 .env
 .env.*
+# web/app форматується власним prettier пізніше; кореневий format:check його не чіпає
+web/app/
+# зібраний артефакт React-дашборда (хешовані імена, мініфіковано) — не форматуємо
+web/public/app/
