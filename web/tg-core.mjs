@@ -65,6 +65,7 @@ export function parseUpdate(update) {
       updateId,
       fromId: m.from?.id ?? null,
       chatId: m.chat?.id ?? null,
+      messageId: m.message_id ?? null, // G1: щоб /clear міг видалити й вхідні власника
       threadId: m.message_thread_id ?? null,
       text: typeof m.text === 'string' ? m.text : '',
     };
@@ -237,7 +238,7 @@ export function chunkArray(arr, size) {
 /** Підсумкове повідомлення після спроби видалення (Telegram не дає видалити
  *  повідомлення старші за 48 год — deleted може бути менше за attempted). */
 export function formatClearResult(deleted, attempted) {
-  if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю своїх повідомлень тут.';
+  if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю повідомлень у цьому чаті.';
   return `🗑 Видалено ${deleted} із ${attempted} повідомлень (старші за 48 год Telegram не дає видалити).`;
 }
 
@@ -251,6 +252,56 @@ export function briefCooldownRemainingMs(lastMs, nowMs, cooldownMs) {
   if (typeof lastMs !== 'number' || !(lastMs > 0)) return 0;
   const elapsed = nowMs - lastMs;
   return elapsed >= cooldownMs ? 0 : cooldownMs - elapsed;
+}
+
+// Вікно ранкового авто-dispatch (київські години, кінець НЕвключний).
+// sendGuard оркестратора має вікно [8,12) (config.sendHour/sendWindowHours), але
+// наше вікно закривається НА ГОДИНУ РАНІШЕ (ревʼю A): між workflow_dispatch і
+// самим sendGuard стоїть черга Actions + завантаження раннера + npm ci + install
+// claude CLI — хвилини. Спроба об 11:57 доїхала б до guard'а вже о 12:0x
+// («after window») і скіпнулась би, а мітка dispatch була б поставлена -> день
+// БЕЗ брифінгу взагалі. Остання спроба о 10:55 лишає guard'у ~годину запасу.
+export const BRIEF_WINDOW_START_HOUR = 8;
+export const BRIEF_WINDOW_END_HOUR = 11;
+// Мінімальний проміжок між двома dispatch (ревʼю A): ручний /brief не ставить
+// денну мітку (він може бути й поза вікном), тож без цього гейта авто-спроба за
+// 5 хв після /brief вистрілила б ДРУГИЙ workflow_dispatch — холостий Actions-ран.
+// Водночас це НЕ вбиває ретрай: якщо dispatch впав, наступна спроба буде за 15 хв.
+export const MIN_DISPATCH_GAP_MS = 15 * 60_000;
+
+/**
+ * A2: чи має цей тік пʼятихвилинного крону вистрілити workflow_dispatch брифінгу.
+ *
+ * Раніше dispatch висів на ЄДИНІЙ спробі (погодинний крон, kyivHour()===8).
+ * 14.07 jitter крону Cloudflare (Free) відсунув її на ~50 хв — брифінг прийшов
+ * о 08:56. Тепер спроб до 36 у вікні, а від дублів тримають три умови:
+ *   lastSentDate  — оркестратор уже надіслав брифінг сьогодні (нема чого диспатчити);
+ *   lastAutoDate  — ми вже успішно диспатчили сьогодні (мітка ставиться ЛИШЕ
+ *                   після підтвердження GitHub, тож збій ретраїться наступним тіком);
+ *   lastDispatchMs — БУДЬ-ЯКИЙ dispatch (у т.ч. ручний /brief) свіжіший за 15 хв.
+ */
+export function shouldAutoDispatchBrief({
+  kyivHour,
+  todayKey,
+  nowMs,
+  lastAutoDate,
+  lastDispatchMs,
+  lastSentDate,
+}) {
+  if (!Number.isFinite(kyivHour)) return false;
+  if (kyivHour < BRIEF_WINDOW_START_HOUR || kyivHour >= BRIEF_WINDOW_END_HOUR) return false;
+  if (typeof todayKey !== 'string' || !todayKey) return false;
+  if (lastSentDate === todayKey) return false;
+  if (lastAutoDate === todayKey) return false;
+  if (
+    Number.isFinite(nowMs) &&
+    Number.isFinite(lastDispatchMs) &&
+    lastDispatchMs > 0 &&
+    nowMs - lastDispatchMs < MIN_DISPATCH_GAP_MS
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -273,7 +324,7 @@ export const COMMANDS = [
   { command: 'reminders', description: 'Список активних нагадувань' },
   { command: 'plan', description: 'План дня (LLM читає календар, пропонує таймлайн)' },
   { command: 'roadmap', description: 'IT-роадмеп (теми, прогрес)' },
-  { command: 'clear', description: 'Видалити останні N моїх повідомлень (за замовч. 20)' },
+  { command: 'clear', description: 'Видалити останні N повідомлень — мої та твої (за замовч. 20)' },
   { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
 ];
 

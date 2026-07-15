@@ -46,6 +46,7 @@ export const factModule: Module<AppConfig> = {
       try {
         const out = await ctx.llm.complete(buildFactsPrompt(cfg.batchSize), {
           timeoutMs: ctx.config.llm.timeoutMs,
+          tag: 'fact',
         });
         cache = parseFacts(out);
       } catch (e) {

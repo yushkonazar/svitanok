@@ -13,7 +13,7 @@ import { createLogger } from './core/logger.js';
 import { createStateStore } from './core/state.js';
 import { createKvStateStore, readKvEnv } from './core/state-kv.js';
 import { createRunBus } from './core/bus.js';
-import { createLLMClient } from './core/llm.js';
+import { createLLMClient, formatLlmDegradedMessage } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
 import {
   createNotifier,
@@ -51,7 +51,6 @@ import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
 import { factModule } from './modules/fact.js';
 import { mockModule } from './modules/mock.js';
-import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
 import { createCurrencyModule } from './modules/currency.js';
 import { createOnThisDayModule } from './modules/onthisday.js';
@@ -331,7 +330,6 @@ function buildModules(): Module<AppConfig>[] {
     mockModule,
     createCurrencyModule(),
     createOnThisDayModule(),
-    nextStepModule,
     weeklyReviewModule,
   ];
 }
@@ -417,17 +415,21 @@ async function main(): Promise<void> {
   // зберігає initData з групи (.env.example). Не задано -> фолбек за chatId.
   const botUsername = optionalSecret('TELEGRAM_BOT_USERNAME') ?? null;
 
+  // Клієнт памʼятає впалі виклики (A3) — після рану один раз попереджаємо в
+  // «⚠️ Система», інакше деградований брифінг виглядає як нормальний.
+  const llm = createLLMClient({
+    model: config.llm.model,
+    defaultTimeoutMs: config.llm.timeoutMs,
+    maxCallsPerRun: config.llm.maxCallsPerRun,
+    log,
+  });
+
   const deps: RunDeps = {
     config,
     clock,
     state,
     bus: createRunBus(),
-    llm: createLLMClient({
-      model: config.llm.model,
-      defaultTimeoutMs: config.llm.timeoutMs,
-      maxCallsPerRun: config.llm.maxCallsPerRun,
-      log,
-    }),
+    llm,
     fetcher: createFetcher({
       allowlist: fetchAllowlist(config),
       timeoutMs: config.fetch.timeoutMs,
@@ -461,26 +463,40 @@ async function main(): Promise<void> {
     }
   } catch (e) {
     log.error(`оркестратор впав: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
-    await failNotify(e, log, topicSystem);
+    await systemNotify(
+      `⚠️ Svitanok: брифінг впав — ${e instanceof Error ? e.message : String(e)}`,
+      log,
+      topicSystem,
+    );
     process.exitCode = 1;
+    return;
+  }
+
+  // A3: ран вижив, але LLM падав -> брифінг тихо деградований (jobs без скорингу,
+  // fact/mock без блоку). Один плейн-текст у «⚠️ Система» — best-effort, ніколи
+  // не валить уже успішний ран. У dry-run у чат не пишемо (лише в лог).
+  const degraded = formatLlmDegradedMessage(llm.failures());
+  if (degraded) {
+    log.warn(degraded.split('\n')[0] ?? 'LLM деградація');
+    if (!dryRun) await systemNotify(degraded, log, topicSystem);
   }
 }
 
-/** Top-level fail-notify напряму через bot token (§4.1). threadId — тема
- *  «⚠️ Система» (TOPIC_SYSTEM), якщо задано; інакше unscoped/General. */
-async function failNotify(error: unknown, log: Logger, threadId?: string): Promise<void> {
+/** Плейн-текст напряму через bot token (§4.1): top-level fail-notify і
+ *  попередження про деградацію (A3). threadId — тема «⚠️ Система»
+ *  (TOPIC_SYSTEM), якщо задано; інакше unscoped/General. Ніколи не кидає. */
+async function systemNotify(text: string, log: Logger, threadId?: string): Promise<void> {
   const token = optionalSecret('TELEGRAM_BOT_TOKEN');
   const chatId = optionalSecret('TELEGRAM_CHAT_ID');
   if (!token || !chatId) {
-    log.error('fail-notify неможливий: немає TELEGRAM_BOT_TOKEN/CHAT_ID');
+    log.error('system-notify неможливий: немає TELEGRAM_BOT_TOKEN/CHAT_ID');
     return;
   }
   try {
     const notifier = createNotifier({ token, chatId, threadId, log });
-    const msg = error instanceof Error ? error.message : String(error);
-    await notifier.failNotify(`⚠️ Svitanok: брифінг впав — ${msg}`);
+    await notifier.failNotify(text);
   } catch (e) {
-    log.error(`fail-notify не вдався: ${e instanceof Error ? e.message : String(e)}`);
+    log.error(`system-notify не вдався: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

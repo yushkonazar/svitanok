@@ -88,7 +88,6 @@ export function joinSummarySegments(segments: (string | null | undefined)[]): st
 
 export interface WeeklyReviewData {
   newsCount: number;
-  steps: string[];
   roadmapDone: number;
   weakTopics: string[];
 }
@@ -100,12 +99,7 @@ export interface WeeklyReviewData {
  * загальний лічильник (не лише за тиждень, §weekly-review.ts коментар).
  */
 export function formatWeeklyReviewMessage(d: WeeklyReviewData): string {
-  const lines = [
-    '📊 <b>Підсумок тижня</b>',
-    '',
-    `🗞 Новин показано: ${d.newsCount}`,
-    `✅ Кроків до офера: ${d.steps.length}`,
-  ];
+  const lines = ['📊 <b>Підсумок тижня</b>', '', `🗞 Новин показано: ${d.newsCount}`];
   if (d.roadmapDone > 0) lines.push(`🗺 Роадмеп: ${d.roadmapDone} пунктів позначено (загалом)`);
   if (d.weakTopics.length > 0) {
     lines.push(`🎤 Слабкі теми mock: ${d.weakTopics.map(escapeHtml).join(', ')}`);

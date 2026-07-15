@@ -23,22 +23,20 @@ modules:
     dedupDays: 3
     retentionDays: 7
     # NewsData.io (ключ NEWSDATA_API_KEY): теми = scope × category. Датацентр-
-    # дружній API (знімає 403 на .ua). language=uk дає укр-контент і для світу.
+    # дружній API (знімає 403 на .ua).
+    #  🇺🇦 Україна: country=ua + language=uk — новини про/з України.
+    #  🌍 Світ: language=en БЕЗ country (C1, рішення власника) — раніше world
+    #     фільтрувався лише language=uk, тож туди текли укр-видання про укр-події
+    #     (дублюючи рубрику «Україна»). Англомовний world = справді міжнародний.
     topics:
       # 🇺🇦 Українські
       - { scope: ua, topic: Головне, category: top, country: ua, language: uk }
       - { scope: ua, topic: Політика, category: politics, country: ua, language: uk }
       - { scope: ua, topic: Технології, category: technology, country: ua, language: uk }
-      # 🌍 Світові
-      - { scope: world, topic: Наука, category: science, language: uk }
-      - { scope: world, topic: Технології, category: technology, language: uk }
-      - { scope: world, topic: Спорт, category: sports, language: uk }
-  nextStep:
-    enabled: true
-    steps:
-      - 'Пофіксити OG-теги'
-      - 'Mock-питання з KB'
-      - 'Оновити резюме під вакансію'
+      # 🌍 Світові (англомовні)
+      - { scope: world, topic: Світ, category: world, language: en }
+      - { scope: world, topic: Наука, category: science, language: en }
+      - { scope: world, topic: Технології, category: technology, language: en }
   weeklyReview: { enabled: true, day: 'sunday' }
   fact:
     enabled: true

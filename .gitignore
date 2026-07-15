@@ -3,6 +3,11 @@ node_modules/
 
 # Build output
 dist/
+*.tsbuildinfo
+# React-дашборд (web/app) білдиться сюди — генерований артефакт, не комітимо
+# (роадмеп v3, E0). Деплой: спершу `npm --prefix web/app run build`, тоді
+# `wrangler deploy` з web/. Прод-index.html на / лишається комітованим окремо.
+/web/public/app/
 
 # Стан живе лише в гілці `state` (§4.3) — не комітимо на гілках коду.
 # brief.yml форсує git add -f у власному checkout гілки state.
@@ -25,3 +30,5 @@ npm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+other/

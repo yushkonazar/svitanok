@@ -34,3 +34,23 @@ jobs:
       - run: npm test
       # TODO(security): додати security-review (Anthropic) як гейт, коли буде
       # доступний API-ключ у Secrets (§10, §18).
+
+  # React-дашборд (web/app, роадмеп v3 E) — окремий toolchain (Vite+React+TS+
+  # Tailwind), власний package.json. Білд у CI ловить поломки міграції; артефакт
+  # (web/public/app) не комітиться, збирається при деплої.
+  dashboard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web/app
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/app/package-lock.json
+      - run: npm ci
+      - run: npm run build

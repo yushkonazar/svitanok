@@ -5,8 +5,13 @@
 // command injection неможливий незалежно від вмісту prompt), rate-limit,
 // парсинг виводу. І/O (HTTP-сервер, сам spawn) — server.mjs.
 
-export const MAX_PROMPT_LEN = 4000;
-export const MAX_SYSTEM_PROMPT_LEN = 2000;
+// Ліміти — САМОнакладені (не обмеження Anthropic): хост спавнить процеси і стоїть
+// в інтернеті, тож розмір payload'а тримаємо під контролем. B3/B4 підняли їх один
+// раз під реальну потребу асистента: системний промпт із 6-ма діями вже впирався
+// в 1953/2000, а транскрипт може накопичити календар + own-data + пошту за 3 раунди.
+// Захист від зловживання лишається на секреті + rate-limiter'і, не на цих цифрах.
+export const MAX_PROMPT_LEN = 6000;
+export const MAX_SYSTEM_PROMPT_LEN = 3000;
 export const MAX_SCHEMA_LEN = 2000;
 const DEFAULT_MODEL = 'haiku';
 
@@ -116,6 +121,41 @@ export function buildClaudeArgs({ prompt, systemPrompt, schemaStr, model }) {
   return args;
 }
 
+/* ── Вичерпаний ліміт підписки (A1) ───────────────────────────────────────
+   Коли підписка Claude упирається в ліміт (5-годинне вікно / тижневий кап),
+   CLI не дає жодного машинного коду — лише людський текст. Розпізнаємо його
+   ТУТ і віддаємо Worker'у стабільний ENUM `usage-limit` (+ resetAtMs, коли CLI
+   назвав epoch). Це НЕ порушує інваріант «деталі помилок не йдуть у HTTP-
+   відповідь» (server.mjs, шапка): назовні йде фіксований код і число, ніколи
+   не сирий stderr/стек. Worker також має власний резервний regex — щоб фікс
+   працював ще ДО редеплою хоста (web/agent-core.mjs classifyLlmFailure). */
+
+export const USAGE_LIMIT_ERROR = 'usage-limit';
+
+// «Claude AI usage limit reached|1752620400», «You've hit your session limit»,
+// «weekly limit reached», «5-hour limit». Свідомо широко: хибний позитив тут —
+// лише точніший текст користувачу, хибний негатив — знову невиразне «не зміг».
+const USAGE_LIMIT_RE =
+  /(usage limit reached|hit your (?:session|weekly|usage) limit|(?:session|weekly|5-hour) limit reached|limit will reset|upgrade to increase your usage limit)/i;
+// Epoch у «...reached|1752620400» — рівно 10 цифр (секунди) або 13 (мс).
+// 11–12-значне число двозначне (×1000 дало б 25-те століття) -> ігноруємо час.
+const RESET_EPOCH_RE = /limit reached\|(\d{13}|\d{10})(?!\d)/i;
+
+/**
+ * Чи текст CLI означає вичерпаний ліміт підписки -> {limit, resetAtMs?}.
+ * resetAtMs — лише коли CLI дав epoch; інакше undefined (Worker скаже
+ * «спробуй пізніше» без години, а не вигадає її).
+ */
+export function detectUsageLimit(text) {
+  const s = typeof text === 'string' ? text : '';
+  if (!USAGE_LIMIT_RE.test(s)) return { limit: false };
+  const m = RESET_EPOCH_RE.exec(s);
+  if (!m) return { limit: true };
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return { limit: true };
+  return { limit: true, resetAtMs: m[1].length >= 13 ? n : n * 1000 };
+}
+
 /** Розібрати stdout claude -p --output-format json -> {ok,result,structured,costUsd}|{ok:false,error}. */
 export function parseClaudeOutput(stdout) {
   let parsed;
@@ -126,7 +166,16 @@ export function parseClaudeOutput(stdout) {
   }
   if (!parsed || typeof parsed !== 'object') return { ok: false, error: 'bad-output' };
   if (parsed.is_error) {
-    return { ok: false, error: typeof parsed.result === 'string' ? parsed.result : 'llm-error' };
+    const raw = typeof parsed.result === 'string' ? parsed.result : 'llm-error';
+    const lim = detectUsageLimit(raw);
+    if (lim.limit) {
+      return {
+        ok: false,
+        error: USAGE_LIMIT_ERROR,
+        ...(lim.resetAtMs ? { resetAtMs: lim.resetAtMs } : {}),
+      };
+    }
+    return { ok: false, error: raw };
   }
   return {
     ok: true,

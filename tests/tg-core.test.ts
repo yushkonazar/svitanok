@@ -61,10 +61,17 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
     });
   });
 
-  it('message -> kind:message; невідоме -> other', () => {
+  it('message -> kind:message + messageId (G1); невідоме -> other', () => {
     expect(
-      parseUpdate({ update_id: 5, message: { from: { id: 9 }, text: 'привіт' } }),
-    ).toMatchObject({ kind: 'message', text: 'привіт', fromId: 9 });
+      parseUpdate({
+        update_id: 5,
+        message: { message_id: 42, from: { id: 9 }, text: 'привіт' },
+      }),
+    ).toMatchObject({ kind: 'message', text: 'привіт', fromId: 9, messageId: 42 });
+    // без message_id -> null (не блокує, просто не трекнемо для /clear)
+    expect(
+      parseUpdate({ update_id: 5, message: { from: { id: 9 }, text: 'x' } }).messageId,
+    ).toBeNull();
     expect(parseUpdate({ update_id: 6, edited_message: {} }).kind).toBe('other');
     expect(parseUpdate(null).kind).toBe('other');
   });
@@ -465,5 +472,71 @@ describe('briefCooldownRemainingMs (SL2)', () => {
     expect(tg.briefCooldownRemainingMs(last, last + 10 * 60_000, HOUR)).toBe(50 * 60_000); // 10хв минуло
     expect(tg.briefCooldownRemainingMs(last, last + HOUR, HOUR)).toBe(0); // рівно година
     expect(tg.briefCooldownRemainingMs(last, last + 2 * HOUR, HOUR)).toBe(0); // давно
+  });
+});
+
+describe('shouldAutoDispatchBrief (A2)', () => {
+  const NOW = Date.parse('2026-07-15T06:00:00Z'); // 09:00 Київ
+  const base = {
+    todayKey: '2026-07-15',
+    nowMs: NOW,
+    lastAutoDate: '2026-07-14',
+    lastDispatchMs: NOW - 24 * 3_600_000, // учора
+    lastSentDate: '2026-07-14',
+  };
+  const at = (kyivHour: number, over: Record<string, unknown> = {}) =>
+    tg.shouldAutoDispatchBrief({ ...base, kyivHour, ...over });
+
+  it('усередині вікна [8,11) -> так (спроба кожні 5 хв, поки не вийшло)', () => {
+    expect(at(8)).toBe(true);
+    expect(at(9)).toBe(true);
+    expect(at(10)).toBe(true);
+  });
+
+  it('вікно закривається о 11:00 — на годину раніше за guard (ревʼю A)', () => {
+    // Між dispatch і sendGuard стоять черга Actions + npm ci + install claude CLI.
+    // Спроба об 11:xx доїхала б до guard'а вже після 12:00 -> «after window» ->
+    // скіп, а мітка вже стоїть -> день БЕЗ брифінгу взагалі.
+    expect(at(11)).toBe(false);
+    expect(at(12)).toBe(false);
+    expect(at(7)).toBe(false);
+    expect(at(0)).toBe(false);
+    expect(at(23)).toBe(false);
+  });
+
+  it('уже успішно диспатчили сьогодні -> ні (жодних холостих Actions-ранів)', () => {
+    expect(at(9, { lastAutoDate: '2026-07-15' })).toBe(false);
+  });
+
+  it('брифінг уже надіслано сьогодні -> ні', () => {
+    expect(at(9, { lastSentDate: '2026-07-15' })).toBe(false);
+  });
+
+  it('ручний /brief щойно (< 15 хв) -> ні; за 20 хв -> знову можна (ревʼю A)', () => {
+    // /brief не ставить денну мітку (може бути й поза вікном), тож від дубля
+    // рятує саме проміжок. Але ретрай зберігається: якщо той ран впав, авто-
+    // спроба повернеться за 15 хв, а не «завтра».
+    expect(at(9, { lastDispatchMs: NOW - 5 * 60_000 })).toBe(false);
+    expect(at(9, { lastDispatchMs: NOW - 14 * 60_000 })).toBe(false);
+    expect(at(9, { lastDispatchMs: NOW - 20 * 60_000 })).toBe(true);
+  });
+
+  it('перший запуск (міток немає) -> так', () => {
+    expect(
+      tg.shouldAutoDispatchBrief({
+        kyivHour: 8,
+        todayKey: '2026-07-15',
+        nowMs: NOW,
+        lastAutoDate: undefined,
+        lastDispatchMs: undefined,
+        lastSentDate: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it('невалідні вхідні -> ні (fail-closed, не спамимо dispatch)', () => {
+    expect(at(NaN)).toBe(false);
+    expect(tg.shouldAutoDispatchBrief({ kyivHour: 9, todayKey: null })).toBe(false);
+    expect(tg.shouldAutoDispatchBrief({})).toBe(false);
   });
 });

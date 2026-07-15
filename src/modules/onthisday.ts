@@ -9,15 +9,39 @@ const PRIORITY = 25;
 export interface OnThisDayEvent {
   year: number;
   text: string;
+  url?: string; // посилання на статтю Вікіпедії (D3, кнопка «Відкрити»)
+}
+
+interface RawPage {
+  content_urls?: { desktop?: { page?: unknown }; mobile?: { page?: unknown } };
+}
+interface RawEvent {
+  year?: number;
+  text?: string;
+  pages?: RawPage[];
+}
+
+/** Витягти посилання на статтю з pages[] події (desktop, фолбек mobile); undefined
+ *  якщо нема валідного https-URL (D3: старі briefing.json без pages лишаються ок). */
+function pageUrl(e: RawEvent): string | undefined {
+  const pages = Array.isArray(e.pages) ? e.pages : [];
+  for (const p of pages) {
+    const u = p?.content_urls?.desktop?.page ?? p?.content_urls?.mobile?.page;
+    if (typeof u === 'string' && /^https:\/\//.test(u)) return u;
+  }
+  return undefined;
 }
 
 /** Розпарсити й провалідувати сирі події з Wikipedia (без відбору/сортування). */
 export function parseEvents(json: unknown): OnThisDayEvent[] {
-  const events = (json as { events?: { year?: number; text?: string }[] })?.events;
+  const events = (json as { events?: RawEvent[] })?.events;
   if (!Array.isArray(events)) return [];
   return events
     .filter((e) => typeof e.year === 'number' && typeof e.text === 'string' && e.text.trim())
-    .map((e) => ({ year: e.year as number, text: (e.text as string).trim() }));
+    .map((e) => {
+      const url = pageUrl(e);
+      return { year: e.year as number, text: (e.text as string).trim(), ...(url ? { url } : {}) };
+    });
 }
 
 // Стратифікація епох (ідея власника, 2026-07-08): «стародавні» події рідкісні

@@ -49,20 +49,14 @@ describe('weekly-review — модуль', () => {
     expect(block).toBeNull();
   });
 
-  it('неділя -> підсумок: новини + кроки за тиждень', async () => {
+  it('неділя -> підсумок: новини за тиждень (D4: «кроки до офера» прибрано)', async () => {
     const state = memState({
       shownNews: { 'https://x/a': iso(1), 'https://x/b': iso(2), 'https://x/old': iso(40) },
-      nextStepLog: [
-        { step: 'OG-теги', date: iso(1) },
-        { step: 'Mock', date: iso(3) },
-        { step: 'старе', date: iso(30) },
-      ],
     });
     const block = await weeklyReviewModule.run(ctx(state, sundayClock));
     expect(block!.priority).toBe(5);
     expect(block!.summary).toContain('2 новин'); // old (40д) не рахується
-    expect(block!.detail).toContain('OG-теги');
-    expect(block!.detail).not.toContain('старе');
+    expect(block!.summary).not.toContain('кроків');
   });
 
   it('Фаза B5: roadmapDone/weakTopics — читає ВЖЕ наявні ключі state без нового I/O', async () => {
@@ -92,18 +86,13 @@ describe('buildPruners', () => {
     modules: { news: { dedupDays: 3, retentionDays: 7 }, mail: { dedupDays: 3 } },
   } as AppConfig;
 
-  it('чистить старі shownNews, nextStepLog і shownMail', () => {
+  it('чистить старі shownNews і shownMail', () => {
     const data: Record<string, unknown> = {
       shownNews: { recent: iso(2), old: iso(40) },
-      nextStepLog: [
-        { step: 'a', date: iso(1) },
-        { step: 'b', date: iso(20) },
-      ],
       shownMail: { recent: iso(1), old: iso(10) },
     };
     for (const p of buildPruners(config, Date.now())) p(data);
     expect(Object.keys(data.shownNews as object)).toEqual(['recent']);
-    expect(data.nextStepLog).toHaveLength(1);
     expect(Object.keys(data.shownMail as object)).toEqual(['recent']);
   });
 });
@@ -136,7 +125,6 @@ const baseConfig = {
       retentionDays: 7,
       sources: {},
     },
-    nextStep: { enabled: true, steps: ['x'] },
     weeklyReview: { enabled: true, day: 'sunday' },
     fact: { enabled: false, batchSize: 30 },
     mock: { enabled: false, batchSize: 15, profile: 'x' },
@@ -156,7 +144,7 @@ describe('runBriefing — неділя', () => {
     const deps: RunDeps = {
       config: parseConfig(baseConfig),
       clock: sundayClock,
-      state: memState({ nextStepLog: [{ step: 'OG-теги', date: iso(1) }] }),
+      state: memState({ shownNews: { 'https://x/a': iso(1) } }),
       bus: createRunBus(),
       llm: { complete: async () => '' },
       fetcher: { fetch: async () => '' },
@@ -170,7 +158,7 @@ describe('runBriefing — неділя', () => {
     expect(res.quiet).toBe(false); // неділя ніколи не тиха
     const reviewBlock = res.briefing.blocks.find((b) => b.id === 'weekly-review');
     expect(reviewBlock?.title).toBe('Підсумок тижня');
-    expect((reviewBlock?.data as { steps: string[] })?.steps).toContain('OG-теги');
+    expect((reviewBlock?.data as { newsCount: number })?.newsCount).toBe(1);
     // Фаза B5: тепер СПРАВДІ йде другим повідомленням у чат (той самий
     // topicBriefing) — раніше чат отримував лише [дата]. Окремий .send()-
     // виклик (best-effort, §код-рев'ю): провал недільного посту не має
@@ -179,7 +167,7 @@ describe('runBriefing — неділя', () => {
     expect(notifier.sent[0]).toHaveLength(1);
     expect(notifier.sent[1]).toHaveLength(1);
     expect(notifier.sent[1]![0]).toContain('Підсумок тижня');
-    expect(notifier.sent[1]![0]).toContain('Кроків до офера: 1');
+    expect(notifier.sent[1]![0]).toContain('Новин показано: 1');
   });
 
   it('НЕ неділя -> weekly-review блок відсутній, чат отримує лише [дата] (без регресії)', async () => {

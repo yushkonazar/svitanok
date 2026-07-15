@@ -1,0 +1,69 @@
+@import 'tailwindcss';
+
+/* Тема дашборда (роадмеп v3, E0). Скляна естетика — та сама, що у vanilla-версії,
+   але як Tailwind v4 @theme-токени, щоб класи (bg-surface, text-muted…) були
+   семантичними. @theme задає ТЕМНУ тему за замовчуванням; світлу вмикає перемикач
+   (theme.tsx) через <html data-theme="light">, перевизначаючи ті самі змінні.
+   Утиліти Tailwind посилаються на var(--color-*), тож зміна значення на корені
+   каскадно перефарбовує весь інтерфейс. */
+@theme {
+  --color-bg: #0e1016;
+  --color-surface: #171a22;
+  --color-surface-2: #1f2430;
+  --color-border: #272d3a;
+  --color-fg: #eef1f6;
+  --color-muted: #97a1b2;
+  --color-accent: #ff8a4c;
+  --color-accent-2: #ffb03a;
+  --color-on-accent: #1a1206;
+  --color-up: #4ade80;
+  --color-down: #f87171;
+
+  /* Графіки: «трек» під порожніми барами/доріжками (тема-залежний, щоб було
+     видно і в світлій темі — на відміну від vanilla, де білі альфи зникали).
+     Брендовий градієнт барів/заливок сталий в обох темах. */
+  --color-track: rgba(255, 255, 255, 0.08);
+  --grad-from: #ff6b57;
+  --grad-to: #ffb03a;
+
+  --radius-card: 16px;
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Світла тема — перевизначення тих самих токенів. Неопаковані правила (поза
+   @layer) виграють у @theme-змінних незалежно від специфічності, тож :root[...]
+   надійно перекриває. Акценти лишаємо брендовими; змінюємо тло/поверхні/текст. */
+:root[data-theme='light'] {
+  --color-bg: #f4f6fb;
+  --color-surface: #ffffff;
+  --color-surface-2: #eceff5;
+  --color-border: #dce1ea;
+  --color-fg: #171b24;
+  --color-muted: #5b6472;
+  --color-on-accent: #ffffff;
+  --color-up: #15a34a;
+  --color-down: #dc2626;
+  --color-track: rgba(15, 23, 42, 0.08);
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Безпечні зони iOS (Telegram fullscreen) */
+#root {
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
