@@ -806,7 +806,7 @@ const HELP_TEXT = [
   '/plan — план дня (LLM прочитає календар і запропонує таймлайн)',
   '/roadmap — IT-роадмеп (теми → підпункти, прогрес)',
   '/settings — відкрити Mini App',
-  '/clear [N] — видалити останні N моїх повідомлень тут (за замовч. 20)',
+  '/clear [N] — видалити останні N повідомлень тут — мої та твої (за замовч. 20)',
   '/whereami — chat_id/thread_id цього чату',
 ].join('\n');
 
@@ -883,6 +883,26 @@ async function trackSentMessage(env, res, chatId, threadId) {
     }
   } catch (e) {
     console.error('sentMessages tracking failed (не блокує відповідь)', e);
+  }
+}
+
+/** G1: записати message_id ВХІДНОГО повідомлення власника в той самий ring-buffer
+ *  sentMessages, щоб /clear видаляв і його репліки, не лише відповіді бота (у
+ *  супергрупі бот-адмін із can_delete_messages може; у DM Telegram не дає
+ *  видаляти повідомлення користувача — тоді deleteMessage просто відмовить,
+ *  оброблено як звичайну відмову). Merge-before-flush, як trackSentMessage. */
+async function trackIncomingMessage(env, parsed) {
+  if (typeof parsed.messageId !== 'number') return;
+  try {
+    const sentMessages = recordSentMessage(
+      await loadSentMessages(env),
+      parsed.chatId,
+      parsed.threadId,
+      parsed.messageId,
+    );
+    await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+  } catch (e) {
+    console.error('incoming message tracking failed (не блокує обробку)', e);
   }
 }
 
@@ -1499,6 +1519,9 @@ async function processTelegramUpdate(env, parsed, origin) {
         });
       }
     } else if (parsed.kind === 'message' && parsed.chatId != null) {
+      // G1: спершу трекнути вхідне (перед handleCommand) — щоб уже цей-таки /clear
+      // міг видалити й своє тригер-повідомлення разом із рештою.
+      await trackIncomingMessage(env, parsed);
       await handleCommand(env, parsed, origin);
     }
 

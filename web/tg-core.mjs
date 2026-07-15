@@ -65,6 +65,7 @@ export function parseUpdate(update) {
       updateId,
       fromId: m.from?.id ?? null,
       chatId: m.chat?.id ?? null,
+      messageId: m.message_id ?? null, // G1: щоб /clear міг видалити й вхідні власника
       threadId: m.message_thread_id ?? null,
       text: typeof m.text === 'string' ? m.text : '',
     };
@@ -237,7 +238,7 @@ export function chunkArray(arr, size) {
 /** Підсумкове повідомлення після спроби видалення (Telegram не дає видалити
  *  повідомлення старші за 48 год — deleted може бути менше за attempted). */
 export function formatClearResult(deleted, attempted) {
-  if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю своїх повідомлень тут.';
+  if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю повідомлень у цьому чаті.';
   return `🗑 Видалено ${deleted} із ${attempted} повідомлень (старші за 48 год Telegram не дає видалити).`;
 }
 
@@ -323,7 +324,7 @@ export const COMMANDS = [
   { command: 'reminders', description: 'Список активних нагадувань' },
   { command: 'plan', description: 'План дня (LLM читає календар, пропонує таймлайн)' },
   { command: 'roadmap', description: 'IT-роадмеп (теми, прогрес)' },
-  { command: 'clear', description: 'Видалити останні N моїх повідомлень (за замовч. 20)' },
+  { command: 'clear', description: 'Видалити останні N повідомлень — мої та твої (за замовч. 20)' },
   { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
 ];
 
