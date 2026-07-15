@@ -78,53 +78,80 @@ function stripTrigger(text) {
 }
 
 function cleanRemainder(text, matched) {
-  const rest = text
-    .replace(matched, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  // matched — рядок або масив рядків (дата + час стрипаються обидва).
+  const parts = Array.isArray(matched) ? matched.filter(Boolean) : [matched];
+  let rest = text;
+  for (const p of parts) rest = rest.replace(p, '');
+  rest = rest.replace(/\s{2,}/g, ' ').trim();
   return rest || 'Нагадування';
 }
 
-// Календарна дата (B1). Місяці — стеми, щоб ловити і родовий («24 липня»), і
-// називний («24 липень»): «лип» -> липень/липня. Порядок альтернатив у regex не
-// має значення (стеми не є префіксами один одного).
-const MONTH_STEMS = {
-  січн: 1,
-  лют: 2,
-  берез: 3,
-  квіт: 4,
-  трав: 5,
-  черв: 6,
-  лип: 7,
-  серп: 8,
-  верес: 9,
-  жовт: 10,
-  листопад: 11,
-  груд: 12,
-};
-const MONTH_RE =
-  /(\d{1,2})\s+(січн|лют|берез|квіт|трав|черв|лип|серп|верес|жовт|листопад|груд)[а-яіїєґ]*(?:\s+о\s+(\d{1,2})(?::(\d{2}))?)?/i;
-// Числова дата: місяць ЛИШЕ дві цифри («24.07»). Одноцифровий місяць не беремо
-// навмисно — інакше «через 1.5 години» розібралось би як 1 травня.
-const NUM_DATE_RE = /(\d{1,2})\.(\d{2})(?:\.(\d{2,4}))?(?:\s+о\s+(\d{1,2})(?::(\d{2}))?)?/;
+// Календарна дата (B1). Місяці — ПОВНІ відмінені форми (родовий для дат «24 липня»
+// + називний «липень»), НЕ стеми: стем «квіт»+[а-яіїєґ]* хибно ловив «квітів»
+// (квіти) як квітень, «трав» — «трав» (трава) як травень (ревʼю B). Кожна форма
+// закінчується так, що звичайні іменники з тим самим коренем не збігаються.
+const MONTHS = [
+  ['січень', 'січня'],
+  ['лютий', 'лютого'],
+  ['березень', 'березня'],
+  ['квітень', 'квітня'],
+  ['травень', 'травня'],
+  ['червень', 'червня'],
+  ['липень', 'липня'],
+  ['серпень', 'серпня'],
+  ['вересень', 'вересня'],
+  ['жовтень', 'жовтня'],
+  ['листопад', 'листопада'],
+  ['грудень', 'грудня'],
+];
+const MONTH_TO_NUM = {};
+MONTHS.forEach((forms, i) => forms.forEach((f) => (MONTH_TO_NUM[f] = i + 1)));
+// Довші форми першими (щоб «листопада» не обрізалось на «листопад» перед межею).
+const MONTH_ALT = Object.keys(MONTH_TO_NUM)
+  .sort((a, b) => b.length - a.length)
+  .join('|');
+// «DD <місяць>» — межі слова через кириличний lookaround (\b не працює з не-\w).
+const MONTH_RE = new RegExp(`(?<![а-яіїєґ\\d])(\\d{1,2})\\s+(${MONTH_ALT})(?![а-яіїєґ])`, 'i');
+// Числова дата «DD.MM[.YYYY]»: місяць ЛИШЕ дві цифри (одноцифровий -> «через 1.5
+// години» розібралось би як 1 травня). Негативний lookbehind на «о » — щоб час у
+// європейськім записі «о 11.05» НЕ читався як дата 11 травня (ревʼю B); час
+// ловить окремий extractTime нижче.
+const NUM_DATE_RE = /(?<![а-яіїєґ\d.])(?<!о\s)(\d{1,2})\.(\d{2})(?:\.(\d{2,4}))?(?!\d)/;
+// Час «о HH», «о HH:MM», «о HH.MM» будь-де (о = «о котрій»). Крапка ТЕЖ як
+// роздільник — «о 11.05» = 11:05 (поширений європейський запис).
+const TIME_RE = /(?<![а-яіїєґ'])о\s+(\d{1,2})(?:[:.](\d{2}))?(?![а-яіїєґ\d])/i;
 // Дата без часу («нагадай 24 липня скасувати підписку») — ставимо на ранок.
 export const DEFAULT_DATE_HOUR = 10;
+// Скільки років уперед шукати найближчу валідну дату без року (29 лютого може
+// бути аж за 2-3 роки — ревʼю B; +5 покриває будь-який високосний випадок).
+const MAX_YEAR_LOOKAHEAD = 5;
 
 /** Київський рік у момент nowMs (для «24 липня» без року). */
 function kyivYearOf(nowMs) {
   return Number(kyivDateKeyOf(nowMs).slice(0, 4));
 }
 
+/** Витягти час «о HH[:.]MM» будь-де в тексті -> {hh,mm,matched}|null (валідний час). */
+function extractTime(text) {
+  const m = text.match(TIME_RE);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2] || 0);
+  if (hh > 23 || mm > 59) return null;
+  return { hh, mm, matched: m[0] };
+}
+
 /**
  * Розібрати текст на {whenMs, remainder} — rule-based час (укр) + залишок як
  * текст нагадування. Порядок патернів (перший влучний перемагає): відносний
- * ("через N хв/год") -> "завтра/сьогодні о HH[:MM]" -> календарна дата
- * ("24 липня [о 10:00]", "24.07") -> голе "о HH[:MM]".
+ * ("через N хв/год") -> "завтра/сьогодні [...] о HH" -> календарна дата
+ * ("24 липня [... о 18:30]", "24.07") -> голе "о HH[:.]MM".
  * "сьогодні о HH" що вже минуло -> null (не вгадуємо мовчки замість юзера).
  * Немає влучного патерну -> null (виклик далі пробує LLM-фолбек або відмовляє).
  *
- * Календарна дата (B1) обовʼязково ПЕРЕД голим "о HH": інакше "24 липня о 10:00"
- * зматчилось би як просто "о 10:00" і поїхало б на сьогодні/завтра.
+ * Час («о HH») витягується ОКРЕМО (extractTime) і застосовується до дня/дати
+ * незалежно від того, чи стоїть він упритул (ревʼю B: «завтра підписати договір
+ * о 14» раніше ігнорувало «завтра», «24 липня подзвонити мамі о 15» — «о 15»).
  */
 export function parseReminderTime(rawText, nowMs = Date.now()) {
   if (typeof rawText !== 'string') return null;
@@ -143,51 +170,46 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
     }
   }
 
-  const explicitDay = text.match(/(завтра|сьогодні)\s+о\s+(\d{1,2})(?::(\d{2}))?/i);
-  if (explicitDay) {
-    const isTomorrow = /завтра/i.test(explicitDay[1]);
-    const hh = Number(explicitDay[2]);
-    const mm = Number(explicitDay[3] || 0);
-    if (hh <= 23 && mm <= 59) {
-      const today = kyivDateKeyOf(nowMs);
-      const dateKey = isTomorrow ? addDaysToDateKey(today, 1) : today;
-      const whenMs = kyivHmToUtcMs(dateKey, hh, mm);
-      if (isTomorrow || whenMs > nowMs) {
-        return { whenMs, remainder: cleanRemainder(text, explicitDay[0]) };
-      }
+  // Час — окремо, застосуємо і до «завтра», і до календарної дати, і як голий.
+  const time = extractTime(text);
+
+  // «завтра/сьогодні» будь-де (не конче впритул до «о HH» — ревʼю B). Без часу
+  // не беремо: «завтра» саме по собі не задає години — хай далі вирішує LLM.
+  const dayWord = text.match(/(?<![а-яіїєґ])(завтра|сьогодні)(?![а-яіїєґ])/i);
+  if (dayWord && time) {
+    const isTomorrow = /завтра/i.test(dayWord[1]);
+    const today = kyivDateKeyOf(nowMs);
+    const dateKey = isTomorrow ? addDaysToDateKey(today, 1) : today;
+    const whenMs = kyivHmToUtcMs(dateKey, time.hh, time.mm);
+    if (isTomorrow || whenMs > nowMs) {
+      return { whenMs, remainder: cleanRemainder(text, [dayWord[0], time.matched]) };
     }
-    return null; // явний день + минулий час -> не перегадуємо за юзера
+    return null; // сьогодні + минулий час -> не перегадуємо за юзера
   }
 
   // Календарна дата (B1) — «24 липня», «24 липня о 18:30», «24.07», «24.07.2026».
   // Без часу -> DEFAULT_DATE_HOUR (10:00): фраза «нагадай 24 липня скасувати
-  // підписку» — це нормальний запит, а не помилка, і раніше він упирався в глухе
+  // підписку» — нормальний запит, а не помилка, і раніше він упирався в глухе
   // «🤔 Не зрозумів час» (ні rule-based патерну, ні канонічного прикладу для LLM).
   const named = text.match(MONTH_RE);
   const numeric = named ? null : text.match(NUM_DATE_RE);
   const dm = named || numeric;
   if (dm) {
-    // Групи різні: named = [_, day, monthStem, hh?, mm?];
-    //              numeric = [_, day, month, year?, hh?, mm?].
     const day = Number(dm[1]);
-    const month = named ? MONTH_STEMS[dm[2].toLowerCase()] : Number(dm[2]);
-    const rawHh = named ? dm[3] : dm[4];
-    const rawMm = named ? dm[4] : dm[5];
-    const rawYear = named ? undefined : dm[3];
-    const hh = rawHh === undefined ? DEFAULT_DATE_HOUR : Number(rawHh);
-    const mm = Number(rawMm || 0);
+    const month = named ? MONTH_TO_NUM[dm[2].toLowerCase()] : Number(dm[2]);
+    const hh = time ? time.hh : DEFAULT_DATE_HOUR;
+    const mm = time ? time.mm : 0;
     // Явний рік — лише в числовій формі («24.07.2026»); 2-значний -> 20xx.
+    const rawYear = named ? undefined : dm[3];
     const explicitYear =
       rawYear === undefined
         ? null
         : Number(rawYear) < 100
           ? 2000 + Number(rawYear)
           : Number(rawYear);
-    const valid = day >= 1 && month >= 1 && month <= 12 && hh <= 23 && mm <= 59;
-    if (valid) {
+    if (day >= 1 && month >= 1 && month <= 12) {
       // Довжина місяця — ОБОВʼЯЗКОВО, і саме тут: Date.parse('2026-02-31T…') у V8
-      // не дає NaN, а мовчки перекочує на 3 березня. Без цієї перевірки «31.02»
-      // ставило б нагадування на цілком інший день.
+      // не дає NaN, а перекочує на 3 березня. «31.02» -> NaN -> відмова.
       const daysInMonth = (year) => new Date(Date.UTC(year, month, 0)).getUTCDate();
       const build = (year) =>
         day > daysInMonth(year)
@@ -197,30 +219,35 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
               hh,
               mm,
             );
-      const year = explicitYear ?? kyivYearOf(nowMs);
-      let whenMs = build(year);
-      // Дата без року, що вже минула («3 січня» у липні) -> наступний рік. Це
-      // видно користувачу: formatReminderConfirm показує рік, коли він не
-      // поточний, тож помилка на кшталт «14 липня» (вчора) одразу впадає в око.
-      if (explicitYear === null && !(whenMs > nowMs)) whenMs = build(year + 1);
+      let whenMs = NaN;
+      if (explicitYear !== null) {
+        whenMs = build(explicitYear);
+      } else {
+        // Без року — найближчий рік уперед, чия дата в майбутньому. Цикл (не одна
+        // спроба +1) — бо «29 лютого» валідне лише за 2-3 роки (найближчий
+        // високосний), ревʼю B. formatReminderConfirm покаже рік, коли не поточний.
+        const base = kyivYearOf(nowMs);
+        for (let i = 0; i <= MAX_YEAR_LOOKAHEAD; i++) {
+          const cand = build(base + i);
+          if (Number.isFinite(cand) && cand > nowMs) {
+            whenMs = cand;
+            break;
+          }
+        }
+      }
       if (Number.isFinite(whenMs) && whenMs > nowMs) {
-        return { whenMs, remainder: cleanRemainder(text, dm[0]) };
+        return { whenMs, remainder: cleanRemainder(text, [dm[0], time?.matched]) };
       }
     }
     return null; // явна дата, але безглузда (31.02 / минулий явний рік) — не вгадуємо
   }
 
-  // \b не працює з кирилицею в JS (не \w) — межі слова емулюємо lookaround'ом.
-  const bare = text.match(/(?<![а-яіїєґ'])о\s+(\d{1,2})(?::(\d{2}))?(?![а-яіїєґ\d])/i);
-  if (bare) {
-    const hh = Number(bare[1]);
-    const mm = Number(bare[2] || 0);
-    if (hh <= 23 && mm <= 59) {
-      const today = kyivDateKeyOf(nowMs);
-      let whenMs = kyivHmToUtcMs(today, hh, mm);
-      if (whenMs <= nowMs) whenMs = kyivHmToUtcMs(addDaysToDateKey(today, 1), hh, mm);
-      return { whenMs, remainder: cleanRemainder(text, bare[0]) };
-    }
+  // Голе «о HH[:.]MM» — сьогодні, або завтра якщо час уже минув.
+  if (time) {
+    const today = kyivDateKeyOf(nowMs);
+    let whenMs = kyivHmToUtcMs(today, time.hh, time.mm);
+    if (whenMs <= nowMs) whenMs = kyivHmToUtcMs(addDaysToDateKey(today, 1), time.hh, time.mm);
+    return { whenMs, remainder: cleanRemainder(text, time.matched) };
   }
 
   return null;

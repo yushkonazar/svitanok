@@ -590,21 +590,30 @@ async function readMail(env, rawQuery) {
     if (ids.length === 0) return [];
     const msgs = await Promise.all(
       ids.map(async (id) => {
-        const u = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
-        u.searchParams.set('format', 'metadata');
-        for (const h of MAIL_HEADERS) u.searchParams.append('metadataHeaders', h);
-        const r = await fetch(u.toString(), { headers: auth });
-        if (!r.ok) return null; // один недоступний лист не валить решту
-        const j = await r.json();
-        const headers = j?.payload?.headers ?? [];
-        const get = (name) =>
-          headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
-        return {
-          from: get('from'),
-          subject: get('subject'),
-          date: get('date'),
-          snippet: j?.snippet ?? '',
-        };
+        // Try/catch НАВКОЛО кожного листа (ревʼю B): кинутий fetch (транзієнтна
+        // мережева помилка/abort) інакше зронив би весь Promise.all -> null ->
+        // «пошта недоступна», хоча акаунт авторизований і решта листів дістались.
+        // Тепер один збій = мінус один лист, як і при !r.ok.
+        try {
+          const u = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
+          u.searchParams.set('format', 'metadata');
+          for (const h of MAIL_HEADERS) u.searchParams.append('metadataHeaders', h);
+          const r = await fetch(u.toString(), { headers: auth });
+          if (!r.ok) return null;
+          const j = await r.json();
+          const headers = j?.payload?.headers ?? [];
+          const get = (name) =>
+            headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
+          return {
+            from: get('from'),
+            subject: get('subject'),
+            date: get('date'),
+            snippet: j?.snippet ?? '',
+          };
+        } catch (e) {
+          console.error('gmail message fetch failed (один лист пропущено)', e?.message);
+          return null;
+        }
       }),
     );
     return msgs.filter(Boolean);
@@ -831,6 +840,11 @@ function sendTo(env, parsed) {
  */
 async function createReminderFromText(env, parsed, text, { agentFallback = false } = {}) {
   const sendText = sendTo(env, parsed);
+
+  // Порожнє «/remind» без аргументів (ревʼю B): без цього гейта фраза йшла у
+  // спінер + холостий callLlmHost(''), а далі в agentFallback -> агент бачив
+  // порожній текст і віддавав СТАРУ заглушку «асистент ще не підключений».
+  if (!text || !text.trim()) return sendText(REMINDER_HELP);
 
   let parsedTime = parseReminderTime(text, Date.now());
   if (!parsedTime && env.LLM_HOST_URL) {

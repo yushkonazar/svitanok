@@ -153,6 +153,47 @@ describe('reminders-core — parseReminderTime: календарна дата (B
   it('канонічні приклади для LLM містять календарну дату (інакше рерайт нікуди переписувати)', () => {
     expect(CANONICAL_EXAMPLES).toContain('24 липня');
   });
+
+  // ── Регресії, знайдені змагальним ревʼю групи B ──────────────────────────
+  it('«о 11.05» — це ЧАС 11:05, а не дата 11 травня (ревʼю B)', () => {
+    // Європейський запис часу з крапкою не має ставати датою в майбутньому.
+    const r = parseReminderTime('дзвінок о 11.05', SUMMER_NOW); // now = 11:00 -> 11:05 сьогодні
+    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-10T08:05:00.000Z'); // 11:05 EEST
+    expect(r.remainder).toBe('дзвінок');
+    expect(parseReminderTime('зустріч о 9.12', SUMMER_NOW).whenMs).toBe(
+      Date.parse('2026-07-11T06:12:00Z'), // 9:12 вже минуло -> завтра
+    );
+  });
+
+  it('звичайні іменники зі стемом місяця НЕ стають датою (ревʼю B: квітів/трав)', () => {
+    // «купити 5 квітів» не має ставати 5 квітня. Немає ні дати, ні часу -> null.
+    expect(parseReminderTime('нагадай купити 5 квітів', SUMMER_NOW)).toBeNull();
+    expect(parseReminderTime('скосити 5 трав', SUMMER_NOW)).toBeNull();
+    expect(parseReminderTime('полити 3 квітки', SUMMER_NOW)).toBeNull();
+    // А справжній місяць — усе ще працює.
+    expect(parseReminderTime('5 квітня посадка', SUMMER_NOW)).not.toBeNull();
+  });
+
+  it('час не впритул до дати — усе одно застосовується (ревʼю B)', () => {
+    // «24 липня подзвонити мамі о 15» -> 24.07 о 15:00, а не о 10:00 з «о 15» у тексті.
+    const r = parseReminderTime('24 липня подзвонити мамі о 15', SUMMER_NOW);
+    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-24T12:00:00.000Z'); // 15:00 EEST
+    expect(r.remainder).toBe('подзвонити мамі');
+  });
+
+  it('«завтра» не впритул до часу — день усе одно завтра (ревʼю B)', () => {
+    // «завтра підписати договір о 14» раніше ставало СЬОГОДНІ 14:00.
+    const r = parseReminderTime('завтра підписати договір о 14', SUMMER_NOW);
+    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-11T11:00:00.000Z'); // завтра 14:00 EEST
+    expect(r.remainder).toBe('підписати договір');
+  });
+
+  it('«29 лютого» знаходить найближчий високосний рік, а не null (ревʼю B)', () => {
+    // З липня 2026: 2026 і 2027 невисокосні -> найближчий 29.02 це 2028.
+    const r = parseReminderTime('29 лютого річниця', SUMMER_NOW);
+    expect(new Date(r.whenMs).getUTCFullYear()).toBe(2028);
+    expect(new Date(r.whenMs).toISOString().slice(5, 10)).toBe('02-29');
+  });
 });
 
 describe('reminders-core — parseReminderTime: голе "о HH[:MM]"', () => {
