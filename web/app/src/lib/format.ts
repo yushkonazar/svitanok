@@ -1,8 +1,8 @@
 // Дрібні хелпери форматування/умов (роадмеп v3, E1).
 
-/** Значення присутнє (не null/undefined) — аналог vanilla has(). */
+/** Значення присутнє — аналог vanilla has() (порожній рядок теж = відсутнє). */
 export function has<T>(v: T | null | undefined): v is T {
-  return v !== null && v !== undefined;
+  return v !== null && v !== undefined && (v as unknown) !== '';
 }
 
 /** Обмежити число в [lo, hi]. */

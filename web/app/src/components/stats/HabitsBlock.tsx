@@ -1,6 +1,6 @@
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
-import { Card, StatLine, SubHead } from '../ui/primitives.tsx';
+import { Card, StatLine, SubHead, Ph } from '../ui/primitives.tsx';
 import { BarsChart } from '../charts/BarsChart.tsx';
 import { HeatmapGrid } from '../charts/HeatmapGrid.tsx';
 
@@ -32,7 +32,11 @@ export function HabitsBlock({ s }: { s: Stats }) {
       </div>
 
       <div className="mt-3">
-        <BarsChart items={s.weekly.map((d) => ({ label: d.day, value: d.value || 0 }))} />
+        {s.weekly.length ? (
+          <BarsChart items={s.weekly.map((d) => ({ label: d.day, value: d.value || 0 }))} />
+        ) : (
+          <Ph>Немає даних за тиждень</Ph>
+        )}
       </div>
 
       {showHeatmap && (

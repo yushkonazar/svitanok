@@ -36,7 +36,7 @@ export function FunnelGoalBlock({ s }: { s: Stats }) {
 
       <div className="mt-2">
         {has(s.conversion.appliedToInterview) && (
-          <StatLine first label="Подав → співбесіда" value={`${s.conversion.appliedToInterview}%`} />
+          <StatLine label="Подав → співбесіда" value={`${s.conversion.appliedToInterview}%`} />
         )}
         {has(s.conversion.interviewToOffer) && (
           <StatLine label="Співбесіда → офер" value={`${s.conversion.interviewToOffer}%`} />
