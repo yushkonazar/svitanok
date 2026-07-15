@@ -79,6 +79,24 @@ describe('stats-core — recordEvent', () => {
     expect(s.interests['Спорт']).toBe(1);
   });
 
+  it('vote з prevDir — чистий дельта-зсув інтересу (C3)', () => {
+    let s = emptyStore();
+    // up (як раніше, prevDir відсутній -> +1)
+    s = recordEvent(s, { type: 'vote', category: 'Наука', dir: 'up' }, '2026-07-07');
+    expect(s.interests['Наука']).toBe(1);
+    // toggle-off (newDir=null, prevDir=up) -> -1, повертає в 0
+    s = recordEvent(s, { type: 'vote', category: 'Наука', dir: null, prevDir: 'up' }, '2026-07-07');
+    expect(s.interests['Наука']).toBe(0);
+    // зміна up -> down (prevDir=up) -> -2
+    s = recordEvent(s, { type: 'vote', category: 'Кіно', dir: 'up' }, '2026-07-07'); // +1
+    s = recordEvent(
+      s,
+      { type: 'vote', category: 'Кіно', dir: 'down', prevDir: 'up' },
+      '2026-07-07',
+    );
+    expect(s.interests['Кіно']).toBe(-1); // 1 - 2
+  });
+
   it('невідома подія й биті дані не валять', () => {
     expect(() => recordEvent(null, { type: 'wat' }, '2026-07-07')).not.toThrow();
     expect(normalize('bad')).toEqual(emptyStore());

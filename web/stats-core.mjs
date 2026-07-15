@@ -159,9 +159,17 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'unsave_item':
       s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
-    case 'vote':
-      if (ev.category) bumpInterest(s, dateKey, ev.category, ev.dir === 'down' ? -1 : 1);
+    case 'vote': {
+      // Чистий дельта-зсув інтересу (C3): від попереднього голосу до нового.
+      // up=+1, down=-1, знято/немає=0. Без prevDir (старий клієнт без url) —
+      // поведінка як раніше: просто ±1 за напрямком (prevDir undefined -> 0).
+      if (ev.category) {
+        const val = (d) => (d === 'up' ? 1 : d === 'down' ? -1 : 0);
+        const delta = val(ev.dir) - val(ev.prevDir);
+        if (delta !== 0) bumpInterest(s, dateKey, ev.category, delta);
+      }
       break;
+    }
     case 'job_stage':
       if (ev.url) {
         if (ev.stage && STAGES.includes(ev.stage)) {

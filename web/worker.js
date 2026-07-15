@@ -116,6 +116,27 @@ function applyVote(weights, category, dir) {
   return { ...weights, [category]: clampWeight(cur + (dir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP)) };
 }
 
+// votedUrls: чесний облік голосів per-url (C3, дзеркало applyUrlVote з news.ts —
+// канонічна версія тестована в news.test.ts). Кожен url впливає на вагу максимум
+// раз; повторний той самий голос знімає, зміна — переставляє.
+const oppositeDir = (d) => (d === 'up' ? 'down' : 'up');
+function applyUrlVote(weights, votedUrls, url, category, clickedDir) {
+  const vu = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
+  const prev = vu[url];
+  let w = weights ?? {};
+  if (prev && (prev.dir === 'up' || prev.dir === 'down')) {
+    w = applyVote(w, prev.category ?? category, oppositeDir(prev.dir));
+  }
+  const newDir = prev && prev.dir === clickedDir ? null : clickedDir;
+  if (newDir) {
+    w = applyVote(w, category, newDir);
+    vu[url] = { dir: newDir, category };
+  } else {
+    delete vu[url];
+  }
+  return { weights: w, votedUrls: vu, prevDir: prev?.dir ?? null, newDir };
+}
+
 // jobPrefs (дзеркало src/modules/jobs.ts — Worker не імпортує TS).
 const JOB_PREFS_CAP = 20;
 const JOB_STOP_WORDS = new Set([
@@ -332,7 +353,10 @@ async function loadAssistantHistory(env) {
   }
 }
 
-/** POST /api/vote {category, dir, url, initData} -> preferenceWeights + інтерес. */
+/** POST /api/vote {category, dir, url?, initData} -> preferenceWeights + інтерес.
+ *  url (C3): якщо переданий — голос дедуплюється per-url (повторний = зняти,
+ *  зміна = переставити). Без url — стара поведінка (кожен клік зсуває вагу), щоб
+ *  не ламати клієнтів, які url ще не шлють. */
 async function handleVote(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   let body;
@@ -341,7 +365,7 @@ async function handleVote(request, env) {
   } catch {
     return json({ ok: false, error: 'bad-json' }, 400);
   }
-  const { category, dir, initData } = body ?? {};
+  const { category, dir, url, initData } = body ?? {};
   if (typeof category !== 'string' || !category || (dir !== 'up' && dir !== 'down')) {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
@@ -349,13 +373,37 @@ async function handleVote(request, env) {
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const state = await loadState(env);
-  const weights = applyVote(state.preferenceWeights ?? {}, category, dir);
-  state.preferenceWeights = weights;
+  let weight;
+  let prevDir = null;
+  let newDir = dir;
+  if (typeof url === 'string' && url) {
+    // Чесний облік: кожен url впливає на вагу максимум раз (C3).
+    const r = applyUrlVote(
+      state.preferenceWeights ?? {},
+      state.votedUrls ?? {},
+      url,
+      category,
+      dir,
+    );
+    state.preferenceWeights = r.weights;
+    state.votedUrls = r.votedUrls;
+    prevDir = r.prevDir;
+    newDir = r.newDir;
+    weight = r.weights[category];
+  } else {
+    state.preferenceWeights = applyVote(state.preferenceWeights ?? {}, category, dir);
+    weight = state.preferenceWeights[category];
+  }
   await env.BRIEFING.put('state', JSON.stringify(state));
-  // Інтерес у stats (для табу «Статистика» → «твої інтереси»).
-  const stats = recordEvent(await loadStats(env), { type: 'vote', category, dir }, kyivDateKey());
+  // Інтерес у stats (таб «Статистика» → «твої інтереси»): чистий дельта-зсув між
+  // попереднім і новим голосом (з url) або звичайний ±1 (без url, prevDir=null).
+  const stats = recordEvent(
+    await loadStats(env),
+    { type: 'vote', category, dir: newDir, prevDir },
+    kyivDateKey(),
+  );
   await env.BRIEFING.put('stats', JSON.stringify(stats));
-  return json({ ok: true, category, weight: weights[category] });
+  return json({ ok: true, category, weight, voted: newDir });
 }
 
 /**

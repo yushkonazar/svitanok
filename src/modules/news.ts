@@ -36,6 +36,56 @@ export function applyVote(weights: Weights, category: string, dir: 'up' | 'down'
   return { ...weights, [category]: next };
 }
 
+// --- votedUrls: чесний облік голосів per-url (C3) ---
+// Раніше кожен клік 👍/👎 безмежно штовхав вагу теми (applyVote на кожен клік без
+// дедупу), а клієнтський toggle-off був лише CSS — сервер уже двічі порахував.
+// Тепер памʼятаємо голос по url: {dir, category}. Повторний той самий голос =
+// зняти (toggle-off), зміна = переставити. Кожен url впливає на вагу максимум раз.
+export type VoteDir = 'up' | 'down';
+export type VotedUrls = Record<string, { dir: VoteDir; category: string }>;
+
+const oppositeDir = (d: VoteDir): VoteDir => (d === 'up' ? 'down' : 'up');
+
+export interface UrlVoteResult {
+  weights: Weights;
+  votedUrls: VotedUrls;
+  prevDir: VoteDir | null; // що було на цьому url
+  newDir: VoteDir | null; // що стало (null = знято)
+}
+
+/**
+ * Застосувати клік по url у напрямку clickedDir:
+ *  - відкотити попередній голос цього url (якщо був), тоді
+ *  - якщо clickedDir збігається з попереднім -> зняти (toggle-off), інакше поставити.
+ * Ваги clamp'ляться [0.5,2.0], тож відкат не ідеально симетричний на межі — але
+ * головне досягнуто: спам-кліки більше не розганяють вагу без стелі.
+ */
+export function applyUrlVote(
+  weights: Weights,
+  votedUrls: VotedUrls | undefined,
+  url: string,
+  category: string,
+  clickedDir: VoteDir,
+): UrlVoteResult {
+  const vu: VotedUrls = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
+  const prev = vu[url];
+  let w = weights ?? {};
+
+  // 1) відкотити попередній ефект (застосувати протилежний напрямок до ТІЄЇ теми).
+  if (prev && (prev.dir === 'up' || prev.dir === 'down')) {
+    w = applyVote(w, prev.category ?? category, oppositeDir(prev.dir));
+  }
+  // 2) той самий клік по активному -> зняти; інакше поставити новий.
+  const newDir: VoteDir | null = prev && prev.dir === clickedDir ? null : clickedDir;
+  if (newDir) {
+    w = applyVote(w, category, newDir);
+    vu[url] = { dir: newDir, category };
+  } else {
+    delete vu[url];
+  }
+  return { weights: w, votedUrls: vu, prevDir: prev?.dir ?? null, newDir };
+}
+
 /** Тижневий decay до 1.0 (§6.1): w += (1.0 - w) * 0.1. */
 export function applyWeeklyDecay(weights: Weights): Weights {
   const out: Weights = {};
