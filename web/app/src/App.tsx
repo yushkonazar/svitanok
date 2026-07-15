@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { useTheme } from './theme.tsx';
+import { StatsScreen } from './components/stats/StatsScreen.tsx';
 
 // 4 таби дашборда — той самий поділ, що у vanilla-версії. Кожен таб = маршрут
 // (deep-link: /app/#/stats шериться, а Telegram startapp=stats відкриває його
@@ -102,7 +103,7 @@ export function App() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
         >
-          <Placeholder tab={active} />
+          {active.id === 'stats' ? <StatsScreen /> : <Placeholder tab={active} />}
         </motion.section>
       </main>
 
