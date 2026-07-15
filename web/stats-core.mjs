@@ -159,9 +159,19 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'unsave_item':
       s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
-    case 'vote':
-      if (ev.category) bumpInterest(s, dateKey, ev.category, ev.dir === 'down' ? -1 : 1);
+    case 'vote': {
+      // Category-aware облік інтересу (C3, ревʼю): знімаємо ефект СТАРОГО голосу
+      // з його теми (ev.prevCategory) і додаємо новий до поточної (ev.category).
+      // Той самий url може прийти під іншою темою — тоді це дві різні теми, і
+      // «повний дельта на одну» лишав би застряглий бал на старій. Коли теми
+      // збігаються (звичайний випадок) — це зводиться до чистого val(new)-val(prev).
+      // Без prevDir (старий клієнт без url) знімати нічого -> просто ±1 за new.
+      const val = (d) => (d === 'up' ? 1 : d === 'down' ? -1 : 0);
+      const prevCat = ev.prevCategory ?? ev.category;
+      if (prevCat && ev.prevDir) bumpInterest(s, dateKey, prevCat, -val(ev.prevDir));
+      if (ev.category && ev.dir) bumpInterest(s, dateKey, ev.category, val(ev.dir));
       break;
+    }
     case 'job_stage':
       if (ev.url) {
         if (ev.stage && STAGES.includes(ev.stage)) {

@@ -2203,6 +2203,19 @@
         }
       }
 
+      // Гідрувати підсвітку 👍/👎 з /api/stats.votes {url:'up'|'down'} (C3): без
+      // цього після переоткриття Mini App кнопки виглядали б непроголосованими, і
+      // повторний тап на сервері зняв би невидимо активний голос (знизивши вагу).
+      function hydrateVotes(stats) {
+        const votes = stats && stats.votes && typeof stats.votes === 'object' ? stats.votes : {};
+        for (const [url, dir] of Object.entries(votes)) {
+          if (dir !== 'up' && dir !== 'down') continue;
+          const st = NEWS_STATE.get(nk(url)) || {};
+          st.vote = dir;
+          NEWS_STATE.set(nk(url), st);
+        }
+      }
+
       function renderNews(blocks) {
         const n = byId(blocks, 'news');
         if (!n?.data?.groups?.length) return '<div class="empty">Новин немає</div>';
@@ -2607,9 +2620,11 @@
           const dres = await r.json().catch(() => ({}));
           if (dres.ok) {
             tg.HapticFeedback?.notificationOccurred?.('success');
-            // toggle-підсвітка: повторний тап того ж напряму знімає позначку
+            // Підсвітку беремо з АВТОРИТЕТНОЇ відповіді сервера (C3): dres.voted =
+            // 'up'|'down'|null — фактичний стан голосу після toggle/зміни. Раніше
+            // клієнт вгадував toggle сам і розходився із сервером після переоткриття.
             const st = NEWS_STATE.get(nk(wrap.dataset.url)) || {};
-            st.vote = st.vote === dir ? null : dir;
+            st.vote = dres.voted ?? null;
             NEWS_STATE.set(nk(wrap.dataset.url), st);
             wrap.querySelector('.up').classList.toggle('on', st.vote === 'up');
             wrap.querySelector('.down').classList.toggle('on', st.vote === 'down');
@@ -2875,6 +2890,7 @@
         CURRENT = { blocks: brief.blocks || [], stats: stats || null };
         ONTHISDAY_SHOWN = 8; // нове завантаження дня -> скинути розкриття
         hydrateSaved(CURRENT.stats);
+        hydrateVotes(CURRENT.stats);
         renderFreshness(brief.generatedAt);
         document.getElementById('when').textContent = brief.dateLabel || '';
         document.getElementById('today').innerHTML = renderToday(CURRENT.blocks, CURRENT.stats);

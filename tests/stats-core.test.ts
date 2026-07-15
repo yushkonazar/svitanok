@@ -79,6 +79,43 @@ describe('stats-core — recordEvent', () => {
     expect(s.interests['Спорт']).toBe(1);
   });
 
+  it('vote з prevDir — category-aware дельта інтересу (C3)', () => {
+    let s = emptyStore();
+    // up (як раніше, prevDir відсутній -> +1)
+    s = recordEvent(s, { type: 'vote', category: 'Наука', dir: 'up' }, '2026-07-07');
+    expect(s.interests['Наука']).toBe(1);
+    // toggle-off (newDir=null, prevDir=up, та сама тема) -> -1, повертає в 0
+    s = recordEvent(
+      s,
+      { type: 'vote', category: 'Наука', dir: null, prevDir: 'up', prevCategory: 'Наука' },
+      '2026-07-07',
+    );
+    expect(s.interests['Наука']).toBe(0);
+    // зміна up -> down у ТІЙ САМІЙ темі -> -2
+    s = recordEvent(s, { type: 'vote', category: 'Кіно', dir: 'up' }, '2026-07-07'); // +1
+    s = recordEvent(
+      s,
+      { type: 'vote', category: 'Кіно', dir: 'down', prevDir: 'up', prevCategory: 'Кіно' },
+      '2026-07-07',
+    );
+    expect(s.interests['Кіно']).toBe(-1); // 1 - 2
+  });
+
+  it('vote: той самий url під ІНШОЮ темою — знімає стару, не дінить нову (ревʼю C)', () => {
+    let s = emptyStore();
+    // Голос up під «Наука» -> interests.Наука=+1.
+    s = recordEvent(s, { type: 'vote', category: 'Наука', dir: 'up' }, '2026-07-07');
+    // Той самий url приходить під «Тех», клік up -> toggle-off: newDir=null,
+    // prevDir=up, prevCategory=Наука. Має зняти +1 з «Наука», «Тех» не чіпати.
+    s = recordEvent(
+      s,
+      { type: 'vote', category: 'Тех', dir: null, prevDir: 'up', prevCategory: 'Наука' },
+      '2026-07-07',
+    );
+    expect(s.interests['Наука']).toBe(0); // знято зі СТАРОЇ теми
+    expect(s.interests['Тех'] ?? 0).toBe(0); // нова тема не постраждала
+  });
+
   it('невідома подія й биті дані не валять', () => {
     expect(() => recordEvent(null, { type: 'wat' }, '2026-07-07')).not.toThrow();
     expect(normalize('bad')).toEqual(emptyStore());

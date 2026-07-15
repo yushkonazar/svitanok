@@ -36,6 +36,80 @@ export function applyVote(weights: Weights, category: string, dir: 'up' | 'down'
   return { ...weights, [category]: next };
 }
 
+// --- votedUrls: чесний облік голосів per-url (C3) ---
+// Раніше кожен клік 👍/👎 безмежно штовхав вагу теми (applyVote на кожен клік без
+// дедупу), а клієнтський toggle-off був лише CSS — сервер уже двічі порахував.
+// Тепер памʼятаємо голос по url: {dir, category, delta}. Повторний той самий
+// голос = зняти (toggle-off), зміна = переставити. Кожен url впливає на вагу
+// максимум раз.
+//
+// `delta` — РЕАЛЬНО застосований зсув ваги (після clamp), а не номінальні ±0.15
+// (ревʼю C): біля межі [0.5,2.0] голос міг бути no-op'ом (вага вже на дні), і
+// відкат «повного» кроку тягнув би вагу в ПРОТИЛЕЖНИЙ бік (dislike -> boost).
+// Відкочуємо саме те, що додали -> голос точно оборотний.
+export type VoteDir = 'up' | 'down';
+export type VotedUrls = Record<string, { dir: VoteDir; category: string; delta: number }>;
+
+const stepFor = (d: VoteDir): number => (d === 'up' ? WEIGHT_STEP : -WEIGHT_STEP);
+
+export interface UrlVoteResult {
+  weights: Weights;
+  votedUrls: VotedUrls;
+  prevDir: VoteDir | null; // що було на цьому url
+  prevCategory: string | null; // під якою темою був попередній голос (для інтересу)
+  newDir: VoteDir | null; // що стало (null = знято)
+}
+
+/** Застосувати зсув до ваги теми з clamp; повернути {weights, delta(реальний)}. */
+function bumpWeight(
+  weights: Weights,
+  category: string,
+  step: number,
+): { weights: Weights; delta: number } {
+  const before = weights[category] ?? 1.0;
+  const after = clampWeight(before + step);
+  return { weights: { ...weights, [category]: after }, delta: after - before };
+}
+
+/**
+ * Застосувати клік по url у напрямку clickedDir:
+ *  - відкотити попередній голос цього url на РІВНО стільки, скільки він додав;
+ *  - якщо clickedDir збігається з попереднім -> зняти (toggle-off), інакше поставити.
+ */
+export function applyUrlVote(
+  weights: Weights,
+  votedUrls: VotedUrls | undefined,
+  url: string,
+  category: string,
+  clickedDir: VoteDir,
+): UrlVoteResult {
+  const vu: VotedUrls = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
+  const prev = vu[url];
+  let w = weights ?? {};
+
+  // 1) відкотити попередній ефект — саме записаний delta (не номінальний крок).
+  if (prev && typeof prev.delta === 'number' && prev.delta !== 0) {
+    const cat = prev.category ?? category;
+    w = { ...w, [cat]: clampWeight((w[cat] ?? 1.0) - prev.delta) };
+  }
+  // 2) той самий клік по активному -> зняти; інакше поставити новий.
+  const newDir: VoteDir | null = prev && prev.dir === clickedDir ? null : clickedDir;
+  if (newDir) {
+    const r = bumpWeight(w, category, stepFor(newDir));
+    w = r.weights;
+    vu[url] = { dir: newDir, category, delta: r.delta };
+  } else {
+    delete vu[url];
+  }
+  return {
+    weights: w,
+    votedUrls: vu,
+    prevDir: prev?.dir ?? null,
+    prevCategory: prev?.category ?? null,
+    newDir,
+  };
+}
+
 /** Тижневий decay до 1.0 (§6.1): w += (1.0 - w) * 0.1. */
 export function applyWeeklyDecay(weights: Weights): Weights {
   const out: Weights = {};
