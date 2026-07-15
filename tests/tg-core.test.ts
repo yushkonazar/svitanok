@@ -61,10 +61,17 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
     });
   });
 
-  it('message -> kind:message; невідоме -> other', () => {
+  it('message -> kind:message + messageId (G1); невідоме -> other', () => {
     expect(
-      parseUpdate({ update_id: 5, message: { from: { id: 9 }, text: 'привіт' } }),
-    ).toMatchObject({ kind: 'message', text: 'привіт', fromId: 9 });
+      parseUpdate({
+        update_id: 5,
+        message: { message_id: 42, from: { id: 9 }, text: 'привіт' },
+      }),
+    ).toMatchObject({ kind: 'message', text: 'привіт', fromId: 9, messageId: 42 });
+    // без message_id -> null (не блокує, просто не трекнемо для /clear)
+    expect(
+      parseUpdate({ update_id: 5, message: { from: { id: 9 }, text: 'x' } }).messageId,
+    ).toBeNull();
     expect(parseUpdate({ update_id: 6, edited_message: {} }).kind).toBe('other');
     expect(parseUpdate(null).kind).toBe('other');
   });
