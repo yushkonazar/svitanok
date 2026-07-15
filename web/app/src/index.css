@@ -19,6 +19,13 @@
   --color-up: #4ade80;
   --color-down: #f87171;
 
+  /* Графіки: «трек» під порожніми барами/доріжками (тема-залежний, щоб було
+     видно і в світлій темі — на відміну від vanilla, де білі альфи зникали).
+     Брендовий градієнт барів/заливок сталий в обох темах. */
+  --color-track: rgba(255, 255, 255, 0.08);
+  --grad-from: #ff6b57;
+  --grad-to: #ffb03a;
+
   --radius-card: 16px;
   --font-sans:
     system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -37,6 +44,7 @@
   --color-on-accent: #ffffff;
   --color-up: #15a34a;
   --color-down: #dc2626;
+  --color-track: rgba(15, 23, 42, 0.08);
   color-scheme: light;
 }
 
