@@ -1,6 +1,8 @@
 import { tg, inTelegram } from '../telegram.ts';
 import { statsSchema, type Stats } from './schema.ts';
 import { SAMPLE_STATS } from './sample.ts';
+import { briefSchema, type Brief } from './briefing-schema.ts';
+import { SAMPLE_BRIEF } from './briefing-sample.ts';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
 // origin), тож шляхи абсолютні (/api/...); у dev Vite проксі /api -> wrangler :8787.
@@ -38,4 +40,42 @@ export async function fetchStats(): Promise<StatsResult> {
     throw new Error('Формат статистики змінився — оновіть застосунок');
   }
   return { stats: parsed.data, demo: false };
+}
+
+/** Брифінг дня + прапор демо. Та сама політика, що й fetchStats. */
+export interface BriefResult {
+  brief: Brief;
+  demo: boolean;
+}
+
+/**
+ * Завантажити briefing.json (щоденний знімок). Поза Telegram/401/403 — SAMPLE;
+ * 5xx/мережа/дрейф контракту — помилка з ретраєм.
+ */
+export async function fetchBriefing(): Promise<BriefResult> {
+  if (!inTelegram()) return { brief: SAMPLE_BRIEF, demo: true };
+
+  const res = await fetch('/briefing.json', { cache: 'no-store', headers: authHeaders() });
+  if (res.status === 401 || res.status === 403) return { brief: SAMPLE_BRIEF, demo: true };
+  if (!res.ok) throw new Error(`Не вдалося завантажити брифінг (${res.status})`);
+
+  const parsed = briefSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат брифінгу змінився — оновіть застосунок');
+  return { brief: parsed.data, demo: false };
+}
+
+/**
+ * Мутація POST /api/event (роадмеп v3, E2). На відміну від GET-читань, initData
+ * їде В ТІЛІ JSON (як vanilla sendEvent), не заголовком; сервер валідує owner.
+ * Поза Telegram — no-op (демо не персиститься; оптимістичне оновлення кешу
+ * робить хук-мутація локально).
+ */
+export async function postEvent(type: string, payload: Record<string, unknown>): Promise<void> {
+  if (!inTelegram() || !tg) return;
+  const res = await fetch('/api/event', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type, ...payload, initData: tg.initData }),
+  });
+  if (!res.ok) throw new Error(`Подію не збережено (${res.status})`);
 }
