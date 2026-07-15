@@ -156,10 +156,9 @@ describe('stats-core — recordEvent', () => {
 describe('stats-core — aggregateStats', () => {
   const seed = () => {
     let s = emptyStore();
-    // 3 дні поспіль до 2026-07-07 з відкриттями + крок
+    // 3 дні поспіль до 2026-07-07 з відкриттями
     for (const day of ['2026-07-05', '2026-07-06', '2026-07-07']) {
       s = recordEvent(s, { type: 'open' }, day, 20);
-      s = recordEvent(s, { type: 'step_done' }, day);
     }
     s = recordEvent(s, { type: 'news_click', category: 'Технології' }, '2026-07-07');
     s = recordEvent(s, { type: 'job_stage', url: 'a', stage: 'applied', fit: 90 }, '2026-07-07');
@@ -171,7 +170,6 @@ describe('stats-core — aggregateStats', () => {
   it('стріки, тижнева активність (7), воронка, ціль, інтереси', () => {
     const st = aggregateStats(seed(), '2026-07-07');
     expect(st.streaks.openDays).toBe(3);
-    expect(st.streaks.stepDays).toBe(3);
     expect(st.weekly).toHaveLength(7);
     expect(st.weekly[6].active).toBe(true); // сьогодні активний (останній)
     expect(st.funnel).toMatchObject({ applied: 1, interview: 1 });
@@ -207,14 +205,7 @@ describe('stats-core — aggregateStats', () => {
     expect(st.timeToOpenMin).toBeNull();
     expect(st.savedCount).toBe(0);
     expect(st.savedList).toEqual([]);
-    expect(st.stepDoneToday).toBe(false);
     expect(st.mockRatedToday).toBe(false);
-  });
-
-  it('stepDoneToday: true лише після step_done СЬОГОДНІ', () => {
-    const s = seed(); // seed вже містить step_done на 05/06/07
-    expect(aggregateStats(s, '2026-07-07').stepDoneToday).toBe(true);
-    expect(aggregateStats(s, '2026-07-08').stepDoneToday).toBe(false); // інший день
   });
 
   it('mockRatedToday: true лише після mock_answer СЬОГОДНІ', () => {

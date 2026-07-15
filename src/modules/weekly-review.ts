@@ -1,20 +1,20 @@
-// weekly-review (consumer, неділя, §6). Багатший підсумок тижня: скільки новин
-// показано, які кроки до офера пройдено. Retention 7 днів. Показується ЗАВЖДИ в
-// неділю (навіть у тихий день, §4.1 п.5) — orchestrator не вмикає quiet у неділю.
+// weekly-review (consumer, неділя, §6). Підсумок тижня: скільки новин показано,
+// прогрес роадмепу, слабкі теми. Retention 7 днів. Показується ЗАВЖДИ в неділю
+// (навіть у тихий день, §4.1 п.5) — orchestrator не вмикає quiet у неділю.
 //
 // Фаза B5: +roadmapDone/weakTopics — БЕЗ нової інфраструктури: обидва вже
 // лежать у тому самому 'state'-блобі (roadmapProgress пише Worker,
-// mockWeights пише Worker) і читаються тут pass-through, як і shownNews/
-// nextStepLog. roadmapDone — це ЗАГАЛЬНИЙ лічильник (усі позначені пункти
-// коли-небудь, не лише за тиждень) — чесно позначено «загалом» у
-// повідомленні (orchestrator.ts formatWeeklyReviewMessage), не «цього тижня».
-// Метрики Фази A (funnel/interests/reliability) НЕ читаються — вони живуть в
-// окремому KV-блобі 'stats', якого createKvStateStore не бачить взагалі
-// (додати означало б новий Worker-крок за зразком updateMasteryFocus).
+// mockWeights пише Worker) і читаються тут pass-through, як і shownNews.
+// roadmapDone — це ЗАГАЛЬНИЙ лічильник (усі позначені пункти коли-небудь, не лише
+// за тиждень) — чесно позначено «загалом» у повідомленні (orchestrator.ts
+// formatWeeklyReviewMessage), не «цього тижня». Метрики Фази A
+// (funnel/interests/reliability) НЕ читаються — вони живуть в окремому KV-блобі
+// 'stats', якого createKvStateStore не бачить взагалі.
+//
+// D4: «кроки до офера» прибрано разом із модулем next-step.
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
-import type { NextStepLogEntry } from './next-step.js';
 import { weakMockTopics, type MockWeights } from './mock.js';
 
 export const RETENTION_DAYS = 7;
@@ -35,28 +35,21 @@ export const weeklyReviewModule: Module<AppConfig> = {
     const shown = ctx.state.get<Record<string, string>>('shownNews') ?? {};
     const newsCount = Object.values(shown).filter((d) => withinDays(d, RETENTION_DAYS, now)).length;
 
-    const log = ctx.state.get<NextStepLogEntry[]>('nextStepLog') ?? [];
-    const steps = [
-      ...new Set(log.filter((e) => withinDays(e.date, RETENTION_DAYS, now)).map((e) => e.step)),
-    ];
-
     const roadmapProgress = ctx.state.get<Record<string, string>>('roadmapProgress') ?? {};
     const roadmapDone = Object.keys(roadmapProgress).length;
     const weights = ctx.state.get<MockWeights>('mockWeights') ?? {};
     const weakTopics = weakMockTopics(weights);
 
-    const summary = `Минулого тижня: ${newsCount} новин, ${steps.length} кроків до офера.`;
-    const detail = steps.length ? steps.map((s) => `• ${s}`).join('\n') : undefined;
+    const summary = `Минулого тижня: ${newsCount} новин.`;
 
     return {
       id: 'weekly-review',
       title: 'Підсумок тижня',
       icon: '📊',
       summary,
-      detail,
       // Mini App (data) + недільне Telegram-повідомлення (orchestrator.ts,
       // Фаза B5 читає ці самі поля).
-      data: { newsCount, steps, roadmapDone, weakTopics },
+      data: { newsCount, roadmapDone, weakTopics },
       priority: 5, // зверху в неділю (замінює звичайний набір, §5)
     };
   },

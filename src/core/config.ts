@@ -44,10 +44,6 @@ const ConfigSchema = z
           )
           .default([]),
       }),
-      nextStep: z.object({
-        enabled: z.boolean(),
-        steps: z.array(z.string()),
-      }),
       weeklyReview: z.object({
         enabled: z.boolean(),
         day: z.string(),

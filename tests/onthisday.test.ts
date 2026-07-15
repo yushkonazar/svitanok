@@ -21,6 +21,29 @@ describe('onthisday — parseEvents', () => {
     expect(parseEvents('нема')).toEqual([]);
     expect(parseEvents({ events: [{ text: 'без року' }] })).toEqual([]);
   });
+
+  it('витягує url статті з pages[] (D3, desktop; фолбек mobile)', () => {
+    const ev = parseEvents({
+      events: [
+        {
+          year: 1991,
+          text: 'A',
+          pages: [{ content_urls: { desktop: { page: 'https://uk.wikipedia.org/wiki/A' } } }],
+        },
+        {
+          year: 2000,
+          text: 'B',
+          pages: [{ content_urls: { mobile: { page: 'https://uk.m.wikipedia.org/wiki/B' } } }],
+        },
+        { year: 2001, text: 'C' }, // без pages -> без url
+        { year: 2002, text: 'D', pages: [{ content_urls: { desktop: { page: 42 } } }] }, // не рядок
+      ],
+    });
+    expect(ev[0]).toEqual({ year: 1991, text: 'A', url: 'https://uk.wikipedia.org/wiki/A' });
+    expect(ev[1]?.url).toBe('https://uk.m.wikipedia.org/wiki/B');
+    expect(ev[2]?.url).toBeUndefined();
+    expect(ev[3]?.url).toBeUndefined();
+  });
 });
 
 describe('onthisday — selectHistoric (стратифікація епох)', () => {

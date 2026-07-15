@@ -92,7 +92,7 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
     prune(): void {
       if (pruners.length === 0) return;
       // Пруна чистить лише оркестратор-ексклюзивні агрегати (shownNews/
-      // shownMail/nextStepLog), які в типовому прогоні вже в `changed` через
+      // shownMail), які в типовому прогоні вже в `changed` через
       // set() свого модуля — тож окремо їх тут не позначаємо. Якщо модуль не
       // запускався, прунінг цього ключа відкладається до наступного разу
       // (housekeeping, не коректність) — не тягнемо його поверх свіжого блоба.

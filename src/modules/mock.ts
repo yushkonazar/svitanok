@@ -9,7 +9,7 @@
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 
-const MOCK_PRIORITY = 58; // після вакансій (55), перед next-step
+const MOCK_PRIORITY = 58; // після вакансій (55)
 
 // Фіксований список тем — щоб вага теми (mockWeights) не фрагментувалась між
 // батчами через довільні LLM-формулювання. Безпека/AI-LLM додано 2026-07,

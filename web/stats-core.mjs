@@ -73,8 +73,7 @@ const dayBucket = (store, dateKey) => {
   // Пересоздаємо бакет і коли він битий (примітив зі старого/зіпсутого стору) —
   // bump по примітиву в strict mode кидає TypeError.
   const cur = store.days[dateKey];
-  if (!cur || typeof cur !== 'object')
-    store.days[dateKey] = { opens: 0, mock: 0, step: 0, news: 0 };
+  if (!cur || typeof cur !== 'object') store.days[dateKey] = { opens: 0, mock: 0, news: 0 };
   return store.days[dateKey];
 };
 /** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
@@ -203,9 +202,8 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
         if (ev.rating === 'hard') bump(s.mockTopics[ev.topic], 'weak');
       }
       break;
-    case 'step_done':
-      bump(dayBucket(s, dateKey), 'step');
-      break;
+    // 'step_done' прибрано (D4, «Крок до офера»); старі days[].step у KV просто
+    // ігноруються (без міграції).
     default:
       break; // невідома подія — ігноруємо (не валимо)
   }
@@ -359,7 +357,6 @@ export function aggregateStats(store, todayKey) {
   // фолбек: форма валідна, стріки/тиждень порожні.
   if (!isDateKey(todayKey)) todayKey = '1970-01-01';
   const opened = (x) => (x?.opens || 0) > 0;
-  const stepped = (x) => (x?.step || 0) > 0;
   const mocked = (x) => (x?.mock || 0) > 0;
 
   // тижнева активність (останні 7 днів, старіші→новіші)
@@ -421,10 +418,8 @@ export function aggregateStats(store, todayKey) {
   return {
     streaks: {
       openDays: streak(s.days, todayKey, opened),
-      stepDays: streak(s.days, todayKey, stepped),
       mockDays: streak(s.days, todayKey, mocked),
       bestOpenDays: bestStreak(s.days, opened),
-      bestStepDays: bestStreak(s.days, stepped),
     },
     timeToOpenMin: median(s.opensMin),
     weekly,
@@ -465,7 +460,6 @@ export function aggregateStats(store, todayKey) {
       total: s.reliability.total,
       deadman: s.reliability.deadman,
     },
-    stepDoneToday: stepped(s.days[todayKey]),
     mockRatedToday: mocked(s.days[todayKey]),
   };
 }
