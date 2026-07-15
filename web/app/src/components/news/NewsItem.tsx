@@ -52,8 +52,13 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
           type="button"
           aria-label={saved ? 'Прибрати зі збереженого' : 'Зберегти'}
           onClick={() => {
-            setSaved('news', item.url, !saved);
-            saveMut.mutate({ save: !saved, url: item.url, title: item.title, category: topic });
+            const next = !saved;
+            setSaved('news', item.url, next);
+            saveMut.mutate(
+              { save: next, url: item.url, title: item.title, category: topic },
+              // Відкат sticky-набору при збої (хук відкочує лише кеш ['stats']).
+              { onError: () => setSaved('news', item.url, saved) },
+            );
             haptic('success');
           }}
           className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-2 text-base transition-colors hover:bg-border"

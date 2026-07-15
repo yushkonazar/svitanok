@@ -33,8 +33,11 @@ export function JobCard({
   const setStage = (key: FunnelStage | 'irrelevant') => {
     haptic('light');
     if (key === 'irrelevant') {
-      dismissMut.mutate({ url: item.url, title: item.title });
-      onDismiss();
+      // Ховаємо картку ЛИШЕ при успіху (як vanilla onOk) — при збої лишається.
+      dismissMut.mutate(
+        { url: item.url, title: item.title },
+        { onSuccess: () => onDismiss(), onError: () => haptic('error') },
+      );
       return;
     }
     // Тогл: повторний клік активної стадії — знімає (stage=null прибирає з воронки).

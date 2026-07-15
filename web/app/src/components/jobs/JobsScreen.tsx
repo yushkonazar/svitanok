@@ -48,7 +48,9 @@ export function JobsScreen() {
 
   let rows: FunnelRow[] = [];
   if (activeStage) {
-    if (stats?.funnelList?.length) {
+    // funnelList авторитетний, коли stats є (навіть порожній масив — як vanilla
+    // `if (fl)`); демо-фолбек на items.funnelStage лише поки stats не завантажено.
+    if (stats && Array.isArray(stats.funnelList)) {
       rows = stats.funnelList
         .filter((x) => x.stage === activeStage)
         .map((x) => ({ url: x.url, title: x.title }));
@@ -66,7 +68,9 @@ export function JobsScreen() {
       <FunnelWidget counts={counts} active={activeStage} onToggle={setActiveStage} />
       {activeStage && <FunnelDetail stage={activeStage} rows={rows} />}
 
-      {visibleItems.length ? (
+      {/* Гейт на allItems (не visibleItems): відхилення ховає лише картки, а не
+          показує «Вакансій немає» — як vanilla (плейсхолдер лише при 0 вакансій). */}
+      {allItems.length ? (
         visibleItems.map((it) => (
           <JobCard
             key={it.url}
