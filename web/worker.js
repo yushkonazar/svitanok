@@ -1819,20 +1819,15 @@ export default {
     if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
       return handleTelegramSetup(request, env);
     }
-    // E4 (роадмеп v3): корінь віддає React-дашборд (/app/index.html) — URL
-    // лишається '/', ассети React абсолютні (/app/assets/*), тож вантажаться
-    // коректно. М'який фолбек: якщо /app ще НЕ зібрано при деплої (артефакт
-    // web/public/app gitignored), віддаємо старий index.html — прод не падає за
-    // жодного стану деплою. Старий дашборд + цей фолбек приберемо окремим кроком,
-    // коли React пройде смоук у реальному Telegram (+ додамо CSP).
+    // E4-final (роадмеп v3): корінь віддає React-дашборд (/app/index.html) — URL
+    // лишається '/', ассети React абсолютні (/app/assets/*). React пройшов смоук
+    // у реальному Telegram, старий index.html видалено, тож фолбек більше не
+    // потрібен. Cloudflare build-команда (npm run build:web) гарантує /app у
+    // задеплоєних ассетах.
     if (url.pathname === '/' || url.pathname === '/index.html') {
-      const appRes = await env.ASSETS.fetch(
-        new Request(new URL('/app/index.html', url.origin), request),
-      );
-      if (appRes.status === 200) return appRes;
-      // інакше — падаємо у фолбек нижче (старий index.html)
+      return env.ASSETS.fetch(new Request(new URL('/app/index.html', url.origin), request));
     }
-    return env.ASSETS.fetch(request); // статичні файли (дашборд)
+    return env.ASSETS.fetch(request); // статичні ассети React (/app/*)
   },
 
   // Єдиний крон (кожні 5 хв) — три задачі, кожна сама себе гейтить за київською
