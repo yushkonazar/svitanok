@@ -17,8 +17,12 @@ export const briefBlockSchema = z.object({
 });
 
 export const briefSchema = z.object({
-  generatedAt: z.string(),
-  dateLabel: z.string(),
+  // .default('') — порожній брифінг '{}' (свіжий деплой / wipe KV / до першого
+  // крону) сервер віддає HTTP 200 '{}'; без дефолтів safeParse кинув би, і Today
+  // показала б жорстку помилку. Vanilla трактує '{}' як успіх (порожні
+  // плейсхолдери) — відтворюємо це.
+  generatedAt: z.string().default(''),
+  dateLabel: z.string().default(''),
   blocks: z.array(briefBlockSchema).default([]),
 });
 

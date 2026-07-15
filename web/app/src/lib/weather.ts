@@ -20,9 +20,10 @@ export function fmtDur(min: number): string {
   return h > 0 ? `${h} год ${m} хв` : `${m} хв`;
 }
 
-/** Довжина дня між сходом і заходом → «Nг Mхв»; '' якщо невідомо. */
+/** Довжина дня між сходом і заходом → «Nг Mхв»; '—' якщо невідомо (як vanilla —
+    пігулка «☀️ День —» усе одно рендериться). */
 export function dayLen(a: number, b: number): string {
-  if (!a || !b || b <= a) return '';
+  if (!a || !b || b <= a) return '—';
   const m = Math.round((b - a) / 60);
   return `${Math.floor(m / 60)}г ${m % 60}хв`;
 }
