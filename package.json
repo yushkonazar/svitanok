@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "build:web": "npm --prefix web/app ci && npm --prefix web/app run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
