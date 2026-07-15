@@ -3,7 +3,7 @@ import { has } from '../../lib/format.ts';
 // Бейджі рівнів та дельти (роадмеп v3, E2) — 1:1 з index.html uvBadge/aqiBadge
 // (1684-1711) і deltaBadge (1661-1667).
 
-type Tone = 'good' | 'mid' | 'warn' | 'bad' | 'muted';
+export type Tone = 'good' | 'mid' | 'warn' | 'bad' | 'muted' | 'fit';
 
 const TONE_CLS: Record<Tone, string> = {
   good: 'bg-up/15 text-up',
@@ -11,11 +11,19 @@ const TONE_CLS: Record<Tone, string> = {
   warn: 'bg-accent-2/20 text-accent-2',
   bad: 'bg-down/15 text-down',
   muted: 'bg-surface-2 text-muted',
+  // fit% сильної вакансії — суцільна брендова заливка (як vanilla .b-fit).
+  fit: 'text-on-accent',
 };
 
-function Badge({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+export function Badge({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  const gradient = tone === 'fit';
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${TONE_CLS[tone]}`}>{children}</span>
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs font-medium ${TONE_CLS[tone]}`}
+      style={gradient ? { background: 'linear-gradient(135deg, var(--grad-from), var(--grad-to))' } : undefined}
+    >
+      {children}
+    </span>
   );
 }
 

@@ -19,8 +19,13 @@ export function SaveButton({ kind, id, title }: { kind: string; id: string; titl
       type="button"
       aria-label={saved ? 'Прибрати зі збереженого' : 'Зберегти'}
       onClick={() => {
-        setSaved(kind, id, !saved);
-        toggle.mutate({ save: !saved, kind, id, title: truncate(title, 140) });
+        const next = !saved;
+        setSaved(kind, id, next);
+        toggle.mutate(
+          { save: next, kind, id, title: truncate(title, 140) },
+          // Відкат sticky-набору при збої (хук відкочує лише кеш ['stats']).
+          { onError: () => setSaved(kind, id, saved) },
+        );
         haptic('success');
       }}
       className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-2 text-base transition-colors hover:bg-border"
