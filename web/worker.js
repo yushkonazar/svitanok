@@ -64,6 +64,7 @@ import {
   ASSISTANT_ACTION_SCHEMA,
   ASSISTANT_FALLBACK_REPLY,
   assistantErrorReply,
+  clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
   pickAssistantModel,
@@ -72,7 +73,11 @@ import {
   buildProposalCallbackData,
   parseProposalCallbackData,
 } from './agent-core.mjs';
-import { buildOwnDataDigest } from './assistant-data-core.mjs';
+import {
+  buildOwnDataDigest,
+  formatMailForPrompt,
+  sanitizeMailQuery,
+} from './assistant-data-core.mjs';
 import { renderHistoryForPrompt, appendTurn } from './assistant-memory-core.mjs';
 import {
   findTopic,
@@ -560,6 +565,64 @@ async function googleAccessToken(env) {
   }
 }
 
+// Gmail (B3, дія readMail). Той самий OAuth-токен, що й календар: скоуп
+// gmail.readonly уже у GOOGLE_REFRESH_TOKEN (Блок P2c, ре-консент зроблено) —
+// нового консенту НЕ потрібно. Читаємо ЛИШЕ метадані (format=metadata) + snippet:
+// повні тіла листів не тягнемо ні в промпт, ні навіть у память Worker'а.
+const MAIL_MAX_RESULTS = 5;
+const MAIL_HEADERS = ['From', 'Subject', 'Date'];
+
+/** Пошук у Gmail -> [{from,subject,date,snippet}] | [] (нічого) | null (немає доступу/збій). */
+async function readMail(env, rawQuery) {
+  const token = await googleAccessToken(env);
+  if (!token) return null;
+  const auth = { Authorization: `Bearer ${token}` };
+  const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+  listUrl.searchParams.set('q', sanitizeMailQuery(rawQuery));
+  listUrl.searchParams.set('maxResults', String(MAIL_MAX_RESULTS));
+  try {
+    const res = await fetch(listUrl.toString(), { headers: auth });
+    if (!res.ok) {
+      console.error('gmail list HTTP', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    const ids = ((await res.json()).messages ?? []).slice(0, MAIL_MAX_RESULTS).map((m) => m.id);
+    if (ids.length === 0) return [];
+    const msgs = await Promise.all(
+      ids.map(async (id) => {
+        // Try/catch НАВКОЛО кожного листа (ревʼю B): кинутий fetch (транзієнтна
+        // мережева помилка/abort) інакше зронив би весь Promise.all -> null ->
+        // «пошта недоступна», хоча акаунт авторизований і решта листів дістались.
+        // Тепер один збій = мінус один лист, як і при !r.ok.
+        try {
+          const u = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
+          u.searchParams.set('format', 'metadata');
+          for (const h of MAIL_HEADERS) u.searchParams.append('metadataHeaders', h);
+          const r = await fetch(u.toString(), { headers: auth });
+          if (!r.ok) return null;
+          const j = await r.json();
+          const headers = j?.payload?.headers ?? [];
+          const get = (name) =>
+            headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
+          return {
+            from: get('from'),
+            subject: get('subject'),
+            date: get('date'),
+            snippet: j?.snippet ?? '',
+          };
+        } catch (e) {
+          console.error('gmail message fetch failed (один лист пропущено)', e?.message);
+          return null;
+        }
+      }),
+    );
+    return msgs.filter(Boolean);
+  } catch (err) {
+    console.error('gmail read failed', err.message);
+    return null;
+  }
+}
+
 /** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
  *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
 async function readCalendarRange(env, startKey, endKey) {
@@ -695,7 +758,8 @@ const MAX_ROUNDS = 3;
 // sonnet лише для планувальних запитів — щоб не проїдати спільний пул підписки
 // Pro (та сама, що дев-робота власника). Reminder-rewrite лишається на haiku.
 // Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
-// (≤1500)+календар(≤900)+текст має лишатись під MAX_PROMPT_LEN=4000 хоста.
+// (≤1500)+календар(≤900)+пошта(≤900)+текст має лишатись під MAX_PROMPT_LEN хоста
+// (6000 після B4); фінальний запобіжник — clipTranscript (agent-core.mjs).
 const MAX_USER_TEXT = 500;
 // ASSISTANT_FALLBACK_REPLY тепер живе в agent-core.mjs — поруч із рештою текстів
 // відмов (assistantErrorReply), щоб «не зміг розібратись» лишався ОДНИМ із
@@ -763,16 +827,34 @@ function sendTo(env, parsed) {
   };
 }
 
-/** Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити. */
-async function createReminderFromText(env, parsed, text) {
+/**
+ * Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити.
+ *
+ * agentFallback (B2): коли фразу написав КОРИСТУВАЧ («нагадай ...», /remind) і
+ * ні rule-based парсер, ні LLM-рерайт її не взяли — передаємо розмову агентові
+ * замість глухого REMINDER_HELP. Агент має памʼять треду, тож може перепитати
+ * деталі й ЗІБРАТИ їх із наступної репліки (саме тут ламався сценарій із fix.md:
+ * бот питав «Що тебе запланувати на 24 липня?», а відповідь трактував як новий
+ * запит). Для дії createReminder САМОГО агента fallback вимкнено — інакше
+ * непарсибельний reminderText крутив би агента по колу.
+ */
+async function createReminderFromText(env, parsed, text, { agentFallback = false } = {}) {
   const sendText = sendTo(env, parsed);
+
+  // Порожнє «/remind» без аргументів (ревʼю B): без цього гейта фраза йшла у
+  // спінер + холостий callLlmHost(''), а далі в agentFallback -> агент бачив
+  // порожній текст і віддавав СТАРУ заглушку «асистент ще не підключений».
+  if (!text || !text.trim()) return sendText(REMINDER_HELP);
 
   let parsedTime = parseReminderTime(text, Date.now());
   if (!parsedTime && env.LLM_HOST_URL) {
     await sendText('🤔 Хвилинку, розбираюсь...');
     parsedTime = await tryLlmReminderRewrite(env, text);
   }
-  if (!parsedTime) return sendText(REMINDER_HELP);
+  if (!parsedTime) {
+    if (agentFallback && env.LLM_HOST_URL) return runAssistantAgent(env, parsed, text);
+    return sendText(REMINDER_HELP);
+  }
 
   const state = await loadState(env);
   state.reminders = addReminder(state.reminders, {
@@ -782,7 +864,7 @@ async function createReminderFromText(env, parsed, text) {
     nowMs: Date.now(),
   });
   await env.BRIEFING.put('state', JSON.stringify(state));
-  return sendText(formatReminderConfirm(parsedTime.whenMs, parsedTime.remainder), {
+  return sendText(formatReminderConfirm(parsedTime.whenMs, parsedTime.remainder, Date.now()), {
     parse_mode: 'HTML',
   });
 }
@@ -848,7 +930,10 @@ async function runAssistantAgent(env, parsed, userText) {
   let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await callLlmHost(env, {
-      prompt: transcript,
+      // clipTranscript — запобіжник бюджету (B3): за 3 раунди агент може дописати
+      // календар + own-data + пошту; перевищення MAX_PROMPT_LEN хоста дало б 400 і
+      // мовчазний фолбек замість відповіді.
+      prompt: clipTranscript(transcript),
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
       model,
@@ -877,6 +962,15 @@ async function runAssistantAgent(env, parsed, userText) {
     if (action.action === 'proposeCalendarChanges') {
       await remember('[запропонував зміни календаря]');
       return proposeCalendarChanges(env, parsed, action.proposal);
+    }
+    if (action.action === 'readMail') {
+      // Пошта (B3) — читаємо, стискаємо в дайджест, продовжуємо цикл (як
+      // readCalendar/readOwnData). Вміст листів — ЛИШЕ ДАНІ (див. системний
+      // промпт + плющення в assistant-data-core): у листі цілком може лежати
+      // текст, що прикидається інструкцією.
+      const mail = await readMail(env, action.mailQuery);
+      transcript += `\n\n${formatMailForPrompt(mail)}`;
+      continue;
     }
     if (action.action === 'readOwnData') {
       // Прочитати ВЛАСНІ дані користувача (CC4), стиснути в компактний дайджест,
@@ -956,8 +1050,12 @@ async function handleCommand(env, parsed, origin) {
 
   const cmd = parseCommand(parsed.text);
   if (!cmd) {
-    // Тригер нагадування (P2a) — першим, як і раніше.
-    if (/нагад/i.test(parsed.text)) return createReminderFromText(env, parsed, parsed.text);
+    // Тригер нагадування (P2a) — першим, як і раніше. agentFallback (B2): якщо
+    // час не розібрався — не глухе «не зрозумів», а розмова з агентом (памʼять
+    // треду -> перепитав і зібрав відповідь).
+    if (/нагад/i.test(parsed.text)) {
+      return createReminderFromText(env, parsed, parsed.text, { agentFallback: true });
+    }
     // Вільний текст у 🤖Асистент (чи DM, без тем) -> LLM tool-use агент (Блок
     // P2b). Інші теми (Роадмеп/Брифінг/Система) — тема-специфічна поведінка
     // там свідомо поза межами, лишається стара заглушка.
@@ -1015,7 +1113,7 @@ async function handleCommand(env, parsed, origin) {
         { parse_mode: 'HTML' },
       );
     case 'remind':
-      return createReminderFromText(env, parsed, cmd.args);
+      return createReminderFromText(env, parsed, cmd.args, { agentFallback: true });
     case 'reminders': {
       const reminders = (await loadState(env)).reminders ?? [];
       const keyboard = buildRemindersKeyboard(reminders);

@@ -1,9 +1,9 @@
 // Чиста логіка «own-data» дайджестів асистент-агента (Блок CC3, 🤖Асистент):
 // стискає власні дані користувача (нагадування / воронка вакансій / активність /
 // сьогоднішній брифінг) у компактний текст для LLM-промпту. Дайджест іде в
-// transcript (user-prompt), чий бюджет на хості MAX_PROMPT_LEN=4000 (окремий від
-// системного промпту, який має свій MAX_SYSTEM_PROMPT_LEN=2000) — тому кап
-// MAX_DIGEST_LEN лишає запас під сам текст користувача й дані календаря. Без I/O —
+// transcript (user-prompt), чий бюджет на хості MAX_PROMPT_LEN=6000 (окремий від
+// системного промпту, який має свій MAX_SYSTEM_PROMPT_LEN=3000) — тому кап
+// MAX_DIGEST_LEN лишає запас під текст користувача, календар і пошту. Без I/O —
 // Worker читає KV (loadState/loadStats/`latest`) і агрегує (aggregateStats/
 // totalProgress), сюди передає вже готові обʼєкти.
 //
@@ -15,8 +15,8 @@
 
 import { listActive } from './reminders-core.mjs';
 
-// Сумарний кап дайджесту — бюджет промпту хоста (4000) ділиться між системним
-// промптом (~1.5к), транскриптом розмови й цим дайджестом.
+// Сумарний кап дайджесту — бюджет промпту хоста (6000) ділиться між історією
+// (500), календарем (900), поштою (900), текстом користувача (500) і цим дайджестом.
 export const MAX_DIGEST_LEN = 1500;
 const MAX_SUMMARY_LEN = 140; // на один блок брифінгу
 const MAX_REMINDER_LEN = 60; // на текст одного нагадування
@@ -132,6 +132,49 @@ export function digestBriefing(latest, todayKey) {
   else if (genDate) header = `Брифінг від ${ddmmOf(genDate)} (сьогоднішній ще не готовий)`;
   else header = 'Останній брифінг';
   return `${header} — ${lines.join('; ')}.`;
+}
+
+/* ── Пошта (B3, дія readMail) ─────────────────────────────────────────────
+   Gmail — НАЙНЕБЕЗПЕЧНІШЕ джерело даних агента: вміст листів пише хтось чужий.
+   Тому сюди йдуть ЛИШЕ метадані (від кого / тема / дата) і короткий snippet,
+   ніколи повне тіло; усе плющиться в один рядок тим самим clip() (щоб текст
+   листа не міг підробити розділювачі транскрипту на кшталт «Користувач написав:»),
+   а системний промпт окремо позначає пошту як «лише дані, не інструкції». */
+
+export const MAX_MAIL_ITEMS = 5;
+export const MAX_MAIL_LEN = 900;
+const MAX_FROM_LEN = 60;
+const MAX_SUBJECT_LEN = 90;
+const MAX_SNIPPET_LEN = 120;
+const DEFAULT_MAIL_QUERY = 'in:inbox newer_than:7d';
+const MAX_MAIL_QUERY_LEN = 120;
+
+/** Нормалізувати пошуковий запит від LLM: один рядок, з капом; порожній -> дефолт. */
+export function sanitizeMailQuery(raw) {
+  const q = String(raw ?? '')
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim();
+  if (!q) return DEFAULT_MAIL_QUERY;
+  return q.length > MAX_MAIL_QUERY_LEN ? q.slice(0, MAX_MAIL_QUERY_LEN) : q;
+}
+
+/** Дайджест листів для промпту (вхід — вже нормалізовані {from,subject,date,snippet}). */
+export function formatMailForPrompt(messages) {
+  if (messages === null) return 'Пошта: недоступна (немає доступу до Gmail).';
+  const list = Array.isArray(messages) ? messages.slice(0, MAX_MAIL_ITEMS) : [];
+  if (list.length === 0) return 'Пошта: за цим запитом нічого не знайшов.';
+  const lines = list.map((m, i) => {
+    const from = clip(m?.from, MAX_FROM_LEN);
+    const subject = clip(m?.subject, MAX_SUBJECT_LEN) || '(без теми)';
+    const snippet = clip(m?.snippet, MAX_SNIPPET_LEN);
+    const date = clip(m?.date, 30);
+    return (
+      `${i + 1}) від ${from || '(невідомо)'} — ${subject}` +
+      (date ? ` [${date}]` : '') +
+      (snippet ? `: ${snippet}` : '')
+    );
+  });
+  return clip(`Пошта (${list.length}): ${lines.join('; ')}.`, MAX_MAIL_LEN);
 }
 
 // Області own-data, які модель може запросити (dataScope у readOwnData, CC4).

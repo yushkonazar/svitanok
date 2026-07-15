@@ -5,6 +5,7 @@ import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 import * as core from '../host/llm-host-core.mjs';
 const {
   MAX_PROMPT_LEN,
+  MAX_SYSTEM_PROMPT_LEN,
   verifySecret,
   validateLlmRequest,
   buildClaudeArgs,
@@ -64,9 +65,10 @@ describe('llm-host-core — validateLlmRequest', () => {
     expect(validateLlmRequest({ prompt: 'x'.repeat(MAX_PROMPT_LEN + 1) }).error).toBe(
       'prompt-too-long',
     );
-    expect(validateLlmRequest({ prompt: 'x', systemPrompt: 'y'.repeat(3000) }).error).toBe(
-      'system-prompt-too-long',
-    );
+    expect(
+      validateLlmRequest({ prompt: 'x', systemPrompt: 'y'.repeat(MAX_SYSTEM_PROMPT_LEN + 1) })
+        .error,
+    ).toBe('system-prompt-too-long');
     expect(validateLlmRequest({ prompt: 'x', jsonSchema: { huge: 'z'.repeat(3000) } }).error).toBe(
       'schema-too-long',
     );
