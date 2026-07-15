@@ -881,6 +881,19 @@ Windows-дев + Linux-CI без `.gitattributes` дають шумні діфи
 git-коміту стану немає. Гілку `state` **видалено** як мертву (`main` лишається
 захищеним і лінійним без окремої гілки стану).
 
+### 19.14 React-дашборд (роадмеп v3, група E)
+
+Mini App мігрує з рукописного `web/public/index.html` на **React+Tailwind**.
+Окремий toolchain у `web/app/` (Vite+React+TS+Tailwind v4, власний
+`package.json`), білдиться у `web/public/app/` — жива версія на **`/app`** поруч
+зі старим `index.html` на `/`, який лишається недоторканим до фінального
+перемикання (E4). Артефакт (`web/public/app/`) **не комітиться** (`.gitignore`);
+CI білдить його окремою job `dashboard` (ловить поломки), а деплой:
+`npm --prefix web/app run build` → `wrangler deploy` з `web/`. Стек — якісний
+(TanStack Query для даних/рефетчу, Zod для валідації контрактів, Framer Motion
+для анімацій, @dnd-kit для drag&drop воронки у групі F), не «мінімум залежностей».
+Контракти `/api/*` і `briefing.json` **незмінні** — Worker не чіпаємо.
+
 ---
 
 ## Дод. A. Ідеї поза MVP
