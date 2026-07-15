@@ -3,11 +3,23 @@ import type { ReactNode } from 'react';
 // Спільні примітиви UI (роадмеп v3, E1) — відповідники vanilla .card / .statline /
 // .subhead / плейсхолдерів, але як Tailwind-компоненти.
 
-/** Картка блоку: заголовок веде емодзі (vanilla h3.plain — без акцентної смуги). */
-export function Card({ title, children }: { title: string; children: ReactNode }) {
+/** Картка блоку: заголовок веде емодзі (vanilla h3.plain — без акцентної смуги).
+    action — необовʼязковий слот у хедері (напр. кнопка 🔖). */
+export function Card({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children: ReactNode;
+  action?: ReactNode;
+}) {
   return (
     <section className="mb-3 rounded-card border border-border bg-surface p-4 shadow-lg">
-      <h3 className="mb-3 text-base font-semibold">{title}</h3>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3 className="text-base font-semibold">{title}</h3>
+        {action}
+      </div>
       {children}
     </section>
   );
