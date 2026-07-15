@@ -228,6 +228,7 @@ export const jobsModule: Module<AppConfig> = {
     try {
       const out = await ctx.llm.complete(buildScorePrompt(cfg.profile, pool, jobPrefs), {
         timeoutMs: ctx.config.llm.timeoutMs,
+        tag: 'jobs',
       });
       const scores = parseScores(out);
       if (scores.size === 0) throw new Error('порожній скоринг');

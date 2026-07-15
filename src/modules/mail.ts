@@ -263,6 +263,7 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
         const profile = ctx.config.modules.jobs.profile;
         const out = await ctx.llm.complete(buildMailPrompt(profile, candidates), {
           timeoutMs: ctx.config.llm.timeoutMs,
+          tag: 'mail',
         });
         const classified = parseMailClassification(out);
         importantCount = candidates.filter((_, i) => classified.get(i + 1)?.important).length;

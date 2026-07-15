@@ -62,16 +62,82 @@ function runClaude(
   });
 }
 
-export function createLLMClient(opts: LLMOptions): LLMClient {
+export interface LlmFailure {
+  /** Хто саме викликав (opts.tag модуля) — щоб попередження назвало РЕАЛЬНО
+   *  деградовані блоки, а не константний список. */
+  tag: string;
+  message: string;
+}
+
+/** Клієнт, що ще й памʼятає впалі виклики цього рану (A3). Модулі ловлять свої
+ *  помилки самі (jobs -> порядок за свіжістю, fact/mock/mail -> блок відсутній),
+ *  тож брифінг однаково приходить — просто тихо бідніший. Оркестратор читає цей
+ *  список у кінці й один раз попереджає в «⚠️ Система», щоб деградація не була
+ *  невидимою. */
+export interface RecordingLLMClient extends LLMClient {
+  failures(): LlmFailure[];
+}
+
+// Ліміт підписки Claude CLI віддає лише людським текстом (машинного коду немає).
+// Дзеркало host/llm-host-core.mjs і web/agent-core.mjs USAGE_LIMIT_RE — src/, host/
+// і web/ навмисно не шарять код (різні деплої), тому це свідомий копі. Щоб копії не
+// розʼїхались (ревʼю A: одна вже народилась із втраченою гілкою), паритет усіх трьох
+// стереже спільний фікстур-набір у tests/usage-limit-fixtures.ts.
+const USAGE_LIMIT_RE =
+  /(usage limit reached|hit your (?:session|weekly|usage) limit|(?:session|weekly|5-hour) limit reached|limit will reset|upgrade to increase your usage limit)/i;
+
+export function isUsageLimitError(text: string): boolean {
+  return USAGE_LIMIT_RE.test(text);
+}
+
+// Людські назви блоків для попередження — краще за константний список у тексті
+// (ревʼю A: старий рядок мовчав про пошту, а це найдорожча деградація — зникає
+// пропозиція «додати співбесіду в календар»; і навпаки, називав факт/питання, які
+// в типовий день узагалі не викликають LLM, бо живуть із батч-кешу).
+const MODULE_LABELS: Record<string, string> = {
+  jobs: 'вакансії (скоринг релевантності)',
+  mail: 'пошта (тріаж + пропозиції співбесід)',
+  fact: 'факт дня',
+  mock: 'питання дня',
+};
+
+/** Попередження в «⚠️ Система» про деградацію рану; null — якщо все пройшло. */
+export function formatLlmDegradedMessage(failures: LlmFailure[]): string | null {
+  if (failures.length === 0) return null;
+  const limit = failures.some((f) => isUsageLimitError(f.message));
+  const affected = [...new Set(failures.map((f) => MODULE_LABELS[f.tag] ?? f.tag))];
+  const head = limit
+    ? `⚠️ Svitanok: ліміти Claude вичерпані — ${failures.length} LLM-виклик(ів) впало.`
+    : `⚠️ Svitanok: LLM недоступний — ${failures.length} виклик(ів) впало.`;
+  return [
+    head,
+    `Брифінг надіслано, але деградували: ${affected.join(', ')}.`,
+    ...failures.slice(0, 2).map((f) => `• ${f.tag}: ${f.message.slice(0, 160)}`),
+  ].join('\n');
+}
+
+export function createLLMClient(opts: LLMOptions): RecordingLLMClient {
   let calls = 0;
+  const failed: LlmFailure[] = [];
   return {
     async complete(prompt, callOpts): Promise<string> {
+      // maxCallsPerRun — НАША стеля, а не збій LLM: кидаємо, але у failures не
+      // пишемо (інакше «LLM недоступний» звучало б там, де LLM цілком живий).
       if (calls >= opts.maxCallsPerRun) {
         throw new Error(`LLM maxCallsPerRun (${opts.maxCallsPerRun}) перевищено`);
       }
       calls += 1;
       const timeoutMs = callOpts?.timeoutMs ?? opts.defaultTimeoutMs;
-      return runClaude(prompt, opts.model, timeoutMs, opts.log);
+      try {
+        return await runClaude(prompt, opts.model, timeoutMs, opts.log);
+      } catch (e) {
+        failed.push({
+          tag: callOpts?.tag ?? 'llm',
+          message: e instanceof Error ? e.message : String(e),
+        });
+        throw e; // поведінка модулів не змінюється — лише лишаємо слід
+      }
     },
+    failures: () => [...failed],
   };
 }

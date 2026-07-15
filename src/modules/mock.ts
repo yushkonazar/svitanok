@@ -175,7 +175,7 @@ export const mockModule: Module<AppConfig> = {
       try {
         const out = await ctx.llm.complete(
           buildMockPrompt(cfg.batchSize, cfg.profile, weights, focus),
-          { timeoutMs: ctx.config.llm.timeoutMs },
+          { timeoutMs: ctx.config.llm.timeoutMs, tag: 'mock' },
         );
         cache = parseMockCache(out);
       } catch (e) {

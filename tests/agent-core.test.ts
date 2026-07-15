@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
 // Межа довжини промпту — з реального контракту хоста (той самий репо, окремий деплой).
@@ -7,6 +8,9 @@ import { MAX_SYSTEM_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
   ASSISTANT_ACTION_SCHEMA,
+  ASSISTANT_FALLBACK_REPLY,
+  assistantErrorReply,
+  classifyLlmFailure,
   buildAssistantSystemPrompt,
   extractAssistantAction,
   pickAssistantModel,
@@ -72,6 +76,87 @@ describe('buildAssistantSystemPrompt', () => {
       expect(buildAssistantSystemPrompt(base + i * DAY).length).toBeLessThanOrEqual(
         MAX_SYSTEM_PROMPT_LEN,
       );
+    }
+  });
+});
+
+describe('classifyLlmFailure / assistantErrorReply (A1)', () => {
+  // 2026-07-15 21:00 Київ (EEST, UTC+3) — час скидання ліміту.
+  const RESET_MS = Date.parse('2026-07-15T18:00:00Z');
+  const NOW = RESET_MS - 3 * 3_600_000; // 18:00 Київ
+
+  it('енум usage-limit від нового хоста -> limit + resetAtMs із поля', () => {
+    const res = { ok: false, status: 502, error: 'usage-limit', resetAtMs: RESET_MS };
+    expect(classifyLlmFailure(res)).toEqual({ kind: 'limit', resetAtMs: RESET_MS });
+    expect(assistantErrorReply(res, NOW)).toContain('Ліміти Claude вичерпані');
+    expect(assistantErrorReply(res, NOW)).toContain('21:00'); // Київ, не UTC
+  });
+
+  it('СИРИЙ текст CLI від СТАРОГО хоста теж упізнається (фікс працює до редеплою)', () => {
+    const res = { ok: false, status: 502, error: 'Claude AI usage limit reached|1752620400' };
+    const c = classifyLlmFailure(res);
+    expect(c.kind).toBe('limit');
+    expect(c.resetAtMs).toBe(1752620400_000);
+  });
+
+  it('ліміт без часу -> без вигаданої години', () => {
+    const res = { ok: false, status: 502, error: "You've hit your weekly limit" };
+    expect(classifyLlmFailure(res)).toEqual({ kind: 'limit' });
+    const text = assistantErrorReply(res, NOW);
+    expect(text).toContain('трохи пізніше');
+    expect(text).not.toMatch(/\d{2}:\d{2}/);
+  });
+
+  it('час скидання вже минув -> не показуємо його (несвіжа мітка)', () => {
+    const res = { ok: false, status: 502, error: 'usage-limit', resetAtMs: RESET_MS };
+    expect(assistantErrorReply(res, RESET_MS + 60_000)).toContain('трохи пізніше');
+  });
+
+  it('429 хоста -> busy; timeout/offline/невалідна дія -> різні тексти', () => {
+    expect(classifyLlmFailure({ ok: false, status: 429, error: 'rate-limited' }).kind).toBe('busy');
+    expect(classifyLlmFailure({ ok: false, status: 0, error: 'timeout' }).kind).toBe('timeout');
+    expect(classifyLlmFailure({ ok: false, status: 0, error: 'offline' }).kind).toBe('offline');
+    expect(classifyLlmFailure({ ok: false, status: 0, error: 'not-configured' }).kind).toBe(
+      'offline',
+    );
+    expect(classifyLlmFailure({ ok: false, status: 502, error: 'overloaded' }).kind).toBe('busy');
+
+    const texts = [
+      assistantErrorReply({ ok: false, status: 429, error: 'rate-limited' }, NOW),
+      assistantErrorReply({ ok: false, status: 0, error: 'timeout' }, NOW),
+      assistantErrorReply({ ok: false, status: 0, error: 'offline' }, NOW),
+    ];
+    expect(new Set(texts).size).toBe(3); // усі три причини звучать по-різному
+  });
+
+  it('успішна відповідь із невалідною дією -> старий фолбек (це не збій інфри)', () => {
+    expect(classifyLlmFailure({ ok: true, structured: { action: 'дурня' } }).kind).toBe('unknown');
+    expect(assistantErrorReply({ ok: true }, NOW)).toBe(ASSISTANT_FALLBACK_REPLY);
+    expect(assistantErrorReply(null, NOW)).toBe(ASSISTANT_FALLBACK_REPLY);
+  });
+
+  it('400 хоста (напр. system-prompt-too-long) -> unknown, не «ліміти»', () => {
+    // Помилка НАША, не Claude — не брехати користувачу про вичерпані ліміти.
+    const res = { ok: false, status: 400, error: 'system-prompt-too-long' };
+    expect(classifyLlmFailure(res).kind).toBe('unknown');
+    expect(assistantErrorReply(res, NOW)).toBe(ASSISTANT_FALLBACK_REPLY);
+  });
+
+  it('скидання НЕ сьогодні -> показуємо й дату (ревʼю A)', () => {
+    // Тижневий ліміт із голим «09:00» читався б як «за годину», а чекати 4 дні.
+    const inFourDays = Date.parse('2026-07-19T06:00:00Z'); // 09:00 Київ, неділя
+    const res = { ok: false, status: 502, error: 'usage-limit', resetAtMs: inFourDays };
+    const text = assistantErrorReply(res, NOW); // NOW = 15.07
+    expect(text).toContain('19.07');
+    expect(text).toContain('09:00');
+  });
+
+  it('паритет зі спільним фікстур-набором (web vs host vs src)', () => {
+    for (const t of USAGE_LIMIT_TEXTS) {
+      expect(classifyLlmFailure({ ok: false, status: 502, error: t }).kind, t).toBe('limit');
+    }
+    for (const t of NON_LIMIT_TEXTS) {
+      expect(classifyLlmFailure({ ok: false, status: 502, error: t }).kind, t).not.toBe('limit');
     }
   });
 });

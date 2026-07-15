@@ -21,6 +21,8 @@ import {
   buildClaudeArgs,
   parseClaudeOutput,
   createRateLimiter,
+  detectUsageLimit,
+  USAGE_LIMIT_ERROR,
 } from './llm-host-core.mjs';
 
 const PORT = Number(process.env.PORT) || 8787;
@@ -103,6 +105,19 @@ function runClaude(args) {
       const parsed = parseClaudeOutput(stdout);
       if (!parsed.ok) {
         console.error(`claude exit=${code} parse-fail; stderr:`, stderr.slice(0, 500));
+        // Вичерпаний ліміт підписки CLI інколи друкує ПЛЕЙН-текстом і виходить
+        // ненульовим кодом — тоді JSON не парситься і вище лишається глухе
+        // 'bad-output'. Перевіряємо обидва потоки й віддаємо стабільний код
+        // (A1) — назовні йде лише енум+epoch, ніколи сам stderr.
+        const lim = detectUsageLimit(`${stdout}\n${stderr}`);
+        if (lim.limit) {
+          resolve({
+            ok: false,
+            error: USAGE_LIMIT_ERROR,
+            ...(lim.resetAtMs ? { resetAtMs: lim.resetAtMs } : {}),
+          });
+          return;
+        }
       }
       resolve(parsed);
     });

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 // @ts-expect-error — JS-модуль хоста без типів (namespace-імпорт: prettier не
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as core from '../host/llm-host-core.mjs';
@@ -9,6 +10,8 @@ const {
   buildClaudeArgs,
   parseClaudeOutput,
   createRateLimiter,
+  detectUsageLimit,
+  USAGE_LIMIT_ERROR,
 } = core;
 
 describe('llm-host-core — verifySecret', () => {
@@ -163,6 +166,55 @@ describe('llm-host-core — parseClaudeOutput', () => {
     expect(parseClaudeOutput('не json{{{').ok).toBe(false);
     expect(parseClaudeOutput('null').error).toBe('bad-output');
     expect(parseClaudeOutput('42').error).toBe('bad-output');
+  });
+
+  it('is_error через вичерпаний ліміт -> стабільний енум + resetAtMs (A1)', () => {
+    const stdout = JSON.stringify({
+      is_error: true,
+      result: 'Claude AI usage limit reached|1752620400',
+    });
+    expect(parseClaudeOutput(stdout)).toEqual({
+      ok: false,
+      error: USAGE_LIMIT_ERROR,
+      resetAtMs: 1752620400 * 1000,
+    });
+  });
+});
+
+describe('llm-host-core — detectUsageLimit (A1)', () => {
+  it('epoch у секундах -> resetAtMs у мс', () => {
+    expect(detectUsageLimit('Claude AI usage limit reached|1752620400')).toEqual({
+      limit: true,
+      resetAtMs: 1752620400_000,
+    });
+  });
+
+  it('epoch у мілісекундах лишається як є', () => {
+    expect(detectUsageLimit('usage limit reached|1752620400000').resetAtMs).toBe(1752620400000);
+  });
+
+  it('двозначна довжина epoch (11–12 цифр) -> час не показуємо (ревʼю A)', () => {
+    // ×1000 дало б 25-те століття; краще без часу, ніж із вигаданим.
+    expect(detectUsageLimit('usage limit reached|17526204000')).toEqual({ limit: true });
+    expect(detectUsageLimit('usage limit reached|175262040000')).toEqual({ limit: true });
+  });
+
+  it('ліміт без epoch -> limit:true без часу (нічого не вигадуємо)', () => {
+    expect(detectUsageLimit("You've hit your session limit · resets 11pm")).toEqual({
+      limit: true,
+    });
+    expect(detectUsageLimit('Weekly limit reached. Try again later.')).toEqual({ limit: true });
+  });
+
+  it('інші помилки — не ліміт', () => {
+    expect(detectUsageLimit('overloaded').limit).toBe(false);
+    expect(detectUsageLimit('').limit).toBe(false);
+    expect(detectUsageLimit(null).limit).toBe(false);
+  });
+
+  it('паритет зі спільним фікстур-набором (host vs web vs src)', () => {
+    for (const t of USAGE_LIMIT_TEXTS) expect(detectUsageLimit(t).limit, t).toBe(true);
+    for (const t of NON_LIMIT_TEXTS) expect(detectUsageLimit(t).limit, t).toBe(false);
   });
 });
 

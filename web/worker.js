@@ -1,5 +1,6 @@
-// Worker: статика дашборда (ASSETS) + /briefing.json із KV + ТОЧНИЙ планувальник
-// (08:00 Київ -> GitHub workflow_dispatch) + DEAD-MAN'S-SWITCH (10:00 Київ) +
+// Worker: статика дашборда (ASSETS) + /briefing.json із KV + планувальник
+// (вікно 08:00–12:00 Київ, спроба щоп'ять хвилин -> GitHub workflow_dispatch,
+// рівно один успішний на добу) + DEAD-MAN'S-SWITCH (10:00 Київ) +
 // НАГАДУВАННЯ (кожні ~5 хв, Блок P2a) + /api/vote, /api/event (запис подій —
 // авторизація власника через Telegram WebApp initData), /api/stats (читання
 // агрегату), /api/telegram (вебхук — Блок P0/P1/P4, авторизація через
@@ -28,6 +29,7 @@ import {
   chunkArray,
   formatClearResult,
   briefCooldownRemainingMs,
+  shouldAutoDispatchBrief,
   COMMANDS,
   REPLY_KEYBOARD,
 } from './tg-core.mjs';
@@ -60,6 +62,8 @@ import {
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
+  ASSISTANT_FALLBACK_REPLY,
+  assistantErrorReply,
   buildAssistantSystemPrompt,
   extractAssistantAction,
   pickAssistantModel,
@@ -444,12 +448,20 @@ async function tgCall(env, method, body) {
 
 /**
  * Тонкий клієнт власного LLM-хоста (host/, VPS на claude CLI — Блок P2, підписка,
- * не платний API). Graceful degradation: без LLM_HOST_URL/LLM_HOST_SECRET, або
- * при будь-якій мережевій/таймаут-помилці — просто null, виклик іде далі без LLM
- * (rule-based фолбек не блокується на доступності хоста).
+ * не платний API). Graceful degradation зберігається: жодна гілка не кидає.
+ *
+ * A1: замість глухого `null` на будь-який збій повертає ПРИЧИНУ —
+ * {ok:false, status, error} (status: HTTP-код або 0 для мережі/таймауту/
+ * ненала­штованості). Виклики, яким байдуже (reminder-rewrite), і далі просто
+ * читають `res?.structured` -> undefined; асистент мапить причину в людський
+ * текст (classifyLlmFailure/assistantErrorReply, agent-core.mjs). Тіло помилки
+ * хоста — це фіксований енум ('usage-limit'/'rate-limited'/'timeout'/…) або
+ * текст CLI, який хост уже пропустив через власну класифікацію.
  */
 async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
-  if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) return null;
+  if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) {
+    return { ok: false, status: 0, error: 'not-configured' };
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 25_000); // менше за таймаут хоста (30с)
   try {
@@ -462,15 +474,29 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
       body: JSON.stringify({ prompt, systemPrompt, jsonSchema, model }),
       signal: ctrl.signal,
     });
-    if (!res.ok) {
-      console.error('llm-host HTTP', res.status, await res.text().catch(() => ''));
-      return null;
+    // Тіло читаємо ОДИН раз (Response.body — стрім, .text() після .json() кине).
+    const raw = await res.text().catch(() => '');
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      /* не-JSON тіло (проксі/502-сторінка) -> data лишається null */
     }
-    const data = await res.json();
-    return data.ok ? data : null;
+    if (!res.ok || !data?.ok) {
+      console.error('llm-host HTTP', res.status, raw.slice(0, 300));
+      return {
+        ok: false,
+        status: res.status,
+        error: typeof data?.error === 'string' ? data.error : `http-${res.status}`,
+        ...(Number.isFinite(data?.resetAtMs) ? { resetAtMs: data.resetAtMs } : {}),
+      };
+    }
+    return data;
   } catch (err) {
-    console.error('llm-host call failed', err.message);
-    return null;
+    // AbortError — це наш 25-секундний таймаут, не «хост лежить»: різні тексти.
+    const aborted = err?.name === 'AbortError';
+    console.error('llm-host call failed', err?.message);
+    return { ok: false, status: 0, error: aborted ? 'timeout' : 'offline' };
   } finally {
     clearTimeout(timer);
   }
@@ -671,7 +697,9 @@ const MAX_ROUNDS = 3;
 // Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
 // (≤1500)+календар(≤900)+текст має лишатись під MAX_PROMPT_LEN=4000 хоста.
 const MAX_USER_TEXT = 500;
-const ASSISTANT_FALLBACK_REPLY = '🤔 Не зміг розібратись до кінця — спробуй сформулювати простіше.';
+// ASSISTANT_FALLBACK_REPLY тепер живе в agent-core.mjs — поруч із рештою текстів
+// відмов (assistantErrorReply), щоб «не зміг розібратись» лишався ОДНИМ із
+// варіантів, а не єдиним (A1).
 const PENDING_TTL_MS = 30 * 60_000; // застаріла кнопка ✅/❌ під пропозицією
 
 /**
@@ -826,10 +854,12 @@ async function runAssistantAgent(env, parsed, userText) {
       model,
     });
     const action = extractAssistantAction(res?.structured);
-    // Хост недоступний/невалідна дія -> чесний фолбек. Історію НЕ чіпаємо (ревʼю
-    // CM): провалений (часто оверсайз) обмін інакше отруював би priorContext
-    // наступних повідомлень і сузив би бюджет ще більше (компаундинг).
-    if (!action) return sendText(ASSISTANT_FALLBACK_REPLY);
+    // Хост недоступний/невалідна дія -> чесний фолбек. Тепер текст залежить від
+    // ПРИЧИНИ (A1): вичерпані ліміти підписки / rate-limit / таймаут / хост лежить
+    // / модель віддала дурню. Історію НЕ чіпаємо (ревʼю CM): провалений (часто
+    // оверсайз) обмін інакше отруював би priorContext наступних повідомлень і
+    // сузив би бюджет ще більше (компаундинг).
+    if (!action) return sendText(assistantErrorReply(res, nowMs));
 
     if (action.action === 'reply') {
       const text = action.replyText || ASSISTANT_FALLBACK_REPLY;
@@ -949,7 +979,7 @@ async function handleCommand(env, parsed, origin) {
       // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
       // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
       const remainMs = briefCooldownRemainingMs(
-        (await loadState(env)).lastBriefDispatchMs,
+        (await loadBriefDispatch(env)).lastMs,
         Date.now(),
         60 * 60_000,
       );
@@ -1429,21 +1459,83 @@ async function dispatchBrief(env) {
   }
 }
 
-/** Записати мітку кулдауну /brief (merge-before-flush) — після УСПІШНОГО
- *  dispatch, і з cron-гілки 08:00, щоб кулдаун перекривав і ранковий авто-brief
- *  (ревʼю SL). */
-async function recordBriefDispatch(env) {
-  const fresh = await loadState(env);
-  fresh.lastBriefDispatchMs = Date.now();
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
+/**
+ * Мітки dispatch брифінгу — ОКРЕМИЙ KV-ключ, не блоб 'state' (ревʼю A; той самий
+ * привід, що й у sentMessages вище). Було: recordBriefDispatch робив
+ * read-modify-write усього 'state', тож конкурентний писар того ж блоба
+ * (checkReminders на тому ж тіку крону, вебхук, багатохвилинний flush
+ * оркестратора) міг просто затерти щойно поставлену денну мітку — і наступний
+ * 5-хвилинний тік вистрілив би ДРУГИЙ workflow_dispatch. Тепер мітки живуть самі:
+ *   {lastMs: <коли будь-який dispatch>, lastAutoDate: 'YYYY-MM-DD' | null}
+ * Після деплою ключа ще немає -> кулдаун /brief один раз стартує «з нуля»
+ * (нешкідливо: максимум один зайвий ручний запуск).
+ */
+async function loadBriefDispatch(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get('briefDispatch')) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
-/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
- *  Побічно веде облік надійності (reliability у stats): Worker — ЄДИНИЙ писар
- *  stats-блоба (жодних нових гонок класу H2), запис ідемпотентний за день. */
-async function deadMansCheck(env) {
-  const raw = await env.BRIEFING.get('latest');
+/** Записати мітку dispatch — ЛИШЕ після підтвердженого workflow_dispatch (SL2).
+ *  autoDate (A2) ставиться тільки з авто-гілки: ручний /brief може бути й поза
+ *  вікном, тож «сьогодні вже диспатчили» — не про нього. Від дубля відразу після
+ *  ручного /brief захищає lastMs (MIN_DISPATCH_GAP_MS, tg-core.mjs). */
+async function recordBriefDispatch(env, autoDate) {
+  const cur = await loadBriefDispatch(env);
+  const next = { ...cur, lastMs: Date.now() };
+  if (autoDate) next.lastAutoDate = autoDate;
+  await env.BRIEFING.put('briefDispatch', JSON.stringify(next));
+}
+
+/**
+ * A2: ранковий авто-dispatch із пʼятихвилинного крону, у вікні [08:00, 11:00)
+ * Києва. Замінює єдину погодинну спробу (kyivHour()===8), яку 14.07 jitter крону
+ * Cloudflare (Free) відсунув на ~50 хв — брифінг прийшов о 08:56 замість 08:0x.
+ * Тепер до 36 спроб; помилка GitHub ретраїться за 15 хв, а не «завтра».
+ * Умови дубля — shouldAutoDispatchBrief (tg-core.mjs, тестовано).
+ */
+async function autoBriefDispatch(env) {
   const today = kyivDateKey();
+  const [state, dispatch] = await Promise.all([loadState(env), loadBriefDispatch(env)]);
+  const due = shouldAutoDispatchBrief({
+    kyivHour: kyivHour(),
+    todayKey: today,
+    nowMs: Date.now(),
+    lastAutoDate: dispatch.lastAutoDate,
+    lastDispatchMs: dispatch.lastMs,
+    lastSentDate: state.lastSentDate,
+  });
+  if (!due) return;
+  // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
+  // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
+  await updateMasteryFocus(env);
+  if (await dispatchBrief(env)) await recordBriefDispatch(env, today);
+}
+
+// Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
+// END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
+// усередині вікна ретраїв: збій GitHub, що минув об 10:30, дав би хибний алерт
+// «не доставлено» й хибний промах у reliability за день, який зрештою доставили.
+const DEAD_MAN_HOUR = 12;
+
+/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
+ *  Веде й облік надійності (reliability у stats). Ідемпотентний за добу — та сама
+ *  мітка reliability.lastCheckDate гейтить і алерт (ревʼю A: перевірку перенесено
+ *  на пʼятихвилинний крон, бо погодинний із гейтом kyivHour()===10 гинув від того
+ *  самого jitter'а, від якого ми щойно врятували dispatch — зсув на годину, і
+ *  сторож просто мовчав би цілий день). */
+async function deadMansCheck(env) {
+  if (kyivHour() < DEAD_MAN_HOUR) return;
+  const today = kyivDateKey();
+  // Дешевий гейт «уже перевіряли сьогодні» ПЕРЕД будь-якою іншою роботою: без
+  // нього алерт летів би на кожен 5-хвилинний тік до кінця доби.
+  const store = await loadStats(env);
+  if (store?.reliability?.lastCheckDate === today) return;
+
+  const raw = await env.BRIEFING.get('latest');
   let fresh = false;
   try {
     const d = JSON.parse(raw ?? '{}');
@@ -1453,15 +1545,12 @@ async function deadMansCheck(env) {
   }
   // Облік доставки — до гейта секретів (не потребує Telegram-крендів), але в
   // try/catch: транзієнтна KV-помилка НЕ сміє заблокувати алерт нижче (це його
-  // день). Пишемо лише коли день ще не облікований. Чесно про гонки: Worker —
-  // єдиний СЕРВІС-писар stats-блоба, проте конкурентні інвокації (цей cron vs
-  // fetch /api/event) — усе одно last-write-wins без CAS; вікно тут µs і раз на
-  // день, стратегічний фікс — Durable Object (див. SPEC/аудит H2).
+  // день). Чесно про гонки: Worker — єдиний СЕРВІС-писар stats-блоба, проте
+  // конкурентні інвокації (цей cron vs fetch /api/event) — усе одно
+  // last-write-wins без CAS; вікно тут µs і раз на день, стратегічний фікс —
+  // Durable Object (див. SPEC/аудит H2).
   try {
-    const store = await loadStats(env);
-    if (store?.reliability?.lastCheckDate !== today) {
-      await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
-    }
+    await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
   } catch (e) {
     console.error('reliability write failed', e);
   }
@@ -1539,29 +1628,21 @@ export default {
     return env.ASSETS.fetch(request); // статичні файли (дашборд)
   },
 
-  // Cron у UTC покриває обидва DST-зсуви; за київською годиною обираємо дію:
-  //   08:00 -> точний dispatch брифінгу;  10:00 -> dead-man-перевірка.
-  // dispatch/dead-man — ЛИШЕ на погодинних кронах (0 5/6/7/8), НЕ на "*/5":
-  // kyivHour()===8 істинна ВЕСЬ 08:00–08:59 київський, тож без цього гейта
-  // кожен 5-хвилинний тік у ту годину (12 на день) вистрілював би зайвий
-  // workflow_dispatch (guard-ідемпотентність не дає дубля брифінгу, але це
-  // ~12 холостих Actions-ранів/день). "*/5" резервуємо суто під нагадування —
-  // погодинні й 5-хв крони інколи збігаються по хвилині (мит. 05/06/07/08:00),
-  // тож і checkReminders прив'язуємо саме до "*/5", щоб не спрацював двічі.
-  async scheduled(event, env, ctx) {
-    if (event.cron === '*/5 * * * *') {
-      ctx.waitUntil(checkReminders(env));
-      return;
-    }
-    const h = kyivHour();
-    // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
-    // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
-    if (h === 8)
-      ctx.waitUntil(
-        updateMasteryFocus(env)
-          .then(() => dispatchBrief(env))
-          .then((ok) => (ok ? recordBriefDispatch(env) : undefined)), // сіє кулдаун (ревʼю SL)
-      );
-    else if (h === 10) ctx.waitUntil(deadMansCheck(env));
+  // Єдиний крон (кожні 5 хв) — три задачі, кожна сама себе гейтить за київською
+  // годиною і сама ідемпотентна за добу. Жодних DST-костилів із набором погодинних
+  // кронів: годину рахує kyivHour() у момент виконання, а не хвилина крону.
+  //
+  // ПОСЛІДОВНО (await, не два waitUntil — ревʼю A): checkReminders і решта роблять
+  // read-modify-write KV без CAS, тож паралельні гілки в одному ізоляті вільно
+  // перетинали б вікна GET->PUT і затирали одна одну (втрачений firedTs -> дубль
+  // нагадування; втрачена мітка dispatch -> зайвий Actions-ран).
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(
+      (async () => {
+        await checkReminders(env); // будь-яка хвилина
+        await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
+        await deadMansCheck(env); // від 12:00 Київ, раз на добу
+      })(),
+    );
   },
 };
