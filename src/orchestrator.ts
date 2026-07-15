@@ -51,7 +51,6 @@ import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
 import { factModule } from './modules/fact.js';
 import { mockModule } from './modules/mock.js';
-import { nextStepModule } from './modules/next-step.js';
 import { weeklyReviewModule } from './modules/weekly-review.js';
 import { createCurrencyModule } from './modules/currency.js';
 import { createOnThisDayModule } from './modules/onthisday.js';
@@ -331,7 +330,6 @@ function buildModules(): Module<AppConfig>[] {
     mockModule,
     createCurrencyModule(),
     createOnThisDayModule(),
-    nextStepModule,
     weeklyReviewModule,
   ];
 }

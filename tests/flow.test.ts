@@ -25,7 +25,6 @@ const baseConfig = {
       retentionDays: 7,
       sources: {},
     },
-    nextStep: { enabled: true, steps: ['x'] },
     weeklyReview: { enabled: true, day: 'sunday' },
     fact: { enabled: false, batchSize: 30 },
     mock: { enabled: false, batchSize: 15, profile: 'x' },

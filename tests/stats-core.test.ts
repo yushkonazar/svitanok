@@ -31,18 +31,36 @@ describe('stats-core — recordEvent', () => {
     expect(s.interests['Наука']).toBe(2);
   });
 
-  it('job_stage applied -> воронка + лог відгуку + fit', () => {
+  it('job_stage applied -> воронка + лог подачі з fit у записі', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: 'applied', fit: 80 }, '2026-07-07');
     expect(s.funnel['j1']).toBe('applied');
-    expect(s.appliedLog).toHaveLength(1);
-    expect(s.fitApplied).toEqual([80]);
+    expect(s.appliedLog).toEqual([{ url: 'j1', ts: '2026-07-07', fit: 80 }]); // fit у записі (ревʼю D)
     // мета (title+дата) для списку стадії
     expect(s.funnelMeta['j1']).toMatchObject({ ts: '2026-07-07' });
-    // stage null знімає стадію ТА мету
+    // stage null знімає стадію, мету ТА запис подачі (ревʼю D)
     s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: null }, '2026-07-07');
     expect(s.funnel['j1']).toBeUndefined();
     expect(s.funnelMeta['j1']).toBeUndefined();
+    expect(s.appliedLog).toHaveLength(0);
+  });
+
+  it('appliedLog: дедуп по url і чистка при знятті/видаленні (ревʼю D)', () => {
+    let s = emptyStore();
+    // delete+re-apply того ж url не додає другий рядок
+    s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: 'applied', fit: 70 }, '2026-07-07');
+    s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: null }, '2026-07-07'); // видалили
+    s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: 'applied', fit: 90 }, '2026-07-08');
+    expect(s.appliedLog).toEqual([{ url: 'j1', ts: '2026-07-08', fit: 90 }]); // один запис, свіжий fit
+    expect(aggregateStats(s, '2026-07-08').goal.weeklyApplied).toBe(1); // НЕ 2
+    expect(aggregateStats(s, '2026-07-08').avgFitApplied).toBe(90);
+    // applied -> saved (зняли подачу) прибирає з лічильника
+    s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: 'saved' }, '2026-07-08');
+    expect(s.appliedLog).toHaveLength(0);
+    // applied -> interview НЕ прибирає (вакансію подано, прогресує)
+    s = recordEvent(s, { type: 'job_stage', url: 'j2', stage: 'applied', fit: 60 }, '2026-07-08');
+    s = recordEvent(s, { type: 'job_stage', url: 'j2', stage: 'interview' }, '2026-07-08');
+    expect(s.appliedLog).toEqual([{ url: 'j2', ts: '2026-07-08', fit: 60 }]);
   });
 
   it('job_stage зберігає title; зміна стадії не втрачає title', () => {
@@ -156,10 +174,9 @@ describe('stats-core — recordEvent', () => {
 describe('stats-core — aggregateStats', () => {
   const seed = () => {
     let s = emptyStore();
-    // 3 дні поспіль до 2026-07-07 з відкриттями + крок
+    // 3 дні поспіль до 2026-07-07 з відкриттями
     for (const day of ['2026-07-05', '2026-07-06', '2026-07-07']) {
       s = recordEvent(s, { type: 'open' }, day, 20);
-      s = recordEvent(s, { type: 'step_done' }, day);
     }
     s = recordEvent(s, { type: 'news_click', category: 'Технології' }, '2026-07-07');
     s = recordEvent(s, { type: 'job_stage', url: 'a', stage: 'applied', fit: 90 }, '2026-07-07');
@@ -171,7 +188,6 @@ describe('stats-core — aggregateStats', () => {
   it('стріки, тижнева активність (7), воронка, ціль, інтереси', () => {
     const st = aggregateStats(seed(), '2026-07-07');
     expect(st.streaks.openDays).toBe(3);
-    expect(st.streaks.stepDays).toBe(3);
     expect(st.weekly).toHaveLength(7);
     expect(st.weekly[6].active).toBe(true); // сьогодні активний (останній)
     expect(st.funnel).toMatchObject({ applied: 1, interview: 1 });
@@ -207,14 +223,7 @@ describe('stats-core — aggregateStats', () => {
     expect(st.timeToOpenMin).toBeNull();
     expect(st.savedCount).toBe(0);
     expect(st.savedList).toEqual([]);
-    expect(st.stepDoneToday).toBe(false);
     expect(st.mockRatedToday).toBe(false);
-  });
-
-  it('stepDoneToday: true лише після step_done СЬОГОДНІ', () => {
-    const s = seed(); // seed вже містить step_done на 05/06/07
-    expect(aggregateStats(s, '2026-07-07').stepDoneToday).toBe(true);
-    expect(aggregateStats(s, '2026-07-08').stepDoneToday).toBe(false); // інший день
   });
 
   it('mockRatedToday: true лише після mock_answer СЬОГОДНІ', () => {

@@ -598,23 +598,31 @@
         font-weight: 600;
         font-size: 13px;
       }
-      .step-done-btn {
-        display: inline-block;
-        margin-top: 10px;
-        padding: 9px 15px;
-        border: none;
-        border-radius: 10px;
-        background: var(--grad, linear-gradient(90deg, #ff6b57, #ffb03a));
-        color: var(--on-accent, #1a1206);
-        font-weight: 600;
-        font-size: 13px;
-        cursor: pointer;
+      .wiki-open {
+        font-size: 12px;
+        white-space: nowrap;
+        opacity: 0.85;
       }
-      .step-done-btn.on,
-      .step-done-btn:disabled {
+      .saved-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .saved-del {
+        flex: none;
+        border: none;
         background: var(--glass-2);
         color: var(--muted);
-        cursor: default;
+        border-radius: 8px;
+        width: 26px;
+        height: 26px;
+        font-size: 13px;
+        cursor: pointer;
+        line-height: 1;
+      }
+      .saved-del:hover {
+        color: var(--fg, #fff);
       }
       .answer {
         margin-top: 8px;
@@ -975,6 +983,39 @@
       }
       .stage-list .item a {
         color: var(--text);
+      }
+      /* D5: рядок деталей воронки — тайтл + контроли зміни стадії/видалення */
+      .stage-detail-item {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .stage-detail-item .fn-title {
+        word-break: break-word;
+      }
+      .fn-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .fn-move,
+      .fn-del {
+        border: none;
+        border-radius: 8px;
+        background: var(--glass-2);
+        color: var(--muted);
+        font-size: 11px;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      .fn-move.on,
+      .fn-move:disabled {
+        background: var(--grad, linear-gradient(90deg, #ff6b57, #ffb03a));
+        color: var(--on-accent, #1a1206);
+        cursor: default;
+      }
+      .fn-del:hover {
+        color: var(--fg, #fff);
       }
       /* домінантний тайтл вакансії (≥15–16, medium) */
       .job-title {
@@ -1671,7 +1712,7 @@
 
       /* ══════════════════════════════════════════════════════════════════════
          ТАБ «СЬОГОДНІ»
-         Порядок: Погода → Курс → Питання дня → Факт дня → Крок → Думка → У цей день
+         Порядок: Погода → Курс → Питання дня → Факт дня → Думка → У цей день
          (без підписів-груп Практичне/Розвиток/Натхнення)
          ══════════════════════════════════════════════════════════════════════ */
       // «У цей день»: скільки подій показано зараз (зростає на ONTHISDAY_STEP за
@@ -1734,13 +1775,8 @@
           );
         }
 
-        // 5) Крок до офера. Кнопка «Зробив» -> step_done (жива, персистить стрік).
-        const ns = byId(blocks, 'next-step');
-        if (ns?.data) {
-          const done = !!(stats && stats.stepDoneToday);
-          const stepBtn = `<button class="step-done-btn${done ? ' on' : ''}" type="button" data-act="step-done"${done ? ' disabled' : ''}>${done ? '✅ Зроблено' : 'Позначити зробленим'}</button>`;
-          out.push(card('🎯 Крок до офера', `<div>${esc(ns.data.step)}</div>${stepBtn}`));
-        }
+        // 5) «Крок до офера» прибрано (D4): картка-ротація з фіксованого списку
+        //    не давала користі; місце звільнено під майбутні фічі роадмепу v3.
 
         // 6) Думка дня.
         const stoic = byId(blocks, 'stoic');
@@ -1761,7 +1797,14 @@
         const onthis = byId(blocks, 'onthisday');
         if (onthis?.data?.events?.length) {
           const evs = onthis.data.events;
-          const row = (e) => `<div class="item"><b>${esc(e.year)}</b> — ${esc(e.text)}</div>`;
+          // D3: якщо є посилання на статтю Вікіпедії — кнопка «Відкрити» (старі
+          // briefing.json без url лишаються без кнопки, сумісно).
+          const row = (e) => {
+            const open = has(e.url)
+              ? ` <a class="wiki-open" href="${esc(e.url)}" target="_blank" rel="noopener">Відкрити ↗</a>`
+              : '';
+            return `<div class="item"><b>${esc(e.year)}</b> — ${esc(e.text)}${open}</div>`;
+          };
           const shown = Math.min(ONTHISDAY_SHOWN, evs.length);
           const remaining = evs.length - shown;
           const btn =
@@ -2334,7 +2377,7 @@
             if (e.stage)
               (byStage[e.stage] = byStage[e.stage] || []).push({
                 url: e.url,
-                title: e.title || e.url,
+                title: e.title || '',
               });
         } else {
           (items || []).forEach((it) => {
@@ -2359,16 +2402,42 @@
         );
       }
 
+      // Людський заголовок вакансії (D5): назва, або hostname+шлях замість голого
+      // URL (title буває порожній, якщо briefing зник до тапу по стадії).
+      function prettyJobTitle(url, title) {
+        if (title && title.trim()) return title.trim();
+        try {
+          const u = new URL(url);
+          const path = u.pathname.replace(/\/+$/, '');
+          return u.hostname.replace(/^www\./, '') + (path && path !== '/' ? path : '');
+        } catch {
+          return url || 'Вакансія';
+        }
+      }
+
       // Панель деталей воронки: список вакансій обраної стадії, ПІД рядком воронки.
+      // D5: кожен рядок має кнопки зміни стадії (наприклад «подав» -> «офер») і ✕
+      // (прибрати з воронки) — раніше стадію можна було міняти лише з картки дня,
+      // а видалення = повторний клік активної стадії (неочевидно).
       function funnelDetailHtml(stageKey) {
         const label = JOB_STAGES.find((s) => s.key === stageKey)?.label || '';
         const list = FUNNEL_BY_STAGE[stageKey] || [];
+        const moveStages = JOB_STAGES.filter((s) => s.key !== 'irrelevant');
         const listHtml = list.length
           ? list
-              .map(
-                (it) =>
-                  `<div class="item"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></div>`,
-              )
+              .map((it) => {
+                const title = prettyJobTitle(it.url, it.title);
+                const moves = moveStages
+                  .map(
+                    (s) =>
+                      `<button class="fn-move${s.key === stageKey ? ' on' : ''}" data-act="funnel-move" data-url="${esc(it.url)}" data-title="${esc(title)}" data-stage="${s.key}"${s.key === stageKey ? ' disabled' : ''}>${esc(s.short)}</button>`,
+                  )
+                  .join('');
+                return `<div class="item stage-detail-item">
+                  <a class="fn-title" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(title)}</a>
+                  <div class="fn-controls">${moves}<button class="fn-del" data-act="funnel-del" data-url="${esc(it.url)}" aria-label="Прибрати з воронки">✕</button></div>
+                </div>`;
+              })
               .join('')
           : ph('Список цієї стадії з’явиться, коли будуть дані');
         return `<div class="funnel-detail-head">${esc(label)}</div><div class="stage-list">${listHtml}</div>`;
@@ -2420,7 +2489,7 @@
         const s = stats.streaks || {};
         const habits = `<div class="streak-row">
             <div class="streak"><div class="fire">🔥</div><div class="n">${has(s.openDays) ? s.openDays : 0}</div><div class="t">днів поспіль відкрито</div>${has(s.bestOpenDays) ? `<div class="rec">рекорд ${s.bestOpenDays}</div>` : ''}</div>
-            <div class="streak"><div class="fire">✅</div><div class="n">${has(s.stepDays) ? s.stepDays : 0}</div><div class="t">днів крок зроблено</div>${has(s.bestStepDays) ? `<div class="rec">рекорд ${s.bestStepDays}</div>` : ''}</div>
+            <div class="streak"><div class="fire">🎤</div><div class="n">${has(s.mockDays) ? s.mockDays : 0}</div><div class="t">днів поспіль питання</div></div>
           </div>
           ${weekbars(stats.weekly)}
           ${
@@ -2471,9 +2540,19 @@
         const savedRow = (x) => {
           const icon = savedKindIcon[x.kind] || '🔖';
           const label = esc(truncate(x.title || '', 80));
-          return x.kind === 'news' && x.url
-            ? `<div class="item"><a href="${esc(x.url)}" target="_blank" rel="noopener">${icon} ${label}</a></div>`
-            : `<div class="item">${icon} ${label}</div>`;
+          const body =
+            x.kind === 'news' && x.url
+              ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${icon} ${label}</a>`
+              : `<span>${icon} ${label}</span>`;
+          // D2: ✕ прибирає збережене (unsave_news за url / unsave_item за kind+id).
+          const data =
+            x.kind === 'news' && x.url
+              ? ` data-url="${esc(x.url)}"`
+              : x.id
+                ? ` data-id="${esc(x.id)}"`
+                : '';
+          const del = `<button class="saved-del" data-act="unsave" data-kind="${esc(x.kind)}"${data} aria-label="Прибрати зі збереженого">✕</button>`;
+          return `<div class="item saved-item">${body}${del}</div>`;
         };
         const savedList = Array.isArray(stats.savedList) ? stats.savedList : [];
         // тренд топ-тем по тижнях: назва | спарклайн | сумарний бал
@@ -2628,6 +2707,7 @@
             NEWS_STATE.set(nk(wrap.dataset.url), st);
             wrap.querySelector('.up').classList.toggle('on', st.vote === 'up');
             wrap.querySelector('.down').classList.toggle('on', st.vote === 'down');
+            refreshStats(); // D1 (інтереси)
           } else alert('Не вдалося зберегти оцінку.');
         } catch {
           alert('Немає зв’язку з сервером.');
@@ -2704,15 +2784,18 @@
           if (saveBtn) {
             e.stopPropagation();
             const wrap = saveBtn.closest('.item-actions');
+            // D2: 🔖 — справжній тогл. Якщо вже збережено -> unsave_news.
+            const willSave = !(NEWS_STATE.get(nk(wrap.dataset.url)) || {}).saved;
             sendEvent(
-              'save_news',
+              willSave ? 'save_news' : 'unsave_news',
               { url: wrap.dataset.url, title: wrap.dataset.title, category: wrap.dataset.cat },
               () => {
                 const st = NEWS_STATE.get(nk(wrap.dataset.url)) || {};
-                st.saved = !st.saved;
+                st.saved = willSave;
                 NEWS_STATE.set(nk(wrap.dataset.url), st);
-                saveBtn.classList.toggle('on', st.saved);
-                saveBtn.textContent = st.saved ? '✅' : '🔖';
+                saveBtn.classList.toggle('on', willSave);
+                saveBtn.textContent = willSave ? '✅' : '🔖';
+                refreshStats(); // D1
               },
             );
             return;
@@ -2739,28 +2822,20 @@
             e.stopPropagation();
             const wrap = saveBtn.closest('.item-actions');
             const key = wrap.dataset.kind + ':' + wrap.dataset.id;
+            // D2: справжній тогл (save_item <-> unsave_item).
+            const willSave = !(ITEM_STATE.get(key) || {}).saved;
             sendEvent(
-              'save_item',
+              willSave ? 'save_item' : 'unsave_item',
               { kind: wrap.dataset.kind, id: wrap.dataset.id, title: wrap.dataset.title },
               () => {
                 const st = ITEM_STATE.get(key) || {};
-                st.saved = !st.saved;
+                st.saved = willSave;
                 ITEM_STATE.set(key, st);
-                saveBtn.classList.toggle('on', st.saved);
-                saveBtn.textContent = st.saved ? '✅' : '🔖';
+                saveBtn.classList.toggle('on', willSave);
+                saveBtn.textContent = willSave ? '✅' : '🔖';
+                refreshStats(); // D1
               },
             );
-            return;
-          }
-
-          const stepBtn = e.target.closest('[data-act="step-done"]');
-          if (stepBtn) {
-            e.stopPropagation();
-            sendEvent('step_done', {}, () => {
-              stepBtn.classList.add('on');
-              stepBtn.textContent = '✅ Зроблено';
-              stepBtn.disabled = true;
-            });
             return;
           }
 
@@ -2776,6 +2851,7 @@
                   b.classList.add('on');
                   b.disabled = true;
                 });
+                refreshStats(); // D1 (слабкі теми mock)
               },
             );
             return;
@@ -2799,6 +2875,39 @@
             FUNNEL_ACTIVE_STAGE = FUNNEL_ACTIVE_STAGE === key ? null : key;
             document.getElementById('jobs').innerHTML = renderJobs(CURRENT.blocks, CURRENT.stats);
             haptic('light');
+            return;
+          }
+
+          // D5: перенести вакансію в іншу стадію просто зі списку деталей.
+          const fnMove = e.target.closest('[data-act="funnel-move"]');
+          if (fnMove) {
+            e.stopPropagation();
+            if (fnMove.disabled) return;
+            sendEvent(
+              'job_stage',
+              { url: fnMove.dataset.url, title: fnMove.dataset.title, stage: fnMove.dataset.stage },
+              () =>
+                refreshStats().then(() => {
+                  document.getElementById('jobs').innerHTML = renderJobs(
+                    CURRENT.blocks,
+                    CURRENT.stats,
+                  );
+                }),
+            );
+            return;
+          }
+          // D5: ✕ — прибрати вакансію з воронки (stage:null видаляє з funnel).
+          const fnDel = e.target.closest('[data-act="funnel-del"]');
+          if (fnDel) {
+            e.stopPropagation();
+            sendEvent('job_stage', { url: fnDel.dataset.url, stage: null }, () =>
+              refreshStats().then(() => {
+                document.getElementById('jobs').innerHTML = renderJobs(
+                  CURRENT.blocks,
+                  CURRENT.stats,
+                );
+              }),
+            );
             return;
           }
 
@@ -2838,6 +2947,39 @@
                 btn.classList.add('on');
                 JOB_STAGE_BY_URL[btn.dataset.url] = stage;
               } else delete JOB_STAGE_BY_URL[btn.dataset.url];
+              refreshStats(); // D1 (воронка)
+            },
+          );
+        });
+
+        // Статистика: видалення збереженого (D2). Делегований слухач на секції —
+        // сама секція persist, тож refreshStats() re-render innerHTML не ламає його.
+        document.getElementById('stats').addEventListener('click', (e) => {
+          const del = e.target.closest('[data-act="unsave"]');
+          if (!del) return;
+          e.stopPropagation();
+          const kind = del.dataset.kind;
+          const isNews = kind === 'news';
+          sendEvent(
+            isNews ? 'unsave_news' : 'unsave_item',
+            isNews ? { url: del.dataset.url } : { kind, id: del.dataset.id },
+            () => {
+              // Зняти підсвітку 🔖 у відповідній сесійній мапі, тоді перемалювати
+              // і статистику, і контент-таб (ревʼю D: інакше вже відрендерена
+              // кнопка 🔖 у «Новини»/«Сьогодні» лишалась би ✅ після видалення тут).
+              if (isNews && del.dataset.url) {
+                const st = NEWS_STATE.get(nk(del.dataset.url));
+                if (st) st.saved = false;
+                rerenderNews();
+              } else if (del.dataset.id) {
+                const st = ITEM_STATE.get(kind + ':' + del.dataset.id);
+                if (st) st.saved = false;
+                document.getElementById('today').innerHTML = renderToday(
+                  CURRENT.blocks,
+                  CURRENT.stats,
+                );
+              }
+              refreshStats(); // D1
             },
           );
         });
@@ -2920,6 +3062,27 @@
 
       function rerenderNews() {
         document.getElementById('news').innerHTML = renderNews(CURRENT.blocks);
+      }
+
+      // D1: після дії, що змінює статистику (збереження/оцінка/стадія/голос),
+      // перечитати /api/stats і перемалювати таб «Статистика» — щоб цифри
+      // (збережено, інтереси, воронка) оновлювались без ручного перезавантаження.
+      // Делеговані слухачі висять на секціях (persist), тож re-render innerHTML
+      // безпечний. Поза Telegram (fetchStats -> null) лишаємо як є.
+      let statsRefreshing = false;
+      async function refreshStats() {
+        if (statsRefreshing) return;
+        statsRefreshing = true;
+        try {
+          const s = await fetchStats();
+          if (!s) return;
+          CURRENT.stats = s;
+          hydrateSaved(s);
+          hydrateVotes(s);
+          document.getElementById('stats').innerHTML = renderStats(s);
+        } finally {
+          statsRefreshing = false;
+        }
       }
 
       /* ══════════════════════════════════════════════════════════════════════
@@ -3131,7 +3294,11 @@
             data: {
               // Стратифікований порядок (selectHistoric): стародавні → XX ст. → XXI ст.
               events: [
-                { year: 1789, text: 'Демо-подія: стародавня (гарантований слот).' },
+                {
+                  year: 1789,
+                  text: 'Демо-подія: стародавня (гарантований слот).',
+                  url: 'https://uk.wikipedia.org/wiki/1789',
+                },
                 { year: 1863, text: 'Демо-подія: стародавня (гарантований слот).' },
                 { year: 1996, text: 'Демо-подія: XX ст. (найновіша з квоти).' },
                 { year: 1990, text: 'Демо-подія: XX ст.' },
@@ -3146,11 +3313,10 @@
               ],
             },
           },
-          { id: 'next-step', data: { step: 'Оновити резюме під вакансію Intern Full Stack.' } },
         ],
       };
       const SAMPLE_STATS = {
-        streaks: { openDays: 5, stepDays: 3, bestOpenDays: 12, bestStepDays: 8, mockDays: 4 },
+        streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
         timeToOpenMin: 23,
         weekly: [
           { day: 'Пн', value: 3, active: true },

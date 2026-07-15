@@ -11,9 +11,9 @@
 //   interestsWeekly:{ '<пн-YYYY-MM-DD>': { topic: score } }  // тижневі кошики інтересів (тренд)
 //   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock
 //   goal:      { weeklyTarget }
-//   fitApplied:[ int ]                                       // fit% поданих вакансій
+//   fitApplied:[ int ]                                       // ЛЕГАСІ fit% (до ревʼю D; тепер fit у appliedLog[].fit)
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
-//   appliedLog:[ { url, ts } ]                               // для тижневого лічильника
+//   appliedLog:[ { url, ts, fit? } ]                         // подачі (дедуп по url) — лічильник тижня + fit
 //   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
@@ -73,8 +73,7 @@ const dayBucket = (store, dateKey) => {
   // Пересоздаємо бакет і коли він битий (примітив зі старого/зіпсутого стору) —
   // bump по примітиву в strict mode кидає TypeError.
   const cur = store.days[dateKey];
-  if (!cur || typeof cur !== 'object')
-    store.days[dateKey] = { opens: 0, mock: 0, step: 0, news: 0 };
+  if (!cur || typeof cur !== 'object') store.days[dateKey] = { opens: 0, mock: 0, news: 0 };
   return store.days[dateKey];
 };
 /** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
@@ -183,12 +182,25 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
             ts: dateKey,
           };
           if (ev.stage === 'applied') {
-            capPush(s.appliedLog, { url: ev.url, ts: dateKey });
-            if (typeof ev.fit === 'number' && ev.fit >= 0) capPush(s.fitApplied, ev.fit);
+            // Ревʼю D: дедуп по url — одна вакансія = один запис подачі (fit живе в
+            // самому записі). Повторний applied того ж url (напр. після delete+
+            // re-apply з D5-контролів) оновлює дату/fit, а не додає рядок — інакше
+            // «подач за тиждень» і гістограма fit роздувались.
+            s.appliedLog = s.appliedLog.filter((a) => a.url !== ev.url);
+            const entry = { url: ev.url, ts: dateKey };
+            if (typeof ev.fit === 'number' && ev.fit >= 0) entry.fit = ev.fit;
+            capPush(s.appliedLog, entry);
+          } else if (ev.stage === 'saved') {
+            // Назад у «збережено» = подачу знято -> прибрати з лічильника.
+            // interview/offer НЕ чіпаємо: вакансію таки подано, вона прогресує.
+            s.appliedLog = s.appliedLog.filter((a) => a.url !== ev.url);
           }
         } else {
           delete s.funnel[ev.url]; // stage null -> зняти
           delete s.funnelMeta[ev.url];
+          // Видалення з воронки -> прибрати й з appliedLog (ревʼю D: інакше
+          // видалена вакансія й далі рахувалась як подача).
+          s.appliedLog = s.appliedLog.filter((a) => a.url !== ev.url);
         }
       }
       break;
@@ -203,9 +215,8 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
         if (ev.rating === 'hard') bump(s.mockTopics[ev.topic], 'weak');
       }
       break;
-    case 'step_done':
-      bump(dayBucket(s, dateKey), 'step');
-      break;
+    // 'step_done' прибрано (D4, «Крок до офера»); старі days[].step у KV просто
+    // ігноруються (без міграції).
     default:
       break; // невідома подія — ігноруємо (не валимо)
   }
@@ -276,7 +287,7 @@ const median = (arr) => {
 };
 
 /** Теплокарта активності: від понеділка ~12 тижнів тому до сьогодні (вкл.).
- *  value = сума дій дня (opens+mock+step+news), level 0..4 — фіксовані пороги,
+ *  value = сума дій дня (opens+mock+news), level 0..4 — фіксовані пороги,
  *  щоб колір мав стале значення день у день. */
 function buildHeatmap(days, todayKey) {
   const d = new Date(todayKey + 'T00:00:00Z');
@@ -288,7 +299,7 @@ function buildHeatmap(days, todayKey) {
     const k = d.toISOString().slice(0, 10);
     if (k > todayKey) break;
     const day = days[k];
-    const v = (day?.opens || 0) + (day?.mock || 0) + (day?.step || 0) + (day?.news || 0);
+    const v = (day?.opens || 0) + (day?.mock || 0) + (day?.news || 0); // step прибрано (D4)
     const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
     out.push({ d: k, v, l });
     d.setUTCDate(d.getUTCDate() + 1);
@@ -359,7 +370,6 @@ export function aggregateStats(store, todayKey) {
   // фолбек: форма валідна, стріки/тиждень порожні.
   if (!isDateKey(todayKey)) todayKey = '1970-01-01';
   const opened = (x) => (x?.opens || 0) > 0;
-  const stepped = (x) => (x?.step || 0) > 0;
   const mocked = (x) => (x?.mock || 0) > 0;
 
   // тижнева активність (останні 7 днів, старіші→новіші)
@@ -396,9 +406,13 @@ export function aggregateStats(store, todayKey) {
   const weeklyApplied = s.appliedLog.filter((a) => a.ts >= weekAgoKey).length;
 
   const conv = (a, b) => (a > 0 ? Math.round((b / a) * 100) : 0);
-  const avgFit = s.fitApplied.length
-    ? Math.round(s.fitApplied.reduce((x, y) => x + y, 0) / s.fitApplied.length)
-    : null;
+  // fit% подач — з самих записів appliedLog (дедуплено по url, ревʼю D), плюс
+  // легасі s.fitApplied (стара форма без url — щоб не втратити історію до фіксу;
+  // у новий стор більше не пишемо, тож подвійного рахунку немає).
+  const fits = [...s.appliedLog.map((a) => a.fit), ...s.fitApplied].filter(
+    (f) => typeof f === 'number' && f >= 0,
+  );
+  const avgFit = fits.length ? Math.round(fits.reduce((x, y) => x + y, 0) / fits.length) : null;
 
   // mock: слабкі теми (weak/seen), стрік днів mock
   const weakTopics = Object.entries(s.mockTopics)
@@ -421,10 +435,8 @@ export function aggregateStats(store, todayKey) {
   return {
     streaks: {
       openDays: streak(s.days, todayKey, opened),
-      stepDays: streak(s.days, todayKey, stepped),
       mockDays: streak(s.days, todayKey, mocked),
       bestOpenDays: bestStreak(s.days, opened),
-      bestStepDays: bestStreak(s.days, stepped),
     },
     timeToOpenMin: median(s.opensMin),
     weekly,
@@ -452,7 +464,7 @@ export function aggregateStats(store, todayKey) {
     // на що подаюсь / як змінюються інтереси).
     heatmap: buildHeatmap(s.days, todayKey),
     appliedWeekly: buildAppliedWeekly(s.appliedLog, todayKey),
-    fitHistogram: buildFitHistogram(s.fitApplied),
+    fitHistogram: buildFitHistogram(fits),
     interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey),
     // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
     // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб
@@ -465,7 +477,6 @@ export function aggregateStats(store, todayKey) {
       total: s.reliability.total,
       deadman: s.reliability.deadman,
     },
-    stepDoneToday: stepped(s.days[todayKey]),
     mockRatedToday: mocked(s.days[todayKey]),
   };
 }

@@ -37,12 +37,6 @@ modules:
       - { scope: world, topic: Світ, category: world, language: en }
       - { scope: world, topic: Наука, category: science, language: en }
       - { scope: world, topic: Технології, category: technology, language: en }
-  nextStep:
-    enabled: true
-    steps:
-      - 'Пофіксити OG-теги'
-      - 'Mock-питання з KB'
-      - 'Оновити резюме під вакансію'
   weeklyReview: { enabled: true, day: 'sunday' }
   fact:
     enabled: true
