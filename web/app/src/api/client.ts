@@ -79,3 +79,31 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
   });
   if (!res.ok) throw new Error(`Подію не збережено (${res.status})`);
 }
+
+/** Авторитетний напрямок голосу від сервера (C3): re-click того ж = null. */
+export type VoteDir = 'up' | 'down' | null;
+export interface VoteResult {
+  weight: number;
+  voted: VoteDir;
+}
+
+/**
+ * Голос за новину (роадмеп v3, E3) — окремий ендпоінт /api/vote (не /api/event):
+ * інша відповідь {ok,category,weight,voted}. `voted` авторитетний (сервер сам
+ * рахує toggle). Поза Telegram — null (оптимістичне значення лишається).
+ */
+export async function postVote(
+  category: string,
+  dir: 'up' | 'down',
+  url: string,
+): Promise<VoteResult | null> {
+  if (!inTelegram() || !tg) return null;
+  const res = await fetch('/api/vote', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ category, dir, url, initData: tg.initData }),
+  });
+  if (!res.ok) throw new Error(`Голос не зараховано (${res.status})`);
+  const data = (await res.json()) as { weight?: number; voted?: VoteDir };
+  return { weight: data.weight ?? 0, voted: data.voted ?? null };
+}

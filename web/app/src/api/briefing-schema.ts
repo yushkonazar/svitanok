@@ -92,6 +92,36 @@ export const onThisDayDataSchema = z.object({
   events: z.array(onThisDayEventSchema).default([]),
 });
 
+export const newsItemSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  why: z.string().optional(),
+});
+
+export const newsGroupSchema = z.object({
+  scope: z.enum(['world', 'ua']),
+  topic: z.string(),
+  items: z.array(newsItemSchema).default([]),
+  more: z.array(newsItemSchema).default([]),
+});
+
+export const newsDataSchema = z.object({
+  groups: z.array(newsGroupSchema).default([]),
+});
+
+// funnelStage — лише демо-фолбек; реальна стадія завжди зі stats (funnelList).
+export const jobItemSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  score: z.number().default(-1),
+  why: z.string().default(''),
+  funnelStage: z.enum(['saved', 'applied', 'interview', 'offer']).optional(),
+});
+
+export const jobsDataSchema = z.object({
+  items: z.array(jobItemSchema).default([]),
+});
+
 export type WeatherLocation = z.infer<typeof weatherLocationSchema>;
 export type WeatherData = z.infer<typeof weatherDataSchema>;
 export type CurrencyData = z.infer<typeof currencyDataSchema>;
@@ -100,6 +130,11 @@ export type FactData = z.infer<typeof factDataSchema>;
 export type StoicData = z.infer<typeof stoicDataSchema>;
 export type OnThisDayEvent = z.infer<typeof onThisDayEventSchema>;
 export type OnThisDayData = z.infer<typeof onThisDayDataSchema>;
+export type NewsItem = z.infer<typeof newsItemSchema>;
+export type NewsGroup = z.infer<typeof newsGroupSchema>;
+export type NewsData = z.infer<typeof newsDataSchema>;
+export type JobItem = z.infer<typeof jobItemSchema>;
+export type JobsData = z.infer<typeof jobsDataSchema>;
 
 /**
  * Знайти блок за id і безпечно розпарсити його data за схемою. null, якщо блоку

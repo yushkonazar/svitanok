@@ -5,11 +5,12 @@ import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { useTheme } from './theme.tsx';
 import { StatsScreen } from './components/stats/StatsScreen.tsx';
 import { TodayScreen } from './components/today/TodayScreen.tsx';
+import { NewsScreen } from './components/news/NewsScreen.tsx';
+import { JobsScreen } from './components/jobs/JobsScreen.tsx';
 
 // 4 таби дашборда — той самий поділ, що у vanilla-версії. Кожен таб = маршрут
 // (deep-link: /app/#/stats шериться, а Telegram startapp=stats відкриває його
-// напряму). Порт вмісту йде поетапно: E1 Статистика, E2 Сьогодні, E3 Новини+
-// Вакансії. Поки — плейсхолдери, щоб перевірити toolchain, тему й навігацію.
+// напряму).
 const TABS = [
   { id: 'today', path: '/', label: 'Сьогодні', icon: '☀️' },
   { id: 'news', path: '/news', label: 'Новини', icon: '🗞' },
@@ -17,24 +18,10 @@ const TABS = [
   { id: 'stats', path: '/stats', label: 'Статистика', icon: '📊' },
 ] as const;
 
-type Tab = (typeof TABS)[number];
-
 // start_param -> шлях вкладки. Приймаємо і id ('stats'), і назву шляху ('/stats').
 function pathForStartParam(param: string): string | null {
   const tab = TABS.find((t) => t.id === param || t.path === `/${param}` || t.path === param);
   return tab ? tab.path : null;
-}
-
-function Placeholder({ tab }: { tab: Tab }) {
-  return (
-    <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 text-center">
-      <div className="text-5xl">{tab.icon}</div>
-      <div className="text-lg font-semibold">{tab.label}</div>
-      <div className="max-w-xs text-sm text-muted">
-        React-версія цієї вкладки з’явиться в наступних кроках міграції.
-      </div>
-    </div>
-  );
 }
 
 export function App() {
@@ -106,10 +93,12 @@ export function App() {
         >
           {active.id === 'today' ? (
             <TodayScreen />
-          ) : active.id === 'stats' ? (
-            <StatsScreen />
+          ) : active.id === 'news' ? (
+            <NewsScreen />
+          ) : active.id === 'jobs' ? (
+            <JobsScreen />
           ) : (
-            <Placeholder tab={active} />
+            <StatsScreen />
           )}
         </motion.section>
       </main>
