@@ -118,23 +118,36 @@ function applyVote(weights, category, dir) {
 
 // votedUrls: чесний облік голосів per-url (C3, дзеркало applyUrlVote з news.ts —
 // канонічна версія тестована в news.test.ts). Кожен url впливає на вагу максимум
-// раз; повторний той самий голос знімає, зміна — переставляє.
-const oppositeDir = (d) => (d === 'up' ? 'down' : 'up');
+// раз; повторний той самий голос знімає, зміна — переставляє. `delta` — реально
+// застосований зсув (після clamp), щоб відкат був точним і на межі [0.5,2.0].
+function bumpWeight(weights, category, step) {
+  const before = weights[category] ?? 1.0;
+  const after = clampWeight(before + step);
+  return { weights: { ...weights, [category]: after }, delta: after - before };
+}
 function applyUrlVote(weights, votedUrls, url, category, clickedDir) {
   const vu = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
   const prev = vu[url];
   let w = weights ?? {};
-  if (prev && (prev.dir === 'up' || prev.dir === 'down')) {
-    w = applyVote(w, prev.category ?? category, oppositeDir(prev.dir));
+  if (prev && typeof prev.delta === 'number' && prev.delta !== 0) {
+    const cat = prev.category ?? category;
+    w = { ...w, [cat]: clampWeight((w[cat] ?? 1.0) - prev.delta) };
   }
   const newDir = prev && prev.dir === clickedDir ? null : clickedDir;
   if (newDir) {
-    w = applyVote(w, category, newDir);
-    vu[url] = { dir: newDir, category };
+    const r = bumpWeight(w, category, newDir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP);
+    w = r.weights;
+    vu[url] = { dir: newDir, category, delta: r.delta };
   } else {
     delete vu[url];
   }
-  return { weights: w, votedUrls: vu, prevDir: prev?.dir ?? null, newDir };
+  return {
+    weights: w,
+    votedUrls: vu,
+    prevDir: prev?.dir ?? null,
+    prevCategory: prev?.category ?? null,
+    newDir,
+  };
 }
 
 // jobPrefs (дзеркало src/modules/jobs.ts — Worker не імпортує TS).
@@ -375,6 +388,7 @@ async function handleVote(request, env) {
   const state = await loadState(env);
   let weight;
   let prevDir = null;
+  let prevCategory = null;
   let newDir = dir;
   if (typeof url === 'string' && url) {
     // Чесний облік: кожен url впливає на вагу максимум раз (C3).
@@ -388,6 +402,7 @@ async function handleVote(request, env) {
     state.preferenceWeights = r.weights;
     state.votedUrls = r.votedUrls;
     prevDir = r.prevDir;
+    prevCategory = r.prevCategory;
     newDir = r.newDir;
     weight = r.weights[category];
   } else {
@@ -395,11 +410,13 @@ async function handleVote(request, env) {
     weight = state.preferenceWeights[category];
   }
   await env.BRIEFING.put('state', JSON.stringify(state));
-  // Інтерес у stats (таб «Статистика» → «твої інтереси»): чистий дельта-зсув між
-  // попереднім і новим голосом (з url) або звичайний ±1 (без url, prevDir=null).
+  // Інтерес у stats (таб «Статистика» → «твої інтереси»): знімаємо старий голос
+  // з ЙОГО теми і додаємо новий до поточної (ревʼю C: той самий url може прийти
+  // під іншою темою — інтерес мусить бути category-aware, як і ваги). prevCategory
+  // null (без url / перший голос) -> recordEvent застосує лише новий напрямок.
   const stats = recordEvent(
     await loadStats(env),
-    { type: 'vote', category, dir: newDir, prevDir },
+    { type: 'vote', category, dir: newDir, prevDir, prevCategory },
     kyivDateKey(),
   );
   await env.BRIEFING.put('stats', JSON.stringify(stats));
@@ -479,6 +496,14 @@ async function handleStats(request, env) {
     hints: masteryHints(stats.mock?.weakTopics ?? [], progress),
     themeOfWeek: themeOfWeek(progress, kyivDateKey()),
   };
+  // Голоси per-url (C3): дашборд гідратує підсвітку 👍/👎 з цього, щоб після
+  // переоткриття Mini App повторний тап не «знімав» невидимо активний голос
+  // (ревʼю C). Віддаємо компактно {url: 'up'|'down'}, без delta/category.
+  stats.votes = Object.fromEntries(
+    Object.entries(state.votedUrls ?? {})
+      .filter(([, v]) => v && (v.dir === 'up' || v.dir === 'down'))
+      .map(([url, v]) => [url, v.dir]),
+  );
   return json(stats);
 }
 

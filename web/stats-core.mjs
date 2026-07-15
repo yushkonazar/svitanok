@@ -160,14 +160,16 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
       break;
     case 'vote': {
-      // Чистий дельта-зсув інтересу (C3): від попереднього голосу до нового.
-      // up=+1, down=-1, знято/немає=0. Без prevDir (старий клієнт без url) —
-      // поведінка як раніше: просто ±1 за напрямком (prevDir undefined -> 0).
-      if (ev.category) {
-        const val = (d) => (d === 'up' ? 1 : d === 'down' ? -1 : 0);
-        const delta = val(ev.dir) - val(ev.prevDir);
-        if (delta !== 0) bumpInterest(s, dateKey, ev.category, delta);
-      }
+      // Category-aware облік інтересу (C3, ревʼю): знімаємо ефект СТАРОГО голосу
+      // з його теми (ev.prevCategory) і додаємо новий до поточної (ev.category).
+      // Той самий url може прийти під іншою темою — тоді це дві різні теми, і
+      // «повний дельта на одну» лишав би застряглий бал на старій. Коли теми
+      // збігаються (звичайний випадок) — це зводиться до чистого val(new)-val(prev).
+      // Без prevDir (старий клієнт без url) знімати нічого -> просто ±1 за new.
+      const val = (d) => (d === 'up' ? 1 : d === 'down' ? -1 : 0);
+      const prevCat = ev.prevCategory ?? ev.category;
+      if (prevCat && ev.prevDir) bumpInterest(s, dateKey, prevCat, -val(ev.prevDir));
+      if (ev.category && ev.dir) bumpInterest(s, dateKey, ev.category, val(ev.dir));
       break;
     }
     case 'job_stage':

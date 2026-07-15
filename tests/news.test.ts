@@ -67,10 +67,11 @@ describe('news — preferenceWeights', () => {
 });
 
 describe('news — applyUrlVote: чесний облік голосів per-url (C3)', () => {
-  it('перший голос — зсуває вагу і памʼятає url', () => {
+  it('перший голос — зсуває вагу і памʼятає url із реальним delta', () => {
     const r = applyUrlVote({}, {}, 'https://x/a', 'Спорт', 'up');
     expect(r.weights.Спорт).toBeCloseTo(1.15);
-    expect(r.votedUrls['https://x/a']).toEqual({ dir: 'up', category: 'Спорт' });
+    expect(r.votedUrls['https://x/a']).toMatchObject({ dir: 'up', category: 'Спорт' });
+    expect(r.votedUrls['https://x/a']?.delta).toBeCloseTo(0.15);
     expect(r.newDir).toBe('up');
     expect(r.prevDir).toBeNull();
   });
@@ -85,7 +86,6 @@ describe('news — applyUrlVote: чесний облік голосів per-url 
   });
 
   it('спам того самого 👍 НЕ розганяє вагу без стелі (головна мета C3)', () => {
-    // Було: 5 кліків = +0.75. Стало: коливається 1.15↔1.0, не більше.
     let w = {};
     let vu = {};
     for (let i = 0; i < 5; i++) {
@@ -93,7 +93,6 @@ describe('news — applyUrlVote: чесний облік голосів per-url 
       w = r.weights;
       vu = r.votedUrls;
     }
-    // 5 непарних кліків -> лишається проголосованим один раз = 1.15.
     expect((w as Record<string, number>).Наука).toBeCloseTo(1.15);
   });
 
@@ -101,8 +100,9 @@ describe('news — applyUrlVote: чесний облік голосів per-url 
     const up = applyUrlVote({}, {}, 'https://x/a', 'Кіно', 'up'); // 1.15
     const down = applyUrlVote(up.weights, up.votedUrls, 'https://x/a', 'Кіно', 'down');
     expect(down.weights.Кіно).toBeCloseTo(0.85); // 1.15 -0.15(відкат) -0.15(down) = 0.85
-    expect(down.votedUrls['https://x/a']).toEqual({ dir: 'down', category: 'Кіно' });
+    expect(down.votedUrls['https://x/a']).toMatchObject({ dir: 'down', category: 'Кіно' });
     expect(down.prevDir).toBe('up');
+    expect(down.prevCategory).toBe('Кіно');
     expect(down.newDir).toBe('down');
   });
 
@@ -110,6 +110,32 @@ describe('news — applyUrlVote: чесний облік голосів per-url 
     const a = applyUrlVote({}, {}, 'https://x/a', 'Тех', 'up');
     const b = applyUrlVote(a.weights, a.votedUrls, 'https://x/b', 'Тех', 'up');
     expect(b.weights.Тех).toBeCloseTo(1.3); // два різні url = +0.30
+  });
+
+  // ── Регресії з ревʼю C ───────────────────────────────────────────────────
+  it('на межі clamp голос не дрейфує в ПРОТИЛЕЖНИЙ бік (ревʼю C)', () => {
+    // Вага на дні 0.5. down — no-op (clamp). Toggle-off раніше додавав +0.15 ->
+    // 0.65 (dislike ставав boost). Тепер відкат = записаний delta (0) -> лишається 0.5.
+    const down = applyUrlVote({ Тех: 0.5 }, {}, 'https://x/a', 'Тех', 'down');
+    expect(down.weights.Тех).toBeCloseTo(0.5);
+    expect(down.votedUrls['https://x/a']?.delta).toBeCloseTo(0); // no-op зафіксовано
+    const off = applyUrlVote(down.weights, down.votedUrls, 'https://x/a', 'Тех', 'down');
+    expect(off.weights.Тех).toBeCloseTo(0.5); // НЕ 0.65
+    // Стеля — дзеркально.
+    const up = applyUrlVote({ Тех: 2.0 }, {}, 'https://x/b', 'Тех', 'up');
+    const upOff = applyUrlVote(up.weights, up.votedUrls, 'https://x/b', 'Тех', 'up');
+    expect(upOff.weights.Тех).toBeCloseTo(2.0); // НЕ 1.85
+  });
+
+  it('той самий url під ІНШОЮ темою — prevCategory показує стару тему (ревʼю C)', () => {
+    // Голос по url під «Наука», потім той самий url приходить під «Тех».
+    const first = applyUrlVote({}, {}, 'https://x/a', 'Наука', 'up');
+    const second = applyUrlVote(first.weights, first.votedUrls, 'https://x/a', 'Тех', 'up');
+    // prev.dir(up)===clicked(up) -> toggle off; вага «Наука» відкочується, «Тех» не чіпається.
+    expect(second.weights.Наука).toBeCloseTo(1.0);
+    expect(second.weights.Тех ?? 1.0).toBeCloseTo(1.0);
+    expect(second.prevCategory).toBe('Наука');
+    expect(second.newDir).toBeNull();
   });
 });
 
