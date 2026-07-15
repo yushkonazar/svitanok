@@ -2964,13 +2964,20 @@
             isNews ? 'unsave_news' : 'unsave_item',
             isNews ? { url: del.dataset.url } : { kind, id: del.dataset.id },
             () => {
-              // зняти підсвітку 🔖 у відповідній сесійній мапі, тоді перечитати stats
+              // Зняти підсвітку 🔖 у відповідній сесійній мапі, тоді перемалювати
+              // і статистику, і контент-таб (ревʼю D: інакше вже відрендерена
+              // кнопка 🔖 у «Новини»/«Сьогодні» лишалась би ✅ після видалення тут).
               if (isNews && del.dataset.url) {
                 const st = NEWS_STATE.get(nk(del.dataset.url));
                 if (st) st.saved = false;
+                rerenderNews();
               } else if (del.dataset.id) {
                 const st = ITEM_STATE.get(kind + ':' + del.dataset.id);
                 if (st) st.saved = false;
+                document.getElementById('today').innerHTML = renderToday(
+                  CURRENT.blocks,
+                  CURRENT.stats,
+                );
               }
               refreshStats(); // D1
             },
