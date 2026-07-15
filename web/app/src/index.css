@@ -1,10 +1,11 @@
 @import 'tailwindcss';
 
-/* Тема дашборда (роадмеп v3, E0). Темна скляна естетика — та сама, що у vanilla-
-   версії, але як Tailwind v4 @theme-токени, щоб класи (bg-surface, text-muted…)
-   були семантичними. Telegram передає власну тему через CSS-змінні
-   (--tg-theme-*), але ми тримаємо свій вигляд сталим (бренд), лише акуратно
-   вписуючись у світлу/темну схему пристрою. */
+/* Тема дашборда (роадмеп v3, E0). Скляна естетика — та сама, що у vanilla-версії,
+   але як Tailwind v4 @theme-токени, щоб класи (bg-surface, text-muted…) були
+   семантичними. @theme задає ТЕМНУ тему за замовчуванням; світлу вмикає перемикач
+   (theme.tsx) через <html data-theme="light">, перевизначаючи ті самі змінні.
+   Утиліти Tailwind посилаються на var(--color-*), тож зміна значення на корені
+   каскадно перефарбовує весь інтерфейс. */
 @theme {
   --color-bg: #0e1016;
   --color-surface: #171a22;
@@ -21,6 +22,26 @@
   --radius-card: 16px;
   --font-sans:
     system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Світла тема — перевизначення тих самих токенів. Неопаковані правила (поза
+   @layer) виграють у @theme-змінних незалежно від специфічності, тож :root[...]
+   надійно перекриває. Акценти лишаємо брендовими; змінюємо тло/поверхні/текст. */
+:root[data-theme='light'] {
+  --color-bg: #f4f6fb;
+  --color-surface: #ffffff;
+  --color-surface-2: #eceff5;
+  --color-border: #dce1ea;
+  --color-fg: #171b24;
+  --color-muted: #5b6472;
+  --color-on-accent: #ffffff;
+  --color-up: #15a34a;
+  --color-down: #dc2626;
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 html,
