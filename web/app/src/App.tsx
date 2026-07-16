@@ -176,30 +176,6 @@ export function App() {
                 демо
               </span>
             )}
-            {!onSettings && (
-              <button
-                type="button"
-                aria-label="Налаштування"
-                onClick={() => {
-                  navigate(SETTINGS_PATH);
-                  haptic('light');
-                }}
-                className="grid h-9 w-9 place-items-center rounded-xl border border-glassb bg-glass"
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="var(--color-tx2)"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                >
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.4 5.6 16.7 7.3M7.3 16.7 5.6 18.4M18.4 18.4 16.7 16.7M7.3 7.3 5.6 5.6" />
-                </svg>
-              </button>
-            )}
             <button
               type="button"
               onClick={() => {
@@ -236,6 +212,35 @@ export function App() {
                 </svg>
               )}
             </button>
+            {/* Налаштування — ПРАВОРУЧ від теми (фідбек власника). */}
+            {!onSettings && (
+              <button
+                type="button"
+                aria-label="Налаштування"
+                onClick={() => {
+                  navigate(SETTINGS_PATH);
+                  haptic('light');
+                }}
+                className="grid h-9 w-9 place-items-center rounded-xl border border-glassb bg-glass"
+              >
+                {/* Повзунки, а НЕ шестерня: шестерня — це коло з 8 променями,
+                    тобто на 18px вона неотличима від сонця в кнопці теми поруч.
+                    Повзунки ні з чим не сплутаєш. */}
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--color-tx2)"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                >
+                  <path d="M4 8h4M13 8h7M4 16h9M18 16h2" />
+                  <circle cx="10.5" cy="8" r="2.4" />
+                  <circle cx="15.5" cy="16" r="2.4" />
+                </svg>
+              </button>
+            )}
           </div>
         </header>
 
