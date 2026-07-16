@@ -110,7 +110,7 @@ function makeCtx(over: { state?: StateStore; llm?: Ctx['llm'] }): Ctx<AppConfig>
 }
 
 describe('mock — батч-кеш', () => {
-  it('кеш порожній -> один виклик; питання+відповідь+resourceUrl; решта в кеш', async () => {
+  it('кеш порожній -> один виклик; питання+відповідь; решта в кеш', async () => {
     const llm = {
       complete: vi.fn(
         async () =>
@@ -122,7 +122,9 @@ describe('mock — батч-кеш', () => {
     expect(block!.summary).toBe('Що таке замикання?');
     const d = block!.data as { question: string; answer?: string; resourceUrl?: string };
     expect(d.answer).toBe('Функція + її оточення.');
-    expect(d.resourceUrl).toContain('google.com/search');
+    // F4: resourceUrl прибрано — це був пошук Google за текстом питання.
+    // «Вивчити» тепер веде в куроване джерело роадмепу (stats.mockMaterials).
+    expect(d.resourceUrl).toBeUndefined();
     expect(llm.complete).toHaveBeenCalledTimes(1);
     expect(state.get('mockCache')).toEqual([{ q: 'Подія?', a: '…' }]);
   });

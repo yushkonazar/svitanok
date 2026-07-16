@@ -4,6 +4,7 @@ import {
   fetchStats,
   fetchBriefing,
   fetchSettings,
+  fetchSaved,
   postEvent,
   postSettings,
   postVote,
@@ -37,16 +38,25 @@ function patchStats(
   );
 }
 
-/** Оцінка питання дня (😌 Легко / 😰 Важко) — виставляє mockRatedToday. */
+/**
+ * Оцінка питання дня (😌 Легко / 😰 Важко).
+ *
+ * qId (F4) — ключ ідемпотентності на сервері: перша оцінка рахує тему й день,
+ * зміна думки лише переставляє weak. Без нього кожен тап рахувався б наново.
+ */
 export function useMockAnswer() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { topic: string; rating: 'easy' | 'hard' }) =>
+    mutationFn: (vars: { qId: string; topic: string; rating: 'easy' | 'hard' }) =>
       postEvent('mock_answer', vars),
-    onMutate: async () => {
+    onMutate: async ({ qId, rating }) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
-      patchStats(qc, (s) => ({ ...s, mockRatedToday: true }));
+      patchStats(qc, (s) => ({
+        ...s,
+        mockRatedToday: true,
+        mockRated: { ...s.mockRated, [qId]: rating },
+      }));
       return { prev };
     },
     onError: (_e, _v, ctx) => {
@@ -242,6 +252,16 @@ export function useJobDismiss() {
   return useMutation({
     mutationFn: (vars: { url: string; title: string }) => postEvent('job_dismiss', vars),
   });
+}
+
+/**
+ * Архів збереженого сторінками (F3). Ключ включає limit: «показати ще» просто
+ * перезапитує більший зріз. Список крихітний (сотні записів), тож infinite-
+ * query з мерджем сторінок тут — зайва складність і зайве джерело
+ * неконсистентності після unsave.
+ */
+export function useSavedArchive(limit: number) {
+  return useQuery({ queryKey: ['saved', limit], queryFn: () => fetchSaved(limit) });
 }
 
 // ── F2: Налаштування ──

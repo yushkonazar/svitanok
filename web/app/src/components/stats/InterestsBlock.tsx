@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { Stats, SavedItem } from '../../api/schema.ts';
+import { useSavedArchive } from '../../api/hooks.ts';
 import { has, truncate } from '../../lib/format.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { openLink } from '../../telegram.ts';
@@ -8,6 +10,11 @@ import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 // (частка реакцій + напрямок vs минулий тиждень) + чипи решти тем.
 // Список збереженого макет не показує, але це наявна функція (backend + D2) —
 // лишаємо компактним блоком нижче.
+//
+// F3: доти тут завжди було рівно 8 записів поруч із чесним лічильником «Ти
+// зберіг 47» — тобто блок сам собі суперечив. Архів у KV ніколи не обрізався,
+// обрізав лише READ, тож «показати ще» просто просить більший зріз
+// (окремий /api/saved, щоб не тягти сотні записів у кожен /api/stats).
 
 const KIND_ICON: Record<string, string> = {
   news: '📰',
@@ -15,6 +22,44 @@ const KIND_ICON: Record<string, string> = {
   quote: '🏛',
   question: '🎤',
 };
+
+const SAVED_STEP = 20;
+
+/** Архів збереженого з «показати ще» (F3). */
+function SavedArchive({ preview, total }: { preview: SavedItem[]; total: number }) {
+  const [limit, setLimit] = useState(0); // 0 = ще не розгортали, показуємо прев'ю зі stats
+  const { data, isFetching } = useSavedArchive(limit || SAVED_STEP);
+  const items = limit === 0 ? preview : (data?.items ?? preview);
+  const shown = items.length;
+  const more = total - shown;
+
+  return (
+    <div className="flex flex-col">
+      <StatRow
+        label="🔖 Ти зберіг"
+        value={
+          <>
+            {total}
+            {shown < total && <span className="ml-1.5 font-normal text-tx3">показано {shown}</span>}
+          </>
+        }
+      />
+      {items.map((item, i) => (
+        <SavedRow key={item.id ?? i} item={item} />
+      ))}
+      {more > 0 && (
+        <button
+          type="button"
+          disabled={isFetching}
+          onClick={() => setLimit((l) => (l || preview.length) + SAVED_STEP)}
+          className="border-t border-hair py-2 text-[12px] font-semibold text-a2 disabled:opacity-50"
+        >
+          {isFetching ? 'Вантажу…' : `Показати ще (${more})`}
+        </button>
+      )}
+    </div>
+  );
+}
 
 function SavedRow({ item }: { item: SavedItem }) {
   const icon = KIND_ICON[item.kind] ?? '🔖';
@@ -106,14 +151,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
 
       {has(s.readPerDay) && <StatRow label="Новин на день (середнє)" value={s.readPerDay} />}
 
-      {s.savedCount > 0 && (
-        <div className="flex flex-col">
-          <StatRow label="🔖 Ти зберіг" value={s.savedCount} />
-          {s.savedList.map((item, i) => (
-            <SavedRow key={item.id ?? i} item={item} />
-          ))}
-        </div>
-      )}
+      {s.savedCount > 0 && <SavedArchive preview={s.savedList} total={s.savedCount} />}
     </div>
   );
 }
