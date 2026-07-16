@@ -15,7 +15,8 @@ export const quietSchema = z.object({
 export const settingsSchema = z.object({
   quiet: quietSchema.default({ enabled: false, from: '22:00', to: '08:00' }),
   /** Лише ЯВНІ оверрайди; відсутній id = дефолт config.yml (для перемикних — увімкнено). */
-  modules: z.record(z.boolean()).default({}),
+  // zod 4: обидві схеми обовʼязкові (див. коментар у schema.ts). Ключ — id модуля.
+  modules: z.record(z.string(), z.boolean()).default({}),
 });
 
 export const connectorsSchema = z.object({

@@ -59,6 +59,13 @@ updates:
     commit-message:
       prefix: chore(deps-web)
       prefix-development: chore(dev-deps-web)
+    ignore:
+      # TypeScript тримаємо на одному мажорі з коренем (6.x). Peer-конфлікту тут
+      # немає (у web/app немає typescript-eslint), але два різні мажори TS в
+      # одному репо — зайва плутанина. Рухати ОБИДВА разом, коли
+      # typescript-eslint підтримає 7 (див. ignore для / вище).
+      - dependency-name: typescript
+        versions: ['>=7.0.0']
 
   # --- npm: host/ (VPS LLM-реле) ---
   - package-ecosystem: npm
