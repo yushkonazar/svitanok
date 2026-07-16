@@ -417,3 +417,39 @@ describe('proposal callback_data', () => {
     expect(parseProposalCallbackData(null)).toBeNull();
   });
 });
+
+describe('фолбеки асистента — три РІЗНІ збої, три різні тексти', () => {
+  const { ASSISTANT_ROUNDS_REPLY, ASSISTANT_EMPTY_REPLY } = agent;
+  // Доти всі три давали ідентичний «🤔 Не зміг розібратись до кінця»:
+  // вичерпані раунди, порожній replyText і немапована відповідь хоста.
+  // Через це скрін власника не казав нічого — саме тому баг і не діагностувався.
+  it('тексти не збігаються між собою', () => {
+    const all = [ASSISTANT_FALLBACK_REPLY, ASSISTANT_ROUNDS_REPLY, ASSISTANT_EMPTY_REPLY];
+    expect(new Set(all).size).toBe(3);
+  });
+
+  it('«вичерпані раунди» підказує, як переформулювати', () => {
+    expect(ASSISTANT_ROUNDS_REPLY).toContain('конкретніше');
+  });
+
+  it('хост відповів, але модель віддала дурню -> загальний фолбек', () => {
+    // Саме цей випадок лишається за ASSISTANT_FALLBACK_REPLY: ok:true, але
+    // extractAssistantAction не дістав валідної дії (kind:'unknown').
+    expect(assistantErrorReply({ ok: true, structured: { action: 'вигадана' } })).toBe(
+      ASSISTANT_FALLBACK_REPLY,
+    );
+    expect(assistantErrorReply(null)).toBe(ASSISTANT_FALLBACK_REPLY);
+  });
+
+  it('відомі причини НЕ падають у загальний фолбек', () => {
+    const known = [
+      { ok: false, status: 502, error: 'usage limit reached' },
+      { ok: false, status: 429, error: 'rate-limit' },
+      { ok: false, status: 0, error: 'timeout' },
+      { ok: false, status: 0, error: 'offline' },
+    ];
+    for (const r of known) {
+      expect(assistantErrorReply(r)).not.toBe(ASSISTANT_FALLBACK_REPLY);
+    }
+  });
+});

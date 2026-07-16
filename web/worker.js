@@ -63,7 +63,8 @@ import {
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
-  ASSISTANT_FALLBACK_REPLY,
+  ASSISTANT_ROUNDS_REPLY,
+  ASSISTANT_EMPTY_REPLY,
   assistantErrorReply,
   clipTranscript,
   buildAssistantSystemPrompt,
@@ -1157,11 +1158,21 @@ async function runAssistantAgent(env, parsed, userText) {
   const model = pickAssistantModel(userText); // SL1: haiku за замовч., sonnet для планування
   let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
   for (let round = 0; round < MAX_ROUNDS; round++) {
+    // На ОСТАННЬОМУ раунді читання вже не має сенсу: його результат нікуди не
+    // піде — цикл одразу впаде у «заплутався в кроках». Тому прямо кажемо, що
+    // читань більше не буде. Ланцюжок «знайди лист -> заплануй подію» вимагає
+    // readMail + фінальної дії, тобто впритул до MAX_ROUNDS: без цього натяку
+    // будь-яке зайве читання зʼїдало останній крок і вбивало весь запит.
+    const lastRound = round === MAX_ROUNDS - 1;
+    const nudge = lastRound
+      ? '\n\nЦе ОСТАННІЙ крок: більше читати не можна. Дай ФІНАЛЬНУ дію ' +
+        '(proposeCalendarChanges / createReminder / reply) з тим, що вже маєш.'
+      : '';
     const res = await callLlmHost(env, {
       // clipTranscript — запобіжник бюджету (B3): за 3 раунди агент може дописати
       // календар + own-data + пошту; перевищення MAX_PROMPT_LEN хоста дало б 400 і
       // мовчазний фолбек замість відповіді.
-      prompt: clipTranscript(transcript),
+      prompt: clipTranscript(transcript) + nudge,
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
       model,
@@ -1175,7 +1186,10 @@ async function runAssistantAgent(env, parsed, userText) {
     if (!action) return sendText(assistantErrorReply(res, nowMs));
 
     if (action.action === 'reply') {
-      const text = action.replyText || ASSISTANT_FALLBACK_REPLY;
+      // Порожній replyText — окремий текст + лог: доти він був неотличимий від
+      // «вичерпані раунди», і скрін власника нічого не підказував.
+      if (!action.replyText) console.error('assistant: reply без replyText');
+      const text = action.replyText || ASSISTANT_EMPTY_REPLY;
       await remember(text);
       return sendText(text);
     }
@@ -1239,7 +1253,10 @@ async function runAssistantAgent(env, parsed, userText) {
       : formatRangeEventsForPrompt(events ?? []);
     transcript += `\n\nКалендар (${label}): ${body}`;
   }
-  return sendText(ASSISTANT_FALLBACK_REPLY); // вичерпані раунди — не помилка (історію не чіпаємо)
+  // Вичерпані раунди — не помилка (історію не чіпаємо), але й не те саме, що
+  // «модель віддала дурню»: свій текст + лог, щоб було видно саме цей шлях.
+  console.error(`assistant: вичерпано ${MAX_ROUNDS} раунд(и) без фінальної дії`);
+  return sendText(ASSISTANT_ROUNDS_REPLY);
 }
 
 /** Зберегти пропозицію (state.assistantPending, ОДИН слот) + кнопки ✅/❌ підтвердження. */
