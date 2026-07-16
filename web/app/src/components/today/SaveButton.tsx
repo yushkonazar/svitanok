@@ -3,11 +3,12 @@ import { useSaved } from '../../saved.tsx';
 import { truncate } from '../../lib/format.ts';
 import { haptic } from '../../telegram.ts';
 
-// Кнопка 🔖 збереження факту/цитати/питання (роадмеп v3, E2). Стан «збережено» —
-// зі session-sticky набору (useSaved), а не напряму зі savedList: сервер обрізає
-// savedList до top-8, тож без стабільної пам'яті позначка «губилась» би на
-// витіснених елементах (ревʼю). title обрізаємо до 140 (як vanilla saveItemBtn);
-// id лишається за ПОВНИМ текстом (textHash у картці) — сумісність KV.
+// Кнопка 🔖 для факту/цитати/питання (дизайн v2 — тихий іконковий варіант).
+// Макет Svitanok.dc.html на «Сьогодні» збереження не показує, але бекенд і
+// «Ти зберіг» у статистиці на ньому тримаються — тож лишаємо функцію, вписавши
+// у нову мову (маленький скляний квадрат у рядку-заголовку блоку).
+// Стан — зі session-sticky набору (useSaved), бо savedList сервера обрізаний
+// до top-8; title обрізаємо до 140 (як vanilla), id — за повним текстом.
 
 export function SaveButton({ kind, id, title }: { kind: string; id: string; title: string }) {
   const { isSaved, setSaved } = useSaved();
@@ -23,12 +24,16 @@ export function SaveButton({ kind, id, title }: { kind: string; id: string; titl
         setSaved(kind, id, next);
         toggle.mutate(
           { save: next, kind, id, title: truncate(title, 140) },
-          // Відкат sticky-набору при збої (хук відкочує лише кеш ['stats']).
           { onError: () => setSaved(kind, id, saved) },
         );
         haptic('success');
       }}
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-2 text-base transition-colors hover:bg-border"
+      className="grid h-7 w-7 flex-none place-items-center rounded-[9px] border text-[13px] transition-colors"
+      style={
+        saved
+          ? { background: 'rgba(255,164,92,.16)', borderColor: 'var(--color-a2)' }
+          : { background: 'var(--color-glass)', borderColor: 'var(--color-glassb)' }
+      }
     >
       {saved ? '✅' : '🔖'}
     </button>

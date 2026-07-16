@@ -11,7 +11,8 @@ import { loadConfig, type AppConfig } from './core/config.js';
 import { createClock, type Clock } from './core/clock.js';
 import { createLogger } from './core/logger.js';
 import { createStateStore } from './core/state.js';
-import { createKvStateStore, readKvEnv } from './core/state-kv.js';
+import { createKvStateStore, readKvEnv, readKvJson } from './core/state-kv.js';
+import { applyModuleOverrides, formatOverrides } from './core/settings-overrides.js';
 import { createRunBus } from './core/bus.js';
 import { createLLMClient, formatLlmDegradedMessage } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
@@ -334,6 +335,17 @@ function buildModules(): Module<AppConfig>[] {
   ];
 }
 
+/** Накласти тумблери Mini App на конфіг + залогувати, що саме змінилось (F2). */
+function applyModuleOverridesFromKv(
+  config: AppConfig,
+  settings: Record<string, unknown> | null,
+  log: Logger,
+): AppConfig {
+  const { config: next, changes } = applyModuleOverrides(config, settings);
+  if (changes.length > 0) log.info(`налаштування Mini App: ${formatOverrides(changes)}`);
+  return next;
+}
+
 /** Хости allowlist для SourceFetcher — з jobs.sources (§8). Новини тепер через
  *  фіксований NewsData API (прямий fetch, не allowlisted). */
 function fetchAllowlist(config: AppConfig): string[] {
@@ -354,7 +366,7 @@ async function main(): Promise<void> {
   const dryRun = args.includes('--dry-run');
   const force = args.includes('--force');
 
-  const config = loadConfig();
+  const configYml = loadConfig();
   const clock = createClock();
   const log = createLogger();
 
@@ -372,10 +384,19 @@ async function main(): Promise<void> {
     }
   }
 
+  const kvEnv = readKvEnv();
+
+  // F2: тумблери модулів із Mini App живуть у KV `settings` (пише Worker). Без
+  // цього оверрайду перемикач у налаштуваннях нічого б не змінював: config.yml —
+  // файл репозиторію, і ран у GitHub Actions про натискання не знає. Читання
+  // best-effort: немає KV / немає ключа / збій -> дефолти config.yml.
+  const config = kvEnv
+    ? applyModuleOverridesFromKv(configYml, await readKvJson({ ...kvEnv, log }, 'settings'), log)
+    : configYml;
+
   // Стан: KV (CF env присутні — CI/прод) або файл (локально). KV прибирає крихку
   // git-гілку `state`. Асинхронне завантаження блоба перед реєстрацією модулів.
   const pruners = buildPruners(config, clock.now().getTime());
-  const kvEnv = readKvEnv();
   const state = kvEnv
     ? await createKvStateStore({ ...kvEnv, log, pruners })
     : createStateStore({ path: process.env.STATE_FILE ?? 'state.json', log, pruners });

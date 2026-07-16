@@ -1,19 +1,27 @@
 import { useState } from 'react';
 import { useBriefing } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
-import { Ph } from '../ui/primitives.tsx';
-import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
+import { Segmented } from '../ui/Segmented.tsx';
 import { NewsGroup } from './NewsGroup.tsx';
 
-// Вкладка «Новини» (роадмеп v3, E3) — 1:1 з index.html renderNews (2262-2279):
-// перемикач 🌍 Світ / 🇺🇦 Україна + групи поточного scope.
+// Вкладка «Новини» (дизайн v2, Svitanok.dc.html): сегмент 🌍 Світ / 🇺🇦 Україна,
+// далі групи за темами. Стани — скелетон / порожньо / помилка.
 
 type Scope = 'world' | 'ua';
 
-const SCOPES: { id: Scope; label: string }[] = [
+const SCOPES = [
   { id: 'world', label: '🌍 Світ' },
   { id: 'ua', label: '🇺🇦 Україна' },
-];
+] as const;
+
+const NewsIcon = (
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-tx3)" strokeWidth="1.6" strokeLinecap="round">
+    <path d="M3 12h5l2 3h4l2-3h5" />
+    <path d="M4.5 8 6 4h12l1.5 4" />
+    <path d="M3 12v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" />
+  </svg>
+);
 
 export function NewsScreen() {
   const [scope, setScope] = useState<Scope>('world');
@@ -23,40 +31,35 @@ export function NewsScreen() {
   if (isError || !data) {
     return (
       <ErrorState
-        message={error instanceof Error ? error.message : 'Не вдалося завантажити новини'}
+        message={error instanceof Error ? error.message : 'Перевір з’єднання з мережею й спробуй ще раз.'}
         onRetry={() => refetch()}
       />
     );
   }
 
   const news = readBlock(data.brief.blocks, 'news', newsDataSchema);
-  if (!news || !news.groups.length) {
-    return <Ph>Новин немає</Ph>;
-  }
-
-  const visible = news.groups.filter((g) => g.scope === scope);
+  const visible = (news?.groups ?? []).filter((g) => g.scope === scope);
 
   return (
-    <div>
-      <div className="mb-3 flex gap-2">
-        {SCOPES.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => setScope(s.id)}
-            className={`flex-1 rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
-              scope === s.id ? 'bg-accent text-on-accent' : 'bg-surface-2 text-muted hover:bg-border'
-            }`}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
+    <div className="flex flex-col gap-4">
+      <Segmented segments={SCOPES} value={scope} onChange={setScope} />
 
-      {visible.length ? (
+      {!news || !news.groups.length ? (
+        <EmptyState
+          icon={NewsIcon}
+          title="Новин поки немає"
+          text="На сьогодні стрічка порожня. Загляни пізніше або онови вручну."
+          onReload={() => refetch()}
+        />
+      ) : visible.length ? (
         visible.map((g) => <NewsGroup key={`${g.scope}:${g.topic}`} group={g} />)
       ) : (
-        <Ph>У цій категорії поки порожньо</Ph>
+        <EmptyState
+          icon={NewsIcon}
+          title="У цій категорії порожньо"
+          text="Тут поки нічого немає. Спробуй іншу категорію або онови."
+          onReload={() => refetch()}
+        />
       )}
     </div>
   );

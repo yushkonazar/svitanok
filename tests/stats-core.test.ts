@@ -465,3 +465,38 @@ describe('stats-core — recordReliability', () => {
     expect(st.reliability).toEqual({ onTime: 1, total: 1, deadman: 0 });
   });
 });
+
+describe('stats-core — set_goal (F2, слайдер тижневої цілі)', () => {
+  it('виставляє ціль і віддає її в агрегат', () => {
+    const s = recordEvent(emptyStore(), { type: 'set_goal', value: 8 }, '2026-07-16');
+    expect(s.goal.weeklyTarget).toBe(8);
+    expect(aggregateStats(s, '2026-07-16').goal.weeklyTarget).toBe(8);
+  });
+
+  it('клампить у діапазон слайдера 1..10', () => {
+    const set = (v: unknown) =>
+      recordEvent(emptyStore(), { type: 'set_goal', value: v }, '2026-07-16').goal.weeklyTarget;
+    expect(set(0)).toBe(1);
+    expect(set(-3)).toBe(1);
+    expect(set(99)).toBe(10);
+    expect(set(1)).toBe(1);
+    expect(set(10)).toBe(10);
+  });
+
+  it('дробове округлює; сміття лишає ціль недоторканою', () => {
+    expect(
+      recordEvent(emptyStore(), { type: 'set_goal', value: 6.7 }, '2026-07-16').goal.weeklyTarget,
+    ).toBe(7);
+    for (const bad of ['вісім', null, undefined, NaN, {}, '', [], false, '8']) {
+      expect(
+        recordEvent(emptyStore(), { type: 'set_goal', value: bad }, '2026-07-16').goal.weeklyTarget,
+      ).toBe(5);
+    }
+  });
+
+  it('normalize самолікує биту/легасі ціль поза діапазоном', () => {
+    expect(normalize({ goal: { weeklyTarget: 4000 } }).goal.weeklyTarget).toBe(10);
+    expect(normalize({ goal: { weeklyTarget: -1 } }).goal.weeklyTarget).toBe(1);
+    expect(normalize({ goal: { weeklyTarget: 0 } }).goal.weeklyTarget).toBe(5); // 0 -> дефолт
+  });
+});
