@@ -3,11 +3,14 @@ import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
   fetchBriefing,
+  fetchSettings,
   postEvent,
+  postSettings,
   postVote,
   type StatsResult,
   type VoteDir,
 } from './client.ts';
+import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 
 // TanStack Query хуки даних дашборда (роадмеп v3, E1+E2). Дефолти (staleTime 60с,
 // retry 1) — у main.tsx. Дві незалежні черги: ['brief'] (щоденний знімок) і
@@ -223,5 +226,93 @@ export function useJobStage() {
 export function useJobDismiss() {
   return useMutation({
     mutationFn: (vars: { url: string; title: string }) => postEvent('job_dismiss', vars),
+  });
+}
+
+// ── F2: Налаштування ──
+
+/** Налаштування власника + статус конекторів (третя незалежна черга). */
+export function useSettings() {
+  return useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
+}
+
+const SETTINGS_SAVE_KEY = ['settings-save'];
+
+/**
+ * Зберегти налаштування. Екран шле ПАТЧ (один тумблер), а на сервер іде ПОВНИЙ
+ * блоб — бо KV без CAS, і серверний read-modify-write губив би тумблери.
+ *
+ * Три речі тримають це вкупі, кожна закриває свою гонку:
+ *
+ * 1. scope — серіалізує запити. Без нього два швидкі тапи летять паралельно й
+ *    останній PUT затирає попередній.
+ * 2. mutationFn бере блоб із КЕШУ, а не з аргументів. onMutate завжди виконується
+ *    ДО mutationFn, тож кеш уже містить і цей патч, і всі попередні. Якби payload
+ *    збирався в компоненті з `settings` рендера, два тапи в одному тіку прочитали
+ *    б той самий (ще не оновлений) стан — і другий загубив би перший. Це
+ *    дзеркальне до пастки useVote: там читання кешу в mutationFn було багом, бо
+ *    оптимістику треба було рахувати ДО патчу; тут навпаки — треба ПІСЛЯ.
+ * 3. onSettled інвалідує лише коли черга спорожніла: інакше відповідь першої
+ *    мутації перемалювала б тумблер, який друга щойно змінила.
+ */
+export function useSaveSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: SETTINGS_SAVE_KEY,
+    scope: { id: 'settings' },
+    mutationFn: () => {
+      const cur = qc.getQueryData<SettingsResponse>(['settings']);
+      return cur ? postSettings(cur.settings) : Promise.resolve(null);
+    },
+    onMutate: async (patch: SettingsPatch) => {
+      await qc.cancelQueries({ queryKey: ['settings'] });
+      const prev = qc.getQueryData<SettingsResponse>(['settings']);
+      qc.setQueryData<SettingsResponse>(['settings'], (old) =>
+        old
+          ? {
+              ...old,
+              settings: {
+                quiet: { ...old.settings.quiet, ...(patch.quiet ?? {}) },
+                modules: { ...old.settings.modules, ...(patch.modules ?? {}) },
+              },
+            }
+          : old,
+      );
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['settings'], ctx.prev);
+    },
+    onSettled: () => {
+      // === 1: поточна мутація ще рахується. Більше -> позаду черга, і рефетч
+      // зараз показав би проміжний стан сервера замість останнього тапу.
+      if (inTelegram() && qc.isMutating({ mutationKey: SETTINGS_SAVE_KEY }) === 1) {
+        qc.invalidateQueries({ queryKey: ['settings'] });
+      }
+    },
+  });
+}
+
+/**
+ * Тижнева ціль подач (слайдер). Свідомо НЕ через /api/settings: ціль живе в
+ * блобі `stats` поруч із weeklyApplied, тож це подія set_goal, як і решта
+ * мутацій дашборда.
+ */
+export function useSetGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { value: number }) => postEvent('set_goal', vars),
+    onMutate: async ({ value }) => {
+      await qc.cancelQueries({ queryKey: ['stats'] });
+      const prev = qc.getQueryData<StatsResult>(['stats']);
+      patchStats(qc, (s) => ({ ...s, goal: { ...s.goal, weeklyTarget: value } }));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
+    },
+    onSettled: () => {
+      if (inTelegram()) qc.invalidateQueries({ queryKey: ['stats'] });
+    },
   });
 }

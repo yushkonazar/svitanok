@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createKvStateStore, readKvEnv, overlayChanged } from '../src/core/state-kv.js';
+import { createKvStateStore, readKvEnv, overlayChanged, readKvJson } from '../src/core/state-kv.js';
 
 const OPTS = {
   accountId: 'acc',
@@ -173,5 +173,41 @@ describe('state-kv — readKvEnv', () => {
     process.env.CF_API_TOKEN = 'tok';
     process.env.KV_NAMESPACE_ID = 'ns';
     expect(readKvEnv()).toBeNull();
+  });
+});
+
+describe('state-kv — readKvJson (F2, ключ `settings`)', () => {
+  const quiet = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+  it('читає JSON-обʼєкт за довільним ключем', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResp('{"modules":{"news":false}}'));
+    const out = await readKvJson({ ...OPTS, fetchImpl }, 'settings');
+    expect(out).toEqual({ modules: { news: false } });
+    // Ключ реально йде в URL — інакше мовчки читали б 'state'.
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/values/settings');
+  });
+
+  it('404 (ключа ще нема) -> null, тихо, без warn', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResp('', 404));
+    expect(await readKvJson({ ...OPTS, fetchImpl, log: quiet }, 'settings')).toBeNull();
+    expect(quiet.warn).not.toHaveBeenCalled();
+  });
+
+  it('HTTP-помилка / мережа / биття JSON -> null, а не throw (ран не падає)', async () => {
+    const cases = [
+      vi.fn().mockResolvedValue(okResp('boom', 500)),
+      vi.fn().mockRejectedValue(new Error('network down')),
+      vi.fn().mockResolvedValue(okResp('{не json')),
+    ];
+    for (const fetchImpl of cases) {
+      await expect(readKvJson({ ...OPTS, fetchImpl, log: quiet }, 'settings')).resolves.toBeNull();
+    }
+  });
+
+  it('не-обʼєкт у значенні (включно з масивом) -> null', async () => {
+    for (const body of ['"рядок"', '42', 'null', '[1,2]', 'true']) {
+      const fetchImpl = vi.fn().mockResolvedValue(okResp(body));
+      await expect(readKvJson({ ...OPTS, fetchImpl }, 'settings')).resolves.toBeNull();
+    }
   });
 });

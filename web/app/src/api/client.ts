@@ -1,8 +1,9 @@
 import { tg, inTelegram } from '../telegram.ts';
 import { statsSchema, type Stats } from './schema.ts';
-import { SAMPLE_STATS } from './sample.ts';
+import { SAMPLE_STATS, EMPTY_STATS } from './sample.ts';
 import { briefSchema, type Brief } from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
+import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
 // origin), тож шляхи абсолютні (/api/...); у dev Vite проксі /api -> wrangler :8787.
@@ -12,6 +13,36 @@ import { SAMPLE_BRIEF } from './briefing-sample.ts';
 /** Заголовки авторизації: initData всередині Telegram, інакше порожньо (демо). */
 function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
+}
+
+/* ── Демо-стани (F2) ────────────────────────────────────────────────────────
+   Перемикач у налаштуваннях, видимий ЛИШЕ поза Telegram: дає подивитись
+   скелетон / порожньо / помилку на реальних екранах, не чіпаючи прод і не
+   чекаючи, поки такий стан трапиться сам. У Telegram не діє взагалі —
+   demoGate викликається тільки з гілки !inTelegram(). */
+
+export type DemoState = 'ready' | 'loading' | 'empty' | 'error';
+
+let demoState: DemoState = 'ready';
+export const getDemoState = (): DemoState => demoState;
+export const setDemoState = (s: DemoState): void => {
+  demoState = s;
+};
+
+async function demoGate<T>(ready: () => T, empty: () => T): Promise<T> {
+  switch (demoState) {
+    case 'loading':
+      // Проміс, який НІКОЛИ не резолвиться -> черга лишається pending -> скелетон.
+      // Кинутий проміс безпечний: ні таймера, ні підписки; перемикання назад
+      // інвалідує чергу й запускає новий запит.
+      return new Promise<T>(() => {});
+    case 'error':
+      throw new Error('Демо-стан «Помилка» — перемкни в налаштуваннях');
+    case 'empty':
+      return empty();
+    default:
+      return ready();
+  }
 }
 
 /** Дані статистики + прапор демо (SAMPLE замість реального контракту). */
@@ -26,7 +57,11 @@ export interface StatsResult {
  * і дрейф контракту (провал валідації) кидають помилку -> стан помилки з ретраєм.
  */
 export async function fetchStats(): Promise<StatsResult> {
-  if (!inTelegram()) return { stats: SAMPLE_STATS, demo: true };
+  if (!inTelegram())
+    return demoGate(
+      () => ({ stats: SAMPLE_STATS, demo: true }),
+      () => ({ stats: EMPTY_STATS, demo: true }),
+    );
 
   const res = await fetch('/api/stats', { cache: 'no-store', headers: authHeaders() });
   if (res.status === 401 || res.status === 403) {
@@ -53,7 +88,12 @@ export interface BriefResult {
  * 5xx/мережа/дрейф контракту — помилка з ретраєм.
  */
 export async function fetchBriefing(): Promise<BriefResult> {
-  if (!inTelegram()) return { brief: SAMPLE_BRIEF, demo: true };
+  if (!inTelegram())
+    return demoGate(
+      () => ({ brief: SAMPLE_BRIEF, demo: true }),
+      // Порожній брифінг — рівно те, що сервер віддає до першого крону ('{}').
+      () => ({ brief: briefSchema.parse({}), demo: true }),
+    );
 
   const res = await fetch('/briefing.json', { cache: 'no-store', headers: authHeaders() });
   if (res.status === 401 || res.status === 403) return { brief: SAMPLE_BRIEF, demo: true };
@@ -78,6 +118,55 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
     body: JSON.stringify({ type, ...payload, initData: tg.initData }),
   });
   if (!res.ok) throw new Error(`Подію не збережено (${res.status})`);
+}
+
+/* ── Налаштування (F2) ─────────────────────────────────────────────────── */
+
+/** Демо-налаштування: те, що показує екран поза Telegram (нічого не персиститься). */
+const DEMO_SETTINGS: SettingsResponse = {
+  settings: { quiet: { enabled: false, from: '22:00', to: '08:00' }, modules: {} },
+  connectors: { google: true, calendar: true, gmail: true },
+};
+
+/**
+ * GET /api/settings. Політика та сама, що у fetchStats: поза Telegram / 401 /
+ * 403 -> демо; 5xx і дрейф контракту -> помилка з ретраєм.
+ *
+ * СВІДОМО повз demoGate: перемикач демо-стану живе на екрані налаштувань, тож
+ * якби цей запит теж підкорявся demoState, вибір «Помилка» завалив би сам екран
+ * — разом із перемикачем, яким тільки й можна вимкнути демо-стан назад.
+ * Демо-стани демонструють ЕКРАНИ ДАНИХ, а не пульт керування собою.
+ */
+export async function fetchSettings(): Promise<SettingsResponse> {
+  if (!inTelegram()) return DEMO_SETTINGS;
+
+  const res = await fetch('/api/settings', { cache: 'no-store', headers: authHeaders() });
+  if (res.status === 401 || res.status === 403) return DEMO_SETTINGS;
+  if (!res.ok) throw new Error(`Не вдалося завантажити налаштування (${res.status})`);
+
+  const parsed = settingsResponseSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат налаштувань змінився — оновіть застосунок');
+  return parsed.data;
+}
+
+/**
+ * POST /api/settings — ПОВНИЙ стан (PUT-семантика), не патч: KV не має ні CAS,
+ * ні read-your-writes, тож серверний read-modify-write губив би тумблери при
+ * швидких тапах. Писар один (власник), і повний стан у нього вже є в кеші.
+ * Поза Telegram — null (оптимістичне значення в кеші лишається).
+ */
+export async function postSettings(next: Settings): Promise<SettingsResponse | null> {
+  if (!inTelegram() || !tg) return null;
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ settings: next, initData: tg.initData }),
+  });
+  if (!res.ok) throw new Error(`Налаштування не збережено (${res.status})`);
+
+  const parsed = settingsResponseSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат налаштувань змінився — оновіть застосунок');
+  return parsed.data;
 }
 
 /** Авторитетний напрямок голосу від сервера (C3): re-click того ж = null. */

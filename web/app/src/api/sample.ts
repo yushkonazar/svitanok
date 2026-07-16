@@ -135,3 +135,30 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
 };
+
+/**
+ * Порожня статистика — демо-стан «Порожньо» (F2, перемикач у налаштуваннях).
+ * Нулі, а не відсутні поля: так видно саме порожні стани блоків (як у перший
+ * день використання), а не помилку контракту.
+ */
+export const EMPTY_STATS: Stats = {
+  streaks: { openDays: 0, mockDays: 0, bestOpenDays: 0 },
+  timeToOpenMin: null,
+  weekly: [],
+  funnel: { saved: 0, applied: 0, interview: 0, offer: 0 },
+  goal: { weeklyTarget: 5, weeklyApplied: 0 },
+  conversion: { appliedToInterview: 0, interviewToOffer: 0 },
+  avgFitApplied: null,
+  funnelList: [],
+  savedCount: 0,
+  savedList: [],
+  mock: { weakTopics: [], streak: 0 },
+  heatmap: [],
+  appliedWeekly: [],
+  fitHistogram: [],
+  interestsTrend: { weeks: [], topics: [] },
+  interests: [],
+  readPerDay: 0,
+  reliability: { onTime: 0, total: 0, deadman: 0 },
+  votes: {},
+};

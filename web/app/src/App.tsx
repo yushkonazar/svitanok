@@ -10,11 +10,16 @@ import { StatsScreen } from './components/stats/StatsScreen.tsx';
 import { TodayScreen } from './components/today/TodayScreen.tsx';
 import { NewsScreen } from './components/news/NewsScreen.tsx';
 import { JobsScreen } from './components/jobs/JobsScreen.tsx';
+import { SettingsScreen } from './components/settings/SettingsScreen.tsx';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
 // /app/#/stats; Telegram startapp=stats). Рамку телефона й фейковий статус-бар з
 // макета НЕ переносимо — у реальному вебв'ю це сам вьюпорт і статус-бар ОС.
+//
+// «Налаштування» (F2) — маршрут /settings, але НЕ таб: як у макеті, це
+// повноекранний режим із власним хедером і без таб-бара (пʼятий таб роздув би
+// пігулку, а заходять туди зрідка).
 
 const TABS = [
   { id: 'today', path: '/', label: 'Сьогодні' },
@@ -24,6 +29,10 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
+
+const SETTINGS_PATH = '/settings';
+/** Усі відомі маршрути — і таби, і повноекранні (для редіректу/deep-link). */
+const KNOWN_PATHS: string[] = [...TABS.map((t) => t.path), SETTINGS_PATH];
 
 function TabIcon({ id, active }: { id: TabId; active: boolean }) {
   const sw = active ? 2 : 1.6;
@@ -61,10 +70,11 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
   );
 }
 
-// start_param -> шлях вкладки. Приймаємо і id ('stats'), і шлях ('/stats').
+// start_param -> шлях. Приймаємо і id ('stats'), і шлях ('/stats').
 function pathForStartParam(param: string): string | null {
   const tab = TABS.find((t) => t.id === param || t.path === `/${param}` || t.path === param);
-  return tab ? tab.path : null;
+  if (tab) return tab.path;
+  return param === 'settings' || param === SETTINGS_PATH ? SETTINGS_PATH : null;
 }
 
 export function App() {
@@ -79,6 +89,7 @@ export function App() {
   const { data: briefData } = useBriefing();
   const headerDate = dateLabelFromIso(briefData?.brief.generatedAt) ?? dateLabel();
 
+  const onSettings = location.pathname === SETTINGS_PATH;
   const active = TABS.find((t) => t.path === location.pathname) ?? TABS[0];
 
   // Deep-link: один раз на старті мапимо Telegram start_param на вкладку.
@@ -92,49 +103,102 @@ export function App() {
 
   // Невідомий шлях -> домашня.
   useEffect(() => {
-    const known = TABS.some((t) => t.path === location.pathname);
-    if (!known) navigate('/', { replace: true });
+    if (!KNOWN_PATHS.includes(location.pathname)) navigate('/', { replace: true });
   }, [location.pathname, navigate]);
 
   // Нативна кнопка «Назад» Telegram: видима поза домашньою, веде на домашню.
   useEffect(() => {
-    const onHome = active.path === '/';
+    const onHome = !onSettings && active.path === '/';
     return setBackButton(!onHome, () => navigate('/'));
-  }, [active.path, navigate]);
+  }, [active.path, onSettings, navigate]);
 
   return (
     <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-[430px] flex-col">
       <Fog />
 
       <div className="relative z-[1] flex-1">
-        {/* HEADER */}
+        {/* HEADER — у налаштуваннях перетворюється на «‹ Налаштування» */}
         <header className="flex items-center gap-2.5 px-5 pb-1.5 pt-2.5">
-          <div
-            className="grid h-[30px] w-[30px] place-items-center rounded-[9px]"
-            style={{ background: 'var(--grad)' }}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--color-onacc)"
-              strokeWidth="2"
-              strokeLinecap="round"
-            >
-              <path d="M5 16a7 7 0 0 1 14 0" />
-              <path d="M3 20h18M12 4v3M5.6 8.6 7 10M18.4 8.6 17 10" />
-            </svg>
-          </div>
-          <div className="flex flex-col">
-            <div className="text-[15px] font-extrabold tracking-[-0.01em]">Svitanok</div>
-            <div className="font-mono text-[9.5px] font-medium text-tx3">{headerDate}</div>
-          </div>
+          {onSettings ? (
+            <>
+              <button
+                type="button"
+                aria-label="Назад"
+                onClick={() => {
+                  navigate('/');
+                  haptic('light');
+                }}
+                className="grid h-9 w-9 place-items-center rounded-xl border border-glassb bg-glass"
+              >
+                <svg
+                  width="19"
+                  height="19"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--color-tx)"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M15 5l-7 7 7 7" />
+                </svg>
+              </button>
+              <div className="text-[18px] font-extrabold tracking-[-0.01em]">Налаштування</div>
+            </>
+          ) : (
+            <>
+              <div
+                className="grid h-[30px] w-[30px] place-items-center rounded-[9px]"
+                style={{ background: 'var(--grad)' }}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--color-onacc)"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                >
+                  <path d="M5 16a7 7 0 0 1 14 0" />
+                  <path d="M3 20h18M12 4v3M5.6 8.6 7 10M18.4 8.6 17 10" />
+                </svg>
+              </div>
+              <div className="flex flex-col">
+                <div className="text-[15px] font-extrabold tracking-[-0.01em]">Svitanok</div>
+                <div className="font-mono text-[9.5px] font-medium text-tx3">{headerDate}</div>
+              </div>
+            </>
+          )}
           <div className="ml-auto flex gap-2">
             {!inTelegram() && (
               <span className="self-center rounded-full bg-glass px-2 py-1 font-mono text-[9px] text-tx3">
                 демо
               </span>
+            )}
+            {!onSettings && (
+              <button
+                type="button"
+                aria-label="Налаштування"
+                onClick={() => {
+                  navigate(SETTINGS_PATH);
+                  haptic('light');
+                }}
+                className="grid h-9 w-9 place-items-center rounded-xl border border-glassb bg-glass"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--color-tx2)"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.4 5.6 16.7 7.3M7.3 16.7 5.6 18.4M18.4 18.4 16.7 16.7M7.3 7.3 5.6 5.6" />
+                </svg>
+              </button>
             )}
             <button
               type="button"
@@ -177,13 +241,15 @@ export function App() {
 
         {/* CONTENT — зміна маршруту ремоунтить секцію -> fadeUp, як у макеті */}
         <motion.main
-          key={active.id}
+          key={onSettings ? 'settings' : active.id}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.32, ease: 'easeOut' }}
-          className="px-5 pb-[120px] pt-1.5"
+          className={onSettings ? 'px-5 pb-10 pt-2.5' : 'px-5 pb-[120px] pt-1.5'}
         >
-          {active.id === 'today' ? (
+          {onSettings ? (
+            <SettingsScreen />
+          ) : active.id === 'today' ? (
             <TodayScreen />
           ) : active.id === 'news' ? (
             <NewsScreen />
@@ -195,8 +261,12 @@ export function App() {
         </motion.main>
       </div>
 
-      {/* TAB BAR — пігулка, активний таб розкривається з підписом */}
-      <nav className="pointer-events-none fixed inset-x-0 bottom-[18px] z-30 flex justify-center">
+      {/* TAB BAR — пігулка, активний таб розкривається з підписом. У
+          налаштуваннях сховано (повноекранний режим, як у макеті). */}
+      <nav
+        hidden={onSettings}
+        className="pointer-events-none fixed inset-x-0 bottom-[18px] z-30 flex justify-center"
+      >
         <div
           className="pointer-events-auto flex gap-1 rounded-full border border-glassb bg-bg2 p-1.5 backdrop-blur-[28px]"
           style={{ boxShadow: '0 12px 40px rgba(0,0,0,.5)' }}

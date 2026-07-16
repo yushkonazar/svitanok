@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseConfig, loadConfig } from '../src/core/config.js';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { TOGGLEABLE_MODULE_IDS } from '../web/settings-core.mjs';
 
 // Мінімальний валідний конфіг для негативних кейсів.
 const valid = {
@@ -60,5 +62,20 @@ describe('config — невалідний падає гучно', () => {
 
   it('sendHour поза 0–23 — відхиляється', () => {
     expect(() => parseConfig({ ...valid, sendHour: 24, sendWindowHours: 0 })).toThrow();
+  });
+});
+
+describe('config — інваріант перемикних модулів (F2)', () => {
+  // Mini App не читає config.yml, тож у налаштуваннях відсутність оверрайду
+  // малюється як «увімкнено». Це чесно лише поки ці вісім реально enabled:true
+  // у config.yml. Вимкнули котрийсь тут — або приберіть його з
+  // TOGGLEABLE_MODULE_IDS, або тумблер почне брехати власнику.
+  it('усі перемикні з Mini App модулі увімкнені в config.yml', () => {
+    const cfg = loadConfig();
+    const mods = cfg.modules as unknown as Record<string, { enabled: boolean }>;
+    for (const id of TOGGLEABLE_MODULE_IDS as string[]) {
+      expect(mods[id], `модуль ${id}`).toBeDefined();
+      expect(mods[id]?.enabled, `модуль ${id} має бути enabled:true`).toBe(true);
+    }
   });
 });

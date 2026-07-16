@@ -65,8 +65,12 @@ export function TodayScreen() {
   return (
     <div className="flex flex-col gap-[18px]">
       {weather && <WeatherBlock locations={weather.locations} />}
-      <HorizonDivider />
-      <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />
+      {/* Блок рендериться, лише якщо модуль дав дані: з F2 власник може вимкнути
+          погоду/курс у налаштуваннях, і тоді блока в брифінгу немає взагалі.
+          Неохоронений CurrencyBlock показував би «курс недоступний» — тобто збій
+          там, де насправді свідомо вимкнено. Роздільник — лише МІЖ блоками. */}
+      {weather && currency && <HorizonDivider />}
+      {currency && <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />}
       {mock && <QuestionBlock d={mock} />}
       {fact && <FactBlock d={fact} />}
       {stoic && <QuoteBlock d={stoic} />}

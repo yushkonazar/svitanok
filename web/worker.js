@@ -8,6 +8,7 @@
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
 import { recordEvent, aggregateStats, recordReliability } from './stats-core.mjs';
+import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
   parseUpdate,
@@ -313,6 +314,30 @@ function kyivMinAfter8(now = new Date()) {
   return mins >= 0 && mins <= 720 ? mins : null;
 }
 
+/** Хвилина київської доби (0..1439) — для вікна тихих годин (F2). */
+function kyivMinuteOfDay(now = new Date()) {
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Kyiv',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const h = Number(p.find((x) => x.type === 'hour')?.value);
+  const m = Number(p.find((x) => x.type === 'minute')?.value);
+  return h * 60 + m;
+}
+
+/** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
+ *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
+ *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts). */
+async function loadSettings(env) {
+  try {
+    return normalizeSettings(JSON.parse((await env.BRIEFING.get('settings')) ?? '{}'));
+  } catch {
+    return normalizeSettings(null);
+  }
+}
+
 /** Прочитати стор статистики з KV (ключ `stats`); биття -> {}. */
 async function loadStats(env) {
   try {
@@ -478,6 +503,78 @@ async function handleEvent(request, env) {
   return json({ ok: true });
 }
 
+/**
+ * Статус конекторів БЕЗ мережі: наявність GOOGLE_*-секретів + скоупи з кешу
+ * `googleToken` (googleAccessToken кладе туди `scope` при обміні). Свідомо НЕ
+ * викликаємо googleAccessToken(): відкриття налаштувань не повинне тягнути
+ * OAuth-обмін (зайва латентність + мережева залежність на екрані, який просто
+ * показує стан). Кеш ще порожній -> віддаємо за наявністю секретів.
+ */
+async function googleConnectors(env) {
+  const hasGoogleCreds = Boolean(
+    env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN,
+  );
+  let scope = null;
+  if (hasGoogleCreds) {
+    try {
+      scope = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null')?.scope ?? null;
+    } catch {
+      /* биття кешу -> скоупи невідомі, фолбек за секретами */
+    }
+  }
+  return connectorStatus({ hasGoogleCreds, scope });
+}
+
+/**
+ * GET /api/settings -> налаштування власника + статус конекторів.
+ * POST /api/settings {settings, initData} -> ЗАМІНИТИ блоб цілком (PUT-семантика).
+ *
+ * Свідомо БЕЗ read-modify-write. Спокуса «прочитати + накласти патч» тут
+ * оманлива: KV не має ні CAS, ні гарантії read-your-writes (~до 60с), а екран
+ * шле окрему мутацію НА КОЖЕН тумблер — два швидкі тапи, і обидва запити
+ * читають той самий базовий блоб, після чого другий PUT тихо затирає перший.
+ * Тому: єдиний писар (власник) шле ПОВНИЙ стан, який у нього вже є в кеші, а
+ * сервер лише валідує й кладе. Клієнт серіалізує запити (scope у
+ * useSaveSettings), тож останній тап = останній PUT.
+ *
+ * Тижнева ціль подач тут СВІДОМО відсутня: вона живе у блобі `stats`
+ * (goal.weeklyTarget агрегується поруч із weeklyApplied) і виставляється подією
+ * `set_goal` через /api/event, як решта мутацій дашборда.
+ */
+async function handleSettings(request, env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
+
+  if (request.method === 'GET') {
+    const auth = await checkOwnerRead(request, env);
+    if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+    const [settings, connectors] = await Promise.all([loadSettings(env), googleConnectors(env)]);
+    return json({ ok: true, settings, connectors });
+  }
+
+  if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: 'bad-json' }, 400);
+  }
+  const auth = await checkOwner(body?.initData, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  // Вимагаємо ПОВНИЙ блоб: часткове тіло normalizeSettings мовчки добив би
+  // дефолтами (тихі години злетіли б на 22:00–08:00 при перемиканні модуля).
+  // Краще гучне 400, ніж тиха втрата налаштувань.
+  const raw = body?.settings;
+  if (!raw || typeof raw !== 'object' || !raw.quiet || !raw.modules) {
+    return json({ ok: false, error: 'bad-params' }, 400);
+  }
+  const next = normalizeSettings(raw);
+  await env.BRIEFING.put('settings', JSON.stringify(next));
+  const connectors = await googleConnectors(env);
+  return json({ ok: true, settings: next, connectors });
+}
+
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
  *  воронка, інтереси — приватні; без initData -> 401/403 (фронт ховає таб). */
 async function handleStats(request, env) {
@@ -623,9 +720,17 @@ async function googleAccessToken(env) {
       try {
         // expires_in (сек) мінус 60с запасу; фолбек 55хв, якщо поле відсутнє.
         const ttlSec = Number.isFinite(json.expires_in) ? Math.max(60, json.expires_in - 60) : 3300;
+        // scope (F2): Google повертає перелік консентованих скоупів у самій
+        // відповіді обміну, тож статус конекторів у Mini App дістається задарма —
+        // без окремого виклику tokeninfo. Поле опційне; його відсутність
+        // деградує до «обидва сервіси» (connectorStatus).
         await env.BRIEFING.put(
           'googleToken',
-          JSON.stringify({ token, expMs: Date.now() + ttlSec * 1000 }),
+          JSON.stringify({
+            token,
+            expMs: Date.now() + ttlSec * 1000,
+            ...(typeof json.scope === 'string' ? { scope: json.scope } : {}),
+          }),
         );
       } catch (e) {
         console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
@@ -805,7 +910,7 @@ const HELP_TEXT = [
   '/reminders — список активних нагадувань (можна скасувати)',
   '/plan — план дня (LLM прочитає календар і запропонує таймлайн)',
   '/roadmap — IT-роадмеп (теми → підпункти, прогрес)',
-  '/settings — відкрити Mini App',
+  '/settings — тихі години, ціль, модулі брифінгу',
   '/clear [N] — видалити останні N повідомлень тут — мої та твої (за замовч. 20)',
   '/whereami — chat_id/thread_id цього чату',
 ].join('\n');
@@ -1273,7 +1378,10 @@ async function handleCommand(env, parsed, origin) {
       return sendText(formatWhereAmI(parsed.chatId, parsed.threadId), { parse_mode: 'HTML' });
     case 'settings':
       return sendText(
-        '⚙️ Налаштування (тихі/робочі години, конектори) зʼявляться в Mini App разом із нагадуваннями й календарем. Поки що — сам дашборд:',
+        // Кнопка веде на головну Mini App (Direct Link ?startapp без параметра —
+        // deep-link у розділ вимагав би зміни спільної buildMiniAppButton, яка
+        // дзеркалиться в src/core/telegram.ts). Тож просто кажемо, куди тиснути.
+        '⚙️ Налаштування — у Mini App, шестерня вгорі праворуч: тихі години, тижнева ціль подач, модулі брифінгу, конектори.',
         {
           reply_markup: {
             // TELEGRAM_BOT_USERNAME (Direct Link Mini App) заданий -> initData
@@ -1458,6 +1566,13 @@ async function checkReminders(env) {
   const now = Date.now();
   const due = dueReminders((await loadState(env)).reminders, now);
   if (due.length === 0) return;
+
+  // Тихі години (F2): не шлемо — і НЕ позначаємо спрацьованими. dueReminders —
+  // чистий фільтр, що переобчислюється кожні 5 хв, тож прострочені просто
+  // лишаються в черзі й підуть першим тіком після кінця вікна. Саме це й
+  // означає «відкладаються на ранок»: нічого не губиться, лише зсувається.
+  const settings = await loadSettings(env);
+  if (isQuietMinute(settings, kyivMinuteOfDay(new Date(now)))) return;
 
   const chatId = env.TELEGRAM_CHAT_ID;
   const threadId = env.TOPIC_ASSISTANT ?? undefined;
@@ -1812,6 +1927,9 @@ export default {
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
+    }
+    if (url.pathname === '/api/settings') {
+      return handleSettings(request, env);
     }
     if (url.pathname === '/api/telegram' && request.method === 'POST') {
       return handleTelegramWebhook(request, env, ctx);
