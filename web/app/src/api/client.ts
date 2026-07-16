@@ -1,9 +1,10 @@
 import { tg, inTelegram } from '../telegram.ts';
 import { statsSchema, type Stats } from './schema.ts';
-import { SAMPLE_STATS, EMPTY_STATS } from './sample.ts';
+import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE } from './sample.ts';
 import { briefSchema, type Brief } from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
+import { savedPageSchema, type SavedPage } from './schema.ts';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
 // origin), тож шляхи абсолютні (/api/...); у dev Vite проксі /api -> wrangler :8787.
@@ -166,6 +167,32 @@ export async function postSettings(next: Settings): Promise<SettingsResponse | n
 
   const parsed = settingsResponseSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат налаштувань змінився — оновіть застосунок');
+  return parsed.data;
+}
+
+/* ── Архів збереженого (F3) ────────────────────────────────────────────── */
+
+/**
+ * GET /api/saved — повний архів сторінками. Окремо від /api/stats, бо там
+ * savedList свідомо обрізаний до 8 як прев'ю: тягти сотні записів у кожне
+ * відкриття апки заради рядка «Ти зберіг N» — марно.
+ * Поза Telegram — демо-архів із SAMPLE (щоб «показати ще» було що показати).
+ */
+export async function fetchSaved(limit: number): Promise<SavedPage> {
+  if (!inTelegram()) {
+    return { items: SAMPLE_SAVED_ARCHIVE.slice(0, limit), total: SAMPLE_SAVED_ARCHIVE.length };
+  }
+  const res = await fetch(`/api/saved?offset=0&limit=${limit}`, {
+    cache: 'no-store',
+    headers: authHeaders(),
+  });
+  if (res.status === 401 || res.status === 403) {
+    return { items: SAMPLE_SAVED_ARCHIVE.slice(0, limit), total: SAMPLE_SAVED_ARCHIVE.length };
+  }
+  if (!res.ok) throw new Error(`Не вдалося завантажити збережене (${res.status})`);
+
+  const parsed = savedPageSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат збереженого змінився — оновіть застосунок');
   return parsed.data;
 }
 

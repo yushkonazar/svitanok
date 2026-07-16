@@ -33,6 +33,11 @@ const TERMINAL_STAGES = ['rejected', 'failed'];
 const STAGES = [...LINEAR_STAGES, ...TERMINAL_STAGES];
 const STAGE_RANK = { saved: 0, applied: 1, interview: 2, offer: 3 };
 
+// Скільки збереженого показує /api/stats (прев'ю на вкладці «Інтереси»).
+// Повний список — /api/saved зі сторінками (F3).
+const SAVED_PREVIEW = 8;
+const SAVED_PAGE_MAX = 50;
+
 // Оцінені питання (F4): qId -> 'easy'|'hard'. Кап — щоб блоб не ріс роками;
 // підсвітка потрібна лише свіжим питанням, які ще на екрані.
 const MOCK_RATED_CAP = 60;
@@ -414,22 +419,6 @@ function buildAppliedWeekly(appliedLog, todayKey, weeks = 8) {
   return starts.map((k) => ({ week: k, count: counts[k] }));
 }
 
-/** Розподіл fit% поданих вакансій за фіксованими кошиками. */
-const FIT_BUCKETS = [
-  ['<50', 0, 49],
-  ['50–59', 50, 59],
-  ['60–69', 60, 69],
-  ['70–79', 70, 79],
-  ['80–89', 80, 89],
-  ['90+', 90, Infinity],
-];
-function buildFitHistogram(fitApplied) {
-  return FIT_BUCKETS.map(([label, lo, hi]) => ({
-    label,
-    count: fitApplied.filter((f) => Number(f) >= lo && Number(f) <= hi).length,
-  }));
-}
-
 /** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів. */
 function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, topN = 5) {
   const starts = lastWeekStarts(todayKey, weeks);
@@ -477,6 +466,31 @@ export function reachedCounts(store) {
     for (const st of seen) out[st]++;
   }
   return out;
+}
+
+/** Один запис збереженого у формі контракту (спільна для прев'ю і сторінок). */
+function savedRow(x) {
+  return {
+    kind: x.kind || 'news',
+    id: x.id || x.url || null,
+    title: x.title || '',
+    url: x.url || null,
+    ts: x.ts || '',
+  };
+}
+
+/**
+ * Сторінка збереженого (F3): повний архів у KV не обрізаний — обрізав лише
+ * READ у aggregateStats. Тож «показати все» не потребує ні міграції, ні нового
+ * сховища: лише чесного доступу до того, що вже лежить.
+ * Порядок — новіші перші (s.saved наповнюється unshift).
+ */
+export function pageSaved(store, { offset = 0, limit = 20 } = {}) {
+  const s = normalize(store);
+  const off = Math.max(0, Math.floor(Number(offset)) || 0);
+  // Кап зверху — щоб ?limit=100000 не тягнув увесь блоб одним махом.
+  const lim = Math.min(SAVED_PAGE_MAX, Math.max(1, Math.floor(Number(limit)) || 20));
+  return { items: s.saved.slice(off, off + lim).map(savedRow), total: s.saved.length };
 }
 
 export function aggregateStats(store, todayKey) {
@@ -576,7 +590,10 @@ export function aggregateStats(store, todayKey) {
     avgFitApplied: avgFit,
     funnelList,
     savedCount: s.saved.length,
-    savedList: s.saved.slice(0, 8).map((x) => ({
+    // ТОП-8 у /api/stats — свідомо: це «останнє збережене» на вкладці, а не
+    // архів. Повний список — окремим ендпоінтом /api/saved (F3), бо тягти сотні
+    // записів у кожен /api/stats заради рядка «Ти зберіг N» — марно.
+    savedList: s.saved.slice(0, SAVED_PREVIEW).map((x) => ({
       kind: x.kind || 'news',
       id: x.id || x.url || null,
       title: x.title || '',
@@ -588,7 +605,6 @@ export function aggregateStats(store, todayKey) {
     // на що подаюсь / як змінюються інтереси).
     heatmap: buildHeatmap(s.days, todayKey),
     appliedWeekly: buildAppliedWeekly(s.appliedLog, todayKey),
-    fitHistogram: buildFitHistogram(fits),
     interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey),
     // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
     // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб

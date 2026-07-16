@@ -7,7 +7,7 @@
 // X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
-import { recordEvent, aggregateStats, recordReliability } from './stats-core.mjs';
+import { recordEvent, aggregateStats, recordReliability, pageSaved } from './stats-core.mjs';
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
@@ -579,6 +579,26 @@ async function handleSettings(request, env) {
   await env.BRIEFING.put('settings', JSON.stringify(next));
   const connectors = await googleConnectors(env);
   return json({ ok: true, settings: next, connectors });
+}
+
+/**
+ * GET /api/saved?offset=&limit= -> сторінка збереженого (F3).
+ *
+ * Окремий ендпоінт, а не поле в /api/stats: там savedList свідомо обрізаний до
+ * 8 як прев'ю, і тягти повний архів (сотні записів) у КОЖНЕ відкриття апки
+ * заради рядка «Ти зберіг N» — марно. Архів у KV не обрізаний ніколи; його лише
+ * не показували.
+ */
+async function handleSaved(request, env) {
+  const auth = await checkOwnerRead(request, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  const url = new URL(request.url);
+  // Кламп і дефолти — у чистій pageSaved (там же й тести).
+  const page = pageSaved(await loadStats(env), {
+    offset: url.searchParams.get('offset'),
+    limit: url.searchParams.get('limit'),
+  });
+  return json({ ok: true, ...page });
 }
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
@@ -1940,6 +1960,9 @@ export default {
     }
     if (url.pathname === '/api/settings') {
       return handleSettings(request, env);
+    }
+    if (url.pathname === '/api/saved') {
+      return handleSaved(request, env);
     }
     if (url.pathname === '/api/telegram' && request.method === 'POST') {
       return handleTelegramWebhook(request, env, ctx);

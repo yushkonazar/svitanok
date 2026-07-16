@@ -4,6 +4,7 @@ import {
   fetchStats,
   fetchBriefing,
   fetchSettings,
+  fetchSaved,
   postEvent,
   postSettings,
   postVote,
@@ -251,6 +252,16 @@ export function useJobDismiss() {
   return useMutation({
     mutationFn: (vars: { url: string; title: string }) => postEvent('job_dismiss', vars),
   });
+}
+
+/**
+ * Архів збереженого сторінками (F3). Ключ включає limit: «показати ще» просто
+ * перезапитує більший зріз. Список крихітний (сотні записів), тож infinite-
+ * query з мерджем сторінок тут — зайва складність і зайве джерело
+ * неконсистентності після unsave.
+ */
+export function useSavedArchive(limit: number) {
+  return useQuery({ queryKey: ['saved', limit], queryFn: () => fetchSaved(limit) });
 }
 
 // ── F2: Налаштування ──

@@ -63,13 +63,17 @@ export const savedItemSchema = z.object({
   ts: z.string(),
 });
 
+/** Сторінка архіву збереженого — GET /api/saved (F3). */
+export const savedPageSchema = z.object({
+  items: z.array(savedItemSchema).default([]),
+  total: int.default(0),
+});
+
 export const weakTopicSchema = z.object({ name: z.string(), value: num });
 
 export const heatmapCellSchema = z.object({ d: z.string(), v: num, l: int });
 
 export const appliedWeekSchema = z.object({ week: z.string(), count: int });
-
-export const fitBucketSchema = z.object({ label: z.string(), count: int });
 
 export const interestSchema = z.object({ topic: z.string(), score: num });
 
@@ -130,7 +134,6 @@ export const statsSchema = z.object({
   mock: z.object({ weakTopics: z.array(weakTopicSchema).default([]), streak: int.default(0) }),
   heatmap: z.array(heatmapCellSchema).default([]),
   appliedWeekly: z.array(appliedWeekSchema).default([]),
-  fitHistogram: z.array(fitBucketSchema).default([]),
   interestsTrend: interestsTrendSchema.default({ weeks: [], topics: [] }),
   interests: z.array(interestSchema).default([]),
   readPerDay: num.default(0),
@@ -162,11 +165,11 @@ export type FunnelItem = z.infer<typeof funnelItemSchema>;
 export type StageEvent = z.infer<typeof stageEventSchema>;
 export type Reached = z.infer<typeof reachedSchema>;
 export type Material = z.infer<typeof materialSchema>;
+export type SavedPage = z.infer<typeof savedPageSchema>;
 export type SavedItem = z.infer<typeof savedItemSchema>;
 export type WeakTopic = z.infer<typeof weakTopicSchema>;
 export type HeatmapCell = z.infer<typeof heatmapCellSchema>;
 export type AppliedWeek = z.infer<typeof appliedWeekSchema>;
-export type FitBucket = z.infer<typeof fitBucketSchema>;
 export type Interest = z.infer<typeof interestSchema>;
 export type InterestsTrend = z.infer<typeof interestsTrendSchema>;
 export type Mastery = z.infer<typeof masterySchema>;

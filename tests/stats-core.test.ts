@@ -331,33 +331,6 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(aw[5].count).toBe(0); // порожній тиждень присутній
   });
 
-  it('fitHistogram: межі кошиків 49/50 та 89/90', () => {
-    let s = emptyStore();
-    for (const [u, fit] of [
-      ['a', 49],
-      ['b', 50],
-      ['c', 89],
-      ['d', 90],
-      ['e', 100],
-    ] as const) {
-      s = recordEvent(s, { type: 'job_stage', url: u, stage: 'applied', fit }, '2026-07-07');
-    }
-    const h = aggregateStats(s, '2026-07-07').fitHistogram;
-    const by = Object.fromEntries(
-      h.map((b: { label: string; count: number }) => [b.label, b.count]),
-    );
-    expect(by['<50']).toBe(1);
-    expect(by['50–59']).toBe(1);
-    expect(by['80–89']).toBe(1);
-    expect(by['90+']).toBe(2);
-    // порожня історія -> всі кошики по нулях, форма стабільна
-    expect(
-      aggregateStats(emptyStore(), '2026-07-07').fitHistogram.every(
-        (b: { count: number }) => b.count === 0,
-      ),
-    ).toBe(true);
-  });
-
   it('interestsWeekly: події дзеркаляться у тижневі кошики (клік/сейв/голос)', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'news_click', category: 'Наука' }, '2026-07-07'); // +1

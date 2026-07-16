@@ -1,4 +1,4 @@
-import type { Stats, HeatmapCell } from './schema.ts';
+import type { Stats, HeatmapCell, SavedItem } from './schema.ts';
 
 // Демо-статистика поза Telegram (роадмеп v3, E1) — перенесена 1:1 з
 // web/public/index.html SAMPLE_STATS, щоб власник бачив заповнений UI без
@@ -175,14 +175,6 @@ export const SAMPLE_STATS: Stats = {
     { week: '', count: 3 },
     { week: '', count: 5 },
   ],
-  fitHistogram: [
-    { label: '<50', count: 0 },
-    { label: '50–59', count: 1 },
-    { label: '60–69', count: 2 },
-    { label: '70–79', count: 4 },
-    { label: '80–89', count: 5 },
-    { label: '90+', count: 2 },
-  ],
   interestsTrend: {
     weeks: ['', '', '', '', '', ''],
     topics: [
@@ -213,7 +205,6 @@ export const EMPTY_STATS: Stats = {
   mock: { weakTopics: [], streak: 0 },
   heatmap: [],
   appliedWeekly: [],
-  fitHistogram: [],
   interestsTrend: { weeks: [], topics: [] },
   interests: [],
   readPerDay: 0,
@@ -222,3 +213,26 @@ export const EMPTY_STATS: Stats = {
   mockRated: {},
   mockMaterials: {},
 };
+
+/**
+ * Демо-архів збереженого (F3) — ДОВШИЙ за прев'ю у SAMPLE_STATS.savedList.
+ * Інакше «Показати ще» в демо нічого б не показувала: прев'ю віддає 3 записи
+ * при savedCount 5, і кнопка була б порожньою обіцянкою.
+ */
+export const SAMPLE_SAVED_ARCHIVE: SavedItem[] = [
+  ...SAMPLE_STATS.savedList,
+  {
+    kind: 'news',
+    id: 'https://example.com/news9',
+    url: 'https://example.com/news9',
+    title: 'Cloudflare Workers: нові ліміти безкоштовного плану',
+    ts: '2026-07-02',
+  },
+  {
+    kind: 'fact',
+    id: 'f9',
+    title: 'Перший баг у комп’ютері був справжнім метеликом (1947)',
+    url: null,
+    ts: '2026-07-01',
+  },
+];
