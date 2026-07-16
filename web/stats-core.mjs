@@ -19,6 +19,14 @@
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 const STAGES = ['saved', 'applied', 'interview', 'offer'];
 
+// Тижнева ціль подач (F2): діапазон слайдера в Mini App. Клампимо і на записі
+// (set_goal), і на читанні (normalize) — щоб биті/легасі значення в KV
+// самолікувались, а не малювали смугу прогресу на 4000%.
+const GOAL_MIN = 1;
+const GOAL_MAX = 10;
+const GOAL_DEFAULT = 5;
+const clampGoal = (v) => Math.min(GOAL_MAX, Math.max(GOAL_MIN, v));
+
 export function emptyStore() {
   return {
     days: {},
@@ -28,7 +36,7 @@ export function emptyStore() {
     interests: {},
     interestsWeekly: {},
     mockTopics: {},
-    goal: { weeklyTarget: 5 },
+    goal: { weeklyTarget: GOAL_DEFAULT },
     fitApplied: [],
     opensMin: [],
     appliedLog: [],
@@ -51,7 +59,7 @@ export function normalize(s) {
         ? s.interestsWeekly
         : e.interestsWeekly,
     mockTopics: s.mockTopics && typeof s.mockTopics === 'object' ? s.mockTopics : e.mockTopics,
-    goal: { weeklyTarget: Number(s.goal?.weeklyTarget) || e.goal.weeklyTarget },
+    goal: { weeklyTarget: clampGoal(Number(s.goal?.weeklyTarget) || e.goal.weeklyTarget) },
     fitApplied: Array.isArray(s.fitApplied) ? s.fitApplied : e.fitApplied,
     opensMin: Array.isArray(s.opensMin) ? s.opensMin : e.opensMin,
     appliedLog: Array.isArray(s.appliedLog) ? s.appliedLog : e.appliedLog,
@@ -215,6 +223,17 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
         if (ev.rating === 'hard') bump(s.mockTopics[ev.topic], 'weak');
       }
       break;
+    case 'set_goal': {
+      // F2, слайдер «Тижнева ціль подач». Ціль ЖИВЕ в цьому сторі (goal.weeklyTarget
+      // тут же й агрегується з weeklyApplied), тож їй не треба ні окремого
+      // KV-ключа, ні ендпоінта — це подія, як і решта мутацій дашборда.
+      // Суворо number: Number(null)/Number('')/Number([]) === 0, тож м'яке
+      // приведення мовчки ставило б ціль 1 на будь-яке сміття замість ігнору.
+      if (typeof ev.value === 'number' && Number.isFinite(ev.value)) {
+        s.goal.weeklyTarget = clampGoal(Math.round(ev.value));
+      }
+      break;
+    }
     // 'step_done' прибрано (D4, «Крок до офера»); старі days[].step у KV просто
     // ігноруються (без міграції).
     default:

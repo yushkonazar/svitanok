@@ -1,10 +1,12 @@
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
-import { Card, StatLine } from '../ui/primitives.tsx';
-import { BarList } from '../charts/BarList.tsx';
+import { SectionHead, StatRow } from '../ui/primitives.tsx';
+import { SkillBars } from '../charts/SkillBars.tsx';
 import { Donut } from '../charts/Donut.tsx';
 
-// C · Майстерність (роадмеп v3, E1) — index.html:2506-2535.
+// C · Майстерність (дизайн v2, Svitanok.dc.html): тема тижня, смуги слабких тем,
+// пончик прогресу роадмепу з підписом. Підказки «вчити» макет не показує —
+// лишаємо тихим рядком (це корисний зв'язок mock-тема → тема роадмепу).
 
 export function MasteryBlock({ s }: { s: Stats }) {
   const tw = s.mastery?.themeOfWeek;
@@ -13,39 +15,44 @@ export function MasteryBlock({ s }: { s: Stats }) {
   const hasRoadmap = has(roadmap?.done) && has(roadmap?.total);
 
   return (
-    <Card title="🎤 C · Майстерність">
-      {tw && <StatLine first label="🗓 Тема тижня" value={`${tw.title} · ${tw.done}/${tw.total}`} />}
+    <div className="flex flex-col gap-3">
+      <SectionHead>Майстерність</SectionHead>
 
-      <div className="mt-2">
-        <BarList
-          items={s.mock.weakTopics.map((w) => ({ name: w.name, value: w.value }))}
-          unit="%"
-          emptyText="Слабких тем поки не виявлено"
-        />
-      </div>
+      {tw && (
+        <div className="flex items-center">
+          <span className="text-[11.5px] font-medium text-tx2">Тема тижня</span>
+          <span className="ml-auto text-[12.5px] font-bold">
+            {tw.title} · {tw.done}/{tw.total}
+          </span>
+        </div>
+      )}
+
+      <SkillBars
+        items={s.mock.weakTopics.map((w) => ({ name: w.name, pct: w.value }))}
+        emptyText="Слабких тем поки не виявлено"
+      />
 
       {hints.map((h, i) => (
-        <div key={i} className="mt-1 text-xs text-muted">
-          ↳ {h.mockTopic}: вчити{' '}
-          {h.themes.map((t) => `${t.title} (${t.done}/${t.total})`).join(', ')}
+        <div key={i} className="text-[11px] leading-[1.4] text-tx3">
+          ↳ {h.mockTopic}: вчити {h.themes.map((t) => `${t.title} (${t.done}/${t.total})`).join(', ')}
         </div>
       ))}
 
-      {has(s.mock.streak) && <StatLine label="Стрік mock" value={`🔥 ${s.mock.streak} дн.`} />}
+      {has(s.mock.streak) && s.mock.streak > 0 && (
+        <StatRow label="Стрік mock" value={`🔥 ${s.mock.streak} дн.`} />
+      )}
 
-      {hasRoadmap ? (
-        <div className="mt-3 flex items-center gap-3">
+      {hasRoadmap && (
+        <div className="flex items-center gap-3.5 pt-1">
           <Donut pct={(roadmap!.done / Math.max(1, roadmap!.total)) * 100} />
-          <div>
-            <div className="font-medium">🗺 Роадмеп тем</div>
-            <div className="text-sm text-muted">
-              {roadmap!.done}/{roadmap!.total} підпунктів
-            </div>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[13px] font-bold">🗺 Роадмеп тем</span>
+            <span className="font-mono text-[11px] font-medium text-tx2">
+              {roadmap!.done} / {roadmap!.total} підпунктів
+            </span>
           </div>
         </div>
-      ) : (
-        <StatLine label="🗺 Роадмеп тем" value={<span className="text-muted">скоро</span>} />
       )}
-    </Card>
+    </div>
   );
 }

@@ -1,18 +1,42 @@
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
-import { Card, StatLine, SubHead, Ph } from '../ui/primitives.tsx';
-import { BarsChart } from '../charts/BarsChart.tsx';
-import { HeatmapGrid } from '../charts/HeatmapGrid.tsx';
+import { SectionHead, StatRow } from '../ui/primitives.tsx';
+import { WeekBars } from '../charts/WeekBars.tsx';
+import { Heatmap } from '../charts/Heatmap.tsx';
 
-// A · Звички (роадмеп v3, E1) — index.html:2488-2501.
+// A · Звички (дизайн v2, Svitanok.dc.html): дві скляні плитки стріків (перша —
+// градієнтним числом), тижневі стовпчики, теплокарта 12 тижнів, медіана часу.
 
-function StreakTile({ emoji, n, t, rec }: { emoji: string; n: number; t: string; rec?: string }) {
+function Tile({
+  n,
+  emoji,
+  label,
+  note,
+  gradient = false,
+}: {
+  n: number;
+  emoji?: string;
+  label: string;
+  note?: string;
+  gradient?: boolean;
+}) {
   return (
-    <div className="flex flex-1 flex-col items-center gap-0.5 rounded-2xl bg-surface-2 p-3 text-center">
-      <div className="text-xl">{emoji}</div>
-      <div className="text-2xl font-bold">{n}</div>
-      <div className="text-xs text-muted">{t}</div>
-      {rec && <div className="text-[11px] text-accent">{rec}</div>}
+    <div className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5">
+      <div className="flex items-baseline gap-1.5">
+        <span
+          className="font-mono text-[44px] font-medium leading-none tracking-[-0.03em]"
+          style={
+            gradient
+              ? { background: 'var(--grad)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }
+              : undefined
+          }
+        >
+          {n}
+        </span>
+        {emoji && <span className="text-[15px]">{emoji}</span>}
+      </div>
+      <span className="text-[10.5px] font-medium leading-[1.3] text-tx2">{label}</span>
+      {note && <span className="font-mono text-[10px] font-semibold text-tx3">{note}</span>}
     </div>
   );
 }
@@ -20,35 +44,36 @@ function StreakTile({ emoji, n, t, rec }: { emoji: string; n: number; t: string;
 export function HabitsBlock({ s }: { s: Stats }) {
   const showHeatmap = s.heatmap.some((c) => c.v > 0);
   return (
-    <Card title="🔥 A · Звички">
+    <div className="flex flex-col gap-3.5">
+      <SectionHead>Звички</SectionHead>
+
       <div className="flex gap-2.5">
-        <StreakTile
-          emoji="🔥"
+        <Tile
+          gradient
           n={s.streaks.openDays || 0}
-          t="днів поспіль відкрито"
-          rec={has(s.streaks.bestOpenDays) ? `рекорд ${s.streaks.bestOpenDays}` : undefined}
+          emoji="🔥"
+          label="днів поспіль відкрито"
+          note={has(s.streaks.bestOpenDays) ? `РЕКОРД ${s.streaks.bestOpenDays}` : undefined}
         />
-        <StreakTile emoji="🎤" n={s.streaks.mockDays || 0} t="днів поспіль питання" />
+        <Tile n={s.streaks.mockDays || 0} label="днів поспіль питання" />
       </div>
 
-      <div className="mt-3">
-        {s.weekly.length ? (
-          <BarsChart items={s.weekly.map((d) => ({ label: d.day, value: d.value || 0 }))} />
-        ) : (
-          <Ph>Немає даних за тиждень</Ph>
-        )}
-      </div>
+      <WeekBars days={s.weekly} />
 
       {showHeatmap && (
-        <>
-          <SubHead>Активність · 12 тижнів</SubHead>
-          <HeatmapGrid cells={s.heatmap} />
-        </>
+        <div>
+          <div className="mb-1.5 font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
+            АКТИВНІСТЬ · 12 ТИЖНІВ
+          </div>
+          <Heatmap cells={s.heatmap} />
+        </div>
       )}
 
       {has(s.timeToOpenMin) && (
-        <StatLine label="Час до відкриття (медіана)" value={`+${s.timeToOpenMin} хв після 08:00`} />
+        <div className="pt-0.5">
+          <StatRow label="Час до відкриття (медіана)" value={`+${s.timeToOpenMin} хв після 08:00`} />
+        </div>
       )}
-    </Card>
+    </div>
   );
 }

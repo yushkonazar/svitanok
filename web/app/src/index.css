@@ -1,64 +1,84 @@
 @import 'tailwindcss';
 
-/* Тема дашборда (роадмеп v3, E0). Скляна естетика — та сама, що у vanilla-версії,
-   але як Tailwind v4 @theme-токени, щоб класи (bg-surface, text-muted…) були
-   семантичними. @theme задає ТЕМНУ тему за замовчуванням; світлу вмикає перемикач
-   (theme.tsx) через <html data-theme="light">, перевизначаючи ті самі змінні.
-   Утиліти Tailwind посилаються на var(--color-*), тож зміна значення на корені
-   каскадно перефарбовує весь інтерфейс. */
-@theme {
-  --color-bg: #0e1016;
-  --color-surface: #171a22;
-  --color-surface-2: #1f2430;
-  --color-border: #272d3a;
-  --color-fg: #eef1f6;
-  --color-muted: #97a1b2;
-  --color-accent: #ff8a4c;
-  --color-accent-2: #ffb03a;
-  --color-on-accent: #1a1206;
-  --color-up: #4ade80;
-  --color-down: #f87171;
+/* Шрифти макета — самохостом (@fontsource), не Google Fonts: CSP тримає
+   font-src/style-src на 'self', а в Telegram-вебв'ю локальні вантажаться швидше
+   й без зовнішніх запитів. Manrope — текст, JetBrains Mono — числа/мітки. */
+@import '@fontsource-variable/manrope';
+@import '@fontsource-variable/jetbrains-mono';
 
-  /* Графіки: «трек» під порожніми барами/доріжками (тема-залежний, щоб було
-     видно і в світлій темі — на відміну від vanilla, де білі альфи зникали).
-     Брендовий градієнт барів/заливок сталий в обох темах. */
+/* Дизайн-система Svitanok v2 (Claude Design, Svitanok.dc.html).
+   Темна — основна: глибоке фіолетово-нічне тло + «туман» (fog) із коралу/амбера.
+   Токени лягають на Tailwind (@theme), тож класи (bg-glass, text-tx2…) семантичні.
+   Світлу вмикає <html data-theme="light"> — перевизначає ті самі змінні. */
+@theme {
+  /* тло / поверхні */
+  --color-bg: #120e1c;
+  --color-bg2: #1a1330;
+  --color-glass: rgba(255, 255, 255, 0.05);
+  --color-glassb: rgba(255, 255, 255, 0.1);
+  --color-hair: rgba(255, 255, 255, 0.08);
+
+  /* текст */
+  --color-tx: #f2f1ec;
+  --color-tx2: rgba(242, 241, 236, 0.6);
+  --color-tx3: rgba(242, 241, 236, 0.38);
+
+  /* акценти */
+  --color-a1: #ff6e7a;
+  --color-a2: #ffa45c;
+  --color-onacc: #1b0812;
+  --color-pos: oklch(0.8 0.14 155);
+  --color-neg: oklch(0.72 0.17 25);
+  --color-info: #9ba6ff;
   --color-track: rgba(255, 255, 255, 0.08);
-  --grad-from: #ff6b57;
-  --grad-to: #ffb03a;
 
   --radius-card: 16px;
-  --font-sans:
-    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --font-sans: 'Manrope Variable', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
 }
 
-/* Світла тема — перевизначення тих самих токенів. Неопаковані правила (поза
-   @layer) виграють у @theme-змінних незалежно від специфічності, тож :root[...]
-   надійно перекриває. Акценти лишаємо брендовими; змінюємо тло/поверхні/текст. */
-:root[data-theme='light'] {
-  --color-bg: #f4f6fb;
-  --color-surface: #ffffff;
-  --color-surface-2: #eceff5;
-  --color-border: #dce1ea;
-  --color-fg: #171b24;
-  --color-muted: #5b6472;
-  --color-on-accent: #ffffff;
-  --color-up: #15a34a;
-  --color-down: #dc2626;
-  --color-track: rgba(15, 23, 42, 0.08);
-  color-scheme: light;
-}
-
-:root[data-theme='dark'] {
+/* «Туман» — не токен Tailwind (лише для фонових плям), тому звичайні змінні. */
+:root {
+  --fogA: rgba(255, 164, 92, 0.13);
+  --fogB: rgba(255, 110, 122, 0.11);
+  --fogC: rgba(170, 150, 255, 0.09);
+  --grad: linear-gradient(135deg, var(--color-a1), var(--color-a2));
   color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --color-bg: #fbf3ee;
+  --color-bg2: #ffffff;
+  --color-glass: rgba(120, 55, 60, 0.045);
+  --color-glassb: rgba(120, 55, 60, 0.12);
+  --color-hair: rgba(60, 30, 40, 0.1);
+  --color-tx: #2a1b22;
+  --color-tx2: rgba(42, 27, 34, 0.62);
+  --color-tx3: rgba(42, 27, 34, 0.42);
+  --color-a1: #e8566a;
+  --color-a2: #ec7a38;
+  --color-onacc: #fff6f0;
+  --color-pos: oklch(0.56 0.14 155);
+  --color-neg: oklch(0.56 0.18 25);
+  --color-info: #5a63cf;
+  --color-track: rgba(60, 30, 40, 0.1);
+  --fogA: rgba(255, 150, 90, 0.16);
+  --fogB: rgba(255, 110, 122, 0.13);
+  --fogC: rgba(150, 130, 230, 0.11);
+  color-scheme: light;
 }
 
 html,
 body {
   margin: 0;
   background: var(--color-bg);
-  color: var(--color-fg);
+  color: var(--color-tx);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  transition:
+    background-color 0.4s ease,
+    color 0.4s ease;
 }
 
 /* Безпечні зони iOS (Telegram fullscreen) */
@@ -66,4 +86,77 @@ body {
   min-height: 100dvh;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
+}
+
+/* Ховаємо скролбар (макет — мобільний, як у vanilla) */
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* ── Анімації макета ── */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+@keyframes sheetUp {
+  from {
+    transform: translateY(101%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.8);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Шанс поважати prefers-reduced-motion — вимикаємо декоративний рух. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

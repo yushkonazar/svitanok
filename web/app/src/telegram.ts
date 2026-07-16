@@ -17,6 +17,10 @@ interface TelegramWebApp {
   ready: () => void;
   expand: () => void;
   openLink: (url: string) => void;
+  // themeChanged — для теми «Авто» (F2): користувач перемкнув тему в самому
+  // Telegram, а Mini App має піти за ним, не чекаючи перезапуску.
+  onEvent?: (event: 'themeChanged', cb: () => void) => void;
+  offEvent?: (event: 'themeChanged', cb: () => void) => void;
   BackButton?: TelegramBackButton;
   HapticFeedback?: {
     impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;

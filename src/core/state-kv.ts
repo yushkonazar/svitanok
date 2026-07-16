@@ -141,6 +141,39 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
   };
 }
 
+/**
+ * Прочитати довільний KV-ключ як JSON-обʼєкт (ТІЛЬКИ читання, без стану/флашу).
+ * Для ключів, які оркестратор лише споживає, а пише хтось інший — сьогодні це
+ * `settings` (тумблери модулів із Mini App, F2). Будь-який збій (404, HTTP,
+ * мережа, биття JSON) -> null: відсутні налаштування мають означати «дефолти
+ * config.yml», а не впалий ран брифінгу.
+ */
+export async function readKvJson(
+  opts: KvStateOptions,
+  key: string,
+): Promise<Record<string, unknown> | null> {
+  const f = opts.fetchImpl ?? fetch;
+  try {
+    const resp = await f(valueUrl(opts, key), {
+      headers: { authorization: `Bearer ${opts.apiToken.trim()}` },
+    });
+    if (resp.status === 404) return null; // ключа ще нема — нормально, тихо
+    if (!resp.ok) {
+      opts.log?.warn(`KV ${key}: читання HTTP ${resp.status} — ігнорую`);
+      return null;
+    }
+    const parsed: unknown = JSON.parse(await resp.text());
+    // Масив — теж typeof 'object', але це не блоб налаштувань: віддаємо null,
+    // щоб споживач не діставав `.modules` з масиву.
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch (e) {
+    opts.log?.warn(`KV ${key}: читання впало (${e instanceof Error ? e.message : String(e)})`);
+    return null;
+  }
+}
+
 /** Прочитати CF-креденшели зі змінних середовища; неповні -> null (локально файл). */
 export function readKvEnv(): { accountId: string; apiToken: string; namespaceId: string } | null {
   const accountId = process.env.CF_ACCOUNT_ID?.trim();

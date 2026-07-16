@@ -21,6 +21,44 @@ updates:
     commit-message:
       prefix: chore(deps)
       prefix-development: chore(dev-deps)
+    ignore:
+      # TypeScript 7 (нативний порт) поки НЕ беремо: typescript-eslint@8.64 —
+      # найновіший на 16.07.2026 — вимагає `typescript >=4.8.4 <6.1.0`, тобто
+      # TS7 ламає лінтер peer-конфліктом. Сидимо на 6.0.x (у межах діапазону).
+      # Знімати, коли typescript-eslint оголосить підтримку 7.
+      - dependency-name: typescript
+        versions: ['>=7.0.0']
+      # @types/node тримаємо на мажорі Node з .nvmrc (24). Новіші типи описують
+      # API, якого в нашому рантаймі немає — tsc пропускав би виклики, що падають
+      # у CI/проді. Піднімати РАЗОМ із .nvmrc, не окремо.
+      - dependency-name: '@types/node'
+        versions: ['>=25.0.0']
+
+  # --- npm: web/app (React-дашборд Mini App — власний package.json+toolchain) ---
+  # Був НЕ покритий узагалі (dependabot стежив лише за / і /host), тож React,
+  # Vite, zod тощо не оновлювались автоматично від самої міграції (група E).
+  #
+  # ⚠️ Гейт тут слабший, ніж у кореня: кореневий eslint свідомо ігнорує web/app
+  # (див. eslint.config.mjs), тестів у ньому теж немає — CI-джоба `dashboard`
+  # перевіряє лише «збирається» (tsc -b && vite build). Тому зелений CI на цих
+  # PR-ах НЕ означає «працює»: мажори (React 19, zod 4, Vite 7, react-router 7)
+  # мержити лише зі смоуком у браузері/Telegram.
+  - package-ecosystem: npm
+    directory: /web/app
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Kyiv
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      prod-dependencies:
+        dependency-type: production
+    commit-message:
+      prefix: chore(deps-web)
+      prefix-development: chore(dev-deps-web)
 
   # --- npm: host/ (VPS LLM-реле) ---
   - package-ecosystem: npm

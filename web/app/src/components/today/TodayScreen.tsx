@@ -1,35 +1,42 @@
 import { useBriefing } from '../../api/hooks.ts';
-import { WeatherCard } from './WeatherCard.tsx';
-import { CurrencyCard } from './CurrencyCard.tsx';
-import { QuestionCard } from './QuestionCard.tsx';
-import { FactCard, ThoughtCard } from './FactCard.tsx';
-import { OnThisDayCard } from './OnThisDayCard.tsx';
+import {
+  readBlock,
+  weatherDataSchema,
+  currencyDataSchema,
+  mockDataSchema,
+  factDataSchema,
+  stoicDataSchema,
+  onThisDayDataSchema,
+} from '../../api/briefing-schema.ts';
+import { shortDateFromIso } from '../../lib/dateLabel.ts';
+import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { WeatherBlock } from './WeatherBlock.tsx';
+import { CurrencyBlock } from './CurrencyBlock.tsx';
+import { QuestionBlock } from './QuestionBlock.tsx';
+import { FactBlock, QuoteBlock } from './FactQuoteBlocks.tsx';
+import { ThisDayBlock } from './ThisDayBlock.tsx';
 
-// Вкладка «Сьогодні» (роадмеп v3, E2). Порядок карток 1:1 з vanilla renderToday
-// (index.html:1714-1817): Погода → Курс → Питання → Факт → Думка → У цей день.
+// Вкладка «Сьогодні» (дизайн v2, Svitanok.dc.html). Порядок макета:
+// погода (з циферблатом і графіком) → горизонт-роздільник → курс → питання →
+// факт → думка → у цей день. Секції течуть одна за одною (без карток), розділені
+// вертикальним ритмом 18px — як у макеті.
 
-function Skeleton() {
+/** Роздільник-«горизонт»: дві волосінки з градієнтною крапкою-сонцем. */
+function HorizonDivider() {
   return (
-    <div className="flex flex-col gap-3">
-      {[0, 1, 2].map((i) => (
-        <div key={i} className="h-28 animate-pulse rounded-card border border-border bg-surface" />
-      ))}
-    </div>
-  );
-}
-
-function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="rounded-card border border-border bg-surface p-6 text-center">
-      <div className="mb-1 text-2xl">⚠️</div>
-      <div className="mb-3 text-sm text-muted">{message}</div>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="rounded-full bg-surface-2 px-4 py-1.5 text-sm font-medium transition-colors hover:bg-border"
-      >
-        Спробувати ще
-      </button>
+    <div className="flex items-center gap-2.5" aria-hidden="true">
+      <div
+        className="h-px flex-1"
+        style={{ background: 'linear-gradient(90deg,transparent,rgba(255,164,92,.4))' }}
+      />
+      <div
+        className="h-2 w-2 rounded-full"
+        style={{ background: 'var(--grad)', boxShadow: '0 0 12px rgba(255,140,100,.7)' }}
+      />
+      <div
+        className="h-px flex-1"
+        style={{ background: 'linear-gradient(90deg,rgba(255,110,122,.4),transparent)' }}
+      />
     </div>
   );
 }
@@ -37,24 +44,37 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void 
 export function TodayScreen() {
   const { data, isLoading, isError, error, refetch } = useBriefing();
 
-  if (isLoading) return <Skeleton />;
+  if (isLoading) return <LoadingSkeleton />;
   if (isError || !data) {
-    const msg = error instanceof Error ? error.message : 'Не вдалося завантажити брифінг';
-    return <ErrorCard message={msg} onRetry={() => refetch()} />;
+    return (
+      <ErrorState
+        message={error instanceof Error ? error.message : 'Перевір з’єднання й спробуй ще раз.'}
+        onRetry={() => refetch()}
+      />
+    );
   }
 
-  const { brief } = data;
+  const blocks = data.brief.blocks;
+  const weather = readBlock(blocks, 'weather', weatherDataSchema);
+  const currency = readBlock(blocks, 'currency', currencyDataSchema);
+  const mock = readBlock(blocks, 'mock', mockDataSchema);
+  const fact = readBlock(blocks, 'fact', factDataSchema);
+  const stoic = readBlock(blocks, 'stoic', stoicDataSchema);
+  const onthisday = readBlock(blocks, 'onthisday', onThisDayDataSchema);
+
   return (
-    <div>
-      {brief.dateLabel && (
-        <div className="mb-3 text-sm text-muted">{brief.dateLabel}</div>
-      )}
-      <WeatherCard brief={brief} />
-      <CurrencyCard brief={brief} />
-      <QuestionCard brief={brief} />
-      <FactCard brief={brief} />
-      <ThoughtCard brief={brief} />
-      <OnThisDayCard brief={brief} />
+    <div className="flex flex-col gap-[18px]">
+      {weather && <WeatherBlock locations={weather.locations} />}
+      {/* Блок рендериться, лише якщо модуль дав дані: з F2 власник може вимкнути
+          погоду/курс у налаштуваннях, і тоді блока в брифінгу немає взагалі.
+          Неохоронений CurrencyBlock показував би «курс недоступний» — тобто збій
+          там, де насправді свідомо вимкнено. Роздільник — лише МІЖ блоками. */}
+      {weather && currency && <HorizonDivider />}
+      {currency && <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />}
+      {mock && <QuestionBlock d={mock} />}
+      {fact && <FactBlock d={fact} />}
+      {stoic && <QuoteBlock d={stoic} />}
+      {onthisday && <ThisDayBlock d={onthisday} />}
     </div>
   );
 }
