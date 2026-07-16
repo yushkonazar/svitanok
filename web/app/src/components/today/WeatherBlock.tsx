@@ -40,9 +40,11 @@ export function WeatherBlock({ locations }: { locations: WeatherLocation[] }) {
   const second = locations[1];
 
   const dl = dayLen(l.sunrise, l.sunset);
+  // «−2ХВ ДО ВЧОРА» читалось як загадка: незрозуміло, що з чим порівняли.
+  // Кажемо прямо, що сталось: день довшає чи коротшає і на скільки.
   const delta =
     has(l.dayLenDeltaMin) && l.dayLenDeltaMin !== 0
-      ? ` · ${l.dayLenDeltaMin! > 0 ? '+' : '−'}${Math.abs(l.dayLenDeltaMin!)}ХВ ДО ВЧОРА`
+      ? ` · ${l.dayLenDeltaMin! > 0 ? 'ДОВШИЙ' : 'КОРОТШИЙ'} НА ${Math.abs(l.dayLenDeltaMin!)} ХВ, НІЖ УЧОРА`
       : '';
   const uv = has(l.uv) ? uvMeta(l.uv!) : null;
   const aqi = has(l.aqi) ? AQI_META[l.aqi!] : null;
@@ -64,12 +66,12 @@ export function WeatherBlock({ locations }: { locations: WeatherLocation[] }) {
           </div>
         </div>
         <div className="ml-auto flex flex-col gap-1.5 whitespace-nowrap pb-1 text-right font-mono text-[10px] font-medium text-tx2">
-          {has(l.feelsLikeC) && <Metric label="ВІДЧ" value={signTemp(l.feelsLikeC!)} />}
+          {has(l.feelsLikeC) && <Metric label="ВІДЧУВАЄТЬСЯ" value={signTemp(l.feelsLikeC!)} />}
           {has(l.minC) && has(l.maxC) && (
             <Metric label="ТЕМПЕРАТУРА" value={`${l.minC}…${l.maxC}°`} />
           )}
           {has(l.windMps) && <Metric label="ВІТЕР" value={`${l.windMps} м/с`} />}
-          {has(l.humidity) && <Metric label="ВОЛОГ" value={`${l.humidity}%`} />}
+          {has(l.humidity) && <Metric label="ВОЛОГІСТЬ" value={`${l.humidity}%`} />}
         </div>
       </div>
 
