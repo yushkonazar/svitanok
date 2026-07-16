@@ -112,7 +112,12 @@ export const statsSchema = z.object({
   mockRatedToday: z.boolean().optional(),
   roadmap: roadmapSchema.optional(),
   mastery: masterySchema.optional(),
-  votes: z.record(z.enum(['up', 'down'])).optional(),
+  // zod 4: z.record ВИМАГАЄ обидві схеми — ключа й значення. З одним аргументом
+  // v4 читає його як схему КЛЮЧА (у v3 це була схема значення), тобто мовчазна
+  // інверсія сенсу: замість «url -> голос» вийшло б «ключі мусять бути up/down»,
+  // і кожен реальний votes завалював би валідацію -> вкладка «Статистика» в
+  // помилку. Ключ тут — url новини.
+  votes: z.record(z.string(), z.enum(['up', 'down'])).optional(),
 });
 
 export type Stats = z.infer<typeof statsSchema>;
