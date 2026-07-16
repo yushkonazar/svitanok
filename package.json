@@ -30,12 +30,11 @@
     ]
   },
   "dependencies": {
-    "js-yaml": "^4.1.0",
-    "zod": "^3.23.8"
+    "js-yaml": "^5.2.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
