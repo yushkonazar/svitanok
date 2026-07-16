@@ -473,12 +473,42 @@ export function formatStatsMessage(stats) {
  * кожній темі, скопіювати значення для TOPIC_*-секретів) — без потреби
  * грепати логи Worker'а.
  */
-export function formatWhereAmI(chatId, threadId) {
+export function formatWhereAmI(chatId, threadId, me = null, assistantTopic = undefined) {
   const lines = [
     '📍 <b>Де я</b>',
     '',
     `chat_id: <code>${escapeHtml(String(chatId ?? '?'))}</code>`,
     `thread_id: <code>${threadId == null ? 'немає (не тема форуму)' : escapeHtml(String(threadId))}</code>`,
   ];
+  // Діагностика «написав вільним текстом — і тиша».
+  //
+  // can_read_all_group_messages з getMe відбиває ЛИШЕ налаштування приватності,
+  // а не права адміна: бот-адмін отримує все навіть із увімкненою приватністю.
+  // Тому не лякаємо, коли приватність увімкнена, — лише кажемо, від чого це
+  // залежить. Інакше попередження брехало б адмін-ботам.
+  if (me && typeof me.can_read_all_group_messages === 'boolean') {
+    lines.push(
+      '',
+      me.can_read_all_group_messages
+        ? '✅ Приватність вимкнена — вільний текст доходить до мене'
+        : 'ℹ️ Приватність УВІМКНЕНА. Вільний текст доходить, лише якщо я адмін групи.\n' +
+            'Якщо не адмін: @BotFather → /setprivacy → Disable, тоді перезапустити діалог.',
+    );
+  }
+  // Тема має значення: вільний текст іде до асистента лише в темі 🤖Асистент
+  // (або в чаті без тем). Тому показуємо, чи збігається поточна тема з
+  // налаштованою, — без цього «мовчання» неможливо відрізнити від «не та тема».
+  if (assistantTopic !== undefined) {
+    const here = threadId == null || String(threadId) === String(assistantTopic);
+    lines.push(
+      '',
+      assistantTopic == null
+        ? '⚠️ TOPIC_ASSISTANT не заданий у воркері — вільний текст працює лише в чаті без тем.'
+        : `🤖 Тема асистента: <code>${escapeHtml(String(assistantTopic))}</code>` +
+            (here
+              ? ' — це вона, вільний текст тут працює'
+              : ' — тут вільний текст НЕ піде до асистента'),
+    );
+  }
   return lines.join('\n');
 }

@@ -14,9 +14,15 @@ interface TelegramWebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string };
   colorScheme?: 'light' | 'dark';
+  version?: string;
+  isVersionAtLeast?: (v: string) => boolean;
   ready: () => void;
   expand: () => void;
   openLink: (url: string) => void;
+  // Bot API 7.7+: гасить НАТИВНИЙ жест Telegram «свайп вниз = закрити/згорнути».
+  // CSS touch-action тут безсилий — жест живе на контейнері вебвʼю, поза сторінкою.
+  disableVerticalSwipes?: () => void;
+  enableVerticalSwipes?: () => void;
   // themeChanged — для теми «Авто» (F2): користувач перемкнув тему в самому
   // Telegram, а Mini App має піти за ним, не чекаючи перезапуску.
   onEvent?: (event: 'themeChanged', cb: () => void) => void;
@@ -91,4 +97,28 @@ export function setBackButton(visible: boolean, onClick: () => void): () => void
   }
   bb.hide();
   return () => {};
+}
+
+/**
+ * Дозволити/заборонити нативний свайп «вниз = закрити апку» (Bot API 7.7+).
+ *
+ * Навіщо: канбан тягне картку пальцем ВНИЗ, і Telegram сприймає це як
+ * pull-to-dismiss — апка починає закриватись замість перетягування. Жест
+ * нативний (UIPanGestureRecognizer на контейнері WKWebView), тож ні
+ * touch-action, ні preventDefault до нього не дістають — лише хост-API.
+ *
+ * Озброюється він лише коли сторінка вгорі (scrollTop === 0) і тягнеш униз —
+ * тому баг і ловився саме на верхній картці.
+ *
+ * Старий клієнт (< 7.7) методу не має: isVersionAtLeast гейтить, бо виклик там
+ * лише насмітить у консоль попередженням і нічого не зробить.
+ */
+export function setVerticalSwipes(enabled: boolean): void {
+  if (!tg?.isVersionAtLeast?.('7.7')) return;
+  try {
+    if (enabled) tg.enableVerticalSwipes?.();
+    else tg.disableVerticalSwipes?.();
+  } catch {
+    /* хост може не підтримувати — не валимо жест через це */
+  }
 }
