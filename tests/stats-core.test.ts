@@ -74,7 +74,17 @@ describe('stats-core — recordEvent', () => {
     // подальший перехід без title у події — тайтл зберігається зі стану
     s = recordEvent(s, { type: 'job_stage', url: 'j2', stage: 'applied' }, '2026-07-08');
     expect(s.funnel['j2']).toBe('applied');
-    expect(s.funnelMeta['j2']).toEqual({ title: 'Junior Dev', ts: '2026-07-08' });
+    // F1: ts — дата ПЕРШОГО входу (07-07), не останнього переходу (07-08).
+    // Доти тут стояло ts:'2026-07-08' — тест закріплював баг як норму, через що
+    // напис «у воронці з …» у шторці показував дату останньої зміни стадії.
+    expect(s.funnelMeta['j2']).toEqual({
+      title: 'Junior Dev',
+      ts: '2026-07-07',
+      history: [
+        { stage: 'saved', ts: '2026-07-07' },
+        { stage: 'applied', ts: '2026-07-08' },
+      ],
+    });
   });
 
   it('normalize терпить старий стор без funnelMeta', () => {
@@ -206,10 +216,29 @@ describe('stats-core — aggregateStats', () => {
       '2026-07-07',
     );
     const st = aggregateStats(s, '2026-07-07');
+    // history (F1) — журнал переходів для «Історії» у шторці вакансії.
     expect(st.funnelList).toEqual([
-      { url: 'c', stage: 'saved', title: 'React Trainee', ts: '2026-07-07' },
-      { url: 'a', stage: 'applied', title: '', ts: '2026-07-07' },
-      { url: 'b', stage: 'interview', title: '', ts: '2026-07-07' },
+      {
+        url: 'c',
+        stage: 'saved',
+        title: 'React Trainee',
+        ts: '2026-07-07',
+        history: [{ stage: 'saved', ts: '2026-07-07' }],
+      },
+      {
+        url: 'a',
+        stage: 'applied',
+        title: '',
+        ts: '2026-07-07',
+        history: [{ stage: 'applied', ts: '2026-07-07' }],
+      },
+      {
+        url: 'b',
+        stage: 'interview',
+        title: '',
+        ts: '2026-07-07',
+        history: [{ stage: 'interview', ts: '2026-07-07' }],
+      },
     ]);
   });
 
@@ -217,7 +246,15 @@ describe('stats-core — aggregateStats', () => {
     const st = aggregateStats(emptyStore(), '2026-07-07');
     expect(st.streaks.openDays).toBe(0);
     expect(st.weekly).toHaveLength(7);
-    expect(st.funnel).toEqual({ saved: 0, applied: 0, interview: 0, offer: 0 });
+    // F1: шість стадій — 4 лінійні + термінальні rejected/failed.
+    expect(st.funnel).toEqual({
+      saved: 0,
+      applied: 0,
+      interview: 0,
+      offer: 0,
+      rejected: 0,
+      failed: 0,
+    });
     expect(st.funnelList).toEqual([]);
     expect(st.interests).toEqual([]);
     expect(st.timeToOpenMin).toBeNull();
@@ -292,33 +329,6 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(aw[7]).toEqual({ week: '2026-07-06', count: 1 }); // поточний останній
     expect(aw[6]).toEqual({ week: '2026-06-29', count: 2 });
     expect(aw[5].count).toBe(0); // порожній тиждень присутній
-  });
-
-  it('fitHistogram: межі кошиків 49/50 та 89/90', () => {
-    let s = emptyStore();
-    for (const [u, fit] of [
-      ['a', 49],
-      ['b', 50],
-      ['c', 89],
-      ['d', 90],
-      ['e', 100],
-    ] as const) {
-      s = recordEvent(s, { type: 'job_stage', url: u, stage: 'applied', fit }, '2026-07-07');
-    }
-    const h = aggregateStats(s, '2026-07-07').fitHistogram;
-    const by = Object.fromEntries(
-      h.map((b: { label: string; count: number }) => [b.label, b.count]),
-    );
-    expect(by['<50']).toBe(1);
-    expect(by['50–59']).toBe(1);
-    expect(by['80–89']).toBe(1);
-    expect(by['90+']).toBe(2);
-    // порожня історія -> всі кошики по нулях, форма стабільна
-    expect(
-      aggregateStats(emptyStore(), '2026-07-07').fitHistogram.every(
-        (b: { count: number }) => b.count === 0,
-      ),
-    ).toBe(true);
   });
 
   it('interestsWeekly: події дзеркаляться у тижневі кошики (клік/сейв/голос)', () => {

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { MOCK_TO_ROADMAP, roadmapToMock, masteryHints, themeOfWeek } from '../web/mastery-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
+import { mockMaterials } from '../web/mastery-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { ROADMAP_TOPICS } from '../web/roadmap-data.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
@@ -25,11 +27,25 @@ describe('mastery-core — контракт словників', () => {
     for (const k of Object.keys(MOCK_TO_ROADMAP)) expect(MOCK_TOPICS).toContain(k);
   });
 
-  it('roadmapToMock: зворотна мапа повна; roadmap-only теми -> []', () => {
+  it('roadmapToMock: зворотна мапа повна; КОЖНА тема роадмепу має mock-тему', () => {
     const rev = roadmapToMock();
     expect(Object.keys(rev)).toHaveLength(TOPICS.length);
     expect(rev['react']).toEqual(['Фреймворк']);
-    expect(rev['tools']).toEqual([]); // roadmap-only тема без mock-звʼязки
+    // F4 закрив прогалину: доти tools/ecosystem/testing-adv/perf-a11y були
+    // roadmap-only ([]), тож «тема тижня» з них не могла сісти батч питань.
+    expect(rev['tools']).toEqual(['Git/CI']);
+    for (const t of TOPICS) {
+      expect(rev[t.id]!.length, `тема ${t.id} без mock-теми`).toBeGreaterThan(0);
+    }
+  });
+
+  it('mockMaterials: кожна mock-тема веде в куроване джерело (F4 «Вивчити»)', () => {
+    const mm = mockMaterials();
+    for (const topic of Object.keys(MOCK_TO_ROADMAP)) {
+      const mats = mm[topic];
+      expect(mats?.length, `mock-тема ${topic} без матеріалів`).toBeGreaterThan(0);
+      for (const m of mats!) expect(m.url).toMatch(/^https:\/\//);
+    }
   });
 });
 

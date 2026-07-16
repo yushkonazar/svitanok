@@ -10,6 +10,10 @@
     "noImplicitOverride": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    // Дозволено лише через noEmit (ми не компілюємо, лише перевіряємо типи).
+    // Потрібне, щоб tests/ могли імпортувати контрактні схеми з web/app, який
+    // живе в bundler-світі й пише розширення .ts (у src/ конвенція інша — .js).
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,

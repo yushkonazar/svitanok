@@ -2,8 +2,14 @@
 // junior Full Stack (той самий профіль, що config.yml modules.jobs.profile/
 // modules.mock.profile: JS/TS, React, Node.js, HTML/CSS). Блок P3.
 //
+// interface Material { title: string; url: string }
 // interface Subtopic { id: string; title: string }
-// interface Topic { id: string; title: string; subtopics: Subtopic[] }
+// interface Topic { id: string; title: string; materials: Material[]; subtopics: Subtopic[] }
+//
+// materials (F5) — КУРОВАНИЙ список: 1-2 канонічні джерела на тему, не
+// автогенерація й не пошуковий запит. Беремо офіційну документацію та сталі
+// підручники — вони найменше гниють; де є українська версія, беремо її.
+// Живить «Вивчити» в картці питання дня (F4) і кнопки-посилання в /roadmap.
 //
 // id — ЛОКАЛЬНИЙ слаг, БЕЗ символів ':' (парситься з callback_data у
 // roadmap-core.mjs, `:` — роздільник полів) і '.' (roadmap-core.mjs:
@@ -24,6 +30,13 @@ export const ROADMAP_TOPICS = [
   {
     id: 'frontend',
     title: '🌐 Frontend основи',
+    materials: [
+      {
+        title: 'MDN — навчання вебу',
+        url: 'https://developer.mozilla.org/uk/docs/Learn_web_development',
+      },
+      { title: 'JavaScript.info (укр)', url: 'https://uk.javascript.info/' },
+    ],
     subtopics: [
       { id: 'html-semantics', title: 'HTML: семантична розмітка' },
       { id: 'css-layout', title: 'CSS: flexbox, grid, адаптивність' },
@@ -37,6 +50,13 @@ export const ROADMAP_TOPICS = [
   {
     id: 'typescript',
     title: '🟦 TypeScript',
+    materials: [
+      {
+        title: 'TypeScript Handbook',
+        url: 'https://www.typescriptlang.org/docs/handbook/intro.html',
+      },
+      { title: 'Type Challenges', url: 'https://github.com/type-challenges/type-challenges' },
+    ],
     subtopics: [
       { id: 'ts-types-basics', title: 'Типи, інтерфейси, generics' },
       { id: 'ts-narrowing', title: 'Звуження типів, union/intersection' },
@@ -48,6 +68,13 @@ export const ROADMAP_TOPICS = [
   {
     id: 'react',
     title: '⚛️ React',
+    materials: [
+      { title: 'React — вчитися', url: 'https://react.dev/learn' },
+      {
+        title: 'TanStack Query',
+        url: 'https://tanstack.com/query/latest/docs/framework/react/overview',
+      },
+    ],
     subtopics: [
       { id: 'jsx-components', title: 'JSX, компоненти, композиція' },
       { id: 'props-state', title: 'Props і state' },
@@ -63,6 +90,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'backend',
     title: '🖥 Backend / Node.js',
+    materials: [
+      { title: 'Node.js — вчитися', url: 'https://nodejs.org/en/learn' },
+      { title: 'Express — гайд', url: 'https://expressjs.com/en/guide/routing.html' },
+    ],
     subtopics: [
       { id: 'node-basics', title: 'Node.js: модулі, event loop' },
       { id: 'express-http', title: 'Express: маршрути, middleware' },
@@ -78,6 +109,13 @@ export const ROADMAP_TOPICS = [
   {
     id: 'databases',
     title: '🗄 Бази даних / SQL',
+    materials: [
+      {
+        title: 'PostgreSQL — туторіал',
+        url: 'https://www.postgresql.org/docs/current/tutorial.html',
+      },
+      { title: 'Use The Index, Luke', url: 'https://use-the-index-luke.com/' },
+    ],
     subtopics: [
       { id: 'relational-model', title: 'Реляційна модель, нормалізація' },
       { id: 'sql-basics', title: 'SQL: SELECT/JOIN/GROUP BY' },
@@ -90,6 +128,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'algorithms',
     title: '🧮 Алгоритми та структури даних',
+    materials: [
+      { title: 'NeetCode — роадмеп', url: 'https://neetcode.io/roadmap' },
+      { title: 'VisuAlgo — візуалізації', url: 'https://visualgo.net/en' },
+    ],
     subtopics: [
       { id: 'complexity', title: 'Складність алгоритмів (Big O)' },
       { id: 'arrays-lists', title: 'Масиви, списки, рядки' },
@@ -102,6 +144,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'security',
     title: '🔐 Веб-безпека',
+    materials: [
+      { title: 'OWASP Top 10', url: 'https://owasp.org/www-project-top-ten/' },
+      { title: 'OWASP Cheat Sheets', url: 'https://cheatsheetseries.owasp.org/' },
+    ],
     subtopics: [
       { id: 'owasp-top10', title: 'OWASP Top 10 — огляд' },
       { id: 'xss-csrf', title: 'XSS/CSRF на практиці' },
@@ -113,6 +159,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'networking',
     title: '📡 HTTP / мережі (поглиблено)',
+    materials: [
+      { title: 'MDN — HTTP', url: 'https://developer.mozilla.org/en-US/docs/Web/HTTP' },
+      { title: 'High Performance Browser Networking', url: 'https://hpbn.co/' },
+    ],
     subtopics: [
       { id: 'http-caching', title: 'Кешування: ETag, Cache-Control' },
       { id: 'cors-deep', title: 'CORS по-справжньому' },
@@ -123,6 +173,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'testing-adv',
     title: '🧪 Тестування (поглиблено)',
+    materials: [
+      { title: 'Playwright — старт', url: 'https://playwright.dev/docs/intro' },
+      { title: 'Testing Library', url: 'https://testing-library.com/docs/' },
+    ],
     subtopics: [
       { id: 'integration-tests', title: 'Інтеграційні тести' },
       { id: 'e2e-playwright', title: 'E2E (Playwright/Cypress)' },
@@ -134,6 +188,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'tools',
     title: '🛠 Git / Тестування / Деплой',
+    materials: [
+      { title: 'Pro Git (укр)', url: 'https://git-scm.com/book/uk/v2' },
+      { title: 'Docker — старт', url: 'https://docs.docker.com/get-started/' },
+    ],
     subtopics: [
       { id: 'git-basics', title: 'Git: коміти, гілки, merge' },
       { id: 'git-workflow', title: 'Git-flow, Pull Request, code review' },
@@ -147,6 +205,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'ecosystem',
     title: '📦 Тулінг / екосистема',
+    materials: [
+      { title: 'Vite — гайд', url: 'https://vite.dev/guide/' },
+      { title: 'npm — semver', url: 'https://docs.npmjs.com/about-semantic-versioning' },
+    ],
     subtopics: [
       { id: 'package-managers', title: 'npm/pnpm, semver, lock-файли' },
       { id: 'bundlers', title: 'Vite/бандлінг' },
@@ -157,6 +219,13 @@ export const ROADMAP_TOPICS = [
   {
     id: 'ai-dev',
     title: '🤖 AI-у-розробці',
+    materials: [
+      {
+        title: 'Anthropic — інженерія промптів',
+        url: 'https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview',
+      },
+      { title: 'Anthropic — огляд API', url: 'https://docs.anthropic.com/en/api/overview' },
+    ],
     subtopics: [
       { id: 'ai-assisted-coding', title: 'Ефективна робота з AI-асистентами' },
       { id: 'llm-api-basics', title: 'LLM API: промпти, структуровані відповіді' },
@@ -167,6 +236,10 @@ export const ROADMAP_TOPICS = [
   {
     id: 'perf-a11y',
     title: '⚡ Продуктивність і доступність',
+    materials: [
+      { title: 'web.dev — Core Web Vitals', url: 'https://web.dev/articles/vitals' },
+      { title: 'A11y Project — чеклист', url: 'https://www.a11yproject.com/checklist/' },
+    ],
     subtopics: [
       { id: 'core-web-vitals', title: 'Core Web Vitals' },
       { id: 'lazy-loading', title: 'Lazy loading, code splitting' },

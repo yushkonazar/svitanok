@@ -10,47 +10,59 @@ import { SaveButton } from './SaveButton.tsx';
 // 🎤 Питання дня (дизайн v2, Svitanok.dc.html): бейдж теми + стрік; питання
 // великим Manrope; «Відповідь ↓» розкриває відповідь із акцентною лінією зліва,
 // оцінку «Легко/Важко» і «Вивчити →».
-// Бекенд рахує оцінку ПО ДНЮ (mockRatedToday), не по питанню, тож який саме
-// варіант обрано — тримаємо локально в сесії лише для підсвітки.
+//
+// F4: оцінка тепер привʼязана до ПИТАННЯ (stats.mockRated[qId]), а не до дня.
+// Доти бекенд знав лише «сьогодні щось оцінено», тож обраний варіант жив у стані
+// сесії й після перезавантаження зникав: чипи заблоковані, жоден не підсвічений.
+// Думку можна змінити — сервер переставить weak, не додаючи seen.
 
 export function QuestionBlock({ d }: { d: MockData }) {
   const [open, setOpen] = useState(false);
-  const [picked, setPicked] = useState<'easy' | 'hard' | null>(null);
   const { data } = useStats();
   const rate = useMockAnswer();
   const navigate = useNavigate();
 
-  const rated = !!data?.stats.mockRatedToday;
   const streak = data?.stats.mock.streak ?? 0;
   const qId = textHash(d.question);
+  // Джерело правди — сервер; сесійного стану більше немає.
+  const picked = data?.stats.mockRated?.[qId] ?? null;
+
+  // F4: «Вивчити» -> куроване джерело роадмепу для теми питання. Доти це був
+  // google.com/search за текстом питання — тобто зізнання, що ми не знаємо, куди
+  // відправити. resourceUrl лишається фолбеком для старих брифінгів у KV.
+  const material = data?.stats.mockMaterials?.[d.topic ?? '']?.[0] ?? null;
 
   const learn = () => {
     haptic('light');
-    if (has(d.resourceUrl)) openLink(d.resourceUrl!);
+    if (material) openLink(material.url);
+    else if (has(d.resourceUrl)) openLink(d.resourceUrl!);
     else navigate('/stats'); // фолбек — блок роадмепу в статистиці
   };
 
   const doRate = (v: 'easy' | 'hard') => {
-    if (rated) return;
-    setPicked(v);
-    rate.mutate({ topic: d.topic || '', rating: v });
+    rate.mutate({ qId, topic: d.topic || '', rating: v });
     haptic('success');
   };
 
+  // Чип лишається активним і після оцінки: думку можна змінити, і сервер це
+  // коректно переставить (F4). Доти невибраний чип назавжди блокувався.
   const chip = (v: 'easy' | 'hard', label: string) => {
     const on = picked === v;
     const pos = v === 'easy';
     return (
       <button
         type="button"
-        disabled={rated && !on}
+        aria-pressed={on}
         onClick={() => doRate(v)}
         className="rounded-full border px-3 py-1.5 text-[11.5px] font-semibold transition-colors"
         style={{
-          background: on ? (pos ? 'rgba(120,220,160,.15)' : 'rgba(255,120,120,.13)') : 'var(--color-glass)',
+          background: on
+            ? pos
+              ? 'rgba(120,220,160,.15)'
+              : 'rgba(255,120,120,.13)'
+            : 'var(--color-glass)',
           borderColor: on ? (pos ? 'var(--color-pos)' : 'var(--color-neg)') : 'var(--color-glassb)',
           color: on ? (pos ? 'var(--color-pos)' : 'var(--color-neg)') : 'var(--color-tx2)',
-          opacity: rated && !on ? 0.5 : 1,
         }}
       >
         {label}
@@ -99,8 +111,13 @@ export function QuestionBlock({ d }: { d: MockData }) {
               <span className="font-mono text-[11px] font-medium text-tx3">ОЦІНИ:</span>
               {chip('easy', 'Легко')}
               {chip('hard', 'Важко')}
-              <button type="button" onClick={learn} className="ml-auto text-[11.5px] font-semibold text-tx2">
-                Вивчити →
+              <button
+                type="button"
+                onClick={learn}
+                title={material?.title}
+                className="ml-auto truncate text-[11.5px] font-semibold text-tx2"
+              >
+                {material ? `${material.title} →` : 'Вивчити →'}
               </button>
             </div>
           )}

@@ -7,7 +7,7 @@
 // X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
-import { recordEvent, aggregateStats, recordReliability } from './stats-core.mjs';
+import { recordEvent, aggregateStats, recordReliability, pageSaved } from './stats-core.mjs';
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
@@ -92,7 +92,7 @@ import {
   buildRootKeyboard,
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
-import { masteryHints, themeOfWeek } from './mastery-core.mjs';
+import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -455,6 +455,12 @@ async function handleVote(request, env) {
  */
 async function applyEvent(env, body) {
   // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
+  //
+  // Термінальні стадії (F1: rejected/failed) сюди СВІДОМО не входять — падають у
+  // null, тобто скорер їх не бачить. Це не недогляд: jobPrefs учить скорер, що
+  // подобається ВЛАСНИКУ, а відмова — рішення роботодавця. Записати «відмову» як
+  // dismiss означало б учити скорер уникати саме тих вакансій, які власник хотів
+  // найбільше (він же на них подався). Провал співбесіди — так само не преференція.
   const jobSignal =
     body.type === 'job_dismiss'
       ? 'dismiss'
@@ -575,6 +581,26 @@ async function handleSettings(request, env) {
   return json({ ok: true, settings: next, connectors });
 }
 
+/**
+ * GET /api/saved?offset=&limit= -> сторінка збереженого (F3).
+ *
+ * Окремий ендпоінт, а не поле в /api/stats: там savedList свідомо обрізаний до
+ * 8 як прев'ю, і тягти повний архів (сотні записів) у КОЖНЕ відкриття апки
+ * заради рядка «Ти зберіг N» — марно. Архів у KV не обрізаний ніколи; його лише
+ * не показували.
+ */
+async function handleSaved(request, env) {
+  const auth = await checkOwnerRead(request, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  const url = new URL(request.url);
+  // Кламп і дефолти — у чистій pageSaved (там же й тести).
+  const page = pageSaved(await loadStats(env), {
+    offset: url.searchParams.get('offset'),
+    limit: url.searchParams.get('limit'),
+  });
+  return json({ ok: true, ...page });
+}
+
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
  *  воронка, інтереси — приватні; без initData -> 401/403 (фронт ховає таб). */
 async function handleStats(request, env) {
@@ -593,6 +619,10 @@ async function handleStats(request, env) {
     hints: masteryHints(stats.mock?.weakTopics ?? [], progress),
     themeOfWeek: themeOfWeek(progress, kyivDateKey()),
   };
+  // F4: mock-тема -> куровані матеріали роадмепу («Вивчити» в картці питання).
+  // Мапа стала й крихітна (13 тем × 2 посилання) — віддаємо цілком, щоб клієнт
+  // не дублював у себе таблицю звʼязку mock↔roadmap.
+  stats.mockMaterials = mockMaterials();
   // Голоси per-url (C3): дашборд гідратує підсвітку 👍/👎 з цього, щоб після
   // переоткриття Mini App повторний тап не «знімав» невидимо активний голос
   // (ревʼю C). Віддаємо компактно {url: 'up'|'down'}, без delta/category.
@@ -1930,6 +1960,9 @@ export default {
     }
     if (url.pathname === '/api/settings') {
       return handleSettings(request, env);
+    }
+    if (url.pathname === '/api/saved') {
+      return handleSaved(request, env);
     }
     if (url.pathname === '/api/telegram' && request.method === 'POST') {
       return handleTelegramWebhook(request, env, ctx);

@@ -1,4 +1,4 @@
-import type { Stats, HeatmapCell } from './schema.ts';
+import type { Stats, HeatmapCell, SavedItem } from './schema.ts';
 
 // Демо-статистика поза Telegram (роадмеп v3, E1) — перенесена 1:1 з
 // web/public/index.html SAMPLE_STATS, щоб власник бачив заповнений UI без
@@ -50,14 +50,71 @@ export const SAMPLE_STATS: Stats = {
     { day: 'Сб', value: 1, active: true },
     { day: 'Нд', value: 2, active: true },
   ],
-  funnel: { saved: 4, applied: 3, interview: 1, offer: 0 },
+  funnel: { saved: 4, applied: 3, interview: 1, offer: 0, rejected: 1, failed: 1 },
   funnelList: [
-    { url: 'https://example.com/job1', stage: 'saved', title: 'Junior Frontend (React)', ts: '2026-07-06' },
-    { url: 'https://example.com/job2', stage: 'applied', title: 'Trainee Full Stack', ts: '2026-07-05' },
-    { url: 'https://example.com/job3', stage: 'interview', title: 'Node.js Developer', ts: '2026-07-04' },
+    {
+      url: 'https://example.com/job1',
+      stage: 'saved',
+      title: 'Junior Frontend (React)',
+      ts: '2026-07-06',
+      history: [{ stage: 'saved', ts: '2026-07-06' }],
+    },
+    {
+      url: 'https://example.com/job2',
+      stage: 'applied',
+      title: 'Trainee Full Stack',
+      ts: '2026-07-05',
+      history: [
+        { stage: 'saved', ts: '2026-07-05' },
+        { stage: 'applied', ts: '2026-07-08' },
+      ],
+    },
+    {
+      url: 'https://example.com/job3',
+      stage: 'interview',
+      title: 'Node.js Developer',
+      ts: '2026-07-04',
+      history: [
+        { stage: 'saved', ts: '2026-07-04' },
+        { stage: 'applied', ts: '2026-07-06' },
+        { stage: 'interview', ts: '2026-07-11' },
+      ],
+    },
+    // Термінальні (F1) — щоб демо показувало всі шість лейнів і «Історію».
+    {
+      url: 'https://example.com/job4',
+      stage: 'rejected',
+      title: 'React Developer (Middle)',
+      ts: '2026-06-28',
+      history: [
+        { stage: 'saved', ts: '2026-06-28' },
+        { stage: 'applied', ts: '2026-06-30' },
+        { stage: 'rejected', ts: '2026-07-04' },
+      ],
+    },
+    {
+      url: 'https://example.com/job5',
+      stage: 'failed',
+      title: 'Full Stack Engineer',
+      ts: '2026-06-20',
+      history: [
+        { stage: 'saved', ts: '2026-06-20' },
+        { stage: 'applied', ts: '2026-06-22' },
+        { stage: 'interview', ts: '2026-07-01' },
+        { stage: 'failed', ts: '2026-07-03' },
+      ],
+    },
   ],
   goal: { weeklyTarget: 5, weeklyApplied: 3 },
-  conversion: { appliedToInterview: 33, interviewToOffer: 0 },
+  // Чесні числа під reached: подались 4 (job2..job5), до співбесіди дійшли 2
+  // (job3, job5) -> 50%; зі співбесід 2 офер 0 -> 0%.
+  conversion: { appliedToInterview: 50, interviewToOffer: 0 },
+  reached: { saved: 5, applied: 4, interview: 2, offer: 0 },
+  mockRated: {},
+  mockMaterials: {
+    Алгоритми: [{ title: 'NeetCode — роадмеп', url: 'https://neetcode.io/roadmap' }],
+    Мова: [{ title: 'JavaScript.info (укр)', url: 'https://uk.javascript.info/' }],
+  },
   avgFitApplied: 84,
   mock: {
     weakTopics: [
@@ -118,14 +175,6 @@ export const SAMPLE_STATS: Stats = {
     { week: '', count: 3 },
     { week: '', count: 5 },
   ],
-  fitHistogram: [
-    { label: '<50', count: 0 },
-    { label: '50–59', count: 1 },
-    { label: '60–69', count: 2 },
-    { label: '70–79', count: 4 },
-    { label: '80–89', count: 5 },
-    { label: '90+', count: 2 },
-  ],
   interestsTrend: {
     weeks: ['', '', '', '', '', ''],
     topics: [
@@ -145,9 +194,10 @@ export const EMPTY_STATS: Stats = {
   streaks: { openDays: 0, mockDays: 0, bestOpenDays: 0 },
   timeToOpenMin: null,
   weekly: [],
-  funnel: { saved: 0, applied: 0, interview: 0, offer: 0 },
+  funnel: { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0, failed: 0 },
   goal: { weeklyTarget: 5, weeklyApplied: 0 },
   conversion: { appliedToInterview: 0, interviewToOffer: 0 },
+  reached: { saved: 0, applied: 0, interview: 0, offer: 0 },
   avgFitApplied: null,
   funnelList: [],
   savedCount: 0,
@@ -155,10 +205,34 @@ export const EMPTY_STATS: Stats = {
   mock: { weakTopics: [], streak: 0 },
   heatmap: [],
   appliedWeekly: [],
-  fitHistogram: [],
   interestsTrend: { weeks: [], topics: [] },
   interests: [],
   readPerDay: 0,
   reliability: { onTime: 0, total: 0, deadman: 0 },
   votes: {},
+  mockRated: {},
+  mockMaterials: {},
 };
+
+/**
+ * Демо-архів збереженого (F3) — ДОВШИЙ за прев'ю у SAMPLE_STATS.savedList.
+ * Інакше «Показати ще» в демо нічого б не показувала: прев'ю віддає 3 записи
+ * при savedCount 5, і кнопка була б порожньою обіцянкою.
+ */
+export const SAMPLE_SAVED_ARCHIVE: SavedItem[] = [
+  ...SAMPLE_STATS.savedList,
+  {
+    kind: 'news',
+    id: 'https://example.com/news9',
+    url: 'https://example.com/news9',
+    title: 'Cloudflare Workers: нові ліміти безкоштовного плану',
+    ts: '2026-07-02',
+  },
+  {
+    kind: 'fact',
+    id: 'f9',
+    title: 'Перший баг у комп’ютері був справжнім метеликом (1947)',
+    url: null,
+    ts: '2026-07-01',
+  },
+];

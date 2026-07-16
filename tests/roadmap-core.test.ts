@@ -20,6 +20,7 @@ const {
   formatTopicMessage,
   buildRootKeyboard,
   buildTopicKeyboard,
+  topicMaterials,
 } = roadmap;
 
 describe('roadmap-data — вміст', () => {
@@ -223,7 +224,8 @@ describe('buildRootKeyboard / buildTopicKeyboard', () => {
   it('topic: рядок на підпункт + «Назад» останнім', () => {
     const first = ROADMAP_TOPICS[0];
     const kb = buildTopicKeyboard(first, {});
-    expect(kb.inline_keyboard).toHaveLength(first.subtopics.length + 1);
+    // підпункти + матеріали (F5) + «Назад»
+    expect(kb.inline_keyboard).toHaveLength(first.subtopics.length + first.materials.length + 1);
     expect(kb.inline_keyboard[0][0].text).toContain('▫️');
     const lastRow = kb.inline_keyboard[kb.inline_keyboard.length - 1];
     expect(lastRow[0]).toEqual({ text: '⬅️ Назад', callback_data: buildRootCallbackData() });
@@ -234,5 +236,59 @@ describe('buildRootKeyboard / buildTopicKeyboard', () => {
     const key = progressKey(first.id, first.subtopics[0].id);
     const kb = buildTopicKeyboard(first, { [key]: '2026-07-11T00:00:00.000Z' });
     expect(kb.inline_keyboard[0][0].text).toContain('✅');
+  });
+});
+
+describe('roadmap — матеріали тем (F5)', () => {
+  it('кожна тема має курований матеріал', () => {
+    for (const t of ROADMAP_TOPICS) {
+      expect(topicMaterials(t).length, `тема ${t.id}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('усі посилання — https і з назвою', () => {
+    for (const t of ROADMAP_TOPICS) {
+      for (const m of t.materials) {
+        expect(m.url, `${t.id}: ${m.title}`).toMatch(/^https:\/\//);
+        expect(m.title.trim().length, `${t.id}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('матеріали стають URL-кнопками в клавіатурі теми', () => {
+    const topic = ROADMAP_TOPICS[0];
+    const rows = buildTopicKeyboard(topic, {}).inline_keyboard;
+    const urlBtns = rows.flat().filter((b: Record<string, unknown>) => 'url' in b);
+    expect(urlBtns).toHaveLength(topic.materials.length);
+    expect(urlBtns[0].text).toContain(topic.materials[0].title);
+    expect(urlBtns[0].url).toBe(topic.materials[0].url);
+    // «Назад» лишається ОСТАННІМ рядком — матеріали не мають його відсунути.
+    expect(rows.at(-1)[0].callback_data).toBe('rd:r');
+  });
+
+  it('битий матеріал відкидається, а не валить sendMessage', () => {
+    // Telegram відхиляє ВСЕ повідомлення, якщо url-кнопка невалідна, тож
+    // фільтр тут боронить не косметику, а доставку.
+    const bad = {
+      id: 'x',
+      title: 'X',
+      subtopics: [],
+      materials: [
+        { title: 'ok', url: 'https://example.com/' },
+        { title: 'js-схема', url: 'javascript:alert(1)' },
+        { title: 'без протоколу', url: 'example.com' },
+        { title: 'http', url: 'http://example.com/' },
+        { title: 'без url' },
+        null,
+      ],
+    };
+    expect(topicMaterials(bad).map((m: { title: string }) => m.title)).toEqual(['ok']);
+  });
+
+  it('тема без materials не ламає клавіатуру', () => {
+    const t = { id: 'x', title: 'X', subtopics: [{ id: 's', title: 'S' }] };
+    const rows = buildTopicKeyboard(t, {}).inline_keyboard;
+    expect(rows.flat().some((b: Record<string, unknown>) => 'url' in b)).toBe(false);
+    expect(rows.at(-1)[0].callback_data).toBe('rd:r');
   });
 });

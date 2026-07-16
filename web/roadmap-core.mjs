@@ -133,7 +133,21 @@ export function formatTopicMessage(topic, progress) {
   return `${escapeHtml(topic.title)} — ${bar ? bar + ' ' : ''}${done}/${total}\n\nТисни на пункт, щоб позначити пройденим:`;
 }
 
-/** Inline-клавіатура теми: рядок на підпункт (✅/▫️+назва) + «⬅️ Назад». */
+/** Матеріали теми (F5): [{title,url}] або порожньо, якщо не курували. */
+export function topicMaterials(topic) {
+  return (Array.isArray(topic?.materials) ? topic.materials : []).filter(
+    (m) => m && typeof m.title === 'string' && /^https:\/\//.test(m.url ?? ''),
+  );
+}
+
+/**
+ * Inline-клавіатура теми: рядок на підпункт (✅/▫️+назва) + матеріали + «⬅️ Назад».
+ *
+ * Матеріали — URL-кнопки ({text,url}), не callback: Telegram відкриє їх сам, без
+ * зайвого раунду до воркера. Лише https — url-кнопка з чимось іншим (або з
+ * битим значенням) валить увесь sendMessage помилкою Telegram, а не тихо
+ * зникає, тож фільтр у topicMaterials боронить усе повідомлення.
+ */
 export function buildTopicKeyboard(topic, progress) {
   const rows = topic.subtopics
     .map((sub) => {
@@ -143,6 +157,7 @@ export function buildTopicKeyboard(topic, progress) {
       return [{ text: `${done ? '✅' : '▫️'} ${sub.title}`, callback_data: cb }];
     })
     .filter((row) => row.length > 0);
+  for (const m of topicMaterials(topic)) rows.push([{ text: `📚 ${m.title}`, url: m.url }]);
   rows.push([{ text: '⬅️ Назад', callback_data: buildRootCallbackData() }]);
   return { inline_keyboard: rows };
 }

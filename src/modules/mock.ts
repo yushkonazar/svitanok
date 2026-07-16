@@ -17,8 +17,15 @@ const MOCK_PRIORITY = 58; // після вакансій (55)
 // security, ai-dev) — той самий «інтерв'ю ↔ навчання» словник без окремої
 // логіки синхронізації (mockWeights і roadmapProgress лишаються незалежними
 // стейтами; звʼязок лише на рівні назв тем).
+// F4: 8 -> 13. Кожна тема роадмепу тепер має свою mock-тему (доти
+// tools/ecosystem/testing-adv/perf-a11y не мали жодної, тож «тема тижня» з них
+// не могла сісти батч питань). TypeScript відділено від 'Мова': профіль скрізь
+// TS, і спільна вага з ванільним JS ховала, що саме кульгає.
+// ⚠️ Дзеркалиться в web/mastery-core.mjs MOCK_TO_ROADMAP — тест пришпилює,
+// що списки не розʼїхались.
 export const MOCK_TOPICS = [
   'Мова',
+  'TypeScript',
   'Фреймворк',
   'HTTP',
   'Бази даних',
@@ -26,6 +33,10 @@ export const MOCK_TOPICS = [
   'Патерни',
   'Безпека',
   'AI/LLM',
+  'Тестування',
+  'Git/CI',
+  'Тулінг',
+  'Продуктивність',
 ];
 
 export interface MockQA {
@@ -142,10 +153,29 @@ export function parseMockCache(text: string): MockQA[] {
   }
 }
 
-/** Детермінований ресурс для вивчення теми (пошук питання) — без вигаданих URL. */
-function resourceFor(question: string): string {
-  return `https://www.google.com/search?q=${encodeURIComponent(question)}`;
+/**
+ * Ключ питання для дедупу батчів (F4). Нормалізуємо, щоб перефразоване тим
+ * самим змістом («Що таке замикання?» / «що таке замикання») не проскакувало
+ * як нове: нижній регістр, злиті пробіли, геть пунктуацію по краях.
+ * Хеш — FNV-1a у base36: короткий і стабільний між ранами.
+ */
+export function questionKey(q: string): string {
+  const norm = q
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    .trim();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < norm.length; i++) {
+    h ^= norm.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
 }
+
+// Скільки ключів заданих питань памʼятаємо. ~batchSize×8 — вистачає, щоб
+// наступні кілька батчів не повторювались, і стан не росте безмежно.
+const ASKED_CAP = 120;
 
 export const mockModule: Module<AppConfig> = {
   id: 'mock',
@@ -167,6 +197,15 @@ export const mockModule: Module<AppConfig> = {
         (x as MockQA).a.length > 0,
     );
 
+    // F4: ключі вже заданих питань — LLM схильна повторювати класику
+    // («що таке замикання?») з батчу в батч, і без цього фільтра одне й те саме
+    // питання прилітало раз на тиждень. Промпту хеші не покажеш, тож
+    // відсіюємо ПІСЛЯ генерації.
+    const asked: string[] = (ctx.state.get<unknown[]>('mockAsked') ?? []).filter(
+      (x): x is string => typeof x === 'string',
+    );
+    const askedSet = new Set(asked);
+
     if (cache.length === 0) {
       // mockWeights (Блок F): слабкі теми з самооцінки -> LLM генерує більше з них.
       const weights = ctx.state.get<MockWeights>('mockWeights');
@@ -182,11 +221,17 @@ export const mockModule: Module<AppConfig> = {
         ctx.log.warn(`mock: генерація не вдалася: ${e instanceof Error ? e.message : String(e)}`);
         return null;
       }
+      const fresh = cache.filter((x) => !askedSet.has(questionKey(x.q)));
+      // Якщо ВЕСЬ батч — повтори, беремо його як є: краще старе питання, ніж
+      // порожня картка. Інакше — лише свіжі.
+      if (fresh.length > 0) cache = fresh;
+      else if (cache.length > 0) ctx.log.warn('mock: батч цілком із повторів — беру як є');
       if (cache.length === 0) return null;
     }
 
     const item = cache.shift()!;
     ctx.state.set('mockCache', cache);
+    ctx.state.set('mockAsked', [...asked, questionKey(item.q)].slice(-ASKED_CAP));
     return {
       id: 'mock',
       title: 'Питання дня',
@@ -195,7 +240,9 @@ export const mockModule: Module<AppConfig> = {
       data: {
         question: item.q,
         answer: item.a || undefined,
-        resourceUrl: resourceFor(item.q),
+        // resourceUrl прибрано (F4): це був google.com/search за текстом
+        // питання — тобто зізнання, що ми не знаємо, куди відправити.
+        // «Вивчити» тепер веде в курований матеріал роадмепу (stats.mockMaterials).
         topic: item.topic,
       },
       inMessage: false, // глибина — в дашборді; повідомлення лаконічне

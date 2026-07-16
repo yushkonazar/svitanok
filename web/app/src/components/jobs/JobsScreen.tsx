@@ -63,7 +63,9 @@ export function JobsScreen() {
           if (it.funnelStage) acc[it.funnelStage]++;
           return acc;
         },
-        { saved: 0, applied: 0, interview: 0, offer: 0 },
+        // Фолбек лише для демо-брифінгу без stats; термінальні тут нулі —
+        // funnelStage у брифінгу їх не має (реальна стадія завжди зі stats).
+        { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0, failed: 0 },
       );
 
   // Канбан — з воронки (усі дні), не з брифінгу.
@@ -72,9 +74,9 @@ export function JobsScreen() {
     title: x.title,
     stage: x.stage,
     score: scoreByUrl.get(x.url) ?? null,
+    ts: x.ts,
+    history: x.history,
   }));
-  const tsByUrl = new Map<string, string>();
-  for (const x of stats?.funnelList ?? []) tsByUrl.set(x.url, x.ts);
 
   const visible = allItems
     .filter((it) => !hidden.has(it.url))
@@ -118,9 +120,7 @@ export function JobsScreen() {
         />
       )}
 
-      {openCard && (
-        <JobSheet card={openCard} ts={tsByUrl.get(openCard.url) ?? ''} onClose={() => setOpenUrl(null)} />
-      )}
+      {openCard && <JobSheet card={openCard} onClose={() => setOpenUrl(null)} />}
     </div>
   );
 }
