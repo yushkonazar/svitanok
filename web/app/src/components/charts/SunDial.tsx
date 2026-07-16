@@ -126,12 +126,13 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
         </div>
       </div>
 
-      {/* маркер «зараз» */}
+      {/* маркер «зараз» — left/top ЧИСЛАМИ: React додає 'px' лише до чисел,
+          а рядок із toFixed() CSS відкинув би як невалідну довжину. */}
       <div
         className="absolute h-3 w-3 rounded-full"
         style={{
-          left: (mx - 6).toFixed(1),
-          top: (my - 6).toFixed(1),
+          left: Math.round((mx - 6) * 10) / 10,
+          top: Math.round((my - 6) * 10) / 10,
           background: isDay ? '#FFE3AE' : '#EDEAF8',
           boxShadow: `0 0 14px 3px ${isDay ? 'rgba(255,196,120,.85)' : 'rgba(200,190,255,.7)'}`,
           transition: 'left 1s linear, top 1s linear',

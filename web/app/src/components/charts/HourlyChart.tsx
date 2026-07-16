@@ -65,6 +65,14 @@ export function HourlyChart({
   const m = has(rainWindow) ? String(rainWindow).match(/(\d{1,2}):\d{2}\D+(\d{1,2}):\d{2}/) : null;
   const rain = m ? { x0: X(+m[1]), x1: X(+m[2]), label: `ОПАДИ ${m[1]}:00–${m[2]}:00` } : null;
 
+  // До 5 міток, рівномірно по РЯДУ (не по годинах): гарантує підписи за
+  // будь-якого діапазону — і 8…23 зранку, і 20…23 увечері.
+  const LABELS = Math.min(5, pts.length);
+  const labelPts =
+    LABELS <= 1
+      ? pts.slice(0, 1)
+      : Array.from({ length: LABELS }, (_, i) => pts[Math.round((i * (pts.length - 1)) / (LABELS - 1))]);
+
   // Маркер — поточна година (притиснута до діапазону даних).
   const nowH = kyivMinutes(new Date()) / 60;
   const nowX = X(nowH);
@@ -125,12 +133,21 @@ export function HourlyChart({
         <path d={d} fill="none" stroke={`url(#${lineId})`} strokeWidth="2.5" strokeLinecap="round" />
         <circle cx={nowX.toFixed(1)} cy={nowY.toFixed(1)} r="3.5" fill="#FFA45C" stroke="var(--color-bg)" strokeWidth="2" />
       </svg>
-      <div className="flex justify-between pl-[26px] font-mono text-[9.5px] font-medium text-tx3">
-        {pts
-          .filter((p) => p.h % 6 === 0)
-          .map((p) => (
-            <span key={p.h}>{String(p.h).padStart(2, '0')}</span>
-          ))}
+      {/* Підписи годин позиціонуємо за РЕАЛЬНИМ X(h), а не justify-between:
+          ряд hourly починається з поточної години (напр. 8…23), тож рівномірний
+          розподіл ставив би мітки не над їхніми точками, а ввечері (19…23) не
+          лишав би жодної. SVG розтягується (preserveAspectRatio="none"), тож
+          X(h)/W*100% дає точний збіг із кривою за будь-якої ширини. */}
+      <div className="relative h-3 font-mono text-[9.5px] font-medium text-tx3">
+        {labelPts.map((p) => (
+          <span
+            key={p.h}
+            className="absolute -translate-x-1/2 whitespace-nowrap"
+            style={{ left: `${((X(p.h) / W) * 100).toFixed(2)}%` }}
+          >
+            {String(p.h).padStart(2, '0')}
+          </span>
+        ))}
       </div>
     </div>
   );

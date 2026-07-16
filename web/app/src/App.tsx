@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { useTheme } from './theme.tsx';
-import { dateLabel } from './lib/dateLabel.ts';
+import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
+import { useBriefing } from './api/hooks.ts';
 import { Fog } from './components/ui/Fog.tsx';
 import { StatsScreen } from './components/stats/StatsScreen.tsx';
 import { TodayScreen } from './components/today/TodayScreen.tsx';
@@ -72,6 +73,12 @@ export function App() {
   const { theme, toggle } = useTheme();
   const isDark = theme === 'dark';
 
+  // Дата в хедері — БРИФІНГУ (generatedAt), не пристрою: якщо крон не спрацював
+  // і брифінг учорашній, це має бути видно. Черга спільна (кеш), зайвого fetch
+  // не буде. Поки вантажиться — дата пристрою як плейсхолдер.
+  const { data: briefData } = useBriefing();
+  const headerDate = dateLabelFromIso(briefData?.brief.generatedAt) ?? dateLabel();
+
   const active = TABS.find((t) => t.path === location.pathname) ?? TABS[0];
 
   // Deep-link: один раз на старті мапимо Telegram start_param на вкладку.
@@ -121,7 +128,7 @@ export function App() {
           </div>
           <div className="flex flex-col">
             <div className="text-[15px] font-extrabold tracking-[-0.01em]">Svitanok</div>
-            <div className="font-mono text-[9.5px] font-medium text-tx3">{dateLabel()}</div>
+            <div className="font-mono text-[9.5px] font-medium text-tx3">{headerDate}</div>
           </div>
           <div className="ml-auto flex gap-2">
             {!inTelegram() && (

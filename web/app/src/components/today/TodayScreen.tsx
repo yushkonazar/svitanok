@@ -8,6 +8,7 @@ import {
   stoicDataSchema,
   onThisDayDataSchema,
 } from '../../api/briefing-schema.ts';
+import { shortDateFromIso } from '../../lib/dateLabel.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { WeatherBlock } from './WeatherBlock.tsx';
 import { CurrencyBlock } from './CurrencyBlock.tsx';
@@ -65,7 +66,7 @@ export function TodayScreen() {
     <div className="flex flex-col gap-[18px]">
       {weather && <WeatherBlock locations={weather.locations} />}
       <HorizonDivider />
-      <CurrencyBlock d={currency} />
+      <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />
       {mock && <QuestionBlock d={mock} />}
       {fact && <FactBlock d={fact} />}
       {stoic && <QuoteBlock d={stoic} />}

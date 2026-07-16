@@ -6,6 +6,10 @@ import { FUNNEL_SHORT, FUNNEL_STAGES } from '../jobs/stages.ts';
 
 // B · Воронка та ціль (дизайн v2, Svitanok.dc.html): 4 міні-картки стадій,
 // рядки конверсій, смуга тижневої цілі, спарклайн подач за 8 тижнів.
+//
+// Свідомо: макет прибрав гістограму «Розподіл fit% поданих» (замінив спарклайном
+// подач) — це і був аудит статистики з роадмепу. stats.fitHistogram сервер далі
+// рахує, тож повернути блок можна будь-коли без змін бекенду.
 
 export function FunnelGoalBlock({ s }: { s: Stats }) {
   const appliedSum = s.appliedWeekly.reduce((a, w) => a + (w.count || 0), 0);

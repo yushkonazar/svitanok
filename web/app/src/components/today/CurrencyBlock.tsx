@@ -45,12 +45,7 @@ function Spark({ hist, accent, gradId }: { hist: number[]; accent: boolean; grad
   );
 }
 
-function today() {
-  const d = new Date();
-  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
-
-export function CurrencyBlock({ d }: { d: CurrencyData | null }) {
+export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: string | null }) {
   const gradId = useId();
   const rows = d ? DEFS.filter((def) => has(d[def.key])) : [];
 
@@ -58,7 +53,9 @@ export function CurrencyBlock({ d }: { d: CurrencyData | null }) {
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <SectionLabel>КУРС НБУ</SectionLabel>
-        <span className="ml-auto font-mono text-[10px] font-medium text-tx3">{today()}</span>
+        {/* дата — з брифінгу, не з годинника пристрою: інакше вчорашні курси
+            підписувались би сьогоднішнім числом */}
+        {date && <span className="ml-auto font-mono text-[10px] font-medium text-tx3">{date}</span>}
       </div>
 
       {rows.length && d ? (
@@ -108,7 +105,9 @@ export function CurrencyBlock({ d }: { d: CurrencyData | null }) {
                     {Math.abs(dd).toFixed(2)}
                   </span>
                 )}
-                <span className="ml-auto font-mono text-base font-semibold">{value}</span>
+                {/* toFixed(2) — як у макеті: без нього 59.4 губить хвостовий
+                    нуль і колонка значень «стрибає» в моно-шрифті */}
+                <span className="ml-auto font-mono text-base font-semibold">{value.toFixed(2)}</span>
               </div>
             );
           })}
