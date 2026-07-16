@@ -1415,7 +1415,12 @@ async function handleCommand(env, parsed, origin) {
       } catch {
         /* немає — просто не покажемо рядок про приватність */
       }
-      return sendText(formatWhereAmI(parsed.chatId, parsed.threadId, me), { parse_mode: 'HTML' });
+      return sendText(
+        formatWhereAmI(parsed.chatId, parsed.threadId, me, env.TOPIC_ASSISTANT ?? null),
+        {
+          parse_mode: 'HTML',
+        },
+      );
     }
     case 'settings':
       return sendText(

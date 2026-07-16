@@ -542,18 +542,18 @@ describe('shouldAutoDispatchBrief (A2)', () => {
 });
 
 describe('formatWhereAmI — режим приватності (діагностика мовчання)', () => {
-  it('приватність увімкнена -> явне попередження + як полагодити', () => {
-    // Саме цей стан робить симптом «/start працює, вільний текст — тиша»:
-    // Telegram не доставляє боту звичайні повідомлення в групі взагалі.
+  it('приватність увімкнена -> кажемо, що все залежить від прав адміна', () => {
+    // НЕ лякаємо: can_read_all_group_messages відбиває лише налаштування
+    // приватності, а бот-адмін отримує все й з увімкненою. Попередження
+    // «текст не доходить» брехало б адмін-ботам.
     const out = formatWhereAmI(-100123, null, { can_read_all_group_messages: false });
-    expect(out).toContain('Приватність УВІМКНЕНА');
+    expect(out).toContain('лише якщо я адмін');
     expect(out).toContain('/setprivacy');
   });
 
   it('приватність вимкнена -> підтвердження, що текст доходить', () => {
     const out = formatWhereAmI(-100123, 7, { can_read_all_group_messages: true });
-    expect(out).toContain('Бачу звичайні повідомлення');
-    expect(out).not.toContain('УВІМКНЕНА');
+    expect(out).toContain('вільний текст доходить');
   });
 
   it('getMe недоступний -> рядка про приватність просто немає (не падаємо)', () => {
@@ -564,9 +564,33 @@ describe('formatWhereAmI — режим приватності (діагност
     }
   });
 
-  it('зворотна сумісність: без третього аргументу працює як раніше', () => {
+  it('зворотна сумісність: без додаткових аргументів працює як раніше', () => {
     const out = formatWhereAmI(-100123, null);
     expect(out).toContain('chat_id');
     expect(out).toContain('thread_id');
+    expect(out).not.toContain('Тема асистента');
+  });
+});
+
+describe('formatWhereAmI — тема асистента (чому вільний текст мовчить)', () => {
+  it('поточна тема = тема асистента -> кажемо, що тут працює', () => {
+    const out = formatWhereAmI(-100123, 6, null, '6');
+    expect(out).toContain('це вона, вільний текст тут працює');
+  });
+
+  it('інша тема -> прямо кажемо, що тут вільний текст НЕ піде', () => {
+    // Саме цей випадок неможливо було відрізнити від «бот зламався».
+    const out = formatWhereAmI(-100123, 6, null, '9');
+    expect(out).toContain('НЕ піде до асистента');
+  });
+
+  it('TOPIC_ASSISTANT не заданий -> явна вказівка на це', () => {
+    const out = formatWhereAmI(-100123, 6, null, null);
+    expect(out).toContain('TOPIC_ASSISTANT не заданий');
+  });
+
+  it('чат без тем -> вільний текст працює', () => {
+    const out = formatWhereAmI(-100123, null, null, '6');
+    expect(out).toContain('вільний текст тут працює');
   });
 });
