@@ -34,6 +34,32 @@ updates:
       - dependency-name: '@types/node'
         versions: ['>=25.0.0']
 
+  # --- npm: web/app (React-дашборд Mini App — власний package.json+toolchain) ---
+  # Був НЕ покритий узагалі (dependabot стежив лише за / і /host), тож React,
+  # Vite, zod тощо не оновлювались автоматично від самої міграції (група E).
+  #
+  # ⚠️ Гейт тут слабший, ніж у кореня: кореневий eslint свідомо ігнорує web/app
+  # (див. eslint.config.mjs), тестів у ньому теж немає — CI-джоба `dashboard`
+  # перевіряє лише «збирається» (tsc -b && vite build). Тому зелений CI на цих
+  # PR-ах НЕ означає «працює»: мажори (React 19, zod 4, Vite 7, react-router 7)
+  # мержити лише зі смоуком у браузері/Telegram.
+  - package-ecosystem: npm
+    directory: /web/app
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Kyiv
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      prod-dependencies:
+        dependency-type: production
+    commit-message:
+      prefix: chore(deps-web)
+      prefix-development: chore(dev-deps-web)
+
   # --- npm: host/ (VPS LLM-реле) ---
   - package-ecosystem: npm
     directory: /host
