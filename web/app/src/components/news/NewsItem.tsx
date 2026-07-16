@@ -5,9 +5,9 @@ import { postEvent } from '../../api/client.ts';
 import { has } from '../../lib/format.ts';
 import { openLink, haptic } from '../../telegram.ts';
 
-// Айтем новини (роадмеп v3, E3) — 1:1 з index.html newsItem (2282-2296): заголовок-
-// посилання, «чому», кнопки 👍/👎/🔖. Голос — зі stats.votes (не обрізається),
-// збереження — session-sticky (kind='news', id=url).
+// Айтем новини (дизайн v2, Svitanok.dc.html): заголовок + «чому» акцентом,
+// праворуч три квадратні кнопки 👍/👎/🔖 (активна — кольорова рамка+тло).
+// Голос — зі stats.votes (сервер не обрізає), збереження — session-sticky.
 
 export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
   const { data } = useStats();
@@ -19,52 +19,79 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
 
   const openNews = () => {
     openLink(item.url);
-    // Пасивний трек кліку (fire-and-forget; no-op поза Telegram).
     void postEvent('news_click', { category: topic, url: item.url }).catch(() => {});
   };
 
-  const voteBtn = (dir: 'up' | 'down', icon: string, onCls: string) => (
+  const btn = (
+    label: string,
+    on: boolean,
+    onClick: () => void,
+    onBg: string,
+    onBrd: string,
+    aria: string,
+  ) => (
     <button
       type="button"
-      aria-label={dir === 'up' ? 'Подобається' : 'Не подобається'}
-      onClick={() => {
-        voteMut.mutate({ category: topic, dir, url: item.url });
-        haptic('light');
+      aria-label={aria}
+      aria-pressed={on}
+      onClick={onClick}
+      className="grid h-8 w-8 flex-none place-items-center rounded-[10px] border text-sm transition-colors"
+      style={{
+        background: on ? onBg : 'var(--color-glass)',
+        borderColor: on ? onBrd : 'var(--color-glassb)',
       }}
-      className={`flex h-8 w-8 items-center justify-center rounded-full text-base transition-colors ${
-        vote === dir ? onCls : 'bg-surface-2 hover:bg-border'
-      }`}
     >
-      {icon}
+      {label}
     </button>
   );
 
   return (
-    <div className="flex items-start justify-between gap-2 border-t border-border/50 py-2 first:border-t-0">
+    <div className="flex items-center gap-2.5">
       <button type="button" onClick={openNews} className="min-w-0 flex-1 text-left">
-        <span className="text-sm font-medium">{item.title}</span>
-        {has(item.why) && <div className="mt-0.5 text-xs text-muted">{item.why}</div>}
+        <span className="block text-[13.5px] font-semibold leading-[1.35]">{item.title}</span>
+        {has(item.why) && (
+          <span className="mt-0.5 block font-mono text-[10.5px] font-medium text-a2">{item.why}</span>
+        )}
       </button>
-      <div className="flex shrink-0 items-center gap-1">
-        {voteBtn('up', '👍', 'bg-up/20 text-up')}
-        {voteBtn('down', '👎', 'bg-down/20 text-down')}
-        <button
-          type="button"
-          aria-label={saved ? 'Прибрати зі збереженого' : 'Зберегти'}
-          onClick={() => {
+      <div className="flex flex-none gap-1.5">
+        {btn(
+          '👍',
+          vote === 'up',
+          () => {
+            voteMut.mutate({ category: topic, dir: 'up', url: item.url });
+            haptic('light');
+          },
+          'rgba(120,220,160,.16)',
+          'var(--color-pos)',
+          'Подобається',
+        )}
+        {btn(
+          '👎',
+          vote === 'down',
+          () => {
+            voteMut.mutate({ category: topic, dir: 'down', url: item.url });
+            haptic('light');
+          },
+          'rgba(255,120,120,.14)',
+          'var(--color-neg)',
+          'Не подобається',
+        )}
+        {btn(
+          '🔖',
+          saved,
+          () => {
             const next = !saved;
             setSaved('news', item.url, next);
             saveMut.mutate(
               { save: next, url: item.url, title: item.title, category: topic },
-              // Відкат sticky-набору при збої (хук відкочує лише кеш ['stats']).
               { onError: () => setSaved('news', item.url, saved) },
             );
             haptic('success');
-          }}
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-2 text-base transition-colors hover:bg-border"
-        >
-          {saved ? '✅' : '🔖'}
-        </button>
+          },
+          'rgba(255,164,92,.16)',
+          'var(--color-a2)',
+          saved ? 'Прибрати зі збереженого' : 'Зберегти',
+        )}
       </div>
     </div>
   );

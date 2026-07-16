@@ -11,3 +11,12 @@ export function prettyJobTitle(url: string, title: string): string {
     return url;
   }
 }
+
+/** Домен вакансії (djinni.co, dou.ua…) — підрядок під заголовком у макеті. */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}

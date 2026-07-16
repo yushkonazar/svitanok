@@ -13,6 +13,36 @@ export function fmtClock(unix: number): string {
     : '—';
 }
 
+const KYIV_HM = new Intl.DateTimeFormat('uk-UA', {
+  timeZone: KYIV,
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+/**
+ * Хвилини від півночі за КИЇВСЬКИМ часом (дизайн v2, циферблат). Беремо саме
+ * Київ, а не локаль пристрою, щоб позиція маркера збігалася з підписами сходу/
+ * заходу (їх теж рендеримо в Києві через fmtClock).
+ */
+export function kyivMinutes(d: Date): number {
+  const parts = KYIV_HM.formatToParts(d);
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+  return h * 60 + m;
+}
+
+/** unix-секунди → хвилини від півночі (Київ); 0 якщо невідомо. */
+export function kyivMinutesFromUnix(unix: number): number {
+  return unix ? kyivMinutes(new Date(unix * 1000)) : 0;
+}
+
+/** «HH:MM» поточного київського часу (центр циферблата). */
+export function kyivClockNow(d: Date): string {
+  const mins = kyivMinutes(d);
+  return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`;
+}
+
 /** Хвилини → «Nг Mхв» / «Mхв» (напр. «до заходу»). */
 export function fmtDur(min: number): string {
   const h = Math.floor(min / 60);

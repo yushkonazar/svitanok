@@ -1,21 +1,26 @@
 import { useState } from 'react';
 import { useBriefing, useStats } from '../../api/hooks.ts';
 import { readBlock, jobsDataSchema } from '../../api/briefing-schema.ts';
-import { Ph } from '../ui/primitives.tsx';
-import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
 import { FunnelWidget } from './FunnelWidget.tsx';
-import { FunnelDetail, type FunnelRow } from './FunnelDetail.tsx';
 import { JobCard } from './JobCard.tsx';
 import type { FunnelStage } from './stages.ts';
 
-// Вкладка «Вакансії» (роадмеп v3, E3) — 1:1 з index.html renderJobs (2344-2357):
-// віджет воронки (завжди), опційно деталі активної стадії, потім картки вакансій.
-// Стадія береться зі stats (funnelList), не з блоку. Відхилення (job_dismiss) —
-// локальне session-ховання, як vanilla HIDDEN_JOBS.
+// Вкладка «Вакансії» (дизайн v2, Svitanok.dc.html): смуга воронки, далі картки
+// (сортовані за fit%, як у макеті). Стадія береться зі stats.funnelList, не з
+// блоку брифінгу. Відхилення — локальне session-ховання (job_dismiss ефемерний).
+// Канбан із drag&drop і шторка картки — наступний крок (потребують термінальних
+// стадій у stats-core), тож сегмент «Список/Канбан» поки не показуємо.
+
+const JobsIcon = (
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-tx3)" strokeWidth="1.6" strokeLinecap="round">
+    <rect x="3" y="7" width="18" height="13" rx="2.5" />
+    <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
+  </svg>
+);
 
 export function JobsScreen() {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
-  const [activeStage, setActiveStage] = useState<FunnelStage | null>(null);
   const { data: briefData, isLoading, isError, error, refetch } = useBriefing();
   const { data: statsData } = useStats();
 
@@ -23,7 +28,7 @@ export function JobsScreen() {
   if (isError || !briefData) {
     return (
       <ErrorState
-        message={error instanceof Error ? error.message : 'Не вдалося завантажити вакансії'}
+        message={error instanceof Error ? error.message : 'Перевір з’єднання й спробуй ще раз.'}
         onRetry={() => refetch()}
       />
     );
@@ -46,32 +51,18 @@ export function JobsScreen() {
         { saved: 0, applied: 0, interview: 0, offer: 0 },
       );
 
-  let rows: FunnelRow[] = [];
-  if (activeStage) {
-    // funnelList авторитетний, коли stats є (навіть порожній масив — як vanilla
-    // `if (fl)`); демо-фолбек на items.funnelStage лише поки stats не завантажено.
-    if (stats && Array.isArray(stats.funnelList)) {
-      rows = stats.funnelList
-        .filter((x) => x.stage === activeStage)
-        .map((x) => ({ url: x.url, title: x.title }));
-    } else {
-      rows = allItems
-        .filter((it) => it.funnelStage === activeStage)
-        .map((it) => ({ url: it.url, title: it.title }));
-    }
-  }
-
-  const visibleItems = allItems.filter((it) => !hidden.has(it.url));
+  // Макет сортує картки за fit% (спадання); score<0 («оцінюється») — у кінець.
+  const visible = allItems
+    .filter((it) => !hidden.has(it.url))
+    .slice()
+    .sort((a, b) => b.score - a.score);
 
   return (
-    <div>
-      <FunnelWidget counts={counts} active={activeStage} onToggle={setActiveStage} />
-      {activeStage && <FunnelDetail stage={activeStage} rows={rows} />}
+    <div className="flex flex-col gap-4">
+      <FunnelWidget counts={counts} />
 
-      {/* Гейт на allItems (не visibleItems): відхилення ховає лише картки, а не
-          показує «Вакансій немає» — як vanilla (плейсхолдер лише при 0 вакансій). */}
       {allItems.length ? (
-        visibleItems.map((it) => (
+        visible.map((it) => (
           <JobCard
             key={it.url}
             item={it}
@@ -80,7 +71,12 @@ export function JobsScreen() {
           />
         ))
       ) : (
-        <Ph>Вакансій немає</Ph>
+        <EmptyState
+          icon={JobsIcon}
+          title="Ще немає вакансій"
+          text="Збережені вакансії з’являться тут. Додай першу з пошуку."
+          onReload={() => refetch()}
+        />
       )}
     </div>
   );
