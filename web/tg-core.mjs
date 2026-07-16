@@ -384,13 +384,17 @@ export function progressBar(done, total, width = 10) {
   return `<code>[${bar}]</code>`;
 }
 
+// Дзеркало STAGES зі stats-core.mjs (worker.js не імпортує TS, а тут — тексти для
+// Telegram). Термінальні (F1) — в кінці: це вихід із воронки, не прогрес.
 const STAGE_LABEL = {
   saved: '💾 Збережено',
   applied: '✅ Подано',
   interview: '🗣 Співбесіда',
   offer: '🎉 Офер',
+  rejected: '🚫 Відмова',
+  failed: '💔 Провал співбесіди',
 };
-const STAGE_ORDER = ['saved', 'applied', 'interview', 'offer'];
+const STAGE_ORDER = ['saved', 'applied', 'interview', 'offer', 'rejected', 'failed'];
 
 /** /jobs — активна воронка вакансій, згрупована за стадією (з /api/stats.funnelList). */
 export function formatJobsMessage(funnelList) {
@@ -446,6 +450,11 @@ export function formatStatsMessage(stats) {
     `🎯 Тижнева ціль: ${goalBar ? goalBar + ' ' : ''}${goal.weeklyApplied ?? 0}/${goal.weeklyTarget ?? 0} подано`,
     `💼 Воронка: ${funnel.saved ?? 0} збережено · ${funnel.applied ?? 0} подано · ` +
       `${funnel.interview ?? 0} співбесід · ${funnel.offer ?? 0} офер(и)`,
+    // Термінальні (F1) — окремим рядком і лише коли є: у порожній воронці
+    // «0 відмов» лише шумить.
+    ...(funnel.rejected || funnel.failed
+      ? [`🚫 Закрито: ${funnel.rejected ?? 0} відмов · ${funnel.failed ?? 0} провал(ів) співбесід`]
+      : []),
     `🎤 Mock-стрік: ${streaks.mockDays ?? 0} дн.`,
   ];
   if (typeof s.avgFitApplied === 'number') {

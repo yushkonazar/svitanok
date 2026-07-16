@@ -455,6 +455,12 @@ async function handleVote(request, env) {
  */
 async function applyEvent(env, body) {
   // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
+  //
+  // Термінальні стадії (F1: rejected/failed) сюди СВІДОМО не входять — падають у
+  // null, тобто скорер їх не бачить. Це не недогляд: jobPrefs учить скорер, що
+  // подобається ВЛАСНИКУ, а відмова — рішення роботодавця. Записати «відмову» як
+  // dismiss означало б учити скорер уникати саме тих вакансій, які власник хотів
+  // найбільше (він же на них подався). Провал співбесіди — так само не преференція.
   const jobSignal =
     body.type === 'job_dismiss'
       ? 'dismiss'

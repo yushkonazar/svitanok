@@ -17,18 +17,42 @@ export const weeklyDaySchema = z.object({
   active: z.boolean(),
 });
 
+// Воронка v2 (F1): 4 лінійні + термінальні rejected/failed.
+// ⚠️ Цей enum — найкрихкіше місце контракту: варто серверу віддати стадію, якої
+// тут немає, і safeParse валить ВЕСЬ /api/stats (не один елемент) -> вкладки
+// «Статистика» й «Вакансії» йдуть у помилку. Розширювати синхронно зі stats-core.
+export const stageSchema = z.enum(['saved', 'applied', 'interview', 'offer', 'rejected', 'failed']);
+
 export const funnelSchema = z.object({
   saved: int,
   applied: int,
   interview: int,
   offer: int,
+  // .default(0) — старий сервер (до F1) цих полів не віддає; без дефолту дашборд
+  // ліг би на першому ж завантаженні під час деплою.
+  rejected: int.default(0),
+  failed: int.default(0),
 });
+
+/** Один перехід у журналі стадій — для «Історії» у шторці вакансії. */
+export const stageEventSchema = z.object({ stage: stageSchema, ts: z.string() });
 
 export const funnelItemSchema = z.object({
   url: z.string(),
-  stage: z.enum(['saved', 'applied', 'interview', 'offer']),
+  stage: stageSchema,
   title: z.string(),
+  /** Дата ПЕРШОГО входу у воронку (F1), не останнього переходу. */
   ts: z.string(),
+  /** Журнал переходів; легасі-записи (до F1) його не мають -> порожній. */
+  history: z.array(stageEventSchema).default([]),
+});
+
+/** Скільки вакансій КОЛИСЬ дійшли до стадії — знаменники конверсій (F1). */
+export const reachedSchema = z.object({
+  saved: int.default(0),
+  applied: int.default(0),
+  interview: int.default(0),
+  offer: int.default(0),
 });
 
 export const savedItemSchema = z.object({
@@ -93,6 +117,9 @@ export const statsSchema = z.object({
   funnel: funnelSchema,
   goal: z.object({ weeklyTarget: num.nullable().default(null), weeklyApplied: int.default(0) }),
   conversion: z.object({ appliedToInterview: num, interviewToOffer: num }),
+  // F1: знаменники конверсій — щоб «50%» читалось як «1 з 2». Старий сервер поля
+  // не віддає -> дефолт нулями.
+  reached: reachedSchema.default({ saved: 0, applied: 0, interview: 0, offer: 0 }),
   avgFitApplied: num.nullable().default(null),
   funnelList: z.array(funnelItemSchema).default([]),
   savedCount: int.default(0),
@@ -123,6 +150,9 @@ export const statsSchema = z.object({
 export type Stats = z.infer<typeof statsSchema>;
 export type WeeklyDay = z.infer<typeof weeklyDaySchema>;
 export type Funnel = z.infer<typeof funnelSchema>;
+export type FunnelItem = z.infer<typeof funnelItemSchema>;
+export type StageEvent = z.infer<typeof stageEventSchema>;
+export type Reached = z.infer<typeof reachedSchema>;
 export type SavedItem = z.infer<typeof savedItemSchema>;
 export type WeakTopic = z.infer<typeof weakTopicSchema>;
 export type HeatmapCell = z.infer<typeof heatmapCellSchema>;

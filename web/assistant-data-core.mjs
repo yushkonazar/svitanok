@@ -81,6 +81,10 @@ export function digestJobs(agg) {
     `Вакансії — воронка: збережено ${f.saved ?? 0}, подано ${f.applied ?? 0}, ` +
       `співбесіда ${f.interview ?? 0}, оферів ${f.offer ?? 0}`,
   ];
+  // Термінальні (F1) — лише коли є, щоб не годувати LLM нулями.
+  if (f.rejected || f.failed) {
+    parts.push(`закрито: ${f.rejected ?? 0} відмов, ${f.failed ?? 0} провалів співбесід`);
+  }
   if (g.weeklyTarget) parts.push(`ціль тижня ${g.weeklyApplied ?? 0}/${g.weeklyTarget} подач`);
   if (typeof agg?.avgFitApplied === 'number') {
     parts.push(`середній fit поданих ${agg.avgFitApplied}%`);

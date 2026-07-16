@@ -17,7 +17,24 @@
 //   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-const STAGES = ['saved', 'applied', 'interview', 'offer'];
+
+// Воронка v2 (роадмеп v3, F1). Чотири лінійні стадії + ДВІ ТЕРМІНАЛЬНІ:
+//   rejected — відмовили після подачі (до співбесіди);
+//   failed   — провал співбесіди.
+// Термінальні свідомо ПОЗА лінійним порядком: це не «далі по воронці», а вихід
+// із неї. Тому STAGE_RANK їх не містить — «дійшов до» рахується лише лінійними.
+//
+// ⚠️ Незнана стадія НЕ ігнорується: recordEvent трактує її як stage:null, тобто
+// ВИДАЛЯЄ вакансію з воронки. Тому будь-яка нова стадія має спершу зʼявитись
+// тут, і лише потім у клієнтах.
+const LINEAR_STAGES = ['saved', 'applied', 'interview', 'offer'];
+const TERMINAL_STAGES = ['rejected', 'failed'];
+const STAGES = [...LINEAR_STAGES, ...TERMINAL_STAGES];
+const STAGE_RANK = { saved: 0, applied: 1, interview: 2, offer: 3 };
+
+// Скільки переходів тримаємо на вакансію (журнал для «Історії» у шторці).
+// Обмеження — щоб блоб KV не ріс безмежно на вакансії, яку ганяють туди-сюди.
+const HISTORY_PER_JOB = 12;
 
 // Тижнева ціль подач (F2): діапазон слайдера в Mini App. Клампимо і на записі
 // (set_goal), і на читанні (normalize) — щоб биті/легасі значення в KV
@@ -182,12 +199,28 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'job_stage':
       if (ev.url) {
         if (ev.stage && STAGES.includes(ev.stage)) {
+          const prev = s.funnelMeta[ev.url];
+          const prevStage = s.funnel[ev.url];
           s.funnel[ev.url] = ev.stage;
           // Мета (title+дата) — щоб дашборд показував СПИСОК вакансій стадії наскрізь
           // по днях, а не лише з поточного брифінгу (вакансії дедупляться на 7 днів).
+          //
+          // F1: `ts` — дата ПЕРШОГО потрапляння у воронку, далі незмінна. Доти вона
+          // перезаписувалась на КОЖНІЙ зміні стадії, тобто напис «у воронці з …» у
+          // шторці показував дату останнього переходу — просто неправда.
+          //
+          // `history` — журнал переходів (для «Історії»). Пишемо лише РЕАЛЬНУ зміну:
+          // повторна подія тією ж стадією (напр. повторний тап) журнал не роздуває.
+          const history = Array.isArray(prev?.history) ? [...prev.history] : [];
+          if (prevStage !== ev.stage) {
+            history.push({ stage: ev.stage, ts: dateKey });
+            if (history.length > HISTORY_PER_JOB)
+              history.splice(0, history.length - HISTORY_PER_JOB);
+          }
           s.funnelMeta[ev.url] = {
-            title: ev.title || s.funnelMeta[ev.url]?.title || '',
-            ts: dateKey,
+            title: ev.title || prev?.title || '',
+            ts: prev?.ts || dateKey,
+            history,
           };
           if (ev.stage === 'applied') {
             // Ревʼю D: дедуп по url — одна вакансія = один запис подачі (fit живе в
@@ -383,6 +416,37 @@ function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, to
 }
 
 /** Агрегувати стор у контракт /api/stats. `todayKey`="YYYY-MM-DD" київський. */
+/**
+ * Скільки вакансій КОЛИСЬ дійшли до кожної лінійної стадії (F1).
+ *
+ * Навіщо окремо від лічильників `funnel`: ті тримають лише ПОТОЧНУ стадію, тож
+ * конверсія з них страждає на survivorship bias — щойно вакансія стає rejected,
+ * вона зникає з `applied`, знаменник падає, і що більше відмов ти фіксуєш, то
+ * КРАЩОЮ виглядає конверсія. Абсурд. Журнал переходів дає чесну відповідь:
+ * «подав 10, до співбесіди дійшло 2» лишається правдою й після десяти відмов.
+ *
+ * Легасі-записи без history: виводимо лінійно з поточної стадії (вакансія на
+ * `offer` колись пройшла applied+interview). Це та сама гіпотеза, що її робила
+ * стара формула, тож регресії немає — лише поступова заміна на факти в міру
+ * накопичення журналу.
+ */
+export function reachedCounts(store) {
+  const s = normalize(store);
+  const out = Object.fromEntries(LINEAR_STAGES.map((st) => [st, 0]));
+  for (const [url, cur] of Object.entries(s.funnel)) {
+    const hist = s.funnelMeta[url]?.history;
+    const seen = new Set();
+    if (Array.isArray(hist) && hist.length) {
+      for (const h of hist) if (STAGE_RANK[h?.stage] != null) seen.add(h.stage);
+    } else if (STAGE_RANK[cur] != null) {
+      // Легасі: без журналу вважаємо, що лінійний шлях пройдено до поточної.
+      for (const st of LINEAR_STAGES) if (STAGE_RANK[st] <= STAGE_RANK[cur]) seen.add(st);
+    }
+    for (const st of seen) out[st]++;
+  }
+  return out;
+}
+
 export function aggregateStats(store, todayKey) {
   const s = normalize(store);
   // Битий todayKey не валить агрегат (RangeError у date-математиці) — детермінований
@@ -403,19 +467,23 @@ export function aggregateStats(store, todayKey) {
   }
 
   // воронка: лічильники + список вакансій за стадією (з title/дати у funnelMeta).
-  const funnel = { saved: 0, applied: 0, interview: 0, offer: 0 };
+  const funnel = Object.fromEntries(STAGES.map((st) => [st, 0]));
   for (const st of Object.values(s.funnel)) if (funnel[st] != null) funnel[st]++;
-  const stageOrder = { saved: 0, applied: 1, interview: 2, offer: 3 };
+  // Порядок показу: лінійні за прогресом, термінальні — в кінці.
+  const listOrder = Object.fromEntries(STAGES.map((st, i) => [st, i]));
   const funnelList = Object.entries(s.funnel)
-    .filter(([, st]) => stageOrder[st] != null)
+    .filter(([, st]) => listOrder[st] != null)
     .map(([url, st]) => ({
       url,
       stage: st,
       title: s.funnelMeta[url]?.title || '',
       ts: s.funnelMeta[url]?.ts || '',
+      // Журнал переходів для «Історії» у шторці. Легасі-записи його не мають —
+      // віддаємо порожній, і шторка чесно покаже лише дату входу.
+      history: Array.isArray(s.funnelMeta[url]?.history) ? s.funnelMeta[url].history : [],
     }))
     .sort(
-      (a, b) => stageOrder[a.stage] - stageOrder[b.stage] || (b.ts || '').localeCompare(a.ts || ''),
+      (a, b) => listOrder[a.stage] - listOrder[b.stage] || (b.ts || '').localeCompare(a.ts || ''),
     );
 
   // тижневі відгуки (за 7 днів)
@@ -425,6 +493,7 @@ export function aggregateStats(store, todayKey) {
   const weeklyApplied = s.appliedLog.filter((a) => a.ts >= weekAgoKey).length;
 
   const conv = (a, b) => (a > 0 ? Math.round((b / a) * 100) : 0);
+  const reached = reachedCounts(s);
   // fit% подач — з самих записів appliedLog (дедуплено по url, ревʼю D), плюс
   // легасі s.fitApplied (стара форма без url — щоб не втратити історію до фіксу;
   // у новий стор більше не пишемо, тож подвійного рахунку немає).
@@ -461,13 +530,17 @@ export function aggregateStats(store, todayKey) {
     weekly,
     funnel,
     goal: { weeklyTarget: s.goal.weeklyTarget, weeklyApplied },
+    // F1: конверсії — з «дійшов до» (reachedCounts), а НЕ з поточних стадій.
+    // Стара формула рахувала живі стадії, тож відмова прибирала вакансію зі
+    // знаменника: що більше відмов, то вища «конверсія». Тепер подана вакансія
+    // лишається в знаменнику назавжди, чим би не скінчилась.
     conversion: {
-      appliedToInterview: conv(
-        funnel.applied + funnel.interview + funnel.offer,
-        funnel.interview + funnel.offer,
-      ),
-      interviewToOffer: conv(funnel.interview + funnel.offer, funnel.offer),
+      appliedToInterview: conv(reached.applied, reached.interview),
+      interviewToOffer: conv(reached.interview, reached.offer),
     },
+    // Скільки вакансій колись дійшли до стадії (знаменники конверсій — видимі,
+    // щоб «50%» читалось як «1 з 2», а не як магія).
+    reached,
     avgFitApplied: avgFit,
     funnelList,
     savedCount: s.saved.length,

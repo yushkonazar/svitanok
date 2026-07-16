@@ -3,6 +3,7 @@ import { useJobStage } from '../../api/hooks.ts';
 import { haptic } from '../../telegram.ts';
 import { prettyJobTitle } from '../../lib/jobTitle.ts';
 import { FUNNEL_STAGES, fitStyle, type FunnelStage } from './stages.ts';
+import type { StageEvent } from '../../api/schema.ts';
 
 // Канбан воронки (дизайн v2, Svitanok.dc.html): лейни-стадії, картки
 // перетягуються між ними. Джерело карток — stats.funnelList (а не блок
@@ -21,6 +22,9 @@ const LANE_DOT: Record<FunnelStage, string> = {
   applied: 'var(--color-a2)',
   interview: 'var(--color-a1)',
   offer: 'var(--color-pos)',
+  // Термінальні (F1): приглушені — це закриті історії, не активна робота.
+  rejected: 'var(--color-neg)',
+  failed: 'var(--color-tx3)',
 };
 
 export interface KanbanCard {
@@ -28,6 +32,10 @@ export interface KanbanCard {
   title: string;
   stage: FunnelStage;
   score: number | null;
+  /** Дата ПЕРШОГО входу у воронку (F1). */
+  ts: string;
+  /** Журнал переходів; порожній у легасі-вакансій (до F1). */
+  history: StageEvent[];
 }
 
 export function KanbanBoard({

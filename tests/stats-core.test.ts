@@ -74,7 +74,17 @@ describe('stats-core — recordEvent', () => {
     // подальший перехід без title у події — тайтл зберігається зі стану
     s = recordEvent(s, { type: 'job_stage', url: 'j2', stage: 'applied' }, '2026-07-08');
     expect(s.funnel['j2']).toBe('applied');
-    expect(s.funnelMeta['j2']).toEqual({ title: 'Junior Dev', ts: '2026-07-08' });
+    // F1: ts — дата ПЕРШОГО входу (07-07), не останнього переходу (07-08).
+    // Доти тут стояло ts:'2026-07-08' — тест закріплював баг як норму, через що
+    // напис «у воронці з …» у шторці показував дату останньої зміни стадії.
+    expect(s.funnelMeta['j2']).toEqual({
+      title: 'Junior Dev',
+      ts: '2026-07-07',
+      history: [
+        { stage: 'saved', ts: '2026-07-07' },
+        { stage: 'applied', ts: '2026-07-08' },
+      ],
+    });
   });
 
   it('normalize терпить старий стор без funnelMeta', () => {
@@ -206,10 +216,29 @@ describe('stats-core — aggregateStats', () => {
       '2026-07-07',
     );
     const st = aggregateStats(s, '2026-07-07');
+    // history (F1) — журнал переходів для «Історії» у шторці вакансії.
     expect(st.funnelList).toEqual([
-      { url: 'c', stage: 'saved', title: 'React Trainee', ts: '2026-07-07' },
-      { url: 'a', stage: 'applied', title: '', ts: '2026-07-07' },
-      { url: 'b', stage: 'interview', title: '', ts: '2026-07-07' },
+      {
+        url: 'c',
+        stage: 'saved',
+        title: 'React Trainee',
+        ts: '2026-07-07',
+        history: [{ stage: 'saved', ts: '2026-07-07' }],
+      },
+      {
+        url: 'a',
+        stage: 'applied',
+        title: '',
+        ts: '2026-07-07',
+        history: [{ stage: 'applied', ts: '2026-07-07' }],
+      },
+      {
+        url: 'b',
+        stage: 'interview',
+        title: '',
+        ts: '2026-07-07',
+        history: [{ stage: 'interview', ts: '2026-07-07' }],
+      },
     ]);
   });
 
@@ -217,7 +246,15 @@ describe('stats-core — aggregateStats', () => {
     const st = aggregateStats(emptyStore(), '2026-07-07');
     expect(st.streaks.openDays).toBe(0);
     expect(st.weekly).toHaveLength(7);
-    expect(st.funnel).toEqual({ saved: 0, applied: 0, interview: 0, offer: 0 });
+    // F1: шість стадій — 4 лінійні + термінальні rejected/failed.
+    expect(st.funnel).toEqual({
+      saved: 0,
+      applied: 0,
+      interview: 0,
+      offer: 0,
+      rejected: 0,
+      failed: 0,
+    });
     expect(st.funnelList).toEqual([]);
     expect(st.interests).toEqual([]);
     expect(st.timeToOpenMin).toBeNull();

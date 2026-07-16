@@ -11,6 +11,7 @@ import {
   type VoteDir,
 } from './client.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
+import type { FunnelStage } from '../components/jobs/stages.ts';
 
 // TanStack Query хуки даних дашборда (роадмеп v3, E1+E2). Дефолти (staleTime 60с,
 // retry 1) — у main.tsx. Дві незалежні черги: ['brief'] (щоденний знімок) і
@@ -184,7 +185,9 @@ export function useJobStage() {
     mutationFn: (vars: {
       url: string;
       title: string;
-      stage: 'saved' | 'applied' | 'interview' | 'offer' | null;
+      // Єдине джерело правди про стадії — components/jobs/stages.ts (дзеркало
+      // stats-core). Локальний union тут розʼїхався б із ним мовчки.
+      stage: FunnelStage | null;
       fit?: number;
     }) =>
       postEvent('job_stage', {
@@ -197,17 +200,29 @@ export function useJobStage() {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
       patchStats(qc, (s) => {
-        // Зберігаємо ts/title наявного запису: сервер їх не змінює при зміні
-        // стадії (funnelMeta пишеться при першому записі), тож затирати їх
-        // порожнім рядком — втратити «у воронці з» до найближчого рефетчу.
+        // Зберігаємо ts/title/history наявного запису — дзеркалимо сервер (F1):
+        // ts там ставиться лише на ПЕРШОМУ вході й далі не змінюється, а журнал
+        // накопичується. Затерти їх тут = показати неправду до рефетчу.
         const existing = s.funnelList.find((x) => x.url === url);
         let list = s.funnelList.filter((x) => x.url !== url);
-        if (stage)
+        if (stage) {
+          const history = existing?.history ?? [];
           list = [
-            { url, stage, title: title || existing?.title || '', ts: existing?.ts ?? '' },
+            {
+              url,
+              stage,
+              title: title || existing?.title || '',
+              ts: existing?.ts ?? '',
+              // Реальна зміна стадії -> новий запис у журналі (без дати: її знає
+              // лише сервер, київський день). Повтор тієї ж стадії журнал не чіпає.
+              history:
+                existing?.stage === stage ? history : [...history, { stage, ts: existing?.ts ?? '' }],
+            },
             ...list,
           ];
-        const funnel = { saved: 0, applied: 0, interview: 0, offer: 0 };
+        }
+        const funnel = { ...s.funnel };
+        for (const k of Object.keys(funnel) as (keyof typeof funnel)[]) funnel[k] = 0;
         for (const x of list) if (funnel[x.stage] != null) funnel[x.stage]++;
         return { ...s, funnelList: list, funnel };
       });

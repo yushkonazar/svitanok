@@ -2,7 +2,7 @@ import type { Stats } from '../../api/schema.ts';
 import { clamp, has } from '../../lib/format.ts';
 import { SectionHead, StatRow } from '../ui/primitives.tsx';
 import { Sparkline } from '../charts/Sparkline.tsx';
-import { FUNNEL_SHORT, FUNNEL_STAGES } from '../jobs/stages.ts';
+import { FUNNEL_SHORT, FUNNEL_STAGES, isTerminal } from '../jobs/stages.ts';
 
 // B · Воронка та ціль (дизайн v2, Svitanok.dc.html): 4 міні-картки стадій,
 // рядки конверсій, смуга тижневої цілі, спарклайн подач за 8 тижнів.
@@ -22,8 +22,10 @@ export function FunnelGoalBlock({ s }: { s: Stats }) {
     <div className="flex flex-col gap-3.5">
       <SectionHead>Воронка та ціль</SectionHead>
 
+      {/* Лише лінійні стадії: 6 колонок на 375px — каша, та й «де я зараз» не
+          про закриті вакансії. Термінальні — рядком нижче. */}
       <div className="flex gap-2">
-        {FUNNEL_STAGES.map((st) => {
+        {FUNNEL_STAGES.filter((st) => !isTerminal(st.key)).map((st) => {
           const n = s.funnel[st.key] || 0;
           return (
             <div
@@ -43,11 +45,44 @@ export function FunnelGoalBlock({ s }: { s: Stats }) {
       </div>
 
       <div className="flex flex-col gap-[9px]">
+        {/* Конверсії з «дійшов до» (F1): знаменник — усі, хто КОЛИСЬ був на
+            стадії, тож відмова його не зменшує. Показуємо «N з M» поруч із
+            відсотком — інакше «50%» на двох вакансіях виглядає як статистика. */}
         {has(s.conversion.appliedToInterview) && (
-          <StatRow label="Подав → співбесіда" value={`${s.conversion.appliedToInterview}%`} />
+          <StatRow
+            label="Подав → співбесіда"
+            value={
+              <>
+                {s.conversion.appliedToInterview}%
+                {s.reached.applied > 0 && (
+                  <span className="ml-1.5 font-normal text-tx3">
+                    {s.reached.interview}/{s.reached.applied}
+                  </span>
+                )}
+              </>
+            }
+          />
         )}
         {has(s.conversion.interviewToOffer) && (
-          <StatRow label="Співбесіда → офер" value={`${s.conversion.interviewToOffer}%`} />
+          <StatRow
+            label="Співбесіда → офер"
+            value={
+              <>
+                {s.conversion.interviewToOffer}%
+                {s.reached.interview > 0 && (
+                  <span className="ml-1.5 font-normal text-tx3">
+                    {s.reached.offer}/{s.reached.interview}
+                  </span>
+                )}
+              </>
+            }
+          />
+        )}
+        {(s.funnel.rejected > 0 || s.funnel.failed > 0) && (
+          <StatRow
+            label="Закрито (відмова / провал)"
+            value={`${s.funnel.rejected} / ${s.funnel.failed}`}
+          />
         )}
         {has(s.avgFitApplied) && <StatRow label="Середній fit% поданих" value={`${s.avgFitApplied}%`} />}
         {has(s.goal.weeklyTarget) && (
