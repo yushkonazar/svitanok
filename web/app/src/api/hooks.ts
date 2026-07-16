@@ -194,8 +194,16 @@ export function useJobStage() {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
       patchStats(qc, (s) => {
+        // Зберігаємо ts/title наявного запису: сервер їх не змінює при зміні
+        // стадії (funnelMeta пишеться при першому записі), тож затирати їх
+        // порожнім рядком — втратити «у воронці з» до найближчого рефетчу.
+        const existing = s.funnelList.find((x) => x.url === url);
         let list = s.funnelList.filter((x) => x.url !== url);
-        if (stage) list = [{ url, stage, title: title || '', ts: '' }, ...list];
+        if (stage)
+          list = [
+            { url, stage, title: title || existing?.title || '', ts: existing?.ts ?? '' },
+            ...list,
+          ];
         const funnel = { saved: 0, applied: 0, interview: 0, offer: 0 };
         for (const x of list) if (funnel[x.stage] != null) funnel[x.stage]++;
         return { ...s, funnelList: list, funnel };
