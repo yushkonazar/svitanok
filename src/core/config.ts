@@ -1,9 +1,15 @@
 // Завантаження + zod-валідація config.yml (§7). Невалідний конфіг падає ГУЧНО
 // на старті (на відміну від рантайм-помилок модулів, що деградують тихо).
-// js-yaml v4 `load` безпечний за замовчуванням — без кастомних конструкторів (§8).
+// `load` безпечний за замовчуванням — без кастомних конструкторів (§8).
+//
+// js-yaml v5 прибрав default-експорт: лише іменовані. Пакет тепер везе власні
+// типи, тож @types/js-yaml видалено — застарілий @types описував v4 і мовчки
+// перекривав справжні типи, через що `tsc` пропускав `import yaml from` як
+// валідний, а Node падав уже в рантаймі («does not provide an export named
+// default»). Зловили тести config.test.ts, не typecheck.
 
 import { readFileSync } from 'node:fs';
-import yaml from 'js-yaml';
+import { load, JSON_SCHEMA } from 'js-yaml';
 import { z } from 'zod';
 
 const LocationSchema = z.object({
@@ -113,6 +119,6 @@ export function parseConfig(raw: unknown): AppConfig {
 /** Завантажити й провалідувати config.yml із диска. */
 export function loadConfig(path = 'config.yml'): AppConfig {
   // JSON_SCHEMA — лише JSON-сумісні типи: жодних кастомних тегів/конструкторів (§8).
-  const raw = yaml.load(readFileSync(path, 'utf8'), { schema: yaml.JSON_SCHEMA }) ?? {};
+  const raw = load(readFileSync(path, 'utf8'), { schema: JSON_SCHEMA }) ?? {};
   return parseConfig(raw);
 }

@@ -21,6 +21,18 @@ updates:
     commit-message:
       prefix: chore(deps)
       prefix-development: chore(dev-deps)
+    ignore:
+      # TypeScript 7 (нативний порт) поки НЕ беремо: typescript-eslint@8.64 —
+      # найновіший на 16.07.2026 — вимагає `typescript >=4.8.4 <6.1.0`, тобто
+      # TS7 ламає лінтер peer-конфліктом. Сидимо на 6.0.x (у межах діапазону).
+      # Знімати, коли typescript-eslint оголосить підтримку 7.
+      - dependency-name: typescript
+        versions: ['>=7.0.0']
+      # @types/node тримаємо на мажорі Node з .nvmrc (24). Новіші типи описують
+      # API, якого в нашому рантаймі немає — tsc пропускав би виклики, що падають
+      # у CI/проді. Піднімати РАЗОМ із .nvmrc, не окремо.
+      - dependency-name: '@types/node'
+        versions: ['>=25.0.0']
 
   # --- npm: host/ (VPS LLM-реле) ---
   - package-ecosystem: npm
