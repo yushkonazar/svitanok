@@ -9,7 +9,8 @@
 //   saved:     [ { kind, url?, title, category?, ts } ]       // обране: news/fact/quote/question
 //   interests: { '<topic>': score }                          // з голосів/кліків
 //   interestsWeekly:{ '<пн-YYYY-MM-DD>': { topic: score } }  // тижневі кошики інтересів (тренд)
-//   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock
+//   mockTopics:{ '<topic>': { seen, weak } }                 // самооцінка mock (по темі)
+//   mockRated: { '<qId>': 'easy'|'hard' }                    // оцінка по ПИТАННЮ (F4, кап 60)
 //   goal:      { weeklyTarget }
 //   fitApplied:[ int ]                                       // ЛЕГАСІ fit% (до ревʼю D; тепер fit у appliedLog[].fit)
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
@@ -32,6 +33,10 @@ const TERMINAL_STAGES = ['rejected', 'failed'];
 const STAGES = [...LINEAR_STAGES, ...TERMINAL_STAGES];
 const STAGE_RANK = { saved: 0, applied: 1, interview: 2, offer: 3 };
 
+// Оцінені питання (F4): qId -> 'easy'|'hard'. Кап — щоб блоб не ріс роками;
+// підсвітка потрібна лише свіжим питанням, які ще на екрані.
+const MOCK_RATED_CAP = 60;
+
 // Скільки переходів тримаємо на вакансію (журнал для «Історії» у шторці).
 // Обмеження — щоб блоб KV не ріс безмежно на вакансії, яку ганяють туди-сюди.
 const HISTORY_PER_JOB = 12;
@@ -53,6 +58,7 @@ export function emptyStore() {
     interests: {},
     interestsWeekly: {},
     mockTopics: {},
+    mockRated: {},
     goal: { weeklyTarget: GOAL_DEFAULT },
     fitApplied: [],
     opensMin: [],
@@ -76,6 +82,7 @@ export function normalize(s) {
         ? s.interestsWeekly
         : e.interestsWeekly,
     mockTopics: s.mockTopics && typeof s.mockTopics === 'object' ? s.mockTopics : e.mockTopics,
+    mockRated: s.mockRated && typeof s.mockRated === 'object' ? s.mockRated : e.mockRated,
     goal: { weeklyTarget: clampGoal(Number(s.goal?.weeklyTarget) || e.goal.weeklyTarget) },
     fitApplied: Array.isArray(s.fitApplied) ? s.fitApplied : e.fitApplied,
     opensMin: Array.isArray(s.opensMin) ? s.opensMin : e.opensMin,
@@ -248,14 +255,39 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'job_dismiss':
       // «Не релевантно» — ефемерне: у постійному сторі НЕ тримаємо.
       break;
-    case 'mock_answer':
-      bump(dayBucket(s, dateKey), 'mock');
+    case 'mock_answer': {
+      // F4: оцінка привʼязана до ПИТАННЯ (qId), а не до дня.
+      //
+      // Доти запис не мав жодного дедупу: кожен POST знову бампав seen/weak, тож
+      // повторний тап (або ретрай мережі) двічі рахував тему й криво тягнув
+      // ваги генератора. Тепер qId — ключ ідемпотентності: перша оцінка рахує
+      // seen і день (стрік = ДНІ практики, не кількість тапів), а зміна думки
+      // лише переставляє weak.
+      const rating = ev.rating === 'hard' ? 'hard' : ev.rating === 'easy' ? 'easy' : null;
+      if (!rating) break; // сміття не рахуємо
+      const qId = typeof ev.qId === 'string' && ev.qId ? ev.qId : null;
+      const prev = qId ? s.mockRated[qId] : undefined;
+      const first = !prev;
+
+      if (first) bump(dayBucket(s, dateKey), 'mock');
       if (ev.topic) {
         if (!s.mockTopics[ev.topic]) s.mockTopics[ev.topic] = { seen: 0, weak: 0 };
-        bump(s.mockTopics[ev.topic], 'seen');
-        if (ev.rating === 'hard') bump(s.mockTopics[ev.topic], 'weak');
+        const t = s.mockTopics[ev.topic];
+        if (first) bump(t, 'seen');
+        if (prev !== rating) {
+          if (rating === 'hard') bump(t, 'weak');
+          else if (prev === 'hard') t.weak = Math.max(0, (Number(t.weak) || 0) - 1);
+        }
+      }
+      if (qId) {
+        s.mockRated[qId] = rating;
+        // Кап: ключі рядків зберігають порядок вставки, тож ріжемо найстаріші.
+        const keys = Object.keys(s.mockRated);
+        for (const k of keys.slice(0, Math.max(0, keys.length - MOCK_RATED_CAP)))
+          delete s.mockRated[k];
       }
       break;
+    }
     case 'set_goal': {
       // F2, слайдер «Тижнева ціль подач». Ціль ЖИВЕ в цьому сторі (goal.weeklyTarget
       // тут же й агрегується з weeklyApplied), тож їй не треба ні окремого
@@ -570,5 +602,8 @@ export function aggregateStats(store, todayKey) {
       deadman: s.reliability.deadman,
     },
     mockRatedToday: mocked(s.days[todayKey]),
+    // F4: які саме питання оцінено — щоб картка пережила перезавантаження
+    // (доти обраний варіант жив лише в стані сесії й після F5 зникав).
+    mockRated: s.mockRated,
   };
 }

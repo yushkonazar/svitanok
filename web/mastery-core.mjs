@@ -2,8 +2,9 @@
 // (src/modules/mock.ts MOCK_TOPICS — вони ж ключі mockWeights) на СТАБІЛЬНІ id
 // тем роадмепу (web/roadmap-data.mjs). Назви не рівні рядково (mock 'HTTP' vs
 // roadmap '📡 HTTP / мережі (поглиблено)'), тож рівність назв — не механізм.
-// Мапінг many-to-many і свідомо lossy: tools/ecosystem/testing-adv/perf-a11y
-// не мають mock-теми — «тема тижня» з них показується без mock-зв'язки.
+// Мапінг many-to-many. F4 закрив колишню прогалину: tools/ecosystem/testing-adv/
+// perf-a11y не мали mock-теми, тож «тема тижня» з них не могла сісти батч
+// питань. Тепер кожна тема роадмепу має свою mock-тему (тест це пришпилює).
 // mockWeights і roadmapProgress ЛИШАЮТЬСЯ незалежними KV-стейтами; звʼязок —
 // лише через ці чисті функції (жодної нової синхронізації станів).
 //
@@ -12,12 +13,15 @@
 // web-код НЕ імпортує — читає готовий masteryFocus зі state (межа src/↔web/).
 
 import { ROADMAP_TOPICS } from './roadmap-data.mjs';
-import { findTopic, topicProgress } from './roadmap-core.mjs';
+import { findTopic, topicProgress, topicMaterials } from './roadmap-core.mjs';
 import { weekStartKey } from './stats-core.mjs';
 
 /** mock-тема (ключ MOCK_TOPICS/mockWeights) -> id тем роадмепу. */
 export const MOCK_TO_ROADMAP = {
-  Мова: ['frontend', 'typescript'],
+  // 'Мова' віддала typescript окремій темі (F4): профіль скрізь TS, і зливати
+  // його з ванільним JS в одну вагу означало ховати, що саме кульгає.
+  Мова: ['frontend'],
+  TypeScript: ['typescript'],
   Фреймворк: ['react'],
   HTTP: ['networking', 'backend'],
   'Бази даних': ['databases'],
@@ -25,6 +29,11 @@ export const MOCK_TO_ROADMAP = {
   Патерни: ['backend'],
   Безпека: ['security'],
   'AI/LLM': ['ai-dev'],
+  // F4: теми, які роадмеп мав, а словник питань — ні.
+  Тестування: ['testing-adv'],
+  'Git/CI': ['tools'],
+  Тулінг: ['ecosystem'],
+  Продуктивність: ['perf-a11y'],
 };
 
 /** Зворотна мапа: id теми роадмепу -> mock-теми (порожньо для roadmap-only тем).
@@ -42,6 +51,34 @@ const ROADMAP_TO_MOCK = (() => {
 
 export function roadmapToMock() {
   return ROADMAP_TO_MOCK;
+}
+
+/**
+ * mock-тема -> куровані матеріали повʼязаних тем роадмепу (F4 «Вивчити» + F5).
+ *
+ * Доти «Вивчити» вело на пошук Google за текстом питання — тобто зізнання, що
+ * ми не знаємо, куди відправити. Тепер веде в конкретне джерело з роадмепу.
+ * Живе тут, бо тут уже є місток mock↔roadmap; клієнт отримує готову мапу в
+ * /api/stats і не дублює таблицю в себе.
+ *
+ * Обидва входи — модульні константи, тож рахуємо раз (Worker кличе на кожен
+ * /api/stats) і заморожуємо.
+ */
+const MOCK_MATERIALS = (() => {
+  const out = {};
+  for (const [mockTopic, ids] of Object.entries(MOCK_TO_ROADMAP)) {
+    const mats = [];
+    for (const id of ids) {
+      const t = findTopic(id);
+      if (t) mats.push(...topicMaterials(t));
+    }
+    if (mats.length) out[mockTopic] = Object.freeze(mats);
+  }
+  return Object.freeze(out);
+})();
+
+export function mockMaterials() {
+  return MOCK_MATERIALS;
 }
 
 /**

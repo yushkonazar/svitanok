@@ -37,16 +37,25 @@ function patchStats(
   );
 }
 
-/** Оцінка питання дня (😌 Легко / 😰 Важко) — виставляє mockRatedToday. */
+/**
+ * Оцінка питання дня (😌 Легко / 😰 Важко).
+ *
+ * qId (F4) — ключ ідемпотентності на сервері: перша оцінка рахує тему й день,
+ * зміна думки лише переставляє weak. Без нього кожен тап рахувався б наново.
+ */
 export function useMockAnswer() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { topic: string; rating: 'easy' | 'hard' }) =>
+    mutationFn: (vars: { qId: string; topic: string; rating: 'easy' | 'hard' }) =>
       postEvent('mock_answer', vars),
-    onMutate: async () => {
+    onMutate: async ({ qId, rating }) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
-      patchStats(qc, (s) => ({ ...s, mockRatedToday: true }));
+      patchStats(qc, (s) => ({
+        ...s,
+        mockRatedToday: true,
+        mockRated: { ...s.mockRated, [qId]: rating },
+      }));
       return { prev };
     },
     onError: (_e, _v, ctx) => {

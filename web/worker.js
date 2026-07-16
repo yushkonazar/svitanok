@@ -92,7 +92,7 @@ import {
   buildRootKeyboard,
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
-import { masteryHints, themeOfWeek } from './mastery-core.mjs';
+import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -599,6 +599,10 @@ async function handleStats(request, env) {
     hints: masteryHints(stats.mock?.weakTopics ?? [], progress),
     themeOfWeek: themeOfWeek(progress, kyivDateKey()),
   };
+  // F4: mock-тема -> куровані матеріали роадмепу («Вивчити» в картці питання).
+  // Мапа стала й крихітна (13 тем × 2 посилання) — віддаємо цілком, щоб клієнт
+  // не дублював у себе таблицю звʼязку mock↔roadmap.
+  stats.mockMaterials = mockMaterials();
   // Голоси per-url (C3): дашборд гідратує підсвітку 👍/👎 з цього, щоб після
   // переоткриття Mini App повторний тап не «знімав» невидимо активний голос
   // (ревʼю C). Віддаємо компактно {url: 'up'|'down'}, без delta/category.

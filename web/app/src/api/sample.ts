@@ -110,6 +110,11 @@ export const SAMPLE_STATS: Stats = {
   // (job3, job5) -> 50%; зі співбесід 2 офер 0 -> 0%.
   conversion: { appliedToInterview: 50, interviewToOffer: 0 },
   reached: { saved: 5, applied: 4, interview: 2, offer: 0 },
+  mockRated: {},
+  mockMaterials: {
+    Алгоритми: [{ title: 'NeetCode — роадмеп', url: 'https://neetcode.io/roadmap' }],
+    Мова: [{ title: 'JavaScript.info (укр)', url: 'https://uk.javascript.info/' }],
+  },
   avgFitApplied: 84,
   mock: {
     weakTopics: [
@@ -214,4 +219,6 @@ export const EMPTY_STATS: Stats = {
   readPerDay: 0,
   reliability: { onTime: 0, total: 0, deadman: 0 },
   votes: {},
+  mockRated: {},
+  mockMaterials: {},
 };

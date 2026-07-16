@@ -101,6 +101,9 @@ export const themeOfWeekSchema = z.object({
   mockTopics: z.array(z.string()),
 });
 
+/** Куроване джерело з роадмепу — «Вивчити» в картці питання (F4/F5). */
+export const materialSchema = z.object({ title: z.string(), url: z.string() });
+
 export const masterySchema = z.object({
   hints: z.array(masteryHintSchema).default([]),
   themeOfWeek: themeOfWeekSchema.nullable().default(null),
@@ -137,6 +140,11 @@ export const statsSchema = z.object({
     deadman: int.default(0),
   }),
   mockRatedToday: z.boolean().optional(),
+  // F4: qId -> обрана оцінка. Доти вибір жив лише в стані сесії й зникав після
+  // перезавантаження: чипи були заблоковані, але жоден не підсвічений.
+  mockRated: z.record(z.string(), z.enum(['easy', 'hard'])).default({}),
+  // F4: mock-тема -> матеріали роадмепу. Старий сервер поля не віддає -> {}.
+  mockMaterials: z.record(z.string(), z.array(materialSchema)).default({}),
   roadmap: roadmapSchema.optional(),
   mastery: masterySchema.optional(),
   // zod 4: z.record ВИМАГАЄ обидві схеми — ключа й значення. З одним аргументом
@@ -153,6 +161,7 @@ export type Funnel = z.infer<typeof funnelSchema>;
 export type FunnelItem = z.infer<typeof funnelItemSchema>;
 export type StageEvent = z.infer<typeof stageEventSchema>;
 export type Reached = z.infer<typeof reachedSchema>;
+export type Material = z.infer<typeof materialSchema>;
 export type SavedItem = z.infer<typeof savedItemSchema>;
 export type WeakTopic = z.infer<typeof weakTopicSchema>;
 export type HeatmapCell = z.infer<typeof heatmapCellSchema>;
