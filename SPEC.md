@@ -575,6 +575,11 @@ PR «бойовий час» (08:00–12:00) і наповнення `stoic.json
 
 1. Приватний репо `svitanok`, default-гілка `main`.
 2. @BotFather → `TELEGRAM_BOT_TOKEN`; `chat_id` знайти через `scripts/check-telegram.mjs` (§6).
+   **@BotFather → `/setprivacy` → Disable** (або зробити бота адміном групи). Без
+   цього Telegram узагалі НЕ доставляє боту звичайні повідомлення в групі — лише
+   команди, згадки й відповіді на його ж повідомлення. Симптом підступний: `/start`
+   працює, а вільний текст асистенту («знайди лист…») зникає без сліду — ні вебхука,
+   ні логу, ні помилки. Перевірити: `/whereami` покаже стан приватності.
 3. `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN`.
 4. Ключ погоди → `WEATHER_API_KEY`.
 5. (Опц.) Google OAuth: client (Desktop), скоуп `calendar.readonly`,

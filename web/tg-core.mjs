@@ -473,12 +473,26 @@ export function formatStatsMessage(stats) {
  * кожній темі, скопіювати значення для TOPIC_*-секретів) — без потреби
  * грепати логи Worker'а.
  */
-export function formatWhereAmI(chatId, threadId) {
+export function formatWhereAmI(chatId, threadId, me = null) {
   const lines = [
     '📍 <b>Де я</b>',
     '',
     `chat_id: <code>${escapeHtml(String(chatId ?? '?'))}</code>`,
     `thread_id: <code>${threadId == null ? 'немає (не тема форуму)' : escapeHtml(String(threadId))}</code>`,
   ];
+  // Режим приватності — головна причина «написав вільним текстом, і тиша».
+  // З увімкненою приватністю (дефолт BotFather) Telegram ВЗАГАЛІ не доставляє
+  // боту звичайні повідомлення в групі: ні вебхука, ні логу, ні шансу відповісти.
+  // Команди при цьому ходять, тому збій виглядає як «/start працює, решта — ні».
+  // Тому й показуємо тут: інакше діагностувати нічим.
+  if (me && typeof me.can_read_all_group_messages === 'boolean') {
+    lines.push(
+      '',
+      me.can_read_all_group_messages
+        ? '✅ Бачу звичайні повідомлення в групі (приватність вимкнена)'
+        : '⚠️ <b>Приватність УВІМКНЕНА</b> — у групі я бачу лише команди, згадки й відповіді на свої повідомлення. Вільний текст до мене не доходить.\n' +
+            'Полагодити: @BotFather → /setprivacy → Disable (або зробити бота адміном групи), потім перезапустити діалог.',
+    );
+  }
   return lines.join('\n');
 }

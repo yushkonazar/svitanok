@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useJobStage } from '../../api/hooks.ts';
-import { haptic } from '../../telegram.ts';
+import { haptic, setVerticalSwipes } from '../../telegram.ts';
 import { prettyJobTitle } from '../../lib/jobTitle.ts';
 import { FUNNEL_STAGES, fitStyle, type FunnelStage } from './stages.ts';
 import type { StageEvent } from '../../api/schema.ts';
@@ -14,8 +14,8 @@ import type { StageEvent } from '../../api/schema.ts';
 // touch-action:none обов'язковий, інакше браузер з'їсть жест скролом.
 // Тап без руху (dragging=false) відкриває шторку картки.
 //
-// Макет має ще лейни «Відмова»/«Провал» — вони потребують термінальних стадій у
-// stats-core; поки рендеримо 4 наявні.
+// Свайп Telegram: на час жесту гасимо нативний pull-to-dismiss
+// (setVerticalSwipes) — інакше тяг картки вниз від верху списку закривав апку.
 
 const LANE_DOT: Record<FunnelStage, string> = {
   saved: '#9BA6FF',
@@ -63,6 +63,9 @@ export function KanbanBoard({
     } catch {
       /* деякі середовища не дають capture — drag просто працюватиме без нього */
     }
+    // Гасимо нативний свайп Telegram на час жесту: інакше тяг картки ВНИЗ від
+    // верху списку читається як pull-to-dismiss і апка починає закриватись.
+    setVerticalSwipes(false);
     setDragUrl(card.url);
     setDragging(false);
     setOverCol(card.stage);
@@ -80,6 +83,14 @@ export function KanbanBoard({
     if (col) setOverCol(col);
   };
 
+  /** Кінець жесту (успіх або скасування): повернути свайпи й скинути стан. */
+  const endDrag = () => {
+    setVerticalSwipes(true);
+    setDragUrl(null);
+    setDragging(false);
+    setOverCol(null);
+  };
+
   const onUp = () => {
     if (dragUrl && dragging && overCol && dragCard && overCol !== dragCard.stage) {
       stageMut.mutate({ url: dragCard.url, title: dragCard.title, stage: overCol });
@@ -87,10 +98,14 @@ export function KanbanBoard({
     } else if (dragUrl && !dragging) {
       onOpenCard(dragUrl); // тап без руху — відкрити шторку
     }
-    setDragUrl(null);
-    setDragging(false);
-    setOverCol(null);
+    endDrag();
   };
+
+  // ⚠️ onPointerCancel обовʼязковий саме через setVerticalSwipes: скасований жест
+  // (вхідний дзвінок, системний свайп) не дає pointerup, і без цього свайпи
+  // лишились би вимкненими ДО КІНЦЯ СЕСІЇ — власник більше не зміг би закрити
+  // апку жестом. Доти хендлера не було: він лише лишав dragUrl висіти.
+  const onCancel = () => endDrag();
 
   return (
     <>
@@ -133,6 +148,7 @@ export function KanbanBoard({
                       onPointerDown={(e) => onDown(e, c)}
                       onPointerMove={onMove}
                       onPointerUp={onUp}
+                      onPointerCancel={onCancel}
                       className="flex select-none items-center gap-2 rounded-xl border border-glassb bg-bg2 px-[11px] py-2.5 transition-opacity duration-150"
                       style={{ cursor: 'grab', touchAction: 'none', opacity: dim ? 0.35 : 1 }}
                     >

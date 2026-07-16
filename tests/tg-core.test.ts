@@ -540,3 +540,33 @@ describe('shouldAutoDispatchBrief (A2)', () => {
     expect(tg.shouldAutoDispatchBrief({})).toBe(false);
   });
 });
+
+describe('formatWhereAmI — режим приватності (діагностика мовчання)', () => {
+  it('приватність увімкнена -> явне попередження + як полагодити', () => {
+    // Саме цей стан робить симптом «/start працює, вільний текст — тиша»:
+    // Telegram не доставляє боту звичайні повідомлення в групі взагалі.
+    const out = formatWhereAmI(-100123, null, { can_read_all_group_messages: false });
+    expect(out).toContain('Приватність УВІМКНЕНА');
+    expect(out).toContain('/setprivacy');
+  });
+
+  it('приватність вимкнена -> підтвердження, що текст доходить', () => {
+    const out = formatWhereAmI(-100123, 7, { can_read_all_group_messages: true });
+    expect(out).toContain('Бачу звичайні повідомлення');
+    expect(out).not.toContain('УВІМКНЕНА');
+  });
+
+  it('getMe недоступний -> рядка про приватність просто немає (не падаємо)', () => {
+    for (const me of [null, undefined, {}, { can_read_all_group_messages: 'ні' }]) {
+      const out = formatWhereAmI(-100123, null, me);
+      expect(out).toContain('chat_id');
+      expect(out).not.toContain('Приватність');
+    }
+  });
+
+  it('зворотна сумісність: без третього аргументу працює як раніше', () => {
+    const out = formatWhereAmI(-100123, null);
+    expect(out).toContain('chat_id');
+    expect(out).toContain('thread_id');
+  });
+});

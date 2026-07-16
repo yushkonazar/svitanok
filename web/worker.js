@@ -1404,8 +1404,19 @@ async function handleCommand(env, parsed, origin) {
       await env.BRIEFING.put('sentMessages', JSON.stringify(fresh));
       return sendText(formatClearResult(deleted, ids.length));
     }
-    case 'whereami':
-      return sendText(formatWhereAmI(parsed.chatId, parsed.threadId), { parse_mode: 'HTML' });
+    case 'whereami': {
+      // getMe -> can_read_all_group_messages: єдиний спосіб дізнатись, чи не
+      // ріже Telegram вільний текст режимом приватності (див. formatWhereAmI).
+      // Best-effort: діагностика не має падати через мережу.
+      let me = null;
+      try {
+        const res = await tgCall(env, 'getMe', {});
+        me = (await res.json())?.result ?? null;
+      } catch {
+        /* немає — просто не покажемо рядок про приватність */
+      }
+      return sendText(formatWhereAmI(parsed.chatId, parsed.threadId, me), { parse_mode: 'HTML' });
+    }
     case 'settings':
       return sendText(
         // Кнопка веде на головну Mini App (Direct Link ?startapp без параметра —
