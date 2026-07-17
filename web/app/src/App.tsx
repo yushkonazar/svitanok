@@ -174,7 +174,10 @@ export function App() {
             </>
           ) : (
             <>
-              <div className="grad-live grid h-[30px] w-[30px] place-items-center rounded-[9px]">
+              <div
+                className="sheen grid h-[30px] w-[30px] place-items-center rounded-[9px]"
+                style={{ background: 'var(--grad)' }}
+              >
                 <svg
                   width="16"
                   height="16"
@@ -320,9 +323,12 @@ export function App() {
                   navigate(t.path);
                   haptic('light');
                 }}
+                // sheen — лише на АКТИВНІЙ: вона градієнтна й найбільша на екрані
+                // (≈125px), тож саме на ній відблиск і видно. Пігулка живе в
+                // fixed-таббарі, тобто рух присутній на кожному екрані завжди.
                 className={
                   on
-                    ? 'flex items-center gap-[7px] rounded-full px-[15px] py-[9px] transition-all duration-[250ms]'
+                    ? 'sheen flex items-center gap-[7px] rounded-full px-[15px] py-[9px] transition-all duration-[250ms]'
                     : 'grid h-9 w-[42px] place-items-center rounded-full text-tx3 transition-all duration-[250ms]'
                 }
                 style={on ? { background: 'var(--grad)', color: 'var(--color-onacc)' } : undefined}

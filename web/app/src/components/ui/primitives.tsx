@@ -13,9 +13,9 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 export function SectionHead({ children }: { children: ReactNode }) {
   return (
     <div className="flex items-center gap-2">
-      {/* grad-live — ЄДИНИЙ нескінченний цикл у застосунку (index.css). Крапка
-          є в заголовку кожного блоку, тож на екрані завжди щось тихо живе. */}
-      <div className="grad-live h-[7px] w-[7px] rounded-[2px]" />
+      {/* Статична. Пробував тут перелив градієнта — на 7px його не видно
+          взагалі (див. коментар до .sheen в index.css). */}
+      <div className="h-[7px] w-[7px] rounded-[2px]" style={{ background: 'var(--grad)' }} />
       <span className="text-[13px] font-bold">{children}</span>
       <div className="h-px flex-1 bg-hair" />
     </div>
