@@ -35,7 +35,15 @@ export function SaveButton({ kind, id, title }: { kind: string; id: string; titl
           : { background: 'var(--color-glass)', borderColor: 'var(--color-glassb)' }
       }
     >
-      {saved ? '✅' : '🔖'}
+      {/* key={String(saved)} — ремоунт перезапускає pop на кожен тап (той самий
+          прийом, що в серці NewsItem: CSS не рестартує кадри без появи елемента). */}
+      <span
+        key={String(saved)}
+        className="block"
+        style={{ animation: 'pop .28s cubic-bezier(.22,1,.36,1)' }}
+      >
+        {saved ? '✅' : '🔖'}
+      </span>
     </button>
   );
 }

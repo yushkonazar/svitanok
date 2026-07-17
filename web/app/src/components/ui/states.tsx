@@ -60,13 +60,16 @@ function Frame({
 }) {
   return (
     <div className="flex flex-col items-center gap-2.5 px-5 py-[52px] text-center">
+      {/* floatY — порожній/помилковий екран не має жодного іншого руху, одна
+          повільна вісь на великому (56px) елементі оживляє його, не смикаючи. */}
       <div
         className="grid h-14 w-14 place-items-center rounded-[18px] border"
-        style={
-          danger
+        style={{
+          animation: 'floatY 3.4s ease-in-out infinite',
+          ...(danger
             ? { background: 'rgba(255,120,120,.1)', borderColor: 'var(--color-neg)' }
-            : { background: 'var(--color-glass)', borderColor: 'var(--color-glassb)' }
-        }
+            : { background: 'var(--color-glass)', borderColor: 'var(--color-glassb)' }),
+        }}
       >
         {icon}
       </div>
@@ -90,10 +93,13 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry: () 
       title="Не вдалося завантажити"
       text={message}
       action={
+        // Той самий акцентний CTA з відблиском, що «Оновити» в EmptyState:
+        // це єдина дія на екрані, і скляна кнопка тут виглядала як другорядна.
         <button
           type="button"
           onClick={onRetry}
-          className="mt-1 rounded-full border border-glassb bg-glass px-[18px] py-[9px] text-xs font-bold text-tx"
+          className="sheen mt-1 rounded-full px-[18px] py-[9px] text-xs font-bold"
+          style={{ background: 'var(--grad)', color: 'var(--color-onacc)' }}
         >
           Спробувати ще
         </button>
