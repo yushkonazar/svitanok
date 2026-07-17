@@ -1,4 +1,5 @@
 import { useId } from 'react';
+import { useInView } from '../../lib/useInView.ts';
 import { has } from '../../lib/format.ts';
 import { kyivMinutes } from '../../lib/weather.ts';
 
@@ -22,6 +23,9 @@ export function HourlyChart({
   rainWindow?: string;
 }) {
   const uid = useId();
+  // Хук ДО раннього return («недостатньо даних») — порядок хуків сталий.
+  const [ref, inView] = useInView<SVGSVGElement>();
+  const play = inView ? 'running' : 'paused';
   const lineId = `${uid}-l`;
   const fillId = `${uid}-f`;
 
@@ -95,7 +99,15 @@ export function HourlyChart({
         <span>ТЕМПЕРАТУРА ПО ГОДИНАХ</span>
         {rain && <span className="text-info">{rain.label}</span>}
       </div>
-      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="температура по годинах">
+      <svg
+        ref={ref}
+        width="100%"
+        height={H}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="температура по годинах"
+      >
         <defs>
           <linearGradient id={lineId} x1="0" y1="0" x2="1" y2="0">
             <stop offset="0" stopColor="#FFA45C" />
@@ -129,9 +141,43 @@ export function HourlyChart({
           </g>
         ))}
 
-        <path d={area} fill={`url(#${fillId})`} />
-        <path d={d} fill="none" stroke={`url(#${lineId})`} strokeWidth="2.5" strokeLinecap="round" />
-        <circle cx={nowX.toFixed(1)} cy={nowY.toFixed(1)} r="3.5" fill="#FFA45C" stroke="var(--color-bg)" strokeWidth="2" />
+        {/* Заливка проявляється, поки крива малюється — інакше стояла б готовою
+            під олівцем, що ще їде. */}
+        <path
+          d={area}
+          fill={`url(#${fillId})`}
+          style={{ animation: 'fadeInSoft .9s ease-out backwards', animationPlayState: play }}
+        />
+        {/* Крива йде зліва направо — так само, як читається час на осі.
+            pathLength="1" нормалізує довжину: CSS не знає її в пікселях. */}
+        <path
+          d={d}
+          pathLength="1"
+          fill="none"
+          stroke={`url(#${lineId})`}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray="1"
+          strokeDashoffset="0"
+          style={{
+            animation: 'lineDraw .9s cubic-bezier(.4,0,.2,1) backwards',
+            animationPlayState: play,
+          }}
+        />
+        {/* Крапка «зараз» спливає, коли крива до неї доїхала. */}
+        <circle
+          cx={nowX.toFixed(1)}
+          cy={nowY.toFixed(1)}
+          r="3.5"
+          fill="#FFA45C"
+          stroke="var(--color-bg)"
+          strokeWidth="2"
+          style={{
+            animation:
+              'pop .3s cubic-bezier(.22,1,.36,1) .8s backwards, fadeInSoft .3s ease-out .8s backwards',
+            animationPlayState: play,
+          }}
+        />
       </svg>
       {/* Підписи годин позиціонуємо за РЕАЛЬНИМ X(h), а не justify-between:
           ряд hourly починається з поточної години (напр. 8…23), тож рівномірний
