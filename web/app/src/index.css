@@ -340,6 +340,59 @@ body {
   animation: sheen 5s ease-in-out infinite;
 }
 
+/* ── Циферблат: денне «Сонячно» (промені-блиск + лінзові бліки) і пташки ────
+   Вигляд із iOS-погоди. Промені мерехтять урозбіг + віночок обертається; бліки
+   спалахують у різних місцях денної зони (повне згасання між піками); пташки
+   повільно дрейфують. Живуть у денному сегменті (кліп у SunDial). Під
+   prefers-reduced-motion загальний блок нижче зупиняє їх на кінцевому кадрі:
+   бліки гаснуть (opacity 0), промені стоять тьмяними, пташки — на місці. */
+@keyframes rayBlink {
+  0%,
+  100% {
+    opacity: 0.14;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+@keyframes raysSpin {
+  from {
+    transform: rotate(0);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes flarePulse {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+@keyframes flareShift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(3px, 4px);
+  }
+}
+@keyframes birdDrift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(10px, -3px);
+  }
+}
+
 /* Шанс поважати prefers-reduced-motion — вимикаємо декоративний рух. */
 @media (prefers-reduced-motion: reduce) {
   *,
