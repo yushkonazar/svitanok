@@ -174,10 +174,7 @@ export function App() {
             </>
           ) : (
             <>
-              <div
-                className="grid h-[30px] w-[30px] place-items-center rounded-[9px]"
-                style={{ background: 'var(--grad)' }}
-              >
+              <div className="grad-live grid h-[30px] w-[30px] place-items-center rounded-[9px]">
                 <svg
                   width="16"
                   height="16"

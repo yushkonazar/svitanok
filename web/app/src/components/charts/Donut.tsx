@@ -46,10 +46,13 @@ export function Donut({ pct, size = 64 }: { pct: number; size?: number }) {
         // на місці, а не порожня.
         strokeDashoffset={offset.toFixed(1)}
         transform="rotate(-90 32 32)"
-        // Анімуємо, лише коли дуга доїхала до екрана: інакше вона намоталась би
-        // за краєм, поки ти скролиш, і ти б її не побачив ніколи.
+        // Анімація навішана ЗАВЖДИ, але до появи стоїть на паузі. З `backwards`
+        // пауза на нульовому кадрі показує ПОРОЖНЮ дугу — тому ти ніколи не
+        // бачиш «намальовано → скинулось → малюється знову». Саме це й давало
+        // відчуття перезавантаження сторінки.
         style={{
-          animation: inView ? 'donutDraw .9s cubic-bezier(.22,1,.36,1)' : undefined,
+          animation: 'donutDraw .9s cubic-bezier(.22,1,.36,1) backwards',
+          animationPlayState: inView ? 'running' : 'paused',
           ['--donut-c' as string]: C.toFixed(1),
         }}
       />

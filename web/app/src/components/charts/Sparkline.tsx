@@ -52,7 +52,7 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
       </defs>
       {/* Заливка проявляється, поки лінія малюється — інакше вона стояла б
           готовою під олівцем, що ще їде. */}
-      <path d={area} fill={`url(#${fillId})`} style={{ animation: inView ? 'fadeInSoft .9s ease-out' : undefined }} />
+      <path d={area} fill={`url(#${fillId})`} style={{ animation: 'fadeInSoft .9s ease-out backwards', animationPlayState: inView ? 'running' : 'paused' }} />
       {/* pathLength="1" нормалізує довжину шляху в одиницю — без цього CSS не
           знає, скільки там пікселів, і намалювати лінію «від початку до кінця»
           нічим. dashoffset у DOM = 0, тобто лінія намальована; кадр лише каже,
@@ -66,7 +66,10 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
         strokeLinecap="round"
         strokeDasharray="1"
         strokeDashoffset="0"
-        style={{ animation: inView ? 'lineDraw .9s cubic-bezier(.4,0,.2,1)' : undefined }}
+        style={{
+          animation: 'lineDraw .9s cubic-bezier(.4,0,.2,1) backwards',
+          animationPlayState: inView ? 'running' : 'paused',
+        }}
       />
       {/* Крапка «сьогодні» зʼявляється, коли лінія до неї доїхала. */}
       <circle
@@ -77,9 +80,9 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
         stroke="var(--color-bg)"
         strokeWidth="2"
         style={{
-          animation: inView
-            ? 'pop .3s cubic-bezier(.22,1,.36,1) .8s backwards, fadeInSoft .3s ease-out .8s backwards'
-            : undefined,
+          animation:
+            'pop .3s cubic-bezier(.22,1,.36,1) .8s backwards, fadeInSoft .3s ease-out .8s backwards',
+          animationPlayState: inView ? 'running' : 'paused',
         }}
       />
     </svg>

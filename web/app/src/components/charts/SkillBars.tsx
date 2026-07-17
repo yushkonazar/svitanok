@@ -26,9 +26,8 @@ export function SkillBars({ items, emptyText }: { items: SkillBar[]; emptyText: 
               style={{
                 width: `${clamp(s.pct, 0, 100)}%`,
                 background: 'linear-gradient(90deg,var(--color-a1),var(--color-a2))',
-                animation: inView
-                  ? `barFill .6s cubic-bezier(.22,1,.36,1) ${i * 60}ms backwards`
-                  : undefined,
+                animation: `barFill .6s cubic-bezier(.22,1,.36,1) ${i * 60}ms backwards`,
+                animationPlayState: inView ? 'running' : 'paused',
               }}
             />
           </div>
