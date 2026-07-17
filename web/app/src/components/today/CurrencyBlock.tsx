@@ -1,6 +1,7 @@
 import { useId } from 'react';
 import type { CurrencyData } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
+import { useInView } from '../../lib/useInView.ts';
 import { SectionLabel, Ph } from '../ui/primitives.tsx';
 
 // Курс НБУ (дизайн v2, Svitanok.dc.html): рядок на валюту — кружечок-символ,
@@ -18,7 +19,19 @@ const SW = 58;
 const SH = 18;
 const PAD = 2;
 
-function Spark({ hist, accent, gradId }: { hist: number[]; accent: boolean; gradId: string }) {
+function Spark({
+  hist,
+  accent,
+  gradId,
+  play,
+  delay,
+}: {
+  hist: number[];
+  accent: boolean;
+  gradId: string;
+  play: boolean;
+  delay: number;
+}) {
   const pts = hist.filter((v) => Number.isFinite(v));
   if (pts.length < 2) return <div style={{ width: SW, height: SH }} />;
   const min = Math.min(...pts);
@@ -34,12 +47,21 @@ function Spark({ hist, accent, gradId }: { hist: number[]; accent: boolean; grad
     .join(' ');
   return (
     <svg width={SW} height={SH} viewBox={`0 0 ${SW} ${SH}`} className="flex-none">
+      {/* Той самий прийом, що в charts/Sparkline: pathLength=1 + dashoffset 0 у
+          DOM (лінія намальована), кадр lineDraw лише каже, звідки приїхати. */}
       <path
         d={d}
+        pathLength="1"
         fill="none"
         stroke={accent ? `url(#${gradId})` : 'var(--color-tx3)'}
         strokeWidth="1.8"
         strokeLinecap="round"
+        strokeDasharray="1"
+        strokeDashoffset="0"
+        style={{
+          animation: `lineDraw .7s cubic-bezier(.4,0,.2,1) ${delay}ms backwards`,
+          animationPlayState: play ? 'running' : 'paused',
+        }}
       />
     </svg>
   );
@@ -47,10 +69,14 @@ function Spark({ hist, accent, gradId }: { hist: number[]; accent: boolean; grad
 
 export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: string | null }) {
   const gradId = useId();
+  // Спарклайни малюються, коли блок доїхав до екрана (він живе під високим
+  // блоком погоди, тобто на малих екранах — за згином). Сходинка 90мс на рядок:
+  // валюти «проростають» одна за одною.
+  const [ref, inView] = useInView<HTMLDivElement>();
   const rows = d ? DEFS.filter((def) => has(d[def.key])) : [];
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div ref={ref} className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <SectionLabel>КУРС НБУ</SectionLabel>
         {/* дата — з брифінгу, не з годинника пристрою: інакше вчорашні курси
@@ -95,7 +121,7 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                   {def.sym}
                 </div>
                 <span className="w-[34px] font-mono text-xs font-semibold">{def.label}</span>
-                <Spark hist={hist} accent={accent} gradId={gradId} />
+                <Spark hist={hist} accent={accent} gradId={gradId} play={inView} delay={i * 90} />
                 {dd != null && (
                   <span
                     className="font-mono text-[10.5px] font-medium"

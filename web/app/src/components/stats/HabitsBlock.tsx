@@ -1,6 +1,8 @@
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
+import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow } from '../ui/primitives.tsx';
+import { useCountUp } from '../ui/CountUp.tsx';
 import { WeekBars } from '../charts/WeekBars.tsx';
 import { Heatmap } from '../charts/Heatmap.tsx';
 
@@ -20,8 +22,12 @@ function Tile({
   note?: string;
   gradient?: boolean;
 }) {
+  // Стрік набігає від нуля (44px — найбільше число застосунку, рух видно
+  // здалеку). useInView — про запас: плитки зазвичай угорі й грають одразу.
+  const [ref, inView] = useInView<HTMLDivElement>();
+  const shown = useCountUp(n, inView);
   return (
-    <div className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5">
+    <div ref={ref} className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5">
       <div className="flex items-baseline gap-1.5">
         <span
           className="font-mono text-[44px] font-medium leading-none tracking-[-0.03em]"
@@ -31,7 +37,7 @@ function Tile({
               : undefined
           }
         >
-          {n}
+          {shown}
         </span>
         {emoji && <span className="text-[15px]">{emoji}</span>}
       </div>

@@ -3,7 +3,9 @@ import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { haptic } from '../../telegram.ts';
+import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
+import { useCountUp } from '../ui/CountUp.tsx';
 
 // D · Інтереси (дизайн v2, Svitanok.dc.html): картка головної теми тижня
 // (частка реакцій + напрямок vs минулий тиждень) + чипи решти тем.
@@ -47,6 +49,10 @@ function SavedLink({ total }: { total: number }) {
 
 export function InterestsBlock({ s }: { s: Stats }) {
   const top = s.interests[0];
+  // Хуки — ДО умовного рендера (top може не бути), порядок сталий.
+  // Герой-бал набігає, коли картка доїхала до екрана (блок глибоко внизу).
+  const [heroRef, heroInView] = useInView<HTMLDivElement>();
+  const heroScore = useCountUp(top?.score ?? 0, heroInView);
   const rest = s.interests.slice(1);
   const total = s.interests.reduce((a, x) => a + x.score, 0);
   const share = top && total > 0 ? Math.round((top.score / total) * 100) : 0;
@@ -66,7 +72,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
 
       {top ? (
         <>
-          <div className="flex items-center gap-3.5 rounded-2xl border border-glassb bg-glass p-4">
+          <div ref={heroRef} className="flex items-center gap-3.5 rounded-2xl border border-glassb bg-glass p-4">
             <div className="flex min-w-0 flex-col">
               <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
                 ГОЛОВНИЙ ЦЬОГО ТИЖНЯ
@@ -88,7 +94,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
                 color: 'transparent',
               }}
             >
-              {top.score}
+              {heroScore}
             </div>
           </div>
 
