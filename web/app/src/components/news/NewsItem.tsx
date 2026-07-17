@@ -6,12 +6,20 @@ import { has } from '../../lib/format.ts';
 import { openLink, haptic } from '../../telegram.ts';
 
 // Айтем новини (дизайн v2, Svitanok.dc.html): заголовок + «чому» акцентом,
-// праворуч три квадратні кнопки 👍/👎/🔖 (активна — кольорова рамка+тло).
+// праворуч дві квадратні кнопки ❤️/🔖 (активна — кольорова рамка+тло).
 // Голос — зі stats.votes (сервер не обрізає), збереження — session-sticky.
+//
+// ❤️ замість 👍/👎 (фідбек власника, п.5): лишився ЛИШЕ позитивний сигнал.
+// Механіку тоглу не чіпали — applyUrlVote і так знімає голос на повторний клік
+// того ж напрямку; тепер напрямок завжди один. Старі 👎 з KV нікуди не діли:
+// сервер більше не дає їх СТВОРИТИ, але вміє прочитати й відкотити, якщо
+// лайкнути раніше дизлайкнуту новину (див. коментар у web/worker.js).
 
 export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
   const { data } = useStats();
-  const vote = data?.stats.votes?.[item.url] ?? null;
+  // Лише 'up' підсвічує серце. Легасі-'down' у KV читається як «не лайкнуто»,
+  // а не як активна кнопка: дизлайків більше немає, і малювати їх нічим.
+  const liked = data?.stats.votes?.[item.url] === 'up';
   const { isSaved, setSaved } = useSaved();
   const saved = isSaved('news', item.url);
   const voteMut = useVote();
@@ -55,26 +63,15 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
       </button>
       <div className="flex flex-none gap-1.5">
         {btn(
-          '👍',
-          vote === 'up',
+          '❤️',
+          liked,
           () => {
-            voteMut.mutate({ category: topic, dir: 'up', url: item.url });
+            voteMut.mutate({ category: topic, url: item.url });
             haptic('light');
           },
-          'rgba(120,220,160,.16)',
-          'var(--color-pos)',
-          'Подобається',
-        )}
-        {btn(
-          '👎',
-          vote === 'down',
-          () => {
-            voteMut.mutate({ category: topic, dir: 'down', url: item.url });
-            haptic('light');
-          },
-          'rgba(255,120,120,.14)',
-          'var(--color-neg)',
-          'Не подобається',
+          'rgba(255,110,122,.16)',
+          'var(--color-a1)',
+          liked ? 'Прибрати вподобання' : 'Подобається',
         )}
         {btn(
           '🔖',

@@ -53,8 +53,14 @@ describe('news — parseNewsData', () => {
   });
 });
 
+// ⚠️ Тести нижче ганяють dir:'down', хоч UI його вже НЕ створює (фідбек
+// власника, п.5: ❤️ замість 👍/👎). Це не мертвий код: у KV лежать старі
+// дизлайки, і applyVote/applyUrlVote мусять уміти їх прочитати й відкотити.
+// Межа така: СТВОРИТИ дизлайк не можна (web/worker.js: 400 на будь-що, крім
+// 'up'), ЗРОЗУМІТИ збережений — обовʼязково.
+
 describe('news — preferenceWeights', () => {
-  it('👍 +0.15, 👎 -0.15, межі [0.5, 2.0]', () => {
+  it('👍 +0.15, легасі-👎 -0.15, межі [0.5, 2.0]', () => {
     expect(applyVote({}, 'Спорт', 'up').Спорт).toBeCloseTo(1.15);
     expect(applyVote({}, 'Спорт', 'down').Спорт).toBeCloseTo(0.85);
     expect(applyVote({ A: 2.0 }, 'A', 'up').A).toBe(WEIGHT_MAX);
@@ -136,6 +142,38 @@ describe('news — applyUrlVote: чесний облік голосів per-url 
     expect(second.weights.Тех ?? 1.0).toBeCloseTo(1.0);
     expect(second.prevCategory).toBe('Наука');
     expect(second.newDir).toBeNull();
+  });
+});
+
+describe('news — ❤️ поверх легасі-дизлайків (фідбек власника, п.5)', () => {
+  it('лайк раніше дизлайкнутої новини відкочує мінус і ставить плюс', () => {
+    // Так виглядає прод-KV після переходу на ❤️: голос створений старим UI.
+    const legacy = applyUrlVote({}, {}, 'https://x/a', 'Кіно', 'down');
+    expect(legacy.weights.Кіно).toBeCloseTo(0.85);
+
+    // Власник тисне ❤️ — єдиний напрямок, який лишився.
+    const heart = applyUrlVote(legacy.weights, legacy.votedUrls, 'https://x/a', 'Кіно', 'up');
+    // 0.85 +0.15(відкат старого) +0.15(лайк) = 1.15. Тобто рівно як у новини,
+    // яку ніколи не чіпали й одразу лайкнули.
+    expect(heart.weights.Кіно).toBeCloseTo(1.15);
+    expect(heart.prevDir).toBe('down');
+    expect(heart.votedUrls['https://x/a']).toMatchObject({ dir: 'up', category: 'Кіно' });
+  });
+
+  it('легасі-дизлайк на дні клампа: лайк не перестрибує через відкат «номіналу»', () => {
+    // delta старого голосу = 0 (вага вже була на дні) -> відкочувати нічого.
+    const legacy = applyUrlVote({ Тех: 0.5 }, {}, 'https://x/a', 'Тех', 'down');
+    expect(legacy.votedUrls['https://x/a']?.delta).toBeCloseTo(0);
+    const heart = applyUrlVote(legacy.weights, legacy.votedUrls, 'https://x/a', 'Тех', 'up');
+    expect(heart.weights.Тех).toBeCloseTo(0.65); // 0.5 + 0(відкат) + 0.15, а не 0.80
+  });
+
+  it('повторне ❤️ знімає лайк — і НЕ воскрешає старий дизлайк', () => {
+    const legacy = applyUrlVote({}, {}, 'https://x/a', 'Кіно', 'down');
+    const heart = applyUrlVote(legacy.weights, legacy.votedUrls, 'https://x/a', 'Кіно', 'up');
+    const off = applyUrlVote(heart.weights, heart.votedUrls, 'https://x/a', 'Кіно', 'up');
+    expect(off.weights.Кіно).toBeCloseTo(1.0); // нейтрально, а не назад у 0.85
+    expect(off.votedUrls['https://x/a']).toBeUndefined();
   });
 });
 

@@ -159,19 +159,24 @@ function invalidateSaved(qc: ReturnType<typeof useQueryClient>) {
 
 // ── E3: Новини + Вакансії ──
 
-/** Голос за новину (👍/👎). Оптимістично + звірка з авторитетним voted сервера. */
+/**
+ * ❤️ на новині. Оптимістично + звірка з авторитетним voted сервера.
+ *
+ * Напрямок більше НЕ параметр: дизлайків немає, лишився один сигнал (фідбек
+ * власника, п.5). Тогл робить сервер (applyUrlVote: повторний той самий
+ * напрямок = зняти), ми лише передбачаємо результат для миттєвого відгуку.
+ */
 export function useVote() {
   const qc = useQueryClient();
   return useMutation({
     // Лише запит; оптимістичне значення рахуємо в onMutate (де кеш ще НЕ змінено).
-    mutationFn: (vars: { category: string; dir: 'up' | 'down'; url: string }) =>
-      postVote(vars.category, vars.dir, vars.url),
+    mutationFn: (vars: { category: string; url: string }) => postVote(vars.category, vars.url),
     onMutate: async (vars) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
       const cur = prev?.stats.votes?.[vars.url] ?? null;
-      // applyUrlVote-логіка: той самий напрямок вимикає (null), інший — перемикає.
-      const optimistic: VoteDir = cur === vars.dir ? null : vars.dir;
+      // Лайкнуте -> знімаємо; будь-що інше (зокрема легасі-'down') -> лайк.
+      const optimistic: VoteDir = cur === 'up' ? null : 'up';
       setVote(qc, vars.url, optimistic);
       return { prev, optimistic };
     },

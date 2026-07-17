@@ -393,10 +393,17 @@ async function loadAssistantHistory(env) {
   }
 }
 
-/** POST /api/vote {category, dir, url?, initData} -> preferenceWeights + інтерес.
- *  url (C3): якщо переданий — голос дедуплюється per-url (повторний = зняти,
- *  зміна = переставити). Без url — стара поведінка (кожен клік зсуває вагу), щоб
- *  не ламати клієнтів, які url ще не шлють. */
+/** POST /api/vote {category, dir:'up', url?, initData} -> preferenceWeights + інтерес.
+ *  url (C3): якщо переданий — голос дедуплюється per-url (повторний = зняти).
+ *  Без url — стара поведінка (кожен клік зсуває вагу), щоб не ламати клієнтів,
+ *  які url ще не шлють.
+ *
+ *  ⚠️ Межа «створити» vs «прочитати» (фідбек власника, п.5 — ❤️ замість 👍/👎):
+ *  НОВИЙ дизлайк створити вже не можна (нижче 400 на будь-що, крім 'up'), але
+ *  applyUrlVote/applyVote та recordEvent('vote') мусять і далі РОЗУМІТИ 'down' —
+ *  у KV лежать старі голоси, і саме їх треба коректно відкотити, коли власник
+ *  лайкне раніше дизлайкнуту новину. Викинеш 'down' із читання — відкотиш не
+ *  ту дельту й тихо зіпсуєш вагу теми назавжди. */
 async function handleVote(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   let body;
@@ -406,7 +413,7 @@ async function handleVote(request, env) {
     return json({ ok: false, error: 'bad-json' }, 400);
   }
   const { category, dir, url, initData } = body ?? {};
-  if (typeof category !== 'string' || !category || (dir !== 'up' && dir !== 'down')) {
+  if (typeof category !== 'string' || !category || dir !== 'up') {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
   const auth = await checkOwner(initData, env);
@@ -625,12 +632,17 @@ async function handleStats(request, env) {
   // Мапа стала й крихітна (13 тем × 2 посилання) — віддаємо цілком, щоб клієнт
   // не дублював у себе таблицю звʼязку mock↔roadmap.
   stats.mockMaterials = mockMaterials();
-  // Голоси per-url (C3): дашборд гідратує підсвітку 👍/👎 з цього, щоб після
+  // Голоси per-url (C3): дашборд гідратує підсвітку ❤️ з цього, щоб після
   // переоткриття Mini App повторний тап не «знімав» невидимо активний голос
-  // (ревʼю C). Віддаємо компактно {url: 'up'|'down'}, без delta/category.
+  // (ревʼю C). Віддаємо компактно {url: 'up'}, без delta/category.
+  //
+  // Фільтр саме на 'up' (фідбек власника, п.5): у KV лежать старі дизлайки, і
+  // віддавати їх клієнту вже нема кому — кнопки 👎 не існує. Мовчки ховаємо їх
+  // із READ, а не чистимо запис: votedUrls досі потрібен, щоб лайк по раніше
+  // дизлайкнутій новині відкотив саме той delta, який колись застосували.
   stats.votes = Object.fromEntries(
     Object.entries(state.votedUrls ?? {})
-      .filter(([, v]) => v && (v.dir === 'up' || v.dir === 'down'))
+      .filter(([, v]) => v && v.dir === 'up')
       .map(([url, v]) => [url, v.dir]),
   );
   return json(stats);
