@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useJobStage } from '../../api/hooks.ts';
 import { haptic, openLink } from '../../telegram.ts';
 import { hostOf, prettyJobTitle } from '../../lib/jobTitle.ts';
@@ -64,7 +65,13 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
     onClose();
   };
 
-  return (
+  // Портал у document.body — щоб шторка вийшла зі stacking-контексту контенту
+  // (обгортка z-[1] над туманом). Інакше таб-бар (fixed z-30, сусід тієї
+  // обгортки) малюється ПОВЕРХ усієї шторки: z-40 всередині z-[1] програє
+  // z-30 на корені сторінки. Портал ставить її на корінь, де z-40 > z-30.
+  // Заразом рятує від transform на motion.main (fixed-нащадок інакше
+  // прив'язується до трансформованого предка, а не до вьюпорта).
+  return createPortal(
     <div
       onClick={onClose}
       className="fixed inset-0 z-40 flex items-end"
@@ -163,6 +170,7 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

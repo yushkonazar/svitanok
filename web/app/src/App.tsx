@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
+import { postEvent } from './api/client.ts';
 import { useTheme } from './theme.tsx';
 import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
 import { useBriefing } from './api/hooks.ts';
@@ -126,6 +127,16 @@ export function App() {
     const path = pathForStartParam(param);
     if (path && path !== location.pathname) navigate(path, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Подія «відкрито» — раз на завантаження. Стрік «днів поспіль», тижневі
+  // стовпчики, теплокарта 12 тижнів і «час до відкриття» ЖИВЛЯТЬСЯ з days.opens,
+  // а її інкрементує лише ця подія. Старий ваніль-дашборд слав її при кожному
+  // завантаженні; React-міграція емісію загубила, тож усі ці метрики стояли
+  // нулями (стрік = 0 «ніби втрата даних»). postEvent сам no-op поза Telegram,
+  // тож демо не чіпає; сервер (worker.js: type==='open') давно її обробляє.
+  useEffect(() => {
+    void postEvent('open', {}).catch(() => {});
   }, []);
 
   // Невідомий шлях -> домашня.
