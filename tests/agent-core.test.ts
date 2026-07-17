@@ -453,3 +453,25 @@ describe('фолбеки асистента — три РІЗНІ збої, тр
     }
   });
 });
+
+describe('фолбек «не встиг» (бюджет часу агента)', () => {
+  const { ASSISTANT_TIME_REPLY, ASSISTANT_ROUNDS_REPLY, ASSISTANT_EMPTY_REPLY } = agent;
+
+  // Воркер у ctx.waitUntil Cloudflare убиває МОВЧКИ: без винятку, логу й
+  // відповіді. Емпірика власника: 2 раунди (~17с) відповідають, 3 з поштою+
+  // календарем (~25-30с) — повна тиша, хоча кожен крок окремо працює. Тому
+  // агент має власний дедлайн і здається сам, поки ще може щось сказати.
+  it('«не встиг» — окремий текст, не плутається з рештою фолбеків', () => {
+    const all = [
+      ASSISTANT_FALLBACK_REPLY,
+      ASSISTANT_ROUNDS_REPLY,
+      ASSISTANT_EMPTY_REPLY,
+      ASSISTANT_TIME_REPLY,
+    ];
+    expect(new Set(all).size).toBe(4);
+  });
+
+  it('текст підказує ДІЮ: розбити на кроки', () => {
+    expect(ASSISTANT_TIME_REPLY).toContain('Розбий на кроки');
+  });
+});
