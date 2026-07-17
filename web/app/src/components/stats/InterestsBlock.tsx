@@ -1,87 +1,47 @@
-import { useState } from 'react';
-import type { Stats, SavedItem } from '../../api/schema.ts';
-import { useSavedArchive } from '../../api/hooks.ts';
-import { has, truncate } from '../../lib/format.ts';
+import { useNavigate } from 'react-router-dom';
+import type { Stats } from '../../api/schema.ts';
+import { has } from '../../lib/format.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
-import { openLink } from '../../telegram.ts';
+import { haptic } from '../../telegram.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 
 // D · Інтереси (дизайн v2, Svitanok.dc.html): картка головної теми тижня
 // (частка реакцій + напрямок vs минулий тиждень) + чипи решти тем.
-// Список збереженого макет не показує, але це наявна функція (backend + D2) —
-// лишаємо компактним блоком нижче.
 //
-// F3: доти тут завжди було рівно 8 записів поруч із чесним лічильником «Ти
-// зберіг 47» — тобто блок сам собі суперечив. Архів у KV ніколи не обрізався,
-// обрізав лише READ, тож «показати ще» просто просить більший зріз
-// (окремий /api/saved, щоб не тягти сотні записів у кожен /api/stats).
+// Архів збереженого ПІШОВ звідси на власний маршрут /saved (фідбек власника,
+// п.6: «окреме місце з групуванням і видаленням»). Тут лишається лише вхід —
+// рядок із лічильником. Заразом це зняло тихий баг: список гортався ростом
+// limit (20→40→60…) при зашитому offset=0, а сервер клампить limit до 50 —
+// тож після 50-го запису «Показати ще» рахувало залишок, але не додавало нічого.
 
-const KIND_ICON: Record<string, string> = {
-  news: '📰',
-  fact: '🧠',
-  quote: '🏛',
-  question: '🎤',
-};
-
-const SAVED_STEP = 20;
-
-/** Архів збереженого з «показати ще» (F3). */
-function SavedArchive({ preview, total }: { preview: SavedItem[]; total: number }) {
-  const [limit, setLimit] = useState(0); // 0 = ще не розгортали, показуємо прев'ю зі stats
-  const { data, isFetching } = useSavedArchive(limit || SAVED_STEP);
-  const items = limit === 0 ? preview : (data?.items ?? preview);
-  const shown = items.length;
-  const more = total - shown;
-
+/** Вхід в архів: лічильник + шеврон. Сам список живе на /saved. */
+function SavedLink({ total }: { total: number }) {
+  const navigate = useNavigate();
   return (
-    <div className="flex flex-col">
-      <StatRow
-        label="🔖 Ти зберіг"
-        value={
-          <>
-            {total}
-            {shown < total && <span className="ml-1.5 font-normal text-tx3">показано {shown}</span>}
-          </>
-        }
-      />
-      {items.map((item, i) => (
-        <SavedRow key={item.id ?? i} item={item} />
-      ))}
-      {more > 0 && (
-        <button
-          type="button"
-          disabled={isFetching}
-          onClick={() => setLimit((l) => (l || preview.length) + SAVED_STEP)}
-          className="border-t border-hair py-2 text-[12px] font-semibold text-a2 disabled:opacity-50"
-        >
-          {isFetching ? 'Вантажу…' : `Показати ще (${more})`}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function SavedRow({ item }: { item: SavedItem }) {
-  const icon = KIND_ICON[item.kind] ?? '🔖';
-  const title = truncate(item.title, 80);
-  return (
-    <div className="flex items-center gap-2 border-t border-hair py-1.5 text-[12px]">
-      <span>{icon}</span>
-      {item.kind === 'news' && item.url ? (
-        <button
-          type="button"
-          onClick={() => openLink(item.url!)}
-          className="flex-1 truncate text-left text-a2"
-          title={item.title}
-        >
-          {title}
-        </button>
-      ) : (
-        <span className="flex-1 truncate" title={item.title}>
-          {title}
-        </span>
-      )}
-    </div>
+    <button
+      type="button"
+      onClick={() => {
+        navigate('/saved');
+        haptic('light');
+      }}
+      className="flex items-center gap-2 rounded-2xl border border-glassb bg-glass px-3.5 py-3 text-left"
+    >
+      <span className="text-[13px] font-semibold">🔖 Збережене</span>
+      <span className="ml-auto font-mono text-[13px] font-semibold text-tx2">{total}</span>
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--color-tx3)"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M9 5l7 7-7 7" />
+      </svg>
+    </button>
   );
 }
 
@@ -151,7 +111,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
 
       {has(s.readPerDay) && <StatRow label="Новин на день (середнє)" value={s.readPerDay} />}
 
-      {s.savedCount > 0 && <SavedArchive preview={s.savedList} total={s.savedCount} />}
+      {s.savedCount > 0 && <SavedLink total={s.savedCount} />}
     </div>
   );
 }
