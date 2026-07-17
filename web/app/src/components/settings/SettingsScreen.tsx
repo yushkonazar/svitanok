@@ -6,6 +6,7 @@ import { useTheme, type ThemePref } from '../../theme.tsx';
 import { SectionLabel, Ph } from '../ui/primitives.tsx';
 import { LoadingSkeleton, ErrorState, SkeletonBar } from '../ui/states.tsx';
 import { Switch, Chip, Stepper, SettingRow } from '../ui/controls.tsx';
+import { cascade } from '../ui/Cascade.tsx';
 import { useQueryClient } from '@tanstack/react-query';
 
 // Екран «Налаштування» (дизайн v2, Svitanok.dc.html; роадмеп v3, F2).
@@ -60,16 +61,19 @@ function TimeField({
   value,
   onChange,
   label,
+  tabIndex,
 }: {
   value: string;
   onChange: (v: string) => void;
   label: string;
+  tabIndex?: number;
 }) {
   return (
     <input
       type="time"
       value={value}
       aria-label={label}
+      tabIndex={tabIndex}
       onChange={(e) => e.target.value && onChange(e.target.value)}
       className="rounded-[9px] border border-glassb bg-glass px-2.5 py-1.5 font-mono text-[12px] font-semibold text-tx"
     />
@@ -147,21 +151,36 @@ export function SettingsScreen() {
           />
         </SettingRow>
 
-        {settings.quiet.enabled && (
-          <div className="flex items-center gap-2 pl-0.5">
-            <TimeField
-              label="Початок тихих годин"
-              value={settings.quiet.from}
-              onChange={(from) => saveQuiet({ from })}
-            />
-            <span className="text-tx3">–</span>
-            <TimeField
-              label="Кінець тихих годин"
-              value={settings.quiet.to}
-              onChange={(to) => saveQuiet({ to })}
-            />
+        {/* Рядок часу розкривається grid-rows 0fr→1fr (той самий прийом, що
+            блоки чек-іну) — раніше він зʼявлявся стрибком. Обгортка живе в DOM
+            ЗАВЖДИ: -mt-3 гасить слот gap-3 секції у згорнутому стані, pt-3
+            всередині повертає відступ у розгорнутому — разом висота згорнутого
+            стану лишається піксель у піксель як до цієї анімації. */}
+        <div
+          aria-hidden={!settings.quiet.enabled}
+          className="-mt-3 grid transition-[grid-template-rows] duration-[350ms] ease-[cubic-bezier(.22,1,.36,1)]"
+          style={{ gridTemplateRows: settings.quiet.enabled ? '1fr' : '0fr' }}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="flex items-center gap-2 pl-0.5 pt-3">
+              {/* tabIndex -1 у згорнутому: візуально прихований input не має
+                  ловити фокус із клавіатури (як кнопки згорнутих блоків чек-іну). */}
+              <TimeField
+                label="Початок тихих годин"
+                value={settings.quiet.from}
+                onChange={(from) => saveQuiet({ from })}
+                tabIndex={settings.quiet.enabled ? 0 : -1}
+              />
+              <span className="text-tx3">–</span>
+              <TimeField
+                label="Кінець тихих годин"
+                value={settings.quiet.to}
+                onChange={(to) => saveQuiet({ to })}
+                tabIndex={settings.quiet.enabled ? 0 : -1}
+              />
+            </div>
           </div>
-        )}
+        </div>
       </Section>
 
       {/* Ціль живе в іншій черзі (['stats']) — тож і стани в неї свої. Раніше тут
@@ -207,18 +226,19 @@ export function SettingsScreen() {
       </Section>
 
       <Section title="МОДУЛІ БРИФІНГУ">
-        {MODULES.map((m) => {
+        {MODULES.map((m, i) => {
           // Відсутність оверрайду = дефолт config.yml; для цих восьми там
           // enabled:true (інваріант закріплено тестом tests/config.test.ts).
           const on = settings.modules[m.id] ?? true;
           return (
-            <SettingRow
-              key={m.id}
-              icon={<span className="w-[22px] flex-none text-center text-[15px]">{m.icon}</span>}
-              title={m.label}
-            >
-              <Switch label={m.label} checked={on} onChange={(next) => saveModule(m.id, next)} />
-            </SettingRow>
+            <div key={m.id} style={cascade(i, 35)}>
+              <SettingRow
+                icon={<span className="w-[22px] flex-none text-center text-[15px]">{m.icon}</span>}
+                title={m.label}
+              >
+                <Switch label={m.label} checked={on} onChange={(next) => saveModule(m.id, next)} />
+              </SettingRow>
+            </div>
           );
         })}
         <p className="text-[11.5px] leading-snug text-tx3">

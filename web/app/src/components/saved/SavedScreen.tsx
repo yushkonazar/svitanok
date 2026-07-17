@@ -4,6 +4,7 @@ import { useSaved } from '../../saved.tsx';
 import { truncate } from '../../lib/format.ts';
 import { openLink, haptic } from '../../telegram.ts';
 import { SectionLabel } from '../ui/primitives.tsx';
+import { Cascade, useCascade } from '../ui/Cascade.tsx';
 import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
 
 // Екран «Збережене» — окремий повноекранний маршрут (фідбек власника, п.6).
@@ -37,10 +38,14 @@ function shortDate(ts: string): string {
   return m ? `${m[3]}.${m[2]}` : '';
 }
 
-function Row({ item }: { item: SavedItem }) {
+function Row({ item, i }: { item: SavedItem; i: number }) {
   const delItem = useToggleSaveItem();
   const delNews = useToggleSaveNews();
   const { setSaved } = useSaved();
+  // useCascade, а не обгортка: рядок тримає роздільники на first:border-t-0,
+  // і зайвий div зробив би КОЖЕН рядок «першим» у своїй обгортці — межі зникли б.
+  // Заморожений стиль тут критичний: видалення зсуває індекси сусідів знизу.
+  const entry = useCascade(i, 40, 6);
   const busy = delItem.isPending || delNews.isPending;
   const date = shortDate(item.ts);
 
@@ -79,7 +84,7 @@ function Row({ item }: { item: SavedItem }) {
     //      сусідні групи однаково стрибають.
     // Робочий шлях — затримати мутацію на час анімації, але тоді вихід з екрана
     // під час таймера ЗАГУБИТЬ видалення. Різкість краща за втрату даних.
-    <div className="flex items-start gap-2.5 border-t border-hair py-2.5 first:border-t-0">
+    <div className="flex items-start gap-2.5 border-t border-hair py-2.5 first:border-t-0" style={entry}>
       <div className="min-w-0 flex-1">
         {isLink ? (
           <button
@@ -159,20 +164,24 @@ export function SavedScreen() {
         {items.length < total && ` · НАБРАНО ${items.length}`}
       </div>
 
-      {groups.map((g) => (
-        <div key={g.id} className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-2">
-            <SectionLabel>
-              {g.icon} {g.label}
-            </SectionLabel>
-            <span className="font-mono text-[10px] font-medium text-tx3">{g.list.length}</span>
+      {/* Cascade (заморожений) і на групах: видалення останнього запису групи
+          зсуває наступні — живий delay рестартував би їм появу. */}
+      {groups.map((g, gi) => (
+        <Cascade key={g.id} i={gi} step={70}>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <SectionLabel>
+                {g.icon} {g.label}
+              </SectionLabel>
+              <span className="font-mono text-[10px] font-medium text-tx3">{g.list.length}</span>
+            </div>
+            <div className="flex flex-col rounded-2xl border border-glassb bg-glass px-3.5 py-0.5">
+              {g.list.map((item, i) => (
+                <Row key={`${item.kind}:${item.id ?? i}`} item={item} i={i} />
+              ))}
+            </div>
           </div>
-          <div className="flex flex-col rounded-2xl border border-glassb bg-glass px-3.5 py-0.5">
-            {g.list.map((item, i) => (
-              <Row key={`${item.kind}:${item.id ?? i}`} item={item} />
-            ))}
-          </div>
-        </div>
+        </Cascade>
       ))}
 
       {hasNextPage && (

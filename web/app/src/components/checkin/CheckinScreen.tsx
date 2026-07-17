@@ -3,6 +3,7 @@ import { useStats, useSaveCheckin } from '../../api/hooks.ts';
 import type { CheckinSlot } from '../../api/schema.ts';
 import { haptic } from '../../telegram.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { cascade } from '../ui/Cascade.tsx';
 import { BLOCKS, isDone, type Block } from './questions.ts';
 
 // Таб «Чек-ін» (фідбек власника, п.7): три блоки, що відкриваються за часом.
@@ -118,7 +119,16 @@ function BlockCard({
                           color: on ? 'var(--color-tx)' : 'var(--color-tx2)',
                         }}
                       >
-                        {lbl}
+                        {/* pop лише на ВИБІР (ремоунт за key, як серце NewsItem);
+                            зняття відповіді проходить тихо — підстрибувати на
+                            «передумав» нема чому. */}
+                        <span
+                          key={String(on)}
+                          className="block"
+                          style={on ? { animation: 'pop .24s cubic-bezier(.22,1,.36,1)' } : undefined}
+                        >
+                          {lbl}
+                        </span>
                       </button>
                     );
                   })}
@@ -131,12 +141,15 @@ function BlockCard({
 
       {state === 'done' && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3">
+          {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано»:
+              момент завершення вартий короткої відповіді інтерфейсу. */}
           {b.qs
             .filter((q) => answers[q.id] !== undefined)
-            .map((q) => (
+            .map((q, i) => (
               <span
                 key={q.id}
                 className="rounded-full border border-glassb px-2 py-0.5 font-mono text-[9.5px] font-semibold text-tx2"
+                style={cascade(i, 40)}
               >
                 {q.o.find(([, v]) => v === answers[q.id])?.[0] ?? String(answers[q.id])}
               </span>
@@ -203,14 +216,17 @@ export function CheckinScreen() {
         </span>
       </div>
 
-      {BLOCKS.map((b) => (
-        <BlockCard
-          key={b.id}
-          b={b}
-          state={stateOf(b, active, answersFor(b.id))}
-          answers={answersFor(b.id)}
-          onAnswer={(q, v) => onAnswer(b.id, q, v)}
-        />
+      {/* Ранок → післяобід → вечір зʼявляються по черзі: каскад повторює
+          порядок доби. Індекси статичні, тож голого cascade(i) досить. */}
+      {BLOCKS.map((b, i) => (
+        <div key={b.id} style={cascade(i, 80)}>
+          <BlockCard
+            b={b}
+            state={stateOf(b, active, answersFor(b.id))}
+            answers={answersFor(b.id)}
+            onAnswer={(q, v) => onAnswer(b.id, q, v)}
+          />
+        </div>
       ))}
 
       {!active && (

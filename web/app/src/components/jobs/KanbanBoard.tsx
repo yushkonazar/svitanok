@@ -3,6 +3,7 @@ import { useJobStage } from '../../api/hooks.ts';
 import { haptic, setVerticalSwipes } from '../../telegram.ts';
 import { prettyJobTitle } from '../../lib/jobTitle.ts';
 import { FUNNEL_STAGES, fitStyle, type FunnelStage } from './stages.ts';
+import { Cascade } from '../ui/Cascade.tsx';
 import type { StageEvent } from '../../api/schema.ts';
 
 // Канбан воронки (дизайн v2, Svitanok.dc.html): лейни-стадії, картки
@@ -139,12 +140,15 @@ export function KanbanBoard({
               </div>
 
               <div className="flex flex-col gap-2">
-                {laneCards.map((c) => {
+                {/* Cascade дає два ефекти одразу: хвилю при відкритті дошки і
+                    мʼяке «всідання» картки в новий лейн після перетягування
+                    (зміна лейна = ремоунт = свіжий fadeUp). */}
+                {laneCards.map((c, i) => {
                   const fit = c.score != null && c.score >= 0 ? fitStyle(c.score) : null;
                   const dim = dragging && dragUrl === c.url;
                   return (
+                    <Cascade key={c.url} i={i} step={40} cap={5}>
                     <div
-                      key={c.url}
                       onPointerDown={(e) => onDown(e, c)}
                       onPointerMove={onMove}
                       onPointerUp={onUp}
@@ -171,6 +175,7 @@ export function KanbanBoard({
                         <circle cx="15" cy="17" r="1.6" />
                       </svg>
                     </div>
+                    </Cascade>
                   );
                 })}
                 {!laneCards.length && (

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useBriefing, useStats } from '../../api/hooks.ts';
 import { readBlock, jobsDataSchema } from '../../api/briefing-schema.ts';
 import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
+import { Cascade } from '../ui/Cascade.tsx';
 import { Segmented } from '../ui/Segmented.tsx';
 import { FunnelWidget } from './FunnelWidget.tsx';
 import { JobCard } from './JobCard.tsx';
@@ -93,13 +94,16 @@ export function JobsScreen() {
         <>
           <FunnelWidget counts={counts} />
           {allItems.length ? (
-            visible.map((it) => (
-              <JobCard
-                key={it.url}
-                item={it}
-                curStage={stageByUrl.get(it.url) ?? it.funnelStage ?? null}
-                onDismiss={() => setHidden((s) => new Set(s).add(it.url))}
-              />
+            // Cascade (заморожений), а не голий cascade(i): «Не цікавить»
+            // зсуває індекси карток нижче, і живий delay рестартував би їм fadeUp.
+            visible.map((it, i) => (
+              <Cascade key={it.url} i={i} step={55} cap={5}>
+                <JobCard
+                  item={it}
+                  curStage={stageByUrl.get(it.url) ?? it.funnelStage ?? null}
+                  onDismiss={() => setHidden((s) => new Set(s).add(it.url))}
+                />
+              </Cascade>
             ))
           ) : (
             <EmptyState

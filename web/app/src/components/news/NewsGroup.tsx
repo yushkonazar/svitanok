@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { NewsGroup as NewsGroupT } from '../../api/briefing-schema.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
+import { cascade } from '../ui/Cascade.tsx';
 import { NewsItem } from './NewsItem.tsx';
 
 // Група новин за темою (дизайн v2, Svitanok.dc.html): емодзі + тема + лічильник
@@ -21,10 +22,21 @@ export function NewsGroup({ group }: { group: NewsGroupT }) {
         <div className="h-px flex-1 bg-hair" />
       </div>
 
-      {group.items.map((it) => (
-        <NewsItem key={it.url} item={it} topic={group.topic} />
+      {/* Каскад лише всередині групи (індекси тут статичні): групи стоять одна
+          під одною, тож око однаково читає хвилю зверху вниз. «Більше» рахує
+          затримку від нуля — розкриття грає власний каскад, а не чекає хвостом
+          за основними трьома. */}
+      {group.items.map((it, i) => (
+        <div key={it.url} style={cascade(i)}>
+          <NewsItem item={it} topic={group.topic} />
+        </div>
       ))}
-      {showMore && group.more.map((it) => <NewsItem key={it.url} item={it} topic={group.topic} />)}
+      {showMore &&
+        group.more.map((it, i) => (
+          <div key={it.url} style={cascade(i)}>
+            <NewsItem item={it} topic={group.topic} />
+          </div>
+        ))}
 
       {group.more.length > 0 && (
         <button
