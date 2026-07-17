@@ -17,7 +17,7 @@ import {
   type StatsResult,
   type VoteDir,
 } from './client.ts';
-import type { SavedPage } from './schema.ts';
+import type { SavedPage, CheckinSlot } from './schema.ts';
 import { nextSavedOffset } from './paging.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
@@ -443,6 +443,44 @@ export function useSaveSettings() {
  * блобі `stats` поруч із weeklyApplied, тож це подія set_goal, як і решта
  * мутацій дашборда.
  */
+const CHECKIN_SCOPE = { id: 'checkin-write' };
+
+/**
+ * Зберегти блок чек-іну (п.7).
+ *
+ * Шлемо ВЕСЬ блок одним запитом, а не по відповіді на питання: KV має ліміт
+ * 1 запис/сек на ключ і не має CAS, тож чотири окремі події по ключу `stats`
+ * — рівно та гонка, заради якої налаштування переробляли на повний PUT.
+ * Дебаунс живе в екрані; scope серіалізує те, що все-таки полетіло підряд.
+ *
+ * `slot` тут — лише підказка: сервер визначає блок сам за київською годиною
+ * (клієнтському годиннику не віримо) і може відповідь ЗІГНОРУВАТИ, якщо час
+ * блоку вже минув. Тому onSettled перепитує ['stats'] — авторитет там.
+ */
+export function useSaveCheckin() {
+  const qc = useQueryClient();
+  return useMutation({
+    scope: CHECKIN_SCOPE,
+    mutationFn: (vars: { slot: CheckinSlot; answers: Record<string, unknown> }) =>
+      postEvent('checkin', { slot: vars.slot, ...vars.answers }),
+    onMutate: async ({ slot, answers }) => {
+      await qc.cancelQueries({ queryKey: ['stats'] });
+      const prev = qc.getQueryData<StatsResult>(['stats']);
+      patchStats(qc, (s) => ({
+        ...s,
+        checkinToday: { ...s.checkinToday, [slot]: { ...s.checkinToday?.[slot], ...answers } },
+      }));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
+    },
+    onSettled: () => {
+      if (inTelegram()) qc.invalidateQueries({ queryKey: ['stats'] });
+    },
+  });
+}
+
 export function useSetGoal() {
   const qc = useQueryClient();
   return useMutation({

@@ -1,158 +1,212 @@
+import { useId } from 'react';
 import { useTick } from '../../lib/useTick.ts';
 import { kyivMinutes, kyivMinutesFromUnix, kyivClockNow } from '../../lib/weather.ts';
+import { CX, CY, R, SIZE, sunGeom, segPath, readout, subLabel } from './sundial-geom.ts';
 
-// Добовий циферблат (дизайн v2, Svitanok.dc.html). Коло 170px: небо-градієнт
-// день (верх) → ніч (низ); маркер їде повним колом за часом доби — полудень
-// угорі, північ унизу, схід ліворуч, захід праворуч. Декор (сонце/хмари/зорі/
-// місяць) статичний, як у макеті. Живий тик — 30с.
+// Добовий циферблат — вигляд «Небо» (фідбек власника, п.1).
 //
-// Геометрія 1:1 з макета: cx=cy=85, R=79; ang = (хв/1440)*2π;
-// mx = cx − R·sin(ang), my = cy + R·cos(ang) — при 00:00 маркер унизу, о 12:00
-// угорі. Час беремо КИЇВСЬКИЙ (як і схід/захід), не локаль пристрою.
+// Геометрія (чому верх кола = сонячний полудень, а не 12:00) — у sundial-geom.ts,
+// там же тести. Тут лише малювання.
+//
+// Що змінилось проти макета Svitanok.dc.html: небо більше НЕ вшитий градієнт із
+// хардкодним стопом на 55% — воно рахується. Колір тече за висотою сонця: у
+// зеніті бліде тепле, на золотій годині весь денний сегмент іде в корал, щойно
+// за обрієм — фіолетова заграва, глибокої ночі — майже чорне. Статичне сонце в
+// зеніті, хмари й декоративний місяць прибрано: був абсурд, коли о 3-й ночі в
+// небі висіло намальоване сонце. Тепер один обʼєкт, який кружляє (сонце вдень,
+// місяць уночі) — і він же підсвічує небо довкола себе.
+//
+// Живий тик — 30с. За 30с обʼєкт проходить 0.125° (≈0.17px), тобто сам по собі
+// рух непомітний; transition потрібен для іншого — коли апку розгорнули через
+// кілька годин, useTick смикає ререндер, і без переходу обʼєкт би стрибнув.
 
-const CX = 85;
-const CY = 85;
-const R = 79;
+const TICK_MS = 30_000;
 
-const STARS: [number, number, number, number, string][] = [
-  // left, bottom, size, duration(s), delay(s) — координати з макета
-  [30, 50, 3, 3, '0s'],
-  [58, 26, 2, 2.4, '.4s'],
-  [78, 44, 2.5, 3.4, '.8s'],
+/** Зорі: [x, y, r] у координатах viewBox + [тривалість, затримка] мерехтіння
+    (різні — щоб не блимали в такт). Живуть у нижній половині кола. */
+const STARS: Array<[number, number, number, string, string]> = [
+  [30, 118, 1.5, '3s', '0s'],
+  [58, 142, 1, '2.4s', '.4s'],
+  [78, 124, 1.25, '3.4s', '.8s'],
+  [124, 108, 1, '2.8s', '.2s'],
+  [104, 150, 0.9, '3.1s', '1.1s'],
+  [142, 134, 1.1, '2.6s', '.6s'],
+  [46, 96, 0.8, '3.6s', '1.4s'],
+  [136, 92, 0.85, '2.2s', '.9s'],
 ];
 
-function pad(n: number) {
-  return String(n).padStart(2, '0');
+const hex = (h: string): [number, number, number] => [
+  parseInt(h.slice(1, 3), 16),
+  parseInt(h.slice(3, 5), 16),
+  parseInt(h.slice(5, 7), 16),
+];
+const rgb = (a: number[]) => `#${a.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+const mix = (a: string, b: string, t: number) => {
+  const k = Math.min(1, Math.max(0, t));
+  const [ar, ag, ab] = hex(a);
+  const [br, bg, bb] = hex(b);
+  return rgb([ar + (br - ar) * k, ag + (bg - ag) * k, ab + (bb - ab) * k]);
+};
+
+/**
+ * Денне небо: у зеніті глибше, до обрію світліше (серпанок); що нижче сонце —
+ * то більше корала.
+ *
+ * ⚠️ Напрямок градієнта саме такий, і це не смак. Спершу я зробив навпаки —
+ * найсвітліше вгорі — і воно (а) виглядало вигорілим, (б) не лишало сонцю на
+ * чому читатись: білий диск на небі #FFEFDC дав контраст 1.15, тобто його просто
+ * не було видно. Справжнє небо теж темніше в зеніті, ніж біля обрію.
+ */
+function dayRamp(alt: number) {
+  const t = Math.pow(Math.min(1, Math.max(0, alt)), 0.7);
+  return {
+    top: mix('#C97A82', '#E09A6A', t),
+    mid: mix('#FF8A6B', '#FFC28C', t),
+    // На золотій годині обрій іде рівно в акцент проєкту (--color-a1).
+    low: mix('#FF6E7A', '#FFE8CC', t),
+  };
+}
+
+/** Нічне небо: щойно за обрієм -> фіолетова заграва; глибока ніч -> майже чорне. */
+function nightRamp(alt: number) {
+  const t = Math.pow(Math.min(1, Math.max(0, alt)), 0.55);
+  return {
+    hi: mix('#5A3670', '#2A2050', t),
+    mid: mix('#33204F', '#1A1338', t),
+    low: mix('#1B1236', '#0D0920', t),
+  };
 }
 
 export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }) {
-  useTick(30_000);
+  useTick(TICK_MS);
+  // useId — бо id градієнтів глобальні в документі: два циферблати на сторінці
+  // підмінили б одне одному небо.
+  const uid = useId().replace(/:/g, '');
+  const id = (n: string) => `${uid}${n}`;
 
   const now = new Date();
   const mins = kyivMinutes(now);
-  const ang = (mins / 1440) * 2 * Math.PI;
-  const mx = CX - R * Math.sin(ang);
-  const my = CY + R * Math.cos(ang);
+  const g = sunGeom(kyivMinutesFromUnix(sunrise), kyivMinutesFromUnix(sunset), mins);
+  const t = readout(g);
+  const day = dayRamp(g.alt);
+  const night = nightRamp(g.alt);
 
-  const sr = kyivMinutesFromUnix(sunrise);
-  const ss = kyivMinutesFromUnix(sunset);
-  const valid = !!sr && !!ss && ss > sr;
-  const isDay = valid ? mins >= sr && mins <= ss : true;
-
-  let sub = '';
-  if (valid) {
-    if (isDay) {
-      const dl = ss - sr;
-      sub = `ДЕНЬ ${Math.floor(dl / 60)}Г${pad(dl % 60)}`;
-    } else {
-      const d = (sr - mins + 1440) % 1440;
-      sub = `ДО СХОДУ ${Math.floor(d / 60)}Г ${pad(d % 60)}ХВ`;
-    }
-  }
+  // Зорі гаснуть, щойно сонце піднялось над обрієм: тримаємо їх лише в сутінках
+  // (alt < 0.12 удень) — інакше вдень у небі мерехтять крапки.
+  const starOp = g.isDay ? Math.max(0, 1 - g.alt / 0.12) : Math.min(1, 0.35 + g.alt);
+  const glow = g.isDay ? '255,186,96' : '168,150,255';
+  const halo = g.isDay ? '255,248,214' : '226,220,255';
 
   return (
     <div className="relative h-[170px] w-[170px] flex-none">
-      {/* небо */}
-      <div
-        className="absolute inset-0 overflow-hidden rounded-full"
-        style={{
-          background:
-            'linear-gradient(180deg,#FFF6E6 0%,#FFDFAE 42%,#FFD09A 55%,#2A2050 55.4%,#1A1338 74%,#120D28 100%)',
-          boxShadow:
-            '0 0 0 1px rgba(255,255,255,.16),0 20px 56px rgba(255,110,122,.24),inset 0 -20px 40px rgba(8,6,20,.5)',
-        }}
+      <svg
+        width={SIZE}
+        height={SIZE}
+        viewBox={`0 0 ${SIZE} ${SIZE}`}
+        role="img"
+        aria-label={`${g.isDay ? 'День' : 'Ніч'}, ${kyivClockNow(now)}${
+          g.valid ? `, ${subLabel(g, mins).toLowerCase()}` : ''
+        }`}
+        style={{ filter: 'drop-shadow(0 20px 56px rgba(255,110,122,.24))' }}
       >
-        {/* сонце в зеніті */}
-        <div
-          className="absolute left-1/2 top-[34px] h-[26px] w-[26px] -translate-x-1/2 rounded-full"
-          style={{ background: '#FFE3AE', boxShadow: '0 0 24px 14px rgba(255,196,120,.6)' }}
-        />
-        {/* хмари */}
-        <div
-          className="absolute left-5 top-[56px] h-[9px] w-11 rounded-full"
-          style={{ background: 'rgba(255,255,255,.75)', boxShadow: '12px 5px 0 -2px rgba(255,255,255,.5)' }}
-        />
-        <div
-          className="absolute right-[22px] top-[30px] h-2 w-8 rounded-full"
-          style={{ background: 'rgba(255,255,255,.6)' }}
-        />
-        {/* нічне сяйво */}
-        <div
-          className="absolute inset-x-0 top-[96px] h-[74px]"
-          style={{ background: 'radial-gradient(60% 80% at 62% 60%,rgba(130,100,255,.22),transparent 70%)' }}
-        />
-        {/* зорі */}
-        {STARS.map(([left, bottom, size, dur, delay], i) => (
-          <div
-            key={i}
-            className="absolute rounded-full"
-            style={{
-              left,
-              bottom,
-              width: size,
-              height: size,
-              background: i === 0 ? '#F2F1EC' : `rgba(242,241,236,${i === 1 ? 0.6 : 0.8})`,
-              animation: `twinkle ${dur}s ease-in-out ${delay} infinite`,
-            }}
-          />
-        ))}
-        <div
-          className="absolute right-[52px] bottom-[58px] h-[3px] w-[3px] rounded-full"
-          style={{
-            background: '#F2F1EC',
-            boxShadow: '0 0 6px rgba(242,241,236,.9)',
-            animation: 'twinkle 2.8s ease-in-out .2s infinite',
-          }}
-        />
-        {/* зоря-«хрестик» */}
-        <div
-          className="absolute right-[38px] bottom-[38px] h-[1.5px] w-[9px]"
-          style={{ background: 'rgba(242,241,236,.85)' }}
-        />
-        <div
-          className="absolute right-[41.5px] bottom-[34px] h-[9px] w-[1.5px]"
-          style={{ background: 'rgba(242,241,236,.85)' }}
-        />
-        {/* місяць-серп */}
-        <div className="absolute right-6 bottom-[52px] h-[18px] w-[18px]">
-          <div
-            className="absolute inset-0 rounded-full"
-            style={{ background: 'rgba(236,232,248,.95)', boxShadow: '0 0 14px rgba(200,190,255,.5)' }}
-          />
-          <div
-            className="absolute left-[5px] top-[-2.5px] h-[17px] w-[17px] rounded-full"
-            style={{ background: '#1D1540' }}
-          />
-        </div>
-      </div>
+        <defs>
+          <linearGradient id={id('d')} x1="0" y1={CY - R} x2="0" y2={g.horizonY} gradientUnits="userSpaceOnUse">
+            <stop className="dial-stop" offset="0" stopColor={day.top} />
+            <stop className="dial-stop" offset=".55" stopColor={day.mid} />
+            <stop className="dial-stop" offset="1" stopColor={day.low} />
+          </linearGradient>
+          <linearGradient id={id('n')} x1="0" y1={g.horizonY} x2="0" y2={CY + R} gradientUnits="userSpaceOnUse">
+            <stop className="dial-stop" offset="0" stopColor={night.hi} />
+            <stop className="dial-stop" offset=".5" stopColor={night.mid} />
+            <stop className="dial-stop" offset="1" stopColor={night.low} />
+          </linearGradient>
+          <clipPath id={id('c')}>
+            <circle cx={CX} cy={CY} r={R} />
+          </clipPath>
+          {/* Обʼєкт світить довкола себе — це і є «жива» частина неба. */}
+          <radialGradient id={id('g')} cx={g.x} cy={g.y} r={46} gradientUnits="userSpaceOnUse">
+            <stop offset="0" stopColor={`rgba(${glow},${g.isDay ? 0.5 : 0.32})`} />
+            <stop offset="1" stopColor={`rgba(${glow},0)`} />
+          </radialGradient>
+          {/* Тісний ореол — щоб СОНЦЕ читалось на світлому небі. Без нього воно
+              зникає: диск #FFE3AE на небі #FFEFDC — це майже той самий колір,
+              і обʼєкт, який мав бути героєм, розчинявся у фоні. Уночі місяць
+              контрастний сам собою, тож ореол там слабший. */}
+          <radialGradient id={id('h')} cx={g.x} cy={g.y} r={15} gradientUnits="userSpaceOnUse">
+            <stop offset="0" stopColor={`rgba(${halo},${g.isDay ? 0.95 : 0.5})`} />
+            <stop offset="1" stopColor={`rgba(${halo},0)`} />
+          </radialGradient>
+        </defs>
 
-      {/* маркер «зараз» — left/top ЧИСЛАМИ: React додає 'px' лише до чисел,
-          а рядок із toFixed() CSS відкинув би як невалідну довжину. */}
-      <div
-        className="absolute h-3 w-3 rounded-full"
-        style={{
-          left: Math.round((mx - 6) * 10) / 10,
-          top: Math.round((my - 6) * 10) / 10,
-          background: isDay ? '#FFE3AE' : '#EDEAF8',
-          boxShadow: `0 0 14px 3px ${isDay ? 'rgba(255,196,120,.85)' : 'rgba(200,190,255,.7)'}`,
-          transition: 'left 1s linear, top 1s linear',
-        }}
-      />
+        <g clipPath={`url(#${id('c')})`}>
+          <path d={segPath(g.half, false)} fill={`url(#${id('d')})`} />
+          <path d={segPath(g.half, true)} fill={`url(#${id('n')})`} />
 
-      {/* центральний зчитувач */}
-      <div className="absolute inset-x-0 top-[96px] flex flex-col items-center gap-px">
-        <div
-          className="font-mono text-[25px] font-bold tracking-[-0.02em]"
-          style={{ color: '#F7F4FF', textShadow: '0 2px 12px rgba(8,6,20,.8)' }}
+          {STARS.map(([sx, sy, r, dur, delay], i) => (
+            <circle key={i} cx={sx} cy={sy} r={r} fill="#F2F1EC" opacity={starOp}>
+              <animate
+                attributeName="opacity"
+                values={`${(0.25 * starOp).toFixed(2)};${(0.95 * starOp).toFixed(2)};${(0.25 * starOp).toFixed(2)}`}
+                dur={dur}
+                begin={delay}
+                repeatCount="indefinite"
+              />
+            </circle>
+          ))}
+
+          <rect x="0" y="0" width={SIZE} height={SIZE} fill={`url(#${id('g')})`} />
+          <rect x="0" y="0" width={SIZE} height={SIZE} fill={`url(#${id('h')})`} />
+
+          {/* Обрій — тонка межа; уся драма з градієнтів, не з лінії. */}
+          <line
+            x1={CX - g.horizonHalfW}
+            y1={g.horizonY}
+            x2={CX + g.horizonHalfW}
+            y2={g.horizonY}
+            stroke="rgba(255,255,255,.24)"
+            strokeWidth="0.8"
+          />
+
+          <g style={{ transition: 'transform 1s linear' }} transform={`translate(${g.x} ${g.y})`}>
+            {g.isDay ? (
+              // Розжарене ядро, а не «тепле»: на блідому денному небі диск
+              // мусить бути СВІТЛІШИЙ за фон, інакше його просто не видно.
+              <circle r="6" fill="#FFFDF4" />
+            ) : (
+              <>
+                <circle r="6.5" fill="#ECE8F8" />
+                {/* Серп — «відкушений» кружок кольору неба на цій висоті. */}
+                <circle cx="3" cy="-2.5" r="6" fill={g.alt > 0.5 ? night.mid : night.hi} />
+              </>
+            )}
+          </g>
+        </g>
+
+        <circle cx={CX} cy={CY} r={R} fill="none" stroke="rgba(255,255,255,.16)" strokeWidth="1" />
+
+        <text
+          className="dial-clock"
+          x={CX}
+          y={t.clockY}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          style={{ fontSize: 25 * t.scale }}
         >
           {kyivClockNow(now)}
-        </div>
-        {sub && (
-          <div className="font-mono text-[8.5px] font-medium" style={{ color: 'rgba(242,241,236,.7)' }}>
-            {sub}
-          </div>
+        </text>
+        {g.valid && (
+          <text
+            className="dial-sub"
+            x={CX}
+            y={t.subY}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            style={{ fontSize: 8.5 * t.scale }}
+          >
+            {subLabel(g, mins)}
+          </text>
         )}
-      </div>
+      </svg>
     </div>
   );
 }
