@@ -123,7 +123,7 @@ export function EmptyState({
           <button
             type="button"
             onClick={onReload}
-            className="mt-1 rounded-full px-[18px] py-[9px] text-xs font-bold"
+            className="sheen mt-1 rounded-full px-[18px] py-[9px] text-xs font-bold"
             style={{ background: 'var(--grad)', color: 'var(--color-onacc)' }}
           >
             Оновити
