@@ -92,14 +92,23 @@ export function buildMailPrompt(profile: string, candidates: MailCandidate[]): s
 }
 
 /** Розпарсити класифікацію у map index(1-based) -> MailClassification; малформат -> порожньо. */
-export function parseMailClassification(text: string): Map<number, MailClassification> {
+/**
+ * Розібрати класифікацію листів.
+ *
+ * `null` -> LLM НЕ ВІДПОВІЛА структуровано (немає масиву / битий JSON). Це НЕ те
+ * саме, що валідний порожній `[]` («переглянув, важливого немає»), і плутати їх
+ * не можна: порожня Map в обох випадках означала б «0 важливих», після чого
+ * листи позначались прочитаними — і зникали назавжди. Виклик мусить бачити
+ * різницю: `[]` — це відповідь, малформат — це збій.
+ */
+export function parseMailClassification(text: string): Map<number, MailClassification> | null {
   const out = new Map<number, MailClassification>();
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
-  if (start === -1 || end <= start) return out;
+  if (start === -1 || end <= start) return null;
   try {
     const arr: unknown = JSON.parse(text.slice(start, end + 1));
-    if (!Array.isArray(arr)) return out;
+    if (!Array.isArray(arr)) return null;
     for (const x of arr) {
       if (x && typeof x === 'object') {
         const o = x as Record<string, unknown>;
@@ -116,7 +125,7 @@ export function parseMailClassification(text: string): Map<number, MailClassific
       }
     }
   } catch {
-    /* малформат -> порожня map -> 0 важливих (не валимо) */
+    return null; // битий JSON — це збій, а не «важливого немає»
   }
   return out;
 }
@@ -266,6 +275,13 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
           tag: 'mail',
         });
         const classified = parseMailClassification(out);
+        // Малформат -> у catch (нижче): НЕ позначаємо прочитаними й логуємо.
+        // Доти порожня Map тут читалась як «0 важливих», листи тихо ставали
+        // розглянутими й випадали з вікна query назавжди — навіть якщо насправді
+        // LLM просто нічого не відповіла.
+        if (classified === null) {
+          throw new Error(`відповідь не розпарсилась (${out.slice(0, 120) || 'порожньо'})`);
+        }
         importantCount = candidates.filter((_, i) => classified.get(i + 1)?.important).length;
 
         const nowMs = ctx.clock.now().getTime();
@@ -289,12 +305,20 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
           });
         }
 
-        // Дедуп по РОЗГЛЯНУТИХ листах — ЛИШЕ якщо LLM реально відповів (навіть
-        // малформед: повторний розгляд не допоможе). При ЗБОЇ виклику (throw
-        // нижче: таймаут/мережа) НЕ позначаємо — інакше лист випав би з вікна
-        // query (newer_than) і був би втрачений назавжди через одну помилку.
-        // На відміну від jobs.ts (позначає лише «picked») лист, раз прочитаний
-        // LLM, не стає завтра важливішим — повторний розгляд лише палить виклик.
+        // Дедуп по РОЗГЛЯНУТИХ листах — лише коли LLM справді класифікувала
+        // (валідний масив, хай і порожній). Раз прочитаний лист завтра не стане
+        // важливішим, тож повторний розгляд лише палив би виклик.
+        //
+        // ⚠️ А от «LLM щось повернула» ≠ «LLM класифікувала». Доти тут стояло
+        // «навіть малформед: повторний розгляд не допоможе» — і це міркування
+        // хибне рівно в найімовірнішому випадку: вичерпаний ліміт підписки
+        // повертає ЛЮДСЬКИЙ ТЕКСТ з exit 0 (див. llm.ts), тобто не throw. Він
+        // не парсився -> «0 важливих» -> усі листи позначались прочитаними ->
+        // запрошення на співбесіду зникало назавжди (dedupDays=3, а далі й сам
+        // Gmail-запит newer_than:3d його вже не віддасть), і власник не бачив
+        // ані блоку «Пошта», ані попередження. Завтра ліміт відпускає — розгляд
+        // ЩЕ ЯК допоміг би. Тепер обидва випадки (ліміт і малформат) ідуть у
+        // catch: без позначки, з логом, з ретраєм наступного рану.
         const today = ctx.clock.todayKey();
         const nextShown: ShownMail = { ...shown };
         for (const cand of candidates) nextShown[cand.id] = today;

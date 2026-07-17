@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { USAGE_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 import {
   createMailModule,
   buildMailPrompt,
@@ -40,7 +41,7 @@ describe('buildMailPrompt', () => {
 
 describe('parseMailClassification', () => {
   it('парсить масив із прози (important-only -> interview:false, решта undefined)', () => {
-    const m = parseMailClassification('Ось: [{"i":1,"important":true},{"i":2,"important":false}]');
+    const m = parseMailClassification('Ось: [{"i":1,"important":true},{"i":2,"important":false}]')!;
     expect(m.get(1)).toEqual({
       important: true,
       interview: false,
@@ -54,7 +55,7 @@ describe('parseMailClassification', () => {
   it('парсить interview+dateISO+time+title', () => {
     const m = parseMailClassification(
       '[{"i":1,"important":true,"interview":true,"dateISO":"2026-07-14","time":"15:00","title":"Співбесіда — Acme"}]',
-    );
+    )!;
     expect(m.get(1)).toEqual({
       important: true,
       interview: true,
@@ -64,9 +65,16 @@ describe('parseMailClassification', () => {
     });
   });
 
-  it('малформат -> порожня map', () => {
-    expect(parseMailClassification('нема').size).toBe(0);
-    expect(parseMailClassification('[зламано').size).toBe(0);
+  it('малформат -> null (це ЗБІЙ), а валідний [] -> порожня map (це ВІДПОВІДЬ)', () => {
+    // Різниця несуча, а не косметична: null веде в catch (лист не позначається
+    // прочитаним і повернеться завтра), порожня map — це «переглянув, важливого
+    // немає» (позначаємо, бо повторний розгляд лише палив би виклик). Доти обидва
+    // випадки давали порожню map — і збій мовчки ставав відповіддю.
+    expect(parseMailClassification('нема')).toBeNull();
+    expect(parseMailClassification('[зламано')).toBeNull();
+    expect(parseMailClassification('{"i":1}')).toBeNull(); // обʼєкт, не масив
+    expect(parseMailClassification("You've hit your session limit")).toBeNull();
+    expect(parseMailClassification('[]')?.size).toBe(0);
   });
 });
 
@@ -199,7 +207,13 @@ describe('mail module', () => {
     expect(await mod.run(makeCtx())).toBeNull();
   });
 
-  it('малформед LLM-відповідь -> 0 важливих -> null, але дедуп все одно записано', async () => {
+  it('малформед LLM-відповідь -> дедуп НЕ записано (лист повернеться завтра)', async () => {
+    // ⚠️ Цей тест раніше стверджував ПРОТИЛЕЖНЕ: «дедуп все одно записано».
+    // Тобто він пінив баг як норму. Міркування було «раз LLM відповіла, повторний
+    // розгляд не допоможе» — але воно хибне рівно в найімовірнішому випадку:
+    // вичерпаний ліміт підписки повертає людський текст з exit 0, не throw.
+    // Лист позначався прочитаним, випадав із вікна newer_than:3d і зникав
+    // назавжди — мовчки. Завтра ліміт відпускає, і розгляд ЩЕ ЯК допоміг би.
     const fetchImpl = mkFetch(['m1'], {
       m1: { subject: 'Тема', from: 'a@b.com', snippet: 's' },
     });
@@ -208,6 +222,41 @@ describe('mail module', () => {
     const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
     const block = await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }));
     expect(block).toBeNull();
+    expect(state.get('shownMail')).toBeUndefined();
+  });
+
+  it('БУДЬ-ЯКИЙ текст ліміту підписки -> дедуп НЕ записано (найгірший реальний сценарій)', async () => {
+    // Так виглядає вичерпаний ліміт Pro: claude -p друкує це в stdout і виходить
+    // з КОДОМ 0. Раніше цей текст ішов у mail як звичайна відповідь -> «0
+    // важливих» -> усі листи позначені прочитаними -> запрошення на співбесіду
+    // втрачене без сліду (ні блоку «Пошта», ні попередження «⚠️ Система», бо у
+    // failures() теж нічого не писалось).
+    //
+    // Ганяємо ВЕСЬ спільний фікстур-набір, а не один рядок: інакше новий текст
+    // ліміту від Anthropic обійшов би захист мовчки, як і раніше.
+    for (const text of USAGE_LIMIT_TEXTS) {
+      const fetchImpl = mkFetch(['m1'], {
+        m1: { subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
+      });
+      const state = memState();
+      const llm = { complete: vi.fn(async () => text) };
+      const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
+      expect(await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] })), text).toBeNull();
+      expect(state.get('shownMail'), text).toBeUndefined();
+    }
+  });
+
+  it('ВАЛІДНИЙ порожній [] -> дедуп ЗАПИСАНО (це відповідь, а не збій)', async () => {
+    // Межа, заради якої parseMailClassification розрізняє null і порожню Map:
+    // «переглянув, важливого немає» — це повноцінна відповідь, і повторно палити
+    // виклик на ті самі листи не треба.
+    const fetchImpl = mkFetch(['m1'], {
+      m1: { subject: 'Розсилка', from: 'news@shop.com', snippet: 'знижки' },
+    });
+    const state = memState();
+    const llm = { complete: vi.fn(async () => '[]') };
+    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
+    expect(await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }))).toBeNull();
     expect(state.get('shownMail')).toEqual({ m1: '2026-07-01' });
   });
 
