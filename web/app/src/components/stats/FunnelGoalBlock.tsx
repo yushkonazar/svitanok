@@ -1,6 +1,8 @@
 import type { Stats } from '../../api/schema.ts';
 import { clamp, has } from '../../lib/format.ts';
+import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow } from '../ui/primitives.tsx';
+import { CountUp } from '../ui/CountUp.tsx';
 import { Sparkline } from '../charts/Sparkline.tsx';
 import { FUNNEL_SHORT, FUNNEL_STAGES, isTerminal } from '../jobs/stages.ts';
 
@@ -12,6 +14,13 @@ import { FUNNEL_SHORT, FUNNEL_STAGES, isTerminal } from '../jobs/stages.ts';
 // рахує, тож повернути блок можна будь-коли без змін бекенду.
 
 export function FunnelGoalBlock({ s }: { s: Stats }) {
+  // Смуга цілі заповнюється, коли доїхала до екрана — тим самим barFill, що й
+  // смуги навичок у MasteryBlock: вони візуально близнюки, і статична смуга
+  // поруч із анімованою читалась би як «ця чомусь не працює».
+  const [goalRef, goalInView] = useInView<HTMLDivElement>();
+  // Окремий спостерігач на ряд стадій: він вище смуги, і чекати її появи
+  // числам нема чого.
+  const [stagesRef, stagesInView] = useInView<HTMLDivElement>();
   const appliedSum = s.appliedWeekly.reduce((a, w) => a + (w.count || 0), 0);
   const showApplied = s.appliedWeekly.some((w) => w.count > 0);
   const goalPct = has(s.goal.weeklyTarget)
@@ -24,7 +33,7 @@ export function FunnelGoalBlock({ s }: { s: Stats }) {
 
       {/* Лише лінійні стадії: 6 колонок на 375px — каша, та й «де я зараз» не
           про закриті вакансії. Термінальні — рядком нижче. */}
-      <div className="flex gap-2">
+      <div ref={stagesRef} className="flex gap-2">
         {FUNNEL_STAGES.filter((st) => !isTerminal(st.key)).map((st) => {
           const n = s.funnel[st.key] || 0;
           return (
@@ -32,12 +41,12 @@ export function FunnelGoalBlock({ s }: { s: Stats }) {
               key={st.key}
               className="flex-1 rounded-2xl border border-glassb bg-glass px-2 py-3 text-center"
             >
-              <div
-                className="font-mono text-2xl font-medium"
+              <CountUp
+                n={n}
+                play={stagesInView}
+                className="block font-mono text-2xl font-medium"
                 style={{ color: n ? 'var(--color-tx)' : 'var(--color-tx3)' }}
-              >
-                {n}
-              </div>
+              />
               <div className="text-[9.5px] font-medium text-tx2">{FUNNEL_SHORT[st.key]}</div>
             </div>
           );
@@ -91,10 +100,15 @@ export function FunnelGoalBlock({ s }: { s: Stats }) {
               label="Тижневі відгуки (ціль)"
               value={`${s.goal.weeklyApplied || 0} / ${s.goal.weeklyTarget}`}
             />
-            <div className="h-2 overflow-hidden rounded-full bg-track">
+            <div ref={goalRef} className="h-2 overflow-hidden rounded-full bg-track">
               <div
                 className="h-full rounded-full"
-                style={{ width: `${goalPct}%`, background: 'linear-gradient(90deg,var(--color-a1),var(--color-a2))' }}
+                style={{
+                  width: `${goalPct}%`,
+                  background: 'linear-gradient(90deg,var(--color-a1),var(--color-a2))',
+                  animation: 'barFill .8s cubic-bezier(.22,1,.36,1) backwards',
+                  animationPlayState: goalInView ? 'running' : 'paused',
+                }}
               />
             </div>
           </>

@@ -27,7 +27,7 @@ export function Segmented<T extends string>({
             aria-pressed={on}
             onClick={() => onChange(s.id)}
             className={`flex-1 rounded-[11px] py-[9px] text-center text-[12.5px] transition-all duration-200 ${
-              on ? 'font-bold' : 'font-semibold text-tx2'
+              on ? 'sheen font-bold' : 'font-semibold text-tx2'
             }`}
             style={on ? { background: 'var(--grad)', color: 'var(--color-onacc)' } : undefined}
           >

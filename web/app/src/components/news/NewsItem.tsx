@@ -49,7 +49,14 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
         borderColor: on ? onBrd : 'var(--color-glassb)',
       }}
     >
-      {label}
+      {/* key={String(on)} — ремоунт емодзі перезапускає pop на КОЖЕН тап. Без
+          нього анімація програлась би раз при монтуванні й більше ніколи: CSS
+          не рестартує кадри на зміну класу, лише на появу елемента.
+          Сам pop лежав у index.css написаний і НЕ ВИКОРИСТАНИЙ ніде — тап у
+          серце (головний жест вкладки) досі просто міняв колір. */}
+      <span key={String(on)} className="block" style={{ animation: 'pop .28s cubic-bezier(.22,1,.36,1)' }}>
+        {label}
+      </span>
     </button>
   );
 

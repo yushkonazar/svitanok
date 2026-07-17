@@ -66,7 +66,7 @@ export function Chip({
         haptic('light');
         onClick();
       }}
-      className="rounded-full px-[13px] py-2 text-xs transition-colors"
+      className={`rounded-full px-[13px] py-2 text-xs transition-colors${active ? ' sheen' : ''}`}
       style={
         active
           ? { background: 'var(--grad)', color: 'var(--color-onacc)', fontWeight: 700 }

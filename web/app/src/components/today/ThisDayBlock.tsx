@@ -3,6 +3,7 @@ import type { OnThisDayData } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
 import { openLink } from '../../telegram.ts';
 import { SectionLabel } from '../ui/primitives.tsx';
+import { cascade } from '../ui/Cascade.tsx';
 
 // 📜 У цей день (дизайн v2, Svitanok.dc.html): рік великим моно праворуч-
 // вирівняно + текст; перший рік акцентований. Спершу 3, «Показати ще» розкриває
@@ -26,8 +27,16 @@ export function ThisDayBlock({ d }: { d: OnThisDayData }) {
         </span>
       </div>
 
+      {/* Розкриті рядки (i >= INITIAL) рахують затримку від нуля — «Показати ще»
+          грає власний каскад одразу, а не досиджує хвіст за першими трьома.
+          Стилі перших трьох при цьому НЕ міняються (рядок той самий) — рестарту
+          їхньої анімації немає. */}
       {shown.map((e, i) => (
-        <div key={`${e.year}-${i}`} className="flex items-baseline gap-3">
+        <div
+          key={`${e.year}-${i}`}
+          className="flex items-baseline gap-3"
+          style={cascade(i >= INITIAL ? i - INITIAL : i, 45, 6)}
+        >
           <span
             className="w-16 flex-none text-right font-mono text-[22px] font-bold tracking-[-0.03em]"
             style={{ color: i === 0 ? 'var(--color-a2)' : 'var(--color-tx3)' }}

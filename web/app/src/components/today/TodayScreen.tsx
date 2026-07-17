@@ -10,6 +10,7 @@ import {
 } from '../../api/briefing-schema.ts';
 import { shortDateFromIso } from '../../lib/dateLabel.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { cascade } from '../ui/Cascade.tsx';
 import { WeatherBlock } from './WeatherBlock.tsx';
 import { CurrencyBlock } from './CurrencyBlock.tsx';
 import { QuestionBlock } from './QuestionBlock.tsx';
@@ -21,7 +22,9 @@ import { ThisDayBlock } from './ThisDayBlock.tsx';
 // факт → думка → у цей день. Секції течуть одна за одною (без карток), розділені
 // вертикальним ритмом 18px — як у макеті.
 
-/** Роздільник-«горизонт»: дві волосінки з градієнтною крапкою-сонцем. */
+/** Роздільник-«горизонт»: дві волосінки з градієнтною крапкою-сонцем.
+ *  Крапка дихає гало (haloPulse) — розрахунок видимості в index.css біля
+ *  кадру: анімується окремий шар 14px+blur, бо сама крапка 8px замала. */
 function HorizonDivider() {
   return (
     <div className="flex items-center gap-2.5" aria-hidden="true">
@@ -29,10 +32,20 @@ function HorizonDivider() {
         className="h-px flex-1"
         style={{ background: 'linear-gradient(90deg,transparent,rgba(255,164,92,.4))' }}
       />
-      <div
-        className="h-2 w-2 rounded-full"
-        style={{ background: 'var(--grad)', boxShadow: '0 0 12px rgba(255,140,100,.7)' }}
-      />
+      <div className="relative grid place-items-center">
+        <span
+          className="absolute h-3.5 w-3.5 rounded-full"
+          style={{
+            background: 'rgba(255,140,100,.65)',
+            filter: 'blur(5px)',
+            animation: 'haloPulse 3.8s ease-in-out infinite',
+          }}
+        />
+        <div
+          className="relative h-2 w-2 rounded-full"
+          style={{ background: 'var(--grad)', boxShadow: '0 0 12px rgba(255,140,100,.7)' }}
+        />
+      </div>
       <div
         className="h-px flex-1"
         style={{ background: 'linear-gradient(90deg,rgba(255,110,122,.4),transparent)' }}
@@ -62,19 +75,33 @@ export function TodayScreen() {
   const stoic = readBlock(blocks, 'stoic', stoicDataSchema);
   const onthisday = readBlock(blocks, 'onthisday', onThisDayDataSchema);
 
+  // Блок рендериться, лише якщо модуль дав дані: з F2 власник може вимкнути
+  // погоду/курс у налаштуваннях, і тоді блока в брифінгу немає взагалі.
+  // Неохоронений CurrencyBlock показував би «курс недоступний» — тобто збій
+  // там, де насправді свідомо вимкнено. Роздільник — лише МІЖ блоками.
+  // Масив (а не JSX-умови в розмітці) — щоб каскад рахував затримку за
+  // ФАКТИЧНОЮ позицією секції: з вимкненою погодою курс має йти першим і без
+  // затримки, а не чекати слот неіснуючого сусіда.
+  const sections: Array<{ key: string; node: React.ReactNode }> = [];
+  if (weather) sections.push({ key: 'weather', node: <WeatherBlock locations={weather.locations} /> });
+  if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
+  if (currency)
+    sections.push({
+      key: 'currency',
+      node: <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />,
+    });
+  if (mock) sections.push({ key: 'mock', node: <QuestionBlock d={mock} /> });
+  if (fact) sections.push({ key: 'fact', node: <FactBlock d={fact} /> });
+  if (stoic) sections.push({ key: 'stoic', node: <QuoteBlock d={stoic} /> });
+  if (onthisday) sections.push({ key: 'onthisday', node: <ThisDayBlock d={onthisday} /> });
+
   return (
     <div className="flex flex-col gap-[18px]">
-      {weather && <WeatherBlock locations={weather.locations} />}
-      {/* Блок рендериться, лише якщо модуль дав дані: з F2 власник може вимкнути
-          погоду/курс у налаштуваннях, і тоді блока в брифінгу немає взагалі.
-          Неохоронений CurrencyBlock показував би «курс недоступний» — тобто збій
-          там, де насправді свідомо вимкнено. Роздільник — лише МІЖ блоками. */}
-      {weather && currency && <HorizonDivider />}
-      {currency && <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />}
-      {mock && <QuestionBlock d={mock} />}
-      {fact && <FactBlock d={fact} />}
-      {stoic && <QuoteBlock d={stoic} />}
-      {onthisday && <ThisDayBlock d={onthisday} />}
+      {sections.map((s, i) => (
+        <div key={s.key} style={cascade(i, 55, 6)}>
+          {s.node}
+        </div>
+      ))}
     </div>
   );
 }

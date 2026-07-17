@@ -1,4 +1,5 @@
 import type { Stats } from '../../api/schema.ts';
+import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 
 // Статистика чек-іну (фідбек власника, п.7: «статистику і тижневий розбір у
@@ -15,6 +16,8 @@ const FMT = (v: number | null, suffix = '') => (v === null ? '—' : `${v}${suff
 
 /** Мінімальна спарклайн-крива. Нулі-дірки НЕ малюємо — вони не нулі, а «немає». */
 function Spark({ points, lo, hi }: { points: Array<number | null>; lo: number; hi: number }) {
+  // Хук ДО раннього return — порядок хуків мусить бути сталим між рендерами.
+  const [ref, inView] = useInView<SVGSVGElement>();
   const vals = points.filter((v): v is number => v !== null);
   if (vals.length < 2) return null;
   const W = 100;
@@ -37,9 +40,33 @@ function Spark({ points, lo, hi }: { points: Array<number | null>; lo: number; h
   if (!segs.length) return null;
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" aria-hidden="true">
+    <svg
+      ref={ref}
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height={H}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
       {segs.map((d, i) => (
-        <path key={i} d={d} fill="none" stroke="var(--color-a2)" strokeWidth="1.5" strokeLinecap="round" />
+        // pathLength="1" — щоб CSS міг намалювати відрізок від початку до кінця,
+        // не знаючи його довжини в пікселях. Сегменти йдуть один за одним, бо
+        // саме розриви (пропущені дні) тут несуть сенс — хай їх буде видно.
+        <path
+          key={i}
+          d={d}
+          pathLength="1"
+          fill="none"
+          stroke="var(--color-a2)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeDasharray="1"
+          strokeDashoffset="0"
+          style={{
+            animation: `lineDraw .7s cubic-bezier(.4,0,.2,1) ${i * 120}ms backwards`,
+            animationPlayState: inView ? 'running' : 'paused',
+          }}
+        />
       ))}
     </svg>
   );

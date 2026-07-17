@@ -1,4 +1,6 @@
 import { FUNNEL_SHORT, FUNNEL_STAGES, isTerminal, type FunnelStage } from './stages.ts';
+import { useInView } from '../../lib/useInView.ts';
+import { CountUp } from '../ui/CountUp.tsx';
 
 // Воронка (дизайн v2, Svitanok.dc.html): одна скляна смуга — стадії з великими
 // моно-лічильниками. Нульовий «Офер» приглушений, як у макеті.
@@ -9,21 +11,24 @@ import { FUNNEL_SHORT, FUNNEL_STAGES, isTerminal, type FunnelStage } from './sta
 // окремим приглушеним рядком і лише коли справді є.
 
 export function FunnelWidget({ counts }: { counts: Record<FunnelStage, number> }) {
+  // Лічильники набігають від нуля при відкритті вкладки (віджет угорі, тож
+  // useInView тут — про запас, для консистентності з рештою «оживлених» чисел).
+  const [ref, inView] = useInView<HTMLDivElement>();
   const closed = (counts.rejected || 0) + (counts.failed || 0);
 
   return (
-    <div className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass px-1.5 py-3.5">
+    <div ref={ref} className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass px-1.5 py-3.5">
       <div className="flex items-stretch">
         {FUNNEL_STAGES.filter((s) => !isTerminal(s.key)).map((s) => {
           const n = counts[s.key] || 0;
           return (
             <div key={s.key} className="flex flex-1 flex-col items-center gap-0.5">
-              <span
+              <CountUp
+                n={n}
+                play={inView}
                 className="font-mono text-[26px] font-medium"
                 style={{ color: n ? 'var(--color-tx)' : 'var(--color-tx3)' }}
-              >
-                {n}
-              </span>
+              />
               <span className="text-[9.5px] font-medium text-tx2">{FUNNEL_SHORT[s.key]}</span>
             </div>
           );
