@@ -31,8 +31,15 @@ export function Donut({ pct, size = 64 }: { pct: number; size?: number }) {
         strokeWidth="7"
         strokeLinecap="round"
         strokeDasharray={C.toFixed(1)}
+        // ПРАВДА — тут, у DOM. Анімація нижче лише додає, звідки приїхати, тож
+        // якщо вона не програється (reduced-motion, фонова вкладка) — дуга вже
+        // на місці, а не порожня.
         strokeDashoffset={offset.toFixed(1)}
         transform="rotate(-90 32 32)"
+        style={{
+          animation: 'donutDraw .9s cubic-bezier(.22,1,.36,1)',
+          ['--donut-c' as string]: C.toFixed(1),
+        }}
       />
       <text
         x="32"

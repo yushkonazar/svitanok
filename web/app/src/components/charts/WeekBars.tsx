@@ -23,6 +23,9 @@ export function WeekBars({ days }: { days: WeeklyDay[] }) {
                 height: h,
                 borderRadius: '6px 6px 3px 3px',
                 background: v > 0 ? 'linear-gradient(180deg,var(--color-a2),var(--color-a1))' : 'var(--color-track)',
+                // Сходинка 45мс: хвиля зліва направо читається як плин тижня —
+                // Пн росте перший. Разом вони б просто «стрибнули».
+                animation: `barGrow .5s cubic-bezier(.22,1,.36,1) ${i * 45}ms backwards`,
               }}
             />
             <span className="font-mono text-[9px] font-medium text-tx3">{d.day}</span>

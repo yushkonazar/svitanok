@@ -39,7 +39,21 @@ function Spark({ points, lo, hi }: { points: Array<number | null>; lo: number; h
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" aria-hidden="true">
       {segs.map((d, i) => (
-        <path key={i} d={d} fill="none" stroke="var(--color-a2)" strokeWidth="1.5" strokeLinecap="round" />
+        // pathLength="1" — щоб CSS міг намалювати відрізок від початку до кінця,
+        // не знаючи його довжини в пікселях. Сегменти йдуть один за одним, бо
+        // саме розриви (пропущені дні) тут несуть сенс — хай їх буде видно.
+        <path
+          key={i}
+          d={d}
+          pathLength="1"
+          fill="none"
+          stroke="var(--color-a2)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeDasharray="1"
+          strokeDashoffset="0"
+          style={{ animation: `lineDraw .7s cubic-bezier(.4,0,.2,1) ${i * 120}ms backwards` }}
+        />
       ))}
     </svg>
   );

@@ -39,9 +39,34 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
           <stop offset="1" stopColor="rgba(255,138,110,0)" />
         </linearGradient>
       </defs>
-      <path d={area} fill={`url(#${fillId})`} />
-      <path d={line} fill="none" stroke={`url(#${lineId})`} strokeWidth="2.5" strokeLinecap="round" />
-      <circle cx={last.x.toFixed(0)} cy={last.y.toFixed(0)} r="3.5" fill="#FF6E7A" stroke="var(--color-bg)" strokeWidth="2" />
+      {/* Заливка проявляється, поки лінія малюється — інакше вона стояла б
+          готовою під олівцем, що ще їде. */}
+      <path d={area} fill={`url(#${fillId})`} style={{ animation: 'fadeInSoft .9s ease-out' }} />
+      {/* pathLength="1" нормалізує довжину шляху в одиницю — без цього CSS не
+          знає, скільки там пікселів, і намалювати лінію «від початку до кінця»
+          нічим. dashoffset у DOM = 0, тобто лінія намальована; кадр лише каже,
+          звідки приїхати. */}
+      <path
+        d={line}
+        pathLength="1"
+        fill="none"
+        stroke={`url(#${lineId})`}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray="1"
+        strokeDashoffset="0"
+        style={{ animation: 'lineDraw .9s cubic-bezier(.4,0,.2,1)' }}
+      />
+      {/* Крапка «сьогодні» зʼявляється, коли лінія до неї доїхала. */}
+      <circle
+        cx={last.x.toFixed(0)}
+        cy={last.y.toFixed(0)}
+        r="3.5"
+        fill="#FF6E7A"
+        stroke="var(--color-bg)"
+        strokeWidth="2"
+        style={{ animation: 'pop .3s cubic-bezier(.22,1,.36,1) .8s backwards, fadeInSoft .3s ease-out .8s backwards' }}
+      />
     </svg>
   );
 }
