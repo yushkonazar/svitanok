@@ -38,6 +38,38 @@ function sampleHeatmap(): HeatmapCell[] {
   return out;
 }
 
+/** ЛОКАЛЬНА дата -> 'YYYY-MM-DD'. toISOString дав би UTC і зсував демо на добу. */
+const dayKey = (dt: Date) =>
+  `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+
+/** Демо-ряд чек-іну: 14 діб із дірками — саме так це й виглядає в житті. */
+function sampleCheckinSeries() {
+  const out: Array<{
+    d: string;
+    sleepH: number | null;
+    energy: number | null;
+    dayScore: number | null;
+    slots: number;
+  }> = [];
+  const d = new Date();
+  d.setDate(d.getDate() - 13);
+  const sleep = [6.5, 7.5, 5.5, 8.5, 6.5, 7.5, 7.5, 5.5, 6.5, 8.5, 7.5, 6.5, 7.5, 6.5];
+  for (let i = 0; i < 14; i++) {
+    // Кожен 5-й день пропущений — щоб було видно, що дірки це норма, а не збій.
+    if (i % 5 !== 4) {
+      out.push({
+        d: dayKey(d),
+        sleepH: sleep[i]!,
+        energy: Math.round((sleep[i]! - 3) * 10) / 10,
+        dayScore: i % 3 === 0 ? 4 : 3,
+        slots: i % 4 === 0 ? 3 : 1,
+      });
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
 export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
   timeToOpenMin: 23,
@@ -183,6 +215,24 @@ export const SAMPLE_STATS: Stats = {
       { topic: 'Політика', series: [0, 1, 1, 0, 2, 1] },
     ],
   },
+  // Чек-ін: демо стоїть у ранковому блоці з частковою відповіддю — так одразу
+  // видно всі три стани (заповнюваний / замкнені) і гідратацію з сервера.
+  checkinSlot: 'morning',
+  checkinToday: { morning: { sleepH: 6.5 } },
+  checkinSeries: sampleCheckinSeries(),
+  checkinWeekly: [
+    { week: '', n: 5, sleepAvg: 6.4, energyAvg: 3.1, dayScoreAvg: 3.4 },
+    { week: '', n: 6, sleepAvg: 7.1, energyAvg: 3.6, dayScoreAvg: 3.8 },
+  ],
+  checkinFill: { morning: 18, afternoon: 11, evening: 7, days: 30 },
+  planVsFact: [
+    { d: '2026-07-14', planned: 3, actual: 1 },
+    { d: '2026-07-15', planned: 2, actual: 2 },
+    { d: '2026-07-16', planned: 3, actual: 0 },
+  ],
+  // ready:false — демо показує саме ГЕЙТ: поки в кошиках мало днів, цифр немає
+  // свідомо (кореляція на малій вибірці бреше впевнено).
+  sleepVsApplied: { ready: false, needed: 8, low: 4, ok: 6 },
 };
 
 /**
@@ -212,6 +262,14 @@ export const EMPTY_STATS: Stats = {
   votes: {},
   mockRated: {},
   mockMaterials: {},
+  // Порожньо = перший день: блок відкритий, але жодної відповіді ще немає.
+  checkinSlot: 'morning',
+  checkinToday: null,
+  checkinSeries: [],
+  checkinWeekly: [],
+  checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
+  planVsFact: [],
+  sleepVsApplied: { ready: false, needed: 8, low: 0, ok: 0 },
 };
 
 /**

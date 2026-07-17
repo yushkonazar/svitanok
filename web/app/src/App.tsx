@@ -12,6 +12,7 @@ import { NewsScreen } from './components/news/NewsScreen.tsx';
 import { JobsScreen } from './components/jobs/JobsScreen.tsx';
 import { SettingsScreen } from './components/settings/SettingsScreen.tsx';
 import { SavedScreen } from './components/saved/SavedScreen.tsx';
+import { CheckinScreen } from './components/checkin/CheckinScreen.tsx';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
@@ -22,10 +23,16 @@ import { SavedScreen } from './components/saved/SavedScreen.tsx';
 // повноекранний режим із власним хедером і без таб-бара (пʼятий таб роздув би
 // пігулку, а заходять туди зрідка).
 
+// ⚠️ Пʼять табів — СТЕЛЯ. Поміряно рендером у найгіршому випадку (активна
+// «Статистика», найдовший підпис): пігулка 317px. Вона живе у fixed inset-x-0,
+// тобто міряється проти ширини екрана: на 390px запас 73px, на вузькому 360px —
+// 43px, на 320px лишається 3px. Шостого таба не буде — наступний екран робити
+// повноекранним маршрутом (як /saved), а не табом.
 const TABS = [
   { id: 'today', path: '/', label: 'Сьогодні' },
   { id: 'news', path: '/news', label: 'Новини' },
   { id: 'jobs', path: '/jobs', label: 'Вакансії' },
+  { id: 'checkin', path: '/checkin', label: 'Чек-ін' },
   { id: 'stats', path: '/stats', label: 'Статистика' },
 ] as const;
 
@@ -73,6 +80,14 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
       <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
         <rect x="3" y="7" width="18" height="13" rx="2.5" />
         <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
+      </svg>
+    );
+  if (id === 'checkin')
+    return (
+      // Календар із галочкою: чек-ін — це «відмітився за сьогодні».
+      <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
+        <rect x="3" y="4.5" width="18" height="16.5" rx="2.5" />
+        <path d="M8 2.5v4M16 2.5v4M8.5 13.5l2.5 2.5 4.5-4.5" />
       </svg>
     );
   return (
@@ -278,6 +293,8 @@ export function App() {
             <NewsScreen />
           ) : active.id === 'jobs' ? (
             <JobsScreen />
+          ) : active.id === 'checkin' ? (
+            <CheckinScreen />
           ) : (
             <StatsScreen />
           )}

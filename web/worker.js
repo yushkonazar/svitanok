@@ -7,7 +7,14 @@
 // X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
-import { recordEvent, aggregateStats, recordReliability, pageSaved } from './stats-core.mjs';
+import {
+  recordEvent,
+  aggregateStats,
+  recordReliability,
+  pageSaved,
+  checkinSlot,
+  checkinDateKey,
+} from './stats-core.mjs';
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
@@ -497,7 +504,22 @@ async function applyEvent(env, body) {
   }
 
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
-  const stats = recordEvent(await loadStats(env), body, kyivDateKey(), nowMin);
+
+  let ev = body;
+  let dateKey = kyivDateKey();
+  if (body.type === 'checkin') {
+    // Слот і добу визначає СЕРВЕР, а не клієнт: інакше «ранковий» чек-ін можна
+    // надіслати опівночі, перевівши годинник на телефоні. Клієнтський body.slot
+    // ігноруємо свідомо — він тут лише підказка для UI.
+    const h = kyivHour();
+    const slot = checkinSlot(h);
+    // Тиха зона (02:00–07:59) — жоден блок не відкритий, писати нічого.
+    if (!slot) return;
+    ev = { ...body, slot };
+    dateKey = checkinDateKey(dateKey, h);
+  }
+
+  const stats = recordEvent(await loadStats(env), ev, dateKey, nowMin);
   await env.BRIEFING.put('stats', JSON.stringify(stats));
 }
 
@@ -645,6 +667,10 @@ async function handleStats(request, env) {
       .filter(([, v]) => v && v.dir === 'up')
       .map(([url, v]) => [url, v.dir]),
   );
+  // Активний блок чек-іну — рахує СЕРВЕР (клієнтському годиннику не віримо:
+  // інакше «ранковий» блок відкривався б опівночі). Не в aggregateStats, бо той
+  // чистий і години не знає; тут же — щоб клієнт не мав власної копії меж.
+  stats.checkinSlot = checkinSlot(kyivHour());
   return json(stats);
 }
 
