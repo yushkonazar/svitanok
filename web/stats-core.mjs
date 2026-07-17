@@ -16,6 +16,7 @@
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
 //   appliedLog:[ { url, ts, fit? } ]                         // подачі (дедуп по url) — лічильник тижня + fit
 //   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
+//   checkins:  { 'YYYY-MM-DD': { morning?, afternoon?, evening? } }  // чек-ін (кап 365)
 
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 
@@ -54,6 +55,117 @@ const GOAL_MAX = 10;
 const GOAL_DEFAULT = 5;
 const clampGoal = (v) => Math.min(GOAL_MAX, Math.max(GOAL_MIN, v));
 
+/* ── Чек-ін (фідбек власника, п.7) ─────────────────────────────────────────
+   Три блоки за часом доби. Межі — рішення власника: 08:00 / 14:00 / 20:00.
+   Вечір перетинає північ (20:00–02:00), 02:00–08:00 — тиха зона, коли не
+   відкритий жоден блок.
+
+   Питання закриті (число або перелік) свідомо: вільний текст неможливо
+   порівняти з учора, а вся цінність чек-іну — у порівнянні. Найсильніші два —
+   `planApply` (скільки подач планую) і `kept` (чи зробив): це єдині відповіді,
+   які застосунок може ПЕРЕВІРИТИ проти appliedLog, а не лише записати. */
+
+export const CHECKIN_SLOTS = ['morning', 'afternoon', 'evening'];
+
+/** Година (київська), з якої блок відкритий. Кінець = початок наступного. */
+export const CHECKIN_FROM = { morning: 8, afternoon: 14, evening: 20 };
+
+/** Скільки діб тримаємо чек-іни. Як HISTORY_CAP — блоб не має рости роками. */
+const CHECKIN_CAP = 365;
+
+/**
+ * Опис полів блоку — він же валідатор.
+ * `num: [min, max]` — число в межах; `int` — ще й ціле; `enum` — закритий перелік.
+ */
+const CHECKIN_FIELDS = {
+  morning: {
+    sleepH: { num: [0, 14] },
+    energy: { num: [1, 5], int: true },
+    plan: { enum: ['apply', 'learn', 'interview', 'rest'] },
+    planApply: { num: [0, 20], int: true },
+  },
+  afternoon: {
+    pace: { enum: ['on', 'off', 'better'] },
+    energy: { num: [1, 5], int: true },
+    ate: { enum: ['apply', 'learn', 'interview', 'chores', 'procrast'] },
+  },
+  evening: {
+    dayScore: { num: [1, 5], int: true },
+    kept: { enum: ['yes', 'partly', 'no'] },
+    energy: { num: [1, 5], int: true },
+    blocker: { enum: ['tired', 'anxious', 'stuck', 'external', 'none'] },
+  },
+};
+
+/**
+ * Активний блок за КИЇВСЬКОЮ годиною, або null у тиху зону (02:00–07:59).
+ *
+ * ⚠️ Рахує сервер, не клієнт. Інакше «ранковий» чек-ін можна надіслати опівночі,
+ * перевівши годинник на телефоні, — і дані стануть художнім твором.
+ */
+export function checkinSlot(hour) {
+  // Суворо number, без Number(): Number(null) === 0, а нуль — ВАЛІДНА година,
+  // яка падає рівно у вечірнє вікно (h < 2). Тобто м'яке приведення робило б із
+  // null/''/[] «вечір» — та сама пастка, що колись ставила goal=1 на будь-яке
+  // сміття в set_goal.
+  if (typeof hour !== 'number' || !Number.isFinite(hour)) return null;
+  const h = Math.floor(hour);
+  if (h < 0 || h > 23) return null;
+  if (h >= CHECKIN_FROM.morning && h < CHECKIN_FROM.afternoon) return 'morning';
+  if (h >= CHECKIN_FROM.afternoon && h < CHECKIN_FROM.evening) return 'afternoon';
+  if (h >= CHECKIN_FROM.evening || h < 2) return 'evening';
+  return null;
+}
+
+/**
+ * Доба, якій НАЛЕЖИТЬ чек-ін, за київською годиною й датою «зараз».
+ *
+ * ⚠️ Не те саме, що kyivDateKey. Вечір іде до 02:00, а о 00:30 календарна дата
+ * вже нова — вечірній чек-ін ліг би на добу, яка щойно почалась, і зіпсував би
+ * обидві: у вчорашньої зник би вечір, у сьогоднішньої зʼявився б вечір раніше за
+ * ранок. Тому ніч до 6-ї віддаємо попередній добі.
+ */
+export function checkinDateKey(kyivDate, hour) {
+  if (!isDateKey(kyivDate)) return kyivDate;
+  // Суворо number — інакше Number(null)===0 зсунув би дату на вчора «просто так».
+  // Сумнів завжди на користь НЕ зсувати: зсунути помилково гірше, ніж не зсунути.
+  if (typeof hour !== 'number' || !Number.isFinite(hour)) return kyivDate;
+  const h = Math.floor(hour);
+  if (h >= 6) return kyivDate;
+  const d = new Date(kyivDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Лишити тільки валідні поля блоку. Невідоме/биле ІГНОРУЄМО, а не видаляємо. */
+function cleanCheckin(slot, ev) {
+  const spec = CHECKIN_FIELDS[slot];
+  if (!spec) return null;
+  const out = {};
+  for (const [k, rule] of Object.entries(spec)) {
+    const v = ev[k];
+    if (v === undefined || v === null) continue;
+    if (rule.enum) {
+      if (rule.enum.includes(v)) out[k] = v;
+      continue;
+    }
+    // typeof, а не Number(): Number(null)===0 і Number('')===0 тихо
+    // перетворили б «нічого» на валідну відповідь.
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    if (rule.int && !Number.isInteger(v)) continue;
+    const [lo, hi] = rule.num;
+    if (v < lo || v > hi) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/** Кап чек-інів: лишаємо останні CHECKIN_CAP діб (ключі сортуються лексично). */
+function capCheckins(s) {
+  const keys = Object.keys(s.checkins).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - CHECKIN_CAP))) delete s.checkins[k];
+}
+
 export function emptyStore() {
   return {
     days: {},
@@ -69,6 +181,7 @@ export function emptyStore() {
     opensMin: [],
     appliedLog: [],
     reliability: { onTime: 0, total: 0, deadman: 0 },
+    checkins: {},
   };
 }
 
@@ -100,6 +213,7 @@ export function normalize(s) {
         ? { lastCheckDate: s.reliability.lastCheckDate }
         : {}),
     },
+    checkins: s.checkins && typeof s.checkins === 'object' ? s.checkins : e.checkins,
   };
 }
 
@@ -310,6 +424,21 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       }
       break;
     }
+    case 'checkin': {
+      // Слот і дату рахує ВОРКЕР (див. checkinSlot/checkinDateKey) — сюди вони
+      // вже приходять готовими в ev.slot і dateKey.
+      const clean = cleanCheckin(ev.slot, ev);
+      // Невідомий слот або жодного валідного поля -> тихо нічого. М'який ігнор,
+      // як у mock_answer, а НЕ як у job_stage (там невідоме значення означає
+      // «видалити» — для чек-іну це знищувало б добу).
+      if (!clean || !Object.keys(clean).length) break;
+      if (!s.checkins[dateKey] || typeof s.checkins[dateKey] !== 'object') s.checkins[dateKey] = {};
+      // Мерджимо, а не замінюємо: клієнт шле блок дебаунсом, і часткова відповідь
+      // не має стирати те, що вже відповіли раніше в цьому ж блоці.
+      s.checkins[dateKey][ev.slot] = { ...s.checkins[dateKey][ev.slot], ...clean };
+      capCheckins(s);
+      break;
+    }
     // 'step_done' прибрано (D4, «Крок до офера»); старі days[].step у KV просто
     // ігноруються (без міграції).
     default:
@@ -412,6 +541,137 @@ function lastWeekStarts(todayKey, n) {
     d.setUTCDate(d.getUTCDate() + 7);
   }
   return out;
+}
+
+/* ── Агрегація чек-іну ─────────────────────────────────────────────────────
+   ⚠️ ГОЛОВНИЙ РИЗИК ЦІЄЇ ФІЧІ — вона вміє впевнено брехати. «У дні, коли ти спав
+   менше 6 годин, подач удвічі менше» звучить як висновок, а на третьому тижні це
+   три точки проти чотирьох — шум у краватці. І така брехня ВИГЛЯДАЄ як аналітика,
+   тобто підштовхує до рішень.
+
+   Тому кореляції гейтяться: жодного порівняння, поки в КОЖНОМУ кошику менше
+   CORR_MIN_N днів. Доти віддаємо лише сирі ряди, які нічого не стверджують.
+   Це коштує ~2 місяці мовчання на старті — чесна ціна. */
+
+const CORR_MIN_N = 8;
+
+const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
+
+/** Ряд «сон / енергія / оцінка дня» за останні N діб (лише заповнені). */
+function buildCheckinSeries(checkins, todayKey, days = 30) {
+  const out = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = d.toISOString().slice(0, 10);
+    const c = checkins[key];
+    if (c) {
+      // Енергія — до трьох точок за добу; це і є крива, а не крапка.
+      const en = CHECKIN_SLOTS.map((sl) => c[sl]?.energy).filter((v) => typeof v === 'number');
+      out.push({
+        d: key,
+        sleepH: typeof c.morning?.sleepH === 'number' ? c.morning.sleepH : null,
+        energy: round1(avg(en)),
+        dayScore: typeof c.evening?.dayScore === 'number' ? c.evening.dayScore : null,
+        slots: CHECKIN_SLOTS.filter((sl) => c[sl] && Object.keys(c[sl]).length).length,
+      });
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/**
+ * Явка по блоках за останні N діб. Самі пропуски — теж сигнал: ранок заповнений
+ * 25 разів, а вечір 4 — це вже висновок, і чесніший за будь-яку кореляцію.
+ */
+function buildCheckinFill(checkins, todayKey, days = 30) {
+  const fill = { morning: 0, afternoon: 0, evening: 0 };
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[d.toISOString().slice(0, 10)];
+    if (c) for (const sl of CHECKIN_SLOTS) if (c[sl] && Object.keys(c[sl]).length) fill[sl]++;
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return { ...fill, days };
+}
+
+/**
+ * Намір проти факту: скільки подач планував уранці — і скільки їх реально було
+ * (за appliedLog, а не за словами). Єдина відповідь, яку застосунок ПЕРЕВІРЯЄ.
+ */
+function buildPlanVsFact(checkins, appliedLog, todayKey, days = 30) {
+  const byDay = {};
+  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
+
+  const rows = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = d.toISOString().slice(0, 10);
+    const planned = checkins[key]?.morning?.planApply;
+    if (typeof planned === 'number') rows.push({ d: key, planned, actual: byDay[key] || 0 });
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return rows;
+}
+
+/**
+ * Сон проти подач — ДВА кошики (мало спав / виспався), і лише якщо в кожному
+ * набралось CORR_MIN_N днів. Інакше null: краще нічого, ніж вигадка.
+ */
+function buildSleepVsApplied(checkins, appliedLog, todayKey, days = 60) {
+  const byDay = {};
+  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
+
+  const low = [];
+  const ok = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = d.toISOString().slice(0, 10);
+    const sleep = checkins[key]?.morning?.sleepH;
+    if (typeof sleep === 'number') (sleep < 6.5 ? low : ok).push(byDay[key] || 0);
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  if (low.length < CORR_MIN_N || ok.length < CORR_MIN_N) {
+    return { ready: false, needed: CORR_MIN_N, low: low.length, ok: ok.length };
+  }
+  return {
+    ready: true,
+    needed: CORR_MIN_N,
+    low: low.length,
+    ok: ok.length,
+    lowAvg: round1(avg(low)),
+    okAvg: round1(avg(ok)),
+  };
+}
+
+/** Чек-ін по тижнях: середні сон / енергія / оцінка дня + скільки діб заповнено. */
+function buildCheckinWeekly(checkins, todayKey, weeks = 8) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const buckets = {};
+  for (const w of starts) buckets[w] = { sleep: [], energy: [], score: [], n: 0 };
+  for (const [key, c] of Object.entries(checkins)) {
+    if (!isDateKey(key)) continue;
+    const w = weekStartKey(key);
+    const b = buckets[w];
+    if (!b) continue;
+    b.n++;
+    if (typeof c.morning?.sleepH === 'number') b.sleep.push(c.morning.sleepH);
+    if (typeof c.evening?.dayScore === 'number') b.score.push(c.evening.dayScore);
+    const en = CHECKIN_SLOTS.map((sl) => c[sl]?.energy).filter((v) => typeof v === 'number');
+    if (en.length) b.energy.push(avg(en));
+  }
+  return starts.map((w) => ({
+    week: w,
+    n: buckets[w].n,
+    sleepAvg: round1(avg(buckets[w].sleep)),
+    energyAvg: round1(avg(buckets[w].energy)),
+    dayScoreAvg: round1(avg(buckets[w].score)),
+  }));
 }
 
 /** Подачі по тижнях (останні 8, нульові тижні присутні; поточний — частковий). */
@@ -627,5 +887,14 @@ export function aggregateStats(store, todayKey) {
     // F4: які саме питання оцінено — щоб картка пережила перезавантаження
     // (доти обраний варіант жив лише в стані сесії й після F5 зникав).
     mockRated: s.mockRated,
+    // Чек-ін (п.7). checkinToday — щоб екран гідратувався після перезаходу й не
+    // питав удруге те, на що вже відповіли. Активний слот сюди НЕ кладемо: він
+    // залежить від години, а /api/stats кешується — його додає worker.js.
+    checkinToday: s.checkins[todayKey] ?? null,
+    checkinSeries: buildCheckinSeries(s.checkins, todayKey),
+    checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
+    checkinFill: buildCheckinFill(s.checkins, todayKey),
+    planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),
+    sleepVsApplied: buildSleepVsApplied(s.checkins, s.appliedLog, todayKey),
   };
 }

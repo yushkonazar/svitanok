@@ -113,6 +113,67 @@ export const masterySchema = z.object({
   themeOfWeek: themeOfWeekSchema.nullable().default(null),
 });
 
+/* ── Чек-ін (п.7) ──────────────────────────────────────────────────────────
+   Форми 1:1 зі stats-core.mjs. Поля блоків — .optional(), бо блок пишеться
+   дебаунсом і цілком легально буває заповнений частково. */
+
+export const checkinMorningSchema = z.object({
+  sleepH: num.optional(),
+  energy: int.optional(),
+  plan: z.enum(['apply', 'learn', 'interview', 'rest']).optional(),
+  planApply: int.optional(),
+});
+export const checkinAfternoonSchema = z.object({
+  pace: z.enum(['on', 'off', 'better']).optional(),
+  energy: int.optional(),
+  ate: z.enum(['apply', 'learn', 'interview', 'chores', 'procrast']).optional(),
+});
+export const checkinEveningSchema = z.object({
+  dayScore: int.optional(),
+  kept: z.enum(['yes', 'partly', 'no']).optional(),
+  energy: int.optional(),
+  blocker: z.enum(['tired', 'anxious', 'stuck', 'external', 'none']).optional(),
+});
+export const checkinDaySchema = z.object({
+  morning: checkinMorningSchema.optional(),
+  afternoon: checkinAfternoonSchema.optional(),
+  evening: checkinEveningSchema.optional(),
+});
+export const checkinPointSchema = z.object({
+  d: z.string(),
+  sleepH: num.nullable().default(null),
+  energy: num.nullable().default(null),
+  dayScore: num.nullable().default(null),
+  slots: int.default(0),
+});
+export const checkinWeekSchema = z.object({
+  week: z.string(),
+  n: int.default(0),
+  sleepAvg: num.nullable().default(null),
+  energyAvg: num.nullable().default(null),
+  dayScoreAvg: num.nullable().default(null),
+});
+export const checkinFillSchema = z.object({
+  morning: int.default(0),
+  afternoon: int.default(0),
+  evening: int.default(0),
+  days: int.default(30),
+});
+export const planVsFactSchema = z.object({
+  d: z.string(),
+  planned: int.default(0),
+  actual: int.default(0),
+});
+/** ready=false -> цифр НЕМА свідомо: кореляція на малій вибірці бреше впевнено. */
+export const sleepVsAppliedSchema = z.object({
+  ready: z.boolean().default(false),
+  needed: int.default(8),
+  low: int.default(0),
+  ok: int.default(0),
+  lowAvg: num.nullable().optional(),
+  okAvg: num.nullable().optional(),
+});
+
 export const statsSchema = z.object({
   streaks: z.object({
     openDays: int.default(0),
@@ -156,9 +217,24 @@ export const statsSchema = z.object({
   // і кожен реальний votes завалював би валідацію -> вкладка «Статистика» в
   // помилку. Ключ тут — url новини.
   votes: z.record(z.string(), z.enum(['up', 'down'])).optional(),
+
+  // ── Чек-ін (п.7) ──
+  // Усе .optional()/.default() — старий воркер цих полів не віддає, а safeParse
+  // валить ЦІЛИЙ /api/stats, не одне поле (див. попередження зверху файлу).
+  checkinSlot: z.enum(['morning', 'afternoon', 'evening']).nullable().optional(),
+  checkinToday: checkinDaySchema.nullable().optional(),
+  checkinSeries: z.array(checkinPointSchema).default([]),
+  checkinWeekly: z.array(checkinWeekSchema).default([]),
+  checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
+  planVsFact: z.array(planVsFactSchema).default([]),
+  sleepVsApplied: sleepVsAppliedSchema.default({ ready: false, needed: 8, low: 0, ok: 0 }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;
+export type CheckinSlot = 'morning' | 'afternoon' | 'evening';
+export type CheckinDay = z.infer<typeof checkinDaySchema>;
+export type CheckinPoint = z.infer<typeof checkinPointSchema>;
+export type CheckinWeek = z.infer<typeof checkinWeekSchema>;
 export type WeeklyDay = z.infer<typeof weeklyDaySchema>;
 export type Funnel = z.infer<typeof funnelSchema>;
 export type FunnelItem = z.infer<typeof funnelItemSchema>;

@@ -121,14 +121,31 @@ body {
     background-position: -200% 0;
   }
 }
-@keyframes twinkle {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-  50% {
-    opacity: 0.95;
-  }
+/* twinkle лишався з часів, коли зорі були div'ами; тепер циферблат — SVG і
+   мерехтить власним <animate> (амплітуда залежить від висоти сонця, чого
+   keyframes не вміють). Тримати мертву анімацію «про всяк» — сміття. */
+
+/* ── Циферблат ──────────────────────────────────────────────────────────────
+   Підписи всередині кола. Класами, а НЕ атрибутом font-family: значення --font-mono
+   містить лапки ('JetBrains Mono Variable'), і в SVG-атрибуті вони порвали б
+   розмітку. Розмір задає компонент inline — він стискається в тісній половині. */
+.dial-clock {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  fill: #f7f4ff;
+  filter: drop-shadow(0 2px 12px rgba(8, 6, 20, 0.85));
+}
+.dial-sub {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  fill: rgba(242, 241, 236, 0.75);
+  filter: drop-shadow(0 1px 8px rgba(8, 6, 20, 0.9));
+}
+/* Небо тече плавно: за 30с тику колір міняється трохи, але при поверненні в
+   апку через кілька годин без переходу стався б різкий стрибок. */
+.dial-stop {
+  transition: stop-color 1.2s linear;
 }
 @keyframes sheetUp {
   from {
