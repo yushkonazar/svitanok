@@ -65,6 +65,7 @@ import {
   ASSISTANT_ACTION_SCHEMA,
   ASSISTANT_ROUNDS_REPLY,
   ASSISTANT_EMPTY_REPLY,
+  ASSISTANT_TIME_REPLY,
   assistantErrorReply,
   clipTranscript,
   buildAssistantSystemPrompt,
@@ -664,12 +665,15 @@ async function tgCall(env, method, body) {
  * хоста — це фіксований енум ('usage-limit'/'rate-limited'/'timeout'/…) або
  * текст CLI, який хост уже пропустив через власну класифікацію.
  */
-async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model }) {
+async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model, timeoutMs }) {
   if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) {
     return { ok: false, status: 0, error: 'not-configured' };
   }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 25_000); // менше за таймаут хоста (30с)
+  // 25с — стеля (менше за таймаут хоста 30с). Агент передає МЕНШЕ: у нього свій
+  // бюджет на весь ланцюжок, і один повільний виклик не сміє зʼїсти його весь.
+  const ms = Number.isFinite(timeoutMs) ? Math.max(1000, Math.min(25_000, timeoutMs)) : 25_000;
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(env.LLM_HOST_URL, {
       method: 'POST',
@@ -963,6 +967,21 @@ const REMINDER_HELP =
 // Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
 // (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
 const MAX_ROUNDS = 3;
+
+/**
+ * Скільки часу агент має на ВЕСЬ ланцюжок, перш ніж сам чесно здасться.
+ *
+ * Чому це взагалі потрібно: Worker живе у ctx.waitUntil і Cloudflare убиває його
+ * МОВЧКИ — без винятку, без логу, без відповіді користувачу. Емпірика власника:
+ * 2 раунди (~17с) відповідають, 3 раунди з поштою+календарем (~25-30с) дають
+ * ПОВНУ тишу, хоча кожен крок окремо працює. Тобто впираємось у стелю платформи,
+ * а не в логіку.
+ *
+ * Тож ставимо власний дедлайн ІЗ ЗАПАСОМ і завершуємось самі: краще чесне
+ * «не встиг, розбий на кроки», ніж мовчанка, яку неможливо ні зрозуміти, ні
+ * задіагностувати.
+ */
+const AGENT_DEADLINE_MS = 18_000;
 // Модель асистента обирає pickAssistantModel(userText) (SL1): дефолт haiku,
 // sonnet лише для планувальних запитів — щоб не проїдати спільний пул підписки
 // Pro (та сама, що дев-робота власника). Reminder-rewrite лишається на haiku.
@@ -1157,7 +1176,14 @@ async function runAssistantAgent(env, parsed, userText) {
   const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
   const model = pickAssistantModel(userText); // SL1: haiku за замовч., sonnet для планування
   let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
+  const startedMs = Date.now();
   for (let round = 0; round < MAX_ROUNDS; round++) {
+    // Встигаємо ще один раунд? Якщо ні — здаємось САМІ, поки є час відповісти.
+    const leftMs = AGENT_DEADLINE_MS - (Date.now() - startedMs);
+    if (round > 0 && leftMs < 3_000) {
+      console.error(`assistant: бюджет ${AGENT_DEADLINE_MS}мс вичерпано на раунді ${round}`);
+      return sendText(ASSISTANT_TIME_REPLY);
+    }
     // На ОСТАННЬОМУ раунді читання вже не має сенсу: його результат нікуди не
     // піде — цикл одразу впаде у «заплутався в кроках». Тому прямо кажемо, що
     // читань більше не буде. Ланцюжок «знайди лист -> заплануй подію» вимагає
@@ -1176,6 +1202,8 @@ async function runAssistantAgent(env, parsed, userText) {
       systemPrompt: buildAssistantSystemPrompt(nowMs),
       jsonSchema: ASSISTANT_ACTION_SCHEMA,
       model,
+      // Лишаємо ~2с на саму відправку відповіді.
+      timeoutMs: Math.max(1000, leftMs - 2_000),
     });
     const action = extractAssistantAction(res?.structured);
     // Хост недоступний/невалідна дія -> чесний фолбек. Тепер текст залежить від
