@@ -101,8 +101,13 @@ export function SavedScreen() {
     useSavedArchive();
 
   if (isLoading) return <LoadingSkeleton />;
-  if (isError)
-    return <ErrorState message={(error as Error)?.message ?? 'Спробуй ще раз'} onRetry={() => void refetch()} />;
+  // Помилку на весь екран показуємо, ЛИШЕ якщо показувати більше нічого. Інакше
+  // збій «Показати ще» на другій сторінці зніс би вже завантажену першу — на
+  // мережевий блимок користувач втрачав би список, який тримає в руках.
+  if (isError && !data)
+    return (
+      <ErrorState message={(error as Error)?.message ?? 'Спробуй ще раз'} onRetry={() => void refetch()} />
+    );
 
   const items = data?.pages.flatMap((p) => p.items) ?? [];
   const total = data?.pages[0]?.total ?? 0;
@@ -154,7 +159,11 @@ export function SavedScreen() {
           onClick={() => void fetchNextPage()}
           className="rounded-full border border-glassb bg-glass py-2.5 text-[12px] font-semibold text-a2 disabled:opacity-50"
         >
-          {isFetchingNextPage ? 'Вантажу…' : `Показати ще (${total - items.length})`}
+          {isFetchingNextPage
+            ? 'Вантажу…'
+            : isError
+              ? 'Не вийшло — спробувати ще'
+              : `Показати ще (${total - items.length})`}
         </button>
       )}
     </div>
