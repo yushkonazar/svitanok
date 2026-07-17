@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { clamp } from '../../lib/format.ts';
+import { useInView } from '../../lib/useInView.ts';
 
 // Пончик прогресу (дизайн v2, Svitanok.dc.html): 64×64, r=26, товщина 7,
 // градієнт a2→a1, старт із 12-ї години (rotate −90), відсоток у центрі.
@@ -10,11 +11,20 @@ const C = 2 * Math.PI * R;
 
 export function Donut({ pct, size = 64 }: { pct: number; size?: number }) {
   const gid = useId();
+  const [ref, inView] = useInView<SVGSVGElement>();
   const p = clamp(Math.round(pct), 0, 100);
   const offset = C * (1 - p / 100);
 
   return (
-    <svg width={size} height={size} viewBox="0 0 64 64" className="flex-none" role="img" aria-label={`Прогрес ${p}%`}>
+    <svg
+      ref={ref}
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      className="flex-none"
+      role="img"
+      aria-label={`Прогрес ${p}%`}
+    >
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#FFA45C" />
@@ -36,8 +46,10 @@ export function Donut({ pct, size = 64 }: { pct: number; size?: number }) {
         // на місці, а не порожня.
         strokeDashoffset={offset.toFixed(1)}
         transform="rotate(-90 32 32)"
+        // Анімуємо, лише коли дуга доїхала до екрана: інакше вона намоталась би
+        // за краєм, поки ти скролиш, і ти б її не побачив ніколи.
         style={{
-          animation: 'donutDraw .9s cubic-bezier(.22,1,.36,1)',
+          animation: inView ? 'donutDraw .9s cubic-bezier(.22,1,.36,1)' : undefined,
           ['--donut-c' as string]: C.toFixed(1),
         }}
       />

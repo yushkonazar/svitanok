@@ -1,10 +1,13 @@
 import { useId } from 'react';
+import { useInView } from '../../lib/useInView.ts';
 
 // Спарклайн (дизайн v2, Svitanok.dc.html): лінія з градієнтом a2→a1 + м'яка
 // заливка донизу + крапка на останній точці. Використовує блок «Подачі · 8 тижнів».
 
 export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: number; h?: number }) {
   const uid = useId();
+  // Хук ДО раннього return («недостатньо даних») — порядок хуків сталий.
+  const [ref, inView] = useInView<SVGSVGElement>();
   const lineId = `${uid}-l`;
   const fillId = `${uid}-f`;
 
@@ -28,7 +31,15 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
   const area = `${line} L${w} ${h} L0 ${h} Z`;
 
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="динаміка подач">
+    <svg
+      ref={ref}
+      width="100%"
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="динаміка подач"
+    >
       <defs>
         <linearGradient id={lineId} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#FFA45C" />
@@ -41,7 +52,7 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
       </defs>
       {/* Заливка проявляється, поки лінія малюється — інакше вона стояла б
           готовою під олівцем, що ще їде. */}
-      <path d={area} fill={`url(#${fillId})`} style={{ animation: 'fadeInSoft .9s ease-out' }} />
+      <path d={area} fill={`url(#${fillId})`} style={{ animation: inView ? 'fadeInSoft .9s ease-out' : undefined }} />
       {/* pathLength="1" нормалізує довжину шляху в одиницю — без цього CSS не
           знає, скільки там пікселів, і намалювати лінію «від початку до кінця»
           нічим. dashoffset у DOM = 0, тобто лінія намальована; кадр лише каже,
@@ -55,7 +66,7 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
         strokeLinecap="round"
         strokeDasharray="1"
         strokeDashoffset="0"
-        style={{ animation: 'lineDraw .9s cubic-bezier(.4,0,.2,1)' }}
+        style={{ animation: inView ? 'lineDraw .9s cubic-bezier(.4,0,.2,1)' : undefined }}
       />
       {/* Крапка «сьогодні» зʼявляється, коли лінія до неї доїхала. */}
       <circle
@@ -65,7 +76,11 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
         fill="#FF6E7A"
         stroke="var(--color-bg)"
         strokeWidth="2"
-        style={{ animation: 'pop .3s cubic-bezier(.22,1,.36,1) .8s backwards, fadeInSoft .3s ease-out .8s backwards' }}
+        style={{
+          animation: inView
+            ? 'pop .3s cubic-bezier(.22,1,.36,1) .8s backwards, fadeInSoft .3s ease-out .8s backwards'
+            : undefined,
+        }}
       />
     </svg>
   );
