@@ -172,22 +172,37 @@ export async function postSettings(next: Settings): Promise<SettingsResponse | n
 
 /* ── Архів збереженого (F3) ────────────────────────────────────────────── */
 
+/** Скільки записів тягнемо за раз. Сервер клампить limit до 50 (SAVED_PAGE_MAX
+    у stats-core), тож просити більше — марно: віддасть однаково 50. */
+export const SAVED_PAGE = 50;
+
 /**
  * GET /api/saved — повний архів сторінками. Окремо від /api/stats, бо там
  * savedList свідомо обрізаний до 8 як прев'ю: тягти сотні записів у кожне
  * відкриття апки заради рядка «Ти зберіг N» — марно.
  * Поза Telegram — демо-архів із SAMPLE (щоб «показати ще» було що показати).
+ *
+ * ⚠️ offset ОБОВʼЯЗКОВИЙ. Доти тут було зашито `offset=0`, а виклик просив
+ * дедалі більший limit (20→40→60…) — і на 51-му записі архів мовчки впирався
+ * в стелю: сервер клампить limit до 50, тож «Показати ще (N)» рахував N чесно,
+ * але не додавав НІЧОГО. Гортаємо offset'ом, а не ростом limit.
  */
-export async function fetchSaved(limit: number): Promise<SavedPage> {
+export async function fetchSaved(offset: number, limit: number = SAVED_PAGE): Promise<SavedPage> {
   if (!inTelegram()) {
-    return { items: SAMPLE_SAVED_ARCHIVE.slice(0, limit), total: SAMPLE_SAVED_ARCHIVE.length };
+    return {
+      items: SAMPLE_SAVED_ARCHIVE.slice(offset, offset + limit),
+      total: SAMPLE_SAVED_ARCHIVE.length,
+    };
   }
-  const res = await fetch(`/api/saved?offset=0&limit=${limit}`, {
+  const res = await fetch(`/api/saved?offset=${offset}&limit=${limit}`, {
     cache: 'no-store',
     headers: authHeaders(),
   });
   if (res.status === 401 || res.status === 403) {
-    return { items: SAMPLE_SAVED_ARCHIVE.slice(0, limit), total: SAMPLE_SAVED_ARCHIVE.length };
+    return {
+      items: SAMPLE_SAVED_ARCHIVE.slice(offset, offset + limit),
+      total: SAMPLE_SAVED_ARCHIVE.length,
+    };
   }
   if (!res.ok) throw new Error(`Не вдалося завантажити збережене (${res.status})`);
 

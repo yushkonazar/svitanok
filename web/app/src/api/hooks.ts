@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
@@ -8,9 +13,12 @@ import {
   postEvent,
   postSettings,
   postVote,
+  SAVED_PAGE,
   type StatsResult,
   type VoteDir,
 } from './client.ts';
+import type { SavedPage } from './schema.ts';
+import { nextSavedOffset } from './paging.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
 
@@ -36,6 +44,34 @@ function patchStats(
   qc.setQueryData<StatsResult>(['stats'], (old) =>
     old ? { ...old, stats: fn(old.stats) } : old,
   );
+}
+
+type SavedInfinite = { pages: SavedPage[]; pageParams: number[] };
+
+/**
+ * Прибрати запис з УСІХ сторінок архіву ['saved'] (F-борг, екран «Збережене»).
+ *
+ * Тогли 🔖 патчили лише ['stats'], бо архіву-екрана ще не існувало — прев'ю з
+ * 8 записів жило всередині статистики. Тепер видалення відбувається САМЕ на
+ * екрані архіву, тож без цього рядок лишався б на місці до перезаходу.
+ * setQueriesData (не setQueryData) — ключ містить сторінки, а вони нас не
+ * обходять: чистимо скрізь, де запис трапиться.
+ */
+function dropFromSaved(
+  qc: ReturnType<typeof useQueryClient>,
+  match: (kind: string, id: string | null) => boolean,
+) {
+  qc.setQueriesData<SavedInfinite>({ queryKey: ['saved'] }, (old) => {
+    if (!old) return old;
+    let removed = 0;
+    const pages = old.pages.map((p) => {
+      const items = p.items.filter((x) => !match(x.kind, x.id));
+      removed += p.items.length - items.length;
+      return { ...p, items };
+    });
+    if (!removed) return old;
+    return { ...old, pages: pages.map((p) => ({ ...p, total: Math.max(0, p.total - removed) })) };
+  });
 }
 
 /**
@@ -81,6 +117,7 @@ export function useToggleSaveItem() {
     onMutate: async ({ save, kind, id, title }) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
+      if (!save) dropFromSaved(qc, (k, i) => k === kind && i === id);
       patchStats(qc, (s) => {
         const exists = s.savedList.some((x) => x.kind === kind && x.id === id);
         if (save) {
@@ -103,9 +140,21 @@ export function useToggleSaveItem() {
       if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
     },
     onSettled: () => {
-      if (inTelegram()) qc.invalidateQueries({ queryKey: ['stats'] });
+      if (inTelegram()) invalidateSaved(qc);
     },
   });
+}
+
+/**
+ * Після зміни збереженого перетягуємо і агрегат, і архів.
+ *
+ * ['saved'] інвалідуємо цілком, а не патчимо далі: пагінація по offset після
+ * видалення зсувається, тож єдина чесна відповідь — перепитати сервер. Для
+ * infinite-черги TanStack перетягне всі вже набрані сторінки.
+ */
+function invalidateSaved(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['stats'] });
+  qc.invalidateQueries({ queryKey: ['saved'] });
 }
 
 // ── E3: Новини + Вакансії ──
@@ -161,6 +210,7 @@ export function useToggleSaveNews() {
     onMutate: async ({ save, url, title }) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
+      if (!save) dropFromSaved(qc, (k, i) => k === 'news' && i === url);
       patchStats(qc, (s) => {
         const exists = s.savedList.some((x) => x.kind === 'news' && x.id === url);
         if (save) {
@@ -183,7 +233,7 @@ export function useToggleSaveNews() {
       if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
     },
     onSettled: () => {
-      if (inTelegram()) qc.invalidateQueries({ queryKey: ['stats'] });
+      if (inTelegram()) invalidateSaved(qc);
     },
   });
 }
@@ -260,8 +310,25 @@ export function useJobDismiss() {
  * query з мерджем сторінок тут — зайва складність і зайве джерело
  * неконсистентності після unsave.
  */
-export function useSavedArchive(limit: number) {
-  return useQuery({ queryKey: ['saved', limit], queryFn: () => fetchSaved(limit) });
+/**
+ * Архів збереженого сторінками по 50 (екран «Збережене»).
+ *
+ * useInfiniteQuery, а не ріст limit: сервер клампить limit до 50, тож старий
+ * підхід («попроси 60») мовчки впирався в стелю на 51-му записі. Гортаємо
+ * offset'ом; наступної сторінки немає, коли набрали total.
+ *
+ * ⚠️ Пагінація по offset + видалення = зсув: прибрали запис — і все за ним
+ * зʼїхало на одиницю, тож наївний дозапис пропустив би сусіда. Тому видалення
+ * інвалідує ['saved'] цілком (TanStack перетягує ВСІ набрані сторінки).
+ */
+export function useSavedArchive() {
+  return useInfiniteQuery({
+    queryKey: ['saved'],
+    queryFn: ({ pageParam }) => fetchSaved(pageParam, SAVED_PAGE),
+    initialPageParam: 0,
+    // Правило гортання — чиста nextSavedOffset (тести: tests/saved-paging.test.ts).
+    getNextPageParam: (_last, all) => nextSavedOffset(all),
+  });
 }
 
 // ── F2: Налаштування ──
