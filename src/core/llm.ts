@@ -48,7 +48,22 @@ function runClaude(
       settled = true;
       clearTimeout(timer);
       if (code === 0) {
-        resolve(stdout.trim());
+        const out = stdout.trim();
+        // ⚠️ Вичерпаний ліміт підписки — це ПОМИЛКА, хоч CLI вийшов успішно.
+        // claude -p не має машинного коду для лімітів: він друкує людський текст
+        // («You've hit your session limit…») і повертає exit 0. Без цієї гілки
+        // такий текст ішов у модуль як звичайна відповідь — і мовчки ставав
+        // «нічого не знайдено»: пошта позначала листи прочитаними й губила
+        // запрошення на співбесіду назавжди, а «⚠️ Система» не спрацьовувала,
+        // бо у failures() нічого не писалось. Тепер це throw -> модуль деградує
+        // чесно, дедуп не позначається, і власник бачить попередження.
+        if (isUsageLimitError(out)) {
+          const diag = out.slice(0, 200);
+          log?.warn(`claude -p: ліміт підписки (exit 0, людський текст): ${diag}`);
+          reject(new Error(`claude -p: ліміт підписки вичерпано — ${diag}`));
+          return;
+        }
+        resolve(out);
       } else {
         // stderr часто порожній — додаємо stdout для діагностики (напр. trust-діалог).
         const diag = (stderr || stdout).trim().slice(0, 500) || '(порожній вивід)';

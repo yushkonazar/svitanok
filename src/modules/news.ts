@@ -240,10 +240,17 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       let newsLimitHit = false;
 
       // preferenceWeights: вага теми масштабує квоту й порядок. Недільний decay -> 1.0.
+      //
+      // ⚠️ Мітка дня обовʼязкова: isSunday() — чиста функція годинника, без жодної
+      // памʼяті. Без неї КОЖЕН ран у неділю декаїв наново, а `workflow_dispatch`
+      // із force саме для того й існує, щоб ганяти ран повторно (напр. дебажиш,
+      // чому не прийшли новини). Три форс-рани -> 0.5 → 0.55 → 0.595 → 0.6355:
+      // твої ❤️ розмивались утричі швидше, ніж «раз на тиждень» за задумом.
       let weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
-      if (ctx.clock.isSunday()) {
+      if (ctx.clock.isSunday() && ctx.state.get<string>('lastDecayDate') !== today) {
         weights = applyWeeklyDecay(weights);
         ctx.state.set('preferenceWeights', weights);
+        ctx.state.set('lastDecayDate', today);
       }
       const weightFor = (t: string) => weights[t] ?? 1.0;
       const quotaFor = (t: string) =>

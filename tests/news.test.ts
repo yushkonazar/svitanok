@@ -188,7 +188,7 @@ function memState(initial: Record<string, unknown> = {}): StateStore {
   };
 }
 
-function makeCtx(state: StateStore = memState()): Ctx<AppConfig> {
+function makeCtx(state: StateStore = memState(), opts: { sunday?: boolean } = {}): Ctx<AppConfig> {
   const noop = () => {};
   return {
     bus: createRunBus(),
@@ -196,7 +196,9 @@ function makeCtx(state: StateStore = memState()): Ctx<AppConfig> {
       todayKey: () => '2026-07-01',
       kyivHour: () => 8,
       now: () => new Date('2026-07-01T08:00:00+03:00'),
-      isSunday: () => false,
+      // Доти було зашито false — тобто недільна гілка (decay ваг) не тестувалась
+      // ЖОДНОГО разу, і саме в ній жив баг із повторним decay на force-ранах.
+      isSunday: () => opts.sunday === true,
     },
     log: { debug: noop, info: noop, warn: noop, error: noop },
     config: {
@@ -322,5 +324,44 @@ describe('news — денний лічильник NewsData (SL4)', () => {
     expect(block).toBeNull();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(state.get('newsRequests')).toEqual({ date: '2026-07-01', count: 1 });
+  });
+});
+
+describe('news — недільний decay ваг: рівно раз на добу', () => {
+  const run = (state: Parameters<typeof makeCtx>[0], sunday: boolean) =>
+    mod(vi.fn(async () => resp(sample))).run(makeCtx(state, { sunday }));
+
+  it('у неділю decay застосовується — і ставить мітку дня', async () => {
+    const state = memState({ preferenceWeights: { Тех: 0.5 } });
+    await run(state, true);
+    expect((state.get('preferenceWeights') as Record<string, number>).Тех).toBeCloseTo(0.55);
+    expect(state.get('lastDecayDate')).toBe('2026-07-01');
+  });
+
+  it('ТРИ force-рани в ту саму неділю -> decay РІВНО один раз', async () => {
+    // Регресія. isSunday() — чиста функція годинника, без памʼяті, тож кожен ран
+    // декаїв наново: 0.5 → 0.55 → 0.595 → 0.6355. А workflow_dispatch із force
+    // саме для повторних ранів і існує — тобто вподобання розмивались утричі
+    // швидше, ніж «раз на тиждень» за задумом.
+    const state = memState({ preferenceWeights: { Тех: 0.5 } });
+    await run(state, true);
+    await run(state, true);
+    await run(state, true);
+    expect((state.get('preferenceWeights') as Record<string, number>).Тех).toBeCloseTo(0.55);
+  });
+
+  it('не в неділю decay не чіпає ваги й не ставить мітку', async () => {
+    const state = memState({ preferenceWeights: { Тех: 0.5 } });
+    await run(state, false);
+    expect((state.get('preferenceWeights') as Record<string, number>).Тех).toBeCloseTo(0.5);
+    expect(state.get('lastDecayDate')).toBeUndefined();
+  });
+
+  it('наступної неділі мітка інша -> decay знову застосується', async () => {
+    // Мітка не має «замкнути» decay назавжди.
+    const state = memState({ preferenceWeights: { Тех: 0.5 }, lastDecayDate: '2026-06-24' });
+    await run(state, true);
+    expect((state.get('preferenceWeights') as Record<string, number>).Тех).toBeCloseTo(0.55);
+    expect(state.get('lastDecayDate')).toBe('2026-07-01');
   });
 });
