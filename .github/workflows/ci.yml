@@ -32,8 +32,11 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
-      # TODO(security): додати security-review (Anthropic) як гейт, коли буде
-      # доступний API-ключ у Secrets (§10, §18).
+      # security-review (Anthropic) у CI — СВІДОМО НЕ РОБИМО (рішення власника,
+      # 17.07.2026): він потребує платного API-ключа, а проєкт живе на Pro-підписці
+      # через claude -p. Це не «колись додамо» — це закрите питання, тож і TODO тут
+      # більше немає: інакше він щоразу спливав би як незакритий борг.
+      # SPEC §10/§18 у частині security-review вважати нечинними.
 
   # React-дашборд (web/app, роадмеп v3 E) — окремий toolchain (Vite+React+TS+
   # Tailwind), власний package.json. Білд у CI ловить поломки міграції; артефакт
