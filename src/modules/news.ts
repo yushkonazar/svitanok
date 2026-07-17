@@ -327,13 +327,5 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         priority: NEWS_PRIORITY,
       };
     },
-
-    // 👍/👎 змінює preferenceWeights теми (через дашборд /api/vote або in-chat callback).
-    async handleCallback(action: string, ctx: Ctx<AppConfig>): Promise<void> {
-      const m = action.match(/^news:(up|down):(.+)$/);
-      if (!m) return;
-      const weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
-      ctx.state.set('preferenceWeights', applyVote(weights, m[2]!, m[1] as 'up' | 'down'));
-    },
   };
 }

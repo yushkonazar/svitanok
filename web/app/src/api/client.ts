@@ -172,22 +172,37 @@ export async function postSettings(next: Settings): Promise<SettingsResponse | n
 
 /* ── Архів збереженого (F3) ────────────────────────────────────────────── */
 
+/** Скільки записів тягнемо за раз. Сервер клампить limit до 50 (SAVED_PAGE_MAX
+    у stats-core), тож просити більше — марно: віддасть однаково 50. */
+export const SAVED_PAGE = 50;
+
 /**
  * GET /api/saved — повний архів сторінками. Окремо від /api/stats, бо там
  * savedList свідомо обрізаний до 8 як прев'ю: тягти сотні записів у кожне
  * відкриття апки заради рядка «Ти зберіг N» — марно.
  * Поза Telegram — демо-архів із SAMPLE (щоб «показати ще» було що показати).
+ *
+ * ⚠️ offset ОБОВʼЯЗКОВИЙ. Доти тут було зашито `offset=0`, а виклик просив
+ * дедалі більший limit (20→40→60…) — і на 51-му записі архів мовчки впирався
+ * в стелю: сервер клампить limit до 50, тож «Показати ще (N)» рахував N чесно,
+ * але не додавав НІЧОГО. Гортаємо offset'ом, а не ростом limit.
  */
-export async function fetchSaved(limit: number): Promise<SavedPage> {
+export async function fetchSaved(offset: number, limit: number = SAVED_PAGE): Promise<SavedPage> {
   if (!inTelegram()) {
-    return { items: SAMPLE_SAVED_ARCHIVE.slice(0, limit), total: SAMPLE_SAVED_ARCHIVE.length };
+    return {
+      items: SAMPLE_SAVED_ARCHIVE.slice(offset, offset + limit),
+      total: SAMPLE_SAVED_ARCHIVE.length,
+    };
   }
-  const res = await fetch(`/api/saved?offset=0&limit=${limit}`, {
+  const res = await fetch(`/api/saved?offset=${offset}&limit=${limit}`, {
     cache: 'no-store',
     headers: authHeaders(),
   });
   if (res.status === 401 || res.status === 403) {
-    return { items: SAMPLE_SAVED_ARCHIVE.slice(0, limit), total: SAMPLE_SAVED_ARCHIVE.length };
+    return {
+      items: SAMPLE_SAVED_ARCHIVE.slice(offset, offset + limit),
+      total: SAMPLE_SAVED_ARCHIVE.length,
+    };
   }
   if (!res.ok) throw new Error(`Не вдалося завантажити збережене (${res.status})`);
 
@@ -196,7 +211,13 @@ export async function fetchSaved(limit: number): Promise<SavedPage> {
   return parsed.data;
 }
 
-/** Авторитетний напрямок голосу від сервера (C3): re-click того ж = null. */
+/**
+ * Авторитетний напрямок голосу від сервера (C3): re-click того ж = null.
+ *
+ * ⚠️ 'down' лишається в типі свідомо, хоч ❤️ його вже не створює: у KV живуть
+ * старі дизлайки, і сервер віддає їх у stats.votes як є. Звузиш тип до
+ * 'up'|null — і TypeScript почне брехати про дані, які реально приходять.
+ */
 export type VoteDir = 'up' | 'down' | null;
 export interface VoteResult {
   weight: number;
@@ -204,20 +225,20 @@ export interface VoteResult {
 }
 
 /**
- * Голос за новину (роадмеп v3, E3) — окремий ендпоінт /api/vote (не /api/event):
+ * ❤️ на новині (роадмеп v3, E3) — окремий ендпоінт /api/vote (не /api/event):
  * інша відповідь {ok,category,weight,voted}. `voted` авторитетний (сервер сам
  * рахує toggle). Поза Telegram — null (оптимістичне значення лишається).
+ *
+ * dir не параметр: напрямок завжди 'up' (фідбек власника, п.5 — дизлайків
+ * більше немає). Лишаємо його в ТІЛІ запиту, бо контракт /api/vote спільний
+ * із легасі-клієнтами й тестами.
  */
-export async function postVote(
-  category: string,
-  dir: 'up' | 'down',
-  url: string,
-): Promise<VoteResult | null> {
+export async function postVote(category: string, url: string): Promise<VoteResult | null> {
   if (!inTelegram() || !tg) return null;
   const res = await fetch('/api/vote', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ category, dir, url, initData: tg.initData }),
+    body: JSON.stringify({ category, dir: 'up', url, initData: tg.initData }),
   });
   if (!res.ok) throw new Error(`Голос не зараховано (${res.status})`);
   const data = (await res.json()) as { weight?: number; voted?: VoteDir };

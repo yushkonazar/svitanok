@@ -82,5 +82,4 @@ export interface Module<TConfig = unknown> {
   kind: ModuleKind;
   enabled(config: TConfig): boolean;
   run(ctx: Ctx<TConfig>): Promise<Block | null>;
-  handleCallback?(action: string, ctx: Ctx<TConfig>): Promise<void>; // фаза B
 }

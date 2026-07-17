@@ -11,6 +11,7 @@ import { TodayScreen } from './components/today/TodayScreen.tsx';
 import { NewsScreen } from './components/news/NewsScreen.tsx';
 import { JobsScreen } from './components/jobs/JobsScreen.tsx';
 import { SettingsScreen } from './components/settings/SettingsScreen.tsx';
+import { SavedScreen } from './components/saved/SavedScreen.tsx';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
@@ -31,8 +32,19 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id'];
 
 const SETTINGS_PATH = '/settings';
+const SAVED_PATH = '/saved';
+
+/**
+ * Повноекранні маршрути — НЕ таби: власний хедер «‹ Назва», без таб-бара.
+ * Пʼятий/шостий таб роздув би пігулку, а заходять сюди зрідка.
+ */
+const FULL: Array<{ path: string; title: string }> = [
+  { path: SETTINGS_PATH, title: 'Налаштування' },
+  { path: SAVED_PATH, title: 'Збережене' },
+];
+
 /** Усі відомі маршрути — і таби, і повноекранні (для редіректу/deep-link). */
-const KNOWN_PATHS: string[] = [...TABS.map((t) => t.path), SETTINGS_PATH];
+const KNOWN_PATHS: string[] = [...TABS.map((t) => t.path), ...FULL.map((f) => f.path)];
 
 function TabIcon({ id, active }: { id: TabId; active: boolean }) {
   const sw = active ? 2 : 1.6;
@@ -74,7 +86,7 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
 function pathForStartParam(param: string): string | null {
   const tab = TABS.find((t) => t.id === param || t.path === `/${param}` || t.path === param);
   if (tab) return tab.path;
-  return param === 'settings' || param === SETTINGS_PATH ? SETTINGS_PATH : null;
+  return FULL.find((f) => f.path === param || f.path === `/${param}`)?.path ?? null;
 }
 
 export function App() {
@@ -89,7 +101,7 @@ export function App() {
   const { data: briefData } = useBriefing();
   const headerDate = dateLabelFromIso(briefData?.brief.generatedAt) ?? dateLabel();
 
-  const onSettings = location.pathname === SETTINGS_PATH;
+  const full = FULL.find((f) => f.path === location.pathname);
   const active = TABS.find((t) => t.path === location.pathname) ?? TABS[0];
 
   // Deep-link: один раз на старті мапимо Telegram start_param на вкладку.
@@ -108,9 +120,9 @@ export function App() {
 
   // Нативна кнопка «Назад» Telegram: видима поза домашньою, веде на домашню.
   useEffect(() => {
-    const onHome = !onSettings && active.path === '/';
+    const onHome = !full && active.path === '/';
     return setBackButton(!onHome, () => navigate('/'));
-  }, [active.path, onSettings, navigate]);
+  }, [active.path, full, navigate]);
 
   return (
     <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-[430px] flex-col">
@@ -119,7 +131,7 @@ export function App() {
       <div className="relative z-[1] flex-1">
         {/* HEADER — у налаштуваннях перетворюється на «‹ Налаштування» */}
         <header className="flex items-center gap-2.5 px-5 pb-1.5 pt-2.5">
-          {onSettings ? (
+          {full ? (
             <>
               <button
                 type="button"
@@ -143,7 +155,7 @@ export function App() {
                   <path d="M15 5l-7 7 7 7" />
                 </svg>
               </button>
-              <div className="text-[18px] font-extrabold tracking-[-0.01em]">Налаштування</div>
+              <div className="text-[18px] font-extrabold tracking-[-0.01em]">{full.title}</div>
             </>
           ) : (
             <>
@@ -212,8 +224,10 @@ export function App() {
                 </svg>
               )}
             </button>
-            {/* Налаштування — ПРАВОРУЧ від теми (фідбек власника). */}
-            {!onSettings && (
+            {/* Налаштування — ПРАВОРУЧ від теми (фідбек власника). На
+                повноекранних маршрутах ховаємо: там уже є «Назад», і третя
+                іконка поруч із нею тільки тісниться. */}
+            {!full && (
               <button
                 type="button"
                 aria-label="Налаштування"
@@ -246,14 +260,18 @@ export function App() {
 
         {/* CONTENT — зміна маршруту ремоунтить секцію -> fadeUp, як у макеті */}
         <motion.main
-          key={onSettings ? 'settings' : active.id}
+          key={full ? full.path : active.id}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.32, ease: 'easeOut' }}
-          className={onSettings ? 'px-5 pb-10 pt-2.5' : 'px-5 pb-[120px] pt-1.5'}
+          className={full ? 'px-5 pb-10 pt-2.5' : 'px-5 pb-[120px] pt-1.5'}
         >
-          {onSettings ? (
-            <SettingsScreen />
+          {full ? (
+            full.path === SETTINGS_PATH ? (
+              <SettingsScreen />
+            ) : (
+              <SavedScreen />
+            )
           ) : active.id === 'today' ? (
             <TodayScreen />
           ) : active.id === 'news' ? (
@@ -269,7 +287,7 @@ export function App() {
       {/* TAB BAR — пігулка, активний таб розкривається з підписом. У
           налаштуваннях сховано (повноекранний режим, як у макеті). */}
       <nav
-        hidden={onSettings}
+        hidden={!!full}
         className="pointer-events-none fixed inset-x-0 bottom-[18px] z-30 flex justify-center"
       >
         <div
