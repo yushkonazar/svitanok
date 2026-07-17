@@ -1,5 +1,6 @@
 import type { SavedItem } from '../../api/schema.ts';
 import { useSavedArchive, useToggleSaveItem, useToggleSaveNews } from '../../api/hooks.ts';
+import { useSaved } from '../../saved.tsx';
 import { truncate } from '../../lib/format.ts';
 import { openLink, haptic } from '../../telegram.ts';
 import { SectionLabel } from '../ui/primitives.tsx';
@@ -39,17 +40,27 @@ function shortDate(ts: string): string {
 function Row({ item }: { item: SavedItem }) {
   const delItem = useToggleSaveItem();
   const delNews = useToggleSaveNews();
+  const { setSaved } = useSaved();
   const busy = delItem.isPending || delNews.isPending;
   const date = shortDate(item.ts);
 
   const remove = () => {
     haptic('light');
+    const id = item.id ?? '';
+    // ⚠️ Зняти позначку в session-sticky наборі ОБОВʼЯЗКОВО, і саме тут.
+    // Набір (saved.tsx) лише ДОПОВНЮЄТЬСЯ зі savedList — зникнення запису його
+    // не чистить, і це навмисно: сервер ріже savedList до top-8, тож відсутність
+    // не означає «не збережено». Тому єдиний спосіб зняти позначку — сказати про
+    // це прямо. Без цього 🔖 на «Новинах»/«Сьогодні» лишався б активним для
+    // видаленого запису до кінця сесії, а щоб зберегти його назад, довелося б
+    // тиснути двічі (перший тап пішов би в порожній unsave).
+    setSaved(item.kind, id, false);
     // Новини писались через save_news (kind='news', id=url) — і прибирати їх
     // треба тим самим шляхом. Через unsave_item вони б не знайшлись.
     if (item.kind === 'news') {
-      delNews.mutate({ save: false, url: item.id ?? '', title: item.title, category: '' });
+      delNews.mutate({ save: false, url: id, title: item.title, category: '' });
     } else {
-      delItem.mutate({ save: false, kind: item.kind, id: item.id ?? '', title: item.title });
+      delItem.mutate({ save: false, kind: item.kind, id, title: item.title });
     }
   };
 

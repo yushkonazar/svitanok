@@ -48,6 +48,38 @@ function patchStats(
 
 type SavedInfinite = { pages: SavedPage[]; pageParams: number[] };
 
+/** Усе, що пише збережене, ходить по черзі — див. SAVED_SCOPE нижче. */
+const SAVED_SCOPE = { id: 'saved-write' };
+
+/**
+ * Знімок обох черг перед оптимістичним записом + відкат.
+ *
+ * ⚠️ cancelQueries по ['saved'] ОБОВʼЯЗКОВИЙ: без нього запит, що вже в польоті
+ * (перший фетч екрана або «Показати ще»), приземлиться ПІСЛЯ нашого патчу й
+ * перезапише його своєю — ще дореміченою — відповіддю. Видалений рядок просто
+ * повернеться. Те саме правило, що й для ['stats'] поруч.
+ */
+async function snapshotSaved(qc: ReturnType<typeof useQueryClient>) {
+  await Promise.all([
+    qc.cancelQueries({ queryKey: ['stats'] }),
+    qc.cancelQueries({ queryKey: ['saved'] }),
+  ]);
+  return {
+    prev: qc.getQueryData<StatsResult>(['stats']),
+    prevSaved: qc.getQueriesData<SavedInfinite>({ queryKey: ['saved'] }),
+  };
+}
+
+type SavedSnapshot = Awaited<ReturnType<typeof snapshotSaved>>;
+
+/** Повернути обидві черги як були (мутація впала). */
+function restoreSaved(qc: ReturnType<typeof useQueryClient>, ctx: SavedSnapshot | undefined) {
+  if (!ctx) return;
+  if (ctx.prev) qc.setQueryData(['stats'], ctx.prev);
+  // Без цього невдале видалення лишало б рядок ЗНИКЛИМ, хоч на сервері він є.
+  for (const [key, data] of ctx.prevSaved) qc.setQueryData(key, data);
+}
+
 /**
  * Прибрати запис з УСІХ сторінок архіву ['saved'] (F-борг, екран «Збережене»).
  *
@@ -60,7 +92,8 @@ type SavedInfinite = { pages: SavedPage[]; pageParams: number[] };
 function dropFromSaved(
   qc: ReturnType<typeof useQueryClient>,
   match: (kind: string, id: string | null) => boolean,
-) {
+): boolean {
+  let hit = 0;
   qc.setQueriesData<SavedInfinite>({ queryKey: ['saved'] }, (old) => {
     if (!old) return old;
     let removed = 0;
@@ -70,8 +103,13 @@ function dropFromSaved(
       return { ...p, items };
     });
     if (!removed) return old;
+    hit += removed;
     return { ...old, pages: pages.map((p) => ({ ...p, total: Math.max(0, p.total - removed) })) };
   });
+  // Повертаємо ФАКТ, а не «я старався»: викликач вирішує по цьому, чи зменшувати
+  // savedCount. Збрехати «так» означало б віднімати лічильник і на повторному
+  // тапі по вже видаленому.
+  return hit > 0;
 }
 
 /**
@@ -108,6 +146,12 @@ export function useMockAnswer() {
 export function useToggleSaveItem() {
   const qc = useQueryClient();
   return useMutation({
+    // scope — щоб два записи збереженого НЕ йшли паралельно: кожен /api/event
+    // робить read-modify-write спільного блоба `stats`, а в KV немає CAS. Дві
+    // одночасні відповіді -> та, що фінішувала другою, відкотить першу. Доти це
+    // було майже недосяжно (🔖 тиснеш по одному), але екран «Збережене» дав
+    // колонку хрестиків — швидкі видалення підряд тепер природна дія.
+    scope: SAVED_SCOPE,
     mutationFn: (vars: { save: boolean; kind: string; id: string; title: string }) =>
       postEvent(vars.save ? 'save_item' : 'unsave_item', {
         kind: vars.kind,
@@ -115,9 +159,8 @@ export function useToggleSaveItem() {
         title: vars.title,
       }),
     onMutate: async ({ save, kind, id, title }) => {
-      await qc.cancelQueries({ queryKey: ['stats'] });
-      const prev = qc.getQueryData<StatsResult>(['stats']);
-      if (!save) dropFromSaved(qc, (k, i) => k === kind && i === id);
+      const ctx = await snapshotSaved(qc);
+      const dropped = !save && dropFromSaved(qc, (k, i) => k === kind && i === id);
       patchStats(qc, (s) => {
         const exists = s.savedList.some((x) => x.kind === kind && x.id === id);
         if (save) {
@@ -130,15 +173,16 @@ export function useToggleSaveItem() {
         }
         return {
           ...s,
-          savedCount: exists ? Math.max(0, s.savedCount - 1) : s.savedCount,
+          // savedList — лише top-8 прев'ю, тож `exists` бреше про 9-й і далі:
+          // видалення з архіву не зменшувало б лічильник узагалі. Рахуємо факт
+          // видалення (з прев'ю АБО з архіву), а не наявність у прев'ю.
+          savedCount: exists || dropped ? Math.max(0, s.savedCount - 1) : s.savedCount,
           savedList: s.savedList.filter((x) => !(x.kind === kind && x.id === id)),
         };
       });
-      return { prev };
+      return ctx;
     },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
-    },
+    onError: (_e, _v, ctx) => restoreSaved(qc, ctx),
     onSettled: () => {
       if (inTelegram()) invalidateSaved(qc);
     },
@@ -206,6 +250,7 @@ function setVote(qc: ReturnType<typeof useQueryClient>, url: string, dir: VoteDi
 export function useToggleSaveNews() {
   const qc = useQueryClient();
   return useMutation({
+    scope: SAVED_SCOPE, // серіалізація записів — див. useToggleSaveItem
     mutationFn: (vars: { save: boolean; url: string; title: string; category: string }) =>
       postEvent(vars.save ? 'save_news' : 'unsave_news', {
         url: vars.url,
@@ -213,9 +258,8 @@ export function useToggleSaveNews() {
         category: vars.category,
       }),
     onMutate: async ({ save, url, title }) => {
-      await qc.cancelQueries({ queryKey: ['stats'] });
-      const prev = qc.getQueryData<StatsResult>(['stats']);
-      if (!save) dropFromSaved(qc, (k, i) => k === 'news' && i === url);
+      const ctx = await snapshotSaved(qc);
+      const dropped = !save && dropFromSaved(qc, (k, i) => k === 'news' && i === url);
       patchStats(qc, (s) => {
         const exists = s.savedList.some((x) => x.kind === 'news' && x.id === url);
         if (save) {
@@ -228,15 +272,15 @@ export function useToggleSaveNews() {
         }
         return {
           ...s,
-          savedCount: exists ? Math.max(0, s.savedCount - 1) : s.savedCount,
+          // Див. useToggleSaveItem: savedList — лише top-8, тож саме прев'ю не
+          // може бути мірилом того, чи запис існував.
+          savedCount: exists || dropped ? Math.max(0, s.savedCount - 1) : s.savedCount,
           savedList: s.savedList.filter((x) => !(x.kind === 'news' && x.id === url)),
         };
       });
-      return { prev };
+      return ctx;
     },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
-    },
+    onError: (_e, _v, ctx) => restoreSaved(qc, ctx),
     onSettled: () => {
       if (inTelegram()) invalidateSaved(qc);
     },
@@ -309,12 +353,6 @@ export function useJobDismiss() {
   });
 }
 
-/**
- * Архів збереженого сторінками (F3). Ключ включає limit: «показати ще» просто
- * перезапитує більший зріз. Список крихітний (сотні записів), тож infinite-
- * query з мерджем сторінок тут — зайва складність і зайве джерело
- * неконсистентності після unsave.
- */
 /**
  * Архів збереженого сторінками по 50 (екран «Збережене»).
  *
