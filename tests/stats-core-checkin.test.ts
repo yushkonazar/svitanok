@@ -16,7 +16,7 @@ const ck = (slot: string, fields: Record<string, unknown>) => ({
   slot,
   ...fields,
 });
-const MORNING = { sleepH: 7.5, energy: 4, plan: 'apply', planApply: 3 };
+const MORNING = { sleepH: 7.5, energy: 4, plan: 'work', planApply: 3 };
 
 describe('checkinSlot — активний блок за київською годиною', () => {
   it('межі рівно там, де сказав власник', () => {
@@ -104,7 +104,7 @@ describe('recordEvent — checkin', () => {
 
   it('повторна подія МЕРДЖИТЬ, а не стирає (клієнт шле дебаунсом)', () => {
     let s = recordEvent(emptyStore(), ck('morning', { sleepH: 7.5, energy: 4 }), '2026-07-17');
-    s = recordEvent(s, ck('morning', { plan: 'apply', planApply: 3 }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { plan: 'work', planApply: 3 }), '2026-07-17');
     expect(s.checkins['2026-07-17'].morning).toEqual(MORNING);
   });
 
@@ -214,8 +214,12 @@ describe('aggregateStats — чек-ін', () => {
     expect(f.afternoon).toBe(0);
   });
 
-  it('намір проти факту бере ФАКТ з appliedLog, а не зі слів', () => {
-    const s = recordEvent(emptyStore(), ck('morning', { planApply: 3 }), '2026-07-17');
+  it('намір проти факту бере ФАКТ з appliedLog, а не зі слів (робочий день)', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('morning', { plan: 'work', planApply: 3 }),
+      '2026-07-17',
+    );
     s.appliedLog = [
       { url: 'a', ts: '2026-07-17' },
       { url: 'b', ts: '2026-07-17' },
@@ -229,37 +233,45 @@ describe('aggregateStats — чек-ін', () => {
     expect(aggregateStats(s, '2026-07-17').planVsFact).toEqual([]);
   });
 
+  it('осиротіле planApply на НЕ-робочому дні у джоб-аналітику НЕ потрапляє (v2)', () => {
+    // Обрав «Робота», ввів 3, перемкнув на «Навчання» — число лишилось, але день не робочий.
+    const s = recordEvent(
+      emptyStore(),
+      ck('morning', { plan: 'learn', planApply: 3 }),
+      '2026-07-17',
+    );
+    expect(aggregateStats(s, '2026-07-17').planVsFact).toEqual([]);
+  });
+
   // ── Гейт кореляцій: головний запобіжник від впевненої брехні ──
-  it('сон/подачі МОВЧИТЬ, поки кошики малі', () => {
+  it('сон/оцінка-дня МОВЧИТЬ, поки кошики малі', () => {
     // 3 дні мало спав, 3 виспався — цього НЕ досить, щоб щось стверджувати.
-    const rows: Array<[string, Record<string, unknown>]> = [];
-    for (let i = 1; i <= 3; i++) rows.push([`2026-07-0${i}`, { sleepH: 5.5 }]);
-    for (let i = 4; i <= 6; i++) rows.push([`2026-07-0${i}`, { sleepH: 8 }]);
-    const r = aggregateStats(withDays(rows), '2026-07-17').sleepVsApplied;
+    const rows: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [];
+    for (let i = 1; i <= 3; i++) rows.push([`2026-07-0${i}`, { sleepH: 5.5 }, { dayScore: 2 }]);
+    for (let i = 4; i <= 6; i++) rows.push([`2026-07-0${i}`, { sleepH: 8 }, { dayScore: 4 }]);
+    const r = aggregateStats(withDays(rows), '2026-07-17').sleepVsDayScore;
     expect(r.ready).toBe(false);
     expect(r.needed).toBe(8);
     expect(r.lowAvg).toBeUndefined(); // жодних цифр, поки не набрали
   });
 
-  it('сон/подачі говорить лише коли В КОЖНОМУ кошику ≥8 днів', () => {
+  it('сон/оцінка-дня говорить лише коли В КОЖНОМУ кошику ≥8 днів', () => {
     let s = emptyStore();
-    const applied: Array<{ url: string; ts: string }> = [];
     const d = new Date('2026-06-01T00:00:00Z');
     for (let i = 0; i < 16; i++) {
       const key = d.toISOString().slice(0, 10);
       const low = i < 8;
+      // Мало спав -> оцінка дня 2; виспався -> 4.
       s = recordEvent(s, ck('morning', { sleepH: low ? 5 : 8 }), key);
-      // Виспані дні — 2 подачі, невиспані — 0.
-      if (!low) applied.push({ url: `${key}-a`, ts: key }, { url: `${key}-b`, ts: key });
+      s = recordEvent(s, ck('evening', { dayScore: low ? 2 : 4 }), key);
       d.setUTCDate(d.getUTCDate() + 1);
     }
-    s.appliedLog = applied;
-    const r = aggregateStats(s, '2026-06-16').sleepVsApplied;
+    const r = aggregateStats(s, '2026-06-16').sleepVsDayScore;
     expect(r.ready).toBe(true);
     expect(r.low).toBe(8);
     expect(r.ok).toBe(8);
-    expect(r.lowAvg).toBe(0);
-    expect(r.okAvg).toBe(2);
+    expect(r.lowAvg).toBe(2);
+    expect(r.okAvg).toBe(4);
   });
 
   it('перекошені кошики (15 проти 2) теж мовчать', () => {
@@ -267,10 +279,12 @@ describe('aggregateStats — чек-ін', () => {
     let s = emptyStore();
     const d = new Date('2026-06-01T00:00:00Z');
     for (let i = 0; i < 17; i++) {
-      s = recordEvent(s, ck('morning', { sleepH: i < 15 ? 8 : 5 }), d.toISOString().slice(0, 10));
+      const key = d.toISOString().slice(0, 10);
+      s = recordEvent(s, ck('morning', { sleepH: i < 15 ? 8 : 5 }), key);
+      s = recordEvent(s, ck('evening', { dayScore: 3 }), key);
       d.setUTCDate(d.getUTCDate() + 1);
     }
-    const r = aggregateStats(s, '2026-06-17').sleepVsApplied;
+    const r = aggregateStats(s, '2026-06-17').sleepVsDayScore;
     expect(r.ready).toBe(false);
     expect(r.low).toBe(2);
   });
@@ -290,5 +304,174 @@ describe('aggregateStats — чек-ін', () => {
     delete (legacy as Record<string, unknown>).checkins;
     expect(() => aggregateStats(legacy, '2026-07-17')).not.toThrow();
     expect(aggregateStats(legacy, '2026-07-17').checkinToday).toBeNull();
+  });
+});
+
+describe('чек-ін — нові поля 18.07 (дзеркало questions.ts ↔ CHECKIN_FIELDS)', () => {
+  it('bedtime/plan=project, ate-нові, applied/blocker-нові/helper приймаються', () => {
+    let s = recordEvent(
+      emptyStore(),
+      ck('morning', { bedtime: 'e01', plan: 'project' }),
+      '2026-07-17',
+    );
+    s = recordEvent(s, ck('afternoon', { ate: 'sport' }), '2026-07-17');
+    s = recordEvent(
+      s,
+      ck('evening', { applied: 4, blocker: 'distract', helper: 'early' }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].morning).toEqual({ bedtime: 'e01', plan: 'project' });
+    expect(s.checkins['2026-07-17'].afternoon).toEqual({ ate: 'sport' });
+    expect(s.checkins['2026-07-17'].evening).toEqual({
+      applied: 4,
+      blocker: 'distract',
+      helper: 'early',
+    });
+  });
+
+  it('невалідне значення нового enum ігнорується (не валить добу)', () => {
+    const s = recordEvent(emptyStore(), ck('morning', { bedtime: 'опівночі' }), '2026-07-17');
+    expect(s.checkins['2026-07-17']).toBeUndefined();
+  });
+
+  it('applied — ціле в межах [0,20]; дробове/поза межами відкидається', () => {
+    const s = recordEvent(emptyStore(), ck('evening', { applied: 2.5, dayScore: 4 }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].evening).toEqual({ dayScore: 4 });
+  });
+});
+
+describe('aggregateStats — нова аналітика чек-іну', () => {
+  it('sleepVsDayScore: день без dayScore у порівняння не входить', () => {
+    let s = emptyStore();
+    const d = new Date('2026-06-01T00:00:00Z');
+    // 20 днів сну БЕЗ жодної оцінки дня -> обидва кошики порожні.
+    for (let i = 0; i < 20; i++) {
+      s = recordEvent(s, ck('morning', { sleepH: i < 10 ? 5 : 8 }), d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    const r = aggregateStats(s, '2026-06-20').sleepVsDayScore;
+    expect([r.low, r.ok, r.ready]).toEqual([0, 0, false]);
+  });
+
+  it('categoryInsight: розподіл ate + сер. оцінка дня на категорію (гейт >=4 днів)', () => {
+    let s = emptyStore();
+    const d = new Date('2026-06-01T00:00:00Z');
+    // 5 днів work (оцінки 3,3,3,3,3 -> має середню), 2 дні rest (без оцінок -> null).
+    for (let i = 0; i < 5; i++) {
+      const key = d.toISOString().slice(0, 10);
+      s = recordEvent(s, ck('afternoon', { ate: 'work' }), key);
+      s = recordEvent(s, ck('evening', { dayScore: 3 }), key);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    for (let i = 0; i < 2; i++) {
+      s = recordEvent(s, ck('afternoon', { ate: 'rest' }), d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    const c = aggregateStats(s, '2026-06-16').categoryInsight;
+    expect(c.total).toBe(7);
+    expect(c.rows[0]).toEqual({ cat: 'work', n: 5, dayScore: 3 });
+    // rest — лише 2 дні (менше гейта 4) -> оцінка null, але в розподілі є.
+    expect(c.rows.find((r: { cat: string }) => r.cat === 'rest')).toEqual({
+      cat: 'rest',
+      n: 2,
+      dayScore: null,
+    });
+  });
+
+  it('categoryInsight: старі значення до v2 (apply/procrast) НЕ рахуються', () => {
+    const s = recordEvent(emptyStore(), ck('afternoon', { ate: 'work' }), '2026-07-15');
+    // Легасі-значення пишемо ПРЯМО в стор (валідатор запису їх би відкинув, але в
+    // старому KV вони лежать) — агрегат мусить їх ігнорувати, не сирим слагом.
+    s.checkins['2026-07-16'] = { afternoon: { ate: 'procrast' } };
+    s.checkins['2026-07-17'] = { afternoon: { ate: 'apply' } };
+    const c = aggregateStats(s, '2026-07-17').categoryInsight;
+    expect(c.total).toBe(1);
+    expect(c.rows).toEqual([{ cat: 'work', n: 1, dayScore: null }]);
+  });
+
+  it('appliedCalibration: matched / more(не залогував) / fewer проти appliedLog (робочі дні)', () => {
+    let s = emptyStore();
+    // Кожен день — робочий (plan='work'), бо тепер калібрація гейтиться на нього.
+    for (const day of ['2026-07-15', '2026-07-16', '2026-07-17']) {
+      s = recordEvent(s, ck('morning', { plan: 'work' }), day);
+    }
+    s = recordEvent(s, ck('evening', { applied: 2 }), '2026-07-15'); // факт 2 -> matched
+    s = recordEvent(s, ck('evening', { applied: 3 }), '2026-07-16'); // факт 1 -> more
+    s = recordEvent(s, ck('evening', { applied: 0 }), '2026-07-17'); // факт 1 -> fewer
+    s.appliedLog = [
+      { url: 'a', ts: '2026-07-15' },
+      { url: 'b', ts: '2026-07-15' },
+      { url: 'c', ts: '2026-07-16' },
+      { url: 'd', ts: '2026-07-17' },
+    ];
+    expect(aggregateStats(s, '2026-07-17').appliedCalibration).toEqual({
+      n: 3,
+      matched: 1,
+      more: 1,
+      fewer: 1,
+    });
+  });
+
+  it('appliedCalibration: applied на НЕ-робочому дні НЕ рахується (v2 гейт)', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { plan: 'rest' }), '2026-07-17');
+    s = recordEvent(s, ck('evening', { applied: 2 }), '2026-07-17');
+    expect(aggregateStats(s, '2026-07-17').appliedCalibration).toEqual({
+      n: 0,
+      matched: 0,
+      more: 0,
+      fewer: 0,
+    });
+  });
+
+  it('checkinTops: мода блокера й помічника, без none', () => {
+    let s = recordEvent(
+      emptyStore(),
+      ck('evening', { blocker: 'tired', helper: 'early' }),
+      '2026-07-15',
+    );
+    s = recordEvent(s, ck('evening', { blocker: 'tired', helper: 'list' }), '2026-07-16');
+    s = recordEvent(s, ck('evening', { blocker: 'none', helper: 'early' }), '2026-07-17');
+    const t = aggregateStats(s, '2026-07-17').checkinTops;
+    expect(t.blocker).toEqual({ value: 'tired', n: 2 });
+    expect(t.helper).toEqual({ value: 'early', n: 2 });
+  });
+
+  it('checkinTops: порожньо -> null', () => {
+    const t = aggregateStats(emptyStore(), '2026-07-17').checkinTops;
+    expect([t.blocker, t.helper]).toEqual([null, null]);
+  });
+
+  it('bedtimeVsEnergy: гейт, тоді ранкова енергія рано vs пізно (join за добою)', () => {
+    let s = emptyStore();
+    const d = new Date('2026-06-01T00:00:00Z');
+    for (let i = 0; i < 16; i++) {
+      const early = i < 8;
+      s = recordEvent(
+        s,
+        ck('morning', { bedtime: early ? 'e23' : 'late', energy: early ? 5 : 2 }),
+        d.toISOString().slice(0, 10),
+      );
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    const r = aggregateStats(s, '2026-06-16').bedtimeVsEnergy;
+    expect(r.ready).toBe(true);
+    expect([r.early, r.late]).toEqual([8, 8]);
+    expect([r.earlyAvg, r.lateAvg]).toEqual([5, 2]);
+  });
+
+  it('bedtimeVsEnergy: середина 00–01 (e01) НЕ рахується в жодному кошику', () => {
+    let s = emptyStore();
+    const d = new Date('2026-06-01T00:00:00Z');
+    for (let i = 0; i < 6; i++) {
+      // e01 із дуже низькою енергією — якби потрапляв у late, зіпсував би середнє.
+      s = recordEvent(
+        s,
+        ck('morning', { bedtime: 'e01', energy: 1 }),
+        d.toISOString().slice(0, 10),
+      );
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    const r = aggregateStats(s, '2026-06-16').bedtimeVsEnergy;
+    expect([r.early, r.late]).toEqual([0, 0]);
   });
 });

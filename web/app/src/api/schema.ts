@@ -117,22 +117,43 @@ export const masterySchema = z.object({
    Форми 1:1 зі stats-core.mjs. Поля блоків — .optional(), бо блок пишеться
    дебаунсом і цілком легально буває заповнений частково. */
 
+// 9 життєвих категорій (v2) — дзеркало CATEGORIES/CATEGORY_VALUES.
+const category = z.enum([
+  'work',
+  'learn',
+  'project',
+  'travel',
+  'chores',
+  'sport',
+  'rest',
+  'people',
+  'create',
+]);
+// ⚠️ checkinToday — це HYDRATION-дані, які міг записати СТАРІШИЙ сервер (інша
+// версія переліку: до v2 plan/ate мали apply/interview/procrast). Тому enum-поля
+// ТУТ толерантні (.catch(undefined)): невідоме значення тихо стає undefined —
+// одне поле деградує, а не валиться safeParse УСЬОГО /api/stats (це зачорнило б
+// Статистику+Вакансії до півночі для тих, хто вже зробив чек-ін до деплою).
+const lenient = <T extends z.ZodType>(s: T) => s.optional().catch(undefined);
 export const checkinMorningSchema = z.object({
   sleepH: num.optional(),
+  bedtime: lenient(z.enum(['e23', 'e00', 'e01', 'e02', 'late'])),
   energy: int.optional(),
-  plan: z.enum(['apply', 'learn', 'interview', 'rest']).optional(),
+  plan: lenient(category),
   planApply: int.optional(),
 });
 export const checkinAfternoonSchema = z.object({
-  pace: z.enum(['on', 'off', 'better']).optional(),
+  pace: lenient(z.enum(['on', 'off', 'better'])),
   energy: int.optional(),
-  ate: z.enum(['apply', 'learn', 'interview', 'chores', 'procrast']).optional(),
+  ate: lenient(category),
 });
 export const checkinEveningSchema = z.object({
   dayScore: int.optional(),
-  kept: z.enum(['yes', 'partly', 'no']).optional(),
+  kept: lenient(z.enum(['yes', 'partly', 'no'])),
+  applied: int.optional(),
   energy: int.optional(),
-  blocker: z.enum(['tired', 'anxious', 'stuck', 'external', 'none']).optional(),
+  blocker: lenient(z.enum(['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none'])),
+  helper: lenient(z.enum(['early', 'list', 'breaks', 'support', 'none'])),
 });
 export const checkinDaySchema = z.object({
   morning: checkinMorningSchema.optional(),
@@ -164,14 +185,47 @@ export const planVsFactSchema = z.object({
   planned: int.default(0),
   actual: int.default(0),
 });
-/** ready=false -> цифр НЕМА свідомо: кореляція на малій вибірці бреше впевнено. */
-export const sleepVsAppliedSchema = z.object({
+/** Пара-кошик із гейтом (ready=false -> цифр НЕМА: мала вибірка бреше впевнено).
+ *  Форма спільна для «сон -> оцінка дня» (v2). */
+export const corrPairSchema = z.object({
   ready: z.boolean().default(false),
   needed: int.default(8),
   low: int.default(0),
   ok: int.default(0),
   lowAvg: num.nullable().optional(),
   okAvg: num.nullable().optional(),
+});
+/** Куди йде час: розподіл категорій + сер. оцінка дня на категорію (null до гейта). */
+export const categoryRowSchema = z.object({
+  cat: z.string(),
+  n: int.default(0),
+  dayScore: num.nullable().default(null),
+});
+export const categoryInsightSchema = z.object({
+  total: int.default(0),
+  rows: z.array(categoryRowSchema).default([]),
+});
+/** Той самий гейт, кошики за часом відходу до сну. */
+export const bedtimeVsEnergySchema = z.object({
+  ready: z.boolean().default(false),
+  needed: int.default(8),
+  early: int.default(0),
+  late: int.default(0),
+  earlyAvg: num.nullable().optional(),
+  lateAvg: num.nullable().optional(),
+});
+/** Звірка самозвіту подач із журналом (не кореляція — без гейта). */
+export const appliedCalibrationSchema = z.object({
+  n: int.default(0),
+  matched: int.default(0),
+  more: int.default(0),
+  fewer: int.default(0),
+});
+/** Найчастіший блокер/помічник (мода за N діб) — або null, коли порожньо. */
+export const checkinTopSchema = z.object({ value: z.string(), n: int.default(0) });
+export const checkinTopsSchema = z.object({
+  blocker: checkinTopSchema.nullable().default(null),
+  helper: checkinTopSchema.nullable().default(null),
 });
 
 export const statsSchema = z.object({
@@ -227,7 +281,13 @@ export const statsSchema = z.object({
   checkinWeekly: z.array(checkinWeekSchema).default([]),
   checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
   planVsFact: z.array(planVsFactSchema).default([]),
-  sleepVsApplied: sleepVsAppliedSchema.default({ ready: false, needed: 8, low: 0, ok: 0 }),
+  // Аналітика чек-іну v2 (трекер життя). Усе .default() — старий воркер полів не
+  // віддає, а safeParse валить ЦІЛИЙ /api/stats.
+  sleepVsDayScore: corrPairSchema.default({ ready: false, needed: 8, low: 0, ok: 0 }),
+  bedtimeVsEnergy: bedtimeVsEnergySchema.default({ ready: false, needed: 8, early: 0, late: 0 }),
+  categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
+  appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
+  checkinTops: checkinTopsSchema.default({ blocker: null, helper: null }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;

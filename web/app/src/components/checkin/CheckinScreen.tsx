@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStats, useSaveCheckin } from '../../api/hooks.ts';
 import type { CheckinSlot } from '../../api/schema.ts';
-import { haptic } from '../../telegram.ts';
+import { haptic, inTelegram } from '../../telegram.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { cascade } from '../ui/Cascade.tsx';
-import { BLOCKS, isDone, type Block } from './questions.ts';
+import { BLOCKS, isDone, isWorkDay, visibleQuestions, type Block } from './questions.ts';
 
 // Таб «Чек-ін» (фідбек власника, п.7): три блоки, що відкриваються за часом.
 //
@@ -51,11 +51,13 @@ function BlockCard({
   b,
   state,
   answers,
+  workDay,
   onAnswer,
 }: {
   b: Block;
   state: State;
   answers: Answers;
+  workDay: boolean;
   onAnswer: (q: string, v: string | number) => void;
 }) {
   const label =
@@ -95,7 +97,7 @@ function BlockCard({
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3.5 px-3.5 pb-3.5">
-            {b.qs.map((q) => (
+            {visibleQuestions(b, workDay).map((q) => (
               <div key={q.id} className="flex flex-col gap-1.5">
                 <div className="text-[12.5px] font-semibold text-tx2">{q.t}</div>
                 <div className="flex flex-wrap gap-1.5">
@@ -141,9 +143,10 @@ function BlockCard({
 
       {state === 'done' && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3">
-          {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано»:
-              момент завершення вартий короткої відповіді інтерфейсу. */}
-          {b.qs
+          {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано».
+              visibleQuestions, а не b.qs: приховане джоб-число (обрав «Робота»,
+              ввів, перемкнув на іншу категорію) не мусить зринати чипом. */}
+          {visibleQuestions(b, workDay)
             .filter((q) => answers[q.id] !== undefined)
             .map((q, i) => (
               <span
@@ -180,6 +183,9 @@ export function CheckinScreen() {
   const s = data?.stats;
   const active = s?.checkinSlot ?? null;
   const server = s?.checkinToday ?? {};
+  // Демо (поза Telegram): відкриваємо ВСІ незаповнені блоки, щоб на прев'ю було
+  // видно всі питання одразу. У проді час і далі гейтить блоки (це лише огляд).
+  const demo = !inTelegram();
 
   const answersFor = (slot: CheckinSlot): Answers => ({
     ...((server[slot] ?? {}) as Answers),
@@ -208,6 +214,10 @@ export function CheckinScreen() {
     return isDone(b, answersFor(slot));
   }).length;
 
+  // Роб.день — за ранковим «головне». Керує показом опційних джоб-чисел у всіх
+  // блоках (вечірнє «скільки вийшло» теж залежить від ранкового вибору).
+  const workDay = isWorkDay(answersFor('morning'));
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -222,8 +232,13 @@ export function CheckinScreen() {
         <div key={b.id} style={cascade(i, 80)}>
           <BlockCard
             b={b}
-            state={stateOf(b, active, answersFor(b.id))}
+            state={
+              demo && !isDone(b, answersFor(b.id))
+                ? 'open'
+                : stateOf(b, active, answersFor(b.id))
+            }
             answers={answersFor(b.id)}
+            workDay={workDay}
             onAnswer={(q, v) => onAnswer(b.id, q, v)}
           />
         </div>

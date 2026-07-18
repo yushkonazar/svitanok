@@ -77,23 +77,40 @@ const CHECKIN_CAP = 365;
  * Опис полів блоку — він же валідатор.
  * `num: [min, max]` — число в межах; `int` — ще й ціле; `enum` — закритий перелік.
  */
+// Дев'ять життєвих категорій (v2, трекер життя) — дзеркало CATEGORIES у
+// web/app/src/components/checkin/questions.ts.
+const CATEGORY_VALUES = [
+  'work',
+  'learn',
+  'project',
+  'travel',
+  'chores',
+  'sport',
+  'rest',
+  'people',
+  'create',
+];
+
 const CHECKIN_FIELDS = {
   morning: {
     sleepH: { num: [0, 14] },
+    bedtime: { enum: ['e23', 'e00', 'e01', 'e02', 'late'] },
     energy: { num: [1, 5], int: true },
-    plan: { enum: ['apply', 'learn', 'interview', 'rest'] },
+    plan: { enum: CATEGORY_VALUES },
     planApply: { num: [0, 20], int: true },
   },
   afternoon: {
     pace: { enum: ['on', 'off', 'better'] },
     energy: { num: [1, 5], int: true },
-    ate: { enum: ['apply', 'learn', 'interview', 'chores', 'procrast'] },
+    ate: { enum: CATEGORY_VALUES },
   },
   evening: {
     dayScore: { num: [1, 5], int: true },
     kept: { enum: ['yes', 'partly', 'no'] },
+    applied: { num: [0, 20], int: true },
     energy: { num: [1, 5], int: true },
-    blocker: { enum: ['tired', 'anxious', 'stuck', 'external', 'none'] },
+    blocker: { enum: ['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none'] },
+    helper: { enum: ['early', 'list', 'breaks', 'support', 'none'] },
   },
 };
 
@@ -611,29 +628,35 @@ function buildPlanVsFact(checkins, appliedLog, todayKey, days = 30) {
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
     const key = d.toISOString().slice(0, 10);
-    const planned = checkins[key]?.morning?.planApply;
-    if (typeof planned === 'number') rows.push({ d: key, planned, actual: byDay[key] || 0 });
+    const m = checkins[key]?.morning;
+    // Лише РОБОЧІ дні (plan='work'): у v2 planApply опційне й показується тільки
+    // там. Без гейта на plan осиротіле число (обрав «Робота», ввів, перемкнув на
+    // «Навчання») пролазило б у джоб-рядок на не-робочому дні.
+    if (m?.plan === 'work' && typeof m.planApply === 'number') {
+      rows.push({ d: key, planned: m.planApply, actual: byDay[key] || 0 });
+    }
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return rows;
 }
 
 /**
- * Сон проти подач — ДВА кошики (мало спав / виспався), і лише якщо в кожному
- * набралось CORR_MIN_N днів. Інакше null: краще нічого, ніж вигадка.
+ * Сон проти ОЦІНКИ ДНЯ — ДВА кошики (мало спав <6.5 / виспався), і лише якщо в
+ * кожному CORR_MIN_N днів. Загальний звʼязок «як ніч впливає на день» — без
+ * привʼязки до пошуку роботи (v2). Інакше null: краще нічого, ніж вигадка.
  */
-function buildSleepVsApplied(checkins, appliedLog, todayKey, days = 60) {
-  const byDay = {};
-  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
-
+function buildSleepVsDayScore(checkins, todayKey, days = 60) {
   const low = [];
   const ok = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const key = d.toISOString().slice(0, 10);
-    const sleep = checkins[key]?.morning?.sleepH;
-    if (typeof sleep === 'number') (sleep < 6.5 ? low : ok).push(byDay[key] || 0);
+    const c = checkins[d.toISOString().slice(0, 10)];
+    const sleep = c?.morning?.sleepH;
+    const score = c?.evening?.dayScore;
+    if (typeof sleep === 'number' && typeof score === 'number') {
+      (sleep < 6.5 ? low : ok).push(score);
+    }
     d.setUTCDate(d.getUTCDate() + 1);
   }
   if (low.length < CORR_MIN_N || ok.length < CORR_MIN_N) {
@@ -647,6 +670,139 @@ function buildSleepVsApplied(checkins, appliedLog, todayKey, days = 60) {
     lowAvg: round1(avg(low)),
     okAvg: round1(avg(ok)),
   };
+}
+
+/** Скільки днів має набратись у КАТЕГОРІЇ, щоб показати її середню оцінку дня. */
+const CATEGORY_SCORE_MIN = 4;
+
+/**
+ * Куди йде час (v2): розподіл ДЕННОЇ категорії `afternoon.ate` за N діб + середня
+ * оцінка дня на категорію. Розподіл (лічильник) чесний за будь-якого N; середню
+ * оцінку показуємо лише для категорій із >=CATEGORY_SCORE_MIN оцінених днів
+ * (інакше null — та сама дисципліна «не брехати на дрібній вибірці»).
+ */
+function buildCategoryInsight(checkins, todayKey, days = 30) {
+  const buckets = {};
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[d.toISOString().slice(0, 10)];
+    const cat = c?.afternoon?.ate;
+    // Лише ВІДОМІ категорії: старі значення до v2 (apply/interview/procrast) не
+    // мусять пролазити сирим слагом у «куди йде час» і спотворювати відсотки.
+    if (typeof cat === 'string' && CATEGORY_VALUES.includes(cat)) {
+      const b = buckets[cat] || (buckets[cat] = { n: 0, scores: [] });
+      b.n++;
+      const score = c?.evening?.dayScore;
+      if (typeof score === 'number') b.scores.push(score);
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  const rows = Object.entries(buckets)
+    .map(([cat, b]) => ({
+      cat,
+      n: b.n,
+      dayScore: b.scores.length >= CATEGORY_SCORE_MIN ? round1(avg(b.scores)) : null,
+    }))
+    .sort((a, b) => b.n - a.n);
+  const total = rows.reduce((s, r) => s + r.n, 0);
+  return { total, rows };
+}
+
+/**
+ * Час відходу до сну проти РАНКОВОЇ енергії (обидва — поля ранку, тож join за
+ * тією ж добою). Рано (до 00:00) vs пізно (після 01:00); межу 00–01 не рахуємо.
+ * Гейт CORR_MIN_N — та сама дисципліна «не брехати на малій вибірці».
+ */
+function buildBedtimeVsEnergy(checkins, todayKey, days = 60) {
+  // Середину 00–01 (e01) НЕ рахуємо в жодному кошику: краї мають контрастувати,
+  // а не змазуватись (та сама логіка, що виключення нейтральної середини всюди).
+  const EARLY = new Set(['e23', 'e00']);
+  const LATE = new Set(['e02', 'late']);
+  const early = [];
+  const late = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const m = checkins[d.toISOString().slice(0, 10)]?.morning;
+    if (m && typeof m.energy === 'number' && typeof m.bedtime === 'string') {
+      if (EARLY.has(m.bedtime)) early.push(m.energy);
+      else if (LATE.has(m.bedtime)) late.push(m.energy);
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  if (early.length < CORR_MIN_N || late.length < CORR_MIN_N) {
+    return { ready: false, needed: CORR_MIN_N, early: early.length, late: late.length };
+  }
+  return {
+    ready: true,
+    needed: CORR_MIN_N,
+    early: early.length,
+    late: late.length,
+    earlyAvg: round1(avg(early)),
+    lateAvg: round1(avg(late)),
+  };
+}
+
+/**
+ * Калібрація: вечірній САМОЗВІТ подач проти appliedLog (факту). Не кореляція, а
+ * звірка per-day, тож без гейта — показуємо як planVsFact, коли є хоч день.
+ *  more  = сказав більше, ніж у журналі  -> подавав ПОЗА застосунком (не залогував)
+ *  fewer = сказав менше -> залогував зайве / плутанина з добою
+ */
+function buildAppliedCalibration(checkins, appliedLog, todayKey, days = 30) {
+  const byDay = {};
+  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
+
+  let n = 0;
+  let matched = 0;
+  let more = 0;
+  let fewer = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = d.toISOString().slice(0, 10);
+    const c = checkins[key];
+    const self = c?.evening?.applied;
+    // Лише робочі дні (plan='work'): осиротіле «скільки вийшло» на не-робочому
+    // дні не мусить потрапляти в джоб-калібрацію.
+    if (c?.morning?.plan === 'work' && typeof self === 'number') {
+      n++;
+      const obj = byDay[key] || 0;
+      if (self === obj) matched++;
+      else if (self > obj) more++;
+      else fewer++;
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return { n, matched, more, fewer };
+}
+
+/**
+ * Найчастіший блокер / помічник за N діб (мода, без 'none'). Не кореляція, а
+ * розподіл — тож без гейта, лише n=0 -> null. Оживляє blocker (доти збирався,
+ * але ніде не читався) і робить helper аналітичним.
+ */
+function buildCheckinTops(checkins, todayKey, days = 30) {
+  const bC = {};
+  const hC = {};
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const ev = checkins[d.toISOString().slice(0, 10)]?.evening;
+    if (ev) {
+      if (typeof ev.blocker === 'string' && ev.blocker !== 'none')
+        bC[ev.blocker] = (bC[ev.blocker] || 0) + 1;
+      if (typeof ev.helper === 'string' && ev.helper !== 'none')
+        hC[ev.helper] = (hC[ev.helper] || 0) + 1;
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  const top = (m) => {
+    const e = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
+    return e ? { value: e[0], n: e[1] } : null;
+  };
+  return { blocker: top(bC), helper: top(hC) };
 }
 
 /** Чек-ін по тижнях: середні сон / енергія / оцінка дня + скільки діб заповнено. */
@@ -895,6 +1051,10 @@ export function aggregateStats(store, todayKey) {
     checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
     checkinFill: buildCheckinFill(s.checkins, todayKey),
     planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),
-    sleepVsApplied: buildSleepVsApplied(s.checkins, s.appliedLog, todayKey),
+    sleepVsDayScore: buildSleepVsDayScore(s.checkins, todayKey),
+    bedtimeVsEnergy: buildBedtimeVsEnergy(s.checkins, todayKey),
+    categoryInsight: buildCategoryInsight(s.checkins, todayKey),
+    appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
+    checkinTops: buildCheckinTops(s.checkins, todayKey),
   };
 }

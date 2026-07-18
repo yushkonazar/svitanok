@@ -71,6 +71,26 @@ describe('контракт /api/stats — statsSchema', () => {
     );
     expect(statsSchema.safeParse(null).success).toBe(false);
   });
+
+  // ⚠️ Регресія чек-ін v2: звузили enum plan/ate (прибрали apply/interview/
+  // procrast). Але checkinToday — hydration стору, який міг записати СТАРІШИЙ
+  // сервер тими значеннями. Без толерантності одне старе поле завалило б
+  // safeParse УСЬОГО /api/stats -> Статистика+Вакансії чорні до півночі.
+  it('старе значення plan/ate у checkinToday деградує в поле, а не чорнить усе', () => {
+    const r = statsSchema.safeParse({
+      ...baseStats,
+      checkinToday: {
+        morning: { plan: 'apply', sleepH: 6.5 }, // 'apply' — з v1, більше не в переліку
+        afternoon: { ate: 'procrast' }, // так само легасі
+      },
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    // Невідоме значення стало undefined; валідне поле поруч уціліло.
+    expect(r.data.checkinToday?.morning?.plan).toBeUndefined();
+    expect(r.data.checkinToday?.morning?.sleepH).toBe(6.5);
+    expect(r.data.checkinToday?.afternoon?.ate).toBeUndefined();
+  });
 });
 
 describe('контракт /api/settings — settingsSchema', () => {
