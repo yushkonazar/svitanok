@@ -182,15 +182,26 @@ export function parseNewsData(json: unknown): NewsItem[] {
 interface TopicCfg {
   scope: 'world' | 'ua';
   topic: string;
-  category: string;
+  /** 'rss' — довільна стрічка (HN, GitHub Releases), НЕ витрачає кредит NewsData. */
+  source?: 'newsdata' | 'rss';
+  url?: string;
+  category?: string;
+  /** Пошук за словами — для тем, яких немає в переліку категорій NewsData. */
+  q?: string;
   country?: string;
   language: string;
 }
 
-function buildNewsUrl(apiKey: string, t: TopicCfg): string {
+/**
+ * URL теми. `category` і `q` — обидва опційні, але конфіг-схема вимагає хоч одне
+ * (тема без обох звелась би до «віддай усе підряд»). Разом вони звужують: q
+ * ставимо самотньо там, де категорії просто не існує (оборона/фронт).
+ */
+export function buildNewsUrl(apiKey: string, t: TopicCfg): string {
   const u = new URL('https://newsdata.io/api/1/latest');
   u.searchParams.set('apikey', apiKey);
-  u.searchParams.set('category', t.category);
+  if (t.category) u.searchParams.set('category', t.category);
+  if (t.q) u.searchParams.set('q', t.q);
   u.searchParams.set('language', t.language);
   if (t.country) u.searchParams.set('country', t.country);
   return u.toString();
@@ -222,10 +233,14 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
     async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
       const cfg = ctx.config.modules.news;
       const apiKey = opts.apiKey ?? optionalSecret('NEWSDATA_API_KEY');
-      if (!apiKey || cfg.topics.length === 0) {
+      // rss-теми (HN/GitHub) ключа не потребують — без NEWSDATA_API_KEY модуль
+      // не мовчить цілком, а віддає те, що дістає зі стрічок.
+      const hasRss = cfg.topics.some((t) => (t as TopicCfg).source === 'rss');
+      if (cfg.topics.length === 0 || (!apiKey && !hasRss)) {
         ctx.log.warn('news: NEWSDATA_API_KEY або topics відсутні — пропуск');
         return null;
       }
+      if (!apiKey) ctx.log.warn('news: без NEWSDATA_API_KEY — лише rss-теми');
 
       const shown = ctx.state.get<ShownNews>('shownNews') ?? {};
       const dedupCutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;
@@ -262,19 +277,31 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       const runSeen = new Set<string>(); // глобальний дедуп прогону: без повторів між темами
       const groups: Group[] = [];
       for (const t of topics) {
-        // Понад денний ліміт — стоп (не фетчимо решту тем), лічильник++ до fetch.
-        if (newsCounter.count >= DAILY_NEWS_LIMIT) {
-          newsLimitHit = true;
-          break;
+        const cfgT = t as TopicCfg;
+        const isRss = cfgT.source === 'rss';
+        // Кредит NewsData витрачають ЛИШЕ newsdata-теми. Понад денний ліміт їх
+        // пропускаємо (continue, не break) — rss-теми (HN/GitHub) коштують нуль
+        // кредитів, тож мають добігти навіть коли ліміт вичерпано.
+        let url: string;
+        if (isRss) {
+          url = cfgT.url as string;
+        } else {
+          if (!apiKey) continue; // без ключа лишаються тільки стрічки
+          if (newsCounter.count >= DAILY_NEWS_LIMIT) {
+            newsLimitHit = true;
+            continue;
+          }
+          newsCounter.count++;
+          url = buildNewsUrl(apiKey, cfgT);
         }
-        newsCounter.count++;
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         let items: NewsItem[];
         try {
-          const res = await fetchImpl(buildNewsUrl(apiKey, t as TopicCfg), { signal: ctrl.signal });
-          if (!res.ok) throw new Error(`NewsData HTTP ${res.status}`);
-          items = parseNewsData(await res.json());
+          const res = await fetchImpl(url, { signal: ctrl.signal });
+          if (!res.ok) throw new Error(`${isRss ? 'RSS' : 'NewsData'} HTTP ${res.status}`);
+          // parseRss дає {title,url} без опису — `why` у стрічок просто немає.
+          items = isRss ? parseRss(await res.text()) : parseNewsData(await res.json());
         } catch (e) {
           ctx.log.warn(`news: тема «${t.topic}» — ${e instanceof Error ? e.message : String(e)}`);
           continue;

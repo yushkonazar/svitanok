@@ -6,6 +6,7 @@ import {
   applyUrlVote,
   applyWeeklyDecay,
   createNewsModule,
+  buildNewsUrl,
   WEIGHT_MIN,
   WEIGHT_MAX,
   DAILY_NEWS_LIMIT,
@@ -13,6 +14,51 @@ import {
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+
+describe('news — buildNewsUrl (category / q)', () => {
+  const key = 'K';
+  const p = (url: string) => new URL(url).searchParams;
+
+  it('класична тема: category + language (+country)', () => {
+    const q = p(
+      buildNewsUrl(key, {
+        scope: 'ua',
+        topic: 'Головне',
+        category: 'top',
+        country: 'ua',
+        language: 'uk',
+      }),
+    );
+    expect(q.get('category')).toBe('top');
+    expect(q.get('language')).toBe('uk');
+    expect(q.get('country')).toBe('ua');
+    expect(q.get('q')).toBeNull(); // без пошуку — параметра просто немає
+  });
+
+  it('тема-пошук БЕЗ категорії (оборона): ставиться q, category відсутній', () => {
+    // NewsData не має категорії «війна/оборона» — тому пошук за словами.
+    const q = p(
+      buildNewsUrl(key, {
+        scope: 'ua',
+        topic: 'Оборона',
+        q: 'війна OR оборона OR фронт',
+        country: 'ua',
+        language: 'uk',
+      }),
+    );
+    expect(q.get('q')).toBe('війна OR оборона OR фронт');
+    expect(q.get('category')).toBeNull();
+    expect(q.get('country')).toBe('ua');
+  });
+
+  it('світова тема без country — параметр не ставиться', () => {
+    const q = p(
+      buildNewsUrl(key, { scope: 'world', topic: 'Наука', category: 'science', language: 'en' }),
+    );
+    expect(q.get('country')).toBeNull();
+    expect(q.get('language')).toBe('en');
+  });
+});
 
 describe('news — parseRss', () => {
   it('RSS 2.0 item з CDATA та сутностями', () => {
@@ -188,7 +234,10 @@ function memState(initial: Record<string, unknown> = {}): StateStore {
   };
 }
 
-function makeCtx(state: StateStore = memState(), opts: { sunday?: boolean } = {}): Ctx<AppConfig> {
+function makeCtx(
+  state: StateStore = memState(),
+  opts: { sunday?: boolean; topics?: unknown[] } = {},
+): Ctx<AppConfig> {
   const noop = () => {};
   return {
     bus: createRunBus(),
@@ -208,7 +257,9 @@ function makeCtx(state: StateStore = memState(), opts: { sunday?: boolean } = {}
           perTopic: 2,
           dedupDays: 3,
           retentionDays: 7,
-          topics: [{ scope: 'ua', topic: 'Тех', category: 'technology', language: 'uk' }],
+          topics: opts.topics ?? [
+            { scope: 'ua', topic: 'Тех', category: 'technology', language: 'uk' },
+          ],
         },
       },
     } as unknown as AppConfig,
@@ -226,6 +277,52 @@ const sample = [
 const resp = (items: unknown[]) =>
   new Response(JSON.stringify({ status: 'success', results: items }), { status: 200 });
 const mod = (f: unknown) => createNewsModule({ fetchImpl: f as typeof fetch, apiKey: 'k' });
+
+describe('news — джерело rss (HN / GitHub Releases)', () => {
+  const RSS_TOPIC = [
+    {
+      scope: 'world',
+      topic: 'Hacker News',
+      source: 'rss',
+      url: 'https://hnrss.org/frontpage',
+      language: 'en',
+    },
+  ];
+  const feed = `<rss><channel>
+      <item><title>HN one</title><link>https://news.example.com/1</link></item>
+      <item><title>HN two</title><link>https://news.example.com/2</link></item>
+    </channel></rss>`;
+  const rssResp = () => new Response(feed, { status: 200 });
+
+  it('парсить стрічку й НЕ витрачає кредит NewsData', async () => {
+    const state = memState();
+    const fetchSpy = vi.fn(async (_u: unknown) => rssResp());
+    const block = await mod(fetchSpy).run(makeCtx(state, { topics: RSS_TOPIC }));
+    const g = (block!.data as { groups: { topic: string; items: { title: string }[] }[] })
+      .groups[0]!;
+    expect(g.topic).toBe('Hacker News');
+    expect(g.items.map((i) => i.title)).toEqual(['HN one', 'HN two']);
+    // Ключове: лічильник кредитів НЕ рухався — стрічка коштує нуль. (Сам лічильник
+    // персиститься завжди, тож перевіряємо саме count, а не його відсутність.)
+    expect(state.get('newsRequests')).toEqual({ date: '2026-07-01', count: 0 });
+    // Фетчили саме URL стрічки, а не newsdata.io.
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe('https://hnrss.org/frontpage');
+  });
+
+  it('працює навіть коли денний ліміт NewsData вичерпано', async () => {
+    const state = memState({ newsRequests: { date: '2026-07-01', count: DAILY_NEWS_LIMIT } });
+    const block = await mod(vi.fn(async () => rssResp())).run(
+      makeCtx(state, { topics: RSS_TOPIC }),
+    );
+    expect(block).not.toBeNull();
+  });
+
+  it('без NEWSDATA_API_KEY модуль не мовчить — віддає стрічки', async () => {
+    const m = createNewsModule({ fetchImpl: (async () => rssResp()) as typeof fetch });
+    const block = await m.run(makeCtx(memState(), { topics: RSS_TOPIC }));
+    expect(block).not.toBeNull();
+  });
+});
 
 describe('news — пайплайн run (NewsData)', () => {
   it('топ-N, клікабельні заголовки, why з опису, scope/topic, зберігає shownNews', async () => {

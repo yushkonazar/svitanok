@@ -125,7 +125,7 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
 
 /** Демо-налаштування: те, що показує екран поза Telegram (нічого не персиститься). */
 const DEMO_SETTINGS: SettingsResponse = {
-  settings: { quiet: { enabled: false, from: '22:00', to: '08:00' }, modules: {} },
+  settings: { quiet: { enabled: false, from: '22:00', to: '08:00' }, modules: {}, mutedTopics: [] },
   connectors: { google: true, calendar: true, gmail: true },
 };
 

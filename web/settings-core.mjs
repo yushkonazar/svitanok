@@ -10,7 +10,8 @@
 //
 // Форма:
 //   { quiet: { enabled: bool, from: "HH:MM", to: "HH:MM" },
-//     modules: { <id>: bool, … } }   // лише явні оверрайди
+//     modules: { <id>: bool, … },    // лише явні оверрайди
+//     mutedTopics: [ "<тема>", … ] }  // приглушені теми новин
 
 /**
  * Модулі брифінгу, які власник може вмикати/вимикати з Mini App.
@@ -38,8 +39,11 @@ const DEFAULT_QUIET = { enabled: false, from: '22:00', to: '08:00' };
  * який про це не просив. Вмикається явним перемиканням.
  */
 export function emptySettings() {
-  return { quiet: { ...DEFAULT_QUIET }, modules: {} };
+  return { quiet: { ...DEFAULT_QUIET }, modules: {}, mutedTopics: [] };
 }
+
+/** Стеля списку приглушених тем — блоб налаштувань не має рости безмежно. */
+const MUTED_TOPICS_CAP = 40;
 
 /** "HH:MM" -> хвилини від опівночі (0..1439); невалідне -> null. */
 export function parseHhmm(v) {
@@ -73,6 +77,14 @@ export function normalizeSettings(raw) {
     if (typeof rawMods[id] === 'boolean') modules[id] = rawMods[id];
   }
 
+  // Приглушені теми новин: лише непорожні рядки, без дублів, із капом. Імена тем
+  // приходять із config.yml (display-назва), тож перелік ТУТ не зашитий — інакше
+  // кожна нова тема вимагала б правки ще й цього файлу.
+  const rawMuted = Array.isArray(raw.mutedTopics) ? raw.mutedTopics : [];
+  const mutedTopics = [
+    ...new Set(rawMuted.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())),
+  ].slice(0, MUTED_TOPICS_CAP);
+
   return {
     quiet: {
       enabled: q.enabled === true,
@@ -80,6 +92,7 @@ export function normalizeSettings(raw) {
       to: to === null ? e.quiet.to : fmtHhmm(to),
     },
     modules,
+    mutedTopics,
   };
 }
 

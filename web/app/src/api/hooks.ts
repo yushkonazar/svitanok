@@ -419,6 +419,9 @@ export function useSaveSettings() {
               settings: {
                 quiet: { ...old.settings.quiet, ...(patch.quiet ?? {}) },
                 modules: { ...old.settings.modules, ...(patch.modules ?? {}) },
+                // mutedTopics — ПОВНА заміна, не мердж: патч несе весь новий
+                // список, інакше зняти приглушення було б неможливо.
+                mutedTopics: patch.mutedTopics ?? old.settings.mutedTopics,
               },
             }
           : old,

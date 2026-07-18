@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useBriefing } from '../../api/hooks.ts';
+import { useBriefing, useSettings } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
 import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
 import { Segmented } from '../ui/Segmented.tsx';
@@ -26,6 +26,7 @@ const NewsIcon = (
 export function NewsScreen() {
   const [scope, setScope] = useState<Scope>('world');
   const { data, isLoading, isError, error, refetch } = useBriefing();
+  const { data: settings } = useSettings();
 
   if (isLoading) return <LoadingSkeleton />;
   if (isError || !data) {
@@ -38,7 +39,10 @@ export function NewsScreen() {
   }
 
   const news = readBlock(data.brief.blocks, 'news', newsDataSchema);
-  const visible = (news?.groups ?? []).filter((g) => g.scope === scope);
+  // Приглушені теми ховаємо і тут: серверний ефект настане лише в НАСТУПНОМУ
+  // брифінгу, а вже згенерований усе одно містить теми, які власник щойно вимкнув.
+  const muted = new Set(settings?.settings.mutedTopics ?? []);
+  const visible = (news?.groups ?? []).filter((g) => g.scope === scope && !muted.has(g.topic));
 
   return (
     <div className="flex flex-col gap-4">

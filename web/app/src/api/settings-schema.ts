@@ -17,6 +17,8 @@ export const settingsSchema = z.object({
   /** Лише ЯВНІ оверрайди; відсутній id = дефолт config.yml (для перемикних — увімкнено). */
   // zod 4: обидві схеми обовʼязкові (див. коментар у schema.ts). Ключ — id модуля.
   modules: z.record(z.string(), z.boolean()).default({}),
+  /** Приглушені теми новин (display-назви). Оркестратор ріже їх ДО запиту. */
+  mutedTopics: z.array(z.string()).default([]),
 });
 
 export const connectorsSchema = z.object({
@@ -38,4 +40,6 @@ export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
 export interface SettingsPatch {
   quiet?: Partial<Settings['quiet']>;
   modules?: Record<string, boolean>;
+  /** ПОВНИЙ новий список (не дельта) — тем мало, зводити дельту нема сенсу. */
+  mutedTopics?: string[];
 }
