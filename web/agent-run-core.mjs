@@ -32,6 +32,10 @@ export const AGENT_RUN_TTL_MS = 5 * 60_000;
 
 const TOKEN_VERSION = 1;
 
+/** Кап тексту користувача в токені. Той самий MAX_USER_TEXT, що й у промпті
+ *  (worker.js) — токен їздить у кожному кроці, роздувати його нічим. */
+const MAX_TOKEN_USER_TEXT = 500;
+
 /* ── base64url без padding'у (btoa/atob є і в Worker'і, і в Node ≥16) ────── */
 
 function b64urlEncode(bytes) {
@@ -84,6 +88,14 @@ async function sign(secret, payloadB64) {
  *       міг перенаправити відповідь у інший чат)
  *   m — message_id повідомлення «⏳ Працюю…» (щоб прибрати його на фініші)
  *   s — номер кроку, e — момент протухання (epoch ms)
+ *   u — текст користувача
+ *
+ * Навіщо `u` тут, а не в KV: історію розмови пишемо ОДНИМ записом на фініші
+ * (як і до переходу — провалений обмін не має отруювати контекст наступних).
+ * Для цього фінішу потрібен вихідний текст користувача, а KV не має
+ * read-your-writes: марка, покладена на старті, могла б бути ще не видною
+ * через 5 секунд. У підписаному токені текст їде з прогоном і підробці не
+ * піддається.
  */
 export async function mintRunToken(
   secret,
@@ -92,6 +104,7 @@ export async function mintRunToken(
     chatId,
     threadId = null,
     progressMsgId = null,
+    userText = '',
     step = 0,
     nowMs = Date.now(),
     ttlMs = AGENT_RUN_TTL_MS,
@@ -103,6 +116,7 @@ export async function mintRunToken(
     c: chatId,
     t: threadId ?? null,
     m: progressMsgId ?? null,
+    u: String(userText ?? '').slice(0, MAX_TOKEN_USER_TEXT),
     s: step,
     e: nowMs + ttlMs,
   };
@@ -160,6 +174,7 @@ export async function verifyRunToken(secret, token, nowMs = Date.now()) {
       chatId: claims.c,
       threadId: claims.t ?? null,
       progressMsgId: claims.m ?? null,
+      userText: typeof claims.u === 'string' ? claims.u : '',
       step: claims.s,
       expMs: claims.e,
     },
@@ -182,6 +197,7 @@ export async function nextRunToken(secret, claims) {
     c: claims.chatId,
     t: claims.threadId ?? null,
     m: claims.progressMsgId ?? null,
+    u: claims.userText ?? '',
     s: step,
     e: claims.expMs, // початкове протухання, НЕ поновлюємо — див. коментар вище
   };

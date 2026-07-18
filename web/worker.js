@@ -70,22 +70,32 @@ import {
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
+  ASSISTANT_MODEL,
   ASSISTANT_ROUNDS_REPLY,
   ASSISTANT_EMPTY_REPLY,
-  ASSISTANT_TIME_REPLY,
+  ASSISTANT_STALLED_REPLY,
+  ASSISTANT_WORKING_REPLY,
+  ASSISTANT_FALLBACK_REPLY,
   assistantErrorReply,
   clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
-  pickAssistantModel,
   sanitizeProposal,
   formatProposalMessage,
   buildProposalCallbackData,
   parseProposalCallbackData,
 } from './agent-core.mjs';
 import {
+  AGENT_MAX_STEPS,
+  AGENT_RUN_TTL_MS,
+  mintRunToken,
+  verifyRunToken,
+  nextRunToken,
+} from './agent-run-core.mjs';
+import {
   buildOwnDataDigest,
   formatMailForPrompt,
+  formatMailBodyForPrompt,
   sanitizeMailQuery,
 } from './assistant-data-core.mjs';
 import { renderHistoryForPrompt, appendTurn } from './assistant-memory-core.mjs';
@@ -866,6 +876,7 @@ async function readMail(env, rawQuery) {
           const get = (name) =>
             headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
           return {
+            id,
             from: get('from'),
             subject: get('subject'),
             date: get('date'),
@@ -880,6 +891,85 @@ async function readMail(env, rawQuery) {
     return msgs.filter(Boolean);
   } catch (err) {
     console.error('gmail read failed', err.message);
+    return null;
+  }
+}
+
+/* ── Повне тіло одного листа (дія readMailBody) ───────────────────────────
+   Власник дозволив тіла листів у контексті агента (18.07.2026). Читаємо рівно
+   ОДИН лист за id, який модель узяла зі списку readMail — не тіла всіх п'яти
+   наосліп: бюджет промпту лишається передбачуваним, а найненадійніше джерело
+   даних (текст пише хтось чужий) потрапляє в контекст дозовано. */
+
+/** Рекурсивно знайти перше text/plain-тіло в дереві частин MIME (fallback — text/html). */
+function pickMailPart(payload) {
+  const walk = (node, mime) => {
+    if (!node) return null;
+    if (node.mimeType === mime && node.body?.data) return node.body.data;
+    for (const part of node.parts ?? []) {
+      const found = walk(part, mime);
+      if (found) return found;
+    }
+    return null;
+  };
+  return { plain: walk(payload, 'text/plain'), html: walk(payload, 'text/html') };
+}
+
+/** base64url (Gmail) -> текст; биття -> ''. */
+function decodeMailData(data) {
+  try {
+    const bin = atob(String(data).replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes); // листи бувають у UTF-8, не latin1
+  } catch {
+    return '';
+  }
+}
+
+/** Грубо зняти теги з HTML-листа, коли text/plain-частини немає. */
+function stripHtml(html) {
+  return String(html)
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+/** Повний лист за id -> {from,subject,date,body} | null (немає доступу/не знайдено). */
+async function readMailBody(env, messageId) {
+  const token = await googleAccessToken(env);
+  if (!token) return null;
+  try {
+    // messageId уже провалідовано в extractAssistantAction (^[A-Za-z0-9_-]{1,128}$),
+    // але encodeURIComponent тут усе одно — інваріант, а не подвійна робота.
+    const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      console.error('gmail body HTTP', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    const j = await res.json();
+    const headers = j?.payload?.headers ?? [];
+    const get = (name) => headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
+    const { plain, html } = pickMailPart(j?.payload);
+    const raw = plain
+      ? decodeMailData(plain)
+      : html
+        ? stripHtml(decodeMailData(html))
+        : decodeMailData(j?.payload?.body?.data ?? '');
+    return {
+      from: get('from'),
+      subject: get('subject'),
+      date: get('date'),
+      body: raw,
+    };
+  } catch (err) {
+    console.error('gmail body read failed', err.message);
     return null;
   }
 }
@@ -1012,30 +1102,12 @@ const UNKNOWN_REPLY =
 const REMINDER_HELP =
   '🤔 Не зрозумів час. Приклади: "через 20 хвилин", "завтра о 10:00", "о 15:30".';
 
-// Обмежена кількість раундів агента (Блок P2b) — кожен раунд до 25с
-// (callLlmHost-таймаут); readCalendar->рішення реалістично влазить у 3.
-const MAX_ROUNDS = 3;
-
-/**
- * Скільки часу агент має на ВЕСЬ ланцюжок, перш ніж сам чесно здасться.
- *
- * Чому це взагалі потрібно: Worker живе у ctx.waitUntil і Cloudflare убиває його
- * МОВЧКИ — без винятку, без логу, без відповіді користувачу. Емпірика власника:
- * 2 раунди (~17с) відповідають, 3 раунди з поштою+календарем (~25-30с) дають
- * ПОВНУ тишу, хоча кожен крок окремо працює. Тобто впираємось у стелю платформи,
- * а не в логіку.
- *
- * Тож ставимо власний дедлайн ІЗ ЗАПАСОМ і завершуємось самі: краще чесне
- * «не встиг, розбий на кроки», ніж мовчанка, яку неможливо ні зрозуміти, ні
- * задіагностувати.
- */
-const AGENT_DEADLINE_MS = 18_000;
-// Модель асистента обирає pickAssistantModel(userText) (SL1): дефолт haiku,
-// sonnet лише для планувальних запитів — щоб не проїдати спільний пул підписки
-// Pro (та сама, що дев-робота власника). Reminder-rewrite лишається на haiku.
-// Кап тексту користувача в transcript (ревʼю CM): сума історія(≤500)+дайджест
-// (≤1500)+календар(≤900)+пошта(≤900)+текст має лишатись під MAX_PROMPT_LEN хоста
-// (6000 після B4); фінальний запобіжник — clipTranscript (agent-core.mjs).
+// Раундів і дедлайну агента більше немає: цикл переїхав на хост (варіант Б), де
+// час не обмежений. Запобіжники тепер — AGENT_MAX_STEPS і AGENT_RUN_TTL_MS
+// (agent-run-core.mjs), обидва зашиті в підписаний ран-токен.
+//
+// Кап тексту користувача: іде і в промпт, і в ран-токен (той їздить у кожному
+// зворотному виклику хоста, тож роздувати його нічим).
 const MAX_USER_TEXT = 500;
 // ASSISTANT_FALLBACK_REPLY тепер живе в agent-core.mjs — поруч із рештою текстів
 // відмов (assistantErrorReply), щоб «не зміг розібратись» лишався ОДНИМ із
@@ -1190,19 +1262,194 @@ async function cancelReminderByText(env, parsed, matchText) {
   return sendText(`🗑 Скасував нагадування: ${matches[0].text}`);
 }
 
+/* ══ Агент: цикл живе на ХОСТІ (варіант Б) ═══════════════════════════════════
+   Доти Worker сам крутив цикл раундів у ctx.waitUntil — і впирався в стелю
+   платформи: Cloudflare убиває фонову роботу МОВЧКИ на ~25-30с (бісект власника:
+   2 раунди відповідають, 3 дають повну тишу). Паліатив AGENT_DEADLINE_MS=18с
+   прибрав мовчанку, але ланцюжок «знайди лист І заплануй» лишався неможливим.
+
+   Тепер:
+     1. Worker шле «⏳ Працюю…», мінтить ран-токен і робить ОДИН POST на хост,
+        який одразу віддає 202 -> waitUntil завершується за ~300мс, евікшену немає.
+     2. Хост крутить цикл біля claude CLI без обмеження часу. Потрібен
+        інструмент -> POST назад у /api/agent-step -> Worker виконує (секрети є
+        лише в нього) і повертає текст для транскрипту + токен наступного кроку.
+     3. Термінальна дія -> Worker виконує її, прибирає «⏳» і відповідає власнику.
+
+   ⚠️ Хост НЕ знає переліку дій: системний промпт і JSON-схему йому дає Worker у
+   тому ж POST. Тому додати агентові вміння = правка ЛИШЕ Worker'а, без редеплою
+   VPS, і скомпрометований хост не отримує ширших повноважень, ніж модель мала
+   й до переходу (`extractAssistantAction` — той самий allowlist, що й раніше). */
+
+/** Марки активних прогонів (сторож у scheduled()). Окремий KV-ключ від `state`
+ *  з того самого мотиву, що sentMessages: писар на кожен запит не має ділити
+ *  гонку з reminders/roadmapProgress. */
+const AGENT_RUNS_KEY = 'agentRuns';
+/** Прогін вважається обірваним, коли токен уже мертвий, а фінішу так і не було. */
+const AGENT_RUN_STALE_MS = AGENT_RUN_TTL_MS + 60_000;
+/** Скільки тримати «надгробки» завершених прогонів (щоб не тарабанити алерт). */
+const AGENT_RUN_KEEP_MS = 60 * 60_000;
+const MAX_TRACKED_RUNS = 12;
+
+async function loadAgentRuns(env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get(AGENT_RUNS_KEY)) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Прибрати старе + втримати кап (найсвіжіші за startedMs/finishedMs). */
+function pruneAgentRuns(runs, nowMs) {
+  const entries = Object.entries(runs).filter(([, r]) => {
+    const t = Number(r?.finishedMs ?? r?.startedMs);
+    return Number.isFinite(t) && nowMs - t < AGENT_RUN_KEEP_MS;
+  });
+  entries.sort((a, b) => Number(b[1]?.startedMs ?? 0) - Number(a[1]?.startedMs ?? 0));
+  return Object.fromEntries(entries.slice(0, MAX_TRACKED_RUNS));
+}
+
+async function markRunStarted(env, runId, info) {
+  try {
+    const runs = await loadAgentRuns(env);
+    runs[runId] = info;
+    await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, info.startedMs)));
+  } catch (e) {
+    // Best-effort: марка потрібна лише сторожу. Збій KV не сміє зірвати запит.
+    console.error('agentRuns mark start failed (не блокує прогін)', e);
+  }
+}
+
 /**
- * LLM tool-use агент (Блок P2b, 🤖Асистент): Worker сам оркеструє обмежений
- * цикл раундів callLlmHost — host/ навмисно stateless, без справжнього
- * tool-calling усередині CLI (`--tools ''` — задокументована найважливіша
- * межа безпеки хоста, host/llm-host-core.mjs) — тому кожен раунд модель
- * обирає РІВНО ОДНУ дію зі схеми ASSISTANT_ACTION_SCHEMA, Worker виконує її
- * детерміновано. readCalendar дописує результат у transcript і триває цикл;
- * решта дій (createReminder/proposeCalendarChanges/reply) — термінальні.
+ * Позначити прогін завершеним.
+ *
+ * ⚠️ НЕ видаляємо запис, а ставимо `finishedMs`-надгробок. KV не має
+ * read-your-writes: читання тут цілком може ще не бачити марки, покладеної
+ * 5 секунд тому на старті. Видалення в такому разі було б no-op -> марка
+ * лишалась би «незавершеною» -> сторож через 6 хвилин слав би ХИБНИЙ алерт про
+ * обірваний запит. Надгробок же виживає в обох порядках: навіть якщо запис
+ * старту загубився, сторож бачить finishedMs і мовчить.
+ */
+async function markRunFinished(env, runId, nowMs = Date.now()) {
+  if (!runId) return;
+  try {
+    const runs = await loadAgentRuns(env);
+    runs[runId] = { ...(runs[runId] ?? {}), finishedMs: nowMs };
+    await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
+  } catch (e) {
+    console.error('agentRuns mark finish failed', e);
+  }
+}
+
+/**
+ * URL роуту циклу на хості. LLM_HOST_URL указує на `/llm` (одноразовий виклик),
+ * цикл живе поруч на `/agent`. Виводимо з наявного секрету, щоб перехід не
+ * вимагав від власника заводити ще один; LLM_HOST_AGENT_URL — явний обхід, якщо
+ * колись знадобиться інша адреса.
+ */
+function agentHostUrl(env) {
+  if (env.LLM_HOST_AGENT_URL) return env.LLM_HOST_AGENT_URL;
+  if (!env.LLM_HOST_URL) return null;
+  return /\/llm\/?$/.test(env.LLM_HOST_URL)
+    ? env.LLM_HOST_URL.replace(/\/llm\/?$/, '/agent')
+    : `${env.LLM_HOST_URL.replace(/\/$/, '')}/agent`;
+}
+
+/**
+ * Запустити прогін на хості: POST і одразу назад. Хост мусить відповісти 202 ДО
+ * того, як почне думати — інакше ми знову чекали б у waitUntil і повернулись би
+ * до тієї самої мовчанки. Форма відповіді при збої — як у callLlmHost, щоб
+ * assistantErrorReply класифікувала причину тим самим кодом.
+ */
+async function startAgentRun(env, payload) {
+  const url = agentHostUrl(env);
+  if (!url || !env.LLM_HOST_SECRET) return { ok: false, status: 0, error: 'not-configured' };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-llm-host-secret': env.LLM_HOST_SECRET },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const raw = await res.text().catch(() => '');
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      /* не-JSON (проксі/502-сторінка) */
+    }
+    if (!res.ok || !data?.ok) {
+      console.error('agent start HTTP', res.status, raw.slice(0, 300));
+      return {
+        ok: false,
+        status: res.status,
+        error: typeof data?.error === 'string' ? data.error : `http-${res.status}`,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('agent start failed', err?.message);
+    return { ok: false, status: 0, error: err?.name === 'AbortError' ? 'timeout' : 'offline' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** message_id щойно надісланого повідомлення; null, якщо Telegram не дав. */
+async function messageIdOf(res) {
+  try {
+    const j = await res.clone().json();
+    const id = j?.result?.message_id;
+    return typeof id === 'number' ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Тихо прибрати повідомлення «⏳ Працюю…» — його відмова нічого не ламає. */
+async function deleteProgressMessage(env, chatId, messageId) {
+  if (typeof messageId !== 'number') return;
+  try {
+    await tgCall(env, 'deleteMessage', { chat_id: chatId, message_id: messageId });
+  } catch (e) {
+    console.error('progress delete failed (не блокує відповідь)', e?.message);
+  }
+}
+
+/**
+ * Записати обмін у памʼять треду. Викликається ЛИШЕ на успішному фініші — як і
+ * до переходу: провалений (часто оверсайз) обмін інакше отруював би контекст
+ * наступних повідомлень. Текст користувача приїхав у підписаному токені, тож
+ * KV-розсинхрон не може його загубити.
+ */
+async function rememberExchange(env, claims, assistantSummary) {
+  try {
+    let h = await loadAssistantHistory(env);
+    h = appendTurn(h, claims.chatId, claims.threadId, 'user', claims.userText);
+    h = appendTurn(h, claims.chatId, claims.threadId, 'assistant', assistantSummary);
+    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+  } catch (e) {
+    console.error('assistantHistory write failed (не блокує відповідь)', e);
+  }
+}
+
+/**
+ * Новий вхід у агента: жодного циклу — надіслати «⏳», віддати роботу хосту.
+ * Уся тривала частина живе на VPS, тож ця функція завершується за ~300мс.
  */
 async function runAssistantAgent(env, parsed, userText) {
   const sendText = sendTo(env, parsed);
   if (!userText || !userText.trim()) return sendText(UNKNOWN_REPLY); // стікер/фото/порожнє — не LLM
-  if (!env.LLM_HOST_URL) return sendText(UNKNOWN_REPLY); // хост не налаштований — graceful
+  if (!agentHostUrl(env) || !env.LLM_HOST_SECRET) return sendText(UNKNOWN_REPLY); // хост не налаштований
+  // Без цього секрету нічим підписати ран-токен — а без токена зворотні виклики
+  // хоста не мали б доказу, що прогін почав Worker. Краще чесна заглушка.
+  if (!env.TELEGRAM_WEBHOOK_SECRET) {
+    console.error('assistant: немає TELEGRAM_WEBHOOK_SECRET — ран-токен не підписати');
+    return sendText(UNKNOWN_REPLY);
+  }
 
   const nowMs = Date.now();
   const priorContext = renderHistoryForPrompt(
@@ -1210,129 +1457,264 @@ async function runAssistantAgent(env, parsed, userText) {
     parsed.chatId,
     parsed.threadId,
   );
-  // Зберегти обмін у памʼять треду (CM): перечитуємо перед put (merge-before-flush,
-  // той самий патерн, що /clear) — щоб конкурентний запис у ті ж секунди не
-  // затерло. assistantSummary — короткий опис відповіді для контексту наступних
-  // реплік (для reply — сам текст; для дій — маркер типу дії).
-  const remember = async (assistantSummary) => {
-    let h = await loadAssistantHistory(env);
-    h = appendTurn(h, parsed.chatId, parsed.threadId, 'user', userText);
-    h = appendTurn(h, parsed.chatId, parsed.threadId, 'assistant', assistantSummary);
-    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+  const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
+  const transcript = clipTranscript(`${priorContext}Користувач написав: "${userMsg}"`);
+
+  // «⏳» ПЕРЕД стартом: ланцюжок може тривати десятки секунд, і мовчазний чат у
+  // цей час читається як «зламалось». message_id запамʼятовуємо в токені, щоб
+  // прибрати повідомлення, коли прийде справжня відповідь.
+  const progressMsgId = await messageIdOf(await sendText(ASSISTANT_WORKING_REPLY));
+
+  const runId = crypto.randomUUID().slice(0, 8);
+  const token = await mintRunToken(env.TELEGRAM_WEBHOOK_SECRET, {
+    runId,
+    chatId: parsed.chatId,
+    threadId: parsed.threadId ?? null,
+    progressMsgId,
+    userText: userMsg,
+    nowMs,
+  });
+
+  await markRunStarted(env, runId, {
+    startedMs: nowMs,
+    chatId: parsed.chatId,
+    threadId: parsed.threadId ?? null,
+    progressMsgId,
+  });
+
+  const started = await startAgentRun(env, {
+    token,
+    transcript,
+    systemPrompt: buildAssistantSystemPrompt(nowMs),
+    jsonSchema: ASSISTANT_ACTION_SCHEMA,
+    model: ASSISTANT_MODEL,
+  });
+  if (started.ok) return; // далі веде хост — відповідь прийде через /api/agent-step
+
+  // Хост не взяв запит: марку знімаємо самі (сторожу нема чого чекати), а «⏳»
+  // переписуємо на чесну причину замість того, щоб лишити його висіти.
+  await markRunFinished(env, runId);
+  const text = assistantErrorReply(started, nowMs);
+  if (typeof progressMsgId === 'number') {
+    const res = await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: progressMsgId,
+      text,
+    });
+    if (res.ok) return res;
+  }
+  return sendText(text);
+}
+
+/**
+ * Виконати ЧИТАЛЬНУ дію -> текст для транскрипту. Усі три джерела (календар,
+ * власні дані, пошта) — ЛИШЕ ДАНІ для моделі: вміст плющиться в один рядок у
+ * assistant-data-core (щоб не підробив розділювачі транскрипту), а системний
+ * промпт окремо попереджає не виконувати команди звідти.
+ */
+async function runReadAction(env, action, nowMs) {
+  if (action.action === 'readMail') {
+    return formatMailForPrompt(await readMail(env, action.mailQuery));
+  }
+  if (action.action === 'readMailBody') {
+    return formatMailBodyForPrompt(await readMailBody(env, action.mailId));
+  }
+  if (action.action === 'readOwnData') {
+    // Читаємо всі три блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
+    // лише потрібне за scope) — простіше за розгалуження по scope.
+    const [state, stats, latest] = await Promise.all([
+      loadState(env),
+      loadStats(env),
+      loadLatest(env),
+    ]);
+    const todayKey = kyivDateKey(new Date(nowMs));
+    const digest = buildOwnDataDigest({
+      scope: action.dataScope,
+      reminders: state.reminders,
+      agg: aggregateStats(stats, todayKey),
+      roadmap: totalProgress(state.roadmapProgress ?? {}),
+      latest,
+      todayKey,
+    });
+    return `Твої дані: ${digest}`;
+  }
+  // readCalendar — Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на
+  // інстант — те ламається на DST-переході). Один день -> formatEventsForPrompt
+  // (без дати), діапазон -> formatRangeEventsForPrompt (кожна подія з DD.MM).
+  const today = kyivDateKey(new Date(nowMs));
+  const startKey = addDaysToDateKey(today, action.startDay);
+  const endKey = addDaysToDateKey(today, action.endDay);
+  const events = await readCalendarRange(env, startKey, endKey);
+  const single = action.startDay === action.endDay;
+  const label = single ? startKey : `${startKey}…${endKey}`;
+  const body = single
+    ? formatEventsForPrompt(events ?? [])
+    : formatRangeEventsForPrompt(events ?? []);
+  return `Календар (${label}): ${body}`;
+}
+
+/** На передостанньому кроці прямо кажемо, що читань більше не буде — інакше
+ *  зайве читання зʼїдає останній крок і вбиває весь запит. */
+const AGENT_LAST_STEP_NUDGE =
+  '\n\nЦе ОСТАННІЙ крок: більше читати не можна. Дай ФІНАЛЬНУ дію ' +
+  '(proposeCalendarChanges / createReminder / reply) з тим, що вже маєш.';
+
+/**
+ * POST /api/agent-step — зворотний виклик хоста (варіант Б).
+ *
+ * ДВА незалежні докази потрібні, щоб цей ендпоінт щось зробив:
+ *   1. `X-Llm-Host-Secret` — «запит справді від нашого хоста»;
+ *   2. ран-токен, підписаний worker-only ключем — «крок належить прогонові, який
+ *      Worker сам почав у відповідь на повідомлення власника».
+ * Другий доказ і є межею: без нього скомпрометований хост міг би сам заводити
+ * прогони й, скажімо, качати пошту (відповідь-бо йде йому ж).
+ *
+ * Тіло: {token, structured} — дія від моделі, або {token, failure} — хост здався.
+ * Відповідь: {done:true} | {done:false, append, token} (текст у транскрипт + токен
+ * наступного кроку).
+ */
+async function handleAgentStep(request, env) {
+  if (!env.LLM_HOST_SECRET || !env.TELEGRAM_WEBHOOK_SECRET) {
+    return json({ ok: false, error: 'not-configured' }, 503);
+  }
+  if (!verifyWebhookSecret(request.headers.get('X-Llm-Host-Secret'), env.LLM_HOST_SECRET)) {
+    return json({ ok: false, error: 'bad-secret' }, 401);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: 'bad-json' }, 400);
+  }
+
+  const nowMs = Date.now();
+  const verified = await verifyRunToken(env.TELEGRAM_WEBHOOK_SECRET, body?.token, nowMs);
+  if (!verified.ok) {
+    // Протухлий/переступлений токен — не аварія: сторож дожене прогін і сам
+    // відзвітує власнику. Хосту кажемо зупинитись.
+    console.error('agent-step: токен відхилено —', verified.error);
+    return json({ ok: false, error: verified.error, done: true }, 401);
+  }
+  const claims = verified.claims;
+  const parsed = { chatId: claims.chatId, threadId: claims.threadId };
+
+  /** Спільний фінал: прибрати «⏳», віддати відповідь, записати памʼять, зняти марку. */
+  const finish = async (send, assistantSummary) => {
+    await deleteProgressMessage(env, claims.chatId, claims.progressMsgId);
+    await send();
+    if (assistantSummary) await rememberExchange(env, claims, assistantSummary);
+    await markRunFinished(env, claims.runId, nowMs);
+    return json({ ok: true, done: true });
   };
 
-  const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
-  const model = pickAssistantModel(userText); // SL1: haiku за замовч., sonnet для планування
-  let transcript = `${priorContext}Користувач написав: "${userMsg}"`;
-  const startedMs = Date.now();
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    // Встигаємо ще один раунд? Якщо ні — здаємось САМІ, поки є час відповісти.
-    const leftMs = AGENT_DEADLINE_MS - (Date.now() - startedMs);
-    if (round > 0 && leftMs < 3_000) {
-      console.error(`assistant: бюджет ${AGENT_DEADLINE_MS}мс вичерпано на раунді ${round}`);
-      return sendText(ASSISTANT_TIME_REPLY);
-    }
-    // На ОСТАННЬОМУ раунді читання вже не має сенсу: його результат нікуди не
-    // піде — цикл одразу впаде у «заплутався в кроках». Тому прямо кажемо, що
-    // читань більше не буде. Ланцюжок «знайди лист -> заплануй подію» вимагає
-    // readMail + фінальної дії, тобто впритул до MAX_ROUNDS: без цього натяку
-    // будь-яке зайве читання зʼїдало останній крок і вбивало весь запит.
-    const lastRound = round === MAX_ROUNDS - 1;
-    const nudge = lastRound
-      ? '\n\nЦе ОСТАННІЙ крок: більше читати не можна. Дай ФІНАЛЬНУ дію ' +
-        '(proposeCalendarChanges / createReminder / reply) з тим, що вже маєш.'
-      : '';
-    const res = await callLlmHost(env, {
-      // clipTranscript — запобіжник бюджету (B3): за 3 раунди агент може дописати
-      // календар + own-data + пошту; перевищення MAX_PROMPT_LEN хоста дало б 400 і
-      // мовчазний фолбек замість відповіді.
-      prompt: clipTranscript(transcript) + nudge,
-      systemPrompt: buildAssistantSystemPrompt(nowMs),
-      jsonSchema: ASSISTANT_ACTION_SCHEMA,
-      model,
-      // Лишаємо ~2с на саму відправку відповіді.
-      timeoutMs: Math.max(1000, leftMs - 2_000),
-    });
-    const action = extractAssistantAction(res?.structured);
-    // Хост недоступний/невалідна дія -> чесний фолбек. Тепер текст залежить від
-    // ПРИЧИНИ (A1): вичерпані ліміти підписки / rate-limit / таймаут / хост лежить
-    // / модель віддала дурню. Історію НЕ чіпаємо (ревʼю CM): провалений (часто
-    // оверсайз) обмін інакше отруював би priorContext наступних повідомлень і
-    // сузив би бюджет ще більше (компаундинг).
-    if (!action) return sendText(assistantErrorReply(res, nowMs));
+  const sendText = sendTo(env, parsed);
 
-    if (action.action === 'reply') {
-      // Порожній replyText — окремий текст + лог: доти він був неотличимий від
-      // «вичерпані раунди», і скрін власника нічого не підказував.
-      if (!action.replyText) console.error('assistant: reply без replyText');
-      const text = action.replyText || ASSISTANT_EMPTY_REPLY;
-      await remember(text);
-      return sendText(text);
-    }
-    if (action.action === 'createReminder') {
-      await remember('[поставив нагадування]');
-      return createReminderFromText(env, parsed, action.reminderText);
-    }
-    if (action.action === 'cancelReminder') {
-      await remember('[скасував нагадування]');
-      return cancelReminderByText(env, parsed, action.reminderText);
-    }
-    if (action.action === 'proposeCalendarChanges') {
-      await remember('[запропонував зміни календаря]');
-      return proposeCalendarChanges(env, parsed, action.proposal);
-    }
-    if (action.action === 'readMail') {
-      // Пошта (B3) — читаємо, стискаємо в дайджест, продовжуємо цикл (як
-      // readCalendar/readOwnData). Вміст листів — ЛИШЕ ДАНІ (див. системний
-      // промпт + плющення в assistant-data-core): у листі цілком може лежати
-      // текст, що прикидається інструкцією.
-      const mail = await readMail(env, action.mailQuery);
-      transcript += `\n\n${formatMailForPrompt(mail)}`;
-      continue;
-    }
-    if (action.action === 'readOwnData') {
-      // Прочитати ВЛАСНІ дані користувача (CC4), стиснути в компактний дайджест,
-      // дописати в transcript, продовжити цикл (як readCalendar). Читаємо всі три
-      // блоби завжди (KV-читання дешеві; buildOwnDataDigest бере лише потрібне за
-      // scope) — простіше за розгалуження по scope. Дайджест — ЛИШЕ ДАНІ для LLM
-      // (плоский текст, prompt-injection застереження в системному промпті).
-      const [state, stats, latest] = await Promise.all([
-        loadState(env),
-        loadStats(env),
-        loadLatest(env),
-      ]);
-      const todayKey = kyivDateKey(new Date(nowMs));
-      const digest = buildOwnDataDigest({
-        scope: action.dataScope,
-        reminders: state.reminders,
-        agg: aggregateStats(stats, todayKey),
-        roadmap: totalProgress(state.roadmapProgress ?? {}),
-        latest,
-        todayKey,
-      });
-      transcript += `\n\nТвої дані: ${digest}`;
-      continue;
-    }
-    // readCalendar — дописати події діапазону [startDay,endDay] від сьогодні (CC1),
-    // продовжити цикл. Y-M-D зсув через addDaysToDateKey (НЕ +N*86400000мс на
-    // інстант — те ламається на DST-переході, коли зсув доби і +1год стрибок
-    // комбінуються). Один день -> formatEventsForPrompt (без дати), діапазон ->
-    // formatRangeEventsForPrompt (кожна подія з префіксом DD.MM).
-    const today = kyivDateKey(new Date(nowMs));
-    const startKey = addDaysToDateKey(today, action.startDay);
-    const endKey = addDaysToDateKey(today, action.endDay);
-    const events = await readCalendarRange(env, startKey, endKey);
-    const single = action.startDay === action.endDay;
-    const label = single ? startKey : `${startKey}…${endKey}`;
-    const body = single
-      ? formatEventsForPrompt(events ?? [])
-      : formatRangeEventsForPrompt(events ?? []);
-    transcript += `\n\nКалендар (${label}): ${body}`;
+  // Хост здався сам: ліміт підписки, CLI впав, мережа. Текст залежить від
+  // ПРИЧИНИ — той самий класифікатор, що й до переходу.
+  if (body.failure) {
+    const f = body.failure;
+    const text = assistantErrorReply(
+      {
+        ok: false,
+        status: Number(f?.status) || 0,
+        error: typeof f?.error === 'string' ? f.error : '',
+        ...(Number.isFinite(f?.resetAtMs) ? { resetAtMs: f.resetAtMs } : {}),
+      },
+      nowMs,
+    );
+    console.error('agent-step: хост здався —', String(f?.error).slice(0, 200));
+    return finish(() => sendText(text), null); // невдачу в памʼять не пишемо
   }
-  // Вичерпані раунди — не помилка (історію не чіпаємо), але й не те саме, що
-  // «модель віддала дурню»: свій текст + лог, щоб було видно саме цей шлях.
-  console.error(`assistant: вичерпано ${MAX_ROUNDS} раунд(и) без фінальної дії`);
-  return sendText(ASSISTANT_ROUNDS_REPLY);
+
+  const action = extractAssistantAction(body?.structured);
+  if (!action) {
+    console.error('agent-step: невалідна дія від моделі');
+    return finish(() => sendText(ASSISTANT_FALLBACK_REPLY), null);
+  }
+
+  /* ── Термінальні дії ─────────────────────────────────────────────────── */
+  if (action.action === 'reply') {
+    if (!action.replyText) console.error('assistant: reply без replyText');
+    const text = action.replyText || ASSISTANT_EMPTY_REPLY;
+    return finish(() => sendText(text), text);
+  }
+  if (action.action === 'createReminder') {
+    return finish(
+      () => createReminderFromText(env, parsed, action.reminderText),
+      '[поставив нагадування]',
+    );
+  }
+  if (action.action === 'cancelReminder') {
+    return finish(
+      () => cancelReminderByText(env, parsed, action.reminderText),
+      '[скасував нагадування]',
+    );
+  }
+  if (action.action === 'proposeCalendarChanges') {
+    return finish(
+      () => proposeCalendarChanges(env, parsed, action.proposal),
+      '[запропонував зміни календаря]',
+    );
+  }
+
+  /* ── Читальні дії: віддати текст у транскрипт і токен наступного кроку ── */
+  const nextToken = await nextRunToken(env.TELEGRAM_WEBHOOK_SECRET, claims);
+  if (!nextToken) {
+    // Кроки вичерпано, а фінальної дії так і немає. Не помилка моделі — свій
+    // текст і свій лог, щоб цей шлях було видно окремо.
+    console.error(`assistant: вичерпано ${AGENT_MAX_STEPS} кроків без фінальної дії`);
+    return finish(() => sendText(ASSISTANT_ROUNDS_REPLY), null);
+  }
+
+  let append;
+  try {
+    append = await runReadAction(env, action, nowMs);
+  } catch (e) {
+    // Збій інструмента НЕ валить прогін: кажемо моделі про невдачу й даємо
+    // дійти до фінальної дії з тим, що вже є.
+    console.error('agent-step: читальна дія впала', e?.message);
+    append = 'Інструмент не спрацював — відповідай тим, що вже маєш.';
+  }
+  if (claims.step + 1 === AGENT_MAX_STEPS - 1) append += AGENT_LAST_STEP_NUDGE;
+
+  return json({ ok: true, done: false, append, token: nextToken });
+}
+
+/**
+ * Сторож обірваних прогонів (крон, кожні 5 хв). Хост міг померти посеред циклу —
+ * OOM, рестарт systemd, впав VPS — і тоді власник лишився б із вічним «⏳
+ * Працюю…». Саме тією мовчанкою, заради усунення якої й робився перехід.
+ *
+ * Алармуємо лише на записах зі `startedMs` без `finishedMs`, старших за
+ * AGENT_RUN_STALE_MS (тобто вже й токен мертвий — прогін не міг би продовжитись).
+ */
+async function agentRunWatchdog(env) {
+  const nowMs = Date.now();
+  const runs = await loadAgentRuns(env);
+  const stale = Object.entries(runs).filter(
+    ([, r]) =>
+      Number.isFinite(r?.startedMs) && !r?.finishedMs && nowMs - r.startedMs > AGENT_RUN_STALE_MS,
+  );
+  if (stale.length === 0) return;
+
+  for (const [runId, r] of stale) {
+    console.error(
+      `assistant: прогін ${runId} обірвався (${Math.round((nowMs - r.startedMs) / 1000)}с)`,
+    );
+    await deleteProgressMessage(env, r.chatId, r.progressMsgId);
+    await tgCall(env, 'sendMessage', {
+      chat_id: r.chatId,
+      message_thread_id: r.threadId ?? undefined,
+      text: ASSISTANT_STALLED_REPLY,
+    });
+    runs[runId] = { ...r, finishedMs: nowMs };
+  }
+  try {
+    await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
+  } catch (e) {
+    console.error('agentRuns watchdog write failed', e);
+  }
 }
 
 /** Зберегти пропозицію (state.assistantPending, ОДИН слот) + кнопки ✅/❌ підтвердження. */
@@ -2076,6 +2458,12 @@ export default {
     if (url.pathname === '/api/telegram' && request.method === 'POST') {
       return handleTelegramWebhook(request, env, ctx);
     }
+    // Зворотний виклик LLM-хоста: цикл агента живе там, інструменти — тут
+    // (варіант Б). Авторизація подвійна: спільний секрет хоста + підписаний
+    // ран-токен. Свідомо БЕЗ CORS — це міжсерверний роут, не для браузера.
+    if (url.pathname === '/api/agent-step' && request.method === 'POST') {
+      return handleAgentStep(request, env);
+    }
     if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
       return handleTelegramSetup(request, env);
     }
@@ -2102,6 +2490,7 @@ export default {
     ctx.waitUntil(
       (async () => {
         await checkReminders(env); // будь-яка хвилина
+        await agentRunWatchdog(env); // обірвані прогони агента, будь-яка хвилина
         await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
         await deadMansCheck(env); // від 12:00 Київ, раз на добу
       })(),

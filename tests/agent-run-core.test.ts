@@ -33,6 +33,32 @@ describe('agent-run-core: ран-токен', () => {
     });
   });
 
+  /* Текст користувача їде в ПІДПИСАНОМУ токені, а не в KV: історія розмови
+     пишеться одним записом на фініші, і KV-розсинхрон (~60с без
+     read-your-writes) не може її загубити. Кирилиця мусить пережити
+     base64url-обіг (TextEncoder -> btoa -> atob -> TextDecoder). */
+  it('текст користувача (кирилиця) переживає обіг і не піддається підробці', async () => {
+    const userText = 'знайди лист від kontramarka і заплануй подію — «Івасюк», 19:30';
+    const token = await mintRunToken(SECRET, { ...BASE, userText, nowMs: NOW });
+    const res = await verifyRunToken(SECRET, token, NOW);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.claims.userText).toBe(userText);
+
+    // Крок зберігає текст — фініш на будь-якому кроці пише правильну історію.
+    const next = await nextRunToken(SECRET, res.claims);
+    const v2 = await verifyRunToken(SECRET, next, NOW);
+    if (!v2.ok) throw new Error('unreachable');
+    expect(v2.claims.userText).toBe(userText);
+  });
+
+  it('задовгий текст користувача обрізається в токені', async () => {
+    const token = await mintRunToken(SECRET, { ...BASE, userText: 'я'.repeat(2000), nowMs: NOW });
+    const res = await verifyRunToken(SECRET, token, NOW);
+    if (!res.ok) throw new Error('unreachable');
+    expect(String(res.claims.userText).length).toBe(500);
+  });
+
   it('threadId=null (приватний чат) переживає обіг', async () => {
     const token = await mintRunToken(SECRET, {
       runId: 'r2',

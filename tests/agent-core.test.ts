@@ -15,7 +15,6 @@ const {
   clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
-  pickAssistantModel,
   sanitizeProposal,
   formatProposalMessage,
   PROPOSAL_CB_PREFIX,
@@ -27,7 +26,7 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 7 дій (B3: +readMail)', () => {
+  it('дозволяє рівно 8 дій (варіант Б: +readMailBody)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -36,6 +35,7 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'reply',
       'readOwnData',
       'readMail',
+      'readMailBody',
     ]);
   });
 });
@@ -101,6 +101,43 @@ describe('readMail + бюджет транскрипту (B3/B4)', () => {
     expect(p).toContain('readMail');
     expect(p).toContain('ЛИСТИ'); // anti-injection застереження охоплює пошту
     expect(p).toContain('ПРОДОВЖЕННЯ РОЗМОВИ'); // B2: відповідь на уточнення — не новий запит
+  });
+
+  /* ── readMailBody: повне тіло ОДНОГО листа (дозвіл власника 18.07.2026) ──
+     mailId іде в ШЛЯХ URL Gmail API, а обирає його модель, яка щойно читала
+     листи від сторонніх людей. Тому валідація сувора: усе, що не схоже на
+     справжній id Gmail, відкидається ще до мережі. */
+  it('extractAssistantAction приймає лише коректний id листа', () => {
+    expect(extractAssistantAction({ action: 'readMailBody', mailId: '18f2ab-cd_9' })).toEqual({
+      action: 'readMailBody',
+      mailId: '18f2ab-cd_9',
+    });
+    expect(extractAssistantAction({ action: 'readMailBody', mailId: '  18f2ab  ' })).toEqual({
+      action: 'readMailBody',
+      mailId: '18f2ab',
+    });
+  });
+
+  it('відкидає id зі слешами, крапками, запитом і кирилицею (path traversal / підміна URL)', () => {
+    for (const mailId of [
+      '',
+      '   ',
+      '../../users/me/settings',
+      'abc/def',
+      'abc?alt=media',
+      'abc#frag',
+      'abc.def',
+      'лист',
+      'a'.repeat(129),
+    ]) {
+      expect(extractAssistantAction({ action: 'readMailBody', mailId })).toBeNull();
+    }
+    expect(extractAssistantAction({ action: 'readMailBody' })).toBeNull();
+  });
+
+  it('системний промпт пояснює, коли брати повне тіло', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('readMailBody');
   });
 
   it('clipTranscript тримає промпт ПІД лімітом хоста (інакше 400 і мовчазний фолбек)', () => {
@@ -194,29 +231,17 @@ describe('classifyLlmFailure / assistantErrorReply (A1)', () => {
   });
 });
 
-describe('pickAssistantModel (SL1)', () => {
-  it('дефолт haiku для простих запитів (Q&A / нагадування / лукап)', () => {
-    expect(pickAssistantModel('яка сьогодні погода?')).toBe('haiku');
-    expect(pickAssistantModel('нагадай через 20 хвилин купити хліб')).toBe('haiku');
-    expect(pickAssistantModel('скільки в мене вакансій на співбесіді?')).toBe('haiku');
-    expect(pickAssistantModel('що завтра в календарі')).toBe('haiku');
-    // ревʼю SL: голе «розклад» у простому лукапі має лишатись haiku
-    expect(pickAssistantModel('покажи мій розклад на завтра')).toBe('haiku');
-    expect(pickAssistantModel('який у мене розклад сьогодні')).toBe('haiku');
-    expect(pickAssistantModel('')).toBe('haiku');
-    expect(pickAssistantModel(null)).toBe('haiku');
+/* Евристику pickAssistantModel (haiku за замовчуванням, sonnet лише на
+   планувальних запитах) прибрано разом із переходом на хост: ланцюжки стали
+   багатокроковими, а на довгому ланцюжку слабша модель губить нитку — «економія»
+   оберталась провалом усього запиту. Рішення власника 18.07.2026 — завжди sonnet. */
+describe('ASSISTANT_MODEL', () => {
+  it('агент завжди на sonnet', () => {
+    expect(agent.ASSISTANT_MODEL).toBe('sonnet');
   });
 
-  it('sonnet для планувальних запитів — і імператив, і інфінітив (ревʼю SL)', () => {
-    expect(pickAssistantModel('склади план дня')).toBe('sonnet');
-    expect(pickAssistantModel('Склади план дня: зустрічі + спортзал')).toBe('sonnet');
-    expect(pickAssistantModel('сплануй мені завтрашній день')).toBe('sonnet');
-    expect(pickAssistantModel('організуй мій розклад на тиждень')).toBe('sonnet');
-    expect(pickAssistantModel('розпиши план підготовки')).toBe('sonnet');
-    // інфінітивні форми (раніше падали в haiku)
-    expect(pickAssistantModel('допоможи спланувати день')).toBe('sonnet');
-    expect(pickAssistantModel('треба розпланувати тиждень')).toBe('sonnet');
-    expect(pickAssistantModel('запланувати підготовку до співбесіди')).toBe('sonnet');
+  it('модель — рядок-alias CLI, а не повний id (хост віддає його як --model)', () => {
+    expect(agent.ASSISTANT_MODEL).toMatch(/^[a-z0-9-]{1,40}$/i);
   });
 });
 
@@ -454,24 +479,36 @@ describe('фолбеки асистента — три РІЗНІ збої, тр
   });
 });
 
-describe('фолбек «не встиг» (бюджет часу агента)', () => {
-  const { ASSISTANT_TIME_REPLY, ASSISTANT_ROUNDS_REPLY, ASSISTANT_EMPTY_REPLY } = agent;
+describe('тексти станів агента', () => {
+  const {
+    ASSISTANT_ROUNDS_REPLY,
+    ASSISTANT_EMPTY_REPLY,
+    ASSISTANT_WORKING_REPLY,
+    ASSISTANT_STALLED_REPLY,
+  } = agent;
 
-  // Воркер у ctx.waitUntil Cloudflare убиває МОВЧКИ: без винятку, логу й
-  // відповіді. Емпірика власника: 2 раунди (~17с) відповідають, 3 з поштою+
-  // календарем (~25-30с) — повна тиша, хоча кожен крок окремо працює. Тому
-  // агент має власний дедлайн і здається сам, поки ще може щось сказати.
-  it('«не встиг» — окремий текст, не плутається з рештою фолбеків', () => {
+  /* Кожен збій мусить мати СВІЙ текст: доти три різні причини («вичерпані
+     раунди», порожній replyText, немапована відповідь хоста) давали один рядок,
+     і «асистент не працює» неможливо було задіагностувати ні власнику, ні по
+     скріну. ASSISTANT_TIME_REPLY (18-секундний бюджет) прибрано разом із самим
+     бюджетом: після переходу на хост час більше не обмежує, а обрив ловить
+     сторож і каже про це своїм текстом. */
+  it('усі тексти станів різні', () => {
     const all = [
       ASSISTANT_FALLBACK_REPLY,
       ASSISTANT_ROUNDS_REPLY,
       ASSISTANT_EMPTY_REPLY,
-      ASSISTANT_TIME_REPLY,
+      ASSISTANT_WORKING_REPLY,
+      ASSISTANT_STALLED_REPLY,
     ];
-    expect(new Set(all).size).toBe(4);
+    expect(new Set(all).size).toBe(5);
   });
 
-  it('текст підказує ДІЮ: розбити на кроки', () => {
-    expect(ASSISTANT_TIME_REPLY).toContain('Розбий на кроки');
+  it('«працюю» коротке — воно висить у чаті, поки йде ланцюжок', () => {
+    expect(ASSISTANT_WORKING_REPLY.length).toBeLessThan(40);
+  });
+
+  it('текст обірваного прогону підказує ДІЮ, а не лише констатує', () => {
+    expect(ASSISTANT_STALLED_REPLY).toContain('Спробуй ще раз');
   });
 });
