@@ -230,9 +230,22 @@ export const SAMPLE_STATS: Stats = {
     { d: '2026-07-15', planned: 2, actual: 2 },
     { d: '2026-07-16', planned: 3, actual: 0 },
   ],
-  // ready:false — демо показує саме ГЕЙТ: поки в кошиках мало днів, цифр немає
-  // свідомо (кореляція на малій вибірці бреше впевнено).
-  sleepVsApplied: { ready: false, needed: 8, low: 4, ok: 6 },
+  // Демо-огляд: кореляції в «готовому» стані, щоб було видно наповнену
+  // статистику (у проді вони мовчать, поки в кожному кошику <8 днів).
+  sleepVsDayScore: { ready: true, needed: 8, low: 9, ok: 11, lowAvg: 2.9, okAvg: 4.1 },
+  bedtimeVsEnergy: { ready: true, needed: 8, early: 11, late: 9, earlyAvg: 3.9, lateAvg: 2.5 },
+  categoryInsight: {
+    total: 22,
+    rows: [
+      { cat: 'work', n: 8, dayScore: 3.4 },
+      { cat: 'rest', n: 5, dayScore: 4.2 },
+      { cat: 'learn', n: 4, dayScore: 3.8 },
+      { cat: 'travel', n: 3, dayScore: null },
+      { cat: 'chores', n: 2, dayScore: null },
+    ],
+  },
+  appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
+  checkinTops: { blocker: { value: 'tired', n: 6 }, helper: { value: 'early', n: 5 } },
 };
 
 /**
@@ -269,7 +282,11 @@ export const EMPTY_STATS: Stats = {
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
   planVsFact: [],
-  sleepVsApplied: { ready: false, needed: 8, low: 0, ok: 0 },
+  sleepVsDayScore: { ready: false, needed: 8, low: 0, ok: 0 },
+  bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
+  categoryInsight: { total: 0, rows: [] },
+  appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
+  checkinTops: { blocker: null, helper: null },
 };
 
 /**
