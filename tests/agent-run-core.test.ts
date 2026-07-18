@@ -2,16 +2,27 @@ import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as run from '../web/agent-run-core.mjs';
 
-const { AGENT_MAX_STEPS, AGENT_RUN_TTL_MS, mintRunToken, verifyRunToken, nextRunToken } = run as {
+const {
+  AGENT_MAX_STEPS,
+  AGENT_RUN_TTL_MS,
+  AGENT_STEP_TTL_MS,
+  mintRunToken,
+  verifyRunToken,
+  nextRunToken,
+} = run as {
   AGENT_MAX_STEPS: number;
   AGENT_RUN_TTL_MS: number;
+  AGENT_STEP_TTL_MS: number;
   mintRunToken: (s: string, o: Record<string, unknown>) => Promise<string>;
   verifyRunToken: (
     s: string,
     t: unknown,
     now?: number,
-  ) => Promise<{ ok: true; claims: Record<string, unknown> } | { ok: false; error: string }>;
-  nextRunToken: (s: string, c: Record<string, unknown>) => Promise<string | null>;
+  ) => Promise<
+    | { ok: true; claims: Record<string, unknown> & { expMs: number; deadlineMs: number } }
+    | { ok: false; error: string }
+  >;
+  nextRunToken: (s: string, c: Record<string, unknown>, now?: number) => Promise<string | null>;
 };
 
 const SECRET = 'worker-only-secret-abcdef0123456789';
@@ -135,18 +146,18 @@ describe('agent-run-core: кроки прогону', () => {
     expect(v1.claims.progressMsgId).toBe(555);
   });
 
-  /* ⚠️ Регресія: якби nextRunToken поновлював `e`, петля, що робить крок за
-     кроком, продовжувала б собі життя нескінченно й AGENT_RUN_TTL_MS не значив
-     би нічого. Дедлайн прогону мусить лишатись прибитим до старту. */
+  /* ⚠️ Регресія: якби nextRunToken поновлював дедлайн прогону, петля, що робить
+     крок за кроком, продовжувала б собі життя нескінченно й AGENT_RUN_TTL_MS не
+     значив би нічого. Дедлайн мусить лишатись прибитим до старту. */
   it('крок НЕ подовжує життя прогону', async () => {
     const t0 = await mintRunToken(SECRET, { ...BASE, nowMs: NOW, ttlMs: 10_000 });
     const v0 = await verifyRunToken(SECRET, t0, NOW);
     if (!v0.ok) throw new Error('unreachable');
 
-    const t1 = await nextRunToken(SECRET, v0.claims);
+    const t1 = await nextRunToken(SECRET, v0.claims, NOW + 5000);
     const v1 = await verifyRunToken(SECRET, t1, NOW + 5000);
     if (!v1.ok) throw new Error('unreachable');
-    expect(v1.claims.expMs).toBe(v0.claims.expMs);
+    expect(v1.claims.deadlineMs).toBe(v0.claims.deadlineMs);
     // ...і через 10с той самий ланцюжок кроків уже мертвий.
     expect(await verifyRunToken(SECRET, t1, NOW + 10_001)).toEqual({
       ok: false,
@@ -162,9 +173,53 @@ describe('agent-run-core: кроки прогону', () => {
       expect(v.ok).toBe(true);
       if (!v.ok) break;
       steps++;
-      token = await nextRunToken(SECRET, v.claims);
+      token = await nextRunToken(SECRET, v.claims, NOW);
     }
     expect(steps).toBe(AGENT_MAX_STEPS);
+  });
+
+  /* ── Звуження вікна реплею (знахідка security-рев'ю) ─────────────────────
+     Токен самодостатній, тож той самий крок можна надіслати повторно, а кожен
+     виклик виконує інструмент і повертає результат викликачеві. З життям кроку,
+     рівним життю прогону, це давало б 5 хвилин необмеженого читання пошти на
+     один легітимний токен. Крок мусить протухати НАБАГАТО раніше за прогін. */
+  it('крок протухає своїм коротким вікном, хоча прогін ще живий', async () => {
+    const token = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    expect(await verifyRunToken(SECRET, token, NOW + AGENT_STEP_TTL_MS - 1)).toMatchObject({
+      ok: true,
+    });
+    // Крок мертвий...
+    expect(await verifyRunToken(SECRET, token, NOW + AGENT_STEP_TTL_MS + 1)).toEqual({
+      ok: false,
+      error: 'expired',
+    });
+    // ...а прогін у цю мить іще ні (саме тому це два різні поля).
+    expect(AGENT_STEP_TTL_MS).toBeLessThan(AGENT_RUN_TTL_MS);
+  });
+
+  it('наступний крок дістає СВІЖЕ вікно, але ніколи не переступає дедлайн прогону', async () => {
+    const t0 = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    const v0 = await verifyRunToken(SECRET, t0, NOW);
+    if (!v0.ok) throw new Error('unreachable');
+
+    // Крок видано майже наприкінці життя прогону.
+    const late = NOW + AGENT_RUN_TTL_MS - 5_000;
+    const t1 = await nextRunToken(SECRET, v0.claims, late);
+    const v1 = await verifyRunToken(SECRET, t1, late);
+    if (!v1.ok) throw new Error('unreachable');
+
+    expect(v1.claims.expMs).toBeGreaterThan(v0.claims.expMs); // вікно свіже
+    expect(v1.claims.deadlineMs).toBe(v0.claims.deadlineMs); // дедлайн той самий
+    expect(v1.claims.expMs).toBeLessThanOrEqual(v1.claims.deadlineMs); // і не за нього
+  });
+
+  it('прогін помирає за дедлайном, навіть якщо крок щойно видано', async () => {
+    const t0 = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    const v0 = await verifyRunToken(SECRET, t0, NOW);
+    if (!v0.ok) throw new Error('unreachable');
+    const past = NOW + AGENT_RUN_TTL_MS + 1;
+    const t1 = await nextRunToken(SECRET, v0.claims, past);
+    expect(await verifyRunToken(SECRET, t1, past)).toEqual({ ok: false, error: 'expired' });
   });
 
   it('токен із кроком за стелею відхиляється навіть із валідним підписом', async () => {

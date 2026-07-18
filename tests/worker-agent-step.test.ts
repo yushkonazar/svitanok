@@ -228,6 +228,25 @@ describe('/api/agent-step — читальні дії й кроки', () => {
     expect(sentTexts()[0]).toContain('Заплутався в кроках');
   });
 
+  /* ── Реплей після фінішу (знахідка security-рев'ю) ───────────────────────
+     Найтихіший варіант зловживання: обмін для власника вже візуально
+     завершився («⏳» зникло, відповідь прийшла), а хтось і далі качає тим самим
+     токеном пошту — і кожна відповідь іде викликачеві. */
+  it('крок для ВЖЕ ЗАВЕРШЕНОГО прогону відхиляється, інструмент не виконується', async () => {
+    const t = await token();
+    // Перший крок проходить...
+    expect((await authed({ token: t, structured: { action: 'readOwnData' } })).status).toBe(200);
+    // ...прогін завершується термінальною дією...
+    await authed({ token: t, structured: { action: 'reply', replyText: 'готово' } });
+    const before = tgCalls.length;
+
+    // ...і повторна спроба тим самим токеном уже нічого не дає.
+    const res = await authed({ token: t, structured: { action: 'readMail' } });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'run-finished', done: true });
+    expect(tgCalls).toHaveLength(before); // жодного нового звернення назовні
+  });
+
   it('протухлий токен -> 401 і хосту сказано зупинитись', async () => {
     const stale = await token({ nowMs: Date.now() - 3_600_000 });
     const res = await authed({ token: stale, structured: { action: 'readOwnData' } });

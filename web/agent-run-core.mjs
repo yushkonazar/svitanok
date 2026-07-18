@@ -15,6 +15,18 @@
 // Так зберігається поточна межа: скомпрометований хост може діяти ЛИШЕ в межах
 // прогону, який власник почав сам, і лише тими діями, що й сьогодні.
 //
+// ЧОГО ЦЕ НЕ ДАЄ (без прикрас, знайдено на security-рев'ю). Токен самодостатній,
+// тож він РЕПЛЕЙНИЙ: поки не протух, той самий крок можна надіслати повторно, а
+// кожен виклик виконує інструмент і повертає результат викликачеві. Тобто
+// скомпрометований хост не обмежений AGENT_MAX_STEPS у кількості прочитаних
+// листів — лише вікном часу. Два запобіжники звужують це вікно:
+//   1. коротке життя КРОКУ (AGENT_STEP_TTL_MS) окремо від дедлайну прогону;
+//   2. відмова кроку для прогону з надгробком (handleAgentStep) — закриває
+//      найтихіший варіант, коли обмін для власника вже завершився.
+// Обидва — звуження, не гарантія. Прибрати реплей насправді можна лише станом:
+// лічильник кроків у Durable Object (він же зняв би й KV-розсинхрон). Поки
+// прогонів одиниці на добу, ця пара пропорційна; за зростання — робити DO.
+//
 // Стан у KV свідомо НЕ тримаємо: KV не має read-your-writes (~60с розсинхрон),
 // а перший зворотний виклик хоста прилітає через 2-5с — запис просто не встиг би
 // стати видимим. Токен самодостатній: усе, що треба знати кроку, лежить у ньому
@@ -29,6 +41,21 @@ export const AGENT_MAX_STEPS = 10;
 /** Стеля ЖИТТЯ прогону. Не «таймаут раунду» (їх більше немає), а межа, після
  *  якої зависла петля перестає мати право торкатись пошти й календаря. */
 export const AGENT_RUN_TTL_MS = 5 * 60_000;
+
+/**
+ * Скільки живе ОКРЕМИЙ крок — окремо від життя прогону.
+ *
+ * ⚠️ Це протидія РЕПЛЕЮ. Токен самодостатній, тож ніщо не заважає викликачеві
+ * надіслати той самий крок двічі — а кожен виклик виконує інструмент і повертає
+ * ЙОМУ Ж результат (пошта, календар). Із життям кроку, рівним життю прогону,
+ * скомпрометований хост мав би 5 хвилин необмеженого читання пошти на один
+ * легітимний токен. Хост мусить використати крок за WORKER_STEP_TIMEOUT_MS
+ * (20с), тож 45с — із запасом на мережу, але вікно реплею вужче в сім разів.
+ *
+ * Повністю реплей це НЕ прибирає (для цього потрібен стан — див. коментар про
+ * Durable Object у handleAgentStep). Це звуження вікна, а не гарантія.
+ */
+export const AGENT_STEP_TTL_MS = 45_000;
 
 const TOKEN_VERSION = 1;
 
@@ -87,7 +114,9 @@ async function sign(secret, payloadB64) {
  *   c — chatId, t — threadId  (куди слати відповідь; підписані, щоб хост не
  *       міг перенаправити відповідь у інший чат)
  *   m — message_id повідомлення «⏳ Працюю…» (щоб прибрати його на фініші)
- *   s — номер кроку, e — момент протухання (epoch ms)
+ *   s — номер кроку
+ *   e — протухання ЦЬОГО КРОКУ (коротке, проти реплею)
+ *   d — дедлайн УСЬОГО прогону (не поновлюється жодним кроком)
  *   u — текст користувача
  *
  * Навіщо `u` тут, а не в KV: історію розмови пишемо ОДНИМ записом на фініші
@@ -110,6 +139,7 @@ export async function mintRunToken(
     ttlMs = AGENT_RUN_TTL_MS,
   },
 ) {
+  const deadline = nowMs + ttlMs;
   const payload = {
     v: TOKEN_VERSION,
     r: runId,
@@ -118,7 +148,8 @@ export async function mintRunToken(
     m: progressMsgId ?? null,
     u: String(userText ?? '').slice(0, MAX_TOKEN_USER_TEXT),
     s: step,
-    e: nowMs + ttlMs,
+    e: Math.min(nowMs + AGENT_STEP_TTL_MS, deadline),
+    d: deadline,
   };
   const payloadB64 = b64urlEncode(new TextEncoder().encode(JSON.stringify(payload)));
   const sig = await sign(secret, payloadB64);
@@ -160,9 +191,12 @@ export async function verifyRunToken(secret, token, nowMs = Date.now()) {
   if (!claims || typeof claims !== 'object') return { ok: false, error: 'bad-format' };
   if (claims.v !== TOKEN_VERSION) return { ok: false, error: 'bad-version' };
 
-  // Протухання рахуємо ТУТ, а не покладаємось на дисципліну хоста: зависла на
-  // сервері петля інакше й далі мала б доступ до пошти й календаря.
+  // Обидва протухання рахуємо ТУТ, а не покладаємось на дисципліну хоста:
+  // зависла на сервері петля інакше й далі мала б доступ до пошти й календаря.
+  // `e` — вікно ЦЬОГО кроку (вузьке, проти реплею), `d` — дедлайн усього
+  // прогону (його не подовжує жоден крок).
   if (!Number.isFinite(claims.e) || claims.e <= nowMs) return { ok: false, error: 'expired' };
+  if (!Number.isFinite(claims.d) || claims.d <= nowMs) return { ok: false, error: 'run-expired' };
   if (!Number.isFinite(claims.s) || claims.s < 0) return { ok: false, error: 'bad-format' };
   if (claims.s >= AGENT_MAX_STEPS) return { ok: false, error: 'too-many-steps' };
   if (claims.c == null) return { ok: false, error: 'bad-format' };
@@ -177,6 +211,7 @@ export async function verifyRunToken(secret, token, nowMs = Date.now()) {
       userText: typeof claims.u === 'string' ? claims.u : '',
       step: claims.s,
       expMs: claims.e,
+      deadlineMs: claims.d,
     },
   };
 }
@@ -184,11 +219,12 @@ export async function verifyRunToken(secret, token, nowMs = Date.now()) {
 /**
  * Токен наступного кроку: той самий прогін, крок +1.
  *
- * ⚠️ `e` НЕ поновлюється — інакше петля, що робить крок за кроком, продовжувала б
- * собі життя нескінченно, і межа AGENT_RUN_TTL_MS не значила б нічого.
- * Повертає null, коли кроки вичерпано (викликач віддає це як фінал прогону).
+ * ⚠️ `d` (дедлайн прогону) НЕ поновлюється — інакше петля, що робить крок за
+ * кроком, продовжувала б собі життя нескінченно, і межа AGENT_RUN_TTL_MS не
+ * значила б нічого. `e` (вікно кроку) видається свіже, але ніколи не переступає
+ * `d`. Повертає null, коли кроки вичерпано (викликач віддає це як фінал прогону).
  */
-export async function nextRunToken(secret, claims) {
+export async function nextRunToken(secret, claims, nowMs = Date.now()) {
   const step = claims.step + 1;
   if (step >= AGENT_MAX_STEPS) return null;
   const payload = {
@@ -199,7 +235,8 @@ export async function nextRunToken(secret, claims) {
     m: claims.progressMsgId ?? null,
     u: claims.userText ?? '',
     s: step,
-    e: claims.expMs, // початкове протухання, НЕ поновлюємо — див. коментар вище
+    e: Math.min(nowMs + AGENT_STEP_TTL_MS, claims.deadlineMs),
+    d: claims.deadlineMs, // дедлайн прогону, НЕ поновлюємо — див. коментар вище
   };
   const payloadB64 = b64urlEncode(new TextEncoder().encode(JSON.stringify(payload)));
   const sig = await sign(secret, payloadB64);

@@ -1597,6 +1597,25 @@ async function handleAgentStep(request, env) {
     return json({ ok: false, error: verified.error, done: true }, 401);
   }
   const claims = verified.claims;
+
+  /* ── Реплей завершеного прогону ────────────────────────────────────────
+     Токен самодостатній, тож той самий крок можна надіслати двічі — а кожен
+     виклик виконує інструмент і повертає результат ВИКЛИКАЧЕВІ. Найгидкіший
+     варіант — коли обмін для власника вже візуально завершився («⏳» зникло,
+     відповідь прийшла), а хтось і далі качає цим токеном пошту. Тут ми цей
+     шлях закриваємо.
+
+     ⚠️ Best-effort, і це чесно: KV не має read-your-writes, тож надгробок,
+     покладений секунду тому, може бути ще не видним. Вікно звужує коротке
+     життя кроку (AGENT_STEP_TTL_MS). Повне рішення — тримати лічильник кроків
+     у Durable Object (заодно прибрало б і KV-розсинхрон); поки прогонів
+     одиниці на добу, ця пара запобіжників пропорційна. */
+  const knownRun = (await loadAgentRuns(env))[claims.runId];
+  if (knownRun?.finishedMs) {
+    console.error(`agent-step: крок для вже завершеного прогону ${claims.runId} — відхилено`);
+    return json({ ok: false, error: 'run-finished', done: true }, 409);
+  }
+
   const parsed = { chatId: claims.chatId, threadId: claims.threadId };
 
   /** Спільний фінал: прибрати «⏳», віддати відповідь, записати памʼять, зняти марку. */
