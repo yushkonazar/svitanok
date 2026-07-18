@@ -1,0 +1,156 @@
+import { describe, it, expect } from 'vitest';
+// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
+import * as run from '../web/agent-run-core.mjs';
+
+const { AGENT_MAX_STEPS, AGENT_RUN_TTL_MS, mintRunToken, verifyRunToken, nextRunToken } = run as {
+  AGENT_MAX_STEPS: number;
+  AGENT_RUN_TTL_MS: number;
+  mintRunToken: (s: string, o: Record<string, unknown>) => Promise<string>;
+  verifyRunToken: (
+    s: string,
+    t: unknown,
+    now?: number,
+  ) => Promise<{ ok: true; claims: Record<string, unknown> } | { ok: false; error: string }>;
+  nextRunToken: (s: string, c: Record<string, unknown>) => Promise<string | null>;
+};
+
+const SECRET = 'worker-only-secret-abcdef0123456789';
+const NOW = 1_752_800_000_000;
+const BASE = { runId: 'r1a2b3c4', chatId: 42, threadId: 7, progressMsgId: 555 };
+
+describe('agent-run-core: ран-токен', () => {
+  it('змінтований токен проходить перевірку і повертає ті самі клейми', async () => {
+    const token = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    const res = await verifyRunToken(SECRET, token, NOW + 1000);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.claims).toMatchObject({
+      runId: 'r1a2b3c4',
+      chatId: 42,
+      threadId: 7,
+      progressMsgId: 555,
+      step: 0,
+    });
+  });
+
+  it('threadId=null (приватний чат) переживає обіг', async () => {
+    const token = await mintRunToken(SECRET, {
+      runId: 'r2',
+      chatId: 9,
+      threadId: null,
+      nowMs: NOW,
+    });
+    const res = await verifyRunToken(SECRET, token, NOW);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.claims.threadId).toBeNull();
+  });
+
+  /* ── Головна безпекова властивість ────────────────────────────────────────
+     Токен підписаний ключем, виведеним із секрету, якого ХОСТ НЕ ЗНАЄ. Якби
+     підпис ішов на LLM_HOST_SECRET, скомпрометований хост мінтив би власні
+     прогони й качав пошту без жодного повідомлення власника. */
+  it('токен, підписаний ІНШИМ секретом, відхиляється (хост не може змінтити прогін)', async () => {
+    const forged = await mintRunToken('llm-host-secret-known-to-host', { ...BASE, nowMs: NOW });
+    const res = await verifyRunToken(SECRET, forged, NOW);
+    expect(res).toEqual({ ok: false, error: 'bad-signature' });
+  });
+
+  it('підроблені клейми при валідному підписі старого тіла відхиляються', async () => {
+    const token = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    const [, sig] = token.split('.');
+    // Зловмисник переписує chatId, лишаючи чужий підпис.
+    const tampered =
+      btoa(JSON.stringify({ v: 1, r: 'r1', c: 999, t: null, m: null, s: 0, e: NOW + 60_000 }))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '') +
+      '.' +
+      sig;
+    const res = await verifyRunToken(SECRET, tampered, NOW);
+    expect(res).toEqual({ ok: false, error: 'bad-signature' });
+  });
+
+  it('протухлий токен відхиляється', async () => {
+    const token = await mintRunToken(SECRET, { ...BASE, nowMs: NOW, ttlMs: 1000 });
+    expect(await verifyRunToken(SECRET, token, NOW + 999)).toMatchObject({ ok: true });
+    expect(await verifyRunToken(SECRET, token, NOW + 1001)).toEqual({
+      ok: false,
+      error: 'expired',
+    });
+  });
+
+  it('сміття замість токена не кидає, а віддає bad-format', async () => {
+    for (const bad of ['', 'no-dot', '.', 'a.', '.b', 'не-base64.не-base64', null, undefined, 42]) {
+      const res = await verifyRunToken(SECRET, bad, NOW);
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it('порожній секрет не проходить (не вироджуємось у «підпис завжди валідний»)', async () => {
+    const token = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    expect(await verifyRunToken('', token, NOW)).toEqual({ ok: false, error: 'no-secret' });
+  });
+});
+
+describe('agent-run-core: кроки прогону', () => {
+  it('nextRunToken інкрементує крок і зберігає runId та адресата', async () => {
+    const t0 = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    const v0 = await verifyRunToken(SECRET, t0, NOW);
+    expect(v0.ok).toBe(true);
+    if (!v0.ok) return;
+
+    const t1 = await nextRunToken(SECRET, v0.claims);
+    const v1 = await verifyRunToken(SECRET, t1, NOW);
+    expect(v1.ok).toBe(true);
+    if (!v1.ok) return;
+    expect(v1.claims.step).toBe(1);
+    expect(v1.claims.runId).toBe('r1a2b3c4');
+    expect(v1.claims.chatId).toBe(42);
+    expect(v1.claims.progressMsgId).toBe(555);
+  });
+
+  /* ⚠️ Регресія: якби nextRunToken поновлював `e`, петля, що робить крок за
+     кроком, продовжувала б собі життя нескінченно й AGENT_RUN_TTL_MS не значив
+     би нічого. Дедлайн прогону мусить лишатись прибитим до старту. */
+  it('крок НЕ подовжує життя прогону', async () => {
+    const t0 = await mintRunToken(SECRET, { ...BASE, nowMs: NOW, ttlMs: 10_000 });
+    const v0 = await verifyRunToken(SECRET, t0, NOW);
+    if (!v0.ok) throw new Error('unreachable');
+
+    const t1 = await nextRunToken(SECRET, v0.claims);
+    const v1 = await verifyRunToken(SECRET, t1, NOW + 5000);
+    if (!v1.ok) throw new Error('unreachable');
+    expect(v1.claims.expMs).toBe(v0.claims.expMs);
+    // ...і через 10с той самий ланцюжок кроків уже мертвий.
+    expect(await verifyRunToken(SECRET, t1, NOW + 10_001)).toEqual({
+      ok: false,
+      error: 'expired',
+    });
+  });
+
+  it('ланцюжок вичерпується рівно на AGENT_MAX_STEPS', async () => {
+    let token: string | null = await mintRunToken(SECRET, { ...BASE, nowMs: NOW });
+    let steps = 0;
+    while (token) {
+      const v = await verifyRunToken(SECRET, token, NOW);
+      expect(v.ok).toBe(true);
+      if (!v.ok) break;
+      steps++;
+      token = await nextRunToken(SECRET, v.claims);
+    }
+    expect(steps).toBe(AGENT_MAX_STEPS);
+  });
+
+  it('токен із кроком за стелею відхиляється навіть із валідним підписом', async () => {
+    const over = await mintRunToken(SECRET, { ...BASE, step: AGENT_MAX_STEPS, nowMs: NOW });
+    expect(await verifyRunToken(SECRET, over, NOW)).toEqual({
+      ok: false,
+      error: 'too-many-steps',
+    });
+  });
+
+  it('бюджети лишаються осмисленими', () => {
+    expect(AGENT_MAX_STEPS).toBeGreaterThanOrEqual(4); // пошта -> тіло -> календар -> пропозиція
+    expect(AGENT_RUN_TTL_MS).toBeGreaterThan(60_000); // інакше сенс переходу втрачено
+  });
+});
