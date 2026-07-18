@@ -28,15 +28,70 @@ modules:
     #  🌍 Світ: language=en БЕЗ country (C1, рішення власника) — раніше world
     #     фільтрувався лише language=uk, тож туди текли укр-видання про укр-події
     #     (дублюючи рубрику «Україна»). Англомовний world = справді міжнародний.
+    # ⚠️ Кожна НОВА тема живе лише в ОДНОМУ scope. Ваги/інтереси/голоси ключаться
+    # по display-імені теми, тож однакова назва у двох scope мовчки ділила б один
+    # бал (як це вже роблять дві «Технології» — легасі, лишаємо: інтерес до теми
+    # і справді один). Нові теми розведено, щоб не множити цей ефект.
     topics:
       # 🇺🇦 Українські
       - { scope: ua, topic: Головне, category: top, country: ua, language: uk }
       - { scope: ua, topic: Політика, category: politics, country: ua, language: uk }
+      # Оборони/фронту в переліку категорій NewsData НЕМА — тому пошук за словами.
+      - {
+          scope: ua,
+          topic: Оборона,
+          q: 'війна OR оборона OR фронт OR ЗСУ',
+          country: ua,
+          language: uk,
+        }
+      - { scope: ua, topic: Економіка, category: business, country: ua, language: uk }
+      - { scope: ua, topic: Спорт, category: sports, country: ua, language: uk }
       - { scope: ua, topic: Технології, category: technology, country: ua, language: uk }
-      # 🌍 Світові (англомовні)
+      - { scope: ua, topic: Суспільство, category: domestic, country: ua, language: uk }
+      - { scope: ua, topic: Освіта, category: education, country: ua, language: uk }
+      # 🌍 Світові (англомовні). «Бізнес» тут і «Економіка» вище — та сама
+      # категорія NewsData, але різні scope Й РІЗНІ назви: спільна назва мовчки
+      # злила б їхні ваги та інтереси в один бал.
       - { scope: world, topic: Світ, category: world, language: en }
       - { scope: world, topic: Наука, category: science, language: en }
+      - { scope: world, topic: Здоровʼя, category: health, language: en }
+      - { scope: world, topic: Культура, category: entertainment, language: en }
+      - { scope: world, topic: Бізнес, category: business, language: en }
+      - { scope: world, topic: Довкілля, category: environment, language: en }
       - { scope: world, topic: Технології, category: technology, language: en }
+      # Стрічки (source: rss) — НЕ витрачають кредитів NewsData й працюють навіть
+      # без NEWSDATA_API_KEY. `why` у них немає (RSS не дає опису).
+      # Джерела звірені на доступність із датацентру (itc.ua й BBC — ті, що не
+      # дають 403 раннеру GitHub Actions, на відміну від решти .ua-видань).
+      - { scope: ua, topic: ITC.ua, source: rss, url: 'https://itc.ua/feed/', language: uk }
+      - {
+          scope: ua,
+          topic: BBC Україна,
+          source: rss,
+          url: 'https://feeds.bbci.co.uk/ukrainian/rss.xml',
+          language: uk,
+        }
+      - {
+          scope: world,
+          topic: Hacker News,
+          source: rss,
+          url: 'https://hnrss.org/frontpage',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи React,
+          source: rss,
+          url: 'https://github.com/facebook/react/releases.atom',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи Node,
+          source: rss,
+          url: 'https://github.com/nodejs/node/releases.atom',
+          language: en,
+        }
   weeklyReview: { enabled: true, day: 'sunday' }
   fact:
     enabled: true

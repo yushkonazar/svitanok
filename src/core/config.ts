@@ -38,15 +38,30 @@ const ConfigSchema = z
         dedupDays: z.number().int().nonnegative(),
         retentionDays: z.number().int().nonnegative(),
         // NewsData.io: теми = scope (world/ua) × category (+опц. country/language).
+        //
+        // `q` — пошук за ключовими словами замість/на додачу до category. Потрібен
+        // темам, яких у переліку категорій NewsData ПРОСТО НЕМА (оборона/фронт).
+        // Тому category став опційним, але рефайн вимагає хоч щось із двох:
+        // тема без обох звелася б до «віддай усе підряд».
+        // `source: rss` — тема з довільної стрічки (Hacker News, GitHub Releases).
+        // Такі теми НЕ витрачають кредитів NewsData, тож живуть за іншими
+        // правилами: їм потрібен `url`, а не category/q.
         topics: z
           .array(
-            z.object({
-              scope: z.enum(['world', 'ua']),
-              topic: z.string(),
-              category: z.string(),
-              country: z.string().optional(),
-              language: z.string().default('uk'),
-            }),
+            z
+              .object({
+                scope: z.enum(['world', 'ua']),
+                topic: z.string(),
+                source: z.enum(['newsdata', 'rss']).default('newsdata'),
+                url: z.string().optional(),
+                category: z.string().optional(),
+                q: z.string().optional(),
+                country: z.string().optional(),
+                language: z.string().default('uk'),
+              })
+              .refine((t) => (t.source === 'rss' ? Boolean(t.url) : Boolean(t.category || t.q)), {
+                message: 'rss-тема мусить мати url; newsdata-тема — category або q',
+              }),
           )
           .default([]),
       }),

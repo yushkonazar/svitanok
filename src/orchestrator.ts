@@ -12,7 +12,11 @@ import { createClock, type Clock } from './core/clock.js';
 import { createLogger } from './core/logger.js';
 import { createStateStore } from './core/state.js';
 import { createKvStateStore, readKvEnv, readKvJson } from './core/state-kv.js';
-import { applyModuleOverrides, formatOverrides } from './core/settings-overrides.js';
+import {
+  applyModuleOverrides,
+  applyTopicMutes,
+  formatOverrides,
+} from './core/settings-overrides.js';
 import { createRunBus } from './core/bus.js';
 import { createLLMClient, formatLlmDegradedMessage } from './core/llm.js';
 import { createFetcher } from './core/fetcher.js';
@@ -343,7 +347,11 @@ function applyModuleOverridesFromKv(
 ): AppConfig {
   const { config: next, changes } = applyModuleOverrides(config, settings);
   if (changes.length > 0) log.info(`налаштування Mini App: ${formatOverrides(changes)}`);
-  return next;
+  // Приглушені теми ріжемо ТУТ, до прогону: кожна тема — окремий кредит NewsData,
+  // тож клієнтський фільтр витрачав би їх намарно.
+  const { config: pruned, muted } = applyTopicMutes(next, settings);
+  if (muted.length > 0) log.info(`теми новин приглушено: ${muted.join(', ')}`);
+  return pruned;
 }
 
 /** Хости allowlist для SourceFetcher — з jobs.sources (§8). Новини тепер через

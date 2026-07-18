@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { applyModuleOverrides, formatOverrides } from '../src/core/settings-overrides.js';
+import {
+  applyModuleOverrides,
+  applyTopicMutes,
+  formatOverrides,
+} from '../src/core/settings-overrides.js';
 import type { AppConfig } from '../src/core/config.js';
 
 // Мінімальний конфіг: тут важлива лише секція modules.
@@ -88,6 +92,57 @@ describe('settings-overrides — applyModuleOverrides', () => {
     const { config, changes } = applyModuleOverrides(weird, { modules: { news: false } });
     expect(config).toBe(weird);
     expect(changes).toEqual([]);
+  });
+});
+
+describe('settings-overrides — applyTopicMutes (фільтр тем новин)', () => {
+  const withTopics = () =>
+    cfg({
+      news: {
+        enabled: true,
+        topics: [
+          { scope: 'ua', topic: 'Головне', category: 'top' },
+          { scope: 'ua', topic: 'Спорт', category: 'sports' },
+          { scope: 'world', topic: 'Наука', category: 'science' },
+        ],
+      },
+    });
+  const topicsOf = (c: AppConfig) =>
+    (
+      (c.modules as unknown as { news: { topics: Array<{ topic: string }> } }).news.topics ?? []
+    ).map((t) => t.topic);
+
+  it('ріже приглушену тему з конфіга ДО прогону (економія кредиту)', () => {
+    const { config, muted } = applyTopicMutes(withTopics(), { mutedTopics: ['Спорт'] });
+    expect(topicsOf(config)).toEqual(['Головне', 'Наука']);
+    expect(muted).toEqual(['Спорт']);
+  });
+
+  it('порожній/відсутній список — конфіг той самий обʼєкт (без зайвих копій)', () => {
+    const c = withTopics();
+    expect(applyTopicMutes(c, { mutedTopics: [] }).config).toBe(c);
+    expect(applyTopicMutes(c, {}).config).toBe(c);
+    expect(applyTopicMutes(c, null).config).toBe(c);
+  });
+
+  it('невідома тема нічого не ріже', () => {
+    const c = withTopics();
+    const { config, muted } = applyTopicMutes(c, { mutedTopics: ['Вигадка'] });
+    expect(config).toBe(c);
+    expect(muted).toEqual([]);
+  });
+
+  it('не мутує вхідний конфіг (чиста функція)', () => {
+    const c = withTopics();
+    applyTopicMutes(c, { mutedTopics: ['Спорт'] });
+    expect(topicsOf(c)).toEqual(['Головне', 'Спорт', 'Наука']);
+  });
+
+  it('битий блоб/відсутні теми не валять', () => {
+    expect(() => applyTopicMutes(cfg({}), { mutedTopics: ['Спорт'] })).not.toThrow();
+    expect(
+      applyTopicMutes(cfg({ news: { enabled: true } }), { mutedTopics: ['Спорт'] }).muted,
+    ).toEqual([]);
   });
 });
 

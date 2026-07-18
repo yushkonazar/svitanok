@@ -45,6 +45,25 @@ describe('config — валідний конфіг', () => {
   it('тестовий період [1,23] проходить валідацію (§19.6)', () => {
     expect(() => parseConfig({ ...valid, sendHour: 1, sendWindowHours: 22 })).not.toThrow();
   });
+
+  // Теми новин: кожна мусить уміти сказати, ЩО саме тягне. rss — стрічкою (url),
+  // newsdata — категорією або пошуком. Тема без цього звелась би до «віддай усе».
+  it('кожна тема новин у config.yml має url (rss) або category/q (newsdata)', () => {
+    const topics = loadConfig('config.yml').modules.news.topics;
+    expect(topics.length).toBeGreaterThan(0);
+    for (const t of topics) {
+      if (t.source === 'rss') expect(t.url, `rss-тема «${t.topic}» без url`).toBeTruthy();
+      else expect(Boolean(t.category || t.q), `тема «${t.topic}» без category і q`).toBe(true);
+    }
+  });
+
+  // Кредити NewsData: лише newsdata-теми їх витрачають (rss безкоштовні). Тримаємо
+  // явний стелаж, щоб розростання переліку не з'їло free-тариф (200/добу) мовчки.
+  it('newsdata-тем не більше 50 на прогін (free-тариф 200/добу)', () => {
+    const topics = loadConfig('config.yml').modules.news.topics;
+    const paid = topics.filter((t) => (t.source ?? 'newsdata') === 'newsdata');
+    expect(paid.length).toBeLessThanOrEqual(50);
+  });
 });
 
 describe('config — невалідний падає гучно', () => {

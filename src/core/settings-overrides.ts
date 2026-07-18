@@ -49,3 +49,43 @@ export function applyModuleOverrides(config: AppConfig, settings: unknown): Modu
 export function formatOverrides(changes: Array<{ id: string; enabled: boolean }>): string {
   return changes.map((c) => `${c.id} ${c.enabled ? 'увімкнено' : 'вимкнено'}`).join(', ');
 }
+
+export interface TopicMuteResult {
+  config: AppConfig;
+  /** Які теми відкинули (для логу рану). */
+  muted: string[];
+}
+
+/**
+ * Прибрати приглушені теми новин (settings.mutedTopics) з config ПЕРЕД прогоном.
+ *
+ * Ріжемо саме тут, а не на клієнті: кожна тема — це окремий запит до NewsData
+ * (кредит із денного ліміту). Клієнтський фільтр сховав би картки, але кредит
+ * усе одно був би витрачений, а стрічка щодня наповнювалась би тим, що власник
+ * просив не показувати.
+ *
+ * Порівняння за ТОЧНОЮ display-назвою теми — тим самим ключем, яким ідуть ваги,
+ * інтереси й голоси.
+ */
+export function applyTopicMutes(config: AppConfig, settings: unknown): TopicMuteResult {
+  const raw = (settings as { mutedTopics?: unknown } | null | undefined)?.mutedTopics;
+  if (!Array.isArray(raw) || raw.length === 0) return { config, muted: [] };
+
+  const mute = new Set(raw.filter((t): t is string => typeof t === 'string' && Boolean(t.trim())));
+  if (mute.size === 0) return { config, muted: [] };
+
+  const news = config.modules?.news;
+  if (!news || !Array.isArray(news.topics)) return { config, muted: [] };
+
+  const kept = news.topics.filter((t) => !mute.has(t.topic));
+  if (kept.length === news.topics.length) return { config, muted: [] };
+
+  const muted = news.topics.filter((t) => mute.has(t.topic)).map((t) => t.topic);
+  return {
+    config: {
+      ...config,
+      modules: { ...config.modules, news: { ...news, topics: kept } },
+    } as AppConfig,
+    muted,
+  };
+}

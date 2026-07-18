@@ -61,6 +61,30 @@ describe('settings-core — normalizeSettings', () => {
   });
 });
 
+describe('settings-core — mutedTopics (фільтр тем новин)', () => {
+  it('дефолт — порожній список', () => {
+    expect(emptySettings().mutedTopics).toEqual([]);
+    expect(normalizeSettings({}).mutedTopics).toEqual([]);
+  });
+
+  it('лишає непорожні рядки, чистить дублі й сміття', () => {
+    const s = normalizeSettings({
+      mutedTopics: ['Спорт', 'Спорт', '  Культура  ', '', '   ', 42, null, {}],
+    });
+    expect(s.mutedTopics).toEqual(['Спорт', 'Культура']);
+  });
+
+  it('не список -> порожньо (битий блоб не валить нормалізацію)', () => {
+    expect(normalizeSettings({ mutedTopics: 'Спорт' }).mutedTopics).toEqual([]);
+    expect(normalizeSettings({ mutedTopics: null }).mutedTopics).toEqual([]);
+  });
+
+  it('кап списку — блоб не росте безмежно', () => {
+    const many = Array.from({ length: 60 }, (_, i) => `Тема${i}`);
+    expect(normalizeSettings({ mutedTopics: many }).mutedTopics).toHaveLength(40);
+  });
+});
+
 describe('settings-core — isQuietMinute', () => {
   const quiet = (o: Record<string, unknown>) => ({ quiet: { enabled: true, ...o }, modules: {} });
 

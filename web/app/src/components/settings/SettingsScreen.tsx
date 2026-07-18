@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { useSettings, useSaveSettings, useStats, useSetGoal } from '../../api/hooks.ts';
+import { useSettings, useSaveSettings, useStats, useSetGoal, useBriefing } from '../../api/hooks.ts';
+import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
+import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { getDemoState, setDemoState, type DemoState } from '../../api/client.ts';
 import { inTelegram, haptic } from '../../telegram.ts';
 import { useTheme, type ThemePref } from '../../theme.tsx';
@@ -88,6 +90,7 @@ export function SettingsScreen() {
   const [demo, setDemo] = useState<DemoState>(getDemoState);
   const { data, isLoading, isError, error, refetch } = useSettings();
   const { data: statsData, isError: statsError } = useStats();
+  const { data: briefData } = useBriefing();
   const save = useSaveSettings();
   const setGoal = useSetGoal();
 
@@ -111,6 +114,23 @@ export function SettingsScreen() {
   // перемальовування прочитали б однаковий стан, і другий загубив би перший.
   const saveQuiet = (patch: Partial<typeof settings.quiet>) => save.mutate({ quiet: patch });
   const saveModule = (id: string, on: boolean) => save.mutate({ modules: { [id]: on } });
+
+  // Перелік тем для перемикачів — ОБʼЄДНАННЯ тем зі свіжого брифінгу й уже
+  // приглушених. Самих лише тем брифінгу мало: приглушена тема туди більше не
+  // потрапляє, і зняти приглушення стало б неможливо.
+  const news = readBlock(briefData?.brief.blocks ?? [], 'news', newsDataSchema);
+  const muted = settings.mutedTopics;
+  const topics = [...new Set([...(news?.groups ?? []).map((g) => g.topic), ...muted])].sort((a, b) =>
+    a.localeCompare(b, 'uk'),
+  );
+  const toggleTopic = (topic: string, on: boolean) => {
+    // Set, а не [...muted, topic]: подвійний тап інакше слав би дубль (сервер його
+    // дедупить, але слати сміття не варто).
+    const next = on
+      ? muted.filter((t) => t !== topic)
+      : [...new Set([...muted, topic])];
+    save.mutate({ mutedTopics: next });
+  };
 
   const connectorRow = (icon: string, label: string, on: boolean) => (
     <SettingRow
@@ -245,6 +265,28 @@ export function SettingsScreen() {
           Вимкнений модуль не потрапляє в завтрашній брифінг.
         </p>
       </Section>
+
+      {/* Теми новин: приглушена тема не запитується взагалі — оркестратор ріже її
+          з конфіга ДО звернення до NewsData, тобто економить і кредит, і стрічку. */}
+      {topics.length > 0 && (
+        <Section title="ТЕМИ НОВИН">
+          {topics.map((t) => {
+            const on = !muted.includes(t);
+            return (
+              <SettingRow
+                key={t}
+                icon={<span className="w-[22px] flex-none text-center text-[15px]">{topicEmoji(t)}</span>}
+                title={t}
+              >
+                <Switch label={t} checked={on} onChange={(next) => toggleTopic(t, next)} />
+              </SettingRow>
+            );
+          })}
+          <p className="text-[11.5px] leading-snug text-tx3">
+            Приглушену тему не збиратимемо в завтрашній брифінг.
+          </p>
+        </Section>
+      )}
 
       <Section title="ТЕМА">
         <div className="flex gap-2" role="radiogroup" aria-label="Тема">
