@@ -20,6 +20,10 @@ export const MAX_SYSTEM_PROMPT_LEN = 3000;
 export const MAX_SCHEMA_LEN = 2000;
 const DEFAULT_MODEL = 'haiku';
 
+/** Дозволене імʼя моделі: alias ("haiku"/"sonnet") або повний id. Починається
+ *  ЛИШЕ з букви/цифри — див. застереження у validateLlmRequest. */
+export const MODEL_RE = /^[a-z0-9][a-z0-9-]{0,39}$/i;
+
 /** Константний-час порівняння секрету (дзеркало web/tg-core.mjs verifyWebhookSecret). */
 export function verifySecret(header, secret) {
   if (typeof header !== 'string' || typeof secret !== 'string' || !secret) return false;
@@ -57,7 +61,11 @@ export function validateLlmRequest(body) {
     if (schemaStr.length > MAX_SCHEMA_LEN) return { ok: false, error: 'schema-too-long' };
   }
 
-  if (model !== undefined && (typeof model !== 'string' || !/^[a-z0-9-]{1,40}$/i.test(model))) {
+  // ⚠️ Перший символ — обовʼязково буквено-цифровий. Регекс без цього умовляння
+  // (`^[a-z0-9-]+$`) пропускав значення на кшталт "--dangerously-skip-permissions":
+  // spawn({shell:false}) інʼєкцію команд не дає, але argv-слот після `--model`
+  // усе одно ліпше не заповнювати чимось, що виглядає як прапорець CLI.
+  if (model !== undefined && (typeof model !== 'string' || !MODEL_RE.test(model))) {
     return { ok: false, error: 'bad-model' };
   }
 

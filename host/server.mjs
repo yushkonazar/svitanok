@@ -24,20 +24,32 @@ import {
   detectUsageLimit,
   USAGE_LIMIT_ERROR,
 } from './llm-host-core.mjs';
+import { WORKER_STEP_TIMEOUT_MS, validateAgentRequest, runAgentLoop } from './agent-loop-core.mjs';
 
 const PORT = Number(process.env.PORT) || 8787;
 const SECRET = process.env.LLM_HOST_SECRET;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS) || 30_000;
-const MAX_BODY_BYTES = 20_000; // з запасом понад суму лімітів prompt+systemPrompt+schema
+const MAX_BODY_BYTES = 40_000; // транскрипт агента більший за одноразовий prompt
 const RATE_LIMIT = {
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60_000,
   max: Number(process.env.RATE_LIMIT_MAX) || 20,
 };
+// Куди хост стукає по кожен інструмент. Свідомо з .env, а НЕ з тіла запиту:
+// адреса в запиті зробила б хост універсальним проксі назовні для будь-кого,
+// хто дістав LLM_HOST_SECRET (SSRF із нашого ж VPS).
+const WORKER_STEP_URL = process.env.WORKER_STEP_URL;
+// Скільки прогонів агента крутиться водночас. Кожен — до MAX_AGENT_STEPS
+// спавнів claude, тож без цієї межі десяток паралельних запитів поклав би VPS.
+const MAX_CONCURRENT_RUNS = Number(process.env.MAX_CONCURRENT_RUNS) || 2;
 
 if (!SECRET) {
   console.error('LLM_HOST_SECRET не задано — вимикаюсь (не піднімаю незахищений ендпоінт).');
   process.exit(1);
+}
+if (!WORKER_STEP_URL) {
+  // Не фатально: /llm (нагадування-рерайт) працює й без цього. Агент — ні.
+  console.warn('WORKER_STEP_URL не задано — роут /agent віддаватиме 503.');
 }
 
 const rateLimiter = createRateLimiter(RATE_LIMIT);
@@ -124,8 +136,103 @@ function runClaude(args) {
   });
 }
 
+/* ══ Цикл агента (варіант Б) ═════════════════════════════════════════════════
+   POST /agent віддає 202 ОДРАЗУ, ще до першої думки моделі, — і саме в цьому
+   суть переходу: Worker'ів ctx.waitUntil завершується за ~300мс і Cloudflare
+   не має чого вбивати. Далі петля крутиться тут, без обмеження часу.
+
+   Кожен крок: claude -p -> Worker виконує обрану дію -> повертає текст для
+   транскрипту й токен наступного кроку. Секрети (Gmail, календар, Telegram, KV)
+   лишаються у Worker'а; хост їх не бачить і не хоче бачити. */
+
+let activeRuns = 0;
+
+/** POST у Worker на /api/agent-step. Ніколи не кидає — {ok:false} при будь-якому збої. */
+async function callWorkerStep(body) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), WORKER_STEP_TIMEOUT_MS);
+  try {
+    const res = await fetch(WORKER_STEP_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-llm-host-secret': SECRET },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const raw = await res.text().catch(() => '');
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error(`worker step ${res.status}: не-JSON відповідь`, raw.slice(0, 200));
+      return { ok: false, error: `http-${res.status}` };
+    }
+  } catch (err) {
+    console.error('worker step call failed:', err?.message);
+    return { ok: false, error: err?.name === 'AbortError' ? 'timeout' : 'offline' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** POST /agent — прийняти прогін і одразу відпустити викликача. */
+async function handleAgent(req, res) {
+  if (!WORKER_STEP_URL) {
+    json(res, 503, { ok: false, error: 'not-configured' });
+    return;
+  }
+  if (activeRuns >= MAX_CONCURRENT_RUNS) {
+    json(res, 429, { ok: false, error: 'rate-limited' });
+    return;
+  }
+
+  let raw;
+  try {
+    raw = await readBody(req);
+  } catch {
+    json(res, 413, { ok: false, error: 'body-too-large' });
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    json(res, 400, { ok: false, error: 'bad-json' });
+    return;
+  }
+  const validated = validateAgentRequest(body);
+  if (!validated.ok) {
+    json(res, 400, { ok: false, error: validated.error });
+    return;
+  }
+
+  // 202 ДО першої думки моделі — інакше Worker чекав би у waitUntil і ми
+  // повернулись би рівно до тієї мовчанки, заради якої все це робиться.
+  json(res, 202, { ok: true, accepted: true });
+
+  activeRuns++;
+  runAgentLoop({ runClaude, callWorkerStep, buildArgs: buildClaudeArgs }, validated.value)
+    .then((r) => console.log(`[agent] прогін завершено: ${r.outcome}, кроків ${r.steps}`))
+    .catch((err) => console.error('agent loop crashed:', err)) // runAgentLoop не кидає, це страховка
+    .finally(() => {
+      activeRuns--;
+    });
+}
+
 const server = http.createServer(async (req, res) => {
   const start = Date.now();
+  if (req.method === 'POST' && req.url === '/agent') {
+    const agentHeader = req.headers['x-llm-host-secret'];
+    if (!verifySecret(Array.isArray(agentHeader) ? agentHeader[0] : agentHeader, SECRET)) {
+      json(res, 401, { ok: false, error: 'bad-secret' });
+      return;
+    }
+    if (!rateLimiter.allow(Date.now())) {
+      json(res, 429, { ok: false, error: 'rate-limited' });
+      return;
+    }
+    await handleAgent(req, res);
+    console.log(`[${new Date().toISOString()}] /agent прийнято, активних прогонів: ${activeRuns}`);
+    return;
+  }
   if (req.method !== 'POST' || req.url !== '/llm') {
     json(res, 404, { ok: false, error: 'not-found' });
     return;
