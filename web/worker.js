@@ -1828,7 +1828,54 @@ async function agentHostHealthCheck(env) {
   }
 }
 
-/** Зберегти пропозицію (state.assistantPending, ОДИН слот) + кнопки ✅/❌ підтвердження. */
+/** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'. Причина: блоб 'state' пишуть
+ *  наївні read-modify-write писарі (lastUpdateId у вебхуку, крон checkReminders,
+ *  дашборд applyEvent) БЕЗ merge-before-flush; KV не має read-your-writes, тож
+ *  писар, що прочитав блоб за мить до запису пропозиції, затирає її назад — і
+ *  кожен ✅ падає в «Застаріла пропозиція» (баг, знайдений на проді 19.07). Той
+ *  самий мотив, що [sentMessages]/[agentRuns]/[assistantHistory] — окремий ключ. */
+const ASSISTANT_PENDING_KEY = 'assistantPending';
+
+/**
+ * Прочитати активну пропозицію -> {pending, source}.
+ * Спершу власний ключ (Worker-пропозиції), тоді legacy `state.assistantPending`
+ * (брифінг src/orchestrator ще пише в блоб — міграцію того боку робимо окремо;
+ * фолбек, щоб пропозиції брифінгу не зламались до неї).
+ */
+async function loadAssistantPending(env) {
+  try {
+    const own = JSON.parse((await env.BRIEFING.get(ASSISTANT_PENDING_KEY)) ?? 'null');
+    if (own && typeof own === 'object') return { pending: own, source: 'own' };
+  } catch {
+    /* парс власного ключа впав -> пробуємо legacy */
+  }
+  const legacy = (await loadState(env)).assistantPending;
+  return legacy && typeof legacy === 'object'
+    ? { pending: legacy, source: 'legacy' }
+    : { pending: null, source: null };
+}
+
+/**
+ * Списати пропозицію (double-tap-safe): лише якщо це ДОСІ той самий id.
+ * Власний ключ -> put-null тумбстоун (не delete: KV без read-your-writes, і
+ * delete немає в частині тест-моків — той самий мотив, що markRunFinished).
+ * Legacy -> прибрати з блоба 'state'. Повертає true, якщо саме цей виклик списав.
+ */
+async function claimAssistantPending(env, id) {
+  const { pending, source } = await loadAssistantPending(env);
+  if (!pending || pending.id !== id) return false;
+  if (source === 'legacy') {
+    const st = await loadState(env);
+    if (st.assistantPending?.id !== id) return false;
+    delete st.assistantPending;
+    await env.BRIEFING.put('state', JSON.stringify(st));
+  } else {
+    await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
+  }
+  return true;
+}
+
+/** Зберегти пропозицію (власний KV-ключ, ОДИН слот) + кнопки ✅/❌ підтвердження. */
 async function proposeCalendarChanges(env, parsed, rawProposal) {
   const sendText = sendTo(env, parsed);
 
@@ -1840,9 +1887,10 @@ async function proposeCalendarChanges(env, parsed, rawProposal) {
   }
 
   const id = crypto.randomUUID().slice(0, 8);
-  const state = await loadState(env);
-  state.assistantPending = { id, items, createdMs: Date.now() };
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  await env.BRIEFING.put(
+    ASSISTANT_PENDING_KEY,
+    JSON.stringify({ id, items, createdMs: Date.now() }),
+  );
 
   const warn = droppedCount > 0 ? `\n\n⚠️ пропущено ${droppedCount} — незрозумілий час` : '';
   return sendText(formatProposalMessage(items) + warn, {
@@ -2085,8 +2133,7 @@ async function resolveReminderCancel(env, parsed, reminderId) {
  * провали -> комбінований toast, не тихе ковтання.
  */
 async function resolveProposalCallback(env, parsed, cb) {
-  const state = await loadState(env);
-  const pending = state.assistantPending;
+  const { pending } = await loadAssistantPending(env);
   const stale = !pending || pending.id !== cb.id || Date.now() - pending.createdMs > PENDING_TTL_MS;
   if (stale) return '⚠️ Застаріла пропозиція.';
 
@@ -2098,12 +2145,9 @@ async function resolveProposalCallback(env, parsed, cb) {
     });
   }
 
-  // Claim: видалити ЛИШЕ якщо це досі той самий id (не чужа новіша пропозиція),
+  // Claim: списати ЛИШЕ якщо це досі той самий id (не чужа новіша пропозиція),
   // ОДРАЗУ, до будь-якого повільного запису — звужує вікно подвійного тапу.
-  const claim = await loadState(env);
-  if (claim.assistantPending?.id !== cb.id) return '⚠️ Застаріла пропозиція.';
-  delete claim.assistantPending;
-  await env.BRIEFING.put('state', JSON.stringify(claim));
+  if (!(await claimAssistantPending(env, cb.id))) return '⚠️ Застаріла пропозиція.';
 
   if (cb.action === 'c') return '❌ Скасовано';
 
