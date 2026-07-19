@@ -10,10 +10,19 @@
 // раз під реальну потребу асистента: системний промпт із 6-ма діями вже впирався
 // в 1953/2000, а транскрипт може накопичити календар + own-data + пошту за 3 раунди.
 // Захист від зловживання лишається на секреті + rate-limiter'і, не на цих цифрах.
-export const MAX_PROMPT_LEN = 6000;
+//
+// Варіант Б підняв MAX_PROMPT_LEN учетверо: цикл переїхав на хост, кроків тепер
+// до AGENT_MAX_STEPS замість 3, і транскрипт накопичує результат КОЖНОГО
+// інструмента (пошта + повне тіло листа + календар + own-data). Обрізання —
+// у agent-loop-core.mjs (голова+хвіст), ця цифра лише стеля payload'а.
+export const MAX_PROMPT_LEN = 24_000;
 export const MAX_SYSTEM_PROMPT_LEN = 3000;
 export const MAX_SCHEMA_LEN = 2000;
 const DEFAULT_MODEL = 'haiku';
+
+/** Дозволене імʼя моделі: alias ("haiku"/"sonnet") або повний id. Починається
+ *  ЛИШЕ з букви/цифри — див. застереження у validateLlmRequest. */
+export const MODEL_RE = /^[a-z0-9][a-z0-9-]{0,39}$/i;
 
 /** Константний-час порівняння секрету (дзеркало web/tg-core.mjs verifyWebhookSecret). */
 export function verifySecret(header, secret) {
@@ -52,7 +61,11 @@ export function validateLlmRequest(body) {
     if (schemaStr.length > MAX_SCHEMA_LEN) return { ok: false, error: 'schema-too-long' };
   }
 
-  if (model !== undefined && (typeof model !== 'string' || !/^[a-z0-9-]{1,40}$/i.test(model))) {
+  // ⚠️ Перший символ — обовʼязково буквено-цифровий. Регекс без цього умовляння
+  // (`^[a-z0-9-]+$`) пропускав значення на кшталт "--dangerously-skip-permissions":
+  // spawn({shell:false}) інʼєкцію команд не дає, але argv-слот після `--model`
+  // усе одно ліпше не заповнювати чимось, що виглядає як прапорець CLI.
+  if (model !== undefined && (typeof model !== 'string' || !MODEL_RE.test(model))) {
     return { ok: false, error: 'bad-model' };
   }
 
