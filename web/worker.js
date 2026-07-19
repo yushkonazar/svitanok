@@ -77,6 +77,7 @@ import {
   ASSISTANT_WORKING_REPLY,
   ASSISTANT_FALLBACK_REPLY,
   assistantErrorReply,
+  assistantStepLabel,
   clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
@@ -84,6 +85,10 @@ import {
   formatProposalMessage,
   buildProposalCallbackData,
   parseProposalCallbackData,
+  classifyHostProbe,
+  hostHealthTransition,
+  HOST_DESYNC_ALERT,
+  HOST_RECOVERED_ALERT,
 } from './agent-core.mjs';
 import {
   AGENT_MAX_STEPS,
@@ -1419,6 +1424,18 @@ async function deleteProgressMessage(env, chatId, messageId) {
   }
 }
 
+/** Переписати «⏳ Працюю…» під поточний крок (проміжний прогрес). Best-effort:
+ *  збій редагування (мережа чи «message is not modified» на повторній дії) не
+ *  блокує прогін — тут лише косметика. */
+async function editProgressMessage(env, chatId, messageId, text) {
+  if (typeof messageId !== 'number') return;
+  try {
+    await tgCall(env, 'editMessageText', { chat_id: chatId, message_id: messageId, text });
+  } catch (e) {
+    console.error('progress edit failed (не блокує прогін)', e?.message);
+  }
+}
+
 /**
  * Записати обмін у памʼять треду. Викликається ЛИШЕ на успішному фініші — як і
  * до переходу: провалений (часто оверсайз) обмін інакше отруював би контекст
@@ -1686,6 +1703,11 @@ async function handleAgentStep(request, env) {
     return finish(() => sendText(ASSISTANT_ROUNDS_REPLY), null);
   }
 
+  // Проміжний прогрес: перепишемо «⏳» під дію, яку зараз виконуємо (best-effort,
+  // після guard'а — на «заплутався» вище цього робити ні до чого).
+  const stepLabel = assistantStepLabel(action.action);
+  if (stepLabel) await editProgressMessage(env, claims.chatId, claims.progressMsgId, stepLabel);
+
   let append;
   try {
     append = await runReadAction(env, action, nowMs);
@@ -1733,6 +1755,76 @@ async function agentRunWatchdog(env) {
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
   } catch (e) {
     console.error('agentRuns watchdog write failed', e);
+  }
+}
+
+/** KV-марка останнього відомого стану здоров'я хоста (для дедуплікації алертів). */
+const AGENT_HOST_HEALTH_KEY = 'agentHostHealth';
+
+/**
+ * Health-check хоста (крон, кожні 5 хв). Ловить НАЙТИХІШУ пастку деплою: новий
+ * Worker + старий хост -> /agent віддає 404, асистент мовчки не працює, а /llm
+ * (нагадування) живий, тож здається, ніби все ок (host/README, розділ «Оновлення
+ * коду хоста»). Пінгуємо /agent і сигналимо власнику САМЕ про цей стан — і про
+ * повернення до норми.
+ *
+ * Алармуємо лише на ЗМІНАХ стану (у нормі 'ok'->'ok' -> тиша) і лише на
+ * детермінованому 404. Мережевий збій/таймаут -> 'unknown', стану не міняє:
+ * лежачий хост власник і так бачить на першому ж запиті («недоступний»), а
+ * флапаючий VPS не має спамити тему «Система».
+ */
+async function agentHostHealthCheck(env) {
+  const url = agentHostUrl(env);
+  // Без URL/секрету асистент свідомо вимкнений — стежити нема за чим. Без
+  // TELEGRAM_CHAT_ID нема куди слати алерт.
+  if (!url || !env.LLM_HOST_SECRET || !env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+
+  let probe = { reached: false, status: 0 };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8_000);
+  try {
+    // Порожнє тіло НАВМИСНО: новий хост валідує й віддає 400 (маршрут /agent є),
+    // старий — 404 (маршруту немає). Прогін НЕ стартує (немає токена), claude не
+    // спавниться — проба дешева.
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-llm-host-secret': env.LLM_HOST_SECRET },
+      body: '{}',
+      signal: ctrl.signal,
+    });
+    probe = { reached: true, status: res.status };
+  } catch (e) {
+    console.error('host health probe failed (не аварія)', e?.message);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const current = classifyHostProbe(probe);
+  let prev = 'ok';
+  try {
+    prev = JSON.parse((await env.BRIEFING.get(AGENT_HOST_HEALTH_KEY)) ?? '{}')?.state ?? 'ok';
+  } catch {
+    /* биття JSON -> 'ok' (щоб перший справжній 404 дав алерт) */
+  }
+
+  const { next, alert } = hostHealthTransition(prev, current);
+  if (alert) {
+    console.error(`host health: ${prev} -> ${current} (${alert})`);
+    await tgCall(env, 'sendMessage', {
+      chat_id: env.TELEGRAM_CHAT_ID,
+      message_thread_id: env.TOPIC_SYSTEM || env.TOPIC_BRIEFING || undefined,
+      text: alert === 'warn' ? HOST_DESYNC_ALERT : HOST_RECOVERED_ALERT,
+    });
+  }
+  if (next !== prev) {
+    try {
+      await env.BRIEFING.put(
+        AGENT_HOST_HEALTH_KEY,
+        JSON.stringify({ state: next, atMs: Date.now() }),
+      );
+    } catch (e) {
+      console.error('host health state write failed', e);
+    }
   }
 }
 
@@ -2510,6 +2602,7 @@ export default {
       (async () => {
         await checkReminders(env); // будь-яка хвилина
         await agentRunWatchdog(env); // обірвані прогони агента, будь-яка хвилина
+        await agentHostHealthCheck(env); // розсинхрон версій хоста, будь-яка хвилина
         await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
         await deadMansCheck(env); // від 12:00 Київ, раз на добу
       })(),

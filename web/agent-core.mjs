@@ -79,6 +79,62 @@ export const ASSISTANT_STALLED_REPLY =
 /** Модель обрала reply, але не дала тексту — рідкісний, але мовчазний випадок. */
 export const ASSISTANT_EMPTY_REPLY = '🤔 Відповідь вийшла порожня. Спробуй переформулювати.';
 
+/**
+ * Проміжний прогрес. Поки хост крутить ЧИТАЛЬНИЙ крок (пошта/календар/дані),
+ * переписуємо «⏳ Працюю…» під конкретну дію: після переходу на хост ланцюжок
+ * триває десятки секунд, і статичне «Працюю…» весь цей час читається як «завис».
+ * Лише для читальних дій — термінальні прибирають повідомлення зовсім.
+ */
+export const ASSISTANT_STEP_LABELS = {
+  readMail: '⏳ Шукаю в пошті…',
+  readMailBody: '⏳ Читаю листа…',
+  readCalendar: '⏳ Дивлюся календар…',
+  readOwnData: '⏳ Заглядаю у твої дані…',
+};
+
+/** Підпис прогресу для дії або null (термінальні/невідомі — без підпису). */
+export function assistantStepLabel(action) {
+  return (typeof action === 'string' && ASSISTANT_STEP_LABELS[action]) || null;
+}
+
+/* ── Health-check хоста: рання діагностика розсинхрону версій ──────────────────
+   Пастка деплою (host/README): Worker їде в прод автоматично з main, а хост —
+   вручну. Новий Worker + старий хост -> /agent віддає 404, асистент мовчки не
+   працює, а /llm (нагадування) живий, тож здається, ніби все ок. Крон періодично
+   пінгує /agent і сигналить власнику САМЕ про цей стан.
+
+   Реагуємо ЛИШЕ на детермінований 404 (маршрут відсутній = старий хост).
+   Мережевий збій/таймаут -> 'unknown': це або транзієнтний блип, або хост лежить
+   (а лежачий хост власник і так бачить на першому ж запиті — «недоступний»), тож
+   на нього НЕ алармуємо, щоб флапаючий VPS не спамив тему «Система». */
+
+/** Проба /agent -> стан. probe: {reached:bool, status:number}. */
+export function classifyHostProbe(probe) {
+  if (!probe || probe.reached !== true) return 'unknown';
+  return Number(probe.status) === 404 ? 'desync' : 'ok';
+}
+
+/**
+ * Перехід стану здоров'я -> дія. Алармуємо лише на ЗМІНАХ, тож у нормі
+ * (кожні 5 хв 'ok'->'ok') крон мовчить. 'unknown' стану не міняє.
+ * Повертає {next, alert}: alert ∈ 'warn' (зайшли в розсинхрон) | 'clear'
+ * (вийшли з нього) | null.
+ */
+export function hostHealthTransition(prev, current) {
+  if (current === 'unknown') return { next: prev ?? 'ok', alert: null };
+  if (current === 'desync' && prev !== 'desync') return { next: 'desync', alert: 'warn' };
+  if (current === 'ok' && prev === 'desync') return { next: 'ok', alert: 'clear' };
+  return { next: current, alert: null };
+}
+
+export const HOST_DESYNC_ALERT =
+  '⚠️ Свiтанок: LLM-хост віддає 404 на /agent — схоже, задеплоєно СТАРУ версію хоста. ' +
+  'Асистент мовчки не працює (а /llm живий, тому здається, ніби все ок). Онови host/ на ' +
+  'VPS: scp host/*.mjs + sudo systemctl restart svitanok-llm-host.';
+
+export const HOST_RECOVERED_ALERT =
+  '✅ Свiтанок: LLM-хост знову відповідає на /agent — асистент у нормі.';
+
 // Запобіжник бюджету транскрипту. Після переходу на хост транскрипт РОСТЕ ТАМ
 // (хост дописує результат кожного інструмента й перепитує модель), тож головне
 // обрізання живе в host/agent-loop-core.mjs. Тут лишається кап на ПОЧАТКОВИЙ

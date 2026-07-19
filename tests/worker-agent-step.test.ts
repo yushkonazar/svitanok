@@ -194,6 +194,24 @@ describe('/api/agent-step — читальні дії й кроки', () => {
     expect(sentTexts()).toHaveLength(0); // відповідь буде лише на фініші
   });
 
+  it('читальний крок переписує «⏳» під поточну дію (проміжний прогрес)', async () => {
+    await authed({
+      token: await token(),
+      structured: { action: 'readCalendar', calendarStartDay: 1, calendarEndDay: 1 },
+    });
+    const edit = tgCalls.find((c) => tgMethod(c) === 'editMessageText');
+    expect(edit?.body).toMatchObject({ chat_id: 555, message_id: 900 });
+    expect(String(edit?.body.text)).toContain('календар');
+    // «⏳» лише переписано, не прибрано — прогін триває.
+    expect(tgCalls.find((c) => tgMethod(c) === 'deleteMessage')).toBeUndefined();
+  });
+
+  it('термінальна дія прогрес НЕ переписує, а прибирає', async () => {
+    await authed({ token: await token(), structured: { action: 'reply', replyText: 'ок' } });
+    expect(tgCalls.find((c) => tgMethod(c) === 'editMessageText')).toBeUndefined();
+    expect(tgCalls.find((c) => tgMethod(c) === 'deleteMessage')).toBeTruthy();
+  });
+
   it('новий токен — це наступний КРОК того самого прогону', async () => {
     const res = await authed({ token: await token(), structured: { action: 'readOwnData' } });
     const { token: next } = (await res.json()) as { token: string };

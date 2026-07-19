@@ -512,3 +512,74 @@ describe('тексти станів агента', () => {
     expect(ASSISTANT_STALLED_REPLY).toContain('Спробуй ще раз');
   });
 });
+
+describe('assistantStepLabel — проміжний прогрес', () => {
+  const { assistantStepLabel } = agent;
+
+  it('кожна ЧИТАЛЬНА дія має свій підпис', () => {
+    expect(assistantStepLabel('readMail')).toContain('пошт');
+    expect(assistantStepLabel('readMailBody')).toContain('лист');
+    expect(assistantStepLabel('readCalendar')).toContain('календар');
+    expect(assistantStepLabel('readOwnData')).toContain('дані');
+  });
+
+  it('підписи читальних дій різні (щоб було видно, що крок змінився)', () => {
+    const labels = ['readMail', 'readMailBody', 'readCalendar', 'readOwnData'].map(
+      assistantStepLabel,
+    );
+    expect(new Set(labels).size).toBe(4);
+  });
+
+  it('термінальні/невідомі дії -> null (їхнє «⏳» прибирають, а не переписують)', () => {
+    for (const a of ['reply', 'createReminder', 'proposeCalendarChanges', 'вигадана', '', null]) {
+      expect(assistantStepLabel(a)).toBeNull();
+    }
+  });
+});
+
+describe('health-check хоста — класифікація й переходи', () => {
+  const { classifyHostProbe, hostHealthTransition, HOST_DESYNC_ALERT, HOST_RECOVERED_ALERT } =
+    agent;
+
+  it('404 = розсинхрон (старий хост без /agent)', () => {
+    expect(classifyHostProbe({ reached: true, status: 404 })).toBe('desync');
+  });
+
+  it('будь-який інший HTTP-код = маршрут є = ok', () => {
+    for (const status of [400, 202, 429, 401, 503, 500]) {
+      expect(classifyHostProbe({ reached: true, status })).toBe('ok');
+    }
+  });
+
+  it('недосяжний хост (мережа/таймаут) = unknown, НЕ ok і НЕ desync', () => {
+    expect(classifyHostProbe({ reached: false, status: 0 })).toBe('unknown');
+    expect(classifyHostProbe(null)).toBe('unknown');
+  });
+
+  it('алерт лише на ЗМІНІ в розсинхрон (ok -> desync)', () => {
+    expect(hostHealthTransition('ok', 'desync')).toEqual({ next: 'desync', alert: 'warn' });
+  });
+
+  it('повторний desync мовчить (уже алармували)', () => {
+    expect(hostHealthTransition('desync', 'desync')).toEqual({ next: 'desync', alert: null });
+  });
+
+  it('відновлення (desync -> ok) шле «в нормі»', () => {
+    expect(hostHealthTransition('desync', 'ok')).toEqual({ next: 'ok', alert: 'clear' });
+  });
+
+  it('норма мовчить (ok -> ok)', () => {
+    expect(hostHealthTransition('ok', 'ok')).toEqual({ next: 'ok', alert: null });
+  });
+
+  it('unknown НЕ міняє стану й нічого не шле (флапаючий VPS не спамить)', () => {
+    expect(hostHealthTransition('ok', 'unknown')).toEqual({ next: 'ok', alert: null });
+    expect(hostHealthTransition('desync', 'unknown')).toEqual({ next: 'desync', alert: null });
+  });
+
+  it('тексти алертів різні й підказують ДІЮ (онови хост)', () => {
+    expect(HOST_DESYNC_ALERT).not.toBe(HOST_RECOVERED_ALERT);
+    expect(HOST_DESYNC_ALERT).toContain('404');
+    expect(HOST_DESYNC_ALERT).toMatch(/systemctl|scp|host\//);
+  });
+});
