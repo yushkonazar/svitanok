@@ -51,6 +51,17 @@ describe('llm-host-core — validateLlmRequest', () => {
     expect(validateLlmRequest({ prompt: 'x', jsonSchema: null }).error).toBe('bad-schema'); // явний null -> відхиляємо, не ігноруємо мовчки
     expect(validateLlmRequest({ prompt: 'x', model: 'rm -rf /' }).error).toBe('bad-model');
     expect(validateLlmRequest({ prompt: 'x', model: '../../etc' }).error).toBe('bad-model');
+    // ⚠️ Регресія: регекс без якоря на перший символ (`^[a-z0-9-]+$`) пропускав
+    // значення, що виглядають як прапорці CLI. spawn({shell:false}) інʼєкцію
+    // команд не дає, але argv-слот після `--model` таким заповнювати не варто.
+    expect(validateLlmRequest({ prompt: 'x', model: '--dangerously-skip-permissions' }).error).toBe(
+      'bad-model',
+    );
+    expect(validateLlmRequest({ prompt: 'x', model: '-p' }).error).toBe('bad-model');
+    // ...а нормальні alias'и й повні id мусять і далі проходити.
+    for (const model of ['haiku', 'sonnet', 'claude-opus-4-8', 'claude-haiku-4-5-20251001']) {
+      expect(validateLlmRequest({ prompt: 'x', model }).ok).toBe(true);
+    }
   });
 
   it('відсутній/порожній/не-рядок prompt -> no-prompt; не-обʼєкт body -> bad-body', () => {
