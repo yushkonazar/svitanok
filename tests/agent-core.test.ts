@@ -26,17 +26,28 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 8 дій (варіант Б: +readMailBody)', () => {
+  it('дозволяє рівно 9 дій (CRUD: +updateReminder)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
       'cancelReminder',
+      'updateReminder',
       'proposeCalendarChanges',
       'reply',
       'readOwnData',
       'readMail',
       'readMailBody',
     ]);
+  });
+
+  it('proposal.items.kind охоплює create ТА мутацію ІСНУЮЧОЇ події (updateEvent/deleteEvent)', () => {
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.kind.enum).toEqual([
+      'event',
+      'reminder',
+      'updateEvent',
+      'deleteEvent',
+    ]);
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.eventId).toBeTruthy();
   });
 });
 
@@ -51,7 +62,7 @@ describe('buildAssistantSystemPrompt', () => {
   it('попереджає, що текст календаря — дані, не інструкції (prompt-injection захист)', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('ЛИШЕ ДАНІ');
-    expect(p).toContain('ніколи — на основі');
+    expect(p).toContain('лише за прямим проханням');
   });
 
   it('описує діапазон календаря start/end 0–7 (CC1)', () => {
@@ -300,6 +311,64 @@ describe('extractAssistantAction', () => {
     expect(extractAssistantAction({ action: 'cancelReminder' })).toBeNull();
   });
 
+  describe('updateReminder — текстовий пошук (як cancelReminder) + патч', () => {
+    it('приймає reminderNewText+when разом', () => {
+      expect(
+        extractAssistantAction({
+          action: 'updateReminder',
+          reminderText: ' стоматолог ',
+          reminderNewText: ' стоматолог, узяти картку ',
+          when: 'завтра о 10:00',
+        }),
+      ).toEqual({
+        action: 'updateReminder',
+        reminderText: 'стоматолог',
+        reminderNewText: 'стоматолог, узяти картку',
+        when: 'завтра о 10:00',
+      });
+    });
+
+    it('приймає ЛИШЕ when (переніс, без зміни тексту)', () => {
+      expect(
+        extractAssistantAction({
+          action: 'updateReminder',
+          reminderText: 'стоматолог',
+          when: 'о 18:00',
+        }),
+      ).toEqual({
+        action: 'updateReminder',
+        reminderText: 'стоматолог',
+        reminderNewText: undefined,
+        when: 'о 18:00',
+      });
+    });
+
+    it('приймає ЛИШЕ reminderNewText (перейменування, без зміни часу)', () => {
+      expect(
+        extractAssistantAction({
+          action: 'updateReminder',
+          reminderText: 'стоматолог',
+          reminderNewText: 'дантист',
+        }),
+      ).toEqual({
+        action: 'updateReminder',
+        reminderText: 'стоматолог',
+        reminderNewText: 'дантист',
+        when: undefined,
+      });
+    });
+
+    it('без reminderText -> null (нема що шукати)', () => {
+      expect(extractAssistantAction({ action: 'updateReminder', reminderNewText: 'x' })).toBeNull();
+    });
+
+    it('без reminderNewText І without when -> null (патч нічого не змінює)', () => {
+      expect(
+        extractAssistantAction({ action: 'updateReminder', reminderText: 'стоматолог' }),
+      ).toBeNull();
+    });
+  });
+
   it('proposeCalendarChanges — потребує масив proposal (навіть порожній)', () => {
     expect(extractAssistantAction({ action: 'proposeCalendarChanges', proposal: [] })).toEqual({
       action: 'proposeCalendarChanges',
@@ -404,6 +473,81 @@ describe('sanitizeProposal', () => {
     expect(sanitizeProposal(null, SUMMER_NOW)).toEqual({ items: [], droppedCount: 0 });
     expect(sanitizeProposal('x', SUMMER_NOW)).toEqual({ items: [], droppedCount: 0 });
   });
+
+  describe('updateEvent/deleteEvent — мутація ІСНУЮЧОЇ події за eventId', () => {
+    it('deleteEvent: лише валідний eventId потрібен', () => {
+      const { items, droppedCount } = sanitizeProposal(
+        [{ kind: 'deleteEvent', eventId: 'abcDEF123_-' }],
+        SUMMER_NOW,
+      );
+      expect(droppedCount).toBe(0);
+      expect(items).toEqual([{ kind: 'deleteEvent', eventId: 'abcDEF123_-' }]);
+    });
+
+    it('deleteEvent: невалідний/відсутній eventId -> дропається', () => {
+      for (const eventId of [undefined, '', '../etc/passwd', 'a'.repeat(129)]) {
+        expect(sanitizeProposal([{ kind: 'deleteEvent', eventId }], SUMMER_NOW)).toEqual({
+          items: [],
+          droppedCount: 1,
+        });
+      }
+    });
+
+    it('updateEvent: часткові поля (лише when) -> в item лише whenMs, БЕЗ title/durationMin', () => {
+      const { items } = sanitizeProposal(
+        [{ kind: 'updateEvent', eventId: 'ev1', when: 'завтра о 16:00' }],
+        SUMMER_NOW,
+      );
+      expect(items).toHaveLength(1);
+      expect(items[0].eventId).toBe('ev1');
+      expect(typeof items[0].whenMs).toBe('number');
+      expect(items[0].title).toBeUndefined();
+      expect(items[0].durationMin).toBeUndefined();
+    });
+
+    it('updateEvent: лише title (перейменування без зміни часу)', () => {
+      const { items } = sanitizeProposal(
+        [{ kind: 'updateEvent', eventId: 'ev1', title: 'Дантист' }],
+        SUMMER_NOW,
+      );
+      expect(items[0]).toEqual({ kind: 'updateEvent', eventId: 'ev1', title: 'Дантист' });
+    });
+
+    it('updateEvent: усі поля разом', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'updateEvent',
+            eventId: 'ev1',
+            title: 'Дантист',
+            when: 'завтра о 16:00',
+            durationMin: 45,
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0]).toMatchObject({
+        kind: 'updateEvent',
+        eventId: 'ev1',
+        title: 'Дантист',
+        durationMin: 45,
+      });
+      expect(typeof items[0].whenMs).toBe('number');
+    });
+
+    it('updateEvent: жодного патч-поля -> дропається (нічого не змінює)', () => {
+      expect(sanitizeProposal([{ kind: 'updateEvent', eventId: 'ev1' }], SUMMER_NOW)).toEqual({
+        items: [],
+        droppedCount: 1,
+      });
+    });
+
+    it('updateEvent: невалідний eventId -> дропається, навіть якщо решта валідна', () => {
+      expect(
+        sanitizeProposal([{ kind: 'updateEvent', eventId: '', title: 'X' }], SUMMER_NOW),
+      ).toEqual({ items: [], droppedCount: 1 });
+    });
+  });
 });
 
 describe('formatProposalMessage', () => {
@@ -417,18 +561,43 @@ describe('formatProposalMessage', () => {
     expect(msg).toContain('1. 📅');
     expect(msg).toContain('2. ⏰');
   });
+
+  it('updateEvent: показує лише ЗМІНЕНІ поля (було -> стане), не чіпані — мовчать', () => {
+    const base = { title: 'Стендап', whenMs: SUMMER_NOW, durationMin: 60 };
+    // лише час змінено -> лише один рядок діфу
+    const onlyTime = formatProposalMessage([
+      { kind: 'updateEvent', eventId: 'ev1', whenMs: SUMMER_NOW + 3_600_000, base },
+    ]);
+    expect(onlyTime).toContain('✏️');
+    expect(onlyTime).not.toContain('Стендап» → «Стендап»'); // title не в диффі, хоч і в base
+
+    // нічого не змінено (лише shiftMin=0, editable поля відсутні) -> «без змін»
+    const noChange = formatProposalMessage([{ kind: 'updateEvent', eventId: 'ev1', base }]);
+    expect(noChange).toContain('без змін');
+  });
+
+  it('deleteEvent: показує назву й час із base (не голий id)', () => {
+    const msg = formatProposalMessage([
+      { kind: 'deleteEvent', eventId: 'ev1', base: { title: 'Стендап', whenMs: SUMMER_NOW } },
+    ]);
+    expect(msg).toContain('🗑');
+    expect(msg).toContain('Стендап');
+    expect(msg).not.toContain('ev1'); // id не показуємо власнику
+  });
+
+  it('deleteEvent без base (захисно) -> фолбек на eventId, не падає', () => {
+    expect(() => formatProposalMessage([{ kind: 'deleteEvent', eventId: 'ev1' }])).not.toThrow();
+  });
 });
 
 describe('proposal callback_data', () => {
-  it('build+parse round-trip для a/c', () => {
-    expect(parseProposalCallbackData(buildProposalCallbackData('a', 'ab12cd34'))).toEqual({
-      action: 'a',
-      id: 'ab12cd34',
-    });
-    expect(parseProposalCallbackData(buildProposalCallbackData('c', 'ab12cd34'))).toEqual({
-      action: 'c',
-      id: 'ab12cd34',
-    });
+  it('build+parse round-trip для a/c/d/l/s/o', () => {
+    for (const action of ['a', 'c', 'd', 'l', 's', 'o']) {
+      expect(parseProposalCallbackData(buildProposalCallbackData(action, 'ab12cd34'))).toEqual({
+        action,
+        id: 'ab12cd34',
+      });
+    }
   });
 
   it('невалідна дія при побудові -> null', () => {
@@ -440,6 +609,61 @@ describe('proposal callback_data', () => {
     expect(parseProposalCallbackData(`${PROPOSAL_CB_PREFIX}a:`)).toBeNull();
     expect(parseProposalCallbackData(`${PROPOSAL_CB_PREFIX}x:id`)).toBeNull();
     expect(parseProposalCallbackData(null)).toBeNull();
+  });
+});
+
+describe('proposalMode + edit/delete-клавіатура', () => {
+  const { proposalMode, cycleEventShift, formatShiftLabel, buildProposalKeyboard } = agent;
+
+  it('одна updateEvent -> edit; одна deleteEvent -> delete; решта -> create', () => {
+    expect(proposalMode([{ kind: 'updateEvent', eventId: 'x' }])).toBe('edit');
+    expect(proposalMode([{ kind: 'deleteEvent', eventId: 'x' }])).toBe('delete');
+    expect(proposalMode([{ kind: 'event', title: 'x' }])).toBe('create');
+    expect(proposalMode([{ kind: 'reminder', title: 'x' }])).toBe('create');
+    expect(proposalMode([])).toBe('create');
+    // >1 пункт ніколи не edit/delete (ті стейджаться ОДНИМ пунктом за конструкцією)
+    expect(
+      proposalMode([
+        { kind: 'updateEvent', eventId: 'x' },
+        { kind: 'event', title: 'y' },
+      ]),
+    ).toBe('create');
+  });
+
+  it('edit-клавіатура: цикл зсуву + «✏️ Інше» + Підтвердити/Скасувати, БЕЗ циклера тривалості/lead', () => {
+    const kb = buildProposalKeyboard(
+      'id123456',
+      [{ kind: 'updateEvent', eventId: 'ev1', shiftMin: 0 }],
+      {},
+    );
+    const flat = kb.inline_keyboard.flat();
+    expect(flat.some((b: { text: string }) => b.text.includes('як заплановано'))).toBe(true);
+    expect(flat.some((b: { text: string }) => b.text.includes('Інше'))).toBe(true);
+    expect(flat.some((b: { text: string }) => b.text.includes('Підтвердити'))).toBe(true);
+    expect(flat.some((b: { text: string }) => b.text.includes('⏳'))).toBe(false); // без тривалості
+    expect(flat.some((b: { text: string }) => b.text.includes('⏰'))).toBe(false); // без lead
+  });
+
+  it('delete-клавіатура: лише Так/Ні, нічого циклити', () => {
+    const kb = buildProposalKeyboard('id123456', [{ kind: 'deleteEvent', eventId: 'ev1' }], {});
+    expect(kb.inline_keyboard).toHaveLength(1);
+    const [row] = kb.inline_keyboard;
+    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
+  });
+
+  it('зсув циклиться по колу, включно з «завтра, той самий час»', () => {
+    expect(cycleEventShift(0)).toBe(15);
+    expect(cycleEventShift(-30)).toBe(1440);
+    expect(cycleEventShift(1440)).toBe(0); // замикання кола
+    expect(cycleEventShift(undefined)).toBe(15);
+  });
+
+  it('підписи зсуву людські', () => {
+    expect(formatShiftLabel(0)).toBe('як заплановано');
+    expect(formatShiftLabel(15)).toBe('+15 хв');
+    expect(formatShiftLabel(-30)).toBe('-30 хв');
+    expect(formatShiftLabel(60)).toBe('+1 год');
+    expect(formatShiftLabel(1440)).toBe('завтра, той самий час');
   });
 });
 
