@@ -83,8 +83,12 @@ import {
   extractAssistantAction,
   sanitizeProposal,
   formatProposalMessage,
-  buildProposalCallbackData,
   parseProposalCallbackData,
+  buildProposalKeyboard,
+  cycleProposalDuration,
+  cycleProposalLead,
+  formatDurationLabel,
+  formatLeadLabel,
   classifyHostProbe,
   hostHealthTransition,
   HOST_DESYNC_ALERT,
@@ -1005,14 +1009,14 @@ async function readCalendarRange(env, startKey, endKey) {
 }
 
 /** Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає — {ok:false} при збої. */
-async function createCalendarEvent(env, { title, startIso, endIso }) {
+async function createCalendarEvent(env, { title, startIso, endIso, reminderMinutes }) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(buildCreateEventBody({ title, startIso, endIso })),
+      body: JSON.stringify(buildCreateEventBody({ title, startIso, endIso, reminderMinutes })),
     });
     if (!res.ok) {
       console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
@@ -1887,22 +1891,18 @@ async function proposeCalendarChanges(env, parsed, rawProposal) {
   }
 
   const id = crypto.randomUUID().slice(0, 8);
+  // cfg = доналаштування (циклери ⏳/⏰). null = «як є»: тривалість від моделі,
+  // сповіщення за дефолтом календаря (тобто поведінка до фічі доналаштування).
+  const cfg = { durMin: null, leadMin: null };
   await env.BRIEFING.put(
     ASSISTANT_PENDING_KEY,
-    JSON.stringify({ id, items, createdMs: Date.now() }),
+    JSON.stringify({ id, items, createdMs: Date.now(), cfg }),
   );
 
   const warn = droppedCount > 0 ? `\n\n⚠️ пропущено ${droppedCount} — незрозумілий час` : '';
   return sendText(formatProposalMessage(items) + warn, {
     parse_mode: 'HTML',
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '✅ Прийняти', callback_data: buildProposalCallbackData('a', id) },
-          { text: '❌ Скасувати', callback_data: buildProposalCallbackData('c', id) },
-        ],
-      ],
-    },
+    reply_markup: buildProposalKeyboard(id, items, cfg),
   });
 }
 
@@ -2133,9 +2133,33 @@ async function resolveReminderCancel(env, parsed, reminderId) {
  * провали -> комбінований toast, не тихе ковтання.
  */
 async function resolveProposalCallback(env, parsed, cb) {
-  const { pending } = await loadAssistantPending(env);
+  const { pending, source } = await loadAssistantPending(env);
   const stale = !pending || pending.id !== cb.id || Date.now() - pending.createdMs > PENDING_TTL_MS;
   if (stale) return '⚠️ Застаріла пропозиція.';
+  const cfg = pending.cfg ?? { durMin: null, leadMin: null };
+
+  /* ── Циклери доналаштування (d=тривалість, l=lead-time) ──────────────────
+     НЕ споживають пропозицію: циклимо значення, перемальовуємо клавіатуру на
+     місці, лишаємо слот. Тільки для worker-пропозицій (власний ключ) — у
+     legacy-пропозицій брифінгу циклерів у клавіатурі немає. */
+  if (cb.action === 'd' || cb.action === 'l') {
+    if (source !== 'own') return '⚠️ Застаріла пропозиція.';
+    const next =
+      cb.action === 'd'
+        ? { ...cfg, durMin: cycleProposalDuration(cfg.durMin) }
+        : { ...cfg, leadMin: cycleProposalLead(cfg.leadMin) };
+    await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify({ ...pending, cfg: next }));
+    if (parsed.chatId != null && parsed.messageId != null) {
+      await tgCall(env, 'editMessageReplyMarkup', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+        reply_markup: buildProposalKeyboard(cb.id, pending.items, next),
+      });
+    }
+    return cb.action === 'd'
+      ? `⏳ Тривалість: ${formatDurationLabel(next.durMin)}`
+      : `⏰ Нагадати ${formatLeadLabel(next.leadMin)}`;
+  }
 
   if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
     await tgCall(env, 'editMessageReplyMarkup', {
@@ -2165,9 +2189,16 @@ async function resolveProposalCallback(env, parsed, cb) {
       await env.BRIEFING.put('state', JSON.stringify(fresh));
       ok++;
     } else {
+      // Доналаштування: глобальний durMin/leadMin перекриває дефолти (null -> «як є»).
+      const durMin = cfg.durMin ?? item.durationMin ?? 60;
       const startIso = new Date(item.whenMs).toISOString();
-      const endIso = new Date(item.whenMs + item.durationMin * 60_000).toISOString();
-      const res = await createCalendarEvent(env, { title: item.title, startIso, endIso });
+      const endIso = new Date(item.whenMs + durMin * 60_000).toISOString();
+      const res = await createCalendarEvent(env, {
+        title: item.title,
+        startIso,
+        endIso,
+        reminderMinutes: cfg.leadMin ?? undefined,
+      });
       if (res.ok) ok++;
       else fail++;
     }

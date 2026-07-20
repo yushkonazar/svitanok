@@ -143,6 +143,31 @@ describe('buildCreateEventBody', () => {
       end: { dateTime: '2026-07-02T16:00:00+03:00', timeZone: 'Europe/Kyiv' },
     });
   });
+
+  it('без reminderMinutes -> без reminders (дефолт календаря)', () => {
+    const body = buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b' });
+    expect(body.reminders).toBeUndefined();
+  });
+
+  it('reminderMinutes -> popup-override за N хв (доналаштування пропозиції)', () => {
+    const body = buildCreateEventBody({
+      title: 'x',
+      startIso: 'a',
+      endIso: 'b',
+      reminderMinutes: 30,
+    });
+    expect(body.reminders).toEqual({
+      useDefault: false,
+      overrides: [{ method: 'popup', minutes: 30 }],
+    });
+  });
+
+  it('reminderMinutes не число -> ігнорується (не б’ємо тіло)', () => {
+    expect(
+      buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b', reminderMinutes: null })
+        .reminders,
+    ).toBeUndefined();
+  });
 });
 
 describe('formatEventsForPrompt', () => {

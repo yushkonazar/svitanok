@@ -95,13 +95,24 @@ export function parseEvents(json) {
   }));
 }
 
-/** Тіло events.insert — одноразова подія (без RRULE), Європа/Київ. */
-export function buildCreateEventBody({ title, startIso, endIso }) {
-  return {
+/**
+ * Тіло events.insert — одноразова подія (без RRULE), Європа/Київ.
+ * `reminderMinutes` (опційно) — popup-сповіщення за N хвилин до події
+ * (доналаштування пропозиції). Не задано -> календар бере власний дефолт.
+ */
+export function buildCreateEventBody({ title, startIso, endIso, reminderMinutes }) {
+  const body = {
     summary: title,
     start: { dateTime: startIso, timeZone: 'Europe/Kyiv' },
     end: { dateTime: endIso, timeZone: 'Europe/Kyiv' },
   };
+  if (Number.isFinite(reminderMinutes)) {
+    body.reminders = {
+      useDefault: false,
+      overrides: [{ method: 'popup', minutes: reminderMinutes }],
+    };
+  }
+  return body;
 }
 
 /** Компактний текст подій ОДНОГО дня для наступного раунду LLM-промпту (бюджет MAX_PROMPT_LEN). */
