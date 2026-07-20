@@ -497,8 +497,13 @@ const fmtWhen = (whenMs) =>
  * обидва канали віддають той самий інваріант перед рендером). updateEvent
  * рендериться як діф «було -> стане» — лише поля, що ЗМІНИЛИСЬ (title/whenMs/
  * durationMin можуть збігатись з base, якщо циклер/LLM їх не чіпав).
+ *
+ * `warnings` (extra a, схвалено власником) — Map<index,string[]> назв подій,
+ * що НАКЛАДАЮТЬСЯ на пункт за індексом (computeOverlapWarnings, worker.js —
+ * читає календар, це чиста функція лише РЕНДЕРИТЬ готовий результат).
+ * Інформативно, не блокує пропозицію.
  */
-export function formatProposalMessage(items) {
+export function formatProposalMessage(items, warnings) {
   const lines = ['🤔 <b>Пропоную:</b>', ''];
   items.forEach((it, i) => {
     if (it.kind === 'updateEvent') {
@@ -518,16 +523,18 @@ export function formatProposalMessage(items) {
         changed.push(`${b.durationMin ?? '?'} → ${it.durationMin} хв`);
       }
       lines.push(`${i + 1}. ✏️ ${changed.length ? changed.join('; ') : 'без змін'}`);
-      return;
-    }
-    if (it.kind === 'deleteEvent') {
+    } else if (it.kind === 'deleteEvent') {
       const b = it.base ?? {};
       lines.push(`${i + 1}. 🗑 «${escapeHtml(b.title ?? it.eventId)}» — ${fmtWhen(b.whenMs)}`);
-      return;
+    } else {
+      lines.push(
+        `${i + 1}. ${KIND_ICON[it.kind] || '•'} ${escapeHtml(it.title)} — ${fmtWhen(it.whenMs)}`,
+      );
     }
-    lines.push(
-      `${i + 1}. ${KIND_ICON[it.kind] || '•'} ${escapeHtml(it.title)} — ${fmtWhen(it.whenMs)}`,
-    );
+    const overlap = warnings instanceof Map ? warnings.get(i) : undefined;
+    if (overlap?.length) {
+      lines.push(`   ⚠️ накладається на ${overlap.map((t) => `«${escapeHtml(t)}»`).join(', ')}`);
+    }
   });
   return lines.join('\n');
 }
@@ -678,4 +685,64 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
     { text: '❌ Скасувати', callback_data: buildProposalCallbackData('c', id) },
   ]);
   return { inline_keyboard: rows };
+}
+
+/**
+ * Текст ПІСЛЯ accept — перепис повідомлення (editMessageText), а не лише
+ * тік кнопки. `results[i] = {ok, id?}` (worker — вихід accept-циклу,
+ * паралельний до `items`; `id` — реальний Google-event-id/reminder-id
+ * новоствореного/зміненого пункту, для delete не потрібен).
+ *
+ * edit/delete-режим — рівно ОДИН пункт, короткий однорядковий результат;
+ * create — нумерований список (✅ на пункт / ⚠️ не вдалось), той самий
+ * порядок, що в самій пропозиції.
+ */
+export function formatProposalResult(items, results) {
+  const mode = proposalMode(items);
+
+  if (mode === 'delete') {
+    const b = items[0]?.base ?? {};
+    return results[0]?.ok
+      ? `🗑 Видалено: «${escapeHtml(b.title ?? '?')}»`
+      : '⚠️ Не вдалось видалити подію.';
+  }
+
+  if (mode === 'edit') {
+    const it = items[0] ?? {};
+    const b = it.base ?? {};
+    if (!results[0]?.ok) return '⚠️ Не вдалось оновити подію.';
+    return `✅ Оновлено: «${escapeHtml(it.title ?? b.title ?? '?')}» — ${fmtWhen(it.whenMs ?? b.whenMs)}`;
+  }
+
+  const lines = ['<b>Результат:</b>', ''];
+  items.forEach((it, i) => {
+    const ok = results[i]?.ok;
+    const icon = it.kind === 'reminder' ? '⏰' : '📅';
+    lines.push(
+      ok
+        ? `${i + 1}. ✅ ${icon} ${escapeHtml(it.title)} — ${fmtWhen(it.whenMs)}`
+        : `${i + 1}. ⚠️ не вдалось: ${escapeHtml(it.title ?? '?')}`,
+    );
+  });
+  return lines.join('\n');
+}
+
+/**
+ * «✏️ Інше» на ПОДІЇ (гібрид, edit-режим) -> питання для розмови.
+ *
+ * `historyText` (пишеться в assistantHistory, worker.js) МАЄ мати маркер
+ * `[id:...]` НА ПОЧАТКУ, не в кінці: appendTurn (assistant-memory-core.mjs)
+ * обрізає РЕПЛІКУ по MAX_TURN_LEN=200 з ХВОСТА («…»), тож маркер у кінці на
+ * довшому тексті просто зникає — id стає непоправно втраченим. Системний
+ * промпт (buildAssistantSystemPrompt, ПРОДОВЖЕННЯ РОЗМОВИ) навчений копіювати
+ * `[id:...]` ЯК Є в eventId наступної дії, ніколи не вигадувати.
+ *
+ * `displayText` (шлеться власнику в Telegram) — БЕЗ маркера: сирий id не
+ * несе користі людині, лише засмічує повідомлення.
+ */
+export function formatEventEditQuestion(eventId, title, whenMs) {
+  const when = fmtWhen(whenMs);
+  const displayText = `✏️ Що змінити в «${title ?? '?'}» (${when})? Напиши нову дату/час чи назву.`;
+  const historyText = `[id:${eventId}] ${displayText}`;
+  return { historyText, displayText };
 }

@@ -179,6 +179,48 @@ describe('/api/agent-step — термінальні дії', () => {
     expect(sentTexts()[0]).toContain('Ліміти Claude вичерпані');
     expect(kv.get('assistantHistory')).toBeUndefined();
   });
+
+  /* CRUD: updateReminder — ПРЯМА термінальна дія (як createReminder/
+     cancelReminder), БЕЗ підтвердження кнопкою — локальний KV, дешево
+     відкотити (той самий мотив, що прямий cancelReminder). */
+  describe('updateReminder (CRUD, прямий термінал)', () => {
+    beforeEach(() => {
+      kv.set(
+        'state',
+        JSON.stringify({
+          reminders: [
+            { id: 'r1', text: 'Купити квитки', whenMs: Date.now() + 3_600_000, firedTs: null },
+          ],
+        }),
+      );
+    });
+
+    it('reminderNewText+when -> патч застосовано, підтвердження надіслано', async () => {
+      const res = await authed({
+        token: await token(),
+        structured: {
+          action: 'updateReminder',
+          reminderText: 'квитки',
+          reminderNewText: 'Купити квитки на концерт',
+          when: 'завтра о 10:00',
+        },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Оновив нагадування');
+      const state = JSON.parse(kv.get('state')!);
+      expect(state.reminders[0].text).toBe('Купити квитки на концерт');
+    });
+
+    it('не знайдено за описом -> чесний текст, KV не чіпається', async () => {
+      await authed({
+        token: await token(),
+        structured: { action: 'updateReminder', reminderText: 'стоматолог', reminderNewText: 'X' },
+      });
+      expect(sentTexts()[0]).toContain('Не знайшов');
+      const state = JSON.parse(kv.get('state')!);
+      expect(state.reminders[0].text).toBe('Купити квитки'); // без змін
+    });
+  });
 });
 
 describe('/api/agent-step — читальні дії й кроки', () => {
@@ -271,5 +313,138 @@ describe('/api/agent-step — читальні дії й кроки', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: 'expired', done: true });
     expect(tgCalls).toHaveLength(0); // відповість сторож, не цей шлях
+  });
+});
+
+/* CRUD (LLM-канал): proposeCalendarChanges з kind:updateEvent/deleteEvent —
+   worker МАЄ домалювати `base` свіжим читанням (enrichEventItems) і порахувати
+   overlap-попередження (computeOverlapWarnings) ПЕРЕД показом пропозиції.
+   Окремий describe з власним (Google-здатним) fetch-стабом — стандартний стаб
+   файлу навмисно віддає 401 на все, крім Telegram. */
+describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', () => {
+  let googleEvents: Map<
+    string,
+    { summary: string; start: { dateTime: string }; end: { dateTime: string } }
+  >;
+
+  const envWithGoogle = () =>
+    makeEnv({
+      GOOGLE_CLIENT_ID: 'gid',
+      GOOGLE_CLIENT_SECRET: 'gsecret',
+      GOOGLE_REFRESH_TOKEN: 'grefresh',
+    });
+
+  beforeEach(() => {
+    googleEvents = new Map([
+      [
+        'ev1',
+        {
+          summary: 'Стендап',
+          start: { dateTime: '2026-07-24T12:00:00Z' },
+          end: { dateTime: '2026-07-24T13:00:00Z' },
+        },
+      ],
+    ]);
+    vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.includes('api.telegram.org')) {
+        tgCalls.push({ url, body: JSON.parse(String(init.body ?? '{}')) });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const single = url.match(
+        /googleapis\.com\/calendar\/v3\/calendars\/primary\/events\/([^/?]+)/,
+      );
+      if (single) {
+        const ev = googleEvents.get(single[1]!);
+        return ev
+          ? new Response(JSON.stringify({ id: single[1], ...ev }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          : new Response('{}', { status: 404 });
+      }
+      if (url.includes('googleapis.com/calendar/v3/calendars/primary/events?')) {
+        return new Response(
+          JSON.stringify({
+            items: [...googleEvents.entries()].map(([id, e]) => ({
+              id,
+              summary: e.summary,
+              start: e.start,
+              end: e.end,
+            })),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 200 });
+    });
+  });
+
+  it('updateEvent зі СПРАВЖНІМ eventId -> base домальовано, показано ДІФ', async () => {
+    await authed(
+      {
+        token: await token(),
+        structured: {
+          action: 'proposeCalendarChanges',
+          proposal: [{ kind: 'updateEvent', eventId: 'ev1', when: 'завтра о 16:00' }],
+        },
+      },
+      envWithGoogle(),
+    );
+    const text = sentTexts()[0];
+    expect(text).toContain('✏️');
+    expect(text).toContain('→'); // діф «було -> стане»
+  });
+
+  it('updateEvent із eventId, якого вже немає -> пункт тихо дропається, не крашить', async () => {
+    await authed(
+      {
+        token: await token(),
+        structured: {
+          action: 'proposeCalendarChanges',
+          proposal: [{ kind: 'updateEvent', eventId: 'noSuchEvent', when: 'завтра о 16:00' }],
+        },
+      },
+      envWithGoogle(),
+    );
+    expect(sentTexts()[0]).toContain('Не зрозумів'); // items спорожніло після енричменту
+  });
+
+  it('нова подія НАКЛАДАЄТЬСЯ на існуючу -> ⚠️ попередження в тексті (не блокує)', async () => {
+    // ev1 = 2026-07-24 12:00-13:00 UTC = 15:00-16:00 Київ (+3, літо). Канонічна
+    // фраза з абсолютною датою (CANONICAL_EXAMPLES) -> 15:30 Київ -> 12:30 UTC,
+    // усередині вікна ev1. "Зараз" фіксуємо ДО 24.07, щоб дата резолвилась
+    // у НАЙБЛИЖЧЕ (цьогорічне) 24 липня, той самий трюк, що SUMMER_NOW деінде.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-10T09:00:00Z'));
+    try {
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Дзвінок', when: '24 липня о 15:30', durationMin: 30 },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+    const text = sentTexts()[0];
+    expect(text).toContain('Дзвінок'); // пропозиція все одно пройшла (не блокує)
+    expect(text).toContain('⚠️ накладається на');
+    expect(text).toContain('Стендап');
   });
 });

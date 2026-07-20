@@ -9,10 +9,14 @@ const {
   markFired,
   snoozeReminder,
   cancelReminder,
+  updateReminder,
   listActive,
   REMINDER_CANCEL_CB_PREFIX,
   buildReminderCancelCallbackData,
   parseReminderCancelCallbackData,
+  REMINDER_EDIT_CB_PREFIX,
+  buildReminderEditCallbackData,
+  parseReminderEditCallbackData,
   formatRemindersListMessage,
   buildRemindersKeyboard,
   formatReminderConfirm,
@@ -338,6 +342,54 @@ describe('reminders-core — rc: callback_data (скасувати нагаду�
       `${REMINDER_CANCEL_CB_PREFIX}${'a'.repeat(61)}`,
     ); // рівно 64
     expect(buildReminderCancelCallbackData('a'.repeat(62))).toBeNull(); // 65 > 64
+  });
+});
+
+describe('reminders-core — ru: callback_data (CRUD: «✏️ Редагувати» -> розмова)', () => {
+  it('build+parse round-trip, окремий простір від rc:/rm:', () => {
+    const cb = buildReminderEditCallbackData('abc-123');
+    expect(cb).toBe('ru:abc-123');
+    expect(parseReminderEditCallbackData(cb)).toBe('abc-123');
+    expect(parseReminderEditCallbackData('rc:abc-123')).toBeNull();
+  });
+
+  it('не той префікс/порожній id -> null', () => {
+    expect(parseReminderEditCallbackData(`${REMINDER_EDIT_CB_PREFIX}`)).toBeNull();
+    expect(parseReminderEditCallbackData(undefined)).toBeNull();
+  });
+});
+
+describe('updateReminder — CRUD: змінити текст і/або час активного нагадування', () => {
+  const base = [{ id: 'r1', text: 'Купити квитки', whenMs: 1000, createdMs: 500, firedTs: null }];
+
+  it('лише текст -> час не чіпає', () => {
+    const out = updateReminder(base, 'r1', { text: 'Купити квитки на концерт' });
+    expect(out[0]).toEqual({
+      id: 'r1',
+      text: 'Купити квитки на концерт',
+      whenMs: 1000,
+      createdMs: 500,
+      firedTs: null,
+    });
+  });
+
+  it('лише час -> текст не чіпає, firedTs скидається (як snooze)', () => {
+    const fired = [{ ...base[0], firedTs: 999 }];
+    const out = updateReminder(fired, 'r1', { whenMs: 2000 });
+    expect(out[0]).toMatchObject({ text: 'Купити квитки', whenMs: 2000, firedTs: null });
+  });
+
+  it('текст і час разом', () => {
+    const out = updateReminder(base, 'r1', { text: 'Нове', whenMs: 3000 });
+    expect(out[0]).toMatchObject({ text: 'Нове', whenMs: 3000 });
+  });
+
+  it('невідомий id -> no-op (та сама поведінка, що markFired/cancelReminder)', () => {
+    expect(updateReminder(base, 'nope', { text: 'X' })).toEqual(base);
+  });
+
+  it('порожній патч -> без змін', () => {
+    expect(updateReminder(base, 'r1', {})).toEqual(base);
   });
 });
 

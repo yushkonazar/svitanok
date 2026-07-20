@@ -291,6 +291,27 @@ export function cancelReminder(reminders, id) {
   return (Array.isArray(reminders) ? reminders : []).filter((r) => r.id !== id);
 }
 
+/**
+ * Змінити текст і/або час активного нагадування (CRUD: updateReminder, той
+ * самий текстовий пошук за описом, що cancelReminder — worker матчить, це
+ * лише застосовує патч). `patch = {text?, whenMs?}` — обидва опційні. Зміна
+ * часу скидає firedTs (як snooze — нагадування знову «на видачу»); зміна
+ * ЛИШЕ тексту його не чіпає. No-op на невідомий id (та сама ідемпотентна
+ * поведінка, що markFired/cancelReminder).
+ */
+export function updateReminder(reminders, id, patch = {}) {
+  return (Array.isArray(reminders) ? reminders : []).map((r) => {
+    if (r.id !== id) return r;
+    const next = { ...r };
+    if (typeof patch.text === 'string' && patch.text) next.text = patch.text;
+    if (typeof patch.whenMs === 'number') {
+      next.whenMs = patch.whenMs;
+      next.firedTs = null;
+    }
+    return next;
+  });
+}
+
 /** Активні (ще не спрацювали) нагадування, за зростанням часу спрацювання —
  *  для /reminders (список+скасувати, §C4). */
 export function listActive(reminders) {
@@ -315,6 +336,24 @@ export function buildReminderCancelCallbackData(id) {
 export function parseReminderCancelCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(REMINDER_CANCEL_CB_PREFIX)) return null;
   const id = data.slice(REMINDER_CANCEL_CB_PREFIX.length);
+  return id ? id : null;
+}
+
+// 'ru:' (reminder-update) — «✏️ Редагувати» на нагадуванні (CRUD, гібрид):
+// НЕ мутує сама, лише передає в розмову (питання + синтетична репліка
+// історії, worker.js). Окремий простір від rc:/rm: (жоден не префікс іншого).
+export const REMINDER_EDIT_CB_PREFIX = 'ru:';
+
+/** callback_data «редагувати нагадування id»; ≤64 байти, інакше null. */
+export function buildReminderEditCallbackData(id) {
+  const s = `${REMINDER_EDIT_CB_PREFIX}${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** Розібрати `ru:<id>` -> id; не той префікс чи порожній id -> null. */
+export function parseReminderEditCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(REMINDER_EDIT_CB_PREFIX)) return null;
+  const id = data.slice(REMINDER_EDIT_CB_PREFIX.length);
   return id ? id : null;
 }
 

@@ -588,6 +588,23 @@ describe('formatProposalMessage', () => {
   it('deleteEvent без base (захисно) -> фолбек на eventId, не падає', () => {
     expect(() => formatProposalMessage([{ kind: 'deleteEvent', eventId: 'ev1' }])).not.toThrow();
   });
+
+  it('warnings (extra a): рядок ⚠️ під пунктом з накладкою; без запису — тиша', () => {
+    const items = [
+      { kind: 'event', title: 'Обід', whenMs: SUMMER_NOW },
+      { kind: 'event', title: 'Кава', whenMs: SUMMER_NOW },
+    ];
+    const warnings = new Map([[0, ['Стендап 15:00']]]);
+    const msg = formatProposalMessage(items, warnings);
+    expect(msg).toContain('⚠️ накладається на «Стендап 15:00»');
+    // РІВНО одне попередження (лише для «Обід» — «Кава» без запису у warnings)
+    expect(msg.match(/⚠️/g)).toHaveLength(1);
+  });
+
+  it('без warnings (undefined, старі виклики) -> поведінка не змінена', () => {
+    const msg = formatProposalMessage([{ kind: 'event', title: 'X', whenMs: SUMMER_NOW }]);
+    expect(msg).not.toContain('⚠️');
+  });
 });
 
 describe('proposal callback_data', () => {
@@ -874,5 +891,78 @@ describe('доналаштування пропозиції — циклери �
     expect(proposalHasEvent([{ kind: 'reminder' }, { kind: 'event' }])).toBe(true);
     expect(proposalHasEvent([{ kind: 'reminder' }])).toBe(false);
     expect(proposalHasEvent([])).toBe(false);
+  });
+});
+
+describe('formatProposalResult — перепис повідомлення ПІСЛЯ accept', () => {
+  const { formatProposalResult } = agent;
+
+  it('create: ✅/⚠️ на пункт, той самий порядок', () => {
+    const items = [
+      { kind: 'event', title: 'Обід', whenMs: SUMMER_NOW },
+      { kind: 'reminder', title: 'Квитки', whenMs: SUMMER_NOW },
+    ];
+    const text = formatProposalResult(items, [{ ok: true, id: 'g1' }, { ok: false }]);
+    expect(text).toContain('1. ✅ 📅 Обід');
+    expect(text).toContain('2. ⚠️ не вдалось: Квитки');
+  });
+
+  it('edit: успіх -> «Оновлено» з фінальними title/whenMs', () => {
+    const items = [
+      {
+        kind: 'updateEvent',
+        eventId: 'ev1',
+        whenMs: SUMMER_NOW + 3_600_000,
+        base: { title: 'Стендап', whenMs: SUMMER_NOW },
+      },
+    ];
+    const text = formatProposalResult(items, [{ ok: true }]);
+    expect(text).toContain('✅ Оновлено');
+    expect(text).toContain('Стендап'); // title не мінявся -> з base
+  });
+
+  it('edit: провал -> чесний текст, без «Оновлено»', () => {
+    const items = [{ kind: 'updateEvent', eventId: 'ev1', base: { title: 'Стендап' } }];
+    expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось оновити');
+  });
+
+  it('delete: успіх -> «Видалено» з назвою з base', () => {
+    const items = [
+      { kind: 'deleteEvent', eventId: 'ev1', base: { title: 'Стендап', whenMs: SUMMER_NOW } },
+    ];
+    expect(formatProposalResult(items, [{ ok: true }])).toBe('🗑 Видалено: «Стендап»');
+  });
+
+  it('delete: провал -> чесний текст', () => {
+    const items = [{ kind: 'deleteEvent', eventId: 'ev1' }];
+    expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось видалити');
+  });
+
+  it('назви екрановані (XSS-регресія)', () => {
+    const items = [{ kind: 'event', title: '<b>x</b>', whenMs: SUMMER_NOW }];
+    const text = formatProposalResult(items, [{ ok: true }]);
+    expect(text).not.toContain('<b>x</b>');
+    expect(text).toContain('&lt;b&gt;');
+  });
+});
+
+describe('formatEventEditQuestion — гібрид «✏️ Інше», маркер id для продовження розмови', () => {
+  const { formatEventEditQuestion } = agent;
+
+  it('historyText має [id:...] НА ПОЧАТКУ (clipTurn обрізає хвіст)', () => {
+    const { historyText } = formatEventEditQuestion('ev12345', 'Стендап', SUMMER_NOW);
+    expect(historyText.startsWith('[id:ev12345]')).toBe(true);
+  });
+
+  it('displayText (шлеться власнику) БЕЗ маркера id', () => {
+    const { displayText } = formatEventEditQuestion('ev12345', 'Стендап', SUMMER_NOW);
+    expect(displayText).not.toContain('ev12345');
+    expect(displayText).not.toContain('[id:');
+    expect(displayText).toContain('Стендап');
+  });
+
+  it('historyText = маркер + displayText (не дублює формулювання)', () => {
+    const { historyText, displayText } = formatEventEditQuestion('ev1', 'X', SUMMER_NOW);
+    expect(historyText).toBe(`[id:ev1] ${displayText}`);
   });
 });
