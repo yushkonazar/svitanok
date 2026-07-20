@@ -117,6 +117,36 @@ async function postCb(id: string, action = 'a', e = env()) {
 
 const postAccept = (id: string, e = env()) => postCb(id, 'a', e);
 
+/** Довільний raw callback_data (для просторів поза pd:, напр. ru:/rs:). */
+async function tapCallback(data: string) {
+  const c = ctx();
+  await worker.fetch(
+    new Request('https://svitanok.example/api/telegram', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({
+        update_id: 3000,
+        callback_query: {
+          id: 'cbq1',
+          from: { id: OWNER },
+          data,
+          message: {
+            message_id: 555,
+            chat: { id: OWNER },
+            reply_markup: { inline_keyboard: [[{ text: 'x', callback_data: data }]] },
+          },
+        },
+      }),
+    }),
+    env(),
+    c,
+  );
+  await c.settle();
+}
+
 const toast = () =>
   tg.find((c) => c.method === 'answerCallbackQuery')?.body.text as string | undefined;
 
@@ -431,35 +461,6 @@ describe('CRUD: edit-режим — цикл зсуву часу (pd:s) і «✏
 });
 
 describe('CRUD: ru:<id> — «✏️ Редагувати» на нагадуванні (БЕЗ assistantPending)', () => {
-  async function tapCallback(data: string) {
-    const c = ctx();
-    await worker.fetch(
-      new Request('https://svitanok.example/api/telegram', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
-        },
-        body: JSON.stringify({
-          update_id: 3000,
-          callback_query: {
-            id: 'cbq1',
-            from: { id: OWNER },
-            data,
-            message: {
-              message_id: 555,
-              chat: { id: OWNER },
-              reply_markup: { inline_keyboard: [[{ text: '✏️', callback_data: data }]] },
-            },
-          },
-        }),
-      }),
-      env(),
-      c,
-    );
-    await c.settle();
-  }
-
   it('шле питання з поточним текстом/часом, пише синтетичну репліку (БЕЗ id-маркера — reminderText сам ключ)', async () => {
     kv.set(
       'state',
@@ -491,5 +492,28 @@ describe('CRUD: ru:<id> — «✏️ Редагувати» на нагадув�
     await tapCallback('ru:nope');
     expect(toast()).toContain('неактуальне');
     expect(tg.find((c) => c.method === 'sendMessage')).toBeUndefined();
+  });
+});
+
+describe('CRUD: rs:<presetIdx>:<id> — розширений snooze (extra b)', () => {
+  it('пресет 1 (1 год) відкладає, тікає кнопку, RM: (старий) лишається живим окремо', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [{ id: 'rem1', text: 'Полити квіти', whenMs: 1000, firedTs: 999 }],
+      }),
+    );
+    await tapCallback('rs:1:rem1');
+
+    expect(toast()).toContain('Відкладено');
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders[0].firedTs).toBeNull();
+    expect(state.reminders[0].whenMs).toBeGreaterThan(Date.now() + 59 * 60_000); // ~1 год наперед
+  });
+
+  it('невідомий id -> «вже неактуальне», без крашу', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    await tapCallback('rs:0:nope');
+    expect(toast()).toContain('неактуальне');
   });
 });

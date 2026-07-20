@@ -59,6 +59,9 @@ import {
   parseReminderCancelCallbackData,
   buildReminderEditCallbackData,
   parseReminderEditCallbackData,
+  snoozeReminderPreset,
+  parseReminderSnoozeCallbackData,
+  buildSnoozeRow,
   LLM_REWRITE_SCHEMA,
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
@@ -2364,6 +2367,17 @@ async function resolveReminderSnooze(env, parsed, reminderId) {
   return resolveReminderAction(env, parsed, reminderId, snoozeReminder, '😴 Відкладено на 10 хв');
 }
 
+/** Обробити `rs:<presetIdx>:<id>` (extra b) — snooze за одним із трьох пресетів. */
+async function resolveReminderSnoozePreset(env, parsed, presetIdx, reminderId) {
+  return resolveReminderAction(
+    env,
+    parsed,
+    reminderId,
+    (reminders, id, nowMs) => snoozeReminderPreset(reminders, id, presetIdx, nowMs),
+    '😴 Відкладено',
+  );
+}
+
 /** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди. */
 async function resolveReminderCancel(env, parsed, reminderId) {
   return resolveReminderAction(env, parsed, reminderId, cancelReminder, '🗑 Нагадування скасовано');
@@ -2825,9 +2839,10 @@ async function checkReminders(env) {
       message_thread_id: threadId,
       text: formatReminderFired(r.text),
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [[{ text: '😴 +10 хв', callback_data: `${REMINDER_CB_PREFIX}${r.id}` }]],
-      },
+      // Розширений snooze (extra b): рядок пресетів, не одна фіксована +10 хв.
+      // Старий rm:<id> (одна кнопка) лишається ЖИВИМ обробником — уже надіслані
+      // повідомлення з ним не можна переписати заднім числом.
+      reply_markup: { inline_keyboard: [buildSnoozeRow(r.id)] },
     });
     // §C5: трекаємо для /clear — cron-контекст, немає вхідного parsed, тож
     // chatId/threadId явні (той самий trackSentMessage, що й sendTo()).
@@ -2857,6 +2872,7 @@ async function processTelegramUpdate(env, parsed, origin) {
       const roadmapCb = parseRoadmapCallbackData(parsed.data);
       const reminderCancelId = parseReminderCancelCallbackData(parsed.data); // 'rc:' — §C4
       const reminderEditId = parseReminderEditCallbackData(parsed.data); // 'ru:' — CRUD
+      const snoozePreset = parseReminderSnoozeCallbackData(parsed.data); // 'rs:' — extra b
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const toast = proposalCb
@@ -2869,13 +2885,20 @@ async function processTelegramUpdate(env, parsed, origin) {
               ? await resolveReminderCancel(env, parsed, reminderCancelId)
               : reminderEditId
                 ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
-                : isReminderSnooze
-                  ? await resolveReminderSnooze(
+                : snoozePreset
+                  ? await resolveReminderSnoozePreset(
                       env,
                       parsed,
-                      parsed.data.slice(REMINDER_CB_PREFIX.length),
+                      snoozePreset.presetIdx,
+                      snoozePreset.id,
                     )
-                  : await resolveCallbackToast(env, parsed);
+                  : isReminderSnooze
+                    ? await resolveReminderSnooze(
+                        env,
+                        parsed,
+                        parsed.data.slice(REMINDER_CB_PREFIX.length),
+                      )
+                    : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,

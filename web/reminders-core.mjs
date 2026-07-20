@@ -280,6 +280,62 @@ export function snoozeReminder(reminders, id, nowMs) {
   );
 }
 
+/* ── Розширений snooze (extra b, схвалено власником) ────────────────────────
+   Одна фіксована +10 хв (rm:<id>, вище) лишається — старе спрацьоване
+   повідомлення в чаті власника вже має ЦЕЙ callback_data, і його не можна
+   переписати заднім числом. Нові спрацьовування (checkReminders, worker.js)
+   натомість шлють РЯДОК із трьох пресетів — окремий простір 'rs:', бо 'rm:'
+   бере ВЕСЬ залишок як id (без internal split — той самий мотив, що й у
+   коментарі при REMINDER_CANCEL_CB_PREFIX), підпростір усередині зламав би
+   snooze-парсинг. 1440 = «завтра, та сама година» (той самий трюк, що
+   EVENT_SHIFT_STEPS у agent-core.mjs). */
+export const SNOOZE_PRESETS = [
+  { minutes: 10, label: '😴 10 хв' },
+  { minutes: 60, label: '😴 1 год' },
+  { minutes: 1440, label: '😴 завтра' },
+];
+
+/** Відкласти на пресет за індексом (SNOOZE_PRESETS) — невідомий індекс -> без змін. */
+export function snoozeReminderPreset(reminders, id, presetIdx, nowMs) {
+  const preset = SNOOZE_PRESETS[presetIdx];
+  if (!preset) return Array.isArray(reminders) ? reminders : [];
+  return (Array.isArray(reminders) ? reminders : []).map((r) =>
+    r.id === id ? { ...r, whenMs: nowMs + preset.minutes * MINUTE, firedTs: null } : r,
+  );
+}
+
+export const REMINDER_SNOOZE_CB_PREFIX = 'rs:';
+
+/** `rs:<presetIdx>:<id>`; ≤64 байти, невалідний presetIdx -> null. */
+export function buildReminderSnoozeCallbackData(presetIdx, id) {
+  if (!Number.isInteger(presetIdx) || presetIdx < 0 || presetIdx >= SNOOZE_PRESETS.length)
+    return null;
+  const s = `${REMINDER_SNOOZE_CB_PREFIX}${presetIdx}:${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** Розібрати `rs:<presetIdx>:<id>` -> {presetIdx,id}|null. */
+export function parseReminderSnoozeCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(REMINDER_SNOOZE_CB_PREFIX)) return null;
+  const rest = data.slice(REMINDER_SNOOZE_CB_PREFIX.length);
+  const sep = rest.indexOf(':');
+  if (sep <= 0) return null;
+  const presetIdx = Number(rest.slice(0, sep));
+  const id = rest.slice(sep + 1);
+  if (!Number.isInteger(presetIdx) || presetIdx < 0 || presetIdx >= SNOOZE_PRESETS.length || !id) {
+    return null;
+  }
+  return { presetIdx, id };
+}
+
+/** Рядок кнопок-пресетів snooze для повідомлення «спрацювало» (checkReminders). */
+export function buildSnoozeRow(id) {
+  return SNOOZE_PRESETS.map((preset, i) => {
+    const cb = buildReminderSnoozeCallbackData(i, id);
+    return cb ? { text: preset.label, callback_data: cb } : null;
+  }).filter((btn) => btn !== null);
+}
+
 /**
  * Скасувати (§C4): видалити нагадування з масиву назавжди — не спрацює
  * ані зараз, ані після snooze. На відміну від markFired/snoozeReminder це

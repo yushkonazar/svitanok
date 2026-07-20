@@ -17,6 +17,12 @@ const {
   REMINDER_EDIT_CB_PREFIX,
   buildReminderEditCallbackData,
   parseReminderEditCallbackData,
+  SNOOZE_PRESETS,
+  snoozeReminderPreset,
+  REMINDER_SNOOZE_CB_PREFIX,
+  buildReminderSnoozeCallbackData,
+  parseReminderSnoozeCallbackData,
+  buildSnoozeRow,
   formatRemindersListMessage,
   buildRemindersKeyboard,
   formatReminderConfirm,
@@ -528,5 +534,60 @@ describe('reminders-core — isAmbiguousRewrite (захист від ненад�
       ? null
       : parseReminderTime(badRewrite, SUMMER_NOW);
     expect(accepted).toBeNull();
+  });
+});
+
+describe('SNOOZE_PRESETS / snoozeReminderPreset — розширений snooze (extra b)', () => {
+  const base = [{ id: 'r1', text: 'X', whenMs: 1000, createdMs: 0, firedTs: 999 }];
+
+  it('рівно 3 пресети: 10хв/1год/завтра', () => {
+    expect(SNOOZE_PRESETS.map((p: { minutes: number }) => p.minutes)).toEqual([10, 60, 1440]);
+  });
+
+  it('застосовує пресет за індексом, скидає firedTs (як snoozeReminder)', () => {
+    const out = snoozeReminderPreset(base, 'r1', 1, 5000); // idx 1 = 60 хв
+    expect(out[0]).toMatchObject({ whenMs: 5000 + 60 * 60_000, firedTs: null });
+  });
+
+  it('невідомий індекс -> без змін', () => {
+    expect(snoozeReminderPreset(base, 'r1', 99, 5000)).toEqual(base);
+  });
+
+  it('невідомий id -> no-op', () => {
+    expect(snoozeReminderPreset(base, 'nope', 0, 5000)).toEqual(base);
+  });
+});
+
+describe('reminders-core — rs: callback_data (пресет snooze, extra b)', () => {
+  it('build+parse round-trip для кожного пресету', () => {
+    for (let i = 0; i < SNOOZE_PRESETS.length; i++) {
+      const cb = buildReminderSnoozeCallbackData(i, 'abc-123');
+      expect(cb).toBe(`${REMINDER_SNOOZE_CB_PREFIX}${i}:abc-123`);
+      expect(parseReminderSnoozeCallbackData(cb)).toEqual({ presetIdx: i, id: 'abc-123' });
+    }
+  });
+
+  it('невалідний presetIdx при побудові -> null', () => {
+    expect(buildReminderSnoozeCallbackData(-1, 'id')).toBeNull();
+    expect(buildReminderSnoozeCallbackData(99, 'id')).toBeNull();
+    expect(buildReminderSnoozeCallbackData(1.5, 'id')).toBeNull();
+  });
+
+  it('малформат/чужий префікс/поза межами при розборі -> null', () => {
+    expect(parseReminderSnoozeCallbackData('rm:0:id')).toBeNull();
+    expect(parseReminderSnoozeCallbackData('rs:99:id')).toBeNull();
+    expect(parseReminderSnoozeCallbackData('rs::id')).toBeNull();
+    expect(parseReminderSnoozeCallbackData('rs:0:')).toBeNull();
+    expect(parseReminderSnoozeCallbackData(null)).toBeNull();
+  });
+
+  it('buildSnoozeRow — по кнопці на пресет, у тому ж порядку', () => {
+    const row = buildSnoozeRow('rem1');
+    expect(row).toHaveLength(3);
+    expect(row[0].text).toBe('😴 10 хв');
+    expect(row[2].text).toBe('😴 завтра');
+    expect(row.every((b: { callback_data: string }) => b.callback_data.startsWith('rs:'))).toBe(
+      true,
+    );
   });
 });
