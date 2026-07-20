@@ -14,6 +14,7 @@ const OWNER = 4242;
 
 let kv: Map<string, string>;
 let tg: { method: string; body: Record<string, unknown> }[];
+let cal: Record<string, unknown>[]; // захоплені тіла events.insert
 
 function env() {
   return {
@@ -25,6 +26,9 @@ function env() {
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
+    GOOGLE_CLIENT_ID: 'gid',
+    GOOGLE_CLIENT_SECRET: 'gsecret',
+    GOOGLE_REFRESH_TOKEN: 'grefresh',
   };
 }
 
@@ -37,12 +41,12 @@ function ctx() {
   };
 }
 
-const acceptUpdate = (id: string, updateId = 1000) => ({
+const acceptUpdate = (id: string, action = 'a', updateId = 1000) => ({
   update_id: updateId,
   callback_query: {
     id: 'cbq1',
     from: { id: OWNER },
-    data: `pd:a:${id}`,
+    data: `pd:${action}:${id}`,
     message: {
       message_id: 555,
       chat: { id: OWNER },
@@ -64,7 +68,16 @@ const pending = (id: string) => ({
   items: [{ kind: 'reminder', title: 'купити квитки', whenMs: Date.now() + 3_600_000 }],
 });
 
-async function postAccept(id: string, e = env()) {
+const eventPending = (id: string, cfg: { durMin: number | null; leadMin: number | null }) => ({
+  id,
+  createdMs: Date.now(),
+  cfg,
+  items: [
+    { kind: 'event', title: 'обід', whenMs: Date.parse('2026-07-24T12:00:00Z'), durationMin: 60 },
+  ],
+});
+
+async function postCb(id: string, action = 'a', e = env()) {
   const c = ctx();
   await worker.fetch(
     new Request('https://svitanok.example/api/telegram', {
@@ -73,7 +86,7 @@ async function postAccept(id: string, e = env()) {
         'content-type': 'application/json',
         'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
       },
-      body: JSON.stringify(acceptUpdate(id)),
+      body: JSON.stringify(acceptUpdate(id, action)),
     }),
     e,
     c,
@@ -81,17 +94,33 @@ async function postAccept(id: string, e = env()) {
   await c.settle(); // дочекатись фонової обробки (resolveProposalCallback)
 }
 
+const postAccept = (id: string, e = env()) => postCb(id, 'a', e);
+
 const toast = () =>
   tg.find((c) => c.method === 'answerCallbackQuery')?.body.text as string | undefined;
 
 beforeEach(() => {
   kv = new Map();
   tg = [];
+  cal = [];
   vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
     const url = String(input);
     if (url.includes('api.telegram.org')) {
       tg.push({ method: url.split('/').pop()!, body: JSON.parse(String(init.body ?? '{}')) });
       return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.includes('oauth2.googleapis.com/token')) {
+      return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.includes('googleapis.com/calendar') && init.method === 'POST') {
+      cal.push(JSON.parse(String(init.body ?? '{}')));
+      return new Response(JSON.stringify({ id: 'evt1' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -135,5 +164,58 @@ describe('accept пропозиції — власний KV-ключ переж�
     kv.set('assistantPending', JSON.stringify(pending('realid00')));
     await postAccept('WRONGid0');
     expect(toast()).toContain('Застаріла');
+  });
+});
+
+describe('доналаштування пропозиції — циклери', () => {
+  it('циклер тривалості (pd:d) міняє cfg і перемальовує клавіатуру, НЕ споживає', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('evt00001', { durMin: null, leadMin: null })),
+    );
+    await postCb('evt00001', 'd');
+
+    const stored = JSON.parse(kv.get('assistantPending')!);
+    expect(stored.cfg.durMin).toBe(30); // null(«як є») -> 30
+    expect(stored.id).toBe('evt00001'); // слот лишився (не спожито)
+    expect(tg.find((c) => c.method === 'editMessageReplyMarkup')).toBeTruthy();
+    expect(toast()).toContain('30 хв');
+  });
+
+  it('accept події з cfg -> тривалість і lead-нагадування у тілі календаря', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('evt00002', { durMin: 90, leadMin: 30 })),
+    );
+    await postCb('evt00002', 'a');
+
+    expect(toast()).toContain('Додано');
+    expect(cal).toHaveLength(1);
+    const body = cal[0] as {
+      start: { dateTime: string };
+      end: { dateTime: string };
+      reminders?: unknown;
+    };
+    expect((Date.parse(body.end.dateTime) - Date.parse(body.start.dateTime)) / 60_000).toBe(90);
+    expect(body.reminders).toEqual({
+      useDefault: false,
+      overrides: [{ method: 'popup', minutes: 30 }],
+    });
+  });
+
+  it('accept без доналаштування (cfg null) -> тривалість від моделі, без reminders', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('evt00003', { durMin: null, leadMin: null })),
+    );
+    await postCb('evt00003', 'a');
+
+    const body = cal[0] as {
+      start: { dateTime: string };
+      end: { dateTime: string };
+      reminders?: unknown;
+    };
+    expect((Date.parse(body.end.dateTime) - Date.parse(body.start.dateTime)) / 60_000).toBe(60); // durationMin моделі
+    expect(body.reminders).toBeUndefined(); // дефолт календаря
   });
 });
