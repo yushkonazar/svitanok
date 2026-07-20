@@ -2384,6 +2384,33 @@ async function resolveReminderCancel(env, parsed, reminderId) {
 }
 
 /**
+ * Обробити `rc:all` (extra c, пакетне скасування) — на відміну від решти
+ * reminder-дій, тут ціле повідомлення переписується (editMessageText), не
+ * лише тік кнопки: список активних змінюється ПОВНІСТЮ, старий текст одразу
+ * зробився б неправдивим (усе ще показував би скасовані пункти).
+ */
+async function resolveReminderCancelAll(env, parsed) {
+  const state = await loadState(env);
+  const active = listActive(state.reminders);
+  if (active.length === 0) return 'Нема що скасовувати.';
+
+  state.reminders = active.reduce((rs, r) => cancelReminder(rs, r.id), state.reminders);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+
+  if (parsed.chatId != null && parsed.messageId != null) {
+    const keyboard = buildRemindersKeyboard(state.reminders);
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: formatRemindersListMessage(state.reminders),
+      parse_mode: 'HTML',
+      ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
+    });
+  }
+  return `🗑 Скасовано ${active.length}`;
+}
+
+/**
  * Клавіатура ПІСЛЯ accept — Edit/Delete на кожен УСПІШНИЙ пункт (create-
  * режим), одне 🗑 (edit-режим успіх — Видалити щойно оновлену подію), або
  * нічого (delete-режим/провал). Глеїть простори ДВОХ модулів (ev: із
@@ -2881,24 +2908,26 @@ async function processTelegramUpdate(env, parsed, origin) {
           ? await resolveAgendaCallback(env, parsed, agendaCb)
           : roadmapCb
             ? await resolveRoadmapCallback(env, parsed, roadmapCb)
-            : reminderCancelId
-              ? await resolveReminderCancel(env, parsed, reminderCancelId)
-              : reminderEditId
-                ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
-                : snoozePreset
-                  ? await resolveReminderSnoozePreset(
-                      env,
-                      parsed,
-                      snoozePreset.presetIdx,
-                      snoozePreset.id,
-                    )
-                  : isReminderSnooze
-                    ? await resolveReminderSnooze(
+            : reminderCancelId === 'all'
+              ? await resolveReminderCancelAll(env, parsed)
+              : reminderCancelId
+                ? await resolveReminderCancel(env, parsed, reminderCancelId)
+                : reminderEditId
+                  ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
+                  : snoozePreset
+                    ? await resolveReminderSnoozePreset(
                         env,
                         parsed,
-                        parsed.data.slice(REMINDER_CB_PREFIX.length),
+                        snoozePreset.presetIdx,
+                        snoozePreset.id,
                       )
-                    : await resolveCallbackToast(env, parsed);
+                    : isReminderSnooze
+                      ? await resolveReminderSnooze(
+                          env,
+                          parsed,
+                          parsed.data.slice(REMINDER_CB_PREFIX.length),
+                        )
+                      : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,

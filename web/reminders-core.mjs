@@ -436,16 +436,26 @@ export function formatRemindersListMessage(reminders) {
 /** Inline-клавіатура /reminders: по кнопці «❌ Скасувати N» на активне нагадування
  *  (у тому ж порядку, що й у formatRemindersListMessage — номер відповідає рядку).
  *  Порожньо, якщо активних немає — виклик не додає reply_markup у цьому випадку. */
+// Сентинель для «скасувати всі» — reminder-id завжди crypto.randomUUID(), тож
+// буквальне 'all' ніколи не збігнеться зі справжнім id (extra c, схвалено власником).
+const CANCEL_ALL_ID = 'all';
+
 export function buildRemindersKeyboard(reminders) {
   const active = listActive(reminders);
-  return {
-    inline_keyboard: active
-      .map((r, i) => {
-        const cb = buildReminderCancelCallbackData(r.id);
-        return cb ? [{ text: `❌ Скасувати ${i + 1}`, callback_data: cb }] : null;
-      })
-      .filter((row) => row !== null),
-  };
+  const rows = active
+    .map((r, i) => {
+      const cb = buildReminderCancelCallbackData(r.id);
+      return cb ? [{ text: `❌ Скасувати ${i + 1}`, callback_data: cb }] : null;
+    })
+    .filter((row) => row !== null);
+  // Пакетне скасування (extra c) — лише коли є сенс (2+ активних), одним тапом,
+  // без окремого підтвердження (той самий мотив, що rc:/rm: — усі reminder-дії
+  // тут уже прямі/без confirm).
+  if (active.length >= 2) {
+    const cb = buildReminderCancelCallbackData(CANCEL_ALL_ID);
+    if (cb) rows.push([{ text: `🗑 Скасувати всі (${active.length})`, callback_data: cb }]);
+  }
+  return { inline_keyboard: rows };
 }
 
 /** Підтвердження одразу після створення нагадування ("/remind"-відповідь). */

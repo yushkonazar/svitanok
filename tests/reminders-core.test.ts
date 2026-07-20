@@ -424,10 +424,62 @@ describe('reminders-core — formatRemindersListMessage/buildRemindersKeyboard (
     expect(msg).toContain('2. ');
 
     const kb = buildRemindersKeyboard(reminders);
-    expect(kb.inline_keyboard).toHaveLength(2);
+    // +1 рядок «Скасувати всі» (extra c) — 2+ активних.
+    expect(kb.inline_keyboard).toHaveLength(3);
     expect(kb.inline_keyboard[0][0].text).toBe('❌ Скасувати 1');
     expect(kb.inline_keyboard[0][0].callback_data).toBe(buildReminderCancelCallbackData('sooner'));
     expect(kb.inline_keyboard[1][0].text).toBe('❌ Скасувати 2');
+  });
+
+  describe('«Скасувати всі» (extra c) — лише коли є сенс (2+ активних)', () => {
+    it('0 чи 1 активне -> рядка немає', () => {
+      expect(buildRemindersKeyboard([]).inline_keyboard).toEqual([]);
+      const one = addReminder([], {
+        id: 'r1',
+        text: 'X',
+        whenMs: SUMMER_NOW + 1000,
+        nowMs: SUMMER_NOW,
+      });
+      expect(buildRemindersKeyboard(one).inline_keyboard).toHaveLength(1); // лише «Скасувати 1»
+    });
+
+    it('2+ активних -> трейлінг-рядок з кількістю, callback_data = rc:all', () => {
+      let reminders = addReminder([], {
+        id: 'r1',
+        text: 'X',
+        whenMs: SUMMER_NOW + 1000,
+        nowMs: SUMMER_NOW,
+      });
+      reminders = addReminder(reminders, {
+        id: 'r2',
+        text: 'Y',
+        whenMs: SUMMER_NOW + 2000,
+        nowMs: SUMMER_NOW,
+      });
+      const kb = buildRemindersKeyboard(reminders);
+      const last = kb.inline_keyboard.at(-1)!;
+      expect(last[0].text).toBe('🗑 Скасувати всі (2)');
+      expect(last[0].callback_data).toBe('rc:all');
+      expect(parseReminderCancelCallbackData(last[0].callback_data)).toBe('all');
+    });
+
+    it('спрацьовані (не активні) не рахуються в поріг 2+', () => {
+      let reminders = addReminder([], {
+        id: 'r1',
+        text: 'X',
+        whenMs: SUMMER_NOW + 1000,
+        nowMs: SUMMER_NOW,
+      });
+      reminders = markFired(reminders, 'r1', SUMMER_NOW);
+      reminders = addReminder(reminders, {
+        id: 'r2',
+        text: 'Y',
+        whenMs: SUMMER_NOW + 2000,
+        nowMs: SUMMER_NOW,
+      });
+      // лише 1 АКТИВНЕ (r1 спрацювало) -> без трейлінг-рядка.
+      expect(buildRemindersKeyboard(reminders).inline_keyboard).toHaveLength(1);
+    });
   });
 
   it('HTML-екранує текст нагадування', () => {

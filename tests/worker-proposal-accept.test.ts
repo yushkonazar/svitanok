@@ -517,3 +517,51 @@ describe('CRUD: rs:<presetIdx>:<id> — розширений snooze (extra b)', 
     expect(toast()).toContain('неактуальне');
   });
 });
+
+describe('CRUD: rc:all — пакетне скасування (extra c)', () => {
+  it('скасовує ВСІ активні, переписує список (editMessageText), без кнопок опісля', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          { id: 'r1', text: 'X', whenMs: Date.now() + 1000, firedTs: null },
+          { id: 'r2', text: 'Y', whenMs: Date.now() + 2000, firedTs: null },
+        ],
+      }),
+    );
+    await tapCallback('rc:all');
+
+    expect(toast()).toContain('Скасовано 2');
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders).toEqual([]);
+
+    const edited = tg.find((c) => c.method === 'editMessageText')?.body as {
+      text: string;
+      reply_markup?: unknown;
+    };
+    expect(edited?.text).toContain('немає');
+    expect(edited?.reply_markup).toBeUndefined();
+  });
+
+  it('спрацьовані НЕ чіпає (вони й так вже поза списком активних)', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          { id: 'r1', text: 'X', whenMs: 1, firedTs: 999 },
+          { id: 'r2', text: 'Y', whenMs: Date.now() + 1000, firedTs: null },
+        ],
+      }),
+    );
+    await tapCallback('rc:all');
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders).toHaveLength(1);
+    expect(state.reminders[0].id).toBe('r1'); // спрацьоване лишилось
+  });
+
+  it('нема активних -> чесний toast, KV не чіпається', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    await tapCallback('rc:all');
+    expect(toast()).toContain('Нема що скасовувати');
+  });
+});
