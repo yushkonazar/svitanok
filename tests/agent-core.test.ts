@@ -583,3 +583,72 @@ describe('health-check хоста — класифікація й переход
     expect(HOST_DESYNC_ALERT).toMatch(/systemctl|scp|host\//);
   });
 });
+
+describe('доналаштування пропозиції — циклери тривалості/lead', () => {
+  const {
+    cycleProposalDuration,
+    cycleProposalLead,
+    formatDurationLabel,
+    formatLeadLabel,
+    proposalHasEvent,
+    buildProposalKeyboard,
+  } = agent;
+
+  it('parse/build приймають нові дії d і l', () => {
+    for (const a of ['a', 'c', 'd', 'l']) {
+      const data = buildProposalCallbackData(a, 'id123456');
+      expect(data).toBe(`pd:${a}:id123456`);
+      expect(parseProposalCallbackData(data)).toEqual({ action: a, id: 'id123456' });
+    }
+    expect(buildProposalCallbackData('x', 'id')).toBeNull();
+    expect(parseProposalCallbackData('pd:x:id')).toBeNull();
+  });
+
+  it('тривалість циклиться по колу, null(«як є») -> 30 -> ... -> назад', () => {
+    expect(cycleProposalDuration(null)).toBe(30);
+    expect(cycleProposalDuration(30)).toBe(60);
+    expect(cycleProposalDuration(180)).toBe(null); // замикання кола
+    expect(cycleProposalDuration(undefined)).toBe(30); // невідоме -> перший крок
+  });
+
+  it('lead циклиться по колу null -> 10 -> ... -> день -> назад', () => {
+    expect(cycleProposalLead(null)).toBe(10);
+    expect(cycleProposalLead(60)).toBe(1440);
+    expect(cycleProposalLead(1440)).toBe(null);
+  });
+
+  it('підписи тривалості людські (хв/год, півтори)', () => {
+    expect(formatDurationLabel(null)).toBe('як є');
+    expect(formatDurationLabel(30)).toBe('30 хв');
+    expect(formatDurationLabel(60)).toBe('1 год');
+    expect(formatDurationLabel(90)).toBe('1.5 год');
+  });
+
+  it('підписи lead людські («за замовч.»/«за 30 хв»/«за день»)', () => {
+    expect(formatLeadLabel(null)).toBe('за замовч.');
+    expect(formatLeadLabel(30)).toBe('за 30 хв');
+    expect(formatLeadLabel(60)).toBe('за 1 год');
+    expect(formatLeadLabel(1440)).toBe('за день');
+  });
+
+  it('клавіатура: рядок циклерів ТІЛЬКИ коли є подія; ✅/❌ завжди', () => {
+    const withEvent = buildProposalKeyboard('id123456', [{ kind: 'event' }], {
+      durMin: 60,
+      leadMin: 30,
+    });
+    expect(withEvent.inline_keyboard).toHaveLength(2); // циклери + accept/cancel
+    expect(withEvent.inline_keyboard[0][0].text).toContain('1 год');
+    expect(withEvent.inline_keyboard[0][1].text).toContain('за 30 хв');
+    expect(withEvent.inline_keyboard[0][0].callback_data).toBe('pd:d:id123456');
+
+    const reminderOnly = buildProposalKeyboard('id123456', [{ kind: 'reminder' }], {});
+    expect(reminderOnly.inline_keyboard).toHaveLength(1); // лише accept/cancel, без циклерів
+    expect(reminderOnly.inline_keyboard[0][0].text).toContain('Прийняти');
+  });
+
+  it('proposalHasEvent: подія -> true, лише нагадування -> false', () => {
+    expect(proposalHasEvent([{ kind: 'reminder' }, { kind: 'event' }])).toBe(true);
+    expect(proposalHasEvent([{ kind: 'reminder' }])).toBe(false);
+    expect(proposalHasEvent([])).toBe(false);
+  });
+});

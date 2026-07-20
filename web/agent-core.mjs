@@ -418,17 +418,87 @@ export function formatProposalMessage(items) {
 // Окремий простір callback_data від v1:<dateKey>:... (P1) і rm:<id> (P2a).
 export const PROPOSAL_CB_PREFIX = 'pd:';
 
-/** `pd:a:<id>` (прийняти) / `pd:c:<id>` (скасувати); ≤64 байти (Telegram-ліміт). */
+// Дії пропозиції: a=прийняти, c=скасувати (термінальні), d=цикл тривалості,
+// l=цикл lead-time сповіщення (доналаштування, НЕ споживають пропозицію).
+const PROPOSAL_ACTIONS = new Set(['a', 'c', 'd', 'l']);
+
+/** `pd:<action>:<id>`; ≤64 байти (Telegram-ліміт). */
 export function buildProposalCallbackData(action, id) {
-  if (action !== 'a' && action !== 'c') return null;
+  if (!PROPOSAL_ACTIONS.has(action)) return null;
   const s = `${PROPOSAL_CB_PREFIX}${action}:${id}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-/** Розібрати `pd:...` callback_data -> {action:'a'|'c', id}|null. */
+/** Розібрати `pd:...` callback_data -> {action:'a'|'c'|'d'|'l', id}|null. */
 export function parseProposalCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(PROPOSAL_CB_PREFIX)) return null;
   const [action, id] = data.slice(PROPOSAL_CB_PREFIX.length).split(':');
-  if ((action !== 'a' && action !== 'c') || !id) return null;
+  if (!PROPOSAL_ACTIONS.has(action) || !id) return null;
   return { action, id };
+}
+
+/* ── Доналаштування пропозиції (циклери під ✅/❌) ─────────────────────────────
+   Тривалість події й за скільки нагадати — тап циклить значення по колу, а
+   пропозиція перемальовується на місці. null = «як є»: тривалість від моделі,
+   сповіщення за дефолтом календаря (тобто поведінка до цієї фічі). Циклери
+   стосуються ЛИШЕ подій; для нагадувань тривалість/lead беззмістовні. */
+
+/** Кроки тривалості події, хв. null -> лишити те, що дала модель. */
+export const PROPOSAL_DURATION_STEPS = [null, 30, 60, 90, 120, 180];
+/** Кроки lead-time сповіщення, хв. null -> дефолт календаря. */
+export const PROPOSAL_LEAD_STEPS = [null, 10, 30, 60, 1440];
+
+const nextInCycle = (steps, cur) => steps[(steps.findIndex((s) => s === cur) + 1) % steps.length];
+
+/** Наступна тривалість по колу (невідоме/undefined -> перший крок). */
+export function cycleProposalDuration(cur) {
+  return nextInCycle(PROPOSAL_DURATION_STEPS, cur ?? null);
+}
+
+/** Наступний lead-time по колу. */
+export function cycleProposalLead(cur) {
+  return nextInCycle(PROPOSAL_LEAD_STEPS, cur ?? null);
+}
+
+/** Підпис тривалості: null->«як є», 30->«30 хв», 60->«1 год», 90->«1.5 год». */
+export function formatDurationLabel(durMin) {
+  if (durMin == null) return 'як є';
+  if (durMin < 60) return `${durMin} хв`;
+  const h = durMin / 60;
+  return `${Number.isInteger(h) ? h : h.toFixed(1)} год`;
+}
+
+/** Підпис lead-time: null->«за замовч.», 10->«за 10 хв», 60->«за 1 год», 1440->«за день». */
+export function formatLeadLabel(leadMin) {
+  if (leadMin == null) return 'за замовч.';
+  if (leadMin >= 1440) return 'за день';
+  if (leadMin % 60 === 0) return `за ${leadMin / 60} год`;
+  return `за ${leadMin} хв`;
+}
+
+/** У пропозиції є хоч одна ПОДІЯ (тоді показуємо циклери)? */
+export function proposalHasEvent(items) {
+  return Array.isArray(items) && items.some((it) => it?.kind === 'event');
+}
+
+/**
+ * Inline-клавіатура пропозиції: рядок циклерів (лише якщо є подія) + ✅/❌.
+ * cfg = {durMin, leadMin} (null = «як є»). Підпис кнопки-циклера показує
+ * поточне значення — окремого рядка-опису не треба.
+ */
+export function buildProposalKeyboard(id, items, cfg = {}) {
+  const rows = [];
+  const d = buildProposalCallbackData('d', id);
+  const l = buildProposalCallbackData('l', id);
+  if (proposalHasEvent(items) && d && l) {
+    rows.push([
+      { text: `⏳ ${formatDurationLabel(cfg.durMin ?? null)}`, callback_data: d },
+      { text: `⏰ ${formatLeadLabel(cfg.leadMin ?? null)}`, callback_data: l },
+    ]);
+  }
+  rows.push([
+    { text: '✅ Прийняти', callback_data: buildProposalCallbackData('a', id) },
+    { text: '❌ Скасувати', callback_data: buildProposalCallbackData('c', id) },
+  ]);
+  return { inline_keyboard: rows };
 }
