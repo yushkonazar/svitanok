@@ -323,6 +323,7 @@ export const COMMANDS = [
   { command: 'remind', description: 'Нагадування (напр. через 20 хв ...)' },
   { command: 'reminders', description: 'Список активних нагадувань' },
   { command: 'agenda', description: 'Найближчі події календаря — тиждень наперед' },
+  { command: 'agent', description: 'Що вміє асистент — повний перелік (вільний текст)' },
   { command: 'plan', description: 'План дня (LLM читає календар, пропонує таймлайн)' },
   { command: 'roadmap', description: 'IT-роадмеп (теми, прогрес)' },
   { command: 'clear', description: 'Видалити останні N повідомлень — мої та твої (за замовч. 20)' },

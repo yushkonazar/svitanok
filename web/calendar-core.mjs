@@ -122,8 +122,19 @@ export function parseEvents(json) {
  * Тіло events.insert — одноразова подія (без RRULE), Європа/Київ.
  * `reminderMinutes` (опційно) — popup-сповіщення за N хвилин до події
  * (доналаштування пропозиції). Не задано -> календар бере власний дефолт.
+ * `location` (PR-10, опційно) — нативне поле Google Calendar, простий рядок.
+ * `attendees` (PR-10, опційно) — ВЖЕ РЕЗОЛЬВЛЕНІ email-адреси (worker резолвить
+ * імена через People API ДО виклику цієї функції) — сюди нічого, крім готових
+ * email, не потрапляє.
  */
-export function buildCreateEventBody({ title, startIso, endIso, reminderMinutes }) {
+export function buildCreateEventBody({
+  title,
+  startIso,
+  endIso,
+  reminderMinutes,
+  location,
+  attendees,
+}) {
   const body = {
     summary: title,
     start: { dateTime: startIso, timeZone: 'Europe/Kyiv' },
@@ -135,6 +146,10 @@ export function buildCreateEventBody({ title, startIso, endIso, reminderMinutes 
       overrides: [{ method: 'popup', minutes: reminderMinutes }],
     };
   }
+  if (typeof location === 'string' && location) body.location = location;
+  if (Array.isArray(attendees) && attendees.length) {
+    body.attendees = attendees.map((email) => ({ email }));
+  }
   return body;
 }
 
@@ -144,11 +159,13 @@ export function buildCreateEventBody({ title, startIso, endIso, reminderMinutes 
  * із свіжопрочитаною подією) ще ДО виклику — тут лишається захисно-опційним,
  * щоб не вимагати зайвого від викликача/тестів.
  */
-export function buildUpdateEventBody({ title, startIso, endIso }) {
+export function buildUpdateEventBody({ title, startIso, endIso, location, attendees }) {
   const body = {};
   if (title != null) body.summary = title;
   if (startIso != null) body.start = { dateTime: startIso, timeZone: 'Europe/Kyiv' };
   if (endIso != null) body.end = { dateTime: endIso, timeZone: 'Europe/Kyiv' };
+  if (location != null) body.location = location;
+  if (Array.isArray(attendees)) body.attendees = attendees.map((email) => ({ email }));
   return body;
 }
 

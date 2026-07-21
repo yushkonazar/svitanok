@@ -224,6 +224,36 @@ describe('buildCreateEventBody', () => {
         .reminders,
     ).toBeUndefined();
   });
+
+  it('location (PR-10) -> нативне поле, порожнє/відсутнє -> без поля', () => {
+    expect(
+      buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b', location: 'Кав’ярня' })
+        .location,
+    ).toBe('Кав’ярня');
+    expect(
+      buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b' }).location,
+    ).toBeUndefined();
+    expect(
+      buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b', location: '' }).location,
+    ).toBeUndefined();
+  });
+
+  it('attendees (PR-10) -> масив {email}, порожній/відсутній -> без поля', () => {
+    expect(
+      buildCreateEventBody({
+        title: 'x',
+        startIso: 'a',
+        endIso: 'b',
+        attendees: ['a@x.com', 'b@x.com'],
+      }).attendees,
+    ).toEqual([{ email: 'a@x.com' }, { email: 'b@x.com' }]);
+    expect(
+      buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b' }).attendees,
+    ).toBeUndefined();
+    expect(
+      buildCreateEventBody({ title: 'x', startIso: 'a', endIso: 'b', attendees: [] }).attendees,
+    ).toBeUndefined();
+  });
 });
 
 describe('formatEventsForPrompt', () => {
@@ -264,6 +294,19 @@ describe('buildUpdateEventBody', () => {
 
   it('нічого не надано -> порожнє тіло', () => {
     expect(buildUpdateEventBody({})).toEqual({});
+  });
+
+  it('location/attendees (PR-10) -> проходять наскрізь у патч, null не пише', () => {
+    expect(buildUpdateEventBody({ location: 'Офіс' }).location).toBe('Офіс');
+    expect(buildUpdateEventBody({}).location).toBeUndefined();
+    expect(buildUpdateEventBody({ attendees: ['a@x.com'] }).attendees).toEqual([
+      { email: 'a@x.com' },
+    ]);
+    // attendees:[] — ЯВНЕ "прибрати всіх гостей" (на відміну від create, тут
+    // Array.isArray допускає порожній масив у патчі — відсутність поля й
+    // порожній масив семантично РІЗНІ для PATCH).
+    expect(buildUpdateEventBody({ attendees: [] }).attendees).toEqual([]);
+    expect(buildUpdateEventBody({}).attendees).toBeUndefined();
   });
 });
 

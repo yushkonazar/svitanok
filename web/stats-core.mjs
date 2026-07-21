@@ -31,7 +31,10 @@ const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 // тут, і лише потім у клієнтах.
 const LINEAR_STAGES = ['saved', 'applied', 'interview', 'offer'];
 const TERMINAL_STAGES = ['rejected', 'failed'];
-const STAGES = [...LINEAR_STAGES, ...TERMINAL_STAGES];
+// export: recordAction/jobStage (agent-core.mjs схема + worker.js валідація)
+// має відкидати НЕ-STAGES значення, а не пускати їх у recordEvent(job_stage),
+// де відсутня/невідома стадія тихо ВИДАЛЯЄ вакансію з воронки (див. ⚠️ вище).
+export const STAGES = [...LINEAR_STAGES, ...TERMINAL_STAGES];
 const STAGE_RANK = { saved: 0, applied: 1, interview: 2, offer: 3 };
 
 // Скільки збереженого показує /api/stats (прев'ю на вкладці «Інтереси»).
@@ -79,7 +82,9 @@ const CHECKIN_CAP = 365;
  */
 // Дев'ять життєвих категорій (v2, трекер життя) — дзеркало CATEGORIES у
 // web/app/src/components/checkin/questions.ts.
-const CATEGORY_VALUES = [
+// export: recordAction/checkin (agent-core.mjs схема) посилається на ТОЙ САМИЙ
+// перелік — щоб enum не розходився й не вимагав ручного дзеркалення.
+export const CATEGORY_VALUES = [
   'work',
   'learn',
   'project',

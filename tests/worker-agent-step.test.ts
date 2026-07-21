@@ -221,6 +221,164 @@ describe('/api/agent-step — термінальні дії', () => {
       expect(state.reminders[0].text).toBe('Купити квитки'); // без змін
     });
   });
+
+  /* PR-8, Категорія A: recordAction — прямий термінал, як updateReminder вище.
+     Кожен kind повторно використовує ТОЙ САМИЙ примітив запису, що й Mini App/
+     Telegram-кнопки (applyEvent/applyUrlVote/toggleProgress). */
+  describe('recordAction (PR-8, Категорія A)', () => {
+    it('checkin у робочу годину -> applyEvent записав у stats.checkins', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-10T08:00:00Z')); // Київ 11:00 -> ранок
+      try {
+        const res = await authed({
+          token: await token(),
+          structured: {
+            action: 'recordAction',
+            recordKind: 'checkin',
+            energy: 4,
+            sleepH: 7,
+            bedtime: 'e23',
+          },
+        });
+        expect(await res.json()).toMatchObject({ done: true });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sentTexts()[0]).toContain('Записав чек-ін');
+      expect(sentTexts()[0]).toContain('ранок');
+      const stats = JSON.parse(kv.get('stats')!);
+      const dateKey = Object.keys(stats.checkins)[0]!;
+      expect(stats.checkins[dateKey].morning).toEqual({ energy: 4, sleepH: 7, bedtime: 'e23' });
+    });
+
+    it('checkin у тиху зону (02:00–08:00 Київ) -> НЕ пише, чесний текст', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-10T02:00:00Z')); // Київ 05:00 -> тиха зона
+      try {
+        await authed({
+          token: await token(),
+          structured: { action: 'recordAction', recordKind: 'checkin', energy: 3 },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sentTexts()[0]).toContain('тиха зона');
+      expect(kv.get('stats')).toBeUndefined();
+    });
+
+    it('voteNews: newsIndex резолвиться у url/topic СВІЖИМ читанням latest, зараховує голос', async () => {
+      kv.set(
+        'latest',
+        JSON.stringify({
+          blocks: [
+            {
+              id: 'news',
+              data: {
+                groups: [
+                  { topic: 'Технології', items: [{ title: 'AI новина', url: 'https://x/a' }] },
+                  { topic: 'Спорт', items: [{ title: 'Матч', url: 'https://x/b' }] },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      const res = await authed({
+        token: await token(),
+        structured: { action: 'recordAction', recordKind: 'voteNews', newsIndex: 2 },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Матч');
+      const state = JSON.parse(kv.get('state')!);
+      expect(state.preferenceWeights.Спорт).toBeGreaterThan(1.0);
+      expect(state.votedUrls['https://x/b']).toMatchObject({ dir: 'up', category: 'Спорт' });
+    });
+
+    it('voteNews: newsIndex поза межами -> не знайшов, KV не чіпається', async () => {
+      kv.set('latest', JSON.stringify({ blocks: [] }));
+      await authed({
+        token: await token(),
+        structured: { action: 'recordAction', recordKind: 'voteNews', newsIndex: 5 },
+      });
+      expect(sentTexts()[0]).toContain('Не знайшов');
+      expect(kv.get('state')).toBeUndefined();
+    });
+
+    it('jobStage: jobIndex резолвиться у url СВІЖИМ читанням funnelList, стадія оновлена', async () => {
+      kv.set(
+        'stats',
+        JSON.stringify({
+          funnel: { 'https://jobs/1': 'applied' },
+          funnelMeta: {
+            'https://jobs/1': { title: 'Frontend Dev', ts: '2026-07-01', history: [] },
+          },
+        }),
+      );
+      const res = await authed({
+        token: await token(),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'jobStage',
+          jobIndex: 1,
+          jobStage: 'interview',
+        },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Frontend Dev');
+      expect(sentTexts()[0]).toContain('interview');
+      const stats = JSON.parse(kv.get('stats')!);
+      expect(stats.funnel['https://jobs/1']).toBe('interview');
+    });
+
+    it('jobStage: jobIndex поза межами -> не знайшов, stats не чіпається', async () => {
+      kv.set('stats', JSON.stringify({ funnel: {}, funnelMeta: {} }));
+      const before = kv.get('stats');
+      await authed({
+        token: await token(),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'jobStage',
+          jobIndex: 1,
+          jobStage: 'interview',
+        },
+      });
+      expect(sentTexts()[0]).toContain('Не знайшов');
+      expect(kv.get('stats')).toBe(before);
+    });
+
+    it('roadmapDone: позначає тему, ідемпотентно (повторний виклик НЕ знімає позначку)', async () => {
+      const res = await authed({
+        token: await token(),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'roadmapDone',
+          roadmapTopicId: 'frontend',
+          roadmapSubtopicId: 'html',
+        },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Позначив');
+      const state = JSON.parse(kv.get('state')!);
+      expect(state.roadmapProgress['frontend.html']).toBeTruthy();
+
+      // Другий виклик — та сама тема, НОВИЙ прогін (перший вже завершений і
+      // токен для нього більше не приймається, replay-захист вище): toggleProgress
+      // сирий зняв би позначку, recordAction-шлях мусить лишити ЯК Є (лише
+      // ДОДАЄ, ніколи не знімає).
+      await authed({
+        token: await token({ runId: 'run5678', progressMsgId: 901 }),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'roadmapDone',
+          roadmapTopicId: 'frontend',
+          roadmapSubtopicId: 'html',
+        },
+      });
+      expect(sentTexts()[1]).toContain('Уже позначено');
+      const state2 = JSON.parse(kv.get('state')!);
+      expect(state2.roadmapProgress['frontend.html']).toBeTruthy(); // досі є
+    });
+  });
 });
 
 describe('/api/agent-step — читальні дії й кроки', () => {
@@ -326,6 +484,10 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
     string,
     { summary: string; start: { dateTime: string }; end: { dateTime: string } }
   >;
+  // People API (PR-10): ім'я -> список email (порожній масив = «нема збігів»,
+  // відсутній ключ у Map теж «нема збігів» — тест НЕ мусить заповнювати все).
+  let peopleResults: Map<string, string[]>;
+  let calendarWrites: { method: string; url: string; body: Record<string, unknown> }[];
 
   const envWithGoogle = () =>
     makeEnv({
@@ -345,6 +507,8 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
         },
       ],
     ]);
+    peopleResults = new Map();
+    calendarWrites = [];
     vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
       const url = String(input);
       if (url.includes('api.telegram.org')) {
@@ -360,10 +524,28 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (url.includes('people.googleapis.com/v1/people:searchContacts')) {
+        const query = new URL(url).searchParams.get('query') ?? '';
+        const emails = peopleResults.get(query) ?? [];
+        return new Response(
+          JSON.stringify({
+            results: emails.map((email) => ({ person: { emailAddresses: [{ value: email }] } })),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       const single = url.match(
         /googleapis\.com\/calendar\/v3\/calendars\/primary\/events\/([^/?]+)/,
       );
       if (single) {
+        if ((init.method ?? 'GET') === 'PATCH') {
+          calendarWrites.push({
+            method: 'PATCH',
+            url,
+            body: JSON.parse(String(init.body ?? '{}')),
+          });
+          return new Response('{}', { status: 200 });
+        }
         const ev = googleEvents.get(single[1]!);
         return ev
           ? new Response(JSON.stringify({ id: single[1], ...ev }), {
@@ -384,6 +566,16 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
+      }
+      if (
+        url.includes('googleapis.com/calendar/v3/calendars/primary/events') &&
+        init.method === 'POST'
+      ) {
+        calendarWrites.push({ method: 'POST', url, body: JSON.parse(String(init.body ?? '{}')) });
+        return new Response(JSON.stringify({ id: 'newEvt1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       return new Response('{}', { status: 200 });
     });
@@ -446,5 +638,125 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
     expect(text).toContain('Дзвінок'); // пропозиція все одно пройшла (не блокує)
     expect(text).toContain('⚠️ накладається на');
     expect(text).toContain('Стендап');
+  });
+
+  /* Гості/локація (PR-10): резолюція ІМ'Я -> email через People API мусить
+     статись ЩЕ ДО показу пропозиції (enrichEventItems), щоб текст показував
+     «Гості: ...»/нотатки ще до того, як власник натисне ✅. */
+  describe('гості/локація — резолюція ДО показу (PR-10)', () => {
+    it('готовий email пропускається без пошуку People API', async () => {
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              {
+                kind: 'event',
+                title: 'Кава',
+                when: 'завтра о 15:00',
+                location: 'Кав’ярня',
+                attendees: ['friend@x.com'],
+              },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      const text = sentTexts()[0];
+      expect(text).toContain('📍 Кав’ярня');
+      expect(text).toContain('👥 Гості (запросимо): friend@x.com');
+    });
+
+    it('ім’я з 1 збігом у People API -> резолвиться в email', async () => {
+      peopleResults.set('Олексій', ['oleksiy@x.com']);
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Олексій'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      expect(sentTexts()[0]).toContain('👥 Гості (запросимо): oleksiy@x.com');
+    });
+
+    it('ім’я з 0 збігів -> НЕ додається як гість, notes пояснює', async () => {
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Невідомий'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      const text = sentTexts()[0];
+      expect(text).not.toContain('👥 Гості');
+      expect(text).toContain('⚠️ «Невідомий» не знайдено в контактах');
+    });
+
+    it('ім’я з 2+ збігами -> НЕ вгадує, notes перелічує варіанти', async () => {
+      peopleResults.set('Ірина', ['irina1@x.com', 'irina2@x.com']);
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Ірина'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      const text = sentTexts()[0];
+      expect(text).not.toContain('👥 Гості');
+      expect(text).toContain('⚠️ «Ірина»: кілька збігів (irina1@x.com, irina2@x.com)');
+    });
+
+    it('без contacts.readonly-скоупу (People API 403) -> тихо не резолвить, не крашить пропозицію', async () => {
+      vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.includes('api.telegram.org')) {
+          tgCalls.push({ url, body: JSON.parse(String(init.body ?? '{}')) });
+          return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.includes('oauth2.googleapis.com/token')) {
+          return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.includes('people.googleapis.com')) return new Response('{}', { status: 403 });
+        return new Response('{}', { status: 200 });
+      });
+      const res = await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Олексій'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      expect(res.status).toBe(200);
+      const text = sentTexts()[0];
+      expect(text).toContain('Зустріч'); // пропозиція все одно пройшла
+      expect(text).toContain('⚠️ «Олексій» не знайдено');
+    });
   });
 });

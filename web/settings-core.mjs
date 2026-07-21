@@ -121,14 +121,19 @@ export function isQuietMinute(settings, minuteOfDay) {
  * репортимо за наявністю секретів — так було історично.
  */
 export function connectorStatus({ hasGoogleCreds, scope }) {
-  if (!hasGoogleCreds) return { google: false, calendar: false, gmail: false };
+  if (!hasGoogleCreds) return { google: false, calendar: false, gmail: false, contacts: false };
   if (typeof scope !== 'string' || !scope.trim()) {
-    return { google: true, calendar: true, gmail: true };
+    // contacts (PR-10, гості на подіях) — НОВИЙ скоуп, на відміну від
+    // calendar/gmail тут порожній scope НЕ означає «є»: до першого
+    // кешованого обміну з ре-консентом власника дефолт має бути false,
+    // інакше Mini App брехав би, що резолюція гостей уже працює.
+    return { google: true, calendar: true, gmail: true, contacts: false };
   }
   const scopes = scope.toLowerCase();
   return {
     google: true,
     calendar: scopes.includes('/auth/calendar'),
     gmail: scopes.includes('/auth/gmail'),
+    contacts: scopes.includes('/auth/contacts'),
   };
 }
