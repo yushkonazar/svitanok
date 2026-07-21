@@ -4,7 +4,7 @@ import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 import * as agent from '../web/agent-core.mjs';
 // Межі довжини — з реального контракту хоста (той самий репо, окремий деплой).
 // @ts-expect-error — JS-модуль хоста без типів.
-import { MAX_SYSTEM_PROMPT_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
+import { MAX_SYSTEM_PROMPT_LEN, MAX_SCHEMA_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
   ASSISTANT_ACTION_SCHEMA,
@@ -26,7 +26,7 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 9 дій (CRUD: +updateReminder)', () => {
+  it('дозволяє рівно 10 дій (PR-8: +recordAction)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -37,17 +37,30 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'readOwnData',
       'readMail',
       'readMailBody',
+      'recordAction',
     ]);
   });
 
-  it('proposal.items.kind охоплює create ТА мутацію ІСНУЮЧОЇ події (updateEvent/deleteEvent)', () => {
+  it('proposal.items.kind охоплює create, мутацію ІСНУЮЧОЇ події ТА settings (PR-9)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.kind.enum).toEqual([
       'event',
       'reminder',
       'updateEvent',
       'deleteEvent',
+      'settings',
     ]);
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.eventId).toBeTruthy();
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.settings).toBeTruthy();
+  });
+
+  it('proposal.items несе location/attendees (PR-10)', () => {
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.location).toEqual({
+      type: 'string',
+    });
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.attendees).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+    });
   });
 });
 
@@ -69,14 +82,14 @@ describe('buildAssistantSystemPrompt', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('calendarStartDay');
     expect(p).toContain('calendarEndDay');
-    expect(p).toContain('через тиждень');
+    expect(p).toContain('тиждень');
   });
 
   it('описує readOwnData зі scope-ами; injection-застереження охоплює й історію (CC4/CM)', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('readOwnData');
     expect(p).toContain('dataScope');
-    expect(p).toContain('Історія розмови'); // ревʼю CM: історія — теж «лише дані»
+    expect(p).toContain('Історія'); // ревʼю CM: історія — теж «лише дані»
   });
 
   it('НЕ перевищує MAX_SYSTEM_PROMPT_LEN хоста в ЖОДЕН день тижня', () => {
@@ -92,6 +105,14 @@ describe('buildAssistantSystemPrompt', () => {
       );
     }
   });
+
+  it(
+    'НЕ перевищує MAX_SCHEMA_LEN хоста (PR-10: запас лишився лише 15 символів —' +
+      ' той самий клас регресії, що й системний промпт, досі без запобіжника)',
+    () => {
+      expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
+    },
+  );
 });
 
 describe('readMail + бюджет транскрипту (B3/B4)', () => {
@@ -111,7 +132,7 @@ describe('readMail + бюджет транскрипту (B3/B4)', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('readMail');
     expect(p).toContain('ЛИСТИ'); // anti-injection застереження охоплює пошту
-    expect(p).toContain('ПРОДОВЖЕННЯ РОЗМОВИ'); // B2: відповідь на уточнення — не новий запит
+    expect(p).toContain('ПРОДОВЖЕННЯ'); // B2: відповідь на уточнення — не новий запит
   });
 
   /* ── readMailBody: повне тіло ОДНОГО листа (дозвіл власника 18.07.2026) ──
@@ -409,6 +430,98 @@ describe('extractAssistantAction', () => {
   });
 });
 
+describe('extractAssistantAction — recordAction (PR-8, Категорія A)', () => {
+  it('невідомий/відсутній recordKind -> null', () => {
+    expect(extractAssistantAction({ action: 'recordAction', recordKind: 'delete' })).toBeNull();
+    expect(extractAssistantAction({ action: 'recordAction' })).toBeNull();
+  });
+
+  it('checkin: збирає лише ВІДОМІ enum-значення + числові поля, сміття відкидає', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'checkin',
+        energy: 4,
+        sleepH: 7,
+        bedtime: 'e23',
+        plan: 'work',
+        dayScore: 'п', // сміття (не число) — ігнор
+        blocker: 'not-a-real-value', // сміття (поза enum) — ігнор
+      }),
+    ).toEqual({
+      action: 'recordAction',
+      kind: 'checkin',
+      checkin: { energy: 4, sleepH: 7, bedtime: 'e23', plan: 'work' },
+    });
+  });
+
+  it('checkin: без жодного поля -> порожній checkin (не null — часткове ОК)', () => {
+    expect(extractAssistantAction({ action: 'recordAction', recordKind: 'checkin' })).toEqual({
+      action: 'recordAction',
+      kind: 'checkin',
+      checkin: {},
+    });
+  });
+
+  it('voteNews: newsIndex — ціле >=1, округлює; <1/відсутнє -> null', () => {
+    expect(
+      extractAssistantAction({ action: 'recordAction', recordKind: 'voteNews', newsIndex: 2.7 }),
+    ).toEqual({ action: 'recordAction', kind: 'voteNews', newsIndex: 3 });
+    expect(
+      extractAssistantAction({ action: 'recordAction', recordKind: 'voteNews', newsIndex: 0 }),
+    ).toBeNull();
+    expect(extractAssistantAction({ action: 'recordAction', recordKind: 'voteNews' })).toBeNull();
+  });
+
+  it('jobStage: потребує ОБИДВА jobIndex(>=1) і jobStage у STAGES', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'jobStage',
+        jobIndex: 1,
+        jobStage: 'interview',
+      }),
+    ).toEqual({ action: 'recordAction', kind: 'jobStage', jobIndex: 1, jobStage: 'interview' });
+    // невалідна стадія (напр. LLM вигадав щось поза списком) -> null, НЕ пропускаємо
+    // — на відміну від сирого job_stage-event, тут порожня/невідома стадія НЕ
+    // має шансу тихо видалити вакансію з воронки.
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'jobStage',
+        jobIndex: 1,
+        jobStage: 'ghosted',
+      }),
+    ).toBeNull();
+    expect(
+      extractAssistantAction({ action: 'recordAction', recordKind: 'jobStage', jobIndex: 1 }),
+    ).toBeNull();
+  });
+
+  it('roadmapDone: потребує ОБИДВА topicId+subtopicId непорожніми', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'roadmapDone',
+        roadmapTopicId: ' frontend ',
+        roadmapSubtopicId: 'html',
+      }),
+    ).toEqual({
+      action: 'recordAction',
+      kind: 'roadmapDone',
+      roadmapTopicId: 'frontend',
+      roadmapSubtopicId: 'html',
+    });
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'roadmapDone',
+        roadmapTopicId: 'frontend',
+      }),
+    ).toBeNull();
+  });
+});
+
 describe('sanitizeProposal', () => {
   it('парсить when канонічним parseReminderTime, лишає title як є', () => {
     const { items, droppedCount } = sanitizeProposal(
@@ -542,10 +655,147 @@ describe('sanitizeProposal', () => {
       });
     });
 
+    it('updateEvent: ЛИШЕ location/attendees (без title/when/durationMin) -> НЕ дропається (PR-10)', () => {
+      const { items, droppedCount } = sanitizeProposal(
+        [{ kind: 'updateEvent', eventId: 'ev1', location: 'Кав’ярня', attendees: ['a@x.com'] }],
+        SUMMER_NOW,
+      );
+      expect(droppedCount).toBe(0);
+      expect(items[0]).toEqual({
+        kind: 'updateEvent',
+        eventId: 'ev1',
+        location: 'Кав’ярня',
+        attendees: ['a@x.com'],
+      });
+    });
+
     it('updateEvent: невалідний eventId -> дропається, навіть якщо решта валідна', () => {
       expect(
         sanitizeProposal([{ kind: 'updateEvent', eventId: '', title: 'X' }], SUMMER_NOW),
       ).toEqual({ items: [], droppedCount: 1 });
+    });
+  });
+
+  describe('location/attendees на event (PR-10)', () => {
+    it('event: location+attendees проходять наскрізь разом з рештою полів', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'event',
+            title: 'Кава з Олексієм',
+            when: 'завтра о 15:00',
+            location: 'Кав’ярня на розі',
+            attendees: ['Олексій', 'friend@x.com'],
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0]).toMatchObject({
+        location: 'Кав’ярня на розі',
+        attendees: ['Олексій', 'friend@x.com'],
+      });
+    });
+
+    it('event: без location/attendees -> поля просто відсутні (не порожні рядки/масиви)', () => {
+      const { items } = sanitizeProposal(
+        [{ kind: 'event', title: 'X', when: 'о 10:00' }],
+        SUMMER_NOW,
+      );
+      expect(items[0].location).toBeUndefined();
+      expect(items[0].attendees).toBeUndefined();
+    });
+
+    it('reminder: location/attendees ІГНОРУЮТЬСЯ (лише event/updateEvent несуть гостей)', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'reminder',
+            title: 'X',
+            when: 'о 10:00',
+            location: 'Десь',
+            attendees: ['a@x.com'],
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0]).toEqual({ kind: 'reminder', title: 'X', whenMs: items[0].whenMs });
+    });
+
+    it('порожній/сміттєвий location -> ігнорується; порожні/сміттєві attendees фільтруються', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'event',
+            title: 'X',
+            when: 'о 10:00',
+            location: '   ',
+            attendees: ['', '  ', 42, null, 'Валідне Імʼя'],
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0].location).toBeUndefined();
+      expect(items[0].attendees).toEqual(['Валідне Імʼя']);
+    });
+
+    it('капи: >10 гостей -> зрізає до 10; довге ім’я/location -> зрізає', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'event',
+            title: 'X',
+            when: 'о 10:00',
+            location: 'я'.repeat(300),
+            attendees: Array.from({ length: 15 }, (_, i) => `гість${i}`),
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0].location).toHaveLength(200);
+      expect(items[0].attendees).toHaveLength(10);
+    });
+  });
+
+  describe('settings — ПОВНИЙ блоб, нормалізований одразу (PR-9)', () => {
+    it('валідний блоб проходить нормалізацію, НІКОЛИ не дропається', () => {
+      const { items, droppedCount } = sanitizeProposal(
+        [
+          {
+            kind: 'settings',
+            settings: {
+              quiet: { enabled: true, from: '23:00', to: '08:00' },
+              modules: { news: false },
+            },
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(droppedCount).toBe(0);
+      expect(items).toEqual([
+        {
+          kind: 'settings',
+          settings: {
+            quiet: { enabled: true, from: '23:00', to: '08:00' },
+            modules: { news: false },
+            mutedTopics: [],
+          },
+        },
+      ]);
+    });
+
+    it('сміття/відсутній settings -> нормалізується у дефолтний блоб, НЕ дропається', () => {
+      const { items, droppedCount } = sanitizeProposal([{ kind: 'settings' }], SUMMER_NOW);
+      expect(droppedCount).toBe(0);
+      expect(items).toEqual([
+        {
+          kind: 'settings',
+          settings: {
+            quiet: { enabled: false, from: '22:00', to: '08:00' },
+            modules: {},
+            mutedTopics: [],
+          },
+        },
+      ]);
     });
   });
 });
@@ -605,6 +855,113 @@ describe('formatProposalMessage', () => {
     const msg = formatProposalMessage([{ kind: 'event', title: 'X', whenMs: SUMMER_NOW }]);
     expect(msg).not.toContain('⚠️');
   });
+
+  describe('гості/локація (PR-10)', () => {
+    it('event: location -> рядок 📍; resolvedAttendees -> рядок 👥', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'event',
+          title: 'Кава',
+          whenMs: SUMMER_NOW,
+          location: 'Кав’ярня',
+          resolvedAttendees: ['a@x.com', 'b@x.com'],
+        },
+      ]);
+      expect(msg).toContain('📍 Кав’ярня');
+      expect(msg).toContain('👥 Гості (запросимо): a@x.com, b@x.com');
+    });
+
+    it('attendeeNotes (0/N збігів у People API) -> ⚠️-рядок на КОЖНУ нотатку', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'event',
+          title: 'Кава',
+          whenMs: SUMMER_NOW,
+          attendeeNotes: [
+            '«Олексій» не знайдено в контактах — додай email вручну, якщо треба',
+            '«Ірина»: кілька збігів (a@x.com, b@x.com) — уточни email',
+          ],
+        },
+      ]);
+      expect(msg).toContain('⚠️ «Олексій» не знайдено');
+      expect(msg).toContain('⚠️ «Ірина»: кілька збігів');
+    });
+
+    it('без location/attendees -> жодного нового рядка (не регресує звичайні події)', () => {
+      const msg = formatProposalMessage([{ kind: 'event', title: 'X', whenMs: SUMMER_NOW }]);
+      expect(msg).not.toContain('📍');
+      expect(msg).not.toContain('👥');
+    });
+
+    it('updateEvent теж рендерить location/гостей (не лише create)', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'updateEvent',
+          eventId: 'ev1',
+          base: { title: 'Стендап', whenMs: SUMMER_NOW },
+          location: 'Нове місце',
+        },
+      ]);
+      expect(msg).toContain('📍 Нове місце');
+    });
+
+    it('назви гостей екрановані (XSS-регресія)', () => {
+      const msg = formatProposalMessage([
+        { kind: 'event', title: 'X', whenMs: SUMMER_NOW, resolvedAttendees: ['<b>a</b>@x.com'] },
+      ]);
+      expect(msg).not.toContain('<b>a</b>');
+      expect(msg).toContain('&lt;b&gt;');
+    });
+  });
+
+  describe('settings — діф «було -> стане» (PR-9)', () => {
+    const base = {
+      quiet: { enabled: false, from: '22:00', to: '08:00' },
+      modules: {},
+      mutedTopics: [],
+    };
+
+    it('нічого не змінено -> «без змін» (LLM помилково повторив поточний стан)', () => {
+      const msg = formatProposalMessage([{ kind: 'settings', base, settings: base }]);
+      expect(msg).toContain('⚙️ Налаштування: без змін');
+    });
+
+    it('тихі години увімкнено -> рядок діфу, решта секцій мовчить', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'settings',
+          base,
+          settings: { ...base, quiet: { enabled: true, from: '23:00', to: '07:00' } },
+        },
+      ]);
+      expect(msg).toContain('тихі години: вимкнено → 23:00–07:00');
+      expect(msg).not.toContain('модулі:');
+    });
+
+    it('модулі увімкнено/вимкнено -> лише ЗМІНЕНІ id', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'settings',
+          base: { ...base, modules: { news: true, jobs: true } },
+          settings: { ...base, modules: { news: false, jobs: true } },
+        },
+      ]);
+      expect(msg).toContain('модулі: news=false');
+      expect(msg).not.toContain('jobs='); // не змінився -> не показуємо
+    });
+
+    it('заглушені теми: додані/прибрані окремо, назви екрановані', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'settings',
+          base: { ...base, mutedTopics: ['Крипта'] },
+          settings: { ...base, mutedTopics: ['Спорт', '<b>Політика</b>'] },
+        },
+      ]);
+      expect(msg).toContain('+заглушити: Спорт, &lt;b&gt;Політика&lt;/b&gt;');
+      expect(msg).toContain('-заглушити: Крипта');
+    });
+  });
 });
 
 describe('proposal callback_data', () => {
@@ -632,9 +989,10 @@ describe('proposal callback_data', () => {
 describe('proposalMode + edit/delete-клавіатура', () => {
   const { proposalMode, cycleEventShift, formatShiftLabel, buildProposalKeyboard } = agent;
 
-  it('одна updateEvent -> edit; одна deleteEvent -> delete; решта -> create', () => {
+  it('одна updateEvent -> edit; одна deleteEvent -> delete; одна settings -> settings; решта -> create', () => {
     expect(proposalMode([{ kind: 'updateEvent', eventId: 'x' }])).toBe('edit');
     expect(proposalMode([{ kind: 'deleteEvent', eventId: 'x' }])).toBe('delete');
+    expect(proposalMode([{ kind: 'settings', settings: {} }])).toBe('settings');
     expect(proposalMode([{ kind: 'event', title: 'x' }])).toBe('create');
     expect(proposalMode([{ kind: 'reminder', title: 'x' }])).toBe('create');
     expect(proposalMode([])).toBe('create');
@@ -666,6 +1024,13 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
     expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
+  });
+
+  it('settings-клавіатура (PR-9): лише Застосувати/Скасувати, нічого циклити', () => {
+    const kb = buildProposalKeyboard('id123456', [{ kind: 'settings', settings: {} }], {});
+    expect(kb.inline_keyboard).toHaveLength(1);
+    const [row] = kb.inline_keyboard;
+    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
   });
 
   it('зсув циклиться по колу, включно з «завтра, той самий час»', () => {
@@ -936,6 +1301,12 @@ describe('formatProposalResult — перепис повідомлення ПІ�
   it('delete: провал -> чесний текст', () => {
     const items = [{ kind: 'deleteEvent', eventId: 'ev1' }];
     expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось видалити');
+  });
+
+  it('settings (PR-9): успіх -> «застосовано», провал -> чесний текст', () => {
+    const items = [{ kind: 'settings', settings: {} }];
+    expect(formatProposalResult(items, [{ ok: true }])).toContain('застосовано');
+    expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось застосувати');
   });
 
   it('назви екрановані (XSS-регресія)', () => {

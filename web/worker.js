@@ -1003,6 +1003,76 @@ async function readMailBody(env, messageId) {
   }
 }
 
+/* ── Гості на подіях (PR-10): резолюція імені в email через Google People API ──
+   ТОЙ САМИЙ access-токен, що Calendar/Gmail (googleAccessToken) — People API
+   ділить консент із рештою Google-інтеграції, потрібен ЛИШЕ ширший скоуп
+   (contacts.readonly) на тому самому GOOGLE_REFRESH_TOKEN. До ре-консенту
+   власником People API повертає 403 -> searchContact тихо віддає [] (як
+   googleAccessToken=null на решті інтеграцій), LLM просто не резолвить
+   імена — не крашить і не блокує решту пропозиції. */
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Пошук контакту за іменем -> [email,...] (0 -> нема скоупу/збігів, обидва
+ *  випадки трактуємо однаково — розрізняти нема сенсу, дія однакова: не резолвити). */
+async function searchContact(env, name) {
+  const token = await googleAccessToken(env);
+  if (!token) return [];
+  try {
+    const url = new URL('https://people.googleapis.com/v1/people:searchContacts');
+    url.searchParams.set('query', name);
+    url.searchParams.set('readMask', 'names,emailAddresses');
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      // 403 без contacts.readonly-скоупу — ОЧІКУВАНО до ре-консенту, не помилка.
+      if (res.status !== 403) {
+        console.error('people search HTTP', res.status, await res.text().catch(() => ''));
+      }
+      return [];
+    }
+    const results = (await res.json())?.results;
+    const emails = [];
+    for (const r of Array.isArray(results) ? results : []) {
+      const email = r?.person?.emailAddresses?.[0]?.value;
+      if (typeof email === 'string' && email) emails.push(email);
+    }
+    return emails;
+  } catch (err) {
+    console.error('people search failed', err.message);
+    return [];
+  }
+}
+
+/**
+ * Резолвити список "ім'я або email" -> {emails, notes}. Уже готовий email
+ * (EMAIL_RE) пропускається без пошуку — модель могла отримати його напряму
+ * з розмови. Ім'я: 0 збігів -> НЕ додаємо гостя (notes пояснює, власник
+ * бачить у пропозиції ДО підтвердження); 1 -> додаємо; 2+ -> теж НЕ додаємо
+ * (не вгадуємо котрий) — обидва граничні випадки віддаємо як notes, не як
+ * помилку: решта пропозиції (час/назва/інші гості) не має через це провалитись.
+ */
+async function resolveAttendees(env, names) {
+  const emails = [];
+  const notes = [];
+  for (const raw of Array.isArray(names) ? names : []) {
+    const name = String(raw ?? '').trim();
+    if (!name) continue;
+    if (EMAIL_RE.test(name)) {
+      emails.push(name);
+      continue;
+    }
+    const found = await searchContact(env, name);
+    if (found.length === 1) {
+      emails.push(found[0]);
+    } else if (found.length === 0) {
+      notes.push(`«${name}» не знайдено в контактах — додай email вручну, якщо треба`);
+    } else {
+      notes.push(`«${name}»: кілька збігів (${found.slice(0, 3).join(', ')}) — уточни email`);
+    }
+  }
+  return { emails, notes };
+}
+
 /** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
  *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
 async function readCalendarRange(env, startKey, endKey) {
@@ -1028,15 +1098,27 @@ async function readCalendarRange(env, startKey, endKey) {
   }
 }
 
-/** Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає — {ok:false} при збої. */
-async function createCalendarEvent(env, { title, startIso, endIso, reminderMinutes }) {
+/**
+ * Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає —
+ * {ok:false} при збої. `sendUpdates=all`, коли є гості (PR-10) — інакше Google
+ * НЕ шле запрошення (дефолт `none`), а сенс attendees саме в сповіщенні;
+ * без гостей лишаємо старий тихий шлях (жоден лист нікому не піде).
+ */
+async function createCalendarEvent(
+  env,
+  { title, startIso, endIso, reminderMinutes, location, attendees },
+) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
-    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+    if (attendees?.length) url.searchParams.set('sendUpdates', 'all');
+    const res = await fetch(url.toString(), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(buildCreateEventBody({ title, startIso, endIso, reminderMinutes })),
+      body: JSON.stringify(
+        buildCreateEventBody({ title, startIso, endIso, reminderMinutes, location, attendees }),
+      ),
     });
     if (!res.ok) {
       console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
@@ -1084,12 +1166,17 @@ async function getCalendarEvent(env, eventId) {
   }
 }
 
-/** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої. */
+/** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої.
+ *  `sendUpdates=all`, коли патч зачіпає attendees (PR-10) — той самий мотив, що create. */
 async function updateCalendarEvent(env, { eventId, patch }) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
-    const res = await fetch(calendarEventUrl(eventId), {
+    const url = new URL(calendarEventUrl(eventId));
+    if (Array.isArray(patch?.attendees) && patch.attendees.length) {
+      url.searchParams.set('sendUpdates', 'all');
+    }
+    const res = await fetch(url.toString(), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(patch),
@@ -1190,11 +1277,39 @@ const HELP_TEXT = [
   '/save — збережене',
   '/remind — нагадування (напр. "через 20 хв ..." або "завтра о 10:00 ...")',
   '/reminders — список активних нагадувань (можна скасувати)',
+  '/agenda — найближчі події календаря, тиждень наперед',
+  '/agent — що вміє асистент (вільний текст) — повний перелік',
   '/plan — план дня (LLM прочитає календар і запропонує таймлайн)',
   '/roadmap — IT-роадмеп (теми → підпункти, прогрес)',
   '/settings — тихі години, ціль, модулі брифінгу',
   '/clear [N] — видалити останні N повідомлень тут — мої та твої (за замовч. 20)',
   '/whereami — chat_id/thread_id цього чату',
+].join('\n');
+
+/**
+ * Перелік можливостей асистента (🤖Асистент, вільний текст) — окремо від
+ * HELP_TEXT (той — slash-команди бота, це — що можна написати текстом
+ * LLM-агенту). Рукописний, не згенерований зі схеми: ASSISTANT_ACTION_SCHEMA
+ * (agent-core.mjs) — контракт для моделі, тут потрібні людські приклади фраз.
+ */
+const AGENT_TEXT = [
+  '🤖 <b>Що вміє асистент</b> (пиши в цій темі вільним текстом)',
+  '',
+  '📅 <b>Календар</b> — створити/перенести/скасувати подію, гості (імена — резолвимо ' +
+    'в email, чи одразу email) і місце. «Заплануй кафе з Олексієм завтра о 15:00 в ' +
+    '«Аромакава»» — завжди питає підтвердження кнопкою.',
+  '⏰ <b>Нагадування</b> — створити/змінити/скасувати, одразу, без підтвердження. ' +
+    '«Нагадай через 20 хв подзвонити в клініку».',
+  '📧 <b>Пошта</b> — пошук і читання Gmail (лише читання, нічого не відправляє).',
+  '✅ <b>Чек-ін</b> — «хочу зробити чек-ін» — заповнить поля активного часу доби ' +
+    '(ранок/день/вечір) з розмови.',
+  '❤️ <b>Новини</b> — «лайкни цю новину про...» (з того, що щойно показав).',
+  '💼 <b>Вакансії</b> — «познач вакансію X як співбесіда» (з того, що щойно показав).',
+  '📚 <b>Роадмеп</b> — «познач Docker вивченим».',
+  '⚙️ <b>Налаштування</b> — тихі години, модулі брифінгу, заглушені теми — теж через ' +
+    'підтвердження (повна заміна, тому діф «було → стане» перед ✅).',
+  '📊 <b>Твої дані</b> — «що я зберіг цього тижня?», «як мій стрік?», «які в мене ' +
+    'нагадування?» — брифінг/вакансії/прогрес/нагадування/чек-іни/збережене/новини/налаштування.',
 ].join('\n');
 
 // Фаза B2: профіль бота (setMyDescription/setMyShortDescription) — те, що
@@ -1410,6 +1525,94 @@ async function updateReminderByText(
   state.reminders = updateReminder(state.reminders, matches[0].id, patch);
   await env.BRIEFING.put('state', JSON.stringify(state));
   return sendText(`✏️ Оновив нагадування: ${patch.text ?? matches[0].text}`);
+}
+
+const RECORD_CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
+
+/**
+ * Обробити recordAction (PR-8, Категорія A) — прямий термінал, як createReminder/
+ * updateReminder: локальні дані, дешево відкотити, підтвердження зайве. Кожен kind
+ * повторно використовує ТОЙ САМИЙ примітив запису, що й Mini App/Telegram-кнопки
+ * (applyEvent/applyUrlVote/toggleProgress) — жодної нової логіки стору тут.
+ *
+ * newsIndex/jobIndex — індекс у СВІЖОМУ (не з дайджесту, який модель бачила
+ * кроків тому) читанні latest/funnelList: те, на що вказував дайджест, могло
+ * зникнути чи зсунутись між readOwnData і цим кроком.
+ */
+async function runRecordAction(env, parsed, action) {
+  const sendText = sendTo(env, parsed);
+
+  if (action.kind === 'checkin') {
+    const slot = checkinSlot(kyivHour());
+    if (!slot) return sendText('🌙 Зараз тиха зона (02:00–08:00) — чек-ін не пишемо.');
+    await applyEvent(env, { type: 'checkin', ...action.checkin });
+    return sendText(`✅ Записав чек-ін (${RECORD_CHECKIN_SLOT_LABEL[slot]}).`);
+  }
+
+  if (action.kind === 'voteNews') {
+    const latest = await loadLatest(env);
+    const groups = latest?.blocks?.find((b) => b?.id === 'news')?.data?.groups;
+    const flat = [];
+    for (const g of Array.isArray(groups) ? groups : []) {
+      for (const it of Array.isArray(g?.items) ? g.items : []) {
+        flat.push({ url: it?.url, topic: g.topic, title: it?.title });
+      }
+    }
+    const item = flat[action.newsIndex - 1];
+    if (!item?.url)
+      return sendText('🤔 Не знайшов цю новину — спробуй readOwnData(scope=news) ще раз.');
+    const state = await loadState(env);
+    const r = applyUrlVote(
+      state.preferenceWeights ?? {},
+      state.votedUrls ?? {},
+      item.url,
+      item.topic,
+      'up',
+    );
+    state.preferenceWeights = r.weights;
+    state.votedUrls = r.votedUrls;
+    await env.BRIEFING.put('state', JSON.stringify(state));
+    const stats = recordEvent(
+      await loadStats(env),
+      {
+        type: 'vote',
+        category: item.topic,
+        dir: r.newDir,
+        prevDir: r.prevDir,
+        prevCategory: r.prevCategory,
+      },
+      kyivDateKey(),
+    );
+    await env.BRIEFING.put('stats', JSON.stringify(stats));
+    return sendText(`❤️ Голос за «${item.title ?? '?'}» зараховано.`);
+  }
+
+  if (action.kind === 'jobStage') {
+    const agg = aggregateStats(await loadStats(env), kyivDateKey());
+    const item = (agg.funnelList ?? [])[action.jobIndex - 1];
+    if (!item?.url)
+      return sendText('🤔 Не знайшов цю вакансію — спробуй readOwnData(scope=jobs) ще раз.');
+    await applyEvent(env, {
+      type: 'job_stage',
+      url: item.url,
+      stage: action.jobStage,
+      title: item.title,
+    });
+    return sendText(`✅ «${item.title || item.url}» → ${action.jobStage}.`);
+  }
+
+  // roadmapDone
+  const state = await loadState(env);
+  const key = progressKey(action.roadmapTopicId, action.roadmapSubtopicId);
+  if (state.roadmapProgress?.[key]) return sendText('✅ Уже позначено вивченим.');
+  state.roadmapProgress = toggleProgress(
+    state.roadmapProgress ?? {},
+    action.roadmapTopicId,
+    action.roadmapSubtopicId,
+    new Date().toISOString(),
+  );
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return sendText('✅ Позначив у роадмепі вивченим.');
 }
 
 /* ══ Агент: цикл живе на ХОСТІ (варіант Б) ═══════════════════════════════════
@@ -1699,12 +1902,13 @@ async function runReadAction(env, action, nowMs) {
     return formatMailBodyForPrompt(await readMailBody(env, action.mailId));
   }
   if (action.action === 'readOwnData') {
-    // Читаємо всі три блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
+    // Читаємо всі чотири блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
     // лише потрібне за scope) — простіше за розгалуження по scope.
-    const [state, stats, latest] = await Promise.all([
+    const [state, stats, latest, settings] = await Promise.all([
       loadState(env),
       loadStats(env),
       loadLatest(env),
+      loadSettings(env),
     ]);
     const todayKey = kyivDateKey(new Date(nowMs));
     const digest = buildOwnDataDigest({
@@ -1714,6 +1918,7 @@ async function runReadAction(env, action, nowMs) {
       roadmap: totalProgress(state.roadmapProgress ?? {}),
       latest,
       todayKey,
+      settings,
     });
     return `Твої дані: ${digest}`;
   }
@@ -1851,6 +2056,9 @@ async function handleAgentStep(request, env) {
   }
   if (action.action === 'updateReminder') {
     return finish(() => updateReminderByText(env, parsed, action), '[оновив нагадування]');
+  }
+  if (action.action === 'recordAction') {
+    return finish(() => runRecordAction(env, parsed, action), `[recordAction:${action.kind}]`);
   }
   if (action.action === 'proposeCalendarChanges') {
     return finish(
@@ -2042,14 +2250,45 @@ async function claimAssistantPending(env, id) {
 async function enrichEventItems(env, items) {
   const out = [];
   for (const item of items) {
+    if (item.kind === 'settings') {
+      // base = ПОТОЧНИЙ блоб — потрібен formatProposalMessage для діфу
+      // «було -> стане» (той самий інваріант, що base на updateEvent).
+      out.push({ ...item, base: await loadSettings(env) });
+      continue;
+    }
+
+    // Гості (PR-10): event/updateEvent можуть нести "attendees" (сирі
+    // імена/email від sanitizeProposal) — резолвимо в email ЩЕ ДО показу
+    // пропозиції (People API), щоб текст показував «Гості: ...»/notes ще до
+    // підтвердження, а не сюрпризом після ✅.
+    let attendeeFields;
+    if ((item.kind === 'event' || item.kind === 'updateEvent') && item.attendees?.length) {
+      const { emails, notes } = await resolveAttendees(env, item.attendees);
+      attendeeFields = { resolvedAttendees: emails, attendeeNotes: notes };
+    }
+
     if (item.kind !== 'updateEvent' && item.kind !== 'deleteEvent') {
-      out.push(item);
+      out.push({ ...item, ...attendeeFields });
+      continue;
+    }
+    if (item.kind === 'deleteEvent') {
+      const fresh = await getCalendarEvent(env, item.eventId);
+      if (!fresh) continue; // подія зникла — тихо дропаємо пункт, не весь пакет
+      out.push({
+        ...item,
+        base: {
+          title: fresh.title,
+          whenMs: fresh.startMs,
+          durationMin: (fresh.endMs - fresh.startMs) / 60_000,
+        },
+      });
       continue;
     }
     const fresh = await getCalendarEvent(env, item.eventId);
     if (!fresh) continue; // подія зникла — тихо дропаємо пункт, не весь пакет
     out.push({
       ...item,
+      ...attendeeFields,
       base: {
         title: fresh.title,
         whenMs: fresh.startMs,
@@ -2166,6 +2405,8 @@ async function handleCommand(env, parsed, origin) {
       });
     case 'help':
       return sendText(HELP_TEXT, { parse_mode: 'HTML' });
+    case 'agent':
+      return sendText(AGENT_TEXT, { parse_mode: 'HTML' });
     case 'brief': {
       // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
       // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
@@ -2576,6 +2817,8 @@ async function resolveProposalCallback(env, parsed, cb) {
         startIso,
         endIso,
         reminderMinutes: cfg.leadMin ?? undefined,
+        location: item.location,
+        attendees: item.resolvedAttendees, // РЕЗОЛЬВЛЕНІ email (enrichEventItems), не сирі імена
       });
       results.push(res.ok ? { ok: true, id: res.id } : { ok: false });
     } else if (item.kind === 'updateEvent') {
@@ -2589,12 +2832,24 @@ async function resolveProposalCallback(env, parsed, cb) {
       const endIso = new Date(whenMs + durationMin * 60_000).toISOString();
       const res = await updateCalendarEvent(env, {
         eventId: item.eventId,
-        patch: buildUpdateEventBody({ title, startIso, endIso }),
+        patch: buildUpdateEventBody({
+          title,
+          startIso,
+          endIso,
+          location: item.location,
+          attendees: item.resolvedAttendees,
+        }),
       });
       results.push(res.ok ? { ok: true, id: item.eventId } : { ok: false });
     } else if (item.kind === 'deleteEvent') {
       const res = await deleteCalendarEvent(env, { eventId: item.eventId });
       results.push(res.ok ? { ok: true } : { ok: false });
+    } else if (item.kind === 'settings') {
+      // Повторна нормалізація тут НАВМИСНО (item.settings уже нормалізований у
+      // sanitizeProposal) — той самий "не довіряй нічому, що пролежало в KV/
+      // пройшло через мережу" рефлекс, що й решта accept-циклу.
+      await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(item.settings)));
+      results.push({ ok: true });
     } else {
       results.push({ ok: false });
     }
@@ -2614,6 +2869,7 @@ async function resolveProposalCallback(env, parsed, cb) {
 
   if (mode === 'delete') return results[0]?.ok ? '🗑 Видалено' : '⚠️ Не вдалось видалити';
   if (mode === 'edit') return results[0]?.ok ? '✅ Оновлено' : '⚠️ Не вдалось оновити';
+  if (mode === 'settings') return results[0]?.ok ? '⚙️ Застосовано' : '⚠️ Не вдалось застосувати';
   const ok = results.filter((r) => r.ok).length;
   const fail = results.length - ok;
   return fail > 0 ? `✅ Додано ${ok}, ⚠️ не вдалось ${fail}` : `✅ Додано ${ok}`;

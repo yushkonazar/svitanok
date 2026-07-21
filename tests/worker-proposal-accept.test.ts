@@ -85,7 +85,13 @@ const EV_BASE = { title: 'Стендап', whenMs: Date.parse('2026-07-24T12:00:
 
 const updateEventPending = (
   id: string,
-  overrides: { whenMs?: number; title?: string; shiftMin?: number } = {},
+  overrides: {
+    whenMs?: number;
+    title?: string;
+    shiftMin?: number;
+    location?: string;
+    resolvedAttendees?: string[];
+  } = {},
 ) => ({
   id,
   createdMs: Date.now(),
@@ -197,7 +203,7 @@ beforeEach(() => {
         const ev = googleEvents.get(id);
         if (!ev) return new Response('{}', { status: 404 }); // реалістично: Google 404 на видалену подію
         const patch = JSON.parse(String(init.body ?? '{}'));
-        cal.push({ _method: 'PATCH', _id: id, ...patch });
+        cal.push({ _method: 'PATCH', _id: id, _url: url, ...patch });
         googleEvents.set(id, { ...ev, ...patch });
         return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
       }
@@ -210,7 +216,7 @@ beforeEach(() => {
     }
     if (url.includes('googleapis.com/calendar') && init.method === 'POST') {
       const body = JSON.parse(String(init.body ?? '{}'));
-      cal.push(body);
+      cal.push({ _url: url, ...body });
       const id = `evt${googleEvents.size + 1}`;
       googleEvents.set(id, body);
       return new Response(JSON.stringify({ id }), {
@@ -402,6 +408,118 @@ describe('CRUD: перепис повідомлення ПІСЛЯ accept (goal 
     kv.set('assistantPending', JSON.stringify(updateEventPending('edt00002')));
     await postCb('edt00002', 'a');
     expect(toast()).toContain('Не вдалось');
+  });
+});
+
+describe('CRUD: settings-пропозиція (PR-9) — accept пише ПОВНИЙ нормалізований блоб у KV', () => {
+  const editText = () =>
+    tg.find((c) => c.method === 'editMessageText')?.body as
+      { text: string; reply_markup?: { inline_keyboard: unknown[][] } } | undefined;
+
+  const settingsPending = (id: string, settings: Record<string, unknown>) => ({
+    id,
+    createdMs: Date.now(),
+    items: [{ kind: 'settings', settings, base: {} }],
+  });
+
+  it('accept -> KV `settings` перезаписано нормалізованим блобом, «Застосовано»', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(
+        settingsPending('set00001', {
+          quiet: { enabled: true, from: '23:00', to: '07:30' },
+          modules: { news: false },
+        }),
+      ),
+    );
+    await postCb('set00001', 'a');
+
+    expect(toast()).toContain('Застосовано');
+    const settings = JSON.parse(kv.get('settings')!);
+    expect(settings).toEqual({
+      quiet: { enabled: true, from: '23:00', to: '07:30' },
+      modules: { news: false },
+      mutedTopics: [],
+    });
+    const edited = editText();
+    expect(edited?.text).toContain('застосовано');
+    expect(edited?.reply_markup).toBeUndefined(); // нічого редагувати/видаляти далі
+  });
+
+  it('cancel -> KV `settings` НЕ чіпається', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(settingsPending('set00002', { modules: { jobs: false } })),
+    );
+    await postCb('set00002', 'c');
+    expect(kv.get('settings')).toBeUndefined();
+  });
+});
+
+describe('CRUD: гості/локація на подіях (PR-10) — sendUpdates=all, тіло з attendees/location', () => {
+  it('create з гостями -> POST несе location+attendees, URL з sendUpdates=all', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify({
+        id: 'gst00001',
+        createdMs: Date.now(),
+        cfg: { durMin: null, leadMin: null },
+        items: [
+          {
+            kind: 'event',
+            title: 'Кава',
+            whenMs: Date.parse('2026-07-24T12:00:00Z'),
+            durationMin: 60,
+            location: 'Кав’ярня',
+            resolvedAttendees: ['a@x.com', 'b@x.com'],
+          },
+        ],
+      }),
+    );
+    await postCb('gst00001', 'a');
+
+    expect(toast()).toContain('Додано');
+    expect(cal).toHaveLength(1);
+    const body = cal[0] as {
+      _url: string;
+      location?: string;
+      attendees?: { email: string }[];
+    };
+    expect(body._url).toContain('sendUpdates=all');
+    expect(body.location).toBe('Кав’ярня');
+    expect(body.attendees).toEqual([{ email: 'a@x.com' }, { email: 'b@x.com' }]);
+  });
+
+  it('create БЕЗ гостей -> URL без sendUpdates (старий тихий шлях, ніхто не сповіщається)', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('gst00002', { durMin: null, leadMin: null })),
+    );
+    await postCb('gst00002', 'a');
+    const body = cal[0] as { _url: string };
+    expect(body._url).not.toContain('sendUpdates');
+  });
+
+  it('updateEvent з гостями -> PATCH несе attendees, URL з sendUpdates=all', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(updateEventPending('gst00003', { resolvedAttendees: ['guest@x.com'] })),
+    );
+    await postCb('gst00003', 'a');
+
+    const patch = cal.find((c) => c._method === 'PATCH') as {
+      _url: string;
+      attendees?: { email: string }[];
+    };
+    expect(patch._url).toContain('sendUpdates=all');
+    expect(patch.attendees).toEqual([{ email: 'guest@x.com' }]);
+  });
+
+  it('updateEvent БЕЗ гостей -> PATCH без sendUpdates', async () => {
+    kv.set('assistantPending', JSON.stringify(updateEventPending('gst00004')));
+    await postCb('gst00004', 'a');
+    const patch = cal.find((c) => c._method === 'PATCH') as { _url: string };
+    expect(patch._url).not.toContain('sendUpdates');
   });
 });
 
