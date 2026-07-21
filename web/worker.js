@@ -2002,41 +2002,30 @@ async function agentHostHealthCheck(env) {
 const ASSISTANT_PENDING_KEY = 'assistantPending';
 
 /**
- * Прочитати активну пропозицію -> {pending, source}.
- * Спершу власний ключ (Worker-пропозиції), тоді legacy `state.assistantPending`
- * (брифінг src/orchestrator ще пише в блоб — міграцію того боку робимо окремо;
- * фолбек, щоб пропозиції брифінгу не зламались до неї).
+ * Прочитати активну пропозицію -> pending|null.
+ * Брифінг (src/orchestrator, mail.ts) тепер теж пише СЮДИ напряму (writeKvJson
+ * на assistantPending, не в блоб `state`) — legacy-фолбек на `state.assistantPending`
+ * прибрано разом із самим записом на тому боці.
  */
 async function loadAssistantPending(env) {
   try {
     const own = JSON.parse((await env.BRIEFING.get(ASSISTANT_PENDING_KEY)) ?? 'null');
-    if (own && typeof own === 'object') return { pending: own, source: 'own' };
+    return own && typeof own === 'object' ? own : null;
   } catch {
-    /* парс власного ключа впав -> пробуємо legacy */
+    return null; // биття ключа -> як «нема пропозиції», не крашимо
   }
-  const legacy = (await loadState(env)).assistantPending;
-  return legacy && typeof legacy === 'object'
-    ? { pending: legacy, source: 'legacy' }
-    : { pending: null, source: null };
 }
 
 /**
  * Списати пропозицію (double-tap-safe): лише якщо це ДОСІ той самий id.
- * Власний ключ -> put-null тумбстоун (не delete: KV без read-your-writes, і
- * delete немає в частині тест-моків — той самий мотив, що markRunFinished).
- * Legacy -> прибрати з блоба 'state'. Повертає true, якщо саме цей виклик списав.
+ * Put-null тумбстоун (не delete: KV без read-your-writes, і delete немає в
+ * частині тест-моків — той самий мотив, що markRunFinished). Повертає true,
+ * якщо саме цей виклик списав.
  */
 async function claimAssistantPending(env, id) {
-  const { pending, source } = await loadAssistantPending(env);
+  const pending = await loadAssistantPending(env);
   if (!pending || pending.id !== id) return false;
-  if (source === 'legacy') {
-    const st = await loadState(env);
-    if (st.assistantPending?.id !== id) return false;
-    delete st.assistantPending;
-    await env.BRIEFING.put('state', JSON.stringify(st));
-  } else {
-    await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
-  }
+  await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
   return true;
 }
 
@@ -2459,7 +2448,7 @@ function buildResultKeyboard(items, results) {
 
 /**
  * Обробити pd:<action>:<id> — весь життєвий цикл пропозиції асистента
- * (`state.assistantPending`, ОДИН слот): create (a/c/d/l), edit (a/c/s/o),
+ * (`assistantPending`, ОКРЕМИЙ KV-ключ, ОДИН слот): create (a/c/d/l), edit (a/c/s/o),
  * delete (a/c). "Claim" (списати зі стану) ОДРАЗУ після перевірки, ще ДО
  * повільного циклу запису — інакше подвійний тап на ✅ (чи паралельна нова
  * пропозиція, що перезаписала слот, поки ця ще оброблялась) встигає
@@ -2471,7 +2460,7 @@ function buildResultKeyboard(items, results) {
  * створених/оновлених подій-нагадувань, кнопки Edit/Delete НА МІСЦІ.
  */
 async function resolveProposalCallback(env, parsed, cb) {
-  const { pending, source } = await loadAssistantPending(env);
+  const pending = await loadAssistantPending(env);
   const stale = !pending || pending.id !== cb.id || Date.now() - pending.createdMs > PENDING_TTL_MS;
   if (stale) return '⚠️ Застаріла пропозиція.';
   const cfg = pending.cfg ?? { durMin: null, leadMin: null };
@@ -2479,11 +2468,9 @@ async function resolveProposalCallback(env, parsed, cb) {
 
   /* ── Циклери create-режиму (d=тривалість, l=lead-time) ──────────────────
      НЕ споживають пропозицію: циклимо значення, перемальовуємо клавіатуру на
-     місці. Текст тут від cfg не залежить -> досить editMessageReplyMarkup.
-     Тільки для worker-пропозицій (власний ключ) — у legacy-пропозицій
-     брифінгу циклерів у клавіатурі немає. */
+     місці. Текст тут від cfg не залежить -> досить editMessageReplyMarkup. */
   if (cb.action === 'd' || cb.action === 'l') {
-    if (source !== 'own' || mode !== 'create') return '⚠️ Застаріла пропозиція.';
+    if (mode !== 'create') return '⚠️ Застаріла пропозиція.';
     const next =
       cb.action === 'd'
         ? { ...cfg, durMin: cycleProposalDuration(cfg.durMin) }
@@ -2505,7 +2492,7 @@ async function resolveProposalCallback(env, parsed, cb) {
      Текст ТЕЖ міняється (діф «було->стане» рахується від whenMs) -> тут
      editMessageText, не лише reply_markup. */
   if (cb.action === 's') {
-    if (source !== 'own' || mode !== 'edit') return '⚠️ Застаріла пропозиція.';
+    if (mode !== 'edit') return '⚠️ Застаріла пропозиція.';
     const item = pending.items[0];
     const b = item.base ?? {};
     const nextShift = cycleEventShift(item.shiftMin ?? 0);
@@ -2531,7 +2518,7 @@ async function resolveProposalCallback(env, parsed, cb) {
      побудує НОВУ proposeCalendarChanges(kind:'updateEvent') із eventId,
      скопійованим із позначки [id:...] (buildAssistantSystemPrompt). */
   if (cb.action === 'o') {
-    if (source !== 'own' || mode !== 'edit') return '⚠️ Застаріла пропозиція.';
+    if (mode !== 'edit') return '⚠️ Застаріла пропозиція.';
     const item = pending.items[0];
     const b = item.base ?? {};
     if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {

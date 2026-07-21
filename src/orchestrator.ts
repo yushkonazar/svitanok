@@ -11,7 +11,13 @@ import { loadConfig, type AppConfig } from './core/config.js';
 import { createClock, type Clock } from './core/clock.js';
 import { createLogger } from './core/logger.js';
 import { createStateStore } from './core/state.js';
-import { createKvStateStore, readKvEnv, readKvJson } from './core/state-kv.js';
+import {
+  createKvStateStore,
+  readKvEnv,
+  readKvJson,
+  writeKvJson,
+  type KvStateOptions,
+} from './core/state-kv.js';
 import {
   applyModuleOverrides,
   applyTopicMutes,
@@ -100,6 +106,13 @@ export interface RunDeps {
   // URL Mini App для кнопки в щоденному сповіщенні. null -> сповіщення йде
   // лише з датою, без кнопки (graceful — не блокує брифінг).
   miniAppUrl: string | null;
+  // CF-креденшели для ПРЯМОГО KV-запису assistantPending (окремий ключ, не
+  // блоб `state` — Worker читає лише його, H2-гонку з наївними писарями
+  // блоба інакше не закрити per-key-мержем: цей запис трапляється РАЗ на
+  // добу, поза звичайним flush-циклом стану). null -> локальний файловий
+  // стан (dev/тести) — пропозиція листа просто не отримує кнопок ✅/❌ (Worker
+  // однаково читає лише прод-KV, писати в локальний файл нема сенсу).
+  kvEnv: KvStateOptions | null;
 }
 
 export type RunStatus = 'sent' | 'skipped' | 'dry-run';
@@ -280,10 +293,12 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   }
 
   // Запрошення на співбесіду, детектовані mail.ts (Блок P2c) — proposeCalendarChanges-
-  // подібна пропозиція (той самий формат state.assistantPending, що агент P2b пише
-  // з Worker-боку; resolveProposalCallback у web/worker.js резолвить її незалежно
-  // від того, ХТО записав). state.set — ЛИШЕ після успішного send (не лишати
-  // «мертву» пропозицію без видимих кнопок).
+  // подібна пропозиція (той самий формат `assistantPending`, що агент P2b пише
+  // з Worker-боку у ВЛАСНИЙ KV-ключ, не блоб `state` — резолвиться незалежно
+  // від того, ХТО записав, web/worker.js resolveProposalCallback). Прямий
+  // writeKvJson (не state.set) — ключ ОКРЕМИЙ від state, і Worker читає ЛИШЕ
+  // прод-KV, тож без kvEnv (локальний файловий стан) писати нема куди. Запис —
+  // ЛИШЕ після успішного send (не лишати «мертву» пропозицію без видимих кнопок).
   const proposal = ctx.bus.get<{ items: MailProposalItem[] }>(MAIL_PROPOSAL_BUS_KEY);
   const proposalId = crypto.randomUUID().slice(0, 8);
   const acceptCb = buildProposalCallbackData('a', proposalId);
@@ -301,11 +316,13 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
           ],
         },
       ]);
-      state.set('assistantPending', {
-        id: proposalId,
-        items: proposal.items,
-        createdMs: clock.now().getTime(),
-      });
+      if (deps.kvEnv) {
+        await writeKvJson(deps.kvEnv, 'assistantPending', {
+          id: proposalId,
+          items: proposal.items,
+          createdMs: clock.now().getTime(),
+        });
+      }
     } catch (e) {
       log.warn(
         `mail: пропозицію співбесіди не надіслано: ${e instanceof Error ? e.message : String(e)}`,
@@ -472,6 +489,7 @@ async function main(): Promise<void> {
     chatId: secrets?.chatId ?? null,
     botUsername,
     miniAppUrl,
+    kvEnv: kvEnv ? { ...kvEnv, log } : null,
   };
 
   try {

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createKvStateStore, readKvEnv, overlayChanged, readKvJson } from '../src/core/state-kv.js';
+import {
+  createKvStateStore,
+  readKvEnv,
+  overlayChanged,
+  readKvJson,
+  writeKvJson,
+} from '../src/core/state-kv.js';
 
 const OPTS = {
   accountId: 'acc',
@@ -208,6 +214,36 @@ describe('state-kv — readKvJson (F2, ключ `settings`)', () => {
     for (const body of ['"рядок"', '42', 'null', '[1,2]', 'true']) {
       const fetchImpl = vi.fn().mockResolvedValue(okResp(body));
       await expect(readKvJson({ ...OPTS, fetchImpl }, 'settings')).resolves.toBeNull();
+    }
+  });
+});
+
+describe('state-kv — writeKvJson (assistantPending: власний ключ, не блоб state)', () => {
+  const quiet = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+  it('PUT на правильний URL/ключ, Bearer + JSON-тіло, повертає true', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResp('{}'));
+    const ok = await writeKvJson({ ...OPTS, fetchImpl }, 'assistantPending', { id: 'x' });
+    expect(ok).toBe(true);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toContain('/accounts/acc/storage/kv/namespaces/ns/values/assistantPending');
+    expect(init.method).toBe('PUT');
+    expect(init.headers).toMatchObject({
+      authorization: 'Bearer tok',
+      'content-type': 'application/json',
+    });
+    expect(JSON.parse(String(init.body))).toEqual({ id: 'x' });
+  });
+
+  it('HTTP-помилка / мережа -> false, а не throw (ран не падає, best-effort)', async () => {
+    const cases = [
+      vi.fn().mockResolvedValue(okResp('boom', 500)),
+      vi.fn().mockRejectedValue(new Error('network down')),
+    ];
+    for (const fetchImpl of cases) {
+      await expect(
+        writeKvJson({ ...OPTS, fetchImpl, log: quiet }, 'assistantPending', { id: 'x' }),
+      ).resolves.toBe(false);
     }
   });
 });

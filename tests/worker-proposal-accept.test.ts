@@ -244,13 +244,13 @@ describe('accept пропозиції — власний KV-ключ переж�
     expect(toast()).not.toContain('Застаріла');
   });
 
-  it('legacy-фолбек: пропозиція лише в блобі state (брифінг) -> теж приймається', async () => {
+  it('РЕГРЕСІЯ (пост-міграція оркестратора): legacy `state.assistantPending` БЕЗ власного ключа -> «Застаріла», не читається', async () => {
+    // Оркестратор (src/orchestrator.ts) тепер пише assistantPending НАПРЯМУ у
+    // власний KV-ключ (writeKvJson), не в блоб `state` — фолбек прибрано.
+    // Запис лише в блобі (стара форма) більше НЕ має підхоплюватись.
     kv.set('state', JSON.stringify({ reminders: [], assistantPending: pending('legacy99') }));
     await postAccept('legacy99');
-    expect(toast()).toContain('Додано');
-    // Legacy-слот прибрано з блоба.
-    const st = JSON.parse(kv.get('state')!);
-    expect(st.assistantPending).toBeUndefined();
+    expect(toast()).toContain('Застаріла');
   });
 
   it('чужий/відсутній id -> «Застаріла пропозиція»', async () => {
