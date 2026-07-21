@@ -1003,6 +1003,76 @@ async function readMailBody(env, messageId) {
   }
 }
 
+/* ── Гості на подіях (PR-10): резолюція імені в email через Google People API ──
+   ТОЙ САМИЙ access-токен, що Calendar/Gmail (googleAccessToken) — People API
+   ділить консент із рештою Google-інтеграції, потрібен ЛИШЕ ширший скоуп
+   (contacts.readonly) на тому самому GOOGLE_REFRESH_TOKEN. До ре-консенту
+   власником People API повертає 403 -> searchContact тихо віддає [] (як
+   googleAccessToken=null на решті інтеграцій), LLM просто не резолвить
+   імена — не крашить і не блокує решту пропозиції. */
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Пошук контакту за іменем -> [email,...] (0 -> нема скоупу/збігів, обидва
+ *  випадки трактуємо однаково — розрізняти нема сенсу, дія однакова: не резолвити). */
+async function searchContact(env, name) {
+  const token = await googleAccessToken(env);
+  if (!token) return [];
+  try {
+    const url = new URL('https://people.googleapis.com/v1/people:searchContacts');
+    url.searchParams.set('query', name);
+    url.searchParams.set('readMask', 'names,emailAddresses');
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      // 403 без contacts.readonly-скоупу — ОЧІКУВАНО до ре-консенту, не помилка.
+      if (res.status !== 403) {
+        console.error('people search HTTP', res.status, await res.text().catch(() => ''));
+      }
+      return [];
+    }
+    const results = (await res.json())?.results;
+    const emails = [];
+    for (const r of Array.isArray(results) ? results : []) {
+      const email = r?.person?.emailAddresses?.[0]?.value;
+      if (typeof email === 'string' && email) emails.push(email);
+    }
+    return emails;
+  } catch (err) {
+    console.error('people search failed', err.message);
+    return [];
+  }
+}
+
+/**
+ * Резолвити список "ім'я або email" -> {emails, notes}. Уже готовий email
+ * (EMAIL_RE) пропускається без пошуку — модель могла отримати його напряму
+ * з розмови. Ім'я: 0 збігів -> НЕ додаємо гостя (notes пояснює, власник
+ * бачить у пропозиції ДО підтвердження); 1 -> додаємо; 2+ -> теж НЕ додаємо
+ * (не вгадуємо котрий) — обидва граничні випадки віддаємо як notes, не як
+ * помилку: решта пропозиції (час/назва/інші гості) не має через це провалитись.
+ */
+async function resolveAttendees(env, names) {
+  const emails = [];
+  const notes = [];
+  for (const raw of Array.isArray(names) ? names : []) {
+    const name = String(raw ?? '').trim();
+    if (!name) continue;
+    if (EMAIL_RE.test(name)) {
+      emails.push(name);
+      continue;
+    }
+    const found = await searchContact(env, name);
+    if (found.length === 1) {
+      emails.push(found[0]);
+    } else if (found.length === 0) {
+      notes.push(`«${name}» не знайдено в контактах — додай email вручну, якщо треба`);
+    } else {
+      notes.push(`«${name}»: кілька збігів (${found.slice(0, 3).join(', ')}) — уточни email`);
+    }
+  }
+  return { emails, notes };
+}
+
 /** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
  *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
 async function readCalendarRange(env, startKey, endKey) {
@@ -1028,15 +1098,27 @@ async function readCalendarRange(env, startKey, endKey) {
   }
 }
 
-/** Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає — {ok:false} при збої. */
-async function createCalendarEvent(env, { title, startIso, endIso, reminderMinutes }) {
+/**
+ * Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає —
+ * {ok:false} при збої. `sendUpdates=all`, коли є гості (PR-10) — інакше Google
+ * НЕ шле запрошення (дефолт `none`), а сенс attendees саме в сповіщенні;
+ * без гостей лишаємо старий тихий шлях (жоден лист нікому не піде).
+ */
+async function createCalendarEvent(
+  env,
+  { title, startIso, endIso, reminderMinutes, location, attendees },
+) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
-    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+    if (attendees?.length) url.searchParams.set('sendUpdates', 'all');
+    const res = await fetch(url.toString(), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(buildCreateEventBody({ title, startIso, endIso, reminderMinutes })),
+      body: JSON.stringify(
+        buildCreateEventBody({ title, startIso, endIso, reminderMinutes, location, attendees }),
+      ),
     });
     if (!res.ok) {
       console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
@@ -1084,12 +1166,17 @@ async function getCalendarEvent(env, eventId) {
   }
 }
 
-/** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої. */
+/** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої.
+ *  `sendUpdates=all`, коли патч зачіпає attendees (PR-10) — той самий мотив, що create. */
 async function updateCalendarEvent(env, { eventId, patch }) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
   try {
-    const res = await fetch(calendarEventUrl(eventId), {
+    const url = new URL(calendarEventUrl(eventId));
+    if (Array.isArray(patch?.attendees) && patch.attendees.length) {
+      url.searchParams.set('sendUpdates', 'all');
+    }
+    const res = await fetch(url.toString(), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(patch),
@@ -2141,14 +2228,39 @@ async function enrichEventItems(env, items) {
       out.push({ ...item, base: await loadSettings(env) });
       continue;
     }
+
+    // Гості (PR-10): event/updateEvent можуть нести "attendees" (сирі
+    // імена/email від sanitizeProposal) — резолвимо в email ЩЕ ДО показу
+    // пропозиції (People API), щоб текст показував «Гості: ...»/notes ще до
+    // підтвердження, а не сюрпризом після ✅.
+    let attendeeFields;
+    if ((item.kind === 'event' || item.kind === 'updateEvent') && item.attendees?.length) {
+      const { emails, notes } = await resolveAttendees(env, item.attendees);
+      attendeeFields = { resolvedAttendees: emails, attendeeNotes: notes };
+    }
+
     if (item.kind !== 'updateEvent' && item.kind !== 'deleteEvent') {
-      out.push(item);
+      out.push({ ...item, ...attendeeFields });
+      continue;
+    }
+    if (item.kind === 'deleteEvent') {
+      const fresh = await getCalendarEvent(env, item.eventId);
+      if (!fresh) continue; // подія зникла — тихо дропаємо пункт, не весь пакет
+      out.push({
+        ...item,
+        base: {
+          title: fresh.title,
+          whenMs: fresh.startMs,
+          durationMin: (fresh.endMs - fresh.startMs) / 60_000,
+        },
+      });
       continue;
     }
     const fresh = await getCalendarEvent(env, item.eventId);
     if (!fresh) continue; // подія зникла — тихо дропаємо пункт, не весь пакет
     out.push({
       ...item,
+      ...attendeeFields,
       base: {
         title: fresh.title,
         whenMs: fresh.startMs,
@@ -2675,6 +2787,8 @@ async function resolveProposalCallback(env, parsed, cb) {
         startIso,
         endIso,
         reminderMinutes: cfg.leadMin ?? undefined,
+        location: item.location,
+        attendees: item.resolvedAttendees, // РЕЗОЛЬВЛЕНІ email (enrichEventItems), не сирі імена
       });
       results.push(res.ok ? { ok: true, id: res.id } : { ok: false });
     } else if (item.kind === 'updateEvent') {
@@ -2688,7 +2802,13 @@ async function resolveProposalCallback(env, parsed, cb) {
       const endIso = new Date(whenMs + durationMin * 60_000).toISOString();
       const res = await updateCalendarEvent(env, {
         eventId: item.eventId,
-        patch: buildUpdateEventBody({ title, startIso, endIso }),
+        patch: buildUpdateEventBody({
+          title,
+          startIso,
+          endIso,
+          location: item.location,
+          attendees: item.resolvedAttendees,
+        }),
       });
       results.push(res.ok ? { ok: true, id: item.eventId } : { ok: false });
     } else if (item.kind === 'deleteEvent') {

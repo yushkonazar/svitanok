@@ -20,6 +20,9 @@ const MAX_TITLE_LEN = 120;
 const MIN_DURATION_MIN = 15;
 const MAX_DURATION_MIN = 480;
 const DEFAULT_DURATION_MIN = 60;
+const MAX_LOCATION_LEN = 200;
+const MAX_ATTENDEE_LEN = 80;
+const MAX_ATTENDEES = 10;
 
 /**
  * Модель асистента — завжди sonnet (рішення власника 18.07.2026).
@@ -285,6 +288,11 @@ export const ASSISTANT_ACTION_SCHEMA = {
           // kind:'settings' — ПОВНИЙ новий блоб (не патч, /api/settings лише
           // повна заміна) — модель має спершу readOwnData scope=settings.
           settings: { type: 'object' },
+          // event/updateEvent (PR-10): location — простий рядок, нативне поле
+          // Google Calendar. attendees — ІМЕНА або email (worker резолвить
+          // імена в email через People API; модель нічого не вигадує).
+          location: { type: 'string' },
+          attendees: { type: 'array', items: { type: 'string' } },
         },
       },
     },
@@ -330,7 +338,9 @@ export function buildAssistantSystemPrompt(nowMs) {
     `updateEvent/deleteEvent (змінити/скасувати ПОДІЮ, "eventId" ОБОВʼЯЗКОВО — копіюй з [id:...], ` +
     `НІКОЛИ не вигадуй) або settings ("settings":{...} — ПОВНИЙ блоб, спершу readOwnData ` +
     `scope=settings). Лише пропозиція, підтверджує кнопкою. "when" — канонічний формат: ` +
-    `${CANONICAL_EXAMPLES} (лише час, зміст — у "title"). "durationMin" типово 60 (event/updateEvent).\n` +
+    `${CANONICAL_EXAMPLES} (лише час, зміст — у "title"). "durationMin" типово 60 (event/updateEvent). ` +
+    `Для event/updateEvent: "location" (місце) і "attendees":["імʼя"/email,...] — гостей ` +
+    `сповістимо, worker сам резолвить імена.\n` +
     `- {"action":"reply","replyText":"..."} — просто відповісти текстом.\n` +
     `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
     `checkin (лише поля АКТИВНОГО слоту з розмови, частково ОК), voteNews(newsIndex), ` +
@@ -508,6 +518,26 @@ function clampDuration(raw) {
  * читанням події перед PATCH. Бодай ОДНЕ поле має бути присутнім, інакше
  * патч — нічого не змінює.
  */
+/** location/attendees (PR-10) — спільний для event/updateEvent, ЛИШЕ якщо
+ *  бодай одне поле реально присутнє (щоб не роздмухувати item порожніми
+ *  масивами/undefined-полями там, де LLM їх не давала). Резолюція
+ *  імен->email — не тут (нуль I/O в agent-core.mjs), а у worker.js
+ *  (enrichEventItems, People API) ПЕРЕД показом пропозиції. */
+function sanitizeLocationAttendees(raw) {
+  const out = {};
+  if (typeof raw?.location === 'string' && raw.location.trim()) {
+    out.location = raw.location.trim().slice(0, MAX_LOCATION_LEN);
+  }
+  if (Array.isArray(raw?.attendees)) {
+    const attendees = raw.attendees
+      .filter((a) => typeof a === 'string' && a.trim())
+      .map((a) => a.trim().slice(0, MAX_ATTENDEE_LEN))
+      .slice(0, MAX_ATTENDEES);
+    if (attendees.length) out.attendees = attendees;
+  }
+  return out;
+}
+
 export function sanitizeProposal(rawProposal, nowMs) {
   const capped = Array.isArray(rawProposal) ? rawProposal.slice(0, MAX_PROPOSAL_ITEMS) : [];
   let droppedCount = Array.isArray(rawProposal)
@@ -541,11 +571,12 @@ export function sanitizeProposal(rawProposal, nowMs) {
       const when = typeof raw?.when === 'string' ? raw.when.trim() : '';
       const parsed = when ? parseReminderTime(when, nowMs) : null;
       const durationMin = clampDuration(raw?.durationMin);
-      if (!title && !parsed && durationMin == null) {
+      const locAtt = sanitizeLocationAttendees(raw);
+      if (!title && !parsed && durationMin == null && !locAtt.location && !locAtt.attendees) {
         droppedCount++; // патч без жодного поля — нічого не змінює
         continue;
       }
-      const item = { kind, eventId };
+      const item = { kind, eventId, ...locAtt };
       if (title) item.title = title;
       if (parsed) item.whenMs = parsed.whenMs;
       if (durationMin != null) item.durationMin = durationMin;
@@ -566,6 +597,7 @@ export function sanitizeProposal(rawProposal, nowMs) {
     const item = { kind, title, whenMs: parsed.whenMs };
     if (kind === 'event') {
       item.durationMin = clampDuration(raw.durationMin) ?? DEFAULT_DURATION_MIN;
+      Object.assign(item, sanitizeLocationAttendees(raw));
     }
     items.push(item);
   }
@@ -662,6 +694,19 @@ export function formatProposalMessage(items, warnings) {
       lines.push(
         `${i + 1}. ${KIND_ICON[it.kind] || '•'} ${escapeHtml(it.title)} — ${fmtWhen(it.whenMs)}`,
       );
+    }
+    // Гості/локація (PR-10) — інформативні, БЕЗ діфу проти base (Google-подія
+    // не несе location у наш parseEvents): просто «що буде», той самий стиль,
+    // що overlap-попередження нижче. attendeeNotes — worker уже спробував
+    // резолвити ім'я через People API ще ДО показу; тут лише рендер.
+    if (it.kind === 'event' || it.kind === 'updateEvent') {
+      if (it.location) lines.push(`   📍 ${escapeHtml(it.location)}`);
+      if (it.resolvedAttendees?.length) {
+        lines.push(`   👥 Гості (запросимо): ${it.resolvedAttendees.map(escapeHtml).join(', ')}`);
+      }
+      if (it.attendeeNotes?.length) {
+        for (const note of it.attendeeNotes) lines.push(`   ⚠️ ${escapeHtml(note)}`);
+      }
     }
     const overlap = warnings instanceof Map ? warnings.get(i) : undefined;
     if (overlap?.length) {

@@ -4,7 +4,7 @@ import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 import * as agent from '../web/agent-core.mjs';
 // Межі довжини — з реального контракту хоста (той самий репо, окремий деплой).
 // @ts-expect-error — JS-модуль хоста без типів.
-import { MAX_SYSTEM_PROMPT_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
+import { MAX_SYSTEM_PROMPT_LEN, MAX_SCHEMA_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
   ASSISTANT_ACTION_SCHEMA,
@@ -52,6 +52,16 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.eventId).toBeTruthy();
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.settings).toBeTruthy();
   });
+
+  it('proposal.items несе location/attendees (PR-10)', () => {
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.location).toEqual({
+      type: 'string',
+    });
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.attendees).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+    });
+  });
 });
 
 describe('buildAssistantSystemPrompt', () => {
@@ -95,6 +105,14 @@ describe('buildAssistantSystemPrompt', () => {
       );
     }
   });
+
+  it(
+    'НЕ перевищує MAX_SCHEMA_LEN хоста (PR-10: запас лишився лише 15 символів —' +
+      ' той самий клас регресії, що й системний промпт, досі без запобіжника)',
+    () => {
+      expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
+    },
+  );
 });
 
 describe('readMail + бюджет транскрипту (B3/B4)', () => {
@@ -637,10 +655,104 @@ describe('sanitizeProposal', () => {
       });
     });
 
+    it('updateEvent: ЛИШЕ location/attendees (без title/when/durationMin) -> НЕ дропається (PR-10)', () => {
+      const { items, droppedCount } = sanitizeProposal(
+        [{ kind: 'updateEvent', eventId: 'ev1', location: 'Кав’ярня', attendees: ['a@x.com'] }],
+        SUMMER_NOW,
+      );
+      expect(droppedCount).toBe(0);
+      expect(items[0]).toEqual({
+        kind: 'updateEvent',
+        eventId: 'ev1',
+        location: 'Кав’ярня',
+        attendees: ['a@x.com'],
+      });
+    });
+
     it('updateEvent: невалідний eventId -> дропається, навіть якщо решта валідна', () => {
       expect(
         sanitizeProposal([{ kind: 'updateEvent', eventId: '', title: 'X' }], SUMMER_NOW),
       ).toEqual({ items: [], droppedCount: 1 });
+    });
+  });
+
+  describe('location/attendees на event (PR-10)', () => {
+    it('event: location+attendees проходять наскрізь разом з рештою полів', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'event',
+            title: 'Кава з Олексієм',
+            when: 'завтра о 15:00',
+            location: 'Кав’ярня на розі',
+            attendees: ['Олексій', 'friend@x.com'],
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0]).toMatchObject({
+        location: 'Кав’ярня на розі',
+        attendees: ['Олексій', 'friend@x.com'],
+      });
+    });
+
+    it('event: без location/attendees -> поля просто відсутні (не порожні рядки/масиви)', () => {
+      const { items } = sanitizeProposal(
+        [{ kind: 'event', title: 'X', when: 'о 10:00' }],
+        SUMMER_NOW,
+      );
+      expect(items[0].location).toBeUndefined();
+      expect(items[0].attendees).toBeUndefined();
+    });
+
+    it('reminder: location/attendees ІГНОРУЮТЬСЯ (лише event/updateEvent несуть гостей)', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'reminder',
+            title: 'X',
+            when: 'о 10:00',
+            location: 'Десь',
+            attendees: ['a@x.com'],
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0]).toEqual({ kind: 'reminder', title: 'X', whenMs: items[0].whenMs });
+    });
+
+    it('порожній/сміттєвий location -> ігнорується; порожні/сміттєві attendees фільтруються', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'event',
+            title: 'X',
+            when: 'о 10:00',
+            location: '   ',
+            attendees: ['', '  ', 42, null, 'Валідне Імʼя'],
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0].location).toBeUndefined();
+      expect(items[0].attendees).toEqual(['Валідне Імʼя']);
+    });
+
+    it('капи: >10 гостей -> зрізає до 10; довге ім’я/location -> зрізає', () => {
+      const { items } = sanitizeProposal(
+        [
+          {
+            kind: 'event',
+            title: 'X',
+            when: 'о 10:00',
+            location: 'я'.repeat(300),
+            attendees: Array.from({ length: 15 }, (_, i) => `гість${i}`),
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(items[0].location).toHaveLength(200);
+      expect(items[0].attendees).toHaveLength(10);
     });
   });
 
@@ -742,6 +854,64 @@ describe('formatProposalMessage', () => {
   it('без warnings (undefined, старі виклики) -> поведінка не змінена', () => {
     const msg = formatProposalMessage([{ kind: 'event', title: 'X', whenMs: SUMMER_NOW }]);
     expect(msg).not.toContain('⚠️');
+  });
+
+  describe('гості/локація (PR-10)', () => {
+    it('event: location -> рядок 📍; resolvedAttendees -> рядок 👥', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'event',
+          title: 'Кава',
+          whenMs: SUMMER_NOW,
+          location: 'Кав’ярня',
+          resolvedAttendees: ['a@x.com', 'b@x.com'],
+        },
+      ]);
+      expect(msg).toContain('📍 Кав’ярня');
+      expect(msg).toContain('👥 Гості (запросимо): a@x.com, b@x.com');
+    });
+
+    it('attendeeNotes (0/N збігів у People API) -> ⚠️-рядок на КОЖНУ нотатку', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'event',
+          title: 'Кава',
+          whenMs: SUMMER_NOW,
+          attendeeNotes: [
+            '«Олексій» не знайдено в контактах — додай email вручну, якщо треба',
+            '«Ірина»: кілька збігів (a@x.com, b@x.com) — уточни email',
+          ],
+        },
+      ]);
+      expect(msg).toContain('⚠️ «Олексій» не знайдено');
+      expect(msg).toContain('⚠️ «Ірина»: кілька збігів');
+    });
+
+    it('без location/attendees -> жодного нового рядка (не регресує звичайні події)', () => {
+      const msg = formatProposalMessage([{ kind: 'event', title: 'X', whenMs: SUMMER_NOW }]);
+      expect(msg).not.toContain('📍');
+      expect(msg).not.toContain('👥');
+    });
+
+    it('updateEvent теж рендерить location/гостей (не лише create)', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'updateEvent',
+          eventId: 'ev1',
+          base: { title: 'Стендап', whenMs: SUMMER_NOW },
+          location: 'Нове місце',
+        },
+      ]);
+      expect(msg).toContain('📍 Нове місце');
+    });
+
+    it('назви гостей екрановані (XSS-регресія)', () => {
+      const msg = formatProposalMessage([
+        { kind: 'event', title: 'X', whenMs: SUMMER_NOW, resolvedAttendees: ['<b>a</b>@x.com'] },
+      ]);
+      expect(msg).not.toContain('<b>a</b>');
+      expect(msg).toContain('&lt;b&gt;');
+    });
   });
 
   describe('settings — діф «було -> стане» (PR-9)', () => {

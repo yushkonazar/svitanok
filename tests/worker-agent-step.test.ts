@@ -484,6 +484,10 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
     string,
     { summary: string; start: { dateTime: string }; end: { dateTime: string } }
   >;
+  // People API (PR-10): ім'я -> список email (порожній масив = «нема збігів»,
+  // відсутній ключ у Map теж «нема збігів» — тест НЕ мусить заповнювати все).
+  let peopleResults: Map<string, string[]>;
+  let calendarWrites: { method: string; url: string; body: Record<string, unknown> }[];
 
   const envWithGoogle = () =>
     makeEnv({
@@ -503,6 +507,8 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
         },
       ],
     ]);
+    peopleResults = new Map();
+    calendarWrites = [];
     vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
       const url = String(input);
       if (url.includes('api.telegram.org')) {
@@ -518,10 +524,28 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (url.includes('people.googleapis.com/v1/people:searchContacts')) {
+        const query = new URL(url).searchParams.get('query') ?? '';
+        const emails = peopleResults.get(query) ?? [];
+        return new Response(
+          JSON.stringify({
+            results: emails.map((email) => ({ person: { emailAddresses: [{ value: email }] } })),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       const single = url.match(
         /googleapis\.com\/calendar\/v3\/calendars\/primary\/events\/([^/?]+)/,
       );
       if (single) {
+        if ((init.method ?? 'GET') === 'PATCH') {
+          calendarWrites.push({
+            method: 'PATCH',
+            url,
+            body: JSON.parse(String(init.body ?? '{}')),
+          });
+          return new Response('{}', { status: 200 });
+        }
         const ev = googleEvents.get(single[1]!);
         return ev
           ? new Response(JSON.stringify({ id: single[1], ...ev }), {
@@ -542,6 +566,16 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
+      }
+      if (
+        url.includes('googleapis.com/calendar/v3/calendars/primary/events') &&
+        init.method === 'POST'
+      ) {
+        calendarWrites.push({ method: 'POST', url, body: JSON.parse(String(init.body ?? '{}')) });
+        return new Response(JSON.stringify({ id: 'newEvt1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       return new Response('{}', { status: 200 });
     });
@@ -604,5 +638,125 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
     expect(text).toContain('Дзвінок'); // пропозиція все одно пройшла (не блокує)
     expect(text).toContain('⚠️ накладається на');
     expect(text).toContain('Стендап');
+  });
+
+  /* Гості/локація (PR-10): резолюція ІМ'Я -> email через People API мусить
+     статись ЩЕ ДО показу пропозиції (enrichEventItems), щоб текст показував
+     «Гості: ...»/нотатки ще до того, як власник натисне ✅. */
+  describe('гості/локація — резолюція ДО показу (PR-10)', () => {
+    it('готовий email пропускається без пошуку People API', async () => {
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              {
+                kind: 'event',
+                title: 'Кава',
+                when: 'завтра о 15:00',
+                location: 'Кав’ярня',
+                attendees: ['friend@x.com'],
+              },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      const text = sentTexts()[0];
+      expect(text).toContain('📍 Кав’ярня');
+      expect(text).toContain('👥 Гості (запросимо): friend@x.com');
+    });
+
+    it('ім’я з 1 збігом у People API -> резолвиться в email', async () => {
+      peopleResults.set('Олексій', ['oleksiy@x.com']);
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Олексій'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      expect(sentTexts()[0]).toContain('👥 Гості (запросимо): oleksiy@x.com');
+    });
+
+    it('ім’я з 0 збігів -> НЕ додається як гість, notes пояснює', async () => {
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Невідомий'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      const text = sentTexts()[0];
+      expect(text).not.toContain('👥 Гості');
+      expect(text).toContain('⚠️ «Невідомий» не знайдено в контактах');
+    });
+
+    it('ім’я з 2+ збігами -> НЕ вгадує, notes перелічує варіанти', async () => {
+      peopleResults.set('Ірина', ['irina1@x.com', 'irina2@x.com']);
+      await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Ірина'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      const text = sentTexts()[0];
+      expect(text).not.toContain('👥 Гості');
+      expect(text).toContain('⚠️ «Ірина»: кілька збігів (irina1@x.com, irina2@x.com)');
+    });
+
+    it('без contacts.readonly-скоупу (People API 403) -> тихо не резолвить, не крашить пропозицію', async () => {
+      vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+        const url = String(input);
+        if (url.includes('api.telegram.org')) {
+          tgCalls.push({ url, body: JSON.parse(String(init.body ?? '{}')) });
+          return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.includes('oauth2.googleapis.com/token')) {
+          return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.includes('people.googleapis.com')) return new Response('{}', { status: 403 });
+        return new Response('{}', { status: 200 });
+      });
+      const res = await authed(
+        {
+          token: await token(),
+          structured: {
+            action: 'proposeCalendarChanges',
+            proposal: [
+              { kind: 'event', title: 'Зустріч', when: 'завтра о 15:00', attendees: ['Олексій'] },
+            ],
+          },
+        },
+        envWithGoogle(),
+      );
+      expect(res.status).toBe(200);
+      const text = sentTexts()[0];
+      expect(text).toContain('Зустріч'); // пропозиція все одно пройшла
+      expect(text).toContain('⚠️ «Олексій» не знайдено');
+    });
   });
 });
