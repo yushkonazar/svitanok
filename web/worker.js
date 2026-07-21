@@ -2135,6 +2135,12 @@ async function claimAssistantPending(env, id) {
 async function enrichEventItems(env, items) {
   const out = [];
   for (const item of items) {
+    if (item.kind === 'settings') {
+      // base = ПОТОЧНИЙ блоб — потрібен formatProposalMessage для діфу
+      // «було -> стане» (той самий інваріант, що base на updateEvent).
+      out.push({ ...item, base: await loadSettings(env) });
+      continue;
+    }
     if (item.kind !== 'updateEvent' && item.kind !== 'deleteEvent') {
       out.push(item);
       continue;
@@ -2688,6 +2694,12 @@ async function resolveProposalCallback(env, parsed, cb) {
     } else if (item.kind === 'deleteEvent') {
       const res = await deleteCalendarEvent(env, { eventId: item.eventId });
       results.push(res.ok ? { ok: true } : { ok: false });
+    } else if (item.kind === 'settings') {
+      // Повторна нормалізація тут НАВМИСНО (item.settings уже нормалізований у
+      // sanitizeProposal) — той самий "не довіряй нічому, що пролежало в KV/
+      // пройшло через мережу" рефлекс, що й решта accept-циклу.
+      await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(item.settings)));
+      results.push({ ok: true });
     } else {
       results.push({ ok: false });
     }
@@ -2707,6 +2719,7 @@ async function resolveProposalCallback(env, parsed, cb) {
 
   if (mode === 'delete') return results[0]?.ok ? '🗑 Видалено' : '⚠️ Не вдалось видалити';
   if (mode === 'edit') return results[0]?.ok ? '✅ Оновлено' : '⚠️ Не вдалось оновити';
+  if (mode === 'settings') return results[0]?.ok ? '⚙️ Застосовано' : '⚠️ Не вдалось застосувати';
   const ok = results.filter((r) => r.ok).length;
   const fail = results.length - ok;
   return fail > 0 ? `✅ Додано ${ok}, ⚠️ не вдалось ${fail}` : `✅ Додано ${ok}`;

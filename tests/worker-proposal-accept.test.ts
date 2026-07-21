@@ -405,6 +405,51 @@ describe('CRUD: перепис повідомлення ПІСЛЯ accept (goal 
   });
 });
 
+describe('CRUD: settings-пропозиція (PR-9) — accept пише ПОВНИЙ нормалізований блоб у KV', () => {
+  const editText = () =>
+    tg.find((c) => c.method === 'editMessageText')?.body as
+      { text: string; reply_markup?: { inline_keyboard: unknown[][] } } | undefined;
+
+  const settingsPending = (id: string, settings: Record<string, unknown>) => ({
+    id,
+    createdMs: Date.now(),
+    items: [{ kind: 'settings', settings, base: {} }],
+  });
+
+  it('accept -> KV `settings` перезаписано нормалізованим блобом, «Застосовано»', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(
+        settingsPending('set00001', {
+          quiet: { enabled: true, from: '23:00', to: '07:30' },
+          modules: { news: false },
+        }),
+      ),
+    );
+    await postCb('set00001', 'a');
+
+    expect(toast()).toContain('Застосовано');
+    const settings = JSON.parse(kv.get('settings')!);
+    expect(settings).toEqual({
+      quiet: { enabled: true, from: '23:00', to: '07:30' },
+      modules: { news: false },
+      mutedTopics: [],
+    });
+    const edited = editText();
+    expect(edited?.text).toContain('застосовано');
+    expect(edited?.reply_markup).toBeUndefined(); // нічого редагувати/видаляти далі
+  });
+
+  it('cancel -> KV `settings` НЕ чіпається', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(settingsPending('set00002', { modules: { jobs: false } })),
+    );
+    await postCb('set00002', 'c');
+    expect(kv.get('settings')).toBeUndefined();
+  });
+});
+
 describe('CRUD: edit-режим — цикл зсуву часу (pd:s) і «✏️ Інше» (pd:o)', () => {
   it('pd:s циклить зсув, ПЕРЕМАЛЬОВУЄ ТЕКСТ (не лише клавіатуру) — діф залежить від whenMs', async () => {
     kv.set('assistantPending', JSON.stringify(updateEventPending('shf00001')));

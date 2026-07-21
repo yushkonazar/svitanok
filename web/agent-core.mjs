@@ -13,6 +13,7 @@ import { escapeHtml } from './tg-core.mjs';
 import { CANONICAL_EXAMPLES, parseReminderTime } from './reminders-core.mjs';
 import { OWN_DATA_SCOPES } from './assistant-data-core.mjs';
 import { CATEGORY_VALUES, STAGES } from './stats-core.mjs';
+import { normalizeSettings } from './settings-core.mjs';
 
 export const MAX_PROPOSAL_ITEMS = 8;
 const MAX_TITLE_LEN = 120;
@@ -273,11 +274,17 @@ export const ASSISTANT_ACTION_SCHEMA = {
           // зовнішній і важче відкотити). updateReminder/deleteReminder — НЕ тут:
           // ті йдуть окремою прямою дією (updateReminder) чи вже наявною
           // cancelReminder, той самий патерн, що createReminder/cancelReminder.
-          kind: { type: 'string', enum: ['event', 'reminder', 'updateEvent', 'deleteEvent'] },
+          kind: {
+            type: 'string',
+            enum: ['event', 'reminder', 'updateEvent', 'deleteEvent', 'settings'],
+          },
           title: { type: 'string' },
           when: { type: 'string' },
           durationMin: { type: 'number' },
           eventId: { type: 'string' },
+          // kind:'settings' — ПОВНИЙ новий блоб (не патч, /api/settings лише
+          // повна заміна) — модель має спершу readOwnData scope=settings.
+          settings: { type: 'object' },
         },
       },
     },
@@ -321,7 +328,8 @@ export function buildAssistantSystemPrompt(nowMs) {
     `- {"action":"proposeCalendarChanges","proposal":[{"kind":"event","title":"...","when":"...",` +
     `"durationMin":60}]} — до ${MAX_PROPOSAL_ITEMS} пунктів: event/reminder (створити) або ` +
     `updateEvent/deleteEvent (змінити/скасувати ПОДІЮ, "eventId" ОБОВʼЯЗКОВО — копіюй з [id:...], ` +
-    `НІКОЛИ не вигадуй). Лише пропозиція, підтверджує кнопкою. "when" — канонічний формат: ` +
+    `НІКОЛИ не вигадуй) або settings ("settings":{...} — ПОВНИЙ блоб, спершу readOwnData ` +
+    `scope=settings). Лише пропозиція, підтверджує кнопкою. "when" — канонічний формат: ` +
     `${CANONICAL_EXAMPLES} (лише час, зміст — у "title"). "durationMin" типово 60 (event/updateEvent).\n` +
     `- {"action":"reply","replyText":"..."} — просто відповісти текстом.\n` +
     `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
@@ -510,6 +518,15 @@ export function sanitizeProposal(rawProposal, nowMs) {
   for (const raw of capped) {
     const kind = raw?.kind;
 
+    // settings — ПОВНИЙ блоб, нормалізований одразу (normalizeSettings ніколи
+    // не кидає — гірший випадок: порожні дефолти). Реальна страховка від
+    // помилкового трактування LLM — не тут, а видимий діф «було->стане»
+    // (formatProposalMessage) ПЕРЕД тим, як власник натисне ✅.
+    if (kind === 'settings') {
+      items.push({ kind, settings: normalizeSettings(raw?.settings) });
+      continue;
+    }
+
     if (kind === 'updateEvent' || kind === 'deleteEvent') {
       const eventId = typeof raw?.eventId === 'string' ? raw.eventId.trim() : '';
       if (!eventId || !ID_RE.test(eventId)) {
@@ -581,10 +598,47 @@ const fmtWhen = (whenMs) =>
  * читає календар, це чиста функція лише РЕНДЕРИТЬ готовий результат).
  * Інформативно, не блокує пропозицію.
  */
+/** Текст діфу «було -> стане» для kind:'settings' — секції, що НЕ змінились,
+ *  не показуємо (шум); зовсім без змін -> «без змін» (LLM помилково повторив
+ *  поточний стан). Теми з mutedTopics — display-назви з config.yml, екрануємо
+ *  як будь-який зовнішній текст. */
+function formatSettingsDiff(before, after) {
+  const b = before ?? {};
+  const a = after ?? {};
+  const parts = [];
+
+  const bq = b.quiet ?? {};
+  const aq = a.quiet ?? {};
+  if (bq.enabled !== aq.enabled || bq.from !== aq.from || bq.to !== aq.to) {
+    const txt = (q) => (q?.enabled ? `${q.from}–${q.to}` : 'вимкнено');
+    parts.push(`тихі години: ${txt(bq)} → ${txt(aq)}`);
+  }
+
+  const bm = b.modules ?? {};
+  const am = a.modules ?? {};
+  const changedMods = [...new Set([...Object.keys(bm), ...Object.keys(am)])].filter(
+    (k) => bm[k] !== am[k],
+  );
+  if (changedMods.length) {
+    parts.push(`модулі: ${changedMods.map((k) => `${k}=${am[k] ?? 'дефолт'}`).join(', ')}`);
+  }
+
+  const bt = new Set(Array.isArray(b.mutedTopics) ? b.mutedTopics : []);
+  const at = new Set(Array.isArray(a.mutedTopics) ? a.mutedTopics : []);
+  const added = [...at].filter((t) => !bt.has(t));
+  const removed = [...bt].filter((t) => !at.has(t));
+  if (added.length) parts.push(`+заглушити: ${added.map(escapeHtml).join(', ')}`);
+  if (removed.length) parts.push(`-заглушити: ${removed.map(escapeHtml).join(', ')}`);
+
+  return parts.length ? parts.join('; ') : 'без змін';
+}
+
 export function formatProposalMessage(items, warnings) {
   const lines = ['🤔 <b>Пропоную:</b>', ''];
   items.forEach((it, i) => {
-    if (it.kind === 'updateEvent') {
+    if (it.kind === 'settings') {
+      lines.push(`${i + 1}. ⚙️ Налаштування: ${formatSettingsDiff(it.base, it.settings)}`);
+    } else if (it.kind === 'updateEvent') {
       // Поля ВІДСУТНІ (null/undefined) -> «не чіпали», а не «збігається з base» —
       // інакше кожен edit-пункт показував би хибну «зміну» там, де циклер/LLM
       // узагалі не торкались поля (title/durationMin лишаються undefined, доки
@@ -711,6 +765,7 @@ export function proposalMode(items) {
   if (Array.isArray(items) && items.length === 1) {
     if (items[0]?.kind === 'updateEvent') return 'edit';
     if (items[0]?.kind === 'deleteEvent') return 'delete';
+    if (items[0]?.kind === 'settings') return 'settings';
   }
   return 'create';
 }
@@ -750,6 +805,14 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
     return { inline_keyboard: rows };
   }
 
+  if (mode === 'settings') {
+    rows.push([
+      { text: '✅ Застосувати', callback_data: buildProposalCallbackData('a', id) },
+      { text: '❌ Скасувати', callback_data: buildProposalCallbackData('c', id) },
+    ]);
+    return { inline_keyboard: rows };
+  }
+
   const d = buildProposalCallbackData('d', id);
   const l = buildProposalCallbackData('l', id);
   if (proposalHasEvent(items) && d && l) {
@@ -777,6 +840,12 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
  */
 export function formatProposalResult(items, results) {
   const mode = proposalMode(items);
+
+  if (mode === 'settings') {
+    return results[0]?.ok
+      ? '⚙️ Налаштування застосовано.'
+      : '⚠️ Не вдалось застосувати налаштування.';
+  }
 
   if (mode === 'delete') {
     const b = items[0]?.base ?? {};

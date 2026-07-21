@@ -41,14 +41,16 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
     ]);
   });
 
-  it('proposal.items.kind охоплює create ТА мутацію ІСНУЮЧОЇ події (updateEvent/deleteEvent)', () => {
+  it('proposal.items.kind охоплює create, мутацію ІСНУЮЧОЇ події ТА settings (PR-9)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.kind.enum).toEqual([
       'event',
       'reminder',
       'updateEvent',
       'deleteEvent',
+      'settings',
     ]);
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.eventId).toBeTruthy();
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.settings).toBeTruthy();
   });
 });
 
@@ -641,6 +643,49 @@ describe('sanitizeProposal', () => {
       ).toEqual({ items: [], droppedCount: 1 });
     });
   });
+
+  describe('settings — ПОВНИЙ блоб, нормалізований одразу (PR-9)', () => {
+    it('валідний блоб проходить нормалізацію, НІКОЛИ не дропається', () => {
+      const { items, droppedCount } = sanitizeProposal(
+        [
+          {
+            kind: 'settings',
+            settings: {
+              quiet: { enabled: true, from: '23:00', to: '08:00' },
+              modules: { news: false },
+            },
+          },
+        ],
+        SUMMER_NOW,
+      );
+      expect(droppedCount).toBe(0);
+      expect(items).toEqual([
+        {
+          kind: 'settings',
+          settings: {
+            quiet: { enabled: true, from: '23:00', to: '08:00' },
+            modules: { news: false },
+            mutedTopics: [],
+          },
+        },
+      ]);
+    });
+
+    it('сміття/відсутній settings -> нормалізується у дефолтний блоб, НЕ дропається', () => {
+      const { items, droppedCount } = sanitizeProposal([{ kind: 'settings' }], SUMMER_NOW);
+      expect(droppedCount).toBe(0);
+      expect(items).toEqual([
+        {
+          kind: 'settings',
+          settings: {
+            quiet: { enabled: false, from: '22:00', to: '08:00' },
+            modules: {},
+            mutedTopics: [],
+          },
+        },
+      ]);
+    });
+  });
 });
 
 describe('formatProposalMessage', () => {
@@ -698,6 +743,55 @@ describe('formatProposalMessage', () => {
     const msg = formatProposalMessage([{ kind: 'event', title: 'X', whenMs: SUMMER_NOW }]);
     expect(msg).not.toContain('⚠️');
   });
+
+  describe('settings — діф «було -> стане» (PR-9)', () => {
+    const base = {
+      quiet: { enabled: false, from: '22:00', to: '08:00' },
+      modules: {},
+      mutedTopics: [],
+    };
+
+    it('нічого не змінено -> «без змін» (LLM помилково повторив поточний стан)', () => {
+      const msg = formatProposalMessage([{ kind: 'settings', base, settings: base }]);
+      expect(msg).toContain('⚙️ Налаштування: без змін');
+    });
+
+    it('тихі години увімкнено -> рядок діфу, решта секцій мовчить', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'settings',
+          base,
+          settings: { ...base, quiet: { enabled: true, from: '23:00', to: '07:00' } },
+        },
+      ]);
+      expect(msg).toContain('тихі години: вимкнено → 23:00–07:00');
+      expect(msg).not.toContain('модулі:');
+    });
+
+    it('модулі увімкнено/вимкнено -> лише ЗМІНЕНІ id', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'settings',
+          base: { ...base, modules: { news: true, jobs: true } },
+          settings: { ...base, modules: { news: false, jobs: true } },
+        },
+      ]);
+      expect(msg).toContain('модулі: news=false');
+      expect(msg).not.toContain('jobs='); // не змінився -> не показуємо
+    });
+
+    it('заглушені теми: додані/прибрані окремо, назви екрановані', () => {
+      const msg = formatProposalMessage([
+        {
+          kind: 'settings',
+          base: { ...base, mutedTopics: ['Крипта'] },
+          settings: { ...base, mutedTopics: ['Спорт', '<b>Політика</b>'] },
+        },
+      ]);
+      expect(msg).toContain('+заглушити: Спорт, &lt;b&gt;Політика&lt;/b&gt;');
+      expect(msg).toContain('-заглушити: Крипта');
+    });
+  });
 });
 
 describe('proposal callback_data', () => {
@@ -725,9 +819,10 @@ describe('proposal callback_data', () => {
 describe('proposalMode + edit/delete-клавіатура', () => {
   const { proposalMode, cycleEventShift, formatShiftLabel, buildProposalKeyboard } = agent;
 
-  it('одна updateEvent -> edit; одна deleteEvent -> delete; решта -> create', () => {
+  it('одна updateEvent -> edit; одна deleteEvent -> delete; одна settings -> settings; решта -> create', () => {
     expect(proposalMode([{ kind: 'updateEvent', eventId: 'x' }])).toBe('edit');
     expect(proposalMode([{ kind: 'deleteEvent', eventId: 'x' }])).toBe('delete');
+    expect(proposalMode([{ kind: 'settings', settings: {} }])).toBe('settings');
     expect(proposalMode([{ kind: 'event', title: 'x' }])).toBe('create');
     expect(proposalMode([{ kind: 'reminder', title: 'x' }])).toBe('create');
     expect(proposalMode([])).toBe('create');
@@ -759,6 +854,13 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
     expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
+  });
+
+  it('settings-клавіатура (PR-9): лише Застосувати/Скасувати, нічого циклити', () => {
+    const kb = buildProposalKeyboard('id123456', [{ kind: 'settings', settings: {} }], {});
+    expect(kb.inline_keyboard).toHaveLength(1);
+    const [row] = kb.inline_keyboard;
+    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
   });
 
   it('зсув циклиться по колу, включно з «завтра, той самий час»', () => {
@@ -1029,6 +1131,12 @@ describe('formatProposalResult — перепис повідомлення ПІ�
   it('delete: провал -> чесний текст', () => {
     const items = [{ kind: 'deleteEvent', eventId: 'ev1' }];
     expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось видалити');
+  });
+
+  it('settings (PR-9): успіх -> «застосовано», провал -> чесний текст', () => {
+    const items = [{ kind: 'settings', settings: {} }];
+    expect(formatProposalResult(items, [{ ok: true }])).toContain('застосовано');
+    expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось застосувати');
   });
 
   it('назви екрановані (XSS-регресія)', () => {
