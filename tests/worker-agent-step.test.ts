@@ -221,6 +221,164 @@ describe('/api/agent-step — термінальні дії', () => {
       expect(state.reminders[0].text).toBe('Купити квитки'); // без змін
     });
   });
+
+  /* PR-8, Категорія A: recordAction — прямий термінал, як updateReminder вище.
+     Кожен kind повторно використовує ТОЙ САМИЙ примітив запису, що й Mini App/
+     Telegram-кнопки (applyEvent/applyUrlVote/toggleProgress). */
+  describe('recordAction (PR-8, Категорія A)', () => {
+    it('checkin у робочу годину -> applyEvent записав у stats.checkins', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-10T08:00:00Z')); // Київ 11:00 -> ранок
+      try {
+        const res = await authed({
+          token: await token(),
+          structured: {
+            action: 'recordAction',
+            recordKind: 'checkin',
+            energy: 4,
+            sleepH: 7,
+            bedtime: 'e23',
+          },
+        });
+        expect(await res.json()).toMatchObject({ done: true });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sentTexts()[0]).toContain('Записав чек-ін');
+      expect(sentTexts()[0]).toContain('ранок');
+      const stats = JSON.parse(kv.get('stats')!);
+      const dateKey = Object.keys(stats.checkins)[0]!;
+      expect(stats.checkins[dateKey].morning).toEqual({ energy: 4, sleepH: 7, bedtime: 'e23' });
+    });
+
+    it('checkin у тиху зону (02:00–08:00 Київ) -> НЕ пише, чесний текст', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-10T02:00:00Z')); // Київ 05:00 -> тиха зона
+      try {
+        await authed({
+          token: await token(),
+          structured: { action: 'recordAction', recordKind: 'checkin', energy: 3 },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sentTexts()[0]).toContain('тиха зона');
+      expect(kv.get('stats')).toBeUndefined();
+    });
+
+    it('voteNews: newsIndex резолвиться у url/topic СВІЖИМ читанням latest, зараховує голос', async () => {
+      kv.set(
+        'latest',
+        JSON.stringify({
+          blocks: [
+            {
+              id: 'news',
+              data: {
+                groups: [
+                  { topic: 'Технології', items: [{ title: 'AI новина', url: 'https://x/a' }] },
+                  { topic: 'Спорт', items: [{ title: 'Матч', url: 'https://x/b' }] },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      const res = await authed({
+        token: await token(),
+        structured: { action: 'recordAction', recordKind: 'voteNews', newsIndex: 2 },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Матч');
+      const state = JSON.parse(kv.get('state')!);
+      expect(state.preferenceWeights.Спорт).toBeGreaterThan(1.0);
+      expect(state.votedUrls['https://x/b']).toMatchObject({ dir: 'up', category: 'Спорт' });
+    });
+
+    it('voteNews: newsIndex поза межами -> не знайшов, KV не чіпається', async () => {
+      kv.set('latest', JSON.stringify({ blocks: [] }));
+      await authed({
+        token: await token(),
+        structured: { action: 'recordAction', recordKind: 'voteNews', newsIndex: 5 },
+      });
+      expect(sentTexts()[0]).toContain('Не знайшов');
+      expect(kv.get('state')).toBeUndefined();
+    });
+
+    it('jobStage: jobIndex резолвиться у url СВІЖИМ читанням funnelList, стадія оновлена', async () => {
+      kv.set(
+        'stats',
+        JSON.stringify({
+          funnel: { 'https://jobs/1': 'applied' },
+          funnelMeta: {
+            'https://jobs/1': { title: 'Frontend Dev', ts: '2026-07-01', history: [] },
+          },
+        }),
+      );
+      const res = await authed({
+        token: await token(),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'jobStage',
+          jobIndex: 1,
+          jobStage: 'interview',
+        },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Frontend Dev');
+      expect(sentTexts()[0]).toContain('interview');
+      const stats = JSON.parse(kv.get('stats')!);
+      expect(stats.funnel['https://jobs/1']).toBe('interview');
+    });
+
+    it('jobStage: jobIndex поза межами -> не знайшов, stats не чіпається', async () => {
+      kv.set('stats', JSON.stringify({ funnel: {}, funnelMeta: {} }));
+      const before = kv.get('stats');
+      await authed({
+        token: await token(),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'jobStage',
+          jobIndex: 1,
+          jobStage: 'interview',
+        },
+      });
+      expect(sentTexts()[0]).toContain('Не знайшов');
+      expect(kv.get('stats')).toBe(before);
+    });
+
+    it('roadmapDone: позначає тему, ідемпотентно (повторний виклик НЕ знімає позначку)', async () => {
+      const res = await authed({
+        token: await token(),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'roadmapDone',
+          roadmapTopicId: 'frontend',
+          roadmapSubtopicId: 'html',
+        },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('Позначив');
+      const state = JSON.parse(kv.get('state')!);
+      expect(state.roadmapProgress['frontend.html']).toBeTruthy();
+
+      // Другий виклик — та сама тема, НОВИЙ прогін (перший вже завершений і
+      // токен для нього більше не приймається, replay-захист вище): toggleProgress
+      // сирий зняв би позначку, recordAction-шлях мусить лишити ЯК Є (лише
+      // ДОДАЄ, ніколи не знімає).
+      await authed({
+        token: await token({ runId: 'run5678', progressMsgId: 901 }),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'roadmapDone',
+          roadmapTopicId: 'frontend',
+          roadmapSubtopicId: 'html',
+        },
+      });
+      expect(sentTexts()[1]).toContain('Уже позначено');
+      const state2 = JSON.parse(kv.get('state')!);
+      expect(state2.roadmapProgress['frontend.html']).toBeTruthy(); // досі є
+    });
+  });
 });
 
 describe('/api/agent-step — читальні дії й кроки', () => {

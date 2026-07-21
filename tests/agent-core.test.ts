@@ -26,7 +26,7 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 9 дій (CRUD: +updateReminder)', () => {
+  it('дозволяє рівно 10 дій (PR-8: +recordAction)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -37,6 +37,7 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'readOwnData',
       'readMail',
       'readMailBody',
+      'recordAction',
     ]);
   });
 
@@ -406,6 +407,98 @@ describe('extractAssistantAction', () => {
     expect(extractAssistantAction({ action: 'deleteEverything' })).toBeNull();
     expect(extractAssistantAction(null)).toBeNull();
     expect(extractAssistantAction({})).toBeNull();
+  });
+});
+
+describe('extractAssistantAction — recordAction (PR-8, Категорія A)', () => {
+  it('невідомий/відсутній recordKind -> null', () => {
+    expect(extractAssistantAction({ action: 'recordAction', recordKind: 'delete' })).toBeNull();
+    expect(extractAssistantAction({ action: 'recordAction' })).toBeNull();
+  });
+
+  it('checkin: збирає лише ВІДОМІ enum-значення + числові поля, сміття відкидає', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'checkin',
+        energy: 4,
+        sleepH: 7,
+        bedtime: 'e23',
+        plan: 'work',
+        dayScore: 'п', // сміття (не число) — ігнор
+        blocker: 'not-a-real-value', // сміття (поза enum) — ігнор
+      }),
+    ).toEqual({
+      action: 'recordAction',
+      kind: 'checkin',
+      checkin: { energy: 4, sleepH: 7, bedtime: 'e23', plan: 'work' },
+    });
+  });
+
+  it('checkin: без жодного поля -> порожній checkin (не null — часткове ОК)', () => {
+    expect(extractAssistantAction({ action: 'recordAction', recordKind: 'checkin' })).toEqual({
+      action: 'recordAction',
+      kind: 'checkin',
+      checkin: {},
+    });
+  });
+
+  it('voteNews: newsIndex — ціле >=1, округлює; <1/відсутнє -> null', () => {
+    expect(
+      extractAssistantAction({ action: 'recordAction', recordKind: 'voteNews', newsIndex: 2.7 }),
+    ).toEqual({ action: 'recordAction', kind: 'voteNews', newsIndex: 3 });
+    expect(
+      extractAssistantAction({ action: 'recordAction', recordKind: 'voteNews', newsIndex: 0 }),
+    ).toBeNull();
+    expect(extractAssistantAction({ action: 'recordAction', recordKind: 'voteNews' })).toBeNull();
+  });
+
+  it('jobStage: потребує ОБИДВА jobIndex(>=1) і jobStage у STAGES', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'jobStage',
+        jobIndex: 1,
+        jobStage: 'interview',
+      }),
+    ).toEqual({ action: 'recordAction', kind: 'jobStage', jobIndex: 1, jobStage: 'interview' });
+    // невалідна стадія (напр. LLM вигадав щось поза списком) -> null, НЕ пропускаємо
+    // — на відміну від сирого job_stage-event, тут порожня/невідома стадія НЕ
+    // має шансу тихо видалити вакансію з воронки.
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'jobStage',
+        jobIndex: 1,
+        jobStage: 'ghosted',
+      }),
+    ).toBeNull();
+    expect(
+      extractAssistantAction({ action: 'recordAction', recordKind: 'jobStage', jobIndex: 1 }),
+    ).toBeNull();
+  });
+
+  it('roadmapDone: потребує ОБИДВА topicId+subtopicId непорожніми', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'roadmapDone',
+        roadmapTopicId: ' frontend ',
+        roadmapSubtopicId: 'html',
+      }),
+    ).toEqual({
+      action: 'recordAction',
+      kind: 'roadmapDone',
+      roadmapTopicId: 'frontend',
+      roadmapSubtopicId: 'html',
+    });
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'roadmapDone',
+        roadmapTopicId: 'frontend',
+      }),
+    ).toBeNull();
   });
 });
 

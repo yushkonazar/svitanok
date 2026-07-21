@@ -1412,6 +1412,94 @@ async function updateReminderByText(
   return sendText(`✏️ Оновив нагадування: ${patch.text ?? matches[0].text}`);
 }
 
+const RECORD_CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
+
+/**
+ * Обробити recordAction (PR-8, Категорія A) — прямий термінал, як createReminder/
+ * updateReminder: локальні дані, дешево відкотити, підтвердження зайве. Кожен kind
+ * повторно використовує ТОЙ САМИЙ примітив запису, що й Mini App/Telegram-кнопки
+ * (applyEvent/applyUrlVote/toggleProgress) — жодної нової логіки стору тут.
+ *
+ * newsIndex/jobIndex — індекс у СВІЖОМУ (не з дайджесту, який модель бачила
+ * кроків тому) читанні latest/funnelList: те, на що вказував дайджест, могло
+ * зникнути чи зсунутись між readOwnData і цим кроком.
+ */
+async function runRecordAction(env, parsed, action) {
+  const sendText = sendTo(env, parsed);
+
+  if (action.kind === 'checkin') {
+    const slot = checkinSlot(kyivHour());
+    if (!slot) return sendText('🌙 Зараз тиха зона (02:00–08:00) — чек-ін не пишемо.');
+    await applyEvent(env, { type: 'checkin', ...action.checkin });
+    return sendText(`✅ Записав чек-ін (${RECORD_CHECKIN_SLOT_LABEL[slot]}).`);
+  }
+
+  if (action.kind === 'voteNews') {
+    const latest = await loadLatest(env);
+    const groups = latest?.blocks?.find((b) => b?.id === 'news')?.data?.groups;
+    const flat = [];
+    for (const g of Array.isArray(groups) ? groups : []) {
+      for (const it of Array.isArray(g?.items) ? g.items : []) {
+        flat.push({ url: it?.url, topic: g.topic, title: it?.title });
+      }
+    }
+    const item = flat[action.newsIndex - 1];
+    if (!item?.url)
+      return sendText('🤔 Не знайшов цю новину — спробуй readOwnData(scope=news) ще раз.');
+    const state = await loadState(env);
+    const r = applyUrlVote(
+      state.preferenceWeights ?? {},
+      state.votedUrls ?? {},
+      item.url,
+      item.topic,
+      'up',
+    );
+    state.preferenceWeights = r.weights;
+    state.votedUrls = r.votedUrls;
+    await env.BRIEFING.put('state', JSON.stringify(state));
+    const stats = recordEvent(
+      await loadStats(env),
+      {
+        type: 'vote',
+        category: item.topic,
+        dir: r.newDir,
+        prevDir: r.prevDir,
+        prevCategory: r.prevCategory,
+      },
+      kyivDateKey(),
+    );
+    await env.BRIEFING.put('stats', JSON.stringify(stats));
+    return sendText(`❤️ Голос за «${item.title ?? '?'}» зараховано.`);
+  }
+
+  if (action.kind === 'jobStage') {
+    const agg = aggregateStats(await loadStats(env), kyivDateKey());
+    const item = (agg.funnelList ?? [])[action.jobIndex - 1];
+    if (!item?.url)
+      return sendText('🤔 Не знайшов цю вакансію — спробуй readOwnData(scope=jobs) ще раз.');
+    await applyEvent(env, {
+      type: 'job_stage',
+      url: item.url,
+      stage: action.jobStage,
+      title: item.title,
+    });
+    return sendText(`✅ «${item.title || item.url}» → ${action.jobStage}.`);
+  }
+
+  // roadmapDone
+  const state = await loadState(env);
+  const key = progressKey(action.roadmapTopicId, action.roadmapSubtopicId);
+  if (state.roadmapProgress?.[key]) return sendText('✅ Уже позначено вивченим.');
+  state.roadmapProgress = toggleProgress(
+    state.roadmapProgress ?? {},
+    action.roadmapTopicId,
+    action.roadmapSubtopicId,
+    new Date().toISOString(),
+  );
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return sendText('✅ Позначив у роадмепі вивченим.');
+}
+
 /* ══ Агент: цикл живе на ХОСТІ (варіант Б) ═══════════════════════════════════
    Доти Worker сам крутив цикл раундів у ctx.waitUntil — і впирався в стелю
    платформи: Cloudflare убиває фонову роботу МОВЧКИ на ~25-30с (бісект власника:
@@ -1853,6 +1941,9 @@ async function handleAgentStep(request, env) {
   }
   if (action.action === 'updateReminder') {
     return finish(() => updateReminderByText(env, parsed, action), '[оновив нагадування]');
+  }
+  if (action.action === 'recordAction') {
+    return finish(() => runRecordAction(env, parsed, action), `[recordAction:${action.kind}]`);
   }
   if (action.action === 'proposeCalendarChanges') {
     return finish(

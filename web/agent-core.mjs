@@ -12,6 +12,7 @@
 import { escapeHtml } from './tg-core.mjs';
 import { CANONICAL_EXAMPLES, parseReminderTime } from './reminders-core.mjs';
 import { OWN_DATA_SCOPES } from './assistant-data-core.mjs';
+import { CATEGORY_VALUES, STAGES } from './stats-core.mjs';
 
 export const MAX_PROPOSAL_ITEMS = 8;
 const MAX_TITLE_LEN = 120;
@@ -225,6 +226,7 @@ export const ASSISTANT_ACTION_SCHEMA = {
         'readOwnData',
         'readMail',
         'readMailBody',
+        'recordAction',
       ],
     },
     calendarStartDay: { type: 'number' },
@@ -234,6 +236,33 @@ export const ASSISTANT_ACTION_SCHEMA = {
     mailId: { type: 'string' },
     reminderText: { type: 'string' },
     reminderNewText: { type: 'string' },
+    // recordAction (PR-8, Категорія A) — ОДНА дія-парасолька для 4 дрібних
+    // локальних записів (замість 4 top-level дій — кожна нова top-level дія
+    // коштує буллет системного промпту, а МІСЦЕ там майже вичерпано). kind->
+    // поля пояснено в буллеті buildAssistantSystemPrompt (recordAction), тому
+    // тут НАВМИСНО без `description` (description теж рахується в бюджет
+    // MAX_SCHEMA_LEN хоста — дублювати той самий текст двічі дорого).
+    recordKind: { type: 'string', enum: ['checkin', 'voteNews', 'jobStage', 'roadmapDone'] },
+    energy: { type: 'number' }, // checkin, 1-5, усі слоти
+    sleepH: { type: 'number' }, // checkin/ранок, годин сну 0-14
+    bedtime: { type: 'string', enum: ['e23', 'e00', 'e01', 'e02', 'late'] }, // checkin/ранок
+    plan: { type: 'string', enum: CATEGORY_VALUES }, // checkin/ранок
+    planApply: { type: 'number' }, // checkin/ранок, план подач 0-20
+    pace: { type: 'string', enum: ['on', 'off', 'better'] }, // checkin/день
+    ate: { type: 'string', enum: CATEGORY_VALUES }, // checkin/день
+    dayScore: { type: 'number' }, // checkin/вечір, 1-5
+    kept: { type: 'string', enum: ['yes', 'partly', 'no'] }, // checkin/вечір
+    applied: { type: 'number' }, // checkin/вечір, подач зроблено 0-20
+    blocker: {
+      type: 'string',
+      enum: ['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none'],
+    }, // checkin/вечір
+    helper: { type: 'string', enum: ['early', 'list', 'breaks', 'support', 'none'] }, // checkin/вечір
+    newsIndex: { type: 'number' }, // voteNews: номер зі scope=news
+    jobIndex: { type: 'number' }, // jobStage: номер зі scope=jobs
+    jobStage: { type: 'string', enum: STAGES },
+    roadmapTopicId: { type: 'string' },
+    roadmapSubtopicId: { type: 'string' },
     proposal: {
       type: 'array',
       items: {
@@ -295,6 +324,9 @@ export function buildAssistantSystemPrompt(nowMs) {
     `НІКОЛИ не вигадуй). Лише пропозиція, підтверджує кнопкою. "when" — канонічний формат: ` +
     `${CANONICAL_EXAMPLES} (лише час, зміст — у "title"). "durationMin" типово 60 (event/updateEvent).\n` +
     `- {"action":"reply","replyText":"..."} — просто відповісти текстом.\n` +
+    `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
+    `checkin (лише поля АКТИВНОГО слоту з розмови, частково ОК), voteNews(newsIndex), ` +
+    `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId).\n` +
     `Зараз у Києві: ${kyivNow}. Бракує даних — спершу readCalendar/readOwnData/readMail, тоді ` +
     `наступним кроком фінальна дія (proposeCalendarChanges/reply). Приклад: «знайди лист і заплануй ` +
     `подію» -> readMail, тоді proposeCalendarChanges з датою з листа.\n` +
@@ -317,7 +349,20 @@ const VALID_ACTIONS = new Set([
   'readOwnData',
   'readMail',
   'readMailBody',
+  'recordAction',
 ]);
+
+const RECORD_ACTION_KINDS = new Set(['checkin', 'voteNews', 'jobStage', 'roadmapDone']);
+const CHECKIN_ENUM_FIELDS = {
+  bedtime: new Set(['e23', 'e00', 'e01', 'e02', 'late']),
+  plan: new Set(CATEGORY_VALUES),
+  pace: new Set(['on', 'off', 'better']),
+  ate: new Set(CATEGORY_VALUES),
+  kept: new Set(['yes', 'partly', 'no']),
+  blocker: new Set(['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none']),
+  helper: new Set(['early', 'list', 'breaks', 'support', 'none']),
+};
+const CHECKIN_NUM_FIELDS = ['energy', 'sleepH', 'planApply', 'dayScore', 'applied'];
 
 /**
  * Charset+довжина для будь-якого id, що модель ЕХОЄ назад (лист Gmail, подія
@@ -372,6 +417,46 @@ export function extractAssistantAction(structured) {
     // dataScope нормалізується у buildOwnDataDigest (невідоме/відсутнє -> 'all').
     const scope = typeof structured.dataScope === 'string' ? structured.dataScope : undefined;
     return { action, dataScope: scope };
+  }
+  if (action === 'recordAction') {
+    const kind = structured.recordKind;
+    if (typeof kind !== 'string' || !RECORD_ACTION_KINDS.has(kind)) return null;
+
+    if (kind === 'checkin') {
+      // Легка структурна перевірка (enum-поля/типи) — САМ слот і фінальна
+      // валідація полів проти нього лишається серверу (cleanCheckin,
+      // stats-core.mjs), який знає поточну київську годину; тут лише
+      // відсіюємо відверте сміття від моделі, той самий мотив, що ID_RE.
+      const checkin = {};
+      for (const [k, allowed] of Object.entries(CHECKIN_ENUM_FIELDS)) {
+        if (typeof structured[k] === 'string' && allowed.has(structured[k]))
+          checkin[k] = structured[k];
+      }
+      for (const k of CHECKIN_NUM_FIELDS) {
+        if (typeof structured[k] === 'number' && Number.isFinite(structured[k]))
+          checkin[k] = structured[k];
+      }
+      return { action, kind, checkin };
+    }
+    if (kind === 'voteNews') {
+      const idx = Number(structured.newsIndex);
+      if (!Number.isFinite(idx) || idx < 1) return null;
+      return { action, kind, newsIndex: Math.round(idx) };
+    }
+    if (kind === 'jobStage') {
+      const idx = Number(structured.jobIndex);
+      const stage = structured.jobStage;
+      if (!Number.isFinite(idx) || idx < 1) return null;
+      if (typeof stage !== 'string' || !STAGES.includes(stage)) return null;
+      return { action, kind, jobIndex: Math.round(idx), jobStage: stage };
+    }
+    // roadmapDone
+    const topicId =
+      typeof structured.roadmapTopicId === 'string' ? structured.roadmapTopicId.trim() : '';
+    const subtopicId =
+      typeof structured.roadmapSubtopicId === 'string' ? structured.roadmapSubtopicId.trim() : '';
+    if (!topicId || !subtopicId) return null;
+    return { action, kind, roadmapTopicId: topicId, roadmapSubtopicId: subtopicId };
   }
   if (action === 'readMail') {
     // Порожній запит валідний — sanitizeMailQuery підставить дефолт (свіжий inbox).
