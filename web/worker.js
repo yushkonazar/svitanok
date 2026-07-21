@@ -1699,12 +1699,13 @@ async function runReadAction(env, action, nowMs) {
     return formatMailBodyForPrompt(await readMailBody(env, action.mailId));
   }
   if (action.action === 'readOwnData') {
-    // Читаємо всі три блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
+    // Читаємо всі чотири блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
     // лише потрібне за scope) — простіше за розгалуження по scope.
-    const [state, stats, latest] = await Promise.all([
+    const [state, stats, latest, settings] = await Promise.all([
       loadState(env),
       loadStats(env),
       loadLatest(env),
+      loadSettings(env),
     ]);
     const todayKey = kyivDateKey(new Date(nowMs));
     const digest = buildOwnDataDigest({
@@ -1714,6 +1715,7 @@ async function runReadAction(env, action, nowMs) {
       roadmap: totalProgress(state.roadmapProgress ?? {}),
       latest,
       todayKey,
+      settings,
     });
     return `Твої дані: ${digest}`;
   }

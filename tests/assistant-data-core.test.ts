@@ -6,8 +6,13 @@ const {
   digestJobs,
   digestProgress,
   digestBriefing,
+  digestCheckin,
+  digestSaved,
+  digestSettings,
+  digestNews,
   normalizeScope,
   buildOwnDataDigest,
+  OWN_DATA_SCOPES,
   MAX_DIGEST_LEN,
   MAX_MAIL_LEN,
   MAX_MAIL_ITEMS,
@@ -161,6 +166,102 @@ describe('digestJobs', () => {
     const out = digestJobs({ funnel: {}, goal: {} });
     expect(out).toBe('Вакансії — воронка: збережено 0, подано 0, співбесіда 0, оферів 0.');
   });
+
+  it('funnelList -> індексований список для jobIndex (PR-7)', () => {
+    const out = digestJobs({
+      funnel: {},
+      goal: {},
+      funnelList: [
+        { url: 'https://x/1', stage: 'applied', title: 'Frontend Dev' },
+        { url: 'https://x/2', stage: 'interview', title: 'Backend Dev' },
+      ],
+    });
+    expect(out).toContain(
+      'список (jobIndex): 1) [applied] Frontend Dev; 2) [interview] Backend Dev',
+    );
+  });
+
+  it('без funnelList -> без секції списку (не регресує старий формат)', () => {
+    const out = digestJobs({ funnel: {}, goal: {} });
+    expect(out).not.toContain('jobIndex');
+  });
+});
+
+describe('digestCheckin (PR-7)', () => {
+  it('нема чек-іну сьогодні -> заглушка', () => {
+    expect(digestCheckin(null)).toBe('Чек-ін сьогодні: ще не робив.');
+    expect(digestCheckin({})).toBe('Чек-ін сьогодні: ще не робив.');
+  });
+
+  it('заповнені слоти -> поля кожного', () => {
+    const out = digestCheckin({
+      morning: { energy: 4, sleepH: 7 },
+      evening: { dayScore: 5 },
+    });
+    expect(out).toBe('Чек-ін сьогодні: ранок(energy=4,sleepH=7); вечір(dayScore=5).');
+  });
+});
+
+describe('digestSaved (PR-7)', () => {
+  it('порожньо -> заглушка', () => {
+    expect(digestSaved({})).toBe('Збережене: порожньо.');
+    expect(digestSaved(null)).toBe('Збережене: порожньо.');
+  });
+
+  it('список -> нумеровані пункти з kind+title', () => {
+    const out = digestSaved({
+      savedList: [
+        { kind: 'quote', title: 'Цитата дня' },
+        { kind: 'news', title: 'Заголовок новини' },
+      ],
+    });
+    expect(out).toBe('Збережене (2): 1) quote: Цитата дня; 2) news: Заголовок новини.');
+  });
+});
+
+describe('digestSettings (PR-7)', () => {
+  it('порожній блоб -> граційна деградація', () => {
+    expect(digestSettings(null)).toBe(
+      'Налаштування: тихі години вимкнено; модулі увімкнено: жоден.',
+    );
+  });
+
+  it('тихі години + модулі + заглушені теми', () => {
+    const out = digestSettings({
+      quiet: { enabled: true, from: '23:00', to: '08:00' },
+      modules: { news: true, jobs: true, mock: false },
+      mutedTopics: ['crypto'],
+    });
+    expect(out).toBe(
+      'Налаштування: тихі години 23:00–08:00; модулі увімкнено: news,jobs; ' +
+        'вимкнено: mock; заглушені теми: crypto.',
+    );
+  });
+});
+
+describe('digestNews (PR-7)', () => {
+  it('без блоку новин у latest -> заглушка', () => {
+    expect(digestNews({ blocks: [] })).toBe('Новини: сьогодні ще немає.');
+    expect(digestNews(null)).toBe('Новини: сьогодні ще немає.');
+  });
+
+  it('groups -> індексований список title+topic для newsIndex', () => {
+    const out = digestNews({
+      blocks: [
+        {
+          id: 'news',
+          data: {
+            groups: [
+              { topic: 'Технології', items: [{ title: 'AI новина', url: 'https://x/a' }] },
+              { topic: 'Спорт', items: [{ title: 'Матч', url: 'https://x/b' }] },
+            ],
+          },
+        },
+      ],
+    });
+    expect(out).toBe('Новини (newsIndex): 1) [Технології] AI новина; 2) [Спорт] Матч.');
+    expect(out).not.toContain('https://'); // url НЕ йде в LLM-контекст (index-only)
+  });
 });
 
 describe('digestProgress', () => {
@@ -277,6 +378,44 @@ describe('buildOwnDataDigest', () => {
     const out = buildOwnDataDigest({ scope: 'chaos', ...sources });
     expect(out).toContain('Вакансії — воронка');
     expect(out).toContain('Нагадування (активні)');
+  });
+
+  it("scope 'all' НЕ включає checkin/saved/news/settings (нішеві, лише на прямий запит)", () => {
+    const out = buildOwnDataDigest({
+      scope: 'all',
+      ...sources,
+      settings: { quiet: {}, modules: {} },
+    });
+    expect(out).not.toContain('Чек-ін');
+    expect(out).not.toContain('Збережене');
+    expect(out).not.toContain('newsIndex');
+    expect(out).not.toContain('Налаштування');
+  });
+
+  it("scope 'checkin'/'saved'/'news'/'settings' -> лише своя секція", () => {
+    const withExtra = {
+      ...sources,
+      agg: { ...sources.agg, checkinToday: { morning: { energy: 3 } }, savedList: [] },
+      settings: { quiet: { enabled: false }, modules: { news: true } },
+    };
+    expect(buildOwnDataDigest({ scope: 'checkin', ...withExtra })).toContain('Чек-ін сьогодні');
+    expect(buildOwnDataDigest({ scope: 'saved', ...withExtra })).toContain('Збережене');
+    expect(buildOwnDataDigest({ scope: 'news', ...withExtra })).toContain('Новини');
+    expect(buildOwnDataDigest({ scope: 'settings', ...withExtra })).toContain('Налаштування');
+  });
+
+  it('OWN_DATA_SCOPES включає всі 9 областей (PR-7)', () => {
+    expect(OWN_DATA_SCOPES).toEqual([
+      'all',
+      'briefing',
+      'jobs',
+      'progress',
+      'reminders',
+      'checkin',
+      'saved',
+      'news',
+      'settings',
+    ]);
   });
 
   it('обрізає до MAX_DIGEST_LEN', () => {

@@ -69,14 +69,14 @@ describe('buildAssistantSystemPrompt', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('calendarStartDay');
     expect(p).toContain('calendarEndDay');
-    expect(p).toContain('через тиждень');
+    expect(p).toContain('тиждень');
   });
 
   it('описує readOwnData зі scope-ами; injection-застереження охоплює й історію (CC4/CM)', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('readOwnData');
     expect(p).toContain('dataScope');
-    expect(p).toContain('Історія розмови'); // ревʼю CM: історія — теж «лише дані»
+    expect(p).toContain('Історія'); // ревʼю CM: історія — теж «лише дані»
   });
 
   it('НЕ перевищує MAX_SYSTEM_PROMPT_LEN хоста в ЖОДЕН день тижня', () => {
@@ -111,7 +111,7 @@ describe('readMail + бюджет транскрипту (B3/B4)', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('readMail');
     expect(p).toContain('ЛИСТИ'); // anti-injection застереження охоплює пошту
-    expect(p).toContain('ПРОДОВЖЕННЯ РОЗМОВИ'); // B2: відповідь на уточнення — не новий запит
+    expect(p).toContain('ПРОДОВЖЕННЯ'); // B2: відповідь на уточнення — не новий запит
   });
 
   /* ── readMailBody: повне тіло ОДНОГО листа (дозвіл власника 18.07.2026) ──

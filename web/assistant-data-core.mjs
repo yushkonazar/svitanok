@@ -89,7 +89,79 @@ export function digestJobs(agg) {
   if (typeof agg?.avgFitApplied === 'number') {
     parts.push(`середній fit поданих ${agg.avgFitApplied}%`);
   }
+  // Індексований список (НЕ сирий url — recordAction/jobStage посилається на
+  // ІНДЕКС, worker резолвить у url свіжим читанням funnelList на момент дії).
+  const list = Array.isArray(agg?.funnelList) ? agg.funnelList.slice(0, MAX_LIST_ITEMS) : [];
+  if (list.length) {
+    const items = list.map((x, i) => `${i + 1}) [${x.stage}] ${clip(x.title || x.url, 50)}`);
+    parts.push(`список (jobIndex): ${items.join('; ')}`);
+  }
   return parts.join('; ') + '.';
+}
+
+const CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
+
+/** Дайджест сьогоднішнього чек-іну — що вже заповнено по слотах (вхід — agg.checkinToday),
+ *  щоб recordAction(kind:checkin) не перепитував уже наявні поля. */
+export function digestCheckin(checkinToday) {
+  const c = checkinToday && typeof checkinToday === 'object' ? checkinToday : {};
+  const slots = ['morning', 'afternoon', 'evening'].filter((s) => c[s] && typeof c[s] === 'object');
+  if (!slots.length) return 'Чек-ін сьогодні: ще не робив.';
+  const parts = slots.map((s) => {
+    const fields = Object.entries(c[s])
+      .map(([k, v]) => `${k}=${v}`)
+      .join(',');
+    return `${CHECKIN_SLOT_LABEL[s]}(${fields || 'порожньо'})`;
+  });
+  return `Чек-ін сьогодні: ${parts.join('; ')}.`;
+}
+
+/** Дайджест збереженого (факти/цитати/новини) — читає вже готовий agg.savedList. */
+export function digestSaved(agg) {
+  const list = Array.isArray(agg?.savedList) ? agg.savedList.slice(0, MAX_LIST_ITEMS) : [];
+  if (!list.length) return 'Збережене: порожньо.';
+  const items = list.map((x, i) => `${i + 1}) ${x.kind ?? 'news'}: ${clip(x.title, 60)}`);
+  return `Збережене (${list.length}): ${items.join('; ')}.`;
+}
+
+/** Дайджест поточних налаштувань (нормалізований блоб /api/settings). */
+export function digestSettings(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const q = s.quiet ?? {};
+  const modules = s.modules && typeof s.modules === 'object' ? s.modules : {};
+  const on = Object.entries(modules)
+    .filter(([, v]) => v)
+    .map(([k]) => k);
+  const off = Object.entries(modules)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+  const muted = Array.isArray(s.mutedTopics) ? s.mutedTopics : [];
+  const parts = [
+    q.enabled ? `тихі години ${q.from ?? '?'}–${q.to ?? '?'}` : 'тихі години вимкнено',
+    `модулі увімкнено: ${on.length ? on.join(',') : 'жоден'}`,
+  ];
+  if (off.length) parts.push(`вимкнено: ${off.join(',')}`);
+  if (muted.length) parts.push(`заглушені теми: ${muted.join(',')}`);
+  return `Налаштування: ${parts.join('; ')}.`;
+}
+
+/** Дайджест новин з останнього брифінгу — індексований список (НЕ сирий url,
+ *  той самий index-only мотив, що jobIndex): recordAction/voteNews посилається
+ *  на newsIndex, worker резолвить у {url,topic} свіжим читанням latest.blocks. */
+export function digestNews(latest) {
+  const blocks = Array.isArray(latest?.blocks) ? latest.blocks : [];
+  const groups = blocks.find((b) => b?.id === 'news')?.data?.groups;
+  const flat = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    for (const it of Array.isArray(g?.items) ? g.items : []) {
+      flat.push({ topic: g.topic, title: it?.title });
+      if (flat.length >= MAX_LIST_ITEMS) break;
+    }
+    if (flat.length >= MAX_LIST_ITEMS) break;
+  }
+  if (!flat.length) return 'Новини: сьогодні ще немає.';
+  const items = flat.map((x, i) => `${i + 1}) [${x.topic}] ${clip(x.title, 70)}`);
+  return `Новини (newsIndex): ${items.join('; ')}.`;
 }
 
 /** Дайджест активності/навчання: стрік відкриттів, прогрес роадмепу, слабкі mock-теми. */
@@ -209,7 +281,19 @@ export function formatMailBodyForPrompt(message) {
 }
 
 // Області own-data, які модель може запросити (dataScope у readOwnData, CC4).
-export const OWN_DATA_SCOPES = ['all', 'briefing', 'jobs', 'progress', 'reminders'];
+// checkin/saved/news/settings — НЕ входять в 'all' (нішеві, лише на прямий
+// запит): 'all' лишається компактним оглядом, не впирається у MAX_DIGEST_LEN.
+export const OWN_DATA_SCOPES = [
+  'all',
+  'briefing',
+  'jobs',
+  'progress',
+  'reminders',
+  'checkin',
+  'saved',
+  'news',
+  'settings',
+];
 
 /** Нормалізувати dataScope (невідоме/відсутнє -> 'all'). */
 export function normalizeScope(scope) {
@@ -221,12 +305,16 @@ export function normalizeScope(scope) {
  * джерела; секції для відсутніх даних граційно деградують (не кидають).
  * Результат обрізаний до MAX_DIGEST_LEN (бюджет промпту хоста).
  */
-export function buildOwnDataDigest({ scope, reminders, agg, roadmap, latest, todayKey }) {
+export function buildOwnDataDigest({ scope, reminders, agg, roadmap, latest, todayKey, settings }) {
   const s = normalizeScope(scope);
   const sections = [];
   if (s === 'all' || s === 'briefing') sections.push(digestBriefing(latest, todayKey));
   if (s === 'all' || s === 'jobs') sections.push(digestJobs(agg));
   if (s === 'all' || s === 'progress') sections.push(digestProgress(agg, roadmap));
   if (s === 'all' || s === 'reminders') sections.push(digestReminders(reminders));
+  if (s === 'checkin') sections.push(digestCheckin(agg?.checkinToday));
+  if (s === 'saved') sections.push(digestSaved(agg));
+  if (s === 'news') sections.push(digestNews(latest));
+  if (s === 'settings') sections.push(digestSettings(settings));
   return clip(sections.join('\n'), MAX_DIGEST_LEN);
 }
