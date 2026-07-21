@@ -280,6 +280,62 @@ export function snoozeReminder(reminders, id, nowMs) {
   );
 }
 
+/* ── Розширений snooze (extra b, схвалено власником) ────────────────────────
+   Одна фіксована +10 хв (rm:<id>, вище) лишається — старе спрацьоване
+   повідомлення в чаті власника вже має ЦЕЙ callback_data, і його не можна
+   переписати заднім числом. Нові спрацьовування (checkReminders, worker.js)
+   натомість шлють РЯДОК із трьох пресетів — окремий простір 'rs:', бо 'rm:'
+   бере ВЕСЬ залишок як id (без internal split — той самий мотив, що й у
+   коментарі при REMINDER_CANCEL_CB_PREFIX), підпростір усередині зламав би
+   snooze-парсинг. 1440 = «завтра, та сама година» (той самий трюк, що
+   EVENT_SHIFT_STEPS у agent-core.mjs). */
+export const SNOOZE_PRESETS = [
+  { minutes: 10, label: '😴 10 хв' },
+  { minutes: 60, label: '😴 1 год' },
+  { minutes: 1440, label: '😴 завтра' },
+];
+
+/** Відкласти на пресет за індексом (SNOOZE_PRESETS) — невідомий індекс -> без змін. */
+export function snoozeReminderPreset(reminders, id, presetIdx, nowMs) {
+  const preset = SNOOZE_PRESETS[presetIdx];
+  if (!preset) return Array.isArray(reminders) ? reminders : [];
+  return (Array.isArray(reminders) ? reminders : []).map((r) =>
+    r.id === id ? { ...r, whenMs: nowMs + preset.minutes * MINUTE, firedTs: null } : r,
+  );
+}
+
+export const REMINDER_SNOOZE_CB_PREFIX = 'rs:';
+
+/** `rs:<presetIdx>:<id>`; ≤64 байти, невалідний presetIdx -> null. */
+export function buildReminderSnoozeCallbackData(presetIdx, id) {
+  if (!Number.isInteger(presetIdx) || presetIdx < 0 || presetIdx >= SNOOZE_PRESETS.length)
+    return null;
+  const s = `${REMINDER_SNOOZE_CB_PREFIX}${presetIdx}:${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** Розібрати `rs:<presetIdx>:<id>` -> {presetIdx,id}|null. */
+export function parseReminderSnoozeCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(REMINDER_SNOOZE_CB_PREFIX)) return null;
+  const rest = data.slice(REMINDER_SNOOZE_CB_PREFIX.length);
+  const sep = rest.indexOf(':');
+  if (sep <= 0) return null;
+  const presetIdx = Number(rest.slice(0, sep));
+  const id = rest.slice(sep + 1);
+  if (!Number.isInteger(presetIdx) || presetIdx < 0 || presetIdx >= SNOOZE_PRESETS.length || !id) {
+    return null;
+  }
+  return { presetIdx, id };
+}
+
+/** Рядок кнопок-пресетів snooze для повідомлення «спрацювало» (checkReminders). */
+export function buildSnoozeRow(id) {
+  return SNOOZE_PRESETS.map((preset, i) => {
+    const cb = buildReminderSnoozeCallbackData(i, id);
+    return cb ? { text: preset.label, callback_data: cb } : null;
+  }).filter((btn) => btn !== null);
+}
+
 /**
  * Скасувати (§C4): видалити нагадування з масиву назавжди — не спрацює
  * ані зараз, ані після snooze. На відміну від markFired/snoozeReminder це
@@ -289,6 +345,27 @@ export function snoozeReminder(reminders, id, nowMs) {
  */
 export function cancelReminder(reminders, id) {
   return (Array.isArray(reminders) ? reminders : []).filter((r) => r.id !== id);
+}
+
+/**
+ * Змінити текст і/або час активного нагадування (CRUD: updateReminder, той
+ * самий текстовий пошук за описом, що cancelReminder — worker матчить, це
+ * лише застосовує патч). `patch = {text?, whenMs?}` — обидва опційні. Зміна
+ * часу скидає firedTs (як snooze — нагадування знову «на видачу»); зміна
+ * ЛИШЕ тексту його не чіпає. No-op на невідомий id (та сама ідемпотентна
+ * поведінка, що markFired/cancelReminder).
+ */
+export function updateReminder(reminders, id, patch = {}) {
+  return (Array.isArray(reminders) ? reminders : []).map((r) => {
+    if (r.id !== id) return r;
+    const next = { ...r };
+    if (typeof patch.text === 'string' && patch.text) next.text = patch.text;
+    if (typeof patch.whenMs === 'number') {
+      next.whenMs = patch.whenMs;
+      next.firedTs = null;
+    }
+    return next;
+  });
 }
 
 /** Активні (ще не спрацювали) нагадування, за зростанням часу спрацювання —
@@ -318,6 +395,24 @@ export function parseReminderCancelCallbackData(data) {
   return id ? id : null;
 }
 
+// 'ru:' (reminder-update) — «✏️ Редагувати» на нагадуванні (CRUD, гібрид):
+// НЕ мутує сама, лише передає в розмову (питання + синтетична репліка
+// історії, worker.js). Окремий простір від rc:/rm: (жоден не префікс іншого).
+export const REMINDER_EDIT_CB_PREFIX = 'ru:';
+
+/** callback_data «редагувати нагадування id»; ≤64 байти, інакше null. */
+export function buildReminderEditCallbackData(id) {
+  const s = `${REMINDER_EDIT_CB_PREFIX}${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** Розібрати `ru:<id>` -> id; не той префікс чи порожній id -> null. */
+export function parseReminderEditCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(REMINDER_EDIT_CB_PREFIX)) return null;
+  const id = data.slice(REMINDER_EDIT_CB_PREFIX.length);
+  return id ? id : null;
+}
+
 /** /reminders — список активних нагадувань (найближче спершу), Київський час. */
 export function formatRemindersListMessage(reminders) {
   const active = listActive(reminders);
@@ -341,16 +436,26 @@ export function formatRemindersListMessage(reminders) {
 /** Inline-клавіатура /reminders: по кнопці «❌ Скасувати N» на активне нагадування
  *  (у тому ж порядку, що й у formatRemindersListMessage — номер відповідає рядку).
  *  Порожньо, якщо активних немає — виклик не додає reply_markup у цьому випадку. */
+// Сентинель для «скасувати всі» — reminder-id завжди crypto.randomUUID(), тож
+// буквальне 'all' ніколи не збігнеться зі справжнім id (extra c, схвалено власником).
+const CANCEL_ALL_ID = 'all';
+
 export function buildRemindersKeyboard(reminders) {
   const active = listActive(reminders);
-  return {
-    inline_keyboard: active
-      .map((r, i) => {
-        const cb = buildReminderCancelCallbackData(r.id);
-        return cb ? [{ text: `❌ Скасувати ${i + 1}`, callback_data: cb }] : null;
-      })
-      .filter((row) => row !== null),
-  };
+  const rows = active
+    .map((r, i) => {
+      const cb = buildReminderCancelCallbackData(r.id);
+      return cb ? [{ text: `❌ Скасувати ${i + 1}`, callback_data: cb }] : null;
+    })
+    .filter((row) => row !== null);
+  // Пакетне скасування (extra c) — лише коли є сенс (2+ активних), одним тапом,
+  // без окремого підтвердження (той самий мотив, що rc:/rm: — усі reminder-дії
+  // тут уже прямі/без confirm).
+  if (active.length >= 2) {
+    const cb = buildReminderCancelCallbackData(CANCEL_ALL_ID);
+    if (cb) rows.push([{ text: `🗑 Скасувати всі (${active.length})`, callback_data: cb }]);
+  }
+  return { inline_keyboard: rows };
 }
 
 /** Підтвердження одразу після створення нагадування ("/remind"-відповідь). */

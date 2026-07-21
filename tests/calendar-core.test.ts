@@ -6,8 +6,14 @@ const {
   kyivRangeBoundsUtc,
   parseEvents,
   buildCreateEventBody,
+  buildUpdateEventBody,
+  findOverlaps,
   formatEventsForPrompt,
   formatRangeEventsForPrompt,
+  formatAgendaMessage,
+  buildAgendaKeyboard,
+  buildAgendaCallbackData,
+  parseAgendaCallbackData,
   isAccessTokenFresh,
 } = cal;
 
@@ -33,8 +39,58 @@ describe('parseEvents', () => {
         { start: { date: '2026-07-01' } },
       ],
     });
-    expect(evs[0]).toEqual({ id: 'ev1', title: 'Зустріч', time: '12:30', date: '2026-07-01' });
-    expect(evs[1]).toEqual({ id: null, title: '(без назви)', time: null, date: '2026-07-01' });
+    expect(evs[0]).toMatchObject({
+      id: 'ev1',
+      title: 'Зустріч',
+      time: '12:30',
+      date: '2026-07-01',
+    });
+    expect(evs[0].startMs).toBe(Date.parse('2026-07-01T09:30:00Z'));
+    expect(evs[1]).toMatchObject({
+      id: null,
+      title: '(без назви)',
+      time: null,
+      date: '2026-07-01',
+    });
+  });
+
+  describe('parseEvents — startMs/endMs (CRUD: findOverlaps, /agenda now-фільтр)', () => {
+    it('timed-подія: startMs/endMs з dateTime', () => {
+      const [ev] = parseEvents({
+        items: [
+          {
+            id: 'a',
+            summary: 'X',
+            start: { dateTime: '2026-07-01T09:00:00Z' },
+            end: { dateTime: '2026-07-01T10:00:00Z' },
+          },
+        ],
+      });
+      expect(ev.startMs).toBe(Date.parse('2026-07-01T09:00:00Z'));
+      expect(ev.endMs).toBe(Date.parse('2026-07-01T10:00:00Z'));
+    });
+
+    it('all-day подія: startMs/endMs із date (end.date ЕКСКЛЮЗИВНИЙ у Google)', () => {
+      const [ev] = parseEvents({
+        items: [
+          {
+            id: 'a',
+            summary: 'Відпустка',
+            start: { date: '2026-07-01' },
+            end: { date: '2026-07-03' },
+          },
+        ],
+      });
+      // Літо (+3): 07-01 00:00 Київ = 06-30 21:00 UTC.
+      expect(ev.startMs).toBe(Date.parse('2026-06-30T21:00:00Z'));
+      expect(ev.endMs).toBe(Date.parse('2026-07-02T21:00:00Z'));
+    });
+
+    it('відсутні start/end -> null, не NaN (findOverlaps фільтрує через Number.isFinite)', () => {
+      const [ev] = parseEvents({ items: [{ id: 'a', summary: 'X' }] });
+      expect(ev.startMs).toBeNull();
+      expect(ev.endMs).toBeNull();
+    });
   });
 
   it('timed-подія пізно ввечері UTC -> київська дата наступного дня (не UTC-дата)', () => {
@@ -183,5 +239,125 @@ describe('formatEventsForPrompt', () => {
         { title: 'Відпустка', time: null },
       ]),
     ).toBe('09:00 Стендап; увесь день: Відпустка');
+  });
+});
+
+describe('buildUpdateEventBody', () => {
+  it('усі поля -> summary/start/end', () => {
+    expect(buildUpdateEventBody({ title: 'Дантист', startIso: 'a', endIso: 'b' })).toEqual({
+      summary: 'Дантист',
+      start: { dateTime: 'a', timeZone: 'Europe/Kyiv' },
+      end: { dateTime: 'b', timeZone: 'Europe/Kyiv' },
+    });
+  });
+
+  it('лише title -> лише summary (частковий патч)', () => {
+    expect(buildUpdateEventBody({ title: 'Дантист' })).toEqual({ summary: 'Дантист' });
+  });
+
+  it('лише startIso/endIso -> без summary', () => {
+    expect(buildUpdateEventBody({ startIso: 'a', endIso: 'b' })).toEqual({
+      start: { dateTime: 'a', timeZone: 'Europe/Kyiv' },
+      end: { dateTime: 'b', timeZone: 'Europe/Kyiv' },
+    });
+  });
+
+  it('нічого не надано -> порожнє тіло', () => {
+    expect(buildUpdateEventBody({})).toEqual({});
+  });
+});
+
+describe('findOverlaps', () => {
+  const events = [
+    { id: 'a', startMs: 1000, endMs: 2000 },
+    { id: 'b', startMs: 3000, endMs: 4000 },
+    { id: 'c', startMs: 1500, endMs: 2500 }, // перетинає 'a'
+  ];
+
+  it('знаходить події, що перетинаються з [start,end)', () => {
+    expect(findOverlaps(events, 1200, 1800).map((e: { id: string }) => e.id)).toEqual(['a', 'c']);
+  });
+
+  it('суміжні (кінець==початок) НЕ перетинаються (напівінтервал)', () => {
+    // [2500,3000) торкається кінця 'c' (2500) і початку 'b' (3000) РІВНО по межі —
+    // жодна не «перетинається» (звичайний напівінтервал, як getRange у масивах).
+    expect(findOverlaps(events, 2500, 3000)).toEqual([]);
+  });
+
+  it('excludeId виключає саму подію (updateEvent не «накладається» сам на себе)', () => {
+    expect(findOverlaps(events, 1200, 1800, 'a').map((e: { id: string }) => e.id)).toEqual(['c']);
+  });
+
+  it('події без startMs/endMs (null) ігноруються, не кидають', () => {
+    expect(findOverlaps([{ id: 'x', startMs: null, endMs: null }], 0, 100)).toEqual([]);
+  });
+
+  it('невалідний вхід -> []', () => {
+    expect(findOverlaps(null, 0, 100)).toEqual([]);
+    expect(findOverlaps(events, NaN, 100)).toEqual([]);
+  });
+});
+
+describe('/agenda — formatAgendaMessage/buildAgendaKeyboard/callback', () => {
+  const NOW = 10_000_000;
+  const events = [
+    { id: 'past', title: 'Вчорашнє', startMs: NOW - 1000, endMs: NOW - 500 },
+    { id: 'ev1', title: 'Стендап', startMs: NOW + 1000, endMs: NOW + 2000 },
+    { id: 'ev2', title: 'Обід', startMs: NOW + 5000, endMs: NOW + 6000 },
+  ];
+
+  it('now-фільтр: минулі події не показуються', () => {
+    const msg = formatAgendaMessage(events, NOW);
+    expect(msg).not.toContain('Вчорашнє');
+    expect(msg).toContain('Стендап');
+    expect(msg).toContain('Обід');
+  });
+
+  it('порожньо -> дружній текст, не порожній рядок', () => {
+    expect(formatAgendaMessage([], NOW)).toContain('немає');
+    expect(formatAgendaMessage([events[0]], NOW)).toContain('немає'); // лишилось тільки минуле
+  });
+
+  it('кап на кількість -> «…ще N»', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      id: `e${i}`,
+      title: `T${i}`,
+      startMs: NOW + i * 1000,
+      endMs: NOW + i * 1000 + 500,
+    }));
+    const msg = formatAgendaMessage(many, NOW);
+    expect(msg).toContain('…ще 5'); // 20 - 15(MAX_AGENDA_ITEMS)
+  });
+
+  it('назва екранована (XSS-регресія, third-party назви подій)', () => {
+    const msg = formatAgendaMessage(
+      [{ id: 'x', title: '<script>alert(1)</script>', startMs: NOW + 1000, endMs: NOW + 2000 }],
+      NOW,
+    );
+    expect(msg).not.toContain('<script>');
+    expect(msg).toContain('&lt;script&gt;');
+  });
+
+  it('клавіатура: та сама кількість/порядок кнопок, що рядків тексту', () => {
+    const kb = buildAgendaKeyboard(events, NOW);
+    expect(kb.inline_keyboard).toHaveLength(2); // 'past' відфільтровано
+    expect(kb.inline_keyboard[0][0].callback_data).toBe(buildAgendaCallbackData('v', 'ev1'));
+    expect(kb.inline_keyboard[1][0].callback_data).toBe(buildAgendaCallbackData('v', 'ev2'));
+  });
+
+  it('build+parse round-trip для v/e/d/b', () => {
+    for (const action of ['v', 'e', 'd', 'b']) {
+      expect(parseAgendaCallbackData(buildAgendaCallbackData(action, 'evId123'))).toEqual({
+        action,
+        id: 'evId123',
+      });
+    }
+  });
+
+  it('невалідна дія/чужий префікс/без id -> null', () => {
+    expect(buildAgendaCallbackData('x', 'id')).toBeNull();
+    expect(parseAgendaCallbackData('pd:a:id')).toBeNull();
+    expect(parseAgendaCallbackData('ev:v:')).toBeNull();
+    expect(parseAgendaCallbackData(null)).toBeNull();
   });
 });
