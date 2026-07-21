@@ -24,6 +24,7 @@ import {
   parseCallbackData,
   resolveCallback,
   markButtonDone,
+  escapeHtml,
   parseCommand,
   formatStatsMessage,
   formatJobsMessage,
@@ -48,12 +49,19 @@ import {
   markFired,
   snoozeReminder,
   cancelReminder,
+  updateReminder,
   listActive,
   formatReminderConfirm,
   formatReminderFired,
   formatRemindersListMessage,
   buildRemindersKeyboard,
+  buildReminderCancelCallbackData,
   parseReminderCancelCallbackData,
+  buildReminderEditCallbackData,
+  parseReminderEditCallbackData,
+  snoozeReminderPreset,
+  parseReminderSnoozeCallbackData,
+  buildSnoozeRow,
   LLM_REWRITE_SCHEMA,
   buildLlmRewriteSystemPrompt,
   extractLlmRewrite,
@@ -64,8 +72,14 @@ import {
   kyivRangeBoundsUtc,
   parseEvents,
   buildCreateEventBody,
+  buildUpdateEventBody,
+  findOverlaps,
   formatEventsForPrompt,
   formatRangeEventsForPrompt,
+  formatAgendaMessage,
+  buildAgendaKeyboard,
+  buildAgendaCallbackData,
+  parseAgendaCallbackData,
   isAccessTokenFresh,
 } from './calendar-core.mjs';
 import {
@@ -83,12 +97,18 @@ import {
   extractAssistantAction,
   sanitizeProposal,
   formatProposalMessage,
+  formatProposalResult,
+  formatEventEditQuestion,
   parseProposalCallbackData,
   buildProposalKeyboard,
   cycleProposalDuration,
   cycleProposalLead,
+  cycleEventShift,
   formatDurationLabel,
   formatLeadLabel,
+  formatShiftLabel,
+  proposalMode,
+  ID_RE,
   classifyHostProbe,
   hostHealthTransition,
   HOST_DESYNC_ALERT,
@@ -1030,6 +1050,86 @@ async function createCalendarEvent(env, { title, startIso, endIso, reminderMinut
   }
 }
 
+/** URL одного events.get/patch/delete — eventId ВАЛІДУЄ викликач (той самий
+ *  мотив, що mailId: рядок іде в шлях URL). */
+function calendarEventUrl(eventId) {
+  return `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`;
+}
+
+/**
+ * Прочитати ОДНУ подію за id (CRUD: свіжий title/startMs/endMs перед
+ * update/delete — список міг бути застарілим на момент тапу). `null` при
+ * будь-якому збої, включно з 404 (подію вже видалено). Реюзає parseEvents
+ * (той самий title/час-парсинг, що читання діапазону) — обгортаємо єдиний
+ * обʼєкт у {items:[...]} замість дублювати нормалізацію.
+ */
+async function getCalendarEvent(env, eventId) {
+  const token = await googleAccessToken(env);
+  if (!token) return null;
+  try {
+    const res = await fetch(calendarEventUrl(eventId), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      if (res.status !== 404) {
+        console.error('google calendar get HTTP', res.status, await res.text().catch(() => ''));
+      }
+      return null;
+    }
+    const json = await res.json();
+    return parseEvents({ items: [json] })[0] ?? null;
+  } catch (err) {
+    console.error('google calendar get failed', err.message);
+    return null;
+  }
+}
+
+/** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої. */
+async function updateCalendarEvent(env, { eventId, patch }) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false };
+  try {
+    const res = await fetch(calendarEventUrl(eventId), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) {
+      console.error('google calendar update HTTP', res.status, await res.text().catch(() => ''));
+      return { ok: false };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('google calendar update failed', err.message);
+    return { ok: false };
+  }
+}
+
+/**
+ * Видалити подію (write-scope, CRUD). 404/410 (уже видалено — власник
+ * прибрав з іншого пристрою, чи подвійний тап) рахуємо УСПІХОМ: мета
+ * («події більше немає») уже досягнута, показувати «⚠️ не вдалось» тут
+ * оманливо.
+ */
+async function deleteCalendarEvent(env, { eventId }) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false };
+  try {
+    const res = await fetch(calendarEventUrl(eventId), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok && res.status !== 404 && res.status !== 410) {
+      console.error('google calendar delete HTTP', res.status, await res.text().catch(() => ''));
+      return { ok: false };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('google calendar delete failed', err.message);
+    return { ok: false };
+  }
+}
+
 /** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
  *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
 async function loadBriefingForDate(env, dateKey) {
@@ -1271,6 +1371,47 @@ async function cancelReminderByText(env, parsed, matchText) {
   return sendText(`🗑 Скасував нагадування: ${matches[0].text}`);
 }
 
+/**
+ * Обробити updateReminder (CRUD, прямий термінал — той самий мотив, що
+ * createReminder/cancelReminder: локальний KV, дешево відкотити, підтвердження
+ * зайве). Знайти за текстом (як cancelReminderByText), застосувати патч —
+ * "when" РЕ-ПАРСИМО тут (LLM подала лише канонічну фразу, час рахує код,
+ * той самий інваріант, що createReminderFromText/proposeCalendarChanges).
+ */
+async function updateReminderByText(
+  env,
+  parsed,
+  { reminderText: matchText, reminderNewText, when },
+) {
+  const sendText = sendTo(env, parsed);
+  const state = await loadState(env);
+  const active = listActive(state.reminders);
+  const q = matchText.toLowerCase();
+  const matches = active.filter((r) => String(r.text).toLowerCase().includes(q));
+
+  if (matches.length === 0) {
+    return sendText(`🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.`);
+  }
+  if (matches.length > 1) {
+    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    return sendText(`🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}`);
+  }
+
+  const patch = {};
+  if (reminderNewText) patch.text = reminderNewText;
+  if (when) {
+    const parsedTime = parseReminderTime(when, Date.now());
+    if (!parsedTime) {
+      return sendText('🤔 Не зрозумів новий час — спробуй точніше (напр. "завтра о 15:00").');
+    }
+    patch.whenMs = parsedTime.whenMs;
+  }
+
+  state.reminders = updateReminder(state.reminders, matches[0].id, patch);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  return sendText(`✏️ Оновив нагадування: ${patch.text ?? matches[0].text}`);
+}
+
 /* ══ Агент: цикл живе на ХОСТІ (варіант Б) ═══════════════════════════════════
    Доти Worker сам крутив цикл раундів у ctx.waitUntil — і впирався в стелю
    платформи: Cloudflare убиває фонову роботу МОВЧКИ на ~25-30с (бісект власника:
@@ -1454,6 +1595,23 @@ async function rememberExchange(env, claims, assistantSummary) {
     await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
   } catch (e) {
     console.error('assistantHistory write failed (не блокує відповідь)', e);
+  }
+}
+
+/**
+ * Записати ЛИШЕ репліку асистента (без user-репліки) — гібридне «✏️
+ * Інше»/«✏️ Редагувати»: тригер тут кнопка, не повідомлення власника, тож
+ * user-репліки просто немає. Наступне СПРАВЖНЄ повідомлення власника ляже
+ * поверх — «ПРОДОВЖЕННЯ РОЗМОВИ» у системному промпті (agent-core.mjs) вже
+ * навчена трактувати його як відповідь на щойно задане питання.
+ */
+async function rememberAssistantQuestion(env, parsed, text) {
+  try {
+    let h = await loadAssistantHistory(env);
+    h = appendTurn(h, parsed.chatId, parsed.threadId, 'assistant', text);
+    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+  } catch (e) {
+    console.error('assistantHistory (question) write failed (не блокує відповідь)', e);
   }
 }
 
@@ -1691,6 +1849,9 @@ async function handleAgentStep(request, env) {
       '[скасував нагадування]',
     );
   }
+  if (action.action === 'updateReminder') {
+    return finish(() => updateReminderByText(env, parsed, action), '[оновив нагадування]');
+  }
   if (action.action === 'proposeCalendarChanges') {
     return finish(
       () => proposeCalendarChanges(env, parsed, action.proposal),
@@ -1879,11 +2040,91 @@ async function claimAssistantPending(env, id) {
   return true;
 }
 
+/**
+ * Домалювати `base` (свіже title/whenMs/durationMin) на updateEvent/
+ * deleteEvent пунктах — ОБОВʼЯЗКОВИЙ інваріант перед показом/accept: без
+ * нього formatProposalMessage не мав би з чим рахувати діф, а видалення
+ * показувало б голий id. Той самий крок і для LLM-пропозиції (тут), і для
+ * button-staged (stageItemEdit/stageItemDelete) — обидва канали віддають
+ * REST accept-loop СТРУКТУРНО ОДНАКОВІ пункти. Пункт, чий eventId уже не
+ * резолвиться (подію видалено між readCalendar і пропозицією) — дропається,
+ * не падає весь пакет.
+ */
+async function enrichEventItems(env, items) {
+  const out = [];
+  for (const item of items) {
+    if (item.kind !== 'updateEvent' && item.kind !== 'deleteEvent') {
+      out.push(item);
+      continue;
+    }
+    const fresh = await getCalendarEvent(env, item.eventId);
+    if (!fresh) continue; // подія зникла — тихо дропаємо пункт, не весь пакет
+    out.push({
+      ...item,
+      base: {
+        title: fresh.title,
+        whenMs: fresh.startMs,
+        durationMin: (fresh.endMs - fresh.startMs) / 60_000,
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * Попередження про накладку часу (extra a, схвалено власником) для create-
+ * подій і update-пунктів, що МІНЯЮТЬ час. ОДИН читальний виклик на весь
+ * пакет (вікно від найранішого до найпізнішого кандидата), не по пункту —
+ * дешевше й достатньо для типового пакета (≤MAX_PROPOSAL_ITEMS). Інформативно,
+ * НЕ блокує пропозицію; збій читання -> тихо без попереджень (не критично).
+ */
+async function computeOverlapWarnings(env, items) {
+  const warnings = new Map();
+  const spans = items
+    .map((item, index) => {
+      if (item.kind === 'event' && Number.isFinite(item.whenMs)) {
+        return { index, eventId: null, start: item.whenMs, dur: item.durationMin ?? 60 };
+      }
+      if (item.kind === 'updateEvent' && Number.isFinite(item.whenMs)) {
+        return {
+          index,
+          eventId: item.eventId,
+          start: item.whenMs,
+          dur: item.durationMin ?? item.base?.durationMin ?? 60,
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+  if (spans.length === 0) return warnings;
+
+  const minMs = Math.min(...spans.map((s) => s.start));
+  const maxMs = Math.max(...spans.map((s) => s.start + s.dur * 60_000));
+  const events = await readCalendarRange(
+    env,
+    kyivDateKey(new Date(minMs)),
+    kyivDateKey(new Date(maxMs)),
+  );
+  if (!events) return warnings;
+
+  for (const span of spans) {
+    const overlaps = findOverlaps(events, span.start, span.start + span.dur * 60_000, span.eventId);
+    if (overlaps.length > 0) {
+      warnings.set(
+        span.index,
+        overlaps.map((e) => (e.time ? `${e.title} ${e.time}` : e.title)),
+      );
+    }
+  }
+  return warnings;
+}
+
 /** Зберегти пропозицію (власний KV-ключ, ОДИН слот) + кнопки ✅/❌ підтвердження. */
 async function proposeCalendarChanges(env, parsed, rawProposal) {
   const sendText = sendTo(env, parsed);
 
-  const { items, droppedCount } = sanitizeProposal(rawProposal, Date.now());
+  const { items: rawItems, droppedCount } = sanitizeProposal(rawProposal, Date.now());
+  const items = await enrichEventItems(env, rawItems);
   if (items.length === 0) {
     return sendText(
       '🤔 Не зрозумів час жодного пункту — спробуй точніше (напр. "завтра о 15:00").',
@@ -1891,16 +2132,17 @@ async function proposeCalendarChanges(env, parsed, rawProposal) {
   }
 
   const id = crypto.randomUUID().slice(0, 8);
-  // cfg = доналаштування (циклери ⏳/⏰). null = «як є»: тривалість від моделі,
-  // сповіщення за дефолтом календаря (тобто поведінка до фічі доналаштування).
+  // cfg = доналаштування (циклери ⏳/⏰, create-режим). null = «як є»: тривалість
+  // від моделі, сповіщення за дефолтом календаря (поведінка до цієї фічі).
   const cfg = { durMin: null, leadMin: null };
   await env.BRIEFING.put(
     ASSISTANT_PENDING_KEY,
     JSON.stringify({ id, items, createdMs: Date.now(), cfg }),
   );
 
-  const warn = droppedCount > 0 ? `\n\n⚠️ пропущено ${droppedCount} — незрозумілий час` : '';
-  return sendText(formatProposalMessage(items) + warn, {
+  const warnings = await computeOverlapWarnings(env, items);
+  const droppedNote = droppedCount > 0 ? `\n\n⚠️ пропущено ${droppedCount} — незрозумілий час` : '';
+  return sendText(formatProposalMessage(items, warnings) + droppedNote, {
     parse_mode: 'HTML',
     reply_markup: buildProposalKeyboard(id, items, cfg),
   });
@@ -1982,6 +2224,16 @@ async function handleCommand(env, parsed, origin) {
       return sendText(formatRemindersListMessage(reminders), {
         parse_mode: 'HTML',
         // reply_markup лише коли є що скасовувати — Telegram не любить порожній inline_keyboard.
+        ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
+      });
+    }
+    case 'agenda': {
+      const events = await readUpcomingWeek(env);
+      if (!events) return sendText('🔌 Не вдалось прочитати календар — спробуй пізніше.');
+      const now = Date.now();
+      const keyboard = buildAgendaKeyboard(events, now);
+      return sendText(formatAgendaMessage(events, now), {
+        parse_mode: 'HTML',
         ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
       });
     }
@@ -2115,35 +2367,123 @@ async function resolveReminderSnooze(env, parsed, reminderId) {
   return resolveReminderAction(env, parsed, reminderId, snoozeReminder, '😴 Відкладено на 10 хв');
 }
 
+/** Обробити `rs:<presetIdx>:<id>` (extra b) — snooze за одним із трьох пресетів. */
+async function resolveReminderSnoozePreset(env, parsed, presetIdx, reminderId) {
+  return resolveReminderAction(
+    env,
+    parsed,
+    reminderId,
+    (reminders, id, nowMs) => snoozeReminderPreset(reminders, id, presetIdx, nowMs),
+    '😴 Відкладено',
+  );
+}
+
 /** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди. */
 async function resolveReminderCancel(env, parsed, reminderId) {
   return resolveReminderAction(env, parsed, reminderId, cancelReminder, '🗑 Нагадування скасовано');
 }
 
 /**
- * Обробити pd:a:<id>/pd:c:<id> — прийняти чи скасувати пропозицію асистента
- * (`state.assistantPending`, ОДИН слот). "Claim" (видалити зі стану) ОДРАЗУ
- * після перевірки, ще ДО повільного циклу запису — інакше подвійний тап на
- * ✅ (чи паралельна нова пропозиція, що перезаписала слот, поки ця ще
- * оброблялась — цикл тепер може тривати довше через ctx.waitUntil) або
- * встигає задублювати нагадування/події (createCalendarEvent — зовнішній
- * незворотний запис, не KV-стан), або стирає ЧУЖУ (новішу) пропозицію
- * непроконтрольовано. Прийняти -> записати кожен пункт; KV після КОЖНОГО
- * нагадування (crash-safe, той самий патерн, що checkReminders); часткові
- * провали -> комбінований toast, не тихе ковтання.
+ * Обробити `rc:all` (extra c, пакетне скасування) — на відміну від решти
+ * reminder-дій, тут ціле повідомлення переписується (editMessageText), не
+ * лише тік кнопки: список активних змінюється ПОВНІСТЮ, старий текст одразу
+ * зробився б неправдивим (усе ще показував би скасовані пункти).
+ */
+async function resolveReminderCancelAll(env, parsed) {
+  const state = await loadState(env);
+  const active = listActive(state.reminders);
+  if (active.length === 0) return 'Нема що скасовувати.';
+
+  state.reminders = active.reduce((rs, r) => cancelReminder(rs, r.id), state.reminders);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+
+  if (parsed.chatId != null && parsed.messageId != null) {
+    const keyboard = buildRemindersKeyboard(state.reminders);
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: formatRemindersListMessage(state.reminders),
+      parse_mode: 'HTML',
+      ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
+    });
+  }
+  return `🗑 Скасовано ${active.length}`;
+}
+
+/**
+ * Клавіатура ПІСЛЯ accept — Edit/Delete на кожен УСПІШНИЙ пункт (create-
+ * режим), одне 🗑 (edit-режим успіх — Видалити щойно оновлену подію), або
+ * нічого (delete-режим/провал). Глеїть простори ДВОХ модулів (ev: із
+ * calendar-core, rc:/ru: із reminders-core) — тому тут, у worker.js, не в
+ * agent-core.mjs (той жодного з них не знає, лишається чистим від Worker-
+ * специфічних callback-неймспейсів).
+ */
+function buildResultKeyboard(items, results) {
+  const mode = proposalMode(items);
+
+  if (mode === 'edit') {
+    if (!results[0]?.ok) return { inline_keyboard: [] };
+    const d = buildAgendaCallbackData('d', items[0].eventId);
+    return d
+      ? { inline_keyboard: [[{ text: '🗑 Видалити', callback_data: d }]] }
+      : { inline_keyboard: [] };
+  }
+  if (mode === 'delete') return { inline_keyboard: [] };
+
+  const rows = [];
+  items.forEach((it, i) => {
+    const r = results[i];
+    if (!r?.ok || !r.id) return;
+    if (it.kind === 'event') {
+      const e = buildAgendaCallbackData('e', r.id);
+      const d = buildAgendaCallbackData('d', r.id);
+      if (e && d) {
+        rows.push([
+          { text: `✏️ ${i + 1}`, callback_data: e },
+          { text: `🗑 ${i + 1}`, callback_data: d },
+        ]);
+      }
+    } else if (it.kind === 'reminder') {
+      const e = buildReminderEditCallbackData(r.id);
+      const c = buildReminderCancelCallbackData(r.id);
+      if (e && c) {
+        rows.push([
+          { text: `✏️ ${i + 1}`, callback_data: e },
+          { text: `🗑 ${i + 1}`, callback_data: c },
+        ]);
+      }
+    }
+  });
+  return { inline_keyboard: rows };
+}
+
+/**
+ * Обробити pd:<action>:<id> — весь життєвий цикл пропозиції асистента
+ * (`state.assistantPending`, ОДИН слот): create (a/c/d/l), edit (a/c/s/o),
+ * delete (a/c). "Claim" (списати зі стану) ОДРАЗУ після перевірки, ще ДО
+ * повільного циклу запису — інакше подвійний тап на ✅ (чи паралельна нова
+ * пропозиція, що перезаписала слот, поки ця ще оброблялась) встигає
+ * задублювати нагадування/події (createCalendarEvent — зовнішній незворотний
+ * запис, не KV-стан), або стирає ЧУЖУ (новішу) пропозицію непроконтрольовано.
+ *
+ * ✅/❌ ЗАВЖДИ переписують повідомлення (editMessageText) — не лише тік
+ * кнопки: власник має бачити результат (успіх/провал) і, для щойно
+ * створених/оновлених подій-нагадувань, кнопки Edit/Delete НА МІСЦІ.
  */
 async function resolveProposalCallback(env, parsed, cb) {
   const { pending, source } = await loadAssistantPending(env);
   const stale = !pending || pending.id !== cb.id || Date.now() - pending.createdMs > PENDING_TTL_MS;
   if (stale) return '⚠️ Застаріла пропозиція.';
   const cfg = pending.cfg ?? { durMin: null, leadMin: null };
+  const mode = proposalMode(pending.items);
 
-  /* ── Циклери доналаштування (d=тривалість, l=lead-time) ──────────────────
+  /* ── Циклери create-режиму (d=тривалість, l=lead-time) ──────────────────
      НЕ споживають пропозицію: циклимо значення, перемальовуємо клавіатуру на
-     місці, лишаємо слот. Тільки для worker-пропозицій (власний ключ) — у
-     legacy-пропозицій брифінгу циклерів у клавіатурі немає. */
+     місці. Текст тут від cfg не залежить -> досить editMessageReplyMarkup.
+     Тільки для worker-пропозицій (власний ключ) — у legacy-пропозицій
+     брифінгу циклерів у клавіатурі немає. */
   if (cb.action === 'd' || cb.action === 'l') {
-    if (source !== 'own') return '⚠️ Застаріла пропозиція.';
+    if (source !== 'own' || mode !== 'create') return '⚠️ Застаріла пропозиція.';
     const next =
       cb.action === 'd'
         ? { ...cfg, durMin: cycleProposalDuration(cfg.durMin) }
@@ -2161,34 +2501,85 @@ async function resolveProposalCallback(env, parsed, cb) {
       : `⏰ Нагадати ${formatLeadLabel(next.leadMin)}`;
   }
 
-  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
-    });
+  /* ── Цикл зсуву часу edit-режиму (s) ──────────────────────────────────────
+     Текст ТЕЖ міняється (діф «було->стане» рахується від whenMs) -> тут
+     editMessageText, не лише reply_markup. */
+  if (cb.action === 's') {
+    if (source !== 'own' || mode !== 'edit') return '⚠️ Застаріла пропозиція.';
+    const item = pending.items[0];
+    const b = item.base ?? {};
+    const nextShift = cycleEventShift(item.shiftMin ?? 0);
+    const nextItems = [
+      { ...item, shiftMin: nextShift, whenMs: (b.whenMs ?? 0) + nextShift * 60_000 },
+    ];
+    await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify({ ...pending, items: nextItems }));
+    if (parsed.chatId != null && parsed.messageId != null) {
+      await tgCall(env, 'editMessageText', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+        text: formatProposalMessage(nextItems),
+        parse_mode: 'HTML',
+        reply_markup: buildProposalKeyboard(cb.id, nextItems, {}),
+      });
+    }
+    return `🕐 ${formatShiftLabel(nextShift)}`;
   }
 
-  // Claim: списати ЛИШЕ якщо це досі той самий id (не чужа новіша пропозиція),
-  // ОДРАЗУ, до будь-якого повільного запису — звужує вікно подвійного тапу.
+  /* ── «✏️ Інше» (o) — гібрид: claim + питання + синтетична репліка ────────
+     СПИСУЄ пропозицію (не циклер): «Інше» замінює подальший тап ✅/❌ на
+     звичайну розмову — власник відповість вільним текстом, асистент сам
+     побудує НОВУ proposeCalendarChanges(kind:'updateEvent') із eventId,
+     скопійованим із позначки [id:...] (buildAssistantSystemPrompt). */
+  if (cb.action === 'o') {
+    if (source !== 'own' || mode !== 'edit') return '⚠️ Застаріла пропозиція.';
+    const item = pending.items[0];
+    const b = item.base ?? {};
+    if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
+      await tgCall(env, 'editMessageReplyMarkup', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+        reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+      });
+    }
+    if (!(await claimAssistantPending(env, cb.id))) return '⚠️ Застаріла пропозиція.';
+    const { historyText, displayText } = formatEventEditQuestion(
+      item.eventId,
+      item.title ?? b.title,
+      item.whenMs ?? b.whenMs,
+    );
+    await sendTo(env, parsed)(displayText);
+    await rememberAssistantQuestion(env, parsed, historyText);
+    return '✍️ Напиши, що змінити';
+  }
+
+  // ── ✅/❌ (a/c) — термінальні: claim ОДРАЗУ, тоді перепис повідомлення ───
   if (!(await claimAssistantPending(env, cb.id))) return '⚠️ Застаріла пропозиція.';
 
-  if (cb.action === 'c') return '❌ Скасовано';
+  if (cb.action === 'c') {
+    if (parsed.chatId != null && parsed.messageId != null) {
+      await tgCall(env, 'editMessageText', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+        text: '❌ Скасовано.',
+      });
+    }
+    return '❌ Скасовано';
+  }
 
-  let ok = 0;
-  let fail = 0;
+  const results = [];
   for (const item of pending.items) {
     if (item.kind === 'reminder') {
+      const newId = crypto.randomUUID();
       const fresh = await loadState(env);
       fresh.reminders = addReminder(fresh.reminders, {
-        id: crypto.randomUUID(),
+        id: newId,
         text: item.title,
         whenMs: item.whenMs,
         nowMs: Date.now(),
       });
       await env.BRIEFING.put('state', JSON.stringify(fresh));
-      ok++;
-    } else {
+      results.push({ ok: true, id: newId });
+    } else if (item.kind === 'event') {
       // Доналаштування: глобальний durMin/leadMin перекриває дефолти (null -> «як є»).
       const durMin = cfg.durMin ?? item.durationMin ?? 60;
       const startIso = new Date(item.whenMs).toISOString();
@@ -2199,11 +2590,197 @@ async function resolveProposalCallback(env, parsed, cb) {
         endIso,
         reminderMinutes: cfg.leadMin ?? undefined,
       });
-      if (res.ok) ok++;
-      else fail++;
+      results.push(res.ok ? { ok: true, id: res.id } : { ok: false });
+    } else if (item.kind === 'updateEvent') {
+      // Поля, які циклер/"Інше" НЕ чіпали (undefined) -> беремо з base
+      // (свіжопрочитана подія при стейджингу) — часткове оновлення.
+      const b = item.base ?? {};
+      const title = item.title ?? b.title;
+      const whenMs = item.whenMs ?? b.whenMs;
+      const durationMin = item.durationMin ?? b.durationMin ?? 60;
+      const startIso = new Date(whenMs).toISOString();
+      const endIso = new Date(whenMs + durationMin * 60_000).toISOString();
+      const res = await updateCalendarEvent(env, {
+        eventId: item.eventId,
+        patch: buildUpdateEventBody({ title, startIso, endIso }),
+      });
+      results.push(res.ok ? { ok: true, id: item.eventId } : { ok: false });
+    } else if (item.kind === 'deleteEvent') {
+      const res = await deleteCalendarEvent(env, { eventId: item.eventId });
+      results.push(res.ok ? { ok: true } : { ok: false });
+    } else {
+      results.push({ ok: false });
     }
   }
+
+  if (parsed.chatId != null && parsed.messageId != null) {
+    const resultKeyboard = buildResultKeyboard(pending.items, results);
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: formatProposalResult(pending.items, results),
+      parse_mode: 'HTML',
+      // reply_markup лише коли є що показати — Telegram не любить порожній inline_keyboard.
+      ...(resultKeyboard.inline_keyboard.length ? { reply_markup: resultKeyboard } : {}),
+    });
+  }
+
+  if (mode === 'delete') return results[0]?.ok ? '🗑 Видалено' : '⚠️ Не вдалось видалити';
+  if (mode === 'edit') return results[0]?.ok ? '✅ Оновлено' : '⚠️ Не вдалось оновити';
+  const ok = results.filter((r) => r.ok).length;
+  const fail = results.length - ok;
   return fail > 0 ? `✅ Додано ${ok}, ⚠️ не вдалось ${fail}` : `✅ Додано ${ok}`;
+}
+
+/** Стейджити РЕДАГУВАННЯ існуючої події (`ev:e:<id>` — з /agenda чи
+ *  пост-accept кнопки): читає СВІЖУ подію (список/попередній accept міг бути
+ *  застарілим), будує single-item updateEvent-пропозицію (shiftMin=0 -> «як
+ *  заплановано») і шле тим самим шляхом, що звичайна пропозиція (той самий
+ *  keyboard/accept-цикл, що LLM-шлях, resolveProposalCallback). */
+async function stageItemEdit(env, parsed, eventId) {
+  const fresh = await getCalendarEvent(env, eventId);
+  if (!fresh) return '🤔 Цю подію вже не знайти — можливо, видалено.';
+
+  const base = {
+    title: fresh.title,
+    whenMs: fresh.startMs,
+    durationMin:
+      Number.isFinite(fresh.endMs) && Number.isFinite(fresh.startMs)
+        ? (fresh.endMs - fresh.startMs) / 60_000
+        : 60,
+  };
+  const item = { kind: 'updateEvent', eventId, shiftMin: 0, whenMs: base.whenMs, base };
+  const id = crypto.randomUUID().slice(0, 8);
+  await env.BRIEFING.put(
+    ASSISTANT_PENDING_KEY,
+    JSON.stringify({ id, items: [item], createdMs: Date.now() }),
+  );
+  await sendTo(env, parsed)(formatProposalMessage([item]), {
+    parse_mode: 'HTML',
+    reply_markup: buildProposalKeyboard(id, [item], {}),
+  });
+  return '✏️ Онови час чи напиши, що змінити';
+}
+
+/** Стейджити ВИДАЛЕННЯ існуючої події (`ev:d:<id>`) — той самий підтверджувальний
+ *  цикл, що create/update (✅/❌, delete-режим клавіатури — лише Так/Ні). */
+async function stageItemDelete(env, parsed, eventId) {
+  const fresh = await getCalendarEvent(env, eventId);
+  if (!fresh) return '🤔 Цю подію вже не знайти — можливо, видалено.';
+
+  const base = { title: fresh.title, whenMs: fresh.startMs };
+  const item = { kind: 'deleteEvent', eventId, base };
+  const id = crypto.randomUUID().slice(0, 8);
+  await env.BRIEFING.put(
+    ASSISTANT_PENDING_KEY,
+    JSON.stringify({ id, items: [item], createdMs: Date.now() }),
+  );
+  await sendTo(env, parsed)(formatProposalMessage([item]), {
+    parse_mode: 'HTML',
+    reply_markup: buildProposalKeyboard(id, [item], {}),
+  });
+  return '🗑 Підтверди видалення';
+}
+
+/** Київський DD.MM HH:MM — для питань редагування нагадування (людський час,
+ *  не epoch). */
+function kyivWhen(ms) {
+  return new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(ms));
+}
+
+/**
+ * Обробити `ru:<id>` — «✏️ Редагувати» на нагадуванні: питання + синтетична
+ * репліка історії (та сама механіка, що `pd:o` для подій, БЕЗ
+ * assistantPending — reminder-мутації прямі/без confirm, той самий мотив, що
+ * createReminder/cancelReminder/updateReminder). Наступна вільна репліка
+ * власника піде через runAssistantAgent -> updateReminder action
+ * (reminderText — сам текст нагадування, природний пошуковий ключ, той
+ * самий, що cancelReminderByText уже використовує — жодного id не треба).
+ */
+async function resolveReminderEditPrompt(env, parsed, reminderId) {
+  const state = await loadState(env);
+  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
+  const r = reminders.find((x) => x.id === reminderId && !x.firedTs);
+  if (!r) return '⚠️ Це нагадування вже неактуальне.';
+
+  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+    });
+  }
+  const question = `✏️ Що змінити в нагадуванні «${r.text}» (${kyivWhen(r.whenMs)})? Напиши новий текст і/або час.`;
+  await sendTo(env, parsed)(question);
+  await rememberAssistantQuestion(env, parsed, question);
+  return '✍️ Напиши, що змінити';
+}
+
+/** Прочитати найближчий тиждень і повернути {events}|null (null -> читання впало). */
+async function readUpcomingWeek(env) {
+  const today = kyivDateKey();
+  return readCalendarRange(env, today, addDaysToDateKey(today, 7));
+}
+
+/**
+ * Обробити `ev:<action>:<id>` — /agenda: v (деталі пункту), e (стейджити
+ * редагування), d (стейджити видалення), b (назад до списку). Той самий
+ * ID_RE-гард, що mailId/eventId у sanitizeProposal — id іде в шлях URL
+ * Google Calendar API, callback_data теоретично може бути підроблений
+ * (хоч webhook уже гейтить не-власника раніше в ланцюжку).
+ */
+async function resolveAgendaCallback(env, parsed, cb) {
+  if (cb.action === 'b') {
+    const events = await readUpcomingWeek(env);
+    if (!events) return '🔌 Не вдалось прочитати календар.';
+    const now = Date.now();
+    if (parsed.chatId != null && parsed.messageId != null) {
+      await tgCall(env, 'editMessageText', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+        text: formatAgendaMessage(events, now),
+        parse_mode: 'HTML',
+        reply_markup: buildAgendaKeyboard(events, now),
+      });
+    }
+    return '';
+  }
+
+  if (!ID_RE.test(cb.id)) return '⚠️ Некоректний id.';
+
+  if (cb.action === 'e') return stageItemEdit(env, parsed, cb.id);
+  if (cb.action === 'd') return stageItemDelete(env, parsed, cb.id);
+
+  // 'v' — деталі одного пункту: назва/час + Редагувати/Видалити/Назад.
+  const fresh = await getCalendarEvent(env, cb.id);
+  if (!fresh) return '🤔 Цю подію вже не знайти — можливо, видалено.';
+  const editCb = buildAgendaCallbackData('e', cb.id);
+  const delCb = buildAgendaCallbackData('d', cb.id);
+  const backCb = buildAgendaCallbackData('b', cb.id); // id 'b' ігнорує — лише формальність guard'а
+  if (parsed.chatId != null && parsed.messageId != null && editCb && delCb && backCb) {
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}`,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '✏️ Редагувати', callback_data: editCb },
+            { text: '🗑 Видалити', callback_data: delCb },
+          ],
+          [{ text: '⬅️ Назад', callback_data: backCb }],
+        ],
+      },
+    });
+  }
+  return '';
 }
 
 /**
@@ -2289,9 +2866,10 @@ async function checkReminders(env) {
       message_thread_id: threadId,
       text: formatReminderFired(r.text),
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [[{ text: '😴 +10 хв', callback_data: `${REMINDER_CB_PREFIX}${r.id}` }]],
-      },
+      // Розширений snooze (extra b): рядок пресетів, не одна фіксована +10 хв.
+      // Старий rm:<id> (одна кнопка) лишається ЖИВИМ обробником — уже надіслані
+      // повідомлення з ним не можна переписати заднім числом.
+      reply_markup: { inline_keyboard: [buildSnoozeRow(r.id)] },
     });
     // §C5: трекаємо для /clear — cron-контекст, немає вхідного parsed, тож
     // chatId/threadId явні (той самий trackSentMessage, що й sendTo()).
@@ -2317,23 +2895,39 @@ async function processTelegramUpdate(env, parsed, origin) {
   try {
     if (parsed.kind === 'callback') {
       const proposalCb = parseProposalCallbackData(parsed.data);
+      const agendaCb = parseAgendaCallbackData(parsed.data); // 'ev:' — CRUD /agenda
       const roadmapCb = parseRoadmapCallbackData(parsed.data);
       const reminderCancelId = parseReminderCancelCallbackData(parsed.data); // 'rc:' — §C4
+      const reminderEditId = parseReminderEditCallbackData(parsed.data); // 'ru:' — CRUD
+      const snoozePreset = parseReminderSnoozeCallbackData(parsed.data); // 'rs:' — extra b
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const toast = proposalCb
         ? await resolveProposalCallback(env, parsed, proposalCb)
-        : roadmapCb
-          ? await resolveRoadmapCallback(env, parsed, roadmapCb)
-          : reminderCancelId
-            ? await resolveReminderCancel(env, parsed, reminderCancelId)
-            : isReminderSnooze
-              ? await resolveReminderSnooze(
-                  env,
-                  parsed,
-                  parsed.data.slice(REMINDER_CB_PREFIX.length),
-                )
-              : await resolveCallbackToast(env, parsed);
+        : agendaCb
+          ? await resolveAgendaCallback(env, parsed, agendaCb)
+          : roadmapCb
+            ? await resolveRoadmapCallback(env, parsed, roadmapCb)
+            : reminderCancelId === 'all'
+              ? await resolveReminderCancelAll(env, parsed)
+              : reminderCancelId
+                ? await resolveReminderCancel(env, parsed, reminderCancelId)
+                : reminderEditId
+                  ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
+                  : snoozePreset
+                    ? await resolveReminderSnoozePreset(
+                        env,
+                        parsed,
+                        snoozePreset.presetIdx,
+                        snoozePreset.id,
+                      )
+                    : isReminderSnooze
+                      ? await resolveReminderSnooze(
+                          env,
+                          parsed,
+                          parsed.data.slice(REMINDER_CB_PREFIX.length),
+                        )
+                      : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,

@@ -9,10 +9,20 @@ const {
   markFired,
   snoozeReminder,
   cancelReminder,
+  updateReminder,
   listActive,
   REMINDER_CANCEL_CB_PREFIX,
   buildReminderCancelCallbackData,
   parseReminderCancelCallbackData,
+  REMINDER_EDIT_CB_PREFIX,
+  buildReminderEditCallbackData,
+  parseReminderEditCallbackData,
+  SNOOZE_PRESETS,
+  snoozeReminderPreset,
+  REMINDER_SNOOZE_CB_PREFIX,
+  buildReminderSnoozeCallbackData,
+  parseReminderSnoozeCallbackData,
+  buildSnoozeRow,
   formatRemindersListMessage,
   buildRemindersKeyboard,
   formatReminderConfirm,
@@ -341,6 +351,54 @@ describe('reminders-core — rc: callback_data (скасувати нагаду�
   });
 });
 
+describe('reminders-core — ru: callback_data (CRUD: «✏️ Редагувати» -> розмова)', () => {
+  it('build+parse round-trip, окремий простір від rc:/rm:', () => {
+    const cb = buildReminderEditCallbackData('abc-123');
+    expect(cb).toBe('ru:abc-123');
+    expect(parseReminderEditCallbackData(cb)).toBe('abc-123');
+    expect(parseReminderEditCallbackData('rc:abc-123')).toBeNull();
+  });
+
+  it('не той префікс/порожній id -> null', () => {
+    expect(parseReminderEditCallbackData(`${REMINDER_EDIT_CB_PREFIX}`)).toBeNull();
+    expect(parseReminderEditCallbackData(undefined)).toBeNull();
+  });
+});
+
+describe('updateReminder — CRUD: змінити текст і/або час активного нагадування', () => {
+  const base = [{ id: 'r1', text: 'Купити квитки', whenMs: 1000, createdMs: 500, firedTs: null }];
+
+  it('лише текст -> час не чіпає', () => {
+    const out = updateReminder(base, 'r1', { text: 'Купити квитки на концерт' });
+    expect(out[0]).toEqual({
+      id: 'r1',
+      text: 'Купити квитки на концерт',
+      whenMs: 1000,
+      createdMs: 500,
+      firedTs: null,
+    });
+  });
+
+  it('лише час -> текст не чіпає, firedTs скидається (як snooze)', () => {
+    const fired = [{ ...base[0], firedTs: 999 }];
+    const out = updateReminder(fired, 'r1', { whenMs: 2000 });
+    expect(out[0]).toMatchObject({ text: 'Купити квитки', whenMs: 2000, firedTs: null });
+  });
+
+  it('текст і час разом', () => {
+    const out = updateReminder(base, 'r1', { text: 'Нове', whenMs: 3000 });
+    expect(out[0]).toMatchObject({ text: 'Нове', whenMs: 3000 });
+  });
+
+  it('невідомий id -> no-op (та сама поведінка, що markFired/cancelReminder)', () => {
+    expect(updateReminder(base, 'nope', { text: 'X' })).toEqual(base);
+  });
+
+  it('порожній патч -> без змін', () => {
+    expect(updateReminder(base, 'r1', {})).toEqual(base);
+  });
+});
+
 describe('reminders-core — formatRemindersListMessage/buildRemindersKeyboard (§C4)', () => {
   it('порожньо -> заглушка, без кнопок', () => {
     expect(formatRemindersListMessage([])).toContain('Активних нагадувань немає');
@@ -366,10 +424,62 @@ describe('reminders-core — formatRemindersListMessage/buildRemindersKeyboard (
     expect(msg).toContain('2. ');
 
     const kb = buildRemindersKeyboard(reminders);
-    expect(kb.inline_keyboard).toHaveLength(2);
+    // +1 рядок «Скасувати всі» (extra c) — 2+ активних.
+    expect(kb.inline_keyboard).toHaveLength(3);
     expect(kb.inline_keyboard[0][0].text).toBe('❌ Скасувати 1');
     expect(kb.inline_keyboard[0][0].callback_data).toBe(buildReminderCancelCallbackData('sooner'));
     expect(kb.inline_keyboard[1][0].text).toBe('❌ Скасувати 2');
+  });
+
+  describe('«Скасувати всі» (extra c) — лише коли є сенс (2+ активних)', () => {
+    it('0 чи 1 активне -> рядка немає', () => {
+      expect(buildRemindersKeyboard([]).inline_keyboard).toEqual([]);
+      const one = addReminder([], {
+        id: 'r1',
+        text: 'X',
+        whenMs: SUMMER_NOW + 1000,
+        nowMs: SUMMER_NOW,
+      });
+      expect(buildRemindersKeyboard(one).inline_keyboard).toHaveLength(1); // лише «Скасувати 1»
+    });
+
+    it('2+ активних -> трейлінг-рядок з кількістю, callback_data = rc:all', () => {
+      let reminders = addReminder([], {
+        id: 'r1',
+        text: 'X',
+        whenMs: SUMMER_NOW + 1000,
+        nowMs: SUMMER_NOW,
+      });
+      reminders = addReminder(reminders, {
+        id: 'r2',
+        text: 'Y',
+        whenMs: SUMMER_NOW + 2000,
+        nowMs: SUMMER_NOW,
+      });
+      const kb = buildRemindersKeyboard(reminders);
+      const last = kb.inline_keyboard.at(-1)!;
+      expect(last[0].text).toBe('🗑 Скасувати всі (2)');
+      expect(last[0].callback_data).toBe('rc:all');
+      expect(parseReminderCancelCallbackData(last[0].callback_data)).toBe('all');
+    });
+
+    it('спрацьовані (не активні) не рахуються в поріг 2+', () => {
+      let reminders = addReminder([], {
+        id: 'r1',
+        text: 'X',
+        whenMs: SUMMER_NOW + 1000,
+        nowMs: SUMMER_NOW,
+      });
+      reminders = markFired(reminders, 'r1', SUMMER_NOW);
+      reminders = addReminder(reminders, {
+        id: 'r2',
+        text: 'Y',
+        whenMs: SUMMER_NOW + 2000,
+        nowMs: SUMMER_NOW,
+      });
+      // лише 1 АКТИВНЕ (r1 спрацювало) -> без трейлінг-рядка.
+      expect(buildRemindersKeyboard(reminders).inline_keyboard).toHaveLength(1);
+    });
   });
 
   it('HTML-екранує текст нагадування', () => {
@@ -476,5 +586,60 @@ describe('reminders-core — isAmbiguousRewrite (захист від ненад�
       ? null
       : parseReminderTime(badRewrite, SUMMER_NOW);
     expect(accepted).toBeNull();
+  });
+});
+
+describe('SNOOZE_PRESETS / snoozeReminderPreset — розширений snooze (extra b)', () => {
+  const base = [{ id: 'r1', text: 'X', whenMs: 1000, createdMs: 0, firedTs: 999 }];
+
+  it('рівно 3 пресети: 10хв/1год/завтра', () => {
+    expect(SNOOZE_PRESETS.map((p: { minutes: number }) => p.minutes)).toEqual([10, 60, 1440]);
+  });
+
+  it('застосовує пресет за індексом, скидає firedTs (як snoozeReminder)', () => {
+    const out = snoozeReminderPreset(base, 'r1', 1, 5000); // idx 1 = 60 хв
+    expect(out[0]).toMatchObject({ whenMs: 5000 + 60 * 60_000, firedTs: null });
+  });
+
+  it('невідомий індекс -> без змін', () => {
+    expect(snoozeReminderPreset(base, 'r1', 99, 5000)).toEqual(base);
+  });
+
+  it('невідомий id -> no-op', () => {
+    expect(snoozeReminderPreset(base, 'nope', 0, 5000)).toEqual(base);
+  });
+});
+
+describe('reminders-core — rs: callback_data (пресет snooze, extra b)', () => {
+  it('build+parse round-trip для кожного пресету', () => {
+    for (let i = 0; i < SNOOZE_PRESETS.length; i++) {
+      const cb = buildReminderSnoozeCallbackData(i, 'abc-123');
+      expect(cb).toBe(`${REMINDER_SNOOZE_CB_PREFIX}${i}:abc-123`);
+      expect(parseReminderSnoozeCallbackData(cb)).toEqual({ presetIdx: i, id: 'abc-123' });
+    }
+  });
+
+  it('невалідний presetIdx при побудові -> null', () => {
+    expect(buildReminderSnoozeCallbackData(-1, 'id')).toBeNull();
+    expect(buildReminderSnoozeCallbackData(99, 'id')).toBeNull();
+    expect(buildReminderSnoozeCallbackData(1.5, 'id')).toBeNull();
+  });
+
+  it('малформат/чужий префікс/поза межами при розборі -> null', () => {
+    expect(parseReminderSnoozeCallbackData('rm:0:id')).toBeNull();
+    expect(parseReminderSnoozeCallbackData('rs:99:id')).toBeNull();
+    expect(parseReminderSnoozeCallbackData('rs::id')).toBeNull();
+    expect(parseReminderSnoozeCallbackData('rs:0:')).toBeNull();
+    expect(parseReminderSnoozeCallbackData(null)).toBeNull();
+  });
+
+  it('buildSnoozeRow — по кнопці на пресет, у тому ж порядку', () => {
+    const row = buildSnoozeRow('rem1');
+    expect(row).toHaveLength(3);
+    expect(row[0].text).toBe('😴 10 хв');
+    expect(row[2].text).toBe('😴 завтра');
+    expect(row.every((b: { callback_data: string }) => b.callback_data.startsWith('rs:'))).toBe(
+      true,
+    );
   });
 });

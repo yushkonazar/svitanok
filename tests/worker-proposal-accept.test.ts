@@ -14,7 +14,11 @@ const OWNER = 4242;
 
 let kv: Map<string, string>;
 let tg: { method: string; body: Record<string, unknown> }[];
-let cal: Record<string, unknown>[]; // захоплені тіла events.insert
+let cal: Record<string, unknown>[]; // захоплені тіла events.insert/patch/delete
+let googleEvents: Map<
+  string,
+  { summary: string; start: { dateTime: string }; end: { dateTime: string } }
+>;
 
 function env() {
   return {
@@ -77,6 +81,23 @@ const eventPending = (id: string, cfg: { durMin: number | null; leadMin: number 
   ],
 });
 
+const EV_BASE = { title: 'Стендап', whenMs: Date.parse('2026-07-24T12:00:00Z'), durationMin: 60 };
+
+const updateEventPending = (
+  id: string,
+  overrides: { whenMs?: number; title?: string; shiftMin?: number } = {},
+) => ({
+  id,
+  createdMs: Date.now(),
+  items: [{ kind: 'updateEvent', eventId: 'ev1', base: EV_BASE, ...overrides }],
+});
+
+const deleteEventPending = (id: string) => ({
+  id,
+  createdMs: Date.now(),
+  items: [{ kind: 'deleteEvent', eventId: 'ev1', base: EV_BASE }],
+});
+
 async function postCb(id: string, action = 'a', e = env()) {
   const c = ctx();
   await worker.fetch(
@@ -96,6 +117,36 @@ async function postCb(id: string, action = 'a', e = env()) {
 
 const postAccept = (id: string, e = env()) => postCb(id, 'a', e);
 
+/** Довільний raw callback_data (для просторів поза pd:, напр. ru:/rs:). */
+async function tapCallback(data: string) {
+  const c = ctx();
+  await worker.fetch(
+    new Request('https://svitanok.example/api/telegram', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({
+        update_id: 3000,
+        callback_query: {
+          id: 'cbq1',
+          from: { id: OWNER },
+          data,
+          message: {
+            message_id: 555,
+            chat: { id: OWNER },
+            reply_markup: { inline_keyboard: [[{ text: 'x', callback_data: data }]] },
+          },
+        },
+      }),
+    }),
+    env(),
+    c,
+  );
+  await c.settle();
+}
+
 const toast = () =>
   tg.find((c) => c.method === 'answerCallbackQuery')?.body.text as string | undefined;
 
@@ -103,6 +154,16 @@ beforeEach(() => {
   kv = new Map();
   tg = [];
   cal = [];
+  googleEvents = new Map([
+    [
+      'ev1',
+      {
+        summary: EV_BASE.title,
+        start: { dateTime: new Date(EV_BASE.whenMs).toISOString() },
+        end: { dateTime: new Date(EV_BASE.whenMs + EV_BASE.durationMin * 60_000).toISOString() },
+      },
+    ],
+  ]);
   vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
     const url = String(input);
     if (url.includes('api.telegram.org')) {
@@ -118,9 +179,41 @@ beforeEach(() => {
         headers: { 'content-type': 'application/json' },
       });
     }
+    // Одна подія за id (getCalendarEvent/updateCalendarEvent/deleteCalendarEvent).
+    const single = url.match(/googleapis\.com\/calendar\/v3\/calendars\/primary\/events\/([^/?]+)/);
+    if (single) {
+      const id = single[1]!;
+      const method = init.method ?? 'GET';
+      if (method === 'GET') {
+        const ev = googleEvents.get(id);
+        return ev
+          ? new Response(JSON.stringify({ id, ...ev }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          : new Response('{}', { status: 404 });
+      }
+      if (method === 'PATCH') {
+        const ev = googleEvents.get(id);
+        if (!ev) return new Response('{}', { status: 404 }); // реалістично: Google 404 на видалену подію
+        const patch = JSON.parse(String(init.body ?? '{}'));
+        cal.push({ _method: 'PATCH', _id: id, ...patch });
+        googleEvents.set(id, { ...ev, ...patch });
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'DELETE') {
+        const existed = googleEvents.has(id);
+        cal.push({ _method: 'DELETE', _id: id });
+        googleEvents.delete(id);
+        return new Response('{}', { status: existed ? 200 : 404 });
+      }
+    }
     if (url.includes('googleapis.com/calendar') && init.method === 'POST') {
-      cal.push(JSON.parse(String(init.body ?? '{}')));
-      return new Response(JSON.stringify({ id: 'evt1' }), {
+      const body = JSON.parse(String(init.body ?? '{}'));
+      cal.push(body);
+      const id = `evt${googleEvents.size + 1}`;
+      googleEvents.set(id, body);
+      return new Response(JSON.stringify({ id }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -217,5 +310,258 @@ describe('доналаштування пропозиції — циклери',
     };
     expect((Date.parse(body.end.dateTime) - Date.parse(body.start.dateTime)) / 60_000).toBe(60); // durationMin моделі
     expect(body.reminders).toBeUndefined(); // дефолт календаря
+  });
+});
+
+describe('CRUD: перепис повідомлення ПІСЛЯ accept (goal — не лише тік кнопки)', () => {
+  const editText = () =>
+    tg.find((c) => c.method === 'editMessageText')?.body as
+      | {
+          text: string;
+          reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
+        }
+      | undefined;
+
+  it('create: reminder + event -> editMessageText з ✅/⚠️ на пункт і ✏️/🗑 кнопками', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify({
+        id: 'multi0001',
+        createdMs: Date.now(),
+        cfg: { durMin: null, leadMin: null },
+        items: [
+          { kind: 'reminder', title: 'Квитки', whenMs: Date.now() + 3_600_000 },
+          {
+            kind: 'event',
+            title: 'Обід',
+            whenMs: Date.parse('2026-07-24T12:00:00Z'),
+            durationMin: 60,
+          },
+        ],
+      }),
+    );
+    await postCb('multi0001', 'a');
+
+    const edited = editText();
+    expect(edited?.text).toContain('1. ✅');
+    expect(edited?.text).toContain('2. ✅');
+    const flat = edited?.reply_markup?.inline_keyboard.flat() ?? [];
+    expect(flat.some((b) => b.text.includes('✏️'))).toBe(true);
+    expect(flat.some((b) => b.text.includes('🗑'))).toBe(true);
+    // reminder-delete кнопка реюзає ІСНУЮЧИЙ rc: (не новий простір)
+    expect(flat.some((b) => b.callback_data.startsWith('rc:'))).toBe(true);
+    // event-кнопки — ev: (agenda-простір)
+    expect(flat.some((b) => b.callback_data.startsWith('ev:'))).toBe(true);
+  });
+
+  it('cancel: теж переписує текст (не лише тік), без кнопок', async () => {
+    kv.set('assistantPending', JSON.stringify(pending('cnl00001')));
+    await postCb('cnl00001', 'c');
+    const edited = editText();
+    expect(edited?.text).toContain('Скасовано');
+    expect(edited?.reply_markup).toBeUndefined();
+  });
+
+  it('edit (updateEvent) accept -> PATCH з фінальними title/start/end, «Оновлено» + 🗑', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(updateEventPending('edt00001', { whenMs: EV_BASE.whenMs + 3_600_000 })),
+    );
+    await postCb('edt00001', 'a');
+
+    const patch = cal.find((c) => c._method === 'PATCH');
+    expect(patch).toBeTruthy();
+    expect(patch!.summary).toBe(EV_BASE.title); // title не мінявся -> з base
+    expect(Date.parse(String((patch as { start: { dateTime: string } }).start.dateTime))).toBe(
+      EV_BASE.whenMs + 3_600_000,
+    );
+
+    expect(toast()).toContain('Оновлено');
+    const edited = editText();
+    expect(edited?.text).toContain('Оновлено');
+    const flat = edited?.reply_markup?.inline_keyboard.flat() ?? [];
+    expect(flat).toHaveLength(1);
+    expect(flat[0]!.text).toContain('Видалити');
+    expect(flat[0]!.callback_data).toBe('ev:d:ev1');
+  });
+
+  it('delete (deleteEvent) accept -> DELETE, «Видалено», без кнопок', async () => {
+    kv.set('assistantPending', JSON.stringify(deleteEventPending('del00001')));
+    await postCb('del00001', 'a');
+
+    expect(cal.find((c) => c._method === 'DELETE' && c._id === 'ev1')).toBeTruthy();
+    expect(toast()).toContain('Видалено');
+    const edited = editText();
+    expect(edited?.text).toContain('Видалено');
+    expect(edited?.text).toContain(EV_BASE.title);
+    expect(edited?.reply_markup).toBeUndefined();
+  });
+
+  it('edit accept, коли подію вже видалено (PATCH 404) -> чесний провал, без крашу', async () => {
+    googleEvents.delete('ev1'); // вже видалено іншим шляхом між стейджингом і accept
+    kv.set('assistantPending', JSON.stringify(updateEventPending('edt00002')));
+    await postCb('edt00002', 'a');
+    expect(toast()).toContain('Не вдалось');
+  });
+});
+
+describe('CRUD: edit-режим — цикл зсуву часу (pd:s) і «✏️ Інше» (pd:o)', () => {
+  it('pd:s циклить зсув, ПЕРЕМАЛЬОВУЄ ТЕКСТ (не лише клавіатуру) — діф залежить від whenMs', async () => {
+    kv.set('assistantPending', JSON.stringify(updateEventPending('shf00001')));
+    await postCb('shf00001', 's');
+
+    const stored = JSON.parse(kv.get('assistantPending')!);
+    expect(stored.items[0].shiftMin).toBe(15);
+    expect(stored.items[0].whenMs).toBe(EV_BASE.whenMs + 15 * 60_000);
+    expect(stored.id).toBe('shf00001'); // не спожито
+
+    const edited = tg.find((c) => c.method === 'editMessageText')?.body as
+      { text: string } | undefined;
+    expect(edited?.text).toContain('→'); // діф «було -> стане» тепер видно
+    expect(toast()).toContain('+15 хв');
+  });
+
+  it('pd:s удруге циклить ДАЛІ (від поточного shiftMin, не з нуля)', async () => {
+    kv.set('assistantPending', JSON.stringify(updateEventPending('shf00002', { shiftMin: 15 })));
+    await postCb('shf00002', 's');
+    const stored = JSON.parse(kv.get('assistantPending')!);
+    expect(stored.items[0].shiftMin).toBe(30);
+  });
+
+  it('pd:o: списує пропозицію, шле питання БЕЗ id, пише синтетичну репліку З id НА ПОЧАТКУ', async () => {
+    kv.set('assistantPending', JSON.stringify(updateEventPending('oth00001')));
+    await postCb('oth00001', 'o');
+
+    // Списано — повторний ✅ дасть «Застаріла».
+    expect(kv.get('assistantPending')).toBe('null');
+
+    const sent = tg.find((c) => c.method === 'sendMessage')?.body.text as string;
+    expect(sent).toBeTruthy();
+    expect(sent).not.toContain('[id:'); // маркер НЕ бачить власник
+    expect(sent).not.toContain('ev1');
+
+    const history = JSON.parse(kv.get('assistantHistory') ?? '{}');
+    const turns =
+      history[`${OWNER}:`] ?? history[`${OWNER}:undefined`] ?? Object.values(history)[0];
+    const last = (turns as { role: string; text: string }[]).at(-1)!;
+    expect(last.role).toBe('assistant');
+    expect(last.text.startsWith('[id:ev1]')).toBe(true); // маркер НА ПОЧАТКУ (clipTurn ріже хвіст)
+
+    expect(toast()).toContain('що змінити');
+  });
+
+  it('pd:s/pd:o недоступні у create-режимі (лише edit) -> «Застаріла»', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('cre00001', { durMin: null, leadMin: null })),
+    );
+    await postCb('cre00001', 's');
+    expect(toast()).toContain('Застаріла');
+  });
+});
+
+describe('CRUD: ru:<id> — «✏️ Редагувати» на нагадуванні (БЕЗ assistantPending)', () => {
+  it('шле питання з поточним текстом/часом, пише синтетичну репліку (БЕЗ id-маркера — reminderText сам ключ)', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          {
+            id: 'rem1',
+            text: 'Купити квитки',
+            whenMs: Date.parse('2026-07-24T12:00:00Z'),
+            firedTs: null,
+          },
+        ],
+      }),
+    );
+    await tapCallback('ru:rem1');
+
+    const sent = tg.find((c) => c.method === 'sendMessage')?.body.text as string;
+    expect(sent).toContain('Купити квитки');
+    expect(toast()).toContain('що змінити');
+
+    const history = JSON.parse(kv.get('assistantHistory') ?? '{}');
+    const turns = Object.values(history)[0] as { role: string; text: string }[];
+    expect(turns.at(-1)).toMatchObject({ role: 'assistant' });
+    expect(turns.at(-1)!.text).toContain('Купити квитки'); // reminderText — природний ключ пошуку, без [id:]
+  });
+
+  it('невідомий/спрацьований id -> чесний toast, нічого не шле', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    await tapCallback('ru:nope');
+    expect(toast()).toContain('неактуальне');
+    expect(tg.find((c) => c.method === 'sendMessage')).toBeUndefined();
+  });
+});
+
+describe('CRUD: rs:<presetIdx>:<id> — розширений snooze (extra b)', () => {
+  it('пресет 1 (1 год) відкладає, тікає кнопку, RM: (старий) лишається живим окремо', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [{ id: 'rem1', text: 'Полити квіти', whenMs: 1000, firedTs: 999 }],
+      }),
+    );
+    await tapCallback('rs:1:rem1');
+
+    expect(toast()).toContain('Відкладено');
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders[0].firedTs).toBeNull();
+    expect(state.reminders[0].whenMs).toBeGreaterThan(Date.now() + 59 * 60_000); // ~1 год наперед
+  });
+
+  it('невідомий id -> «вже неактуальне», без крашу', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    await tapCallback('rs:0:nope');
+    expect(toast()).toContain('неактуальне');
+  });
+});
+
+describe('CRUD: rc:all — пакетне скасування (extra c)', () => {
+  it('скасовує ВСІ активні, переписує список (editMessageText), без кнопок опісля', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          { id: 'r1', text: 'X', whenMs: Date.now() + 1000, firedTs: null },
+          { id: 'r2', text: 'Y', whenMs: Date.now() + 2000, firedTs: null },
+        ],
+      }),
+    );
+    await tapCallback('rc:all');
+
+    expect(toast()).toContain('Скасовано 2');
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders).toEqual([]);
+
+    const edited = tg.find((c) => c.method === 'editMessageText')?.body as {
+      text: string;
+      reply_markup?: unknown;
+    };
+    expect(edited?.text).toContain('немає');
+    expect(edited?.reply_markup).toBeUndefined();
+  });
+
+  it('спрацьовані НЕ чіпає (вони й так вже поза списком активних)', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          { id: 'r1', text: 'X', whenMs: 1, firedTs: 999 },
+          { id: 'r2', text: 'Y', whenMs: Date.now() + 1000, firedTs: null },
+        ],
+      }),
+    );
+    await tapCallback('rc:all');
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders).toHaveLength(1);
+    expect(state.reminders[0].id).toBe('r1'); // спрацьоване лишилось
+  });
+
+  it('нема активних -> чесний toast, KV не чіпається', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    await tapCallback('rc:all');
+    expect(toast()).toContain('Нема що скасовувати');
   });
 });
