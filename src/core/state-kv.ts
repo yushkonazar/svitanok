@@ -174,6 +174,40 @@ export async function readKvJson(
   }
 }
 
+/**
+ * Записати JSON у довільний KV-ключ (best-effort — НІКОЛИ не throw, дзеркало
+ * readKvJson). На відміну від flush() (де мовчазна втрата ВСЬОГО стану —
+ * реальна проблема, throw навмисний), тут викликач сам зважує критичність:
+ * для assistantPending (пропозиція листа-запрошення, orchestrator.ts) основний
+ * брифінг уже надіслано — збій запису лише вимикає кнопки ✅/❌ під ним, не
+ * валить увесь ран.
+ */
+export async function writeKvJson(
+  opts: KvStateOptions,
+  key: string,
+  value: unknown,
+): Promise<boolean> {
+  const f = opts.fetchImpl ?? fetch;
+  try {
+    const resp = await f(valueUrl(opts, key), {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${opts.apiToken.trim()}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(value),
+    });
+    if (!resp.ok) {
+      opts.log?.warn(`KV ${key}: запис HTTP ${resp.status} — ігнорую`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    opts.log?.warn(`KV ${key}: запис впав (${e instanceof Error ? e.message : String(e)})`);
+    return false;
+  }
+}
+
 /** Прочитати CF-креденшели зі змінних середовища; неповні -> null (локально файл). */
 export function readKvEnv(): { accountId: string; apiToken: string; namespaceId: string } | null {
   const accountId = process.env.CF_ACCOUNT_ID?.trim();

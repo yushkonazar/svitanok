@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runBriefing, isQuietDay, type RunDeps } from '../src/orchestrator.js';
+import type { KvStateOptions } from '../src/core/state-kv.js';
 import { parseConfig, type AppConfig } from '../src/core/config.js';
 import { createRunBus } from '../src/core/bus.js';
 import { MAIL_PROPOSAL_BUS_KEY } from '../src/modules/mail.js';
@@ -57,6 +58,25 @@ function memState(initial: Record<string, unknown> = {}): StateStore {
   };
 }
 
+/** Фейкові CF-креденшели + fetchImpl, що ловить writeKvJson-виклики
+ *  (метод/URL/тіло) — для перевірки прямого запису assistantPending. */
+function fakeKvEnv(): KvStateOptions & { puts: { url: string; body: unknown }[] } {
+  const puts: { url: string; body: unknown }[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    if ((init?.method ?? 'GET') === 'PUT') {
+      puts.push({ url: String(input), body: JSON.parse(String(init!.body)) });
+    }
+    return new Response('{}', { status: 200 });
+  };
+  return {
+    accountId: 'acc',
+    apiToken: 'tok',
+    namespaceId: 'ns',
+    fetchImpl,
+    puts,
+  };
+}
+
 function fakeNotifier(): NotifierType & { sent: string[][]; buttons: TgButton[][][] } {
   const sent: string[][] = [];
   const buttons: TgButton[][][] = [];
@@ -93,6 +113,7 @@ function deps(over: Partial<RunDeps> = {}): RunDeps {
     notifier: fakeNotifier(),
     assistantNotifier: null,
     miniAppUrl: null,
+    kvEnv: null,
     ...over,
   };
 }
@@ -370,14 +391,16 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
     expect(assistantNotifier.sent).toHaveLength(0);
   });
 
-  it('успішний send -> state.assistantPending записаний, callback_data кнопок містить ТОЙ САМИЙ id', async () => {
+  it('успішний send -> assistantPending записаний у ВЛАСНИЙ KV-ключ (writeKvJson, не state), callback_data кнопок містить ТОЙ САМИЙ id', async () => {
     const assistantNotifier = fakeNotifier();
-    const state = memState();
-    await runBriefing(deps({ modules: [mailModule], assistantNotifier, state }));
+    const kvEnv = fakeKvEnv();
+    await runBriefing(deps({ modules: [mailModule], assistantNotifier, kvEnv }));
     expect(assistantNotifier.sent).toHaveLength(1);
-    const pending = state.get<{ id: string; items: unknown[] }>('assistantPending');
-    expect(pending?.items).toEqual(proposalItems);
-    expect(pending?.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(kvEnv.puts).toHaveLength(1);
+    expect(kvEnv.puts[0]!.url).toContain('/values/assistantPending');
+    const pending = kvEnv.puts[0]!.body as { id: string; items: unknown[] };
+    expect(pending.items).toEqual(proposalItems);
+    expect(pending.id).toMatch(/^[0-9a-f]{8}$/);
     // Крос-перевірка: id, вшитий у callback_data кнопок, МАЄ збігатися з тим,
     // що записано в assistantPending — інакше тап ✅ у Telegram резолвиться
     // проти чужого/неіснуючого pending (тихий "⚠️ Застаріла пропозиція").
@@ -385,8 +408,15 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
       text: string;
       callback_data: string;
     }[];
-    expect(accept!.callback_data).toBe(`pd:a:${pending!.id}`);
-    expect(cancel!.callback_data).toBe(`pd:c:${pending!.id}`);
+    expect(accept!.callback_data).toBe(`pd:a:${pending.id}`);
+    expect(cancel!.callback_data).toBe(`pd:c:${pending.id}`);
+  });
+
+  it('kvEnv=null (локальний файловий стан) -> send пройшов, запису в KV просто немає (не падає)', async () => {
+    const assistantNotifier = fakeNotifier();
+    const res = await runBriefing(deps({ modules: [mailModule], assistantNotifier, kvEnv: null }));
+    expect(res.status).toBe('sent');
+    expect(assistantNotifier.sent).toHaveLength(1);
   });
 
   it('assistantNotifier=null (TOPIC_ASSISTANT не задано) -> нічого не падає, брифінг усе одно sent', async () => {
@@ -394,17 +424,17 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
     expect(res.status).toBe('sent');
   });
 
-  it('send пропозиції падає -> assistantPending НЕ записаний, основний брифінг усе одно sent', async () => {
+  it('send пропозиції падає -> assistantPending НЕ записаний у KV, основний брифінг усе одно sent', async () => {
     const assistantNotifier: NotifierType = {
       send: async () => {
         throw new Error('Telegram 500');
       },
       failNotify: async () => {},
     };
-    const state = memState();
-    const res = await runBriefing(deps({ modules: [mailModule], assistantNotifier, state }));
+    const kvEnv = fakeKvEnv();
+    const res = await runBriefing(deps({ modules: [mailModule], assistantNotifier, kvEnv }));
     expect(res.status).toBe('sent');
-    expect(state.get('assistantPending')).toBeUndefined();
+    expect(kvEnv.puts).toHaveLength(0);
   });
 
   it('без пропозиції (bus порожній) -> assistantNotifier не викликається', async () => {

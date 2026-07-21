@@ -153,6 +153,7 @@ describe('runBriefing — неділя', () => {
       notifier,
       assistantNotifier: null,
       miniAppUrl: null,
+      kvEnv: null,
     };
     const res = await runBriefing(deps);
     expect(res.quiet).toBe(false); // неділя ніколи не тиха
@@ -185,6 +186,7 @@ describe('runBriefing — неділя', () => {
       notifier,
       assistantNotifier: null,
       miniAppUrl: null,
+      kvEnv: null,
     };
     await runBriefing(deps);
     expect(notifier.sent[0]).toHaveLength(1);
