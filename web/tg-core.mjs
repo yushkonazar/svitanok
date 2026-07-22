@@ -31,13 +31,24 @@ export function link(url, text) {
   return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
 }
 
+/**
+ * Константночасне порівняння двох рядків — без короткого замикання, тож не
+ * зливає позицію першого розбіжного символу (той самий мотив, що timingSafeEqual
+ * у agent-run-core). Різна довжина або не-рядок -> false. Спільне ядро
+ * verifyWebhookSecret (secret-token вебхука) і HMAC-звірки initData у worker.js.
+ */
+export function constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 /** Константний-час порівняння secret-token (X-Telegram-Bot-Api-Secret-Token). */
 export function verifyWebhookSecret(header, secret) {
-  if (typeof header !== 'string' || typeof secret !== 'string' || !secret) return false;
-  if (header.length !== secret.length) return false;
-  let diff = 0;
-  for (let i = 0; i < header.length; i++) diff |= header.charCodeAt(i) ^ secret.charCodeAt(i);
-  return diff === 0;
+  if (typeof secret !== 'string' || !secret) return false; // порожній секрет — не автентифікуємо
+  return constantTimeEqual(header, secret);
 }
 
 /** Нормалізувати апдейт: тип + ключові поля. Невідоме -> kind:'other'. */
