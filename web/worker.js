@@ -81,6 +81,7 @@ import {
   buildAgendaCallbackData,
   parseAgendaCallbackData,
   isAccessTokenFresh,
+  buildMapsUrl,
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
@@ -125,6 +126,7 @@ import {
   buildOwnDataDigest,
   formatMailForPrompt,
   formatMailBodyForPrompt,
+  formatDriveForPrompt,
   sanitizeMailQuery,
 } from './assistant-data-core.mjs';
 import { renderHistoryForPrompt, appendTurn } from './assistant-memory-core.mjs';
@@ -1073,6 +1075,75 @@ async function resolveAttendees(env, names) {
   return { emails, notes };
 }
 
+/**
+ * Створити новий контакт (write-scope, PR-13). Ніколи не кидає — {ok:false}
+ * при збої (403 без contacts-скоупу — той самий "тихо не резолвили" мотив,
+ * що searchContact, ЛИШЕ тут це вже TERMінальна дія в accept-циклі, тож
+ * помилку показуємо власнику текстом, не мовчки ігноруємо).
+ */
+async function createContact(env, { name, email }) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false };
+  try {
+    const res = await fetch('https://people.googleapis.com/v1/people:createContact', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        names: [{ givenName: name }],
+        emailAddresses: [{ value: email }],
+      }),
+    });
+    if (!res.ok) {
+      console.error('people createContact HTTP', res.status, await res.text().catch(() => ''));
+      return { ok: false };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('people createContact failed', err.message);
+    return { ok: false };
+  }
+}
+
+const DRIVE_MAX_RESULTS = 5;
+
+/**
+ * Пошук файлів у Drive за назвою (PR-14, дія readDrive). МЕТА-ДАНІ ЛИШЕ:
+ * назва+посилання, БЕЗ читання вмісту (резюме реально PDF/Word — розбір
+ * тексту звідти окремий, більший шматок роботи, свідомо відкладено).
+ * [{name,webViewLink}] | [] (нема збігів) | null (немає доступу/збій —
+ * ТОЙ САМИЙ контракт, що readMail: formatDriveForPrompt різнить тексти).
+ */
+async function searchDrive(env, rawQuery) {
+  const token = await googleAccessToken(env);
+  if (!token) return null;
+  const query = String(rawQuery ?? '')
+    .trim()
+    .slice(0, 120);
+  if (!query) return [];
+  try {
+    const url = new URL('https://www.googleapis.com/drive/v3/files');
+    // Екранувати одинарні лапки — Drive query-мова, сирий текст користувача
+    // не має ламати структуру запиту (той самий мотив, що SQL-параметризація).
+    const escaped = query.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    url.searchParams.set('q', `name contains '${escaped}' and trashed = false`);
+    url.searchParams.set('fields', 'files(id,name,webViewLink,modifiedTime)');
+    url.searchParams.set('pageSize', String(DRIVE_MAX_RESULTS));
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      // 403 без drive.readonly-скоупу — очікувано до ре-консенту, не помилка.
+      if (res.status !== 403) {
+        console.error('drive search HTTP', res.status, await res.text().catch(() => ''));
+      }
+      return null;
+    }
+    const json = await res.json();
+    return Array.isArray(json.files) ? json.files : [];
+  } catch (err) {
+    console.error('drive search failed', err.message);
+    return null;
+  }
+}
+
 /** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
  *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
 async function readCalendarRange(env, startKey, endKey) {
@@ -1308,6 +1379,9 @@ const AGENT_TEXT = [
   '📚 <b>Роадмеп</b> — «познач Docker вивченим».',
   '⚙️ <b>Налаштування</b> — тихі години, модулі брифінгу, заглушені теми — теж через ' +
     'підтвердження (повна заміна, тому діф «було → стане» перед ✅).',
+  '👤 <b>Контакти</b> — «збережи Олексія як контакт, email x@y.com» — через підтвердження.',
+  '📁 <b>Drive</b> — «знайди моє резюме» — пошук за назвою, лише посилання (без читання ' +
+    'вмісту файлу).',
   '📊 <b>Твої дані</b> — «що я зберіг цього тижня?», «як мій стрік?», «які в мене ' +
     'нагадування?» — брифінг/вакансії/прогрес/нагадування/чек-іни/збережене/новини/налаштування.',
 ].join('\n');
@@ -1900,6 +1974,9 @@ async function runReadAction(env, action, nowMs) {
   }
   if (action.action === 'readMailBody') {
     return formatMailBodyForPrompt(await readMailBody(env, action.mailId));
+  }
+  if (action.action === 'readDrive') {
+    return formatDriveForPrompt(await searchDrive(env, action.driveQuery));
   }
   if (action.action === 'readOwnData') {
     // Читаємо всі чотири блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
@@ -2850,6 +2927,9 @@ async function resolveProposalCallback(env, parsed, cb) {
       // пройшло через мережу" рефлекс, що й решта accept-циклу.
       await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(item.settings)));
       results.push({ ok: true });
+    } else if (item.kind === 'contact') {
+      const res = await createContact(env, { name: item.title, email: item.email });
+      results.push(res.ok ? { ok: true } : { ok: false });
     } else {
       results.push({ ok: false });
     }
@@ -2870,6 +2950,7 @@ async function resolveProposalCallback(env, parsed, cb) {
   if (mode === 'delete') return results[0]?.ok ? '🗑 Видалено' : '⚠️ Не вдалось видалити';
   if (mode === 'edit') return results[0]?.ok ? '✅ Оновлено' : '⚠️ Не вдалось оновити';
   if (mode === 'settings') return results[0]?.ok ? '⚙️ Застосовано' : '⚠️ Не вдалось застосувати';
+  if (mode === 'contact') return results[0]?.ok ? '👤 Збережено' : '⚠️ Не вдалось зберегти';
   const ok = results.filter((r) => r.ok).length;
   const fail = results.length - ok;
   return fail > 0 ? `✅ Додано ${ok}, ⚠️ не вдалось ${fail}` : `✅ Додано ${ok}`;
@@ -3007,10 +3088,12 @@ async function resolveAgendaCallback(env, parsed, cb) {
   const delCb = buildAgendaCallbackData('d', cb.id);
   const backCb = buildAgendaCallbackData('b', cb.id); // id 'b' ігнорує — лише формальність guard'а
   if (parsed.chatId != null && parsed.messageId != null && editCb && delCb && backCb) {
+    const mapsUrl = buildMapsUrl(fresh.location);
+    const locLine = mapsUrl ? `\n📍 <a href="${mapsUrl}">${escapeHtml(fresh.location)}</a>` : '';
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
-      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}`,
+      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}${locLine}`,
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [

@@ -15,7 +15,7 @@ let tg: { method: string; body: Record<string, unknown> }[];
 let cal: Record<string, unknown>[];
 let googleEvents: Map<
   string,
-  { summary: string; start: { dateTime: string }; end: { dateTime: string } }
+  { summary: string; start: { dateTime: string }; end: { dateTime: string }; location?: string }
 >;
 
 function env() {
@@ -207,6 +207,22 @@ describe('ev:v — деталі пункту', () => {
   it('невідомий id (подія зникла) -> чесний toast, не падає', async () => {
     await tapAgenda('ev:v:noSuchEvent');
     expect(toast()).toContain('вже не знайти');
+  });
+
+  it('location (PR-12) -> клікабельне Maps-посилання під назвою; без location -> без рядка', async () => {
+    googleEvents.set('evLoc', {
+      summary: 'Кава',
+      location: 'Кав’ярня на розі',
+      start: { dateTime: '2026-07-24T12:00:00Z' },
+      end: { dateTime: '2026-07-24T13:00:00Z' },
+    });
+    await tapAgenda('ev:v:evLoc', 2001);
+    const withLoc = lastEditText();
+    expect(withLoc?.text).toContain('📍 <a href="https://www.google.com/maps/search/?api=1&query=');
+    expect(withLoc?.text).toContain('Кав’ярня на розі</a>');
+
+    await tapAgenda('ev:v:ev1', 2002); // без location у фікстурі
+    expect(lastEditText()?.text).not.toContain('📍');
   });
 });
 

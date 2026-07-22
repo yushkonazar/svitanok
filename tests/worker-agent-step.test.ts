@@ -664,7 +664,8 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
         envWithGoogle(),
       );
       const text = sentTexts()[0];
-      expect(text).toContain('📍 Кав’ярня');
+      expect(text).toContain('📍 <a href="https://www.google.com/maps/search/?api=1&query=');
+      expect(text).toContain('Кав’ярня</a>');
       expect(text).toContain('👥 Гості (запросимо): friend@x.com');
     });
 
@@ -758,5 +759,86 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
       expect(text).toContain('Зустріч'); // пропозиція все одно пройшла
       expect(text).toContain('⚠️ «Олексій» не знайдено');
     });
+  });
+});
+
+describe('/api/agent-step — readDrive (PR-14, лише посилання, без читання вмісту)', () => {
+  const envWithGoogle = () =>
+    makeEnv({
+      GOOGLE_CLIENT_ID: 'gid',
+      GOOGLE_CLIENT_SECRET: 'gsecret',
+      GOOGLE_REFRESH_TOKEN: 'grefresh',
+    });
+
+  const stubDrive = (files: { id: string; name: string; webViewLink: string }[] | 'forbidden') => {
+    vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.includes('api.telegram.org')) {
+        tgCalls.push({ url, body: JSON.parse(String(init.body ?? '{}')) });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('www.googleapis.com/drive/v3/files')) {
+        if (files === 'forbidden') return new Response('{}', { status: 403 });
+        return new Response(JSON.stringify({ files }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 200 });
+    });
+  };
+
+  it('знаходить файл -> текст у транскрипт, НОВИЙ токен, власнику ще нічого не шле', async () => {
+    stubDrive([
+      { id: 'f1', name: 'Резюме_2026.pdf', webViewLink: 'https://drive.google.com/file/d/f1/view' },
+    ]);
+    const res = await authed(
+      { token: await token(), structured: { action: 'readDrive', driveQuery: 'резюме' } },
+      envWithGoogle(),
+    );
+    const body = (await res.json()) as { done: boolean; append: string; token: string };
+    expect(body.done).toBe(false);
+    expect(body.append).toContain('Резюме_2026.pdf');
+    expect(body.append).toContain('https://drive.google.com/file/d/f1/view');
+    expect(sentTexts()).toHaveLength(0);
+  });
+
+  it('прогрес-підпис "Шукаю в Drive…" під час кроку', async () => {
+    stubDrive([]);
+    await authed(
+      { token: await token(), structured: { action: 'readDrive', driveQuery: 'резюме' } },
+      envWithGoogle(),
+    );
+    const edit = tgCalls.find((c) => c.url.split('/').pop() === 'editMessageText');
+    expect(String(edit?.body.text)).toContain('Drive');
+  });
+
+  it('нічого не знайдено -> чесний текст, НЕ крашить', async () => {
+    stubDrive([]);
+    const res = await authed(
+      { token: await token(), structured: { action: 'readDrive', driveQuery: 'щось неіснуюче' } },
+      envWithGoogle(),
+    );
+    const body = (await res.json()) as { append: string };
+    expect(body.append).toContain('нічого не знайшов');
+  });
+
+  it('без drive.readonly-скоупу (403) -> "недоступний", НЕ крашить', async () => {
+    stubDrive('forbidden');
+    const res = await authed(
+      { token: await token(), structured: { action: 'readDrive', driveQuery: 'резюме' } },
+      envWithGoogle(),
+    );
+    const body = (await res.json()) as { append: string };
+    expect(body.append).toContain('недоступний');
   });
 });

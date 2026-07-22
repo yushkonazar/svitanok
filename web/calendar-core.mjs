@@ -80,6 +80,28 @@ function cleanTitle(summary) {
   return t ? t.slice(0, MAX_EVENT_TITLE) : '(без назви)';
 }
 
+const MAX_LOCATION_LEN = 200;
+
+/** Місце події для промпту/показу: той самий анти-injection мотив, що
+ *  cleanTitle (сплющити переноси, обрізати) — але БЕЗ заглушки «(без назви)»,
+ *  бо порожнє місце — легітимний, частий стан (не всі події мають адресу). */
+function cleanLocation(location) {
+  const t = String(location ?? '')
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim();
+  return t ? t.slice(0, MAX_LOCATION_LEN) : null;
+}
+
+/**
+ * Google Maps «universal» пошук-URL (PR-12) — БЕЗ API-ключа й білінгу, просто
+ * посилання, що Maps сам резолвить у найкращий збіг. null для порожнього
+ * location (немає що показувати).
+ */
+export function buildMapsUrl(location) {
+  const loc = cleanLocation(location);
+  return loc ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}` : null;
+}
+
 /** Інстант початку/кінця Google-подій — timed через dateTime, all-day через
  *  date (kyivDayBoundsUtc: `end.date` у Google ЕКСКЛЮЗИВНИЙ — «день ПІСЛЯ
  *  останнього дня події» — тож його ж 00:00 і є коректним кінцем інтервалу). */
@@ -115,6 +137,7 @@ export function parseEvents(json) {
     date: e.start?.date ? e.start.date : e.start?.dateTime ? kyivDateKeyOf(e.start.dateTime) : null,
     startMs: eventInstantMs(e.start),
     endMs: eventInstantMs(e.end),
+    location: cleanLocation(e.location), // PR-12: null, якщо немає — Maps-лінк лише коли є що показати
   }));
 }
 
