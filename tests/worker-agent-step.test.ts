@@ -664,7 +664,8 @@ describe('/api/agent-step — proposeCalendarChanges: enrich + overlap (CRUD)', 
         envWithGoogle(),
       );
       const text = sentTexts()[0];
-      expect(text).toContain('📍 Кав’ярня');
+      expect(text).toContain('📍 <a href="https://www.google.com/maps/search/?api=1&query=');
+      expect(text).toContain('Кав’ярня</a>');
       expect(text).toContain('👥 Гості (запросимо): friend@x.com');
     });
 

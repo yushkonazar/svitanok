@@ -81,6 +81,7 @@ import {
   buildAgendaCallbackData,
   parseAgendaCallbackData,
   isAccessTokenFresh,
+  buildMapsUrl,
 } from './calendar-core.mjs';
 import {
   ASSISTANT_ACTION_SCHEMA,
@@ -3007,10 +3008,12 @@ async function resolveAgendaCallback(env, parsed, cb) {
   const delCb = buildAgendaCallbackData('d', cb.id);
   const backCb = buildAgendaCallbackData('b', cb.id); // id 'b' ігнорує — лише формальність guard'а
   if (parsed.chatId != null && parsed.messageId != null && editCb && delCb && backCb) {
+    const mapsUrl = buildMapsUrl(fresh.location);
+    const locLine = mapsUrl ? `\n📍 <a href="${mapsUrl}">${escapeHtml(fresh.location)}</a>` : '';
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
-      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}`,
+      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}${locLine}`,
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [

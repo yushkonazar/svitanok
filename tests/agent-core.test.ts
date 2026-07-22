@@ -26,7 +26,7 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 10 дій (PR-8: +recordAction)', () => {
+  it('дозволяє рівно 11 дій (PR-14: +readDrive)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -37,20 +37,23 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'readOwnData',
       'readMail',
       'readMailBody',
+      'readDrive',
       'recordAction',
     ]);
   });
 
-  it('proposal.items.kind охоплює create, мутацію ІСНУЮЧОЇ події ТА settings (PR-9)', () => {
+  it('proposal.items.kind охоплює create, мутацію ІСНУЮЧОЇ події, settings ТА contact (PR-13)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.kind.enum).toEqual([
       'event',
       'reminder',
       'updateEvent',
       'deleteEvent',
       'settings',
+      'contact',
     ]);
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.eventId).toBeTruthy();
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.settings).toBeTruthy();
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.email).toBeTruthy();
   });
 
   it('proposal.items несе location/attendees (PR-10)', () => {
@@ -107,8 +110,8 @@ describe('buildAssistantSystemPrompt', () => {
   });
 
   it(
-    'НЕ перевищує MAX_SCHEMA_LEN хоста (PR-10: запас лишився лише 15 символів —' +
-      ' той самий клас регресії, що й системний промпт, досі без запобіжника)',
+    'НЕ перевищує MAX_SCHEMA_LEN хоста (запас тонкий — PR-13/14 вже впирались, ' +
+      'ate без дубльованого enum CATEGORY_VALUES звільнило місце)',
     () => {
       expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
     },
@@ -856,8 +859,8 @@ describe('formatProposalMessage', () => {
     expect(msg).not.toContain('⚠️');
   });
 
-  describe('гості/локація (PR-10)', () => {
-    it('event: location -> рядок 📍; resolvedAttendees -> рядок 👥', () => {
+  describe('гості/локація (PR-10, PR-12: Maps-посилання)', () => {
+    it('event: location -> клікабельне Maps-посилання; resolvedAttendees -> рядок 👥', () => {
       const msg = formatProposalMessage([
         {
           kind: 'event',
@@ -867,7 +870,8 @@ describe('formatProposalMessage', () => {
           resolvedAttendees: ['a@x.com', 'b@x.com'],
         },
       ]);
-      expect(msg).toContain('📍 Кав’ярня');
+      expect(msg).toContain('📍 <a href="https://www.google.com/maps/search/?api=1&query=');
+      expect(msg).toContain('>Кав’ярня</a>');
       expect(msg).toContain('👥 Гості (запросимо): a@x.com, b@x.com');
     });
 
@@ -902,7 +906,8 @@ describe('formatProposalMessage', () => {
           location: 'Нове місце',
         },
       ]);
-      expect(msg).toContain('📍 Нове місце');
+      expect(msg).toContain('📍 <a href=');
+      expect(msg).toContain('>Нове місце</a>');
     });
 
     it('назви гостей екрановані (XSS-регресія)', () => {
