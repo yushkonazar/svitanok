@@ -5,6 +5,7 @@ import * as tg from '../web/tg-core.mjs';
 const {
   textHash,
   verifyWebhookSecret,
+  constantTimeEqual,
   parseUpdate,
   isOwner,
   isDuplicate,
@@ -28,6 +29,24 @@ const {
   COMMANDS,
   REPLY_KEYBOARD,
 } = tg;
+
+describe('tg-core — constantTimeEqual', () => {
+  it('рівні рядки -> true; різниця/довжина/тип -> false (без короткого замикання)', () => {
+    expect(constantTimeEqual('abc', 'abc')).toBe(true);
+    expect(constantTimeEqual('abc', 'abd')).toBe(false); // остання позиція
+    expect(constantTimeEqual('abc', 'Xbc')).toBe(false); // перша позиція — теж false
+    expect(constantTimeEqual('abc', 'abcd')).toBe(false); // різна довжина
+    expect(constantTimeEqual('', '')).toBe(true); // два порожні — рівні
+    expect(constantTimeEqual(undefined, 'x')).toBe(false);
+    expect(constantTimeEqual('x', null)).toBe(false);
+  });
+
+  it('звірка HMAC-hex (сценарій initData): правильний хеш проходить, підмінений — ні', () => {
+    const good = 'a3f'.repeat(21) + 'a'; // 64 hex-символи (SHA-256)
+    expect(constantTimeEqual(good, good)).toBe(true);
+    expect(constantTimeEqual(good, good.slice(0, 63) + 'b')).toBe(false);
+  });
+});
 
 describe('tg-core — verifyWebhookSecret', () => {
   it('точний збіг -> true; будь-яка відмінність/довжина/тип -> false', () => {
