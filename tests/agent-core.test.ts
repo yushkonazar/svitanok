@@ -1383,6 +1383,21 @@ describe('formatProposalResult — перепис повідомлення ПІ�
     expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось зберегти');
   });
 
+  it('contact ЗМІШАНИЙ з event у пакеті (mode="create") -> 👤, без "— ?" (реалістичний мікс: «заплануй і збережи в контакти»)', () => {
+    const items = [
+      { kind: 'event', title: 'Кава з Тарасом', whenMs: SUMMER_NOW },
+      { kind: 'contact', title: 'Тарас', email: 'taras@x.com' },
+    ];
+    const text = formatProposalResult(items, [{ ok: true }, { ok: true }]);
+    expect(text).toContain('1. ✅ 📅 Кава з Тарасом');
+    expect(text).toContain('2. ✅ 👤 Тарас');
+    expect(text).not.toContain('Тарас — ?'); // раніше падало б у fmtWhen(undefined)="?"
+    expect(text).not.toContain('📅 Тарас'); // не подіїний іконка на контакті
+
+    const failText = formatProposalResult(items, [{ ok: true }, { ok: false }]);
+    expect(failText).toContain('2. ⚠️ не вдалось зберегти контакт: Тарас');
+  });
+
   it('назви екрановані (XSS-регресія)', () => {
     const items = [{ kind: 'event', title: '<b>x</b>', whenMs: SUMMER_NOW }];
     const text = formatProposalResult(items, [{ ok: true }]);

@@ -964,6 +964,18 @@ export function formatProposalResult(items, results) {
   const lines = ['<b>Результат:</b>', ''];
   items.forEach((it, i) => {
     const ok = results[i]?.ok;
+    if (it.kind === 'contact') {
+      // Contact НЕ має whenMs (не подія/нагадування) — окрема гілка, інакше
+      // впала б у "📅 Ім'я — ?" (fmtWhen(undefined) -> "?", хибний календар-іконка).
+      // Реалістичний мікс: «заплануй зустріч і збережи в контакти» — один запит,
+      // 2 пункти РІЗНИХ kind у тому самому proposal.
+      lines.push(
+        ok
+          ? `${i + 1}. ✅ 👤 ${escapeHtml(it.title)}`
+          : `${i + 1}. ⚠️ не вдалось зберегти контакт: ${escapeHtml(it.title ?? '?')}`,
+      );
+      return;
+    }
     const icon = it.kind === 'reminder' ? '⏰' : '📅';
     lines.push(
       ok
