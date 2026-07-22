@@ -23,6 +23,9 @@ const MAX_DURATION_MIN = 480;
 const DEFAULT_DURATION_MIN = 60;
 const MAX_LOCATION_LEN = 200;
 const MAX_ATTENDEE_LEN = 80;
+// PR-13, kind:'contact' — груба перевірка формату (People API все одно
+// звірить справжню валідність), той самий рівень строгості, що worker.js.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_ATTENDEES = 10;
 
 /**
@@ -96,6 +99,7 @@ export const ASSISTANT_STEP_LABELS = {
   readMailBody: '⏳ Читаю листа…',
   readCalendar: '⏳ Дивлюся календар…',
   readOwnData: '⏳ Заглядаю у твої дані…',
+  readDrive: '⏳ Шукаю в Drive…',
 };
 
 /** Підпис прогресу для дії або null (термінальні/невідомі — без підпису). */
@@ -377,6 +381,7 @@ const VALID_ACTIONS = new Set([
   'readOwnData',
   'readMail',
   'readMailBody',
+  'readDrive',
   'recordAction',
 ]);
 
@@ -499,6 +504,12 @@ export function extractAssistantAction(structured) {
     if (!id || !ID_RE.test(id)) return null;
     return { action, mailId: id };
   }
+  if (action === 'readDrive') {
+    // Той самий "порожній запит валідний" мотив, що readMail — searchDrive
+    // сам віддає [] на порожній query, sanitize тут не потрібен.
+    const q = typeof structured.driveQuery === 'string' ? structured.driveQuery : '';
+    return { action, driveQuery: q };
+  }
   if (action === 'proposeCalendarChanges') {
     if (!Array.isArray(structured.proposal)) return null;
     return { action, proposal: structured.proposal };
@@ -564,6 +575,21 @@ export function sanitizeProposal(rawProposal, nowMs) {
     // (formatProposalMessage) ПЕРЕД тим, як власник натисне ✅.
     if (kind === 'settings') {
       items.push({ kind, settings: normalizeSettings(raw?.settings) });
+      continue;
+    }
+
+    // contact (PR-13) — новий контакт: "title" реюзає те саме поле, що
+    // event/reminder (імʼя), "email" ОБОВʼЯЗКОВИЙ і мусить хоч грубо виглядати
+    // як email (People API сам відкине справжнє сміття — тут лише відсіюємо
+    // очевидне, той самий "не довіряй LLM" рефлекс, що ID_RE для id).
+    if (kind === 'contact') {
+      const name = typeof raw?.title === 'string' ? raw.title.trim().slice(0, MAX_TITLE_LEN) : '';
+      const email = typeof raw?.email === 'string' ? raw.email.trim() : '';
+      if (!name || !EMAIL_RE.test(email)) {
+        droppedCount++;
+        continue;
+      }
+      items.push({ kind, title: name, email });
       continue;
     }
 
@@ -678,7 +704,9 @@ function formatSettingsDiff(before, after) {
 export function formatProposalMessage(items, warnings) {
   const lines = ['🤔 <b>Пропоную:</b>', ''];
   items.forEach((it, i) => {
-    if (it.kind === 'settings') {
+    if (it.kind === 'contact') {
+      lines.push(`${i + 1}. 👤 Новий контакт: ${escapeHtml(it.title)} — ${escapeHtml(it.email)}`);
+    } else if (it.kind === 'settings') {
       lines.push(`${i + 1}. ⚙️ Налаштування: ${formatSettingsDiff(it.base, it.settings)}`);
     } else if (it.kind === 'updateEvent') {
       // Поля ВІДСУТНІ (null/undefined) -> «не чіпали», а не «збігається з base» —
@@ -823,6 +851,7 @@ export function proposalMode(items) {
     if (items[0]?.kind === 'updateEvent') return 'edit';
     if (items[0]?.kind === 'deleteEvent') return 'delete';
     if (items[0]?.kind === 'settings') return 'settings';
+    if (items[0]?.kind === 'contact') return 'contact';
   }
   return 'create';
 }
@@ -870,6 +899,14 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
     return { inline_keyboard: rows };
   }
 
+  if (mode === 'contact') {
+    rows.push([
+      { text: '✅ Зберегти', callback_data: buildProposalCallbackData('a', id) },
+      { text: '❌ Скасувати', callback_data: buildProposalCallbackData('c', id) },
+    ]);
+    return { inline_keyboard: rows };
+  }
+
   const d = buildProposalCallbackData('d', id);
   const l = buildProposalCallbackData('l', id);
   if (proposalHasEvent(items) && d && l) {
@@ -902,6 +939,12 @@ export function formatProposalResult(items, results) {
     return results[0]?.ok
       ? '⚙️ Налаштування застосовано.'
       : '⚠️ Не вдалось застосувати налаштування.';
+  }
+
+  if (mode === 'contact') {
+    return results[0]?.ok
+      ? `👤 Контакт збережено: ${escapeHtml(items[0]?.title ?? '?')}`
+      : '⚠️ Не вдалось зберегти контакт.';
   }
 
   if (mode === 'delete') {

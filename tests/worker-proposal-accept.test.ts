@@ -523,6 +523,86 @@ describe('CRUD: гості/локація на подіях (PR-10) — sendUpda
   });
 });
 
+describe('CRUD: контакт на запис (PR-13) — accept пише через People API createContact', () => {
+  const contactPending = (id: string, name: string, email: string) => ({
+    id,
+    createdMs: Date.now(),
+    items: [{ kind: 'contact', title: name, email }],
+  });
+
+  let peopleWrites: { name: string; email: string }[];
+
+  beforeEach(() => {
+    peopleWrites = [];
+    vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.includes('api.telegram.org')) {
+        tg.push({ method: url.split('/').pop()!, body: JSON.parse(String(init.body ?? '{}')) });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('people.googleapis.com/v1/people:createContact')) {
+        const body = JSON.parse(String(init.body ?? '{}'));
+        peopleWrites.push({
+          name: body.names?.[0]?.givenName,
+          email: body.emailAddresses?.[0]?.value,
+        });
+        return new Response('{}', { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+  });
+
+  it('accept -> People API createContact викликано з правильними name/email, «Збережено»', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(contactPending('con00001', 'Олексій', 'oleksiy@x.com')),
+    );
+    await postCb('con00001', 'a');
+
+    expect(toast()).toContain('Збережено');
+    expect(peopleWrites).toEqual([{ name: 'Олексій', email: 'oleksiy@x.com' }]);
+  });
+
+  it('cancel -> People API НЕ викликається', async () => {
+    kv.set('assistantPending', JSON.stringify(contactPending('con00002', 'Ірина', 'irina@x.com')));
+    await postCb('con00002', 'c');
+    expect(peopleWrites).toEqual([]);
+  });
+
+  it('провал People API (403, без скоупу) -> чесний toast, не крашить', async () => {
+    vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.includes('api.telegram.org')) {
+        tg.push({ method: url.split('/').pop()!, body: JSON.parse(String(init.body ?? '{}')) });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('people.googleapis.com')) return new Response('{}', { status: 403 });
+      return new Response('{}', { status: 200 });
+    });
+    kv.set('assistantPending', JSON.stringify(contactPending('con00003', 'X', 'x@y.com')));
+    await postCb('con00003', 'a');
+    expect(toast()).toContain('Не вдалось зберегти');
+  });
+});
+
 describe('CRUD: edit-режим — цикл зсуву часу (pd:s) і «✏️ Інше» (pd:o)', () => {
   it('pd:s циклить зсув, ПЕРЕМАЛЬОВУЄ ТЕКСТ (не лише клавіатуру) — діф залежить від whenMs', async () => {
     kv.set('assistantPending', JSON.stringify(updateEventPending('shf00001')));
