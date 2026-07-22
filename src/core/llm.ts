@@ -4,9 +4,56 @@
 //
 // Неінтерактивність (§2.1): brief.yml пресідить ~/.claude.json
 // (hasCompletedOnboarding) перед першим викликом, інакше CI висне на trust-промпті.
+//
+// БЕЗПЕКА (security-рев'ю): оркестратор годує в модель НЕДОВІРЕНИЙ контент —
+// тіла листів (mail-тріаж) і RSS (jobs) контролює будь-хто, хто напише на пошту
+// чи опублікує вакансію. А сам процес крутиться в GitHub Actions поряд із
+// найпотужнішими секретами (GOOGLE_REFRESH_TOKEN, CF_API_TOKEN, TELEGRAM_BOT_TOKEN).
+// Тому дзеркалимо локдаун VPS-хоста (host/llm-host-core.buildClaudeArgs):
+//   1. `--tools ''` — модель НЕ отримує жодного інструменту (лише текст-відповідь).
+//      Прибирає весь клас «інʼєкція в листі -> виклик Bash/WebFetch -> витік env».
+//   2. вичищене оточення дочірнього процесу — без секретів, які claude не треба
+//      (defense-in-depth: навіть якби зʼявився шлях до інструмента, красти нічого).
 
 import { spawn } from 'node:child_process';
 import type { LLMClient, Logger } from './types.js';
+
+/**
+ * Аргументи claude CLI. `--tools ''` — головна межа безпеки (див. шапку файлу):
+ * модель тут потрібна лише для тексту (JSON-класифікація/скоринг), жоден модуль
+ * інструментів не потребує. Той самий прийом, що на VPS-хості з тим самим піном
+ * CLI (@anthropic-ai/claude-code 2.1.195), тож поведінка вже доведена.
+ */
+export function buildClaudeArgs(model: string): string[] {
+  return ['-p', '--tools', '', '--model', model];
+}
+
+/**
+ * Секрети кроку `run briefing` (brief.yml), яких дочірньому claude НЕ треба.
+ * Лишаємо все системне (PATH/HOME) і CLAUDE_CODE_OAUTH_TOKEN (авторизація CLI),
+ * викидаємо реальні креденшели. ⚠️ Додаєш секрет-креденшел у brief.yml -> додай
+ * і сюди (тест scrubSecretsFromEnv стереже перелік).
+ */
+export const SENSITIVE_ENV_KEYS = [
+  'CF_API_TOKEN',
+  'CF_ACCOUNT_ID',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+  'GOOGLE_REFRESH_TOKEN',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_CHAT_ID',
+  'TELEGRAM_BOT_USERNAME',
+  'WEATHER_API_KEY',
+  'NEWSDATA_API_KEY',
+] as const;
+
+/** Копія оточення без секретів із SENSITIVE_ENV_KEYS (defense-in-depth поверх
+ *  `--tools ''`). Спред+delete, не мутуємо process.env. */
+export function scrubSecretsFromEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const k of SENSITIVE_ENV_KEYS) delete out[k];
+  return out;
+}
 
 export interface LLMOptions {
   model: string;
@@ -22,8 +69,12 @@ function runClaude(
   log?: Logger,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn('claude', ['-p', '--model', model], {
+    const child = spawn('claude', buildClaudeArgs(model), {
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Дочірній процес НЕ успадковує креденшели, які йому не потрібні (див.
+      // шапку файлу): недовірений лист-контент розмовляє з claude, у якого в
+      // env немає ні refresh-токена, ні CF-токена, ні bot-токена.
+      env: scrubSecretsFromEnv(process.env),
     });
     let stdout = '';
     let stderr = '';

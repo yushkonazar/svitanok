@@ -1,6 +1,65 @@
 import { describe, it, expect } from 'vitest';
-import { formatLlmDegradedMessage, isUsageLimitError } from '../src/core/llm.js';
+import {
+  formatLlmDegradedMessage,
+  isUsageLimitError,
+  buildClaudeArgs,
+  scrubSecretsFromEnv,
+  SENSITIVE_ENV_KEYS,
+} from '../src/core/llm.js';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
+
+describe('buildClaudeArgs (security — локдаун інструментів у CI)', () => {
+  it('передає --tools "" (окремим argv-слотом), як VPS-хост', () => {
+    const args = buildClaudeArgs('claude-haiku-4-5');
+    const i = args.indexOf('--tools');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe(''); // порожній рядок — окремий елемент, не склейка
+    expect(args).toContain('-p');
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-haiku-4-5');
+  });
+});
+
+describe('scrubSecretsFromEnv (security — недовірений контент не бачить креденшели)', () => {
+  it('викидає КОЖЕН секрет із SENSITIVE_ENV_KEYS', () => {
+    const env = Object.fromEntries(SENSITIVE_ENV_KEYS.map((k) => [k, 'секрет']));
+    const out = scrubSecretsFromEnv(env);
+    for (const k of SENSITIVE_ENV_KEYS) expect(out[k], k).toBeUndefined();
+  });
+
+  it('лишає системне оточення й токен авторизації CLI', () => {
+    const out = scrubSecretsFromEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/runner',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
+      GOOGLE_REFRESH_TOKEN: 'секрет',
+    });
+    expect(out.PATH).toBe('/usr/bin');
+    expect(out.HOME).toBe('/home/runner');
+    expect(out.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth'); // claude без цього не автентифікується
+    expect(out.GOOGLE_REFRESH_TOKEN).toBeUndefined();
+  });
+
+  it('не мутує вхідний обʼєкт (спред, не delete на process.env)', () => {
+    const env = { GOOGLE_REFRESH_TOKEN: 'секрет', PATH: '/usr/bin' };
+    scrubSecretsFromEnv(env);
+    expect(env.GOOGLE_REFRESH_TOKEN).toBe('секрет'); // оригінал недоторканий
+  });
+
+  it('перелік креденшелів покриває реальні секрети brief.yml (регрес — не забути новий)', () => {
+    // Дзеркало env кроку `run briefing`: якщо додав креденшел у workflow, додай і
+    // в SENSITIVE_ENV_KEYS. Топіки/URL/namespace-id свідомо не тут (не креденшели).
+    for (const k of [
+      'GOOGLE_REFRESH_TOKEN',
+      'GOOGLE_CLIENT_SECRET',
+      'CF_API_TOKEN',
+      'TELEGRAM_BOT_TOKEN',
+      'NEWSDATA_API_KEY',
+      'WEATHER_API_KEY',
+    ]) {
+      expect(SENSITIVE_ENV_KEYS).toContain(k);
+    }
+  });
+});
 
 describe('isUsageLimitError (A3) — паритет із host/ і web/', () => {
   it('упізнає ВСІ тексти ліміту зі спільного фікстур-набору', () => {
