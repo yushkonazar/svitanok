@@ -18,6 +18,7 @@ import {
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
+  constantTimeEqual,
   parseUpdate,
   isOwner,
   isDuplicate,
@@ -310,7 +311,9 @@ async function validateInitData(initData, botToken) {
   const enc = new TextEncoder();
   const secret = await hmac(enc.encode('WebAppData'), enc.encode(botToken));
   const computed = toHex(await hmac(secret, enc.encode(dataCheck)));
-  if (computed !== hash) return null;
+  // Константночасно (не `!==`): звіряємо HMAC, тож не зливаємо позицію першого
+  // розбіжного байта — той самий інваріант, що verifyWebhookSecret/timingSafeEqual.
+  if (!constantTimeEqual(computed, hash)) return null;
   const authDate = Number(params.get('auth_date') ?? 0);
   if (!authDate || Date.now() / 1000 - authDate > 86400) return null; // старіше 24 год
   try {
