@@ -257,6 +257,30 @@ export function formatMailForPrompt(messages) {
   return clip(`Пошта (${list.length}): ${lines.join('; ')}.`, MAX_MAIL_LEN);
 }
 
+/* ── Drive (PR-14, дія readDrive) ──────────────────────────────────────────
+   MVP свідомо БЕЗ читання вмісту файлу (резюме реально лежить як PDF/Word —
+   розбір тексту звідти окремий, більший шматок роботи, відкладено): лише
+   пошук за назвою + посилання. webViewLink готовий і клікабельний — модель
+   лише копіює його як є, нічого не вигадує (той самий інваріант, що mailId/
+   eventId, просто тут це вже кінцевий текст, не id для наступного кроку). */
+
+export const MAX_DRIVE_ITEMS = 5;
+export const MAX_DRIVE_LEN = 700;
+const MAX_DRIVE_NAME_LEN = 100;
+
+/** Дайджест результатів пошуку в Drive (вхід — вже нормалізовані {name,webViewLink}). */
+export function formatDriveForPrompt(files) {
+  if (files === null) return 'Drive: недоступний (немає доступу).';
+  const list = Array.isArray(files) ? files.slice(0, MAX_DRIVE_ITEMS) : [];
+  if (list.length === 0) return 'Drive: за цим запитом нічого не знайшов.';
+  const lines = list.map((f, i) => {
+    const name = clip(f?.name, MAX_DRIVE_NAME_LEN) || '(без назви)';
+    const link = typeof f?.webViewLink === 'string' && f.webViewLink ? ` — ${f.webViewLink}` : '';
+    return `${i + 1}) ${name}${link}`;
+  });
+  return clip(`Drive (${list.length}): ${lines.join('; ')}.`, MAX_DRIVE_LEN);
+}
+
 /* ── Повне тіло ОДНОГО листа (дія readMailBody) ───────────────────────────
    Власник дозволив тіла листів у контексті агента (18.07.2026). Свідомо не
    «тіла всіх знайдених», а рівно одного, обраного моделлю за id: так бюджет

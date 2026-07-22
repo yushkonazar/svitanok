@@ -15,6 +15,7 @@ const {
   buildAgendaCallbackData,
   parseAgendaCallbackData,
   isAccessTokenFresh,
+  buildMapsUrl,
 } = cal;
 
 describe('kyivDayBoundsUtc — DST межі дня (той самий трюк, що src/modules/calendar.ts)', () => {
@@ -126,6 +127,38 @@ describe('parseEvents', () => {
   it('некоректний json -> []', () => {
     expect(parseEvents({})).toEqual([]);
     expect(parseEvents(null)).toEqual([]);
+  });
+
+  it('location (PR-12): читає e.location, сплющує переноси, обрізає; відсутнє -> null', () => {
+    const [withLoc, withoutLoc] = parseEvents({
+      items: [
+        { id: 'a', summary: 'X', location: 'Кав’ярня\n\nна розі', start: {} },
+        { id: 'b', summary: 'Y', start: {} },
+      ],
+    });
+    expect(withLoc.location).toBe('Кав’ярня на розі');
+    expect(withoutLoc.location).toBeNull();
+  });
+});
+
+describe('buildMapsUrl (PR-12) — Google Maps пошук-URL, без API-ключа/білінгу', () => {
+  it('будує universal search-URL, url-кодує текст', () => {
+    expect(buildMapsUrl('Кав’ярня на розі')).toBe(
+      'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent('Кав’ярня на розі'),
+    );
+  });
+
+  it('порожнє/відсутнє location -> null (нема що показувати)', () => {
+    expect(buildMapsUrl('')).toBeNull();
+    expect(buildMapsUrl('   ')).toBeNull();
+    expect(buildMapsUrl(null)).toBeNull();
+    expect(buildMapsUrl(undefined)).toBeNull();
+  });
+
+  it('сплющує переноси рядків (анти-інʼєкція, той самий мотив, що cleanTitle)', () => {
+    const url = buildMapsUrl('Адреса\n\nз новим рядком');
+    expect(url).not.toContain('%0A'); // немає закодованого \n у query
+    expect(url).toContain(encodeURIComponent('Адреса з новим рядком'));
   });
 });
 

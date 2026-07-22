@@ -26,7 +26,7 @@ const {
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 10 дій (PR-8: +recordAction)', () => {
+  it('дозволяє рівно 11 дій (PR-14: +readDrive)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -37,20 +37,23 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'readOwnData',
       'readMail',
       'readMailBody',
+      'readDrive',
       'recordAction',
     ]);
   });
 
-  it('proposal.items.kind охоплює create, мутацію ІСНУЮЧОЇ події ТА settings (PR-9)', () => {
+  it('proposal.items.kind охоплює create, мутацію ІСНУЮЧОЇ події, settings ТА contact (PR-13)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.kind.enum).toEqual([
       'event',
       'reminder',
       'updateEvent',
       'deleteEvent',
       'settings',
+      'contact',
     ]);
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.eventId).toBeTruthy();
     expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.settings).toBeTruthy();
+    expect(ASSISTANT_ACTION_SCHEMA.properties.proposal.items.properties.email).toBeTruthy();
   });
 
   it('proposal.items несе location/attendees (PR-10)', () => {
@@ -107,8 +110,8 @@ describe('buildAssistantSystemPrompt', () => {
   });
 
   it(
-    'НЕ перевищує MAX_SCHEMA_LEN хоста (PR-10: запас лишився лише 15 символів —' +
-      ' той самий клас регресії, що й системний промпт, досі без запобіжника)',
+    'НЕ перевищує MAX_SCHEMA_LEN хоста (запас тонкий — PR-13/14 вже впирались, ' +
+      'ate без дубльованого enum CATEGORY_VALUES звільнило місце)',
     () => {
       expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
     },
@@ -125,6 +128,17 @@ describe('readMail + бюджет транскрипту (B3/B4)', () => {
     expect(extractAssistantAction({ action: 'readMail' })).toEqual({
       action: 'readMail',
       mailQuery: '',
+    });
+  });
+
+  it('extractAssistantAction приймає readDrive (PR-14); порожній запит валідний', () => {
+    expect(extractAssistantAction({ action: 'readDrive', driveQuery: 'резюме' })).toEqual({
+      action: 'readDrive',
+      driveQuery: 'резюме',
+    });
+    expect(extractAssistantAction({ action: 'readDrive' })).toEqual({
+      action: 'readDrive',
+      driveQuery: '',
     });
   });
 
@@ -798,6 +812,35 @@ describe('sanitizeProposal', () => {
       ]);
     });
   });
+
+  describe('contact — новий контакт, email валідується грубо (PR-13)', () => {
+    it('валідні title+email -> проходить', () => {
+      const { items, droppedCount } = sanitizeProposal(
+        [{ kind: 'contact', title: ' Олексій ', email: ' oleksiy@x.com ' }],
+        SUMMER_NOW,
+      );
+      expect(droppedCount).toBe(0);
+      expect(items).toEqual([{ kind: 'contact', title: 'Олексій', email: 'oleksiy@x.com' }]);
+    });
+
+    it('відсутній/порожній title -> дропається', () => {
+      expect(sanitizeProposal([{ kind: 'contact', email: 'a@x.com' }], SUMMER_NOW)).toEqual({
+        items: [],
+        droppedCount: 1,
+      });
+      expect(
+        sanitizeProposal([{ kind: 'contact', title: '  ', email: 'a@x.com' }], SUMMER_NOW),
+      ).toEqual({ items: [], droppedCount: 1 });
+    });
+
+    it('невалідний/відсутній email -> дропається', () => {
+      for (const email of [undefined, '', 'не-email', 'a@b', '@x.com', 'a@x']) {
+        expect(
+          sanitizeProposal([{ kind: 'contact', title: 'Олексій', email }], SUMMER_NOW),
+        ).toEqual({ items: [], droppedCount: 1 });
+      }
+    });
+  });
 });
 
 describe('formatProposalMessage', () => {
@@ -856,8 +899,8 @@ describe('formatProposalMessage', () => {
     expect(msg).not.toContain('⚠️');
   });
 
-  describe('гості/локація (PR-10)', () => {
-    it('event: location -> рядок 📍; resolvedAttendees -> рядок 👥', () => {
+  describe('гості/локація (PR-10, PR-12: Maps-посилання)', () => {
+    it('event: location -> клікабельне Maps-посилання; resolvedAttendees -> рядок 👥', () => {
       const msg = formatProposalMessage([
         {
           kind: 'event',
@@ -867,7 +910,8 @@ describe('formatProposalMessage', () => {
           resolvedAttendees: ['a@x.com', 'b@x.com'],
         },
       ]);
-      expect(msg).toContain('📍 Кав’ярня');
+      expect(msg).toContain('📍 <a href="https://www.google.com/maps/search/?api=1&query=');
+      expect(msg).toContain('>Кав’ярня</a>');
       expect(msg).toContain('👥 Гості (запросимо): a@x.com, b@x.com');
     });
 
@@ -902,7 +946,8 @@ describe('formatProposalMessage', () => {
           location: 'Нове місце',
         },
       ]);
-      expect(msg).toContain('📍 Нове місце');
+      expect(msg).toContain('📍 <a href=');
+      expect(msg).toContain('>Нове місце</a>');
     });
 
     it('назви гостей екрановані (XSS-регресія)', () => {
@@ -911,6 +956,16 @@ describe('formatProposalMessage', () => {
       ]);
       expect(msg).not.toContain('<b>a</b>');
       expect(msg).toContain('&lt;b&gt;');
+    });
+  });
+
+  describe('contact — новий контакт (PR-13)', () => {
+    it('рендерить імʼя + email, екранує (XSS-регресія)', () => {
+      const msg = formatProposalMessage([
+        { kind: 'contact', title: '<b>Олексій</b>', email: 'oleksiy@x.com' },
+      ]);
+      expect(msg).toContain('👤 Новий контакт: &lt;b&gt;Олексій&lt;/b&gt; — oleksiy@x.com');
+      expect(msg).not.toContain('<b>Олексій</b>');
     });
   });
 
@@ -989,10 +1044,11 @@ describe('proposal callback_data', () => {
 describe('proposalMode + edit/delete-клавіатура', () => {
   const { proposalMode, cycleEventShift, formatShiftLabel, buildProposalKeyboard } = agent;
 
-  it('одна updateEvent -> edit; одна deleteEvent -> delete; одна settings -> settings; решта -> create', () => {
+  it('одна updateEvent -> edit; одна deleteEvent -> delete; одна settings -> settings; одна contact -> contact; решта -> create', () => {
     expect(proposalMode([{ kind: 'updateEvent', eventId: 'x' }])).toBe('edit');
     expect(proposalMode([{ kind: 'deleteEvent', eventId: 'x' }])).toBe('delete');
     expect(proposalMode([{ kind: 'settings', settings: {} }])).toBe('settings');
+    expect(proposalMode([{ kind: 'contact', title: 'X', email: 'x@y.com' }])).toBe('contact');
     expect(proposalMode([{ kind: 'event', title: 'x' }])).toBe('create');
     expect(proposalMode([{ kind: 'reminder', title: 'x' }])).toBe('create');
     expect(proposalMode([])).toBe('create');
@@ -1031,6 +1087,17 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
     expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
+  });
+
+  it('contact-клавіатура (PR-13): лише Зберегти/Скасувати, нічого циклити', () => {
+    const kb = buildProposalKeyboard(
+      'id123456',
+      [{ kind: 'contact', title: 'X', email: 'x@y.com' }],
+      {},
+    );
+    expect(kb.inline_keyboard).toHaveLength(1);
+    const [row] = kb.inline_keyboard;
+    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Зберегти', '❌ Скасувати']);
   });
 
   it('зсув циклиться по колу, включно з «завтра, той самий час»', () => {
@@ -1127,13 +1194,14 @@ describe('assistantStepLabel — проміжний прогрес', () => {
     expect(assistantStepLabel('readMailBody')).toContain('лист');
     expect(assistantStepLabel('readCalendar')).toContain('календар');
     expect(assistantStepLabel('readOwnData')).toContain('дані');
+    expect(assistantStepLabel('readDrive')).toContain('Drive');
   });
 
   it('підписи читальних дій різні (щоб було видно, що крок змінився)', () => {
-    const labels = ['readMail', 'readMailBody', 'readCalendar', 'readOwnData'].map(
+    const labels = ['readMail', 'readMailBody', 'readCalendar', 'readOwnData', 'readDrive'].map(
       assistantStepLabel,
     );
-    expect(new Set(labels).size).toBe(4);
+    expect(new Set(labels).size).toBe(5);
   });
 
   it('термінальні/невідомі дії -> null (їхнє «⏳» прибирають, а не переписують)', () => {
@@ -1307,6 +1375,27 @@ describe('formatProposalResult — перепис повідомлення ПІ�
     const items = [{ kind: 'settings', settings: {} }];
     expect(formatProposalResult(items, [{ ok: true }])).toContain('застосовано');
     expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось застосувати');
+  });
+
+  it('contact (PR-13): успіх -> імʼя в тексті, провал -> чесний текст', () => {
+    const items = [{ kind: 'contact', title: 'Олексій', email: 'oleksiy@x.com' }];
+    expect(formatProposalResult(items, [{ ok: true }])).toContain('Олексій');
+    expect(formatProposalResult(items, [{ ok: false }])).toContain('Не вдалось зберегти');
+  });
+
+  it('contact ЗМІШАНИЙ з event у пакеті (mode="create") -> 👤, без "— ?" (реалістичний мікс: «заплануй і збережи в контакти»)', () => {
+    const items = [
+      { kind: 'event', title: 'Кава з Тарасом', whenMs: SUMMER_NOW },
+      { kind: 'contact', title: 'Тарас', email: 'taras@x.com' },
+    ];
+    const text = formatProposalResult(items, [{ ok: true }, { ok: true }]);
+    expect(text).toContain('1. ✅ 📅 Кава з Тарасом');
+    expect(text).toContain('2. ✅ 👤 Тарас');
+    expect(text).not.toContain('Тарас — ?'); // раніше падало б у fmtWhen(undefined)="?"
+    expect(text).not.toContain('📅 Тарас'); // не подіїний іконка на контакті
+
+    const failText = formatProposalResult(items, [{ ok: true }, { ok: false }]);
+    expect(failText).toContain('2. ⚠️ не вдалось зберегти контакт: Тарас');
   });
 
   it('назви екрановані (XSS-регресія)', () => {
