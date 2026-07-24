@@ -634,6 +634,13 @@ export function sanitizeProposal(rawProposal, nowMs) {
     if (kind === 'event') {
       item.durationMin = clampDuration(raw.durationMin) ?? DEFAULT_DURATION_MIN;
       Object.assign(item, sanitizeLocationAttendees(raw));
+    } else {
+      // kind === 'reminder': анкер для create-режим циклера часу (🕐,
+      // buildProposalKeyboard) — shiftMin завжди рахуємо ВІД baseWhenMs (перший
+      // запропонований час), не від поточного whenMs, інакше повторні тапи
+      // компаундились би замість циклу навколо однієї точки.
+      item.baseWhenMs = parsed.whenMs;
+      item.shiftMin = 0;
     }
     items.push(item);
   }
@@ -864,6 +871,13 @@ export function proposalMode(items) {
  *   delete: лише ✅/❌ (нічого циклити).
  * cfg = {durMin, leadMin} для create (null = «як є»); item.shiftMin для edit
  * (мутується ПРЯМО на єдиному пункті — нема сенсу в окремому cfg, коли пункт один).
+ *
+ * Create-режим з РІВНО одним пунктом kind:'reminder' — ТЕЖ циклер 🕐 (той самий
+ * 's'/cycleEventShift/formatShiftLabel, що edit-режим, лише анкер інший:
+ * item.baseWhenMs замість item.base.whenMs — нової події/нагадування ще не
+ * існує, тож "було" нема, є лише перше запропоноване). Це і є «підправити час
+ * перед підтвердженням» для нагадувань з фрази частини доби (day-part) чи
+ * будь-якої іншої одиночної пропозиції нагадування.
  */
 export function buildProposalKeyboard(id, items, cfg = {}) {
   const mode = proposalMode(items);
@@ -907,6 +921,12 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
     return { inline_keyboard: rows };
   }
 
+  if (items.length === 1 && items[0]?.kind === 'reminder') {
+    const s = buildProposalCallbackData('s', id);
+    if (s) {
+      rows.push([{ text: `🕐 ${formatShiftLabel(items[0]?.shiftMin ?? 0)}`, callback_data: s }]);
+    }
+  }
   const d = buildProposalCallbackData('d', id);
   const l = buildProposalCallbackData('l', id);
   if (proposalHasEvent(items) && d && l) {
