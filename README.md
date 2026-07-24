@@ -335,3 +335,16 @@ React-дашборд (ловить поломки збірки, не депло�
    rule-based фолбеком) — розгортання й секрет генерації в `host/README.md`.
 7. `npx wrangler deploy` (або просто push у `main` — деплоїться сам) для Worker;
    `npm run build:web` вбудований у той самий деплой.
+8. **Одноразова реєстрація бота в Telegram** — після першого деплою Worker
+   виклич `POST /api/telegram/setup` (авторизація тим самим `TELEGRAM_WEBHOOK_SECRET`,
+   що й вебхук — у заголовку, не в query, щоб не осів у логах). Ендпоінт за один
+   раз реєструє вебхук (`setWebhook` + `secret_token` + `allowed_updates`), меню
+   команд (`setMyCommands`), опис бота й кнопку-меню Mini App:
+
+   ```bash
+   curl -X POST "https://svitanok.yushko-nazar.workers.dev/api/telegram/setup" -H "X-Telegram-Bot-Api-Secret-Token: <TELEGRAM_WEBHOOK_SECRET>"
+   ```
+
+   Ідемпотентний — безпечно перезапускати. **Перезапускай** після зміни списку
+   команд/опису/кнопки-меню або якщо вебхук колись загубився (бот перестав
+   отримувати апдейти). Звичайний код-деплой вебхук не чіпає, тож щоразу не треба.

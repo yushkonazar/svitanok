@@ -548,12 +548,18 @@ describe('sanitizeProposal', () => {
     expect(typeof items[0].whenMs).toBe('number');
   });
 
-  it('reminder-пункт без durationMin (не потрібен)', () => {
+  it('reminder-пункт без durationMin (не потрібен), з анкером для циклера часу (🕐)', () => {
     const { items } = sanitizeProposal(
       [{ kind: 'reminder', title: 'Подати CV', when: 'о 18:00' }],
       SUMMER_NOW,
     );
-    expect(items[0]).toEqual({ kind: 'reminder', title: 'Подати CV', whenMs: items[0].whenMs });
+    expect(items[0]).toEqual({
+      kind: 'reminder',
+      title: 'Подати CV',
+      whenMs: items[0].whenMs,
+      baseWhenMs: items[0].whenMs,
+      shiftMin: 0,
+    });
     expect(items[0].durationMin).toBeUndefined();
   });
 
@@ -732,7 +738,13 @@ describe('sanitizeProposal', () => {
         ],
         SUMMER_NOW,
       );
-      expect(items[0]).toEqual({ kind: 'reminder', title: 'X', whenMs: items[0].whenMs });
+      expect(items[0]).toEqual({
+        kind: 'reminder',
+        title: 'X',
+        whenMs: items[0].whenMs,
+        baseWhenMs: items[0].whenMs,
+        shiftMin: 0,
+      });
     });
 
     it('порожній/сміттєвий location -> ігнорується; порожні/сміттєві attendees фільтруються', () => {
@@ -1305,7 +1317,7 @@ describe('доналаштування пропозиції — циклери �
     expect(formatLeadLabel(1440)).toBe('за день');
   });
 
-  it('клавіатура: рядок циклерів ТІЛЬКИ коли є подія; ✅/❌ завжди', () => {
+  it('клавіатура: рядок циклерів тривалості/lead ТІЛЬКИ коли є подія; ✅/❌ завжди', () => {
     const withEvent = buildProposalKeyboard('id123456', [{ kind: 'event' }], {
       durMin: 60,
       leadMin: 30,
@@ -1315,9 +1327,23 @@ describe('доналаштування пропозиції — циклери �
     expect(withEvent.inline_keyboard[0][1].text).toContain('за 30 хв');
     expect(withEvent.inline_keyboard[0][0].callback_data).toBe('pd:d:id123456');
 
-    const reminderOnly = buildProposalKeyboard('id123456', [{ kind: 'reminder' }], {});
-    expect(reminderOnly.inline_keyboard).toHaveLength(1); // лише accept/cancel, без циклерів
-    expect(reminderOnly.inline_keyboard[0][0].text).toContain('Прийняти');
+    // Кілька пунктів (не рівно один reminder) -> без ⏳/⏰ (не події) і без 🕐
+    // (циклер часу — лише для ОДНОГО reminder, нижче) — просто accept/cancel.
+    const multi = buildProposalKeyboard(
+      'id123456',
+      [{ kind: 'reminder' }, { kind: 'contact', title: 'X', email: 'x@x.com' }],
+      {},
+    );
+    expect(multi.inline_keyboard).toHaveLength(1);
+    expect(multi.inline_keyboard[0][0].text).toContain('Прийняти');
+  });
+
+  it('клавіатура: create-режим з ОДНИМ reminder -> циклер часу 🕐 (окремо від подієвих ⏳/⏰)', () => {
+    const kb = buildProposalKeyboard('id123456', [{ kind: 'reminder', shiftMin: 30 }], {});
+    expect(kb.inline_keyboard).toHaveLength(2); // 🕐 + accept/cancel
+    expect(kb.inline_keyboard[0][0].text).toContain('+30 хв');
+    expect(kb.inline_keyboard[0][0].callback_data).toBe('pd:s:id123456');
+    expect(kb.inline_keyboard[1][0].text).toContain('Прийняти');
   });
 
   it('proposalHasEvent: подія -> true, лише нагадування -> false', () => {

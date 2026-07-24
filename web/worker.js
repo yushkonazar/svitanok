@@ -68,6 +68,8 @@ import {
   extractLlmRewrite,
   isAmbiguousRewrite,
   addDaysToDateKey,
+  matchDayPartRange,
+  pickDayPartSlot,
 } from './reminders-core.mjs';
 import {
   kyivRangeBoundsUtc,
@@ -1497,6 +1499,52 @@ function sendTo(env, parsed) {
 }
 
 /**
+ * Нагадування з фрази частини доби («після обіду», «вранці» тощо, day-part —
+ * reminders-core.matchDayPartRange) — БЕЗ прямого створення: точна година
+ * невідома, доки не глянемо календар. Читаємо сьогодні+завтра (чи лише один
+ * із них, якщо текст явно каже «завтра»/«сьогодні» — dayPart.forcedDay),
+ * обираємо вільну годину (pickDayPartSlot) і СТЕЙДЖИМО як звичайну пропозицію
+ * нагадування (kind:'reminder', proposeCalendarChanges) — той самий
+ * confirm-флоу, що й LLM-пропозиції, тож власник бачить запропонований час і
+ * може підправити його циклером 🕐 (buildProposalKeyboard) ДО підтвердження,
+ * замість негайного, неперевіреного створення.
+ *
+ * Немає доступу до календаря (readCalendarRange -> null) — трактуємо як
+ * «подій немає» (той самий graceful-degrade мотив, що computeOverlapWarnings):
+ * пропозиція все одно йде, просто без реальної перевірки зайнятості.
+ */
+async function proposeDayPartReminder(env, parsed, dayPart) {
+  const nowMs = Date.now();
+  const todayKey = kyivDateKey(new Date(nowMs));
+  const tomorrowKey = addDaysToDateKey(todayKey, 1);
+
+  let days;
+  if (dayPart.forcedDay === 'tomorrow') {
+    const events = await readCalendarRange(env, tomorrowKey, tomorrowKey);
+    days = [{ dateKey: tomorrowKey, events, nowMs: 0, isToday: false }];
+  } else if (dayPart.forcedDay === 'today') {
+    const events = await readCalendarRange(env, todayKey, todayKey);
+    days = [{ dateKey: todayKey, events, nowMs, isToday: true }];
+  } else {
+    const [todayEvents, tomorrowEvents] = await Promise.all([
+      readCalendarRange(env, todayKey, todayKey),
+      readCalendarRange(env, tomorrowKey, tomorrowKey),
+    ]);
+    days = [
+      { dateKey: todayKey, events: todayEvents, nowMs, isToday: true },
+      { dateKey: tomorrowKey, events: tomorrowEvents, nowMs: 0, isToday: false },
+    ];
+  }
+
+  const slot = pickDayPartSlot(days, dayPart.startHour, dayPart.endHour);
+  const hh = String(slot.hour).padStart(2, '0');
+  const when = `${slot.isToday ? 'сьогодні' : 'завтра'} о ${hh}:00`;
+  return proposeCalendarChanges(env, parsed, [
+    { kind: 'reminder', title: dayPart.remainder, when },
+  ]);
+}
+
+/**
  * Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити.
  *
  * agentFallback (B2): коли фразу написав КОРИСТУВАЧ («нагадай ...», /remind) і
@@ -1516,6 +1564,16 @@ async function createReminderFromText(env, parsed, text, { agentFallback = false
   if (!text || !text.trim()) return sendText(REMINDER_HELP);
 
   let parsedTime = parseReminderTime(text, Date.now());
+
+  // День-частина («після обіду», «вранці» тощо) БЕЗ явної години — рахуємо
+  // вільний час через календар і йдемо в staged-confirm, а не пряме створення
+  // (див. doc-коментар proposeDayPartReminder). ПЕРЕД LLM-рерайтом: це
+  // дешевший і точніший шлях для рівно цього класу фраз, LLM тут не потрібен.
+  if (!parsedTime) {
+    const dayPart = matchDayPartRange(text);
+    if (dayPart) return proposeDayPartReminder(env, parsed, dayPart);
+  }
+
   if (!parsedTime && env.LLM_HOST_URL) {
     await sendText('🤔 Хвилинку, розбираюсь...');
     parsedTime = await tryLlmReminderRewrite(env, text);
@@ -2809,17 +2867,22 @@ async function resolveProposalCallback(env, parsed, cb) {
       : `⏰ Нагадати ${formatLeadLabel(next.leadMin)}`;
   }
 
-  /* ── Цикл зсуву часу edit-режиму (s) ──────────────────────────────────────
-     Текст ТЕЖ міняється (діф «було->стане» рахується від whenMs) -> тут
-     editMessageText, не лише reply_markup. */
+  /* ── Цикл зсуву часу (s) — edit-режим АБО create-режим з ОДНИМ нагадуванням ─
+     Текст ТЕЖ міняється (діф/час рахується від whenMs) -> тут editMessageText,
+     не лише reply_markup. Анкер різний: edit зсуває від base.whenMs (ІСНУЮЧА
+     подія), create-нагадування — від baseWhenMs (перший запропонований час;
+     нової сутності ще не існує, «було» нема) — buildProposalKeyboard показує
+     цей циклер лише для рівно одного пункту kind:'reminder' у create-режимі. */
   if (cb.action === 's') {
-    if (mode !== 'edit') return '⚠️ Застаріла пропозиція.';
+    const isCreateReminder =
+      mode === 'create' && pending.items.length === 1 && pending.items[0]?.kind === 'reminder';
+    if (mode !== 'edit' && !isCreateReminder) return '⚠️ Застаріла пропозиція.';
     const item = pending.items[0];
-    const b = item.base ?? {};
+    const anchorMs = isCreateReminder
+      ? (item.baseWhenMs ?? item.whenMs ?? 0)
+      : (item.base?.whenMs ?? 0);
     const nextShift = cycleEventShift(item.shiftMin ?? 0);
-    const nextItems = [
-      { ...item, shiftMin: nextShift, whenMs: (b.whenMs ?? 0) + nextShift * 60_000 },
-    ];
+    const nextItems = [{ ...item, shiftMin: nextShift, whenMs: anchorMs + nextShift * 60_000 }];
     await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify({ ...pending, items: nextItems }));
     if (parsed.chatId != null && parsed.messageId != null) {
       await tgCall(env, 'editMessageText', {
@@ -2827,7 +2890,7 @@ async function resolveProposalCallback(env, parsed, cb) {
         message_id: parsed.messageId,
         text: formatProposalMessage(nextItems),
         parse_mode: 'HTML',
-        reply_markup: buildProposalKeyboard(cb.id, nextItems, {}),
+        reply_markup: buildProposalKeyboard(cb.id, nextItems, cfg),
       });
     }
     return `🕐 ${formatShiftLabel(nextShift)}`;
