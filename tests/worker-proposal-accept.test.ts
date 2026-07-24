@@ -648,12 +648,106 @@ describe('CRUD: edit-режим — цикл зсуву часу (pd:s) і «✏
     expect(toast()).toContain('що змінити');
   });
 
-  it('pd:s/pd:o недоступні у create-режимі (лише edit) -> «Застаріла»', async () => {
+  it('pd:s/pd:o недоступні у create-режимі ПОДІЇ (лише edit) -> «Застаріла»', async () => {
     kv.set(
       'assistantPending',
       JSON.stringify(eventPending('cre00001', { durMin: null, leadMin: null })),
     );
     await postCb('cre00001', 's');
+    expect(toast()).toContain('Застаріла');
+  });
+});
+
+describe('CRUD: create-режим з ОДНИМ reminder — цикл зсуву часу (pd:s), фіча «частина доби»', () => {
+  const reminderPending = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    createdMs: Date.now(),
+    items: [
+      {
+        kind: 'reminder',
+        title: 'купити квитки',
+        whenMs: Date.now() + 3_600_000,
+        baseWhenMs: Date.now() + 3_600_000,
+        shiftMin: 0,
+        ...overrides,
+      },
+    ],
+  });
+
+  it('pd:s циклить від baseWhenMs (НЕ від base.whenMs — нова сутність, «було» нема)', async () => {
+    const anchor = Date.now() + 3_600_000;
+    kv.set(
+      'assistantPending',
+      JSON.stringify(reminderPending('rmt00001', { whenMs: anchor, baseWhenMs: anchor })),
+    );
+    await postCb('rmt00001', 's');
+
+    const stored = JSON.parse(kv.get('assistantPending')!);
+    expect(stored.items[0].shiftMin).toBe(15);
+    expect(stored.items[0].whenMs).toBe(anchor + 15 * 60_000);
+    expect(stored.id).toBe('rmt00001'); // не спожито — циклер, не термінал
+
+    const edited = tg.find((c) => c.method === 'editMessageText')?.body as
+      { text: string; reply_markup: { inline_keyboard: unknown[][] } } | undefined;
+    expect(edited?.text).toContain('купити квитки');
+    expect(edited?.reply_markup.inline_keyboard[0]?.[0]).toMatchObject({
+      callback_data: 'pd:s:rmt00001',
+    });
+    expect(toast()).toContain('+15 хв');
+  });
+
+  it('pd:s удруге циклить ДАЛІ від baseWhenMs (не компаундиться від проміжного whenMs)', async () => {
+    const anchor = Date.now() + 3_600_000;
+    kv.set(
+      'assistantPending',
+      JSON.stringify(
+        reminderPending('rmt00002', {
+          whenMs: anchor + 15 * 60_000,
+          baseWhenMs: anchor,
+          shiftMin: 15,
+        }),
+      ),
+    );
+    await postCb('rmt00002', 's');
+    const stored = JSON.parse(kv.get('assistantPending')!);
+    expect(stored.items[0].shiftMin).toBe(30);
+    expect(stored.items[0].whenMs).toBe(anchor + 30 * 60_000); // від anchor, не від anchor+15
+  });
+
+  it('легасі-пункт БЕЗ baseWhenMs (до цього фіксу) -> фолбек на whenMs як анкер', async () => {
+    const anchor = Date.now() + 3_600_000;
+    kv.set(
+      'assistantPending',
+      JSON.stringify({
+        id: 'rmt00003',
+        createdMs: Date.now(),
+        items: [{ kind: 'reminder', title: 'X', whenMs: anchor }], // без baseWhenMs/shiftMin
+      }),
+    );
+    await postCb('rmt00003', 's');
+    const stored = JSON.parse(kv.get('assistantPending')!);
+    expect(stored.items[0].whenMs).toBe(anchor + 15 * 60_000);
+  });
+
+  it('reminder НЕ єдиний пункт (мультипропозиція) -> pd:s «Застаріла», не циклить', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify({
+        id: 'rmt00004',
+        createdMs: Date.now(),
+        items: [
+          {
+            kind: 'reminder',
+            title: 'X',
+            whenMs: Date.now() + 3_600_000,
+            baseWhenMs: Date.now(),
+            shiftMin: 0,
+          },
+          { kind: 'contact', title: 'Y', email: 'y@x.com' },
+        ],
+      }),
+    );
+    await postCb('rmt00004', 's');
     expect(toast()).toContain('Застаріла');
   });
 });
