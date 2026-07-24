@@ -253,6 +253,133 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
   return null;
 }
 
+/* ── Частини доби («вранці»/«в обід»/«після обіду»/«ввечері» тощо) ────────────
+   parseReminderTime НІКОЛИ не вгадує конкретну годину сама (той самий інваріант,
+   що для "в обід"/LLM-рерайту, шапка файлу) — фраза частини доби мапиться лише
+   в ДІАПАЗОН годин. Яку саме годину в діапазоні запропонувати, вирішує worker.js
+   (readCalendarRange -> pickDayPartSlot нижче): вільна година в діапазоні, якщо
+   є; інакше чесний запасний варіант. Результат ЗАВЖДИ іде через staged-confirm
+   (proposeCalendarChanges), НЕ через пряме createReminder — власник бачить
+   запропонований час і може підправити його циклером 🕐 до підтвердження. */
+
+/**
+ * Фрази частини доби -> діапазон годин. Порядок важливий (перший збіг
+ * перемагає): «після обіду» — ОКРЕМА (пізніша) частина доби від «в обід»
+ * (обід сам по собі), інші форми слова не перетинаються.
+ */
+export const DAY_PART_RANGES = [
+  { label: 'вранці', re: /(?<![а-яіїєґ])(вранці|зранку)(?![а-яіїєґ])/i, startHour: 7, endHour: 10 },
+  {
+    label: 'після обіду',
+    re: /(?<![а-яіїєґ])після\s+обід[уі]?(?![а-яіїєґ])/i,
+    startHour: 14,
+    endHour: 17,
+  },
+  {
+    label: 'в обід',
+    // Опційний прийменник ("в"/"на") — усередині ЦЬОГО Ж збігу (m[0]), інакше
+    // cleanRemainder стирає лише "обід" і лишає осиротілий прийменник у тексті.
+    re: /(?<![а-яіїєґ])(?:(?:в|на)\s+)?обід(?![а-яіїєґ])/i,
+    startHour: 12,
+    endHour: 14,
+  },
+  { label: 'вдень', re: /(?<![а-яіїєґ])(вдень|удень)(?![а-яіїєґ])/i, startHour: 11, endHour: 17 },
+  {
+    label: 'ввечері',
+    re: /(?<![а-яіїєґ])(ввечері|увечері|вечором)(?![а-яіїєґ])/i,
+    startHour: 18,
+    endHour: 21,
+  },
+  { label: 'вночі', re: /(?<![а-яіїєґ])вночі(?![а-яіїєґ])/i, startHour: 21, endHour: 23 },
+];
+
+/**
+ * Розпізнати фразу частини доби -> {label,startHour,endHour,matched,forcedDay,
+ * remainder}|null. Явна година в тексті ("о 8") -> null: той випадок уже
+ * покриває окремий, наявний шлях (LLM-рерайт конвертує "ввечері о 8" в
+ * "о 20:00" — тут вгадувати діапазон не треба, година вже відома).
+ *
+ * forcedDay: 'tomorrow'/'today', коли текст явно каже «завтра»/«сьогодні»
+ * поруч (worker.js звужує пошук вільної години до ОДНОГО дня); null -> не
+ * вказано, шукати можна і сьогодні, і завтра.
+ */
+export function matchDayPartRange(rawText) {
+  if (typeof rawText !== 'string' || !rawText) return null;
+  const text = stripTrigger(rawText.trim());
+  if (!text || extractTime(text)) return null;
+  for (const part of DAY_PART_RANGES) {
+    const m = text.match(part.re);
+    if (!m) continue;
+    const dayWord = text.match(/(?<![а-яіїєґ])(завтра|сьогодні)(?![а-яіїєґ])/i);
+    return {
+      label: part.label,
+      startHour: part.startHour,
+      endHour: part.endHour,
+      matched: m[0],
+      forcedDay: dayWord ? (/завтра/i.test(dayWord[1]) ? 'tomorrow' : 'today') : null,
+      remainder: cleanRemainder(text, [m[0], dayWord?.[0]]),
+    };
+  }
+  return null;
+}
+
+// Тривалість слоту, що перевіряємо на зайнятість (хв) — нагадування миттєве,
+// але перевіряємо ширше за секунду: не пропонувати час, що впаде всередину
+// зустрічі, яка вже почалась чи от-от почнеться.
+const SLOT_CHECK_MIN = 30;
+
+/**
+ * Перша вільна ГОДИНА (рівно HH:00) у [startHour,endHour) заданої дати (Київ),
+ * що не перетинається з жодною подією `events` ({startMs,endMs}[] — той самий
+ * формат, що calendar-core.parseEvents). `nowMs` відсікає вже минулі години
+ * (0 -> нічого не минуло, для «завтра», де це не має сенсу). Немає вільної ->
+ * null (викликач сам вирішує запасний варіант).
+ */
+export function findFreeHourInRange(events, dateKey, startHour, endHour, nowMs = 0) {
+  const list = Array.isArray(events) ? events : [];
+  for (let h = startHour; h < endHour; h++) {
+    const slotStart = kyivHmToUtcMs(dateKey, h, 0);
+    if (!Number.isFinite(slotStart) || slotStart <= nowMs) continue;
+    const slotEnd = slotStart + SLOT_CHECK_MIN * MINUTE;
+    const busy = list.some(
+      (e) =>
+        e &&
+        Number.isFinite(e.startMs) &&
+        Number.isFinite(e.endMs) &&
+        e.startMs < slotEnd &&
+        e.endMs > slotStart,
+    );
+    if (!busy) return h;
+  }
+  return null;
+}
+
+/**
+ * Обрати {dateKey,hour,isToday} серед кандидатних днів — перший із вільною
+ * годиною в діапазоні перемагає (findFreeHourInRange, по черзі). Жодного
+ * вільного -> запасний варіант: startHour першого дня, де діапазон ще НЕ
+ * минув повністю (endMs > nowMs); якщо взагалі ніде — startHour найпершого
+ * дня зі списку. Це чесний найкращий варіант, а не відмова: confirm-екран
+ * покаже запропонований час, власник підправить циклером 🕐, якщо не підходить.
+ *
+ * `days` = [{dateKey, events, nowMs, isToday}] у порядку пріоритету (типово
+ * сьогодні тоді завтра; worker.js звужує до одного дня, коли forcedDay заданий).
+ */
+export function pickDayPartSlot(days, startHour, endHour) {
+  for (const day of days) {
+    const h = findFreeHourInRange(day.events, day.dateKey, startHour, endHour, day.nowMs ?? 0);
+    if (h != null) return { dateKey: day.dateKey, hour: h, isToday: Boolean(day.isToday) };
+  }
+  for (const day of days) {
+    const endMs = kyivHmToUtcMs(day.dateKey, endHour, 0);
+    if (!Number.isFinite(day.nowMs) || !Number.isFinite(endMs) || endMs > day.nowMs) {
+      return { dateKey: day.dateKey, hour: startHour, isToday: Boolean(day.isToday) };
+    }
+  }
+  const first = days[0];
+  return { dateKey: first.dateKey, hour: startHour, isToday: Boolean(first.isToday) };
+}
+
 /** Додати нагадування (id/nowMs — від виклику, щоб функція лишалась чистою). */
 export function addReminder(reminders, { id, text, whenMs, nowMs }) {
   const list = Array.isArray(reminders) ? reminders : [];

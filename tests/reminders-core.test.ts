@@ -34,6 +34,10 @@ const {
   addDaysToDateKey,
   DEFAULT_DATE_HOUR,
   CANONICAL_EXAMPLES,
+  DAY_PART_RANGES,
+  matchDayPartRange,
+  findFreeHourInRange,
+  pickDayPartSlot,
 } = rem;
 
 // Літо (EEST, UTC+3): 2026-07-10 11:00 Київ.
@@ -231,6 +235,176 @@ describe('reminders-core — parseReminderTime: голе "о HH[:MM]"', () => {
     expect(parseReminderTime('привіт, як справи?', SUMMER_NOW)).toBeNull();
     expect(parseReminderTime('', SUMMER_NOW)).toBeNull();
     expect(parseReminderTime(undefined, SUMMER_NOW)).toBeNull();
+  });
+});
+
+describe('reminders-core — matchDayPartRange (частини доби без явної години)', () => {
+  it('розпізнає базові фрази -> правильний діапазон і remainder', () => {
+    expect(matchDayPartRange('нагадай вранці зробити зарядку')).toEqual({
+      label: 'вранці',
+      startHour: 7,
+      endHour: 10,
+      matched: 'вранці',
+      forcedDay: null,
+      remainder: 'зробити зарядку',
+    });
+    expect(matchDayPartRange('нагадай в обід подзвонити мамі')).toMatchObject({
+      label: 'в обід',
+      startHour: 12,
+      endHour: 14,
+      remainder: 'подзвонити мамі',
+    });
+    expect(matchDayPartRange('нагадай ввечері полити квіти')).toMatchObject({
+      label: 'ввечері',
+      startHour: 18,
+      endHour: 21,
+    });
+  });
+
+  it('«після обіду» — ОКРЕМИЙ, пізніший діапазон від голого «в обід»', () => {
+    const r = matchDayPartRange('нагадай після обіду зробити х');
+    expect(r).toMatchObject({ label: 'після обіду', startHour: 14, endHour: 17 });
+    expect(r.remainder).toBe('зробити х');
+  });
+
+  it('«обіду» (генітив, тільки в "після обіду") НЕ хибно ловиться голим "в обід"', () => {
+    // Якби регекс "в обід" збігався тут, діапазон був би 12-14, не 14-17.
+    expect(matchDayPartRange('нагадай після обіду щось')?.startHour).toBe(14);
+  });
+
+  it('явна година в тексті -> null (це вже шлях LLM-рерайту, не діапазон)', () => {
+    expect(matchDayPartRange('нагадай ввечері о 20:00 щось')).toBeNull();
+    expect(matchDayPartRange('нагадай о 8')).toBeNull();
+  });
+
+  it('"завтра"/"сьогодні" поруч -> forcedDay, знятий з remainder', () => {
+    expect(matchDayPartRange('нагадай завтра вранці зробити зарядку')).toEqual({
+      label: 'вранці',
+      startHour: 7,
+      endHour: 10,
+      matched: 'вранці',
+      forcedDay: 'tomorrow',
+      remainder: 'зробити зарядку',
+    });
+    expect(matchDayPartRange('нагадай сьогодні в обід щось')?.forcedDay).toBe('today');
+  });
+
+  it('немає фрази частини доби -> null', () => {
+    expect(matchDayPartRange('нагадай купити молоко')).toBeNull();
+    expect(matchDayPartRange('')).toBeNull();
+    expect(matchDayPartRange(undefined)).toBeNull();
+  });
+
+  it('DAY_PART_RANGES — усі діапазони валідні (start < end, 0-23)', () => {
+    for (const part of DAY_PART_RANGES) {
+      expect(part.startHour).toBeGreaterThanOrEqual(0);
+      expect(part.endHour).toBeLessThanOrEqual(23);
+      expect(part.startHour).toBeLessThan(part.endHour);
+    }
+  });
+});
+
+describe('reminders-core — findFreeHourInRange', () => {
+  const DATE = '2026-07-10';
+
+  it('немає подій -> перша година діапазону', () => {
+    expect(findFreeHourInRange([], DATE, 12, 14, 0)).toBe(12);
+  });
+
+  it('перша година зайнята -> наступна вільна', () => {
+    const busyAt12 = Date.parse('2026-07-10T09:00:00Z'); // 12:00 Київ (літо, +3)
+    const events = [{ startMs: busyAt12, endMs: busyAt12 + 30 * 60_000 }];
+    expect(findFreeHourInRange(events, DATE, 12, 14, 0)).toBe(13);
+  });
+
+  it('увесь діапазон зайнятий -> null', () => {
+    const start = Date.parse('2026-07-10T09:00:00Z'); // 12:00 Київ
+    const events = [{ startMs: start, endMs: start + 2 * 60 * 60_000 }]; // 12:00-14:00
+    expect(findFreeHourInRange(events, DATE, 12, 14, 0)).toBeNull();
+  });
+
+  it('nowMs відсікає вже минулі години', () => {
+    // Зараз 12:30 Київ -> година 12:00 уже минула, лишається 13.
+    const now = Date.parse('2026-07-10T09:30:00Z');
+    expect(findFreeHourInRange([], DATE, 12, 14, now)).toBe(13);
+  });
+
+  it('події без валідних startMs/endMs ігноруються (не валять перевірку)', () => {
+    expect(findFreeHourInRange([{ startMs: NaN, endMs: NaN }, null, {}], DATE, 12, 13, 0)).toBe(12);
+  });
+});
+
+describe('reminders-core — pickDayPartSlot', () => {
+  it('сьогодні вільно -> обирає сьогодні', () => {
+    const slot = pickDayPartSlot(
+      [
+        { dateKey: '2026-07-10', events: [], nowMs: 0, isToday: true },
+        { dateKey: '2026-07-11', events: [], nowMs: 0, isToday: false },
+      ],
+      12,
+      14,
+    );
+    expect(slot).toEqual({ dateKey: '2026-07-10', hour: 12, isToday: true });
+  });
+
+  it('сьогодні все зайнято -> перепадає на завтра', () => {
+    const busyStart = Date.parse('2026-07-10T09:00:00Z'); // 12:00 Київ
+    const todayEvents = [{ startMs: busyStart, endMs: busyStart + 2 * 60 * 60_000 }]; // 12-14 зайнято
+    const slot = pickDayPartSlot(
+      [
+        { dateKey: '2026-07-10', events: todayEvents, nowMs: 0, isToday: true },
+        { dateKey: '2026-07-11', events: [], nowMs: 0, isToday: false },
+      ],
+      12,
+      14,
+    );
+    expect(slot).toEqual({ dateKey: '2026-07-11', hour: 12, isToday: false });
+  });
+
+  it('усі дні зайняті -> запасний варіант: startHour першого дня, де діапазон ще не минув', () => {
+    const busyToday = Date.parse('2026-07-10T09:00:00Z');
+    const todayEvents = [{ startMs: busyToday, endMs: busyToday + 2 * 60 * 60_000 }];
+    const busyTomorrow = Date.parse('2026-07-11T09:00:00Z');
+    const tomorrowEvents = [{ startMs: busyTomorrow, endMs: busyTomorrow + 2 * 60 * 60_000 }];
+    const slot = pickDayPartSlot(
+      [
+        { dateKey: '2026-07-10', events: todayEvents, nowMs: 0, isToday: true },
+        { dateKey: '2026-07-11', events: tomorrowEvents, nowMs: 0, isToday: false },
+      ],
+      12,
+      14,
+    );
+    // Обидва дні "зайняті", але жоден technically не "минув" (nowMs=0) -> перший у списку.
+    expect(slot).toEqual({ dateKey: '2026-07-10', hour: 12, isToday: true });
+  });
+
+  it('сьогоднішній діапазон уже минув (пізній вечір) -> фолбек одразу на завтра, не сьогодні', () => {
+    // Зараз 22:00 Київ (10.07); діапазон 12-14 давно позаду, попри "вільні" (без подій) години.
+    const now = Date.parse('2026-07-10T19:00:00Z');
+    const busyTomorrowStart = Date.parse('2026-07-11T09:00:00Z'); // 12:00 Київ 11.07 — теж зайнято
+    const tomorrowEvents = [
+      { startMs: busyTomorrowStart, endMs: busyTomorrowStart + 2 * 60 * 60_000 },
+    ];
+    const slot = pickDayPartSlot(
+      [
+        { dateKey: '2026-07-10', events: [], nowMs: now, isToday: true },
+        { dateKey: '2026-07-11', events: tomorrowEvents, nowMs: 0, isToday: false },
+      ],
+      12,
+      14,
+    );
+    expect(slot.dateKey).toBe('2026-07-11');
+  });
+
+  it('один день у списку (forcedDay звузив вибір) — і той зайнятий -> все одно startHour цього дня', () => {
+    const busyStart = Date.parse('2026-07-11T09:00:00Z');
+    const events = [{ startMs: busyStart, endMs: busyStart + 2 * 60 * 60_000 }];
+    const slot = pickDayPartSlot(
+      [{ dateKey: '2026-07-11', events, nowMs: 0, isToday: false }],
+      12,
+      14,
+    );
+    expect(slot).toEqual({ dateKey: '2026-07-11', hour: 12, isToday: false });
   });
 });
 

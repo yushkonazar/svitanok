@@ -93,6 +93,14 @@ const lastEditText = () =>
     | undefined;
 
 beforeEach(() => {
+  // Фікстури нижче хардкодять '2026-07-24' як "майбутню" подію відносно
+  // якогось ранішого "зараз" — без пінінгу годинника цей файл був тіканням
+  // бомби: тест ламався сам собою, щойно реальний UTC-час переступав 12:00
+  // того самого дня (now-фільтр /agenda рахує за startMs, не endMs). Пінимо
+  // "зараз" ДО 12:00 UTC, як і решта файлів цього проєкту (worker-agent-step.test.ts).
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-07-24T09:00:00Z'));
+
   kv = new Map();
   tg = [];
   cal = [];
@@ -174,7 +182,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe('/agenda — список найближчих подій', () => {
   it('показує майбутню подію, ховає минулу (now-фільтр)', async () => {
