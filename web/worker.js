@@ -150,6 +150,7 @@ import {
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
+import { parseOneCall, mergeAqi } from './weather-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -680,6 +681,120 @@ async function handleSaved(request, env) {
     limit: url.searchParams.get('limit'),
   });
   return json({ ok: true, ...page });
+}
+
+// Ті самі локації, що config.yml locations (оркестратор) — Worker НЕ читає
+// config.yml (окремий деплой, без збірки з src/), тож хардкодимо дзеркалом.
+// ⚠️ Зміниш локації в config.yml -> онови й тут.
+const WEATHER_LOCATIONS = [
+  { lat: 49.8397, lon: 24.0297, name: 'Львів' },
+  { lat: 51.12, lon: 26.46, name: 'Немовичі' },
+];
+const WEATHER_LIVE_TTL_MS = 30 * 60_000; // 30 хв — реальна свіжість, не «застигле» з брифінгу
+// Захисний лічильник — та сама причина, що DAILY_REQUEST_LIMIT в src/modules/
+// weather.ts (спільний OpenWeather-ключ/квота), менший ліміт: тут це «скільки
+// РАЗІВ на добу Mini App може оновити кеш», не «скільки запитів на локацію».
+const WEATHER_LIVE_DAILY_LIMIT = 50;
+
+/**
+ * GET /api/weather -> жива погода (PR-7, фідбек власника: статична температура
+ * з ранкового брифінгу вже за обідом не відповідала дійсності). Owner-gated,
+ * кешовано в KV (weatherLive, ~30 хв) — той самий OpenWeather-ключ ділиться з
+ * оркестратором, тож живий фетч НЕ на кожне відкриття Mini App.
+ */
+async function handleLiveWeather(request, env) {
+  const auth = await checkOwnerRead(request, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  const nowMs = Date.now();
+  let cached;
+  try {
+    cached = JSON.parse((await env.BRIEFING.get('weatherLive')) ?? 'null');
+  } catch {
+    cached = null;
+  }
+  if (
+    cached &&
+    Number.isFinite(cached.fetchedAtMs) &&
+    nowMs - cached.fetchedAtMs < WEATHER_LIVE_TTL_MS
+  ) {
+    return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+  }
+
+  if (!env.WEATHER_API_KEY) {
+    // Немає ключа на Worker-боці (лише в GH Actions secrets, окремий деплой) —
+    // graceful: фронт фолбекає на снапшот брифінгу, не показує помилку.
+    return json({ ok: false, error: 'not-configured' }, 503);
+  }
+
+  const today = kyivDateKey();
+  let counter;
+  try {
+    counter = JSON.parse((await env.BRIEFING.get('weatherLiveCounter')) ?? 'null');
+  } catch {
+    counter = null;
+  }
+  if (!counter || counter.date !== today) counter = { date: today, count: 0 };
+  if (counter.count >= WEATHER_LIVE_DAILY_LIMIT) {
+    // Ліміт вичерпано -> віддати БУДЬ-ЯКИЙ наявний кеш (навіть протухлий) —
+    // краще вчорашнє число, ніж зовсім нічого; фолбек на брифінг лишається
+    // клієнту, якщо кешу взагалі немає.
+    if (cached)
+      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+    return json({ ok: false, error: 'rate-limited' }, 429);
+  }
+
+  const todayKey = today;
+  const fetchLocation = async (loc) => {
+    counter.count++;
+    const oneCallUrl = new URL('https://api.openweathermap.org/data/3.0/onecall');
+    oneCallUrl.searchParams.set('lat', String(loc.lat));
+    oneCallUrl.searchParams.set('lon', String(loc.lon));
+    oneCallUrl.searchParams.set('units', 'metric');
+    oneCallUrl.searchParams.set('lang', 'ua');
+    oneCallUrl.searchParams.set('exclude', 'minutely');
+    oneCallUrl.searchParams.set('appid', env.WEATHER_API_KEY);
+    const res = await fetch(oneCallUrl.toString());
+    if (!res.ok) throw new Error(`OpenWeather HTTP ${res.status}`);
+    const parsed = parseOneCall(await res.json(), loc.name, todayKey);
+    if (!parsed) throw new Error(`порожній onecall для ${loc.name}`);
+
+    counter.count++;
+    try {
+      const aqiUrl = new URL('https://api.openweathermap.org/data/2.5/air_pollution');
+      aqiUrl.searchParams.set('lat', String(loc.lat));
+      aqiUrl.searchParams.set('lon', String(loc.lon));
+      aqiUrl.searchParams.set('appid', env.WEATHER_API_KEY);
+      const aqiRes = await fetch(aqiUrl.toString());
+      if (aqiRes.ok) {
+        const aqi = mergeAqi(await aqiRes.json());
+        if (aqi !== undefined) parsed.aqi = aqi;
+      }
+    } catch {
+      /* AQI — довантаження понад основне; збій не валить локацію */
+    }
+    return parsed;
+  };
+
+  const results = await Promise.allSettled(WEATHER_LOCATIONS.map(fetchLocation));
+  await env.BRIEFING.put('weatherLiveCounter', JSON.stringify(counter));
+
+  const locations = [];
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') locations.push(r.value);
+    else console.error(`жива погода для ${WEATHER_LOCATIONS[i].name} впала:`, r.reason?.message);
+  });
+
+  if (locations.length === 0) {
+    // Усі локації впали -> віддати старий кеш, якщо є, інакше чесна відмова
+    // (клієнт фолбекає на снапшот брифінгу).
+    if (cached)
+      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+    return json({ ok: false, error: 'upstream-failed' }, 502);
+  }
+
+  await env.BRIEFING.put('weatherLive', JSON.stringify({ locations, fetchedAtMs: nowMs }));
+  return json({ ok: true, locations, fetchedAtMs: nowMs });
 }
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
@@ -3690,6 +3805,9 @@ export default {
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
+    }
+    if (url.pathname === '/api/weather') {
+      return handleLiveWeather(request, env);
     }
     if (url.pathname === '/api/settings') {
       return handleSettings(request, env);

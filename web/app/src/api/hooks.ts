@@ -8,6 +8,7 @@ import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
   fetchBriefing,
+  fetchLiveWeather,
   fetchSettings,
   fetchSaved,
   postEvent,
@@ -34,6 +35,23 @@ export function useStats() {
 
 export function useBriefing() {
   return useQuery({ queryKey: ['brief'], queryFn: fetchBriefing });
+}
+
+/**
+ * Жива погода (PR-7) — окрема, незалежна черга від ['brief']: снапшот брифінгу
+ * лишається як фолбек (WeatherBlock отримує обидва, воліє живі дані). Worker
+ * сам кешує на ~30 хв (спільний OpenWeather-ключ/квота з оркестратором), тож
+ * 5-хвилинний refetchInterval здебільшого просто б'є в KV-кеш, не в OpenWeather.
+ * retry:0 — fetchLiveWeather і так ніколи не кидає (null = «нема живих
+ * даних», не помилка), ретраї лише додали б затримку до фолбеку.
+ */
+export function useLiveWeather() {
+  return useQuery({
+    queryKey: ['liveWeather'],
+    queryFn: fetchLiveWeather,
+    refetchInterval: 5 * 60_000,
+    retry: 0,
+  });
 }
 
 /** Оновити ['stats'] в кеші, зберігши обгортку StatsResult. */
