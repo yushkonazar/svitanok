@@ -62,6 +62,8 @@ import {
   parseReminderCancelCallbackData,
   buildReminderEditCallbackData,
   parseReminderEditCallbackData,
+  parseReminderDoneCallbackData,
+  formatReminderDone,
   snoozeReminderPreset,
   parseReminderSnoozeCallbackData,
   buildSnoozeRow,
@@ -2754,6 +2756,35 @@ async function resolveReminderCancel(env, parsed, reminderId) {
 }
 
 /**
+ * Обробити `rk:<id>` («✅ Виконано», фідбек власника) — на відміну від
+ * snooze/cancel (лише тік кнопки, resolveReminderAction) тут ПЕРЕПИСУЄМО ВСЕ
+ * повідомлення (editMessageText) і прибираємо клавіатуру ПОВНІСТЮ (порожній
+ * inline_keyboard) — вимога явно каже «всі кнопки прибираються, статус видно
+ * одразу», а не просто тік однієї з них. Мутація — те саме справжнє видалення,
+ * що cancelReminder (нема окремого поля done — статус лише через видалення,
+ * той самий інваріант, що вже задокументовано в reminders-core.mjs).
+ */
+async function resolveReminderDone(env, parsed, reminderId) {
+  const state = await loadState(env);
+  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
+  const reminder = reminders.find((r) => r.id === reminderId);
+  if (!reminder) return '⚠️ Це нагадування вже неактуальне.';
+
+  state.reminders = cancelReminder(reminders, reminderId);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  if (parsed.chatId != null && parsed.messageId != null) {
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: formatReminderDone(reminder.text),
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+  return '✅ Виконано';
+}
+
+/**
  * Обробити `rc:all` (extra c, пакетне скасування) — на відміну від решти
  * reminder-дій, тут ціле повідомлення переписується (editMessageText), не
  * лише тік кнопки: список активних змінюється ПОВНІСТЮ, старий текст одразу
@@ -3293,6 +3324,7 @@ async function processTelegramUpdate(env, parsed, origin) {
       const roadmapCb = parseRoadmapCallbackData(parsed.data);
       const reminderCancelId = parseReminderCancelCallbackData(parsed.data); // 'rc:' — §C4
       const reminderEditId = parseReminderEditCallbackData(parsed.data); // 'ru:' — CRUD
+      const reminderDoneId = parseReminderDoneCallbackData(parsed.data); // 'rk:' — «✅ Виконано»
       const snoozePreset = parseReminderSnoozeCallbackData(parsed.data); // 'rs:' — extra b
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
@@ -3308,20 +3340,22 @@ async function processTelegramUpdate(env, parsed, origin) {
                 ? await resolveReminderCancel(env, parsed, reminderCancelId)
                 : reminderEditId
                   ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
-                  : snoozePreset
-                    ? await resolveReminderSnoozePreset(
-                        env,
-                        parsed,
-                        snoozePreset.presetIdx,
-                        snoozePreset.id,
-                      )
-                    : isReminderSnooze
-                      ? await resolveReminderSnooze(
+                  : reminderDoneId
+                    ? await resolveReminderDone(env, parsed, reminderDoneId)
+                    : snoozePreset
+                      ? await resolveReminderSnoozePreset(
                           env,
                           parsed,
-                          parsed.data.slice(REMINDER_CB_PREFIX.length),
+                          snoozePreset.presetIdx,
+                          snoozePreset.id,
                         )
-                      : await resolveCallbackToast(env, parsed);
+                      : isReminderSnooze
+                        ? await resolveReminderSnooze(
+                            env,
+                            parsed,
+                            parsed.data.slice(REMINDER_CB_PREFIX.length),
+                          )
+                        : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,
