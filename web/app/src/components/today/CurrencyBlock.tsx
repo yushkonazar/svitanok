@@ -1,12 +1,14 @@
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import type { CurrencyData } from '../../api/briefing-schema.ts';
-import { has } from '../../lib/format.ts';
+import { has, pctChange, windowMinMax } from '../../lib/format.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionLabel, Ph } from '../ui/primitives.tsx';
 
-// Курс НБУ (дизайн v2, Svitanok.dc.html): рядок на валюту — кружечок-символ,
-// код, міні-спарклайн, дельта, велике значення. Перша валюта акцентована
-// (кораловий бейдж + градієнтний спарклайн), решта — приглушені.
+// Курс НБУ (дизайн v2, Svitanok.dc.html + PR-8): рядок на валюту — кружечок-
+// символ, код, міні-спарклайн, дельта (з % — не лайв-стан, а зручність
+// відстеження зміни, фідбек власника), велике значення. Перша валюта
+// акцентована (кораловий бейдж + градієнтний спарклайн + тижневий мін/макс під
+// заголовком), решта — приглушені. Тап на рядок розкриває міні-конвертер.
 
 const DEFS = [
   { key: 'usd', hk: 'usdHistory', sym: '$', label: 'USD' },
@@ -14,6 +16,12 @@ const DEFS = [
   { key: 'pln', hk: 'plnHistory', sym: 'zł', label: 'PLN' },
   { key: 'gbp', hk: 'gbpHistory', sym: '£', label: 'GBP' },
 ] as const;
+
+// Поріг «стрічка» (⚡) — денна зміна, що впадає в очі. 1% на курсі валют за
+// добу — реально помітний рух, не шум округлення НБУ.
+const SPIKE_PCT = 1;
+const WEEK_DAYS = 7;
+const DEFAULT_AMOUNT = 100;
 
 const SW = 58;
 const SH = 18;
@@ -75,6 +83,16 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
   const [ref, inView] = useInView<HTMLDivElement>();
   const rows = d ? DEFS.filter((def) => has(d[def.key])) : [];
 
+  // Конвертер (PR-8, п.6.3) — розкритий рядок + сума. ОДИН спільний amount:
+  // перемикаючись між валютами, власник порівнює ту саму суму, не вводить
+  // наново. Скидання при закритті свідомо НЕ робимо — тап назад на той самий
+  // рядок має пам'ятати, що вже вводив.
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [amount, setAmount] = useState(DEFAULT_AMOUNT);
+
+  const accentMinMax =
+    rows.length && d ? windowMinMax((d[rows[0].hk] as number[] | undefined) ?? [], WEEK_DAYS) : null;
+
   return (
     <div ref={ref} className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
@@ -83,6 +101,13 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
             підписувались би сьогоднішнім числом */}
         {date && <span className="ml-auto font-mono text-[10px] font-medium text-tx3">{date}</span>}
       </div>
+      {/* Тижневий мін/макс (п.6.2) — лише акцентна валюта, щоб не захаращувати
+          кожен рядок: один орієнтир «де ми в діапазоні тижня» досить. */}
+      {accentMinMax && (
+        <div className="font-mono text-[10px] text-tx3">
+          {rows[0]!.label} за {WEEK_DAYS}Д: {accentMinMax.min.toFixed(2)}–{accentMinMax.max.toFixed(2)}
+        </div>
+      )}
 
       {rows.length && d ? (
         <>
@@ -99,41 +124,91 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
             const hist = (d[def.hk] as number[] | undefined) ?? [];
             const prev = hist.length >= 2 ? hist[hist.length - 2] : null;
             const dd = prev != null ? value - prev : null;
+            const pct = prev != null ? pctChange(value, prev) : null;
+            const spike = pct != null && Math.abs(pct) >= SPIKE_PCT;
             const accent = i === 0;
+            const isOpen = expanded === def.key;
+            const deltaColor =
+              dd == null || dd === 0
+                ? 'var(--color-tx3)'
+                : dd > 0
+                  ? 'var(--color-pos)'
+                  : 'var(--color-neg)';
             return (
-              <div key={def.key} className="flex items-center gap-2.5 py-1.5">
-                <div
-                  className="grid h-7 w-7 flex-none place-items-center rounded-full border font-mono text-xs font-bold"
-                  style={
-                    accent
-                      ? {
-                          background: 'rgba(255,164,92,.12)',
-                          borderColor: 'rgba(255,164,92,.28)',
-                          color: 'var(--color-a2)',
-                        }
-                      : {
-                          background: 'var(--color-glass)',
-                          borderColor: 'var(--color-glassb)',
-                          color: 'var(--color-tx2)',
-                        }
-                  }
+              <div key={def.key} className="flex flex-col">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : def.key)}
+                  aria-expanded={isOpen}
+                  className="flex w-full items-center gap-2.5 border-0 bg-transparent p-0 py-1.5 text-left"
                 >
-                  {def.sym}
-                </div>
-                <span className="w-[34px] font-mono text-xs font-semibold">{def.label}</span>
-                <Spark hist={hist} accent={accent} gradId={gradId} play={inView} delay={i * 90} />
-                {dd != null && (
-                  <span
-                    className="font-mono text-[10.5px] font-medium"
-                    style={{ color: dd > 0 ? 'var(--color-pos)' : dd < 0 ? 'var(--color-neg)' : 'var(--color-tx3)' }}
+                  <div
+                    className="grid h-7 w-7 flex-none place-items-center rounded-full border font-mono text-xs font-bold"
+                    style={
+                      accent
+                        ? {
+                            background: 'rgba(255,164,92,.12)',
+                            borderColor: 'rgba(255,164,92,.28)',
+                            color: 'var(--color-a2)',
+                          }
+                        : {
+                            background: 'var(--color-glass)',
+                            borderColor: 'var(--color-glassb)',
+                            color: 'var(--color-tx2)',
+                          }
+                    }
                   >
-                    {dd > 0 ? '↑' : dd < 0 ? '↓' : '→'}
-                    {Math.abs(dd).toFixed(2)}
-                  </span>
+                    {def.sym}
+                  </div>
+                  <span className="w-[34px] font-mono text-xs font-semibold">{def.label}</span>
+                  <Spark hist={hist} accent={accent} gradId={gradId} play={inView} delay={i * 90} />
+                  {dd != null && (
+                    <span
+                      className="flex items-center gap-0.5 font-mono text-[10.5px] font-medium"
+                      style={{ color: deltaColor }}
+                    >
+                      {/* Бейдж «стрибок» (п.6.4) — денна зміна ≥1%, впадає в очі. */}
+                      {spike && <span title="Помітна зміна за добу">⚡</span>}
+                      {dd > 0 ? '↑' : dd < 0 ? '↓' : '→'}
+                      {Math.abs(dd).toFixed(2)}
+                      {/* % зміни поруч з абсолютною (п.6.1) — «+0.32» саме по
+                          собі не каже, це багато чи мало для ЦІЄЇ валюти. */}
+                      {pct != null && (
+                        <span className="text-tx3">
+                          {' '}
+                          ({pct > 0 ? '+' : pct < 0 ? '−' : ''}
+                          {Math.abs(pct).toFixed(1)}%)
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {/* toFixed(2) — як у макеті: без нього 59.4 губить хвостовий
+                      нуль і колонка значень «стрибає» в моно-шрифті */}
+                  <span className="ml-auto font-mono text-base font-semibold">{value.toFixed(2)}</span>
+                </button>
+
+                {/* Конвертер «скільки в грн» (п.6.3) — tap-to-expand, той самий
+                    інтеракційний патерн, що «Відповідь ↓» у QuestionBlock. */}
+                {isOpen && (
+                  <div
+                    className="flex items-center gap-2 py-1 pl-9 text-[11.5px] text-tx2"
+                    style={{ animation: 'fadeUp .2s ease' }}
+                  >
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={amount}
+                      onChange={(e) => setAmount(Number(e.target.value) || 0)}
+                      className="w-16 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11.5px]"
+                      aria-label={`Сума в ${def.label}`}
+                    />
+                    <span className="font-mono">{def.sym}</span>
+                    <span className="text-tx3">=</span>
+                    <span className="font-mono font-semibold text-tx">
+                      {(amount * value).toFixed(2)} ₴
+                    </span>
+                  </div>
                 )}
-                {/* toFixed(2) — як у макеті: без нього 59.4 губить хвостовий
-                    нуль і колонка значень «стрибає» в моно-шрифті */}
-                <span className="ml-auto font-mono text-base font-semibold">{value.toFixed(2)}</span>
               </div>
             );
           })}
