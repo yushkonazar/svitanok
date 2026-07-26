@@ -7,6 +7,10 @@ import { describe, it, expect } from 'vitest';
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { checkinSlot, checkinDateKey } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { CHECKIN_NUDGE_WINDOWS, matchCheckinNudgeWindow } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { shouldSendCheckinNudge } from '../web/stats-core.mjs';
 
 // Щоденний чек-ін (фідбек власника, п.7). Межі 08:00 / 14:00 / 20:00 — рішення
 // власника; вечір іде до 02:00, 02:00–07:59 — тиха зона.
@@ -473,5 +477,51 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     }
     const r = aggregateStats(s, '2026-06-16').bedtimeVsEnergy;
     expect([r.early, r.late]).toEqual([0, 0]);
+  });
+});
+
+describe('matchCheckinNudgeWindow — вікна нагадувань про чек-ін', () => {
+  it('усередині вікна -> правильний слот; поза вікном -> null', () => {
+    expect(matchCheckinNudgeWindow(780)?.slot).toBe('morning'); // 13:00
+    expect(matchCheckinNudgeWindow(809)?.slot).toBe('morning'); // 13:29
+    expect(matchCheckinNudgeWindow(810)).toBeNull(); // 13:30 — межа виключена
+    expect(matchCheckinNudgeWindow(1140)?.slot).toBe('afternoon'); // 19:00
+    expect(matchCheckinNudgeWindow(1350)?.slot).toBe('evening'); // 22:30
+    expect(matchCheckinNudgeWindow(0)).toBeNull(); // північ
+    expect(matchCheckinNudgeWindow(600)).toBeNull(); // 10:00 — узагалі поза вікнами
+  });
+
+  it('вікна не перетинаються й усі мають text/slot', () => {
+    for (const w of CHECKIN_NUDGE_WINDOWS) {
+      expect(w.fromMin).toBeLessThan(w.toMin);
+      expect(typeof w.text).toBe('string');
+      expect(w.text.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('shouldSendCheckinNudge — гейт (тихі години / вже нагадали / слот заповнено)', () => {
+  it('усі прапорці false -> надіслати', () => {
+    expect(
+      shouldSendCheckinNudge({ quiet: false, alreadyNudgedToday: false, slotFilled: false }),
+    ).toBe(true);
+  });
+
+  it('тихі години -> НЕ слати, навіть якщо слот порожній і ще не нагадували', () => {
+    expect(
+      shouldSendCheckinNudge({ quiet: true, alreadyNudgedToday: false, slotFilled: false }),
+    ).toBe(false);
+  });
+
+  it('уже нагадали цей слот сьогодні -> НЕ слати вдруге', () => {
+    expect(
+      shouldSendCheckinNudge({ quiet: false, alreadyNudgedToday: true, slotFilled: false }),
+    ).toBe(false);
+  });
+
+  it('слот уже заповнено -> НЕ слати (нема про що нагадувати)', () => {
+    expect(
+      shouldSendCheckinNudge({ quiet: false, alreadyNudgedToday: false, slotFilled: true }),
+    ).toBe(false);
   });
 });

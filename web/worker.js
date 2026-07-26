@@ -14,6 +14,8 @@ import {
   pageSaved,
   checkinSlot,
   checkinDateKey,
+  matchCheckinNudgeWindow,
+  shouldSendCheckinNudge,
 } from './stats-core.mjs';
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
@@ -3517,6 +3519,40 @@ async function autoBriefDispatch(env) {
   if (await dispatchBrief(env)) await recordBriefDispatch(env, today);
 }
 
+/**
+ * П'ятихвилинний крон-гейт: вікно слоту (matchCheckinNudgeWindow) -> зібрати
+ * три прапорці з KV (тихі години/вже нагадали/слот заповнено) -> чиста
+ * shouldSendCheckinNudge (stats-core.mjs, тестована без KV/fetch) вирішує.
+ * Ідемпотентно за добу — store.checkinNudgeDates[slot] (той самий "останню
+ * дату записав" ідіом, що dispatch.lastAutoDate/reliability.lastCheckDate —
+ * не зростаючий журнал, один рядок на слот).
+ */
+async function checkinNudgeCheck(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const minuteOfDay = kyivMinuteOfDay(new Date());
+  const win = matchCheckinNudgeWindow(minuteOfDay);
+  if (!win) return;
+
+  const [settings, store] = await Promise.all([loadSettings(env), loadStats(env)]);
+  const today = kyivDateKey();
+  const dateKey = checkinDateKey(today, kyivHour());
+  const due = shouldSendCheckinNudge({
+    quiet: isQuietMinute(settings, minuteOfDay),
+    alreadyNudgedToday: store.checkinNudgeDates?.[win.slot] === today,
+    slotFilled: Boolean(store.checkins?.[dateKey]?.[win.slot]),
+  });
+  if (!due) return;
+
+  await tgCall(env, 'sendMessage', {
+    chat_id: env.TELEGRAM_CHAT_ID,
+    message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+    text: win.text,
+  });
+
+  store.checkinNudgeDates = { ...(store.checkinNudgeDates ?? {}), [win.slot]: today };
+  await env.BRIEFING.put('stats', JSON.stringify(store));
+}
+
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
 // END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
 // усередині вікна ретраїв: збій GitHub, що минув об 10:30, дав би хибний алерт
@@ -3666,6 +3702,7 @@ export default {
         await agentHostHealthCheck(env); // розсинхрон версій хоста, будь-яка хвилина
         await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
         await deadMansCheck(env); // від 12:00 Київ, раз на добу
+        await checkinNudgeCheck(env); // вікна нагадувань про чек-ін, раз на слот/добу
       })(),
     );
   },
