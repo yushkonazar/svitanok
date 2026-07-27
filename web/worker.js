@@ -2680,7 +2680,10 @@ async function handleCommand(env, parsed, origin) {
       }
       // Мітку кулдауну сіємо ЛИШЕ після успішного dispatch (ревʼю SL): інакше
       // транзієнтний збій GitHub блокував би повтор на годину + брехливе «Запустив».
-      const ok = await dispatchBrief(env);
+      // force: ручний /brief — явний намір «хочу зараз», а не ще одна спроба
+      // крону. Без нього команда після ранкової доставки мовчки не робила
+      // нічого (див. коментар над dispatchBrief).
+      const ok = await dispatchBrief(env, { force: true });
       if (!ok) {
         return sendText(
           '⚠️ Не вдалося запустити генерацію (тимчасова помилка GitHub). Спробуй ще раз за хвилину.',
@@ -3581,10 +3584,23 @@ async function updateMasteryFocus(env) {
   }
 }
 
-/** Точний ранковий тригер: dispatch brief (без force -> нормальний guard).
- *  Повертає true, якщо workflow_dispatch прийнято (SL2 — /brief сіє кулдаун
- *  ЛИШЕ після успіху; ніколи не кидає — false при будь-якому збої). */
-async function dispatchBrief(env) {
+/**
+ * Тригер brief-воркфлоу. Повертає true, якщо workflow_dispatch прийнято (SL2 —
+ * /brief сіє кулдаун ЛИШЕ після успіху; ніколи не кидає — false при збої).
+ *
+ * force розділяє два РІЗНІ виклики, які доти йшли однаковим шляхом:
+ *   • автоматичний (autoBriefDispatch, крон) — force=false, бо guard-
+ *     ідемпотентність тут і є захистом: у вікні 08:00–12:00 крон стукає що
+ *     5 хв, і без неї власник отримав би 48 брифінгів;
+ *   • ручний /brief — force=true. Доти він теж ішов без force, тож УСЯ команда
+ *     після ранкової доставки була тихим no-op: guard бачив lastSent===today,
+ *     писав «send=false» і завершував воркфлоу успіхом, а бот уже відрапортував
+ *     «Запустив генерацію — прийде за кілька хвилин». Ніщо не приходило й
+ *     ніде не було помилки. Ручний виклик — це явний намір «хочу ЗАРАЗ», його
+ *     квоту стереже власний годинний кулдаун (briefCooldownRemainingMs), а не
+ *     добова ідемпотентність.
+ */
+async function dispatchBrief(env, { force = false } = {}) {
   if (!env.GH_DISPATCH_TOKEN) {
     console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
     return false;
@@ -3599,7 +3615,11 @@ async function dispatchBrief(env) {
         'user-agent': 'svitanok-scheduler',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ ref: 'main' }), // без inputs.force -> нормальний guard
+      // inputs у workflow_dispatch — РЯДКИ, навіть для `type: boolean` (REST
+      // API приймає лише string-значення, GitHub сам приводить до boolean перед
+      // обчисленням `inputs.force` у brief.yml). Ключ узагалі не шлемо, коли
+      // force=false, — тоді працює default: false з опису воркфлоу.
+      body: JSON.stringify({ ref: 'main', ...(force ? { inputs: { force: 'true' } } : {}) }),
     });
     if (!resp.ok) {
       console.error('workflow_dispatch failed', resp.status, await resp.text());
