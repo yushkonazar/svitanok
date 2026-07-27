@@ -3,6 +3,8 @@
 // деградує на SAMPLE-дані (E1). Тут лише читання/сигнали, жодної логіки авторизації
 // (вона на сервері, §safety: клієнту не довіряємо).
 
+export type HomeScreenStatus = 'unsupported' | 'unknown' | 'added' | 'missed';
+
 interface TelegramBackButton {
   show: () => void;
   hide: () => void;
@@ -25,8 +27,20 @@ interface TelegramWebApp {
   enableVerticalSwipes?: () => void;
   // themeChanged — для теми «Авто» (F2): користувач перемкнув тему в самому
   // Telegram, а Mini App має піти за ним, не чекаючи перезапуску.
-  onEvent?: (event: 'themeChanged', cb: () => void) => void;
-  offEvent?: (event: 'themeChanged', cb: () => void) => void;
+  onEvent?: (
+    event: 'themeChanged' | 'homeScreenAdded' | 'homeScreenChecked',
+    cb: (payload?: { status: HomeScreenStatus }) => void,
+  ) => void;
+  offEvent?: (
+    event: 'themeChanged' | 'homeScreenAdded' | 'homeScreenChecked',
+    cb: (payload?: { status: HomeScreenStatus }) => void,
+  ) => void;
+  // Bot API 8.0+: ярлик на домашній екран пристрою — обходить усю навігацію
+  // Telegram (menu-кнопка недоступна в групах, reply-клавіатура ненадійна на
+  // Desktop у супергрупах/форум-темах), один тап із робочого столу напряму в
+  // Mini App.
+  addToHomeScreen?: () => void;
+  checkHomeScreenStatus?: (cb: (status: HomeScreenStatus) => void) => void;
   BackButton?: TelegramBackButton;
   HapticFeedback?: {
     impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;
@@ -120,5 +134,33 @@ export function setVerticalSwipes(enabled: boolean): void {
     else tg.disableVerticalSwipes?.();
   } catch {
     /* хост може не підтримувати — не валимо жест через це */
+  }
+}
+
+/**
+ * Статус ярлика на домашньому екрані (Bot API 8.0+). callback — той самий
+ * стиль, що й у SDK: 'unsupported' лишається дефолтом (не 'unknown'), щоб
+ * старий клієнт/старий Telegram трактувався як «немає кнопки», а не «є, але
+ * незрозуміло» — консервативніший фолбек для UI, який вирішує, показувати
+ * кнопку «Додати на головний екран» чи ні.
+ */
+export function checkHomeScreenStatus(cb: (status: HomeScreenStatus) => void): void {
+  if (!tg?.checkHomeScreenStatus) {
+    cb('unsupported');
+    return;
+  }
+  try {
+    tg.checkHomeScreenStatus(cb);
+  } catch {
+    cb('unsupported');
+  }
+}
+
+/** Показати системний промпт «Додати Світанок на головний екран» (Bot API 8.0+). */
+export function addToHomeScreen(): void {
+  try {
+    tg?.addToHomeScreen?.();
+  } catch {
+    /* хост може не підтримувати — no-op */
   }
 }
