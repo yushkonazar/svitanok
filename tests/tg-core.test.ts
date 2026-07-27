@@ -230,9 +230,9 @@ describe('tg-core — parseCommand (Блок P4)', () => {
   });
 
   it('лейбл reply-keyboard мапиться на ту саму команду, що й "/xxx"', () => {
-    expect(parseCommand('📋 Статистика')).toEqual({ cmd: 'stats', args: '' });
-    expect(parseCommand('💼 Вакансії')).toEqual({ cmd: 'jobs', args: '' });
-    expect(parseCommand('🔖 Збережене')).toEqual({ cmd: 'save', args: '' });
+    expect(parseCommand('📅 Сьогодні')).toEqual({ cmd: 'agenda', args: '' });
+    expect(parseCommand('🧠 План дня')).toEqual({ cmd: 'plan', args: '' });
+    expect(parseCommand('⏰ Нагадування')).toEqual({ cmd: 'reminders', args: '' });
     expect(parseCommand('🔄 Брифінг')).toEqual({ cmd: 'brief', args: '' });
   });
 
@@ -251,12 +251,12 @@ describe('tg-core — parseCommand (Блок P4)', () => {
     expect(REPLY_KEYBOARD.flat().length).toBeGreaterThan(0);
   });
 
-  it('REPLY_KEYBOARD містить Налаштування+Роадмеп (Фаза B2, компенсація видаленої теми «Команди»)', () => {
+  it('REPLY_KEYBOARD — дієві команди з негайною відповіддю в чаті, не дублі екранів Mini App', () => {
     const labels = REPLY_KEYBOARD.flat();
-    expect(labels).toContain('⚙️ Налаштування');
-    expect(labels).toContain('🗺 Роадмеп');
-    expect(parseCommand('⚙️ Налаштування')).toEqual({ cmd: 'settings', args: '' });
-    expect(parseCommand('🗺 Роадмеп')).toEqual({ cmd: 'roadmap', args: '' });
+    expect(labels).toContain('📅 Сьогодні');
+    expect(labels).toContain('⏰ Нагадування');
+    expect(parseCommand('📅 Сьогодні')).toEqual({ cmd: 'agenda', args: '' });
+    expect(parseCommand('⏰ Нагадування')).toEqual({ cmd: 'reminders', args: '' });
   });
 
   it('кожен лейбл REPLY_KEYBOARD резолвиться в команду з COMMANDS (без дрейфу двох реєстрів)', () => {
