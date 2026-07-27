@@ -58,6 +58,14 @@ const ConfigSchema = z
                 q: z.string().optional(),
                 country: z.string().optional(),
                 language: z.string().default('uk'),
+                // Кастомні заголовки фетчу (лише rss) — напр. User-Agent для
+                // джерел за bot-захистом (HLTV: 403 з мінімальним UA, 200 з
+                // повним браузерним).
+                headers: z.record(z.string(), z.string()).optional(),
+                // Фільтр шуму монорепо-стрічок релізів (Vite/Cloudflare Workers
+                // SDK мішають core-теги з саб-пакетами) чи beta/rc-тегів.
+                includePattern: z.string().optional(),
+                excludePattern: z.string().optional(),
               })
               .refine((t) => (t.source === 'rss' ? Boolean(t.url) : Boolean(t.category || t.q)), {
                 message: 'rss-тема мусить мати url; newsdata-тема — category або q',

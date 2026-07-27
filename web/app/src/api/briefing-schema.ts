@@ -106,6 +106,7 @@ export const newsItemSchema = z.object({
   title: z.string(),
   url: z.string(),
   why: z.string().optional(),
+  publishedAt: z.string().optional(),
 });
 
 export const newsGroupSchema = z.object({

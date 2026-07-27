@@ -119,26 +119,130 @@ export const SAMPLE_BRIEF: Brief = {
     {
       id: 'news',
       data: {
+        // Редизайн новин (BBC/Guardian/ТСН/dotesports/HLTV + розширені релізи):
+        // назви/джерела тем відповідають реальному config.yml, щоб демо-режим
+        // (поза Telegram) давав чесний перегляд нового екрана — різний "час
+        // тому" (щойно/години/день) на пробу time-ago, різні хости на пробу
+        // newsSource(), Релізи без `why` (те, чого в реальних GitHub-релізах
+        // немає).
         groups: [
           {
             scope: 'world',
-            topic: 'Технології',
+            topic: 'Світ',
             items: [
               {
-                title: 'Новий реліз Node.js LTS',
-                url: 'https://example.com/node',
-                why: 'стосується твого стеку',
+                title: 'Wildfire now nine miles from French city of Bordeaux',
+                url: 'https://www.theguardian.com/world/2026/jul/27/bordeaux-wildfire',
+                publishedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
               },
-              { title: 'TypeScript 6.0 анонс', url: 'https://example.com/ts' },
+              {
+                title: 'Uganda begins emergency food handouts after 19 die from hunger',
+                url: 'https://feeds.bbci.co.uk/news/world/uganda-food',
+                publishedAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
+              },
             ],
             more: [
-              { title: 'Chrome прибирає third-party cookies', url: 'https://example.com/chrome' },
+              {
+                title: 'Two Russian men jailed in Angola for terrorism and spying',
+                url: 'https://feeds.bbci.co.uk/news/world/angola-case',
+                publishedAt: new Date(Date.now() - 26 * 3600_000).toISOString(),
+              },
+            ],
+          },
+          {
+            scope: 'world',
+            topic: 'Тех/IT',
+            items: [
+              {
+                title: 'Warning shot or publicity stunt — how worried should we be about the OpenAI hack?',
+                url: 'https://www.theguardian.com/technology/2026/jul/27/openai-hack',
+                why: 'обговорення "радикальної прозорості" після інциденту',
+                publishedAt: new Date(Date.now() - 45 * 60_000).toISOString(),
+              },
+              {
+                title: 'Self-contained highly-portable Python distributions',
+                url: 'https://news.ycombinator.com/item?id=example',
+                publishedAt: new Date(Date.now() - 5 * 3600_000).toISOString(),
+              },
+            ],
+            more: [
+              {
+                title: 'Chrome прибирає third-party cookies',
+                url: 'https://feeds.bbci.co.uk/news/technology/chrome-cookies',
+                publishedAt: new Date(Date.now() - 30 * 3600_000).toISOString(),
+              },
             ],
           },
           {
             scope: 'world',
             topic: 'Наука',
-            items: [{ title: 'Телескоп зафіксував наднову', url: 'https://example.com/nova' }],
+            items: [
+              {
+                title: "'It's not rocket science': a day in the life of a Nasa behavioral health scientist",
+                url: 'https://www.theguardian.com/science/2026/jul/27/nasa-scientist',
+                publishedAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+              },
+            ],
+          },
+          {
+            scope: 'world',
+            topic: 'Кіберспорт',
+            items: [
+              {
+                title: 'Команда оголосила новий ростер перед осіннім сплітом',
+                url: 'https://dotesports.com/news/example-roster',
+                publishedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+              },
+            ],
+          },
+          {
+            scope: 'world',
+            topic: 'Футбол',
+            items: [
+              {
+                title: 'Chelsea open talks to sign Henderson and Welbeck',
+                url: 'https://www.theguardian.com/football/2026/jul/27/chelsea-talks',
+                publishedAt: new Date(Date.now() - 4 * 3600_000).toISOString(),
+              },
+            ],
+          },
+          {
+            scope: 'world',
+            topic: 'Релізи',
+            // GitHub-релізи — версія+час, БЕЗ `why` (releases.atom не дає опису).
+            items: [
+              {
+                title: '19.2.8',
+                url: 'https://github.com/react/react/releases/tag/19.2.8',
+                publishedAt: new Date(Date.now() - 6 * 3600_000).toISOString(),
+              },
+              {
+                title: 'v5.4.10',
+                url: 'https://github.com/vitejs/vite/releases/tag/v5.4.10',
+                publishedAt: new Date(Date.now() - 20 * 3600_000).toISOString(),
+              },
+              {
+                title: 'wrangler@4.114.0',
+                url: 'https://github.com/cloudflare/workers-sdk/releases/tag/wrangler%404.114.0',
+                publishedAt: new Date(Date.now() - 40 * 3600_000).toISOString(),
+              },
+            ],
+          },
+          {
+            scope: 'ua',
+            topic: 'Загальне',
+            items: [
+              {
+                title: '"З усією повагою до Сирського і Федорова..." Зеленський — у інтервʼю Sky News',
+                url: 'https://feeds.bbci.co.uk/ukrainian/interview',
+                publishedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+              },
+              {
+                title: 'У Раді пропонують дозволити полювання у "сезон тиші"',
+                url: 'https://tsn.ua/ukrayina/example',
+                publishedAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
+              },
+            ],
           },
           {
             scope: 'ua',
@@ -146,18 +250,39 @@ export const SAMPLE_BRIEF: Brief = {
             items: [
               {
                 title: 'Уряд ухвалив IT-пільги',
-                url: 'https://example.com/it',
+                url: 'https://tsn.ua/politika/example-it',
                 why: 'впливає на ринок праці',
+                publishedAt: new Date(Date.now() - 7 * 3600_000).toISOString(),
               },
             ],
           },
           {
             scope: 'ua',
-            topic: 'Війна',
-            items: [{ title: 'Ситуація на фронті: зведення', url: 'https://example.com/front' }],
+            topic: 'Оборона',
+            items: [
+              {
+                title: 'Ситуація на фронті: зведення Генштабу',
+                url: 'https://tsn.ua/oborona/example-front',
+                publishedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+              },
+            ],
             more: [
-              { title: 'Регіональні новини', url: 'https://example.com/reg' },
-              { title: 'Ще одна новина', url: 'https://example.com/more' },
+              {
+                title: 'Партнери погодили новий пакет постачань на осінь',
+                url: 'https://tsn.ua/oborona/example-supply',
+                publishedAt: new Date(Date.now() - 8 * 3600_000).toISOString(),
+              },
+            ],
+          },
+          {
+            scope: 'ua',
+            topic: 'Технології',
+            items: [
+              {
+                title: 'Мінцифри розширює список послуг у застосунку держави',
+                url: 'https://tsn.ua/nauka_it/example-diia',
+                publishedAt: new Date(Date.now() - 5 * 3600_000).toISOString(),
+              },
             ],
           },
         ],

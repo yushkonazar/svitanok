@@ -4,6 +4,9 @@ import { useSaved } from '../../saved.tsx';
 import { postEvent } from '../../api/client.ts';
 import { has } from '../../lib/format.ts';
 import { openLink, haptic } from '../../telegram.ts';
+import { newsSource } from '../../lib/newsSource.ts';
+import { timeAgo } from '../../lib/timeAgo.ts';
+import { useTick } from '../../lib/useTick.ts';
 
 // Айтем новини (дизайн v2, Svitanok.dc.html): заголовок + «чому» акцентом,
 // праворуч дві квадратні кнопки ❤️/🔖 (активна — кольорова рамка+тло).
@@ -16,6 +19,8 @@ import { openLink, haptic } from '../../telegram.ts';
 // лайкнути раніше дизлайкнуту новину (див. коментар у web/worker.js).
 
 export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
+  // Живий тик (раз/хв) — «5 хв» саме старіє на екрані, без рефетчу даних.
+  useTick(60_000);
   const { data } = useStats();
   // Лише 'up' підсвічує серце. Легасі-'down' у KV читається як «не лайкнуто»,
   // а не як активна кнопка: дизлайків більше немає, і малювати їх нічим.
@@ -60,9 +65,20 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
     </button>
   );
 
+  const source = newsSource(item.url);
+  const ago = timeAgo(item.publishedAt);
+
   return (
     <div className="flex items-center gap-2.5">
       <button type="button" onClick={openNews} className="min-w-0 flex-1 text-left">
+        {(source || ago) && (
+          <span className="mb-0.5 flex items-center gap-1.5 font-mono text-[9.5px] font-semibold text-tx3">
+            {source && (
+              <span className="rounded-[5px] border border-glassb px-1 py-[1px]">{source}</span>
+            )}
+            {ago && <span>{ago}</span>}
+          </span>
+        )}
         <span className="block text-[13.5px] font-semibold leading-[1.35]">{item.title}</span>
         {has(item.why) && (
           <span className="mt-0.5 block font-mono text-[10.5px] font-medium text-a2">{item.why}</span>

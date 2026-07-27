@@ -1,7 +1,7 @@
-import { createPortal } from 'react-dom';
 import { useJobStage } from '../../api/hooks.ts';
 import { haptic, openLink } from '../../telegram.ts';
 import { hostOf, prettyJobTitle } from '../../lib/jobTitle.ts';
+import { Sheet } from '../ui/Sheet.tsx';
 import { FUNNEL_STAGES, STAGE_LABEL, fitStyle, isTerminal, type FunnelStage } from './stages.ts';
 import type { StageEvent } from '../../api/schema.ts';
 import type { KanbanCard } from './KanbanBoard.tsx';
@@ -65,31 +65,8 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
     onClose();
   };
 
-  // Портал у document.body — щоб шторка вийшла зі stacking-контексту контенту
-  // (обгортка z-[1] над туманом). Інакше таб-бар (fixed z-30, сусід тієї
-  // обгортки) малюється ПОВЕРХ усієї шторки: z-40 всередині z-[1] програє
-  // z-30 на корені сторінки. Портал ставить її на корінь, де z-40 > z-30.
-  // Заразом рятує від transform на motion.main (fixed-нащадок інакше
-  // прив'язується до трансформованого предка, а не до вьюпорта).
-  return createPortal(
-    <div
-      onClick={onClose}
-      className="fixed inset-0 z-40 flex items-end"
-      style={{ background: 'rgba(6,4,12,.55)', animation: 'fadeIn .2s ease' }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full px-5 pb-7 pt-2.5"
-        style={{
-          background: 'var(--color-bg2)',
-          borderTop: '1px solid var(--color-glassb)',
-          borderRadius: '26px 26px 0 0',
-          animation: 'sheetUp .3s cubic-bezier(.2,.8,.2,1)',
-          boxShadow: '0 -20px 60px rgba(0,0,0,.5)',
-        }}
-      >
-        <div className="mx-auto mb-4 mt-1 h-1 w-[38px] rounded-full bg-glassb" />
-
+  return (
+    <Sheet onClose={onClose}>
         <div className="mb-1 flex items-center gap-2.5">
           {fit ? (
             <span
@@ -169,8 +146,6 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
             Прибрати з воронки
           </button>
         </div>
-      </div>
-    </div>,
-    document.body,
+    </Sheet>
   );
 }
