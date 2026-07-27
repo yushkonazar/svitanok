@@ -14,6 +14,8 @@ import {
   pageSaved,
   checkinSlot,
   checkinDateKey,
+  matchCheckinNudgeWindow,
+  shouldSendCheckinNudge,
 } from './stats-core.mjs';
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
@@ -60,6 +62,8 @@ import {
   parseReminderCancelCallbackData,
   buildReminderEditCallbackData,
   parseReminderEditCallbackData,
+  parseReminderDoneCallbackData,
+  formatReminderDone,
   snoozeReminderPreset,
   parseReminderSnoozeCallbackData,
   buildSnoozeRow,
@@ -146,6 +150,7 @@ import {
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
+import { parseOneCall, mergeAqi } from './weather-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -676,6 +681,120 @@ async function handleSaved(request, env) {
     limit: url.searchParams.get('limit'),
   });
   return json({ ok: true, ...page });
+}
+
+// Ті самі локації, що config.yml locations (оркестратор) — Worker НЕ читає
+// config.yml (окремий деплой, без збірки з src/), тож хардкодимо дзеркалом.
+// ⚠️ Зміниш локації в config.yml -> онови й тут.
+const WEATHER_LOCATIONS = [
+  { lat: 49.8397, lon: 24.0297, name: 'Львів' },
+  { lat: 51.12, lon: 26.46, name: 'Немовичі' },
+];
+const WEATHER_LIVE_TTL_MS = 30 * 60_000; // 30 хв — реальна свіжість, не «застигле» з брифінгу
+// Захисний лічильник — та сама причина, що DAILY_REQUEST_LIMIT в src/modules/
+// weather.ts (спільний OpenWeather-ключ/квота), менший ліміт: тут це «скільки
+// РАЗІВ на добу Mini App може оновити кеш», не «скільки запитів на локацію».
+const WEATHER_LIVE_DAILY_LIMIT = 50;
+
+/**
+ * GET /api/weather -> жива погода (PR-7, фідбек власника: статична температура
+ * з ранкового брифінгу вже за обідом не відповідала дійсності). Owner-gated,
+ * кешовано в KV (weatherLive, ~30 хв) — той самий OpenWeather-ключ ділиться з
+ * оркестратором, тож живий фетч НЕ на кожне відкриття Mini App.
+ */
+async function handleLiveWeather(request, env) {
+  const auth = await checkOwnerRead(request, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  const nowMs = Date.now();
+  let cached;
+  try {
+    cached = JSON.parse((await env.BRIEFING.get('weatherLive')) ?? 'null');
+  } catch {
+    cached = null;
+  }
+  if (
+    cached &&
+    Number.isFinite(cached.fetchedAtMs) &&
+    nowMs - cached.fetchedAtMs < WEATHER_LIVE_TTL_MS
+  ) {
+    return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+  }
+
+  if (!env.WEATHER_API_KEY) {
+    // Немає ключа на Worker-боці (лише в GH Actions secrets, окремий деплой) —
+    // graceful: фронт фолбекає на снапшот брифінгу, не показує помилку.
+    return json({ ok: false, error: 'not-configured' }, 503);
+  }
+
+  const today = kyivDateKey();
+  let counter;
+  try {
+    counter = JSON.parse((await env.BRIEFING.get('weatherLiveCounter')) ?? 'null');
+  } catch {
+    counter = null;
+  }
+  if (!counter || counter.date !== today) counter = { date: today, count: 0 };
+  if (counter.count >= WEATHER_LIVE_DAILY_LIMIT) {
+    // Ліміт вичерпано -> віддати БУДЬ-ЯКИЙ наявний кеш (навіть протухлий) —
+    // краще вчорашнє число, ніж зовсім нічого; фолбек на брифінг лишається
+    // клієнту, якщо кешу взагалі немає.
+    if (cached)
+      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+    return json({ ok: false, error: 'rate-limited' }, 429);
+  }
+
+  const todayKey = today;
+  const fetchLocation = async (loc) => {
+    counter.count++;
+    const oneCallUrl = new URL('https://api.openweathermap.org/data/3.0/onecall');
+    oneCallUrl.searchParams.set('lat', String(loc.lat));
+    oneCallUrl.searchParams.set('lon', String(loc.lon));
+    oneCallUrl.searchParams.set('units', 'metric');
+    oneCallUrl.searchParams.set('lang', 'ua');
+    oneCallUrl.searchParams.set('exclude', 'minutely');
+    oneCallUrl.searchParams.set('appid', env.WEATHER_API_KEY);
+    const res = await fetch(oneCallUrl.toString());
+    if (!res.ok) throw new Error(`OpenWeather HTTP ${res.status}`);
+    const parsed = parseOneCall(await res.json(), loc.name, todayKey);
+    if (!parsed) throw new Error(`порожній onecall для ${loc.name}`);
+
+    counter.count++;
+    try {
+      const aqiUrl = new URL('https://api.openweathermap.org/data/2.5/air_pollution');
+      aqiUrl.searchParams.set('lat', String(loc.lat));
+      aqiUrl.searchParams.set('lon', String(loc.lon));
+      aqiUrl.searchParams.set('appid', env.WEATHER_API_KEY);
+      const aqiRes = await fetch(aqiUrl.toString());
+      if (aqiRes.ok) {
+        const aqi = mergeAqi(await aqiRes.json());
+        if (aqi !== undefined) parsed.aqi = aqi;
+      }
+    } catch {
+      /* AQI — довантаження понад основне; збій не валить локацію */
+    }
+    return parsed;
+  };
+
+  const results = await Promise.allSettled(WEATHER_LOCATIONS.map(fetchLocation));
+  await env.BRIEFING.put('weatherLiveCounter', JSON.stringify(counter));
+
+  const locations = [];
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') locations.push(r.value);
+    else console.error(`жива погода для ${WEATHER_LOCATIONS[i].name} впала:`, r.reason?.message);
+  });
+
+  if (locations.length === 0) {
+    // Усі локації впали -> віддати старий кеш, якщо є, інакше чесна відмова
+    // (клієнт фолбекає на снапшот брифінгу).
+    if (cached)
+      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+    return json({ ok: false, error: 'upstream-failed' }, 502);
+  }
+
+  await env.BRIEFING.put('weatherLive', JSON.stringify({ locations, fetchedAtMs: nowMs }));
+  return json({ ok: true, locations, fetchedAtMs: nowMs });
 }
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
@@ -2752,6 +2871,35 @@ async function resolveReminderCancel(env, parsed, reminderId) {
 }
 
 /**
+ * Обробити `rk:<id>` («✅ Виконано», фідбек власника) — на відміну від
+ * snooze/cancel (лише тік кнопки, resolveReminderAction) тут ПЕРЕПИСУЄМО ВСЕ
+ * повідомлення (editMessageText) і прибираємо клавіатуру ПОВНІСТЮ (порожній
+ * inline_keyboard) — вимога явно каже «всі кнопки прибираються, статус видно
+ * одразу», а не просто тік однієї з них. Мутація — те саме справжнє видалення,
+ * що cancelReminder (нема окремого поля done — статус лише через видалення,
+ * той самий інваріант, що вже задокументовано в reminders-core.mjs).
+ */
+async function resolveReminderDone(env, parsed, reminderId) {
+  const state = await loadState(env);
+  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
+  const reminder = reminders.find((r) => r.id === reminderId);
+  if (!reminder) return '⚠️ Це нагадування вже неактуальне.';
+
+  state.reminders = cancelReminder(reminders, reminderId);
+  await env.BRIEFING.put('state', JSON.stringify(state));
+  if (parsed.chatId != null && parsed.messageId != null) {
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: formatReminderDone(reminder.text),
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+  return '✅ Виконано';
+}
+
+/**
  * Обробити `rc:all` (extra c, пакетне скасування) — на відміну від решти
  * reminder-дій, тут ціле повідомлення переписується (editMessageText), не
  * лише тік кнопки: список активних змінюється ПОВНІСТЮ, старий текст одразу
@@ -3291,6 +3439,7 @@ async function processTelegramUpdate(env, parsed, origin) {
       const roadmapCb = parseRoadmapCallbackData(parsed.data);
       const reminderCancelId = parseReminderCancelCallbackData(parsed.data); // 'rc:' — §C4
       const reminderEditId = parseReminderEditCallbackData(parsed.data); // 'ru:' — CRUD
+      const reminderDoneId = parseReminderDoneCallbackData(parsed.data); // 'rk:' — «✅ Виконано»
       const snoozePreset = parseReminderSnoozeCallbackData(parsed.data); // 'rs:' — extra b
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
@@ -3306,20 +3455,22 @@ async function processTelegramUpdate(env, parsed, origin) {
                 ? await resolveReminderCancel(env, parsed, reminderCancelId)
                 : reminderEditId
                   ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
-                  : snoozePreset
-                    ? await resolveReminderSnoozePreset(
-                        env,
-                        parsed,
-                        snoozePreset.presetIdx,
-                        snoozePreset.id,
-                      )
-                    : isReminderSnooze
-                      ? await resolveReminderSnooze(
+                  : reminderDoneId
+                    ? await resolveReminderDone(env, parsed, reminderDoneId)
+                    : snoozePreset
+                      ? await resolveReminderSnoozePreset(
                           env,
                           parsed,
-                          parsed.data.slice(REMINDER_CB_PREFIX.length),
+                          snoozePreset.presetIdx,
+                          snoozePreset.id,
                         )
-                      : await resolveCallbackToast(env, parsed);
+                      : isReminderSnooze
+                        ? await resolveReminderSnooze(
+                            env,
+                            parsed,
+                            parsed.data.slice(REMINDER_CB_PREFIX.length),
+                          )
+                        : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,
@@ -3517,6 +3668,40 @@ async function autoBriefDispatch(env) {
   if (await dispatchBrief(env)) await recordBriefDispatch(env, today);
 }
 
+/**
+ * П'ятихвилинний крон-гейт: вікно слоту (matchCheckinNudgeWindow) -> зібрати
+ * три прапорці з KV (тихі години/вже нагадали/слот заповнено) -> чиста
+ * shouldSendCheckinNudge (stats-core.mjs, тестована без KV/fetch) вирішує.
+ * Ідемпотентно за добу — store.checkinNudgeDates[slot] (той самий "останню
+ * дату записав" ідіом, що dispatch.lastAutoDate/reliability.lastCheckDate —
+ * не зростаючий журнал, один рядок на слот).
+ */
+async function checkinNudgeCheck(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const minuteOfDay = kyivMinuteOfDay(new Date());
+  const win = matchCheckinNudgeWindow(minuteOfDay);
+  if (!win) return;
+
+  const [settings, store] = await Promise.all([loadSettings(env), loadStats(env)]);
+  const today = kyivDateKey();
+  const dateKey = checkinDateKey(today, kyivHour());
+  const due = shouldSendCheckinNudge({
+    quiet: isQuietMinute(settings, minuteOfDay),
+    alreadyNudgedToday: store.checkinNudgeDates?.[win.slot] === today,
+    slotFilled: Boolean(store.checkins?.[dateKey]?.[win.slot]),
+  });
+  if (!due) return;
+
+  await tgCall(env, 'sendMessage', {
+    chat_id: env.TELEGRAM_CHAT_ID,
+    message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+    text: win.text,
+  });
+
+  store.checkinNudgeDates = { ...(store.checkinNudgeDates ?? {}), [win.slot]: today };
+  await env.BRIEFING.put('stats', JSON.stringify(store));
+}
+
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
 // END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
 // усередині вікна ретраїв: збій GitHub, що минув об 10:30, дав би хибний алерт
@@ -3621,6 +3806,9 @@ export default {
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
     }
+    if (url.pathname === '/api/weather') {
+      return handleLiveWeather(request, env);
+    }
     if (url.pathname === '/api/settings') {
       return handleSettings(request, env);
     }
@@ -3666,6 +3854,7 @@ export default {
         await agentHostHealthCheck(env); // розсинхрон версій хоста, будь-яка хвилина
         await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
         await deadMansCheck(env); // від 12:00 Київ, раз на добу
+        await checkinNudgeCheck(env); // вікна нагадувань про чек-ін, раз на слот/добу
       })(),
     );
   },

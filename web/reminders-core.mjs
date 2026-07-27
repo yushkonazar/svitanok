@@ -455,12 +455,15 @@ export function parseReminderSnoozeCallbackData(data) {
   return { presetIdx, id };
 }
 
-/** Рядок кнопок-пресетів snooze для повідомлення «спрацювало» (checkReminders). */
+/** Рядок кнопок-пресетів snooze + «✅ Виконано» для повідомлення «спрацювало»
+ *  (checkReminders) — власник або відкладає, або одразу закриває нагадування. */
 export function buildSnoozeRow(id) {
-  return SNOOZE_PRESETS.map((preset, i) => {
+  const snoozeBtns = SNOOZE_PRESETS.map((preset, i) => {
     const cb = buildReminderSnoozeCallbackData(i, id);
     return cb ? { text: preset.label, callback_data: cb } : null;
   }).filter((btn) => btn !== null);
+  const doneCb = buildReminderDoneCallbackData(id);
+  return doneCb ? [...snoozeBtns, { text: '✅ Виконано', callback_data: doneCb }] : snoozeBtns;
 }
 
 /**
@@ -506,7 +509,9 @@ export function listActive(reminders) {
 // Окремий простір callback_data від rm:<id> (snooze, worker.js) — 'rm:' бере
 // ВЕСЬ залишок як id (без internal split), тож підпростір усередині нього
 // зламав би snooze-парсинг. 'rc:' (reminder-cancel) — новий, не перетинається
-// з v1:/rm:/pd:/rd: (жоден не є префіксом іншого).
+// з v1:/rm:/pd:/rs:/ru:/ev: (жоден не є префіксом іншого). ⚠️ 'rd:' зайнятий
+// roadmap-core.mjs (ROADMAP_CB_PREFIX) — «Виконано» нагадування нижче взяло
+// 'rk:', щоб не зіткнутись.
 export const REMINDER_CANCEL_CB_PREFIX = 'rc:';
 
 /** callback_data «скасувати нагадування id»; ≤64 байти (Telegram-ліміт), інакше null. */
@@ -538,6 +543,30 @@ export function parseReminderEditCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(REMINDER_EDIT_CB_PREFIX)) return null;
   const id = data.slice(REMINDER_EDIT_CB_PREFIX.length);
   return id ? id : null;
+}
+
+// 'rk:' (reminder-kept/done) — «✅ Виконано» на спрацьованому нагадуванні
+// (фідбек власника: крім snooze потрібна кнопка завершення). Окремий простір
+// від rc:/ru:/rs:/rm: — і від 'rd:' (roadmap-core.mjs), з яким інакше збігся б.
+export const REMINDER_DONE_CB_PREFIX = 'rk:';
+
+/** callback_data «нагадування виконано id»; ≤64 байти, інакше null. */
+export function buildReminderDoneCallbackData(id) {
+  const s = `${REMINDER_DONE_CB_PREFIX}${id}`;
+  return new TextEncoder().encode(s).length <= 64 ? s : null;
+}
+
+/** Розібрати `rk:<id>` -> id; не той префікс чи порожній id -> null. */
+export function parseReminderDoneCallbackData(data) {
+  if (typeof data !== 'string' || !data.startsWith(REMINDER_DONE_CB_PREFIX)) return null;
+  const id = data.slice(REMINDER_DONE_CB_PREFIX.length);
+  return id ? id : null;
+}
+
+/** Текст ПІСЛЯ «✅ Виконано» — перепис повідомлення (editMessageText), клавіатура
+ *  прибирається повністю (worker.js) — статус видно одразу, тапати вже нема куди. */
+export function formatReminderDone(text) {
+  return `✅ <b>Виконано</b>\n${escapeHtml(text)}`;
 }
 
 /** /reminders — список активних нагадувань (найближче спершу), Київський час. */

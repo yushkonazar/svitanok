@@ -29,7 +29,6 @@ import { createFetcher } from './core/fetcher.js';
 import {
   createNotifier,
   buildProposalCallbackData,
-  buildMiniAppButton,
   escapeHtml,
   type Notifier,
   type OutboundMessage,
@@ -237,27 +236,17 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   ]);
   const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
 
-  // Щоденне сповіщення в чат: дата(+рядок дня) + кнопка відкрити Mini App (усі
-  // блоки — лише в briefing.json, дашборд лишається єдиним місцем перегляду
-  // повного вмісту). У неділю додається окреме недільне повідомлення (Фаза
-  // B5, нижче) — messages може містити 1 або 2 елементи. messages — те, що
-  // РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю).
+  // Щоденне сповіщення в чат: дата(+рядок дня), БЕЗ inline-кнопки апки (фідбек
+  // власника, п.2) — кнопка живе в ОДНОМУ місці, постійна menu-кнопка біля
+  // поля вводу (Worker, setChatMenuButton), а не щоденний inline-дубль під
+  // кожним повідомленням. Само повідомлення ще й закріплюється (нижче, після
+  // send) — так само одна стала точка входу, не залежна від скролу стрічки.
+  // Усі блоки — лише в briefing.json, дашборд лишається єдиним місцем
+  // перегляду повного вмісту. У неділю додається окреме недільне повідомлення
+  // (Фаза B5, нижче) — messages може містити 1 або 2 елементи. messages — те,
+  // що РЕАЛЬНО йде в чат (і для sent, і для dry-run-превʼю).
   const dailyMessage: OutboundMessage = {
     text: headerFull,
-    ...(deps.miniAppUrl
-      ? {
-          buttons: [
-            [
-              buildMiniAppButton(
-                '📊 Відкрити Mini App',
-                deps.miniAppUrl,
-                deps.chatId,
-                deps.botUsername,
-              ),
-            ],
-          ],
-        }
-      : {}),
   };
   // Фаза B5: недільний підсумок тижня — окреме HTML-повідомлення в ТУ САМУ
   // тему (topicBriefing), одразу після щоденного. weekly-review вже в blocks
@@ -281,7 +270,35 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // Недільний підсумок шлемо ОКРЕМИМ send() best-effort — його провал (напр.
   // транзиєнтна HTTP-помилка чи задовгий текст) не має ретригерити повторну
   // відправку вже доставленого щоденного повідомлення при наступному запуску.
-  await deps.notifier.send([dailyMessage]);
+  const { messageIds } = await deps.notifier.send([dailyMessage]);
+
+  // Закріпити щоденне (фідбек власника, п.2) — та сама «одна стала точка
+  // входу», що прибрана inline-кнопка вище. Best-effort і НЕЗАЛЕЖНО одне від
+  // одного: unpin учорашнього може впасти (повідомлення вже відкріплене/
+  // видалене власником — не помилка), pin може впасти (бот без права
+  // can_pin_messages — тоді просто лишаємось без закріплення, як і сьогодні,
+  // й лишаємо слід у логах для діагностики). Жодне з двох не сміє валити
+  // критичну доставку (catch, не throw).
+  const newPinId = messageIds[0];
+  if (newPinId != null) {
+    const prevPinId = state.get<number>('briefPinMsgId');
+    if (typeof prevPinId === 'number') {
+      try {
+        await deps.notifier.unpin(prevPinId);
+      } catch {
+        /* учорашнє могло вже бути відкріплене/видалене — не критично */
+      }
+    }
+    try {
+      await deps.notifier.pin(newPinId);
+      state.set('briefPinMsgId', newPinId);
+    } catch (e) {
+      log.warn(
+        `брифінг: закріпити не вдалось (нема can_pin_messages?): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   if (weeklyMessage) {
     try {
       await deps.notifier.send([weeklyMessage]);

@@ -109,7 +109,10 @@ modules:
     query: 'in:inbox newer_than:3d -category:promotions -category:social'
   jobs:
     enabled: true
-    perRun: 3
+    # 3 -> 7 (фідбек власника: щодня приходило не більше 3, замало). POOL_SIZE
+    # (src/modules/jobs.ts) піднято паралельно, щоб на скоринг ішло достатньо
+    # кандидатів під новий perRun.
+    perRun: 7
     dedupDays: 7
     # Профіль для LLM-скорингу релевантності вакансій (fit %).
     profile: >-
@@ -122,10 +125,16 @@ modules:
     # раннера, але джерела вимкнено, щоб не було щоденних warn без користі:
     #   - 'https://www.work.ua/jobs-junior+developer/'
     #   - 'https://www.work.ua/jobs-junior+full+stack/'
+    # 4 DOU + 4 Djinni (було 3 DOU) — collectPool (jobs.ts) бере round-robin по
+    # СПИСКАХ, тож меншість джерел структурно недоотримувала слоти ще ДО
+    # скорингу (3 DOU vs 4 Djinni -> 6/14 vs 8/14 у старому пулі). Четвертий
+    # DOU-фід — ширший exp-діапазон на тій самій категорії (не замінює
+    # junior-фіди нижче, додає паралельний, трохи ширший зріз).
     sources:
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Full%20Stack&exp=0-1'
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Front%20End&exp=0-1'
       - 'https://jobs.dou.ua/vacancies/feeds/?category=Back%20End&exp=0-1'
+      - 'https://jobs.dou.ua/vacancies/feeds/?category=Full%20Stack&exp=1-3'
       - 'https://djinni.co/jobs/rss/?primary_keyword=Fullstack&exp_level=no_exp&exp_level=1y'
       - 'https://djinni.co/jobs/rss/?primary_keyword=JavaScript&exp_level=no_exp&exp_level=1y'
       - 'https://djinni.co/jobs/rss/?primary_keyword=Node.js&exp_level=no_exp&exp_level=1y'

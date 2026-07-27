@@ -132,8 +132,24 @@ export function QuestionBlock({ d }: { d: MockData }) {
           >
             Відповідь ↓
           </button>
-          <span className="text-tx3">Легко</span>
-          <span className="text-tx3">Важко</span>
+          {/* Оцінка вже відома (picked !== null) -> показати ЇЇ, а не статичні
+              «Легко»/«Важко»: доти вони висіли тут завжди, ігноруючи те, що
+              власник уже оцінив питання, — на перезаході видно було лише
+              початковий стан, без жодного сліду вчорашньої (чи щойно даної)
+              відповіді. */}
+          {picked ? (
+            <span
+              className="font-mono text-[10.5px] font-semibold"
+              style={{ color: picked === 'easy' ? 'var(--color-pos)' : 'var(--color-neg)' }}
+            >
+              ✅ {picked === 'easy' ? 'Легко' : 'Важко'}
+            </span>
+          ) : (
+            <>
+              <span className="text-tx3">Легко</span>
+              <span className="text-tx3">Важко</span>
+            </>
+          )}
           <button type="button" onClick={learn} className="ml-auto text-tx2">
             Вивчити →
           </button>

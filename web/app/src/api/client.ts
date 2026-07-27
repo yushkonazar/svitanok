@@ -1,7 +1,12 @@
 import { tg, inTelegram } from '../telegram.ts';
 import { statsSchema, type Stats } from './schema.ts';
 import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE } from './sample.ts';
-import { briefSchema, type Brief } from './briefing-schema.ts';
+import {
+  briefSchema,
+  liveWeatherResponseSchema,
+  type Brief,
+  type LiveWeatherResponse,
+} from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 import { savedPageSchema, type SavedPage } from './schema.ts';
@@ -103,6 +108,27 @@ export async function fetchBriefing(): Promise<BriefResult> {
   const parsed = briefSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат брифінгу змінився — оновіть застосунок');
   return { brief: parsed.data, demo: false };
+}
+
+/**
+ * GET /api/weather — жива погода (PR-7, фідбек власника: статична температура
+ * з ранкового брифінгу вже за обідом не відповідала дійсності).
+ *
+ * Навмисно М'ЯКШИЙ контракт, ніж fetchStats/fetchBriefing: ЖОДНА помилка тут
+ * не кидає — WeatherBlock і так має робочий фолбек (снапшот брифінгу), тож
+ * live-шар лишається чистим покращенням, не критичним шляхом. null означає
+ * «покажи снапшот» — не «сталась помилка».
+ */
+export async function fetchLiveWeather(): Promise<LiveWeatherResponse | null> {
+  if (!inTelegram()) return null;
+  try {
+    const res = await fetch('/api/weather', { cache: 'no-store', headers: authHeaders() });
+    if (!res.ok) return null;
+    const parsed = liveWeatherResponseSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

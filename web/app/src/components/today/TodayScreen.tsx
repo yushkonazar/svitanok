@@ -1,4 +1,4 @@
-import { useBriefing } from '../../api/hooks.ts';
+import { useBriefing, useLiveWeather } from '../../api/hooks.ts';
 import {
   readBlock,
   weatherDataSchema,
@@ -56,6 +56,11 @@ function HorizonDivider() {
 
 export function TodayScreen() {
   const { data, isLoading, isError, error, refetch } = useBriefing();
+  // Жива погода (PR-7, фідбек власника) — м'який шар поверх снапшоту брифінгу:
+  // `live` відсутній (ще завантажується/поза Telegram/збій) -> просто рендеримо
+  // снапшот, як і завжди. fetchLiveWeather НІКОЛИ не кидає, тож немає окремого
+  // isError тут — лише necessarily-undefined `data`.
+  const { data: liveWeather } = useLiveWeather();
 
   if (isLoading) return <LoadingSkeleton />;
   if (isError || !data) {
@@ -83,7 +88,14 @@ export function TodayScreen() {
   // ФАКТИЧНОЮ позицією секції: з вимкненою погодою курс має йти першим і без
   // затримки, а не чекати слот неіснуючого сусіда.
   const sections: Array<{ key: string; node: React.ReactNode }> = [];
-  if (weather) sections.push({ key: 'weather', node: <WeatherBlock locations={weather.locations} /> });
+  // liveWeather.locations перекриває снапшот, коли є (PR-7) — той самий
+  // масив-формат (weatherLocationSchema), WeatherBlock узагалі не знає
+  // різниці між живим і статичним джерелом.
+  if (weather)
+    sections.push({
+      key: 'weather',
+      node: <WeatherBlock locations={liveWeather?.locations ?? weather.locations} />,
+    });
   if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
   if (currency)
     sections.push({

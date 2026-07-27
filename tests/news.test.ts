@@ -97,6 +97,22 @@ describe('news — parseNewsData', () => {
   it('відкидає небезпечну схему (javascript:), M2', () => {
     expect(parseNewsData({ results: [{ title: 'T', link: 'javascript:alert(1)' }] })).toEqual([]);
   });
+
+  it('CDATA-артефакт у description знімається (той самий stripCdata/decodeXml, що parseRss)', () => {
+    // NewsData інколи віддає description НЕОБРОБЛЕНИМ від оригінальної RSS-
+    // стрічки видавця — сирий XML-фрагмент просвічував у why як є.
+    expect(
+      parseNewsData({
+        results: [
+          {
+            title: 'T',
+            link: 'https://x.com/a',
+            description: '<![CDATA[Текст із &amp; сутністю]]>',
+          },
+        ],
+      }),
+    ).toEqual([{ title: 'T', url: 'https://x.com/a', why: 'Текст із & сутністю' }]);
+  });
 });
 
 // ⚠️ Тести нижче ганяють dir:'down', хоч UI його вже НЕ створює (фідбек

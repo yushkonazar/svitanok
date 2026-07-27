@@ -86,7 +86,10 @@ function fakeNotifier(): NotifierType & { sent: string[][]; buttons: TgButton[][
     send: async (m) => {
       sent.push(m.map((x) => (typeof x === 'string' ? x : x.text)));
       for (const x of m) if (typeof x !== 'string' && x.buttons) buttons.push(x.buttons);
+      return { messageIds: [] };
     },
+    pin: async () => {},
+    unpin: async () => {},
     failNotify: async () => {},
   };
 }
@@ -171,49 +174,14 @@ describe('runBriefing — деградація', () => {
   });
 });
 
-describe('runBriefing — єдине сповіщення (дата + Mini App кнопка)', () => {
-  it('без miniAppUrl -> лише текст дати, без кнопки', async () => {
-    const notifier = fakeNotifier();
-    const res = await runBriefing(deps({ notifier, modules: [], miniAppUrl: null }));
-    expect(res.status).toBe('sent');
-    expect(notifier.sent).toHaveLength(1);
-    expect(notifier.sent[0]!.join('')).toContain('червня'); // header
-    expect(notifier.buttons).toHaveLength(0);
-  });
-
-  it('з miniAppUrl, без chatId -> одна кнопка web_app, що відкриває той самий URL', async () => {
-    const notifier = fakeNotifier();
-    const res = await runBriefing(
-      deps({ notifier, modules: [], miniAppUrl: 'https://svitanok.example.workers.dev' }),
-    );
-    expect(res.status).toBe('sent');
-    expect(notifier.sent).toHaveLength(1);
-    const btn = notifier.buttons[0]![0]![0]!;
-    expect(btn).toEqual({
-      text: '📊 Відкрити Mini App',
-      web_app: { url: 'https://svitanok.example.workers.dev' },
-    });
-  });
-
-  it("групова chatId (від'ємний, TELEGRAM_CHAT_ID=супергрупа) -> url-кнопка, не web_app (§H1: BUTTON_TYPE_INVALID у групах)", async () => {
-    const notifier = fakeNotifier();
-    const res = await runBriefing(
-      deps({
-        notifier,
-        modules: [],
-        miniAppUrl: 'https://svitanok.example.workers.dev',
-        chatId: '-1001234567890',
-      }),
-    );
-    expect(res.status).toBe('sent');
-    const btn = notifier.buttons[0]![0]![0]!;
-    expect(btn).toEqual({
-      text: '📊 Відкрити Mini App',
-      url: 'https://svitanok.example.workers.dev',
-    });
-  });
-
-  it('groupChatId + botUsername -> Direct Link Mini App (initData зберігається з групи)', async () => {
+describe('runBriefing — єдине сповіщення (дата, БЕЗ inline-кнопки апки)', () => {
+  // Фідбек власника (п.2): inline-кнопка «Відкрити Mini App» під щоденним
+  // повідомленням прибрана — кнопка живе в ОДНОМУ місці (постійна menu-кнопка
+  // Worker'а, поза цим файлом) + повідомлення закріплюється (нижче). Логіка
+  // вибору типу кнопки (web_app/url/Direct Link) сама лишається — і тестована
+  // напряму в tests/telegram.test.ts (buildMiniAppButton) — просто орchestrator
+  // її більше не викликає, незалежно від miniAppUrl/chatId/botUsername.
+  it('miniAppUrl/chatId/botUsername присутні -> все одно лише текст дати, без жодної кнопки', async () => {
     const notifier = fakeNotifier();
     const res = await runBriefing(
       deps({
@@ -225,11 +193,76 @@ describe('runBriefing — єдине сповіщення (дата + Mini App �
       }),
     );
     expect(res.status).toBe('sent');
-    const btn = notifier.buttons[0]![0]![0]!;
-    expect(btn).toEqual({
-      text: '📊 Відкрити Mini App',
-      url: 'https://t.me/svitanok_bot?startapp',
-    });
+    expect(notifier.sent).toHaveLength(1);
+    expect(notifier.sent[0]!.join('')).toContain('червня'); // header
+    expect(notifier.buttons).toHaveLength(0);
+  });
+
+  it('без miniAppUrl -> так само лише текст дати', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(deps({ notifier, modules: [], miniAppUrl: null }));
+    expect(res.status).toBe('sent');
+    expect(notifier.buttons).toHaveLength(0);
+  });
+});
+
+describe('runBriefing — закріплення щоденного повідомлення (фідбек власника, п.2)', () => {
+  function fakePinNotifier(
+    messageId: number | null,
+  ): NotifierType & { pinned: number[]; unpinned: number[]; pinShouldThrow: boolean } {
+    const pinned: number[] = [];
+    const unpinned: number[] = [];
+    const self = {
+      pinned,
+      unpinned,
+      pinShouldThrow: false,
+      send: async () => ({ messageIds: messageId != null ? [messageId] : [] }),
+      pin: async (id: number) => {
+        if (self.pinShouldThrow) throw new Error('no can_pin_messages');
+        pinned.push(id);
+      },
+      unpin: async (id: number) => {
+        unpinned.push(id);
+      },
+      failNotify: async () => {},
+    };
+    return self;
+  }
+
+  it('send повернув message_id -> pin викликається на ньому, стан оновлюється', async () => {
+    const notifier = fakePinNotifier(555);
+    const state = memState();
+    const res = await runBriefing(deps({ notifier, modules: [], state }));
+    expect(res.status).toBe('sent');
+    expect(notifier.pinned).toEqual([555]);
+    expect(notifier.unpinned).toEqual([]); // нема попереднього -> не відкріплюємо
+    expect(state.get('briefPinMsgId')).toBe(555);
+  });
+
+  it('є попередній briefPinMsgId у стані -> спершу unpin учорашнього, тоді pin нового', async () => {
+    const notifier = fakePinNotifier(777);
+    const state = memState();
+    state.set('briefPinMsgId', 111);
+    await runBriefing(deps({ notifier, modules: [], state }));
+    expect(notifier.unpinned).toEqual([111]);
+    expect(notifier.pinned).toEqual([777]);
+    expect(state.get('briefPinMsgId')).toBe(777);
+  });
+
+  it('pin падає (нема can_pin_messages) -> лог, НЕ валить доставку, стан не оновлюється', async () => {
+    const notifier = fakePinNotifier(999);
+    notifier.pinShouldThrow = true;
+    const state = memState();
+    const res = await runBriefing(deps({ notifier, modules: [], state }));
+    expect(res.status).toBe('sent'); // критична доставка не постраждала
+    expect(state.get('briefPinMsgId')).toBeUndefined();
+  });
+
+  it('send не повернув message_id (мок без нього) -> pin взагалі не викликається', async () => {
+    const notifier = fakePinNotifier(null);
+    const res = await runBriefing(deps({ notifier, modules: [] }));
+    expect(res.status).toBe('sent');
+    expect(notifier.pinned).toEqual([]);
   });
 });
 
@@ -429,6 +462,8 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
       send: async () => {
         throw new Error('Telegram 500');
       },
+      pin: async () => {},
+      unpin: async () => {},
       failNotify: async () => {},
     };
     const kvEnv = fakeKvEnv();

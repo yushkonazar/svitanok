@@ -25,3 +25,18 @@ export function textHash(s: string): string {
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
 }
+
+/** % зміни value відносно prev; null — немає з чим порівняти (prev відсутній/0,
+ *  ділення дало б NaN/Infinity — не показуємо оманливе число). */
+export function pctChange(value: number, prev: number | null | undefined): number | null {
+  if (prev == null || prev === 0 || !Number.isFinite(prev)) return null;
+  return ((value - prev) / prev) * 100;
+}
+
+/** {min,max} за останні `days` точок історії (з кінця масиву — новіші там же,
+ *  що і в CurrencyBlock.tsx); null — немає жодної валідної точки у вікні. */
+export function windowMinMax(hist: number[], days: number): { min: number; max: number } | null {
+  const win = hist.slice(-days).filter((v) => Number.isFinite(v));
+  if (!win.length) return null;
+  return { min: Math.min(...win), max: Math.max(...win) };
+}

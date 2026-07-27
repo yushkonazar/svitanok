@@ -17,6 +17,10 @@ const {
   REMINDER_EDIT_CB_PREFIX,
   buildReminderEditCallbackData,
   parseReminderEditCallbackData,
+  REMINDER_DONE_CB_PREFIX,
+  buildReminderDoneCallbackData,
+  parseReminderDoneCallbackData,
+  formatReminderDone,
   SNOOZE_PRESETS,
   snoozeReminderPreset,
   REMINDER_SNOOZE_CB_PREFIX,
@@ -539,6 +543,33 @@ describe('reminders-core — ru: callback_data (CRUD: «✏️ Редагува�
   });
 });
 
+describe('reminders-core — rk: callback_data («✅ Виконано» на спрацьованому нагадуванні)', () => {
+  it('build+parse round-trip, окремий простір від rc:/ru:/rs:/rm: (і від rd: — roadmap-core.mjs)', () => {
+    const cb = buildReminderDoneCallbackData('abc-123');
+    expect(cb).toBe('rk:abc-123');
+    expect(parseReminderDoneCallbackData(cb)).toBe('abc-123');
+    expect(parseReminderDoneCallbackData('rc:abc-123')).toBeNull();
+    expect(parseReminderDoneCallbackData('rd:abc-123')).toBeNull(); // roadmap, не reminder
+  });
+
+  it('не той префікс/порожній id/не-рядок -> null', () => {
+    expect(parseReminderDoneCallbackData(`${REMINDER_DONE_CB_PREFIX}`)).toBeNull();
+    expect(parseReminderDoneCallbackData(undefined)).toBeNull();
+  });
+
+  it('64-байтовий ліміт — надто довгий id -> null', () => {
+    expect(buildReminderDoneCallbackData('я'.repeat(35))).toBeNull(); // rk: + 70 байт > 64
+    expect(buildReminderDoneCallbackData('a'.repeat(61))).toBe(
+      `${REMINDER_DONE_CB_PREFIX}${'a'.repeat(61)}`,
+    ); // рівно 64
+  });
+
+  it('formatReminderDone — статус-текст, HTML-екрановано', () => {
+    expect(formatReminderDone('Купити квитки')).toBe('✅ <b>Виконано</b>\nКупити квитки');
+    expect(formatReminderDone('<script>')).toContain('&lt;script&gt;');
+  });
+});
+
 describe('updateReminder — CRUD: змінити текст і/або час активного нагадування', () => {
   const base = [{ id: 'r1', text: 'Купити квитки', whenMs: 1000, createdMs: 500, firedTs: null }];
 
@@ -807,13 +838,14 @@ describe('reminders-core — rs: callback_data (пресет snooze, extra b)', 
     expect(parseReminderSnoozeCallbackData(null)).toBeNull();
   });
 
-  it('buildSnoozeRow — по кнопці на пресет, у тому ж порядку', () => {
+  it('buildSnoozeRow — по кнопці на пресет + «✅ Виконано» останньою', () => {
     const row = buildSnoozeRow('rem1');
-    expect(row).toHaveLength(3);
+    expect(row).toHaveLength(4); // 3 snooze-пресети + Виконано
     expect(row[0].text).toBe('😴 10 хв');
     expect(row[2].text).toBe('😴 завтра');
-    expect(row.every((b: { callback_data: string }) => b.callback_data.startsWith('rs:'))).toBe(
-      true,
-    );
+    expect(
+      row.slice(0, 3).every((b: { callback_data: string }) => b.callback_data.startsWith('rs:')),
+    ).toBe(true);
+    expect(row[3]).toEqual({ text: '✅ Виконано', callback_data: 'rk:rem1' });
   });
 });

@@ -787,6 +787,37 @@ describe('CRUD: ru:<id> — «✏️ Редагувати» на нагадув�
   });
 });
 
+describe('CRUD: rk:<id> — «✅ Виконано» на спрацьованому нагадуванні', () => {
+  it('переписує ВСЕ повідомлення статусом + прибирає клавіатуру ПОВНІСТЮ (не лише тік кнопки)', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          { id: 'rem1', text: 'Купити квитки', whenMs: Date.now() - 1000, firedTs: Date.now() },
+        ],
+      }),
+    );
+    await tapCallback('rk:rem1');
+
+    expect(toast()).toBe('✅ Виконано');
+    const edited = tg.find((c) => c.method === 'editMessageText')?.body as
+      { text: string; reply_markup?: { inline_keyboard: unknown[][] } } | undefined;
+    expect(edited?.text).toBe('✅ <b>Виконано</b>\nКупити квитки');
+    expect(edited?.reply_markup).toEqual({ inline_keyboard: [] }); // усі кнопки прибрано
+
+    // Справжнє видалення (той самий інваріант, що rc: — нема окремого поля done).
+    const state = JSON.parse(kv.get('state')!);
+    expect(state.reminders).toEqual([]);
+  });
+
+  it('невідомий id -> чесний toast, нічого не переписує', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    await tapCallback('rk:nope');
+    expect(toast()).toContain('неактуальне');
+    expect(tg.find((c) => c.method === 'editMessageText')).toBeUndefined();
+  });
+});
+
 describe('CRUD: rs:<presetIdx>:<id> — розширений snooze (extra b)', () => {
   it('пресет 1 (1 год) відкладає, тікає кнопку, RM: (старий) лишається живим окремо', async () => {
     kv.set(

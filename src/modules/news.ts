@@ -169,9 +169,12 @@ export function parseNewsData(json: unknown): NewsItem[] {
       o.link.trim() &&
       isHttpUrl(o.link.trim()) // лише http(s) (M2)
     ) {
+      // stripCdata/decodeXml (той самий, що parseRss нижче): NewsData інколи
+      // повертає description, лишений НЕОБРОБЛЕНИМ від оригінальної RSS-стрічки
+      // видавця — <![CDATA[...]]>/XML-сутності просвічували в why як є.
       const why =
         typeof o.description === 'string' && o.description.trim()
-          ? o.description.trim().slice(0, WHY_MAX)
+          ? decodeXml(stripCdata(o.description.trim())).trim().slice(0, WHY_MAX)
           : undefined;
       out.push({ title: o.title.trim(), url: o.link.trim(), why });
     }
