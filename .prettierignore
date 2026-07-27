@@ -8,3 +8,6 @@ package-lock.json
 web/app/
 # зібраний артефакт React-дашборда (хешовані імена, мініфіковано) — не форматуємо
 web/public/app/
+# сторонні скіли (github.com/nextlevelbuilder/ui-ux-pro-max-skill), скопійовані
+# як є — не форматуємо, щоб не ускладнювати майбутню звірку з апстрімом
+.claude/skills/
