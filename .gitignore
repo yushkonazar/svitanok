@@ -34,3 +34,7 @@ Thumbs.db
 other/
 # wrangler local state (KV cache, dev)
 .wrangler/
+
+# Python bytecode cache — генерується при запуску скіл-скриптів (.claude/skills/*)
+__pycache__/
+*.pyc
