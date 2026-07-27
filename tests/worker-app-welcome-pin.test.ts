@@ -20,6 +20,7 @@ let kv: Map<string, string>;
 let calls: { method: string; body: Record<string, unknown> }[];
 let pinnedMessageId: number | null;
 let nextSentMessageId: number;
+let getChatFails: boolean;
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
@@ -51,6 +52,7 @@ beforeEach(() => {
   calls = [];
   pinnedMessageId = null;
   nextSentMessageId = 900;
+  getChatFails = false;
   vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     const method = url.split('/').pop() ?? '';
@@ -58,6 +60,7 @@ beforeEach(() => {
     calls.push({ method, body });
 
     if (method === 'getChat') {
+      if (getChatFails) return new Response('down', { status: 500 });
       return new Response(
         JSON.stringify({
           ok: true,
@@ -141,6 +144,20 @@ describe('ensureAppWelcomePin (/api/telegram/setup)', () => {
 
     expect(welcomeSends()).toHaveLength(2);
     expect(pins()).toHaveLength(2);
+  });
+
+  it('getChat падає (мережа/таймаут) — пропускає цикл, НЕ шле дубль вітального повідомлення', async () => {
+    await callSetup();
+    getChatFails = true;
+
+    await callSetup();
+
+    // Транзієнтний збій getChat не повинен трактуватись як «пін загублено» —
+    // інакше одна флуктуація сіяла б ще один дубль щодня (крон кличе це
+    // безумовно раз на добу). Замість цього — тихо пропустити цикл, наступний
+    // виклик (коли getChat знову відповість) сам підтвердить чи полагодить.
+    expect(welcomeSends()).toHaveLength(1);
+    expect(pins()).toHaveLength(1);
   });
 
   it('без TELEGRAM_CHAT_ID — тихо пропускає, інші кроки setup не ламає', async () => {

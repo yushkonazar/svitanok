@@ -3637,16 +3637,25 @@ async function ensureAppWelcomePin(env, miniAppUrl) {
   if (!env.TELEGRAM_CHAT_ID) return;
   const chatId = env.TELEGRAM_CHAT_ID;
 
+  // Резонний-за-замовчуванням: пересилаємо/переприкріплюємо ЛИШЕ якщо getChat
+  // ПОЗИТИВНО підтвердив, що поточний пін не наш (не збігається зі стором) чи
+  // взагалі відсутній. Транзієнтний збій getChat (мережа/таймаут) НЕ повинен
+  // тлумачитись як «пін загублено» — інакше одна флуктуація що дня давала б
+  // ще один дубль вітального повідомлення (крон викликає це раз на добу
+  // безумовно). Замість цього просто пропускаємо цикл: завтрашній getChat
+  // або підтвердить пін (no-op), або справді покаже втрату (і полагодить).
+  let pinnedId;
   try {
     const chatRes = await tgCall(env, 'getChat', { chat_id: chatId });
     const chatJson = await chatRes.json();
-    const pinnedId = chatJson?.result?.pinned_message?.message_id;
-    const state = await loadState(env);
-    if (typeof state.appWelcomePinMsgId === 'number' && pinnedId === state.appWelcomePinMsgId) {
-      return;
-    }
+    pinnedId = chatJson?.result?.pinned_message?.message_id;
   } catch (e) {
-    console.error('ensureAppWelcomePin: getChat не вдався (пробуємо (пере)закріпити)', e?.message);
+    console.error('ensureAppWelcomePin: getChat не вдався — пропускаємо цикл', e?.message);
+    return;
+  }
+  const state = await loadState(env);
+  if (typeof state.appWelcomePinMsgId === 'number' && pinnedId === state.appWelcomePinMsgId) {
+    return;
   }
 
   const button = buildMiniAppButton(
@@ -3671,9 +3680,12 @@ async function ensureAppWelcomePin(env, miniAppUrl) {
     message_id: newId,
     disable_notification: true,
   });
-  const state = await loadState(env);
-  state.appWelcomePinMsgId = newId;
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  // Перечитати — між першим loadState (вище) і тепер минуло 2 await Telegram-
+  // виклики, конкурентний писар того ж блоба (checkReminders/вебхук на тому
+  // самому 5-хвилинному тіку) міг оновити щось інше в 'state' за цей час.
+  const fresh = await loadState(env);
+  fresh.appWelcomePinMsgId = newId;
+  await env.BRIEFING.put('state', JSON.stringify(fresh));
 }
 
 /** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
