@@ -3554,20 +3554,16 @@ async function handleTelegramWebhook(request, env, ctx) {
   return json({ ok: true });
 }
 
-/** POST /api/telegram/setup -> одноразовий setWebhook. Auth тим самим заголовком,
- *  що й вебхук (X-Telegram-Bot-Api-Secret-Token) — не query-param (не осідає в логах). */
-async function handleTelegramSetup(request, env) {
-  if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
-    return json({ ok: false, error: 'no-webhook-secret' }, 500);
-  }
-  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
-  if (!verifyWebhookSecret(header, env.TELEGRAM_WEBHOOK_SECRET)) {
-    return json({ ok: false, error: 'bad-secret' }, 401);
-  }
-  const url = new URL(request.url);
-  const webhookUrl = `${url.origin}/api/telegram`;
+/**
+ * Ядро реєстрації бота (вебхук + меню команд + профіль + кнопка-меню +
+ * вітальний пін) — спільне для ручного POST /api/telegram/setup і автоматичного
+ * щоденного самозапуску (autoTelegramSetup, нижче). origin — БЕЗ кінцевого
+ * слеша (URL.origin це гарантує; env.MINI_APP_URL перевіряємо явно, бо туди
+ * значення вводить власник руками).
+ */
+async function runTelegramSetup(env, origin) {
   const res = await tgCall(env, 'setWebhook', {
-    url: webhookUrl,
+    url: `${origin}/api/telegram`,
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,
     allowed_updates: ['message', 'callback_query', 'my_chat_member'],
   });
@@ -3578,10 +3574,53 @@ async function handleTelegramSetup(request, env) {
   await tgCall(env, 'setMyDescription', { description: BOT_DESCRIPTION });
   await tgCall(env, 'setMyShortDescription', { short_description: BOT_SHORT_DESCRIPTION });
   await tgCall(env, 'setChatMenuButton', {
-    menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: url.origin } },
+    menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: origin } },
   });
-  await ensureAppWelcomePin(env, url.origin);
-  return json({ ok: res.ok, webhookUrl });
+  await ensureAppWelcomePin(env, origin);
+  return res.ok;
+}
+
+/** POST /api/telegram/setup -> ручний виклик runTelegramSetup. Auth тим самим
+ *  заголовком, що й вебхук (X-Telegram-Bot-Api-Secret-Token) — не query-param
+ *  (не осідає в логах). Лишається як фолбек/діагностика — щоденний
+ *  autoTelegramSetup (нижче) робить те саме без ручного curl. */
+async function handleTelegramSetup(request, env) {
+  if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
+    return json({ ok: false, error: 'no-webhook-secret' }, 500);
+  }
+  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  if (!verifyWebhookSecret(header, env.TELEGRAM_WEBHOOK_SECRET)) {
+    return json({ ok: false, error: 'bad-secret' }, 401);
+  }
+  const url = new URL(request.url);
+  const ok = await runTelegramSetup(env, url.origin);
+  return json({ ok, webhookUrl: `${url.origin}/api/telegram` });
+}
+
+/**
+ * Щоденний самозапуск runTelegramSetup — власник більше НЕ мусить руками
+ * викликати curl після зміни команд/опису/кнопки-меню чи якщо вебхук/пін
+ * загубився. Усі кроки runTelegramSetup — ідемпотентні виклики Telegram API
+ * (перевстановлюють те саме значення), тож щоденний повтор безпечний і сам є
+ * формою self-healing (той самий мотив, що ensureAppWelcomePin усередині).
+ *
+ * Гейт на MINI_APP_URL — Worker-секрет (wrangler secret put), ТЕ САМЕ значення,
+ * що вже є в оркестраторі (.env.example): поза HTTP-запитом (тут — крон) немає
+ * request.url, з якого можна взяти origin. Без секрету функція тихо
+ * пропускається — ручний curl (README) лишається робочим фолбеком.
+ *
+ * Раз на добу — той самий "остання дата" ідіом, що dispatch.lastAutoDate.
+ */
+async function autoTelegramSetup(env) {
+  if (!env.MINI_APP_URL || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) return;
+  const today = kyivDateKey();
+  const state = await loadState(env);
+  if (state.telegramSetupDate === today) return;
+  const origin = env.MINI_APP_URL.replace(/\/+$/, '');
+  await runTelegramSetup(env, origin);
+  const fresh = await loadState(env); // перечитати — попередні кроки могли писати state (пін)
+  fresh.telegramSetupDate = today;
+  await env.BRIEFING.put('state', JSON.stringify(fresh));
 }
 
 /**
@@ -3952,6 +3991,7 @@ export default {
         await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
         await deadMansCheck(env); // від 12:00 Київ, раз на добу
         await checkinNudgeCheck(env); // вікна нагадувань про чек-ін, раз на слот/добу
+        await autoTelegramSetup(env); // самозапуск setup (вебхук/меню/пін), раз на добу
       })(),
     );
   },
