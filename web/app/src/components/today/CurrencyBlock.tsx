@@ -87,8 +87,19 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
   // перемикаючись між валютами, власник порівнює ту саму суму, не вводить
   // наново. Скидання при закритті свідомо НЕ робимо — тап назад на той самий
   // рядок має пам'ятати, що вже вводив.
+  //
+  // Рядок, не число (фідбек власника — баг): controlled type="number" зі
+  // `setAmount(Number(e.target.value) || 0)` перетворював порожній інпут на
+  // ЧИСЛО 0, DOM одразу показував назад "0" (React не дає стерти поле), і
+  // наступний натиснутий digit вставлявся ПЕРЕД тим "0" (курсор скидається
+  // на початок при кожному контрольованому ре-рендері) — "70" ставало "070".
+  // type="number" до того ж не пускає кому як десятковий роздільник залежно
+  // від локалі браузера. Тримаємо сирий рядок як є (що надрукував — те й
+  // видно, включно з проміжними станами "7", "7.", "7,5"), парсимо в число
+  // лише для обчислення конвертації.
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [amount, setAmount] = useState(DEFAULT_AMOUNT);
+  const [amountStr, setAmountStr] = useState(String(DEFAULT_AMOUNT));
+  const amount = Number(amountStr.replace(',', '.')) || 0;
 
   const accentMinMax =
     rows.length && d ? windowMinMax((d[rows[0].hk] as number[] | undefined) ?? [], WEEK_DAYS) : null;
@@ -195,10 +206,15 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                     style={{ animation: 'fadeUp .2s ease' }}
                   >
                     <input
-                      type="number"
+                      type="text"
                       inputMode="decimal"
-                      value={amount}
-                      onChange={(e) => setAmount(Number(e.target.value) || 0)}
+                      value={amountStr}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        // цифри + щонайбільше один роздільник (кома чи крапка) —
+                        // пускає й проміжні стани набору ("", "7", "7.", "7,5")
+                        if (/^\d*[.,]?\d*$/.test(v)) setAmountStr(v);
+                      }}
                       className="w-16 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11.5px]"
                       aria-label={`Сума в ${def.label}`}
                     />
