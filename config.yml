@@ -24,18 +24,40 @@ modules:
     retentionDays: 7
     # NewsData.io (ключ NEWSDATA_API_KEY): теми = scope × category. Датацентр-
     # дружній API (знімає 403 на .ua).
+    #
+    # Редизайн новин (фідбек власника): region = СТРОГО за походженням джерела,
+    # не за темою. «Україна» — лише українські джерела (NewsData country=ua,
+    # ТСН, BBC Україна). «Світ» — світові джерела + УСЕ позарегіональне, чого
+    # немає сенсу дублювати в обидва боки (Кіберспорт/Футбол/Релізи — тем без
+    # країни, «Краще просто занести Релізи в Світ, адже це загальносвітова
+    # тема»). NewsData free-тариф має 12-годинну затримку й не дає обрати
+    # видання (лише категорія/мова) — тому «Світ»/«Наука»/«Тех/IT»/«Футбол»
+    # тепер СПРАВЖНІ RSS перевірених видань (BBC/Guardian/ТСН), у реальному
+    # часі, а не через агрегатор.
+    #
+    # Кілька рядків можуть свідомо ділити одну (scope, topic) пару — вони
+    # МЕРДЖАТЬСЯ в одну групу (news.ts, createNewsModule). Декларуємо рядки
+    # однієї теми ПОРЯД (сортування за вагою стабільне — порядок мерджу
+    # передбачуваний лише тоді).
+    #
     #  🇺🇦 Україна: country=ua + language=uk — новини про/з України.
     #  🌍 Світ: language=en БЕЗ country (C1, рішення власника) — раніше world
     #     фільтрувався лише language=uk, тож туди текли укр-видання про укр-події
     #     (дублюючи рубрику «Україна»). Англомовний world = справді міжнародний.
-    # ⚠️ Кожна НОВА тема живе лише в ОДНОМУ scope. Ваги/інтереси/голоси ключаться
-    # по display-імені теми, тож однакова назва у двох scope мовчки ділила б один
-    # бал (як це вже роблять дві «Технології» — легасі, лишаємо: інтерес до теми
-    # і справді один). Нові теми розведено, щоб не множити цей ефект.
+    # ⚠️ Кожна тема живе лише в ОДНОМУ scope. Ваги/інтереси/голоси ключаться по
+    # display-імені теми, тож однакова назва у двох scope мовчки ділила б один
+    # бал — «Тех/IT» (світ) і «Технології» (Україна) свідомо розведені назвами.
     topics:
-      # 🇺🇦 Українські
+      # 🇺🇦 Українські — лише українські джерела.
       - { scope: ua, topic: Головне, category: top, country: ua, language: uk }
       - { scope: ua, topic: Політика, category: politics, country: ua, language: uk }
+      - {
+          scope: ua,
+          topic: Політика,
+          source: rss,
+          url: 'https://tsn.ua/rss/politika',
+          language: uk,
+        }
       # Оборони/фронту в переліку категорій NewsData НЕМА — тому пошук за словами.
       - {
           scope: ua,
@@ -45,52 +67,217 @@ modules:
           language: uk,
         }
       - { scope: ua, topic: Економіка, category: business, country: ua, language: uk }
+      - { scope: ua, topic: Економіка, source: rss, url: 'https://tsn.ua/rss/groshi', language: uk }
       - { scope: ua, topic: Спорт, category: sports, country: ua, language: uk }
       - { scope: ua, topic: Технології, category: technology, country: ua, language: uk }
-      - { scope: ua, topic: Суспільство, category: domestic, country: ua, language: uk }
-      - { scope: ua, topic: Освіта, category: education, country: ua, language: uk }
-      # 🌍 Світові (англомовні). «Бізнес» тут і «Економіка» вище — та сама
-      # категорія NewsData, але різні scope Й РІЗНІ назви: спільна назва мовчки
-      # злила б їхні ваги та інтереси в один бал.
-      - { scope: world, topic: Світ, category: world, language: en }
-      - { scope: world, topic: Наука, category: science, language: en }
-      - { scope: world, topic: Здоровʼя, category: health, language: en }
-      - { scope: world, topic: Культура, category: entertainment, language: en }
-      - { scope: world, topic: Бізнес, category: business, language: en }
-      - { scope: world, topic: Довкілля, category: environment, language: en }
-      - { scope: world, topic: Технології, category: technology, language: en }
-      # Стрічки (source: rss) — НЕ витрачають кредитів NewsData й працюють навіть
-      # без NEWSDATA_API_KEY. `why` у них немає (RSS не дає опису).
-      # Джерела звірені на доступність із датацентру (itc.ua й BBC — ті, що не
-      # дають 403 раннеру GitHub Actions, на відміну від решти .ua-видань).
-      - { scope: ua, topic: ITC.ua, source: rss, url: 'https://itc.ua/feed/', language: uk }
       - {
           scope: ua,
-          topic: BBC Україна,
+          topic: Технології,
+          source: rss,
+          url: 'https://tsn.ua/rss/nauka_it',
+          language: uk,
+        }
+      - { scope: ua, topic: Технології, source: rss, url: 'https://itc.ua/feed/', language: uk }
+      - { scope: ua, topic: Суспільство, category: domestic, country: ua, language: uk }
+      - { scope: ua, topic: Освіта, category: education, country: ua, language: uk }
+      # «Загальне» — злиття BBC Україна (мовна стрічка) + ТСН, розділ «Україна»
+      # (ДУЖЕ свіжий — перевірено, 2-5 хв між новинами). Окремо від «Головне»
+      # (те — NewsData category=top). Свідомо `/rss/ukrayina`, НЕ загальний
+      # `/rss`: загальний фід інколи мішає й російськомовні матеріали (ТСН
+      # веде паралельну ru-версію сайту) — розділ `/ukrayina` підтверджено
+      # тегований `<language>uk-ukr</language>` і містить лише українську.
+      - {
+          scope: ua,
+          topic: Загальне,
           source: rss,
           url: 'https://feeds.bbci.co.uk/ukrainian/rss.xml',
           language: uk,
         }
       - {
+          scope: ua,
+          topic: Загальне,
+          source: rss,
+          url: 'https://tsn.ua/rss/ukrayina',
+          language: uk,
+        }
+
+      # 🌍 Світові — світові джерела + все позарегіональне (Кіберспорт/Футбол/
+      # Релізи не мають країни, тож живуть тут, а не дублюються в Україну).
+      # «Бізнес» тут і «Економіка» вище — та сама категорія NewsData, але різні
+      # scope Й РІЗНІ назви: спільна назва мовчки злила б їхні ваги в один бал.
+      #
+      # «Світ» — заміна NewsData category=world (12г затримка, без контролю
+      # видання) на прямі RSS BBC World + Guardian World.
+      - {
           scope: world,
-          topic: Hacker News,
+          topic: Світ,
+          source: rss,
+          url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Світ,
+          source: rss,
+          url: 'https://www.theguardian.com/world/rss',
+          language: en,
+        }
+
+      - { scope: world, topic: Наука, category: science, language: en }
+      - {
+          scope: world,
+          topic: Наука,
+          source: rss,
+          url: 'https://feeds.bbci.co.uk/news/science_and_environment/rss.xml',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Наука,
+          source: rss,
+          url: 'https://www.theguardian.com/science/rss',
+          language: en,
+        }
+
+      - { scope: world, topic: Здоровʼя, category: health, language: en }
+      - { scope: world, topic: Культура, category: entertainment, language: en }
+      - { scope: world, topic: Бізнес, category: business, language: en }
+      - { scope: world, topic: Довкілля, category: environment, language: en }
+
+      # «Тех/IT» — злиття NewsData technology + Hacker News (той самий смисл,
+      # що раніше окремий чіп, тепер частина цієї теми) + BBC/Guardian Technology.
+      - { scope: world, topic: Тех/IT, category: technology, language: en }
+      - {
+          scope: world,
+          topic: Тех/IT,
           source: rss,
           url: 'https://hnrss.org/frontpage',
           language: en,
         }
       - {
           scope: world,
-          topic: Релізи React,
+          topic: Тех/IT,
+          source: rss,
+          url: 'https://feeds.bbci.co.uk/news/technology/rss.xml',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Тех/IT,
+          source: rss,
+          url: 'https://www.theguardian.com/uk/technology/rss',
+          language: en,
+        }
+
+      # «Кіберспорт» — обидва джерела (власник: «Беремо і те, і те»). HLTV за
+      # Cloudflare bot-захистом — мінімальний User-Agent дає 403, повний
+      # «браузерний» проходить (перевірено напряму). Крихко: якщо колись
+      # перестане проходити — тема просто лишиться з контентом dotesports
+      # (graceful degrade, той самий try/catch на кожен рядок).
+      - {
+          scope: world,
+          topic: Кіберспорт,
+          source: rss,
+          url: 'https://dotesports.com/feed',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Кіберспорт,
+          source: rss,
+          url: 'https://www.hltv.org/rss/news',
+          language: en,
+          headers:
+            {
+              User-Agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            },
+        }
+
+      - {
+          scope: world,
+          topic: Футбол,
+          source: rss,
+          url: 'https://feeds.bbci.co.uk/sport/football/rss.xml',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Футбол,
+          source: rss,
+          url: 'https://www.theguardian.com/football/rss',
+          language: en,
+        }
+
+      # «Релізи» — розширений список репозиторіїв (замінює колишні окремі
+      # «Релізи React»/«Релізи Node» — тепер один топік, «9 репо»). Vite й
+      # Cloudflare Workers SDK — монорепо (releases.atom мішає core-теги із
+      # саб-пакетами, напр. plugin-legacy@8.2.2/wrangler@4.114.0) — includePattern
+      # звужує до «свого». PostgreSQL тегує й beta/rc (REL_19_BETA2) — excludePattern.
+      - {
+          scope: world,
+          topic: Релізи,
           source: rss,
           url: 'https://github.com/facebook/react/releases.atom',
           language: en,
         }
       - {
           scope: world,
-          topic: Релізи Node,
+          topic: Релізи,
           source: rss,
           url: 'https://github.com/nodejs/node/releases.atom',
           language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/microsoft/TypeScript/releases.atom',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/microsoft/vscode/releases.atom',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/git/git/releases.atom',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/tailwindlabs/tailwindcss/releases.atom',
+          language: en,
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/postgres/postgres/releases.atom',
+          language: en,
+          excludePattern: '(beta|rc|alpha)',
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/vitejs/vite/releases.atom',
+          language: en,
+          includePattern: '^v?\d+\.\d+\.\d+$',
+        }
+      - {
+          scope: world,
+          topic: Релізи,
+          source: rss,
+          url: 'https://github.com/cloudflare/workers-sdk/releases.atom',
+          language: en,
+          includePattern: '^wrangler@',
         }
   weeklyReview: { enabled: true, day: 'sunday' }
   fact:
