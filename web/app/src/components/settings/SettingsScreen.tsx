@@ -1,9 +1,16 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSettings, useSaveSettings, useStats, useSetGoal, useBriefing } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { getDemoState, setDemoState, type DemoState } from '../../api/client.ts';
-import { inTelegram, haptic } from '../../telegram.ts';
+import {
+  inTelegram,
+  haptic,
+  tg,
+  checkHomeScreenStatus,
+  addToHomeScreen,
+  type HomeScreenStatus,
+} from '../../telegram.ts';
 import { useTheme, type ThemePref } from '../../theme.tsx';
 import { SectionLabel, Ph } from '../ui/primitives.tsx';
 import { LoadingSkeleton, ErrorState, SkeletonBar } from '../ui/states.tsx';
@@ -79,6 +86,51 @@ function TimeField({
       onChange={(e) => e.target.value && onChange(e.target.value)}
       className="rounded-[9px] border border-glassb bg-glass px-2.5 py-1.5 font-mono text-[12px] font-semibold text-tx"
     />
+  );
+}
+
+/**
+ * Ярлик на головний екран пристрою (Bot API 8.0+, дослідження Telegram-механік —
+ * фідбек власника). Обходить усю навігацію Telegram: у групі немає персональної
+ * menu-кнопки бота (лише в приватному чаті), а reply-клавіатура ненадійна на
+ * Desktop у супергрупах/форум-темах (баг клієнта) — ярлик працює завжди
+ * однаково, незалежно від того, де саме відкрита розмова з ботом.
+ *
+ * status стартує 'unsupported' і checkHomeScreenStatus підтверджує/спростовує
+ * це асинхронно — старий клієнт (< 8.0) чи поза Telegram лишає секцію
+ * невидимою, а не показує кнопку, що нічого не зробить.
+ */
+function HomeScreenSection() {
+  const [status, setStatus] = useState<HomeScreenStatus>('unsupported');
+
+  useEffect(() => {
+    checkHomeScreenStatus(setStatus);
+    const onAdded = () => setStatus('added');
+    tg?.onEvent?.('homeScreenAdded', onAdded);
+    return () => tg?.offEvent?.('homeScreenAdded', onAdded);
+  }, []);
+
+  if (status === 'unsupported') return null;
+
+  return (
+    <Section title="ГОЛОВНИЙ ЕКРАН">
+      {status === 'added' ? (
+        <p className="text-[13px] font-semibold" style={{ color: 'var(--color-pos)' }}>
+          ✅ Додано на головний екран
+        </p>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            haptic('light');
+            addToHomeScreen();
+          }}
+          className="rounded-[11px] border border-glassb bg-glass px-3.5 py-2.5 text-left text-[13px] font-semibold"
+        >
+          📲 Додати Світанок на головний екран
+        </button>
+      )}
+    </Section>
   );
 }
 
@@ -297,6 +349,8 @@ export function SettingsScreen() {
           ))}
         </div>
       </Section>
+
+      <HomeScreenSection />
 
       {/* Демо-стан — лише поза Telegram: у справжньому вебвʼю дані реальні, і
           підміняти їх нема ні сенсу, ні права. */}
