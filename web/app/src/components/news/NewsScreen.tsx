@@ -1,17 +1,31 @@
 import { useState } from 'react';
 import { useBriefing, useSettings } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema, type NewsGroup as NewsGroupT } from '../../api/briefing-schema.ts';
+import { isReleaseTopic } from '../../lib/topicKind.ts';
 import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
 import { Segmented } from '../ui/Segmented.tsx';
 import { DigestCard } from './DigestCard.tsx';
 import { TopicChipRow } from './TopicChipRow.tsx';
-import { NewsBentoTile, MutedNewsTile } from './NewsBentoTile.tsx';
+import { HeroNewsCard } from './HeroNewsCard.tsx';
+import { CompactNewsCard } from './CompactNewsCard.tsx';
+import { ReleaseGridSection } from './ReleaseGridSection.tsx';
+import { MutedNewsTile } from './MutedNewsTile.tsx';
 import { TopicSheet } from './TopicSheet.tsx';
 
 // Вкладка «Новини» (редизайн: інтерактивні блоки замість рядків) — дайджест
 // топ-подій зверху, сегмент 🌍 Світ/🇺🇦 Україна, ряд тем-чіпів (усі теми
-// регіону, і приглушені теж — притлумлені), bento-сітка активних тем із
-// лідер-новиною одразу в плитці, тап відкриває Sheet із повним списком.
+// регіону, і приглушені теж — притлумлені), далі САМІ ТЕМИ у трьох формах:
+//
+//  1. Топ-N (ті самі теми, що потрапили в дайджест) — HeroNewsCard: повна
+//     новина (джерело+час+заголовок+чому+❤️🔖 через NewsItem) + другий
+//     айтем пік-рядком. Видно ОДРАЗУ, без тапу.
+//  2. Релізи — ЗАВЖДИ окрема секція (незалежно від рангу): repo+версія+час,
+//     ReleaseGridSection.
+//  3. Решта — CompactNewsCard, 2-колонкова сітка: заголовок+джерела теж
+//     видно одразу, тап -> повний Sheet.
+//  4. Приглушені — MutedNewsTile, компактний сірий чіп, тапабельний (peek
+//     без унмуту).
+//
 // Регіон-фільтр — той самий g.scope===scope, що й раніше: щойно тема без
 // країни (Кіберспорт/Футбол/Релізи) отримала scope:'world' у config.yml,
 // вона сама лишається лише в Світі, нічого зайвого фільтрувати не треба.
@@ -22,6 +36,8 @@ const SCOPES = [
   { id: 'world', label: '🌍 Світ' },
   { id: 'ua', label: '🇺🇦 Україна' },
 ] as const;
+
+const HERO_COUNT = 3;
 
 const NewsIcon = (
   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-tx3)" strokeWidth="1.6" strokeLinecap="round">
@@ -52,18 +68,32 @@ export function NewsScreen() {
   const news = readBlock(data.brief.blocks, 'news', newsDataSchema);
   const allGroups = news?.groups ?? [];
   // Приглушені теми тут БІЛЬШЕ НЕ ховаємо (фідбек власника, редизайн) —
-  // притлумлений чіп/плитка лишається тапабельною (peek без унмуту).
-  // Серверний ефект (rss лишається у фетчі, newsdata — ріжеться) настає
-  // окремо, у applyTopicMutes.
+  // притлумлений чіп лишається тапабельним (peek без унмуту). Серверний
+  // ефект (rss лишається у фетчі, newsdata — ріжеться) настає окремо, у
+  // applyTopicMutes.
   const muted = new Set(settings?.settings.mutedTopics ?? []);
   const scoped = allGroups.filter((g) => g.scope === scope);
-  const unmuted = scoped.filter((g) => !muted.has(g.topic));
-  const mutedGroups = scoped.filter((g) => muted.has(g.topic));
+  const scopedUnmuted = scoped.filter((g) => !muted.has(g.topic));
+  const scopedMuted = scoped.filter((g) => muted.has(g.topic));
   const openGroup = openKey ? (allGroups.find((g) => topicKey(g) === openKey) ?? null) : null;
+
+  // Релізи — ЗАВЖДИ окрема секція, незалежно від ваги/рангу (версія — не
+  // "новина", тож не має сенсу в топ-N/дайджесті). Решта — кандидати на
+  // топ-N (Hero) чи compact.
+  const releaseGroup = scopedUnmuted.find((g) => isReleaseTopic(g.topic)) ?? null;
+  const newsGroups = scopedUnmuted.filter((g) => !isReleaseTopic(g.topic) && g.items.length > 0);
+  const heroes = newsGroups.slice(0, HERO_COUNT);
+  const compacts = newsGroups.slice(HERO_COUNT);
+
+  // Дайджест — топ-N з УСІХ регіонів (не лише поточного scope), той самий
+  // відбір, що дав heroes для активного регіону: групи вже відсортовані
+  // бекендом за вагою спадно, тож перші НЕ приглушені/не-реліз групи й Є
+  // "улюблене".
+  const digestGroups = allGroups.filter((g) => !muted.has(g.topic) && !isReleaseTopic(g.topic));
 
   return (
     <div className="flex flex-col gap-4">
-      <DigestCard groups={allGroups.filter((g) => !muted.has(g.topic))} />
+      <DigestCard groups={digestGroups} />
 
       <Segmented segments={SCOPES} value={scope} onChange={setScope} />
 
@@ -85,15 +115,28 @@ export function NewsScreen() {
         <>
           <TopicChipRow groups={scoped} muted={muted} onSelect={(g) => setOpenKey(topicKey(g))} />
 
-          <div className="grid grid-cols-2 gap-2.5">
-            {unmuted.map((g) => (
-              <NewsBentoTile key={g.topic} group={g} onOpen={() => setOpenKey(topicKey(g))} />
-            ))}
-          </div>
+          {heroes.map((g) => (
+            <HeroNewsCard key={g.topic} group={g} onOpenAll={() => setOpenKey(topicKey(g))} />
+          ))}
 
-          {mutedGroups.length > 0 && (
+          {releaseGroup && (
+            <ReleaseGridSection
+              group={releaseGroup}
+              onOpenAll={() => setOpenKey(topicKey(releaseGroup))}
+            />
+          )}
+
+          {compacts.length > 0 && (
+            <div className="grid grid-cols-2 gap-2.5">
+              {compacts.map((g) => (
+                <CompactNewsCard key={g.topic} group={g} onOpen={() => setOpenKey(topicKey(g))} />
+              ))}
+            </div>
+          )}
+
+          {scopedMuted.length > 0 && (
             <div className="grid grid-cols-2 gap-2">
-              {mutedGroups.map((g) => (
+              {scopedMuted.map((g) => (
                 <MutedNewsTile key={g.topic} group={g} onOpen={() => setOpenKey(topicKey(g))} />
               ))}
             </div>
