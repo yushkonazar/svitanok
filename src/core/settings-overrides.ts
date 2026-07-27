@@ -66,6 +66,15 @@ export interface TopicMuteResult {
  *
  * Порівняння за ТОЧНОЮ display-назвою теми — тим самим ключем, яким ідуть ваги,
  * інтереси й голоси.
+ *
+ * `source: 'rss'`-рядки — ВИНЯТОК (фідбек власника, редизайн новин): rss не
+ * коштує кредиту NewsData, тож немає причини різати ЙОГО, а нова Mini App
+ * дозволяє «підглянути» приглушену тему (тап на сірий чіп) без зняття
+ * приглушення — назавжди, не один день. Без винятку rss-тема зникла б із
+ * briefing.json наступного ж прогону, і сірий чіп показував би порожньо
+ * назавжди. newsdata-рядки лишаються під різом як і раніше — кредит
+ * економиться, приглушена newsdata-тема просто застаріє за день (фронтенд
+ * деградує graceful, sheet покаже порожньо).
  */
 export function applyTopicMutes(config: AppConfig, settings: unknown): TopicMuteResult {
   const raw = (settings as { mutedTopics?: unknown } | null | undefined)?.mutedTopics;
@@ -77,10 +86,17 @@ export function applyTopicMutes(config: AppConfig, settings: unknown): TopicMute
   const news = config.modules?.news;
   if (!news || !Array.isArray(news.topics)) return { config, muted: [] };
 
-  const kept = news.topics.filter((t) => !mute.has(t.topic));
-  if (kept.length === news.topics.length) return { config, muted: [] };
-
+  // muted — за приналежністю до mute-сету, НЕ за тим, чи рядок фактично
+  // вирізаний: приглушена rss-тема лишається в масиві (нижче), але для логу
+  // рану вона й досі "приглушена". Рахуємо ДО early-return, інакше "усе
+  // приглушене виявилось rss" (kept.length===topics.length) хибно повернуло б
+  // muted:[] — рядок не вирізаний, але власник таки приглушив тему.
   const muted = news.topics.filter((t) => mute.has(t.topic)).map((t) => t.topic);
+  if (muted.length === 0) return { config, muted: [] };
+
+  const kept = news.topics.filter((t) => !mute.has(t.topic) || t.source === 'rss');
+  if (kept.length === news.topics.length) return { config, muted };
+
   return {
     config: {
       ...config,

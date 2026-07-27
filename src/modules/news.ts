@@ -132,6 +132,15 @@ function decodeXml(s: string): string {
 export interface RssItem {
   title: string;
   url: string;
+  publishedAt?: string;
+}
+
+/** RSS <pubDate> чи Atom <published>/<updated> -> ISO, або undefined на непарсибельне/відсутнє. */
+function parseFeedDate(block: string): string | undefined {
+  const raw = block.match(/<(pubDate|published|updated)[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '';
+  if (!raw) return undefined;
+  const ms = Date.parse(decodeXml(stripCdata(raw)).trim());
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
 
 export function parseRss(xml: string): RssItem[] {
@@ -143,7 +152,7 @@ export function parseRss(xml: string): RssItem[] {
     if (!url) url = b.match(/<link[^>]*href=["']([^"']+)["']/i)?.[1] ?? ''; // Atom
     const title = decodeXml(stripCdata(rawTitle)).trim();
     url = decodeXml(stripCdata(url)).trim();
-    if (title && url && isHttpUrl(url)) out.push({ title, url }); // лише http(s) (M2)
+    if (title && url && isHttpUrl(url)) out.push({ title, url, publishedAt: parseFeedDate(b) }); // лише http(s) (M2)
   }
   return out;
 }
@@ -153,6 +162,22 @@ export interface NewsItem {
   title: string;
   url: string;
   why?: string;
+  publishedAt?: string;
+}
+
+/**
+ * NewsData's pubDate — документовано як UTC у форматі "YYYY-MM-DD HH:mm:ss",
+ * БЕЗ позначки таймзони. Date.parse на такому рядку читає його як ЛОКАЛЬНИЙ
+ * час (V8/Node) — на GitHub Actions runner'і (UTC) сьогодні це no-op, але
+ * пастка, якщо середовище колись зміниться. Явно доклеюємо 'Z', якщо позначки
+ * зони нема.
+ */
+function parseNewsDataDate(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const s = raw.trim();
+  const iso = /[Zz]|[+-]\d\d:?\d\d$/.test(s) ? s : `${s.replace(' ', 'T')}Z`;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
 
 /** Розпарсити відповідь NewsData (results[]) у наші айтеми. */
@@ -161,7 +186,7 @@ export function parseNewsData(json: unknown): NewsItem[] {
   if (!Array.isArray(results)) return [];
   const out: NewsItem[] = [];
   for (const r of results) {
-    const o = r as { title?: unknown; link?: unknown; description?: unknown };
+    const o = r as { title?: unknown; link?: unknown; description?: unknown; pubDate?: unknown };
     if (
       typeof o.title === 'string' &&
       typeof o.link === 'string' &&
@@ -176,7 +201,8 @@ export function parseNewsData(json: unknown): NewsItem[] {
         typeof o.description === 'string' && o.description.trim()
           ? decodeXml(stripCdata(o.description.trim())).trim().slice(0, WHY_MAX)
           : undefined;
-      out.push({ title: o.title.trim(), url: o.link.trim(), why });
+      const publishedAt = parseNewsDataDate(o.pubDate);
+      out.push({ title: o.title.trim(), url: o.link.trim(), why, publishedAt });
     }
   }
   return out;
@@ -193,6 +219,14 @@ interface TopicCfg {
   q?: string;
   country?: string;
   language: string;
+  /** Кастомні заголовки фетчу (лише rss) — напр. User-Agent для джерел за
+   *  bot-захистом (HLTV: 403 з мінімальним UA, 200 з повним браузерним). */
+  headers?: Record<string, string>;
+  /** Лишити лише title, що матчить regex — фільтр шуму монорепо-стрічок
+   *  релізів (Vite/Cloudflare Workers SDK мішають core-теги з саб-пакетами). */
+  includePattern?: string;
+  /** Викинути title, що матчить regex — напр. beta/rc-теги PostgreSQL. */
+  excludePattern?: string;
 }
 
 /**
@@ -278,7 +312,14 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       const topics = [...cfg.topics].sort((a, b) => weightFor(b.topic) - weightFor(a.topic));
 
       const runSeen = new Set<string>(); // глобальний дедуп прогону: без повторів між темами
-      const groups: Group[] = [];
+      // Map, а не масив: кілька рядків TopicCfg тепер свідомо ділять одну (scope,
+      // topic) пару (напр. «Наука» = NewsData + BBC Science + Guardian Science) —
+      // без злиття фронтенд намалював би дублікат-плитку на той самий топік.
+      // Дедуп (runSeen) і вага/квота (weightFor/quotaFor) уже коректні для
+      // мерджу без змін — обидва ключуються лише за іменем теми, не за рядком
+      // конфіга. Однойменні рядки декларувати ПОРЯД у config.yml — сортування
+      // за вагою стабільне, тож порядок мерджу передбачуваний лише тоді.
+      const groupsByKey = new Map<string, Group>();
       for (const t of topics) {
         const cfgT = t as TopicCfg;
         const isRss = cfgT.source === 'rss';
@@ -301,10 +342,23 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         let items: NewsItem[];
         try {
-          const res = await fetchImpl(url, { signal: ctrl.signal });
+          const res = await fetchImpl(url, {
+            signal: ctrl.signal,
+            ...(isRss && cfgT.headers ? { headers: cfgT.headers } : {}),
+          });
           if (!res.ok) throw new Error(`${isRss ? 'RSS' : 'NewsData'} HTTP ${res.status}`);
           // parseRss дає {title,url} без опису — `why` у стрічок просто немає.
           items = isRss ? parseRss(await res.text()) : parseNewsData(await res.json());
+          // Фільтр шуму ДО дедуп/квота-циклу — монорепо-стрічки релізів
+          // (Vite/Cloudflare Workers SDK) мішають core-теги з саб-пакетами.
+          if (cfgT.includePattern) {
+            const re = new RegExp(cfgT.includePattern, 'i');
+            items = items.filter((it) => re.test(it.title));
+          }
+          if (cfgT.excludePattern) {
+            const re = new RegExp(cfgT.excludePattern, 'i');
+            items = items.filter((it) => !re.test(it.title));
+          }
         } catch (e) {
           ctx.log.warn(`news: тема «${t.topic}» — ${e instanceof Error ? e.message : String(e)}`);
           continue;
@@ -322,7 +376,12 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
           const shownAt = shown[canon] ? Date.parse(shown[canon]!) : 0;
           if (shownAt && shownAt >= dedupCutoff) continue; // показували в вікні
           runSeen.add(canon);
-          const entry: NewsItem = { title: it.title, url: canon, why: it.why };
+          const entry: NewsItem = {
+            title: it.title,
+            url: canon,
+            why: it.why,
+            publishedAt: it.publishedAt,
+          };
           if (picked.length < quota) {
             picked.push(entry);
             nextShown[canon] = today;
@@ -330,7 +389,16 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
             more.push(entry);
           }
         }
-        if (picked.length) groups.push({ scope: t.scope, topic: t.topic, items: picked, more });
+        if (picked.length) {
+          const key = `${t.scope} ${t.topic}`;
+          const existing = groupsByKey.get(key);
+          if (existing) {
+            existing.items.push(...picked);
+            existing.more.push(...more);
+          } else {
+            groupsByKey.set(key, { scope: t.scope, topic: t.topic, items: picked, more });
+          }
+        }
       }
 
       // Персист лічильника ЗАВЖДИ (кредити витрачено навіть коли нічого не взято).
@@ -341,6 +409,7 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         );
       }
 
+      const groups = [...groupsByKey.values()];
       if (groups.length === 0) return null;
       ctx.state.set('shownNews', nextShown);
 

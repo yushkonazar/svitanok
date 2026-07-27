@@ -144,6 +144,47 @@ describe('settings-overrides — applyTopicMutes (фільтр тем новин
       applyTopicMutes(cfg({ news: { enabled: true } }), { mutedTopics: ['Спорт'] }).muted,
     ).toEqual([]);
   });
+
+  it('приглушена rss-тема НЕ вирізається з конфіга (безкоштовна, потрібна для peek у Mini App)', () => {
+    const c = cfg({
+      news: {
+        enabled: true,
+        topics: [
+          { scope: 'ua', topic: 'Головне', category: 'top' },
+          {
+            scope: 'world',
+            topic: 'Кіберспорт',
+            source: 'rss',
+            url: 'https://dotesports.com/feed',
+          },
+        ],
+      },
+    });
+    const { config, muted } = applyTopicMutes(c, { mutedTopics: ['Кіберспорт'] });
+    // Рядок лишається в конфізі (усе ще фетчиться) — але муж лог "тема приглушена".
+    expect(topicsOf(config)).toEqual(['Головне', 'Кіберспорт']);
+    expect(muted).toEqual(['Кіберспорт']);
+  });
+
+  it('приглушена newsdata-тема далі ріжеться, поруч з непорізаною rss', () => {
+    const c = cfg({
+      news: {
+        enabled: true,
+        topics: [
+          { scope: 'ua', topic: 'Спорт', category: 'sports' },
+          {
+            scope: 'world',
+            topic: 'Кіберспорт',
+            source: 'rss',
+            url: 'https://dotesports.com/feed',
+          },
+        ],
+      },
+    });
+    const { config, muted } = applyTopicMutes(c, { mutedTopics: ['Спорт', 'Кіберспорт'] });
+    expect(topicsOf(config)).toEqual(['Кіберспорт']); // Спорт (newsdata) вирізано, Кіберспорт (rss) лишився
+    expect(muted).toEqual(['Спорт', 'Кіберспорт']);
+  });
 });
 
 describe('settings-overrides — formatOverrides', () => {

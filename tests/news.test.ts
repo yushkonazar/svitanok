@@ -82,6 +82,29 @@ describe('news — parseRss', () => {
     </channel></rss>`;
     expect(parseRss(xml)).toEqual([{ title: 'Good', url: 'https://x.com/a' }]);
   });
+
+  it('publishedAt з <pubDate> (RSS2.0) -> ISO', () => {
+    const xml = `<rss><channel>
+      <item><title>A</title><link>https://x.com/a</link><pubDate>Mon, 27 Jul 2026 10:00:00 GMT</pubDate></item>
+    </channel></rss>`;
+    expect(parseRss(xml)[0]!.publishedAt).toBe('2026-07-27T10:00:00.000Z');
+  });
+
+  it('publishedAt з Atom <updated> -> ISO', () => {
+    const xml = `<feed><entry><title>A</title><link href="https://y.com/1"/><updated>2026-07-27T12:30:00Z</updated></entry></feed>`;
+    expect(parseRss(xml)[0]!.publishedAt).toBe('2026-07-27T12:30:00.000Z');
+  });
+
+  it('без дати чи непарсибельна дата -> publishedAt відсутній', () => {
+    const xml = `<rss><channel>
+      <item><title>A</title><link>https://x.com/a</link></item>
+      <item><title>B</title><link>https://x.com/b</link><pubDate>не дата</pubDate></item>
+    </channel></rss>`;
+    expect(parseRss(xml)).toEqual([
+      { title: 'A', url: 'https://x.com/a' },
+      { title: 'B', url: 'https://x.com/b' },
+    ]);
+  });
 });
 
 describe('news — parseNewsData', () => {
@@ -112,6 +135,20 @@ describe('news — parseNewsData', () => {
         ],
       }),
     ).toEqual([{ title: 'T', url: 'https://x.com/a', why: 'Текст із & сутністю' }]);
+  });
+
+  it('publishedAt з NewsData "YYYY-MM-DD HH:mm:ss" (без таймзони) -> ISO з UTC-корекцією', () => {
+    expect(
+      parseNewsData({
+        results: [{ title: 'T', link: 'https://x.com/a', pubDate: '2026-07-27 14:30:00' }],
+      }),
+    ).toEqual([{ title: 'T', url: 'https://x.com/a', publishedAt: '2026-07-27T14:30:00.000Z' }]);
+  });
+
+  it('без pubDate -> publishedAt відсутній', () => {
+    expect(parseNewsData({ results: [{ title: 'T', link: 'https://x.com/a' }] })).toEqual([
+      { title: 'T', url: 'https://x.com/a' },
+    ]);
   });
 });
 
@@ -337,6 +374,140 @@ describe('news — джерело rss (HN / GitHub Releases)', () => {
     const m = createNewsModule({ fetchImpl: (async () => rssResp()) as typeof fetch });
     const block = await m.run(makeCtx(memState(), { topics: RSS_TOPIC }));
     expect(block).not.toBeNull();
+  });
+
+  it('кастомні headers доходять до фетч-виклику (HLTV — потрібен конкретний User-Agent)', async () => {
+    const topics = [
+      {
+        scope: 'world',
+        topic: 'Кіберспорт',
+        source: 'rss',
+        url: 'https://hltv.org/rss/news',
+        language: 'en',
+        headers: { 'User-Agent': 'Mozilla/5.0 (real browser)' },
+      },
+    ];
+    const fetchSpy = vi.fn(async (_u: unknown, _init?: unknown) => rssResp());
+    await mod(fetchSpy).run(makeCtx(memState(), { topics }));
+    expect(fetchSpy.mock.calls[0]![1]).toMatchObject({
+      headers: { 'User-Agent': 'Mozilla/5.0 (real browser)' },
+    });
+  });
+
+  it('newsdata-темі headers ігноруються (лише rss їх розуміє)', async () => {
+    const topics = [
+      { scope: 'ua', topic: 'Тех', category: 'technology', language: 'uk', headers: { X: 'y' } },
+    ];
+    const fetchSpy = vi.fn(async (_u: unknown, _init?: unknown) => resp(sample));
+    await mod(fetchSpy).run(makeCtx(memState(), { topics }));
+    expect(
+      (fetchSpy.mock.calls[0]![1] as { headers?: unknown } | undefined)?.headers,
+    ).toBeUndefined();
+  });
+});
+
+describe('news — includePattern/excludePattern (фільтр шуму монорепо-стрічок)', () => {
+  const feed = `<rss><channel>
+      <item><title>v5.4.10</title><link>https://github.com/vitejs/vite/releases/tag/v5.4.10</link></item>
+      <item><title>plugin-legacy@8.2.2</title><link>https://github.com/vitejs/vite/releases/tag/plugin-legacy@8.2.2</link></item>
+    </channel></rss>`;
+
+  it('includePattern лишає лише title, що матчить', async () => {
+    const topics = [
+      {
+        scope: 'world',
+        topic: 'Релізи',
+        source: 'rss',
+        url: 'https://x',
+        language: 'en',
+        includePattern: '^v?\\d+\\.\\d+\\.\\d+$',
+      },
+    ];
+    const block = await mod(vi.fn(async () => new Response(feed, { status: 200 }))).run(
+      makeCtx(memState(), { topics }),
+    );
+    const g = (block!.data as { groups: { items: { title: string }[] }[] }).groups[0]!;
+    expect(g.items.map((i) => i.title)).toEqual(['v5.4.10']);
+  });
+
+  it('excludePattern викидає title, що матчить (напр. beta/rc)', async () => {
+    const betaFeed = `<rss><channel>
+      <item><title>REL_19_0</title><link>https://x/1</link></item>
+      <item><title>REL_19_BETA2</title><link>https://x/2</link></item>
+    </channel></rss>`;
+    const topics = [
+      {
+        scope: 'world',
+        topic: 'Релізи',
+        source: 'rss',
+        url: 'https://x',
+        language: 'en',
+        excludePattern: '(beta|rc|alpha)',
+      },
+    ];
+    const block = await mod(vi.fn(async () => new Response(betaFeed, { status: 200 }))).run(
+      makeCtx(memState(), { topics }),
+    );
+    const g = (block!.data as { groups: { items: { title: string }[] }[] }).groups[0]!;
+    expect(g.items.map((i) => i.title)).toEqual(['REL_19_0']);
+  });
+});
+
+describe('news — merge груп за (scope, topic) (кілька джерел -> одна тема)', () => {
+  it('newsdata-рядок + rss-рядок з однаковою (scope,topic) -> ОДИН Group з обʼєднаними items', async () => {
+    const topics = [
+      { scope: 'world', topic: 'Наука', category: 'science', language: 'en' },
+      {
+        scope: 'world',
+        topic: 'Наука',
+        source: 'rss',
+        url: 'https://bbc.example/science',
+        language: 'en',
+      },
+    ];
+    const fetchSpy = vi.fn(async (u: unknown) => {
+      const url = String(u);
+      if (url.includes('bbc.example')) {
+        return new Response(
+          `<rss><channel><item><title>BBC Science</title><link>https://bbc.example/1</link></item></channel></rss>`,
+          { status: 200 },
+        );
+      }
+      return resp([{ title: 'NewsData Science', link: 'https://newsdata.example/1' }]);
+    });
+    const block = await mod(fetchSpy).run(makeCtx(memState(), { topics }));
+    const groups = (
+      block!.data as { groups: { scope: string; topic: string; items: { title: string }[] }[] }
+    ).groups;
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.scope).toBe('world');
+    expect(groups[0]!.topic).toBe('Наука');
+    expect(groups[0]!.items.map((i) => i.title).sort()).toEqual(
+      ['BBC Science', 'NewsData Science'].sort(),
+    );
+  });
+
+  it('різні теми лишаються окремими групами (немає надмірного мерджу)', async () => {
+    const topics = [
+      { scope: 'ua', topic: 'Політика', category: 'politics', country: 'ua', language: 'uk' },
+      { scope: 'ua', topic: 'Економіка', category: 'business', country: 'ua', language: 'uk' },
+    ];
+    // Різні URL на тему — інакше однакові URL зі спільного фікстура-сампла
+    // законно з'їв би crossтемний дедуп (runSeen), і тест перевіряв би не те.
+    const fetchSpy = vi.fn(async (u: unknown) => {
+      const isPolitics = String(u).includes('category=politics');
+      return resp([
+        {
+          title: isPolitics ? 'Новина політики' : 'Новина економіки',
+          link: isPolitics
+            ? 'https://feed.example.com/politics'
+            : 'https://feed.example.com/business',
+        },
+      ]);
+    });
+    const block = await mod(fetchSpy).run(makeCtx(memState(), { topics }));
+    const groups = (block!.data as { groups: { topic: string }[] }).groups;
+    expect(groups.map((g) => g.topic).sort()).toEqual(['Економіка', 'Політика']);
   });
 });
 
