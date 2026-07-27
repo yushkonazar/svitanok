@@ -1,16 +1,23 @@
+import type { ReactNode } from 'react';
 import type { Stats } from '../../api/schema.ts';
-import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 
-// Статистика чек-іну (фідбек власника, п.7: «статистику і тижневий розбір у
-// Статистика»).
+// Статистика чек-іну (фідбек власника, п.7 -> PR-9 п.10.2: «графіки для сну/
+// енергії не потрібні, просто вивід середнього й подальший аналіз з
+// рекомендацією; перероби блок і по дизайну, і по деяких логічних рішеннях»).
+//
+// Спарклайни Сон/Енергія ПРИБРАНО — замінено на одну картку «Сон та енергія»:
+// середні + тренд (уже рахувались) + детермінована, правило-based рекомендація
+// (не LLM — дешево, без нової затримки). Решта секцій нижче — явка, куди йде
+// час, кореляції — ЛИШАЮТЬСЯ (вони вже anti-overfit-гейтяться на сервері й
+// відповідають «аналіз, не графік»), лише отримали явні підписи там, де їх
+// не було (явка) чи бракувало пояснення, ЩО означає число (куди йде час).
 //
 // ⚠️ Цей блок ЛЕГКО зробив би брехливим. «У дні, коли ти спав менше 6 — подач
 // удвічі менше» звучить як висновок, а на третьому тижні це три точки проти
 // чотирьох. І така брехня ВИГЛЯДАЄ як аналітика, тобто підштовхує до рішень.
 // Тому все, що претендує на звʼязок, гейтиться на сервері (sleepVsApplied.ready)
-// і мовчить, поки в кожному кошику менше 8 днів. Доти показуємо лише те, що
-// нічого не стверджує: ряди й явку.
+// і мовчить, поки в кожному кошику менше 8 днів.
 
 const BLOCKER_LABEL: Record<string, string> = {
   tired: 'Втома',
@@ -67,72 +74,33 @@ function Score({
   );
 }
 
-/** Мінімальна спарклайн-крива. Нулі-дірки НЕ малюємо — вони не нулі, а «немає». */
-function Spark({ points, lo, hi }: { points: Array<number | null>; lo: number; hi: number }) {
-  // Хук ДО раннього return — порядок хуків мусить бути сталим між рендерами.
-  const [ref, inView] = useInView<SVGSVGElement>();
-  const vals = points.filter((v): v is number => v !== null);
-  if (vals.length < 2) return null;
-  const W = 100;
-  const H = 26;
-  // Відступи, щоб пік/спад не торкались країв і не обрізались півтовщиною лінії
-  // (це й був «баг»: верхні точки лягали на y=0 і зрізались зверху картки).
-  const PX = 1.5;
-  const PY = 3;
-  const span = hi - lo || 1;
-  // Дірки розривають лінію: з'єднати їх означало б домалювати дані, яких немає.
-  const segs: string[] = [];
-  let cur: string[] = [];
-  points.forEach((v, i) => {
-    if (v === null) {
-      if (cur.length > 1) segs.push(cur.join(' '));
-      cur = [];
-      return;
-    }
-    const x = PX + (i / Math.max(1, points.length - 1)) * (W - PX * 2);
-    // Клампимо в межі картки: значення поза [lo,hi] (напр. сон 3.5 з опції «<4»
-    // при lo=4) інакше вилазить за відступ, майже до краю.
-    const raw = PY + (H - PY * 2) * (1 - (v - lo) / span);
-    const y = Math.max(PY, Math.min(H - PY, raw));
-    cur.push(`${cur.length ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`);
-  });
-  if (cur.length > 1) segs.push(cur.join(' '));
-  if (!segs.length) return null;
-
+/** Заголовок-підпис секції: моно-капс, що саме показує картка нижче. */
+function SubLabel({ children }: { children: ReactNode }) {
   return (
-    <svg
-      ref={ref}
-      viewBox={`0 0 ${W} ${H}`}
-      width="100%"
-      height={H}
-      preserveAspectRatio="none"
-      aria-hidden="true"
-    >
-      {segs.map((d, i) => (
-        // pathLength="1" — щоб CSS міг намалювати відрізок від початку до кінця,
-        // не знаючи його довжини в пікселях. Сегменти йдуть один за одним, бо
-        // саме розриви (пропущені дні) тут несуть сенс — хай їх буде видно.
-        <path
-          key={i}
-          d={d}
-          pathLength="1"
-          fill="none"
-          stroke="var(--color-a2)"
-          strokeWidth="1.5"
-          // Товщина не розтягується з viewBox (preserveAspectRatio none інакше
-          // робить лінію товстою по горизонталі й тонкою по вертикалі).
-          vectorEffect="non-scaling-stroke"
-          strokeLinecap="round"
-          strokeDasharray="1"
-          strokeDashoffset="0"
-          style={{
-            animation: `lineDraw .7s cubic-bezier(.4,0,.2,1) ${i * 120}ms backwards`,
-            animationPlayState: inView ? 'running' : 'paused',
-          }}
-        />
-      ))}
-    </svg>
+    <div className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">{children}</div>
   );
+}
+
+/**
+ * Рекомендація за середнім сном/енергією тижня — ДЕТЕРМІНОВАНА (пороги, не
+ * LLM: дешево, без нової затримки/виклику). Пороги: сон 6/7 год (нижче
+ * рекомендованих 7–9 — поширений орієнтир), енергія 2.5/4 на шкалі 1–5.
+ * Свідомо ЗАГАЛЬНІ формулювання ("спробуй", "орієнтовно") — той самий
+ * інваріант, що svd/bve нижче: не вигадувати причинно-наслідкових звʼязків,
+ * яких дані не підтверджують.
+ */
+function checkinInsight(avgSleep: number | null, weekEnergyAvg: number | null): string | null {
+  const parts: string[] = [];
+  if (avgSleep != null) {
+    if (avgSleep < 6) parts.push('Сон нижче рекомендованого — спробуй лягати на 30–60 хв раніше.');
+    else if (avgSleep < 7) parts.push('Сон трохи нижче рекомендованих 7–9 год.');
+    else parts.push('Сон у нормі — тримай цей режим.');
+  }
+  if (weekEnergyAvg != null) {
+    if (weekEnergyAvg < 2.5) parts.push('Енергія цього тижня низька.');
+    else if (weekEnergyAvg >= 4) parts.push('Енергія цього тижня висока.');
+  }
+  return parts.length ? parts.join(' ') : null;
 }
 
 export function CheckinBlock({ s }: { s: Stats }) {
@@ -148,9 +116,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
       </div>
     );
 
-  const sleep = series.map((p) => p.sleepH);
-  const energy = series.map((p) => p.energy);
-  const sleepVals = sleep.filter((v): v is number => v !== null);
+  const sleepVals = series.map((p) => p.sleepH).filter((v): v is number => v !== null);
   const avgSleep = sleepVals.length
     ? Math.round((sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length) * 10) / 10
     : null;
@@ -165,6 +131,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
           ? ' · ↓ vs минулий'
           : ' · = vs минулий'
       : '';
+  const insight = checkinInsight(avgSleep, week?.energyAvg ?? null);
 
   const svd = s.sleepVsDayScore;
   const bve = s.bedtimeVsEnergy;
@@ -179,58 +146,61 @@ export function CheckinBlock({ s }: { s: Stats }) {
     <div className="flex flex-col gap-3">
       <SectionHead>Чек-ін</SectionHead>
 
-      <div className="flex flex-col gap-2.5 rounded-2xl border border-glassb bg-glass p-4">
-        <div className="flex items-baseline gap-2">
-          <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
-            СОН ЗА {filledDays} ДІБ
-          </span>
-          <Score
-            v={avgSleep}
-            color={sleepColor(avgSleep)}
-            suffix=" год"
-            className="ml-auto font-mono text-[17px] font-semibold"
-          />
+      {/* Сон та енергія — БЕЗ графіків (фідбек власника, п.10.2): середні +
+          тренд + детермінована рекомендація замість спарклайнів. */}
+      <div className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass p-4">
+        <SubLabel>СОН ТА ЕНЕРГІЯ · ЗА {filledDays} ДІБ</SubLabel>
+        <div className="flex items-center gap-5">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] text-tx3">СОН (СЕРЕДНЄ)</span>
+            <Score
+              v={avgSleep}
+              color={sleepColor(avgSleep)}
+              suffix=" год"
+              className="font-mono text-[19px] font-semibold"
+            />
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] text-tx3">ЕНЕРГІЯ (ЦЕЙ ТИЖДЕНЬ)</span>
+            <Score
+              v={week?.energyAvg ?? null}
+              color={ratingColor(week?.energyAvg ?? null)}
+              className="font-mono text-[19px] font-semibold"
+            />
+          </div>
         </div>
-        <Spark points={sleep} lo={4} hi={10} />
         {week && (
           <span className="text-[10.5px] font-medium text-tx2">
-            Цей тиждень:{' '}
+            Сон цього тижня:{' '}
             <Score v={week.sleepAvg} color={sleepColor(week.sleepAvg)} suffix=" год" />
             {trend}
           </span>
         )}
-      </div>
-
-      <div className="flex flex-col gap-2.5 rounded-2xl border border-glassb bg-glass p-4">
-        <div className="flex items-baseline gap-2">
-          <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
-            ЕНЕРГІЯ (СЕРЕДНЄ ЗА ДОБУ)
-          </span>
-          <Score
-            v={week?.energyAvg ?? null}
-            color={ratingColor(week?.energyAvg ?? null)}
-            className="ml-auto font-mono text-[17px] font-semibold"
-          />
-        </div>
-        <Spark points={energy} lo={1} hi={5} />
+        {insight && (
+          <div className="mt-0.5 text-[11.5px] leading-[1.5] text-tx2">💡 {insight}</div>
+        )}
       </div>
 
       {/* Явка: пропуски — теж дані. Ранок 25 разів проти вечора 4 каже більше,
           ніж самі відповіді. */}
-      <StatRow
-        label="🌅 Ранок"
-        value={`${fill.morning} з ${fill.days}`}
-      />
-      <StatRow label="☀️ Післяобід" value={`${fill.afternoon} з ${fill.days}`} />
-      <StatRow label="🌙 Вечір" value={`${fill.evening} з ${fill.days}`} />
+      <div className="flex flex-col gap-1">
+        <SubLabel>ЯВКА ПО СЛОТАХ</SubLabel>
+        <StatRow label="🌅 Ранок" value={`${fill.morning} з ${fill.days}`} />
+        <StatRow label="☀️ Післяобід" value={`${fill.afternoon} з ${fill.days}`} />
+        <StatRow label="🌙 Вечір" value={`${fill.evening} з ${fill.days}`} />
+      </div>
 
       {/* Куди йде час (v2): розподіл денної категорії + як вона повʼязана з
           оцінкою дня. Розподіл чесний за будь-якого N; середню оцінку категорії
           даємо лише коли в неї набралось >=4 оцінені дні (інакше без числа). */}
       {cat.total >= 5 && (
         <div className="rounded-2xl border border-glassb bg-glass p-4">
-          <div className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
-            КУДИ ЙДЕ ЧАС · {cat.total} ДІБ
+          <SubLabel>КУДИ ЙДЕ ЧАС · {cat.total} ДІБ</SubLabel>
+          {/* Пояснення, ЩО означає "настрій" у рядку — саме число без цього
+              підпису незрозуміло, звідки й від чого воно рахується. */}
+          <div className="mt-0.5 text-[10.5px] text-tx3">
+            % часу за категорією за добу; «настрій» — середня оцінка дня в добах
+            із цією категорією (лише коли їх ≥4)
           </div>
           <div className="mt-2 flex flex-col gap-1.5">
             {cat.rows.slice(0, 4).map((r) => (

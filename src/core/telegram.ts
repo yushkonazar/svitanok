@@ -132,7 +132,15 @@ export interface OutboundMessage {
 }
 
 export interface Notifier {
-  send(messages: (string | OutboundMessage)[]): Promise<void>;
+  /** messageIds — id щойно надісланих повідомлень (той самий порядок, що вхід);
+   *  адитивно до попередньої сигнатури (Promise<void>) — виклики без деструктуризації
+   *  результату лишаються коректними. Потрібен для pin() нижче (закріпити брифінг). */
+  send(messages: (string | OutboundMessage)[]): Promise<{ messageIds: number[] }>;
+  /** Закріпити/відкріпити повідомлення (закріплення брифінгу, фідбек власника —
+   *  кнопка апки в ОДНОМУ місці замість щоденного inline-дубля). Best-effort з
+   *  боку викликача (orchestrator): бот може не мати права can_pin_messages. */
+  pin(messageId: number): Promise<void>;
+  unpin(messageId: number): Promise<void>;
   /** Мінімальне попередження власнику напряму (top-level catch, §4.1). */
   failNotify(text: string): Promise<void>;
 }
@@ -152,7 +160,13 @@ export interface NotifierOptions {
 export function createNotifier(opts: NotifierOptions): Notifier {
   const { token, chatId, threadId, log, fetchImpl = fetch, timeoutMs = 30000 } = opts;
 
-  async function call(method: string, body: Record<string, unknown>): Promise<void> {
+  /** Повертає `result` Telegram-відповіді (напр. {message_id,...} на sendMessage) —
+   *  undefined, якщо відповідь не розпарсилась (не мало б статись при res.ok,
+   *  але не валимо виклик на цьому — той самий graceful-мотив, що й раніше). */
+  async function call(
+    method: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | undefined> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -162,9 +176,15 @@ export function createNotifier(opts: NotifierOptions): Notifier {
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
+      const text = await res.text().catch(() => '');
       if (!res.ok) {
-        const text = await res.text().catch(() => '');
         throw new Error(`Telegram ${method} HTTP ${res.status}: ${text}`);
+      }
+      try {
+        const json = JSON.parse(text) as { result?: Record<string, unknown> };
+        return json.result;
+      } catch {
+        return undefined;
       }
     } finally {
       clearTimeout(timer);
@@ -172,7 +192,8 @@ export function createNotifier(opts: NotifierOptions): Notifier {
   }
 
   return {
-    async send(messages: (string | OutboundMessage)[]): Promise<void> {
+    async send(messages: (string | OutboundMessage)[]): Promise<{ messageIds: number[] }> {
+      const messageIds: number[] = [];
       for (const raw of messages) {
         const msg: OutboundMessage = typeof raw === 'string' ? { text: raw } : raw;
         // Ліміт Telegram — за ВИДИМИМ текстом (href у <a> не рахується, §9).
@@ -192,8 +213,22 @@ export function createNotifier(opts: NotifierOptions): Notifier {
         if (msg.buttons && msg.buttons.length > 0) {
           body.reply_markup = { inline_keyboard: msg.buttons };
         }
-        await call('sendMessage', body);
+        const result = await call('sendMessage', body);
+        if (typeof result?.message_id === 'number') messageIds.push(result.message_id);
       }
+      return { messageIds };
+    },
+    async pin(messageId: number): Promise<void> {
+      // Без message_thread_id: повідомлення вже належить своїй темі (якщо
+      // форум), Telegram сам закріплює в межах неї — параметра для цього нема.
+      await call('pinChatMessage', {
+        chat_id: chatId,
+        message_id: messageId,
+        disable_notification: true,
+      });
+    },
+    async unpin(messageId: number): Promise<void> {
+      await call('unpinChatMessage', { chat_id: chatId, message_id: messageId });
     },
     async failNotify(text: string): Promise<void> {
       // Без HTML — на випадок проблем із розміткою; обрізати під ліміт.

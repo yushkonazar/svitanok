@@ -11,7 +11,7 @@ import { parseRss, type RssItem } from './news.js';
 
 const JOBS_PRIORITY = 55;
 const MAX_ITEMS_PER_FEED = 12;
-const POOL_SIZE = 14; // кандидатів на скоринг (малий промпт claude -p)
+const POOL_SIZE = 20; // кандидатів на скоринг (перRun 3->7 підняв потребу в ширшому пулі)
 const MESSAGE_ITEMS = 2; // у Telegram — лише топ-збіги; повний список у дашборді
 const WORKUA_BASE = 'https://www.work.ua';
 

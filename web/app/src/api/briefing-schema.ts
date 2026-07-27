@@ -59,6 +59,16 @@ export const weatherDataSchema = z.object({
   locations: z.array(weatherLocationSchema).default([]),
 });
 
+// GET /api/weather (PR-7, «жива погода») — той самий weatherLocationSchema, що
+// снапшот брифінгу, лише без dayLenDeltaMin (немає стану «вчора» для живого
+// запиту) + fetchedAtMs (коли Worker востаннє оновив KV-кеш).
+export const liveWeatherResponseSchema = z.object({
+  ok: z.literal(true),
+  locations: z.array(weatherLocationSchema.omit({ dayLenDeltaMin: true })).default([]),
+  fetchedAtMs: z.number(),
+});
+export type LiveWeatherResponse = z.infer<typeof liveWeatherResponseSchema>;
+
 export const currencyDataSchema = z.object({
   usd: z.number().optional(),
   eur: z.number().optional(),

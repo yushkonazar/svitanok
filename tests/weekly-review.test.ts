@@ -102,7 +102,12 @@ function fakeNotifier(): Notifier & { sent: string[][] } {
   const sent: string[][] = [];
   return {
     sent,
-    send: async (m) => void sent.push(m.map((x) => (typeof x === 'string' ? x : x.text))),
+    send: async (m) => {
+      sent.push(m.map((x) => (typeof x === 'string' ? x : x.text)));
+      return { messageIds: [] };
+    },
+    pin: async () => {},
+    unpin: async () => {},
     failNotify: async () => {},
   };
 }

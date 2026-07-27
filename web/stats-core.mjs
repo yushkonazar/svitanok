@@ -159,6 +159,53 @@ export function checkinDateKey(kyivDate, hour) {
   return d.toISOString().slice(0, 10);
 }
 
+/*
+ * Нагадування про незаповнений чек-ін (фідбек власника: «забуваю інколи про
+ * них»). Вікна — НЕ технічний кінець слоту (checkinSlot: вечір формально до
+ * 02:00), а практичний момент «ще встигаєш»: нагадувати вночі безглуздо.
+ */
+export const CHECKIN_NUDGE_WINDOWS = [
+  {
+    slot: 'morning',
+    fromMin: 780,
+    toMin: 810, // 13:00–13:30, слот закінчується 14:00
+    text: '🌅 Ще не заповнив ранковий чек-ін — швидко зробити зараз?',
+  },
+  {
+    slot: 'afternoon',
+    fromMin: 1140,
+    toMin: 1170, // 19:00–19:30, слот закінчується 20:00
+    text: '☀️ Ще не заповнив післяобідній чек-ін — швидко зробити зараз?',
+  },
+  {
+    slot: 'evening',
+    fromMin: 1350,
+    toMin: 1380, // 22:30–23:00, практичний момент «ще не спиш», не 02:00
+    text: '🌙 Ще не заповнив вечірній чек-ін — доки не пізно?',
+  },
+];
+
+/** Яке вікно нагадування відповідає поточній київській хвилині доби (0..1439)
+ *  -> {slot,text}|null. Чисто lookup, жодного I/O. */
+export function matchCheckinNudgeWindow(minuteOfDay) {
+  return (
+    CHECKIN_NUDGE_WINDOWS.find((w) => minuteOfDay >= w.fromMin && minuteOfDay < w.toMin) ?? null
+  );
+}
+
+/**
+ * Чи слати нагадування зараз (worker.js уже знайшов вікно й зібрав ці три
+ * прапорці з KV: тихі години, чи вже нагадали цей слот сьогодні, чи слот уже
+ * заповнено) -> boolean. Той самий стиль, що shouldAutoDispatchBrief
+ * (tg-core.mjs) — уся логіка "чи" ізольована й тестована без KV/fetch.
+ */
+export function shouldSendCheckinNudge({ quiet, alreadyNudgedToday, slotFilled }) {
+  if (quiet) return false;
+  if (alreadyNudgedToday) return false;
+  if (slotFilled) return false;
+  return true;
+}
+
 /** Лишити тільки валідні поля блоку. Невідоме/биле ІГНОРУЄМО, а не видаляємо. */
 function cleanCheckin(slot, ev) {
   const spec = CHECKIN_FIELDS[slot];

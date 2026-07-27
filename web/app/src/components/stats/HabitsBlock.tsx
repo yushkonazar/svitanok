@@ -68,8 +68,13 @@ export function HabitsBlock({ s }: { s: Stats }) {
 
       {showHeatmap && (
         <div>
-          <div className="mb-1.5 font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
+          <div className="mb-0.5 font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
             АКТИВНІСТЬ · 12 ТИЖНІВ
+          </div>
+          {/* Пояснення, ЩО рахується (фідбек власника, п.10.1) — раніше це
+              бачив лише hover-title, марний на тач-екрані. */}
+          <div className="mb-1.5 text-[10.5px] text-tx3">
+            Відкриття апки + питання дня + новини, за день
           </div>
           <Heatmap cells={s.heatmap} />
         </div>
