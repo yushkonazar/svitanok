@@ -409,6 +409,20 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         );
       }
 
+      // Найновіші зверху (фідбек власника: релізи показувались у порядку
+      // фетчу конфіга, не за часом — стара новина від одного репо випереджала
+      // свіжу від іншого). Без дати -> в кінець; stable sort лишає відносний
+      // порядок рівних (у т.ч. усіх без дати) незмінним.
+      const byRecency = (a: NewsItem, b: NewsItem) => {
+        const ta = a.publishedAt ? Date.parse(a.publishedAt) : -Infinity;
+        const tb = b.publishedAt ? Date.parse(b.publishedAt) : -Infinity;
+        return tb - ta;
+      };
+      for (const g of groupsByKey.values()) {
+        g.items.sort(byRecency);
+        g.more.sort(byRecency);
+      }
+
       const groups = [...groupsByKey.values()];
       if (groups.length === 0) return null;
       ctx.state.set('shownNews', nextShown);

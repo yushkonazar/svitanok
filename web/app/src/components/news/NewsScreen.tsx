@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useBriefing, useSettings } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema, type NewsGroup as NewsGroupT } from '../../api/briefing-schema.ts';
-import { isReleaseTopic } from '../../lib/topicKind.ts';
+import { isReleaseTopic, topicKey } from '../../lib/topicKind.ts';
+import { markTopicSeen } from '../../lib/newsSeen.ts';
 import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
 import { Segmented } from '../ui/Segmented.tsx';
 import { DigestCard } from './DigestCard.tsx';
@@ -47,8 +48,6 @@ const NewsIcon = (
   </svg>
 );
 
-const topicKey = (g: NewsGroupT) => `${g.scope}:${g.topic}`;
-
 export function NewsScreen() {
   const [scope, setScope] = useState<Scope>('world');
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -76,6 +75,15 @@ export function NewsScreen() {
   const scopedUnmuted = scoped.filter((g) => !muted.has(g.topic));
   const scopedMuted = scoped.filter((g) => muted.has(g.topic));
   const openGroup = openKey ? (allGroups.find((g) => topicKey(g) === openKey) ?? null) : null;
+
+  // Єдина брама відкриття теми (чіп/hero/compact/реліз-«показати всі»/муте-
+  // тайл — усі йдуть сюди): позначає найновіший айтем теми як "переглянуто"
+  // (items уже відсортовані бекендом за publishedAt) — це і гасить помаранчеве
+  // кільце чіпа на сірий (фідбек власника, фото 2).
+  const openTopic = (g: NewsGroupT) => {
+    markTopicSeen(topicKey(g), (g.items[0] ?? g.more[0])?.url);
+    setOpenKey(topicKey(g));
+  };
 
   // Релізи — ЗАВЖДИ окрема секція, незалежно від ваги/рангу (версія — не
   // "новина", тож не має сенсу в топ-N/дайджесті). Решта — кандидати на
@@ -113,23 +121,20 @@ export function NewsScreen() {
         />
       ) : (
         <>
-          <TopicChipRow groups={scoped} muted={muted} onSelect={(g) => setOpenKey(topicKey(g))} />
+          <TopicChipRow groups={scoped} muted={muted} onSelect={openTopic} />
 
           {heroes.map((g) => (
-            <HeroNewsCard key={g.topic} group={g} onOpenAll={() => setOpenKey(topicKey(g))} />
+            <HeroNewsCard key={g.topic} group={g} onOpenAll={() => openTopic(g)} />
           ))}
 
           {releaseGroup && (
-            <ReleaseGridSection
-              group={releaseGroup}
-              onOpenAll={() => setOpenKey(topicKey(releaseGroup))}
-            />
+            <ReleaseGridSection group={releaseGroup} onOpenAll={() => openTopic(releaseGroup)} />
           )}
 
           {compacts.length > 0 && (
             <div className="grid grid-cols-2 gap-2.5">
               {compacts.map((g) => (
-                <CompactNewsCard key={g.topic} group={g} onOpen={() => setOpenKey(topicKey(g))} />
+                <CompactNewsCard key={g.topic} group={g} onOpen={() => openTopic(g)} />
               ))}
             </div>
           )}
@@ -137,7 +142,7 @@ export function NewsScreen() {
           {scopedMuted.length > 0 && (
             <div className="grid grid-cols-2 gap-2">
               {scopedMuted.map((g) => (
-                <MutedNewsTile key={g.topic} group={g} onOpen={() => setOpenKey(topicKey(g))} />
+                <MutedNewsTile key={g.topic} group={g} onOpen={() => openTopic(g)} />
               ))}
             </div>
           )}
