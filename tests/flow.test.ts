@@ -88,8 +88,6 @@ function fakeNotifier(): NotifierType & { sent: string[][]; buttons: TgButton[][
       for (const x of m) if (typeof x !== 'string' && x.buttons) buttons.push(x.buttons);
       return { messageIds: [] };
     },
-    pin: async () => {},
-    unpin: async () => {},
     failNotify: async () => {},
   };
 }
@@ -203,66 +201,6 @@ describe('runBriefing — єдине сповіщення (дата, БЕЗ inli
     const res = await runBriefing(deps({ notifier, modules: [], miniAppUrl: null }));
     expect(res.status).toBe('sent');
     expect(notifier.buttons).toHaveLength(0);
-  });
-});
-
-describe('runBriefing — закріплення щоденного повідомлення (фідбек власника, п.2)', () => {
-  function fakePinNotifier(
-    messageId: number | null,
-  ): NotifierType & { pinned: number[]; unpinned: number[]; pinShouldThrow: boolean } {
-    const pinned: number[] = [];
-    const unpinned: number[] = [];
-    const self = {
-      pinned,
-      unpinned,
-      pinShouldThrow: false,
-      send: async () => ({ messageIds: messageId != null ? [messageId] : [] }),
-      pin: async (id: number) => {
-        if (self.pinShouldThrow) throw new Error('no can_pin_messages');
-        pinned.push(id);
-      },
-      unpin: async (id: number) => {
-        unpinned.push(id);
-      },
-      failNotify: async () => {},
-    };
-    return self;
-  }
-
-  it('send повернув message_id -> pin викликається на ньому, стан оновлюється', async () => {
-    const notifier = fakePinNotifier(555);
-    const state = memState();
-    const res = await runBriefing(deps({ notifier, modules: [], state }));
-    expect(res.status).toBe('sent');
-    expect(notifier.pinned).toEqual([555]);
-    expect(notifier.unpinned).toEqual([]); // нема попереднього -> не відкріплюємо
-    expect(state.get('briefPinMsgId')).toBe(555);
-  });
-
-  it('є попередній briefPinMsgId у стані -> спершу unpin учорашнього, тоді pin нового', async () => {
-    const notifier = fakePinNotifier(777);
-    const state = memState();
-    state.set('briefPinMsgId', 111);
-    await runBriefing(deps({ notifier, modules: [], state }));
-    expect(notifier.unpinned).toEqual([111]);
-    expect(notifier.pinned).toEqual([777]);
-    expect(state.get('briefPinMsgId')).toBe(777);
-  });
-
-  it('pin падає (нема can_pin_messages) -> лог, НЕ валить доставку, стан не оновлюється', async () => {
-    const notifier = fakePinNotifier(999);
-    notifier.pinShouldThrow = true;
-    const state = memState();
-    const res = await runBriefing(deps({ notifier, modules: [], state }));
-    expect(res.status).toBe('sent'); // критична доставка не постраждала
-    expect(state.get('briefPinMsgId')).toBeUndefined();
-  });
-
-  it('send не повернув message_id (мок без нього) -> pin взагалі не викликається', async () => {
-    const notifier = fakePinNotifier(null);
-    const res = await runBriefing(deps({ notifier, modules: [] }));
-    expect(res.status).toBe('sent');
-    expect(notifier.pinned).toEqual([]);
   });
 });
 
@@ -462,8 +400,6 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
       send: async () => {
         throw new Error('Telegram 500');
       },
-      pin: async () => {},
-      unpin: async () => {},
       failNotify: async () => {},
     };
     const kvEnv = fakeKvEnv();

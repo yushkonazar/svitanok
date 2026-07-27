@@ -237,10 +237,9 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
 
   // Щоденне сповіщення в чат: дата(+рядок дня), БЕЗ inline-кнопки апки (фідбек
-  // власника, п.2) — кнопка живе в ОДНОМУ місці, постійна menu-кнопка біля
-  // поля вводу (Worker, setChatMenuButton), а не щоденний inline-дубль під
-  // кожним повідомленням. Само повідомлення ще й закріплюється (нижче, після
-  // send) — так само одна стала точка входу, не залежна від скролу стрічки.
+  // власника, п.2) — постійний вхід у Mini App тепер ОКРЕМЕ закріплене вітальне
+  // повідомлення (web/worker.js ensureAppWelcomePin, ставиться один раз через
+  // /api/telegram/setup), а не щоденний inline-дубль під кожним брифінгом.
   // Усі блоки — лише в briefing.json, дашборд лишається єдиним місцем
   // перегляду повного вмісту. У неділю додається окреме недільне повідомлення
   // (Фаза B5, нижче) — messages може містити 1 або 2 елементи. messages — те,
@@ -270,34 +269,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // Недільний підсумок шлемо ОКРЕМИМ send() best-effort — його провал (напр.
   // транзиєнтна HTTP-помилка чи задовгий текст) не має ретригерити повторну
   // відправку вже доставленого щоденного повідомлення при наступному запуску.
-  const { messageIds } = await deps.notifier.send([dailyMessage]);
-
-  // Закріпити щоденне (фідбек власника, п.2) — та сама «одна стала точка
-  // входу», що прибрана inline-кнопка вище. Best-effort і НЕЗАЛЕЖНО одне від
-  // одного: unpin учорашнього може впасти (повідомлення вже відкріплене/
-  // видалене власником — не помилка), pin може впасти (бот без права
-  // can_pin_messages — тоді просто лишаємось без закріплення, як і сьогодні,
-  // й лишаємо слід у логах для діагностики). Жодне з двох не сміє валити
-  // критичну доставку (catch, не throw).
-  const newPinId = messageIds[0];
-  if (newPinId != null) {
-    const prevPinId = state.get<number>('briefPinMsgId');
-    if (typeof prevPinId === 'number') {
-      try {
-        await deps.notifier.unpin(prevPinId);
-      } catch {
-        /* учорашнє могло вже бути відкріплене/видалене — не критично */
-      }
-    }
-    try {
-      await deps.notifier.pin(newPinId);
-      state.set('briefPinMsgId', newPinId);
-    } catch (e) {
-      log.warn(
-        `брифінг: закріпити не вдалось (нема can_pin_messages?): ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-  }
+  await deps.notifier.send([dailyMessage]);
 
   if (weeklyMessage) {
     try {

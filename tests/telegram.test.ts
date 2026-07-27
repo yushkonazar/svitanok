@@ -272,54 +272,6 @@ describe('createNotifier', () => {
     expect(messageIds).toEqual([]);
   });
 
-  it('pin -> pinChatMessage з chat_id/message_id/disable_notification, БЕЗ message_thread_id', async () => {
-    let body: Record<string, unknown> = {};
-    let url = '';
-    const fakeFetch = vi.fn(async (u: string, init: RequestInit) => {
-      url = u;
-      body = JSON.parse(init.body as string);
-      return new Response('{"ok":true}', { status: 200 });
-    });
-    const n = createNotifier({
-      token: 'T',
-      chatId: '42',
-      threadId: '7', // навіть із темою — pinChatMessage не бере message_thread_id
-      fetchImpl: fakeFetch as unknown as typeof fetch,
-    });
-    await n.pin(555);
-    expect(url).toContain('/botT/pinChatMessage');
-    expect(body).toEqual({ chat_id: '42', message_id: 555, disable_notification: true });
-  });
-
-  it('unpin -> unpinChatMessage з chat_id/message_id', async () => {
-    let body: Record<string, unknown> = {};
-    let url = '';
-    const fakeFetch = vi.fn(async (u: string, init: RequestInit) => {
-      url = u;
-      body = JSON.parse(init.body as string);
-      return new Response('{"ok":true}', { status: 200 });
-    });
-    const n = createNotifier({
-      token: 'T',
-      chatId: '42',
-      fetchImpl: fakeFetch as unknown as typeof fetch,
-    });
-    await n.unpin(555);
-    expect(url).toContain('/botT/unpinChatMessage');
-    expect(body).toEqual({ chat_id: '42', message_id: 555 });
-  });
-
-  it('pin/unpin кидають на HTTP-помилці (best-effort — на боці викликача, не тут)', async () => {
-    const fakeFetch = vi.fn(async () => new Response('forbidden', { status: 403 }));
-    const n = createNotifier({
-      token: 'T',
-      chatId: '42',
-      fetchImpl: fakeFetch as unknown as typeof fetch,
-    });
-    await expect(n.pin(1)).rejects.toThrow(/HTTP 403/);
-    await expect(n.unpin(1)).rejects.toThrow(/HTTP 403/);
-  });
-
   it('TELEGRAM_HARD_LIMIT = 4096', () => {
     expect(TELEGRAM_HARD_LIMIT).toBe(4096);
   });

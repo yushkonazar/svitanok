@@ -134,13 +134,8 @@ export interface OutboundMessage {
 export interface Notifier {
   /** messageIds — id щойно надісланих повідомлень (той самий порядок, що вхід);
    *  адитивно до попередньої сигнатури (Promise<void>) — виклики без деструктуризації
-   *  результату лишаються коректними. Потрібен для pin() нижче (закріпити брифінг). */
+   *  результату лишаються коректними. */
   send(messages: (string | OutboundMessage)[]): Promise<{ messageIds: number[] }>;
-  /** Закріпити/відкріпити повідомлення (закріплення брифінгу, фідбек власника —
-   *  кнопка апки в ОДНОМУ місці замість щоденного inline-дубля). Best-effort з
-   *  боку викликача (orchestrator): бот може не мати права can_pin_messages. */
-  pin(messageId: number): Promise<void>;
-  unpin(messageId: number): Promise<void>;
   /** Мінімальне попередження власнику напряму (top-level catch, §4.1). */
   failNotify(text: string): Promise<void>;
 }
@@ -217,18 +212,6 @@ export function createNotifier(opts: NotifierOptions): Notifier {
         if (typeof result?.message_id === 'number') messageIds.push(result.message_id);
       }
       return { messageIds };
-    },
-    async pin(messageId: number): Promise<void> {
-      // Без message_thread_id: повідомлення вже належить своїй темі (якщо
-      // форум), Telegram сам закріплює в межах неї — параметра для цього нема.
-      await call('pinChatMessage', {
-        chat_id: chatId,
-        message_id: messageId,
-        disable_notification: true,
-      });
-    },
-    async unpin(messageId: number): Promise<void> {
-      await call('unpinChatMessage', { chat_id: chatId, message_id: messageId });
     },
     async failNotify(text: string): Promise<void> {
       // Без HTML — на випадок проблем із розміткою; обрізати під ліміт.

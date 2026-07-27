@@ -1519,6 +1519,19 @@ const BOT_DESCRIPTION =
   'Плюс асистент — нагадування, календар, план дня. Напиши /help, щоб побачити всі команди.';
 const BOT_SHORT_DESCRIPTION = 'Ранковий брифінг + асистент для пошуку роботи в IT.';
 
+// Одноразове закріплене вітальне повідомлення (фідбек власника, п.2) — «одна
+// стала точка входу» в Mini App у форум-супергрупі. Раніше цю роль намагався
+// грати ЩОДЕННИЙ брифінг (unpin учорашнього -> pin сьогоднішнього), але сам
+// брифінг більше не несе кнопку (вона — тут), тож churn був без сенсу: щодня
+// відкріпити й закріпити ТЕ САМЕ повідомлення про наявність апки. Тепер —
+// один текст, закріплений один раз, ensureAppWelcomePin (нижче) лише
+// підтверджує/відновлює закріплення на кожен /api/telegram/setup.
+const APP_WELCOME_TEXT =
+  '🌅 <b>Світанок</b> — твій персональний Mini App.\n\n' +
+  'Погода, курс, новини, вакансії, чек-ін, статистика, IT-роадмеп — усе в ' +
+  'одному місці. Це повідомлення закріплене, щоб кнопка нижче завжди була ' +
+  'під рукою.';
+
 const UNKNOWN_REPLY =
   '🤖 Асистент-діалог ще не підключений (зʼявиться пізніше). Натисни /help, щоб побачити доступні команди.';
 const REMINDER_HELP =
@@ -2658,7 +2671,17 @@ async function handleCommand(env, parsed, origin) {
     case 'start':
       return sendText(START_TEXT, {
         parse_mode: 'HTML',
-        reply_markup: { keyboard: REPLY_KEYBOARD, resize_keyboard: true },
+        reply_markup: {
+          keyboard: REPLY_KEYBOARD,
+          resize_keyboard: true,
+          // is_persistent: клавіатура лишається розгорнутою замість того, щоб
+          // ховатись за перемикачем ⊞ — на мобільному прибирає зайвий тап
+          // (Bot API 6.4). input_field_placeholder — підказка в порожньому полі
+          // вводу: бот розуміє вільний текст («нагадай...»), про що ніде не
+          // сказано, поки людина саме дивиться на порожнє поле.
+          is_persistent: true,
+          input_field_placeholder: 'Команда або "нагадай..."',
+        },
       });
     case 'help':
       return sendText(HELP_TEXT, { parse_mode: 'HTML' });
@@ -3557,7 +3580,61 @@ async function handleTelegramSetup(request, env) {
   await tgCall(env, 'setChatMenuButton', {
     menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: url.origin } },
   });
+  await ensureAppWelcomePin(env, url.origin);
   return json({ ok: res.ok, webhookUrl });
+}
+
+/**
+ * Одноразове закріплене вітальне повідомлення з кнопкою Mini App (фідбек
+ * власника, п.2) — «одна стала точка входу», не залежна від того, куди
+ * прогорнута стрічка чату. Ідемпотентно: getChat каже, яке повідомлення
+ * закріплене ЗАРАЗ — якщо це вже наше (id збігається зі стором) -> no-op,
+ * повторний /api/telegram/setup нічого не дублює. Якщо власник зняв
+ * закріплення вручну чи видалив повідомлення (pinnedId не збігається/відсутній)
+ * -> шлемо нове й закріплюємо знову (self-healing замість «закріпилось один
+ * раз і забули»).
+ */
+async function ensureAppWelcomePin(env, miniAppUrl) {
+  if (!env.TELEGRAM_CHAT_ID) return;
+  const chatId = env.TELEGRAM_CHAT_ID;
+
+  try {
+    const chatRes = await tgCall(env, 'getChat', { chat_id: chatId });
+    const chatJson = await chatRes.json();
+    const pinnedId = chatJson?.result?.pinned_message?.message_id;
+    const state = await loadState(env);
+    if (typeof state.appWelcomePinMsgId === 'number' && pinnedId === state.appWelcomePinMsgId) {
+      return;
+    }
+  } catch (e) {
+    console.error('ensureAppWelcomePin: getChat не вдався (пробуємо (пере)закріпити)', e?.message);
+  }
+
+  const button = buildMiniAppButton(
+    '📊 Відкрити Mini App',
+    miniAppUrl,
+    chatId,
+    env.TELEGRAM_BOT_USERNAME,
+  );
+  const sendRes = await tgCall(env, 'sendMessage', {
+    chat_id: chatId,
+    message_thread_id: env.TOPIC_BRIEFING ?? undefined,
+    text: APP_WELCOME_TEXT,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: [[button]] },
+  });
+  const sendJson = await sendRes.json().catch(() => null);
+  const newId = sendJson?.result?.message_id;
+  if (typeof newId !== 'number') return;
+
+  await tgCall(env, 'pinChatMessage', {
+    chat_id: chatId,
+    message_id: newId,
+    disable_notification: true,
+  });
+  const state = await loadState(env);
+  state.appWelcomePinMsgId = newId;
+  await env.BRIEFING.put('state', JSON.stringify(state));
 }
 
 /** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
