@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
@@ -143,6 +143,17 @@ export function App() {
   useEffect(() => {
     if (!KNOWN_PATHS.includes(location.pathname)) navigate('/', { replace: true });
   }, [location.pathname, navigate]);
+
+  // Нова вкладка починається ЗГОРИ. Скролер тут — сам документ (немає жодного
+  // overflow-контейнера, оболонка лише min-h-[100dvh]), тож позиція скролу
+  // переживає зміну маршруту: прогорнув «Сьогодні» до «В цей день», тапнув
+  // «Новини» — і опинявся посеред стрічки, ніби вже читав її. Ремоунт
+  // motion.main цього не чіпає: він міняє ВМІСТ, а не позицію вьюпорта.
+  // useLayoutEffect, а не useEffect: скидання має статись ДО кадру, інакше
+  // видно стрибок уже намальованого контенту.
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [location.pathname]);
 
   // Нативна кнопка «Назад» Telegram: видима поза домашньою, веде на домашню.
   useEffect(() => {
