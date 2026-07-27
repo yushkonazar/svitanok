@@ -31,3 +31,18 @@ export function releaseRepo(url: string): string {
   const m = /github\.com\/([^/]+)\/([^/]+)\/releases\/tag\//i.exec(url);
   return m ? `${m[1]}/${m[2]}` : newsSource(url);
 }
+
+const RE_ESCAPE = /[.*+?^${}()|[\]\\]/g;
+
+/**
+ * Версія без дублювання назви репо — деякі проєкти (напр. TypeScript) тегують
+ * реліз описовою назвою "TypeScript 6.0.3", а не голою версією, тож поруч із
+ * назвою репо в тайлі це виглядало як "TypeScript … TypeScript 6.0.3".
+ * Прибираємо префікс назви репо (нечутливо до регістру), якщо він є.
+ */
+export function releaseVersionLabel(title: string, repo: string): string {
+  const name = repo.includes('/') ? repo.split('/')[1]! : repo;
+  const re = new RegExp(`^${name.replace(RE_ESCAPE, '\\$&')}[\\s:.-]*`, 'i');
+  const stripped = title.trim().replace(re, '').trim();
+  return stripped || title.trim();
+}
