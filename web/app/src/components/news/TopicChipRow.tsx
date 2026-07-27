@@ -1,11 +1,19 @@
 import type { NewsGroup as NewsGroupT } from '../../api/briefing-schema.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
+import { topicKey } from '../../lib/topicKind.ts';
+import { isTopicSeen } from '../../lib/newsSeen.ts';
 import { haptic } from '../../telegram.ts';
 import { SectionLabel } from '../ui/primitives.tsx';
 
 // Горизонтальний скрол усіх тем поточного регіону (редизайн новин) — і
 // приглушені теж, притлумлені (не ховаємо повністю): тап на будь-яку, і
 // приглушену, відкриває Sheet (без побічного зняття приглушення).
+//
+// Кільце чіпа — помаранчеве, доки в темі є непереглянуте, сіре щойно
+// власник відкривав її останньою (фідбек власника, фото 2: досі всі чіпи
+// однаково помаранчеві незалежно від того, чи там щось нове). Приглушені —
+// завжди сірі й притлумлені, як і раніше (стан "приглушено" тут важливіший
+// за "нове/старе").
 
 export function TopicChipRow({
   groups,
@@ -22,6 +30,8 @@ export function TopicChipRow({
       <div className="mt-2 flex gap-3 overflow-x-auto pb-1">
         {groups.map((g) => {
           const isMuted = muted.has(g.topic);
+          const latestUrl = (g.items[0] ?? g.more[0])?.url;
+          const hasUnseen = !isMuted && !isTopicSeen(topicKey(g), latestUrl);
           return (
             <button
               key={g.topic}
@@ -35,7 +45,7 @@ export function TopicChipRow({
             >
               <div
                 className="grid h-12 w-12 place-items-center rounded-full border-2 bg-glass text-lg"
-                style={{ borderColor: isMuted ? 'var(--color-glassb)' : 'var(--color-a2)' }}
+                style={{ borderColor: hasUnseen ? 'var(--color-a2)' : 'var(--color-glassb)' }}
               >
                 {topicEmoji(g.topic)}
               </div>

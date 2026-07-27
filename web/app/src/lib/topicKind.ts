@@ -6,3 +6,8 @@
 export function isReleaseTopic(topic: string): boolean {
   return /реліз|release/i.test(topic);
 }
+
+/** Стабільний ключ теми (scope+назва) — той самий формат для Sheet-стану й "переглянуто". */
+export function topicKey(g: { scope: string; topic: string }): string {
+  return `${g.scope}:${g.topic}`;
+}

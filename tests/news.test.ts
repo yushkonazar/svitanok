@@ -509,6 +509,38 @@ describe('news — merge груп за (scope, topic) (кілька джерел
     const groups = (block!.data as { groups: { topic: string }[] }).groups;
     expect(groups.map((g) => g.topic).sort()).toEqual(['Економіка', 'Політика']);
   });
+
+  it('айтеми злитої групи відсортовані за publishedAt — найновіші перші, не порядок фетчу', async () => {
+    const topics = [
+      {
+        scope: 'world',
+        topic: 'Релізи',
+        source: 'rss',
+        url: 'https://repo-a.example/releases.atom',
+        language: 'en',
+      },
+      {
+        scope: 'world',
+        topic: 'Релізи',
+        source: 'rss',
+        url: 'https://repo-b.example/releases.atom',
+        language: 'en',
+      },
+    ];
+    // Перший рядок конфіга (repo-a) віддає СТАРІШУ дату, ніж другий (repo-b) —
+    // без сортування repo-a лишився б items[0] лише через порядок фетчу.
+    const fetchSpy = vi.fn(async (u: unknown) => {
+      const isA = String(u).includes('repo-a');
+      return new Response(
+        `<feed><entry><title>${isA ? 'Стара' : 'Свіжа'}</title><link href="https://x.example/${isA ? 'old' : 'new'}"/><updated>${isA ? '2026-01-01T00:00:00Z' : '2026-07-20T00:00:00Z'}</updated></entry></feed>`,
+        { status: 200 },
+      );
+    });
+    const block = await mod(fetchSpy).run(makeCtx(memState(), { topics }));
+    const groups = (block!.data as { groups: { items: { title: string }[] }[] }).groups;
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.items.map((i) => i.title)).toEqual(['Свіжа', 'Стара']);
+  });
 });
 
 describe('news — пайплайн run (NewsData)', () => {
