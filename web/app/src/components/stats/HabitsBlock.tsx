@@ -5,6 +5,7 @@ import { SectionHead, StatRow } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
 import { WeekBars } from '../charts/WeekBars.tsx';
 import { Heatmap } from '../charts/Heatmap.tsx';
+import { WeekdayBars } from '../charts/WeekdayBars.tsx';
 
 // A · Звички (дизайн v2, Svitanok.dc.html): дві скляні плитки стріків (перша —
 // градієнтним числом), тижневі стовпчики, теплокарта 12 тижнів, медіана часу.
@@ -64,6 +65,16 @@ export function HabitsBlock({ s }: { s: Stats }) {
         <Tile n={s.streaks.mockDays || 0} label="днів поспіль питання" />
       </div>
 
+      {/* До рекорду — маленький рядок контексту під плитками, не в самій
+          плитці (там уже є РЕКОРД N): чи це вже рекорд, чи скільки лишилось. */}
+      {has(s.streaks.bestOpenDays) && (
+        <span className="-mt-1 font-mono text-[10px] font-semibold text-tx3">
+          {s.streaks.openDays >= (s.streaks.bestOpenDays ?? 0)
+            ? '🏆 Це вже рекорд!'
+            : `До рекорду: ${(s.streaks.bestOpenDays ?? 0) - s.streaks.openDays} дн.`}
+        </span>
+      )}
+
       <WeekBars days={s.weekly} />
 
       {showHeatmap && (
@@ -77,6 +88,9 @@ export function HabitsBlock({ s }: { s: Stats }) {
             Відкриття апки + питання дня + новини, за день
           </div>
           <Heatmap cells={s.heatmap} />
+          <div className="mt-3">
+            <WeekdayBars cells={s.heatmap} />
+          </div>
         </div>
       )}
 
