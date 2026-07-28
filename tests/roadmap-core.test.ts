@@ -15,6 +15,7 @@ const {
   toggleProgress,
   topicProgress,
   totalProgress,
+  roadmapWeekly,
   findNextIncomplete,
   formatRootMessage,
   formatTopicMessage,
@@ -138,6 +139,24 @@ describe('topicProgress / totalProgress', () => {
       0,
     );
     expect(total).toBe(expectedTotal);
+  });
+
+  it('roadmapWeekly: групує вже наявні ISO-таймстемпи progress по тижнях (не нова статистика)', () => {
+    let progress = {};
+    progress = toggleProgress(progress, 'frontend', 'html-semantics', '2026-07-07T09:00:00.000Z');
+    progress = toggleProgress(progress, 'frontend', 'css-layout', '2026-06-30T09:00:00.000Z');
+    progress = toggleProgress(progress, 'frontend', 'js-fundamentals', '2026-06-29T09:00:00.000Z');
+    const rw = roadmapWeekly(progress, '2026-07-07', 12);
+    expect(rw).toHaveLength(12);
+    expect(rw[11]).toEqual({ week: '2026-07-06', count: 1 }); // поточний тиждень
+    expect(rw[10]).toEqual({ week: '2026-06-29', count: 2 }); // два в тому самому тижні
+    expect(rw[9].count).toBe(0); // порожній тиждень присутній
+  });
+
+  it('roadmapWeekly: {} -> усі тижні нульові', () => {
+    const rw = roadmapWeekly({}, '2026-07-07', 4);
+    expect(rw).toHaveLength(4);
+    expect(rw.every((w: { count: number }) => w.count === 0)).toBe(true);
   });
 
   it('topicProgress рахує лише свою тему', () => {

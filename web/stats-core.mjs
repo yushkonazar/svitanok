@@ -235,6 +235,15 @@ function capCheckins(s) {
   for (const k of keys.slice(0, Math.max(0, keys.length - CHECKIN_CAP))) delete s.checkins[k];
 }
 
+const RELIABILITY_CAP = 90;
+/** Кап журналу надійності: лишаємо останні RELIABILITY_CAP діб. */
+function capReliabilityDays(s) {
+  const keys = Object.keys(s.reliability.days).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - RELIABILITY_CAP))) {
+    delete s.reliability.days[k];
+  }
+}
+
 export function emptyStore() {
   return {
     days: {},
@@ -249,7 +258,7 @@ export function emptyStore() {
     fitApplied: [],
     opensMin: [],
     appliedLog: [],
-    reliability: { onTime: 0, total: 0, deadman: 0 },
+    reliability: { onTime: 0, total: 0, deadman: 0, days: {} },
     checkins: {},
   };
 }
@@ -278,6 +287,7 @@ export function normalize(s) {
       onTime: Number(s.reliability?.onTime) || 0,
       total: Number(s.reliability?.total) || 0,
       deadman: Number(s.reliability?.deadman) || 0,
+      days: s.reliability?.days && typeof s.reliability.days === 'object' ? s.reliability.days : {},
       ...(typeof s.reliability?.lastCheckDate === 'string'
         ? { lastCheckDate: s.reliability.lastCheckDate }
         : {}),
@@ -531,6 +541,8 @@ export function recordReliability(store, dateKey, delivered) {
   r.total += 1;
   if (delivered) r.onTime += 1;
   else r.deadman += 1;
+  r.days[dateKey] = { ok: delivered };
+  capReliabilityDays(s);
   return s;
 }
 
@@ -572,6 +584,20 @@ function bestStreak(days, pred) {
 function dayDiff(a, b) {
   return Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 }
+
+/**
+ * Стрік надійності — НЕ голий streak(), бо тут грейс streak() був би хибним:
+ * streak()'s "!pred(days[dateKey]) -> дивись учора" не розрізняє "сьогодні ще
+ * не перевірено" (запису нема — грейс доречний, той самий сенс, що й для
+ * streaks.openDays) від "сьогодні явно зафіксовано збій" (запис {ok:false}
+ * Є — це вже факт, не "ще не сьогодні", і грейс сховав би сьогоднішній
+ * зрив до завтра). Явний збій сьогодні -> стрік=0 одразу, без грейсу.
+ */
+function reliabilityStreak(days, dateKey) {
+  const today = days[dateKey];
+  if (today !== undefined && today.ok !== true) return 0;
+  return streak(days, dateKey, (d) => d?.ok === true);
+}
 const median = (arr) => {
   if (!arr.length) return null;
   const a = [...arr].sort((x, y) => x - y);
@@ -601,7 +627,7 @@ function buildHeatmap(days, todayKey) {
 }
 
 /** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
-function lastWeekStarts(todayKey, n) {
+export function lastWeekStarts(todayKey, n) {
   const d = new Date(weekStartKey(todayKey) + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 7 * (n - 1));
   const out = [];
@@ -893,6 +919,24 @@ function buildAppliedWeekly(appliedLog, todayKey, weeks = 8) {
   return starts.map((k) => ({ week: k, count: counts[k] }));
 }
 
+/** Fit% поданих по тижнях (останні 8) — той самий appliedLog[].fit, що
+ *  avgFitApplied (всі-часи), лише розбитий по тижнях. Легасі s.fitApplied
+ *  сюди НЕ йде (немає ts, поділити на тижні нічим) — той самий виняток,
+ *  що вже в buildAppliedWeekly. null для тижня без жодного fit-запису
+ *  (не 0 — 0% виглядав би як «поганий fit», а не «даних немає»). */
+function buildFitWeekly(appliedLog, todayKey, weeks = 8) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const buckets = Object.fromEntries(starts.map((k) => [k, []]));
+  for (const a of appliedLog) {
+    const wk = isDateKey(a?.ts) ? weekStartKey(a.ts) : null;
+    if (wk && buckets[wk] && typeof a.fit === 'number') buckets[wk].push(a.fit);
+  }
+  return starts.map((k) => ({
+    week: k,
+    avgFit: buckets[k].length ? Math.round(avg(buckets[k])) : null,
+  }));
+}
+
 /** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів. */
 function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, topN = 5) {
   const starts = lastWeekStarts(todayKey, weeks);
@@ -1028,6 +1072,16 @@ export function aggregateStats(store, todayKey) {
     .sort((a, b) => b.value - a.value)
     .slice(0, 6);
 
+  // Загальний recency-сигнал БЕЗ розбивки по темі: mockRated не прив'язує
+  // qId до теми (лише {qId: рейтинг}), тож "останні N ПО ТЕМІ" вимагав би
+  // схема-міграції — свідомо відкладено. Це дешевший, безризиковий різ:
+  // частка 'easy' серед уже наявних (капнутих на 60) оцінок, доповнює
+  // all-time weakTopics% свіжішим "як я зараз", без нового сховища.
+  const mockRatings = Object.values(s.mockRated);
+  const mockRecentEasyPct = mockRatings.length
+    ? Math.round((mockRatings.filter((r) => r === 'easy').length / mockRatings.length) * 100)
+    : null;
+
   const interests = Object.entries(s.interests)
     .filter(([, v]) => v > 0)
     .map(([topic, score]) => ({ topic, score }))
@@ -1074,22 +1128,39 @@ export function aggregateStats(store, todayKey) {
       url: x.url || null,
       ts: x.ts || '',
     })),
-    mock: { weakTopics, streak: streak(s.days, todayKey, mocked) },
+    mock: {
+      weakTopics,
+      streak: streak(s.days, todayKey, mocked),
+      recentEasyPct: mockRecentEasyPct,
+    },
     // A2: розширені метрики (питання власника: стабільність / темп подач /
     // на що подаюсь / як змінюються інтереси).
     heatmap: buildHeatmap(s.days, todayKey),
     appliedWeekly: buildAppliedWeekly(s.appliedLog, todayKey),
-    interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey),
+    fitWeekly: buildFitWeekly(s.appliedLog, todayKey),
+    // 26 тижнів — уся глибина, що реально зберігається (WEEKLY_CAP), не
+    // дефолтне «6» buildInterestsTrend: тренд-графік у статистиці показує
+    // повні пів року, короткий 2-точковий стрілочка-тренд у InterestsBlock
+    // читає лише останні два елементи того самого масиву.
+    interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey, WEEKLY_CAP),
     // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
     // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб
     // цей чистий агрегатор не знав про roadmap-контент.
     interests,
     readPerDay: Math.round(totalReads / activeDays),
-    // Контракт /api/stats — лише лічильники; lastCheckDate — внутрішній маркер стору.
+    // Контракт /api/stats — лічильники + журнал; lastCheckDate — внутрішній
+    // маркер стору, назовні не йде. streak/best — той самий streak()/
+    // bestStreak(), що вже рахує stréaks.openDays/mockDays, лише інший
+    // предикат (ok===true) над reliability.days замість s.days.
     reliability: {
       onTime: s.reliability.onTime,
       total: s.reliability.total,
       deadman: s.reliability.deadman,
+      streak: reliabilityStreak(s.reliability.days, todayKey),
+      best: bestStreak(s.reliability.days, (d) => d?.ok === true),
+      days: Object.keys(s.reliability.days)
+        .sort()
+        .map((d) => ({ d, ok: s.reliability.days[d].ok })),
     },
     mockRatedToday: mocked(s.days[todayKey]),
     // F4: які саме питання оцінено — щоб картка пережила перезавантаження
