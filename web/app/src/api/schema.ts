@@ -246,9 +246,21 @@ export const statsSchema = z.object({
   funnelList: z.array(funnelItemSchema).default([]),
   savedCount: int.default(0),
   savedList: z.array(savedItemSchema).default([]),
-  mock: z.object({ weakTopics: z.array(weakTopicSchema).default([]), streak: int.default(0) }),
+  mock: z.object({
+    weakTopics: z.array(weakTopicSchema).default([]),
+    streak: int.default(0),
+    // Загальний recency-сигнал (без розбивки по темі — mockRated не прив'язує
+    // qId до теми) поруч із all-time weakTopics%. null, доки жодної оцінки.
+    recentEasyPct: num.nullable().default(null),
+  }),
   heatmap: z.array(heatmapCellSchema).default([]),
   appliedWeekly: z.array(appliedWeekSchema).default([]),
+  // Fit% поданих по тижнях — той самий {week,count}-шейп духом, що appliedWeekly,
+  // але avgFit замість count (nullable — тиждень без жодного fit-запису).
+  fitWeekly: z.array(z.object({ week: z.string(), avgFit: num.nullable() })).default([]),
+  // Ріст роадмепу по тижнях — перевикористовує appliedWeekSchema {week,count},
+  // не нова форма контракту (той самий підхід, що вже є для appliedWeekly).
+  roadmapWeekly: z.array(appliedWeekSchema).default([]),
   interestsTrend: interestsTrendSchema.default({ weeks: [], topics: [] }),
   interests: z.array(interestSchema).default([]),
   readPerDay: num.default(0),
@@ -256,6 +268,9 @@ export const statsSchema = z.object({
     onTime: int.default(0),
     total: int.default(0),
     deadman: int.default(0),
+    streak: int.default(0),
+    best: int.default(0),
+    days: z.array(z.object({ d: z.string(), ok: z.boolean() })).default([]),
   }),
   mockRatedToday: z.boolean().optional(),
   // F4: qId -> обрана оцінка. Доти вибір жив лише в стані сесії й зникав після
