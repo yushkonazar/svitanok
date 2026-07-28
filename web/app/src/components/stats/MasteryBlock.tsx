@@ -3,6 +3,7 @@ import { has } from '../../lib/format.ts';
 import { SectionHead, StatRow } from '../ui/primitives.tsx';
 import { SkillBars } from '../charts/SkillBars.tsx';
 import { Donut } from '../charts/Donut.tsx';
+import { MiniTrend } from '../charts/MiniTrend.tsx';
 
 // C · Майстерність (дизайн v2 + PR-9, п.10.3): раніше три незалежні сутності
 // (тема тижня / % слабких тем / прогрес роадмепу) стояли поруч без пояснення
@@ -24,6 +25,7 @@ export function MasteryBlock({ s }: { s: Stats }) {
   const roadmap = s.roadmap;
   const hasRoadmap = has(roadmap?.done) && has(roadmap?.total);
   const weakTopics = s.mock.weakTopics;
+  const roadmapGrowth = s.roadmapWeekly.some((w) => w.count > 0);
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -42,6 +44,21 @@ export function MasteryBlock({ s }: { s: Stats }) {
         </div>
       )}
 
+      {/* 1.5. Ріст роадмепу в часі — знімок % сам по собі не каже, чи це
+          прогрес, чи давно застигле число. toggleProgress і так пише ISO-
+          таймстемп при позначенні (roadmap-core.mjs) — тут просто сурфейс
+          уже наявних даних, лінія (не бар) — 12 вузьких колонок з реальними
+          датами-підписами в барах не влізли б без обрізки. */}
+      {roadmapGrowth && (
+        <div className="flex flex-col gap-1">
+          <SubLabel>НОВІ ЗАВЕРШЕННЯ · 12 ТИЖНІВ</SubLabel>
+          <MiniTrend
+            weeks={s.roadmapWeekly.map((w) => w.week)}
+            series={s.roadmapWeekly.map((w) => w.count)}
+          />
+        </div>
+      )}
+
       {/* 2. Тема тижня — рекомендований фокус, не сам прогрес. */}
       {tw && (
         <div className="flex flex-col gap-0.5">
@@ -56,13 +73,23 @@ export function MasteryBlock({ s }: { s: Stats }) {
       )}
 
       {/* 3. Слабкі теми — % ПОЯСНЕНО: це не загальний "рівень скіла", а частка
-          невдалих відповідей на mock-питання дня за цією темою. */}
+          невдалих відповідей на mock-питання дня за цією темою. Явно позначено
+          "УСЯ ІСТОРІЯ" (mockTopics росте all-time, без забування) — і поруч
+          recentEasyPct (mockRated, капнутий на 60 останніх) як чесний
+          "як я зараз" сигнал, без розбивки по темі (mockRated не привʼязує
+          qId до теми — розбивка вимагала б схема-міграції, свідомо відкладено). */}
       <div className="flex flex-col gap-1.5">
-        <SubLabel>СЛАБКІ ТЕМИ · % НЕВДАЛИХ ВІДПОВІДЕЙ НА MOCK-ПИТАННЯ</SubLabel>
+        <SubLabel>СЛАБКІ ТЕМИ · % НЕВДАЛИХ ВІДПОВІДЕЙ, УСЯ ІСТОРІЯ</SubLabel>
         <SkillBars
           items={weakTopics.map((w) => ({ name: w.name, pct: w.value }))}
           emptyText="Слабких тем поки не виявлено"
         />
+        {has(s.mock.recentEasyPct) && (
+          <StatRow
+            label="Останні 60 оцінок"
+            value={`${s.mock.recentEasyPct}% легко`}
+          />
+        )}
       </div>
 
       {/* 4. Підказки — звʼязок "слабка mock-тема -> яку тему роадмепу підтягнути". */}
