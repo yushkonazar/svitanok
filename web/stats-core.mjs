@@ -1012,14 +1012,26 @@ function buildAppliedCalibration(checkins, appliedLog, todayKey, days = 30) {
   return { n, matched, more, fewer };
 }
 
+/** Скільки варіантів блокерів/помічників віддаємо в рейтингу (решта — хвіст). */
+const TOPS_RANK_LIMIT = 5;
+
 /**
- * Найчастіший блокер / помічник за N діб (мода, без 'none'). Не кореляція, а
- * розподіл — тож без гейта, лише n=0 -> null. Оживляє blocker (доти збирався,
- * але ніде не читався) і робить helper аналітичним.
+ * Блокери / помічники за N діб — ПОВНИЙ рейтинг, не лише мода. Не кореляція,
+ * а розподіл, тож без статистичного гейта (лише порожньо -> null/[]).
+ *
+ * Ці два поля — мультивибір, і саме тому їх НЕМАЄ в реєстрі «Індексу дня»
+ * (checkin-model.mjs FIELDS оперує скалярними/порядковими полями). Тобто це
+ * єдина картка, яка їх узагалі показує — дублювання з моделлю тут неможливе
+ * за побудовою.
+ *
+ * `blocker`/`helper` (мода) лишаються для сумісності контракту; `blockers`/
+ * `helpers` — новий рейтинг, `days` — скільки діб мали вечірній запис
+ * (знаменник, без якого «6×» не має масштабу).
  */
 function buildCheckinTops(checkins, todayKey, days = 30) {
   const bC = {};
   const hC = {};
+  let filled = 0;
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
@@ -1027,16 +1039,28 @@ function buildCheckinTops(checkins, todayKey, days = 30) {
     if (ev) {
       // asList: обидва стали мультивибором; 'none' — свідома відповідь «нічого
       // не завадило», а не варіант для топу, тож не рахуємо її як причину.
-      for (const b of asList(ev.blocker)) if (b !== 'none') bC[b] = (bC[b] || 0) + 1;
-      for (const h of asList(ev.helper)) if (h !== 'none') hC[h] = (hC[h] || 0) + 1;
+      const bs = asList(ev.blocker);
+      const hs = asList(ev.helper);
+      if (bs.length || hs.length) filled++;
+      for (const b of bs) if (b !== 'none') bC[b] = (bC[b] || 0) + 1;
+      for (const h of hs) if (h !== 'none') hC[h] = (hC[h] || 0) + 1;
     }
     d.setUTCDate(d.getUTCDate() + 1);
   }
-  const top = (m) => {
-    const e = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
-    return e ? { value: e[0], n: e[1] } : null;
+  const rank = (m) =>
+    Object.entries(m)
+      .map(([value, n]) => ({ value, n }))
+      .sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
+      .slice(0, TOPS_RANK_LIMIT);
+  const blockers = rank(bC);
+  const helpers = rank(hC);
+  return {
+    blocker: blockers[0] ?? null,
+    helper: helpers[0] ?? null,
+    blockers,
+    helpers,
+    days: filled,
   };
-  return { blocker: top(bC), helper: top(hC) };
 }
 
 const MODEL_WINDOW_DAYS = 90;

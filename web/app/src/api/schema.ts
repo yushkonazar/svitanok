@@ -301,6 +301,11 @@ export const checkinTopSchema = z.object({ value: z.string(), n: int.default(0) 
 export const checkinTopsSchema = z.object({
   blocker: checkinTopSchema.nullable().default(null),
   helper: checkinTopSchema.nullable().default(null),
+  // Повний рейтинг (не лише мода) — blocker/helper мультивибірні, тож їх немає
+  // в реєстрі «Індексу дня»; ця картка — єдине місце, де вони видні.
+  blockers: z.array(checkinTopSchema).default([]),
+  helpers: z.array(checkinTopSchema).default([]),
+  days: int.default(0),
 });
 
 // «Індекс дня» (checkin-model.mjs): композитні індекси, ваги, що вчаться на
@@ -445,7 +450,13 @@ export const statsSchema = z.object({
   bedtimeVsEnergy: bedtimeVsEnergySchema.default({ ready: false, needed: 8, early: 0, late: 0 }),
   categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
   appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
-  checkinTops: checkinTopsSchema.default({ blocker: null, helper: null }),
+  checkinTops: checkinTopsSchema.default({
+    blocker: null,
+    helper: null,
+    blockers: [],
+    helpers: [],
+    days: 0,
+  }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.

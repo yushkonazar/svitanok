@@ -387,7 +387,25 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
-  checkinTops: { blocker: { value: 'tired', n: 6 }, helper: { value: 'early', n: 5 } },
+  checkinTops: {
+    blocker: { value: 'tired', n: 6 },
+    helper: { value: 'early', n: 5 },
+    blockers: [
+      { value: 'tired', n: 6 },
+      { value: 'distract', n: 4 },
+      { value: 'nomotiv', n: 3 },
+      { value: 'overload', n: 2 },
+      { value: 'stuck', n: 1 },
+    ],
+    helpers: [
+      { value: 'early', n: 5 },
+      { value: 'smallstep', n: 4 },
+      { value: 'move', n: 3 },
+      { value: 'breaks', n: 2 },
+      { value: 'music', n: 1 },
+    ],
+    days: 14,
+  },
   // «Індекс дня» (checkin-model.mjs): демо-набір, що показує ВСІ стани разом —
   // ваги вивчені, один лаг готовий і один ще ні (гейт), архетипи готові.
   checkinModel: {
@@ -489,7 +507,7 @@ export const EMPTY_STATS: Stats = {
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
   categoryInsight: { total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
-  checkinTops: { blocker: null, helper: null },
+  checkinTops: { blocker: null, helper: null, blockers: [], helpers: [], days: 0 },
   checkinModel: {
     n: 0,
     fit: {

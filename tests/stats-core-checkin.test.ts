@@ -561,6 +561,49 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
   it('checkinTops: порожньо -> null', () => {
     const t = aggregateStats(emptyStore(), '2026-07-17').checkinTops;
     expect([t.blocker, t.helper]).toEqual([null, null]);
+    expect([t.blockers, t.helpers]).toEqual([[], []]);
+  });
+
+  it('checkinTops: ПОВНИЙ рейтинг, не лише мода; days = діб із вечірнім вибором', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      ck('evening', { blocker: ['tired', 'distract'], helper: ['early'] }),
+      '2026-07-15',
+    );
+    s = recordEvent(
+      s,
+      ck('evening', { blocker: ['tired', 'stuck'], helper: ['early', 'list'] }),
+      '2026-07-16',
+    );
+    s = recordEvent(s, ck('evening', { blocker: ['tired'], helper: ['none'] }), '2026-07-17');
+    const t = aggregateStats(s, '2026-07-17').checkinTops;
+    // Мода лишається як була (сумісність контракту) і збігається з головою рейтингу.
+    expect(t.blocker).toEqual({ value: 'tired', n: 3 });
+    expect(t.blockers[0]).toEqual({ value: 'tired', n: 3 });
+    // Хвіст теж віддається — саме його доти ніде не було видно.
+    expect(t.blockers.map((r: { value: string }) => r.value)).toEqual([
+      'tired',
+      'distract',
+      'stuck',
+    ]);
+    // 'none' — свідоме «нічого не допомогло», не варіант рейтингу.
+    expect(t.helpers).toEqual([
+      { value: 'early', n: 2 },
+      { value: 'list', n: 1 },
+    ]);
+    expect(t.days).toBe(3);
+  });
+
+  it('checkinTops: рейтинг капиться на 5 (хвіст не роздуває картку)', () => {
+    const many = ['tired', 'anxious', 'stuck', 'distract', 'nomotiv', 'overload'];
+    let s = emptyStore();
+    // По одній добі на кожен блокер -> 6 різних значень, у рейтинг влазить 5.
+    many.forEach((b, i) => {
+      s = recordEvent(s, ck('evening', { blocker: [b] }), `2026-07-${10 + i}`);
+    });
+    const t = aggregateStats(s, '2026-07-17').checkinTops;
+    expect(t.blockers).toHaveLength(5);
   });
 
   it('checkinModel: порожній стор -> ваги апріорні, драйвери/архетипи не готові', () => {
