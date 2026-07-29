@@ -214,6 +214,7 @@ export const checkinEveningSchema = z.object({
   jobProgress: int.optional(),
   jobConfidence: int.optional(),
   focusQuality: int.optional(),
+  flames: multi(z.enum(['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'])),
 });
 export const checkinDaySchema = z.object({
   morning: checkinMorningSchema.optional(),
