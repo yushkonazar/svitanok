@@ -1,8 +1,6 @@
-import { useNavigate } from 'react-router-dom';
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
-import { haptic } from '../../telegram.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
@@ -16,37 +14,6 @@ import { InterestTrend } from '../charts/InterestTrend.tsx';
 // рядок із лічильником. Заразом це зняло тихий баг: список гортався ростом
 // limit (20→40→60…) при зашитому offset=0, а сервер клампить limit до 50 —
 // тож після 50-го запису «Показати ще» рахувало залишок, але не додавало нічого.
-
-/** Вхід в архів: лічильник + шеврон. Сам список живе на /saved. */
-function SavedLink({ total }: { total: number }) {
-  const navigate = useNavigate();
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        navigate('/saved');
-        haptic('light');
-      }}
-      className="flex items-center gap-2 rounded-2xl border border-glassb bg-glass px-3.5 py-3 text-left"
-    >
-      <span className="text-[13px] font-semibold">🔖 Збережене</span>
-      <span className="ml-auto font-mono text-[13px] font-semibold text-tx2">{total}</span>
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="var(--color-tx3)"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M9 5l7 7-7 7" />
-      </svg>
-    </button>
-  );
-}
 
 export function InterestsBlock({ s }: { s: Stats }) {
   const top = s.interests[0];
@@ -129,8 +96,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
       )}
 
       {has(s.readPerDay) && <StatRow label="Новин на день (середнє)" value={s.readPerDay} />}
-
-      {s.savedCount > 0 && <SavedLink total={s.savedCount} />}
+      {s.savedCount > 0 && <StatRow label="🔖 Збережено" value={s.savedCount} />}
     </div>
   );
 }
