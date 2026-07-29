@@ -2,7 +2,7 @@ import { useStats } from '../../api/hooks.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { HabitsBlock } from './HabitsBlock.tsx';
 import { CheckinBlock } from './CheckinBlock.tsx';
-import { FunnelGoalBlock } from './FunnelGoalBlock.tsx';
+import { RhythmBlock } from './RhythmBlock.tsx';
 import { MasteryBlock } from './MasteryBlock.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
@@ -31,7 +31,7 @@ export function StatsScreen() {
     <div className="flex flex-col gap-[26px]">
       <HabitsBlock s={s} />
       <CheckinBlock s={s} />
-      <FunnelGoalBlock s={s} />
+      <RhythmBlock s={s} />
       <MasteryBlock s={s} />
       <InterestsBlock s={s} />
       <ReliabilityBlock s={s} />

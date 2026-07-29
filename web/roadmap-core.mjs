@@ -7,6 +7,7 @@
 
 import { escapeHtml, progressBar } from './tg-core.mjs';
 import { ROADMAP_TOPICS } from './roadmap-data.mjs';
+import { weekStartKey, lastWeekStarts } from './stats-core.mjs';
 
 // Окремий простір callback_data від v1:<dateKey>:... (P1), rm:<id> (P2a),
 // pd:<action>:<id> (P2b/P2c).
@@ -89,6 +90,25 @@ export function totalProgress(progress) {
     total += p.total;
   }
   return { done, total };
+}
+
+/**
+ * Скільки підпунктів позначено ЗАВЕРШЕНИМИ в кожному з останніх `weeks`
+ * тижнів — не нова статистика, а сурфейс уже наявних даних: toggleProgress
+ * (вище) і так пише ISO-таймстемп у progress[key] при позначенні, просто
+ * totalProgress його ніколи не читав (лише {done,total}, без часу). Той
+ * самий {week,count}-шейп, що appliedWeekly (stats-core.mjs) — не вигадую
+ * нову форму контракту.
+ */
+export function roadmapWeekly(progress, todayKey, weeks = 12) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const counts = Object.fromEntries(starts.map((k) => [k, 0]));
+  for (const iso of Object.values(progress)) {
+    if (typeof iso !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(iso)) continue;
+    const wk = weekStartKey(iso.slice(0, 10));
+    if (counts[wk] != null) counts[wk]++;
+  }
+  return starts.map((k) => ({ week: k, count: counts[k] }));
 }
 
 /** Перший невідмічений підпункт у канонічному порядку тем/підпунктів; null якщо все зроблено. */

@@ -107,6 +107,27 @@ describe('stats-core — recordEvent', () => {
     expect(s.interests['Спорт']).toBe(1);
   });
 
+  it('mock.recentEasyPct: частка easy серед mockRated, null коли порожньо', () => {
+    let s = emptyStore();
+    expect(aggregateStats(s, '2026-07-07').mock.recentEasyPct).toBeNull();
+    s = recordEvent(
+      s,
+      { type: 'mock_answer', qId: 'q1', topic: 'Алгоритми', rating: 'easy' },
+      '2026-07-07',
+    );
+    s = recordEvent(
+      s,
+      { type: 'mock_answer', qId: 'q2', topic: 'Алгоритми', rating: 'hard' },
+      '2026-07-07',
+    );
+    s = recordEvent(
+      s,
+      { type: 'mock_answer', qId: 'q3', topic: 'Патерни', rating: 'easy' },
+      '2026-07-07',
+    );
+    expect(aggregateStats(s, '2026-07-07').mock.recentEasyPct).toBe(67); // 2 із 3
+  });
+
   it('vote з prevDir — category-aware дельта інтересу (C3)', () => {
     let s = emptyStore();
     // up (як раніше, prevDir відсутній -> +1)
@@ -349,6 +370,18 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(aw[5].count).toBe(0); // порожній тиждень присутній
   });
 
+  it('fitWeekly: середній fit по тижнях, null для тижня без fit-записів (не 0)', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'job_stage', url: 'a', stage: 'applied', fit: 80 }, '2026-07-07');
+    s = recordEvent(s, { type: 'job_stage', url: 'b', stage: 'applied', fit: 60 }, '2026-07-07');
+    s = recordEvent(s, { type: 'job_stage', url: 'c', stage: 'applied' }, '2026-06-30'); // без fit
+    const fw = aggregateStats(s, '2026-07-07').fitWeekly;
+    expect(fw).toHaveLength(8);
+    expect(fw[7]).toEqual({ week: '2026-07-06', avgFit: 70 }); // (80+60)/2
+    expect(fw[6]).toEqual({ week: '2026-06-29', avgFit: null }); // подача була, fit — ні
+    expect(fw[5].avgFit).toBeNull(); // порожній тиждень
+  });
+
   it('interestsWeekly: події дзеркаляться у тижневі кошики (клік/сейв/голос)', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'news_click', category: 'Наука' }, '2026-07-07'); // +1
@@ -359,15 +392,15 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(s.interestsWeekly['2026-06-29']).toEqual({ Спорт: 1 });
   });
 
-  it('interestsTrend: топ-теми за історію, серії по останніх 6 тижнях', () => {
+  it('interestsTrend: топ-теми за історію, серії по останніх 26 тижнях (WEEKLY_CAP — уся глибина ретенції)', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'news_click', category: 'Наука' }, '2026-07-07');
     s = recordEvent(s, { type: 'save_news', url: 'u', category: 'Технології' }, '2026-06-30');
     const tr = aggregateStats(s, '2026-07-07').interestsTrend;
-    expect(tr.weeks).toHaveLength(6);
-    expect(tr.weeks[5]).toBe('2026-07-06');
+    expect(tr.weeks).toHaveLength(26);
+    expect(tr.weeks[25]).toBe('2026-07-06');
     const tech = tr.topics.find((t: { topic: string }) => t.topic === 'Технології');
-    expect(tech.series).toEqual([0, 0, 0, 0, 2, 0]);
+    expect(tech.series).toEqual([...Array(24).fill(0), 2, 0]);
     // топ-1 — Технології (2 > 1)
     expect(tr.topics[0].topic).toBe('Технології');
   });
@@ -451,6 +484,7 @@ describe('stats-core — recordReliability', () => {
       onTime: 1,
       total: 1,
       deadman: 0,
+      days: { '2026-07-07': { ok: true } },
       lastCheckDate: '2026-07-07',
     });
     s = recordReliability(s, '2026-07-08', false);
@@ -458,6 +492,7 @@ describe('stats-core — recordReliability', () => {
       onTime: 1,
       total: 2,
       deadman: 1,
+      days: { '2026-07-07': { ok: true }, '2026-07-08': { ok: false } },
       lastCheckDate: '2026-07-08',
     });
   });
@@ -483,14 +518,49 @@ describe('stats-core — recordReliability', () => {
       onTime: 0,
       total: 1,
       deadman: 1,
+      days: { '2026-07-07': { ok: false } },
       lastCheckDate: '2026-07-07',
     });
   });
 
-  it('aggregateStats віддає лише лічильники (без lastCheckDate)', () => {
+  it('normalize терпить старий стор без reliability.days взагалі', () => {
+    expect(normalize({ reliability: { onTime: 3, total: 4 } }).reliability.days).toEqual({});
+  });
+
+  it('aggregateStats віддає лічильники + журнал (без lastCheckDate)', () => {
     const s = recordReliability(emptyStore(), '2026-07-07', true);
     const st = aggregateStats(s, '2026-07-07');
-    expect(st.reliability).toEqual({ onTime: 1, total: 1, deadman: 0 });
+    expect(st.reliability).toEqual({
+      onTime: 1,
+      total: 1,
+      deadman: 0,
+      streak: 1,
+      best: 1,
+      days: [{ d: '2026-07-07', ok: true }],
+    });
+  });
+
+  it('reliability: стрік рахує підряд ok, той самий грейс-принцип, що streaks.openDays', () => {
+    let s = emptyStore();
+    s = recordReliability(s, '2026-07-05', true);
+    s = recordReliability(s, '2026-07-06', true);
+    s = recordReliability(s, '2026-07-07', false); // сьогодні зірвано
+    const st = aggregateStats(s, '2026-07-07');
+    // сьогодні ok=false -> стрік не рахує сьогодні і не йде в грейс-гілку
+    // (та відрізняється від streaks.openDays лише тим, що тут "сьогодні"
+    // РЕАЛЬНО записано, а не просто відсутнє — тому стрік=0, не 2)
+    expect(st.reliability.streak).toBe(0);
+    expect(st.reliability.best).toBe(2);
+  });
+
+  it('reliability: журнал капиться на RELIABILITY_CAP (90) днів', () => {
+    let s = emptyStore();
+    const d = new Date('2026-07-07T00:00:00Z');
+    for (let i = 0; i < 95; i++) {
+      s = recordReliability(s, d.toISOString().slice(0, 10), true);
+      d.setUTCDate(d.getUTCDate() - 1);
+    }
+    expect(Object.keys(s.reliability.days)).toHaveLength(90);
   });
 });
 

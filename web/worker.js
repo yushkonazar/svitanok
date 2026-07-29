@@ -144,6 +144,7 @@ import {
   parseRoadmapCallbackData,
   toggleProgress,
   totalProgress,
+  roadmapWeekly,
   formatRootMessage,
   formatTopicMessage,
   buildRootKeyboard,
@@ -809,6 +810,9 @@ async function handleStats(request, env) {
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
   const progress = state.roadmapProgress ?? {};
   stats.roadmap = totalProgress(progress);
+  // Ріст роадмепу по тижнях — сурфейс уже наявних ISO-таймстемпів у progress
+  // (toggleProgress їх і так пише), Майстерність показує не лише поточний %.
+  stats.roadmapWeekly = roadmapWeekly(progress, kyivDateKey());
   // A4: звʼязка mock↔roadmap для дашборда — слабкі теми -> «куди вчитись»,
   // «тема тижня» -> фокус наступного mock-батчу.
   stats.mastery = {

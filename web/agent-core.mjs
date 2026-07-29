@@ -12,7 +12,7 @@
 import { escapeHtml } from './tg-core.mjs';
 import { CANONICAL_EXAMPLES, parseReminderTime } from './reminders-core.mjs';
 import { OWN_DATA_SCOPES } from './assistant-data-core.mjs';
-import { CATEGORY_VALUES, STAGES } from './stats-core.mjs';
+import { CATEGORY_VALUES, STAGES, BLOCKER_VALUES, HELPER_VALUES } from './stats-core.mjs';
 import { normalizeSettings } from './settings-core.mjs';
 import { buildMapsUrl } from './calendar-core.mjs';
 
@@ -259,14 +259,14 @@ export const ASSISTANT_ACTION_SCHEMA = {
     bedtime: { type: 'string', enum: ['e23', 'e00', 'e01', 'e02', 'late'] }, // checkin/ранок
     plan: { type: 'string', enum: CATEGORY_VALUES }, // checkin/ранок
     planApply: { type: 'number' }, // checkin/ранок, план подач 0-20
-    pace: { type: 'string', enum: ['on', 'off', 'better'] }, // checkin/день
+    pace: { type: 'string' }, // checkin/день: on|behind|other|overload|better
     // ate: НАВМИСНО без enum (той самий CATEGORY_VALUES, що вже в "plan" вище —
     // дублювати список удруге дорого для MAX_SCHEMA_LEN). extractAssistantAction
     // все одно звіряє проти CATEGORY_VALUES (CHECKIN_ENUM_FIELDS) незалежно від
     // schema, тож це економія бюджету, не послаблення валідації.
     ate: { type: 'string' }, // checkin/день, той самий перелік, що "plan"
     dayScore: { type: 'number' }, // checkin/вечір, 1-5
-    kept: { type: 'string', enum: ['yes', 'partly', 'no'] }, // checkin/вечір
+    kept: { type: 'string', enum: ['yes', 'partly', 'no', 'changed'] }, // checkin/вечір
     applied: { type: 'number' }, // checkin/вечір, подач зроблено 0-20
     blocker: {
       type: 'string',
@@ -386,16 +386,46 @@ const VALID_ACTIONS = new Set([
 ]);
 
 const RECORD_ACTION_KINDS = new Set(['checkin', 'voteNews', 'jobStage', 'roadmapDone']);
+// ⚠️ ЦЕ — справжній валідатор полів чек-іну від моделі (ASSISTANT_ACTION_SCHEMA
+// нижче лише підказує моделі формат і впирається в MAX_SCHEMA_LEN). Тож новий
+// перелік значень треба тримати ТУТ; у схемі enum-и лишаються короткими.
+// BLOCKER_VALUES/HELPER_VALUES імпортовані зі stats-core — єдине джерело істини,
+// щоб розширений перелік не розʼїхався між валідатором чек-іну й агентом.
 const CHECKIN_ENUM_FIELDS = {
   bedtime: new Set(['e23', 'e00', 'e01', 'e02', 'late']),
+  lateReason: new Set(['work', 'scroll', 'metime', 'anxious', 'social', 'other']),
+  sleepLatency: new Set(['fast', 'mid', 'slow', 'vslow']),
   plan: new Set(CATEGORY_VALUES),
-  pace: new Set(['on', 'off', 'better']),
+  pace: new Set(['on', 'off', 'behind', 'other', 'overload', 'better']),
   ate: new Set(CATEGORY_VALUES),
-  kept: new Set(['yes', 'partly', 'no']),
-  blocker: new Set(['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none']),
-  helper: new Set(['early', 'list', 'breaks', 'support', 'none']),
+  withWhom: new Set(['alone', 'family', 'friends', 'work', 'public', 'mixed']),
+  kept: new Set(['yes', 'partly', 'no', 'changed']),
+  blocker: new Set(BLOCKER_VALUES),
+  helper: new Set(HELPER_VALUES),
+  detached: new Set(['yes', 'partly', 'no']),
+  moved: new Set(['none', 'light', 'workout']),
+  outdoor: new Set(['none', 'short', 'long']),
+  screen: new Set(['low', 'mid', 'high', 'vhigh']),
 };
-const CHECKIN_NUM_FIELDS = ['energy', 'sleepH', 'planApply', 'dayScore', 'applied'];
+const CHECKIN_NUM_FIELDS = [
+  'energy',
+  'mood',
+  'sleepH',
+  'sleepQ',
+  'worryAM',
+  'planApply',
+  'rushed',
+  'dayScore',
+  'applied',
+  'effort',
+  'output',
+  'rumination',
+  'autonomy',
+  'caffeine',
+  'jobProgress',
+  'jobConfidence',
+  'focusQuality',
+];
 
 /**
  * Charset+довжина для будь-якого id, що модель ЕХОЄ назад (лист Gmail, подія

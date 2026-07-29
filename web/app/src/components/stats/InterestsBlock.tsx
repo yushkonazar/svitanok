@@ -6,6 +6,7 @@ import { haptic } from '../../telegram.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
+import { InterestTrend } from '../charts/InterestTrend.tsx';
 
 // D · Інтереси (дизайн v2, Svitanok.dc.html): картка головної теми тижня
 // (частка реакцій + напрямок vs минулий тиждень) + чипи решти тем.
@@ -108,6 +109,18 @@ export function InterestsBlock({ s }: { s: Stats }) {
                   {topicEmoji(it.topic)} {it.topic} {it.score}
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Пів року реальної тижневої історії (interestsTrend) уже лежали в
+              API — раніше споживались лише як стрілочка "↑ vs минулий" вище.
+              Тут той самий масив рендериться повним графіком (п.1 ідей). */}
+          {s.interestsTrend.topics.length > 0 && s.interestsTrend.weeks.length >= 2 && (
+            <div className="rounded-2xl border border-glassb bg-glass p-3.5">
+              <span className="mb-2 block font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
+                ТРЕНД ІНТЕРЕСУ
+              </span>
+              <InterestTrend trend={s.interestsTrend} />
             </div>
           )}
         </>
