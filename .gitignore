@@ -28,6 +28,10 @@ npm-debug.log*
 # Editor / OS
 .DS_Store
 Thumbs.db
+
+# Python (research/checkin_model.py — специфікація-оракул, не деплоїться)
+__pycache__/
+*.pyc
 .idea/
 .vscode/
 
