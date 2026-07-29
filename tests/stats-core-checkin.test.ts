@@ -563,6 +563,48 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     expect([t.blocker, t.helper]).toEqual([null, null]);
   });
 
+  it('checkinModel: порожній стор -> ваги апріорні, драйвери/архетипи не готові', () => {
+    const m = aggregateStats(emptyStore(), '2026-07-17').checkinModel;
+    expect(m.fit.learned).toBe(false);
+    expect(m.dayIndex).toEqual({ last: null, mean: null });
+    expect(m.drivers).toEqual([]);
+    expect(m.archetypes.ready).toBe(false);
+    expect(m.lagged.recovery.ready).toBe(false);
+    expect(m.lagged.body.ready).toBe(false);
+  });
+
+  it('checkinModel: 25 діб стабільно хороших даних -> ваги вчаться, індекс дня близький до 100', () => {
+    let s = emptyStore();
+    const d = new Date('2026-06-01T00:00:00Z');
+    let lastKey = '';
+    for (let i = 0; i < 25; i++) {
+      lastKey = d.toISOString().slice(0, 10);
+      s = recordEvent(s, ck('morning', { sleepH: 8, sleepQ: 5, energy: 5, mood: 5 }), lastKey);
+      s = recordEvent(s, ck('afternoon', { energy: 5, mood: 5 }), lastKey);
+      s = recordEvent(
+        s,
+        ck('evening', {
+          dayScore: 5,
+          output: 5,
+          focusQuality: 5,
+          autonomy: 5,
+          jobConfidence: 5,
+          moved: 'workout',
+          outdoor: 'long',
+          energy: 5,
+          mood: 5,
+        }),
+        lastKey,
+      );
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    // todayKey = ОСТАННІЙ день із записом, не наступний: інакше вікно моделі
+    // закінчується порожньою добою, і dayIndex.last рахує null, не сьогодні.
+    const m = aggregateStats(s, lastKey).checkinModel;
+    expect(m.fit.learned).toBe(true);
+    expect(m.dayIndex.last).toBeGreaterThan(90);
+  });
+
   it('bedtimeVsEnergy: гейт, тоді ранкова енергія рано vs пізно (join за добою)', () => {
     let s = emptyStore();
     const d = new Date('2026-06-01T00:00:00Z');

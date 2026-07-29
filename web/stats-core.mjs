@@ -2,6 +2,12 @@
 // Без залежностей і без I/O — щоб покрити тестами (worker.js імпортує це, KV-I/O
 // робить Worker). Стор — один JSON-блоб у KV (ключ `stats`).
 //
+// checkin-model.mjs — окремий файл (портована математика: індекси/ridge-ваги/
+// драйвери/архетипи), а не inline тут: research/checkin_model.py лишається
+// специфікацією-оракулом, і держати JS-порт в одному місці з однією назвою
+// файлу простіше звіряти з golden-векторами (tests/checkin-model.test.ts).
+import { analyzeCheckinModel, flattenCheckinDay } from './checkin-model.mjs';
+//
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
 //   funnel:    { '<url>': 'saved'|'applied'|'interview'|'offer' }  // стадія вакансії
@@ -1033,6 +1039,29 @@ function buildCheckinTops(checkins, todayKey, days = 30) {
   return { blocker: top(bC), helper: top(hC) };
 }
 
+const MODEL_WINDOW_DAYS = 90;
+
+/**
+ * «Індекс дня» — повна модель (checkin-model.mjs) над останніми
+ * MODEL_WINDOW_DAYS. КОЖЕН календарний день вікна стає рядком (навіть
+ * повністю порожній -> усі поля null): лаговий звʼязок «сьогодні->завтра»
+ * порівнює СУСІДНІ елементи масиву, тож пропуск дня зсунув би пари й почав
+ * би порівнювати не по-справжньому суміжні доби. Той самий принцип
+ * ітерації, що вже в buildCheckinSeries/buildCheckinFill (день за днем,
+ * незалежно від наявності запису).
+ */
+function buildCheckinModel(checkins, todayKey, days = MODEL_WINDOW_DAYS) {
+  const flat = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = d.toISOString().slice(0, 10);
+    flat.push(flattenCheckinDay(checkins[key], asList, CATEGORY_VALUES));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return analyzeCheckinModel(flat);
+}
+
 /** Чек-ін по тижнях: середні сон / енергія / оцінка дня + скільки діб заповнено. */
 function buildCheckinWeekly(checkins, todayKey, weeks = 8) {
   const starts = lastWeekStarts(todayKey, weeks);
@@ -1332,5 +1361,9 @@ export function aggregateStats(store, todayKey) {
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
     appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
+    // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
+    // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,
+    // архетипи. Читає ті самі checkins, нічого нового не питає в людини.
+    checkinModel: buildCheckinModel(s.checkins, todayKey),
   };
 }

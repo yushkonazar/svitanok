@@ -303,6 +303,74 @@ export const checkinTopsSchema = z.object({
   helper: checkinTopSchema.nullable().default(null),
 });
 
+// «Індекс дня» (checkin-model.mjs): композитні індекси, ваги, що вчаться на
+// власних dayScore, драйвери, лаговий звʼязок, архетипи. Форми 1:1 з JS-
+// портом моделі (analyzeCheckinModel) — golden-звірений з research/checkin_model.py.
+export const modelIndexKeySchema = z.enum(['recovery', 'resource', 'work', 'agency', 'body']);
+export const checkinFitSchema = z.object({
+  weights: z.record(modelIndexKeySchema, num),
+  r2: num.nullable().default(null),
+  n: int.default(0),
+  learned: z.boolean().default(false),
+});
+export const checkinDayIndexSchema = z.object({
+  last: num.nullable().default(null),
+  mean: num.nullable().default(null),
+});
+export const checkinDriverSchema = z.object({
+  field: z.string(),
+  index: modelIndexKeySchema,
+  delta: num,
+  d: num,
+  p: num,
+  nHigh: int,
+  nLow: int,
+});
+/** Той самий гейт-патерн, що corrPairSchema/bedtimeVsEnergySchema, лише для
+ *  лагового звʼязку «сьогодні -> завтра» (rho/p зʼявляються тільки ready). */
+export const checkinLaggedSchema = z.object({
+  ready: z.boolean().default(false),
+  n: int.default(0),
+  needed: int.optional(),
+  rho: num.nullable().optional(),
+  p: num.nullable().optional(),
+  src: z.string().optional(),
+  target: z.string().optional(),
+});
+export const checkinArchetypeGroupSchema = z.object({
+  n: int.default(0),
+  share: num.default(0),
+  profile: z.record(modelIndexKeySchema, num),
+  top: modelIndexKeySchema,
+  low: modelIndexKeySchema,
+});
+export const checkinArchetypesSchema = z.object({
+  ready: z.boolean().default(false),
+  n: int.default(0),
+  needed: int.optional(),
+  k: int.optional(),
+  groups: z.array(checkinArchetypeGroupSchema).default([]),
+});
+export const checkinModelSchema = z.object({
+  n: int.default(0),
+  fit: checkinFitSchema,
+  dayIndex: checkinDayIndexSchema,
+  drivers: z.array(checkinDriverSchema).default([]),
+  // Ключі — підмножина INDICES (сервер рахує лаг лише для recovery/body,
+  // FIELD 7 у research/checkin_model.py), не всі 5: string-record, не enum-record.
+  lagged: z.record(z.string(), checkinLaggedSchema),
+  archetypes: checkinArchetypesSchema,
+});
+
+const EMPTY_CHECKIN_MODEL = {
+  n: 0,
+  fit: { weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 }, r2: null, n: 0, learned: false },
+  dayIndex: { last: null, mean: null },
+  drivers: [],
+  lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
+  archetypes: { ready: false, n: 0, groups: [] },
+};
+
 export const statsSchema = z.object({
   streaks: z.object({
     openDays: int.default(0),
@@ -378,6 +446,7 @@ export const statsSchema = z.object({
   categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
   appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
   checkinTops: checkinTopsSchema.default({ blocker: null, helper: null }),
+  checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
   intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),
