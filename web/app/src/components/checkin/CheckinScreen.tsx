@@ -178,20 +178,49 @@ function BlockCard({
   onPad: (xId: string, x: number, yId: string, y: number) => void;
 }) {
   const [deepOpen, setDeepOpen] = useState(false);
+  // «Записаний» блок можна РОЗГОРНУТИ НАЗАД. Без цього була дірка: isDone
+  // рахує лише ЯДРО (не-soft core-питання), тож щойно відповів на основні —
+  // блок згортався в «✓ ЗАПИСАНО», а разом із ним ставав недосяжним і розділ
+  // «Детальніше». Тобто на глибокі питання не було як відповісти взагалі.
+  // Згортання лишається (підсумок чипами — корисний стан), але тепер це
+  // ПЕРЕМИКАЧ, а не однобічні двері.
+  const [reopened, setReopened] = useState(false);
+
+  const core = coreQuestions(b, workDay, answers);
+  const deep = deepQuestions(b, workDay, answers);
+  const deepFilled = deep.filter((q) => isAnswered(q, answers)).length;
+  const deepLeft = deep.length - deepFilled;
+
+  const canReopen = state === 'done';
+  const expanded = state === 'open' || (canReopen && reopened);
+  // Редагувати можна у відкритому АБО в перевідкритому блоці. «Пропущений»
+  // лишається замкненим свідомо: відповідь заднім числом — здогадка, не дані.
+  const disabled = !expanded;
+
   const label =
     state === 'open'
       ? 'ЗАПОВНИ'
       : state === 'done'
-        ? '✓ ЗАПИСАНО'
+        ? reopened
+          ? '▲ ЗГОРНУТИ'
+          : deepLeft > 0
+            ? `✓ ЗАПИСАНО · ЩЕ ${deepLeft}`
+            : '✓ ЗАПИСАНО'
         : state === 'missed'
           ? 'ПРОПУЩЕНО'
           : `ВІДКРИЄТЬСЯ О ${pad2(b.from)}:00`;
 
   const tone = state === 'open' ? 'text-a2' : state === 'done' ? 'text-pos' : 'text-tx3';
-  const core = coreQuestions(b, workDay, answers);
-  const deep = deepQuestions(b, workDay, answers);
-  const deepFilled = deep.filter((q) => isAnswered(q, answers)).length;
-  const disabled = state !== 'open';
+
+  const head = (
+    <>
+      <span className="text-[15px]">{b.ic}</span>
+      <span className="text-[13.5px] font-bold">{b.nm}</span>
+      <span className={`ml-auto font-mono text-[9.5px] font-semibold tracking-[0.05em] ${tone}`}>
+        {label}
+      </span>
+    </>
+  );
 
   return (
     <div
@@ -208,18 +237,26 @@ function BlockCard({
         opacity: state === 'locked' ? 0.5 : state === 'missed' ? 0.62 : 1,
       }}
     >
-      <div className="flex items-center gap-2.5 px-3.5 py-3">
-        <span className="text-[15px]">{b.ic}</span>
-        <span className="text-[13.5px] font-bold">{b.nm}</span>
-        <span className={`ml-auto font-mono text-[9.5px] font-semibold tracking-[0.05em] ${tone}`}>
-          {label}
-        </span>
-      </div>
+      {canReopen ? (
+        <button
+          type="button"
+          aria-expanded={reopened}
+          onClick={() => {
+            haptic('light');
+            setReopened((v) => !v);
+          }}
+          className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left"
+        >
+          {head}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2.5 px-3.5 py-3">{head}</div>
+      )}
 
       {/* grid-rows 0fr->1fr анімує висоту, не знаючи її в px (вона різна в блоках). */}
       <div
         className="grid transition-[grid-template-rows] duration-[450ms] ease-[cubic-bezier(.22,1,.36,1)]"
-        style={{ gridTemplateRows: state === 'open' ? '1fr' : '0fr' }}
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3.5 px-3.5 pb-3.5">
@@ -272,9 +309,11 @@ function BlockCard({
         </div>
       </div>
 
-      {state === 'done' && (
+      {state === 'done' && !reopened && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3">
           {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано».
+              У ПЕРЕВІДКРИТОМУ блоці їх немає: там уже видно самі відповіді,
+              і чипи дублювали б їх удвічі.
               visibleQuestions, а не b.qs: приховане джоб-число (обрав «Робота»,
               ввів, перемкнув на іншу категорію) не мусить зринати чипом. */}
           {visibleQuestions(b, workDay, answers)
