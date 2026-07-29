@@ -130,6 +130,10 @@ export const HELPER_VALUES = [
   'music',
   'none',
 ];
+// П'ять незалежних щоденних стріків (кожен додаток рахує свій окремо) —
+// нема капу нижче кількості значень: усі п'ять цілком реально запалити
+// в один день, на відміну від blocker/helper де 3 з ~10 — розумна стеля.
+export const FLAME_VALUES = ['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'];
 
 const CHECKIN_FIELDS = {
   morning: {
@@ -188,6 +192,7 @@ const CHECKIN_FIELDS = {
     jobProgress: { num: [1, 5], int: true },
     jobConfidence: { num: [1, 5], int: true },
     focusQuality: { num: [1, 5], int: true },
+    flames: { enumMulti: FLAME_VALUES, max: FLAME_VALUES.length },
   },
 };
 
