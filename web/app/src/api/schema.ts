@@ -135,25 +135,85 @@ const category = z.enum([
 // одне поле деградує, а не валиться safeParse УСЬОГО /api/stats (це зачорнило б
 // Статистику+Вакансії до півночі для тих, хто вже зробив чек-ін до деплою).
 const lenient = <T extends z.ZodType>(s: T) => s.optional().catch(undefined);
+/**
+ * Мультивибір: сервер нормалізує запис у МАСИВ, але в KV лежать роки записів,
+ * де це поле було голим рядком. Приймаємо обидві форми й зводимо до масиву —
+ * інакше стара доба валила б гідратацію екрана (а lenient сховав би її тихо,
+ * і чек-ін виглядав би незаповненим).
+ */
+const multi = <T extends z.ZodType>(s: T) =>
+  z
+    .union([z.array(s), s])
+    .transform((v) => (Array.isArray(v) ? v : [v]))
+    .optional()
+    .catch(undefined);
 export const checkinMorningSchema = z.object({
   sleepH: num.optional(),
+  sleepQ: int.optional(),
+  sleepLatency: lenient(z.enum(['fast', 'mid', 'slow', 'vslow'])),
   bedtime: lenient(z.enum(['e23', 'e00', 'e01', 'e02', 'late'])),
+  lateReason: lenient(z.enum(['work', 'scroll', 'metime', 'anxious', 'social', 'other'])),
   energy: int.optional(),
-  plan: lenient(category),
+  mood: int.optional(),
+  plan: multi(category),
   planApply: int.optional(),
+  worryAM: int.optional(),
 });
 export const checkinAfternoonSchema = z.object({
-  pace: lenient(z.enum(['on', 'off', 'better'])),
+  pace: lenient(z.enum(['on', 'off', 'behind', 'other', 'overload', 'better'])),
   energy: int.optional(),
-  ate: lenient(category),
+  mood: int.optional(),
+  ate: multi(category),
+  rushed: int.optional(),
+  withWhom: lenient(z.enum(['alone', 'family', 'friends', 'work', 'public', 'mixed'])),
 });
 export const checkinEveningSchema = z.object({
   dayScore: int.optional(),
-  kept: lenient(z.enum(['yes', 'partly', 'no'])),
+  kept: lenient(z.enum(['yes', 'partly', 'no', 'changed'])),
   applied: int.optional(),
   energy: int.optional(),
-  blocker: lenient(z.enum(['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none'])),
-  helper: lenient(z.enum(['early', 'list', 'breaks', 'support', 'none'])),
+  mood: int.optional(),
+  effort: int.optional(),
+  output: int.optional(),
+  blocker: multi(
+    z.enum([
+      'tired',
+      'anxious',
+      'stuck',
+      'external',
+      'distract',
+      'health',
+      'nomotiv',
+      'overload',
+      'waiting',
+      'procrast',
+      'none',
+    ]),
+  ),
+  helper: multi(
+    z.enum([
+      'early',
+      'list',
+      'breaks',
+      'support',
+      'move',
+      'smallstep',
+      'nodistract',
+      'deadline',
+      'music',
+      'none',
+    ]),
+  ),
+  detached: lenient(z.enum(['yes', 'partly', 'no'])),
+  rumination: int.optional(),
+  autonomy: int.optional(),
+  moved: lenient(z.enum(['none', 'light', 'workout'])),
+  outdoor: lenient(z.enum(['none', 'short', 'long'])),
+  screen: lenient(z.enum(['low', 'mid', 'high', 'vhigh'])),
+  caffeine: int.optional(),
+  jobProgress: int.optional(),
+  jobConfidence: int.optional(),
+  focusQuality: int.optional(),
 });
 export const checkinDaySchema = z.object({
   morning: checkinMorningSchema.optional(),
@@ -164,8 +224,22 @@ export const checkinPointSchema = z.object({
   d: z.string(),
   sleepH: num.nullable().default(null),
   energy: num.nullable().default(null),
+  // Форма дня, а не лише її середнє: [ранок, день, вечір], null — незаповнений
+  // слот (дірка), не нуль. Старий сервер полів не віддає -> порожній масив.
+  energyCurve: z.array(num.nullable()).default([]),
+  moodCurve: z.array(num.nullable()).default([]),
   dayScore: num.nullable().default(null),
   slots: int.default(0),
+});
+
+/** Дрейф наміру: план (ранок) проти того, що реально зайняло час (день). */
+export const intentDriftSchema = z.object({
+  total: int.default(0),
+  matched: int.default(0),
+  pct: num.nullable().default(null),
+  top: z
+    .array(z.object({ from: z.string(), to: z.string(), n: int }))
+    .default([]),
 });
 export const checkinWeekSchema = z.object({
   week: z.string(),
@@ -246,9 +320,21 @@ export const statsSchema = z.object({
   funnelList: z.array(funnelItemSchema).default([]),
   savedCount: int.default(0),
   savedList: z.array(savedItemSchema).default([]),
-  mock: z.object({ weakTopics: z.array(weakTopicSchema).default([]), streak: int.default(0) }),
+  mock: z.object({
+    weakTopics: z.array(weakTopicSchema).default([]),
+    streak: int.default(0),
+    // Загальний recency-сигнал (без розбивки по темі — mockRated не прив'язує
+    // qId до теми) поруч із all-time weakTopics%. null, доки жодної оцінки.
+    recentEasyPct: num.nullable().default(null),
+  }),
   heatmap: z.array(heatmapCellSchema).default([]),
   appliedWeekly: z.array(appliedWeekSchema).default([]),
+  // Fit% поданих по тижнях — той самий {week,count}-шейп духом, що appliedWeekly,
+  // але avgFit замість count (nullable — тиждень без жодного fit-запису).
+  fitWeekly: z.array(z.object({ week: z.string(), avgFit: num.nullable() })).default([]),
+  // Ріст роадмепу по тижнях — перевикористовує appliedWeekSchema {week,count},
+  // не нова форма контракту (той самий підхід, що вже є для appliedWeekly).
+  roadmapWeekly: z.array(appliedWeekSchema).default([]),
   interestsTrend: interestsTrendSchema.default({ weeks: [], topics: [] }),
   interests: z.array(interestSchema).default([]),
   readPerDay: num.default(0),
@@ -256,6 +342,9 @@ export const statsSchema = z.object({
     onTime: int.default(0),
     total: int.default(0),
     deadman: int.default(0),
+    streak: int.default(0),
+    best: int.default(0),
+    days: z.array(z.object({ d: z.string(), ok: z.boolean() })).default([]),
   }),
   mockRatedToday: z.boolean().optional(),
   // F4: qId -> обрана оцінка. Доти вибір жив лише в стані сесії й зникав після
@@ -288,6 +377,9 @@ export const statsSchema = z.object({
   categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
   appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
   checkinTops: checkinTopsSchema.default({ blocker: null, helper: null }),
+  // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
+  // нових полів чек-іну.
+  intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;

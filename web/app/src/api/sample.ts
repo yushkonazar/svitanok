@@ -48,6 +48,8 @@ function sampleCheckinSeries() {
     d: string;
     sleepH: number | null;
     energy: number | null;
+    energyCurve: Array<number | null>;
+    moodCurve: Array<number | null>;
     dayScore: number | null;
     slots: number;
   }> = [];
@@ -57,12 +59,19 @@ function sampleCheckinSeries() {
   for (let i = 0; i < 14; i++) {
     // Кожен 5-й день пропущений — щоб було видно, що дірки це норма, а не збій.
     if (i % 5 !== 4) {
+      const base = Math.round((sleep[i]! - 3) * 10) / 10;
+      const three = i % 4 === 0;
+      // Форма дня, не лише середнє: у «повні» доби видно спад ранок->вечір,
+      // у неповні — дірка null там, де слот не заповнено.
+      const clamp = (v: number) => Math.max(1, Math.min(5, Math.round(v)));
       out.push({
         d: dayKey(d),
         sleepH: sleep[i]!,
-        energy: Math.round((sleep[i]! - 3) * 10) / 10,
+        energy: base,
+        energyCurve: three ? [clamp(base + 1), clamp(base), clamp(base - 1)] : [clamp(base), null, null],
+        moodCurve: three ? [clamp(base), clamp(base), clamp(base - 1)] : [null, null, clamp(base)],
         dayScore: i % 3 === 0 ? 4 : 3,
-        slots: i % 4 === 0 ? 3 : 1,
+        slots: three ? 3 : 1,
       });
     }
     d.setDate(d.getDate() + 1);
@@ -155,6 +164,8 @@ export const SAMPLE_STATS: Stats = {
       { name: 'HTTP', value: 40 },
     ],
     streak: 4,
+    // Свіжіше за all-time weakTopics% — демонструє, що недавно йде краще.
+    recentEasyPct: 60,
   },
   roadmap: { done: 12, total: 74 },
   mastery: {
@@ -195,7 +206,47 @@ export const SAMPLE_STATS: Stats = {
     { kind: 'quote', id: 'qt1', title: '«Дій, а не бажай» — Марк Аврелій', url: null, ts: '2026-07-06' },
   ],
   readPerDay: 6,
-  reliability: { onTime: 28, total: 30, deadman: 1 },
+  // 30 днів, один dead-man 9 днів тому — стрік=9 (від наступного дня),
+  // рекорд=20 (найдовший забіг до зриву).
+  reliability: {
+    onTime: 29,
+    total: 30,
+    deadman: 1,
+    streak: 9,
+    best: 20,
+    days: [
+      { d: '2026-06-09', ok: true },
+      { d: '2026-06-10', ok: true },
+      { d: '2026-06-11', ok: true },
+      { d: '2026-06-12', ok: true },
+      { d: '2026-06-13', ok: true },
+      { d: '2026-06-14', ok: true },
+      { d: '2026-06-15', ok: true },
+      { d: '2026-06-16', ok: true },
+      { d: '2026-06-17', ok: true },
+      { d: '2026-06-18', ok: true },
+      { d: '2026-06-19', ok: true },
+      { d: '2026-06-20', ok: true },
+      { d: '2026-06-21', ok: true },
+      { d: '2026-06-22', ok: true },
+      { d: '2026-06-23', ok: true },
+      { d: '2026-06-24', ok: true },
+      { d: '2026-06-25', ok: true },
+      { d: '2026-06-26', ok: true },
+      { d: '2026-06-27', ok: true },
+      { d: '2026-06-28', ok: true },
+      { d: '2026-06-29', ok: false },
+      { d: '2026-06-30', ok: true },
+      { d: '2026-07-01', ok: true },
+      { d: '2026-07-02', ok: true },
+      { d: '2026-07-03', ok: true },
+      { d: '2026-07-04', ok: true },
+      { d: '2026-07-05', ok: true },
+      { d: '2026-07-06', ok: true },
+      { d: '2026-07-07', ok: true },
+      { d: '2026-07-08', ok: true },
+    ],
+  },
   heatmap: sampleHeatmap(),
   appliedWeekly: [
     { week: '', count: 1 },
@@ -207,12 +258,84 @@ export const SAMPLE_STATS: Stats = {
     { week: '', count: 3 },
     { week: '', count: 5 },
   ],
+  // null там, де того тижня подач із fit-оцінкою не було (не 0% — «даних
+  // немає», не «поганий fit»).
+  fitWeekly: [
+    { week: '', avgFit: 70 },
+    { week: '', avgFit: null },
+    { week: '', avgFit: 75 },
+    { week: '', avgFit: 80 },
+    { week: '', avgFit: 78 },
+    { week: '', avgFit: 82 },
+    { week: '', avgFit: 79 },
+    { week: '', avgFit: 84 },
+  ],
+  // 12 тижнів нових завершень роадмепу — демонструє реальний ріст, не лише
+  // поточний знімок 12/74.
+  roadmapWeekly: [
+    { week: '', count: 1 },
+    { week: '', count: 0 },
+    { week: '', count: 2 },
+    { week: '', count: 1 },
+    { week: '', count: 1 },
+    { week: '', count: 3 },
+    { week: '', count: 0 },
+    { week: '', count: 2 },
+    { week: '', count: 1 },
+    { week: '', count: 0 },
+    { week: '', count: 2 },
+    { week: '', count: 1 },
+  ],
+  // 26 тижнів (WEEKLY_CAP — уся глибина ретенції, stats-core.mjs), не 6 —
+  // демо показує повний тренд-графік (InterestTrend), не лише коротку
+  // стрілочку. Технології ростуть, Наука коливається м'яко вгору, Політика
+  // згасає — три різні форми лінії для перевірки живим прев'ю.
   interestsTrend: {
-    weeks: ['', '', '', '', '', ''],
+    weeks: [
+      '2026-01-12',
+      '2026-01-19',
+      '2026-01-26',
+      '2026-02-02',
+      '2026-02-09',
+      '2026-02-16',
+      '2026-02-23',
+      '2026-03-02',
+      '2026-03-09',
+      '2026-03-16',
+      '2026-03-23',
+      '2026-03-30',
+      '2026-04-06',
+      '2026-04-13',
+      '2026-04-20',
+      '2026-04-27',
+      '2026-05-04',
+      '2026-05-11',
+      '2026-05-18',
+      '2026-05-25',
+      '2026-06-01',
+      '2026-06-08',
+      '2026-06-15',
+      '2026-06-22',
+      '2026-06-29',
+      '2026-07-06',
+    ],
     topics: [
-      { topic: 'Технології', series: [2, 4, 3, 6, 5, 8] },
-      { topic: 'Наука', series: [1, 2, 0, 3, 2, 4] },
-      { topic: 'Політика', series: [0, 1, 1, 0, 2, 1] },
+      {
+        topic: 'Технології',
+        series: [
+          1, 2, 1, 3, 2, 3, 4, 3, 5, 4, 6, 5, 7, 6, 8, 7, 9, 8, 10, 9, 11, 10, 12, 11, 13, 12,
+        ],
+      },
+      {
+        topic: 'Наука',
+        series: [0, 1, 1, 0, 2, 1, 2, 3, 2, 1, 3, 2, 4, 3, 2, 4, 3, 5, 4, 3, 5, 4, 6, 5, 4, 7],
+      },
+      {
+        topic: 'Політика',
+        series: [
+          6, 5, 6, 4, 5, 3, 4, 2, 3, 2, 1, 2, 1, 0, 1, 2, 1, 0, 1, 0, 2, 1, 0, 1, 0, 3,
+        ],
+      },
     ],
   },
   // Чек-ін: демо стоїть у ранковому блоці з частковою відповіддю — так одразу
@@ -220,6 +343,18 @@ export const SAMPLE_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: { morning: { sleepH: 6.5 } },
   checkinSeries: sampleCheckinSeries(),
+  // 30 діб, у 19 план збігся з тим, що реально зайняло час. Топ-пари — куди
+  // саме зʼїжджає день, коли не збігається.
+  intentDrift: {
+    total: 30,
+    matched: 19,
+    pct: 63,
+    top: [
+      { from: 'work', to: 'chores', n: 4 },
+      { from: 'learn', to: 'work', n: 3 },
+      { from: 'project', to: 'rest', n: 2 },
+    ],
+  },
   checkinWeekly: [
     { week: '', n: 5, sleepAvg: 6.4, energyAvg: 3.1, dayScoreAvg: 3.4 },
     { week: '', n: 6, sleepAvg: 7.1, energyAvg: 3.6, dayScoreAvg: 3.8 },
@@ -265,13 +400,15 @@ export const EMPTY_STATS: Stats = {
   funnelList: [],
   savedCount: 0,
   savedList: [],
-  mock: { weakTopics: [], streak: 0 },
+  mock: { weakTopics: [], streak: 0, recentEasyPct: null },
   heatmap: [],
   appliedWeekly: [],
+  fitWeekly: [],
+  roadmapWeekly: [],
   interestsTrend: { weeks: [], topics: [] },
   interests: [],
   readPerDay: 0,
-  reliability: { onTime: 0, total: 0, deadman: 0 },
+  reliability: { onTime: 0, total: 0, deadman: 0, streak: 0, best: 0, days: [] },
   votes: {},
   mockRated: {},
   mockMaterials: {},
@@ -279,6 +416,7 @@ export const EMPTY_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: null,
   checkinSeries: [],
+  intentDrift: { total: 0, matched: 0, pct: null, top: [] },
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
   planVsFact: [],
