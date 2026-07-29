@@ -20,7 +20,9 @@ const ck = (slot: string, fields: Record<string, unknown>) => ({
   slot,
   ...fields,
 });
-const MORNING = { sleepH: 7.5, energy: 4, plan: 'work', planApply: 3 };
+// `plan` — мультивибір (масив). Легасі-форму (голий рядок) валідатор і далі
+// приймає й нормалізує в масив — окремий тест нижче.
+const MORNING = { sleepH: 7.5, energy: 4, plan: ['work'], planApply: 3 };
 
 describe('checkinSlot — активний блок за київською годиною', () => {
   it('межі рівно там, де сказав власник', () => {
@@ -108,7 +110,7 @@ describe('recordEvent — checkin', () => {
 
   it('повторна подія МЕРДЖИТЬ, а не стирає (клієнт шле дебаунсом)', () => {
     let s = recordEvent(emptyStore(), ck('morning', { sleepH: 7.5, energy: 4 }), '2026-07-17');
-    s = recordEvent(s, ck('morning', { plan: 'work', planApply: 3 }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { plan: ['work'], planApply: 3 }), '2026-07-17');
     expect(s.checkins['2026-07-17'].morning).toEqual(MORNING);
   });
 
@@ -315,21 +317,21 @@ describe('чек-ін — нові поля 18.07 (дзеркало questions.ts
   it('bedtime/plan=project, ate-нові, applied/blocker-нові/helper приймаються', () => {
     let s = recordEvent(
       emptyStore(),
-      ck('morning', { bedtime: 'e01', plan: 'project' }),
+      ck('morning', { bedtime: 'e01', plan: ['project'] }),
       '2026-07-17',
     );
-    s = recordEvent(s, ck('afternoon', { ate: 'sport' }), '2026-07-17');
+    s = recordEvent(s, ck('afternoon', { ate: ['sport'] }), '2026-07-17');
     s = recordEvent(
       s,
-      ck('evening', { applied: 4, blocker: 'distract', helper: 'early' }),
+      ck('evening', { applied: 4, blocker: ['distract'], helper: ['early'] }),
       '2026-07-17',
     );
-    expect(s.checkins['2026-07-17'].morning).toEqual({ bedtime: 'e01', plan: 'project' });
-    expect(s.checkins['2026-07-17'].afternoon).toEqual({ ate: 'sport' });
+    expect(s.checkins['2026-07-17'].morning).toEqual({ bedtime: 'e01', plan: ['project'] });
+    expect(s.checkins['2026-07-17'].afternoon).toEqual({ ate: ['sport'] });
     expect(s.checkins['2026-07-17'].evening).toEqual({
       applied: 4,
-      blocker: 'distract',
-      helper: 'early',
+      blocker: ['distract'],
+      helper: ['early'],
     });
   });
 
@@ -341,6 +343,105 @@ describe('чек-ін — нові поля 18.07 (дзеркало questions.ts
   it('applied — ціле в межах [0,20]; дробове/поза межами відкидається', () => {
     const s = recordEvent(emptyStore(), ck('evening', { applied: 2.5, dayScore: 4 }), '2026-07-17');
     expect(s.checkins['2026-07-17'].evening).toEqual({ dayScore: 4 });
+  });
+});
+
+describe('чек-ін — мультивибір (plan/ate/blocker/helper)', () => {
+  it('масив зберігається як масив; сміття всередині відкидається поштучно', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('evening', { blocker: ['tired', 'вигадка', 'overload'] }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].evening.blocker).toEqual(['tired', 'overload']);
+  });
+
+  it('ЛЕГАСІ: голий рядок і далі приймається й нормалізується в масив', () => {
+    const s = recordEvent(emptyStore(), ck('afternoon', { ate: 'sport' }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].afternoon.ate).toEqual(['sport']);
+  });
+
+  it('дублікати схлопуються, довжина капиться (день не має пʼяти причин)', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('evening', { blocker: ['tired', 'tired', 'stuck', 'anxious', 'health', 'nomotiv'] }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].evening.blocker).toEqual(['tired', 'stuck', 'anxious']);
+  });
+
+  it('plan капиться на 2 (головних справ на день не буває пʼять)', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('morning', { plan: ['work', 'learn', 'sport'] }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].morning.plan).toEqual(['work', 'learn']);
+  });
+
+  it('масив із самого сміття -> поле відсутнє, доба не створюється порожньою', () => {
+    const s = recordEvent(emptyStore(), ck('evening', { blocker: ['ой', 'йой'] }), '2026-07-17');
+    expect(s.checkins['2026-07-17']).toBeUndefined();
+  });
+
+  it('топ блокерів/помічників рахує КОЖЕН вибір дня, "none" не рахується', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { blocker: ['tired', 'stuck'] }), '2026-07-15');
+    s = recordEvent(
+      s,
+      ck('evening', { blocker: ['tired'], helper: ['move', 'none'] }),
+      '2026-07-16',
+    );
+    const st = aggregateStats(s, '2026-07-16');
+    expect(st.checkinTops.blocker).toEqual({ value: 'tired', n: 2 });
+    expect(st.checkinTops.helper).toEqual({ value: 'move', n: 1 });
+  });
+
+  it('«куди йде час» рахує обидві категорії дня і терпить легасі-рядок', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('afternoon', { ate: ['work', 'learn'] }), '2026-07-15');
+    // легасі-доба: рядок замість масиву
+    s.checkins['2026-07-16'] = { afternoon: { ate: 'work' } };
+    const rows = aggregateStats(s, '2026-07-16').categoryInsight.rows;
+    expect(rows.find((r: { cat: string }) => r.cat === 'work').n).toBe(2);
+    expect(rows.find((r: { cat: string }) => r.cat === 'learn').n).toBe(1);
+  });
+});
+
+describe('чек-ін — дрейф наміру (plan -> ate, на вже зібраних даних)', () => {
+  it('збіг хоч по одній категорії = дотримано; розбіжність дає пару', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { plan: ['work'] }), '2026-07-15');
+    s = recordEvent(s, ck('afternoon', { ate: ['work'] }), '2026-07-15');
+    s = recordEvent(s, ck('morning', { plan: ['learn'] }), '2026-07-16');
+    s = recordEvent(s, ck('afternoon', { ate: ['chores'] }), '2026-07-16');
+    const dr = aggregateStats(s, '2026-07-16').intentDrift;
+    expect(dr.total).toBe(2);
+    expect(dr.matched).toBe(1);
+    expect(dr.pct).toBe(50);
+    expect(dr.top).toEqual([{ from: 'learn', to: 'chores', n: 1 }]);
+  });
+
+  it('доба без плану АБО без факту у знаменник не входить', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { plan: ['work'] }), '2026-07-16');
+    const dr = aggregateStats(s, '2026-07-16').intentDrift;
+    expect(dr.total).toBe(0);
+    expect(dr.pct).toBeNull();
+  });
+});
+
+describe('чек-ін — крива енергії/настрою (форма дня, не середнє)', () => {
+  it('три слоти дають три точки в порядку ранок->день->вечір', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { energy: 5, mood: 4 }), '2026-07-16');
+    s = recordEvent(s, ck('afternoon', { energy: 3 }), '2026-07-16');
+    s = recordEvent(s, ck('evening', { energy: 1, mood: 2 }), '2026-07-16');
+    const row = aggregateStats(s, '2026-07-16').checkinSeries.at(-1);
+    expect(row.energyCurve).toEqual([5, 3, 1]);
+    // Незаповнений слот -> null (дірка), а не 0: нуль читався б як «сил немає».
+    expect(row.moodCurve).toEqual([4, null, 2]);
+    expect(row.energy).toBe(3); // середнє лишається для сумісності
   });
 });
 

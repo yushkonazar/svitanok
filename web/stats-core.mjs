@@ -96,28 +96,112 @@ export const CATEGORY_VALUES = [
   'create',
 ];
 
+/** Скільки варіантів максимум приймаємо в мультивиборі (день не має 5 причин). */
+const MULTI_MAX = 3;
+
+/**
+ * Перешкоди/помічники розширені й СПІВСТАВЛЕНІ: майже кожній перешкоді
+ * відповідає правдоподібний помічник (distract↔nodistract, stuck↔smallstep,
+ * tired↔move, anxious↔support). Це те, що робить питання «що спрацювало
+ * проти саме цієї перешкоди» взагалі відповідальним.
+ */
+export const BLOCKER_VALUES = [
+  'tired',
+  'anxious',
+  'stuck',
+  'external',
+  'distract',
+  'health',
+  'nomotiv',
+  'overload',
+  'waiting',
+  'procrast',
+  'none',
+];
+export const HELPER_VALUES = [
+  'early',
+  'list',
+  'breaks',
+  'support',
+  'move',
+  'smallstep',
+  'nodistract',
+  'deadline',
+  'music',
+  'none',
+];
+
 const CHECKIN_FIELDS = {
   morning: {
     sleepH: { num: [0, 14] },
+    // Якість окремо від тривалості — стандарт Consensus Sleep Diary (1..5).
+    // Без неї поріг «<6.5год» рахує 8 годин поганого сну виспаним.
+    sleepQ: { num: [1, 5], int: true },
+    // Скільки засинав — третій незалежний факт (ліг / засинав / проспав).
+    sleepLatency: { enum: ['fast', 'mid', 'slow', 'vslow'] },
     bedtime: { enum: ['e23', 'e00', 'e01', 'e02', 'late'] },
+    // Чому пізно — питається УМОВНО (лише коли лягав пізно), тож у нормальні
+    // дні коштує нуль тапів. «Мстива прокрастинація сну»: стресовий день ->
+    // лягаю пізніше, щоб урвати час для себе.
+    lateReason: { enum: ['work', 'scroll', 'metime', 'anxious', 'social', 'other'] },
     energy: { num: [1, 5], int: true },
-    plan: { enum: CATEGORY_VALUES },
+    // Настрій (валентність) поруч з енергією (активація) — разом дають 2D
+    // афект замість однієї осі. Обидва йдуть з ОДНОГО тапу по паду.
+    mood: { num: [1, 5], int: true },
+    plan: { enumMulti: CATEGORY_VALUES, max: 2 },
     planApply: { num: [0, 20], int: true },
+    worryAM: { num: [1, 5], int: true },
   },
   afternoon: {
-    pace: { enum: ['on', 'off', 'better'] },
+    // «off» лишається (легасі-записи), але розділено на конкретніші причини:
+    // відстаю / роблю інше / перевантажений — це три різні дні.
+    pace: { enum: ['on', 'off', 'behind', 'other', 'overload', 'better'] },
     energy: { num: [1, 5], int: true },
-    ate: { enum: CATEGORY_VALUES },
+    mood: { num: [1, 5], int: true },
+    ate: { enumMulti: CATEGORY_VALUES, max: 2 },
+    rushed: { num: [1, 5], int: true },
+    withWhom: { enum: ['alone', 'family', 'friends', 'work', 'public', 'mixed'] },
   },
   evening: {
     dayScore: { num: [1, 5], int: true },
-    kept: { enum: ['yes', 'partly', 'no'] },
+    // «changed» — свідома зміна пріоритетів, це НЕ провал. Доти вона тонула
+    // в «no» і псувала і статистику дотримання, і звʼязок з автономією.
+    kept: { enum: ['yes', 'partly', 'no', 'changed'] },
     applied: { num: [0, 20], int: true },
     energy: { num: [1, 5], int: true },
-    blocker: { enum: ['tired', 'anxious', 'stuck', 'external', 'distract', 'health', 'none'] },
-    helper: { enum: ['early', 'list', 'breaks', 'support', 'none'] },
+    mood: { num: [1, 5], int: true },
+    // Зусилля × результат (NASA-TLX: effort і performance — РІЗНІ виміри).
+    // Теж один тап по паду. Квадранти: потік / гриндж / легкий день / застій.
+    effort: { num: [1, 5], int: true },
+    output: { num: [1, 5], int: true },
+    blocker: { enumMulti: BLOCKER_VALUES, max: MULTI_MAX },
+    helper: { enumMulti: HELPER_VALUES, max: MULTI_MAX },
+    // Відновлення й румінація — єдині поля, чия цінність у звʼязку з
+    // ЗАВТРАШНІМ днем (перший лагований звʼязок у цьому застосунку).
+    detached: { enum: ['yes', 'partly', 'no'] },
+    rumination: { num: [1, 5], int: true },
+    autonomy: { num: [1, 5], int: true },
+    moved: { enum: ['none', 'light', 'workout'] },
+    outdoor: { enum: ['none', 'short', 'long'] },
+    screen: { enum: ['low', 'mid', 'high', 'vhigh'] },
+    caffeine: { num: [0, 10], int: true },
+    jobProgress: { num: [1, 5], int: true },
+    jobConfidence: { num: [1, 5], int: true },
+    focusQuality: { num: [1, 5], int: true },
   },
 };
+
+/**
+ * Значення мультивибору як масив.
+ *
+ * ⚠️ Сумісність: `plan`/`ate`/`blocker`/`helper` РАНІШЕ зберігались рядком, і
+ * в KV лежать роки таких записів. Кожен читач цих полів мусить іти через цей
+ * хелпер, інакше стара доба тихо випаде з аналітики (а не впаде помітно).
+ */
+export function asList(v) {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x);
+  return typeof v === 'string' && v ? [v] : [];
+}
 
 /**
  * Активний блок за КИЇВСЬКОЮ годиною, або null у тиху зону (02:00–07:59).
@@ -214,6 +298,16 @@ function cleanCheckin(slot, ev) {
   for (const [k, rule] of Object.entries(spec)) {
     const v = ev[k];
     if (v === undefined || v === null) continue;
+    if (rule.enumMulti) {
+      // Приймаємо і масив (нова форма), і голий рядок (легасі-клієнт/агент, що
+      // ще шле одне значення) — asList зводить обидва до масиву. Дедуп + кап:
+      // «день не має пʼяти причин», а без капу сюди можна залити весь enum.
+      const clean = [...new Set(asList(v))]
+        .filter((x) => rule.enumMulti.includes(x))
+        .slice(0, rule.max ?? MULTI_MAX);
+      if (clean.length) out[k] = clean;
+      continue;
+    }
     if (rule.enum) {
       if (rule.enum.includes(v)) out[k] = v;
       continue;
@@ -668,6 +762,13 @@ function buildCheckinSeries(checkins, todayKey, days = 30) {
         d: key,
         sleepH: typeof c.morning?.sleepH === 'number' ? c.morning.sleepH : null,
         energy: round1(avg(en)),
+        // Сама КРИВА, не лише її середнє: три дні із середнім 3.0 можуть бути
+        // «рівний день», «згорів надвечір» і «розігнався надвечір» — за avg
+        // вони нерозрізненні, і саме ця форма губилась досі.
+        energyCurve: CHECKIN_SLOTS.map((sl) =>
+          typeof c[sl]?.energy === 'number' ? c[sl].energy : null,
+        ),
+        moodCurve: CHECKIN_SLOTS.map((sl) => (typeof c[sl]?.mood === 'number' ? c[sl].mood : null)),
         dayScore: typeof c.evening?.dayScore === 'number' ? c.evening.dayScore : null,
         slots: CHECKIN_SLOTS.filter((sl) => c[sl] && Object.keys(c[sl]).length).length,
       });
@@ -675,6 +776,49 @@ function buildCheckinSeries(checkins, todayKey, days = 30) {
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return out;
+}
+
+/**
+ * Дрейф наміру: що планував уранці (`plan`) проти того, що реально зʼїло день
+ * (`ate`). Обидва поля збирались роками й НІКОЛИ не порівнювались — `plan`
+ * узагалі використовувався лише як гейт «робочий день». Тут нічого нового не
+ * питаємо, лише читаємо вже наявне.
+ *
+ * `matched` — доба, де хоч одна запланована категорія опинилась серед тих, що
+ * зайняли час (з мультивибором «влучив бодай у щось» — чесніший критерій за
+ * сувору рівність).
+ */
+function buildIntentDrift(checkins, todayKey, days = 30) {
+  const pairs = {};
+  let matched = 0;
+  let total = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[d.toISOString().slice(0, 10)];
+    d.setUTCDate(d.getUTCDate() + 1);
+    const plan = asList(c?.morning?.plan).filter((x) => CATEGORY_VALUES.includes(x));
+    const ate = asList(c?.afternoon?.ate).filter((x) => CATEGORY_VALUES.includes(x));
+    if (!plan.length || !ate.length) continue;
+    total++;
+    if (plan.some((p) => ate.includes(p))) {
+      matched++;
+      continue;
+    }
+    // Тільки РОЗБІЖНІ доби йдуть у пари «планував X -> зʼїло Y»: збіги нічого
+    // не пояснюють, а в списку топ-пар витіснили б справжній дрейф.
+    for (const p of plan) {
+      for (const a of ate) {
+        const key = `${p}>${a}`;
+        pairs[key] = (pairs[key] || 0) + 1;
+      }
+    }
+  }
+  const top = Object.entries(pairs)
+    .map(([k, n]) => ({ from: k.split('>')[0], to: k.split('>')[1], n }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 5);
+  return { total, matched, pct: total ? Math.round((matched / total) * 100) : null, top };
 }
 
 /**
@@ -710,7 +854,7 @@ function buildPlanVsFact(checkins, appliedLog, todayKey, days = 30) {
     // Лише РОБОЧІ дні (plan='work'): у v2 planApply опційне й показується тільки
     // там. Без гейта на plan осиротіле число (обрав «Робота», ввів, перемкнув на
     // «Навчання») пролазило б у джоб-рядок на не-робочому дні.
-    if (m?.plan === 'work' && typeof m.planApply === 'number') {
+    if (asList(m?.plan).includes('work') && typeof m.planApply === 'number') {
       rows.push({ d: key, planned: m.planApply, actual: byDay[key] || 0 });
     }
     d.setUTCDate(d.getUTCDate() + 1);
@@ -765,10 +909,11 @@ function buildCategoryInsight(checkins, todayKey, days = 30) {
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
     const c = checkins[d.toISOString().slice(0, 10)];
-    const cat = c?.afternoon?.ate;
     // Лише ВІДОМІ категорії: старі значення до v2 (apply/interview/procrast) не
     // мусять пролазити сирим слагом у «куди йде час» і спотворювати відсотки.
-    if (typeof cat === 'string' && CATEGORY_VALUES.includes(cat)) {
+    // asList: поле стало мультивибором, але легасі-доби тримають рядок.
+    for (const cat of asList(c?.afternoon?.ate)) {
+      if (!CATEGORY_VALUES.includes(cat)) continue;
       const b = buckets[cat] || (buckets[cat] = { n: 0, scores: [] });
       b.n++;
       const score = c?.evening?.dayScore;
@@ -844,7 +989,7 @@ function buildAppliedCalibration(checkins, appliedLog, todayKey, days = 30) {
     const self = c?.evening?.applied;
     // Лише робочі дні (plan='work'): осиротіле «скільки вийшло» на не-робочому
     // дні не мусить потрапляти в джоб-калібрацію.
-    if (c?.morning?.plan === 'work' && typeof self === 'number') {
+    if (asList(c?.morning?.plan).includes('work') && typeof self === 'number') {
       n++;
       const obj = byDay[key] || 0;
       if (self === obj) matched++;
@@ -869,10 +1014,10 @@ function buildCheckinTops(checkins, todayKey, days = 30) {
   for (let i = 0; i < days; i++) {
     const ev = checkins[d.toISOString().slice(0, 10)]?.evening;
     if (ev) {
-      if (typeof ev.blocker === 'string' && ev.blocker !== 'none')
-        bC[ev.blocker] = (bC[ev.blocker] || 0) + 1;
-      if (typeof ev.helper === 'string' && ev.helper !== 'none')
-        hC[ev.helper] = (hC[ev.helper] || 0) + 1;
+      // asList: обидва стали мультивибором; 'none' — свідома відповідь «нічого
+      // не завадило», а не варіант для топу, тож не рахуємо її як причину.
+      for (const b of asList(ev.blocker)) if (b !== 'none') bC[b] = (bC[b] || 0) + 1;
+      for (const h of asList(ev.helper)) if (h !== 'none') hC[h] = (hC[h] || 0) + 1;
     }
     d.setUTCDate(d.getUTCDate() + 1);
   }
@@ -1171,6 +1316,9 @@ export function aggregateStats(store, todayKey) {
     // залежить від години, а /api/stats кешується — його додає worker.js.
     checkinToday: s.checkins[todayKey] ?? null,
     checkinSeries: buildCheckinSeries(s.checkins, todayKey),
+    // Дрейф наміру — на ВЖЕ зібраних даних (plan/ate є роками), тож працює з
+    // першого дня, не чекає накопичення нових полів.
+    intentDrift: buildIntentDrift(s.checkins, todayKey),
     checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
     checkinFill: buildCheckinFill(s.checkins, todayKey),
     planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),
