@@ -3,7 +3,6 @@ import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { HabitsBlock } from './HabitsBlock.tsx';
 import { CheckinBlock } from './CheckinBlock.tsx';
 import { RhythmBlock } from './RhythmBlock.tsx';
-import { MasteryBlock } from './MasteryBlock.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
 
@@ -32,7 +31,11 @@ export function StatsScreen() {
       <HabitsBlock s={s} />
       <CheckinBlock s={s} />
       <RhythmBlock s={s} />
-      <MasteryBlock s={s} />
+      {/* ⚠️ «Майстерність» ТИМЧАСОВО вимкнено (рішення власника 29.07): блок
+          чекає на такий самий редизайн, як Чек-ін і Звички. Компонент
+          (MasteryBlock.tsx) і всі його дані в /api/stats лишаються НЕТОРКАНИМИ
+          — вимкнено лише рендер, щоб повернути одним рядком, а не збирати
+          заново. */}
       <InterestsBlock s={s} />
       <ReliabilityBlock s={s} />
     </div>

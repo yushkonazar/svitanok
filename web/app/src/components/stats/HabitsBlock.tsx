@@ -98,6 +98,11 @@ export function HabitsBlock({ s }: { s: Stats }) {
   const prior = hw.length >= 8 ? rate(hw.slice(-8, -4)) : null;
   const delta = recent !== null && prior !== null ? Math.round((recent - prior) * 100) : null;
 
+  // Охоплення рахуємо з heatmap: там уже лежить кожна доба вікна (v>0 = день
+  // із дією), тож нове поле в API для цього не потрібне.
+  const totalDays = s.heatmap.length;
+  const activeDays = s.heatmap.filter((c) => c.v > 0).length;
+
   return (
     <div className="flex flex-col gap-3.5">
       <SectionHead>Звички</SectionHead>
@@ -150,7 +155,12 @@ export function HabitsBlock({ s }: { s: Stats }) {
         </Card>
       )}
 
-      {/* 3. СТРІКИ — наслідок ритуалу, тому нижче, а не зверху. */}
+      {/* 3. СТРІКИ — наслідок ритуалу, тому нижче, а не зверху.
+          Друга плитка — ОХОПЛЕННЯ, а не стрік питання дня: той уже показується
+          на вкладці «Сьогодні» в самій картці питання (фідбек власника), і
+          дублювати його тут — витрачати найпомітніше місце блоку на повтор.
+          Охоплення ж ніде не показувалось і дає стріку знаменник: 5 днів
+          поспіль при 70 активних добах із 84 і при 20 — це різні історії. */}
       <div className="flex gap-2.5">
         <Tile
           gradient
@@ -159,7 +169,11 @@ export function HabitsBlock({ s }: { s: Stats }) {
           label="днів поспіль відкрито"
           note={has(s.streaks.bestOpenDays) ? `РЕКОРД ${best}` : undefined}
         />
-        <Tile n={s.streaks.mockDays || 0} label="днів поспіль питання" />
+        <Tile
+          n={activeDays}
+          label={`активних діб із ${totalDays}`}
+          note={totalDays > 0 ? `${Math.round((activeDays / totalDays) * 100)}% ЧАСУ` : undefined}
+        />
       </div>
 
       {has(s.streaks.bestOpenDays) && (
