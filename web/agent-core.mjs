@@ -12,7 +12,13 @@
 import { escapeHtml } from './tg-core.mjs';
 import { CANONICAL_EXAMPLES, parseReminderTime } from './reminders-core.mjs';
 import { OWN_DATA_SCOPES } from './assistant-data-core.mjs';
-import { CATEGORY_VALUES, STAGES, BLOCKER_VALUES, HELPER_VALUES } from './stats-core.mjs';
+import {
+  CATEGORY_VALUES,
+  STAGES,
+  BLOCKER_VALUES,
+  HELPER_VALUES,
+  FLAME_VALUES,
+} from './stats-core.mjs';
 import { normalizeSettings } from './settings-core.mjs';
 import { buildMapsUrl } from './calendar-core.mjs';
 
@@ -406,6 +412,7 @@ const CHECKIN_ENUM_FIELDS = {
   moved: new Set(['none', 'light', 'workout']),
   outdoor: new Set(['none', 'short', 'long']),
   screen: new Set(['low', 'mid', 'high', 'vhigh']),
+  flames: new Set(FLAME_VALUES),
 };
 const CHECKIN_NUM_FIELDS = [
   'energy',

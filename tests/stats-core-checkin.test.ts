@@ -384,6 +384,23 @@ describe('чек-ін — мультивибір (plan/ate/blocker/helper)', () 
     expect(s.checkins['2026-07-17']).toBeUndefined();
   });
 
+  it('flames: масив зберігається, сміття відкидається, дублікати схлопуються (без капу нижче 5)', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('evening', {
+        flames: ['tiktok', 'tiktok', 'вигадка', 'duolingo', 'snapchat', 'bereal', 'chess'],
+      }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].evening.flames).toEqual([
+      'tiktok',
+      'duolingo',
+      'snapchat',
+      'bereal',
+      'chess',
+    ]);
+  });
+
   it('топ блокерів/помічників рахує КОЖЕН вибір дня, "none" не рахується', () => {
     let s = emptyStore();
     s = recordEvent(s, ck('evening', { blocker: ['tired', 'stuck'] }), '2026-07-15');
