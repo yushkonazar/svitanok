@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import type { Stats } from '../../api/schema.ts';
-import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
+import { SectionHead, StatRow, Ph, Hint } from '../ui/primitives.tsx';
 import { haptic } from '../../telegram.ts';
 import { DayIndexHero } from './DayIndexHero.tsx';
 import { DayShapeChart } from '../charts/DayShapeChart.tsx';
@@ -193,6 +193,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
           <div className="mt-2">
             <DayShapeChart series={series} />
           </div>
+          <Hint>
+            Твій СЕРЕДНІЙ день від ранку до вечора. Показує те, чого середнє число сказати не
+            може: ти згоряєш надвечір чи навпаки розганяєшся. Лінія вниз — енергія витікає до
+            вечора.
+          </Hint>
         </Card>
       )}
 
@@ -201,6 +206,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
         <div className="mt-2">
           <StateMatrix series={series} />
         </div>
+        <Hint>
+          Та сама сітка 5×5, по якій ти тапаєш у чек-іні. Число в клітинці — скільки разів ти в
+          ній опинявся. Праворуч-угорі — бадьорий і в настрої, ліворуч-унизу — виснажений.
+          Скупчення показує, де ти буваєш насправді, а не де здається.
+        </Hint>
       </Card>
 
       {model.drivers.length > 0 && (
@@ -218,6 +228,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
           <div className="mt-2.5">
             <ArchetypeRadar archetypes={model.archetypes} />
           </div>
+          <Hint>
+            «Середнього дня» не існує — натомість твої доби згруповані в кілька типів. Кожна
+            фігура — форма одного типу за пʼятьма вимірами, відсоток — як часто такі дні
+            трапляються. Чим більший промінь, тим сильніший вимір.
+          </Hint>
         </Card>
       )}
 
@@ -229,6 +244,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
               <LaggedRow key={idx} idx={idx} data={data} />
             ))}
           </div>
+          <Hint>
+            Єдине місце, що дивиться на ЗАВТРАШНІЙ день: чи сьогоднішнє відновлення й рух
+            повʼязані з тим, як мине наступна доба. ρ — сила звʼязку від −1 до +1 (0 — звʼязку
+            немає). «Шум?» означає, що вибірки поки замало, щоб вірити числу.
+          </Hint>
         </Card>
       )}
 
@@ -293,10 +313,10 @@ export function CheckinBlock({ s }: { s: Stats }) {
                   />
                 </div>
               )}
-              <div className="mt-2 text-[10px] leading-[1.45] text-tx3">
+              <Hint>
                 Скільки діб ти обирав кожен варіант. «Нічого» не рахується — це свідома відповідь,
                 а не причина.
-              </div>
+              </Hint>
             </Card>
           )}
 
@@ -315,10 +335,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
                   }))}
                 />
               </div>
-              <div className="mt-2 text-[10px] leading-[1.45] text-tx3">
-                «Оцінка» — середня оцінка дня в добах із цією категорією; зʼявляється лише від 4
-                оцінених діб.
-              </div>
+              <Hint>
+                Куди реально йде час: скільки діб кожна категорія забирала день. «Оцінка» —
+                середня оцінка дня в таких добах, тобто які заняття корелюють із хорошим днем;
+                зʼявляється лише від 4 оцінених діб.
+              </Hint>
             </Card>
           )}
 
@@ -354,6 +375,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
                   />
                 </div>
               )}
+              <Hint>
+                Уранці ти обираєш «головне на сьогодні», удень — «що зайняло час». Тут вони
+                зіставлені: чи день пішов туди, куди планувався. Пари внизу — найчастіші
+                підміни, тобто куди насправді витікає час.
+              </Hint>
             </Card>
           )}
 
@@ -382,6 +408,10 @@ export function CheckinBlock({ s }: { s: Stats }) {
                   {cal.fewer > 0 && `${cal.fewer} дн. у журналі більше, ніж у звіті`}
                 </div>
               )}
+              <Hint>
+                Єдина картка, де твої слова звіряються із ЗОВНІШНІМ фактом — журналом подач.
+                Решта статистики вірить самозвіту на слово; тут видно, наскільки він точний.
+              </Hint>
             </Card>
           )}
 

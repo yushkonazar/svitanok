@@ -2,6 +2,7 @@ import type { Stats } from '../../api/schema.ts';
 import { useCountUp } from '../ui/CountUp.tsx';
 import { useInView } from '../../lib/useInView.ts';
 import { INDEX_COLOR, INDEX_LABEL, INDEX_ORDER } from '../../lib/checkinIndex.ts';
+import { Hint } from '../ui/primitives.tsx';
 
 // «Індекс дня» (0–100) — не наша оцінка, а ridge-регресія (checkin-model.mjs)
 // на ВЛАСНИХ dayScore людини: ваги нижче кажуть, з чого САМЕ в неї складається
@@ -64,11 +65,13 @@ export function DayIndexHero({ model }: { model: Stats['checkinModel'] }) {
         ))}
       </div>
 
-      <div className="text-[10px] leading-[1.4] text-tx3">
+      <Hint>
+        Одне число 0–100 замість десятка окремих: усі відповіді чек-іну зведені в пʼять
+        напрямів, а смуги показують, скільки кожен важить.{' '}
         {model.fit.learned
-          ? `Ваги вивчені на твоїх ${model.fit.n} добах (R²=${model.fit.r2?.toFixed(2)}) — з чого САМЕ в тебе складається хороший день.`
-          : `Ваги ще типові (порівну) — потрібно 20+ заповнених діб, зараз ${model.fit.n}.`}
-      </div>
+          ? `Ваги не задані наперед — модель вивела їх із твоїх ${model.fit.n} діб, звіряючись із тим, як ти сам оцінював день. Тобто це твоє означення хорошого дня, не чуже. R²=${model.fit.r2?.toFixed(2)} — наскільки добре пʼять напрямів пояснюють твої оцінки (1.0 = ідеально).`
+          : `Поки ваги однакові: щоб вивести саме твої, треба 20+ заповнених діб, зараз ${model.fit.n}.`}
+      </Hint>
     </div>
   );
 }

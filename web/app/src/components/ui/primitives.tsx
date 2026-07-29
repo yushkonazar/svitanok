@@ -57,3 +57,15 @@ export function StatRow({
 export function Ph({ children }: { children: ReactNode }) {
   return <div className="py-1 text-[12.5px] text-tx2">{children}</div>;
 }
+
+/**
+ * Пояснення внизу картки: «що я зараз бачу і як це читати».
+ *
+ * Окремий примітив, а не просто <div>: графіки статистики стали щільними
+ * (матриця станів, радари архетипів, ефект-сайзи), і без однакового,
+ * ПЕРЕДБАЧУВАНО РОЗТАШОВАНОГО підпису кожна картка вимагає здогадки. Один
+ * стиль на всі — щоб око вчилося шукати пояснення в одному місці.
+ */
+export function Hint({ children }: { children: ReactNode }) {
+  return <div className="mt-2 text-[10px] leading-[1.45] text-tx3">{children}</div>;
+}

@@ -2,6 +2,7 @@ import { scaleLinear } from 'd3-scale';
 import type { Stats } from '../../api/schema.ts';
 import { fieldLabel, INDEX_COLOR } from '../../lib/checkinIndex.ts';
 import { cascade } from '../ui/Cascade.tsx';
+import { Hint } from '../ui/primitives.tsx';
 
 // Драйвери «Індексу дня» — Cohen's d (effect size), не гола різниця середніх:
 // 0.4 при розкиді 0.3 і при розкиді 2.0 виглядали б однаково без цього.
@@ -50,10 +51,12 @@ export function DriversBars({ drivers }: { drivers: Stats['checkinModel']['drive
           </div>
         );
       })}
-      <div className="mt-0.5 text-[10px] leading-[1.5] text-tx3">
-        Різниця в оцінці дня між добами з високим і низьким значенням поля. «Значущо» — Welch's
-        t-test, p&lt;0.05; тьмяні бари — імовірно шум.
-      </div>
+      <Hint>
+        Наскільки оцінка дня відрізняється між добами, де показник був високий, і тими, де
+        низький. Довжина смуги — СИЛА впливу (не просто різниця середніх), число праворуч — на
+        скільки балів зсувається день. «Значущо» = ефект навряд чи випадковий; тьмяні смуги —
+        даних поки замало, щоб їм вірити.
+      </Hint>
     </div>
   );
 }
