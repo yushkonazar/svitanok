@@ -48,6 +48,8 @@ function sampleCheckinSeries() {
     d: string;
     sleepH: number | null;
     energy: number | null;
+    energyCurve: Array<number | null>;
+    moodCurve: Array<number | null>;
     dayScore: number | null;
     slots: number;
   }> = [];
@@ -57,12 +59,19 @@ function sampleCheckinSeries() {
   for (let i = 0; i < 14; i++) {
     // Кожен 5-й день пропущений — щоб було видно, що дірки це норма, а не збій.
     if (i % 5 !== 4) {
+      const base = Math.round((sleep[i]! - 3) * 10) / 10;
+      const three = i % 4 === 0;
+      // Форма дня, не лише середнє: у «повні» доби видно спад ранок->вечір,
+      // у неповні — дірка null там, де слот не заповнено.
+      const clamp = (v: number) => Math.max(1, Math.min(5, Math.round(v)));
       out.push({
         d: dayKey(d),
         sleepH: sleep[i]!,
-        energy: Math.round((sleep[i]! - 3) * 10) / 10,
+        energy: base,
+        energyCurve: three ? [clamp(base + 1), clamp(base), clamp(base - 1)] : [clamp(base), null, null],
+        moodCurve: three ? [clamp(base), clamp(base), clamp(base - 1)] : [null, null, clamp(base)],
         dayScore: i % 3 === 0 ? 4 : 3,
-        slots: i % 4 === 0 ? 3 : 1,
+        slots: three ? 3 : 1,
       });
     }
     d.setDate(d.getDate() + 1);
@@ -334,6 +343,18 @@ export const SAMPLE_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: { morning: { sleepH: 6.5 } },
   checkinSeries: sampleCheckinSeries(),
+  // 30 діб, у 19 план збігся з тим, що реально зайняло час. Топ-пари — куди
+  // саме зʼїжджає день, коли не збігається.
+  intentDrift: {
+    total: 30,
+    matched: 19,
+    pct: 63,
+    top: [
+      { from: 'work', to: 'chores', n: 4 },
+      { from: 'learn', to: 'work', n: 3 },
+      { from: 'project', to: 'rest', n: 2 },
+    ],
+  },
   checkinWeekly: [
     { week: '', n: 5, sleepAvg: 6.4, energyAvg: 3.1, dayScoreAvg: 3.4 },
     { week: '', n: 6, sleepAvg: 7.1, energyAvg: 3.6, dayScoreAvg: 3.8 },
@@ -395,6 +416,7 @@ export const EMPTY_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: null,
   checkinSeries: [],
+  intentDrift: { total: 0, matched: 0, pct: null, top: [] },
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
   planVsFact: [],

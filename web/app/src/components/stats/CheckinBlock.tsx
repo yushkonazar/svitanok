@@ -19,18 +19,29 @@ import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 // Тому все, що претендує на звʼязок, гейтиться на сервері (sleepVsApplied.ready)
 // і мовчить, поки в кожному кошику менше 8 днів.
 
+// Дзеркало переліків із questions.ts. Неповна мапа не валить екран (є фолбек
+// на сирий слаг нижче), але показувала б «nomotiv» замість людського підпису.
 const BLOCKER_LABEL: Record<string, string> = {
   tired: 'Втома',
   anxious: 'Тривога',
   stuck: 'Не знав з чого',
   distract: 'Відволікання',
+  nomotiv: 'Немає мотивації',
+  overload: 'Забагато всього',
+  procrast: 'Відкладав',
+  waiting: 'Чекав на інших',
   health: 'Здоровʼя',
   external: 'Зовнішнє',
 };
 const HELPER_LABEL: Record<string, string> = {
   early: 'Ранній старт',
   list: 'Список',
+  smallstep: 'Маленький крок',
+  nodistract: 'Прибрав відволікання',
+  move: 'Рух/прогулянка',
   breaks: 'Перерви',
+  deadline: 'Дедлайн',
+  music: 'Музика/фокус',
   support: 'Підтримка',
 };
 const CATEGORY_LABEL: Record<string, string> = {
@@ -136,6 +147,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
   const svd = s.sleepVsDayScore;
   const bve = s.bedtimeVsEnergy;
   const cat = s.categoryInsight;
+  const drift = s.intentDrift;
   const cal = s.appliedCalibration;
   const tops = s.checkinTops;
   const kept = s.planVsFact;
@@ -217,6 +229,38 @@ export function CheckinBlock({ s }: { s: Stats }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Дрейф наміру: план (ранок) проти того, що реально зайняло час (день).
+          Обидва поля збирались роками й ніколи не порівнювались — тож ця
+          картка працює з першого дня, не чекає накопичення нових полів.
+          Гейт 5 діб — той самий мінімум, що й «куди йде час»: на трьох добах
+          відсоток дотримання був би шумом у краватці. */}
+      {drift.total >= 5 && drift.pct != null && (
+        <div className="rounded-2xl border border-glassb bg-glass p-4">
+          <SubLabel>ПЛАН ПРОТИ РЕАЛЬНОСТІ · {drift.total} ДІБ</SubLabel>
+          <div className="mt-1.5 text-[13px] font-semibold">
+            У {drift.pct}% діб день пішов за планом
+            <span className="ml-1.5 font-mono text-[11px] font-medium text-tx3">
+              {drift.matched} з {drift.total}
+            </span>
+          </div>
+          {drift.top.length > 0 && (
+            <>
+              <div className="mt-2 text-[10.5px] text-tx3">Куди зʼїжджає найчастіше:</div>
+              <div className="mt-1 flex flex-col gap-1">
+                {drift.top.slice(0, 3).map((p) => (
+                  <div key={`${p.from}>${p.to}`} className="flex items-baseline gap-1.5 text-[12px]">
+                    <span className="text-tx2">{CATEGORY_LABEL[p.from] ?? p.from}</span>
+                    <span className="text-tx3">→</span>
+                    <span className="font-semibold">{CATEGORY_LABEL[p.to] ?? p.to}</span>
+                    <span className="ml-auto font-mono text-[10.5px] text-tx3">×{p.n}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 

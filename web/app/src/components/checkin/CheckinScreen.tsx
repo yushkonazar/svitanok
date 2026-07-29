@@ -4,7 +4,20 @@ import type { CheckinSlot } from '../../api/schema.ts';
 import { haptic, inTelegram } from '../../telegram.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { cascade } from '../ui/Cascade.tsx';
-import { BLOCKS, isDone, isWorkDay, visibleQuestions, type Block } from './questions.ts';
+import { AffectPad } from './AffectPad.tsx';
+import {
+  BLOCKS,
+  asList,
+  coreQuestions,
+  deepQuestions,
+  isAnswered,
+  isDone,
+  isWorkDay,
+  pluralizePytannya,
+  visibleQuestions,
+  type Block,
+  type Question,
+} from './questions.ts';
 
 // Таб «Чек-ін» (фідбек власника, п.7): три блоки, що відкриваються за часом.
 //
@@ -22,16 +35,21 @@ import { BLOCKS, isDone, isWorkDay, visibleQuestions, type Block } from './quest
 //
 // Активний блок каже СЕРВЕР (stats.checkinSlot): клієнтському годиннику не
 // віримо, інакше «ранковий» блок відкривався б опівночі переведенням годинника.
+//
+// Розділ «Детальніше» згорнутий за замовчуванням: розширений набір питань
+// (сон-латентність, румінація, автономія, екран, кофеїн…) цінний для аналізу,
+// але щоденне ядро мусить лишатись коротким — інакше звичка вмирає.
 
 /** Скільки чекаємо після останнього тапу, перш ніж слати блок. */
 const DEBOUNCE_MS = 1200;
 
-type Answers = Record<string, string | number>;
+type AnswerValue = string | number | Array<string | number>;
+type Answers = Record<string, AnswerValue>;
 type State = 'locked' | 'open' | 'done' | 'missed';
 
 const ORDER: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
 
-const pad = (n: number) => String(n).padStart(2, '0');
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
 /**
  * Стан блоку. `active` — що каже сервер (null у тиху зону 02:00–07:59).
@@ -47,19 +65,114 @@ function stateOf(b: Block, active: CheckinSlot | null | undefined, answers?: Ans
   return ORDER.indexOf(b.id) < ORDER.indexOf(active) ? 'missed' : 'locked';
 }
 
+/** Один варіант відповіді — спільна кнопка для `one` і `multi`. */
+function OptionButton({
+  label,
+  on,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  on: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      // tabIndex -1 у згорнутому: інакше блок «пропущено» лишається
+      // доступним з клавіатури, хоч візуально закритий.
+      tabIndex={disabled ? -1 : 0}
+      onClick={onClick}
+      className="min-w-[40px] flex-auto rounded-[10px] border px-1.5 py-2 text-[11.5px] font-semibold transition-colors"
+      style={{
+        borderColor: on ? 'var(--color-a2)' : 'var(--color-glassb)',
+        background: on ? 'color-mix(in srgb, var(--color-a2) 16%, transparent)' : 'var(--color-bg2)',
+        color: on ? 'var(--color-tx)' : 'var(--color-tx2)',
+      }}
+    >
+      {/* pop лише на ВИБІР (ремоунт за key, як серце NewsItem); зняття
+          відповіді проходить тихо — підстрибувати на «передумав» нема чому. */}
+      <span
+        key={String(on)}
+        className="block"
+        style={on ? { animation: 'pop .24s cubic-bezier(.22,1,.36,1)' } : undefined}
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
+function QuestionRow({
+  q,
+  answers,
+  disabled,
+  onAnswer,
+  onPad,
+}: {
+  q: Question;
+  answers: Answers;
+  disabled: boolean;
+  onAnswer: (id: string, v: string | number, multi?: number) => void;
+  onPad: (xId: string, x: number, yId: string, y: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-1.5">
+        <div className="text-[12.5px] font-semibold text-tx2">{q.t}</div>
+        {q.kind === 'multi' && (
+          <span className="font-mono text-[9px] text-tx3">до {q.max ?? 3}</span>
+        )}
+      </div>
+
+      {q.kind === 'pad' && q.pad ? (
+        <AffectPad
+          xLabel={q.pad.xLabel}
+          yLabel={q.pad.yLabel}
+          x={answers[q.pad.x] as number | undefined}
+          y={answers[q.pad.y] as number | undefined}
+          disabled={disabled}
+          onPick={(x, y) => onPad(q.pad!.x, x, q.pad!.y, y)}
+        />
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {(q.o ?? []).map(([lbl, v]) => {
+            const on =
+              q.kind === 'multi' ? asList(answers[q.id]).includes(v) : answers[q.id] === v;
+            return (
+              <OptionButton
+                key={String(v)}
+                label={lbl}
+                on={on}
+                disabled={disabled}
+                onClick={() => onAnswer(q.id, v, q.kind === 'multi' ? (q.max ?? 3) : undefined)}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BlockCard({
   b,
   state,
   answers,
   workDay,
   onAnswer,
+  onPad,
 }: {
   b: Block;
   state: State;
   answers: Answers;
   workDay: boolean;
-  onAnswer: (q: string, v: string | number) => void;
+  onAnswer: (q: string, v: string | number, multi?: number) => void;
+  onPad: (xId: string, x: number, yId: string, y: number) => void;
 }) {
+  const [deepOpen, setDeepOpen] = useState(false);
   const label =
     state === 'open'
       ? 'ЗАПОВНИ'
@@ -67,18 +180,26 @@ function BlockCard({
         ? '✓ ЗАПИСАНО'
         : state === 'missed'
           ? 'ПРОПУЩЕНО'
-          : `ВІДКРИЄТЬСЯ О ${pad(b.from)}:00`;
+          : `ВІДКРИЄТЬСЯ О ${pad2(b.from)}:00`;
 
-  const tone =
-    state === 'open' ? 'text-a2' : state === 'done' ? 'text-pos' : 'text-tx3';
+  const tone = state === 'open' ? 'text-a2' : state === 'done' ? 'text-pos' : 'text-tx3';
+  const core = coreQuestions(b, workDay, answers);
+  const deep = deepQuestions(b, workDay, answers);
+  const deepFilled = deep.filter((q) => isAnswered(q, answers)).length;
+  const disabled = state !== 'open';
 
   return (
     <div
       className="overflow-hidden rounded-2xl border transition-[border-color,background,opacity] duration-[400ms]"
       style={{
-        borderColor: state === 'open' ? 'color-mix(in srgb, var(--color-a2) 55%, transparent)' : 'var(--color-glassb)',
+        borderColor:
+          state === 'open'
+            ? 'color-mix(in srgb, var(--color-a2) 55%, transparent)'
+            : 'var(--color-glassb)',
         background:
-          state === 'open' ? 'color-mix(in srgb, var(--color-a2) 7%, var(--color-glass))' : 'var(--color-glass)',
+          state === 'open'
+            ? 'color-mix(in srgb, var(--color-a2) 7%, var(--color-glass))'
+            : 'var(--color-glass)',
         opacity: state === 'locked' ? 0.5 : state === 'missed' ? 0.62 : 1,
       }}
     >
@@ -97,46 +218,51 @@ function BlockCard({
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3.5 px-3.5 pb-3.5">
-            {visibleQuestions(b, workDay).map((q) => (
-              <div key={q.id} className="flex flex-col gap-1.5">
-                <div className="text-[12.5px] font-semibold text-tx2">{q.t}</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {q.o.map(([lbl, v]) => {
-                    const on = answers[q.id] === v;
-                    return (
-                      <button
-                        key={String(v)}
-                        type="button"
-                        aria-pressed={on}
-                        // tabIndex -1 у згорнутому: інакше блок «пропущено» лишається
-                        // доступним з клавіатури, хоч візуально закритий.
-                        tabIndex={state === 'open' ? 0 : -1}
-                        onClick={() => onAnswer(q.id, v)}
-                        className="min-w-[40px] flex-auto rounded-[10px] border px-1.5 py-2 text-[11.5px] font-semibold transition-colors"
-                        style={{
-                          borderColor: on ? 'var(--color-a2)' : 'var(--color-glassb)',
-                          background: on
-                            ? 'color-mix(in srgb, var(--color-a2) 16%, transparent)'
-                            : 'var(--color-bg2)',
-                          color: on ? 'var(--color-tx)' : 'var(--color-tx2)',
-                        }}
-                      >
-                        {/* pop лише на ВИБІР (ремоунт за key, як серце NewsItem);
-                            зняття відповіді проходить тихо — підстрибувати на
-                            «передумав» нема чому. */}
-                        <span
-                          key={String(on)}
-                          className="block"
-                          style={on ? { animation: 'pop .24s cubic-bezier(.22,1,.36,1)' } : undefined}
-                        >
-                          {lbl}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+            {core.map((q) => (
+              <QuestionRow
+                key={q.id}
+                q={q}
+                answers={answers}
+                disabled={disabled}
+                onAnswer={onAnswer}
+                onPad={onPad}
+              />
             ))}
+
+            {deep.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  tabIndex={disabled ? -1 : 0}
+                  onClick={() => {
+                    haptic('light');
+                    setDeepOpen((v) => !v);
+                  }}
+                  className="flex items-center gap-1.5 self-start rounded-full border border-glassb bg-glass px-3 py-1.5 text-[11px] font-semibold text-tx2"
+                >
+                  <span>{deepOpen ? '−' : '+'} Детальніше</span>
+                  <span className="font-mono text-[9.5px] text-tx3">
+                    {deepFilled
+                      ? `${deepFilled}/${deep.length}`
+                      : `${deep.length} ${pluralizePytannya(deep.length)}`}
+                  </span>
+                </button>
+                {deepOpen && (
+                  <div className="flex flex-col gap-3.5 border-t border-glassb pt-3.5">
+                    {deep.map((q) => (
+                      <QuestionRow
+                        key={q.id}
+                        q={q}
+                        answers={answers}
+                        disabled={disabled}
+                        onAnswer={onAnswer}
+                        onPad={onPad}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -146,17 +272,25 @@ function BlockCard({
           {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано».
               visibleQuestions, а не b.qs: приховане джоб-число (обрав «Робота»,
               ввів, перемкнув на іншу категорію) не мусить зринати чипом. */}
-          {visibleQuestions(b, workDay)
-            .filter((q) => answers[q.id] !== undefined)
-            .map((q, i) => (
-              <span
-                key={q.id}
-                className="rounded-full border border-glassb px-2 py-0.5 font-mono text-[9.5px] font-semibold text-tx2"
-                style={cascade(i, 40)}
-              >
-                {q.o.find(([, v]) => v === answers[q.id])?.[0] ?? String(answers[q.id])}
-              </span>
-            ))}
+          {visibleQuestions(b, workDay, answers)
+            .filter((q) => isAnswered(q, answers))
+            .map((q, i) => {
+              const text =
+                q.kind === 'pad' && q.pad
+                  ? `${q.pad.yLabel} ${answers[q.pad.y]} · ${q.pad.xLabel} ${answers[q.pad.x]}`
+                  : asList(answers[q.id])
+                      .map((v) => (q.o ?? []).find(([, ov]) => ov === v)?.[0] ?? String(v))
+                      .join(', ');
+              return (
+                <span
+                  key={q.id}
+                  className="rounded-full border border-glassb px-2 py-0.5 font-mono text-[9.5px] font-semibold text-tx2"
+                  style={cascade(i, 40)}
+                >
+                  {text}
+                </span>
+              );
+            })}
         </div>
       )}
     </div>
@@ -178,7 +312,12 @@ export function CheckinScreen() {
 
   if (isLoading) return <LoadingSkeleton />;
   if (isError)
-    return <ErrorState message={(error as Error)?.message ?? 'Спробуй ще раз'} onRetry={() => void refetch()} />;
+    return (
+      <ErrorState
+        message={(error as Error)?.message ?? 'Спробуй ще раз'}
+        onRetry={() => void refetch()}
+      />
+    );
 
   const s = data?.stats;
   const active = s?.checkinSlot ?? null;
@@ -192,21 +331,50 @@ export function CheckinScreen() {
     ...(local[slot] ?? {}),
   });
 
-  const onAnswer = (slot: CheckinSlot, q: string, v: string | number) => {
-    haptic('light');
-    const cur = answersFor(slot);
-    // Повторний тап знімає — щоб можна було передумати.
-    const next: Answers = { ...cur };
-    if (next[q] === v) delete next[q];
-    else next[q] = v;
+  /** Дебаунс: шлемо ВЕСЬ блок одним запитом. Без цього чотири тапи = чотири
+   *  записи в один KV-ключ, а там ліміт 1/сек і немає CAS. */
+  const queue = (slot: CheckinSlot, next: Answers) => {
     setLocal((p) => ({ ...p, [slot]: next }));
-
-    // Дебаунс: шлемо ВЕСЬ блок одним запитом. Без цього чотири тапи = чотири
-    // записи в один KV-ключ, а там ліміт 1/сек і немає CAS.
     clearTimeout(timers.current[slot]);
     timers.current[slot] = setTimeout(() => {
       save.mutate({ slot, answers: next });
     }, DEBOUNCE_MS);
+  };
+
+  const onAnswer = (slot: CheckinSlot, q: string, v: string | number, multi?: number) => {
+    haptic('light');
+    const cur = answersFor(slot);
+    const next: Answers = { ...cur };
+    if (multi) {
+      const list = asList(cur[q]);
+      // Повторний тап знімає; понад ліміт — витісняємо найстаріший вибір, а не
+      // мовчки ігноруємо тап (інакше кнопка виглядає зламаною).
+      const has = list.includes(v);
+      const kept = has ? list.filter((x) => x !== v) : [...list, v].slice(-multi);
+      if (kept.length) next[q] = kept;
+      else delete next[q];
+    } else if (next[q] === v) {
+      delete next[q]; // повторний тап знімає — щоб можна було передумати
+    } else {
+      next[q] = v;
+    }
+    queue(slot, next);
+  };
+
+  const onPad = (slot: CheckinSlot, xId: string, x: number, yId: string, y: number) => {
+    haptic('light');
+    const cur = answersFor(slot);
+    const next: Answers = { ...cur };
+    // Повторний тап по ТІЙ САМІЙ клітинці знімає обидві осі разом — пад
+    // поводиться як одна відповідь, якою він і є для власника.
+    if (cur[xId] === x && cur[yId] === y) {
+      delete next[xId];
+      delete next[yId];
+    } else {
+      next[xId] = x;
+      next[yId] = y;
+    }
+    queue(slot, next);
   };
 
   const filled = ORDER.filter((slot) => {
@@ -214,8 +382,8 @@ export function CheckinScreen() {
     return isDone(b, answersFor(slot));
   }).length;
 
-  // Роб.день — за ранковим «головне». Керує показом опційних джоб-чисел у всіх
-  // блоках (вечірнє «скільки вийшло» теж залежить від ранкового вибору).
+  // Роб.день — за ранковим «головне». Керує показом опційних джоб-питань у всіх
+  // блоках (вечірні «просування/віра» теж залежать від ранкового вибору).
   const workDay = isWorkDay(answersFor('morning'));
 
   return (
@@ -233,22 +401,20 @@ export function CheckinScreen() {
           <BlockCard
             b={b}
             state={
-              demo && !isDone(b, answersFor(b.id))
-                ? 'open'
-                : stateOf(b, active, answersFor(b.id))
+              demo && !isDone(b, answersFor(b.id)) ? 'open' : stateOf(b, active, answersFor(b.id))
             }
             answers={answersFor(b.id)}
             workDay={workDay}
-            onAnswer={(q, v) => onAnswer(b.id, q, v)}
+            onAnswer={(q, v, multi) => onAnswer(b.id, q, v, multi)}
+            onPad={(xId, x, yId, y) => onPad(b.id, xId, x, yId, y)}
           />
         </div>
       ))}
 
       {!active && (
         <p className="text-[12.5px] leading-[1.5] text-tx2">
-          Блоки живуть за часом: ранок з 08:00, післяобід з 14:00, вечір з 20:00.
-          Пропущений блок лишається порожнім — відповідь заднім числом була б
-          здогадкою, а не даними.
+          Блоки живуть за часом: ранок з 08:00, післяобід з 14:00, вечір з 20:00. Пропущений блок
+          лишається порожнім — відповідь заднім числом була б здогадкою, а не даними.
         </p>
       )}
     </div>
