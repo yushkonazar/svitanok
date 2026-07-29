@@ -5,6 +5,7 @@ import { haptic, inTelegram } from '../../telegram.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { AffectPad } from './AffectPad.tsx';
+import { BrandLogo } from './BrandLogo.tsx';
 import {
   BLOCKS,
   asList,
@@ -68,11 +69,13 @@ function stateOf(b: Block, active: CheckinSlot | null | undefined, answers?: Ans
 /** Один варіант відповіді — спільна кнопка для `one` і `multi`. */
 function OptionButton({
   label,
+  icon,
   on,
   disabled,
   onClick,
 }: {
   label: string;
+  icon?: React.ReactNode;
   on: boolean;
   disabled: boolean;
   onClick: () => void;
@@ -96,9 +99,10 @@ function OptionButton({
           відповіді проходить тихо — підстрибувати на «передумав» нема чому. */}
       <span
         key={String(on)}
-        className="block"
+        className="flex items-center justify-center gap-1"
         style={on ? { animation: 'pop .24s cubic-bezier(.22,1,.36,1)' } : undefined}
       >
+        {icon}
         {label}
       </span>
     </button>
@@ -145,6 +149,7 @@ function QuestionRow({
               <OptionButton
                 key={String(v)}
                 label={lbl}
+                icon={q.id === 'flames' ? <BrandLogo id={String(v)} /> : undefined}
                 on={on}
                 disabled={disabled}
                 onClick={() => onAnswer(q.id, v, q.kind === 'multi' ? (q.max ?? 3) : undefined)}
