@@ -358,6 +358,65 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(byDate['2026-07-05']).toMatchObject({ v: 0, l: 0 });
   });
 
+  it('heatmap: клітинка несе СКЛАД активності (o/m/n), не лише суму', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'open' }, '2026-07-06');
+    s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
+    s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
+    const hm = aggregateStats(s, '2026-07-07').heatmap;
+    const cell = hm.find((c: { d: string }) => c.d === '2026-07-06');
+    // Сума лишається як була, але тепер видно, ЩО саме її склало.
+    expect(cell.o + cell.m + cell.n).toBe(cell.v);
+    expect(cell.n).toBe(2);
+    expect(cell.m).toBe(0);
+  });
+
+  it('openRhythm: розподіл (не лише медіана); замало точок -> ready=false', () => {
+    let s = emptyStore();
+    // 4 доби -> нижче гейта 5.
+    ['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-04'].forEach((d, i) => {
+      s = recordEvent(s, { type: 'open' }, d, 10 + i * 10);
+    });
+    expect(aggregateStats(s, '2026-07-07').openRhythm).toMatchObject({ ready: false, n: 4 });
+
+    // 9 діб із рівномірним розкидом 0..80 хв -> медіана 40, квартилі 20/60.
+    let s2 = emptyStore();
+    for (let i = 0; i < 9; i++) {
+      const d = `2026-06-${String(10 + i).padStart(2, '0')}`;
+      s2 = recordEvent(s2, { type: 'open' }, d, i * 10);
+    }
+    const r = aggregateStats(s2, '2026-07-07').openRhythm;
+    expect(r.ready).toBe(true);
+    expect(r.n).toBe(9);
+    expect(r.median).toBe(40);
+    expect([r.q1, r.q3]).toEqual([20, 60]);
+    expect(r.iqr).toBe(40); // саме це число відрізняє ритуал від випадковості
+  });
+
+  it('habitWeekly: знаменник — лише доби, що НАСТАЛИ (поточний тиждень не штрафується)', () => {
+    let s = emptyStore();
+    // Вівторок 07.07 — другий день тижня (пн 06.07).
+    s = recordEvent(s, { type: 'open' }, '2026-07-06');
+    s = recordEvent(s, { type: 'open' }, '2026-07-07');
+    const hw = aggregateStats(s, '2026-07-07').habitWeekly;
+    const cur = hw[hw.length - 1];
+    expect(cur.week).toBe('2026-07-06');
+    expect(cur.days).toBe(2); // не 7 — інакше живий тиждень завжди «провальний»
+    expect(cur.active).toBe(2);
+  });
+
+  it('habitWeekly: 12 тижнів, склад активності по кошиках', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'open' }, '2026-07-06');
+    s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
+    const hw = aggregateStats(s, '2026-07-07').habitWeekly;
+    expect(hw).toHaveLength(12);
+    const cur = hw[hw.length - 1];
+    // news_click рахується ЛИШЕ в news — окремі лічильники, не подвійний облік
+    // (той самий інваріант, що вже перевіряє heatmap-тест вище).
+    expect([cur.opens, cur.news]).toEqual([1, 1]);
+  });
+
   it('appliedWeekly: 8 тижнів із нулями, подачі падають у свої кошики', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'job_stage', url: 'a', stage: 'applied' }, '2026-07-07'); // пот. тиждень (пн 06)

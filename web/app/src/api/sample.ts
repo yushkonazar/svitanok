@@ -33,9 +33,30 @@ function sampleHeatmap(): HeatmapCell[] {
   ];
   for (let i = 0; d <= today; d.setDate(d.getDate() + 1), i++) {
     const [v, l] = pattern[i % pattern.length];
-    out.push({ d: key(d), v, l });
+    // Склад суми (opens/mock/news) — детермінований розкид, щоб у демо було
+    // видно РІЗНІ за характером дні, а не лише різну «яскравість».
+    const o = v === 0 ? 0 : Math.max(1, Math.round(v * 0.4));
+    const m = v === 0 ? 0 : i % 3 === 0 ? 1 : 0;
+    out.push({ d: key(d), v, l, o, m, n: Math.max(0, v - o - m) });
   }
   return out;
+}
+
+/**
+ * Демо-тренд утримання: 12 тижнів із видимою динамікою (провал у середині,
+ * відновлення в кінці) — інакше на рівному ряді не видно, що графік узагалі
+ * щось показує. Останній тиждень частковий (як у житті: він ще триває).
+ */
+function sampleHabitWeekly() {
+  const active = [3, 5, 6, 4, 2, 3, 5, 6, 7, 6, 7, 4];
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 77); // понеділок 12 тижнів тому
+  return active.map((a, i) => {
+    const week = dayKey(d);
+    d.setDate(d.getDate() + 7);
+    const days = i === active.length - 1 ? 5 : 7; // поточний тиждень ще не повний
+    return { week, active: Math.min(a, days), days, opens: a * 2, mock: a, news: a * 3 };
+  });
 }
 
 /** ЛОКАЛЬНА дата -> 'YYYY-MM-DD'. toISOString дав би UTC і зсував демо на добу. */
@@ -89,6 +110,9 @@ function sampleCheckinSeries() {
 export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
   timeToOpenMin: 23,
+  // Розкид ±~35 хв навколо медіани — «ритуал, але не за будильником».
+  openRhythm: { ready: true, n: 46, p10: 2, q1: 12, median: 23, q3: 47, p90: 78, iqr: 35 },
+  habitWeekly: sampleHabitWeekly(),
   weekly: [
     { day: 'Пн', value: 3, active: true },
     { day: 'Вт', value: 2, active: true },
@@ -474,6 +498,8 @@ export const SAMPLE_STATS: Stats = {
 export const EMPTY_STATS: Stats = {
   streaks: { openDays: 0, mockDays: 0, bestOpenDays: 0 },
   timeToOpenMin: null,
+  openRhythm: { ready: false, n: 0, needed: 5 },
+  habitWeekly: [],
   weekly: [],
   funnel: { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0, failed: 0 },
   goal: { weeklyTarget: 5, weeklyApplied: 0 },

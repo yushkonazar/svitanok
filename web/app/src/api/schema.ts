@@ -71,7 +71,39 @@ export const savedPageSchema = z.object({
 
 export const weakTopicSchema = z.object({ name: z.string(), value: num });
 
-export const heatmapCellSchema = z.object({ d: z.string(), v: num, l: int });
+// o/m/n — склад активності дня (opens/mock/news). .default(0): старий воркер
+// віддає лише d/v/l, і без дефолтів safeParse валив би ВЕСЬ /api/stats.
+export const heatmapCellSchema = z.object({
+  d: z.string(),
+  v: num,
+  l: int,
+  o: int.default(0),
+  m: int.default(0),
+  n: int.default(0),
+});
+
+/** Розподіл часу першого відкриття — коробка з вусами (p10/q1/median/q3/p90). */
+export const openRhythmSchema = z.object({
+  ready: z.boolean().default(false),
+  n: int.default(0),
+  needed: int.optional(),
+  p10: num.nullable().optional(),
+  q1: num.nullable().optional(),
+  median: num.nullable().optional(),
+  q3: num.nullable().optional(),
+  p90: num.nullable().optional(),
+  iqr: num.nullable().optional(),
+});
+
+/** Тиждень звички: активні доби зі СПРАВЖНЬОГО знаменника + склад активності. */
+export const habitWeekSchema = z.object({
+  week: z.string(),
+  active: int.default(0),
+  days: int.default(0),
+  opens: int.default(0),
+  mock: int.default(0),
+  news: int.default(0),
+});
 
 export const appliedWeekSchema = z.object({ week: z.string(), count: int });
 
@@ -458,6 +490,8 @@ export const statsSchema = z.object({
     days: 0,
   }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
+  openRhythm: openRhythmSchema.default({ ready: false, n: 0 }),
+  habitWeekly: z.array(habitWeekSchema).default([]),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
   intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),

@@ -712,7 +712,11 @@ const median = (arr) => {
 
 /** Теплокарта активності: від понеділка ~12 тижнів тому до сьогодні (вкл.).
  *  value = сума дій дня (opens+mock+news), level 0..4 — фіксовані пороги,
- *  щоб колір мав стале значення день у день. */
+ *  щоб колір мав стале значення день у день.
+ *
+ *  o/m/n — СКЛАД тієї суми (opens/mock/news). Доти клітинка знала лише «скільки»,
+ *  і три різні дні (тричі заходив / відповів на питання / читав новини) виглядали
+ *  однаково. Тепер тап по клітинці може сказати, ЩО саме то був за день. */
 function buildHeatmap(days, todayKey) {
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 83);
@@ -723,12 +727,88 @@ function buildHeatmap(days, todayKey) {
     const k = d.toISOString().slice(0, 10);
     if (k > todayKey) break;
     const day = days[k];
-    const v = (day?.opens || 0) + (day?.mock || 0) + (day?.news || 0); // step прибрано (D4)
+    const o = day?.opens || 0;
+    const m = day?.mock || 0;
+    const nw = day?.news || 0;
+    const v = o + m + nw; // step прибрано (D4)
     const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
-    out.push({ d: k, v, l });
+    out.push({ d: k, v, l, o, m, n: nw });
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return out;
+}
+
+/** Персентиль за лінійною інтерполяцією (той самий метод, що median вище). */
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return Math.round(sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo));
+}
+
+/**
+ * Ритм відкриття: РОЗПОДІЛ хвилин після 08:00 до першого заходу, не лише
+ * медіана. Доти з усього масиву opensMin назовні йшло одне число
+ * (timeToOpenMin), тобто розкид — власне те, що відрізняє звичку від
+ * випадковості — викидався. «О 8:20 ± 15 хв» і «о 8:20 ± 3 год» — це
+ * протилежні історії з однаковою медіаною.
+ *
+ * Вуса — p10/p90, а не min/max: одна ніч, коли відкрив о 23:00, розтягнула б
+ * шкалу так, що коробка стала б невидимою смужкою.
+ */
+function buildOpenRhythm(opensMin) {
+  const xs = opensMin.filter((v) => typeof v === 'number' && v >= 0).sort((a, b) => a - b);
+  if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
+  const q1 = percentile(xs, 0.25);
+  const q3 = percentile(xs, 0.75);
+  return {
+    ready: true,
+    n: xs.length,
+    p10: percentile(xs, 0.1),
+    q1,
+    median: percentile(xs, 0.5),
+    q3,
+    p90: percentile(xs, 0.9),
+    // Розкид середньої половини діб — і є «наскільки це ритуал».
+    iqr: q3 - q1,
+  };
+}
+
+/**
+ * Звички по тижнях: скільки діб тижня були активними + СКЛАД активності.
+ * Теплокарта показує щоденну щільність, але не відповідає на «чи я тримаюсь
+ * краще, ніж місяць тому» — для цього потрібен тренд, а не сітка.
+ */
+function buildHabitWeekly(days, todayKey, weeks = 12) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const buckets = Object.fromEntries(
+    starts.map((k) => [k, { active: 0, days: 0, opens: 0, mock: 0, news: 0 }]),
+  );
+  const today = new Date(todayKey + 'T00:00:00Z');
+  const first = new Date(starts[0] + 'T00:00:00Z');
+  for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+    const k = d.toISOString().slice(0, 10);
+    const b = buckets[weekStartKey(k)];
+    if (!b) continue;
+    // Знаменник — лише доби, що вже НАСТАЛИ: інакше поточний тиждень завжди
+    // виглядав би провальним (7 у знаменнику, коли минуло 2 дні).
+    b.days++;
+    const day = days[k];
+    b.opens += day?.opens || 0;
+    b.mock += day?.mock || 0;
+    b.news += day?.news || 0;
+    if ((day?.opens || 0) > 0) b.active++;
+  }
+  return starts.map((week) => ({
+    week,
+    active: buckets[week].active,
+    days: buckets[week].days,
+    opens: buckets[week].opens,
+    mock: buckets[week].mock,
+    news: buckets[week].news,
+  }));
 }
 
 /** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
@@ -1304,6 +1384,10 @@ export function aggregateStats(store, todayKey) {
       bestOpenDays: bestStreak(s.days, opened),
     },
     timeToOpenMin: median(s.opensMin),
+    // Розподіл часу відкриття (не лише медіана) + тренд утримання по тижнях —
+    // «Звички» відповідають на «наскільки це ритуал» і «чи тримаюсь краще».
+    openRhythm: buildOpenRhythm(s.opensMin),
+    habitWeekly: buildHabitWeekly(s.days, todayKey),
     weekly,
     funnel,
     goal: { weeklyTarget: s.goal.weeklyTarget, weeklyApplied },
