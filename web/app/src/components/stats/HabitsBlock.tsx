@@ -8,6 +8,16 @@ import { Heatmap } from '../charts/Heatmap.tsx';
 import { WeekdayBars } from '../charts/WeekdayBars.tsx';
 import { OpenRhythm } from '../charts/OpenRhythm.tsx';
 import { HabitTrend } from '../charts/HabitTrend.tsx';
+import { FlameTrend } from '../charts/FlameTrend.tsx';
+import { RankedBars } from '../charts/RankedBars.tsx';
+
+const FLAME_LABEL: Record<string, string> = {
+  tiktok: 'Тікток',
+  duolingo: 'Дуолінго',
+  snapchat: 'Снепчат',
+  bereal: 'BeReal',
+  chess: 'Шахмати',
+};
 
 // A · Звички — повний редизайн навколо питання «чи це вже РИТУАЛ».
 //
@@ -102,6 +112,8 @@ export function HabitsBlock({ s }: { s: Stats }) {
   // із дією), тож нове поле в API для цього не потрібне.
   const totalDays = s.heatmap.length;
   const activeDays = s.heatmap.filter((c) => c.v > 0).length;
+
+  const flames = s.flameStats;
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -202,6 +214,33 @@ export function HabitsBlock({ s }: { s: Stats }) {
               Середня активність за днем тижня за всі 12 тижнів. Показує, який день у тебе
               системно провальний — це майже завжди той самий день, а не випадковість.
             </Hint>
+          </div>
+        </Card>
+      )}
+
+      {/* 5. ВОГНИКИ — стріки в СТОРОННІХ застосунках (evening.flames). Свідомо
+          тут, не в Чек-іні: це той самий тип сигналу, що opens/mock/news вище
+          («чи тримаю звичку»), а не про добробут дня. */}
+      {flames.tops.length > 0 && (
+        <Card>
+          <SubLabel>ВОГНИКИ В ІНШИХ ЗАСТОСУНКАХ · 12 ТИЖНІВ</SubLabel>
+          <div className="mt-2">
+            <FlameTrend weeks={flames.weekly} />
+          </div>
+          <Hint>
+            Стріки, які тримаєш поза Світанком. Висота стовпця — скільки вечорів тижня хоч один
+            вогник горів; колір усередині — конструктивний він (навчання, гра розуму) чи споживчий
+            (стрічка).
+          </Hint>
+          <div className="mt-3.5 border-t border-glassb pt-3">
+            <div className="mb-1.5 text-[11px] font-semibold text-tx2">Що частіше</div>
+            <RankedBars
+              rows={flames.tops.map((r) => ({
+                key: r.value,
+                label: FLAME_LABEL[r.value] ?? r.value,
+                n: r.n,
+              }))}
+            />
           </div>
         </Card>
       )}
