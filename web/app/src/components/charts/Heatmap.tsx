@@ -12,12 +12,14 @@ import { haptic } from '../../telegram.ts';
 // відповідає не лише «скільки», а «що це був за день». На тач-екрані це
 // заміна hover-title, який там не працює в принципі.
 
+// Зелена шкала (фідбек власника, GitHub-стиль) — color-mix із семантичним
+// --color-pos (уже «добре/позитив» у решті застосунку), той самий підхід,
+// що StateMatrix.tsx: автоматично адаптується між темною й світлою темою,
+// на відміну від фіксованих rgba.
 function cellBg(l: number): string {
-  const v = Math.max(0, Math.min(4, l)) / 4;
-  const g = Math.round(150 - v * 40);
-  const b = Math.round(110 - v * 28);
-  const op = (0.12 + v * 0.82).toFixed(2);
-  return `rgba(255,${g},${b},${op})`;
+  if (l <= 0) return 'var(--color-track)';
+  const v = Math.min(4, l) / 4;
+  return `color-mix(in srgb, var(--color-pos) ${Math.round(20 + v * 70)}%, var(--color-track))`;
 }
 
 const CELL = 11;
