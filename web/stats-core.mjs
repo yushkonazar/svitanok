@@ -611,15 +611,34 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'checkin': {
       // Слот і дату рахує ВОРКЕР (див. checkinSlot/checkinDateKey) — сюди вони
       // вже приходять готовими в ev.slot і dateKey.
+      //
+      // Підтверджений блок (confirmed:true) — далі ІГНОРУЄМО будь-які правки.
+      // Це навмисне рішення власника: кнопка «Підтвердити» має сенс лише
+      // якщо після неї справді нічого не можна змінити, інакше вона просто
+      // бреше про остаточність. Перевірка ДО cleanCheckin — щоб жодне поле
+      // (включно з повторним confirm) не могло торкнутись замкненого блоку.
+      const existing = s.checkins[dateKey]?.[ev.slot];
+      if (existing?.confirmed) break;
+
       const clean = cleanCheckin(ev.slot, ev);
-      // Невідомий слот або жодного валідного поля -> тихо нічого. М'який ігнор,
-      // як у mock_answer, а НЕ як у job_stage (там невідоме значення означає
-      // «видалити» — для чек-іну це знищувало б добу).
-      if (!clean || !Object.keys(clean).length) break;
+      const confirming = ev.confirmed === true;
+      const hasClean = !!clean && Object.keys(clean).length > 0;
+      // Невідомий слот, чи жодного валідного поля І не підтвердження -> тихо
+      // нічого. М'який ігнор, як у mock_answer, а НЕ як у job_stage (там
+      // невідоме значення означає «видалити» — для чек-іну це знищувало б добу).
+      if (!hasClean && !confirming) break;
+
+      const merged = { ...existing, ...(clean ?? {}) };
+      if (confirming) {
+        // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
+        // жодної відповіді ще нема, назавжди без жодних даних усередині.
+        if (!Object.keys(merged).length) break;
+        merged.confirmed = true;
+      }
       if (!s.checkins[dateKey] || typeof s.checkins[dateKey] !== 'object') s.checkins[dateKey] = {};
       // Мерджимо, а не замінюємо: клієнт шле блок дебаунсом, і часткова відповідь
       // не має стирати те, що вже відповіли раніше в цьому ж блоці.
-      s.checkins[dateKey][ev.slot] = { ...s.checkins[dateKey][ev.slot], ...clean };
+      s.checkins[dateKey][ev.slot] = merged;
       capCheckins(s);
       break;
     }

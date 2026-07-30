@@ -190,6 +190,10 @@ export const checkinMorningSchema = z.object({
   plan: multi(category),
   planApply: int.optional(),
   worryAM: int.optional(),
+  // Кнопка «Підтвердити» (сервер: stats-core.mjs case 'checkin') — після
+  // цього прапорця бекенд ІГНОРУЄ будь-які подальші правки блоку. Живе тут,
+  // а не в окремій схемі, бо приходить у ТОМУ САМОМУ checkinToday[slot].
+  confirmed: z.boolean().optional(),
 });
 export const checkinAfternoonSchema = z.object({
   pace: lenient(z.enum(['on', 'off', 'behind', 'other', 'overload', 'better'])),
@@ -198,6 +202,7 @@ export const checkinAfternoonSchema = z.object({
   ate: multi(category),
   rushed: int.optional(),
   withWhom: lenient(z.enum(['alone', 'family', 'friends', 'work', 'public', 'mixed'])),
+  confirmed: z.boolean().optional(),
 });
 export const checkinEveningSchema = z.object({
   dayScore: int.optional(),
@@ -247,6 +252,7 @@ export const checkinEveningSchema = z.object({
   jobConfidence: int.optional(),
   focusQuality: int.optional(),
   flames: multi(z.enum(['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'])),
+  confirmed: z.boolean().optional(),
 });
 export const checkinDaySchema = z.object({
   morning: checkinMorningSchema.optional(),

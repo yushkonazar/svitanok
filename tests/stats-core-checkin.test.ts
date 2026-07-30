@@ -182,6 +182,51 @@ describe('recordEvent — checkin', () => {
   });
 });
 
+describe('recordEvent — checkin, confirmed (кнопка «Підтвердити»)', () => {
+  it('confirmed:true фіксує блок разом із будь-якими полями в тому самому запиті', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('morning', { sleepH: 7.5, energy: 4, confirmed: true }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].morning).toEqual({ sleepH: 7.5, energy: 4, confirmed: true });
+  });
+
+  it('confirmed:true без нових полів фіксує те, що вже було збережено раніше', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { sleepH: 7.5, energy: 4 }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { confirmed: true }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ sleepH: 7.5, energy: 4, confirmed: true });
+  });
+
+  it('після confirmed:true БУДЬ-ЯКІ подальші правки ігноруються (нічого не змінити)', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { energy: 4, confirmed: true }), '2026-07-17');
+    // Спроба змінити вже підтверджене поле.
+    s = recordEvent(s, ck('morning', { energy: 1 }), '2026-07-17');
+    // Спроба додати НОВЕ поле в підтверджений блок.
+    s = recordEvent(s, ck('morning', { sleepH: 3 }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ energy: 4, confirmed: true });
+  });
+
+  it('підтвердити ПОРОЖНІЙ блок (без жодної відповіді) -> тихо нічого, доба не створюється', () => {
+    const s = recordEvent(emptyStore(), ck('morning', { confirmed: true }), '2026-07-17');
+    expect(s.checkins['2026-07-17']).toBeUndefined();
+  });
+
+  it('confirmed стосується ЛИШЕ свого слоту — інші блоки того ж дня редагуються як завжди', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { energy: 4, confirmed: true }), '2026-07-17');
+    s = recordEvent(s, ck('afternoon', { energy: 3 }), '2026-07-17');
+    s = recordEvent(s, ck('afternoon', { energy: 5 }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ energy: 4, confirmed: true });
+    expect(s.checkins['2026-07-17'].afternoon).toEqual({ energy: 5 });
+  });
+
+  it('повторний confirmed:true — ідемпотентно, без помилок і без зміни даних', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { energy: 4, confirmed: true }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { confirmed: true }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ energy: 4, confirmed: true });
+  });
+});
+
 describe('aggregateStats — чек-ін', () => {
   const withDays = (rows: Array<[string, Record<string, unknown>, Record<string, unknown>?]>) => {
     let s = emptyStore();
