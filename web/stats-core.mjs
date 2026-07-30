@@ -6,7 +6,7 @@
 // драйвери/архетипи), а не inline тут: research/checkin_model.py лишається
 // специфікацією-оракулом, і держати JS-порт в одному місці з однією назвою
 // файлу простіше звіряти з golden-векторами (tests/checkin-model.test.ts).
-import { analyzeCheckinModel, flattenCheckinDay } from './checkin-model.mjs';
+import { analyzeCheckinModel, flattenCheckinDay, cohensD, welchP } from './checkin-model.mjs';
 //
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
@@ -140,6 +140,10 @@ export const HELPER_VALUES = [
 // нема капу нижче кількості значень: усі п'ять цілком реально запалити
 // в один день, на відміну від blocker/helper де 3 з ~10 — розумна стеля.
 export const FLAME_VALUES = ['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'];
+// Розподіл на "конструктивні" (навчання/гра розуму) проти "споживчих"
+// (стрічка) — не деталь UI, а свідомий поділ: композиція звички цікавіша за
+// сирий перелік застосунків (buildFlameStats нижче).
+export const CONSTRUCTIVE_FLAMES = new Set(['duolingo', 'chess']);
 
 const CHECKIN_FIELDS = {
   morning: {
@@ -830,6 +834,48 @@ function buildHabitWeekly(days, todayKey, weeks = 12) {
   }));
 }
 
+/**
+ * Вогники (стріки в СТОРОННІХ застосунках, evening.flames): рейтинг частоти +
+ * тижнева композиція конструктивні/споживчі. Свідомо в Звичках, не в Чек-іні:
+ * це сигнал «чи тримаю звичку в іншому застосунку», той самий тип питання, що
+ * opens/mock/news у habitWeekly вище — не про добробут дня, тож у реєстрі
+ * «Індексу дня» (checkin-model.mjs) цього поля й не може бути.
+ *
+ * Той самий патерн ітерації, що buildHabitWeekly: знаменник тижня — лише доби,
+ * що вже НАСТАЛИ (інакше поточний тиждень завжди виглядав би провальним).
+ */
+function buildFlameStats(checkins, todayKey, weeks = 12) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const buckets = Object.fromEntries(
+    starts.map((k) => [k, { active: 0, days: 0, constructive: 0, consumptive: 0 }]),
+  );
+  const counts = {};
+  let activeNights = 0;
+  const today = new Date(todayKey + 'T00:00:00Z');
+  const first = new Date(starts[0] + 'T00:00:00Z');
+  for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+    const k = d.toISOString().slice(0, 10);
+    const b = buckets[weekStartKey(k)];
+    if (!b) continue;
+    b.days++;
+    const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
+    if (flames.length) {
+      b.active++;
+      activeNights++;
+    }
+    for (const f of flames) {
+      counts[f] = (counts[f] || 0) + 1;
+      if (CONSTRUCTIVE_FLAMES.has(f)) b.constructive++;
+      else b.consumptive++;
+    }
+  }
+  return {
+    tops: rankCounts(counts),
+    activeNights,
+    weekly: starts.map((week) => ({ week, ...buckets[week] })),
+  };
+}
+
 /** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
 export function lastWeekStarts(todayKey, n) {
   const d = new Date(weekStartKey(todayKey) + 'T00:00:00Z');
@@ -856,6 +902,8 @@ const CORR_MIN_N = 8;
 
 const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
+const round2 = (v) => (v === null ? null : Math.round(v * 100) / 100);
+const round4 = (v) => (v === null ? null : Math.round(v * 10000) / 10000);
 
 /** Ряд «сон / енергія / оцінка дня» за останні N діб (лише заповнені). */
 function buildCheckinSeries(checkins, todayKey, days = 30) {
@@ -1078,6 +1126,63 @@ function buildBedtimeVsEnergy(checkins, todayKey, days = 60) {
 }
 
 /**
+ * Соціальний контекст дня (afternoon.withWhom): розподіл ЧАСТОТИ (той самий
+ * рейтинговий підхід, що blocker/helper/lateReason) + СПРАВЖНЄ порівняння
+ * «сам» проти «з людьми» на вечірній оцінці дня.
+ *
+ * На відміну від buildSleepVsDayScore/buildBedtimeVsEnergy (голі середні двох
+ * кошиків) тут — Cohen's d + Welch p, той самий апарат, що вже рахує
+ * computeDrivers у checkin-model.mjs (golden-тестований). withWhom не
+ * скалярне поле, тож у реєстрі моделі його бути не може за побудовою — але
+ * рівень строгості порівняння лишається той самий, а не слабший.
+ *
+ * Шестистороннього розподілу занадто мало для тесту в кожному кошику
+ * (family/friends/work/public/mixed рідко назбирають CORR_MIN_N кожен) —
+ * тому порівняння БІНАРНЕ: «сам» проти «решта разом», найконтрастніша й
+ * найреалістичніша межа, яка взагалі має шанс набрати вибірку.
+ */
+function buildSocialContext(checkins, todayKey, days = 60) {
+  const counts = {};
+  const aloneScores = [];
+  const otherScores = [];
+  let filled = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[d.toISOString().slice(0, 10)];
+    const who = c?.afternoon?.withWhom;
+    if (typeof who === 'string' && who) {
+      filled++;
+      counts[who] = (counts[who] || 0) + 1;
+      const score = c?.evening?.dayScore;
+      if (typeof score === 'number') (who === 'alone' ? aloneScores : otherScores).push(score);
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  const ready = aloneScores.length >= CORR_MIN_N && otherScores.length >= CORR_MIN_N;
+  return {
+    tops: rankCounts(counts),
+    days: filled,
+    aloneVsOthers: ready
+      ? {
+          ready: true,
+          nAlone: aloneScores.length,
+          nOthers: otherScores.length,
+          aloneAvg: round1(avg(aloneScores)),
+          othersAvg: round1(avg(otherScores)),
+          d: round2(cohensD(aloneScores, otherScores)),
+          p: round4(welchP(aloneScores, otherScores)),
+        }
+      : {
+          ready: false,
+          needed: CORR_MIN_N,
+          nAlone: aloneScores.length,
+          nOthers: otherScores.length,
+        },
+  };
+}
+
+/**
  * Калібрація: вечірній САМОЗВІТ подач проти appliedLog (факту). Не кореляція, а
  * звірка per-day, тож без гейта — показуємо як planVsFact, коли є хоч день.
  *  more  = сказав більше, ніж у журналі  -> подавав ПОЗА застосунком (не залогував)
@@ -1114,6 +1219,14 @@ function buildAppliedCalibration(checkins, appliedLog, todayKey, days = 30) {
 /** Скільки варіантів блокерів/помічників віддаємо в рейтингу (решта — хвіст). */
 const TOPS_RANK_LIMIT = 5;
 
+/** Обʼєкт лічильників {value: n} -> рейтинг спадання (нічия — за абеткою), TOP N. */
+function rankCounts(counts, limit = TOPS_RANK_LIMIT) {
+  return Object.entries(counts)
+    .map(([value, n]) => ({ value, n }))
+    .sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
+    .slice(0, limit);
+}
+
 /**
  * Блокери / помічники за N діб — ПОВНИЙ рейтинг, не лише мода. Не кореляція,
  * а розподіл, тож без статистичного гейта (лише порожньо -> null/[]).
@@ -1126,15 +1239,23 @@ const TOPS_RANK_LIMIT = 5;
  * `blocker`/`helper` (мода) лишаються для сумісності контракту; `blockers`/
  * `helpers` — новий рейтинг, `days` — скільки діб мали вечірній запис
  * (знаменник, без якого «6×» не має масштабу).
+ *
+ * lateReason (ранкове, УМОВНЕ поле — питається лише коли лягав пізно) —
+ * той самий рейтинговий підхід, приєднаний в ОДНОМУ проході з blocker/helper:
+ * причина пізнього відбою теж ніде, крім тут, не показується (вільна від
+ * реєстру моделі за тією ж логікою — це причина-тег, а не скалярне поле).
  */
 function buildCheckinTops(checkins, todayKey, days = 30) {
   const bC = {};
   const hC = {};
+  const lC = {};
   let filled = 0;
+  let lateNights = 0;
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const ev = checkins[d.toISOString().slice(0, 10)]?.evening;
+    const rec = checkins[d.toISOString().slice(0, 10)];
+    const ev = rec?.evening;
     if (ev) {
       // asList: обидва стали мультивибором; 'none' — свідома відповідь «нічого
       // не завадило», а не варіант для топу, тож не рахуємо її як причину.
@@ -1144,21 +1265,23 @@ function buildCheckinTops(checkins, todayKey, days = 30) {
       for (const b of bs) if (b !== 'none') bC[b] = (bC[b] || 0) + 1;
       for (const h of hs) if (h !== 'none') hC[h] = (hC[h] || 0) + 1;
     }
+    const reason = rec?.morning?.lateReason;
+    if (typeof reason === 'string' && reason) {
+      lateNights++;
+      lC[reason] = (lC[reason] || 0) + 1;
+    }
     d.setUTCDate(d.getUTCDate() + 1);
   }
-  const rank = (m) =>
-    Object.entries(m)
-      .map(([value, n]) => ({ value, n }))
-      .sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
-      .slice(0, TOPS_RANK_LIMIT);
-  const blockers = rank(bC);
-  const helpers = rank(hC);
+  const blockers = rankCounts(bC);
+  const helpers = rankCounts(hC);
   return {
     blocker: blockers[0] ?? null,
     helper: helpers[0] ?? null,
     blockers,
     helpers,
     days: filled,
+    lateReasons: rankCounts(lC),
+    lateNights,
   };
 }
 
@@ -1407,6 +1530,9 @@ export function aggregateStats(store, todayKey) {
     // «Звички» відповідають на «наскільки це ритуал» і «чи тримаюсь краще».
     openRhythm: buildOpenRhythm(s.opensMin),
     habitWeekly: buildHabitWeekly(s.days, todayKey),
+    // Вогники сторонніх застосунків — та сама «звичка», не добробут, тому тут,
+    // а не серед полів чек-іну нижче.
+    flameStats: buildFlameStats(s.checkins, todayKey),
     weekly,
     funnel,
     goal: { weeklyTarget: s.goal.weeklyTarget, weeklyApplied },
@@ -1488,6 +1614,7 @@ export function aggregateStats(store, todayKey) {
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
     appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
+    socialContext: buildSocialContext(s.checkins, todayKey),
     // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
     // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,
     // архетипи. Читає ті самі checkins, нічого нового не питає в людини.
