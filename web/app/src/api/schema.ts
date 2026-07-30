@@ -344,6 +344,44 @@ export const checkinTopsSchema = z.object({
   blockers: z.array(checkinTopSchema).default([]),
   helpers: z.array(checkinTopSchema).default([]),
   days: int.default(0),
+  // lateReason (ранкове, умовне поле) — той самий рейтинг, приєднаний з тієї ж
+  // причини: причина пізнього відбою теж поза реєстром моделі.
+  lateReasons: z.array(checkinTopSchema).default([]),
+  lateNights: int.default(0),
+});
+
+/** Сам проти «з людьми» на вечірній оцінці дня — Cohen's d + Welch p. */
+export const aloneVsOthersSchema = z.object({
+  ready: z.boolean().default(false),
+  needed: int.optional(),
+  nAlone: int.default(0),
+  nOthers: int.default(0),
+  aloneAvg: num.nullable().optional(),
+  othersAvg: num.nullable().optional(),
+  d: num.nullable().optional(),
+  p: num.nullable().optional(),
+});
+/** Соціальний контекст дня (afternoon.withWhom): частота + сам-vs-люди. */
+export const socialContextSchema = z.object({
+  tops: z.array(checkinTopSchema).default([]),
+  days: int.default(0),
+  aloneVsOthers: aloneVsOthersSchema.default({ ready: false, nAlone: 0, nOthers: 0 }),
+});
+
+/** Тиждень вогників: композиція конструктивні/споживчі (той самий знаменник
+ *  «доби, що вже настали», що habitWeekSchema). */
+export const flameWeekSchema = z.object({
+  week: z.string(),
+  active: int.default(0),
+  days: int.default(0),
+  constructive: int.default(0),
+  consumptive: int.default(0),
+});
+/** Вогники сторонніх застосунків (evening.flames): рейтинг + тижнева композиція. */
+export const flameStatsSchema = z.object({
+  tops: z.array(checkinTopSchema).default([]),
+  activeNights: int.default(0),
+  weekly: z.array(flameWeekSchema).default([]),
 });
 
 // «Індекс дня» (checkin-model.mjs): композитні індекси, ваги, що вчаться на
@@ -494,10 +532,18 @@ export const statsSchema = z.object({
     blockers: [],
     helpers: [],
     days: 0,
+    lateReasons: [],
+    lateNights: 0,
+  }),
+  socialContext: socialContextSchema.default({
+    tops: [],
+    days: 0,
+    aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
   }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
   openRhythm: openRhythmSchema.default({ ready: false, n: 0 }),
   habitWeekly: z.array(habitWeekSchema).default([]),
+  flameStats: flameStatsSchema.default({ tops: [], activeNights: 0, weekly: [] }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
   intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),

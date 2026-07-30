@@ -607,6 +607,21 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     const t = aggregateStats(emptyStore(), '2026-07-17').checkinTops;
     expect([t.blocker, t.helper]).toEqual([null, null]);
     expect([t.blockers, t.helpers]).toEqual([[], []]);
+    expect(t.lateReasons).toEqual([]);
+    expect(t.lateNights).toBe(0);
+  });
+
+  it('checkinTops: lateReasons — рейтинг причин пізнього відбою (умовне ранкове поле)', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { lateReason: 'scroll' }), '2026-07-15');
+    s = recordEvent(s, ck('morning', { lateReason: 'scroll' }), '2026-07-16');
+    s = recordEvent(s, ck('morning', { lateReason: 'work' }), '2026-07-17');
+    const t = aggregateStats(s, '2026-07-17').checkinTops;
+    expect(t.lateReasons).toEqual([
+      { value: 'scroll', n: 2 },
+      { value: 'work', n: 1 },
+    ]);
+    expect(t.lateNights).toBe(3);
   });
 
   it('checkinTops: ПОВНИЙ рейтинг, не лише мода; days = діб із вечірнім вибором', () => {
@@ -725,6 +740,114 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     }
     const r = aggregateStats(s, '2026-06-16').bedtimeVsEnergy;
     expect([r.early, r.late]).toEqual([0, 0]);
+  });
+});
+
+describe('aggregateStats — соціальний контекст (withWhom)', () => {
+  it('tops: рейтинг частоти за N діб', () => {
+    let s = emptyStore();
+    const seq = ['alone', 'alone', 'friends', 'work', 'alone'];
+    seq.forEach((who, i) => {
+      s = recordEvent(s, ck('afternoon', { withWhom: who }), `2026-07-${10 + i}`);
+    });
+    const sc = aggregateStats(s, '2026-07-14').socialContext;
+    expect(sc.tops).toEqual([
+      { value: 'alone', n: 3 },
+      { value: 'friends', n: 1 },
+      { value: 'work', n: 1 },
+    ]);
+    expect(sc.days).toBe(5);
+  });
+
+  it('aloneVsOthers: гейт CORR_MIN_N — не готово, поки в кожному кошику <8', () => {
+    let s = emptyStore();
+    for (let i = 0; i < 7; i++) {
+      const key = `2026-07-${10 + i}`;
+      s = recordEvent(s, ck('afternoon', { withWhom: 'alone' }), key);
+      s = recordEvent(s, ck('evening', { dayScore: 5 }), key);
+    }
+    const r = aggregateStats(s, '2026-07-16').socialContext.aloneVsOthers;
+    expect(r).toEqual({ ready: false, needed: 8, nAlone: 7, nOthers: 0 });
+  });
+
+  it('aloneVsOthers: 8+8 із чіткою різницею -> ready, правильний напрямок і величина ефекту', () => {
+    let s = emptyStore();
+    // Розкид навмисний (не константа): нульова дисперсія в кошику робить
+    // cohensD/welchP виродженими (pooled=0 -> d=0, se2=0 -> p=1), а не
+    // «дуже значущим» — той самий інваріант, що вже в checkin-model.mjs.
+    const aloneScores = [5, 4, 5, 3, 5, 4, 5, 4]; // серед. 4.375 -> round1 4.4
+    const otherWho = [
+      'friends',
+      'family',
+      'friends',
+      'family',
+      'friends',
+      'family',
+      'friends',
+      'family',
+    ];
+    const otherScores = [2, 3, 2, 3, 2, 3, 2, 3]; // серед. 2.5
+    const d = new Date('2026-07-01T00:00:00Z');
+    let lastKey = '';
+    for (let i = 0; i < 8; i++) {
+      lastKey = d.toISOString().slice(0, 10);
+      s = recordEvent(s, ck('afternoon', { withWhom: 'alone' }), lastKey);
+      s = recordEvent(s, ck('evening', { dayScore: aloneScores[i] }), lastKey);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    for (let i = 0; i < 8; i++) {
+      lastKey = d.toISOString().slice(0, 10);
+      s = recordEvent(s, ck('afternoon', { withWhom: otherWho[i] }), lastKey);
+      s = recordEvent(s, ck('evening', { dayScore: otherScores[i] }), lastKey);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    const r = aggregateStats(s, lastKey).socialContext.aloneVsOthers;
+    expect(r.ready).toBe(true);
+    expect([r.nAlone, r.nOthers]).toEqual([8, 8]);
+    expect([r.aloneAvg, r.othersAvg]).toEqual([4.4, 2.5]);
+    // «Сам» помітно вище — d великий і додатний, p значущий. Не вимагаємо
+    // точних плаваючих чисел (їх уже golden-звіряє checkin-model.test.ts),
+    // лише що buildSocialContext правильно розкладає по кошиках і передає далі.
+    expect(r.d).toBeGreaterThan(2);
+    expect(r.p).toBeLessThan(0.01);
+  });
+});
+
+describe('aggregateStats — вогники (flames, evening)', () => {
+  it('tops: рейтинг частоти + activeNights', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
+    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-11');
+    s = recordEvent(s, ck('evening', { flames: ['tiktok'] }), '2026-07-12');
+    const f = aggregateStats(s, '2026-07-12').flameStats;
+    expect(f.tops).toEqual([
+      { value: 'duolingo', n: 2 },
+      { value: 'chess', n: 1 },
+      { value: 'tiktok', n: 1 },
+    ]);
+    expect(f.activeNights).toBe(3);
+  });
+
+  it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'tiktok'] }), '2026-07-06');
+    const fw = aggregateStats(s, '2026-07-07').flameStats.weekly;
+    expect(fw).toHaveLength(12);
+    const cur = fw[fw.length - 1];
+    expect(cur.constructive).toBe(1);
+    expect(cur.consumptive).toBe(1);
+    expect(cur.active).toBe(1);
+  });
+
+  it('weekly: знаменник — лише доби, що НАСТАЛИ (поточний тиждень не штрафується)', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['chess'] }), '2026-07-06');
+    s = recordEvent(s, ck('evening', { flames: ['chess'] }), '2026-07-07');
+    const fw = aggregateStats(s, '2026-07-07').flameStats.weekly;
+    const cur = fw[fw.length - 1];
+    expect(cur.week).toBe('2026-07-06');
+    expect(cur.days).toBe(2); // не 7 — інакше живий тиждень завжди «провальний»
+    expect(cur.active).toBe(2);
   });
 });
 

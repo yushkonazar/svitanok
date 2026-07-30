@@ -48,6 +48,22 @@ const HELPER_LABEL: Record<string, string> = {
   music: 'Музика/фокус',
   support: 'Підтримка',
 };
+const LATE_REASON_LABEL: Record<string, string> = {
+  work: 'Робота/проєкт',
+  scroll: 'Залип у стрічці',
+  metime: 'Хотів час для себе',
+  anxious: 'Не міг заснути',
+  social: 'Люди/події',
+  other: 'Інше',
+};
+const WITH_WHOM_LABEL: Record<string, string> = {
+  alone: '🧍 Сам',
+  family: '🏠 Рідні',
+  friends: '🫂 Друзі',
+  work: '💼 По роботі',
+  public: '🏙 Серед людей',
+  mixed: '🔀 Порівну',
+};
 const CATEGORY_LABEL: Record<string, string> = {
   work: '💼 Робота',
   learn: '📚 Навчання',
@@ -139,6 +155,31 @@ function LaggedRow({ idx, data }: { idx: string; data: Stats['checkinModel']['la
   );
 }
 
+/** «Сам» проти «з людьми»: той самий тон, що LaggedRow — Cohen's d + Welch p. */
+function AloneVsOthersRow({ data }: { data: Stats['socialContext']['aloneVsOthers'] }) {
+  if (!data.ready) {
+    return (
+      <div className="text-[11px] leading-[1.5] text-tx3">
+        Порівняння «сам / з людьми» ще рано ({data.nAlone} і {data.nOthers} із {data.needed}{' '}
+        потрібних діб у кожному кошику).
+      </div>
+    );
+  }
+  const alone = data.aloneAvg ?? 0;
+  const others = data.othersAvg ?? 0;
+  const sig = (data.p ?? 1) < 0.05;
+  const dir = alone > others ? 'ЗАЗВИЧАЙ ВИЩА' : alone < others ? 'ЗАЗВИЧАЙ НИЖЧА' : 'БЕЗ РІЗНИЦІ';
+  return (
+    <div className="flex items-baseline gap-1.5 text-[12px]">
+      <span className="whitespace-nowrap font-semibold text-tx">🧍 Сам</span>
+      <span className="text-tx2">оцінка дня {dir}, ніж коли серед людей</span>
+      <span className="ml-auto font-mono text-[10px] text-tx3">
+        d={(data.d ?? 0).toFixed(2)} {sig ? '· значущо' : '· шум?'}
+      </span>
+    </div>
+  );
+}
+
 export function CheckinBlock({ s }: { s: Stats }) {
   const series = s.checkinSeries;
   const model = s.checkinModel;
@@ -170,6 +211,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
   const drift = s.intentDrift;
   const cal = s.appliedCalibration;
   const tops = s.checkinTops;
+  const social = s.socialContext;
   const kept = s.planVsFact;
   const keptHit = kept.filter((r) => r.actual >= r.planned).length;
 
@@ -316,6 +358,57 @@ export function CheckinBlock({ s }: { s: Stats }) {
               <Hint>
                 Скільки діб ти обирав кожен варіант. «Нічого» не рахується — це свідома відповідь,
                 а не причина.
+              </Hint>
+            </Card>
+          )}
+
+          {/* lateReason — умовне ранкове поле (питається лише коли лягав
+              пізно). Причина-тег, не скалярне поле, тож поза реєстром моделі
+              за тією ж логікою, що blocker/helper вище. */}
+          {tops.lateReasons.length > 0 && (
+            <Card>
+              <SubLabel>ЧОМУ ЛЯГАЄШ ПІЗНО · {tops.lateNights} НОЧЕЙ</SubLabel>
+              <div className="mt-2">
+                <RankedBars
+                  color="var(--color-idx-recovery)"
+                  rows={tops.lateReasons.map((r) => ({
+                    key: r.value,
+                    label: LATE_REASON_LABEL[r.value] ?? r.value,
+                    n: r.n,
+                  }))}
+                />
+              </div>
+              <Hint>
+                Питається лише в добу, коли ти ліг після півночі (01:00+). Показує, що ЗАЗВИЧАЙ
+                стоїть за пізнім відбоєм — робота, стрічка чи просто не спиться.
+              </Hint>
+            </Card>
+          )}
+
+          {/* withWhom — соціальний контекст (afternoon, deep). Частота +
+              справжнє порівняння «сам» проти «з людьми» на оцінці дня
+              (Cohen's d + Welch, той самий апарат, що «Що зсуває оцінку
+              дня» — не слабша математика лише тому, що поле поза реєстром
+              моделі). */}
+          {social.tops.length > 0 && (
+            <Card>
+              <SubLabel>СОЦІАЛЬНИЙ КОНТЕКСТ · {social.days} ДІБ</SubLabel>
+              <div className="mt-2">
+                <RankedBars
+                  rows={social.tops.map((r) => ({
+                    key: r.value,
+                    label: WITH_WHOM_LABEL[r.value] ?? r.value,
+                    n: r.n,
+                  }))}
+                />
+              </div>
+              <div className="mt-2.5 border-t border-glassb pt-2.5">
+                <AloneVsOthersRow data={social.aloneVsOthers} />
+              </div>
+              <Hint>
+                З ким переважно був день. Рядок знизу — чи «сам-на-сам» дні статистично
+                відрізняються оцінкою від днів серед людей: d — сила різниці, «шум?» означає, що
+                вибірки поки замало, щоб вірити числу.
               </Hint>
             </Card>
           )}

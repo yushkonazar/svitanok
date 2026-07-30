@@ -59,6 +59,39 @@ function sampleHabitWeekly() {
   });
 }
 
+/**
+ * Демо-вогники: тижнева композиція з видимою динамікою (той самий принцип,
+ * що sampleHabitWeekly) — на старті переважно споживчі, ближче до сьогодні
+ * конструктивні (дуолінго/шахи) переважають.
+ */
+function sampleFlameWeekly() {
+  const active = [3, 4, 3, 5, 4, 4, 5, 4, 6, 5, 6, 4];
+  const constructive = [1, 1, 1, 2, 1, 2, 3, 2, 4, 3, 4, 3];
+  const consumptive = [2, 3, 2, 3, 3, 2, 2, 2, 2, 2, 2, 1];
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 77);
+  return active.map((a, i) => {
+    const week = dayKey(d);
+    d.setDate(d.getDate() + 7);
+    const days = i === active.length - 1 ? 5 : 7;
+    return { week, active: Math.min(a, days), days, constructive: constructive[i], consumptive: consumptive[i] };
+  });
+}
+
+function sampleFlameStats() {
+  return {
+    tops: [
+      { value: 'duolingo', n: 34 },
+      { value: 'tiktok', n: 22 },
+      { value: 'chess', n: 14 },
+      { value: 'snapchat', n: 9 },
+      { value: 'bereal', n: 6 },
+    ],
+    activeNights: 54,
+    weekly: sampleFlameWeekly(),
+  };
+}
+
 /** ЛОКАЛЬНА дата -> 'YYYY-MM-DD'. toISOString дав би UTC і зсував демо на добу. */
 const dayKey = (dt: Date) =>
   `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
@@ -113,6 +146,7 @@ export const SAMPLE_STATS: Stats = {
   // Розкид ±~35 хв навколо медіани — «ритуал, але не за будильником».
   openRhythm: { ready: true, n: 46, p10: 2, q1: 12, median: 23, q3: 47, p90: 78, iqr: 35 },
   habitWeekly: sampleHabitWeekly(),
+  flameStats: sampleFlameStats(),
   weekly: [
     { day: 'Пн', value: 3, active: true },
     { day: 'Вт', value: 2, active: true },
@@ -429,6 +463,34 @@ export const SAMPLE_STATS: Stats = {
       { value: 'music', n: 1 },
     ],
     days: 14,
+    lateReasons: [
+      { value: 'scroll', n: 4 },
+      { value: 'work', n: 3 },
+      { value: 'metime', n: 2 },
+      { value: 'anxious', n: 1 },
+    ],
+    lateNights: 10,
+  },
+  // Соціальний контекст: демо-набір готовий (значуще різняться «сам» і «з
+  // людьми») — щоб було видно, як виглядає повністю розкрита картка.
+  socialContext: {
+    tops: [
+      { value: 'work', n: 18 },
+      { value: 'alone', n: 14 },
+      { value: 'friends', n: 9 },
+      { value: 'family', n: 7 },
+      { value: 'mixed', n: 4 },
+    ],
+    days: 52,
+    aloneVsOthers: {
+      ready: true,
+      nAlone: 14,
+      nOthers: 38,
+      aloneAvg: 3.3,
+      othersAvg: 3.9,
+      d: 0.52,
+      p: 0.031,
+    },
   },
   // «Індекс дня» (checkin-model.mjs): демо-набір, що показує ВСІ стани разом —
   // ваги вивчені, один лаг готовий і один ще ні (гейт), архетипи готові.
@@ -500,6 +562,7 @@ export const EMPTY_STATS: Stats = {
   timeToOpenMin: null,
   openRhythm: { ready: false, n: 0, needed: 5 },
   habitWeekly: [],
+  flameStats: { tops: [], activeNights: 0, weekly: [] },
   weekly: [],
   funnel: { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0, failed: 0 },
   goal: { weeklyTarget: 5, weeklyApplied: 0 },
@@ -533,7 +596,16 @@ export const EMPTY_STATS: Stats = {
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
   categoryInsight: { total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
-  checkinTops: { blocker: null, helper: null, blockers: [], helpers: [], days: 0 },
+  checkinTops: {
+    blocker: null,
+    helper: null,
+    blockers: [],
+    helpers: [],
+    days: 0,
+    lateReasons: [],
+    lateNights: 0,
+  },
+  socialContext: { tops: [], days: 0, aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 } },
   checkinModel: {
     n: 0,
     fit: {
