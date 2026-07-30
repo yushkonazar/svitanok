@@ -44,7 +44,10 @@ import {
 /** Скільки чекаємо після останнього тапу, перш ніж слати блок. */
 const DEBOUNCE_MS = 1200;
 
-type AnswerValue = string | number | Array<string | number>;
+// null — явний сигнал «зняв відповідь» (не «ще не відповідав»): questions.ts
+// isAnswered/condMet трактують null так само, як відсутній ключ, але на
+// дроті це РІЗНІ речі — сервер мусить прибрати поле, а не проігнорувати подію.
+type AnswerValue = string | number | Array<string | number> | null;
 // confirmed — прапорець «Підтверджено», не відповідь на питання: живе поруч
 // із Answers, а не всередині AnswerValue, щоб isAnswered/asList/питання-цикли
 // й далі не бачили нічого, крім реальних полів чек-іну.
@@ -142,8 +145,8 @@ function QuestionRow({
         <AffectPad
           xLabel={q.pad.xLabel}
           yLabel={q.pad.yLabel}
-          x={answers[q.pad.x] as number | undefined}
-          y={answers[q.pad.y] as number | undefined}
+          x={answers[q.pad.x] as number | null | undefined}
+          y={answers[q.pad.y] as number | null | undefined}
           disabled={disabled}
           onPick={(x, y) => onPad(q.pad!.x, x, q.pad!.y, y)}
         />
@@ -465,10 +468,15 @@ export function CheckinScreen() {
       // мовчки ігноруємо тап (інакше кнопка виглядає зламаною).
       const has = list.includes(v);
       const kept = has ? list.filter((x) => x !== v) : [...list, v].slice(-multi);
-      if (kept.length) next[q] = kept;
-      else delete next[q];
+      // [] — ЯВНИЙ сигнал «очисти» (stats-core.mjs cleanCheckin), не «не
+      // чіпай»: без нього сервер лишав би старий вибір навіть після того, як
+      // тут показано порожньо (баг: зняти відповідь можна було лише ЛОКАЛЬНО,
+      // до першого дебаунсу — на сервері значення трималось назавжди).
+      next[q] = kept.length ? kept : [];
     } else if (next[q] === v) {
-      delete next[q]; // повторний тап знімає — щоб можна було передумати
+      // null — ЯВНИЙ сигнал «очисти» (не відсутній ключ): та сама причина,
+      // що для мультивибору вище — «передумав» мусить дійти до сервера.
+      next[q] = null;
     } else {
       next[q] = v;
     }
@@ -480,10 +488,11 @@ export function CheckinScreen() {
     const cur = answersFor(slot);
     const next: Answers = { ...cur };
     // Повторний тап по ТІЙ САМІЙ клітинці знімає обидві осі разом — пад
-    // поводиться як одна відповідь, якою він і є для власника.
+    // поводиться як одна відповідь, якою й є для власника. null (не delete) —
+    // явний сигнал «очисти» для сервера, той самий мотив, що onAnswer вище.
     if (cur[xId] === x && cur[yId] === y) {
-      delete next[xId];
-      delete next[yId];
+      next[xId] = null;
+      next[yId] = null;
     } else {
       next[xId] = x;
       next[yId] = y;

@@ -390,7 +390,7 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
           }
         }
         if (picked.length) {
-          const key = `${t.scope} ${t.topic}`;
+          const key = `${t.scope}\u0000${t.topic}`;
           const existing = groupsByKey.get(key);
           if (existing) {
             existing.items.push(...picked);

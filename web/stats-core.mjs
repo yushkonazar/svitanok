@@ -305,26 +305,56 @@ export function shouldSendCheckinNudge({ quiet, alreadyNudgedToday, slotFilled }
   return true;
 }
 
-/** Лишити тільки валідні поля блоку. Невідоме/биле ІГНОРУЄМО, а не видаляємо. */
+/**
+ * Лишити тільки валідні поля блоку. Невідоме/бите ІГНОРУЄМО (як і раніше).
+ *
+ * ⚠️ Відсутній ключ і ЯВНИЙ намір «очисти» — РІЗНІ речі, які раніше сервер
+ * плутав (обидва тихо ігнорувались — cleanCheckin пропускав undefined і null
+ * однаково). Це робило зняття відповіді неможливим: клієнт «знімав» поле
+ * ЛОКАЛЬНО (delete), але на дроті відсутній ключ означає «не чіпай», а не
+ * «прибери» — той самий контракт, на який покладається агент, коли шле
+ * ЧАСТКОВЕ оновлення (лише щойно згадані поля з розмови) і не мусить стирати
+ * решту вже записаного.
+ *
+ * Тому явний сигнал очищення ОКРЕМИЙ від «не чіпай»:
+ *   - скалярне/enum поле: null -> ОЧИСТИТИ (не «невалідне число», а намір);
+ *   - мультивибір:        []   -> ОЧИСТИТИ (порожній вибір, а не сміття);
+ *   - будь-яке поле відсутнє в ev -> НЕ ЧІПАТИ (як і завжди).
+ *
+ * Повертає { set, clear }: `set` — нові/змінені значення (як раніше єдиний
+ * обʼєкт), `clear` — ключі, які треба ВИДАЛИТИ з існуючого блоку.
+ */
 function cleanCheckin(slot, ev) {
   const spec = CHECKIN_FIELDS[slot];
   if (!spec) return null;
-  const out = {};
+  const set = {};
+  const clear = [];
   for (const [k, rule] of Object.entries(spec)) {
     const v = ev[k];
-    if (v === undefined || v === null) continue;
+    if (v === undefined) continue; // ключ відсутній у цій події -> не чіпаємо
     if (rule.enumMulti) {
+      // null АБО порожній масив — явне очищення. Непорожній масив, що після
+      // фільтра лишився порожнім (саме сміття) — ТИХО ігнорується, як і
+      // раніше: сміття не мусить випадково стирати поле.
+      if (v === null || (Array.isArray(v) && v.length === 0)) {
+        clear.push(k);
+        continue;
+      }
       // Приймаємо і масив (нова форма), і голий рядок (легасі-клієнт/агент, що
       // ще шле одне значення) — asList зводить обидва до масиву. Дедуп + кап:
       // «день не має пʼяти причин», а без капу сюди можна залити весь enum.
-      const clean = [...new Set(asList(v))]
+      const list = [...new Set(asList(v))]
         .filter((x) => rule.enumMulti.includes(x))
         .slice(0, rule.max ?? MULTI_MAX);
-      if (clean.length) out[k] = clean;
+      if (list.length) set[k] = list;
+      continue;
+    }
+    if (v === null) {
+      clear.push(k);
       continue;
     }
     if (rule.enum) {
-      if (rule.enum.includes(v)) out[k] = v;
+      if (rule.enum.includes(v)) set[k] = v;
       continue;
     }
     // typeof, а не Number(): Number(null)===0 і Number('')===0 тихо
@@ -333,9 +363,9 @@ function cleanCheckin(slot, ev) {
     if (rule.int && !Number.isInteger(v)) continue;
     const [lo, hi] = rule.num;
     if (v < lo || v > hi) continue;
-    out[k] = v;
+    set[k] = v;
   }
-  return out;
+  return { set, clear };
 }
 
 /** Кап чек-інів: лишаємо останні CHECKIN_CAP діб (ключі сортуються лексично). */
@@ -624,15 +654,24 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       const existing = s.checkins[dateKey]?.[ev.slot];
       if (existing?.confirmed) break;
 
-      const clean = cleanCheckin(ev.slot, ev);
+      const cleaned = cleanCheckin(ev.slot, ev);
+      const clean = cleaned?.set ?? null;
+      const clear = cleaned?.clear ?? [];
       const confirming = ev.confirmed === true;
       const hasClean = !!clean && Object.keys(clean).length > 0;
-      // Невідомий слот, чи жодного валідного поля І не підтвердження -> тихо
-      // нічого. М'який ігнор, як у mock_answer, а НЕ як у job_stage (там
-      // невідоме значення означає «видалити» — для чек-іну це знищувало б добу).
-      if (!hasClean && !confirming) break;
+      const hasClear = clear.length > 0;
+      // Невідомий слот, чи жодної зміни (ні нового значення, ні очищення) І не
+      // підтвердження -> тихо нічого. М'який ігнор, як у mock_answer, а НЕ як
+      // у job_stage (там невідоме значення означає «видалити» — для чек-іну це
+      // знищувало б добу).
+      if (!hasClean && !hasClear && !confirming) break;
 
       const merged = { ...existing, ...(clean ?? {}) };
+      // Явне очищення (null/[] від клієнта) — ВИДАЛЯЄ ключ, а не залишає старе
+      // значення. Саме цього не було раніше: {...existing, ...clean} умів лише
+      // додавати/перезаписувати, ніколи не прибирав — «повторний тап знімає»
+      // (questions.ts) працювало тільки локально, до першого дебаунсу.
+      for (const k of clear) delete merged[k];
       if (confirming) {
         // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
         // жодної відповіді ще нема, назавжди без жодних даних усередині.
