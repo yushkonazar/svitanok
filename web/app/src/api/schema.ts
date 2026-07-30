@@ -71,7 +71,39 @@ export const savedPageSchema = z.object({
 
 export const weakTopicSchema = z.object({ name: z.string(), value: num });
 
-export const heatmapCellSchema = z.object({ d: z.string(), v: num, l: int });
+// o/m/n — склад активності дня (opens/mock/news). .default(0): старий воркер
+// віддає лише d/v/l, і без дефолтів safeParse валив би ВЕСЬ /api/stats.
+export const heatmapCellSchema = z.object({
+  d: z.string(),
+  v: num,
+  l: int,
+  o: int.default(0),
+  m: int.default(0),
+  n: int.default(0),
+});
+
+/** Розподіл часу першого відкриття — коробка з вусами (p10/q1/median/q3/p90). */
+export const openRhythmSchema = z.object({
+  ready: z.boolean().default(false),
+  n: int.default(0),
+  needed: int.optional(),
+  p10: num.nullable().optional(),
+  q1: num.nullable().optional(),
+  median: num.nullable().optional(),
+  q3: num.nullable().optional(),
+  p90: num.nullable().optional(),
+  iqr: num.nullable().optional(),
+});
+
+/** Тиждень звички: активні доби зі СПРАВЖНЬОГО знаменника + склад активності. */
+export const habitWeekSchema = z.object({
+  week: z.string(),
+  active: int.default(0),
+  days: int.default(0),
+  opens: int.default(0),
+  mock: int.default(0),
+  news: int.default(0),
+});
 
 export const appliedWeekSchema = z.object({ week: z.string(), count: int });
 
@@ -158,6 +190,10 @@ export const checkinMorningSchema = z.object({
   plan: multi(category),
   planApply: int.optional(),
   worryAM: int.optional(),
+  // Кнопка «Підтвердити» (сервер: stats-core.mjs case 'checkin') — після
+  // цього прапорця бекенд ІГНОРУЄ будь-які подальші правки блоку. Живе тут,
+  // а не в окремій схемі, бо приходить у ТОМУ САМОМУ checkinToday[slot].
+  confirmed: z.boolean().optional(),
 });
 export const checkinAfternoonSchema = z.object({
   pace: lenient(z.enum(['on', 'off', 'behind', 'other', 'overload', 'better'])),
@@ -166,6 +202,7 @@ export const checkinAfternoonSchema = z.object({
   ate: multi(category),
   rushed: int.optional(),
   withWhom: lenient(z.enum(['alone', 'family', 'friends', 'work', 'public', 'mixed'])),
+  confirmed: z.boolean().optional(),
 });
 export const checkinEveningSchema = z.object({
   dayScore: int.optional(),
@@ -215,6 +252,7 @@ export const checkinEveningSchema = z.object({
   jobConfidence: int.optional(),
   focusQuality: int.optional(),
   flames: multi(z.enum(['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'])),
+  confirmed: z.boolean().optional(),
 });
 export const checkinDaySchema = z.object({
   morning: checkinMorningSchema.optional(),
@@ -301,7 +339,80 @@ export const checkinTopSchema = z.object({ value: z.string(), n: int.default(0) 
 export const checkinTopsSchema = z.object({
   blocker: checkinTopSchema.nullable().default(null),
   helper: checkinTopSchema.nullable().default(null),
+  // Повний рейтинг (не лише мода) — blocker/helper мультивибірні, тож їх немає
+  // в реєстрі «Індексу дня»; ця картка — єдине місце, де вони видні.
+  blockers: z.array(checkinTopSchema).default([]),
+  helpers: z.array(checkinTopSchema).default([]),
+  days: int.default(0),
 });
+
+// «Індекс дня» (checkin-model.mjs): композитні індекси, ваги, що вчаться на
+// власних dayScore, драйвери, лаговий звʼязок, архетипи. Форми 1:1 з JS-
+// портом моделі (analyzeCheckinModel) — golden-звірений з research/checkin_model.py.
+export const modelIndexKeySchema = z.enum(['recovery', 'resource', 'work', 'agency', 'body']);
+export const checkinFitSchema = z.object({
+  weights: z.record(modelIndexKeySchema, num),
+  r2: num.nullable().default(null),
+  n: int.default(0),
+  learned: z.boolean().default(false),
+});
+export const checkinDayIndexSchema = z.object({
+  last: num.nullable().default(null),
+  mean: num.nullable().default(null),
+});
+export const checkinDriverSchema = z.object({
+  field: z.string(),
+  index: modelIndexKeySchema,
+  delta: num,
+  d: num,
+  p: num,
+  nHigh: int,
+  nLow: int,
+});
+/** Той самий гейт-патерн, що corrPairSchema/bedtimeVsEnergySchema, лише для
+ *  лагового звʼязку «сьогодні -> завтра» (rho/p зʼявляються тільки ready). */
+export const checkinLaggedSchema = z.object({
+  ready: z.boolean().default(false),
+  n: int.default(0),
+  needed: int.optional(),
+  rho: num.nullable().optional(),
+  p: num.nullable().optional(),
+  src: z.string().optional(),
+  target: z.string().optional(),
+});
+export const checkinArchetypeGroupSchema = z.object({
+  n: int.default(0),
+  share: num.default(0),
+  profile: z.record(modelIndexKeySchema, num),
+  top: modelIndexKeySchema,
+  low: modelIndexKeySchema,
+});
+export const checkinArchetypesSchema = z.object({
+  ready: z.boolean().default(false),
+  n: int.default(0),
+  needed: int.optional(),
+  k: int.optional(),
+  groups: z.array(checkinArchetypeGroupSchema).default([]),
+});
+export const checkinModelSchema = z.object({
+  n: int.default(0),
+  fit: checkinFitSchema,
+  dayIndex: checkinDayIndexSchema,
+  drivers: z.array(checkinDriverSchema).default([]),
+  // Ключі — підмножина INDICES (сервер рахує лаг лише для recovery/body,
+  // FIELD 7 у research/checkin_model.py), не всі 5: string-record, не enum-record.
+  lagged: z.record(z.string(), checkinLaggedSchema),
+  archetypes: checkinArchetypesSchema,
+});
+
+const EMPTY_CHECKIN_MODEL = {
+  n: 0,
+  fit: { weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 }, r2: null, n: 0, learned: false },
+  dayIndex: { last: null, mean: null },
+  drivers: [],
+  lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
+  archetypes: { ready: false, n: 0, groups: [] },
+};
 
 export const statsSchema = z.object({
   streaks: z.object({
@@ -377,7 +488,16 @@ export const statsSchema = z.object({
   bedtimeVsEnergy: bedtimeVsEnergySchema.default({ ready: false, needed: 8, early: 0, late: 0 }),
   categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
   appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
-  checkinTops: checkinTopsSchema.default({ blocker: null, helper: null }),
+  checkinTops: checkinTopsSchema.default({
+    blocker: null,
+    helper: null,
+    blockers: [],
+    helpers: [],
+    days: 0,
+  }),
+  checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
+  openRhythm: openRhythmSchema.default({ ready: false, n: 0 }),
+  habitWeekly: z.array(habitWeekSchema).default([]),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
   intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),

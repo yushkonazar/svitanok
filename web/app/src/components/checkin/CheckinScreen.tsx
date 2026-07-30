@@ -45,7 +45,10 @@ import {
 const DEBOUNCE_MS = 1200;
 
 type AnswerValue = string | number | Array<string | number>;
-type Answers = Record<string, AnswerValue>;
+// confirmed — прапорець «Підтверджено», не відповідь на питання: живе поруч
+// із Answers, а не всередині AnswerValue, щоб isAnswered/asList/питання-цикли
+// й далі не бачили нічого, крім реальних полів чек-іну.
+type Answers = Record<string, AnswerValue> & { confirmed?: boolean };
 type State = 'locked' | 'open' | 'done' | 'missed';
 
 const ORDER: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
@@ -85,10 +88,14 @@ function OptionButton({
       type="button"
       aria-pressed={on}
       // tabIndex -1 у згорнутому: інакше блок «пропущено» лишається
-      // доступним з клавіатури, хоч візуально закритий.
+      // доступним з клавіатури, хоч візуально закритий. Візуальне згортання
+      // (grid-rows 0fr) робить тап недосяжним для звичайного дотику, але сам
+      // обробник — друга лінія захисту: підтверджений блок мусить лишатись
+      // незмінним НАВІТЬ якщо хтось дістанеться кнопки в обхід розмітки.
       tabIndex={disabled ? -1 : 0}
-      onClick={onClick}
-      className="min-w-[40px] flex-auto rounded-[10px] border px-1.5 py-2 text-[11.5px] font-semibold transition-colors"
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      className="min-w-[40px] flex-auto rounded-[10px] border px-1.5 py-2 text-[11.5px] font-semibold transition-colors disabled:cursor-default"
       style={{
         borderColor: on ? 'var(--color-a2)' : 'var(--color-glassb)',
         background: on ? 'color-mix(in srgb, var(--color-a2) 16%, transparent)' : 'var(--color-bg2)',
@@ -165,61 +172,137 @@ function QuestionRow({
 function BlockCard({
   b,
   state,
+  live,
   answers,
   workDay,
   onAnswer,
   onPad,
+  onConfirm,
 }: {
   b: Block;
   state: State;
+  /** Активне вікно ЦЬОГО блоку зараз (або демо-режим) — підтвердити можна
+   *  ЛИШЕ поки воно живе, інакше кнопка обіцяла б збереження, якого сервер
+   *  однаково відкинув би (слот/дату визначає він, а не клієнтський час). */
+  live: boolean;
   answers: Answers;
   workDay: boolean;
   onAnswer: (q: string, v: string | number, multi?: number) => void;
   onPad: (xId: string, x: number, yId: string, y: number) => void;
+  onConfirm: () => void;
 }) {
   const [deepOpen, setDeepOpen] = useState(false);
-  const label =
-    state === 'open'
-      ? 'ЗАПОВНИ'
+  // «Записаний» блок можна РОЗГОРНУТИ НАЗАД. Без цього була дірка: isDone
+  // рахує лише ЯДРО (не-soft core-питання), тож щойно відповів на основні —
+  // блок згортався в «✓ ЗАПИСАНО», а разом із ним ставав недосяжним і розділ
+  // «Детальніше». Тобто на глибокі питання не було як відповісти взагалі.
+  // Згортання лишається (підсумок чипами — корисний стан), але тепер це
+  // ПЕРЕМИКАЧ, а не однобічні двері.
+  //
+  // ⚠️ Підтверджений блок (confirmed) з цього правила ВИКЛЮЧЕНИЙ навмисне:
+  // кнопка «Підтвердити» (нижче) існує рівно для того, щоб після неї
+  // «розгорнути назад» більше не можна було — інакше підтвердження нічого
+  // не гарантує.
+  const [reopened, setReopened] = useState(false);
+  const confirmed = !!answers.confirmed;
+
+  const core = coreQuestions(b, workDay, answers);
+  const deep = deepQuestions(b, workDay, answers);
+  const deepFilled = deep.filter((q) => isAnswered(q, answers)).length;
+  const deepLeft = deep.length - deepFilled;
+  const coreDone = isDone(b, answers);
+
+  // ⚠️ isDone (у stateOf) перевіряється РАНІШЕ за «активний слот», тож щойно
+  // відповів на ядро — state миттю стає 'done', НАВІТЬ якщо вікно блоку й
+  // досі активне. Раніше це й спричиняло автозгортання просто на середині
+  // заповнення. Тому «розгорнуто» рахуємо НЕ від state, а від `live` напряму:
+  // поки вікно живе, блок лишається відкритим завжди — заповнюєш ядро, бачиш
+  // кнопку «Підтвердити», можеш дозаповнити «Детальніше» — усе без згортання.
+  // Лише коли вікно ЗАКРИЛОСЬ (і підтвердження не було), вмикається старий
+  // режим «згорнуто, розгорни вручну» (canReopen).
+  const canReopen = state === 'done' && !confirmed && !live;
+  const expanded = !confirmed && (live || (canReopen && reopened));
+  // «Пропущений» лишається замкненим свідомо: відповідь заднім числом —
+  // здогадка, не дані. Підтверджений — замкнений НАЗАВЖДИ, а не до кінця вікна.
+  const disabled = !expanded;
+  // Показуємо кнопку, лише поки вікно блоку РЕАЛЬНО живе: підтвердження,
+  // надіслане в закрите вікно, сервер тихо відкинув би (той самий гейт, що
+  // й звичайні правки), і власник побачив би «підтверджено», яке насправді
+  // не зберіглось. Чесніше не показувати кнопку взагалі, ніж брехати нею.
+  const canConfirm = live && !confirmed && coreDone;
+
+  const label = confirmed
+    ? '🔒 ПІДТВЕРДЖЕНО'
+    : live
+      ? coreDone
+        ? deepLeft > 0
+          ? `ГОТОВО · ЩЕ ${deepLeft}`
+          : 'ГОТОВО — ПІДТВЕРДЬ'
+        : 'ЗАПОВНИ'
       : state === 'done'
-        ? '✓ ЗАПИСАНО'
+        ? reopened
+          ? '▲ ЗГОРНУТИ'
+          : deepLeft > 0
+            ? `✓ ЗАПИСАНО · ЩЕ ${deepLeft}`
+            : '✓ ЗАПИСАНО'
         : state === 'missed'
           ? 'ПРОПУЩЕНО'
           : `ВІДКРИЄТЬСЯ О ${pad2(b.from)}:00`;
 
-  const tone = state === 'open' ? 'text-a2' : state === 'done' ? 'text-pos' : 'text-tx3';
-  const core = coreQuestions(b, workDay, answers);
-  const deep = deepQuestions(b, workDay, answers);
-  const deepFilled = deep.filter((q) => isAnswered(q, answers)).length;
-  const disabled = state !== 'open';
+  const tone =
+    confirmed || (live && coreDone)
+      ? 'text-pos'
+      : live || state === 'open'
+        ? 'text-a2'
+        : state === 'done'
+          ? 'text-pos'
+          : 'text-tx3';
+
+  const head = (
+    <>
+      <span className="text-[15px]">{b.ic}</span>
+      <span className="text-[13.5px] font-bold">{b.nm}</span>
+      <span className={`ml-auto font-mono text-[9.5px] font-semibold tracking-[0.05em] ${tone}`}>
+        {label}
+      </span>
+    </>
+  );
 
   return (
     <div
       className="overflow-hidden rounded-2xl border transition-[border-color,background,opacity] duration-[400ms]"
       style={{
         borderColor:
-          state === 'open'
+          live && !confirmed
             ? 'color-mix(in srgb, var(--color-a2) 55%, transparent)'
             : 'var(--color-glassb)',
         background:
-          state === 'open'
+          live && !confirmed
             ? 'color-mix(in srgb, var(--color-a2) 7%, var(--color-glass))'
             : 'var(--color-glass)',
         opacity: state === 'locked' ? 0.5 : state === 'missed' ? 0.62 : 1,
       }}
     >
-      <div className="flex items-center gap-2.5 px-3.5 py-3">
-        <span className="text-[15px]">{b.ic}</span>
-        <span className="text-[13.5px] font-bold">{b.nm}</span>
-        <span className={`ml-auto font-mono text-[9.5px] font-semibold tracking-[0.05em] ${tone}`}>
-          {label}
-        </span>
-      </div>
+      {canReopen ? (
+        <button
+          type="button"
+          aria-expanded={reopened}
+          onClick={() => {
+            haptic('light');
+            setReopened((v) => !v);
+          }}
+          className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left"
+        >
+          {head}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2.5 px-3.5 py-3">{head}</div>
+      )}
 
       {/* grid-rows 0fr->1fr анімує висоту, не знаючи її в px (вона різна в блоках). */}
       <div
         className="grid transition-[grid-template-rows] duration-[450ms] ease-[cubic-bezier(.22,1,.36,1)]"
-        style={{ gridTemplateRows: state === 'open' ? '1fr' : '0fr' }}
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3.5 px-3.5 pb-3.5">
@@ -268,13 +351,39 @@ function BlockCard({
                 )}
               </>
             )}
+
+            {canConfirm && (
+              <div className="flex flex-col gap-1.5 border-t border-glassb pt-3.5">
+                <p className="text-[10.5px] leading-[1.45] text-tx3">
+                  Після підтвердження відповіді зафіксуються — передумати вже не вийде. Перевір,
+                  перш ніж тиснути.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    haptic('success');
+                    onConfirm();
+                  }}
+                  className="rounded-xl py-2.5 text-center text-[12.5px] font-bold"
+                  style={{ background: 'var(--grad)', color: 'var(--color-onacc)' }}
+                >
+                  🔒 Підтвердити відповіді
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {state === 'done' && (
+      {/* Чипи — коли блок ЗГОРНУТИЙ: підтверджено назавжди, АБО вікно
+          закрилось (не live) і не розгорнуто вручну. Поки вікно живе,
+          блок лишається розгорнутим (expanded=true), тож чипи тут не мають
+          сенсу — там уже видно самі відповіді. */}
+      {(confirmed || (!live && state === 'done' && !reopened)) && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3">
           {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано».
+              У ПЕРЕВІДКРИТОМУ блоці їх немає: там уже видно самі відповіді,
+              і чипи дублювали б їх удвічі.
               visibleQuestions, а не b.qs: приховане джоб-число (обрав «Робота»,
               ввів, перемкнув на іншу категорію) не мусить зринати чипом. */}
           {visibleQuestions(b, workDay, answers)
@@ -382,6 +491,24 @@ export function CheckinScreen() {
     queue(slot, next);
   };
 
+  /**
+   * Підтвердження — ОДИН атомарний запит, а не «спершу дошли правки, тоді
+   * підтверди»: два окремі запити до KV (ліміт 1/сек, немає CAS) ризикували б
+   * гонкою, де confirmed приземлився б РАНІШЕ за останню правку. Тому
+   * невідісланий local[slot] їде в тому самому тілі, що й confirmed:true —
+   * сервер мерджить і фіксує однією операцією (case 'checkin' у stats-core.mjs).
+   */
+  const onConfirm = (slot: CheckinSlot) => {
+    clearTimeout(timers.current[slot]);
+    const pending = local[slot] ?? {};
+    save.mutate({ slot, answers: { ...pending, confirmed: true } });
+    setLocal((p) => {
+      const next = { ...p };
+      delete next[slot];
+      return next;
+    });
+  };
+
   const filled = ORDER.filter((slot) => {
     const b = BLOCKS.find((x) => x.id === slot)!;
     return isDone(b, answersFor(slot));
@@ -408,10 +535,12 @@ export function CheckinScreen() {
             state={
               demo && !isDone(b, answersFor(b.id)) ? 'open' : stateOf(b, active, answersFor(b.id))
             }
+            live={demo || active === b.id}
             answers={answersFor(b.id)}
             workDay={workDay}
             onAnswer={(q, v, multi) => onAnswer(b.id, q, v, multi)}
             onPad={(xId, x, yId, y) => onPad(b.id, xId, x, yId, y)}
+            onConfirm={() => onConfirm(b.id)}
           />
         </div>
       ))}
