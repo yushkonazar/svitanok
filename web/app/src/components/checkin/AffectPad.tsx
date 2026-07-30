@@ -25,12 +25,14 @@ export function AffectPad({
 }: {
   xLabel: string;
   yLabel: string;
-  x: number | undefined;
-  y: number | undefined;
+  // null — «зняв відповідь» (explicit-clear), undefined — «ще не відповідав»;
+  // обидва читаються як «не обрано» однаково (questions.ts isAnswered).
+  x: number | null | undefined;
+  y: number | null | undefined;
   onPick: (x: number, y: number) => void;
   disabled?: boolean;
 }) {
-  const picked = x !== undefined && y !== undefined;
+  const picked = x != null && y != null;
 
   return (
     <div className="flex flex-col gap-1">

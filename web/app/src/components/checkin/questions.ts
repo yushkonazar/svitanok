@@ -518,7 +518,9 @@ export function isWorkDay(dayAnswers: Record<string, unknown> | undefined): bool
 function condMet(q: Question, answers: Record<string, unknown> | undefined): boolean {
   if (!q.showIf) return true;
   const v = answers?.[q.showIf.q];
-  return v !== undefined && q.showIf.in.includes(v as string | number);
+  // != null (не !== undefined): explicit-clear лишає null у чернетці як
+  // «поки без відповіді» — та сама семантика, що isAnswered нижче.
+  return v != null && q.showIf.in.includes(v as string | number);
 }
 
 /** Питання блоку, видимі за поточним контекстом (умови + гейт робочого дня). */
@@ -548,14 +550,20 @@ export function deepQuestions(
   return visibleQuestions(b, workDay, answers).filter((q) => q.deep);
 }
 
-/** Чи відповіли на питання (для pad — на обидві осі). */
+/**
+ * Чи відповіли на питання (для pad — на обидві осі).
+ *
+ * != null, не !== undefined: «зняти відповідь» (повторний тап знімає) пише
+ * ЯВНИЙ null у чернетку, доки дебаунс не піде на сервер і поле не зникне
+ * зовсім — обидва стани мусять читатись як «без відповіді» однаково.
+ */
 export function isAnswered(q: Question, answers: Record<string, unknown> | undefined): boolean {
   if (!answers) return false;
   if (q.kind === 'pad' && q.pad) {
-    return answers[q.pad.x] !== undefined && answers[q.pad.y] !== undefined;
+    return answers[q.pad.x] != null && answers[q.pad.y] != null;
   }
   if (q.kind === 'multi') return asList(answers[q.id]).length > 0;
-  return answers[q.id] !== undefined;
+  return answers[q.id] != null;
 }
 
 /** Блок заповнений, коли відповіли на всі НЕ-soft питання ядра. */

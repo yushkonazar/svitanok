@@ -182,6 +182,68 @@ describe('recordEvent — checkin', () => {
   });
 });
 
+describe('recordEvent — checkin, ЯВНЕ очищення поля (null/[])', () => {
+  it('null очищує скалярне поле — раніше лишалось старе значення', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { sleepH: 6.5, energy: 4 }), '2026-07-20');
+    s = recordEvent(s, ck('morning', { sleepH: null }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({ energy: 4 });
+  });
+
+  it('null очищує enum-поле', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { bedtime: 'e23', sleepH: 7 }), '2026-07-20');
+    s = recordEvent(s, ck('morning', { bedtime: null }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({ sleepH: 7 });
+  });
+
+  it('[] очищує мультивибір', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { plan: ['work', 'learn'] }), '2026-07-20');
+    s = recordEvent(s, ck('morning', { plan: [] }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({});
+  });
+
+  it('null теж очищує мультивибір (симетрія зі скалярними полями)', () => {
+    let s = recordEvent(emptyStore(), ck('evening', { blocker: ['tired'] }), '2026-07-20');
+    s = recordEvent(s, ck('evening', { blocker: null }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].evening).toEqual({});
+  });
+
+  it('непорожній масив, що після фільтра лишився порожнім (саме сміття) — НЕ очищує', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { plan: ['work'] }), '2026-07-20');
+    // 'вигадка' не в CATEGORY_VALUES -> фільтр дає [], але це РІЗНЕ від
+    // клієнтського [] (явний намір) — сміття не мусить випадково стирати поле.
+    s = recordEvent(s, ck('morning', { plan: ['вигадка'] }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({ plan: ['work'] });
+  });
+
+  it('відсутній ключ і далі НЕ чіпає — регресія для агента (часткові оновлення)', () => {
+    let s = recordEvent(
+      emptyStore(),
+      ck('morning', { sleepH: 7.5, energy: 4, plan: ['work'] }),
+      '2026-07-20',
+    );
+    // Агент шле лише щойно згадане поле — решта не в event взагалі.
+    s = recordEvent(s, ck('morning', { energy: 5 }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({ sleepH: 7.5, energy: 5, plan: ['work'] });
+  });
+
+  it('очищення й нове значення в ОДНІЙ події — обидва застосовуються', () => {
+    let s = recordEvent(
+      emptyStore(),
+      ck('morning', { sleepH: 6.5, bedtime: 'late' }),
+      '2026-07-20',
+    );
+    s = recordEvent(s, ck('morning', { sleepH: null, energy: 4 }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({ bedtime: 'late', energy: 4 });
+  });
+
+  it('підтверджений блок ігнорує ОЧИЩЕННЯ так само, як і будь-яку іншу правку', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { sleepH: 7 }), '2026-07-20');
+    s = recordEvent(s, ck('morning', { confirmed: true }), '2026-07-20');
+    s = recordEvent(s, ck('morning', { sleepH: null }), '2026-07-20');
+    expect(s.checkins['2026-07-20'].morning).toEqual({ sleepH: 7, confirmed: true });
+  });
+});
+
 describe('recordEvent — checkin, confirmed (кнопка «Підтвердити»)', () => {
   it('confirmed:true фіксує блок разом із будь-якими полями в тому самому запиті', () => {
     const s = recordEvent(
