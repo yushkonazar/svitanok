@@ -307,7 +307,12 @@ const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join
 
 /** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
 async function validateInitData(initData, botToken) {
-  if (!initData) return null;
+  // ⚠️ Без цієї перевірки: enc.encode(undefined) -> порожній масив байтів,
+  // тож секрет вироджується у HMAC("WebAppData", "") — публічну константу,
+  // яку може порахувати БУДЬ-ХТО без знання токена. Не заданий токен (вікно
+  // ротації секрету, битий конфіг) тоді тихо перетворює misconfig на fail-open
+  // авторизацію, а не на fail-closed відмову.
+  if (!initData || !botToken) return null;
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   if (!hash) return null;
@@ -573,16 +578,21 @@ async function applyEvent(env, body) {
 
   const loaded = await loadStats(env);
   // Підтверджений блок (recordEvent, case 'checkin') ігнорує ВСІ подальші
-  // правки — рахуємо це ДО запису, щоб викликач (агент, runRecordAction)
-  // міг чесно сказати «нічого не змінилось», а не збрехати про успіх.
+  // правки — рахуємо це ДО запису, щоб викликач (агент, runRecordAction;
+  // Mini App, handleEvent) міг чесно сказати «нічого не змінилось», а не
+  // збрехати про успіх.
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
+  if (checkinLocked) return { locked: true }; // нічого не зміниться — не палимо KV-запис даремно
   const stats = recordEvent(loaded, ev, dateKey, nowMin);
   await env.BRIEFING.put('stats', JSON.stringify(stats));
-  if (body.type === 'checkin') return { locked: checkinLocked };
+  if (body.type === 'checkin') return { locked: false };
 }
 
-/** POST /api/event {type, …, initData} -> записати подію у стор статистики. */
+/** POST /api/event {type, …, initData} -> записати подію у стор статистики.
+ *  locked (checkin, вже підтверджений блок) — сурфейсимо чесно, той самий
+ *  контракт, що runRecordAction (агент): {ok:true} саме по собі не каже,
+ *  чи запис реально відбувся. */
 async function handleEvent(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   let body;
@@ -595,8 +605,8 @@ async function handleEvent(request, env) {
   const auth = await checkOwner(body.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  await applyEvent(env, body);
-  return json({ ok: true });
+  const result = await applyEvent(env, body);
+  return json({ ok: true, locked: result?.locked ?? false });
 }
 
 /**
