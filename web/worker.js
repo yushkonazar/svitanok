@@ -307,7 +307,12 @@ const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join
 
 /** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
 async function validateInitData(initData, botToken) {
-  if (!initData) return null;
+  // ⚠️ Без цієї перевірки: enc.encode(undefined) -> порожній масив байтів,
+  // тож секрет вироджується у HMAC("WebAppData", "") — публічну константу,
+  // яку може порахувати БУДЬ-ХТО без знання токена. Не заданий токен (вікно
+  // ротації секрету, битий конфіг) тоді тихо перетворює misconfig на fail-open
+  // авторизацію, а не на fail-closed відмову.
+  if (!initData || !botToken) return null;
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   if (!hash) return null;

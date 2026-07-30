@@ -109,6 +109,17 @@ describe('GET /api/weather — owner-gate', () => {
     const res = await getWeather(initData);
     expect(res.status).toBe(403);
   });
+
+  /* ⚠️ Регресія: enc.encode(undefined) у validateInitData давав ПОРОЖНІЙ масив
+     байтів, тож HMAC-секрет вироджувався у HMAC("WebAppData", "") — публічну
+     константу, яку рахує будь-хто БЕЗ знання токена. Не заданий
+     TELEGRAM_BOT_TOKEN (вікно ротації секрету, битий конфіг) тихо перетворював
+     misconfig на fail-open: підроблений initData з довільним user id проходив. */
+  it('TELEGRAM_BOT_TOKEN не задано -> 401, НАВІТЬ якщо hash порахований проти undefined', async () => {
+    const forged = await buildInitData(OWNER, undefined as unknown as string);
+    const res = await getWeather(forged, env({ TELEGRAM_BOT_TOKEN: undefined }));
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('GET /api/weather — фетч, кеш, ліміт', () => {
