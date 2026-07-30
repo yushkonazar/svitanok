@@ -266,6 +266,41 @@ describe('/api/agent-step — термінальні дії', () => {
       expect(kv.get('stats')).toBeUndefined();
     });
 
+    it('checkin у ВЖЕ ПІДТВЕРДЖЕНИЙ блок -> чесний текст, KV не змінюється (агент не бреше про успіх)', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-10T08:00:00Z')); // Київ 11:00 -> ранок
+      try {
+        await authed({
+          token: await token(),
+          structured: { action: 'recordAction', recordKind: 'checkin', energy: 4 },
+        });
+        // Підтверджуємо блок напряму в KV — так само, як це робить кнопка
+        // «Підтвердити» в Mini App (recordEvent, case 'checkin', confirmed:true).
+        const stats = JSON.parse(kv.get('stats')!);
+        const dateKey = Object.keys(stats.checkins)[0]!;
+        stats.checkins[dateKey].morning.confirmed = true;
+        kv.set('stats', JSON.stringify(stats));
+
+        // Другий запит — інший runId, той самий підтверджений слот.
+        await authed({
+          token: await token({ runId: 'run5678' }),
+          structured: {
+            action: 'recordAction',
+            recordKind: 'checkin',
+            energy: 1,
+            sleepH: 3,
+          },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sentTexts().at(-1)).toContain('підтверджено');
+      const stats = JSON.parse(kv.get('stats')!);
+      const dateKey = Object.keys(stats.checkins)[0]!;
+      // Жодне нове поле не потрапило — блок лишився ЯКИМ БУВ до другого виклику.
+      expect(stats.checkins[dateKey].morning).toEqual({ energy: 4, confirmed: true });
+    });
+
     it('voteNews: newsIndex резолвиться у url/topic СВІЖИМ читанням latest, зараховує голос', async () => {
       kv.set(
         'latest',

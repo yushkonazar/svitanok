@@ -571,8 +571,15 @@ async function applyEvent(env, body) {
     dateKey = checkinDateKey(dateKey, h);
   }
 
-  const stats = recordEvent(await loadStats(env), ev, dateKey, nowMin);
+  const loaded = await loadStats(env);
+  // Підтверджений блок (recordEvent, case 'checkin') ігнорує ВСІ подальші
+  // правки — рахуємо це ДО запису, щоб викликач (агент, runRecordAction)
+  // міг чесно сказати «нічого не змінилось», а не збрехати про успіх.
+  const checkinLocked =
+    body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
+  const stats = recordEvent(loaded, ev, dateKey, nowMin);
   await env.BRIEFING.put('stats', JSON.stringify(stats));
+  if (body.type === 'checkin') return { locked: checkinLocked };
 }
 
 /** POST /api/event {type, …, initData} -> записати подію у стор статистики. */
@@ -1820,7 +1827,10 @@ async function runRecordAction(env, parsed, action) {
   if (action.kind === 'checkin') {
     const slot = checkinSlot(kyivHour());
     if (!slot) return sendText('🌙 Зараз тиха зона (02:00–08:00) — чек-ін не пишемо.');
-    await applyEvent(env, { type: 'checkin', ...action.checkin });
+    const result = await applyEvent(env, { type: 'checkin', ...action.checkin });
+    if (result?.locked) {
+      return sendText(`🔒 ${RECORD_CHECKIN_SLOT_LABEL[slot]} уже підтверджено — змінити не можна.`);
+    }
     return sendText(`✅ Записав чек-ін (${RECORD_CHECKIN_SLOT_LABEL[slot]}).`);
   }
 
