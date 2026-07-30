@@ -2,6 +2,12 @@
 // Без залежностей і без I/O — щоб покрити тестами (worker.js імпортує це, KV-I/O
 // робить Worker). Стор — один JSON-блоб у KV (ключ `stats`).
 //
+// checkin-model.mjs — окремий файл (портована математика: індекси/ridge-ваги/
+// драйвери/архетипи), а не inline тут: research/checkin_model.py лишається
+// специфікацією-оракулом, і держати JS-порт в одному місці з однією назвою
+// файлу простіше звіряти з golden-векторами (tests/checkin-model.test.ts).
+import { analyzeCheckinModel, flattenCheckinDay } from './checkin-model.mjs';
+//
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
 //   funnel:    { '<url>': 'saved'|'applied'|'interview'|'offer' }  // стадія вакансії
@@ -605,15 +611,34 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
     case 'checkin': {
       // Слот і дату рахує ВОРКЕР (див. checkinSlot/checkinDateKey) — сюди вони
       // вже приходять готовими в ev.slot і dateKey.
+      //
+      // Підтверджений блок (confirmed:true) — далі ІГНОРУЄМО будь-які правки.
+      // Це навмисне рішення власника: кнопка «Підтвердити» має сенс лише
+      // якщо після неї справді нічого не можна змінити, інакше вона просто
+      // бреше про остаточність. Перевірка ДО cleanCheckin — щоб жодне поле
+      // (включно з повторним confirm) не могло торкнутись замкненого блоку.
+      const existing = s.checkins[dateKey]?.[ev.slot];
+      if (existing?.confirmed) break;
+
       const clean = cleanCheckin(ev.slot, ev);
-      // Невідомий слот або жодного валідного поля -> тихо нічого. М'який ігнор,
-      // як у mock_answer, а НЕ як у job_stage (там невідоме значення означає
-      // «видалити» — для чек-іну це знищувало б добу).
-      if (!clean || !Object.keys(clean).length) break;
+      const confirming = ev.confirmed === true;
+      const hasClean = !!clean && Object.keys(clean).length > 0;
+      // Невідомий слот, чи жодного валідного поля І не підтвердження -> тихо
+      // нічого. М'який ігнор, як у mock_answer, а НЕ як у job_stage (там
+      // невідоме значення означає «видалити» — для чек-іну це знищувало б добу).
+      if (!hasClean && !confirming) break;
+
+      const merged = { ...existing, ...(clean ?? {}) };
+      if (confirming) {
+        // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
+        // жодної відповіді ще нема, назавжди без жодних даних усередині.
+        if (!Object.keys(merged).length) break;
+        merged.confirmed = true;
+      }
       if (!s.checkins[dateKey] || typeof s.checkins[dateKey] !== 'object') s.checkins[dateKey] = {};
       // Мерджимо, а не замінюємо: клієнт шле блок дебаунсом, і часткова відповідь
       // не має стирати те, що вже відповіли раніше в цьому ж блоці.
-      s.checkins[dateKey][ev.slot] = { ...s.checkins[dateKey][ev.slot], ...clean };
+      s.checkins[dateKey][ev.slot] = merged;
       capCheckins(s);
       break;
     }
@@ -706,7 +731,11 @@ const median = (arr) => {
 
 /** Теплокарта активності: від понеділка ~12 тижнів тому до сьогодні (вкл.).
  *  value = сума дій дня (opens+mock+news), level 0..4 — фіксовані пороги,
- *  щоб колір мав стале значення день у день. */
+ *  щоб колір мав стале значення день у день.
+ *
+ *  o/m/n — СКЛАД тієї суми (opens/mock/news). Доти клітинка знала лише «скільки»,
+ *  і три різні дні (тричі заходив / відповів на питання / читав новини) виглядали
+ *  однаково. Тепер тап по клітинці може сказати, ЩО саме то був за день. */
 function buildHeatmap(days, todayKey) {
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 83);
@@ -717,12 +746,88 @@ function buildHeatmap(days, todayKey) {
     const k = d.toISOString().slice(0, 10);
     if (k > todayKey) break;
     const day = days[k];
-    const v = (day?.opens || 0) + (day?.mock || 0) + (day?.news || 0); // step прибрано (D4)
+    const o = day?.opens || 0;
+    const m = day?.mock || 0;
+    const nw = day?.news || 0;
+    const v = o + m + nw; // step прибрано (D4)
     const l = v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4;
-    out.push({ d: k, v, l });
+    out.push({ d: k, v, l, o, m, n: nw });
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return out;
+}
+
+/** Персентиль за лінійною інтерполяцією (той самий метод, що median вище). */
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return Math.round(sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo));
+}
+
+/**
+ * Ритм відкриття: РОЗПОДІЛ хвилин після 08:00 до першого заходу, не лише
+ * медіана. Доти з усього масиву opensMin назовні йшло одне число
+ * (timeToOpenMin), тобто розкид — власне те, що відрізняє звичку від
+ * випадковості — викидався. «О 8:20 ± 15 хв» і «о 8:20 ± 3 год» — це
+ * протилежні історії з однаковою медіаною.
+ *
+ * Вуса — p10/p90, а не min/max: одна ніч, коли відкрив о 23:00, розтягнула б
+ * шкалу так, що коробка стала б невидимою смужкою.
+ */
+function buildOpenRhythm(opensMin) {
+  const xs = opensMin.filter((v) => typeof v === 'number' && v >= 0).sort((a, b) => a - b);
+  if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
+  const q1 = percentile(xs, 0.25);
+  const q3 = percentile(xs, 0.75);
+  return {
+    ready: true,
+    n: xs.length,
+    p10: percentile(xs, 0.1),
+    q1,
+    median: percentile(xs, 0.5),
+    q3,
+    p90: percentile(xs, 0.9),
+    // Розкид середньої половини діб — і є «наскільки це ритуал».
+    iqr: q3 - q1,
+  };
+}
+
+/**
+ * Звички по тижнях: скільки діб тижня були активними + СКЛАД активності.
+ * Теплокарта показує щоденну щільність, але не відповідає на «чи я тримаюсь
+ * краще, ніж місяць тому» — для цього потрібен тренд, а не сітка.
+ */
+function buildHabitWeekly(days, todayKey, weeks = 12) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const buckets = Object.fromEntries(
+    starts.map((k) => [k, { active: 0, days: 0, opens: 0, mock: 0, news: 0 }]),
+  );
+  const today = new Date(todayKey + 'T00:00:00Z');
+  const first = new Date(starts[0] + 'T00:00:00Z');
+  for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+    const k = d.toISOString().slice(0, 10);
+    const b = buckets[weekStartKey(k)];
+    if (!b) continue;
+    // Знаменник — лише доби, що вже НАСТАЛИ: інакше поточний тиждень завжди
+    // виглядав би провальним (7 у знаменнику, коли минуло 2 дні).
+    b.days++;
+    const day = days[k];
+    b.opens += day?.opens || 0;
+    b.mock += day?.mock || 0;
+    b.news += day?.news || 0;
+    if ((day?.opens || 0) > 0) b.active++;
+  }
+  return starts.map((week) => ({
+    week,
+    active: buckets[week].active,
+    days: buckets[week].days,
+    opens: buckets[week].opens,
+    mock: buckets[week].mock,
+    news: buckets[week].news,
+  }));
 }
 
 /** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
@@ -1006,14 +1111,26 @@ function buildAppliedCalibration(checkins, appliedLog, todayKey, days = 30) {
   return { n, matched, more, fewer };
 }
 
+/** Скільки варіантів блокерів/помічників віддаємо в рейтингу (решта — хвіст). */
+const TOPS_RANK_LIMIT = 5;
+
 /**
- * Найчастіший блокер / помічник за N діб (мода, без 'none'). Не кореляція, а
- * розподіл — тож без гейта, лише n=0 -> null. Оживляє blocker (доти збирався,
- * але ніде не читався) і робить helper аналітичним.
+ * Блокери / помічники за N діб — ПОВНИЙ рейтинг, не лише мода. Не кореляція,
+ * а розподіл, тож без статистичного гейта (лише порожньо -> null/[]).
+ *
+ * Ці два поля — мультивибір, і саме тому їх НЕМАЄ в реєстрі «Індексу дня»
+ * (checkin-model.mjs FIELDS оперує скалярними/порядковими полями). Тобто це
+ * єдина картка, яка їх узагалі показує — дублювання з моделлю тут неможливе
+ * за побудовою.
+ *
+ * `blocker`/`helper` (мода) лишаються для сумісності контракту; `blockers`/
+ * `helpers` — новий рейтинг, `days` — скільки діб мали вечірній запис
+ * (знаменник, без якого «6×» не має масштабу).
  */
 function buildCheckinTops(checkins, todayKey, days = 30) {
   const bC = {};
   const hC = {};
+  let filled = 0;
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
@@ -1021,16 +1138,51 @@ function buildCheckinTops(checkins, todayKey, days = 30) {
     if (ev) {
       // asList: обидва стали мультивибором; 'none' — свідома відповідь «нічого
       // не завадило», а не варіант для топу, тож не рахуємо її як причину.
-      for (const b of asList(ev.blocker)) if (b !== 'none') bC[b] = (bC[b] || 0) + 1;
-      for (const h of asList(ev.helper)) if (h !== 'none') hC[h] = (hC[h] || 0) + 1;
+      const bs = asList(ev.blocker);
+      const hs = asList(ev.helper);
+      if (bs.length || hs.length) filled++;
+      for (const b of bs) if (b !== 'none') bC[b] = (bC[b] || 0) + 1;
+      for (const h of hs) if (h !== 'none') hC[h] = (hC[h] || 0) + 1;
     }
     d.setUTCDate(d.getUTCDate() + 1);
   }
-  const top = (m) => {
-    const e = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
-    return e ? { value: e[0], n: e[1] } : null;
+  const rank = (m) =>
+    Object.entries(m)
+      .map(([value, n]) => ({ value, n }))
+      .sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
+      .slice(0, TOPS_RANK_LIMIT);
+  const blockers = rank(bC);
+  const helpers = rank(hC);
+  return {
+    blocker: blockers[0] ?? null,
+    helper: helpers[0] ?? null,
+    blockers,
+    helpers,
+    days: filled,
   };
-  return { blocker: top(bC), helper: top(hC) };
+}
+
+const MODEL_WINDOW_DAYS = 90;
+
+/**
+ * «Індекс дня» — повна модель (checkin-model.mjs) над останніми
+ * MODEL_WINDOW_DAYS. КОЖЕН календарний день вікна стає рядком (навіть
+ * повністю порожній -> усі поля null): лаговий звʼязок «сьогодні->завтра»
+ * порівнює СУСІДНІ елементи масиву, тож пропуск дня зсунув би пари й почав
+ * би порівнювати не по-справжньому суміжні доби. Той самий принцип
+ * ітерації, що вже в buildCheckinSeries/buildCheckinFill (день за днем,
+ * незалежно від наявності запису).
+ */
+function buildCheckinModel(checkins, todayKey, days = MODEL_WINDOW_DAYS) {
+  const flat = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = d.toISOString().slice(0, 10);
+    flat.push(flattenCheckinDay(checkins[key], asList, CATEGORY_VALUES));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return analyzeCheckinModel(flat);
 }
 
 /** Чек-ін по тижнях: середні сон / енергія / оцінка дня + скільки діб заповнено. */
@@ -1251,6 +1403,10 @@ export function aggregateStats(store, todayKey) {
       bestOpenDays: bestStreak(s.days, opened),
     },
     timeToOpenMin: median(s.opensMin),
+    // Розподіл часу відкриття (не лише медіана) + тренд утримання по тижнях —
+    // «Звички» відповідають на «наскільки це ритуал» і «чи тримаюсь краще».
+    openRhythm: buildOpenRhythm(s.opensMin),
+    habitWeekly: buildHabitWeekly(s.days, todayKey),
     weekly,
     funnel,
     goal: { weeklyTarget: s.goal.weeklyTarget, weeklyApplied },
@@ -1332,5 +1488,9 @@ export function aggregateStats(store, todayKey) {
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
     appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
+    // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
+    // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,
+    // архетипи. Читає ті самі checkins, нічого нового не питає в людини.
+    checkinModel: buildCheckinModel(s.checkins, todayKey),
   };
 }

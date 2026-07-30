@@ -182,6 +182,51 @@ describe('recordEvent — checkin', () => {
   });
 });
 
+describe('recordEvent — checkin, confirmed (кнопка «Підтвердити»)', () => {
+  it('confirmed:true фіксує блок разом із будь-якими полями в тому самому запиті', () => {
+    const s = recordEvent(
+      emptyStore(),
+      ck('morning', { sleepH: 7.5, energy: 4, confirmed: true }),
+      '2026-07-17',
+    );
+    expect(s.checkins['2026-07-17'].morning).toEqual({ sleepH: 7.5, energy: 4, confirmed: true });
+  });
+
+  it('confirmed:true без нових полів фіксує те, що вже було збережено раніше', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { sleepH: 7.5, energy: 4 }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { confirmed: true }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ sleepH: 7.5, energy: 4, confirmed: true });
+  });
+
+  it('після confirmed:true БУДЬ-ЯКІ подальші правки ігноруються (нічого не змінити)', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { energy: 4, confirmed: true }), '2026-07-17');
+    // Спроба змінити вже підтверджене поле.
+    s = recordEvent(s, ck('morning', { energy: 1 }), '2026-07-17');
+    // Спроба додати НОВЕ поле в підтверджений блок.
+    s = recordEvent(s, ck('morning', { sleepH: 3 }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ energy: 4, confirmed: true });
+  });
+
+  it('підтвердити ПОРОЖНІЙ блок (без жодної відповіді) -> тихо нічого, доба не створюється', () => {
+    const s = recordEvent(emptyStore(), ck('morning', { confirmed: true }), '2026-07-17');
+    expect(s.checkins['2026-07-17']).toBeUndefined();
+  });
+
+  it('confirmed стосується ЛИШЕ свого слоту — інші блоки того ж дня редагуються як завжди', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { energy: 4, confirmed: true }), '2026-07-17');
+    s = recordEvent(s, ck('afternoon', { energy: 3 }), '2026-07-17');
+    s = recordEvent(s, ck('afternoon', { energy: 5 }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ energy: 4, confirmed: true });
+    expect(s.checkins['2026-07-17'].afternoon).toEqual({ energy: 5 });
+  });
+
+  it('повторний confirmed:true — ідемпотентно, без помилок і без зміни даних', () => {
+    let s = recordEvent(emptyStore(), ck('morning', { energy: 4, confirmed: true }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { confirmed: true }), '2026-07-17');
+    expect(s.checkins['2026-07-17'].morning).toEqual({ energy: 4, confirmed: true });
+  });
+});
+
 describe('aggregateStats — чек-ін', () => {
   const withDays = (rows: Array<[string, Record<string, unknown>, Record<string, unknown>?]>) => {
     let s = emptyStore();
@@ -561,6 +606,91 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
   it('checkinTops: порожньо -> null', () => {
     const t = aggregateStats(emptyStore(), '2026-07-17').checkinTops;
     expect([t.blocker, t.helper]).toEqual([null, null]);
+    expect([t.blockers, t.helpers]).toEqual([[], []]);
+  });
+
+  it('checkinTops: ПОВНИЙ рейтинг, не лише мода; days = діб із вечірнім вибором', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      ck('evening', { blocker: ['tired', 'distract'], helper: ['early'] }),
+      '2026-07-15',
+    );
+    s = recordEvent(
+      s,
+      ck('evening', { blocker: ['tired', 'stuck'], helper: ['early', 'list'] }),
+      '2026-07-16',
+    );
+    s = recordEvent(s, ck('evening', { blocker: ['tired'], helper: ['none'] }), '2026-07-17');
+    const t = aggregateStats(s, '2026-07-17').checkinTops;
+    // Мода лишається як була (сумісність контракту) і збігається з головою рейтингу.
+    expect(t.blocker).toEqual({ value: 'tired', n: 3 });
+    expect(t.blockers[0]).toEqual({ value: 'tired', n: 3 });
+    // Хвіст теж віддається — саме його доти ніде не було видно.
+    expect(t.blockers.map((r: { value: string }) => r.value)).toEqual([
+      'tired',
+      'distract',
+      'stuck',
+    ]);
+    // 'none' — свідоме «нічого не допомогло», не варіант рейтингу.
+    expect(t.helpers).toEqual([
+      { value: 'early', n: 2 },
+      { value: 'list', n: 1 },
+    ]);
+    expect(t.days).toBe(3);
+  });
+
+  it('checkinTops: рейтинг капиться на 5 (хвіст не роздуває картку)', () => {
+    const many = ['tired', 'anxious', 'stuck', 'distract', 'nomotiv', 'overload'];
+    let s = emptyStore();
+    // По одній добі на кожен блокер -> 6 різних значень, у рейтинг влазить 5.
+    many.forEach((b, i) => {
+      s = recordEvent(s, ck('evening', { blocker: [b] }), `2026-07-${10 + i}`);
+    });
+    const t = aggregateStats(s, '2026-07-17').checkinTops;
+    expect(t.blockers).toHaveLength(5);
+  });
+
+  it('checkinModel: порожній стор -> ваги апріорні, драйвери/архетипи не готові', () => {
+    const m = aggregateStats(emptyStore(), '2026-07-17').checkinModel;
+    expect(m.fit.learned).toBe(false);
+    expect(m.dayIndex).toEqual({ last: null, mean: null });
+    expect(m.drivers).toEqual([]);
+    expect(m.archetypes.ready).toBe(false);
+    expect(m.lagged.recovery.ready).toBe(false);
+    expect(m.lagged.body.ready).toBe(false);
+  });
+
+  it('checkinModel: 25 діб стабільно хороших даних -> ваги вчаться, індекс дня близький до 100', () => {
+    let s = emptyStore();
+    const d = new Date('2026-06-01T00:00:00Z');
+    let lastKey = '';
+    for (let i = 0; i < 25; i++) {
+      lastKey = d.toISOString().slice(0, 10);
+      s = recordEvent(s, ck('morning', { sleepH: 8, sleepQ: 5, energy: 5, mood: 5 }), lastKey);
+      s = recordEvent(s, ck('afternoon', { energy: 5, mood: 5 }), lastKey);
+      s = recordEvent(
+        s,
+        ck('evening', {
+          dayScore: 5,
+          output: 5,
+          focusQuality: 5,
+          autonomy: 5,
+          jobConfidence: 5,
+          moved: 'workout',
+          outdoor: 'long',
+          energy: 5,
+          mood: 5,
+        }),
+        lastKey,
+      );
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    // todayKey = ОСТАННІЙ день із записом, не наступний: інакше вікно моделі
+    // закінчується порожньою добою, і dayIndex.last рахує null, не сьогодні.
+    const m = aggregateStats(s, lastKey).checkinModel;
+    expect(m.fit.learned).toBe(true);
+    expect(m.dayIndex.last).toBeGreaterThan(90);
   });
 
   it('bedtimeVsEnergy: гейт, тоді ранкова енергія рано vs пізно (join за добою)', () => {

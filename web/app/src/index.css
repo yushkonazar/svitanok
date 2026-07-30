@@ -32,6 +32,16 @@
   --color-info: #9ba6ff;
   --color-track: rgba(255, 255, 255, 0.08);
 
+  /* «Індекс дня» (checkin-model.mjs) — 5 композитних індексів, кожен свій
+     колір: свідомо ІНШІ відтінки за a1/a2 (акцент/hero-числа) і pos/neg
+     (семантика добре/погано), щоб «індекс Робота високий» не читалось як
+     «успіх» — просто розподіл, не оцінка. */
+  --color-idx-recovery: #5ecfc4;
+  --color-idx-resource: #f0c25e;
+  --color-idx-work: #ef8354;
+  --color-idx-agency: #b18cf0;
+  --color-idx-body: #8fcf8a;
+
   --radius-card: 16px;
 
   --font-sans: 'Manrope Variable', system-ui, -apple-system, sans-serif;
@@ -74,6 +84,13 @@
   --color-neg: oklch(0.56 0.18 25);
   --color-info: #5a63cf;
   --color-track: rgba(60, 30, 40, 0.1);
+  /* темніші/насиченіші за темну тему — та сама причина, що a1/a2/pos/neg
+     вище: пастельний відтінок на #fbf3ee тоне до нечитабельного. */
+  --color-idx-recovery: #1f8a7d;
+  --color-idx-resource: #a8791a;
+  --color-idx-work: #c85a2e;
+  --color-idx-agency: #7c4dc4;
+  --color-idx-body: #4a8f3f;
   /* Вищі за темну (0.32 проти 0.26): на світлому тлі туман не світлить, а
      ТЕМНИТЬ, і та сама альфа дає слабший контраст. 0.32 -> дельта -47 по синьому. */
   --fogA: rgba(255, 150, 90, 0.32);

@@ -54,11 +54,16 @@ export function AffectPad({
                     aria-pressed={on}
                     aria-label={`${yLabel} ${yv}, ${xLabel} ${xv}`}
                     tabIndex={disabled ? -1 : 0}
-                    onClick={() => {
-                      haptic('light');
-                      onPick(xv, yv);
-                    }}
-                    className="h-7 flex-1 rounded-[7px] border transition-colors"
+                    disabled={disabled}
+                    onClick={
+                      disabled
+                        ? undefined
+                        : () => {
+                            haptic('light');
+                            onPick(xv, yv);
+                          }
+                    }
+                    className="h-7 flex-1 rounded-[7px] border transition-colors disabled:cursor-default"
                     style={{
                       borderColor: on ? 'var(--color-a2)' : 'var(--color-glassb)',
                       background: on

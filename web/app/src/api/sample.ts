@@ -33,16 +33,41 @@ function sampleHeatmap(): HeatmapCell[] {
   ];
   for (let i = 0; d <= today; d.setDate(d.getDate() + 1), i++) {
     const [v, l] = pattern[i % pattern.length];
-    out.push({ d: key(d), v, l });
+    // Склад суми (opens/mock/news) — детермінований розкид, щоб у демо було
+    // видно РІЗНІ за характером дні, а не лише різну «яскравість».
+    const o = v === 0 ? 0 : Math.max(1, Math.round(v * 0.4));
+    const m = v === 0 ? 0 : i % 3 === 0 ? 1 : 0;
+    out.push({ d: key(d), v, l, o, m, n: Math.max(0, v - o - m) });
   }
   return out;
+}
+
+/**
+ * Демо-тренд утримання: 12 тижнів із видимою динамікою (провал у середині,
+ * відновлення в кінці) — інакше на рівному ряді не видно, що графік узагалі
+ * щось показує. Останній тиждень частковий (як у житті: він ще триває).
+ */
+function sampleHabitWeekly() {
+  const active = [3, 5, 6, 4, 2, 3, 5, 6, 7, 6, 7, 4];
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 77); // понеділок 12 тижнів тому
+  return active.map((a, i) => {
+    const week = dayKey(d);
+    d.setDate(d.getDate() + 7);
+    const days = i === active.length - 1 ? 5 : 7; // поточний тиждень ще не повний
+    return { week, active: Math.min(a, days), days, opens: a * 2, mock: a, news: a * 3 };
+  });
 }
 
 /** ЛОКАЛЬНА дата -> 'YYYY-MM-DD'. toISOString дав би UTC і зсував демо на добу. */
 const dayKey = (dt: Date) =>
   `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 
-/** Демо-ряд чек-іну: 14 діб із дірками — саме так це й виглядає в житті. */
+/**
+ * Демо-ряд чек-іну: 24 доби з дірками — саме так це й виглядає в житті, але
+ * ДОСИТЬ трислотових діб, щоб «Карта станів» (гейт ≥12 пар енергія×настрій,
+ * StateMatrix.tsx) реально показала сітку в демо, а не порожню картку.
+ */
 function sampleCheckinSeries() {
   const out: Array<{
     d: string;
@@ -54,13 +79,16 @@ function sampleCheckinSeries() {
     slots: number;
   }> = [];
   const d = new Date();
-  d.setDate(d.getDate() - 13);
-  const sleep = [6.5, 7.5, 5.5, 8.5, 6.5, 7.5, 7.5, 5.5, 6.5, 8.5, 7.5, 6.5, 7.5, 6.5];
-  for (let i = 0; i < 14; i++) {
-    // Кожен 5-й день пропущений — щоб було видно, що дірки це норма, а не збій.
-    if (i % 5 !== 4) {
+  d.setDate(d.getDate() - 23);
+  const sleep = [
+    6.5, 7.5, 5.5, 8.5, 6.5, 7.5, 7.5, 5.5, 6.5, 8.5, 7.5, 6.5, 7.5, 6.5, 7, 6, 8, 7.5, 6.5, 7, 8,
+    5.5, 7, 6.5,
+  ];
+  for (let i = 0; i < 24; i++) {
+    // Кожен 6-й день пропущений — щоб було видно, що дірки це норма, а не збій.
+    if (i % 6 !== 5) {
       const base = Math.round((sleep[i]! - 3) * 10) / 10;
-      const three = i % 4 === 0;
+      const three = i % 3 !== 2; // 2 із 3 діб — повний трислотовий запис
       // Форма дня, не лише середнє: у «повні» доби видно спад ранок->вечір,
       // у неповні — дірка null там, де слот не заповнено.
       const clamp = (v: number) => Math.max(1, Math.min(5, Math.round(v)));
@@ -82,6 +110,9 @@ function sampleCheckinSeries() {
 export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
   timeToOpenMin: 23,
+  // Розкид ±~35 хв навколо медіани — «ритуал, але не за будильником».
+  openRhythm: { ready: true, n: 46, p10: 2, q1: 12, median: 23, q3: 47, p90: 78, iqr: 35 },
+  habitWeekly: sampleHabitWeekly(),
   weekly: [
     { day: 'Пн', value: 3, active: true },
     { day: 'Вт', value: 2, active: true },
@@ -380,7 +411,83 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
-  checkinTops: { blocker: { value: 'tired', n: 6 }, helper: { value: 'early', n: 5 } },
+  checkinTops: {
+    blocker: { value: 'tired', n: 6 },
+    helper: { value: 'early', n: 5 },
+    blockers: [
+      { value: 'tired', n: 6 },
+      { value: 'distract', n: 4 },
+      { value: 'nomotiv', n: 3 },
+      { value: 'overload', n: 2 },
+      { value: 'stuck', n: 1 },
+    ],
+    helpers: [
+      { value: 'early', n: 5 },
+      { value: 'smallstep', n: 4 },
+      { value: 'move', n: 3 },
+      { value: 'breaks', n: 2 },
+      { value: 'music', n: 1 },
+    ],
+    days: 14,
+  },
+  // «Індекс дня» (checkin-model.mjs): демо-набір, що показує ВСІ стани разом —
+  // ваги вивчені, один лаг готовий і один ще ні (гейт), архетипи готові.
+  checkinModel: {
+    n: 90,
+    fit: {
+      weights: { recovery: 0.28, resource: 0.24, work: 0.3, agency: 0.1, body: 0.08 },
+      r2: 0.38,
+      n: 45,
+      learned: true,
+    },
+    dayIndex: { last: 74.5, mean: 68.2 },
+    drivers: [
+      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, nHigh: 22, nLow: 18 },
+      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, nHigh: 24, nLow: 20 },
+      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, nHigh: 19, nLow: 21 },
+      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, nHigh: 15, nLow: 17 },
+      { field: 'screen', index: 'recovery', delta: -0.55, d: -0.69, p: 0.031, nHigh: 12, nLow: 26 },
+    ],
+    lagged: {
+      recovery: { ready: true, n: 44, rho: 0.21, p: 0.048, src: 'recovery', target: 'dayScore' },
+      body: { ready: false, n: 10, needed: 16 },
+    },
+    archetypes: {
+      ready: true,
+      k: 4,
+      n: 42,
+      groups: [
+        {
+          n: 16,
+          share: 0.381,
+          profile: { recovery: 0.62, resource: 0.58, work: 0.71, agency: 0.4, body: 0.35 },
+          top: 'work',
+          low: 'body',
+        },
+        {
+          n: 12,
+          share: 0.286,
+          profile: { recovery: 0.75, resource: 0.68, work: 0.45, agency: 0.55, body: 0.6 },
+          top: 'recovery',
+          low: 'work',
+        },
+        {
+          n: 9,
+          share: 0.214,
+          profile: { recovery: 0.35, resource: 0.4, work: 0.3, agency: 0.42, body: 0.5 },
+          top: 'body',
+          low: 'recovery',
+        },
+        {
+          n: 5,
+          share: 0.119,
+          profile: { recovery: 0.3, resource: 0.28, work: 0.25, agency: 0.2, body: 0.3 },
+          top: 'body',
+          low: 'agency',
+        },
+      ],
+    },
+  },
 };
 
 /**
@@ -391,6 +498,8 @@ export const SAMPLE_STATS: Stats = {
 export const EMPTY_STATS: Stats = {
   streaks: { openDays: 0, mockDays: 0, bestOpenDays: 0 },
   timeToOpenMin: null,
+  openRhythm: { ready: false, n: 0, needed: 5 },
+  habitWeekly: [],
   weekly: [],
   funnel: { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0, failed: 0 },
   goal: { weeklyTarget: 5, weeklyApplied: 0 },
@@ -424,7 +533,20 @@ export const EMPTY_STATS: Stats = {
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
   categoryInsight: { total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
-  checkinTops: { blocker: null, helper: null },
+  checkinTops: { blocker: null, helper: null, blockers: [], helpers: [], days: 0 },
+  checkinModel: {
+    n: 0,
+    fit: {
+      weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 },
+      r2: null,
+      n: 0,
+      learned: false,
+    },
+    dayIndex: { last: null, mean: null },
+    drivers: [],
+    lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
+    archetypes: { ready: false, n: 0, groups: [] },
+  },
 };
 
 /**

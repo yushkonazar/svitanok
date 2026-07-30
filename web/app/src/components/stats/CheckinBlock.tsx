@@ -1,26 +1,30 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Stats } from '../../api/schema.ts';
-import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
+import { SectionHead, StatRow, Ph, Hint } from '../ui/primitives.tsx';
+import { haptic } from '../../telegram.ts';
+import { DayIndexHero } from './DayIndexHero.tsx';
+import { DayShapeChart } from '../charts/DayShapeChart.tsx';
+import { StateMatrix } from '../charts/StateMatrix.tsx';
+import { DriversBars } from '../charts/DriversBars.tsx';
+import { ArchetypeRadar } from '../charts/ArchetypeRadar.tsx';
+import { RankedBars } from '../charts/RankedBars.tsx';
+import { FillBars } from '../charts/FillBars.tsx';
+import { INDEX_LABEL } from '../../lib/checkinIndex.ts';
 
-// Статистика чек-іну (фідбек власника, п.7 -> PR-9 п.10.2: «графіки для сну/
-// енергії не потрібні, просто вивід середнього й подальший аналіз з
-// рекомендацією; перероби блок і по дизайну, і по деяких логічних рішеннях»).
+// Статистика чек-іну — ПОВНИЙ редизайн (роадмеп: «Індекс дня» + D3-графіки).
+// Стара версія (PR-9) читала 11 полів із 36 зібраних; ця — «Індекс дня»
+// (checkin-model.mjs, портовано з research/checkin_model.py, golden-звірено)
+// читає 25: композитні індекси, ваги, що вчаться на власних dayScore,
+// драйвери (Cohen's d + Welch), лаговий звʼязок «сьогодні->завтра»,
+// архетипи (k-means). П'ять нових візуальних секцій зверху — аналітичний
+// шар; уся стара, уже коректна аналітика (куди йде час, дрейф наміру,
+// кореляції, топ-блокери, калібрація подач) лишається під «Подробиці»,
+// не викидається — просто більше не забиває головний екран.
 //
-// Спарклайни Сон/Енергія ПРИБРАНО — замінено на одну картку «Сон та енергія»:
-// середні + тренд (уже рахувались) + детермінована, правило-based рекомендація
-// (не LLM — дешево, без нової затримки). Решта секцій нижче — явка, куди йде
-// час, кореляції — ЛИШАЮТЬСЯ (вони вже anti-overfit-гейтяться на сервері й
-// відповідають «аналіз, не графік»), лише отримали явні підписи там, де їх
-// не було (явка) чи бракувало пояснення, ЩО означає число (куди йде час).
-//
-// ⚠️ Цей блок ЛЕГКО зробив би брехливим. «У дні, коли ти спав менше 6 — подач
-// удвічі менше» звучить як висновок, а на третьому тижні це три точки проти
-// чотирьох. І така брехня ВИГЛЯДАЄ як аналітика, тобто підштовхує до рішень.
-// Тому все, що претендує на звʼязок, гейтиться на сервері (sleepVsApplied.ready)
-// і мовчить, поки в кожному кошику менше 8 днів.
+// ⚠️ Той самий інваріант, що завжди: усе, що претендує на звʼязок, гейтиться
+// на сервері (ready/learned/p-value) і мовчить, поки вибірка мала. Це легко
+// зробити брехливим блоком, а брехня тут виглядає як аналітика.
 
-// Дзеркало переліків із questions.ts. Неповна мапа не валить екран (є фолбек
-// на сирий слаг нижче), але показувала б «nomotiv» замість людського підпису.
 const BLOCKER_LABEL: Record<string, string> = {
   tired: 'Втома',
   anxious: 'Тривога',
@@ -56,17 +60,12 @@ const CATEGORY_LABEL: Record<string, string> = {
   create: '🎨 Творчість',
 };
 
-// Колір оцінки: червоний (погано) -> жовтий -> зелений (добре). Щоб число саме
-// по собі казало «це добре чи ні», а не було просто цифрою.
 const scoreHsl = (t: number) => `hsl(${Math.round(Math.max(0, Math.min(1, t)) * 125)}, 62%, 58%)`;
-/** Шкала 1–5 (енергія, оцінка дня, настрій). */
 const ratingColor = (v: number | null): string | undefined =>
   v == null ? undefined : scoreHsl((v - 1) / 4);
-/** Сон у годинах: 4 і менше — червоне, 8+ — зелене (плато на «виспався»). */
 const sleepColor = (h: number | null): string | undefined =>
   h == null ? undefined : scoreHsl((h - 4) / 4);
 
-/** Число з кольором-оцінкою. */
 function Score({
   v,
   color,
@@ -85,20 +84,21 @@ function Score({
   );
 }
 
-/** Заголовок-підпис секції: моно-капс, що саме показує картка нижче. */
 function SubLabel({ children }: { children: ReactNode }) {
   return (
     <div className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">{children}</div>
   );
 }
 
+function Card({ children }: { children: ReactNode }) {
+  return <div className="rounded-2xl border border-glassb bg-glass p-4">{children}</div>;
+}
+
 /**
  * Рекомендація за середнім сном/енергією тижня — ДЕТЕРМІНОВАНА (пороги, не
- * LLM: дешево, без нової затримки/виклику). Пороги: сон 6/7 год (нижче
- * рекомендованих 7–9 — поширений орієнтир), енергія 2.5/4 на шкалі 1–5.
- * Свідомо ЗАГАЛЬНІ формулювання ("спробуй", "орієнтовно") — той самий
- * інваріант, що svd/bve нижче: не вигадувати причинно-наслідкових звʼязків,
- * яких дані не підтверджують.
+ * LLM): пороги сон 6/7 год, енергія 2.5/4 на шкалі 1..5. Свідомо загальні
+ * формулювання — той самий інваріант, що весь блок: не вигадувати
+ * причинно-наслідкових звʼязків, яких дані не підтверджують.
  */
 function checkinInsight(avgSleep: number | null, weekEnergyAvg: number | null): string | null {
   const parts: string[] = [];
@@ -114,235 +114,312 @@ function checkinInsight(avgSleep: number | null, weekEnergyAvg: number | null): 
   return parts.length ? parts.join(' ') : null;
 }
 
+/** «Сьогодні -> завтра»: лаговий звʼязок, єдине, що дивиться на ЗАВТРАШНІЙ день. */
+function LaggedRow({ idx, data }: { idx: string; data: Stats['checkinModel']['lagged'][string] }) {
+  if (!data.ready) {
+    return (
+      <div className="text-[11px] leading-[1.5] text-tx3">
+        {INDEX_LABEL[idx] ?? idx}: ще рано ({data.n} із {data.needed} потрібних пар діб).
+      </div>
+    );
+  }
+  const rho = data.rho ?? 0;
+  const sig = (data.p ?? 1) < 0.05;
+  const dir = rho > 0.05 ? '↑ вищий' : rho < -0.05 ? '↓ нижчий' : 'без помітного звʼязку';
+  return (
+    <div className="flex items-baseline gap-1.5 text-[12px]">
+      <span className="font-semibold text-tx">{INDEX_LABEL[idx] ?? idx}</span>
+      <span className="text-tx2">
+        сьогодні → {dir === 'без помітного звʼязку' ? dir : `завтрашній день ${dir}`}
+      </span>
+      <span className="ml-auto font-mono text-[10px] text-tx3">
+        ρ={rho.toFixed(2)} {sig ? '· значущо' : '· шум?'}
+      </span>
+    </div>
+  );
+}
+
 export function CheckinBlock({ s }: { s: Stats }) {
   const series = s.checkinSeries;
-  const fill = s.checkinFill;
+  const model = s.checkinModel;
   const filledDays = series.length;
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
-  if (!filledDays)
+  if (!filledDays && model.n === 0) {
     return (
       <div className="flex flex-col gap-3">
         <SectionHead>Чек-ін</SectionHead>
-        <Ph>Заповни чек-ін кілька днів — і тут з’являться твої ряди</Ph>
+        <Ph>Заповни чек-ін кілька днів — і тут з’явиться твій «Індекс дня»</Ph>
       </div>
     );
+  }
 
   const sleepVals = series.map((p) => p.sleepH).filter((v): v is number => v !== null);
   const avgSleep = sleepVals.length
     ? Math.round((sleepVals.reduce((a, b) => a + b, 0) / sleepVals.length) * 10) / 10
     : null;
-
   const week = s.checkinWeekly.at(-1);
-  const prev = s.checkinWeekly.at(-2);
-  const trend =
-    week?.sleepAvg != null && prev?.sleepAvg != null
-      ? week.sleepAvg > prev.sleepAvg
-        ? ' · ↑ vs минулий'
-        : week.sleepAvg < prev.sleepAvg
-          ? ' · ↓ vs минулий'
-          : ' · = vs минулий'
-      : '';
   const insight = checkinInsight(avgSleep, week?.energyAvg ?? null);
 
-  const svd = s.sleepVsDayScore;
-  const bve = s.bedtimeVsEnergy;
+  const fill = s.checkinFill;
+  // s.sleepVsDayScore / s.bedtimeVsEnergy СВІДОМО не читаються: sleepH і
+  // bedtime тепер у реєстрі «Індексу дня», і DriversBars показує їхній вплив
+  // строгіше (Cohen's d + Welch). Поля лишаються в контракті /api/stats —
+  // прибирати їх із сервера немає причин, але малювати вдруге теж.
   const cat = s.categoryInsight;
   const drift = s.intentDrift;
   const cal = s.appliedCalibration;
   const tops = s.checkinTops;
   const kept = s.planVsFact;
-  // «Намір проти факту» — джоб-опційне: показуємо лише коли були робочі дні.
   const keptHit = kept.filter((r) => r.actual >= r.planned).length;
+
+  const laggedEntries = Object.entries(model.lagged);
 
   return (
     <div className="flex flex-col gap-3">
       <SectionHead>Чек-ін</SectionHead>
 
-      {/* Сон та енергія — БЕЗ графіків (фідбек власника, п.10.2): середні +
-          тренд + детермінована рекомендація замість спарклайнів. */}
-      <div className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass p-4">
-        <SubLabel>СОН ТА ЕНЕРГІЯ · ЗА {filledDays} ДІБ</SubLabel>
-        <div className="flex items-center gap-5">
-          <div className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-tx3">СОН (СЕРЕДНЄ)</span>
-            <Score
-              v={avgSleep}
-              color={sleepColor(avgSleep)}
-              suffix=" год"
-              className="font-mono text-[19px] font-semibold"
-            />
+      {model.dayIndex.last !== null && (
+        <Card>
+          <DayIndexHero model={model} />
+        </Card>
+      )}
+
+      {insight && <div className="text-[11.5px] leading-[1.5] text-tx2">💡 {insight}</div>}
+
+      {filledDays > 1 && (
+        <Card>
+          <SubLabel>ФОРМА ДНЯ</SubLabel>
+          <div className="mt-2">
+            <DayShapeChart series={series} />
           </div>
-          <div className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-tx3">ЕНЕРГІЯ (ЦЕЙ ТИЖДЕНЬ)</span>
-            <Score
-              v={week?.energyAvg ?? null}
-              color={ratingColor(week?.energyAvg ?? null)}
-              className="font-mono text-[19px] font-semibold"
-            />
-          </div>
+          <Hint>
+            Твій СЕРЕДНІЙ день від ранку до вечора. Показує те, чого середнє число сказати не
+            може: ти згоряєш надвечір чи навпаки розганяєшся. Лінія вниз — енергія витікає до
+            вечора.
+          </Hint>
+        </Card>
+      )}
+
+      <Card>
+        <SubLabel>КАРТА СТАНІВ</SubLabel>
+        <div className="mt-2">
+          <StateMatrix series={series} />
         </div>
-        {week && (
-          <span className="text-[10.5px] font-medium text-tx2">
-            Сон цього тижня:{' '}
-            <Score v={week.sleepAvg} color={sleepColor(week.sleepAvg)} suffix=" год" />
-            {trend}
-          </span>
-        )}
-        {insight && (
-          <div className="mt-0.5 text-[11.5px] leading-[1.5] text-tx2">💡 {insight}</div>
-        )}
-      </div>
+        <Hint>
+          Та сама сітка 5×5, по якій ти тапаєш у чек-іні. Число в клітинці — скільки разів ти в
+          ній опинявся. Праворуч-угорі — бадьорий і в настрої, ліворуч-унизу — виснажений.
+          Скупчення показує, де ти буваєш насправді, а не де здається.
+        </Hint>
+      </Card>
 
-      {/* Явка: пропуски — теж дані. Ранок 25 разів проти вечора 4 каже більше,
-          ніж самі відповіді. */}
-      <div className="flex flex-col gap-1">
-        <SubLabel>ЯВКА ПО СЛОТАХ</SubLabel>
-        <StatRow label="🌅 Ранок" value={`${fill.morning} з ${fill.days}`} />
-        <StatRow label="☀️ Післяобід" value={`${fill.afternoon} з ${fill.days}`} />
-        <StatRow label="🌙 Вечір" value={`${fill.evening} з ${fill.days}`} />
-      </div>
-
-      {/* Куди йде час (v2): розподіл денної категорії + як вона повʼязана з
-          оцінкою дня. Розподіл чесний за будь-якого N; середню оцінку категорії
-          даємо лише коли в неї набралось >=4 оцінені дні (інакше без числа). */}
-      {cat.total >= 5 && (
-        <div className="rounded-2xl border border-glassb bg-glass p-4">
-          <SubLabel>КУДИ ЙДЕ ЧАС · {cat.total} ДІБ</SubLabel>
-          {/* Пояснення, ЩО означає "настрій" у рядку — саме число без цього
-              підпису незрозуміло, звідки й від чого воно рахується. */}
-          <div className="mt-0.5 text-[10.5px] text-tx3">
-            % часу за категорією за добу; «настрій» — середня оцінка дня в добах
-            із цією категорією (лише коли їх ≥4)
+      {model.drivers.length > 0 && (
+        <Card>
+          <SubLabel>ЩО ЗСУВАЄ ОЦІНКУ ДНЯ</SubLabel>
+          <div className="mt-2.5">
+            <DriversBars drivers={model.drivers} />
           </div>
+        </Card>
+      )}
+
+      {model.archetypes.ready && (
+        <Card>
+          <SubLabel>АРХЕТИПИ ДНІВ</SubLabel>
+          <div className="mt-2.5">
+            <ArchetypeRadar archetypes={model.archetypes} />
+          </div>
+          <Hint>
+            «Середнього дня» не існує — натомість твої доби згруповані в кілька типів. Кожна
+            фігура — форма одного типу за пʼятьма вимірами, відсоток — як часто такі дні
+            трапляються. Чим більший промінь, тим сильніший вимір.
+          </Hint>
+        </Card>
+      )}
+
+      {laggedEntries.length > 0 && (
+        <Card>
+          <SubLabel>СЬОГОДНІ → ЗАВТРА</SubLabel>
           <div className="mt-2 flex flex-col gap-1.5">
-            {cat.rows.slice(0, 4).map((r) => (
-              <div key={r.cat} className="flex items-baseline gap-2 text-[13px]">
-                <span className="font-semibold">{CATEGORY_LABEL[r.cat] ?? r.cat}</span>
-                <span className="font-mono text-[11px] text-tx3">
-                  {Math.round((r.n / cat.total) * 100)}%
-                </span>
-                {r.dayScore != null && (
-                  <span className="ml-auto font-mono text-[11px] text-tx2">
-                    настрій <Score v={r.dayScore} color={ratingColor(r.dayScore)} />
-                  </span>
-                )}
-              </div>
+            {laggedEntries.map(([idx, data]) => (
+              <LaggedRow key={idx} idx={idx} data={data} />
             ))}
           </div>
-        </div>
+          <Hint>
+            Єдине місце, що дивиться на ЗАВТРАШНІЙ день: чи сьогоднішнє відновлення й рух
+            повʼязані з тим, як мине наступна доба. ρ — сила звʼязку від −1 до +1 (0 — звʼязку
+            немає). «Шум?» означає, що вибірки поки замало, щоб вірити числу.
+          </Hint>
+        </Card>
       )}
 
-      {/* Дрейф наміру: план (ранок) проти того, що реально зайняло час (день).
-          Обидва поля збирались роками й ніколи не порівнювались — тож ця
-          картка працює з першого дня, не чекає накопичення нових полів.
-          Гейт 5 діб — той самий мінімум, що й «куди йде час»: на трьох добах
-          відсоток дотримання був би шумом у краватці. */}
-      {drift.total >= 5 && drift.pct != null && (
-        <div className="rounded-2xl border border-glassb bg-glass p-4">
-          <SubLabel>ПЛАН ПРОТИ РЕАЛЬНОСТІ · {drift.total} ДІБ</SubLabel>
-          <div className="mt-1.5 text-[13px] font-semibold">
-            У {drift.pct}% діб день пішов за планом
-            <span className="ml-1.5 font-mono text-[11px] font-medium text-tx3">
-              {drift.matched} з {drift.total}
-            </span>
-          </div>
-          {drift.top.length > 0 && (
-            <>
-              <div className="mt-2 text-[10.5px] text-tx3">Куди зʼїжджає найчастіше:</div>
-              <div className="mt-1 flex flex-col gap-1">
-                {drift.top.slice(0, 3).map((p) => (
-                  <div key={`${p.from}>${p.to}`} className="flex items-baseline gap-1.5 text-[12px]">
-                    <span className="text-tx2">{CATEGORY_LABEL[p.from] ?? p.from}</span>
-                    <span className="text-tx3">→</span>
-                    <span className="font-semibold">{CATEGORY_LABEL[p.to] ?? p.to}</span>
-                    <span className="ml-auto font-mono text-[10.5px] text-tx3">×{p.n}</span>
-                  </div>
-                ))}
-              </div>
-            </>
+      <button
+        type="button"
+        onClick={() => {
+          haptic('light');
+          setDetailsOpen((v) => !v);
+        }}
+        className="flex items-center gap-1.5 self-start rounded-full border border-glassb bg-glass px-3 py-1.5 text-[11px] font-semibold text-tx2"
+      >
+        <span>{detailsOpen ? '−' : '+'} Подробиці</span>
+      </button>
+
+      {detailsOpen && (
+        <div className="flex flex-col gap-3 border-t border-glassb pt-3">
+          {/* ⚠️ Тут свідомо НЕМАЄ карток «Сон і оцінка дня» та «Коли лягаєш і
+              ранкова енергія». Обидві були рукописними кореляціями по полях
+              sleepH/bedtime — а обидва поля тепер у реєстрі «Індексу дня», і
+              «Що зсуває оцінку дня» показує їх СТРОГІШЕ: Cohen's d + Welch
+              замість різниці двох середніх. Лишати їх означало б показувати
+              той самий звʼязок двічі, причому слабшою математикою.
+              Що лишилось тут — рівно те, чого модель НЕ бачить. */}
+
+          <Card>
+            <SubLabel>ЯВКА ПО СЛОТАХ · {fill.days} ДІБ</SubLabel>
+            <div className="mt-2">
+              <FillBars fill={fill} />
+            </div>
+          </Card>
+
+          {/* blocker/helper — мультивибір, їх немає в реєстрі моделі за
+              побудовою. Доти показувалась лише мода (одне значення), тепер —
+              весь рейтинг: «втома 6× і відволікання 4×» — інша картина, ніж
+              просто «найчастіше втома». */}
+          {(tops.blockers.length > 0 || tops.helpers.length > 0) && (
+            <Card>
+              <SubLabel>ЩО ЗАВАЖАЛО І ЩО ПОМАГАЛО · {tops.days} ДІБ</SubLabel>
+              {tops.blockers.length > 0 && (
+                <div className="mt-2.5">
+                  <div className="mb-1.5 text-[11px] font-semibold text-tx2">🚧 Заважало</div>
+                  <RankedBars
+                    color="var(--color-neg)"
+                    rows={tops.blockers.map((r) => ({
+                      key: r.value,
+                      label: BLOCKER_LABEL[r.value] ?? r.value,
+                      n: r.n,
+                    }))}
+                  />
+                </div>
+              )}
+              {tops.helpers.length > 0 && (
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[11px] font-semibold text-tx2">✨ Помагало</div>
+                  <RankedBars
+                    color="var(--color-pos)"
+                    rows={tops.helpers.map((r) => ({
+                      key: r.value,
+                      label: HELPER_LABEL[r.value] ?? r.value,
+                      n: r.n,
+                    }))}
+                  />
+                </div>
+              )}
+              <Hint>
+                Скільки діб ти обирав кожен варіант. «Нічого» не рахується — це свідома відповідь,
+                а не причина.
+              </Hint>
+            </Card>
           )}
-        </div>
-      )}
 
-      {/* Сон -> оцінка дня. Кореляція лише коли є що порівнювати. */}
-      <div className="rounded-2xl border border-glassb bg-glass p-4">
-        <div className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
-          СОН І ОЦІНКА ДНЯ
-        </div>
-        {svd.ready ? (
-          <>
-            <div className="mt-1.5 text-[13px] font-semibold">
-              Спав &lt;6.5 год — оцінка дня{' '}
-              <Score v={svd.lowAvg ?? null} color={ratingColor(svd.lowAvg ?? null)} />
-            </div>
-            <div className="text-[13px] font-semibold">
-              Спав більше — <Score v={svd.okAvg ?? null} color={ratingColor(svd.okAvg ?? null)} />
-            </div>
-            <div className="mt-1 text-[10.5px] text-tx3">
-              {svd.low} і {svd.ok} днів. Це спостереження, не причина.
-            </div>
-          </>
-        ) : (
-          <div className="mt-1.5 text-[12px] leading-[1.5] text-tx2">
-            Ще рано порівнювати: {svd.low} коротких ночей і {svd.ok} нормальних, а треба
-            щонайменше по {svd.needed}. На меншій вибірці будь-яка цифра тут була б
-            вигадкою, тому її немає.
-          </div>
-        )}
-      </div>
+          {cat.total >= 5 && (
+            <Card>
+              <SubLabel>КУДИ ЙДЕ ЧАС · {cat.total} ДІБ</SubLabel>
+              <div className="mt-2">
+                <RankedBars
+                  suffix=" діб"
+                  rows={cat.rows.slice(0, 5).map((r) => ({
+                    key: r.cat,
+                    label: CATEGORY_LABEL[r.cat] ?? r.cat,
+                    n: r.n,
+                    note: r.dayScore != null ? `оцінка ${r.dayScore}` : null,
+                    noteColor: ratingColor(r.dayScore),
+                  }))}
+                />
+              </div>
+              <Hint>
+                Куди реально йде час: скільки діб кожна категорія забирала день. «Оцінка» —
+                середня оцінка дня в таких добах, тобто які заняття корелюють із хорошим днем;
+                зʼявляється лише від 4 оцінених діб.
+              </Hint>
+            </Card>
+          )}
 
-      {bve.ready && (
-        <div className="rounded-2xl border border-glassb bg-glass p-4">
-          <div className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
-            КОЛИ ЛЯГАЄШ І РАНКОВА ЕНЕРГІЯ
-          </div>
-          <div className="mt-1.5 text-[13px] font-semibold">
-            Лягав рано (до 00:00) — енергія{' '}
-            <Score v={bve.earlyAvg ?? null} color={ratingColor(bve.earlyAvg ?? null)} />
-          </div>
-          <div className="text-[13px] font-semibold">
-            Пізно (після 01:00) —{' '}
-            <Score v={bve.lateAvg ?? null} color={ratingColor(bve.lateAvg ?? null)} />
-          </div>
-          <div className="mt-1 text-[10.5px] text-tx3">
-            {bve.early} і {bve.late} днів. Спостереження, не причина.
-          </div>
-        </div>
-      )}
+          {drift.total >= 5 && drift.pct != null && (
+            <Card>
+              <SubLabel>ПЛАН ПРОТИ РЕАЛЬНОСТІ · {drift.total} ДІБ</SubLabel>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span
+                  className="font-mono text-[22px] font-medium leading-none"
+                  style={{ color: ratingColor(1 + (drift.pct / 100) * 4) }}
+                >
+                  {drift.pct}%
+                </span>
+                <span className="text-[11.5px] text-tx2">
+                  діб пішли за планом
+                  <span className="ml-1 font-mono text-tx3">
+                    {drift.matched}/{drift.total}
+                  </span>
+                </span>
+              </div>
+              {drift.top.length > 0 && (
+                <div className="mt-2.5">
+                  <div className="mb-1.5 text-[11px] font-semibold text-tx2">
+                    Куди зʼїжджає найчастіше
+                  </div>
+                  <RankedBars
+                    color="var(--color-idx-agency)"
+                    rows={drift.top.slice(0, 4).map((p) => ({
+                      key: `${p.from}>${p.to}`,
+                      label: `${CATEGORY_LABEL[p.from] ?? p.from} → ${CATEGORY_LABEL[p.to] ?? p.to}`,
+                      n: p.n,
+                    }))}
+                  />
+                </div>
+              )}
+              <Hint>
+                Уранці ти обираєш «головне на сьогодні», удень — «що зайняло час». Тут вони
+                зіставлені: чи день пішов туди, куди планувався. Пари внизу — найчастіші
+                підміни, тобто куди насправді витікає час.
+              </Hint>
+            </Card>
+          )}
 
-      {/* Що піднімає / тягне — мода за N діб. */}
-      {tops.blocker && (
-        <StatRow
-          label="🚧 Найчастіше заважало"
-          value={`${BLOCKER_LABEL[tops.blocker.value] ?? tops.blocker.value} · ${tops.blocker.n}×`}
-        />
-      )}
-      {tops.helper && (
-        <StatRow
-          label="✨ Найчастіше допомагало"
-          value={`${HELPER_LABEL[tops.helper.value] ?? tops.helper.value} · ${tops.helper.n}×`}
-        />
-      )}
+          {/* Подачі — єдина відповідь, яку застосунок може ПЕРЕВІРИТИ проти
+              зовнішнього журналу (appliedLog). Модель такого не вміє: вона
+              працює лише всередині самозвіту. Дві колишні окремі картки
+              (план подач + звіт↔журнал) зведені в одну — це одна тема. */}
+          {(kept.length > 0 || cal.n > 0) && (
+            <Card>
+              <SubLabel>ПОДАЧІ: СЛОВА ↔ ЖУРНАЛ</SubLabel>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {kept.length > 0 && (
+                  <StatRow
+                    label="🎯 Виконав план подач"
+                    value={`${keptHit} з ${kept.length} днів`}
+                  />
+                )}
+                {cal.n > 0 && (
+                  <StatRow label="📊 Звіт збігся з журналом" value={`${cal.matched} з ${cal.n}`} />
+                )}
+              </div>
+              {(cal.more > 0 || cal.fewer > 0) && (
+                <div className="mt-1.5 text-[10px] leading-[1.45] text-tx3">
+                  {cal.more > 0 && `${cal.more} дн. подавав поза застосунком`}
+                  {cal.more > 0 && cal.fewer > 0 && ' · '}
+                  {cal.fewer > 0 && `${cal.fewer} дн. у журналі більше, ніж у звіті`}
+                </div>
+              )}
+              <Hint>
+                Єдина картка, де твої слова звіряються із ЗОВНІШНІМ фактом — журналом подач.
+                Решта статистики вірить самозвіту на слово; тут видно, наскільки він точний.
+              </Hint>
+            </Card>
+          )}
 
-      {/* Джоб-опційне — зʼявляється лише в дні пошуку роботи (є подачі в журналі
-          / самозвіт). У «загальні» дні цих рядків просто немає. */}
-      {kept.length > 0 && (
-        <StatRow label="🎯 Виконав план подач" value={`${keptHit} з ${kept.length} днів`} />
-      )}
-      {cal.n > 0 && (
-        <div className="rounded-2xl border border-glassb bg-glass p-4">
-          <div className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
-            📊 ПОДАЧІ: ЗВІТ ↔ ЖУРНАЛ
-          </div>
-          <div className="mt-1.5 text-[13px] font-semibold">
-            Збіглося {cal.matched} з {cal.n} днів
-          </div>
-          {(cal.more > 0 || cal.fewer > 0) && (
-            <div className="mt-1 text-[10.5px] leading-[1.5] text-tx3">
-              {cal.more > 0 && `${cal.more} дн. подавав поза застосунком`}
-              {cal.more > 0 && cal.fewer > 0 && ' · '}
-              {cal.fewer > 0 && `${cal.fewer} дн. у журналі більше`}
-            </div>
+          {avgSleep !== null && (
+            <StatRow
+              label="😴 Сон (середнє за ряд)"
+              value={<Score v={avgSleep} color={sleepColor(avgSleep)} suffix=" год" />}
+            />
           )}
         </div>
       )}
