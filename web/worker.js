@@ -337,19 +337,32 @@ async function validateInitData(initData, botToken) {
 }
 
 /**
- * Валідація initData + власник. -> {ok:true,user} або {ok:false,status,error}.
- * Звіряємо з TELEGRAM_OWNER_USER_ID (персональний user id, НЕ TELEGRAM_CHAT_ID —
- * той тепер лише «куди слати», в супергрупі це вже груповий id, ніколи не рівний
- * user id власника). Fail-closed: не задано -> forbidden, не fail-open.
+ * Власник + опційно ще учасники супергрупи (TELEGRAM_ALLOWED_USER_IDS, через
+ * кому) -> Set рядкових id. Порожній Set (обидві змінні не задані) — навмисно:
+ * і checkOwner, і вебхук тоді фейлять closed (нікому не довіряємо), а не open.
+ */
+function allowedUserIds(env) {
+  const ids = new Set();
+  if (env.TELEGRAM_OWNER_USER_ID) ids.add(String(env.TELEGRAM_OWNER_USER_ID));
+  for (const raw of String(env.TELEGRAM_ALLOWED_USER_IDS ?? '').split(',')) {
+    const id = raw.trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Валідація initData + дозволений учасник. -> {ok:true,user} або
+ * {ok:false,status,error}. Звіряємо з allowedUserIds (персональні user id, НЕ
+ * TELEGRAM_CHAT_ID — той тепер лише «куди слати», в супергрупі це вже
+ * груповий id, ніколи не рівний user id людини). Fail-closed: жодного
+ * дозволеного id не задано -> forbidden, не fail-open.
  */
 async function checkOwner(initData, env) {
   const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
   if (!v) return { ok: false, status: 401, error: 'auth' };
-  if (
-    !env.TELEGRAM_OWNER_USER_ID ||
-    !v.user ||
-    String(v.user.id) !== String(env.TELEGRAM_OWNER_USER_ID)
-  ) {
+  const allowed = allowedUserIds(env);
+  if (!allowed.size || !v.user || !allowed.has(String(v.user.id))) {
     return { ok: false, status: 403, error: 'forbidden' };
   }
   return { ok: true, user: v.user };
@@ -3567,8 +3580,8 @@ async function handleTelegramWebhook(request, env, ctx) {
   }
   const parsed = parseUpdate(update);
 
-  if (!isOwner(parsed, env.TELEGRAM_OWNER_USER_ID)) {
-    // Не власник — тихо ігноруємо (бот однокористувацький; не палимо деталі стороннім).
+  if (!isOwner(parsed, allowedUserIds(env))) {
+    // Не власник/не в списку дозволених — тихо ігноруємо, не палимо деталі стороннім.
     return json({ ok: true });
   }
 

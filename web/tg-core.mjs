@@ -84,10 +84,18 @@ export function parseUpdate(update) {
   return { kind: 'other', updateId };
 }
 
-/** Власник? Порівнюємо from.id з дозволеним chatId (single-user бот). */
-export function isOwner(parsed, ownerChatId) {
-  if (parsed?.fromId == null || ownerChatId == null) return false;
-  return String(parsed.fromId) === String(ownerChatId);
+/**
+ * Дозволений відправник? Порівнюємо from.id з дозволеним id (single-user
+ * бот) АБО множиною дозволених id (Set/масив — кілька учасників супергрупи,
+ * TELEGRAM_ALLOWED_USER_IDS). Той самий виклик, той самий сенс — worker.js
+ * вирішує, один id прийшов чи декілька.
+ */
+export function isOwner(parsed, ownerIds) {
+  if (parsed?.fromId == null || ownerIds == null) return false;
+  const id = String(parsed.fromId);
+  if (ownerIds instanceof Set) return ownerIds.has(id);
+  if (Array.isArray(ownerIds)) return ownerIds.some((x) => String(x) === id);
+  return id === String(ownerIds);
 }
 
 /** Дедуп: апдейт уже оброблений, якщо update_id <= lastUpdateId (Telegram передоставляє). */
