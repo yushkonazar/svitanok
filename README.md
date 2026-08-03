@@ -279,14 +279,15 @@ Google-трійка (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN`), теми супе
 Secrets): без нього щоденний автозапуск `/api/telegram/setup` (нижче) тихо
 пропускається, а решта Worker'а працює як і раніше.
 
-| Група                     | Змінні                                                                                                      | Призначення                                                                   |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Критичні                  | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_OWNER_USER_ID`, `MINI_APP_URL`, `TELEGRAM_BOT_USERNAME` | без токена/chat_id брифінг узагалі не шлеться (рання валідація, видимий фейл) |
-| Погода                    | `WEATHER_API_KEY`                                                                                           | OpenWeather, потрібна підписка One Call 3.0                                   |
-| Claude                    | `CLAUDE_CODE_OAUTH_TOKEN`                                                                                   | `claude setup-token`, курація брифінгу                                        |
-| Google                    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`                                          | Calendar+Gmail(+Contacts+Drive після ре-консенту)                             |
-| Worker-лише               | `GH_DISPATCH_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `LLM_HOST_URL`, `LLM_HOST_SECRET`                           | точний cron-тригер, вебхук, VPS-хост                                          |
-| Теми супергрупи (опційно) | `TOPIC_BRIEFING`, `TOPIC_ASSISTANT`, `TOPIC_ROADMAP`, `TOPIC_SYSTEM`                                        | маршрутизація повідомлень по темах форуму                                     |
+| Група                     | Змінні                                                                                                      | Призначення                                                                          |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Критичні                  | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_OWNER_USER_ID`, `MINI_APP_URL`, `TELEGRAM_BOT_USERNAME` | без токена/chat_id брифінг узагалі не шлеться (рання валідація, видимий фейл)        |
+| Погода                    | `WEATHER_API_KEY`                                                                                           | OpenWeather, потрібна підписка One Call 3.0                                          |
+| Claude                    | `CLAUDE_CODE_OAUTH_TOKEN`                                                                                   | `claude setup-token`, курація брифінгу                                               |
+| Google                    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`                                          | Calendar+Gmail(+Contacts+Drive після ре-консенту)                                    |
+| Worker-лише               | `GH_DISPATCH_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `LLM_HOST_URL`, `LLM_HOST_SECRET`                           | точний cron-тригер, вебхук, VPS-хост                                                 |
+| Теми супергрупи (опційно) | `TOPIC_BRIEFING`, `TOPIC_ASSISTANT`, `TOPIC_ROADMAP`, `TOPIC_SYSTEM`                                        | маршрутизація повідомлень по темах форуму                                            |
+| Спільний доступ (опційно) | `TELEGRAM_ALLOWED_USER_IDS`                                                                                 | ще учасники супергрупи з тим самим доступом, що власник (СПІЛЬНІ дані — не per-user) |
 
 Повний список із коментарями — у [`.env.example`](.env.example).
 

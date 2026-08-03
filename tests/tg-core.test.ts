@@ -103,6 +103,15 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
     expect(isOwner({ fromId: null }, 111)).toBe(false);
   });
 
+  it('isOwner приймає Set/масив дозволених id (кілька учасників супергрупи)', () => {
+    const p = parseUpdate({ callback_query: { from: { id: 222 }, message: {} } });
+    expect(isOwner(p, new Set(['111', '222']))).toBe(true);
+    expect(isOwner(p, new Set(['111']))).toBe(false);
+    expect(isOwner(p, [111, 222])).toBe(true);
+    expect(isOwner(p, [111])).toBe(false);
+    expect(isOwner(p, new Set())).toBe(false); // порожньо -> fail-closed, не fail-open
+  });
+
   it('isDuplicate: <= lastUpdateId; без id не дедупить', () => {
     expect(isDuplicate(10, 10)).toBe(true);
     expect(isDuplicate(10, 9)).toBe(true);
