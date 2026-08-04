@@ -14,6 +14,7 @@ const BOT_TOKEN = 'bot-token-abc';
 let kv: Map<string, string>;
 let openWeatherCalls: string[];
 let openWeatherFail: boolean;
+let geocodeEmpty: boolean;
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
@@ -60,25 +61,36 @@ async function buildInitData(userId: number, botToken: string, authDateSec?: num
   return params.toString();
 }
 
-async function getWeather(initData: string | null, e = env()) {
-  return worker.fetch(
-    new Request('https://svitanok.example/api/weather', {
-      headers: initData ? { 'X-Telegram-Init-Data': initData } : {},
-    }),
-    e,
-    { waitUntil: () => {} },
-  );
+async function getWeather(initData: string | null, e = env(), cf?: Record<string, unknown>) {
+  const req = new Request('https://svitanok.example/api/weather', {
+    headers: initData ? { 'X-Telegram-Init-Data': initData } : {},
+  });
+  // Реальний Cloudflare Workers runtime сам додає request.cf на кожен живий
+  // запит; тестове середовище — plain Node Request (без workerd), тож
+  // симулюємо тим самим шляхом, що й Cloudflare — прямим присвоєнням.
+  if (cf) Object.assign(req, { cf });
+  return worker.fetch(req, e, { waitUntil: () => {} });
 }
+
+const LVIV_CF = { latitude: '49.84', longitude: '24.03', city: 'Lviv' };
+const KYIV_CF = { latitude: '50.45', longitude: '30.52', city: 'Kyiv' };
 
 beforeEach(() => {
   kv = new Map();
   openWeatherCalls = [];
   openWeatherFail = false;
+  geocodeEmpty = false;
   vi.stubGlobal('fetch', async (input: unknown) => {
     const url = String(input);
     if (url.includes('api.openweathermap.org')) {
       openWeatherCalls.push(url);
       if (openWeatherFail) return new Response('down', { status: 500 });
+      if (url.includes('/geo/1.0/reverse')) {
+        return new Response(JSON.stringify(geocodeEmpty ? [] : [{ name: 'Твоя точка' }]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
       if (url.includes('/onecall')) {
         return new Response(
           JSON.stringify({ current: { temp: 20, feels_like: 19, weather: [{ id: 800 }] } }),
@@ -200,5 +212,90 @@ describe('GET /api/weather — фетч, кеш, ліміт', () => {
     const res = await getWeather(initData);
     expect(res.status).toBe(200);
     expect(openWeatherCalls.length).toBe(callsBefore); // жодного нового фетчу — ліміт зупинив ДО нього
+  });
+});
+
+describe('GET /api/weather — геопозиція власника (request.cf)', () => {
+  it('перший запит з cf -> зберігає ownerGeo, підміняє головну локацію', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(initData, env(), LVIV_CF);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    // Твоя точка -> слот 1, Львів (WEATHER_LOCATIONS[0]) зсунувся у слот 2.
+    expect(body.locations.map((l) => l.name)).toEqual(['Твоя точка', 'Львів']);
+    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({ lat: 49.84, lon: 24.03 });
+  });
+
+  it('та сама позиція вдруге -> ownerGeo НЕ переписується, кеш обслуговує без нового фетчу', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await getWeather(initData, env(), LVIV_CF);
+    const storedAfterFirst = kv.get('ownerGeo');
+    const callsAfterFirst = openWeatherCalls.length;
+
+    const res = await getWeather(initData, env(), LVIV_CF);
+    expect(res.status).toBe(200);
+    expect(kv.get('ownerGeo')).toBe(storedAfterFirst); // байтово той самий запис — жодного нового put
+    expect(openWeatherCalls).toHaveLength(callsAfterFirst); // кеш обслужив, без нового фетчу/геокоду
+  });
+
+  it('позиція відрізняється -> переписує ownerGeo, інвалідує кеш і фетчить заново (навіть у межах TTL)', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await getWeather(initData, env(), LVIV_CF); // valid, свіжий кеш під Львів-позицію
+
+    const callsAfterFirst = openWeatherCalls.length;
+    const res = await getWeather(initData, env(), KYIV_CF);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations.map((l) => l.name)).toEqual(['Твоя точка', 'Львів']);
+    expect(openWeatherCalls.length).toBeGreaterThan(callsAfterFirst); // кеш під СТАРУ позицію не рахується валідним
+    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({ lat: 50.45, lon: 30.52 });
+  });
+
+  it('незначний джиттер координат (у межах ~2км) -> трактується як «та сама позиція», без перезапису', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await getWeather(initData, env(), LVIV_CF);
+    const storedAfterFirst = kv.get('ownerGeo');
+
+    const jitterCf = { latitude: '49.85', longitude: '24.04', city: 'Lviv' }; // ~0.01° зсув
+    const res = await getWeather(initData, env(), jitterCf);
+    expect(res.status).toBe(200);
+    expect(kv.get('ownerGeo')).toBe(storedAfterFirst);
+  });
+
+  it('немає cf (напр. локальний dev), АЛЕ вже є збережена позиція -> тримається останньої відомої', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await getWeather(initData, env(), LVIV_CF); // зберігає ownerGeo
+
+    const res = await getWeather(initData); // без cf узагалі
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations.map((l) => l.name)).toEqual(['Твоя точка', 'Львів']);
+  });
+
+  it('геокодування не дало назви -> фолбек «Твоя локація», геопозиція все одно застосована', async () => {
+    geocodeEmpty = true;
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(initData, env(), LVIV_CF);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations[0]?.name).toBe('Твоя локація');
+  });
+
+  it('cf.latitude/longitude відсутні (null) -> НЕ трактується як (0,0), лишається дефолтна пара', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(initData, env(), { latitude: null, longitude: null, city: null });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
+    expect(kv.get('ownerGeo')).toBeUndefined();
+  });
+
+  it('cf.latitude/longitude — порожні рядки (не null) -> також НЕ (0,0), лишається дефолтна пара', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(initData, env(), { latitude: '', longitude: '', city: '' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
+    expect(kv.get('ownerGeo')).toBeUndefined();
   });
 });

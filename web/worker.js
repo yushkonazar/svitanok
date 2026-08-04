@@ -759,26 +759,127 @@ const WEATHER_LIVE_TTL_MS = 30 * 60_000; // 30 хв — реальна свіж�
 // weather.ts (спільний OpenWeather-ключ/квота), менший ліміт: тут це «скільки
 // РАЗІВ на добу Mini App може оновити кеш», не «скільки запитів на локацію».
 const WEATHER_LIVE_DAILY_LIMIT = 50;
+// ~0.02° ≈ 1-2км на широті України — навмисно грубіше за старий клієнтський
+// GPS-поріг (0.01°): IP-геолокація (MaxMind через Cloudflare) сама по собі
+// точна лише до міста/індексу, тож два послідовні запити з ОДНІЄЇ реальної
+// точки можуть дати трохи різні координати без жодного реального переїзду —
+// тонший поріг спричиняв би зайві «геопозиції відрізняються» і зайві KV-записи.
+const GEO_MATCH_TOLERANCE = 0.02;
+
+function roundGeo(n) {
+  return Math.round(n * 100) / 100;
+}
+
+/** true, якщо обидві точки «та сама позиція» (з допуском) АБО обидві null
+ *  (немає жодного сигналу — трактуємо як «нічого не змінилось»). */
+function sameGeo(a, b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    Math.abs(a.lat - b.lat) < GEO_MATCH_TOLERANCE && Math.abs(a.lon - b.lon) < GEO_MATCH_TOLERANCE
+  );
+}
+
+/**
+ * Геопозиція власника з Cloudflare-заголовків запиту (request.cf) — жоден
+ * клієнтський дозвіл не потрібен: WebView Mini App шле HTTP-запити НАПРЯМУ з
+ * пристрою власника на цей Worker (Telegram нічого не проксує), тож
+ * Cloudflare бачить реальну мережу власника й на кожному запиті сам додає
+ * приблизну геопозицію (по IP, рівень міста/індексу — MaxMind). Ані дозволу,
+ * ані JS Geolocation/Telegram LocationManager — обидва виявились НЕНАДІЙНИМИ
+ * в самому Telegram-клієнті (задокументований, невирішений баг Telegram на
+ * iOS/Desktop, підтверджено власником на обох платформах), тож геолокацію
+ * винесено сюди повністю: на боці Worker, поза Telegram API взагалі.
+ *
+ * request.cf.latitude/longitude — РЯДКИ (`string | null`), НЕ Number(null)/
+ * Number('') напряму: та сама пастка, що вже задокументована в
+ * checkinDateKey/kyivMinAfter8 — Number(null)===0 АЛЕ Й Number('')===0 дали б
+ * хибну (0,0) на кожен запит без cf/з порожнім рядком замість null. request.cf
+ * може бути ВІДСУТНІМ узагалі (локальний dev без --remote, деякі внутрішні
+ * типи запитів) — null тоді, graceful.
+ */
+function requestGeo(request) {
+  const cf = request.cf;
+  if (!cf) return null;
+  const latRaw = cf.latitude;
+  const lonRaw = cf.longitude;
+  const lat = typeof latRaw === 'string' && latRaw !== '' ? Number(latRaw) : NaN;
+  const lon = typeof lonRaw === 'string' && lonRaw !== '' ? Number(lonRaw) : NaN;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat: roundGeo(lat), lon: roundGeo(lon) };
+}
+
+/** Зворотне геокодування (OpenWeather Geocoding API — окремий безкоштовний
+ *  тір від One Call 3.0, той самий WEATHER_API_KEY). Українська назва
+ *  (local_names.uk), якщо є, інакше — що дав API. null на будь-який збій —
+ *  виклик graceful-деградує до дефолтного підпису, не валить живу погоду. */
+async function reverseGeocodeCity(lat, lon, apiKey) {
+  try {
+    const url = new URL('https://api.openweathermap.org/geo/1.0/reverse');
+    url.searchParams.set('lat', String(lat));
+    url.searchParams.set('lon', String(lon));
+    url.searchParams.set('limit', '1');
+    url.searchParams.set('appid', apiKey);
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const data = await res.json();
+    const first = Array.isArray(data) ? data[0] : null;
+    return first?.local_names?.uk ?? first?.name ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * GET /api/weather -> жива погода (PR-7, фідбек власника: статична температура
  * з ранкового брифінгу вже за обідом не відповідала дійсності). Owner-gated,
  * кешовано в KV (weatherLive, ~30 хв) — той самий OpenWeather-ключ ділиться з
  * оркестратором, тож живий фетч НЕ на кожне відкриття Mini App.
+ *
+ * Геопозиція (Блок «Погода», фідбек власника): на КОЖЕН запит перевіряємо
+ * requestGeo() і звіряємо зі збереженою (KV ownerGeo) — «сходяться» (в межах
+ * ~1-2км) -> нічого не міняємо; «відрізняються» -> переписуємо на поточну й
+ * зберігаємо. Це единий власник (не мультитенантний застосунок), тож його
+ * геопозиція — стабільне значення, яке МОЖНА кешувати так само, як дефолтну
+ * пару: кеш зберігає, ЯКА позиція в ньому лежить (weatherLive.geo), і
+ * інвалідується, коли ефективна позиція змінюється, — не лише по TTL.
  */
 async function handleLiveWeather(request, env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const nowMs = Date.now();
+  const currentGeo = requestGeo(request);
+  let storedGeo;
+  try {
+    storedGeo = JSON.parse((await env.BRIEFING.get('ownerGeo')) ?? 'null');
+  } catch {
+    storedGeo = null;
+  }
+  // «Перевірка чи сходяться геопозиції» (фідбек власника): є свіжий сигнал і
+  // він ВІДРІЗНЯЄТЬСЯ від збереженого -> переписуємо й зберігаємо. Сходиться
+  // (або свіжого сигналу взагалі немає, напр. локальний dev) -> лишаємо
+  // збережене як є, жодного зайвого KV-запису.
+  let effectiveGeo = storedGeo;
+  if (currentGeo && !sameGeo(currentGeo, storedGeo)) {
+    effectiveGeo = currentGeo;
+    await env.BRIEFING.put('ownerGeo', JSON.stringify(currentGeo));
+  }
+  const hasGeo = !!effectiveGeo;
+
   let cached;
   try {
     cached = JSON.parse((await env.BRIEFING.get('weatherLive')) ?? 'null');
   } catch {
     cached = null;
   }
+  // Кеш валідний лише якщо TTL не протух І позиція в ньому — та сама, що
+  // ефективна зараз (інакше свіжий переїзд показував би застиглу погоду
+  // старого міста до 30 хв).
   if (
     cached &&
+    sameGeo(cached.geo ?? null, effectiveGeo) &&
     Number.isFinite(cached.fetchedAtMs) &&
     nowMs - cached.fetchedAtMs < WEATHER_LIVE_TTL_MS
   ) {
@@ -800,9 +901,9 @@ async function handleLiveWeather(request, env) {
   }
   if (!counter || counter.date !== today) counter = { date: today, count: 0 };
   if (counter.count >= WEATHER_LIVE_DAILY_LIMIT) {
-    // Ліміт вичерпано -> віддати БУДЬ-ЯКИЙ наявний кеш (навіть протухлий) —
-    // краще вчорашнє число, ніж зовсім нічого; фолбек на брифінг лишається
-    // клієнту, якщо кешу взагалі немає.
+    // Ліміт вичерпано -> віддати БУДЬ-ЯКИЙ наявний кеш (навіть протухлий/іншої
+    // позиції) — краще вчорашнє число, ніж зовсім нічого; фолбек на брифінг
+    // лишається клієнту, якщо кешу взагалі немає.
     if (cached)
       return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
     return json({ ok: false, error: 'rate-limited' }, 429);
@@ -840,13 +941,26 @@ async function handleLiveWeather(request, env) {
     return parsed;
   };
 
-  const results = await Promise.allSettled(WEATHER_LOCATIONS.map(fetchLocation));
+  let targetLocations = WEATHER_LOCATIONS;
+  if (hasGeo) {
+    counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
+    const name = await reverseGeocodeCity(effectiveGeo.lat, effectiveGeo.lon, env.WEATHER_API_KEY);
+    // Львів (WEATHER_LOCATIONS[0]) зсувається у другий слот замість Немовичів —
+    // той самий 2-слотовий UI (головна температура + рядок біля UV/AQI), лише
+    // інший вміст масиву.
+    targetLocations = [
+      { lat: effectiveGeo.lat, lon: effectiveGeo.lon, name: name ?? 'Твоя локація' },
+      WEATHER_LOCATIONS[0],
+    ];
+  }
+
+  const results = await Promise.allSettled(targetLocations.map(fetchLocation));
   await env.BRIEFING.put('weatherLiveCounter', JSON.stringify(counter));
 
   const locations = [];
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') locations.push(r.value);
-    else console.error(`жива погода для ${WEATHER_LOCATIONS[i].name} впала:`, r.reason?.message);
+    else console.error(`жива погода для ${targetLocations[i].name} впала:`, r.reason?.message);
   });
 
   if (locations.length === 0) {
@@ -857,7 +971,10 @@ async function handleLiveWeather(request, env) {
     return json({ ok: false, error: 'upstream-failed' }, 502);
   }
 
-  await env.BRIEFING.put('weatherLive', JSON.stringify({ locations, fetchedAtMs: nowMs }));
+  await env.BRIEFING.put(
+    'weatherLive',
+    JSON.stringify({ locations, fetchedAtMs: nowMs, geo: effectiveGeo }),
+  );
   return json({ ok: true, locations, fetchedAtMs: nowMs });
 }
 
