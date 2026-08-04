@@ -137,6 +137,24 @@ describe('news — parseNewsData', () => {
     ).toEqual([{ title: 'T', url: 'https://x.com/a', why: 'Текст із & сутністю' }]);
   });
 
+  it('ОБРІЗАНИЙ CDATA-артефакт (без "<!" на початку) теж знімається', () => {
+    // Реальний кейс зі скріншота власника: NewsData інколи віддає фрагмент без
+    // провідного "<!" — стара парна регексп такий не бачила й пропускала як є.
+    expect(
+      parseNewsData({
+        results: [
+          {
+            title: 'T',
+            link: 'https://x.com/a',
+            description: '[CDATA[ Сеута: нова міграційна криза в Єврошунії?]]>',
+          },
+        ],
+      }),
+    ).toEqual([
+      { title: 'T', url: 'https://x.com/a', why: 'Сеута: нова міграційна криза в Єврошунії?' },
+    ]);
+  });
+
   it('publishedAt з NewsData "YYYY-MM-DD HH:mm:ss" (без таймзони) -> ISO з UTC-корекцією', () => {
     expect(
       parseNewsData({
