@@ -9,6 +9,7 @@ import {
   onThisDayDataSchema,
 } from '../../api/briefing-schema.ts';
 import { shortDateFromIso } from '../../lib/dateLabel.ts';
+import { useGeolocation } from '../../lib/useGeolocation.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { WeatherBlock } from './WeatherBlock.tsx';
@@ -60,7 +61,11 @@ export function TodayScreen() {
   // `live` відсутній (ще завантажується/поза Telegram/збій) -> просто рендеримо
   // снапшот, як і завжди. fetchLiveWeather НІКОЛИ не кидає, тож немає окремого
   // isError тут — лише necessarily-undefined `data`.
-  const { data: liveWeather } = useLiveWeather();
+  // Геолокація (Блок «Погода») — коли браузер дав координати, useLiveWeather
+  // підміняє головну локацію на реальне «де ти зараз»; поки null (ще
+  // запитуємо/відмовлено/десктоп) — дефолтна пара Львів/Немовичі, як і раніше.
+  const geo = useGeolocation();
+  const { data: liveWeather } = useLiveWeather(geo);
 
   if (isLoading) return <LoadingSkeleton />;
   if (isError || !data) {

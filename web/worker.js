@@ -760,29 +760,74 @@ const WEATHER_LIVE_TTL_MS = 30 * 60_000; // 30 хв — реальна свіж�
 // РАЗІВ на добу Mini App може оновити кеш», не «скільки запитів на локацію».
 const WEATHER_LIVE_DAILY_LIMIT = 50;
 
+/** Зворотне геокодування (OpenWeather Geocoding API — окремий безкоштовний
+ *  тір від One Call 3.0, той самий WEATHER_API_KEY). Українська назва
+ *  (local_names.uk), якщо є, інакше — що дав API. null на будь-який збій —
+ *  виклик graceful-деградує до дефолтного підпису, не валить живу погоду. */
+async function reverseGeocodeCity(lat, lon, apiKey) {
+  try {
+    const url = new URL('https://api.openweathermap.org/geo/1.0/reverse');
+    url.searchParams.set('lat', String(lat));
+    url.searchParams.set('lon', String(lon));
+    url.searchParams.set('limit', '1');
+    url.searchParams.set('appid', apiKey);
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const data = await res.json();
+    const first = Array.isArray(data) ? data[0] : null;
+    return first?.local_names?.uk ?? first?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * GET /api/weather -> жива погода (PR-7, фідбек власника: статична температура
- * з ранкового брифінгу вже за обідом не відповідала дійсності). Owner-gated,
- * кешовано в KV (weatherLive, ~30 хв) — той самий OpenWeather-ключ ділиться з
- * оркестратором, тож живий фетч НЕ на кожне відкриття Mini App.
+ * GET /api/weather[?lat=&lon=] -> жива погода (PR-7, фідбек власника: статична
+ * температура з ранкового брифінгу вже за обідом не відповідала дійсності).
+ * Owner-gated, кешовано в KV (weatherLive, ~30 хв) — той самий OpenWeather-ключ
+ * ділиться з оркестратором, тож живий фетч НЕ на кожне відкриття Mini App.
+ *
+ * ?lat=&lon= (опційно, Блок «Погода» — геолокація з Mini App): підміняє ГОЛОВНУ
+ * локацію на реальні координати (зворотне геокодування -> назва), Львів
+ * (WEATHER_LOCATIONS[0]) зсувається у другий слот замість Немовичів. Не
+ * кешується — geo-локація персональна для цього перегляду, кешувати чужі
+ * 30 хв немає сенсу (і зіпсувало б спільний кеш для дефолтної пари).
  */
 async function handleLiveWeather(request, env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
+  const url = new URL(request.url);
+  // Суворо рядок -> Number, НЕ голий Number(searchParams.get(...)): відсутній
+  // параметр дає null, а Number(null)===0 — валідна на вигляд координата
+  // (0,0), тож hasGeo хибно спрацював би на КОЖЕН запит без lat/lon узагалі.
+  const latRaw = url.searchParams.get('lat');
+  const lonRaw = url.searchParams.get('lon');
+  const latParam = latRaw !== null ? Number(latRaw) : NaN;
+  const lonParam = lonRaw !== null ? Number(lonRaw) : NaN;
+  const hasGeo =
+    Number.isFinite(latParam) &&
+    Number.isFinite(lonParam) &&
+    latParam >= -90 &&
+    latParam <= 90 &&
+    lonParam >= -180 &&
+    lonParam <= 180;
+
   const nowMs = Date.now();
   let cached;
-  try {
-    cached = JSON.parse((await env.BRIEFING.get('weatherLive')) ?? 'null');
-  } catch {
-    cached = null;
-  }
-  if (
-    cached &&
-    Number.isFinite(cached.fetchedAtMs) &&
-    nowMs - cached.fetchedAtMs < WEATHER_LIVE_TTL_MS
-  ) {
-    return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+  if (!hasGeo) {
+    try {
+      cached = JSON.parse((await env.BRIEFING.get('weatherLive')) ?? 'null');
+    } catch {
+      cached = null;
+    }
+    if (
+      cached &&
+      Number.isFinite(cached.fetchedAtMs) &&
+      nowMs - cached.fetchedAtMs < WEATHER_LIVE_TTL_MS
+    ) {
+      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+    }
   }
 
   if (!env.WEATHER_API_KEY) {
@@ -802,8 +847,8 @@ async function handleLiveWeather(request, env) {
   if (counter.count >= WEATHER_LIVE_DAILY_LIMIT) {
     // Ліміт вичерпано -> віддати БУДЬ-ЯКИЙ наявний кеш (навіть протухлий) —
     // краще вчорашнє число, ніж зовсім нічого; фолбек на брифінг лишається
-    // клієнту, якщо кешу взагалі немає.
-    if (cached)
+    // клієнту, якщо кешу взагалі немає. Geo-запит кешу не має — чесна відмова.
+    if (!hasGeo && cached)
       return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
     return json({ ok: false, error: 'rate-limited' }, 429);
   }
@@ -840,24 +885,38 @@ async function handleLiveWeather(request, env) {
     return parsed;
   };
 
-  const results = await Promise.allSettled(WEATHER_LOCATIONS.map(fetchLocation));
+  let targetLocations = WEATHER_LOCATIONS;
+  if (hasGeo) {
+    counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
+    const name = await reverseGeocodeCity(latParam, lonParam, env.WEATHER_API_KEY);
+    // Львів (WEATHER_LOCATIONS[0]) зсувається у другий слот замість Немовичів —
+    // той самий 2-слотовий UI (головна температура + рядок біля UV/AQI), лише
+    // інший вміст масиву.
+    targetLocations = [
+      { lat: latParam, lon: lonParam, name: name ?? 'Твоя локація' },
+      WEATHER_LOCATIONS[0],
+    ];
+  }
+
+  const results = await Promise.allSettled(targetLocations.map(fetchLocation));
   await env.BRIEFING.put('weatherLiveCounter', JSON.stringify(counter));
 
   const locations = [];
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') locations.push(r.value);
-    else console.error(`жива погода для ${WEATHER_LOCATIONS[i].name} впала:`, r.reason?.message);
+    else console.error(`жива погода для ${targetLocations[i].name} впала:`, r.reason?.message);
   });
 
   if (locations.length === 0) {
     // Усі локації впали -> віддати старий кеш, якщо є, інакше чесна відмова
     // (клієнт фолбекає на снапшот брифінгу).
-    if (cached)
+    if (!hasGeo && cached)
       return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
     return json({ ok: false, error: 'upstream-failed' }, 502);
   }
 
-  await env.BRIEFING.put('weatherLive', JSON.stringify({ locations, fetchedAtMs: nowMs }));
+  if (!hasGeo)
+    await env.BRIEFING.put('weatherLive', JSON.stringify({ locations, fetchedAtMs: nowMs }));
   return json({ ok: true, locations, fetchedAtMs: nowMs });
 }
 
