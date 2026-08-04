@@ -22,6 +22,22 @@ interface TelegramCloudStorage {
   removeItem: (key: string, cb?: (err: unknown, success?: boolean) => void) => void;
 }
 
+interface TelegramLocationData {
+  latitude: number;
+  longitude: number;
+}
+
+// Bot API 8.0+. Нативна геолокація Telegram — йде через дозвіл САМОГО
+// Telegram (host app, OS-рівень), не через web Geolocation API/Permissions-
+// Policy WebView. init() обовʼязковий перед getLocation() — виставляє
+// isLocationAvailable/isAccessGranted.
+interface TelegramLocationManager {
+  isLocationAvailable?: boolean;
+  isAccessGranted?: boolean;
+  init: (cb?: () => void) => void;
+  getLocation: (cb: (data: TelegramLocationData | null) => void) => void;
+}
+
 interface TelegramWebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string };
@@ -57,6 +73,7 @@ interface TelegramWebApp {
     notificationOccurred?: (type: 'success' | 'warning' | 'error') => void;
   };
   CloudStorage?: TelegramCloudStorage;
+  LocationManager?: TelegramLocationManager;
 }
 
 declare global {
@@ -210,4 +227,47 @@ export function cloudRemoveItem(key: string): void {
   } catch {
     /* те саме */
   }
+}
+
+export type TelegramLocationResult =
+  | { ok: true; lat: number; lon: number }
+  | { ok: false; reason: 'unsupported' | 'unavailable' | 'denied' };
+
+/**
+ * Нативна геолокація Telegram (Bot API 8.0+, LocationManager) — ЗАМІСТЬ
+ * navigator.geolocation, коли доступна. Хост-девайс власника мовчки НІКОЛИ
+ * не відповідав на стандартний web Geolocation API (ні успіхом, ні
+ * помилкою, навіть довго після власного timeout) — ознака, що сам API
+ * заблокований на рівні WebView, в якому Telegram рендерить Mini App
+ * (Permissions-Policy на iframe тощо), а не відмова дозволу користувачем.
+ * LocationManager іде через дозвіл САМОГО Telegram (host app), в обхід
+ * цього шару. 'unsupported' — старий клієнт без LocationManager узагалі
+ * (виклик коду лишає фолбек на navigator.geolocation).
+ */
+export function getTelegramLocation(): Promise<TelegramLocationResult> {
+  return new Promise((resolve) => {
+    const lm = tg?.LocationManager;
+    if (!lm) {
+      resolve({ ok: false, reason: 'unsupported' });
+      return;
+    }
+    try {
+      lm.init(() => {
+        if (!lm.isLocationAvailable) {
+          resolve({ ok: false, reason: 'unavailable' });
+          return;
+        }
+        try {
+          lm.getLocation((data) => {
+            if (data) resolve({ ok: true, lat: data.latitude, lon: data.longitude });
+            else resolve({ ok: false, reason: 'denied' });
+          });
+        } catch {
+          resolve({ ok: false, reason: 'unsupported' });
+        }
+      });
+    } catch {
+      resolve({ ok: false, reason: 'unsupported' });
+    }
+  });
 }
