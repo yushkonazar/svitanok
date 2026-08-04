@@ -224,7 +224,29 @@ export function HabitsBlock({ s }: { s: Stats }) {
       {flames.tops.length > 0 && (
         <Card>
           <SubLabel>ВОГНИКИ В ІНШИХ ЗАСТОСУНКАХ · 12 ТИЖНІВ</SubLabel>
-          <div className="mt-2">
+
+          {/* Ідея поля — памʼятати заходити у ВСІ застосунки, не скільки
+              разів обирав який (той лічильник тривіальний: коли flames
+              взагалі відповідають, це майже завжди всі пʼять разом). */}
+          <div className="mt-2 flex gap-2.5">
+            <Tile
+              gradient
+              n={flames.streak}
+              emoji="🔥"
+              label="днів поспіль повна рутина"
+              note={has(flames.best) ? `РЕКОРД ${flames.best}` : undefined}
+            />
+            <Tile n={flames.activeNights} label="вечорів хоч один вогник" />
+          </div>
+          {has(flames.best) && (
+            <span className="-mb-1 mt-1.5 block font-mono text-[10px] font-semibold text-tx3">
+              {flames.streak >= flames.best
+                ? '🏆 Це вже рекорд!'
+                : `До рекорду: ${flames.best - flames.streak} дн.`}
+            </span>
+          )}
+
+          <div className="mt-3.5">
             <FlameTrend weeks={flames.weekly} />
           </div>
           <Hint>
@@ -233,9 +255,9 @@ export function HabitsBlock({ s }: { s: Stats }) {
             (стрічка).
           </Hint>
           <div className="mt-3.5 border-t border-glassb pt-3">
-            <div className="mb-1.5 text-[11px] font-semibold text-tx2">Що частіше</div>
+            <div className="mb-1.5 text-[11px] font-semibold text-tx2">Що частіше пропускаю</div>
             <RankedBars
-              rows={flames.tops.map((r) => ({
+              rows={flames.missedTops.map((r) => ({
                 key: r.value,
                 label: FLAME_LABEL[r.value] ?? r.value,
                 n: r.n,

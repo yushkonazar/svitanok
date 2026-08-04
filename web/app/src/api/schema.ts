@@ -381,10 +381,15 @@ export const flameWeekSchema = z.object({
   constructive: int.default(0),
   consumptive: int.default(0),
 });
-/** Вогники сторонніх застосунків (evening.flames): рейтинг + тижнева композиція. */
+/** Вогники сторонніх застосунків (evening.flames): рейтинг + тижнева композиція
+ *  + стрік ПОВНОЇ рутини (усі FLAME_VALUES за добу). missedTops — дзеркало
+ *  tops, але лічильник пропущеного: «що частіше пропускаю». */
 export const flameStatsSchema = z.object({
   tops: z.array(checkinTopSchema).default([]),
+  missedTops: z.array(checkinTopSchema).default([]),
   activeNights: int.default(0),
+  streak: int.default(0),
+  best: int.default(0),
   weekly: z.array(flameWeekSchema).default([]),
 });
 
@@ -547,7 +552,14 @@ export const statsSchema = z.object({
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
   openRhythm: openRhythmSchema.default({ ready: false, n: 0 }),
   habitWeekly: z.array(habitWeekSchema).default([]),
-  flameStats: flameStatsSchema.default({ tops: [], activeNights: 0, weekly: [] }),
+  flameStats: flameStatsSchema.default({
+    tops: [],
+    missedTops: [],
+    activeNights: 0,
+    streak: 0,
+    best: 0,
+    weekly: [],
+  }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
   intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),
