@@ -49,28 +49,43 @@ function writeStored(coords: GeoCoords | null): void {
 }
 
 /**
+ * Діагностичний статус ЖИВОЇ спроби (не сховища) — власник двічі підтвердив
+ * «не спрацювало» після фіксів памʼяті (localStorage, потім CloudStorage), а
+ * l.name у WeatherBlock лишався «Львів» — це означає, що hasGeo на бекенді
+ * був false, тобто geo НІКОЛИ не ставав не-null на клієнті. Проблема не в
+ * ЗБЕРЕЖЕННІ позиції — getCurrentPosition, вочевидь, просто не встигає/не
+ * може відповісти успіхом на цьому клієнті взагалі. Статус рендериться в
+ * WeatherBlock маленьким підписом — щоб побачити ТОЧНУ причину (відмова /
+ * недоступність / таймаут / непідтримка API) без доступу до консолі пристрою.
+ */
+export type GeoStatus = 'pending' | 'ok' | 'denied' | 'unavailable' | 'timeout' | 'unsupported';
+
+export interface GeoState {
+  coords: GeoCoords | null;
+  status: GeoStatus;
+}
+
+/**
  * Координати браузера з памʼяттю між відкриттями (Блок «Погода»). Дозвіл на
  * геолокацію в Telegram Mini App «діє постійно» лише номінально — WebView
  * часто перестворюється при кожному відкритті, і холодний getCurrentPosition
  * не завжди встигає відповісти за швидкий повторний захід. Гірше того:
  * localStorage сам по собі ненадійний як памʼять МІЖ сеансами Mini App —
  * Telegram може чистити WebView-сховище між платформами/запусками (саме
- * тому в Bot API взагалі існує CloudStorage). Локальний тест підтвердив:
- * localStorage-only фікс не пережив повторне відкриття — застосунок знову
- * відкотився на дефолтний Львів.
+ * тому в Bot API взагалі існує CloudStorage).
  *
- * Тепер: на монтуванні ОДРАЗУ повертаємо localStorage (лінивий useState, чисто
- * для миттєвого першого рендера), а паралельно читаємо CloudStorage — і якщо
- * там щось є, а локально порожньо (саме той випадок, коли WebView-сховище не
- * пережило перезапуск), підхоплюємо хмарне значення (prev ?? cloud — не
- * перебиває вже наявне свіжіше). Тихо перепитуємо й свіжий GPS-фікс;
- * збігається в межах ~1км — нічого не міняємо; відрізняється — оновлюємо
- * стан і ОБИДВА сховища. PERMISSION_DENIED (реальне відкликання дозволу, на
- * відміну від транзиєнтного таймауту/POSITION_UNAVAILABLE) чистить обидва —
- * інакше застаріле місце показувалось би вічно.
+ * На монтуванні ОДРАЗУ повертаємо localStorage (лінивий useState, чисто для
+ * миттєвого першого рендера), а паралельно читаємо CloudStorage — і якщо там
+ * щось є, а локально порожньо (WebView-сховище не пережило перезапуск),
+ * підхоплюємо хмарне значення (prev ?? cloud — не перебиває вже наявне
+ * свіжіше). Тихо перепитуємо й свіжий GPS-фікс; збігається в межах ~1км —
+ * нічого не міняємо; відрізняється — оновлюємо стан і ОБИДВА сховища.
+ * PERMISSION_DENIED (реальне відкликання дозволу, на відміну від
+ * транзиєнтного таймауту/POSITION_UNAVAILABLE) чистить обидва.
  */
-export function useGeolocation(): GeoCoords | null {
+export function useGeolocation(): GeoState {
   const [coords, setCoords] = useState<GeoCoords | null>(readLocal);
+  const [status, setStatus] = useState<GeoStatus>('pending');
 
   useEffect(() => {
     let cancelled = false;
@@ -81,36 +96,47 @@ export function useGeolocation(): GeoCoords | null {
       if (cloud) setCoords((prev) => prev ?? cloud);
     });
 
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (cancelled) return;
-          const next = { lat: round(pos.coords.latitude), lon: round(pos.coords.longitude) };
-          setCoords((prev) => {
-            if (prev && prev.lat === next.lat && prev.lon === next.lon) return prev;
-            writeStored(next);
-            return next;
-          });
-        },
-        (err) => {
-          if (cancelled) return;
-          if (err.code === 1 /* PERMISSION_DENIED */) {
-            writeStored(null);
-            setCoords(null);
-          }
-          /* POSITION_UNAVAILABLE/TIMEOUT — транзиєнтне, лишаємось на останній
-             відомій позиції (зі storage/cloud або null для нового користувача). */
-        },
-        // enableHighAccuracy:false — містова точність достатня для погоди,
-        // мережева локація швидша й дешевша за GPS-фікс.
-        { enableHighAccuracy: false, timeout: 10_000, maximumAge: 15 * 60_000 },
-      );
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setStatus('unsupported');
+      return () => {
+        cancelled = true;
+      };
     }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (cancelled) return;
+        setStatus('ok');
+        const next = { lat: round(pos.coords.latitude), lon: round(pos.coords.longitude) };
+        setCoords((prev) => {
+          if (prev && prev.lat === next.lat && prev.lon === next.lon) return prev;
+          writeStored(next);
+          return next;
+        });
+      },
+      (err) => {
+        if (cancelled) return;
+        if (err.code === 1 /* PERMISSION_DENIED */) {
+          setStatus('denied');
+          writeStored(null);
+          setCoords(null);
+        } else if (err.code === 2 /* POSITION_UNAVAILABLE */) {
+          setStatus('unavailable');
+        } else {
+          setStatus('timeout');
+        }
+        /* лишаємось на останній відомій позиції (зі storage/cloud або null
+           для нового користувача) — лише статус сигналізує проблему. */
+      },
+      // enableHighAccuracy:false — містова точність достатня для погоди,
+      // мережева локація швидша й дешевша за GPS-фікс.
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 15 * 60_000 },
+    );
 
     return () => {
       cancelled = true;
     };
   }, []);
 
-  return coords;
+  return { coords, status };
 }
