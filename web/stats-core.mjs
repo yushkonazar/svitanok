@@ -100,6 +100,8 @@ export const CATEGORY_VALUES = [
   'rest',
   'people',
   'create',
+  'health',
+  'admin',
 ];
 
 /** Скільки варіантів максимум приймаємо в мультивиборі (день не має 5 причин). */
@@ -122,6 +124,7 @@ export const BLOCKER_VALUES = [
   'overload',
   'waiting',
   'procrast',
+  'forgot',
   'none',
 ];
 export const HELPER_VALUES = [
@@ -130,6 +133,7 @@ export const HELPER_VALUES = [
   'breaks',
   'support',
   'move',
+  'rest',
   'smallstep',
   'nodistract',
   'deadline',
@@ -195,7 +199,7 @@ const CHECKIN_FIELDS = {
     detached: { enum: ['yes', 'partly', 'no'] },
     rumination: { num: [1, 5], int: true },
     autonomy: { num: [1, 5], int: true },
-    moved: { enum: ['none', 'light', 'workout'] },
+    moved: { enum: ['none', 'light', 'active', 'workout'] },
     outdoor: { enum: ['none', 'short', 'long'] },
     screen: { enum: ['low', 'mid', 'high', 'vhigh'] },
     caffeine: { num: [0, 10], int: true },
