@@ -275,6 +275,16 @@ export const checkinPointSchema = z.object({
   slots: int.default(0),
 });
 
+/** Ніч журналу сну (Блок «Сон») — тап «Ліг спати» + автоматичне «прокинувся»
+ *  (перше відкриття наступного дня). durationMin — лише коли є ОБИДВА
+ *  таймстемпи; одна нога без другої лишається null, а не здогадкою. */
+export const sleepNightSchema = z.object({
+  d: z.string(),
+  startedAt: z.string().nullable().default(null),
+  wokeAt: z.string().nullable().default(null),
+  durationMin: num.nullable().default(null),
+});
+
 /** Дрейф наміру: план (ранок) проти того, що реально зайняло час (день). */
 export const intentDriftSchema = z.object({
   total: int.default(0),
@@ -526,6 +536,7 @@ export const statsSchema = z.object({
   checkinSlot: z.enum(['morning', 'afternoon', 'evening']).nullable().optional(),
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
+  sleepLog: z.array(sleepNightSchema).default([]),
   checkinWeekly: z.array(checkinWeekSchema).default([]),
   checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
   planVsFact: z.array(planVsFactSchema).default([]),

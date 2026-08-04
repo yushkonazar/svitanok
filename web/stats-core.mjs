@@ -309,6 +309,40 @@ export function shouldSendCheckinNudge({ quiet, alreadyNudgedToday, slotFilled }
   return true;
 }
 
+/* ── Сон: нагадування «Ліг спати» (Блок «Сон») ─────────────────────────────
+   Вікно 23:00–02:00 Київ, розбите на ДВІ половини через північ (minuteOfDay
+   не «переходить» північ сам — 00:00–01:59 належить НАСТУПНІЙ календарній
+   добі). Обидві половини worker.js зводить до ОДНІЄЇ ночі через
+   checkinDateKey (той самий зсув, що вже коректно приписує вечірній чек-ін
+   до 02:00 «вчорашньому вечору») — тут нова математика не потрібна. */
+export const SLEEP_NUDGE_TEXT = '🌙 Ще не зафіксував відхід до сну — тисни, якщо вже лягаєш.';
+
+/** У вікні нагадування «Ліг спати» (23:00–23:59 АБО 00:00–01:59)? */
+export function inSleepNudgeWindow(minuteOfDay) {
+  return (minuteOfDay >= 1380 && minuteOfDay <= 1439) || (minuteOfDay >= 0 && minuteOfDay < 120);
+}
+
+/** Чи слати нагадування «Ліг спати» зараз — той самий стиль, що shouldSendCheckinNudge. */
+export function shouldSendSleepNudge({ quiet, alreadySentTonight }) {
+  if (quiet) return false;
+  if (alreadySentTonight) return false;
+  return true;
+}
+
+/**
+ * Ночі з надісланим, але НЕ натиснутим нагадуванням «Ліг спати» — з
+ * ПОПЕРЕДНІХ (не поточної) ночей. Власник явно попросив: сповіщення не мусить
+ * просто висіти, якщо тап так і не стався — worker.js бере цей список і
+ * прибирає кнопку/дописує текст на кожній.
+ */
+export function staleSleepNudges(sleepLog, currentNightKey) {
+  return Object.entries(sleepLog ?? {})
+    .filter(
+      ([k, v]) => v?.nudgeMsgId != null && !v.startedAt && !v.nudgeCleared && k !== currentNightKey,
+    )
+    .map(([dateKey, v]) => ({ dateKey, nudgeMsgId: v.nudgeMsgId }));
+}
+
 /**
  * Лишити тільки валідні поля блоку. Невідоме/бите ІГНОРУЄМО (як і раніше).
  *
@@ -387,6 +421,15 @@ function capReliabilityDays(s) {
   }
 }
 
+const SLEEP_LOG_CAP = 90;
+/** Кап журналу сну: лишаємо останні SLEEP_LOG_CAP ночей. */
+function capSleepLog(s) {
+  const keys = Object.keys(s.sleepLog).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - SLEEP_LOG_CAP))) {
+    delete s.sleepLog[k];
+  }
+}
+
 export function emptyStore() {
   return {
     days: {},
@@ -403,6 +446,7 @@ export function emptyStore() {
     appliedLog: [],
     reliability: { onTime: 0, total: 0, deadman: 0, days: {} },
     checkins: {},
+    sleepLog: {},
   };
 }
 
@@ -436,6 +480,7 @@ export function normalize(s) {
         : {}),
     },
     checkins: s.checkins && typeof s.checkins === 'object' ? s.checkins : e.checkins,
+    sleepLog: s.sleepLog && typeof s.sleepLog === 'object' ? s.sleepLog : e.sleepLog,
   };
 }
 
@@ -486,7 +531,7 @@ const bumpInterest = (s, dateKey, topic, by = 1) => {
  *  job_stage · job_dismiss · mock_answer · step_done · vote.
  *  `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
  */
-export function recordEvent(store, ev, dateKey, nowMin = null) {
+export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
   const s = normalize(store);
   if (!isDateKey(dateKey)) return s; // без валідної дати подію не приймаємо (не валимо)
   const t = ev?.type;
@@ -496,8 +541,18 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       // «Час до відкриття» — лише ПЕРШЕ відкриття дня: клієнт шле open на кожне
       // завантаження, і без цього гейта повторні заходи (обід/вечір) тягнуть
       // медіану в сотні хвилин, знецінюючи метрику.
-      if (!(day.opens > 0) && typeof nowMin === 'number' && nowMin >= 0)
+      const firstOpenToday = !(day.opens > 0);
+      if (firstOpenToday && typeof nowMin === 'number' && nowMin >= 0)
         capPush(s.opensMin, Math.round(nowMin));
+      // Сон: перше відкриття доби — безкоштовний проксі «прокинувся». Закриває
+      // БУДЬ-ЯКУ ще не закриту МИНУЛУ ніч (ключ != поточна дата) — не лише
+      // вчорашню: якщо застосунок не відкривали кілька днів, перше ж
+      // відкриття закриває найдавнішу відкриту ніч теж, а не губить дані мовчки.
+      if (firstOpenToday && typeof nowIso === 'string' && nowIso) {
+        for (const [k, night] of Object.entries(s.sleepLog)) {
+          if (night?.startedAt && !night.wokeAt && k !== dateKey) night.wokeAt = nowIso;
+        }
+      }
       bump(day, 'opens');
       break;
     }
@@ -687,6 +742,19 @@ export function recordEvent(store, ev, dateKey, nowMin = null) {
       // не має стирати те, що вже відповіли раніше в цьому ж блоці.
       s.checkins[dateKey][ev.slot] = merged;
       capCheckins(s);
+      break;
+    }
+    case 'sleepStart': {
+      // Тап «🌙 Ліг спати» (Блок «Сон»). dateKey рахує ВОРКЕР через checkinDateKey
+      // (той самий зсув, що вечірній чек-ін) — ніч до 06:00 лишається «вчорашньою».
+      // Перший тап виграє (idempotent): повторний тап тієї ж ночі нічого не міняє —
+      // той самий дух, що confirmed-лок чек-іну.
+      if (typeof nowIso === 'string' && nowIso) {
+        if (!s.sleepLog[dateKey] || typeof s.sleepLog[dateKey] !== 'object')
+          s.sleepLog[dateKey] = {};
+        if (!s.sleepLog[dateKey].startedAt) s.sleepLog[dateKey].startedAt = nowIso;
+        capSleepLog(s);
+      }
       break;
     }
     // 'step_done' прибрано (D4, «Крок до офера»); старі days[].step у KV просто
@@ -1507,6 +1575,31 @@ export function pageSaved(store, { offset = 0, limit = 20 } = {}) {
   return { items: s.saved.slice(off, off + lim).map(savedRow), total: s.saved.length };
 }
 
+/**
+ * Останні `nights` ночей журналу сну (Блок «Сон») — {d, startedAt, wokeAt,
+ * durationMin}. durationMin — ЛИШЕ коли є ОБИДВА таймстемпи (тап «Ліг спати» +
+ * автоматичне «прокинувся» з першого відкриття наступного дня); одна нога без
+ * другої — null, а не здогадка.
+ */
+function buildSleepLog(sleepLog, nights = 30) {
+  return Object.keys(sleepLog ?? {})
+    .sort()
+    .slice(-nights)
+    .map((d) => {
+      const night = sleepLog[d] ?? {};
+      const durationMin =
+        night.startedAt && night.wokeAt
+          ? Math.round((Date.parse(night.wokeAt) - Date.parse(night.startedAt)) / 60000)
+          : null;
+      return {
+        d,
+        startedAt: night.startedAt ?? null,
+        wokeAt: night.wokeAt ?? null,
+        durationMin,
+      };
+    });
+}
+
 export function aggregateStats(store, todayKey) {
   const s = normalize(store);
   // Битий todayKey не валить агрегат (RangeError у date-математиці) — детермінований
@@ -1674,6 +1767,9 @@ export function aggregateStats(store, todayKey) {
     // залежить від години, а /api/stats кешується — його додає worker.js.
     checkinToday: s.checkins[todayKey] ?? null,
     checkinSeries: buildCheckinSeries(s.checkins, todayKey),
+    // Сон (Блок «Сон») — точні таймстемпи замість ранкового бакета, коли є:
+    // тап «Ліг спати» + автоматичне «прокинувся» з першого відкриття наступного дня.
+    sleepLog: buildSleepLog(s.sleepLog),
     // Дрейф наміру — на ВЖЕ зібраних даних (plan/ate є роками), тож працює з
     // першого дня, не чекає накопичення нових полів.
     intentDrift: buildIntentDrift(s.checkins, todayKey),
