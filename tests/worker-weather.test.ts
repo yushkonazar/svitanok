@@ -14,7 +14,6 @@ const BOT_TOKEN = 'bot-token-abc';
 let kv: Map<string, string>;
 let openWeatherCalls: string[];
 let openWeatherFail: boolean;
-let geocodeEmpty: boolean;
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
@@ -61,9 +60,9 @@ async function buildInitData(userId: number, botToken: string, authDateSec?: num
   return params.toString();
 }
 
-async function getWeather(initData: string | null, e = env(), qs = '') {
+async function getWeather(initData: string | null, e = env()) {
   return worker.fetch(
-    new Request(`https://svitanok.example/api/weather${qs}`, {
+    new Request('https://svitanok.example/api/weather', {
       headers: initData ? { 'X-Telegram-Init-Data': initData } : {},
     }),
     e,
@@ -75,7 +74,6 @@ beforeEach(() => {
   kv = new Map();
   openWeatherCalls = [];
   openWeatherFail = false;
-  geocodeEmpty = false;
   vi.stubGlobal('fetch', async (input: unknown) => {
     const url = String(input);
     if (url.includes('api.openweathermap.org')) {
@@ -92,14 +90,6 @@ beforeEach(() => {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
-      }
-      if (url.includes('/geo/1.0/reverse')) {
-        return new Response(
-          JSON.stringify(
-            geocodeEmpty ? [] : [{ name: 'Тернопіль', local_names: { uk: 'Тернопіль' } }],
-          ),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
       }
     }
     return new Response('{}', { status: 200 });
@@ -210,57 +200,5 @@ describe('GET /api/weather — фетч, кеш, ліміт', () => {
     const res = await getWeather(initData);
     expect(res.status).toBe(200);
     expect(openWeatherCalls.length).toBe(callsBefore); // жодного нового фетчу — ліміт зупинив ДО нього
-  });
-});
-
-describe('GET /api/weather?lat=&lon= — геолокація (Блок «Погода»)', () => {
-  it('валідні lat/lon -> [геолокація, Львів] замість дефолтної пари, кличе зворотне геокодування', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await getWeather(initData, env(), '?lat=49.5&lon=25.6');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; locations: { name: string }[] };
-    expect(body.ok).toBe(true);
-    expect(body.locations.map((l) => l.name)).toEqual(['Тернопіль', 'Львів']); // НЕ Немовичі
-    expect(openWeatherCalls.some((u) => u.includes('/geo/1.0/reverse'))).toBe(true);
-  });
-
-  it('geo-запит НЕ читає й НЕ пише спільний кеш weatherLive (персональний, не для 30-хв TTL)', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    await getWeather(initData); // звичайний запит будує кеш
-    const cachedBefore = kv.get('weatherLive');
-    await getWeather(initData, env(), '?lat=49.5&lon=25.6');
-    expect(kv.get('weatherLive')).toBe(cachedBefore); // не перезаписано geo-результатом
-  });
-
-  it('geo-фетч падає -> 502 (кешу для geo нема, що фолбечити)', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    openWeatherFail = true;
-    const res = await getWeather(initData, env(), '?lat=49.5&lon=25.6');
-    expect(res.status).toBe(502);
-  });
-
-  it('лише lat, без lon -> ігнорується, звичайна дефолтна пара (Number(null)===0 пастка)', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await getWeather(initData, env(), '?lat=49.5');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { locations: { name: string }[] };
-    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
-  });
-
-  it('lat/lon поза діапазоном -> ігнорується, звичайна дефолтна пара', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await getWeather(initData, env(), '?lat=999&lon=25.6');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { locations: { name: string }[] };
-    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
-  });
-
-  it('зворотне геокодування нічого не знайшло (порожній масив) -> фолбек-назва «Твоя локація»', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    geocodeEmpty = true;
-    const res = await getWeather(initData, env(), '?lat=1&lon=1');
-    const body = (await res.json()) as { ok: boolean; locations: { name: string }[] };
-    expect(body.ok).toBe(true); // геокодування — довантаження, збій не валить погоду
-    expect(body.locations[0]?.name).toBe('Твоя локація');
   });
 });

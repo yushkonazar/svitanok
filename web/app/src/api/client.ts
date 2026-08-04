@@ -119,17 +119,10 @@ export async function fetchBriefing(): Promise<BriefResult> {
  * live-шар лишається чистим покращенням, не критичним шляхом. null означає
  * «покажи снапшот» — не «сталась помилка».
  */
-export async function fetchLiveWeather(
-  geo?: { lat: number; lon: number } | null,
-): Promise<LiveWeatherResponse | null> {
+export async function fetchLiveWeather(): Promise<LiveWeatherResponse | null> {
   if (!inTelegram()) return null;
   try {
-    // geo (Блок «Погода», геолокація Mini App) — сервер підміняє головну
-    // локацію на реальні координати; без geo — дефолтна пара (Львів/Немовичі).
-    const url = geo
-      ? `/api/weather?lat=${encodeURIComponent(geo.lat)}&lon=${encodeURIComponent(geo.lon)}`
-      : '/api/weather';
-    const res = await fetch(url, { cache: 'no-store', headers: authHeaders() });
+    const res = await fetch('/api/weather', { cache: 'no-store', headers: authHeaders() });
     if (!res.ok) return null;
     const parsed = liveWeatherResponseSchema.safeParse(await res.json());
     return parsed.success ? parsed.data : null;
