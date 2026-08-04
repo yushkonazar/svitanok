@@ -145,21 +145,36 @@ export function useGeolocation(): GeoState {
          користувача). */
     };
 
-    getTelegramLocation().then((res) => {
-      if (cancelled) return;
-      if (res.ok) {
-        apply({ lat: round(res.lat), lon: round(res.lon) });
-        return;
-      }
-      if (res.reason !== 'unsupported') {
-        fail(res.reason);
-        return;
-      }
-      requestBrowserGeolocation(apply, fail);
-    });
+    const attempt = () => {
+      getTelegramLocation().then((res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          apply({ lat: round(res.lat), lon: round(res.lon) });
+          return;
+        }
+        if (res.reason !== 'unsupported') {
+          fail(res.reason);
+          return;
+        }
+        requestBrowserGeolocation(apply, fail);
+      });
+    };
+
+    attempt();
+
+    // openLocationSettings() відкриває системний екран Telegram, але НЕ
+    // перезавантажує сторінку — WebView Mini App лишається живим, ефект з
+    // порожнім deps-масивом виконався б рівно раз і назавжди застряг би на
+    // старому статусі, навіть якщо власник щойно надав дозвіл. Перепитуємо
+    // при поверненні у вкладку (той самий сигнал, що й повернення з фону).
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') attempt();
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
