@@ -418,6 +418,16 @@ function kyivMinuteOfDay(now = new Date()) {
   return h * 60 + m;
 }
 
+/** Бакет "О котрій ліг?" (той самий enum, що BEDTIME_BUCKETS/CHECKIN_FIELDS.
+ *  morning.bedtime) із київської ГОДИНИ тапу «Ліг спати». */
+function bedtimeBucketForHour(h) {
+  if (h < 23) return 'e23';
+  if (h === 23) return 'e00';
+  if (h === 0) return 'e01';
+  if (h === 1) return 'e02';
+  return 'late'; // 2..5 (реалістичний діапазон тапу — 20:00–05:59)
+}
+
 /** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
  *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
  *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts). */
@@ -607,6 +617,9 @@ async function applyEvent(env, body) {
     // Той самий зсув, що вечірній чек-ін: тап о 00:47 належить учорашньому
     // вечору, не сьогоднішній календарній добі.
     dateKey = checkinDateKey(dateKey, kyivHour());
+    // Бакет "О котрій ліг?" рахуємо ТУТ (маємо kyivHour), не в stats-core —
+    // recordEvent лишається без часових поясів, лише зберігає готове значення.
+    ev = { ...body, bedtimeBucket: bedtimeBucketForHour(kyivHour()) };
   }
 
   const loaded = await loadStats(env);

@@ -285,6 +285,89 @@ describe('stats-core — сон (Блок «Сон»)', () => {
       { d: '2026-07-11', startedAt: '2026-07-11T23:30:00.000Z', wokeAt: null, durationMin: null },
     ]);
   });
+
+  it('sleepStart зберігає bedtimeBucket лише коли значення з ДОЗВОЛЕНОГО переліку', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      { type: 'sleepStart', bedtimeBucket: 'e02' },
+      '2026-07-10',
+      null,
+      '2026-07-10T23:47:00.000Z',
+    );
+    expect(s.sleepLog['2026-07-10'].bedtimeBucket).toBe('e02');
+
+    let s2 = emptyStore();
+    s2 = recordEvent(
+      s2,
+      { type: 'sleepStart', bedtimeBucket: 'вигадка' },
+      '2026-07-10',
+      null,
+      '2026-07-10T23:47:00.000Z',
+    );
+    expect(s2.sleepLog['2026-07-10'].bedtimeBucket).toBeUndefined();
+  });
+
+  it('open авто-заповнює sleepH+bedtime НАСТУПНОГО ранку, коли ще не відповіли самі', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      { type: 'sleepStart', bedtimeBucket: 'e00' },
+      '2026-07-10',
+      null,
+      '2026-07-10T23:47:00.000Z',
+    );
+    s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:17:00.000Z');
+    expect(s.checkins['2026-07-11'].morning).toEqual({ sleepH: 7.5, bedtime: 'e00' });
+  });
+
+  it('open НЕ перезаписує sleepH, якщо вже відповіли самі (ручна відповідь важливіша)', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'checkin', slot: 'morning', sleepH: 6 }, '2026-07-11');
+    s = recordEvent(
+      s,
+      { type: 'sleepStart', bedtimeBucket: 'e00' },
+      '2026-07-10',
+      null,
+      '2026-07-10T23:47:00.000Z',
+    );
+    s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:17:00.000Z');
+    expect(s.checkins['2026-07-11'].morning.sleepH).toBe(6); // ручне лишається
+    expect(s.checkins['2026-07-11'].morning.bedtime).toBe('e00'); // це поле НЕ відповідали -> заповнилось
+  });
+
+  it('open НЕ перезаписує ЯВНО очищене поле (null) — той самий контракт, що cleanCheckin', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'checkin', slot: 'morning', sleepH: 6 }, '2026-07-11');
+    s = recordEvent(s, { type: 'checkin', slot: 'morning', sleepH: null }, '2026-07-11'); // явне очищення
+    expect(s.checkins['2026-07-11'].morning.sleepH).toBeUndefined();
+    s = recordEvent(
+      s,
+      { type: 'sleepStart', bedtimeBucket: 'e00' },
+      '2026-07-10',
+      null,
+      '2026-07-10T23:47:00.000Z',
+    );
+    s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:17:00.000Z');
+    // Ключ ВІДСУТНІЙ (не null) після clear -> auto-fill таки заповнює: явне
+    // очищення означало «не такий, як записано», не «ніколи не заповнюй».
+    expect(s.checkins['2026-07-11'].morning.sleepH).toBe(7.5);
+  });
+
+  it('open пропускає auto-fill sleepH при абсурдній тривалості (>14год), але bedtime все одно заповнює', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      { type: 'sleepStart', bedtimeBucket: 'e00' },
+      '2026-07-08',
+      null,
+      '2026-07-08T23:00:00.000Z',
+    );
+    // Застосунок не відкривали кілька днів -> перше відкриття лише 11.07, ~57 год потому.
+    s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T08:00:00.000Z');
+    expect(s.checkins['2026-07-09'].morning.sleepH).toBeUndefined();
+    expect(s.checkins['2026-07-09'].morning.bedtime).toBe('e00');
+  });
 });
 
 describe('stats-core — aggregateStats', () => {

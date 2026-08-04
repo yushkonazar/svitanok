@@ -86,6 +86,11 @@ const CHECKIN_CAP = 365;
  * Опис полів блоку — він же валідатор.
  * `num: [min, max]` — число в межах; `int` — ще й ціле; `enum` — закритий перелік.
  */
+// Бакети "О котрій ліг?" — той самий enum, що CHECKIN_FIELDS.morning.bedtime
+// нижче; іменований export, бо case 'sleepStart' (тап «Ліг спати») теж
+// звіряється з ним, зберігаючи бакет на sleepLog-записі.
+export const BEDTIME_BUCKETS = ['e23', 'e00', 'e01', 'e02', 'late'];
+
 // Дев'ять життєвих категорій (v2, трекер життя) — дзеркало CATEGORIES у
 // web/app/src/components/checkin/questions.ts.
 // export: recordAction/checkin (agent-core.mjs схема) посилається на ТОЙ САМИЙ
@@ -157,7 +162,7 @@ const CHECKIN_FIELDS = {
     sleepQ: { num: [1, 5], int: true },
     // Скільки засинав — третій незалежний факт (ліг / засинав / проспав).
     sleepLatency: { enum: ['fast', 'mid', 'slow', 'vslow'] },
-    bedtime: { enum: ['e23', 'e00', 'e01', 'e02', 'late'] },
+    bedtime: { enum: BEDTIME_BUCKETS },
     // Чому пізно — питається УМОВНО (лише коли лягав пізно), тож у нормальні
     // дні коштує нуль тапів. «Мстива прокрастинація сну»: стресовий день ->
     // лягаю пізніше, щоб урвати час для себе.
@@ -259,6 +264,14 @@ export function checkinDateKey(kyivDate, hour) {
   if (h >= 6) return kyivDate;
   const d = new Date(kyivDate + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** dateKey, зсунутий на n діб (може бути відʼємним). Ніч сну -> ранок, що йде
+ *  за нею (case 'open', авто-заповнення sleepH/bedtime), використовує n=1. */
+function addDays(dateKey, n) {
+  const d = new Date(dateKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
@@ -549,9 +562,40 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // вчорашню: якщо застосунок не відкривали кілька днів, перше ж
       // відкриття закриває найдавнішу відкриту ніч теж, а не губить дані мовчки.
       if (firstOpenToday && typeof nowIso === 'string' && nowIso) {
+        let touchedCheckins = false;
         for (const [k, night] of Object.entries(s.sleepLog)) {
-          if (night?.startedAt && !night.wokeAt && k !== dateKey) night.wokeAt = nowIso;
+          if (night?.startedAt && !night.wokeAt && k !== dateKey) {
+            night.wokeAt = nowIso;
+            // Авто-заповнення ранкового чек-іну точними даними (власник,
+            // Блок «Сон»: без цього ранкові sleepH/bedtime лишались
+            // окремим, розбіжним джерелом від точних тапу+пробудження).
+            // ЛИШЕ якщо ще НЕ відповіли самі — undefined, не == null: явне
+            // очищення (null) теж НЕ перезаписуємо, той самий контракт, що
+            // cleanCheckin.
+            const morningDay = addDays(k, 1);
+            const hours = (Date.parse(nowIso) - Date.parse(night.startedAt)) / 3_600_000;
+            if (!s.checkins[morningDay] || typeof s.checkins[morningDay] !== 'object') {
+              s.checkins[morningDay] = {};
+            }
+            const morning = { ...(s.checkins[morningDay].morning ?? {}) };
+            let filled = false;
+            // Той самий діапазон, що CHECKIN_FIELDS.morning.sleepH (num [0,14]) —
+            // поза ним тиша зона/кількаденна перерва дала б абсурдне число.
+            if (morning.sleepH === undefined && hours > 0 && hours <= 14) {
+              morning.sleepH = Math.round(hours * 10) / 10;
+              filled = true;
+            }
+            if (morning.bedtime === undefined && night.bedtimeBucket) {
+              morning.bedtime = night.bedtimeBucket;
+              filled = true;
+            }
+            if (filled) {
+              s.checkins[morningDay].morning = morning;
+              touchedCheckins = true;
+            }
+          }
         }
+        if (touchedCheckins) capCheckins(s);
       }
       bump(day, 'opens');
       break;
@@ -752,7 +796,16 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       if (typeof nowIso === 'string' && nowIso) {
         if (!s.sleepLog[dateKey] || typeof s.sleepLog[dateKey] !== 'object')
           s.sleepLog[dateKey] = {};
-        if (!s.sleepLog[dateKey].startedAt) s.sleepLog[dateKey].startedAt = nowIso;
+        if (!s.sleepLog[dateKey].startedAt) {
+          s.sleepLog[dateKey].startedAt = nowIso;
+          // Бакет "О котрій ліг?" рахує ВОРКЕР (kyivHour у момент тапу) — той
+          // самий enum, що CHECKIN_FIELDS.morning.bedtime; зберігаємо тут, щоб
+          // авто-заповнення ранкового чек-іну (case 'open' вище) не мусило
+          // саме лізти в часові пояси.
+          if (BEDTIME_BUCKETS.includes(ev.bedtimeBucket)) {
+            s.sleepLog[dateKey].bedtimeBucket = ev.bedtimeBucket;
+          }
+        }
         capSleepLog(s);
       }
       break;
