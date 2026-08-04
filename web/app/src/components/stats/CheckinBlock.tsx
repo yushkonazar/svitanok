@@ -206,6 +206,18 @@ export function CheckinBlock({ s }: { s: Stats }) {
   const week = s.checkinWeekly.at(-1);
   const insight = checkinInsight(avgSleep, week?.energyAvg ?? null);
 
+  // Точний сон (Блок «Сон») — найсвіжіша ніч ІЗ ОБОМА таймстемпами (тап «Ліг
+  // спати» + автоматичне «прокинувся»). Половинчата ніч (лише один бік) не
+  // показується — краще нічого, ніж здогадка з одного таймстемпу.
+  const lastSleepNight = [...s.sleepLog].reverse().find((n) => n.durationMin != null);
+  const kyivTime = (iso: string) =>
+    new Date(iso).toLocaleTimeString('uk-UA', {
+      timeZone: 'Europe/Kyiv',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  const fmtDuration = (min: number) => `${Math.floor(min / 60)}год ${min % 60}хв`;
+
   const fill = s.checkinFill;
   // s.sleepVsDayScore / s.bedtimeVsEnergy СВІДОМО не читаються: sleepH і
   // bedtime тепер у реєстрі «Індексу дня», і DriversBars показує їхній вплив
@@ -232,6 +244,12 @@ export function CheckinBlock({ s }: { s: Stats }) {
       )}
 
       {insight && <div className="text-[11.5px] leading-[1.5] text-tx2">💡 {insight}</div>}
+      {lastSleepNight?.durationMin != null && lastSleepNight.startedAt && lastSleepNight.wokeAt && (
+        <div className="text-[11.5px] leading-[1.5] text-tx2">
+          🌙 Точний сон: {fmtDuration(lastSleepNight.durationMin)} (ліг о{' '}
+          {kyivTime(lastSleepNight.startedAt)}, прокинувся о {kyivTime(lastSleepNight.wokeAt)})
+        </div>
+      )}
 
       {filledDays > 1 && (
         <Card>

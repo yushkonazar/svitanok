@@ -417,6 +417,12 @@ export const SAMPLE_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: { morning: { sleepH: 6.5 } },
   checkinSeries: sampleCheckinSeries(),
+  sleepLog: [
+    { d: '2026-07-30', startedAt: '2026-07-30T23:12:00.000Z', wokeAt: '2026-07-31T07:05:00.000Z', durationMin: 473 },
+    { d: '2026-07-31', startedAt: '2026-07-31T23:58:00.000Z', wokeAt: '2026-08-01T07:20:00.000Z', durationMin: 442 },
+    { d: '2026-08-01', startedAt: '2026-08-02T00:34:00.000Z', wokeAt: '2026-08-02T08:10:00.000Z', durationMin: 456 },
+    { d: '2026-08-02', startedAt: '2026-08-02T23:20:00.000Z', wokeAt: null, durationMin: null },
+  ],
   // 30 діб, у 19 план збігся з тим, що реально зайняло час. Топ-пари — куди
   // саме зʼїжджає день, коли не збігається.
   intentDrift: {
@@ -597,6 +603,7 @@ export const EMPTY_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: null,
   checkinSeries: [],
+  sleepLog: [],
   intentDrift: { total: 0, matched: 0, pct: null, top: [] },
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
