@@ -12,37 +12,6 @@ interface TelegramBackButton {
   offClick: (cb: () => void) => void;
 }
 
-// Bot API 6.9+. На відміну від localStorage — гарантовано персистить між
-// окремими запусками Mini App (синк на боці Telegram, не WebView-сховище,
-// яке платформа може чистити між сесіями). Callback-based, як і весь
-// нативний SDK Telegram.
-interface TelegramCloudStorage {
-  setItem: (key: string, value: string, cb?: (err: unknown, success?: boolean) => void) => void;
-  getItem: (key: string, cb: (err: unknown, value?: string) => void) => void;
-  removeItem: (key: string, cb?: (err: unknown, success?: boolean) => void) => void;
-}
-
-interface TelegramLocationData {
-  latitude: number;
-  longitude: number;
-}
-
-// Bot API 8.0+. Нативна геолокація Telegram — йде через дозвіл САМОГО
-// Telegram (host app, OS-рівень), не через web Geolocation API/Permissions-
-// Policy WebView. init() обовʼязковий перед getLocation() — виставляє
-// isLocationAvailable/isAccessGranted.
-interface TelegramLocationManager {
-  isLocationAvailable?: boolean;
-  isAccessGranted?: boolean;
-  init: (cb?: () => void) => void;
-  getLocation: (cb: (data: TelegramLocationData | null) => void) => void;
-  // Відкриває системні налаштування дозволів (Bot API 8.0+) — коли
-  // isLocationAvailable/isAccessGranted false, це майже завжди ОС-рівень
-  // (вимкнена геолокація на пристрої або немає дозволу в самого Telegram),
-  // не щось виправне кодом. Пряме посилання замість «шукай сам у налаштуваннях».
-  openSettings?: () => void;
-}
-
 interface TelegramWebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string };
@@ -77,8 +46,6 @@ interface TelegramWebApp {
     impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;
     notificationOccurred?: (type: 'success' | 'warning' | 'error') => void;
   };
-  CloudStorage?: TelegramCloudStorage;
-  LocationManager?: TelegramLocationManager;
 }
 
 declare global {
@@ -195,120 +162,5 @@ export function addToHomeScreen(): void {
     tg?.addToHomeScreen?.();
   } catch {
     /* хост може не підтримувати — no-op */
-  }
-}
-
-/**
- * CloudStorage (Bot API 6.9+) — тонкі Promise-обгортки над callback-API.
- * null/no-op на будь-який збій чи відсутність підтримки (старий клієнт,
- * поза Telegram) — виклики лишаються простим await без окремого error-шляху,
- * той самий «м'який» контракт, що й fetchLiveWeather.
- */
-export function cloudGetItem(key: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    if (!tg?.CloudStorage?.getItem) {
-      resolve(null);
-      return;
-    }
-    try {
-      tg.CloudStorage.getItem(key, (err, value) => resolve(err ? null : (value ?? null)));
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-export function cloudSetItem(key: string, value: string): void {
-  try {
-    tg?.CloudStorage?.setItem?.(key, value);
-  } catch {
-    /* старий клієнт/збій — тихо ігноруємо */
-  }
-}
-
-export function cloudRemoveItem(key: string): void {
-  try {
-    tg?.CloudStorage?.removeItem?.(key);
-  } catch {
-    /* те саме */
-  }
-}
-
-export type TelegramLocationResult =
-  | { ok: true; lat: number; lon: number }
-  | { ok: false; reason: 'unsupported' | 'unavailable' | 'denied' };
-
-/**
- * Нативна геолокація Telegram (Bot API 8.0+, LocationManager) — ЗАМІСТЬ
- * navigator.geolocation, коли доступна. Хост-девайс власника мовчки НІКОЛИ
- * не відповідав на стандартний web Geolocation API (ні успіхом, ні
- * помилкою, навіть довго після власного timeout) — ознака, що сам API
- * заблокований на рівні WebView, в якому Telegram рендерить Mini App
- * (Permissions-Policy на iframe тощо), а не відмова дозволу користувачем.
- * LocationManager іде через дозвіл САМОГО Telegram (host app), в обхід
- * цього шару. 'unsupported' — старий клієнт без LocationManager узагалі
- * (виклик коду лишає фолбек на navigator.geolocation).
- *
- * Захисний timeout: у сирцях офіційного SDK (telegram-web-app.js) init()
- * на клієнті зі старою версією просто МОВЧКИ повертається — checkVersion()
- * не пропускає, і переданий колбек ніколи не викликається. Обʼєкт
- * LocationManager при цьому МОЖЕ існувати (перевірено — старий/фолбек
- * клієнт логує «LocationManager is not supported in version X», але саму
- * властивість не приховує), тож перевірка `!lm` це не ловить. Без таймауту
- * це той самий клас «тихого зависання» назавжди, що вже був з
- * navigator.geolocation (PR #234) — тепер закритий і тут.
- */
-export function getTelegramLocation(): Promise<TelegramLocationResult> {
-  return new Promise((resolve) => {
-    const lm = tg?.LocationManager;
-    if (!lm) {
-      resolve({ ok: false, reason: 'unsupported' });
-      return;
-    }
-
-    let settled = false;
-    const settle = (r: TelegramLocationResult) => {
-      if (settled) return;
-      settled = true;
-      resolve(r);
-    };
-    const timeoutId = setTimeout(() => settle({ ok: false, reason: 'unsupported' }), 8_000);
-
-    try {
-      lm.init(() => {
-        if (!lm.isLocationAvailable) {
-          clearTimeout(timeoutId);
-          settle({ ok: false, reason: 'unavailable' });
-          return;
-        }
-        try {
-          lm.getLocation((data) => {
-            clearTimeout(timeoutId);
-            if (data) settle({ ok: true, lat: data.latitude, lon: data.longitude });
-            else settle({ ok: false, reason: 'denied' });
-          });
-        } catch {
-          clearTimeout(timeoutId);
-          settle({ ok: false, reason: 'unsupported' });
-        }
-      });
-    } catch {
-      clearTimeout(timeoutId);
-      settle({ ok: false, reason: 'unsupported' });
-    }
-  });
-}
-
-/**
- * Відкрити системні налаштування дозволу геолокації (Bot API 8.0+) — коли
- * getTelegramLocation() дав reason:'unavailable'/'denied', це майже завжди
- * ОС-рівень (вимкнена геолокація на пристрої або немає дозволу в самого
- * Telegram), не щось виправне кодом. Пряме посилання замість «шукай сам».
- */
-export function openLocationSettings(): void {
-  try {
-    tg?.LocationManager?.openSettings?.();
-  } catch {
-    /* старий клієнт/збій — тихо ігноруємо */
   }
 }
