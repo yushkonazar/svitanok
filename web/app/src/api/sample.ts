@@ -87,7 +87,16 @@ function sampleFlameStats() {
       { value: 'snapchat', n: 9 },
       { value: 'bereal', n: 6 },
     ],
+    missedTops: [
+      { value: 'bereal', n: 18 },
+      { value: 'snapchat', n: 15 },
+      { value: 'chess', n: 10 },
+      { value: 'tiktok', n: 6 },
+      { value: 'duolingo', n: 4 },
+    ],
     activeNights: 54,
+    streak: 6,
+    best: 11,
     weekly: sampleFlameWeekly(),
   };
 }
@@ -562,7 +571,7 @@ export const EMPTY_STATS: Stats = {
   timeToOpenMin: null,
   openRhythm: { ready: false, n: 0, needed: 5 },
   habitWeekly: [],
-  flameStats: { tops: [], activeNights: 0, weekly: [] },
+  flameStats: { tops: [], missedTops: [], activeNights: 0, streak: 0, best: 0, weekly: [] },
   weekly: [],
   funnel: { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0, failed: 0 },
   goal: { weeklyTarget: 5, weeklyApplied: 0 },

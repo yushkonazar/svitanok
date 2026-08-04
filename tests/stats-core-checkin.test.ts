@@ -890,6 +890,51 @@ describe('aggregateStats — вогники (flames, evening)', () => {
     expect(f.activeNights).toBe(3);
   });
 
+  it('streak/best: рахує ЛИШЕ доби з УСІМА пʼятьма вогниками, не «скільки обрано»', () => {
+    let s = emptyStore();
+    const all5 = ['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'];
+    s = recordEvent(s, ck('evening', { flames: all5 }), '2026-07-10');
+    s = recordEvent(s, ck('evening', { flames: all5 }), '2026-07-11');
+    // Не повний день (лише 2 з 5) -> ламає стрік, навіть коли flames ВІДПОВІДЖЕНО.
+    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-12');
+    s = recordEvent(s, ck('evening', { flames: all5 }), '2026-07-13');
+    const f = aggregateStats(s, '2026-07-13').flameStats;
+    expect(f.streak).toBe(1); // лише 13-те — 12-те не повне
+    expect(f.best).toBe(2); // 10-11
+  });
+
+  it('missedTops: лічильник ПРОПУЩЕНОГО, лише на добах з вечірнім чек-іном (не порожня історія)', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
+    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-11');
+    const f = aggregateStats(s, '2026-07-11').flameStats;
+    const byValue = Object.fromEntries(
+      f.missedTops.map((r: { value: string; n: number }) => [r.value, r.n]),
+    );
+    // 10-те: пропущено tiktok/snapchat/bereal. 11-те: пропущено ще й chess.
+    expect(byValue.tiktok).toBe(2);
+    expect(byValue.snapchat).toBe(2);
+    expect(byValue.bereal).toBe(2);
+    expect(byValue.chess).toBe(1);
+    expect(byValue.duolingo).toBeUndefined(); // жодного разу не пропущено
+  });
+
+  it('missedTops: порожні доби БЕЗ вечірнього чек-іну не рахуються (не шумлять рейтинг)', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
+    // aggregateStats дивиться на 12-тижневе вікно назад від todayKey — усі ці
+    // тижні до 10.07 порожні (нема жодного чек-іну), і не мусять псувати рейтинг.
+    const f = aggregateStats(s, '2026-07-10').flameStats;
+    const byValue = Object.fromEntries(
+      f.missedTops.map((r: { value: string; n: number }) => [r.value, r.n]),
+    );
+    expect(byValue.tiktok).toBe(1);
+    expect(byValue.snapchat).toBe(1);
+    expect(byValue.bereal).toBe(1);
+    expect(byValue.duolingo).toBeUndefined();
+    expect(byValue.chess).toBeUndefined();
+  });
+
   it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються', () => {
     let s = emptyStore();
     s = recordEvent(s, ck('evening', { flames: ['duolingo', 'tiktok'] }), '2026-07-06');

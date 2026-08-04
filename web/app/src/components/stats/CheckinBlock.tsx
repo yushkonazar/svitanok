@@ -33,9 +33,10 @@ const BLOCKER_LABEL: Record<string, string> = {
   nomotiv: 'Немає мотивації',
   overload: 'Забагато всього',
   procrast: 'Відкладав',
+  forgot: 'Забув',
   waiting: 'Чекав на інших',
   health: 'Здоровʼя',
-  external: 'Зовнішнє',
+  external: 'Зовнішні обставини',
 };
 const HELPER_LABEL: Record<string, string> = {
   early: 'Ранній старт',
@@ -43,6 +44,7 @@ const HELPER_LABEL: Record<string, string> = {
   smallstep: 'Маленький крок',
   nodistract: 'Прибрав відволікання',
   move: 'Рух/прогулянка',
+  rest: 'Відпочинок/сон',
   breaks: 'Перерви',
   deadline: 'Дедлайн',
   music: 'Музика/фокус',
@@ -74,6 +76,8 @@ const CATEGORY_LABEL: Record<string, string> = {
   rest: '🌿 Відпочинок',
   people: '👥 Люди',
   create: '🎨 Творчість',
+  health: '🏥 Здоровʼя',
+  admin: '📋 Адмін/фінанси',
 };
 
 const scoreHsl = (t: number) => `hsl(${Math.round(Math.max(0, Math.min(1, t)) * 125)}, 62%, 58%)`;
