@@ -875,13 +875,28 @@ function buildHabitWeekly(days, todayKey, weeks = 12) {
 
 /**
  * Вогники (стріки в СТОРОННІХ застосунках, evening.flames): рейтинг частоти +
- * тижнева композиція конструктивні/споживчі. Свідомо в Звичках, не в Чек-іні:
- * це сигнал «чи тримаю звичку в іншому застосунку», той самий тип питання, що
- * opens/mock/news у habitWeekly вище — не про добробут дня, тож у реєстрі
- * «Індексу дня» (checkin-model.mjs) цього поля й не може бути.
+ * тижнева композиція конструктивні/споживчі + стрік ПОВНОЇ рутини. Свідомо в
+ * Звичках, не в Чек-іні: це сигнал «чи тримаю звичку в іншому застосунку»,
+ * той самий тип питання, що opens/mock/news у habitWeekly вище — не про
+ * добробут дня, тож у реєстрі «Індексу дня» (checkin-model.mjs) цього поля й
+ * не може бути.
  *
  * Той самий патерн ітерації, що buildHabitWeekly: знаменник тижня — лише доби,
  * що вже НАСТАЛИ (інакше поточний тиждень завжди виглядав би провальним).
+ *
+ * ⚠️ Ідея за полем — «пам'ятати заходити у ВСІ застосунки» (власник), не
+ * «скільки разів обирав який». Стара «частота вибору» тривіальна: коли
+ * flames взагалі відповідають, це майже завжди всі 5 разом (all-or-nothing),
+ * тож рейтинг вибору завжди рівний і нічого не каже. Замість цього:
+ *   - completeDays: день "повний", коли зафіксовано ВСІ FLAME_VALUES.
+ *     Відсутність відповіді того дня теж НЕ повна (той самий дух, що
+ *     streak механіки в Duolingo/Snapchat — пропуск ламає стрік, байдуже
+ *     чому) — тому map будується для КОЖНОЇ доби вікна, не лише
+ *     відповіджених.
+ *   - streak/best — той самий generic streak()/bestStreak(), що вже рахує
+ *     reliability/openDays, лише інший предикат.
+ *   - missedTops — дзеркало tops, але лічильник НЕВІДМІЧЕНОГО за день:
+ *     «що частіше пропускаю», дієвіший сигнал за «що частіше обирав».
  */
 function buildFlameStats(checkins, todayKey, weeks = 12) {
   const starts = lastWeekStarts(todayKey, weeks);
@@ -889,15 +904,25 @@ function buildFlameStats(checkins, todayKey, weeks = 12) {
     starts.map((k) => [k, { active: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
   const counts = {};
+  const missed = {};
+  const completeDays = {};
   let activeNights = 0;
   const today = new Date(todayKey + 'T00:00:00Z');
   const first = new Date(starts[0] + 'T00:00:00Z');
   for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
     const k = d.toISOString().slice(0, 10);
+    const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
+    completeDays[k] = { complete: flames.length === FLAME_VALUES.length };
+    // missed рахуємо ЛИШЕ на добах, де вечірній чек-ін реально торкались —
+    // інакше кожна порожня доба 12-тижневого вікна (нема чек-іну взагалі)
+    // додала б +1 УСІМ пʼятьом застосункам однаково, і рейтинг завжди
+    // виглядав би майже рівним (шум порожньої історії забиває сигнал).
+    if (checkins[k]?.evening !== undefined) {
+      for (const f of FLAME_VALUES) if (!flames.includes(f)) missed[f] = (missed[f] || 0) + 1;
+    }
     const b = buckets[weekStartKey(k)];
     if (!b) continue;
     b.days++;
-    const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
     if (flames.length) {
       b.active++;
       activeNights++;
@@ -910,7 +935,10 @@ function buildFlameStats(checkins, todayKey, weeks = 12) {
   }
   return {
     tops: rankCounts(counts),
+    missedTops: rankCounts(missed),
     activeNights,
+    streak: streak(completeDays, todayKey, (d) => d?.complete === true),
+    best: bestStreak(completeDays, (d) => d?.complete === true),
     weekly: starts.map((week) => ({ week, ...buckets[week] })),
   };
 }
