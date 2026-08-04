@@ -208,6 +208,42 @@ export function parseNewsData(json: unknown): NewsItem[] {
   return out;
 }
 
+/**
+ * Пакетний переклад через Google Cloud Translation (Basic v2, простий
+ * API-key у query — без OAuth/service-account, той самий патерн, що
+ * WEATHER_API_KEY/NEWSDATA_API_KEY). Один запит на ВЕСЬ пакет текстів рану —
+ * тариф рахує символи, не запити, тож батчити варто заради швидкості й
+ * надійності (менше окремих HTTP-викликів, які можуть впасти).
+ */
+export async function translateBatch(
+  texts: string[],
+  apiKey: string,
+  target: string,
+  source: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  if (texts.length === 0) return [];
+  const res = await fetchImpl(
+    `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: texts, source, target, format: 'text' }),
+    },
+  );
+  if (!res.ok) throw new Error(`Google Translate HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    data?: { translations?: Array<{ translatedText?: unknown }> };
+  };
+  const translations = json.data?.translations;
+  if (!Array.isArray(translations) || translations.length !== texts.length) {
+    throw new Error('Google Translate: неочікувана форма відповіді');
+  }
+  return translations.map((t, i) =>
+    typeof t.translatedText === 'string' ? t.translatedText : texts[i]!,
+  );
+}
+
 interface TopicCfg {
   scope: 'world' | 'ua';
   topic: string;
@@ -227,6 +263,9 @@ interface TopicCfg {
   includePattern?: string;
   /** Викинути title, що матчить regex — напр. beta/rc-теги PostgreSQL. */
   excludePattern?: string;
+  /** Перекласти title+why на uk (Google Cloud Translation) — лише прозові
+   *  джерела (BBC/Guardian/NewsData-категорії), НЕ терсі стрічки/власні назви. */
+  translate?: boolean;
 }
 
 /**
@@ -254,12 +293,17 @@ interface Group {
 
 export interface NewsModuleOptions {
   fetchImpl?: typeof fetch;
+  /** Ін'єкція для тестів; дефолт — реальний translateBatch (Google Cloud Translation). */
+  translateImpl?: typeof translateBatch;
   apiKey?: string;
+  translateApiKey?: string;
   timeoutMs?: number;
 }
 
 export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig> {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const translateImpl = opts.translateImpl ?? translateBatch;
+  const translateApiKey = opts.translateApiKey ?? optionalSecret('GOOGLE_TRANSLATE_API_KEY');
   const timeoutMs = opts.timeoutMs ?? 30000;
 
   return {
@@ -320,6 +364,9 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       // конфіга. Однойменні рядки декларувати ПОРЯД у config.yml — сортування
       // за вагою стабільне, тож порядок мерджу передбачуваний лише тоді.
       const groupsByKey = new Map<string, Group>();
+      // Один пакетний виклик перекладу НАПРИКІНЦІ рану (не по темі) — economить
+      // HTTP-запити: тариф Google Translate рахує символи, не запити.
+      const pendingTranslate: Array<{ text: string; set: (translated: string) => void }> = [];
       for (const t of topics) {
         const cfgT = t as TopicCfg;
         const isRss = cfgT.source === 'rss';
@@ -382,6 +429,23 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
             why: it.why,
             publishedAt: it.publishedAt,
           };
+          if (cfgT.translate && translateApiKey) {
+            pendingTranslate.push({
+              text: entry.title,
+              set: (v) => {
+                entry.title = v;
+              },
+            });
+            if (entry.why) {
+              const why = entry.why;
+              pendingTranslate.push({
+                text: why,
+                set: (v) => {
+                  entry.why = v;
+                },
+              });
+            }
+          }
           if (picked.length < quota) {
             picked.push(entry);
             nextShown[canon] = today;
@@ -421,6 +485,26 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       for (const g of groupsByKey.values()) {
         g.items.sort(byRecency);
         g.more.sort(byRecency);
+      }
+
+      // Переклад — ОСТАННІМ кроком, до summary/summaryHtml (Telegram-
+      // повідомлення теж має бачити вже перекладене). Провал — graceful:
+      // лишається англійський оригінал, ран не падає через переклад.
+      if (pendingTranslate.length && translateApiKey) {
+        try {
+          const translated = await translateImpl(
+            pendingTranslate.map((p) => p.text),
+            translateApiKey,
+            'uk',
+            'en',
+          );
+          pendingTranslate.forEach((p, i) => {
+            const t = translated[i];
+            if (t) p.set(t);
+          });
+        } catch (e) {
+          ctx.log.warn(`news: переклад — ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
 
       const groups = [...groupsByKey.values()];

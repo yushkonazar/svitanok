@@ -66,6 +66,12 @@ const ConfigSchema = z
                 // SDK мішають core-теги з саб-пакетами) чи beta/rc-тегів.
                 includePattern: z.string().optional(),
                 excludePattern: z.string().optional(),
+                // Прозова англомовна новина (BBC/Guardian/NewsData-категорії) ->
+                // перекласти title+why на uk (Google Cloud Translation, §GOOGLE_
+                // TRANSLATE_API_KEY). НЕ ставити на терсі/proper-noun стрічки
+                // (HN-заголовки, GitHub-релізи, кіберспорт-команди/турніри) —
+                // переклад там або нема що перекладати, або сплутає власні назви.
+                translate: z.boolean().optional(),
               })
               .refine((t) => (t.source === 'rss' ? Boolean(t.url) : Boolean(t.category || t.q)), {
                 message: 'rss-тема мусить мати url; newsdata-тема — category або q',
