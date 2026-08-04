@@ -36,6 +36,11 @@ interface TelegramLocationManager {
   isAccessGranted?: boolean;
   init: (cb?: () => void) => void;
   getLocation: (cb: (data: TelegramLocationData | null) => void) => void;
+  // Відкриває системні налаштування дозволів (Bot API 8.0+) — коли
+  // isLocationAvailable/isAccessGranted false, це майже завжди ОС-рівень
+  // (вимкнена геолокація на пристрої або немає дозволу в самого Telegram),
+  // не щось виправне кодом. Пряме посилання замість «шукай сам у налаштуваннях».
+  openSettings?: () => void;
 }
 
 interface TelegramWebApp {
@@ -270,4 +275,18 @@ export function getTelegramLocation(): Promise<TelegramLocationResult> {
       resolve({ ok: false, reason: 'unsupported' });
     }
   });
+}
+
+/**
+ * Відкрити системні налаштування дозволу геолокації (Bot API 8.0+) — коли
+ * getTelegramLocation() дав reason:'unavailable'/'denied', це майже завжди
+ * ОС-рівень (вимкнена геолокація на пристрої або немає дозволу в самого
+ * Telegram), не щось виправне кодом. Пряме посилання замість «шукай сам».
+ */
+export function openLocationSettings(): void {
+  try {
+    tg?.LocationManager?.openSettings?.();
+  } catch {
+    /* старий клієнт/збій — тихо ігноруємо */
+  }
 }
