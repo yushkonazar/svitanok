@@ -248,6 +248,15 @@ export type TelegramLocationResult =
  * LocationManager іде через дозвіл САМОГО Telegram (host app), в обхід
  * цього шару. 'unsupported' — старий клієнт без LocationManager узагалі
  * (виклик коду лишає фолбек на navigator.geolocation).
+ *
+ * Захисний timeout: у сирцях офіційного SDK (telegram-web-app.js) init()
+ * на клієнті зі старою версією просто МОВЧКИ повертається — checkVersion()
+ * не пропускає, і переданий колбек ніколи не викликається. Обʼєкт
+ * LocationManager при цьому МОЖЕ існувати (перевірено — старий/фолбек
+ * клієнт логує «LocationManager is not supported in version X», але саму
+ * властивість не приховує), тож перевірка `!lm` це не ловить. Без таймауту
+ * це той самий клас «тихого зависання» назавжди, що вже був з
+ * navigator.geolocation (PR #234) — тепер закритий і тут.
  */
 export function getTelegramLocation(): Promise<TelegramLocationResult> {
   return new Promise((resolve) => {
@@ -256,23 +265,36 @@ export function getTelegramLocation(): Promise<TelegramLocationResult> {
       resolve({ ok: false, reason: 'unsupported' });
       return;
     }
+
+    let settled = false;
+    const settle = (r: TelegramLocationResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    const timeoutId = setTimeout(() => settle({ ok: false, reason: 'unsupported' }), 8_000);
+
     try {
       lm.init(() => {
         if (!lm.isLocationAvailable) {
-          resolve({ ok: false, reason: 'unavailable' });
+          clearTimeout(timeoutId);
+          settle({ ok: false, reason: 'unavailable' });
           return;
         }
         try {
           lm.getLocation((data) => {
-            if (data) resolve({ ok: true, lat: data.latitude, lon: data.longitude });
-            else resolve({ ok: false, reason: 'denied' });
+            clearTimeout(timeoutId);
+            if (data) settle({ ok: true, lat: data.latitude, lon: data.longitude });
+            else settle({ ok: false, reason: 'denied' });
           });
         } catch {
-          resolve({ ok: false, reason: 'unsupported' });
+          clearTimeout(timeoutId);
+          settle({ ok: false, reason: 'unsupported' });
         }
       });
     } catch {
-      resolve({ ok: false, reason: 'unsupported' });
+      clearTimeout(timeoutId);
+      settle({ ok: false, reason: 'unsupported' });
     }
   });
 }
