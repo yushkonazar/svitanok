@@ -118,7 +118,15 @@ export function applyWeeklyDecay(weights: Weights): Weights {
 }
 
 // --- RSS/Atom парсинг (без залежностей) — використовує jobs ---
-const stripCdata = (s: string) => s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+// Окремі replace на відкриваючий/закриваючий маркер (не одна парна регексп):
+// NewsData інколи віддає CDATA-артефакт ОБРІЗАНИМ (без "<!" на початку —
+// лишається голе "[CDATA[...]]>"), тож парна регексп на повний "<![CDATA[...]]>"
+// такий фрагмент просто не бачить і пропускає його як є.
+const stripCdata = (s: string) =>
+  s
+    .replace(/<!\[CDATA\[/g, '')
+    .replace(/\[CDATA\[/g, '')
+    .replace(/\]\]>/g, '');
 function decodeXml(s: string): string {
   return s
     .replace(/&lt;/g, '<')
