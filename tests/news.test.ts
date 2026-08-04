@@ -6,6 +6,7 @@ import {
   applyUrlVote,
   applyWeeklyDecay,
   createNewsModule,
+  curlFetch,
   buildNewsUrl,
   WEIGHT_MIN,
   WEIGHT_MAX,
@@ -421,6 +422,85 @@ describe('news — джерело rss (HN / GitHub Releases)', () => {
     expect(
       (fetchSpy.mock.calls[0]![1] as { headers?: unknown } | undefined)?.headers,
     ).toBeUndefined();
+  });
+
+  const HLTV_TOPIC = [
+    {
+      scope: 'world',
+      topic: 'Кіберспорт',
+      source: 'rss',
+      url: 'https://hltv.org/rss/news',
+      language: 'en',
+      headers: { 'User-Agent': 'Mozilla/5.0 (real browser)' },
+    },
+  ];
+
+  it('403 на rss -> curl-фолбек, і якщо curl ok -> бере його body', async () => {
+    const fetchSpy = vi.fn(async () => new Response('blocked', { status: 403 }));
+    const curlSpy: typeof curlFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => feed,
+      json: async () => {
+        throw new Error('n/a');
+      },
+    }));
+    const m = createNewsModule({
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      curlFetchImpl: curlSpy,
+      apiKey: 'k',
+    });
+    const block = await m.run(makeCtx(memState(), { topics: HLTV_TOPIC }));
+    const g = (block!.data as { groups: { topic: string; items: { title: string }[] }[] })
+      .groups[0]!;
+    expect(g.items.map((i) => i.title)).toEqual(['HN one', 'HN two']);
+    expect(curlSpy).toHaveBeenCalledWith(
+      'https://hltv.org/rss/news',
+      { 'User-Agent': 'Mozilla/5.0 (real browser)' },
+      expect.any(Number),
+    );
+  });
+
+  it('403 на rss, curl теж не рятує -> тема graceful пропускається (не валить весь ран)', async () => {
+    const fetchSpy = vi.fn(async () => new Response('blocked', { status: 403 }));
+    const curlSpy: typeof curlFetch = vi.fn(async () => {
+      throw new Error('curl exit 7: could not connect');
+    });
+    const m = createNewsModule({
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      curlFetchImpl: curlSpy,
+      apiKey: 'k',
+    });
+    const block = await m.run(makeCtx(memState(), { topics: HLTV_TOPIC }));
+    expect(block).toBeNull(); // єдина тема впала -> нема що показати, той самий graceful-шлях
+  });
+
+  it('не-403 помилка (rss) -> curl НЕ пробуємо', async () => {
+    const fetchSpy = vi.fn(async () => new Response('boom', { status: 500 }));
+    const curlSpy: typeof curlFetch = vi.fn();
+    const m = createNewsModule({
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      curlFetchImpl: curlSpy,
+      apiKey: 'k',
+    });
+    await m.run(makeCtx(memState(), { topics: HLTV_TOPIC }));
+    expect(curlSpy).not.toHaveBeenCalled();
+  });
+
+  it('403 у newsdata-темі (не rss) -> curl НЕ пробуємо', async () => {
+    const fetchSpy = vi.fn(async () => new Response('blocked', { status: 403 }));
+    const curlSpy: typeof curlFetch = vi.fn();
+    const m = createNewsModule({
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      curlFetchImpl: curlSpy,
+      apiKey: 'k',
+    });
+    await m.run(
+      makeCtx(memState(), {
+        topics: [{ scope: 'ua', topic: 'Тех', category: 'technology', language: 'uk' }],
+      }),
+    );
+    expect(curlSpy).not.toHaveBeenCalled();
   });
 });
 

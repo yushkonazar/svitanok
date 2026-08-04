@@ -1,9 +1,11 @@
-// news (consumer). NewsData.io: теми scope(world/ua)×category, language=uk (укр-
-// контент і для світу; датацентр-дружній API — знімає 403 на .ua). Групи
+// news (consumer). NewsData.io: теми scope(world/ua)×category, language=uk для
+// ua (датацентр-дружній API — знімає 403 на .ua) / language=en для world (не
+// дублювати «Україна» англомовними виданнями — рішення власника 15.07). Групи
 // {scope,topic,items[{title,url,why?}],more} для дашборда (таб Новини: под-таби
 // 🌍/🇺🇦 × теми). Дедуп проти показаних (state.shownNews). Ваги 👍/👎 масштабують
 // квоту й порядок тем. `parseRss`/`RssItem` лишаються — їх юзає jobs.
 
+import { spawn } from 'node:child_process';
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 import { canonicalizeUrl, isHttpUrl } from '../core/url.js';
@@ -165,6 +167,57 @@ export function parseRss(xml: string): RssItem[] {
   return out;
 }
 
+/** Мінімальний спільний шейп fetch-Response і curlFetch-результату (лише те,
+ *  що реально споживає fetch-цикл нижче: rss читає text(), NewsData — json()). */
+interface FetchLike {
+  ok: boolean;
+  status: number;
+  text: () => Promise<string>;
+  json: () => Promise<unknown>;
+}
+
+/**
+ * Фолбек через системний curl — ЛИШЕ коли звичайний fetch впав на 403 (rss-
+ * джерела під bot-захистом). Деякі сайти (HLTV) блокують саме TLS/HTTP-
+ * фінгерпринт (JA3/JA4) Node fetch/undici — перевірено напряму: curl із ТИМ
+ * САМИМ заголовком проходить, звичайний fetch ні. spawn з масивом аргументів,
+ * без shell (§19.7, той самий прийом, що src/core/llm.ts) — url/headers тут
+ * завжди зі свого config.yml, не зовнішній ввід, але патерн лишаємо однаковим.
+ */
+export function curlFetch(
+  url: string,
+  headers: Record<string, string> | undefined,
+  timeoutMs: number,
+): Promise<FetchLike> {
+  const MARK = '__SVITANOK_CURL_STATUS__';
+  return new Promise((resolve, reject) => {
+    const args = ['-sS', '--max-time', String(Math.max(1, Math.ceil(timeoutMs / 1000)))];
+    for (const [k, v] of Object.entries(headers ?? {})) args.push('-H', `${k}: ${v}`);
+    args.push('-w', `\n${MARK}%{http_code}`, url);
+    const child = spawn('curl', args);
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d: Buffer) => (out += d));
+    child.stderr.on('data', (d: Buffer) => (err += d));
+    child.on('error', reject); // curl відсутній у PATH чи не запустився
+    child.on('close', (code) => {
+      const idx = out.lastIndexOf(`\n${MARK}`);
+      if (code !== 0 || idx === -1) {
+        reject(new Error(`curl exit ${code}: ${err.trim() || 'no status marker'}`));
+        return;
+      }
+      const body = out.slice(0, idx);
+      const status = Number(out.slice(idx + MARK.length + 1));
+      resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        text: () => Promise.resolve(body),
+        json: () => Promise.reject(new Error('curlFetch: json() не підтримується (лише rss)')),
+      });
+    });
+  });
+}
+
 // --- NewsData.io ---
 export interface NewsItem {
   title: string;
@@ -262,12 +315,15 @@ interface Group {
 
 export interface NewsModuleOptions {
   fetchImpl?: typeof fetch;
+  /** Ін'єкція для тестів (мокає реальний spawn('curl', ...)); дефолт — curlFetch. */
+  curlFetchImpl?: typeof curlFetch;
   apiKey?: string;
   timeoutMs?: number;
 }
 
 export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig> {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const curlFetchImpl = opts.curlFetchImpl ?? curlFetch;
   const timeoutMs = opts.timeoutMs ?? 30000;
 
   return {
@@ -350,10 +406,22 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         let items: NewsItem[];
         try {
-          const res = await fetchImpl(url, {
+          let res: FetchLike = await fetchImpl(url, {
             signal: ctrl.signal,
             ...(isRss && cfgT.headers ? { headers: cfgT.headers } : {}),
           });
+          if (isRss && !res.ok && res.status === 403) {
+            // TLS/HTTP-фінгерпринт-блок, не заголовок (§ curlFetch) — один
+            // фолбек-спроб перед тим, як здатись на цю тему цього рану.
+            try {
+              const viaCurl = await curlFetchImpl(url, cfgT.headers, timeoutMs);
+              if (viaCurl.ok) res = viaCurl;
+            } catch (curlErr) {
+              ctx.log.warn(
+                `news: curl-фолбек «${t.topic}» — ${curlErr instanceof Error ? curlErr.message : String(curlErr)}`,
+              );
+            }
+          }
           if (!res.ok) throw new Error(`${isRss ? 'RSS' : 'NewsData'} HTTP ${res.status}`);
           // parseRss дає {title,url} без опису — `why` у стрічок просто немає.
           items = isRss ? parseRss(await res.text()) : parseNewsData(await res.json());
