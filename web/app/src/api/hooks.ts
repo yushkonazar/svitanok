@@ -22,7 +22,6 @@ import type { SavedPage, CheckinSlot } from './schema.ts';
 import { nextSavedOffset } from './paging.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
-import type { GeoCoords } from '../lib/useGeolocation.ts';
 
 // TanStack Query хуки даних дашборда (роадмеп v3, E1+E2). Дефолти (staleTime 60с,
 // retry 1) — у main.tsx. Дві незалежні черги: ['brief'] (щоденний знімок) і
@@ -46,16 +45,10 @@ export function useBriefing() {
  * retry:0 — fetchLiveWeather і так ніколи не кидає (null = «нема живих
  * даних», не помилка), ретраї лише додали б затримку до фолбеку.
  */
-/**
- * geo (Блок «Погода», useGeolocation) — коли є, підміняє головну локацію на
- * реальні координати; у queryKey, щоб перехід null->coords (геолокація
- * відповіла вже ПІСЛЯ першого монтування) сам тригернув перезапит, а не чекав
- * наступного 5-хвилинного тіку.
- */
-export function useLiveWeather(geo?: GeoCoords | null) {
+export function useLiveWeather() {
   return useQuery({
-    queryKey: ['liveWeather', geo?.lat ?? null, geo?.lon ?? null],
-    queryFn: () => fetchLiveWeather(geo),
+    queryKey: ['liveWeather'],
+    queryFn: fetchLiveWeather,
     refetchInterval: 5 * 60_000,
     retry: 0,
   });
