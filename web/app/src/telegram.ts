@@ -12,6 +12,16 @@ interface TelegramBackButton {
   offClick: (cb: () => void) => void;
 }
 
+// Bot API 6.9+. На відміну від localStorage — гарантовано персистить між
+// окремими запусками Mini App (синк на боці Telegram, не WebView-сховище,
+// яке платформа може чистити між сесіями). Callback-based, як і весь
+// нативний SDK Telegram.
+interface TelegramCloudStorage {
+  setItem: (key: string, value: string, cb?: (err: unknown, success?: boolean) => void) => void;
+  getItem: (key: string, cb: (err: unknown, value?: string) => void) => void;
+  removeItem: (key: string, cb?: (err: unknown, success?: boolean) => void) => void;
+}
+
 interface TelegramWebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string };
@@ -46,6 +56,7 @@ interface TelegramWebApp {
     impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;
     notificationOccurred?: (type: 'success' | 'warning' | 'error') => void;
   };
+  CloudStorage?: TelegramCloudStorage;
 }
 
 declare global {
@@ -162,5 +173,41 @@ export function addToHomeScreen(): void {
     tg?.addToHomeScreen?.();
   } catch {
     /* хост може не підтримувати — no-op */
+  }
+}
+
+/**
+ * CloudStorage (Bot API 6.9+) — тонкі Promise-обгортки над callback-API.
+ * null/no-op на будь-який збій чи відсутність підтримки (старий клієнт,
+ * поза Telegram) — виклики лишаються простим await без окремого error-шляху,
+ * той самий «м'який» контракт, що й fetchLiveWeather.
+ */
+export function cloudGetItem(key: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    if (!tg?.CloudStorage?.getItem) {
+      resolve(null);
+      return;
+    }
+    try {
+      tg.CloudStorage.getItem(key, (err, value) => resolve(err ? null : (value ?? null)));
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export function cloudSetItem(key: string, value: string): void {
+  try {
+    tg?.CloudStorage?.setItem?.(key, value);
+  } catch {
+    /* старий клієнт/збій — тихо ігноруємо */
+  }
+}
+
+export function cloudRemoveItem(key: string): void {
+  try {
+    tg?.CloudStorage?.removeItem?.(key);
+  } catch {
+    /* те саме */
   }
 }
