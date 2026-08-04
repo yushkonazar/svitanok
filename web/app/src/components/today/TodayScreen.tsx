@@ -65,7 +65,7 @@ export function TodayScreen() {
   // підміняє головну локацію на реальне «де ти зараз»; поки null (ще
   // запитуємо/відмовлено/десктоп) — дефолтна пара Львів/Немовичі, як і раніше.
   const geo = useGeolocation();
-  const { data: liveWeather } = useLiveWeather(geo);
+  const { data: liveWeather } = useLiveWeather(geo.coords);
 
   if (isLoading) return <LoadingSkeleton />;
   if (isError || !data) {
@@ -99,7 +99,9 @@ export function TodayScreen() {
   if (weather)
     sections.push({
       key: 'weather',
-      node: <WeatherBlock locations={liveWeather?.locations ?? weather.locations} />,
+      node: (
+        <WeatherBlock locations={liveWeather?.locations ?? weather.locations} geoStatus={geo.status} />
+      ),
     });
   if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
   if (currency)
