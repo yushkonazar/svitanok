@@ -16,6 +16,10 @@ import {
   checkinDateKey,
   matchCheckinNudgeWindow,
   shouldSendCheckinNudge,
+  inSleepNudgeWindow,
+  SLEEP_NUDGE_TEXT,
+  shouldSendSleepNudge,
+  staleSleepNudges,
 } from './stats-core.mjs';
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
@@ -157,6 +161,14 @@ const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір ві�
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
 // reminders-core.mjs (REMINDER_CANCEL_CB_PREFIX) — НЕ підпростір усередині
 // 'rm:', бо resolveReminderSnooze бере ВЕСЬ залишок після 'rm:' як id.
+
+// Сон (Блок «Сон») — кнопка «🌙 Ліг спати» на проактивному нагадуванні.
+// Без id/аргументів (одна кнопка на все повідомлення) — сама наявність
+// префікса вже достатня, дату/ніч рахує сервер (checkinDateKey), як і чек-ін.
+const SLEEP_START_CB_PREFIX = 'sl:';
+const buildSleepStartCallbackData = () => `${SLEEP_START_CB_PREFIX}1`;
+const isSleepStartCallback = (data) =>
+  typeof data === 'string' && data.startsWith(SLEEP_START_CB_PREFIX);
 
 // /clear (§C5): скільки deleteMessage-викликів паралельно за раз — компроміс
 // між швидкістю (не повністю послідовно) і обережністю до rate-limit
@@ -406,6 +418,16 @@ function kyivMinuteOfDay(now = new Date()) {
   return h * 60 + m;
 }
 
+/** Бакет "О котрій ліг?" (той самий enum, що BEDTIME_BUCKETS/CHECKIN_FIELDS.
+ *  morning.bedtime) із київської ГОДИНИ тапу «Ліг спати». */
+function bedtimeBucketForHour(h) {
+  if (h < 23) return 'e23';
+  if (h === 23) return 'e00';
+  if (h === 0) return 'e01';
+  if (h === 1) return 'e02';
+  return 'late'; // 2..5 (реалістичний діапазон тапу — 20:00–05:59)
+}
+
 /** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
  *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
  *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts). */
@@ -574,6 +596,10 @@ async function applyEvent(env, body) {
   }
 
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
+  // Сон (wokeAt, case 'open') і тап «Ліг спати» (startedAt, case 'sleepStart')
+  // обидва потребують ТОЧНОГО часу — recordEvent чистий (без Date.now() всередині),
+  // тож рахуємо тут і передаємо явним аргументом, як і nowMin.
+  const nowIso = new Date().toISOString();
 
   let ev = body;
   let dateKey = kyivDateKey();
@@ -587,6 +613,13 @@ async function applyEvent(env, body) {
     if (!slot) return;
     ev = { ...body, slot };
     dateKey = checkinDateKey(dateKey, h);
+  } else if (body.type === 'sleepStart') {
+    // Той самий зсув, що вечірній чек-ін: тап о 00:47 належить учорашньому
+    // вечору, не сьогоднішній календарній добі.
+    dateKey = checkinDateKey(dateKey, kyivHour());
+    // Бакет "О котрій ліг?" рахуємо ТУТ (маємо kyivHour), не в stats-core —
+    // recordEvent лишається без часових поясів, лише зберігає готове значення.
+    ev = { ...body, bedtimeBucket: bedtimeBucketForHour(kyivHour()) };
   }
 
   const loaded = await loadStats(env);
@@ -597,7 +630,7 @@ async function applyEvent(env, body) {
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
   if (checkinLocked) return { locked: true }; // нічого не зміниться — не палимо KV-запис даремно
-  const stats = recordEvent(loaded, ev, dateKey, nowMin);
+  const stats = recordEvent(loaded, ev, dateKey, nowMin, nowIso);
   await env.BRIEFING.put('stats', JSON.stringify(stats));
   if (body.type === 'checkin') return { locked: false };
 }
@@ -2938,6 +2971,28 @@ async function resolveReminderCancel(env, parsed, reminderId) {
 }
 
 /**
+ * Обробити `sl:1` (тап «🌙 Ліг спати», Блок «Сон») — той самий applyEvent, що
+ * /api/event і решта callback-подій (jobPrefs/mockWeights/stats не
+ * розходяться між джерелами). Той самий стиль редагування, що rk: («✅
+ * Виконано») — переписуємо повідомлення й прибираємо кнопку повністю: другий
+ * тап на ту саму ніч і так нічого не змінить (recordEvent ідемпотентний), але
+ * бачити стару кнопку після підтвердження нема сенсу.
+ */
+async function resolveSleepStart(env, parsed) {
+  await applyEvent(env, { type: 'sleepStart' });
+  if (parsed.chatId != null && parsed.messageId != null) {
+    await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: '🌙 <b>Ліг спати</b> — записав.',
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+  return '🌙 Записав';
+}
+
+/**
  * Обробити `rk:<id>` («✅ Виконано», фідбек власника) — на відміну від
  * snooze/cancel (лише тік кнопки, resolveReminderAction) тут ПЕРЕПИСУЄМО ВСЕ
  * повідомлення (editMessageText) і прибираємо клавіатуру ПОВНІСТЮ (порожній
@@ -3510,6 +3565,7 @@ async function processTelegramUpdate(env, parsed, origin) {
       const snoozePreset = parseReminderSnoozeCallbackData(parsed.data); // 'rs:' — extra b
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
+      const isSleepStart = isSleepStartCallback(parsed.data); // 'sl:' — «🌙 Ліг спати»
       const toast = proposalCb
         ? await resolveProposalCallback(env, parsed, proposalCb)
         : agendaCb
@@ -3537,7 +3593,9 @@ async function processTelegramUpdate(env, parsed, origin) {
                             parsed,
                             parsed.data.slice(REMINDER_CB_PREFIX.length),
                           )
-                        : await resolveCallbackToast(env, parsed);
+                        : isSleepStart
+                          ? await resolveSleepStart(env, parsed)
+                          : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,
@@ -3891,6 +3949,64 @@ async function checkinNudgeCheck(env) {
   await env.BRIEFING.put('stats', JSON.stringify(store));
 }
 
+/**
+ * П'ятихвилинний крон-гейт для Блоку «Сон»: те саме вікно-мисливство, що
+ * checkinNudgeCheck, ПЛЮС прибирання завислих кнопок з МИНУЛИХ ночей —
+ * власник прямо попросив: сповіщення не мусить просто висіти, якщо тап так і
+ * не стався. Обидва кроки в одній функції — обидва читають/пишуть один і той
+ * самий store, зайвий проліт у KV не потрібен.
+ */
+async function sleepNudgeCheck(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const minuteOfDay = kyivMinuteOfDay(new Date());
+  const store = await loadStats(env);
+  const nightKey = checkinDateKey(kyivDateKey(), kyivHour());
+  let changed = false;
+
+  // 1) Ночі з надісланим, але НЕ натиснутим нагадуванням — уже не поточна ніч
+  // (checkinDateKey тримає ТУ САМУ ніч стабільною аж до 06:00, тож «минула» тут
+  // означає справді минула, а не просто «перейшли за північ»).
+  for (const { dateKey, nudgeMsgId } of staleSleepNudges(store.sleepLog, nightKey)) {
+    await tgCall(env, 'editMessageText', {
+      chat_id: env.TELEGRAM_CHAT_ID,
+      message_id: nudgeMsgId,
+      text: '🌙 Не встиг зафіксувати — нічого, вранці вкажеш час сну вручну.',
+      reply_markup: { inline_keyboard: [] },
+    });
+    store.sleepLog[dateKey] = { ...store.sleepLog[dateKey], nudgeCleared: true };
+    changed = true;
+  }
+
+  // 2) Нове нагадування — лише у вікні (23:00–02:00) і лише раз за ніч.
+  if (inSleepNudgeWindow(minuteOfDay)) {
+    const settings = await loadSettings(env);
+    const due = shouldSendSleepNudge({
+      quiet: isQuietMinute(settings, minuteOfDay),
+      alreadySentTonight: store.sleepLog?.[nightKey]?.nudgeMsgId != null,
+    });
+    if (due) {
+      const res = await tgCall(env, 'sendMessage', {
+        chat_id: env.TELEGRAM_CHAT_ID,
+        message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+        text: SLEEP_NUDGE_TEXT,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🌙 Ліг спати', callback_data: buildSleepStartCallbackData() }],
+          ],
+        },
+      });
+      const sent = await res.json().catch(() => null);
+      const msgId = sent?.result?.message_id;
+      if (typeof msgId === 'number') {
+        store.sleepLog[nightKey] = { ...store.sleepLog[nightKey], nudgeMsgId: msgId };
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) await env.BRIEFING.put('stats', JSON.stringify(store));
+}
+
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
 // END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
 // усередині вікна ретраїв: збій GitHub, що минув об 10:30, дав би хибний алерт
@@ -4044,6 +4160,7 @@ export default {
         await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
         await deadMansCheck(env); // від 12:00 Київ, раз на добу
         await checkinNudgeCheck(env); // вікна нагадувань про чек-ін, раз на слот/добу
+        await sleepNudgeCheck(env); // «Ліг спати» 23:00–02:00 + прибирання завислих кнопок
         await autoTelegramSetup(env); // самозапуск setup (вебхук/меню/пін), раз на добу
       })(),
     );

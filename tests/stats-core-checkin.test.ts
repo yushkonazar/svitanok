@@ -11,6 +11,8 @@ import { checkinSlot, checkinDateKey } from '../web/stats-core.mjs';
 import { CHECKIN_NUDGE_WINDOWS, matchCheckinNudgeWindow } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { shouldSendCheckinNudge } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { inSleepNudgeWindow, shouldSendSleepNudge, staleSleepNudges } from '../web/stats-core.mjs';
 
 // Щоденний чек-ін (фідбек власника, п.7). Межі 08:00 / 14:00 / 20:00 — рішення
 // власника; вечір іде до 02:00, 02:00–07:59 — тиха зона.
@@ -1001,5 +1003,61 @@ describe('shouldSendCheckinNudge — гейт (тихі години / вже н
     expect(
       shouldSendCheckinNudge({ quiet: false, alreadyNudgedToday: false, slotFilled: true }),
     ).toBe(false);
+  });
+});
+
+describe('inSleepNudgeWindow — вікно «Ліг спати» (23:00–02:00, з переходом через північ)', () => {
+  it('23:00–23:59 і 00:00–01:59 -> у вікні', () => {
+    expect(inSleepNudgeWindow(1380)).toBe(true); // 23:00
+    expect(inSleepNudgeWindow(1439)).toBe(true); // 23:59
+    expect(inSleepNudgeWindow(0)).toBe(true); // 00:00
+    expect(inSleepNudgeWindow(119)).toBe(true); // 01:59
+  });
+
+  it('02:00 і вдень -> поза вікном', () => {
+    expect(inSleepNudgeWindow(120)).toBe(false); // 02:00 — межа виключена
+    expect(inSleepNudgeWindow(600)).toBe(false); // 10:00
+    expect(inSleepNudgeWindow(1379)).toBe(false); // 22:59
+  });
+});
+
+describe('shouldSendSleepNudge — гейт (тихі години / вже слали цієї ночі)', () => {
+  it('обидва прапорці false -> надіслати', () => {
+    expect(shouldSendSleepNudge({ quiet: false, alreadySentTonight: false })).toBe(true);
+  });
+  it('тихі години -> НЕ слати', () => {
+    expect(shouldSendSleepNudge({ quiet: true, alreadySentTonight: false })).toBe(false);
+  });
+  it('уже слали цієї ночі -> НЕ слати вдруге', () => {
+    expect(shouldSendSleepNudge({ quiet: false, alreadySentTonight: true })).toBe(false);
+  });
+});
+
+describe('staleSleepNudges — завислі кнопки з МИНУЛИХ ночей (власник: не мусить просто висіти)', () => {
+  it('минула ніч, надіслано, не натиснуто, не прибрано -> у списку', () => {
+    const sleepLog = { '2026-07-10': { nudgeMsgId: 42 } };
+    expect(staleSleepNudges(sleepLog, '2026-07-11')).toEqual([
+      { dateKey: '2026-07-10', nudgeMsgId: 42 },
+    ]);
+  });
+
+  it('ПОТОЧНА ніч -> НЕ в списку, навіть якщо ще не натиснуто', () => {
+    const sleepLog = { '2026-07-11': { nudgeMsgId: 42 } };
+    expect(staleSleepNudges(sleepLog, '2026-07-11')).toEqual([]);
+  });
+
+  it('уже натиснуто (є startedAt) -> НЕ в списку', () => {
+    const sleepLog = { '2026-07-10': { nudgeMsgId: 42, startedAt: '2026-07-10T23:00:00.000Z' } };
+    expect(staleSleepNudges(sleepLog, '2026-07-11')).toEqual([]);
+  });
+
+  it('уже прибрано (nudgeCleared) -> НЕ в списку вдруге', () => {
+    const sleepLog = { '2026-07-10': { nudgeMsgId: 42, nudgeCleared: true } };
+    expect(staleSleepNudges(sleepLog, '2026-07-11')).toEqual([]);
+  });
+
+  it('нагадування не надсилалось (нема nudgeMsgId) -> НЕ в списку', () => {
+    const sleepLog = { '2026-07-10': {} };
+    expect(staleSleepNudges(sleepLog, '2026-07-11')).toEqual([]);
   });
 });
