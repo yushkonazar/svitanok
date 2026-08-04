@@ -160,6 +160,8 @@ const category = z.enum([
   'rest',
   'people',
   'create',
+  'health',
+  'admin',
 ]);
 // ⚠️ checkinToday — це HYDRATION-дані, які міг записати СТАРІШИЙ сервер (інша
 // версія переліку: до v2 plan/ate мали apply/interview/procrast). Тому enum-поля
@@ -224,6 +226,7 @@ export const checkinEveningSchema = z.object({
       'overload',
       'waiting',
       'procrast',
+      'forgot',
       'none',
     ]),
   ),
@@ -234,6 +237,7 @@ export const checkinEveningSchema = z.object({
       'breaks',
       'support',
       'move',
+      'rest',
       'smallstep',
       'nodistract',
       'deadline',
@@ -244,7 +248,7 @@ export const checkinEveningSchema = z.object({
   detached: lenient(z.enum(['yes', 'partly', 'no'])),
   rumination: int.optional(),
   autonomy: int.optional(),
-  moved: lenient(z.enum(['none', 'light', 'workout'])),
+  moved: lenient(z.enum(['none', 'light', 'active', 'workout'])),
   outdoor: lenient(z.enum(['none', 'short', 'long'])),
   screen: lenient(z.enum(['low', 'mid', 'high', 'vhigh'])),
   caffeine: int.optional(),
