@@ -108,12 +108,18 @@ modules:
       #
       # «Світ» — заміна NewsData category=world (12г затримка, без контролю
       # видання) на прямі RSS BBC World + Guardian World.
+      #
+      # translate: true — Google Cloud Translation (title+why -> uk), лише на
+      # прозових джерелах нижче (BBC/Guardian/NewsData-категорії). НЕ на HN
+      # (терсі заголовки посилань), Кіберспорт/Релізи (власні назви команд/
+      # турнірів/тегів — переклад або нема що робити, або сплутає назву).
       - {
           scope: world,
           topic: Світ,
           source: rss,
           url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
           language: en,
+          translate: true,
         }
       - {
           scope: world,
@@ -121,15 +127,17 @@ modules:
           source: rss,
           url: 'https://www.theguardian.com/world/rss',
           language: en,
+          translate: true,
         }
 
-      - { scope: world, topic: Наука, category: science, language: en }
+      - { scope: world, topic: Наука, category: science, language: en, translate: true }
       - {
           scope: world,
           topic: Наука,
           source: rss,
           url: 'https://feeds.bbci.co.uk/news/science_and_environment/rss.xml',
           language: en,
+          translate: true,
         }
       - {
           scope: world,
@@ -137,16 +145,19 @@ modules:
           source: rss,
           url: 'https://www.theguardian.com/science/rss',
           language: en,
+          translate: true,
         }
 
-      - { scope: world, topic: Здоровʼя, category: health, language: en }
-      - { scope: world, topic: Культура, category: entertainment, language: en }
-      - { scope: world, topic: Бізнес, category: business, language: en }
-      - { scope: world, topic: Довкілля, category: environment, language: en }
+      - { scope: world, topic: Здоровʼя, category: health, language: en, translate: true }
+      - { scope: world, topic: Культура, category: entertainment, language: en, translate: true }
+      - { scope: world, topic: Бізнес, category: business, language: en, translate: true }
+      - { scope: world, topic: Довкілля, category: environment, language: en, translate: true }
 
       # «Тех/IT» — злиття NewsData technology + Hacker News (той самий смисл,
       # що раніше окремий чіп, тепер частина цієї теми) + BBC/Guardian Technology.
-      - { scope: world, topic: Тех/IT, category: technology, language: en }
+      # HN свідомо БЕЗ translate: terse заголовки посилань (продукти/репо),
+      # не прозовий текст — переклад там частіше плутає, ніж допомагає.
+      - { scope: world, topic: Тех/IT, category: technology, language: en, translate: true }
       - {
           scope: world,
           topic: Тех/IT,
@@ -160,6 +171,7 @@ modules:
           source: rss,
           url: 'https://feeds.bbci.co.uk/news/technology/rss.xml',
           language: en,
+          translate: true,
         }
       - {
           scope: world,
@@ -167,6 +179,7 @@ modules:
           source: rss,
           url: 'https://www.theguardian.com/uk/technology/rss',
           language: en,
+          translate: true,
         }
 
       # «Кіберспорт» — обидва джерела (власник: «Беремо і те, і те»), фокус на
@@ -208,6 +221,7 @@ modules:
           source: rss,
           url: 'https://feeds.bbci.co.uk/sport/football/rss.xml',
           language: en,
+          translate: true,
         }
       - {
           scope: world,
@@ -215,6 +229,7 @@ modules:
           source: rss,
           url: 'https://www.theguardian.com/football/rss',
           language: en,
+          translate: true,
         }
 
       # «Релізи» — розширений список репозиторіїв (замінює колишні окремі

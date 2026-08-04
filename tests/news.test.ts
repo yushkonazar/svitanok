@@ -504,6 +504,95 @@ describe('news — джерело rss (HN / GitHub Releases)', () => {
   });
 });
 
+describe('news — translate: true (Google Cloud Translation)', () => {
+  const worldFeed = `<rss><channel>
+      <item><title>World one</title><link>https://news.example.com/1</link></item>
+      <item><title>World two</title><link>https://news.example.com/2</link></item>
+    </channel></rss>`;
+  const worldResp = () => new Response(worldFeed, { status: 200 });
+  const WORLD_TOPIC = [
+    {
+      scope: 'world',
+      topic: 'Світ',
+      source: 'rss',
+      url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+      language: 'en',
+      translate: true,
+    },
+  ];
+
+  it('translate:true + ключ -> перекладає title через ОДИН пакетний виклик', async () => {
+    const translateSpy = vi.fn(async (texts: string[]) => texts.map((t) => `UK:${t}`));
+    const m = createNewsModule({
+      fetchImpl: (async () => worldResp()) as unknown as typeof fetch,
+      translateImpl: translateSpy,
+      translateApiKey: 'gkey',
+    });
+    const block = await m.run(makeCtx(memState(), { topics: WORLD_TOPIC }));
+    const g = (block!.data as { groups: { items: { title: string }[] }[] }).groups[0]!;
+    expect(g.items.map((i) => i.title)).toEqual(['UK:World one', 'UK:World two']);
+    expect(translateSpy).toHaveBeenCalledTimes(1); // один пакетний виклик, не по темі
+    expect(translateSpy).toHaveBeenCalledWith(['World one', 'World two'], 'gkey', 'uk', 'en');
+  });
+
+  it('без translateApiKey -> переклад НЕ викликається, лишається оригінал', async () => {
+    const translateSpy = vi.fn();
+    const m = createNewsModule({
+      fetchImpl: (async () => worldResp()) as unknown as typeof fetch,
+      translateImpl: translateSpy,
+    });
+    const block = await m.run(makeCtx(memState(), { topics: WORLD_TOPIC }));
+    const g = (block!.data as { groups: { items: { title: string }[] }[] }).groups[0]!;
+    expect(g.items.map((i) => i.title)).toEqual(['World one', 'World two']);
+    expect(translateSpy).not.toHaveBeenCalled();
+  });
+
+  it('тема БЕЗ translate:true -> ігнорується, навіть якщо ключ є', async () => {
+    const translateSpy = vi.fn();
+    const m = createNewsModule({
+      fetchImpl: (async () => worldResp()) as unknown as typeof fetch,
+      translateImpl: translateSpy,
+      translateApiKey: 'gkey',
+    });
+    const topics = [{ ...WORLD_TOPIC[0]!, translate: undefined }];
+    await m.run(makeCtx(memState(), { topics }));
+    expect(translateSpy).not.toHaveBeenCalled();
+  });
+
+  it('переклад падає -> graceful, лишається оригінал (ран не валиться)', async () => {
+    const translateSpy = vi.fn(async () => {
+      throw new Error('Google Translate HTTP 429');
+    });
+    const m = createNewsModule({
+      fetchImpl: (async () => worldResp()) as unknown as typeof fetch,
+      translateImpl: translateSpy,
+      translateApiKey: 'gkey',
+    });
+    const block = await m.run(makeCtx(memState(), { topics: WORLD_TOPIC }));
+    const g = (block!.data as { groups: { items: { title: string }[] }[] }).groups[0]!;
+    expect(g.items.map((i) => i.title)).toEqual(['World one', 'World two']);
+  });
+
+  it('перекладає title І why разом в одному пакеті', async () => {
+    const translateSpy = vi.fn(async (texts: string[]) => texts.map((t) => `UK:${t}`));
+    const m = createNewsModule({
+      fetchImpl: (async () => resp(sample)) as unknown as typeof fetch,
+      translateImpl: translateSpy,
+      translateApiKey: 'gkey',
+      apiKey: 'k',
+    });
+    const topics = [
+      { scope: 'ua', topic: 'Тех', category: 'technology', language: 'uk', translate: true },
+    ];
+    const block = await m.run(makeCtx(memState(), { topics }));
+    const g = (block!.data as { groups: { items: { title: string; why?: string }[] }[] })
+      .groups[0]!;
+    // sample: перша новина має description ('опис А'), решта — ні.
+    expect(g.items[0]).toMatchObject({ title: 'UK:Новина А', why: 'UK:опис А' });
+    expect(translateSpy.mock.calls[0]![0]).toEqual(['Новина А', 'опис А', 'Новина Б', 'Новина В']);
+  });
+});
+
 describe('news — includePattern/excludePattern (фільтр шуму монорепо-стрічок)', () => {
   const feed = `<rss><channel>
       <item><title>v5.4.10</title><link>https://github.com/vitejs/vite/releases/tag/v5.4.10</link></item>
