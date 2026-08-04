@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { cloudGetItem, cloudSetItem, cloudRemoveItem } from '../telegram.ts';
+import { cloudGetItem, cloudSetItem, cloudRemoveItem, getTelegramLocation } from '../telegram.ts';
 
 export interface GeoCoords {
   lat: number;
@@ -49,14 +49,13 @@ function writeStored(coords: GeoCoords | null): void {
 }
 
 /**
- * Діагностичний статус ЖИВОЇ спроби (не сховища) — власник двічі підтвердив
- * «не спрацювало» після фіксів памʼяті (localStorage, потім CloudStorage), а
- * l.name у WeatherBlock лишався «Львів» — це означає, що hasGeo на бекенді
- * був false, тобто geo НІКОЛИ не ставав не-null на клієнті. Проблема не в
- * ЗБЕРЕЖЕННІ позиції — getCurrentPosition, вочевидь, просто не встигає/не
- * може відповісти успіхом на цьому клієнті взагалі. Статус рендериться в
- * WeatherBlock маленьким підписом — щоб побачити ТОЧНУ причину (відмова /
- * недоступність / таймаут / непідтримка API) без доступу до консолі пристрою.
+ * Діагностичний статус ЖИВОЇ спроби (не сховища). Стандартний
+ * navigator.geolocation на пристрої власника мовчки НІКОЛИ не відповідав —
+ * ні успіхом, ні помилкою, навіть довго після власного timeout: ознака, що
+ * сам web Geolocation API заблокований на рівні WebView, в якому Telegram
+ * рендерить Mini App (Permissions-Policy на iframe тощо), не відмова
+ * дозволу користувачем. Статус рендериться в WeatherBlock маленьким
+ * підписом — щоб бачити ТОЧНУ причину без доступу до консолі пристрою.
  */
 export type GeoStatus = 'pending' | 'ok' | 'denied' | 'unavailable' | 'timeout' | 'unsupported';
 
@@ -65,23 +64,52 @@ export interface GeoState {
   status: GeoStatus;
 }
 
+/** Фолбек для клієнтів без LocationManager (Bot API < 8.0) — стандартний Web
+ *  Geolocation API. Обгорнутий у try/catch: якщо сам виклик кидає синхронно
+ *  (WebView без належної реалізації), це раніше залишало статус 'pending'
+ *  назавжди без жодного сигналу — саме так і виглядало на пристрої власника. */
+function requestBrowserGeolocation(
+  onSuccess: (c: GeoCoords) => void,
+  onFail: (s: GeoStatus) => void,
+): void {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    onFail('unsupported');
+    return;
+  }
+  try {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => onSuccess({ lat: round(pos.coords.latitude), lon: round(pos.coords.longitude) }),
+      (err) => {
+        if (err.code === 1 /* PERMISSION_DENIED */) onFail('denied');
+        else if (err.code === 2 /* POSITION_UNAVAILABLE */) onFail('unavailable');
+        else onFail('timeout');
+      },
+      // enableHighAccuracy:false — містова точність достатня для погоди,
+      // мережева локація швидша й дешевша за GPS-фікс.
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 15 * 60_000 },
+    );
+  } catch {
+    onFail('unsupported');
+  }
+}
+
 /**
- * Координати браузера з памʼяттю між відкриттями (Блок «Погода»). Дозвіл на
- * геолокацію в Telegram Mini App «діє постійно» лише номінально — WebView
- * часто перестворюється при кожному відкритті, і холодний getCurrentPosition
- * не завжди встигає відповісти за швидкий повторний захід. Гірше того:
+ * Координати з памʼяттю між відкриттями (Блок «Погода»). Основний шлях —
+ * Telegram LocationManager (Bot API 8.0+): дозвіл САМОГО Telegram (host app,
+ * OS-рівень), в обхід web Geolocation API/Permissions-Policy WebView, де
+ * стандартний navigator.geolocation мовчки ніколи не відповідав. Старий
+ * клієнт без LocationManager — фолбек на navigator.geolocation.
+ *
  * localStorage сам по собі ненадійний як памʼять МІЖ сеансами Mini App —
  * Telegram може чистити WebView-сховище між платформами/запусками (саме
- * тому в Bot API взагалі існує CloudStorage).
- *
- * На монтуванні ОДРАЗУ повертаємо localStorage (лінивий useState, чисто для
- * миттєвого першого рендера), а паралельно читаємо CloudStorage — і якщо там
- * щось є, а локально порожньо (WebView-сховище не пережило перезапуск),
- * підхоплюємо хмарне значення (prev ?? cloud — не перебиває вже наявне
- * свіжіше). Тихо перепитуємо й свіжий GPS-фікс; збігається в межах ~1км —
- * нічого не міняємо; відрізняється — оновлюємо стан і ОБИДВА сховища.
- * PERMISSION_DENIED (реальне відкликання дозволу, на відміну від
- * транзиєнтного таймауту/POSITION_UNAVAILABLE) чистить обидва.
+ * тому в Bot API взагалі існує CloudStorage). На монтуванні ОДРАЗУ
+ * повертаємо localStorage (лінивий useState, чисто для миттєвого першого
+ * рендера), а паралельно читаємо CloudStorage — і якщо там щось є, а
+ * локально порожньо, підхоплюємо хмарне значення (prev ?? cloud — не
+ * перебиває вже наявне свіжіше). Тихо перепитуємо й свіжий фікс; збігається
+ * в межах ~1км — нічого не міняємо; відрізняється — оновлюємо стан і
+ * ОБИДВА сховища. Відмова дозволу чистить обидва — інакше застаріле місце
+ * показувалось би вічно.
  */
 export function useGeolocation(): GeoState {
   const [coords, setCoords] = useState<GeoCoords | null>(readLocal);
@@ -96,42 +124,39 @@ export function useGeolocation(): GeoState {
       if (cloud) setCoords((prev) => prev ?? cloud);
     });
 
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      setStatus('unsupported');
-      return () => {
-        cancelled = true;
-      };
-    }
+    const apply = (next: GeoCoords) => {
+      if (cancelled) return;
+      setStatus('ok');
+      setCoords((prev) => {
+        if (prev && prev.lat === next.lat && prev.lon === next.lon) return prev;
+        writeStored(next);
+        return next;
+      });
+    };
+    const fail = (s: GeoStatus) => {
+      if (cancelled) return;
+      setStatus(s);
+      if (s === 'denied') {
+        writeStored(null);
+        setCoords(null);
+      }
+      /* unavailable/timeout/unsupported — транзиєнтне/платформне, лишаємось
+         на останній відомій позиції (зі storage/cloud або null для нового
+         користувача). */
+    };
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        if (cancelled) return;
-        setStatus('ok');
-        const next = { lat: round(pos.coords.latitude), lon: round(pos.coords.longitude) };
-        setCoords((prev) => {
-          if (prev && prev.lat === next.lat && prev.lon === next.lon) return prev;
-          writeStored(next);
-          return next;
-        });
-      },
-      (err) => {
-        if (cancelled) return;
-        if (err.code === 1 /* PERMISSION_DENIED */) {
-          setStatus('denied');
-          writeStored(null);
-          setCoords(null);
-        } else if (err.code === 2 /* POSITION_UNAVAILABLE */) {
-          setStatus('unavailable');
-        } else {
-          setStatus('timeout');
-        }
-        /* лишаємось на останній відомій позиції (зі storage/cloud або null
-           для нового користувача) — лише статус сигналізує проблему. */
-      },
-      // enableHighAccuracy:false — містова точність достатня для погоди,
-      // мережева локація швидша й дешевша за GPS-фікс.
-      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 15 * 60_000 },
-    );
+    getTelegramLocation().then((res) => {
+      if (cancelled) return;
+      if (res.ok) {
+        apply({ lat: round(res.lat), lon: round(res.lon) });
+        return;
+      }
+      if (res.reason !== 'unsupported') {
+        fail(res.reason);
+        return;
+      }
+      requestBrowserGeolocation(apply, fail);
+    });
 
     return () => {
       cancelled = true;
