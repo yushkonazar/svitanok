@@ -448,6 +448,53 @@ async function loadStats(env) {
   }
 }
 
+/**
+ * Безпечний read-modify-write для 'stats' (оптимістична конкуренція, один
+ * retry). KV не має вбудованого CAS, а незалежних писарів у цей ключ кілька:
+ * Mini App-події (open/checkin/sleepStart), голосування за новину з чату,
+ * і три 5-хвилинні крони (checkinNudgeCheck, sleepNudgeCheck, deadMansCheck).
+ * Без цього кожен тихо втрачав зміни іншого (last-write-wins): реальний
+ * кейс — власник тапнув «Ліг спати», вранці відкрив застосунок, авто-
+ * заповнення sleepH/bedtime відбулось (recordEvent — чиста функція,
+ * перевірено ізольовано на реальних даних), але крон, який стартував
+ * читання ДО цього відкриття, а дописав у KV ПІСЛЯ (його власні Telegram-
+ * виклики — секунди), переписав усе своєю застарілою до-заповнення копією.
+ *
+ * `patch` — ЧИСТА трансформація (store) -> store (той самий контракт, що
+ * вже мають recordEvent/recordReliability, і вони теж уже ідемпотентні
+ * всередині — case 'checkin' ігнорує confirmed, recordReliability ігнорує
+ * повторний lastCheckDate). Якщо між першим і другим читанням хтось інший
+ * встиг записати — застосовуємо ТОЙ САМИЙ patch ще раз до свіжішої копії,
+ * замість того щоб мовчки затерти чужі зміни. НІКОЛИ не кладіть сюди
+ * побічні ефекти (Telegram-виклики тощо) — вони виконались би двічі при
+ * ретраї; лише саму мутацію стану, ПІСЛЯ того як side-effects уже сталися.
+ */
+async function updateStats(env, patch) {
+  const raw1 = (await env.BRIEFING.get('stats')) ?? '{}';
+  let parsed1;
+  try {
+    parsed1 = JSON.parse(raw1);
+  } catch {
+    parsed1 = {};
+  }
+  const result1 = patch(parsed1);
+  const json1 = JSON.stringify(result1);
+  const raw2 = (await env.BRIEFING.get('stats')) ?? '{}';
+  if (raw2 === raw1) {
+    await env.BRIEFING.put('stats', json1);
+    return result1;
+  }
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(raw2);
+  } catch {
+    parsed2 = {};
+  }
+  const result2 = patch(parsed2);
+  await env.BRIEFING.put('stats', JSON.stringify(result2));
+  return result2;
+}
+
 async function loadState(env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
@@ -626,12 +673,13 @@ async function applyEvent(env, body) {
   // Підтверджений блок (recordEvent, case 'checkin') ігнорує ВСІ подальші
   // правки — рахуємо це ДО запису, щоб викликач (агент, runRecordAction;
   // Mini App, handleEvent) міг чесно сказати «нічого не змінилось», а не
-  // збрехати про успіх.
+  // збрехати про успіх. Це лише швидкий fast-path на щойно прочитаному
+  // знімку — САМА безпека (навіть якщо стан зміниться між цим читанням і
+  // updateStats) лежить у recordEvent (case 'checkin' сам ігнорує confirmed).
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
   if (checkinLocked) return { locked: true }; // нічого не зміниться — не палимо KV-запис даремно
-  const stats = recordEvent(loaded, ev, dateKey, nowMin, nowIso);
-  await env.BRIEFING.put('stats', JSON.stringify(stats));
+  await updateStats(env, (curStore) => recordEvent(curStore, ev, dateKey, nowMin, nowIso));
   if (body.type === 'checkin') return { locked: false };
 }
 
@@ -2030,18 +2078,20 @@ async function runRecordAction(env, parsed, action) {
     state.preferenceWeights = r.weights;
     state.votedUrls = r.votedUrls;
     await env.BRIEFING.put('state', JSON.stringify(state));
-    const stats = recordEvent(
-      await loadStats(env),
-      {
-        type: 'vote',
-        category: item.topic,
-        dir: r.newDir,
-        prevDir: r.prevDir,
-        prevCategory: r.prevCategory,
-      },
-      kyivDateKey(),
+    const voteDateKey = kyivDateKey();
+    await updateStats(env, (curStore) =>
+      recordEvent(
+        curStore,
+        {
+          type: 'vote',
+          category: item.topic,
+          dir: r.newDir,
+          prevDir: r.prevDir,
+          prevCategory: r.prevCategory,
+        },
+        voteDateKey,
+      ),
     );
-    await env.BRIEFING.put('stats', JSON.stringify(stats));
     return sendText(`❤️ Голос за «${item.title ?? '?'}» зараховано.`);
   }
 
@@ -4062,8 +4112,17 @@ async function checkinNudgeCheck(env) {
     text: win.text,
   });
 
-  store.checkinNudgeDates = { ...(store.checkinNudgeDates ?? {}), [win.slot]: today };
-  await env.BRIEFING.put('stats', JSON.stringify(store));
+  // Позначаємо ПІСЛЯ надсилання, окремим безпечним patch на свіжий stats —
+  // не тим самим `store`, що читали для рішення `due` (той міг устигнути
+  // застаріти, поки лист Telegram); sendMessage (побічний ефект) уже
+  // стався РАЗ вище, тож сам patch — чиста, спокійно повторювана мутація.
+  // НЕ normalize() тут — воно не знає про checkinNudgeDates (ad-hoc поле
+  // поза emptyStore-схемою) і мовчки прибрало б його; той самий контракт,
+  // що мав ОРИГІНАЛЬНИЙ код (прямий спред store, без normalize).
+  await updateStats(env, (curStore) => ({
+    ...curStore,
+    checkinNudgeDates: { ...(curStore.checkinNudgeDates ?? {}), [win.slot]: today },
+  }));
 }
 
 /**
@@ -4078,7 +4137,14 @@ async function sleepNudgeCheck(env) {
   const minuteOfDay = kyivMinuteOfDay(new Date());
   const store = await loadStats(env);
   const nightKey = checkinDateKey(kyivDateKey(), kyivHour());
-  let changed = false;
+
+  // Побічні ефекти (editMessageText/sendMessage) збираємо як ЧИСТІ дані
+  // (dateKey-и/msgId), не мутуємо `store` напряму тут — сам запис у KV
+  // робимо ОКРЕМО, нижче, через updateStats на свіжому знімку. Інакше цей
+  // крон (мережеві виклики Telegram — секунди) переписав би своєю
+  // застарілою до-заповнення копією щойно записане авто-заповнення сну з
+  // ранкового 'open' (реальний кейс, що й привів до цього фіксу).
+  const clearedDateKeys = [];
 
   // 1) Ночі з надісланим, але НЕ натиснутим нагадуванням — уже не поточна ніч
   // (checkinDateKey тримає ТУ САМУ ніч стабільною аж до 06:00, тож «минула» тут
@@ -4090,11 +4156,11 @@ async function sleepNudgeCheck(env) {
       text: '🌙 Не встиг зафіксувати — нічого, вранці вкажеш час сну вручну.',
       reply_markup: { inline_keyboard: [] },
     });
-    store.sleepLog[dateKey] = { ...store.sleepLog[dateKey], nudgeCleared: true };
-    changed = true;
+    clearedDateKeys.push(dateKey);
   }
 
   // 2) Нове нагадування — лише у вікні (23:00–02:00) і лише раз за ніч.
+  let newNudge = null;
   if (inSleepNudgeWindow(minuteOfDay)) {
     const settings = await loadSettings(env);
     const due = shouldSendSleepNudge({
@@ -4114,14 +4180,29 @@ async function sleepNudgeCheck(env) {
       });
       const sent = await res.json().catch(() => null);
       const msgId = sent?.result?.message_id;
-      if (typeof msgId === 'number') {
-        store.sleepLog[nightKey] = { ...store.sleepLog[nightKey], nudgeMsgId: msgId };
-        changed = true;
-      }
+      if (typeof msgId === 'number') newNudge = { nightKey, msgId };
     }
   }
 
-  if (changed) await env.BRIEFING.put('stats', JSON.stringify(store));
+  if (clearedDateKeys.length === 0 && !newNudge) return;
+
+  // Усі Telegram-виклики вже сталися РАЗ вище; сам patch на sleepLog —
+  // чиста, безпечно повторювана мутація (не normalize() — те саме
+  // застереження, що в checkinNudgeCheck: ad-hoc поля поза emptyStore не
+  // мають зникати).
+  await updateStats(env, (curStore) => {
+    const next = { ...curStore, sleepLog: { ...(curStore.sleepLog ?? {}) } };
+    for (const dateKey of clearedDateKeys) {
+      next.sleepLog[dateKey] = { ...next.sleepLog[dateKey], nudgeCleared: true };
+    }
+    if (newNudge) {
+      next.sleepLog[newNudge.nightKey] = {
+        ...next.sleepLog[newNudge.nightKey],
+        nudgeMsgId: newNudge.msgId,
+      };
+    }
+    return next;
+  });
 }
 
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
@@ -4154,12 +4235,11 @@ async function deadMansCheck(env) {
   }
   // Облік доставки — до гейта секретів (не потребує Telegram-крендів), але в
   // try/catch: транзієнтна KV-помилка НЕ сміє заблокувати алерт нижче (це його
-  // день). Чесно про гонки: Worker — єдиний СЕРВІС-писар stats-блоба, проте
-  // конкурентні інвокації (цей cron vs fetch /api/event) — усе одно
-  // last-write-wins без CAS; вікно тут µs і раз на день, стратегічний фікс —
-  // Durable Object (див. SPEC/аудит H2).
+  // день). updateStats — той самий безпечний read-modify-write, що й решта
+  // писарів stats-блоба (recordReliability і так уже ідемпотентний за
+  // lastCheckDate, тож повторне застосування при конфлікті — безпечне).
   try {
-    await env.BRIEFING.put('stats', JSON.stringify(recordReliability(store, today, fresh)));
+    await updateStats(env, (curStore) => recordReliability(curStore, today, fresh));
   } catch (e) {
     console.error('reliability write failed', e);
   }
