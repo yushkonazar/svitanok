@@ -879,6 +879,30 @@ async function reverseGeocodeCity(lat, lon, apiKey) {
   }
 }
 
+/** Пряме геокодування (та сама OpenWeather Geocoding API, інший ендпоінт) —
+ *  назва міста, введена власником -> координати. Для ручного перевизначення
+ *  локації (фідбек власника: IP-геолокація не встигає за реальним рухом на
+ *  мобільній мережі — оператор мапить IP на місто приблизно й не в реальному
+ *  часі, тож «свіжі» — не протухлі кешем — дані можуть лишатись географічно
+ *  неправильними години після переїзду). null на збій/порожній результат —
+ *  виклик сам поверне владельцю чесну 404, не впаде мовчки. */
+async function geocodeCity(query, apiKey) {
+  try {
+    const url = new URL('https://api.openweathermap.org/geo/1.0/direct');
+    url.searchParams.set('q', query);
+    url.searchParams.set('limit', '1');
+    url.searchParams.set('appid', apiKey);
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const data = await res.json();
+    const first = Array.isArray(data) ? data[0] : null;
+    if (!first || !Number.isFinite(first.lat) || !Number.isFinite(first.lon)) return null;
+    return { lat: first.lat, lon: first.lon, name: first.local_names?.uk ?? first.name ?? query };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * GET /api/weather -> жива погода (PR-7, фідбек власника: статична температура
  * з ранкового брифінгу вже за обідом не відповідала дійсності). Owner-gated,
@@ -908,12 +932,28 @@ async function handleLiveWeather(request, env) {
   // «Перевірка чи сходяться геопозиції» (фідбек власника): є свіжий сигнал і
   // він ВІДРІЗНЯЄТЬСЯ від збереженого -> переписуємо й зберігаємо. Сходиться
   // (або свіжого сигналу взагалі немає, напр. локальний dev) -> лишаємо
-  // збережене як є, жодного зайвого KV-запису.
+  // збережене як є, жодного зайвого KV-запису. Пишемо ОКРЕМО від ручного
+  // перевизначення нижче — авто-детекція йде своїм ходом навіть під час
+  // manual override, щоб було на що впасти назад, коли власник його прибере.
   let effectiveGeo = storedGeo;
   if (currentGeo && !sameGeo(currentGeo, storedGeo)) {
     effectiveGeo = currentGeo;
     await env.BRIEFING.put('ownerGeo', JSON.stringify(currentGeo));
   }
+
+  // Ручне перевизначення (фідбек власника): IP-геолокація (MaxMind через
+  // Cloudflare) не встигає за реальним переміщенням на мобільній мережі — тож
+  // коли воно є, ПОВНІСТЮ переважає авто-детекцію, незалежно від request.cf.
+  let manualGeo;
+  try {
+    manualGeo = JSON.parse((await env.BRIEFING.get('ownerGeoManual')) ?? 'null');
+  } catch {
+    manualGeo = null;
+  }
+  if (manualGeo) effectiveGeo = { lat: manualGeo.lat, lon: manualGeo.lon };
+  // Фронту для стану кнопки перевизначення потрібна лише назва — не координати.
+  const manualGeoOut = manualGeo ? { name: manualGeo.name } : null;
+
   const hasGeo = !!effectiveGeo;
 
   let cached;
@@ -931,7 +971,12 @@ async function handleLiveWeather(request, env) {
     Number.isFinite(cached.fetchedAtMs) &&
     nowMs - cached.fetchedAtMs < WEATHER_LIVE_TTL_MS
   ) {
-    return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+    return json({
+      ok: true,
+      locations: cached.locations,
+      fetchedAtMs: cached.fetchedAtMs,
+      manualGeo: manualGeoOut,
+    });
   }
 
   if (!env.WEATHER_API_KEY) {
@@ -953,7 +998,12 @@ async function handleLiveWeather(request, env) {
     // позиції) — краще вчорашнє число, ніж зовсім нічого; фолбек на брифінг
     // лишається клієнту, якщо кешу взагалі немає.
     if (cached)
-      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+      return json({
+        ok: true,
+        locations: cached.locations,
+        fetchedAtMs: cached.fetchedAtMs,
+        manualGeo: manualGeoOut,
+      });
     return json({ ok: false, error: 'rate-limited' }, 429);
   }
 
@@ -991,8 +1041,14 @@ async function handleLiveWeather(request, env) {
 
   let targetLocations = WEATHER_LOCATIONS;
   if (hasGeo) {
-    counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
-    const name = await reverseGeocodeCity(effectiveGeo.lat, effectiveGeo.lon, env.WEATHER_API_KEY);
+    // Ручне перевизначення вже несе назву, яку власник підтвердив при
+    // встановленні (geocodeCity) — зворотне геокодування тут зайве й може
+    // повернути ІНШУ назву (напр. район замість міста), ніж очікує власник.
+    let name = manualGeo?.name ?? null;
+    if (!name) {
+      counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
+      name = await reverseGeocodeCity(effectiveGeo.lat, effectiveGeo.lon, env.WEATHER_API_KEY);
+    }
     // Львів (WEATHER_LOCATIONS[0]) зсувається у другий слот замість Немовичів —
     // той самий 2-слотовий UI (головна температура + рядок біля UV/AQI), лише
     // інший вміст масиву.
@@ -1015,7 +1071,12 @@ async function handleLiveWeather(request, env) {
     // Усі локації впали -> віддати старий кеш, якщо є, інакше чесна відмова
     // (клієнт фолбекає на снапшот брифінгу).
     if (cached)
-      return json({ ok: true, locations: cached.locations, fetchedAtMs: cached.fetchedAtMs });
+      return json({
+        ok: true,
+        locations: cached.locations,
+        fetchedAtMs: cached.fetchedAtMs,
+        manualGeo: manualGeoOut,
+      });
     return json({ ok: false, error: 'upstream-failed' }, 502);
   }
 
@@ -1023,7 +1084,54 @@ async function handleLiveWeather(request, env) {
     'weatherLive',
     JSON.stringify({ locations, fetchedAtMs: nowMs, geo: effectiveGeo }),
   );
-  return json({ ok: true, locations, fetchedAtMs: nowMs });
+  return json({ ok: true, locations, fetchedAtMs: nowMs, manualGeo: manualGeoOut });
+}
+
+/**
+ * POST /api/weather/location {city, initData} -> ручне перевизначення геопозиції
+ * (фідбек власника, продовження PR-7: IP-геолокація фізично не встигає за
+ * реальним переміщенням на мобільній мережі — оператор мапить IP на місто
+ * приблизно й не в реальному часі). Пряме геокодування (geocodeCity) введеної
+ * назви -> {lat, lon, name} у ownerGeoManual, і ВІД ЦЬОГО МОМЕНТУ
+ * handleLiveWeather повністю ігнорує request.cf, доки власник сам не прибере.
+ *
+ * DELETE /api/weather/location {initData} -> прибрати перевизначення,
+ * повернутись до авто-детекції по IP (ownerGeo лишався живим весь час).
+ */
+async function handleWeatherLocation(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+
+  if (request.method === 'DELETE') {
+    const auth = await checkOwner(body?.initData, env);
+    if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+    await env.BRIEFING.delete('ownerGeoManual');
+    return json({ ok: true, manualGeo: null });
+  }
+
+  if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
+  const auth = await checkOwner(body?.initData, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+
+  const city = typeof body?.city === 'string' ? body.city.trim() : '';
+  if (!city) return json({ ok: false, error: 'bad-params' }, 400);
+  if (!env.WEATHER_API_KEY) return json({ ok: false, error: 'not-configured' }, 503);
+
+  const resolved = await geocodeCity(city, env.WEATHER_API_KEY);
+  if (!resolved) return json({ ok: false, error: 'not-found' }, 404);
+
+  const manual = {
+    lat: roundGeo(resolved.lat),
+    lon: roundGeo(resolved.lon),
+    name: resolved.name,
+    setAtMs: Date.now(),
+  };
+  await env.BRIEFING.put('ownerGeoManual', JSON.stringify(manual));
+  return json({ ok: true, manualGeo: { name: manual.name } });
 }
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
@@ -4310,6 +4418,9 @@ export default {
     }
     if (url.pathname === '/api/weather') {
       return handleLiveWeather(request, env);
+    }
+    if (url.pathname === '/api/weather/location') {
+      return handleWeatherLocation(request, env);
     }
     if (url.pathname === '/api/settings') {
       return handleSettings(request, env);

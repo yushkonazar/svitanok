@@ -14,6 +14,8 @@ import {
   postEvent,
   postSettings,
   postVote,
+  setWeatherLocation,
+  clearWeatherLocation,
   SAVED_PAGE,
   type StatsResult,
   type VoteDir,
@@ -51,6 +53,28 @@ export function useLiveWeather() {
     queryFn: fetchLiveWeather,
     refetchInterval: 5 * 60_000,
     retry: 0,
+  });
+}
+
+/** Встановити ручне перевизначення локації погоди (фідбек власника). На
+ *  відміну від решти мутацій дашборда — БЕЗ оптимістичного оновлення: ім'я
+ *  міста валідує OpenWeather (геокодування), тож локальне вгадування
+ *  результату до відповіді сервера означало б показати щось, що потім
+ *  довелось би тихо відкотити при 404. Просто чекаємо й інвалідуємо. */
+export function useSetWeatherLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (city: string) => setWeatherLocation(city),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
+  });
+}
+
+/** Прибрати ручне перевизначення -> повернутись до авто-детекції по IP. */
+export function useClearWeatherLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => clearWeatherLocation(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
   });
 }
 
