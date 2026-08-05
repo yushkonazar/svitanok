@@ -188,6 +188,19 @@ describe('stats-core — recordEvent', () => {
     expect(normalize('bad')).toEqual(emptyStore());
   });
 
+  it('checkinNudgeDates (ad-hoc поле checkinNudgeCheck) переживає recordEvent/normalize', () => {
+    const store = { checkinNudgeDates: { morning: '2026-08-05' } };
+    // Регресія: normalize() не знав про checkinNudgeDates і мовчки прибирав
+    // його на КОЖЕН recordEvent (open/checkin/sleepStart/vote) — «вже
+    // нагадали сьогодні» стиралось першим-ліпшим відкриттям застосунку.
+    const s = recordEvent(store, { type: 'open' }, '2026-08-05', 10, '2026-08-05T05:00:00Z');
+    expect(s.checkinNudgeDates).toEqual({ morning: '2026-08-05' });
+    expect(normalize({ checkinNudgeDates: { evening: 'x' } }).checkinNudgeDates).toEqual({
+      evening: 'x',
+    });
+    expect(normalize({}).checkinNudgeDates).toEqual({});
+  });
+
   it('save_item додає в обране за kind+id; дедуп; інтерес лише з topic', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'save_item', kind: 'fact', id: 'f1', title: 'Факт' }, '2026-07-07');

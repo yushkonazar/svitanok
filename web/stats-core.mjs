@@ -460,6 +460,7 @@ export function emptyStore() {
     reliability: { onTime: 0, total: 0, deadman: 0, days: {} },
     checkins: {},
     sleepLog: {},
+    checkinNudgeDates: {},
   };
 }
 
@@ -494,6 +495,10 @@ export function normalize(s) {
     },
     checkins: s.checkins && typeof s.checkins === 'object' ? s.checkins : e.checkins,
     sleepLog: s.sleepLog && typeof s.sleepLog === 'object' ? s.sleepLog : e.sleepLog,
+    checkinNudgeDates:
+      s.checkinNudgeDates && typeof s.checkinNudgeDates === 'object'
+        ? s.checkinNudgeDates
+        : e.checkinNudgeDates,
   };
 }
 
