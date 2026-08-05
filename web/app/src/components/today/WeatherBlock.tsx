@@ -1,14 +1,50 @@
+import { useState } from 'react';
 import type { WeatherLocation } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
 import { dayLen, fmtClock, signTemp } from '../../lib/weather.ts';
 import { SunDial } from '../charts/SunDial.tsx';
 import { HourlyChart } from '../charts/HourlyChart.tsx';
 import { Ph } from '../ui/primitives.tsx';
+import { useSetWeatherLocation, useClearWeatherLocation } from '../../api/hooks.ts';
+import { haptic } from '../../telegram.ts';
 
 // Погода (дизайн v2, Svitanok.dc.html): місто·стан + велика температура зліва,
 // метрики справа; добовий циферблат між лініями сходу/заходу; пігулка довжини
 // дня; рядок UV/AQI/друге місто; графік по годинах.
 // Головне місто — locations[0], друге (якщо є) — у рядку UV.
+//
+// Ручне перевизначення локації (фідбек власника): IP-геолокація (MaxMind
+// через Cloudflare) не встигає за реальним рухом на мобільній мережі —
+// оператор мапить IP на місто приблизно й не в реальному часі, тож «жива»
+// (не протухла кешем) погода може лишатись географічно неправильною години
+// після переїзду. Шпилька біля назви міста — вхід у крихітний інлайн-редактор
+// (той самий tap-to-expand патерн, що конвертер у CurrencyBlock): заповнена —
+// перевизначення активне, порожня — авто-детекція по IP.
+
+function PinIcon({ active }: { active: boolean }) {
+  // Форма відрізняється, не лише колір (a11y-правило дизайн-скіла): заповнена
+  // крапля — активне перевизначення, контурна — авто-детекція.
+  return active ? (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="var(--color-a2)" className="flex-none">
+      <path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.34 7.01 11.6a1.5 1.5 0 0 0 1.98 0C13.28 21.34 20 15.25 20 10c0-4.42-3.58-8-8-8Zm0 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z" />
+    </svg>
+  ) : (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--color-tx3)"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="flex-none"
+    >
+      <path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.34 7.01 11.6a1.5 1.5 0 0 0 1.98 0C13.28 21.34 20 15.25 20 10c0-4.42-3.58-8-8-8Z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
 
 function uvMeta(uv: number): { label: string; color: string } {
   if (uv >= 8) return { label: 'ДУЖЕ ВИСОКИЙ', color: 'var(--color-neg)' };
@@ -34,7 +70,25 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function WeatherBlock({ locations }: { locations: WeatherLocation[] }) {
+export function WeatherBlock({
+  locations,
+  manualGeo = null,
+}: {
+  locations: WeatherLocation[];
+  manualGeo?: { name: string } | null;
+}) {
+  const setLoc = useSetWeatherLocation();
+  const clearLoc = useClearWeatherLocation();
+  const [editing, setEditing] = useState(false);
+  const [city, setCity] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  const openEditor = () => {
+    setCity(manualGeo?.name ?? '');
+    setErr(null);
+    setEditing((v) => !v);
+  };
+
   const l = locations[0];
   if (!l) return <Ph>Дані про погоду з’являться в найближчому брифінгу</Ph>;
   const second = locations[1];
@@ -54,9 +108,22 @@ export function WeatherBlock({ locations }: { locations: WeatherLocation[] }) {
       {/* герой */}
       <div className="flex items-end gap-3.5">
         <div className="flex flex-col gap-0.5">
-          <div className="text-xs font-semibold text-tx2">
-            {l.name}
-            {l.condition ? ` · ${l.condition}` : ''}
+          <div className="flex items-center gap-1 text-xs font-semibold text-tx2">
+            <span>
+              {l.name}
+              {l.condition ? ` · ${l.condition}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={openEditor}
+              aria-label={
+                manualGeo ? `Локація вручну: ${manualGeo.name}. Змінити` : 'Вказати локацію вручну'
+              }
+              aria-expanded={editing}
+              className="grid h-4 w-4 flex-none place-items-center rounded-full"
+            >
+              <PinIcon active={!!manualGeo} />
+            </button>
           </div>
           <div
             className="font-mono text-[64px] font-medium leading-[0.95] tracking-[-0.05em]"
@@ -74,6 +141,67 @@ export function WeatherBlock({ locations }: { locations: WeatherLocation[] }) {
           {has(l.humidity) && <Metric label="ВОЛОГІСТЬ" value={`${l.humidity}%`} />}
         </div>
       </div>
+
+      {/* редактор ручної локації — той самий tap-to-expand патерн, що
+          конвертер CurrencyBlock */}
+      {editing && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const trimmed = city.trim();
+            if (!trimmed) return;
+            setErr(null);
+            setLoc.mutate(trimmed, {
+              onSuccess: () => {
+                haptic('success');
+                setEditing(false);
+              },
+              onError: (e) => setErr(e instanceof Error ? e.message : 'Не вдалося встановити локацію'),
+            });
+          }}
+          className="-mt-2 flex flex-wrap items-center gap-1.5"
+          style={{ animation: 'fadeUp .2s ease' }}
+        >
+          <input
+            type="text"
+            autoFocus
+            value={city}
+            onChange={(e) => {
+              setCity(e.target.value);
+              setErr(null);
+            }}
+            placeholder="Місто вручну…"
+            className="w-32 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11px]"
+            aria-label="Назва міста для ручної локації"
+          />
+          <button
+            type="submit"
+            disabled={setLoc.isPending || !city.trim()}
+            className="rounded-full px-3 py-1 text-[10.5px] font-semibold disabled:opacity-50"
+            style={{ background: 'var(--grad)', color: 'var(--color-onacc)' }}
+          >
+            {setLoc.isPending ? '…' : manualGeo ? 'Оновити' : 'Встановити'}
+          </button>
+          {manualGeo && (
+            <button
+              type="button"
+              disabled={clearLoc.isPending}
+              onClick={() =>
+                clearLoc.mutate(undefined, {
+                  onSuccess: () => {
+                    haptic('light');
+                    setEditing(false);
+                  },
+                })
+              }
+              className="text-[10.5px] font-medium text-tx3 disabled:opacity-50"
+            >
+              Прибрати
+            </button>
+          )}
+          {err && <div className="basis-full text-[10px] text-neg">{err}</div>}
+        </form>
+      )}
 
       {/* циферблат між лініями сходу/заходу */}
       <div className="flex items-center gap-3">

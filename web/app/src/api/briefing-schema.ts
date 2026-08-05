@@ -62,10 +62,16 @@ export const weatherDataSchema = z.object({
 // GET /api/weather (PR-7, «жива погода») — той самий weatherLocationSchema, що
 // снапшот брифінгу, лише без dayLenDeltaMin (немає стану «вчора» для живого
 // запиту) + fetchedAtMs (коли Worker востаннє оновив KV-кеш).
+//
+// manualGeo — ручне перевизначення локації (фідбек власника: IP-геолокація не
+// встигає за реальним рухом на мобільній мережі). Лише назва — координати
+// клієнту знати не треба, він показує «Рівне» й кнопку «прибрати», нічого
+// більше. null, якщо перевизначення немає (звичайна авто-детекція по IP).
 export const liveWeatherResponseSchema = z.object({
   ok: z.literal(true),
   locations: z.array(weatherLocationSchema.omit({ dayLenDeltaMin: true })).default([]),
   fetchedAtMs: z.number(),
+  manualGeo: z.object({ name: z.string() }).nullable().default(null),
 });
 export type LiveWeatherResponse = z.infer<typeof liveWeatherResponseSchema>;
 

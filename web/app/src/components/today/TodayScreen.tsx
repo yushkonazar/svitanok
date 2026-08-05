@@ -94,7 +94,12 @@ export function TodayScreen() {
   if (weather)
     sections.push({
       key: 'weather',
-      node: <WeatherBlock locations={liveWeather?.locations ?? weather.locations} />,
+      node: (
+        <WeatherBlock
+          locations={liveWeather?.locations ?? weather.locations}
+          manualGeo={liveWeather?.manualGeo ?? null}
+        />
+      ),
     });
   if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
   if (currency)
