@@ -15,12 +15,14 @@ let kv: Map<string, string>;
 let openWeatherCalls: string[];
 let openWeatherFail: boolean;
 let geocodeEmpty: boolean;
+let geocodeDirectEmpty: boolean;
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
     BRIEFING: {
       get: async (k: string) => kv.get(k) ?? null,
       put: async (k: string, v: string) => void kv.set(k, v),
+      delete: async (k: string) => void kv.delete(k),
       list: async () => ({ keys: [] }),
     },
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
@@ -75,16 +77,43 @@ async function getWeather(initData: string | null, e = env(), cf?: Record<string
 const LVIV_CF = { latitude: '49.84', longitude: '24.03', city: 'Lviv' };
 const KYIV_CF = { latitude: '50.45', longitude: '30.52', city: 'Kyiv' };
 
+async function setLocation(initData: string | null, city: string, e = env()) {
+  const req = new Request('https://svitanok.example/api/weather/location', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ city, initData }),
+  });
+  return worker.fetch(req, e, { waitUntil: () => {} });
+}
+
+async function clearLocation(initData: string | null, e = env()) {
+  const req = new Request('https://svitanok.example/api/weather/location', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ initData }),
+  });
+  return worker.fetch(req, e, { waitUntil: () => {} });
+}
+
 beforeEach(() => {
   kv = new Map();
   openWeatherCalls = [];
   openWeatherFail = false;
   geocodeEmpty = false;
+  geocodeDirectEmpty = false;
   vi.stubGlobal('fetch', async (input: unknown) => {
     const url = String(input);
     if (url.includes('api.openweathermap.org')) {
       openWeatherCalls.push(url);
       if (openWeatherFail) return new Response('down', { status: 500 });
+      if (url.includes('/geo/1.0/direct')) {
+        return new Response(
+          JSON.stringify(
+            geocodeDirectEmpty ? [] : [{ lat: 50.62, lon: 26.24, local_names: { uk: 'Рівне' } }],
+          ),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       if (url.includes('/geo/1.0/reverse')) {
         return new Response(JSON.stringify(geocodeEmpty ? [] : [{ name: 'Твоя точка' }]), {
           status: 200,
@@ -297,5 +326,110 @@ describe('GET /api/weather — геопозиція власника (request.cf
     const body = (await res.json()) as { locations: { name: string }[] };
     expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
     expect(kv.get('ownerGeo')).toBeUndefined();
+  });
+});
+
+describe('POST/DELETE /api/weather/location — ручне перевизначення (фідбек власника)', () => {
+  it('без initData -> 401', async () => {
+    const res = await setLocation(null, 'Рівне');
+    expect(res.status).toBe(401);
+  });
+
+  it('чужий user id -> 403', async () => {
+    const initData = await buildInitData(9999, BOT_TOKEN);
+    const res = await setLocation(initData, 'Рівне');
+    expect(res.status).toBe(403);
+  });
+
+  it('порожнє місто -> 400 bad-params', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await setLocation(initData, '   ');
+    expect(res.status).toBe(400);
+  });
+
+  it('немає WEATHER_API_KEY -> 503 not-configured', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await setLocation(initData, 'Рівне', env({ WEATHER_API_KEY: undefined }));
+    expect(res.status).toBe(503);
+  });
+
+  it('місто не знайдено (геокодування — порожній результат) -> 404 not-found, KV не чіпає', async () => {
+    geocodeDirectEmpty = true;
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await setLocation(initData, 'Невідоме Місто');
+    expect(res.status).toBe(404);
+    expect(kv.get('ownerGeoManual')).toBeUndefined();
+  });
+
+  it('успіх -> зберігає ownerGeoManual, віддає {ok:true, manualGeo:{name}}', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await setLocation(initData, 'Рівне');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; manualGeo: { name: string } };
+    expect(body).toEqual({ ok: true, manualGeo: { name: 'Рівне' } });
+    expect(JSON.parse(kv.get('ownerGeoManual')!)).toMatchObject({
+      lat: 50.62,
+      lon: 26.24,
+      name: 'Рівне',
+    });
+  });
+
+  it('мануальне перевизначення ПЕРЕВАЖАЄ request.cf цілком — навіть коли cf каже інше', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await setLocation(initData, 'Рівне');
+
+    // Cloudflare продовжує репортити КИЇВ (владелец фізично там за IP) —
+    // manual має перемогти й показати Рівне, не Київ.
+    const res = await getWeather(initData, env(), KYIV_CF);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      locations: { name: string }[];
+      manualGeo: { name: string } | null;
+    };
+    expect(body.locations.map((l) => l.name)).toEqual(['Рівне', 'Львів']);
+    expect(body.manualGeo).toEqual({ name: 'Рівне' });
+    // Авто-детекція все одно пишеться в ownerGeo (є на що впасти після clear).
+    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({ lat: 50.45, lon: 30.52 });
+  });
+
+  it('manual override не викликає зворотне геокодування — назва напряму з geocodeCity', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await setLocation(initData, 'Рівне');
+    const callsAfterSet = openWeatherCalls.filter((u) => u.includes('/geo/1.0/reverse')).length;
+
+    await getWeather(initData, env(), KYIV_CF);
+    const callsAfterGet = openWeatherCalls.filter((u) => u.includes('/geo/1.0/reverse')).length;
+    expect(callsAfterGet).toBe(callsAfterSet); // жодного нового /reverse-виклику
+  });
+
+  it('без initData -> DELETE 401', async () => {
+    const res = await clearLocation(null);
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE прибирає override -> наступний GET повертається до авто-детекції (cf)', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await setLocation(initData, 'Рівне');
+
+    const delRes = await clearLocation(initData);
+    expect(delRes.status).toBe(200);
+    expect(kv.get('ownerGeoManual')).toBeUndefined();
+
+    const res = await getWeather(initData, env(), KYIV_CF);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      locations: { name: string }[];
+      manualGeo: { name: string } | null;
+    };
+    expect(body.locations.map((l) => l.name)).toEqual(['Твоя точка', 'Львів']);
+    expect(body.manualGeo).toBeNull();
+  });
+
+  it('GET /api/weather без manual override -> manualGeo: null', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(initData);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { manualGeo: { name: string } | null };
+    expect(body.manualGeo).toBeNull();
   });
 });

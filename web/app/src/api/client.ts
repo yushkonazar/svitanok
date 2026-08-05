@@ -132,6 +132,39 @@ export async function fetchLiveWeather(): Promise<LiveWeatherResponse | null> {
 }
 
 /**
+ * POST /api/weather/location {city, initData} -> ручне перевизначення локації
+ * (фідбек власника: IP-геолокація не встигає за реальним рухом). Поза Telegram
+ * — null (як postSettings/postEvent: демо не персиститься, і живої погоди в
+ * демо однаково немає — редагувати нічого). УСЕРЕДИНІ Telegram цей шлях
+ * КИДАЄ на помилку — форма вводу міста мусить показати «місто не знайдено»,
+ * а не мовчки проковтнути її.
+ */
+export async function setWeatherLocation(city: string): Promise<{ name: string } | null> {
+  if (!inTelegram() || !tg) return null;
+  const res = await fetch('/api/weather/location', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ city, initData: tg.initData }),
+  });
+  if (res.status === 404) throw new Error('Місто не знайдено');
+  if (!res.ok) throw new Error(`Не вдалося встановити локацію (${res.status})`);
+  const data = (await res.json()) as { manualGeo: { name: string } };
+  return data.manualGeo;
+}
+
+/** DELETE /api/weather/location -> прибрати ручне перевизначення, повернутись
+ *  до авто-детекції по IP. */
+export async function clearWeatherLocation(): Promise<void> {
+  if (!inTelegram() || !tg) return;
+  const res = await fetch('/api/weather/location', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ initData: tg.initData }),
+  });
+  if (!res.ok) throw new Error(`Не вдалося прибрати локацію (${res.status})`);
+}
+
+/**
  * Мутація POST /api/event (роадмеп v3, E2). На відміну від GET-читань, initData
  * їде В ТІЛІ JSON (як vanilla sendEvent), не заголовком; сервер валідує owner.
  * Поза Telegram — no-op (демо не персиститься; оптимістичне оновлення кешу
