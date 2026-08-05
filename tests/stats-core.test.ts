@@ -92,11 +92,23 @@ describe('stats-core — recordEvent', () => {
     expect(normalize(legacy).funnelMeta).toEqual({});
   });
 
-  it('job_dismiss ефемерне — стор не змінюється', () => {
+  it('job_dismiss — персистентне (фідбек власника), дедуп по url, решта стору не зачеплена', () => {
     let s = emptyStore();
-    const before = JSON.stringify(s);
     s = recordEvent(s, { type: 'job_dismiss', url: 'j9' }, '2026-07-07');
-    expect(JSON.stringify(s)).toBe(before);
+    expect(s.dismissedUrls).toEqual([{ url: 'j9', ts: '2026-07-07' }]);
+
+    // Повторний "Не цікавить" тієї самої вакансії -> без дублю.
+    s = recordEvent(s, { type: 'job_dismiss', url: 'j9' }, '2026-07-08');
+    expect(s.dismissedUrls).toEqual([{ url: 'j9', ts: '2026-07-07' }]);
+
+    // Інша вакансія -> додається окремим записом; решта стору незачеплена.
+    const before = JSON.stringify({ ...s, dismissedUrls: [] });
+    s = recordEvent(s, { type: 'job_dismiss', url: 'j10' }, '2026-07-08');
+    expect(s.dismissedUrls).toEqual([
+      { url: 'j9', ts: '2026-07-07' },
+      { url: 'j10', ts: '2026-07-08' },
+    ]);
+    expect(JSON.stringify({ ...s, dismissedUrls: [] })).toBe(before);
   });
 
   it('mock_answer hard -> слабка тема; vote -> інтерес', () => {
@@ -444,6 +456,14 @@ describe('stats-core — aggregateStats', () => {
     ]);
   });
 
+  it('dismissedUrls: aggregateStats віддає плаский масив url (без ts) для клієнтського фільтра', () => {
+    let s = emptyStore();
+    s = recordEvent(s, { type: 'job_dismiss', url: 'x1' }, '2026-07-07');
+    s = recordEvent(s, { type: 'job_dismiss', url: 'x2' }, '2026-07-08');
+    const st = aggregateStats(s, '2026-07-08');
+    expect(st.dismissedUrls).toEqual(['x1', 'x2']);
+  });
+
   it('порожній стор -> валідна форма з нулями', () => {
     const st = aggregateStats(emptyStore(), '2026-07-07');
     expect(st.streaks.openDays).toBe(0);
@@ -458,6 +478,7 @@ describe('stats-core — aggregateStats', () => {
       failed: 0,
     });
     expect(st.funnelList).toEqual([]);
+    expect(st.dismissedUrls).toEqual([]);
     expect(st.interests).toEqual([]);
     expect(st.timeToOpenMin).toBeNull();
     expect(st.savedCount).toBe(0);

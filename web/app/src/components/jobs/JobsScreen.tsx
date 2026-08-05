@@ -15,7 +15,9 @@ import type { FunnelStage } from './stages.ts';
 // - КАНБАН: лейни-стадії з drag&drop; джерело — stats.funnelList, тож видно й
 //   вакансії з МИНУЛИХ днів (список їх не показує — саме це раніше закривав
 //   FunnelDetail). fit% підтягуємо з брифінгу за url, якщо вакансія ще в ньому.
-// Відхилення — локальне session-ховання (job_dismiss ефемерний).
+// Відхилення («Не цікавить») — персистентне (stats.dismissedUrls, фідбек
+// власника: раніше було лише сесійне ховання, вакансія поверталась після
+// перезаходу), плюс миттєве локальне ховання ДО підтвердження мутації.
 
 const JobsIcon = (
   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-tx3)" strokeWidth="1.6" strokeLinecap="round">
@@ -79,8 +81,12 @@ export function JobsScreen() {
     history: x.history,
   }));
 
+  // Персистентне (stats.dismissedUrls) + сесійне (hidden, миттєвий відгук ДО
+  // підтвердження мутації) — обидва разом: перше переживає перезахід у
+  // застосунок, друге ховає картку без очікування round-trip до сервера.
+  const dismissedUrls = new Set(stats?.dismissedUrls ?? []);
   const visible = allItems
-    .filter((it) => !hidden.has(it.url))
+    .filter((it) => !hidden.has(it.url) && !dismissedUrls.has(it.url))
     .slice()
     .sort((a, b) => b.score - a.score);
 

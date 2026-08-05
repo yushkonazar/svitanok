@@ -3,18 +3,21 @@ import { useJobStage, useJobDismiss } from '../../api/hooks.ts';
 import { has } from '../../lib/format.ts';
 import { hostOf } from '../../lib/jobTitle.ts';
 import { openLink, haptic } from '../../telegram.ts';
-import { FUNNEL_STAGES, STAGE_LABEL, fitStyle, isTerminal, type FunnelStage } from './stages.ts';
+import { FUNNEL_STAGES, STAGE_LABEL, TRIAGE_STAGES, fitStyle, type FunnelStage } from './stages.ts';
 
 // Картка вакансії (дизайн v2, Svitanok.dc.html): скляна картка — рядок бейджа
 // fit% + назва стадії праворуч; заголовок + домен; кнопки стадій + «Не цікавить».
 //
-// «Не цікавить» (job_dismiss) — це МОЄ рішення: ефемерне ховання + негативний
-// сигнал скореру. Термінальна «Відмова» (F1) — рішення РОБОТОДАВЦЯ, персистентна
-// стадія, і скорера вона не вчить (я ж хотів цю вакансію). Речі різні, тому й
-// кнопка перейменована: «Відхилити» поруч із «Відмова» читалось як те саме.
+// «Не цікавить» (job_dismiss) — персистентне (stats.dismissedUrls): негативний
+// сигнал скореру + постійне видалення зі списку. Термінальна «Відмова» (F1) —
+// рішення РОБОТОДАВЦЯ, окрема стадія воронки, і скорера вона не вчить (я ж
+// хотів цю вакансію). Речі різні, тому й кнопка перейменована: «Відхилити»
+// поруч із «Відмова» читалось як те саме.
 //
-// Тут лише ЛІНІЙНІ стадії: картка — це тріаж свіжої вакансії з брифінгу, а не
-// ведення воронки. Термінальні ставляться зі шторки/канбана, де видно контекст.
+// Тут лише TRIAGE_STAGES (saved/applied) — фідбек власника: картка це
+// швидкий тріаж свіжої вакансії з брифінгу, не ведення воронки. Interview/
+// offer/rejected/failed переводяться пізніше вручну в Канбані, де видно
+// контекст (журнал переходів, дата входу тощо), а не одним тапом тут.
 //
 // `why` (пояснення скорера) макет не показує, але це цінна інформація — лишаємо
 // тихим рядком під доменом.
@@ -105,7 +108,7 @@ export function JobCard({
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {FUNNEL_STAGES.filter((s) => !isTerminal(s.key)).map((s) =>
+        {FUNNEL_STAGES.filter((s) => TRIAGE_STAGES.includes(s.key)).map((s) =>
           btn(s.key, s.short, curStage === s.key, () => setStage(s.key)),
         )}
         {btn('dismiss', 'Не цікавить', false, dismiss, true)}
