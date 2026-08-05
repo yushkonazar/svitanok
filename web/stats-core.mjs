@@ -461,6 +461,7 @@ export function emptyStore() {
     checkins: {},
     sleepLog: {},
     checkinNudgeDates: {},
+    dismissedUrls: [],
   };
 }
 
@@ -499,6 +500,7 @@ export function normalize(s) {
       s.checkinNudgeDates && typeof s.checkinNudgeDates === 'object'
         ? s.checkinNudgeDates
         : e.checkinNudgeDates,
+    dismissedUrls: Array.isArray(s.dismissedUrls) ? s.dismissedUrls : e.dismissedUrls,
   };
 }
 
@@ -704,7 +706,15 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       }
       break;
     case 'job_dismiss':
-      // «Не релевантно» — ефемерне: у постійному сторі НЕ тримаємо.
+      // Фідбек власника: «Не цікавить» мала прибирати вакансію зі списку
+      // НАЗАВЖДИ, не лише на сесію. Раніше тут був no-op (ephemeral-рішення
+      // стосувалось лише scorer-сигналу нижче, jobPrefs у worker.js) — і
+      // React-стан `hidden` (сесійний Set) скидався на кожен перезахід,
+      // тож вакансія поверталась. Дедуп по url — повторний тап того самого
+      // «Не цікавить» не мусить роздувати список.
+      if (typeof ev.url === 'string' && ev.url && !s.dismissedUrls.some((d) => d.url === ev.url)) {
+        capPush(s.dismissedUrls, { url: ev.url, ts: dateKey });
+      }
       break;
     case 'mock_answer': {
       // F4: оцінка привʼязана до ПИТАННЯ (qId), а не до дня.
@@ -1771,6 +1781,10 @@ export function aggregateStats(store, todayKey) {
     reached,
     avgFitApplied: avgFit,
     funnelList,
+    // «Не цікавить» (job_dismiss) — персистентне (фідбек власника): клієнт
+    // фільтрує сьогоднішній список брифінгу за цими url, не лише за
+    // сесійним React-станом.
+    dismissedUrls: s.dismissedUrls.map((d) => d.url),
     savedCount: s.saved.length,
     // ТОП-8 у /api/stats — свідомо: це «останнє збережене» на вкладці, а не
     // архів. Повний список — окремим ендпоінтом /api/saved (F3), бо тягти сотні

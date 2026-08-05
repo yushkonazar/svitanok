@@ -2,8 +2,9 @@ import { useRef, useState } from 'react';
 import { useJobStage } from '../../api/hooks.ts';
 import { haptic, setVerticalSwipes } from '../../telegram.ts';
 import { prettyJobTitle } from '../../lib/jobTitle.ts';
-import { FUNNEL_STAGES, fitStyle, type FunnelStage } from './stages.ts';
+import { FUNNEL_STAGES, isTerminal, fitStyle, type FunnelStage } from './stages.ts';
 import { Cascade } from '../ui/Cascade.tsx';
+import { StageCelebration } from './StageCelebration.tsx';
 import type { StageEvent } from '../../api/schema.ts';
 
 // Канбан воронки (дизайн v2, Svitanok.dc.html): лейни-стадії, картки
@@ -52,6 +53,10 @@ export function KanbanBoard({
   const [overCol, setOverCol] = useState<FunnelStage | null>(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const off = useRef({ x: 0, y: 0, w: 150 });
+  // Зворотний зв'язок на перехід у термінальну/фінальну стадію (фідбек
+  // власника) — окремо від haptic, StageCelebration сама вирішує тон
+  // (святкування для offer, тихий тост для rejected/failed).
+  const [celebrate, setCelebrate] = useState<'offer' | 'rejected' | 'failed' | null>(null);
 
   const dragCard = cards.find((c) => c.url === dragUrl) ?? null;
 
@@ -95,7 +100,11 @@ export function KanbanBoard({
   const onUp = () => {
     if (dragUrl && dragging && overCol && dragCard && overCol !== dragCard.stage) {
       stageMut.mutate({ url: dragCard.url, title: dragCard.title, stage: overCol });
-      haptic('success');
+      // Термінальна/фінальна стадія — це вже кінець історії вакансії, тактильний
+      // відгук окремий від звичайного «успіх» переходу (warning для закритого,
+      // ту саму «success» для offer — воно й є успіхом).
+      haptic(isTerminal(overCol) ? 'warning' : 'success');
+      if (overCol === 'offer' || isTerminal(overCol)) setCelebrate(overCol);
     } else if (dragUrl && !dragging) {
       onOpenCard(dragUrl); // тап без руху — відкрити шторку
     }
@@ -212,6 +221,10 @@ export function KanbanBoard({
             </span>
           )}
         </div>
+      )}
+
+      {celebrate && (
+        <StageCelebration kind={celebrate} onClose={() => setCelebrate(null)} />
       )}
     </>
   );

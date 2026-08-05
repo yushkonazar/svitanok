@@ -220,6 +220,7 @@ export const SAMPLE_STATS: Stats = {
       ],
     },
   ],
+  dismissedUrls: ['https://example.com/job-dismissed'],
   goal: { weeklyTarget: 5, weeklyApplied: 3 },
   // Чесні числа під reached: подались 4 (job2..job5), до співбесіди дійшли 2
   // (job3, job5) -> 50%; зі співбесід 2 офер 0 -> 0%.
@@ -585,6 +586,7 @@ export const EMPTY_STATS: Stats = {
   reached: { saved: 0, applied: 0, interview: 0, offer: 0 },
   avgFitApplied: null,
   funnelList: [],
+  dismissedUrls: [],
   savedCount: 0,
   savedList: [],
   mock: { weakTopics: [], streak: 0, recentEasyPct: null },

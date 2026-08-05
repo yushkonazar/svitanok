@@ -16,6 +16,11 @@ export const TERMINAL_STAGES: readonly TerminalStage[] = ['rejected', 'failed'];
 export const isTerminal = (s: FunnelStage): s is TerminalStage =>
   (TERMINAL_STAGES as readonly string[]).includes(s);
 
+/** Стадії для швидкого тріажу свіжої вакансії в «Списку» (JobCard) — фідбек
+ *  власника: interview/offer/rejected/failed переводяться пізніше вручну в
+ *  Канбані, де видно контекст, а не одним тапом на щойно збереженій картці. */
+export const TRIAGE_STAGES: readonly FunnelStage[] = ['saved', 'applied'];
+
 export const FUNNEL_STAGES: { key: FunnelStage; label: string; short: string }[] = [
   { key: 'saved', label: 'Збережено', short: 'Збережено' },
   { key: 'applied', label: 'Подав', short: 'Подав' },
