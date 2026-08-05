@@ -364,10 +364,28 @@ export function useJobStage() {
   });
 }
 
-/** Відхилити вакансію (job_dismiss) — ефемерне, не чіпає stats; ховання локальне. */
+/** Відхилити вакансію (job_dismiss) — персистентне (stats.dismissedUrls,
+ *  фідбек власника): раніше було лише сесійне ховання, вакансія поверталась
+ *  після перезаходу. Оптимістичне оновлення — той самий патерн, що useJobStage. */
 export function useJobDismiss() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (vars: { url: string; title: string }) => postEvent('job_dismiss', vars),
+    onMutate: async ({ url }) => {
+      await qc.cancelQueries({ queryKey: ['stats'] });
+      const prev = qc.getQueryData<StatsResult>(['stats']);
+      patchStats(qc, (s) => ({
+        ...s,
+        dismissedUrls: s.dismissedUrls.includes(url) ? s.dismissedUrls : [...s.dismissedUrls, url],
+      }));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
+    },
+    onSettled: () => {
+      if (inTelegram()) qc.invalidateQueries({ queryKey: ['stats'] });
+    },
   });
 }
 

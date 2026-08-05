@@ -487,6 +487,7 @@ export const statsSchema = z.object({
   reached: reachedSchema.default({ saved: 0, applied: 0, interview: 0, offer: 0 }),
   avgFitApplied: num.nullable().default(null),
   funnelList: z.array(funnelItemSchema).default([]),
+  dismissedUrls: z.array(z.string()).default([]),
   savedCount: int.default(0),
   savedList: z.array(savedItemSchema).default([]),
   mock: z.object({
