@@ -15,12 +15,15 @@ import {
   postSettings,
   postVote,
   setWeatherLocation,
+  setWeatherLocationExact,
   clearWeatherLocation,
+  fetchSettlements,
   SAVED_PAGE,
   type StatsResult,
   type VoteDir,
 } from './client.ts';
 import type { SavedPage, CheckinSlot } from './schema.ts';
+import type { Settlement } from './briefing-schema.ts';
 import { nextSavedOffset } from './paging.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
@@ -69,12 +72,41 @@ export function useSetWeatherLocation() {
   });
 }
 
+/** Те саме, але з ГОТОВИМ кандидатом з автозаповнення (обходить повторне
+ *  геокодування — див. коментар у client.ts). */
+export function useSetWeatherLocationExact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pick: Pick<Settlement, 'lat' | 'lon' | 'name'>) => setWeatherLocationExact(pick),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
+  });
+}
+
 /** Прибрати ручне перевизначення -> повернутись до авто-детекції по IP. */
 export function useClearWeatherLocation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => clearWeatherLocation(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
+  });
+}
+
+/**
+ * Список населених пунктів для автозаповнення (фідбек власника: «звичайна
+ * пошукова логіка» — статичний ассет /settlements.json, пошук ЦІЛКОМ на
+ * клієнті, WeatherBlock фільтрує на кожен keystroke БЕЗ мережевого запиту).
+ * enabled лише коли редактор локації відкритий — ~570КБ gzip не тягнемо,
+ * доки власник реально не захотів змінити місто. staleTime+gcTime
+ * Infinity — статичні геодані, раз завантажив за сесію й досить.
+ */
+export function useSettlements(enabled: boolean) {
+  return useQuery({
+    queryKey: ['settlements'],
+    queryFn: fetchSettlements,
+    enabled,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: 0,
   });
 }
 

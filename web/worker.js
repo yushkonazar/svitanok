@@ -888,12 +888,12 @@ async function reverseGeocodeCity(lat, lon, apiKey) {
 }
 
 /** Пряме геокодування (та сама OpenWeather Geocoding API, інший ендпоінт) —
- *  назва міста, введена власником -> координати. Для ручного перевизначення
- *  локації (фідбек власника: IP-геолокація не встигає за реальним рухом на
- *  мобільній мережі — оператор мапить IP на місто приблизно й не в реальному
- *  часі, тож «свіжі» — не протухлі кешем — дані можуть лишатись географічно
- *  неправильними години після переїзду). null на збій/порожній результат —
- *  виклик сам поверне владельцю чесну 404, не впаде мовчки. */
+ *  назва міста -> координати. Фолбек-шлях для POST /api/weather/location,
+ *  коли власник ввів назву руками без вибору з автозаповнення (те тепер
+ *  працює з локального web/app/public/settlements.json — фідбек власника:
+ *  «звичайна пошукова логіка» без мережевого запиту на кожен keystroke, див.
+ *  web/scripts/gen-settlements.mjs). null на збій/порожній результат —
+ *  виклик сам поверне власнику чесну 404, не впаде мовчки. */
 async function geocodeCity(query, apiKey) {
   try {
     const url = new URL('https://api.openweathermap.org/geo/1.0/direct');
@@ -1103,6 +1103,12 @@ async function handleLiveWeather(request, env) {
  * назви -> {lat, lon, name} у ownerGeoManual, і ВІД ЦЬОГО МОМЕНТУ
  * handleLiveWeather повністю ігнорує request.cf, доки власник сам не прибере.
  *
+ * АБО {lat, lon, name, initData} -> явний вибір з автозаповнення (клієнт
+ * шукає по web/app/public/settlements.json, координати вже відомі) —
+ * геокодування пропускаємо, інакше повторний запит по одній лише назві міг
+ * би повернути ІНШЕ місто, ніж власник візуально обрав (однойменні населені
+ * пункти в різних областях/країнах).
+ *
  * DELETE /api/weather/location {initData} -> прибрати перевизначення,
  * повернутись до авто-детекції по IP (ownerGeo лишався живим весь час).
  */
@@ -1125,12 +1131,22 @@ async function handleWeatherLocation(request, env) {
   const auth = await checkOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  const city = typeof body?.city === 'string' ? body.city.trim() : '';
-  if (!city) return json({ ok: false, error: 'bad-params' }, 400);
-  if (!env.WEATHER_API_KEY) return json({ ok: false, error: 'not-configured' }, 503);
+  const hasExactPick =
+    Number.isFinite(body?.lat) &&
+    Number.isFinite(body?.lon) &&
+    typeof body?.name === 'string' &&
+    body.name.trim();
 
-  const resolved = await geocodeCity(city, env.WEATHER_API_KEY);
-  if (!resolved) return json({ ok: false, error: 'not-found' }, 404);
+  let resolved;
+  if (hasExactPick) {
+    resolved = { lat: body.lat, lon: body.lon, name: body.name.trim() };
+  } else {
+    const city = typeof body?.city === 'string' ? body.city.trim() : '';
+    if (!city) return json({ ok: false, error: 'bad-params' }, 400);
+    if (!env.WEATHER_API_KEY) return json({ ok: false, error: 'not-configured' }, 503);
+    resolved = await geocodeCity(city, env.WEATHER_API_KEY);
+    if (!resolved) return json({ ok: false, error: 'not-found' }, 404);
+  }
 
   const manual = {
     lat: roundGeo(resolved.lat),

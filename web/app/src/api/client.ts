@@ -4,8 +4,11 @@ import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE } from './sample.ts';
 import {
   briefSchema,
   liveWeatherResponseSchema,
+  settlementsSchema,
   type Brief,
   type LiveWeatherResponse,
+  type Settlement,
+  type SettlementTuple,
 } from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
@@ -150,6 +153,52 @@ export async function setWeatherLocation(city: string): Promise<{ name: string }
   if (!res.ok) throw new Error(`Не вдалося встановити локацію (${res.status})`);
   const data = (await res.json()) as { manualGeo: { name: string } };
   return data.manualGeo;
+}
+
+/**
+ * Той самий POST /api/weather/location, але з ГОТОВИМИ координатами
+ * (обраний варіант з автозаповнення) — обходить повторне геокодування на
+ * Worker-боці, яке за назвою могло б повернути ІНШЕ місто при однойменних
+ * населених пунктах у різних областях/країнах.
+ */
+export async function setWeatherLocationExact(
+  pick: Pick<Settlement, 'lat' | 'lon' | 'name'>,
+): Promise<{ name: string } | null> {
+  if (!inTelegram() || !tg) return null;
+  const res = await fetch('/api/weather/location', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...pick, initData: tg.initData }),
+  });
+  if (!res.ok) throw new Error(`Не вдалося встановити локацію (${res.status})`);
+  const data = (await res.json()) as { manualGeo: { name: string } };
+  return data.manualGeo;
+}
+
+function tupleToSettlement([name, lat, lon, country, region]: SettlementTuple): Settlement {
+  return { name, lat, lon, country, region };
+}
+
+/**
+ * /settlements.json — статичний ассет (НЕ /api/*, без auth — публічні
+ * геодані, той самий рівень доступу, що JS/CSS-бандл додатку), для
+ * автозаповнення локації (фідбек власника: пошук ЦІЛКОМ на клієнті, без
+ * мережевого запиту на кожен keystroke). Один фетч на сесію (TanStack кешує
+ * необмежено, gcTime у useSettlements) — 35к+ записів, ~570КБ gzip, тож
+ * лінивий і лише коли власник реально відкрив редактор локації.
+ *
+ * import.meta.env.BASE_URL — той самий шлях, що Vite `base` (/app/), єдиний
+ * і для dev-сервера, і для прод-білда (файл лежить у web/app/public/).
+ */
+export async function fetchSettlements(): Promise<Settlement[]> {
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}settlements.json`, { cache: 'force-cache' });
+    if (!res.ok) return [];
+    const parsed = settlementsSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data.map(tupleToSettlement) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** DELETE /api/weather/location -> прибрати ручне перевизначення, повернутись

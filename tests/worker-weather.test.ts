@@ -86,6 +86,19 @@ async function setLocation(initData: string | null, city: string, e = env()) {
   return worker.fetch(req, e, { waitUntil: () => {} });
 }
 
+async function setLocationExact(
+  initData: string | null,
+  pick: { lat: number; lon: number; name: string },
+  e = env(),
+) {
+  const req = new Request('https://svitanok.example/api/weather/location', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...pick, initData }),
+  });
+  return worker.fetch(req, e, { waitUntil: () => {} });
+}
+
 async function clearLocation(initData: string | null, e = env()) {
   const req = new Request('https://svitanok.example/api/weather/location', {
     method: 'DELETE',
@@ -431,5 +444,23 @@ describe('POST/DELETE /api/weather/location — ручне перевизнач�
     expect(res.status).toBe(200);
     const body = (await res.json()) as { manualGeo: { name: string } | null };
     expect(body.manualGeo).toBeNull();
+  });
+
+  it('явний вибір {lat,lon,name} -> зберігає БЕЗ геокодування (жодного /geo/1.0/direct виклику)', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await setLocationExact(initData, {
+      lat: 50.62,
+      lon: 26.24,
+      name: 'Рівне (обране)',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; manualGeo: { name: string } };
+    expect(body).toEqual({ ok: true, manualGeo: { name: 'Рівне (обране)' } });
+    expect(openWeatherCalls.filter((u) => u.includes('/geo/1.0/direct'))).toHaveLength(0);
+    expect(JSON.parse(kv.get('ownerGeoManual')!)).toMatchObject({
+      lat: 50.62,
+      lon: 26.24,
+      name: 'Рівне (обране)',
+    });
   });
 });
