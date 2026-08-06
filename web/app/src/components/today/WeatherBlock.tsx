@@ -1,11 +1,16 @@
-import { useState } from 'react';
-import type { WeatherLocation } from '../../api/briefing-schema.ts';
+import { useEffect, useState } from 'react';
+import type { WeatherLocation, WeatherSuggestion } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
 import { dayLen, fmtClock, signTemp } from '../../lib/weather.ts';
 import { SunDial } from '../charts/SunDial.tsx';
 import { HourlyChart } from '../charts/HourlyChart.tsx';
 import { Ph } from '../ui/primitives.tsx';
-import { useSetWeatherLocation, useClearWeatherLocation } from '../../api/hooks.ts';
+import {
+  useSetWeatherLocation,
+  useSetWeatherLocationExact,
+  useClearWeatherLocation,
+  useWeatherSuggestions,
+} from '../../api/hooks.ts';
 import { haptic } from '../../telegram.ts';
 
 // Погода (дизайн v2, Svitanok.dc.html): місто·стан + велика температура зліва,
@@ -78,13 +83,38 @@ export function WeatherBlock({
   manualGeo?: { name: string } | null;
 }) {
   const setLoc = useSetWeatherLocation();
+  const setLocExact = useSetWeatherLocationExact();
   const clearLoc = useClearWeatherLocation();
   const [editing, setEditing] = useState(false);
   const [city, setCity] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
+  // Дебаунс перед запитом підказок — інакше кожен keystroke б'є в OpenWeather-
+  // квоту (фідбек власника: автозаповнення при введенні міста).
+  const [debouncedCity, setDebouncedCity] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedCity(city), 350);
+    return () => clearTimeout(t);
+  }, [city]);
+  const { data: suggestions = [] } = useWeatherSuggestions(editing ? debouncedCity : '');
+
+  const pickSuggestion = (s: WeatherSuggestion) => {
+    setErr(null);
+    setLocExact.mutate(
+      { lat: s.lat, lon: s.lon, name: s.name },
+      {
+        onSuccess: () => {
+          haptic('success');
+          setEditing(false);
+        },
+        onError: (e) => setErr(e instanceof Error ? e.message : 'Не вдалося встановити локацію'),
+      },
+    );
+  };
+
   const openEditor = () => {
     setCity(manualGeo?.name ?? '');
+    setDebouncedCity('');
     setErr(null);
     setEditing((v) => !v);
   };
@@ -198,6 +228,26 @@ export function WeatherBlock({
             >
               Прибрати
             </button>
+          )}
+          {/* Автозаповнення (фідбек власника) — обраний кандидат несе готові
+              lat/lon, повторне геокодування на сервері пропускається. */}
+          {suggestions.length > 0 && (
+            <div className="flex basis-full flex-col gap-0.5 rounded-lg border border-glassb bg-glass p-1">
+              {suggestions.map((s, i) => (
+                <button
+                  key={`${s.lat},${s.lon},${i}`}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickSuggestion(s)}
+                  className="rounded-md px-1.5 py-1 text-left text-[11px] font-medium text-tx2"
+                >
+                  {s.name}
+                  {(s.state || s.country) && (
+                    <span className="text-tx3"> · {[s.state, s.country].filter(Boolean).join(', ')}</span>
+                  )}
+                </button>
+              ))}
+            </div>
           )}
           {err && <div className="basis-full text-[10px] text-neg">{err}</div>}
         </form>

@@ -75,6 +75,19 @@ export const liveWeatherResponseSchema = z.object({
 });
 export type LiveWeatherResponse = z.infer<typeof liveWeatherResponseSchema>;
 
+// GET /api/weather/location/suggest — кандидати для автозаповнення (фідбек
+// власника). state/country — лише для розрізнення однойменних міст у списку;
+// самé перевизначення зберігає тільки name (як і решта локацій у застосунку).
+export const weatherSuggestionSchema = z.object({
+  lat: z.number(),
+  lon: z.number(),
+  name: z.string(),
+  state: z.string().nullable(),
+  country: z.string().nullable(),
+});
+export const weatherSuggestionsSchema = z.array(weatherSuggestionSchema);
+export type WeatherSuggestion = z.infer<typeof weatherSuggestionSchema>;
+
 export const currencyDataSchema = z.object({
   usd: z.number().optional(),
   eur: z.number().optional(),

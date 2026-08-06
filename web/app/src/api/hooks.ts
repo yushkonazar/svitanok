@@ -15,12 +15,15 @@ import {
   postSettings,
   postVote,
   setWeatherLocation,
+  setWeatherLocationExact,
   clearWeatherLocation,
+  suggestWeatherLocations,
   SAVED_PAGE,
   type StatsResult,
   type VoteDir,
 } from './client.ts';
 import type { SavedPage, CheckinSlot } from './schema.ts';
+import type { WeatherSuggestion } from './briefing-schema.ts';
 import { nextSavedOffset } from './paging.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
@@ -69,12 +72,39 @@ export function useSetWeatherLocation() {
   });
 }
 
+/** Те саме, але з ГОТОВИМ кандидатом з автозаповнення (обходить повторне
+ *  геокодування — див. коментар у client.ts). */
+export function useSetWeatherLocationExact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pick: Pick<WeatherSuggestion, 'lat' | 'lon' | 'name'>) =>
+      setWeatherLocationExact(pick),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
+  });
+}
+
 /** Прибрати ручне перевизначення -> повернутись до авто-детекції по IP. */
 export function useClearWeatherLocation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => clearWeatherLocation(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
+  });
+}
+
+/**
+ * Кандидати для автозаповнення (фідбек власника) — увімкнено лише коли
+ * запит ≥2 символів (той самий поріг, що Worker: коротші префікси — шум).
+ * Клієнт додатково дебаунсить ЗНАЧЕННЯ перед тим, як воно потрапляє сюди
+ * (WeatherBlock), тож query fire відбувається не на кожен keystroke.
+ */
+export function useWeatherSuggestions(q: string) {
+  return useQuery({
+    queryKey: ['weatherSuggest', q],
+    queryFn: () => suggestWeatherLocations(q),
+    enabled: q.trim().length >= 2,
+    staleTime: 60_000,
+    retry: 0,
   });
 }
 

@@ -880,27 +880,45 @@ async function reverseGeocodeCity(lat, lon, apiKey) {
 }
 
 /** Пряме геокодування (та сама OpenWeather Geocoding API, інший ендпоінт) —
- *  назва міста, введена власником -> координати. Для ручного перевизначення
- *  локації (фідбек власника: IP-геолокація не встигає за реальним рухом на
- *  мобільній мережі — оператор мапить IP на місто приблизно й не в реальному
- *  часі, тож «свіжі» — не протухлі кешем — дані можуть лишатись географічно
- *  неправильними години після переїзду). null на збій/порожній результат —
- *  виклик сам поверне владельцю чесну 404, не впаде мовчки. */
-async function geocodeCity(query, apiKey) {
+ *  назва міста -> до `limit` кандидатів, кожен з власними lat/lon/name/state/
+ *  country. Спільне ядро для geocodeCity (перевизначення локації) і
+ *  автозаповнення при введенні: кандидат, обраний зі списку, несе ВЖЕ ГОТОВІ
+ *  координати — повторне геокодування зайве й могло б повернути ІНШЕ місто
+ *  при однойменних населених пунктах у різних областях/країнах. [] на
+ *  збій/порожній результат — виклик сам вирішує, як це показати. */
+async function geocodeCityCandidates(query, apiKey, limit = 1) {
   try {
     const url = new URL('https://api.openweathermap.org/geo/1.0/direct');
     url.searchParams.set('q', query);
-    url.searchParams.set('limit', '1');
+    url.searchParams.set('limit', String(limit));
     url.searchParams.set('appid', apiKey);
     const res = await fetch(url.toString());
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     const data = await res.json();
-    const first = Array.isArray(data) ? data[0] : null;
-    if (!first || !Number.isFinite(first.lat) || !Number.isFinite(first.lon)) return null;
-    return { lat: first.lat, lon: first.lon, name: first.local_names?.uk ?? first.name ?? query };
+    if (!Array.isArray(data)) return [];
+    return data
+      .filter((c) => c && Number.isFinite(c.lat) && Number.isFinite(c.lon))
+      .map((c) => ({
+        lat: c.lat,
+        lon: c.lon,
+        name: c.local_names?.uk ?? c.name ?? query,
+        state: typeof c.state === 'string' ? c.state : null,
+        country: typeof c.country === 'string' ? c.country : null,
+      }));
   } catch {
-    return null;
+    return [];
   }
+}
+
+/** Для ручного перевизначення локації (фідбек власника: IP-геолокація не
+ *  встигає за реальним рухом на мобільній мережі — оператор мапить IP на
+ *  місто приблизно й не в реальному часі, тож «свіжі» — не протухлі кешем —
+ *  дані можуть лишатись географічно неправильними години після переїзду).
+ *  Топ-1 кандидат; null на збій/порожній результат — виклик сам поверне
+ *  власнику чесну 404, не впаде мовчки. */
+async function geocodeCity(query, apiKey) {
+  const [first] = await geocodeCityCandidates(query, apiKey, 1);
+  return first ?? null;
 }
 
 /**
@@ -1095,6 +1113,12 @@ async function handleLiveWeather(request, env) {
  * назви -> {lat, lon, name} у ownerGeoManual, і ВІД ЦЬОГО МОМЕНТУ
  * handleLiveWeather повністю ігнорує request.cf, доки власник сам не прибере.
  *
+ * АБО {lat, lon, name, initData} -> явний вибір з автозаповнення
+ * (handleWeatherLocationSuggest нижче): координати вже відомі, геокодування
+ * пропускаємо — інакше повторний запит по одній лише назві міг би повернути
+ * ІНШЕ місто, ніж власник візуально обрав (однойменні населені пункти в
+ * різних областях/країнах).
+ *
  * DELETE /api/weather/location {initData} -> прибрати перевизначення,
  * повернутись до авто-детекції по IP (ownerGeo лишався живим весь час).
  */
@@ -1117,12 +1141,22 @@ async function handleWeatherLocation(request, env) {
   const auth = await checkOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  const city = typeof body?.city === 'string' ? body.city.trim() : '';
-  if (!city) return json({ ok: false, error: 'bad-params' }, 400);
-  if (!env.WEATHER_API_KEY) return json({ ok: false, error: 'not-configured' }, 503);
+  const hasExactPick =
+    Number.isFinite(body?.lat) &&
+    Number.isFinite(body?.lon) &&
+    typeof body?.name === 'string' &&
+    body.name.trim();
 
-  const resolved = await geocodeCity(city, env.WEATHER_API_KEY);
-  if (!resolved) return json({ ok: false, error: 'not-found' }, 404);
+  let resolved;
+  if (hasExactPick) {
+    resolved = { lat: body.lat, lon: body.lon, name: body.name.trim() };
+  } else {
+    const city = typeof body?.city === 'string' ? body.city.trim() : '';
+    if (!city) return json({ ok: false, error: 'bad-params' }, 400);
+    if (!env.WEATHER_API_KEY) return json({ ok: false, error: 'not-configured' }, 503);
+    resolved = await geocodeCity(city, env.WEATHER_API_KEY);
+    if (!resolved) return json({ ok: false, error: 'not-found' }, 404);
+  }
 
   const manual = {
     lat: roundGeo(resolved.lat),
@@ -1132,6 +1166,25 @@ async function handleWeatherLocation(request, env) {
   };
   await env.BRIEFING.put('ownerGeoManual', JSON.stringify(manual));
   return json({ ok: true, manualGeo: { name: manual.name } });
+}
+
+/**
+ * GET /api/weather/location/suggest?q=<текст> -> кандидати для автозаповнення
+ * при введенні міста вручну (фідбек власника). Owner-gated (initData
+ * заголовком, як решта GET-читань). Мінімум 2 символи в query — коротші
+ * префікси дають лише шум і марно палять OpenWeather-квоту на кожен
+ * keystroke; клієнт додатково дебаунсить перед запитом.
+ */
+async function handleWeatherLocationSuggest(request, env) {
+  const auth = await checkOwnerRead(request, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  if (!env.WEATHER_API_KEY) return json({ ok: true, results: [] });
+
+  const q = (new URL(request.url).searchParams.get('q') ?? '').trim();
+  if (q.length < 2) return json({ ok: true, results: [] });
+
+  const results = await geocodeCityCandidates(q, env.WEATHER_API_KEY, 5);
+  return json({ ok: true, results });
 }
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
@@ -4418,6 +4471,9 @@ export default {
     }
     if (url.pathname === '/api/weather') {
       return handleLiveWeather(request, env);
+    }
+    if (url.pathname === '/api/weather/location/suggest') {
+      return handleWeatherLocationSuggest(request, env);
     }
     if (url.pathname === '/api/weather/location') {
       return handleWeatherLocation(request, env);
