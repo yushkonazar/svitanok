@@ -1179,13 +1179,12 @@ async function handleWeatherLocation(request, env) {
  * нативну кнопку геолокації сама — request_location існує ВИКЛЮЧНО як
  * властивість KeyboardButton у ЧАТІ (Bot API), Mini App цього не обходить.
  * Натомість Mini App просить БОТА проактивно надіслати ТОЙ САМИЙ промпт, що
- * й команда /locate (locateKeyboard, worker.js:handleCommand) — власник
+ * й команда /locate (sendLocatePrompt, worker.js:handleCommand) — власник
  * тапає кнопку вже в чаті, Mini App лише скорочує шлях «не пам'ятати
  * команду», сам факт тапу все одно лишається в чаті, не тут.
  *
- * env.TELEGRAM_CHAT_ID/env.TOPIC_ASSISTANT — той самий проактивний шлях
- * (не parsed.chatId — тут немає вхідного апдейту), що вже шле нагадування/
- * dead-man-перевірку.
+ * sendLocatePrompt сам шле в ПРИВАТНИЙ чат (TELEGRAM_OWNER_USER_ID) —
+ * request_location недоступний у груповому чаті бота (TOPIC_ASSISTANT).
  */
 async function handleWeatherLocatePrompt(request, env) {
   let body;
@@ -1194,16 +1193,13 @@ async function handleWeatherLocatePrompt(request, env) {
   } catch {
     body = null;
   }
+  // TELEGRAM_OWNER_USER_ID гарантовано задано, якщо checkOwner пройшов —
+  // allowedUserIds(env) (усередині checkOwner) сама на нього спирається,
+  // тож окрема not-configured-перевірка тут була б недосяжним кодом.
   const auth = await checkOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
-  if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'not-configured' }, 503);
 
-  const res = await tgCall(env, 'sendMessage', {
-    chat_id: env.TELEGRAM_CHAT_ID,
-    message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
-    text: 'Тисни кнопку нижче, щоб надіслати поточну GPS-позицію 📍',
-    reply_markup: locateKeyboard(),
-  });
+  const res = await sendLocatePrompt(env);
   if (!res.ok) return json({ ok: false, error: 'telegram-failed' }, 502);
   return json({ ok: true });
 }
@@ -3086,6 +3082,26 @@ function normalKeyboard() {
 }
 
 /**
+ * Шле /locate-промпт ЗАВЖДИ в приватний чат із власником — НЕ туди, звідки
+ * прийшов виклик (parsed.chatId чи TELEGRAM_CHAT_ID).
+ *
+ * ⚠️ Регресія (фідбек власника, прод: «Не вдалося надіслати запит (502)»):
+ * request_location — властивість KeyboardButton, доступна ВИКЛЮЧНО в
+ * приватних чатах (Bot API); основний чат бота — форум-супергрупа з темами
+ * (TOPIC_ASSISTANT), тож Telegram відхиляв sendMessage із такою
+ * клавіатурою суцільно, і /locate НІКОЛИ не працював за межами приватного
+ * листування. chat_id тут = TELEGRAM_OWNER_USER_ID: приватний DM із ботом
+ * уже «розблокований» — власник і так писав туди (як мінімум /start).
+ */
+async function sendLocatePrompt(env) {
+  return tgCall(env, 'sendMessage', {
+    chat_id: env.TELEGRAM_OWNER_USER_ID,
+    text: 'Тисни кнопку нижче, щоб надіслати поточну GPS-позицію 📍',
+    reply_markup: locateKeyboard(),
+  });
+}
+
+/**
  * Обробити GPS-позицію з /locate (фідбек власника: IP-геолокація не
  * встигає за реальним рухом; Live Location відкинуто — фоновий дозвіл ОС +
  * 8-годинний ліміт Telegram занадто нав'язливо для одноразової звірки).
@@ -3158,10 +3174,25 @@ async function handleCommand(env, parsed, origin) {
       return sendText(HELP_TEXT, { parse_mode: 'HTML' });
     case 'agent':
       return sendText(AGENT_TEXT, { parse_mode: 'HTML' });
-    case 'locate':
-      return sendText('Тисни кнопку нижче, щоб надіслати поточну GPS-позицію 📍', {
-        reply_markup: locateKeyboard(),
-      });
+    case 'locate': {
+      const isPrivate = String(parsed.chatId) === String(env.TELEGRAM_OWNER_USER_ID);
+      const res = await sendLocatePrompt(env);
+      if (!res.ok) {
+        return sendText('⚠️ Не вдалося надіслати запит — спробуй ще раз за хвилину.', {
+          reply_markup: normalKeyboard(),
+        });
+      }
+      // /locate написано НЕ в приватному чаті (група/тема) -> промпт пішов
+      // туди (request_location там недоступний), тож попереджаємо тут, звідки
+      // й викликали. У приватному чаті sendLocatePrompt уже надіслав
+      // повідомлення в ЦЕЙ САМИЙ чат вище — другого не треба (дубль).
+      if (!isPrivate) {
+        return sendText(
+          '📍 Кнопку показано в приватному чаті з ботом — request_location недоступний у групових чатах. Перевір особисті повідомлення.',
+        );
+      }
+      return undefined;
+    }
     case 'brief': {
       // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
       // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
