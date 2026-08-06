@@ -142,13 +142,39 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('/locate -> клавіатура з request_location', () => {
-  it('/locate шле промпт з кнопкою KeyboardButton{request_location:true}', async () => {
-    await sendCommand('/locate');
+  it('/locate написано в приватному чаті -> ОДНЕ повідомлення з кнопкою, У ЦЕЙ САМИЙ чат', async () => {
+    await sendCommand('/locate'); // sendCommand шле з chat.id: OWNER (приватний, у цьому файлі)
 
     const sent = lastSend();
+    expect(sent?.body).toMatchObject({ chat_id: String(OWNER) });
+    expect(sent?.body.message_thread_id).toBeUndefined();
     expect(sent?.body.text).toContain('GPS-позицію');
     const markup = sent?.body.reply_markup as { keyboard: unknown[][] };
     expect(markup.keyboard[0]?.[0]).toMatchObject({ request_location: true });
+    // Той самий чат -> без другого «перевір приват» повідомлення (дублю).
+    expect(tg.filter((c) => c.method === 'sendMessage')).toHaveLength(1);
+  });
+
+  it('РЕГРЕСІЯ (фідбек власника, прод: «Не вдалося надіслати запит (502)»): /locate написано в ГРУПІ -> промпт іде В ПРИВАТ, у групі лише коротке попередження', async () => {
+    const GROUP_CHAT_ID = -1001234567890; // Telegram-групи мають від'ємний chat_id
+    await sendUpdate({ text: '/locate', chat: { id: GROUP_CHAT_ID }, message_thread_id: 5 });
+
+    const sends = tg.filter((c) => c.method === 'sendMessage');
+    expect(sends).toHaveLength(2); // промпт (приват) + попередження (група)
+
+    // Промпт із кнопкою — у ПРИВАТНИЙ чат (TELEGRAM_OWNER_USER_ID), НЕ в групу:
+    // request_location там Bot API відхиляв би (кореневий баг регресії).
+    const prompt = sends.find((s) => (s.body.reply_markup as { keyboard: unknown[][] })?.keyboard);
+    expect(prompt?.body.chat_id).toBe(String(OWNER));
+    expect(prompt?.body.message_thread_id).toBeUndefined();
+
+    // Попередження — туди, звідки й викликали (група+тема), щоб власник знав,
+    // де шукати кнопку, а не мовчав.
+    const notice = sends.find((s) => s !== prompt);
+    // chat_id тут — з parsed.chatId (число, як прийшло від Telegram), не
+    // рядок з env-змінної — сам факт "не приват" важливіший за тип.
+    expect(notice?.body).toMatchObject({ chat_id: GROUP_CHAT_ID, message_thread_id: 5 });
+    expect(notice?.body.text).toContain('приватному чаті');
   });
 });
 
@@ -211,19 +237,19 @@ describe('POST /api/weather/locate-prompt — тригер із Mini App', () =>
     expect(res.status).toBe(403);
   });
 
-  it('немає TELEGRAM_CHAT_ID -> 503 not-configured', async () => {
-    const initData = await buildInitData(OWNER, 'bot-token');
-    const res = await postLocatePrompt(initData, env({ TELEGRAM_CHAT_ID: undefined }));
-    expect(res.status).toBe(503);
-  });
-
-  it('успіх -> шле ТОЙ САМИЙ /locate-промпт у TELEGRAM_CHAT_ID/TOPIC_ASSISTANT (проактивно, не в parsed.chatId)', async () => {
+  it('успіх -> шле ТОЙ САМИЙ /locate-промпт У ПРИВАТНИЙ чат (TELEGRAM_OWNER_USER_ID), БЕЗ message_thread_id', async () => {
     const initData = await buildInitData(OWNER, 'bot-token');
     const res = await postLocatePrompt(initData);
     expect(res.status).toBe(200);
 
     const sent = lastSend();
-    expect(sent?.body).toMatchObject({ chat_id: String(OWNER), message_thread_id: '5' });
+    // РЕГРЕСІЯ (прод, фідбек власника: «Не вдалося надіслати запит (502)»):
+    // request_location недоступний у груповому чаті (TOPIC_ASSISTANT) — Bot
+    // API відхиляв sendMessage із такою клавіатурою. Приватний чат
+    // (chat_id=TELEGRAM_OWNER_USER_ID) не має тем, тож message_thread_id
+    // тут БУТИ НЕ МАЄ — присутність цього поля й була кореневою причиною.
+    expect(sent?.body).toMatchObject({ chat_id: String(OWNER) });
+    expect(sent?.body.message_thread_id).toBeUndefined();
     expect(sent?.body.text).toContain('GPS-позицію');
     const markup = sent?.body.reply_markup as { keyboard: unknown[][] };
     expect(markup.keyboard[0]?.[0]).toMatchObject({ request_location: true });
