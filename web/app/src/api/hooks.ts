@@ -17,6 +17,7 @@ import {
   setWeatherLocation,
   setWeatherLocationExact,
   clearWeatherLocation,
+  requestLocatePrompt,
   fetchSettlements,
   SAVED_PAGE,
   type StatsResult,
@@ -89,6 +90,13 @@ export function useClearWeatherLocation() {
     mutationFn: () => clearWeatherLocation(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
   });
+}
+
+/** Тригер /locate-промпту з Mini App (фідбек власника: кнопка в самій апці).
+ *  Без інвалідації ['liveWeather'] — сама позиція ще НЕ змінилась, лише
+ *  надіслано запит у чат; оновиться, коли власник тапне request_location. */
+export function useRequestLocatePrompt() {
+  return useMutation({ mutationFn: () => requestLocatePrompt() });
 }
 
 /**

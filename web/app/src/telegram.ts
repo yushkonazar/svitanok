@@ -41,6 +41,12 @@ interface TelegramWebApp {
   // Mini App.
   addToHomeScreen?: () => void;
   checkHomeScreenStatus?: (cb: (status: HomeScreenStatus) => void) => void;
+  // Закрити Mini App -> назад у чат. Використовується після /locate-тригера
+  // з апки (фідбек власника): нативна кнопка «Надіслати позицію» існує
+  // ВИКЛЮЧНО в чаті (Bot API request_location — властивість KeyboardButton,
+  // WebView її не показує), тож найкоротший шлях — одразу перекинути
+  // власника туди, а не лишати його шукати чат самому.
+  close?: () => void;
   BackButton?: TelegramBackButton;
   HapticFeedback?: {
     impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;
@@ -74,6 +80,15 @@ export function initTelegram(): void {
 export function openLink(url: string): void {
   if (tg?.openLink) tg.openLink(url);
   else window.open(url, '_blank', 'noopener');
+}
+
+/** Закрити Mini App (поза Telegram — no-op, нема куди «повертатись»). */
+export function closeApp(): void {
+  try {
+    tg?.close?.();
+  } catch {
+    /* хост може не підтримувати — no-op */
+  }
 }
 
 /** Тактильний відгук (no-op поза Telegram). */

@@ -214,6 +214,22 @@ export async function clearWeatherLocation(): Promise<void> {
 }
 
 /**
+ * POST /api/weather/locate-prompt -> просить бота проактивно надіслати
+ * /locate-промпт (кнопка request_location) У ЧАТ. Mini App сама не вміє
+ * показати цю кнопку (WebView, request_location — виключно KeyboardButton
+ * у чаті, Bot API), тож лише скорочує шлях до неї.
+ */
+export async function requestLocatePrompt(): Promise<void> {
+  if (!inTelegram() || !tg) return;
+  const res = await fetch('/api/weather/locate-prompt', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ initData: tg.initData }),
+  });
+  if (!res.ok) throw new Error(`Не вдалося надіслати запит (${res.status})`);
+}
+
+/**
  * Мутація POST /api/event (роадмеп v3, E2). На відміну від GET-читань, initData
  * їде В ТІЛІ JSON (як vanilla sendEvent), не заголовком; сервер валідує owner.
  * Поза Telegram — no-op (демо не персиститься; оптимістичне оновлення кешу
