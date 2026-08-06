@@ -95,6 +95,27 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
     expect(parseUpdate(null).kind).toBe('other');
   });
 
+  it('message з location (/locate) -> location:{latitude,longitude}; без location -> null', () => {
+    const withLoc = parseUpdate({
+      update_id: 7,
+      message: {
+        message_id: 1,
+        from: { id: 9 },
+        chat: { id: 9 },
+        location: { latitude: 50.62, longitude: 26.24, horizontal_accuracy: 12 },
+      },
+    });
+    // horizontal_accuracy свідомо НЕ читаємо — лише координати нам треба.
+    expect(withLoc.location).toEqual({ latitude: 50.62, longitude: 26.24 });
+
+    expect(parseUpdate({ update_id: 8, message: { text: 'привіт' } }).location).toBeNull();
+    // биті координати (не число) -> теж null, не NaN у сторі
+    expect(
+      parseUpdate({ update_id: 9, message: { location: { latitude: 'x', longitude: 26.24 } } })
+        .location,
+    ).toBeNull();
+  });
+
   it('isOwner порівнює from.id з дозволеним', () => {
     const p = parseUpdate({ callback_query: { from: { id: 111 }, message: {} } });
     expect(isOwner(p, 111)).toBe(true);

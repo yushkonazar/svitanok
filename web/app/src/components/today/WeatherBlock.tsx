@@ -9,9 +9,10 @@ import {
   useSetWeatherLocation,
   useSetWeatherLocationExact,
   useClearWeatherLocation,
+  useRequestLocatePrompt,
   useSettlements,
 } from '../../api/hooks.ts';
-import { haptic } from '../../telegram.ts';
+import { haptic, closeApp } from '../../telegram.ts';
 
 // Скільки варіантів показуємо в списку — досить, щоб знайти потрібне місто
 // серед однойменних, не захаращуючи невеликий інлайн-редактор.
@@ -118,6 +119,7 @@ export function WeatherBlock({
   const setLoc = useSetWeatherLocation();
   const setLocExact = useSetWeatherLocationExact();
   const clearLoc = useClearWeatherLocation();
+  const locatePrompt = useRequestLocatePrompt();
   const [city, setCity] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
@@ -323,6 +325,31 @@ export function WeatherBlock({
               Прибрати
             </button>
           )}
+          {/* Тригер /locate З АПКИ (фідбек власника: «можна зробити цю кнопку
+              тригер у самій апці?»). Mini App не вміє показати нативну
+              кнопку геолокації сама (request_location — виключно
+              KeyboardButton у ЧАТІ, Bot API), тож просить бота надіслати
+              той самий промпт і одразу перекидає власника туди —
+              closeApp() замість «шукай сам». */}
+          <button
+            type="button"
+            disabled={locatePrompt.isPending}
+            onClick={() => {
+              setErr(null);
+              locatePrompt.mutate(undefined, {
+                onSuccess: () => {
+                  haptic('success');
+                  setTimeout(closeApp, 450); // час відчути тап (press-анімація), перш ніж апка згорнеться
+                },
+                onError: (e) =>
+                  setErr(e instanceof Error ? e.message : 'Не вдалося надіслати запит'),
+              });
+            }}
+            className="basis-full rounded-lg border border-glassb px-3 py-1.5 text-[11px] font-medium text-tx2 disabled:opacity-50"
+            style={flyStyle(visible, leaving, STAGGER_MS * 3)}
+          >
+            {locatePrompt.isPending ? '…' : '📍 Точна GPS-позиція через чат'}
+          </button>
           {/* Автозаповнення (фідбек власника) — обраний кандидат несе готові
               lat/lon, повторне геокодування на сервері пропускається. */}
           {suggestions.length > 0 && (
