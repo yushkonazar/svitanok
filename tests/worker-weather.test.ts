@@ -255,6 +255,40 @@ describe('GET /api/weather — фетч, кеш, ліміт', () => {
     expect(res.status).toBe(200);
     expect(openWeatherCalls.length).toBe(callsBefore); // жодного нового фетчу — ліміт зупинив ДО нього
   });
+
+  it('РЕГРЕСІЯ (фідбек власника): ліміт вичерпано ПІСЛЯ зміни локації -> 429, а НЕ кеш чужого міста', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await getWeather(initData); // кеш під дефолтну позицію (Сарни-подібний кейс — WEATHER_LOCATIONS)
+    const cached = JSON.parse(kv.get('weatherLive')!);
+    expect(cached.locations[0]?.name).toBe('Львів');
+
+    // Власник обирає нову локацію (Рівне) — ownerGeoManual зберігається успішно.
+    const setRes = await setLocationExact(initData, { lat: 50.62, lon: 26.24, name: 'Рівне' });
+    expect(setRes.status).toBe(200);
+
+    // Але денний лічильник УЖЕ вичерпаний (типовий кейс: багато перемикань
+    // локації за день з'їдають квоту раніше, ніж дійшло до цього запиту).
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date());
+    kv.set('weatherLiveCounter', JSON.stringify({ date: today, count: 999 }));
+
+    const res = await getWeather(initData);
+    // НЕ 200 зі старим кешем Львова — позиція розійшлась, кеш під неї не годиться.
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('rate-limited');
+  });
+
+  it('ліміт вичерпано, локація НЕ змінювалась -> кеш тієї самої позиції все одно обслуговує (не регресія)', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    await getWeather(initData); // кеш під дефолтну позицію, без manual override
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date());
+    kv.set('weatherLiveCounter', JSON.stringify({ date: today, count: 999 }));
+
+    const res = await getWeather(initData);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations[0]?.name).toBe('Львів');
+  });
 });
 
 describe('GET /api/weather — геопозиція власника (request.cf)', () => {
