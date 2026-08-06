@@ -4,10 +4,11 @@ import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE } from './sample.ts';
 import {
   briefSchema,
   liveWeatherResponseSchema,
-  weatherSuggestionsSchema,
+  settlementsSchema,
   type Brief,
   type LiveWeatherResponse,
-  type WeatherSuggestion,
+  type Settlement,
+  type SettlementTuple,
 } from './briefing-schema.ts';
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
@@ -161,7 +162,7 @@ export async function setWeatherLocation(city: string): Promise<{ name: string }
  * населених пунктах у різних областях/країнах.
  */
 export async function setWeatherLocationExact(
-  pick: Pick<WeatherSuggestion, 'lat' | 'lon' | 'name'>,
+  pick: Pick<Settlement, 'lat' | 'lon' | 'name'>,
 ): Promise<{ name: string } | null> {
   if (!inTelegram() || !tg) return null;
   const res = await fetch('/api/weather/location', {
@@ -174,22 +175,27 @@ export async function setWeatherLocationExact(
   return data.manualGeo;
 }
 
+function tupleToSettlement([name, lat, lon, country, region]: SettlementTuple): Settlement {
+  return { name, lat, lon, country, region };
+}
+
 /**
- * GET /api/weather/location/suggest?q= -> кандидати для автозаповнення.
- * Поза Telegram / збій мережі / дрейф контракту -> [] (не критичний шлях —
- * автозаповнення просто не пропонує варіантів, форма лишається робочою).
+ * /settlements.json — статичний ассет (НЕ /api/*, без auth — публічні
+ * геодані, той самий рівень доступу, що JS/CSS-бандл додатку), для
+ * автозаповнення локації (фідбек власника: пошук ЦІЛКОМ на клієнті, без
+ * мережевого запиту на кожен keystroke). Один фетч на сесію (TanStack кешує
+ * необмежено, gcTime у useSettlements) — 35к+ записів, ~570КБ gzip, тож
+ * лінивий і лише коли власник реально відкрив редактор локації.
+ *
+ * import.meta.env.BASE_URL — той самий шлях, що Vite `base` (/app/), єдиний
+ * і для dev-сервера, і для прод-білда (файл лежить у web/app/public/).
  */
-export async function suggestWeatherLocations(q: string): Promise<WeatherSuggestion[]> {
-  if (!inTelegram()) return [];
+export async function fetchSettlements(): Promise<Settlement[]> {
   try {
-    const res = await fetch(`/api/weather/location/suggest?q=${encodeURIComponent(q)}`, {
-      cache: 'no-store',
-      headers: authHeaders(),
-    });
+    const res = await fetch(`${import.meta.env.BASE_URL}settlements.json`, { cache: 'force-cache' });
     if (!res.ok) return [];
-    const body = (await res.json()) as { results?: unknown[] };
-    const parsed = weatherSuggestionsSchema.safeParse(body.results ?? []);
-    return parsed.success ? parsed.data : [];
+    const parsed = settlementsSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data.map(tupleToSettlement) : [];
   } catch {
     return [];
   }

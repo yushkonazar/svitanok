@@ -16,7 +16,6 @@ let openWeatherCalls: string[];
 let openWeatherFail: boolean;
 let geocodeEmpty: boolean;
 let geocodeDirectEmpty: boolean;
-let geocodeDirectResults: unknown[] | null;
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
@@ -100,14 +99,6 @@ async function setLocationExact(
   return worker.fetch(req, e, { waitUntil: () => {} });
 }
 
-async function suggestLocations(initData: string | null, q: string, e = env()) {
-  const req = new Request(
-    `https://svitanok.example/api/weather/location/suggest?q=${encodeURIComponent(q)}`,
-    { headers: initData ? { 'X-Telegram-Init-Data': initData } : {} },
-  );
-  return worker.fetch(req, e, { waitUntil: () => {} });
-}
-
 async function clearLocation(initData: string | null, e = env()) {
   const req = new Request('https://svitanok.example/api/weather/location', {
     method: 'DELETE',
@@ -123,20 +114,18 @@ beforeEach(() => {
   openWeatherFail = false;
   geocodeEmpty = false;
   geocodeDirectEmpty = false;
-  geocodeDirectResults = null;
   vi.stubGlobal('fetch', async (input: unknown) => {
     const url = String(input);
     if (url.includes('api.openweathermap.org')) {
       openWeatherCalls.push(url);
       if (openWeatherFail) return new Response('down', { status: 500 });
       if (url.includes('/geo/1.0/direct')) {
-        const body = geocodeDirectEmpty
-          ? []
-          : (geocodeDirectResults ?? [{ lat: 50.62, lon: 26.24, local_names: { uk: 'Рівне' } }]);
-        return new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify(
+            geocodeDirectEmpty ? [] : [{ lat: 50.62, lon: 26.24, local_names: { uk: 'Рівне' } }],
+          ),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
       }
       if (url.includes('/geo/1.0/reverse')) {
         return new Response(JSON.stringify(geocodeEmpty ? [] : [{ name: 'Твоя точка' }]), {
@@ -473,69 +462,5 @@ describe('POST/DELETE /api/weather/location — ручне перевизнач�
       lon: 26.24,
       name: 'Рівне (обране)',
     });
-  });
-});
-
-describe('GET /api/weather/location/suggest — автозаповнення (фідбек власника)', () => {
-  it('без initData -> 401', async () => {
-    const res = await suggestLocations(null, 'Рів');
-    expect(res.status).toBe(401);
-  });
-
-  it('чужий user id -> 403', async () => {
-    const initData = await buildInitData(9999, BOT_TOKEN);
-    const res = await suggestLocations(initData, 'Рів');
-    expect(res.status).toBe(403);
-  });
-
-  it('запит коротший за 2 символи -> порожній список, БЕЗ виклику OpenWeather', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await suggestLocations(initData, 'Р');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; results: unknown[] };
-    expect(body).toEqual({ ok: true, results: [] });
-    expect(openWeatherCalls).toHaveLength(0);
-  });
-
-  it('немає WEATHER_API_KEY -> порожній список (graceful, не помилка)', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await suggestLocations(initData, 'Рівне', env({ WEATHER_API_KEY: undefined }));
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; results: unknown[] };
-    expect(body).toEqual({ ok: true, results: [] });
-  });
-
-  it('кілька кандидатів -> мапить lat/lon/name/state/country, обрізає до 5', async () => {
-    geocodeDirectResults = [
-      { lat: 50.62, lon: 26.24, local_names: { uk: 'Рівне' }, country: 'UA' },
-      { lat: 42.4, lon: -83.1, name: 'Rivne', state: 'Michigan', country: 'US' },
-    ];
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await suggestLocations(initData, 'Рівне');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      ok: boolean;
-      results: {
-        lat: number;
-        lon: number;
-        name: string;
-        state: string | null;
-        country: string | null;
-      }[];
-    };
-    expect(body.results).toEqual([
-      { lat: 50.62, lon: 26.24, name: 'Рівне', state: null, country: 'UA' },
-      { lat: 42.4, lon: -83.1, name: 'Rivne', state: 'Michigan', country: 'US' },
-    ]);
-    expect(openWeatherCalls.some((u) => u.includes('limit=5'))).toBe(true);
-  });
-
-  it('порожній результат геокодування -> порожній список', async () => {
-    geocodeDirectEmpty = true;
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-    const res = await suggestLocations(initData, 'Невідоме Місто');
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; results: unknown[] };
-    expect(body).toEqual({ ok: true, results: [] });
   });
 });

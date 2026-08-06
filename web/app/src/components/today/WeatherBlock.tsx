@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import type { WeatherLocation, WeatherSuggestion } from '../../api/briefing-schema.ts';
+import { useMemo, useState } from 'react';
+import type { WeatherLocation, Settlement } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
 import { dayLen, fmtClock, signTemp } from '../../lib/weather.ts';
 import { SunDial } from '../charts/SunDial.tsx';
@@ -9,9 +9,13 @@ import {
   useSetWeatherLocation,
   useSetWeatherLocationExact,
   useClearWeatherLocation,
-  useWeatherSuggestions,
+  useSettlements,
 } from '../../api/hooks.ts';
 import { haptic } from '../../telegram.ts';
+
+// Скільки варіантів показуємо в списку — досить, щоб знайти потрібне місто
+// серед однойменних, не захаращуючи невеликий інлайн-редактор.
+const MAX_SUGGESTIONS = 8;
 
 // Погода (дизайн v2, Svitanok.dc.html): місто·стан + велика температура зліва,
 // метрики справа; добовий циферблат між лініями сходу/заходу; пігулка довжини
@@ -89,16 +93,27 @@ export function WeatherBlock({
   const [city, setCity] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
-  // Дебаунс перед запитом підказок — інакше кожен keystroke б'є в OpenWeather-
-  // квоту (фідбек власника: автозаповнення при введенні міста).
-  const [debouncedCity, setDebouncedCity] = useState('');
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedCity(city), 350);
-    return () => clearTimeout(t);
-  }, [city]);
-  const { data: suggestions = [] } = useWeatherSuggestions(editing ? debouncedCity : '');
+  // Автозаповнення (фідбек власника: «звичайна пошукова логіка», список
+  // звужується щосимволу) — ЦІЛКОМ на клієнті, без мережевого запиту на
+  // кожен keystroke: settlements.json завантажується один раз (лише коли
+  // редактор реально відкрито), далі — префікс-фільтр у памʼяті. Дані вже
+  // відсортовані за population (gen-settlements.mjs), тож перші N збігів —
+  // найбільші міста, без окремого сортування тут.
+  const { data: settlements } = useSettlements(editing);
+  const suggestions = useMemo(() => {
+    const q = city.trim().toLowerCase();
+    if (!q || !settlements) return [];
+    const out: Settlement[] = [];
+    for (const s of settlements) {
+      if (s.name.toLowerCase().startsWith(q)) {
+        out.push(s);
+        if (out.length >= MAX_SUGGESTIONS) break;
+      }
+    }
+    return out;
+  }, [settlements, city]);
 
-  const pickSuggestion = (s: WeatherSuggestion) => {
+  const pickSuggestion = (s: Settlement) => {
     setErr(null);
     setLocExact.mutate(
       { lat: s.lat, lon: s.lon, name: s.name },
@@ -114,7 +129,6 @@ export function WeatherBlock({
 
   const openEditor = () => {
     setCity(manualGeo?.name ?? '');
-    setDebouncedCity('');
     setErr(null);
     setEditing((v) => !v);
   };
@@ -242,8 +256,8 @@ export function WeatherBlock({
                   className="rounded-md px-1.5 py-1 text-left text-[11px] font-medium text-tx2"
                 >
                   {s.name}
-                  {(s.state || s.country) && (
-                    <span className="text-tx3"> · {[s.state, s.country].filter(Boolean).join(', ')}</span>
+                  {(s.region ?? s.country) && (
+                    <span className="text-tx3"> · {s.region ?? s.country}</span>
                   )}
                 </button>
               ))}

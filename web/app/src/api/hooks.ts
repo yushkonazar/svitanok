@@ -17,13 +17,13 @@ import {
   setWeatherLocation,
   setWeatherLocationExact,
   clearWeatherLocation,
-  suggestWeatherLocations,
+  fetchSettlements,
   SAVED_PAGE,
   type StatsResult,
   type VoteDir,
 } from './client.ts';
 import type { SavedPage, CheckinSlot } from './schema.ts';
-import type { WeatherSuggestion } from './briefing-schema.ts';
+import type { Settlement } from './briefing-schema.ts';
 import { nextSavedOffset } from './paging.ts';
 import type { SettingsPatch, SettingsResponse } from './settings-schema.ts';
 import type { FunnelStage } from '../components/jobs/stages.ts';
@@ -77,8 +77,7 @@ export function useSetWeatherLocation() {
 export function useSetWeatherLocationExact() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (pick: Pick<WeatherSuggestion, 'lat' | 'lon' | 'name'>) =>
-      setWeatherLocationExact(pick),
+    mutationFn: (pick: Pick<Settlement, 'lat' | 'lon' | 'name'>) => setWeatherLocationExact(pick),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['liveWeather'] }),
   });
 }
@@ -93,17 +92,20 @@ export function useClearWeatherLocation() {
 }
 
 /**
- * Кандидати для автозаповнення (фідбек власника) — увімкнено лише коли
- * запит ≥2 символів (той самий поріг, що Worker: коротші префікси — шум).
- * Клієнт додатково дебаунсить ЗНАЧЕННЯ перед тим, як воно потрапляє сюди
- * (WeatherBlock), тож query fire відбувається не на кожен keystroke.
+ * Список населених пунктів для автозаповнення (фідбек власника: «звичайна
+ * пошукова логіка» — статичний ассет /settlements.json, пошук ЦІЛКОМ на
+ * клієнті, WeatherBlock фільтрує на кожен keystroke БЕЗ мережевого запиту).
+ * enabled лише коли редактор локації відкритий — ~570КБ gzip не тягнемо,
+ * доки власник реально не захотів змінити місто. staleTime+gcTime
+ * Infinity — статичні геодані, раз завантажив за сесію й досить.
  */
-export function useWeatherSuggestions(q: string) {
+export function useSettlements(enabled: boolean) {
   return useQuery({
-    queryKey: ['weatherSuggest', q],
-    queryFn: () => suggestWeatherLocations(q),
-    enabled: q.trim().length >= 2,
-    staleTime: 60_000,
+    queryKey: ['settlements'],
+    queryFn: fetchSettlements,
+    enabled,
+    staleTime: Infinity,
+    gcTime: Infinity,
     retry: 0,
   });
 }
