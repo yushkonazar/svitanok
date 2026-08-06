@@ -7,8 +7,11 @@ import { SectionLabel, Ph } from '../ui/primitives.tsx';
 // Курс НБУ (дизайн v2, Svitanok.dc.html + PR-8): рядок на валюту — кружечок-
 // символ, код, міні-спарклайн, дельта (з % — не лайв-стан, а зручність
 // відстеження зміни, фідбек власника), велике значення. Перша валюта
-// акцентована (кораловий бейдж + градієнтний спарклайн + тижневий мін/макс під
-// заголовком), решта — приглушені. Тап на рядок розкриває міні-конвертер.
+// акцентована (кораловий бейдж + градієнтний спарклайн), решта — приглушені.
+// Тап на рядок розкриває міні-конвертер + тижневий мін/макс — фідбек
+// власника: діапазон за 7д раніше показувався ЛИШЕ для акцентної (USD) над
+// списком; тепер це те саме tap-to-expand, що конвертер, і працює для
+// БУДЬ-ЯКОЇ валюти, не лише першої.
 
 const DEFS = [
   { key: 'usd', hk: 'usdHistory', sym: '$', label: 'USD' },
@@ -101,9 +104,6 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
   const [amountStr, setAmountStr] = useState(String(DEFAULT_AMOUNT));
   const amount = Number(amountStr.replace(',', '.')) || 0;
 
-  const accentMinMax =
-    rows.length && d ? windowMinMax((d[rows[0].hk] as number[] | undefined) ?? [], WEEK_DAYS) : null;
-
   return (
     <div ref={ref} className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
@@ -112,13 +112,6 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
             підписувались би сьогоднішнім числом */}
         {date && <span className="ml-auto font-mono text-[10px] font-medium text-tx3">{date}</span>}
       </div>
-      {/* Тижневий мін/макс (п.6.2) — лише акцентна валюта, щоб не захаращувати
-          кожен рядок: один орієнтир «де ми в діапазоні тижня» досить. */}
-      {accentMinMax && (
-        <div className="font-mono text-[10px] text-tx3">
-          {rows[0]!.label} за {WEEK_DAYS}Д: {accentMinMax.min.toFixed(2)}–{accentMinMax.max.toFixed(2)}
-        </div>
-      )}
 
       {rows.length && d ? (
         <>
@@ -139,6 +132,9 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
             const spike = pct != null && Math.abs(pct) >= SPIKE_PCT;
             const accent = i === 0;
             const isOpen = expanded === def.key;
+            // Тижневий мін/макс (п.6.2) — рахуємо лише для розкритої валюти,
+            // не для всіх чотирьох одразу (дешево, але без потреби).
+            const minMax = isOpen ? windowMinMax(hist, WEEK_DAYS) : null;
             const deltaColor =
               dd == null || dd === 0
                 ? 'var(--color-tx3)'
@@ -198,31 +194,38 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                   <span className="ml-auto font-mono text-base font-semibold">{value.toFixed(2)}</span>
                 </button>
 
-                {/* Конвертер «скільки в грн» (п.6.3) — tap-to-expand, той самий
-                    інтеракційний патерн, що «Відповідь ↓» у QuestionBlock. */}
+                {/* Тап-to-expand розкриває ОБИДВА: тижневий діапазон (п.6.2,
+                    фідбек власника — раніше лише для акцентної USD над
+                    списком, тепер для будь-якої обраної валюти) над
+                    конвертером «скільки в грн» (п.6.3, той самий
+                    інтеракційний патерн, що «Відповідь ↓» у QuestionBlock). */}
                 {isOpen && (
-                  <div
-                    className="flex items-center gap-2 py-1 pl-9 text-[11.5px] text-tx2"
-                    style={{ animation: 'fadeUp .2s ease' }}
-                  >
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      value={amountStr}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        // цифри + щонайбільше один роздільник (кома чи крапка) —
-                        // пускає й проміжні стани набору ("", "7", "7.", "7,5")
-                        if (/^\d*[.,]?\d*$/.test(v)) setAmountStr(v);
-                      }}
-                      className="w-16 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11.5px]"
-                      aria-label={`Сума в ${def.label}`}
-                    />
-                    <span className="font-mono">{def.sym}</span>
-                    <span className="text-tx3">=</span>
-                    <span className="font-mono font-semibold text-tx">
-                      {(amount * value).toFixed(2)} ₴
-                    </span>
+                  <div className="flex flex-col gap-1 py-1 pl-9" style={{ animation: 'fadeUp .2s ease' }}>
+                    {minMax && (
+                      <div className="font-mono text-[10px] text-tx3">
+                        {def.label} за {WEEK_DAYS}Д: {minMax.min.toFixed(2)}–{minMax.max.toFixed(2)}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 text-[11.5px] text-tx2">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={amountStr}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          // цифри + щонайбільше один роздільник (кома чи крапка) —
+                          // пускає й проміжні стани набору ("", "7", "7.", "7,5")
+                          if (/^\d*[.,]?\d*$/.test(v)) setAmountStr(v);
+                        }}
+                        className="w-16 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11.5px]"
+                        aria-label={`Сума в ${def.label}`}
+                      />
+                      <span className="font-mono">{def.sym}</span>
+                      <span className="text-tx3">=</span>
+                      <span className="font-mono font-semibold text-tx">
+                        {(amount * value).toFixed(2)} ₴
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
