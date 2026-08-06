@@ -939,12 +939,12 @@ describe('aggregateStats — вогники (flames, evening)', () => {
     expect(byValue.chess).toBeUndefined();
   });
 
-  it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються (повне вікно)', () => {
+  it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються (далека історія, без стелі)', () => {
     let s = emptyStore();
-    s = recordEvent(s, ck('evening', { flames: ['tiktok'] }), '2026-01-01'); // >12 тижнів тому -> капає вікно на максимум
+    s = recordEvent(s, ck('evening', { flames: ['tiktok'] }), '2026-01-01'); // далека історія — вікно без верхньої межі
     s = recordEvent(s, ck('evening', { flames: ['duolingo', 'tiktok'] }), '2026-07-06');
     const fw = aggregateStats(s, '2026-07-07').flameStats.weekly;
-    expect(fw).toHaveLength(12);
+    expect(fw).toHaveLength(28); // рівно стільки тижнів між 2026-01-01 (Пн того тижня) і 2026-07-07
     const cur = fw[fw.length - 1];
     expect(cur.constructive).toBe(1);
     expect(cur.consumptive).toBe(1);

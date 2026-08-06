@@ -548,10 +548,10 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(weekStartKey('2026-07-13')).toBe('2026-07-13'); // наступний понеділок
   });
 
-  it('heatmap: вирівняна на понеділок, закінчується сьогодні, рівні за порогами (повне 12-тижневе вікно)', () => {
+  it('heatmap: вирівняна на понеділок, закінчується сьогодні, рівні за порогами (далека історія, без стелі)', () => {
     let s = emptyStore();
-    // Запис задовго до вікна — щоб воно встигло вирости до повного максимуму
-    // (weeksAvailable) і тест міг перевіряти саме capped-поведінку.
+    // Запис задовго до решти подій — вікно тепер БЕЗ верхньої межі (фідбек
+    // власника: «відмова від 12 тижнів»), тож сягає аж сюди.
     s = recordEvent(s, { type: 'open' }, '2026-01-01');
     s = recordEvent(s, { type: 'open' }, '2026-07-07'); // 1 дія -> l1
     for (let i = 0; i < 3; i++)
@@ -560,9 +560,8 @@ describe('stats-core — розширені метрики (A2)', () => {
     const hm = aggregateStats(s, '2026-07-07').heatmap;
     expect(new Date(hm[0].d + 'T00:00:00Z').getUTCDay()).toBe(1); // понеділок
     expect(hm[hm.length - 1].d).toBe('2026-07-07'); // сьогодні
-    // Рівно 12 тижнів (lastWeekStarts) до сьогодні: 11 повних попередніх
-    // тижнів (77 днів) + Пн-Вт поточного (todayKey='2026-07-07', вівторок) = 79.
-    expect(hm.length).toBe(79);
+    expect(hm[0].d).toBe(weekStartKey('2026-01-01')); // без стелі — від тижня НАЙДАВНІШОГО запису
+    expect(hm.length).toBe(191); // рівно стільки днів між цими двома датами
     const byDate = Object.fromEntries(hm.map((c: { d: string }) => [c.d, c]));
     expect(byDate['2026-07-07']).toMatchObject({ v: 1, l: 1 });
     expect(byDate['2026-07-06']).toMatchObject({ v: 4, l: 3 });
@@ -625,13 +624,14 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(cur.active).toBe(2);
   });
 
-  it('habitWeekly: 12 тижнів, склад активності по кошиках (повне вікно)', () => {
+  it('habitWeekly: склад активності по кошиках, вікно сягає аж до найдавнішого запису (без стелі)', () => {
     let s = emptyStore();
-    s = recordEvent(s, { type: 'open' }, '2026-01-01'); // >12 тижнів тому -> вікно капається на максимум
+    s = recordEvent(s, { type: 'open' }, '2026-01-01'); // далека історія — тепер без верхньої межі
     s = recordEvent(s, { type: 'open' }, '2026-07-06');
     s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
     const hw = aggregateStats(s, '2026-07-07').habitWeekly;
-    expect(hw).toHaveLength(12);
+    expect(hw).toHaveLength(28);
+    expect(hw[0].week).toBe(weekStartKey('2026-01-01'));
     const cur = hw[hw.length - 1];
     // news_click рахується ЛИШЕ в news — окремі лічильники, не подвійний облік
     // (той самий інваріант, що вже перевіряє heatmap-тест вище).
@@ -687,18 +687,21 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(s.interestsWeekly['2026-06-29']).toEqual({ Спорт: 1 });
   });
 
-  it('interestsTrend: топ-теми за історію, серії по останніх 26 тижнях (WEEKLY_CAP — уся глибина ретенції, повне вікно)', () => {
+  it('interestsTrend: топ-теми за історію, серії від найдавнішого тижневого кошика (без стелі)', () => {
     let s = emptyStore();
-    // >26 тижнів тому — щоб вікно встигло вирости до повного максимуму, а не
-    // звузитись до реальної (короткої) глибини цього тесту.
+    // Далека історія — вікно сягає аж сюди (фідбек власника: «відмова від 12
+    // тижнів»); природна стеля лишається лише WEEKLY_CAP на самому сторі.
     s = recordEvent(s, { type: 'vote', category: 'Спорт', dir: 'up' }, '2025-12-01');
     s = recordEvent(s, { type: 'news_click', category: 'Наука' }, '2026-07-07');
     s = recordEvent(s, { type: 'save_news', url: 'u', category: 'Технології' }, '2026-06-30');
     const tr = aggregateStats(s, '2026-07-07').interestsTrend;
-    expect(tr.weeks).toHaveLength(26);
-    expect(tr.weeks[25]).toBe('2026-07-06');
+    expect(tr.weeks[0]).toBe(weekStartKey('2025-12-01'));
+    expect(tr.weeks[tr.weeks.length - 1]).toBe('2026-07-06');
     const tech = tr.topics.find((t: { topic: string }) => t.topic === 'Технології');
-    expect(tech.series).toEqual([...Array(24).fill(0), 2, 0]);
+    // Технології — тиждень 2026-06-29 (передостанній), 0 у решті серії.
+    const techIdx = tr.weeks.indexOf('2026-06-29');
+    expect(tech.series[techIdx]).toBe(2);
+    expect(tech.series.filter((v: number) => v !== 0)).toEqual([2]);
     // топ-1 — Технології (2 > 1)
     expect(tr.topics[0].topic).toBe('Технології');
   });

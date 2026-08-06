@@ -930,12 +930,8 @@ const median = (arr) => {
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
 
-/** Максимальна глибина теплокарти — 12 тижнів, або менше, якщо перший
- *  реальний запис активності свіжіший (weeksAvailable). */
-const HEATMAP_WEEKS = 12;
-
-/** Теплокарта активності: від понеділка тижня першого реального запису
- *  (не більш як HEATMAP_WEEKS тижнів тому) до сьогодні (вкл.).
+/** Теплокарта активності: від понеділка тижня ПЕРШОГО реального запису
+ *  активності до сьогодні (вкл.) — без верхньої межі (weeksSinceFirst).
  *  value = сума дій дня (opens+mock+news), level 0..4 — фіксовані пороги,
  *  щоб колір мав стале значення день у день.
  *
@@ -943,7 +939,7 @@ const HEATMAP_WEEKS = 12;
  *  і три різні дні (тричі заходив / відповів на питання / читав новини) виглядали
  *  однаково. Тепер тап по клітинці може сказати, ЩО саме то був за день. */
 function buildHeatmap(days, todayKey) {
-  const weeks = weeksAvailable(days, todayKey, HEATMAP_WEEKS);
+  const weeks = weeksSinceFirst(days, todayKey);
   const d = new Date(lastWeekStarts(todayKey, weeks)[0] + 'T00:00:00Z');
   const out = [];
   for (;;) {
@@ -1004,8 +1000,8 @@ function buildOpenRhythm(opensMin) {
  * Теплокарта показує щоденну щільність, але не відповідає на «чи я тримаюсь
  * краще, ніж місяць тому» — для цього потрібен тренд, а не сітка.
  */
-function buildHabitWeekly(days, todayKey, weeks = 12) {
-  const starts = lastWeekStarts(todayKey, weeksAvailable(days, todayKey, weeks));
+function buildHabitWeekly(days, todayKey) {
+  const starts = lastWeekStarts(todayKey, weeksSinceFirst(days, todayKey));
   const buckets = Object.fromEntries(
     starts.map((k) => [k, { active: 0, days: 0, opens: 0, mock: 0, news: 0 }]),
   );
@@ -1059,8 +1055,8 @@ function buildHabitWeekly(days, todayKey, weeks = 12) {
  *   - missedTops — дзеркало tops, але лічильник НЕВІДМІЧЕНОГО за день:
  *     «що частіше пропускаю», дієвіший сигнал за «що частіше обирав».
  */
-function buildFlameStats(checkins, todayKey, weeks = 12) {
-  const starts = lastWeekStarts(todayKey, weeksAvailable(checkins, todayKey, weeks));
+function buildFlameStats(checkins, todayKey) {
+  const starts = lastWeekStarts(todayKey, weeksSinceFirst(checkins, todayKey));
   const buckets = Object.fromEntries(
     starts.map((k) => [k, { active: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
@@ -1123,23 +1119,23 @@ function earliestWeekStart(dateKeyedObj) {
 }
 
 /**
- * Скільки тижнів РЕАЛЬНО є від першого запису в obj до todayKey — капнуто на
- * `max`, не менше 1. Порожній obj -> max (нема від чого відштовхнутись, і
- * порожній результат однаково не рендериться — усі споживачі гейтяться на
- * length>=2 далі по стеку).
+ * Скільки тижнів минуло від тижня першого запису в obj до todayKey (мінімум
+ * 1). Порожній obj -> 1 (нема з чого рахувати; порожній результат однаково не
+ * рендериться — усі споживачі гейтяться на length>=2/якийсь v>0 далі по стеку).
  *
- * ⚠️ Фідбек власника: фіксовані вікна (12/26 тижнів) завжди рахувались НАЗАД
- * від today, тож перші місяці після запуску Світанку вікно захоплювало тижні
- * ДО того, як застосунок узагалі існував — порожні тижні тягнули середні
- * показники вниз і псували графіки (heatmap/«найактивніший день»/утримання/
- * тренд інтересу). Тепер вікно росте ВІД моменту першого реального запису, а
- * не завжди на повну глибину назад.
+ * ⚠️ Фідбек власника (2 ітерації): спершу вікно росло від першого запису, але
+ * лишалось капнуте на старий максимум (12/26 тижнів) — власник явно попросив
+ * прибрати й цю стелю: «Відмова від 12 тижнів, тепер показуємо дані з моменту
+ * початку їх отримання» — БЕЗ верхньої межі, а не «до 12». Раніше фіксовані
+ * вікна (12/26 тижнів) завжди рахувались НАЗАД від today, тож перші місяці
+ * після запуску Світанку вікно захоплювало тижні ДО того, як застосунок
+ * узагалі існував — порожні тижні тягнули середні показники вниз і псували
+ * графіки (heatmap/«найактивніший день»/утримання/тренд інтересу).
  */
-function weeksAvailable(dateKeyedObj, todayKey, max) {
+function weeksSinceFirst(dateKeyedObj, todayKey) {
   const first = earliestWeekStart(dateKeyedObj);
-  if (!first) return max;
-  const weeksSince = Math.floor(dayDiff(first, weekStartKey(todayKey)) / 7) + 1;
-  return Math.max(1, Math.min(max, weeksSince));
+  if (!first) return 1;
+  return Math.floor(dayDiff(first, weekStartKey(todayKey)) / 7) + 1;
 }
 
 /* ── Агрегація чек-іну ─────────────────────────────────────────────────────
@@ -1616,10 +1612,11 @@ function buildFitWeekly(appliedLog, todayKey, weeks = 8) {
   }));
 }
 
-/** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів
- *  (звужено до weeksAvailable — не раніше першого тижневого кошика). */
-function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, topN = 5) {
-  const starts = lastWeekStarts(todayKey, weeksAvailable(interestsWeekly, todayKey, weeks));
+/** Тренд інтересів: топ-`topN` тем за всю історію × усі тижні від першого
+ *  тижневого кошика (weeksSinceFirst) — верхньої межі нема, лише природна
+ *  стеля WEEKLY_CAP на самому сторі interestsWeekly (bumpInterest). */
+function buildInterestsTrend(interests, interestsWeekly, todayKey, topN = 5) {
+  const starts = lastWeekStarts(todayKey, weeksSinceFirst(interestsWeekly, todayKey));
   const topics = Object.entries(interests)
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
@@ -1854,11 +1851,11 @@ export function aggregateStats(store, todayKey) {
     heatmap: buildHeatmap(s.days, todayKey),
     appliedWeekly: buildAppliedWeekly(s.appliedLog, todayKey),
     fitWeekly: buildFitWeekly(s.appliedLog, todayKey),
-    // 26 тижнів — уся глибина, що реально зберігається (WEEKLY_CAP), не
-    // дефолтне «6» buildInterestsTrend: тренд-графік у статистиці показує
-    // повні пів року, короткий 2-точковий стрілочка-тренд у InterestsBlock
-    // читає лише останні два елементи того самого масиву.
-    interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey, WEEKLY_CAP),
+    // Без верхньої межі (weeksSinceFirst у buildInterestsTrend) — природна
+    // стеля лишається WEEKLY_CAP на самому сторі interestsWeekly. Короткий
+    // 2-точковий стрілочка-тренд у InterestsBlock читає лише останні два
+    // елементи того самого масиву.
+    interestsTrend: buildInterestsTrend(s.interests, s.interestsWeekly, todayKey),
     // roadmap — НЕ тут: state.roadmapProgress живе в іншому KV-блобі (state,
     // не stats), merge робить handleStats (worker.js, Блок P3) окремо, щоб
     // цей чистий агрегатор не знав про roadmap-контент.
