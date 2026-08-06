@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import type { WeatherLocation, Settlement } from '../../api/briefing-schema.ts';
 import { has } from '../../lib/format.ts';
 import { dayLen, fmtClock, signTemp } from '../../lib/weather.ts';
@@ -16,6 +16,16 @@ import { haptic } from '../../telegram.ts';
 // Скільки варіантів показуємо в списку — досить, щоб знайти потрібне місто
 // серед однойменних, не захаращуючи невеликий інлайн-редактор.
 const MAX_SUGGESTIONS = 8;
+
+// Тайминги «вильоту» редактора локації (ui-ux-pro-max, --domain ux):
+// duration-timing 150-300мс для мікровзаємодій; exit-faster-than-enter —
+// вихід ~60-70% від входу; spring-physics — пружна крива замість лінійної/
+// пласкої cubic-bezier; stagger-sequence — 30-50мс на елемент.
+const ENTER_MS = 260;
+const EXIT_MS = 170;
+const SPRING_EASE = 'cubic-bezier(.34,1.56,.64,1)'; // back-out — легкий перельот і осідання
+const EXIT_EASE = 'cubic-bezier(.4,0,1,1)'; // ease-in — «easing» правило скіла: вхід ease-out, вихід ease-in
+const STAGGER_MS = 40;
 
 // Погода (дизайн v2, Svitanok.dc.html): місто·стан + велика температура зліва,
 // метрики справа; добовий циферблат між лініями сходу/заходу; пігулка довжини
@@ -55,6 +65,25 @@ function PinIcon({ active }: { active: boolean }) {
   );
 }
 
+/**
+ * Стиль «вильоту» зі шпильки для одного елемента редактора (фідбек
+ * власника). Вхід і вихід — АСИМЕТРИЧНІ (exit-faster-than-enter): вхід
+ * пружний і трохи повільніший, вихід — швидкий ease-in, без stagger (усе
+ * ховається одразу, затримка лише прикрашає ПОЯВУ, не зникнення).
+ * transform-origin — верхній лівий кут: елемент росте ЗВІДТИ, де сидить
+ * іконка вище, а не з власного центру.
+ */
+function flyStyle(visible: boolean, leaving: boolean, delayMs: number): CSSProperties {
+  return {
+    transformOrigin: '0% 0%',
+    opacity: visible ? 1 : 0,
+    transform: visible ? 'translate(0,0) scale(1)' : 'translate(-6px,-28px) scale(.3)',
+    transition: leaving
+      ? `opacity ${EXIT_MS}ms ${EXIT_EASE}, transform ${EXIT_MS}ms ${EXIT_EASE}`
+      : `opacity ${ENTER_MS}ms ${SPRING_EASE} ${delayMs}ms, transform ${ENTER_MS}ms ${SPRING_EASE} ${delayMs}ms`,
+  };
+}
+
 function uvMeta(uv: number): { label: string; color: string } {
   if (uv >= 8) return { label: 'ДУЖЕ ВИСОКИЙ', color: 'var(--color-neg)' };
   if (uv >= 6) return { label: 'ВИСОКИЙ', color: 'var(--color-a2)' };
@@ -89,9 +118,37 @@ export function WeatherBlock({
   const setLoc = useSetWeatherLocation();
   const setLocExact = useSetWeatherLocationExact();
   const clearLoc = useClearWeatherLocation();
-  const [editing, setEditing] = useState(false);
   const [city, setCity] = useState('');
   const [err, setErr] = useState<string | null>(null);
+
+  // Життєвий цикл редактора з анімацією виходу (фідбек власника — той самий
+  // shown/leaving патерн, що StageCelebration.tsx): formOpen тримає <form>
+  // у DOM, поки не дограє вихід; shown вмикає видимий стан на наступний
+  // кадр після монтування (щоб було звідки анімувати вхід); leaving —
+  // прапорець «зараз їде геть», перемикає flyStyle на швидшу exit-криву.
+  const [formOpen, setFormOpen] = useState(false);
+  const [shown, setShown] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+
+  useEffect(() => {
+    if (!formOpen) return;
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, [formOpen]);
+
+  const closeEditor = () => setLeaving(true);
+
+  useEffect(() => {
+    if (!leaving) return;
+    const t = setTimeout(() => {
+      setFormOpen(false);
+      setShown(false);
+      setLeaving(false);
+    }, EXIT_MS);
+    return () => clearTimeout(t);
+  }, [leaving]);
+
+  const visible = shown && !leaving;
 
   // Автозаповнення (фідбек власника: «звичайна пошукова логіка», список
   // звужується щосимволу) — ЦІЛКОМ на клієнті, без мережевого запиту на
@@ -99,7 +156,7 @@ export function WeatherBlock({
   // редактор реально відкрито), далі — префікс-фільтр у памʼяті. Дані вже
   // відсортовані за population (gen-settlements.mjs), тож перші N збігів —
   // найбільші міста, без окремого сортування тут.
-  const { data: settlements } = useSettlements(editing);
+  const { data: settlements } = useSettlements(formOpen);
   const suggestions = useMemo(() => {
     const q = city.trim().toLowerCase();
     if (!q || !settlements) return [];
@@ -120,7 +177,7 @@ export function WeatherBlock({
       {
         onSuccess: () => {
           haptic('success');
-          setEditing(false);
+          closeEditor();
         },
         onError: (e) => setErr(e instanceof Error ? e.message : 'Не вдалося встановити локацію'),
       },
@@ -128,9 +185,13 @@ export function WeatherBlock({
   };
 
   const openEditor = () => {
+    if (formOpen) {
+      closeEditor();
+      return;
+    }
     setCity(manualGeo?.name ?? '');
     setErr(null);
-    setEditing((v) => !v);
+    setFormOpen(true);
   };
 
   const l = locations[0];
@@ -163,22 +224,22 @@ export function WeatherBlock({
               aria-label={
                 manualGeo ? `Локація вручну: ${manualGeo.name}. Змінити` : 'Вказати локацію вручну'
               }
-              aria-expanded={editing}
-              className="relative grid h-4 w-4 flex-none place-items-center rounded-full transition-transform duration-150 active:scale-75"
+              aria-expanded={formOpen}
+              className="relative grid h-4 w-4 flex-none place-items-center rounded-full transition-all duration-150 active:scale-90 active:opacity-70"
+              style={
+                {
+                  // Постійний «пінг»-пульс — тихий натяк «тапни мене», доки
+                  // редактор закритий (фідбек власника: динамічна анімація
+                  // кнопки; ui-ux-pro-max --domain gsap, «loop attention»
+                  // патерн: розширення+згасання box-shadow, БЕЗ transform —
+                  // не компонується зі scale press-фідбеку в сусідньому
+                  // правилі, тож коло лишається рівним, не «кривим»).
+                  // Гаситься, щойно відкрито — форма вже привертає увагу.
+                  '--pulse-c': manualGeo ? 'rgba(255,164,92,.55)' : 'rgba(200,203,214,.4)',
+                  animation: formOpen ? 'none' : 'pinPulse 2.4s ease-out infinite',
+                } as CSSProperties
+              }
             >
-              {/* Постійний «радар»-пульс — тихий натяк «тапни мене», доки
-                  редактор закритий (фідбек власника: динамічна анімація
-                  кнопки). Гаситься, щойно відкрито — форма вже привертає увагу. */}
-              {!editing && (
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 rounded-full"
-                  style={{
-                    border: `1.3px solid ${manualGeo ? 'var(--color-a2)' : 'var(--color-tx3)'}`,
-                    animation: 'pinRadar 2.2s cubic-bezier(.2,.7,.3,1) infinite',
-                  }}
-                />
-              )}
               <PinIcon active={!!manualGeo} />
             </button>
           </div>
@@ -200,8 +261,9 @@ export function WeatherBlock({
       </div>
 
       {/* редактор ручної локації — той самий tap-to-expand патерн, що
-          конвертер CurrencyBlock */}
-      {editing && (
+          конвертер CurrencyBlock, тепер із симетричним входом/виходом
+          (flyStyle) замість миттєвого розмонтування. */}
+      {formOpen && (
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -211,7 +273,7 @@ export function WeatherBlock({
             setLoc.mutate(trimmed, {
               onSuccess: () => {
                 haptic('success');
-                setEditing(false);
+                closeEditor();
               },
               onError: (e) => setErr(e instanceof Error ? e.message : 'Не вдалося встановити локацію'),
             });
@@ -229,7 +291,7 @@ export function WeatherBlock({
             placeholder="Місто вручну…"
             className="w-32 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11px]"
             aria-label="Назва міста для ручної локації"
-            style={{ transformOrigin: '0% 0%', animation: 'editorFlyIn .38s cubic-bezier(.2,1.1,.4,1) both' }}
+            style={flyStyle(visible, leaving, 0)}
           />
           <button
             type="submit"
@@ -238,8 +300,7 @@ export function WeatherBlock({
             style={{
               background: 'var(--grad)',
               color: 'var(--color-onacc)',
-              transformOrigin: '0% 0%',
-              animation: 'editorFlyIn .38s 60ms cubic-bezier(.2,1.1,.4,1) both',
+              ...flyStyle(visible, leaving, STAGGER_MS),
             }}
           >
             {setLoc.isPending ? '…' : manualGeo ? 'Оновити' : 'Встановити'}
@@ -252,12 +313,12 @@ export function WeatherBlock({
                 clearLoc.mutate(undefined, {
                   onSuccess: () => {
                     haptic('light');
-                    setEditing(false);
+                    closeEditor();
                   },
                 })
               }
               className="text-[10.5px] font-medium text-tx3 disabled:opacity-50"
-              style={{ transformOrigin: '0% 0%', animation: 'editorFlyIn .38s 110ms cubic-bezier(.2,1.1,.4,1) both' }}
+              style={flyStyle(visible, leaving, STAGGER_MS * 2)}
             >
               Прибрати
             </button>
