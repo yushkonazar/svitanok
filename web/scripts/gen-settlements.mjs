@@ -119,6 +119,7 @@ function parseWorld(text, ukNames) {
     const f = line.split('\t');
     const [geonameid, name, , , latS, lonS, , , country, , , , , , popS] = f;
     if (country === 'UA') continue; // Україна вже щільніше покрита parseUA
+    if (country === 'RU') continue; // фідбек власника — прибрати всі російські міста
     const lat = Number(latS);
     const lon = Number(lonS);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
