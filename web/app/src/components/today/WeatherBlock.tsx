@@ -164,8 +164,21 @@ export function WeatherBlock({
                 manualGeo ? `Локація вручну: ${manualGeo.name}. Змінити` : 'Вказати локацію вручну'
               }
               aria-expanded={editing}
-              className="grid h-4 w-4 flex-none place-items-center rounded-full"
+              className="relative grid h-4 w-4 flex-none place-items-center rounded-full transition-transform duration-150 active:scale-75"
             >
+              {/* Постійний «радар»-пульс — тихий натяк «тапни мене», доки
+                  редактор закритий (фідбек власника: динамічна анімація
+                  кнопки). Гаситься, щойно відкрито — форма вже привертає увагу. */}
+              {!editing && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 rounded-full"
+                  style={{
+                    border: `1.3px solid ${manualGeo ? 'var(--color-a2)' : 'var(--color-tx3)'}`,
+                    animation: 'pinRadar 2.2s cubic-bezier(.2,.7,.3,1) infinite',
+                  }}
+                />
+              )}
               <PinIcon active={!!manualGeo} />
             </button>
           </div>
@@ -204,7 +217,6 @@ export function WeatherBlock({
             });
           }}
           className="-mt-2 flex flex-wrap items-center gap-1.5"
-          style={{ animation: 'fadeUp .2s ease' }}
         >
           <input
             type="text"
@@ -217,12 +229,18 @@ export function WeatherBlock({
             placeholder="Місто вручну…"
             className="w-32 rounded-lg border border-glassb bg-glass px-2 py-1 font-mono text-[11px]"
             aria-label="Назва міста для ручної локації"
+            style={{ transformOrigin: '0% 0%', animation: 'editorFlyIn .38s cubic-bezier(.2,1.1,.4,1) both' }}
           />
           <button
             type="submit"
             disabled={setLoc.isPending || !city.trim()}
             className="rounded-full px-3 py-1 text-[10.5px] font-semibold disabled:opacity-50"
-            style={{ background: 'var(--grad)', color: 'var(--color-onacc)' }}
+            style={{
+              background: 'var(--grad)',
+              color: 'var(--color-onacc)',
+              transformOrigin: '0% 0%',
+              animation: 'editorFlyIn .38s 60ms cubic-bezier(.2,1.1,.4,1) both',
+            }}
           >
             {setLoc.isPending ? '…' : manualGeo ? 'Оновити' : 'Встановити'}
           </button>
@@ -239,6 +257,7 @@ export function WeatherBlock({
                 })
               }
               className="text-[10.5px] font-medium text-tx3 disabled:opacity-50"
+              style={{ transformOrigin: '0% 0%', animation: 'editorFlyIn .38s 110ms cubic-bezier(.2,1.1,.4,1) both' }}
             >
               Прибрати
             </button>
@@ -246,7 +265,10 @@ export function WeatherBlock({
           {/* Автозаповнення (фідбек власника) — обраний кандидат несе готові
               lat/lon, повторне геокодування на сервері пропускається. */}
           {suggestions.length > 0 && (
-            <div className="flex basis-full flex-col gap-0.5 rounded-lg border border-glassb bg-glass p-1">
+            <div
+              className="flex basis-full flex-col gap-0.5 rounded-lg border border-glassb bg-glass p-1"
+              style={{ animation: 'fadeUp .2s ease' }}
+            >
               {suggestions.map((s, i) => (
                 <button
                   key={`${s.lat},${s.lon},${i}`}
