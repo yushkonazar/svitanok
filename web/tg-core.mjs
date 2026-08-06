@@ -71,6 +71,17 @@ export function parseUpdate(update) {
   }
   if (update.message) {
     const m = update.message;
+    // location — відповідь на /locate: KeyboardButton{request_location:true}
+    // шле {latitude, longitude, horizontal_accuracy?}, без тексту в тому ж
+    // повідомленні. Лише координати нам потрібні — решту полів (heading,
+    // live_period тощо, для Live Location) свідомо не читаємо: той шлях
+    // навмисно НЕ обраний (фідбек власника — ненадійний фоновий дозвіл ОС +
+    // 8-годинний ліміт Telegram; одноразовий тап натомість).
+    const loc = m.location;
+    const location =
+      loc && Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude)
+        ? { latitude: loc.latitude, longitude: loc.longitude }
+        : null;
     return {
       kind: 'message',
       updateId,
@@ -79,6 +90,7 @@ export function parseUpdate(update) {
       messageId: m.message_id ?? null, // G1: щоб /clear міг видалити й вхідні власника
       threadId: m.message_thread_id ?? null,
       text: typeof m.text === 'string' ? m.text : '',
+      location,
     };
   }
   return { kind: 'other', updateId };
@@ -347,7 +359,12 @@ export const COMMANDS = [
   { command: 'roadmap', description: 'IT-роадмеп (теми, прогрес)' },
   { command: 'clear', description: 'Видалити останні N повідомлень — мої та твої (за замовч. 20)' },
   { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
+  { command: 'locate', description: 'Оновити позицію за GPS (для точної погоди в Mini App)' },
 ];
+
+// Ярлик кнопки скасування тимчасової клавіатури /locate — окремий рядок, а не
+// KEYBOARD_ALIASES: не команда, а вихід зі стану «чекаю на геопозицію».
+export const LOCATE_CANCEL_LABEL = '⬅️ Скасувати';
 
 // Reply-keyboard «пад» швидких дій (персистентний, шлеться раз на /start).
 // Ревʼю Telegram-механік (фідбек власника): попередній набір (Статистика/

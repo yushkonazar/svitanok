@@ -48,6 +48,7 @@ import {
   shouldAutoDispatchBrief,
   COMMANDS,
   REPLY_KEYBOARD,
+  LOCATE_CANCEL_LABEL,
 } from './tg-core.mjs';
 import {
   parseReminderTime,
@@ -1860,6 +1861,7 @@ const HELP_TEXT = [
   '/settings — тихі години, ціль, модулі брифінгу',
   '/clear [N] — видалити останні N повідомлень тут — мої та твої (за замовч. 20)',
   '/whereami — chat_id/thread_id цього чату',
+  '/locate — оновити позицію за GPS (точна погода в Mini App, замість IP-приблизності)',
 ].join('\n');
 
 /**
@@ -3032,9 +3034,56 @@ async function proposeCalendarChanges(env, parsed, rawProposal) {
   });
 }
 
+// Клавіатура, що чекає на GPS-позицію (/locate) — request_location доступний
+// ЛИШЕ як властивість KeyboardButton, inline-кнопки цього не вміють (Bot
+// API). Скасування — окремий рядок нижче: без нього власник лишався б із
+// однокнопковою клавіатурою, якщо передумав ділитись позицією.
+function locateKeyboard() {
+  return {
+    keyboard: [[{ text: '📍 Надіслати позицію', request_location: true }], [LOCATE_CANCEL_LABEL]],
+    resize_keyboard: true,
+  };
+}
+
+function normalKeyboard() {
+  return { keyboard: REPLY_KEYBOARD, resize_keyboard: true, is_persistent: true };
+}
+
+/**
+ * Обробити GPS-позицію з /locate (фідбек власника: IP-геолокація не
+ * встигає за реальним рухом; Live Location відкинуто — фоновий дозвіл ОС +
+ * 8-годинний ліміт Telegram занадто нав'язливо для одноразової звірки).
+ * Той самий ownerGeoManual, що ручний пошук у Mini App (WeatherBlock) —
+ * єдине джерело правди для «власник сам сказав, де він», байдуже, звідки
+ * прийшла назва (тап у чаті чи вибір зі списку).
+ *
+ * lat/lon гарантовано скінченні числа — parseUpdate (tg-core.mjs) вже
+ * відфільтрував биті координати до null ДО того, як handleCommand
+ * викликає це (parsed.location взагалі не було б truthy інакше).
+ */
+async function handleLocationShare(env, parsed, sendText) {
+  const { latitude: lat, longitude: lon } = parsed.location;
+  const name = env.WEATHER_API_KEY
+    ? ((await reverseGeocodeCity(lat, lon, env.WEATHER_API_KEY)) ?? 'Твоя локація')
+    : 'Твоя локація';
+  const manual = { lat: roundGeo(lat), lon: roundGeo(lon), name, setAtMs: Date.now() };
+  await env.BRIEFING.put('ownerGeoManual', JSON.stringify(manual));
+  return sendText(`📍 Позицію оновлено: ${name}. Погода в Mini App підхопить за кілька секунд.`, {
+    reply_markup: normalKeyboard(),
+  });
+}
+
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
 async function handleCommand(env, parsed, origin) {
   const sendText = sendTo(env, parsed);
+
+  // GPS-позиція (відповідь на /locate) і скасування тимчасової клавіатури —
+  // ОБИДВА поза звичайним parseCommand: перше не має тексту взагалі, друге —
+  // не команда й не reply-keyboard alias з KEYBOARD_ALIASES.
+  if (parsed.location) return handleLocationShare(env, parsed, sendText);
+  if (parsed.text === LOCATE_CANCEL_LABEL) {
+    return sendText('Гаразд, без змін.', { reply_markup: normalKeyboard() });
+  }
 
   const cmd = parseCommand(parsed.text);
   if (!cmd) {
@@ -3073,6 +3122,10 @@ async function handleCommand(env, parsed, origin) {
       return sendText(HELP_TEXT, { parse_mode: 'HTML' });
     case 'agent':
       return sendText(AGENT_TEXT, { parse_mode: 'HTML' });
+    case 'locate':
+      return sendText('Тисни кнопку нижче, щоб надіслати поточну GPS-позицію 📍', {
+        reply_markup: locateKeyboard(),
+      });
     case 'brief': {
       // Кулдаун 1 год (SL2): кожен /brief = повний workflow_dispatch (палить
       // хвилини Actions + квоту KV/новин), guard гасить лише подвійну відправку.
