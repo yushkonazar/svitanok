@@ -75,6 +75,30 @@ export const liveWeatherResponseSchema = z.object({
 });
 export type LiveWeatherResponse = z.infer<typeof liveWeatherResponseSchema>;
 
+// /settlements.json — статичний ассет (web/scripts/gen-settlements.mjs,
+// GeoNames CC-BY 4.0), НЕ /api/*: автозаповнення локації (фідбек власника,
+// продовження ручного перевизначення) шукає ЦІЛКОМ на клієнті — «звичайна
+// пошукова логіка», без мережевого запиту на кожен keystroke. Кортеж, не
+// обʼєкт (менший файл): [name, lat, lon, country, region]. region — область
+// для України, null для решти світу (там вистачає country-коду).
+export const settlementSchema = z.tuple([
+  z.string(),
+  z.number(),
+  z.number(),
+  z.string(),
+  z.string().nullable(),
+]);
+export const settlementsSchema = z.array(settlementSchema);
+export type SettlementTuple = z.infer<typeof settlementSchema>;
+
+export interface Settlement {
+  name: string;
+  lat: number;
+  lon: number;
+  country: string;
+  region: string | null;
+}
+
 export const currencyDataSchema = z.object({
   usd: z.number().optional(),
   eur: z.number().optional(),
