@@ -564,14 +564,33 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       const firstOpenToday = !(day.opens > 0);
       if (firstOpenToday && typeof nowMin === 'number' && nowMin >= 0)
         capPush(s.opensMin, Math.round(nowMin));
-      // Сон: перше відкриття доби — безкоштовний проксі «прокинувся». Закриває
-      // БУДЬ-ЯКУ ще не закриту МИНУЛУ ніч (ключ != поточна дата) — не лише
-      // вчорашню: якщо застосунок не відкривали кілька днів, перше ж
-      // відкриття закриває найдавнішу відкриту ніч теж, а не губить дані мовчки.
-      if (firstOpenToday && typeof nowIso === 'string' && nowIso) {
+      // Сон: перше відкриття ПІСЛЯ реального сну — безкоштовний проксі
+      // «прокинувся». Закриває БУДЬ-ЯКУ ще не закриту МИНУЛУ ніч (ключ !=
+      // поточна дата) — не лише вчорашню: якщо застосунок не відкривали
+      // кілька днів, перше ж відкриття закриває найдавнішу відкриту ніч теж.
+      //
+      // ⚠️ Регресія (фідбек власника): раніше цей блок гейтився firstOpenToday
+      // — тим самим прапорцем, що й opensMin вище. Пізній передсонний тап
+      // (Kyiv-доба вже перевалила північ, до тапу «Ліг спати») з'їдав «перше
+      // відкриття дня» ще ДО сну; РЕАЛЬНЕ ранкове відкриття того ж
+      // календарного дня більше не було «першим», і автозаповнення чек-іну
+      // мовчки не спрацьовувало. Замість дня — поріг мінімального часу від
+      // старту сну: підстраховує від миттєвого повторного відкриття одразу
+      // після тапу «Ліг спати» (той самий edge case, що раніше прикривав
+      // firstOpenToday), але не залежить від календарної доби.
+      const MIN_HOURS_BEFORE_WAKE = 1;
+      if (typeof nowIso === 'string' && nowIso) {
         let touchedCheckins = false;
         for (const [k, night] of Object.entries(s.sleepLog)) {
-          if (night?.startedAt && !night.wokeAt && k !== dateKey) {
+          const hours = night?.startedAt
+            ? (Date.parse(nowIso) - Date.parse(night.startedAt)) / 3_600_000
+            : NaN;
+          if (
+            night?.startedAt &&
+            !night.wokeAt &&
+            k !== dateKey &&
+            hours >= MIN_HOURS_BEFORE_WAKE
+          ) {
             night.wokeAt = nowIso;
             // Авто-заповнення ранкового чек-іну точними даними (власник,
             // Блок «Сон»: без цього ранкові sleepH/bedtime лишались
@@ -580,7 +599,6 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
             // очищення (null) теж НЕ перезаписуємо, той самий контракт, що
             // cleanCheckin.
             const morningDay = addDays(k, 1);
-            const hours = (Date.parse(nowIso) - Date.parse(night.startedAt)) / 3_600_000;
             if (!s.checkins[morningDay] || typeof s.checkins[morningDay] !== 'object') {
               s.checkins[morningDay] = {};
             }
