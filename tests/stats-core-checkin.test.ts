@@ -924,8 +924,10 @@ describe('aggregateStats — вогники (flames, evening)', () => {
   it('missedTops: порожні доби БЕЗ вечірнього чек-іну не рахуються (не шумлять рейтинг)', () => {
     let s = emptyStore();
     s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
-    // aggregateStats дивиться на 12-тижневе вікно назад від todayKey — усі ці
-    // тижні до 10.07 порожні (нема жодного чек-іну), і не мусять псувати рейтинг.
+    // Вікно росте ВІД першого чек-іну (weeksAvailable, stats-core.mjs), тож тут
+    // воно й так лише 1 тиждень — жодної порожньої до-стартової доби нема. Тест
+    // лишається валідним: у ВІКНІ (з 06.07 по 10.07) лише 10.07 має чек-ін,
+    // решта днів без запису взагалі й не рахуються в missedTops (гейт нижче).
     const f = aggregateStats(s, '2026-07-10').flameStats;
     const byValue = Object.fromEntries(
       f.missedTops.map((r: { value: string; n: number }) => [r.value, r.n]),
@@ -937,8 +939,9 @@ describe('aggregateStats — вогники (flames, evening)', () => {
     expect(byValue.chess).toBeUndefined();
   });
 
-  it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються', () => {
+  it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються (повне вікно)', () => {
     let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['tiktok'] }), '2026-01-01'); // >12 тижнів тому -> капає вікно на максимум
     s = recordEvent(s, ck('evening', { flames: ['duolingo', 'tiktok'] }), '2026-07-06');
     const fw = aggregateStats(s, '2026-07-07').flameStats.weekly;
     expect(fw).toHaveLength(12);

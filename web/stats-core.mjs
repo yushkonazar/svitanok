@@ -930,7 +930,12 @@ const median = (arr) => {
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
 
-/** Теплокарта активності: від понеділка ~12 тижнів тому до сьогодні (вкл.).
+/** Максимальна глибина теплокарти — 12 тижнів, або менше, якщо перший
+ *  реальний запис активності свіжіший (weeksAvailable). */
+const HEATMAP_WEEKS = 12;
+
+/** Теплокарта активності: від понеділка тижня першого реального запису
+ *  (не більш як HEATMAP_WEEKS тижнів тому) до сьогодні (вкл.).
  *  value = сума дій дня (opens+mock+news), level 0..4 — фіксовані пороги,
  *  щоб колір мав стале значення день у день.
  *
@@ -938,10 +943,8 @@ const median = (arr) => {
  *  і три різні дні (тричі заходив / відповів на питання / читав новини) виглядали
  *  однаково. Тепер тап по клітинці може сказати, ЩО саме то був за день. */
 function buildHeatmap(days, todayKey) {
-  const d = new Date(todayKey + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - 83);
-  // до понеділка — тим самим weekStartKey, що й тижневі кошики (одна конвенція)
-  d.setTime(Date.parse(weekStartKey(d.toISOString().slice(0, 10)) + 'T00:00:00Z'));
+  const weeks = weeksAvailable(days, todayKey, HEATMAP_WEEKS);
+  const d = new Date(lastWeekStarts(todayKey, weeks)[0] + 'T00:00:00Z');
   const out = [];
   for (;;) {
     const k = d.toISOString().slice(0, 10);
@@ -1002,7 +1005,7 @@ function buildOpenRhythm(opensMin) {
  * краще, ніж місяць тому» — для цього потрібен тренд, а не сітка.
  */
 function buildHabitWeekly(days, todayKey, weeks = 12) {
-  const starts = lastWeekStarts(todayKey, weeks);
+  const starts = lastWeekStarts(todayKey, weeksAvailable(days, todayKey, weeks));
   const buckets = Object.fromEntries(
     starts.map((k) => [k, { active: 0, days: 0, opens: 0, mock: 0, news: 0 }]),
   );
@@ -1057,7 +1060,7 @@ function buildHabitWeekly(days, todayKey, weeks = 12) {
  *     «що частіше пропускаю», дієвіший сигнал за «що частіше обирав».
  */
 function buildFlameStats(checkins, todayKey, weeks = 12) {
-  const starts = lastWeekStarts(todayKey, weeks);
+  const starts = lastWeekStarts(todayKey, weeksAvailable(checkins, todayKey, weeks));
   const buckets = Object.fromEntries(
     starts.map((k) => [k, { active: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
@@ -1111,6 +1114,32 @@ export function lastWeekStarts(todayKey, n) {
     d.setUTCDate(d.getUTCDate() + 7);
   }
   return out;
+}
+
+/** Понеділок тижня НАЙДАВНІШОГО ключа "YYYY-MM-DD" в obj, або null коли порожньо. */
+function earliestWeekStart(dateKeyedObj) {
+  const keys = Object.keys(dateKeyedObj).filter(isDateKey).sort();
+  return keys.length ? weekStartKey(keys[0]) : null;
+}
+
+/**
+ * Скільки тижнів РЕАЛЬНО є від першого запису в obj до todayKey — капнуто на
+ * `max`, не менше 1. Порожній obj -> max (нема від чого відштовхнутись, і
+ * порожній результат однаково не рендериться — усі споживачі гейтяться на
+ * length>=2 далі по стеку).
+ *
+ * ⚠️ Фідбек власника: фіксовані вікна (12/26 тижнів) завжди рахувались НАЗАД
+ * від today, тож перші місяці після запуску Світанку вікно захоплювало тижні
+ * ДО того, як застосунок узагалі існував — порожні тижні тягнули середні
+ * показники вниз і псували графіки (heatmap/«найактивніший день»/утримання/
+ * тренд інтересу). Тепер вікно росте ВІД моменту першого реального запису, а
+ * не завжди на повну глибину назад.
+ */
+function weeksAvailable(dateKeyedObj, todayKey, max) {
+  const first = earliestWeekStart(dateKeyedObj);
+  if (!first) return max;
+  const weeksSince = Math.floor(dayDiff(first, weekStartKey(todayKey)) / 7) + 1;
+  return Math.max(1, Math.min(max, weeksSince));
 }
 
 /* ── Агрегація чек-іну ─────────────────────────────────────────────────────
@@ -1587,9 +1616,10 @@ function buildFitWeekly(appliedLog, todayKey, weeks = 8) {
   }));
 }
 
-/** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів. */
+/** Тренд інтересів: топ-`topN` тем за всю історію × останні `weeks` тижнів
+ *  (звужено до weeksAvailable — не раніше першого тижневого кошика). */
 function buildInterestsTrend(interests, interestsWeekly, todayKey, weeks = 6, topN = 5) {
-  const starts = lastWeekStarts(todayKey, weeks);
+  const starts = lastWeekStarts(todayKey, weeksAvailable(interestsWeekly, todayKey, weeks));
   const topics = Object.entries(interests)
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])

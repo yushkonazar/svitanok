@@ -3,17 +3,22 @@ import type { Stats } from '../../api/schema.ts';
 import { shortDateFromIso } from '../../lib/dateLabel.ts';
 import { haptic } from '../../telegram.ts';
 
-// Утримання по тижнях: скільки діб тижня були активними, і З ЧОГО складалась
-// активність (відкриття / питання / новини).
+// Утримання по тижнях: скільки дій зробив за тиждень (відносно найактивнішого
+// з показаних), і З ЧОГО складалась активність (відкриття / питання / новини).
 //
-// Дві шкали в одному графіку свідомо РОЗДІЛЕНІ, а не накладені:
-//   - висота стовпця = % активних діб тижня (утримання, головна метрика);
-//   - сегменти всередині = склад дій того тижня (частки opens/mock/news).
-// Стек саме тут коректний: три категорії (ui-ux-pro-max: part-to-whole ≤5,
-// stacked bar — рекомендований варіант; pie/donut має grade C і відпадає).
+// ⚠️ Регресія (фідбек власника): висота раніше кодувала % активних діб тижня
+// (active/days). Але два тижні з ОДНАКОВИМ покриттям (напр. 5/5 діб) дають
+// ОДНАКОВУ висоту, навіть якщо один — 51 дія, а другий — 177: ratio активних
+// діб математично не може розрізнити ці тижні (обидва =1.0), тож різниця в
+// обсязі була невидимою саме там, де на неї тапали подивитись. Тепер висота =
+// обсяг дій відносно найактивнішого тижня вікна; покриття (active/days) і
+// далі показується в деталі під графіком і в бейджі «Утримання» вище (той
+// рахує окремо, з самого habitWeekly, а не з висоти стовпця).
 //
-// Знаменник — days, а не 7: поточний тиждень ще триває, і ділення на 7 робило
-// б його штучно провальним щопонеділка.
+// Сегменти всередині стовпця лишаються складом активності (частки
+// opens/mock/news) — стек тут коректний: три категорії (ui-ux-pro-max:
+// part-to-whole ≤5, stacked bar — рекомендований варіант; pie/donut має
+// grade C і відпадає).
 
 const W = 300;
 const H = 92;
@@ -30,14 +35,10 @@ export function HabitTrend({ weeks }: { weeks: Stats['habitWeekly'] }) {
 
   const rows = useMemo(
     () =>
-      weeks.map((w) => {
-        const total = w.opens + w.mock + w.news;
-        return {
-          ...w,
-          pct: w.days > 0 ? w.active / w.days : 0,
-          total,
-        };
-      }),
+      weeks.map((w) => ({
+        ...w,
+        total: w.opens + w.mock + w.news,
+      })),
     [weeks],
   );
 
@@ -47,6 +48,7 @@ export function HabitTrend({ weeks }: { weeks: Stats['habitWeekly'] }) {
   const gap = Math.min(3, barW * 0.18);
   const plotH = H - PAD_B;
   const sel = tap !== null ? rows[tap] : null;
+  const maxTotal = Math.max(1, ...rows.map((r) => r.total));
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -64,7 +66,7 @@ export function HabitTrend({ weeks }: { weeks: Stats['habitWeekly'] }) {
         ))}
         {rows.map((r, i) => {
           const x = 2 + i * barW;
-          const h = Math.max(2, r.pct * (plotH - 4));
+          const h = Math.max(2, (r.total / maxTotal) * (plotH - 4));
           const y = plotH - h;
           // Сегменти всередині стовпця — частки складу активності.
           let acc = 0;
