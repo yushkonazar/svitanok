@@ -25,6 +25,8 @@ function env(overrides: Record<string, unknown> = {}) {
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
+    TELEGRAM_CHAT_ID: String(OWNER),
+    TOPIC_ASSISTANT: '5',
     WEATHER_API_KEY: 'wkey',
     ...overrides,
   };
@@ -36,6 +38,51 @@ function ctx() {
     waitUntil: (p: Promise<unknown>) => void promises.push(p),
     settle: () => Promise.all(promises),
   };
+}
+
+/** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData
+ *  (потрібен лише для POST /api/weather/locate-prompt — Mini App auth, НЕ
+ *  webhook secret-token, яким автентифікуються решта тестів цього файлу). */
+async function buildInitData(userId: number, botToken: string) {
+  const user = JSON.stringify({ id: userId, first_name: 'O' });
+  const authDate = Math.floor(Date.now() / 1000);
+  const params = new URLSearchParams({ user, auth_date: String(authDate) });
+  const dataCheck = [...params.entries()]
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join('\n');
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode('WebAppData'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
+  const secretKey = await crypto.subtle.importKey(
+    'raw',
+    secretBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
+  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
+  params.set('hash', hash);
+  return params.toString();
+}
+
+async function postLocatePrompt(initData: string | null, e = env()) {
+  return worker.fetch(
+    new Request('https://svitanok.example/api/weather/locate-prompt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    }),
+    e,
+    { waitUntil: () => {} },
+  );
 }
 
 async function sendUpdate(message: Record<string, unknown>, e = env(), updateId = 1) {
@@ -149,5 +196,46 @@ describe('скасування (LOCATE_CANCEL_LABEL)', () => {
     expect(lastSendText()).toContain('без змін');
     const markup = lastSend()?.body.reply_markup as { keyboard: string[][] };
     expect(markup.keyboard[0]?.[0]).toBe('📅 Сьогодні'); // REPLY_KEYBOARD, не locate-клавіатура
+  });
+});
+
+describe('POST /api/weather/locate-prompt — тригер із Mini App', () => {
+  it('без initData -> 401', async () => {
+    const res = await postLocatePrompt(null);
+    expect(res.status).toBe(401);
+  });
+
+  it('чужий user id -> 403', async () => {
+    const initData = await buildInitData(9999, 'bot-token');
+    const res = await postLocatePrompt(initData);
+    expect(res.status).toBe(403);
+  });
+
+  it('немає TELEGRAM_CHAT_ID -> 503 not-configured', async () => {
+    const initData = await buildInitData(OWNER, 'bot-token');
+    const res = await postLocatePrompt(initData, env({ TELEGRAM_CHAT_ID: undefined }));
+    expect(res.status).toBe(503);
+  });
+
+  it('успіх -> шле ТОЙ САМИЙ /locate-промпт у TELEGRAM_CHAT_ID/TOPIC_ASSISTANT (проактивно, не в parsed.chatId)', async () => {
+    const initData = await buildInitData(OWNER, 'bot-token');
+    const res = await postLocatePrompt(initData);
+    expect(res.status).toBe(200);
+
+    const sent = lastSend();
+    expect(sent?.body).toMatchObject({ chat_id: String(OWNER), message_thread_id: '5' });
+    expect(sent?.body.text).toContain('GPS-позицію');
+    const markup = sent?.body.reply_markup as { keyboard: unknown[][] };
+    expect(markup.keyboard[0]?.[0]).toMatchObject({ request_location: true });
+  });
+
+  it('Telegram sendMessage повернув помилку -> 502, не тихий «ok:true»', async () => {
+    vi.stubGlobal('fetch', async (input: unknown) => {
+      if (String(input).includes('api.telegram.org')) return new Response('down', { status: 500 });
+      return new Response('{}', { status: 200 });
+    });
+    const initData = await buildInitData(OWNER, 'bot-token');
+    const res = await postLocatePrompt(initData);
+    expect(res.status).toBe(502);
   });
 });

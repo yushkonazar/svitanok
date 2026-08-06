@@ -1172,6 +1172,42 @@ async function handleWeatherLocation(request, env) {
   return json({ ok: true, manualGeo: { name: manual.name } });
 }
 
+/**
+ * POST /api/weather/locate-prompt {initData} -> тригер /locate-промпту
+ * (кнопка request_location), ІНІЦІЙОВАНИЙ З MINI APP (фідбек власника:
+ * «можна зробити цю кнопку тригер у самій апці?»). WebView не вміє показати
+ * нативну кнопку геолокації сама — request_location існує ВИКЛЮЧНО як
+ * властивість KeyboardButton у ЧАТІ (Bot API), Mini App цього не обходить.
+ * Натомість Mini App просить БОТА проактивно надіслати ТОЙ САМИЙ промпт, що
+ * й команда /locate (locateKeyboard, worker.js:handleCommand) — власник
+ * тапає кнопку вже в чаті, Mini App лише скорочує шлях «не пам'ятати
+ * команду», сам факт тапу все одно лишається в чаті, не тут.
+ *
+ * env.TELEGRAM_CHAT_ID/env.TOPIC_ASSISTANT — той самий проактивний шлях
+ * (не parsed.chatId — тут немає вхідного апдейту), що вже шле нагадування/
+ * dead-man-перевірку.
+ */
+async function handleWeatherLocatePrompt(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  const auth = await checkOwner(body?.initData, env);
+  if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'not-configured' }, 503);
+
+  const res = await tgCall(env, 'sendMessage', {
+    chat_id: env.TELEGRAM_CHAT_ID,
+    message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+    text: 'Тисни кнопку нижче, щоб надіслати поточну GPS-позицію 📍',
+    reply_markup: locateKeyboard(),
+  });
+  if (!res.ok) return json({ ok: false, error: 'telegram-failed' }, 502);
+  return json({ ok: true });
+}
+
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
  *  воронка, інтереси — приватні; без initData -> 401/403 (фронт ховає таб). */
 async function handleStats(request, env) {
@@ -4511,6 +4547,9 @@ export default {
     }
     if (url.pathname === '/api/weather/location') {
       return handleWeatherLocation(request, env);
+    }
+    if (url.pathname === '/api/weather/locate-prompt') {
+      return handleWeatherLocatePrompt(request, env);
     }
     if (url.pathname === '/api/settings') {
       return handleSettings(request, env);
