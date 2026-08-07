@@ -115,6 +115,12 @@ export function HabitsBlock({ s }: { s: Stats }) {
 
   const flames = s.flameStats;
 
+  // Вікна не завжди рівно 12/26 тижнів — щойно запущений трекер росте від
+  // моменту першого запису (stats-core.mjs: weeksAvailable), тож підпис
+  // мусить показувати РЕАЛЬНУ глибину, а не завжди «12», інакше сам підпис
+  // бреше, поки історія коротша за максимум.
+  const heatmapWeeks = Math.ceil(s.heatmap.length / 7);
+
   return (
     <div className="flex flex-col gap-3.5">
       <SectionHead>Звички</SectionHead>
@@ -139,7 +145,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
       {hw.length >= 2 && (
         <Card>
           <div className="flex items-baseline gap-2">
-            <SubLabel>УТРИМАННЯ · 12 ТИЖНІВ</SubLabel>
+            <SubLabel>УТРИМАННЯ · {hw.length} ТИЖ.</SubLabel>
             {delta !== null && (
               <span
                 className="ml-auto font-mono text-[10.5px] font-semibold"
@@ -160,9 +166,9 @@ export function HabitsBlock({ s }: { s: Stats }) {
             <HabitTrend weeks={hw} />
           </div>
           <Hint>
-            Висота стовпця — скільки діб тижня ти був активним (поточний тиждень рахується лише
-            за дні, що вже минули). Кольори всередині — з чого та активність складалась. Тапни
-            на тиждень, щоб побачити числа.
+            Висота стовпця — скільки дій зробив за тиждень відносно найактивнішого з показаних.
+            Кольори всередині — з чого та активність складалась. Тапни на тиждень, щоб побачити
+            числа (і скільки діб тижня був активним).
           </Hint>
         </Card>
       )}
@@ -200,7 +206,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
           для time-based intensity), але клітинка тепер знає СКЛАД дня. */}
       {showHeatmap && (
         <Card>
-          <SubLabel>ЩОДЕННА АКТИВНІСТЬ · 12 ТИЖНІВ</SubLabel>
+          <SubLabel>ЩОДЕННА АКТИВНІСТЬ · {heatmapWeeks} ТИЖ.</SubLabel>
           <div className="mt-2">
             <Heatmap cells={s.heatmap} />
           </div>
@@ -211,7 +217,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
           <div className="mt-3.5 border-t border-glassb pt-3">
             <WeekdayBars cells={s.heatmap} />
             <Hint>
-              Середня активність за днем тижня за всі 12 тижнів. Показує, який день у тебе
+              Середня активність за днем тижня за {heatmapWeeks} тиж. Показує, який день у тебе
               системно провальний — це майже завжди той самий день, а не випадковість.
             </Hint>
           </div>
@@ -223,7 +229,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
           («чи тримаю звичку»), а не про добробут дня. */}
       {flames.tops.length > 0 && (
         <Card>
-          <SubLabel>ВОГНИКИ В ІНШИХ ЗАСТОСУНКАХ · 12 ТИЖНІВ</SubLabel>
+          <SubLabel>ВОГНИКИ В ІНШИХ ЗАСТОСУНКАХ · {flames.weekly.length} ТИЖ.</SubLabel>
 
           {/* Ідея поля — памʼятати заходити у ВСІ застосунки, не скільки
               разів обирав який (той лічильник тривіальний: коли flames

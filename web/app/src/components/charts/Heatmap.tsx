@@ -71,6 +71,7 @@ export function Heatmap({ cells }: { cells: HeatmapCell[] }) {
   const W = AXIS_W + cols.length * STEP;
   const H = AXIS_H + 7 * STEP;
   const sel = tap ? cells.find((c) => c.d === tap) : null;
+  const weeksLabel = `${cols.length} тиж.`;
 
   return (
     <div ref={ref} className="flex flex-col gap-1.5">
@@ -79,7 +80,7 @@ export function Heatmap({ cells }: { cells: HeatmapCell[] }) {
           viewBox={`0 0 ${W} ${H}`}
           style={{ width: W, maxWidth: '100%', height: 'auto' }}
           role="img"
-          aria-label="Сітка активності за 12 тижнів: колонка — тиждень, рядок — день тижня"
+          aria-label={`Сітка активності за ${weeksLabel}: колонка — тиждень, рядок — день тижня`}
         >
           {monthTicks.map((t) => (
             <text
