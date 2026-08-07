@@ -91,6 +91,34 @@ const CHECKIN_CAP = 365;
 // звіряється з ним, зберігаючи бакет на sleepLog-записі.
 export const BEDTIME_BUCKETS = ['e23', 'e00', 'e01', 'e02', 'late'];
 
+/**
+ * Дозволені значення "Скільки годин ти спав?" — СЕРЕДИНИ діапазонів
+ * (<4, 4–5, …, 9+). ДЗЕРКАЛО `qs.sleepH.o` у
+ * web/app/src/components/checkin/questions.ts: змінюєш тут — міняй і там.
+ *
+ * ⚠️ Це не декоративний перелік, а контракт із UI. CheckinScreen підсвічує
+ * варіант СУВОРОЮ рівністю (`answers[q.id] === v`), тож будь-яке значення поза
+ * цим набором рендериться як «нічого не обрано».
+ */
+export const SLEEP_H_BUCKETS = [3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5];
+
+/**
+ * Приліпити виміряні години сну до бакета UI (7.6год -> 7.5, тобто «7–8»).
+ *
+ * ⚠️ Регресія (фідбек власника: «досі не працює автоматична підстановка часу
+ * сну»). Автозаповнення писало ТОЧНЕ число (Math.round(h*10)/10 -> 7.6), а UI
+ * знає лише сім середин вище й звіряє їх сувору рівність — 7.6 !== 7.5, тож
+ * жоден варіант не підсвічувався й екран виглядав порожнім, хоч значення в KV
+ * лежало. Точність при цьому НЕ втрачається: «🌙 Точний сон» у Статистиці
+ * рахується з sleepLog (startedAt/wokeAt), а не з цього поля.
+ *
+ * floor(h)+0.5 — рівно семантика діапазонів: 7.0..7.99 -> «7–8».
+ */
+export function snapSleepHours(h) {
+  const mid = Math.floor(h) + 0.5;
+  return Math.min(SLEEP_H_BUCKETS[SLEEP_H_BUCKETS.length - 1], Math.max(SLEEP_H_BUCKETS[0], mid));
+}
+
 // Дев'ять життєвих категорій (v2, трекер життя) — дзеркало CATEGORIES у
 // web/app/src/components/checkin/questions.ts.
 // export: recordAction/checkin (agent-core.mjs схема) посилається на ТОЙ САМИЙ
@@ -607,7 +635,9 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
             // Той самий діапазон, що CHECKIN_FIELDS.morning.sleepH (num [0,14]) —
             // поза ним тиша зона/кількаденна перерва дала б абсурдне число.
             if (morning.sleepH === undefined && hours > 0 && hours <= 14) {
-              morning.sleepH = Math.round(hours * 10) / 10;
+              // Бакет UI, а не точне число — інакше варіант не підсвітиться
+              // (див. snapSleepHours: сувора рівність у CheckinScreen).
+              morning.sleepH = snapSleepHours(hours);
               filled = true;
             }
             if (morning.bedtime === undefined && night.bedtimeBucket) {
