@@ -386,6 +386,15 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         return null;
       }
       if (!apiKey) ctx.log.warn('news: без NEWSDATA_API_KEY — лише rss-теми');
+      // ⚠️ Без цього warn-а відсутній ключ падав НІМО: cfgT.translate&&translateApiKey
+      // (нижче) просто пропускав pendingTranslate.push, жодного логу — власник
+      // бачив англійські «Світ»-новини й не мав ЖОДНОГО сліду в логах хоста,
+      // чому саме (не помилка виклику — виклику взагалі не було).
+      if (!translateApiKey && cfg.topics.some((t) => (t as TopicCfg).translate)) {
+        ctx.log.warn(
+          'news: GOOGLE_TRANSLATE_API_KEY не задано — прозові world-теми лишаються англійською',
+        );
+      }
 
       const shown = ctx.state.get<ShownNews>('shownNews') ?? {};
       const dedupCutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;

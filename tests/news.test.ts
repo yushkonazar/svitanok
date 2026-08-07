@@ -308,7 +308,7 @@ function memState(initial: Record<string, unknown> = {}): StateStore {
 
 function makeCtx(
   state: StateStore = memState(),
-  opts: { sunday?: boolean; topics?: unknown[] } = {},
+  opts: { sunday?: boolean; topics?: unknown[]; warnLog?: string[] } = {},
 ): Ctx<AppConfig> {
   const noop = () => {};
   return {
@@ -321,7 +321,12 @@ function makeCtx(
       // ЖОДНОГО разу, і саме в ній жив баг із повторним decay на force-ранах.
       isSunday: () => opts.sunday === true,
     },
-    log: { debug: noop, info: noop, warn: noop, error: noop },
+    log: {
+      debug: noop,
+      info: noop,
+      warn: opts.warnLog ? (msg: string) => opts.warnLog!.push(msg) : noop,
+      error: noop,
+    },
     config: {
       modules: {
         news: {
@@ -545,6 +550,27 @@ describe('news — translate: true (Google Cloud Translation)', () => {
     const g = (block!.data as { groups: { items: { title: string }[] }[] }).groups[0]!;
     expect(g.items.map((i) => i.title)).toEqual(['World one', 'World two']);
     expect(translateSpy).not.toHaveBeenCalled();
+  });
+
+  it('без translateApiKey, але є translate:true тема -> попередження в лозі (інакше тиша без сліду)', async () => {
+    const warnLog: string[] = [];
+    const m = createNewsModule({
+      fetchImpl: (async () => worldResp()) as unknown as typeof fetch,
+      translateImpl: vi.fn(),
+    });
+    await m.run(makeCtx(memState(), { topics: WORLD_TOPIC, warnLog }));
+    expect(warnLog.some((l) => l.includes('GOOGLE_TRANSLATE_API_KEY'))).toBe(true);
+  });
+
+  it('без translateApiKey і без жодної translate:true теми -> без зайвого попередження', async () => {
+    const warnLog: string[] = [];
+    const m = createNewsModule({
+      fetchImpl: (async () => worldResp()) as unknown as typeof fetch,
+      translateImpl: vi.fn(),
+    });
+    const topics = [{ ...WORLD_TOPIC[0]!, translate: undefined }];
+    await m.run(makeCtx(memState(), { topics, warnLog }));
+    expect(warnLog.some((l) => l.includes('GOOGLE_TRANSLATE_API_KEY'))).toBe(false);
   });
 
   it('тема БЕЗ translate:true -> ігнорується, навіть якщо ключ є', async () => {
