@@ -2,9 +2,18 @@ import type { HeatmapCell } from '../../api/schema.ts';
 import { useInView } from '../../lib/useInView.ts';
 
 // Агрегація s.heatmap (той самий масив, що Heatmap.tsx) по днях тижня —
-// "який день найактивніший" за всю 12-тижневу історію, а не лише поточний
+// "який день найактивніший" за всю історію збору, а не лише поточний
 // тиждень (те, що вже показує WeekBars). Нуль бекенд-змін: heatmap[].d уже
 // містить дату кожної клітинки, агрегація цілком на фронті.
+//
+// ⚠️ МЕДІАНА, не середнє (фідбек власника: «чи коректні дані на графіках»).
+// Кошик одного дня тижня — це лише 4-5 значень, тож ОДИН аномальний день
+// (напр. коли довго щось налаштовував і відкривав апку десятки разів)
+// перетягував середнє на себе: стовпчик того дня злітав у стелю, решта
+// сплющувалась у Math.max(4,…)-підлогу й ставала візуально нерозрізненною.
+// Виходило, що графік стверджував СИСТЕМНІСТЬ («майже завжди той самий
+// день»), спираючись рівно на одну випадковість — тобто протилежне тому,
+// що обіцяв підпис. Медіана стійка до такого викиду за побудовою.
 //
 // ui-ux-pro-max (--domain chart): "не лише колір" — акцентний день
 // відрізняється й кольором тексту підпису, не тільки кольором стовпчика.
@@ -15,18 +24,23 @@ const MAX_H = 46;
 // getUTCDay(): 0=Нд..6=Сб -> індекс у DOW_LABELS (0=Пн..6=Нд).
 const toMonFirst = (jsDay: number) => (jsDay + 6) % 7;
 
+/** Медіана (порожній кошик -> 0). Той самий метод, що median у stats-core.mjs. */
+function median(xs: number[]): number {
+  if (!xs.length) return 0;
+  const a = [...xs].sort((p, q) => p - q);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m]! : (a[m - 1]! + a[m]!) / 2;
+}
+
 export function WeekdayBars({ cells }: { cells: HeatmapCell[] }) {
   const [ref, inView] = useInView<HTMLDivElement>();
   if (!cells.length) return null;
 
-  const sums = new Array(7).fill(0);
-  const counts = new Array(7).fill(0);
+  const byDow: number[][] = Array.from({ length: 7 }, () => []);
   for (const c of cells) {
-    const dow = toMonFirst(new Date(`${c.d}T00:00:00Z`).getUTCDay());
-    sums[dow] += c.v;
-    counts[dow]++;
+    byDow[toMonFirst(new Date(`${c.d}T00:00:00Z`).getUTCDay())]!.push(c.v);
   }
-  const avgs = sums.map((sum, i) => (counts[i] ? sum / counts[i] : 0));
+  const avgs = byDow.map(median);
   const max = Math.max(1, ...avgs);
   const bestIdx = avgs.indexOf(Math.max(...avgs));
 

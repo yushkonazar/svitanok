@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { postEvent } from './api/client.ts';
@@ -130,13 +131,30 @@ export function App() {
   }, []);
 
   // Подія «відкрито» — раз на завантаження. Стрік «днів поспіль», тижневі
-  // стовпчики, теплокарта 12 тижнів і «час до відкриття» ЖИВЛЯТЬСЯ з days.opens,
+  // стовпчики, теплокарта і «час до відкриття» ЖИВЛЯТЬСЯ з days.opens,
   // а її інкрементує лише ця подія. Старий ваніль-дашборд слав її при кожному
   // завантаженні; React-міграція емісію загубила, тож усі ці метрики стояли
   // нулями (стрік = 0 «ніби втрата даних»). postEvent сам no-op поза Telegram,
   // тож демо не чіпає; сервер (worker.js: type==='open') давно її обробляє.
+  //
+  // ⚠️ Інвалідація ['stats'] ОБОВʼЯЗКОВА (фідбек власника: «не працює
+  // автоматична підстановка часу сну»). Ця подія не просто рахує відкриття —
+  // саме вона на сервері ЗАКРИВАЄ ніч (sleepLog.wokeAt) і ДОПИСУЄ в ранковий
+  // чек-ін sleepH+bedtime (stats-core.mjs, case 'open'). Але useStats()
+  // стартує ПАРАЛЕЛЬНО з цим postEvent, тобто /api/stats рахується ще ДО
+  // дозапису, а staleTime 60с + refetchOnWindowFocus:false означали, що
+  // свіжий sleepH не з'являвся на екрані ВЗАГАЛІ за сесію. Власник відкривав
+  // Чек-ін одразу після запуску — і бачив порожньо, хоч у KV значення вже
+  // лежало. Серверний цикл при цьому справний (tests/worker-sleep-wake).
+  // Той самий onSettled-патерн, що в решти мутацій (hooks.ts).
+  const qc = useQueryClient();
   useEffect(() => {
-    void postEvent('open', {}).catch(() => {});
+    void postEvent('open', {})
+      .then(() => {
+        if (inTelegram()) void qc.invalidateQueries({ queryKey: ['stats'] });
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Невідомий шлях -> домашня.
