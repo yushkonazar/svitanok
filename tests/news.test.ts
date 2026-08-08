@@ -8,6 +8,7 @@ import {
   createNewsModule,
   curlFetch,
   buildNewsUrl,
+  translateBatch,
   WEIGHT_MIN,
   WEIGHT_MAX,
   DAILY_NEWS_LIMIT,
@@ -506,6 +507,69 @@ describe('news — джерело rss (HN / GitHub Releases)', () => {
       }),
     );
     expect(curlSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('news — translateBatch (реальний HTTP-шар, не інжектований translateImpl)', () => {
+  /** Мок Google Translate: віддає UK:<текст> для кожного сегмента запиту. */
+  const okFetch = (seen: string[][]) =>
+    (async (_url: string, init: { body: string }) => {
+      const q = (JSON.parse(init.body) as { q: string[] }).q;
+      seen.push(q);
+      return new Response(
+        JSON.stringify({ data: { translations: q.map((t) => ({ translatedText: `UK:${t}` })) } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+  it('РЕГРЕСІЯ (прод, лог рану: «Google Translate HTTP 400»): >100 сегментів ріжуться на кілька запитів', async () => {
+    // 170 сегментів — реальний масштаб рану (15 тем × ~8 елементів + описи).
+    // Одним тілом це переліт стелі Google (128) -> 400 -> ВЕСЬ переклад рану
+    // відкочувався на англійську.
+    const texts = Array.from({ length: 170 }, (_, i) => `t${i}`);
+    const seen: string[][] = [];
+    const out = await translateBatch(texts, 'k', 'uk', 'en', okFetch(seen));
+
+    expect(seen).toHaveLength(2); // 100 + 70, жоден не перевищує стелю
+    expect(seen.every((chunk) => chunk.length <= 100)).toBe(true);
+    expect(out).toHaveLength(170);
+  });
+
+  it('порядок зшивання зберігається — викликач зіставляє результат за індексом', async () => {
+    const texts = Array.from({ length: 250 }, (_, i) => `t${i}`);
+    const out = await translateBatch(texts, 'k', 'uk', 'en', okFetch([]));
+    expect(out[0]).toBe('UK:t0');
+    expect(out[99]).toBe('UK:t99'); // остання позиція першого шматка
+    expect(out[100]).toBe('UK:t100'); // перша позиція другого
+    expect(out[249]).toBe('UK:t249');
+  });
+
+  it('рівно 100 сегментів -> один запит (межа не дробиться зайвий раз)', async () => {
+    const seen: string[][] = [];
+    await translateBatch(
+      Array.from({ length: 100 }, (_, i) => `t${i}`),
+      'k',
+      'uk',
+      'en',
+      okFetch(seen),
+    );
+    expect(seen).toHaveLength(1);
+  });
+
+  it('помилка Google несе ПРИЧИНУ з тіла, не голий статус (без неї 400 не діагностувався)', async () => {
+    const failing = (async () =>
+      new Response(JSON.stringify({ error: { code: 400, message: 'Too many text segments' } }), {
+        status: 400,
+      })) as unknown as typeof fetch;
+    await expect(translateBatch(['a'], 'k', 'uk', 'en', failing)).rejects.toThrow(
+      /Too many text segments/,
+    );
+  });
+
+  it('порожній вхід -> жодного HTTP-запиту', async () => {
+    const spy = vi.fn();
+    expect(await translateBatch([], 'k', 'uk', 'en', spy as unknown as typeof fetch)).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 

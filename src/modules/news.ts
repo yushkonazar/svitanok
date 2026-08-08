@@ -270,20 +270,29 @@ export function parseNewsData(json: unknown): NewsItem[] {
 }
 
 /**
- * Пакетний переклад через Google Cloud Translation (Basic v2, простий
- * API-key у query — без OAuth/service-account, той самий патерн, що
- * WEATHER_API_KEY/NEWSDATA_API_KEY). Один запит на ВЕСЬ пакет текстів рану —
- * тариф рахує символи, не запити, тож батчити варто заради швидкості й
- * надійності (менше окремих HTTP-викликів, які можуть впасти).
+ * Стеля Google Cloud Translation v2 — 128 сегментів (`q`) на ОДИН запит.
+ *
+ * ⚠️ Регресія (фідбек власника: «прийшло англійською» вже ПІСЛЯ фіксу
+ * проводки секрету). Лог рану: `news: переклад — Google Translate HTTP 400`.
+ * Причина суто арифметична: 15 рядків `translate: true` × до 8 елементів
+ * (perTopic 3 + EXTRA_MORE 5) — це ~120 заголовків, плюс `why` у
+ * newsdata-рядків -> ~170 сегментів в одному тілі запиту. Переліт стелі ->
+ * 400 -> catch у run() -> ВЕСЬ переклад рану тихо відкочувався на англійську.
+ *
+ * 100, а не 128: теми додають регулярно, і другий такий самий обрив коштував
+ * би ще один день англомовних новин. Тариф рахує СИМВОЛИ, не запити, тож
+ * дробити батч не дорожче.
  */
-export async function translateBatch(
+const TRANSLATE_MAX_SEGMENTS = 100;
+
+/** Один запит до Google Translate (≤ TRANSLATE_MAX_SEGMENTS сегментів). */
+async function translateChunk(
   texts: string[],
   apiKey: string,
   target: string,
   source: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch,
 ): Promise<string[]> {
-  if (texts.length === 0) return [];
   const res = await fetchImpl(
     `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
     {
@@ -292,7 +301,16 @@ export async function translateBatch(
       body: JSON.stringify({ q: texts, source, target, format: 'text' }),
     },
   );
-  if (!res.ok) throw new Error(`Google Translate HTTP ${res.status}`);
+  if (!res.ok) {
+    // Тіло помилки Google несе ПРИЧИНУ ("Too many text segments", "API key not
+    // valid" тощо) — без нього голий «HTTP 400» не давав діагностувати нічого,
+    // і саме через це фіча простояла зайвий день. Ключ живе в query, не в
+    // тілі, тож у лог він не потрапляє.
+    const detail = await res.text().catch(() => '');
+    throw new Error(
+      `Google Translate HTTP ${res.status}${detail ? ` — ${detail.replace(/\s+/g, ' ').slice(0, 300)}` : ''}`,
+    );
+  }
   const json = (await res.json()) as {
     data?: { translations?: Array<{ translatedText?: unknown }> };
   };
@@ -303,6 +321,33 @@ export async function translateBatch(
   return translations.map((t, i) =>
     typeof t.translatedText === 'string' ? t.translatedText : texts[i]!,
   );
+}
+
+/**
+ * Пакетний переклад через Google Cloud Translation (Basic v2, простий
+ * API-key у query — без OAuth/service-account, той самий патерн, що
+ * WEATHER_API_KEY/NEWSDATA_API_KEY).
+ *
+ * Ріжемо на шматки по TRANSLATE_MAX_SEGMENTS (див. коментар вище) і
+ * зшиваємо назад У ТОМУ Ж ПОРЯДКУ: викликач (`pendingTranslate`) зіставляє
+ * результат з оригіналами суто за індексом, тож порядок — частина контракту.
+ * Послідовно, не Promise.all: паралельні запити тим самим ключем ловлять
+ * rate-limit, а виграш у часі тут нікому не потрібен (крон, не інтерактив).
+ */
+export async function translateBatch(
+  texts: string[],
+  apiKey: string,
+  target: string,
+  source: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  if (texts.length === 0) return [];
+  const out: string[] = [];
+  for (let i = 0; i < texts.length; i += TRANSLATE_MAX_SEGMENTS) {
+    const chunk = texts.slice(i, i + TRANSLATE_MAX_SEGMENTS);
+    out.push(...(await translateChunk(chunk, apiKey, target, source, fetchImpl)));
+  }
+  return out;
 }
 
 interface TopicCfg {
