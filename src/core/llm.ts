@@ -45,6 +45,11 @@ export const SENSITIVE_ENV_KEYS = [
   'TELEGRAM_BOT_USERNAME',
   'WEATHER_API_KEY',
   'NEWSDATA_API_KEY',
+  // Доїхав у brief.yml разом із перекладом world-новин (28f35d3) — і лишався в
+  // оточенні дочірнього claude, який читає тіла листів і RSS вакансій, тобто
+  // рівно недовірений контент (B3). Тепер перелік стереже тест, що парсить
+  // сам env-блок workflow, а не список, переписаний вручну.
+  'GOOGLE_TRANSLATE_API_KEY',
 ] as const;
 
 /** Копія оточення без секретів із SENSITIVE_ENV_KEYS (defense-in-depth поверх

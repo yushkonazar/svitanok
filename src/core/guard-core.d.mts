@@ -6,6 +6,11 @@ export interface GuardParams {
   kyivHour: number;
   todayKey: string;
   lastSentDate: string | null;
+  /** Обійти лише годинне вікно; ідемпотентність за добу лишається (B2). */
+  forceWindow?: boolean;
+  /** Обійти і вікно, і ідемпотентність — перезаписує сьогоднішній брифінг. */
+  forceSend?: boolean;
+  /** Легасі-синонім forceSend (старі виклики/тести). */
   force?: boolean;
 }
 

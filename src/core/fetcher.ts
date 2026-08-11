@@ -43,6 +43,7 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
       let res: Response;
+      let body: string | null = null;
       try {
         res = await fetchImpl(url, {
           signal: ctrl.signal,
@@ -52,6 +53,12 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
             accept: 'application/rss+xml, application/xml, text/xml, */*',
           },
         });
+        // Тіло — ПІД тим самим таймаутом (B14). Доти clearTimeout спрацьовував
+        // одразу після заголовків, і зависла стрічка тіла (RSS-сервер віддав
+        // 200 й замовк) тримала прогін до 360-хв ліміту job'а. Читаємо лише
+        // для фінальної відповіді: у 3xx тіло не потрібне, а редирект іде
+        // наступним хопом зі своїм свіжим таймаутом.
+        if (res.ok) body = await res.text();
       } finally {
         clearTimeout(timer);
       }
@@ -65,7 +72,7 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
         continue;
       }
       if (!res.ok) throw new Error(`fetch HTTP ${res.status} для ${url}`);
-      return await res.text();
+      return body ?? '';
     }
   }
 

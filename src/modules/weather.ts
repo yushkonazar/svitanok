@@ -9,6 +9,7 @@ import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig, LocationConfig } from '../core/config.js';
 import { optionalSecret } from '../core/secrets.js';
 import { canonicalizeUrl } from '../core/url.js';
+import { fetchJsonWithTimeout } from '../core/google-auth.js';
 
 // Пороги дії — явні константи (§6).
 export const COLD_THRESHOLD_C = 10; // willBeCold = tempC < 10
@@ -328,19 +329,16 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
       let limitHit = false;
 
       // Кожен запит проходить через лічильник; понад ліміт — кидаємо, не фетчимо.
-      const guardedFetch = async (u: string): Promise<Response> => {
+      // Тіло читається ПІД тим самим таймаутом (fetchJsonWithTimeout, B14):
+      // раніше abort знімався одразу після заголовків, і зависла стрічка тіла
+      // тримала прогін до 360-хв ліміту job'а.
+      const guardedJson = async (u: string) => {
         if (counter.count >= DAILY_REQUEST_LIMIT) {
           limitHit = true;
           throw new Error(`денний ліміт запитів OpenWeather вичерпано (${DAILY_REQUEST_LIMIT})`);
         }
         counter.count++;
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-        try {
-          return await fetchImpl(u, { signal: ctrl.signal });
-        } finally {
-          clearTimeout(timer);
-        }
+        return fetchJsonWithTimeout(fetchImpl, u, {}, timeoutMs);
       };
 
       const fetchOneCall = async (loc: LocationConfig): Promise<WeatherToday> => {
@@ -351,12 +349,12 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
         url.searchParams.set('lang', 'ua');
         url.searchParams.set('exclude', 'minutely');
         url.searchParams.set('appid', apiKey);
-        const res = await guardedFetch(url.toString());
+        const res = await guardedJson(url.toString());
         if (!res.ok) {
           // Лог БЕЗ ключа (§19.4).
           throw new Error(`OpenWeather HTTP ${res.status} для ${canonicalizeUrl(url.toString())}`);
         }
-        const parsed = parseOneCall(await res.json(), loc.name, todayKey);
+        const parsed = parseOneCall(res.body, loc.name, todayKey);
         if (!parsed) throw new Error(`порожній onecall для ${loc.name}`);
         return parsed;
       };
@@ -368,9 +366,9 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
           url.searchParams.set('lat', String(loc.lat));
           url.searchParams.set('lon', String(loc.lon));
           url.searchParams.set('appid', apiKey);
-          const res = await guardedFetch(url.toString());
+          const res = await guardedJson(url.toString());
           if (!res.ok) return undefined;
-          return mergeAqi(await res.json());
+          return mergeAqi(res.body);
         } catch {
           return undefined;
         }

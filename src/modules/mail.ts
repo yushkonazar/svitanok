@@ -15,7 +15,7 @@ import type { AppConfig } from '../core/config.js';
 import {
   googleCreds,
   googleAccessToken,
-  withTimeout,
+  fetchJsonWithTimeout,
   type GoogleOAuthCreds,
 } from '../core/google-auth.js';
 import { kyivLocalToUtcMs } from '../core/tz.js';
@@ -201,14 +201,14 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
     const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
     url.searchParams.set('q', query);
     url.searchParams.set('maxResults', String(maxResults));
-    const res = await withTimeout(
-      (signal) =>
-        fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${token}` }, signal }),
+    const res = await fetchJsonWithTimeout<{ messages?: { id: string }[] }>(
+      fetchImpl,
+      url.toString(),
+      { headers: { Authorization: `Bearer ${token}` } },
       timeoutMs,
     );
     if (!res.ok) throw new Error(`Gmail list HTTP ${res.status}`);
-    const json = (await res.json()) as { messages?: { id: string }[] };
-    return (json.messages ?? []).map((m) => m.id);
+    return (res.body?.messages ?? []).map((m) => m.id);
   }
 
   /** Metadata-only (subject+from+snippet) — НІКОЛИ format=full (без тіла листа). */
@@ -217,16 +217,12 @@ export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig
     url.searchParams.set('format', 'metadata');
     url.searchParams.append('metadataHeaders', 'Subject');
     url.searchParams.append('metadataHeaders', 'From');
-    const res = await withTimeout(
-      (signal) =>
-        fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${token}` }, signal }),
-      timeoutMs,
-    );
-    if (!res.ok) return null; // одиничний лист не вдався -> пропустити, не валити весь тріаж
-    const json = (await res.json()) as {
+    const res = await fetchJsonWithTimeout<{
       snippet?: string;
       payload?: { headers?: { name: string; value: string }[] };
-    };
+    }>(fetchImpl, url.toString(), { headers: { Authorization: `Bearer ${token}` } }, timeoutMs);
+    if (!res.ok) return null; // одиничний лист не вдався -> пропустити, не валити весь тріаж
+    const json = res.body ?? {};
     const headers = json.payload?.headers ?? [];
     const subject = headers.find((h) => h.name === 'Subject')?.value ?? '(без теми)';
     const from = headers.find((h) => h.name === 'From')?.value ?? '';

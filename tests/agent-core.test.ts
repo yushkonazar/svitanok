@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів.
+import { OWN_DATA_SCOPES } from '../web/assistant-data-core.mjs';
 // Межі довжини — з реального контракту хоста (той самий репо, окремий деплой).
 // @ts-expect-error — JS-модуль хоста без типів.
 import { MAX_SYSTEM_PROMPT_LEN, MAX_SCHEMA_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
@@ -65,6 +68,34 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       items: { type: 'string' },
     });
   });
+
+  it('top-level "when" оголошений (updateReminder — перенос без зміни тексту, B7)', () => {
+    // Схема мала "when" лише в proposal.items, хоча extractAssistantAction
+    // читає ЩЕ Й top-level structured.when (updateReminder). Строгий
+    // structured-output зрізає неоголошене поле -> «перенеси нагадування на
+    // 18:00» приходило без часу і падало в null -> фолбек-відповідь.
+    expect(ASSISTANT_ACTION_SCHEMA.properties.when).toEqual({ type: 'string' });
+  });
+
+  it('КОЖНЕ top-level поле, яке читає extractAssistantAction, оголошене в схемі', () => {
+    // Механічний інваріант замість переліку вручну (той самий мотив, що
+    // SENSITIVE_ENV_KEYS-тест): наступне поле, дописане в extractAssistantAction
+    // без запису в схему, червонить CI одразу, а не тихо зрізається хостом.
+    //
+    // Динамічні читання чек-іну (structured[k] по CHECKIN_ENUM_FIELDS/
+    // CHECKIN_NUM_FIELDS) сюди НЕ входять свідомо: там схема тримає лише
+    // підмножину полів заради MAX_SCHEMA_LEN, а справжній валідатор —
+    // CHECKIN_ENUM_FIELDS (див. коментар над ним). Це окрема знахідка (B22).
+    const src = readFileSync(new URL('../web/agent-core.mjs', import.meta.url), 'utf8');
+    const start = src.indexOf('export function extractAssistantAction');
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf('\n}', start);
+    const body = src.slice(start, end);
+    const read = new Set([...body.matchAll(/structured\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!));
+    expect(read.size).toBeGreaterThan(10); // зріз тіла функції не зʼїхав
+    const declared = new Set(Object.keys(ASSISTANT_ACTION_SCHEMA.properties));
+    expect([...read].filter((f) => !declared.has(f))).toEqual([]);
+  });
 });
 
 describe('buildAssistantSystemPrompt', () => {
@@ -93,6 +124,14 @@ describe('buildAssistantSystemPrompt', () => {
     expect(p).toContain('readOwnData');
     expect(p).toContain('dataScope');
     expect(p).toContain('Історія'); // ревʼю CM: історія — теж «лише дані»
+  });
+
+  it('називає КОЖНУ область OWN_DATA_SCOPES (промпт — єдине джерело переліку)', () => {
+    // Схема тримає dataScope без enum (бюджет MAX_SCHEMA_LEN, B7) — отже
+    // ЄДИНЕ місце, звідки модель дізнається перелік областей, це промпт. Нова
+    // область у OWN_DATA_SCOPES без згадки тут = недосяжна для моделі.
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    for (const scope of OWN_DATA_SCOPES) expect(p).toContain(scope);
   });
 
   it('НЕ перевищує MAX_SYSTEM_PROMPT_LEN хоста в ЖОДЕН день тижня', () => {

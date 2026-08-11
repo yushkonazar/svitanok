@@ -65,6 +65,10 @@ class Field:
     span: tuple[float, float] | None = None
     # Небінарне зведення (сон): назва спецпроцедури.
     curve: str | None = None
+    # Легасі-значення з KV, яким свідомо НЕ призначено рівня (-> None). Тримаємо
+    # явно, щоб CI-assert на боці JS відрізняв свідоме виключення від забутого
+    # рівня. Дзеркало `legacyUnscored` у web/checkin-model.mjs.
+    legacy_unscored: tuple[str, ...] = ()
 
 
 FIELDS: tuple[Field, ...] = (
@@ -91,14 +95,19 @@ FIELDS: tuple[Field, ...] = (
     Field("focusQuality", "evening", WORK, weight=1.2),
     Field("effort", "evening", WORK, weight=0.6),
     Field("kept", "evening", WORK, weight=1.2, levels=("no", "partly", "changed", "yes")),
-    Field("pace", "afternoon", WORK, weight=0.8, levels=("overload", "behind", "other", "on", "better")),
+    # legacy_unscored: старе «Збився» ("off") пізніше розділили на три різні дні
+    # (behind/other/overload) — відновити, який саме, неможливо, тож свідомо None.
+    Field("pace", "afternoon", WORK, weight=0.8, levels=("overload", "behind", "other", "on", "better"),
+          legacy_unscored=("off",)),
     Field("jobProgress", "evening", WORK, weight=0.6),
     # ── Автономія / сенс ─────────────────────────────────────────────────────
     Field("autonomy", "evening", AGENCY, weight=1.5),
     Field("intentMatch", "derived", AGENCY, weight=1.2, span=(0, 1)),
     Field("jobConfidence", "evening", AGENCY, weight=0.6),
     # ── Тіло / режим ─────────────────────────────────────────────────────────
-    Field("moved", "evening", BODY, weight=1.5, levels=("none", "light", "workout")),
+    # 'active' («Активно») чек-ін збирає з самого початку — без нього BODY (лише
+    # 2 поля) ставав None і викидав УСЮ добу з навчання ваг/архетипів (B5).
+    Field("moved", "evening", BODY, weight=1.5, levels=("none", "light", "active", "workout")),
     Field("outdoor", "evening", BODY, weight=1.2, levels=("none", "short", "long")),
 )
 
@@ -425,7 +434,7 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
             "autonomy": auto,
             "intentMatch": float(rng.random() < 0.55),
             "jobConfidence": int(np.clip(round(rng.normal(3.2, 1.0)), 1, 5)),
-            "moved": rng.choice(["none", "light", "workout"], p=[.35, .45, .20]),
+            "moved": rng.choice(["none", "light", "active", "workout"], p=[.35, .35, .10, .20]),
             "outdoor": rng.choice(["none", "short", "long"], p=[.3, .45, .25]),
             "dayScore": score,
         })
@@ -478,6 +487,12 @@ def emit_golden(path: Path) -> dict:
                 (FIELDS[FIELD_INDEX["rumination"]], 5),
                 (FIELDS[FIELD_INDEX["bedtime"]], "late"),
                 (FIELDS[FIELD_INDEX["moved"]], "workout"),
+                # 'active' — рівень, якого моделі бракувало (B5): пінимо його
+                # позицію (1/3 між light і workout), щоб порт не «повернувся»
+                # до трирівневої шкали непомітно.
+                (FIELDS[FIELD_INDEX["moved"]], "active"),
+                # Легасі pace:"off" — свідомо None, а не здогадка (legacy_unscored).
+                (FIELDS[FIELD_INDEX["pace"]], "off"),
                 (FIELDS[FIELD_INDEX["kept"]], "changed"),
             )
         ],
@@ -493,7 +508,15 @@ def emit_golden(path: Path) -> dict:
         "archetypes": res["archetypes"],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    # newline="\n" + фінальний перенос: файл комітиться в репо, де його чекає
+    # prettier --check. Без явного newline Windows писав би CRLF (Path.write_text
+    # транслює переноси за платформою), і `npm run format:check` червонів би —
+    # причому лише в того, хто регенерував на Windows.
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     return payload
 
 

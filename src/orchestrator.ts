@@ -75,7 +75,10 @@ import { buildPruners } from './core/prune.js';
 
 export interface RunOptions {
   dryRun?: boolean;
-  force?: boolean;
+  /** Обійти лише годинне вікно; ідемпотентність за добу лишається (B2). */
+  forceWindow?: boolean;
+  /** Обійти і вікно, і ідемпотентність — перезаписує сьогоднішній брифінг. */
+  forceSend?: boolean;
 }
 
 export interface RunDeps {
@@ -157,7 +160,8 @@ async function runPhase(
 export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise<RunResult> {
   const { config, clock, state, log } = deps;
   const dryRun = opts.dryRun ?? false;
-  const force = opts.force ?? false;
+  const forceWindow = opts.forceWindow ?? false;
+  const forceSend = opts.forceSend ?? false;
 
   const lastSentDate = state.get<string>('lastSentDate') ?? null;
   const decision = sendGuard({
@@ -165,7 +169,8 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     sendWindowHours: config.sendWindowHours,
     clock,
     lastSentDate,
-    force,
+    forceWindow,
+    forceSend,
   });
   log.info(`[guard] send=${decision.send} :: ${decision.reason}`);
 
@@ -378,7 +383,11 @@ function fetchAllowlist(config: AppConfig): string[] {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
-  const force = args.includes('--force');
+  // --force-window: «хочу зараз, поза вікном» (ідемпотентність діє — саме вона
+  // не дає повторному прогону перезаписати сьогоднішній брифінг майже порожнім).
+  // --force-send: повний обхід, свідомий перезапис; лише ручний запуск людиною.
+  const forceWindow = args.includes('--force-window');
+  const forceSend = args.includes('--force-send') || args.includes('--force');
 
   const configYml = loadConfig();
   const clock = createClock();
@@ -482,7 +491,7 @@ async function main(): Promise<void> {
   };
 
   try {
-    const result = await runBriefing(deps, { dryRun, force });
+    const result = await runBriefing(deps, { dryRun, forceWindow, forceSend });
     // briefing.json для Mini App (публікує brief.yml у гілку дашборда).
     const briefingFile = process.env.BRIEFING_FILE;
     if (briefingFile && result.status !== 'skipped') {

@@ -10,8 +10,10 @@ const {
   validateLlmRequest,
   buildClaudeArgs,
   parseClaudeOutput,
+  formatUsage,
   createRateLimiter,
   detectUsageLimit,
+  resolveBindHost,
   USAGE_LIMIT_ERROR,
 } = core;
 
@@ -167,7 +169,47 @@ describe('llm-host-core — parseClaudeOutput', () => {
       result: '{"task":"x"}',
       structured: { task: 'x' },
       costUsd: 0.0038,
+      usage: null,
     });
+  });
+
+  /* C1: чи `claude -p` узагалі кешує статичний префікс (системний промпт +
+   * схема), який ми шлемо на КОЖНОМУ кроці агента? Досі це було припущення —
+   * жодного числа. CLI віддає `usage` у тому ж JSON; просто прокидаємо його
+   * назовні, щоб лог показав cache_read і питання стало емпіричним. */
+  it('прокидає usage-блок CLI (cache_read/cache_creation — вимір кешу, C1)', () => {
+    const stdout = JSON.stringify({
+      result: 'ок',
+      is_error: false,
+      usage: {
+        input_tokens: 12,
+        output_tokens: 34,
+        cache_read_input_tokens: 1800,
+        cache_creation_input_tokens: 0,
+      },
+    });
+    const out = parseClaudeOutput(stdout);
+    expect(out.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      cache_read_input_tokens: 1800,
+      cache_creation_input_tokens: 0,
+    });
+  });
+
+  it('formatUsage — компактний рядок для логів; без usage не бреше нулями', () => {
+    expect(
+      formatUsage({
+        input_tokens: 12,
+        output_tokens: 34,
+        cache_read_input_tokens: 1800,
+        cache_creation_input_tokens: 5,
+      }),
+    ).toBe('in=12 out=34 cacheRead=1800 cacheCreate=5');
+    // Немає блоку / немає поля -> прочерк. Нуль і «не повідомлено» — РІЗНІ
+    // відповіді на питання «чи працює кеш», і плутати їх не можна.
+    expect(formatUsage(null)).toBe('usage=-');
+    expect(formatUsage({ input_tokens: 12 })).toBe('in=12 out=- cacheRead=- cacheCreate=-');
   });
 
   it('is_error:true -> ok:false з текстом помилки', () => {
@@ -228,6 +270,23 @@ describe('llm-host-core — detectUsageLimit (A1)', () => {
   it('паритет зі спільним фікстур-набором (host vs web vs src)', () => {
     for (const t of USAGE_LIMIT_TEXTS) expect(detectUsageLimit(t).limit, t).toBe(true);
     for (const t of NON_LIMIT_TEXTS) expect(detectUsageLimit(t).limit, t).toBe(false);
+  });
+});
+
+describe('llm-host-core — resolveBindHost (S4: хост не висить на всіх інтерфейсах)', () => {
+  it('за замовчуванням лише loopback — назовні пускає Caddy, а не сам процес', () => {
+    // Доти server.listen(PORT) слухав 0.0.0.0, і єдиним, що тримало ендпоінт
+    // приватним, був ufw. Одне невдале правило фаєрвола = відкритий в інтернет
+    // спавнер підпроцесів. Caddy і так проксі на 127.0.0.1:8787 (host/README),
+    // тож loopback нічого не ламає — просто прибирає цей клас помилки.
+    expect(resolveBindHost({})).toBe('127.0.0.1');
+    expect(resolveBindHost({ BIND_HOST: '' })).toBe('127.0.0.1');
+    expect(resolveBindHost({ BIND_HOST: '   ' })).toBe('127.0.0.1');
+  });
+
+  it('явний BIND_HOST шанується (інша топологія — контейнер, окремий проксі)', () => {
+    expect(resolveBindHost({ BIND_HOST: '0.0.0.0' })).toBe('0.0.0.0');
+    expect(resolveBindHost({ BIND_HOST: ' 10.0.0.5 ' })).toBe('10.0.0.5');
   });
 });
 

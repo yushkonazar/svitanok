@@ -14,20 +14,44 @@
  * @param {number} p.kyivHour          - поточна київська година 0–23
  * @param {string} p.todayKey          - "YYYY-MM-DD" київський
  * @param {string|null} p.lastSentDate - "YYYY-MM-DD" останньої відправки або null
- * @param {boolean} [p.force]          - workflow_dispatch: обійти вікно+ідемпотентність (§19.2)
+ * @param {boolean} [p.forceWindow]    - обійти ЛИШЕ годинне вікно, ідемпотентність лишити
+ * @param {boolean} [p.forceSend]      - обійти і вікно, і ідемпотентність (людина-налагоджувач)
+ * @param {boolean} [p.force]          - легасі-синонім forceSend (старі виклики)
  * @returns {{ send: boolean, reason: string }}
  */
 export function decideSend(p) {
-  const { sendHour, sendWindowHours, kyivHour, todayKey, lastSentDate, force = false } = p;
+  const {
+    sendHour,
+    sendWindowHours,
+    kyivHour,
+    todayKey,
+    lastSentDate,
+    forceWindow = false,
+    forceSend = false,
+    force = false,
+  } = p;
+  const fullBypass = forceSend || force;
 
-  // Ручний запуск завжди форсує (§19.2): натиснув кнопку — хочеш зараз.
-  if (force) {
-    return { send: true, reason: 'force: ручний запуск обходить вікно та ідемпотентність' };
+  /* ⚠️ Два РІЗНІ «форси» (B2/F2). Доти був один, і ручний /brief обходив
+     ідемпотентність — а повторний прогін того самого дня перебирає ВЖЕ
+     показані новини й вакансії (shownNews/shownJobs), тож віддає майже
+     порожній брифінг і публікує його поверх ранкового: у KV `latest` І в
+     історії `briefing:<дата>`. Дашборд назавжди лишався без новин за той день,
+     а inline-кнопки ранкового повідомлення починали вказувати в інший масив.
+     Тепер «хочу зараз, поза вікном» і «перезапиши сьогоднішній» — це різні
+     наміри й різні прапорці. */
+  if (fullBypass) {
+    return { send: true, reason: 'force-send: обхід вікна та ідемпотентності' };
   }
 
   // Ідемпотентність: сьогодні вже слали (ловить другу джобу того ж дня / гонку dispatch).
+  // Її НЕ обходить forceWindow — саме вона захищає опублікований брифінг.
   if (lastSentDate === todayKey) {
     return { send: false, reason: `idempotent: вже надіслано сьогодні (${todayKey})` };
+  }
+
+  if (forceWindow) {
+    return { send: true, reason: 'force-window: ручний запуск поза вікном (ідемпотентність діє)' };
   }
 
   const lower = sendHour;

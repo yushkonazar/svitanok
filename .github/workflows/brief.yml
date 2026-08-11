@@ -12,8 +12,18 @@ on:
     - cron: '0 6 * * *' # 08:00 Київ узимку (EET = UTC+2)
   workflow_dispatch: # CF-планувальник або ручний запуск
     inputs:
+      # ДВА різні наміри (B2). force_window — «хочу зараз, поза вікном»: саме це
+      # шле бот на /brief. Ідемпотентність за добу лишається, бо повторний прогін
+      # того самого дня бачить усі новини й вакансії вже показаними й опублікував
+      # би майже порожній брифінг поверх ранкового (і в `latest`, і в історії).
+      force_window:
+        description: 'Запустити поза вікном (ідемпотентність за добу лишається)'
+        type: boolean
+        default: false
+      # Повний обхід — свідомий ПЕРЕЗАПИС сьогоднішнього брифінгу. Лише для
+      # ручного запуску людиною з UI GitHub.
       force:
-        description: 'Форсувати доставку (обійти вікно+ідемпотентність; для тестів)'
+        description: 'ПЕРЕЗАПИСАТИ сьогоднішній брифінг (обхід вікна+ідемпотентності)'
         type: boolean
         default: false
 
@@ -52,12 +62,17 @@ jobs:
       - id: g
         env:
           STATE_FILE: ${{ runner.temp }}/state.json
-        run: node scripts/guard.mjs ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+        run: node scripts/guard.mjs ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force-send' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.force_window) && '--force-window' || '' }}
 
   brief:
     needs: guard
     if: needs.guard.outputs.send == 'true'
     runs-on: ubuntu-latest
+    # Остання сітка безпеки під зависання (B14): типовий прогін — хвилини, а
+    # дефолтні 360 хв означали б, що завислий на тілі відповіді HTTP-виклик
+    # палить пів дня runner-часу й тримає concurrency-групу зайнятою. 25 хв —
+    # із запасом більше за найдовший реальний ран (claude -p таймаут 150с × 5).
+    timeout-minutes: 25
     permissions:
       contents: read # стан у KV -> запис у репо не потрібен (least privilege)
     steps:
@@ -109,7 +124,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-        run: npx tsx src/orchestrator.ts ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+        run: npx tsx src/orchestrator.ts ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force-send' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.force_window) && '--force-window' || '' }}
       # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
       # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
       # Прямий виклик CF API замість wrangler: скоуплений токен ламає wrangler-

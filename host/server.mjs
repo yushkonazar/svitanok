@@ -22,11 +22,15 @@ import {
   parseClaudeOutput,
   createRateLimiter,
   detectUsageLimit,
+  formatUsage,
+  resolveBindHost,
   USAGE_LIMIT_ERROR,
 } from './llm-host-core.mjs';
 import { WORKER_STEP_TIMEOUT_MS, validateAgentRequest, runAgentLoop } from './agent-loop-core.mjs';
 
 const PORT = Number(process.env.PORT) || 8787;
+// Слухаємо лише loopback (S4): назовні хост публікує Caddy. Див. resolveBindHost.
+const BIND_HOST = resolveBindHost(process.env);
 const SECRET = process.env.LLM_HOST_SECRET;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS) || 30_000;
@@ -278,12 +282,13 @@ const server = http.createServer(async (req, res) => {
 
   const preview = validated.value.prompt.slice(0, 200).replace(/\n/g, ' ');
   console.log(
-    `[${new Date().toISOString()}] ${status} ${Date.now() - start}ms cost=${result.costUsd ?? '-'} "${preview}"`,
+    `[${new Date().toISOString()}] ${status} ${Date.now() - start}ms cost=${result.costUsd ?? '-'} ` +
+      `${formatUsage(result.usage)} "${preview}"`,
   );
 });
 
-server.listen(PORT, () => {
-  console.log(`svitanok-llm-host слухає :${PORT}`);
+server.listen(PORT, BIND_HOST, () => {
+  console.log(`svitanok-llm-host слухає ${BIND_HOST}:${PORT}`);
 });
 
 // Останній запобіжник: логуємо й падаємо КЕРОВАНО (не тихо зависаємо в

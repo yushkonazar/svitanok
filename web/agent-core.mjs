@@ -11,7 +11,6 @@
 
 import { escapeHtml } from './tg-core.mjs';
 import { CANONICAL_EXAMPLES, parseReminderTime } from './reminders-core.mjs';
-import { OWN_DATA_SCOPES } from './assistant-data-core.mjs';
 import {
   CATEGORY_VALUES,
   STAGES,
@@ -247,12 +246,24 @@ export const ASSISTANT_ACTION_SCHEMA = {
     },
     calendarStartDay: { type: 'number' },
     calendarEndDay: { type: 'number' },
-    dataScope: { type: 'string', enum: OWN_DATA_SCOPES },
+    // dataScope: НАВМИСНО без enum — усі 9 областей уже перелічені словами в
+    // буллеті readOwnData системного промпту, а дублювати список удруге дорого
+    // для MAX_SCHEMA_LEN (той самий мотив, що "ate" нижче; місце знадобилось під
+    // top-level "when", B7). Невідоме значення нормалізує buildOwnDataDigest ->
+    // 'all', тож це економія бюджету, не послаблення валідації. Повноту переліку
+    // в промпті стереже тест «промпт називає КОЖЕН OWN_DATA_SCOPES».
+    dataScope: { type: 'string' },
     mailQuery: { type: 'string' },
     mailId: { type: 'string' },
     driveQuery: { type: 'string' },
     reminderText: { type: 'string' },
     reminderNewText: { type: 'string' },
+    // top-level "when" — НОВИЙ час для updateReminder (перенос без зміни
+    // тексту). Не плутати з proposal.items.when: те саме імʼя, різні рівні, і
+    // оголошення всередині items СЮДИ не поширюється — строгий structured-output
+    // зрізав би неоголошене поле, і «перенеси нагадування на 18:00» приходило б
+    // без часу (B7). Формат — канонічний рядок, час рахує worker (parseReminderTime).
+    when: { type: 'string' },
     // recordAction (PR-8, Категорія A) — ОДНА дія-парасолька для 4 дрібних
     // локальних записів (замість 4 top-level дій — кожна нова top-level дія
     // коштує буллет системного промпту, а МІСЦЕ там майже вичерпано). kind->

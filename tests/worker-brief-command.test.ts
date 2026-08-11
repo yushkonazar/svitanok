@@ -99,19 +99,42 @@ afterEach(() => {
 });
 
 describe('/brief -> workflow_dispatch', () => {
-  it('шле inputs.force, щоб guard не зарубав ручний запуск як «вже надіслано сьогодні»', async () => {
+  it('шле inputs.force_window — «зараз, поза вікном», але без перезапису (B2)', async () => {
     await sendCommand('/brief');
 
     expect(dispatches).toHaveLength(1);
-    expect(dispatches[0]?.body).toMatchObject({ ref: 'main', inputs: { force: 'true' } });
+    expect(dispatches[0]?.body).toMatchObject({ ref: 'main', inputs: { force_window: 'true' } });
+    // Повний обхід (force) бот НЕ просить НІКОЛИ: повторний прогін того самого
+    // дня опублікував би майже порожній брифінг поверх ранкового.
+    expect(
+      (dispatches[0]?.body as { inputs: Record<string, unknown> }).inputs.force,
+    ).toBeUndefined();
     expect(lastSendText()).toContain('Запустив генерацію');
   });
 
-  it('force — рядок, а не boolean: REST API workflow_dispatch приймає лише string-inputs', async () => {
+  it('прапорець — рядок, а не boolean: REST API workflow_dispatch приймає лише string-inputs', async () => {
     await sendCommand('/brief');
 
     const inputs = (dispatches[0]?.body as { inputs: Record<string, unknown> }).inputs;
-    expect(typeof inputs.force).toBe('string');
+    expect(typeof inputs.force_window).toBe('string');
+  });
+
+  it('брифінг за сьогодні вже надіслано -> чесна відповідь, БЕЗ dispatch (B2)', async () => {
+    // Раніше /brief тут ішов у GitHub із повним force, прогін перебирав уже
+    // показані новини/вакансії й публікував майже порожній блоб поверх
+    // ранкового — назавжди, включно з історією `briefing:<дата>`.
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+    kv.set('state', JSON.stringify({ lastSentDate: today }));
+
+    await sendCommand('/brief');
+
+    expect(dispatches).toHaveLength(0);
+    expect(lastSendText()).toContain('уже надіслано');
   });
 
   it('без GH_DISPATCH_TOKEN — чесна помилка, а не «прийде за кілька хвилин»', async () => {

@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { load } from 'js-yaml';
 import {
   formatLlmDegradedMessage,
   isUsageLimitError,
@@ -45,19 +47,42 @@ describe('scrubSecretsFromEnv (security — недовірений контен�
     expect(env.GOOGLE_REFRESH_TOKEN).toBe('секрет'); // оригінал недоторканий
   });
 
-  it('перелік креденшелів покриває реальні секрети brief.yml (регрес — не забути новий)', () => {
-    // Дзеркало env кроку `run briefing`: якщо додав креденшел у workflow, додай і
-    // в SENSITIVE_ENV_KEYS. Топіки/URL/namespace-id свідомо не тут (не креденшели).
-    for (const k of [
-      'GOOGLE_REFRESH_TOKEN',
-      'GOOGLE_CLIENT_SECRET',
-      'CF_API_TOKEN',
-      'TELEGRAM_BOT_TOKEN',
-      'NEWSDATA_API_KEY',
-      'WEATHER_API_KEY',
-    ]) {
-      expect(SENSITIVE_ENV_KEYS).toContain(k);
-    }
+  it('КОЖЕН секрет кроку `run briefing` класифіковано — або чистимо, або явно ні', () => {
+    // Перелік вручну тут не тримаємо: він уже раз розійшовся з реальністю
+    // (GOOGLE_TRANSLATE_API_KEY доїхав у workflow і лишався в оточенні
+    // дочірнього claude, який обробляє НЕДОВІРЕНИЙ контент — B3). Тепер
+    // джерело істини — сам brief.yml: новий ${{ secrets.* }} без запису в
+    // один із двох списків червонить CI одразу.
+    //
+    // Значення мають лише два законні місця:
+    //  - SENSITIVE_ENV_KEYS — креденшел, дочірньому claude не потрібен;
+    //  - NON_CREDENTIAL_ALLOWLIST — свідомо НЕ креденшел (id теми, публічний
+    //    URL) або потрібен самому CLI (CLAUDE_CODE_OAUTH_TOKEN — без нього
+    //    claude не автентифікується, вичистити його = зламати брифінг).
+    const NON_CREDENTIAL_ALLOWLIST = [
+      'TOPIC_BRIEFING',
+      'TOPIC_ASSISTANT',
+      'TOPIC_SYSTEM',
+      'MINI_APP_URL',
+      'KV_NAMESPACE_ID',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+    ];
+
+    const wf = load(
+      readFileSync(new URL('../.github/workflows/brief.yml', import.meta.url), 'utf8'),
+    ) as { jobs: { brief: { steps: { name?: string; env?: Record<string, string> }[] } } };
+    // Саме цей крок спавнить `claude -p` (npx tsx src/orchestrator.ts) — решта
+    // кроків workflow дочірнього claude не запускають, тож їх env не стосується.
+    const step = wf.jobs.brief.steps.find((s) => s.name === 'run briefing');
+    expect(step?.env, 'крок `run briefing` з env-блоком').toBeTruthy();
+
+    const fromSecrets = Object.entries(step!.env!)
+      .filter(([, v]) => /\$\{\{\s*secrets\./.test(String(v)))
+      .map(([k]) => k);
+    expect(fromSecrets.length).toBeGreaterThan(5); // парсер справді щось знайшов
+
+    const known = new Set<string>([...SENSITIVE_ENV_KEYS, ...NON_CREDENTIAL_ALLOWLIST]);
+    expect(fromSecrets.filter((k) => !known.has(k))).toEqual([]);
   });
 });
 
