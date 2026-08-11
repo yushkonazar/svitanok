@@ -1506,65 +1506,104 @@ describe('formatEventEditQuestion — гібрид «✏️ Інше», марк
  *  U1 — модель не бачить власних дій. На довгому ланцюжку вона повторює те
  *  саме читання, спалюючи крок зі стелі в 10. Echo дописує слід у транскрипт. */
 describe('readBatch — кілька читань одним кроком (C3)', () => {
-  it('оголошений у схемі й у переліку дій', () => {
+  it('оголошений у схемі; reads — масив ОБʼЄКТІВ зі своїми параметрами', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toContain('readBatch');
-    expect(ASSISTANT_ACTION_SCHEMA.properties.reads).toEqual({
-      type: 'array',
-      items: { type: 'string' },
-    });
+    const reads = ASSISTANT_ACTION_SCHEMA.properties.reads;
+    expect(reads.type).toBe('array');
+    expect(reads.items.type).toBe('object');
+    expect(Object.keys(reads.items.properties)).toEqual(
+      expect.arrayContaining(['action', 'calendarStartDay', 'mailQuery', 'mailId', 'dataScope']),
+    );
   });
 
-  it('нормалізує параметри КОЖНОГО читання так само, як окрема дія', () => {
+  it('кожне читання проходить ТУ САМУ нормалізацію, що й окрема дія', () => {
     expect(
       extractAssistantAction({
         action: 'readBatch',
-        reads: ['readCalendar', 'readMail'],
-        calendarStartDay: 1,
-        calendarEndDay: 1,
-        mailQuery: 'співбесіда',
+        reads: [
+          { action: 'readCalendar', calendarStartDay: 1, calendarEndDay: 1 },
+          { action: 'readMail', mailQuery: 'співбесіда' },
+        ],
       }),
     ).toEqual({
       action: 'readBatch',
-      reads: ['readCalendar', 'readMail'],
-      startDay: 1,
-      endDay: 1,
-      mailQuery: 'співбесіда',
-      dataScope: undefined,
-      driveQuery: '',
-      mailId: '',
+      reads: [
+        { action: 'readCalendar', startDay: 1, endDay: 1 },
+        { action: 'readMail', mailQuery: 'співбесіда' },
+      ],
     });
   });
 
-  it('дедуп і кап на 3 — інакше модель могла б попросити десять читань за крок', () => {
+  it('ДВА readMail з різними запитами — саме заради цього й був підняток бюджету', () => {
+    // Перша версія (масив назв, параметри з top-level) цього не вміла: запит
+    // був один на весь батч.
     const r = extractAssistantAction({
       action: 'readBatch',
-      reads: ['readMail', 'readMail', 'readCalendar', 'readOwnData', 'readDrive'],
-    });
-    expect(r.reads).toEqual(['readMail', 'readCalendar', 'readOwnData']);
+      reads: [
+        { action: 'readMail', mailQuery: 'співбесіда' },
+        { action: 'readMail', mailQuery: 'рахунок' },
+      ],
+    })!;
+    expect(r.reads.map((x: { mailQuery: string }) => x.mailQuery)).toEqual([
+      'співбесіда',
+      'рахунок',
+    ]);
   });
 
-  it('ТЕРМІНАЛЬНІ дії всередині батча відкидаються (батч — лише читання)', () => {
-    // Інакше через reads:['reply'] чи ['createReminder'] можна було б обійти
-    // і ✅-гейт, і taint-перевірку, які стоять на термінальних гілках.
-    expect(
-      extractAssistantAction({ action: 'readBatch', reads: ['readMail', 'createReminder'] })!.reads,
-    ).toEqual(['readMail']);
-    expect(extractAssistantAction({ action: 'readBatch', reads: ['reply'] })).toBeNull();
-  });
-
-  it('порожній/битий reads -> null (немає що читати)', () => {
-    expect(extractAssistantAction({ action: 'readBatch', reads: [] })).toBeNull();
-    expect(extractAssistantAction({ action: 'readBatch' })).toBeNull();
-    expect(extractAssistantAction({ action: 'readBatch', reads: 'readMail' })).toBeNull();
-  });
-
-  it('батч із ОДНОГО читання валідний — модель не мусить вгадувати, коли він доречний', () => {
-    expect(extractAssistantAction({ action: 'readBatch', reads: ['readOwnData'] })!.reads).toEqual([
+  it('дедуп по НОРМАЛІЗОВАНІЙ формі + кап на 3', () => {
+    const r = extractAssistantAction({
+      action: 'readBatch',
+      reads: [
+        { action: 'readMail', mailQuery: 'x' },
+        { action: 'readMail', mailQuery: 'x' }, // дубль -> геть
+        { action: 'readCalendar' },
+        { action: 'readOwnData', dataScope: 'jobs' },
+        { action: 'readDrive', driveQuery: 'резюме' }, // 4-те -> за капом
+      ],
+    })!;
+    expect(r.reads.map((x: { action: string }) => x.action)).toEqual([
+      'readMail',
+      'readCalendar',
       'readOwnData',
     ]);
   });
 
-  it('промпт описує readBatch, а бюджети хоста не перевищено', () => {
+  it('невалідний елемент відсіюється тією ж перевіркою, що й одиночна дія', () => {
+    // mailId не проходить ID_RE -> readMailBody невалідний і поодинці.
+    const r = extractAssistantAction({
+      action: 'readBatch',
+      reads: [{ action: 'readMailBody', mailId: '../etc/passwd' }, { action: 'readCalendar' }],
+    })!;
+    expect(r.reads.map((x: { action: string }) => x.action)).toEqual(['readCalendar']);
+  });
+
+  it('ТЕРМІНАЛЬНІ дії й вкладений батч відкидаються', () => {
+    // Інакше reads:[{action:'createReminder'}] обійшов би taint-гейт і ✅-гейт,
+    // а вкладений readBatch дав би рекурсію.
+    expect(
+      extractAssistantAction({
+        action: 'readBatch',
+        reads: [{ action: 'readMail' }, { action: 'createReminder', reminderText: 'х' }],
+      })!.reads,
+    ).toHaveLength(1);
+    expect(
+      extractAssistantAction({ action: 'readBatch', reads: [{ action: 'reply', replyText: 'х' }] }),
+    ).toBeNull();
+    expect(
+      extractAssistantAction({
+        action: 'readBatch',
+        reads: [{ action: 'readBatch', reads: [{ action: 'readMail' }] }],
+      }),
+    ).toBeNull();
+  });
+
+  it('порожній/битий reads -> null', () => {
+    expect(extractAssistantAction({ action: 'readBatch', reads: [] })).toBeNull();
+    expect(extractAssistantAction({ action: 'readBatch' })).toBeNull();
+    expect(extractAssistantAction({ action: 'readBatch', reads: ['readMail'] })).toBeNull();
+  });
+
+  it('промпт описує readBatch, бюджети хоста не перевищено', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('readBatch');
     expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
@@ -1589,9 +1628,12 @@ describe('formatActionEcho — слід обраних дій у транскр�
     expect(formatActionEcho({ action: 'readOwnData', dataScope: 'jobs' })).toBe(
       '[ти обрав: readOwnData "jobs"]',
     );
-    expect(formatActionEcho({ action: 'readBatch', reads: ['readCalendar', 'readMail'] })).toBe(
-      '[ти обрав: readBatch readCalendar+readMail]',
-    );
+    expect(
+      formatActionEcho({
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readMail' }],
+      }),
+    ).toBe('[ти обрав: readBatch readCalendar+readMail]');
   });
 
   it('без параметра — сама назва (нічого не вигадуємо)', () => {

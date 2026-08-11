@@ -994,10 +994,10 @@ describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
       token: await token(),
       structured: {
         action: 'readBatch',
-        reads: ['readCalendar', 'readOwnData'],
-        calendarStartDay: 1,
-        calendarEndDay: 1,
-        dataScope: 'reminders',
+        reads: [
+          { action: 'readCalendar', calendarStartDay: 1, calendarEndDay: 1 },
+          { action: 'readOwnData', dataScope: 'reminders' },
+        ],
       },
     });
     const body = (await res.json()) as { done: boolean; append: string; token: string };
@@ -1021,7 +1021,10 @@ describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
     // Google недоступний (стаб віддає 401) -> календар впаде, own-data з KV — ні.
     const res = await authed({
       token: await token(),
-      structured: { action: 'readBatch', reads: ['readCalendar', 'readOwnData'] },
+      structured: {
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readOwnData' }],
+      },
     });
     const body = (await res.json()) as { done: boolean; append: string };
     expect(body.done).toBe(false);
@@ -1037,7 +1040,10 @@ describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
     );
     const res1 = await authed({
       token: await token(),
-      structured: { action: 'readBatch', reads: ['readCalendar', 'readMail'] },
+      structured: {
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readMail', mailQuery: 'вакансії' }],
+      },
     });
     const body1 = (await res1.json()) as { token: string };
     tgCalls = [];
@@ -1061,7 +1067,10 @@ describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
     );
     const res1 = await authed({
       token: await token(),
-      structured: { action: 'readBatch', reads: ['readCalendar', 'readOwnData'] },
+      structured: {
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readOwnData' }],
+      },
     });
     const body1 = (await res1.json()) as { token: string };
     tgCalls = [];

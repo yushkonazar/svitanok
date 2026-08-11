@@ -2684,10 +2684,10 @@ async function runReadAction(env, action, nowMs) {
        Збій ОДНОГО читання не валить решту: модель отримає те, що вдалось, і
        чесний рядок про те, що не вдалось. */
     const results = await Promise.all(
-      action.reads.map((name) =>
-        runReadAction(env, { ...action, action: name }, nowMs).catch((e) => {
-          console.error(`agent-step: ${name} у батчі впало`, e?.message);
-          return `${name}: не спрацювало.`;
+      action.reads.map((sub) =>
+        runReadAction(env, sub, nowMs).catch((e) => {
+          console.error(`agent-step: ${sub.action} у батчі впало`, e?.message);
+          return `${sub.action}: не спрацювало.`;
         }),
       ),
     );
@@ -2910,7 +2910,7 @@ async function handleAgentStep(request, env) {
   // taint-гейті (S2).
   const tainting =
     action.action === 'readBatch'
-      ? action.reads.some((r) => TAINTING_READ_ACTIONS.has(r))
+      ? action.reads.some((r) => TAINTING_READ_ACTIONS.has(r.action))
       : TAINTING_READ_ACTIONS.has(action.action);
   const tainted = claims.tainted || tainting;
   const nextToken = await nextRunToken(env.TELEGRAM_WEBHOOK_SECRET, { ...claims, tainted });

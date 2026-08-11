@@ -258,12 +258,26 @@ export const ASSISTANT_ACTION_SCHEMA = {
     mailQuery: { type: 'string' },
     mailId: { type: 'string' },
     driveQuery: { type: 'string' },
-    // readBatch (C3): перелік НАЗВ читань, а параметри беруться з тих самих
-    // top-level полів (mailQuery, calendarStartDay…). Масив обʼєктів був би
-    // виразнішим, але коштував би ~300 символів MAX_SCHEMA_LEN — запасу там 90.
-    // Наслідок обраного дизайну: два readMail з РІЗНИМИ запитами в один батч не
-    // складеш. Це прийнятно — типовий випадок це різні ДЖЕРЕЛА (календар+пошта).
-    reads: { type: 'array', items: { type: 'string' } },
+    // readBatch (C3): кожен елемент — ПОВНОЦІННА читальна дія зі своїми
+    // параметрами. Перша версія була масивом назв із параметрами з top-level
+    // полів — компроміс під MAX_SCHEMA_LEN=2000, який не давав скласти в один
+    // батч два readMail з різними запитами. Після підняття межі до 4000 тримати
+    // цей компроміс немає причин.
+    reads: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          action: { type: 'string' },
+          calendarStartDay: { type: 'number' },
+          calendarEndDay: { type: 'number' },
+          dataScope: { type: 'string' },
+          mailQuery: { type: 'string' },
+          mailId: { type: 'string' },
+          driveQuery: { type: 'string' },
+        },
+      },
+    },
     reminderText: { type: 'string' },
     reminderNewText: { type: 'string' },
     // top-level "when" — НОВИЙ час для updateReminder (перенос без зміни
@@ -370,8 +384,9 @@ export function buildAssistantSystemPrompt(nowMs) {
     `бракує уривка.\n` +
     `- {"action":"readDrive","driveQuery":"..."} — пошук файлу в Google Drive за назвою (напр. ` +
     `"резюме"), лише посилання, БЕЗ читання вмісту.\n` +
-    `- {"action":"readBatch","reads":["readCalendar","readMail"]} — до ${MAX_BATCH_READS} читань ЗА ОДИН ` +
-    `крок (параметри — ті самі поля). Треба кілька джерел — бери це, не по одному.\n` +
+    `- {"action":"readBatch","reads":[{"action":"readCalendar","calendarStartDay":1,` +
+    `"calendarEndDay":1},{"action":"readMail","mailQuery":"..."}]} — до ${MAX_BATCH_READS} читань ЗА ` +
+    `ОДИН крок, кожне зі СВОЇМИ параметрами. Треба кілька джерел — бери це, не по одному.\n` +
     `- {"action":"createReminder","reminderText":"..."} — одне просте нагадування.\n` +
     `- {"action":"cancelReminder","reminderText":"опис"} — скасувати активне нагадування за описом.\n` +
     `- {"action":"updateReminder","reminderText":"опис","reminderNewText":"новий текст",` +
@@ -586,36 +601,32 @@ export function extractAssistantAction(structured) {
     return { action, driveQuery: q };
   }
   if (action === 'readBatch') {
-    // Один крок = кілька читань (C3). Кожен елемент — НАЗВА читальної дії;
-    // параметри лишаються в тих самих top-level полях, тож нормалізуємо їх
-    // рівно так, як це роблять окремі гілки вище.
-    //
-    // ⚠️ Лише READ_ACTIONS. Пропустити сюди термінальну дію означало б дати
-    // обхід гейтів, які стоять на термінальних гілках (taint-перевірка,
-    // ✅-підтвердження, isPrimaryOwner) — батч виконується як читання.
+    /* Один крок = кілька читань (C3). Кожен елемент проганяємо через ЦЮ САМУ
+       функцію — тобто через ті самі перевірки, що й одиночну дію (ID_RE на
+       mailId, клемп днів календаря, дефолти запитів). Нічого не дублюємо, і
+       розійтись валідації не можуть.
+
+       ⚠️ Гейт READ_ACTIONS робить дві речі одразу: не пускає всередину
+       ТЕРМІНАЛЬНІ дії (інакше reads:[{action:'createReminder'}] обійшов би
+       taint-гейт і ✅-підтвердження, бо батч виконується як читання) і не
+       пускає вкладений readBatch — тобто рекурсія тут неможлива. */
     if (!Array.isArray(structured.reads)) return null;
     const reads = [];
-    for (const r of structured.reads) {
-      if (typeof r !== 'string' || !READ_ACTIONS.has(r) || reads.includes(r)) continue;
-      reads.push(r);
+    const seen = new Set();
+    for (const item of structured.reads) {
+      if (!item || typeof item !== 'object' || !READ_ACTIONS.has(item.action)) continue;
+      const norm = extractAssistantAction(item);
+      if (!norm) continue;
+      // Дедуп по НОРМАЛІЗОВАНІЙ формі: два однакові читання — марний час, а два
+      // readMail з різними запитами — цілком легітимний батч.
+      const key = JSON.stringify(norm);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      reads.push(norm);
       if (reads.length >= MAX_BATCH_READS) break;
     }
     if (reads.length === 0) return null;
-    const clampDay = (v) => (Number.isFinite(v) ? Math.min(7, Math.max(0, Math.round(v))) : null);
-    const start = clampDay(structured.calendarStartDay) ?? 0;
-    const endRaw = clampDay(structured.calendarEndDay);
-    const mailId = typeof structured.mailId === 'string' ? structured.mailId.trim() : '';
-    return {
-      action,
-      reads,
-      startDay: start,
-      endDay: endRaw == null ? start : Math.max(start, endRaw),
-      mailQuery: typeof structured.mailQuery === 'string' ? structured.mailQuery : '',
-      dataScope: typeof structured.dataScope === 'string' ? structured.dataScope : undefined,
-      driveQuery: typeof structured.driveQuery === 'string' ? structured.driveQuery : '',
-      // Той самий ID_RE, що в readMailBody: рядок іде в шлях URL Gmail API.
-      mailId: mailId && ID_RE.test(mailId) ? mailId : '',
-    };
+    return { action, reads };
   }
   if (action === 'proposeCalendarChanges') {
     if (!Array.isArray(structured.proposal)) return null;
@@ -641,7 +652,7 @@ export function formatActionEcho(action) {
     return s.length > MAX_ECHO_PARAM ? `${s.slice(0, MAX_ECHO_PARAM)}…` : s;
   };
   let detail = '';
-  if (name === 'readBatch') detail = (action.reads ?? []).join('+');
+  if (name === 'readBatch') detail = (action.reads ?? []).map((r) => r.action).join('+');
   else if (name === 'readCalendar') detail = `${action.startDay}..${action.endDay}`;
   else if (name === 'readMail') detail = clip(action.mailQuery) && `"${clip(action.mailQuery)}"`;
   else if (name === 'readMailBody') detail = clip(action.mailId) && `"${clip(action.mailId)}"`;
