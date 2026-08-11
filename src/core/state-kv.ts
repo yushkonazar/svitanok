@@ -21,8 +21,36 @@
 
 import type { StateStore, Logger } from './types.js';
 import type { Pruner } from './state.js';
+// withTimeout живе поруч із Google-викликами лише історично — це загальний
+// abort-примітив, і calendar/mail беруть його звідти так само.
+import { withTimeout } from './google-auth.js';
 
 type StateData = Record<string, unknown>;
+
+/**
+ * Таймаут KV-виклику. Доти його не було ЗОВСІМ: CF API, що прийняв зʼєднання і
+ * замовк, тримав прогін брифінгу до 360-хв ліміту job'а GitHub Actions — без
+ * алерту, без падіння (B14). 15с із запасом покривають нормальний KV (десятки
+ * мс), лишаючись далеко під бюджетом рану.
+ */
+export const KV_TIMEOUT_MS = 15_000;
+
+/**
+ * KV-виклик під таймаутом — разом ІЗ ТІЛОМ. Тіло читаємо завжди (і на помилці
+ * теж): flush() кладе його в текст throw'а, а поза timed-регіоном воно було б
+ * рівно тим самим зависанням, від якого й захищаємось.
+ */
+async function kvFetch(
+  f: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; text: string }> {
+  return withTimeout(async (signal) => {
+    const resp = await f(url, { ...init, signal });
+    return { ok: resp.ok, status: resp.status, text: await resp.text() };
+  }, timeoutMs);
+}
 
 /** Накласти змінені оркестратором ключі поверх свіжого блоба (per-key merge, H2). */
 export function overlayChanged(
@@ -43,6 +71,8 @@ export interface KvStateOptions {
   log?: Logger;
   pruners?: Pruner[];
   fetchImpl?: typeof fetch;
+  /** Стеля на КОЖЕН KV-виклик разом із читанням тіла (B14). */
+  timeoutMs?: number;
 }
 
 /** URL значення ключа в KV через CF API. */
@@ -59,12 +89,13 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
   const url = valueUrl(opts, key);
   const auth = { authorization: `Bearer ${opts.apiToken.trim()}` };
   const pruners = opts.pruners ?? [];
+  const timeoutMs = opts.timeoutMs ?? KV_TIMEOUT_MS;
   let data: StateData = {};
 
   try {
-    const resp = await f(url, { headers: auth });
+    const resp = await kvFetch(f, url, { headers: auth }, timeoutMs);
     if (resp.ok) {
-      const parsed: unknown = JSON.parse(await resp.text());
+      const parsed: unknown = JSON.parse(resp.text);
       if (parsed && typeof parsed === 'object') data = parsed as StateData;
     } else if (resp.status !== 404) {
       // 404 = ключа ще нема (перший запуск) — нормально, тихо.
@@ -106,9 +137,9 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
       // змінені ключі, щоб не затерти записи Worker під час довгого рану.
       let fresh: StateData | null = null;
       try {
-        const resp = await f(url, { headers: auth });
+        const resp = await kvFetch(f, url, { headers: auth }, timeoutMs);
         if (resp.ok) {
-          const parsed: unknown = JSON.parse(await resp.text());
+          const parsed: unknown = JSON.parse(resp.text);
           if (parsed && typeof parsed === 'object') fresh = parsed as StateData;
         } else if (resp.status !== 404) {
           // 404 = ключа ще нема (перший запис) -> пишемо повний блоб.
@@ -126,14 +157,19 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
       // поведінка: краще зберегти свій стан, ніж кинути). Інакше — per-key merge.
       const body = fresh ? overlayChanged(fresh, data, changed) : data;
 
-      const resp = await f(url, {
-        method: 'PUT',
-        headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const resp = await kvFetch(
+        f,
+        url,
+        {
+          method: 'PUT',
+          headers: { ...auth, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+        timeoutMs,
+      );
       if (!resp.ok) {
         // Видимий failed замість тихої втрати стану (§19.12).
-        throw new Error(`KV state: запис HTTP ${resp.status} ${await resp.text()}`);
+        throw new Error(`KV state: запис HTTP ${resp.status} ${resp.text}`);
       }
       dirty = false;
       changed.clear();
@@ -154,15 +190,18 @@ export async function readKvJson(
 ): Promise<Record<string, unknown> | null> {
   const f = opts.fetchImpl ?? fetch;
   try {
-    const resp = await f(valueUrl(opts, key), {
-      headers: { authorization: `Bearer ${opts.apiToken.trim()}` },
-    });
+    const resp = await kvFetch(
+      f,
+      valueUrl(opts, key),
+      { headers: { authorization: `Bearer ${opts.apiToken.trim()}` } },
+      opts.timeoutMs ?? KV_TIMEOUT_MS,
+    );
     if (resp.status === 404) return null; // ключа ще нема — нормально, тихо
     if (!resp.ok) {
       opts.log?.warn(`KV ${key}: читання HTTP ${resp.status} — ігнорую`);
       return null;
     }
-    const parsed: unknown = JSON.parse(await resp.text());
+    const parsed: unknown = JSON.parse(resp.text);
     // Масив — теж typeof 'object', але це не блоб налаштувань: віддаємо null,
     // щоб споживач не діставав `.modules` з масиву.
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -189,14 +228,19 @@ export async function writeKvJson(
 ): Promise<boolean> {
   const f = opts.fetchImpl ?? fetch;
   try {
-    const resp = await f(valueUrl(opts, key), {
-      method: 'PUT',
-      headers: {
-        authorization: `Bearer ${opts.apiToken.trim()}`,
-        'content-type': 'application/json',
+    const resp = await kvFetch(
+      f,
+      valueUrl(opts, key),
+      {
+        method: 'PUT',
+        headers: {
+          authorization: `Bearer ${opts.apiToken.trim()}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(value),
       },
-      body: JSON.stringify(value),
-    });
+      opts.timeoutMs ?? KV_TIMEOUT_MS,
+    );
     if (!resp.ok) {
       opts.log?.warn(`KV ${key}: запис HTTP ${resp.status} — ігнорую`);
       return false;

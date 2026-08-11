@@ -58,6 +58,11 @@ jobs:
     needs: guard
     if: needs.guard.outputs.send == 'true'
     runs-on: ubuntu-latest
+    # Остання сітка безпеки під зависання (B14): типовий прогін — хвилини, а
+    # дефолтні 360 хв означали б, що завислий на тілі відповіді HTTP-виклик
+    # палить пів дня runner-часу й тримає concurrency-групу зайнятою. 25 хв —
+    # із запасом більше за найдовший реальний ран (claude -p таймаут 150с × 5).
+    timeout-minutes: 25
     permissions:
       contents: read # стан у KV -> запис у репо не потрібен (least privilege)
     steps:
