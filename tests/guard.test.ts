@@ -57,11 +57,23 @@ describe('sendGuard — ідемпотентність за київською �
   });
 });
 
-describe('sendGuard — force (workflow_dispatch)', () => {
+describe('sendGuard — два різні force (workflow_dispatch, B2)', () => {
   const cfg = { sendHour: 8, sendWindowHours: 4 };
 
-  it('обходить вікно та ідемпотентність', () => {
+  it('force-send обходить вікно ТА ідемпотентність', () => {
     const clock = atKyiv('2026-07-01T00:00:00Z'); // 03:00 Kyiv — поза вікном
-    expect(sendGuard({ ...cfg, clock, lastSentDate: '2026-07-01', force: true }).send).toBe(true);
+    expect(sendGuard({ ...cfg, clock, lastSentDate: '2026-07-01', forceSend: true }).send).toBe(
+      true,
+    );
+  });
+
+  it('force-window обходить лише вікно — сьогоднішній брифінг не перезаписується', () => {
+    const clock = atKyiv('2026-07-01T00:00:00Z'); // 03:00 Kyiv — поза вікном
+    // Ще не слали сьогодні -> шлемо, хоч і поза вікном.
+    expect(sendGuard({ ...cfg, clock, lastSentDate: null, forceWindow: true }).send).toBe(true);
+    // Уже слали -> НЕ шлемо (саме це й ламало опублікований брифінг, B2).
+    const d = sendGuard({ ...cfg, clock, lastSentDate: '2026-07-01', forceWindow: true });
+    expect(d.send).toBe(false);
+    expect(d.reason).toContain('idempotent');
   });
 });

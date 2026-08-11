@@ -12,19 +12,29 @@ export interface SendGuardInput {
   sendWindowHours: number;
   clock: Clock;
   lastSentDate: string | null;
-  /** workflow_dispatch / CLI --force: обійти вікно та ідемпотентність (§19.2). */
-  force?: boolean;
+  /** --force-window: обійти лише годинне вікно; ідемпотентність діє (B2). */
+  forceWindow?: boolean;
+  /** --force-send: обійти і вікно, і ідемпотентність (перезапис сьогоднішнього). */
+  forceSend?: boolean;
 }
 
 /** Рішення «слати чи ні» для поточного київського моменту. */
 export function sendGuard(input: SendGuardInput): GuardDecision {
-  const { sendHour, sendWindowHours, clock, lastSentDate, force = false } = input;
+  const {
+    sendHour,
+    sendWindowHours,
+    clock,
+    lastSentDate,
+    forceWindow = false,
+    forceSend = false,
+  } = input;
   return decideSend({
     sendHour,
     sendWindowHours,
     kyivHour: clock.kyivHour(),
     todayKey: clock.todayKey(),
     lastSentDate,
-    force,
+    forceWindow,
+    forceSend,
   });
 }

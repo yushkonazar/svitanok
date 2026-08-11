@@ -49,7 +49,10 @@ function readLastSentDate(path) {
   }
 }
 
-const force = process.argv.includes('--force');
+// Два різні наміри (B2): --force-window «хочу зараз, поза вікном» (ідемпотентність
+// діє) і --force-send «перезапиши сьогоднішній» (повний обхід, лише для людини).
+const forceWindow = process.argv.includes('--force-window');
+const forceSend = process.argv.includes('--force-send') || process.argv.includes('--force');
 const { sendHour, sendWindowHours } = readConfigNumbers(join(ROOT, 'config.yml'));
 const { todayKey, kyivHour } = kyivParts();
 // STATE_FILE дозволяє читати стан із окремої гілки `state` (brief.yml, §4.3).
@@ -62,12 +65,13 @@ const { send, reason } = decideSend({
   kyivHour,
   todayKey,
   lastSentDate,
-  force,
+  forceWindow,
+  forceSend,
 });
 
 console.log(
   `[guard] send=${send} :: ${reason} ` +
-    `(kyivHour=${kyivHour}, today=${todayKey}, lastSent=${lastSentDate ?? 'none'}, force=${force})`,
+    `(kyivHour=${kyivHour}, today=${todayKey}, lastSent=${lastSentDate ?? 'none'}, forceWindow=${forceWindow}, forceSend=${forceSend})`,
 );
 
 if (process.env.GITHUB_OUTPUT) {
