@@ -100,6 +100,7 @@ export const ASSISTANT_EMPTY_REPLY = '🤔 Відповідь вийшла по�
  * Лише для читальних дій — термінальні прибирають повідомлення зовсім.
  */
 export const ASSISTANT_STEP_LABELS = {
+  readBatch: '⏳ Збираю дані…',
   readMail: '⏳ Шукаю в пошті…',
   readMailBody: '⏳ Читаю листа…',
   readCalendar: '⏳ Дивлюся календар…',
@@ -241,6 +242,7 @@ export const ASSISTANT_ACTION_SCHEMA = {
         'readMail',
         'readMailBody',
         'readDrive',
+        'readBatch',
         'recordAction',
       ],
     },
@@ -256,6 +258,12 @@ export const ASSISTANT_ACTION_SCHEMA = {
     mailQuery: { type: 'string' },
     mailId: { type: 'string' },
     driveQuery: { type: 'string' },
+    // readBatch (C3): перелік НАЗВ читань, а параметри беруться з тих самих
+    // top-level полів (mailQuery, calendarStartDay…). Масив обʼєктів був би
+    // виразнішим, але коштував би ~300 символів MAX_SCHEMA_LEN — запасу там 90.
+    // Наслідок обраного дизайну: два readMail з РІЗНИМИ запитами в один батч не
+    // складеш. Це прийнятно — типовий випадок це різні ДЖЕРЕЛА (календар+пошта).
+    reads: { type: 'array', items: { type: 'string' } },
     reminderText: { type: 'string' },
     reminderNewText: { type: 'string' },
     // top-level "when" — НОВИЙ час для updateReminder (перенос без зміни
@@ -362,6 +370,8 @@ export function buildAssistantSystemPrompt(nowMs) {
     `бракує уривка.\n` +
     `- {"action":"readDrive","driveQuery":"..."} — пошук файлу в Google Drive за назвою (напр. ` +
     `"резюме"), лише посилання, БЕЗ читання вмісту.\n` +
+    `- {"action":"readBatch","reads":["readCalendar","readMail"]} — до ${MAX_BATCH_READS} читань ЗА ОДИН ` +
+    `крок (параметри — ті самі поля). Треба кілька джерел — бери це, не по одному.\n` +
     `- {"action":"createReminder","reminderText":"..."} — одне просте нагадування.\n` +
     `- {"action":"cancelReminder","reminderText":"опис"} — скасувати активне нагадування за описом.\n` +
     `- {"action":"updateReminder","reminderText":"опис","reminderNewText":"новий текст",` +
@@ -399,8 +409,25 @@ const VALID_ACTIONS = new Set([
   'readMail',
   'readMailBody',
   'readDrive',
+  'readBatch',
   'recordAction',
 ]);
+
+/**
+ * Читальні дії — ті, які лише збирають дані в транскрипт і НЕ завершують
+ * прогін. Єдине джерело для readBatch (C3) і для крокових підписів.
+ */
+export const READ_ACTIONS = new Set([
+  'readCalendar',
+  'readOwnData',
+  'readMail',
+  'readMailBody',
+  'readDrive',
+]);
+/** Стеля читань в одному батчі — щоб крок лишався передбачуваним за часом. */
+export const MAX_BATCH_READS = 3;
+/** Кап параметра в echo-рядку (U1). */
+const MAX_ECHO_PARAM = 60;
 
 const RECORD_ACTION_KINDS = new Set(['checkin', 'voteNews', 'jobStage', 'roadmapDone']);
 // ⚠️ ЦЕ — справжній валідатор полів чек-іну від моделі (ASSISTANT_ACTION_SCHEMA
@@ -558,6 +585,38 @@ export function extractAssistantAction(structured) {
     const q = typeof structured.driveQuery === 'string' ? structured.driveQuery : '';
     return { action, driveQuery: q };
   }
+  if (action === 'readBatch') {
+    // Один крок = кілька читань (C3). Кожен елемент — НАЗВА читальної дії;
+    // параметри лишаються в тих самих top-level полях, тож нормалізуємо їх
+    // рівно так, як це роблять окремі гілки вище.
+    //
+    // ⚠️ Лише READ_ACTIONS. Пропустити сюди термінальну дію означало б дати
+    // обхід гейтів, які стоять на термінальних гілках (taint-перевірка,
+    // ✅-підтвердження, isPrimaryOwner) — батч виконується як читання.
+    if (!Array.isArray(structured.reads)) return null;
+    const reads = [];
+    for (const r of structured.reads) {
+      if (typeof r !== 'string' || !READ_ACTIONS.has(r) || reads.includes(r)) continue;
+      reads.push(r);
+      if (reads.length >= MAX_BATCH_READS) break;
+    }
+    if (reads.length === 0) return null;
+    const clampDay = (v) => (Number.isFinite(v) ? Math.min(7, Math.max(0, Math.round(v))) : null);
+    const start = clampDay(structured.calendarStartDay) ?? 0;
+    const endRaw = clampDay(structured.calendarEndDay);
+    const mailId = typeof structured.mailId === 'string' ? structured.mailId.trim() : '';
+    return {
+      action,
+      reads,
+      startDay: start,
+      endDay: endRaw == null ? start : Math.max(start, endRaw),
+      mailQuery: typeof structured.mailQuery === 'string' ? structured.mailQuery : '',
+      dataScope: typeof structured.dataScope === 'string' ? structured.dataScope : undefined,
+      driveQuery: typeof structured.driveQuery === 'string' ? structured.driveQuery : '',
+      // Той самий ID_RE, що в readMailBody: рядок іде в шлях URL Gmail API.
+      mailId: mailId && ID_RE.test(mailId) ? mailId : '',
+    };
+  }
   if (action === 'proposeCalendarChanges') {
     if (!Array.isArray(structured.proposal)) return null;
     return { action, proposal: structured.proposal };
@@ -565,6 +624,30 @@ export function extractAssistantAction(structured) {
   // reply
   const text = structured.replyText;
   return { action, replyText: typeof text === 'string' ? text.trim() : '' };
+}
+
+/**
+ * Слід обраної дії для транскрипту (U1).
+ *
+ * Модель не бачить власних кроків: транскрипт містить лише РЕЗУЛЬТАТИ
+ * інструментів, тож на довгому ланцюжку вона повторює те саме читання й
+ * спалює крок зі стелі. Один рядок перед результатом дає їй план-трейс.
+ * Параметр обрізаємо — echo не має зʼїдати бюджет транскрипту.
+ */
+export function formatActionEcho(action) {
+  const name = action?.action ?? '?';
+  const clip = (v) => {
+    const s = String(v ?? '').trim();
+    return s.length > MAX_ECHO_PARAM ? `${s.slice(0, MAX_ECHO_PARAM)}…` : s;
+  };
+  let detail = '';
+  if (name === 'readBatch') detail = (action.reads ?? []).join('+');
+  else if (name === 'readCalendar') detail = `${action.startDay}..${action.endDay}`;
+  else if (name === 'readMail') detail = clip(action.mailQuery) && `"${clip(action.mailQuery)}"`;
+  else if (name === 'readMailBody') detail = clip(action.mailId) && `"${clip(action.mailId)}"`;
+  else if (name === 'readDrive') detail = clip(action.driveQuery) && `"${clip(action.driveQuery)}"`;
+  else if (name === 'readOwnData') detail = clip(action.dataScope) && `"${clip(action.dataScope)}"`;
+  return `[ти обрав: ${name}${detail ? ` ${detail}` : ''}]`;
 }
 
 function clampDuration(raw) {
