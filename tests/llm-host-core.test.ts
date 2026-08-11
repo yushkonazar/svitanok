@@ -13,6 +13,7 @@ const {
   formatUsage,
   createRateLimiter,
   detectUsageLimit,
+  resolveBindHost,
   USAGE_LIMIT_ERROR,
 } = core;
 
@@ -269,6 +270,23 @@ describe('llm-host-core — detectUsageLimit (A1)', () => {
   it('паритет зі спільним фікстур-набором (host vs web vs src)', () => {
     for (const t of USAGE_LIMIT_TEXTS) expect(detectUsageLimit(t).limit, t).toBe(true);
     for (const t of NON_LIMIT_TEXTS) expect(detectUsageLimit(t).limit, t).toBe(false);
+  });
+});
+
+describe('llm-host-core — resolveBindHost (S4: хост не висить на всіх інтерфейсах)', () => {
+  it('за замовчуванням лише loopback — назовні пускає Caddy, а не сам процес', () => {
+    // Доти server.listen(PORT) слухав 0.0.0.0, і єдиним, що тримало ендпоінт
+    // приватним, був ufw. Одне невдале правило фаєрвола = відкритий в інтернет
+    // спавнер підпроцесів. Caddy і так проксі на 127.0.0.1:8787 (host/README),
+    // тож loopback нічого не ламає — просто прибирає цей клас помилки.
+    expect(resolveBindHost({})).toBe('127.0.0.1');
+    expect(resolveBindHost({ BIND_HOST: '' })).toBe('127.0.0.1');
+    expect(resolveBindHost({ BIND_HOST: '   ' })).toBe('127.0.0.1');
+  });
+
+  it('явний BIND_HOST шанується (інша топологія — контейнер, окремий проксі)', () => {
+    expect(resolveBindHost({ BIND_HOST: '0.0.0.0' })).toBe('0.0.0.0');
+    expect(resolveBindHost({ BIND_HOST: ' 10.0.0.5 ' })).toBe('10.0.0.5');
   });
 });
 
