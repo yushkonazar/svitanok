@@ -437,3 +437,43 @@ describe('/agenda — formatAgendaMessage/buildAgendaKeyboard/callback', () => {
     expect(parseAgendaCallbackData(null)).toBeNull();
   });
 });
+
+/* U5 (аудит §10): «Перенеси всі завтрашні зустрічі на годину пізніше» було
+ * структурно неможливим — і власник підтвердив це наживо (тест T3: асистент
+ * чесно відповів «не можу, немає [id:...]»). Причина не в моделі: промпт
+ * календаря взагалі не віддавав eventId, а sanitizeProposal дропає
+ * updateEvent/deleteEvent без id. Тобто дві половини механізму були на місці, а
+ * між ними бракувало одного поля. */
+describe('formatEventsForPrompt — [id:…] для мутації подій (U5)', () => {
+  const ev = (over = {}) => ({ id: 'abc123', title: 'Стендап', time: '10:00', ...over });
+
+  it('подія несе свій id у промпт', () => {
+    expect(formatEventsForPrompt([ev()])).toBe('10:00 Стендап [id:abc123]');
+  });
+
+  it('подія на весь день — так само', () => {
+    expect(formatEventsForPrompt([ev({ time: null, title: 'Відпустка' })])).toBe(
+      'увесь день: Відпустка [id:abc123]',
+    );
+  });
+
+  it('без id (чи битий id) — просто без позначки, а не «[id:null]»', () => {
+    expect(formatEventsForPrompt([ev({ id: null })])).toBe('10:00 Стендап');
+    // Той самий ID_RE, що й у sanitizeProposal: рядок піде в шлях URL Google.
+    expect(formatEventsForPrompt([ev({ id: '../../etc' })])).toBe('10:00 Стендап');
+  });
+
+  it('діапазон днів теж несе id — саме там живе «всі завтрашні зустрічі»', () => {
+    const out = formatRangeEventsForPrompt([
+      ev({ date: '2026-08-13' }),
+      ev({ id: 'def456', date: '2026-08-13', time: '15:00', title: 'Дзвінок' }),
+    ]);
+    expect(out).toContain('[id:abc123]');
+    expect(out).toContain('[id:def456]');
+  });
+
+  it('порожньо -> «подій немає» (без змін)', () => {
+    expect(formatEventsForPrompt([])).toBe('подій немає');
+    expect(formatRangeEventsForPrompt([])).toBe('подій немає');
+  });
+});
