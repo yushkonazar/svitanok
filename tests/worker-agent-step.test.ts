@@ -1082,3 +1082,38 @@ describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
     expect(sentTexts().join(' ')).toContain('Скасував');
   });
 });
+
+/* Скрін власника 12.08.2026: відповідь асистента прийшла з дослівними `**` і
+ * рядком `---`. Модель пише Markdown (так навчена будь-яка LLM), а reply йшов
+ * без parse_mode — тобто голим текстом. */
+describe('/api/agent-step — розмітка відповіді (Markdown -> HTML)', () => {
+  it('жирне доїжджає як <b>, а не як зірочки', async () => {
+    await authed({
+      token: await token(),
+      structured: { action: 'reply', replyText: '📅 **Завтра** — календар чистий.\n---\nОк' },
+    });
+    const sent = tgCalls.find((c) => tgMethod(c) === 'sendMessage')!;
+    expect(sent.body.text).toBe('📅 <b>Завтра</b> — календар чистий.\n\nОк');
+    expect(sent.body.parse_mode).toBe('HTML');
+  });
+
+  it('⚠️ сторонній текст із листа екранується — теги лише наші', async () => {
+    await authed({
+      token: await token(),
+      structured: { action: 'reply', replyText: 'Тема: **<b>клік</b> & co**' },
+    });
+    const sent = tgCalls.find((c) => tgMethod(c) === 'sendMessage')!;
+    expect(sent.body.text).toBe('Тема: <b>&lt;b&gt;клік&lt;/b&gt; &amp; co</b>');
+  });
+
+  it('у памʼять розмови йде ВИХІДНИЙ текст, без розмітки', async () => {
+    // Історія — це вхід наступного промпту, а не повідомлення для показу:
+    // теги там лише палили б токени й учили модель писати HTML.
+    await authed({
+      token: await token(),
+      structured: { action: 'reply', replyText: '**Готово**' },
+    });
+    const history = JSON.parse(kv.get('assistantHistory') ?? '{}');
+    expect(history['555:42'][1]).toEqual({ role: 'assistant', text: '**Готово**' });
+  });
+});
