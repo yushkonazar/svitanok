@@ -32,6 +32,7 @@ import {
   resolveCallback,
   markButtonDone,
   escapeHtml,
+  mdToTelegramHtml,
   parseCommand,
   formatStatsMessage,
   formatJobsMessage,
@@ -2873,7 +2874,14 @@ async function handleAgentStep(request, env) {
   if (action.action === 'reply') {
     if (!action.replyText) console.error('assistant: reply без replyText');
     const text = action.replyText || ASSISTANT_EMPTY_REPLY;
-    return finish(() => sendText(text), text);
+    /* Модель пише Markdown (так навчена будь-яка LLM), а повідомлення йшло без
+       parse_mode — власник бачив дослівні `**жирне**` і рядки `---`.
+       mdToTelegramHtml СПЕРШУ екранує все (у відповіді є сторонній текст: теми
+       листів, імена відправників), і лише потім вставляє власні теги — тож у
+       Telegram не може поїхати тег, якого ми туди не поставили.
+       У памʼять розмови пишемо ВИХІДНИЙ текст, без розмітки: історія — це вхід
+       наступного промпту, а не повідомлення для показу. */
+    return finish(() => sendText(mdToTelegramHtml(text), { parse_mode: 'HTML' }), text);
   }
   if (action.action === 'createReminder') {
     return finish(
