@@ -8,7 +8,7 @@ import type { AppConfig } from '../core/config.js';
 import {
   googleCreds,
   googleAccessToken,
-  withTimeout,
+  fetchJsonWithTimeout,
   type GoogleOAuthCreds,
 } from '../core/google-auth.js';
 import { kyivLocalToUtcMs } from '../core/tz.js';
@@ -70,13 +70,14 @@ export function createCalendarModule(opts: CalendarModuleOptions = {}): Module<A
     url.searchParams.set('singleEvents', 'true');
     url.searchParams.set('orderBy', 'startTime');
     url.searchParams.set('timeZone', 'Europe/Kyiv');
-    const res = await withTimeout(
-      (signal) =>
-        fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${token}` }, signal }),
+    const res = await fetchJsonWithTimeout(
+      fetchImpl,
+      url.toString(),
+      { headers: { Authorization: `Bearer ${token}` } },
       timeoutMs,
     );
     if (!res.ok) throw new Error(`Google Calendar HTTP ${res.status}`);
-    return parseEvents(await res.json());
+    return parseEvents(res.body);
   }
 
   return {
