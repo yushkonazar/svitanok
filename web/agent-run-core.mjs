@@ -135,6 +135,7 @@ export async function mintRunToken(
     progressMsgId = null,
     userText = '',
     step = 0,
+    tainted = false,
     nowMs = Date.now(),
     ttlMs = AGENT_RUN_TTL_MS,
   },
@@ -148,6 +149,10 @@ export async function mintRunToken(
     m: progressMsgId ?? null,
     u: String(userText ?? '').slice(0, MAX_TOKEN_USER_TEXT),
     s: step,
+    // `x` — taint-біт (S2): у транскрипт уже потрапив текст, який контролює
+    // СТОРОННЯ людина (тіло листа, назва файлу в Drive). Живе в ПІДПИСАНОМУ
+    // токені, а не в KV: хост його не підробить, а KV не має read-your-writes.
+    x: tainted ? 1 : 0,
     e: Math.min(nowMs + AGENT_STEP_TTL_MS, deadline),
     d: deadline,
   };
@@ -210,6 +215,10 @@ export async function verifyRunToken(secret, token, nowMs = Date.now()) {
       progressMsgId: claims.m ?? null,
       userText: typeof claims.u === 'string' ? claims.u : '',
       step: claims.s,
+      // Старі токени (без `x`) читаються як НЕ заплямовані — це коректно: їх
+      // видали до появи біта, тобто до появи самої гілки читання пошти в цьому
+      // прогоні. Токен живе хвилини, тож стан «змішаних» токенів минущий.
+      tainted: claims.x === 1,
       expMs: claims.e,
       deadlineMs: claims.d,
     },
@@ -235,6 +244,9 @@ export async function nextRunToken(secret, claims, nowMs = Date.now()) {
     m: claims.progressMsgId ?? null,
     u: claims.userText ?? '',
     s: step,
+    // Taint — ОДНОСТОРОННІЙ: заплямований прогін заплямованим і лишається.
+    // Зняти його могло б лише «забування» вже прочитаного, а транскрипт росте.
+    x: claims.tainted ? 1 : 0,
     e: Math.min(nowMs + AGENT_STEP_TTL_MS, claims.deadlineMs),
     d: claims.deadlineMs, // дедлайн прогону, НЕ поновлюємо — див. коментар вище
   };
