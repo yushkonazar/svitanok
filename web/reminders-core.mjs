@@ -429,9 +429,25 @@ export function pickDayPartSlot(days, startHour, endHour) {
 }
 
 /** Додати нагадування (id/nowMs — від виклику, щоб функція лишалась чистою). */
-export function addReminder(reminders, { id, text, whenMs, nowMs }) {
+export function addReminder(reminders, { id, text, whenMs, nowMs, chatId, threadId }) {
   const list = Array.isArray(reminders) ? reminders : [];
-  return [...list, { id, text, whenMs, createdMs: nowMs, firedTs: null }];
+  return [
+    ...list,
+    {
+      id,
+      text,
+      whenMs,
+      createdMs: nowMs,
+      firedTs: null,
+      // Адреса доставки (B12). Доти нагадування летіло в захардкоджені
+      // TELEGRAM_CHAT_ID + TOPIC_ASSISTANT незалежно від того, ДЕ його
+      // створили: попросив у приватному чаті — відповідь приходила в тему
+      // супергрупи. Пишемо лише те, що справді знаємо: undefined-поля не
+      // зберігаємо, щоб доставка чесно впала у фолбек, а не в «null-чат».
+      ...(chatId != null ? { chatId } : {}),
+      ...(threadId != null ? { threadId } : {}),
+    },
+  ];
 }
 
 /** Нагадування «на видачу»: час настав і ще не спрацьовувало. */

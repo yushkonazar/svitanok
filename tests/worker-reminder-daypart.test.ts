@@ -204,3 +204,74 @@ describe('createReminder — фраза частини доби (день-час
     expect(kv.get('assistantPending')).toBeUndefined();
   });
 });
+
+/* B12: нагадування летіло в захардкоджені TELEGRAM_CHAT_ID + TOPIC_ASSISTANT
+ * незалежно від того, ДЕ його створили — попросив у приватному чаті, а
+ * відповідь прийшла в тему супергрупи. Тепер адреса зберігається на самому
+ * нагадуванні; для записів, створених ДО цієї зміни, лишається старий фолбек. */
+describe('доставка нагадування за адресою створення (B12)', () => {
+  const OWNER_CHAT = 777;
+  const GROUP_CHAT = '-100999';
+
+  const cronEnv = (kv: Map<string, string>) => ({
+    BRIEFING: {
+      get: async (k: string) => kv.get(k) ?? null,
+      put: async (k: string, v: string) => void kv.set(k, v),
+      list: async () => ({ keys: [] }),
+    },
+    TELEGRAM_BOT_TOKEN: 'bot-token',
+    TELEGRAM_CHAT_ID: GROUP_CHAT,
+    TOPIC_ASSISTANT: '42',
+  });
+
+  const runCron = async (kv: Map<string, string>) => {
+    const promises: Promise<unknown>[] = [];
+    await worker.scheduled({}, cronEnv(kv), {
+      waitUntil: (p: Promise<unknown>) => void promises.push(p),
+    });
+    await Promise.all(promises);
+  };
+
+  it('нагадування зі збереженим chatId приходить САМЕ туди', async () => {
+    const kv = new Map<string, string>();
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [
+          {
+            id: 'r1',
+            text: 'молоко',
+            whenMs: Date.now() - 1000,
+            chatId: OWNER_CHAT,
+            firedTs: null,
+          },
+        ],
+      }),
+    );
+    await runCron(kv);
+
+    const sent = tg.find(
+      (c) => c.method === 'sendMessage' && String(c.body.text).includes('молоко'),
+    );
+    expect(sent?.body.chat_id).toBe(OWNER_CHAT);
+    // Тема належить ІНШОМУ чату — тягнути її сюди не можна.
+    expect(sent?.body.message_thread_id).toBeUndefined();
+  });
+
+  it('legacy-нагадування (без адреси) — старий фолбек на env', async () => {
+    const kv = new Map<string, string>();
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [{ id: 'r2', text: 'легасі', whenMs: Date.now() - 1000, firedTs: null }],
+      }),
+    );
+    await runCron(kv);
+
+    const sent = tg.find(
+      (c) => c.method === 'sendMessage' && String(c.body.text).includes('легасі'),
+    );
+    expect(String(sent?.body.chat_id)).toBe(GROUP_CHAT);
+    expect(String(sent?.body.message_thread_id)).toBe('42');
+  });
+});

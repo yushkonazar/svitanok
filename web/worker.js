@@ -2212,6 +2212,9 @@ async function createReminderFromText(env, parsed, text, { agentFallback = false
     text: parsedTime.remainder,
     whenMs: parsedTime.whenMs,
     nowMs: Date.now(),
+    // Куди відповідати, коли час настане (B12) — туди ж, де попросили.
+    chatId: parsed.chatId,
+    threadId: parsed.threadId,
   });
   await env.BRIEFING.put('state', JSON.stringify(state));
   return sendText(formatReminderConfirm(parsedTime.whenMs, parsedTime.remainder, Date.now()), {
@@ -3845,6 +3848,8 @@ async function resolveProposalCallback(env, parsed, cb) {
         text: item.title,
         whenMs: item.whenMs,
         nowMs: Date.now(),
+        chatId: parsed.chatId,
+        threadId: parsed.threadId,
       });
       await env.BRIEFING.put('state', JSON.stringify(fresh));
       results.push({ ok: true, id: newId });
@@ -4148,9 +4153,15 @@ async function checkReminders(env) {
   const settings = await loadSettings(env);
   if (isQuietMinute(settings, kyivMinuteOfDay(new Date(now)))) return;
 
-  const chatId = env.TELEGRAM_CHAT_ID;
-  const threadId = env.TOPIC_ASSISTANT ?? undefined;
   for (const r of due) {
+    /* Доставка ЗА АДРЕСОЮ створення (B12). Раніше кожне нагадування летіло в
+       захардкоджені TELEGRAM_CHAT_ID + TOPIC_ASSISTANT: попросив у приватному
+       чаті — відповідь приходила в тему супергрупи (а якщо тем немає взагалі,
+       message_thread_id мовчки ігнорувався). Фолбек лишаємо для legacy-записів,
+       створених до цієї зміни, — у них адреси просто немає. */
+    const chatId = r.chatId ?? env.TELEGRAM_CHAT_ID;
+    const threadId =
+      r.chatId != null ? (r.threadId ?? undefined) : (env.TOPIC_ASSISTANT ?? undefined);
     const res = await tgCall(env, 'sendMessage', {
       chat_id: chatId,
       message_thread_id: threadId,
