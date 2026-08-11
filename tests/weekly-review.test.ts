@@ -83,17 +83,46 @@ describe('weekly-review — модуль', () => {
 
 describe('buildPruners', () => {
   const config = {
-    modules: { news: { dedupDays: 3, retentionDays: 7 }, mail: { dedupDays: 3 } },
+    modules: {
+      news: { dedupDays: 3, retentionDays: 7 },
+      mail: { dedupDays: 3 },
+      jobs: { dedupDays: 7 },
+    },
   } as AppConfig;
 
-  it('чистить старі shownNews і shownMail', () => {
+  it('чистить старі shownNews, shownMail і shownJobs', () => {
     const data: Record<string, unknown> = {
       shownNews: { recent: iso(2), old: iso(40) },
       shownMail: { recent: iso(1), old: iso(10) },
+      shownJobs: { recent: iso(3), old: iso(30) },
     };
     for (const p of buildPruners(config, Date.now())) p(data);
     expect(Object.keys(data.shownNews as object)).toEqual(['recent']);
     expect(Object.keys(data.shownMail as object)).toEqual(['recent']);
+    expect(Object.keys(data.shownJobs as object)).toEqual(['recent']);
+  });
+
+  /* B20/F4: shownJobs був єдиною з чотирьох dedup-мап без прунера — по запису
+     на КОЖНУ колись показану вакансію (7/добу), тобто ~2500 записів і ~220 КБ
+     сміття на рік усередині блоба `state`, який читається й переписується
+     кожним прогоном. Прунер симетричний до shownMail, тож головне тут — що
+     він узагалі є в наборі. */
+  it('кожна dedup-мапа має свій прунер (жодну більше не забуто)', () => {
+    const data: Record<string, unknown> = {
+      shownNews: { old: iso(40) },
+      shownMail: { old: iso(40) },
+      shownJobs: { old: iso(40) },
+    };
+    for (const p of buildPruners(config, Date.now())) p(data);
+    for (const key of ['shownNews', 'shownMail', 'shownJobs']) {
+      expect(Object.keys(data[key] as object)).toEqual([]);
+    }
+  });
+
+  it('відсутня мапа й биті дати не валять прунер', () => {
+    const data: Record<string, unknown> = { shownJobs: { broken: 'не дата' } };
+    for (const p of buildPruners(config, Date.now())) p(data);
+    expect(Object.keys(data.shownJobs as object)).toEqual([]); // непарсибельне — геть
   });
 });
 
