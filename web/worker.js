@@ -305,6 +305,48 @@ const json = (obj, status = 200) =>
     headers: { 'content-type': 'application/json; charset=utf-8' },
   });
 
+/**
+ * Стеля тіла запиту (S3). Найбільше законне тіло тут — повний блоб settings
+ * (сотні байтів) і Telegram-апдейт (одиниці КБ), тож 16КБ — це запас на два
+ * порядки, а не межа для реального вжитку.
+ */
+const MAX_REQUEST_BODY_BYTES = 16 * 1024;
+
+/**
+ * Розібрати JSON-тіло з жорсткою стелею розміру (S3) -> {ok:true,body} |
+ * {ok:false,status,error}.
+ *
+ * Навіщо ДО request.json(): без цього кожен ендпоінт спершу матеріалізує в
+ * памʼяті скільки завгодно даних, і лише потім бачить, що вони не потрібні —
+ * тобто вартість запиту задає той, хто його шле. Content-Length — дешевий
+ * ранній відсів; для запитів без нього (chunked) рахуємо реально прочитане.
+ *
+ * ⚠️ Rate-limit сам по собі тут НЕ вирішується — це конфіг Cloudflare WAF на
+ * /api/*, поза кодом (див. AUDIT §8 S3).
+ */
+async function readJsonBody(request) {
+  const declared = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_REQUEST_BODY_BYTES) {
+    return { ok: false, status: 413, error: 'body-too-large' };
+  }
+  let raw;
+  try {
+    raw = await request.text();
+  } catch {
+    return { ok: false, status: 400, error: 'bad-json' };
+  }
+  // Байти, не символи: кирилиця в UTF-8 — два байти на літеру, тож перевірка
+  // по .length пропускала б удвічі більше за задекларовану межу.
+  if (new TextEncoder().encode(raw).length > MAX_REQUEST_BODY_BYTES) {
+    return { ok: false, status: 413, error: 'body-too-large' };
+  }
+  try {
+    return { ok: true, body: JSON.parse(raw) };
+  } catch {
+    return { ok: false, status: 400, error: 'bad-json' };
+  }
+}
+
 // --- Telegram WebApp initData validation (HMAC-SHA256, WebCrypto) ---
 async function hmac(keyBytes, msgBytes) {
   const key = await crypto.subtle.importKey(
@@ -561,12 +603,9 @@ async function loadAssistantHistory(env) {
  *  ту дельту й тихо зіпсуєш вагу теми назавжди. */
 async function handleVote(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: 'bad-json' }, 400);
-  }
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
+  const body = parsedBody.body;
   const { category, dir, url, initData } = body ?? {};
   if (typeof category !== 'string' || !category || dir !== 'up') {
     return json({ ok: false, error: 'bad-params' }, 400);
@@ -698,12 +737,9 @@ async function applyEvent(env, body) {
  *  чи запис реально відбувся. */
 async function handleEvent(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: 'bad-json' }, 400);
-  }
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
+  const body = parsedBody.body;
   if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
   const auth = await checkOwner(body.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
@@ -762,12 +798,9 @@ async function handleSettings(request, env) {
 
   if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: 'bad-json' }, 400);
-  }
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
+  const body = parsedBody.body;
   const auth = await checkOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
@@ -1127,12 +1160,13 @@ async function handleLiveWeather(request, env) {
  * повернутись до авто-детекції по IP (ownerGeo лишався живим весь час).
  */
 async function handleWeatherLocation(request, env) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    body = null;
+  const parsedBody = await readJsonBody(request);
+  // Тіло тут НЕ обовʼязкове (DELETE без тіла) -> биття JSON = null, як і було;
+  // а от завелике тіло відкидаємо явно (S3).
+  if (!parsedBody.ok && parsedBody.status === 413) {
+    return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   }
+  const body = parsedBody.ok ? parsedBody.body : null;
 
   if (request.method === 'DELETE') {
     const auth = await checkOwner(body?.initData, env);
@@ -1187,12 +1221,13 @@ async function handleWeatherLocation(request, env) {
  * request_location недоступний у груповому чаті бота (TOPIC_ASSISTANT).
  */
 async function handleWeatherLocatePrompt(request, env) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    body = null;
+  const parsedBody = await readJsonBody(request);
+  // Тіло тут НЕ обовʼязкове (DELETE без тіла) -> биття JSON = null, як і було;
+  // а от завелике тіло відкидаємо явно (S3).
+  if (!parsedBody.ok && parsedBody.status === 413) {
+    return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   }
+  const body = parsedBody.ok ? parsedBody.body : null;
   // TELEGRAM_OWNER_USER_ID гарантовано задано, якщо checkOwner пройшов —
   // allowedUserIds(env) (усередині checkOwner) сама на нього спирається,
   // тож окрема not-configured-перевірка тут була б недосяжним кодом.
@@ -2655,12 +2690,9 @@ async function handleAgentStep(request, env) {
     return json({ ok: false, error: 'bad-secret' }, 401);
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: 'bad-json' }, 400);
-  }
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
+  const body = parsedBody.body;
 
   const nowMs = Date.now();
   const verified = await verifyRunToken(env.TELEGRAM_WEBHOOK_SECRET, body?.token, nowMs);
@@ -4062,12 +4094,9 @@ async function handleTelegramWebhook(request, env, ctx) {
     return json({ ok: false, error: 'bad-secret' }, 401);
   }
 
-  let update;
-  try {
-    update = await request.json();
-  } catch {
-    return json({ ok: false, error: 'bad-json' }, 400);
-  }
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
+  const update = parsedBody.body;
   const parsed = parseUpdate(update);
 
   if (!isOwner(parsed, allowedUserIds(env))) {
