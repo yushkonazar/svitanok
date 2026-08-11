@@ -244,6 +244,11 @@ export const ASSISTANT_ACTION_SCHEMA = {
         'readDrive',
         'readBatch',
         'recordAction',
+        // ask (U3) — те саме тіло, що reply ("replyText"), інший СЕНС: не
+        // фінальна відповідь, а питання, після якого Worker чекає на власника
+        // й повертає моделі її ж нотатку. Своїх полів не має — тому в схемі
+        // коштує рівно один рядок enum'у.
+        'ask',
       ],
     },
     calendarStartDay: { type: 'number' },
@@ -404,6 +409,9 @@ export function buildAssistantSystemPrompt(nowMs) {
     `формат: ${CANONICAL_EXAMPLES} (лише час, суть — у "title"). "durationMin" типово 60. ` +
     `event/updateEvent: ще "location"+"attendees":["імʼя"/email,...].\n` +
     `- {"action":"reply","replyText":"..."} — просто відповісти текстом.\n` +
+    `- {"action":"ask","replyText":"питання","note":"що вже зʼясував"} — перепитати, коли для ` +
+    `фінальної дії бракує саме ВІДПОВІДІ користувача. "note" тут ОБОВʼЯЗКОВО: лише він ` +
+    `повернеться до тебе з відповіддю, решта прочитаного пропаде.\n` +
     `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
     `checkin (лише поля АКТИВНОГО слоту з розмови, частково ОК), voteNews(newsIndex), ` +
     `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId).\n` +
@@ -438,6 +446,7 @@ const VALID_ACTIONS = new Set([
   'readDrive',
   'readBatch',
   'recordAction',
+  'ask',
 ]);
 
 /**
@@ -647,6 +656,15 @@ export function extractAssistantAction(structured) {
     if (!Array.isArray(structured.proposal)) return null;
     return { action, proposal: structured.proposal };
   }
+  // ask (U3): те саме поле, що reply, але порожнє питання — НЕ дія. У reply
+  // порожнеча ще має сенс (є ASSISTANT_EMPTY_REPLY, власник бачить чесну
+  // заглушку й кінець), а тут вона лишила б його чекати на відповідь, якої
+  // ніхто не просив.
+  if (action === 'ask') {
+    const q = typeof structured.replyText === 'string' ? structured.replyText.trim() : '';
+    if (!q) return null;
+    return { action, replyText: q };
+  }
   // reply
   const text = structured.replyText;
   return { action, replyText: typeof text === 'string' ? text.trim() : '' };
@@ -668,6 +686,35 @@ export function extractAssistantNote(structured) {
   if (typeof raw !== 'string') return '';
   const flat = raw.replace(/\s*[\r\n]+\s*/g, ' ').trim();
   return flat.length > MAX_NOTE_LEN ? `${flat.slice(0, MAX_NOTE_LEN - 1).trimEnd()}…` : flat;
+}
+
+/**
+ * Скільки живе слот «я перепитав» (U3). Півгодини — це «власник відійшов і
+ * відповів», а не «наступного ранку написав щось інше»: підхоплювати вчорашню
+ * нотатку до свіжого запиту гірше, ніж не підхопити нічого.
+ */
+export const ASSISTANT_RESUME_TTL_MS = 30 * 60_000;
+
+/**
+ * Префікс транскрипту для ПРОДОВЖЕНОГО прогону (U3) або ''.
+ *
+ * Що саме переноситься — і чому не все. Транскрипт живе на ХОСТІ: у зворотному
+ * виклику Worker бачить лише {token, structured}, тож перенести весь ланцюжок
+ * читань він не може без зміни протоколу хоста (окрема задача). Натомість
+ * переносимо блокнот моделі (U2) — те, що вона сама визнала вартим збереження.
+ * Саме питання й запит власника нести не треба: вони вже їдуть у «Попередній
+ * розмові» з assistantHistory.
+ *
+ * Свіжість перевіряємо ТУТ, а не покладаємось на TTL сховища: KV викидає ключ
+ * приблизно, і протухла нотатка, що дожила зайву хвилину, зіпсувала б наступний
+ * запит мовчки.
+ */
+export function buildResumePrefix(resume, nowMs = Date.now()) {
+  if (!resume || typeof resume !== 'object') return '';
+  if (!Number.isFinite(resume.atMs) || nowMs - resume.atMs > ASSISTANT_RESUME_TTL_MS) return '';
+  const note = typeof resume.note === 'string' ? resume.note.trim() : '';
+  if (!note) return '';
+  return `ПРОДОВЖЕННЯ: ти щойно перепитав. Твоя нотатка тоді: ${note}\n`;
 }
 
 /**

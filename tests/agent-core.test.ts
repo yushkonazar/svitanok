@@ -26,13 +26,15 @@ const {
   formatActionEcho,
   extractAssistantNote,
   MAX_NOTE_LEN,
+  buildResumePrefix,
+  ASSISTANT_RESUME_TTL_MS,
 } = agent;
 
 // Літо (EEST, UTC+3): 2026-07-10 11:00 Київ.
 const SUMMER_NOW = Date.parse('2026-07-10T08:00:00Z');
 
 describe('ASSISTANT_ACTION_SCHEMA', () => {
-  it('дозволяє рівно 12 дій (C3: +readBatch)', () => {
+  it('дозволяє рівно 13 дій (C3: +readBatch, U3: +ask)', () => {
     expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toEqual([
       'readCalendar',
       'createReminder',
@@ -46,6 +48,7 @@ describe('ASSISTANT_ACTION_SCHEMA', () => {
       'readDrive',
       'readBatch',
       'recordAction',
+      'ask',
     ]);
   });
 
@@ -1701,9 +1704,81 @@ describe('note — блокнот моделі між кроками (U2)', () =
     );
   });
 
-  it('промпт пояснює note; бюджети хоста не перевищено', () => {
+  it('промпт пояснює note; бюджети хоста не перевищено (U2)', () => {
     const p = buildAssistantSystemPrompt(SUMMER_NOW);
     expect(p).toContain('note');
+    expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
+    const DAY = 86_400_000;
+    const base = Date.parse('2026-07-06T09:00:00Z');
+    for (let i = 0; i < 7; i++) {
+      expect(buildAssistantSystemPrompt(base + i * DAY).length).toBeLessThanOrEqual(
+        MAX_SYSTEM_PROMPT_LEN,
+      );
+    }
+  });
+});
+
+/* U3 (аудит §10) — `ask`: уточнення перестає бути кінцем роботи.
+ *
+ * Доти будь-яке перепитування йшло через `reply`, тобто прогін завершувався, а
+ * все прочитане (пошта, календар) зникало: відповідь власника заходила холодним
+ * стартом і модель починала збирати дані спочатку. `ask` каже прямо «я
+ * перепитав», і Worker кладе в слот продовження блокнот моделі (U2) — тобто
+ * рівно те, що вона сама вважала важливим зберегти.
+ *
+ * Свідома межа: сам ТРАНСКРИПТ живе на хості (Worker бачить у зворотному виклику
+ * лише {token, structured}), тож переносимо не його, а нотатку. Повний перенос
+ * вимагав би зміни протоколу хоста — окрема задача. */
+describe('ask — нетермінальне уточнення (U3)', () => {
+  it('оголошений у схемі й приймається валідатором', () => {
+    expect(ASSISTANT_ACTION_SCHEMA.properties.action.enum).toContain('ask');
+    expect(extractAssistantAction({ action: 'ask', replyText: 'На яку годину?' })).toEqual({
+      action: 'ask',
+      replyText: 'На яку годину?',
+    });
+  });
+
+  it('питання без тексту -> null (порожнє повідомлення власнику — гірше за фолбек)', () => {
+    expect(extractAssistantAction({ action: 'ask', replyText: '   ' })).toBeNull();
+    expect(extractAssistantAction({ action: 'ask' })).toBeNull();
+  });
+
+  it('не читальна дія: у readBatch не вкладається', () => {
+    // Інакше «уточнення» всередині батча виконалось би як читання й не дійшло
+    // б до власника — той самий гейт READ_ACTIONS, що ловить термінальні дії.
+    expect(
+      extractAssistantAction({
+        action: 'readBatch',
+        reads: [{ action: 'ask', replyText: 'коли?' }],
+      }),
+    ).toBeNull();
+  });
+
+  it('buildResumePrefix віддає нотатку наступному прогонові', () => {
+    const now = SUMMER_NOW;
+    const prefix = buildResumePrefix({ note: 'знайшов лист kontramarka', atMs: now - 60_000 }, now);
+    expect(prefix).toContain('знайшов лист kontramarka');
+    expect(prefix).toContain('ПРОДОВЖЕННЯ');
+    expect(prefix.endsWith('\n')).toBe(true); // окремий рядок перед запитом
+  });
+
+  it('протухлий слот ігнорується — через годину це вже інша розмова', () => {
+    const now = SUMMER_NOW;
+    expect(buildResumePrefix({ note: 'щось', atMs: now - ASSISTANT_RESUME_TTL_MS - 1 }, now)).toBe(
+      '',
+    );
+    expect(buildResumePrefix({ note: 'щось' }, now)).toBe(''); // без часу — не довіряємо
+  });
+
+  it('порожній/битий слот -> порожній префікс (нічого не вигадуємо)', () => {
+    expect(buildResumePrefix(null, SUMMER_NOW)).toBe('');
+    expect(buildResumePrefix({ atMs: SUMMER_NOW }, SUMMER_NOW)).toBe('');
+    expect(buildResumePrefix('нотатка', SUMMER_NOW)).toBe('');
+  });
+
+  it('промпт описує ask разом із вимогою note; бюджети хоста не перевищено', () => {
+    const p = buildAssistantSystemPrompt(SUMMER_NOW);
+    expect(p).toContain('"action":"ask"');
     expect(JSON.stringify(ASSISTANT_ACTION_SCHEMA).length).toBeLessThanOrEqual(MAX_SCHEMA_LEN);
     const DAY = 86_400_000;
     const base = Date.parse('2026-07-06T09:00:00Z');

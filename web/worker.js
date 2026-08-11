@@ -112,6 +112,8 @@ import {
   buildAssistantSystemPrompt,
   extractAssistantAction,
   extractAssistantNote,
+  buildResumePrefix,
+  ASSISTANT_RESUME_TTL_MS,
   sanitizeProposal,
   formatProposalMessage,
   formatProposalResult,
@@ -145,7 +147,7 @@ import {
   formatDriveForPrompt,
   sanitizeMailQuery,
 } from './assistant-data-core.mjs';
-import { renderHistoryForPrompt, appendTurn } from './assistant-memory-core.mjs';
+import { renderHistoryForPrompt, appendTurn, historyKey } from './assistant-memory-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -2601,6 +2603,60 @@ async function rememberAssistantQuestion(env, parsed, text) {
   }
 }
 
+/* ── Слот продовження (U3) ────────────────────────────────────────────────
+   Коли модель перепитує (`ask`), прогін закривається — інакше хост чекав би на
+   власника хвилинами, тримаючи петлю. Але відповідь власника має заходити не
+   холодним стартом, а з тим, що модель уже знала. Це «те, що знала» — її
+   блокнот (U2); повний транскрипт лишається на хості й сюди не приїжджає (див.
+   buildResumePrefix).
+
+   ОКРЕМИЙ ключ на (чат, тему), не поле в блобі `state` — той самий мотив, що
+   assistantPending/sentMessages/agentRuns: наївні read-modify-write писарі
+   `state` затирали б слот назад. Ключ той самий, що в історії розмови, тож
+   тема з темою не змішуються. */
+function assistantResumeKey(chatId, threadId) {
+  return `assistantResume:${historyKey(chatId, threadId)}`;
+}
+
+/** Покласти слот. Без нотатки не кладемо: продовжувати не було б чим, а
+ *  порожній слот лише плутав би наступний запит. Збій KV не блокує питання —
+ *  власник має його отримати в будь-якому разі. */
+async function saveAssistantResume(env, claims, note, nowMs) {
+  if (!note) return;
+  try {
+    await env.BRIEFING.put(
+      assistantResumeKey(claims.chatId, claims.threadId),
+      // tainted: нотатка складена ПІСЛЯ читання пошти/Drive — це переказ
+      // тексту, який пише стороння людина. Якби продовжений прогін стартував
+      // чистим, інʼєкція з листа дістала б рівно те, чого їй бракує: прямий
+      // запис наступним кроком. Тож пляма (S2) їде разом із нотаткою.
+      JSON.stringify({ note, tainted: claims.tainted === true, atMs: nowMs }),
+      { expirationTtl: Math.round(ASSISTANT_RESUME_TTL_MS / 1000) },
+    );
+  } catch (e) {
+    console.error('assistantResume write failed (не блокує питання)', e);
+  }
+}
+
+/** Забрати слот — ОДНОРАЗОВО: продовження буває рівно одне, а невидалений слот
+ *  чіплявся б до наступних, уже інших запитів. */
+async function takeAssistantResume(env, chatId, threadId) {
+  const key = assistantResumeKey(chatId, threadId);
+  let rec = null;
+  try {
+    rec = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
+  } catch {
+    /* биття JSON -> продовження просто не буде */
+  }
+  if (!rec) return null;
+  try {
+    await env.BRIEFING.delete(key);
+  } catch (e) {
+    console.error('assistantResume delete failed (не блокує прогін)', e);
+  }
+  return rec;
+}
+
 /**
  * Новий вхід у агента: жодного циклу — надіслати «⏳», віддати роботу хосту.
  * Уся тривала частина живе на VPS, тож ця функція завершується за ~300мс.
@@ -2623,7 +2679,13 @@ async function runAssistantAgent(env, parsed, userText) {
     parsed.threadId,
   );
   const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
-  const transcript = clipTranscript(`${priorContext}Користувач написав: "${userMsg}"`);
+  // U3: якщо попередній прогін закінчився питанням — це повідомлення є на нього
+  // відповіддю, і модель має почати не з нуля, а зі своєї ж нотатки.
+  const resume = await takeAssistantResume(env, parsed.chatId, parsed.threadId);
+  const resumePrefix = buildResumePrefix(resume, nowMs);
+  const transcript = clipTranscript(
+    `${priorContext}${resumePrefix}Користувач написав: "${userMsg}"`,
+  );
 
   // «⏳» ПЕРЕД стартом: ланцюжок може тривати десятки секунд, і мовчазний чат у
   // цей час читається як «зламалось». message_id запамʼятовуємо в токені, щоб
@@ -2637,6 +2699,9 @@ async function runAssistantAgent(env, parsed, userText) {
     threadId: parsed.threadId ?? null,
     progressMsgId,
     userText: userMsg,
+    // Продовження заплямованого прогону лишається заплямованим (S2): у
+    // транскрипті знову переказ стороннього тексту — див. saveAssistantResume.
+    tainted: Boolean(resumePrefix) && resume.tainted === true,
     nowMs,
   });
 
@@ -2876,6 +2941,17 @@ async function handleAgentStep(request, env) {
   }
 
   /* ── Термінальні дії ─────────────────────────────────────────────────── */
+  /* ask (U3) — термінальний для ПРОГОНУ, але не для розмови. Прогін закриваємо
+     (хост інакше чекав би на власника хвилинами, тримаючи петлю й дедлайн), а в
+     слот продовження кладемо блокнот моделі — щоб відповідь власника зайшла з
+     ним, а не холодним стартом, як було з `reply`-питаннями. Розмітка й запис у
+     памʼять — рівно ті самі, що в reply: для власника це звичайне повідомлення
+     від асистента. */
+  if (action.action === 'ask') {
+    await saveAssistantResume(env, claims, note, nowMs);
+    const text = action.replyText;
+    return finish(() => sendText(mdToTelegramHtml(text), { parse_mode: 'HTML' }), text);
+  }
   if (action.action === 'reply') {
     if (!action.replyText) console.error('assistant: reply без replyText');
     const text = action.replyText || ASSISTANT_EMPTY_REPLY;
