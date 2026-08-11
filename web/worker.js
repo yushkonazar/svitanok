@@ -79,6 +79,7 @@ import {
   addDaysToDateKey,
   matchDayPartRange,
   pickDayPartSlot,
+  classifyReminderIntent,
 } from './reminders-core.mjs';
 import {
   kyivRangeBoundsUtc,
@@ -3125,6 +3126,20 @@ async function handleLocationShare(env, parsed, sendText) {
   });
 }
 
+/**
+ * Аварійний вимикач класифікатора наміру (B23): `REMINDER_INTENT_ROUTING=0`
+ * (або 'off'/'false') повертає стару жадібну поведінку «будь-яке "нагад" ->
+ * парсер». Умикання за замовчуванням — фікс має працювати без налаштування;
+ * змінна потрібна лише щоб відкотитись без релізу, якщо в живому вжитку
+ * класифікатор поведеться не так, як у тестах. Це щоденний інструмент
+ * власника, а не сервіс із вікном обслуговування.
+ */
+function reminderIntentRoutingEnabled(env) {
+  const raw = env.REMINDER_INTENT_ROUTING;
+  if (raw === undefined || raw === null) return true;
+  return !['0', 'off', 'false', 'no'].includes(String(raw).trim().toLowerCase());
+}
+
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
 async function handleCommand(env, parsed, origin) {
   const sendText = sendTo(env, parsed);
@@ -3143,6 +3158,17 @@ async function handleCommand(env, parsed, origin) {
     // час не розібрався — не глухе «не зрозумів», а розмова з агентом (памʼять
     // треду -> перепитав і зібрав відповідь).
     if (/нагад/i.test(parsed.text)) {
+      // B23: до фікса сюди жадібно провалювалось БУДЬ-ЯКЕ «нагад», і парсер
+      // (він уміє лише зрізати час) перетворював «скасуй нагадування…» на ще
+      // одне нагадування з дослівним текстом. Класифікатор пропускає до агента
+      // ЛИШЕ сильні сигнали (мутація наявного / друга дія), решта йде старим,
+      // швидшим і детермінованим шляхом. Без хоста агента нема — тоді теж
+      // парсер (той самий гейт, що в agentFallback нижче).
+      const toAgent =
+        reminderIntentRoutingEnabled(env) &&
+        classifyReminderIntent(parsed.text) === 'agent' &&
+        Boolean(agentHostUrl(env));
+      if (toAgent) return runAssistantAgent(env, parsed, parsed.text);
       return createReminderFromText(env, parsed, parsed.text, { agentFallback: true });
     }
     // Вільний текст у 🤖Асистент (чи DM, без тем) -> LLM tool-use агент (Блок
