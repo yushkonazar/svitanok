@@ -2235,10 +2235,59 @@ async function createReminderFromText(env, parsed, text, { agentFallback = false
 const MIN_CANCEL_MATCH_LEN = 4;
 
 /**
- * Скасувати активне нагадування за описом (CM3, дія cancelReminder агента):
- * збіг по підрядку тексту серед активних. 0 -> не знайшов; 1 -> скасувати +
- * підтвердити; >1 -> уточнити (не вгадуємо, яке саме). Плоский текст (без
- * parse_mode) — текст нагадування довільний, Telegram не інтерпретує розмітку.
+ * Знайти РІВНО одне активне нагадування за описом -> {reminder} | {reply}.
+ *
+ * Спільне для cancelReminder і updateReminder: збіг по підрядку серед активних.
+ * 0 -> не знайшов; >1 -> уточнити (не вгадуємо, яке саме — ціна помилки тут не
+ * симетрична: скасоване нагадування власник просто не отримає й не дізнається
+ * про це). Плоский текст відповіді (без parse_mode) — текст нагадування
+ * довільний, Telegram не має інтерпретувати в ньому розмітку.
+ */
+async function findReminderByText(env, matchText) {
+  const state = await loadState(env);
+  const q = String(matchText ?? '')
+    .trim()
+    .toLowerCase();
+  const matches = listActive(state.reminders).filter((r) =>
+    String(r.text).toLowerCase().includes(q),
+  );
+  if (matches.length === 0) {
+    return { reply: `🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.` };
+  }
+  if (matches.length > 1) {
+    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    return { reply: `🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}` };
+  }
+  return { reminder: matches[0] };
+}
+
+/**
+ * Показати пропозицію під ✅/❌ (той самий цикл, що подієві stageItemEdit/
+ * stageItemDelete: власний KV-ключ + buildProposalKeyboard + accept-гілка).
+ */
+async function stageProposalItem(env, parsed, item) {
+  const id = crypto.randomUUID().slice(0, 8);
+  await env.BRIEFING.put(
+    ASSISTANT_PENDING_KEY,
+    JSON.stringify({ id, items: [item], createdMs: Date.now() }),
+  );
+  return sendTo(env, parsed)(formatProposalMessage([item]), {
+    parse_mode: 'HTML',
+    reply_markup: buildProposalKeyboard(id, [item], {}),
+  });
+}
+
+/**
+ * Дія агента cancelReminder -> ПРОПОЗИЦІЯ скасування під ✅ (S2, залишок).
+ *
+ * Доти це був прямий запис у KV із мотивом «локальний стан, дешево відкотити».
+ * Мотив не тримається: власник не побачить, що нагадування зникло, — він просто
+ * НЕ отримає його в потрібний момент, і відкочувати буде нічого. Це рівно та
+ * дія, якої домагалась би інʼєкція з листа, тож вона йде тим самим шляхом, що
+ * й видалення події: показ того, що зникне, і кнопка.
+ *
+ * Taint-гейт (TAINT_BLOCKED_ACTIONS) НЕ послаблюємо: ✅ — це другий рубіж, а не
+ * заміна першому. Після читання пошти дія і далі просто не доходить сюди.
  */
 async function cancelReminderByText(env, parsed, matchText) {
   const sendText = sendTo(env, parsed);
@@ -2254,28 +2303,26 @@ async function cancelReminderByText(env, parsed, matchText) {
       `🤔 Опис «${matchText}» надто короткий — скажи конкретніше, яке нагадування скасувати. Список — /reminders.`,
     );
   }
-  const state = await loadState(env);
-  const active = listActive(state.reminders);
-  const matches = active.filter((r) => String(r.text).toLowerCase().includes(q));
-
-  if (matches.length === 0) {
-    return sendText(`🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.`);
-  }
-  if (matches.length > 1) {
-    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
-    return sendText(`🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}`);
-  }
-  state.reminders = cancelReminder(state.reminders, matches[0].id);
-  await env.BRIEFING.put('state', JSON.stringify(state));
-  return sendText(`🗑 Скасував нагадування: ${matches[0].text}`);
+  const found = await findReminderByText(env, matchText);
+  if (found.reply) return sendText(found.reply);
+  return stageProposalItem(env, parsed, {
+    kind: 'deleteReminder',
+    reminderId: found.reminder.id,
+    base: { title: found.reminder.text, whenMs: found.reminder.whenMs },
+  });
 }
 
 /**
- * Обробити updateReminder (CRUD, прямий термінал — той самий мотив, що
- * createReminder/cancelReminder: локальний KV, дешево відкотити, підтвердження
- * зайве). Знайти за текстом (як cancelReminderByText), застосувати патч —
- * "when" РЕ-ПАРСИМО тут (LLM подала лише канонічну фразу, час рахує код,
- * той самий інваріант, що createReminderFromText/proposeCalendarChanges).
+ * Дія агента updateReminder -> ПРОПОЗИЦІЯ переносу/перейменування під ✅ (S2).
+ *
+ * Той самий мотив, що cancelReminderByText: змінений час нагадування власник
+ * помітить лише тоді, коли воно не прийде вчасно. Тепер він бачить діф
+ * «було → стане» ДО того, як щось змінилось.
+ *
+ * "when" РЕ-ПАРСИМО тут (LLM подала лише канонічну фразу, час рахує код — той
+ * самий інваріант, що createReminderFromText/proposeCalendarChanges), і робимо
+ * це ДО показу: непарсибельний час має давати чесну відповідь, а не пропозицію
+ * «без змін».
  */
 async function updateReminderByText(
   env,
@@ -2283,32 +2330,23 @@ async function updateReminderByText(
   { reminderText: matchText, reminderNewText, when },
 ) {
   const sendText = sendTo(env, parsed);
-  const state = await loadState(env);
-  const active = listActive(state.reminders);
-  const q = matchText.toLowerCase();
-  const matches = active.filter((r) => String(r.text).toLowerCase().includes(q));
+  const found = await findReminderByText(env, matchText);
+  if (found.reply) return sendText(found.reply);
 
-  if (matches.length === 0) {
-    return sendText(`🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.`);
-  }
-  if (matches.length > 1) {
-    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
-    return sendText(`🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}`);
-  }
-
-  const patch = {};
-  if (reminderNewText) patch.text = reminderNewText;
+  const item = {
+    kind: 'updateReminder',
+    reminderId: found.reminder.id,
+    base: { title: found.reminder.text, whenMs: found.reminder.whenMs },
+  };
+  if (reminderNewText) item.title = reminderNewText;
   if (when) {
     const parsedTime = parseReminderTime(when, Date.now());
     if (!parsedTime) {
       return sendText('🤔 Не зрозумів новий час — спробуй точніше (напр. "завтра о 15:00").');
     }
-    patch.whenMs = parsedTime.whenMs;
+    item.whenMs = parsedTime.whenMs;
   }
-
-  state.reminders = updateReminder(state.reminders, matches[0].id, patch);
-  await env.BRIEFING.put('state', JSON.stringify(state));
-  return sendText(`✏️ Оновив нагадування: ${patch.text ?? matches[0].text}`);
+  return stageProposalItem(env, parsed, item);
 }
 
 const RECORD_CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
@@ -3015,14 +3053,19 @@ async function handleAgentStep(request, env) {
       '[поставив нагадування]',
     );
   }
+  // Обидві мутації нагадувань — під ✅ (S2): у памʼять пишемо саме
+  // «запропонував», інакше наступний крок розмови вважав би справу зробленою.
   if (action.action === 'cancelReminder') {
     return finish(
       () => cancelReminderByText(env, parsed, action.reminderText),
-      '[скасував нагадування]',
+      '[запропонував скасувати нагадування]',
     );
   }
   if (action.action === 'updateReminder') {
-    return finish(() => updateReminderByText(env, parsed, action), '[оновив нагадування]');
+    return finish(
+      () => updateReminderByText(env, parsed, action),
+      '[запропонував змінити нагадування]',
+    );
   }
   if (action.action === 'recordAction') {
     return finish(() => runRecordAction(env, parsed, action), `[recordAction:${action.kind}]`);
@@ -4054,6 +4097,28 @@ async function resolveProposalCallback(env, parsed, cb) {
     } else if (item.kind === 'deleteEvent') {
       const res = await deleteCalendarEvent(env, { eventId: item.eventId });
       results.push(res.ok ? { ok: true } : { ok: false });
+    } else if (item.kind === 'deleteReminder' || item.kind === 'updateReminder') {
+      /* Мутація нагадування ПІСЛЯ ✅ (S2). Читаємо стан ЗАНОВО (між пропозицією
+         і тапом могло минути до PENDING_TTL_MS — нагадування могло спрацювати,
+         бути скасованим кнопкою чи зміненим). Тому спершу перевіряємо, що воно
+         ще активне: примітиви cancelReminder/updateReminder на невідомий id —
+         тихий no-op, і без цієї перевірки власник бачив би «готово» там, де
+         нічого не сталось. */
+      const fresh = await loadState(env);
+      const target = listActive(fresh.reminders).find((r) => r.id === item.reminderId);
+      if (!target) {
+        results.push({ ok: false });
+      } else {
+        fresh.reminders =
+          item.kind === 'deleteReminder'
+            ? cancelReminder(fresh.reminders, item.reminderId)
+            : updateReminder(fresh.reminders, item.reminderId, {
+                ...(item.title ? { text: item.title } : {}),
+                ...(Number.isFinite(item.whenMs) ? { whenMs: item.whenMs } : {}),
+              });
+        await env.BRIEFING.put('state', JSON.stringify(fresh));
+        results.push({ ok: true });
+      }
     } else if (item.kind === 'settings') {
       // Повторна нормалізація тут НАВМИСНО (item.settings уже нормалізований у
       // sanitizeProposal) — той самий "не довіряй нічому, що пролежало в KV/
@@ -4082,6 +4147,12 @@ async function resolveProposalCallback(env, parsed, cb) {
 
   if (mode === 'delete') return results[0]?.ok ? '🗑 Видалено' : '⚠️ Не вдалось видалити';
   if (mode === 'edit') return results[0]?.ok ? '✅ Оновлено' : '⚠️ Не вдалось оновити';
+  if (mode === 'reminderDelete') {
+    return results[0]?.ok ? '🗑 Скасовано нагадування' : '⚠️ Не вдалось скасувати';
+  }
+  if (mode === 'reminderEdit') {
+    return results[0]?.ok ? '✅ Оновлено нагадування' : '⚠️ Не вдалось оновити';
+  }
   if (mode === 'settings') return results[0]?.ok ? '⚙️ Застосовано' : '⚠️ Не вдалось застосувати';
   if (mode === 'contact') return results[0]?.ok ? '👤 Збережено' : '⚠️ Не вдалось зберегти';
   const ok = results.filter((r) => r.ok).length;
