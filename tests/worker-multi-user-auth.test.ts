@@ -166,3 +166,189 @@ describe('Mini App (/api/stats) — TELEGRAM_ALLOWED_USER_IDS', () => {
     expect(res.status).toBe(403);
   });
 });
+
+/* S1/B1 (аудит 11.08.2026, 🔴 HIGH): «multi-user» насправді означав CO-OWNER, а
+ * не гостя. Другий id зі списку читав пошту й настрій власника, перезаписував
+ * його settings і гео, приймав його календарні пропозиції й ЗАПУСКАВ агента
+ * проти його Gmail — рівно з тими самими правами, що власник.
+ *
+ * Розділення ролей: `allowedUserIds` лишається для ЧИТАННЯ (дашборд), а
+ * будь-яка мутація стану власника й агент вимагають ГОЛОВНОГО власника
+ * (TELEGRAM_OWNER_USER_ID). Нижче — обидві сторони межі. */
+
+async function postJson(path: string, body: unknown, e: Record<string, unknown>, method = 'POST') {
+  return worker.fetch(
+    new Request(`https://svitanok.example${path}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    e,
+    { waitUntil: () => {} },
+  );
+}
+
+// ОБИДВІ назви змінної — щоб тести на межу ролей були червоними ВЖЕ ЗАРАЗ
+// (за старою назвою co-owner уже дозволений), а не «зеленими» лише тому, що
+// нову назву код ще не читає. Перейменування перевіряється окремим блоком нижче.
+const coOwnerEnv = (over: Record<string, unknown> = {}) =>
+  env({
+    TELEGRAM_COOWNER_USER_IDS: String(FRIEND),
+    TELEGRAM_ALLOWED_USER_IDS: String(FRIEND),
+    ...over,
+  });
+
+const FULL_SETTINGS = { quiet: { from: 22, to: 8 }, modules: {} };
+
+describe('розділення ролей — co-owner ЧИТАЄ, але не мутує (S1/B1)', () => {
+  it('дашборд лишається доступним co-owner (це й був сенс списку)', async () => {
+    const res = await getStats(await buildInitData(FRIEND, BOT_TOKEN), coOwnerEnv());
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /api/settings — co-owner 403, власник 200', async () => {
+    const e = coOwnerEnv();
+    const friend = await postJson(
+      '/api/settings',
+      { initData: await buildInitData(FRIEND, BOT_TOKEN), settings: FULL_SETTINGS },
+      e,
+    );
+    expect(friend.status).toBe(403);
+    // ...і блоб у KV НЕ зʼявився: 403 має бути ДО запису, а не після.
+    expect(kv.get('settings')).toBeUndefined();
+
+    const owner = await postJson(
+      '/api/settings',
+      { initData: await buildInitData(OWNER, BOT_TOKEN), settings: FULL_SETTINGS },
+      e,
+    );
+    expect(owner.status).toBe(200);
+  });
+
+  it('POST /api/weather/location — co-owner не перезаписує гео власника (S5)', async () => {
+    const e = coOwnerEnv();
+    const res = await postJson(
+      '/api/weather/location',
+      { initData: await buildInitData(FRIEND, BOT_TOKEN), lat: 50.45, lon: 30.52, name: 'Київ' },
+      e,
+    );
+    expect(res.status).toBe(403);
+    expect(kv.get('ownerGeoManual')).toBeUndefined();
+  });
+
+  it('POST /api/event — co-owner не пише чек-ін у статистику власника', async () => {
+    const res = await postJson(
+      '/api/event',
+      { initData: await buildInitData(FRIEND, BOT_TOKEN), type: 'open' },
+      coOwnerEnv(),
+    );
+    expect(res.status).toBe(403);
+    expect(kv.get('stats')).toBeUndefined();
+  });
+
+  it('POST /api/vote — co-owner не зсуває ваги тем власника', async () => {
+    const res = await postJson(
+      '/api/vote',
+      { initData: await buildInitData(FRIEND, BOT_TOKEN), category: 'Технології', dir: 'up' },
+      coOwnerEnv(),
+    );
+    expect(res.status).toBe(403);
+    expect(kv.get('state')).toBeUndefined();
+  });
+});
+
+describe('розділення ролей — Telegram: агент і команди власника (S1/B1)', () => {
+  const agentEnv = (over: Record<string, unknown> = {}) =>
+    coOwnerEnv({
+      LLM_HOST_URL: 'https://llm.example/llm',
+      LLM_HOST_SECRET: 'host-secret',
+      TELEGRAM_CHAT_ID: String(OWNER),
+      ...over,
+    });
+
+  it('вільний текст co-owner НЕ запускає агента проти Gmail власника', async () => {
+    const e = agentEnv();
+    await sendCommand(FRIEND, 'знайди листи про співбесіди за тиждень', e);
+
+    // Жодного виклику хоста — саме це й було найгіршим сценарієм S1.
+    expect(tg.some((c) => String(c.body.text ?? '').includes('Працюю'))).toBe(false);
+  });
+
+  it('/brief co-owner не запускає прогін брифінгу', async () => {
+    await sendCommand(FRIEND, '/brief', agentEnv({ GH_DISPATCH_TOKEN: 'gh' }), 2);
+    expect(tg.some((c) => String(c.body.text ?? '').includes('Запустив генерацію'))).toBe(false);
+  });
+
+  it('власник тими самими командами користується як раніше', async () => {
+    await sendCommand(OWNER, '/help', agentEnv(), 3);
+    expect(tg.filter((c) => c.method === 'sendMessage')).not.toHaveLength(0);
+  });
+});
+
+describe('перейменування змінної (TELEGRAM_COOWNER_USER_IDS)', () => {
+  it('нова назва працює сама по собі', async () => {
+    const res = await getStats(
+      await buildInitData(FRIEND, BOT_TOKEN),
+      env({ TELEGRAM_COOWNER_USER_IDS: String(FRIEND) }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('стара назва теж (секрети живуть у двох місцях — рвати доступ на деплої не можна)', async () => {
+    const res = await getStats(
+      await buildInitData(FRIEND, BOT_TOKEN),
+      env({ TELEGRAM_ALLOWED_USER_IDS: String(FRIEND) }),
+    );
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('розділення ролей — межа проходить по МУТАЦІЯХ, не по всьому боту', () => {
+  it('читальні команди co-owner працюють (/stats, /reminders, /settings)', async () => {
+    const e = coOwnerEnv();
+    for (const [i, cmd] of ['/stats', '/reminders', '/settings'].entries()) {
+      tg = [];
+      await sendCommand(FRIEND, cmd, e, 100 + i);
+      const texts = tg.filter((c) => c.method === 'sendMessage').map((c) => String(c.body.text));
+      expect(texts.length, cmd).toBeGreaterThan(0);
+      expect(texts.join(' '), cmd).not.toContain('лише власнику');
+    }
+  });
+
+  it('/remind co-owner не створює нагадування у стані власника', async () => {
+    await sendCommand(FRIEND, '/remind купити молоко о 18:00', coOwnerEnv(), 110);
+    // 'state' сам по собі зʼявиться (туди пишеться lastUpdateId дедупу) —
+    // важливо, що в ньому НЕМАЄ нагадувань.
+    expect(JSON.parse(kv.get('state') ?? '{}').reminders).toBeUndefined();
+    expect(tg.some((c) => String(c.body.text ?? '').includes('лише власнику'))).toBe(true);
+  });
+
+  it('кнопка (callback) від co-owner нічого не мутує — лише тост', async () => {
+    const c = ctx();
+    await worker.fetch(
+      new Request('https://svitanok.example/api/telegram', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+        },
+        body: JSON.stringify({
+          update_id: 120,
+          callback_query: {
+            id: 'cb1',
+            from: { id: FRIEND },
+            data: 'sl:start', // «🌙 Ліг спати» — пише в sleepLog власника
+            message: { message_id: 5, chat: { id: OWNER } },
+          },
+        }),
+      }),
+      coOwnerEnv(),
+      c,
+    );
+    await c.settle();
+
+    expect(kv.get('stats')).toBeUndefined();
+    const answer = tg.find((x) => x.method === 'answerCallbackQuery');
+    expect(String(answer?.body.text ?? '')).toContain('Лише власник');
+  });
+});
