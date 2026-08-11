@@ -6,6 +6,7 @@ import * as core from '../host/llm-host-core.mjs';
 const {
   MAX_PROMPT_LEN,
   MAX_SYSTEM_PROMPT_LEN,
+  MAX_SCHEMA_LEN,
   verifySecret,
   validateLlmRequest,
   buildClaudeArgs,
@@ -82,9 +83,11 @@ describe('llm-host-core — validateLlmRequest', () => {
       validateLlmRequest({ prompt: 'x', systemPrompt: 'y'.repeat(MAX_SYSTEM_PROMPT_LEN + 1) })
         .error,
     ).toBe('system-prompt-too-long');
-    expect(validateLlmRequest({ prompt: 'x', jsonSchema: { huge: 'z'.repeat(3000) } }).error).toBe(
-      'schema-too-long',
-    );
+    // Від межі, а не від магічного числа: інакше кожне підняття ліміту тихо
+    // перетворює цей рядок на перевірку «валідна схема валідна».
+    expect(
+      validateLlmRequest({ prompt: 'x', jsonSchema: { huge: 'z'.repeat(MAX_SCHEMA_LEN) } }).error,
+    ).toBe('schema-too-long');
   });
 });
 
