@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker from '../web/worker.js';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import { mintRunToken, AGENT_MAX_STEPS } from '../web/agent-run-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів.
+import { AgentRun } from '../web/agent-run-do.mjs';
 
 /* Інтеграційний тест зворотного ендпоінта /api/agent-step — через СПРАВЖНІЙ
    fetch-хендлер воркера. Юніти покривають чисті шматки (токен, allowlist дій),
@@ -33,6 +35,34 @@ function makeEnv(over: Record<string, unknown> = {}) {
 }
 
 const CTX = { waitUntil: () => {}, passThroughOnException: () => {} };
+
+/** Прив'язка DO у памʼяті: один справжній AgentRun на імʼя (Фаза 4). Так тест
+ *  ганяє ту саму ухвалу, що й прод, а не її переказ. */
+function fakeDoNamespace() {
+  const objects = new Map<string, InstanceType<typeof AgentRun>>();
+  return {
+    getByName: (name: string) => {
+      if (!objects.has(name)) {
+        const store = new Map<string, unknown>();
+        objects.set(
+          name,
+          new AgentRun(
+            {
+              storage: {
+                get: async (k: string) => store.get(k),
+                put: async (k: string, v: unknown) => void store.set(k, v),
+                deleteAll: async () => void store.clear(),
+                setAlarm: async () => {},
+              },
+            },
+            {},
+          ),
+        );
+      }
+      return objects.get(name)!;
+    },
+  };
+}
 
 const post = (body: unknown, headers: Record<string, string> = {}, env = makeEnv()) =>
   worker.fetch(
@@ -180,10 +210,14 @@ describe('/api/agent-step — термінальні дії', () => {
     expect(kv.get('assistantHistory')).toBeUndefined();
   });
 
-  /* CRUD: updateReminder — ПРЯМА термінальна дія (як createReminder/
-     cancelReminder), БЕЗ підтвердження кнопкою — локальний KV, дешево
-     відкотити (той самий мотив, що прямий cancelReminder). */
-  describe('updateReminder (CRUD, прямий термінал)', () => {
+  /* S2 (залишок): мутації нагадувань — ЗА ✅-ГЕЙТ.
+     Було: cancelReminder/updateReminder писали в KV одразу (мотив — «локальний
+     стан, дешево відкотити»). Але скасоване нагадування власник просто не
+     отримає: «відкотити» нічого не поверне, бо про втрату він не дізнається.
+     Тепер обидві дії лише СТАВЛЯТЬ пропозицію під ✅ — той самий цикл, що
+     подієві updateEvent/deleteEvent. Створення лишається прямим: додати —
+     справді дешево. */
+  describe('updateReminder — під ✅, а не прямо в KV', () => {
     beforeEach(() => {
       kv.set(
         'state',
@@ -195,7 +229,7 @@ describe('/api/agent-step — термінальні дії', () => {
       );
     });
 
-    it('reminderNewText+when -> патч застосовано, підтвердження надіслано', async () => {
+    it('патч показується під кнопкою; KV НЕ чіпається до підтвердження', async () => {
       const res = await authed({
         token: await token(),
         structured: {
@@ -206,19 +240,71 @@ describe('/api/agent-step — термінальні дії', () => {
         },
       });
       expect(await res.json()).toMatchObject({ done: true });
-      expect(sentTexts()[0]).toContain('Оновив нагадування');
-      const state = JSON.parse(kv.get('state')!);
-      expect(state.reminders[0].text).toBe('Купити квитки на концерт');
+      const sent = tgCalls.find((c) => tgMethod(c) === 'sendMessage')!;
+      expect(String(sent.body.text)).toContain('Купити квитки на концерт');
+      expect(JSON.stringify(sent.body.reply_markup)).toContain('pd:a:');
+      // Головне: до ✅ стан незмінний.
+      expect(JSON.parse(kv.get('state')!).reminders[0].text).toBe('Купити квитки');
+      expect(kv.get('assistantPending')).toBeTruthy();
     });
 
-    it('не знайдено за описом -> чесний текст, KV не чіпається', async () => {
+    it('не знайдено за описом -> чесний текст, пропозиції немає', async () => {
       await authed({
         token: await token(),
         structured: { action: 'updateReminder', reminderText: 'стоматолог', reminderNewText: 'X' },
       });
       expect(sentTexts()[0]).toContain('Не знайшов');
-      const state = JSON.parse(kv.get('state')!);
-      expect(state.reminders[0].text).toBe('Купити квитки'); // без змін
+      expect(kv.get('assistantPending')).toBeUndefined();
+      expect(JSON.parse(kv.get('state')!).reminders[0].text).toBe('Купити квитки');
+    });
+
+    it('незрозумілий новий час -> чесний текст, пропозиції немає', async () => {
+      await authed({
+        token: await token(),
+        structured: { action: 'updateReminder', reminderText: 'квитки', when: 'колись потім' },
+      });
+      expect(sentTexts()[0]).toContain('час');
+      expect(kv.get('assistantPending')).toBeUndefined();
+    });
+  });
+
+  describe('cancelReminder — під ✅, а не прямо в KV', () => {
+    beforeEach(() => {
+      kv.set(
+        'state',
+        JSON.stringify({
+          reminders: [{ id: 'r1', text: 'стоматолог', whenMs: Date.now() + 86_400_000 }],
+        }),
+      );
+    });
+
+    it('пропонує скасування; нагадування живе до ✅', async () => {
+      await authed({
+        token: await token(),
+        structured: { action: 'cancelReminder', reminderText: 'стоматолог' },
+      });
+      const sent = tgCalls.find((c) => tgMethod(c) === 'sendMessage')!;
+      expect(String(sent.body.text)).toContain('стоматолог');
+      expect(JSON.stringify(sent.body.reply_markup)).toContain('pd:a:');
+      expect(JSON.parse(kv.get('state')!).reminders).toHaveLength(1);
+    });
+
+    it('кілька збігів -> уточнення, без пропозиції (не вгадуємо, яке саме)', async () => {
+      kv.set(
+        'state',
+        JSON.stringify({
+          reminders: [
+            { id: 'r1', text: 'стоматолог зранку', whenMs: Date.now() + 86_400_000 },
+            { id: 'r2', text: 'стоматолог увечері', whenMs: Date.now() + 90_000_000 },
+          ],
+        }),
+      );
+      await authed({
+        token: await token(),
+        structured: { action: 'cancelReminder', reminderText: 'стоматолог' },
+      });
+      expect(sentTexts()[0]).toContain('уточни');
+      expect(kv.get('assistantPending')).toBeUndefined();
     });
   });
 
@@ -521,6 +607,54 @@ describe('/api/agent-step — читальні дії й кроки', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: 'run-finished', done: true });
     expect(tgCalls).toHaveLength(before); // жодного нового звернення назовні
+  });
+
+  /* ── Той самий реплей, але з Durable Object (Фаза 4) ─────────────────────
+     Гілка вище — фолбек на KV-надгробок: best-effort, бо KV не має
+     read-your-writes (надгробок, покладений секунду тому, може бути ще не
+     видним, і саме в цю щілину реплей і проходив). Із привʼязаним DO ухвала
+     атомарна, тож закривається й ПОВТОР ТОГО САМОГО КРОКУ — а не лише крок
+     після фінішу. */
+  it('DO ріже повтор кроку ДО виконання інструмента (KV цього не вміє)', async () => {
+    const env = makeEnv({ AGENT_RUN: fakeDoNamespace() });
+    const t = await token();
+    expect((await authed({ token: t, structured: { action: 'readOwnData' } }, env)).status).toBe(
+      200,
+    );
+    const before = tgCalls.length;
+
+    const res = await authed({ token: t, structured: { action: 'readMail' } }, env);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'step-replayed', done: true });
+    expect(tgCalls).toHaveLength(before); // пошта НЕ читалась
+  });
+
+  it('DO: після фінішу крок не проходить (надгробок видно одразу)', async () => {
+    const env = makeEnv({ AGENT_RUN: fakeDoNamespace() });
+    const t = await token();
+    await authed({ token: t, structured: { action: 'reply', replyText: 'готово' } }, env);
+    // Той самий токен: у проді всі кроки прогону несуть спільний дедлайн, тож
+    // і DO в них один (імʼя = runId + дедлайн).
+    const res = await authed({ token: t, structured: { action: 'readMail' } }, env);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'run-finished', done: true });
+  });
+
+  it('DO недоступний -> прогін НЕ падає (запобіжник углиб, а не межа)', async () => {
+    // Межа — підпис токена; DO звужує реплей. Якби його збій валив крок,
+    // блип платформи забирав би асистента цілком — гірший розмін.
+    const env = makeEnv({
+      AGENT_RUN: {
+        getByName: () => ({
+          claimStep: async () => {
+            throw new Error('DO unavailable');
+          },
+        }),
+      },
+    });
+    const res = await authed({ token: await token(), structured: { action: 'readOwnData' } }, env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { append: string }).append).toContain('Твої дані');
   });
 
   it('протухлий токен -> 401 і хосту сказано зупинитись', async () => {
@@ -974,7 +1108,7 @@ describe('/api/agent-step — taint після читання пошти/Drive (
     expect(sentTexts().join(' ')).toContain('Співбесіда');
   });
 
-  it('БЕЗ читання пошти прямий cancelReminder працює як раніше (звужуємо, не ламаємо)', async () => {
+  it('БЕЗ читання пошти cancelReminder доходить до ✅-пропозиції (звужуємо, не ламаємо)', async () => {
     kv.set(
       'state',
       JSON.stringify({
@@ -987,7 +1121,8 @@ describe('/api/agent-step — taint після читання пошти/Drive (
       { action: 'cancelReminder', reminderText: 'стоматолог' },
     );
     expect(body2.done).toBe(true);
-    expect(sentTexts().join(' ')).toContain('Скасував');
+    expect(sentTexts().join(' ')).toContain('Пропоную');
+    expect(kv.get('assistantPending')).toBeTruthy();
   });
 });
 
@@ -1102,7 +1237,7 @@ describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
       token: body1.token,
       structured: { action: 'cancelReminder', reminderText: 'стоматолог' },
     });
-    expect(sentTexts().join(' ')).toContain('Скасував');
+    expect(sentTexts().join(' ')).toContain('Пропоную');
   });
 });
 

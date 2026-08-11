@@ -17,11 +17,17 @@
   "workers_dev": false,
   "preview_urls": false,
   "kv_namespaces": [{ "binding": "BRIEFING", "id": "389ff22c124a476bb18d2f5e6a5334c0" }],
+  // Durable Object прогону асистента (Фаза 4 аудиту): авторитетний лічильник
+  // кроків замість best-effort надгробка в KV. `storage:"sqlite"` — не смак:
+  // на Workers Free доступні ЛИШЕ SQLite-бекенди DO. Оголошення через `exports`
+  // (декларативне) замість легасі-масиву `migrations` — так радить поточна
+  // документація для нових класів; обидва способи взаємовиключні.
+  "durable_objects": { "bindings": [{ "name": "AGENT_RUN", "class_name": "AgentRun" }] },
+  "exports": { "AgentRun": { "type": "durable-object", "storage": "sqlite" } },
   // ОДИН крон (A2): нагадування (Блок P2a) + dispatch брифінгу у вікні 08:00–11:00
   // Київ + dead-man від 12:00 — кожна задача гейтиться за kyivHour() у момент
   // виконання й ідемпотентна за добу. Погодинні крони (0 5/6/7/8 UTC) прибрано:
   // вони існували як DST-костиль під ОДНУ точну спробу, і саме та єдина спроба
   // гинула від jitter'а крону Cloudflare Free (14.07 брифінг спізнився на ~50 хв).
   "triggers": { "crons": ["*/5 * * * *"] },
-  "workers_dev": false,
 }

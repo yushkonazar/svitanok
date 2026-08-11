@@ -235,3 +235,70 @@ describe('agent-run-core: кроки прогону', () => {
     expect(AGENT_RUN_TTL_MS).toBeGreaterThan(60_000); // інакше сенс переходу втрачено
   });
 });
+
+/* Durable Object для лічильника кроків (Фаза 4 аудиту).
+ *
+ * Токен самодостатній, тому РЕПЛЕЙНИЙ: поки він живий, той самий крок можна
+ * надіслати вдруге, і кожен виклик виконає інструмент (читання пошти!) та
+ * віддасть результат викликачеві. Досі це звужували двома запобіжниками —
+ * коротким життям кроку і надгробком у KV, — але KV не має read-your-writes,
+ * тож надгробок, покладений секунду тому, міг бути ще не видним. Рішення, яке
+ * аудит називав правильним із самого початку: лічильник у DO, де read-modify-
+ * write атомарний.
+ *
+ * Тут — чиста ухвала; сам DO і його сховище — у agent-run-do.test.ts. */
+describe('agent-run-core: ухвала про крок (DO)', () => {
+  const { decideStepClaim, agentRunDoName } = run as {
+    decideStepClaim: (
+      state: Record<string, unknown> | null,
+      step: number,
+    ) => { ok: boolean; error?: string; state?: Record<string, unknown> };
+    agentRunDoName: (claims: Record<string, unknown>) => string;
+  };
+
+  it('перший крок прогону приймається й запамʼятовується', () => {
+    const d = decideStepClaim(null, 0);
+    expect(d.ok).toBe(true);
+    expect(d.state).toMatchObject({ lastStep: 0 });
+  });
+
+  it('кроки йдуть уперед: 0 -> 1 -> 2', () => {
+    let state: Record<string, unknown> | null = null;
+    for (const step of [0, 1, 2]) {
+      const d = decideStepClaim(state, step);
+      expect(d.ok).toBe(true);
+      state = d.state!;
+    }
+    expect(state).toMatchObject({ lastStep: 2 });
+  });
+
+  it('ПОВТОР того самого кроку відхиляється — це і є реплей', () => {
+    const first = decideStepClaim(null, 3);
+    expect(decideStepClaim(first.state!, 3)).toMatchObject({ ok: false, error: 'step-replayed' });
+    // Так само й крок «назад»: легітимна петля лише зростає.
+    expect(decideStepClaim(first.state!, 2)).toMatchObject({ ok: false, error: 'step-replayed' });
+  });
+
+  it('крок для завершеного прогону відхиляється (надгробок, тепер атомарний)', () => {
+    expect(decideStepClaim({ lastStep: 1, finishedMs: NOW }, 2)).toMatchObject({
+      ok: false,
+      error: 'run-finished',
+    });
+  });
+
+  it('крок поза стелею відхиляється незалежно від токена', () => {
+    expect(decideStepClaim(null, AGENT_MAX_STEPS)).toMatchObject({
+      ok: false,
+      error: 'too-many-steps',
+    });
+    expect(decideStepClaim(null, -1).ok).toBe(false);
+    expect(decideStepClaim(null, Number.NaN).ok).toBe(false);
+  });
+
+  it('імʼя DO включає дедлайн — колізія 8-символьного runId не воскресить чужий стан', () => {
+    const a = agentRunDoName({ runId: 'r1a2b3c4', deadlineMs: NOW + 300_000 });
+    const b = agentRunDoName({ runId: 'r1a2b3c4', deadlineMs: NOW + 999_000 });
+    expect(a).toContain('r1a2b3c4');
+    expect(a).not.toBe(b);
+  });
+});

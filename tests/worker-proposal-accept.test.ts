@@ -888,3 +888,71 @@ describe('CRUD: rc:all — пакетне скасування (extra c)', () =>
     expect(toast()).toContain('Нема що скасовувати');
   });
 });
+
+/* S2 (залишок): мутації НАГАДУВАНЬ проходять той самий accept-цикл, що подієві
+   updateEvent/deleteEvent. Стейджить їх Worker (агент лише просить дією
+   cancelReminder/updateReminder), тож перевіряємо саме другу половину — що ✅
+   справді застосовує зміну до KV, а ❌ лишає стан недоторканим. */
+describe('CRUD: мутація нагадування під ✅ (S2)', () => {
+  const WHEN = Date.now() + 86_400_000;
+  const NEW_WHEN = Date.now() + 90_000_000;
+  const withReminder = () =>
+    kv.set(
+      'state',
+      JSON.stringify({ reminders: [{ id: 'r1', text: 'стоматолог', whenMs: WHEN }] }),
+    );
+
+  const deletePending = (id: string) => ({
+    id,
+    createdMs: Date.now(),
+    items: [
+      { kind: 'deleteReminder', reminderId: 'r1', base: { title: 'стоматолог', whenMs: WHEN } },
+    ],
+  });
+  const updatePending = (id: string) => ({
+    id,
+    createdMs: Date.now(),
+    items: [
+      {
+        kind: 'updateReminder',
+        reminderId: 'r1',
+        base: { title: 'стоматолог', whenMs: WHEN },
+        title: 'стоматолог (перенесено)',
+        whenMs: NEW_WHEN,
+      },
+    ],
+  });
+
+  it('✅ на скасуванні — нагадування зникає зі стану', async () => {
+    withReminder();
+    kv.set('assistantPending', JSON.stringify(deletePending('rd123456')));
+    await postAccept('rd123456');
+    expect(toast()).toContain('Скасовано нагадування');
+    expect(JSON.parse(kv.get('state')!).reminders).toHaveLength(0);
+  });
+
+  it('✅ на переносі — застосовано і текст, і час', async () => {
+    withReminder();
+    kv.set('assistantPending', JSON.stringify(updatePending('ru123456')));
+    await postAccept('ru123456');
+    expect(toast()).toContain('Оновлено');
+    const r = JSON.parse(kv.get('state')!).reminders[0];
+    expect(r.text).toBe('стоматолог (перенесено)');
+    expect(r.whenMs).toBe(NEW_WHEN);
+  });
+
+  it('❌ — стан недоторканий (це і є сенс гейта)', async () => {
+    withReminder();
+    kv.set('assistantPending', JSON.stringify(deletePending('rd123456')));
+    await postCb('rd123456', 'c');
+    expect(JSON.parse(kv.get('state')!).reminders).toHaveLength(1);
+    expect(JSON.parse(kv.get('state')!).reminders[0].text).toBe('стоматолог');
+  });
+
+  it('нагадування зникло між пропозицією і ✅ -> чесна відмова, не тиша', async () => {
+    kv.set('state', JSON.stringify({ reminders: [] }));
+    kv.set('assistantPending', JSON.stringify(deletePending('rd123456')));
+    await postAccept('rd123456');
+    expect(toast()).toMatch(/не вдалось/i);
+  });
+});
