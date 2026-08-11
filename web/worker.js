@@ -350,18 +350,56 @@ async function validateInitData(initData, botToken) {
 }
 
 /**
- * Власник + опційно ще учасники супергрупи (TELEGRAM_ALLOWED_USER_IDS, через
- * кому) -> Set рядкових id. Порожній Set (обидві змінні не задані) — навмисно:
- * і checkOwner, і вебхук тоді фейлять closed (нікому не довіряємо), а не open.
+ * Власник + опційно співвласники (TELEGRAM_COOWNER_USER_IDS, через кому) -> Set
+ * рядкових id. Порожній Set (жодна змінна не задана) — навмисно: і checkOwner,
+ * і вебхук тоді фейлять closed (нікому не довіряємо), а не open.
+ *
+ * ⚠️ Це список ЧИТАЧІВ, не других власників (S1). Мутації стану, агент і
+ * команди керування вимагають isPrimaryOwner — див. нижче.
+ *
+ * Стара назва TELEGRAM_ALLOWED_USER_IDS лишається живою навмисно: секрети
+ * синхронізовані у ДВОХ місцях (GitHub + Cloudflare), і якби код перестав її
+ * читати в мить деплою, співвласник утратив би доступ до дашборда раніше, ніж
+ * власник встиг би перейменувати змінну. Прибрати після перейменування.
  */
 function allowedUserIds(env) {
   const ids = new Set();
   if (env.TELEGRAM_OWNER_USER_ID) ids.add(String(env.TELEGRAM_OWNER_USER_ID));
-  for (const raw of String(env.TELEGRAM_ALLOWED_USER_IDS ?? '').split(',')) {
+  const coOwners = env.TELEGRAM_COOWNER_USER_IDS ?? env.TELEGRAM_ALLOWED_USER_IDS ?? '';
+  for (const raw of String(coOwners).split(',')) {
     const id = raw.trim();
     if (id) ids.add(id);
   }
   return ids;
+}
+
+/**
+ * ГОЛОВНИЙ власник — рівно один id (TELEGRAM_OWNER_USER_ID) (S1/B1).
+ *
+ * Доти «дозволений учасник» означав «другий власник»: він читав пошту й настрій
+ * власника, перезаписував settings і гео, приймав його календарні пропозиції й
+ * запускав агента проти його Gmail. Список задумувався як «дай подивитись
+ * дашборд», а давав повні права.
+ *
+ * Fail-closed: змінна не задана -> false (як і allowedUserIds, яка тоді віддає
+ * порожній Set і нікого не пускає навіть читати).
+ */
+function isPrimaryOwner(env, userId) {
+  const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
+  return Boolean(owner) && userId != null && String(userId) === owner;
+}
+
+/**
+ * checkOwner + вимога бути головним власником — для ендпоінтів, що ПИШУТЬ у стан
+ * власника (settings, гео, чек-ін/події, голоси) чи запускають від його імені
+ * дії назовні. Читальні ендпоінти лишаються на checkOwner (S1: розділяємо
+ * «подивитись» і «змінити»).
+ */
+async function checkPrimaryOwner(initData, env) {
+  const auth = await checkOwner(initData, env);
+  if (!auth.ok) return auth;
+  if (!isPrimaryOwner(env, auth.user?.id)) return { ok: false, status: 403, error: 'forbidden' };
+  return auth;
 }
 
 /**
@@ -571,7 +609,7 @@ async function handleVote(request, env) {
   if (typeof category !== 'string' || !category || dir !== 'up') {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
-  const auth = await checkOwner(initData, env);
+  const auth = await checkPrimaryOwner(initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const state = await loadState(env);
@@ -705,7 +743,7 @@ async function handleEvent(request, env) {
     return json({ ok: false, error: 'bad-json' }, 400);
   }
   if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
-  const auth = await checkOwner(body.initData, env);
+  const auth = await checkPrimaryOwner(body.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const result = await applyEvent(env, body);
@@ -768,7 +806,7 @@ async function handleSettings(request, env) {
   } catch {
     return json({ ok: false, error: 'bad-json' }, 400);
   }
-  const auth = await checkOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   // Вимагаємо ПОВНИЙ блоб: часткове тіло normalizeSettings мовчки добив би
@@ -1135,14 +1173,14 @@ async function handleWeatherLocation(request, env) {
   }
 
   if (request.method === 'DELETE') {
-    const auth = await checkOwner(body?.initData, env);
+    const auth = await checkPrimaryOwner(body?.initData, env);
     if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
     await env.BRIEFING.delete('ownerGeoManual');
     return json({ ok: true, manualGeo: null });
   }
 
   if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
-  const auth = await checkOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const hasExactPick =
@@ -1196,7 +1234,7 @@ async function handleWeatherLocatePrompt(request, env) {
   // TELEGRAM_OWNER_USER_ID гарантовано задано, якщо checkOwner пройшов —
   // allowedUserIds(env) (усередині checkOwner) сама на нього спирається,
   // тож окрема not-configured-перевірка тут була б недосяжним кодом.
-  const auth = await checkOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(body?.initData, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const res = await sendLocatePrompt(env);
@@ -3125,6 +3163,28 @@ async function handleLocationShare(env, parsed, sendText) {
   });
 }
 
+/**
+ * Команди, доступні ЛИШЕ головному власнику (S1/B1). Решта (/start, /help,
+ * /stats, /jobs…) — читальні, їх співвласник бачить і далі.
+ *
+ * Критерій потрапляння сюди: команда або ПИШЕ в стан власника, або діє від
+ * його імені назовні, або витрачає його ресурси (хвилини GitHub Actions, пул
+ * підписки Claude). Вільний текст (агент) гейтиться окремо — у нього немає
+ * cmd, а найгірший сценарій S1 саме такий: «знайди листи…» від співвласника
+ * запускало прогін проти Gmail ВЛАСНИКА.
+ */
+// /brief — палить хвилини Actions і перезаписує брифінг; /clear — видаляє
+// повідомлення; /locate — веде до перезапису гео власника (S5); /remind —
+// створює нагадування в його стані. Решта команд (/stats, /jobs, /save,
+// /reminders, /agenda, /roadmap, /settings, /whereami) лише ПОКАЗУЮТЬ — їх
+// співвласник бачить і далі, а самі кнопки під ними вже гейтяться окремо.
+const OWNER_ONLY_COMMANDS = new Set(['brief', 'clear', 'locate', 'remind']);
+
+/** Ввічлива відмова співвласнику — без деталей про те, що саме заблоковано. */
+const COOWNER_DENIED_REPLY = '🔒 Ця дія доступна лише власнику. Дашборд і перегляд — як завжди.';
+/** Те саме тостом під кнопкою (answerCallbackQuery — інша, коротша поверхня). */
+const COOWNER_DENIED_TOAST = '🔒 Лише власник';
+
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
 async function handleCommand(env, parsed, origin) {
   const sendText = sendTo(env, parsed);
@@ -3138,6 +3198,14 @@ async function handleCommand(env, parsed, origin) {
   }
 
   const cmd = parseCommand(parsed.text);
+  // S1/B1: усе, що ПИШЕ в стан власника, діє від його імені назовні або
+  // витрачає його ресурси, — лише головному власнику. Співвласник лишається
+  // читачем (дашборд), яким список і задумувався.
+  const primary = isPrimaryOwner(env, parsed.fromId);
+  if (!primary && (!cmd || OWNER_ONLY_COMMANDS.has(cmd.cmd))) {
+    return sendText(COOWNER_DENIED_REPLY);
+  }
+
   if (!cmd) {
     // Тригер нагадування (P2a) — першим, як і раніше. agentFallback (B2): якщо
     // час не розібрався — не глухе «не зрозумів», а розмова з агентом (памʼять
@@ -3998,36 +4066,41 @@ async function processTelegramUpdate(env, parsed, origin) {
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const isSleepStart = isSleepStartCallback(parsed.data); // 'sl:' — «🌙 Ліг спати»
-      const toast = proposalCb
-        ? await resolveProposalCallback(env, parsed, proposalCb)
-        : agendaCb
-          ? await resolveAgendaCallback(env, parsed, agendaCb)
-          : roadmapCb
-            ? await resolveRoadmapCallback(env, parsed, roadmapCb)
-            : reminderCancelId === 'all'
-              ? await resolveReminderCancelAll(env, parsed)
-              : reminderCancelId
-                ? await resolveReminderCancel(env, parsed, reminderCancelId)
-                : reminderEditId
-                  ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
-                  : reminderDoneId
-                    ? await resolveReminderDone(env, parsed, reminderDoneId)
-                    : snoozePreset
-                      ? await resolveReminderSnoozePreset(
-                          env,
-                          parsed,
-                          snoozePreset.presetIdx,
-                          snoozePreset.id,
-                        )
-                      : isReminderSnooze
-                        ? await resolveReminderSnooze(
+      // S1/B1: кнопки — це ВИКЛЮЧНО мутації стану власника (прийняти пропозицію
+      // в його календар, скасувати його нагадування, записати його сон, відмітити
+      // його роадмеп). Жодної читальної серед них немає, тож межа рівно тут.
+      const toast = !isPrimaryOwner(env, parsed.fromId)
+        ? COOWNER_DENIED_TOAST
+        : proposalCb
+          ? await resolveProposalCallback(env, parsed, proposalCb)
+          : agendaCb
+            ? await resolveAgendaCallback(env, parsed, agendaCb)
+            : roadmapCb
+              ? await resolveRoadmapCallback(env, parsed, roadmapCb)
+              : reminderCancelId === 'all'
+                ? await resolveReminderCancelAll(env, parsed)
+                : reminderCancelId
+                  ? await resolveReminderCancel(env, parsed, reminderCancelId)
+                  : reminderEditId
+                    ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
+                    : reminderDoneId
+                      ? await resolveReminderDone(env, parsed, reminderDoneId)
+                      : snoozePreset
+                        ? await resolveReminderSnoozePreset(
                             env,
                             parsed,
-                            parsed.data.slice(REMINDER_CB_PREFIX.length),
+                            snoozePreset.presetIdx,
+                            snoozePreset.id,
                           )
-                        : isSleepStart
-                          ? await resolveSleepStart(env, parsed)
-                          : await resolveCallbackToast(env, parsed);
+                        : isReminderSnooze
+                          ? await resolveReminderSnooze(
+                              env,
+                              parsed,
+                              parsed.data.slice(REMINDER_CB_PREFIX.length),
+                            )
+                          : isSleepStart
+                            ? await resolveSleepStart(env, parsed)
+                            : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,
