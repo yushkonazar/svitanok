@@ -603,12 +603,14 @@ async function handleVote(request, env) {
   // з ЙОГО теми і додаємо новий до поточної (ревʼю C: той самий url може прийти
   // під іншою темою — інтерес мусить бути category-aware, як і ваги). prevCategory
   // null (без url / перший голос) -> recordEvent застосує лише новий напрямок.
-  const stats = recordEvent(
-    await loadStats(env),
-    { type: 'vote', category, dir: newDir, prevDir, prevCategory },
-    kyivDateKey(),
+  //
+  // Через updateStats, а не сирий put: голос — такий самий незалежний писар
+  // 'stats', як Mini App-події і три 5-хвилинні крони (B4). ❤️, що збіглося з
+  // кроном, інакше тихо стирало бік, який програв гонку.
+  const dateKey = kyivDateKey();
+  await updateStats(env, (store) =>
+    recordEvent(store, { type: 'vote', category, dir: newDir, prevDir, prevCategory }, dateKey),
   );
-  await env.BRIEFING.put('stats', JSON.stringify(stats));
   return json({ ok: true, category, weight, voted: newDir });
 }
 
