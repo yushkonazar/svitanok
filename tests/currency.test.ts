@@ -59,14 +59,13 @@ const ctx = (state: StateStore = memState()): Ctx<AppConfig> =>
 const nbu = (arr: unknown) => vi.fn(async () => new Response(JSON.stringify(arr), { status: 200 }));
 
 describe('currency — модуль', () => {
-  it('повертає блок inMessage:false з курсом + історією', async () => {
+  it('повертає блок з курсом + історією', async () => {
     const fetchImpl = nbu([
       { cc: 'USD', rate: 44 },
       { cc: 'EUR', rate: 51 },
     ]);
     const mod = createCurrencyModule({ fetchImpl: fetchImpl as unknown as typeof fetch });
     const block = await mod.run(ctx());
-    expect(block!.inMessage).toBe(false);
     expect(block!.summary).toContain('USD 44');
     const d = block!.data as Record<string, unknown>;
     expect(d.usd).toBe(44);

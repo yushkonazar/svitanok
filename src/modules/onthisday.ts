@@ -1,5 +1,5 @@
 // onthisday (consumer). «У цей день» — історичні події з Wikipedia (uk).
-// Лише дашборд (inMessage:false). Фіксований REST-ендпоінт -> прямий fetch.
+// Лише дашборд. Фіксований REST-ендпоінт -> прямий fetch.
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
@@ -134,7 +134,6 @@ export function createOnThisDayModule(opts: OnThisDayOptions = {}): Module<AppCo
           icon: '📜',
           summary: events.map((e) => `${e.year}: ${e.text}`).join('\n'),
           data: { events },
-          inMessage: false, // лише дашборд
           priority: PRIORITY,
         };
       } catch (e) {

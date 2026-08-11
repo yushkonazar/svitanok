@@ -60,17 +60,6 @@ export function fitEscaped(plain: string, budget: number): string {
   return escapeHtml(safeSlice(lo)) + ELLIPSIS;
 }
 
-// callback_data (Блок P1, вебхук): `v1:<dateKey>:<action>`. МАЄ збігатися символ-у-
-// символ з дзеркалом web/tg-core.mjs (буквально та сама версія/формат) — інакше
-// Worker не розпарсить кнопки, надіслані Actions-раном.
-export const CB_VERSION = 'v1';
-
-/** Закодувати callback_data; ≤64 байти (UTF-8, Telegram-ліміт) — інакше null (кнопку відкидаємо). */
-export function buildCallbackData(dateKey: string, action: string): string | null {
-  const s = `${CB_VERSION}:${dateKey}:${action}`;
-  return new TextEncoder().encode(s).length <= 64 ? s : null;
-}
-
 // pd:a:<id>/pd:c:<id> (Блок P2b, окремий простір від v1:<dateKey>:...) — TS-
 // дзеркало web/agent-core.mjs (`PROPOSAL_CB_PREFIX`/`buildProposalCallbackData`).
 // МАЄ збігатися символ-у-символ — той самий webhook-обробник
@@ -89,42 +78,13 @@ export type TgButton =
   | { text: string; web_app: { url: string } }
   | { text: string; url: string };
 
-/**
- * Кнопка запуску Mini App. Telegram Bot API: `web_app`-кнопки в inline_keyboard
- * дозволені ЛИШЕ в приватних чатах з ботом — у групі/супергрупі Telegram
- * відповідає `BUTTON_TYPE_INVALID` (400), і повідомлення НЕ надсилається
- * (проявилось на проді 2026-07-12: щоденний брифінг падав щоранку, бо
- * TELEGRAM_CHAT_ID тепер id супергрупи, §4.3 «Блок Теми»).
- *
- * Пріоритет вибору типу кнопки:
- * 1. **botUsername заданий** -> Direct Link Mini App: `https://t.me/<username>
- *    ?startapp` (Telegram Bot API, розділ Web Apps). Цей формат ЗАВЖДИ
- *    launch-ить повноцінний Mini App із `Telegram.WebApp.initData` — і з
- *    групи, і з приватного чату (обходить обмеження `web_app`-кнопки).
- *    Потребує ОДНОРАЗОВОГО owner-кроку: @BotFather -> Bot Settings ->
- *    Configure Mini App -> URL = те саме значення, що MINI_APP_URL
- *    (`.env.example`). Без цього кроку посилання відкриє «звичайний» сайт
- *    без ін'єкції Telegram.WebApp (як і фолбек нижче).
- * 2. **botUsername не заданий** (owner ще не зробив крок 1) -> фолбек за
- *    знаком chatId (стандартна конвенція Telegram: групи/супергрупи/канали —
- *    ВІД'ЄМНИЙ chat_id, приватні чати — додатний): chatId < 0 (група) ->
- *    звичайна `url`-кнопка (завжди валідна, БЕЗ initData -> дашборд
- *    деградує на SAMPLE-фолбек, §H1); інакше -> `web_app` (initData є, бо
- *    приватний чат — єдиний контекст, де ця кнопка легальна).
- */
-export function buildMiniAppButton(
-  text: string,
-  url: string,
-  chatId?: string | number | null,
-  botUsername?: string | null,
-): TgButton {
-  const username = botUsername?.trim().replace(/^@/, '');
-  if (username) {
-    return { text, url: `https://t.me/${username}?startapp` };
-  }
-  const isGroup = chatId != null && Number(chatId) < 0;
-  return isGroup ? { text, url } : { text, web_app: { url } };
-}
+/* buildCallbackData і buildMiniAppButton прибрано (аудит B20/F5): обидві були
+   ДУБЛІКАТАМИ живих реалізацій у web/tg-core.mjs, і жодна не мала консюмера в
+   src/ — callback_data будував лише мертвий рендерер (див. render.ts), а
+   Mini App-кнопку orchestrator свідомо не малює під щоденним повідомленням
+   (фідбек власника, п.2: постійний вхід — закріплене вітальне повідомлення).
+   Логіка вибору web_app/url/Direct Link лишається живою і тестованою на боці
+   Worker'а (tests/tg-core.test.ts), тож видалення нічого не оголює. */
 
 export interface OutboundMessage {
   text: string;

@@ -280,19 +280,10 @@ function formatSummaryLine(w: WeatherToday): string {
   return `${w.emoji} ${w.name}: ${signed(w.tempC)}${marks}`;
 }
 
-/** Рядок detail: стан, відчувається, мін/макс, вітер, вологість, UV, дощ-вікно. */
-function formatDetailLine(w: WeatherToday): string {
-  const parts = [
-    `${w.name}: ${w.condition}`,
-    `відч. ${signed(w.feelsLikeC)}`,
-    `${signed(w.minC)}…${signed(w.maxC)}`,
-    `💨 ${w.windMps} м/с${w.gustMps !== undefined ? ` (пориви ${w.gustMps})` : ''}`,
-  ];
-  if (w.humidity !== undefined) parts.push(`💧 ${w.humidity}%`);
-  if (w.uv !== undefined) parts.push(`UV ${w.uv}`);
-  if (w.willRain) parts.push(`☔ ${w.popPercent}%${w.rainWindow ? ` (${w.rainWindow})` : ''}`);
-  return parts.join(', ');
-}
+/* formatDetailLine (стан, відчувається, мін/макс, вітер, вологість, UV, вікно
+   дощу) прибрано разом із Block.detail (аудит B20/F5): рядок складався щоранку
+   й нікуди не йшов. Усі ці поля лишаються в data.locations — дашборд рендерить
+   їх сам, і саме він єдиний споживач. */
 
 interface RequestCounter {
   date: string;
@@ -421,9 +412,9 @@ export function createWeatherModule(opts: WeatherModuleOptions = {}): Module<App
         title: 'Погода',
         icon: '🌦',
         summary: ok.map(formatSummaryLine).join('\n'),
-        detail: ok.map(formatDetailLine).join('\n'),
+        // detail (розгорнутий рядок на локацію) прибрано разом із рендерером
+        // (аудит B20/F5): дашборд бере все з data.locations.
         data: { locations: ok },
-        inMessage: false, // глибина — в дашборді; повідомлення лаконічне
         priority: 40,
       };
     },
