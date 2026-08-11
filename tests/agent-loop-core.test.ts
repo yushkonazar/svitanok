@@ -222,6 +222,43 @@ describe('runAgentLoop', () => {
     expect(workerCalls[1]?.token).toBe('t1.s');
   });
 
+  it('логує usage КОЖНОГО кроку — саме тут видно, чи кешується статичний префікс (C1)', async () => {
+    // Питання, заради якого це існує: системний промпт + схема (≈2000+3000
+    // символів) їдуть у КОЖЕН spawn заново. Якщо `claude -p` їх кешує, на
+    // кроці 2+ cacheRead має бути ненульовим. Досі в логах не було жодного
+    // числа, тож відповідь була здогадкою — а від неї залежить, чи є сенс
+    // у C2 (стабілізація префікса) і чи не потрібен перехід на Messages API.
+    const lines: string[] = [];
+    const { deps } = setup(
+      [
+        {
+          ok: true,
+          structured: { action: 'readMail' },
+          usage: { input_tokens: 2400, output_tokens: 20, cache_read_input_tokens: 0 },
+        },
+        {
+          ok: true,
+          structured: { action: 'reply', replyText: 'ок' },
+          usage: { input_tokens: 600, output_tokens: 30, cache_read_input_tokens: 1800 },
+        },
+      ],
+      [
+        { ok: true, done: false, append: 'Пошта: 1 лист.', token: 't1.s' },
+        { ok: true, done: true },
+      ],
+    );
+    deps.log = (...args: unknown[]) => void lines.push(args.join(' '));
+
+    await run(deps);
+
+    const usageLines = lines.filter((l) => l.includes('cacheRead'));
+    expect(usageLines).toHaveLength(2);
+    expect(usageLines[0]).toContain('крок 0');
+    expect(usageLines[0]).toContain('cacheRead=0');
+    expect(usageLines[1]).toContain('крок 1');
+    expect(usageLines[1]).toContain('cacheRead=1800');
+  });
+
   it('збій CLI -> звіт Worker’у з причиною, петля зупиняється', async () => {
     const { deps, workerCalls } = setup(
       [{ ok: false, error: 'usage-limit', resetAtMs: 1_752_620_400_000 }],
