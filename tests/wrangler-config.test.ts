@@ -30,6 +30,11 @@ describe('web/wrangler.jsonc', () => {
 
   it('публічні workers.dev і preview-URL вимкнені (S3)', () => {
     expect(cfg.workers_dev).toBe(false);
+    // Ключ рівно ОДИН. Дубль (був: рядки 17 і 33) JSON.parse проковтує мовчки —
+    // перемагає останній, тож розбіжні значення дали б конфіг, що не збігається
+    // з тим, як його читає людина. Саме цей ключ вимикає адресу ПОЗА зоною
+    // yushko.dev, якою обходяться WAF і rate limit.
+    expect(raw.match(/"workers_dev"/g) ?? []).toHaveLength(1);
     // preview_urls за замовчуванням дорівнює workers_dev, але тримаємо явно —
     // щоб повернення однієї галки не вмикало мовчки другу.
     expect(cfg.preview_urls).toBe(false);
