@@ -244,6 +244,11 @@ export const ASSISTANT_ACTION_SCHEMA = {
         'readDrive',
         'readBatch',
         'recordAction',
+        // ask (U3) — те саме тіло, що reply ("replyText"), інший СЕНС: не
+        // фінальна відповідь, а питання, після якого Worker чекає на власника
+        // й повертає моделі її ж нотатку. Своїх полів не має — тому в схемі
+        // коштує рівно один рядок enum'у.
+        'ask',
       ],
     },
     calendarStartDay: { type: 'number' },
@@ -350,6 +355,11 @@ export const ASSISTANT_ACTION_SCHEMA = {
       },
     },
     replyText: { type: 'string' },
+    // note (U2) — БЛОКНОТ моделі між кроками, не дія. Worker повертає його
+    // дослівно в наступний append, тож модель бачить власний план («лишилось:
+    // 2 листи + подія») там, де раніше були самі лише результати інструментів.
+    // Дає декомпозицію складного запиту без нової дії й без правки хоста.
+    note: { type: 'string' },
   },
 };
 
@@ -399,9 +409,14 @@ export function buildAssistantSystemPrompt(nowMs) {
     `формат: ${CANONICAL_EXAMPLES} (лише час, суть — у "title"). "durationMin" типово 60. ` +
     `event/updateEvent: ще "location"+"attendees":["імʼя"/email,...].\n` +
     `- {"action":"reply","replyText":"..."} — просто відповісти текстом.\n` +
+    `- {"action":"ask","replyText":"питання","note":"що вже зʼясував"} — перепитати, коли для ` +
+    `фінальної дії бракує саме ВІДПОВІДІ користувача. "note" тут ОБОВʼЯЗКОВО: лише він ` +
+    `повернеться до тебе з відповіддю, решта прочитаного пропаде.\n` +
     `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
     `checkin (лише поля АКТИВНОГО слоту з розмови, частково ОК), voteNews(newsIndex), ` +
     `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId).\n` +
+    `"note":"..." — твій блокнот (до ${MAX_NOTE_LEN} символів, до будь-якої дії): що вже зʼясував ` +
+    `і що ЛИШИЛОСЬ. Повернеться тобі наступним кроком — веди його на складному запиті.\n` +
     `Зараз у Києві: ${kyivNow}. Бракує даних — спершу readCalendar/readOwnData/readMail/readDrive, ` +
     `тоді фінальна дія. Приклад: «лист і подія» -> readMail, тоді proposeCalendarChanges.\n` +
     `[id:...] біля події — СЛУЖБОВА позначка: копіюй її в "eventId", коли міняєш чи видаляєш ` +
@@ -431,6 +446,7 @@ const VALID_ACTIONS = new Set([
   'readDrive',
   'readBatch',
   'recordAction',
+  'ask',
 ]);
 
 /**
@@ -448,6 +464,9 @@ export const READ_ACTIONS = new Set([
 export const MAX_BATCH_READS = 3;
 /** Кап параметра в echo-рядку (U1). */
 const MAX_ECHO_PARAM = 60;
+/** Кап блокнота моделі (U2): він їде в транскрипт КОЖНОГО наступного кроку,
+ *  тож розростатись йому нема куди — це план на кілька рядків, не переказ. */
+export const MAX_NOTE_LEN = 200;
 
 const RECORD_ACTION_KINDS = new Set(['checkin', 'voteNews', 'jobStage', 'roadmapDone']);
 // ⚠️ ЦЕ — справжній валідатор полів чек-іну від моделі (ASSISTANT_ACTION_SCHEMA
@@ -637,20 +656,76 @@ export function extractAssistantAction(structured) {
     if (!Array.isArray(structured.proposal)) return null;
     return { action, proposal: structured.proposal };
   }
+  // ask (U3): те саме поле, що reply, але порожнє питання — НЕ дія. У reply
+  // порожнеча ще має сенс (є ASSISTANT_EMPTY_REPLY, власник бачить чесну
+  // заглушку й кінець), а тут вона лишила б його чекати на відповідь, якої
+  // ніхто не просив.
+  if (action === 'ask') {
+    const q = typeof structured.replyText === 'string' ? structured.replyText.trim() : '';
+    if (!q) return null;
+    return { action, replyText: q };
+  }
   // reply
   const text = structured.replyText;
   return { action, replyText: typeof text === 'string' ? text.trim() : '' };
 }
 
 /**
- * Слід обраної дії для транскрипту (U1).
+ * Блокнот моделі між кроками (U2) -> чистий рядок або ''.
+ *
+ * Живе ОКРЕМО від extractAssistantAction свідомо: `note` — не параметр дії, а
+ * наскрізне поле при будь-якій із них, і дописувати його в кожен із дванадцяти
+ * return'ів валідатора означало б розмазати одну просту річ по всій функції.
+ *
+ * Переноси рядків сплющуємо (той самий мотив, що clip в assistant-data-core):
+ * нотатка складена моделлю, яка могла начитатись стороннього тексту з листа, і
+ * підробляти нею розділювачі транскрипту не можна.
+ */
+export function extractAssistantNote(structured) {
+  const raw = structured?.note;
+  if (typeof raw !== 'string') return '';
+  const flat = raw.replace(/\s*[\r\n]+\s*/g, ' ').trim();
+  return flat.length > MAX_NOTE_LEN ? `${flat.slice(0, MAX_NOTE_LEN - 1).trimEnd()}…` : flat;
+}
+
+/**
+ * Скільки живе слот «я перепитав» (U3). Півгодини — це «власник відійшов і
+ * відповів», а не «наступного ранку написав щось інше»: підхоплювати вчорашню
+ * нотатку до свіжого запиту гірше, ніж не підхопити нічого.
+ */
+export const ASSISTANT_RESUME_TTL_MS = 30 * 60_000;
+
+/**
+ * Префікс транскрипту для ПРОДОВЖЕНОГО прогону (U3) або ''.
+ *
+ * Що саме переноситься — і чому не все. Транскрипт живе на ХОСТІ: у зворотному
+ * виклику Worker бачить лише {token, structured}, тож перенести весь ланцюжок
+ * читань він не може без зміни протоколу хоста (окрема задача). Натомість
+ * переносимо блокнот моделі (U2) — те, що вона сама визнала вартим збереження.
+ * Саме питання й запит власника нести не треба: вони вже їдуть у «Попередній
+ * розмові» з assistantHistory.
+ *
+ * Свіжість перевіряємо ТУТ, а не покладаємось на TTL сховища: KV викидає ключ
+ * приблизно, і протухла нотатка, що дожила зайву хвилину, зіпсувала б наступний
+ * запит мовчки.
+ */
+export function buildResumePrefix(resume, nowMs = Date.now()) {
+  if (!resume || typeof resume !== 'object') return '';
+  if (!Number.isFinite(resume.atMs) || nowMs - resume.atMs > ASSISTANT_RESUME_TTL_MS) return '';
+  const note = typeof resume.note === 'string' ? resume.note.trim() : '';
+  if (!note) return '';
+  return `ПРОДОВЖЕННЯ: ти щойно перепитав. Твоя нотатка тоді: ${note}\n`;
+}
+
+/**
+ * Слід обраної дії (U1) + блокнот моделі (U2) для транскрипту.
  *
  * Модель не бачить власних кроків: транскрипт містить лише РЕЗУЛЬТАТИ
  * інструментів, тож на довгому ланцюжку вона повторює те саме читання й
  * спалює крок зі стелі. Один рядок перед результатом дає їй план-трейс.
  * Параметр обрізаємо — echo не має зʼїдати бюджет транскрипту.
  */
-export function formatActionEcho(action) {
+export function formatActionEcho(action, note = '') {
   const name = action?.action ?? '?';
   const clip = (v) => {
     const s = String(v ?? '').trim();
@@ -663,7 +738,8 @@ export function formatActionEcho(action) {
   else if (name === 'readMailBody') detail = clip(action.mailId) && `"${clip(action.mailId)}"`;
   else if (name === 'readDrive') detail = clip(action.driveQuery) && `"${clip(action.driveQuery)}"`;
   else if (name === 'readOwnData') detail = clip(action.dataScope) && `"${clip(action.dataScope)}"`;
-  return `[ти обрав: ${name}${detail ? ` ${detail}` : ''}]`;
+  const echo = `[ти обрав: ${name}${detail ? ` ${detail}` : ''}]`;
+  return note ? `${echo}\n[твоя нотатка: ${note}]` : echo;
 }
 
 function clampDuration(raw) {
