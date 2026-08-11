@@ -42,3 +42,6 @@ other/
 # Python bytecode cache — генерується при запуску скіл-скриптів (.claude/skills/*)
 __pycache__/
 *.pyc
+
+# Local audit workspace (Cowork session outputs — not versioned)
+.workspace/
