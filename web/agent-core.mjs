@@ -404,6 +404,8 @@ export function buildAssistantSystemPrompt(nowMs) {
     `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId).\n` +
     `Зараз у Києві: ${kyivNow}. Бракує даних — спершу readCalendar/readOwnData/readMail/readDrive, ` +
     `тоді фінальна дія. Приклад: «лист і подія» -> readMail, тоді proposeCalendarChanges.\n` +
+    `[id:...] біля події — СЛУЖБОВА позначка: копіюй її в "eventId", коли міняєш чи видаляєш ` +
+    `подію, але НІКОЛИ не показуй користувачеві в replyText.\n` +
     `ПРОДОВЖЕННЯ: якщо ТИ щойно перепитав про нагадування/подію (позначка [id:...] — копіюй як є ` +
     `в eventId/reminderId, не вигадуй), наступне повідомлення — відповідь на питання, не новий ` +
     `запит. Виконай дію.\n` +

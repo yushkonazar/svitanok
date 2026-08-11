@@ -212,9 +212,27 @@ export function findOverlaps(events, startMs, endMs, excludeId = null) {
 }
 
 /** Компактний текст подій ОДНОГО дня для наступного раунду LLM-промпту (бюджет MAX_PROMPT_LEN). */
+/**
+ * Позначка `[id:…]` для події в промпті (U5).
+ *
+ * Без неї мутація подій була структурно неможливою: `sanitizeProposal` дропає
+ * updateEvent/deleteEvent без `eventId`, а взяти той id моделі було НІЗВІДКИ —
+ * промпт календаря його не показував. Обидві половини механізму існували, між
+ * ними бракувало одного поля (перевірено власником наживо: асистент на «перенеси
+ * всі завтрашні зустрічі» чесно відповів, що не має `[id:...]`).
+ *
+ * Той самий ID_RE, що й у sanitizeProposal: цей рядок модель ЕХОЄ назад, і він
+ * іде в шлях URL Google Calendar API. Битий/відсутній id -> просто без позначки,
+ * а не «[id:null]» — інакше модель радо скопіювала б слово «null».
+ */
+const EVENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const idMark = (e) => (typeof e?.id === 'string' && EVENT_ID_RE.test(e.id) ? ` [id:${e.id}]` : '');
+
 export function formatEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
-  return events.map((e) => (e.time ? `${e.time} ${e.title}` : `увесь день: ${e.title}`)).join('; ');
+  return events
+    .map((e) => `${e.time ? `${e.time} ${e.title}` : `увесь день: ${e.title}`}${idMark(e)}`)
+    .join('; ');
 }
 
 /**
@@ -234,7 +252,8 @@ export function formatRangeEventsForPrompt(events) {
   let out = shown
     .map((e) => {
       const prefix = e.date ? `${ddmm(e.date)} ` : '';
-      return e.time ? `${prefix}${e.time} ${e.title}` : `${prefix}увесь день: ${e.title}`;
+      const body = e.time ? `${prefix}${e.time} ${e.title}` : `${prefix}увесь день: ${e.title}`;
+      return `${body}${idMark(e)}`;
     })
     .join('; ');
   if (out.length > MAX_RANGE_LEN) return out.slice(0, MAX_RANGE_LEN - 1).trimEnd() + '…';
