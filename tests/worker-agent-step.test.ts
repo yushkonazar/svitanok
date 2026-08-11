@@ -461,6 +461,29 @@ describe('/api/agent-step — читальні дії й кроки', () => {
     expect(payload.u).toBe('що в мене завтра?'); // текст користувача їде далі
   });
 
+  /* U2 — блокнот моделі. Складний запит вона веде наосліп: у транскрипті лише
+     РЕЗУЛЬТАТИ інструментів, свого плану («лишилось два листи») там немає.
+     Worker повертає нотатку дослівно в наступний append — це вся механіка. */
+  it('note від моделі повертається в транскрипт наступного кроку (U2)', async () => {
+    const res = await authed({
+      token: await token(),
+      structured: {
+        action: 'readOwnData',
+        dataScope: 'reminders',
+        note: 'лишилось: 2 листи + подія',
+      },
+    });
+    const { append } = (await res.json()) as { append: string };
+    expect(append).toContain('[твоя нотатка: лишилось: 2 листи + подія]');
+    expect(append).toContain('[ти обрав: readOwnData'); // слід дії (U1) лишився
+  });
+
+  it('без note транскрипт не змінюється (U2 нічого не додає з нічого)', async () => {
+    const res = await authed({ token: await token(), structured: { action: 'readOwnData' } });
+    const { append } = (await res.json()) as { append: string };
+    expect(append).not.toContain('нотатка');
+  });
+
   /* Читання на передостанньому кроці марне: його результат нікуди не піде.
      Тому там прямо кажемо моделі, що читань більше не буде. */
   it('на передостанньому кроці додається підказка про фінальну дію', async () => {

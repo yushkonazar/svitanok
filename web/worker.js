@@ -111,6 +111,7 @@ import {
   clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
+  extractAssistantNote,
   sanitizeProposal,
   formatProposalMessage,
   formatProposalResult,
@@ -2856,6 +2857,10 @@ async function handleAgentStep(request, env) {
     console.error('agent-step: невалідна дія від моделі');
     return finish(() => sendText(ASSISTANT_FALLBACK_REPLY), null);
   }
+  // U2: блокнот моделі — наскрізне поле при будь-якій дії, не параметр дії
+  // (тому й окремий витяг). Для читань він їде назад у транскрипт разом з
+  // echo, для термінальних — просто не має куди подітись.
+  const note = extractAssistantNote(body?.structured);
 
   /* ── Заплямований прогін: прямі записи заборонені (S2) ─────────────────
      Щойно в транскрипт потрапило тіло листа чи назва файлу з Drive, у
@@ -2945,7 +2950,8 @@ async function handleAgentStep(request, env) {
   }
   // U1: слід власної дії. Модель бачить у транскрипті лише РЕЗУЛЬТАТИ, тож на
   // довгому ланцюжку повторює те саме читання й марнує крок зі стелі в 10.
-  append = `${formatActionEcho(action)}\n${append}`;
+  // U2: поруч — її власний блокнот, дослівно (план на наступні кроки).
+  append = `${formatActionEcho(action, note)}\n${append}`;
   if (claims.step + 1 === AGENT_MAX_STEPS - 1) append += AGENT_LAST_STEP_NUDGE;
 
   return json({ ok: true, done: false, append, token: nextToken });

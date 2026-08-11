@@ -350,6 +350,11 @@ export const ASSISTANT_ACTION_SCHEMA = {
       },
     },
     replyText: { type: 'string' },
+    // note (U2) — БЛОКНОТ моделі між кроками, не дія. Worker повертає його
+    // дослівно в наступний append, тож модель бачить власний план («лишилось:
+    // 2 листи + подія») там, де раніше були самі лише результати інструментів.
+    // Дає декомпозицію складного запиту без нової дії й без правки хоста.
+    note: { type: 'string' },
   },
 };
 
@@ -402,6 +407,8 @@ export function buildAssistantSystemPrompt(nowMs) {
     `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
     `checkin (лише поля АКТИВНОГО слоту з розмови, частково ОК), voteNews(newsIndex), ` +
     `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId).\n` +
+    `"note":"..." — твій блокнот (до ${MAX_NOTE_LEN} символів, до будь-якої дії): що вже зʼясував ` +
+    `і що ЛИШИЛОСЬ. Повернеться тобі наступним кроком — веди його на складному запиті.\n` +
     `Зараз у Києві: ${kyivNow}. Бракує даних — спершу readCalendar/readOwnData/readMail/readDrive, ` +
     `тоді фінальна дія. Приклад: «лист і подія» -> readMail, тоді proposeCalendarChanges.\n` +
     `[id:...] біля події — СЛУЖБОВА позначка: копіюй її в "eventId", коли міняєш чи видаляєш ` +
@@ -448,6 +455,9 @@ export const READ_ACTIONS = new Set([
 export const MAX_BATCH_READS = 3;
 /** Кап параметра в echo-рядку (U1). */
 const MAX_ECHO_PARAM = 60;
+/** Кап блокнота моделі (U2): він їде в транскрипт КОЖНОГО наступного кроку,
+ *  тож розростатись йому нема куди — це план на кілька рядків, не переказ. */
+export const MAX_NOTE_LEN = 200;
 
 const RECORD_ACTION_KINDS = new Set(['checkin', 'voteNews', 'jobStage', 'roadmapDone']);
 // ⚠️ ЦЕ — справжній валідатор полів чек-іну від моделі (ASSISTANT_ACTION_SCHEMA
@@ -643,14 +653,32 @@ export function extractAssistantAction(structured) {
 }
 
 /**
- * Слід обраної дії для транскрипту (U1).
+ * Блокнот моделі між кроками (U2) -> чистий рядок або ''.
+ *
+ * Живе ОКРЕМО від extractAssistantAction свідомо: `note` — не параметр дії, а
+ * наскрізне поле при будь-якій із них, і дописувати його в кожен із дванадцяти
+ * return'ів валідатора означало б розмазати одну просту річ по всій функції.
+ *
+ * Переноси рядків сплющуємо (той самий мотив, що clip в assistant-data-core):
+ * нотатка складена моделлю, яка могла начитатись стороннього тексту з листа, і
+ * підробляти нею розділювачі транскрипту не можна.
+ */
+export function extractAssistantNote(structured) {
+  const raw = structured?.note;
+  if (typeof raw !== 'string') return '';
+  const flat = raw.replace(/\s*[\r\n]+\s*/g, ' ').trim();
+  return flat.length > MAX_NOTE_LEN ? `${flat.slice(0, MAX_NOTE_LEN - 1).trimEnd()}…` : flat;
+}
+
+/**
+ * Слід обраної дії (U1) + блокнот моделі (U2) для транскрипту.
  *
  * Модель не бачить власних кроків: транскрипт містить лише РЕЗУЛЬТАТИ
  * інструментів, тож на довгому ланцюжку вона повторює те саме читання й
  * спалює крок зі стелі. Один рядок перед результатом дає їй план-трейс.
  * Параметр обрізаємо — echo не має зʼїдати бюджет транскрипту.
  */
-export function formatActionEcho(action) {
+export function formatActionEcho(action, note = '') {
   const name = action?.action ?? '?';
   const clip = (v) => {
     const s = String(v ?? '').trim();
@@ -663,7 +691,8 @@ export function formatActionEcho(action) {
   else if (name === 'readMailBody') detail = clip(action.mailId) && `"${clip(action.mailId)}"`;
   else if (name === 'readDrive') detail = clip(action.driveQuery) && `"${clip(action.driveQuery)}"`;
   else if (name === 'readOwnData') detail = clip(action.dataScope) && `"${clip(action.dataScope)}"`;
-  return `[ти обрав: ${name}${detail ? ` ${detail}` : ''}]`;
+  const echo = `[ти обрав: ${name}${detail ? ` ${detail}` : ''}]`;
+  return note ? `${echo}\n[твоя нотатка: ${note}]` : echo;
 }
 
 function clampDuration(raw) {
