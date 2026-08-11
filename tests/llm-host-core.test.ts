@@ -10,6 +10,7 @@ const {
   validateLlmRequest,
   buildClaudeArgs,
   parseClaudeOutput,
+  formatUsage,
   createRateLimiter,
   detectUsageLimit,
   USAGE_LIMIT_ERROR,
@@ -167,7 +168,47 @@ describe('llm-host-core — parseClaudeOutput', () => {
       result: '{"task":"x"}',
       structured: { task: 'x' },
       costUsd: 0.0038,
+      usage: null,
     });
+  });
+
+  /* C1: чи `claude -p` узагалі кешує статичний префікс (системний промпт +
+   * схема), який ми шлемо на КОЖНОМУ кроці агента? Досі це було припущення —
+   * жодного числа. CLI віддає `usage` у тому ж JSON; просто прокидаємо його
+   * назовні, щоб лог показав cache_read і питання стало емпіричним. */
+  it('прокидає usage-блок CLI (cache_read/cache_creation — вимір кешу, C1)', () => {
+    const stdout = JSON.stringify({
+      result: 'ок',
+      is_error: false,
+      usage: {
+        input_tokens: 12,
+        output_tokens: 34,
+        cache_read_input_tokens: 1800,
+        cache_creation_input_tokens: 0,
+      },
+    });
+    const out = parseClaudeOutput(stdout);
+    expect(out.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      cache_read_input_tokens: 1800,
+      cache_creation_input_tokens: 0,
+    });
+  });
+
+  it('formatUsage — компактний рядок для логів; без usage не бреше нулями', () => {
+    expect(
+      formatUsage({
+        input_tokens: 12,
+        output_tokens: 34,
+        cache_read_input_tokens: 1800,
+        cache_creation_input_tokens: 5,
+      }),
+    ).toBe('in=12 out=34 cacheRead=1800 cacheCreate=5');
+    // Немає блоку / немає поля -> прочерк. Нуль і «не повідомлено» — РІЗНІ
+    // відповіді на питання «чи працює кеш», і плутати їх не можна.
+    expect(formatUsage(null)).toBe('usage=-');
+    expect(formatUsage({ input_tokens: 12 })).toBe('in=12 out=- cacheRead=- cacheCreate=-');
   });
 
   it('is_error:true -> ok:false з текстом помилки', () => {

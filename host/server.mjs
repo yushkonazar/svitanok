@@ -22,6 +22,7 @@ import {
   parseClaudeOutput,
   createRateLimiter,
   detectUsageLimit,
+  formatUsage,
   USAGE_LIMIT_ERROR,
 } from './llm-host-core.mjs';
 import { WORKER_STEP_TIMEOUT_MS, validateAgentRequest, runAgentLoop } from './agent-loop-core.mjs';
@@ -278,7 +279,8 @@ const server = http.createServer(async (req, res) => {
 
   const preview = validated.value.prompt.slice(0, 200).replace(/\n/g, ' ');
   console.log(
-    `[${new Date().toISOString()}] ${status} ${Date.now() - start}ms cost=${result.costUsd ?? '-'} "${preview}"`,
+    `[${new Date().toISOString()}] ${status} ${Date.now() - start}ms cost=${result.costUsd ?? '-'} ` +
+      `${formatUsage(result.usage)} "${preview}"`,
   );
 });
 

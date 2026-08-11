@@ -20,6 +20,7 @@ import {
   MAX_SYSTEM_PROMPT_LEN,
   MAX_SCHEMA_LEN,
   MODEL_RE,
+  formatUsage,
 } from './llm-host-core.mjs';
 
 /**
@@ -189,6 +190,14 @@ export async function runAgentLoop(deps, { token, transcript, systemPrompt, sche
           model,
         }),
       );
+      if (out?.ok) {
+        // C1 — телеметрія кешу. Саме тут вона й має сенс: системний промпт і
+        // схема незмінні між кроками ОДНОГО прогону, тож ненульовий cacheRead
+        // на кроці 1+ означає, що `claude -p` префікс кешує. Нулі на всіх
+        // кроках означають протилежне — і тоді стабілізація префікса (C2) не
+        // дасть нічого, а питання переходить у площину cost-моделі.
+        log(`[agent] крок ${step}: ${formatUsage(out.usage)}`);
+      }
       if (!out?.ok) {
         // Ліміт підписки / впав CLI / таймаут — Worker перекладе це власнику
         // людською мовою (той самий класифікатор, що й до переходу).

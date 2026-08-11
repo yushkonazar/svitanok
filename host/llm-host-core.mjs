@@ -195,7 +195,26 @@ export function parseClaudeOutput(stdout) {
     result: typeof parsed.result === 'string' ? parsed.result : '',
     structured: parsed.structured_output ?? null,
     costUsd: typeof parsed.total_cost_usd === 'number' ? parsed.total_cost_usd : null,
+    // C1: `usage` CLI (input/output + cache_read/cache_creation) — ЄДИНЕ
+    // джерело відповіді на питання «чи кешується статичний префікс». Системний
+    // промпт і схема (разом ~5КБ) їдуть у КОЖЕН spawn заново, і досі ми лише
+    // припускали, що CLI їх кешує. Просто прокидаємо блок як є, без інтерпретації.
+    usage: parsed.usage ?? null,
   };
+}
+
+/**
+ * `usage` -> компактний рядок для логів. Відсутнє поле дає прочерк, а НЕ нуль:
+ * «кеш не спрацював» і «CLI не повідомив» — різні відповіді, і саме їх ми тут
+ * і розрізняємо.
+ */
+export function formatUsage(usage) {
+  if (!usage || typeof usage !== 'object') return 'usage=-';
+  const n = (v) => (typeof v === 'number' ? v : '-');
+  return (
+    `in=${n(usage.input_tokens)} out=${n(usage.output_tokens)} ` +
+    `cacheRead=${n(usage.cache_read_input_tokens)} cacheCreate=${n(usage.cache_creation_input_tokens)}`
+  );
 }
 
 /** Проста фіксовано-вікна rate-limiter у памʼяті (один процес = один лічильник). */
