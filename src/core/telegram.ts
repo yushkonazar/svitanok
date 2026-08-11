@@ -7,7 +7,7 @@ import type { Logger } from './types.js';
 export const TELEGRAM_HARD_LIMIT = 4096;
 
 /** Escape ВСІХ динамічних полів для HTML parse mode (§8). Включно з `"` —
- *  інакше URL/текст із лапкою ламає атрибут href у link() (400 від Telegram). */
+ *  інакше URL/текст із лапкою ламав би атрибут href (400 від Telegram). */
 export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -16,10 +16,8 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Клікабельне посилання у словах: <a href="url">text</a>. Обидва поля екрануються. */
-export function link(url: string, text: string): string {
-  return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
-}
+/* link() (<a href> у словах) прибрано слідом за рендерером (B20/F5): його
+   єдиними викликачами були summaryHtml у news/jobs, які нікуди не йшли. */
 
 /**
  * ВИДИМА довжина HTML — як рахує Telegram ліміт 4096 («after entities parsing»):
