@@ -4536,6 +4536,51 @@ async function deadMansCheck(env) {
   }
 }
 
+/**
+ * Задачі єдиного 5-хвилинного крону. Кожна сама себе гейтить за київською
+ * годиною і сама ідемпотентна за добу. Жодних DST-костилів із набором
+ * погодинних кронів: годину рахує kyivHour() у момент виконання, а не хвилина
+ * крону.
+ *
+ * Назва поруч із функцією — не косметика: у логах Cloudflare падіння інакше
+ * виглядає як анонімний стек із waitUntil, і незрозуміло, ЯКА з восьми задач
+ * впала (B11).
+ */
+export const CRON_TASKS = [
+  { name: 'checkReminders', run: checkReminders }, // будь-яка хвилина
+  { name: 'agentRunWatchdog', run: agentRunWatchdog }, // обірвані прогони агента
+  { name: 'agentHostHealthCheck', run: agentHostHealthCheck }, // розсинхрон версій хоста
+  { name: 'autoBriefDispatch', run: autoBriefDispatch }, // [08:00, 11:00) Київ, раз на добу
+  { name: 'deadMansCheck', run: deadMansCheck }, // від 12:00 Київ, раз на добу
+  { name: 'checkinNudgeCheck', run: checkinNudgeCheck }, // вікна чек-іну, раз на слот/добу
+  { name: 'sleepNudgeCheck', run: sleepNudgeCheck }, // «Ліг спати» 23:00–02:00 + прибирання
+  { name: 'autoTelegramSetup', run: autoTelegramSetup }, // самозапуск setup, раз на добу
+];
+
+/**
+ * Виконати крон-задачі ПОСЛІДОВНО, ізолювавши збій кожної (B11).
+ *
+ * Доти всі вісім були awaited підряд в одному ctx.waitUntil без try/catch:
+ * throw у першій (типово Telegram лежить о 08:05 — tgCall помилку fetch не
+ * ловить) забирав із собою решту. Брифінг не диспатчився, dead-man не
+ * спрацьовував, нагадування не йшли — і все МОВЧКИ, бо waitUntil ковтає reject.
+ *
+ * ⚠️ Саме послідовно, НЕ Promise.allSettled: задачі роблять read-modify-write
+ * KV без CAS, тож паралельні гілки в одному ізоляті перетинали б вікна
+ * GET->PUT і затирали одна одну (втрачений firedTs -> дубль нагадування;
+ * втрачена мітка dispatch -> зайвий Actions-ран) — рівно та причина, з якої
+ * вони колись і стали послідовними (ревʼю A). Ізолюємо збій, а не порядок.
+ */
+export async function runCronTasks(tasks, env) {
+  for (const task of tasks) {
+    try {
+      await task.run(env);
+    } catch (e) {
+      console.error(`cron: задача ${task.name} впала (решта виконуються далі)`, e);
+    }
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -4613,26 +4658,7 @@ export default {
     return env.ASSETS.fetch(request); // статичні ассети React (/app/*)
   },
 
-  // Єдиний крон (кожні 5 хв) — три задачі, кожна сама себе гейтить за київською
-  // годиною і сама ідемпотентна за добу. Жодних DST-костилів із набором погодинних
-  // кронів: годину рахує kyivHour() у момент виконання, а не хвилина крону.
-  //
-  // ПОСЛІДОВНО (await, не два waitUntil — ревʼю A): checkReminders і решта роблять
-  // read-modify-write KV без CAS, тож паралельні гілки в одному ізоляті вільно
-  // перетинали б вікна GET->PUT і затирали одна одну (втрачений firedTs -> дубль
-  // нагадування; втрачена мітка dispatch -> зайвий Actions-ран).
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(
-      (async () => {
-        await checkReminders(env); // будь-яка хвилина
-        await agentRunWatchdog(env); // обірвані прогони агента, будь-яка хвилина
-        await agentHostHealthCheck(env); // розсинхрон версій хоста, будь-яка хвилина
-        await autoBriefDispatch(env); // [08:00, 11:00) Київ, раз на добу
-        await deadMansCheck(env); // від 12:00 Київ, раз на добу
-        await checkinNudgeCheck(env); // вікна нагадувань про чек-ін, раз на слот/добу
-        await sleepNudgeCheck(env); // «Ліг спати» 23:00–02:00 + прибирання завислих кнопок
-        await autoTelegramSetup(env); // самозапуск setup (вебхук/меню/пін), раз на добу
-      })(),
-    );
+    ctx.waitUntil(runCronTasks(CRON_TASKS, env));
   },
 };
