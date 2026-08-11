@@ -467,6 +467,30 @@ function capReliabilityDays(s) {
   }
 }
 
+/**
+ * Кап архіву збереженого (S3). `saved` — єдиний масив у сторі, що ріс безмежно:
+ * власник зберігає новини й факти роками, а блоб 'stats' читається й
+ * переписується на КОЖНУ подію (відкриття застосунку, чек-ін, голос, три
+ * 5-хвилинні крони). Тобто розмір тут — не «місце в KV», а латентність усіх
+ * цих операцій. Тисяча записів — це роки збереженого при реальному темпі, тож
+ * межа не ріже живе користування; обрізаємо з ХВОСТА (unshift кладе найновіше
+ * на початок).
+ */
+export const SAVED_CAP = 1000;
+function capSaved(s) {
+  if (s.saved.length > SAVED_CAP) s.saved.length = SAVED_CAP;
+}
+
+/**
+ * Кап денних бакетів (S3). Той самий горизонт, що CHECKIN_CAP: усе, що читає
+ * days (стрік, тренди, «активний день тижня»), і так дивиться максимум на рік.
+ */
+export const DAYS_CAP = CHECKIN_CAP;
+function capDays(s) {
+  const keys = Object.keys(s.days).sort();
+  for (const k of keys.slice(0, Math.max(0, keys.length - DAYS_CAP))) delete s.days[k];
+}
+
 const SLEEP_LOG_CAP = 90;
 /** Кап журналу сну: лишаємо останні SLEEP_LOG_CAP ночей. */
 function capSleepLog(s) {
@@ -883,6 +907,11 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
     default:
       break; // невідома подія — ігноруємо (не валимо)
   }
+  // Кепи, що не привʼязані до конкретної гілки (S3): saved росте лише в
+  // save_*, days — майже в кожній, тож дешевше підрізати один раз на виході.
+  // Обидва — no-op, поки межа не перейдена.
+  capSaved(s);
+  capDays(s);
   return s;
 }
 

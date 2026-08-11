@@ -239,3 +239,45 @@ describe('handleVote — голос за новину не затирає кон
     expect(stats.sleepLog['2026-08-04'].nudgeCleared).toBe(true); // ...і крон не затертий
   });
 });
+
+/* S3: тіло запиту без стелі означало, що вартість обробки задає той, хто його
+ * шле — Worker спершу матеріалізує скільки завгодно даних і лише потім бачить,
+ * що вони не потрібні. Найбільше законне тіло тут — блоб settings (сотні
+ * байтів), тож 16КБ — запас на два порядки. */
+describe('стеля розміру тіла запиту (S3)', () => {
+  it('тіло понад 16КБ -> 413 ще ДО розбору JSON і ДО авторизації', async () => {
+    const huge = JSON.stringify({ type: 'open', pad: 'я'.repeat(20_000) });
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: huge,
+      }),
+      baseEnv(),
+      { waitUntil: () => {} },
+    );
+    expect(res.status).toBe(413);
+    expect(kv.get('stats')).toBeUndefined();
+  });
+
+  it('кирилиця рахується в БАЙТАХ, не символах (UTF-8 — два байти на літеру)', async () => {
+    // ~9000 кириличних символів = ~18КБ. Перевірка по .length пропустила б.
+    const body = JSON.stringify({ type: 'open', pad: 'я'.repeat(9_000) });
+    expect(body.length).toBeLessThan(16 * 1024);
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      }),
+      baseEnv(),
+      { waitUntil: () => {} },
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it('звичайне тіло проходить як раніше', async () => {
+    const res = await postEvent({ type: 'open' }, baseEnv());
+    expect([400, 401, 403]).toContain(res.status); // без initData — авторизація, не 413
+  });
+});

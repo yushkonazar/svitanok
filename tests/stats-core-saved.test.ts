@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
+// Namespace-імпорт (не список): prettier переносить довгий список на кілька
+// рядків, і однорядковий @ts-expect-error відʼїжджає від рядка з помилкою —
+// директива стає «невикористаною», а помилка типів лишається.
 // @ts-expect-error — JS-модуль Worker'а без типів
-import { emptyStore, recordEvent, aggregateStats, pageSaved } from '../web/stats-core.mjs';
+import * as stats from '../web/stats-core.mjs';
+const { emptyStore, recordEvent, aggregateStats, pageSaved, SAVED_CAP, DAYS_CAP } = stats;
 
 // Повний архів збереженого (роадмеп v3, F3).
 //
@@ -96,5 +100,39 @@ describe('F3 — сторінки збереженого', () => {
     const p = page(s);
     expect(p.total).toBe(2);
     expect(p.items.map((x) => x.id)).not.toContain('https://e.com/1');
+  });
+});
+
+/* S3 (аудит 11.08.2026): checkins/sleepLog/reliability.days давно мають кепи, а
+ * `saved` і `days` росли безмежно. Блоб 'stats' читається й переписується на
+ * КОЖНУ подію (відкриття застосунку, чек-ін, голос, три 5-хвилинні крони), тож
+ * його розмір — це не «місце в KV», а латентність кожної з цих операцій. */
+describe('кепи росту стору (S3)', () => {
+  it('saved: понад SAVED_CAP — найстаріші випадають, найновіші лишаються', () => {
+    let store = emptyStore();
+    for (let i = 0; i < SAVED_CAP + 25; i++) {
+      store = recordEvent(
+        store,
+        { type: 'save_news', url: `https://x/${i}`, title: `новина ${i}`, category: 'Тех' },
+        '2026-08-11',
+      );
+    }
+    expect(store.saved).toHaveLength(SAVED_CAP);
+    // unshift кладе найновіше на початок -> обрізаємо з ХВОСТА.
+    expect(store.saved[0].url).toBe(`https://x/${SAVED_CAP + 24}`);
+    expect(store.saved.some((x: { url: string }) => x.url === 'https://x/0')).toBe(false);
+  });
+
+  it('days: понад DAYS_CAP діб — найстаріші дати випадають', () => {
+    const store = emptyStore();
+    // Готуємо стор із надлишком днів напряму, тоді одна подія має підрізати.
+    for (let i = 0; i < DAYS_CAP + 10; i++) {
+      const d = new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10);
+      store.days[d] = { opens: 1, mock: 0, news: 0 };
+    }
+    const after = recordEvent(store, { type: 'open' }, '2026-08-11');
+    expect(Object.keys(after.days)).toHaveLength(DAYS_CAP);
+    expect(after.days['2020-01-01']).toBeUndefined();
+    expect(after.days['2026-08-11']).toBeDefined(); // сьогоднішній — на місці
   });
 });
