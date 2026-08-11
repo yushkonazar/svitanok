@@ -1789,3 +1789,65 @@ describe('ask — нетермінальне уточнення (U3)', () => {
     }
   });
 });
+
+/* S2 (залишок): мутації НАГАДУВАНЬ — за ✅-гейт.
+ *
+ * Створення нагадування лишається прямим (додати — дешево відкотити), а от
+ * скасувати чи перенести чуже нагадування — дія, якої власник міг не просити:
+ * саме її й спробувала б інʼєкція з листа. Taint-біт цей шлях уже ріже, але це
+ * ОДИН запобіжник; кнопка ✅ — другий, і він працює навіть тоді, коли модель
+ * помилилась сама, без жодної інʼєкції (не той збіг за описом).
+ *
+ * Пункти будує САМ Worker (як stageItemEdit для подій), а не модель: у схемі
+ * пропозиції цих видів немає — LLM і далі просить діями cancelReminder/
+ * updateReminder, гейт додається на нашому боці. */
+describe('пропозиція на мутацію нагадування (✅-гейт)', () => {
+  const { proposalMode, buildProposalKeyboard, formatProposalResult } = agent;
+  const BASE = { title: 'стоматолог', whenMs: Date.parse('2026-07-24T12:00:00Z') };
+  const del = [{ kind: 'deleteReminder', reminderId: 'r1', base: BASE }];
+  const upd = [
+    {
+      kind: 'updateReminder',
+      reminderId: 'r1',
+      base: BASE,
+      whenMs: Date.parse('2026-07-24T15:00:00Z'),
+    },
+  ];
+
+  it('має власні режими — не плутається з подіями', () => {
+    expect(proposalMode(del)).toBe('reminderDelete');
+    expect(proposalMode(upd)).toBe('reminderEdit');
+    // Подієві режими лишились на місці (регресія на випадок «зручного» злиття).
+    expect(proposalMode([{ kind: 'deleteEvent', eventId: 'x' }])).toBe('delete');
+  });
+
+  it('клавіатура — лише ✅/❌, без циклерів подій', () => {
+    for (const items of [del, upd]) {
+      const rows = buildProposalKeyboard('ab12cd34', items).inline_keyboard;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toHaveLength(2);
+      // Циклер зсуву часу (s) і «✏️ Інше» (o) — подієві: вони ведуть у гілки,
+      // що працюють з eventId, тож на нагадуванні їх бути не сміє.
+      const all = JSON.stringify(rows);
+      expect(all).not.toContain('pd:s:');
+      expect(all).not.toContain('pd:o:');
+      expect(all).toContain('pd:a:');
+      expect(all).toContain('pd:c:');
+    }
+  });
+
+  it('текст показує, ЩО саме зникне або зміниться', () => {
+    expect(formatProposalMessage(del)).toContain('стоматолог');
+    expect(formatProposalMessage(del)).toContain('24.07');
+    const updText = formatProposalMessage(upd);
+    expect(updText).toContain('стоматолог');
+    expect(updText).toContain('→'); // діф «було -> стане»
+    expect(updText).toContain('18:00'); // новий час, Київ = UTC+3 влітку
+  });
+
+  it('результат після ✅ — однорядковий, як в інших одиночних режимах', () => {
+    expect(formatProposalResult(del, [{ ok: true }])).toContain('стоматолог');
+    expect(formatProposalResult(del, [{ ok: false }])).toMatch(/не вдалось/i);
+    expect(formatProposalResult(upd, [{ ok: true }])).toContain('18:00');
+  });
+});

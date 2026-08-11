@@ -401,6 +401,7 @@ export function buildAssistantSystemPrompt(nowMs) {
     `- {"action":"cancelReminder","reminderText":"опис"} — скасувати активне нагадування за описом.\n` +
     `- {"action":"updateReminder","reminderText":"опис","reminderNewText":"новий текст",` +
     `"when":"новий час"} — змінити нагадування (текст і/або час; "when" лише канонічний формат).\n` +
+    `Обидві мутації нагадувань я показую власнику під кнопкою ✅ — не кажи, що вже зробив.\n` +
     `- {"action":"proposeCalendarChanges","proposal":[{"kind":"event","title":"...","when":"...",` +
     `"durationMin":60}]} — до ${MAX_PROPOSAL_ITEMS} пунктів, ЗАВЖДИ з підтвердженням кнопкою: ` +
     `event/reminder (створити), updateEvent/deleteEvent (змінити/скасувати ПОДІЮ, "eventId" з ` +
@@ -870,7 +871,14 @@ export function sanitizeProposal(rawProposal, nowMs) {
   return { items, droppedCount };
 }
 
-const KIND_ICON = { event: '📅', reminder: '⏰', updateEvent: '✏️', deleteEvent: '🗑' };
+const KIND_ICON = {
+  event: '📅',
+  reminder: '⏰',
+  updateEvent: '✏️',
+  deleteEvent: '🗑',
+  updateReminder: '✏️',
+  deleteReminder: '🗑',
+};
 
 const proposalTimeFmt = new Intl.DateTimeFormat('uk-UA', {
   timeZone: 'Europe/Kyiv',
@@ -958,6 +966,27 @@ export function formatProposalMessage(items, warnings) {
     } else if (it.kind === 'deleteEvent') {
       const b = it.base ?? {};
       lines.push(`${i + 1}. 🗑 «${escapeHtml(b.title ?? it.eventId)}» — ${fmtWhen(b.whenMs)}`);
+    } else if (it.kind === 'deleteReminder') {
+      // Показуємо ТЕКСТ і ЧАС нагадування, а не лише «скасувати»: власник має
+      // бачити, ЩО саме зникне, — інакше ✅ нічого не важить.
+      const b = it.base ?? {};
+      lines.push(
+        `${i + 1}. 🗑 Скасувати нагадування «${escapeHtml(b.title ?? '?')}» — ${fmtWhen(b.whenMs)}`,
+      );
+    } else if (it.kind === 'updateReminder') {
+      const b = it.base ?? {};
+      const changed = [];
+      if (it.title != null && it.title !== b.title) {
+        changed.push(`«${escapeHtml(b.title ?? '?')}» → «${escapeHtml(it.title)}»`);
+      }
+      if (it.whenMs != null && it.whenMs !== b.whenMs) {
+        changed.push(`${fmtWhen(b.whenMs)} → ${fmtWhen(it.whenMs)}`);
+      }
+      lines.push(
+        `${i + 1}. ✏️ Нагадування «${escapeHtml(b.title ?? '?')}»: ${
+          changed.length ? changed.join('; ') : 'без змін'
+        }`,
+      );
     } else {
       lines.push(
         `${i + 1}. ${KIND_ICON[it.kind] || '•'} ${escapeHtml(it.title)} — ${fmtWhen(it.whenMs)}`,
@@ -1082,6 +1111,11 @@ export function proposalMode(items) {
     if (items[0]?.kind === 'deleteEvent') return 'delete';
     if (items[0]?.kind === 'settings') return 'settings';
     if (items[0]?.kind === 'contact') return 'contact';
+    // Мутації НАГАДУВАНЬ (S2) — власні режими, а не 'edit'/'delete'. Ті ведуть
+    // у гілки, що працюють з eventId (циклер зсуву, «✏️ Інше» -> питання про
+    // подію): нагадуванню там нема чого робити, лишається чисте ✅/❌.
+    if (items[0]?.kind === 'updateReminder') return 'reminderEdit';
+    if (items[0]?.kind === 'deleteReminder') return 'reminderDelete';
   }
   return 'create';
 }
@@ -1144,6 +1178,22 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
     return { inline_keyboard: rows };
   }
 
+  // Нагадування (S2): лише підтвердження. На видаленні ❌ підписано «Ні» —
+  // «Скасувати» тут означало б дві протилежні речі в одному рядку.
+  if (mode === 'reminderDelete' || mode === 'reminderEdit') {
+    rows.push([
+      {
+        text: mode === 'reminderDelete' ? '✅ Так, скасувати' : '✅ Підтвердити',
+        callback_data: buildProposalCallbackData('a', id),
+      },
+      {
+        text: mode === 'reminderDelete' ? '❌ Ні' : '❌ Скасувати',
+        callback_data: buildProposalCallbackData('c', id),
+      },
+    ]);
+    return { inline_keyboard: rows };
+  }
+
   if (items.length === 1 && items[0]?.kind === 'reminder') {
     const s = buildProposalCallbackData('s', id);
     if (s) {
@@ -1202,6 +1252,22 @@ export function formatProposalResult(items, results) {
     const b = it.base ?? {};
     if (!results[0]?.ok) return '⚠️ Не вдалось оновити подію.';
     return `✅ Оновлено: «${escapeHtml(it.title ?? b.title ?? '?')}» — ${fmtWhen(it.whenMs ?? b.whenMs)}`;
+  }
+
+  if (mode === 'reminderDelete') {
+    const b = items[0]?.base ?? {};
+    return results[0]?.ok
+      ? `🗑 Нагадування скасовано: «${escapeHtml(b.title ?? '?')}»`
+      : '⚠️ Не вдалось скасувати нагадування — можливо, його вже немає.';
+  }
+
+  if (mode === 'reminderEdit') {
+    const it = items[0] ?? {};
+    const b = it.base ?? {};
+    if (!results[0]?.ok) return '⚠️ Не вдалось оновити нагадування — можливо, його вже немає.';
+    return `✅ Нагадування оновлено: «${escapeHtml(it.title ?? b.title ?? '?')}» — ${fmtWhen(
+      it.whenMs ?? b.whenMs,
+    )}`;
   }
 
   const lines = ['<b>Результат:</b>', ''];
