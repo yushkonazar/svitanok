@@ -129,11 +129,23 @@ describe('runBriefing — guard', () => {
     expect(notifier.sent).toHaveLength(0);
   });
 
-  it('force обходить ідемпотентність', async () => {
+  it('force-send обходить ідемпотентність', async () => {
     const res = await runBriefing(deps({ state: memState({ lastSentDate: '2026-06-29' }) }), {
-      force: true,
+      forceSend: true,
     });
     expect(res.status).toBe('sent');
+  });
+
+  /* B2: /brief мусить уміти «зараз, поза вікном», але НЕ перезаписувати
+     сьогоднішній брифінг — повторний прогін того самого дня бачить усі новини
+     й вакансії вже показаними й публікує майже порожній блоб поверх ранкового
+     (і в `latest`, і в історії `briefing:<дата>`). */
+  it('force-window НЕ обходить ідемпотентність — сьогоднішній брифінг лишається', async () => {
+    const res = await runBriefing(deps({ state: memState({ lastSentDate: '2026-06-29' }) }), {
+      forceWindow: true,
+    });
+    expect(res.status).toBe('skipped');
+    expect(res.reason).toContain('idempotent');
   });
 });
 

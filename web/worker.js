@@ -3207,12 +3207,27 @@ async function handleCommand(env, parsed, origin) {
           `⏳ Брифінг нещодавно запускався. Спробуй за ${mins} хв (або дочекайся щоденного о 08:00).`,
         );
       }
+      /* B2: /brief більше НЕ перезаписує вже опублікований брифінг.
+         Повторний прогін того самого дня бачить усі новини й вакансії вже
+         показаними (shownNews/shownJobs) і публікує майже порожній блоб поверх
+         ранкового — у KV `latest` І в історії `briefing:<дата>`. Дашборд
+         назавжди лишався без новин за той день, а inline-кнопки ранкового
+         повідомлення починали вказувати в інший масив.
+         Тож перевіряємо це ТУТ, до dispatch (той самий lastSentDate, що читає
+         guard), і кажемо чесно — замість «Запустив генерацію» й тиші у відповідь
+         на idempotent-скіп у CI. */
+      if ((await loadState(env)).lastSentDate === kyivDateKey()) {
+        return sendText(
+          '✅ Сьогоднішній брифінг уже надіслано — дивись вище або в Mini App. ' +
+            'Перегенерація стерла б його новини й вакансії (вони вже позначені показаними), ' +
+            'тож роблю це лише вручну через GitHub → workflow «brief» → force.',
+        );
+      }
       // Мітку кулдауну сіємо ЛИШЕ після успішного dispatch (ревʼю SL): інакше
       // транзієнтний збій GitHub блокував би повтор на годину + брехливе «Запустив».
-      // force: ручний /brief — явний намір «хочу зараз», а не ще одна спроба
-      // крону. Без нього команда після ранкової доставки мовчки не робила
-      // нічого (див. коментар над dispatchBrief).
-      const ok = await dispatchBrief(env, { force: true });
+      // forceWindow: ручний /brief — «хочу зараз, поза вікном». Ідемпотентність
+      // за добу лишається живою (див. блок вище).
+      const ok = await dispatchBrief(env, { forceWindow: true });
       if (!ok) {
         return sendText(
           '⚠️ Не вдалося запустити генерацію (тимчасова помилка GitHub). Спробуй ще раз за хвилину.',
@@ -4259,7 +4274,7 @@ async function updateMasteryFocus(env) {
  *     квоту стереже власний годинний кулдаун (briefCooldownRemainingMs), а не
  *     добова ідемпотентність.
  */
-async function dispatchBrief(env, { force = false } = {}) {
+async function dispatchBrief(env, { forceWindow = false } = {}) {
   if (!env.GH_DISPATCH_TOKEN) {
     console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
     return false;
@@ -4276,9 +4291,15 @@ async function dispatchBrief(env, { force = false } = {}) {
       },
       // inputs у workflow_dispatch — РЯДКИ, навіть для `type: boolean` (REST
       // API приймає лише string-значення, GitHub сам приводить до boolean перед
-      // обчисленням `inputs.force` у brief.yml). Ключ узагалі не шлемо, коли
-      // force=false, — тоді працює default: false з опису воркфлоу.
-      body: JSON.stringify({ ref: 'main', ...(force ? { inputs: { force: 'true' } } : {}) }),
+      // обчисленням inputs.* у brief.yml). Ключ узагалі не шлемо, коли прапорця
+      // немає, — тоді працює default: false з опису воркфлоу.
+      //
+      // Саме force_window, а НЕ force (B2): бот просить «запусти зараз, поза
+      // вікном», але ніколи не просить перезаписати вже опублікований брифінг.
+      body: JSON.stringify({
+        ref: 'main',
+        ...(forceWindow ? { inputs: { force_window: 'true' } } : {}),
+      }),
     });
     if (!resp.ok) {
       console.error('workflow_dispatch failed', resp.status, await resp.text());
