@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker from '../web/worker.js';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import { mintRunToken, AGENT_MAX_STEPS } from '../web/agent-run-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів.
+import { AgentRun } from '../web/agent-run-do.mjs';
 
 /* Інтеграційний тест зворотного ендпоінта /api/agent-step — через СПРАВЖНІЙ
    fetch-хендлер воркера. Юніти покривають чисті шматки (токен, allowlist дій),
@@ -33,6 +35,34 @@ function makeEnv(over: Record<string, unknown> = {}) {
 }
 
 const CTX = { waitUntil: () => {}, passThroughOnException: () => {} };
+
+/** Прив'язка DO у памʼяті: один справжній AgentRun на імʼя (Фаза 4). Так тест
+ *  ганяє ту саму ухвалу, що й прод, а не її переказ. */
+function fakeDoNamespace() {
+  const objects = new Map<string, InstanceType<typeof AgentRun>>();
+  return {
+    getByName: (name: string) => {
+      if (!objects.has(name)) {
+        const store = new Map<string, unknown>();
+        objects.set(
+          name,
+          new AgentRun(
+            {
+              storage: {
+                get: async (k: string) => store.get(k),
+                put: async (k: string, v: unknown) => void store.set(k, v),
+                deleteAll: async () => void store.clear(),
+                setAlarm: async () => {},
+              },
+            },
+            {},
+          ),
+        );
+      }
+      return objects.get(name)!;
+    },
+  };
+}
 
 const post = (body: unknown, headers: Record<string, string> = {}, env = makeEnv()) =>
   worker.fetch(
@@ -521,6 +551,54 @@ describe('/api/agent-step — читальні дії й кроки', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: 'run-finished', done: true });
     expect(tgCalls).toHaveLength(before); // жодного нового звернення назовні
+  });
+
+  /* ── Той самий реплей, але з Durable Object (Фаза 4) ─────────────────────
+     Гілка вище — фолбек на KV-надгробок: best-effort, бо KV не має
+     read-your-writes (надгробок, покладений секунду тому, може бути ще не
+     видним, і саме в цю щілину реплей і проходив). Із привʼязаним DO ухвала
+     атомарна, тож закривається й ПОВТОР ТОГО САМОГО КРОКУ — а не лише крок
+     після фінішу. */
+  it('DO ріже повтор кроку ДО виконання інструмента (KV цього не вміє)', async () => {
+    const env = makeEnv({ AGENT_RUN: fakeDoNamespace() });
+    const t = await token();
+    expect((await authed({ token: t, structured: { action: 'readOwnData' } }, env)).status).toBe(
+      200,
+    );
+    const before = tgCalls.length;
+
+    const res = await authed({ token: t, structured: { action: 'readMail' } }, env);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'step-replayed', done: true });
+    expect(tgCalls).toHaveLength(before); // пошта НЕ читалась
+  });
+
+  it('DO: після фінішу крок не проходить (надгробок видно одразу)', async () => {
+    const env = makeEnv({ AGENT_RUN: fakeDoNamespace() });
+    const t = await token();
+    await authed({ token: t, structured: { action: 'reply', replyText: 'готово' } }, env);
+    // Той самий токен: у проді всі кроки прогону несуть спільний дедлайн, тож
+    // і DO в них один (імʼя = runId + дедлайн).
+    const res = await authed({ token: t, structured: { action: 'readMail' } }, env);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'run-finished', done: true });
+  });
+
+  it('DO недоступний -> прогін НЕ падає (запобіжник углиб, а не межа)', async () => {
+    // Межа — підпис токена; DO звужує реплей. Якби його збій валив крок,
+    // блип платформи забирав би асистента цілком — гірший розмін.
+    const env = makeEnv({
+      AGENT_RUN: {
+        getByName: () => ({
+          claimStep: async () => {
+            throw new Error('DO unavailable');
+          },
+        }),
+      },
+    });
+    const res = await authed({ token: await token(), structured: { action: 'readOwnData' } }, env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { append: string }).append).toContain('Твої дані');
   });
 
   it('протухлий токен -> 401 і хосту сказано зупинитись', async () => {

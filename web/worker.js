@@ -139,7 +139,11 @@ import {
   mintRunToken,
   verifyRunToken,
   nextRunToken,
+  agentRunDoName,
 } from './agent-run-core.mjs';
+// Клас Durable Object мусить бути експортований із ГОЛОВНОГО модуля Worker'а
+// (це вимога Cloudflare), тож ре-експорт — не стилістика, а контракт деплою.
+export { AgentRun } from './agent-run-do.mjs';
 import {
   buildOwnDataDigest,
   formatMailForPrompt,
@@ -2459,6 +2463,48 @@ async function markRunStarted(env, runId, info) {
   }
 }
 
+/* ── Клейм кроку (Фаза 4) ─────────────────────────────────────────────────
+   Чому це не просто «читання KV, як було». Токен самодостатній, тобто
+   реплейний: поки він живий, той самий крок можна надіслати вдруге, і кожен
+   виклик виконає інструмент (читання пошти!) та віддасть результат викликачеві.
+   KV-надгробок звужував лише найтихіший варіант — крок ПІСЛЯ фінішу, — та й той
+   best-effort: KV не має read-your-writes, тож марка, покладена секунду тому,
+   могла бути ще не видною. У DO read-modify-write атомарний: там ми ріжемо й
+   повтор самого кроку, і робимо надгробок миттєво видним.
+
+   Фолбек, коли привʼязки немає (локальний прогін, старий конфіг, тести):
+   поведінка рівно та, що була. Це запобіжник УГЛИБ, а не межа — межею був і
+   лишається підпис токена, — тож його відсутність не має валити асистента. З
+   того самого мотиву й збій DO пускає крок далі: блип платформи інакше забирав
+   би асистента цілком, а це гірший розмін. */
+async function claimAgentStep(env, claims, nowMs) {
+  const ns = env.AGENT_RUN;
+  if (typeof ns?.getByName !== 'function') {
+    console.error('agent-step: AGENT_RUN не привʼязано — надгробок лишається best-effort (KV)');
+    const knownRun = (await loadAgentRuns(env))[claims.runId];
+    return knownRun?.finishedMs ? { ok: false, error: 'run-finished' } : { ok: true };
+  }
+  try {
+    const claim = await ns.getByName(agentRunDoName(claims)).claimStep(claims.step, nowMs);
+    return claim?.ok ? { ok: true } : { ok: false, error: claim?.error || 'step-rejected' };
+  } catch (e) {
+    console.error('agent-step: DO-клейм впав (крок пускаємо далі)', e?.message);
+    return { ok: true };
+  }
+}
+
+/** Надгробок у DO — парний до claimAgentStep і best-effort із того самого
+ *  мотиву: KV-марку (її читає сторож) ставить markRunFinished окремо. */
+async function finishAgentRunDo(env, claims, nowMs) {
+  const ns = env.AGENT_RUN;
+  if (typeof ns?.getByName !== 'function') return;
+  try {
+    await ns.getByName(agentRunDoName(claims)).finish(nowMs);
+  } catch (e) {
+    console.error('agent-step: DO-фініш впав (не блокує відповідь)', e?.message);
+  }
+}
+
 /**
  * Позначити прогін завершеним.
  *
@@ -2869,32 +2915,31 @@ async function handleAgentStep(request, env) {
   }
   const claims = verified.claims;
 
-  /* ── Реплей завершеного прогону ────────────────────────────────────────
+  /* ── Реплей кроку ──────────────────────────────────────────────────────
      Токен самодостатній, тож той самий крок можна надіслати двічі — а кожен
      виклик виконує інструмент і повертає результат ВИКЛИКАЧЕВІ. Найгидкіший
      варіант — коли обмін для власника вже візуально завершився («⏳» зникло,
-     відповідь прийшла), а хтось і далі качає цим токеном пошту. Тут ми цей
-     шлях закриваємо.
+     відповідь прийшла), а хтось і далі качає цим токеном пошту.
 
-     ⚠️ Best-effort, і це чесно: KV не має read-your-writes, тож надгробок,
-     покладений секунду тому, може бути ще не видним. Вікно звужує коротке
-     життя кроку (AGENT_STEP_TTL_MS). Повне рішення — тримати лічильник кроків
-     у Durable Object (заодно прибрало б і KV-розсинхрон); поки прогонів
-     одиниці на добу, ця пара запобіжників пропорційна. */
-  const knownRun = (await loadAgentRuns(env))[claims.runId];
-  if (knownRun?.finishedMs) {
-    console.error(`agent-step: крок для вже завершеного прогону ${claims.runId} — відхилено`);
-    return json({ ok: false, error: 'run-finished', done: true }, 409);
+     Тепер ухвалу виносить Durable Object (claimAgentStep): крок можна зайняти
+     РІВНО раз, а надгробок видно наступному крокові одразу. Без привʼязки DO
+     лишається старий KV-надгробок — вужче, але не гірше, ніж було. */
+  const claim = await claimAgentStep(env, claims, nowMs);
+  if (!claim.ok) {
+    console.error(`agent-step: крок ${claims.step} прогону ${claims.runId} — ${claim.error}`);
+    return json({ ok: false, error: claim.error, done: true }, 409);
   }
 
   const parsed = { chatId: claims.chatId, threadId: claims.threadId };
 
-  /** Спільний фінал: прибрати «⏳», віддати відповідь, записати памʼять, зняти марку. */
+  /** Спільний фінал: прибрати «⏳», віддати відповідь, записати памʼять, зняти
+   *  марку (KV — для сторожа, DO — щоб наступний крок цього прогону не пройшов). */
   const finish = async (send, assistantSummary) => {
     await deleteProgressMessage(env, claims.chatId, claims.progressMsgId);
     await send();
     if (assistantSummary) await rememberExchange(env, claims, assistantSummary);
     await markRunFinished(env, claims.runId, nowMs);
+    await finishAgentRunDo(env, claims, nowMs);
     return json({ ok: true, done: true });
   };
 

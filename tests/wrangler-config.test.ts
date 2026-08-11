@@ -35,6 +35,20 @@ describe('web/wrangler.jsonc', () => {
     expect(cfg.preview_urls).toBe(false);
   });
 
+  it('DO прогону привʼязаний і оголошений на SQLite-бекенді (Фаза 4)', () => {
+    // На Workers Free доступні ЛИШЕ SQLite-бекенди DO — легасі key-value клас
+    // просто не задеплоївся б. І клас, і привʼязка мусять збігатись з ім'ям,
+    // яке worker.js ре-експортує, інакше деплой падає на невідомому класі.
+    const bindings = (cfg.durable_objects as { bindings: { name: string; class_name: string }[] })
+      .bindings;
+    expect(bindings).toEqual([{ name: 'AGENT_RUN', class_name: 'AgentRun' }]);
+    expect(cfg.exports).toEqual({ AgentRun: { type: 'durable-object', storage: 'sqlite' } });
+    // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
+    expect(cfg.migrations).toBeUndefined();
+    const worker = readFileSync(new URL('../web/worker.js', import.meta.url), 'utf8');
+    expect(worker).toContain('export { AgentRun }');
+  });
+
   it('немає ключа routes — маршрути веде дашборд, wrangler їх не перезаписує', () => {
     // Кастомний домен (svitanok.yushko.dev) доданий у панелі. Щойно тут
     // зʼявиться `routes`, деплой почне вважати ЦЕЙ файл джерелом істини й зітре
