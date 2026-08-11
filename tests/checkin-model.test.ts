@@ -12,6 +12,8 @@ import { dayIndices, fitWeights, dayIndexScore } from '../web/checkin-model.mjs'
 import { computeDrivers, computeLagged, computeArchetypes } from '../web/checkin-model.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { analyzeCheckinModel, flattenCheckinDay } from '../web/checkin-model.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { CHECKIN_FIELDS } from '../web/stats-core.mjs';
 
 // Золоті вектори — згенеровані research/checkin_model.py (Python/numpy/scipy,
 // та сама математика в читабельному вигляді). Розбіжність тут = регресія ПОРТУ
@@ -249,5 +251,34 @@ describe('flattenCheckinDay — адаптер nested checkins[date] -> плос
     expect(flat.sleepH).toBeNull();
     expect(flat.dayScore).toBeNull();
     expect(flat.intentMatch).toBeNull();
+  });
+});
+
+describe('checkin-model — реєстр чек-іну й реєстр моделі не розʼїжджаються (B5)', () => {
+  it('КОЖНЕ enum-значення CHECKIN_FIELDS відоме моделі (або явно оголошене легасі)', () => {
+    // Механічний інваріант замість ручної звірки двох списків: значення, яке
+    // чек-ін ЗБИРАЄ, а модель не знає, normalizeField перетворює на null. Для
+    // BODY (moved+outdoor, а MIN_FIELDS_PER_INDEX=2) це означає null на весь
+    // індекс -> доба взагалі не потрапляє у fitWeights/архетипи. Саме так
+    // moved:'active' тихо викидав дні з навчання, і побачити це в UI було
+    // неможливо.
+    const drift: string[] = [];
+    for (const [slot, spec] of Object.entries(
+      CHECKIN_FIELDS as Record<string, Record<string, { enum?: string[] }>>,
+    )) {
+      for (const [field, def] of Object.entries(spec)) {
+        if (!def.enum) continue;
+        // Модель тримає частину полів у зрізах доби (energy@morning) — шукаємо
+        // обидві форми; поля, яких у моделі немає взагалі (lateReason,
+        // withWhom), вона свідомо не рахує, і це не дрейф.
+        const mf = (FIELDS as Array<{ name: string; levels?: string[]; legacyUnscored?: string[] }>)
+          .filter((f) => f.levels)
+          .find((f) => f.name === field || f.name === `${field}@${slot}`);
+        if (!mf) continue;
+        const known = new Set([...(mf.levels ?? []), ...(mf.legacyUnscored ?? [])]);
+        for (const v of def.enum) if (!known.has(v)) drift.push(`${slot}.${field}: "${v}"`);
+      }
+    }
+    expect(drift).toEqual([]);
   });
 });

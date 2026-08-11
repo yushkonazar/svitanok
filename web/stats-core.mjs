@@ -182,7 +182,12 @@ export const FLAME_VALUES = ['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'
 // сирий перелік застосунків (buildFlameStats нижче).
 export const CONSTRUCTIVE_FLAMES = new Set(['duolingo', 'chess']);
 
-const CHECKIN_FIELDS = {
+// Експортується не заради Worker'а (він читає це локально), а заради
+// CI-assert'у «enum ⊆ levels»: значення, яке ЗБИРАЄ чек-ін, але яке не знає
+// checkin-model.mjs, нормалізується в null і тихо вибиває поле — а для BODY
+// (лише 2 поля при MIN_FIELDS_PER_INDEX=2) це викидає ВСЮ добу з навчання
+// ваг і архетипів. Саме так сталося з moved:'active' (B5).
+export const CHECKIN_FIELDS = {
   morning: {
     sleepH: { num: [0, 14] },
     // Якість окремо від тривалості — стандарт Consensus Sleep Diary (1..5).

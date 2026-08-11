@@ -67,6 +67,16 @@
       "want": 1.0
     },
     {
+      "field": "moved",
+      "raw": "active",
+      "want": 0.6666666666666666
+    },
+    {
+      "field": "pace",
+      "raw": "off",
+      "want": null
+    },
+    {
       "field": "kept",
       "raw": "changed",
       "want": 0.6666666666666666
@@ -99,7 +109,7 @@
       "autonomy": 2,
       "intentMatch": 0.0,
       "jobConfidence": 3,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "none",
       "dayScore": 2
     },
@@ -459,7 +469,7 @@
       "autonomy": 4,
       "intentMatch": 0.0,
       "jobConfidence": 5,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "long",
       "dayScore": 4
     },
@@ -789,7 +799,7 @@
       "autonomy": 2,
       "intentMatch": 1.0,
       "jobConfidence": 3,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "long",
       "dayScore": 4
     },
@@ -1239,7 +1249,7 @@
       "autonomy": 4,
       "intentMatch": 1.0,
       "jobConfidence": 4,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "short",
       "dayScore": 2
     },
@@ -1839,7 +1849,7 @@
       "autonomy": 4,
       "intentMatch": 1.0,
       "jobConfidence": 2,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "long",
       "dayScore": 4
     },
@@ -2049,7 +2059,7 @@
       "autonomy": 3,
       "intentMatch": 1.0,
       "jobConfidence": 4,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "none",
       "dayScore": 3
     },
@@ -2889,7 +2899,7 @@
       "autonomy": 4,
       "intentMatch": 1.0,
       "jobConfidence": 1,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "short",
       "dayScore": 3
     },
@@ -3399,7 +3409,7 @@
       "autonomy": 3,
       "intentMatch": 0.0,
       "jobConfidence": 3,
-      "moved": "light",
+      "moved": "active",
       "outdoor": "long",
       "dayScore": 3
     },
@@ -3680,7 +3690,7 @@
       "resource": 0.493421052631579,
       "work": 0.33898305084745767,
       "agency": 0.20454545454545453,
-      "body": 0.27777777777777773
+      "body": 0.37037037037037035
     },
     {
       "recovery": 0.8311688311688311,
@@ -3699,26 +3709,26 @@
   ],
   "fit": {
     "weights": {
-      "recovery": 0.24552718457017966,
-      "resource": 0.2745304581844104,
-      "work": 0.3562116861627046,
-      "agency": 0.06836340703702427,
-      "body": 0.0553672640456811
+      "recovery": 0.24781305494986824,
+      "resource": 0.2781917155946442,
+      "work": 0.3594392907540502,
+      "agency": 0.06975854501592753,
+      "body": 0.04479739368550995
     },
     "beta": {
-      "recovery": 0.242103569133468,
-      "resource": 0.2707024229461412,
-      "work": 0.3512446930795613,
-      "agency": 0.06741015203983165,
-      "body": 0.0545952264393072
+      "recovery": 0.2410210751017463,
+      "resource": 0.2705671272669004,
+      "work": 0.34958789523367045,
+      "agency": 0.0678466254357491,
+      "body": 0.043569601246479975
     },
-    "intercept": 0.05330203966553537,
-    "r2": 0.3410085059687703,
+    "intercept": 0.06023795187398295,
+    "r2": 0.33796260021588287,
     "n": 120,
     "learned": true
   },
   "dayIndex": {
-    "last": 50.6,
+    "last": 50.9,
     "mean": 54.6
   },
   "drivers": [
@@ -3960,8 +3970,8 @@
     "body": {
       "ready": true,
       "n": 119,
-      "rho": 0.054,
-      "p": 0.561,
+      "rho": 0.04,
+      "p": 0.6621,
       "src": "body",
       "target": "dayScore"
     }
@@ -3972,56 +3982,56 @@
     "n": 120,
     "groups": [
       {
-        "n": 54,
-        "share": 0.45,
+        "n": 42,
+        "share": 0.35,
         "profile": {
-          "recovery": 0.736,
-          "resource": 0.548,
-          "work": 0.43,
-          "agency": 0.559,
-          "body": 0.497
-        },
-        "top": "recovery",
-        "low": "work"
-      },
-      {
-        "n": 28,
-        "share": 0.233,
-        "profile": {
-          "recovery": 0.707,
-          "resource": 0.644,
-          "work": 0.64,
-          "agency": 0.374,
-          "body": 0.278
+          "recovery": 0.72,
+          "resource": 0.572,
+          "work": 0.507,
+          "agency": 0.472,
+          "body": 0.17
         },
         "top": "recovery",
         "low": "body"
       },
       {
-        "n": 21,
-        "share": 0.175,
+        "n": 32,
+        "share": 0.267,
         "profile": {
-          "recovery": 0.585,
-          "resource": 0.411,
-          "work": 0.561,
-          "agency": 0.72,
-          "body": 0.246
+          "recovery": 0.548,
+          "resource": 0.391,
+          "work": 0.435,
+          "agency": 0.705,
+          "body": 0.418
         },
         "top": "agency",
+        "low": "resource"
+      },
+      {
+        "n": 24,
+        "share": 0.2,
+        "profile": {
+          "recovery": 0.724,
+          "resource": 0.628,
+          "work": 0.617,
+          "agency": 0.677,
+          "body": 0.505
+        },
+        "top": "recovery",
         "low": "body"
       },
       {
-        "n": 17,
-        "share": 0.142,
+        "n": 22,
+        "share": 0.183,
         "profile": {
-          "recovery": 0.523,
-          "resource": 0.41,
-          "work": 0.356,
-          "agency": 0.636,
-          "body": 0.598
+          "recovery": 0.709,
+          "resource": 0.528,
+          "work": 0.409,
+          "agency": 0.362,
+          "body": 0.665
         },
-        "top": "agency",
-        "low": "work"
+        "top": "recovery",
+        "low": "agency"
       }
     ]
   }

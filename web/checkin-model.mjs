@@ -114,6 +114,14 @@ export const FIELDS = [
     weight: 0.8,
     polarity: 1,
     levels: ['overload', 'behind', 'other', 'on', 'better'],
+    // Легасі-значення з KV, якому НЕМАЄ чесного рівня: старе «Збився» пізніше
+    // розділили на три РІЗНІ дні (behind/other/overload), і відновити заднім
+    // числом, який саме це був, неможливо. Свідомо лишається null: поле випадає,
+    // ваги WORK перенормовуються на присутні (WORK має 6 полів, тож індекс
+    // виживає) — це чесніше за здогадку, що вигадала б інформацію.
+    // Оголошено ЯВНО, щоб assert «enum ⊆ levels» відрізняв свідоме виключення
+    // від забутого рівня (як було з moved:'active').
+    legacyUnscored: ['off'],
   },
   { name: 'jobProgress', slot: 'evening', index: WORK, weight: 0.6, polarity: 1 },
   // ── Автономія / сенс ─────────────────────────────────────────────────────────
@@ -127,7 +135,11 @@ export const FIELDS = [
     index: BODY,
     weight: 1.5,
     polarity: 1,
-    levels: ['none', 'light', 'workout'],
+    // 'active' («🔥 Активно») чек-ін збирає з самого початку, а модель його не
+    // знала -> normalizeField давав null -> BODY (лише 2 поля при
+    // MIN_FIELDS_PER_INDEX=2) ставав null -> УСЯ доба випадала з навчання ваг
+    // і архетипів (B5). Ординально 'active' стоїть між 'light' і 'workout'.
+    levels: ['none', 'light', 'active', 'workout'],
   },
   {
     name: 'outdoor',
