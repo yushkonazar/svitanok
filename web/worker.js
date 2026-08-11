@@ -106,6 +106,7 @@ import {
   ASSISTANT_FALLBACK_REPLY,
   assistantErrorReply,
   assistantStepLabel,
+  formatActionEcho,
   clipTranscript,
   buildAssistantSystemPrompt,
   extractAssistantAction,
@@ -2675,6 +2676,23 @@ async function runAssistantAgent(env, parsed, userText) {
  * промпт окремо попереджає не виконувати команди звідти.
  */
 async function runReadAction(env, action, nowMs) {
+  if (action.action === 'readBatch') {
+    /* C3: кілька читань — ОДИН крок. Кожен крок циклу коштує окремий spawn
+       `claude` (~11 с виміряно на проді), тож «календар + пошта» по одному
+       читанню за раз — це 23 с очікування замість 12. Виконуємо паралельно
+       (той самий Promise.all, що вже є в readOwnData для чотирьох KV-блобів).
+       Збій ОДНОГО читання не валить решту: модель отримає те, що вдалось, і
+       чесний рядок про те, що не вдалось. */
+    const results = await Promise.all(
+      action.reads.map((sub) =>
+        runReadAction(env, sub, nowMs).catch((e) => {
+          console.error(`agent-step: ${sub.action} у батчі впало`, e?.message);
+          return `${sub.action}: не спрацювало.`;
+        }),
+      ),
+    );
+    return results.join('\n\n');
+  }
   if (action.action === 'readMail') {
     return formatMailForPrompt(await readMail(env, action.mailQuery));
   }
@@ -2886,7 +2904,15 @@ async function handleAgentStep(request, env) {
   // Пляма ставиться за ТИПОМ дії, а не за вмістом відповіді: навіть порожній
   // результат пошуку означає, що модель попросила сторонні дані, і наступний
   // крок уже міг би бути наслідком чужого тексту.
-  const tainted = claims.tainted || TAINTING_READ_ACTIONS.has(action.action);
+  // ⚠️ Батч перевіряємо ПОЕЛЕМЕНТНО (C3): readBatch сам по собі не плямує, але
+  // readBatch:['readCalendar','readMail'] тягне в транскрипт сторонній текст
+  // рівно так само, як окремий readMail. Без цього рядка батч став би дірою в
+  // taint-гейті (S2).
+  const tainting =
+    action.action === 'readBatch'
+      ? action.reads.some((r) => TAINTING_READ_ACTIONS.has(r.action))
+      : TAINTING_READ_ACTIONS.has(action.action);
+  const tainted = claims.tainted || tainting;
   const nextToken = await nextRunToken(env.TELEGRAM_WEBHOOK_SECRET, { ...claims, tainted });
   if (!nextToken) {
     // Кроки вичерпано, а фінальної дії так і немає. Не помилка моделі — свій
@@ -2909,6 +2935,9 @@ async function handleAgentStep(request, env) {
     console.error('agent-step: читальна дія впала', e?.message);
     append = 'Інструмент не спрацював — відповідай тим, що вже маєш.';
   }
+  // U1: слід власної дії. Модель бачить у транскрипті лише РЕЗУЛЬТАТИ, тож на
+  // довгому ланцюжку повторює те саме читання й марнує крок зі стелі в 10.
+  append = `${formatActionEcho(action)}\n${append}`;
   if (claims.step + 1 === AGENT_MAX_STEPS - 1) append += AGENT_LAST_STEP_NUDGE;
 
   return json({ ok: true, done: false, append, token: nextToken });

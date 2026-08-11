@@ -984,3 +984,101 @@ describe('cancelReminderByText — поріг довжини опису (S2)', (
     expect(sentTexts().join(' ')).toMatch(/конкретніше|Не знайшов/i);
   });
 });
+
+/* C3 + U1 наскрізь. Тут головне не «функція повернула масив», а те, що обидва
+ * читання відбулись у МЕЖАХ ОДНОГО кроку: цикл не повернувся на хост по новий
+ * spawn `claude`, а це рівно ті ~11 с, які видно в проді між кроками. */
+describe('/api/agent-step — readBatch (C3) і echo дій (U1)', () => {
+  it('два читання за ОДИН крок: один токен, один append, обидва результати', async () => {
+    const res = await authed({
+      token: await token(),
+      structured: {
+        action: 'readBatch',
+        reads: [
+          { action: 'readCalendar', calendarStartDay: 1, calendarEndDay: 1 },
+          { action: 'readOwnData', dataScope: 'reminders' },
+        ],
+      },
+    });
+    const body = (await res.json()) as { done: boolean; append: string; token: string };
+
+    expect(body.done).toBe(false);
+    expect(body.token).toBeTruthy(); // крок ОДИН -> токен теж один
+    expect(body.append).toContain('Календар');
+    expect(body.append).toContain('Твої дані');
+  });
+
+  it('echo називає обрану дію ПЕРЕД результатом (U1)', async () => {
+    const res = await authed({
+      token: await token(),
+      structured: { action: 'readCalendar', calendarStartDay: 0, calendarEndDay: 0 },
+    });
+    const body = (await res.json()) as { append: string };
+    expect(body.append.startsWith('[ти обрав: readCalendar 0..0]')).toBe(true);
+  });
+
+  it('збій ОДНОГО читання в батчі не валить решту', async () => {
+    // Google недоступний (стаб віддає 401) -> календар впаде, own-data з KV — ні.
+    const res = await authed({
+      token: await token(),
+      structured: {
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readOwnData' }],
+      },
+    });
+    const body = (await res.json()) as { done: boolean; append: string };
+    expect(body.done).toBe(false);
+    expect(body.append).toContain('Твої дані'); // друге читання дійшло
+  });
+
+  it('⚠️ батч ПЛЯМУЄ прогін, якщо всередині пошта — інакше це діра в taint-гейті', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [{ id: 'r1', text: 'стоматолог', whenMs: Date.now() + 86_400_000 }],
+      }),
+    );
+    const res1 = await authed({
+      token: await token(),
+      structured: {
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readMail', mailQuery: 'вакансії' }],
+      },
+    });
+    const body1 = (await res1.json()) as { token: string };
+    tgCalls = [];
+
+    const res2 = await authed({
+      token: body1.token,
+      structured: { action: 'cancelReminder', reminderText: 'стоматолог' },
+    });
+    expect((await res2.json()) as unknown).toMatchObject({ done: true });
+    // Нагадування ціле, відмова чесна — рівно як після одиночного readMail.
+    expect(JSON.parse(kv.get('state')!).reminders).toHaveLength(1);
+    expect(sentTexts().join(' ')).toContain('пошти/Drive');
+  });
+
+  it('батч БЕЗ пошти/Drive не плямує — звужуємо саме отруєний шлях', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [{ id: 'r1', text: 'стоматолог', whenMs: Date.now() + 86_400_000 }],
+      }),
+    );
+    const res1 = await authed({
+      token: await token(),
+      structured: {
+        action: 'readBatch',
+        reads: [{ action: 'readCalendar' }, { action: 'readOwnData' }],
+      },
+    });
+    const body1 = (await res1.json()) as { token: string };
+    tgCalls = [];
+
+    await authed({
+      token: body1.token,
+      structured: { action: 'cancelReminder', reminderText: 'стоматолог' },
+    });
+    expect(sentTexts().join(' ')).toContain('Скасував');
+  });
+});
