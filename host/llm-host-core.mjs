@@ -198,6 +198,19 @@ export function parseClaudeOutput(stdout) {
   };
 }
 
+/**
+ * Інтерфейс, на якому слухати (S4). Дефолт — ЛИШЕ loopback: назовні хост
+ * публікує Caddy (reverse_proxy 127.0.0.1:8787, host/README), тож слухати
+ * 0.0.0.0 не потрібно нікому — а от ціна помилки висока: цей процес спавнить
+ * підпроцеси, і єдиним, що тримало його приватним, лишався ufw. Одне невдале
+ * правило фаєрвола — і ендпоінт в інтернеті. BIND_HOST лишається для іншої
+ * топології (контейнер, проксі на іншому вузлі).
+ */
+export function resolveBindHost(env = process.env) {
+  const raw = typeof env.BIND_HOST === 'string' ? env.BIND_HOST.trim() : '';
+  return raw || '127.0.0.1';
+}
+
 /** Проста фіксовано-вікна rate-limiter у памʼяті (один процес = один лічильник). */
 export function createRateLimiter({ windowMs, max }) {
   let windowStart = 0;
