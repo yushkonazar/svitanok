@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTrendPaths } from '../web/app/src/lib/trendPath.ts';
+import { buildTrendPaths } from './trendPath.ts';
 
 /* B10/F1 (аудит C2, high): `DayShapeChart` малював ЛІНІЮ на одній шкалі, а свої
  * gridlines і точки — на іншій. Лінія брала домен [0, max(даних)] із
@@ -12,7 +12,10 @@ import { buildTrendPaths } from '../web/app/src/lib/trendPath.ts';
  * кривої: збіг координати точки з координатою лінії — це і є «графік не бреше».
  *
  * Обережно з сумісністю: решта графіків (InterestTrend, Ритм) домену не
- * передають і мусять лишитись на автоматичному [0, max] — окремий тест. */
+ * передають і мусять лишитись на автоматичному [0, max] — окремий тест.
+ *
+ * Живе ТУТ, а не в кореневому vitest: модуль тягне d3, а d3 стоїть лише у
+ * web/app — кореневий `npm ci` його не ставить, і CI падав саме на цьому. */
 
 const OPTS = { width: 300, height: 84, padX: 8, padY: 14 };
 
