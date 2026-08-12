@@ -245,7 +245,6 @@ export const mockModule: Module<AppConfig> = {
         // «Вивчити» тепер веде в курований матеріал роадмепу (stats.mockMaterials).
         topic: item.topic,
       },
-      inMessage: false, // глибина — в дашборді; повідомлення лаконічне
       priority: MOCK_PRIORITY,
     };
   },

@@ -149,7 +149,6 @@ describe('onthisday — модуль', () => {
     );
     const mod = createOnThisDayModule({ fetchImpl: fetchImpl as unknown as typeof fetch });
     const block = await mod.run(ctx());
-    expect(block!.inMessage).toBe(false);
     expect(block!.summary).toContain('2022: Подія');
     expect(fetchImpl.mock.calls[0]?.[0]).toContain('/events/06/30'); // MM/DD з todayKey
   });

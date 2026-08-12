@@ -151,7 +151,12 @@ import {
   formatDriveForPrompt,
   sanitizeMailQuery,
 } from './assistant-data-core.mjs';
-import { renderHistoryForPrompt, appendTurn, historyKey } from './assistant-memory-core.mjs';
+import {
+  renderHistoryForPrompt,
+  appendTurn,
+  historyKey,
+  ASSISTANT_HISTORY_TTL_S,
+} from './assistant-memory-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -2654,6 +2659,20 @@ async function editProgressMessage(env, chatId, messageId, text) {
 }
 
 /**
+ * Єдиний писар памʼяті розмови — щоб TTL стояв в ОДНОМУ місці. Пропущений TTL
+ * у другого писаря означав би ключ, що знову живе вічно, і помітити це можна
+ * було б хіба випадково (аудит §KV).
+ *
+ * TTL тут — «стільки тиші»: кожен запис відсуває межу, тож жива розмова не
+ * зникає посеред себе, а покинута прибирається сама.
+ */
+async function putAssistantHistory(env, history) {
+  await env.BRIEFING.put('assistantHistory', JSON.stringify(history), {
+    expirationTtl: ASSISTANT_HISTORY_TTL_S,
+  });
+}
+
+/**
  * Записати обмін у памʼять треду. Викликається ЛИШЕ на успішному фініші — як і
  * до переходу: провалений (часто оверсайз) обмін інакше отруював би контекст
  * наступних повідомлень. Текст користувача приїхав у підписаному токені, тож
@@ -2664,7 +2683,7 @@ async function rememberExchange(env, claims, assistantSummary) {
     let h = await loadAssistantHistory(env);
     h = appendTurn(h, claims.chatId, claims.threadId, 'user', claims.userText);
     h = appendTurn(h, claims.chatId, claims.threadId, 'assistant', assistantSummary);
-    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+    await putAssistantHistory(env, h);
   } catch (e) {
     console.error('assistantHistory write failed (не блокує відповідь)', e);
   }
@@ -2681,7 +2700,7 @@ async function rememberAssistantQuestion(env, parsed, text) {
   try {
     let h = await loadAssistantHistory(env);
     h = appendTurn(h, parsed.chatId, parsed.threadId, 'assistant', text);
-    await env.BRIEFING.put('assistantHistory', JSON.stringify(h));
+    await putAssistantHistory(env, h);
   } catch (e) {
     console.error('assistantHistory (question) write failed (не блокує відповідь)', e);
   }

@@ -181,27 +181,15 @@ describe('jobs — скоринг і сортування', () => {
     const state = memState();
     const block = await jobsModule.run(makeCtx({ state, llm }));
     expect(llm.complete).toHaveBeenCalledTimes(1);
-    // BE-A (95) перший, FS-A (90), FE-A (50)
-    expect(block!.summaryHtml).toContain(
-      '<b>95%</b> <a href="https://jobs.dou.ua/be1">Backend A</a>',
-    );
-    expect(block!.summaryHtml!.indexOf('95%')).toBeLessThan(block!.summaryHtml!.indexOf('90%'));
-    // «Чому» лишається в дашборді (data.items), не в Telegram-повідомленні.
-    expect(block!.detailHtml).toBeUndefined();
-    const items = (block!.data as { items: { why: string }[] }).items;
+    // Порядок за скорингом: BE-A (95) перший, далі FS-A (90), FE-A (50).
+    // Перевіряємо data.items — саме він доїжджає до дашборда (HTML-версія
+    // summary й кнопки 💾/✅ прибрані разом із мертвим рендерером, B20/F5).
+    const items = (block!.data as { items: { title: string; score: number; why: string }[] }).items;
+    expect(items.map((i) => i.title)).toEqual(['Backend A', 'Full Stack A', 'Frontend A']);
     expect(items[0]!.why).toBe('ідеально');
+    // У короткий рядок дня йдуть лише топ-2 заголовки, у тому самому порядку.
+    expect(block!.summary.split('\n')).toEqual(['Backend A', 'Full Stack A']);
     expect(Object.keys(state.get('shownJobs') as object)).toContain('https://jobs.dou.ua/be1');
-    // Кнопки в чаті (Блок P1) — по одному рядку [💾,✅] на кожен пункт summary (top-2).
-    expect(block!.buttons).toEqual([
-      [
-        { label: '💾 Зберегти', action: 'js:0' },
-        { label: '✅ Подав', action: 'ja:0' },
-      ],
-      [
-        { label: '💾 Зберегти', action: 'js:1' },
-        { label: '✅ Подав', action: 'ja:1' },
-      ],
-    ]);
   });
 
   it('скоринг впав -> фолбек на свіжість, без бейджів %', async () => {
@@ -211,15 +199,17 @@ describe('jobs — скоринг і сортування', () => {
       }),
     };
     const block = await jobsModule.run(makeCtx({ llm }));
-    expect(block!.summaryHtml).toContain('<a href="https://jobs.dou.ua/fs1">Full Stack A</a>');
-    expect(block!.summaryHtml).not.toContain('%'); // без скорингу — без бейджа
+    expect(block!.summary).toContain('Full Stack A');
+    const items = (block!.data as { items: { score: number }[] }).items;
+    expect(items.every((i) => i.score === -1)).toBe(true); // -1 = без скорингу
   });
 
   it('дедуп: показана вакансія не потрапляє в пул', async () => {
     const state = memState({ shownJobs: { 'https://jobs.dou.ua/fs1': '2026-07-01' } });
     const llm = { complete: vi.fn(async () => '[]') }; // порожній скоринг -> фолбек
     const block = await jobsModule.run(makeCtx({ state, llm }));
-    expect(block!.summaryHtml).not.toContain('Full Stack A');
+    const items = (block!.data as { items: { title: string }[] }).items;
+    expect(items.map((i) => i.title)).not.toContain('Full Stack A');
   });
 
   it('порожні sources -> null', async () => {

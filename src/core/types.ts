@@ -4,29 +4,29 @@
 export type { Clock } from './clock.js';
 import type { Clock } from './clock.js';
 
-export interface Button {
-  label: string;
-  // Короткий callback-код (напр. 'ja:0'); повний callback_data (з датою, версією,
-  // Telegram-лімітом 64 байти) кодує render.ts на момент відправки (§ Блок P1).
-  action: string;
-}
-
+/**
+ * Блок брифінгу.
+ *
+ * ⚠️ Що тут МОЖНА мати: рівно те, що доїжджає до споживача. Споживач один —
+ * `briefing.json` для Mini App, і `buildBriefingData` бере id/title/icon/
+ * summary/data/priority. Telegram отримує лише заголовок дати й короткий рядок
+ * дня, які збирає orchestrator.
+ *
+ * Тому звідси прибрано (аудит B20/F5) `detail`/`summaryHtml`/`detailHtml`/
+ * `buttons`/`inMessage`: усі п'ять читав ЛИШЕ видалений рендерер. Найгірше в
+ * них було не саме сміття, а хибний контракт — модулі чесно рахували HTML і
+ * кнопки, які нікуди не йшли (news екранував лінки, weather складав повний
+ * detail, stoic/fact/jobs малювали 🔖 «Зберегти»). Нове поле тут заводимо лише
+ * разом зі споживачем.
+ */
 export interface Block {
   id: string;
   title: string;
   icon?: string;
-  summary: string; // показується завжди (плейн-текст; render екранує)
-  detail?: string; // ховається в expandable (плейн-текст; render екранує)
-  // Готовий БЕЗПЕЧНИЙ HTML (модуль уже екранував динаміку через escapeHtml) —
-  // для лінків у словах тощо. Якщо заданий, render бере його замість summary/detail.
-  summaryHtml?: string;
-  detailHtml?: string;
-  buttons?: Button[][]; // рядки inline-клавіатури (Telegram reply_markup)
+  summary: string; // показується завжди (плейн-текст)
   priority: number; // порядок ВІДОБРАЖЕННЯ (менше = вище)
   // Структуровані дані блоку для Mini App (briefing.json). Серіалізовний JSON.
   data?: unknown;
-  // false -> блок НЕ йде в Telegram-повідомлення (лише в Mini App). Дефолт true.
-  inMessage?: boolean;
   // Поля `fresh` немає. Єдиний сигнал «нічого свіжого» — run() повертає null.
 }
 

@@ -3,7 +3,6 @@ import {
   escapeHtml,
   fitEscaped,
   createNotifier,
-  buildMiniAppButton,
   TELEGRAM_HARD_LIMIT,
 } from '../src/core/telegram.js';
 
@@ -43,59 +42,11 @@ describe('fitEscaped — entity-safe обрізання (§9)', () => {
   });
 });
 
-describe('buildMiniAppButton', () => {
-  it('без chatId -> web_app (приватний чат за замовчуванням)', () => {
-    expect(buildMiniAppButton('📊 Відкрити', 'https://svitanok.example.workers.dev')).toEqual({
-      text: '📊 Відкрити',
-      web_app: { url: 'https://svitanok.example.workers.dev' },
-    });
-  });
-
-  it('додатний chatId (приватний чат) -> web_app', () => {
-    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '123456')).toEqual({
-      text: '📊 Відкрити',
-      web_app: { url: 'https://x/app' },
-    });
-  });
-
-  it("від'ємний chatId (група/супергрупа) -> url (BUTTON_TYPE_INVALID у групах, §H1)", () => {
-    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '-1001234567890')).toEqual({
-      text: '📊 Відкрити',
-      url: 'https://x/app',
-    });
-    // Числовий chatId теж коректно розпізнається (не лише рядок).
-    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', -42)).toEqual({
-      text: '📊 Відкрити',
-      url: 'https://x/app',
-    });
-  });
-
-  it('botUsername заданий -> Direct Link Mini App (t.me/<username>?startapp), незалежно від chatId', () => {
-    // Група — саме той контекст, де web_app недійсний; Direct Link це вирішує.
-    expect(
-      buildMiniAppButton('📊 Відкрити', 'https://x/app', '-1001234567890', 'svitanok_bot'),
-    ).toEqual({ text: '📊 Відкрити', url: 'https://t.me/svitanok_bot?startapp' });
-    // Приватний чат теж отримує Direct Link (initData так само зберігається).
-    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '123456', 'svitanok_bot')).toEqual({
-      text: '📊 Відкрити',
-      url: 'https://t.me/svitanok_bot?startapp',
-    });
-  });
-
-  it('botUsername з провідним "@" -> обрізається', () => {
-    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', null, '@svitanok_bot')).toEqual({
-      text: '📊 Відкрити',
-      url: 'https://t.me/svitanok_bot?startapp',
-    });
-  });
-
-  it('botUsername порожній/не заданий -> фолбек за chatId (стара поведінка)', () => {
-    expect(buildMiniAppButton('📊 Відкрити', 'https://x/app', '-100', '')).toEqual({
-      text: '📊 Відкрити',
-      url: 'https://x/app',
-    });
-  });
-});
+/* buildMiniAppButton (src-копія) видалено разом із тестами (аудит B20/F5):
+   вона дублювала живу реалізацію web/tg-core.mjs і не мала жодного консюмера в
+   src/ — orchestrator свідомо не малює Mini App-кнопку під щоденним
+   повідомленням. Вибір web_app/url/Direct Link і далі покритий тестами живої
+   копії (tests/tg-core.test.ts). */
 
 describe('createNotifier', () => {
   it('send робить sendMessage з parse_mode HTML', async () => {
@@ -152,7 +103,9 @@ describe('createNotifier', () => {
     await n.send([
       {
         text: 'Субота, 11 липня',
-        buttons: [[buildMiniAppButton('📊 Відкрити Mini App', 'https://x/app')]],
+        // Кнопка — літералом: перевіряємо саме notifier (buttons ->
+        // reply_markup.inline_keyboard), а не те, хто її склав.
+        buttons: [[{ text: '📊 Відкрити Mini App', web_app: { url: 'https://x/app' } }]],
       },
     ]);
     expect(calls[0]).toMatchObject({

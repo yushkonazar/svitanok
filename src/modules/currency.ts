@@ -1,5 +1,5 @@
 // currency (consumer). Курс НБУ (USD/EUR/PLN/GBP) + історія (rolling 14 днів у
-// стані для спарклайнів дашборда). Лише дашборд (inMessage:false). Фіксований
+// стані для спарклайнів дашборда). Лише дашборд. Фіксований
 // ендпоінт НБУ (не з контенту) -> прямий fetch, без allowlist.
 
 import type { Module, Block, Ctx } from '../core/types.js';
@@ -87,7 +87,6 @@ export function createCurrencyModule(opts: CurrencyModuleOptions = {}): Module<A
             plnHistory: series('pln'),
             gbpHistory: series('gbp'),
           },
-          inMessage: false, // лише дашборд
           priority: CURRENCY_PRIORITY,
         };
       } catch (e) {
