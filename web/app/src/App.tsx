@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { demoBadge } from './lib/demoBadge.ts';
+import { ErrorBoundary } from './components/ui/ErrorBoundary.tsx';
 import { postEvent } from './api/client.ts';
 import { useTheme } from './theme.tsx';
 import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
@@ -366,23 +367,30 @@ export function App() {
           transition={{ duration: 0.32, ease: 'easeOut' }}
           className={full ? 'px-5 pb-10 pt-2.5' : 'px-5 pb-[120px] pt-1.5'}
         >
-          {full ? (
-            full.path === SETTINGS_PATH ? (
-              <SettingsScreen />
+          {/* Межа помилок — саме ТУТ, навколо вмісту, а не навколо застосунку:
+              шапка, таб-бар і навігація мусять пережити падіння екрана, інакше з
+              розбитої вкладки нікуди піти. resetKey — поточний шлях: перехід на
+              іншу вкладку дає чистий старт, щоб одна помилка не залипала на весь
+              сеанс. */}
+          <ErrorBoundary label={full ? full.title : active.label} resetKey={location.pathname}>
+            {full ? (
+              full.path === SETTINGS_PATH ? (
+                <SettingsScreen />
+              ) : (
+                <SavedScreen />
+              )
+            ) : active.id === 'today' ? (
+              <TodayScreen />
+            ) : active.id === 'news' ? (
+              <NewsScreen />
+            ) : active.id === 'jobs' ? (
+              <JobsScreen />
+            ) : active.id === 'checkin' ? (
+              <CheckinScreen />
             ) : (
-              <SavedScreen />
-            )
-          ) : active.id === 'today' ? (
-            <TodayScreen />
-          ) : active.id === 'news' ? (
-            <NewsScreen />
-          ) : active.id === 'jobs' ? (
-            <JobsScreen />
-          ) : active.id === 'checkin' ? (
-            <CheckinScreen />
-          ) : (
-            <StatsScreen />
-          )}
+              <StatsScreen />
+            )}
+          </ErrorBoundary>
         </motion.main>
       </div>
 
