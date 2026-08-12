@@ -34,8 +34,20 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
   const mood = useMemo(() => averageCurve(series, 'moodCurve'), [series]);
   const n = series.length;
 
-  const { lineOf } = useMemo(
-    () => buildTrendPaths([energy, mood], { width: W, height: H, padX: 8, padY: 14 }),
+  // ⚠️ Домен ЗАДАНО ЯВНО (B10). Шкала чек-іну фіксована за змістом — 1-5, — а
+  // не виведена з даних: без цього лінія жила на [0, max(середніх)], а підписи
+  // «1/3/5» і кружечки рахувались по [1,5], тобто три шари одного графіка
+  // стояли на різних шкалах. Точки плавали над лінією, а сітка завищувала
+  // значення тим сильніше, чим далі середні від 5.
+  const { lineOf, yOf, xOf } = useMemo(
+    () =>
+      buildTrendPaths([energy, mood], {
+        width: W,
+        height: H,
+        padX: 8,
+        padY: 14,
+        domain: [1, 5],
+      }),
     [energy, mood],
   );
 
@@ -47,7 +59,7 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
     <div className="flex flex-col gap-1.5">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
         {[1, 3, 5].map((v) => {
-          const y = 14 + ((5 - v) / 4) * (H - 14 - 14);
+          const y = yOf(v);
           return (
             <g key={v}>
               <line x1={8} x2={W - 8} y1={y} y2={y} stroke="var(--color-hair)" strokeWidth="1" />
@@ -82,8 +94,8 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
               v !== null && (
                 <circle
                   key={i}
-                  cx={8 + (i / 2) * (W - 16)}
-                  cy={14 + ((5 - v) / 4) * (H - 14 - 14)}
+                  cx={xOf(i)}
+                  cy={yOf(v)}
                   r={2.6}
                   fill="var(--color-a2)"
                 />
@@ -92,7 +104,7 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
         {SLOT_LABEL.map((lbl, i) => (
           <text
             key={lbl}
-            x={8 + (i / 2) * (W - 16)}
+            x={xOf(i)}
             y={H - 2}
             fontSize="9"
             textAnchor="middle"

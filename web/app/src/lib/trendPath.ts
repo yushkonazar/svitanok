@@ -11,9 +11,23 @@ export interface TrendPathOptions {
   height?: number;
   padX?: number;
   padY?: number;
+  /**
+   * Явний y-домен [min, max] замість автоматичного [0, max(даних)].
+   *
+   * ⚠️ Потрібен там, де шкала ФІКСОВАНА за змістом, а не за даними: чек-ін
+   * завжди 1-5, і графік мусить це показувати, навіть якщо всі середні між 2 і
+   * 3. Без нього виникав баг B10: лінія малювалась по [0,max], а підписи й
+   * точки — по [1,5], тобто три шари одного графіка жили на різних шкалах.
+   */
+  domain?: [number, number];
 }
 
-const DEFAULTS: Required<TrendPathOptions> = { width: 300, height: 88, padX: 3, padY: 6 };
+const DEFAULTS: Required<Omit<TrendPathOptions, 'domain'>> = {
+  width: 300,
+  height: 88,
+  padX: 3,
+  padY: 6,
+};
 
 /**
  * Спільний y-домен по ВСІХ переданих серіях (seriesList) — щоб кілька ліній
@@ -30,7 +44,13 @@ export function buildTrendPaths(seriesList: (number | null)[][], opts: TrendPath
     .range([padX, width - padX]);
   const flat = seriesList.flat().filter((v): v is number => v != null);
   const maxV = Math.max(1, ...flat);
-  const y = scaleLinear().domain([0, maxV]).range([height - padY, padY]);
+  // clamp: значення поза заданим доменом притискаємо до межі полотна, а не
+  // малюємо за ним (при автоматичному домені клемп ні на що не впливає — межі
+  // й так виведені з даних).
+  const y = scaleLinear()
+    .domain(opts.domain ?? [0, maxV])
+    .range([height - padY, padY])
+    .clamp(true);
   const lineOf = d3line<number | null>()
     .defined((v) => v != null)
     .x((_, i) => x(i))
@@ -42,5 +62,8 @@ export function buildTrendPaths(seriesList: (number | null)[][], opts: TrendPath
     .y0(y(0))
     .y1((v) => y(v ?? 0))
     .curve(curveMonotoneX);
-  return { lineOf, areaOf };
+  // yOf експортуємо НАВМИСНО: графік, який малює точки чи gridlines поруч із
+  // лінією, мусить брати їхні координати ЗВІДСИ, а не рахувати власною
+  // формулою — саме розбіжність двох формул і була багом B10.
+  return { lineOf, areaOf, yOf: (v: number) => y(v), xOf: (i: number) => x(i) };
 }
