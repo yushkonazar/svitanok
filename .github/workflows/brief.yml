@@ -147,10 +147,14 @@ jobs:
             --data-binary @"$GITHUB_WORKSPACE/briefing.json")
           echo "CF API HTTP $code"; cat /tmp/kv_resp.json; echo
           # Історія: копія під ключем briefing:<київська дата> для гортання в Mini App.
+          # expiration_ttl=90 діб (аудит §KV: жоден ключ не мав TTL) — копії
+          # накопичувались назавжди, по одній на добу. Три місяці гортання
+          # вистачає з запасом, а `latest` ЗУМИСНЕ лишається без TTL: він і є
+          # поточний payload дашборда, і зникнути не має права.
           if [ "$code" = "200" ]; then
             DAY=$(TZ=Europe/Kyiv date +%F)
             curl -s -o /dev/null -X PUT \
-              "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/briefing:${DAY}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/briefing:${DAY}?expiration_ttl=7776000" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
               --data-binary @"$GITHUB_WORKSPACE/briefing.json" && echo "історія: briefing:${DAY} записано"
           fi

@@ -9,7 +9,6 @@ import { spawn } from 'node:child_process';
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 import { canonicalizeUrl, isHttpUrl } from '../core/url.js';
-import { escapeHtml, link } from '../core/telegram.js';
 import { optionalSecret } from '../core/secrets.js';
 
 const NEWS_PRIORITY = 50;
@@ -617,8 +616,8 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         g.more.sort(byRecency);
       }
 
-      // Переклад — ОСТАННІМ кроком, до summary/summaryHtml (Telegram-
-      // повідомлення теж має бачити вже перекладене). Провал — graceful:
+      // Переклад — ОСТАННІМ кроком, до складання summary (щоб і короткий
+      // рядок дня, і дашборд бачили вже перекладене). Провал — graceful:
       // лишається англійський оригінал, ран не падає через переклад.
       if (pendingTranslate.length && translateApiKey) {
         try {
@@ -641,13 +640,8 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       if (groups.length === 0) return null;
       ctx.state.set('shownNews', nextShown);
 
-      const summaryHtml = groups
-        .map((g) => {
-          const head = `<b>${escapeHtml(g.topic)}</b>`;
-          const lines = g.items.map((it) => `• ${link(it.url, it.title)}`).join('\n');
-          return `${head}\n${lines}`;
-        })
-        .join('\n\n');
+      // HTML-версія з екранованими лінками тут колись була — її читав ЛИШЕ
+      // мертвий рендерер (аудит B20/F5). Новини живуть у дашборді (data.groups).
       const summary = groups.flatMap((g) => g.items.map((it) => it.title)).join('\n');
 
       return {
@@ -655,9 +649,7 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
         title: 'Новини',
         icon: '🗞',
         summary,
-        summaryHtml,
         data: { groups },
-        inMessage: false, // глибина — в дашборді; повідомлення лаконічне
         priority: NEWS_PRIORITY,
       };
     },

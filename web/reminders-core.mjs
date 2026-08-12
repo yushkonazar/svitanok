@@ -576,6 +576,14 @@ export function listActive(reminders) {
 // з v1:/rm:/pd:/rs:/ru:/ev: (жоден не є префіксом іншого). ⚠️ 'rd:' зайнятий
 // roadmap-core.mjs (ROADMAP_CB_PREFIX) — «Виконано» нагадування нижче взяло
 // 'rk:', щоб не зіткнутись.
+// Сон (Блок «Сон») — кнопка «🌙 Ліг спати» на проактивному нагадуванні.
+// Без id/аргументів (одна кнопка на все повідомлення) — сама наявність
+// префікса вже достатня, дату/ніч рахує сервер (checkinDateKey), як і чек-ін.
+export const SLEEP_START_CB_PREFIX = 'sl:';
+export const buildSleepStartCallbackData = () => `${SLEEP_START_CB_PREFIX}1`;
+export const isSleepStartCallback = (data) =>
+  typeof data === 'string' && data.startsWith(SLEEP_START_CB_PREFIX);
+
 export const REMINDER_CANCEL_CB_PREFIX = 'rc:';
 
 /** callback_data «скасувати нагадування id»; ≤64 байти (Telegram-ліміт), інакше null. */

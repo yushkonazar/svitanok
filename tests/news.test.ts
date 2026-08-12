@@ -824,8 +824,7 @@ describe('news — пайплайн run (NewsData)', () => {
   it('топ-N, клікабельні заголовки, why з опису, scope/topic, зберігає shownNews', async () => {
     const state = memState();
     const block = await mod(vi.fn(async () => resp(sample))).run(makeCtx(state));
-    expect(block!.summaryHtml).toContain('<a href="https://feed.example.com/a">Новина А</a>');
-    expect(block!.summaryHtml).toContain('<b>Тех</b>');
+    expect(block!.summary).toContain('Новина А');
     const g = (
       block!.data as { groups: { scope: string; topic: string; items: { why?: string }[] }[] }
     ).groups[0]!;
@@ -841,26 +840,26 @@ describe('news — пайплайн run (NewsData)', () => {
       .groups[0]!;
     expect(g.items).toHaveLength(2);
     expect(g.more.map((x) => x.title)).toContain('Новина В');
-    expect(block!.summaryHtml).not.toContain('Новина В');
+    expect(block!.summary).not.toContain('Новина В');
   });
 
   it('дедуп: показане в вікні пропускається', async () => {
     const state = memState({ shownNews: { 'https://feed.example.com/a': '2026-07-01' } });
     const block = await mod(vi.fn(async () => resp(sample))).run(makeCtx(state));
-    expect(block!.summaryHtml).not.toContain('Новина А');
-    expect(block!.summaryHtml).toContain('Новина Б');
+    expect(block!.summary).not.toContain('Новина А');
+    expect(block!.summary).toContain('Новина Б');
   });
 
   it('вага 2.0 збільшує квоту (третій проходить); 0.5 зменшує до 1', async () => {
     const up = await mod(vi.fn(async () => resp(sample))).run(
       makeCtx(memState({ preferenceWeights: { Тех: 2.0 } })),
     );
-    expect(up!.summaryHtml).toContain('Новина В');
+    expect(up!.summary).toContain('Новина В');
     const down = await mod(vi.fn(async () => resp(sample))).run(
       makeCtx(memState({ preferenceWeights: { Тех: 0.5 } })),
     );
-    expect(down!.summaryHtml).toContain('Новина А');
-    expect(down!.summaryHtml).not.toContain('Новина Б');
+    expect(down!.summary).toContain('Новина А');
+    expect(down!.summary).not.toContain('Новина Б');
   });
 
   it('немає apiKey -> null', async () => {

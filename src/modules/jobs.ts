@@ -1,12 +1,12 @@
 // jobs (consumer). Вакансії з DOU + Djinni RSS. Збирає пул найсвіжіших,
 // LLM-скоринг релевантності під профіль (fit %), сортує, бере top-perRun.
-// Клікабельний заголовок-лінк + бейдж %, «чому» — у detail (expandable).
-// Скоринг не вдався -> фолбек на свіжість (без %). Дедуп проти shownJobs.
+// Заголовок, бейдж % і «чому» — у data.items для дашборда; у короткий рядок
+// дня йдуть лише топ-MESSAGE_ITEMS заголовків.
+// Скоринг не вдався -> фолбек на свіжість (score=-1). Дедуп проти shownJobs.
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
 import { canonicalizeUrl } from '../core/url.js';
-import { link } from '../core/telegram.js';
 import { parseRss, type RssItem } from './news.js';
 
 const JOBS_PRIORITY = 55;
@@ -253,29 +253,22 @@ export const jobsModule: Module<AppConfig> = {
     for (const p of picked) nextShown[p.url] = today;
     ctx.state.set('shownJobs', nextShown);
 
-    // Коротка версія для повідомлення: топ-MESSAGE_ITEMS збігів (бейдж % + лінк).
-    // Повний список і «чому» лишаються в дашборді (data.items).
-    const shortPicks = picked.slice(0, MESSAGE_ITEMS);
-    const summaryHtml = shortPicks
-      .map((p) => `• ${p.score >= 0 ? `<b>${p.score}%</b> ` : ''}${link(p.url, p.title)}`)
+    // Коротка версія для короткого рядка дня: топ-MESSAGE_ITEMS збігів. Повний
+    // список і «чому» лишаються в дашборді (data.items). HTML-версія з лінками
+    // й кнопки 💾/✅ тут колись були — їх читав ЛИШЕ мертвий рендерер (аудит
+    // B20/F5), у чат вони не доїжджали жодного разу; збереження й «Подав»
+    // живуть у Mini App.
+    const summary = picked
+      .slice(0, MESSAGE_ITEMS)
+      .map((p) => p.title)
       .join('\n');
-    const summary = shortPicks.map((p) => p.title).join('\n');
-
-    // Кнопки в чаті (Блок P1): idx збігається з позицією в data.items (shortPicks
-    // = префікс picked), резолвиться в Worker проти briefing:<dateKey>.
-    const buttons = shortPicks.map((_, i) => [
-      { label: '💾 Зберегти', action: `js:${i}` },
-      { label: '✅ Подав', action: `ja:${i}` },
-    ]);
 
     return {
       id: 'jobs',
       title: 'Вакансії',
       icon: '💼',
       summary,
-      summaryHtml,
       data: { items: picked },
-      buttons,
       priority: JOBS_PRIORITY,
     };
   },

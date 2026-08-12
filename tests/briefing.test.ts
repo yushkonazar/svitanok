@@ -9,11 +9,11 @@ const b = (over: Partial<Block> & { id: string; priority: number }): Block => ({
 });
 
 describe('buildBriefingData', () => {
-  it('сортує за priority, містить data й УСІ блоки (зокрема inMessage:false)', () => {
+  it('сортує за priority, містить data й УСІ блоки', () => {
     const data = buildBriefingData(
       [
         b({ id: 'jobs', priority: 55, title: 'Вакансії', data: { items: [{ score: 92 }] } }),
-        b({ id: 'fact', priority: 20, title: 'Факт', inMessage: false, summary: 'цікаво' }),
+        b({ id: 'fact', priority: 20, title: 'Факт', summary: 'цікаво' }),
       ],
       'Вівторок, 30 червня',
       '2026-06-30T05:00:00.000Z',
