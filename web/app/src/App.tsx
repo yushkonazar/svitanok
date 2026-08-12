@@ -3,10 +3,11 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
+import { demoBadge } from './lib/demoBadge.ts';
 import { postEvent } from './api/client.ts';
 import { useTheme } from './theme.tsx';
 import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
-import { useBriefing } from './api/hooks.ts';
+import { useBriefing, useStats } from './api/hooks.ts';
 import { Fog } from './components/ui/Fog.tsx';
 import { StatsScreen } from './components/stats/StatsScreen.tsx';
 import { TodayScreen } from './components/today/TodayScreen.tsx';
@@ -116,7 +117,16 @@ export function App() {
   // і брифінг учорашній, це має бути видно. Черга спільна (кеш), зайвого fetch
   // не буде. Поки вантажиться — дата пристрою як плейсхолдер.
   const { data: briefData } = useBriefing();
+  const { data: statsData } = useStats();
   const headerDate = dateLabelFromIso(briefData?.brief.generatedAt) ?? dateLabel();
+
+  // B9: `demo:true` приходить не лише поза Telegram, а й на 401/403 усередині
+  // нього (протухла сесія) — і доти цей другий випадок мовчав, показуючи чужі
+  // стріки як свої. Досить ОДНОГО демо-джерела: екран уже змішаний.
+  const badge = demoBadge({
+    inTelegram: inTelegram(),
+    demo: Boolean(briefData?.demo || statsData?.demo),
+  });
 
   const full = FULL.find((f) => f.path === location.pathname);
   const active = TABS.find((t) => t.path === location.pathname) ?? TABS[0];
@@ -238,9 +248,13 @@ export function App() {
             </>
           )}
           <div className="ml-auto flex gap-2">
-            {!inTelegram() && (
-              <span className="self-center rounded-full bg-glass px-2 py-1 font-mono text-[9px] text-tx3">
-                демо
+            {badge && (
+              <span
+                title={badge.hint}
+                aria-label={badge.hint}
+                className="self-center rounded-full bg-glass px-2 py-1 font-mono text-[9px] text-tx3"
+              >
+                {badge.text}
               </span>
             )}
             <button
