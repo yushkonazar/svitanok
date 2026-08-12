@@ -13,10 +13,6 @@ import {
   parseUpdate,
   isOwner,
   isDuplicate,
-  parseCallbackData,
-  resolveCallback,
-  markButtonDone,
-  escapeHtml,
   parseCommand,
   formatStatsMessage,
   formatJobsMessage,
@@ -35,58 +31,52 @@ import {
 } from './tg-core.mjs';
 import {
   isSleepStartCallback,
-  snoozeReminder,
-  cancelReminder,
-  listActive,
   formatRemindersListMessage,
   buildRemindersKeyboard,
   parseReminderCancelCallbackData,
   parseReminderEditCallbackData,
   parseReminderDoneCallbackData,
-  formatReminderDone,
-  snoozeReminderPreset,
   parseReminderSnoozeCallbackData,
-  addDaysToDateKey,
   classifyReminderIntent,
 } from './reminders-core.mjs';
 import {
   formatAgendaMessage,
   buildAgendaKeyboard,
-  buildAgendaCallbackData,
   parseAgendaCallbackData,
-  buildMapsUrl,
 } from './calendar-core.mjs';
-import { parseProposalCallbackData, ID_RE } from './agent-core.mjs';
+import { parseProposalCallbackData } from './agent-core.mjs';
 import {} from './agent-run-core.mjs';
 // Клас Durable Object мусить бути експортований із ГОЛОВНОГО модуля Worker'а
 // (це вимога Cloudflare), тож ре-експорт — не стилістика, а контракт деплою.
 export { AgentRun } from './agent-run-do.mjs';
 import {} from './assistant-data-core.mjs';
-import {
-  findTopic,
-  findSubtopic,
-  progressKey,
-  parseRoadmapCallbackData,
-  toggleProgress,
-  formatRootMessage,
-  formatTopicMessage,
-  buildRootKeyboard,
-  buildTopicKeyboard,
-} from './roadmap-core.mjs';
+import { parseRoadmapCallbackData, formatRootMessage, buildRootKeyboard } from './roadmap-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import {
   handleVote,
-  applyEvent,
   handleEvent,
   handleSettings,
   handleSaved,
   handleStats,
 } from './api-dashboard.mjs';
 import { tgCall, sendTo, trackIncomingMessage } from './telegram-client.mjs';
-import { rememberAssistantQuestion } from './assistant-memory.mjs';
 import { UNKNOWN_REPLY } from './agent-core.mjs';
+import {
+  resolveCallbackToast,
+  resolveReminderSnooze,
+  resolveReminderSnoozePreset,
+  resolveReminderCancel,
+  resolveSleepStart,
+  resolveReminderDone,
+  resolveReminderCancelAll,
+  resolveReminderEditPrompt,
+  readUpcomingWeek,
+  resolveAgendaCallback,
+  resolveRoadmapCallback,
+  REMINDER_CB_PREFIX,
+} from './callbacks.mjs';
 import {
   checkReminders,
   dispatchBrief,
@@ -113,12 +103,10 @@ import {
   agentHostHealthCheck,
 } from './agent-runtime.mjs';
 import { createReminderFromText } from './reminders-actions.mjs';
-import { resolveProposalCallback, stageItemEdit, stageItemDelete } from './proposals.mjs';
+import { resolveProposalCallback } from './proposals.mjs';
 import { agentHostUrl } from './llm-host.mjs';
-import { getCalendarEvent, readCalendarRange } from './google.mjs';
-import { loadStats, loadState, loadSentMessages, loadBriefingForDate } from './kv-store.mjs';
+import { loadStats, loadState, loadSentMessages } from './kv-store.mjs';
 
-const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
 // reminders-core.mjs (REMINDER_CANCEL_CB_PREFIX) — НЕ підпростір усередині
 // 'rm:', бо resolveReminderSnooze бере ВЕСЬ залишок після 'rm:' як id.
@@ -131,31 +119,6 @@ const DELETE_CHUNK_SIZE = 10;
 /* ══════════════════════════════════════════════════════════════════════
    TELEGRAM-ВЕБХУК (Блок P0+P1) — прийом callback-кнопок з брифінгу.
    ══════════════════════════════════════════════════════════════════════ */
-
-/** Обробити callback: застосувати подію (якщо валідна) + позначити кнопку ✓;
- *  повертає текст тосту для answerCallbackQuery (успіх/застаріло/невідомо). */
-async function resolveCallbackToast(env, parsed) {
-  const cb = parseCallbackData(parsed.data);
-  if (!cb) return '⚠️ Застаріла кнопка.';
-
-  const briefing = await loadBriefingForDate(env, cb.dateKey);
-  const resolved = resolveCallback(briefing, cb.code, cb.idx);
-  if (resolved.error === 'stale') return '⚠️ Ця кнопка вже застаріла.';
-  if (resolved.error) return '⚠️ Невідома дія.';
-
-  // applyEvent сам читає/пише 'state' (jobPrefs/mockWeights) — виклик тут не
-  // конфліктує з lastUpdateId-записом у handleTelegramWebhook (той перечитує
-  // 'state' ПІСЛЯ цього виклику, а не переносить сюди свою стару копію).
-  await applyEvent(env, resolved.event);
-  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
-    });
-  }
-  return resolved.toast;
-}
 
 /* ══════════════════════════════════════════════════════════════════════
    Команди / Налаштування (Блок P4) — маршрутизація текстових повідомлень.
@@ -551,290 +514,6 @@ async function handleCommand(env, parsed, origin) {
     default:
       return sendText(UNKNOWN_REPLY);
   }
-}
-
-/**
- * Спільна логіка snooze/cancel (§C4): завантажити стан, перевірити існування
- * нагадування, мутувати (mutate — snoozeReminder чи cancelReminder), зберегти,
- * тікнути кнопку (markButtonDone+editMessageReplyMarkup — одноразовий статус-
- * тік, не перерендер усього повідомлення, на відміну від roadmap, де
- * editMessageText доречний для навігації меню). Розрізняються лише mutate-
- * функцією й текстом тосту.
- */
-async function resolveReminderAction(env, parsed, reminderId, mutate, successToast) {
-  const state = await loadState(env);
-  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  if (!reminders.some((r) => r.id === reminderId)) return '⚠️ Це нагадування вже неактуальне.';
-
-  state.reminders = mutate(reminders, reminderId, Date.now());
-  await env.BRIEFING.put('state', JSON.stringify(state));
-  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
-    });
-  }
-  return successToast;
-}
-
-/** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
-async function resolveReminderSnooze(env, parsed, reminderId) {
-  return resolveReminderAction(env, parsed, reminderId, snoozeReminder, '😴 Відкладено на 10 хв');
-}
-
-/** Обробити `rs:<presetIdx>:<id>` (extra b) — snooze за одним із трьох пресетів. */
-async function resolveReminderSnoozePreset(env, parsed, presetIdx, reminderId) {
-  return resolveReminderAction(
-    env,
-    parsed,
-    reminderId,
-    (reminders, id, nowMs) => snoozeReminderPreset(reminders, id, presetIdx, nowMs),
-    '😴 Відкладено',
-  );
-}
-
-/** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди. */
-async function resolveReminderCancel(env, parsed, reminderId) {
-  return resolveReminderAction(env, parsed, reminderId, cancelReminder, '🗑 Нагадування скасовано');
-}
-
-/**
- * Обробити `sl:1` (тап «🌙 Ліг спати», Блок «Сон») — той самий applyEvent, що
- * /api/event і решта callback-подій (jobPrefs/mockWeights/stats не
- * розходяться між джерелами). Той самий стиль редагування, що rk: («✅
- * Виконано») — переписуємо повідомлення й прибираємо кнопку повністю: другий
- * тап на ту саму ніч і так нічого не змінить (recordEvent ідемпотентний), але
- * бачити стару кнопку після підтвердження нема сенсу.
- */
-async function resolveSleepStart(env, parsed) {
-  await applyEvent(env, { type: 'sleepStart' });
-  if (parsed.chatId != null && parsed.messageId != null) {
-    await tgCall(env, 'editMessageText', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      text: '🌙 <b>Ліг спати</b> — записав.',
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: [] },
-    });
-  }
-  return '🌙 Записав';
-}
-
-/**
- * Обробити `rk:<id>` («✅ Виконано», фідбек власника) — на відміну від
- * snooze/cancel (лише тік кнопки, resolveReminderAction) тут ПЕРЕПИСУЄМО ВСЕ
- * повідомлення (editMessageText) і прибираємо клавіатуру ПОВНІСТЮ (порожній
- * inline_keyboard) — вимога явно каже «всі кнопки прибираються, статус видно
- * одразу», а не просто тік однієї з них. Мутація — те саме справжнє видалення,
- * що cancelReminder (нема окремого поля done — статус лише через видалення,
- * той самий інваріант, що вже задокументовано в reminders-core.mjs).
- */
-async function resolveReminderDone(env, parsed, reminderId) {
-  const state = await loadState(env);
-  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  const reminder = reminders.find((r) => r.id === reminderId);
-  if (!reminder) return '⚠️ Це нагадування вже неактуальне.';
-
-  state.reminders = cancelReminder(reminders, reminderId);
-  await env.BRIEFING.put('state', JSON.stringify(state));
-  if (parsed.chatId != null && parsed.messageId != null) {
-    await tgCall(env, 'editMessageText', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      text: formatReminderDone(reminder.text),
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: [] },
-    });
-  }
-  return '✅ Виконано';
-}
-
-/**
- * Обробити `rc:all` (extra c, пакетне скасування) — на відміну від решти
- * reminder-дій, тут ціле повідомлення переписується (editMessageText), не
- * лише тік кнопки: список активних змінюється ПОВНІСТЮ, старий текст одразу
- * зробився б неправдивим (усе ще показував би скасовані пункти).
- */
-async function resolveReminderCancelAll(env, parsed) {
-  const state = await loadState(env);
-  const active = listActive(state.reminders);
-  if (active.length === 0) return 'Нема що скасовувати.';
-
-  state.reminders = active.reduce((rs, r) => cancelReminder(rs, r.id), state.reminders);
-  await env.BRIEFING.put('state', JSON.stringify(state));
-
-  if (parsed.chatId != null && parsed.messageId != null) {
-    const keyboard = buildRemindersKeyboard(state.reminders);
-    await tgCall(env, 'editMessageText', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      text: formatRemindersListMessage(state.reminders),
-      parse_mode: 'HTML',
-      ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
-    });
-  }
-  return `🗑 Скасовано ${active.length}`;
-}
-
-/** Київський DD.MM HH:MM — для питань редагування нагадування (людський час,
- *  не epoch). */
-function kyivWhen(ms) {
-  return new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kyiv',
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(ms));
-}
-
-/**
- * Обробити `ru:<id>` — «✏️ Редагувати» на нагадуванні: питання + синтетична
- * репліка історії (та сама механіка, що `pd:o` для подій, БЕЗ
- * assistantPending — reminder-мутації прямі/без confirm, той самий мотив, що
- * createReminder/cancelReminder/updateReminder). Наступна вільна репліка
- * власника піде через runAssistantAgent -> updateReminder action
- * (reminderText — сам текст нагадування, природний пошуковий ключ, той
- * самий, що cancelReminderByText уже використовує — жодного id не треба).
- */
-async function resolveReminderEditPrompt(env, parsed, reminderId) {
-  const state = await loadState(env);
-  const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  const r = reminders.find((x) => x.id === reminderId && !x.firedTs);
-  if (!r) return '⚠️ Це нагадування вже неактуальне.';
-
-  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
-    });
-  }
-  const question = `✏️ Що змінити в нагадуванні «${r.text}» (${kyivWhen(r.whenMs)})? Напиши новий текст і/або час.`;
-  await sendTo(env, parsed)(question);
-  await rememberAssistantQuestion(env, parsed, question);
-  return '✍️ Напиши, що змінити';
-}
-
-/** Прочитати найближчий тиждень і повернути {events}|null (null -> читання впало). */
-async function readUpcomingWeek(env) {
-  const today = kyivDateKey();
-  return readCalendarRange(env, today, addDaysToDateKey(today, 7));
-}
-
-/**
- * Обробити `ev:<action>:<id>` — /agenda: v (деталі пункту), e (стейджити
- * редагування), d (стейджити видалення), b (назад до списку). Той самий
- * ID_RE-гард, що mailId/eventId у sanitizeProposal — id іде в шлях URL
- * Google Calendar API, callback_data теоретично може бути підроблений
- * (хоч webhook уже гейтить не-власника раніше в ланцюжку).
- */
-async function resolveAgendaCallback(env, parsed, cb) {
-  if (cb.action === 'b') {
-    const events = await readUpcomingWeek(env);
-    if (!events) return '🔌 Не вдалось прочитати календар.';
-    const now = Date.now();
-    if (parsed.chatId != null && parsed.messageId != null) {
-      await tgCall(env, 'editMessageText', {
-        chat_id: parsed.chatId,
-        message_id: parsed.messageId,
-        text: formatAgendaMessage(events, now),
-        parse_mode: 'HTML',
-        reply_markup: buildAgendaKeyboard(events, now),
-      });
-    }
-    return '';
-  }
-
-  if (!ID_RE.test(cb.id)) return '⚠️ Некоректний id.';
-
-  if (cb.action === 'e') return stageItemEdit(env, parsed, cb.id);
-  if (cb.action === 'd') return stageItemDelete(env, parsed, cb.id);
-
-  // 'v' — деталі одного пункту: назва/час + Редагувати/Видалити/Назад.
-  const fresh = await getCalendarEvent(env, cb.id);
-  if (!fresh) return '🤔 Цю подію вже не знайти — можливо, видалено.';
-  const editCb = buildAgendaCallbackData('e', cb.id);
-  const delCb = buildAgendaCallbackData('d', cb.id);
-  const backCb = buildAgendaCallbackData('b', cb.id); // id 'b' ігнорує — лише формальність guard'а
-  if (parsed.chatId != null && parsed.messageId != null && editCb && delCb && backCb) {
-    const mapsUrl = buildMapsUrl(fresh.location);
-    const locLine = mapsUrl ? `\n📍 <a href="${mapsUrl}">${escapeHtml(fresh.location)}</a>` : '';
-    await tgCall(env, 'editMessageText', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}${locLine}`,
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '✏️ Редагувати', callback_data: editCb },
-            { text: '🗑 Видалити', callback_data: delCb },
-          ],
-          [{ text: '⬅️ Назад', callback_data: backCb }],
-        ],
-      },
-    });
-  }
-  return '';
-}
-
-/**
- * Обробити rd:r / rd:t:<topicId> / rd:s:<topicId>:<subtopicId> — навігація
- * теми→підпункти→toggle (Блок P3, 🗺Роадмеп). editMessageText В ОДНОМУ
- * виклику з reply_markup у тому самому тілі (не два окремих API-виклики) —
- * ре-рендерить те саме повідомлення на місці замість нового. root/topic —
- * лише ре-рендер (без KV-запису); toggle — ОДИН запис state.roadmapProgress,
- * тоді ре-рендер тієї самої теми. Невідомий topicId/subtopicId (застарілий
- * контент) -> toast замість крашу.
- */
-async function resolveRoadmapCallback(env, parsed, cb) {
-  if (parsed.chatId == null || parsed.messageId == null) return '';
-  const editText = (text, replyMarkup) =>
-    tgCall(env, 'editMessageText', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      text,
-      parse_mode: 'HTML',
-      reply_markup: replyMarkup,
-    });
-
-  if (cb.kind === 'root') {
-    const progress = (await loadState(env)).roadmapProgress ?? {};
-    await editText(formatRootMessage(progress), buildRootKeyboard(progress));
-    return '';
-  }
-
-  if (cb.kind === 'topic') {
-    const topic = findTopic(cb.topicId);
-    if (!topic) return '⚠️ Ця тема більше не існує.';
-    const progress = (await loadState(env)).roadmapProgress ?? {};
-    await editText(formatTopicMessage(topic, progress), buildTopicKeyboard(topic, progress));
-    return '';
-  }
-
-  // toggle
-  const topic = findTopic(cb.topicId);
-  const subtopic = findSubtopic(topic, cb.subtopicId);
-  if (!topic || !subtopic) return '⚠️ Цей підпункт більше не існує.';
-
-  const state = await loadState(env);
-  const before = state.roadmapProgress ?? {};
-  const wasDone = progressKey(cb.topicId, cb.subtopicId) in before;
-  state.roadmapProgress = toggleProgress(
-    before,
-    cb.topicId,
-    cb.subtopicId,
-    new Date().toISOString(),
-  );
-  await env.BRIEFING.put('state', JSON.stringify(state));
-
-  await editText(
-    formatTopicMessage(topic, state.roadmapProgress),
-    buildTopicKeyboard(topic, state.roadmapProgress),
-  );
-  return wasDone ? '↩️ Знято позначку' : '✅ Позначено';
 }
 
 /**
