@@ -39,7 +39,6 @@ import {
   formatWhereAmI,
   buildMiniAppButton,
   sentMessagesKey,
-  recordSentMessage,
   lastSentMessages,
   parseClearCount,
   chunkArray,
@@ -170,6 +169,7 @@ import {
 } from './kyiv-time.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
+import { tgCall, sendTo, trackSentMessage, trackIncomingMessage } from './telegram-client.mjs';
 import {
   readMail,
   readMailBody,
@@ -976,19 +976,6 @@ async function handleStats(request, env) {
    TELEGRAM-ВЕБХУК (Блок P0+P1) — прийом callback-кнопок з брифінгу.
    ══════════════════════════════════════════════════════════════════════ */
 
-/** Тонкий клієнт Telegram Bot API (порт src/core/telegram.ts:call — Worker не імпортує TS). */
-async function tgCall(env, method, body) {
-  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    console.error(`Telegram ${method} HTTP ${res.status}`, await res.text().catch(() => ''));
-  }
-  return res;
-}
-
 /**
  * Тонкий клієнт власного LLM-хоста (host/, VPS на claude CLI — Блок P2, підписка,
  * не платний API). Graceful degradation зберігається: жодна гілка не кидає.
@@ -1199,66 +1186,6 @@ async function tryLlmReminderRewrite(env, text) {
   const rewritten = extractLlmRewrite(res?.structured);
   if (!rewritten || isAmbiguousRewrite(rewritten)) return null;
   return parseReminderTime(rewritten, now);
-}
-
-/**
- * Спільна логіка трекінгу для /clear (§C5): якщо sendMessage вдався, записати
- * message_id у ring buffer. Викликається і з sendTo() (webhook-контекст), і з
- * checkReminders() (cron-контекст, немає вхідного parsed) — тому приймає
- * chatId/threadId явно, а не через parsed. res.clone() перед .json(), щоб не
- * спожити тіло Response для можливих майбутніх консюмерів повернутого значення.
- */
-async function trackSentMessage(env, res, chatId, threadId) {
-  if (!res.ok) return;
-  try {
-    const json = await res.clone().json();
-    const messageId = json?.result?.message_id;
-    if (typeof messageId === 'number') {
-      const sentMessages = recordSentMessage(
-        await loadSentMessages(env),
-        chatId,
-        threadId,
-        messageId,
-      );
-      await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
-    }
-  } catch (e) {
-    console.error('sentMessages tracking failed (не блокує відповідь)', e);
-  }
-}
-
-/** G1: записати message_id ВХІДНОГО повідомлення власника в той самий ring-buffer
- *  sentMessages, щоб /clear видаляв і його репліки, не лише відповіді бота (у
- *  супергрупі бот-адмін із can_delete_messages може; у DM Telegram не дає
- *  видаляти повідомлення користувача — тоді deleteMessage просто відмовить,
- *  оброблено як звичайну відмову). Merge-before-flush, як trackSentMessage. */
-async function trackIncomingMessage(env, parsed) {
-  if (typeof parsed.messageId !== 'number') return;
-  try {
-    const sentMessages = recordSentMessage(
-      await loadSentMessages(env),
-      parsed.chatId,
-      parsed.threadId,
-      parsed.messageId,
-    );
-    await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
-  } catch (e) {
-    console.error('incoming message tracking failed (не блокує обробку)', e);
-  }
-}
-
-/** sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4 хендлерів нижче). */
-function sendTo(env, parsed) {
-  return async (text, extra) => {
-    const res = await tgCall(env, 'sendMessage', {
-      chat_id: parsed.chatId,
-      message_thread_id: parsed.threadId ?? undefined,
-      text,
-      ...extra,
-    });
-    await trackSentMessage(env, res, parsed.chatId, parsed.threadId);
-    return res;
-  };
 }
 
 /**
