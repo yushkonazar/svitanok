@@ -49,14 +49,11 @@ import {
   LOCATE_CANCEL_LABEL,
 } from './tg-core.mjs';
 import {
-  parseReminderTime,
-  addReminder,
   dueReminders,
   markFired,
   snoozeReminder,
   cancelReminder,
   listActive,
-  formatReminderConfirm,
   formatReminderFired,
   formatRemindersListMessage,
   buildRemindersKeyboard,
@@ -67,13 +64,7 @@ import {
   snoozeReminderPreset,
   parseReminderSnoozeCallbackData,
   buildSnoozeRow,
-  LLM_REWRITE_SCHEMA,
-  buildLlmRewriteSystemPrompt,
-  extractLlmRewrite,
-  isAmbiguousRewrite,
   addDaysToDateKey,
-  matchDayPartRange,
-  pickDayPartSlot,
   classifyReminderIntent,
 } from './reminders-core.mjs';
 import {
@@ -156,13 +147,17 @@ import {
 import { tgCall, sendTo, trackSentMessage, trackIncomingMessage } from './telegram-client.mjs';
 import { rememberExchange, rememberAssistantQuestion } from './assistant-memory.mjs';
 import {
-  stageProposalItem,
+  createReminderFromText,
+  cancelReminderByText,
+  updateReminderByText,
+} from './reminders-actions.mjs';
+import {
   proposeCalendarChanges,
   resolveProposalCallback,
   stageItemEdit,
   stageItemDelete,
 } from './proposals.mjs';
-import { callLlmHost, agentHostUrl, startAgentRun } from './llm-host.mjs';
+import { agentHostUrl, startAgentRun } from './llm-host.mjs';
 import {
   getCalendarEvent,
   readMail,
@@ -722,8 +717,6 @@ const APP_WELCOME_TEXT =
 
 const UNKNOWN_REPLY =
   '🤖 Асистент-діалог ще не підключений (зʼявиться пізніше). Натисни /help, щоб побачити доступні команди.';
-const REMINDER_HELP =
-  '🤔 Не зрозумів час. Приклади: "через 20 хвилин", "завтра о 10:00", "о 15:30".';
 
 // Раундів і дедлайну агента більше немає: цикл переїхав на хост (варіант Б), де
 // час не обмежений. Запобіжники тепер — AGENT_MAX_STEPS і AGENT_RUN_TTL_MS
@@ -735,229 +728,6 @@ const MAX_USER_TEXT = 500;
 // ASSISTANT_FALLBACK_REPLY тепер живе в agent-core.mjs — поруч із рештою текстів
 // відмов (assistantErrorReply), щоб «не зміг розібратись» лишався ОДНИМ із
 // варіантів, а не єдиним (A1).
-/**
- * LLM-фолбек, коли rule-based parseReminderTime не впізнав фразу: питаємо
- * VPS-хост ПЕРЕПИСАТИ її в канонічний патерн (LLM НЕ рахує час сам — ненадійна
- * арифметика дат), тоді прогонюємо результат через ТОЙ САМИЙ parseReminderTime.
- * Хост недоступний/не налаштований -> callLlmHost сам поверне null, тихо.
- * isAmbiguousRewrite — захист від ненадійного rewrite (модель не завжди
- * до кінця виконує інструкцію «прибери слово частини доби») — якщо лишилось
- * "ввечері"/"вранці" тощо, НЕ довіряємо, а не мовчки ставимо хибний час.
- */
-async function tryLlmReminderRewrite(env, text) {
-  const now = Date.now();
-  const res = await callLlmHost(env, {
-    prompt: text,
-    systemPrompt: buildLlmRewriteSystemPrompt(now),
-    jsonSchema: LLM_REWRITE_SCHEMA,
-  });
-  const rewritten = extractLlmRewrite(res?.structured);
-  if (!rewritten || isAmbiguousRewrite(rewritten)) return null;
-  return parseReminderTime(rewritten, now);
-}
-
-/**
- * Нагадування з фрази частини доби («після обіду», «вранці» тощо, day-part —
- * reminders-core.matchDayPartRange) — БЕЗ прямого створення: точна година
- * невідома, доки не глянемо календар. Читаємо сьогодні+завтра (чи лише один
- * із них, якщо текст явно каже «завтра»/«сьогодні» — dayPart.forcedDay),
- * обираємо вільну годину (pickDayPartSlot) і СТЕЙДЖИМО як звичайну пропозицію
- * нагадування (kind:'reminder', proposeCalendarChanges) — той самий
- * confirm-флоу, що й LLM-пропозиції, тож власник бачить запропонований час і
- * може підправити його циклером 🕐 (buildProposalKeyboard) ДО підтвердження,
- * замість негайного, неперевіреного створення.
- *
- * Немає доступу до календаря (readCalendarRange -> null) — трактуємо як
- * «подій немає» (той самий graceful-degrade мотив, що computeOverlapWarnings):
- * пропозиція все одно йде, просто без реальної перевірки зайнятості.
- */
-async function proposeDayPartReminder(env, parsed, dayPart) {
-  const nowMs = Date.now();
-  const todayKey = kyivDateKey(new Date(nowMs));
-  const tomorrowKey = addDaysToDateKey(todayKey, 1);
-
-  let days;
-  if (dayPart.forcedDay === 'tomorrow') {
-    const events = await readCalendarRange(env, tomorrowKey, tomorrowKey);
-    days = [{ dateKey: tomorrowKey, events, nowMs: 0, isToday: false }];
-  } else if (dayPart.forcedDay === 'today') {
-    const events = await readCalendarRange(env, todayKey, todayKey);
-    days = [{ dateKey: todayKey, events, nowMs, isToday: true }];
-  } else {
-    const [todayEvents, tomorrowEvents] = await Promise.all([
-      readCalendarRange(env, todayKey, todayKey),
-      readCalendarRange(env, tomorrowKey, tomorrowKey),
-    ]);
-    days = [
-      { dateKey: todayKey, events: todayEvents, nowMs, isToday: true },
-      { dateKey: tomorrowKey, events: tomorrowEvents, nowMs: 0, isToday: false },
-    ];
-  }
-
-  const slot = pickDayPartSlot(days, dayPart.startHour, dayPart.endHour);
-  const hh = String(slot.hour).padStart(2, '0');
-  const when = `${slot.isToday ? 'сьогодні' : 'завтра'} о ${hh}:00`;
-  return proposeCalendarChanges(env, parsed, [
-    { kind: 'reminder', title: dayPart.remainder, when },
-  ]);
-}
-
-/**
- * Розібрати текст на час+нагадування, зберегти в state.reminders, підтвердити.
- *
- * agentFallback (B2): коли фразу написав КОРИСТУВАЧ («нагадай ...», /remind) і
- * ні rule-based парсер, ні LLM-рерайт її не взяли — передаємо розмову агентові
- * замість глухого REMINDER_HELP. Агент має памʼять треду, тож може перепитати
- * деталі й ЗІБРАТИ їх із наступної репліки (саме тут ламався сценарій із fix.md:
- * бот питав «Що тебе запланувати на 24 липня?», а відповідь трактував як новий
- * запит). Для дії createReminder САМОГО агента fallback вимкнено — інакше
- * непарсибельний reminderText крутив би агента по колу.
- */
-async function createReminderFromText(env, parsed, text, { agentFallback = false } = {}) {
-  const sendText = sendTo(env, parsed);
-
-  // Порожнє «/remind» без аргументів (ревʼю B): без цього гейта фраза йшла у
-  // спінер + холостий callLlmHost(''), а далі в agentFallback -> агент бачив
-  // порожній текст і віддавав СТАРУ заглушку «асистент ще не підключений».
-  if (!text || !text.trim()) return sendText(REMINDER_HELP);
-
-  let parsedTime = parseReminderTime(text, Date.now());
-
-  // День-частина («після обіду», «вранці» тощо) БЕЗ явної години — рахуємо
-  // вільний час через календар і йдемо в staged-confirm, а не пряме створення
-  // (див. doc-коментар proposeDayPartReminder). ПЕРЕД LLM-рерайтом: це
-  // дешевший і точніший шлях для рівно цього класу фраз, LLM тут не потрібен.
-  if (!parsedTime) {
-    const dayPart = matchDayPartRange(text);
-    if (dayPart) return proposeDayPartReminder(env, parsed, dayPart);
-  }
-
-  if (!parsedTime && env.LLM_HOST_URL) {
-    await sendText('🤔 Хвилинку, розбираюсь...');
-    parsedTime = await tryLlmReminderRewrite(env, text);
-  }
-  if (!parsedTime) {
-    if (agentFallback && env.LLM_HOST_URL) return runAssistantAgent(env, parsed, text);
-    return sendText(REMINDER_HELP);
-  }
-
-  const state = await loadState(env);
-  state.reminders = addReminder(state.reminders, {
-    id: crypto.randomUUID(),
-    text: parsedTime.remainder,
-    whenMs: parsedTime.whenMs,
-    nowMs: Date.now(),
-    // Куди відповідати, коли час настане (B12) — туди ж, де попросили.
-    chatId: parsed.chatId,
-    threadId: parsed.threadId,
-  });
-  await env.BRIEFING.put('state', JSON.stringify(state));
-  return sendText(formatReminderConfirm(parsedTime.whenMs, parsedTime.remainder, Date.now()), {
-    parse_mode: 'HTML',
-  });
-}
-
-/** Мінімальна довжина опису для пошуку нагадування (S2) — див. cancelReminderByText. */
-const MIN_CANCEL_MATCH_LEN = 4;
-
-/**
- * Знайти РІВНО одне активне нагадування за описом -> {reminder} | {reply}.
- *
- * Спільне для cancelReminder і updateReminder: збіг по підрядку серед активних.
- * 0 -> не знайшов; >1 -> уточнити (не вгадуємо, яке саме — ціна помилки тут не
- * симетрична: скасоване нагадування власник просто не отримає й не дізнається
- * про це). Плоский текст відповіді (без parse_mode) — текст нагадування
- * довільний, Telegram не має інтерпретувати в ньому розмітку.
- */
-async function findReminderByText(env, matchText) {
-  const state = await loadState(env);
-  const q = String(matchText ?? '')
-    .trim()
-    .toLowerCase();
-  const matches = listActive(state.reminders).filter((r) =>
-    String(r.text).toLowerCase().includes(q),
-  );
-  if (matches.length === 0) {
-    return { reply: `🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.` };
-  }
-  if (matches.length > 1) {
-    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
-    return { reply: `🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}` };
-  }
-  return { reminder: matches[0] };
-}
-
-/**
- * Дія агента cancelReminder -> ПРОПОЗИЦІЯ скасування під ✅ (S2, залишок).
- *
- * Доти це був прямий запис у KV із мотивом «локальний стан, дешево відкотити».
- * Мотив не тримається: власник не побачить, що нагадування зникло, — він просто
- * НЕ отримає його в потрібний момент, і відкочувати буде нічого. Це рівно та
- * дія, якої домагалась би інʼєкція з листа, тож вона йде тим самим шляхом, що
- * й видалення події: показ того, що зникне, і кнопка.
- *
- * Taint-гейт (TAINT_BLOCKED_ACTIONS) НЕ послаблюємо: ✅ — це другий рубіж, а не
- * заміна першому. Після читання пошти дія і далі просто не доходить сюди.
- */
-async function cancelReminderByText(env, parsed, matchText) {
-  const sendText = sendTo(env, parsed);
-  // Поріг довжини (S2): збіг іде по ПІДРЯДКУ, тож «о» чи «на» підходить майже
-  // під будь-яке нагадування — і коли активне лишається одне, воно тихо
-  // скасовується. Для власника такий опис і так безглуздий, а для інʼєкції в
-  // тілі листа це найдешевший спосіб щось знищити.
-  const q = String(matchText ?? '')
-    .trim()
-    .toLowerCase();
-  if (q.length < MIN_CANCEL_MATCH_LEN) {
-    return sendText(
-      `🤔 Опис «${matchText}» надто короткий — скажи конкретніше, яке нагадування скасувати. Список — /reminders.`,
-    );
-  }
-  const found = await findReminderByText(env, matchText);
-  if (found.reply) return sendText(found.reply);
-  return stageProposalItem(env, parsed, {
-    kind: 'deleteReminder',
-    reminderId: found.reminder.id,
-    base: { title: found.reminder.text, whenMs: found.reminder.whenMs },
-  });
-}
-
-/**
- * Дія агента updateReminder -> ПРОПОЗИЦІЯ переносу/перейменування під ✅ (S2).
- *
- * Той самий мотив, що cancelReminderByText: змінений час нагадування власник
- * помітить лише тоді, коли воно не прийде вчасно. Тепер він бачить діф
- * «було → стане» ДО того, як щось змінилось.
- *
- * "when" РЕ-ПАРСИМО тут (LLM подала лише канонічну фразу, час рахує код — той
- * самий інваріант, що createReminderFromText/proposeCalendarChanges), і робимо
- * це ДО показу: непарсибельний час має давати чесну відповідь, а не пропозицію
- * «без змін».
- */
-async function updateReminderByText(
-  env,
-  parsed,
-  { reminderText: matchText, reminderNewText, when },
-) {
-  const sendText = sendTo(env, parsed);
-  const found = await findReminderByText(env, matchText);
-  if (found.reply) return sendText(found.reply);
-
-  const item = {
-    kind: 'updateReminder',
-    reminderId: found.reminder.id,
-    base: { title: found.reminder.text, whenMs: found.reminder.whenMs },
-  };
-  if (reminderNewText) item.title = reminderNewText;
-  if (when) {
-    const parsedTime = parseReminderTime(when, Date.now());
-    if (!parsedTime) {
-      return sendText('🤔 Не зрозумів новий час — спробуй точніше (напр. "завтра о 15:00").');
-    }
-    item.whenMs = parsedTime.whenMs;
-  }
-  return stageProposalItem(env, parsed, item);
-}
 
 const RECORD_CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
 
@@ -1879,7 +1649,9 @@ async function handleCommand(env, parsed, origin) {
         classifyReminderIntent(parsed.text) === 'agent' &&
         Boolean(agentHostUrl(env));
       if (toAgent) return runAssistantAgent(env, parsed, parsed.text);
-      return createReminderFromText(env, parsed, parsed.text, { agentFallback: true });
+      return createReminderFromText(env, parsed, parsed.text, {
+        onUnparsed: () => runAssistantAgent(env, parsed, parsed.text),
+      });
     }
     // Вільний текст у 🤖Асистент (чи DM, без тем) -> LLM tool-use агент (Блок
     // P2b). Інші теми (Роадмеп/Брифінг/Система) — тема-специфічна поведінка
@@ -1987,7 +1759,9 @@ async function handleCommand(env, parsed, origin) {
         { parse_mode: 'HTML' },
       );
     case 'remind':
-      return createReminderFromText(env, parsed, cmd.args, { agentFallback: true });
+      return createReminderFromText(env, parsed, cmd.args, {
+        onUnparsed: () => runAssistantAgent(env, parsed, cmd.args),
+      });
     case 'reminders': {
       const reminders = (await loadState(env)).reminders ?? [];
       const keyboard = buildRemindersKeyboard(reminders);
