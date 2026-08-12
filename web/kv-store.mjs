@@ -54,6 +54,13 @@ export async function loadSentMessages(env) {
   return readJson(env, 'sentMessages', {});
 }
 
+/** Писар того самого ring-buffer. Окремо від читача, бо писарів двоє (репліки
+ *  бота й вхідні повідомлення власника) — і обидва мусять merge-before-flush
+ *  через recordSentMessage, а не класти сирий обʼєкт. */
+export async function putSentMessages(env, sentMessages) {
+  await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+}
+
 /** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
  *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}. */
 export async function loadLatest(env) {
