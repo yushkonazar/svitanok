@@ -1,10 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HashRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App.tsx';
 import { ThemeProvider } from './theme.tsx';
 import { SavedProvider } from './saved.tsx';
+import { ToastProvider } from './components/ui/Toast.tsx';
+import { mutationErrorText } from './lib/mutationError.ts';
 import { initTelegram } from './telegram.ts';
 import './index.css';
 
@@ -21,7 +23,33 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
 // TanStack Query — кеш + рефетч даних дашборда (E1). Дані живуть 1 хв свіжими;
 // рефетч після мутацій (збереження/голос) — через invalidate у відповідних хуках.
+// ⚠️ Клієнт створюється ПІСЛЯ рендера провайдера тостів? Ні — навпаки: тости
+// живуть у React-дереві, а MutationCache — поза ним. Тому міст односторонній:
+// кеш кладе текст у чергу-«поштову скриньку», а провайдер її читає (див.
+// pendingToasts нижче). Альтернатива — прокидати notifyError у КОЖЕН хук
+// мутації — саме те дублювання, через яке фідбек і не зʼявився досі.
+const pendingToasts: string[] = [];
+let deliverToast: ((text: string) => void) | null = null;
+
+/** Викликається провайдером, щойно він змонтувався: віддає накопичене й бере
+ *  доставку на себе. */
+function attachToastSink(sink: (text: string) => void) {
+  deliverToast = sink;
+  while (pendingToasts.length) sink(pendingToasts.shift()!);
+}
+
 const queryClient = new QueryClient({
+  // ОДНЕ місце на всі мутації (аудит C2: «немає видимого фідбеку помилок
+  // мутацій» — найбільша прогалина фронтенду). Кожна мутація дашборда оновлює
+  // екран оптимістично, і react-query при помилці тихо ВІДКОЧУЄ стан: без
+  // цього рядка тап виглядав як «не зарахувався» без причини.
+  mutationCache: new MutationCache({
+    onError: (error) => {
+      const text = mutationErrorText(error);
+      if (deliverToast) deliverToast(text);
+      else pendingToasts.push(text);
+    },
+  }),
   defaultOptions: {
     queries: {
       staleTime: 60_000,
@@ -37,13 +65,15 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <SavedProvider>
+      <ToastProvider onReady={attachToastSink}>
+        <SavedProvider>
         <ThemeProvider>
           <HashRouter>
             <App />
           </HashRouter>
-        </ThemeProvider>
-      </SavedProvider>
+          </ThemeProvider>
+        </SavedProvider>
+      </ToastProvider>
     </QueryClientProvider>
   </StrictMode>,
 );
