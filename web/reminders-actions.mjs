@@ -29,7 +29,6 @@ import {
   matchDayPartRange,
   pickDayPartSlot,
   formatReminderConfirm,
-  REMINDER_HELP,
   buildLlmRewriteSystemPrompt,
   LLM_REWRITE_SCHEMA,
   extractLlmRewrite,
@@ -42,6 +41,12 @@ import { callLlmHost } from './llm-host.mjs';
 import { sendTo } from './telegram-client.mjs';
 import { stageProposalItem, proposeCalendarChanges } from './proposals.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
+
+/** Відповідь, коли час у фразі не розпізнано ЖОДНИМ шляхом (парсер -> LLM-рерайт
+ *  -> знову парсер). Приклади в тексті — це не прикраса: вони показують саме ті
+ *  форми, які парсер гарантовано розуміє. */
+const REMINDER_HELP =
+  '🤔 Не зрозумів час. Приклади: "через 20 хвилин", "завтра о 10:00", "о 15:30".';
 
 /** Мінімальна довжина опису для пошуку нагадування (S2) — див. cancelReminderByText:
  *  збіг іде по ПІДРЯДКУ, тож «о» чи «на» підходить майже під будь-яке нагадування. */
