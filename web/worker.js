@@ -150,12 +150,7 @@ import {
   formatDriveForPrompt,
   sanitizeMailQuery,
 } from './assistant-data-core.mjs';
-import {
-  renderHistoryForPrompt,
-  appendTurn,
-  historyKey,
-  ASSISTANT_HISTORY_TTL_S,
-} from './assistant-memory-core.mjs';
+import { renderHistoryForPrompt, appendTurn, historyKey } from './assistant-memory-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -180,6 +175,20 @@ import {
 } from './kyiv-time.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
+import {
+  loadSettings,
+  loadStats,
+  loadState,
+  loadSentMessages,
+  loadLatest,
+  loadBriefingForDate,
+  loadAssistantHistory,
+  putAssistantHistory,
+  updateStats,
+  ASSISTANT_PENDING_KEY,
+  loadAssistantPending,
+  claimAssistantPending,
+} from './kv-store.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -247,117 +256,6 @@ async function readJsonBody(request) {
     return { ok: true, body: JSON.parse(raw) };
   } catch {
     return { ok: false, status: 400, error: 'bad-json' };
-  }
-}
-
-/** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
- *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
- *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts). */
-async function loadSettings(env) {
-  try {
-    return normalizeSettings(JSON.parse((await env.BRIEFING.get('settings')) ?? '{}'));
-  } catch {
-    return normalizeSettings(null);
-  }
-}
-
-/** Прочитати стор статистики з KV (ключ `stats`); биття -> {}. */
-async function loadStats(env) {
-  try {
-    return JSON.parse((await env.BRIEFING.get('stats')) ?? '{}');
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Безпечний read-modify-write для 'stats' (оптимістична конкуренція, один
- * retry). KV не має вбудованого CAS, а незалежних писарів у цей ключ кілька:
- * Mini App-події (open/checkin/sleepStart), голосування за новину з чату,
- * і три 5-хвилинні крони (checkinNudgeCheck, sleepNudgeCheck, deadMansCheck).
- * Без цього кожен тихо втрачав зміни іншого (last-write-wins): реальний
- * кейс — власник тапнув «Ліг спати», вранці відкрив застосунок, авто-
- * заповнення sleepH/bedtime відбулось (recordEvent — чиста функція,
- * перевірено ізольовано на реальних даних), але крон, який стартував
- * читання ДО цього відкриття, а дописав у KV ПІСЛЯ (його власні Telegram-
- * виклики — секунди), переписав усе своєю застарілою до-заповнення копією.
- *
- * `patch` — ЧИСТА трансформація (store) -> store (той самий контракт, що
- * вже мають recordEvent/recordReliability, і вони теж уже ідемпотентні
- * всередині — case 'checkin' ігнорує confirmed, recordReliability ігнорує
- * повторний lastCheckDate). Якщо між першим і другим читанням хтось інший
- * встиг записати — застосовуємо ТОЙ САМИЙ patch ще раз до свіжішої копії,
- * замість того щоб мовчки затерти чужі зміни. НІКОЛИ не кладіть сюди
- * побічні ефекти (Telegram-виклики тощо) — вони виконались би двічі при
- * ретраї; лише саму мутацію стану, ПІСЛЯ того як side-effects уже сталися.
- */
-async function updateStats(env, patch) {
-  const raw1 = (await env.BRIEFING.get('stats')) ?? '{}';
-  let parsed1;
-  try {
-    parsed1 = JSON.parse(raw1);
-  } catch {
-    parsed1 = {};
-  }
-  const result1 = patch(parsed1);
-  const json1 = JSON.stringify(result1);
-  const raw2 = (await env.BRIEFING.get('stats')) ?? '{}';
-  if (raw2 === raw1) {
-    await env.BRIEFING.put('stats', json1);
-    return result1;
-  }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(raw2);
-  } catch {
-    parsed2 = {};
-  }
-  const result2 = patch(parsed2);
-  await env.BRIEFING.put('stats', JSON.stringify(result2));
-  return result2;
-}
-
-async function loadState(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {}; // биття JSON -> порожній стан
-  }
-}
-
-/** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
- *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
- *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state'). */
-async function loadSentMessages(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('sentMessages')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
- *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}. */
-async function loadLatest(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('latest')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Історія діалогу асистента per-thread (ключ `assistantHistory`, CM) — ОКРЕМИЙ
- *  KV-ключ від 'state' (як sentMessages: запис на кожен обмін не ділить гонку
- *  писарів state-блоба). Биття -> {}. */
-async function loadAssistantHistory(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('assistantHistory')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
   }
 }
 
@@ -1630,16 +1528,6 @@ async function deleteCalendarEvent(env, { eventId }) {
   }
 }
 
-/** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
- *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
-async function loadBriefingForDate(env, dateKey) {
-  try {
-    return JSON.parse((await env.BRIEFING.get(`briefing:${dateKey}`)) ?? '{}');
-  } catch {
-    return {};
-  }
-}
-
 /** Обробити callback: застосувати подію (якщо валідна) + позначити кнопку ✓;
  *  повертає текст тосту для answerCallbackQuery (успіх/застаріло/невідомо). */
 async function resolveCallbackToast(env, parsed) {
@@ -2377,20 +2265,6 @@ async function editProgressMessage(env, chatId, messageId, text) {
 }
 
 /**
- * Єдиний писар памʼяті розмови — щоб TTL стояв в ОДНОМУ місці. Пропущений TTL
- * у другого писаря означав би ключ, що знову живе вічно, і помітити це можна
- * було б хіба випадково (аудит §KV).
- *
- * TTL тут — «стільки тиші»: кожен запис відсуває межу, тож жива розмова не
- * зникає посеред себе, а покинута прибирається сама.
- */
-async function putAssistantHistory(env, history) {
-  await env.BRIEFING.put('assistantHistory', JSON.stringify(history), {
-    expirationTtl: ASSISTANT_HISTORY_TTL_S,
-  });
-}
-
-/**
  * Записати обмін у памʼять треду. Викликається ЛИШЕ на успішному фініші — як і
  * до переходу: провалений (часто оверсайз) обмін інакше отруював би контекст
  * наступних повідомлень. Текст користувача приїхав у підписаному токені, тож
@@ -2962,42 +2836,6 @@ async function agentHostHealthCheck(env) {
       console.error('host health state write failed', e);
     }
   }
-}
-
-/** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'. Причина: блоб 'state' пишуть
- *  наївні read-modify-write писарі (lastUpdateId у вебхуку, крон checkReminders,
- *  дашборд applyEvent) БЕЗ merge-before-flush; KV не має read-your-writes, тож
- *  писар, що прочитав блоб за мить до запису пропозиції, затирає її назад — і
- *  кожен ✅ падає в «Застаріла пропозиція» (баг, знайдений на проді 19.07). Той
- *  самий мотив, що [sentMessages]/[agentRuns]/[assistantHistory] — окремий ключ. */
-const ASSISTANT_PENDING_KEY = 'assistantPending';
-
-/**
- * Прочитати активну пропозицію -> pending|null.
- * Брифінг (src/orchestrator, mail.ts) тепер теж пише СЮДИ напряму (writeKvJson
- * на assistantPending, не в блоб `state`) — legacy-фолбек на `state.assistantPending`
- * прибрано разом із самим записом на тому боці.
- */
-async function loadAssistantPending(env) {
-  try {
-    const own = JSON.parse((await env.BRIEFING.get(ASSISTANT_PENDING_KEY)) ?? 'null');
-    return own && typeof own === 'object' ? own : null;
-  } catch {
-    return null; // биття ключа -> як «нема пропозиції», не крашимо
-  }
-}
-
-/**
- * Списати пропозицію (double-tap-safe): лише якщо це ДОСІ той самий id.
- * Put-null тумбстоун (не delete: KV без read-your-writes, і delete немає в
- * частині тест-моків — той самий мотив, що markRunFinished). Повертає true,
- * якщо саме цей виклик списав.
- */
-async function claimAssistantPending(env, id) {
-  const pending = await loadAssistantPending(env);
-  if (!pending || pending.id !== id) return false;
-  await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
-  return true;
 }
 
 /**
