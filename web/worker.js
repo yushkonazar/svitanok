@@ -172,6 +172,14 @@ import {
 } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
 import { parseOneCall, mergeAqi } from './weather-core.mjs';
+import {
+  kyivHour,
+  kyivDateKey,
+  kyivMinAfter8,
+  kyivMinuteOfDay,
+  bedtimeBucketForHour,
+} from './kyiv-time.mjs';
+import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -193,126 +201,6 @@ const DELETE_CHUNK_SIZE = 10;
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
-
-// preferenceWeights (дзеркало src/modules/news.ts — Worker не імпортує TS).
-const WEIGHT_MIN = 0.5;
-const WEIGHT_MAX = 2.0;
-const WEIGHT_STEP = 0.15;
-const clampWeight = (w) => Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, w));
-function applyVote(weights, category, dir) {
-  const cur = weights[category] ?? 1.0;
-  return { ...weights, [category]: clampWeight(cur + (dir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP)) };
-}
-
-// votedUrls: чесний облік голосів per-url (C3, дзеркало applyUrlVote з news.ts —
-// канонічна версія тестована в news.test.ts). Кожен url впливає на вагу максимум
-// раз; повторний той самий голос знімає, зміна — переставляє. `delta` — реально
-// застосований зсув (після clamp), щоб відкат був точним і на межі [0.5,2.0].
-function bumpWeight(weights, category, step) {
-  const before = weights[category] ?? 1.0;
-  const after = clampWeight(before + step);
-  return { weights: { ...weights, [category]: after }, delta: after - before };
-}
-function applyUrlVote(weights, votedUrls, url, category, clickedDir) {
-  const vu = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
-  const prev = vu[url];
-  let w = weights ?? {};
-  if (prev && typeof prev.delta === 'number' && prev.delta !== 0) {
-    const cat = prev.category ?? category;
-    w = { ...w, [cat]: clampWeight((w[cat] ?? 1.0) - prev.delta) };
-  }
-  const newDir = prev && prev.dir === clickedDir ? null : clickedDir;
-  if (newDir) {
-    const r = bumpWeight(w, category, newDir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP);
-    w = r.weights;
-    vu[url] = { dir: newDir, category, delta: r.delta };
-  } else {
-    delete vu[url];
-  }
-  return {
-    weights: w,
-    votedUrls: vu,
-    prevDir: prev?.dir ?? null,
-    prevCategory: prev?.category ?? null,
-    newDir,
-  };
-}
-
-// jobPrefs (дзеркало src/modules/jobs.ts — Worker не імпортує TS).
-const JOB_PREFS_CAP = 20;
-const JOB_STOP_WORDS = new Set([
-  'job',
-  'jobs',
-  'vacancy',
-  'вакансія',
-  'вакансии',
-  'developer',
-  'розробник',
-  'engineer',
-  'інженер',
-  'junior',
-  'trainee',
-  'intern',
-  'стажист',
-  'джуніор',
-  'full',
-  'part',
-  'time',
-  'remote',
-  'hybrid',
-  'офіс',
-  'дистанційно',
-  'stack',
-]);
-function titleTokens(title) {
-  return (title.toLowerCase().match(/[a-zа-яїієґ0-9+#.]{3,}/gi) ?? []).filter(
-    (t) => !JOB_STOP_WORDS.has(t),
-  );
-}
-function updateJobPrefs(prefs, signal, title) {
-  const tokens = titleTokens(title);
-  if (tokens.length === 0) return prefs;
-  const toAdd = signal === 'dismiss' ? 'disliked' : 'liked';
-  const toRemove = toAdd === 'liked' ? 'disliked' : 'liked';
-  const merged = [...tokens, ...prefs[toAdd].filter((t) => !tokens.includes(t))].slice(
-    0,
-    JOB_PREFS_CAP,
-  );
-  const filtered = prefs[toRemove].filter((t) => !tokens.includes(t));
-  return { ...prefs, [toAdd]: merged, [toRemove]: filtered };
-}
-
-// mockWeights (дзеркало src/modules/mock.ts — Worker не імпортує TS).
-const MOCK_WEIGHT_MIN = 0.5;
-const MOCK_WEIGHT_MAX = 2.0;
-const MOCK_WEIGHT_STEP = 0.2;
-const clampMockWeight = (w) => Math.min(MOCK_WEIGHT_MAX, Math.max(MOCK_WEIGHT_MIN, w));
-function updateMockWeight(weights, topic, rating) {
-  if (!topic) return weights;
-  const cur = weights[topic] ?? 1.0;
-  const next = clampMockWeight(cur + (rating === 'hard' ? MOCK_WEIGHT_STEP : -MOCK_WEIGHT_STEP));
-  return { ...weights, [topic]: next };
-}
-
-/** Київська година (0..23) зараз, з урахуванням DST через Intl. */
-function kyivHour(now = new Date()) {
-  const h = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    hour12: false,
-  }).format(now);
-  return Number(h);
-}
-
-/** Київська дата "YYYY-MM-DD" (для порівняння «свіжості» брифінгу). */
-function kyivDateKey(now = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Kyiv',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-}
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -485,51 +373,6 @@ async function checkOwner(initData, env) {
  */
 async function checkOwnerRead(request, env) {
   return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
-}
-
-/** Хвилини після 08:00 Київ зараз (метрика «час до відкриття»); поза ранком -> null. */
-function kyivMinAfter8(now = new Date()) {
-  const p = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(now);
-  const h = Number(p.find((x) => x.type === 'hour')?.value);
-  const m = Number(p.find((x) => x.type === 'minute')?.value);
-  const mins = h * 60 + m - 480;
-  return mins >= 0 && mins <= 720 ? mins : null;
-}
-
-/** Хвилина київської доби (0..1439) — для вікна тихих годин (F2). */
-function kyivMinuteOfDay(now = new Date()) {
-  const p = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(now);
-  const h = Number(p.find((x) => x.type === 'hour')?.value);
-  const m = Number(p.find((x) => x.type === 'minute')?.value);
-  return h * 60 + m;
-}
-
-/** Бакет "О котрій ліг?" (той самий enum, що BEDTIME_BUCKETS/CHECKIN_FIELDS.
- *  morning.bedtime) із київської ГОДИНИ тапу «Ліг спати».
- *
- * ⚠️ Регресія, знайдена реальним HTTP-тестом (worker-sleep-wake.test.ts):
- * стара умова `h < 23` стояла ПЕРШОЮ й ловила ВСІ години 0-22 (0<23 і 1<23
- * теж істинні), тож гілки `h===0`/`h===1` і фолбек 'late' були мертвим кодом
- * — тап після півночі (01:15, 03:00…) завжди писав 'e23' («лягли раніше
- * 23:00») замість коректного пізнього бакета. Підтверджено на прод-KV: запис
- * від 2026-08-04T22:56:40Z (01:56 Київ) мав bedtimeBucket:"e23". Порядок
- * перевірок тепер — точні години СПЕРШУ, `h<23` — лише фолбек для 20-22. */
-function bedtimeBucketForHour(h) {
-  if (h === 23) return 'e00';
-  if (h === 0) return 'e01';
-  if (h === 1) return 'e02';
-  if (h >= 2 && h <= 5) return 'late';
-  return 'e23'; // 20, 21, 22 (і будь-що поза реалістичним діапазоном тапу)
 }
 
 /** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
