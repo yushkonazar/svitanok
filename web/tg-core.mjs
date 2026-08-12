@@ -424,6 +424,24 @@ export const REPLY_KEYBOARD = [
   ['⏰ Нагадування', '🔄 Брифінг'],
 ];
 
+/** Звичайна reply-клавіатура (персистентна). Виноситься сюди разом із
+ *  locateKeyboard: обидві — чиста форма Telegram-обʼєкта, і потрібні вони й
+ *  командам, і погодно-гео шляху. */
+export function normalKeyboard() {
+  return { keyboard: REPLY_KEYBOARD, resize_keyboard: true, is_persistent: true };
+}
+
+/** Клавіатура, що чекає на GPS-позицію (/locate) — request_location доступний
+ *  ЛИШЕ як властивість KeyboardButton, inline-кнопки цього не вміють (Bot API).
+ *  Скасування — окремий рядок: без нього власник лишався б із однокнопковою
+ *  клавіатурою, якщо передумав ділитись позицією. */
+export function locateKeyboard() {
+  return {
+    keyboard: [[{ text: '📍 Надіслати позицію', request_location: true }], [LOCATE_CANCEL_LABEL]],
+    resize_keyboard: true,
+  };
+}
+
 // Лейбл reply-keyboard кнопки -> та сама команда, що й відповідний "/xxx".
 const KEYBOARD_ALIASES = {
   '📅 Сьогодні': 'agenda',
