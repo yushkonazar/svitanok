@@ -24,7 +24,6 @@ import {
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
-  constantTimeEqual,
   parseUpdate,
   isOwner,
   isDuplicate,
@@ -83,9 +82,6 @@ import {
   classifyReminderIntent,
 } from './reminders-core.mjs';
 import {
-  kyivRangeBoundsUtc,
-  parseEvents,
-  buildCreateEventBody,
   buildUpdateEventBody,
   findOverlaps,
   formatEventsForPrompt,
@@ -94,7 +90,6 @@ import {
   buildAgendaKeyboard,
   buildAgendaCallbackData,
   parseAgendaCallbackData,
-  isAccessTokenFresh,
   buildMapsUrl,
 } from './calendar-core.mjs';
 import {
@@ -149,14 +144,8 @@ import {
   formatMailForPrompt,
   formatMailBodyForPrompt,
   formatDriveForPrompt,
-  sanitizeMailQuery,
 } from './assistant-data-core.mjs';
-import {
-  renderHistoryForPrompt,
-  appendTurn,
-  historyKey,
-  ASSISTANT_HISTORY_TTL_S,
-} from './assistant-memory-core.mjs';
+import { renderHistoryForPrompt, appendTurn, historyKey } from './assistant-memory-core.mjs';
 import {
   findTopic,
   findSubtopic,
@@ -172,6 +161,41 @@ import {
 } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
 import { parseOneCall, mergeAqi } from './weather-core.mjs';
+import {
+  kyivHour,
+  kyivDateKey,
+  kyivMinAfter8,
+  kyivMinuteOfDay,
+  bedtimeBucketForHour,
+} from './kyiv-time.mjs';
+import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
+import { allowedUserIds, isPrimaryOwner, checkPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
+import {
+  readMail,
+  readMailBody,
+  resolveAttendees,
+  createContact,
+  searchDrive,
+  readCalendarRange,
+  createCalendarEvent,
+  getCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+} from './google.mjs';
+import {
+  loadSettings,
+  loadStats,
+  loadState,
+  loadSentMessages,
+  loadLatest,
+  loadBriefingForDate,
+  loadAssistantHistory,
+  putAssistantHistory,
+  updateStats,
+  ASSISTANT_PENDING_KEY,
+  loadAssistantPending,
+  claimAssistantPending,
+} from './kv-store.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -193,126 +217,6 @@ const DELETE_CHUNK_SIZE = 10;
 
 const GH_DISPATCH_URL =
   'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
-
-// preferenceWeights (дзеркало src/modules/news.ts — Worker не імпортує TS).
-const WEIGHT_MIN = 0.5;
-const WEIGHT_MAX = 2.0;
-const WEIGHT_STEP = 0.15;
-const clampWeight = (w) => Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, w));
-function applyVote(weights, category, dir) {
-  const cur = weights[category] ?? 1.0;
-  return { ...weights, [category]: clampWeight(cur + (dir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP)) };
-}
-
-// votedUrls: чесний облік голосів per-url (C3, дзеркало applyUrlVote з news.ts —
-// канонічна версія тестована в news.test.ts). Кожен url впливає на вагу максимум
-// раз; повторний той самий голос знімає, зміна — переставляє. `delta` — реально
-// застосований зсув (після clamp), щоб відкат був точним і на межі [0.5,2.0].
-function bumpWeight(weights, category, step) {
-  const before = weights[category] ?? 1.0;
-  const after = clampWeight(before + step);
-  return { weights: { ...weights, [category]: after }, delta: after - before };
-}
-function applyUrlVote(weights, votedUrls, url, category, clickedDir) {
-  const vu = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
-  const prev = vu[url];
-  let w = weights ?? {};
-  if (prev && typeof prev.delta === 'number' && prev.delta !== 0) {
-    const cat = prev.category ?? category;
-    w = { ...w, [cat]: clampWeight((w[cat] ?? 1.0) - prev.delta) };
-  }
-  const newDir = prev && prev.dir === clickedDir ? null : clickedDir;
-  if (newDir) {
-    const r = bumpWeight(w, category, newDir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP);
-    w = r.weights;
-    vu[url] = { dir: newDir, category, delta: r.delta };
-  } else {
-    delete vu[url];
-  }
-  return {
-    weights: w,
-    votedUrls: vu,
-    prevDir: prev?.dir ?? null,
-    prevCategory: prev?.category ?? null,
-    newDir,
-  };
-}
-
-// jobPrefs (дзеркало src/modules/jobs.ts — Worker не імпортує TS).
-const JOB_PREFS_CAP = 20;
-const JOB_STOP_WORDS = new Set([
-  'job',
-  'jobs',
-  'vacancy',
-  'вакансія',
-  'вакансии',
-  'developer',
-  'розробник',
-  'engineer',
-  'інженер',
-  'junior',
-  'trainee',
-  'intern',
-  'стажист',
-  'джуніор',
-  'full',
-  'part',
-  'time',
-  'remote',
-  'hybrid',
-  'офіс',
-  'дистанційно',
-  'stack',
-]);
-function titleTokens(title) {
-  return (title.toLowerCase().match(/[a-zа-яїієґ0-9+#.]{3,}/gi) ?? []).filter(
-    (t) => !JOB_STOP_WORDS.has(t),
-  );
-}
-function updateJobPrefs(prefs, signal, title) {
-  const tokens = titleTokens(title);
-  if (tokens.length === 0) return prefs;
-  const toAdd = signal === 'dismiss' ? 'disliked' : 'liked';
-  const toRemove = toAdd === 'liked' ? 'disliked' : 'liked';
-  const merged = [...tokens, ...prefs[toAdd].filter((t) => !tokens.includes(t))].slice(
-    0,
-    JOB_PREFS_CAP,
-  );
-  const filtered = prefs[toRemove].filter((t) => !tokens.includes(t));
-  return { ...prefs, [toAdd]: merged, [toRemove]: filtered };
-}
-
-// mockWeights (дзеркало src/modules/mock.ts — Worker не імпортує TS).
-const MOCK_WEIGHT_MIN = 0.5;
-const MOCK_WEIGHT_MAX = 2.0;
-const MOCK_WEIGHT_STEP = 0.2;
-const clampMockWeight = (w) => Math.min(MOCK_WEIGHT_MAX, Math.max(MOCK_WEIGHT_MIN, w));
-function updateMockWeight(weights, topic, rating) {
-  if (!topic) return weights;
-  const cur = weights[topic] ?? 1.0;
-  const next = clampMockWeight(cur + (rating === 'hard' ? MOCK_WEIGHT_STEP : -MOCK_WEIGHT_STEP));
-  return { ...weights, [topic]: next };
-}
-
-/** Київська година (0..23) зараз, з урахуванням DST через Intl. */
-function kyivHour(now = new Date()) {
-  const h = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    hour12: false,
-  }).format(now);
-  return Number(h);
-}
-
-/** Київська дата "YYYY-MM-DD" (для порівняння «свіжості» брифінгу). */
-function kyivDateKey(now = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Kyiv',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-}
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -359,287 +263,6 @@ async function readJsonBody(request) {
     return { ok: true, body: JSON.parse(raw) };
   } catch {
     return { ok: false, status: 400, error: 'bad-json' };
-  }
-}
-
-// --- Telegram WebApp initData validation (HMAC-SHA256, WebCrypto) ---
-async function hmac(keyBytes, msgBytes) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
-}
-const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-/** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
-async function validateInitData(initData, botToken) {
-  // ⚠️ Без цієї перевірки: enc.encode(undefined) -> порожній масив байтів,
-  // тож секрет вироджується у HMAC("WebAppData", "") — публічну константу,
-  // яку може порахувати БУДЬ-ХТО без знання токена. Не заданий токен (вікно
-  // ротації секрету, битий конфіг) тоді тихо перетворює misconfig на fail-open
-  // авторизацію, а не на fail-closed відмову.
-  if (!initData || !botToken) return null;
-  const params = new URLSearchParams(initData);
-  const hash = params.get('hash');
-  if (!hash) return null;
-  params.delete('hash');
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const secret = await hmac(enc.encode('WebAppData'), enc.encode(botToken));
-  const computed = toHex(await hmac(secret, enc.encode(dataCheck)));
-  // Константночасно (не `!==`): звіряємо HMAC, тож не зливаємо позицію першого
-  // розбіжного байта — той самий інваріант, що verifyWebhookSecret/timingSafeEqual.
-  if (!constantTimeEqual(computed, hash)) return null;
-  const authDate = Number(params.get('auth_date') ?? 0);
-  if (!authDate || Date.now() / 1000 - authDate > 86400) return null; // старіше 24 год
-  try {
-    return { user: JSON.parse(params.get('user') ?? 'null') };
-  } catch {
-    return { user: null };
-  }
-}
-
-/**
- * Власник + опційно співвласники (TELEGRAM_COOWNER_USER_IDS, через кому) -> Set
- * рядкових id. Порожній Set (жодна змінна не задана) — навмисно: і checkOwner,
- * і вебхук тоді фейлять closed (нікому не довіряємо), а не open.
- *
- * ⚠️ Це список ЧИТАЧІВ, не других власників (S1). Мутації стану, агент і
- * команди керування вимагають isPrimaryOwner — див. нижче.
- *
- * Стара назва TELEGRAM_ALLOWED_USER_IDS лишається живою навмисно: секрети
- * синхронізовані у ДВОХ місцях (GitHub + Cloudflare), і якби код перестав її
- * читати в мить деплою, співвласник утратив би доступ до дашборда раніше, ніж
- * власник встиг би перейменувати змінну. Прибрати після перейменування.
- */
-function allowedUserIds(env) {
-  const ids = new Set();
-  if (env.TELEGRAM_OWNER_USER_ID) ids.add(String(env.TELEGRAM_OWNER_USER_ID));
-  const coOwners = env.TELEGRAM_COOWNER_USER_IDS ?? env.TELEGRAM_ALLOWED_USER_IDS ?? '';
-  for (const raw of String(coOwners).split(',')) {
-    const id = raw.trim();
-    if (id) ids.add(id);
-  }
-  return ids;
-}
-
-/**
- * ГОЛОВНИЙ власник — рівно один id (TELEGRAM_OWNER_USER_ID) (S1/B1).
- *
- * Доти «дозволений учасник» означав «другий власник»: він читав пошту й настрій
- * власника, перезаписував settings і гео, приймав його календарні пропозиції й
- * запускав агента проти його Gmail. Список задумувався як «дай подивитись
- * дашборд», а давав повні права.
- *
- * Fail-closed: змінна не задана -> false (як і allowedUserIds, яка тоді віддає
- * порожній Set і нікого не пускає навіть читати).
- */
-function isPrimaryOwner(env, userId) {
-  const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
-  return Boolean(owner) && userId != null && String(userId) === owner;
-}
-
-/**
- * checkOwner + вимога бути головним власником — для ендпоінтів, що ПИШУТЬ у стан
- * власника (settings, гео, чек-ін/події, голоси) чи запускають від його імені
- * дії назовні. Читальні ендпоінти лишаються на checkOwner (S1: розділяємо
- * «подивитись» і «змінити»).
- */
-async function checkPrimaryOwner(initData, env) {
-  const auth = await checkOwner(initData, env);
-  if (!auth.ok) return auth;
-  if (!isPrimaryOwner(env, auth.user?.id)) return { ok: false, status: 403, error: 'forbidden' };
-  return auth;
-}
-
-/**
- * Валідація initData + дозволений учасник. -> {ok:true,user} або
- * {ok:false,status,error}. Звіряємо з allowedUserIds (персональні user id, НЕ
- * TELEGRAM_CHAT_ID — той тепер лише «куди слати», в супергрупі це вже
- * груповий id, ніколи не рівний user id людини). Fail-closed: жодного
- * дозволеного id не задано -> forbidden, не fail-open.
- */
-async function checkOwner(initData, env) {
-  const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
-  if (!v) return { ok: false, status: 401, error: 'auth' };
-  const allowed = allowedUserIds(env);
-  if (!allowed.size || !v.user || !allowed.has(String(v.user.id))) {
-    return { ok: false, status: 403, error: 'forbidden' };
-  }
-  return { ok: true, user: v.user };
-}
-
-/**
- * Auth для GET-читань дашборда: initData з заголовка X-Telegram-Init-Data
- * (НЕ query-param — персональні дані власника й hash не осідають у логах/URL).
- * Той самий власник-чек, що й POST-и (/api/vote|/api/event). Дашборд — дані
- * одного власника (події календаря, воронка вакансій, збережене), тож
- * читання НЕ публічне: без валідного initData -> 401/403, фронт деградує на SAMPLE.
- */
-async function checkOwnerRead(request, env) {
-  return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
-}
-
-/** Хвилини після 08:00 Київ зараз (метрика «час до відкриття»); поза ранком -> null. */
-function kyivMinAfter8(now = new Date()) {
-  const p = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(now);
-  const h = Number(p.find((x) => x.type === 'hour')?.value);
-  const m = Number(p.find((x) => x.type === 'minute')?.value);
-  const mins = h * 60 + m - 480;
-  return mins >= 0 && mins <= 720 ? mins : null;
-}
-
-/** Хвилина київської доби (0..1439) — для вікна тихих годин (F2). */
-function kyivMinuteOfDay(now = new Date()) {
-  const p = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(now);
-  const h = Number(p.find((x) => x.type === 'hour')?.value);
-  const m = Number(p.find((x) => x.type === 'minute')?.value);
-  return h * 60 + m;
-}
-
-/** Бакет "О котрій ліг?" (той самий enum, що BEDTIME_BUCKETS/CHECKIN_FIELDS.
- *  morning.bedtime) із київської ГОДИНИ тапу «Ліг спати».
- *
- * ⚠️ Регресія, знайдена реальним HTTP-тестом (worker-sleep-wake.test.ts):
- * стара умова `h < 23` стояла ПЕРШОЮ й ловила ВСІ години 0-22 (0<23 і 1<23
- * теж істинні), тож гілки `h===0`/`h===1` і фолбек 'late' були мертвим кодом
- * — тап після півночі (01:15, 03:00…) завжди писав 'e23' («лягли раніше
- * 23:00») замість коректного пізнього бакета. Підтверджено на прод-KV: запис
- * від 2026-08-04T22:56:40Z (01:56 Київ) мав bedtimeBucket:"e23". Порядок
- * перевірок тепер — точні години СПЕРШУ, `h<23` — лише фолбек для 20-22. */
-function bedtimeBucketForHour(h) {
-  if (h === 23) return 'e00';
-  if (h === 0) return 'e01';
-  if (h === 1) return 'e02';
-  if (h >= 2 && h <= 5) return 'late';
-  return 'e23'; // 20, 21, 22 (і будь-що поза реалістичним діапазоном тапу)
-}
-
-/** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
- *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
- *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts). */
-async function loadSettings(env) {
-  try {
-    return normalizeSettings(JSON.parse((await env.BRIEFING.get('settings')) ?? '{}'));
-  } catch {
-    return normalizeSettings(null);
-  }
-}
-
-/** Прочитати стор статистики з KV (ключ `stats`); биття -> {}. */
-async function loadStats(env) {
-  try {
-    return JSON.parse((await env.BRIEFING.get('stats')) ?? '{}');
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Безпечний read-modify-write для 'stats' (оптимістична конкуренція, один
- * retry). KV не має вбудованого CAS, а незалежних писарів у цей ключ кілька:
- * Mini App-події (open/checkin/sleepStart), голосування за новину з чату,
- * і три 5-хвилинні крони (checkinNudgeCheck, sleepNudgeCheck, deadMansCheck).
- * Без цього кожен тихо втрачав зміни іншого (last-write-wins): реальний
- * кейс — власник тапнув «Ліг спати», вранці відкрив застосунок, авто-
- * заповнення sleepH/bedtime відбулось (recordEvent — чиста функція,
- * перевірено ізольовано на реальних даних), але крон, який стартував
- * читання ДО цього відкриття, а дописав у KV ПІСЛЯ (його власні Telegram-
- * виклики — секунди), переписав усе своєю застарілою до-заповнення копією.
- *
- * `patch` — ЧИСТА трансформація (store) -> store (той самий контракт, що
- * вже мають recordEvent/recordReliability, і вони теж уже ідемпотентні
- * всередині — case 'checkin' ігнорує confirmed, recordReliability ігнорує
- * повторний lastCheckDate). Якщо між першим і другим читанням хтось інший
- * встиг записати — застосовуємо ТОЙ САМИЙ patch ще раз до свіжішої копії,
- * замість того щоб мовчки затерти чужі зміни. НІКОЛИ не кладіть сюди
- * побічні ефекти (Telegram-виклики тощо) — вони виконались би двічі при
- * ретраї; лише саму мутацію стану, ПІСЛЯ того як side-effects уже сталися.
- */
-async function updateStats(env, patch) {
-  const raw1 = (await env.BRIEFING.get('stats')) ?? '{}';
-  let parsed1;
-  try {
-    parsed1 = JSON.parse(raw1);
-  } catch {
-    parsed1 = {};
-  }
-  const result1 = patch(parsed1);
-  const json1 = JSON.stringify(result1);
-  const raw2 = (await env.BRIEFING.get('stats')) ?? '{}';
-  if (raw2 === raw1) {
-    await env.BRIEFING.put('stats', json1);
-    return result1;
-  }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(raw2);
-  } catch {
-    parsed2 = {};
-  }
-  const result2 = patch(parsed2);
-  await env.BRIEFING.put('stats', JSON.stringify(result2));
-  return result2;
-}
-
-async function loadState(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {}; // биття JSON -> порожній стан
-  }
-}
-
-/** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
- *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
- *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state'). */
-async function loadSentMessages(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('sentMessages')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
- *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}. */
-async function loadLatest(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('latest')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Історія діалогу асистента per-thread (ключ `assistantHistory`, CM) — ОКРЕМИЙ
- *  KV-ключ від 'state' (як sentMessages: запис на кожен обмін не ділить гонку
- *  писарів state-блоба). Биття -> {}. */
-async function loadAssistantHistory(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('assistantHistory')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
   }
 }
 
@@ -1425,503 +1048,6 @@ async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model, timeo
   }
 }
 
-/**
- * OAuth access token через refresh_token grant (Google) — порт
- * src/modules/calendar.ts:93-115 під Worker-секрети GOOGLE_CLIENT_ID/
- * GOOGLE_CLIENT_SECRET/GOOGLE_REFRESH_TOKEN (Блок P2b). Відсутні секрети або
- * будь-яка мережева помилка -> null (graceful, той самий стиль що calendar.ts
- * і callLlmHost — виклик іде далі без календаря, не валить обробку апдейту).
- */
-async function googleAccessToken(env) {
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
-  // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
-  // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
-  // KV-namespace — прийнятно. Биття кешу -> перевидати.
-  try {
-    const cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
-    if (isAccessTokenFresh(cached, Date.now())) return cached.token;
-  } catch {
-    /* биття -> перевидати нижче */
-  }
-  const body = new URLSearchParams({
-    client_id: env.GOOGLE_CLIENT_ID,
-    client_secret: env.GOOGLE_CLIENT_SECRET,
-    refresh_token: env.GOOGLE_REFRESH_TOKEN,
-    grant_type: 'refresh_token',
-  });
-  try {
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-    if (!res.ok) {
-      console.error('google token HTTP', res.status, await res.text().catch(() => ''));
-      return null;
-    }
-    const json = await res.json();
-    const token = typeof json.access_token === 'string' ? json.access_token : null;
-    if (token) {
-      // Кеш — BEST-EFFORT (ревʼю SL): збій KV-запису (rate-limit 1/сек на ключ /
-      // денний кап Free) НЕ сміє відкинути щойно виданий валідний токен, інакше
-      // календар мовчки недоступний попри успішний OAuth. Тому окремий try.
-      try {
-        // expires_in (сек) мінус 60с запасу; фолбек 55хв, якщо поле відсутнє.
-        const ttlSec = Number.isFinite(json.expires_in) ? Math.max(60, json.expires_in - 60) : 3300;
-        // scope (F2): Google повертає перелік консентованих скоупів у самій
-        // відповіді обміну, тож статус конекторів у Mini App дістається задарма —
-        // без окремого виклику tokeninfo. Поле опційне; його відсутність
-        // деградує до «обидва сервіси» (connectorStatus).
-        await env.BRIEFING.put(
-          'googleToken',
-          JSON.stringify({
-            token,
-            expMs: Date.now() + ttlSec * 1000,
-            ...(typeof json.scope === 'string' ? { scope: json.scope } : {}),
-          }),
-        );
-      } catch (e) {
-        console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
-      }
-    }
-    return token;
-  } catch (err) {
-    console.error('google token failed', err.message);
-    return null;
-  }
-}
-
-// Gmail (B3, дія readMail). Той самий OAuth-токен, що й календар: скоуп
-// gmail.readonly уже у GOOGLE_REFRESH_TOKEN (Блок P2c, ре-консент зроблено) —
-// нового консенту НЕ потрібно. Читаємо ЛИШЕ метадані (format=metadata) + snippet:
-// повні тіла листів не тягнемо ні в промпт, ні навіть у память Worker'а.
-const MAIL_MAX_RESULTS = 5;
-const MAIL_HEADERS = ['From', 'Subject', 'Date'];
-
-/** Пошук у Gmail -> [{from,subject,date,snippet}] | [] (нічого) | null (немає доступу/збій). */
-async function readMail(env, rawQuery) {
-  const token = await googleAccessToken(env);
-  if (!token) return null;
-  const auth = { Authorization: `Bearer ${token}` };
-  const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
-  listUrl.searchParams.set('q', sanitizeMailQuery(rawQuery));
-  listUrl.searchParams.set('maxResults', String(MAIL_MAX_RESULTS));
-  try {
-    const res = await fetch(listUrl.toString(), { headers: auth });
-    if (!res.ok) {
-      console.error('gmail list HTTP', res.status, await res.text().catch(() => ''));
-      return null;
-    }
-    const ids = ((await res.json()).messages ?? []).slice(0, MAIL_MAX_RESULTS).map((m) => m.id);
-    if (ids.length === 0) return [];
-    const msgs = await Promise.all(
-      ids.map(async (id) => {
-        // Try/catch НАВКОЛО кожного листа (ревʼю B): кинутий fetch (транзієнтна
-        // мережева помилка/abort) інакше зронив би весь Promise.all -> null ->
-        // «пошта недоступна», хоча акаунт авторизований і решта листів дістались.
-        // Тепер один збій = мінус один лист, як і при !r.ok.
-        try {
-          const u = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
-          u.searchParams.set('format', 'metadata');
-          for (const h of MAIL_HEADERS) u.searchParams.append('metadataHeaders', h);
-          const r = await fetch(u.toString(), { headers: auth });
-          if (!r.ok) return null;
-          const j = await r.json();
-          const headers = j?.payload?.headers ?? [];
-          const get = (name) =>
-            headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
-          return {
-            id,
-            from: get('from'),
-            subject: get('subject'),
-            date: get('date'),
-            snippet: j?.snippet ?? '',
-          };
-        } catch (e) {
-          console.error('gmail message fetch failed (один лист пропущено)', e?.message);
-          return null;
-        }
-      }),
-    );
-    return msgs.filter(Boolean);
-  } catch (err) {
-    console.error('gmail read failed', err.message);
-    return null;
-  }
-}
-
-/* ── Повне тіло одного листа (дія readMailBody) ───────────────────────────
-   Власник дозволив тіла листів у контексті агента (18.07.2026). Читаємо рівно
-   ОДИН лист за id, який модель узяла зі списку readMail — не тіла всіх п'яти
-   наосліп: бюджет промпту лишається передбачуваним, а найненадійніше джерело
-   даних (текст пише хтось чужий) потрапляє в контекст дозовано. */
-
-/** Рекурсивно знайти перше text/plain-тіло в дереві частин MIME (fallback — text/html). */
-function pickMailPart(payload) {
-  const walk = (node, mime) => {
-    if (!node) return null;
-    if (node.mimeType === mime && node.body?.data) return node.body.data;
-    for (const part of node.parts ?? []) {
-      const found = walk(part, mime);
-      if (found) return found;
-    }
-    return null;
-  };
-  return { plain: walk(payload, 'text/plain'), html: walk(payload, 'text/html') };
-}
-
-/** base64url (Gmail) -> текст; биття -> ''. */
-function decodeMailData(data) {
-  try {
-    const bin = atob(String(data).replace(/-/g, '+').replace(/_/g, '/'));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes); // листи бувають у UTF-8, не latin1
-  } catch {
-    return '';
-  }
-}
-
-/** Грубо зняти теги з HTML-листа, коли text/plain-частини немає. */
-function stripHtml(html) {
-  return String(html)
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-/** Повний лист за id -> {from,subject,date,body} | null (немає доступу/не знайдено). */
-async function readMailBody(env, messageId) {
-  const token = await googleAccessToken(env);
-  if (!token) return null;
-  try {
-    // messageId уже провалідовано в extractAssistantAction (^[A-Za-z0-9_-]{1,128}$),
-    // але encodeURIComponent тут усе одно — інваріант, а не подвійна робота.
-    const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) {
-      console.error('gmail body HTTP', res.status, await res.text().catch(() => ''));
-      return null;
-    }
-    const j = await res.json();
-    const headers = j?.payload?.headers ?? [];
-    const get = (name) => headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
-    const { plain, html } = pickMailPart(j?.payload);
-    const raw = plain
-      ? decodeMailData(plain)
-      : html
-        ? stripHtml(decodeMailData(html))
-        : decodeMailData(j?.payload?.body?.data ?? '');
-    return {
-      from: get('from'),
-      subject: get('subject'),
-      date: get('date'),
-      body: raw,
-    };
-  } catch (err) {
-    console.error('gmail body read failed', err.message);
-    return null;
-  }
-}
-
-/* ── Гості на подіях (PR-10): резолюція імені в email через Google People API ──
-   ТОЙ САМИЙ access-токен, що Calendar/Gmail (googleAccessToken) — People API
-   ділить консент із рештою Google-інтеграції, потрібен ЛИШЕ ширший скоуп
-   (contacts.readonly) на тому самому GOOGLE_REFRESH_TOKEN. До ре-консенту
-   власником People API повертає 403 -> searchContact тихо віддає [] (як
-   googleAccessToken=null на решті інтеграцій), LLM просто не резолвить
-   імена — не крашить і не блокує решту пропозиції. */
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/** Пошук контакту за іменем -> [email,...] (0 -> нема скоупу/збігів, обидва
- *  випадки трактуємо однаково — розрізняти нема сенсу, дія однакова: не резолвити). */
-async function searchContact(env, name) {
-  const token = await googleAccessToken(env);
-  if (!token) return [];
-  try {
-    const url = new URL('https://people.googleapis.com/v1/people:searchContacts');
-    url.searchParams.set('query', name);
-    url.searchParams.set('readMask', 'names,emailAddresses');
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) {
-      // 403 без contacts.readonly-скоупу — ОЧІКУВАНО до ре-консенту, не помилка.
-      if (res.status !== 403) {
-        console.error('people search HTTP', res.status, await res.text().catch(() => ''));
-      }
-      return [];
-    }
-    const results = (await res.json())?.results;
-    const emails = [];
-    for (const r of Array.isArray(results) ? results : []) {
-      const email = r?.person?.emailAddresses?.[0]?.value;
-      if (typeof email === 'string' && email) emails.push(email);
-    }
-    return emails;
-  } catch (err) {
-    console.error('people search failed', err.message);
-    return [];
-  }
-}
-
-/**
- * Резолвити список "ім'я або email" -> {emails, notes}. Уже готовий email
- * (EMAIL_RE) пропускається без пошуку — модель могла отримати його напряму
- * з розмови. Ім'я: 0 збігів -> НЕ додаємо гостя (notes пояснює, власник
- * бачить у пропозиції ДО підтвердження); 1 -> додаємо; 2+ -> теж НЕ додаємо
- * (не вгадуємо котрий) — обидва граничні випадки віддаємо як notes, не як
- * помилку: решта пропозиції (час/назва/інші гості) не має через це провалитись.
- */
-async function resolveAttendees(env, names) {
-  const emails = [];
-  const notes = [];
-  for (const raw of Array.isArray(names) ? names : []) {
-    const name = String(raw ?? '').trim();
-    if (!name) continue;
-    if (EMAIL_RE.test(name)) {
-      emails.push(name);
-      continue;
-    }
-    const found = await searchContact(env, name);
-    if (found.length === 1) {
-      emails.push(found[0]);
-    } else if (found.length === 0) {
-      notes.push(`«${name}» не знайдено в контактах — додай email вручну, якщо треба`);
-    } else {
-      notes.push(`«${name}»: кілька збігів (${found.slice(0, 3).join(', ')}) — уточни email`);
-    }
-  }
-  return { emails, notes };
-}
-
-/**
- * Створити новий контакт (write-scope, PR-13). Ніколи не кидає — {ok:false}
- * при збої (403 без contacts-скоупу — той самий "тихо не резолвили" мотив,
- * що searchContact, ЛИШЕ тут це вже TERMінальна дія в accept-циклі, тож
- * помилку показуємо власнику текстом, не мовчки ігноруємо).
- */
-async function createContact(env, { name, email }) {
-  const token = await googleAccessToken(env);
-  if (!token) return { ok: false };
-  try {
-    const res = await fetch('https://people.googleapis.com/v1/people:createContact', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        names: [{ givenName: name }],
-        emailAddresses: [{ value: email }],
-      }),
-    });
-    if (!res.ok) {
-      console.error('people createContact HTTP', res.status, await res.text().catch(() => ''));
-      return { ok: false };
-    }
-    return { ok: true };
-  } catch (err) {
-    console.error('people createContact failed', err.message);
-    return { ok: false };
-  }
-}
-
-const DRIVE_MAX_RESULTS = 5;
-
-/**
- * Пошук файлів у Drive за назвою (PR-14, дія readDrive). МЕТА-ДАНІ ЛИШЕ:
- * назва+посилання, БЕЗ читання вмісту (резюме реально PDF/Word — розбір
- * тексту звідти окремий, більший шматок роботи, свідомо відкладено).
- * [{name,webViewLink}] | [] (нема збігів) | null (немає доступу/збій —
- * ТОЙ САМИЙ контракт, що readMail: formatDriveForPrompt різнить тексти).
- */
-async function searchDrive(env, rawQuery) {
-  const token = await googleAccessToken(env);
-  if (!token) return null;
-  const query = String(rawQuery ?? '')
-    .trim()
-    .slice(0, 120);
-  if (!query) return [];
-  try {
-    const url = new URL('https://www.googleapis.com/drive/v3/files');
-    // Екранувати одинарні лапки — Drive query-мова, сирий текст користувача
-    // не має ламати структуру запиту (той самий мотив, що SQL-параметризація).
-    const escaped = query.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    url.searchParams.set('q', `name contains '${escaped}' and trashed = false`);
-    url.searchParams.set('fields', 'files(id,name,webViewLink,modifiedTime)');
-    url.searchParams.set('pageSize', String(DRIVE_MAX_RESULTS));
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) {
-      // 403 без drive.readonly-скоупу — очікувано до ре-консенту, не помилка.
-      if (res.status !== 403) {
-        console.error('drive search HTTP', res.status, await res.text().catch(() => ''));
-      }
-      return null;
-    }
-    const json = await res.json();
-    return Array.isArray(json.files) ? json.files : [];
-  } catch (err) {
-    console.error('drive search failed', err.message);
-    return null;
-  }
-}
-
-/** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
- *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
-async function readCalendarRange(env, startKey, endKey) {
-  const token = await googleAccessToken(env);
-  if (!token) return null;
-  const { timeMin, timeMax } = kyivRangeBoundsUtc(startKey, endKey);
-  const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
-  url.searchParams.set('timeMin', timeMin);
-  url.searchParams.set('timeMax', timeMax);
-  url.searchParams.set('singleEvents', 'true');
-  url.searchParams.set('orderBy', 'startTime');
-  url.searchParams.set('timeZone', 'Europe/Kyiv');
-  try {
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) {
-      console.error('google calendar read HTTP', res.status, await res.text().catch(() => ''));
-      return null;
-    }
-    return parseEvents(await res.json());
-  } catch (err) {
-    console.error('google calendar read failed', err.message);
-    return null;
-  }
-}
-
-/**
- * Створити подію в календарі (write-scope, Блок P2b). Ніколи не кидає —
- * {ok:false} при збої. `sendUpdates=all`, коли є гості (PR-10) — інакше Google
- * НЕ шле запрошення (дефолт `none`), а сенс attendees саме в сповіщенні;
- * без гостей лишаємо старий тихий шлях (жоден лист нікому не піде).
- */
-async function createCalendarEvent(
-  env,
-  { title, startIso, endIso, reminderMinutes, location, attendees },
-) {
-  const token = await googleAccessToken(env);
-  if (!token) return { ok: false };
-  try {
-    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
-    if (attendees?.length) url.searchParams.set('sendUpdates', 'all');
-    const res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(
-        buildCreateEventBody({ title, startIso, endIso, reminderMinutes, location, attendees }),
-      ),
-    });
-    if (!res.ok) {
-      console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
-      return { ok: false };
-    }
-    const json = await res.json();
-    return { ok: true, id: typeof json.id === 'string' ? json.id : null };
-  } catch (err) {
-    console.error('google calendar create failed', err.message);
-    return { ok: false };
-  }
-}
-
-/** URL одного events.get/patch/delete — eventId ВАЛІДУЄ викликач (той самий
- *  мотив, що mailId: рядок іде в шлях URL). */
-function calendarEventUrl(eventId) {
-  return `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`;
-}
-
-/**
- * Прочитати ОДНУ подію за id (CRUD: свіжий title/startMs/endMs перед
- * update/delete — список міг бути застарілим на момент тапу). `null` при
- * будь-якому збої, включно з 404 (подію вже видалено). Реюзає parseEvents
- * (той самий title/час-парсинг, що читання діапазону) — обгортаємо єдиний
- * обʼєкт у {items:[...]} замість дублювати нормалізацію.
- */
-async function getCalendarEvent(env, eventId) {
-  const token = await googleAccessToken(env);
-  if (!token) return null;
-  try {
-    const res = await fetch(calendarEventUrl(eventId), {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      if (res.status !== 404) {
-        console.error('google calendar get HTTP', res.status, await res.text().catch(() => ''));
-      }
-      return null;
-    }
-    const json = await res.json();
-    return parseEvents({ items: [json] })[0] ?? null;
-  } catch (err) {
-    console.error('google calendar get failed', err.message);
-    return null;
-  }
-}
-
-/** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої.
- *  `sendUpdates=all`, коли патч зачіпає attendees (PR-10) — той самий мотив, що create. */
-async function updateCalendarEvent(env, { eventId, patch }) {
-  const token = await googleAccessToken(env);
-  if (!token) return { ok: false };
-  try {
-    const url = new URL(calendarEventUrl(eventId));
-    if (Array.isArray(patch?.attendees) && patch.attendees.length) {
-      url.searchParams.set('sendUpdates', 'all');
-    }
-    const res = await fetch(url.toString(), {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    if (!res.ok) {
-      console.error('google calendar update HTTP', res.status, await res.text().catch(() => ''));
-      return { ok: false };
-    }
-    return { ok: true };
-  } catch (err) {
-    console.error('google calendar update failed', err.message);
-    return { ok: false };
-  }
-}
-
-/**
- * Видалити подію (write-scope, CRUD). 404/410 (уже видалено — власник
- * прибрав з іншого пристрою, чи подвійний тап) рахуємо УСПІХОМ: мета
- * («події більше немає») уже досягнута, показувати «⚠️ не вдалось» тут
- * оманливо.
- */
-async function deleteCalendarEvent(env, { eventId }) {
-  const token = await googleAccessToken(env);
-  if (!token) return { ok: false };
-  try {
-    const res = await fetch(calendarEventUrl(eventId), {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok && res.status !== 404 && res.status !== 410) {
-      console.error('google calendar delete HTTP', res.status, await res.text().catch(() => ''));
-      return { ok: false };
-    }
-    return { ok: true };
-  } catch (err) {
-    console.error('google calendar delete failed', err.message);
-    return { ok: false };
-  }
-}
-
-/** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
- *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
-async function loadBriefingForDate(env, dateKey) {
-  try {
-    return JSON.parse((await env.BRIEFING.get(`briefing:${dateKey}`)) ?? '{}');
-  } catch {
-    return {};
-  }
-}
-
 /** Обробити callback: застосувати подію (якщо валідна) + позначити кнопку ✓;
  *  повертає текст тосту для answerCallbackQuery (успіх/застаріло/невідомо). */
 async function resolveCallbackToast(env, parsed) {
@@ -2659,20 +1785,6 @@ async function editProgressMessage(env, chatId, messageId, text) {
 }
 
 /**
- * Єдиний писар памʼяті розмови — щоб TTL стояв в ОДНОМУ місці. Пропущений TTL
- * у другого писаря означав би ключ, що знову живе вічно, і помітити це можна
- * було б хіба випадково (аудит §KV).
- *
- * TTL тут — «стільки тиші»: кожен запис відсуває межу, тож жива розмова не
- * зникає посеред себе, а покинута прибирається сама.
- */
-async function putAssistantHistory(env, history) {
-  await env.BRIEFING.put('assistantHistory', JSON.stringify(history), {
-    expirationTtl: ASSISTANT_HISTORY_TTL_S,
-  });
-}
-
-/**
  * Записати обмін у памʼять треду. Викликається ЛИШЕ на успішному фініші — як і
  * до переходу: провалений (часто оверсайз) обмін інакше отруював би контекст
  * наступних повідомлень. Текст користувача приїхав у підписаному токені, тож
@@ -3244,42 +2356,6 @@ async function agentHostHealthCheck(env) {
       console.error('host health state write failed', e);
     }
   }
-}
-
-/** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'. Причина: блоб 'state' пишуть
- *  наївні read-modify-write писарі (lastUpdateId у вебхуку, крон checkReminders,
- *  дашборд applyEvent) БЕЗ merge-before-flush; KV не має read-your-writes, тож
- *  писар, що прочитав блоб за мить до запису пропозиції, затирає її назад — і
- *  кожен ✅ падає в «Застаріла пропозиція» (баг, знайдений на проді 19.07). Той
- *  самий мотив, що [sentMessages]/[agentRuns]/[assistantHistory] — окремий ключ. */
-const ASSISTANT_PENDING_KEY = 'assistantPending';
-
-/**
- * Прочитати активну пропозицію -> pending|null.
- * Брифінг (src/orchestrator, mail.ts) тепер теж пише СЮДИ напряму (writeKvJson
- * на assistantPending, не в блоб `state`) — legacy-фолбек на `state.assistantPending`
- * прибрано разом із самим записом на тому боці.
- */
-async function loadAssistantPending(env) {
-  try {
-    const own = JSON.parse((await env.BRIEFING.get(ASSISTANT_PENDING_KEY)) ?? 'null');
-    return own && typeof own === 'object' ? own : null;
-  } catch {
-    return null; // биття ключа -> як «нема пропозиції», не крашимо
-  }
-}
-
-/**
- * Списати пропозицію (double-tap-safe): лише якщо це ДОСІ той самий id.
- * Put-null тумбстоун (не delete: KV без read-your-writes, і delete немає в
- * частині тест-моків — той самий мотив, що markRunFinished). Повертає true,
- * якщо саме цей виклик списав.
- */
-async function claimAssistantPending(env, id) {
-  const pending = await loadAssistantPending(env);
-  if (!pending || pending.id !== id) return false;
-  await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
-  return true;
 }
 
 /**
