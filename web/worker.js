@@ -24,7 +24,6 @@ import {
 import { normalizeSettings, isQuietMinute, connectorStatus } from './settings-core.mjs';
 import {
   verifyWebhookSecret,
-  constantTimeEqual,
   parseUpdate,
   isOwner,
   isDuplicate,
@@ -180,6 +179,7 @@ import {
   bedtimeBucketForHour,
 } from './kyiv-time.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
+import { allowedUserIds, isPrimaryOwner, checkPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
@@ -248,131 +248,6 @@ async function readJsonBody(request) {
   } catch {
     return { ok: false, status: 400, error: 'bad-json' };
   }
-}
-
-// --- Telegram WebApp initData validation (HMAC-SHA256, WebCrypto) ---
-async function hmac(keyBytes, msgBytes) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
-}
-const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-/** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
-async function validateInitData(initData, botToken) {
-  // ⚠️ Без цієї перевірки: enc.encode(undefined) -> порожній масив байтів,
-  // тож секрет вироджується у HMAC("WebAppData", "") — публічну константу,
-  // яку може порахувати БУДЬ-ХТО без знання токена. Не заданий токен (вікно
-  // ротації секрету, битий конфіг) тоді тихо перетворює misconfig на fail-open
-  // авторизацію, а не на fail-closed відмову.
-  if (!initData || !botToken) return null;
-  const params = new URLSearchParams(initData);
-  const hash = params.get('hash');
-  if (!hash) return null;
-  params.delete('hash');
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const secret = await hmac(enc.encode('WebAppData'), enc.encode(botToken));
-  const computed = toHex(await hmac(secret, enc.encode(dataCheck)));
-  // Константночасно (не `!==`): звіряємо HMAC, тож не зливаємо позицію першого
-  // розбіжного байта — той самий інваріант, що verifyWebhookSecret/timingSafeEqual.
-  if (!constantTimeEqual(computed, hash)) return null;
-  const authDate = Number(params.get('auth_date') ?? 0);
-  if (!authDate || Date.now() / 1000 - authDate > 86400) return null; // старіше 24 год
-  try {
-    return { user: JSON.parse(params.get('user') ?? 'null') };
-  } catch {
-    return { user: null };
-  }
-}
-
-/**
- * Власник + опційно співвласники (TELEGRAM_COOWNER_USER_IDS, через кому) -> Set
- * рядкових id. Порожній Set (жодна змінна не задана) — навмисно: і checkOwner,
- * і вебхук тоді фейлять closed (нікому не довіряємо), а не open.
- *
- * ⚠️ Це список ЧИТАЧІВ, не других власників (S1). Мутації стану, агент і
- * команди керування вимагають isPrimaryOwner — див. нижче.
- *
- * Стара назва TELEGRAM_ALLOWED_USER_IDS лишається живою навмисно: секрети
- * синхронізовані у ДВОХ місцях (GitHub + Cloudflare), і якби код перестав її
- * читати в мить деплою, співвласник утратив би доступ до дашборда раніше, ніж
- * власник встиг би перейменувати змінну. Прибрати після перейменування.
- */
-function allowedUserIds(env) {
-  const ids = new Set();
-  if (env.TELEGRAM_OWNER_USER_ID) ids.add(String(env.TELEGRAM_OWNER_USER_ID));
-  const coOwners = env.TELEGRAM_COOWNER_USER_IDS ?? env.TELEGRAM_ALLOWED_USER_IDS ?? '';
-  for (const raw of String(coOwners).split(',')) {
-    const id = raw.trim();
-    if (id) ids.add(id);
-  }
-  return ids;
-}
-
-/**
- * ГОЛОВНИЙ власник — рівно один id (TELEGRAM_OWNER_USER_ID) (S1/B1).
- *
- * Доти «дозволений учасник» означав «другий власник»: він читав пошту й настрій
- * власника, перезаписував settings і гео, приймав його календарні пропозиції й
- * запускав агента проти його Gmail. Список задумувався як «дай подивитись
- * дашборд», а давав повні права.
- *
- * Fail-closed: змінна не задана -> false (як і allowedUserIds, яка тоді віддає
- * порожній Set і нікого не пускає навіть читати).
- */
-function isPrimaryOwner(env, userId) {
-  const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
-  return Boolean(owner) && userId != null && String(userId) === owner;
-}
-
-/**
- * checkOwner + вимога бути головним власником — для ендпоінтів, що ПИШУТЬ у стан
- * власника (settings, гео, чек-ін/події, голоси) чи запускають від його імені
- * дії назовні. Читальні ендпоінти лишаються на checkOwner (S1: розділяємо
- * «подивитись» і «змінити»).
- */
-async function checkPrimaryOwner(initData, env) {
-  const auth = await checkOwner(initData, env);
-  if (!auth.ok) return auth;
-  if (!isPrimaryOwner(env, auth.user?.id)) return { ok: false, status: 403, error: 'forbidden' };
-  return auth;
-}
-
-/**
- * Валідація initData + дозволений учасник. -> {ok:true,user} або
- * {ok:false,status,error}. Звіряємо з allowedUserIds (персональні user id, НЕ
- * TELEGRAM_CHAT_ID — той тепер лише «куди слати», в супергрупі це вже
- * груповий id, ніколи не рівний user id людини). Fail-closed: жодного
- * дозволеного id не задано -> forbidden, не fail-open.
- */
-async function checkOwner(initData, env) {
-  const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
-  if (!v) return { ok: false, status: 401, error: 'auth' };
-  const allowed = allowedUserIds(env);
-  if (!allowed.size || !v.user || !allowed.has(String(v.user.id))) {
-    return { ok: false, status: 403, error: 'forbidden' };
-  }
-  return { ok: true, user: v.user };
-}
-
-/**
- * Auth для GET-читань дашборда: initData з заголовка X-Telegram-Init-Data
- * (НЕ query-param — персональні дані власника й hash не осідають у логах/URL).
- * Той самий власник-чек, що й POST-и (/api/vote|/api/event). Дашборд — дані
- * одного власника (події календаря, воронка вакансій, збережене), тож
- * читання НЕ публічне: без валідного initData -> 401/403, фронт деградує на SAMPLE.
- */
-async function checkOwnerRead(request, env) {
-  return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
 }
 
 /** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
