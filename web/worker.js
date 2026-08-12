@@ -7,18 +7,7 @@
 // X-Telegram-Bot-Api-Secret-Token). KV namespace BRIEFING, ключі
 // `latest`/`state`(+`reminders`)/`stats`/`briefing:<date>`.
 
-import {
-  aggregateStats,
-  recordReliability,
-  checkinDateKey,
-  matchCheckinNudgeWindow,
-  shouldSendCheckinNudge,
-  inSleepNudgeWindow,
-  SLEEP_NUDGE_TEXT,
-  shouldSendSleepNudge,
-  staleSleepNudges,
-} from './stats-core.mjs';
-import { isQuietMinute } from './settings-core.mjs';
+import { aggregateStats } from './stats-core.mjs';
 import {
   verifyWebhookSecret,
   parseUpdate,
@@ -40,19 +29,15 @@ import {
   chunkArray,
   formatClearResult,
   briefCooldownRemainingMs,
-  shouldAutoDispatchBrief,
-  COMMANDS,
   REPLY_KEYBOARD,
   LOCATE_CANCEL_LABEL,
   normalKeyboard,
 } from './tg-core.mjs';
 import {
-  dueReminders,
-  markFired,
+  isSleepStartCallback,
   snoozeReminder,
   cancelReminder,
   listActive,
-  formatReminderFired,
   formatRemindersListMessage,
   buildRemindersKeyboard,
   parseReminderCancelCallbackData,
@@ -61,7 +46,6 @@ import {
   formatReminderDone,
   snoozeReminderPreset,
   parseReminderSnoozeCallbackData,
-  buildSnoozeRow,
   addDaysToDateKey,
   classifyReminderIntent,
 } from './reminders-core.mjs';
@@ -89,8 +73,7 @@ import {
   buildRootKeyboard,
   buildTopicKeyboard,
 } from './roadmap-core.mjs';
-import { themeOfWeek } from './mastery-core.mjs';
-import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
+import { kyivDateKey } from './kyiv-time.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import {
@@ -101,9 +84,21 @@ import {
   handleSaved,
   handleStats,
 } from './api-dashboard.mjs';
-import { tgCall, sendTo, trackSentMessage, trackIncomingMessage } from './telegram-client.mjs';
+import { tgCall, sendTo, trackIncomingMessage } from './telegram-client.mjs';
 import { rememberAssistantQuestion } from './assistant-memory.mjs';
 import { UNKNOWN_REPLY } from './agent-core.mjs';
+import {
+  checkReminders,
+  dispatchBrief,
+  loadBriefDispatch,
+  recordBriefDispatch,
+  autoBriefDispatch,
+  checkinNudgeCheck,
+  sleepNudgeCheck,
+  deadMansCheck,
+  runTelegramSetup,
+  autoTelegramSetup,
+} from './cron.mjs';
 import {
   handleLiveWeather,
   handleWeatherLocation,
@@ -121,35 +116,17 @@ import { createReminderFromText } from './reminders-actions.mjs';
 import { resolveProposalCallback, stageItemEdit, stageItemDelete } from './proposals.mjs';
 import { agentHostUrl } from './llm-host.mjs';
 import { getCalendarEvent, readCalendarRange } from './google.mjs';
-import {
-  loadSettings,
-  loadStats,
-  loadState,
-  loadSentMessages,
-  loadBriefingForDate,
-  updateStats,
-} from './kv-store.mjs';
+import { loadStats, loadState, loadSentMessages, loadBriefingForDate } from './kv-store.mjs';
 
 const REMINDER_CB_PREFIX = 'rm:'; // snooze; окремий простір від v1:<dateKey>:... (P1).
 // 'rc:' (reminder-cancel, §C4) — окремий простір від rm:/pd:/rd:/v1:, живе в
 // reminders-core.mjs (REMINDER_CANCEL_CB_PREFIX) — НЕ підпростір усередині
 // 'rm:', бо resolveReminderSnooze бере ВЕСЬ залишок після 'rm:' як id.
 
-// Сон (Блок «Сон») — кнопка «🌙 Ліг спати» на проактивному нагадуванні.
-// Без id/аргументів (одна кнопка на все повідомлення) — сама наявність
-// префікса вже достатня, дату/ніч рахує сервер (checkinDateKey), як і чек-ін.
-const SLEEP_START_CB_PREFIX = 'sl:';
-const buildSleepStartCallbackData = () => `${SLEEP_START_CB_PREFIX}1`;
-const isSleepStartCallback = (data) =>
-  typeof data === 'string' && data.startsWith(SLEEP_START_CB_PREFIX);
-
 // /clear (§C5): скільки deleteMessage-викликів паралельно за раз — компроміс
 // між швидкістю (не повністю послідовно) і обережністю до rate-limit
 // Telegram/Cloudflare (не бурст усіх 40 водночас).
 const DELETE_CHUNK_SIZE = 10;
-
-const GH_DISPATCH_URL =
-  'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
 
 /* ══════════════════════════════════════════════════════════════════════
    TELEGRAM-ВЕБХУК (Блок P0+P1) — прийом callback-кнопок з брифінгу.
@@ -247,28 +224,6 @@ const AGENT_TEXT = [
   '📊 <b>Твої дані</b> — «що я зберіг цього тижня?», «як мій стрік?», «які в мене ' +
     'нагадування?» — брифінг/вакансії/прогрес/нагадування/чек-іни/збережене/новини/налаштування.',
 ].join('\n');
-
-// Фаза B2: профіль бота (setMyDescription/setMyShortDescription) — те, що
-// власник бачить ДО першого /start (порожній чат) і в прев'ю/шарінгу. Разом
-// із розширеним REPLY_KEYBOARD (tg-core.mjs) компенсує видалену тему
-// «Команди» (та ніколи не мала прив'язки в коді, суто організаційна).
-const BOT_DESCRIPTION =
-  'Персональний ранковий брифінг: погода, курс, новини, вакансії, IT-роадмеп. ' +
-  'Плюс асистент — нагадування, календар, план дня. Напиши /help, щоб побачити всі команди.';
-const BOT_SHORT_DESCRIPTION = 'Ранковий брифінг + асистент для пошуку роботи в IT.';
-
-// Одноразове закріплене вітальне повідомлення (фідбек власника, п.2) — «одна
-// стала точка входу» в Mini App у форум-супергрупі. Раніше цю роль намагався
-// грати ЩОДЕННИЙ брифінг (unpin учорашнього -> pin сьогоднішнього), але сам
-// брифінг більше не несе кнопку (вона — тут), тож churn був без сенсу: щодня
-// відкріпити й закріпити ТЕ САМЕ повідомлення про наявність апки. Тепер —
-// один текст, закріплений один раз, ensureAppWelcomePin (нижче) лише
-// підтверджує/відновлює закріплення на кожен /api/telegram/setup.
-const APP_WELCOME_TEXT =
-  '🌅 <b>Світанок</b> — твій персональний Mini App.\n\n' +
-  'Погода, курс, новини, вакансії, чек-ін, статистика, IT-роадмеп — усе в ' +
-  'одному місці. Це повідомлення закріплене, щоб кнопка нижче завжди була ' +
-  'під рукою.';
 
 // ASSISTANT_FALLBACK_REPLY тепер живе в agent-core.mjs — поруч із рештою текстів
 // відмов (assistantErrorReply), щоб «не зміг розібратись» лишався ОДНИМ із
@@ -883,52 +838,6 @@ async function resolveRoadmapCallback(env, parsed, cb) {
 }
 
 /**
- * Знайти прострочені нагадування, надіслати + позначити спрацьованими.
- * Пише KV ПІСЛЯ КОЖНОГО надісланого — якщо tgCall впаде посеред циклу (мережа),
- * уже надіслані не втратять firedTs і не задублюються наступним тіком.
- */
-async function checkReminders(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
-  const now = Date.now();
-  const due = dueReminders((await loadState(env)).reminders, now);
-  if (due.length === 0) return;
-
-  // Тихі години (F2): не шлемо — і НЕ позначаємо спрацьованими. dueReminders —
-  // чистий фільтр, що переобчислюється кожні 5 хв, тож прострочені просто
-  // лишаються в черзі й підуть першим тіком після кінця вікна. Саме це й
-  // означає «відкладаються на ранок»: нічого не губиться, лише зсувається.
-  const settings = await loadSettings(env);
-  if (isQuietMinute(settings, kyivMinuteOfDay(new Date(now)))) return;
-
-  for (const r of due) {
-    /* Доставка ЗА АДРЕСОЮ створення (B12). Раніше кожне нагадування летіло в
-       захардкоджені TELEGRAM_CHAT_ID + TOPIC_ASSISTANT: попросив у приватному
-       чаті — відповідь приходила в тему супергрупи (а якщо тем немає взагалі,
-       message_thread_id мовчки ігнорувався). Фолбек лишаємо для legacy-записів,
-       створених до цієї зміни, — у них адреси просто немає. */
-    const chatId = r.chatId ?? env.TELEGRAM_CHAT_ID;
-    const threadId =
-      r.chatId != null ? (r.threadId ?? undefined) : (env.TOPIC_ASSISTANT ?? undefined);
-    const res = await tgCall(env, 'sendMessage', {
-      chat_id: chatId,
-      message_thread_id: threadId,
-      text: formatReminderFired(r.text),
-      parse_mode: 'HTML',
-      // Розширений snooze (extra b): рядок пресетів, не одна фіксована +10 хв.
-      // Старий rm:<id> (одна кнопка) лишається ЖИВИМ обробником — уже надіслані
-      // повідомлення з ним не можна переписати заднім числом.
-      reply_markup: { inline_keyboard: [buildSnoozeRow(r.id)] },
-    });
-    // §C5: трекаємо для /clear — cron-контекст, немає вхідного parsed, тож
-    // chatId/threadId явні (той самий trackSentMessage, що й sendTo()).
-    await trackSentMessage(env, res, chatId, threadId);
-    const fresh = await loadState(env); // перечитати — попередня ітерація вже писала
-    fresh.reminders = markFired(fresh.reminders, r.id, now);
-    await env.BRIEFING.put('state', JSON.stringify(fresh));
-  }
-}
-
-/**
  * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
  * lastUpdateId — викликається через ctx.waitUntil (Блок P2b): agent-цикл
  * (runAssistantAgent) може тривати до ~75с (3×25с callLlmHost-таймаут),
@@ -1041,32 +950,6 @@ async function handleTelegramWebhook(request, env, ctx) {
   return json({ ok: true });
 }
 
-/**
- * Ядро реєстрації бота (вебхук + меню команд + профіль + кнопка-меню +
- * вітальний пін) — спільне для ручного POST /api/telegram/setup і автоматичного
- * щоденного самозапуску (autoTelegramSetup, нижче). origin — БЕЗ кінцевого
- * слеша (URL.origin це гарантує; env.MINI_APP_URL перевіряємо явно, бо туди
- * значення вводить власник руками).
- */
-async function runTelegramSetup(env, origin) {
-  const res = await tgCall(env, 'setWebhook', {
-    url: `${origin}/api/telegram`,
-    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-    allowed_updates: ['message', 'callback_query', 'my_chat_member'],
-  });
-  // "/" меню команд + menu-button (кнопка біля поля вводу) -> запуск Mini App (Блок P4).
-  await tgCall(env, 'setMyCommands', { commands: COMMANDS });
-  // Фаза B2: профіль бота видно ДО /start (порожній чат) і в прев'ю — не
-  // потребує окремої теми «Команди» для пояснення «що це».
-  await tgCall(env, 'setMyDescription', { description: BOT_DESCRIPTION });
-  await tgCall(env, 'setMyShortDescription', { short_description: BOT_SHORT_DESCRIPTION });
-  await tgCall(env, 'setChatMenuButton', {
-    menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: origin } },
-  });
-  await ensureAppWelcomePin(env, origin);
-  return res.ok;
-}
-
 /** POST /api/telegram/setup -> ручний виклик runTelegramSetup. Auth тим самим
  *  заголовком, що й вебхук (X-Telegram-Bot-Api-Secret-Token) — не query-param
  *  (не осідає в логах). Лишається як фолбек/діагностика — щоденний
@@ -1082,418 +965,6 @@ async function handleTelegramSetup(request, env) {
   const url = new URL(request.url);
   const ok = await runTelegramSetup(env, url.origin);
   return json({ ok, webhookUrl: `${url.origin}/api/telegram` });
-}
-
-/**
- * Щоденний самозапуск runTelegramSetup — власник більше НЕ мусить руками
- * викликати curl після зміни команд/опису/кнопки-меню чи якщо вебхук/пін
- * загубився. Усі кроки runTelegramSetup — ідемпотентні виклики Telegram API
- * (перевстановлюють те саме значення), тож щоденний повтор безпечний і сам є
- * формою self-healing (той самий мотив, що ensureAppWelcomePin усередині).
- *
- * Гейт на MINI_APP_URL — Worker-секрет (wrangler secret put), ТЕ САМЕ значення,
- * що вже є в оркестраторі (.env.example): поза HTTP-запитом (тут — крон) немає
- * request.url, з якого можна взяти origin. Без секрету функція тихо
- * пропускається — ручний curl (README) лишається робочим фолбеком.
- *
- * Раз на добу — той самий "остання дата" ідіом, що dispatch.lastAutoDate.
- */
-async function autoTelegramSetup(env) {
-  if (!env.MINI_APP_URL || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) return;
-  const today = kyivDateKey();
-  const state = await loadState(env);
-  if (state.telegramSetupDate === today) return;
-  const origin = env.MINI_APP_URL.replace(/\/+$/, '');
-  await runTelegramSetup(env, origin);
-  const fresh = await loadState(env); // перечитати — попередні кроки могли писати state (пін)
-  fresh.telegramSetupDate = today;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
-}
-
-/**
- * Одноразове закріплене вітальне повідомлення з кнопкою Mini App (фідбек
- * власника, п.2) — «одна стала точка входу», не залежна від того, куди
- * прогорнута стрічка чату. Ідемпотентно: getChat каже, яке повідомлення
- * закріплене ЗАРАЗ — якщо це вже наше (id збігається зі стором) -> no-op,
- * повторний /api/telegram/setup нічого не дублює. Якщо власник зняв
- * закріплення вручну чи видалив повідомлення (pinnedId не збігається/відсутній)
- * -> шлемо нове й закріплюємо знову (self-healing замість «закріпилось один
- * раз і забули»).
- */
-async function ensureAppWelcomePin(env, miniAppUrl) {
-  if (!env.TELEGRAM_CHAT_ID) return;
-  const chatId = env.TELEGRAM_CHAT_ID;
-
-  // Резонний-за-замовчуванням: пересилаємо/переприкріплюємо ЛИШЕ якщо getChat
-  // ПОЗИТИВНО підтвердив, що поточний пін не наш (не збігається зі стором) чи
-  // взагалі відсутній. Транзієнтний збій getChat (мережа/таймаут) НЕ повинен
-  // тлумачитись як «пін загублено» — інакше одна флуктуація що дня давала б
-  // ще один дубль вітального повідомлення (крон викликає це раз на добу
-  // безумовно). Замість цього просто пропускаємо цикл: завтрашній getChat
-  // або підтвердить пін (no-op), або справді покаже втрату (і полагодить).
-  let pinnedId;
-  try {
-    const chatRes = await tgCall(env, 'getChat', { chat_id: chatId });
-    const chatJson = await chatRes.json();
-    pinnedId = chatJson?.result?.pinned_message?.message_id;
-  } catch (e) {
-    console.error('ensureAppWelcomePin: getChat не вдався — пропускаємо цикл', e?.message);
-    return;
-  }
-  const state = await loadState(env);
-  if (typeof state.appWelcomePinMsgId === 'number' && pinnedId === state.appWelcomePinMsgId) {
-    return;
-  }
-
-  const button = buildMiniAppButton(
-    '📊 Відкрити Mini App',
-    miniAppUrl,
-    chatId,
-    env.TELEGRAM_BOT_USERNAME,
-  );
-  const sendRes = await tgCall(env, 'sendMessage', {
-    chat_id: chatId,
-    message_thread_id: env.TOPIC_BRIEFING ?? undefined,
-    text: APP_WELCOME_TEXT,
-    parse_mode: 'HTML',
-    reply_markup: { inline_keyboard: [[button]] },
-  });
-  const sendJson = await sendRes.json().catch(() => null);
-  const newId = sendJson?.result?.message_id;
-  if (typeof newId !== 'number') return;
-
-  await tgCall(env, 'pinChatMessage', {
-    chat_id: chatId,
-    message_id: newId,
-    disable_notification: true,
-  });
-  // Перечитати — між першим loadState (вище) і тепер минуло 2 await Telegram-
-  // виклики, конкурентний писар того ж блоба (checkReminders/вебхук на тому
-  // самому 5-хвилинному тіку) міг оновити щось інше в 'state' за цей час.
-  const fresh = await loadState(env);
-  fresh.appWelcomePinMsgId = newId;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
-}
-
-/** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
- *  оркестратор (src/modules/mock.ts) читає її як готові рядки й СІДИТЬ наступний
- *  mock-батч темою з роадмепу (web-код у src/ не імпортується — межа src/↔web/).
- *  Ротація детермінована за тижнем, тож щоденний перезапис безпечний;
- *  оркестратор masteryFocus не пише -> merge-гонок класу H2 нема. */
-async function updateMasteryFocus(env) {
-  try {
-    const state = await loadState(env);
-    const focus = themeOfWeek(state.roadmapProgress ?? {}, kyivDateKey());
-    // Тема детермінована на тиждень -> 6/7 щоденних записів були б ідентичні.
-    // Пропускаємо no-op: кожен зайвий read-modify-write усього state-блоба —
-    // дармове вікно клобберу конкурентних писарів (вебхук/події).
-    const cur = state.masteryFocus;
-    const same =
-      (focus === null && cur === null) ||
-      (focus && cur && cur.week === focus.week && cur.topicId === focus.topicId);
-    if (same) return;
-    state.masteryFocus = focus; // null коли роадмеп завершено — теж валідний стан
-    await env.BRIEFING.put('state', JSON.stringify(state));
-  } catch (e) {
-    console.error('updateMasteryFocus failed', e); // не блокує dispatch
-  }
-}
-
-/**
- * Тригер brief-воркфлоу. Повертає true, якщо workflow_dispatch прийнято (SL2 —
- * /brief сіє кулдаун ЛИШЕ після успіху; ніколи не кидає — false при збої).
- *
- * force розділяє два РІЗНІ виклики, які доти йшли однаковим шляхом:
- *   • автоматичний (autoBriefDispatch, крон) — force=false, бо guard-
- *     ідемпотентність тут і є захистом: у вікні 08:00–12:00 крон стукає що
- *     5 хв, і без неї власник отримав би 48 брифінгів;
- *   • ручний /brief — force=true. Доти він теж ішов без force, тож УСЯ команда
- *     після ранкової доставки була тихим no-op: guard бачив lastSent===today,
- *     писав «send=false» і завершував воркфлоу успіхом, а бот уже відрапортував
- *     «Запустив генерацію — прийде за кілька хвилин». Ніщо не приходило й
- *     ніде не було помилки. Ручний виклик — це явний намір «хочу ЗАРАЗ», його
- *     квоту стереже власний годинний кулдаун (briefCooldownRemainingMs), а не
- *     добова ідемпотентність.
- */
-async function dispatchBrief(env, { forceWindow = false } = {}) {
-  if (!env.GH_DISPATCH_TOKEN) {
-    console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
-    return false;
-  }
-  try {
-    const resp = await fetch(GH_DISPATCH_URL, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28',
-        'user-agent': 'svitanok-scheduler',
-        'content-type': 'application/json',
-      },
-      // inputs у workflow_dispatch — РЯДКИ, навіть для `type: boolean` (REST
-      // API приймає лише string-значення, GitHub сам приводить до boolean перед
-      // обчисленням inputs.* у brief.yml). Ключ узагалі не шлемо, коли прапорця
-      // немає, — тоді працює default: false з опису воркфлоу.
-      //
-      // Саме force_window, а НЕ force (B2): бот просить «запусти зараз, поза
-      // вікном», але ніколи не просить перезаписати вже опублікований брифінг.
-      body: JSON.stringify({
-        ref: 'main',
-        ...(forceWindow ? { inputs: { force_window: 'true' } } : {}),
-      }),
-    });
-    if (!resp.ok) {
-      console.error('workflow_dispatch failed', resp.status, await resp.text());
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.error('workflow_dispatch error', e?.message);
-    return false;
-  }
-}
-
-/**
- * Мітки dispatch брифінгу — ОКРЕМИЙ KV-ключ, не блоб 'state' (ревʼю A; той самий
- * привід, що й у sentMessages вище). Було: recordBriefDispatch робив
- * read-modify-write усього 'state', тож конкурентний писар того ж блоба
- * (checkReminders на тому ж тіку крону, вебхук, багатохвилинний flush
- * оркестратора) міг просто затерти щойно поставлену денну мітку — і наступний
- * 5-хвилинний тік вистрілив би ДРУГИЙ workflow_dispatch. Тепер мітки живуть самі:
- *   {lastMs: <коли будь-який dispatch>, lastAutoDate: 'YYYY-MM-DD' | null}
- * Після деплою ключа ще немає -> кулдаун /brief один раз стартує «з нуля»
- * (нешкідливо: максимум один зайвий ручний запуск).
- */
-async function loadBriefDispatch(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('briefDispatch')) ?? '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Записати мітку dispatch — ЛИШЕ після підтвердженого workflow_dispatch (SL2).
- *  autoDate (A2) ставиться тільки з авто-гілки: ручний /brief може бути й поза
- *  вікном, тож «сьогодні вже диспатчили» — не про нього. Від дубля відразу після
- *  ручного /brief захищає lastMs (MIN_DISPATCH_GAP_MS, tg-core.mjs). */
-async function recordBriefDispatch(env, autoDate) {
-  const cur = await loadBriefDispatch(env);
-  const next = { ...cur, lastMs: Date.now() };
-  if (autoDate) next.lastAutoDate = autoDate;
-  await env.BRIEFING.put('briefDispatch', JSON.stringify(next));
-}
-
-/**
- * A2: ранковий авто-dispatch із пʼятихвилинного крону, у вікні [08:00, 11:00)
- * Києва. Замінює єдину погодинну спробу (kyivHour()===8), яку 14.07 jitter крону
- * Cloudflare (Free) відсунув на ~50 хв — брифінг прийшов о 08:56 замість 08:0x.
- * Тепер до 36 спроб; помилка GitHub ретраїться за 15 хв, а не «завтра».
- * Умови дубля — shouldAutoDispatchBrief (tg-core.mjs, тестовано).
- */
-async function autoBriefDispatch(env) {
-  const today = kyivDateKey();
-  const [state, dispatch] = await Promise.all([loadState(env), loadBriefDispatch(env)]);
-  const due = shouldAutoDispatchBrief({
-    kyivHour: kyivHour(),
-    todayKey: today,
-    nowMs: Date.now(),
-    lastAutoDate: dispatch.lastAutoDate,
-    lastDispatchMs: dispatch.lastMs,
-    lastSentDate: state.lastSentDate,
-  });
-  if (!due) return;
-  // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
-  // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
-  await updateMasteryFocus(env);
-  if (await dispatchBrief(env)) await recordBriefDispatch(env, today);
-}
-
-/**
- * П'ятихвилинний крон-гейт: вікно слоту (matchCheckinNudgeWindow) -> зібрати
- * три прапорці з KV (тихі години/вже нагадали/слот заповнено) -> чиста
- * shouldSendCheckinNudge (stats-core.mjs, тестована без KV/fetch) вирішує.
- * Ідемпотентно за добу — store.checkinNudgeDates[slot] (той самий "останню
- * дату записав" ідіом, що dispatch.lastAutoDate/reliability.lastCheckDate —
- * не зростаючий журнал, один рядок на слот).
- */
-async function checkinNudgeCheck(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
-  const minuteOfDay = kyivMinuteOfDay(new Date());
-  const win = matchCheckinNudgeWindow(minuteOfDay);
-  if (!win) return;
-
-  const [settings, store] = await Promise.all([loadSettings(env), loadStats(env)]);
-  const today = kyivDateKey();
-  const dateKey = checkinDateKey(today, kyivHour());
-  const due = shouldSendCheckinNudge({
-    quiet: isQuietMinute(settings, minuteOfDay),
-    alreadyNudgedToday: store.checkinNudgeDates?.[win.slot] === today,
-    slotFilled: Boolean(store.checkins?.[dateKey]?.[win.slot]),
-  });
-  if (!due) return;
-
-  await tgCall(env, 'sendMessage', {
-    chat_id: env.TELEGRAM_CHAT_ID,
-    message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
-    text: win.text,
-  });
-
-  // Позначаємо ПІСЛЯ надсилання, окремим безпечним patch на свіжий stats —
-  // не тим самим `store`, що читали для рішення `due` (той міг устигнути
-  // застаріти, поки лист Telegram); sendMessage (побічний ефект) уже
-  // стався РАЗ вище, тож сам patch — чиста, спокійно повторювана мутація.
-  // НЕ normalize() тут — воно не знає про checkinNudgeDates (ad-hoc поле
-  // поза emptyStore-схемою) і мовчки прибрало б його; той самий контракт,
-  // що мав ОРИГІНАЛЬНИЙ код (прямий спред store, без normalize).
-  await updateStats(env, (curStore) => ({
-    ...curStore,
-    checkinNudgeDates: { ...(curStore.checkinNudgeDates ?? {}), [win.slot]: today },
-  }));
-}
-
-/**
- * П'ятихвилинний крон-гейт для Блоку «Сон»: те саме вікно-мисливство, що
- * checkinNudgeCheck, ПЛЮС прибирання завислих кнопок з МИНУЛИХ ночей —
- * власник прямо попросив: сповіщення не мусить просто висіти, якщо тап так і
- * не стався. Обидва кроки в одній функції — обидва читають/пишуть один і той
- * самий store, зайвий проліт у KV не потрібен.
- */
-async function sleepNudgeCheck(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
-  const minuteOfDay = kyivMinuteOfDay(new Date());
-  const store = await loadStats(env);
-  const nightKey = checkinDateKey(kyivDateKey(), kyivHour());
-
-  // Побічні ефекти (editMessageText/sendMessage) збираємо як ЧИСТІ дані
-  // (dateKey-и/msgId), не мутуємо `store` напряму тут — сам запис у KV
-  // робимо ОКРЕМО, нижче, через updateStats на свіжому знімку. Інакше цей
-  // крон (мережеві виклики Telegram — секунди) переписав би своєю
-  // застарілою до-заповнення копією щойно записане авто-заповнення сну з
-  // ранкового 'open' (реальний кейс, що й привів до цього фіксу).
-  const clearedDateKeys = [];
-
-  // 1) Ночі з надісланим, але НЕ натиснутим нагадуванням — уже не поточна ніч
-  // (checkinDateKey тримає ТУ САМУ ніч стабільною аж до 06:00, тож «минула» тут
-  // означає справді минула, а не просто «перейшли за північ»).
-  for (const { dateKey, nudgeMsgId } of staleSleepNudges(store.sleepLog, nightKey)) {
-    await tgCall(env, 'editMessageText', {
-      chat_id: env.TELEGRAM_CHAT_ID,
-      message_id: nudgeMsgId,
-      text: '🌙 Не встиг зафіксувати — нічого, вранці вкажеш час сну вручну.',
-      reply_markup: { inline_keyboard: [] },
-    });
-    clearedDateKeys.push(dateKey);
-  }
-
-  // 2) Нове нагадування — лише у вікні (23:00–02:00) і лише раз за ніч.
-  let newNudge = null;
-  if (inSleepNudgeWindow(minuteOfDay)) {
-    const settings = await loadSettings(env);
-    const due = shouldSendSleepNudge({
-      quiet: isQuietMinute(settings, minuteOfDay),
-      alreadySentTonight: store.sleepLog?.[nightKey]?.nudgeMsgId != null,
-    });
-    if (due) {
-      const res = await tgCall(env, 'sendMessage', {
-        chat_id: env.TELEGRAM_CHAT_ID,
-        message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
-        text: SLEEP_NUDGE_TEXT,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🌙 Ліг спати', callback_data: buildSleepStartCallbackData() }],
-          ],
-        },
-      });
-      const sent = await res.json().catch(() => null);
-      const msgId = sent?.result?.message_id;
-      if (typeof msgId === 'number') newNudge = { nightKey, msgId };
-    }
-  }
-
-  if (clearedDateKeys.length === 0 && !newNudge) return;
-
-  // Усі Telegram-виклики вже сталися РАЗ вище; сам patch на sleepLog —
-  // чиста, безпечно повторювана мутація (не normalize() — те саме
-  // застереження, що в checkinNudgeCheck: ad-hoc поля поза emptyStore не
-  // мають зникати).
-  await updateStats(env, (curStore) => {
-    const next = { ...curStore, sleepLog: { ...(curStore.sleepLog ?? {}) } };
-    for (const dateKey of clearedDateKeys) {
-      next.sleepLog[dateKey] = { ...next.sleepLog[dateKey], nudgeCleared: true };
-    }
-    if (newNudge) {
-      next.sleepLog[newNudge.nightKey] = {
-        ...next.sleepLog[newNudge.nightKey],
-        nudgeMsgId: newNudge.msgId,
-      };
-    }
-    return next;
-  });
-}
-
-// Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
-// END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
-// усередині вікна ретраїв: збій GitHub, що минув об 10:30, дав би хибний алерт
-// «не доставлено» й хибний промах у reliability за день, який зрештою доставили.
-const DEAD_MAN_HOUR = 12;
-
-/** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.
- *  Веде й облік надійності (reliability у stats). Ідемпотентний за добу — та сама
- *  мітка reliability.lastCheckDate гейтить і алерт (ревʼю A: перевірку перенесено
- *  на пʼятихвилинний крон, бо погодинний із гейтом kyivHour()===10 гинув від того
- *  самого jitter'а, від якого ми щойно врятували dispatch — зсув на годину, і
- *  сторож просто мовчав би цілий день). */
-async function deadMansCheck(env) {
-  if (kyivHour() < DEAD_MAN_HOUR) return;
-  const today = kyivDateKey();
-  // Дешевий гейт «уже перевіряли сьогодні» ПЕРЕД будь-якою іншою роботою: без
-  // нього алерт летів би на кожен 5-хвилинний тік до кінця доби.
-  const store = await loadStats(env);
-  if (store?.reliability?.lastCheckDate === today) return;
-
-  const raw = await env.BRIEFING.get('latest');
-  let fresh = false;
-  try {
-    const d = JSON.parse(raw ?? '{}');
-    fresh = typeof d.generatedAt === 'string' && kyivDateKey(new Date(d.generatedAt)) === today;
-  } catch {
-    /* биття JSON -> вважаємо несвіжим -> алерт */
-  }
-  // Облік доставки — до гейта секретів (не потребує Telegram-крендів), але в
-  // try/catch: транзієнтна KV-помилка НЕ сміє заблокувати алерт нижче (це його
-  // день). updateStats — той самий безпечний read-modify-write, що й решта
-  // писарів stats-блоба (recordReliability і так уже ідемпотентний за
-  // lastCheckDate, тож повторне застосування при конфлікті — безпечне).
-  try {
-    await updateStats(env, (curStore) => recordReliability(curStore, today, fresh));
-  } catch (e) {
-    console.error('reliability write failed', e);
-  }
-  if (fresh) return;
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    console.error('TELEGRAM_* відсутні — dead-man пропущено');
-    return;
-  }
-
-  const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: env.TELEGRAM_CHAT_ID,
-      // Фаза B: тема «⚠️ Система» (операційні алерти окремо від контенту
-      // брифінгу). TOPIC_SYSTEM не заведено -> фолбек на стару поведінку
-      // (TOPIC_BRIEFING), щоб алерт не «загубився» для власників, які ще
-      // не створили нову тему. `||`, не `??` — порожній рядок (Cloudflare-
-      // змінна заведена, але лишена пустою) теж має фолбечити, не «зʼїдати»
-      // резервну тему мовчки.
-      message_thread_id: env.TOPIC_SYSTEM || env.TOPIC_BRIEFING || undefined,
-      text: '⚠️ Свiтанок: ранковий брифінг сьогодні не доставлено (KV не оновлено). Перевір GitHub Actions → workflow «brief».',
-    }),
-  });
-  if (!resp.ok) {
-    console.error('dead-man alert failed', resp.status, await resp.text());
-  }
 }
 
 /**
