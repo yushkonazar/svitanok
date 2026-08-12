@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
+import { pluralUk } from '../../lib/plural.ts';
 import { haptic } from '../../telegram.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
@@ -92,7 +93,7 @@ export function ReliabilityBlock({ s }: { s: Stats }) {
           <StatRow label="Вчасно" value={`${r.onTime} із ${r.total} останніх днів`} valueClass="text-pos" />
           {r.deadman > 0 && (
             <span className="font-mono text-[9.5px] text-tx3">
-              Dead-man спрацював {r.deadman} раз{r.deadman === 1 ? '' : 'и'}
+              Dead-man спрацював {r.deadman} {pluralUk(r.deadman, ['раз', 'рази', 'разів'])}
             </span>
           )}
         </>

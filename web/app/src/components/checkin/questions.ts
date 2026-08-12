@@ -1,4 +1,5 @@
 import type { CheckinSlot } from '../../api/schema.ts';
+import { pluralUk } from '../../lib/plural.ts';
 
 // Питання чек-іну — «трекер життя» (рішення власника 18.07: загальний фокус, не
 // пошук роботи). Дзеркало CHECKIN_FIELDS зі stats-core.mjs — значення мусять
@@ -504,14 +505,9 @@ export const BLOCKS: Block[] = [
   },
 ];
 
-/** «1 питання / 2 питання / 5 питань» — той самий підхід, що pluralizeNova у
- *  новинах (окрема функція на слово, не універсальний утиліт). */
+/** «1 питання / 2 питання / 5 питань» — слова, правило спільне (lib/plural.ts). */
 export function pluralizePytannya(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'питання';
-  if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) return 'питання';
-  return 'питань';
+  return pluralUk(n, ['питання', 'питання', 'питань']);
 }
 
 /** Значення мультивибору як масив (сервер так само терпить легасі-рядок). */
