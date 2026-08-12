@@ -171,3 +171,21 @@ describe('роутинг «нагад» — аварійний вимикач', 
     expect(remindersInKv()).toHaveLength(1);
   });
 });
+
+/* Регресія, знайдена механічним тестом імпортів (tests/module-imports.test.ts)
+ * під час модуляризації: `REMINDER_HELP` імпортувався з модуля, який його не
+ * експортує, тобто мовчки ставав `undefined`. Жоден тест цього не спіймав —
+ * саме цей шлях («час не розпізнано ЖОДНИМ способом») не був покритий крізь
+ * воркер. Тепер покритий: власник має отримати підказку з прикладами, а не
+ * порожнє повідомлення. */
+describe('нерозпізнаний час -> підказка з прикладами', () => {
+  it('без LLM-хоста фраза без часу дає REMINDER_HELP, а не порожнечу', async () => {
+    await send('/remind абракадабра', env({ LLM_HOST_URL: undefined }));
+
+    const texts = sentTexts();
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('Не зрозумів час');
+    expect(texts[0]).toContain('завтра о 10:00'); // приклади на місці
+    expect(remindersInKv()).toHaveLength(0);
+  });
+});
