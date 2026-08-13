@@ -10,6 +10,16 @@ import { ArchetypeRadar } from '../charts/ArchetypeRadar.tsx';
 import { RankedBars } from '../charts/RankedBars.tsx';
 import { FillBars } from '../charts/FillBars.tsx';
 import { INDEX_LABEL } from '../../lib/checkinIndex.ts';
+// Підписи значень чек-іну — спільні з картою станів (lib/checkinLabels.ts).
+// Доти вони жили тут локальними константами; щойно тих самих значень
+// знадобилось деталям клітинки, дві копії почали б розходитись мовчки.
+import {
+  BLOCKER_LABEL,
+  HELPER_LABEL,
+  LATE_REASON_LABEL,
+  WITH_WHOM_LABEL,
+  CATEGORY_LABEL,
+} from '../../lib/checkinLabels.ts';
 
 // Статистика чек-іну — ПОВНИЙ редизайн (роадмеп: «Індекс дня» + D3-графіки).
 // Стара версія (PR-9) читала 11 полів із 36 зібраних; ця — «Індекс дня»
@@ -24,61 +34,6 @@ import { INDEX_LABEL } from '../../lib/checkinIndex.ts';
 // ⚠️ Той самий інваріант, що завжди: усе, що претендує на звʼязок, гейтиться
 // на сервері (ready/learned/p-value) і мовчить, поки вибірка мала. Це легко
 // зробити брехливим блоком, а брехня тут виглядає як аналітика.
-
-const BLOCKER_LABEL: Record<string, string> = {
-  tired: 'Втома',
-  anxious: 'Тривога',
-  stuck: 'Не знав з чого',
-  distract: 'Відволікання',
-  nomotiv: 'Немає мотивації',
-  overload: 'Забагато всього',
-  procrast: 'Відкладав',
-  forgot: 'Забув',
-  waiting: 'Чекав на інших',
-  health: 'Здоровʼя',
-  external: 'Зовнішні обставини',
-};
-const HELPER_LABEL: Record<string, string> = {
-  early: 'Ранній старт',
-  list: 'Список',
-  smallstep: 'Маленький крок',
-  nodistract: 'Прибрав відволікання',
-  move: 'Рух/прогулянка',
-  rest: 'Відпочинок/сон',
-  breaks: 'Перерви',
-  deadline: 'Дедлайн',
-  music: 'Музика/фокус',
-  support: 'Підтримка',
-};
-const LATE_REASON_LABEL: Record<string, string> = {
-  work: 'Робота/проєкт',
-  scroll: 'Залип у стрічці',
-  metime: 'Хотів час для себе',
-  anxious: 'Не міг заснути',
-  social: 'Люди/події',
-  other: 'Інше',
-};
-const WITH_WHOM_LABEL: Record<string, string> = {
-  alone: '🧍 Сам',
-  family: '🏠 Рідні',
-  friends: '🫂 Друзі',
-  work: '💼 По роботі',
-  public: '🏙 Серед людей',
-  mixed: '🔀 Порівну',
-};
-const CATEGORY_LABEL: Record<string, string> = {
-  work: '💼 Робота',
-  learn: '📚 Навчання',
-  project: '🛠 Проєкт',
-  travel: '🧭 Дорога',
-  chores: '🔁 Побут',
-  sport: '🏃 Спорт',
-  rest: '🌿 Відпочинок',
-  people: '👥 Люди',
-  create: '🎨 Творчість',
-  health: '🏥 Здоровʼя',
-  admin: '📋 Адмін/фінанси',
-};
 
 const scoreHsl = (t: number) => `hsl(${Math.round(Math.max(0, Math.min(1, t)) * 125)}, 62%, 58%)`;
 const ratingColor = (v: number | null): string | undefined =>
@@ -266,14 +221,15 @@ export function CheckinBlock({ s }: { s: Stats }) {
       )}
 
       <Card>
-        <SubLabel>КАРТА СТАНІВ</SubLabel>
+        <SubLabel>КАРТА СТАНІВ · {s.checkinRaw.days} ДІБ</SubLabel>
         <div className="mt-2">
-          <StateMatrix series={series} />
+          <StateMatrix raw={s.checkinRaw} />
         </div>
         <Hint>
           Та сама сітка 5×5, по якій ти тапаєш у чек-іні. Число в клітинці — скільки разів ти в
           ній опинявся. Праворуч-угорі — бадьорий і в настрої, ліворуч-унизу — виснажений.
-          Скупчення показує, де ти буваєш насправді, а не де здається.
+          Перемикач зверху розділяє ранок, день і вечір: це різні стани з різними причинами, і
+          разом вони змішувались в одну купу.
         </Hint>
       </Card>
 

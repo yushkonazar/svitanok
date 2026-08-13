@@ -263,6 +263,30 @@ export const checkinDaySchema = z.object({
   afternoon: checkinAfternoonSchema.optional(),
   evening: checkinEveningSchema.optional(),
 });
+
+/**
+ * Гаряче вікно сирих чек-інів — доби з УСІМА тегами, ще не зведеними в рол-ап.
+ *
+ * Потрібне рівно там, де рол-ап безсилий: «тапнув клітинку карти станів — які
+ * саме це були доби й що в них було». `checkinTops` знає, що втома траплялась
+ * 14 разів, але не знає, чи серед них ці чотири вечори.
+ *
+ * ⚠️ Валідується СТРОГО (той самий checkinDaySchema, що й checkinToday), хоч
+ * тут 90 діб замість однієї. Заміряно перед вибором: строго 0.55 мс проти
+ * 0.13 мс вільно, на 90 добах, на КЛІЄНТІ — тобто різниця нижча за похибку
+ * одного рендера, а натомість деталі клітинки читають `rec.evening.blocker`
+ * із типами, а не як `unknown`. `.catch` на кожній добі (через lenient-стиль
+ * усередині схеми) означає, що одна побита доба не забирає з собою вікно.
+ *
+ * from/to — РЕАЛЬНІ межі вікна, а не номінальні: підпис глибини малюється з
+ * них, і саме через це блок «Чек-ін» перестає обіцяти period, якого не має.
+ */
+export const checkinRawSchema = z.object({
+  days: int.default(90),
+  from: z.string().default(''),
+  to: z.string().default(''),
+  records: z.record(z.string(), checkinDaySchema.catch({})).default({}),
+});
 export const checkinPointSchema = z.object({
   d: z.string(),
   sleepH: num.nullable().default(null),
@@ -537,6 +561,7 @@ export const statsSchema = z.object({
   checkinSlot: z.enum(['morning', 'afternoon', 'evening']).nullable().optional(),
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
+  checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
   sleepLog: z.array(sleepNightSchema).default([]),
   checkinWeekly: z.array(checkinWeekSchema).default([]),
   checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
@@ -581,6 +606,7 @@ export type Stats = z.infer<typeof statsSchema>;
 export type CheckinSlot = 'morning' | 'afternoon' | 'evening';
 export type CheckinDay = z.infer<typeof checkinDaySchema>;
 export type CheckinPoint = z.infer<typeof checkinPointSchema>;
+export type CheckinRaw = z.infer<typeof checkinRawSchema>;
 export type CheckinWeek = z.infer<typeof checkinWeekSchema>;
 export type WeeklyDay = z.infer<typeof weeklyDaySchema>;
 export type Funnel = z.infer<typeof funnelSchema>;

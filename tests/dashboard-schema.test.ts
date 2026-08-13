@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { statsSchema } from '../web/app/src/api/schema.ts';
 import { settingsSchema, settingsResponseSchema } from '../web/app/src/api/settings-schema.ts';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 
 // Контракти Mini App (/api/stats, /api/settings) — покриття кореневим vitest.
 //
@@ -90,6 +92,71 @@ describe('контракт /api/stats — statsSchema', () => {
     expect(r.data.checkinToday?.morning?.plan).toBeUndefined();
     expect(r.data.checkinToday?.morning?.sleepH).toBe(6.5);
     expect(r.data.checkinToday?.afternoon?.ate).toBeUndefined();
+  });
+});
+
+/* Найсильніший вид тесту схеми: не вигаданий літерал, а СПРАВЖНІЙ вихід
+   aggregateStats. Літерал перевіряє, що схема приймає те, що я собі уявив;
+   цей — що вона приймає те, що реально їде з воркера. Розходження між цими
+   двома видно лише в проді, і саме так уже ламався дашборд. */
+describe('контракт /api/stats — справжній вихід aggregateStats', () => {
+  const TODAY = '2026-08-13';
+  const back = (n: number) => {
+    const d = new Date(TODAY + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
+  const ck = (slot: string, fields: Record<string, unknown>) => ({
+    type: 'checkin',
+    slot,
+    ...fields,
+  });
+
+  const filled = () => {
+    let s = emptyStore();
+    for (let i = 0; i < 40; i++) {
+      s = recordEvent(
+        s,
+        ck('morning', { sleepH: 7.5, energy: 3, mood: 4, bedtime: 'e00' }),
+        back(i),
+      );
+      s = recordEvent(s, ck('afternoon', { energy: 4, mood: 3, withWhom: 'alone' }), back(i));
+      s = recordEvent(
+        s,
+        ck('evening', { energy: 2, mood: 3, dayScore: 3, blocker: ['tired'], helper: ['list'] }),
+        back(i),
+      );
+    }
+    return s;
+  };
+
+  it('повний вихід сервера проходить схему без втрат', () => {
+    const r = statsSchema.safeParse(aggregateStats(filled(), TODAY));
+    expect(r.success).toBe(true);
+  });
+
+  it('гаряче вікно доїжджає з тегами й межами, а не порожнім дефолтом', () => {
+    const r = statsSchema.safeParse(aggregateStats(filled(), TODAY));
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    const raw = r.data.checkinRaw;
+    expect(raw.days).toBe(90);
+    expect(raw.from).toBe(back(89));
+    expect(raw.to).toBe(TODAY);
+    expect(Object.keys(raw.records).length).toBe(40);
+    // Саме те, чого немає в checkinSeries — теги, з яких будуються причини.
+    expect(raw.records[TODAY]?.evening?.blocker).toEqual(['tired']);
+    expect(raw.records[TODAY]?.afternoon?.withWhom).toBe('alone');
+  });
+
+  it('одна побита доба не забирає з собою вікно', () => {
+    const s = filled();
+    s.checkins[back(3)] = { evening: { dayScore: 'нісенітниця' } };
+    const r = statsSchema.safeParse(aggregateStats(s, TODAY));
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.checkinRaw.records[back(3)]).toEqual({});
+    expect(r.data.checkinRaw.records[TODAY]?.evening?.dayScore).toBe(3);
   });
 });
 
