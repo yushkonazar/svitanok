@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import worker from '../web/worker.js';
 // @ts-expect-error — JS-модуль Worker'а без типів
@@ -115,5 +117,43 @@ describe('GET /api/status — доступ', () => {
     expect(res.status).toBe(404);
     // І, головне, не отримує публічних заголовків: гілка просто не спрацювала.
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});
+
+/* ⚠️ МЕХАНІЧНИЙ ЗАМОК НА НАЗВУ КЛЮЧА.
+ *
+ * Пише мітку оркестратор (src/orchestrator.ts, TS-світ), читає воркер
+ * (web/api-status.mjs, .mjs-світ) — імпортувати одне в інше нічим, тож назва
+ * ключа існує у двох місцях. Розійдуться — ендпоінт мовчки віддаватиме null
+ * НАЗАВЖДИ: жодного винятку, жодного падіння тесту, просто бейдж, який ніколи
+ * не оживає. Саме той різновид поломки, який без механічної перевірки живе
+ * місяцями.
+ *
+ * Тому звіряємо джерело напряму: у файлі запису мусить бути рівно та назва,
+ * яку читає ендпоінт. */
+describe('ключ статусу — одна назва на обох боках', () => {
+  const orchestrator = readFileSync(join(__dirname, '..', 'src', 'orchestrator.ts'), 'utf8');
+
+  it('оркестратор пише саме той ключ, який читає ендпоінт', () => {
+    expect(orchestrator).toContain(`'${STATUS_KEY}'`);
+    // І щоб тест не проходив «просто тому, що рядок десь є»: назва мусить
+    // стояти саме в аргументах запису в KV. Без регексу — його екранування у
+    // шаблонному рядку вже раз дало зламаний патерн, що мовчки нічого не
+    // перевіряв би.
+    const callsWithKey = orchestrator
+      .split('writeKvJson(')
+      .slice(1)
+      .filter((tail) => tail.slice(0, 80).includes(`'${STATUS_KEY}'`));
+    expect(callsWithKey).toHaveLength(1);
+  });
+
+  it('запис іде ПІСЛЯ відправки — рядок стоїть нижче за send щоденного', () => {
+    // Порядок у файлі — не доказ порядку виконання, але зсув запису ВГОРУ, за
+    // межі успішного send, помітно саме так. Поведінковий бік перевіряє
+    // flow.test.ts («провал відправки -> мітки немає»).
+    const sendAt = orchestrator.indexOf('notifier.send([dailyMessage])');
+    const writeAt = orchestrator.indexOf(`'${STATUS_KEY}'`);
+    expect(sendAt).toBeGreaterThan(0);
+    expect(writeAt).toBeGreaterThan(sendAt);
   });
 });
