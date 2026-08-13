@@ -379,9 +379,12 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
     const kvEnv = fakeKvEnv();
     await runBriefing(deps({ modules: [mailModule], assistantNotifier, kvEnv }));
     expect(assistantNotifier.sent).toHaveLength(1);
-    expect(kvEnv.puts).toHaveLength(1);
-    expect(kvEnv.puts[0]!.url).toContain('/values/assistantPending');
-    const pending = kvEnv.puts[0]!.body as { id: string; items: unknown[] };
+    // ⚠️ Шукаємо СВІЙ ключ, а не рахуємо всі записи: після появи publicStatus
+    // (мітка «живий сервіс») лічильник почав ламатись від кожного нового
+    // ключа, хоч до assistantPending це не має жодного стосунку.
+    const pendingPut = kvEnv.puts.find((p) => p.url.includes('/values/assistantPending'));
+    expect(pendingPut).toBeDefined();
+    const pending = pendingPut!.body as { id: string; items: unknown[] };
     expect(pending.items).toEqual(proposalItems);
     expect(pending.id).toMatch(/^[0-9a-f]{8}$/);
     // Крос-перевірка: id, вшитий у callback_data кнопок, МАЄ збігатися з тим,
@@ -417,7 +420,7 @@ describe('runBriefing — mail-пропозиція (Блок P2c)', () => {
     const kvEnv = fakeKvEnv();
     const res = await runBriefing(deps({ modules: [mailModule], assistantNotifier, kvEnv }));
     expect(res.status).toBe('sent');
-    expect(kvEnv.puts).toHaveLength(0);
+    expect(kvEnv.puts.find((p) => p.url.includes('/values/assistantPending'))).toBeUndefined();
   });
 
   it('без пропозиції (bus порожній) -> assistantNotifier не викликається', async () => {
@@ -444,5 +447,69 @@ describe('isQuietDay (§6)', () => {
 
   it('жодне trigger-джерело не увімкнене -> не тихий (повний брифінг)', () => {
     expect(isQuietDay(makeConfig(), new Set())).toBe(false);
+  });
+});
+
+/* Публічна мітка «живий сервіс» (GET /api/status).
+ *
+ * ⚠️ ПОРЯДОК ТУТ І Є ВИМОГОЮ: мітка пишеться ПІСЛЯ успішної відправки. Запис
+ * до send означав би, що публічний ендпоінт звітує про брифінг, якого не було —
+ * а зовнішній бейдж саме на цьому й будує «сервіс живий». Тому перевіряємо не
+ * лише «записалось», а й «НЕ записалось, коли не надіслано». */
+describe('runBriefing — публічна мітка останнього брифінгу', () => {
+  const statusPut = (kv: ReturnType<typeof fakeKvEnv>) =>
+    kv.puts.find((p) => p.url.includes('/values/publicStatus'));
+
+  it('після успішної відправки пише ISO-мітку в окремий ключ', async () => {
+    const kv = fakeKvEnv();
+    await runBriefing(deps({ kvEnv: kv }), { dryRun: false });
+    const put = statusPut(kv);
+    expect(put).toBeDefined();
+    expect(Object.keys(put!.body as object)).toEqual(['lastBriefingAt']);
+    const iso = (put!.body as { lastBriefingAt: string }).lastBriefingAt;
+    expect(new Date(iso).toISOString()).toBe(iso); // саме ISO-8601 UTC
+  });
+
+  it('ключ ОКРЕМИЙ від state — публічний ендпоінт не читає приватний блоб', () => {
+    const kv = fakeKvEnv();
+    return runBriefing(deps({ kvEnv: kv }), { dryRun: false }).then(() => {
+      expect(statusPut(kv)!.url).not.toContain('/values/state');
+    });
+  });
+
+  it('відправка НЕ відбулась (дубль за добу) -> мітки немає', async () => {
+    const kv = fakeKvEnv();
+    const res = await runBriefing(
+      deps({ kvEnv: kv, state: memState({ lastSentDate: '2026-06-29' }) }),
+      { dryRun: false },
+    );
+    expect(res.status).toBe('skipped');
+    expect(statusPut(kv)).toBeUndefined();
+  });
+
+  it('провал відправки -> мітки немає (ендпоінт не звітує про неіснуючий брифінг)', async () => {
+    const kv = fakeKvEnv();
+    const failing = {
+      ...fakeNotifier(),
+      send: async () => {
+        throw new Error('Telegram лежить');
+      },
+    };
+    await expect(
+      runBriefing(deps({ kvEnv: kv, notifier: failing }), { dryRun: false }),
+    ).rejects.toThrow();
+    expect(statusPut(kv)).toBeUndefined();
+  });
+
+  it('сухий прогін нічого не пише', async () => {
+    const kv = fakeKvEnv();
+    await runBriefing(deps({ kvEnv: kv }), { dryRun: true });
+    expect(statusPut(kv)).toBeUndefined();
+  });
+
+  it('без kvEnv (локальний файловий стан) не падає', async () => {
+    await expect(runBriefing(deps({ kvEnv: null }), { dryRun: false })).resolves.toMatchObject({
+      status: 'sent',
+    });
   });
 });
