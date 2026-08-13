@@ -1,4 +1,4 @@
-import type { Stats, HeatmapCell, SavedItem } from './schema.ts';
+import type { Stats, HeatmapCell, SavedItem, ArchiveMonth } from './schema.ts';
 
 // Демо-статистика поза Telegram (роадмеп v3, E1) — перенесена 1:1 з
 // web/public/index.html SAMPLE_STATS, щоб власник бачив заповнений UI без
@@ -213,6 +213,44 @@ function sampleCheckinRaw(): Stats['checkinRaw'] {
   d.setDate(d.getDate() - 1);
   return { days: 90, from, to: dayKey(d), records };
 }
+
+
+/**
+ * Демо-архів: 14 місяців із видимою динамікою.
+ *
+ * ⚠️ Довший за все інше в демо НАВМИСНО — саме в цьому суть блоку. Решта
+ * екрана дивиться на 30-90 діб, а тут єдине місце, де видно рік і більше;
+ * показати тут три місяці означало б не показати нічого.
+ */
+export const SAMPLE_ARCHIVE: ArchiveMonth[] = (() => {
+  const out: ArchiveMonth[] = [];
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 13);
+  // Сон повільно вирівнюється, оцінка дня росте, активність плаває — щоб було
+  // видно, що ряди РІЗНІ, а не один і той самий шум під трьома назвами.
+  const sleep = [6.1, 6.0, 6.4, 6.3, 6.8, 6.6, 7.0, 7.1, 6.9, 7.3, 7.2, 7.4, 7.3, 7.5];
+  const score = [2.8, 2.9, 3.0, 2.7, 3.1, 3.2, 3.0, 3.4, 3.3, 3.6, 3.5, 3.7, 3.6, 3.8];
+  const active = [12, 18, 22, 19, 25, 27, 24, 28, 26, 29, 28, 30, 27, 21];
+  for (let i = 0; i < sleep.length; i++) {
+    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    out.push({
+      month,
+      checkinDays: Math.max(0, active[i]! - 2),
+      sleepAvg: sleep[i]!,
+      energyAvg: Math.round((2.4 + i * 0.06) * 10) / 10,
+      moodAvg: Math.round((2.6 + i * 0.05) * 10) / 10,
+      dayScoreAvg: score[i]!,
+      activeDays: active[i]!,
+      opens: active[i]! * 3,
+      mock: Math.round(active[i]! / 3),
+      news: active[i]! * 2,
+      applied: Math.max(0, Math.round(active[i]! / 4)),
+    });
+    d.setMonth(d.getMonth() + 1);
+  }
+  return out;
+})();
 
 export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },

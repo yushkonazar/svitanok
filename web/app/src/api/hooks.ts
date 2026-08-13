@@ -7,6 +7,7 @@ import {
 import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
+  fetchArchive,
   fetchBriefing,
   fetchLiveWeather,
   fetchSettings,
@@ -37,6 +38,22 @@ import type { FunnelStage } from '../components/jobs/stages.ts';
 
 export function useStats() {
   return useQuery({ queryKey: ['stats'], queryFn: fetchStats });
+}
+
+/**
+ * Історія по місяцях (холодний архів).
+ *
+ * ⚠️ ОКРЕМА черга, і вантажиться ЛИШЕ коли блок справді на екрані (enabled):
+ * це додаткове читання KV, потрібне рідко — його не можна вішати на кожне
+ * відкриття дашборда. Дані змінюються раз на добу, тож staleTime щедрий.
+ */
+export function useArchive(enabled = true) {
+  return useQuery({
+    queryKey: ['archive'],
+    queryFn: fetchArchive,
+    enabled,
+    staleTime: 60 * 60 * 1000,
+  });
 }
 
 export function useBriefing() {
