@@ -107,6 +107,33 @@ export const habitWeekSchema = z.object({
 
 export const appliedWeekSchema = z.object({ week: z.string(), count: int });
 
+/**
+ * Швидкість воронки: скільки триває кожен крок і що лежить без руху.
+ *
+ * ⚠️ medianDays nullable ЗІ ЗМІСТОМ: null — «переходів замало для медіани»,
+ * а не «нуль днів». Нуль тут читався б як «миттєво», тобто найкраща можлива
+ * оцінка діставалась би кроку, який ще жодного разу нормально не пройшли.
+ */
+export const funnelStepSchema = z.object({
+  from: stageSchema,
+  to: stageSchema,
+  n: int.default(0),
+  medianDays: num.nullable().default(null),
+});
+
+export const staleJobSchema = z.object({
+  url: z.string(),
+  stage: stageSchema,
+  title: z.string().default(''),
+  days: int.default(0),
+});
+
+export const funnelSpeedSchema = z.object({
+  steps: z.array(funnelStepSchema).default([]),
+  stale: z.array(staleJobSchema).default([]),
+  staleAfterDays: int.default(21),
+});
+
 export const interestSchema = z.object({ topic: z.string(), score: num });
 
 export const interestsTrendSchema = z.object({
@@ -571,6 +598,7 @@ export const statsSchema = z.object({
   }),
   heatmap: z.array(heatmapCellSchema).default([]),
   appliedWeekly: z.array(appliedWeekSchema).default([]),
+  funnelSpeed: funnelSpeedSchema.default({ steps: [], stale: [], staleAfterDays: 21 }),
   // Fit% поданих по тижнях — той самий {week,count}-шейп духом, що appliedWeekly,
   // але avgFit замість count (nullable — тиждень без жодного fit-запису).
   fitWeekly: z.array(z.object({ week: z.string(), avgFit: num.nullable() })).default([]),

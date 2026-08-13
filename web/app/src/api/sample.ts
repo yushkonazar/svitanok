@@ -406,6 +406,20 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   heatmap: sampleHeatmap(),
+  // Швидкість воронки: демо показує ОБИДВА стани, які блок має розрізняти —
+  // крок із медіаною й крок, де переходів ще замало (medianDays: null).
+  funnelSpeed: {
+    staleAfterDays: 21,
+    steps: [
+      { from: 'saved' as const, to: 'applied' as const, n: 9, medianDays: 3 },
+      { from: 'applied' as const, to: 'interview' as const, n: 4, medianDays: 11 },
+      { from: 'interview' as const, to: 'offer' as const, n: 1, medianDays: null },
+    ],
+    stale: [
+      { url: 'https://jobs.example.com/1', stage: 'applied' as const, title: 'Frontend Engineer — Aurora', days: 34 },
+      { url: 'https://jobs.example.com/2', stage: 'saved' as const, title: 'React Developer — Northwind', days: 27 },
+    ],
+  },
   appliedWeekly: [
     { week: '', count: 1 },
     { week: '', count: 2 },
@@ -690,6 +704,7 @@ export const EMPTY_STATS: Stats = {
   savedList: [],
   mock: { weakTopics: [], streak: 0, recentEasyPct: null },
   heatmap: [],
+  funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
   appliedWeekly: [],
   fitWeekly: [],
   roadmapWeekly: [],
