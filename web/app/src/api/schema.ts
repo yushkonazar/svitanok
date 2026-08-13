@@ -508,13 +508,31 @@ export const flameStatsSchema = z.object({
 export const modelIndexKeySchema = z.enum(['recovery', 'resource', 'work', 'agency', 'body']);
 export const checkinFitSchema = z.object({
   weights: z.record(modelIndexKeySchema, num),
+  /** Знак β окремо від величини: смуги показують ВАГУ, рахунок — НАПРЯМОК. */
+  signs: z.record(modelIndexKeySchema, num).optional(),
+  /** Обрана крос-валідацією регуляризація (доти була зашита в 1.0). */
+  lambda: num.optional(),
   r2: num.nullable().default(null),
+  /**
+   * Крос-валідований R² (leave-one-out).
+   *
+   * ⚠️ Може бути ВІДʼЄМНИМ — це не помилка, а «передбачає гірше за просте
+   * середнє». Саме той випадок, коли моделі не варто вірити, тож ховати його
+   * не можна. Внутрішньовибірковий r2 завжди оптимістичніший.
+   */
+  r2cv: num.nullable().optional(),
   n: int.default(0),
   learned: z.boolean().default(false),
 });
 export const checkinDayIndexSchema = z.object({
+  /** null, коли доба не дотягнула до needCoverage — «ще рано», не «нема даних». */
   last: num.nullable().default(null),
   mean: num.nullable().default(null),
+  /** Скільки з пʼяти вимірів дала остання доба і скільки треба. */
+  lastCoverage: int.default(0),
+  needCoverage: int.default(3),
+  /** Скільки діб вікна взагалі отримали оцінку — чесний знаменник середнього. */
+  scored: int.default(0),
 });
 export const checkinDriverSchema = z.object({
   field: z.string(),
@@ -522,6 +540,10 @@ export const checkinDriverSchema = z.object({
   delta: num,
   d: num,
   p: num,
+  /** p після поправки Бенʼяміні-Хохберга на всю родину драйверів. */
+  q: num.optional(),
+  /** Чи витримує поправку на множинні порівняння. */
+  passesBH: z.boolean().optional(),
   nHigh: int,
   nLow: int,
 });
@@ -564,7 +586,7 @@ export const checkinModelSchema = z.object({
 const EMPTY_CHECKIN_MODEL = {
   n: 0,
   fit: { weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 }, r2: null, n: 0, learned: false },
-  dayIndex: { last: null, mean: null },
+  dayIndex: { last: null, mean: null, lastCoverage: 0, needCoverage: 3, scored: 0 },
   drivers: [],
   lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
   archetypes: { ready: false, n: 0, groups: [] },

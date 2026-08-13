@@ -157,7 +157,16 @@ export const FIELDS = [
 export const MIN_FIELDS_PER_INDEX = 2;
 export const MIN_DAYS_FOR_FIT = 20;
 export const MIN_N_PER_BUCKET = 8;
-export const RIDGE_LAMBDA = 1.0;
+
+/**
+ * Скільки з пʼяти індексів мусить дати доба, щоб «Індекс дня» узагалі рахувався.
+ *
+ * ⚠️ Три — не круглий вибір, а межа, за якою число перестає бути порівнюваним
+ * саме з собою: два виміри доступні вже з самого ранку (обидва мають ≥2
+ * ранкові поля), тож поріг 2 означав би «оцінка доби, поки доба ще не почалась».
+ */
+export const MIN_INDICES_FOR_SCORE = 3;
+// λ більше НЕ константа: обирається за LOO-CV із RIDGE_GRID (див. fitWeights).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. НОРМАЛІЗАЦІЯ 0..1
@@ -257,6 +266,28 @@ function solveLinear(A, b) {
 
 const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
 
+/** A⁻¹ через n розвʼязків A·z = eᵢ. Для 5×5 це дешевше за окремий алгоритм. */
+function invertMatrix(A) {
+  const n = A.length;
+  return Array.from({ length: n }, (_, i) => {
+    const e = new Array(n).fill(0);
+    e[i] = 1;
+    return solveLinear(A, e);
+  });
+}
+
+/**
+ * Сітка λ для підбору за LOO-CV.
+ *
+ * ⚠️ Доти λ була ОДНА (1.0) і зашита. На 20-30 добах проти 5 предикторів це
+ * означає, що регуляризація могла домінувати над сигналом: ваги виходили
+ * рівнішими, ніж дані, і «модель вивела їх із твоїх діб» перетворювалось на
+ * «модель майже нічого не вивела, але показала рівні смуги». Тепер λ
+ * обирається за крос-валідацією — тобто за здатністю передбачати НЕ ті доби,
+ * на яких училась.
+ */
+export const RIDGE_GRID = [0.05, 0.15, 0.5, 1.5, 5, 15];
+
 /**
  * Ridge-регресія 5 індексів -> dayScore. Не ми вирішуємо, з чого складається
  * «хороший день» — модель вчиться на власних оцінках дня людини.
@@ -277,55 +308,129 @@ export function fitWeights(rows) {
   const X = full.map((r) => INDICES.map((i) => r.indices[i]));
   const y = full.map((r) => (r.dayScore - 1) / 4);
   const n = INDICES.length;
+  const nRows = X.length;
   const Xm = INDICES.map((_, j) => mean(X.map((row) => row[j])));
   const ym = mean(y);
-  const Xc = X.map((row) => row.map((v, j) => v - Xm[j]));
+  // ⚠️ СТАНДАРТИЗАЦІЯ, а не саме центрування. Ridge штрафує КОЕФІЦІЄНТИ, тож
+  // без спільного масштабу предиктор із меншим розкидом отримує більший β і
+  // сильніший штраф — регуляризація починає залежати від того, наскільки
+  // рівний вимір, а не наскільки він важливий. Індекси всі 0..1, але їхні
+  // стандартні відхилення різняться втричі.
+  const sd = INDICES.map((_, j) => {
+    const col = X.map((row) => row[j] - Xm[j]);
+    const v = col.reduce((s, d) => s + d * d, 0) / Math.max(1, nRows - 1);
+    return Math.sqrt(v) > 1e-9 ? Math.sqrt(v) : 1;
+  });
+  const Xz = X.map((row) => row.map((v, j) => (v - Xm[j]) / sd[j]));
   const yc = y.map((v) => v - ym);
+  const ssTot = yc.reduce((s, v) => s + v * v, 0);
 
-  // A = Xc^T Xc + lambda*I ; rhs = Xc^T yc
-  const A = Array.from({ length: n }, (_, i) =>
+  const gram = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => {
       let s = 0;
-      for (let k = 0; k < Xc.length; k++) s += Xc[k][i] * Xc[k][j];
-      return s + (i === j ? RIDGE_LAMBDA : 0);
+      for (let k = 0; k < nRows; k++) s += Xz[k][i] * Xz[k][j];
+      return s;
     }),
   );
   const rhs = Array.from({ length: n }, (_, i) => {
     let s = 0;
-    for (let k = 0; k < Xc.length; k++) s += Xc[k][i] * yc[k];
+    for (let k = 0; k < nRows; k++) s += Xz[k][i] * yc[k];
     return s;
   });
-  const beta = solveLinear(A, rhs);
 
-  const pred = Xc.map((row) => row.reduce((s, v, j) => s + v * beta[j], 0) + ym);
-  const ssRes = y.reduce((s, v, k) => s + (v - pred[k]) ** 2, 0);
-  const ssTot = y.reduce((s, v) => s + (v - ym) ** 2, 0);
+  /**
+   * Підгонка при заданій λ + LOO-CV у ЗАМКНУТІЙ формі.
+   *
+   * PRESS через діагональ капелюшної матриці: залишок відкинутої доби дорівнює
+   * eᵢ/(1−hᵢᵢ), тож перенавчати модель `nRows` разів не треба. 1/nRows у hᵢᵢ — це
+   * внесок вільного члена, який ми зняли центруванням; без нього LOO був би
+   * оптимістичним рівно на нього.
+   */
+  const fitAt = (lambda) => {
+    const A = gram.map((row, i) => row.map((v, j) => v + (i === j ? lambda : 0)));
+    const beta = solveLinear(A, rhs);
+    const Ainv = invertMatrix(A);
+    let press = 0;
+    let ssRes = 0;
+    for (let k = 0; k < nRows; k++) {
+      const xk = Xz[k];
+      let h = 1 / nRows;
+      for (let i = 0; i < n; i++) {
+        let ai = 0;
+        for (let j = 0; j < n; j++) ai += Ainv[i][j] * xk[j];
+        h += xk[i] * ai;
+      }
+      const pred = xk.reduce((s, v, j) => s + v * beta[j], 0);
+      const e = yc[k] - pred;
+      ssRes += e * e;
+      const denom = 1 - h;
+      press += Math.abs(denom) > 1e-9 ? (e / denom) ** 2 : e * e;
+    }
+    return { lambda, beta, ssRes, press };
+  };
+
+  // Обираємо λ за здатністю передбачати НЕ ті доби, на яких училась.
+  let best = null;
+  for (const lambda of RIDGE_GRID) {
+    const cand = fitAt(lambda);
+    if (!best || cand.press < best.press) best = cand;
+  }
+  const { lambda, beta, ssRes, press } = best;
+
   const r2 = ssTot > 1e-12 ? 1 - ssRes / ssTot : null;
+  // ⚠️ CV-R² може бути ВІДʼЄМНИМ, і це не помилка: означає, що модель
+  // передбачає гірше за просте середнє. Обрізати його до нуля означало б
+  // сховати єдиний випадок, коли їй узагалі не варто вірити.
+  const r2cv = ssTot > 1e-12 ? 1 - press / ssTot : null;
 
-  const mag = beta.map(Math.abs);
+  // Коефіцієнти повертаємо у ВИХІДНОМУ масштабі індексів (β/sd), інакше
+  // intercept і будь-яке порівняння з попередніми версіями поїхали б.
+  const betaRaw = beta.map((b, j) => b / sd[j]);
+  const mag = betaRaw.map(Math.abs);
   const magSum = mag.reduce((a, b) => a + b, 0);
   const share = magSum > 1e-12 ? mag.map((m) => m / magSum) : INDICES.map(() => 1 / n);
 
   return {
     weights: Object.fromEntries(INDICES.map((i, j) => [i, share[j]])),
-    beta: Object.fromEntries(INDICES.map((i, j) => [i, beta[j]])),
-    intercept: ym - Xm.reduce((s, v, j) => s + v * beta[j], 0),
+    beta: Object.fromEntries(INDICES.map((i, j) => [i, betaRaw[j]])),
+    // Знак окремо від величини: смуги пояснення показують ВАГУ виміру, а
+    // рахунок мусить знати НАПРЯМОК. Доти знак губився в Math.abs, і вимір,
+    // що тягне день униз, підіймав «Індекс дня».
+    signs: Object.fromEntries(INDICES.map((i, j) => [i, betaRaw[j] < 0 ? -1 : 1])),
+    intercept: ym - Xm.reduce((s, v, j) => s + v * betaRaw[j], 0),
+    lambda,
     r2,
+    r2cv,
     n: full.length,
     learned: true,
   };
 }
 
-/** 5 індексів + ваги -> «Індекс дня» 0..100. Ваги перенормовуються на наявні. */
-export function dayIndexScore(indices, weights) {
+/**
+ * 5 індексів + ваги -> «Індекс дня» 0..100. Ваги перенормовуються на наявні.
+ *
+ * ⚠️ ЗНАК МАЄ ЗНАЧЕННЯ. Ваги — це |β|/Σ|β|, тобто чиста величина внеску. Якщо
+ * у виміру відʼємний коефіцієнт (більше — гірший день), то в середнє входить
+ * його ДОПОВНЕННЯ: інакше високе значення шкідливого виміру підіймало б
+ * оцінку дня, і «Індекс» рухався б у протилежний бік від того, що людина сама
+ * поставила. `signs` необовʼязковий — без нього поведінка та сама, що й доти
+ * (апріорні ваги знака не мають).
+ */
+export function dayIndexScore(indices, weights, signs = null) {
   let num = 0;
   let den = 0;
   for (const i of INDICES) {
     if (indices[i] === null) continue;
-    num += indices[i] * weights[i];
+    const v = signs && signs[i] < 0 ? 1 - indices[i] : indices[i];
+    num += v * weights[i];
     den += weights[i];
   }
   return den > 0 ? Math.round(((100 * num) / den) * 10) / 10 : null;
+}
+
+/** Скільки з пʼяти індексів доба реально дає. */
+export function indicesPresent(indices) {
+  return INDICES.filter((i) => indices[i] !== null).length;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -509,7 +614,40 @@ export function computeDrivers(days, target = 'dayScore') {
       nLow: lo.length,
     });
   }
+  applyBH(out);
   return out.sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+}
+
+/** Рівень значущості родини драйверів. */
+const BH_ALPHA = 0.05;
+
+/**
+ * Поправка Бенʼяміні-Хохберга на МНОЖИННІ порівняння — на місці, в рядках.
+ *
+ * ⚠️ НАВІЩО. Драйверів десятки, і кожен перевіряється власним тестом при
+ * p<0.05. На 25 полях приблизно один «значущий» результат очікується ЧИСТО
+ * ВИПАДКОВО — тобто підпис «значущо» на найгучнішому рядку блоку був майже
+ * гарантований навіть на шумі. BH контролює частку хибних відкриттів у всій
+ * родині, а не ймовірність помилки в окремому тесті.
+ *
+ * Обрано BH, а не Бонферроні: останній при 25 порівняннях вимагав би p<0.002 і
+ * не пропустив би нічого, крім найгрубіших ефектів. Для розвідки власних даних
+ * це надто суворо — краще контрольована частка хибних, ніж мовчання.
+ *
+ * q рахується монотонно з кінця: без цього крок BH міг би оголосити значущим
+ * рядок із БІЛЬШИМ p, ніж у визнаного незначущим сусіда.
+ */
+function applyBH(rows) {
+  const m = rows.length;
+  if (!m) return;
+  const order = rows.map((_, i) => i).sort((a, b) => rows[a].p - rows[b].p);
+  let running = 1;
+  for (let k = m - 1; k >= 0; k--) {
+    const row = rows[order[k]];
+    running = Math.min(running, (m / (k + 1)) * row.p);
+    row.q = round4(running);
+    row.passesBH = running <= BH_ALPHA;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -661,7 +799,18 @@ export function computeArchetypes(days, k = 4) {
 export function analyzeCheckinModel(days) {
   const idx = days.map((d) => dayIndices(d));
   const fit = fitWeights(idx.map((ix, i) => ({ indices: ix, dayScore: days[i].dayScore })));
-  const scores = idx.map((ix) => dayIndexScore(ix, fit.weights));
+  // ⚠️ ГЕЙТ ПОКРИТТЯ — найбільше джерело хибного прочитання в усьому блоці.
+  // «Індекс дня» перенормовує ваги на НАЯВНІ індекси, тож о 09:00, коли
+  // заповнено лише ранок, доступні щонайбільше два виміри — і «92» означало
+  // «я виспався», а виглядало як підсумок доби. Далі число дрейфувало весь
+  // день, а середнє усереднювало ці різні за змістом величини.
+  //
+  // Тому доба з покриттям нижче порогу не отримує оцінки взагалі. Це не
+  // «немає даних» — це «ще рано», і екран мусить сказати саме так.
+  const cover = idx.map(indicesPresent);
+  const scores = idx.map((ix, i) =>
+    cover[i] >= MIN_INDICES_FOR_SCORE ? dayIndexScore(ix, fit.weights, fit.signs) : null,
+  );
   const validScores = scores.filter((s) => s !== null);
   return {
     n: days.length,
@@ -669,6 +818,13 @@ export function analyzeCheckinModel(days) {
     dayIndex: {
       last: scores.length ? scores[scores.length - 1] : null,
       mean: validScores.length ? Math.round(mean(validScores) * 10) / 10 : null,
+      // Скільки вимірів дала ОСТАННЯ доба і скільки треба — щоб підказка могла
+      // сказати «заповни вечір», а не мовчати прочерком.
+      lastCoverage: cover.length ? cover[cover.length - 1] : 0,
+      needCoverage: MIN_INDICES_FOR_SCORE,
+      // Скільки діб вікна взагалі дотягнули до порогу — чесний знаменник
+      // середнього, якого доти не було видно.
+      scored: validScores.length,
     },
     drivers: computeDrivers(days),
     lagged: Object.fromEntries([RECOVERY, BODY].map((i) => [i, computeLagged(days, i)])),

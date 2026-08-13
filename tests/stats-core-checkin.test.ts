@@ -802,7 +802,7 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
   it('checkinModel: порожній стор -> ваги апріорні, драйвери/архетипи не готові', () => {
     const m = aggregateStats(emptyStore(), '2026-07-17').checkinModel;
     expect(m.fit.learned).toBe(false);
-    expect(m.dayIndex).toEqual({ last: null, mean: null });
+    expect(m.dayIndex).toMatchObject({ last: null, mean: null, scored: 0 });
     expect(m.drivers).toEqual([]);
     expect(m.archetypes.ready).toBe(false);
     expect(m.lagged.recovery.ready).toBe(false);

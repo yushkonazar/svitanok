@@ -630,16 +630,25 @@ export const SAMPLE_STATS: Stats = {
     n: 90,
     fit: {
       weights: { recovery: 0.28, resource: 0.24, work: 0.3, agency: 0.1, body: 0.08 },
+      // Один відʼємний знак у демо навмисно: без нього не видно, що рахунок
+      // узагалі вміє віднімати вимір, який тягне день униз.
+      signs: { recovery: 1, resource: 1, work: 1, agency: 1, body: -1 },
+      lambda: 0.5,
       r2: 0.38,
+      // Помітно нижчий за внутрішньовибірковий — так воно й буває, і демо має
+      // показувати саме це, а не два однакові числа.
+      r2cv: 0.21,
       n: 45,
       learned: true,
     },
-    dayIndex: { last: 74.5, mean: 68.2 },
+    dayIndex: { last: 74.5, mean: 68.2, lastCoverage: 5, needCoverage: 3, scored: 41 },
     drivers: [
-      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, nHigh: 22, nLow: 18 },
-      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, nHigh: 24, nLow: 20 },
-      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, nHigh: 19, nLow: 21 },
-      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, nHigh: 15, nLow: 17 },
+      // q/passesBH — поправка на множинні порівняння: демо показує обидва
+      // стани, бо саме різниця між «p<0.05» і «витримує поправку» тут і нова.
+      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, q: 0.019, passesBH: true, nHigh: 22, nLow: 18 },
+      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, q: 0.038, passesBH: true, nHigh: 24, nLow: 20 },
+      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, q: 0.07, passesBH: false, nHigh: 19, nLow: 21 },
+      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, q: 0.11, passesBH: false, nHigh: 15, nLow: 17 },
       { field: 'screen', index: 'recovery', delta: -0.55, d: -0.69, p: 0.031, nHigh: 12, nLow: 26 },
     ],
     lagged: {
@@ -767,7 +776,7 @@ export const EMPTY_STATS: Stats = {
       n: 0,
       learned: false,
     },
-    dayIndex: { last: null, mean: null },
+    dayIndex: { last: null, mean: null, lastCoverage: 0, needCoverage: 3, scored: 0 },
     drivers: [],
     lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
     archetypes: { ready: false, n: 0, groups: [] },
