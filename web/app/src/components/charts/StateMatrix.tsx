@@ -13,6 +13,7 @@ import {
 } from '../../lib/stateMap.ts';
 import { pluralUk } from '../../lib/plural.ts';
 import { daysWindowLabel } from '../../lib/windowLabel.ts';
+import { svgButtonProps } from '../../lib/svgButton.ts';
 import { Segmented } from '../ui/Segmented.tsx';
 
 // Карта станів: енергія × настрій, 5×5 клітинок. Геометрія НАВМИСНО повторює
@@ -163,22 +164,13 @@ export function StateMatrix({ raw, periods = [] }: { raw: CheckinRaw; periods?: 
               // а скрінрідер бачить 25 безіменних прямокутників.
               <g
                 key={key}
-                role="button"
-                tabIndex={0}
-                aria-pressed={tap === key}
-                aria-label={`Енергія ${5 - r}, настрій ${c + 1}: ${
-                  v > 0 ? `${v} ${pluralUk(v, ['раз', 'рази', 'разів'])}` : 'жодного разу'
-                }`}
-                onClick={toggle}
-                onKeyDown={(e) => {
-                  // Пробіл ще й гортає сторінку — для кнопки це не те, чого
-                  // чекають, тож подію треба зупинити, а не лише обробити.
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggle();
-                  }
-                }}
-                style={{ cursor: 'pointer' }}
+                {...svgButtonProps({
+                  label: `Енергія ${5 - r}, настрій ${c + 1}: ${
+                    v > 0 ? `${v} ${pluralUk(v, ['раз', 'рази', 'разів'])}` : 'жодного разу'
+                  }`,
+                  pressed: tap === key,
+                  onActivate: toggle,
+                })}
               >
                 <rect
                   x={x}
