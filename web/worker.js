@@ -37,6 +37,7 @@ import {
   handleSaved,
   handleStats,
 } from './api-dashboard.mjs';
+import { handleStatus } from './api-status.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -265,6 +266,18 @@ export default {
           'cache-control': 'no-store',
         },
       });
+    }
+    // ⚠️ ПУБЛІЧНИЙ — свідомо перед усіма auth-гілками. Єдиний ендпоінт без
+    // автентифікації: зовнішній бейдж «живий сервіс» на yushko.dev. Тіло —
+    // рівно одна мітка часу (web/api-status.mjs), і більше туди нічого класти
+    // не можна: усе, що він віддає, віддається всім.
+    //
+    // Шлях НАВМИСНО /api/status: правило WAF — starts_with(uri.path, "/api/")
+    // з винятками /api/telegram і /api/agent-step, тож ліміт 60/10с діє тут
+    // без жодних змін конфігу. Будь-яка інша назва (/status або щось із
+    // префіксом винятку) тихо вивела б його з-під ліміту.
+    if (url.pathname === '/api/status' && request.method === 'GET') {
+      return handleStatus(request, env);
     }
     if (url.pathname === '/api/history') {
       const auth = await checkOwnerRead(request, env);
