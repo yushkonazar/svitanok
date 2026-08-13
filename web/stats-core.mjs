@@ -297,7 +297,7 @@ export function checkinDateKey(kyivDate, hour) {
   if (h >= 6) return kyivDate;
   const d = new Date(kyivDate + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return dayKey(d);
 }
 
 /** dateKey, зсунутий на n діб (може бути відʼємним). Ніч сну -> ранок, що йде
@@ -305,7 +305,7 @@ export function checkinDateKey(kyivDate, hour) {
 function addDays(dateKey, n) {
   const d = new Date(dateKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
+  return dayKey(d);
 }
 
 /*
@@ -571,6 +571,24 @@ const dayBucket = (store, dateKey) => {
   if (!cur || typeof cur !== 'object') store.days[dateKey] = { opens: 0, mock: 0, news: 0 };
   return store.days[dateKey];
 };
+/**
+ * Date -> "YYYY-MM-DD" БЕЗ toISOString.
+ *
+ * ⚠️ Не мікрооптимізація заради краси. toISOString форматує ПОВНИЙ ISO —
+ * час, мілісекунди, зону, — з якого ми щоразу беремо перші 10 символів. За
+ * один /api/stats білдери проходять ~1500 діб (теплокарта, утримання,
+ * вогники — по 365 кожен, плюс десяток вікон по 30-90), тож ця дрібниця
+ * коштувала ~2 мс із десятимілісекундного бюджету CPU воркера. Заміряно:
+ * ×5.4 на послідовності з 400 діб, вивід символ-у-символ той самий.
+ *
+ * getUTC* навмисно: увесь date-шар модуля працює в UTC, тож локальна зона
+ * не має жодного шансу зсунути ключ.
+ */
+const pad2 = (n) => (n < 10 ? '0' + n : String(n));
+export function dayKey(d) {
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
 /** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
 const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
 // Кап історійних масивів (opensMin/fitApplied/appliedLog): медіані/трендам
@@ -585,7 +603,7 @@ const capPush = (arr, v) => {
 export function weekStartKey(dateKey) {
   const d = new Date(dateKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-  return d.toISOString().slice(0, 10);
+  return dayKey(d);
 }
 
 // Тижневих кошиків інтересів тримаємо пів року — тренду вистачає 6 тижнів.
@@ -944,7 +962,7 @@ function streak(days, dateKey, pred) {
   const d = new Date(dateKey + 'T00:00:00Z');
   if (!pred(days[dateKey])) d.setUTCDate(d.getUTCDate() - 1);
   for (;;) {
-    const k = d.toISOString().slice(0, 10);
+    const k = dayKey(d);
     if (pred(days[k])) {
       cur++;
       d.setUTCDate(d.getUTCDate() - 1);
@@ -1007,7 +1025,7 @@ function buildHeatmap(days, todayKey) {
   const d = new Date(lastWeekStarts(todayKey, weeks)[0] + 'T00:00:00Z');
   const out = [];
   for (;;) {
-    const k = d.toISOString().slice(0, 10);
+    const k = dayKey(d);
     if (k > todayKey) break;
     const day = days[k];
     const o = day?.opens || 0;
@@ -1248,7 +1266,7 @@ function buildHabitWeekly(days, todayKey) {
   const today = new Date(todayKey + 'T00:00:00Z');
   const first = new Date(starts[0] + 'T00:00:00Z');
   for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
-    const k = d.toISOString().slice(0, 10);
+    const k = dayKey(d);
     const b = buckets[weekStartKey(k)];
     if (!b) continue;
     // Знаменник — лише доби, що вже НАСТАЛИ: інакше поточний тиждень завжди
@@ -1307,7 +1325,7 @@ function buildFlameStats(checkins, todayKey) {
   const today = new Date(todayKey + 'T00:00:00Z');
   const first = new Date(starts[0] + 'T00:00:00Z');
   for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
-    const k = d.toISOString().slice(0, 10);
+    const k = dayKey(d);
     const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
     completeDays[k] = { complete: flames.length === FLAME_VALUES.length };
     // missed рахуємо ЛИШЕ на добах, де вечірній чек-ін реально торкались —
@@ -1346,7 +1364,7 @@ export function lastWeekStarts(todayKey, n) {
   d.setUTCDate(d.getUTCDate() - 7 * (n - 1));
   const out = [];
   for (let i = 0; i < n; i++) {
-    out.push(d.toISOString().slice(0, 10));
+    out.push(dayKey(d));
     d.setUTCDate(d.getUTCDate() + 7);
   }
   return out;
@@ -1354,8 +1372,16 @@ export function lastWeekStarts(todayKey, n) {
 
 /** Понеділок тижня НАЙДАВНІШОГО ключа "YYYY-MM-DD" в obj, або null коли порожньо. */
 function earliestWeekStart(dateKeyedObj) {
-  const keys = Object.keys(dateKeyedObj).filter(isDateKey).sort();
-  return keys.length ? weekStartKey(keys[0]) : null;
+  // Мінімум одним проходом замість filter+sort: ISO-ключі лексикографічно
+  // впорядковані так само, як хронологічно, тож сортувати весь рік заради
+  // першого елемента — зайва робота. ⚠️ На заміру це НЕ дало помітного
+  // виграшу (сортування 365 рядків тут не вузьке місце) — лишено як простіший
+  // код, а не як оптимізація.
+  let min = null;
+  for (const k of Object.keys(dateKeyedObj)) {
+    if (isDateKey(k) && (min === null || k < min)) min = k;
+  }
+  return min === null ? null : weekStartKey(min);
 }
 
 /**
@@ -1401,7 +1427,7 @@ function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRece
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const key = d.toISOString().slice(0, 10);
+    const key = dayKey(d);
     const c = checkins[key];
     if (c) {
       // Енергія — до трьох точок за добу; це і є крива, а не крапка.
@@ -1443,7 +1469,7 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const c = checkins[d.toISOString().slice(0, 10)];
+    const c = checkins[dayKey(d)];
     d.setUTCDate(d.getUTCDate() + 1);
     const plan = asList(c?.morning?.plan).filter((x) => CATEGORY_VALUES.includes(x));
     const ate = asList(c?.afternoon?.ate).filter((x) => CATEGORY_VALUES.includes(x));
@@ -1484,7 +1510,7 @@ function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const c = checkins[d.toISOString().slice(0, 10)];
+    const c = checkins[dayKey(d)];
     if (c) for (const sl of CHECKIN_SLOTS) if (c[sl] && Object.keys(c[sl]).length) fill[sl]++;
     d.setUTCDate(d.getUTCDate() + 1);
   }
@@ -1503,7 +1529,7 @@ function buildPlanVsFact(checkins, appliedLog, todayKey, days = STATS_WINDOWS.ch
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const key = d.toISOString().slice(0, 10);
+    const key = dayKey(d);
     const m = checkins[key]?.morning;
     // Лише РОБОЧІ дні (plan='work'): у v2 planApply опційне й показується тільки
     // там. Без гейта на plan осиротіле число (обрав «Робота», ввів, перемкнув на
@@ -1527,7 +1553,7 @@ function buildSleepVsDayScore(checkins, todayKey, days = STATS_WINDOWS.checkinMi
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const c = checkins[d.toISOString().slice(0, 10)];
+    const c = checkins[dayKey(d)];
     const sleep = c?.morning?.sleepH;
     const score = c?.evening?.dayScore;
     if (typeof sleep === 'number' && typeof score === 'number') {
@@ -1562,7 +1588,7 @@ function buildCategoryInsight(checkins, todayKey, days = STATS_WINDOWS.checkinRe
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const c = checkins[d.toISOString().slice(0, 10)];
+    const c = checkins[dayKey(d)];
     // Лише ВІДОМІ категорії: старі значення до v2 (apply/interview/procrast) не
     // мусять пролазити сирим слагом у «куди йде час» і спотворювати відсотки.
     // asList: поле стало мультивибором, але легасі-доби тримають рядок.
@@ -1601,7 +1627,7 @@ function buildBedtimeVsEnergy(checkins, todayKey, days = STATS_WINDOWS.checkinMi
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const m = checkins[d.toISOString().slice(0, 10)]?.morning;
+    const m = checkins[dayKey(d)]?.morning;
     if (m && typeof m.energy === 'number' && typeof m.bedtime === 'string') {
       if (EARLY.has(m.bedtime)) early.push(m.energy);
       else if (LATE.has(m.bedtime)) late.push(m.energy);
@@ -1645,7 +1671,7 @@ function buildSocialContext(checkins, todayKey, days = STATS_WINDOWS.checkinMid)
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const c = checkins[d.toISOString().slice(0, 10)];
+    const c = checkins[dayKey(d)];
     const who = c?.afternoon?.withWhom;
     if (typeof who === 'string' && who) {
       filled++;
@@ -1701,7 +1727,7 @@ function buildAppliedCalibration(
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const key = d.toISOString().slice(0, 10);
+    const key = dayKey(d);
     const c = checkins[key];
     const self = c?.evening?.applied;
     // Лише робочі дні (plan='work'): осиротіле «скільки вийшло» на не-робочому
@@ -1756,7 +1782,7 @@ function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const rec = checkins[d.toISOString().slice(0, 10)];
+    const rec = checkins[dayKey(d)];
     const ev = rec?.evening;
     if (ev) {
       // asList: обидва стали мультивибором; 'none' — свідома відповідь «нічого
@@ -1802,7 +1828,7 @@ function buildCheckinModel(checkins, todayKey, days = STATS_WINDOWS.checkinDeep)
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
-    const key = d.toISOString().slice(0, 10);
+    const key = dayKey(d);
     flat.push(flattenCheckinDay(checkins[key], asList, CATEGORY_VALUES));
     d.setUTCDate(d.getUTCDate() + 1);
   }
@@ -1977,7 +2003,7 @@ export function aggregateStats(store, todayKey) {
   const wd = new Date(todayKey + 'T00:00:00Z');
   wd.setUTCDate(wd.getUTCDate() - 6);
   for (let i = 0; i < 7; i++) {
-    const k = wd.toISOString().slice(0, 10);
+    const k = dayKey(wd);
     const day = s.days[k];
     weekly.push({ day: UA_DAYS[wd.getUTCDay()], value: day?.opens || 0, active: opened(day) });
     wd.setUTCDate(wd.getUTCDate() + 1);
@@ -2006,7 +2032,7 @@ export function aggregateStats(store, todayKey) {
   // тижневі відгуки (за 7 днів)
   const weekAgo = new Date(todayKey + 'T00:00:00Z');
   weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
-  const weekAgoKey = weekAgo.toISOString().slice(0, 10);
+  const weekAgoKey = dayKey(weekAgo);
   const weeklyApplied = s.appliedLog.filter((a) => a.ts >= weekAgoKey).length;
 
   const conv = (a, b) => (a > 0 ? Math.round((b / a) * 100) : 0);
