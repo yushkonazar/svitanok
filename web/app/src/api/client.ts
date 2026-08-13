@@ -1,6 +1,6 @@
 import { tg, inTelegram } from '../telegram.ts';
-import { statsSchema, type Stats } from './schema.ts';
-import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE } from './sample.ts';
+import { statsSchema, archiveSchema, type Stats, type ArchiveMonth } from './schema.ts';
+import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE, SAMPLE_ARCHIVE } from './sample.ts';
 import {
   briefSchema,
   liveWeatherResponseSchema,
@@ -84,6 +84,24 @@ export async function fetchStats(): Promise<StatsResult> {
     throw new Error('Формат статистики змінився — оновіть застосунок');
   }
   return { stats: parsed.data, demo: false };
+}
+
+/**
+ * Холодний архів місячних згорток (GET /api/archive).
+ *
+ * ⚠️ Тут НЕМАЄ демо-фолбека, на відміну від fetchStats. Архів — це «що було за
+ * роки», і показувати замість нього вигадані місяці означало б підсунути
+ * фальшиву історію там, де вся цінність саме в тому, що вона справжня. Немає
+ * доступу — немає блоку.
+ */
+export async function fetchArchive(): Promise<ArchiveMonth[]> {
+  if (!inTelegram()) return SAMPLE_ARCHIVE;
+  const res = await fetch('/api/archive', { cache: 'no-store', headers: authHeaders() });
+  if (res.status === 401 || res.status === 403) return [];
+  if (!res.ok) throw new Error(`Не вдалося завантажити історію (${res.status})`);
+  const parsed = archiveSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат історії змінився — оновіть застосунок');
+  return parsed.data.months;
 }
 
 /** Брифінг дня + прапор демо. Та сама політика, що й fetchStats. */

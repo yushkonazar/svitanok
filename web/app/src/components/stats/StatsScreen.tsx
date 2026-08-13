@@ -6,6 +6,7 @@ import { RhythmBlock } from './RhythmBlock.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
 import { MasteryBlock } from './MasteryBlock.tsx';
+import { HistoryBlock } from './HistoryBlock.tsx';
 
 // Вкладка «Статистика» (дизайн v2, Svitanok.dc.html): секції з ритмом 26px,
 // кожна — заголовок із градієнтною крапкою та волосінню.
@@ -39,6 +40,10 @@ export function StatsScreen() {
           зіставлення роадмепу з mock-питаннями, якого доти на екрані не було. */}
       <InterestsBlock s={s} />
       <ReliabilityBlock s={s} />
+      {/* Історія — в самому кінці й згорнута: єдиний блок, що дивиться далі за
+          квартал, але й потрібен він рідше за все інше, і коштує окремого
+          читання KV. */}
+      <HistoryBlock />
     </div>
   );
 }

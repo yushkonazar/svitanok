@@ -38,6 +38,7 @@ import {
   handleStats,
 } from './api-dashboard.mjs';
 import { handleStatus } from './api-status.mjs';
+import { handleArchiveRequest } from './api-archive.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -295,6 +296,12 @@ export default {
     }
     if (url.pathname === '/api/event' && request.method === 'POST') {
       return handleEvent(request, env);
+    }
+    if (url.pathname === '/api/archive') {
+      // Холодний архів місячних згорток — ОКРЕМО від /api/stats: там бюджет
+      // 10 мс CPU на кожен відкритий дашборд, а це потрібно лише коли людина
+      // відкриє «Історію».
+      return handleArchiveRequest(request, env);
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
