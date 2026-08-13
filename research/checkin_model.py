@@ -118,7 +118,8 @@ FIELD_INDEX = {f.name: i for i, f in enumerate(FIELDS)}
 MIN_FIELDS_PER_INDEX = 2   # менше — індекс за добу не рахуємо (None)
 MIN_DAYS_FOR_FIT = 20      # менше — ваги не вчимо, беремо апріорні
 MIN_N_PER_BUCKET = 8       # драйвер показуємо лише з 8 добами в КОЖНОМУ кошику
-RIDGE_LAMBDA = 1.0         # регуляризація: 20-30 діб на 5 предикторів
+MIN_INDICES_FOR_SCORE = 3  # менше — «Індекс дня» за добу не рахуємо взагалі
+RIDGE_GRID = [0.05, 0.15, 0.5, 1.5, 5, 15]  # λ обирається за LOO-CV, не зашита
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,39 +213,90 @@ def fit_weights(rows: list[tuple[dict[str, float | None], float]]):
     X = np.array([[ix[i] for i in INDICES] for ix, _ in full], dtype=float)
     y = np.array([(sc - 1.0) / 4.0 for _, sc in full], dtype=float)  # dayScore 1..5 -> 0..1
 
-    Xc, Xm = X - X.mean(0), X.mean(0)
-    yc, ym = y - y.mean(), y.mean()
-    A = Xc.T @ Xc + RIDGE_LAMBDA * np.eye(len(INDICES))
-    beta = np.linalg.solve(A, Xc.T @ yc)
+    Xm, ym = X.mean(0), y.mean()
+    # СТАНДАРТИЗАЦІЯ, не саме центрування: ridge штрафує коефіцієнти, тож без
+    # спільного масштабу предиктор із меншим розкидом дістає більший β і
+    # сильніший штраф — регуляризація починає залежати від рівності виміру, а
+    # не від його важливості.
+    sd = X.std(0, ddof=1)
+    sd = np.where(sd > 1e-9, sd, 1.0)
+    Xz = (X - Xm) / sd
+    yc = y - ym
+    ss_tot = float((yc ** 2).sum())
+    rows = Xz.shape[0]
 
-    pred = Xc @ beta + ym
-    ss_res = float(((y - pred) ** 2).sum())
-    ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else None
+    gram = Xz.T @ Xz
+    rhs = Xz.T @ yc
 
-    # Внесок у ВІДСОТКАХ читається людиною, сирий коефіцієнт — ні. Беремо
-    # модуль: індекс із відʼємним коефіцієнтом все одно ПОЯСНЮЄ оцінку.
-    mag = np.abs(beta)
+    def fit_at(lam: float):
+        """Підгонка при заданій λ + LOO-CV у ЗАМКНУТІЙ формі.
+
+        PRESS через діагональ капелюшної матриці: залишок відкинутої доби
+        дорівнює e/(1-h), тож перенавчати `rows` разів не треба. 1/rows у h —
+        внесок вільного члена, знятого центруванням.
+        """
+        A = gram + lam * np.eye(len(INDICES))
+        beta = np.linalg.solve(A, rhs)
+        Ainv = np.linalg.inv(A)
+        h = 1.0 / rows + np.einsum("ij,jk,ik->i", Xz, Ainv, Xz)
+        e = yc - Xz @ beta
+        # Клемп ЗНИЗУ, не фолбек на e: при h -> 1 підстановка самого залишку
+        # робила б штраф НАЙМЕНШИМ саме для доби, яку підгонка «вивчила
+        # напамʼять» — помилка в бік оптимізму там, де CV мусить бути суворим.
+        denom = np.maximum(1.0 - h, 1e-6)
+        press = float(((e / denom) ** 2).sum())
+        return {"lambda": lam, "beta": beta, "ss_res": float((e ** 2).sum()), "press": press}
+
+    best = min((fit_at(l) for l in RIDGE_GRID), key=lambda c: c["press"])
+    beta, lam = best["beta"], best["lambda"]
+
+    r2 = 1.0 - best["ss_res"] / ss_tot if ss_tot > 1e-12 else None
+    # CV-R² може бути ВІДʼЄМНИМ — це не помилка, а «передбачає гірше за
+    # середнє». Обрізати до нуля означало б сховати єдиний випадок, коли
+    # моделі не варто вірити.
+    r2cv = 1.0 - best["press"] / ss_tot if ss_tot > 1e-12 else None
+
+    # Коефіцієнти — у ВИХІДНОМУ масштабі індексів, інакше intercept поїде.
+    beta_raw = beta / sd
+    mag = np.abs(beta_raw)
     share = mag / mag.sum() if mag.sum() > 1e-12 else np.full(len(INDICES), 1 / len(INDICES))
     return {
         "weights": {i: float(s) for i, s in zip(INDICES, share)},
-        "beta": {i: float(b) for i, b in zip(INDICES, beta)},
-        "intercept": float(ym - Xm @ beta),
+        "beta": {i: float(b) for i, b in zip(INDICES, beta_raw)},
+        # Знак окремо від величини: смуги показують ВАГУ, рахунок мусить знати
+        # НАПРЯМОК. Доти знак губився в abs, і вимір, що тягне день униз,
+        # підіймав «Індекс дня».
+        "signs": {i: (-1 if b < 0 else 1) for i, b in zip(INDICES, beta_raw)},
+        "intercept": float(ym - Xm @ beta_raw),
+        "lambda": float(lam),
         "r2": r2,
+        "r2cv": r2cv,
         "n": len(full),
         "learned": True,
     }
 
 
-def day_index_score(ix: dict[str, float | None], weights: dict[str, float]) -> float | None:
-    """5 індексів + ваги -> «Індекс дня» 0..100. Ваги перенормовуються на наявні."""
+def day_index_score(ix: dict[str, float | None], weights: dict[str, float],
+                    signs: dict[str, int] | None = None) -> float | None:
+    """5 індексів + ваги -> «Індекс дня» 0..100. Ваги перенормовуються на наявні.
+
+    ЗНАК МАЄ ЗНАЧЕННЯ: ваги — це |β|/Σ|β|, чиста величина внеску. Якщо у виміру
+    відʼємний коефіцієнт (більше — гірший день), у середнє входить його
+    ДОПОВНЕННЯ; інакше високе значення шкідливого виміру підіймало б оцінку.
+    """
     num = den = 0.0
     for i in INDICES:
         if ix.get(i) is None:
             continue
-        num += ix[i] * weights[i]
+        v = 1.0 - ix[i] if signs and signs.get(i, 1) < 0 else ix[i]
+        num += v * weights[i]
         den += weights[i]
     return round(100 * num / den, 1) if den > 0 else None
+
+
+def indices_present(ix: dict[str, float | None]) -> int:
+    """Скільки з пʼяти індексів доба реально дає."""
+    return sum(1 for i in INDICES if ix.get(i) is not None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,7 +356,37 @@ def drivers(days: list[dict], target: str = "dayScore") -> list[dict]:
             "nHigh": len(hi),
             "nLow": len(lo),
         })
+    _apply_bh(out)
     return sorted(out, key=lambda r: -abs(r["d"]))
+
+
+BH_ALPHA = 0.05
+
+
+def _apply_bh(rows: list[dict]) -> None:
+    """Поправка Бенʼяміні-Хохберга на МНОЖИННІ порівняння — на місці.
+
+    Драйверів десятки, кожен перевіряється власним тестом при p<0.05: на 25
+    полях приблизно один «значущий» результат очікується ЧИСТО ВИПАДКОВО, тобто
+    підпис «значущо» на найгучнішому рядку був майже гарантований навіть на
+    шумі. BH контролює частку хибних відкриттів у всій родині.
+
+    Не Бонферроні: той при 25 порівняннях вимагав би p<0.002 і не пропустив би
+    нічого, крім найгрубіших ефектів — для розвідки власних даних надто суворо.
+
+    q рахується монотонно з кінця: інакше крок BH міг би оголосити значущим
+    рядок із БІЛЬШИМ p, ніж у визнаного незначущим сусіда.
+    """
+    m = len(rows)
+    if not m:
+        return
+    order = sorted(range(m), key=lambda i: rows[i]["p"])
+    running = 1.0
+    for k in range(m - 1, -1, -1):
+        row = rows[order[k]]
+        running = min(running, (m / (k + 1)) * row["p"])
+        row["q"] = round(running, 4)
+        row["passesBH"] = running <= BH_ALPHA
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -449,13 +531,24 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
 def analyze(days: list[dict]) -> dict:
     idx = [day_indices(d) for d in days]
     fit = fit_weights(list(zip(idx, [d.get("dayScore") for d in days])))
-    scores = [day_index_score(i, fit["weights"]) for i in idx]
+    # ГЕЙТ ПОКРИТТЯ — найбільше джерело хибного прочитання блоку. «Індекс дня»
+    # перенормовує ваги на НАЯВНІ індекси, тож о 09:00 доступні щонайбільше два
+    # виміри, і «92» означало «я виспався», а виглядало як підсумок доби.
+    cover = [indices_present(i) for i in idx]
+    scores = [
+        day_index_score(i, fit["weights"], fit.get("signs")) if c >= MIN_INDICES_FOR_SCORE else None
+        for i, c in zip(idx, cover)
+    ]
+    valid = [s for s in scores if s is not None]
     return {
         "n": len(days),
         "fit": fit,
         "dayIndex": {
-            "last": scores[-1],
-            "mean": round(float(np.mean([s for s in scores if s is not None])), 1),
+            "last": scores[-1] if scores else None,
+            "mean": round(float(np.mean(valid)), 1) if valid else None,
+            "lastCoverage": cover[-1] if cover else 0,
+            "needCoverage": MIN_INDICES_FOR_SCORE,
+            "scored": len(valid),
         },
         "drivers": drivers(days),
         "lagged": {i: lagged(days, i) for i in (RECOVERY, BODY)},
@@ -474,7 +567,8 @@ def emit_golden(path: Path) -> dict:
             "MIN_FIELDS_PER_INDEX": MIN_FIELDS_PER_INDEX,
             "MIN_DAYS_FOR_FIT": MIN_DAYS_FOR_FIT,
             "MIN_N_PER_BUCKET": MIN_N_PER_BUCKET,
-            "RIDGE_LAMBDA": RIDGE_LAMBDA,
+            "MIN_INDICES_FOR_SCORE": MIN_INDICES_FOR_SCORE,
+            "RIDGE_GRID": RIDGE_GRID,
         },
         # Точкові перевірки нормалізації — найдешевший спосіб зловити розʼїзд
         # полярності/кривої сну в порті.

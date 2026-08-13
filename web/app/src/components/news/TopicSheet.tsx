@@ -17,7 +17,7 @@ export function TopicSheet({ group, onClose }: { group: NewsGroupT; onClose: () 
   const release = isReleaseTopic(group.topic);
 
   return (
-    <Sheet onClose={onClose}>
+    <Sheet onClose={onClose} label="Теми новин">
       <div className="mb-3 flex items-center gap-2">
         <span className="text-lg">{topicEmoji(group.topic)}</span>
         <span className="text-[15px] font-bold tracking-[-0.01em]">{group.topic}</span>

@@ -391,24 +391,34 @@ describe('tg-core — sentMessages ring buffer (§C5: /clear)', () => {
 });
 
 describe('tg-core — formatStatsMessage/formatJobsMessage/formatSavedMessage (Блок P4)', () => {
-  it('formatStatsMessage — базові поля + слабкі теми (лише value>0) + fit', () => {
+  it('formatStatsMessage — базові поля + fit', () => {
     const msg = formatStatsMessage({
       streaks: { openDays: 3, bestOpenDays: 7, mockDays: 1 },
       funnel: { saved: 2, applied: 1, interview: 0, offer: 0 },
       goal: { weeklyApplied: 1, weeklyTarget: 5 },
       avgFitApplied: 82,
-      mock: {
-        weakTopics: [
-          { name: 'React', value: 40 },
-          { name: 'Дате', value: 0 },
-        ],
-      },
     });
     expect(msg).toContain('Стрік відкриттів: 3 дн. (рекорд 7)');
     expect(msg).toContain('<code>[██░░░░░░░░]</code> 1/5 подано'); // прогрес-бар (Фаза B4): 1/5*10=2
     expect(msg).toContain('82%');
-    expect(msg).toContain('React');
-    expect(msg).not.toContain('Дате'); // value:0 відфільтровано
+  });
+
+  /* ⚠️ Рядок «Слабкі теми» ПРИБРАНО свідомо, і це не втрата. Він брав
+     mock.weakTopics — all-time відсоток невдалих ПО mock-темі, без жодного
+     гейта на розмір вибірки. Тема, яку питали двічі й обидва рази позначили
+     складною, давала 100% і очолювала список — тобто найгучніше місце
+     повідомлення діставалось найменш перевіреній темі.
+
+     Заміна — блок «Відмітив, а не дається» нижче: він бере ту саму слабкість,
+     але поруч із прогресом роадмепу, і теми без питань до нього не потрапляють
+     за побудовою (easePct === null). */
+  it('старий рядок «Слабкі теми» більше не показується', () => {
+    const msg = formatStatsMessage({
+      streaks: { openDays: 3 },
+      mock: { weakTopics: [{ name: 'React', value: 100 }] },
+    });
+    expect(msg).not.toContain('Слабкі теми');
+    expect(msg).not.toContain('React');
   });
 
   it('formatStatsMessage — порожній стор не падає (дефолти)', () => {
@@ -707,5 +717,135 @@ describe('mdToTelegramHtml — плейсхолдер коду не чіпає �
   it('літеральний «<C0>» у тексті моделі не стає кодом', () => {
     // Після escapeHtml це вже &lt;C0&gt;, тож підміна його не бачить.
     expect(mdToTelegramHtml('<C0>')).toBe('&lt;C0&gt;');
+  });
+});
+
+/* /stats у чаті — редизайн після дизайн-проходу по дашборду.
+ *
+ * ⚠️ ПРИВІД. Дашборд за прохід навчився відповідати на «що потребує уваги»
+ * (вакансії без руху, розрив «відмітив ↔ дається», швидкість кроків), а бот
+ * лишився знімком лічильників — стрік, ціль, воронка. Тобто найдієвіше з
+ * нового було доступне ЛИШЕ якщо відкрити Mini App.
+ *
+ * Різниця ролей при цьому реальна: дашборд ГОРТАЮТЬ, повідомлення в чаті
+ * ПРОБІГАЮТЬ очима. Тому сюди йде не все, а лише те, з чого можна щось
+ * зробити просто зараз, і кожен блок зʼявляється, лише коли має вміст. */
+describe('tg-core — formatStatsMessage після проходу по статистиці', () => {
+  const base = {
+    streaks: { openDays: 3, bestOpenDays: 7, mockDays: 1 },
+    funnel: { saved: 2, applied: 1, interview: 0, offer: 0 },
+    goal: { weeklyApplied: 1, weeklyTarget: 5 },
+  };
+
+  it('вакансії без руху — окремим блоком зі стадією й днями', () => {
+    const msg = formatStatsMessage({
+      ...base,
+      funnelSpeed: {
+        steps: [],
+        staleAfterDays: 21,
+        stale: [
+          { url: 'https://x/1', stage: 'applied', title: 'Frontend — Aurora', days: 34 },
+          { url: 'https://x/2', stage: 'saved', title: 'React — Northwind', days: 27 },
+        ],
+      },
+    });
+    expect(msg).toContain('Frontend — Aurora');
+    expect(msg).toContain('34 дн.');
+    expect(msg).toContain('подано');
+  });
+
+  it('список без руху обрізається — у чаті це зведення, а не архів', () => {
+    const stale = Array.from({ length: 9 }, (_, i) => ({
+      url: `https://x/${i}`,
+      stage: 'saved',
+      title: `Вакансія ${i}`,
+      days: 30 + i,
+    }));
+    const msg = formatStatsMessage({
+      ...base,
+      funnelSpeed: { steps: [], stale, staleAfterDays: 21 },
+    });
+    expect(msg).toContain('Вакансія 0');
+    expect(msg).not.toContain('Вакансія 8');
+    expect(msg).toMatch(/ще \d+/);
+  });
+
+  it('нічого не лежить -> блоку немає взагалі, а не «0 вакансій»', () => {
+    const msg = formatStatsMessage({
+      ...base,
+      funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
+    });
+    expect(msg).not.toContain('без руху');
+  });
+
+  it('крок із медіаною показується, крок без неї — мовчить', () => {
+    const msg = formatStatsMessage({
+      ...base,
+      funnelSpeed: {
+        stale: [],
+        staleAfterDays: 21,
+        steps: [
+          { from: 'saved', to: 'applied', n: 9, medianDays: 3 },
+          { from: 'applied', to: 'interview', n: 1, medianDays: null },
+        ],
+      },
+    });
+    expect(msg).toContain('3 дн.');
+    // Крок без медіани у чат не йде: «замало переходів» — це шум у зведенні.
+    expect(msg).not.toContain('співбесіда:');
+  });
+
+  it('розрив «відмітив ↔ дається» — лише помітний, з обома числами', () => {
+    const msg = formatStatsMessage({
+      ...base,
+      mastery: {
+        topics: [
+          { id: 'a', title: '📡 HTTP', done: 4, total: 5, seen: 11, weak: 8, easePct: 27 },
+          { id: 'b', title: '🌐 Frontend', done: 7, total: 7, seen: 22, weak: 3, easePct: 86 },
+        ],
+      },
+    });
+    expect(msg).toContain('📡 HTTP');
+    expect(msg).toContain('80%');
+    expect(msg).toContain('27%');
+    // Рівна тема (100 проти 86) — не розрив, у чат не йде.
+    expect(msg).not.toContain('Frontend');
+  });
+
+  it('тема без питань НЕ потрапляє в розрив (нуль тут не оцінка)', () => {
+    const msg = formatStatsMessage({
+      ...base,
+      mastery: {
+        topics: [
+          { id: 'a', title: '🧪 Тестування', done: 5, total: 5, seen: 0, weak: 0, easePct: null },
+        ],
+      },
+    });
+    expect(msg).not.toContain('Тестування');
+  });
+
+  it('відмінок співбесід живий: 2 — «співбесіди», 5 — «співбесід»', () => {
+    const two = formatStatsMessage({ ...base, funnel: { ...base.funnel, interview: 2 } });
+    const five = formatStatsMessage({ ...base, funnel: { ...base.funnel, interview: 5 } });
+    expect(two).toContain('2 співбесіди');
+    expect(five).toContain('5 співбесід');
+  });
+
+  it('усе порожнє -> повідомлення все одно валідне', () => {
+    expect(() => formatStatsMessage({})).not.toThrow();
+    expect(formatStatsMessage({})).toContain('Статистика');
+  });
+
+  it('назви вакансій і тем екрануються', () => {
+    const msg = formatStatsMessage({
+      ...base,
+      funnelSpeed: {
+        steps: [],
+        staleAfterDays: 21,
+        stale: [{ url: 'https://x/1', stage: 'saved', title: '<script>x</script>', days: 30 }],
+      },
+    });
+    expect(msg).toContain('&lt;script&gt;');
+    expect(msg).not.toContain('<script>');
   });
 });

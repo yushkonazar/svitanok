@@ -537,34 +537,125 @@ export function formatSavedMessage(savedList) {
   return lines.join('\n');
 }
 
-/** /stats — стрік+ціль+воронка+слабкі mock-теми, з /api/stats (aggregateStats). */
+/**
+ * Українське відмінювання за числом — ОДНЕ правило на воркер.
+ *
+ * ⚠️ mod100 перевіряється окремо: 11-14 закінчуються на 1-4, але вимагають
+ * форми «багато». Правило «дивись лише на останню цифру» дає «11 співбесіда».
+ * Дзеркало pluralUk із web/app/src/lib/plural.ts — клієнт і воркер живуть у
+ * різних світах модулів (.ts проти .mjs), тож імпортувати одне в інше нічим.
+ */
+function plural(n, forms) {
+  const mod10 = Math.abs(n) % 10;
+  const mod100 = Math.abs(n) % 100;
+  if (mod10 === 1 && mod100 !== 11) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
+  return forms[2];
+}
+
+/** Підпис стадії у зведенні «без руху». */
+const STALE_STAGE = { saved: 'збережено', applied: 'подано', interview: 'співбесіда' };
+
+/** Підпис кроку воронки — «куди дійшли»: саме це очікування й міряється. */
+const SPEED_STEP = {
+  applied: 'Збережено → подано',
+  interview: 'Подано → співбесіда',
+  offer: 'Співбесіда → офер',
+};
+
+/** Скільки рядків показуємо в чаті: це зведення, а не архів. */
+const CHAT_STALE = 3;
+const CHAT_GAP = 2;
+
+/** Нижче цього розрив «відмітив ↔ дається» — округлення, а не сигнал. */
+const CHAT_GAP_MIN = 15;
+
+/**
+ * /stats — зведення в чаті.
+ *
+ * ⚠️ ЧОМУ НЕ ПРОСТО «ТЕ САМЕ, ЩО НА ДАШБОРДІ». Дашборд ГОРТАЮТЬ, повідомлення
+ * в чаті ПРОБІГАЮТЬ очима. Тому сюди йде не все нове, а лише те, з чого можна
+ * щось зробити просто зараз: вакансії без руху (це буквально список справ) і
+ * розрив «відмітив пройденим, а питання не даються» (це список на повторення).
+ * Решта — тренди, розподіли, історія — лишається там, де її можна роздивитись.
+ *
+ * Кожен блок зʼявляється, ЛИШЕ коли має вміст: «0 вакансій без руху» — рядок,
+ * який щодня займає місце й нічого не каже.
+ */
 export function formatStatsMessage(stats) {
   const s = stats || {};
   const streaks = s.streaks || {};
   const funnel = s.funnel || {};
   const goal = s.goal || {};
+  const speed = s.funnelSpeed || {};
   const goalBar = progressBar(goal.weeklyApplied ?? 0, goal.weeklyTarget ?? 0);
+  const interview = funnel.interview ?? 0;
+  const offer = funnel.offer ?? 0;
+  const rejected = funnel.rejected ?? 0;
+  const failed = funnel.failed ?? 0;
   const lines = [
     '📊 <b>Статистика</b>',
     '',
     `🔥 Стрік відкриттів: ${streaks.openDays ?? 0} дн. (рекорд ${streaks.bestOpenDays ?? 0})`,
     `🎯 Тижнева ціль: ${goalBar ? goalBar + ' ' : ''}${goal.weeklyApplied ?? 0}/${goal.weeklyTarget ?? 0} подано`,
+    // ⚠️ Відмінки живі скрізь у рядку, а не лише де впало в око: доти тут
+    // стояло «2 співбесід», «1 відмов» і дужковий обхід «офер(и)/провал(ів)» —
+    // три способи не відмінювати в одному повідомленні.
     `💼 Воронка: ${funnel.saved ?? 0} збережено · ${funnel.applied ?? 0} подано · ` +
-      `${funnel.interview ?? 0} співбесід · ${funnel.offer ?? 0} офер(и)`,
+      `${interview} ${plural(interview, ['співбесіда', 'співбесіди', 'співбесід'])} · ` +
+      `${offer} ${plural(offer, ['офер', 'офери', 'оферів'])}`,
     // Термінальні (F1) — окремим рядком і лише коли є: у порожній воронці
     // «0 відмов» лише шумить.
-    ...(funnel.rejected || funnel.failed
-      ? [`🚫 Закрито: ${funnel.rejected ?? 0} відмов · ${funnel.failed ?? 0} провал(ів) співбесід`]
+    ...(rejected || failed
+      ? [
+          `🚫 Закрито: ${rejected} ${plural(rejected, ['відмова', 'відмови', 'відмов'])} · ` +
+            `${failed} ${plural(failed, ['провал', 'провали', 'провалів'])} співбесід`,
+        ]
       : []),
     `🎤 Mock-стрік: ${streaks.mockDays ?? 0} дн.`,
   ];
   if (typeof s.avgFitApplied === 'number') {
     lines.push(`📈 Середній fit поданих: ${s.avgFitApplied}%`);
   }
-  const weak = (s.mock?.weakTopics ?? []).filter((t) => t.value > 0).slice(0, 3);
-  if (weak.length > 0) {
-    lines.push(`⚠️ Слабкі теми: ${weak.map((t) => escapeHtml(t.name)).join(', ')}`);
+
+  // Найдієвіше з усього повідомлення: список того, що чекає на рух.
+  const stale = Array.isArray(speed.stale) ? speed.stale : [];
+  if (stale.length > 0) {
+    lines.push('', `⏳ <b>Лежить без руху</b> (${speed.staleAfterDays ?? 21}+ дн.)`);
+    for (const j of stale.slice(0, CHAT_STALE)) {
+      const label = STALE_STAGE[j.stage] ?? j.stage;
+      lines.push(`• ${escapeHtml(j.title || j.url || '?')} — ${label}, ${j.days} дн.`);
+    }
+    if (stale.length > CHAT_STALE) lines.push(`• …ще ${stale.length - CHAT_STALE}`);
   }
+
+  // Медіани кроків — лише там, де вони є. Крок без медіани в чат не йде:
+  // «замало переходів» доречне на дашборді, а тут це шум у зведенні.
+  const steps = (Array.isArray(speed.steps) ? speed.steps : []).filter(
+    (st) => typeof st.medianDays === 'number',
+  );
+  if (steps.length > 0) {
+    lines.push('');
+    for (const st of steps) {
+      lines.push(`🕰 ${SPEED_STEP[st.to] ?? st.to}: зазвичай ${st.medianDays} дн.`);
+    }
+  }
+
+  // Розрив «відмітив пройденим ↔ питання не даються» — список на повторення.
+  // Теми без питань (easePct === null) сюди не потрапляють за побудовою: нуль
+  // тут означав би найгіршу оцінку за те, що тему жодного разу не питали.
+  const gaps = (s.mastery?.topics ?? [])
+    .filter((t) => typeof t.easePct === 'number' && t.total > 0)
+    .map((t) => ({ ...t, donePct: Math.round((t.done / t.total) * 100) }))
+    .filter((t) => t.donePct - t.easePct >= CHAT_GAP_MIN)
+    .sort((a, b) => b.donePct - b.easePct - (a.donePct - a.easePct));
+  if (gaps.length > 0) {
+    lines.push('', '🎓 <b>Відмітив, а не дається</b>');
+    for (const t of gaps.slice(0, CHAT_GAP)) {
+      lines.push(`• ${escapeHtml(t.title)} — ${t.donePct}% пройдено, ${t.easePct}% дається`);
+    }
+  }
+
   return lines.join('\n');
 }
 

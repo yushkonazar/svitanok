@@ -101,7 +101,11 @@ export function OpenRhythm({ rhythm }: { rhythm: Stats['openRhythm'] }) {
       <div className="text-[11px] leading-[1.45] text-tx3">
         <span className="font-semibold text-tx2">{spreadWord(iqr)}</span> — половина діб між{' '}
         {clockLabel(q1)} і {clockLabel(q3)}
-        <span className="font-mono text-[10px]"> · {rhythm.n} діб</span>
+        {/* «діб ІЗ ВІДКРИТТЯМ», не просто «діб»: вибірка рахується в записах
+            журналу (одна доба, коли застосунок відкривали), тож доба без
+            жодного відкриття у це число не входить. Різниця мала на вигляд,
+            але саме вона відрізняє «за 90 днів» від «за 90 разів». */}
+        <span className="font-mono text-[10px]"> · {rhythm.n} діб із відкриттям</span>
       </div>
     </div>
   );

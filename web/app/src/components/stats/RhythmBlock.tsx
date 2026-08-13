@@ -1,8 +1,13 @@
 import type { Stats } from '../../api/schema.ts';
 import { clamp, has } from '../../lib/format.ts';
 import { useInView } from '../../lib/useInView.ts';
-import { SectionHead, StatRow } from '../ui/primitives.tsx';
+import { SectionHead, StatRow, Hint } from '../ui/primitives.tsx';
+import { pluralUk } from '../../lib/plural.ts';
 import { MiniTrend } from '../charts/MiniTrend.tsx';
+// ⚠️ Глибина береться з s.windows, а НЕ з рядка. Доти тут стояло зашите
+// «8 ТИЖНІВ» окремо від серверної константи: змінилась би вона — підпис
+// збрехав би мовчки, і дізнатись про це не було б звідки.
+import { weeksWindowLabel } from '../../lib/windowLabel.ts';
 
 // Ритм (повний редизайн статистики, замінює колишню «Воронка та ціль») —
 // картки-лічильники стадій (saved/applied/interview/offer) прибрано ЦІЛКОМ:
@@ -13,7 +18,21 @@ import { MiniTrend } from '../charts/MiniTrend.tsx';
 // голого числа/базового спарклайна, щоб "чи я на правильному шляху" читалось
 // з форми лінії, а не лише з одного відсотка.
 
+/** Підпис кроку — «куди дійшли», бо саме це очікування й міряється. */
+const STEP_LABEL: Record<string, string> = {
+  applied: 'Збережено → подано',
+  interview: 'Подано → співбесіда',
+  offer: 'Співбесіда → офер',
+};
+
+const STAGE_SHORT: Record<string, string> = {
+  saved: 'збережено',
+  applied: 'подано',
+  interview: 'співбесіда',
+};
+
 export function RhythmBlock({ s }: { s: Stats }) {
+  const speed = s.funnelSpeed;
   // Смуга цілі заповнюється, коли доїхала до екрана — той самий barFill, що
   // й смуги навичок у MasteryBlock.
   const [goalRef, goalInView] = useInView<HTMLDivElement>();
@@ -86,11 +105,79 @@ export function RhythmBlock({ s }: { s: Stats }) {
         )}
       </div>
 
+      {/* ШВИДКІСТЬ. Доти блок відповідав лише на «скільки»: відсотки конверсій,
+          ціль, два тренди. «А скільки це триває» і «що лежить без руху» не мало
+          відповіді ніде — при тому, що журнал переходів (funnelMeta.history)
+          збирається давно й уже їде в payload заради «Історії» у шторці.
+          Для того, хто шукає роботу, це найпрактичніше тут: «подав 12 діб тому
+          й тиша» — привід написати, а не чекати далі. */}
+      {speed.steps.some((st) => st.n > 0) && (
+        <div className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass p-4">
+          <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
+            СКІЛЬКИ ТРИВАЄ КРОК
+          </span>
+          {speed.steps.map((st) => (
+            <div key={st.to} className="flex items-baseline gap-2 text-[11.5px]">
+              <span className="flex-1 text-tx2">
+                {STEP_LABEL[st.to] ?? st.to}
+              </span>
+              {st.medianDays !== null ? (
+                <span className="font-mono text-[11px] font-semibold">
+                  {st.medianDays} {pluralUk(st.medianDays, ['доба', 'доби', 'діб'])}
+                </span>
+              ) : (
+                // ⚠️ НЕ нуль і не прочерк без пояснення: «замало» — це інша
+                // відповідь, ніж «миттєво», і плутати їх тут найлегше.
+                <span className="font-mono text-[10px] text-tx3">замало переходів</span>
+              )}
+              <span className="w-[52px] flex-none text-right font-mono text-[10px] text-tx3">
+                {st.n} {pluralUk(st.n, ['перехід', 'переходи', 'переходів'])}
+              </span>
+            </div>
+          ))}
+          <Hint>
+            Медіана, а не середнє: одна вакансія, що пролежала пів року, інакше зсунула б усю
+            оцінку. «Замало переходів» означає, що крок проходили менше трьох разів — на такій
+            вибірці будь-яке число було б вигадкою.
+          </Hint>
+        </div>
+      )}
+
+      {speed.stale.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass p-4">
+          <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
+            ЛЕЖИТЬ БЕЗ РУХУ · {speed.staleAfterDays}+ ДІБ
+          </span>
+          {speed.stale.slice(0, 5).map((j) => (
+            <div key={j.url} className="flex items-baseline gap-2 text-[11.5px]">
+              <span className="min-w-0 flex-1 truncate text-tx2">{j.title || j.url}</span>
+              <span className="flex-none font-mono text-[10px] text-tx3">
+                {STAGE_SHORT[j.stage] ?? j.stage}
+              </span>
+              <span className="w-[46px] flex-none text-right font-mono text-[10.5px] font-semibold text-neg">
+                {j.days} дн.
+              </span>
+            </div>
+          ))}
+          {speed.stale.length > 5 && (
+            <span className="font-mono text-[10px] text-tx3">
+              …і ще {speed.stale.length - 5}
+            </span>
+          )}
+          <Hint>
+            Скільки діб вакансія стоїть на тій самій стадії. Рахується від ОСТАННЬОГО руху, а не
+            від дати збереження: вакансія може бути у воронці пів року, але якщо стадію змінили
+            вчора — це рух. Термінальні (відмова/провал/офер) сюди не потрапляють: там уже нічого
+            не чекають.
+          </Hint>
+        </div>
+      )}
+
       {has(s.avgFitApplied) && (
         <div>
           <div className="mb-1 flex items-baseline gap-1.5">
             <span className="font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
-              FIT% ПОДАНИХ · 8 ТИЖНІВ
+              FIT% ПОДАНИХ · {weeksWindowLabel(s.windows.trendWeeks)}
             </span>
             <span className="font-mono text-[11px] font-semibold text-tx2">
               {s.avgFitApplied}% зараз
@@ -106,7 +193,7 @@ export function RhythmBlock({ s }: { s: Stats }) {
       {appliedSum > 0 && (
         <div>
           <div className="mb-1 font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
-            ПОДАЧІ · 8 ТИЖНІВ (РАЗОМ {appliedSum})
+            ПОДАЧІ · {weeksWindowLabel(s.windows.trendWeeks)} (РАЗОМ {appliedSum})
           </div>
           <MiniTrend
             weeks={s.appliedWeekly.map((w) => w.week)}

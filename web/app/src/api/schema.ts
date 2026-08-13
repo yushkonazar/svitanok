@@ -107,6 +107,33 @@ export const habitWeekSchema = z.object({
 
 export const appliedWeekSchema = z.object({ week: z.string(), count: int });
 
+/**
+ * Швидкість воронки: скільки триває кожен крок і що лежить без руху.
+ *
+ * ⚠️ medianDays nullable ЗІ ЗМІСТОМ: null — «переходів замало для медіани»,
+ * а не «нуль днів». Нуль тут читався б як «миттєво», тобто найкраща можлива
+ * оцінка діставалась би кроку, який ще жодного разу нормально не пройшли.
+ */
+export const funnelStepSchema = z.object({
+  from: stageSchema,
+  to: stageSchema,
+  n: int.default(0),
+  medianDays: num.nullable().default(null),
+});
+
+export const staleJobSchema = z.object({
+  url: z.string(),
+  stage: stageSchema,
+  title: z.string().default(''),
+  days: int.default(0),
+});
+
+export const funnelSpeedSchema = z.object({
+  steps: z.array(funnelStepSchema).default([]),
+  stale: z.array(staleJobSchema).default([]),
+  staleAfterDays: int.default(21),
+});
+
 export const interestSchema = z.object({ topic: z.string(), score: num });
 
 export const interestsTrendSchema = z.object({
@@ -140,9 +167,28 @@ export const themeOfWeekSchema = z.object({
 /** Куроване джерело з роадмепу — «Вивчити» в картці питання (F4/F5). */
 export const materialSchema = z.object({ title: z.string(), url: z.string() });
 
+/**
+ * Готовність однієї теми роадмепу: прогрес × як даються питання по ній.
+ *
+ * ⚠️ easePct НЕ nullable «про всяк випадок» — null тут має ЗМІСТ: питань по
+ * темі не було. Нуль читався б як «усе складно», тобто найгірша оцінка
+ * діставалась би темі лише за те, що її жодного разу не питали. Екран мусить
+ * показувати такі теми окремо, а не в одному рейтингу з реально слабкими.
+ */
+export const masteryTopicSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  done: int.default(0),
+  total: int.default(0),
+  seen: int.default(0),
+  weak: int.default(0),
+  easePct: num.nullable().default(null),
+});
+
 export const masterySchema = z.object({
   hints: z.array(masteryHintSchema).default([]),
   themeOfWeek: themeOfWeekSchema.nullable().default(null),
+  topics: z.array(masteryTopicSchema).default([]),
 });
 
 /* ── Чек-ін (п.7) ──────────────────────────────────────────────────────────
@@ -263,6 +309,49 @@ export const checkinDaySchema = z.object({
   afternoon: checkinAfternoonSchema.optional(),
   evening: checkinEveningSchema.optional(),
 });
+
+/**
+ * Гаряче вікно сирих чек-інів — доби з УСІМА тегами, ще не зведеними в рол-ап.
+ *
+ * Потрібне рівно там, де рол-ап безсилий: «тапнув клітинку карти станів — які
+ * саме це були доби й що в них було». `checkinTops` знає, що втома траплялась
+ * 14 разів, але не знає, чи серед них ці чотири вечори.
+ *
+ * ⚠️ Валідується СТРОГО (той самий checkinDaySchema, що й checkinToday), хоч
+ * тут 90 діб замість однієї. Заміряно перед вибором: строго 0.55 мс проти
+ * 0.13 мс вільно, на 90 добах, на КЛІЄНТІ — тобто різниця нижча за похибку
+ * одного рендера, а натомість деталі клітинки читають `rec.evening.blocker`
+ * із типами, а не як `unknown`. `.catch` на кожній добі (через lenient-стиль
+ * усередині схеми) означає, що одна побита доба не забирає з собою вікно.
+ *
+ * from/to — РЕАЛЬНІ межі вікна, а не номінальні: підпис глибини малюється з
+ * них, і саме через це блок «Чек-ін» перестає обіцяти period, якого не має.
+ */
+export const checkinRawSchema = z.object({
+  days: int.default(90),
+  from: z.string().default(''),
+  to: z.string().default(''),
+  records: z.record(z.string(), checkinDaySchema.catch({})).default({}),
+});
+/**
+ * Глибини агрегації, оголошені сервером.
+ *
+ * ⚠️ Усі з дефолтами: старіший воркер поля `windows` не віддає, і без них
+ * safeParse завалив би ВЕСЬ /api/stats під час деплою. Дефолти навмисно
+ * дорівнюють нинішнім значенням STATS_WINDOWS — гірший сценарій тоді просто
+ * «підпис показує вчорашню глибину», а не чорна вкладка.
+ */
+export const statsWindowsSchema = z.object({
+  checkinRecent: int.default(30),
+  checkinMid: int.default(60),
+  checkinDeep: int.default(90),
+  trendWeeks: int.default(8),
+  checkinWeeks: int.default(8),
+  reliabilityDays: int.default(90),
+  /** «Ритуал відкриття» — рахується в ДОБАХ ІЗ ВІДКРИТТЯМ, не календарних. */
+  rhythmOpens: int.default(90),
+});
+
 export const checkinPointSchema = z.object({
   d: z.string(),
   sleepH: num.nullable().default(null),
@@ -287,6 +376,7 @@ export const sleepNightSchema = z.object({
 
 /** Дрейф наміру: план (ранок) проти того, що реально зайняло час (день). */
 export const intentDriftSchema = z.object({
+  days: int.default(0),
   total: int.default(0),
   matched: int.default(0),
   pct: num.nullable().default(null),
@@ -329,6 +419,7 @@ export const categoryRowSchema = z.object({
   dayScore: num.nullable().default(null),
 });
 export const categoryInsightSchema = z.object({
+  days: int.default(0),
   total: int.default(0),
   rows: z.array(categoryRowSchema).default([]),
 });
@@ -357,7 +448,14 @@ export const checkinTopsSchema = z.object({
   // в реєстрі «Індексу дня»; ця картка — єдине місце, де вони видні.
   blockers: z.array(checkinTopSchema).default([]),
   helpers: z.array(checkinTopSchema).default([]),
+  // ⚠️ days — ГЛИБИНА ВІКНА, filled — скільки діб у ньому заповнено. Доти тут
+  // лежало одне поле `days` зі значенням filled, і воно рендерилось як «· N
+  // ДІБ», тобто читалось як глибина. «ЩО ЗАВАЖАЛО · 12 ДІБ» означало «12
+  // заповнених із останніх 30», а виглядало як «за останні 12 днів». Поруч у
+  // checkinFill те саме поле означало саме вікно — одна назва, протилежний
+  // зміст, в одному payload.
   days: int.default(0),
+  filled: int.default(0),
   // lateReason (ранкове, умовне поле) — той самий рейтинг, приєднаний з тієї ж
   // причини: причина пізнього відбою теж поза реєстром моделі.
   lateReasons: z.array(checkinTopSchema).default([]),
@@ -379,6 +477,7 @@ export const aloneVsOthersSchema = z.object({
 export const socialContextSchema = z.object({
   tops: z.array(checkinTopSchema).default([]),
   days: int.default(0),
+  filled: int.default(0),
   aloneVsOthers: aloneVsOthersSchema.default({ ready: false, nAlone: 0, nOthers: 0 }),
 });
 
@@ -409,13 +508,31 @@ export const flameStatsSchema = z.object({
 export const modelIndexKeySchema = z.enum(['recovery', 'resource', 'work', 'agency', 'body']);
 export const checkinFitSchema = z.object({
   weights: z.record(modelIndexKeySchema, num),
+  /** Знак β окремо від величини: смуги показують ВАГУ, рахунок — НАПРЯМОК. */
+  signs: z.record(modelIndexKeySchema, num).optional(),
+  /** Обрана крос-валідацією регуляризація (доти була зашита в 1.0). */
+  lambda: num.optional(),
   r2: num.nullable().default(null),
+  /**
+   * Крос-валідований R² (leave-one-out).
+   *
+   * ⚠️ Може бути ВІДʼЄМНИМ — це не помилка, а «передбачає гірше за просте
+   * середнє». Саме той випадок, коли моделі не варто вірити, тож ховати його
+   * не можна. Внутрішньовибірковий r2 завжди оптимістичніший.
+   */
+  r2cv: num.nullable().optional(),
   n: int.default(0),
   learned: z.boolean().default(false),
 });
 export const checkinDayIndexSchema = z.object({
+  /** null, коли доба не дотягнула до needCoverage — «ще рано», не «нема даних». */
   last: num.nullable().default(null),
   mean: num.nullable().default(null),
+  /** Скільки з пʼяти вимірів дала остання доба і скільки треба. */
+  lastCoverage: int.default(0),
+  needCoverage: int.default(3),
+  /** Скільки діб вікна взагалі отримали оцінку — чесний знаменник середнього. */
+  scored: int.default(0),
 });
 export const checkinDriverSchema = z.object({
   field: z.string(),
@@ -423,6 +540,10 @@ export const checkinDriverSchema = z.object({
   delta: num,
   d: num,
   p: num,
+  /** p після поправки Бенʼяміні-Хохберга на всю родину драйверів. */
+  q: num.optional(),
+  /** Чи витримує поправку на множинні порівняння. */
+  passesBH: z.boolean().optional(),
   nHigh: int,
   nLow: int,
 });
@@ -465,7 +586,7 @@ export const checkinModelSchema = z.object({
 const EMPTY_CHECKIN_MODEL = {
   n: 0,
   fit: { weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 }, r2: null, n: 0, learned: false },
-  dayIndex: { last: null, mean: null },
+  dayIndex: { last: null, mean: null, lastCoverage: 0, needCoverage: 3, scored: 0 },
   drivers: [],
   lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
   archetypes: { ready: false, n: 0, groups: [] },
@@ -496,9 +617,26 @@ export const statsSchema = z.object({
     // Загальний recency-сигнал (без розбивки по темі — mockRated не прив'язує
     // qId до теми) поруч із all-time weakTopics%. null, доки жодної оцінки.
     recentEasyPct: num.nullable().default(null),
+    /**
+     * Частка «легко» по тижнях.
+     *
+     * ⚠️ Стало можливим лише з таймстемпом на оцінці. Доти хронологію довелось
+     * би виводити з порядку ключів обʼєкта — а він не гарантований (усе-цифровий
+     * base36-ключ JS переставляє на початок), тобто тренд міг мовчки
+     * перевернутись. easePct=null означає «тиждень без питань», а не «все було
+     * складно»: нуль злив би дві протилежні відповіді.
+     */
+    easeTrend: z
+      .array(z.object({ week: z.string(), n: int.default(0), easePct: num.nullable().default(null) }))
+      .default([]),
+    /** {тема: {seen, weak}} за останні 60 діб — на противагу all-time weakTopics. */
+    recentByTopic: z
+      .record(z.string(), z.object({ seen: int.default(0), weak: int.default(0) }))
+      .default({}),
   }),
   heatmap: z.array(heatmapCellSchema).default([]),
   appliedWeekly: z.array(appliedWeekSchema).default([]),
+  funnelSpeed: funnelSpeedSchema.default({ steps: [], stale: [], staleAfterDays: 21 }),
   // Fit% поданих по тижнях — той самий {week,count}-шейп духом, що appliedWeekly,
   // але avgFit замість count (nullable — тиждень без жодного fit-запису).
   fitWeekly: z.array(z.object({ week: z.string(), avgFit: num.nullable() })).default([]),
@@ -537,6 +675,20 @@ export const statsSchema = z.object({
   checkinSlot: z.enum(['morning', 'afternoon', 'evening']).nullable().optional(),
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
+  checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
+  // Глибини агрегації, оголошені сервером (STATS_WINDOWS у stats-core.mjs).
+  // Підписи «за N діб / N тижнів» малюються ЗВІДСИ, а не з памʼяті клієнта:
+  // доти «8 ТИЖНІВ» стояло зашитим рядком у RhythmBlock окремо від серверної
+  // константи, і розійшлись би вони мовчки.
+  windows: statsWindowsSchema.default({
+    checkinRecent: 30,
+    checkinMid: 60,
+    checkinDeep: 90,
+    trendWeeks: 8,
+    checkinWeeks: 8,
+    reliabilityDays: 90,
+    rhythmOpens: 90,
+  }),
   sleepLog: z.array(sleepNightSchema).default([]),
   checkinWeekly: z.array(checkinWeekSchema).default([]),
   checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
@@ -545,20 +697,22 @@ export const statsSchema = z.object({
   // віддає, а safeParse валить ЦІЛИЙ /api/stats.
   sleepVsDayScore: corrPairSchema.default({ ready: false, needed: 8, low: 0, ok: 0 }),
   bedtimeVsEnergy: bedtimeVsEnergySchema.default({ ready: false, needed: 8, early: 0, late: 0 }),
-  categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
+  categoryInsight: categoryInsightSchema.default({ days: 30, total: 0, rows: [] }),
   appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
   checkinTops: checkinTopsSchema.default({
     blocker: null,
     helper: null,
     blockers: [],
     helpers: [],
-    days: 0,
+    days: 30,
+    filled: 0,
     lateReasons: [],
     lateNights: 0,
   }),
   socialContext: socialContextSchema.default({
     tops: [],
-    days: 0,
+    days: 60,
+    filled: 0,
     aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
   }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
@@ -574,13 +728,14 @@ export const statsSchema = z.object({
   }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
-  intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),
+  intentDrift: intentDriftSchema.default({ days: 30, total: 0, matched: 0, pct: null, top: [] }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;
 export type CheckinSlot = 'morning' | 'afternoon' | 'evening';
 export type CheckinDay = z.infer<typeof checkinDaySchema>;
 export type CheckinPoint = z.infer<typeof checkinPointSchema>;
+export type CheckinRaw = z.infer<typeof checkinRawSchema>;
 export type CheckinWeek = z.infer<typeof checkinWeekSchema>;
 export type WeeklyDay = z.infer<typeof weeklyDaySchema>;
 export type Funnel = z.infer<typeof funnelSchema>;
@@ -592,6 +747,7 @@ export type SavedPage = z.infer<typeof savedPageSchema>;
 export type SavedItem = z.infer<typeof savedItemSchema>;
 export type WeakTopic = z.infer<typeof weakTopicSchema>;
 export type HeatmapCell = z.infer<typeof heatmapCellSchema>;
+export type MasteryTopic = z.infer<typeof masteryTopicSchema>;
 export type AppliedWeek = z.infer<typeof appliedWeekSchema>;
 export type Interest = z.infer<typeof interestSchema>;
 export type InterestsTrend = z.infer<typeof interestsTrendSchema>;

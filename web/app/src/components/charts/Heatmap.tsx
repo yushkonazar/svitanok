@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { HeatmapCell } from '../../api/schema.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { haptic } from '../../telegram.ts';
+import { svgButtonProps } from '../../lib/svgButton.ts';
 
 // Сітка активності в стилі GitHub contribution graph (фідбек власника):
 // колонка = тиждень, рядок = день тижня, ПЛЮС обидві осі з позначками —
@@ -121,15 +122,29 @@ export function Heatmap({ cells }: { cells: HeatmapCell[] }) {
                 fill={cellBg(c.l)}
                 stroke={tap === c.d ? 'var(--color-tx)' : 'none'}
                 strokeWidth={tap === c.d ? 1.4 : 0}
+                {...svgButtonProps({
+                  label: `${fmtDay(c.d)}: ${
+                    c.v === 0
+                      ? 'тиша'
+                      : [
+                          c.o && `${c.o} відкриттів`,
+                          c.m && `${c.m} питань`,
+                          c.n && `${c.n} новин`,
+                        ]
+                          .filter(Boolean)
+                          .join(', ')
+                  }`,
+                  pressed: tap === c.d,
+                  onActivate: () => {
+                    haptic('light');
+                    setTap(tap === c.d ? null : c.d);
+                  },
+                })}
                 style={{
                   cursor: 'pointer',
                   // Діагональна хвиля появи: фронт іде з лівого верху вправо-вниз.
                   animation: `fadeInSoft .45s ease-out ${ci * 30 + ri * 9}ms backwards`,
                   animationPlayState: inView ? 'running' : 'paused',
-                }}
-                onClick={() => {
-                  haptic('light');
-                  setTap(tap === c.d ? null : c.d);
                 }}
               />
             )),

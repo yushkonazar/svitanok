@@ -36,6 +36,7 @@ import {
   formatRemindersListMessage,
 } from './reminders-core.mjs';
 import { aggregateStats } from './stats-core.mjs';
+import { masteryTopics } from './mastery-core.mjs';
 import { formatStatsMessage, formatJobsMessage, formatSavedMessage } from './tg-core.mjs';
 import { formatAgendaMessage, buildAgendaKeyboard } from './calendar-core.mjs';
 import { formatRootMessage, buildRootKeyboard } from './roadmap-core.mjs';
@@ -278,10 +279,16 @@ export async function handleCommand(env, parsed, origin) {
       await recordBriefDispatch(env);
       return sendText('🔄 Запустив генерацію брифінгу — прийде за кілька хвилин.');
     }
-    case 'stats':
-      return sendText(formatStatsMessage(aggregateStats(await loadStats(env), kyivDateKey())), {
-        parse_mode: 'HTML',
-      });
+    case 'stats': {
+      // Два незалежні KV-блоби: лічильники живуть у stats, прогрес роадмепу —
+      // у state. Розрив «відмітив ↔ дається» зшивається лише з обох, тож тут
+      // повторюється те саме, що робить handleStats для дашборда (masteryTopics
+      // — чиста функція, дублюється виклик, а не логіка).
+      const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
+      const agg = aggregateStats(store, kyivDateKey());
+      agg.mastery = { topics: masteryTopics(state.roadmapProgress ?? {}, store.mockTopics) };
+      return sendText(formatStatsMessage(agg), { parse_mode: 'HTML' });
+    }
     case 'jobs':
       return sendText(
         formatJobsMessage(aggregateStats(await loadStats(env), kyivDateKey()).funnelList),

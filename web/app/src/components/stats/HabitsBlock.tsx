@@ -10,6 +10,8 @@ import { OpenRhythm } from '../charts/OpenRhythm.tsx';
 import { HabitTrend } from '../charts/HabitTrend.tsx';
 import { FlameTrend } from '../charts/FlameTrend.tsx';
 import { RankedBars } from '../charts/RankedBars.tsx';
+// Одна мова підписів глибини на весь екран: «ЗА N ТИЖНІВ», не «N ТИЖ.».
+import { weeksWindowLabel } from '../../lib/windowLabel.ts';
 
 const FLAME_LABEL: Record<string, string> = {
   tiktok: 'Тікток',
@@ -135,7 +137,9 @@ export function HabitsBlock({ s }: { s: Stats }) {
           <Hint>
             Коли ти зазвичай уперше заходиш у застосунок. Смуга — не помилка, а РОЗКИД: жирна
             риска це типовий час, кольорова коробка — середня половина діб, вуса — майже всі
-            інші. Вузька коробка означає ритуал, широка — що заходиш коли доведеться.
+            інші. Вузька коробка означає ритуал, широка — що заходиш коли доведеться. Рахується
+            по останніх {s.windows.rhythmOpens} добах із відкриттям, а не за весь час — інакше
+            звичка, що змінилась пів року тому, тягнула б число на себе досі.
           </Hint>
         </Card>
       )}
@@ -145,7 +149,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
       {hw.length >= 2 && (
         <Card>
           <div className="flex items-baseline gap-2">
-            <SubLabel>УТРИМАННЯ · {hw.length} ТИЖ.</SubLabel>
+            <SubLabel>УТРИМАННЯ · {weeksWindowLabel(hw.length)}</SubLabel>
             {delta !== null && (
               <span
                 className="ml-auto font-mono text-[10.5px] font-semibold"
@@ -206,7 +210,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
           для time-based intensity), але клітинка тепер знає СКЛАД дня. */}
       {showHeatmap && (
         <Card>
-          <SubLabel>ЩОДЕННА АКТИВНІСТЬ · {heatmapWeeks} ТИЖ.</SubLabel>
+          <SubLabel>ЩОДЕННА АКТИВНІСТЬ · {weeksWindowLabel(heatmapWeeks)}</SubLabel>
           <div className="mt-2">
             <Heatmap cells={s.heatmap} />
           </div>
@@ -231,7 +235,7 @@ export function HabitsBlock({ s }: { s: Stats }) {
           («чи тримаю звичку»), а не про добробут дня. */}
       {flames.tops.length > 0 && (
         <Card>
-          <SubLabel>ВОГНИКИ В ІНШИХ ЗАСТОСУНКАХ · {flames.weekly.length} ТИЖ.</SubLabel>
+          <SubLabel>ВОГНИКИ В ІНШИХ ЗАСТОСУНКАХ · {weeksWindowLabel(flames.weekly.length)}</SubLabel>
 
           {/* Ідея поля — памʼятати заходити у ВСІ застосунки, не скільки
               разів обирав який (той лічильник тривіальний: коли flames

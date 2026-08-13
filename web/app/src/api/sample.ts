@@ -149,6 +149,71 @@ function sampleCheckinSeries() {
   return out;
 }
 
+/**
+ * Демо гарячого вікна — сирі доби чек-іну з ТЕГАМИ.
+ *
+ * Глибше за ряд вище (60 діб проти 24) НАВМИСНО: у проді так само, бо ряд
+ * тримає 30 діб, а вікно 90. Демо мусить показувати справжнє співвідношення,
+ * інакше «карта станів глибша за форму дня» виглядатиме як помилка.
+ *
+ * Теги не випадкові: погані вечори супроводжуються втомою й пізнім відбоєм,
+ * добрі — раннім стартом. Інакше демо показало б рівний шум, тобто рівно те,
+ * чого карта й не має показувати, коли звʼязку немає.
+ */
+function sampleCheckinRaw(): Stats['checkinRaw'] {
+  const records: Stats['checkinRaw']['records'] = {};
+  const d = new Date();
+  d.setDate(d.getDate() - 59);
+  const from = dayKey(d);
+  for (let i = 0; i < 60; i++) {
+    // Кожна 7-ма доба порожня — дірки це норма, а не збій.
+    if (i % 7 !== 6) {
+      const low = i % 3 === 0; // «важка» доба
+      const clamp = (v: number) => Math.max(1, Math.min(5, v));
+      records[dayKey(d)] = {
+        morning: {
+          sleepH: low ? 5.5 : 7.5,
+          sleepQ: low ? 2 : 4,
+          bedtime: low ? 'e02' : 'e23',
+          ...(low ? { lateReason: 'scroll' as const } : {}),
+          energy: clamp(low ? 2 : 4),
+          mood: clamp(low ? 2 : 4),
+          plan: ['work'],
+        },
+        afternoon: {
+          pace: low ? 'behind' : 'on',
+          energy: clamp(low ? 2 : 4),
+          mood: clamp(low ? 3 : 4),
+          withWhom: i % 4 === 0 ? 'alone' : 'friends',
+        },
+        evening: {
+          dayScore: low ? 2 : 4,
+          energy: clamp(low ? 1 : 3),
+          mood: clamp(low ? 2 : 4),
+          // ⚠️ Теги НАВМИСНО не ідеально розділені. Спершу «важкі» доби мали
+          // рівно [tired, distract], а «добрі» — рівно [early, list], і
+          // деталі клітинки показували «17/17 · норма 0%» у кожному рядку.
+          // Виглядало ефектно й учило хибного: у справжніх даних звʼязок
+          // ніколи не буває стовідсотковим, а блок мусить показувати саме
+          // те, що там буде — часткове перекриття.
+          blocker: low
+            ? i % 2 === 0
+              ? ['tired', 'distract']
+              : ['tired']
+            : i % 5 === 0
+              ? ['procrast']
+              : ['none'],
+          helper: low ? (i % 4 === 0 ? ['breaks'] : ['none']) : i % 3 === 1 ? ['early'] : ['early', 'list'],
+          moved: low ? (i % 3 === 0 ? 'none' : 'light') : i % 2 === 0 ? 'active' : 'workout',
+        },
+      };
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  d.setDate(d.getDate() - 1);
+  return { days: 90, from, to: dayKey(d), records };
+}
+
 export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
   timeToOpenMin: 23,
@@ -241,9 +306,44 @@ export const SAMPLE_STATS: Stats = {
     streak: 4,
     // Свіжіше за all-time weakTopics% — демонструє, що недавно йде краще.
     recentEasyPct: 60,
+    // Помітний підйом в останні тижні — щоб демо показувало, що тренд узагалі
+    // вміє рухатись; порожні тижні лишені навмисно (n=0 -> null, не нуль).
+    easeTrend: [
+      { week: '2026-06-22', n: 6, easePct: 33 },
+      { week: '2026-06-29', n: 4, easePct: 50 },
+      { week: '2026-07-06', n: 0, easePct: null },
+      { week: '2026-07-13', n: 5, easePct: 40 },
+      { week: '2026-07-20', n: 7, easePct: 57 },
+      { week: '2026-07-27', n: 6, easePct: 67 },
+      { week: '2026-08-03', n: 8, easePct: 75 },
+      { week: '2026-08-10', n: 4, easePct: 75 },
+    ],
+    recentByTopic: {
+      HTTP: { seen: 6, weak: 4 },
+      TypeScript: { seen: 5, weak: 3 },
+      Мова: { seen: 8, weak: 1 },
+    },
   },
   roadmap: { done: 12, total: 74 },
   mastery: {
+    // Готовність по темах. Числа підібрані так, щоб демо показувало ВСІ три
+    // стани, які блок і має розрізняти: розрив («відмітив, а не дається»),
+    // рівний прогрес і теми, яких жодного разу не питали.
+    topics: [
+      { id: 'frontend', title: '🌐 Frontend основи', done: 7, total: 7, seen: 22, weak: 3, easePct: 86 },
+      { id: 'typescript', title: '🟦 TypeScript', done: 5, total: 6, seen: 14, weak: 9, easePct: 36 },
+      { id: 'react', title: '⚛️ React', done: 3, total: 6, seen: 18, weak: 6, easePct: 67 },
+      { id: 'networking', title: '📡 HTTP / мережі (поглиблено)', done: 4, total: 5, seen: 11, weak: 8, easePct: 27 },
+      { id: 'backend', title: '🖥 Backend / Node.js', done: 4, total: 7, seen: 16, weak: 7, easePct: 56 },
+      { id: 'databases', title: '🗄 Бази даних', done: 2, total: 6, seen: 9, weak: 4, easePct: 56 },
+      { id: 'algorithms', title: '🧮 Алгоритми та структури даних', done: 2, total: 6, seen: 12, weak: 7, easePct: 42 },
+      { id: 'security', title: '🔒 Безпека', done: 1, total: 5, seen: 4, weak: 3, easePct: 25 },
+      { id: 'ai-dev', title: '🤖 AI у розробці', done: 2, total: 4, seen: 6, weak: 1, easePct: 83 },
+      { id: 'testing-adv', title: '🧪 Тестування (поглиблено)', done: 0, total: 5, seen: 0, weak: 0, easePct: null },
+      { id: 'tools', title: '🛠 Git / CI', done: 3, total: 5, seen: 0, weak: 0, easePct: null },
+      { id: 'ecosystem', title: '📦 Тулінг і екосистема', done: 1, total: 4, seen: 0, weak: 0, easePct: null },
+      { id: 'perf-a11y', title: '⚡ Продуктивність і a11y', done: 0, total: 4, seen: 0, weak: 0, easePct: null },
+    ],
     themeOfWeek: {
       week: '',
       topicId: 'react',
@@ -323,6 +423,20 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   heatmap: sampleHeatmap(),
+  // Швидкість воронки: демо показує ОБИДВА стани, які блок має розрізняти —
+  // крок із медіаною й крок, де переходів ще замало (medianDays: null).
+  funnelSpeed: {
+    staleAfterDays: 21,
+    steps: [
+      { from: 'saved' as const, to: 'applied' as const, n: 9, medianDays: 3 },
+      { from: 'applied' as const, to: 'interview' as const, n: 4, medianDays: 11 },
+      { from: 'interview' as const, to: 'offer' as const, n: 1, medianDays: null },
+    ],
+    stale: [
+      { url: 'https://jobs.example.com/1', stage: 'applied' as const, title: 'Frontend Engineer — Aurora', days: 34 },
+      { url: 'https://jobs.example.com/2', stage: 'saved' as const, title: 'React Developer — Northwind', days: 27 },
+    ],
+  },
   appliedWeekly: [
     { week: '', count: 1 },
     { week: '', count: 2 },
@@ -403,13 +517,16 @@ export const SAMPLE_STATS: Stats = {
       },
       {
         topic: 'Наука',
-        series: [0, 1, 1, 0, 2, 1, 2, 3, 2, 1, 3, 2, 4, 3, 2, 4, 3, 5, 4, 3, 5, 4, 6, 5, 4, 7],
+        // Останній місяць помітно вищий за попередній — щоб демо показувало
+        // картку «що змінилось». Доти всі три ряди були гладкі, картка чесно
+        // ховалась, і побачити її можна було лише на власних даних.
+        series: [0, 1, 1, 0, 2, 1, 2, 3, 2, 1, 3, 2, 4, 3, 2, 4, 3, 5, 4, 3, 4, 9, 11, 10, 12, 11],
       },
       {
         topic: 'Політика',
-        series: [
-          6, 5, 6, 4, 5, 3, 4, 2, 3, 2, 1, 2, 1, 0, 1, 2, 1, 0, 1, 0, 2, 1, 0, 1, 0, 3,
-        ],
+        // ...і симетрично — тема, що згасла: рівний інтерес до середини й
+        // тиша в останній місяць.
+        series: [6, 5, 6, 4, 5, 3, 4, 2, 3, 2, 4, 3, 5, 4, 3, 5, 4, 6, 5, 4, 0, 1, 0, 0, 1, 0],
       },
     ],
   },
@@ -417,7 +534,19 @@ export const SAMPLE_STATS: Stats = {
   // видно всі три стани (заповнюваний / замкнені) і гідратацію з сервера.
   checkinSlot: 'morning',
   checkinToday: { morning: { sleepH: 6.5 } },
+  // Глибини агрегації — дзеркало STATS_WINDOWS зі stats-core.mjs. У демо теж
+  // справжні, бо підписи «за N діб» малюються саме звідси.
+  windows: {
+    checkinRecent: 30,
+    checkinMid: 60,
+    checkinDeep: 90,
+    trendWeeks: 8,
+    checkinWeeks: 8,
+    reliabilityDays: 90,
+    rhythmOpens: 90,
+  },
   checkinSeries: sampleCheckinSeries(),
+  checkinRaw: sampleCheckinRaw(),
   sleepLog: [
     { d: '2026-07-30', startedAt: '2026-07-30T23:12:00.000Z', wokeAt: '2026-07-31T07:05:00.000Z', durationMin: 473 },
     { d: '2026-07-31', startedAt: '2026-07-31T23:58:00.000Z', wokeAt: '2026-08-01T07:20:00.000Z', durationMin: 442 },
@@ -427,6 +556,7 @@ export const SAMPLE_STATS: Stats = {
   // 30 діб, у 19 план збігся з тим, що реально зайняло час. Топ-пари — куди
   // саме зʼїжджає день, коли не збігається.
   intentDrift: {
+    days: 30,
     total: 30,
     matched: 19,
     pct: 63,
@@ -451,6 +581,7 @@ export const SAMPLE_STATS: Stats = {
   sleepVsDayScore: { ready: true, needed: 8, low: 9, ok: 11, lowAvg: 2.9, okAvg: 4.1 },
   bedtimeVsEnergy: { ready: true, needed: 8, early: 11, late: 9, earlyAvg: 3.9, lateAvg: 2.5 },
   categoryInsight: {
+    days: 30,
     total: 22,
     rows: [
       { cat: 'work', n: 8, dayScore: 3.4 },
@@ -462,6 +593,7 @@ export const SAMPLE_STATS: Stats = {
   },
   appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
   checkinTops: {
+    days: 30,
     blocker: { value: 'tired', n: 6 },
     helper: { value: 'early', n: 5 },
     blockers: [
@@ -478,7 +610,7 @@ export const SAMPLE_STATS: Stats = {
       { value: 'breaks', n: 2 },
       { value: 'music', n: 1 },
     ],
-    days: 14,
+    filled: 14,
     lateReasons: [
       { value: 'scroll', n: 4 },
       { value: 'work', n: 3 },
@@ -490,6 +622,7 @@ export const SAMPLE_STATS: Stats = {
   // Соціальний контекст: демо-набір готовий (значуще різняться «сам» і «з
   // людьми») — щоб було видно, як виглядає повністю розкрита картка.
   socialContext: {
+    days: 60,
     tops: [
       { value: 'work', n: 18 },
       { value: 'alone', n: 14 },
@@ -497,7 +630,7 @@ export const SAMPLE_STATS: Stats = {
       { value: 'family', n: 7 },
       { value: 'mixed', n: 4 },
     ],
-    days: 52,
+    filled: 52,
     aloneVsOthers: {
       ready: true,
       nAlone: 14,
@@ -514,16 +647,25 @@ export const SAMPLE_STATS: Stats = {
     n: 90,
     fit: {
       weights: { recovery: 0.28, resource: 0.24, work: 0.3, agency: 0.1, body: 0.08 },
+      // Один відʼємний знак у демо навмисно: без нього не видно, що рахунок
+      // узагалі вміє віднімати вимір, який тягне день униз.
+      signs: { recovery: 1, resource: 1, work: 1, agency: 1, body: -1 },
+      lambda: 0.5,
       r2: 0.38,
+      // Помітно нижчий за внутрішньовибірковий — так воно й буває, і демо має
+      // показувати саме це, а не два однакові числа.
+      r2cv: 0.21,
       n: 45,
       learned: true,
     },
-    dayIndex: { last: 74.5, mean: 68.2 },
+    dayIndex: { last: 74.5, mean: 68.2, lastCoverage: 5, needCoverage: 3, scored: 41 },
     drivers: [
-      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, nHigh: 22, nLow: 18 },
-      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, nHigh: 24, nLow: 20 },
-      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, nHigh: 19, nLow: 21 },
-      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, nHigh: 15, nLow: 17 },
+      // q/passesBH — поправка на множинні порівняння: демо показує обидва
+      // стани, бо саме різниця між «p<0.05» і «витримує поправку» тут і нова.
+      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, q: 0.019, passesBH: true, nHigh: 22, nLow: 18 },
+      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, q: 0.038, passesBH: true, nHigh: 24, nLow: 20 },
+      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, q: 0.07, passesBH: false, nHigh: 19, nLow: 21 },
+      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, q: 0.11, passesBH: false, nHigh: 15, nLow: 17 },
       { field: 'screen', index: 'recovery', delta: -0.55, d: -0.69, p: 0.031, nHigh: 12, nLow: 26 },
     ],
     lagged: {
@@ -589,8 +731,9 @@ export const EMPTY_STATS: Stats = {
   dismissedUrls: [],
   savedCount: 0,
   savedList: [],
-  mock: { weakTopics: [], streak: 0, recentEasyPct: null },
+  mock: { weakTopics: [], streak: 0, recentEasyPct: null , easeTrend: [], recentByTopic: {} },
   heatmap: [],
+  funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
   appliedWeekly: [],
   fitWeekly: [],
   roadmapWeekly: [],
@@ -604,26 +747,44 @@ export const EMPTY_STATS: Stats = {
   // Порожньо = перший день: блок відкритий, але жодної відповіді ще немає.
   checkinSlot: 'morning',
   checkinToday: null,
+  // Глибини агрегації — дзеркало STATS_WINDOWS зі stats-core.mjs. У демо теж
+  // справжні, бо підписи «за N діб» малюються саме звідси.
+  windows: {
+    checkinRecent: 30,
+    checkinMid: 60,
+    checkinDeep: 90,
+    trendWeeks: 8,
+    checkinWeeks: 8,
+    reliabilityDays: 90,
+    rhythmOpens: 90,
+  },
   checkinSeries: [],
+  checkinRaw: { days: 90, from: '', to: '', records: {} },
   sleepLog: [],
-  intentDrift: { total: 0, matched: 0, pct: null, top: [] },
+  intentDrift: { days: 30, total: 0, matched: 0, pct: null, top: [] },
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
   planVsFact: [],
   sleepVsDayScore: { ready: false, needed: 8, low: 0, ok: 0 },
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
-  categoryInsight: { total: 0, rows: [] },
+  categoryInsight: { days: 30, total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
   checkinTops: {
     blocker: null,
     helper: null,
     blockers: [],
     helpers: [],
-    days: 0,
+    days: 30,
+    filled: 0,
     lateReasons: [],
     lateNights: 0,
   },
-  socialContext: { tops: [], days: 0, aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 } },
+  socialContext: {
+    days: 60,
+    filled: 0,
+    tops: [],
+    aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
+  },
   checkinModel: {
     n: 0,
     fit: {
@@ -632,7 +793,7 @@ export const EMPTY_STATS: Stats = {
       n: 0,
       learned: false,
     },
-    dayIndex: { last: null, mean: null },
+    dayIndex: { last: null, mean: null, lastCoverage: 0, needCoverage: 3, scored: 0 },
     drivers: [],
     lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
     archetypes: { ready: false, n: 0, groups: [] },

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
 import { shortDateFromIso } from '../../lib/dateLabel.ts';
 import { haptic } from '../../telegram.ts';
+import { svgButtonProps } from '../../lib/svgButton.ts';
 
 // Утримання по тижнях: скільки дій зробив за тиждень (відносно найактивнішого
 // з показаних), і З ЧОГО складалась активність (відкриття / питання / новини).
@@ -73,11 +74,14 @@ export function HabitTrend({ weeks }: { weeks: Stats['habitWeekly'] }) {
           return (
             <g
               key={r.week}
-              onClick={() => {
-                haptic('light');
-                setTap(tap === i ? null : i);
-              }}
-              style={{ cursor: 'pointer' }}
+              {...svgButtonProps({
+                label: `Тиждень ${r.week}: ${r.active} із ${r.days} діб активні, ${r.total} дій`,
+                pressed: tap === i,
+                onActivate: () => {
+                  haptic('light');
+                  setTap(tap === i ? null : i);
+                },
+              })}
             >
               {/* прозорий хіт-таргет на всю висоту: тонкий стовпчик важко влучити */}
               <rect x={x} y={0} width={barW} height={plotH} fill="transparent" />

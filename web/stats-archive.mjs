@@ -1,0 +1,127 @@
+// Холодний архів місячних згорток.
+//
+// ⚠️ ЦЕ ПРО ВТРАТУ ДАНИХ, а не про майбутній графік. Стор ріже історію капами:
+// чек-іни й щоденна активність — 365 діб, надійність і журнал сну — 90, тижневі
+// інтереси — 26 тижнів, оцінки mock — останні 60. Тобто кожної доби щось
+// найстаріше зникає НАЗАВЖДИ, і місця, де воно лишалось би бодай згорнутим, не
+// існувало. Що довше відкладати архів, то більше вже не повернути.
+//
+// ⚠️ ЧОМУ ОКРЕМИЙ KV-КЛЮЧ, а не поле в `stats`. Гарячий блоб читається й
+// ПЕРЕЗАПИСУЄТЬСЯ на кожну подію (тап чек-іну, зміна стадії, голос), тож усе,
+// що в ньому лежить, коштує на кожному записі. Архів же дописується раз на добу
+// кроном і читається лише тоді, коли справді просять довгий період. Тримати їх
+// разом означало б платити за роки історії на кожному тапі.
+//
+// Читання архіву назовні (періоди «рік / усе» на екрані) — окрема задача:
+// спершу має бути що читати. Тут закривається саме втрата.
+
+import { isDateKey, dayKey } from './stats-core.mjs';
+
+/** Ключ у тому самому KV-неймспейсі, що `stats`/`state`. */
+export const ARCHIVE_KEY = 'statsArchive';
+
+const monthOf = (dateKey) => dateKey.slice(0, 7);
+const round1 = (v) => Math.round(v * 10) / 10;
+
+function bucket(out, month) {
+  if (!out[month]) {
+    out[month] = {
+      checkinDays: 0,
+      sleepAvg: null,
+      energyAvg: null,
+      moodAvg: null,
+      dayScoreAvg: null,
+      activeDays: 0,
+      opens: 0,
+      mock: 0,
+      news: 0,
+      applied: 0,
+    };
+  }
+  return out[month];
+}
+
+const avg = (xs) => (xs.length ? round1(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+
+/**
+ * Стор -> {'YYYY-MM': згортка} по всіх місяцях, що ще є в живих даних.
+ *
+ * Свідомо небагато полів: архів має пережити роки, тож кожен зайвий показник —
+ * це те, що не можна буде прибрати, не втративши сумісність із уже записаним.
+ * Береться те, на що спирається довгий погляд назад: скільки заповнював, як
+ * спав, яка була енергія/настрій/оцінка дня, скільки був активний і скільки
+ * подавався.
+ */
+export function monthlyRollup(store, todayKey) {
+  const s = store && typeof store === 'object' ? store : {};
+  const out = {};
+
+  const checkins = s.checkins && typeof s.checkins === 'object' ? s.checkins : {};
+  const acc = {};
+  for (const [d, rec] of Object.entries(checkins)) {
+    if (!isDateKey(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
+    const m = monthOf(d);
+    bucket(out, m).checkinDays++;
+    if (!acc[m]) acc[m] = { sleep: [], energy: [], mood: [], score: [] };
+    const a = acc[m];
+    if (typeof rec.morning?.sleepH === 'number') a.sleep.push(rec.morning.sleepH);
+    if (typeof rec.evening?.dayScore === 'number') a.score.push(rec.evening.dayScore);
+    for (const slot of ['morning', 'afternoon', 'evening']) {
+      if (typeof rec[slot]?.energy === 'number') a.energy.push(rec[slot].energy);
+      if (typeof rec[slot]?.mood === 'number') a.mood.push(rec[slot].mood);
+    }
+  }
+  for (const [m, a] of Object.entries(acc)) {
+    const b = out[m];
+    b.sleepAvg = avg(a.sleep);
+    b.energyAvg = avg(a.energy);
+    b.moodAvg = avg(a.mood);
+    b.dayScoreAvg = avg(a.score);
+  }
+
+  const days = s.days && typeof s.days === 'object' ? s.days : {};
+  for (const [d, v] of Object.entries(days)) {
+    if (!isDateKey(d) || d > todayKey || !v || typeof v !== 'object') continue;
+    const b = bucket(out, monthOf(d));
+    b.activeDays++;
+    b.opens += Number(v.opens) || 0;
+    b.mock += Number(v.mock) || 0;
+    b.news += Number(v.news) || 0;
+  }
+
+  for (const a of Array.isArray(s.appliedLog) ? s.appliedLog : []) {
+    const ts = typeof a === 'string' ? a : a?.ts;
+    if (!isDateKey(ts) || ts > todayKey) continue;
+    bucket(out, monthOf(ts)).applied++;
+  }
+
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * Злити свіжий зріз у вже записаний архів.
+ *
+ * ⚠️ ГОЛОВНЕ ПРАВИЛО: уже записаний МИНУЛИЙ місяць не перераховується НІКОЛИ.
+ * Його дані вже частково поза ретеншеном, тож свіжий перерахунок побачить лише
+ * огризок — і тихо замінив би повний місяць на гірший. Поточний місяць,
+ * навпаки, перераховується щодня: він ще росте.
+ *
+ * Наслідок, з яким треба жити свідомо: якщо згортка колись рахуватиметься
+ * інакше, старі місяці лишаться порахованими по-старому. Це чесніша ціна, ніж
+ * втрата даних, і саме тому набір полів тут навмисно вузький.
+ */
+export function mergeArchive(prevArchive, fresh, todayKey) {
+  const prev = prevArchive && typeof prevArchive === 'object' ? prevArchive : {};
+  const current = monthOf(todayKey);
+  const out = { ...prev };
+  for (const [month, rollup] of Object.entries(fresh ?? {})) {
+    if (month !== current && Object.prototype.hasOwnProperty.call(prev, month)) continue;
+    out[month] = rollup;
+  }
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** Місяць «сьогодні» за київським ключем доби — для тестів і крону. */
+export function currentMonth(todayKey) {
+  return monthOf(isDateKey(todayKey) ? todayKey : dayKey(new Date()));
+}
