@@ -6,6 +6,7 @@ import { haptic } from '../../telegram.ts';
 import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
 import { useInView } from '../../lib/useInView.ts';
+import { daysWindowLabel } from '../../lib/windowLabel.ts';
 
 // E · Надійність (повний редизайн) — це системна довіра ("чи бот на часі"),
 // не особистий прогрес власника, тож картка свідомо ТИХІША за решту екрана:
@@ -88,9 +89,24 @@ export function ReliabilityBlock({ s }: { s: Stats }) {
             </span>
           </div>
 
-          {r.days.length > 1 && <DotTimeline days={r.days} />}
+          {r.days.length > 1 && (
+            <>
+              <span className="font-mono text-[9.5px] tracking-[0.08em] text-tx3">
+                ЖУРНАЛ · {daysWindowLabel(s.windows.reliabilityDays, r.days.length)}
+              </span>
+              <DotTimeline days={r.days} />
+            </>
+          )}
 
-          <StatRow label="Вчасно" value={`${r.onTime} із ${r.total} останніх днів`} valueClass="text-pos" />
+          {/* ⚠️ onTime/total — лічильники ЗА ВЕСЬ ЧАС (recordReliability лише
+              інкрементує їх, ніколи не скидає), а от журнал днів обрізаний на
+              reliabilityDays. Підпис казав «із N останніх днів» — тобто
+              приписував довічному лічильнику вікно, якого в нього немає. */}
+          <StatRow
+            label="Вчасно"
+            value={`${r.onTime} із ${r.total} днів за весь час`}
+            valueClass="text-pos"
+          />
           {r.deadman > 0 && (
             <span className="font-mono text-[9.5px] text-tx3">
               Dead-man спрацював {r.deadman} {pluralUk(r.deadman, ['раз', 'рази', 'разів'])}

@@ -3,6 +3,10 @@ import { clamp, has } from '../../lib/format.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow } from '../ui/primitives.tsx';
 import { MiniTrend } from '../charts/MiniTrend.tsx';
+// ⚠️ Глибина береться з s.windows, а НЕ з рядка. Доти тут стояло зашите
+// «8 ТИЖНІВ» окремо від серверної константи: змінилась би вона — підпис
+// збрехав би мовчки, і дізнатись про це не було б звідки.
+import { weeksWindowLabel } from '../../lib/windowLabel.ts';
 
 // Ритм (повний редизайн статистики, замінює колишню «Воронка та ціль») —
 // картки-лічильники стадій (saved/applied/interview/offer) прибрано ЦІЛКОМ:
@@ -90,7 +94,7 @@ export function RhythmBlock({ s }: { s: Stats }) {
         <div>
           <div className="mb-1 flex items-baseline gap-1.5">
             <span className="font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
-              FIT% ПОДАНИХ · 8 ТИЖНІВ
+              FIT% ПОДАНИХ · {weeksWindowLabel(s.windows.trendWeeks)}
             </span>
             <span className="font-mono text-[11px] font-semibold text-tx2">
               {s.avgFitApplied}% зараз
@@ -106,7 +110,7 @@ export function RhythmBlock({ s }: { s: Stats }) {
       {appliedSum > 0 && (
         <div>
           <div className="mb-1 font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
-            ПОДАЧІ · 8 ТИЖНІВ (РАЗОМ {appliedSum})
+            ПОДАЧІ · {weeksWindowLabel(s.windows.trendWeeks)} (РАЗОМ {appliedSum})
           </div>
           <MiniTrend
             weeks={s.appliedWeekly.map((w) => w.week)}

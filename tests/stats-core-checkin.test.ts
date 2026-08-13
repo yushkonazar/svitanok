@@ -757,7 +757,7 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     expect(t.lateNights).toBe(3);
   });
 
-  it('checkinTops: ПОВНИЙ рейтинг, не лише мода; days = діб із вечірнім вибором', () => {
+  it('checkinTops: ПОВНИЙ рейтинг, не лише мода; filled = діб із вечірнім вибором', () => {
     let s = emptyStore();
     s = recordEvent(
       s,
@@ -785,7 +785,7 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
       { value: 'early', n: 2 },
       { value: 'list', n: 1 },
     ]);
-    expect(t.days).toBe(3);
+    expect(t.filled).toBe(3);
   });
 
   it('checkinTops: рейтинг капиться на 5 (хвіст не роздуває картку)', () => {
@@ -877,7 +877,7 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
 });
 
 describe('aggregateStats — соціальний контекст (withWhom)', () => {
-  it('tops: рейтинг частоти за N діб', () => {
+  it('tops: рейтинг частоти, filled = діб із відповіддю (не глибина вікна)', () => {
     let s = emptyStore();
     const seq = ['alone', 'alone', 'friends', 'work', 'alone'];
     seq.forEach((who, i) => {
@@ -889,7 +889,7 @@ describe('aggregateStats — соціальний контекст (withWhom)', 
       { value: 'friends', n: 1 },
       { value: 'work', n: 1 },
     ]);
-    expect(sc.days).toBe(5);
+    expect(sc.filled).toBe(5);
   });
 
   it('aloneVsOthers: гейт CORR_MIN_N — не готово, поки в кожному кошику <8', () => {
