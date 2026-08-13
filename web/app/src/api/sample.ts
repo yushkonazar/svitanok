@@ -149,6 +149,59 @@ function sampleCheckinSeries() {
   return out;
 }
 
+/**
+ * Демо гарячого вікна — сирі доби чек-іну з ТЕГАМИ.
+ *
+ * Глибше за ряд вище (60 діб проти 24) НАВМИСНО: у проді так само, бо ряд
+ * тримає 30 діб, а вікно 90. Демо мусить показувати справжнє співвідношення,
+ * інакше «карта станів глибша за форму дня» виглядатиме як помилка.
+ *
+ * Теги не випадкові: погані вечори супроводжуються втомою й пізнім відбоєм,
+ * добрі — раннім стартом. Інакше демо показало б рівний шум, тобто рівно те,
+ * чого карта й не має показувати, коли звʼязку немає.
+ */
+function sampleCheckinRaw(): Stats['checkinRaw'] {
+  const records: Stats['checkinRaw']['records'] = {};
+  const d = new Date();
+  d.setDate(d.getDate() - 59);
+  const from = dayKey(d);
+  for (let i = 0; i < 60; i++) {
+    // Кожна 7-ма доба порожня — дірки це норма, а не збій.
+    if (i % 7 !== 6) {
+      const low = i % 3 === 0; // «важка» доба
+      const clamp = (v: number) => Math.max(1, Math.min(5, v));
+      records[dayKey(d)] = {
+        morning: {
+          sleepH: low ? 5.5 : 7.5,
+          sleepQ: low ? 2 : 4,
+          bedtime: low ? 'e02' : 'e23',
+          ...(low ? { lateReason: 'scroll' as const } : {}),
+          energy: clamp(low ? 2 : 4),
+          mood: clamp(low ? 2 : 4),
+          plan: ['work'],
+        },
+        afternoon: {
+          pace: low ? 'behind' : 'on',
+          energy: clamp(low ? 2 : 4),
+          mood: clamp(low ? 3 : 4),
+          withWhom: i % 4 === 0 ? 'alone' : 'friends',
+        },
+        evening: {
+          dayScore: low ? 2 : 4,
+          energy: clamp(low ? 1 : 3),
+          mood: clamp(low ? 2 : 4),
+          blocker: low ? ['tired', 'distract'] : ['none'],
+          helper: low ? ['none'] : ['early', 'list'],
+          moved: low ? 'none' : 'active',
+        },
+      };
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  d.setDate(d.getDate() - 1);
+  return { days: 90, from, to: dayKey(d), records };
+}
+
 export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
   timeToOpenMin: 23,
@@ -418,6 +471,7 @@ export const SAMPLE_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: { morning: { sleepH: 6.5 } },
   checkinSeries: sampleCheckinSeries(),
+  checkinRaw: sampleCheckinRaw(),
   sleepLog: [
     { d: '2026-07-30', startedAt: '2026-07-30T23:12:00.000Z', wokeAt: '2026-07-31T07:05:00.000Z', durationMin: 473 },
     { d: '2026-07-31', startedAt: '2026-07-31T23:58:00.000Z', wokeAt: '2026-08-01T07:20:00.000Z', durationMin: 442 },
@@ -605,6 +659,7 @@ export const EMPTY_STATS: Stats = {
   checkinSlot: 'morning',
   checkinToday: null,
   checkinSeries: [],
+  checkinRaw: { days: 90, from: '', to: '', records: {} },
   sleepLog: [],
   intentDrift: { total: 0, matched: 0, pct: null, top: [] },
   checkinWeekly: [],

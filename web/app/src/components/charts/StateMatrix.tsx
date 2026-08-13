@@ -1,38 +1,41 @@
 import { useMemo, useState } from 'react';
-import type { CheckinPoint } from '../../api/schema.ts';
+import type { CheckinRaw } from '../../api/schema.ts';
 import { haptic } from '../../telegram.ts';
+import { readingsOf, gridOf, SLOT_FILTERS, type SlotFilter } from '../../lib/stateMap.ts';
+import { pluralUk } from '../../lib/plural.ts';
+import { Segmented } from '../ui/Segmented.tsx';
 
-// Карта станів: енергія × настрій, 5×5 клітинок — скільки РАЗІВ (по слотах,
-// не по добах) траплялась кожна пара за всю історію ряду. Геометрія
-// НАВМИСНО повторює AffectPad (введення чек-іну, той самий 5×5): тапаєш по
-// сітці — бачиш свої доби на ТІЙ САМІЙ сітці.
+// Карта станів: енергія × настрій, 5×5 клітинок. Геометрія НАВМИСНО повторює
+// AffectPad (введення чек-іну, той самий 5×5): тапаєш по сітці — бачиш свої
+// доби на ТІЙ САМІЙ сітці.
 //
-// ui-ux-pro-max (--domain chart): Heatmap/Matrix вимагає ≥20 клітинок і
-// ЧИСЛО на клітинці, не лише колір (accessibility — «color only» high
-// severity) — обидва дотримані.
+// ⚠️ ЧОМУ ДЖЕРЕЛО — checkinRaw, а не checkinSeries, як було. Дві причини, і
+// обидві про чесність:
+//   1. СЛОТ. Ряд віддавав energyCurve/moodCurve, і сітка зсипала ранок, день
+//      та вечір в одну купу. «Енергія 2 · настрій 2» вранці (недоспав) і
+//      ввечері (виснажився за день) — різні явища з різними причинами, а
+//      клітинка була одна. Тепер слот видно й ним можна фільтрувати.
+//   2. ГЛИБИНА. Ряд — 30 діб, тобто ≤90 зрізів на 25 клітинок. Підказка при
+//      цьому обіцяла показати, «де ти буваєш насправді». Гаряче вікно дає 90
+//      діб, і глибина тепер ПІДПИСАНА, а не мається на увазі.
+//
+// ui-ux-pro-max (--domain chart): Heatmap/Matrix вимагає ≥20 клітинок і ЧИСЛО
+// на клітинці, не лише колір (accessibility — «color only» high severity) —
+// обидва дотримані.
 
-export function StateMatrix({ series }: { series: CheckinPoint[] }) {
+/** Нижче цього сітка виглядає як помилка рендера, а не як розподіл. */
+const MIN_READINGS = 12;
+
+export function StateMatrix({ raw }: { raw: CheckinRaw }) {
+  const [slot, setSlot] = useState<SlotFilter>('all');
   const [tap, setTap] = useState<string | null>(null);
 
-  const { grid, max, n } = useMemo(() => {
-    const g: number[][] = Array.from({ length: 5 }, () => Array(5).fill(0));
-    let count = 0;
-    for (const p of series) {
-      for (let i = 0; i < 3; i++) {
-        const e = p.energyCurve[i];
-        const m = p.moodCurve[i];
-        if (typeof e === 'number' && typeof m === 'number') {
-          const er = Math.min(5, Math.max(1, Math.round(e)));
-          const mr = Math.min(5, Math.max(1, Math.round(m)));
-          g[5 - er]![mr - 1]! += 1;
-          count++;
-        }
-      }
-    }
-    return { grid: g, max: Math.max(1, ...g.flat()), n: count };
-  }, [series]);
-
-  if (n < 12) return null;
+  const readings = useMemo(() => readingsOf(raw, slot), [raw, slot]);
+  const { grid, max, n } = useMemo(() => gridOf(readings), [readings]);
+  // Гейт рахуємо по ВСІХ зрізах, а не по відфільтрованих: інакше перемикач
+  // слоту зникав би разом із сіткою, і повернутись до «Усі» було б нічим.
+  const total = useMemo(() => readingsOf(raw, 'all').length, [raw]);
+  if (total < MIN_READINGS) return null;
 
   const cell = 34;
   const gap = 3;
@@ -40,9 +43,7 @@ export function StateMatrix({ series }: { series: CheckinPoint[] }) {
   const gy = 4;
   const W = gx + 5 * cell + 4 * gap;
   const H = gy + 5 * cell + 4 * gap + 16;
-  const tapped = tap
-    ? { r: Number(tap.split(':')[0]), c: Number(tap.split(':')[1]) }
-    : null;
+  const tapped = tap ? { r: Number(tap.split(':')[0]), c: Number(tap.split(':')[1]) } : null;
   const tappedCount = tapped ? grid[tapped.r]![tapped.c]! : 0;
 
   const colorFor = (v: number) => {
@@ -54,7 +55,17 @@ export function StateMatrix({ series }: { series: CheckinPoint[] }) {
   };
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
+      <Segmented
+        segments={SLOT_FILTERS}
+        value={slot}
+        onChange={(id) => {
+          haptic('light');
+          setSlot(id);
+          setTap(null); // вибір клітинки належав попередньому зрізу даних
+        }}
+      />
+
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
         {[5, 4, 3, 2, 1].map((v, r) => (
           <text
@@ -124,12 +135,13 @@ export function StateMatrix({ series }: { series: CheckinPoint[] }) {
           }),
         )}
       </svg>
+
       <div className="flex items-center justify-between text-[9.5px] text-tx3">
         <span>енергія ↑ · настрій →</span>
         <span className="font-mono">
           {tapped
             ? `енергія ${5 - tapped.r} · настрій ${tapped.c + 1} — ${tappedCount}×`
-            : `${n} зрізів`}
+            : `${n} ${pluralUk(n, ['зріз', 'зрізи', 'зрізів'])}`}
         </span>
       </div>
     </div>
