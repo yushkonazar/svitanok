@@ -321,6 +321,8 @@ export const statsWindowsSchema = z.object({
   trendWeeks: int.default(8),
   checkinWeeks: int.default(8),
   reliabilityDays: int.default(90),
+  /** «Ритуал відкриття» — рахується в ДОБАХ ІЗ ВІДКРИТТЯМ, не календарних. */
+  rhythmOpens: int.default(90),
 });
 
 export const checkinPointSchema = z.object({
@@ -619,6 +621,7 @@ export const statsSchema = z.object({
     trendWeeks: 8,
     checkinWeeks: 8,
     reliabilityDays: 90,
+    rhythmOpens: 90,
   }),
   sleepLog: z.array(sleepNightSchema).default([]),
   checkinWeekly: z.array(checkinWeekSchema).default([]),

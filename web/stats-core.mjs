@@ -1065,6 +1065,19 @@ export const STATS_WINDOWS = {
   checkinWeeks: 8,
   /** Журнал доставки (кап самого стору). */
   reliabilityDays: RELIABILITY_CAP,
+  /**
+   * «Ритуал відкриття» — скільки ОСТАННІХ діб із відкриттям беремо.
+   *
+   * ⚠️ Рахується в ЗАПИСАХ, не в календарних добах: opensMin — плаский масив
+   * хвилин без дат, один запис = одна доба, коли застосунок відкривали. Тобто
+   * це «останні 90 діб із відкриттям», і підпис мусить казати саме так.
+   *
+   * Вікно тут не косметика: доти медіана й розкид рахувались по ВСЬОМУ масиву
+   * (кап HISTORY_CAP, до року), тож звичка, що змінилась три місяці тому,
+   * тонула в старих записах — блок обіцяв «наскільки це ритуал ЗАРАЗ», а
+   * показував середнє по році.
+   */
+  rhythmOpens: 90,
 };
 
 /**
@@ -1111,8 +1124,13 @@ function percentile(sorted, p) {
  * Вуса — p10/p90, а не min/max: одна ніч, коли відкрив о 23:00, розтягнула б
  * шкалу так, що коробка стала б невидимою смужкою.
  */
-function buildOpenRhythm(opensMin) {
-  const xs = opensMin.filter((v) => typeof v === 'number' && v >= 0).sort((a, b) => a - b);
+function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
+  // slice ДО фільтра: вікно рахується в записах журналу, а не у валідних
+  // значеннях — інакше пачка битих записів мовчки розтягнула б період.
+  const xs = opensMin
+    .slice(-days)
+    .filter((v) => typeof v === 'number' && v >= 0)
+    .sort((a, b) => a - b);
   if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
   const q1 = percentile(xs, 0.25);
   const q3 = percentile(xs, 0.75);
