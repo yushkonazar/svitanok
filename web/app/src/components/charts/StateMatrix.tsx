@@ -5,11 +5,14 @@ import {
   readingsOf,
   gridOf,
   cellDetail,
+  narrowWindow,
   SLOT_FILTERS,
   CAUSE_MIN_N,
   type SlotFilter,
+  type PeriodOption,
 } from '../../lib/stateMap.ts';
 import { pluralUk } from '../../lib/plural.ts';
+import { daysWindowLabel } from '../../lib/windowLabel.ts';
 import { Segmented } from '../ui/Segmented.tsx';
 
 // Карта станів: енергія × настрій, 5×5 клітинок. Геометрія НАВМИСНО повторює
@@ -33,14 +36,20 @@ import { Segmented } from '../ui/Segmented.tsx';
 /** Нижче цього сітка виглядає як помилка рендера, а не як розподіл. */
 const MIN_READINGS = 12;
 
-export function StateMatrix({ raw }: { raw: CheckinRaw }) {
+export function StateMatrix({ raw, periods = [] }: { raw: CheckinRaw; periods?: PeriodOption[] }) {
   const [slot, setSlot] = useState<SlotFilter>('all');
+  const [days, setDays] = useState<number>(raw.days);
   const [tap, setTap] = useState<string | null>(null);
 
-  const readings = useMemo(() => readingsOf(raw, slot), [raw, slot]);
+  // Звужене вікно стає ЄДИНИМ джерелом для всього нижче — сітки, підпису
+  // глибини й деталей клітинки. Тому «30 діб» не може показати причини,
+  // пораховані на 90: вони бачать той самий обʼєкт.
+  const win = useMemo(() => narrowWindow(raw, days), [raw, days]);
+  const readings = useMemo(() => readingsOf(win, slot), [win, slot]);
   const { grid, max, n } = useMemo(() => gridOf(readings), [readings]);
-  // Гейт рахуємо по ВСІХ зрізах, а не по відфільтрованих: інакше перемикач
-  // слоту зникав би разом із сіткою, і повернутись до «Усі» було б нічим.
+  // Гейт рахуємо по ПОВНОМУ вікну й усіх слотах: інакше вузький період міг би
+  // прибрати сітку разом із перемикачами, і повернутись до ширшого не було б
+  // чим — глухий кут, з якого користувач не бачить виходу.
   const total = useMemo(() => readingsOf(raw, 'all').length, [raw]);
   if (total < MIN_READINGS) return null;
 
@@ -61,8 +70,45 @@ export function StateMatrix({ raw }: { raw: CheckinRaw }) {
     return `color-mix(in srgb, var(--color-a2) ${Math.round(18 + t * 62)}%, var(--color-track))`;
   };
 
+  // Показуємо лише ті періоди, які вікно реально вміє дати: пункт, що не
+  // змінює нічого, читається як зламана кнопка.
+  const shown = periods.filter((p) => p.days <= raw.days);
+
   return (
     <div className="flex flex-col gap-2">
+      {shown.length > 1 && (
+        <div className="flex items-center gap-2">
+          {/* Глибина живе ТУТ, а не в заголовку картки: вона тепер залежить
+              від вибору, і рознесені підпис із перемикачем розійшлись би. */}
+          <span className="font-mono text-[9.5px] tracking-[0.08em] text-tx3">
+            {daysWindowLabel(win.days)}
+          </span>
+          <div className="ml-auto flex gap-1">
+            {shown.map((p) => {
+              const on = p.days === days;
+              return (
+                <button
+                  key={p.days}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => {
+                    haptic('light');
+                    setDays(p.days);
+                    setTap(null); // вибір належав попередньому зрізу даних
+                  }}
+                  className={`rounded-full border px-2 py-[3px] font-mono text-[10px] font-semibold ${
+                    on ? 'border-transparent text-onacc' : 'border-glassb text-tx3'
+                  }`}
+                  style={on ? { background: 'var(--grad)' } : undefined}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <Segmented
         segments={SLOT_FILTERS}
         value={slot}
@@ -172,13 +218,11 @@ export function StateMatrix({ raw }: { raw: CheckinRaw }) {
         </span>
       </div>
 
+      {/* win, не raw: причини мусять бути пораховані на тому самому періоді,
+          що й сітка, інакше клітинка каже «17 вечорів», а пояснення під нею
+          спирається на дев'яносто діб. */}
       {tapped && (
-        <CellPanel
-          raw={raw}
-          filter={slot}
-          energy={5 - tapped.r}
-          mood={tapped.c + 1}
-        />
+        <CellPanel raw={win} filter={slot} energy={5 - tapped.r} mood={tapped.c + 1} />
       )}
     </div>
   );

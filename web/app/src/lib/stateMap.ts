@@ -85,6 +85,42 @@ export function gridOf(readings: StateReading[]): { grid: number[][]; max: numbe
   return { grid, max: Math.max(1, ...grid.flat()), n: readings.length };
 }
 
+/* ── Період ────────────────────────────────────────────────────────────────
+   ⚠️ ФІЛЬТР УМІЄ ЛИШЕ ЗВУЖУВАТИ, і це не спрощення, а межа даних. Сервер
+   віддає 90 діб — стелю, яку задає CPU-бюджет воркера (10 мс на запит,
+   лінійно з історією). Глибших даних на клієнті просто немає, тож «рік» або
+   «усе» тут зʼявитись не можуть: кнопка, яка обіцяє період, а показує ті самі
+   90 діб, гірша за її відсутність. Довші періоди чекають на місячні згортки
+   в холодному ключі — тоді до цього самого перемикача додасться ще пункт. */
+
+/** Опції періоду; значення підставляє екран із оголошених сервером вікон. */
+export interface PeriodOption {
+  days: number;
+  label: string;
+}
+
+/**
+ * Звузити гаряче вікно до останніх `days` діб.
+ *
+ * Разом із записами звужується й ОГОЛОШЕНА глибина (days/from): підпис
+ * малюється саме з неї, і якби вона лишалась 90, перемикач «30 діб» показував
+ * би тридцятиденні дані під дев'яностоденним заголовком.
+ */
+export function narrowWindow(raw: CheckinRaw, days: number): CheckinRaw {
+  if (days >= raw.days) return raw;
+  const from = shiftKey(raw.to, -(days - 1));
+  const records: CheckinRaw['records'] = {};
+  for (const [k, v] of Object.entries(raw.records)) if (k >= from) records[k] = v;
+  return { days, from, to: raw.to, records };
+}
+
+function shiftKey(dateKey: string, delta: number): string {
+  const d = new Date(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateKey;
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
 /* ── Причини стану ─────────────────────────────────────────────────────────
    Питання, заради якого все й робилось: «я часто буваю ось у цьому стані —
    а що з ним поруч?».

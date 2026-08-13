@@ -190,6 +190,16 @@ export function CheckinBlock({ s }: { s: Stats }) {
 
   const laggedEntries = Object.entries(model.lagged);
 
+  // Періоди карти станів — із ОГОЛОШЕНИХ сервером вікон, не з літералів.
+  // Ширших за гаряче вікно тут бути не може: глибших даних клієнт не має
+  // (стеля 90 діб — це CPU-бюджет воркера), а кнопка, яка обіцяє період і
+  // показує ті самі дані, гірша за її відсутність. Коли зʼявляться місячні
+  // згортки, до цього ж масиву додасться «рік».
+  const statePeriods = [
+    { days: s.windows.checkinRecent, label: `${s.windows.checkinRecent}д` },
+    { days: s.windows.checkinDeep, label: `${s.windows.checkinDeep}д` },
+  ].filter((p, i, all) => all.findIndex((x) => x.days === p.days) === i);
+
   return (
     <div className="flex flex-col gap-3">
       <SectionHead>Чек-ін</SectionHead>
@@ -223,9 +233,12 @@ export function CheckinBlock({ s }: { s: Stats }) {
       )}
 
       <Card>
-        <SubLabel>КАРТА СТАНІВ · {daysWindowLabel(s.checkinRaw.days)}</SubLabel>
+        <SubLabel>КАРТА СТАНІВ</SubLabel>
+        {/* Глибина підписана ВСЕРЕДИНІ графіка, а не тут: вона тепер залежить
+            від вибраного періоду, і рознесені підпис із перемикачем розійшлись
+            би при першому ж кліку. */}
         <div className="mt-2">
-          <StateMatrix raw={s.checkinRaw} />
+          <StateMatrix raw={s.checkinRaw} periods={statePeriods} />
         </div>
         <Hint>
           Та сама сітка 5×5, по якій ти тапаєш у чек-іні. Число в клітинці — скільки разів ти в
