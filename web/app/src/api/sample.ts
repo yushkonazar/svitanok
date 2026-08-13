@@ -306,6 +306,23 @@ export const SAMPLE_STATS: Stats = {
     streak: 4,
     // Свіжіше за all-time weakTopics% — демонструє, що недавно йде краще.
     recentEasyPct: 60,
+    // Помітний підйом в останні тижні — щоб демо показувало, що тренд узагалі
+    // вміє рухатись; порожні тижні лишені навмисно (n=0 -> null, не нуль).
+    easeTrend: [
+      { week: '2026-06-22', n: 6, easePct: 33 },
+      { week: '2026-06-29', n: 4, easePct: 50 },
+      { week: '2026-07-06', n: 0, easePct: null },
+      { week: '2026-07-13', n: 5, easePct: 40 },
+      { week: '2026-07-20', n: 7, easePct: 57 },
+      { week: '2026-07-27', n: 6, easePct: 67 },
+      { week: '2026-08-03', n: 8, easePct: 75 },
+      { week: '2026-08-10', n: 4, easePct: 75 },
+    ],
+    recentByTopic: {
+      HTTP: { seen: 6, weak: 4 },
+      TypeScript: { seen: 5, weak: 3 },
+      Мова: { seen: 8, weak: 1 },
+    },
   },
   roadmap: { done: 12, total: 74 },
   mastery: {
@@ -630,16 +647,25 @@ export const SAMPLE_STATS: Stats = {
     n: 90,
     fit: {
       weights: { recovery: 0.28, resource: 0.24, work: 0.3, agency: 0.1, body: 0.08 },
+      // Один відʼємний знак у демо навмисно: без нього не видно, що рахунок
+      // узагалі вміє віднімати вимір, який тягне день униз.
+      signs: { recovery: 1, resource: 1, work: 1, agency: 1, body: -1 },
+      lambda: 0.5,
       r2: 0.38,
+      // Помітно нижчий за внутрішньовибірковий — так воно й буває, і демо має
+      // показувати саме це, а не два однакові числа.
+      r2cv: 0.21,
       n: 45,
       learned: true,
     },
-    dayIndex: { last: 74.5, mean: 68.2 },
+    dayIndex: { last: 74.5, mean: 68.2, lastCoverage: 5, needCoverage: 3, scored: 41 },
     drivers: [
-      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, nHigh: 22, nLow: 18 },
-      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, nHigh: 24, nLow: 20 },
-      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, nHigh: 19, nLow: 21 },
-      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, nHigh: 15, nLow: 17 },
+      // q/passesBH — поправка на множинні порівняння: демо показує обидва
+      // стани, бо саме різниця між «p<0.05» і «витримує поправку» тут і нова.
+      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, q: 0.019, passesBH: true, nHigh: 22, nLow: 18 },
+      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, q: 0.038, passesBH: true, nHigh: 24, nLow: 20 },
+      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, q: 0.07, passesBH: false, nHigh: 19, nLow: 21 },
+      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, q: 0.11, passesBH: false, nHigh: 15, nLow: 17 },
       { field: 'screen', index: 'recovery', delta: -0.55, d: -0.69, p: 0.031, nHigh: 12, nLow: 26 },
     ],
     lagged: {
@@ -705,7 +731,7 @@ export const EMPTY_STATS: Stats = {
   dismissedUrls: [],
   savedCount: 0,
   savedList: [],
-  mock: { weakTopics: [], streak: 0, recentEasyPct: null },
+  mock: { weakTopics: [], streak: 0, recentEasyPct: null , easeTrend: [], recentByTopic: {} },
   heatmap: [],
   funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
   appliedWeekly: [],
@@ -767,7 +793,7 @@ export const EMPTY_STATS: Stats = {
       n: 0,
       learned: false,
     },
-    dayIndex: { last: null, mean: null },
+    dayIndex: { last: null, mean: null, lastCoverage: 0, needCoverage: 3, scored: 0 },
     drivers: [],
     lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
     archetypes: { ready: false, n: 0, groups: [] },

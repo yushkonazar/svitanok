@@ -13,6 +13,8 @@ import { computeDrivers, computeLagged, computeArchetypes } from '../web/checkin
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { analyzeCheckinModel, flattenCheckinDay } from '../web/checkin-model.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
+import { RIDGE_GRID, MIN_INDICES_FOR_SCORE, indicesPresent } from '../web/checkin-model.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
 import { CHECKIN_FIELDS } from '../web/stats-core.mjs';
 
 // Золоті вектори — згенеровані research/checkin_model.py (Python/numpy/scipy,
@@ -37,7 +39,16 @@ describe('checkin-model — реєстр полів', () => {
     expect(golden.constants.MIN_FIELDS_PER_INDEX).toBe(2);
     expect(golden.constants.MIN_DAYS_FOR_FIT).toBe(20);
     expect(golden.constants.MIN_N_PER_BUCKET).toBe(8);
-    expect(golden.constants.RIDGE_LAMBDA).toBe(1.0);
+    expect(golden.constants.MIN_INDICES_FOR_SCORE).toBe(MIN_INDICES_FOR_SCORE);
+  });
+
+  /* ⚠️ RIDGE_LAMBDA більше не константа. Раніше λ була зашита в 1.0 з обох
+     боків, і golden просто фіксував це число. Тепер λ обирається за LOO-CV із
+     сітки, тож контрактом стала САМА СІТКА: розійдеться вона між мовами —
+     обидві сторони оберуть різні λ, а отже й різні ваги, і золоті вектори
+     розсиплються далеко від причини. */
+  it('сітка λ — та сама в обох мовах (інакше CV обере різні моделі)', () => {
+    expect(golden.constants.RIDGE_GRID).toEqual(RIDGE_GRID);
   });
 });
 
@@ -280,5 +291,158 @@ describe('checkin-model — реєстр чек-іну й реєстр моде�
       }
     }
     expect(drift).toEqual([]);
+  });
+});
+
+/* ── Статфікси Фази 5 ────────────────────────────────────────────────────────
+   Чотири правки з аудиту C-stats §4 і §6.3. Кожна лікує окремий спосіб, яким
+   блок міг упевнено брехати. */
+
+describe('статфікс 1 — гейт покриття «Індексу дня»', () => {
+  const full = (v: number) => Object.fromEntries(INDICES.map((i: string) => [i, v]));
+
+  it('доба з меншим за поріг покриттям НЕ отримує оцінки', () => {
+    // ⚠️ Суть §4.1: о 09:00 заповнено лише ранок, доступні щонайбільше два
+    // індекси — і «92» означало «я виспався», а виглядало як підсумок доби.
+    const days = Array.from({ length: 25 }, () => ({ sleepH: 8, sleepQ: 5, dayScore: 4 }));
+    const res = analyzeCheckinModel(days);
+    expect(res.dayIndex.last).toBeNull();
+    expect(res.dayIndex.lastCoverage).toBeLessThan(res.dayIndex.needCoverage);
+  });
+
+  it('покриття рахується як кількість НЕпорожніх індексів', () => {
+    expect(indicesPresent(full(0.5))).toBe(5);
+    expect(indicesPresent({ ...full(0.5), body: null, agency: null })).toBe(3);
+  });
+
+  it('середнє рахується ЛИШЕ по добах, що дотягнули до порогу', () => {
+    // 20 повних діб + 5 «ранкових» огризків: огризки не мають тягнути середнє.
+    const rich = {
+      sleepH: 8,
+      sleepQ: 5,
+      'energy@morning': 4,
+      'mood@morning': 4,
+      output: 4,
+      focusQuality: 4,
+      autonomy: 4,
+      intentMatch: 1,
+      moved: 'active',
+      outdoor: 'long',
+      dayScore: 5,
+    };
+    const thin = { sleepH: 4, sleepQ: 1, dayScore: 1 };
+    const res = analyzeCheckinModel([...Array(20).fill(rich), ...Array(5).fill(thin)]);
+    expect(res.dayIndex.scored).toBe(20);
+  });
+
+  it('поріг оголошений у відповіді — підпис не має його вгадувати', () => {
+    const res = analyzeCheckinModel([{ sleepH: 8, sleepQ: 5, dayScore: 4 }]);
+    expect(res.dayIndex.needCoverage).toBe(MIN_INDICES_FOR_SCORE);
+  });
+});
+
+describe('статфікс 2 — знак β зберігається в рахунку', () => {
+  const weights = Object.fromEntries(INDICES.map((i: string) => [i, 0.2]));
+
+  it('вимір із відʼємним коефіцієнтом ТЯГНЕ оцінку вниз, а не вгору', () => {
+    // ⚠️ §4.4: ваги — це |β|/Σ|β|, тож без знака високе значення шкідливого
+    // виміру ПІДІЙМАЛО індекс, і число рухалось проти власної оцінки людини.
+    const ix = { recovery: 1, resource: 1, work: 1, agency: 1, body: 1 };
+    const signs = { recovery: 1, resource: 1, work: 1, agency: 1, body: -1 };
+    expect(dayIndexScore(ix, weights)).toBe(100);
+    expect(dayIndexScore(ix, weights, signs)).toBe(80); // body входить доповненням
+  });
+
+  it('без знаків поведінка та сама, що доти (апріорні ваги знака не мають)', () => {
+    const ix = { recovery: 0.5, resource: 0.5, work: 0.5, agency: 0.5, body: 0.5 };
+    expect(dayIndexScore(ix, weights, null)).toBe(dayIndexScore(ix, weights));
+  });
+
+  it('усі коефіцієнти додатні -> знаки нічого не міняють', () => {
+    const ix = { recovery: 0.8, resource: 0.6, work: 0.4, agency: 0.2, body: 1 };
+    const plus = Object.fromEntries(INDICES.map((i: string) => [i, 1]));
+    expect(dayIndexScore(ix, weights, plus)).toBe(dayIndexScore(ix, weights));
+  });
+
+  it('fitWeights віддає знаки окремо від величин', () => {
+    const days = golden.days as Array<Record<string, unknown> & { dayScore: number }>;
+    const fit = fitWeights(days.map((d) => ({ indices: dayIndices(d), dayScore: d.dayScore })));
+    for (const i of INDICES as string[]) {
+      expect(Math.abs(fit.signs[i])).toBe(1);
+      expect(fit.weights[i]).toBeGreaterThanOrEqual(0); // величина завжди невідʼємна
+      expect(Math.sign(fit.beta[i]) || 1).toBe(fit.signs[i]);
+    }
+  });
+});
+
+describe('статфікс 3 — поправка Бенʼяміні-Хохберга на драйверах', () => {
+  const days = golden.days as Array<Record<string, unknown>>;
+
+  it('кожен драйвер несе q і вердикт родини, а не лише власний p', () => {
+    // ⚠️ §6.3-5: драйверів десятки, тож на 25 полях один «значущий» результат
+    // очікується чисто випадково — підпис «значущо» був майже гарантований.
+    for (const r of computeDrivers(days)) {
+      expect(typeof r.q).toBe('number');
+      expect(typeof r.passesBH).toBe('boolean');
+    }
+  });
+
+  it('q ніколи не менший за власний p — поправка лише посилює вимогу', () => {
+    for (const r of computeDrivers(days)) expect(r.q).toBeGreaterThanOrEqual(r.p - 1e-9);
+  });
+
+  it('q монотонний за p: рядок із більшим p не може мати менший q', () => {
+    const rows = [...computeDrivers(days)].sort((a, b) => a.p - b.p);
+    for (let i = 1; i < rows.length; i++) expect(rows[i].q).toBeGreaterThanOrEqual(rows[i - 1].q);
+  });
+
+  it('витримати поправку строго важче, ніж власний p<0.05', () => {
+    const rows = computeDrivers(days);
+    const byP = rows.filter((r: { p: number }) => r.p < 0.05).length;
+    const byQ = rows.filter((r: { passesBH: boolean }) => r.passesBH).length;
+    expect(byQ).toBeLessThanOrEqual(byP);
+  });
+});
+
+describe('статфікс 4 — λ за крос-валідацією і CV-R²', () => {
+  const days = golden.days as Array<Record<string, unknown> & { dayScore: number }>;
+  const fit = () => fitWeights(days.map((d) => ({ indices: dayIndices(d), dayScore: d.dayScore })));
+
+  it('обрана λ — із оголошеної сітки, а не довільне число', () => {
+    expect(RIDGE_GRID).toContain(fit().lambda);
+  });
+
+  it('CV-R² не більший за внутрішньовибірковий — інакше це не крос-валідація', () => {
+    const f = fit();
+    expect(f.r2cv).toBeLessThanOrEqual(f.r2 + 1e-9);
+  });
+
+  it('CV-R² віддається як є, без обрізання знизу', () => {
+    // Відʼємний CV-R² означає «передбачає гірше за середнє» — єдиний випадок,
+    // коли моделі не варто вірити взагалі, і саме його не можна ховати.
+    const noise = Array.from({ length: 40 }, (_, i) => ({
+      sleepH: 7 + ((i * 7) % 5) * 0.4,
+      sleepQ: (i % 5) + 1,
+      'energy@morning': (i % 5) + 1,
+      'mood@morning': ((i * 3) % 5) + 1,
+      output: ((i * 2) % 5) + 1,
+      focusQuality: ((i * 4) % 5) + 1,
+      autonomy: ((i * 3) % 5) + 1,
+      intentMatch: i % 2,
+      moved: ['none', 'light', 'active', 'workout'][i % 4],
+      outdoor: ['none', 'short', 'long'][i % 3],
+      dayScore: ((i * 11) % 5) + 1,
+    }));
+    const f = fitWeights(noise.map((d) => ({ indices: dayIndices(d), dayScore: d.dayScore })));
+    expect(typeof f.r2cv).toBe('number');
+    expect(f.r2cv).toBeLessThan(f.r2);
+  });
+
+  it('мала вибірка -> апріорні ваги, без λ і CV', () => {
+    const f = fitWeights([
+      { indices: Object.fromEntries(INDICES.map((i: string) => [i, 0.5])), dayScore: 3 },
+    ]);
+    expect(f.learned).toBe(false);
+    expect(f.r2cv).toBeUndefined();
   });
 });

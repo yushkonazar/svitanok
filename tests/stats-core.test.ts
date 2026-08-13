@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, normalize, recordEvent, aggregateStats } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { dayKey } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
 import { recordReliability, weekStartKey } from '../web/stats-core.mjs';
 
@@ -897,5 +899,42 @@ describe('stats-core — set_goal (F2, слайдер тижневої цілі)
     expect(normalize({ goal: { weeklyTarget: 4000 } }).goal.weeklyTarget).toBe(10);
     expect(normalize({ goal: { weeklyTarget: -1 } }).goal.weeklyTarget).toBe(1);
     expect(normalize({ goal: { weeklyTarget: 0 } }).goal.weeklyTarget).toBe(5); // 0 -> дефолт
+  });
+});
+
+/* ⚠️ dayKey — заміна toISOString().slice(0,10) у гарячому шляху /api/stats.
+   Той форматує ПОВНИЙ ISO (час, мілісекунди, зону), з якого бралось 10
+   символів, і робив це ~1500 разів на запит: теплокарта, утримання й вогники
+   йдуть по 365 діб кожен, плюс десяток вікон по 30-90. Заміряно ×5.4 на
+   послідовності з 400 діб, а весь aggregateStats на річній історії — 10.6 -> 7.2 мс
+   із десятимілісекундного бюджету CPU воркера.
+
+   Тест не про швидкість, а про ЕКВІВАЛЕНТНІСТЬ: оптимізація має сенс лише
+   доти, доки вивід символ-у-символ той самий. */
+describe('dayKey — швидкий ключ доби', () => {
+  it('символ-у-символ як toISOString().slice(0,10) на межах року/місяця', () => {
+    for (const iso of [
+      '2026-01-01T00:00:00Z',
+      '2026-12-31T00:00:00Z',
+      '2024-02-29T00:00:00Z', // високосний
+      '2026-03-01T00:00:00Z',
+      '2026-10-05T00:00:00Z',
+      '1999-09-09T00:00:00Z',
+    ]) {
+      const d = new Date(iso);
+      expect(dayKey(d)).toBe(d.toISOString().slice(0, 10));
+    }
+  });
+
+  it('однаковий на 800 послідовних добах поспіль (перехід років включно)', () => {
+    const d = new Date('2025-06-15T00:00:00Z');
+    for (let i = 0; i < 800; i++) {
+      expect(dayKey(d)).toBe(d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+  });
+
+  it('двоцифрове доповнення: 5 -> «05», не «5»', () => {
+    expect(dayKey(new Date('2026-01-05T00:00:00Z'))).toBe('2026-01-05');
   });
 });

@@ -66,7 +66,7 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
   };
 
   return (
-    <Sheet onClose={onClose}>
+    <Sheet onClose={onClose} label="Вакансія">
         <div className="mb-1 flex items-center gap-2.5">
           {fit ? (
             <span

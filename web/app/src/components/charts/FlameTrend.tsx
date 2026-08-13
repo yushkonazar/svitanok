@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
 import { shortDateFromIso } from '../../lib/dateLabel.ts';
 import { haptic } from '../../telegram.ts';
+import { svgButtonProps } from '../../lib/svgButton.ts';
 
 // Тижнева композиція вогників (стріків у СТОРОННІХ застосунках): конструктивні
 // (дуолінго/шахи) проти споживчих (тікток/снепчат/bereal).
@@ -66,11 +67,14 @@ export function FlameTrend({ weeks }: { weeks: Stats['flameStats']['weekly'] }) 
           return (
             <g
               key={r.week}
-              onClick={() => {
-                haptic('light');
-                setTap(tap === i ? null : i);
-              }}
-              style={{ cursor: 'pointer' }}
+              {...svgButtonProps({
+                label: `Тиждень ${r.week}: ${r.active} із ${r.days} вечорів із вогником`,
+                pressed: tap === i,
+                onActivate: () => {
+                  haptic('light');
+                  setTap(tap === i ? null : i);
+                },
+              })}
             >
               {/* прозорий хіт-таргет на всю висоту: тонкий стовпчик важко влучити */}
               <rect x={x} y={0} width={barW} height={plotH} fill="transparent" />

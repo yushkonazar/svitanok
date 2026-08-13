@@ -83,7 +83,7 @@ describe('runCronTasks — збій однієї задачі не забира�
     expect(order).toEqual(['a:start', 'a:end', 'b:start', 'b:end']);
   });
 
-  it('CRON_TASKS — усі вісім задач, кожна з назвою для логів', () => {
+  it('CRON_TASKS — усі девʼять задач, кожна з назвою для логів', () => {
     expect(CRON_TASKS.map((t: { name: string }) => t.name)).toEqual([
       'checkReminders',
       'agentRunWatchdog',
@@ -93,6 +93,7 @@ describe('runCronTasks — збій однієї задачі не забира�
       'checkinNudgeCheck',
       'sleepNudgeCheck',
       'autoTelegramSetup',
+      'archiveMonthly',
     ]);
   });
 });

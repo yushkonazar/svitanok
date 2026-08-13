@@ -25,7 +25,7 @@ const stats = (topics: MasteryTopic[], weekly: number[] = [1, 1, 1, 1]): Stats =
   ({
     mastery: { topics, hints: [], themeOfWeek: null },
     roadmapWeekly: weekly.map((count, i) => ({ week: `2026-0${i + 1}-01`, count })),
-    mock: { weakTopics: [], streak: 0 },
+    mock: { weakTopics: [], streak: 0, easeTrend: [], recentByTopic: {} },
   }) as unknown as Stats;
 
 describe('MasteryBlock — розрив', () => {

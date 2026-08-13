@@ -33,7 +33,8 @@
     "MIN_FIELDS_PER_INDEX": 2,
     "MIN_DAYS_FOR_FIT": 20,
     "MIN_N_PER_BUCKET": 8,
-    "RIDGE_LAMBDA": 1.0
+    "MIN_INDICES_FOR_SCORE": 3,
+    "RIDGE_GRID": [0.05, 0.15, 0.5, 1.5, 5, 15]
   },
   "normalize": [
     {
@@ -3709,27 +3710,39 @@
   ],
   "fit": {
     "weights": {
-      "recovery": 0.24781305494986824,
-      "resource": 0.2781917155946442,
-      "work": 0.3594392907540502,
-      "agency": 0.06975854501592753,
-      "body": 0.04479739368550995
+      "recovery": 0.2715130859034983,
+      "resource": 0.2710614039638732,
+      "work": 0.3452999494970466,
+      "agency": 0.07285355620954895,
+      "body": 0.039272004426033104
     },
     "beta": {
-      "recovery": 0.2410210751017463,
-      "resource": 0.2705671272669004,
-      "work": 0.34958789523367045,
-      "agency": 0.0678466254357491,
-      "body": 0.043569601246479975
+      "recovery": 0.31597536229589746,
+      "resource": 0.31544971409724565,
+      "work": 0.4018453706568793,
+      "agency": 0.08478386498851308,
+      "body": 0.04570308567378709
     },
-    "intercept": 0.06023795187398295,
-    "r2": 0.33796260021588287,
+    "signs": {
+      "recovery": 1,
+      "resource": 1,
+      "work": 1,
+      "agency": 1,
+      "body": 1
+    },
+    "intercept": -0.04978499286320759,
+    "lambda": 15.0,
+    "r2": 0.35454467276898705,
+    "r2cv": 0.29311645514278617,
     "n": 120,
     "learned": true
   },
   "dayIndex": {
-    "last": 50.9,
-    "mean": 54.6
+    "last": 51.2,
+    "mean": 55.1,
+    "lastCoverage": 5,
+    "needCoverage": 3,
+    "scored": 120
   },
   "drivers": [
     {
@@ -3739,7 +3752,9 @@
       "d": 1.78,
       "p": 0.0,
       "nHigh": 27,
-      "nLow": 43
+      "nLow": 43,
+      "q": 0.0,
+      "passesBH": true
     },
     {
       "field": "focusQuality",
@@ -3748,7 +3763,9 @@
       "d": 1.17,
       "p": 0.0,
       "nHigh": 27,
-      "nLow": 54
+      "nLow": 54,
+      "q": 0.0,
+      "passesBH": true
     },
     {
       "field": "energy@morning",
@@ -3757,7 +3774,9 @@
       "d": 0.97,
       "p": 0.0005,
       "nHigh": 72,
-      "nLow": 8
+      "nLow": 8,
+      "q": 0.0042,
+      "passesBH": true
     },
     {
       "field": "energy@evening",
@@ -3766,7 +3785,9 @@
       "d": 0.93,
       "p": 0.0013,
       "nHigh": 48,
-      "nLow": 20
+      "nLow": 20,
+      "q": 0.0071,
+      "passesBH": true
     },
     {
       "field": "rumination",
@@ -3775,7 +3796,9 @@
       "d": 0.77,
       "p": 0.003,
       "nHigh": 57,
-      "nLow": 29
+      "nLow": 29,
+      "q": 0.0094,
+      "passesBH": true
     },
     {
       "field": "energy@afternoon",
@@ -3784,7 +3807,9 @@
       "d": 0.76,
       "p": 0.0019,
       "nHigh": 46,
-      "nLow": 32
+      "nLow": 32,
+      "q": 0.0071,
+      "passesBH": true
     },
     {
       "field": "autonomy",
@@ -3793,7 +3818,9 @@
       "d": 0.74,
       "p": 0.0098,
       "nHigh": 52,
-      "nLow": 21
+      "nLow": 21,
+      "q": 0.0245,
+      "passesBH": true
     },
     {
       "field": "mood@evening",
@@ -3802,7 +3829,9 @@
       "d": 0.73,
       "p": 0.0017,
       "nHigh": 24,
-      "nLow": 62
+      "nLow": 62,
+      "q": 0.0071,
+      "passesBH": true
     },
     {
       "field": "mood@afternoon",
@@ -3811,7 +3840,9 @@
       "d": 0.7,
       "p": 0.002,
       "nHigh": 40,
-      "nLow": 43
+      "nLow": 43,
+      "q": 0.0071,
+      "passesBH": true
     },
     {
       "field": "mood@morning",
@@ -3820,7 +3851,9 @@
       "d": 0.65,
       "p": 0.0054,
       "nHigh": 38,
-      "nLow": 39
+      "nLow": 39,
+      "q": 0.015,
+      "passesBH": true
     },
     {
       "field": "intentMatch",
@@ -3829,7 +3862,9 @@
       "d": -0.29,
       "p": 0.1106,
       "nHigh": 64,
-      "nLow": 56
+      "nLow": 56,
+      "q": 0.2514,
+      "passesBH": false
     },
     {
       "field": "screen",
@@ -3838,7 +3873,9 @@
       "d": 0.24,
       "p": 0.4947,
       "nHigh": 18,
-      "nLow": 16
+      "nLow": 16,
+      "q": 0.8834,
+      "passesBH": false
     },
     {
       "field": "bedtime",
@@ -3847,7 +3884,9 @@
       "d": 0.17,
       "p": 0.4357,
       "nHigh": 64,
-      "nLow": 32
+      "nLow": 32,
+      "q": 0.8834,
+      "passesBH": false
     },
     {
       "field": "outdoor",
@@ -3856,7 +3895,9 @@
       "d": 0.17,
       "p": 0.4798,
       "nHigh": 34,
-      "nLow": 38
+      "nLow": 38,
+      "q": 0.8834,
+      "passesBH": false
     },
     {
       "field": "rushed",
@@ -3865,7 +3906,9 @@
       "d": -0.15,
       "p": 0.5396,
       "nHigh": 31,
-      "nLow": 37
+      "nLow": 37,
+      "q": 0.8993,
+      "passesBH": false
     },
     {
       "field": "worryAM",
@@ -3874,7 +3917,9 @@
       "d": -0.1,
       "p": 0.6491,
       "nHigh": 61,
-      "nLow": 24
+      "nLow": 24,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "jobConfidence",
@@ -3883,7 +3928,9 @@
       "d": 0.1,
       "p": 0.6683,
       "nHigh": 46,
-      "nLow": 31
+      "nLow": 31,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "moved",
@@ -3892,7 +3939,9 @@
       "d": 0.09,
       "p": 0.7688,
       "nHigh": 21,
-      "nLow": 54
+      "nLow": 54,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "effort",
@@ -3901,7 +3950,9 @@
       "d": 0.07,
       "p": 0.7675,
       "nHigh": 55,
-      "nLow": 27
+      "nLow": 27,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "sleepLatency",
@@ -3910,7 +3961,9 @@
       "d": 0.05,
       "p": 0.8684,
       "nHigh": 38,
-      "nLow": 15
+      "nLow": 15,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "pace",
@@ -3919,7 +3972,9 @@
       "d": 0.05,
       "p": 0.829,
       "nHigh": 54,
-      "nLow": 41
+      "nLow": 41,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "detached",
@@ -3928,7 +3983,9 @@
       "d": 0.04,
       "p": 0.8888,
       "nHigh": 43,
-      "nLow": 27
+      "nLow": 27,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "kept",
@@ -3937,7 +3994,9 @@
       "d": 0.03,
       "p": 0.8875,
       "nHigh": 44,
-      "nLow": 20
+      "nLow": 20,
+      "q": 0.9661,
+      "passesBH": false
     },
     {
       "field": "jobProgress",
@@ -3946,7 +4005,9 @@
       "d": 0.02,
       "p": 0.9444,
       "nHigh": 35,
-      "nLow": 49
+      "nLow": 49,
+      "q": 0.974,
+      "passesBH": false
     },
     {
       "field": "caffeine",
@@ -3955,7 +4016,9 @@
       "d": -0.01,
       "p": 0.974,
       "nHigh": 43,
-      "nLow": 47
+      "nLow": 47,
+      "q": 0.974,
+      "passesBH": false
     }
   ],
   "lagged": {

@@ -34,6 +34,7 @@ import {
   SLEEP_NUDGE_TEXT,
 } from './stats-core.mjs';
 import { themeOfWeek } from './mastery-core.mjs';
+import { monthlyRollup, mergeArchive, ARCHIVE_KEY } from './stats-archive.mjs';
 import { isQuietMinute } from './settings-core.mjs';
 import { shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
@@ -275,6 +276,48 @@ export async function updateMasteryFocus(env) {
  *     квоту стереже власний годинний кулдаун (briefCooldownRemainingMs), а не
  *     добова ідемпотентність.
  */
+/**
+ * Дописати місячні згортки в холодний архів (раз на добу).
+ *
+ * ⚠️ НАВІЩО. Стор ріже історію капами — чек-іни й активність 365 діб,
+ * надійність і сон 90, тижневі інтереси 26 тижнів, оцінки mock 60. Кожної доби
+ * щось найстаріше зникає НАЗАВЖДИ, і місця, де воно лишалось би бодай
+ * згорнутим, не було. Це задача про втрату даних, а не про майбутній графік.
+ *
+ * ⚠️ ОКРЕМИЙ KV-КЛЮЧ, а не поле в `stats`: гарячий блоб читається й
+ * перезаписується на КОЖНУ подію, тож усе в ньому коштує на кожному тапі.
+ * Архів пишеться раз на добу й читається лише під довгий період.
+ *
+ * No-op, якщо нічого не змінилось: зайвий read-modify-write — це дармове вікно
+ * клобберу (той самий мотив, що в updateMasteryFocus вище).
+ */
+export async function archiveMonthly(env) {
+  try {
+    const store = await loadStats(env);
+    const today = kyivDateKey();
+    const fresh = monthlyRollup(store, today);
+    if (!Object.keys(fresh).length) return;
+    const prev = await readArchive(env);
+    const merged = mergeArchive(prev, fresh, today);
+    const next = JSON.stringify(merged);
+    if (next === JSON.stringify(prev)) return;
+    await env.BRIEFING.put(ARCHIVE_KEY, next);
+  } catch (e) {
+    console.error('archiveMonthly failed', e); // не блокує решту крону
+  }
+}
+
+/** Архів; биття -> порожньо (краще дописати заново, ніж упасти). */
+async function readArchive(env) {
+  try {
+    const raw = await env.BRIEFING.get(ARCHIVE_KEY);
+    const parsed = JSON.parse(raw ?? 'null');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function dispatchBrief(env, { forceWindow = false } = {}) {
   if (!env.GH_DISPATCH_TOKEN) {
     console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
