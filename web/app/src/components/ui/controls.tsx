@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { haptic } from '../../telegram.ts';
 
@@ -113,7 +113,16 @@ export function Stepper({
   const clamp = useCallback((v: number) => Math.max(min, Math.min(max, v)), [min, max]);
 
   // Батько підтвердив (або відкотив) значення — чернетка більше не потрібна.
-  useEffect(() => setDraft(null), [value]);
+  //
+  // ⚠️ КОРИГУВАННЯ ПІД ЧАС РЕНДЕРА, не в ефекті. React документує саме цей
+  // патерн для «скинути стан, коли проп змінився». Ефект тут робив зайвий
+  // коміт: кадр зі СТАРОЮ чернеткою поверх уже нового значення встигав
+  // потрапити на екран — на повільному пристрої це видно як смикання повзунка.
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue) {
+    setLastValue(value);
+    setDraft(null);
+  }
 
   const shown = draft ?? clamp(value);
 

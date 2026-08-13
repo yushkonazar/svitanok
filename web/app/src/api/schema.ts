@@ -748,6 +748,30 @@ export type SavedItem = z.infer<typeof savedItemSchema>;
 export type WeakTopic = z.infer<typeof weakTopicSchema>;
 export type HeatmapCell = z.infer<typeof heatmapCellSchema>;
 export type MasteryTopic = z.infer<typeof masteryTopicSchema>;
+
+/**
+ * Місячна згортка з холодного архіву (GET /api/archive).
+ *
+ * ⚠️ Усе, крім `month`, — з дефолтами. Архів пишеться раз на добу й переживає
+ * роки: запис, зроблений старішою версією згортки, не має валити екран через
+ * поле, якого тоді ще не існувало.
+ */
+export const archiveMonthSchema = z.object({
+  month: z.string(),
+  checkinDays: int.default(0),
+  sleepAvg: num.nullable().default(null),
+  energyAvg: num.nullable().default(null),
+  moodAvg: num.nullable().default(null),
+  dayScoreAvg: num.nullable().default(null),
+  activeDays: int.default(0),
+  opens: int.default(0),
+  mock: int.default(0),
+  news: int.default(0),
+  applied: int.default(0),
+});
+
+export const archiveSchema = z.object({ months: z.array(archiveMonthSchema).default([]) });
+export type ArchiveMonth = z.infer<typeof archiveMonthSchema>;
 export type AppliedWeek = z.infer<typeof appliedWeekSchema>;
 export type Interest = z.infer<typeof interestSchema>;
 export type InterestsTrend = z.infer<typeof interestsTrendSchema>;
