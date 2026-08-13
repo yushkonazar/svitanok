@@ -140,9 +140,28 @@ export const themeOfWeekSchema = z.object({
 /** Куроване джерело з роадмепу — «Вивчити» в картці питання (F4/F5). */
 export const materialSchema = z.object({ title: z.string(), url: z.string() });
 
+/**
+ * Готовність однієї теми роадмепу: прогрес × як даються питання по ній.
+ *
+ * ⚠️ easePct НЕ nullable «про всяк випадок» — null тут має ЗМІСТ: питань по
+ * темі не було. Нуль читався б як «усе складно», тобто найгірша оцінка
+ * діставалась би темі лише за те, що її жодного разу не питали. Екран мусить
+ * показувати такі теми окремо, а не в одному рейтингу з реально слабкими.
+ */
+export const masteryTopicSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  done: int.default(0),
+  total: int.default(0),
+  seen: int.default(0),
+  weak: int.default(0),
+  easePct: num.nullable().default(null),
+});
+
 export const masterySchema = z.object({
   hints: z.array(masteryHintSchema).default([]),
   themeOfWeek: themeOfWeekSchema.nullable().default(null),
+  topics: z.array(masteryTopicSchema).default([]),
 });
 
 /* ── Чек-ін (п.7) ──────────────────────────────────────────────────────────
@@ -659,6 +678,7 @@ export type SavedPage = z.infer<typeof savedPageSchema>;
 export type SavedItem = z.infer<typeof savedItemSchema>;
 export type WeakTopic = z.infer<typeof weakTopicSchema>;
 export type HeatmapCell = z.infer<typeof heatmapCellSchema>;
+export type MasteryTopic = z.infer<typeof masteryTopicSchema>;
 export type AppliedWeek = z.infer<typeof appliedWeekSchema>;
 export type Interest = z.infer<typeof interestSchema>;
 export type InterestsTrend = z.infer<typeof interestsTrendSchema>;

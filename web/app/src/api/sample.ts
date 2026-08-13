@@ -309,6 +309,24 @@ export const SAMPLE_STATS: Stats = {
   },
   roadmap: { done: 12, total: 74 },
   mastery: {
+    // Готовність по темах. Числа підібрані так, щоб демо показувало ВСІ три
+    // стани, які блок і має розрізняти: розрив («відмітив, а не дається»),
+    // рівний прогрес і теми, яких жодного разу не питали.
+    topics: [
+      { id: 'frontend', title: '🌐 Frontend основи', done: 7, total: 7, seen: 22, weak: 3, easePct: 86 },
+      { id: 'typescript', title: '🟦 TypeScript', done: 5, total: 6, seen: 14, weak: 9, easePct: 36 },
+      { id: 'react', title: '⚛️ React', done: 3, total: 6, seen: 18, weak: 6, easePct: 67 },
+      { id: 'networking', title: '📡 HTTP / мережі (поглиблено)', done: 4, total: 5, seen: 11, weak: 8, easePct: 27 },
+      { id: 'backend', title: '🖥 Backend / Node.js', done: 4, total: 7, seen: 16, weak: 7, easePct: 56 },
+      { id: 'databases', title: '🗄 Бази даних', done: 2, total: 6, seen: 9, weak: 4, easePct: 56 },
+      { id: 'algorithms', title: '🧮 Алгоритми та структури даних', done: 2, total: 6, seen: 12, weak: 7, easePct: 42 },
+      { id: 'security', title: '🔒 Безпека', done: 1, total: 5, seen: 4, weak: 3, easePct: 25 },
+      { id: 'ai-dev', title: '🤖 AI у розробці', done: 2, total: 4, seen: 6, weak: 1, easePct: 83 },
+      { id: 'testing-adv', title: '🧪 Тестування (поглиблено)', done: 0, total: 5, seen: 0, weak: 0, easePct: null },
+      { id: 'tools', title: '🛠 Git / CI', done: 3, total: 5, seen: 0, weak: 0, easePct: null },
+      { id: 'ecosystem', title: '📦 Тулінг і екосистема', done: 1, total: 4, seen: 0, weak: 0, easePct: null },
+      { id: 'perf-a11y', title: '⚡ Продуктивність і a11y', done: 0, total: 4, seen: 0, weak: 0, easePct: null },
+    ],
     themeOfWeek: {
       week: '',
       topicId: 'react',

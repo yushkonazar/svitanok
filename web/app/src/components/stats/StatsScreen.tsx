@@ -5,6 +5,7 @@ import { CheckinBlock } from './CheckinBlock.tsx';
 import { RhythmBlock } from './RhythmBlock.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
+import { MasteryBlock } from './MasteryBlock.tsx';
 
 // Вкладка «Статистика» (дизайн v2, Svitanok.dc.html): секції з ритмом 26px,
 // кожна — заголовок із градієнтною крапкою та волосінню.
@@ -31,11 +32,11 @@ export function StatsScreen() {
       <HabitsBlock s={s} />
       <CheckinBlock s={s} />
       <RhythmBlock s={s} />
-      {/* ⚠️ «Майстерність» ТИМЧАСОВО вимкнено (рішення власника 29.07): блок
-          чекає на такий самий редизайн, як Чек-ін і Звички. Компонент
-          (MasteryBlock.tsx) і всі його дані в /api/stats лишаються НЕТОРКАНИМИ
-          — вимкнено лише рендер, щоб повернути одним рядком, а не збирати
-          заново. */}
+      <MasteryBlock s={s} />
+      {/* Редизайн зроблено — блок повернувся в рендер. Вимикали його 29.07 із
+          вердиктом «абсолютно не розумію, що мені показується»; тепер він
+          відповідає на конкретне питання («що я знаю, а що ні») через
+          зіставлення роадмепу з mock-питаннями, якого доти на екрані не було. */}
       <InterestsBlock s={s} />
       <ReliabilityBlock s={s} />
     </div>
