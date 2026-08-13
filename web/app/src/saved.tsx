@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useStats } from './api/hooks.ts';
 
@@ -26,22 +26,32 @@ export function SavedProvider({ children }: { children: ReactNode }) {
 
   // Додаткове (additive) вливання зі savedList — тільки додаємо ключі, ніколи не
   // прибираємо через відсутність (сервер міг обрізати список).
-  useEffect(() => {
-    if (!savedList || !savedList.length) return;
-    setSet((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const x of savedList) {
-        if (!x.id) continue;
-        const k = keyOf(x.kind, x.id);
-        if (!next.has(k)) {
-          next.add(k);
-          changed = true;
+  //
+  // ⚠️ ПІД ЧАС РЕНДЕРА, не в ефекті. Ефект давав зайвий коміт: перший кадр
+  // після рефетчу показував позначки БЕЗ щойно влитих ключів, і сердечко на
+  // мить згасало — рівно та мигалка, проти якої цей провайдер і зроблений.
+  //
+  // Повернення того самого Set при відсутності змін — не оптимізація, а умова
+  // завершення: React бачить ту саму референцію й не перезапускає рендер.
+  const [lastList, setLastList] = useState(savedList);
+  if (savedList !== lastList) {
+    setLastList(savedList);
+    if (savedList?.length) {
+      setSet((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        for (const x of savedList) {
+          if (!x.id) continue;
+          const k = keyOf(x.kind, x.id);
+          if (!next.has(k)) {
+            next.add(k);
+            changed = true;
+          }
         }
-      }
-      return changed ? next : prev;
-    });
-  }, [savedList]);
+        return changed ? next : prev;
+      });
+    }
+  }
 
   const setSaved = useCallback((kind: string, id: string, value: boolean) => {
     setSet((prev) => {

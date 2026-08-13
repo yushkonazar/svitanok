@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useJobStage } from '../../api/hooks.ts';
 import { haptic, setVerticalSwipes } from '../../telegram.ts';
 import { prettyJobTitle } from '../../lib/jobTitle.ts';
@@ -52,7 +52,12 @@ export function KanbanBoard({
   const [dragging, setDragging] = useState(false);
   const [overCol, setOverCol] = useState<FunnelStage | null>(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const off = useRef({ x: 0, y: 0, w: 150 });
+  // ⚠️ СТАН, а не ref: ці три числа ЧИТАЮТЬСЯ ПІД ЧАС РЕНДЕРА (позиція й ширина
+  // клона, що їде за пальцем). Ref для цього непридатний за побудовою — рендер
+  // не перезапускається від його зміни, тож картинка збігалася лише тому, що
+  // поруч оновлювався `pos`. Ставиться один раз на початку перетягування, тобто
+  // ціна — один зайвий рендер на драг.
+  const [off, setOff] = useState({ x: 0, y: 0, w: 150 });
   // Зворотний зв'язок на перехід у термінальну/фінальну стадію (фідбек
   // власника) — окремо від haptic, StageCelebration сама вирішує тон
   // (святкування для offer, тихий тост для rejected/failed).
@@ -63,7 +68,7 @@ export function KanbanBoard({
   const onDown = (e: React.PointerEvent, card: KanbanCard) => {
     const el = e.currentTarget as HTMLElement;
     const r = el.getBoundingClientRect();
-    off.current = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width };
+    setOff({ x: e.clientX - r.left, y: e.clientY - r.top, w: r.width });
     try {
       el.setPointerCapture(e.pointerId);
     } catch {
@@ -203,9 +208,9 @@ export function KanbanBoard({
         <div
           className="pointer-events-none fixed z-50 flex items-center gap-2 rounded-xl px-3 py-2.5"
           style={{
-            left: pos.x - off.current.x,
-            top: pos.y - off.current.y,
-            width: off.current.w,
+            left: pos.x - off.x,
+            top: pos.y - off.y,
+            width: off.w,
             background: 'var(--color-bg2)',
             border: '1px solid var(--color-a2)',
             boxShadow: '0 18px 44px rgba(0,0,0,.6),0 0 0 1px rgba(255,164,92,.3)',
