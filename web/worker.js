@@ -60,6 +60,7 @@ import {
   deadMansCheck,
   runTelegramSetup,
   autoTelegramSetup,
+  archiveMonthly,
 } from './cron.mjs';
 import {
   handleLiveWeather,
@@ -219,6 +220,7 @@ export const CRON_TASKS = [
   { name: 'checkinNudgeCheck', run: checkinNudgeCheck }, // вікна чек-іну, раз на слот/добу
   { name: 'sleepNudgeCheck', run: sleepNudgeCheck }, // «Ліг спати» 23:00–02:00 + прибирання
   { name: 'autoTelegramSetup', run: autoTelegramSetup }, // самозапуск setup, раз на добу
+  { name: 'archiveMonthly', run: archiveMonthly }, // місячні згортки в холодний ключ
 ];
 
 /**

@@ -590,7 +590,7 @@ export function dayKey(d) {
 }
 
 /** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
-const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
+export const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
 // Кап історійних масивів (opensMin/fitApplied/appliedLog): медіані/трендам
 // достатньо останнього року, стор не росте безмежно.
 const HISTORY_CAP = 365;
