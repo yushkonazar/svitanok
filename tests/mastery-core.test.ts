@@ -4,6 +4,8 @@ import { MOCK_TO_ROADMAP, roadmapToMock, masteryHints, themeOfWeek } from '../we
 // @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
 import { mockMaterials } from '../web/mastery-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
+import { masteryTopics } from '../web/mastery-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
 import { ROADMAP_TOPICS } from '../web/roadmap-data.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { progressKey } from '../web/roadmap-core.mjs';
@@ -121,5 +123,81 @@ describe('mastery-core — themeOfWeek', () => {
     for (const s of theme.subtopics) own[progressKey(theme.id, s.id)] = '2026-07-08T00:00:00Z';
     const next = themeOfWeek(own, '2026-07-08');
     expect(next.topicId).not.toBe(before.topicId);
+  });
+});
+
+/* Готовність по темах: єдине місце, де «відмічено пройденим» зустрічається з
+ * «як воно даються на питаннях».
+ *
+ * ⚠️ ПРИВІД. Блок «Майстерність» вимкнено з рендера ще 29.07 із вердиктом
+ * власника «абсолютно не розумію, що мені показується»: три незалежні сутності
+ * (роадмеп, mock, тема тижня) стояли поруч без жодного звʼязку. Звʼязок при
+ * цьому ІСНУВАВ — MOCK_TO_ROADMAP тут-таки, — але назовні не виходив: дашборд
+ * бачив або загальний відсоток роадмепу, або all-time %невдалих по mock-темах,
+ * і зіставити їх було нічим.
+ *
+ * Найцінніше, що дає це зіставлення, — РОЗРИВ: тема відмічена пройденою, а
+ * питання по ній даються погано. Це «ілюзія знання», і жоден із двох боків
+ * окремо її показати не може. */
+describe('mastery-core — masteryTopics (готовність по темах)', () => {
+  const progress = (pairs: [string, string][]) =>
+    Object.fromEntries(pairs.map(([t, s]) => [progressKey(t, s), '2026-08-01T10:00:00.000Z']));
+
+  it('зшиває прогрес роадмепу з mock-статистикою по КОЖНІЙ темі', () => {
+    const rows = masteryTopics(progress([]), { HTTP: { seen: 10, weak: 4 } });
+    const http = rows.find((r: { id: string }) => r.id === 'networking');
+    expect(http.seen).toBe(10);
+    expect(http.weak).toBe(4);
+  });
+
+  it('mock-тема, що мапиться на КІЛЬКА тем роадмепу, рахується в кожній', () => {
+    // HTTP -> ['networking', 'backend'] (MOCK_TO_ROADMAP)
+    const rows = masteryTopics({}, { HTTP: { seen: 10, weak: 4 } });
+    for (const id of ['networking', 'backend']) {
+      expect(rows.find((r: { id: string }) => r.id === id).seen).toBe(10);
+    }
+  });
+
+  it('тема роадмепу з кількох mock-тем СУМУЄ їхні лічильники', () => {
+    // backend <- 'HTTP' і 'Патерни'
+    const rows = masteryTopics({}, { HTTP: { seen: 10, weak: 4 }, Патерни: { seen: 6, weak: 1 } });
+    const backend = rows.find((r: { id: string }) => r.id === 'backend');
+    expect(backend.seen).toBe(16);
+    expect(backend.weak).toBe(5);
+  });
+
+  it('віддає ВСІ теми роадмепу, навіть без жодного питання', () => {
+    const rows = masteryTopics({}, {});
+    expect(rows).toHaveLength(TOPICS.length);
+    for (const r of rows) expect(r.seen).toBe(0);
+  });
+
+  it('прогрес рахується по підпунктах теми, не по всьому роадмепу', () => {
+    const t = TOPICS[0]!;
+    const rows = masteryTopics(progress([[t.id, t.subtopics[0]!.id]]), {});
+    const row = rows.find((r: { id: string }) => r.id === t.id);
+    expect(row.done).toBe(1);
+    expect(row.total).toBe(t.subtopics.length);
+  });
+
+  it('seen=0 -> easePct НУЛЬ НЕ ставиться (це «не питали», а не «погано»)', () => {
+    const rows = masteryTopics({}, {});
+    for (const r of rows) expect(r.easePct).toBeNull();
+  });
+
+  it('easePct — частка НЕвідмічених складними, від 0 до 100', () => {
+    const rows = masteryTopics({}, { Алгоритми: { seen: 10, weak: 3 } });
+    expect(rows.find((r: { id: string }) => r.id === 'algorithms').easePct).toBe(70);
+  });
+
+  it('битий вхід не валить агрегат', () => {
+    expect(() => masteryTopics(null, null)).not.toThrow();
+    expect(() => masteryTopics('дурня', { HTTP: 'теж дурня' })).not.toThrow();
+    expect(masteryTopics(null, null)).toHaveLength(TOPICS.length);
+  });
+
+  it('weak більший за seen не дає відʼємної легкості', () => {
+    const rows = masteryTopics({}, { Алгоритми: { seen: 2, weak: 5 } });
+    expect(rows.find((r: { id: string }) => r.id === 'algorithms').easePct).toBe(0);
   });
 });

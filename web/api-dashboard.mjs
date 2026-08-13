@@ -26,7 +26,7 @@ import {
 } from './stats-core.mjs';
 import { normalizeSettings, connectorStatus } from './settings-core.mjs';
 import { totalProgress, roadmapWeekly } from './roadmap-core.mjs';
-import { masteryHints, themeOfWeek, mockMaterials } from './mastery-core.mjs';
+import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './mastery-core.mjs';
 
 /** POST /api/vote {category, dir:'up', url?, initData} -> preferenceWeights + інтерес.
  *  url (C3): якщо переданий — голос дедуплюється per-url (повторний = зняти).
@@ -301,6 +301,11 @@ export async function handleStats(request, env) {
   stats.mastery = {
     hints: masteryHints(stats.mock?.weakTopics ?? [], progress),
     themeOfWeek: themeOfWeek(progress, kyivDateKey()),
+    // Готовність по темах: єдине місце, де «відмічено пройденим» зустрічається
+    // з «як воно даються на питаннях». Обидва боки й доти були в payload, але
+    // порізно — зіставити їх на клієнті було нічим, бо таблиця звʼязку
+    // mock<->roadmap живе лише тут.
+    topics: masteryTopics(progress, store.mockTopics),
   };
   // F4: mock-тема -> куровані матеріали роадмепу («Вивчити» в картці питання).
   // Мапа стала й крихітна (13 тем × 2 посилання) — віддаємо цілком, щоб клієнт
