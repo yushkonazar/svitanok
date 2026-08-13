@@ -590,6 +590,25 @@ export function dayKey(d) {
 }
 
 /** "YYYY-MM-DD"? Битий ключ у date-математиці кидає RangeError — гардимо на вході. */
+/**
+ * Чи безпечно використати рядок як КЛЮЧ обʼєкта-мапи.
+ *
+ * ⚠️ Знайдено рев'ю: мапи стору кейзяться рядками з події (mockTopics[ev.topic]
+ * і подібні), а патерн `if (!m[k]) m[k] = {...}; m[k].seen++` на ключі
+ * '__proto__' НЕ створює запису — m['__proto__'] уже істинний (це
+ * Object.prototype), тож інкремент іде В ПРОТОТИП. Після цього кожен порожній
+ * обʼєкт у цьому ізоляті має поле `seen`, і будь-яка перевірка виду
+ * `if (!obj.seen)` деінде починає брехати. Ізолят живе довго й обслуговує
+ * наступні запити вже отруєним.
+ *
+ * Джерело ключа — POST /api/event власника, тобто це не шлях зловмисника, а
+ * латентна пастка: досить одного кривого клієнта. Гард стоїть на ОБОХ межах —
+ * на записі й на читанні, — бо стор, записаний до гарда, уже лежить у KV, і
+ * виправити його заднім числом неможливо.
+ */
+export const isSafeKey = (k) =>
+  typeof k === 'string' && k !== '__proto__' && k !== 'constructor' && k !== 'prototype';
+
 export const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
 // Кап історійних масивів (opensMin/fitApplied/appliedLog): медіані/трендам
 // достатньо останнього року, стор не росте безмежно.
@@ -830,7 +849,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       const first = !prevRec;
 
       if (first) bump(dayBucket(s, dateKey), 'mock');
-      if (ev.topic) {
+      if (ev.topic && isSafeKey(ev.topic)) {
         if (!s.mockTopics[ev.topic]) s.mockTopics[ev.topic] = { seen: 0, weak: 0 };
         const t = s.mockTopics[ev.topic];
         if (first) bump(t, 'seen');
@@ -1273,6 +1292,7 @@ function buildRecentByTopic(mockRated, todayKey, days = MOCK_RECENT_DAYS) {
   for (const raw of Object.values(mockRated ?? {})) {
     const rec = readRating(raw);
     if (!rec || !rec.at || !rec.topic || rec.at < from) continue;
+    if (!isSafeKey(rec.topic)) continue;
     if (!out[rec.topic]) out[rec.topic] = { seen: 0, weak: 0 };
     out[rec.topic].seen++;
     if (rec.r === 'hard') out[rec.topic].weak++;
@@ -2117,6 +2137,7 @@ export function aggregateStats(store, todayKey) {
 
   // mock: слабкі теми (weak/seen), стрік днів mock
   const weakTopics = Object.entries(s.mockTopics)
+    .filter(([name]) => isSafeKey(name))
     .map(([name, v]) => ({ name, value: v.seen ? Math.round((v.weak / v.seen) * 100) : 0 }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 6);

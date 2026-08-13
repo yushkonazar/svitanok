@@ -363,8 +363,13 @@ export function fitWeights(rows) {
       const pred = xk.reduce((s, v, j) => s + v * beta[j], 0);
       const e = yc[k] - pred;
       ssRes += e * e;
-      const denom = 1 - h;
-      press += Math.abs(denom) > 1e-9 ? (e / denom) ** 2 : e * e;
+      // ⚠️ Клемп ЗНИЗУ, не фолбек на e². Знайдено рев'ю: попередній варіант при
+      // h -> 1 підставляв сам залишок, тобто в найгіршому для моделі випадку
+      // (доба, яку підгонка «вивчила напамʼять») штраф ставав НАЙМЕНШИМ —
+      // помилка в бік оптимізму рівно там, де CV мусить бути суворим. Тепер
+      // знаменник не менший за 1e-6, тож така доба дає великий штраф.
+      const denom = Math.max(1 - h, 1e-6);
+      press += (e / denom) ** 2;
     }
     return { lambda, beta, ssRes, press };
   };

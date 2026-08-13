@@ -240,8 +240,11 @@ def fit_weights(rows: list[tuple[dict[str, float | None], float]]):
         Ainv = np.linalg.inv(A)
         h = 1.0 / rows + np.einsum("ij,jk,ik->i", Xz, Ainv, Xz)
         e = yc - Xz @ beta
-        denom = 1.0 - h
-        press = float((np.where(np.abs(denom) > 1e-9, e / np.where(denom == 0, 1, denom), e) ** 2).sum())
+        # Клемп ЗНИЗУ, не фолбек на e: при h -> 1 підстановка самого залишку
+        # робила б штраф НАЙМЕНШИМ саме для доби, яку підгонка «вивчила
+        # напамʼять» — помилка в бік оптимізму там, де CV мусить бути суворим.
+        denom = np.maximum(1.0 - h, 1e-6)
+        press = float(((e / denom) ** 2).sum())
         return {"lambda": lam, "beta": beta, "ss_res": float((e ** 2).sum()), "press": press}
 
     best = min((fit_at(l) for l in RIDGE_GRID), key=lambda c: c["press"])
