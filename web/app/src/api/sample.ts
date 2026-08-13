@@ -306,6 +306,23 @@ export const SAMPLE_STATS: Stats = {
     streak: 4,
     // Свіжіше за all-time weakTopics% — демонструє, що недавно йде краще.
     recentEasyPct: 60,
+    // Помітний підйом в останні тижні — щоб демо показувало, що тренд узагалі
+    // вміє рухатись; порожні тижні лишені навмисно (n=0 -> null, не нуль).
+    easeTrend: [
+      { week: '2026-06-22', n: 6, easePct: 33 },
+      { week: '2026-06-29', n: 4, easePct: 50 },
+      { week: '2026-07-06', n: 0, easePct: null },
+      { week: '2026-07-13', n: 5, easePct: 40 },
+      { week: '2026-07-20', n: 7, easePct: 57 },
+      { week: '2026-07-27', n: 6, easePct: 67 },
+      { week: '2026-08-03', n: 8, easePct: 75 },
+      { week: '2026-08-10', n: 4, easePct: 75 },
+    ],
+    recentByTopic: {
+      HTTP: { seen: 6, weak: 4 },
+      TypeScript: { seen: 5, weak: 3 },
+      Мова: { seen: 8, weak: 1 },
+    },
   },
   roadmap: { done: 12, total: 74 },
   mastery: {
@@ -714,7 +731,7 @@ export const EMPTY_STATS: Stats = {
   dismissedUrls: [],
   savedCount: 0,
   savedList: [],
-  mock: { weakTopics: [], streak: 0, recentEasyPct: null },
+  mock: { weakTopics: [], streak: 0, recentEasyPct: null , easeTrend: [], recentByTopic: {} },
   heatmap: [],
   funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
   appliedWeekly: [],

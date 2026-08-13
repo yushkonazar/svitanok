@@ -822,8 +822,12 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       const rating = ev.rating === 'hard' ? 'hard' : ev.rating === 'easy' ? 'easy' : null;
       if (!rating) break; // сміття не рахуємо
       const qId = typeof ev.qId === 'string' && ev.qId ? ev.qId : null;
-      const prev = qId ? s.mockRated[qId] : undefined;
-      const first = !prev;
+      // ⚠️ Порівнюємо ОЦІНКУ, а не сирий запис: відколи mockRated тримає обʼєкт,
+      // `prev !== rating` було б істинним ЗАВЖДИ, і кожен повторний тап
+      // накручував би weak. Дедуп по qId — саме те, заради чого qId і зʼявився.
+      const prevRec = qId ? readRating(s.mockRated[qId]) : null;
+      const prev = prevRec ? prevRec.r : undefined;
+      const first = !prevRec;
 
       if (first) bump(dayBucket(s, dateKey), 'mock');
       if (ev.topic) {
@@ -836,7 +840,13 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
         }
       }
       if (qId) {
-        s.mockRated[qId] = rating;
+        // ⚠️ ОБʼЄКТ, а не голий рядок. Доти було {qId: 'easy'|'hard'} — без часу
+        // й без теми, і це блокувало одразу дві речі: тренд «чи стає легше»
+        // (порядок ключів у JS-обʼєкті не гарантований — усе-цифровий base36
+        // рушає на початок, тож хронологія на ньому була б вигадкою) і
+        // «останні N по КОЖНІЙ темі». `at` оновлюється й при зміні думки:
+        // свіжість стосується РІШЕННЯ, а не першого показу питання.
+        s.mockRated[qId] = { r: rating, at: dateKey, topic: ev.topic || null };
         // Кап: ключі рядків зберігають порядок вставки, тож ріжемо найстаріші.
         const keys = Object.keys(s.mockRated);
         for (const k of keys.slice(0, Math.max(0, keys.length - MOCK_RATED_CAP)))
@@ -1208,6 +1218,66 @@ function funnelSpeed(funnel, funnelMeta, todayKey) {
   stale.sort((a, b) => b.days - a.days);
 
   return { steps, stale, staleAfterDays: STALE_AFTER_DAYS };
+}
+
+/** Скільки тижнів у тренді легкості. */
+const EASE_TREND_WEEKS = 8;
+
+/** Вікно «як дається зараз» у розрізі тем. */
+const MOCK_RECENT_DAYS = 60;
+
+/**
+ * Запис оцінки в обох формах -> {r, at, topic}.
+ *
+ * Легасі — голий рядок 'easy'|'hard' без часу й теми. Він і далі рахується там,
+ * де для цього досить самої оцінки, і мовчки випадає там, де потрібен час: це
+ * чесніше за здогадку про дату, яка вигадала б хронологію.
+ */
+function readRating(v) {
+  if (v === 'easy' || v === 'hard') return { r: v, at: null, topic: null };
+  if (!v || typeof v !== 'object') return null;
+  const r = v.r === 'easy' || v.r === 'hard' ? v.r : null;
+  if (!r) return null;
+  return {
+    r,
+    at: isDateKey(v.at) ? v.at : null,
+    topic: typeof v.topic === 'string' ? v.topic : null,
+  };
+}
+
+/** Частка «легко» по тижнях — той самий {week,...}-шейп, що інші тижневі ряди. */
+function buildEaseTrend(mockRated, todayKey, weeks = EASE_TREND_WEEKS) {
+  const starts = lastWeekStarts(todayKey, weeks);
+  const buckets = Object.fromEntries(starts.map((k) => [k, { easy: 0, n: 0 }]));
+  for (const raw of Object.values(mockRated ?? {})) {
+    const rec = readRating(raw);
+    if (!rec || !rec.at) continue;
+    const wk = weekStartKey(rec.at);
+    const b = buckets[wk];
+    if (!b) continue;
+    b.n++;
+    if (rec.r === 'easy') b.easy++;
+  }
+  return starts.map((week) => {
+    const b = buckets[week];
+    // n=0 -> null, а не 0: «тиждень без питань» і «тиждень, де все було
+    // складно» — протилежні відповіді, і нуль злив би їх в одну.
+    return { week, n: b.n, easePct: b.n ? Math.round((b.easy / b.n) * 100) : null };
+  });
+}
+
+/** {тема: {seen, weak}} за останні MOCK_RECENT_DAYS — на противагу all-time. */
+function buildRecentByTopic(mockRated, todayKey, days = MOCK_RECENT_DAYS) {
+  const from = addDays(todayKey, -(days - 1));
+  const out = {};
+  for (const raw of Object.values(mockRated ?? {})) {
+    const rec = readRating(raw);
+    if (!rec || !rec.at || !rec.topic || rec.at < from) continue;
+    if (!out[rec.topic]) out[rec.topic] = { seen: 0, weak: 0 };
+    out[rec.topic].seen++;
+    if (rec.r === 'hard') out[rec.topic].weak++;
+  }
+  return out;
 }
 
 /** Персентиль за лінійною інтерполяцією (той самий метод, що median вище). */
@@ -2056,10 +2126,16 @@ export function aggregateStats(store, todayKey) {
   // схема-міграції — свідомо відкладено. Це дешевший, безризиковий різ:
   // частка 'easy' серед уже наявних (капнутих на 60) оцінок, доповнює
   // all-time weakTopics% свіжішим "як я зараз", без нового сховища.
-  const mockRatings = Object.values(s.mockRated);
+  // Легасі-форма (голий рядок) лежить у KV роками: читати її ОБОВʼЯЗКОВО,
+  // інакше вся історія оцінок зникла б у день деплою. Час і тема в неї просто
+  // відсутні — тоді запис рахується в загальному відсотку, але не в тих
+  // зрізах, які без них порахувати неможливо.
+  const mockRatings = Object.values(s.mockRated).map(readRating).filter(Boolean);
   const mockRecentEasyPct = mockRatings.length
-    ? Math.round((mockRatings.filter((r) => r === 'easy').length / mockRatings.length) * 100)
+    ? Math.round((mockRatings.filter((r) => r.r === 'easy').length / mockRatings.length) * 100)
     : null;
+  const easeTrend = buildEaseTrend(s.mockRated, todayKey);
+  const recentByTopic = buildRecentByTopic(s.mockRated, todayKey);
 
   const interests = Object.entries(s.interests)
     .filter(([, v]) => v > 0)
@@ -2126,6 +2202,10 @@ export function aggregateStats(store, todayKey) {
       weakTopics,
       streak: streak(s.days, todayKey, mocked),
       recentEasyPct: mockRecentEasyPct,
+      // Розблоковано таймстемпом на оцінці: «чи стає легше» по тижнях і «як
+      // дається ЗАРАЗ» у розрізі тем. Обидва до цього були неможливі.
+      easeTrend,
+      recentByTopic,
     },
     // A2: розширені метрики (питання власника: стабільність / темп подач /
     // на що подаюсь / як змінюються інтереси).
@@ -2159,7 +2239,16 @@ export function aggregateStats(store, todayKey) {
     mockRatedToday: mocked(s.days[todayKey]),
     // F4: які саме питання оцінено — щоб картка пережила перезавантаження
     // (доти обраний варіант жив лише в стані сесії й після F5 зникав).
-    mockRated: s.mockRated,
+    // ⚠️ НАЗОВНІ — стара пласка форма {qId: 'easy'|'hard'}. Клієнт читає її
+    // рівно для одного: підсвітити вже обрану оцінку в картці питання дня.
+    // Час і тема потрібні лише серверним зрізам вище, тож роздувати ними
+    // контракт (і ламати гідратацію) немає жодної причини — внутрішнє
+    // сховище й зовнішній контракт тут навмисно різні.
+    mockRated: Object.fromEntries(
+      Object.entries(s.mockRated)
+        .map(([qId, raw]) => [qId, readRating(raw)?.r])
+        .filter(([, r]) => r),
+    ),
     // Чек-ін (п.7). checkinToday — щоб екран гідратувався після перезаходу й не
     // питав удруге те, на що вже відповіли. Активний слот сюди НЕ кладемо: він
     // залежить від години, а /api/stats кешується — його додає worker.js.

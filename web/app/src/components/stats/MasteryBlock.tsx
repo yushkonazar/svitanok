@@ -91,6 +91,8 @@ export function MasteryBlock({ s }: { s: Stats }) {
   const eta = weeksLeft(s.roadmapWeekly, left);
   const tw = s.mastery?.themeOfWeek;
   const roadmapGrowth = s.roadmapWeekly.some((w) => w.count > 0);
+  // Два тижні з даними — мінімум, за якого лінія взагалі щось означає.
+  const easeWeeks = s.mock.easeTrend.filter((w) => w.easePct !== null);
 
   if (!topics.length) {
     return (
@@ -186,6 +188,28 @@ export function MasteryBlock({ s }: { s: Stats }) {
             Скільки підпунктів роадмепу ти закривав щотижня. Прогноз рахується за темпом ОСТАННІХ
             чотирьох тижнів, а не за всією історією — давній ривок не має обіцяти те, чого зараз
             немає. Без темпу прогноз не показується взагалі.
+          </Hint>
+        </Card>
+      )}
+
+      {/* 3.5 ЧИ СТАЄ ЛЕГШЕ — єдиний тут погляд у ЧАС, а не в поточний стан.
+          Довго був неможливий: оцінки лежали без таймстемпа, і хронологію
+          довелось би виводити з порядку ключів обʼєкта — тобто з того, що JS
+          не гарантує. Тепер час є, і питання «я просто відмічаю пройдене чи
+          справді починаю це знати» нарешті має відповідь. */}
+      {easeWeeks.length >= 2 && (
+        <Card>
+          <SubLabel>ЧИ СТАЄ ЛЕГШЕ · ЗА {s.mock.easeTrend.length} ТИЖНІВ</SubLabel>
+          <div className="mt-2">
+            <MiniTrend
+              weeks={s.mock.easeTrend.map((w) => w.week)}
+              series={s.mock.easeTrend.map((w) => w.easePct)}
+            />
+          </div>
+          <Hint>
+            Частка питань, які ти позначив легкими, по тижнях. Тиждень без питань — розрив у
+            лінії, а не падіння в нуль: «не питали» і «все було складно» — різні відповіді.
+            Лінія вгору означає, що матеріал справді осідає, а не лише відмічається пройденим.
           </Hint>
         </Card>
       )}

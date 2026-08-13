@@ -617,6 +617,22 @@ export const statsSchema = z.object({
     // Загальний recency-сигнал (без розбивки по темі — mockRated не прив'язує
     // qId до теми) поруч із all-time weakTopics%. null, доки жодної оцінки.
     recentEasyPct: num.nullable().default(null),
+    /**
+     * Частка «легко» по тижнях.
+     *
+     * ⚠️ Стало можливим лише з таймстемпом на оцінці. Доти хронологію довелось
+     * би виводити з порядку ключів обʼєкта — а він не гарантований (усе-цифровий
+     * base36-ключ JS переставляє на початок), тобто тренд міг мовчки
+     * перевернутись. easePct=null означає «тиждень без питань», а не «все було
+     * складно»: нуль злив би дві протилежні відповіді.
+     */
+    easeTrend: z
+      .array(z.object({ week: z.string(), n: int.default(0), easePct: num.nullable().default(null) }))
+      .default([]),
+    /** {тема: {seen, weak}} за останні 60 діб — на противагу all-time weakTopics. */
+    recentByTopic: z
+      .record(z.string(), z.object({ seen: int.default(0), weak: int.default(0) }))
+      .default({}),
   }),
   heatmap: z.array(heatmapCellSchema).default([]),
   appliedWeekly: z.array(appliedWeekSchema).default([]),
