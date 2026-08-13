@@ -1,4 +1,14 @@
-import type { KeyboardEvent } from 'react';
+/**
+ * ⚠️ БЕЗ import type з 'react' — свідомо. Цей модуль покривається КОРЕНЕВИМ
+ * vitest (чиста логіка, без DOM), а кореневий tsc бачить лише кореневі
+ * залежності: react стоїть тільки у web/app/node_modules, і `npm ci` в корені
+ * його не ставить. Локально це непомітно (тека вже існує), а CI падає — рівно
+ * ті самі граблі, що колись із d3.
+ *
+ * Структурний тип тут і достатній, і кращий: обробнику потрібні рівно два
+ * поля, а ширший параметр лишається сумісним із React.KeyboardEvent.
+ */
+type KeyLike = { key: string; preventDefault: () => void };
 
 // Клікабельний елемент усередині SVG — як кнопка, а не як малюнок.
 //
@@ -27,7 +37,7 @@ export function svgButtonProps({ label, pressed, onActivate }: SvgButtonOptions)
     'aria-label': label,
     ...(pressed === undefined ? {} : { 'aria-pressed': pressed }),
     onClick: onActivate,
-    onKeyDown: (e: KeyboardEvent) => {
+    onKeyDown: (e: KeyLike) => {
       // ⚠️ preventDefault обовʼязковий саме для пробілу: без нього браузер ще й
       // гортає сторінку, тобто натиснути на графік з клавіатури означало б
       // втратити його з очей.
