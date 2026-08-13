@@ -96,3 +96,94 @@ describe('StateMatrix — підпис осей', () => {
     expect(within(container).getByText(/енергія ↑ · настрій →/)).toBeInTheDocument();
   });
 });
+
+/* Панель деталей — те, заради чого власник це й просив: «зараз це просто
+ * сітка, яка показує, скільки разів я обирав ту чи іншу плитку». */
+describe('StateMatrix — деталі клітинки', () => {
+  /** n важких вечорів (утома) + m добрих (ранній старт), щоб було з чим порівнювати. */
+  const withCauses = (bad: number, good: number): CheckinRaw => {
+    const records: CheckinRaw['records'] = {};
+    for (let i = 0; i < bad; i++) {
+      records[`2026-06-${String(i + 1).padStart(2, '0')}`] = {
+        evening: { energy: 1, mood: 1, dayScore: 2, blocker: ['tired'] },
+      };
+    }
+    for (let i = 0; i < good; i++) {
+      records[`2026-07-${String(i + 1).padStart(2, '0')}`] = {
+        evening: { energy: 5, mood: 5, dayScore: 4, helper: ['early'] },
+      };
+    }
+    return { days: 90, from: '2026-06-01', to: '2026-08-13', records };
+  };
+
+  /** Клітинка «енергія 1 · настрій 1» — лівий нижній кут сітки. */
+  const worstCell = (container: HTMLElement) => container.querySelectorAll('svg g')[20]!;
+
+  it('тап відкриває ДАТИ — і саме їх, а не лише лічильник', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText('01.06')).toBeInTheDocument();
+    expect(screen.getByText(/10 вечорів|10 зрізів/)).toBeInTheDocument();
+  });
+
+  it('показує причини з часткою й нормою, а не сам перелік', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText(/Втома/)).toBeInTheDocument();
+    expect(screen.getByText('↑ 10/10')).toBeInTheDocument();
+    expect(screen.getByText('норма 0%')).toBeInTheDocument();
+  });
+
+  /* ⚠️ Регресія за побудовою: кратність на чистому розділенні (10 із 10 проти
+   * 0 з 20) дає «×70 частіше» — число, що стрибає вдесятеро від однієї нової
+   * доби. Виглядає як точність, є фальшивкою; на екрані його бути не мусить. */
+  it('кратність НЕ показується — вона лише для сортування', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.queryByText(/×\d/)).toBeNull();
+  });
+
+  it('відсутність теж читається: помічник, якого тут не буває', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText(/Ранній старт/)).toBeInTheDocument();
+    expect(screen.getByText('↓ 0/10')).toBeInTheDocument();
+  });
+
+  it('оцінка таких днів іде поруч зі своєю нормою', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText(/Оцінка таких днів/)).toBeInTheDocument();
+    expect(screen.getByText(/зазвичай 4/)).toBeInTheDocument();
+  });
+
+  it('замало даних -> дати є, а висновків НЕМАЄ (і про це сказано)', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(3, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText('01.06')).toBeInTheDocument();
+    expect(screen.getByText(/Замало даних/)).toBeInTheDocument();
+    expect(screen.queryByText(/частіше/)).toBeNull();
+  });
+
+  it('порожня клітинка каже прямо, що такого стану не було', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(0, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText(/не був жодного разу/)).toBeInTheDocument();
+  });
+
+  it('повторний тап по тій самій клітинці згортає панель', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    await user.click(worstCell(container));
+    expect(screen.getByText('01.06')).toBeInTheDocument();
+    await user.click(worstCell(container));
+    expect(screen.queryByText('01.06')).toBeNull();
+  });
+});

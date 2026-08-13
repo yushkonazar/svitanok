@@ -190,9 +190,21 @@ function sampleCheckinRaw(): Stats['checkinRaw'] {
           dayScore: low ? 2 : 4,
           energy: clamp(low ? 1 : 3),
           mood: clamp(low ? 2 : 4),
-          blocker: low ? ['tired', 'distract'] : ['none'],
-          helper: low ? ['none'] : ['early', 'list'],
-          moved: low ? 'none' : 'active',
+          // ⚠️ Теги НАВМИСНО не ідеально розділені. Спершу «важкі» доби мали
+          // рівно [tired, distract], а «добрі» — рівно [early, list], і
+          // деталі клітинки показували «17/17 · норма 0%» у кожному рядку.
+          // Виглядало ефектно й учило хибного: у справжніх даних звʼязок
+          // ніколи не буває стовідсотковим, а блок мусить показувати саме
+          // те, що там буде — часткове перекриття.
+          blocker: low
+            ? i % 2 === 0
+              ? ['tired', 'distract']
+              : ['tired']
+            : i % 5 === 0
+              ? ['procrast']
+              : ['none'],
+          helper: low ? (i % 4 === 0 ? ['breaks'] : ['none']) : i % 3 === 1 ? ['early'] : ['early', 'list'],
+          moved: low ? (i % 3 === 0 ? 'none' : 'light') : i % 2 === 0 ? 'active' : 'workout',
         },
       };
     }
