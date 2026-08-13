@@ -105,12 +105,32 @@ export function StateMatrix({ raw }: { raw: CheckinRaw }) {
             const key = `${r}:${c}`;
             const x = gx + c * (cell + gap);
             const y = gy + r * (cell + gap);
+            const toggle = () => {
+              haptic('light');
+              setTap(tap === key ? null : key);
+            };
             return (
+              // ⚠️ Клітинка НЕСЕ ПОВЕДІНКУ, отже це кнопка, а не малюнок (аудит
+              // C2/F9: тапи по чартах були досяжні лише мишею й пальцем). SVG
+              // не має власного <button>, тож роль, tabIndex і клавіші
+              // виставляються руками — інакше вся карта недосяжна з клавіатури,
+              // а скрінрідер бачить 25 безіменних прямокутників.
               <g
                 key={key}
-                onClick={() => {
-                  haptic('light');
-                  setTap(tap === key ? null : key);
+                role="button"
+                tabIndex={0}
+                aria-pressed={tap === key}
+                aria-label={`Енергія ${5 - r}, настрій ${c + 1}: ${
+                  v > 0 ? `${v} ${pluralUk(v, ['раз', 'рази', 'разів'])}` : 'жодного разу'
+                }`}
+                onClick={toggle}
+                onKeyDown={(e) => {
+                  // Пробіл ще й гортає сторінку — для кнопки це не те, чого
+                  // чекають, тож подію треба зупинити, а не лише обробити.
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle();
+                  }
                 }}
                 style={{ cursor: 'pointer' }}
               >

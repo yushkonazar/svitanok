@@ -178,6 +178,46 @@ describe('StateMatrix — деталі клітинки', () => {
     expect(screen.getByText(/не був жодного разу/)).toBeInTheDocument();
   });
 
+  /* F9 з аудиту C2: тапи по чартах були доступні лише мишею/пальцем. Клітинка
+   * несе поведінку (відкриває деталі), тож мусить бути кнопкою й для клавіші —
+   * інакше половина карти просто недосяжна. */
+  it('клітинка — кнопка з підписом, а не німий прямокутник', () => {
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    const cell = worstCell(container);
+    expect(cell.getAttribute('role')).toBe('button');
+    expect(cell.getAttribute('tabindex')).toBe('0');
+    expect(cell.getAttribute('aria-label')).toMatch(/енергія 1.*настрій 1.*10/i);
+  });
+
+  it('Enter відкриває деталі так само, як тап', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    (worstCell(container) as SVGElement & { focus: () => void }).focus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('01.06')).toBeInTheDocument();
+  });
+
+  it('пробіл теж відкриває (обидві клавіші — стандарт для кнопки)', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    (worstCell(container) as SVGElement & { focus: () => void }).focus();
+    await user.keyboard(' ');
+    expect(screen.getByText('01.06')).toBeInTheDocument();
+  });
+
+  it('обрана клітинка позначена для скрінрідера, не лише обведенням', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
+    expect(worstCell(container).getAttribute('aria-pressed')).toBe('false');
+    await user.click(worstCell(container));
+    expect(worstCell(container).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('порожня клітинка теж досяжна — «тут не був жодного разу» це відповідь', () => {
+    const { container } = render(<StateMatrix raw={withCauses(0, 20)} />);
+    expect(worstCell(container).getAttribute('aria-label')).toMatch(/жодного разу|0/);
+  });
+
   it('повторний тап по тій самій клітинці згортає панель', async () => {
     const user = userEvent.setup();
     const { container } = render(<StateMatrix raw={withCauses(10, 20)} />);
