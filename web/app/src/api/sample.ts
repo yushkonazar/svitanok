@@ -406,6 +406,20 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   heatmap: sampleHeatmap(),
+  // Швидкість воронки: демо показує ОБИДВА стани, які блок має розрізняти —
+  // крок із медіаною й крок, де переходів ще замало (medianDays: null).
+  funnelSpeed: {
+    staleAfterDays: 21,
+    steps: [
+      { from: 'saved' as const, to: 'applied' as const, n: 9, medianDays: 3 },
+      { from: 'applied' as const, to: 'interview' as const, n: 4, medianDays: 11 },
+      { from: 'interview' as const, to: 'offer' as const, n: 1, medianDays: null },
+    ],
+    stale: [
+      { url: 'https://jobs.example.com/1', stage: 'applied' as const, title: 'Frontend Engineer — Aurora', days: 34 },
+      { url: 'https://jobs.example.com/2', stage: 'saved' as const, title: 'React Developer — Northwind', days: 27 },
+    ],
+  },
   appliedWeekly: [
     { week: '', count: 1 },
     { week: '', count: 2 },
@@ -486,13 +500,16 @@ export const SAMPLE_STATS: Stats = {
       },
       {
         topic: 'Наука',
-        series: [0, 1, 1, 0, 2, 1, 2, 3, 2, 1, 3, 2, 4, 3, 2, 4, 3, 5, 4, 3, 5, 4, 6, 5, 4, 7],
+        // Останній місяць помітно вищий за попередній — щоб демо показувало
+        // картку «що змінилось». Доти всі три ряди були гладкі, картка чесно
+        // ховалась, і побачити її можна було лише на власних даних.
+        series: [0, 1, 1, 0, 2, 1, 2, 3, 2, 1, 3, 2, 4, 3, 2, 4, 3, 5, 4, 3, 4, 9, 11, 10, 12, 11],
       },
       {
         topic: 'Політика',
-        series: [
-          6, 5, 6, 4, 5, 3, 4, 2, 3, 2, 1, 2, 1, 0, 1, 2, 1, 0, 1, 0, 2, 1, 0, 1, 0, 3,
-        ],
+        // ...і симетрично — тема, що згасла: рівний інтерес до середини й
+        // тиша в останній місяць.
+        series: [6, 5, 6, 4, 5, 3, 4, 2, 3, 2, 4, 3, 5, 4, 3, 5, 4, 6, 5, 4, 0, 1, 0, 0, 1, 0],
       },
     ],
   },
@@ -509,6 +526,7 @@ export const SAMPLE_STATS: Stats = {
     trendWeeks: 8,
     checkinWeeks: 8,
     reliabilityDays: 90,
+    rhythmOpens: 90,
   },
   checkinSeries: sampleCheckinSeries(),
   checkinRaw: sampleCheckinRaw(),
@@ -689,6 +707,7 @@ export const EMPTY_STATS: Stats = {
   savedList: [],
   mock: { weakTopics: [], streak: 0, recentEasyPct: null },
   heatmap: [],
+  funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
   appliedWeekly: [],
   fitWeekly: [],
   roadmapWeekly: [],
@@ -711,6 +730,7 @@ export const EMPTY_STATS: Stats = {
     trendWeeks: 8,
     checkinWeeks: 8,
     reliabilityDays: 90,
+    rhythmOpens: 90,
   },
   checkinSeries: [],
   checkinRaw: { days: 90, from: '', to: '', records: {} },

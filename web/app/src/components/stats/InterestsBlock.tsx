@@ -2,9 +2,10 @@ import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { useInView } from '../../lib/useInView.ts';
-import { SectionHead, StatRow, Ph } from '../ui/primitives.tsx';
+import { SectionHead, StatRow, Ph, Hint } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
 import { InterestTrend } from '../charts/InterestTrend.tsx';
+import { interestShifts, focusPct } from '../../lib/interestShift.ts';
 
 // D · Інтереси (дизайн v2, Svitanok.dc.html): картка головної теми тижня
 // (частка реакцій + напрямок vs минулий тиждень) + чипи решти тем.
@@ -20,6 +21,11 @@ export function InterestsBlock({ s }: { s: Stats }) {
   // Хуки — ДО умовного рендера (top може не бути), порядок сталий.
   // Герой-бал набігає, коли картка доїхала до екрана (блок глибоко внизу).
   const [heroRef, heroInView] = useInView<HTMLDivElement>();
+  // Рух, а не знімок: теми, що помітно зросли або згасли за останній місяць
+  // проти попереднього. Доти напрямок був видний ЛИШЕ в головної теми — тобто
+  // саме тієї, про яку й так усе зрозуміло.
+  const shifts = interestShifts(s.interestsTrend);
+  const focus = focusPct(s.interests);
   const heroScore = useCountUp(top?.score ?? 0, heroInView);
   const rest = s.interests.slice(1);
   const total = s.interests.reduce((a, x) => a + x.score, 0);
@@ -79,6 +85,39 @@ export function InterestsBlock({ s }: { s: Stats }) {
             </div>
           )}
 
+          {shifts.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-2xl border border-glassb bg-glass p-3.5">
+              <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
+                ЩО ЗМІНИЛОСЬ ЗА МІСЯЦЬ
+              </span>
+              {shifts.slice(0, 4).map((sh) => (
+                <div key={sh.topic} className="flex items-baseline gap-2 text-[11.5px]">
+                  <span className="min-w-0 flex-1 truncate text-tx2">
+                    {topicEmoji(sh.topic)} {sh.topic}
+                  </span>
+                  <span className="flex-none font-mono text-[10px] text-tx3">
+                    {sh.prior} → {sh.recent}
+                  </span>
+                  <span
+                    className="w-[54px] flex-none text-right font-mono text-[10.5px] font-semibold"
+                    style={{
+                      color: sh.direction === 'up' ? 'var(--color-pos)' : 'var(--color-tx3)',
+                    }}
+                  >
+                    {sh.direction === 'up' ? '↑' : '↓'} ×
+                    {(sh.direction === 'up' ? sh.ratio : 1 / sh.ratio).toFixed(1)}
+                  </span>
+                </div>
+              ))}
+              <Hint>
+                Реакції за останні 4 тижні проти попередніх 4. Показані лише помітні зміни —
+                рівні теми й дрібні коливання сюди не потрапляють, інакше список щотижня був би
+                повний і нічого не означав. «Згасла» тема не гірша за іншу: це просто те, що
+                тебе зараз цікавить менше.
+              </Hint>
+            </div>
+          )}
+
           {/* Пів року реальної тижневої історії (interestsTrend) уже лежали в
               API — раніше споживались лише як стрілочка "↑ vs минулий" вище.
               Тут той самий масив рендериться повним графіком (п.1 ідей). */}
@@ -95,6 +134,12 @@ export function InterestsBlock({ s }: { s: Stats }) {
         <Ph>Лайкай новини — і тут з’являться твої теми</Ph>
       )}
 
+      {focus !== null && (
+        <StatRow
+          label="Зосередженість"
+          value={`${focus}% реакцій — на головній темі`}
+        />
+      )}
       {has(s.readPerDay) && <StatRow label="Новин на день (середнє)" value={s.readPerDay} />}
       {s.savedCount > 0 && <StatRow label="🔖 Збережено" value={s.savedCount} />}
     </div>

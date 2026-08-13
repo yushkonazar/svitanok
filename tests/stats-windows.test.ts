@@ -141,3 +141,42 @@ describe('оголошене вікно = справжня межа даних',
     );
   });
 });
+
+/* ⚠️ ДЕФЕКТ, який знайшовся під час проходу по блоках. «Ритуал відкриття»
+   рахувався по ВСЬОМУ масиву opensMin — а це кап HISTORY_CAP, тобто до року.
+   Медіана й розкид за рік не рухаються від того, що звичка змінилась три
+   місяці тому: свіжі 90 діб тонуть у 275 старих. Блок при цьому обіцяє
+   відповісти «наскільки це ритуал ЗАРАЗ», а показує середнє по році.
+
+   Вікно тут рахується в ЗАПИСАХ, а не в календарних добах: opensMin — плаский
+   масив хвилин без дат, один запис = одна доба, коли застосунок відкривали.
+   Тобто це «останні N діб з відкриттям», і підпис мусить казати саме так. */
+describe('openRhythm — ритуал міряється по СВІЖИХ добах', () => {
+  const store = (mins: number[]) => ({ ...emptyStore(), opensMin: mins });
+
+  it('бере лише останні rhythmOpens записів', () => {
+    // 300 ранніх діб (о 08:00) + 90 пізніх (о 12:00). Вікно 90 -> медіана пізня.
+    const mins = [...Array(300).fill(0), ...Array(STATS_WINDOWS.rhythmOpens).fill(240)];
+    expect(aggregateStats(store(mins), TODAY).openRhythm.median).toBe(240);
+  });
+
+  it('без вікна та сама історія дала б медіану старої звички', () => {
+    // Контроль: якби рахували ВСЕ, медіана 390 записів була б 0 (більшість — старі).
+    const mins = [...Array(300).fill(0), ...Array(STATS_WINDOWS.rhythmOpens).fill(240)];
+    const all = [...mins].sort((a, b) => a - b);
+    expect(all[Math.floor(all.length / 2)]).toBe(0);
+  });
+
+  it('n у відповіді — розмір ВИКОРИСТАНОЇ вибірки, не всієї історії', () => {
+    const mins = Array(300).fill(30);
+    expect(aggregateStats(store(mins), TODAY).openRhythm.n).toBe(STATS_WINDOWS.rhythmOpens);
+  });
+
+  it('історії менше за вікно -> беремо скільки є', () => {
+    expect(aggregateStats(store([10, 20, 30, 40, 50, 60]), TODAY).openRhythm.n).toBe(6);
+  });
+
+  it('замало записів -> не готово, як і раніше', () => {
+    expect(aggregateStats(store([10, 20]), TODAY).openRhythm.ready).toBe(false);
+  });
+});

@@ -1065,6 +1065,19 @@ export const STATS_WINDOWS = {
   checkinWeeks: 8,
   /** Журнал доставки (кап самого стору). */
   reliabilityDays: RELIABILITY_CAP,
+  /**
+   * «Ритуал відкриття» — скільки ОСТАННІХ діб із відкриттям беремо.
+   *
+   * ⚠️ Рахується в ЗАПИСАХ, не в календарних добах: opensMin — плаский масив
+   * хвилин без дат, один запис = одна доба, коли застосунок відкривали. Тобто
+   * це «останні 90 діб із відкриттям», і підпис мусить казати саме так.
+   *
+   * Вікно тут не косметика: доти медіана й розкид рахувались по ВСЬОМУ масиву
+   * (кап HISTORY_CAP, до року), тож звичка, що змінилась три місяці тому,
+   * тонула в старих записах — блок обіцяв «наскільки це ритуал ЗАРАЗ», а
+   * показував середнє по році.
+   */
+  rhythmOpens: 90,
 };
 
 /**
@@ -1091,6 +1104,94 @@ function buildCheckinRaw(checkins, todayKey, days = STATS_WINDOWS.checkinDeep) {
   return { days, from, to: todayKey, records };
 }
 
+/* ── Швидкість воронки ─────────────────────────────────────────────────────
+   ⚠️ ПРОГАЛИНА, яку це закриває. Блок «Ритм» відповідав лише на «скільки»:
+   конверсії у відсотках, тижнева ціль, два тренди. Питання «а СКІЛЬКИ ЦЕ
+   ТРИВАЄ» і «що лежить без руху» не мало відповіді ніде — при тому, що дані
+   для неї збираються давно: funnelMeta[url].history пише {stage, ts} на кожній
+   реальній зміні стадії, і цей журнал уже їде в /api/stats заради «Історії» у
+   шторці вакансії. Бракувало не даних, а їх зведення.
+
+   Для того, хто шукає роботу, це найпрактичніше з усього блоку: «подав 12 діб
+   тому й тиша» — привід написати, а не чекати далі. */
+
+/** Лінійні кроки воронки; термінальні (rejected/failed) сюди не входять. */
+const SPEED_STEPS = [
+  ['saved', 'applied'],
+  ['applied', 'interview'],
+  ['interview', 'offer'],
+];
+
+/** Нижче цього медіана — не медіана, а одне-два спостереження. */
+const SPEED_MIN_N = 3;
+
+/**
+ * Скільки діб вакансія стоїть без руху, перш ніж це варто помітити.
+ *
+ * ⚠️ Поріг ОДИН на всі стадії — свідомо. Спокуса зробити його різним («подано»
+ * чекає довше за «збережено») означала б зашити в код припущення про те, як
+ * поводяться роботодавці, якого дані не підтверджують. Формулювання при цьому
+ * описове — «лежить без руху», не «протерміновано»: застосунок констатує факт,
+ * а не звинувачує.
+ */
+const STALE_AFTER_DAYS = 21;
+
+/** Активні стадії: у термінальних нічого не «лежить», там уже все вирішено. */
+const ACTIVE_STAGES = ['saved', 'applied', 'interview'];
+
+function funnelSpeed(funnel, funnelMeta, todayKey) {
+  const meta = funnelMeta && typeof funnelMeta === 'object' ? funnelMeta : {};
+  const durations = new Map(SPEED_STEPS.map(([, to]) => [to, []]));
+
+  for (const m of Object.values(meta)) {
+    const hist = Array.isArray(m?.history) ? m.history : [];
+    for (let i = 1; i < hist.length; i++) {
+      const from = hist[i - 1];
+      const to = hist[i];
+      if (!isDateKey(from?.ts) || !isDateKey(to?.ts)) continue;
+      // Лише кроки ВПЕРЕД у лінійному порядку. Відкат (applied -> saved) сам по
+      // собі не крок; але наступний рух уперед після нього — знову крок, і
+      // рахується від дати відкату, бо саме звідти почалось нове очікування.
+      const pair = SPEED_STEPS.find(([f, t]) => f === from.stage && t === to.stage);
+      if (!pair) continue;
+      const d = dayDiff(from.ts, to.ts);
+      if (d >= 0) durations.get(to.stage).push(d);
+    }
+  }
+
+  const steps = SPEED_STEPS.map(([from, to]) => {
+    const xs = durations.get(to).sort((a, b) => a - b);
+    return {
+      from,
+      to,
+      n: xs.length,
+      // Гейт на медіану, не на сам крок: показати «1 перехід» чесно, а от
+      // «медіана по одному спостереженню» — це вже вигляд статистики без неї.
+      medianDays: xs.length >= SPEED_MIN_N ? median(xs) : null,
+    };
+  });
+
+  const stale = [];
+  for (const [url, stage] of Object.entries(funnel ?? {})) {
+    if (!ACTIVE_STAGES.includes(stage)) continue;
+    const m = meta[url];
+    const hist = Array.isArray(m?.history) ? m.history : [];
+    // Дата ОСТАННЬОГО руху, а не входу у воронку: вакансія може лежати в ній
+    // пів року, але якщо стадію змінили вчора — це рух, а не застій. Легасі-
+    // записи журналу не мають, для них лишається дата входу.
+    const last =
+      hist.length && isDateKey(hist[hist.length - 1]?.ts) ? hist[hist.length - 1].ts : m?.ts;
+    if (!isDateKey(last)) continue;
+    const days = dayDiff(last, todayKey);
+    if (days >= STALE_AFTER_DAYS) {
+      stale.push({ url, stage, title: m?.title || '', days });
+    }
+  }
+  stale.sort((a, b) => b.days - a.days);
+
+  return { steps, stale, staleAfterDays: STALE_AFTER_DAYS };
+}
+
 /** Персентиль за лінійною інтерполяцією (той самий метод, що median вище). */
 function percentile(sorted, p) {
   if (!sorted.length) return null;
@@ -1111,8 +1212,13 @@ function percentile(sorted, p) {
  * Вуса — p10/p90, а не min/max: одна ніч, коли відкрив о 23:00, розтягнула б
  * шкалу так, що коробка стала б невидимою смужкою.
  */
-function buildOpenRhythm(opensMin) {
-  const xs = opensMin.filter((v) => typeof v === 'number' && v >= 0).sort((a, b) => a - b);
+function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
+  // slice ДО фільтра: вікно рахується в записах журналу, а не у валідних
+  // значеннях — інакше пачка битих записів мовчки розтягнула б період.
+  const xs = opensMin
+    .slice(-days)
+    .filter((v) => typeof v === 'number' && v >= 0)
+    .sort((a, b) => a - b);
   if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
   const q1 = percentile(xs, 0.25);
   const q3 = percentile(xs, 0.75);
@@ -1971,6 +2077,10 @@ export function aggregateStats(store, todayKey) {
     reached,
     avgFitApplied: avgFit,
     funnelList,
+    // Швидкість воронки: скільки триває кожен крок і що лежить без руху.
+    // Читає той самий funnelMeta[].history, що вже їде заради «Історії» у
+    // шторці — нових даних не збирає, лише зводить наявні.
+    funnelSpeed: funnelSpeed(s.funnel, s.funnelMeta, todayKey),
     // «Не цікавить» (job_dismiss) — персистентне (фідбек власника): клієнт
     // фільтрує сьогоднішній список брифінгу за цими url, не лише за
     // сесійним React-станом.
