@@ -10,6 +10,8 @@ import { ArchetypeRadar } from '../charts/ArchetypeRadar.tsx';
 import { RankedBars } from '../charts/RankedBars.tsx';
 import { FillBars } from '../charts/FillBars.tsx';
 import { INDEX_LABEL } from '../../lib/checkinIndex.ts';
+// Підписи глибини малюються з s.windows (сервер), а не з памʼяті цього файлу.
+import { daysWindowLabel } from '../../lib/windowLabel.ts';
 // Підписи значень чек-іну — спільні з картою станів (lib/checkinLabels.ts).
 // Доти вони жили тут локальними константами; щойно тих самих значень
 // знадобилось деталям клітинки, дві копії почали б розходитись мовчки.
@@ -188,6 +190,16 @@ export function CheckinBlock({ s }: { s: Stats }) {
 
   const laggedEntries = Object.entries(model.lagged);
 
+  // Періоди карти станів — із ОГОЛОШЕНИХ сервером вікон, не з літералів.
+  // Ширших за гаряче вікно тут бути не може: глибших даних клієнт не має
+  // (стеля 90 діб — це CPU-бюджет воркера), а кнопка, яка обіцяє період і
+  // показує ті самі дані, гірша за її відсутність. Коли зʼявляться місячні
+  // згортки, до цього ж масиву додасться «рік».
+  const statePeriods = [
+    { days: s.windows.checkinRecent, label: `${s.windows.checkinRecent}д` },
+    { days: s.windows.checkinDeep, label: `${s.windows.checkinDeep}д` },
+  ].filter((p, i, all) => all.findIndex((x) => x.days === p.days) === i);
+
   return (
     <div className="flex flex-col gap-3">
       <SectionHead>Чек-ін</SectionHead>
@@ -208,7 +220,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
 
       {filledDays > 1 && (
         <Card>
-          <SubLabel>ФОРМА ДНЯ</SubLabel>
+          <SubLabel>ФОРМА ДНЯ · {daysWindowLabel(s.windows.checkinRecent, filledDays)}</SubLabel>
           <div className="mt-2">
             <DayShapeChart series={series} />
           </div>
@@ -221,9 +233,12 @@ export function CheckinBlock({ s }: { s: Stats }) {
       )}
 
       <Card>
-        <SubLabel>КАРТА СТАНІВ · {s.checkinRaw.days} ДІБ</SubLabel>
+        <SubLabel>КАРТА СТАНІВ</SubLabel>
+        {/* Глибина підписана ВСЕРЕДИНІ графіка, а не тут: вона тепер залежить
+            від вибраного періоду, і рознесені підпис із перемикачем розійшлись
+            би при першому ж кліку. */}
         <div className="mt-2">
-          <StateMatrix raw={s.checkinRaw} />
+          <StateMatrix raw={s.checkinRaw} periods={statePeriods} />
         </div>
         <Hint>
           Та сама сітка 5×5, по якій ти тапаєш у чек-іні. Число в клітинці — скільки разів ти в
@@ -294,7 +309,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
               Що лишилось тут — рівно те, чого модель НЕ бачить. */}
 
           <Card>
-            <SubLabel>ЯВКА ПО СЛОТАХ · {fill.days} ДІБ</SubLabel>
+            <SubLabel>ЯВКА ПО СЛОТАХ · {daysWindowLabel(fill.days)}</SubLabel>
             <div className="mt-2">
               <FillBars fill={fill} />
             </div>
@@ -306,7 +321,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
               просто «найчастіше втома». */}
           {(tops.blockers.length > 0 || tops.helpers.length > 0) && (
             <Card>
-              <SubLabel>ЩО ЗАВАЖАЛО І ЩО ПОМАГАЛО · {tops.days} ДІБ</SubLabel>
+              <SubLabel>ЩО ЗАВАЖАЛО І ЩО ПОМАГАЛО · {daysWindowLabel(tops.days, tops.filled)}</SubLabel>
               {tops.blockers.length > 0 && (
                 <div className="mt-2.5">
                   <div className="mb-1.5 text-[11px] font-semibold text-tx2">🚧 Заважало</div>
@@ -370,7 +385,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
               моделі). */}
           {social.tops.length > 0 && (
             <Card>
-              <SubLabel>СОЦІАЛЬНИЙ КОНТЕКСТ · {social.days} ДІБ</SubLabel>
+              <SubLabel>СОЦІАЛЬНИЙ КОНТЕКСТ · {daysWindowLabel(social.days, social.filled)}</SubLabel>
               <div className="mt-2">
                 <RankedBars
                   rows={social.tops.map((r) => ({
@@ -393,7 +408,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
 
           {cat.total >= 5 && (
             <Card>
-              <SubLabel>КУДИ ЙДЕ ЧАС · {cat.total} ДІБ</SubLabel>
+              <SubLabel>КУДИ ЙДЕ ЧАС · {daysWindowLabel(cat.days, cat.total)}</SubLabel>
               <div className="mt-2">
                 <RankedBars
                   suffix=" діб"
@@ -416,7 +431,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
 
           {drift.total >= 5 && drift.pct != null && (
             <Card>
-              <SubLabel>ПЛАН ПРОТИ РЕАЛЬНОСТІ · {drift.total} ДІБ</SubLabel>
+              <SubLabel>ПЛАН ПРОТИ РЕАЛЬНОСТІ · {daysWindowLabel(drift.days, drift.total)}</SubLabel>
               <div className="mt-2 flex items-baseline gap-2">
                 <span
                   className="font-mono text-[22px] font-medium leading-none"

@@ -26,7 +26,11 @@ const raw = (n: number): CheckinRaw => {
   return { days: 90, from: '2026-06-01', to: '2026-08-13', records };
 };
 
-const footer = () => screen.getByText(/зріз|×$/).textContent ?? '';
+/** Підпис під сіткою. Шукаємо через сусідство з легендою осей, а не за
+ *  текстом: щойно панель деталей теж почала писати «N зрізів», пошук за
+ *  текстом став знаходити два елементи й падати. */
+const footer = () =>
+  screen.getByText(/енергія ↑ · настрій →/).nextElementSibling?.textContent ?? '';
 
 describe('StateMatrix — слот-фільтр', () => {
   it('замало зрізів -> нічого не малюємо (сітка з двох крапок читається як збій)', () => {
@@ -87,6 +91,100 @@ describe('StateMatrix — слот-фільтр', () => {
     for (const nm of names) {
       expect(screen.getByRole('button', { name: new RegExp(nm) })).toBeInTheDocument();
     }
+  });
+});
+
+/* Фільтр періоду. Він уміє лише ЗВУЖУВАТИ: глибших за 90 діб даних на клієнті
+ * немає (стеля CPU-бюджету воркера), тож ширші пункти не показуються взагалі —
+ * кнопка, яка обіцяє період і не змінює нічого, гірша за її відсутність. */
+describe('StateMatrix — фільтр періоду', () => {
+  const PERIODS = [
+    { days: 30, label: '30д' },
+    { days: 90, label: '90д' },
+  ];
+
+  /** n діб поспіль, найсвіжіша — `to`. */
+  const spread = (n: number): CheckinRaw => {
+    const records: CheckinRaw['records'] = {};
+    const d = new Date('2026-08-13T00:00:00Z');
+    for (let i = 0; i < n; i++) {
+      records[d.toISOString().slice(0, 10)] = { evening: { energy: 3, mood: 3 } };
+      d.setUTCDate(d.getUTCDate() - 1);
+    }
+    return { days: 90, from: '2026-05-16', to: '2026-08-13', records };
+  };
+
+  it('за замовчуванням — повне вікно', () => {
+    render(<StateMatrix raw={spread(60)} periods={PERIODS} />);
+    expect(screen.getByText('ЗА 90 ДІБ')).toBeInTheDocument();
+    expect(footer()).toBe('60 зрізів');
+  });
+
+  it('вужчий період справді відрізає дані, а не лише підпис', async () => {
+    const user = userEvent.setup();
+    render(<StateMatrix raw={spread(60)} periods={PERIODS} />);
+    await user.click(screen.getByRole('button', { name: '30д' }));
+    expect(footer()).toBe('30 зрізів');
+    expect(screen.getByText('ЗА 30 ДІБ')).toBeInTheDocument();
+  });
+
+  it('причини рахуються на ВИБРАНОМУ періоді, не на повному вікні', async () => {
+    const user = userEvent.setup();
+    const records: CheckinRaw['records'] = {};
+    const d = new Date('2026-08-13T00:00:00Z');
+    for (let i = 0; i < 60; i++) {
+      // Через день — важкий стан (1,1) і добрий (5,5): без «решти» причини не
+      // рахуються взагалі, бо порівнювати нема з чим.
+      // Втома лише в СТАРІШІЙ половині: у 30-денному вікні її бути не має.
+      const hard = i % 2 === 0;
+      records[d.toISOString().slice(0, 10)] = hard
+        ? { evening: { energy: 1, mood: 1, ...(i >= 30 ? { blocker: ['tired' as const] } : {}) } }
+        : { evening: { energy: 5, mood: 5 } };
+      d.setUTCDate(d.getUTCDate() - 1);
+    }
+    const raw90: CheckinRaw = { days: 90, from: '2026-05-16', to: '2026-08-13', records };
+    const { container } = render(<StateMatrix raw={raw90} periods={PERIODS} />);
+    const worst = container.querySelectorAll('svg g')[20]!;
+
+    await user.click(worst);
+    expect(screen.getByText(/Втома/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '30д' }));
+    await user.click(container.querySelectorAll('svg g')[20]!);
+    expect(screen.queryByText(/Втома/)).toBeNull();
+  });
+
+  it('зміна періоду скидає вибір клітинки', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StateMatrix raw={spread(60)} periods={PERIODS} />);
+    await user.click(container.querySelectorAll('svg g')[12]!);
+    expect(footer()).toMatch(/енергія 3 · настрій 3/);
+    await user.click(screen.getByRole('button', { name: '30д' }));
+    expect(footer()).toBe('30 зрізів');
+  });
+
+  it('без переданих періодів перемикача немає взагалі', () => {
+    render(<StateMatrix raw={spread(60)} />);
+    expect(screen.queryByRole('button', { name: '30д' })).toBeNull();
+  });
+
+  it('період, глибший за вікно, не показується — він нічого б не змінив', () => {
+    render(
+      <StateMatrix
+        raw={{ ...spread(20), days: 30 }}
+        periods={[...PERIODS, { days: 365, label: 'рік' }]}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'рік' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '90д' })).toBeNull();
+  });
+
+  it('вузький період не заганяє в глухий кут — сітка й перемикачі лишаються', async () => {
+    const user = userEvent.setup();
+    // 40 діб усього: у 30-денному вікні лишиться 30 — більше за гейт.
+    render(<StateMatrix raw={spread(40)} periods={PERIODS} />);
+    await user.click(screen.getByRole('button', { name: '30д' }));
+    expect(screen.getByRole('button', { name: '90д' })).toBeInTheDocument();
   });
 });
 

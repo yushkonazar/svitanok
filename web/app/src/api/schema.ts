@@ -287,6 +287,23 @@ export const checkinRawSchema = z.object({
   to: z.string().default(''),
   records: z.record(z.string(), checkinDaySchema.catch({})).default({}),
 });
+/**
+ * Глибини агрегації, оголошені сервером.
+ *
+ * ⚠️ Усі з дефолтами: старіший воркер поля `windows` не віддає, і без них
+ * safeParse завалив би ВЕСЬ /api/stats під час деплою. Дефолти навмисно
+ * дорівнюють нинішнім значенням STATS_WINDOWS — гірший сценарій тоді просто
+ * «підпис показує вчорашню глибину», а не чорна вкладка.
+ */
+export const statsWindowsSchema = z.object({
+  checkinRecent: int.default(30),
+  checkinMid: int.default(60),
+  checkinDeep: int.default(90),
+  trendWeeks: int.default(8),
+  checkinWeeks: int.default(8),
+  reliabilityDays: int.default(90),
+});
+
 export const checkinPointSchema = z.object({
   d: z.string(),
   sleepH: num.nullable().default(null),
@@ -311,6 +328,7 @@ export const sleepNightSchema = z.object({
 
 /** Дрейф наміру: план (ранок) проти того, що реально зайняло час (день). */
 export const intentDriftSchema = z.object({
+  days: int.default(0),
   total: int.default(0),
   matched: int.default(0),
   pct: num.nullable().default(null),
@@ -353,6 +371,7 @@ export const categoryRowSchema = z.object({
   dayScore: num.nullable().default(null),
 });
 export const categoryInsightSchema = z.object({
+  days: int.default(0),
   total: int.default(0),
   rows: z.array(categoryRowSchema).default([]),
 });
@@ -381,7 +400,14 @@ export const checkinTopsSchema = z.object({
   // в реєстрі «Індексу дня»; ця картка — єдине місце, де вони видні.
   blockers: z.array(checkinTopSchema).default([]),
   helpers: z.array(checkinTopSchema).default([]),
+  // ⚠️ days — ГЛИБИНА ВІКНА, filled — скільки діб у ньому заповнено. Доти тут
+  // лежало одне поле `days` зі значенням filled, і воно рендерилось як «· N
+  // ДІБ», тобто читалось як глибина. «ЩО ЗАВАЖАЛО · 12 ДІБ» означало «12
+  // заповнених із останніх 30», а виглядало як «за останні 12 днів». Поруч у
+  // checkinFill те саме поле означало саме вікно — одна назва, протилежний
+  // зміст, в одному payload.
   days: int.default(0),
+  filled: int.default(0),
   // lateReason (ранкове, умовне поле) — той самий рейтинг, приєднаний з тієї ж
   // причини: причина пізнього відбою теж поза реєстром моделі.
   lateReasons: z.array(checkinTopSchema).default([]),
@@ -403,6 +429,7 @@ export const aloneVsOthersSchema = z.object({
 export const socialContextSchema = z.object({
   tops: z.array(checkinTopSchema).default([]),
   days: int.default(0),
+  filled: int.default(0),
   aloneVsOthers: aloneVsOthersSchema.default({ ready: false, nAlone: 0, nOthers: 0 }),
 });
 
@@ -562,6 +589,18 @@ export const statsSchema = z.object({
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
+  // Глибини агрегації, оголошені сервером (STATS_WINDOWS у stats-core.mjs).
+  // Підписи «за N діб / N тижнів» малюються ЗВІДСИ, а не з памʼяті клієнта:
+  // доти «8 ТИЖНІВ» стояло зашитим рядком у RhythmBlock окремо від серверної
+  // константи, і розійшлись би вони мовчки.
+  windows: statsWindowsSchema.default({
+    checkinRecent: 30,
+    checkinMid: 60,
+    checkinDeep: 90,
+    trendWeeks: 8,
+    checkinWeeks: 8,
+    reliabilityDays: 90,
+  }),
   sleepLog: z.array(sleepNightSchema).default([]),
   checkinWeekly: z.array(checkinWeekSchema).default([]),
   checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
@@ -570,20 +609,22 @@ export const statsSchema = z.object({
   // віддає, а safeParse валить ЦІЛИЙ /api/stats.
   sleepVsDayScore: corrPairSchema.default({ ready: false, needed: 8, low: 0, ok: 0 }),
   bedtimeVsEnergy: bedtimeVsEnergySchema.default({ ready: false, needed: 8, early: 0, late: 0 }),
-  categoryInsight: categoryInsightSchema.default({ total: 0, rows: [] }),
+  categoryInsight: categoryInsightSchema.default({ days: 30, total: 0, rows: [] }),
   appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
   checkinTops: checkinTopsSchema.default({
     blocker: null,
     helper: null,
     blockers: [],
     helpers: [],
-    days: 0,
+    days: 30,
+    filled: 0,
     lateReasons: [],
     lateNights: 0,
   }),
   socialContext: socialContextSchema.default({
     tops: [],
-    days: 0,
+    days: 60,
+    filled: 0,
     aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
   }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
@@ -599,7 +640,7 @@ export const statsSchema = z.object({
   }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
-  intentDrift: intentDriftSchema.default({ total: 0, matched: 0, pct: null, top: [] }),
+  intentDrift: intentDriftSchema.default({ days: 30, total: 0, matched: 0, pct: null, top: [] }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;

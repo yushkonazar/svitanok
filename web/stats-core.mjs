@@ -1022,19 +1022,50 @@ function buildHeatmap(days, todayKey) {
 }
 
 /**
- * Глибина ГАРЯЧОГО вікна сирих чек-інів.
+ * ВІКНА АГРЕГАЦІЇ — усі, в одному місці, і назовні разом із даними.
  *
- * ⚠️ 90 — не кругле число «щоб більше», а межа блоба, який читається й
- * ПЕРЕЗАПИСУЄТЬСЯ на кожну подію: aggregateStats крутиться на кожен
- * /api/stats без кешу, а Workers Free дає 10 мс CPU на запит, і час росте
- * лінійно з історією. Заміряно: 90 діб ≈ 7 мс, рік ≈ 11 мс — тобто десь на
- * річному горизонті бюджет закінчується. Довші періоди мусять поїхати з
- * місячних згорток окремим холодним ключем, а не звідси.
+ * ⚠️ ПРИВІД. Екран рахував на пʼятьох глибинах одночасно (30/60/90 діб,
+ * 8 тижнів, «вся історія») і майже ніде цього не писав. Читач бачить числа
+ * поруч і природно вважає, що вони про один період: «найчастіше заважала
+ * втома» й «куди йде час» — це різні місяці, якщо чек-ін заповнювався нерівно.
  *
- * Збігається з вікном «Індексу дня» (MODEL_WINDOW_DAYS) НАВМИСНО: доти блок
- * «Чек-ін» говорив про 30/60/90 діб одночасно, ніде цього не підписуючи.
+ * Гірше було з трендами подач: глибина стояла ЗАШИТОЮ В РЯДОК на клієнті
+ * («FIT% ПОДАНИХ · 8 ТИЖНІВ») окремо від цієї константи. Розійшлись би —
+ * підпис збрехав би мовчки, і дізнатись про це не було б звідки. Той самий
+ * клас помилки, що B10 (три шари графіка на різних шкалах).
+ *
+ * Тому вікна їдуть у payload: підпис на екрані малюється З ДАНИХ, а не з
+ * власної пам'яті про те, що там на сервері.
+ *
+ * ⚠️ ЧОМУ ЇХ ДОСІ КІЛЬКА, а не одне. Різна глибина тут ОСМИСЛЕНА, а не
+ * випадкова: «що заважало» цінне саме СВІЖИМ (місяць — це те, на що ще можна
+ * вплинути), а модель і карта станів потребують вибірки, тож дивляться на
+ * квартал. Проблемою була невидимість, не різниця. Звести все в одне число
+ * означало б зіпсувати або перше, або друге.
  */
-const CHECKIN_RAW_DAYS = 90;
+export const STATS_WINDOWS = {
+  /** «Останнім часом»: топи, категорії, дрейф наміру, явка, калібрування. */
+  checkinRecent: 30,
+  /** Порівняння, яким потрібна вибірка в обох кошиках (соцконтекст). */
+  checkinMid: 60,
+  /**
+   * Модель «Індексу дня» і карта станів — усе, що претендує на висновок.
+   *
+   * ⚠️ 90 — не «щоб більше», а стеля, яку задає CPU. aggregateStats крутиться
+   * на КОЖЕН /api/stats без кешу, Workers Free дає 10 мс CPU на запит, і час
+   * росте лінійно з історією: заміряно 90 діб ≈ 7 мс, рік ≈ 11 мс, три роки
+   * ≈ 22 мс. Тобто десь на річному горизонті бюджет закінчується, і довші
+   * періоди мусять поїхати з місячних згорток окремим холодним ключем, а не
+   * розширенням цього числа.
+   */
+  checkinDeep: 90,
+  /** Тренди подач і fit% — тижневі стовпчики. */
+  trendWeeks: 8,
+  /** Тижневий розбір чек-іну. */
+  checkinWeeks: 8,
+  /** Журнал доставки (кап самого стору). */
+  reliabilityDays: RELIABILITY_CAP,
+};
 
 /**
  * Сирі записи чек-іну за гаряче вікно — рівно те, що лежить у сторі.
@@ -1050,7 +1081,7 @@ const CHECKIN_RAW_DAYS = 90;
  * потрібне сам. Розріджено (лише заповнені доби) — дірки нічого не додають,
  * а на порожньому старті це різниця між {} і 90 пустишками.
  */
-function buildCheckinRaw(checkins, todayKey, days = CHECKIN_RAW_DAYS) {
+function buildCheckinRaw(checkins, todayKey, days = STATS_WINDOWS.checkinDeep) {
   const from = addDays(todayKey, -(days - 1));
   const records = {};
   for (const [key, rec] of Object.entries(checkins ?? {})) {
@@ -1259,7 +1290,7 @@ const round2 = (v) => (v === null ? null : Math.round(v * 100) / 100);
 const round4 = (v) => (v === null ? null : Math.round(v * 10000) / 10000);
 
 /** Ряд «сон / енергія / оцінка дня» за останні N діб (лише заповнені). */
-function buildCheckinSeries(checkins, todayKey, days = 30) {
+function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const out = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1299,7 +1330,7 @@ function buildCheckinSeries(checkins, todayKey, days = 30) {
  * зайняли час (з мультивибором «влучив бодай у щось» — чесніший критерій за
  * сувору рівність).
  */
-function buildIntentDrift(checkins, todayKey, days = 30) {
+function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const pairs = {};
   let matched = 0;
   let total = 0;
@@ -1329,14 +1360,20 @@ function buildIntentDrift(checkins, todayKey, days = 30) {
     .map(([k, n]) => ({ from: k.split('>')[0], to: k.split('>')[1], n }))
     .sort((a, b) => b.n - a.n)
     .slice(0, 5);
-  return { total, matched, pct: total ? Math.round((matched / total) * 100) : null, top };
+  return {
+    days,
+    total,
+    matched,
+    pct: total ? Math.round((matched / total) * 100) : null,
+    top,
+  };
 }
 
 /**
  * Явка по блоках за останні N діб. Самі пропуски — теж сигнал: ранок заповнений
  * 25 разів, а вечір 4 — це вже висновок, і чесніший за будь-яку кореляцію.
  */
-function buildCheckinFill(checkins, todayKey, days = 30) {
+function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const fill = { morning: 0, afternoon: 0, evening: 0 };
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1352,7 +1389,7 @@ function buildCheckinFill(checkins, todayKey, days = 30) {
  * Намір проти факту: скільки подач планував уранці — і скільки їх реально було
  * (за appliedLog, а не за словами). Єдина відповідь, яку застосунок ПЕРЕВІРЯЄ.
  */
-function buildPlanVsFact(checkins, appliedLog, todayKey, days = 30) {
+function buildPlanVsFact(checkins, appliedLog, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const byDay = {};
   for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
 
@@ -1378,7 +1415,7 @@ function buildPlanVsFact(checkins, appliedLog, todayKey, days = 30) {
  * кожному CORR_MIN_N днів. Загальний звʼязок «як ніч впливає на день» — без
  * привʼязки до пошуку роботи (v2). Інакше null: краще нічого, ніж вигадка.
  */
-function buildSleepVsDayScore(checkins, todayKey, days = 60) {
+function buildSleepVsDayScore(checkins, todayKey, days = STATS_WINDOWS.checkinMid) {
   const low = [];
   const ok = [];
   const d = new Date(todayKey + 'T00:00:00Z');
@@ -1414,7 +1451,7 @@ const CATEGORY_SCORE_MIN = 4;
  * оцінку показуємо лише для категорій із >=CATEGORY_SCORE_MIN оцінених днів
  * (інакше null — та сама дисципліна «не брехати на дрібній вибірці»).
  */
-function buildCategoryInsight(checkins, todayKey, days = 30) {
+function buildCategoryInsight(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const buckets = {};
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1440,7 +1477,7 @@ function buildCategoryInsight(checkins, todayKey, days = 30) {
     }))
     .sort((a, b) => b.n - a.n);
   const total = rows.reduce((s, r) => s + r.n, 0);
-  return { total, rows };
+  return { days, total, rows };
 }
 
 /**
@@ -1448,7 +1485,7 @@ function buildCategoryInsight(checkins, todayKey, days = 30) {
  * тією ж добою). Рано (до 00:00) vs пізно (після 01:00); межу 00–01 не рахуємо.
  * Гейт CORR_MIN_N — та сама дисципліна «не брехати на малій вибірці».
  */
-function buildBedtimeVsEnergy(checkins, todayKey, days = 60) {
+function buildBedtimeVsEnergy(checkins, todayKey, days = STATS_WINDOWS.checkinMid) {
   // Середину 00–01 (e01) НЕ рахуємо в жодному кошику: краї мають контрастувати,
   // а не змазуватись (та сама логіка, що виключення нейтральної середини всюди).
   const EARLY = new Set(['e23', 'e00']);
@@ -1494,7 +1531,7 @@ function buildBedtimeVsEnergy(checkins, todayKey, days = 60) {
  * тому порівняння БІНАРНЕ: «сам» проти «решта разом», найконтрастніша й
  * найреалістичніша межа, яка взагалі має шанс набрати вибірку.
  */
-function buildSocialContext(checkins, todayKey, days = 60) {
+function buildSocialContext(checkins, todayKey, days = STATS_WINDOWS.checkinMid) {
   const counts = {};
   const aloneScores = [];
   const otherScores = [];
@@ -1515,7 +1552,8 @@ function buildSocialContext(checkins, todayKey, days = 60) {
   const ready = aloneScores.length >= CORR_MIN_N && otherScores.length >= CORR_MIN_N;
   return {
     tops: rankCounts(counts),
-    days: filled,
+    days,
+    filled,
     aloneVsOthers: ready
       ? {
           ready: true,
@@ -1541,7 +1579,12 @@ function buildSocialContext(checkins, todayKey, days = 60) {
  *  more  = сказав більше, ніж у журналі  -> подавав ПОЗА застосунком (не залогував)
  *  fewer = сказав менше -> залогував зайве / плутанина з добою
  */
-function buildAppliedCalibration(checkins, appliedLog, todayKey, days = 30) {
+function buildAppliedCalibration(
+  checkins,
+  appliedLog,
+  todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
   const byDay = {};
   for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
 
@@ -1598,7 +1641,7 @@ function rankCounts(counts, limit = TOPS_RANK_LIMIT) {
  * причина пізнього відбою теж ніде, крім тут, не показується (вільна від
  * реєстру моделі за тією ж логікою — це причина-тег, а не скалярне поле).
  */
-function buildCheckinTops(checkins, todayKey, days = 30) {
+function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const bC = {};
   const hC = {};
   const lC = {};
@@ -1632,24 +1675,23 @@ function buildCheckinTops(checkins, todayKey, days = 30) {
     helper: helpers[0] ?? null,
     blockers,
     helpers,
-    days: filled,
+    days,
+    filled,
     lateReasons: rankCounts(lC),
     lateNights,
   };
 }
 
-const MODEL_WINDOW_DAYS = 90;
-
 /**
  * «Індекс дня» — повна модель (checkin-model.mjs) над останніми
- * MODEL_WINDOW_DAYS. КОЖЕН календарний день вікна стає рядком (навіть
+ * STATS_WINDOWS.checkinDeep добами. КОЖЕН календарний день вікна стає рядком (навіть
  * повністю порожній -> усі поля null): лаговий звʼязок «сьогодні->завтра»
  * порівнює СУСІДНІ елементи масиву, тож пропуск дня зсунув би пари й почав
  * би порівнювати не по-справжньому суміжні доби. Той самий принцип
  * ітерації, що вже в buildCheckinSeries/buildCheckinFill (день за днем,
  * незалежно від наявності запису).
  */
-function buildCheckinModel(checkins, todayKey, days = MODEL_WINDOW_DAYS) {
+function buildCheckinModel(checkins, todayKey, days = STATS_WINDOWS.checkinDeep) {
   const flat = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1662,7 +1704,7 @@ function buildCheckinModel(checkins, todayKey, days = MODEL_WINDOW_DAYS) {
 }
 
 /** Чек-ін по тижнях: середні сон / енергія / оцінка дня + скільки діб заповнено. */
-function buildCheckinWeekly(checkins, todayKey, weeks = 8) {
+function buildCheckinWeekly(checkins, todayKey, weeks = STATS_WINDOWS.checkinWeeks) {
   const starts = lastWeekStarts(todayKey, weeks);
   const buckets = {};
   for (const w of starts) buckets[w] = { sleep: [], energy: [], score: [], n: 0 };
@@ -1687,7 +1729,7 @@ function buildCheckinWeekly(checkins, todayKey, weeks = 8) {
 }
 
 /** Подачі по тижнях (останні 8, нульові тижні присутні; поточний — частковий). */
-function buildAppliedWeekly(appliedLog, todayKey, weeks = 8) {
+function buildAppliedWeekly(appliedLog, todayKey, weeks = STATS_WINDOWS.trendWeeks) {
   const starts = lastWeekStarts(todayKey, weeks);
   const counts = Object.fromEntries(starts.map((k) => [k, 0]));
   for (const a of appliedLog) {
@@ -1702,7 +1744,7 @@ function buildAppliedWeekly(appliedLog, todayKey, weeks = 8) {
  *  сюди НЕ йде (немає ts, поділити на тижні нічим) — той самий виняток,
  *  що вже в buildAppliedWeekly. null для тижня без жодного fit-запису
  *  (не 0 — 0% виглядав би як «поганий fit», а не «даних немає»). */
-function buildFitWeekly(appliedLog, todayKey, weeks = 8) {
+function buildFitWeekly(appliedLog, todayKey, weeks = STATS_WINDOWS.trendWeeks) {
   const starts = lastWeekStarts(todayKey, weeks);
   const buckets = Object.fromEntries(starts.map((k) => [k, []]));
   for (const a of appliedLog) {
@@ -1986,6 +2028,11 @@ export function aggregateStats(store, todayKey) {
     // питав удруге те, на що вже відповіли. Активний слот сюди НЕ кладемо: він
     // залежить від години, а /api/stats кешується — його додає worker.js.
     checkinToday: s.checkins[todayKey] ?? null,
+    // Вікна їдуть РАЗОМ із даними: підпис глибини на екрані малюється з них, а
+    // не з власної пам'яті клієнта про те, що там на сервері. Доти «8 ТИЖНІВ»
+    // стояло зашитим рядком у RhythmBlock окремо від константи — розійшлись би
+    // мовчки.
+    windows: { ...STATS_WINDOWS },
     checkinSeries: buildCheckinSeries(s.checkins, todayKey),
     // Сирі записи за гаряче вікно — джерело для «деталей клітинки» карти
     // станів (які саме доби й що в них було). Рол-апи нижче лишаються: вони

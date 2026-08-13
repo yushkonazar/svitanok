@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readingsOf, gridOf, SLOT_FILTERS } from '../web/app/src/lib/stateMap.ts';
+import { readingsOf, gridOf, narrowWindow, SLOT_FILTERS } from '../web/app/src/lib/stateMap.ts';
 import type { CheckinRaw } from '../web/app/src/api/schema.ts';
 
 // Карта станів — розбір гарячого вікна на зрізи «енергія×настрій».
@@ -88,6 +88,47 @@ describe('readingsOf — зрізи з гарячого вікна', () => {
 
   it('підпис фільтра — слово, не сам емодзі (читабельність і скрінрідер)', () => {
     for (const f of SLOT_FILTERS) expect(f.label).toMatch(/\p{L}/u);
+  });
+});
+
+/* Фільтр періоду. Працює ЛИШЕ звуженням гарячого вікна: розширити його клієнт
+   не може, бо глибших даних у нього просто немає (сервер віддає 90 діб —
+   стеля CPU-бюджету). Тому «рік / усе» тут і не зʼявляються: кнопка, яка
+   обіцяє період, а показує ті самі 90 діб, гірша за її відсутність. */
+describe('narrowWindow — звуження гарячого вікна', () => {
+  const day = (back: number) => {
+    const d = new Date('2026-08-13T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - back);
+    return d.toISOString().slice(0, 10);
+  };
+  const full = raw(
+    Object.fromEntries(
+      Array.from({ length: 90 }, (_, i) => [day(i), { evening: { energy: 3, mood: 3 } }]),
+    ),
+  );
+
+  it('лишає рівно стільки діб, скільки просили — межу включно', () => {
+    const w = narrowWindow({ ...full, to: day(0) }, 30);
+    expect(Object.keys(w.records)).toHaveLength(30);
+    expect(w.records[day(29)]).toBeDefined();
+    expect(w.records[day(30)]).toBeUndefined();
+  });
+
+  it('оголошена глибина звужується разом із даними — підпис не має брехати', () => {
+    const w = narrowWindow({ ...full, to: day(0) }, 30);
+    expect(w.days).toBe(30);
+    expect(w.from).toBe(day(29));
+    expect(w.to).toBe(day(0));
+  });
+
+  it('ширше за наявне вікно НЕ вигадує даних — віддає що є', () => {
+    const w = narrowWindow({ ...full, to: day(0) }, 365);
+    expect(w.days).toBe(90);
+    expect(Object.keys(w.records)).toHaveLength(90);
+  });
+
+  it('порожнє вікно переживає звуження', () => {
+    expect(narrowWindow(raw({}), 30).records).toEqual({});
   });
 });
 

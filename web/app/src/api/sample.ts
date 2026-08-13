@@ -482,6 +482,16 @@ export const SAMPLE_STATS: Stats = {
   // видно всі три стани (заповнюваний / замкнені) і гідратацію з сервера.
   checkinSlot: 'morning',
   checkinToday: { morning: { sleepH: 6.5 } },
+  // Глибини агрегації — дзеркало STATS_WINDOWS зі stats-core.mjs. У демо теж
+  // справжні, бо підписи «за N діб» малюються саме звідси.
+  windows: {
+    checkinRecent: 30,
+    checkinMid: 60,
+    checkinDeep: 90,
+    trendWeeks: 8,
+    checkinWeeks: 8,
+    reliabilityDays: 90,
+  },
   checkinSeries: sampleCheckinSeries(),
   checkinRaw: sampleCheckinRaw(),
   sleepLog: [
@@ -493,6 +503,7 @@ export const SAMPLE_STATS: Stats = {
   // 30 діб, у 19 план збігся з тим, що реально зайняло час. Топ-пари — куди
   // саме зʼїжджає день, коли не збігається.
   intentDrift: {
+    days: 30,
     total: 30,
     matched: 19,
     pct: 63,
@@ -517,6 +528,7 @@ export const SAMPLE_STATS: Stats = {
   sleepVsDayScore: { ready: true, needed: 8, low: 9, ok: 11, lowAvg: 2.9, okAvg: 4.1 },
   bedtimeVsEnergy: { ready: true, needed: 8, early: 11, late: 9, earlyAvg: 3.9, lateAvg: 2.5 },
   categoryInsight: {
+    days: 30,
     total: 22,
     rows: [
       { cat: 'work', n: 8, dayScore: 3.4 },
@@ -528,6 +540,7 @@ export const SAMPLE_STATS: Stats = {
   },
   appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
   checkinTops: {
+    days: 30,
     blocker: { value: 'tired', n: 6 },
     helper: { value: 'early', n: 5 },
     blockers: [
@@ -544,7 +557,7 @@ export const SAMPLE_STATS: Stats = {
       { value: 'breaks', n: 2 },
       { value: 'music', n: 1 },
     ],
-    days: 14,
+    filled: 14,
     lateReasons: [
       { value: 'scroll', n: 4 },
       { value: 'work', n: 3 },
@@ -556,6 +569,7 @@ export const SAMPLE_STATS: Stats = {
   // Соціальний контекст: демо-набір готовий (значуще різняться «сам» і «з
   // людьми») — щоб було видно, як виглядає повністю розкрита картка.
   socialContext: {
+    days: 60,
     tops: [
       { value: 'work', n: 18 },
       { value: 'alone', n: 14 },
@@ -563,7 +577,7 @@ export const SAMPLE_STATS: Stats = {
       { value: 'family', n: 7 },
       { value: 'mixed', n: 4 },
     ],
-    days: 52,
+    filled: 52,
     aloneVsOthers: {
       ready: true,
       nAlone: 14,
@@ -670,27 +684,43 @@ export const EMPTY_STATS: Stats = {
   // Порожньо = перший день: блок відкритий, але жодної відповіді ще немає.
   checkinSlot: 'morning',
   checkinToday: null,
+  // Глибини агрегації — дзеркало STATS_WINDOWS зі stats-core.mjs. У демо теж
+  // справжні, бо підписи «за N діб» малюються саме звідси.
+  windows: {
+    checkinRecent: 30,
+    checkinMid: 60,
+    checkinDeep: 90,
+    trendWeeks: 8,
+    checkinWeeks: 8,
+    reliabilityDays: 90,
+  },
   checkinSeries: [],
   checkinRaw: { days: 90, from: '', to: '', records: {} },
   sleepLog: [],
-  intentDrift: { total: 0, matched: 0, pct: null, top: [] },
+  intentDrift: { days: 30, total: 0, matched: 0, pct: null, top: [] },
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
   planVsFact: [],
   sleepVsDayScore: { ready: false, needed: 8, low: 0, ok: 0 },
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
-  categoryInsight: { total: 0, rows: [] },
+  categoryInsight: { days: 30, total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
   checkinTops: {
     blocker: null,
     helper: null,
     blockers: [],
     helpers: [],
-    days: 0,
+    days: 30,
+    filled: 0,
     lateReasons: [],
     lateNights: 0,
   },
-  socialContext: { tops: [], days: 0, aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 } },
+  socialContext: {
+    days: 60,
+    filled: 0,
+    tops: [],
+    aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
+  },
   checkinModel: {
     n: 0,
     fit: {
