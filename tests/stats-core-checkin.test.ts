@@ -422,6 +422,75 @@ describe('aggregateStats — чек-ін', () => {
   });
 });
 
+/* ── Гаряче вікно сирих чек-інів ───────────────────────────────────────────
+   НАВІЩО ОКРЕМЕ ПОЛЕ, коли вже є checkinSeries. Ряд віддає лише скаляри
+   (сон/енергія/крива/оцінка) — усі ТЕГИ доби (blocker, helper, withWhom,
+   lateReason, pace…) з нього викинуті, бо кожен із них уже має власний
+   передрахований рол-ап. Рол-ап відповідає «як часто», але НЕ вміє відповісти
+   «а що було саме в ці доби» — а це і є питання, яке ставить карта станів,
+   коли тапаєш клітинку.
+
+   Свідома межа глибини: 90 діб. Це не кругле число, а межа ГАРЯЧОГО блоба —
+   стор читається й перезаписується на кожну подію, тож він мусить лишатись
+   малим; довші періоди колись поїдуть із місячних згорток, не звідси. */
+describe('aggregateStats — гаряче вікно сирих чек-інів', () => {
+  const TODAY = '2026-08-13';
+  const back = (n: number) => {
+    const d = new Date(TODAY + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  it('віддає СИРІ теги слоту — те, чого в checkinSeries немає', () => {
+    let s = recordEvent(emptyStore(), ck('afternoon', { withWhom: 'alone' }), TODAY);
+    s = recordEvent(s, ck('evening', { blocker: ['tired', 'distract'], dayScore: 2 }), TODAY);
+    const raw = aggregateStats(s, TODAY).checkinRaw;
+    expect(raw.records[TODAY].afternoon.withWhom).toBe('alone');
+    expect(raw.records[TODAY].evening.blocker).toEqual(['tired', 'distract']);
+  });
+
+  it('вікно ГЛИБШЕ за checkinSeries — інакше поле не мало б сенсу', () => {
+    let s = emptyStore();
+    for (let i = 0; i < 80; i++) s = recordEvent(s, ck('evening', { dayScore: 3 }), back(i));
+    const agg = aggregateStats(s, TODAY);
+    expect(agg.checkinSeries.length).toBe(30);
+    expect(Object.keys(agg.checkinRaw.records).length).toBe(80);
+  });
+
+  it('доба поза вікном не потрапляє', () => {
+    let s = recordEvent(emptyStore(), ck('evening', { dayScore: 5 }), back(89));
+    s = recordEvent(s, ck('evening', { dayScore: 1 }), back(90));
+    const rec = aggregateStats(s, TODAY).checkinRaw.records;
+    expect(rec[back(89)]).toBeDefined();
+    expect(rec[back(90)]).toBeUndefined();
+  });
+
+  it('незаповнені доби не займають місця (розріджено, не 90 дірок)', () => {
+    const s = recordEvent(emptyStore(), ck('morning', MORNING), back(5));
+    expect(Object.keys(aggregateStats(s, TODAY).checkinRaw.records)).toEqual([back(5)]);
+  });
+
+  it('from/to описують РЕАЛЬНЕ вікно — підпис глибини не має брехати', () => {
+    const raw = aggregateStats(emptyStore(), TODAY).checkinRaw;
+    expect(raw.days).toBe(90);
+    expect(raw.to).toBe(TODAY);
+    expect(raw.from).toBe(back(89)); // 90 діб включно з сьогоднішньою
+  });
+
+  it('порожній стор -> порожні records, але метадані на місці', () => {
+    const raw = aggregateStats(emptyStore(), TODAY).checkinRaw;
+    expect(raw.records).toEqual({});
+    expect(raw.days).toBe(90);
+  });
+
+  it('легасі-стор без checkins не валить агрегат', () => {
+    const legacy = { ...emptyStore() };
+    delete (legacy as Record<string, unknown>).checkins;
+    expect(() => aggregateStats(legacy, TODAY)).not.toThrow();
+    expect(aggregateStats(legacy, TODAY).checkinRaw.records).toEqual({});
+  });
+});
+
 describe('чек-ін — нові поля 18.07 (дзеркало questions.ts ↔ CHECKIN_FIELDS)', () => {
   it('bedtime/plan=project, ate-нові, applied/blocker-нові/helper приймаються', () => {
     let s = recordEvent(
