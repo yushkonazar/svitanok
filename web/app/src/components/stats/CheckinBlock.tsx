@@ -191,11 +191,8 @@ export function CheckinBlock({ s }: { s: Stats }) {
   // прибирати їх із сервера немає причин, але малювати вдруге теж.
   const cat = s.categoryInsight;
   const drift = s.intentDrift;
-  const cal = s.appliedCalibration;
   const tops = s.checkinTops;
   const social = s.socialContext;
-  const kept = s.planVsFact;
-  const keptHit = kept.filter((r) => r.actual >= r.planned).length;
 
   const laggedEntries = Object.entries(model.lagged);
 
@@ -490,37 +487,19 @@ export function CheckinBlock({ s }: { s: Stats }) {
             </Card>
           )}
 
-          {/* Подачі — єдина відповідь, яку застосунок може ПЕРЕВІРИТИ проти
-              зовнішнього журналу (appliedLog). Модель такого не вміє: вона
-              працює лише всередині самозвіту. Дві колишні окремі картки
-              (план подач + звіт↔журнал) зведені в одну — це одна тема. */}
-          {(kept.length > 0 || cal.n > 0) && (
-            <Card>
-              <SubLabel>ПОДАЧІ: СЛОВА ↔ ЖУРНАЛ</SubLabel>
-              <div className="mt-2 flex flex-col gap-1.5">
-                {kept.length > 0 && (
-                  <StatRow
-                    label="🎯 Виконав план подач"
-                    value={`${keptHit} з ${kept.length} днів`}
-                  />
-                )}
-                {cal.n > 0 && (
-                  <StatRow label="📊 Звіт збігся з журналом" value={`${cal.matched} з ${cal.n}`} />
-                )}
-              </div>
-              {(cal.more > 0 || cal.fewer > 0) && (
-                <div className="mt-1.5 text-[10px] leading-[1.45] text-tx3">
-                  {cal.more > 0 && `${cal.more} дн. подавав поза застосунком`}
-                  {cal.more > 0 && cal.fewer > 0 && ' · '}
-                  {cal.fewer > 0 && `${cal.fewer} дн. у журналі більше, ніж у звіті`}
-                </div>
-              )}
-              <Hint>
-                Єдина картка, де твої слова звіряються із ЗОВНІШНІМ фактом — журналом подач.
-                Решта статистики вірить самозвіту на слово; тут видно, наскільки він точний.
-              </Hint>
-            </Card>
-          )}
+          {/* ⚠️ ТУТ БУЛА КАРТКА «ПОДАЧІ: СЛОВА ↔ ЖУРНАЛ» — прибрана на вимогу
+              власника, і причина глибша за «подач поки мало».
+
+              Вона зіставляла самозвіт про подачі з журналом appliedLog, тобто
+              відповідала на питання ПРО ЯКІСТЬ ДАНИХ («наскільки точний мій
+              самозвіт»), а не про пошук роботи. Такому місце в діагностиці, а
+              не на екрані, куди приходять із питанням «що робити далі» —
+              навіть коли подач стане тридцять.
+
+              Дані нікуди не діваються: appliedCalibration і далі їде в
+              /api/stats, і звірка лишається доступною тому, кому вона потрібна
+              (щотижневий звіт асистента — саме той споживач). Прибрано лише
+              постійне місце на екрані. */}
 
           {avgSleep !== null && (
             <StatRow
