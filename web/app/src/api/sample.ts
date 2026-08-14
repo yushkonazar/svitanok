@@ -596,7 +596,8 @@ export const SAMPLE_STATS: Stats = {
   intentDrift: {
     days: 30,
     total: 30,
-    matched: 19,
+    full: 12,
+    partial: 9,
     pct: 63,
     top: [
       { from: 'work', to: 'chores', n: 4 },
@@ -799,7 +800,7 @@ export const EMPTY_STATS: Stats = {
   checkinSeries: [],
   checkinRaw: { days: 90, from: '', to: '', records: {} },
   sleepLog: [],
-  intentDrift: { days: 30, total: 0, matched: 0, pct: null, top: [] },
+  intentDrift: { days: 30, total: 0, full: 0, partial: 0, pct: null, top: [] },
   checkinWeekly: [],
   checkinFill: { morning: 0, afternoon: 0, evening: 0, days: 30 },
   planVsFact: [],

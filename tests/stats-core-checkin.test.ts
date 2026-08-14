@@ -604,7 +604,7 @@ describe('чек-ін — мультивибір (plan/ate/blocker/helper)', () 
 });
 
 describe('чек-ін — дрейф наміру (plan -> ate, на вже зібраних даних)', () => {
-  it('збіг хоч по одній категорії = дотримано; розбіжність дає пару', () => {
+  it('повний збіг і повна розбіжність: 100% і 0%, пара з розбіжної доби', () => {
     let s = emptyStore();
     s = recordEvent(s, ck('morning', { plan: ['work'] }), '2026-07-15');
     s = recordEvent(s, ck('afternoon', { ate: ['work'] }), '2026-07-15');
@@ -612,9 +612,49 @@ describe('чек-ін — дрейф наміру (plan -> ate, на вже зі
     s = recordEvent(s, ck('afternoon', { ate: ['chores'] }), '2026-07-16');
     const dr = aggregateStats(s, '2026-07-16').intentDrift;
     expect(dr.total).toBe(2);
-    expect(dr.matched).toBe(1);
-    expect(dr.pct).toBe(50);
-    expect(dr.top).toEqual([{ from: 'learn', to: 'chores', n: 1 }]);
+    expect(dr.full).toBe(1);
+    expect(dr.partial).toBe(0);
+    expect(dr.pct).toBe(50); // (1 + 0) / 2
+    // Одна пара, один раз -> нижче DRIFT_PAIR_MIN_N, у топ не йде.
+    expect(dr.top).toEqual([]);
+  });
+
+  /* ⚠️ РЕГРЕСІЯ, заради якої цей опис і переписаний. Доти критерієм було
+     plan.some(p => ate.includes(p)) — «влучив бодай у щось». Доба з планом
+     [робота, спорт] і фактом [спорт, відпочинок] зараховувалась ПОВНІСТЮ, хоч
+     робота не сталась. Наслідок системний: що більше категорій обираєш уранці,
+     то вищий відсоток — при двох пунктах досить влучити в один.
+
+     Той самий критерій успадковував intentMatch у моделі, тобто завищувався не
+     лише цей блок, а й індекс AGENCY і через нього «Індекс дня». */
+  it('ЧАСТКОВИЙ збіг дає ЧАСТКУ, а не повний залік', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { plan: ['work', 'sport'] }), '2026-07-16');
+    s = recordEvent(s, ck('afternoon', { ate: ['sport', 'rest'] }), '2026-07-16');
+    const dr = aggregateStats(s, '2026-07-16').intentDrift;
+    expect(dr.total).toBe(1);
+    expect(dr.full).toBe(0);
+    expect(dr.partial).toBe(1);
+    expect(dr.pct).toBe(50); // один плановий пункт із двох
+  });
+
+  it('пара будується з НЕВИКОНАНОГО плану проти НЕЗАПЛАНОВАНОГО факту', () => {
+    let s = emptyStore();
+    // Дві однакові часткові доби: 'work' не сталась, натомість 'rest'.
+    // 'sport' збігся — у пари не йде, бо збіг нічого не пояснює.
+    for (const d of ['2026-07-15', '2026-07-16']) {
+      s = recordEvent(s, ck('morning', { plan: ['work', 'sport'] }), d);
+      s = recordEvent(s, ck('afternoon', { ate: ['sport', 'rest'] }), d);
+    }
+    const dr = aggregateStats(s, '2026-07-16').intentDrift;
+    expect(dr.top).toEqual([{ from: 'work', to: 'rest', n: 2 }]);
+  });
+
+  it('пара, що трапилась ОДИН раз, у топ не потрапляє', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { plan: ['work'] }), '2026-07-16');
+    s = recordEvent(s, ck('afternoon', { ate: ['rest'] }), '2026-07-16');
+    expect(aggregateStats(s, '2026-07-16').intentDrift.top).toEqual([]);
   });
 
   it('доба без плану АБО без факту у знаменник не входить', () => {

@@ -1555,9 +1555,14 @@ function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRece
  * зайняли час (з мультивибором «влучив бодай у щось» — чесніший критерій за
  * сувору рівність).
  */
+/** Пара «планував X -> зʼїло Y» мусить трапитись двічі, щоб щось означати. */
+const DRIFT_PAIR_MIN_N = 2;
+
 function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const pairs = {};
-  let matched = 0;
+  let full = 0;
+  let partial = 0;
+  let doneSum = 0;
   let total = 0;
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1568,14 +1573,21 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
     const ate = asList(c?.afternoon?.ate).filter((x) => CATEGORY_VALUES.includes(x));
     if (!plan.length || !ate.length) continue;
     total++;
-    if (plan.some((p) => ate.includes(p))) {
-      matched++;
+    const kept = plan.filter((p) => ate.includes(p));
+    doneSum += kept.length / plan.length;
+    if (kept.length === plan.length) {
+      full++;
       continue;
     }
-    // Тільки РОЗБІЖНІ доби йдуть у пари «планував X -> зʼїло Y»: збіги нічого
-    // не пояснюють, а в списку топ-пар витіснили б справжній дрейф.
-    for (const p of plan) {
-      for (const a of ate) {
+    if (kept.length) partial++;
+    // ⚠️ Пари будуються з НЕВИКОНАНОГО плану проти НЕЗАПЛАНОВАНОГО факту, і
+    // тепер із ЧАСТКОВИХ діб теж. Доти доба з частковим збігом уся йшла в
+    // «matched» і зникала — а саме в ній і видно дрейф: одне планове сталось,
+    // друге підмінилось. Збіги в пари не йдуть: вони нічого не пояснюють.
+    const missed = plan.filter((p) => !ate.includes(p));
+    const extra = ate.filter((a) => !plan.includes(a));
+    for (const p of missed) {
+      for (const a of extra) {
         const key = `${p}>${a}`;
         pairs[key] = (pairs[key] || 0) + 1;
       }
@@ -1583,13 +1595,19 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
   }
   const top = Object.entries(pairs)
     .map(([k, n]) => ({ from: k.split('>')[0], to: k.split('>')[1], n }))
+    .filter((r) => r.n >= DRIFT_PAIR_MIN_N)
     .sort((a, b) => b.n - a.n)
     .slice(0, 5);
   return {
     days,
     total,
-    matched,
-    pct: total ? Math.round((matched / total) * 100) : null,
+    full,
+    partial,
+    // ⚠️ pct — СЕРЕДНЯ ЧАСТКА виконаного плану, не «частка діб за планом».
+    // Доти доба зараховувалась цілком, якщо збігся бодай один пункт із двох,
+    // тож число росло від самої звички планувати ширше. Тепер два планові
+    // пункти й один виконаний дають 50%, а не 100%.
+    pct: total ? Math.round((doneSum / total) * 100) : null,
     top,
   };
 }

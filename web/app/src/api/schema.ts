@@ -380,11 +380,14 @@ export const sleepNightSchema = z.object({
 export const intentDriftSchema = z.object({
   days: int.default(0),
   total: int.default(0),
-  matched: int.default(0),
+  // ⚠️ `matched` більше немає: воно означало «збігся БОДАЙ ОДИН плановий
+  // пункт», тобто зараховувало добу цілком за половину зробленого. Замість
+  // нього два ЧЕСНІ лічильники — повністю й частково, — і pct як СЕРЕДНЯ
+  // частка виконаного плану, а не частка «зарахованих» діб.
+  full: int.default(0),
+  partial: int.default(0),
   pct: num.nullable().default(null),
-  top: z
-    .array(z.object({ from: z.string(), to: z.string(), n: int }))
-    .default([]),
+  top: z.array(z.object({ from: z.string(), to: z.string(), n: int })).default([]),
 });
 export const checkinWeekSchema = z.object({
   week: z.string(),
@@ -730,7 +733,7 @@ export const statsSchema = z.object({
   }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
-  intentDrift: intentDriftSchema.default({ days: 30, total: 0, matched: 0, pct: null, top: [] }),
+  intentDrift: intentDriftSchema.default({ days: 30, total: 0, full: 0, partial: 0, pct: null, top: [] }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;
