@@ -66,6 +66,10 @@ function sampleHabitWeekly() {
  */
 function sampleFlameWeekly() {
   const active = [3, 4, 3, 5, 4, 4, 5, 4, 6, 5, 6, 4];
+  // ⚠️ full ЗАВЖДИ помітно менший за active — і це не декор демо, а суть
+  // блоку: «хоч один вогник» і «всі пʼять» розходяться в рази, і поки обидва
+  // не видно поруч, графік і стрік під ним виглядають як помилка.
+  const full = [0, 1, 0, 2, 1, 1, 2, 1, 3, 2, 3, 2];
   const constructive = [1, 1, 1, 2, 1, 2, 3, 2, 4, 3, 4, 3];
   const consumptive = [2, 3, 2, 3, 3, 2, 2, 2, 2, 2, 2, 1];
   const d = new Date();
@@ -74,7 +78,14 @@ function sampleFlameWeekly() {
     const week = dayKey(d);
     d.setDate(d.getDate() + 7);
     const days = i === active.length - 1 ? 5 : 7;
-    return { week, active: Math.min(a, days), days, constructive: constructive[i], consumptive: consumptive[i] };
+    return {
+      week,
+      active: Math.min(a, days),
+      full: Math.min(full[i]!, days),
+      days,
+      constructive: constructive[i],
+      consumptive: consumptive[i],
+    };
   });
 }
 

@@ -13,8 +13,17 @@ import { svgButtonProps } from '../../lib/svgButton.ts';
 // той самий принцип проєкту "один компонент = один інсайт" (ArchetypeRadar/
 // OpenRhythm/DriversBars так само не діляться рендером один з одним).
 //
-// Висота стовпця = частка вечорів із БУДЬ-ЯКИМ вогником (active/days) — «чи
-// тримаю звичку взагалі»; сегменти всередині — з чого вона складається.
+// ⚠️ ПЕРЕМИКАЧ ПРЕДИКАТА — головна правка блоку.
+//
+// Доти графік мовчки малював «хоч один вогник за вечір», а стрік ПОРУЧ у тій
+// самій картці рахував «усі пʼять». Тобто графік показував «майже завжди
+// повно», стрік показував нуль, і обидва були праві — просто ніде не було
+// сказано, що це різні питання. Найдешевший спосіб зробити блок незрозумілим:
+// два предикати без підписів на відстані сантиметра.
+//
+// Тепер обидва названі й перемикаються явно. Це не косметика: «тримаю звичку
+// взагалі» і «тримаю рутину повністю» — різні цілі з різною ціною, і вибирати
+// між ними має людина, а не мовчазний дефолт.
 
 const W = 300;
 const H = 92;
@@ -25,16 +34,24 @@ const PARTS = [
   { key: 'consumptive' as const, label: 'споживчі', color: 'var(--color-a2)' },
 ];
 
+const MODES = [
+  { key: 'any' as const, label: 'хоч один', word: 'із вогником' },
+  { key: 'full' as const, label: 'усі пʼять', word: 'із повною рутиною' },
+];
+type Mode = (typeof MODES)[number]['key'];
+
 export function FlameTrend({ weeks }: { weeks: Stats['flameStats']['weekly'] }) {
   const [tap, setTap] = useState<number | null>(null);
+  const [mode, setMode] = useState<Mode>('any');
 
   const rows = useMemo(
     () =>
       weeks.map((w) => {
         const total = w.constructive + w.consumptive;
-        return { ...w, pct: w.days > 0 ? w.active / w.days : 0, total };
+        const hit = mode === 'full' ? w.full : w.active;
+        return { ...w, hit, pct: w.days > 0 ? hit / w.days : 0, total };
       }),
-    [weeks],
+    [weeks, mode],
   );
 
   if (rows.length < 2) return null;
@@ -43,9 +60,44 @@ export function FlameTrend({ weeks }: { weeks: Stats['flameStats']['weekly'] }) 
   const gap = Math.min(3, barW * 0.18);
   const plotH = H - PAD_B;
   const sel = tap !== null ? rows[tap] : null;
+  const modeWord = MODES.find((m) => m.key === mode)!.word;
+  // Конструктивна частка за ВЕСЬ показаний період — одне число замість читання
+  // всіх сегментів. Це найцікавіше, що є в блоці, а доти воно було поховане в
+  // кольорі всередині стовпців.
+  const cSum = rows.reduce((a, r) => a + r.constructive, 0);
+  const allSum = rows.reduce((a, r) => a + r.total, 0);
+  const constructivePct = allSum > 0 ? Math.round((cSum / allSum) * 100) : null;
 
   return (
     <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5">
+        {MODES.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            aria-pressed={mode === m.key}
+            onClick={() => {
+              haptic('light');
+              setMode(m.key);
+              // Вибір скидається: підпис унизу інакше лишився б від іншого
+              // предиката, а це рівно та плутанина, проти якої перемикач.
+              setTap(null);
+            }}
+            className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${
+              mode === m.key
+                ? 'border-glassb bg-glass text-tx'
+                : 'border-transparent text-tx3'
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+        {constructivePct !== null && (
+          <span className="ml-auto font-mono text-[9.5px] text-tx3">
+            конструктивних <span className="font-semibold text-tx2">{constructivePct}%</span>
+          </span>
+        )}
+      </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
         {[0.5, 1].map((g) => (
           <line
@@ -68,7 +120,7 @@ export function FlameTrend({ weeks }: { weeks: Stats['flameStats']['weekly'] }) 
             <g
               key={r.week}
               {...svgButtonProps({
-                label: `Тиждень ${r.week}: ${r.active} із ${r.days} вечорів із вогником`,
+                label: `Тиждень ${r.week}: ${r.hit} із ${r.days} вечорів ${modeWord}`,
                 pressed: tap === i,
                 onActivate: () => {
                   haptic('light');
@@ -141,7 +193,7 @@ export function FlameTrend({ weeks }: { weeks: Stats['flameStats']['weekly'] }) 
         ))}
         <span className="ml-auto font-mono">
           {sel
-            ? `${shortDateFromIso(sel.week)}: ${sel.active}/${sel.days} веч. · ${sel.total} вогників`
+            ? `${shortDateFromIso(sel.week)}: ${sel.hit}/${sel.days} веч. ${modeWord} · ${sel.constructive} констр. / ${sel.consumptive} спож.`
             : 'тапни на тиждень'}
         </span>
       </div>

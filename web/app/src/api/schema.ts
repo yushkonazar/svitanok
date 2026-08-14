@@ -490,7 +490,10 @@ export const socialContextSchema = z.object({
  *  «доби, що вже настали», що habitWeekSchema). */
 export const flameWeekSchema = z.object({
   week: z.string(),
+  /** Вечорів із ХОЧ ОДНИМ вогником. */
   active: int.default(0),
+  /** Вечорів, де горіли ВСІ пʼять — той самий предикат, що стрік повної рутини. */
+  full: int.default(0),
   days: int.default(0),
   constructive: int.default(0),
   consumptive: int.default(0),

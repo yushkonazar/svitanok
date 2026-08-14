@@ -1014,6 +1014,32 @@ describe('aggregateStats — вогники (flames, evening)', () => {
     expect(f.best).toBe(2); // 10-11
   });
 
+  /* ⚠️ ДВА ПРЕДИКАТИ В ОДНІЙ КАРТЦІ — саме те, що робило блок незрозумілим.
+     Графік малював «хоч один вогник», стрік поруч вимагав УСІ ПʼЯТЬ: графік
+     показував «майже завжди повно», стрік показував нуль, і обидва були праві.
+     Тепер обидва лічильники їдуть у payload по тижнях, щоб екран міг показати
+     різницю явно, а не лишати один із них невидимим. */
+  it('weekly: active («хоч один») і full («всі пʼять») — різні числа того самого тижня', () => {
+    let s = emptyStore();
+    const all5 = ['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'];
+    s = recordEvent(s, ck('evening', { flames: all5 }), '2026-07-06');
+    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-07');
+    s = recordEvent(s, ck('evening', { flames: ['chess', 'tiktok'] }), '2026-07-08');
+    const w = aggregateStats(s, '2026-07-08').flameStats.weekly;
+    const cur = w[w.length - 1]!;
+    expect(cur.active).toBe(3); // три вечори з хоч одним
+    expect(cur.full).toBe(1); // і лише один повний
+  });
+
+  it('weekly.full = 0, коли жодного повного вечора — це нуль, а не відсутність', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-06');
+    const w = aggregateStats(s, '2026-07-06').flameStats.weekly;
+    const cur = w[w.length - 1]!;
+    expect(cur.active).toBe(1);
+    expect(cur.full).toBe(0);
+  });
+
   it('missedTops: лічильник ПРОПУЩЕНОГО, лише на добах з вечірнім чек-іном (не порожня історія)', () => {
     let s = emptyStore();
     s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
