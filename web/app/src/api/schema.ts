@@ -249,7 +249,9 @@ export const checkinAfternoonSchema = z.object({
   mood: int.optional(),
   ate: multi(category),
   rushed: int.optional(),
-  withWhom: lenient(z.enum(['alone', 'family', 'friends', 'work', 'public', 'mixed'])),
+  withWhom: lenient(
+    z.enum(['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed']),
+  ),
   confirmed: z.boolean().optional(),
 });
 export const checkinEveningSchema = z.object({

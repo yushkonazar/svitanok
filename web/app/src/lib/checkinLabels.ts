@@ -49,6 +49,7 @@ export const LATE_REASON_LABEL: Record<string, string> = {
 
 export const WITH_WHOM_LABEL: Record<string, string> = {
   alone: '🧍 Сам',
+  partner: '💖 Кохана',
   family: '🏠 Рідні',
   friends: '🫂 Друзі',
   work: '💼 По роботі',

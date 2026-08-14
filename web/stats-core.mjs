@@ -216,7 +216,10 @@ export const CHECKIN_FIELDS = {
     mood: { num: [1, 5], int: true },
     ate: { enumMulti: CATEGORY_VALUES, max: 2 },
     rushed: { num: [1, 5], int: true },
-    withWhom: { enum: ['alone', 'family', 'friends', 'work', 'public', 'mixed'] },
+    // ⚠️ Пари з questions.ts: значення, яке збирає чек-ін, але якого немає
+    // тут, нормалізується в null і ТИХО вибиває поле (так було з moved:'active',
+    // баг B5). CI-assert «enum ⊆ levels» стереже саме цю пару.
+    withWhom: { enum: ['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed'] },
   },
   evening: {
     dayScore: { num: [1, 5], int: true },
