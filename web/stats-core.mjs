@@ -1408,8 +1408,13 @@ function buildHabitWeekly(days, todayKey) {
  */
 function buildFlameStats(checkins, todayKey) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(checkins, todayKey));
+  // ⚠️ active і full — ДВА РІЗНІ ПРЕДИКАТИ, і саме їх мовчазне сусідство робило
+  // блок незрозумілим: графік малював «хоч один вогник за вечір», а стрік поруч
+  // вимагав УСІ ПʼЯТЬ. Тобто графік показував «майже завжди повно», а стрік —
+  // нуль, і обидва були праві. Тепер full їде в payload, і перемикач на екрані
+  // показує обидва явно, замість того щоб один із них лишався невидимим.
   const buckets = Object.fromEntries(
-    starts.map((k) => [k, { active: 0, days: 0, constructive: 0, consumptive: 0 }]),
+    starts.map((k) => [k, { active: 0, full: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
   const counts = {};
   const missed = {};
@@ -1435,6 +1440,7 @@ function buildFlameStats(checkins, todayKey) {
       b.active++;
       activeNights++;
     }
+    if (flames.length === FLAME_VALUES.length) b.full++;
     for (const f of flames) {
       counts[f] = (counts[f] || 0) + 1;
       if (CONSTRUCTIVE_FLAMES.has(f)) b.constructive++;
