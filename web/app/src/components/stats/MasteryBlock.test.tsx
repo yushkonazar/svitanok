@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MasteryBlock } from './MasteryBlock.tsx';
+import { MasteryBlock, MasteryBody } from './MasteryBlock.tsx';
 import type { MasteryTopic, Stats } from '../../api/schema.ts';
 
 /* Майстерність. Арифметика покрита кореневим vitest (tests/mastery-rows.test.ts);
@@ -30,7 +30,7 @@ const stats = (topics: MasteryTopic[], weekly: number[] = [1, 1, 1, 1]): Stats =
 
 describe('MasteryBlock — розрив', () => {
   it('показує ОБИДВІ смуги з числами, а не одну оцінку', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />);
+    render(<MasteryBody s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />);
     expect(screen.getByText('відмічено')).toBeInTheDocument();
     expect(screen.getByText('дається')).toBeInTheDocument();
     expect(screen.getByText('80%')).toBeInTheDocument();
@@ -38,19 +38,19 @@ describe('MasteryBlock — розрив', () => {
   });
 
   it('великий розрив позначений явно — це і є інсайт блоку', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />);
+    render(<MasteryBody s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />);
     expect(screen.getByText(/розрив 50/)).toBeInTheDocument();
   });
 
   it('дрібний розрив НЕ позначається — інакше значок втрачає сенс', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 45 })])} />);
+    render(<MasteryBody s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 45 })])} />);
     // Саме ЗНАЧОК, не згадка слова в підказці під карткою.
     expect(screen.queryByText(/^розрив \d+$/)).toBeNull();
   });
 
   it('порядок рядків веде найбільший розрив', () => {
     const { container } = render(
-      <MasteryBlock
+      <MasteryBody
         s={stats([
           topic({ id: 'рівна', done: 5, total: 10, seen: 20, easePct: 50 }),
           topic({ id: 'ілюзія', done: 10, total: 10, seen: 20, easePct: 20 }),
@@ -62,7 +62,7 @@ describe('MasteryBlock — розрив', () => {
   });
 
   it('видно розмір вибірки — 50% з 6 питань і з 60 читаються по-різному', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 6, easePct: 50 })])} />);
+    render(<MasteryBody s={stats([topic({ id: 'A', done: 5, total: 10, seen: 6, easePct: 50 })])} />);
     expect(screen.getByText(/6 питань/)).toBeInTheDocument();
   });
 });
@@ -70,7 +70,7 @@ describe('MasteryBlock — розрив', () => {
 describe('MasteryBlock — неперевірені теми', () => {
   it('тема без питань НЕ стає нулем у рейтингу, а йде окремо', () => {
     render(
-      <MasteryBlock
+      <MasteryBody
         s={stats([
           topic({ id: 'непитана', done: 10, total: 10, seen: 0, easePct: null }),
           topic({ id: 'питана', done: 5, total: 10, seen: 20, easePct: 50 }),
@@ -83,7 +83,7 @@ describe('MasteryBlock — неперевірені теми', () => {
   });
 
   it('коли перевіряти нічого — картки рейтингу немає взагалі', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 3, total: 10 })])} />);
+    render(<MasteryBody s={stats([topic({ id: 'A', done: 3, total: 10 })])} />);
     expect(screen.queryByText(/ВІДМІЧЕНО ПРОТИ/)).toBeNull();
     expect(screen.getByText(/ЩЕ НЕ ПЕРЕВІРЕНО/)).toBeInTheDocument();
   });
@@ -95,19 +95,19 @@ describe('MasteryBlock — темп і прогноз', () => {
   );
 
   it('прогноз показується, коли темп є', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 0, total: 10 })], [2, 2, 2, 2])} />);
+    render(<MasteryBody s={stats([topic({ id: 'A', done: 0, total: 10 })], [2, 2, 2, 2])} />);
     expect(screen.getByText(/~5 тижнів за поточним темпом/)).toBeInTheDocument();
   });
 
   it('темпу немає -> прогнозу немає, і картка мовчить, а не пише «∞»', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 0, total: 10 })], [0, 0, 0, 0])} />);
+    render(<MasteryBody s={stats([topic({ id: 'A', done: 0, total: 10 })], [0, 0, 0, 0])} />);
     expect(screen.queryByText(/за поточним темпом/)).toBeNull();
     expect(screen.queryByText(/ТЕМП/)).toBeNull();
   });
 
   it('довгий список згортається, кнопка каже скільки саме сховано', async () => {
     const user = userEvent.setup();
-    render(<MasteryBlock s={stats(many)} />);
+    render(<MasteryBody s={stats(many)} />);
     expect(screen.getByRole('button', { name: /Ще 3/ })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Ще 3/ }));
     expect(screen.getAllByText('відмічено')).toHaveLength(8);
@@ -116,7 +116,39 @@ describe('MasteryBlock — темп і прогноз', () => {
 
 describe('MasteryBlock — порожній стан', () => {
   it('без жодної теми — підказка, що робити, а не порожньо', () => {
-    render(<MasteryBlock s={stats([])} />);
+    render(<MasteryBody s={stats([])} />);
     expect(screen.getByText(/roadmap/)).toBeInTheDocument();
+  });
+});
+
+/* Оболонка: блок згорнутий за замовчуванням і стоїть у хвості екрана.
+ *
+ * ⚠️ Це вимога власника, і вона збігається з тим, що видно з даних: поки по
+ * темі не набралось MIN_SEEN питань, вона падає в «ще не перевірено», а
+ * картки «Розрив», «Темп» і «Чи стає легше» ховаються власними гейтами —
+ * тобто розгорнутий блок довго показує майже порожнечу. */
+describe('MasteryBlock — оболонка', () => {
+  it('згорнутий за замовчуванням: видно заголовок і кнопку, не вміст', () => {
+    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 40 })])} />);
+    expect(screen.getByText('Майстерність')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Відкрити/ })).toBeInTheDocument();
+    expect(screen.queryByText('ВІДМІЧЕНО ПРОТИ «ДАЄТЬСЯ»')).toBeNull();
+  });
+
+  it('кнопка відкриває вміст і міняє власний підпис', async () => {
+    const user = userEvent.setup();
+    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 40 })])} />);
+    await user.click(screen.getByRole('button', { name: /Відкрити/ }));
+    expect(screen.getByText('ВІДМІЧЕНО ПРОТИ «ДАЄТЬСЯ»')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Згорнути/ })).toBeInTheDocument();
+  });
+
+  it('стан оболонки — справжній aria-expanded, а не лише текст на кнопці', async () => {
+    const user = userEvent.setup();
+    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10 })])} />);
+    const btn = screen.getByRole('button', { name: /Відкрити/ });
+    expect(btn).toHaveAttribute('aria-expanded', 'false');
+    await user.click(btn);
+    expect(btn).toHaveAttribute('aria-expanded', 'true');
   });
 });

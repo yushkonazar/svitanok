@@ -31,6 +31,47 @@ const STAGE_SHORT: Record<string, string> = {
   interview: 'співбесіда',
 };
 
+/**
+ * Крок конверсії — з ЯВНИМ станом «знаменник порожній».
+ *
+ * ⚠️ Доти рядок показував «0%» і при нулі співбесід, і при нулі оферів із
+ * десяти співбесід: хвостик «x/y» ховався разом із знаменником, а сам нуль
+ * лишався. Тобто ВІДСУТНІСТЬ ДАНИХ виглядала точно як ПОГАНИЙ РЕЗУЛЬТАТ —
+ * найгірший різновид нуля, і рівно та помилка, яку в Майстерності вже
+ * виправили через easePct = null («не питали» ≠ «все складно»).
+ *
+ * Тепер порожній знаменник каже про себе словами, а відсоток не малюється.
+ */
+function ConversionRow({
+  label,
+  pct,
+  num,
+  den,
+}: {
+  label: string;
+  pct: number | null | undefined;
+  num: number;
+  den: number;
+}) {
+  if (den <= 0) {
+    return <StatRow label={label} value={<span className="font-normal text-tx3">ще не було</span>} />;
+  }
+  if (!has(pct)) return null;
+  return (
+    <StatRow
+      label={label}
+      value={
+        <>
+          {pct}%
+          <span className="ml-1.5 font-normal text-tx3">
+            {num}/{den}
+          </span>
+        </>
+      }
+    />
+  );
+}
+
 export function RhythmBlock({ s }: { s: Stats }) {
   const speed = s.funnelSpeed;
   // Смуга цілі заповнюється, коли доїхала до екрана — той самий barFill, що
@@ -48,36 +89,18 @@ export function RhythmBlock({ s }: { s: Stats }) {
       <div className="flex flex-col gap-[9px]">
         {/* Конверсії з «дійшов до» (F1): знаменник — усі, хто КОЛИСЬ був на
             стадії, тож відмова його не зменшує. */}
-        {has(s.conversion.appliedToInterview) && (
-          <StatRow
-            label="Подав → співбесіда"
-            value={
-              <>
-                {s.conversion.appliedToInterview}%
-                {s.reached.applied > 0 && (
-                  <span className="ml-1.5 font-normal text-tx3">
-                    {s.reached.interview}/{s.reached.applied}
-                  </span>
-                )}
-              </>
-            }
-          />
-        )}
-        {has(s.conversion.interviewToOffer) && (
-          <StatRow
-            label="Співбесіда → офер"
-            value={
-              <>
-                {s.conversion.interviewToOffer}%
-                {s.reached.interview > 0 && (
-                  <span className="ml-1.5 font-normal text-tx3">
-                    {s.reached.offer}/{s.reached.interview}
-                  </span>
-                )}
-              </>
-            }
-          />
-        )}
+        <ConversionRow
+          label="Подав → співбесіда"
+          pct={s.conversion.appliedToInterview}
+          num={s.reached.interview}
+          den={s.reached.applied}
+        />
+        <ConversionRow
+          label="Співбесіда → офер"
+          pct={s.conversion.interviewToOffer}
+          num={s.reached.offer}
+          den={s.reached.interview}
+        />
         {(s.funnel.rejected > 0 || s.funnel.failed > 0) && (
           <StatRow
             label="Закрито (відмова / провал)"

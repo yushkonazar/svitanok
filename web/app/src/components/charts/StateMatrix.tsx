@@ -12,6 +12,7 @@ import {
   type PeriodOption,
 } from '../../lib/stateMap.ts';
 import { pluralUk } from '../../lib/plural.ts';
+import { Note } from '../ui/primitives.tsx';
 import { daysWindowLabel } from '../../lib/windowLabel.ts';
 import { svgButtonProps } from '../../lib/svgButton.ts';
 import { Segmented } from '../ui/Segmented.tsx';
@@ -52,7 +53,22 @@ export function StateMatrix({ raw, periods = [] }: { raw: CheckinRaw; periods?: 
   // прибрати сітку разом із перемикачами, і повернутись до ширшого не було б
   // чим — глухий кут, з якого користувач не бачить виходу.
   const total = useMemo(() => readingsOf(raw, 'all').length, [raw]);
-  if (total < MIN_READINGS) return null;
+  // ⚠️ ПРОГРЕС, А НЕ null. Доти компонент повертав null, а картка навколо нього
+  // в CheckinBlock — єдина в блоці без ЗОВНІШНЬОГО гейта (сусіди гейтяться на
+  // filledDays, drivers.length, archetypes.ready). Тобто в нового користувача
+  // лишався заголовок «КАРТА СТАНІВ» і повний текст підказки над порожнечею —
+  // виглядало як зламаний рендер.
+  //
+  // Виправляти тут, а не в картці: компонент знає своє число, а картка мусила б
+  // повторити ту саму арифметику й розійтися з нею при першій же зміні гейта.
+  if (total < MIN_READINGS) {
+    return (
+      <Note>
+        Сітка зʼявиться після {MIN_READINGS} зрізів — зараз {total}. Один заповнений блок
+        чек-іну (ранок, день або вечір) — це один зріз.
+      </Note>
+    );
+  }
 
   const cell = 34;
   const gap = 3;
@@ -310,8 +326,12 @@ function CellPanel({
           >
             {dayScore.avg}
           </span>
+          {/* Розмір вибірки — поруч зі значенням, а не в підказці. «3.2 проти
+              3.6» з шести діб і з сорока читаються по-різному, а доти n не
+              показувався взагалі: колір давав упевненість, якої число могло не
+              заслуговувати. Той самий принцип, що «· N питань» у Майстерності. */}
           <span className="ml-auto font-mono text-[10px] text-tx3">
-            зазвичай {dayScore.base}
+            зазвичай {dayScore.base} · по {dayScore.n} діб
           </span>
         </div>
       )}

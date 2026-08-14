@@ -266,16 +266,21 @@ export function HabitsBlock({ s }: { s: Stats }) {
             вогник горів; колір усередині — конструктивний він (навчання, гра розуму) чи споживчий
             (стрічка).
           </Hint>
-          <div className="mt-3.5 border-t border-glassb pt-3">
-            <div className="mb-1.5 text-[11px] font-semibold text-tx2">Що частіше пропускаю</div>
-            <RankedBars
-              rows={flames.missedTops.map((r) => ({
-                key: r.value,
-                label: FLAME_LABEL[r.value] ?? r.value,
-                n: r.n,
-              }))}
-            />
-          </div>
+          {/* Заголовок стояв БЕЗ гейта, а RankedBars усередині повертає null на
+              порожньому списку — тобто у вечори, коли пропущено нічого, лишався
+              підпис «Що частіше пропускаю» над порожнім місцем. */}
+          {flames.missedTops.length > 0 && (
+            <div className="mt-3.5 border-t border-glassb pt-3">
+              <div className="mb-1.5 text-[11px] font-semibold text-tx2">Що частіше пропускаю</div>
+              <RankedBars
+                rows={flames.missedTops.map((r) => ({
+                  key: r.value,
+                  label: FLAME_LABEL[r.value] ?? r.value,
+                  n: r.n,
+                }))}
+              />
+            </div>
+          )}
         </Card>
       )}
     </div>
