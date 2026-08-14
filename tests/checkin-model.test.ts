@@ -257,6 +257,31 @@ describe('flattenCheckinDay — адаптер nested checkins[date] -> плос
     expect(noAte.intentMatch).toBeNull();
   });
 
+  /* ⚠️ ЦЕ І Є ВИПРАВЛЕНА ПОМИЛКА. Доти критерій був plan.some(p => ate.includes(p)),
+     тобто «влучив бодай у щось» = повна одиниця. Доба з планом [робота, спорт] і
+     фактом [спорт, відпочинок] діставала 1.0, хоч робота не сталась — і що більше
+     категорій людина планує, то легше було «виконати план». AGENCY (вага 1.2) через
+     це систематично завищувався саме в тих, хто планує ширше. */
+  it('половина плану виконана -> 0.5, а не повна одиниця', () => {
+    const half = flattenCheckinDay(
+      { morning: { plan: ['work', 'learn'] }, afternoon: { ate: ['learn', 'rest'] } },
+      asList,
+      CATS,
+    );
+    expect(half.intentMatch).toBe(0.5);
+  });
+
+  it('обидва планові пункти зроблені -> 1; знаменник — ПЛАН, не факт', () => {
+    // Факт ширший за план: три категорії проти двох. Зайве не карається —
+    // питання блоку «чи зробив те, що збирався», а не «чи не робив зайвого».
+    const all = flattenCheckinDay(
+      { morning: { plan: ['work', 'learn'] }, afternoon: { ate: ['work', 'learn', 'rest'] } },
+      asList,
+      CATS,
+    );
+    expect(all.intentMatch).toBe(1);
+  });
+
   it('порожній rec не падає — усе null', () => {
     const flat = flattenCheckinDay(undefined, asList, CATS);
     expect(flat.sleepH).toBeNull();
