@@ -83,6 +83,13 @@ export const heatmapCellSchema = z.object({
 });
 
 /** Розподіл часу першого відкриття — коробка з вусами (p10/q1/median/q3/p90). */
+/** Половина вікна ритуалу — для порівняння «раніше» проти «тепер». */
+const rhythmHalfSchema = z.object({
+  n: int.default(0),
+  median: num.nullable().default(null),
+  iqr: num.nullable().default(null),
+});
+
 export const openRhythmSchema = z.object({
   ready: z.boolean().default(false),
   n: int.default(0),
@@ -93,6 +100,8 @@ export const openRhythmSchema = z.object({
   q3: num.nullable().optional(),
   p90: num.nullable().optional(),
   iqr: num.nullable().optional(),
+  /** null — половин замало для порівняння. Це НЕ «розкид не змінився». */
+  drift: z.object({ early: rhythmHalfSchema, late: rhythmHalfSchema }).nullable().default(null),
 });
 
 /** Тиждень звички: активні доби зі СПРАВЖНЬОГО знаменника + склад активності. */
@@ -724,7 +733,7 @@ export const statsSchema = z.object({
     aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
   }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
-  openRhythm: openRhythmSchema.default({ ready: false, n: 0 }),
+  openRhythm: openRhythmSchema.default({ ready: false, n: 0, drift: null }),
   habitWeekly: z.array(habitWeekSchema).default([]),
   flameStats: flameStatsSchema.default({
     tops: [],

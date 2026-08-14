@@ -321,7 +321,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
             <Card>
               <SubLabel>ЯВКА ПО СЛОТАХ · {daysWindowLabel(fill.days)}</SubLabel>
               <div className="mt-2">
-                <FillBars fill={fill} />
+                <FillBars fill={fill} raw={s.checkinRaw} />
               </div>
             </Card>
           )}

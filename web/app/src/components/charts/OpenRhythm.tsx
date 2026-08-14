@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
+import { haptic } from '../../telegram.ts';
 import { Hint } from '../ui/primitives.tsx';
 
 // Ритуал відкриття — коробка з вусами (box plot) по хвилинах після 08:00.
@@ -34,6 +36,7 @@ const H = 44;
 const PAD = 6;
 
 export function OpenRhythm({ rhythm }: { rhythm: Stats['openRhythm'] }) {
+  const [open, setOpen] = useState(false);
   if (!rhythm.ready) {
     return (
       <Hint>
@@ -106,6 +109,75 @@ export function OpenRhythm({ rhythm }: { rhythm: Stats['openRhythm'] }) {
             жодного відкриття у це число не входить. Різниця мала на вигляд,
             але саме вона відрізняє «за 90 днів» від «за 90 разів». */}
         <span className="font-mono text-[10px]"> · {rhythm.n} діб із відкриттям</span>
+      </div>
+
+      {/* ⚠️ ЄДИНЕ, ЩО КОРОБКА СКАЗАТИ НЕ МОЖЕ — чи звичка ЗАТИСКАЄТЬСЯ. Вона
+          описує вікно цілком, тобто «як було загалом», а блок обіцяє відповісти
+          на «наскільки це ВЖЕ ритуал». Різниця в тому, що ритуал — це процес:
+          розкид, який падає, і розкид, який стоїть, дають ту саму коробку.
+          Тому вікно ділиться навпіл по порядку записів, і порівняння живе під
+          тапом — на самому графіку йому місця немає, а щодня воно й не
+          потрібне. */}
+      {rhythm.drift && (
+        <>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => {
+              haptic('light');
+              setOpen((v) => !v);
+            }}
+            className="self-start rounded-full border border-glassb bg-glass px-2.5 py-1 font-mono text-[9px] font-semibold tracking-[0.06em] text-tx3"
+          >
+            {open ? 'ЗГОРНУТИ' : 'ЧИ ЗАТИСКАЄТЬСЯ?'}
+          </button>
+          {open && <RhythmDrift drift={rhythm.drift} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Рядок половини. ⚠️ Оголошений ЗОВНІ RhythmDrift: компонент, створений під
+ *  час рендера, щоразу новий, тобто скидає власний стан і ламає узгодження
+ *  React (правило react-x/no-nested-component-definitions). */
+function HalfRow({ label, h }: { label: string; h: { n: number; median: number | null; iqr: number | null } }) {
+  return (
+    <div className="flex items-baseline gap-2 text-[10.5px] text-tx2">
+      <span className="w-[52px] shrink-0 text-tx3">{label}</span>
+      <span className="font-mono">{clockLabel(h.median ?? 0)}</span>
+      <span className="ml-auto font-mono text-[10px] text-tx3">
+        ±{h.iqr ?? 0} хв · {h.n}
+      </span>
+    </div>
+  );
+}
+
+/** Перша половина вікна проти другої: медіана й розкид окремо. */
+function RhythmDrift({ drift }: { drift: NonNullable<Stats['openRhythm']['drift']> }) {
+  const { early, late } = drift;
+  const dIqr = (late.iqr ?? 0) - (early.iqr ?? 0);
+  const dMed = (late.median ?? 0) - (early.median ?? 0);
+  // Поріг у хвилинах, нижче якого різницю не називаємо зміною: 10 хв на
+  // розкиді — це шум одного пізнього ранку, а не звичка.
+  const NOISE = 10;
+  const verdict =
+    dIqr <= -NOISE
+      ? { text: 'ритм затискається', color: 'var(--color-pos)' }
+      : dIqr >= NOISE
+        ? { text: 'ритм розпливається', color: 'var(--color-neg)' }
+        : { text: 'розкид тримається', color: 'var(--color-tx3)' };
+  return (
+    <div className="flex flex-col gap-1 rounded-xl border border-glassb bg-glass px-2.5 py-2">
+      <HalfRow label="раніше" h={early} />
+      <HalfRow label="тепер" h={late} />
+      <div className="mt-0.5 border-t border-glassb pt-1 text-[10.5px]" style={{ color: verdict.color }}>
+        {verdict.text}
+        <span className="ml-1 font-mono text-[9.5px] text-tx3">
+          розкид {dIqr > 0 ? '+' : ''}
+          {dIqr} хв · час {dMed > 0 ? '+' : ''}
+          {dMed} хв
+        </span>
       </div>
     </div>
   );

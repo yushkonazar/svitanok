@@ -180,3 +180,45 @@ describe('openRhythm — ритуал міряється по СВІЖИХ до�
     expect(aggregateStats(store([10, 20]), TODAY).openRhythm.ready).toBe(false);
   });
 });
+
+/* Дрейф ритуалу: перша половина вікна проти другої.
+ *
+ * ⚠️ Заради ЦЬОГО блок і існує. Коробка з вусами описує вікно ЦІЛКОМ, тобто
+ * каже «як було загалом» — але блок обіцяє відповісти на «наскільки це ВЖЕ
+ * ритуал», а ритуал це процес: розкид, який падає, і розкид, який стоїть,
+ * дають ту саму коробку. Різницю видно лише в порівнянні половин. */
+describe('openRhythm — чи затискається ритм', () => {
+  const store = (mins: number[]) => ({ ...emptyStore(), opensMin: mins });
+
+  it('розкид упав -> late.iqr помітно менший за early.iqr', () => {
+    // 20 хаотичних записів, далі 20 майже однакових.
+    const chaos = Array.from({ length: 20 }, (_, i) => (i % 2 ? 0 : 240));
+    const tight = Array.from({ length: 20 }, (_, i) => 60 + (i % 2));
+    const d = aggregateStats(store([...chaos, ...tight]), TODAY).openRhythm.drift;
+    expect(d).not.toBeNull();
+    expect(d.early.iqr).toBeGreaterThan(100);
+    expect(d.late.iqr).toBeLessThan(5);
+  });
+
+  it('половини рівні -> обидва розкиди однакові, висновку про зміну немає', () => {
+    const mins = Array.from({ length: 40 }, (_, i) => (i % 2 ? 30 : 90));
+    const d = aggregateStats(store(mins), TODAY).openRhythm.drift;
+    expect(d.early.iqr).toBe(d.late.iqr);
+  });
+
+  /* Гейт на КОЖНУ половину окремо. «Замало для порівняння» і «розкид не
+     змінився» — різні відповіді, і сплутати їх тут найлегше: нуль різниці
+     виглядає як стабільність. */
+  it('половини коротшої за гейт -> drift = null, а не нульова різниця', () => {
+    const mins = Array.from({ length: 10 }, () => 60); // half = 5 < 8
+    expect(aggregateStats(store(mins), TODAY).openRhythm.drift).toBeNull();
+  });
+
+  it('половини рахуються за ПОРЯДКОМ записів, а не за значенням', () => {
+    // Якби ділили відсортований ряд, «раніше» завжди було б меншим за «тепер».
+    const mins = [...Array(20).fill(200), ...Array(20).fill(10)];
+    const d = aggregateStats(store(mins), TODAY).openRhythm.drift;
+    expect(d.early.median).toBe(200);
+    expect(d.late.median).toBe(10);
+  });
+});
