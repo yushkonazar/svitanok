@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
+import { haptic } from '../../telegram.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, Hint } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
@@ -34,21 +36,38 @@ function Tile({
   emoji,
   label,
   note,
+  detail,
   gradient = false,
 }: {
   n: number;
   emoji?: string;
   label: string;
   note?: string;
+  /** Розбивка під тапом. Є — плитка стає кнопкою; немає — лишається текстом. */
+  detail?: React.ReactNode;
   gradient?: boolean;
 }) {
   // Стрік набігає від нуля (36px — рух видно здалеку). useInView — про запас.
   const [ref, inView] = useInView<HTMLDivElement>();
+  const [open, setOpen] = useState(false);
   const shown = useCountUp(n, inView);
+  // Плитка без розбивки лишається <div>: кнопка, що нічого не робить, гірша за
+  // її відсутність — читач екрана оголосить її як інтерактивну.
+  const Tag = detail ? 'button' : 'div';
   return (
-    <div
-      ref={ref}
-      className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5"
+    <Tag
+      ref={ref as React.Ref<HTMLDivElement & HTMLButtonElement>}
+      {...(detail
+        ? {
+            type: 'button' as const,
+            'aria-expanded': open,
+            onClick: () => {
+              haptic('light');
+              setOpen((v) => !v);
+            },
+          }
+        : {})}
+      className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5 text-left"
     >
       <div className="flex items-baseline gap-1.5">
         <span
@@ -70,7 +89,12 @@ function Tile({
       </div>
       <span className="text-[10.5px] font-medium leading-[1.3] text-tx2">{label}</span>
       {note && <span className="font-mono text-[10px] font-semibold text-tx3">{note}</span>}
-    </div>
+      {detail && open && (
+        <span className="mt-1 border-t border-glassb pt-1 font-mono text-[9.5px] leading-[1.4] text-tx3">
+          {detail}
+        </span>
+      )}
+    </Tag>
   );
 }
 
@@ -100,10 +124,23 @@ export function HabitsBlock({ s }: { s: Stats }) {
   const prior = hw.length >= 8 ? rate(hw.slice(-8, -4)) : null;
   const delta = recent !== null && prior !== null ? Math.round((recent - prior) * 100) : null;
 
-  // Охоплення рахуємо з heatmap: там уже лежить кожна доба вікна (v>0 = день
-  // із дією), тож нове поле в API для цього не потрібне.
+  // Охоплення рахуємо з heatmap: там уже лежить кожна доба вікна, тож нове
+  // поле в API для цього не потрібне.
+  //
+  // ⚠️ ПРЕДИКАТ — c.o > 0 («відкривав»), а НЕ c.v > 0 (opens+mock+news).
+  // Доти в одному ряду стояли два лічильники з РІЗНИМИ дефініціями активності:
+  // стрік ліворуч рахував відкриття, а цей — будь-яку з трьох подій, і ніщо про
+  // це не казало. Два числа поруч читаються як одна величина, тож розбіжність
+  // була невидимою за побудовою.
+  //
+  // Зведено до відкриттів, бо саме це людина розуміє під «активним днем», і
+  // саме цим міряється сусідній стрік. Питання й новини без відкриття
+  // застосунку однаково не трапляються — обидві події шле лише Mini App, яка
+  // на кожному завантаженні шле ще й `open`.
   const totalDays = s.heatmap.length;
-  const activeDays = s.heatmap.filter((c) => c.v > 0).length;
+  const openedDays = s.heatmap.filter((c) => c.o > 0).length;
+  const daysWithMock = s.heatmap.filter((c) => c.m > 0).length;
+  const daysWithNews = s.heatmap.filter((c) => c.n > 0).length;
 
   const flames = s.flameStats;
 
@@ -160,9 +197,12 @@ export function HabitsBlock({ s }: { s: Stats }) {
             <HabitTrend weeks={hw} />
           </div>
           <Hint>
-            Висота стовпця — скільки дій зробив за тиждень відносно найактивнішого з показаних.
-            Кольори всередині — з чого та активність складалась. Тапни на тиждень, щоб побачити
-            числа (і скільки діб тижня був активним).
+            Два питання в одній картці, кожне у своїй геометрії. Стовпець — ОБСЯГ дій за тиждень
+            відносно найактивнішого з показаних, кольори всередині — з чого він складався. Смуга
+            під стовпцем — ПОКРИТТЯ: скільки діб тижня взагалі були активні. Розділені навмисно:
+            два тижні з покриттям 5/5 однакові за покриттям, але можуть різнитись обсягом утричі,
+            і однією висотою це не показати. Тапни на тиждень — покаже склад і порівняння з
+            попереднім.
           </Hint>
         </Card>
       )}
@@ -182,9 +222,18 @@ export function HabitsBlock({ s }: { s: Stats }) {
           note={has(s.streaks.bestOpenDays) ? `РЕКОРД ${best}` : undefined}
         />
         <Tile
-          n={activeDays}
-          label={`активних діб із ${totalDays}`}
-          note={totalDays > 0 ? `${Math.round((activeDays / totalDays) * 100)}% ЧАСУ` : undefined}
+          n={openedDays}
+          label={`діб відкривав із ${totalDays}`}
+          note={
+            totalDays > 0 ? `${Math.round((openedDays / totalDays) * 100)}% ВІД ПЕРШОГО ЗАПИСУ` : undefined
+          }
+          detail={
+            openedDays > 0 ? (
+              <>
+                з них із питаннями {daysWithMock} · з новинами {daysWithNews}
+              </>
+            ) : undefined
+          }
         />
       </div>
 
