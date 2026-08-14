@@ -147,7 +147,16 @@ export function CheckinBlock({ s }: { s: Stats }) {
   const filledDays = series.length;
   const [detailsOpen, setDetailsOpen] = useState(false);
 
-  if (!filledDays && model.n === 0) {
+  // ⚠️ Гейт БЕЗ model.n, і це виправлення, а не спрощення. `model.n` — це
+  // довжина плаского масиву, який buildCheckinModel будує ЗАВЖДИ на повні 90
+  // ітерацій, вставляючи порожні доби. Тобто воно дорівнює вікну, а не
+  // кількості заповнених діб, і `model.n === 0` було ІСТИННЕ лише тоді, коли
+  // сервер узагалі не віддав поле (застарілий воркер -> zod-дефолт).
+  //
+  // Наслідок: абсолютно новий користувач НІКОЛИ не бачив цієї заглушки —
+  // натомість йому рендерилась секція з порожньою картою станів. Заповнених діб
+  // достатньо як єдиної умови: немає жодної — показувати нічого.
+  if (!filledDays) {
     return (
       <div className="flex flex-col gap-3">
         <SectionHead>Чек-ін</SectionHead>
@@ -308,12 +317,17 @@ export function CheckinBlock({ s }: { s: Stats }) {
               той самий звʼязок двічі, причому слабшою математикою.
               Що лишилось тут — рівно те, чого модель НЕ бачить. */}
 
-          <Card>
-            <SubLabel>ЯВКА ПО СЛОТАХ · {daysWindowLabel(fill.days)}</SubLabel>
-            <div className="mt-2">
-              <FillBars fill={fill} />
-            </div>
-          </Card>
+          {/* Гейта не було зовсім: при трьох нулях картка малювала три порожні
+              стовпчики, а «найслабший слот» вибирався довільно між ними —
+              підсвічений червоним нуль там, де слотів просто ще не було. */}
+          {fill.morning + fill.afternoon + fill.evening > 0 && (
+            <Card>
+              <SubLabel>ЯВКА ПО СЛОТАХ · {daysWindowLabel(fill.days)}</SubLabel>
+              <div className="mt-2">
+                <FillBars fill={fill} />
+              </div>
+            </Card>
+          )}
 
           {/* blocker/helper — мультивибір, їх немає в реєстрі моделі за
               побудовою. Доти показувалась лише мода (одне значення), тепер —
