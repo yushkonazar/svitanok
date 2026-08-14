@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
+import { haptic } from '../../telegram.ts';
 import { clamp, has } from '../../lib/format.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Hint } from '../ui/primitives.tsx';
@@ -47,17 +49,21 @@ function ConversionRow({
   pct,
   num,
   den,
+  jobs,
 }: {
   label: string;
   pct: number | null | undefined;
   num: number;
   den: number;
+  /** Вакансії, що ЗАРАЗ стоять на цільовій стадії — розкриваються тапом. */
+  jobs?: Stats['funnelList'];
 }) {
+  const [open, setOpen] = useState(false);
   if (den <= 0) {
     return <StatRow label={label} value={<span className="font-normal text-tx3">ще не було</span>} />;
   }
   if (!has(pct)) return null;
-  return (
+  const row = (
     <StatRow
       label={label}
       value={
@@ -69,6 +75,37 @@ function ConversionRow({
         </>
       }
     />
+  );
+  // ⚠️ Відсоток без імен — це число, з якого нічого не зробиш. Тап показує
+  // КОНКРЕТНІ вакансії на цільовій стадії, тобто перетворює звіт на список.
+  // Дані вже на клієнті (funnelList), тобто бракувало не інформації, а місця.
+  if (!jobs || jobs.length === 0) return row;
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => {
+          haptic('light');
+          setOpen((v) => !v);
+        }}
+        className="text-left"
+      >
+        {row}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-0.5 rounded-xl border border-glassb bg-glass px-2.5 py-1.5">
+          {jobs.slice(0, 5).map((j) => (
+            <span key={j.url} className="truncate text-[10.5px] text-tx2">
+              {j.title || j.url}
+            </span>
+          ))}
+          {jobs.length > 5 && (
+            <span className="font-mono text-[9.5px] text-tx3">…ще {jobs.length - 5}</span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -94,12 +131,14 @@ export function RhythmBlock({ s }: { s: Stats }) {
           pct={s.conversion.appliedToInterview}
           num={s.reached.interview}
           den={s.reached.applied}
+          jobs={s.funnelList.filter((j) => j.stage === 'interview')}
         />
         <ConversionRow
           label="Співбесіда → офер"
           pct={s.conversion.interviewToOffer}
           num={s.reached.offer}
           den={s.reached.interview}
+          jobs={s.funnelList.filter((j) => j.stage === 'offer')}
         />
         {(s.funnel.rejected > 0 || s.funnel.failed > 0) && (
           <StatRow

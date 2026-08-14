@@ -1323,13 +1323,14 @@ function percentile(sorted, p) {
  * Вуса — p10/p90, а не min/max: одна ніч, коли відкрив о 23:00, розтягнула б
  * шкалу так, що коробка стала б невидимою смужкою.
  */
+/** Мінімум записів на половину, щоб порівнювати «раніше» з «тепер». */
+const RHYTHM_HALF_MIN = 8;
+
 function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
   // slice ДО фільтра: вікно рахується в записах журналу, а не у валідних
   // значеннях — інакше пачка битих записів мовчки розтягнула б період.
-  const xs = opensMin
-    .slice(-days)
-    .filter((v) => typeof v === 'number' && v >= 0)
-    .sort((a, b) => a - b);
+  const win = opensMin.slice(-days).filter((v) => typeof v === 'number' && v >= 0);
+  const xs = [...win].sort((a, b) => a - b);
   if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
   const q1 = percentile(xs, 0.25);
   const q3 = percentile(xs, 0.75);
@@ -1343,7 +1344,30 @@ function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
     p90: percentile(xs, 0.9),
     // Розкид середньої половини діб — і є «наскільки це ритуал».
     iqr: q3 - q1,
+    // ⚠️ ДРЕЙФ — відповідь на питання, заради якого блок існує: «наскільки це
+    // ВЖЕ ритуал». Сама коробка описує вікно цілком, тобто каже, як було
+    // загалом, — але не каже, чи звичка ЗАТИСКАЄТЬСЯ. Тому вікно ділиться
+    // навпіл по ПОРЯДКУ ЗАПИСІВ (win, не відсортований xs) і кожна половина
+    // отримує свої медіану й розкид.
+    //
+    // Гейт на кожну половину окремо: 8 записів — та сама межа, що в решті
+    // порівнянь чек-іну. Нижче — null, а не «розкид не змінився»: відсутність
+    // порівняння й висновок «стабільно» тут найлегше сплутати.
+    drift: driftHalves(win),
   };
+}
+
+/** Медіана й розкид у першій та другій половині вікна (за порядком записів). */
+function driftHalves(win) {
+  const half = Math.floor(win.length / 2);
+  if (half < RHYTHM_HALF_MIN) return null;
+  const box = (arr) => {
+    const s = [...arr].sort((a, b) => a - b);
+    const a = percentile(s, 0.25);
+    const b = percentile(s, 0.75);
+    return { n: s.length, median: percentile(s, 0.5), iqr: b - a };
+  };
+  return { early: box(win.slice(0, half)), late: box(win.slice(-half)) };
 }
 
 /**

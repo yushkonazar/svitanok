@@ -267,7 +267,19 @@ export const SAMPLE_STATS: Stats = {
   streaks: { openDays: 5, bestOpenDays: 12, mockDays: 4 },
   timeToOpenMin: 23,
   // Розкид ±~35 хв навколо медіани — «ритуал, але не за будильником».
-  openRhythm: { ready: true, n: 46, p10: 2, q1: 12, median: 23, q3: 47, p90: 78, iqr: 35 },
+  openRhythm: {
+    ready: true,
+    n: 46,
+    p10: 2,
+    q1: 12,
+    median: 23,
+    q3: 47,
+    p90: 78,
+    iqr: 35,
+    // Демо показує ЗАТИСКАННЯ ритуалу: розкид упав удвічі, медіана трохи
+    // зсунулась раніше. Рівні половини сховали б саму картку.
+    drift: { early: { n: 23, median: 31, iqr: 48 }, late: { n: 23, median: 20, iqr: 22 } },
+  },
   habitWeekly: sampleHabitWeekly(),
   flameStats: sampleFlameStats(),
   weekly: [
@@ -768,7 +780,7 @@ export const SAMPLE_STATS: Stats = {
 export const EMPTY_STATS: Stats = {
   streaks: { openDays: 0, mockDays: 0, bestOpenDays: 0 },
   timeToOpenMin: null,
-  openRhythm: { ready: false, n: 0, needed: 5 },
+  openRhythm: { ready: false, n: 0, needed: 5, drift: null },
   habitWeekly: [],
   flameStats: { tops: [], missedTops: [], activeNights: 0, streak: 0, best: 0, weekly: [] },
   weekly: [],
