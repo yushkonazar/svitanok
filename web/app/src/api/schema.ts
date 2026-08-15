@@ -83,6 +83,13 @@ export const heatmapCellSchema = z.object({
 });
 
 /** Розподіл часу першого відкриття — коробка з вусами (p10/q1/median/q3/p90). */
+/** Половина вікна ритуалу — для порівняння «раніше» проти «тепер». */
+const rhythmHalfSchema = z.object({
+  n: int.default(0),
+  median: num.nullable().default(null),
+  iqr: num.nullable().default(null),
+});
+
 export const openRhythmSchema = z.object({
   ready: z.boolean().default(false),
   n: int.default(0),
@@ -93,6 +100,8 @@ export const openRhythmSchema = z.object({
   q3: num.nullable().optional(),
   p90: num.nullable().optional(),
   iqr: num.nullable().optional(),
+  /** null — половин замало для порівняння. Це НЕ «розкид не змінився». */
+  drift: z.object({ early: rhythmHalfSchema, late: rhythmHalfSchema }).nullable().default(null),
 });
 
 /** Тиждень звички: активні доби зі СПРАВЖНЬОГО знаменника + склад активності. */
@@ -249,7 +258,9 @@ export const checkinAfternoonSchema = z.object({
   mood: int.optional(),
   ate: multi(category),
   rushed: int.optional(),
-  withWhom: lenient(z.enum(['alone', 'family', 'friends', 'work', 'public', 'mixed'])),
+  withWhom: lenient(
+    z.enum(['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed']),
+  ),
   confirmed: z.boolean().optional(),
 });
 export const checkinEveningSchema = z.object({
@@ -378,11 +389,14 @@ export const sleepNightSchema = z.object({
 export const intentDriftSchema = z.object({
   days: int.default(0),
   total: int.default(0),
-  matched: int.default(0),
+  // ⚠️ `matched` більше немає: воно означало «збігся БОДАЙ ОДИН плановий
+  // пункт», тобто зараховувало добу цілком за половину зробленого. Замість
+  // нього два ЧЕСНІ лічильники — повністю й частково, — і pct як СЕРЕДНЯ
+  // частка виконаного плану, а не частка «зарахованих» діб.
+  full: int.default(0),
+  partial: int.default(0),
   pct: num.nullable().default(null),
-  top: z
-    .array(z.object({ from: z.string(), to: z.string(), n: int }))
-    .default([]),
+  top: z.array(z.object({ from: z.string(), to: z.string(), n: int })).default([]),
 });
 export const checkinWeekSchema = z.object({
   week: z.string(),
@@ -485,7 +499,10 @@ export const socialContextSchema = z.object({
  *  «доби, що вже настали», що habitWeekSchema). */
 export const flameWeekSchema = z.object({
   week: z.string(),
+  /** Вечорів із ХОЧ ОДНИМ вогником. */
   active: int.default(0),
+  /** Вечорів, де горіли ВСІ пʼять — той самий предикат, що стрік повної рутини. */
+  full: int.default(0),
   days: int.default(0),
   constructive: int.default(0),
   consumptive: int.default(0),
@@ -716,7 +733,7 @@ export const statsSchema = z.object({
     aloneVsOthers: { ready: false, nAlone: 0, nOthers: 0 },
   }),
   checkinModel: checkinModelSchema.default(EMPTY_CHECKIN_MODEL),
-  openRhythm: openRhythmSchema.default({ ready: false, n: 0 }),
+  openRhythm: openRhythmSchema.default({ ready: false, n: 0, drift: null }),
   habitWeekly: z.array(habitWeekSchema).default([]),
   flameStats: flameStatsSchema.default({
     tops: [],
@@ -728,7 +745,7 @@ export const statsSchema = z.object({
   }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
-  intentDrift: intentDriftSchema.default({ days: 30, total: 0, matched: 0, pct: null, top: [] }),
+  intentDrift: intentDriftSchema.default({ days: 30, total: 0, full: 0, partial: 0, pct: null, top: [] }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;

@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
+import { haptic } from '../../telegram.ts';
 import { clamp, has } from '../../lib/format.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, StatRow, Hint } from '../ui/primitives.tsx';
@@ -31,6 +33,82 @@ const STAGE_SHORT: Record<string, string> = {
   interview: 'співбесіда',
 };
 
+/**
+ * Крок конверсії — з ЯВНИМ станом «знаменник порожній».
+ *
+ * ⚠️ Доти рядок показував «0%» і при нулі співбесід, і при нулі оферів із
+ * десяти співбесід: хвостик «x/y» ховався разом із знаменником, а сам нуль
+ * лишався. Тобто ВІДСУТНІСТЬ ДАНИХ виглядала точно як ПОГАНИЙ РЕЗУЛЬТАТ —
+ * найгірший різновид нуля, і рівно та помилка, яку в Майстерності вже
+ * виправили через easePct = null («не питали» ≠ «все складно»).
+ *
+ * Тепер порожній знаменник каже про себе словами, а відсоток не малюється.
+ */
+function ConversionRow({
+  label,
+  pct,
+  num,
+  den,
+  jobs,
+}: {
+  label: string;
+  pct: number | null | undefined;
+  num: number;
+  den: number;
+  /** Вакансії, що ЗАРАЗ стоять на цільовій стадії — розкриваються тапом. */
+  jobs?: Stats['funnelList'];
+}) {
+  const [open, setOpen] = useState(false);
+  if (den <= 0) {
+    return <StatRow label={label} value={<span className="font-normal text-tx3">ще не було</span>} />;
+  }
+  if (!has(pct)) return null;
+  const row = (
+    <StatRow
+      label={label}
+      value={
+        <>
+          {pct}%
+          <span className="ml-1.5 font-normal text-tx3">
+            {num}/{den}
+          </span>
+        </>
+      }
+    />
+  );
+  // ⚠️ Відсоток без імен — це число, з якого нічого не зробиш. Тап показує
+  // КОНКРЕТНІ вакансії на цільовій стадії, тобто перетворює звіт на список.
+  // Дані вже на клієнті (funnelList), тобто бракувало не інформації, а місця.
+  if (!jobs || jobs.length === 0) return row;
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => {
+          haptic('light');
+          setOpen((v) => !v);
+        }}
+        className="text-left"
+      >
+        {row}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-0.5 rounded-xl border border-glassb bg-glass px-2.5 py-1.5">
+          {jobs.slice(0, 5).map((j) => (
+            <span key={j.url} className="truncate text-[10.5px] text-tx2">
+              {j.title || j.url}
+            </span>
+          ))}
+          {jobs.length > 5 && (
+            <span className="font-mono text-[9.5px] text-tx3">…ще {jobs.length - 5}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RhythmBlock({ s }: { s: Stats }) {
   const speed = s.funnelSpeed;
   // Смуга цілі заповнюється, коли доїхала до екрана — той самий barFill, що
@@ -48,36 +126,20 @@ export function RhythmBlock({ s }: { s: Stats }) {
       <div className="flex flex-col gap-[9px]">
         {/* Конверсії з «дійшов до» (F1): знаменник — усі, хто КОЛИСЬ був на
             стадії, тож відмова його не зменшує. */}
-        {has(s.conversion.appliedToInterview) && (
-          <StatRow
-            label="Подав → співбесіда"
-            value={
-              <>
-                {s.conversion.appliedToInterview}%
-                {s.reached.applied > 0 && (
-                  <span className="ml-1.5 font-normal text-tx3">
-                    {s.reached.interview}/{s.reached.applied}
-                  </span>
-                )}
-              </>
-            }
-          />
-        )}
-        {has(s.conversion.interviewToOffer) && (
-          <StatRow
-            label="Співбесіда → офер"
-            value={
-              <>
-                {s.conversion.interviewToOffer}%
-                {s.reached.interview > 0 && (
-                  <span className="ml-1.5 font-normal text-tx3">
-                    {s.reached.offer}/{s.reached.interview}
-                  </span>
-                )}
-              </>
-            }
-          />
-        )}
+        <ConversionRow
+          label="Подав → співбесіда"
+          pct={s.conversion.appliedToInterview}
+          num={s.reached.interview}
+          den={s.reached.applied}
+          jobs={s.funnelList.filter((j) => j.stage === 'interview')}
+        />
+        <ConversionRow
+          label="Співбесіда → офер"
+          pct={s.conversion.interviewToOffer}
+          num={s.reached.offer}
+          den={s.reached.interview}
+          jobs={s.funnelList.filter((j) => j.stage === 'offer')}
+        />
         {(s.funnel.rejected > 0 || s.funnel.failed > 0) && (
           <StatRow
             label="Закрито (відмова / провал)"

@@ -843,8 +843,17 @@ export function analyzeCheckinModel(days) {
 
 /**
  * checkins[dateKey] (реальна форма сховища) -> плоский день для моделі.
- * intentMatch — ЄДИНЕ похідне поле: план (ранок) влучив бодай у щось із того,
- * що реально зайняло час (день) — той самий критерій, що вже buildIntentDrift.
+ * intentMatch — ЄДИНЕ похідне поле: ЧАСТКА планового, що справді зайняла час.
+ *
+ * ⚠️ Доти був критерій «влучив бодай у щось» (plan.some(p => ate.includes(p))),
+ * і це систематично завищувало AGENCY. План [робота, спорт], факт [спорт,
+ * відпочинок] -> повна одиниця, хоч робота не сталась. Тобто що більше
+ * категорій обираєш уранці, то легше «виконати план»: при двох пунктах досить
+ * влучити в один. Той самий критерій ішов і в картку «План проти реальності»,
+ * тож обидва місця брехали однаково — і саме тому виправляються разом.
+ *
+ * Частка |plan ∩ ate| / |plan| відповідає на те саме питання чесно, і span
+ * поля [0,1] під неї вже був: міняється не контракт, а чим його заповнюють.
  */
 export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const m = rec?.morning ?? {};
@@ -853,7 +862,7 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const plan = asListFn(m.plan).filter((x) => categoryValues.includes(x));
   const ate = asListFn(a.ate).filter((x) => categoryValues.includes(x));
   const intentMatch =
-    plan.length && ate.length ? (plan.some((p) => ate.includes(p)) ? 1 : 0) : null;
+    plan.length && ate.length ? plan.filter((p) => ate.includes(p)).length / plan.length : null;
   return {
     sleepH: m.sleepH ?? null,
     sleepQ: m.sleepQ ?? null,

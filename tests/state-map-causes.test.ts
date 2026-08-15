@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { factsOf, cellDetail, CAUSE_MIN_N } from '../web/app/src/lib/stateMap.ts';
+import { factsOf, cellDetail, CAUSE_MIN_N, DAY_SCORE_MIN_N } from '../web/app/src/lib/stateMap.ts';
 import type { CheckinRaw, CheckinDay } from '../web/app/src/api/schema.ts';
 
 // Деталі клітинки карти станів: які саме це були доби й що в них було.
@@ -239,6 +239,39 @@ describe('cellDetail — оцінка дня як окреме число', () =
     const r = raw({
       ...nights(10, { energy: 1, mood: 1 }, 1),
       ...nights(10, { energy: 5, mood: 5 }, 11),
+    });
+    expect(cellDetail(r, 'evening', { energy: 1, mood: 1 }).dayScore).toBeNull();
+  });
+
+  // ⚠️ Доти гейта тут не було ВЗАГАЛІ — єдине таке місце в блоці. Одна доба
+  // давала впевнене «2 проти 4», ще й розфарбоване в червоний, тобто читалось
+  // як висновок. «Оцінка ТАКИХ ДНІВ» із одного дня — це оцінка одного дня.
+  it('менше DAY_SCORE_MIN_N діб у клітинці -> порівняння з нормою немає', () => {
+    const r = raw({
+      ...nights(DAY_SCORE_MIN_N - 1, { energy: 1, mood: 1, dayScore: 2 }, 1),
+      ...nights(10, { energy: 5, mood: 5, dayScore: 4 }, 11),
+    });
+    expect(cellDetail(r, 'evening', { energy: 1, mood: 1 }).dayScore).toBeNull();
+  });
+
+  it('рівно DAY_SCORE_MIN_N діб — уже показуємо, з розміром вибірки', () => {
+    const r = raw({
+      ...nights(DAY_SCORE_MIN_N, { energy: 1, mood: 1, dayScore: 2 }, 1),
+      ...nights(10, { energy: 5, mood: 5, dayScore: 4 }, 11),
+    });
+    expect(cellDetail(r, 'evening', { energy: 1, mood: 1 }).dayScore).toEqual({
+      avg: 2,
+      base: 4,
+      n: DAY_SCORE_MIN_N,
+    });
+  });
+
+  // Норма з однієї доби так само не норма, як і середнє з однієї — тому гейт
+  // стоїть на ОБОХ боках, а не лише на клітинці.
+  it('замало діб У РЕШТІ вибірки -> норми немає, отже й порівняння', () => {
+    const r = raw({
+      ...nights(10, { energy: 1, mood: 1, dayScore: 2 }, 1),
+      ...nights(DAY_SCORE_MIN_N - 1, { energy: 5, mood: 5, dayScore: 4 }, 11),
     });
     expect(cellDetail(r, 'evening', { energy: 1, mood: 1 }).dayScore).toBeNull();
   });

@@ -604,7 +604,7 @@ describe('чек-ін — мультивибір (plan/ate/blocker/helper)', () 
 });
 
 describe('чек-ін — дрейф наміру (plan -> ate, на вже зібраних даних)', () => {
-  it('збіг хоч по одній категорії = дотримано; розбіжність дає пару', () => {
+  it('повний збіг і повна розбіжність: 100% і 0%, пара з розбіжної доби', () => {
     let s = emptyStore();
     s = recordEvent(s, ck('morning', { plan: ['work'] }), '2026-07-15');
     s = recordEvent(s, ck('afternoon', { ate: ['work'] }), '2026-07-15');
@@ -612,9 +612,49 @@ describe('чек-ін — дрейф наміру (plan -> ate, на вже зі
     s = recordEvent(s, ck('afternoon', { ate: ['chores'] }), '2026-07-16');
     const dr = aggregateStats(s, '2026-07-16').intentDrift;
     expect(dr.total).toBe(2);
-    expect(dr.matched).toBe(1);
-    expect(dr.pct).toBe(50);
-    expect(dr.top).toEqual([{ from: 'learn', to: 'chores', n: 1 }]);
+    expect(dr.full).toBe(1);
+    expect(dr.partial).toBe(0);
+    expect(dr.pct).toBe(50); // (1 + 0) / 2
+    // Одна пара, один раз -> нижче DRIFT_PAIR_MIN_N, у топ не йде.
+    expect(dr.top).toEqual([]);
+  });
+
+  /* ⚠️ РЕГРЕСІЯ, заради якої цей опис і переписаний. Доти критерієм було
+     plan.some(p => ate.includes(p)) — «влучив бодай у щось». Доба з планом
+     [робота, спорт] і фактом [спорт, відпочинок] зараховувалась ПОВНІСТЮ, хоч
+     робота не сталась. Наслідок системний: що більше категорій обираєш уранці,
+     то вищий відсоток — при двох пунктах досить влучити в один.
+
+     Той самий критерій успадковував intentMatch у моделі, тобто завищувався не
+     лише цей блок, а й індекс AGENCY і через нього «Індекс дня». */
+  it('ЧАСТКОВИЙ збіг дає ЧАСТКУ, а не повний залік', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { plan: ['work', 'sport'] }), '2026-07-16');
+    s = recordEvent(s, ck('afternoon', { ate: ['sport', 'rest'] }), '2026-07-16');
+    const dr = aggregateStats(s, '2026-07-16').intentDrift;
+    expect(dr.total).toBe(1);
+    expect(dr.full).toBe(0);
+    expect(dr.partial).toBe(1);
+    expect(dr.pct).toBe(50); // один плановий пункт із двох
+  });
+
+  it('пара будується з НЕВИКОНАНОГО плану проти НЕЗАПЛАНОВАНОГО факту', () => {
+    let s = emptyStore();
+    // Дві однакові часткові доби: 'work' не сталась, натомість 'rest'.
+    // 'sport' збігся — у пари не йде, бо збіг нічого не пояснює.
+    for (const d of ['2026-07-15', '2026-07-16']) {
+      s = recordEvent(s, ck('morning', { plan: ['work', 'sport'] }), d);
+      s = recordEvent(s, ck('afternoon', { ate: ['sport', 'rest'] }), d);
+    }
+    const dr = aggregateStats(s, '2026-07-16').intentDrift;
+    expect(dr.top).toEqual([{ from: 'work', to: 'rest', n: 2 }]);
+  });
+
+  it('пара, що трапилась ОДИН раз, у топ не потрапляє', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { plan: ['work'] }), '2026-07-16');
+    s = recordEvent(s, ck('afternoon', { ate: ['rest'] }), '2026-07-16');
+    expect(aggregateStats(s, '2026-07-16').intentDrift.top).toEqual([]);
   });
 
   it('доба без плану АБО без факту у знаменник не входить', () => {
@@ -972,6 +1012,32 @@ describe('aggregateStats — вогники (flames, evening)', () => {
     const f = aggregateStats(s, '2026-07-13').flameStats;
     expect(f.streak).toBe(1); // лише 13-те — 12-те не повне
     expect(f.best).toBe(2); // 10-11
+  });
+
+  /* ⚠️ ДВА ПРЕДИКАТИ В ОДНІЙ КАРТЦІ — саме те, що робило блок незрозумілим.
+     Графік малював «хоч один вогник», стрік поруч вимагав УСІ ПʼЯТЬ: графік
+     показував «майже завжди повно», стрік показував нуль, і обидва були праві.
+     Тепер обидва лічильники їдуть у payload по тижнях, щоб екран міг показати
+     різницю явно, а не лишати один із них невидимим. */
+  it('weekly: active («хоч один») і full («всі пʼять») — різні числа того самого тижня', () => {
+    let s = emptyStore();
+    const all5 = ['tiktok', 'duolingo', 'snapchat', 'bereal', 'chess'];
+    s = recordEvent(s, ck('evening', { flames: all5 }), '2026-07-06');
+    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-07');
+    s = recordEvent(s, ck('evening', { flames: ['chess', 'tiktok'] }), '2026-07-08');
+    const w = aggregateStats(s, '2026-07-08').flameStats.weekly;
+    const cur = w[w.length - 1]!;
+    expect(cur.active).toBe(3); // три вечори з хоч одним
+    expect(cur.full).toBe(1); // і лише один повний
+  });
+
+  it('weekly.full = 0, коли жодного повного вечора — це нуль, а не відсутність', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-06');
+    const w = aggregateStats(s, '2026-07-06').flameStats.weekly;
+    const cur = w[w.length - 1]!;
+    expect(cur.active).toBe(1);
+    expect(cur.full).toBe(0);
   });
 
   it('missedTops: лічильник ПРОПУЩЕНОГО, лише на добах з вечірнім чек-іном (не порожня історія)', () => {

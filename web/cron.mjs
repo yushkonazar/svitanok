@@ -34,7 +34,14 @@ import {
   SLEEP_NUDGE_TEXT,
 } from './stats-core.mjs';
 import { themeOfWeek } from './mastery-core.mjs';
-import { monthlyRollup, mergeArchive, ARCHIVE_KEY } from './stats-archive.mjs';
+import {
+  monthlyRollup,
+  mergeArchive,
+  ARCHIVE_KEY,
+  weeklyRollup,
+  mergeWeekly,
+  WEEKLY_ARCHIVE_KEY,
+} from './stats-archive.mjs';
 import { isQuietMinute } from './settings-core.mjs';
 import { shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
@@ -295,22 +302,31 @@ export async function archiveMonthly(env) {
   try {
     const store = await loadStats(env);
     const today = kyivDateKey();
-    const fresh = monthlyRollup(store, today);
-    if (!Object.keys(fresh).length) return;
-    const prev = await readArchive(env);
-    const merged = mergeArchive(prev, fresh, today);
-    const next = JSON.stringify(merged);
-    if (next === JSON.stringify(prev)) return;
-    await env.BRIEFING.put(ARCHIVE_KEY, next);
+    // ⚠️ ОДИН прогін — ДВА рівні. Стор читається один раз: тижнева згортка
+    // працює на тих самих даних, і другий loadStats був би зайвим читанням KV
+    // заради того самого обʼєкта.
+    await writeRollup(env, ARCHIVE_KEY, monthlyRollup(store, today), mergeArchive, today);
+    await writeRollup(env, WEEKLY_ARCHIVE_KEY, weeklyRollup(store, today), mergeWeekly, today);
   } catch (e) {
     console.error('archiveMonthly failed', e); // не блокує решту крону
   }
 }
 
+/** Прочитати-злити-записати один рівень архіву. No-op, якщо нічого не змінилось:
+ *  зайвий read-modify-write — дармове вікно клобберу. */
+async function writeRollup(env, key, fresh, merge, today) {
+  if (!Object.keys(fresh).length) return;
+  const prev = await readArchive(env, key);
+  const merged = merge(prev, fresh, today);
+  const next = JSON.stringify(merged);
+  if (next === JSON.stringify(prev)) return;
+  await env.BRIEFING.put(key, next);
+}
+
 /** Архів; биття -> порожньо (краще дописати заново, ніж упасти). */
-async function readArchive(env) {
+async function readArchive(env, key = ARCHIVE_KEY) {
   try {
-    const raw = await env.BRIEFING.get(ARCHIVE_KEY);
+    const raw = await env.BRIEFING.get(key);
     const parsed = JSON.parse(raw ?? 'null');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {

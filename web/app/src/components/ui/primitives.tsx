@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
+import { haptic } from '../../telegram.ts';
 
 // Спільні примітиви (дизайн v2, Svitanok.dc.html).
 
@@ -59,13 +60,64 @@ export function Ph({ children }: { children: ReactNode }) {
 }
 
 /**
+ * Повідомлення про СТАН картки: «ще рано», «зараз місяців 1», «замало
+ * переходів».
+ *
+ * ⚠️ Виглядає як Hint, але НЕ ховається — і це головне, заради чого воно
+ * окремо. Hint пояснює, ЯК читати те, що намальовано; Note відповідає на
+ * «чому тут порожньо». Сховати другий за кнопкою означає лишити людину перед
+ * порожньою карткою без жодного натяку, що робити.
+ */
+export function Note({ children }: { children: ReactNode }) {
+  return <div className="mt-2 text-[10.5px] leading-[1.5] text-tx3">{children}</div>;
+}
+
+/**
  * Пояснення внизу картки: «що я зараз бачу і як це читати».
  *
  * Окремий примітив, а не просто <div>: графіки статистики стали щільними
  * (матриця станів, радари архетипів, ефект-сайзи), і без однакового,
  * ПЕРЕДБАЧУВАНО РОЗТАШОВАНОГО підпису кожна картка вимагає здогадки. Один
  * стиль на всі — щоб око вчилося шукати пояснення в одному місці.
+ *
+ * ⚠️ ЗГОРНУТЕ ЗА ЗАМОВЧУВАННЯМ. Підказка потрібна ОДИН раз — коли вчишся
+ * читати блок; далі вона щодня забирає висоту й розсіює увагу від самих
+ * чисел. Але й прибрати її не можна: без неї половина екрана нечитабельна
+ * (ρ, d, «витримує поправку»). Тому кнопка, а не видалення.
+ *
+ * Правиться САМЕ ТУТ, а не в 28 місцях виклику: одна поведінка й один вигляд
+ * на всі графіки — вимога, а не збіг. Нова картка отримує це безкоштовно.
+ *
+ * ⚠️ Стан НЕ зберігається між сесіями свідомо. Інакше через пів року екран
+ * мовчки лишиться без пояснень, і «а де воно було» не матиме відповіді.
  */
 export function Hint({ children }: { children: ReactNode }) {
-  return <div className="mt-2 text-[10px] leading-[1.45] text-tx3">{children}</div>;
+  const [open, setOpen] = useState(false);
+  // useId, а не лічильник: aria-controls мусить бути унікальним на сторінці,
+  // а підказок на екрані статистики під три десятки.
+  const bodyId = useId();
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => {
+          haptic('light');
+          setOpen((v) => !v);
+        }}
+        className="flex items-center gap-1 rounded-full border border-glassb bg-glass px-2 py-[3px] font-mono text-[9px] font-semibold tracking-[0.06em] text-tx3"
+      >
+        {/* Знак — декор: сенс кнопки несе слово поруч, тож читачеві екрана
+            «?» не потрібне (інакше він озвучив би «знак питання Пояснення»). */}
+        <span aria-hidden="true">?</span>
+        <span>{open ? 'ЗГОРНУТИ' : 'ПОЯСНЕННЯ'}</span>
+      </button>
+      {open && (
+        <div id={bodyId} className="mt-1.5 text-[10px] leading-[1.45] text-tx3">
+          {children}
+        </div>
+      )}
+    </div>
+  );
 }

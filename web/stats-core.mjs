@@ -216,7 +216,10 @@ export const CHECKIN_FIELDS = {
     mood: { num: [1, 5], int: true },
     ate: { enumMulti: CATEGORY_VALUES, max: 2 },
     rushed: { num: [1, 5], int: true },
-    withWhom: { enum: ['alone', 'family', 'friends', 'work', 'public', 'mixed'] },
+    // ⚠️ Пари з questions.ts: значення, яке збирає чек-ін, але якого немає
+    // тут, нормалізується в null і ТИХО вибиває поле (так було з moved:'active',
+    // баг B5). CI-assert «enum ⊆ levels» стереже саме цю пару.
+    withWhom: { enum: ['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed'] },
   },
   evening: {
     dayScore: { num: [1, 5], int: true },
@@ -1320,13 +1323,14 @@ function percentile(sorted, p) {
  * Вуса — p10/p90, а не min/max: одна ніч, коли відкрив о 23:00, розтягнула б
  * шкалу так, що коробка стала б невидимою смужкою.
  */
+/** Мінімум записів на половину, щоб порівнювати «раніше» з «тепер». */
+const RHYTHM_HALF_MIN = 8;
+
 function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
   // slice ДО фільтра: вікно рахується в записах журналу, а не у валідних
   // значеннях — інакше пачка битих записів мовчки розтягнула б період.
-  const xs = opensMin
-    .slice(-days)
-    .filter((v) => typeof v === 'number' && v >= 0)
-    .sort((a, b) => a - b);
+  const win = opensMin.slice(-days).filter((v) => typeof v === 'number' && v >= 0);
+  const xs = [...win].sort((a, b) => a - b);
   if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
   const q1 = percentile(xs, 0.25);
   const q3 = percentile(xs, 0.75);
@@ -1340,7 +1344,30 @@ function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
     p90: percentile(xs, 0.9),
     // Розкид середньої половини діб — і є «наскільки це ритуал».
     iqr: q3 - q1,
+    // ⚠️ ДРЕЙФ — відповідь на питання, заради якого блок існує: «наскільки це
+    // ВЖЕ ритуал». Сама коробка описує вікно цілком, тобто каже, як було
+    // загалом, — але не каже, чи звичка ЗАТИСКАЄТЬСЯ. Тому вікно ділиться
+    // навпіл по ПОРЯДКУ ЗАПИСІВ (win, не відсортований xs) і кожна половина
+    // отримує свої медіану й розкид.
+    //
+    // Гейт на кожну половину окремо: 8 записів — та сама межа, що в решті
+    // порівнянь чек-іну. Нижче — null, а не «розкид не змінився»: відсутність
+    // порівняння й висновок «стабільно» тут найлегше сплутати.
+    drift: driftHalves(win),
   };
+}
+
+/** Медіана й розкид у першій та другій половині вікна (за порядком записів). */
+function driftHalves(win) {
+  const half = Math.floor(win.length / 2);
+  if (half < RHYTHM_HALF_MIN) return null;
+  const box = (arr) => {
+    const s = [...arr].sort((a, b) => a - b);
+    const a = percentile(s, 0.25);
+    const b = percentile(s, 0.75);
+    return { n: s.length, median: percentile(s, 0.5), iqr: b - a };
+  };
+  return { early: box(win.slice(0, half)), late: box(win.slice(-half)) };
 }
 
 /**
@@ -1405,8 +1432,13 @@ function buildHabitWeekly(days, todayKey) {
  */
 function buildFlameStats(checkins, todayKey) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(checkins, todayKey));
+  // ⚠️ active і full — ДВА РІЗНІ ПРЕДИКАТИ, і саме їх мовчазне сусідство робило
+  // блок незрозумілим: графік малював «хоч один вогник за вечір», а стрік поруч
+  // вимагав УСІ ПʼЯТЬ. Тобто графік показував «майже завжди повно», а стрік —
+  // нуль, і обидва були праві. Тепер full їде в payload, і перемикач на екрані
+  // показує обидва явно, замість того щоб один із них лишався невидимим.
   const buckets = Object.fromEntries(
-    starts.map((k) => [k, { active: 0, days: 0, constructive: 0, consumptive: 0 }]),
+    starts.map((k) => [k, { active: 0, full: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
   const counts = {};
   const missed = {};
@@ -1432,6 +1464,7 @@ function buildFlameStats(checkins, todayKey) {
       b.active++;
       activeNights++;
     }
+    if (flames.length === FLAME_VALUES.length) b.full++;
     for (const f of flames) {
       counts[f] = (counts[f] || 0) + 1;
       if (CONSTRUCTIVE_FLAMES.has(f)) b.constructive++;
@@ -1552,9 +1585,14 @@ function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRece
  * зайняли час (з мультивибором «влучив бодай у щось» — чесніший критерій за
  * сувору рівність).
  */
+/** Пара «планував X -> зʼїло Y» мусить трапитись двічі, щоб щось означати. */
+const DRIFT_PAIR_MIN_N = 2;
+
 function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
   const pairs = {};
-  let matched = 0;
+  let full = 0;
+  let partial = 0;
+  let doneSum = 0;
   let total = 0;
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1565,14 +1603,21 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
     const ate = asList(c?.afternoon?.ate).filter((x) => CATEGORY_VALUES.includes(x));
     if (!plan.length || !ate.length) continue;
     total++;
-    if (plan.some((p) => ate.includes(p))) {
-      matched++;
+    const kept = plan.filter((p) => ate.includes(p));
+    doneSum += kept.length / plan.length;
+    if (kept.length === plan.length) {
+      full++;
       continue;
     }
-    // Тільки РОЗБІЖНІ доби йдуть у пари «планував X -> зʼїло Y»: збіги нічого
-    // не пояснюють, а в списку топ-пар витіснили б справжній дрейф.
-    for (const p of plan) {
-      for (const a of ate) {
+    if (kept.length) partial++;
+    // ⚠️ Пари будуються з НЕВИКОНАНОГО плану проти НЕЗАПЛАНОВАНОГО факту, і
+    // тепер із ЧАСТКОВИХ діб теж. Доти доба з частковим збігом уся йшла в
+    // «matched» і зникала — а саме в ній і видно дрейф: одне планове сталось,
+    // друге підмінилось. Збіги в пари не йдуть: вони нічого не пояснюють.
+    const missed = plan.filter((p) => !ate.includes(p));
+    const extra = ate.filter((a) => !plan.includes(a));
+    for (const p of missed) {
+      for (const a of extra) {
         const key = `${p}>${a}`;
         pairs[key] = (pairs[key] || 0) + 1;
       }
@@ -1580,13 +1625,19 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
   }
   const top = Object.entries(pairs)
     .map(([k, n]) => ({ from: k.split('>')[0], to: k.split('>')[1], n }))
+    .filter((r) => r.n >= DRIFT_PAIR_MIN_N)
     .sort((a, b) => b.n - a.n)
     .slice(0, 5);
   return {
     days,
     total,
-    matched,
-    pct: total ? Math.round((matched / total) * 100) : null,
+    full,
+    partial,
+    // ⚠️ pct — СЕРЕДНЯ ЧАСТКА виконаного плану, не «частка діб за планом».
+    // Доти доба зараховувалась цілком, якщо збігся бодай один пункт із двох,
+    // тож число росло від самої звички планувати ширше. Тепер два планові
+    // пункти й один виконаний дають 50%, а не 100%.
+    pct: total ? Math.round((doneSum / total) * 100) : null,
     top,
   };
 }

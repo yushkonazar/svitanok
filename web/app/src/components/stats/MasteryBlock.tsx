@@ -83,7 +83,42 @@ function TopicRow({ row }: { row: MasteryRow }) {
   );
 }
 
+/**
+ * Майстерність, згорнута за замовчуванням і в самому кінці екрана.
+ *
+ * ⚠️ Це вимога власника, і вона збігається з тим, що видно з даних: поки по
+ * темі не набралось {MIN_SEEN} питань, вона падає в «ще не перевірено», а
+ * картки «Розрив», «Темп» і «Чи стає легше» ховаються власними гейтами. Тобто
+ * розгорнутий блок довго показує майже порожнечу — це аргумент ЗА згортання,
+ * не проти.
+ *
+ * Лінивого завантаження тут НЕМАЄ й не треба, на відміну від «Історії»: усе
+ * вже приїхало в /api/stats. Згортання економить УВАГУ, не трафік.
+ */
 export function MasteryBlock({ s }: { s: Stats }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHead>Майстерність</SectionHead>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => {
+          haptic('light');
+          setOpen((v) => !v);
+        }}
+        className="flex items-center gap-1.5 self-start rounded-full border border-glassb bg-glass px-3 py-1.5 text-[11px] font-semibold text-tx2"
+      >
+        <span>{open ? '− Згорнути' : '+ Відкрити'}</span>
+      </button>
+      {open && <MasteryBody s={s} />}
+    </div>
+  );
+}
+
+/** Тіло блоку. Експортується заради тестів: логіка рядків не залежить від того,
+ *  розгорнута оболонка чи ні, тож перевіряти її крізь клік — зайвий крок. */
+export function MasteryBody({ s }: { s: Stats }) {
   const [expanded, setExpanded] = useState(false);
   const topics = s.mastery?.topics ?? [];
   const { rated, unrated } = masteryRows(topics);
@@ -95,20 +130,13 @@ export function MasteryBlock({ s }: { s: Stats }) {
   const easeWeeks = s.mock.easeTrend.filter((w) => w.easePct !== null);
 
   if (!topics.length) {
-    return (
-      <div className="flex flex-col gap-3">
-        <SectionHead>Майстерність</SectionHead>
-        <Ph>Позначай пройдене в /roadmap і відповідай на питання дня — тут зʼявиться картина</Ph>
-      </div>
-    );
+    return <Ph>Позначай пройдене в /roadmap і відповідай на питання дня — тут зʼявиться картина</Ph>;
   }
 
   const shown = expanded ? rated : rated.slice(0, PREVIEW_ROWS);
 
   return (
     <div className="flex flex-col gap-3.5">
-      <SectionHead>Майстерність</SectionHead>
-
       {/* 1. РОЗРИВ — головне питання блоку: де відмічене розходиться зі знанням. */}
       {rated.length > 0 && (
         <Card>

@@ -102,6 +102,13 @@ FIELDS: tuple[Field, ...] = (
     Field("jobProgress", "evening", WORK, weight=0.6),
     # ── Автономія / сенс ─────────────────────────────────────────────────────
     Field("autonomy", "evening", AGENCY, weight=1.5),
+    # ⚠️ ЧАСТКА виконаного плану, не булеве «влучив бодай у щось». Доти воно
+    # було 0/1 з критерієм plan.some(p in ate) — і доба з планом [робота, спорт]
+    # та фактом [спорт, відпочинок] діставала повну одиницю, хоч робота не
+    # сталась. Що більше категорій обираєш уранці, то легше було «виконати
+    # план», тобто AGENCY систематично завищувався саме в тих, хто планує
+    # більше. span=(0,1) був такий від початку — міняється лише те, чим його
+    # заповнюють.
     Field("intentMatch", "derived", AGENCY, weight=1.2, span=(0, 1)),
     Field("jobConfidence", "evening", AGENCY, weight=0.6),
     # ── Тіло / режим ─────────────────────────────────────────────────────────
@@ -514,7 +521,10 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
             "pace": rng.choice(["overload", "behind", "other", "on", "better"], p=[.1, .25, .15, .4, .1]),
             "jobProgress": int(np.clip(round(rng.normal(3.0, 1.1)), 1, 5)),
             "autonomy": auto,
-            "intentMatch": float(rng.random() < 0.55),
+            # План — до 2 категорій, тож частка може бути лише 0, 0.5 або 1.
+            # ⚠️ Доти генератор давав самі 0/1, і золоті вектори перевіряли
+            # тільки КІНЦІ шкали — проміжне значення жоден тест не проходив.
+            "intentMatch": float(rng.choice([0.0, 0.5, 1.0], p=[.30, .25, .45])),
             "jobConfidence": int(np.clip(round(rng.normal(3.2, 1.0)), 1, 5)),
             "moved": rng.choice(["none", "light", "active", "workout"], p=[.35, .35, .10, .20]),
             "outdoor": rng.choice(["none", "short", "long"], p=[.3, .45, .25]),

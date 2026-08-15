@@ -1,25 +1,17 @@
+import { useState } from 'react';
 import type { Stats } from '../../api/schema.ts';
 import { has } from '../../lib/format.ts';
+import { haptic } from '../../telegram.ts';
 import { useInView } from '../../lib/useInView.ts';
 import { SectionHead, Hint } from '../ui/primitives.tsx';
 import { useCountUp } from '../ui/CountUp.tsx';
-import { WeekBars } from '../charts/WeekBars.tsx';
 import { Heatmap } from '../charts/Heatmap.tsx';
 import { WeekdayBars } from '../charts/WeekdayBars.tsx';
 import { OpenRhythm } from '../charts/OpenRhythm.tsx';
 import { HabitTrend } from '../charts/HabitTrend.tsx';
 import { FlameTrend } from '../charts/FlameTrend.tsx';
-import { RankedBars } from '../charts/RankedBars.tsx';
 // Одна мова підписів глибини на весь екран: «ЗА N ТИЖНІВ», не «N ТИЖ.».
 import { weeksWindowLabel } from '../../lib/windowLabel.ts';
-
-const FLAME_LABEL: Record<string, string> = {
-  tiktok: 'Тікток',
-  duolingo: 'Дуолінго',
-  snapchat: 'Снепчат',
-  bereal: 'BeReal',
-  chess: 'Шахмати',
-};
 
 // A · Звички — повний редизайн навколо питання «чи це вже РИТУАЛ».
 //
@@ -44,21 +36,38 @@ function Tile({
   emoji,
   label,
   note,
+  detail,
   gradient = false,
 }: {
   n: number;
   emoji?: string;
   label: string;
   note?: string;
+  /** Розбивка під тапом. Є — плитка стає кнопкою; немає — лишається текстом. */
+  detail?: React.ReactNode;
   gradient?: boolean;
 }) {
   // Стрік набігає від нуля (36px — рух видно здалеку). useInView — про запас.
   const [ref, inView] = useInView<HTMLDivElement>();
+  const [open, setOpen] = useState(false);
   const shown = useCountUp(n, inView);
+  // Плитка без розбивки лишається <div>: кнопка, що нічого не робить, гірша за
+  // її відсутність — читач екрана оголосить її як інтерактивну.
+  const Tag = detail ? 'button' : 'div';
   return (
-    <div
-      ref={ref}
-      className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5"
+    <Tag
+      ref={ref as React.Ref<HTMLDivElement & HTMLButtonElement>}
+      {...(detail
+        ? {
+            type: 'button' as const,
+            'aria-expanded': open,
+            onClick: () => {
+              haptic('light');
+              setOpen((v) => !v);
+            },
+          }
+        : {})}
+      className="flex flex-1 flex-col gap-0.5 rounded-2xl border border-glassb bg-glass p-3.5 text-left"
     >
       <div className="flex items-baseline gap-1.5">
         <span
@@ -80,7 +89,12 @@ function Tile({
       </div>
       <span className="text-[10.5px] font-medium leading-[1.3] text-tx2">{label}</span>
       {note && <span className="font-mono text-[10px] font-semibold text-tx3">{note}</span>}
-    </div>
+      {detail && open && (
+        <span className="mt-1 border-t border-glassb pt-1 font-mono text-[9.5px] leading-[1.4] text-tx3">
+          {detail}
+        </span>
+      )}
+    </Tag>
   );
 }
 
@@ -110,10 +124,23 @@ export function HabitsBlock({ s }: { s: Stats }) {
   const prior = hw.length >= 8 ? rate(hw.slice(-8, -4)) : null;
   const delta = recent !== null && prior !== null ? Math.round((recent - prior) * 100) : null;
 
-  // Охоплення рахуємо з heatmap: там уже лежить кожна доба вікна (v>0 = день
-  // із дією), тож нове поле в API для цього не потрібне.
+  // Охоплення рахуємо з heatmap: там уже лежить кожна доба вікна, тож нове
+  // поле в API для цього не потрібне.
+  //
+  // ⚠️ ПРЕДИКАТ — c.o > 0 («відкривав»), а НЕ c.v > 0 (opens+mock+news).
+  // Доти в одному ряду стояли два лічильники з РІЗНИМИ дефініціями активності:
+  // стрік ліворуч рахував відкриття, а цей — будь-яку з трьох подій, і ніщо про
+  // це не казало. Два числа поруч читаються як одна величина, тож розбіжність
+  // була невидимою за побудовою.
+  //
+  // Зведено до відкриттів, бо саме це людина розуміє під «активним днем», і
+  // саме цим міряється сусідній стрік. Питання й новини без відкриття
+  // застосунку однаково не трапляються — обидві події шле лише Mini App, яка
+  // на кожному завантаженні шле ще й `open`.
   const totalDays = s.heatmap.length;
-  const activeDays = s.heatmap.filter((c) => c.v > 0).length;
+  const openedDays = s.heatmap.filter((c) => c.o > 0).length;
+  const daysWithMock = s.heatmap.filter((c) => c.m > 0).length;
+  const daysWithNews = s.heatmap.filter((c) => c.n > 0).length;
 
   const flames = s.flameStats;
 
@@ -170,9 +197,12 @@ export function HabitsBlock({ s }: { s: Stats }) {
             <HabitTrend weeks={hw} />
           </div>
           <Hint>
-            Висота стовпця — скільки дій зробив за тиждень відносно найактивнішого з показаних.
-            Кольори всередині — з чого та активність складалась. Тапни на тиждень, щоб побачити
-            числа (і скільки діб тижня був активним).
+            Два питання в одній картці, кожне у своїй геометрії. Стовпець — ОБСЯГ дій за тиждень
+            відносно найактивнішого з показаних, кольори всередині — з чого він складався. Смуга
+            під стовпцем — ПОКРИТТЯ: скільки діб тижня взагалі були активні. Розділені навмисно:
+            два тижні з покриттям 5/5 однакові за покриттям, але можуть різнитись обсягом утричі,
+            і однією висотою це не показати. Тапни на тиждень — покаже склад і порівняння з
+            попереднім.
           </Hint>
         </Card>
       )}
@@ -192,9 +222,18 @@ export function HabitsBlock({ s }: { s: Stats }) {
           note={has(s.streaks.bestOpenDays) ? `РЕКОРД ${best}` : undefined}
         />
         <Tile
-          n={activeDays}
-          label={`активних діб із ${totalDays}`}
-          note={totalDays > 0 ? `${Math.round((activeDays / totalDays) * 100)}% ЧАСУ` : undefined}
+          n={openedDays}
+          label={`діб відкривав із ${totalDays}`}
+          note={
+            totalDays > 0 ? `${Math.round((openedDays / totalDays) * 100)}% ВІД ПЕРШОГО ЗАПИСУ` : undefined
+          }
+          detail={
+            openedDays > 0 ? (
+              <>
+                з них із питаннями {daysWithMock} · з новинами {daysWithNews}
+              </>
+            ) : undefined
+          }
         />
       </div>
 
@@ -204,7 +243,24 @@ export function HabitsBlock({ s }: { s: Stats }) {
         </span>
       )}
 
-      <WeekBars days={s.weekly} />
+      {/* ⚠️ ТУТ БУВ <WeekBars days={s.weekly} /> — сім стовпчиків за останній
+          тиждень. Прибраний на вимогу власника («не розумію, для чого він»), і
+          три причини кажуть те саме.
+
+          1. Дублював теплокарту гіршою мовою: та показує ті самі доби й ще
+             пʼять тижнів, з АБСОЛЮТНОЮ шкалою кольору (пороги 1/3/6). WeekBars
+             нормувався ВІДНОСНО СЕБЕ, тож тиждень з одним відкриттям на добу
+             виглядав так само, як тиждень із двадцятьма.
+          2. Кодував ІНШУ величину, ніж сусіднє «Утримання»: там висота це
+             opens+mock+news, тут лише opens. Два зовні однакові стовпчикові
+             графіки в одному блоці означали різне.
+          3. Ні заголовка, ні підпису, ні одиниць, ні тапу — єдиний такий
+             елемент на екрані, ще й на найдорожчому місці, одразу під
+             лічильниками.
+
+          Порожнеча тут навмисна: подих між лічильниками й теплокартою читається
+          краще, ніж ще один графік. s.weekly лишається в контракті — його
+          прибирання з сервера окрема задача, і без споживача воно не терміново. */}
 
       {/* 4. ЩОДЕННА СІТКА — heatmap лишається (ui-ux-pro-max підтверджує його
           для time-based intensity), але клітинка тепер знає СКЛАД дня. */}
@@ -262,20 +318,28 @@ export function HabitsBlock({ s }: { s: Stats }) {
             <FlameTrend weeks={flames.weekly} />
           </div>
           <Hint>
-            Стріки, які тримаєш поза Світанком. Висота стовпця — скільки вечорів тижня хоч один
-            вогник горів; колір усередині — конструктивний він (навчання, гра розуму) чи споживчий
-            (стрічка).
+            Стріки, які тримаєш поза Світанком. ⚠️ Дві плитки вгорі рахують РІЗНЕ: ліва — вечори,
+            де горіли ВСІ пʼять, права — де горів хоч один. Перемикач над графіком показує ту саму
+            різницю по тижнях: «хоч один» — чи тримаю звичку взагалі, «усі пʼять» — чи тримаю
+            рутину повністю. Це різні цілі з різною ціною, тож вибір за тобою, а не за
+            замовчуванням. Колір усередині стовпця — конструктивний вогник (навчання, гра розуму)
+            чи споживчий (стрічка); частка конструктивних за весь період — числом праворуч від
+            перемикача.
           </Hint>
-          <div className="mt-3.5 border-t border-glassb pt-3">
-            <div className="mb-1.5 text-[11px] font-semibold text-tx2">Що частіше пропускаю</div>
-            <RankedBars
-              rows={flames.missedTops.map((r) => ({
-                key: r.value,
-                label: FLAME_LABEL[r.value] ?? r.value,
-                n: r.n,
-              }))}
-            />
-          </div>
+          {/* ⚠️ ТУТ БУВ підблок «Що частіше пропускаю» — рейтинг застосунків за
+              пропусками. Прибраний на вимогу власника, і дані підтверджують:
+
+              дія з нього нульова (я й так знаю, що частіше забуваю Тікток), а
+              на реальних даних усі пʼять рядків показували 11× — тобто
+              ранжування ВИРОДЖЕНЕ, порядок випадковий, а смуги однакової
+              довжини вдавали рейтинг там, де рейтингу немає.
+
+              Головне тепер живе не тут, а в самому чек-іні: питання про вогники
+              піднято у другий пункт вечора як НАГАДУВАННЯ їх запалити. Звіт про
+              те, чого не запалив, ту саму роботу зробити не міг — він приходив
+              тоді, коли день уже минув.
+
+              flameStats.missedTops лишається в контракті. */}
         </Card>
       )}
     </div>

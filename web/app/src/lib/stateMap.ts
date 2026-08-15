@@ -411,6 +411,20 @@ function causesOf(raw: CheckinRaw, picked: StateReading[], rest: StateReading[])
 }
 
 /**
+ * Мінімум діб, щоб порівнювати оцінку клітинки з нормою.
+ *
+ * ⚠️ Доти гейта тут не було ВЗАГАЛІ — єдине таке місце в блоці. Клітинка з
+ * ОДНІЄЮ добою показувала впевнене «3.0 проти 3.6», ще й розфарбоване в
+ * зелений/червоний, тобто читалось як висновок. Порівняй із сусідами в цьому ж
+ * файлі: причини — CAUSE_MIN_N=8, драйвери — 8, лаг — 16, соцконтекст — 8.
+ *
+ * Поріг нижчий за CAUSE_MIN_N свідомо: середнє двох чисел — набагато простіша
+ * величина за lift тега, і 4 доби вже дають щось краще за здогадку. Але одна
+ * доба — це не «оцінка таких днів», це оцінка одного дня.
+ */
+export const DAY_SCORE_MIN_N = 4;
+
+/**
  * Оцінка дня цих діб проти решти.
  *
  * Окремо від причин, бо це не тег, а число — і єдине в картці, що приходить із
@@ -430,7 +444,8 @@ function dayScoreOf(
   const restDays = [...new Set(all.map((r) => r.d))].filter((d) => !days.includes(d));
   const mine = days.map(scoreOf).filter((v): v is number => v !== null);
   const theirs = restDays.map(scoreOf).filter((v): v is number => v !== null);
-  if (!mine.length || !theirs.length) return null;
+  // Обидва боки: норма з однієї доби так само не норма, як і середнє з однієї.
+  if (mine.length < DAY_SCORE_MIN_N || theirs.length < DAY_SCORE_MIN_N) return null;
   const avg = (xs: number[]) => Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10;
   return { avg: avg(mine), base: avg(theirs), n: mine.length };
 }
