@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { RhythmBlock } from './RhythmBlock.tsx';
+import userEvent from '@testing-library/user-event';
+import { RhythmBlock, RhythmBody } from './RhythmBlock.tsx';
 import { SAMPLE_STATS } from '../../api/sample.ts';
 import type { Stats } from '../../api/schema.ts';
 
@@ -30,7 +31,7 @@ const stats = (over: Partial<Stats>): Stats => ({
 describe('RhythmBlock — конверсії з порожнім знаменником', () => {
   it('жодної співбесіди -> «ще не було», а не «0%»', () => {
     render(
-      <RhythmBlock
+      <RhythmBody
         s={stats({
           reached: { ...SAMPLE_STATS.reached, applied: 3, interview: 0, offer: 0 },
           conversion: { appliedToInterview: 0, interviewToOffer: 0 },
@@ -44,7 +45,7 @@ describe('RhythmBlock — конверсії з порожнім знаменн�
 
   it('подачі є, співбесід немає -> це чесний 0% з видимим дробом', () => {
     render(
-      <RhythmBlock
+      <RhythmBody
         s={stats({
           reached: { ...SAMPLE_STATS.reached, applied: 3, interview: 0, offer: 0 },
           conversion: { appliedToInterview: 0, interviewToOffer: 0 },
@@ -60,7 +61,7 @@ describe('RhythmBlock — конверсії з порожнім знаменн�
 
   it('обидва знаменники порожні -> жодного відсотка на екрані', () => {
     render(
-      <RhythmBlock
+      <RhythmBody
         s={stats({
           reached: { ...SAMPLE_STATS.reached, applied: 0, interview: 0, offer: 0 },
           conversion: { appliedToInterview: 0, interviewToOffer: 0 },
@@ -77,7 +78,7 @@ describe('RhythmBlock — конверсії з порожнім знаменн�
 
   it('дані є — рядок показує відсоток і дріб, як і раніше', () => {
     render(
-      <RhythmBlock
+      <RhythmBody
         s={stats({
           reached: { ...SAMPLE_STATS.reached, applied: 10, interview: 4, offer: 1 },
           conversion: { appliedToInterview: 40, interviewToOffer: 25 },
@@ -86,5 +87,27 @@ describe('RhythmBlock — конверсії з порожнім знаменн�
     );
     expect(screen.getByText('Подав → співбесіда').parentElement!.textContent).toContain('40%');
     expect(screen.getByText('Співбесіда → офер').parentElement!.textContent).toContain('1/4');
+  });
+});
+
+/* Оболонка: згорнута за замовчуванням і в хвості екрана, поруч із Майстерністю
+ * й Історією. Воронка рухається ТИЖНЯМИ — щоденне місце під три картки вона
+ * не окупала. */
+describe('RhythmBlock — оболонка', () => {
+  it('згорнутий за замовчуванням: заголовок і кнопка, не вміст', () => {
+    render(<RhythmBlock s={stats({})} />);
+    expect(screen.getByText('Ритм')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Відкрити/ })).toBeInTheDocument();
+    expect(screen.queryByText('Подав → співбесіда')).toBeNull();
+  });
+
+  it('кнопка відкриває вміст і має справжній aria-expanded', async () => {
+    const user = userEvent.setup();
+    render(<RhythmBlock s={stats({})} />);
+    const btn = screen.getByRole('button', { name: /Відкрити/ });
+    expect(btn).toHaveAttribute('aria-expanded', 'false');
+    await user.click(btn);
+    expect(btn).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Подав → співбесіда')).toBeInTheDocument();
   });
 });

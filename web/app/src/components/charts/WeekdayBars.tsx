@@ -58,12 +58,18 @@ export function WeekdayBars({ cells }: { cells: HeatmapCell[] }) {
     cellsByDow[i]!.push(c);
   }
   const avgs = byDow.map(median);
-  const max = Math.max(1, ...avgs);
   const bestIdx = avgs.indexOf(Math.max(...avgs));
   // ⚠️ РОЗКИД, а не лише медіана. Медіана сама по собі — один біт: «цей день
   // активніший». Вона не каже головного: чи різниця СТАБІЛЬНА, чи це два
   // випадкові тижні. Вус q1..q3 відповідає на це прямо в стовпчику, без тапу.
   const spreads = byDow.map((xs) => ({ q1: q(xs, 0.25), q3: q(xs, 0.75), n: xs.length }));
+  // ⚠️ ШКАЛА ВРАХОВУЄ ВУСА, а не лише медіани. Перша версія брала max самих
+  // медіан — і вус, чий q3 більший за найбільшу медіану (а це норма: медіана
+  // стійка до сплесків, q3 — ні), вилазив ВИЩЕ поля графіка. Наживо це
+  // виглядало як білі палиці поверх заголовка сусідньої секції.
+  const max = Math.max(1, ...avgs, ...spreads.map((s) => s.q3));
+  /** Значення -> висота в пікселях, зрізана полем. */
+  const yOf = (v: number) => Math.max(0, Math.min(MAX_H, (v / max) * MAX_H));
   const sel = tap !== null ? cellsByDow[tap]! : null;
 
   return (
@@ -71,27 +77,32 @@ export function WeekdayBars({ cells }: { cells: HeatmapCell[] }) {
       <div className="font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
         НАЙАКТИВНІШИЙ ДЕНЬ ТИЖНЯ
       </div>
-      <div className="flex h-[66px] items-end gap-2 pt-1">
+      <div className="flex items-end gap-2 pt-1">
         {DOW_LABELS.map((label, i) => {
           const v = avgs[i];
-          const h = v > 0 ? Math.max(4, Math.round((v / max) * MAX_H)) : 3;
+          const h = v > 0 ? Math.max(4, Math.round(yOf(v))) : 3;
           const isBest = i === bestIdx && v > 0;
           return (
             <button
               key={label}
               type="button"
               aria-pressed={tap === i}
-              aria-label={`${label}: типово ${v} дій, середня половина ${Math.round(spreads[i]!.q1)}–${Math.round(spreads[i]!.q3)}, ${spreads[i]!.n} таких днів`}
+              aria-label={`${label}: типово ${v} ${pluralUk(Math.round(v), ['дія', 'дії', 'дій'])}, середня половина ${Math.round(spreads[i]!.q1)}–${Math.round(spreads[i]!.q3)}, ${spreads[i]!.n} ${pluralUk(spreads[i]!.n, ['такий день', 'такі дні', 'таких днів'])}`}
               onClick={() => {
                 haptic('light');
                 setTap(tap === i ? null : i);
               }}
               className="flex flex-1 flex-col items-center gap-[5px]"
             >
-              <div className="relative w-full" style={{ height: h }}>
+              {/* ⚠️ Поле ФІКСОВАНОЇ висоти, стовпчик притиснутий до низу.
+                  Доти контейнер мав висоту САМОГО СТОВПЧИКА, а вус позиціювався
+                  всередині нього — тобто будь-яке значення вище за медіану
+                  виходило за контейнер, і нічого його не стримувало. */}
+              <div className="relative w-full overflow-hidden" style={{ height: MAX_H }}>
                 <div
-                  className="absolute inset-0"
+                  className="absolute inset-x-0 bottom-0"
                   style={{
+                    height: h,
                     borderRadius: '6px 6px 3px 3px',
                     background: isBest
                       ? 'linear-gradient(180deg,var(--color-a2),var(--color-a1))'
@@ -110,11 +121,8 @@ export function WeekdayBars({ cells }: { cells: HeatmapCell[] }) {
                   <div
                     className="absolute left-1/2 w-[2px] -translate-x-1/2 rounded-full"
                     style={{
-                      bottom: Math.round((spreads[i]!.q1 / max) * MAX_H),
-                      height: Math.max(
-                        1,
-                        Math.round(((spreads[i]!.q3 - spreads[i]!.q1) / max) * MAX_H),
-                      ),
+                      bottom: Math.round(yOf(spreads[i]!.q1)),
+                      height: Math.max(1, Math.round(yOf(spreads[i]!.q3) - yOf(spreads[i]!.q1))),
                       background: 'var(--color-tx)',
                       opacity: 0.45,
                     }}
