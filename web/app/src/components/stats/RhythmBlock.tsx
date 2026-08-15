@@ -109,7 +109,42 @@ function ConversionRow({
   );
 }
 
+/**
+ * Ритм, згорнутий і в хвості екрана — на вимогу власника.
+ *
+ * ⚠️ Збігається з тим, що видно з даних. Блок відповідає на питання пошуку
+ * роботи, а воронка рухається ТИЖНЯМИ: конверсії, медіани кроків і «лежить без
+ * руху» не змінюються від того, що ти відкрив застосунок удруге за день.
+ * Розгорнутий він щодня займав три картки, щоб повідомити те саме, що вчора.
+ *
+ * Найдієвіше з нього («лежить без руху 21+ діб») від згортання не втрачається:
+ * саме цей рядок уже щодня приходить у /stats бота, тобто в місце, яке
+ * пробігають очима, а не гортають.
+ */
 export function RhythmBlock({ s }: { s: Stats }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHead>Ритм</SectionHead>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => {
+          haptic('light');
+          setOpen((v) => !v);
+        }}
+        className="flex items-center gap-1.5 self-start rounded-full border border-glassb bg-glass px-3 py-1.5 text-[11px] font-semibold text-tx2"
+      >
+        <span>{open ? '− Згорнути' : '+ Відкрити'}</span>
+      </button>
+      {open && <RhythmBody s={s} />}
+    </div>
+  );
+}
+
+/** Тіло блоку. Експортується заради тестів — та сама причина, що в
+ *  MasteryBody: логіка рядків не залежить від стану оболонки. */
+export function RhythmBody({ s }: { s: Stats }) {
   const speed = s.funnelSpeed;
   // Смуга цілі заповнюється, коли доїхала до екрана — той самий barFill, що
   // й смуги навичок у MasteryBlock.
@@ -121,8 +156,6 @@ export function RhythmBlock({ s }: { s: Stats }) {
 
   return (
     <div className="flex flex-col gap-3.5">
-      <SectionHead>Ритм</SectionHead>
-
       <div className="flex flex-col gap-[9px]">
         {/* Конверсії з «дійшов до» (F1): знаменник — усі, хто КОЛИСЬ був на
             стадії, тож відмова його не зменшує. */}

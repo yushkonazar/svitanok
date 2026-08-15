@@ -98,21 +98,28 @@ export function Hint({ children }: { children: ReactNode }) {
   const bodyId = useId();
   return (
     <div className="mt-2">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={() => {
-          haptic('light');
-          setOpen((v) => !v);
-        }}
-        className="flex items-center gap-1 rounded-full border border-glassb bg-glass px-2 py-[3px] font-mono text-[9px] font-semibold tracking-[0.06em] text-tx3"
-      >
-        {/* Знак — декор: сенс кнопки несе слово поруч, тож читачеві екрана
-            «?» не потрібне (інакше він озвучив би «знак питання Пояснення»). */}
-        <span aria-hidden="true">?</span>
-        <span>{open ? 'ЗГОРНУТИ' : 'ПОЯСНЕННЯ'}</span>
-      </button>
+      {/* ⚠️ Кнопка притиснута ПРАВОРУЧ, а текст під нею лишається на всю
+          ширину. Це не косметика: ліворуч кнопка ставала першим, що бачить
+          око в кожній картці, і тягнула увагу на службовий елемент замість
+          самих чисел. Праворуч унизу вона читається як виноска — там її
+          шукають, коли треба, і не помічають, коли ні. */}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => {
+            haptic('light');
+            setOpen((v) => !v);
+          }}
+          className="flex items-center gap-1 rounded-full border border-glassb bg-glass px-2 py-[3px] font-mono text-[9px] font-semibold tracking-[0.06em] text-tx3"
+        >
+          {/* Знак — декор: сенс кнопки несе слово поруч, тож читачеві екрана
+              «?» не потрібне (інакше він озвучив би «знак питання Пояснення»). */}
+          <span aria-hidden="true">?</span>
+          <span>{open ? 'ЗГОРНУТИ' : 'ПОЯСНЕННЯ'}</span>
+        </button>
+      </div>
       {open && (
         <div id={bodyId} className="mt-1.5 text-[10px] leading-[1.45] text-tx3">
           {children}
