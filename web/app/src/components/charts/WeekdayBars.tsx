@@ -73,10 +73,11 @@ export function WeekdayBars({ cells }: { cells: HeatmapCell[] }) {
   const sel = tap !== null ? cellsByDow[tap]! : null;
 
   return (
+    // ⚠️ Власного заголовка більше НЕМАЄ: блок переїхав із підвалу теплокарти
+    // у свою картку, і підписує його тепер SubLabel, як усі інші. Два різні
+    // способи називати картку на одному екрані — це той дрібний розсинхрон,
+    // з якого починається «чому тут інакше».
     <div ref={ref} className="flex flex-col gap-1.5">
-      <div className="font-mono text-[9.5px] font-semibold tracking-[0.1em] text-tx3">
-        НАЙАКТИВНІШИЙ ДЕНЬ ТИЖНЯ
-      </div>
       <div className="flex items-end gap-2 pt-1">
         {DOW_LABELS.map((label, i) => {
           const v = avgs[i];
@@ -149,8 +150,8 @@ export function WeekdayBars({ cells }: { cells: HeatmapCell[] }) {
           </div>
           <div className="font-mono text-[9.5px] text-tx3">
             типово {avgs[tap]} {pluralUk(Math.round(avgs[tap]!), ['дія', 'дії', 'дій'])} · середня
-            половина {Math.round(spreads[tap]!.q1)}–
-            {Math.round(spreads[tap]!.q3)} · найактивніший {Math.max(...sel.map((c) => c.v))}
+            половина {Math.round(spreads[tap]!.q1)}–{Math.round(spreads[tap]!.q3)} · найактивніший{' '}
+            {Math.max(...sel.map((c) => c.v))}
           </div>
           <div className="flex flex-wrap gap-x-2.5 font-mono text-[9.5px] text-tx3">
             <span>відкриттів {sel.reduce((a, c) => a + c.o, 0)}</span>
