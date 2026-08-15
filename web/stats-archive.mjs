@@ -15,7 +15,7 @@
 // Читання архіву назовні (періоди «рік / усе» на екрані) — окрема задача:
 // спершу має бути що читати. Тут закривається саме втрата.
 
-import { isDateKey, dayKey } from './stats-core.mjs';
+import { isDateKey, dayKey, weekStartKey } from './stats-core.mjs';
 
 /** Ключ у тому самому KV-неймспейсі, що `stats`/`state`. */
 export const ARCHIVE_KEY = 'statsArchive';
@@ -124,4 +124,118 @@ export function mergeArchive(prevArchive, fresh, todayKey) {
 /** Місяць «сьогодні» за київським ключем доби — для тестів і крону. */
 export function currentMonth(todayKey) {
   return monthOf(isDateKey(todayKey) ? todayKey : dayKey(new Date()));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ТИЖНЕВИЙ АРХІВ
+//
+// ⚠️ ОКРЕМИЙ КЛЮЧ, а не поле в місячному. Три причини, і кожної окремо
+// достатньо:
+//   1. уже записаний місячний архів має формат {'YYYY-MM': згортка} на
+//      ВЕРХНЬОМУ рівні; додати туди контейнер тижнів означало б або зламати
+//      цей формат, або покластися на те, що всі читачі коректно фільтрують
+//      нетипові ключі;
+//   2. читачі різні: місяці малює «Історія», тижні потрібні «Важелям», і
+//      вантажити одне заради іншого немає причин;
+//   3. тижнів у десять разів більше, тобто ключ росте помітно швидше.
+//
+// ⚠️ НАВІЩО ВЗАГАЛІ ТИЖНІ, якщо є місяці. Місячні середні НЕ ГОДЯТЬСЯ для
+// пошуку звʼязків між доменами: дванадцять точок на рік — це вибірка, на якій
+// жодна кореляція не витримає поправки. Тижні дають 52 точки на рік, і саме на
+// них рахується лаговий звʼязок «цього тижня X -> наступного Y».
+//
+// А головне — ці ряди ЗНИКАЮТЬ. Тижневі інтереси живуть 26 тижнів, чек-іни 365
+// діб; усе, що старше, вже не відновити нізвідки. Тому тижневий рівень пишеться
+// зараз, а не тоді, коли зʼявиться графік.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const WEEKLY_ARCHIVE_KEY = 'statsArchiveWeekly';
+
+/** 10 років тижнів. Не «безмежно»: KV тримає 25 МіБ на значення, і межа має
+ *  бути ОГОЛОШЕНА, а не з'ясована в день, коли запис перестане вміщатись. */
+export const WEEKLY_ARCHIVE_CAP = 520;
+
+/** ISO-понеділок доби.
+ *
+ * ⚠️ Береться зі stats-core, а НЕ пишеться тут заново. Перша версія цього файлу
+ * мала власну копію — арифметично вона збігалась (перевірено на 1000 добах), і
+ * саме тому була небезпечною: розійшлися б вони не сьогодні, а через рік, від
+ * однієї правки в одному з двох місць, і архів мовчки почав би класти дані під
+ * чужі ключі. Той самий клас, що вже ловили з `days`, `pluralUk` і назвою
+ * KV-ключа publicStatus.
+ *
+ * Тижневі кошики інтересів (bumpInterest) уже кейзяться саме цим ключем, тож
+ * збіг тут не косметичний: два рівні одних даних мусять індексуватись однаково. */
+const weekOf = weekStartKey;
+
+/**
+ * Стор -> {'YYYY-MM-DD' (понеділок): згортка} по всіх тижнях у живих даних.
+ *
+ * Набір полів ТОЙ САМИЙ, що в місячній згортці, і це навмисно: два рівні одного
+ * архіву з різними полями — це два формати, які розійдуться при першій же
+ * правці. Плюс споживач може рахувати на них однаковим кодом.
+ */
+export function weeklyRollup(store, todayKey) {
+  const s = store && typeof store === 'object' ? store : {};
+  const out = {};
+
+  const checkins = s.checkins && typeof s.checkins === 'object' ? s.checkins : {};
+  const acc = {};
+  for (const [d, rec] of Object.entries(checkins)) {
+    if (!isDateKey(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
+    const w = weekOf(d);
+    bucket(out, w).checkinDays++;
+    if (!acc[w]) acc[w] = { sleep: [], energy: [], mood: [], score: [] };
+    const a = acc[w];
+    if (typeof rec.morning?.sleepH === 'number') a.sleep.push(rec.morning.sleepH);
+    if (typeof rec.evening?.dayScore === 'number') a.score.push(rec.evening.dayScore);
+    for (const slot of ['morning', 'afternoon', 'evening']) {
+      if (typeof rec[slot]?.energy === 'number') a.energy.push(rec[slot].energy);
+      if (typeof rec[slot]?.mood === 'number') a.mood.push(rec[slot].mood);
+    }
+  }
+  for (const [w, a] of Object.entries(acc)) {
+    const b = out[w];
+    b.sleepAvg = avg(a.sleep);
+    b.energyAvg = avg(a.energy);
+    b.moodAvg = avg(a.mood);
+    b.dayScoreAvg = avg(a.score);
+  }
+
+  const days = s.days && typeof s.days === 'object' ? s.days : {};
+  for (const [d, v] of Object.entries(days)) {
+    if (!isDateKey(d) || d > todayKey || !v || typeof v !== 'object') continue;
+    const b = bucket(out, weekOf(d));
+    b.activeDays++;
+    b.opens += Number(v.opens) || 0;
+    b.mock += Number(v.mock) || 0;
+    b.news += Number(v.news) || 0;
+  }
+
+  for (const a of Array.isArray(s.appliedLog) ? s.appliedLog : []) {
+    const ts = typeof a === 'string' ? a : a?.ts;
+    if (!isDateKey(ts) || ts > todayKey) continue;
+    bucket(out, weekOf(ts)).applied++;
+  }
+
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * Злити свіжий тижневий зріз у записаний архів.
+ *
+ * Те саме правило, що в місячному: минулий ТИЖДЕНЬ не перераховується, поточний
+ * оновлюється щодня. Плюс кап — найстаріші тижні відпадають, коли їх стає
+ * більше за WEEKLY_ARCHIVE_CAP.
+ */
+export function mergeWeekly(prevArchive, fresh, todayKey) {
+  const prev = prevArchive && typeof prevArchive === 'object' ? prevArchive : {};
+  const current = weekOf(isDateKey(todayKey) ? todayKey : dayKey(new Date()));
+  const out = { ...prev };
+  for (const [week, rollup] of Object.entries(fresh ?? {})) {
+    if (week !== current && Object.prototype.hasOwnProperty.call(prev, week)) continue;
+    out[week] = rollup;
+  }
+  const sorted = Object.entries(out).sort(([a], [b]) => a.localeCompare(b));
+  return Object.fromEntries(sorted.slice(-WEEKLY_ARCHIVE_CAP));
 }
