@@ -458,11 +458,6 @@ export const checkinFillSchema = z.object({
   evening: int.default(0),
   days: int.default(30),
 });
-export const planVsFactSchema = z.object({
-  d: z.string(),
-  planned: int.default(0),
-  actual: int.default(0),
-});
 /** Пара-кошик із гейтом (ready=false -> цифр НЕМА: мала вибірка бреше впевнено).
  *  Форма спільна для «сон -> оцінка дня» (v2). */
 export const corrPairSchema = z.object({
@@ -493,13 +488,6 @@ export const bedtimeVsEnergySchema = z.object({
   earlyAvg: num.nullable().optional(),
   lateAvg: num.nullable().optional(),
 });
-/** Звірка самозвіту подач із журналом (не кореляція — без гейта). */
-export const appliedCalibrationSchema = z.object({
-  n: int.default(0),
-  matched: int.default(0),
-  more: int.default(0),
-  fewer: int.default(0),
-});
 /** Найчастіший блокер/помічник (мода за N діб) — або null, коли порожньо. */
 export const checkinTopSchema = z.object({ value: z.string(), n: int.default(0) });
 /**
@@ -528,6 +516,30 @@ export const nightKindsSchema = z.object({
       restAvg: num.optional(),
     })
     .default({ ready: false, nRough: 0 }),
+});
+/**
+ * Зусилля × результат — чотири типи робочого дня + `mid` (трійка по осі).
+ *
+ * ⚠️ dayScore кута nullable ЗІ ЗМІСТОМ: null — діб у куті менше за поріг, а не
+ * «нуль». Нуль читався б як найгірша оцінка там, де оцінки просто немає.
+ */
+const quadrantCellSchema = z.object({
+  n: int.default(0),
+  dayScore: num.nullable().default(null),
+  scored: int.default(0),
+});
+export const workQuadrantsSchema = z.object({
+  days: int.default(30),
+  n: int.default(0),
+  /** Доби з трійкою по осі: у кут не заштовхуємо, показуємо окремо. */
+  mid: int.default(0),
+  needed: int.default(4),
+  cells: z.object({
+    flow: quadrantCellSchema,
+    hardwin: quadrantCellSchema,
+    grind: quadrantCellSchema,
+    quiet: quadrantCellSchema,
+  }),
 });
 export const checkinTopsSchema = z.object({
   blocker: checkinTopSchema.nullable().default(null),
@@ -621,11 +633,9 @@ export const flameWeekSchema = z.object({
   consumptive: int.default(0),
 });
 /** Вогники сторонніх застосунків (evening.flames): рейтинг + тижнева композиція
- *  + стрік ПОВНОЇ рутини (усі FLAME_VALUES за добу). missedTops — дзеркало
- *  tops, але лічильник пропущеного: «що частіше пропускаю». */
+ *  + стрік ПОВНОЇ рутини (усі FLAME_VALUES за добу). */
 export const flameStatsSchema = z.object({
   tops: z.array(checkinTopSchema).default([]),
-  missedTops: z.array(checkinTopSchema).default([]),
   activeNights: int.default(0),
   streak: int.default(0),
   best: int.default(0),
@@ -803,6 +813,9 @@ export const statsSchema = z.object({
   // Усе .optional()/.default() — старий воркер цих полів не віддає, а safeParse
   // валить ЦІЛИЙ /api/stats, не одне поле (див. попередження зверху файлу).
   checkinSlot: z.enum(['morning', 'afternoon', 'evening']).nullable().optional(),
+  /** Скільки хвилин активному блоку лишилось. Рахує СЕРВЕР (межі київські), а
+   *  клієнт лише тикає від цього якоря — і по нулю йде перепитати. */
+  checkinSlotEndsIn: int.nullable().optional(),
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
@@ -822,13 +835,11 @@ export const statsSchema = z.object({
   sleepLog: z.array(sleepNightSchema).default([]),
   checkinWeekly: z.array(checkinWeekSchema).default([]),
   checkinFill: checkinFillSchema.default({ morning: 0, afternoon: 0, evening: 0, days: 30 }),
-  planVsFact: z.array(planVsFactSchema).default([]),
   // Аналітика чек-іну v2 (трекер життя). Усе .default() — старий воркер полів не
   // віддає, а safeParse валить ЦІЛИЙ /api/stats.
   sleepVsDayScore: corrPairSchema.default({ ready: false, needed: 8, low: 0, ok: 0 }),
   bedtimeVsEnergy: bedtimeVsEnergySchema.default({ ready: false, needed: 8, early: 0, late: 0 }),
   categoryInsight: categoryInsightSchema.default({ days: 30, total: 0, rows: [] }),
-  appliedCalibration: appliedCalibrationSchema.default({ n: 0, matched: 0, more: 0, fewer: 0 }),
   checkinTops: checkinTopsSchema.default({
     blocker: null,
     helper: null,
@@ -852,6 +863,18 @@ export const statsSchema = z.object({
     reasons: [],
     effect: { ready: false, nRough: 0 },
   }),
+  workQuadrants: workQuadrantsSchema.default({
+    days: 30,
+    n: 0,
+    mid: 0,
+    needed: 4,
+    cells: {
+      flow: { n: 0, dayScore: null, scored: 0 },
+      hardwin: { n: 0, dayScore: null, scored: 0 },
+      grind: { n: 0, dayScore: null, scored: 0 },
+      quiet: { n: 0, dayScore: null, scored: 0 },
+    },
+  }),
   expectCalibration: expectCalibrationSchema.default({ days: 30, n: 0, ready: false }),
   moveIntent: moveIntentSchema.default({ days: 30, n: 0, ready: false }),
   socialContext: socialContextSchema.default({
@@ -865,7 +888,6 @@ export const statsSchema = z.object({
   habitWeekly: z.array(habitWeekSchema).default([]),
   flameStats: flameStatsSchema.default({
     tops: [],
-    missedTops: [],
     activeNights: 0,
     streak: 0,
     best: 0,

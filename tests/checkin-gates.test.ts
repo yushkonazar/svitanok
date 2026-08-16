@@ -9,6 +9,8 @@ import {
 import { emptyStore, recordEvent, aggregateStats, BLOCKER_VALUES } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { FIELDS, normalizeField, dayIndices } from '../web/checkin-model.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { checkinSlot, checkinSlotEndsInMin } from '../web/stats-core.mjs';
 
 /* Умовні питання чек-іну: сховане питання не перестає існувати для сервера й
  * моделі — воно перестає існувати лише на екрані. Саме на цьому місці блок
@@ -247,5 +249,99 @@ describe('nightKinds — зіпсовані ночі названо прямо',
   it('порівняння з рештою днів мовчить, поки вибірка мала', () => {
     expect(nk.effect.ready).toBe(false);
     expect(nk.effect.needed).toBeGreaterThanOrEqual(8);
+  });
+});
+
+/* ⚠️ Таймер закриття блоку: межі мусять бути ТІ САМІ, що в checkinSlot. Другий
+   перелік годин розійшовся б із першим тихо — таймер обіцяв би час, якого блок
+   уже не має. Тому тест бʼє по обох одразу. */
+describe('checkinSlotEndsInMin — скільки блоку лишилось жити', () => {
+  const cases: Array<[number, string | null, number | null]> = [
+    [8 * 60, 'morning', 360],
+    [13 * 60 + 59, 'morning', 1],
+    [14 * 60, 'afternoon', 360],
+    [19 * 60 + 59, 'afternoon', 1],
+    [20 * 60, 'evening', 360],
+    [23 * 60 + 59, 'evening', 121],
+    [0, 'evening', 120],
+    [1 * 60 + 59, 'evening', 1],
+    // Тиха зона: блоку немає, отже й таймера немає — не «0 хвилин».
+    [2 * 60, null, null],
+    [7 * 60 + 59, null, null],
+  ];
+
+  for (const [min, slot, left] of cases) {
+    it(`${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')} -> ${slot ?? 'немає блоку'} / ${left ?? '—'}`, () => {
+      expect(checkinSlot(Math.floor(min / 60))).toBe(slot);
+      expect(checkinSlotEndsInMin(min)).toBe(left);
+    });
+  }
+
+  it('вечір перетинає північ безперервно — жодного стрибка на 00:00', () => {
+    // 23:59 -> 121, 00:00 -> 120: різниця рівно хвилина, а не «ще 24 години».
+    expect(checkinSlotEndsInMin(23 * 60 + 59) - checkinSlotEndsInMin(0)).toBe(1);
+  });
+
+  it('битий вхід -> null, а не випадкове число (та сама пастка, що в checkinSlot)', () => {
+    for (const v of [-1, 1440, NaN, null, undefined, '', '600', {}, []]) {
+      expect(checkinSlotEndsInMin(v as never)).toBeNull();
+    }
+  });
+});
+
+/* Квадранти «зусилля × результат»: єдиний споживач пада work2d поза моделлю. */
+describe('workQuadrants — чотири типи робочого дня', () => {
+  const TODAY = '2026-08-16';
+  const build = (evenings: Array<Record<string, unknown>>) => {
+    let s = emptyStore();
+    const d = new Date(`${TODAY}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - (evenings.length - 1));
+    for (const e of evenings) {
+      s = recordEvent(s, { type: 'checkin', slot: 'evening', ...e }, d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return aggregateStats(s, TODAY).workQuadrants;
+  };
+
+  it('кожен кут ловить свій день', () => {
+    const q = build([
+      { effort: 1, output: 5 }, // потік
+      { effort: 5, output: 5 }, // важка перемога
+      { effort: 5, output: 1 }, // гриндж
+      { effort: 1, output: 1 }, // тихий
+    ]);
+    expect([q.cells.flow.n, q.cells.hardwin.n, q.cells.grind.n, q.cells.quiet.n]).toEqual([
+      1, 1, 1, 1,
+    ]);
+    expect(q.n).toBe(4);
+    expect(q.mid).toBe(0);
+  });
+
+  /* ⚠️ Трійка по осі — НЕ кут. Заштовхати середину в найближчий означало б
+     вигадати позицію дня, якої власник не називав. */
+  it('трійка по будь-якій осі йде в mid, а не в кут', () => {
+    const q = build([
+      { effort: 3, output: 5 },
+      { effort: 5, output: 3 },
+      { effort: 3, output: 3 },
+    ]);
+    expect(q.mid).toBe(3);
+    const cells = Object.values(q.cells) as Array<{ n: number }>;
+    expect(cells.every((c) => c.n === 0)).toBe(true);
+  });
+
+  it('доба без однієї з осей не рахується взагалі — половина пада це не день', () => {
+    const q = build([{ effort: 5 }, { output: 5 }, { dayScore: 4 }]);
+    expect(q.n).toBe(0);
+  });
+
+  /* Прочерк замість середнього — не «нуль», а «діб замало». Нуль читався б як
+     найгірша оцінка там, де оцінки просто немає. */
+  it('середня оцінка кута мовчить, поки діб менше за поріг', () => {
+    const q3 = build(Array.from({ length: 3 }, () => ({ effort: 5, output: 1, dayScore: 2 })));
+    expect(q3.cells.grind.n).toBe(3);
+    expect(q3.cells.grind.dayScore).toBeNull();
+    const q4 = build(Array.from({ length: 4 }, () => ({ effort: 5, output: 1, dayScore: 2 })));
+    expect(q4.cells.grind.dayScore).toBe(2);
   });
 });
