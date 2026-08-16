@@ -248,6 +248,21 @@ export const checkinMorningSchema = z.object({
   sleepH: num.optional(),
   sleepQ: int.optional(),
   sleepLatency: lenient(z.enum(['fast', 'mid', 'slow', 'vslow'])),
+  /** Причина зіпсованої ночі — мультивибір: одна ніч рідко має одну причину. */
+  nightReason: multi(
+    z.enum([
+      'wait',
+      'work',
+      'cant',
+      'uncomf',
+      'anxious',
+      'health',
+      'people',
+      'scroll',
+      'travel',
+      'other',
+    ]),
+  ),
   /** Четвертий вимір сну: з тривалості й якості не виводиться. */
   awakenings: lenient(z.enum(['no', 'once', 'few', 'many'])),
   bedtime: lenient(z.enum(['e23', 'e00', 'e01', 'e02', 'late'])),
@@ -487,6 +502,33 @@ export const appliedCalibrationSchema = z.object({
 });
 /** Найчастіший блокер/помічник (мода за N діб) — або null, коли порожньо. */
 export const checkinTopSchema = z.object({ value: z.string(), n: int.default(0) });
+/**
+ * Як минали ночі: скільки зіпсованих і чому.
+ *
+ * ⚠️ effect під гейтом (той самий CORR_MIN_N): зіпсовані ночі рідкісні, і
+ * «після безсонної день гірший на 1.2» на двох спостереженнях — монетка, яка
+ * читається як висновок.
+ */
+export const nightKindsSchema = z.object({
+  days: int.default(30),
+  nights: int.default(0),
+  slept: int.default(0),
+  naps: int.default(0),
+  none: int.default(0),
+  rough: int.default(0),
+  /** Дати самих ночей — факт, не висновок, тож без гейта. */
+  dates: z.array(z.string()).default([]),
+  reasons: z.array(checkinTopSchema).default([]),
+  effect: z
+    .object({
+      ready: z.boolean().default(false),
+      needed: int.optional(),
+      nRough: int.default(0),
+      roughAvg: num.optional(),
+      restAvg: num.optional(),
+    })
+    .default({ ready: false, nRough: 0 }),
+});
 export const checkinTopsSchema = z.object({
   blocker: checkinTopSchema.nullable().default(null),
   helper: checkinTopSchema.nullable().default(null),
@@ -798,6 +840,17 @@ export const statsSchema = z.object({
     filled: 0,
     lateReasons: [],
     lateNights: 0,
+  }),
+  nightKinds: nightKindsSchema.default({
+    days: 30,
+    nights: 0,
+    slept: 0,
+    naps: 0,
+    none: 0,
+    rough: 0,
+    dates: [],
+    reasons: [],
+    effect: { ready: false, nRough: 0 },
   }),
   expectCalibration: expectCalibrationSchema.default({ days: 30, n: 0, ready: false }),
   moveIntent: moveIntentSchema.default({ days: 30, n: 0, ready: false }),

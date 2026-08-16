@@ -4,6 +4,7 @@ import {
   HELPER_LABEL,
   LATE_REASON_LABEL,
   MOVED_LABEL,
+  NIGHT_REASON_LABEL,
   PACE_LABEL,
   WITH_WHOM_LABEL,
   labelOf,
@@ -227,6 +228,10 @@ export function factsOf(rec: CheckinDay | undefined, slot: CheckinSlot): string[
     //
     // 'slept' у факти не йде НАВМИСНО: це норма, а норма нічого не вирізняє.
     if (m.sleepKind === 'none' || m.sleepKind === 'naps') out.push(`night:${m.sleepKind}`);
+    // Причина зіпсованої ночі — мультивибір, тож КОЖНА причина окремий факт
+    // (той самий принцип, що блокери). Саме вона, а не сам факт, відрізняє
+    // «доробляв проєкт» від «не міг заснути».
+    for (const r of m.nightReason ?? []) out.push(`nightwhy:${r}`);
     if (m.awakenings === 'few' || m.awakenings === 'many') out.push('awake:many');
     else if (m.awakenings === 'no') out.push('awake:no');
     if (typeof m.bodyFeel === 'number') {
@@ -378,6 +383,8 @@ export function causeLabel(key: string): string {
       return labelOf(BEDTIME_LABEL, value);
     case 'late':
       return `🌙 ${labelOf(LATE_REASON_LABEL, value)}`;
+    case 'nightwhy':
+      return `🌑 ${labelOf(NIGHT_REASON_LABEL, value)}`;
     case 'pace':
       return labelOf(PACE_LABEL, value);
     case 'with':
@@ -455,6 +462,7 @@ const MORNING_KINDS = new Set([
   'worry',
   'latency',
   'night',
+  'nightwhy',
   'awake',
   'body',
   'load',

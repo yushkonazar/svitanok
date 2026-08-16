@@ -19,9 +19,11 @@ import {
   BLOCKER_LABEL,
   HELPER_LABEL,
   LATE_REASON_LABEL,
+  NIGHT_REASON_LABEL,
   WITH_WHOM_LABEL,
   CATEGORY_LABEL,
 } from '../../lib/checkinLabels.ts';
+import { pluralUk } from '../../lib/plural.ts';
 
 // Статистика чек-іну — ПОВНИЙ редизайн (роадмеп: «Індекс дня» + D3-графіки).
 // Стара версія (PR-9) читала 11 полів із 36 зібраних; ця — «Індекс дня»
@@ -36,6 +38,12 @@ import {
 // ⚠️ Той самий інваріант, що завжди: усе, що претендує на звʼязок, гейтиться
 // на сервері (ready/learned/p-value) і мовчить, поки вибірка мала. Це легко
 // зробити брехливим блоком, а брехня тут виглядає як аналітика.
+
+/** «1 ніч / 2 ночі / 5 ночей» — правило спільне (lib/plural.ts). */
+const pluralNight = (n: number) => pluralUk(n, ['ніч', 'ночі', 'ночей']);
+
+/** '2026-08-15' -> '15.08': у картці про останні тижні рік — зайвий шум. */
+const shortDate = (k: string) => `${k.slice(8, 10)}.${k.slice(5, 7)}`;
 
 const scoreHsl = (t: number) => `hsl(${Math.round(Math.max(0, Math.min(1, t)) * 125)}, 62%, 58%)`;
 const ratingColor = (v: number | null): string | undefined =>
@@ -194,6 +202,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
   const cal = s.expectCalibration;
   const mv = s.moveIntent;
   const tops = s.checkinTops;
+  const nights = s.nightKinds;
   const social = s.socialContext;
 
   const laggedEntries = Object.entries(model.lagged);
@@ -224,6 +233,61 @@ export function CheckinBlock({ s }: { s: Stats }) {
           🌙 Точний сон: {fmtDuration(lastSleepNight.durationMin)} (ліг о{' '}
           {kyivTime(lastSleepNight.startedAt)}, прокинувся о {kyivTime(lastSleepNight.wokeAt)})
         </div>
+      )}
+
+      {/* ⚠️ ЗʼЯВЛЯЄТЬСЯ, ЛИШЕ КОЛИ Є ПРО ЩО СКАЗАТИ (rough > 0). Картка «усі 30
+          ночей нормальні» — це рядок, який щодня займає місце й нічого не
+          додає; а от «дві ночі ти не спав узагалі» — подія, яку треба назвати
+          прямо, і доти вона ніде не називалась: режим ночі впливав на «Індекс
+          дня», але словами не звучав ніде.
+
+          Причини важать більше за сам факт: «чекав ранку», «допрацьовував
+          проєкт» і «не міг заснути» — три різні ночі, і лише остання про сон. */}
+      {nights.rough > 0 && (
+        <Card>
+          <SubLabel>
+            ЗІПСОВАНІ НОЧІ · {nights.rough} З {nights.nights} ЗА {nights.days} ДІБ
+          </SubLabel>
+          <div className="mt-2 text-[11.5px] leading-[1.5] text-tx2">
+            {nights.none > 0 && (
+              <span className="font-semibold text-neg">
+                🌑 Без сну: {nights.none} {pluralNight(nights.none)}.{' '}
+              </span>
+            )}
+            {nights.naps > 0 && <span>🌒 Уривками: {nights.naps}. </span>}
+            {nights.dates.length > 0 && (
+              <span className="text-tx3">Останні: {nights.dates.map(shortDate).join(', ')}</span>
+            )}
+          </div>
+          {nights.reasons.length > 0 && (
+            <div className="mt-2.5">
+              <RankedBars
+                color="var(--color-idx-recovery)"
+                rows={nights.reasons.map((r) => ({
+                  key: r.value,
+                  label: NIGHT_REASON_LABEL[r.value] ?? r.value,
+                  n: r.n,
+                }))}
+              />
+            </div>
+          )}
+          {nights.effect.ready ? (
+            <div className="mt-2 text-[11.5px] text-tx2">
+              Оцінка таких днів {nights.effect.roughAvg} проти {nights.effect.restAvg} у решти (
+              {nights.effect.nRough} діб).
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-tx3">
+              Порівняти з рештою днів ще рано: {nights.effect.nRough} із{' '}
+              {nights.effect.needed ?? 8} потрібних діб з оцінкою.
+            </div>
+          )}
+          <Hint>
+            Ніч без сну й ніч уривками доти впливали лише на «Індекс дня» — числом, але не
+            словами. Причина тут важливіша за факт: чекав ранку, доробляв проєкт і просто не міг
+            заснути — це три різні ночі з різними висновками.
+          </Hint>
+        </Card>
       )}
 
       {filledDays > 1 && (

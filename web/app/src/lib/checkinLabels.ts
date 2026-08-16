@@ -81,6 +81,19 @@ export const AWAKENINGS_LABEL: Record<string, string> = {
   many: 'Прокидався часто',
 };
 
+export const NIGHT_REASON_LABEL: Record<string, string> = {
+  wait: 'Чекав ранку/комендантська',
+  work: 'Робота/проєкт',
+  cant: 'Не міг заснути',
+  uncomf: 'Незручно спати',
+  anxious: 'Тривога/думки',
+  health: 'Здоровʼя/біль',
+  people: 'Люди/події',
+  scroll: 'Залип у стрічці',
+  travel: 'Дорога/переїзд',
+  other: 'Інше',
+};
+
 export const LATE_REASON_LABEL: Record<string, string> = {
   work: 'Робота/проєкт',
   scroll: 'Залип у стрічці',

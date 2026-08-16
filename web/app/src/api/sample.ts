@@ -654,6 +654,25 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
+  // Ночі: у демо їх чотири зіпсовані з тридцяти — і effect свідомо НЕ готовий.
+  // Показати «після безсонної ночі день гірший на 1.2» на чотирьох
+  // спостереженнях означало б намалювати монетку, яка читається як висновок.
+  nightKinds: {
+    days: 30,
+    nights: 24,
+    slept: 20,
+    naps: 3,
+    none: 1,
+    rough: 4,
+    dates: ['2026-07-29', '2026-08-04', '2026-08-09', '2026-08-15'],
+    reasons: [
+      { value: 'work', n: 2 },
+      { value: 'wait', n: 2 },
+      { value: 'cant', n: 1 },
+      { value: 'uncomf', n: 1 },
+    ],
+    effect: { ready: false, needed: 8, nRough: 4 },
+  },
   checkinTops: {
     days: 30,
     blocker: { value: 'tired', n: 6 },
@@ -859,6 +878,17 @@ export const EMPTY_STATS: Stats = {
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
   categoryInsight: { days: 30, total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
+  nightKinds: {
+    days: 30,
+    nights: 0,
+    slept: 0,
+    naps: 0,
+    none: 0,
+    rough: 0,
+    dates: [],
+    reasons: [],
+    effect: { ready: false, needed: 8, nRough: 0 },
+  },
   checkinTops: {
     blocker: null,
     helper: null,
