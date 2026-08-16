@@ -87,6 +87,10 @@ FIELDS: tuple[Field, ...] = (
     Field("sleepH", "morning", RECOVERY, weight=1.5, curve="sleep_hours"),
     Field("sleepQ", "morning", RECOVERY, weight=1.2),
     Field("sleepLatency", "morning", RECOVERY, weight=0.8, levels=("fast", "mid", "slow", "vslow"), polarity=-1),
+    # Нічні пробудження — третій незалежний вимір сну поряд із тривалістю та
+    # якістю (Consensus Sleep Diary міряє їх окремо саме тому, що вони не
+    # виводяться одне з одного: 8 годин із чотирма пробудженнями — не 8 годин).
+    Field("awakenings", "morning", RECOVERY, weight=0.8, levels=("no", "once", "few", "many"), polarity=-1),
     Field("bedtime", "morning", RECOVERY, weight=0.8, levels=("e23", "e00", "e01", "e02", "late"), polarity=-1),
     Field("detached", "evening", RECOVERY, weight=1.2, levels=("no", "partly", "yes")),
     Field("rumination", "evening", RECOVERY, weight=1.2, polarity=-1),
@@ -100,6 +104,12 @@ FIELDS: tuple[Field, ...] = (
     Field("mood@afternoon", "afternoon", RESOURCE, weight=1.0),
     Field("mood@evening", "evening", RESOURCE, weight=1.0),
     Field("worryAM", "morning", RESOURCE, weight=0.8, polarity=-1),
+    # Очікуване навантаження дня. Полярність −1 за тим самим зразком, що
+    # worryAM: обидва — РАНКОВІ передчуття, які виснажують ресурс ще до того,
+    # як день стався. Напрямок не вгадується — драйвери покажуть, чи справді
+    # завантажений день виходить гіршим, чи навпаки (у власника може бути
+    # навпаки: порожній день гнітить сильніше за щільний).
+    Field("dayLoad", "morning", RESOURCE, weight=0.8, polarity=-1),
     Field("rushed", "afternoon", RESOURCE, weight=0.8, polarity=-1),
     # Переривання ЗЗОВНІ — окремо від власного відволікання. Доти обидві
     # причини зливались у блокер 'distract', хоч рішення в них різні.
@@ -144,8 +154,18 @@ FIELDS: tuple[Field, ...] = (
     # Рівні дзеркалять вечірні аналоги слово в слово (none/light/workout проти
     # moved; none/short/long проти outdoor) — інакше пара «намір проти факту»
     # порівнювала б різні шкали.
-    Field("movePlan", "morning", BODY, weight=1.0, levels=("none", "light", "workout")),
+    #
+    # ⚠️ Рівні movePlan — ТІ САМІ ЧОТИРИ, що в moved. Доти їх було три (без
+    # 'active'), і нормалізація тихо розʼїжджалась: «легко» в намірі давало
+    # 0.50, а «легко» у факті — 0.33. Пара «намір проти факту» порівнювала два
+    # РІЗНІ нулі-до-одиниці й систематично показувала намір завищеним.
+    Field("movePlan", "morning", BODY, weight=1.0, levels=("none", "light", "active", "workout")),
     Field("outdoorNow", "afternoon", BODY, weight=1.0, levels=("none", "short", "long")),
+    # Стан тіла зранку (біль, важкість, легкість) — ТРЕТІЙ не-вечірній вхід у
+    # BODY і єдиний, що міряє саме тіло, а не його використання: рух і час
+    # надворі — це поведінка, а не самопочуття. Найдешевший спосіб відрізнити
+    # «мало рухався, бо лінь» від «мало рухався, бо болить».
+    Field("bodyFeel", "morning", BODY, weight=1.0),
 )
 
 FIELD_INDEX = {f.name: i for i, f in enumerate(FIELDS)}
@@ -541,6 +561,8 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
             "sleepH": round(sleep, 1),
             "sleepQ": int(np.clip(round(1 + 4 * base + rng.normal(0, 0.5)), 1, 5)),
             "sleepLatency": rng.choice(["fast", "mid", "slow", "vslow"], p=[.4, .3, .2, .1]),
+            # Пробудження тягнуться за якістю ночі: коротка ніч частіше рвана.
+            "awakenings": ["no", "once", "few", "many"][int(np.clip(round((1 - base) * 3 + rng.normal(0, 0.7)), 0, 3))],
             "bedtime": rng.choice(["e23", "e00", "e01", "e02", "late"], p=[.2, .3, .25, .15, .1]),
             "detached": rng.choice(["no", "partly", "yes"], p=[.25, .4, .35]),
             "rumination": rum,
@@ -553,6 +575,7 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
             "mood@afternoon": int(np.clip(mo + rng.integers(-1, 2), 1, 5)),
             "mood@evening": int(np.clip(mo + rng.integers(-1, 1), 1, 5)),
             "worryAM": int(np.clip(round(rng.normal(2.6, 1.0)), 1, 5)),
+            "dayLoad": int(np.clip(round(rng.normal(3.1, 1.1)), 1, 5)),
             "rushed": int(np.clip(round(rng.normal(3.0, 1.0)), 1, 5)),
             "interrupted": rng.choice(["none", "few", "many"], p=[.3, .45, .25]),
             "output": outp,
@@ -571,8 +594,11 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
             "intentMatch": float(rng.choice([0.0, 0.5, 1.0], p=[.30, .25, .45])),
             "jobConfidence": int(np.clip(round(rng.normal(3.2, 1.0)), 1, 5)),
             "dayControl": int(np.clip(round(auto + rng.normal(0, 0.9)), 1, 5)),
-            "movePlan": rng.choice(["none", "light", "workout"], p=[.35, .45, .20]),
+            "movePlan": rng.choice(["none", "light", "active", "workout"], p=[.35, .35, .10, .20]),
             "outdoorNow": rng.choice(["none", "short", "long"], p=[.3, .5, .2]),
+            # Тіло зранку тягнеться за відновленням — інакше поле було б чистим
+            # шумом і драйвер по ньому не міг би зʼявитись навіть у синтетиці.
+            "bodyFeel": int(np.clip(round(1 + 4 * (rec * 0.7 + rng.normal(0, 0.18))), 1, 5)),
             "moved": rng.choice(["none", "light", "active", "workout"], p=[.35, .35, .10, .20]),
             "outdoor": rng.choice(["none", "short", "long"], p=[.3, .45, .25]),
             "dayScore": score,

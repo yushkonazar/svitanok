@@ -78,6 +78,17 @@ export const FIELDS = [
     polarity: -1,
     levels: ['fast', 'mid', 'slow', 'vslow'],
   },
+  // Нічні пробудження — ТРЕТІЙ незалежний вимір сну поряд із тривалістю та
+  // якістю. Consensus Sleep Diary міряє їх окремо саме тому, що одне з одного
+  // вони не виводяться: 8 годин із чотирма пробудженнями — це не 8 годин.
+  {
+    name: 'awakenings',
+    slot: 'morning',
+    index: RECOVERY,
+    weight: 0.8,
+    polarity: -1,
+    levels: ['no', 'once', 'few', 'many'],
+  },
   {
     name: 'bedtime',
     slot: 'morning',
@@ -112,6 +123,12 @@ export const FIELDS = [
   { name: 'mood@afternoon', slot: 'afternoon', index: RESOURCE, weight: 1.0, polarity: 1 },
   { name: 'mood@evening', slot: 'evening', index: RESOURCE, weight: 1.0, polarity: 1 },
   { name: 'worryAM', slot: 'morning', index: RESOURCE, weight: 0.8, polarity: -1 },
+  // Очікуване навантаження дня. Полярність −1 за тим самим зразком, що worryAM:
+  // обидва — РАНКОВІ передчуття, які тиснуть на ресурс ще до того, як день
+  // стався. Напрямок при цьому НЕ вгадується наперед: драйвери покажуть, чи
+  // справді щільний день виходить гіршим — у власника цілком може бути
+  // навпаки, і порожній день гнітитиме сильніше за завантажений.
+  { name: 'dayLoad', slot: 'morning', index: RESOURCE, weight: 0.8, polarity: -1 },
   { name: 'rushed', slot: 'afternoon', index: RESOURCE, weight: 0.8, polarity: -1 },
   // Переривання ЗЗОВНІ — окремо від власного відволікання. Доти обидві
   // причини зливались у блокер 'distract', хоч рішення в них різні.
@@ -198,13 +215,18 @@ export const FIELDS = [
   // Рівні дзеркалять вечірні аналоги слово в слово (none/light/workout проти
   // moved; none/short/long проти outdoor) — інакше пара «намір проти факту»
   // порівнювала б різні шкали.
+  //
+  // ⚠️ Рівні movePlan — ТІ САМІ ЧОТИРИ, що в moved, і це не косметика. Доти їх
+  // було три (без 'active'), тобто нормалізація розʼїжджалась тихо: «легко» в
+  // намірі давало 0.50, а «легко» у факті — 0.33. Пара «намір проти факту»
+  // порівнювала два різні нулі-до-одиниці й систематично завищувала намір.
   {
     name: 'movePlan',
     slot: 'morning',
     index: BODY,
     weight: 1.0,
     polarity: 1,
-    levels: ['none', 'light', 'workout'],
+    levels: ['none', 'light', 'active', 'workout'],
   },
   {
     name: 'outdoorNow',
@@ -214,6 +236,10 @@ export const FIELDS = [
     polarity: 1,
     levels: ['none', 'short', 'long'],
   },
+  // Стан тіла зранку — ТРЕТІЙ не-вечірній вхід у BODY і єдиний, що міряє саме
+  // тіло, а не його використання: рух і час надворі — це поведінка. Найдешевший
+  // спосіб відрізнити «мало рухався, бо лінь» від «мало рухався, бо болить».
+  { name: 'bodyFeel', slot: 'morning', index: BODY, weight: 1.0, polarity: 1 },
 ];
 
 // Гейти — свідомо консервативні (той самий інваріант, що вже в stats-core:
@@ -941,16 +967,27 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
   // реальну відповідь, окрім найгіршої. Відповідь власника при цьому НЕ
   // перезаписується: якщо поле все ж заповнене (легасі-доба, ручна правка),
   // береться воно.
+  // ⚠️ ВИВЕДЕНЕ ПЕРЕКРИВАЄ ЗБЕРЕЖЕНЕ, а не навпаки — і це другий захист, не
+  // основний. Основний стоїть в UI: закритий showIf чистить відповідь (див.
+  // clearGatedAnswers у questions.ts). Але послідовність «обрав Спав → 8 годин
+  // → передумав, Не спав» лишала в KV sleepH=8 разом із sleepKind='none', і
+  // при старому `m.sleepH ?? derived` модель читала б безсонну ніч як 8 годин
+  // сну — найгірший з можливих результатів для поля, яке додано саме заради
+  // таких ночей. Легасі-доби це не зачіпає: там sleepKind=null, отже derived
+  // немає взагалі, і береться збережене.
   const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
   const kind = m.sleepKind ?? null;
   const derived = kind ? DERIVED_SLEEP[kind] : undefined;
 
   return {
     sleepKind: kind,
-    sleepH: m.sleepH ?? derived?.h ?? null,
-    sleepQ: m.sleepQ ?? derived?.q ?? null,
+    sleepH: derived?.h ?? m.sleepH ?? null,
+    sleepQ: derived?.q ?? m.sleepQ ?? null,
     sleepLatency: m.sleepLatency ?? null,
+    awakenings: m.awakenings ?? null,
     bedtime: m.bedtime ?? null,
+    bodyFeel: m.bodyFeel ?? null,
+    dayLoad: m.dayLoad ?? null,
     'energy@morning': m.energy ?? null,
     'energy@afternoon': a.energy ?? null,
     'energy@evening': e.energy ?? null,
