@@ -865,6 +865,10 @@ export const EMPTY_STATS: Stats = {
     lateReasons: [],
     lateNights: 0,
   },
+  // ready:false, а не вигадані нулі: порожній стан мусить читатись як «ще
+  // рано», а не як «зсув нульовий» чи «намір ніколи не збувався».
+  expectCalibration: { days: 30, n: 0, ready: false, needed: 8 },
+  moveIntent: { days: 30, n: 0, ready: false, needed: 5 },
   socialContext: {
     days: 60,
     filled: 0,
