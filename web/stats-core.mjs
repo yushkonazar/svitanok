@@ -6,7 +6,13 @@
 // драйвери/архетипи), а не inline тут: research/checkin_model.py лишається
 // специфікацією-оракулом, і держати JS-порт в одному місці з однією назвою
 // файлу простіше звіряти з golden-векторами (tests/checkin-model.test.ts).
-import { analyzeCheckinModel, flattenCheckinDay, cohensD, welchP } from './checkin-model.mjs';
+import {
+  analyzeCheckinModel,
+  flattenCheckinDay,
+  cohensD,
+  welchP,
+  sleepHoursOf,
+} from './checkin-model.mjs';
 //
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
@@ -224,6 +230,24 @@ export const CHECKIN_FIELDS = {
     // Якість окремо від тривалості — стандарт Consensus Sleep Diary (1..5).
     // Без неї поріг «<6.5год» рахує 8 годин поганого сну виспаним.
     sleepQ: { num: [1, 5], int: true },
+    // ⚠️ Причина зіпсованої ночі — мультивибір, дзеркало lateReason. Ніч без
+    // сну рідко має одну причину: чекав ранку І було незручно І доробляв
+    // проєкт — типова комбінація, а не рідкість.
+    nightReason: {
+      enumMulti: [
+        'wait',
+        'work',
+        'cant',
+        'uncomf',
+        'anxious',
+        'health',
+        'people',
+        'scroll',
+        'travel',
+        'other',
+      ],
+      max: MULTI_MAX,
+    },
     // Скільки засинав — третій незалежний факт (ліг / засинав / проспав).
     sleepLatency: { enum: ['fast', 'mid', 'slow', 'vslow'] },
     // Четвертий: скільки разів ніч рвалась. Із трьох попередніх не виводиться.
@@ -1634,7 +1658,9 @@ function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRece
       const en = CHECKIN_SLOTS.map((sl) => c[sl]?.energy).filter((v) => typeof v === 'number');
       out.push({
         d: key,
-        sleepH: typeof c.morning?.sleepH === 'number' ? c.morning.sleepH : null,
+        // sleepHoursOf, а не сире поле: у добу без сну того поля немає, і
+        // крива мовчки пропускала б найінформативнішу ніч замість нуля.
+        sleepH: sleepHoursOf(c.morning),
         energy: round1(avg(en)),
         // Сама КРИВА, не лише її середнє: три дні із середнім 3.0 можуть бути
         // «рівний день», «згорів надвечір» і «розігнався надвечір» — за avg
@@ -1872,7 +1898,9 @@ function buildSleepVsDayScore(checkins, todayKey, days = STATS_WINDOWS.checkinMi
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
     const c = checkins[dayKey(d)];
-    const sleep = c?.morning?.sleepH;
+    // ⚠️ Через sleepHoursOf: доти безсонні ночі ВИПАДАЛИ з порівняння, тобто
+    // «мало сну проти нормального» рахувалось без найгіршого кошика.
+    const sleep = sleepHoursOf(c?.morning);
     const score = c?.evening?.dayScore;
     if (typeof sleep === 'number' && typeof score === 'number') {
       (sleep < 6.5 ? low : ok).push(score);
@@ -2144,6 +2172,69 @@ function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
 }
 
 /**
+ * Як минали ночі: скільки було зіпсованих і ЧОМУ.
+ *
+ * ⚠️ БЕЗ ЦЬОГО НОВЕ ПИТАННЯ БУЛО Б НАПІВПОРОЖНІМ. Режим ночі живив «Індекс
+ * дня» — тобто безсонна ніч впливала на число, але ніде не була НАЗВАНА. А це
+ * та подія, яку треба бачити прямо: «дві ночі за місяць ти не спав узагалі» —
+ * факт, з яким можна щось зробити, на відміну від «Відновлення 34%».
+ *
+ * Причина при цьому важливіша за сам факт: «чекав ранку через комендантську»,
+ * «допрацьовував проєкт» і «не міг заснути» — три різні ночі з трьома різними
+ * висновками, і лише остання з них узагалі про сон.
+ *
+ * Порівняння оцінки дня — під тим самим гейтом, що решта блоку (CORR_MIN_N):
+ * зіпсовані ночі рідкісні, і «після безсонної ночі день гірший на 1.2» на двох
+ * спостереженнях було б не висновком, а монеткою.
+ */
+function buildNightKinds(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  const kinds = { slept: 0, naps: 0, none: 0 };
+  const reasons = {};
+  const roughScores = [];
+  const restScores = [];
+  const roughDates = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = dayKey(d);
+    d.setUTCDate(d.getUTCDate() + 1);
+    const rec = checkins[key];
+    const kind = rec?.morning?.sleepKind;
+    if (!kind || !(kind in kinds)) continue;
+    kinds[kind]++;
+    const score = rec?.evening?.dayScore;
+    const rough = kind !== 'slept';
+    if (rough) {
+      roughDates.push(key);
+      for (const r of asList(rec?.morning?.nightReason)) reasons[r] = (reasons[r] || 0) + 1;
+    }
+    if (typeof score === 'number') (rough ? roughScores : restScores).push(score);
+  }
+  const nights = kinds.slept + kinds.naps + kinds.none;
+  const rough = kinds.naps + kinds.none;
+  return {
+    days,
+    nights,
+    ...kinds,
+    rough,
+    // Дати самих ночей — факт, а не висновок, тож без гейта. Саме вони дають
+    // «це було позавчора», якого не дасть жоден відсоток. Кап на 5: далі йде
+    // хвіст, який ніхто не читає.
+    dates: roughDates.slice(-5),
+    reasons: rankCounts(reasons),
+    effect:
+      roughScores.length >= CORR_MIN_N && restScores.length >= CORR_MIN_N
+        ? {
+            ready: true,
+            roughAvg: round1(avg(roughScores)),
+            restAvg: round1(avg(restScores)),
+            nRough: roughScores.length,
+          }
+        : { ready: false, needed: CORR_MIN_N, nRough: roughScores.length },
+  };
+}
+
+/**
  * «Індекс дня» — повна модель (checkin-model.mjs) над останніми
  * STATS_WINDOWS.checkinDeep добами. КОЖЕН календарний день вікна стає рядком (навіть
  * повністю порожній -> усі поля null): лаговий звʼязок «сьогодні->завтра»
@@ -2175,7 +2266,11 @@ function buildCheckinWeekly(checkins, todayKey, weeks = STATS_WINDOWS.checkinWee
     const b = buckets[w];
     if (!b) continue;
     b.n++;
-    if (typeof c.morning?.sleepH === 'number') b.sleep.push(c.morning.sleepH);
+    // Те саме джерело: без нього тижневий середній сон рахувався ЛИШЕ по
+    // ночах, коли ти спав, — тобто був завищений рівно тими ночами, які
+    // найбільше на нього впливають.
+    const sh = sleepHoursOf(c.morning);
+    if (sh !== null) b.sleep.push(sh);
     if (typeof c.evening?.dayScore === 'number') b.score.push(c.evening.dayScore);
     const en = CHECKIN_SLOTS.map((sl) => c[sl]?.energy).filter((v) => typeof v === 'number');
     if (en.length) b.energy.push(avg(en));
@@ -2542,6 +2637,7 @@ export function aggregateStats(store, todayKey) {
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
     appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
+    nightKinds: buildNightKinds(s.checkins, todayKey),
     socialContext: buildSocialContext(s.checkins, todayKey),
     // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
     // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,

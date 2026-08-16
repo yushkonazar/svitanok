@@ -946,6 +946,45 @@ export function analyzeCheckinModel(days) {
  * Частка |plan ∩ ate| / |plan| відповідає на те саме питання чесно, і span
  * поля [0,1] під неї вже був: міняється не контракт, а чим його заповнюють.
  */
+/**
+ * Числа для ночей, у які тривалість і якість не питались.
+ *
+ * ⚠️ Не з повітря: 'none' — нижня межа обох шкал (0 год, якість 1); 'naps' —
+ * дві години розірваного сну і якість 2, тобто гірше за будь-яку реальну
+ * відповідь, окрім найгіршої.
+ */
+const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
+
+/**
+ * Години сну з ранкового запису — ЄДИНЕ джерело на весь застосунок.
+ *
+ * ⚠️ ЗАРАДИ ЧОГО ОКРЕМА ФУНКЦІЯ. Виведення жило всередині flattenCheckinDay, і
+ * ним користувалась лише модель. Усі інші агрегації читали `morning.sleepH`
+ * НАПРЯМУ — а в добу без сну того поля просто немає (питання сховане й
+ * почищене). Тобто безсонна ніч не потрапляла ні в криву сну, ні в тижневе
+ * середнє, ні в порівняння «сон проти оцінки дня»: вона з них ВИПАДАЛА, і
+ * середній сон рахувався лише по ночах, коли ти спав, — тобто був
+ * систематично завищений рівно тими ночами, які найважливіші.
+ *
+ * Тепер правило одне на всіх, і обійти його можна лише свідомо.
+ *
+ * Режим ночі ГОЛОВНІШИЙ за збережене число: він і є найсвіжіша відповідь
+ * (послідовність «Спав, 8 годин -> передумав, Не спав» інакше лишала б вісім
+ * годин). Легасі-доби не зачіпає — там sleepKind немає взагалі.
+ */
+export function sleepHoursOf(m) {
+  const d = DERIVED_SLEEP[m?.sleepKind];
+  if (d) return d.h;
+  return typeof m?.sleepH === 'number' ? m.sleepH : null;
+}
+
+/** Якість сну за тим самим правилом, що sleepHoursOf. */
+export function sleepQualityOf(m) {
+  const d = DERIVED_SLEEP[m?.sleepKind];
+  if (d) return d.q;
+  return typeof m?.sleepQ === 'number' ? m.sleepQ : null;
+}
+
 export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const m = rec?.morning ?? {};
   const a = rec?.afternoon ?? {};
@@ -975,14 +1014,10 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
   // сну — найгірший з можливих результатів для поля, яке додано саме заради
   // таких ночей. Легасі-доби це не зачіпає: там sleepKind=null, отже derived
   // немає взагалі, і береться збережене.
-  const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
-  const kind = m.sleepKind ?? null;
-  const derived = kind ? DERIVED_SLEEP[kind] : undefined;
-
   return {
-    sleepKind: kind,
-    sleepH: derived?.h ?? m.sleepH ?? null,
-    sleepQ: derived?.q ?? m.sleepQ ?? null,
+    sleepKind: m.sleepKind ?? null,
+    sleepH: sleepHoursOf(m),
+    sleepQ: sleepQualityOf(m),
     sleepLatency: m.sleepLatency ?? null,
     awakenings: m.awakenings ?? null,
     bedtime: m.bedtime ?? null,

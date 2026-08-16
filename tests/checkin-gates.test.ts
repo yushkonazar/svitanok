@@ -158,3 +158,94 @@ describe('checkinTops — варіанти, яких не обирали', () =>
     expect(BLOCKER_VALUES).toContain('none');
   });
 });
+
+/* ⚠️ ГОЛОВНА ДІРА, ЯКУ ЗАКРИВАЄ sleepHoursOf.
+   Виведення сну жило всередині моделі, і ним користувалась ЛИШЕ вона. Решта
+   агрегацій читала morning.sleepH напряму — а в добу без сну того поля немає
+   (питання сховане й почищене). Тобто безсонна ніч випадала з кривої сну, з
+   тижневого середнього й з порівняння «сон проти оцінки дня»: середній сон
+   рахувався тільки по ночах, коли ти спав, і був завищений рівно тими ночами,
+   які на нього найбільше впливають. */
+describe('sleepHoursOf — одне джерело виведення на всі агрегації', () => {
+  const TODAY = '2026-08-16';
+  /** n діб: ranges — масив ранків, циклічно. */
+  const build = (mornings: Array<Record<string, unknown>>, evening: Record<string, unknown>) => {
+    let s = emptyStore();
+    const d = new Date(`${TODAY}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - (mornings.length - 1));
+    for (const m of mornings) {
+      const key = d.toISOString().slice(0, 10);
+      s = recordEvent(s, { type: 'checkin', slot: 'morning', ...m }, key);
+      s = recordEvent(s, { type: 'checkin', slot: 'evening', ...evening }, key);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return s;
+  };
+
+  it('ніч без сну входить у криву сну нулем, а не пропуском', () => {
+    const st = build([{ sleepKind: 'slept', sleepH: 8 }, { sleepKind: 'none' }], { dayScore: 3 });
+    const series = aggregateStats(st, TODAY).checkinSeries;
+    expect(series.map((p: { sleepH: number | null }) => p.sleepH)).toEqual([8, 0]);
+  });
+
+  it('тижневий середній сон більше не рахується лише по ночах, коли ти спав', () => {
+    const st = build([{ sleepKind: 'slept', sleepH: 8 }, { sleepKind: 'none' }], { dayScore: 3 });
+    const wk = aggregateStats(st, TODAY).checkinWeekly.at(-1)!;
+    // 8 і 0 -> 4. Доти було б 8: безсонна ніч просто зникала зі знаменника.
+    expect(wk.sleepAvg).toBe(4);
+  });
+
+  it('«дрімав» теж рахується — двома годинами, а не пропуском', () => {
+    const st = build([{ sleepKind: 'naps' }], { dayScore: 3 });
+    expect(aggregateStats(st, TODAY).checkinSeries[0]!.sleepH).toBe(2);
+  });
+});
+
+/* «Ніч без сну» мусить звучати СЛОВАМИ, а не лише впливати на число. */
+describe('nightKinds — зіпсовані ночі названо прямо', () => {
+  const TODAY = '2026-08-16';
+  const store = (() => {
+    let s = emptyStore();
+    const d = new Date(`${TODAY}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 4);
+    const kinds = [
+      { sleepKind: 'slept', sleepH: 7.5 },
+      { sleepKind: 'none', nightReason: ['wait', 'work'] },
+      { sleepKind: 'slept', sleepH: 8 },
+      { sleepKind: 'naps', nightReason: ['cant'] },
+      { sleepKind: 'slept', sleepH: 7 },
+    ];
+    for (const m of kinds) {
+      const key = d.toISOString().slice(0, 10);
+      s = recordEvent(s, { type: 'checkin', slot: 'morning', ...m }, key);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return s;
+  })();
+  const nk = aggregateStats(store, TODAY).nightKinds;
+
+  it('рахує режими ночі окремо', () => {
+    expect([nk.slept, nk.naps, nk.none, nk.rough]).toEqual([3, 1, 1, 2]);
+  });
+
+  it('причини — мультивибір, кожна окремо', () => {
+    expect(nk.reasons).toEqual(
+      expect.arrayContaining([
+        { value: 'wait', n: 1 },
+        { value: 'work', n: 1 },
+        { value: 'cant', n: 1 },
+      ]),
+    );
+  });
+
+  it('дати самих ночей — факт, тож без гейта', () => {
+    expect(nk.dates).toHaveLength(2);
+  });
+
+  /* Зіпсовані ночі рідкісні: «після безсонної день гірший на 1.2» на двох
+     спостереженнях — монетка, яка читається як висновок. */
+  it('порівняння з рештою днів мовчить, поки вибірка мала', () => {
+    expect(nk.effect.ready).toBe(false);
+    expect(nk.effect.needed).toBeGreaterThanOrEqual(8);
+  });
+});
