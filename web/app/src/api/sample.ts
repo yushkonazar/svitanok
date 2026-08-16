@@ -642,6 +642,21 @@ export const SAMPLE_STATS: Stats = {
       { cat: 'chores', n: 2, dayScore: null },
     ],
   },
+  // Квадранти: демо показує ВСІ чотири кути непорожніми, але середню оцінку —
+  // лише там, де діб досить (гриндж і потік). Порожній кут із прочерком і є
+  // типовим станом перших тижнів, і його теж треба бачити.
+  workQuadrants: {
+    days: 30,
+    n: 19,
+    mid: 5,
+    needed: 4,
+    cells: {
+      flow: { n: 5, dayScore: 4.4, scored: 5 },
+      hardwin: { n: 4, dayScore: 3.8, scored: 4 },
+      grind: { n: 4, dayScore: 2.5, scored: 4 },
+      quiet: { n: 1, dayScore: null, scored: 1 },
+    },
+  },
   // Ночі: у демо їх чотири зіпсовані з тридцяти — і effect свідомо НЕ готовий.
   // Показати «після безсонної ночі день гірший на 1.2» на чотирьох
   // спостереженнях означало б намалювати монетку, яка читається як висновок.
@@ -864,6 +879,18 @@ export const EMPTY_STATS: Stats = {
   sleepVsDayScore: { ready: false, needed: 8, low: 0, ok: 0 },
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
   categoryInsight: { days: 30, total: 0, rows: [] },
+  workQuadrants: {
+    days: 30,
+    n: 0,
+    mid: 0,
+    needed: 4,
+    cells: {
+      flow: { n: 0, dayScore: null, scored: 0 },
+      hardwin: { n: 0, dayScore: null, scored: 0 },
+      grind: { n: 0, dayScore: null, scored: 0 },
+      quiet: { n: 0, dayScore: null, scored: 0 },
+    },
+  },
   nightKinds: {
     days: 30,
     nights: 0,

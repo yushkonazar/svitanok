@@ -2128,6 +2128,83 @@ function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
 }
 
 /**
+ * Зусилля × результат — чотири типи робочого дня.
+ *
+ * ⚠️ ЦЕ ЄДИНИЙ СПОЖИВАЧ ПАДА «work2d» ПОЗА МОДЕЛЛЮ. Обидва поля збираються
+ * ОДНИМ тапом саме заради квадрантів (NASA-TLX: зусилля й результат — різні
+ * виміри), але картки для них не існувало: effort і output лише додавали ваги
+ * в «Індекс дня». Тобто найдешевше зібраний вимір у всьому чек-іні нічого не
+ * пояснював.
+ *
+ * ПОРОГИ ФІКСОВАНІ (≥4 високо, ≤2 низько), а не медіанні — і це рішення, а не
+ * лінощі. Медіанний поділ «відносно твоїх звичайних днів» звучить розумніше,
+ * але він ПЕРЕПИСУЄ МИНУЛЕ: доба, яку ти бачив як «потік», через місяць нових
+ * даних мовчки стає «тихим днем», бо зсунулась медіана. Для щоденника це гірше
+ * за грубішу шкалу — зникає сама можливість сказати «таких днів стало більше».
+ *
+ * Трійка по будь-якій осі — НЕ квадрант, а `mid`, і він показується явно.
+ * Заштовхати середину в найближчий кут означало б вигадати позицію дня, якої
+ * власник не називав.
+ */
+const QUADRANT_HI = 4;
+const QUADRANT_LO = 2;
+/** Нижче цього середню оцінку кута не показуємо (той самий поріг, що DAY_SCORE_MIN_N
+ *  у карті станів): середнє двох діб — це оцінка двох діб, а не типу днів. */
+const QUADRANT_SCORE_MIN = 4;
+
+function buildWorkQuadrants(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  const cells = {
+    flow: { n: 0, scores: [] },
+    hardwin: { n: 0, scores: [] },
+    grind: { n: 0, scores: [] },
+    quiet: { n: 0, scores: [] },
+  };
+  let mid = 0;
+  let n = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const e = checkins[dayKey(d)]?.evening;
+    d.setUTCDate(d.getUTCDate() + 1);
+    const effort = e?.effort;
+    const output = e?.output;
+    if (typeof effort !== 'number' || typeof output !== 'number') continue;
+    n++;
+    const hiE = effort >= QUADRANT_HI;
+    const loE = effort <= QUADRANT_LO;
+    const hiO = output >= QUADRANT_HI;
+    const loO = output <= QUADRANT_LO;
+    let key = null;
+    if (hiO && loE) key = 'flow';
+    else if (hiO && hiE) key = 'hardwin';
+    else if (loO && hiE) key = 'grind';
+    else if (loO && loE) key = 'quiet';
+    if (!key) {
+      mid++;
+      continue;
+    }
+    cells[key].n++;
+    if (typeof e.dayScore === 'number') cells[key].scores.push(e.dayScore);
+  }
+  return {
+    days,
+    n,
+    mid,
+    cells: Object.fromEntries(
+      Object.entries(cells).map(([k, v]) => [
+        k,
+        {
+          n: v.n,
+          dayScore: v.scores.length >= QUADRANT_SCORE_MIN ? round1(avg(v.scores)) : null,
+          scored: v.scores.length,
+        },
+      ]),
+    ),
+    needed: QUADRANT_SCORE_MIN,
+  };
+}
+
+/**
  * Як минали ночі: скільки було зіпсованих і ЧОМУ.
  *
  * ⚠️ БЕЗ ЦЬОГО НОВЕ ПИТАННЯ БУЛО Б НАПІВПОРОЖНІМ. Режим ночі живив «Індекс
@@ -2592,6 +2669,7 @@ export function aggregateStats(store, todayKey) {
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
     nightKinds: buildNightKinds(s.checkins, todayKey),
+    workQuadrants: buildWorkQuadrants(s.checkins, todayKey),
     socialContext: buildSocialContext(s.checkins, todayKey),
     // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
     // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,

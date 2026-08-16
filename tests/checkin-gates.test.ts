@@ -288,3 +288,60 @@ describe('checkinSlotEndsInMin — скільки блоку лишилось ж
     }
   });
 });
+
+/* Квадранти «зусилля × результат»: єдиний споживач пада work2d поза моделлю. */
+describe('workQuadrants — чотири типи робочого дня', () => {
+  const TODAY = '2026-08-16';
+  const build = (evenings: Array<Record<string, unknown>>) => {
+    let s = emptyStore();
+    const d = new Date(`${TODAY}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - (evenings.length - 1));
+    for (const e of evenings) {
+      s = recordEvent(s, { type: 'checkin', slot: 'evening', ...e }, d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return aggregateStats(s, TODAY).workQuadrants;
+  };
+
+  it('кожен кут ловить свій день', () => {
+    const q = build([
+      { effort: 1, output: 5 }, // потік
+      { effort: 5, output: 5 }, // важка перемога
+      { effort: 5, output: 1 }, // гриндж
+      { effort: 1, output: 1 }, // тихий
+    ]);
+    expect([q.cells.flow.n, q.cells.hardwin.n, q.cells.grind.n, q.cells.quiet.n]).toEqual([
+      1, 1, 1, 1,
+    ]);
+    expect(q.n).toBe(4);
+    expect(q.mid).toBe(0);
+  });
+
+  /* ⚠️ Трійка по осі — НЕ кут. Заштовхати середину в найближчий означало б
+     вигадати позицію дня, якої власник не називав. */
+  it('трійка по будь-якій осі йде в mid, а не в кут', () => {
+    const q = build([
+      { effort: 3, output: 5 },
+      { effort: 5, output: 3 },
+      { effort: 3, output: 3 },
+    ]);
+    expect(q.mid).toBe(3);
+    const cells = Object.values(q.cells) as Array<{ n: number }>;
+    expect(cells.every((c) => c.n === 0)).toBe(true);
+  });
+
+  it('доба без однієї з осей не рахується взагалі — половина пада це не день', () => {
+    const q = build([{ effort: 5 }, { output: 5 }, { dayScore: 4 }]);
+    expect(q.n).toBe(0);
+  });
+
+  /* Прочерк замість середнього — не «нуль», а «діб замало». Нуль читався б як
+     найгірша оцінка там, де оцінки просто немає. */
+  it('середня оцінка кута мовчить, поки діб менше за поріг', () => {
+    const q3 = build(Array.from({ length: 3 }, () => ({ effort: 5, output: 1, dayScore: 2 })));
+    expect(q3.cells.grind.n).toBe(3);
+    expect(q3.cells.grind.dayScore).toBeNull();
+    const q4 = build(Array.from({ length: 4 }, () => ({ effort: 5, output: 1, dayScore: 2 })));
+    expect(q4.cells.grind.dayScore).toBe(2);
+  });
+});

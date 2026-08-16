@@ -517,6 +517,30 @@ export const nightKindsSchema = z.object({
     })
     .default({ ready: false, nRough: 0 }),
 });
+/**
+ * Зусилля × результат — чотири типи робочого дня + `mid` (трійка по осі).
+ *
+ * ⚠️ dayScore кута nullable ЗІ ЗМІСТОМ: null — діб у куті менше за поріг, а не
+ * «нуль». Нуль читався б як найгірша оцінка там, де оцінки просто немає.
+ */
+const quadrantCellSchema = z.object({
+  n: int.default(0),
+  dayScore: num.nullable().default(null),
+  scored: int.default(0),
+});
+export const workQuadrantsSchema = z.object({
+  days: int.default(30),
+  n: int.default(0),
+  /** Доби з трійкою по осі: у кут не заштовхуємо, показуємо окремо. */
+  mid: int.default(0),
+  needed: int.default(4),
+  cells: z.object({
+    flow: quadrantCellSchema,
+    hardwin: quadrantCellSchema,
+    grind: quadrantCellSchema,
+    quiet: quadrantCellSchema,
+  }),
+});
 export const checkinTopsSchema = z.object({
   blocker: checkinTopSchema.nullable().default(null),
   helper: checkinTopSchema.nullable().default(null),
@@ -838,6 +862,18 @@ export const statsSchema = z.object({
     dates: [],
     reasons: [],
     effect: { ready: false, nRough: 0 },
+  }),
+  workQuadrants: workQuadrantsSchema.default({
+    days: 30,
+    n: 0,
+    mid: 0,
+    needed: 4,
+    cells: {
+      flow: { n: 0, dayScore: null, scored: 0 },
+      hardwin: { n: 0, dayScore: null, scored: 0 },
+      grind: { n: 0, dayScore: null, scored: 0 },
+      quiet: { n: 0, dayScore: null, scored: 0 },
+    },
   }),
   expectCalibration: expectCalibrationSchema.default({ days: 30, n: 0, ready: false }),
   moveIntent: moveIntentSchema.default({ days: 30, n: 0, ready: false }),
