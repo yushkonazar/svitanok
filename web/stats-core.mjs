@@ -189,6 +189,10 @@ export const CONSTRUCTIVE_FLAMES = new Set(['duolingo', 'chess']);
 // ваг і архетипів. Саме так сталося з moved:'active' (B5).
 export const CHECKIN_FIELDS = {
   morning: {
+    // ⚠️ Режим ночі стоїть ПЕРЕД тривалістю й гейтить її разом із якістю:
+    // на 'none'/'naps' ті питання не показуються, а значення виводить
+    // flattenCheckinDay. Рівні дзеркалять checkin-model.mjs.
+    sleepKind: { enum: ['none', 'naps', 'slept'] },
     sleepH: { num: [0, 14] },
     // Якість окремо від тривалості — стандарт Consensus Sleep Diary (1..5).
     // Без неї поріг «<6.5год» рахує 8 годин поганого сну виспаним.
@@ -199,7 +203,9 @@ export const CHECKIN_FIELDS = {
     // Чому пізно — питається УМОВНО (лише коли лягав пізно), тож у нормальні
     // дні коштує нуль тапів. «Мстива прокрастинація сну»: стресовий день ->
     // лягаю пізніше, щоб урвати час для себе.
-    lateReason: { enum: ['work', 'scroll', 'metime', 'anxious', 'social', 'other'] },
+    lateReason: {
+      enum: ['work', 'scroll', 'metime', 'anxious', 'social', 'late_home', 'other'],
+    },
     energy: { num: [1, 5], int: true },
     // Настрій (валентність) поруч з енергією (активація) — разом дають 2D
     // афект замість однієї осі. Обидва йдуть з ОДНОГО тапу по паду.
@@ -207,6 +213,14 @@ export const CHECKIN_FIELDS = {
     plan: { enumMulti: CATEGORY_VALUES, max: 2 },
     planApply: { num: [0, 20], int: true },
     worryAM: { num: [1, 5], int: true },
+    // Намір руху — перший НЕ-вечірній вхід у BODY. Рівні дзеркалять `moved`
+    // слово в слово, інакше пара «намір проти факту» порівнювала б різні шкали.
+    movePlan: { enum: ['none', 'light', 'workout'] },
+    // Пад «очікування × контроль»: один тап, два поля (той самий прийом, що
+    // AFFECT і work2d). dayControl живить AGENCY, dayExpect — калібрування
+    // проти вечірнього dayScore.
+    dayControl: { num: [1, 5], int: true },
+    dayExpect: { num: [1, 5], int: true },
   },
   afternoon: {
     // «off» лишається (легасі-записи), але розділено на конкретніші причини:
@@ -220,6 +234,13 @@ export const CHECKIN_FIELDS = {
     // тут, нормалізується в null і ТИХО вибиває поле (так було з moved:'active',
     // баг B5). CI-assert «enum ⊆ levels» стереже саме цю пару.
     withWhom: { enum: ['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed'] },
+    // Другий не-вечірній вхід у BODY; рівні дзеркалять вечірній `outdoor`.
+    outdoorNow: { enum: ['none', 'short', 'long'] },
+    // Друга не-вечірня опора WORK після pace.
+    mainProgress: { enum: ['none', 'started', 'half', 'most'] },
+    // Переривання ЗЗОВНІ — окремо від власного відволікання: доти обидві
+    // причини зливались у блокер 'distract', хоч рішення в них різні.
+    interrupted: { enum: ['none', 'few', 'many'] },
   },
   evening: {
     dayScore: { num: [1, 5], int: true },
@@ -1664,6 +1685,106 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
 }
 
 /**
+ * Калібрування очікувань: ранкове «яким очікую день» проти вечірньої оцінки.
+ *
+ * ⚠️ ЄДИНИЙ СПОЖИВАЧ dayExpect — і це навмисно. Поле не входить у жоден індекс
+ * моделі: воно описує не добу, а ПРОГНОЗ про неї, і змішати їх означало б
+ * зробити «Індекс дня» частково передбаченням самого себе.
+ *
+ * Що з цього видно, чого не видно більше нізвідки: систематичний зсув. Якщо
+ * bias стабільно відʼємний — ти недооцінюєш свої дні, і це окрема інформація
+ * від того, які вони насправді.
+ *
+ * Гейт CORR_MIN_N: на пʼятьох добах «ти песиміст» — це монетка.
+ */
+function buildExpectCalibration(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  const pairs = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[dayKey(d)];
+    d.setUTCDate(d.getUTCDate() + 1);
+    const exp = c?.morning?.dayExpect;
+    const act = c?.evening?.dayScore;
+    if (typeof exp !== 'number' || typeof act !== 'number') continue;
+    pairs.push({ exp, act });
+  }
+  const n = pairs.length;
+  if (n < CORR_MIN_N) return { days, n, needed: CORR_MIN_N, ready: false };
+  const diffs = pairs.map((p) => p.act - p.exp);
+  // Три кошики, а не лише середнє: bias=0 буває і коли щодня точно, і коли
+  // половина днів гірша, половина краща. Це різні люди.
+  return {
+    days,
+    n,
+    ready: true,
+    avgExpect: round1(avg(pairs.map((p) => p.exp))),
+    avgActual: round1(avg(pairs.map((p) => p.act))),
+    bias: round1(avg(diffs)),
+    better: diffs.filter((x) => x > 0).length,
+    same: diffs.filter((x) => x === 0).length,
+    worse: diffs.filter((x) => x < 0).length,
+  };
+}
+
+/** Рівні наміру й факту руху на одній ординальній шкалі. */
+const MOVE_RANK = { none: 0, light: 1, active: 2, workout: 3 };
+
+/**
+ * Намір руху (ранок) проти факту (вечір).
+ *
+ * ⚠️ ДВА РІЗНІ ПИТАННЯ, а не одне. «Скільки разів намір збувся» і «скільки
+ * разів рух стався без наміру» — різні речі: перше про виконання, друге про
+ * те, що рух буває й непланованим. Зводити їх в один відсоток означало б
+ * втратити половину картини.
+ *
+ * Намір вважається виконаним, коли ФАКТ не нижчий за план: запланував легкий
+ * рух, а вийшло тренування — це виконано, а не «мимо».
+ */
+function buildMoveIntent(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  let planned = 0;
+  let keptPlan = 0;
+  let noPlanButMoved = 0;
+  let noPlanDays = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[dayKey(d)];
+    d.setUTCDate(d.getUTCDate() + 1);
+    const plan = c?.morning?.movePlan;
+    const fact = c?.evening?.moved;
+    if (plan === undefined || fact === undefined) continue;
+    const pr = MOVE_RANK[plan];
+    const fr = MOVE_RANK[fact];
+    if (pr === undefined || fr === undefined) continue;
+    if (pr > 0) {
+      planned++;
+      if (fr >= pr) keptPlan++;
+    } else {
+      noPlanDays++;
+      if (fr > 0) noPlanButMoved++;
+    }
+  }
+  const total = planned + noPlanDays;
+  if (total < MOVE_MIN_N) return { days, n: total, needed: MOVE_MIN_N, ready: false };
+  return {
+    days,
+    n: total,
+    ready: true,
+    planned,
+    kept: keptPlan,
+    // Порожній знаменник -> null, а не 0%: «нуль із нуля» і «нуль із десяти» —
+    // різні твердження, і плутати їх ми вже перестали в конверсіях воронки.
+    keptPct: planned > 0 ? Math.round((keptPlan / planned) * 100) : null,
+    noPlanDays,
+    noPlanButMoved,
+  };
+}
+
+/** Нижче — і «намір збувається в 100%» стоїть на одній добі. */
+const MOVE_MIN_N = 5;
+
+/**
  * Явка по блоках за останні N діб. Самі пропуски — теж сигнал: ранок заповнений
  * 25 разів, а вечір 4 — це вже висновок, і чесніший за будь-яку кореляцію.
  */
@@ -2362,6 +2483,11 @@ export function aggregateStats(store, todayKey) {
     // Дрейф наміру — на ВЖЕ зібраних даних (plan/ate є роками), тож працює з
     // першого дня, не чекає накопичення нових полів.
     intentDrift: buildIntentDrift(s.checkins, todayKey),
+    // ⚠️ Обидва блоки існують, щоб нові ранкові питання не збирались у пусту:
+    // dayExpect не входить у жоден індекс, а movePlan сам по собі лише живить
+    // BODY — пару «намір проти факту» без цієї функції ніхто б не побачив.
+    expectCalibration: buildExpectCalibration(s.checkins, todayKey),
+    moveIntent: buildMoveIntent(s.checkins, todayKey),
     checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
     checkinFill: buildCheckinFill(s.checkins, todayKey),
     planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),

@@ -43,6 +43,24 @@ export const INDEX_LABEL = {
 /** @type {ModelField[]} */
 export const FIELDS = [
   // ── Відновлення ────────────────────────────────────────────────────────────
+  // ⚠️ sleepKind — РЕЖИМ ночі, а не її тривалість, і він стоїть перед усім
+  // іншим про сон. «Не спав» і «дрімав уривками» доти лягали в sleepH як
+  // «мало спав», тобто три різні ночі ставали однією.
+  //
+  // Він НЕ замінює sleepH/sleepQ, а гейтить їх у чек-іні: на не-нічних
+  // варіантах ті два питання не показуються, а значення ВИВОДЯТЬСЯ (нижче, у
+  // flattenCheckinDay). Лишити їх порожніми було б найгіршим варіантом:
+  // RECOVERY утратив би два з чотирьох ранкових полів саме в ту добу, яка
+  // найінформативніша, і при MIN_FIELDS_PER_INDEX=2 найгірші ночі зникали б з
+  // моделі взагалі.
+  {
+    name: 'sleepKind',
+    slot: 'morning',
+    index: RECOVERY,
+    weight: 1.2,
+    polarity: 1,
+    levels: ['none', 'naps', 'slept'],
+  },
   {
     name: 'sleepH',
     slot: 'morning',
@@ -95,6 +113,16 @@ export const FIELDS = [
   { name: 'mood@evening', slot: 'evening', index: RESOURCE, weight: 1.0, polarity: 1 },
   { name: 'worryAM', slot: 'morning', index: RESOURCE, weight: 0.8, polarity: -1 },
   { name: 'rushed', slot: 'afternoon', index: RESOURCE, weight: 0.8, polarity: -1 },
+  // Переривання ЗЗОВНІ — окремо від власного відволікання. Доти обидві
+  // причини зливались у блокер 'distract', хоч рішення в них різні.
+  {
+    name: 'interrupted',
+    slot: 'afternoon',
+    index: RESOURCE,
+    weight: 0.8,
+    polarity: -1,
+    levels: ['none', 'few', 'many'],
+  },
   // ── Робота ───────────────────────────────────────────────────────────────────
   { name: 'output', slot: 'evening', index: WORK, weight: 1.5, polarity: 1 },
   { name: 'focusQuality', slot: 'evening', index: WORK, weight: 1.2, polarity: 1 },
@@ -124,10 +152,22 @@ export const FIELDS = [
     legacyUnscored: ['off'],
   },
   { name: 'jobProgress', slot: 'evening', index: WORK, weight: 0.6, polarity: 1 },
+  // Прогрес на ОБІД — друга не-вечірня опора WORK після pace. До неї індекс
+  // тримався поза вечором на одному полі.
+  {
+    name: 'mainProgress',
+    slot: 'afternoon',
+    index: WORK,
+    weight: 1.0,
+    polarity: 1,
+    levels: ['none', 'started', 'half', 'most'],
+  },
   // ── Автономія / сенс ─────────────────────────────────────────────────────────
   { name: 'autonomy', slot: 'evening', index: AGENCY, weight: 1.5, polarity: 1 },
   { name: 'intentMatch', slot: 'derived', index: AGENCY, weight: 1.2, polarity: 1, span: [0, 1] },
   { name: 'jobConfidence', slot: 'evening', index: AGENCY, weight: 0.6, polarity: 1 },
+  // Очікуваний контроль над днем (ранок) — пара до вечірньої autonomy.
+  { name: 'dayControl', slot: 'morning', index: AGENCY, weight: 1.0, polarity: 1 },
   // ── Тіло / режим ─────────────────────────────────────────────────────────────
   {
     name: 'moved',
@@ -146,6 +186,31 @@ export const FIELDS = [
     slot: 'evening',
     index: BODY,
     weight: 1.2,
+    polarity: 1,
+    levels: ['none', 'short', 'long'],
+  },
+  // ⚠️ ДВА НЕ-ВЕЧІРНІ ВХОДИ В BODY — і це головна причина, чому вони тут.
+  // Доти індекс мав РІВНО два поля, обидва вечірні, при MIN_FIELDS_PER_INDEX=2:
+  // запасу не було взагалі, і один пропущений тап робив BODY=null на всю добу,
+  // а отже викидав її з архетипів. Заміряно: при явці вечора 20% архетипи
+  // діставали 10 придатних діб із потрібних 20.
+  //
+  // Рівні дзеркалять вечірні аналоги слово в слово (none/light/workout проти
+  // moved; none/short/long проти outdoor) — інакше пара «намір проти факту»
+  // порівнювала б різні шкали.
+  {
+    name: 'movePlan',
+    slot: 'morning',
+    index: BODY,
+    weight: 1.0,
+    polarity: 1,
+    levels: ['none', 'light', 'workout'],
+  },
+  {
+    name: 'outdoorNow',
+    slot: 'afternoon',
+    index: BODY,
+    weight: 1.0,
     polarity: 1,
     levels: ['none', 'short', 'long'],
   },
@@ -863,9 +928,27 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const ate = asListFn(a.ate).filter((x) => categoryValues.includes(x));
   const intentMatch =
     plan.length && ate.length ? plan.filter((p) => ate.includes(p)).length / plan.length : null;
+
+  // ⚠️ ВИВЕДЕННЯ СНУ, а не пропуск. На «не спав» і «дрімав» чек-ін не питає
+  // тривалість і якість — питати нема про що. Але ЛИШИТИ ЇХ null означало б
+  // забрати в RECOVERY два з чотирьох ранкових полів саме в найінформативнішу
+  // добу, а при MIN_FIELDS_PER_INDEX=2 це часто робить весь індекс null —
+  // тобто найгірші ночі просто зникали б з моделі. Результат, протилежний
+  // тому, заради чого питання й додане.
+  //
+  // Числа не з повітря: 'none' — нижня межа обох шкал (0 год, якість 1);
+  // 'naps' — 2 год розірваного сну і якість 2, тобто гірше за будь-яку
+  // реальну відповідь, окрім найгіршої. Відповідь власника при цьому НЕ
+  // перезаписується: якщо поле все ж заповнене (легасі-доба, ручна правка),
+  // береться воно.
+  const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
+  const kind = m.sleepKind ?? null;
+  const derived = kind ? DERIVED_SLEEP[kind] : undefined;
+
   return {
-    sleepH: m.sleepH ?? null,
-    sleepQ: m.sleepQ ?? null,
+    sleepKind: kind,
+    sleepH: m.sleepH ?? derived?.h ?? null,
+    sleepQ: m.sleepQ ?? derived?.q ?? null,
     sleepLatency: m.sleepLatency ?? null,
     bedtime: m.bedtime ?? null,
     'energy@morning': m.energy ?? null,
@@ -876,6 +959,11 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
     'mood@evening': e.mood ?? null,
     worryAM: m.worryAM ?? null,
     rushed: a.rushed ?? null,
+    interrupted: a.interrupted ?? null,
+    mainProgress: a.mainProgress ?? null,
+    outdoorNow: a.outdoorNow ?? null,
+    movePlan: m.movePlan ?? null,
+    dayControl: m.dayControl ?? null,
     pace: a.pace ?? null,
     output: e.output ?? null,
     focusQuality: e.focusQuality ?? null,

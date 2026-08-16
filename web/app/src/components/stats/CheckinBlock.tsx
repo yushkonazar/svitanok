@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import type { Stats } from '../../api/schema.ts';
-import { SectionHead, StatRow, Ph, Hint } from '../ui/primitives.tsx';
+import { SectionHead, StatRow, Ph, Hint, Note } from '../ui/primitives.tsx';
 import { haptic } from '../../telegram.ts';
 import { DayIndexHero } from './DayIndexHero.tsx';
 import { DayShapeChart } from '../charts/DayShapeChart.tsx';
@@ -191,6 +191,8 @@ export function CheckinBlock({ s }: { s: Stats }) {
   // прибирати їх із сервера немає причин, але малювати вдруге теж.
   const cat = s.categoryInsight;
   const drift = s.intentDrift;
+  const cal = s.expectCalibration;
+  const mv = s.moveIntent;
   const tops = s.checkinTops;
   const social = s.socialContext;
 
@@ -485,6 +487,115 @@ export function CheckinBlock({ s }: { s: Stats }) {
                 час; пара, що трапилась один раз, у список не потрапляє.
               </Hint>
             </Card>
+          )}
+
+          {/* ⚠️ ЄДИНИЙ СПОЖИВАЧ dayExpect. Поле навмисно не входить у жоден
+              індекс моделі: воно про ПРОГНОЗ доби, а не про саму добу, і
+              змішати їх означало б зробити «Індекс дня» частково передбаченням
+              самого себе. Без цієї картки питання збиралось би в пусту. */}
+          {cal.ready ? (
+            <Card>
+              <SubLabel>ОЧІКУВАННЯ ПРОТИ РЕАЛЬНОСТІ · {daysWindowLabel(cal.days, cal.n)}</SubLabel>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span
+                  className="font-mono text-[22px] font-medium leading-none"
+                  style={{
+                    color:
+                      (cal.bias ?? 0) > 0.2
+                        ? 'var(--color-pos)'
+                        : (cal.bias ?? 0) < -0.2
+                          ? 'var(--color-neg)'
+                          : undefined,
+                  }}
+                >
+                  {(cal.bias ?? 0) > 0 ? '+' : ''}
+                  {cal.bias}
+                </span>
+                <span className="text-[11.5px] text-tx2">
+                  {(cal.bias ?? 0) > 0.2
+                    ? 'дні виходять кращими, ніж очікуєш'
+                    : (cal.bias ?? 0) < -0.2
+                      ? 'дні виходять гіршими, ніж очікуєш'
+                      : 'очікування збігається з реальністю'}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-x-3 font-mono text-[10px] text-tx3">
+                <span>очікував {cal.avgExpect}</span>
+                <span>вийшло {cal.avgActual}</span>
+                <span>краще {cal.better}</span>
+                <span>так само {cal.same}</span>
+                <span>гірше {cal.worse}</span>
+              </div>
+              <Hint>
+                Ранкове «яким очікуєш день» проти вечірньої оцінки. Число — СЕРЕДНІЙ зсув:
+                додатний означає, що дні виходять кращими за прогноз. Три кошики поруч не
+                зайві: нульовий зсув буває і коли щодня влучаєш, і коли половина днів краща,
+                а половина гірша — це різні історії. Рахується від {cal.n} діб, де є обидві
+                відповіді.
+              </Hint>
+            </Card>
+          ) : (
+            cal.n > 0 && (
+              <Card>
+                <SubLabel>ОЧІКУВАННЯ ПРОТИ РЕАЛЬНОСТІ</SubLabel>
+                <Note>
+                  Потрібно {cal.needed} діб, де є і ранкове очікування, і вечірня оцінка —
+                  зараз {cal.n}. На меншій вибірці «ти песиміст» було б монеткою.
+                </Note>
+              </Card>
+            )
+          )}
+
+          {/* Пара «намір проти факту» для руху. movePlan сам по собі живить
+              лише BODY; без цієї картки звʼязок із вечірнім `moved` ніхто б
+              не побачив. */}
+          {mv.ready ? (
+            <Card>
+              <SubLabel>РУХ: НАМІР ПРОТИ ФАКТУ · {daysWindowLabel(mv.days, mv.n)}</SubLabel>
+              <div className="mt-2 flex flex-col gap-1">
+                <StatRow
+                  label="Намір збувся"
+                  value={
+                    mv.keptPct === null ? (
+                      <span className="font-normal text-tx3">планів не було</span>
+                    ) : (
+                      <>
+                        {mv.keptPct}%
+                        <span className="ml-1.5 font-normal text-tx3">
+                          {mv.kept}/{mv.planned}
+                        </span>
+                      </>
+                    )
+                  }
+                />
+                <StatRow
+                  label="Рух без плану"
+                  value={
+                    <>
+                      {mv.noPlanButMoved}
+                      <span className="ml-1.5 font-normal text-tx3">із {mv.noPlanDays}</span>
+                    </>
+                  }
+                />
+              </div>
+              <Hint>
+                Ранкове «рух заплановано?» проти вечірнього «рух сьогодні». Намір рахується
+                виконаним, коли факт не НИЖЧИЙ за план: планував легкий рух, вийшло
+                тренування — це виконано. Другий рядок про протилежне: скільки разів рух
+                стався там, де його не планував. Зводити обидва в один відсоток означало б
+                втратити половину картини.
+              </Hint>
+            </Card>
+          ) : (
+            mv.n > 0 && (
+              <Card>
+                <SubLabel>РУХ: НАМІР ПРОТИ ФАКТУ</SubLabel>
+                <Note>
+                  Потрібно {mv.needed} діб, де є і ранковий намір, і вечірній факт — зараз{' '}
+                  {mv.n}.
+                </Note>
+              </Card>
+            )
           )}
 
           {/* ⚠️ ТУТ БУЛА КАРТКА «ПОДАЧІ: СЛОВА ↔ ЖУРНАЛ» — прибрана на вимогу

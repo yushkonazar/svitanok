@@ -13,6 +13,10 @@ import { CHECKIN_NUDGE_WINDOWS, matchCheckinNudgeWindow } from '../web/stats-cor
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { isCheckinSlotFilled } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
+import { asList, CATEGORY_VALUES } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { flattenCheckinDay, dayIndices } from '../web/checkin-model.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
 import { shouldSendCheckinNudge } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { inSleepNudgeWindow, shouldSendSleepNudge, staleSleepNudges } from '../web/stats-core.mjs';
@@ -1282,5 +1286,93 @@ describe('checkinNudgeCheck — предикат заповненості не �
   it('слот перевіряється спільним предикатом, а не Boolean(...)', () => {
     expect(cron).toContain('isCheckinSlotFilled(store.checkins');
     expect(cron).not.toMatch(/slotFilled:\s*Boolean\(/);
+  });
+});
+
+/* ⚠️ ВИВЕДЕННЯ СНУ — головна пастка нового першого питання.
+ *
+ * На «не спав» і «дрімав» чек-ін не питає тривалість і якість. Якби ці поля
+ * просто лишались порожніми, RECOVERY утратив би два з чотирьох ранкових полів
+ * САМЕ в найінформативнішу добу — а при MIN_FIELDS_PER_INDEX=2 це часто робить
+ * увесь індекс null, тобто найгірші ночі зникали б з моделі. Результат,
+ * протилежний тому, заради чого питання й додане. */
+describe('sleepKind — режим ночі виводить тривалість і якість', () => {
+  const flat = (morning: Record<string, unknown>) =>
+    flattenCheckinDay({ morning }, asList, CATEGORY_VALUES);
+
+  it('«не спав» -> нижня межа обох шкал, а не null', () => {
+    const f = flat({ sleepKind: 'none' });
+    expect(f.sleepKind).toBe('none');
+    expect(f.sleepH).toBe(0);
+    expect(f.sleepQ).toBe(1);
+  });
+
+  it('«дрімав» -> розірваний сон, гірший за будь-яку реальну відповідь, окрім найгіршої', () => {
+    const f = flat({ sleepKind: 'naps' });
+    expect(f.sleepH).toBe(2);
+    expect(f.sleepQ).toBe(2);
+  });
+
+  it('«спав» нічого не вигадує — питаємо як раніше', () => {
+    expect(flat({ sleepKind: 'slept' }).sleepH).toBeNull();
+    expect(flat({ sleepKind: 'slept', sleepH: 7.5, sleepQ: 4 }).sleepH).toBe(7.5);
+  });
+
+  /* Власна відповідь ГОЛОВНІША за виведену: легасі-доба чи ручна правка не
+     мають перетиратись припущенням. */
+  it('заповнене поле не перезаписується виведеним', () => {
+    const f = flat({ sleepKind: 'naps', sleepH: 4.5, sleepQ: 3 });
+    expect(f.sleepH).toBe(4.5);
+    expect(f.sleepQ).toBe(3);
+  });
+
+  it('без sleepKind поводимось як раніше — легасі-доби не ламаються', () => {
+    const f = flat({ sleepH: 7.5 });
+    expect(f.sleepKind).toBeNull();
+    expect(f.sleepH).toBe(7.5);
+    expect(f.sleepQ).toBeNull();
+  });
+
+  /* ⚠️ РАДИ ЧОГО ВСЕ: доба без сну мусить ЗАЛИШИТИСЬ у моделі. */
+  it('ніч без сну лишає RECOVERY порахованим, а не null', () => {
+    const ix = dayIndices(flat({ sleepKind: 'none', bedtime: 'late' }));
+    expect(ix.recovery).not.toBeNull();
+    // І це має бути НИЗЬКЕ значення, а не просто «якесь».
+    expect(ix.recovery).toBeLessThan(0.35);
+  });
+});
+
+describe('нові ранкові й обідні поля доїжджають до моделі', () => {
+  it('movePlan і outdoorNow дають BODY два НЕ-вечірні входи', () => {
+    const ix = dayIndices(
+      flattenCheckinDay(
+        { morning: { movePlan: 'workout' }, afternoon: { outdoorNow: 'long' } },
+        asList,
+        CATEGORY_VALUES,
+      ),
+    );
+    // Доти BODY складався лише з вечірніх moved/outdoor — без вечора був null.
+    expect(ix.body).not.toBeNull();
+  });
+
+  it('mainProgress дає WORK другу не-вечірню опору після pace', () => {
+    const ix = dayIndices(
+      flattenCheckinDay(
+        { afternoon: { mainProgress: 'most', pace: 'on' } },
+        asList,
+        CATEGORY_VALUES,
+      ),
+    );
+    expect(ix.work).not.toBeNull();
+  });
+
+  it('dayControl доїжджає в AGENCY', () => {
+    const f = flattenCheckinDay(
+      { morning: { dayControl: 5, plan: ['work'] }, afternoon: { ate: ['work'] } },
+      asList,
+      CATEGORY_VALUES,
+    );
+    expect(f.dayControl).toBe(5);
+    expect(dayIndices(f).agency).not.toBeNull();
   });
 });

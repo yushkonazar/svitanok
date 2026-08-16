@@ -683,6 +683,30 @@ export const SAMPLE_STATS: Stats = {
   },
   // Соціальний контекст: демо-набір готовий (значуще різняться «сам» і «з
   // людьми») — щоб було видно, як виглядає повністю розкрита картка.
+  // Демо показує ЗСУВ, а не рівність: нульовий bias сховав би сенс картки —
+  // та сама пастка, що з гладкими демо-рядами інтересів і з full=active у
+  // вогниках.
+  expectCalibration: {
+    days: 30,
+    n: 19,
+    ready: true,
+    avgExpect: 3.1,
+    avgActual: 3.5,
+    bias: 0.4,
+    better: 11,
+    same: 4,
+    worse: 4,
+  },
+  moveIntent: {
+    days: 30,
+    n: 21,
+    ready: true,
+    planned: 12,
+    kept: 7,
+    keptPct: 58,
+    noPlanDays: 9,
+    noPlanButMoved: 3,
+  },
   socialContext: {
     days: 60,
     tops: [

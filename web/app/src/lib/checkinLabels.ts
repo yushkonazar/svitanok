@@ -38,12 +38,38 @@ export const HELPER_LABEL: Record<string, string> = {
   support: 'Підтримка',
 };
 
+export const SLEEP_KIND_LABEL: Record<string, string> = {
+  slept: 'Спав',
+  naps: 'Дрімав уривками',
+  none: 'Ніч без сну',
+};
+
+export const MOVE_PLAN_LABEL: Record<string, string> = {
+  none: 'Рух не планував',
+  light: 'Планував легкий рух',
+  workout: 'Планував тренування',
+};
+
+export const PROGRESS_LABEL: Record<string, string> = {
+  none: 'До обіду нічого',
+  started: 'До обіду почав',
+  half: 'До обіду половина',
+  most: 'До обіду майже все',
+};
+
+export const INTERRUPTED_LABEL: Record<string, string> = {
+  none: 'Не збивали',
+  few: 'Збивали кілька разів',
+  many: 'Збивали постійно',
+};
+
 export const LATE_REASON_LABEL: Record<string, string> = {
   work: 'Робота/проєкт',
   scroll: 'Залип у стрічці',
   metime: 'Хотів час для себе',
   anxious: 'Не міг заснути',
   social: 'Люди/події',
+  late_home: 'Пізно повернувся',
   other: 'Інше',
 };
 

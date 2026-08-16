@@ -73,6 +73,17 @@ class Field:
 
 FIELDS: tuple[Field, ...] = (
     # ── Відновлення ──────────────────────────────────────────────────────────
+    # ⚠️ sleepKind — РЕЖИМ ночі, а не її тривалість, і він стоїть перед усім
+    # іншим про сон. «Не спав» і «дрімав уривками» доти лягали в sleepH як
+    # «мало спав», тобто три різні ночі ставали однією.
+    #
+    # Він НЕ замінює sleepH/sleepQ, а гейтить їх у чек-іні: на не-нічних
+    # варіантах ті два питання не показуються, а значення ВИВОДЯТЬСЯ
+    # (flattenCheckinDay на боці JS). Лишити їх порожніми було б найгіршим
+    # варіантом: RECOVERY утратив би два з чотирьох ранкових полів саме в ту
+    # добу, яка найінформативніша, і при MIN_FIELDS_PER_INDEX=2 найгірші ночі
+    # зникали б з моделі взагалі.
+    Field("sleepKind", "morning", RECOVERY, weight=1.2, levels=("none", "naps", "slept")),
     Field("sleepH", "morning", RECOVERY, weight=1.5, curve="sleep_hours"),
     Field("sleepQ", "morning", RECOVERY, weight=1.2),
     Field("sleepLatency", "morning", RECOVERY, weight=0.8, levels=("fast", "mid", "slow", "vslow"), polarity=-1),
@@ -90,6 +101,9 @@ FIELDS: tuple[Field, ...] = (
     Field("mood@evening", "evening", RESOURCE, weight=1.0),
     Field("worryAM", "morning", RESOURCE, weight=0.8, polarity=-1),
     Field("rushed", "afternoon", RESOURCE, weight=0.8, polarity=-1),
+    # Переривання ЗЗОВНІ — окремо від власного відволікання. Доти обидві
+    # причини зливались у блокер 'distract', хоч рішення в них різні.
+    Field("interrupted", "afternoon", RESOURCE, weight=0.8, levels=("none", "few", "many"), polarity=-1),
     # ── Робота ───────────────────────────────────────────────────────────────
     Field("output", "evening", WORK, weight=1.5),
     Field("focusQuality", "evening", WORK, weight=1.2),
@@ -100,6 +114,9 @@ FIELDS: tuple[Field, ...] = (
     Field("pace", "afternoon", WORK, weight=0.8, levels=("overload", "behind", "other", "on", "better"),
           legacy_unscored=("off",)),
     Field("jobProgress", "evening", WORK, weight=0.6),
+    # Прогрес на ОБІД — друга не-вечірня опора WORK після pace. До неї індекс
+    # тримався на одному полі поза вечором.
+    Field("mainProgress", "afternoon", WORK, weight=1.0, levels=("none", "started", "half", "most")),
     # ── Автономія / сенс ─────────────────────────────────────────────────────
     Field("autonomy", "evening", AGENCY, weight=1.5),
     # ⚠️ ЧАСТКА виконаного плану, не булеве «влучив бодай у щось». Доти воно
@@ -111,11 +128,24 @@ FIELDS: tuple[Field, ...] = (
     # заповнюють.
     Field("intentMatch", "derived", AGENCY, weight=1.2, span=(0, 1)),
     Field("jobConfidence", "evening", AGENCY, weight=0.6),
+    # Очікуваний контроль над днем (ранок) — пара до вечірньої autonomy.
+    Field("dayControl", "morning", AGENCY, weight=1.0),
     # ── Тіло / режим ─────────────────────────────────────────────────────────
     # 'active' («Активно») чек-ін збирає з самого початку — без нього BODY (лише
     # 2 поля) ставав None і викидав УСЮ добу з навчання ваг/архетипів (B5).
     Field("moved", "evening", BODY, weight=1.5, levels=("none", "light", "active", "workout")),
     Field("outdoor", "evening", BODY, weight=1.2, levels=("none", "short", "long")),
+    # ⚠️ ДВА НЕ-ВЕЧІРНІ ВХОДИ В BODY — і це головна причина, чому вони тут.
+    # Доти індекс мав РІВНО два поля, обидва вечірні, при MIN_FIELDS_PER_INDEX=2:
+    # запасу не було взагалі, і один пропущений тап робив BODY=None на всю добу,
+    # а отже викидав її з архетипів. Заміряно: при явці вечора 20% архетипи
+    # діставали 10 придатних діб із потрібних 20.
+    #
+    # Рівні дзеркалять вечірні аналоги слово в слово (none/light/workout проти
+    # moved; none/short/long проти outdoor) — інакше пара «намір проти факту»
+    # порівнювала б різні шкали.
+    Field("movePlan", "morning", BODY, weight=1.0, levels=("none", "light", "workout")),
+    Field("outdoorNow", "afternoon", BODY, weight=1.0, levels=("none", "short", "long")),
 )
 
 FIELD_INDEX = {f.name: i for i, f in enumerate(FIELDS)}
@@ -497,7 +527,17 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
         rum = int(np.clip(round(6 - 4 * rec + rng.normal(0, 0.9)), 1, 5))
         score = int(np.clip(round(1 + 4 * (0.42 * rec + 0.30 * (outp - 1) / 4 + 0.18 * (auto - 1) / 4
                                            + rng.normal(0, 0.10))), 1, 5))
+        # sleepKind корелює зі сном: короткі ночі частіше «дрімав», зовсім
+        # погані — «не спав». Без цієї залежності золоті вектори перевіряли б
+        # поле, яке ні на що не схоже в реальних даних.
+        if sleep < 4.5:
+            kind = rng.choice(["none", "naps", "slept"], p=[.35, .45, .20])
+        elif sleep < 6.0:
+            kind = rng.choice(["naps", "slept"], p=[.35, .65])
+        else:
+            kind = "slept"
         days.append({
+            "sleepKind": kind,
             "sleepH": round(sleep, 1),
             "sleepQ": int(np.clip(round(1 + 4 * base + rng.normal(0, 0.5)), 1, 5)),
             "sleepLatency": rng.choice(["fast", "mid", "slow", "vslow"], p=[.4, .3, .2, .1]),
@@ -514,18 +554,25 @@ def synth(n: int = 120, seed: int = 42) -> list[dict]:
             "mood@evening": int(np.clip(mo + rng.integers(-1, 1), 1, 5)),
             "worryAM": int(np.clip(round(rng.normal(2.6, 1.0)), 1, 5)),
             "rushed": int(np.clip(round(rng.normal(3.0, 1.0)), 1, 5)),
+            "interrupted": rng.choice(["none", "few", "many"], p=[.3, .45, .25]),
             "output": outp,
             "focusQuality": int(np.clip(outp + rng.integers(-1, 2), 1, 5)),
             "effort": int(np.clip(round(rng.normal(3.3, 1.0)), 1, 5)),
             "kept": rng.choice(["no", "partly", "changed", "yes"], p=[.15, .35, .15, .35]),
             "pace": rng.choice(["overload", "behind", "other", "on", "better"], p=[.1, .25, .15, .4, .1]),
             "jobProgress": int(np.clip(round(rng.normal(3.0, 1.1)), 1, 5)),
+            # Прогрес на обід тягнеться за вечірнім результатом — інакше пара
+            # «половина до обіду -> кращий вечір» не мала б у синтетиці сигналу.
+            "mainProgress": ["none", "started", "half", "most"][int(np.clip(round((outp - 1) / 4 * 3 + rng.normal(0, 0.6)), 0, 3))],
             "autonomy": auto,
             # План — до 2 категорій, тож частка може бути лише 0, 0.5 або 1.
             # ⚠️ Доти генератор давав самі 0/1, і золоті вектори перевіряли
             # тільки КІНЦІ шкали — проміжне значення жоден тест не проходив.
             "intentMatch": float(rng.choice([0.0, 0.5, 1.0], p=[.30, .25, .45])),
             "jobConfidence": int(np.clip(round(rng.normal(3.2, 1.0)), 1, 5)),
+            "dayControl": int(np.clip(round(auto + rng.normal(0, 0.9)), 1, 5)),
+            "movePlan": rng.choice(["none", "light", "workout"], p=[.35, .45, .20]),
+            "outdoorNow": rng.choice(["none", "short", "long"], p=[.3, .5, .2]),
             "moved": rng.choice(["none", "light", "active", "workout"], p=[.35, .35, .10, .20]),
             "outdoor": rng.choice(["none", "short", "long"], p=[.3, .45, .25]),
             "dayScore": score,

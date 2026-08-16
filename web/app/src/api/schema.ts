@@ -237,16 +237,24 @@ const multi = <T extends z.ZodType>(s: T) =>
     .optional()
     .catch(undefined);
 export const checkinMorningSchema = z.object({
+  /** Режим ночі. Гейтить sleepH/sleepQ у чек-іні; значення для моделі виводить
+   *  flattenCheckinDay, тож пропуск двох питань НЕ обнуляє RECOVERY. */
+  sleepKind: lenient(z.enum(['none', 'naps', 'slept'])),
   sleepH: num.optional(),
   sleepQ: int.optional(),
   sleepLatency: lenient(z.enum(['fast', 'mid', 'slow', 'vslow'])),
   bedtime: lenient(z.enum(['e23', 'e00', 'e01', 'e02', 'late'])),
-  lateReason: lenient(z.enum(['work', 'scroll', 'metime', 'anxious', 'social', 'other'])),
+  lateReason: lenient(
+    z.enum(['work', 'scroll', 'metime', 'anxious', 'social', 'late_home', 'other']),
+  ),
   energy: int.optional(),
   mood: int.optional(),
   plan: multi(category),
   planApply: int.optional(),
   worryAM: int.optional(),
+  movePlan: lenient(z.enum(['none', 'light', 'workout'])),
+  dayControl: int.optional(),
+  dayExpect: int.optional(),
   // Кнопка «Підтвердити» (сервер: stats-core.mjs case 'checkin') — після
   // цього прапорця бекенд ІГНОРУЄ будь-які подальші правки блоку. Живе тут,
   // а не в окремій схемі, бо приходить у ТОМУ САМОМУ checkinToday[slot].
@@ -261,6 +269,9 @@ export const checkinAfternoonSchema = z.object({
   withWhom: lenient(
     z.enum(['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed']),
   ),
+  outdoorNow: lenient(z.enum(['none', 'short', 'long'])),
+  mainProgress: lenient(z.enum(['none', 'started', 'half', 'most'])),
+  interrupted: lenient(z.enum(['none', 'few', 'many'])),
   confirmed: z.boolean().optional(),
 });
 export const checkinEveningSchema = z.object({
@@ -487,6 +498,39 @@ export const aloneVsOthersSchema = z.object({
   d: num.nullable().optional(),
   p: num.nullable().optional(),
 });
+/**
+ * Калібрування очікувань: ранковий dayExpect проти вечірнього dayScore.
+ *
+ * ⚠️ ЄДИНИЙ споживач dayExpect — поле навмисно поза індексами моделі, бо
+ * описує прогноз про добу, а не саму добу.
+ */
+export const expectCalibrationSchema = z.object({
+  days: int.default(30),
+  n: int.default(0),
+  ready: z.boolean().default(false),
+  needed: int.optional(),
+  avgExpect: num.nullable().optional(),
+  avgActual: num.nullable().optional(),
+  bias: num.nullable().optional(),
+  better: int.optional(),
+  same: int.optional(),
+  worse: int.optional(),
+});
+
+/** Намір руху (ранок) проти факту (вечір). */
+export const moveIntentSchema = z.object({
+  days: int.default(30),
+  n: int.default(0),
+  ready: z.boolean().default(false),
+  needed: int.optional(),
+  planned: int.optional(),
+  kept: int.optional(),
+  /** null — планів не було взагалі; це НЕ «0% виконано». */
+  keptPct: num.nullable().optional(),
+  noPlanDays: int.optional(),
+  noPlanButMoved: int.optional(),
+});
+
 /** Соціальний контекст дня (afternoon.withWhom): частота + сам-vs-люди. */
 export const socialContextSchema = z.object({
   tops: z.array(checkinTopSchema).default([]),
@@ -726,6 +770,8 @@ export const statsSchema = z.object({
     lateReasons: [],
     lateNights: 0,
   }),
+  expectCalibration: expectCalibrationSchema.default({ days: 30, n: 0, ready: false }),
+  moveIntent: moveIntentSchema.default({ days: 30, n: 0, ready: false }),
   socialContext: socialContextSchema.default({
     tops: [],
     days: 60,
