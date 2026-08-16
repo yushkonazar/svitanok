@@ -654,6 +654,25 @@ export const SAMPLE_STATS: Stats = {
     ],
   },
   appliedCalibration: { n: 14, matched: 8, more: 4, fewer: 2 },
+  // Ночі: у демо їх чотири зіпсовані з тридцяти — і effect свідомо НЕ готовий.
+  // Показати «після безсонної ночі день гірший на 1.2» на чотирьох
+  // спостереженнях означало б намалювати монетку, яка читається як висновок.
+  nightKinds: {
+    days: 30,
+    nights: 24,
+    slept: 20,
+    naps: 3,
+    none: 1,
+    rough: 4,
+    dates: ['2026-07-29', '2026-08-04', '2026-08-09', '2026-08-15'],
+    reasons: [
+      { value: 'work', n: 2 },
+      { value: 'wait', n: 2 },
+      { value: 'cant', n: 1 },
+      { value: 'uncomf', n: 1 },
+    ],
+    effect: { ready: false, needed: 8, nRough: 4 },
+  },
   checkinTops: {
     days: 30,
     blocker: { value: 'tired', n: 6 },
@@ -672,6 +691,10 @@ export const SAMPLE_STATS: Stats = {
       { value: 'breaks', n: 2 },
       { value: 'music', n: 1 },
     ],
+    // Демо показує рядок «жодного разу» непорожнім — інакше цей стан ніде не
+    // побачити, а він і є типовим у перші тижні після розширення списків.
+    unusedBlockers: ['waiting', 'forgot', 'noplan', 'context', 'perfect', 'noise'],
+    unusedHelpers: ['deadline', 'plan', 'timer', 'clean', 'food'],
     filled: 14,
     lateReasons: [
       { value: 'scroll', n: 4 },
@@ -683,6 +706,30 @@ export const SAMPLE_STATS: Stats = {
   },
   // Соціальний контекст: демо-набір готовий (значуще різняться «сам» і «з
   // людьми») — щоб було видно, як виглядає повністю розкрита картка.
+  // Демо показує ЗСУВ, а не рівність: нульовий bias сховав би сенс картки —
+  // та сама пастка, що з гладкими демо-рядами інтересів і з full=active у
+  // вогниках.
+  expectCalibration: {
+    days: 30,
+    n: 19,
+    ready: true,
+    avgExpect: 3.1,
+    avgActual: 3.5,
+    bias: 0.4,
+    better: 11,
+    same: 4,
+    worse: 4,
+  },
+  moveIntent: {
+    days: 30,
+    n: 21,
+    ready: true,
+    planned: 12,
+    kept: 7,
+    keptPct: 58,
+    noPlanDays: 9,
+    noPlanButMoved: 3,
+  },
   socialContext: {
     days: 60,
     tops: [
@@ -831,16 +878,33 @@ export const EMPTY_STATS: Stats = {
   bedtimeVsEnergy: { ready: false, needed: 8, early: 0, late: 0 },
   categoryInsight: { days: 30, total: 0, rows: [] },
   appliedCalibration: { n: 0, matched: 0, more: 0, fewer: 0 },
+  nightKinds: {
+    days: 30,
+    nights: 0,
+    slept: 0,
+    naps: 0,
+    none: 0,
+    rough: 0,
+    dates: [],
+    reasons: [],
+    effect: { ready: false, needed: 8, nRough: 0 },
+  },
   checkinTops: {
     blocker: null,
     helper: null,
     blockers: [],
     helpers: [],
+    unusedBlockers: [],
+    unusedHelpers: [],
     days: 30,
     filled: 0,
     lateReasons: [],
     lateNights: 0,
   },
+  // ready:false, а не вигадані нулі: порожній стан мусить читатись як «ще
+  // рано», а не як «зсув нульовий» чи «намір ніколи не збувався».
+  expectCalibration: { days: 30, n: 0, ready: false, needed: 8 },
+  moveIntent: { days: 30, n: 0, ready: false, needed: 5 },
   socialContext: {
     days: 60,
     filled: 0,

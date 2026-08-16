@@ -320,3 +320,119 @@ describe('cellDetail — оцінка дня як окреме число', () =
     expect(cellDetail(r, 'evening', { energy: 1, mood: 1 }).dayScore).toBeNull();
   });
 });
+
+/* ── Поля, чиїм ЄДИНИМ споживачем було одне зведене число ──────────────────
+   Питання власника: «крутиться в голові, керував я чи обставини, час надворі,
+   кава — вони взагалі йдуть у статистику?». Ішли — у ваги «Індексу дня», і
+   більше нікуди. Тобто відповідь була «так», але користі з неї не було ніякої:
+   поле, яке лише додає ваги в одне число, з погляду власника не відповідає ні
+   на що. Тепер кожне з них уміє пояснити стан. */
+describe('factsOf — поля, що доти жили тільки всередині індексів', () => {
+  it('ранок: режим ночі, пробудження, тіло, навантаження, контроль, намір руху', () => {
+    const f = factsOf(
+      {
+        morning: {
+          sleepKind: 'none',
+          awakenings: 'many',
+          bodyFeel: 1,
+          dayLoad: 5,
+          dayControl: 1,
+          movePlan: 'workout',
+        },
+      },
+      'morning',
+    );
+    expect(f).toEqual(
+      expect.arrayContaining([
+        'night:none',
+        'awake:many',
+        'body:bad',
+        'load:high',
+        'control:low',
+        'moveplan:yes',
+      ]),
+    );
+  });
+
+  it('ранок: «спав» фактом НЕ стає — це норма, а норма нічого не вирізняє', () => {
+    expect(factsOf({ morning: { sleepKind: 'slept' } }, 'morning')).toEqual([]);
+  });
+
+  it('обід: переривання, прогрес до обіду, час надворі', () => {
+    const f = factsOf(
+      { afternoon: { interrupted: 'many', mainProgress: 'none', outdoorNow: 'long' } },
+      'afternoon',
+    );
+    expect(f).toEqual(expect.arrayContaining(['interrupted:many', 'progress:none', 'outnow:long']));
+  });
+
+  it('вечір: кава — три чашки це вже режим доби, а не деталь', () => {
+    expect(factsOf({ evening: { caffeine: 4 } }, 'evening')).toContain('caffeine:high');
+    expect(factsOf({ evening: { caffeine: 0 } }, 'evening')).toContain('caffeine:none');
+    expect(factsOf({ evening: { caffeine: 2 } }, 'evening')).toEqual([]);
+  });
+
+  it('усі нові факти мають підпис, а не сирий ключ', () => {
+    for (const k of [
+      'night:none',
+      'night:naps',
+      'awake:many',
+      'awake:no',
+      'body:bad',
+      'body:good',
+      'load:high',
+      'load:low',
+      'control:high',
+      'control:low',
+      'moveplan:yes',
+      'moveplan:no',
+      'interrupted:many',
+      'interrupted:none',
+      'progress:none',
+      'progress:good',
+      'outnow:none',
+      'outnow:short',
+      'outnow:long',
+      'caffeine:high',
+      'caffeine:none',
+    ]) {
+      expect(causeLabel(k)).not.toBe(k);
+    }
+  });
+});
+
+/* ⚠️ ЗНАМЕННИК ФАКТУ — і мовчазна помилка, яку цей тест ловить.
+   factSlot розкладає факти по слотах, і невідомий вид ТИХО їде у вечір. Саме
+   так уже сталося з 'latency': факт додали, у перелік ранкових не дописали, і
+   «довго не міг заснути» ділилось на кількість ВЕЧІРНІХ зрізів. Нічого не
+   падає — просто виходить інший відсоток. */
+describe('factSlot — ранкові факти діляться на ранковий знаменник', () => {
+  const morningsWith = (n: number, morning: NonNullable<CheckinDay['morning']>, from = 1) => {
+    const out: CheckinRaw['records'] = {};
+    for (let i = 0; i < n; i++) {
+      out[`2026-06-${String(from + i).padStart(2, '0')}`] = { morning };
+    }
+    return out;
+  };
+
+  it('«довго не міг заснути» доходить до причин у фільтрі «Ранок»', () => {
+    const r = raw({
+      // Рівно та клітинка: 10 ранків з довгим засинанням...
+      ...morningsWith(10, { energy: 2, mood: 2, sleepLatency: 'vslow' }, 1),
+      // ...і 10 інших ранків без нього — база для порівняння.
+      ...morningsWith(10, { energy: 5, mood: 5, sleepLatency: 'fast' }, 11),
+    });
+    const d = cellDetail(r, 'morning', { energy: 2, mood: 2 });
+    expect(d.scope).toBe('cell');
+    expect(d.causes.map((c) => c.key)).toContain('latency:slow');
+  });
+
+  it('те саме для нових ранкових фактів — вони не мають осісти у вечорі', () => {
+    const r = raw({
+      ...morningsWith(10, { energy: 2, mood: 2, bodyFeel: 1, dayLoad: 5 }, 1),
+      ...morningsWith(10, { energy: 5, mood: 5, bodyFeel: 5, dayLoad: 1 }, 11),
+    });
+    const keys = cellDetail(r, 'morning', { energy: 2, mood: 2 }).causes.map((c) => c.key);
+    expect(keys).toEqual(expect.arrayContaining(['body:bad', 'load:high']));
+  });
+});
