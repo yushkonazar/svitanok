@@ -9,6 +9,7 @@ import { BrandLogo } from './BrandLogo.tsx';
 import {
   BLOCKS,
   asList,
+  clearGatedAnswers,
   coreQuestions,
   deepQuestions,
   isAnswered,
@@ -449,8 +450,17 @@ export function CheckinScreen() {
   });
 
   /** Дебаунс: шлемо ВЕСЬ блок одним запитом. Без цього чотири тапи = чотири
-   *  записи в один KV-ключ, а там ліміт 1/сек і немає CAS. */
-  const queue = (slot: CheckinSlot, next: Answers) => {
+   *  записи в один KV-ключ, а там ліміт 1/сек і немає CAS.
+   *
+   *  ⚠️ Тут же гаситься те, що закрив showIf. Місце обрано навмисно — через
+   *  queue проходять ОБИДВА способи відповісти (кнопка й пад), тож правило
+   *  неможливо обійти, додавши третій. null — той самий явний сигнал «очисти»,
+   *  що вже вміє сервер (cleanCheckin), а не видалений ключ: видалений ключ
+   *  мердж на сервері прочитав би як «не чіпай». */
+  const queue = (slot: CheckinSlot, answers: Answers) => {
+    const b = BLOCKS.find((x) => x.id === slot);
+    const gated = b ? clearGatedAnswers(b, answers) : {};
+    const next: Answers = Object.keys(gated).length ? { ...answers, ...gated } : answers;
     setLocal((p) => ({ ...p, [slot]: next }));
     clearTimeout(timers.current[slot]);
     timers.current[slot] = setTimeout(() => {

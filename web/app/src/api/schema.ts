@@ -204,7 +204,7 @@ export const masterySchema = z.object({
    Форми 1:1 зі stats-core.mjs. Поля блоків — .optional(), бо блок пишеться
    дебаунсом і цілком легально буває заповнений частково. */
 
-// 9 життєвих категорій (v2) — дзеркало CATEGORIES/CATEGORY_VALUES.
+// Життєві категорії — дзеркало CATEGORIES/CATEGORY_VALUES (stats-core.mjs).
 const category = z.enum([
   'work',
   'learn',
@@ -217,6 +217,11 @@ const category = z.enum([
   'create',
   'health',
   'admin',
+  // Три статті часу, що доти тонули в 'chores' і 'rest' — тобто спотворювали
+  // саме ті кошики, які вже працювали.
+  'food',
+  'scroll',
+  'games',
 ]);
 // ⚠️ checkinToday — це HYDRATION-дані, які міг записати СТАРІШИЙ сервер (інша
 // версія переліку: до v2 plan/ate мали apply/interview/procrast). Тому enum-поля
@@ -243,6 +248,8 @@ export const checkinMorningSchema = z.object({
   sleepH: num.optional(),
   sleepQ: int.optional(),
   sleepLatency: lenient(z.enum(['fast', 'mid', 'slow', 'vslow'])),
+  /** Четвертий вимір сну: з тривалості й якості не виводиться. */
+  awakenings: lenient(z.enum(['no', 'once', 'few', 'many'])),
   bedtime: lenient(z.enum(['e23', 'e00', 'e01', 'e02', 'late'])),
   lateReason: lenient(
     z.enum(['work', 'scroll', 'metime', 'anxious', 'social', 'late_home', 'other']),
@@ -252,7 +259,13 @@ export const checkinMorningSchema = z.object({
   plan: multi(category),
   planApply: int.optional(),
   worryAM: int.optional(),
-  movePlan: lenient(z.enum(['none', 'light', 'workout'])),
+  /** Тіло зранку — третій не-вечірній вхід у BODY. */
+  bodyFeel: int.optional(),
+  /** Очікуване навантаження дня — пара до обіднього `rushed`. */
+  dayLoad: int.optional(),
+  /** ⚠️ Усі ЧОТИРИ рівні `moved`: інакше «легко» в намірі важить 0.50, а
+   *  «легко» у факті — 0.33, і пара «намір проти факту» завищує намір. */
+  movePlan: lenient(z.enum(['none', 'light', 'active', 'workout'])),
   dayControl: int.optional(),
   dayExpect: int.optional(),
   // Кнопка «Підтвердити» (сервер: stats-core.mjs case 'checkin') — після
@@ -295,6 +308,10 @@ export const checkinEveningSchema = z.object({
       'waiting',
       'procrast',
       'forgot',
+      'noplan',
+      'context',
+      'perfect',
+      'noise',
       'none',
     ]),
   ),
@@ -310,6 +327,10 @@ export const checkinEveningSchema = z.object({
       'nodistract',
       'deadline',
       'music',
+      'plan',
+      'timer',
+      'clean',
+      'food',
       'none',
     ]),
   ),
@@ -473,6 +494,12 @@ export const checkinTopsSchema = z.object({
   // в реєстрі «Індексу дня»; ця картка — єдине місце, де вони видні.
   blockers: z.array(checkinTopSchema).default([]),
   helpers: z.array(checkinTopSchema).default([]),
+  // ⚠️ Варіанти, які за все вікно не обрано ЖОДНОГО разу. Питання «що зі списку
+  // зайве» доти вирішувалось здогадкою, а здогадка тут дорога в обидва боки:
+  // прибрати варіант, що трапляється раз на місяць, — назавжди втратити рідкісну
+  // причину; лишити мертвий — щовечора платити за нього увагою.
+  unusedBlockers: z.array(z.string()).default([]),
+  unusedHelpers: z.array(z.string()).default([]),
   // ⚠️ days — ГЛИБИНА ВІКНА, filled — скільки діб у ньому заповнено. Доти тут
   // лежало одне поле `days` зі значенням filled, і воно рендерилось як «· N
   // ДІБ», тобто читалось як глибина. «ЩО ЗАВАЖАЛО · 12 ДІБ» означало «12
@@ -765,6 +792,8 @@ export const statsSchema = z.object({
     helper: null,
     blockers: [],
     helpers: [],
+    unusedBlockers: [],
+    unusedHelpers: [],
     days: 30,
     filled: 0,
     lateReasons: [],
