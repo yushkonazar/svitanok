@@ -27,6 +27,7 @@ import {
   checkinDateKey,
   recordReliability,
   shouldSendCheckinNudge,
+  isCheckinSlotFilled,
   matchCheckinNudgeWindow,
   inSleepNudgeWindow,
   staleSleepNudges,
@@ -448,7 +449,10 @@ export async function checkinNudgeCheck(env) {
   const due = shouldSendCheckinNudge({
     quiet: isQuietMinute(settings, minuteOfDay),
     alreadyNudgedToday: store.checkinNudgeDates?.[win.slot] === today,
-    slotFilled: Boolean(store.checkins?.[dateKey]?.[win.slot]),
+    // ⚠️ НЕ Boolean(...): порожній обʼєкт істинний. Саме на цьому нагадування
+    // й ламалось — відмітив відповідь, зняв повторним тапом, слот лишився як
+    // `{}`, і нудж на добу зникав. Тепер предикат ОДИН на весь проєкт.
+    slotFilled: isCheckinSlotFilled(store.checkins?.[dateKey], win.slot),
   });
   if (!due) return;
 

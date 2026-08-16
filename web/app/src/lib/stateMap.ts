@@ -212,6 +212,13 @@ export function factsOf(rec: CheckinDay | undefined, slot: CheckinSlot): string[
     }
     if (m.lateReason) out.push(`late:${m.lateReason}`);
     if (typeof m.worryAM === 'number' && m.worryAM >= 4) out.push('worry:high');
+    // ⚠️ «Скільки засинав» доти збиралось, валідувалось і живило індекс
+    // RECOVERY — але в ПРИЧИНАХ клітинки не зʼявлялось ніколи. Тобто модель
+    // ним користувалась, а пояснити стан ним було неможливо. Це третій
+    // незалежний факт про сон (ліг / засинав / проспав), і саме він
+    // відрізняє «мало спав» від «довго не міг заснути».
+    if (m.sleepLatency === 'slow' || m.sleepLatency === 'vslow') out.push('latency:slow');
+    else if (m.sleepLatency === 'fast') out.push('latency:fast');
     return out;
   }
   if (slot === 'afternoon') {
@@ -235,6 +242,21 @@ export function factsOf(rec: CheckinDay | undefined, slot: CheckinSlot): string[
     else if (e.focusQuality >= 4) out.push('focus:high');
   }
   if (e.outdoor) out.push(`outdoor:${e.outdoor}`);
+  // ⚠️ Та сама прогалина, що з sleepLatency: обидва поля живили модель, але не
+  // могли пояснити жодну клітинку. А це найцінніші кандидати в причини — вони
+  // про ГОЛОВУ, а не про обставини: «крутиться в голові» й «керував я, а не
+  // обставини» пояснюють важкий вечір там, де блокери мовчать.
+  //
+  // Пороги ті самі, що в сусідів (≤2 / ≥4) — вихід за них і є сигналом, а
+  // середина шкали нічого не характеризує.
+  if (typeof e.rumination === 'number') {
+    if (e.rumination >= 4) out.push('rumination:high');
+    else if (e.rumination <= 2) out.push('rumination:low');
+  }
+  if (typeof e.autonomy === 'number') {
+    if (e.autonomy >= 4) out.push('autonomy:high');
+    else if (e.autonomy <= 2) out.push('autonomy:low');
+  }
   return out;
 }
 
@@ -272,6 +294,13 @@ const PLAIN_LABEL: Record<string, string> = {
   'screen:high': '📱 Багато екрана',
   'focus:low': '🌫 Розсіяний фокус',
   'focus:high': '🎯 Глибокий фокус',
+  // Три факти, що доти живили модель, але не вміли пояснити жодну клітинку.
+  'latency:slow': '🛏 Довго не міг заснути',
+  'latency:fast': '🛏 Заснув одразу',
+  'rumination:high': '🌀 Крутилось у голові',
+  'rumination:low': '🌀 Голова чиста',
+  'autonomy:high': '🎛 День був мій',
+  'autonomy:low': '🎛 Вели обставини',
 };
 
 /** Людський підпис факту. Невідомий ключ віддається як є — видно, а не зникає. */

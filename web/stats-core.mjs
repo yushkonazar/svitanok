@@ -269,6 +269,27 @@ export function asList(v) {
  * ⚠️ Рахує сервер, не клієнт. Інакше «ранковий» чек-ін можна надіслати опівночі,
  * перевівши годинник на телефоні, — і дані стануть художнім твором.
  */
+/**
+ * Чи слот чек-іну справді заповнений.
+ *
+ * ⚠️ ЄДИНЕ ВИЗНАЧЕННЯ НА ВЕСЬ ПРОЄКТ — і саме тому воно тут, а не по місцях.
+ * Доти їх було два, і вони розходились: «Явка по слотах» рахувала
+ * `Object.keys(...).length`, а нагадування — `Boolean(...)`. Порожній обʼєкт
+ * ІСТИННИЙ, тож достатньо було відмітити відповідь і зняти її повторним тапом:
+ * запис лишався як `{}`, нагадування на добу вимикалось назавжди, а статистика
+ * той самий слот бачила порожнім.
+ *
+ * Той самий клас, що вже ловили з полем `days` і назвою KV-ключа: два способи
+ * сказати одне й те саме, які мовчки розʼїжджаються.
+ *
+ * `confirmed` НЕ рахується сам по собі: підтвердити порожній блок неможливо
+ * (recordEvent це відсікає), тож ключ ніколи не буває там наодинці.
+ */
+export function isCheckinSlotFilled(rec, slot) {
+  const v = rec?.[slot];
+  return !!v && typeof v === 'object' && Object.keys(v).length > 0;
+}
+
 export function checkinSlot(hour) {
   // Суворо number, без Number(): Number(null) === 0, а нуль — ВАЛІДНА година,
   // яка падає рівно у вечірнє вікно (h < 2). Тобто м'яке приведення робило б із
@@ -1652,7 +1673,7 @@ function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
     const c = checkins[dayKey(d)];
-    if (c) for (const sl of CHECKIN_SLOTS) if (c[sl] && Object.keys(c[sl]).length) fill[sl]++;
+    if (c) for (const sl of CHECKIN_SLOTS) if (isCheckinSlotFilled(c, sl)) fill[sl]++;
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return { ...fill, days };

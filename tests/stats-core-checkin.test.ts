@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 // ⚠️ Два імпорти, а не один список: prettier переносить довгий список на кілька
 // рядків, і однорядковий @ts-expect-error відʼїжджає від рядка з помилкою —
 // тоді директива «невикористана», а помилка типів лишається. Патерн проєкту:
@@ -9,6 +10,8 @@ import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 import { checkinSlot, checkinDateKey } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { CHECKIN_NUDGE_WINDOWS, matchCheckinNudgeWindow } from '../web/stats-core.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { isCheckinSlotFilled } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { shouldSendCheckinNudge } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
@@ -1197,5 +1200,87 @@ describe('staleSleepNudges — завислі кнопки з МИНУЛИХ н�
   it('нагадування не надсилалось (нема nudgeMsgId) -> НЕ в списку', () => {
     const sleepLog = { '2026-07-10': {} };
     expect(staleSleepNudges(sleepLog, '2026-07-11')).toEqual([]);
+  });
+});
+
+/* ⚠️ ПОРОЖНІЙ СЛОТ — БАГ, ЩО ВИМИКАВ НАГАДУВАННЯ.
+ *
+ * `checkinNudgeCheck` рахував «слот заповнено» через Boolean(store.checkins[d][slot]),
+ * а порожній обʼєкт ІСТИННИЙ. Достатньо було відмітити відповідь і зняти її
+ * повторним тапом: запис лишався як `{}`, нагадування на добу вимикалось
+ * назавжди — і при цьому «Явка по слотах» той самий слот бачила порожнім, бо
+ * рахувала Object.keys().length.
+ *
+ * Два визначення одного поняття, які розʼїхались. Тепер визначення ОДНЕ, і ці
+ * тести стережуть саме його. */
+describe('isCheckinSlotFilled — одне визначення «слот заповнено»', () => {
+  it('слот із відповіддю — заповнений', () => {
+    expect(isCheckinSlotFilled({ morning: { sleepQ: 4 } }, 'morning')).toBe(true);
+  });
+
+  it('ПОРОЖНІЙ обʼєкт — НЕ заповнений (саме тут ламалось)', () => {
+    expect(isCheckinSlotFilled({ morning: {} }, 'morning')).toBe(false);
+  });
+
+  it('слоту немає / доби немає / сміття — не заповнений, без винятку', () => {
+    expect(isCheckinSlotFilled({ morning: { sleepQ: 4 } }, 'evening')).toBe(false);
+    expect(isCheckinSlotFilled(undefined, 'morning')).toBe(false);
+    expect(isCheckinSlotFilled({ morning: 'сміття' }, 'morning')).toBe(false);
+  });
+
+  /* Регресія в її ПОВНОМУ вигляді: не «функція повертає false», а весь шлях —
+     заповнив, зняв, і нагадування МУСИТЬ прийти. Саме цього не було. */
+  it('заповнив і зняв -> слот порожній -> нагадування ВСЕ ОДНО спрацює', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { sleepQ: 4 }), '2026-08-16');
+    s = recordEvent(s, ck('morning', { sleepQ: null }), '2026-08-16');
+    const slot = s.checkins['2026-08-16']?.morning;
+    expect(Object.keys(slot)).toHaveLength(0);
+    // Стара умова дала б true й з'їла нагадування:
+    expect(Boolean(slot)).toBe(true);
+    expect(
+      shouldSendCheckinNudge({
+        quiet: false,
+        alreadyNudgedToday: false,
+        slotFilled: isCheckinSlotFilled(s.checkins['2026-08-16'], 'morning'),
+      }),
+    ).toBe(true);
+  });
+
+  it('справді заповнений слот нагадування НЕ отримує', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { sleepQ: 4 }), '2026-08-16');
+    expect(
+      shouldSendCheckinNudge({
+        quiet: false,
+        alreadyNudgedToday: false,
+        slotFilled: isCheckinSlotFilled(s.checkins['2026-08-16'], 'morning'),
+      }),
+    ).toBe(false);
+  });
+
+  /* «Явка по слотах» і нагадування мусять бачити те саме — інакше розбіжність
+     заведеться вдруге, просто в іншому місці. */
+  it('порожній слот не рахується і в «Явці по слотах»', () => {
+    let s = emptyStore();
+    s = recordEvent(s, ck('morning', { sleepQ: 4 }), '2026-08-16');
+    s = recordEvent(s, ck('morning', { sleepQ: null }), '2026-08-16');
+    expect(aggregateStats(s, '2026-08-16').checkinFill.morning).toBe(0);
+  });
+});
+
+/* ⚠️ МЕХАНІЧНИЙ ЗАМОК НА МІСЦЕ ВИКОРИСТАННЯ.
+ *
+ * Тести вище стережуть сам предикат — але не те, що крон ним КОРИСТУЄТЬСЯ.
+ * Повернути там `Boolean(...)` можна однією правкою, і жоден поведінковий тест
+ * не впаде: нагадування живе за таймером у проді, а не в тестах.
+ *
+ * Той самий прийом, що вже стереже назву KV-ключа publicStatus. */
+describe('checkinNudgeCheck — предикат заповненості не можна підмінити назад', () => {
+  const cron = readFileSync(new URL('../web/cron.mjs', import.meta.url), 'utf8');
+
+  it('слот перевіряється спільним предикатом, а не Boolean(...)', () => {
+    expect(cron).toContain('isCheckinSlotFilled(store.checkins');
+    expect(cron).not.toMatch(/slotFilled:\s*Boolean\(/);
   });
 });
