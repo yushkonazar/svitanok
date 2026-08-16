@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import type { Stats } from '../../api/schema.ts';
-import { SectionHead, StatRow, Ph, Hint } from '../ui/primitives.tsx';
+import { SectionHead, StatRow, Ph, Hint, Note } from '../ui/primitives.tsx';
 import { haptic } from '../../telegram.ts';
 import { DayIndexHero } from './DayIndexHero.tsx';
 import { DayShapeChart } from '../charts/DayShapeChart.tsx';
@@ -19,9 +19,11 @@ import {
   BLOCKER_LABEL,
   HELPER_LABEL,
   LATE_REASON_LABEL,
+  NIGHT_REASON_LABEL,
   WITH_WHOM_LABEL,
   CATEGORY_LABEL,
 } from '../../lib/checkinLabels.ts';
+import { pluralUk } from '../../lib/plural.ts';
 
 // Статистика чек-іну — ПОВНИЙ редизайн (роадмеп: «Індекс дня» + D3-графіки).
 // Стара версія (PR-9) читала 11 полів із 36 зібраних; ця — «Індекс дня»
@@ -36,6 +38,12 @@ import {
 // ⚠️ Той самий інваріант, що завжди: усе, що претендує на звʼязок, гейтиться
 // на сервері (ready/learned/p-value) і мовчить, поки вибірка мала. Це легко
 // зробити брехливим блоком, а брехня тут виглядає як аналітика.
+
+/** «1 ніч / 2 ночі / 5 ночей» — правило спільне (lib/plural.ts). */
+const pluralNight = (n: number) => pluralUk(n, ['ніч', 'ночі', 'ночей']);
+
+/** '2026-08-15' -> '15.08': у картці про останні тижні рік — зайвий шум. */
+const shortDate = (k: string) => `${k.slice(8, 10)}.${k.slice(5, 7)}`;
 
 const scoreHsl = (t: number) => `hsl(${Math.round(Math.max(0, Math.min(1, t)) * 125)}, 62%, 58%)`;
 const ratingColor = (v: number | null): string | undefined =>
@@ -191,7 +199,10 @@ export function CheckinBlock({ s }: { s: Stats }) {
   // прибирати їх із сервера немає причин, але малювати вдруге теж.
   const cat = s.categoryInsight;
   const drift = s.intentDrift;
+  const cal = s.expectCalibration;
+  const mv = s.moveIntent;
   const tops = s.checkinTops;
+  const nights = s.nightKinds;
   const social = s.socialContext;
 
   const laggedEntries = Object.entries(model.lagged);
@@ -222,6 +233,61 @@ export function CheckinBlock({ s }: { s: Stats }) {
           🌙 Точний сон: {fmtDuration(lastSleepNight.durationMin)} (ліг о{' '}
           {kyivTime(lastSleepNight.startedAt)}, прокинувся о {kyivTime(lastSleepNight.wokeAt)})
         </div>
+      )}
+
+      {/* ⚠️ ЗʼЯВЛЯЄТЬСЯ, ЛИШЕ КОЛИ Є ПРО ЩО СКАЗАТИ (rough > 0). Картка «усі 30
+          ночей нормальні» — це рядок, який щодня займає місце й нічого не
+          додає; а от «дві ночі ти не спав узагалі» — подія, яку треба назвати
+          прямо, і доти вона ніде не називалась: режим ночі впливав на «Індекс
+          дня», але словами не звучав ніде.
+
+          Причини важать більше за сам факт: «чекав ранку», «допрацьовував
+          проєкт» і «не міг заснути» — три різні ночі, і лише остання про сон. */}
+      {nights.rough > 0 && (
+        <Card>
+          <SubLabel>
+            ЗІПСОВАНІ НОЧІ · {nights.rough} З {nights.nights} ЗА {nights.days} ДІБ
+          </SubLabel>
+          <div className="mt-2 text-[11.5px] leading-[1.5] text-tx2">
+            {nights.none > 0 && (
+              <span className="font-semibold text-neg">
+                🌑 Без сну: {nights.none} {pluralNight(nights.none)}.{' '}
+              </span>
+            )}
+            {nights.naps > 0 && <span>🌒 Уривками: {nights.naps}. </span>}
+            {nights.dates.length > 0 && (
+              <span className="text-tx3">Останні: {nights.dates.map(shortDate).join(', ')}</span>
+            )}
+          </div>
+          {nights.reasons.length > 0 && (
+            <div className="mt-2.5">
+              <RankedBars
+                color="var(--color-idx-recovery)"
+                rows={nights.reasons.map((r) => ({
+                  key: r.value,
+                  label: NIGHT_REASON_LABEL[r.value] ?? r.value,
+                  n: r.n,
+                }))}
+              />
+            </div>
+          )}
+          {nights.effect.ready ? (
+            <div className="mt-2 text-[11.5px] text-tx2">
+              Оцінка таких днів {nights.effect.roughAvg} проти {nights.effect.restAvg} у решти (
+              {nights.effect.nRough} діб).
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-tx3">
+              Порівняти з рештою днів ще рано: {nights.effect.nRough} із{' '}
+              {nights.effect.needed ?? 8} потрібних діб з оцінкою.
+            </div>
+          )}
+          <Hint>
+            Ніч без сну й ніч уривками доти впливали лише на «Індекс дня» — числом, але не
+            словами. Причина тут важливіша за факт: чекав ранку, доробляв проєкт і просто не міг
+            заснути — це три різні ночі з різними висновками.
+          </Hint>
+        </Card>
       )}
 
       {filledDays > 1 && (
@@ -359,9 +425,28 @@ export function CheckinBlock({ s }: { s: Stats }) {
                   />
                 </div>
               )}
+              {/* ⚠️ «ЖОДНОГО РАЗУ» — не декор, а відповідь на питання «які
+                  варіанти зайві», яке доти можна було вирішити тільки
+                  здогадкою. Здогадка тут дорога в обидва боки: викинути
+                  варіант, що трапляється раз на місяць, — назавжди втратити
+                  рідкісну причину; лишити мертвий — щовечора платити за нього
+                  увагою. Тепер відповідь дають дані, і рішення ухвалюється,
+                  коли варіант простояв порожнім усе вікно. */}
+              {(tops.unusedBlockers.length > 0 || tops.unusedHelpers.length > 0) && (
+                <div className="mt-3 border-t border-glassb pt-2">
+                  <div className="text-[10px] font-medium text-tx3">
+                    Жодного разу за {tops.days} діб:{' '}
+                    {[
+                      ...tops.unusedBlockers.map((v) => BLOCKER_LABEL[v] ?? v),
+                      ...tops.unusedHelpers.map((v) => HELPER_LABEL[v] ?? v),
+                    ].join(' · ')}
+                  </div>
+                </div>
+              )}
               <Hint>
                 Скільки діб ти обирав кожен варіант. «Нічого» не рахується — це свідома відповідь,
-                а не причина.
+                а не причина. Рядок «жодного разу» показує варіанти, які за все вікно не обрано —
+                це підстава прибрати їх зі списку, коли вони простоять порожніми досить довго.
               </Hint>
             </Card>
           )}
@@ -485,6 +570,115 @@ export function CheckinBlock({ s }: { s: Stats }) {
                 час; пара, що трапилась один раз, у список не потрапляє.
               </Hint>
             </Card>
+          )}
+
+          {/* ⚠️ ЄДИНИЙ СПОЖИВАЧ dayExpect. Поле навмисно не входить у жоден
+              індекс моделі: воно про ПРОГНОЗ доби, а не про саму добу, і
+              змішати їх означало б зробити «Індекс дня» частково передбаченням
+              самого себе. Без цієї картки питання збиралось би в пусту. */}
+          {cal.ready ? (
+            <Card>
+              <SubLabel>ОЧІКУВАННЯ ПРОТИ РЕАЛЬНОСТІ · {daysWindowLabel(cal.days, cal.n)}</SubLabel>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span
+                  className="font-mono text-[22px] font-medium leading-none"
+                  style={{
+                    color:
+                      (cal.bias ?? 0) > 0.2
+                        ? 'var(--color-pos)'
+                        : (cal.bias ?? 0) < -0.2
+                          ? 'var(--color-neg)'
+                          : undefined,
+                  }}
+                >
+                  {(cal.bias ?? 0) > 0 ? '+' : ''}
+                  {cal.bias}
+                </span>
+                <span className="text-[11.5px] text-tx2">
+                  {(cal.bias ?? 0) > 0.2
+                    ? 'дні виходять кращими, ніж очікуєш'
+                    : (cal.bias ?? 0) < -0.2
+                      ? 'дні виходять гіршими, ніж очікуєш'
+                      : 'очікування збігається з реальністю'}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-x-3 font-mono text-[10px] text-tx3">
+                <span>очікував {cal.avgExpect}</span>
+                <span>вийшло {cal.avgActual}</span>
+                <span>краще {cal.better}</span>
+                <span>так само {cal.same}</span>
+                <span>гірше {cal.worse}</span>
+              </div>
+              <Hint>
+                Ранкове «яким очікуєш день» проти вечірньої оцінки. Число — СЕРЕДНІЙ зсув:
+                додатний означає, що дні виходять кращими за прогноз. Три кошики поруч не
+                зайві: нульовий зсув буває і коли щодня влучаєш, і коли половина днів краща,
+                а половина гірша — це різні історії. Рахується від {cal.n} діб, де є обидві
+                відповіді.
+              </Hint>
+            </Card>
+          ) : (
+            cal.n > 0 && (
+              <Card>
+                <SubLabel>ОЧІКУВАННЯ ПРОТИ РЕАЛЬНОСТІ</SubLabel>
+                <Note>
+                  Потрібно {cal.needed} діб, де є і ранкове очікування, і вечірня оцінка —
+                  зараз {cal.n}. На меншій вибірці «ти песиміст» було б монеткою.
+                </Note>
+              </Card>
+            )
+          )}
+
+          {/* Пара «намір проти факту» для руху. movePlan сам по собі живить
+              лише BODY; без цієї картки звʼязок із вечірнім `moved` ніхто б
+              не побачив. */}
+          {mv.ready ? (
+            <Card>
+              <SubLabel>РУХ: НАМІР ПРОТИ ФАКТУ · {daysWindowLabel(mv.days, mv.n)}</SubLabel>
+              <div className="mt-2 flex flex-col gap-1">
+                <StatRow
+                  label="Намір збувся"
+                  value={
+                    mv.keptPct === null ? (
+                      <span className="font-normal text-tx3">планів не було</span>
+                    ) : (
+                      <>
+                        {mv.keptPct}%
+                        <span className="ml-1.5 font-normal text-tx3">
+                          {mv.kept}/{mv.planned}
+                        </span>
+                      </>
+                    )
+                  }
+                />
+                <StatRow
+                  label="Рух без плану"
+                  value={
+                    <>
+                      {mv.noPlanButMoved}
+                      <span className="ml-1.5 font-normal text-tx3">із {mv.noPlanDays}</span>
+                    </>
+                  }
+                />
+              </div>
+              <Hint>
+                Ранкове «рух заплановано?» проти вечірнього «рух сьогодні». Намір рахується
+                виконаним, коли факт не НИЖЧИЙ за план: планував легкий рух, вийшло
+                тренування — це виконано. Другий рядок про протилежне: скільки разів рух
+                стався там, де його не планував. Зводити обидва в один відсоток означало б
+                втратити половину картини.
+              </Hint>
+            </Card>
+          ) : (
+            mv.n > 0 && (
+              <Card>
+                <SubLabel>РУХ: НАМІР ПРОТИ ФАКТУ</SubLabel>
+                <Note>
+                  Потрібно {mv.needed} діб, де є і ранковий намір, і вечірній факт — зараз{' '}
+                  {mv.n}.
+                </Note>
+              </Card>
+            )
           )}
 
           {/* ⚠️ ТУТ БУЛА КАРТКА «ПОДАЧІ: СЛОВА ↔ ЖУРНАЛ» — прибрана на вимогу

@@ -122,8 +122,16 @@ describe('checkin-model — dayIndexScore', () => {
     const days = golden.days as Array<Record<string, unknown> & { dayScore: number }>;
     const idx = days.map((d) => dayIndices(d));
     const fit = fitWeights(idx.map((ix, i) => ({ indices: ix, dayScore: days[i]!.dayScore })));
-    const scores = idx.map((ix) => dayIndexScore(ix, fit.weights));
+    // ⚠️ ЗІ ЗНАКАМИ — як і Python-оракул. Доти аргумент не передавався, і тест
+    // проходив ЛИШЕ ТОМУ, що на тодішній синтетиці всі пʼять β виявились
+    // додатними: обидві гілки давали однакове число. Щойно β одного виміру
+    // стало відʼємним, розбіжність вилізла — тобто тест роками не перевіряв
+    // рівно ту гілку, заради якої знаки й заводились.
+    const scores = idx.map((ix) => dayIndexScore(ix, fit.weights, fit.signs));
     expect(near(scores[scores.length - 1], golden.dayIndex.last, 1e-1)).toBe(true);
+    // Пін проти повернення тієї самої сліпої зони: знаки мусять збігатись із
+    // Python ЯВНО, а не «випадково не заважати».
+    expect(fit.signs).toEqual(golden.fit.signs);
   });
 
   it('перенормовує ваги на присутні індекси (частковий вхід не занижує штучно)', () => {

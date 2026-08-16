@@ -43,6 +43,24 @@ export const INDEX_LABEL = {
 /** @type {ModelField[]} */
 export const FIELDS = [
   // ── Відновлення ────────────────────────────────────────────────────────────
+  // ⚠️ sleepKind — РЕЖИМ ночі, а не її тривалість, і він стоїть перед усім
+  // іншим про сон. «Не спав» і «дрімав уривками» доти лягали в sleepH як
+  // «мало спав», тобто три різні ночі ставали однією.
+  //
+  // Він НЕ замінює sleepH/sleepQ, а гейтить їх у чек-іні: на не-нічних
+  // варіантах ті два питання не показуються, а значення ВИВОДЯТЬСЯ (нижче, у
+  // flattenCheckinDay). Лишити їх порожніми було б найгіршим варіантом:
+  // RECOVERY утратив би два з чотирьох ранкових полів саме в ту добу, яка
+  // найінформативніша, і при MIN_FIELDS_PER_INDEX=2 найгірші ночі зникали б з
+  // моделі взагалі.
+  {
+    name: 'sleepKind',
+    slot: 'morning',
+    index: RECOVERY,
+    weight: 1.2,
+    polarity: 1,
+    levels: ['none', 'naps', 'slept'],
+  },
   {
     name: 'sleepH',
     slot: 'morning',
@@ -59,6 +77,17 @@ export const FIELDS = [
     weight: 0.8,
     polarity: -1,
     levels: ['fast', 'mid', 'slow', 'vslow'],
+  },
+  // Нічні пробудження — ТРЕТІЙ незалежний вимір сну поряд із тривалістю та
+  // якістю. Consensus Sleep Diary міряє їх окремо саме тому, що одне з одного
+  // вони не виводяться: 8 годин із чотирма пробудженнями — це не 8 годин.
+  {
+    name: 'awakenings',
+    slot: 'morning',
+    index: RECOVERY,
+    weight: 0.8,
+    polarity: -1,
+    levels: ['no', 'once', 'few', 'many'],
   },
   {
     name: 'bedtime',
@@ -94,7 +123,23 @@ export const FIELDS = [
   { name: 'mood@afternoon', slot: 'afternoon', index: RESOURCE, weight: 1.0, polarity: 1 },
   { name: 'mood@evening', slot: 'evening', index: RESOURCE, weight: 1.0, polarity: 1 },
   { name: 'worryAM', slot: 'morning', index: RESOURCE, weight: 0.8, polarity: -1 },
+  // Очікуване навантаження дня. Полярність −1 за тим самим зразком, що worryAM:
+  // обидва — РАНКОВІ передчуття, які тиснуть на ресурс ще до того, як день
+  // стався. Напрямок при цьому НЕ вгадується наперед: драйвери покажуть, чи
+  // справді щільний день виходить гіршим — у власника цілком може бути
+  // навпаки, і порожній день гнітитиме сильніше за завантажений.
+  { name: 'dayLoad', slot: 'morning', index: RESOURCE, weight: 0.8, polarity: -1 },
   { name: 'rushed', slot: 'afternoon', index: RESOURCE, weight: 0.8, polarity: -1 },
+  // Переривання ЗЗОВНІ — окремо від власного відволікання. Доти обидві
+  // причини зливались у блокер 'distract', хоч рішення в них різні.
+  {
+    name: 'interrupted',
+    slot: 'afternoon',
+    index: RESOURCE,
+    weight: 0.8,
+    polarity: -1,
+    levels: ['none', 'few', 'many'],
+  },
   // ── Робота ───────────────────────────────────────────────────────────────────
   { name: 'output', slot: 'evening', index: WORK, weight: 1.5, polarity: 1 },
   { name: 'focusQuality', slot: 'evening', index: WORK, weight: 1.2, polarity: 1 },
@@ -124,10 +169,22 @@ export const FIELDS = [
     legacyUnscored: ['off'],
   },
   { name: 'jobProgress', slot: 'evening', index: WORK, weight: 0.6, polarity: 1 },
+  // Прогрес на ОБІД — друга не-вечірня опора WORK після pace. До неї індекс
+  // тримався поза вечором на одному полі.
+  {
+    name: 'mainProgress',
+    slot: 'afternoon',
+    index: WORK,
+    weight: 1.0,
+    polarity: 1,
+    levels: ['none', 'started', 'half', 'most'],
+  },
   // ── Автономія / сенс ─────────────────────────────────────────────────────────
   { name: 'autonomy', slot: 'evening', index: AGENCY, weight: 1.5, polarity: 1 },
   { name: 'intentMatch', slot: 'derived', index: AGENCY, weight: 1.2, polarity: 1, span: [0, 1] },
   { name: 'jobConfidence', slot: 'evening', index: AGENCY, weight: 0.6, polarity: 1 },
+  // Очікуваний контроль над днем (ранок) — пара до вечірньої autonomy.
+  { name: 'dayControl', slot: 'morning', index: AGENCY, weight: 1.0, polarity: 1 },
   // ── Тіло / режим ─────────────────────────────────────────────────────────────
   {
     name: 'moved',
@@ -149,6 +206,40 @@ export const FIELDS = [
     polarity: 1,
     levels: ['none', 'short', 'long'],
   },
+  // ⚠️ ДВА НЕ-ВЕЧІРНІ ВХОДИ В BODY — і це головна причина, чому вони тут.
+  // Доти індекс мав РІВНО два поля, обидва вечірні, при MIN_FIELDS_PER_INDEX=2:
+  // запасу не було взагалі, і один пропущений тап робив BODY=null на всю добу,
+  // а отже викидав її з архетипів. Заміряно: при явці вечора 20% архетипи
+  // діставали 10 придатних діб із потрібних 20.
+  //
+  // Рівні дзеркалять вечірні аналоги слово в слово (none/light/workout проти
+  // moved; none/short/long проти outdoor) — інакше пара «намір проти факту»
+  // порівнювала б різні шкали.
+  //
+  // ⚠️ Рівні movePlan — ТІ САМІ ЧОТИРИ, що в moved, і це не косметика. Доти їх
+  // було три (без 'active'), тобто нормалізація розʼїжджалась тихо: «легко» в
+  // намірі давало 0.50, а «легко» у факті — 0.33. Пара «намір проти факту»
+  // порівнювала два різні нулі-до-одиниці й систематично завищувала намір.
+  {
+    name: 'movePlan',
+    slot: 'morning',
+    index: BODY,
+    weight: 1.0,
+    polarity: 1,
+    levels: ['none', 'light', 'active', 'workout'],
+  },
+  {
+    name: 'outdoorNow',
+    slot: 'afternoon',
+    index: BODY,
+    weight: 1.0,
+    polarity: 1,
+    levels: ['none', 'short', 'long'],
+  },
+  // Стан тіла зранку — ТРЕТІЙ не-вечірній вхід у BODY і єдиний, що міряє саме
+  // тіло, а не його використання: рух і час надворі — це поведінка. Найдешевший
+  // спосіб відрізнити «мало рухався, бо лінь» від «мало рухався, бо болить».
+  { name: 'bodyFeel', slot: 'morning', index: BODY, weight: 1.0, polarity: 1 },
 ];
 
 // Гейти — свідомо консервативні (той самий інваріант, що вже в stats-core:
@@ -855,6 +946,45 @@ export function analyzeCheckinModel(days) {
  * Частка |plan ∩ ate| / |plan| відповідає на те саме питання чесно, і span
  * поля [0,1] під неї вже був: міняється не контракт, а чим його заповнюють.
  */
+/**
+ * Числа для ночей, у які тривалість і якість не питались.
+ *
+ * ⚠️ Не з повітря: 'none' — нижня межа обох шкал (0 год, якість 1); 'naps' —
+ * дві години розірваного сну і якість 2, тобто гірше за будь-яку реальну
+ * відповідь, окрім найгіршої.
+ */
+const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
+
+/**
+ * Години сну з ранкового запису — ЄДИНЕ джерело на весь застосунок.
+ *
+ * ⚠️ ЗАРАДИ ЧОГО ОКРЕМА ФУНКЦІЯ. Виведення жило всередині flattenCheckinDay, і
+ * ним користувалась лише модель. Усі інші агрегації читали `morning.sleepH`
+ * НАПРЯМУ — а в добу без сну того поля просто немає (питання сховане й
+ * почищене). Тобто безсонна ніч не потрапляла ні в криву сну, ні в тижневе
+ * середнє, ні в порівняння «сон проти оцінки дня»: вона з них ВИПАДАЛА, і
+ * середній сон рахувався лише по ночах, коли ти спав, — тобто був
+ * систематично завищений рівно тими ночами, які найважливіші.
+ *
+ * Тепер правило одне на всіх, і обійти його можна лише свідомо.
+ *
+ * Режим ночі ГОЛОВНІШИЙ за збережене число: він і є найсвіжіша відповідь
+ * (послідовність «Спав, 8 годин -> передумав, Не спав» інакше лишала б вісім
+ * годин). Легасі-доби не зачіпає — там sleepKind немає взагалі.
+ */
+export function sleepHoursOf(m) {
+  const d = DERIVED_SLEEP[m?.sleepKind];
+  if (d) return d.h;
+  return typeof m?.sleepH === 'number' ? m.sleepH : null;
+}
+
+/** Якість сну за тим самим правилом, що sleepHoursOf. */
+export function sleepQualityOf(m) {
+  const d = DERIVED_SLEEP[m?.sleepKind];
+  if (d) return d.q;
+  return typeof m?.sleepQ === 'number' ? m.sleepQ : null;
+}
+
 export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const m = rec?.morning ?? {};
   const a = rec?.afternoon ?? {};
@@ -863,11 +993,36 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const ate = asListFn(a.ate).filter((x) => categoryValues.includes(x));
   const intentMatch =
     plan.length && ate.length ? plan.filter((p) => ate.includes(p)).length / plan.length : null;
+
+  // ⚠️ ВИВЕДЕННЯ СНУ, а не пропуск. На «не спав» і «дрімав» чек-ін не питає
+  // тривалість і якість — питати нема про що. Але ЛИШИТИ ЇХ null означало б
+  // забрати в RECOVERY два з чотирьох ранкових полів саме в найінформативнішу
+  // добу, а при MIN_FIELDS_PER_INDEX=2 це часто робить весь індекс null —
+  // тобто найгірші ночі просто зникали б з моделі. Результат, протилежний
+  // тому, заради чого питання й додане.
+  //
+  // Числа не з повітря: 'none' — нижня межа обох шкал (0 год, якість 1);
+  // 'naps' — 2 год розірваного сну і якість 2, тобто гірше за будь-яку
+  // реальну відповідь, окрім найгіршої. Відповідь власника при цьому НЕ
+  // перезаписується: якщо поле все ж заповнене (легасі-доба, ручна правка),
+  // береться воно.
+  // ⚠️ ВИВЕДЕНЕ ПЕРЕКРИВАЄ ЗБЕРЕЖЕНЕ, а не навпаки — і це другий захист, не
+  // основний. Основний стоїть в UI: закритий showIf чистить відповідь (див.
+  // clearGatedAnswers у questions.ts). Але послідовність «обрав Спав → 8 годин
+  // → передумав, Не спав» лишала в KV sleepH=8 разом із sleepKind='none', і
+  // при старому `m.sleepH ?? derived` модель читала б безсонну ніч як 8 годин
+  // сну — найгірший з можливих результатів для поля, яке додано саме заради
+  // таких ночей. Легасі-доби це не зачіпає: там sleepKind=null, отже derived
+  // немає взагалі, і береться збережене.
   return {
-    sleepH: m.sleepH ?? null,
-    sleepQ: m.sleepQ ?? null,
+    sleepKind: m.sleepKind ?? null,
+    sleepH: sleepHoursOf(m),
+    sleepQ: sleepQualityOf(m),
     sleepLatency: m.sleepLatency ?? null,
+    awakenings: m.awakenings ?? null,
     bedtime: m.bedtime ?? null,
+    bodyFeel: m.bodyFeel ?? null,
+    dayLoad: m.dayLoad ?? null,
     'energy@morning': m.energy ?? null,
     'energy@afternoon': a.energy ?? null,
     'energy@evening': e.energy ?? null,
@@ -876,6 +1031,11 @@ export function flattenCheckinDay(rec, asListFn, categoryValues) {
     'mood@evening': e.mood ?? null,
     worryAM: m.worryAM ?? null,
     rushed: a.rushed ?? null,
+    interrupted: a.interrupted ?? null,
+    mainProgress: a.mainProgress ?? null,
+    outdoorNow: a.outdoorNow ?? null,
+    movePlan: m.movePlan ?? null,
+    dayControl: m.dayControl ?? null,
     pace: a.pace ?? null,
     output: e.output ?? null,
     focusQuality: e.focusQuality ?? null,

@@ -4,6 +4,7 @@ import {
   HELPER_LABEL,
   LATE_REASON_LABEL,
   MOVED_LABEL,
+  NIGHT_REASON_LABEL,
   PACE_LABEL,
   WITH_WHOM_LABEL,
   labelOf,
@@ -219,6 +220,34 @@ export function factsOf(rec: CheckinDay | undefined, slot: CheckinSlot): string[
     // відрізняє «мало спав» від «довго не міг заснути».
     if (m.sleepLatency === 'slow' || m.sleepLatency === 'vslow') out.push('latency:slow');
     else if (m.sleepLatency === 'fast') out.push('latency:fast');
+    // ⚠️ ЩЕ ПʼЯТЬ ПОЛІВ, які живили «Індекс дня» і НЕ ВМІЛИ пояснити жодну
+    // клітинку. Це та сама прогалина, що вже закривалась для sleepLatency й
+    // румінації, — просто ширша: поле, чий єдиний споживач — одне зведене
+    // число, з погляду власника не відповідає ні на що. Пороги ті самі, що в
+    // сусідів (≤2 / ≥4), а середина шкали нічого не характеризує й факту не дає.
+    //
+    // 'slept' у факти не йде НАВМИСНО: це норма, а норма нічого не вирізняє.
+    if (m.sleepKind === 'none' || m.sleepKind === 'naps') out.push(`night:${m.sleepKind}`);
+    // Причина зіпсованої ночі — мультивибір, тож КОЖНА причина окремий факт
+    // (той самий принцип, що блокери). Саме вона, а не сам факт, відрізняє
+    // «доробляв проєкт» від «не міг заснути».
+    for (const r of m.nightReason ?? []) out.push(`nightwhy:${r}`);
+    if (m.awakenings === 'few' || m.awakenings === 'many') out.push('awake:many');
+    else if (m.awakenings === 'no') out.push('awake:no');
+    if (typeof m.bodyFeel === 'number') {
+      if (m.bodyFeel <= 2) out.push('body:bad');
+      else if (m.bodyFeel >= 4) out.push('body:good');
+    }
+    if (typeof m.dayLoad === 'number') {
+      if (m.dayLoad >= 4) out.push('load:high');
+      else if (m.dayLoad <= 2) out.push('load:low');
+    }
+    if (typeof m.dayControl === 'number') {
+      if (m.dayControl >= 4) out.push('control:high');
+      else if (m.dayControl <= 2) out.push('control:low');
+    }
+    if (m.movePlan === 'workout' || m.movePlan === 'active') out.push('moveplan:yes');
+    else if (m.movePlan === 'none') out.push('moveplan:no');
     return out;
   }
   if (slot === 'afternoon') {
@@ -227,6 +256,14 @@ export function factsOf(rec: CheckinDay | undefined, slot: CheckinSlot): string[
     if (a.pace) out.push(`pace:${a.pace}`);
     if (a.withWhom) out.push(`with:${a.withWhom}`);
     if (typeof a.rushed === 'number' && a.rushed >= 4) out.push('rushed:high');
+    // Три обідні поля з тією самою прогалиною: доти вони існували лише всередині
+    // індексів. «Збивали постійно» пояснює провал по обіді краще за будь-який
+    // вечірній блокер — саме тому, що воно з ТОГО САМОГО часу доби, що й зріз.
+    if (a.interrupted === 'many') out.push('interrupted:many');
+    else if (a.interrupted === 'none') out.push('interrupted:none');
+    if (a.mainProgress === 'none') out.push('progress:none');
+    else if (a.mainProgress === 'most' || a.mainProgress === 'half') out.push('progress:good');
+    if (a.outdoorNow) out.push(`outnow:${a.outdoorNow}`);
     return out;
   }
   const e = rec.evening;
@@ -257,6 +294,12 @@ export function factsOf(rec: CheckinDay | undefined, slot: CheckinSlot): string[
     if (e.autonomy >= 4) out.push('autonomy:high');
     else if (e.autonomy <= 2) out.push('autonomy:low');
   }
+  // Останнє поле, чиїм єдиним споживачем лишалась вага 0.4 всередині
+  // «Відновлення». Три чашки — це вже режим доби, а не деталь.
+  if (typeof e.caffeine === 'number') {
+    if (e.caffeine >= 3) out.push('caffeine:high');
+    else if (e.caffeine === 0) out.push('caffeine:none');
+  }
   return out;
 }
 
@@ -286,6 +329,13 @@ const OUTDOOR_LABEL: Record<string, string> = {
   short: '🚪 До години надворі',
   long: '🚪 Годину+ надворі',
 };
+/** Той самий вимір, що OUTDOOR_LABEL, але зріз на обід — і підпис мусить це
+ *  казати, інакше два різні факти доби читаються як один. */
+const OUTNOW_LABEL: Record<string, string> = {
+  none: '🚪 До обіду не виходив',
+  short: '🚪 До обіду коротко надворі',
+  long: '🚪 До обіду годину+ надворі',
+};
 const PLAIN_LABEL: Record<string, string> = {
   'sleepQ:bad': '😖 Погано спалось',
   'sleepQ:good': '😌 Добре спалось',
@@ -301,6 +351,25 @@ const PLAIN_LABEL: Record<string, string> = {
   'rumination:low': '🌀 Голова чиста',
   'autonomy:high': '🎛 День був мій',
   'autonomy:low': '🎛 Вели обставини',
+  // Девʼять полів, що доти вміли лише додати ваги в одне зведене число.
+  'night:none': '🌑 Ніч без сну',
+  'night:naps': '🌒 Спав уривками',
+  'awake:many': '😵 Ніч рвалась',
+  'awake:no': '😴 Проспав без пробуджень',
+  'body:bad': '🦴 Тіло розбите',
+  'body:good': '🦴 Тіло легке',
+  'load:high': '📅 День був щільний',
+  'load:low': '📅 День був порожній',
+  'control:high': '🎚 Зранку день здавався своїм',
+  'control:low': '🎚 Зранку день здавався чужим',
+  'moveplan:yes': '🏃 Планував рух',
+  'moveplan:no': '🏃 Руху не планував',
+  'interrupted:many': '📢 Збивали постійно',
+  'interrupted:none': '📢 Ніхто не збивав',
+  'progress:none': '🐌 До обіду нічого',
+  'progress:good': '⚡ До обіду половина+',
+  'caffeine:high': '☕ Три чашки+',
+  'caffeine:none': '☕ Без кофеїну',
 };
 
 /** Людський підпис факту. Невідомий ключ віддається як є — видно, а не зникає. */
@@ -314,6 +383,8 @@ export function causeLabel(key: string): string {
       return labelOf(BEDTIME_LABEL, value);
     case 'late':
       return `🌙 ${labelOf(LATE_REASON_LABEL, value)}`;
+    case 'nightwhy':
+      return `🌑 ${labelOf(NIGHT_REASON_LABEL, value)}`;
     case 'pace':
       return labelOf(PACE_LABEL, value);
     case 'with':
@@ -330,6 +401,8 @@ export function causeLabel(key: string): string {
       return labelOf(DETACHED_LABEL, value);
     case 'outdoor':
       return labelOf(OUTDOOR_LABEL, value);
+    case 'outnow':
+      return labelOf(OUTNOW_LABEL, value);
     default:
       return key;
   }
@@ -375,8 +448,35 @@ export function cellDetail(
   };
 }
 
-const MORNING_KINDS = new Set(['sleep', 'sleepQ', 'bedtime', 'late', 'worry']);
-const AFTERNOON_KINDS = new Set(['pace', 'with', 'rushed']);
+// ⚠️ ПОПОВНЮВАТИ РАЗОМ ІЗ factsOf. Знаменник факту береться за цим переліком, і
+// забутий вид тихо їде у вечір (default нижче) — тобто ранковий факт ділиться
+// на кількість ВЕЧІРНІХ зрізів. Саме так уже сталося з 'latency': факт додали,
+// сюди не дописали, і «довго не міг заснути» рахувалось від вечірнього
+// знаменника. Помилка не падає й не видно її на око — вона просто дає інший
+// відсоток.
+const MORNING_KINDS = new Set([
+  'sleep',
+  'sleepQ',
+  'bedtime',
+  'late',
+  'worry',
+  'latency',
+  'night',
+  'nightwhy',
+  'awake',
+  'body',
+  'load',
+  'control',
+  'moveplan',
+]);
+const AFTERNOON_KINDS = new Set([
+  'pace',
+  'with',
+  'rushed',
+  'interrupted',
+  'progress',
+  'outnow',
+]);
 
 /**
  * Якому слоту належить факт.

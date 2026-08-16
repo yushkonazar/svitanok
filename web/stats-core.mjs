@@ -6,7 +6,13 @@
 // драйвери/архетипи), а не inline тут: research/checkin_model.py лишається
 // специфікацією-оракулом, і держати JS-порт в одному місці з однією назвою
 // файлу простіше звіряти з golden-векторами (tests/checkin-model.test.ts).
-import { analyzeCheckinModel, flattenCheckinDay, cohensD, welchP } from './checkin-model.mjs';
+import {
+  analyzeCheckinModel,
+  flattenCheckinDay,
+  cohensD,
+  welchP,
+  sleepHoursOf,
+} from './checkin-model.mjs';
 //
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
@@ -135,6 +141,18 @@ export const CATEGORY_VALUES = [
   'create',
   'health',
   'admin',
+  // ⚠️ ТРИ ДОДАНІ КАТЕГОРІЇ І ЇХНЯ ЦІНА. Перелік спільний для «головне на
+  // сьогодні» й «на що пішов час», тож кожна нова категорія РОЗРІДЖУЄ кошики
+  // buildCategoryInsight (там свій поріг CATEGORY_SCORE_MIN) — за це платимо
+  // свідомо, бо доти три реальні статті часу не мали куди лягти й тонули в
+  // 'chores' та 'rest', тобто спотворювали саме ті кошики, які вже працюють.
+  //
+  // 'scroll' навмисно є і в плані: він там ніколи не зʼявиться, і це РОБИТЬ
+  // РОБОТУ — intentMatch рахує |план ∩ факт| / |план|, тож доба, де час пішов
+  // у стрічку замість плану, тепер видно як розрив, а не як «відпочинок».
+  'food',
+  'scroll',
+  'games',
 ];
 
 /** Скільки варіантів максимум приймаємо в мультивиборі (день не має 5 причин). */
@@ -158,6 +176,14 @@ export const BLOCKER_VALUES = [
   'waiting',
   'procrast',
   'forgot',
+  // Чотири причини, яким доти не було куди лягти, і кожна має свою пару нижче.
+  // «Не було плану» тонуло в 'stuck' (не знав з чого) — хоч це різні дні:
+  // одному бракує першого кроку, другому взагалі списку. «Перемикався» тонуло
+  // в 'distract', хоч відволікання приходить ЗЗОВНІ, а перемикання робиш сам.
+  'noplan',
+  'context',
+  'perfect',
+  'noise',
   'none',
 ];
 export const HELPER_VALUES = [
@@ -171,6 +197,13 @@ export const HELPER_VALUES = [
   'nodistract',
   'deadline',
   'music',
+  // Пари до нових перешкод: noplan↔plan, context↔timer, noise↔clean,
+  // tired/health↔food. Без пари помічник не додається — інакше список росте, а
+  // відповісти «що спрацювало проти саме цієї перешкоди» стає НЕ легше.
+  'plan',
+  'timer',
+  'clean',
+  'food',
   'none',
 ];
 // П'ять незалежних щоденних стріків (кожен додаток рахує свій окремо) —
@@ -189,17 +222,48 @@ export const CONSTRUCTIVE_FLAMES = new Set(['duolingo', 'chess']);
 // ваг і архетипів. Саме так сталося з moved:'active' (B5).
 export const CHECKIN_FIELDS = {
   morning: {
+    // ⚠️ Режим ночі стоїть ПЕРЕД тривалістю й гейтить її разом із якістю:
+    // на 'none'/'naps' ті питання не показуються, а значення виводить
+    // flattenCheckinDay. Рівні дзеркалять checkin-model.mjs.
+    sleepKind: { enum: ['none', 'naps', 'slept'] },
     sleepH: { num: [0, 14] },
     // Якість окремо від тривалості — стандарт Consensus Sleep Diary (1..5).
     // Без неї поріг «<6.5год» рахує 8 годин поганого сну виспаним.
     sleepQ: { num: [1, 5], int: true },
+    // ⚠️ Причина зіпсованої ночі — мультивибір, дзеркало lateReason. Ніч без
+    // сну рідко має одну причину: чекав ранку І було незручно І доробляв
+    // проєкт — типова комбінація, а не рідкість.
+    nightReason: {
+      enumMulti: [
+        'wait',
+        'work',
+        'cant',
+        'uncomf',
+        'anxious',
+        'health',
+        'people',
+        'scroll',
+        'travel',
+        'other',
+      ],
+      max: MULTI_MAX,
+    },
     // Скільки засинав — третій незалежний факт (ліг / засинав / проспав).
     sleepLatency: { enum: ['fast', 'mid', 'slow', 'vslow'] },
+    // Четвертий: скільки разів ніч рвалась. Із трьох попередніх не виводиться.
+    awakenings: { enum: ['no', 'once', 'few', 'many'] },
     bedtime: { enum: BEDTIME_BUCKETS },
+    // Тіло зранку — третій не-вечірній вхід у BODY і єдиний про САМОПОЧУТТЯ
+    // (рух і час надворі — це поведінка).
+    bodyFeel: { num: [1, 5], int: true },
+    // Очікуване навантаження дня — пара до обіднього `rushed`.
+    dayLoad: { num: [1, 5], int: true },
     // Чому пізно — питається УМОВНО (лише коли лягав пізно), тож у нормальні
     // дні коштує нуль тапів. «Мстива прокрастинація сну»: стресовий день ->
     // лягаю пізніше, щоб урвати час для себе.
-    lateReason: { enum: ['work', 'scroll', 'metime', 'anxious', 'social', 'other'] },
+    lateReason: {
+      enum: ['work', 'scroll', 'metime', 'anxious', 'social', 'late_home', 'other'],
+    },
     energy: { num: [1, 5], int: true },
     // Настрій (валентність) поруч з енергією (активація) — разом дають 2D
     // афект замість однієї осі. Обидва йдуть з ОДНОГО тапу по паду.
@@ -207,6 +271,15 @@ export const CHECKIN_FIELDS = {
     plan: { enumMulti: CATEGORY_VALUES, max: 2 },
     planApply: { num: [0, 20], int: true },
     worryAM: { num: [1, 5], int: true },
+    // Намір руху — перший НЕ-вечірній вхід у BODY. Рівні дзеркалять `moved`
+    // слово в слово (усі ЧОТИРИ, включно з 'active'), інакше пара «намір проти
+    // факту» порівнює два різні нулі-до-одиниці й завищує намір.
+    movePlan: { enum: ['none', 'light', 'active', 'workout'] },
+    // Пад «очікування × контроль»: один тап, два поля (той самий прийом, що
+    // AFFECT і work2d). dayControl живить AGENCY, dayExpect — калібрування
+    // проти вечірнього dayScore.
+    dayControl: { num: [1, 5], int: true },
+    dayExpect: { num: [1, 5], int: true },
   },
   afternoon: {
     // «off» лишається (легасі-записи), але розділено на конкретніші причини:
@@ -220,6 +293,13 @@ export const CHECKIN_FIELDS = {
     // тут, нормалізується в null і ТИХО вибиває поле (так було з moved:'active',
     // баг B5). CI-assert «enum ⊆ levels» стереже саме цю пару.
     withWhom: { enum: ['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed'] },
+    // Другий не-вечірній вхід у BODY; рівні дзеркалять вечірній `outdoor`.
+    outdoorNow: { enum: ['none', 'short', 'long'] },
+    // Друга не-вечірня опора WORK після pace.
+    mainProgress: { enum: ['none', 'started', 'half', 'most'] },
+    // Переривання ЗЗОВНІ — окремо від власного відволікання: доти обидві
+    // причини зливались у блокер 'distract', хоч рішення в них різні.
+    interrupted: { enum: ['none', 'few', 'many'] },
   },
   evening: {
     dayScore: { num: [1, 5], int: true },
@@ -1578,7 +1658,9 @@ function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRece
       const en = CHECKIN_SLOTS.map((sl) => c[sl]?.energy).filter((v) => typeof v === 'number');
       out.push({
         d: key,
-        sleepH: typeof c.morning?.sleepH === 'number' ? c.morning.sleepH : null,
+        // sleepHoursOf, а не сире поле: у добу без сну того поля немає, і
+        // крива мовчки пропускала б найінформативнішу ніч замість нуля.
+        sleepH: sleepHoursOf(c.morning),
         energy: round1(avg(en)),
         // Сама КРИВА, не лише її середнє: три дні із середнім 3.0 можуть бути
         // «рівний день», «згорів надвечір» і «розігнався надвечір» — за avg
@@ -1664,6 +1746,106 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
 }
 
 /**
+ * Калібрування очікувань: ранкове «яким очікую день» проти вечірньої оцінки.
+ *
+ * ⚠️ ЄДИНИЙ СПОЖИВАЧ dayExpect — і це навмисно. Поле не входить у жоден індекс
+ * моделі: воно описує не добу, а ПРОГНОЗ про неї, і змішати їх означало б
+ * зробити «Індекс дня» частково передбаченням самого себе.
+ *
+ * Що з цього видно, чого не видно більше нізвідки: систематичний зсув. Якщо
+ * bias стабільно відʼємний — ти недооцінюєш свої дні, і це окрема інформація
+ * від того, які вони насправді.
+ *
+ * Гейт CORR_MIN_N: на пʼятьох добах «ти песиміст» — це монетка.
+ */
+function buildExpectCalibration(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  const pairs = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[dayKey(d)];
+    d.setUTCDate(d.getUTCDate() + 1);
+    const exp = c?.morning?.dayExpect;
+    const act = c?.evening?.dayScore;
+    if (typeof exp !== 'number' || typeof act !== 'number') continue;
+    pairs.push({ exp, act });
+  }
+  const n = pairs.length;
+  if (n < CORR_MIN_N) return { days, n, needed: CORR_MIN_N, ready: false };
+  const diffs = pairs.map((p) => p.act - p.exp);
+  // Три кошики, а не лише середнє: bias=0 буває і коли щодня точно, і коли
+  // половина днів гірша, половина краща. Це різні люди.
+  return {
+    days,
+    n,
+    ready: true,
+    avgExpect: round1(avg(pairs.map((p) => p.exp))),
+    avgActual: round1(avg(pairs.map((p) => p.act))),
+    bias: round1(avg(diffs)),
+    better: diffs.filter((x) => x > 0).length,
+    same: diffs.filter((x) => x === 0).length,
+    worse: diffs.filter((x) => x < 0).length,
+  };
+}
+
+/** Рівні наміру й факту руху на одній ординальній шкалі. */
+const MOVE_RANK = { none: 0, light: 1, active: 2, workout: 3 };
+
+/**
+ * Намір руху (ранок) проти факту (вечір).
+ *
+ * ⚠️ ДВА РІЗНІ ПИТАННЯ, а не одне. «Скільки разів намір збувся» і «скільки
+ * разів рух стався без наміру» — різні речі: перше про виконання, друге про
+ * те, що рух буває й непланованим. Зводити їх в один відсоток означало б
+ * втратити половину картини.
+ *
+ * Намір вважається виконаним, коли ФАКТ не нижчий за план: запланував легкий
+ * рух, а вийшло тренування — це виконано, а не «мимо».
+ */
+function buildMoveIntent(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  let planned = 0;
+  let keptPlan = 0;
+  let noPlanButMoved = 0;
+  let noPlanDays = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const c = checkins[dayKey(d)];
+    d.setUTCDate(d.getUTCDate() + 1);
+    const plan = c?.morning?.movePlan;
+    const fact = c?.evening?.moved;
+    if (plan === undefined || fact === undefined) continue;
+    const pr = MOVE_RANK[plan];
+    const fr = MOVE_RANK[fact];
+    if (pr === undefined || fr === undefined) continue;
+    if (pr > 0) {
+      planned++;
+      if (fr >= pr) keptPlan++;
+    } else {
+      noPlanDays++;
+      if (fr > 0) noPlanButMoved++;
+    }
+  }
+  const total = planned + noPlanDays;
+  if (total < MOVE_MIN_N) return { days, n: total, needed: MOVE_MIN_N, ready: false };
+  return {
+    days,
+    n: total,
+    ready: true,
+    planned,
+    kept: keptPlan,
+    // Порожній знаменник -> null, а не 0%: «нуль із нуля» і «нуль із десяти» —
+    // різні твердження, і плутати їх ми вже перестали в конверсіях воронки.
+    keptPct: planned > 0 ? Math.round((keptPlan / planned) * 100) : null,
+    noPlanDays,
+    noPlanButMoved,
+  };
+}
+
+/** Нижче — і «намір збувається в 100%» стоїть на одній добі. */
+const MOVE_MIN_N = 5;
+
+/**
  * Явка по блоках за останні N діб. Самі пропуски — теж сигнал: ранок заповнений
  * 25 разів, а вечір 4 — це вже висновок, і чесніший за будь-яку кореляцію.
  */
@@ -1716,7 +1898,9 @@ function buildSleepVsDayScore(checkins, todayKey, days = STATS_WINDOWS.checkinMi
   d.setUTCDate(d.getUTCDate() - (days - 1));
   for (let i = 0; i < days; i++) {
     const c = checkins[dayKey(d)];
-    const sleep = c?.morning?.sleepH;
+    // ⚠️ Через sleepHoursOf: доти безсонні ночі ВИПАДАЛИ з порівняння, тобто
+    // «мало сну проти нормального» рахувалось без найгіршого кошика.
+    const sleep = sleepHoursOf(c?.morning);
     const score = c?.evening?.dayScore;
     if (typeof sleep === 'number' && typeof score === 'number') {
       (sleep < 6.5 ? low : ok).push(score);
@@ -1969,10 +2153,84 @@ function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
     helper: helpers[0] ?? null,
     blockers,
     helpers,
+    // ⚠️ ЩО ЖОДНОГО РАЗУ НЕ ОБИРАЛОСЬ — і чому це окреме поле, а не «те, чого
+    // немає в blockers». Питання «які варіанти зайві» доти можна було вирішити
+    // лише здогадкою, а здогадка тут дорога: викинути варіант, який справді
+    // трапляється раз на місяць, означає назавжди втратити рідкісну причину.
+    // Тепер відповідь дають ДАНІ — і рішення про прибирання ухвалюється, коли
+    // варіант простояв порожнім усе вікно, а не коли він видався зайвим.
+    //
+    // 'none' виключена: це свідома відповідь «нічого не завадило», і в топ вона
+    // не рахується (вище), тож у «невикористаних» виглядала б як хибний докір.
+    unusedBlockers: BLOCKER_VALUES.filter((v) => v !== 'none' && !bC[v]),
+    unusedHelpers: HELPER_VALUES.filter((v) => v !== 'none' && !hC[v]),
     days,
     filled,
     lateReasons: rankCounts(lC),
     lateNights,
+  };
+}
+
+/**
+ * Як минали ночі: скільки було зіпсованих і ЧОМУ.
+ *
+ * ⚠️ БЕЗ ЦЬОГО НОВЕ ПИТАННЯ БУЛО Б НАПІВПОРОЖНІМ. Режим ночі живив «Індекс
+ * дня» — тобто безсонна ніч впливала на число, але ніде не була НАЗВАНА. А це
+ * та подія, яку треба бачити прямо: «дві ночі за місяць ти не спав узагалі» —
+ * факт, з яким можна щось зробити, на відміну від «Відновлення 34%».
+ *
+ * Причина при цьому важливіша за сам факт: «чекав ранку через комендантську»,
+ * «допрацьовував проєкт» і «не міг заснути» — три різні ночі з трьома різними
+ * висновками, і лише остання з них узагалі про сон.
+ *
+ * Порівняння оцінки дня — під тим самим гейтом, що решта блоку (CORR_MIN_N):
+ * зіпсовані ночі рідкісні, і «після безсонної ночі день гірший на 1.2» на двох
+ * спостереженнях було б не висновком, а монеткою.
+ */
+function buildNightKinds(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  const kinds = { slept: 0, naps: 0, none: 0 };
+  const reasons = {};
+  const roughScores = [];
+  const restScores = [];
+  const roughDates = [];
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const key = dayKey(d);
+    d.setUTCDate(d.getUTCDate() + 1);
+    const rec = checkins[key];
+    const kind = rec?.morning?.sleepKind;
+    if (!kind || !(kind in kinds)) continue;
+    kinds[kind]++;
+    const score = rec?.evening?.dayScore;
+    const rough = kind !== 'slept';
+    if (rough) {
+      roughDates.push(key);
+      for (const r of asList(rec?.morning?.nightReason)) reasons[r] = (reasons[r] || 0) + 1;
+    }
+    if (typeof score === 'number') (rough ? roughScores : restScores).push(score);
+  }
+  const nights = kinds.slept + kinds.naps + kinds.none;
+  const rough = kinds.naps + kinds.none;
+  return {
+    days,
+    nights,
+    ...kinds,
+    rough,
+    // Дати самих ночей — факт, а не висновок, тож без гейта. Саме вони дають
+    // «це було позавчора», якого не дасть жоден відсоток. Кап на 5: далі йде
+    // хвіст, який ніхто не читає.
+    dates: roughDates.slice(-5),
+    reasons: rankCounts(reasons),
+    effect:
+      roughScores.length >= CORR_MIN_N && restScores.length >= CORR_MIN_N
+        ? {
+            ready: true,
+            roughAvg: round1(avg(roughScores)),
+            restAvg: round1(avg(restScores)),
+            nRough: roughScores.length,
+          }
+        : { ready: false, needed: CORR_MIN_N, nRough: roughScores.length },
   };
 }
 
@@ -2008,7 +2266,11 @@ function buildCheckinWeekly(checkins, todayKey, weeks = STATS_WINDOWS.checkinWee
     const b = buckets[w];
     if (!b) continue;
     b.n++;
-    if (typeof c.morning?.sleepH === 'number') b.sleep.push(c.morning.sleepH);
+    // Те саме джерело: без нього тижневий середній сон рахувався ЛИШЕ по
+    // ночах, коли ти спав, — тобто був завищений рівно тими ночами, які
+    // найбільше на нього впливають.
+    const sh = sleepHoursOf(c.morning);
+    if (sh !== null) b.sleep.push(sh);
     if (typeof c.evening?.dayScore === 'number') b.score.push(c.evening.dayScore);
     const en = CHECKIN_SLOTS.map((sl) => c[sl]?.energy).filter((v) => typeof v === 'number');
     if (en.length) b.energy.push(avg(en));
@@ -2362,6 +2624,11 @@ export function aggregateStats(store, todayKey) {
     // Дрейф наміру — на ВЖЕ зібраних даних (plan/ate є роками), тож працює з
     // першого дня, не чекає накопичення нових полів.
     intentDrift: buildIntentDrift(s.checkins, todayKey),
+    // ⚠️ Обидва блоки існують, щоб нові ранкові питання не збирались у пусту:
+    // dayExpect не входить у жоден індекс, а movePlan сам по собі лише живить
+    // BODY — пару «намір проти факту» без цієї функції ніхто б не побачив.
+    expectCalibration: buildExpectCalibration(s.checkins, todayKey),
+    moveIntent: buildMoveIntent(s.checkins, todayKey),
     checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
     checkinFill: buildCheckinFill(s.checkins, todayKey),
     planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),
@@ -2370,6 +2637,7 @@ export function aggregateStats(store, todayKey) {
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
     appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
+    nightKinds: buildNightKinds(s.checkins, todayKey),
     socialContext: buildSocialContext(s.checkins, todayKey),
     // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
     // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,
