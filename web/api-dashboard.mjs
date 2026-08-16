@@ -16,12 +16,19 @@ import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner } from './auth-core.mjs';
 import { loadStats, loadState, loadSettings, updateStats } from './kv-store.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
-import { kyivDateKey, kyivHour, kyivMinAfter8, bedtimeBucketForHour } from './kyiv-time.mjs';
+import {
+  kyivDateKey,
+  kyivHour,
+  kyivMinAfter8,
+  kyivMinuteOfDay,
+  bedtimeBucketForHour,
+} from './kyiv-time.mjs';
 import {
   recordEvent,
   aggregateStats,
   pageSaved,
   checkinSlot,
+  checkinSlotEndsInMin,
   checkinDateKey,
 } from './stats-core.mjs';
 import { normalizeSettings, connectorStatus } from './settings-core.mjs';
@@ -329,6 +336,9 @@ export async function handleStats(request, env) {
   // чистий і години не знає; тут же — щоб клієнт не мав власної копії меж.
   const h = kyivHour();
   stats.checkinSlot = checkinSlot(h);
+  // Скільки блоку лишилось жити. Клієнт тикає від цього якоря локально, а коли
+  // той добігає нуля — перепитує сервер замість того, щоб вирішувати самому.
+  stats.checkinSlotEndsIn = checkinSlotEndsInMin(kyivMinuteOfDay());
   // ⚠️ checkinToday мусить читатись за КЛЮЧЕМ ЧЕК-ІНУ (як пише applyEvent через
   // checkinDateKey), а не за сирим календарним днем. aggregateStats не знає
   // години, тож дає checkins[kyivDateKey()]; але о 00:00–01:59 вечірній блок

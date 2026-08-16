@@ -587,6 +587,7 @@ export const SAMPLE_STATS: Stats = {
   // Чек-ін: демо стоїть у ранковому блоці з частковою відповіддю — так одразу
   // видно всі три стани (заповнюваний / замкнені) і гідратацію з сервера.
   checkinSlot: 'morning',
+  checkinSlotEndsIn: 72,
   checkinToday: { morning: { sleepH: 6.5 } },
   // Глибини агрегації — дзеркало STATS_WINDOWS зі stats-core.mjs. У демо теж
   // справжні, бо підписи «за N діб» малюються саме звідси.

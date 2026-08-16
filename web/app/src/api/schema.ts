@@ -789,6 +789,9 @@ export const statsSchema = z.object({
   // Усе .optional()/.default() — старий воркер цих полів не віддає, а safeParse
   // валить ЦІЛИЙ /api/stats, не одне поле (див. попередження зверху файлу).
   checkinSlot: z.enum(['morning', 'afternoon', 'evening']).nullable().optional(),
+  /** Скільки хвилин активному блоку лишилось. Рахує СЕРВЕР (межі київські), а
+   *  клієнт лише тикає від цього якоря — і по нулю йде перепитати. */
+  checkinSlotEndsIn: int.nullable().optional(),
   checkinToday: checkinDaySchema.nullable().optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),

@@ -9,6 +9,8 @@ import {
 import { emptyStore, recordEvent, aggregateStats, BLOCKER_VALUES } from '../web/stats-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { FIELDS, normalizeField, dayIndices } from '../web/checkin-model.mjs';
+// @ts-expect-error — JS-модуль Worker'а без типів
+import { checkinSlot, checkinSlotEndsInMin } from '../web/stats-core.mjs';
 
 /* Умовні питання чек-іну: сховане питання не перестає існувати для сервера й
  * моделі — воно перестає існувати лише на екрані. Саме на цьому місці блок
@@ -247,5 +249,42 @@ describe('nightKinds — зіпсовані ночі названо прямо',
   it('порівняння з рештою днів мовчить, поки вибірка мала', () => {
     expect(nk.effect.ready).toBe(false);
     expect(nk.effect.needed).toBeGreaterThanOrEqual(8);
+  });
+});
+
+/* ⚠️ Таймер закриття блоку: межі мусять бути ТІ САМІ, що в checkinSlot. Другий
+   перелік годин розійшовся б із першим тихо — таймер обіцяв би час, якого блок
+   уже не має. Тому тест бʼє по обох одразу. */
+describe('checkinSlotEndsInMin — скільки блоку лишилось жити', () => {
+  const cases: Array<[number, string | null, number | null]> = [
+    [8 * 60, 'morning', 360],
+    [13 * 60 + 59, 'morning', 1],
+    [14 * 60, 'afternoon', 360],
+    [19 * 60 + 59, 'afternoon', 1],
+    [20 * 60, 'evening', 360],
+    [23 * 60 + 59, 'evening', 121],
+    [0, 'evening', 120],
+    [1 * 60 + 59, 'evening', 1],
+    // Тиха зона: блоку немає, отже й таймера немає — не «0 хвилин».
+    [2 * 60, null, null],
+    [7 * 60 + 59, null, null],
+  ];
+
+  for (const [min, slot, left] of cases) {
+    it(`${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')} -> ${slot ?? 'немає блоку'} / ${left ?? '—'}`, () => {
+      expect(checkinSlot(Math.floor(min / 60))).toBe(slot);
+      expect(checkinSlotEndsInMin(min)).toBe(left);
+    });
+  }
+
+  it('вечір перетинає північ безперервно — жодного стрибка на 00:00', () => {
+    // 23:59 -> 121, 00:00 -> 120: різниця рівно хвилина, а не «ще 24 години».
+    expect(checkinSlotEndsInMin(23 * 60 + 59) - checkinSlotEndsInMin(0)).toBe(1);
+  });
+
+  it('битий вхід -> null, а не випадкове число (та сама пастка, що в checkinSlot)', () => {
+    for (const v of [-1, 1440, NaN, null, undefined, '', '600', {}, []]) {
+      expect(checkinSlotEndsInMin(v as never)).toBeNull();
+    }
   });
 });

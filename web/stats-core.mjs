@@ -370,6 +370,37 @@ export function isCheckinSlotFilled(rec, slot) {
   return !!v && typeof v === 'object' && Object.keys(v).length > 0;
 }
 
+/** Кінець вечірнього блоку — 02:00 наступної доби (та сама межа, що `h < 2`). */
+const CHECKIN_EVENING_END_H = 2;
+
+/**
+ * Скільки хвилин лишилось до закриття активного блоку; null — блок не відкритий
+ * (тиха зона 02:00–07:59).
+ *
+ * ⚠️ РАХУЄ СЕРВЕР, і не заради краси. Межі блоків київські, а клієнт живе в
+ * тому часовому поясі, який стоїть на телефоні: власний відлік на клієнті
+ * показував би «ще 3 години» тому, у кого годинник переведено, — і показував би
+ * упевнено. Клієнт дістає ОДНЕ число-якір і тикає від нього локально; коли
+ * воно добігає нуля, він іде по свіжу відповідь, а не вирішує сам.
+ *
+ * Межі беруться з CHECKIN_FROM — того самого джерела, що checkinSlot. Другий
+ * перелік годин розійшовся б із першим тихо: таймер обіцяв би час, якого блок
+ * уже не має.
+ */
+export function checkinSlotEndsInMin(minuteOfDay) {
+  if (typeof minuteOfDay !== 'number' || !Number.isFinite(minuteOfDay)) return null;
+  const m = Math.floor(minuteOfDay);
+  if (m < 0 || m >= 1440) return null;
+  const slot = checkinSlot(Math.floor(m / 60));
+  if (!slot) return null;
+  if (slot === 'morning') return CHECKIN_FROM.afternoon * 60 - m;
+  if (slot === 'afternoon') return CHECKIN_FROM.evening * 60 - m;
+  // Вечір перетинає північ: до 02:00 лишилось або «сьогодні вночі», або
+  // «завтра вночі» — залежно від того, з якого боку півночі ми зараз.
+  const end = CHECKIN_EVENING_END_H * 60;
+  return m >= CHECKIN_FROM.evening * 60 ? 1440 + end - m : end - m;
+}
+
 export function checkinSlot(hour) {
   // Суворо number, без Number(): Number(null) === 0, а нуль — ВАЛІДНА година,
   // яка падає рівно у вечірнє вікно (h < 2). Тобто м'яке приведення робило б із
