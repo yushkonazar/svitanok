@@ -672,6 +672,10 @@ export const SAMPLE_STATS: Stats = {
       { value: 'breaks', n: 2 },
       { value: 'music', n: 1 },
     ],
+    // Демо показує рядок «жодного разу» непорожнім — інакше цей стан ніде не
+    // побачити, а він і є типовим у перші тижні після розширення списків.
+    unusedBlockers: ['waiting', 'forgot', 'noplan', 'context', 'perfect', 'noise'],
+    unusedHelpers: ['deadline', 'plan', 'timer', 'clean', 'food'],
     filled: 14,
     lateReasons: [
       { value: 'scroll', n: 4 },
@@ -860,6 +864,8 @@ export const EMPTY_STATS: Stats = {
     helper: null,
     blockers: [],
     helpers: [],
+    unusedBlockers: [],
+    unusedHelpers: [],
     days: 30,
     filled: 0,
     lateReasons: [],

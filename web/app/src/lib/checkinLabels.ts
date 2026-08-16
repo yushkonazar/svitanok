@@ -23,6 +23,10 @@ export const BLOCKER_LABEL: Record<string, string> = {
   waiting: 'Чекав на інших',
   health: 'Здоровʼя',
   external: 'Зовнішні обставини',
+  noplan: 'Не було плану',
+  context: 'Перемикався між справами',
+  perfect: 'Застряг на деталях',
+  noise: 'Шум/незручне місце',
 };
 
 export const HELPER_LABEL: Record<string, string> = {
@@ -36,6 +40,10 @@ export const HELPER_LABEL: Record<string, string> = {
   deadline: 'Дедлайн',
   music: 'Музика/фокус',
   support: 'Підтримка',
+  plan: 'План з вечора',
+  timer: 'Таймер/помодоро',
+  clean: 'Прибрав робоче місце',
+  food: 'Нормально поїв',
 };
 
 export const SLEEP_KIND_LABEL: Record<string, string> = {
@@ -47,6 +55,9 @@ export const SLEEP_KIND_LABEL: Record<string, string> = {
 export const MOVE_PLAN_LABEL: Record<string, string> = {
   none: 'Рух не планував',
   light: 'Планував легкий рух',
+  // Рівні дзеркалять MOVED_LABEL один в один — пара «намір проти факту»
+  // порівнює однакові шкали, тож і підписи мусять читатись однаково.
+  active: 'Планував активний рух',
   workout: 'Планував тренування',
 };
 
@@ -61,6 +72,13 @@ export const INTERRUPTED_LABEL: Record<string, string> = {
   none: 'Не збивали',
   few: 'Збивали кілька разів',
   many: 'Збивали постійно',
+};
+
+export const AWAKENINGS_LABEL: Record<string, string> = {
+  no: 'Не прокидався',
+  once: 'Прокидався раз',
+  few: 'Прокидався кілька разів',
+  many: 'Прокидався часто',
 };
 
 export const LATE_REASON_LABEL: Record<string, string> = {
@@ -95,6 +113,9 @@ export const CATEGORY_LABEL: Record<string, string> = {
   create: '🎨 Творчість',
   health: '🏥 Здоровʼя',
   admin: '📋 Адмін/фінанси',
+  food: '🍽 Їжа/готування',
+  scroll: '📱 Стрічка/телефон',
+  games: '🎮 Ігри',
 };
 
 export const PACE_LABEL: Record<string, string> = {
