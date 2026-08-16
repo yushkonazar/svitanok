@@ -1528,8 +1528,6 @@ function buildHabitWeekly(days, todayKey) {
  *     відповіджених.
  *   - streak/best — той самий generic streak()/bestStreak(), що вже рахує
  *     reliability/openDays, лише інший предикат.
- *   - missedTops — дзеркало tops, але лічильник НЕВІДМІЧЕНОГО за день:
- *     «що частіше пропускаю», дієвіший сигнал за «що частіше обирав».
  */
 function buildFlameStats(checkins, todayKey) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(checkins, todayKey));
@@ -1542,7 +1540,6 @@ function buildFlameStats(checkins, todayKey) {
     starts.map((k) => [k, { active: 0, full: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
   const counts = {};
-  const missed = {};
   const completeDays = {};
   let activeNights = 0;
   const today = new Date(todayKey + 'T00:00:00Z');
@@ -1551,13 +1548,6 @@ function buildFlameStats(checkins, todayKey) {
     const k = dayKey(d);
     const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
     completeDays[k] = { complete: flames.length === FLAME_VALUES.length };
-    // missed рахуємо ЛИШЕ на добах, де вечірній чек-ін реально торкались —
-    // інакше кожна порожня доба 12-тижневого вікна (нема чек-іну взагалі)
-    // додала б +1 УСІМ пʼятьом застосункам однаково, і рейтинг завжди
-    // виглядав би майже рівним (шум порожньої історії забиває сигнал).
-    if (checkins[k]?.evening !== undefined) {
-      for (const f of FLAME_VALUES) if (!flames.includes(f)) missed[f] = (missed[f] || 0) + 1;
-    }
     const b = buckets[weekStartKey(k)];
     if (!b) continue;
     b.days++;
@@ -1574,7 +1564,6 @@ function buildFlameStats(checkins, todayKey) {
   }
   return {
     tops: rankCounts(counts),
-    missedTops: rankCounts(missed),
     activeNights,
     streak: streak(completeDays, todayKey, (d) => d?.complete === true),
     best: bestStreak(completeDays, (d) => d?.complete === true),
@@ -1862,31 +1851,6 @@ function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
 }
 
 /**
- * Намір проти факту: скільки подач планував уранці — і скільки їх реально було
- * (за appliedLog, а не за словами). Єдина відповідь, яку застосунок ПЕРЕВІРЯЄ.
- */
-function buildPlanVsFact(checkins, appliedLog, todayKey, days = STATS_WINDOWS.checkinRecent) {
-  const byDay = {};
-  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
-
-  const rows = [];
-  const d = new Date(todayKey + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - (days - 1));
-  for (let i = 0; i < days; i++) {
-    const key = dayKey(d);
-    const m = checkins[key]?.morning;
-    // Лише РОБОЧІ дні (plan='work'): у v2 planApply опційне й показується тільки
-    // там. Без гейта на plan осиротіле число (обрав «Робота», ввів, перемкнув на
-    // «Навчання») пролазило б у джоб-рядок на не-робочому дні.
-    if (asList(m?.plan).includes('work') && typeof m.planApply === 'number') {
-      rows.push({ d: key, planned: m.planApply, actual: byDay[key] || 0 });
-    }
-    d.setUTCDate(d.getUTCDate() + 1);
-  }
-  return rows;
-}
-
-/**
  * Сон проти ОЦІНКИ ДНЯ — ДВА кошики (мало спав <6.5 / виспався), і лише якщо в
  * кожному CORR_MIN_N днів. Загальний звʼязок «як ніч впливає на день» — без
  * привʼязки до пошуку роботи (v2). Інакше null: краще нічого, ніж вигадка.
@@ -2049,45 +2013,6 @@ function buildSocialContext(checkins, todayKey, days = STATS_WINDOWS.checkinMid)
           nOthers: otherScores.length,
         },
   };
-}
-
-/**
- * Калібрація: вечірній САМОЗВІТ подач проти appliedLog (факту). Не кореляція, а
- * звірка per-day, тож без гейта — показуємо як planVsFact, коли є хоч день.
- *  more  = сказав більше, ніж у журналі  -> подавав ПОЗА застосунком (не залогував)
- *  fewer = сказав менше -> залогував зайве / плутанина з добою
- */
-function buildAppliedCalibration(
-  checkins,
-  appliedLog,
-  todayKey,
-  days = STATS_WINDOWS.checkinRecent,
-) {
-  const byDay = {};
-  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
-
-  let n = 0;
-  let matched = 0;
-  let more = 0;
-  let fewer = 0;
-  const d = new Date(todayKey + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - (days - 1));
-  for (let i = 0; i < days; i++) {
-    const key = dayKey(d);
-    const c = checkins[key];
-    const self = c?.evening?.applied;
-    // Лише робочі дні (plan='work'): осиротіле «скільки вийшло» на не-робочому
-    // дні не мусить потрапляти в джоб-калібрацію.
-    if (asList(c?.morning?.plan).includes('work') && typeof self === 'number') {
-      n++;
-      const obj = byDay[key] || 0;
-      if (self === obj) matched++;
-      else if (self > obj) more++;
-      else fewer++;
-    }
-    d.setUTCDate(d.getUTCDate() + 1);
-  }
-  return { n, matched, more, fewer };
 }
 
 /** Скільки варіантів блокерів/помічників віддаємо в рейтингу (решта — хвіст). */
@@ -2631,11 +2556,9 @@ export function aggregateStats(store, todayKey) {
     moveIntent: buildMoveIntent(s.checkins, todayKey),
     checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
     checkinFill: buildCheckinFill(s.checkins, todayKey),
-    planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),
     sleepVsDayScore: buildSleepVsDayScore(s.checkins, todayKey),
     bedtimeVsEnergy: buildBedtimeVsEnergy(s.checkins, todayKey),
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
-    appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
     nightKinds: buildNightKinds(s.checkins, todayKey),
     socialContext: buildSocialContext(s.checkins, todayKey),
