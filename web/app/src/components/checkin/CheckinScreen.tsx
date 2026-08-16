@@ -182,6 +182,8 @@ function BlockCard({
   onAnswer,
   onPad,
   onConfirm,
+  endsIn,
+  onExpire,
 }: {
   b: Block;
   state: State;
@@ -194,6 +196,9 @@ function BlockCard({
   onAnswer: (q: string, v: string | number, multi?: number) => void;
   onPad: (xId: string, x: number, yId: string, y: number) => void;
   onConfirm: () => void;
+  /** Хвилин до закриття блоку (сервер). null — блок не активний. */
+  endsIn: number | null;
+  onExpire: () => void;
 }) {
   const [deepOpen, setDeepOpen] = useState(false);
   // «Записаний» блок можна РОЗГОРНУТИ НАЗАД. Без цього була дірка: isDone
@@ -266,6 +271,12 @@ function BlockCard({
     <>
       <span className="text-[15px]">{b.ic}</span>
       <span className="text-[13.5px] font-bold">{b.nm}</span>
+      {/* Таймер лише на ЖИВОМУ й не підтвердженому блоці: у підтвердженого
+          вікно вже не має значення (правки не приймаються), у закритого —
+          тим паче. */}
+      {live && !confirmed && endsIn != null && (
+        <SlotTimer key={endsIn} endsIn={endsIn} onExpire={onExpire} />
+      )}
       <span className={`ml-auto font-mono text-[9.5px] font-semibold tracking-[0.05em] ${tone}`}>
         {label}
       </span>
@@ -415,6 +426,70 @@ function BlockCard({
   );
 }
 
+/**
+ * Скільки блоку лишилось жити.
+ *
+ * ⚠️ ЯКІР — СЕРВЕРНИЙ, і це головне рішення тут. Межі блоків київські, а
+ * клієнт живе в поясі, який стоїть на телефоні: власний відлік показував би
+ * «ще три години» тому, у кого годинник переведено, — і показував би впевнено,
+ * тим самим шрифтом. Тому сервер каже, СКІЛЬКИ ХВИЛИН лишилось (одне число), а
+ * тут воно лише зменшується.
+ *
+ * По нулю компонент не вирішує нічого сам, а йде по свіжу відповідь: слот
+ * визначає сервер, і саме він мусить сказати, що тепер відкрито.
+ *
+ * Власний стан у ОКРЕМОМУ компоненті навмисно: тік раз на пів хвилини у
+ * CheckinScreen перемальовував би всі три блоки з усіма питаннями.
+ */
+function SlotTimer({ endsIn, onExpire }: { endsIn: number; onExpire: () => void }) {
+  // ⚠️ Годинник живе В ЕФЕКТІ, а не в рендері. Рендер мусить бути чистим, а
+  // Date.now() під час рендера дає різний результат на кожен перемальовок —
+  // лінтер правий: це рівно той клас помилок, де число «стрибає», коли
+  // компонент перемалювався з чужої причини.
+  //
+  // Скидання при зміні пропа зроблено КЛЮЧЕМ на місці виклику (key={endsIn}),
+  // а не setState в ефекті: компонент просто монтується наново з новим
+  // початковим значенням — без зайвого рендера й вікна, де на екрані ще старе
+  // число, а проп уже новий.
+  const [left, setLeft] = useState(endsIn);
+  useEffect(() => {
+    const at = Date.now();
+    const id = setInterval(() => {
+      setLeft(Math.max(0, endsIn - Math.floor((Date.now() - at) / 60_000)));
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [endsIn]);
+
+  const expire = useRef(onExpire);
+  useEffect(() => {
+    expire.current = onExpire;
+  }, [onExpire]);
+  useEffect(() => {
+    // Нуль — не привід вирішувати щось самому: слот визначає сервер, тож ідемо
+    // по свіжу відповідь. Саме через ref, а не прямо в залежностях: батько
+    // віддає інлайн-стрілку, тобто НОВУ функцію щорендеру — з нею в deps ефект
+    // перезапускався б щоразу й на нулі смикав би сервер знову й знову.
+    if (left === 0) expire.current();
+  }, [left]);
+
+  const h = Math.floor(left / 60);
+  const m = left % 60;
+  const text = h > 0 ? `${h}:${pad2(m)}` : `${m} хв`;
+  // Остання година — інший колір. Не «терміново!», а рівно те, що є: часу
+  // лишилось на один блок питань, і це варто помітити боковим зором.
+  const soon = left <= 60;
+  return (
+    <span
+      className={`rounded-full border px-1.5 py-px font-mono text-[9px] font-semibold ${
+        soon ? 'border-neg/40 text-neg' : 'border-glassb text-tx3'
+      }`}
+      aria-label={`Блок закриється через ${h > 0 ? `${h} год ${m} хв` : `${m} хв`}`}
+    >
+      ⏳ {text}
+    </span>
+  );
+}
+
 export function CheckinScreen() {
   const { data, isLoading, isError, error, refetch } = useStats();
   const save = useSaveCheckin();
@@ -560,6 +635,11 @@ export function CheckinScreen() {
             onAnswer={(q, v, multi) => onAnswer(b.id, q, v, multi)}
             onPad={(xId, x, yId, y) => onPad(b.id, xId, x, yId, y)}
             onConfirm={() => onConfirm(b.id)}
+            // ⚠️ Лише СПРАВЖНЬОМУ активному блоку, навіть у демо: демо
+            // відкриває всі три, і таймер на всіх трьох обіцяв би те, чого
+            // немає — два з них у цю мить закриті.
+            endsIn={active === b.id ? (s?.checkinSlotEndsIn ?? null) : null}
+            onExpire={() => void refetch()}
           />
         </div>
       ))}

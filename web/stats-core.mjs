@@ -370,6 +370,37 @@ export function isCheckinSlotFilled(rec, slot) {
   return !!v && typeof v === 'object' && Object.keys(v).length > 0;
 }
 
+/** Кінець вечірнього блоку — 02:00 наступної доби (та сама межа, що `h < 2`). */
+const CHECKIN_EVENING_END_H = 2;
+
+/**
+ * Скільки хвилин лишилось до закриття активного блоку; null — блок не відкритий
+ * (тиха зона 02:00–07:59).
+ *
+ * ⚠️ РАХУЄ СЕРВЕР, і не заради краси. Межі блоків київські, а клієнт живе в
+ * тому часовому поясі, який стоїть на телефоні: власний відлік на клієнті
+ * показував би «ще 3 години» тому, у кого годинник переведено, — і показував би
+ * упевнено. Клієнт дістає ОДНЕ число-якір і тикає від нього локально; коли
+ * воно добігає нуля, він іде по свіжу відповідь, а не вирішує сам.
+ *
+ * Межі беруться з CHECKIN_FROM — того самого джерела, що checkinSlot. Другий
+ * перелік годин розійшовся б із першим тихо: таймер обіцяв би час, якого блок
+ * уже не має.
+ */
+export function checkinSlotEndsInMin(minuteOfDay) {
+  if (typeof minuteOfDay !== 'number' || !Number.isFinite(minuteOfDay)) return null;
+  const m = Math.floor(minuteOfDay);
+  if (m < 0 || m >= 1440) return null;
+  const slot = checkinSlot(Math.floor(m / 60));
+  if (!slot) return null;
+  if (slot === 'morning') return CHECKIN_FROM.afternoon * 60 - m;
+  if (slot === 'afternoon') return CHECKIN_FROM.evening * 60 - m;
+  // Вечір перетинає північ: до 02:00 лишилось або «сьогодні вночі», або
+  // «завтра вночі» — залежно від того, з якого боку півночі ми зараз.
+  const end = CHECKIN_EVENING_END_H * 60;
+  return m >= CHECKIN_FROM.evening * 60 ? 1440 + end - m : end - m;
+}
+
 export function checkinSlot(hour) {
   // Суворо number, без Number(): Number(null) === 0, а нуль — ВАЛІДНА година,
   // яка падає рівно у вечірнє вікно (h < 2). Тобто м'яке приведення робило б із
@@ -1528,8 +1559,6 @@ function buildHabitWeekly(days, todayKey) {
  *     відповіджених.
  *   - streak/best — той самий generic streak()/bestStreak(), що вже рахує
  *     reliability/openDays, лише інший предикат.
- *   - missedTops — дзеркало tops, але лічильник НЕВІДМІЧЕНОГО за день:
- *     «що частіше пропускаю», дієвіший сигнал за «що частіше обирав».
  */
 function buildFlameStats(checkins, todayKey) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(checkins, todayKey));
@@ -1542,7 +1571,6 @@ function buildFlameStats(checkins, todayKey) {
     starts.map((k) => [k, { active: 0, full: 0, days: 0, constructive: 0, consumptive: 0 }]),
   );
   const counts = {};
-  const missed = {};
   const completeDays = {};
   let activeNights = 0;
   const today = new Date(todayKey + 'T00:00:00Z');
@@ -1551,13 +1579,6 @@ function buildFlameStats(checkins, todayKey) {
     const k = dayKey(d);
     const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
     completeDays[k] = { complete: flames.length === FLAME_VALUES.length };
-    // missed рахуємо ЛИШЕ на добах, де вечірній чек-ін реально торкались —
-    // інакше кожна порожня доба 12-тижневого вікна (нема чек-іну взагалі)
-    // додала б +1 УСІМ пʼятьом застосункам однаково, і рейтинг завжди
-    // виглядав би майже рівним (шум порожньої історії забиває сигнал).
-    if (checkins[k]?.evening !== undefined) {
-      for (const f of FLAME_VALUES) if (!flames.includes(f)) missed[f] = (missed[f] || 0) + 1;
-    }
     const b = buckets[weekStartKey(k)];
     if (!b) continue;
     b.days++;
@@ -1574,7 +1595,6 @@ function buildFlameStats(checkins, todayKey) {
   }
   return {
     tops: rankCounts(counts),
-    missedTops: rankCounts(missed),
     activeNights,
     streak: streak(completeDays, todayKey, (d) => d?.complete === true),
     best: bestStreak(completeDays, (d) => d?.complete === true),
@@ -1862,31 +1882,6 @@ function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
 }
 
 /**
- * Намір проти факту: скільки подач планував уранці — і скільки їх реально було
- * (за appliedLog, а не за словами). Єдина відповідь, яку застосунок ПЕРЕВІРЯЄ.
- */
-function buildPlanVsFact(checkins, appliedLog, todayKey, days = STATS_WINDOWS.checkinRecent) {
-  const byDay = {};
-  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
-
-  const rows = [];
-  const d = new Date(todayKey + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - (days - 1));
-  for (let i = 0; i < days; i++) {
-    const key = dayKey(d);
-    const m = checkins[key]?.morning;
-    // Лише РОБОЧІ дні (plan='work'): у v2 planApply опційне й показується тільки
-    // там. Без гейта на plan осиротіле число (обрав «Робота», ввів, перемкнув на
-    // «Навчання») пролазило б у джоб-рядок на не-робочому дні.
-    if (asList(m?.plan).includes('work') && typeof m.planApply === 'number') {
-      rows.push({ d: key, planned: m.planApply, actual: byDay[key] || 0 });
-    }
-    d.setUTCDate(d.getUTCDate() + 1);
-  }
-  return rows;
-}
-
-/**
  * Сон проти ОЦІНКИ ДНЯ — ДВА кошики (мало спав <6.5 / виспався), і лише якщо в
  * кожному CORR_MIN_N днів. Загальний звʼязок «як ніч впливає на день» — без
  * привʼязки до пошуку роботи (v2). Інакше null: краще нічого, ніж вигадка.
@@ -2051,45 +2046,6 @@ function buildSocialContext(checkins, todayKey, days = STATS_WINDOWS.checkinMid)
   };
 }
 
-/**
- * Калібрація: вечірній САМОЗВІТ подач проти appliedLog (факту). Не кореляція, а
- * звірка per-day, тож без гейта — показуємо як planVsFact, коли є хоч день.
- *  more  = сказав більше, ніж у журналі  -> подавав ПОЗА застосунком (не залогував)
- *  fewer = сказав менше -> залогував зайве / плутанина з добою
- */
-function buildAppliedCalibration(
-  checkins,
-  appliedLog,
-  todayKey,
-  days = STATS_WINDOWS.checkinRecent,
-) {
-  const byDay = {};
-  for (const a of appliedLog) if (isDateKey(a?.ts)) byDay[a.ts] = (byDay[a.ts] || 0) + 1;
-
-  let n = 0;
-  let matched = 0;
-  let more = 0;
-  let fewer = 0;
-  const d = new Date(todayKey + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - (days - 1));
-  for (let i = 0; i < days; i++) {
-    const key = dayKey(d);
-    const c = checkins[key];
-    const self = c?.evening?.applied;
-    // Лише робочі дні (plan='work'): осиротіле «скільки вийшло» на не-робочому
-    // дні не мусить потрапляти в джоб-калібрацію.
-    if (asList(c?.morning?.plan).includes('work') && typeof self === 'number') {
-      n++;
-      const obj = byDay[key] || 0;
-      if (self === obj) matched++;
-      else if (self > obj) more++;
-      else fewer++;
-    }
-    d.setUTCDate(d.getUTCDate() + 1);
-  }
-  return { n, matched, more, fewer };
-}
-
 /** Скільки варіантів блокерів/помічників віддаємо в рейтингу (решта — хвіст). */
 const TOPS_RANK_LIMIT = 5;
 
@@ -2168,6 +2124,83 @@ function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
     filled,
     lateReasons: rankCounts(lC),
     lateNights,
+  };
+}
+
+/**
+ * Зусилля × результат — чотири типи робочого дня.
+ *
+ * ⚠️ ЦЕ ЄДИНИЙ СПОЖИВАЧ ПАДА «work2d» ПОЗА МОДЕЛЛЮ. Обидва поля збираються
+ * ОДНИМ тапом саме заради квадрантів (NASA-TLX: зусилля й результат — різні
+ * виміри), але картки для них не існувало: effort і output лише додавали ваги
+ * в «Індекс дня». Тобто найдешевше зібраний вимір у всьому чек-іні нічого не
+ * пояснював.
+ *
+ * ПОРОГИ ФІКСОВАНІ (≥4 високо, ≤2 низько), а не медіанні — і це рішення, а не
+ * лінощі. Медіанний поділ «відносно твоїх звичайних днів» звучить розумніше,
+ * але він ПЕРЕПИСУЄ МИНУЛЕ: доба, яку ти бачив як «потік», через місяць нових
+ * даних мовчки стає «тихим днем», бо зсунулась медіана. Для щоденника це гірше
+ * за грубішу шкалу — зникає сама можливість сказати «таких днів стало більше».
+ *
+ * Трійка по будь-якій осі — НЕ квадрант, а `mid`, і він показується явно.
+ * Заштовхати середину в найближчий кут означало б вигадати позицію дня, якої
+ * власник не називав.
+ */
+const QUADRANT_HI = 4;
+const QUADRANT_LO = 2;
+/** Нижче цього середню оцінку кута не показуємо (той самий поріг, що DAY_SCORE_MIN_N
+ *  у карті станів): середнє двох діб — це оцінка двох діб, а не типу днів. */
+const QUADRANT_SCORE_MIN = 4;
+
+function buildWorkQuadrants(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+  const cells = {
+    flow: { n: 0, scores: [] },
+    hardwin: { n: 0, scores: [] },
+    grind: { n: 0, scores: [] },
+    quiet: { n: 0, scores: [] },
+  };
+  let mid = 0;
+  let n = 0;
+  const d = new Date(todayKey + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
+    const e = checkins[dayKey(d)]?.evening;
+    d.setUTCDate(d.getUTCDate() + 1);
+    const effort = e?.effort;
+    const output = e?.output;
+    if (typeof effort !== 'number' || typeof output !== 'number') continue;
+    n++;
+    const hiE = effort >= QUADRANT_HI;
+    const loE = effort <= QUADRANT_LO;
+    const hiO = output >= QUADRANT_HI;
+    const loO = output <= QUADRANT_LO;
+    let key = null;
+    if (hiO && loE) key = 'flow';
+    else if (hiO && hiE) key = 'hardwin';
+    else if (loO && hiE) key = 'grind';
+    else if (loO && loE) key = 'quiet';
+    if (!key) {
+      mid++;
+      continue;
+    }
+    cells[key].n++;
+    if (typeof e.dayScore === 'number') cells[key].scores.push(e.dayScore);
+  }
+  return {
+    days,
+    n,
+    mid,
+    cells: Object.fromEntries(
+      Object.entries(cells).map(([k, v]) => [
+        k,
+        {
+          n: v.n,
+          dayScore: v.scores.length >= QUADRANT_SCORE_MIN ? round1(avg(v.scores)) : null,
+          scored: v.scores.length,
+        },
+      ]),
+    ),
+    needed: QUADRANT_SCORE_MIN,
   };
 }
 
@@ -2631,13 +2664,12 @@ export function aggregateStats(store, todayKey) {
     moveIntent: buildMoveIntent(s.checkins, todayKey),
     checkinWeekly: buildCheckinWeekly(s.checkins, todayKey),
     checkinFill: buildCheckinFill(s.checkins, todayKey),
-    planVsFact: buildPlanVsFact(s.checkins, s.appliedLog, todayKey),
     sleepVsDayScore: buildSleepVsDayScore(s.checkins, todayKey),
     bedtimeVsEnergy: buildBedtimeVsEnergy(s.checkins, todayKey),
     categoryInsight: buildCategoryInsight(s.checkins, todayKey),
-    appliedCalibration: buildAppliedCalibration(s.checkins, s.appliedLog, todayKey),
     checkinTops: buildCheckinTops(s.checkins, todayKey),
     nightKinds: buildNightKinds(s.checkins, todayKey),
+    workQuadrants: buildWorkQuadrants(s.checkins, todayKey),
     socialContext: buildSocialContext(s.checkins, todayKey),
     // «Індекс дня» — окрема статистична модель (checkin-model.mjs): композитні
     // індекси, ваги, що вчаться на власних dayScore, драйвери, лаговий звʼязок,

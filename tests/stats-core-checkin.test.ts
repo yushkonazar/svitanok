@@ -336,35 +336,6 @@ describe('aggregateStats — чек-ін', () => {
     expect(f.afternoon).toBe(0);
   });
 
-  it('намір проти факту бере ФАКТ з appliedLog, а не зі слів (робочий день)', () => {
-    const s = recordEvent(
-      emptyStore(),
-      ck('morning', { plan: 'work', planApply: 3 }),
-      '2026-07-17',
-    );
-    s.appliedLog = [
-      { url: 'a', ts: '2026-07-17' },
-      { url: 'b', ts: '2026-07-17' },
-    ];
-    const rows = aggregateStats(s, '2026-07-17').planVsFact;
-    expect(rows).toEqual([{ d: '2026-07-17', planned: 3, actual: 2 }]);
-  });
-
-  it('дні без planApply у порівняння не потрапляють', () => {
-    const s = recordEvent(emptyStore(), ck('morning', { sleepH: 7 }), '2026-07-17');
-    expect(aggregateStats(s, '2026-07-17').planVsFact).toEqual([]);
-  });
-
-  it('осиротіле planApply на НЕ-робочому дні у джоб-аналітику НЕ потрапляє (v2)', () => {
-    // Обрав «Робота», ввів 3, перемкнув на «Навчання» — число лишилось, але день не робочий.
-    const s = recordEvent(
-      emptyStore(),
-      ck('morning', { plan: 'learn', planApply: 3 }),
-      '2026-07-17',
-    );
-    expect(aggregateStats(s, '2026-07-17').planVsFact).toEqual([]);
-  });
-
   // ── Гейт кореляцій: головний запобіжник від впевненої брехні ──
   it('сон/оцінка-дня МОВЧИТЬ, поки кошики малі', () => {
     // 3 дні мало спав, 3 виспався — цього НЕ досить, щоб щось стверджувати.
@@ -736,40 +707,6 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     expect(c.rows).toEqual([{ cat: 'work', n: 1, dayScore: null }]);
   });
 
-  it('appliedCalibration: matched / more(не залогував) / fewer проти appliedLog (робочі дні)', () => {
-    let s = emptyStore();
-    // Кожен день — робочий (plan='work'), бо тепер калібрація гейтиться на нього.
-    for (const day of ['2026-07-15', '2026-07-16', '2026-07-17']) {
-      s = recordEvent(s, ck('morning', { plan: 'work' }), day);
-    }
-    s = recordEvent(s, ck('evening', { applied: 2 }), '2026-07-15'); // факт 2 -> matched
-    s = recordEvent(s, ck('evening', { applied: 3 }), '2026-07-16'); // факт 1 -> more
-    s = recordEvent(s, ck('evening', { applied: 0 }), '2026-07-17'); // факт 1 -> fewer
-    s.appliedLog = [
-      { url: 'a', ts: '2026-07-15' },
-      { url: 'b', ts: '2026-07-15' },
-      { url: 'c', ts: '2026-07-16' },
-      { url: 'd', ts: '2026-07-17' },
-    ];
-    expect(aggregateStats(s, '2026-07-17').appliedCalibration).toEqual({
-      n: 3,
-      matched: 1,
-      more: 1,
-      fewer: 1,
-    });
-  });
-
-  it('appliedCalibration: applied на НЕ-робочому дні НЕ рахується (v2 гейт)', () => {
-    let s = recordEvent(emptyStore(), ck('morning', { plan: 'rest' }), '2026-07-17');
-    s = recordEvent(s, ck('evening', { applied: 2 }), '2026-07-17');
-    expect(aggregateStats(s, '2026-07-17').appliedCalibration).toEqual({
-      n: 0,
-      matched: 0,
-      more: 0,
-      fewer: 0,
-    });
-  });
-
   it('checkinTops: мода блокера й помічника, без none', () => {
     let s = recordEvent(
       emptyStore(),
@@ -1045,40 +982,6 @@ describe('aggregateStats — вогники (flames, evening)', () => {
     const cur = w[w.length - 1]!;
     expect(cur.active).toBe(1);
     expect(cur.full).toBe(0);
-  });
-
-  it('missedTops: лічильник ПРОПУЩЕНОГО, лише на добах з вечірнім чек-іном (не порожня історія)', () => {
-    let s = emptyStore();
-    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
-    s = recordEvent(s, ck('evening', { flames: ['duolingo'] }), '2026-07-11');
-    const f = aggregateStats(s, '2026-07-11').flameStats;
-    const byValue = Object.fromEntries(
-      f.missedTops.map((r: { value: string; n: number }) => [r.value, r.n]),
-    );
-    // 10-те: пропущено tiktok/snapchat/bereal. 11-те: пропущено ще й chess.
-    expect(byValue.tiktok).toBe(2);
-    expect(byValue.snapchat).toBe(2);
-    expect(byValue.bereal).toBe(2);
-    expect(byValue.chess).toBe(1);
-    expect(byValue.duolingo).toBeUndefined(); // жодного разу не пропущено
-  });
-
-  it('missedTops: порожні доби БЕЗ вечірнього чек-іну не рахуються (не шумлять рейтинг)', () => {
-    let s = emptyStore();
-    s = recordEvent(s, ck('evening', { flames: ['duolingo', 'chess'] }), '2026-07-10');
-    // Вікно росте ВІД першого чек-іну (weeksAvailable, stats-core.mjs), тож тут
-    // воно й так лише 1 тиждень — жодної порожньої до-стартової доби нема. Тест
-    // лишається валідним: у ВІКНІ (з 06.07 по 10.07) лише 10.07 має чек-ін,
-    // решта днів без запису взагалі й не рахуються в missedTops (гейт нижче).
-    const f = aggregateStats(s, '2026-07-10').flameStats;
-    const byValue = Object.fromEntries(
-      f.missedTops.map((r: { value: string; n: number }) => [r.value, r.n]),
-    );
-    expect(byValue.tiktok).toBe(1);
-    expect(byValue.snapchat).toBe(1);
-    expect(byValue.bereal).toBe(1);
-    expect(byValue.duolingo).toBeUndefined();
-    expect(byValue.chess).toBeUndefined();
   });
 
   it('weekly: конструктивні (duolingo/chess) і споживчі (tiktok/snapchat/bereal) не змішуються (далека історія, без стелі)', () => {

@@ -99,6 +99,18 @@ function checkinInsight(avgSleep: number | null, weekEnergyAvg: number | null): 
   return parts.length ? parts.join(' ') : null;
 }
 
+/**
+ * Чотири типи робочого дня. Порядок клітинок — як на паді, де ти відповідаєш:
+ * зусилля вгору, результат управо, тож «потік» (мало зусиль, багато результату)
+ * стоїть унизу праворуч, а «гриндж» — угорі ліворуч.
+ */
+const QUADRANTS: ReadonlyArray<{ key: 'grind' | 'hardwin' | 'quiet' | 'flow'; label: string; hint: string }> = [
+  { key: 'grind', label: '🪨 Гриндж', hint: 'багато зусиль, мало результату' },
+  { key: 'hardwin', label: '⛰ Важка перемога', hint: 'багато зусиль, багато результату' },
+  { key: 'quiet', label: '🌾 Тихий день', hint: 'мало зусиль, мало результату' },
+  { key: 'flow', label: '🌊 Потік', hint: 'мало зусиль, багато результату' },
+];
+
 /** «Сьогодні -> завтра»: лаговий звʼязок, єдине, що дивиться на ЗАВТРАШНІЙ день. */
 function LaggedRow({ idx, data }: { idx: string; data: Stats['checkinModel']['lagged'][string] }) {
   if (!data.ready) {
@@ -203,6 +215,7 @@ export function CheckinBlock({ s }: { s: Stats }) {
   const mv = s.moveIntent;
   const tops = s.checkinTops;
   const nights = s.nightKinds;
+  const quad = s.workQuadrants;
   const social = s.socialContext;
 
   const laggedEntries = Object.entries(model.lagged);
@@ -233,6 +246,54 @@ export function CheckinBlock({ s }: { s: Stats }) {
           🌙 Точний сон: {fmtDuration(lastSleepNight.durationMin)} (ліг о{' '}
           {kyivTime(lastSleepNight.startedAt)}, прокинувся о {kyivTime(lastSleepNight.wokeAt)})
         </div>
+      )}
+
+      {/* ⚠️ ЄДИНИЙ СПОЖИВАЧ ПАДА «зусилля × результат» поза моделлю. Обидва
+          поля збираються ОДНИМ тапом саме заради цих квадрантів, але картки
+          для них не існувало: effort і output лише додавали ваги в «Індекс
+          дня». Найдешевше зібраний вимір у чек-іні нічого не пояснював. */}
+      {quad.n > 0 && (
+        <Card>
+          <SubLabel>ТИПИ РОБОЧОГО ДНЯ · {daysWindowLabel(quad.days, quad.n)}</SubLabel>
+          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+            {QUADRANTS.map((q) => {
+              const c = quad.cells[q.key];
+              return (
+                <div
+                  key={q.key}
+                  className="rounded-xl border border-glassb bg-bg2 p-2.5"
+                  style={{ opacity: c.n ? 1 : 0.45 }}
+                >
+                  <div className="text-[11.5px] font-semibold text-tx">{q.label}</div>
+                  <div className="mt-0.5 text-[9.5px] leading-[1.35] text-tx3">{q.hint}</div>
+                  <div className="mt-1.5 flex items-baseline gap-1.5">
+                    <span className="font-mono text-[15px] font-bold text-tx">{c.n}</span>
+                    <span className="font-mono text-[9px] text-tx3">
+                      {c.n === 1 ? 'доба' : 'діб'}
+                    </span>
+                    {/* Прочерк — не «нуль», а «діб замало для середнього». */}
+                    <span className="ml-auto font-mono text-[10px] text-tx2">
+                      {c.dayScore == null ? '—' : `оцінка ${c.dayScore}`}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {quad.mid > 0 && (
+            <div className="mt-2 text-[10px] text-tx3">
+              Ще {quad.mid} діб посередині — трійка по зусиллях або результату. У кут їх не
+              заштовхуємо: це вигадало б позицію, якої ти не називав.
+            </div>
+          )}
+          <Hint>
+            Зусилля й результат — РІЗНІ виміри, і один тап по паду дає обидва. Разом вони
+            відповідають на те, чого не скаже жодне окреме число: важкий день і безрезультатний
+            день — не одне й те саме. Пороги фіксовані (4-5 високо, 1-2 низько), а не «відносно
+            твоїх звичайних днів»: інакше доба, яку ти бачив як потік, через місяць мовчки стала
+            б тихим днем — просто тому, що зсунулась медіана.
+          </Hint>
+        </Card>
       )}
 
       {/* ⚠️ ЗʼЯВЛЯЄТЬСЯ, ЛИШЕ КОЛИ Є ПРО ЩО СКАЗАТИ (rough > 0). Картка «усі 30
@@ -690,10 +751,11 @@ export function CheckinBlock({ s }: { s: Stats }) {
               не на екрані, куди приходять із питанням «що робити далі» —
               навіть коли подач стане тридцять.
 
-              Дані нікуди не діваються: appliedCalibration і далі їде в
-              /api/stats, і звірка лишається доступною тому, кому вона потрібна
-              (щотижневий звіт асистента — саме той споживач). Прибрано лише
-              постійне місце на екрані. */}
+              ⚠️ 17.08 прибрано й із СЕРВЕРА. Аргумент «хай лишається в контракті
+              для щотижневого звіту» не витримав перевірки часом: звіту немає й
+              досі, а функція рахувалась на КОЖНОМУ запиті в бюджеті 10 мс. Коли
+              звіт зʼявиться (крок 10), `git show` поверне її разом із тестами —
+              це дешевше, ніж місяцями платити за споживача, якого немає. */}
 
           {avgSleep !== null && (
             <StatRow
