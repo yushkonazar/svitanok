@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { factsOf, cellDetail, CAUSE_MIN_N, DAY_SCORE_MIN_N } from '../web/app/src/lib/stateMap.ts';
+import {
+  factsOf,
+  cellDetail,
+  causeLabel,
+  CAUSE_MIN_N,
+  DAY_SCORE_MIN_N,
+} from '../web/app/src/lib/stateMap.ts';
 import type { CheckinRaw, CheckinDay } from '../web/app/src/api/schema.ts';
 
 // Деталі клітинки карти станів: які саме це були доби й що в них було.
@@ -60,6 +66,44 @@ describe('factsOf — що спостережно в записі слоту', (
     };
     expect(factsOf(rec, 'morning')).toEqual(['sleep:short']);
     expect(factsOf(rec, 'evening')).toEqual(['blocker:tired']);
+  });
+
+  /* ⚠️ ТРИ ПОЛЯ, ЩО ЖИВИЛИ МОДЕЛЬ, АЛЕ НЕ ВМІЛИ ПОЯСНИТИ ЖОДНУ КЛІТИНКУ.
+     sleepLatency, rumination і autonomy валідувались, зберігались і входили в
+     індекси RECOVERY/AGENCY — тобто найглибша аналітика ними користувалась, а
+     сказати «ось чому цей вечір такий» ними було неможливо. Причому це
+     найцінніші кандидати в причини: вони про ГОЛОВУ, а не про обставини. */
+  it('ранок: довге засинання — окремий факт, не те саме, що мало спав', () => {
+    expect(factsOf({ morning: { sleepLatency: 'vslow' } }, 'morning')).toContain('latency:slow');
+    expect(factsOf({ morning: { sleepLatency: 'fast' } }, 'morning')).toContain('latency:fast');
+  });
+
+  it('ранок: середнє засинання фактом НЕ стає — воно нічого не характеризує', () => {
+    expect(factsOf({ morning: { sleepLatency: 'mid' } }, 'morning')).toEqual([]);
+  });
+
+  it('вечір: румінація й автономія на обох краях шкали', () => {
+    const hi = factsOf({ evening: { rumination: 5, autonomy: 1 } }, 'evening');
+    expect(hi).toEqual(expect.arrayContaining(['rumination:high', 'autonomy:low']));
+    const lo = factsOf({ evening: { rumination: 1, autonomy: 5 } }, 'evening');
+    expect(lo).toEqual(expect.arrayContaining(['rumination:low', 'autonomy:high']));
+  });
+
+  it('вечір: середина шкали (3) фактом не стає — той самий поріг, що в сусідів', () => {
+    expect(factsOf({ evening: { rumination: 3, autonomy: 3 } }, 'evening')).toEqual([]);
+  });
+
+  it('нові факти мають людські підписи, а не сирі ключі', () => {
+    for (const k of [
+      'latency:slow',
+      'latency:fast',
+      'rumination:high',
+      'rumination:low',
+      'autonomy:high',
+      'autonomy:low',
+    ]) {
+      expect(causeLabel(k)).not.toBe(k);
+    }
   });
 
   it('порожній слот -> порожні факти, не виняток', () => {
