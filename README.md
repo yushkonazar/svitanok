@@ -82,19 +82,19 @@ flowchart TB
 weekly review. Модулі (`src/modules/`), кожен незалежний (падіння одного не
 валить брифінг):
 
-| Модуль          | Тип      | LLM?       | Що робить                                                                  |
-| --------------- | -------- | ---------- | -------------------------------------------------------------------------- |
-| `stoic`         | consumer | ні         | Цитата дня (public domain, детермінована ротація за днем року)             |
-| `weather`       | producer | ні         | Погода по локаціях (Львів, Немовичі) через OpenWeather One Call 3.0 + AQI  |
-| `calendar`      | producer | ні         | Сьогоднішні події Google Calendar (`calendar.readonly`)                    |
-| `news`          | consumer | ні         | NewsData.io (теми за scope×category) + RSS-стрічки; дедуп, ваги ❤️ на тему |
-| `jobs`          | consumer | так        | DOU + Djinni RSS → LLM-скоринг релевантності (fit %) під профіль           |
-| `mail`          | producer | так        | Gmail-тріаж (лише метадані), виявляє запрошення на співбесіду              |
-| `fact`          | consumer | так (батч) | «Факт дня» — один виклик генерує пачку на ~2 тижні наперед                 |
-| `mock`          | consumer | так (батч) | Питання співбесіди дня — той самий батч-кеш, що `fact`                     |
-| `currency`      | consumer | ні         | Курс НБУ + 14-денна історія — лише дашборд                                 |
-| `onthisday`     | consumer | ні         | «У цей день» з Wikipedia — лише дашборд                                    |
-| `weekly-review` | consumer | ні         | Недільний підсумок: новини за тиждень, роадмеп-прогрес, слабкі теми        |
+| Модуль          | Тип      | LLM?       | Що робить                                                                        |
+| --------------- | -------- | ---------- | -------------------------------------------------------------------------------- |
+| `stoic`         | consumer | ні         | Цитата дня (public domain, детермінована ротація за днем року)                   |
+| `weather`       | producer | ні         | Погода по двох локаціях (`OWNER_LOCATIONS`) через OpenWeather One Call 3.0 + AQI |
+| `calendar`      | producer | ні         | Сьогоднішні події Google Calendar (`calendar.readonly`)                          |
+| `news`          | consumer | ні         | NewsData.io (теми за scope×category) + RSS-стрічки; дедуп, ваги ❤️ на тему       |
+| `jobs`          | consumer | так        | DOU + Djinni RSS → LLM-скоринг релевантності (fit %) під профіль                 |
+| `mail`          | producer | так        | Gmail-тріаж (лише метадані), виявляє запрошення на співбесіду                    |
+| `fact`          | consumer | так (батч) | «Факт дня» — один виклик генерує пачку на ~2 тижні наперед                       |
+| `mock`          | consumer | так (батч) | Питання співбесіди дня — той самий батч-кеш, що `fact`                           |
+| `currency`      | consumer | ні         | Курс НБУ + 14-денна історія — лише дашборд                                       |
+| `onthisday`     | consumer | ні         | «У цей день» з Wikipedia — лише дашборд                                          |
+| `weekly-review` | consumer | ні         | Недільний підсумок: новини за тиждень, роадмеп-прогрес, слабкі теми              |
 
 Курація (jobs/mail/fact/mock) іде через `claude -p` — модель `claude-haiku-4-5`
 (пінована в `config.yml`, не Sonnet: за латентністю на довгих промптах Haiku

@@ -185,7 +185,7 @@ describe('slug — детермінований', () => {
 // --- модуль: мульти-локація, лічильник запитів, AQI ---
 const locations: LocationConfig[] = [
   { lat: 49.8, lon: 24.0, name: 'Львів' },
-  { lat: 51.1, lon: 26.4, name: 'Немовичі' },
+  { lat: 50.6199, lon: 26.2516, name: 'Рівне' },
 ];
 
 function makeCtx(seed: Record<string, unknown> = {}): Ctx<AppConfig> {
@@ -250,14 +250,14 @@ describe('weather module — мульти-локація + AQI', () => {
 
   it('одна локація впала — інша лишається; bus містить лише успішну', async () => {
     const mod = createWeatherModule({
-      fetchImpl: makeFetch({ failLat: '51.1' }) as unknown as typeof fetch,
+      fetchImpl: makeFetch({ failLat: '50.6199' }) as unknown as typeof fetch,
       apiKey: 'K',
     });
     const ctx = makeCtx();
     const block = await mod.run(ctx);
 
     expect(block!.summary).toContain('Львів');
-    expect(block!.summary).not.toContain('Немовичі');
+    expect(block!.summary).not.toContain('Рівне');
     expect(ctx.bus.get('weather.today.loc0')).toBeDefined();
     expect(ctx.bus.get('weather.today.loc1')).toBeUndefined();
   });
