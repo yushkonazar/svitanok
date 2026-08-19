@@ -191,9 +191,42 @@ describe('GET /api/weather — фетч, кеш, ліміт', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; locations: { name: string }[] };
     expect(body.ok).toBe(true);
-    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
+    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Рівне']);
     expect(openWeatherCalls).toHaveLength(4); // 2 локації × (onecall + air_pollution)
     expect(kv.get('weatherLive')).toBeTruthy();
+  });
+
+  /* ── Координати більше не зашиті в код ────────────────────────────────
+     Доти в weather-geo.mjs лежав дубль домашніх координат — і саме він робив
+     «прибрати їх із config.yml» половинчастим фіксом: це робочий код Worker'а,
+     а не приклад. Тепер публічний фолбек у файлі, справжні — у секреті. */
+
+  it('OWNER_LOCATIONS із секрету перекриває публічний фолбек', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(
+      initData,
+      env({
+        OWNER_LOCATIONS: JSON.stringify([{ lat: 48.9226, lon: 24.7111, name: 'Івано-Франківськ' }]),
+      }),
+    );
+    const body = (await res.json()) as { locations: { name: string }[] };
+    expect(body.locations.map((l) => l.name)).toEqual(['Івано-Франківськ']);
+  });
+
+  /* Битий секрет НЕ валить погоду: вона довантаження понад основне, і впасти
+     тут означало б зачорнити дашборд через одну зіпсовану змінну. Але й тихо
+     підмінити локацію не можна — тому фолбек публічний і передбачуваний. */
+  it('битий OWNER_LOCATIONS -> публічний фолбек, а не падіння', async () => {
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    for (const bad of ['{не json', '[]', '[{"lat":1}]', '"рядок"']) {
+      // ⚠️ Без цього рядка тест брехав би: погода кешується на 30 хв, і друга
+      // ж ітерація віддавала б КЕШ першої, не торкаючись розбору секрету.
+      kv.delete('weatherLive');
+      const res = await getWeather(initData, env({ OWNER_LOCATIONS: bad }));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { locations: { name: string }[] };
+      expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Рівне']);
+    }
   });
 
   it('другий запит У МЕЖАХ TTL (30 хв) -> з КЕШУ, без нового фетчу', async () => {
@@ -362,7 +395,7 @@ describe('GET /api/weather — геопозиція власника (request.cf
     const res = await getWeather(initData, env(), { latitude: null, longitude: null, city: null });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { locations: { name: string }[] };
-    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
+    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Рівне']);
     expect(kv.get('ownerGeo')).toBeUndefined();
   });
 
@@ -371,7 +404,7 @@ describe('GET /api/weather — геопозиція власника (request.cf
     const res = await getWeather(initData, env(), { latitude: '', longitude: '', city: '' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { locations: { name: string }[] };
-    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Немовичі']);
+    expect(body.locations.map((l) => l.name)).toEqual(['Львів', 'Рівне']);
     expect(kv.get('ownerGeo')).toBeUndefined();
   });
 });

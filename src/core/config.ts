@@ -145,9 +145,44 @@ export function parseConfig(raw: unknown): AppConfig {
   return parsed.data;
 }
 
+/**
+ * Локації з середовища замість закомічених.
+ *
+ * ⚠️ НАВІЩО. У config.yml лежали справжні домашні координати з точністю ~1 км:
+ * для села на дві тисячі людей це не «локація погоди», а адреса, і вона їхала
+ * в репозиторій разом із кодом. Тепер у файлі лише обласні центри, а справжні
+ * значення приходять змінною OWNER_LOCATIONS — тим самим шляхом, що й секрети.
+ *
+ * Формат — ТОЙ САМИЙ, що в конфігу: JSON-масив {lat, lon, name}, і валідація та
+ * сама (LocationSchema). Зіпсована змінна ПАДАЄ, а не мовчки відкочується на
+ * фолбек: тихий відкат означав би, що власник місяць дивиться погоду чужого
+ * міста й не знає про це — гірше за видиму помилку на старті.
+ */
+export function locationsFromEnv(raw: string | undefined): LocationConfig[] | null {
+  const text = (raw ?? '').trim();
+  if (!text) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new Error(
+      `OWNER_LOCATIONS не парситься як JSON (${e instanceof Error ? e.message : String(e)})`,
+      { cause: e },
+    );
+  }
+  const checked = z.array(LocationSchema).min(1).safeParse(parsed);
+  if (!checked.success) {
+    throw new Error(`OWNER_LOCATIONS невалідні:
+${formatIssues(checked.error)}`);
+  }
+  return checked.data;
+}
+
 /** Завантажити й провалідувати config.yml із диска. */
-export function loadConfig(path = 'config.yml'): AppConfig {
+export function loadConfig(path = 'config.yml', env: NodeJS.ProcessEnv = process.env): AppConfig {
   // JSON_SCHEMA — лише JSON-сумісні типи: жодних кастомних тегів/конструкторів (§8).
   const raw = load(readFileSync(path, 'utf8'), { schema: JSON_SCHEMA }) ?? {};
-  return parseConfig(raw);
+  const cfg = parseConfig(raw);
+  const fromEnv = locationsFromEnv(env.OWNER_LOCATIONS);
+  return fromEnv ? { ...cfg, locations: fromEnv } : cfg;
 }

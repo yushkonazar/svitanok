@@ -481,7 +481,11 @@ export function snoozeReminder(reminders, id, nowMs) {
    snooze-парсинг. 1440 = «завтра, та сама година» (той самий трюк, що
    EVENT_SHIFT_STEPS у agent-core.mjs). */
 export const SNOOZE_PRESETS = [
-  { minutes: 10, label: '😴 10 хв' },
+  // Перший пресет — той самий інтервал, що й кнопка «відкласти» без вибору.
+  // Тримаємо його ВІД КОНСТАНТИ (і число, і підпис): доти тут стояли два
+  // незалежні літерали, тож «десяток» у проєкті було ТРИ — константа, це
+  // число й текст тоста, — і жодна пара не була звʼязана.
+  { minutes: SNOOZE_MINUTES, label: `😴 ${SNOOZE_MINUTES} хв` },
   { minutes: 60, label: '😴 1 год' },
   { minutes: 1440, label: '😴 завтра' },
 ];

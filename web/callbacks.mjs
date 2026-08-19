@@ -21,6 +21,7 @@ import {
   listActive,
   snoozeReminder,
   snoozeReminderPreset,
+  SNOOZE_MINUTES,
   formatReminderDone,
   buildRemindersKeyboard,
   formatRemindersListMessage,
@@ -107,7 +108,18 @@ async function resolveReminderAction(env, parsed, reminderId, mutate, successToa
 
 /** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
 export async function resolveReminderSnooze(env, parsed, reminderId) {
-  return resolveReminderAction(env, parsed, reminderId, snoozeReminder, '😴 Відкладено на 10 хв');
+  // ⚠️ РЯДОК ВІД КОНСТАНТИ, не літерал. Доти тут стояло жорстке «10 хв», не
+  // звʼязане зі SNOOZE_MINUTES нічим: зміни константу — і бот щовечора
+  // писатиме користувачеві число, якого не робить. Сюїт цього не ловив
+  // (tests/reminders-core.test.ts рахував очікування з тієї самої константи),
+  // тобто це була нетестована брехня в інтерфейсі, що чекала свого дня.
+  return resolveReminderAction(
+    env,
+    parsed,
+    reminderId,
+    snoozeReminder,
+    `😴 Відкладено на ${SNOOZE_MINUTES} хв`,
+  );
 }
 
 /** Обробити `rs:<presetIdx>:<id>` (extra b) — snooze за одним із трьох пресетів. */

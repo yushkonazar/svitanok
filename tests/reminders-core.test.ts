@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 // @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as rem from '../web/reminders-core.mjs';
 const {
@@ -437,7 +438,13 @@ describe('reminders-core — стор: addReminder/dueReminders/markFired/snooze
     reminders = markFired(reminders, 'r2', SUMMER_NOW);
     reminders = snoozeReminder(reminders, 'r2', SUMMER_NOW);
     expect(reminders[0].firedTs).toBeNull();
-    expect(reminders[0].whenMs).toBe(SUMMER_NOW + SNOOZE_MINUTES * 60_000);
+    // ⚠️ ЛІТЕРАЛ, а не SNOOZE_MINUTES. Доти обидві сторони рівності брали ТУ
+    // САМУ константу, тобто асерція трималась істинною за будь-якого її
+    // значення: мутація 10 -> 11 лишала весь сюїт (1961 тест) зеленим, поки
+    // callbacks.mjs жорстко обіцяв користувачеві «10 хв». Тепер зміна
+    // константи ГАСИТЬ цей тест — і це навмисно: інтервал у тості й у
+    // пресеті мусить переглянути людина, а не дізнатись про це користувач.
+    expect(reminders[0].whenMs).toBe(SUMMER_NOW + 10 * 60_000);
     expect(dueReminders(reminders, SUMMER_NOW)).toHaveLength(0); // ще не настав новий час
     expect(dueReminders(reminders, reminders[0].whenMs)).toHaveLength(1);
   });
@@ -837,6 +844,25 @@ describe('reminders-core — rs: callback_data (пресет snooze, extra b)', 
     expect(parseReminderSnoozeCallbackData('rs::id')).toBeNull();
     expect(parseReminderSnoozeCallbackData('rs:0:')).toBeNull();
     expect(parseReminderSnoozeCallbackData(null)).toBeNull();
+  });
+
+  /* ── Три «десятки», що доти жили нарізно ──────────────────────────────
+     SNOOZE_MINUTES, число в першому пресеті й текст тоста в callbacks.mjs були
+     трьома незалежними літералами. Тепер два останні виводяться з константи, і
+     ці тести стережуть саме звʼязок, а не значення. */
+
+  it('перший пресет виводиться з SNOOZE_MINUTES — і числом, і підписом', () => {
+    expect(SNOOZE_PRESETS[0].minutes).toBe(SNOOZE_MINUTES);
+    expect(SNOOZE_PRESETS[0].label).toContain(String(SNOOZE_MINUTES));
+  });
+
+  /* Читання сирцю — той самий прийом, що вже застосований у
+     tests/wrangler-config.test.ts: поведінку тоста інакше не дістати без
+     повного мока Telegram, а зловити повернення жорсткого числа треба. */
+  it('тост snooze інтерполює константу, а не жорстке число', () => {
+    const src = readFileSync('web/callbacks.mjs', 'utf8');
+    expect(src).toContain('Відкладено на ${SNOOZE_MINUTES} хв');
+    expect(src).not.toMatch(/Відкладено на \d+ хв/);
   });
 
   it('buildSnoozeRow — по кнопці на пресет + «✅ Виконано» останньою', () => {

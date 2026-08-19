@@ -52,6 +52,72 @@ async function kvFetch(
   }, timeoutMs);
 }
 
+/**
+ * Скільки разів пробуємо прочитати блоб, перш ніж визнати читання невдалим.
+ *
+ * ⚠️ Доти спроба була ОДНА, і будь-яке блимання мережі оберталось записом
+ * повного блоба поверх свіжого (див. readBlob). Три спроби з лінійним бекофом
+ * коштують у найгіршому разі 600 мс — мізер проти рану на хвилини, — і
+ * прибирають найчастішу причину відмови (транзієнтний 5xx CF API).
+ */
+export const KV_READ_ATTEMPTS = 3;
+
+/** База лінійного бекофу між спробами: 200 мс, далі 400 мс. */
+const KV_RETRY_BASE_MS = 200;
+
+/**
+ * Результат читання блоба, де «немає ключа» і «не змогли прочитати» — РІЗНІ
+ * стани.
+ *
+ * ⚠️ ЦЕ І Є ВИПРАВЛЕННЯ. Раніше обидва випадки давали `null`, і flush не міг
+ * їх розрізнити: 404 (ключа ще нема) вимагає записати повний блоб, а 5xx/
+ * таймаут/битий JSON — навпаки, забороняє писати будь-що, бо в KV лежить
+ * свіжіший стан, якого ми не побачили. Одна відмова CF API під час нічного
+ * рану затирала все, що Worker дописав за той час: чек-іни, нагадування,
+ * голоси, roadmap.
+ */
+type ReadResult = { ok: true; value: StateData | null } | { ok: false; reason: string };
+
+/**
+ * Прочитати блоб із ретраями. 404 — це УСПІХ зі значенням null (ключа нема).
+ * Будь-яка інша відмова після всіх спроб — { ok: false }, і вирішувати, що з
+ * цим робити, мусить викликач.
+ */
+async function readBlob(
+  f: typeof fetch,
+  url: string,
+  auth: Record<string, string>,
+  timeoutMs: number,
+  attempts: number,
+  delayMs: number,
+  log?: Logger,
+): Promise<ReadResult> {
+  let reason = 'unknown';
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs * i));
+    try {
+      const resp = await kvFetch(f, url, { headers: auth }, timeoutMs);
+      if (resp.ok) {
+        const parsed: unknown = JSON.parse(resp.text);
+        return {
+          ok: true,
+          value: parsed && typeof parsed === 'object' ? (parsed as StateData) : null,
+        };
+      }
+      // 404 — не помилка: ключа ще немає (перший запуск).
+      if (resp.status === 404) return { ok: true, value: null };
+      reason = `HTTP ${resp.status}`;
+    } catch (e) {
+      // Битий JSON сюди теж потрапляє — і це правильно: перезаписати
+      // пошкоджений блоб «своєю копією» означало б добити те, що ще можна
+      // врятувати руками.
+      reason = e instanceof Error ? e.message : String(e);
+    }
+    if (i < attempts - 1) log?.warn(`KV state: читання не вдалось (${reason}) — спроба ${i + 2}`);
+  }
+  return { ok: false, reason };
+}
+
 /** Накласти змінені оркестратором ключі поверх свіжого блоба (per-key merge, H2). */
 export function overlayChanged(
   fresh: StateData,
@@ -73,6 +139,8 @@ export interface KvStateOptions {
   fetchImpl?: typeof fetch;
   /** Стеля на КОЖЕН KV-виклик разом із читанням тіла (B14). */
   timeoutMs?: number;
+  /** Пауза між спробами читання; 0 у тестах, щоб не спати даремно. */
+  retryDelayMs?: number;
 }
 
 /** URL значення ключа в KV через CF API. */
@@ -90,21 +158,23 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
   const auth = { authorization: `Bearer ${opts.apiToken.trim()}` };
   const pruners = opts.pruners ?? [];
   const timeoutMs = opts.timeoutMs ?? KV_TIMEOUT_MS;
+  const retryDelayMs = opts.retryDelayMs ?? KV_RETRY_BASE_MS;
   let data: StateData = {};
 
-  try {
-    const resp = await kvFetch(f, url, { headers: auth }, timeoutMs);
-    if (resp.ok) {
-      const parsed: unknown = JSON.parse(resp.text);
-      if (parsed && typeof parsed === 'object') data = parsed as StateData;
-    } else if (resp.status !== 404) {
-      // 404 = ключа ще нема (перший запуск) — нормально, тихо.
-      opts.log?.warn(`KV state: завантаження HTTP ${resp.status} — фолбек на порожній стан`);
-    }
-  } catch (e) {
-    opts.log?.warn(
-      `KV state: завантаження впало (${e instanceof Error ? e.message : String(e)}) — порожній стан`,
-    );
+  // Семантику завантаження лишаємо як була (збій -> порожній стан, можливий
+  // повтор брифінгу — задокументований компроміс у шапці файлу), але тепер із
+  // ретраями: одне блимання мережі більше не коштує цілого стану.
+  //
+  // ⚠️ `loadOk` памʼятає, чи ми взагалі бачили вміст. Це знадобиться на flush:
+  // якщо завантаження впало, а re-read раптом каже 404, то це суперечність
+  // (ключ щойно був), і писати «свою копію» в такий момент — найгірше з
+  // можливого: у блобі лежить чужий стан, якого ми не прочитали ЖОДНОГО разу.
+  const loaded = await readBlob(f, url, auth, timeoutMs, KV_READ_ATTEMPTS, retryDelayMs, opts.log);
+  let loadOk = loaded.ok;
+  if (loaded.ok) {
+    if (loaded.value) data = loaded.value;
+  } else {
+    opts.log?.warn(`KV state: завантаження впало (${loaded.reason}) — порожній стан`);
   }
 
   let dirty = false;
@@ -135,27 +205,45 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
 
       // Merge-before-flush (H2): перечитати свіжий блоб і накласти лише свої
       // змінені ключі, щоб не затерти записи Worker під час довгого рану.
-      let fresh: StateData | null = null;
-      try {
-        const resp = await kvFetch(f, url, { headers: auth }, timeoutMs);
-        if (resp.ok) {
-          const parsed: unknown = JSON.parse(resp.text);
-          if (parsed && typeof parsed === 'object') fresh = parsed as StateData;
-        } else if (resp.status !== 404) {
-          // 404 = ключа ще нема (перший запис) -> пишемо повний блоб.
-          opts.log?.warn(
-            `KV state: re-read HTTP ${resp.status} перед merge — пишу свою копію повністю`,
-          );
-        }
-      } catch (e) {
-        opts.log?.warn(
-          `KV state: re-read впав перед merge (${e instanceof Error ? e.message : String(e)}) — пишу свою копію повністю`,
+      const read = await readBlob(
+        f,
+        url,
+        auth,
+        timeoutMs,
+        KV_READ_ATTEMPTS,
+        retryDelayMs,
+        opts.log,
+      );
+
+      // ⚠️ НЕ ПИШЕМО НІЧОГО, якщо не змогли прочитати. Доти тут стояв фолбек
+      // «краще зберегти свій стан, ніж кинути» — і саме він робив мережеве
+      // блимання дорожчим за падіння рану: PUT повного блоба затирав усе, що
+      // Worker дописав за хвилини роботи оркестратора.
+      //
+      // Ціна рішення названа прямо: flush фіксує lastSentDate ПІСЛЯ відправки
+      // брифінгу, тож throw тут означає можливий ПОВТОР брифінгу наступного
+      // рану. Це та сама at-least-once семантика, що вже описана в шапці файлу
+      // для збою завантаження, і вона дешевша за втрату чек-інів і нагадувань:
+      // зайве повідомлення видно й воно нічого не руйнує, а стерті дані —
+      // назавжди.
+      if (!read.ok) {
+        throw new Error(
+          `KV state: flush скасовано — не вдалось перечитати блоб (${read.reason}) за ${KV_READ_ATTEMPTS} спроб(и). Нічого не записано, щоб не затерти чужі записи.`,
         );
       }
 
-      // fresh === null (404/збій re-read) -> фолбек на повний блоб (стара
-      // поведінка: краще зберегти свій стан, ніж кинути). Інакше — per-key merge.
-      const body = fresh ? overlayChanged(fresh, data, changed) : data;
+      // Суперечність: завантаження впало, а тепер ключа «немає». Один із двох
+      // відповідей CF API хибний, і писати повний блоб на такій підставі — це
+      // перезаписати стан, якого ми не бачили жодного разу.
+      if (read.value === null && !loadOk) {
+        throw new Error(
+          'KV state: flush скасовано — завантаження впало, а re-read віддав 404. Стан не читався жодного разу, повний запис затер би чужі дані.',
+        );
+      }
+
+      // value === null тут означає ЧЕСНИЙ 404 при успішному завантаженні:
+      // ключа справді немає (перший запис) -> пишемо повний блоб.
+      const body = read.value ? overlayChanged(read.value, data, changed) : data;
 
       const resp = await kvFetch(
         f,
@@ -173,6 +261,9 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
       }
       dirty = false;
       changed.clear();
+      // Після успішного PUT блоб напевно існує й ми знаємо його вміст — тож
+      // наступний flush у цьому ж рані не мусить спотикатись об `loadOk`.
+      loadOk = true;
     },
   };
 }
