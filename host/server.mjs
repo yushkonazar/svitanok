@@ -24,6 +24,9 @@ import {
   detectUsageLimit,
   formatUsage,
   resolveBindHost,
+  parseClaudeVersion,
+  claudeVersionWarning,
+  PINNED_CLAUDE_VERSION,
   USAGE_LIMIT_ERROR,
 } from './llm-host-core.mjs';
 import { WORKER_STEP_TIMEOUT_MS, validateAgentRequest, runAgentLoop } from './agent-loop-core.mjs';
@@ -280,15 +283,43 @@ const server = http.createServer(async (req, res) => {
   const status = result.ok ? 200 : 502;
   json(res, status, result);
 
-  const preview = validated.value.prompt.slice(0, 200).replace(/\n/g, ' ');
+  // ТЕКСТ ПРОМПТА В ЛОГ НЕ ЙДЕ. Доти сюди писались перші 200 символів — а це
+  // фрагменти пошти й календаря власника, тобто найчутливіше, що взагалі
+  // проходить через хост. Лог локальний на VPS, але тримати там витяги з
+  // листування заради діагностики немає причин: для неї досить довжини —
+  // саме вона відрізняє «порожній запит» від «впав на 24КБ».
   console.log(
     `[${new Date().toISOString()}] ${status} ${Date.now() - start}ms cost=${result.costUsd ?? '-'} ` +
-      `${formatUsage(result.usage)} "${preview}"`,
+      `${formatUsage(result.usage)} prompt=${validated.value.prompt.length}b`,
   );
 });
 
+/**
+ * Звірити встановлений claude CLI з піном — ОДИН раз на старті.
+ *
+ * Раніше пін жив у трьох місцях і не перевірявся ніде. Ламна зміна CLI
+ * деградує не фічу, а `--tools ''` — межу, що не пускає модель до
+ * інструментів; на VPS немає lock-файлу, тож один `npm i -g` міг зсунути її
+ * мовчки. Тепер розбіжність видно в journald з першого рядка.
+ *
+ * Не валимо старт: хост обслуговує й асистента, і курацію, і зупинка через
+ * розбіжність патч-версії проміняла б ймовірну проблему на гарантовану.
+ */
+function checkClaudeVersion() {
+  const child = spawn('claude', ['--version'], { shell: false });
+  let out = '';
+  child.stdout?.on('data', (c) => (out += c));
+  child.on('error', () => console.warn('claude CLI не запускається — версію не перевірено'));
+  child.on('close', () => {
+    const warn = claudeVersionWarning(parseClaudeVersion(out));
+    if (warn) console.warn(`УВАГА: ${warn}`);
+    else console.log(`claude CLI ${PINNED_CLAUDE_VERSION} — збігається з піном`);
+  });
+}
+
 server.listen(PORT, BIND_HOST, () => {
   console.log(`svitanok-llm-host слухає ${BIND_HOST}:${PORT}`);
+  checkClaudeVersion();
 });
 
 // Останній запобіжник: логуємо й падаємо КЕРОВАНО (не тихо зависаємо в

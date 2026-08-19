@@ -104,7 +104,7 @@ const deleteEventPending = (id: string) => ({
   items: [{ kind: 'deleteEvent', eventId: 'ev1', base: EV_BASE }],
 });
 
-async function postCb(id: string, action = 'a', e = env()) {
+async function postCb(id: string, action = 'a', e = env(), updateId = 1000) {
   const c = ctx();
   await worker.fetch(
     new Request('https://svitanok.example/api/telegram', {
@@ -113,7 +113,7 @@ async function postCb(id: string, action = 'a', e = env()) {
         'content-type': 'application/json',
         'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
       },
-      body: JSON.stringify(acceptUpdate(id, action)),
+      body: JSON.stringify(acceptUpdate(id, action, updateId)),
     }),
     e,
     c,
@@ -121,7 +121,7 @@ async function postCb(id: string, action = 'a', e = env()) {
   await c.settle(); // дочекатись фонової обробки (resolveProposalCallback)
 }
 
-const postAccept = (id: string, e = env()) => postCb(id, 'a', e);
+const postAccept = (id: string, e = env(), updateId?: number) => postCb(id, 'a', e, updateId);
 
 /** Довільний raw callback_data (для просторів поза pd:, напр. ru:/rs:). */
 async function tapCallback(data: string) {
@@ -257,6 +257,51 @@ describe('accept пропозиції — власний KV-ключ переж�
     kv.set('state', JSON.stringify({ reminders: [], assistantPending: pending('legacy99') }));
     await postAccept('legacy99');
     expect(toast()).toContain('Застаріла');
+  });
+
+  /* ── Подвійний тап ✅ ──────────────────────────────────────────────────
+     claim НЕ атомарний: KV не має CAS, тож два тапи цілком можуть обидва
+     прочитати той самий pending, обидва пройти перевірку id і обидва піти в
+     цикл. Доти це означало ДВІ події в календарі — незворотний зовнішній
+     запис. Тут гонка емулюється чесно: pending повертається на місце перед
+     другим тапом, тобто claim пропускає обидва. */
+  it('подвійний тап (claim пройшов ДВІЧІ) -> подія створюється РІВНО ОДИН раз', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('dbl00001', { durMin: null, leadMin: null })),
+    );
+    await postAccept('dbl00001');
+    const creates = () => cal.filter((c) => !c._method).length;
+    expect(creates()).toBe(1);
+
+    // ⚠️ ІНШИЙ update_id — інакше тест брехав би: воркер відсікає повтор за
+    // update_id (worker.js), і другий виклик просто не дійшов би до обробника.
+    // Це захист від РЕТРАЮ Telegram; подвійний тап людини дає ДВА різні
+    // update_id і цим захистом не покривається взагалі.
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('dbl00001', { durMin: null, leadMin: null })),
+    );
+    await postAccept('dbl00001', env(), 1001);
+    expect(creates()).toBe(1); // ← ГОЛОВНА АСЕРЦІЯ: другої події немає
+    // toast() бере ПЕРШИЙ answerCallbackQuery — тобто відповідь першого тапу.
+    // Тут потрібен останній: саме він каже, що другий нічого не зробив.
+    const toasts = tg.filter((c) => c.method === 'answerCallbackQuery');
+    expect(toasts.at(-1)!.body.text).toContain('Уже виконано');
+  });
+
+  /* Друга половина фіксу: кнопки знімаються ОДРАЗУ після claim, а не разом із
+     результатом наприкінці. Доти вони лишались живими весь час раундтріпів до
+     Google — тобто вікно для другого тапу дорівнювало тривалості всієї роботи,
+     а не мілісекундам. */
+  it('клавіатура знімається ПЕРШИМ викликом у Telegram, ще до роботи', async () => {
+    kv.set(
+      'assistantPending',
+      JSON.stringify(eventPending('kbd00001', { durMin: null, leadMin: null })),
+    );
+    await postAccept('kbd00001');
+    expect(tg[0]!.method).toBe('editMessageReplyMarkup');
+    expect(tg.some((c) => c.method === 'editMessageText')).toBe(true);
   });
 
   it('чужий/відсутній id -> «Застаріла пропозиція»', async () => {
