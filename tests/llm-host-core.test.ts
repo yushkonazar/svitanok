@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
 // @ts-expect-error — JS-модуль хоста без типів (namespace-імпорт: prettier не
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as core from '../host/llm-host-core.mjs';
 const {
+  PINNED_CLAUDE_VERSION,
+  parseClaudeVersion,
+  claudeVersionWarning,
   MAX_PROMPT_LEN,
   MAX_SYSTEM_PROMPT_LEN,
   MAX_SCHEMA_LEN,
@@ -302,5 +306,46 @@ describe('llm-host-core — createRateLimiter (фіксоване вікно)', 
     expect(rl.allow(1000)).toBe(true); // нове вікно
     expect(rl.allow(1050)).toBe(true);
     expect(rl.allow(1060)).toBe(false);
+  });
+});
+
+/* ── Пін версії CLI ───────────────────────────────────────────────────────
+   Пін жив у трьох місцях (brief.yml, host/README.md, коментар llm.ts) і не
+   перевірявся ніде. Ламна зміна CLI деградує не фічу, а `--tools ''` — межу,
+   що не пускає модель до інструментів. На VPS немає lock-файлу, тож один
+   `npm i -g` міг зсунути цю межу мовчки. */
+describe('llm-host-core — звірка версії claude CLI', () => {
+  it('витягує семвер із реального формату виводу', () => {
+    expect(parseClaudeVersion('2.1.195 (Claude Code)')).toBe('2.1.195');
+    expect(parseClaudeVersion('  1.0.0  ')).toBe('1.0.0');
+  });
+
+  it('не розпізнали -> null, а не вигадана версія', () => {
+    for (const bad of ['', null, undefined, 'claude: command not found', 'v-x-y']) {
+      expect(parseClaudeVersion(bad as never)).toBeNull();
+    }
+  });
+
+  it('збіг із піном -> без попередження', () => {
+    expect(claudeVersionWarning(PINNED_CLAUDE_VERSION)).toBeNull();
+  });
+
+  it('розбіжність -> попередження називає САМЕ межу безпеки, а не «версію»', () => {
+    const w = claudeVersionWarning('2.2.0');
+    expect(w).toContain('2.2.0');
+    expect(w).toContain(PINNED_CLAUDE_VERSION);
+    // Головне в тексті: читач мусить зрозуміти, ЩО перевіряти.
+    expect(w).toContain('--tools');
+  });
+
+  it('версію не визначили -> теж попередження (мовчання й було дефектом)', () => {
+    expect(claudeVersionWarning(null)).toContain('локдаун');
+  });
+
+  /* ⚠️ Пін мусить збігатись із тим, що ставить CI. Розійдуться — і хост
+     попереджатиме про «розбіжність» на кожному старті, хоча все правильно. */
+  it('константа збігається з версією, яку ставить brief.yml', () => {
+    const wf = readFileSync('.github/workflows/brief.yml', 'utf8');
+    expect(wf).toContain(`@anthropic-ai/claude-code@${PINNED_CLAUDE_VERSION}`);
   });
 });

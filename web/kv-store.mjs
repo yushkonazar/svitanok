@@ -160,7 +160,19 @@ export async function loadAssistantPending(env) {
 }
 
 /**
- * Списати пропозицію (double-tap-safe): лише якщо це ДОСІ той самий id.
+ * Списати пропозицію: лише якщо це ДОСІ той самий id.
+ *
+ * ⚠️ НЕ АТОМАРНО, і доти цей коментар обіцяв протилежне («double-tap-safe»).
+ * Це read-check-write, а KV не має CAS: два конкурентні виклики можуть обидва
+ * прочитати той самий pending, обидва пройти перевірку id і обидва повернути
+ * true. Коментар, що перебільшує, гірший за його відсутність — тим паче тут,
+ * де за ним стоять НЕЗВОРОТНІ зовнішні записи (подія в календарі, контакт).
+ *
+ * Ідемпотентність тепер тримається не на цій функції, а на рівні ЕФЕКТУ —
+ * markProposalExecuted нижче + зняття клавіатури одразу після claim
+ * (web/proposals.mjs). Справжня серіалізація — Durable Object, він у проєкті
+ * уже є (AGENT_RUN), і це стратегічний фікс, а не сьогоднішній.
+ *
  * Put-null тумбстоун (не delete: KV без read-your-writes, і delete немає в
  * частині тест-моків — той самий мотив, що markRunFinished). Повертає true,
  * якщо саме цей виклик списав.
@@ -169,5 +181,34 @@ export async function claimAssistantPending(env, id) {
   const pending = await loadAssistantPending(env);
   if (!pending || pending.id !== id) return false;
   await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
+  return true;
+}
+
+/** Скільки живе маркер виконаної пропозиції. Доба з запасом перекриває і
+ *  подвійний тап, і будь-який ретрай доставки; довше тримати нема сенсу —
+ *  пропозиція з таким id вже не повернеться. */
+const EXECUTED_TTL_S = 86_400;
+const executedKey = (id) => `assistantExecuted:${id}`;
+
+/**
+ * Позначити пропозицію ВИКОНАНОЮ. true — цей виклик перший, можна робити
+ * зовнішні записи; false — хтось уже зробив, треба тихо вийти.
+ *
+ * ⚠️ ЧОМУ ЦЕ, А НЕ «АТОМАРНИЙ CLAIM». Атомарного claim у Workers KV не буває —
+ * CAS немає. Тому ідемпотентність переїхала туди, де вона справді потрібна: не
+ * «хто списав пропозицію», а «чи вже створено подію». Вікно гонки при цьому
+ * скорочується з тривалості ВСЬОГО обробника (claim -> кілька раундтріпів до
+ * Google -> перепис повідомлення) до одного GET->PUT, тобто на два порядки.
+ *
+ * Це НЕ робить операцію атомарною, і робити вигляд, що робить, — та сама
+ * помилка, за яку виправлено коментар вище. Разом зі зняттям клавіатури одразу
+ * після claim цього досить, щоб подвійний тап людини не створював другої події;
+ * гарантію дає лише Durable Object.
+ */
+export async function markProposalExecuted(env, id) {
+  if (!id) return false;
+  const already = await env.BRIEFING.get(executedKey(id));
+  if (already) return false;
+  await env.BRIEFING.put(executedKey(id), '1', { expirationTtl: EXECUTED_TTL_S });
   return true;
 }

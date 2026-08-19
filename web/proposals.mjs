@@ -49,6 +49,7 @@ import {
   ASSISTANT_PENDING_KEY,
   loadAssistantPending,
   claimAssistantPending,
+  markProposalExecuted,
 } from './kv-store.mjs';
 import {
   getCalendarEvent,
@@ -369,6 +370,26 @@ export async function resolveProposalCallback(env, parsed, cb) {
   // ── ✅/❌ (a/c) — термінальні: claim ОДРАЗУ, тоді перепис повідомлення ───
   if (!(await claimAssistantPending(env, cb.id))) return '⚠️ Застаріла пропозиція.';
 
+  // ⚠️ КЛАВІАТУРУ ЗНІМАЄМО ТУТ, а не наприкінці разом із результатом — і це
+  // головна половина фіксу подвійного тапу. Доти кнопки ✅/❌ лишались живими
+  // ВЕСЬ час виконання: claim, потім кілька раундтріпів до Google, і аж потім
+  // перепис повідомлення. Тобто вікно для другого тапу дорівнювало тривалості
+  // всієї роботи, а не мілісекундам, — а ефект незворотний (подія в календарі
+  // створюється двічі). Тепер після першого тапу тапати вже нема по чому.
+  //
+  // Best-effort: збій edit'а НЕ має скасовувати саму роботу — повідомлення все
+  // одно перепишеться нижче результатом.
+  if (parsed.chatId != null && parsed.messageId != null) {
+    try {
+      await tgCall(env, 'editMessageReplyMarkup', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+      });
+    } catch {
+      /* косметика; справжній захист — markProposalExecuted нижче */
+    }
+  }
+
   if (cb.action === 'c') {
     if (parsed.chatId != null && parsed.messageId != null) {
       await tgCall(env, 'editMessageText', {
@@ -379,6 +400,13 @@ export async function resolveProposalCallback(env, parsed, cb) {
     }
     return '❌ Скасовано';
   }
+
+  // ⚠️ ДРУГА ПОЛОВИНА ФІКСУ — ідемпотентність на рівні ЕФЕКТУ. claim вище не
+  // атомарний (KV без CAS), тож теоретично обидва тапи можуть його пройти. Цей
+  // маркер ставиться ПЕРЕД будь-яким зовнішнім записом і звужує вікно до одного
+  // GET->PUT. Гарантії він не дає — її дає лише Durable Object; але саме він
+  // відповідає за те, що болить: другого запису в календар не буде.
+  if (!(await markProposalExecuted(env, cb.id))) return '⚠️ Уже виконано.';
 
   const results = [];
   for (const item of pending.items) {

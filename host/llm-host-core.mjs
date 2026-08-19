@@ -157,6 +157,43 @@ export function buildClaudeArgs({ prompt, systemPrompt, schemaStr, model }) {
    не сирий stderr/стек. Worker також має власний резервний regex — щоб фікс
    працював ще ДО редеплою хоста (web/agent-core.mjs classifyLlmFailure). */
 
+/**
+ * Версія CLI, на якій доведено локдаун.
+ *
+ * ⚠️ ЧОМУ ЦЕ ВАЖЛИВІШЕ, НІЖ ЗДАЄТЬСЯ. Пін живе у ТРЬОХ місцях (brief.yml,
+ * host/README.md і тут), а перевіряти встановлену версію не було чим. При
+ * цьому ламна зміна CLI деградує не фічу, а `--tools ''` — єдину межу, що не
+ * пускає модель до інструментів. На VPS немає lock-файлу, і рука власника
+ * ставить свіжу версію одним `npm i -g` — тобто межа безпеки могла поїхати
+ * мовчки.
+ */
+export const PINNED_CLAUDE_VERSION = '2.1.195';
+
+/**
+ * Витягти семвер із виводу `claude --version` ('2.1.195 (Claude Code)').
+ * Не розпізнали — null: краще чесне «не знаю», ніж вигадана версія.
+ */
+export function parseClaudeVersion(out) {
+  const m = String(out ?? '').match(/(\d+\.\d+\.\d+)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Порівняти встановлену версію з піном. Повертає рядок попередження або null.
+ *
+ * Попередження, а не відмова старту — свідомо: хост обслуговує й асистента, і
+ * курацію, і зупинити його через розбіжність патч-версії означало б проміняти
+ * ймовірну проблему на гарантовану. Але мовчати теж не можна — саме мовчання й
+ * було дефектом.
+ */
+export function claudeVersionWarning(installed, pinned = PINNED_CLAUDE_VERSION) {
+  if (!installed) {
+    return `не вдалось визначити версію claude CLI (очікується ${pinned}) — локдаун --tools не перевірено`;
+  }
+  if (installed === pinned) return null;
+  return `версія claude CLI ${installed} != пін ${pinned} — перевір, що --tools '' і --setting-sources '' ще діють`;
+}
+
 export const USAGE_LIMIT_ERROR = 'usage-limit';
 
 // «Claude AI usage limit reached|1752620400», «You've hit your session limit»,

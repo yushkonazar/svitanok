@@ -64,6 +64,25 @@ jobs:
           STATE_FILE: ${{ runner.temp }}/state.json
         run: node scripts/guard.mjs ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force-send' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.force_window) && '--force-window' || '' }}
 
+      # ⚠️ ЄДИНИЙ АКТИВНИЙ СИГНАЛ ПРО ЗБІЙ ДО ВХОДУ В ОРКЕСТРАТОР.
+      # Усередині оркестратора відмови вже покриті: top-level catch шле
+      # systemNotify, Promise.allSettled ізолює модулі, деградацію LLM видно в
+      # тексті. Але падіння ДО нього — npm ci, встановлення CLI, checkout, OOM
+      # раннера — давали лише червоний хрестик у вкладці Actions. Ловив це
+      # deadMansCheck у Worker'і, але аж з 12:00 за Києвом, тобто через години.
+      #
+      # Свідомо БЕЗ `-f` у curl і без падіння самого кроку: сповіщення про збій,
+      # що саме валиться, лише плутає картину. Крок довідковий.
+      - name: сповістити про збій
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOPIC_SYSTEM: ${{ secrets.TOPIC_SYSTEM }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"             -d chat_id="${TELEGRAM_CHAT_ID}"             ${TOPIC_SYSTEM:+-d message_thread_id="${TOPIC_SYSTEM}"}             -d text="❌ brief.yml: джоба '${{ github.job }}' впала — ${RUN_URL}"             -o /dev/null || echo "сповіщення не пішло (не критично)"
+
   brief:
     needs: guard
     if: needs.guard.outputs.send == 'true'
@@ -166,3 +185,21 @@ jobs:
           fi
       # Стан оркестратор пише напряму в KV (ключ `state`) — окремий крок коміту не
       # потрібен. Гілка `state` лишилась незадіяною (можна видалити пізніше).
+      # ⚠️ ЄДИНИЙ АКТИВНИЙ СИГНАЛ ПРО ЗБІЙ ДО ВХОДУ В ОРКЕСТРАТОР.
+      # Усередині оркестратора відмови вже покриті: top-level catch шле
+      # systemNotify, Promise.allSettled ізолює модулі, деградацію LLM видно в
+      # тексті. Але падіння ДО нього — npm ci, встановлення CLI, checkout, OOM
+      # раннера — давали лише червоний хрестик у вкладці Actions. Ловив це
+      # deadMansCheck у Worker'і, але аж з 12:00 за Києвом, тобто через години.
+      #
+      # Свідомо БЕЗ `-f` у curl і без падіння самого кроку: сповіщення про збій,
+      # що саме валиться, лише плутає картину. Крок довідковий.
+      - name: сповістити про збій
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOPIC_SYSTEM: ${{ secrets.TOPIC_SYSTEM }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"             -d chat_id="${TELEGRAM_CHAT_ID}"             ${TOPIC_SYSTEM:+-d message_thread_id="${TOPIC_SYSTEM}"}             -d text="❌ brief.yml: джоба '${{ github.job }}' впала — ${RUN_URL}"             -o /dev/null || echo "сповіщення не пішло (не критично)"
