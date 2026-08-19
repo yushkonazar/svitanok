@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseConfig, loadConfig } from '../src/core/config.js';
+import { parseConfig, loadConfig, locationsFromEnv } from '../src/core/config.js';
 // @ts-expect-error — JS-модуль Worker'а без типів
 import { TOGGLEABLE_MODULE_IDS } from '../web/settings-core.mjs';
 
@@ -96,5 +96,48 @@ describe('config — інваріант перемикних модулів (F2)
       expect(mods[id], `модуль ${id}`).toBeDefined();
       expect(mods[id]?.enabled, `модуль ${id} має бути enabled:true`).toBe(true);
     }
+  });
+});
+
+/* ── Координати власника — зі середовища, не з репозиторію ────────────────
+   У config.yml лежали справжні домашні координати з точністю ~1 км: для села
+   на дві тисячі людей це адреса, а не «локація погоди». Тепер у файлі лише
+   обласні центри, а справжні значення приходять тим самим шляхом, що секрети. */
+describe('locationsFromEnv — OWNER_LOCATIONS', () => {
+  it('порожньо/пробіли -> null (працює фолбек із config.yml)', () => {
+    expect(locationsFromEnv(undefined)).toBeNull();
+    expect(locationsFromEnv('')).toBeNull();
+    expect(locationsFromEnv('   ')).toBeNull();
+  });
+
+  it('валідний JSON -> той самий тип, що в конфігу', () => {
+    const got = locationsFromEnv('[{"lat":51.12,"lon":26.46,"name":"Село"}]');
+    expect(got).toEqual([{ lat: 51.12, lon: 26.46, name: 'Село' }]);
+  });
+
+  /* ⚠️ ПАДАЄ, а не мовчки бере фолбек. Тихий фолбек на публічні координати
+     означав би, що власник місяць дивиться погоду чужого міста й не знає про
+     це — гірше за видиму помилку на старті. */
+  it('битий JSON -> throw з поясненням', () => {
+    expect(() => locationsFromEnv('{не json')).toThrow(/не парситься як JSON/);
+  });
+
+  it('валідний JSON, але не та форма -> throw', () => {
+    for (const bad of ['[]', '[{"lat":1}]', '"рядок"', '{"lat":1,"lon":2,"name":"x"}']) {
+      expect(() => locationsFromEnv(bad)).toThrow(/невалідні/);
+    }
+  });
+
+  it('loadConfig бере OWNER_LOCATIONS замість файлу', () => {
+    const cfg = loadConfig('config.yml', {
+      OWNER_LOCATIONS: '[{"lat":48.9226,"lon":24.7111,"name":"Івано-Франківськ"}]',
+    } as NodeJS.ProcessEnv);
+    expect(cfg.locations).toEqual([{ lat: 48.9226, lon: 24.7111, name: 'Івано-Франківськ' }]);
+  });
+
+  /* Головна асерція всієї правки: у самому файлі домашніх координат немає. */
+  it('config.yml без змінної -> ПУБЛІЧНІ обласні центри, не домашні координати', () => {
+    const cfg = loadConfig('config.yml', {} as NodeJS.ProcessEnv);
+    expect(cfg.locations.map((l) => l.name)).toEqual(['Львів', 'Рівне']);
   });
 });

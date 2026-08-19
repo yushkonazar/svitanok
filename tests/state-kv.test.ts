@@ -11,6 +11,9 @@ const OPTS = {
   accountId: 'acc',
   apiToken: 'tok',
   namespaceId: 'ns',
+  // Читання тепер ретраїться; у тестах спимо нуль, щоб не платити 600 мс за
+  // кожен сценарій відмови.
+  retryDelayMs: 0,
 };
 
 const okResp = (body: string, status = 200) =>
@@ -108,13 +111,37 @@ describe('state-kv — createKvStateStore', () => {
     expect(body.preferenceWeights).toEqual({ Спорт: 1.3 }); // не чіпав -> зі свіжого
   });
 
-  it('re-read впав -> фолбек на повний блоб (свій стан не втрачається)', async () => {
+  /* ── Читання, яке не вдалось, БІЛЬШЕ НЕ ДОРІВНЮЄ «ключа немає» ────────────
+     Доти обидва випадки давали null, і flush писав повний блоб — тобто одне
+     мережеве блимання під час нічного рану затирало все, що Worker дописав за
+     хвилини: чек-іни, нагадування, голоси, roadmap. Тепер 404 і відмова —
+     різні стани, і відмова зупиняє запис. */
+
+  it('re-read впав УСІ спроби -> throw, і НІЧОГО не записано', async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      methods.push(String(init?.method ?? 'GET'));
+      if (methods.length === 1) return okResp('{"reminders":[{"id":"r1"}]}'); // load
+      throw new Error('network'); // re-read падає щоразу
+    });
+    const s = await createKvStateStore({
+      ...OPTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    s.set('lastSentDate', '2026-07-02');
+    await expect(s.flush()).rejects.toThrow(/flush скасовано/);
+    // ГОЛОВНА АСЕРЦІЯ: жодного PUT. Краще впасти видимо, ніж стерти чуже.
+    expect(methods.filter((m) => m === 'PUT')).toEqual([]);
+  });
+
+  it('re-read впав і піднявся з другої спроби -> merge, без throw', async () => {
     let put: RequestInit | null = null;
     let n = 0;
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       n += 1;
       if (n === 1) return okResp('{}'); // load
-      if (n === 2) throw new Error('network'); // re-read впав
+      if (n === 2) throw new Error('network'); // перша спроба re-read
+      if (n === 3) return okResp('{"reminders":[{"id":"r1"}]}'); // друга — вдала
       put = init ?? {};
       return okResp('{}'); // PUT
     });
@@ -124,7 +151,64 @@ describe('state-kv — createKvStateStore', () => {
     });
     s.set('lastSentDate', '2026-07-02');
     await s.flush();
+    const body = JSON.parse(String(put!.body));
+    expect(body.lastSentDate).toBe('2026-07-02');
+    // Ретрай урятував саме те, заради чого merge-before-flush і робився.
+    expect(body.reminders).toEqual([{ id: 'r1' }]);
+  });
+
+  it('битий JSON у блобі -> throw, а не перезапис пошкодженого', async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      methods.push(String(init?.method ?? 'GET'));
+      return methods.length === 1 ? okResp('{}') : okResp('{ це не json');
+    });
+    const s = await createKvStateStore({
+      ...OPTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    s.set('lastSentDate', '2026-07-02');
+    await expect(s.flush()).rejects.toThrow(/flush скасовано/);
+    expect(methods.filter((m) => m === 'PUT')).toEqual([]);
+  });
+
+  it('ЧЕСНИЙ 404 на re-read (ключа справді нема) -> повний блоб, як і раніше', async () => {
+    let put: RequestInit | null = null;
+    let n = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      n += 1;
+      if (n === 1) return okResp('', 404); // load: ключа нема
+      if (n === 2) return okResp('', 404); // re-read: досі нема
+      put = init ?? {};
+      return okResp('{}');
+    });
+    const s = await createKvStateStore({
+      ...OPTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    s.set('lastSentDate', '2026-07-02');
+    await s.flush();
     expect(JSON.parse(String(put!.body))).toEqual({ lastSentDate: '2026-07-02' });
+  });
+
+  /* ⚠️ Суперечність, якої аудит не назвав: завантаження впало (тобто ключ МІГ
+     існувати), а re-read каже 404. Одна з двох відповідей CF API хибна, і
+     писати повний блоб на такій підставі означає перезаписати стан, якого ми
+     не бачили жодного разу. */
+  it('завантаження впало + re-read 404 -> throw (стан не читався жодного разу)', async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      methods.push(String(init?.method ?? 'GET'));
+      // Усі три спроби завантаження — 503; потім re-read віддає 404.
+      return methods.length <= 3 ? okResp('boom', 503) : okResp('', 404);
+    });
+    const s = await createKvStateStore({
+      ...OPTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    s.set('lastSentDate', '2026-07-02');
+    await expect(s.flush()).rejects.toThrow(/не читався жодного разу/);
+    expect(methods.filter((m) => m === 'PUT')).toEqual([]);
   });
 
   it('помилка запису -> throw (видимий failed)', async () => {

@@ -40,7 +40,23 @@ export async function validateInitData(initData, botToken) {
   // яку може порахувати БУДЬ-ХТО без знання токена. Не заданий токен (вікно
   // ротації секрету, битий конфіг) тоді тихо перетворює misconfig на fail-open
   // авторизацію, а не на fail-closed відмову.
-  if (!initData || !botToken) return null;
+  if (!initData) return null;
+  // ⚠️ TRIM, а не просто перевірка на falsy — і це не косметика.
+  //
+  // Стара умова `!botToken` пропускала токен із самих ПРОБІЛІВ. Тоді секрет =
+  // HMAC("WebAppData", " ") — не публічна константа, але простір кандидатів
+  // мізерний (пробіл, два пробіли, перенос рядка, табуляція), а `user.id` в
+  // initData підписант задає САМ (checkOwner нижче звіряє саме його). Тобто це
+  // був не «не той секрет», а повний обхід авторизації Mini App при токені з
+  // пробілів.
+  //
+  // Другий бік того самого: підписуємо ОБРІЗАНИМ токеном. Хвостовий перенос
+  // рядка в секреті — задокументована пастка цього проєкту (копіювання з
+  // панелі), і без trim він давав ІНШИЙ HMAC, тобто тихо клав авторизацію
+  // дашборда цілком. src/core/secrets.ts трактує рядок із пробілів як
+  // відсутній секрет — тепер поведінка збігається з обох боків.
+  const token = String(botToken ?? '').trim();
+  if (!token) return null;
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   if (!hash) return null;
@@ -50,7 +66,7 @@ export async function validateInitData(initData, botToken) {
     .sort()
     .join('\n');
   const enc = new TextEncoder();
-  const secret = await hmac(enc.encode('WebAppData'), enc.encode(botToken));
+  const secret = await hmac(enc.encode('WebAppData'), enc.encode(token));
   const computed = toHex(await hmac(secret, enc.encode(dataCheck)));
   // Константночасно (не `!==`): звіряємо HMAC, тож не зливаємо позицію першого
   // розбіжного байта — той самий інваріант, що verifyWebhookSecret/timingSafeEqual.

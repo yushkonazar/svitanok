@@ -24,10 +24,51 @@ import { kyivDateKey } from './kyiv-time.mjs';
 import { tgCall } from './telegram-client.mjs';
 import { locateKeyboard, normalKeyboard } from './tg-core.mjs';
 
-const WEATHER_LOCATIONS = [
+/**
+ * ⚠️ ТУТ ЛИШЕ ПУБЛІЧНІ ЗНАЧЕННЯ, і це другий бік того самого виправлення, що в
+ * config.yml. Доти в цьому файлі лежав ЗАШИТИЙ дубль домашніх координат — і
+ * саме він робив «прибрати координати з конфігу» неповним фіксом: це не
+ * документація й не приклад, а робочий код Worker'а, який щодня ходить по цих
+ * точках. Село на дві тисячі людей із точністю ~1 км — адреса, не локація.
+ *
+ * Справжні значення приходять секретом OWNER_LOCATIONS (JSON тієї самої форми,
+ * що config.yml). Немає секрету — працює цей фолбек, і погода буде по Рівному.
+ */
+const WEATHER_LOCATIONS_FALLBACK = [
   { lat: 49.8397, lon: 24.0297, name: 'Львів' },
-  { lat: 51.12, lon: 26.46, name: 'Немовичі' },
+  { lat: 50.6199, lon: 26.2516, name: 'Рівне' },
 ];
+
+/**
+ * Локації власника з секрету; фолбек — публічні обласні центри.
+ *
+ * Битий секрет НЕ валить запит: погода — довантаження понад основне, і впасти
+ * тут означало б зачорнити дашборд через одну зіпсовану змінну. Але й тихо
+ * підмінити локацію не можна — тому в лог іде явна причина.
+ */
+function ownerLocations(env) {
+  const raw = (env?.OWNER_LOCATIONS ?? '').trim();
+  if (!raw) return WEATHER_LOCATIONS_FALLBACK;
+  try {
+    const parsed = JSON.parse(raw);
+    const ok =
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every(
+        (l) =>
+          l &&
+          typeof l.lat === 'number' &&
+          typeof l.lon === 'number' &&
+          typeof l.name === 'string' &&
+          l.name.length > 0,
+      );
+    if (!ok) throw new Error('очікується непорожній масив {lat, lon, name}');
+    return parsed;
+  } catch (e) {
+    console.error('OWNER_LOCATIONS невалідні — працюю на публічному фолбеку:', e.message);
+    return WEATHER_LOCATIONS_FALLBACK;
+  }
+}
 const WEATHER_LIVE_TTL_MS = 30 * 60_000; // 30 хв — реальна свіжість, не «застигле» з брифінгу
 // Захисний лічильник — та сама причина, що DAILY_REQUEST_LIMIT в src/modules/
 // weather.ts (спільний OpenWeather-ключ/квота, реальний бюджет акаунта —
@@ -278,7 +319,8 @@ export async function handleLiveWeather(request, env) {
     return parsed;
   };
 
-  let targetLocations = WEATHER_LOCATIONS;
+  const configured = ownerLocations(env);
+  let targetLocations = configured;
   if (hasGeo) {
     // Ручне перевизначення вже несе назву, яку власник підтвердив при
     // встановленні (geocodeCity) — зворотне геокодування тут зайве й може
@@ -288,12 +330,12 @@ export async function handleLiveWeather(request, env) {
       counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
       name = await reverseGeocodeCity(effectiveGeo.lat, effectiveGeo.lon, env.WEATHER_API_KEY);
     }
-    // Львів (WEATHER_LOCATIONS[0]) зсувається у другий слот замість Немовичів —
+    // Перша налаштована локація зсувається у другий слот замість другої —
     // той самий 2-слотовий UI (головна температура + рядок біля UV/AQI), лише
     // інший вміст масиву.
     targetLocations = [
       { lat: effectiveGeo.lat, lon: effectiveGeo.lon, name: name ?? 'Твоя локація' },
-      WEATHER_LOCATIONS[0],
+      configured[0],
     ];
   }
 
