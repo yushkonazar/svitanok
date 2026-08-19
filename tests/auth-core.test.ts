@@ -54,6 +54,28 @@ describe('validateInitData — підпис Telegram', () => {
     expect(await validateInitData(forged, '')).toBeNull();
   });
 
+  /* ⚠️ ТА САМА ДІРА, лише на крок глибше — і саме її стара перевірка `!botToken`
+     пропускала. Токен із пробілів falsy НЕ є, тож секрет ставав
+     HMAC("WebAppData", " "): не публічна константа, але простір кандидатів
+     мізерний, а `user.id` підписант задає сам. Тобто це був не «не той
+     секрет», а обхід авторизації Mini App цілком. */
+  it('токен із самих пробілів -> null (не власний валідний секрет)', async () => {
+    for (const blank of [' ', '   ', '\n', '\r\n', '\t']) {
+      const forged = signInitData({ user: JSON.stringify(OWNER) }, blank);
+      expect(await validateInitData(forged, blank)).toBeNull();
+    }
+  });
+
+  /* Хвостовий перенос рядка в секреті — задокументована пастка цього проєкту
+     (копіювання з панелі). Без trim він давав ІНШИЙ HMAC і тихо клав
+     авторизацію дашборда цілком: Telegram підписує чистим токеном, а ми
+     звіряли брудним. */
+  it('токен із хвостовим переносом рядка працює так само, як чистий', async () => {
+    const init = ownerInit(); // підписано ЧИСТИМ BOT_TOKEN
+    expect(await validateInitData(init, BOT_TOKEN + '\r\n')).not.toBeNull();
+    expect(await validateInitData(init, ` ${BOT_TOKEN} `)).not.toBeNull();
+  });
+
   it('чужий токен, підроблений hash, відсутній hash -> null', async () => {
     expect(await validateInitData(ownerInit(), 'інший-токен')).toBeNull();
     const tampered = ownerInit().replace(/hash=[0-9a-f]+/, 'hash=' + 'a'.repeat(64));
