@@ -1,3 +1,4 @@
+// @ts-check
 // «Індекс дня» — статистична модель чек-іну (композитні індекси, ваги, що
 // вчаться, драйвери, лаговий звʼязок, архетипи). Порт research/checkin_model.py
 // (Python/numpy/scipy — читабельна специфікація й тест-оракул) у чистий JS без
@@ -36,8 +37,19 @@ export const INDEX_LABEL = {
 /**
  * @typedef {{
  *   name: string, slot: string, index: string, weight: number, polarity: 1|-1,
- *   levels?: string[], span?: [number, number], curve?: 'sleep_hours'
+ *   levels?: string[], span?: [number, number], curve?: 'sleep_hours',
+ *   legacyUnscored?: string[]
  * }} ModelField
+ */
+
+/**
+ * Композит пʼяти індексів однієї доби: null = індекс не набрав
+ * MIN_FIELDS_PER_INDEX полів.
+ * @typedef {Record<string, number|null>} IndexMap
+ * Ваги (або знаки) індексів — ключі ті самі, що INDICES.
+ * @typedef {Record<string, number>} IndexWeights
+ * Плоска доба: ключі = ModelField.name плюс dayScore.
+ * @typedef {KvBlob} ModelDay
  */
 
 /** @type {ModelField[]} */
@@ -267,20 +279,25 @@ export const MIN_INDICES_FOR_SCORE = 3;
  * Сон -> 0..1 нелінійно: 7–9 год = плато 1.0, штраф в обидва боки. Лінійна
  * шкала карала б 10 годин як «краще за 8» — плато описує реальну норму.
  */
-function sleepHoursScore(h) {
+function sleepHoursScore(/** @type {number} */ h) {
   if (h >= 7 && h <= 9) return 1;
   if (h < 7) return Math.max(0, 1 - (7 - h) / 4);
   return Math.max(0, 1 - (h - 9) / 3);
 }
 
-/** Сире значення поля -> 0..1 з урахуванням полярності; null лишається null. */
+/** Сире значення поля -> 0..1 з урахуванням полярності; null лишається null.
+ *  @param {ModelField} f
+ *  @param {unknown} raw
+ *  @returns {number|null} */
 export function normalizeField(f, raw) {
   if (raw === null || raw === undefined) return null;
   let v;
   if (f.curve === 'sleep_hours') {
     v = sleepHoursScore(Number(raw));
   } else if (f.levels) {
-    const i = f.levels.indexOf(raw);
+    // Приведення, а не String(raw): рівні — рядки, і нерядкове значення
+    // мусить дати -1 (тобто null), а не збігтися з рівнем після конвертації.
+    const i = f.levels.indexOf(/** @type {string} */ (raw));
     if (i < 0) return null;
     v = i / (f.levels.length - 1);
   } else if (f.span) {
@@ -301,8 +318,11 @@ export function normalizeField(f, raw) {
  * Доба (плоский обʼєкт сирих полів, ключі = ModelField.name) -> {індекс: 0..1|null}.
  * Ваги ПЕРЕНОРМОВУЮТЬСЯ на присутні поля — чек-ін заповнюється нерівно (вечір
  * частіше порожній), без цього доба з одним полем була б систематично занижена.
+ * @param {ModelDay} day
+ * @returns {IndexMap}
  */
 export function dayIndices(day) {
+  /** @type {IndexMap} */
   const out = {};
   for (const idx of INDICES) {
     let num = 0;
@@ -325,39 +345,56 @@ export function dayIndices(day) {
 // 4. ЛІНІЙНА АЛГЕБРА — Гаус із частковим піворотом (5×5, без бібліотек)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Розвʼязує A·x = b для квадратної матриці A (масив рядків). Мутує копії. */
+/*
+ * ⚠️ ПРО `?? 0` В УСЬОМУ ЦЬОМУ РОЗДІЛІ. Матриці тут щільні, а цикли ходять
+ * рівно в межах n, тож `undefined` з індексації недосяжний. Він зʼявляється
+ * лише в ТИПАХ через noUncheckedIndexedAccess. `?? 0` не додає гілки за
+ * даними й не змінює жодного числа — це найдешевший спосіб не приводити типи
+ * силоміць там, де файл звіряється з research/checkin_model.py до 7 знаку.
+ */
+
+/** Розвʼязує A·x = b для квадратної матриці A (масив рядків). Мутує копії.
+ *  @param {number[][]} A
+ *  @param {number[]} b
+ *  @returns {number[]} */
 function solveLinear(A, b) {
   const n = b.length;
   const M = A.map((row) => row.slice());
   const y = b.slice();
   for (let col = 0; col < n; col++) {
     let piv = col;
-    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    for (let r = col + 1; r < n; r++)
+      if (Math.abs(M[r]?.[col] ?? 0) > Math.abs(M[piv]?.[col] ?? 0)) piv = r;
     if (piv !== col) {
-      [M[col], M[piv]] = [M[piv], M[col]];
-      [y[col], y[piv]] = [y[piv], y[col]];
+      [M[col], M[piv]] = [M[piv] ?? [], M[col] ?? []];
+      [y[col], y[piv]] = [y[piv] ?? 0, y[col] ?? 0];
     }
-    const pivot = M[col][col];
+    const pivot = M[col]?.[col] ?? 0;
     if (Math.abs(pivot) < 1e-12) continue;
     for (let r = col + 1; r < n; r++) {
-      const factor = M[r][col] / pivot;
+      const Mr = M[r] ?? [];
+      const Mc = M[col] ?? [];
+      const factor = (Mr[col] ?? 0) / pivot;
       if (factor === 0) continue;
-      for (let c = col; c < n; c++) M[r][c] -= factor * M[col][c];
-      y[r] -= factor * y[col];
+      for (let c = col; c < n; c++) Mr[c] = (Mr[c] ?? 0) - factor * (Mc[c] ?? 0);
+      y[r] = (y[r] ?? 0) - factor * (y[col] ?? 0);
     }
   }
   const x = new Array(n).fill(0);
   for (let r = n - 1; r >= 0; r--) {
-    let s = y[r];
-    for (let c = r + 1; c < n; c++) s -= M[r][c] * x[c];
-    x[r] = Math.abs(M[r][r]) > 1e-12 ? s / M[r][r] : 0;
+    const Mr = M[r] ?? [];
+    let s = y[r] ?? 0;
+    for (let c = r + 1; c < n; c++) s -= (Mr[c] ?? 0) * (x[c] ?? 0);
+    x[r] = Math.abs(Mr[r] ?? 0) > 1e-12 ? s / (Mr[r] ?? 0) : 0;
   }
   return x;
 }
 
-const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+const mean = (/** @type {number[]} */ xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
 
-/** A⁻¹ через n розвʼязків A·z = eᵢ. Для 5×5 це дешевше за окремий алгоритм. */
+/** A⁻¹ через n розвʼязків A·z = eᵢ. Для 5×5 це дешевше за окремий алгоритм.
+ *  @param {number[][]} A
+ *  @returns {number[][]} */
 function invertMatrix(A) {
   const n = A.length;
   return Array.from({ length: n }, (_, i) => {
@@ -383,6 +420,7 @@ export const RIDGE_GRID = [0.05, 0.15, 0.5, 1.5, 5, 15];
  * Ridge-регресія 5 індексів -> dayScore. Не ми вирішуємо, з чого складається
  * «хороший день» — модель вчиться на власних оцінках дня людини.
  * rows: [{indices, dayScore}]. Повертає {weights, beta, intercept, r2, n, learned}.
+ * @param {{ indices: IndexMap, dayScore?: number|null }[]} rows
  */
 export function fitWeights(rows) {
   const full = rows.filter(
@@ -396,11 +434,13 @@ export function fitWeights(rows) {
     return { weights: prior, r2: null, n: full.length, learned: false };
   }
 
-  const X = full.map((r) => INDICES.map((i) => r.indices[i]));
-  const y = full.map((r) => (r.dayScore - 1) / 4);
+  // Приведення, а не `?? 0`: фільтр `full` вище лишив рівно ті доби, де всі
+  // пʼять індексів не null, — саме це компілятор із `every` вивести не вміє.
+  const X = /** @type {number[][]} */ (full.map((r) => INDICES.map((i) => r.indices[i])));
+  const y = full.map((r) => ((r.dayScore ?? 0) - 1) / 4);
   const n = INDICES.length;
   const nRows = X.length;
-  const Xm = INDICES.map((_, j) => mean(X.map((row) => row[j])));
+  const Xm = INDICES.map((_, j) => mean(X.map((row) => row[j] ?? 0)));
   const ym = mean(y);
   // ⚠️ СТАНДАРТИЗАЦІЯ, а не саме центрування. Ridge штрафує КОЕФІЦІЄНТИ, тож
   // без спільного масштабу предиктор із меншим розкидом отримує більший β і
@@ -408,24 +448,24 @@ export function fitWeights(rows) {
   // рівний вимір, а не наскільки він важливий. Індекси всі 0..1, але їхні
   // стандартні відхилення різняться втричі.
   const sd = INDICES.map((_, j) => {
-    const col = X.map((row) => row[j] - Xm[j]);
+    const col = X.map((row) => (row[j] ?? 0) - (Xm[j] ?? 0));
     const v = col.reduce((s, d) => s + d * d, 0) / Math.max(1, nRows - 1);
     return Math.sqrt(v) > 1e-9 ? Math.sqrt(v) : 1;
   });
-  const Xz = X.map((row) => row.map((v, j) => (v - Xm[j]) / sd[j]));
+  const Xz = X.map((row) => row.map((v, j) => (v - (Xm[j] ?? 0)) / (sd[j] ?? 1)));
   const yc = y.map((v) => v - ym);
   const ssTot = yc.reduce((s, v) => s + v * v, 0);
 
   const gram = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => {
       let s = 0;
-      for (let k = 0; k < nRows; k++) s += Xz[k][i] * Xz[k][j];
+      for (let k = 0; k < nRows; k++) s += (Xz[k]?.[i] ?? 0) * (Xz[k]?.[j] ?? 0);
       return s;
     }),
   );
   const rhs = Array.from({ length: n }, (_, i) => {
     let s = 0;
-    for (let k = 0; k < nRows; k++) s += Xz[k][i] * yc[k];
+    for (let k = 0; k < nRows; k++) s += (Xz[k]?.[i] ?? 0) * (yc[k] ?? 0);
     return s;
   });
 
@@ -437,22 +477,22 @@ export function fitWeights(rows) {
    * внесок вільного члена, який ми зняли центруванням; без нього LOO був би
    * оптимістичним рівно на нього.
    */
-  const fitAt = (lambda) => {
+  const fitAt = (/** @type {number} */ lambda) => {
     const A = gram.map((row, i) => row.map((v, j) => v + (i === j ? lambda : 0)));
     const beta = solveLinear(A, rhs);
     const Ainv = invertMatrix(A);
     let press = 0;
     let ssRes = 0;
     for (let k = 0; k < nRows; k++) {
-      const xk = Xz[k];
+      const xk = Xz[k] ?? [];
       let h = 1 / nRows;
       for (let i = 0; i < n; i++) {
         let ai = 0;
-        for (let j = 0; j < n; j++) ai += Ainv[i][j] * xk[j];
-        h += xk[i] * ai;
+        for (let j = 0; j < n; j++) ai += (Ainv[i]?.[j] ?? 0) * (xk[j] ?? 0);
+        h += (xk[i] ?? 0) * ai;
       }
-      const pred = xk.reduce((s, v, j) => s + v * beta[j], 0);
-      const e = yc[k] - pred;
+      const pred = xk.reduce((s, v, j) => s + v * (beta[j] ?? 0), 0);
+      const e = (yc[k] ?? 0) - pred;
       ssRes += e * e;
       // ⚠️ Клемп ЗНИЗУ, не фолбек на e². Знайдено рев'ю: попередній варіант при
       // h -> 1 підставляв сам залишок, тобто в найгіршому для моделі випадку
@@ -471,7 +511,9 @@ export function fitWeights(rows) {
     const cand = fitAt(lambda);
     if (!best || cand.press < best.press) best = cand;
   }
-  const { lambda, beta, ssRes, press } = best;
+  // RIDGE_GRID непорожня, тож `best` тут уже не null — цикл вище виконався
+  // щонайменше раз. Приведення замість зайвої гілки на недосяжний випадок.
+  const { lambda, beta, ssRes, press } = /** @type {NonNullable<typeof best>} */ (best);
 
   const r2 = ssTot > 1e-12 ? 1 - ssRes / ssTot : null;
   // ⚠️ CV-R² може бути ВІДʼЄМНИМ, і це не помилка: означає, що модель
@@ -481,19 +523,20 @@ export function fitWeights(rows) {
 
   // Коефіцієнти повертаємо у ВИХІДНОМУ масштабі індексів (β/sd), інакше
   // intercept і будь-яке порівняння з попередніми версіями поїхали б.
-  const betaRaw = beta.map((b, j) => b / sd[j]);
+  const betaRaw = beta.map((b, j) => b / (sd[j] ?? 1));
   const mag = betaRaw.map(Math.abs);
   const magSum = mag.reduce((a, b) => a + b, 0);
-  const share = magSum > 1e-12 ? mag.map((m) => m / magSum) : INDICES.map(() => 1 / n);
+  const share =
+    magSum > 1e-12 ? mag.map((/** @type {number} */ m) => m / magSum) : INDICES.map(() => 1 / n);
 
   return {
-    weights: Object.fromEntries(INDICES.map((i, j) => [i, share[j]])),
-    beta: Object.fromEntries(INDICES.map((i, j) => [i, betaRaw[j]])),
+    weights: Object.fromEntries(INDICES.map((i, j) => [i, share[j] ?? 0])),
+    beta: Object.fromEntries(INDICES.map((i, j) => [i, betaRaw[j] ?? 0])),
     // Знак окремо від величини: смуги пояснення показують ВАГУ виміру, а
     // рахунок мусить знати НАПРЯМОК. Доти знак губився в Math.abs, і вимір,
     // що тягне день униз, підіймав «Індекс дня».
-    signs: Object.fromEntries(INDICES.map((i, j) => [i, betaRaw[j] < 0 ? -1 : 1])),
-    intercept: ym - Xm.reduce((s, v, j) => s + v * betaRaw[j], 0),
+    signs: Object.fromEntries(INDICES.map((i, j) => [i, (betaRaw[j] ?? 0) < 0 ? -1 : 1])),
+    intercept: ym - Xm.reduce((s, v, j) => s + v * (betaRaw[j] ?? 0), 0),
     lambda,
     r2,
     r2cv,
@@ -511,20 +554,29 @@ export function fitWeights(rows) {
  * оцінку дня, і «Індекс» рухався б у протилежний бік від того, що людина сама
  * поставила. `signs` необовʼязковий — без нього поведінка та сама, що й доти
  * (апріорні ваги знака не мають).
+ * @param {IndexMap} indices
+ * @param {IndexWeights} weights
+ * @param {IndexWeights|null} [signs]
+ * @returns {number|null}
  */
 export function dayIndexScore(indices, weights, signs = null) {
   let num = 0;
   let den = 0;
+  // Приведення обох читань зберігає поведінку РІВНО як була: ключі тут завжди
+  // з INDICES, а `?? 0` натомість тихо підмінив би відсутню вагу нулем.
   for (const i of INDICES) {
-    if (indices[i] === null) continue;
-    const v = signs && signs[i] < 0 ? 1 - indices[i] : indices[i];
-    num += v * weights[i];
-    den += weights[i];
+    const raw = /** @type {number|null} */ (indices[i]);
+    if (raw === null) continue;
+    const w = /** @type {number} */ (weights[i]);
+    const v = signs && /** @type {number} */ (signs[i]) < 0 ? 1 - raw : raw;
+    num += v * w;
+    den += w;
   }
   return den > 0 ? Math.round(((100 * num) / den) * 10) / 10 : null;
 }
 
-/** Скільки з пʼяти індексів доба реально дає. */
+/** Скільки з пʼяти індексів доба реально дає.
+ *  @param {IndexMap} indices */
 export function indicesPresent(indices) {
   return INDICES.filter((i) => indices[i] !== null).length;
 }
@@ -545,16 +597,25 @@ const LANCZOS_C = [
   1.5056327351493116e-7,
 ];
 
+/**
+ * @param {number} x
+ * @returns {number}
+ */
 function lgamma(x) {
   if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
   x -= 1;
-  let a = LANCZOS_C[0];
+  let a = LANCZOS_C[0] ?? 0;
   const t = x + LANCZOS_G + 0.5;
-  for (let i = 1; i < LANCZOS_G + 2; i++) a += LANCZOS_C[i] / (x + i);
+  for (let i = 1; i < LANCZOS_G + 2; i++) a += (LANCZOS_C[i] ?? 0) / (x + i);
   return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
 // Continued fraction для неповної бета-функції (Numerical Recipes betacf).
+/**
+ * @param {number} a
+ * @param {number} b
+ * @param {number} x
+ */
 function betacf(a, b, x) {
   const MAXIT = 200;
   const EPS = 3e-14;
@@ -590,7 +651,10 @@ function betacf(a, b, x) {
 }
 
 /** Регуляризована неповна бета-функція I_x(a,b) — той самий будівельний блок
- *  для Welch p-value і Spearman p-value, обидва зводяться до Student-t. */
+ *  для Welch p-value і Spearman p-value, обидва зводяться до Student-t.
+ *  @param {number} a
+ *  @param {number} b
+ *  @param {number} x */
 function betai(a, b, x) {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
@@ -602,12 +666,18 @@ function betai(a, b, x) {
     : 1 - (bt * betacf(b, a, 1 - x)) / b;
 }
 
-/** Двобічне p-значення Student-t: P(|T|>=|t|), df може бути дробовим (Welch). */
+/** Двобічне p-значення Student-t: P(|T|>=|t|), df може бути дробовим (Welch).
+ *  @param {number} t
+ *  @param {number} df */
 function studentTTwoSidedP(t, df) {
   if (!Number.isFinite(t) || df <= 0) return 1;
   return betai(df / 2, 0.5, df / (df + t * t));
 }
 
+/**
+ * @param {number[]} a
+ * @param {number[]} b
+ */
 export function cohensD(a, b) {
   const na = a.length;
   const nb = b.length;
@@ -620,7 +690,9 @@ export function cohensD(a, b) {
   return pooled > 1e-9 ? (ma - mb) / pooled : 0;
 }
 
-/** Welch's t-test p-значення — не передбачає рівних дисперсій (кошики різного розміру). */
+/** Welch's t-test p-значення — не передбачає рівних дисперсій (кошики різного розміру).
+ *  @param {number[]} a
+ *  @param {number[]} b */
 export function welchP(a, b) {
   const na = a.length;
   const nb = b.length;
@@ -635,22 +707,27 @@ export function welchP(a, b) {
   return studentTTwoSidedP(t, df);
 }
 
-/** Ранги з усередненням при звʼязках (потрібно для Spearman). */
+/** Ранги з усередненням при звʼязках (потрібно для Spearman).
+ *  @param {number[]} xs
+ *  @returns {number[]} */
 function ranks(xs) {
-  const idx = xs.map((_, i) => i).sort((i, j) => xs[i] - xs[j]);
+  const idx = xs.map((_, i) => i).sort((i, j) => (xs[i] ?? 0) - (xs[j] ?? 0));
+  /** @type {number[]} */
   const r = new Array(xs.length);
   let i = 0;
   while (i < idx.length) {
     let j = i;
-    while (j + 1 < idx.length && xs[idx[j + 1]] === xs[idx[i]]) j++;
+    while (j + 1 < idx.length && xs[idx[j + 1] ?? 0] === xs[idx[i] ?? 0]) j++;
     const avg = (i + j) / 2 + 1;
-    for (let k = i; k <= j; k++) r[idx[k]] = avg;
+    for (let k = i; k <= j; k++) r[idx[k] ?? 0] = avg;
     i = j + 1;
   }
   return r;
 }
 
-/** Spearman rho + p (t-апроксимація — той самий формула, що scipy.stats.spearmanr). */
+/** Spearman rho + p (t-апроксимація — той самий формула, що scipy.stats.spearmanr).
+ *  @param {number[]} xs
+ *  @param {number[]} ys */
 export function spearman(xs, ys) {
   const n = xs.length;
   const rx = ranks(xs);
@@ -661,8 +738,8 @@ export function spearman(xs, ys) {
   let dx2 = 0;
   let dy2 = 0;
   for (let i = 0; i < n; i++) {
-    const ddx = rx[i] - mx;
-    const ddy = ry[i] - my;
+    const ddx = (rx[i] ?? 0) - mx;
+    const ddy = (ry[i] ?? 0) - my;
     num += ddx * ddy;
     dx2 += ddx * ddx;
     dy2 += ddy * ddy;
@@ -678,19 +755,25 @@ export function spearman(xs, ys) {
 // 6. ДРАЙВЕРИ
 // ─────────────────────────────────────────────────────────────────────────────
 
-const round2 = (v) => Math.round(v * 100) / 100;
-const round3 = (v) => Math.round(v * 1000) / 1000;
-const round4 = (v) => Math.round(v * 10000) / 10000;
+const round2 = (/** @type {number} */ v) => Math.round(v * 100) / 100;
+const round3 = (/** @type {number} */ v) => Math.round(v * 1000) / 1000;
+const round4 = (/** @type {number} */ v) => Math.round(v * 10000) / 10000;
 
 /**
  * Кожне бінаризовне поле -> вплив на цільову оцінку (за замовч. dayScore),
  * відсортовано за |d|. Один генеричний прохід замість картки на поле: нове
  * поле в FIELDS саме зʼявляється в аналізі, коли набереться вибірка.
+ * @param {ModelDay[]} days
+ * @param {string} [target]
+ * @returns {KvBlob[]}
  */
 export function computeDrivers(days, target = 'dayScore') {
+  /** @type {KvBlob[]} */
   const out = [];
   for (const f of FIELDS) {
+    /** @type {number[]} */
     const hi = [];
+    /** @type {number[]} */
     const lo = [];
     for (const d of days) {
       const t = d[target];
@@ -732,14 +815,15 @@ const BH_ALPHA = 0.05;
  *
  * q рахується монотонно з кінця: без цього крок BH міг би оголосити значущим
  * рядок із БІЛЬШИМ p, ніж у визнаного незначущим сусіда.
+ * @param {KvBlob[]} rows
  */
 function applyBH(rows) {
   const m = rows.length;
   if (!m) return;
-  const order = rows.map((_, i) => i).sort((a, b) => rows[a].p - rows[b].p);
+  const order = rows.map((_, i) => i).sort((a, b) => (rows[a]?.p ?? 0) - (rows[b]?.p ?? 0));
   let running = 1;
   for (let k = m - 1; k >= 0; k--) {
-    const row = rows[order[k]];
+    const row = /** @type {KvBlob} */ (rows[order[k] ?? 0]);
     running = Math.min(running, (m / (k + 1)) * row.p);
     row.q = round4(running);
     row.passesBH = running <= BH_ALPHA;
@@ -750,12 +834,21 @@ function applyBH(rows) {
 // 7. ЛАГОВІ ЗВʼЯЗКИ — сьогодні -> ЗАВТРА
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @param {ModelDay[]} days
+ * @param {string} srcIndex
+ * @param {string} [target]
+ */
 export function computeLagged(days, srcIndex, target = 'dayScore') {
+  /** @type {number[]} */
   const xs = [];
+  /** @type {number[]} */
   const ys = [];
   for (let i = 0; i < days.length - 1; i++) {
-    const v = dayIndices(days[i])[srcIndex];
-    const t = days[i + 1][target];
+    // Приведення зберігає поведінку точно: srcIndex завжди з INDICES, тобто
+    // ключ у мапі є, і `undefined` тут недосяжний — лише в типі.
+    const v = /** @type {number|null} */ (dayIndices(days[i] ?? {})[srcIndex]);
+    const t = (days[i + 1] ?? {})[target];
     if (v !== null && t !== null && t !== undefined) {
       xs.push(v);
       ys.push(t);
@@ -772,64 +865,77 @@ export function computeLagged(days, srcIndex, target = 'dayScore') {
 // 8. АРХЕТИПИ — k-means, ІНІЦІАЛІЗАЦІЯ ДЕТЕРМІНОВАНА (maxmin, без PRNG)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @param {number[]} a
+ * @param {number[]} b
+ */
 function sqDist(a, b) {
   let s = 0;
-  for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
+  for (let i = 0; i < a.length; i++) s += ((a[i] ?? 0) - (b[i] ?? 0)) ** 2;
   return s;
 }
 
 /** Перший центр — найближча до середнього доба; кожен наступний — та, що
  *  максимізує мінімальну відстань до вже обраних. Без seed: Python і JS
- *  дають ІДЕНТИЧНИЙ результат з точністю до плаваючої коми. */
+ *  дають ІДЕНТИЧНИЙ результат з точністю до плаваючої коми.
+ *  @param {number[][]} Xs
+ *  @param {number} k
+ *  @returns {number[][]} */
 function farthestPointInit(Xs, k) {
   const n = Xs.length;
-  const dim = Xs[0].length;
-  const centroidMean = Array.from({ length: dim }, (_, j) => mean(Xs.map((row) => row[j])));
+  const dim = (Xs[0] ?? []).length;
+  const centroidMean = Array.from({ length: dim }, (_, j) => mean(Xs.map((row) => row[j] ?? 0)));
   let first = 0;
   let bestD = Infinity;
   for (let i = 0; i < n; i++) {
-    const d = sqDist(Xs[i], centroidMean);
+    const d = sqDist(Xs[i] ?? [], centroidMean);
     if (d < bestD) {
       bestD = d;
       first = i;
     }
   }
   const chosen = [first];
-  const dist = Xs.map((row) => sqDist(row, Xs[first]));
+  const dist = Xs.map((row) => sqDist(row, Xs[first] ?? []));
   for (let step = 1; step < k; step++) {
     let nxt = 0;
     let best = -Infinity;
     for (let i = 0; i < n; i++)
-      if (dist[i] > best) {
-        best = dist[i];
+      if ((dist[i] ?? -Infinity) > best) {
+        best = dist[i] ?? -Infinity;
         nxt = i;
       }
     chosen.push(nxt);
-    for (let i = 0; i < n; i++) dist[i] = Math.min(dist[i], sqDist(Xs[i], Xs[nxt]));
+    for (let i = 0; i < n; i++)
+      dist[i] = Math.min(dist[i] ?? Infinity, sqDist(Xs[i] ?? [], Xs[nxt] ?? []));
   }
-  return chosen.map((i) => Xs[i].slice());
+  return chosen.map((i) => (Xs[i] ?? []).slice());
 }
 
 /**
  * k-means на стандартизованих 5-вимірних індексах. Замість «середнього дня»
  * (якого не існує) — 3-4 ТИПИ днів із частотою й профілем.
+ * @param {ModelDay[]} days
+ * @param {number} [k]
  */
 export function computeArchetypes(days, k = 4) {
+  /** @type {number[][]} */
   const V = [];
   for (const d of days) {
     const ix = dayIndices(d);
-    if (INDICES.every((i) => ix[i] !== null)) V.push(INDICES.map((i) => ix[i]));
+    // Приведення після `every`: перевірку компілятор не переносить на map.
+    if (INDICES.every((i) => ix[i] !== null))
+      V.push(/** @type {number[]} */ (INDICES.map((i) => ix[i])));
   }
   if (V.length < k * 5) return { ready: false, n: V.length, needed: k * 5 };
 
   const dim = INDICES.length;
-  const colMean = Array.from({ length: dim }, (_, j) => mean(V.map((row) => row[j])));
+  const colMean = Array.from({ length: dim }, (_, j) => mean(V.map((row) => row[j] ?? 0)));
   const colStd = Array.from({ length: dim }, (_, j) => {
-    const m = colMean[j];
-    const v = mean(V.map((row) => (row[j] - m) ** 2));
+    const m = colMean[j] ?? 0;
+    const v = mean(V.map((row) => ((row[j] ?? 0) - m) ** 2));
     return Math.sqrt(v) < 1e-9 ? 1 : Math.sqrt(v);
   });
-  const Xs = V.map((row) => row.map((v, j) => (v - colMean[j]) / colStd[j]));
+  const Xs = V.map((row) => row.map((v, j) => (v - (colMean[j] ?? 0)) / (colStd[j] ?? 1)));
 
   let C = farthestPointInit(Xs, k);
   let labels = new Array(Xs.length).fill(0);
@@ -839,7 +945,7 @@ export function computeArchetypes(days, k = 4) {
       let best = 0;
       let bestD = Infinity;
       for (let j = 0; j < k; j++) {
-        const d = sqDist(row, C[j]);
+        const d = sqDist(row, C[j] ?? []);
         if (d < bestD) {
           bestD = d;
           best = j;
@@ -850,31 +956,34 @@ export function computeArchetypes(days, k = 4) {
     const newC = Array.from({ length: k }, (_, j) => {
       const members = Xs.filter((_, i) => labels[i] === j);
       return members.length
-        ? Array.from({ length: dim }, (_, d) => mean(members.map((row) => row[d])))
-        : C[j];
+        ? Array.from({ length: dim }, (_, d) => mean(members.map((row) => row[d] ?? 0)))
+        : (C[j] ?? []);
     });
     for (let j = 0; j < k; j++) {
-      if (sqDist(newC[j], C[j]) > 1e-18) changed = true;
+      if (sqDist(newC[j] ?? [], C[j] ?? []) > 1e-18) changed = true;
     }
     C = newC;
     if (!changed) break;
   }
 
+  /** @type {KvBlob[]} */
   const groups = [];
   for (let j = 0; j < k; j++) {
     const memberIdx = labels.map((l, i) => (l === j ? i : -1)).filter((i) => i >= 0);
     if (!memberIdx.length) continue;
-    const profile = Array.from({ length: dim }, (_, d) => mean(memberIdx.map((i) => V[i][d])));
+    const profile = Array.from({ length: dim }, (_, d) =>
+      mean(memberIdx.map((i) => V[i]?.[d] ?? 0)),
+    );
     let topI = 0;
     let lowI = 0;
     for (let d = 1; d < dim; d++) {
-      if (profile[d] > profile[topI]) topI = d;
-      if (profile[d] < profile[lowI]) lowI = d;
+      if ((profile[d] ?? 0) > (profile[topI] ?? 0)) topI = d;
+      if ((profile[d] ?? 0) < (profile[lowI] ?? 0)) lowI = d;
     }
     groups.push({
       n: memberIdx.length,
       share: round3(memberIdx.length / V.length),
-      profile: Object.fromEntries(INDICES.map((i, d) => [i, round3(profile[d])])),
+      profile: Object.fromEntries(INDICES.map((i, d) => [i, round3(profile[d] ?? 0)])),
       top: INDICES[topI],
       low: INDICES[lowI],
     });
@@ -891,10 +1000,11 @@ export function computeArchetypes(days, k = 4) {
  * Повний прохід моделі на масиві плоских «днів» (формат ModelField.name-ключів,
  * як повертає flattenCheckinDay нижче). Не читає KV напряму — чиста функція
  * над уже підготованими рядками, той самий стиль, що решта stats-core.mjs.
+ * @param {ModelDay[]} days
  */
 export function analyzeCheckinModel(days) {
   const idx = days.map((d) => dayIndices(d));
-  const fit = fitWeights(idx.map((ix, i) => ({ indices: ix, dayScore: days[i].dayScore })));
+  const fit = fitWeights(idx.map((ix, i) => ({ indices: ix, dayScore: days[i]?.dayScore })));
   // ⚠️ ГЕЙТ ПОКРИТТЯ — найбільше джерело хибного прочитання в усьому блоці.
   // «Індекс дня» перенормовує ваги на НАЯВНІ індекси, тож о 09:00, коли
   // заповнено лише ранок, доступні щонайбільше два виміри — і «92» означало
@@ -905,7 +1015,7 @@ export function analyzeCheckinModel(days) {
   // «немає даних» — це «ще рано», і екран мусить сказати саме так.
   const cover = idx.map(indicesPresent);
   const scores = idx.map((ix, i) =>
-    cover[i] >= MIN_INDICES_FOR_SCORE ? dayIndexScore(ix, fit.weights, fit.signs) : null,
+    (cover[i] ?? 0) >= MIN_INDICES_FOR_SCORE ? dayIndexScore(ix, fit.weights, fit.signs) : null,
   );
   const validScores = scores.filter((s) => s !== null);
   return {
@@ -953,6 +1063,7 @@ export function analyzeCheckinModel(days) {
  * дві години розірваного сну і якість 2, тобто гірше за будь-яку реальну
  * відповідь, окрім найгіршої.
  */
+/** @type {Record<string, { h: number, q: number }|undefined>} */
 const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
 
 /**
@@ -972,19 +1083,31 @@ const DERIVED_SLEEP = { none: { h: 0, q: 1 }, naps: { h: 2, q: 2 } };
  * (послідовність «Спав, 8 годин -> передумав, Не спав» інакше лишала б вісім
  * годин). Легасі-доби не зачіпає — там sleepKind немає взагалі.
  */
+/**
+ * @param {KvBlob|null|undefined} m ранковий запис чек-іну
+ * @returns {number|null}
+ */
 export function sleepHoursOf(m) {
   const d = DERIVED_SLEEP[m?.sleepKind];
   if (d) return d.h;
   return typeof m?.sleepH === 'number' ? m.sleepH : null;
 }
 
-/** Якість сну за тим самим правилом, що sleepHoursOf. */
+/** Якість сну за тим самим правилом, що sleepHoursOf.
+ *  @param {KvBlob|null|undefined} m
+ *  @returns {number|null} */
 export function sleepQualityOf(m) {
   const d = DERIVED_SLEEP[m?.sleepKind];
   if (d) return d.q;
   return typeof m?.sleepQ === 'number' ? m.sleepQ : null;
 }
 
+/**
+ * @param {KvBlob|null|undefined} rec запис checkins[dateKey]
+ * @param {(v: unknown) => any[]} asListFn
+ * @param {string[]} categoryValues
+ * @returns {ModelDay}
+ */
 export function flattenCheckinDay(rec, asListFn, categoryValues) {
   const m = rec?.morning ?? {};
   const a = rec?.afternoon ?? {};
