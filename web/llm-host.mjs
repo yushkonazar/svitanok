@@ -1,3 +1,4 @@
+// @ts-check
 // Клієнт власного LLM-хоста (Фаза 5, модуляризація worker.js, план A2 §5).
 //
 // Хост — це VPS із `claude` CLI на підписці (host/), а не платний API. Worker
@@ -24,6 +25,11 @@
  * текст (classifyLlmFailure/assistantErrorReply, agent-core.mjs). Тіло помилки
  * хоста — це фіксований енум ('usage-limit'/'rate-limited'/'timeout'/…) або
  * текст CLI, який хост уже пропустив через власну класифікацію.
+ *
+ * @param {Env} env
+ * @param {{ prompt: string, systemPrompt?: string, jsonSchema?: KvBlob,
+ *           model?: string, timeoutMs?: number }} opts
+ * @returns {Promise<KvBlob>} {ok:true,…} від хоста або {ok:false,status,error}
  */
 export async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model, timeoutMs }) {
   if (!env.LLM_HOST_URL || !env.LLM_HOST_SECRET) {
@@ -32,7 +38,10 @@ export async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model
   const ctrl = new AbortController();
   // 25с — стеля (менше за таймаут хоста 30с). Агент передає МЕНШЕ: у нього свій
   // бюджет на весь ланцюжок, і один повільний виклик не сміє зʼїсти його весь.
-  const ms = Number.isFinite(timeoutMs) ? Math.max(1000, Math.min(25_000, timeoutMs)) : 25_000;
+  // Локальна змінна лише заради звуження типу: Number.isFinite істинний тільки
+  // для чисел, але компілятору цього не повідомляє. Поведінка та сама.
+  const t = typeof timeoutMs === 'number' ? timeoutMs : NaN;
+  const ms = Number.isFinite(t) ? Math.max(1000, Math.min(25_000, t)) : 25_000;
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(env.LLM_HOST_URL, {
@@ -62,8 +71,9 @@ export async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model
       };
     }
     return data;
-  } catch (err) {
+  } catch (e) {
     // AbortError — це наш 25-секундний таймаут, не «хост лежить»: різні тексти.
+    const err = /** @type {{ name?: unknown, message?: unknown }|null} */ (e);
     const aborted = err?.name === 'AbortError';
     console.error('llm-host call failed', err?.message);
     return { ok: false, status: 0, error: aborted ? 'timeout' : 'offline' };
@@ -77,6 +87,8 @@ export async function callLlmHost(env, { prompt, systemPrompt, jsonSchema, model
  * цикл живе поруч на `/agent`. Виводимо з наявного секрету, щоб перехід не
  * вимагав від власника заводити ще один; LLM_HOST_AGENT_URL — явний обхід, якщо
  * колись знадобиться інша адреса.
+ * @param {Env} env
+ * @returns {string|null}
  */
 export function agentHostUrl(env) {
   if (env.LLM_HOST_AGENT_URL) return env.LLM_HOST_AGENT_URL;
@@ -91,6 +103,9 @@ export function agentHostUrl(env) {
  * того, як почне думати — інакше ми знову чекали б у waitUntil і повернулись би
  * до тієї самої мовчанки. Форма відповіді при збої — як у callLlmHost, щоб
  * assistantErrorReply класифікувала причину тим самим кодом.
+ * @param {Env} env
+ * @param {KvBlob} payload
+ * @returns {Promise<{ ok: true } | { ok: false, status: number, error: string }>}
  */
 export async function startAgentRun(env, payload) {
   const url = agentHostUrl(env);
@@ -120,7 +135,8 @@ export async function startAgentRun(env, payload) {
       };
     }
     return { ok: true };
-  } catch (err) {
+  } catch (e) {
+    const err = /** @type {{ name?: unknown, message?: unknown }|null} */ (e);
     console.error('agent start failed', err?.message);
     return { ok: false, status: 0, error: err?.name === 'AbortError' ? 'timeout' : 'offline' };
   } finally {

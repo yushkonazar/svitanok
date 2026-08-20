@@ -1,3 +1,4 @@
+// @ts-check
 // Чиста логіка налаштувань власника (роадмеп v3, F2) — блоб KV `settings`.
 // Worker (web/worker.js) читає/пише його через /api/settings; оркестратор
 // (src/orchestrator.ts) читає ТОЙ САМИЙ ключ, щоб застосувати тумблери модулів
@@ -31,12 +32,20 @@ export const TOGGLEABLE_MODULE_IDS = [
   'jobs',
 ];
 
+/**
+ * Форма блоба `settings`.
+ * @typedef {{ enabled: boolean, from: string, to: string }} QuietHours
+ * @typedef {{ quiet: QuietHours, modules: Record<string, boolean>,
+ *             mutedTopics: string[] }} Settings
+ */
+
 const DEFAULT_QUIET = { enabled: false, from: '22:00', to: '08:00' };
 
 /**
  * Дефолт: тихі години ВИМКНЕНІ. Макет показує їх увімкненими, але вмикати їх
  * мовчки на боці сервера — значить почати глушити нічні нагадування власнику,
  * який про це не просив. Вмикається явним перемиканням.
+ * @returns {Settings}
  */
 export function emptySettings() {
   return { quiet: { ...DEFAULT_QUIET }, modules: {}, mutedTopics: [] };
@@ -45,7 +54,9 @@ export function emptySettings() {
 /** Стеля списку приглушених тем — блоб налаштувань не має рости безмежно. */
 const MUTED_TOPICS_CAP = 40;
 
-/** "HH:MM" -> хвилини від опівночі (0..1439); невалідне -> null. */
+/** "HH:MM" -> хвилини від опівночі (0..1439); невалідне -> null.
+ *  @param {unknown} v
+ *  @returns {number|null} */
 export function parseHhmm(v) {
   if (typeof v !== 'string') return null;
   const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
@@ -56,13 +67,16 @@ export function parseHhmm(v) {
   return h * 60 + min;
 }
 
-/** Хвилини від опівночі -> канонічне "HH:MM" (з обгортанням через добу). */
+/** Хвилини від опівночі -> канонічне "HH:MM" (з обгортанням через добу).
+ *  @param {number} mins */
 export function fmtHhmm(mins) {
   const m = ((Math.round(mins) % 1440) + 1440) % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
 
-/** Нормалізувати частковий/битий блоб до повної форми (як normalize у stats-core). */
+/** Нормалізувати частковий/битий блоб до повної форми (як normalize у stats-core).
+ *  @param {KvBlob|null|undefined} raw
+ *  @returns {Settings} */
 export function normalizeSettings(raw) {
   const e = emptySettings();
   if (!raw || typeof raw !== 'object') return e;
@@ -72,6 +86,7 @@ export function normalizeSettings(raw) {
   const to = parseHhmm(q.to);
 
   const rawMods = raw.modules && typeof raw.modules === 'object' ? raw.modules : {};
+  /** @type {Record<string, boolean>} */
   const modules = {};
   for (const id of TOGGLEABLE_MODULE_IDS) {
     if (typeof rawMods[id] === 'boolean') modules[id] = rawMods[id];
@@ -80,9 +95,12 @@ export function normalizeSettings(raw) {
   // Приглушені теми новин: лише непорожні рядки, без дублів, із капом. Імена тем
   // приходять із config.yml (display-назва), тож перелік ТУТ не зашитий — інакше
   // кожна нова тема вимагала б правки ще й цього файлу.
+  /** @type {unknown[]} */
   const rawMuted = Array.isArray(raw.mutedTopics) ? raw.mutedTopics : [];
   const mutedTopics = [
-    ...new Set(rawMuted.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())),
+    ...new Set(
+      rawMuted.filter((t) => typeof t === 'string' && t.trim()).map((t) => String(t).trim()),
+    ),
   ].slice(0, MUTED_TOPICS_CAP);
 
   return {
@@ -101,6 +119,8 @@ export function normalizeSettings(raw) {
  * Вікно може перетинати північ (22:00 -> 08:00). Межі: from включно, to НЕ
  * включно (о 08:00 нагадування вже йдуть). from === to -> вікно порожнє, а не
  * ціла доба: інакше випадковий однаковий час глушив би нагадування назавжди.
+ * @param {KvBlob|null|undefined} settings
+ * @param {number} minuteOfDay
  */
 export function isQuietMinute(settings, minuteOfDay) {
   const s = normalizeSettings(settings);
@@ -119,6 +139,7 @@ export function isQuietMinute(settings, minuteOfDay) {
  * Calendar і Gmail ділять ОДИН refresh token (спільний консент, див.
  * src/core/google-auth.ts), тож поки скоупи ще не закешовані, обидва
  * репортимо за наявністю секретів — так було історично.
+ * @param {{ hasGoogleCreds: unknown, scope?: unknown }} opts
  */
 export function connectorStatus({ hasGoogleCreds, scope }) {
   if (!hasGoogleCreds) return { google: false, calendar: false, gmail: false, contacts: false };
