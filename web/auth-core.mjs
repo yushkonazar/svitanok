@@ -1,3 +1,4 @@
+// @ts-check
 // Авторизація Mini App і розмежування прав (Фаза 5, модуляризація worker.js).
 //
 // ЄДИНА безпекова поверхня дашборда: перевірка Telegram initData (HMAC-SHA256)
@@ -18,8 +19,32 @@
 
 import { constantTimeEqual } from './tg-core.mjs';
 
+/**
+ * Користувач Telegram із initData.
+ *
+ * Перелічено рівно ті поля, які читає код. Форму приймаємо на віру НЕ з
+ * недогляду: до цього місця підпис initData уже перевірено HMAC-ом на
+ * bot-токені, тобто дані прийшли від Telegram, а не від викликача.
+ * @typedef {{ id: number, first_name?: string, last_name?: string, username?: string,
+ *             language_code?: string, is_premium?: boolean }} TelegramUser
+ */
+
+/**
+ * Ухвала авторизації. Літеральні `true`/`false` тут ОБОВʼЯЗКОВІ: без них
+ * виведення розширює `ok` до `boolean`, союз перестає розрізнятись, і
+ * `checkPrimaryOwner` втрачає гарантію, що після `!auth.ok` лишився саме
+ * успішний варіант із `user`.
+ * @typedef {{ ok: true, user: TelegramUser }} AuthOk
+ * @typedef {{ ok: false, status: number, error: string }} AuthFail
+ * @typedef {AuthOk | AuthFail} AuthResult
+ */
+
 /* ── Telegram WebApp initData (HMAC-SHA256, WebCrypto) ─────────────────── */
 
+/**
+ * @param {Uint8Array} keyBytes
+ * @param {Uint8Array} msgBytes
+ */
 async function hmac(keyBytes, msgBytes) {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -31,9 +56,19 @@ async function hmac(keyBytes, msgBytes) {
   return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
 }
 
-const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+const toHex = (/** @type {Uint8Array} */ buf) =>
+  [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-/** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
+/**
+ * Перевіряє initData за алгоритмом Telegram; повертає {user} або null.
+ *
+ * `botToken` — `unknown`, а не `string`: нижче він проходить через
+ * `String(...).trim()` саме тому, що джерело (секрет Cloudflare) може бути й
+ * незаданим, і з хвостовим переносом рядка.
+ * @param {string|null|undefined} initData
+ * @param {unknown} botToken
+ * @returns {Promise<{ user: TelegramUser|null }|null>}
+ */
 export async function validateInitData(initData, botToken) {
   // ⚠️ Без цієї перевірки: enc.encode(undefined) -> порожній масив байтів,
   // тож секрет вироджується у HMAC("WebAppData", "") — публічну константу,
@@ -94,8 +129,11 @@ export async function validateInitData(initData, botToken) {
  * синхронізовані у ДВОХ місцях (GitHub + Cloudflare), і якби код перестав її
  * читати в мить деплою, співвласник утратив би доступ до дашборда раніше, ніж
  * власник встиг би перейменувати змінну. Прибрати після перейменування.
+ * @param {Env} env
+ * @returns {Set<string>}
  */
 export function allowedUserIds(env) {
+  /** @type {Set<string>} */
   const ids = new Set();
   if (env.TELEGRAM_OWNER_USER_ID) ids.add(String(env.TELEGRAM_OWNER_USER_ID));
   const coOwners = env.TELEGRAM_COOWNER_USER_IDS ?? env.TELEGRAM_ALLOWED_USER_IDS ?? '';
@@ -116,6 +154,8 @@ export function allowedUserIds(env) {
  *
  * Fail-closed: змінна не задана -> false (як і allowedUserIds, яка тоді віддає
  * порожній Set і нікого не пускає навіть читати).
+ * @param {Env} env
+ * @param {string|number|null|undefined} userId
  */
 export function isPrimaryOwner(env, userId) {
   const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
@@ -128,6 +168,9 @@ export function isPrimaryOwner(env, userId) {
  * TELEGRAM_CHAT_ID — той тепер лише «куди слати», в супергрупі це вже
  * груповий id, ніколи не рівний user id людини). Fail-closed: жодного
  * дозволеного id не задано -> forbidden, не fail-open.
+ * @param {string|null|undefined} initData
+ * @param {Env} env
+ * @returns {Promise<AuthResult>}
  */
 export async function checkOwner(initData, env) {
   const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
@@ -144,6 +187,9 @@ export async function checkOwner(initData, env) {
  * власника (settings, гео, чек-ін/події, голоси) чи запускають від його імені
  * дії назовні. Читальні ендпоінти лишаються на checkOwner (S1: розділяємо
  * «подивитись» і «змінити»).
+ * @param {string|null|undefined} initData
+ * @param {Env} env
+ * @returns {Promise<AuthResult>}
  */
 export async function checkPrimaryOwner(initData, env) {
   const auth = await checkOwner(initData, env);
@@ -158,6 +204,9 @@ export async function checkPrimaryOwner(initData, env) {
  * Той самий власник-чек, що й POST-и (/api/vote|/api/event). Дашборд — дані
  * одного власника (події календаря, воронка вакансій, збережене), тож
  * читання НЕ публічне: без валідного initData -> 401/403, фронт деградує на SAMPLE.
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<AuthResult>}
  */
 export async function checkOwnerRead(request, env) {
   return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
