@@ -1,3 +1,4 @@
+// @ts-check
 // Київський час — чисті функції над Intl (Фаза 5, модуляризація worker.js).
 //
 // НАВІЩО ОКРЕМИЙ МОДУЛЬ. Ці чотири функції — фундамент КОЖНОГО часового рішення
@@ -29,7 +30,10 @@ export function kyivDateKey(now = new Date()) {
   }).format(now);
 }
 
-/** Години+хвилини київського часу як пара чисел (спільне для двох функцій нижче). */
+/**
+ * Години+хвилини київського часу як пара чисел (спільне для двох функцій нижче).
+ * @param {Date} now
+ */
 function kyivHourMinute(now) {
   const p = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/Kyiv',
@@ -66,7 +70,7 @@ export function kyivMinuteOfDay(now = new Date()) {
  * 23:00») замість коректного пізнього бакета. Підтверджено на прод-KV: запис
  * від 2026-08-04T22:56:40Z (01:56 Київ) мав bedtimeBucket:"e23". Порядок
  * перевірок тепер — точні години СПЕРШУ, `h<23` — лише фолбек для 20-22. */
-export function bedtimeBucketForHour(h) {
+export function bedtimeBucketForHour(/** @type {number} */ h) {
   if (h === 23) return 'e00';
   if (h === 0) return 'e01';
   if (h === 1) return 'e02';

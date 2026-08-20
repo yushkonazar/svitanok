@@ -1,9 +1,15 @@
+// @ts-check
 // HTTP-примітиви Worker'а (Фаза 5, модуляризація worker.js).
 //
 // Дві дрібні речі, які вживає КОЖЕН ендпоінт, — і саме тому вони мають жити
 // окремо: інакше будь-який новий модуль-хендлер тягнув би за собою імпорт із
 // worker.js і замикав цикл.
 
+/**
+ * JSON-відповідь із правильним content-type.
+ * @param {unknown} obj
+ * @param {number} [status]
+ */
 export const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
@@ -28,6 +34,8 @@ const MAX_REQUEST_BODY_BYTES = 16 * 1024;
  *
  * ⚠️ Rate-limit сам по собі тут НЕ вирішується — це конфіг Cloudflare WAF на
  * /api/*, поза кодом (див. AUDIT §8 S3).
+ *
+ * @param {Request} request
  */
 export async function readJsonBody(request) {
   const declared = Number(request.headers.get('content-length'));
