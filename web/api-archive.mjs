@@ -1,3 +1,4 @@
+// @ts-check
 // GET /api/archive — читання холодного архіву місячних згорток.
 //
 // ⚠️ ОКРЕМИЙ ЕНДПОІНТ, а не поле в /api/stats. Той крутить aggregateStats на
@@ -14,7 +15,8 @@ import { checkOwnerRead } from './auth-core.mjs';
 import { ARCHIVE_KEY } from './stats-archive.mjs';
 
 /** 'YYYY-MM' і нічого іншого — ключі архіву пише крон, але читаємо ми строго. */
-const isMonthKey = (k) => typeof k === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(k);
+const isMonthKey = (/** @type {unknown} */ k) =>
+  typeof k === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(k);
 
 /**
  * Архів -> {months:[{month, ...згортка}]}, хронологічно.
@@ -25,9 +27,12 @@ const isMonthKey = (k) => typeof k === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.tes
  *
  * Биті дані зводяться до порожнього списку, а не до 500: архів дописується
  * кроном, і зіпсований запис не має валити екран — блок просто не покажеться.
+ * @param {Env} env
+ * @param {import('./auth-core.mjs').AuthResult|null|undefined} auth
  */
 export async function handleArchive(env, auth) {
   if (!auth?.ok) return json({ ok: false, error: auth?.error ?? 'auth' }, auth?.status ?? 401);
+  /** @type {KvBlob[]} */
   let months = [];
   try {
     const raw = await env.BRIEFING.get(ARCHIVE_KEY);
@@ -49,7 +54,9 @@ export async function handleArchive(env, auth) {
   });
 }
 
-/** Обгортка з auth для маршруту воркера. */
+/** Обгортка з auth для маршруту воркера.
+ *  @param {Request} request
+ *  @param {Env} env */
 export async function handleArchiveRequest(request, env) {
   return handleArchive(env, await checkOwnerRead(request, env));
 }
