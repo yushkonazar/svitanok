@@ -1,3 +1,4 @@
+// @ts-check
 // Чиста логіка погоди для Worker'а (PR-7, «жива погода в Mini App») — дзеркало
 // src/modules/weather.ts (та сама межа src/↔web/, що tg-core.mjs/calendar-core.mjs/
 // reminders-core.mjs): оркестратор фетчить OpenWeather РАЗ/добу для щоденного
@@ -16,11 +17,12 @@ export const RAIN_POP_THRESHOLD = 0.5;
 const DAY_START_HOUR = 6;
 const DAY_END_HOUR = 21;
 
-function isPrecipCode(id) {
+function isPrecipCode(/** @type {number} */ id) {
   return id >= 200 && id < 700;
 }
 
-/** Емодзі-стан за кодом погоди OpenWeather. */
+/** Емодзі-стан за кодом погоди OpenWeather.
+ *  @param {number} id */
 export function emojiFor(id) {
   if (id >= 200 && id < 300) return '⛈'; // гроза
   if (id >= 300 && id < 400) return '🌦'; // мряка
@@ -33,10 +35,16 @@ export function emojiFor(id) {
   return '☁️'; // 803/804 — хмарно
 }
 
+/**
+ * Предикат типу, а не просто перевірка: без `v is number` .filter(isNum) не
+ * звужував би any[] до number[], і Math.min(...hourTemps) лишався б без типу.
+ * @param {unknown} v
+ * @returns {v is number}
+ */
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
-const round = (v) => Math.round(v);
+const round = (/** @type {number} */ v) => Math.round(v);
 
-function entryKyiv(dtSeconds) {
+function entryKyiv(/** @type {number} */ dtSeconds) {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Kyiv',
     year: 'numeric',
@@ -45,26 +53,28 @@ function entryKyiv(dtSeconds) {
     hour: '2-digit',
     hour12: false,
   });
+  /** @type {Record<string, string>} */
   const p = {};
   for (const part of fmt.formatToParts(new Date(dtSeconds * 1000))) p[part.type] = part.value;
   return { dateKey: `${p.year}-${p.month}-${p.day}`, hour: parseInt(p.hour ?? '0', 10) % 24 };
 }
 
-function rainSignalHour(h) {
+function rainSignalHour(/** @type {KvBlob} */ h) {
   if (isNum(h.pop)) return h.pop;
   return isPrecipCode(h.weather?.[0]?.id ?? 0) ? 1 : 0;
 }
 
-const pad2 = (n) => String(n).padStart(2, '0');
+const pad2 = (/** @type {number} */ n) => String(n).padStart(2, '0');
 
-function formatRainWindow(rainyHours) {
+function formatRainWindow(/** @type {number[]} */ rainyHours) {
   if (rainyHours.length === 0) return undefined;
   const first = Math.min(...rainyHours);
   const last = Math.min(Math.max(...rainyHours) + 1, 24);
   return `${pad2(first)}:00–${pad2(last)}:00`;
 }
 
-/** Похідна «одягтися»-підказка за відчутною температурою. */
+/** Похідна «одягтися»-підказка за відчутною температурою.
+ *  @param {number} feelsLikeC */
 export function adviceFor(feelsLikeC) {
   if (!Number.isFinite(feelsLikeC)) return '';
   if (feelsLikeC < 0) return 'Морозно — тепла куртка, шапка, рукавиці';
@@ -74,20 +84,26 @@ export function adviceFor(feelsLikeC) {
   return 'Спекотно — легкий одяг, більше води';
 }
 
-/** AQI 1..5 з відповіді Air Pollution (list[0].main.aqi). */
+/** AQI 1..5 з відповіді Air Pollution (list[0].main.aqi).
+ *  @param {any} json */
 export function mergeAqi(json) {
   const aqi = json?.list?.[0]?.main?.aqi;
   return isNum(aqi) && aqi >= 1 && aqi <= 5 ? aqi : undefined;
 }
 
 /** Звести One Call 3.0-відповідь до WeatherLocation (weatherLocationSchema
- *  форма) для київської дати todayKey. null, якщо відповідь непридатна. */
+ *  форма) для київської дати todayKey. null, якщо відповідь непридатна.
+ *  @param {any} json сира відповідь One Call 3.0
+ *  @param {string} name
+ *  @param {string} todayKey київська дата "YYYY-MM-DD" */
 export function parseOneCall(json, name, todayKey) {
   const cur = json?.current;
   if (!cur || !isNum(cur.temp)) return null;
 
+  /** @type {KvBlob[]} */
   const daily = Array.isArray(json.daily) ? json.daily : [];
   const day0 = daily[0];
+  /** @type {KvBlob[]} */
   const hourly = Array.isArray(json.hourly) ? json.hourly : [];
 
   const repId = cur.weather?.[0]?.id ?? day0?.weather?.[0]?.id ?? 0;
