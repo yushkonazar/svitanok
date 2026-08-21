@@ -974,33 +974,61 @@ export type Roadmap = z.infer<typeof roadmapSchema>;
  * ⚠️ Усе, крім `weekOf`, — з дефолтами, як в архіві: блоб пише крон, і запис,
  * зроблений старішою версією, не має валити екран через нове поле.
  */
+// Ефект теж є твердженням («11.4 проти 5.6»), тож дефолтів не має: рядок без
+// нього просто не покаже чисел (`effect: null` у схемі рядка вище).
 export const leverEffectSchema = z.object({
-  high: num.default(0),
-  low: num.default(0),
-  nHigh: int.default(0),
-  nLow: int.default(0),
-  d: num.default(0),
+  high: num,
+  low: num,
+  nHigh: int,
+  nLow: int,
+  d: num,
 });
 
 /**
- * ⚠️ ВСЕ, крім `from`/`to`, — з дефолтами, як в `archiveMonthSchema` вище й
- * рівно з тієї самої причини: блоб пише крон і перезаписує його лише в
- * понеділок. Одне нове обовʼязкове поле — і рядки, записані попереднім
- * тижнем, завалили б `safeParse` цілком, а блок показував би «формат
- * змінився» до наступного перерахунку. `from`/`to` дефолтів не мають свідомо:
- * рядок без ознак намалювати нічим, і сервер такі вже відкидає.
+ * ⚠️ ПОЛЯ, ЩО НЕСУТЬ ТВЕРДЖЕННЯ, ДЕФОЛТІВ НЕ МАЮТЬ.
+ *
+ * Спокуса зробити як в `archiveMonthSchema` вище (усе з дефолтами, щоб блоб
+ * старішого крона не валив екран) тут ПОМИЛКОВА, і це різниця в суті, а не в
+ * стилі. Там дефолт — чесне відоме число: «0 відкриттів», «немає середнього».
+ * Тут `p` і `rho` — саме́ твердження про надійність, і дефолт `p = 1` дав би на
+ * екрані «ВИТРИМУЄ ОБИДВІ ПОПРАВКИ · ρ=0.00 · p=1.000», тобто впевнений важіль
+ * із нізвідки; `rho = 0` ще й перевернув би напрямок речення, а `lag = 1`
+ * підставив би «наступного тижня» замість «того ж».
+ *
+ * Сумісність зі старішим блобом дає `leverRowsSchema` нижче: він відкидає биті
+ * рядки ПООДИНЦІ, а не валить увесь payload. Дефолти лишаються тільки в тих
+ * полів, які нічого не стверджують і на екран не йдуть.
  */
 export const leverRowSchema = z.object({
   from: z.string(),
   to: z.string(),
-  lag: int.default(1),
-  rho: num.default(0),
+  lag: int,
+  rho: num,
   rhoDiff: num.default(0),
-  n: int.default(0),
+  n: int,
   nDiff: int.default(0),
-  p: num.default(1),
+  p: num,
   effect: leverEffectSchema.nullable().default(null),
 });
+
+/**
+ * Список рядків, стійкий до одного зіпсованого.
+ *
+ * Блоб пише крон і перезаписує лише в понеділок, тож рядок старішої форми
+ * доживе до наступного перерахунку. Строгий `z.array(leverRowSchema)` завалив
+ * би на ньому ВЕСЬ payload, і блок показував би «формат змінився» цілий
+ * тиждень; тихі дефолти натомість показали б вигадку. Третій шлях — не
+ * показати саме цей рядок.
+ */
+export const leverRowsSchema = z
+  .array(z.unknown())
+  .default([])
+  .transform((arr) =>
+    arr.flatMap((raw) => {
+      const parsed = leverRowSchema.safeParse(raw);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  );
 
 export const leverFeatureSchema = z.object({
   label: z.string(),
@@ -1027,7 +1055,7 @@ export const leversPayloadSchema = z.object({
   weeksNeeded: int.default(0),
   tested: int.default(0),
   shown: int.default(0),
-  rows: z.array(leverRowSchema).default([]),
+  rows: leverRowsSchema,
   skipped: z.array(z.object({ key: z.string(), reason: z.string() })).default([]),
 });
 

@@ -112,9 +112,12 @@ describe('computeLevers — тижнева ідемпотентність', () =
     expect(puts).toEqual([LEVERS_KEY]);
     const payload = JSON.parse(kv.get(LEVERS_KEY)!);
     expect(payload.weekOf).toBe('2026-08-17');
-    expect(payload.window).toBe(LEVERS_WEEKS_WINDOW);
     expect(typeof payload.computedAt).toBe('string');
     expect(payload.tested).toBeGreaterThan(0);
+    // Ширина вікна окремим полем НЕ пишеться: її задають межі, і саме вони
+    // читаються на екрані. Зайве поле в контракті — те, що наступний читач
+    // мусить перевіряти, хто його споживає.
+    expect(payload.window).toBeUndefined();
   });
 
   /* ⚠️ Найдорожча задача статистики на 5-хвилинному кроні. Без цього гейта
@@ -188,7 +191,17 @@ describe('computeLevers — зміст результату', () => {
 
     const p = JSON.parse(kv.get(LEVERS_KEY)!);
     expect(p.lastWeek).toBe('2026-08-10'); // останній ПОВНИЙ тиждень, не поточний
-    expect(p.firstWeek).toBe(iso(Date.parse('2026-08-10T00:00:00Z') - 51 * 7 * DAY));
+    expect(p.firstWeek).toBe(
+      iso(Date.parse('2026-08-10T00:00:00Z') - (LEVERS_WEEKS_WINDOW - 1) * 7 * DAY),
+    );
+    /* ⚠️ ЗНАХІДКА РЕВʼЮ. Вік понеділка першого кошика = (today − понеділок
+       цього тижня) + 7·(N−1) + 7. При N=52 це 364…370 діб, тобто ПРИ
+       ЗАПІЗНІЛОМУ прогоні (гейт крону — `weekOf`, а не день тижня) перші доби
+       кошика вже видалені капом 365 і тиждень виходить занижений. N=51 лишає
+       тиждень запасу. */
+    const firstMondayAge =
+      (Date.parse('2026-08-17T00:00:00Z') - Date.parse(p.firstWeek + 'T00:00:00Z')) / DAY;
+    expect(firstMondayAge + 6).toBeLessThan(365);
   });
 
   it('тижні з явкою нижче порога не рахуються придатними', async () => {

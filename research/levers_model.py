@@ -258,7 +258,12 @@ def series_usable(xs) -> tuple[bool, str]:
 
 def contrast(drv, tgt, lag):
     """Читабельний ефект: «12 проти 6». Медіанний спліт драйвера -> середні цілі."""
-    xs, ys = level_samples(drv, tgt, lag)
+    return contrast_of(level_samples(drv, tgt, lag))
+
+
+def contrast_of(samples):
+    """Те саме на ВЖЕ вирівняній вибірці — дзеркало contrastOf() у JS-порті."""
+    xs, ys = samples
     if len(xs) < MIN_PAIR_N:
         return None
     med = float(np.median(xs))
@@ -292,6 +297,7 @@ def analyze(series: dict[str, list], weeks_usable: int, hypotheses=None) -> dict
             skipped.append({"key": key, "reason": why})
 
     considered = []
+    levels = []
     for drv_k, tgt_k, lag in hyps:
         if not usable_key.get(drv_k) or not usable_key.get(tgt_k):
             continue
@@ -300,9 +306,11 @@ def analyze(series: dict[str, list], weeks_usable: int, hypotheses=None) -> dict
         dx, dy = diff_samples(drv, tgt, lag)
         if len(lx) < MIN_PAIR_N or len(dx) < MIN_PAIR_N:
             continue
-        rho_l, _ = spearman(lx, ly)
-        _, p_eff = spearman(lx, ly, n_eff=eff_n(lx, ly))
+        # ⚠️ ОДИН виклик на рівневу пару, як у JS-порті: `n_eff` підмінює лише
+        # ступені свободи, тож `rho` в обох випадках той самий.
+        rho_l, p_eff = spearman(lx, ly, n_eff=eff_n(lx, ly))
         rho_d, p_dif = spearman(dx, dy)
+        levels.append((lx, ly))
         considered.append({
             "from": drv_k, "to": tgt_k, "lag": lag,
             "rho": round(rho_l, 4), "rhoDiff": round(rho_d, 4),
@@ -325,7 +333,7 @@ def analyze(series: dict[str, list], weeks_usable: int, hypotheses=None) -> dict
             continue
         row = dict(c)
         row["p"] = round(max(c["pEff"], c["pDiff"]), 6)
-        row["effect"] = contrast(series[c["from"]], series[c["to"]], c["lag"])
+        row["effect"] = contrast_of(levels[i])
         row.pop("pEff")
         row.pop("pDiff")
         rows.append(row)
@@ -486,8 +494,12 @@ def emit_golden(path: Path) -> dict:
         "earlySeries": early,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    # indent=2 — той самий відступ, що ставить prettier у lint-staged; інакше
-    # кожна регенерація давала б фантомний діф на весь файл.
+    # indent=2 — той самий відступ, що ставить prettier у lint-staged.
+    #
+    # ⚠️ Відступу МАЛО: prettier ще й складає короткі масиви в один рядок, тож
+    # свіжий `--emit-golden` однаково показує діф на сотні рядків, у якому
+    # НІЧОГО не змінилось. Прогони `npx prettier --write` на цьому файлі —
+    # діф має зникнути повністю. Якщо не зник, розійшлась саме математика.
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return payload
 

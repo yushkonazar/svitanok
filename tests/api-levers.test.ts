@@ -235,25 +235,54 @@ describe('GET /api/levers — відповідь сервера проти ко�
     expect(parsed.success).toBe(true);
   });
 
-  /* ⚠️ ЗНАХІДКА РЕВʼЮ. Блоб пише крон і перезаписує лише в понеділок. Доти
-     `rho`/`p`/`n`/`lag` не мали дефолтів, тож один рядок старішої форми валив
-     `safeParse` ЦІЛКОМ — і блок показував би «формат змінився» аж до
-     наступного перерахунку. `archiveMonthSchema` двома схемами вище тримає
-     протилежне правило саме з цієї причини. */
-  it('рядок старішої форми не валить увесь блок, а добирає дефолти', () => {
+  /* ⚠️ ДВІ ЗНАХІДКИ РЕВʼЮ ПОСПІЛЬ, і друга виправляла першу.
+     Спершу `rho`/`p`/`n`/`lag` не мали дефолтів, тож один рядок старішої форми
+     валив `safeParse` ЦІЛКОМ, і блок показував «формат змінився» до наступного
+     понеділка. Дефолти це закрили — але відкрили гірше: рядок без `p` і `rho`
+     рендерився як повноцінний важіль, «ВИТРИМУЄ ОБИДВІ ПОПРАВКИ · ρ=0.00 ·
+     p=1.000», тобто впевненість із нізвідки. Правильна відповідь — третя: не
+     показати САМЕ ЦЕЙ рядок. */
+  it('рядок старішої форми відкидається поштучно, решта payload лишається', () => {
     const parsed = leversSchema.safeParse({
       levers: {
         weekOf: '2026-08-17',
         ready: true,
-        rows: [{ from: 'sleep', to: 'applied' }],
+        tested: 7,
+        rows: [
+          { from: 'sleep', to: 'applied' }, // без rho/p/lag/n — битий
+          { from: 'mood', to: 'applied', lag: 1, rho: 0.5, n: 30, p: 0.01 },
+        ],
       },
       features: {},
     });
     expect(parsed.success).toBe(true);
-    const row = parsed.data!.levers!.rows[0]!;
-    expect(row.p).toBe(1);
-    expect(row.rho).toBe(0);
-    expect(row.effect).toBeNull();
+    expect(parsed.data!.levers!.rows.map((r) => r.from)).toEqual(['mood']);
+    // payload вижив цілком: знаменник чесності на місці
+    expect(parsed.data!.levers!.tested).toBe(7);
+  });
+
+  it('рядок без ефекту лишається — ефект нічого не стверджує сам по собі', () => {
+    const parsed = leversSchema.safeParse({
+      levers: {
+        weekOf: '2026-08-17',
+        rows: [{ from: 'mood', to: 'applied', lag: 1, rho: 0.5, n: 30, p: 0.01 }],
+      },
+      features: {},
+    });
+    expect(parsed.data!.levers!.rows[0]!.effect).toBeNull();
+  });
+
+  it('битий ефект відкидає ВЕСЬ рядок, а не показує «0 проти 0»', () => {
+    const parsed = leversSchema.safeParse({
+      levers: {
+        weekOf: '2026-08-17',
+        rows: [
+          { from: 'mood', to: 'applied', lag: 1, rho: 0.5, n: 30, p: 0.01, effect: { high: 5 } },
+        ],
+      },
+      features: {},
+    });
+    expect(parsed.data!.levers!.rows).toEqual([]);
   });
 
   it('а без мітки тижня схема таки падає — це єдине незамінне поле', () => {

@@ -379,7 +379,9 @@ export async function computeLevers(/** @type {Env} */ env) {
     await putLevers(env, {
       computedAt: new Date().toISOString(),
       weekOf,
-      window: LEVERS_WEEKS_WINDOW,
+      // Ширину вікна окремим полем НЕ пишемо: її повністю задають межі нижче,
+      // а зайве поле в контракті — те, що наступний читач мусить перевіряти,
+      // хто його читає (ніхто).
       firstWeek: built.weekStarts[0] ?? null,
       lastWeek: built.weekStarts.at(-1) ?? null,
       ...analysis,
