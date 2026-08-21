@@ -597,7 +597,7 @@ describe('sanitizeProposal', () => {
     expect(droppedCount).toBe(0);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: 'event', title: 'Стоматолог', durationMin: 30 });
-    expect(typeof items[0].whenMs).toBe('number');
+    expect(typeof items[0]!.whenMs).toBe('number');
   });
 
   it('reminder-пункт без durationMin (не потрібен), з анкером для циклера часу (🕐)', () => {
@@ -608,11 +608,11 @@ describe('sanitizeProposal', () => {
     expect(items[0]).toEqual({
       kind: 'reminder',
       title: 'Подати CV',
-      whenMs: items[0].whenMs,
-      baseWhenMs: items[0].whenMs,
+      whenMs: items[0]!.whenMs,
+      baseWhenMs: items[0]!.whenMs,
       shiftMin: 0,
     });
-    expect(items[0].durationMin).toBeUndefined();
+    expect(items[0]!.durationMin).toBeUndefined();
   });
 
   it('durationMin клампиться в [15,480], відсутній -> дефолт 60', () => {
@@ -624,7 +624,7 @@ describe('sanitizeProposal', () => {
       ],
       SUMMER_NOW,
     );
-    expect(items.map((i: { durationMin: number }) => i.durationMin)).toEqual([15, 480, 60]);
+    expect(items.map((i: KvBlob) => i.durationMin)).toEqual([15, 480, 60]);
   });
 
   it('непарсибельний when / відсутній title/kind -> дропається, не валить решту', () => {
@@ -639,7 +639,7 @@ describe('sanitizeProposal', () => {
       SUMMER_NOW,
     );
     expect(items).toHaveLength(1);
-    expect(items[0].title).toBe('Добра');
+    expect(items[0]!.title).toBe('Добра');
     expect(droppedCount).toBe(4);
   });
 
@@ -684,10 +684,10 @@ describe('sanitizeProposal', () => {
         SUMMER_NOW,
       );
       expect(items).toHaveLength(1);
-      expect(items[0].eventId).toBe('ev1');
-      expect(typeof items[0].whenMs).toBe('number');
-      expect(items[0].title).toBeUndefined();
-      expect(items[0].durationMin).toBeUndefined();
+      expect(items[0]!.eventId).toBe('ev1');
+      expect(typeof items[0]!.whenMs).toBe('number');
+      expect(items[0]!.title).toBeUndefined();
+      expect(items[0]!.durationMin).toBeUndefined();
     });
 
     it('updateEvent: лише title (перейменування без зміни часу)', () => {
@@ -717,7 +717,7 @@ describe('sanitizeProposal', () => {
         title: 'Дантист',
         durationMin: 45,
       });
-      expect(typeof items[0].whenMs).toBe('number');
+      expect(typeof items[0]!.whenMs).toBe('number');
     });
 
     it('updateEvent: жодного патч-поля -> дропається (нічого не змінює)', () => {
@@ -773,8 +773,8 @@ describe('sanitizeProposal', () => {
         [{ kind: 'event', title: 'X', when: 'о 10:00' }],
         SUMMER_NOW,
       );
-      expect(items[0].location).toBeUndefined();
-      expect(items[0].attendees).toBeUndefined();
+      expect(items[0]!.location).toBeUndefined();
+      expect(items[0]!.attendees).toBeUndefined();
     });
 
     it('reminder: location/attendees ІГНОРУЮТЬСЯ (лише event/updateEvent несуть гостей)', () => {
@@ -793,8 +793,8 @@ describe('sanitizeProposal', () => {
       expect(items[0]).toEqual({
         kind: 'reminder',
         title: 'X',
-        whenMs: items[0].whenMs,
-        baseWhenMs: items[0].whenMs,
+        whenMs: items[0]!.whenMs,
+        baseWhenMs: items[0]!.whenMs,
         shiftMin: 0,
       });
     });
@@ -812,8 +812,8 @@ describe('sanitizeProposal', () => {
         ],
         SUMMER_NOW,
       );
-      expect(items[0].location).toBeUndefined();
-      expect(items[0].attendees).toEqual(['Валідне Імʼя']);
+      expect(items[0]!.location).toBeUndefined();
+      expect(items[0]!.attendees).toEqual(['Валідне Імʼя']);
     });
 
     it('капи: >10 гостей -> зрізає до 10; довге ім’я/location -> зрізає', () => {
@@ -829,8 +829,8 @@ describe('sanitizeProposal', () => {
         ],
         SUMMER_NOW,
       );
-      expect(items[0].location).toHaveLength(200);
-      expect(items[0].attendees).toHaveLength(10);
+      expect(items[0]!.location).toHaveLength(200);
+      expect(items[0]!.attendees).toHaveLength(10);
     });
   });
 

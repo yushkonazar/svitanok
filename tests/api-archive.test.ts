@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import worker from '../web/worker.js';
 import { ARCHIVE_KEY } from '../web/stats-archive.mjs';
 import { handleArchive } from '../web/api-archive.mjs';
+import { workerEnv } from './helpers/env.js';
 
 /* GET /api/archive — читання холодного архіву місячних згорток.
  *
@@ -13,13 +14,14 @@ import { handleArchive } from '../web/api-archive.mjs';
  * ⚠️ ПРИВАТНИЙ, на відміну від /api/status: тут середні по сну, енергії й
  * настрою за роки — це не «сервіс живий», це щоденник. */
 
-const env = (value: string | null, extra: Record<string, unknown> = {}) => ({
-  BRIEFING: { get: async (k: string) => (k === ARCHIVE_KEY ? value : null) },
-  ASSETS: { fetch: async () => new Response('nf', { status: 404 }) },
-  ...extra,
-});
+const env = (value: string | null, extra: Partial<Env> = {}) =>
+  workerEnv({
+    BRIEFING: { get: async (k: string) => (k === ARCHIVE_KEY ? value : null) },
+    ASSETS: { fetch: async () => new Response('nf', { status: 404 }) },
+    ...extra,
+  });
 
-const call = (e: unknown, headers: Record<string, string> = {}) =>
+const call = (e: Env, headers: Record<string, string> = {}) =>
   worker.fetch(new Request('https://svitanok.yushko.dev/api/archive', { headers }), e, {
     waitUntil: () => {},
   });

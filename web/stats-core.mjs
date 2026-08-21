@@ -374,8 +374,8 @@ export function asList(v) {
  * `confirmed` НЕ рахується сам по собі: підтвердити порожній блок неможливо
  * (recordEvent це відсікає), тож ключ ніколи не буває там наодинці.
  */
-export function isCheckinSlotFilled(/** @type {KvBlob} */ rec, /** @type {string} */ slot) {
-  const v = rec?.[slot];
+export function isCheckinSlotFilled(/** @type {unknown} */ rec, /** @type {string} */ slot) {
+  const v = /** @type {KvBlob|null|undefined} */ (rec)?.[slot];
   return !!v && typeof v === 'object' && Object.keys(v).length > 0;
 }
 
@@ -689,11 +689,16 @@ export function emptyStore() {
 }
 
 /** Нормалізувати частковий стор до повної форми (стійко до старих/битих даних).
- *  @param {KvBlob|null|undefined} s
+ *  `unknown`, а не `KvBlob`: стійкість тут — ОБІЦЯНКА, і в KV справді лежить
+ *  усе що завгодно (рядок, null, масив після ручної правки ключа).
+ *  @param {unknown} rawStore
  *  @returns {KvBlob} */
-export function normalize(s) {
+export function normalize(rawStore) {
   const e = emptyStore();
-  if (!s || typeof s !== 'object') return e;
+  if (!rawStore || typeof rawStore !== 'object') return e;
+  // Після гарду TS звужує `unknown` до `object` — без індексної сигнатури,
+  // тож поля читаються через явний KvBlob.
+  const s = /** @type {KvBlob} */ (rawStore);
   return {
     days: s.days && typeof s.days === 'object' ? s.days : e.days,
     funnel: s.funnel && typeof s.funnel === 'object' ? s.funnel : e.funnel,
@@ -1164,7 +1169,8 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
  * через reliability.lastCheckDate — повторний виклик тим самим dateKey — no-op.
  */
 export function recordReliability(
-  /** @type {KvBlob} */ store,
+  // unknown, бо функція СВІДОМО стійка до битих даних (перевіряється тестом)
+  /** @type {unknown} */ store,
   /** @type {string} */ dateKey,
   /** @type {unknown} */ delivered,
 ) {
@@ -1995,6 +2001,10 @@ const MOVE_MIN_N = 5;
  * Явка по блоках за останні N діб. Самі пропуски — теж сигнал: ранок заповнений
  * 25 разів, а вечір 4 — це вже висновок, і чесніший за будь-яку кореляцію.
  */
+/** Спред `KvBlob` в обʼєктний літерал ГУБИТЬ індексну сигнатуру: результат
+ *  звужується до перелічених полів, і `.morning` стає помилкою типів, хоч
+ *  у рантаймі поле там є. Тому тип результату оголошено явно.
+ *  @returns {KvBlob} */
 function buildCheckinFill(
   /** @type {KvBlob} */ checkins,
   /** @type {string} */ todayKey,
@@ -2385,6 +2395,7 @@ function buildWorkQuadrants(
  * зіпсовані ночі рідкісні, і «після безсонної ночі день гірший на 1.2» на двох
  * спостереженнях було б не висновком, а монеткою.
  */
+/** @returns {KvBlob} (див. buildCheckinFill — та сама причина) */
 function buildNightKinds(
   /** @type {KvBlob} */ checkins,
   /** @type {string} */ todayKey,
@@ -2575,7 +2586,7 @@ function buildInterestsTrend(
  * стара формула, тож регресії немає — лише поступова заміна на факти в міру
  * накопичення журналу.
  */
-export function reachedCounts(/** @type {KvBlob} */ store) {
+export function reachedCounts(/** @type {unknown} */ store) {
   const s = normalize(store);
   const out = /** @type {KvBlob} */ (Object.fromEntries(LINEAR_STAGES.map((st) => [st, 0])));
   for (const [url, cur] of Object.entries(s.funnel)) {
@@ -2611,7 +2622,7 @@ function savedRow(/** @type {KvBlob} */ x) {
  * Порядок — новіші перші (s.saved наповнюється unshift).
  */
 /**
- * @param {KvBlob} store
+ * @param {unknown} store unknown, бо функція СВІДОМО стійка до битих даних (перевіряється тестом)
  * @param {{ offset?: unknown, limit?: unknown }} [opts] сирі query-параметри;
  *        кламп і дефолти — тут, а не у викликача
  */

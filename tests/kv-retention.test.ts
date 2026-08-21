@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import worker from '../web/worker.js';
 import { mintRunToken } from '../web/agent-run-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
+import { workerEnv } from './helpers/env.js';
 
 /* Борг (аудит §KV): «жоден ключ не має TTL — нічого не протухає».
  *
@@ -50,21 +51,22 @@ describe('TTL: памʼять розмови (assistantHistory)', () => {
   let kv: Map<string, string>;
   let putOpts: Map<string, unknown>;
 
-  const env = () => ({
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string, opts?: unknown) => {
-        kv.set(k, v);
-        putOpts.set(k, opts);
+  const env = () =>
+    workerEnv({
+      BRIEFING: {
+        get: async (k: string) => kv.get(k) ?? null,
+        put: async (k: string, v: string, opts?: unknown) => {
+          kv.set(k, v);
+          putOpts.set(k, opts);
+        },
+        delete: async (k: string) => void kv.delete(k),
+        list: async () => ({ keys: [] }),
       },
-      delete: async (k: string) => void kv.delete(k),
-      list: async () => ({ keys: [] }),
-    },
-    LLM_HOST_SECRET: HOST_SECRET,
-    TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
-    TELEGRAM_BOT_TOKEN: 'bot-token',
-    TELEGRAM_OWNER_USER_ID: '555',
-  });
+      LLM_HOST_SECRET: HOST_SECRET,
+      TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      TELEGRAM_OWNER_USER_ID: '555',
+    });
 
   beforeEach(() => {
     kv = new Map();

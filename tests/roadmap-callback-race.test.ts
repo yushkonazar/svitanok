@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { resolveRoadmapCallback } from '../web/callbacks.mjs';
+import { workerEnv } from './helpers/env.js';
 
 /* Регресія, знайдена рев'ю PR #334.
  *
@@ -30,7 +31,7 @@ let edits: { text: string; markup: unknown }[];
  */
 function env(swapOnRead: number, swapped: unknown) {
   let reads = 0;
-  return {
+  return workerEnv({
     BRIEFING: {
       get: async (k: string) => {
         if (k !== 'state') return kv.get(k) ?? null;
@@ -41,7 +42,7 @@ function env(swapOnRead: number, swapped: unknown) {
     },
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: '4242',
-  };
+  });
 }
 
 const parsed = { chatId: 4242, messageId: 7 };

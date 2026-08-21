@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести /brief -> workflow_dispatch.
  *
@@ -24,16 +25,14 @@ let dispatches: { url: string; body: Record<string, unknown> }[];
 let dispatchStatus: number;
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     GH_DISPATCH_TOKEN: 'gh-token',
     ...overrides,
-  };
+  });
 }
 
 function ctx() {

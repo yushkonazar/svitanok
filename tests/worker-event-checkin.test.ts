@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести POST /api/event для checkin (Mini App шлях, на відміну
  * від /api/agent-step, який тестує worker-agent-step.test.ts для агента).
@@ -18,7 +19,7 @@ let kv: Map<string, string>;
 let putCalls: string[];
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
+  return workerEnv({
     BRIEFING: {
       get: async (k: string) => kv.get(k) ?? null,
       put: async (k: string, v: string) => {
@@ -30,7 +31,7 @@ function env(overrides: Record<string, unknown> = {}) {
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     ...overrides,
-  };
+  });
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */

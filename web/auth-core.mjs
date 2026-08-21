@@ -154,7 +154,13 @@ export async function validateInitData(initData, botToken) {
  * синхронізовані у ДВОХ місцях (GitHub + Cloudflare), і якби код перестав її
  * читати в мить деплою, співвласник утратив би доступ до дашборда раніше, ніж
  * власник встиг би перейменувати змінну. Прибрати після перейменування.
- * @param {Env} env
+ *
+ * Параметр звужено до ТРЬОХ полів, які функція справді читає, а не до всього
+ * `Env`: вимагати від викликача 25 прив'язок заради трьох означало б, що жоден
+ * тест не може покликати її без повного оточення — і кожен зробив би
+ * приведення, тобто знову ніяких типів.
+ * @param {Pick<Env, 'TELEGRAM_OWNER_USER_ID' | 'TELEGRAM_COOWNER_USER_IDS'
+ *   | 'TELEGRAM_ALLOWED_USER_IDS'>} env
  * @returns {Set<string>}
  */
 export function allowedUserIds(env) {
@@ -179,7 +185,7 @@ export function allowedUserIds(env) {
  *
  * Fail-closed: змінна не задана -> false (як і allowedUserIds, яка тоді віддає
  * порожній Set і нікого не пускає навіть читати).
- * @param {Env} env
+ * @param {Pick<Env, 'TELEGRAM_OWNER_USER_ID'>} env
  * @param {string|number|null|undefined} userId
  */
 export function isPrimaryOwner(env, userId) {

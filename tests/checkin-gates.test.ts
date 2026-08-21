@@ -184,7 +184,7 @@ describe('sleepHoursOf — одне джерело виведення на вс�
   it('ніч без сну входить у криву сну нулем, а не пропуском', () => {
     const st = build([{ sleepKind: 'slept', sleepH: 8 }, { sleepKind: 'none' }], { dayScore: 3 });
     const series = aggregateStats(st, TODAY).checkinSeries;
-    expect(series.map((p: { sleepH: number | null }) => p.sleepH)).toEqual([8, 0]);
+    expect(series.map((p: KvBlob) => p.sleepH)).toEqual([8, 0]);
   });
 
   it('тижневий середній сон більше не рахується лише по ночах, коли ти спав', () => {

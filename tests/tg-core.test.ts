@@ -220,7 +220,7 @@ describe('tg-core — resolveCallback', () => {
       fit: 88,
     });
     // score -1 (без скорингу) -> без fit
-    expect(resolveCallback(briefing, 'ja', 1).event.fit).toBeUndefined();
+    expect(resolveCallback(briefing, 'ja', 1).event!.fit).toBeUndefined();
   });
 
   it('sf/sq -> save_item з id=textHash(того самого рядка, що й дашборд)', () => {
@@ -259,10 +259,10 @@ describe('tg-core — markButtonDone', () => {
       ],
     };
     const out = markButtonDone(rm, 'v1:2026-07-09:js:0');
-    expect(out.inline_keyboard[0][0].text).toBe('✓ 💾 Зберегти');
-    expect(out.inline_keyboard[0][1].text).toBe('✅ Подав');
+    expect(out!.inline_keyboard[0][0].text).toBe('✓ 💾 Зберегти');
+    expect(out!.inline_keyboard[0][1].text).toBe('✅ Подав');
     // повторно — без подвійного ✓
-    expect(markButtonDone(out, 'v1:2026-07-09:js:0').inline_keyboard[0][0].text).toBe(
+    expect(markButtonDone(out!, 'v1:2026-07-09:js:0')!.inline_keyboard[0][0].text!).toBe(
       '✓ 💾 Зберегти',
     );
   });

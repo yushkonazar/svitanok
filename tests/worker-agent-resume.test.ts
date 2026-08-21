@@ -3,6 +3,7 @@ import worker from '../web/worker.js';
 import { mintRunToken } from '../web/agent-run-core.mjs';
 import { ASSISTANT_RESUME_TTL_MS } from '../web/agent-core.mjs';
 import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* U3 (аудит §10) — уточнення перестає бути кінцем роботи.
  *
@@ -29,10 +30,8 @@ let tg: Call[];
 let agentRuns: Call[];
 
 function env(over: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_CHAT_ID: String(OWNER),
@@ -40,7 +39,7 @@ function env(over: Record<string, unknown> = {}) {
     LLM_HOST_URL: HOST,
     LLM_HOST_SECRET: HOST_SECRET,
     ...over,
-  };
+  });
 }
 
 function ctx() {

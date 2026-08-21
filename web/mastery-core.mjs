@@ -94,7 +94,7 @@ export function mockMaterials() {
  */
 export function masteryHints(
   /** @type {any[]|null|undefined} */ weakTopics,
-  /** @type {KvBlob|null|undefined} */ progress,
+  /** @type {unknown} */ progress,
 ) {
   const p = progress && typeof progress === 'object' ? progress : {};
   return (Array.isArray(weakTopics) ? weakTopics : [])
@@ -133,11 +133,13 @@ export function masteryHints(
  * перевірено»), а не в одному рейтингу з реально слабкими.
  */
 export function masteryTopics(
-  /** @type {KvBlob|null|undefined} */ progress,
-  /** @type {KvBlob|null|undefined} */ mockTopics,
+  // unknown: обидва аргументи приходять із KV, і функція СВІДОМО стійка до
+  // битих даних — це перевіряється тестом «битий вхід не валить агрегат».
+  /** @type {unknown} */ progress,
+  /** @type {unknown} */ mockTopics,
 ) {
-  const p = progress && typeof progress === 'object' ? progress : {};
-  const m = mockTopics && typeof mockTopics === 'object' ? mockTopics : {};
+  const p = /** @type {KvBlob} */ (progress && typeof progress === 'object' ? progress : {});
+  const m = /** @type {KvBlob} */ (mockTopics && typeof mockTopics === 'object' ? mockTopics : {});
   return ROADMAP_TOPICS.map((t) => {
     const { done, total } = topicProgress(p, t);
     let seen = 0;

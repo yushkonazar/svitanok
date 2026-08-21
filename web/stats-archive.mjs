@@ -114,12 +114,16 @@ export function monthlyRollup(/** @type {KvBlob} */ store, /** @type {string} */
  * втрата даних, і саме тому набір полів тут навмисно вузький.
  */
 export function mergeArchive(
-  /** @type {KvBlob} */ prevArchive,
+  // unknown, бо функція СВІДОМО стійка до битих даних (перевіряється тестом)
+  /** @type {unknown} */ prevArchive,
   /** @type {KvBlob} */ fresh,
   /** @type {string} */ todayKey,
 ) {
-  const prev = prevArchive && typeof prevArchive === 'object' ? prevArchive : {};
+  const prev = /** @type {KvBlob} */ (
+    prevArchive && typeof prevArchive === 'object' ? prevArchive : {}
+  );
   const current = monthOf(todayKey);
+  /** @type {KvBlob} */
   const out = { ...prev };
   for (const [month, rollup] of Object.entries(fresh ?? {})) {
     if (month !== current && Object.prototype.hasOwnProperty.call(prev, month)) continue;

@@ -20,11 +20,17 @@ export interface MemoryKvOptions {
  * Стаб KV поверх переданої мапи. Мапа лишається у викликача — з неї зручно
  * читати й у неї зручно засівати стан ДО запиту.
  */
-export function memoryKv(store: Map<string, string>, opts: MemoryKvOptions = {}) {
-  return {
+export function memoryKv(store: Map<string, string>, opts: MemoryKvOptions = {}): Env['BRIEFING'] {
+  const stub = {
     get: async (k: string) => store.get(k) ?? null,
     put: async (k: string, v: string) => void store.set(k, v),
     delete: async (k: string) => void store.delete(k),
     list: async () => ({ keys: (opts.listKeys?.() ?? []).map((name) => ({ name })) }),
   };
+  // ⚠️ ЄДИНЕ приведення на весь тестовий шар, і воно тут навмисно. KVNamespace
+  // має ще getWithMetadata і перевантаження get за типом значення; код проєкту
+  // не кличе жодного з них (kv-store.mjs — увесь доступ до KV). Розписувати їх
+  // у стабі означало б імітувати те, чого ніхто не викликає, а приведення в
+  // КОЖНОМУ тесті — знімати перевірку скрізь замість одного місця.
+  return stub as unknown as Env['BRIEFING'];
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* C4 — те саме, що `tests/worker-stats-race.test.ts` довів для 'stats', тепер
  * для 'state'.
@@ -27,12 +28,12 @@ const WEBHOOK_SECRET = 'tg-webhook-secret-abcdef';
 let kv: Map<string, string>;
 
 function baseEnv() {
-  return {
-    BRIEFING: { ...memoryKv(kv) },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
-  };
+  });
 }
 
 /**
@@ -43,7 +44,7 @@ function baseEnv() {
 function envWithRacer(onCall: number, write: () => void) {
   const calls = { state: 0 };
   return {
-    env: {
+    env: workerEnv({
       ...baseEnv(),
       BRIEFING: {
         get: async (k: string) => {
@@ -53,7 +54,7 @@ function envWithRacer(onCall: number, write: () => void) {
         put: async (k: string, v: string) => void kv.set(k, v),
         list: async () => ({ keys: [] }),
       },
-    },
+    }),
     calls,
   };
 }

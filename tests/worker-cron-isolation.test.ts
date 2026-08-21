@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker, { CRON_TASKS, runCronTasks } from '../web/worker.js';
+import { workerEnv } from './helpers/env.js';
 
 /* B11 (аудит 11.08.2026): вісім крон-задач були awaited підряд в ОДНОМУ
  * ctx.waitUntil без ізоляції. Throw у першій (типово Telegram лежить о 08:05 —
@@ -18,7 +19,7 @@ let kv: Map<string, string>;
 let reads: string[];
 
 function kvEnv() {
-  return {
+  return workerEnv({
     BRIEFING: {
       get: async (k: string) => {
         reads.push(k);
@@ -29,7 +30,7 @@ function kvEnv() {
     },
     TELEGRAM_BOT_TOKEN: 'bot-token-abc',
     TELEGRAM_CHAT_ID: OWNER_CHAT,
-  };
+  });
 }
 
 beforeEach(() => {
@@ -58,7 +59,7 @@ describe('runCronTasks — збій однієї задачі не забира�
       { name: 'третя', run: async () => void ran.push('третя') },
     ];
 
-    await expect(runCronTasks(tasks, {})).resolves.toBeUndefined(); // сам раннер НЕ кидає
+    await expect(runCronTasks(tasks, workerEnv())).resolves.toBeUndefined(); // сам раннер НЕ кидає
     expect(ran).toEqual(['вибухає', 'друга', 'третя']);
     const logged = err.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logged).toContain('вибухає');
@@ -77,7 +78,7 @@ describe('runCronTasks — збій однієї задачі не забира�
         { name: 'a', run: () => slow('a', 20) },
         { name: 'b', run: () => slow('b', 0) },
       ],
-      {},
+      workerEnv(),
     );
     expect(order).toEqual(['a:start', 'a:end', 'b:start', 'b:end']);
   });

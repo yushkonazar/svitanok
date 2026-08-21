@@ -733,8 +733,11 @@ export const ASSISTANT_RESUME_TTL_MS = 30 * 60_000;
  * приблизно, і протухла нотатка, що дожила зайву хвилину, зіпсувала б наступний
  * запит мовчки.
  */
-export function buildResumePrefix(/** @type {KvBlob|null|undefined} */ resume, nowMs = Date.now()) {
-  if (!resume || typeof resume !== 'object') return '';
+export function buildResumePrefix(/** @type {unknown} */ rawResume, nowMs = Date.now()) {
+  if (!rawResume || typeof rawResume !== 'object') return '';
+  // Після гарду TS звужує `unknown` до `object` — без індексної сигнатури,
+  // тож поля читаються через явний KvBlob.
+  const resume = /** @type {KvBlob} */ (rawResume);
   if (!Number.isFinite(resume.atMs) || nowMs - resume.atMs > ASSISTANT_RESUME_TTL_MS) return '';
   const note = typeof resume.note === 'string' ? resume.note.trim() : '';
   if (!note) return '';
@@ -819,6 +822,11 @@ export function sanitizeProposal(/** @type {any} */ rawProposal, /** @type {numb
     ? Math.max(0, rawProposal.length - MAX_PROPOSAL_ITEMS)
     : 0;
 
+  // Явний тип, а не висновок із push'ів: інакше TS збирає ОБʼЄДНАННЯ форм
+  // (settings-пункт | event-пункт | patch-пункт), у якому спільних полів майже
+  // немає — і будь-яке `items[0].whenMs` стає помилкою, хоч у рантаймі поле
+  // там є. Пункти пропозиції — різнорідні блоби за побудовою.
+  /** @type {KvBlob[]} */
   const items = [];
   for (const raw of capped) {
     const kind = raw?.kind;
