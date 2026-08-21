@@ -107,6 +107,7 @@ export const ASSISTANT_EMPTY_REPLY = '🤔 Відповідь вийшла по�
  * триває десятки секунд, і статичне «Працюю…» весь цей час читається як «завис».
  * Лише для читальних дій — термінальні прибирають повідомлення зовсім.
  */
+/** @type {KvBlob} */
 export const ASSISTANT_STEP_LABELS = {
   readBatch: '⏳ Збираю дані…',
   readMail: '⏳ Шукаю в пошті…',
@@ -117,7 +118,7 @@ export const ASSISTANT_STEP_LABELS = {
 };
 
 /** Підпис прогресу для дії або null (термінальні/невідомі — без підпису). */
-export function assistantStepLabel(action) {
+export function assistantStepLabel(/** @type {unknown} */ action) {
   return (typeof action === 'string' && ASSISTANT_STEP_LABELS[action]) || null;
 }
 
@@ -133,7 +134,7 @@ export function assistantStepLabel(action) {
    на нього НЕ алармуємо, щоб флапаючий VPS не спамив тему «Система». */
 
 /** Проба /agent -> стан. probe: {reached:bool, status:number}. */
-export function classifyHostProbe(probe) {
+export function classifyHostProbe(/** @type {KvBlob|null|undefined} */ probe) {
   if (!probe || probe.reached !== true) return 'unknown';
   return Number(probe.status) === 404 ? 'desync' : 'ok';
 }
@@ -144,7 +145,10 @@ export function classifyHostProbe(probe) {
  * Повертає {next, alert}: alert ∈ 'warn' (зайшли в розсинхрон) | 'clear'
  * (вийшли з нього) | null.
  */
-export function hostHealthTransition(prev, current) {
+export function hostHealthTransition(
+  /** @type {string|null|undefined} */ prev,
+  /** @type {string} */ current,
+) {
   if (current === 'unknown') return { next: prev ?? 'ok', alert: null };
   if (current === 'desync' && prev !== 'desync') return { next: 'desync', alert: 'warn' };
   if (current === 'ok' && prev === 'desync') return { next: 'ok', alert: 'clear' };
@@ -168,7 +172,7 @@ export const MAX_TRANSCRIPT_LEN = 23_000;
 
 /** Обрізати транскрипт до бюджету хоста (з видимим маркером — щоб модель знала,
  *  що дані неповні, і не вигадувала відсутнє). */
-export function clipTranscript(text) {
+export function clipTranscript(/** @type {unknown} */ text) {
   const s = String(text ?? '');
   if (s.length <= MAX_TRANSCRIPT_LEN) return s;
   return s.slice(0, MAX_TRANSCRIPT_LEN - 24).trimEnd() + '\n…(дані обрізано)';
@@ -180,6 +184,10 @@ export function clipTranscript(text) {
  * | 'timeout' | 'offline' (хост не відповідає / не налаштований) | 'unknown'
  * (усе решта, включно з валідним 200, де модель віддала невалідну дію —
  * це НЕ інфраструктурна помилка, і текст має лишитись старий).
+ */
+/**
+ * @param {KvBlob|null|undefined} res
+ * @returns {{ kind: string, resetAtMs?: number }}
  */
 export function classifyLlmFailure(res) {
   if (!res || res.ok !== false) return { kind: 'unknown' };
@@ -194,7 +202,7 @@ export function classifyLlmFailure(res) {
     if (m) {
       const n = Number(m[1]);
       if (Number.isFinite(n) && n > 0) {
-        return { kind: 'limit', resetAtMs: m[1].length >= 13 ? n : n * 1000 };
+        return { kind: 'limit', resetAtMs: (m[1] ?? '').length >= 13 ? n : n * 1000 };
       }
     }
     return { kind: 'limit' };
@@ -205,25 +213,26 @@ export function classifyLlmFailure(res) {
   return { kind: 'unknown' };
 }
 
-const kyivDay = (ms) =>
+const kyivDay = (/** @type {number} */ ms) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date(ms));
 
 /** Текст користувачу за причиною відмови LLM (нічого не вигадуємо: годину
  *  скидання показуємо ЛИШЕ якщо її назвав сам CLI і вона ще попереду).
  *  Якщо скидання не сьогодні — показуємо і ДАТУ: тижневий ліміт із голим «09:00»
  *  читався б як «за годину», хоча чекати кілька днів (ревʼю A). */
-export function assistantErrorReply(res, nowMs = Date.now()) {
+export function assistantErrorReply(/** @type {KvBlob|null|undefined} */ res, nowMs = Date.now()) {
   const { kind, resetAtMs } = classifyLlmFailure(res);
   if (kind === 'limit') {
-    const sameDay = Number.isFinite(resetAtMs) && kyivDay(resetAtMs) === kyivDay(nowMs);
+    // `?? 0` недосяжне: обидва вживання стоять ПІСЛЯ Number.isFinite.
+    const sameDay = Number.isFinite(resetAtMs) && kyivDay(resetAtMs ?? 0) === kyivDay(nowMs);
     const when =
-      Number.isFinite(resetAtMs) && resetAtMs > nowMs
+      Number.isFinite(resetAtMs) && (resetAtMs ?? 0) > nowMs
         ? ` Спробуй після ${new Intl.DateTimeFormat('uk-UA', {
             timeZone: 'Europe/Kyiv',
             hour: '2-digit',
             minute: '2-digit',
             ...(sameDay ? {} : { day: '2-digit', month: '2-digit' }),
-          }).format(new Date(resetAtMs))}.`
+          }).format(new Date(resetAtMs ?? 0))}.`
         : ' Спробуй трохи пізніше.';
     return `⏳ Ліміти Claude вичерпані — асистент тимчасово не працює.${when}`;
   }
@@ -380,7 +389,7 @@ export const ASSISTANT_ACTION_SCHEMA = {
  * рішень, НЕ для того щоб LLM сама рахувала UTC (те саме застереження, що
  * buildLlmRewriteSystemPrompt у reminders-core.mjs).
  */
-export function buildAssistantSystemPrompt(nowMs) {
+export function buildAssistantSystemPrompt(/** @type {number} */ nowMs) {
   const kyivNow = new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
     weekday: 'long',
@@ -530,6 +539,10 @@ const CHECKIN_NUM_FIELDS = [
 export const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** Валідувати структуровану відповідь хоста -> {action,...}|null (захисно, як extractLlmRewrite). */
+/**
+ * @param {any} structured структурована відповідь хоста — без гарантій форми
+ * @returns {KvBlob|null}
+ */
 export function extractAssistantAction(structured) {
   const action = structured?.action;
   if (typeof action !== 'string' || !VALID_ACTIONS.has(action)) return null;
@@ -537,7 +550,8 @@ export function extractAssistantAction(structured) {
   if (action === 'readCalendar') {
     // Клемп кожного офсету до [0,7] (CC1: діапазон днів наперед, було [0,1]).
     // end >= start завжди (інакше kyivRangeBoundsUtc дала б timeMax<timeMin).
-    const clampDay = (v) => (Number.isFinite(v) ? Math.min(7, Math.max(0, Math.round(v))) : null);
+    const clampDay = (/** @type {any} */ v) =>
+      Number.isFinite(v) ? Math.min(7, Math.max(0, Math.round(v))) : null;
     const start = clampDay(structured.calendarStartDay) ?? 0;
     const endRaw = clampDay(structured.calendarEndDay);
     const end = endRaw == null ? start : Math.max(start, endRaw);
@@ -583,6 +597,7 @@ export function extractAssistantAction(structured) {
       // валідація полів проти нього лишається серверу (cleanCheckin,
       // stats-core.mjs), який знає поточну київську годину; тут лише
       // відсіюємо відверте сміття від моделі, той самий мотив, що ID_RE.
+      /** @type {KvBlob} */
       const checkin = {};
       for (const [k, allowed] of Object.entries(CHECKIN_ENUM_FIELDS)) {
         if (typeof structured[k] === 'string' && allowed.has(structured[k]))
@@ -690,7 +705,7 @@ export function extractAssistantAction(structured) {
  * нотатка складена моделлю, яка могла начитатись стороннього тексту з листа, і
  * підробляти нею розділювачі транскрипту не можна.
  */
-export function extractAssistantNote(structured) {
+export function extractAssistantNote(/** @type {any} */ structured) {
   const raw = structured?.note;
   if (typeof raw !== 'string') return '';
   const flat = raw.replace(/\s*[\r\n]+\s*/g, ' ').trim();
@@ -718,7 +733,7 @@ export const ASSISTANT_RESUME_TTL_MS = 30 * 60_000;
  * приблизно, і протухла нотатка, що дожила зайву хвилину, зіпсувала б наступний
  * запит мовчки.
  */
-export function buildResumePrefix(resume, nowMs = Date.now()) {
+export function buildResumePrefix(/** @type {KvBlob|null|undefined} */ resume, nowMs = Date.now()) {
   if (!resume || typeof resume !== 'object') return '';
   if (!Number.isFinite(resume.atMs) || nowMs - resume.atMs > ASSISTANT_RESUME_TTL_MS) return '';
   const note = typeof resume.note === 'string' ? resume.note.trim() : '';
@@ -734,24 +749,30 @@ export function buildResumePrefix(resume, nowMs = Date.now()) {
  * спалює крок зі стелі. Один рядок перед результатом дає їй план-трейс.
  * Параметр обрізаємо — echo не має зʼїдати бюджет транскрипту.
  */
-export function formatActionEcho(action, note = '') {
+export function formatActionEcho(
+  /** @type {KvBlob|null|undefined} */ action,
+  /** @type {string} */ note = '',
+) {
   const name = action?.action ?? '?';
-  const clip = (v) => {
+  const clip = (/** @type {unknown} */ v) => {
     const s = String(v ?? '').trim();
     return s.length > MAX_ECHO_PARAM ? `${s.slice(0, MAX_ECHO_PARAM)}…` : s;
   };
   let detail = '';
-  if (name === 'readBatch') detail = (action.reads ?? []).map((r) => r.action).join('+');
-  else if (name === 'readCalendar') detail = `${action.startDay}..${action.endDay}`;
-  else if (name === 'readMail') detail = clip(action.mailQuery) && `"${clip(action.mailQuery)}"`;
-  else if (name === 'readMailBody') detail = clip(action.mailId) && `"${clip(action.mailId)}"`;
-  else if (name === 'readDrive') detail = clip(action.driveQuery) && `"${clip(action.driveQuery)}"`;
-  else if (name === 'readOwnData') detail = clip(action.dataScope) && `"${clip(action.dataScope)}"`;
+  if (name === 'readBatch')
+    detail = (action?.reads ?? []).map((/** @type {KvBlob} */ r) => r.action).join('+');
+  else if (name === 'readCalendar') detail = `${action?.startDay}..${action?.endDay}`;
+  else if (name === 'readMail') detail = clip(action?.mailQuery) && `"${clip(action?.mailQuery)}"`;
+  else if (name === 'readMailBody') detail = clip(action?.mailId) && `"${clip(action?.mailId)}"`;
+  else if (name === 'readDrive')
+    detail = clip(action?.driveQuery) && `"${clip(action?.driveQuery)}"`;
+  else if (name === 'readOwnData')
+    detail = clip(action?.dataScope) && `"${clip(action?.dataScope)}"`;
   const echo = `[ти обрав: ${name}${detail ? ` ${detail}` : ''}]`;
   return note ? `${echo}\n[твоя нотатка: ${note}]` : echo;
 }
 
-function clampDuration(raw) {
+function clampDuration(/** @type {unknown} */ raw) {
   const n = Number(raw);
   return Number.isFinite(n)
     ? Math.min(MAX_DURATION_MIN, Math.max(MIN_DURATION_MIN, Math.round(n)))
@@ -776,22 +797,23 @@ function clampDuration(raw) {
  *  масивами/undefined-полями там, де LLM їх не давала). Резолюція
  *  імен->email — не тут (нуль I/O в agent-core.mjs), а у worker.js
  *  (enrichEventItems, People API) ПЕРЕД показом пропозиції. */
-function sanitizeLocationAttendees(raw) {
+function sanitizeLocationAttendees(/** @type {any} */ raw) {
+  /** @type {KvBlob} */
   const out = {};
   if (typeof raw?.location === 'string' && raw.location.trim()) {
     out.location = raw.location.trim().slice(0, MAX_LOCATION_LEN);
   }
   if (Array.isArray(raw?.attendees)) {
     const attendees = raw.attendees
-      .filter((a) => typeof a === 'string' && a.trim())
-      .map((a) => a.trim().slice(0, MAX_ATTENDEE_LEN))
+      .filter((/** @type {unknown} */ a) => typeof a === 'string' && a.trim())
+      .map((/** @type {string} */ a) => a.trim().slice(0, MAX_ATTENDEE_LEN))
       .slice(0, MAX_ATTENDEES);
     if (attendees.length) out.attendees = attendees;
   }
   return out;
 }
 
-export function sanitizeProposal(rawProposal, nowMs) {
+export function sanitizeProposal(/** @type {any} */ rawProposal, /** @type {number} */ nowMs) {
   const capped = Array.isArray(rawProposal) ? rawProposal.slice(0, MAX_PROPOSAL_ITEMS) : [];
   let droppedCount = Array.isArray(rawProposal)
     ? Math.max(0, rawProposal.length - MAX_PROPOSAL_ITEMS)
@@ -844,6 +866,7 @@ export function sanitizeProposal(rawProposal, nowMs) {
         droppedCount++; // патч без жодного поля — нічого не змінює
         continue;
       }
+      /** @type {KvBlob} */
       const item = { kind, eventId, ...locAtt };
       if (title) item.title = title;
       if (parsed) item.whenMs = parsed.whenMs;
@@ -862,6 +885,7 @@ export function sanitizeProposal(rawProposal, nowMs) {
       droppedCount++;
       continue;
     }
+    /** @type {KvBlob} */
     const item = { kind, title, whenMs: parsed.whenMs };
     if (kind === 'event') {
       item.durationMin = clampDuration(raw.durationMin) ?? DEFAULT_DURATION_MIN;
@@ -879,6 +903,7 @@ export function sanitizeProposal(rawProposal, nowMs) {
   return { items, droppedCount };
 }
 
+/** @type {KvBlob} */
 const KIND_ICON = {
   event: '📅',
   reminder: '⏰',
@@ -895,7 +920,7 @@ const proposalTimeFmt = new Intl.DateTimeFormat('uk-UA', {
   hour: '2-digit',
   minute: '2-digit',
 });
-const fmtWhen = (whenMs) =>
+const fmtWhen = (/** @type {number} */ whenMs) =>
   Number.isFinite(whenMs) ? proposalTimeFmt.format(new Date(whenMs)) : '?';
 
 /**
@@ -916,7 +941,10 @@ const fmtWhen = (whenMs) =>
  *  не показуємо (шум); зовсім без змін -> «без змін» (LLM помилково повторив
  *  поточний стан). Теми з mutedTopics — display-назви з config.yml, екрануємо
  *  як будь-який зовнішній текст. */
-function formatSettingsDiff(before, after) {
+function formatSettingsDiff(
+  /** @type {KvBlob|null|undefined} */ before,
+  /** @type {KvBlob|null|undefined} */ after,
+) {
   const b = before ?? {};
   const a = after ?? {};
   const parts = [];
@@ -924,7 +952,8 @@ function formatSettingsDiff(before, after) {
   const bq = b.quiet ?? {};
   const aq = a.quiet ?? {};
   if (bq.enabled !== aq.enabled || bq.from !== aq.from || bq.to !== aq.to) {
-    const txt = (q) => (q?.enabled ? `${q.from}–${q.to}` : 'вимкнено');
+    const txt = (/** @type {KvBlob|null|undefined} */ q) =>
+      q?.enabled ? `${q.from}–${q.to}` : 'вимкнено';
     parts.push(`тихі години: ${txt(bq)} → ${txt(aq)}`);
   }
 
@@ -947,9 +976,13 @@ function formatSettingsDiff(before, after) {
   return parts.length ? parts.join('; ') : 'без змін';
 }
 
+/**
+ * @param {KvBlob[]} items
+ * @param {Map<number, string[]>|null|undefined} [warnings]
+ */
 export function formatProposalMessage(items, warnings) {
   const lines = ['🤔 <b>Пропоную:</b>', ''];
-  items.forEach((it, i) => {
+  items.forEach((/** @type {KvBlob} */ it, /** @type {number} */ i) => {
     if (it.kind === 'contact') {
       lines.push(`${i + 1}. 👤 Новий контакт: ${escapeHtml(it.title)} — ${escapeHtml(it.email)}`);
     } else if (it.kind === 'settings') {
@@ -1017,7 +1050,9 @@ export function formatProposalMessage(items, warnings) {
     }
     const overlap = warnings instanceof Map ? warnings.get(i) : undefined;
     if (overlap?.length) {
-      lines.push(`   ⚠️ накладається на ${overlap.map((t) => `«${escapeHtml(t)}»`).join(', ')}`);
+      lines.push(
+        `   ⚠️ накладається на ${overlap.map((/** @type {string} */ t) => `«${escapeHtml(t)}»`).join(', ')}`,
+      );
     }
   });
   return lines.join('\n');
@@ -1032,16 +1067,17 @@ export const PROPOSAL_CB_PREFIX = 'pd:';
 const PROPOSAL_ACTIONS = new Set(['a', 'c', 'd', 'l', 's', 'o']);
 
 /** `pd:<action>:<id>`; ≤64 байти (Telegram-ліміт). */
-export function buildProposalCallbackData(action, id) {
+export function buildProposalCallbackData(/** @type {string} */ action, /** @type {string} */ id) {
   if (!PROPOSAL_ACTIONS.has(action)) return null;
   const s = `${PROPOSAL_CB_PREFIX}${action}:${id}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
 /** Розібрати `pd:...` callback_data -> {action:'a'|'c'|'d'|'l'|'s'|'o', id}|null. */
-export function parseProposalCallbackData(data) {
+export function parseProposalCallbackData(/** @type {unknown} */ data) {
   if (typeof data !== 'string' || !data.startsWith(PROPOSAL_CB_PREFIX)) return null;
-  const [action, id] = data.slice(PROPOSAL_CB_PREFIX.length).split(':');
+  // Дефолт '' замість undefined: Set.has('') так само false.
+  const [action = '', id] = data.slice(PROPOSAL_CB_PREFIX.length).split(':');
   if (!PROPOSAL_ACTIONS.has(action) || !id) return null;
   return { action, id };
 }
@@ -1060,25 +1096,28 @@ export const PROPOSAL_LEAD_STEPS = [null, 10, 30, 60, 1440];
  *  0 -> як заплановано, 1440 -> той самий час завтра. */
 export const EVENT_SHIFT_STEPS = [0, 15, 30, 60, -15, -30, 1440];
 
-const nextInCycle = (steps, cur) => steps[(steps.findIndex((s) => s === cur) + 1) % steps.length];
+// Приведення: індекс завжди в межах масиву (% steps.length), тож undefined тут
+// недосяжний — лише в типі.
+const nextInCycle = (/** @type {(number|null)[]} */ steps, /** @type {number|null} */ cur) =>
+  /** @type {number|null} */ (steps[(steps.findIndex((s) => s === cur) + 1) % steps.length]);
 
 /** Наступна тривалість по колу (невідоме/undefined -> перший крок). */
-export function cycleProposalDuration(cur) {
+export function cycleProposalDuration(/** @type {number|null} */ cur) {
   return nextInCycle(PROPOSAL_DURATION_STEPS, cur ?? null);
 }
 
 /** Наступний lead-time по колу. */
-export function cycleProposalLead(cur) {
+export function cycleProposalLead(/** @type {number|null} */ cur) {
   return nextInCycle(PROPOSAL_LEAD_STEPS, cur ?? null);
 }
 
 /** Наступний зсув часу по колу. */
-export function cycleEventShift(cur) {
+export function cycleEventShift(/** @type {number|null} */ cur) {
   return nextInCycle(EVENT_SHIFT_STEPS, cur ?? 0);
 }
 
 /** Підпис тривалості: null->«як є», 30->«30 хв», 60->«1 год», 90->«1.5 год». */
-export function formatDurationLabel(durMin) {
+export function formatDurationLabel(/** @type {number|null} */ durMin) {
   if (durMin == null) return 'як є';
   if (durMin < 60) return `${durMin} хв`;
   const h = durMin / 60;
@@ -1086,7 +1125,7 @@ export function formatDurationLabel(durMin) {
 }
 
 /** Підпис lead-time: null->«за замовч.», 10->«за 10 хв», 60->«за 1 год», 1440->«за день». */
-export function formatLeadLabel(leadMin) {
+export function formatLeadLabel(/** @type {number|null} */ leadMin) {
   if (leadMin == null) return 'за замовч.';
   if (leadMin >= 1440) return 'за день';
   if (leadMin % 60 === 0) return `за ${leadMin / 60} год`;
@@ -1094,7 +1133,7 @@ export function formatLeadLabel(leadMin) {
 }
 
 /** Підпис зсуву: 0->«як заплановано», 1440->«завтра, той самий час», ±N->«+N хв/год». */
-export function formatShiftLabel(shiftMin) {
+export function formatShiftLabel(/** @type {number|null} */ shiftMin) {
   if (!shiftMin) return 'як заплановано';
   if (shiftMin === 1440) return 'завтра, той самий час';
   const sign = shiftMin > 0 ? '+' : '-';
@@ -1103,7 +1142,7 @@ export function formatShiftLabel(shiftMin) {
 }
 
 /** У пропозиції є хоч одна ПОДІЯ (тоді показуємо циклери створення)? */
-export function proposalHasEvent(items) {
+export function proposalHasEvent(/** @type {KvBlob[]} */ items) {
   return Array.isArray(items) && items.some((it) => it?.kind === 'event');
 }
 
@@ -1113,7 +1152,7 @@ export function proposalHasEvent(items) {
  * як кнопкою з /agenda чи пост-accept Edit/Delete, так і LLM-пропозицією —
  * обидва канали дають РІВНО один пункт цього виду); інакше — 'create'.
  */
-export function proposalMode(items) {
+export function proposalMode(/** @type {KvBlob[]} */ items) {
   if (Array.isArray(items) && items.length === 1) {
     if (items[0]?.kind === 'updateEvent') return 'edit';
     if (items[0]?.kind === 'deleteEvent') return 'delete';
@@ -1143,6 +1182,11 @@ export function proposalMode(items) {
  * існує, тож "було" нема, є лише перше запропоноване). Це і є «підправити час
  * перед підтвердженням» для нагадувань з фрази частини доби (day-part) чи
  * будь-якої іншої одиночної пропозиції нагадування.
+ */
+/**
+ * @param {string} id
+ * @param {KvBlob[]} items
+ * @param {{ durMin?: number|null, leadMin?: number|null }} [cfg]
  */
 export function buildProposalKeyboard(id, items, cfg = {}) {
   const mode = proposalMode(items);
@@ -1233,7 +1277,10 @@ export function buildProposalKeyboard(id, items, cfg = {}) {
  * create — нумерований список (✅ на пункт / ⚠️ не вдалось), той самий
  * порядок, що в самій пропозиції.
  */
-export function formatProposalResult(items, results) {
+export function formatProposalResult(
+  /** @type {KvBlob[]} */ items,
+  /** @type {KvBlob[]} */ results,
+) {
   const mode = proposalMode(items);
 
   if (mode === 'settings') {
@@ -1316,7 +1363,11 @@ export function formatProposalResult(items, results) {
  * `displayText` (шлеться власнику в Telegram) — БЕЗ маркера: сирий id не
  * несе користі людині, лише засмічує повідомлення.
  */
-export function formatEventEditQuestion(eventId, title, whenMs) {
+export function formatEventEditQuestion(
+  /** @type {string} */ eventId,
+  /** @type {string|null|undefined} */ title,
+  /** @type {number} */ whenMs,
+) {
   const when = fmtWhen(whenMs);
   const displayText = `✏️ Що змінити в «${title ?? '?'}» (${when})? Напиши нову дату/час чи назву.`;
   const historyText = `[id:${eventId}] ${displayText}`;

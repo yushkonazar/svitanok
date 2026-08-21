@@ -141,14 +141,18 @@ export const COOWNER_DENIED_TOAST = '🔒 Лише власник';
  * класифікатор поведеться не так, як у тестах. Це щоденний інструмент
  * власника, а не сервіс із вікном обслуговування.
  */
-function reminderIntentRoutingEnabled(env) {
+function reminderIntentRoutingEnabled(/** @type {Env} */ env) {
   const raw = env.REMINDER_INTENT_ROUTING;
   if (raw === undefined || raw === null) return true;
   return !['0', 'off', 'false', 'no'].includes(String(raw).trim().toLowerCase());
 }
 
 /** Обробити текстове повідомлення (slash-команда/reply-keyboard) -> sendMessage. */
-export async function handleCommand(env, parsed, origin) {
+export async function handleCommand(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ origin,
+) {
   const sendText = sendTo(env, parsed);
 
   // GPS-позиція (відповідь на /locate) і скасування тимчасової клавіатури —
@@ -285,7 +289,9 @@ export async function handleCommand(env, parsed, origin) {
       // повторюється те саме, що робить handleStats для дашборда (masteryTopics
       // — чиста функція, дублюється виклик, а не логіка).
       const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
-      const agg = aggregateStats(store, kyivDateKey());
+      // Блоб: нижче до агрегату дописується майстерність — поле, якого
+      // aggregateStats не знає (той самий мотив, що в handleStats).
+      const agg = /** @type {KvBlob} */ (aggregateStats(store, kyivDateKey()));
       agg.mastery = { topics: masteryTopics(state.roadmapProgress ?? {}, store.mockTopics) };
       return sendText(formatStatsMessage(agg), { parse_mode: 'HTML' });
     }
@@ -341,6 +347,7 @@ export async function handleCommand(env, parsed, origin) {
       const n = parseClearCount(cmd.args);
       const ids = lastSentMessages(await loadSentMessages(env), parsed.chatId, parsed.threadId, n);
       let deleted = 0;
+      /** @type {number[]} */
       const forget = []; // остаточно відмовлені id (>48г/без прав) — не пробувати знову
       // Пачками по DELETE_CHUNK_SIZE (не всі N одразу) — компроміс між швидкістю
       // (не повністю послідовно) і обережністю до rate-limit Telegram/Worker.
@@ -351,7 +358,7 @@ export async function handleCommand(env, parsed, origin) {
           ),
         );
         settled.forEach((r, i) => {
-          const id = chunk[i];
+          const id = /** @type {number} */ (chunk[i]);
           if (r.status !== 'fulfilled') return; // мережева помилка -> ретрай наступного /clear
           if (r.value.ok) {
             deleted++;
@@ -371,7 +378,7 @@ export async function handleCommand(env, parsed, origin) {
       // якого sentMessages узагалі живе в окремому ключі від 'state').
       const key = sentMessagesKey(parsed.chatId, parsed.threadId);
       const fresh = await loadSentMessages(env);
-      fresh[key] = (fresh[key] ?? []).filter((id) => !forget.includes(id));
+      fresh[key] = (fresh[key] ?? []).filter((/** @type {number} */ id) => !forget.includes(id));
       await env.BRIEFING.put('sentMessages', JSON.stringify(fresh));
       return sendText(formatClearResult(deleted, ids.length));
     }

@@ -36,6 +36,9 @@ const HEADERS = {
  * і це рівно та поведінка, якої треба в кожному з цих випадків. Кидати 500 на
  * биті дані означало б, що бейдж показує «сервіс лежить» тоді, коли лежить
  * лише один KV-запис.
+ *
+ * @param {Request} _request
+ * @param {Env} env
  */
 export async function handleStatus(_request, env) {
   let lastBriefingAt = null;

@@ -6,10 +6,33 @@
 
 export const CB_VERSION = 'v1';
 
+/**
+ * Апдейт Telegram після нормалізації — розрізняльний союз за `kind`.
+ * @typedef {{ kind: 'callback', updateId: number|null, callbackId: string|null,
+ *             fromId: number|null, chatId: number|null, messageId: number|null,
+ *             threadId: number|null, data: string, replyMarkup: KvBlob|null }} ParsedCallback
+ * @typedef {{ kind: 'message', updateId: number|null, fromId: number|null,
+ *             chatId: number|null, messageId: number|null, threadId: number|null,
+ *             text: string, location: { latitude: number, longitude: number }|null }} ParsedMessage
+ * @typedef {{ kind: 'other', updateId: number|null }} ParsedOther
+ * @typedef {ParsedCallback|ParsedMessage|ParsedOther} ParsedUpdate
+ */
+
+/**
+ * Куди слати відповідь. Окремо від ParsedUpdate з двох причин: у крон-контексті
+ * вхідного апдейту немає взагалі, а обробники дістають уже обрану гілку союзу.
+ *
+ * Усі поля опційні НАВМИСНО: parseUpdate віддає `chatId: null`, коли Telegram
+ * його не дав, і робити тут поле обовʼязковим означало б описувати не те, що
+ * справді приходить.
+ * @typedef {{ chatId?: string|number|null, threadId?: string|number|null,
+ *             messageId?: number|null }} SendTarget
+ */
+
 // Дзеркало textHash з web/public/index.html — стабільний ID для обраного без url
 // (факт/цитата). МАЄ збігатися символ-у-символ, інакше чат і дашборд дедуплять
 // збереження по-різному.
-export function textHash(s) {
+export function textHash(/** @type {unknown} */ s) {
   let h = 0;
   for (let i = 0; i < String(s).length; i++) h = (h * 31 + String(s).charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
@@ -17,7 +40,7 @@ export function textHash(s) {
 
 // Дзеркало escapeHtml з src/core/telegram.ts — Worker не імпортує TS.
 // Екранує й `"` (атрибут-безпека href, як у TS-оригіналі).
-export function escapeHtml(s) {
+export function escapeHtml(/** @type {unknown} */ s) {
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -45,6 +68,7 @@ export function escapeHtml(s) {
  * Свідомо НЕ підтримуємо: таблиці, посилання [text](url), fenced-блоки ```.
  * Асистент ними не користується, а кожна така конструкція — ще один шлях
  * зібрати невалідну розмітку.
+ * @param {unknown} text
  */
 export function mdToTelegramHtml(text) {
   const src = String(text ?? '');
@@ -53,6 +77,7 @@ export function mdToTelegramHtml(text) {
   // `_` всередині коду перетворились би на теги. Маркер `<C0>` безпечний саме
   // тому, що escapeHtml уже відпрацював: після нього `<` у тексті бути НЕ може,
   // отже підміна назад не зачепить нічого, крім наших власних вставок.
+  /** @type {string[]} */
   const codes = [];
   let out = escapeHtml(src).replace(/`([^`\n]+)`/g, (_, c) => {
     codes.push(c);
@@ -72,7 +97,7 @@ export function mdToTelegramHtml(text) {
 
 /** Дзеркало link() з src/core/telegram.ts — url і text екрануються ОКРЕМО
  *  (не конкатенувати перед екрануванням — інакше лапка в url ламає href). */
-export function link(url, text) {
+export function link(/** @type {unknown} */ url, /** @type {unknown} */ text) {
   return `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
 }
 
@@ -81,6 +106,8 @@ export function link(url, text) {
  * зливає позицію першого розбіжного символу (той самий мотив, що timingSafeEqual
  * у agent-run-core). Різна довжина або не-рядок -> false. Спільне ядро
  * verifyWebhookSecret (secret-token вебхука) і HMAC-звірки initData у worker.js.
+ * @param {unknown} a
+ * @param {unknown} b
  */
 export function constantTimeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -90,13 +117,17 @@ export function constantTimeEqual(a, b) {
   return diff === 0;
 }
 
-/** Константний-час порівняння secret-token (X-Telegram-Bot-Api-Secret-Token). */
+/** Константний-час порівняння secret-token (X-Telegram-Bot-Api-Secret-Token).
+ *  @param {unknown} header
+ *  @param {unknown} secret */
 export function verifyWebhookSecret(header, secret) {
   if (typeof secret !== 'string' || !secret) return false; // порожній секрет — не автентифікуємо
   return constantTimeEqual(header, secret);
 }
 
-/** Нормалізувати апдейт: тип + ключові поля. Невідоме -> kind:'other'. */
+/** Нормалізувати апдейт: тип + ключові поля. Невідоме -> kind:'other'.
+ *  @param {any} update сире тіло вебхука
+ *  @returns {ParsedUpdate} */
 export function parseUpdate(update) {
   if (!update || typeof update !== 'object') return { kind: 'other', updateId: null };
   const updateId = typeof update.update_id === 'number' ? update.update_id : null;
@@ -146,6 +177,8 @@ export function parseUpdate(update) {
  * бот) АБО множиною дозволених id (Set/масив — кілька учасників супергрупи,
  * TELEGRAM_ALLOWED_USER_IDS). Той самий виклик, той самий сенс — worker.js
  * вирішує, один id прийшов чи декілька.
+ * @param {KvBlob|null|undefined} parsed
+ * @param {Set<string>|Array<string|number>|string|number|null|undefined} ownerIds
  */
 export function isOwner(parsed, ownerIds) {
   if (parsed?.fromId == null || ownerIds == null) return false;
@@ -155,14 +188,19 @@ export function isOwner(parsed, ownerIds) {
   return id === String(ownerIds);
 }
 
-/** Дедуп: апдейт уже оброблений, якщо update_id <= lastUpdateId (Telegram передоставляє). */
+/** Дедуп: апдейт уже оброблений, якщо update_id <= lastUpdateId (Telegram передоставляє).
+ *  @param {unknown} lastUpdateId
+ *  @param {unknown} updateId */
 export function isDuplicate(lastUpdateId, updateId) {
   if (typeof updateId !== 'number') return false; // без id не дедупимо (не блокуємо)
   if (typeof lastUpdateId !== 'number') return false;
   return updateId <= lastUpdateId;
 }
 
-/** callback_data: `v1:<dateKey>:<code>[:<idx>]`. Модуль дає `code[:idx]`, дату — render. */
+/** callback_data: `v1:<dateKey>:<code>[:<idx>]`. Модуль дає `code[:idx]`, дату — render.
+ *  @param {string} dateKey
+ *  @param {string} action
+ *  @returns {string|null} null, якщо не влізло в 64 байти */
 export function buildCallbackData(dateKey, action) {
   const s = `${CB_VERSION}:${dateKey}:${action}`;
   // Telegram-ліміт callback_data — 1..64 байти (UTF-8).
@@ -170,34 +208,49 @@ export function buildCallbackData(dateKey, action) {
   return s;
 }
 
-/** Розібрати callback_data -> {v,dateKey,code,idx}|null. idx — число або null. */
+/** Розібрати callback_data -> {v,dateKey,code,idx}|null. idx — число або null.
+ *  @param {unknown} data
+ *  @returns {{ v: string, dateKey: string, code: string, idx: number|null }|null} */
 export function parseCallbackData(data) {
   if (typeof data !== 'string') return null;
   const parts = data.split(':');
   if (parts.length < 3 || parts[0] !== CB_VERSION) return null;
-  const [, dateKey, code, idxRaw] = parts;
+  // `?? ''` не змінює поведінки: довжину звірено вище, тож обидва елементи є.
+  const [, dateKey = '', code = '', idxRaw] = parts;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return null;
   if (!code) return null;
   const idx = idxRaw === undefined ? null : Number(idxRaw);
   if (idxRaw !== undefined && !Number.isInteger(idx)) return null;
-  return { v: parts[0], dateKey, code, idx };
+  return { v: CB_VERSION, dateKey, code, idx };
 }
 
 /**
  * Резолв callback у подію для recordEvent, за опублікованим briefing (той самий,
  * що читає дашборд). Повертає {event, toast} або {error}. Ідентичність айтема —
  * індекс у block.data.items (jobs) або сам блок-сінглтон (fact/stoic).
+ *
+ * Форма результату — «щось одне з двох» через опційні поля, а не розрізняльний
+ * союз: викликачі перевіряють res.error на істинність, і союз змусив би
+ * кожного з них писати `'error' in res`.
+ * @param {KvBlob|null|undefined} briefing
+ * @param {string} code
+ * @param {number|null} idx
+ * @returns {{ event?: KvBlob, toast?: string, error?: 'stale'|'unknown' }}
  */
 export function resolveCallback(briefing, code, idx) {
+  /** @type {KvBlob[]} */
   const blocks = Array.isArray(briefing?.blocks) ? briefing.blocks : [];
-  const find = (id) => blocks.find((b) => b && b.id === id);
+  const find = (/** @type {string} */ id) => blocks.find((b) => b && b.id === id);
   switch (code) {
     case 'js':
     case 'ja': {
       const items = find('jobs')?.data?.items;
-      const it = Array.isArray(items) ? items[idx] : null;
+      // `idx != null` не змінює поведінки: items[null] в JS і так undefined,
+      // тобто нижче спрацював би той самий `!it -> stale`.
+      const it = Array.isArray(items) && idx != null ? items[idx] : null;
       if (!it || !it.url) return { error: 'stale' };
       const stage = code === 'js' ? 'saved' : 'applied';
+      /** @type {{ type: string, url: string, title: string, stage: string, fit?: number }} */
       const event = { type: 'job_stage', url: it.url, title: it.title || '', stage };
       if (code === 'ja' && typeof it.score === 'number' && it.score >= 0) event.fit = it.score;
       return { event, toast: stage === 'saved' ? '💾 Збережено' : '✅ Позначено «подав»' };
@@ -235,6 +288,10 @@ export function resolveCallback(briefing, code, idx) {
  *    (без initData, дашборд деградує на SAMPLE, §H1); інакше -> web_app
  *    (Telegram Bot API дозволяє web_app ЛИШЕ в приватних чатах —
  *    BUTTON_TYPE_INVALID у групі інакше).
+ * @param {string} text
+ * @param {string} url
+ * @param {string|number|null|undefined} chatId
+ * @param {string|null|undefined} botUsername
  */
 export function buildMiniAppButton(text, url, chatId, botUsername) {
   const username = botUsername ? String(botUsername).trim().replace(/^@/, '') : '';
@@ -243,14 +300,16 @@ export function buildMiniAppButton(text, url, chatId, botUsername) {
   return isGroup ? { text, url } : { text, web_app: { url } };
 }
 
-/** Позначити натиснуту кнопку галкою (✓) у reply_markup — легкий зворотний звʼязок. */
+/** Позначити натиснуту кнопку галкою (✓) у reply_markup — легкий зворотний звʼязок.
+ *  @param {KvBlob|null|undefined} replyMarkup
+ *  @param {string} tappedData */
 export function markButtonDone(replyMarkup, tappedData) {
   const rows = replyMarkup?.inline_keyboard;
   if (!Array.isArray(rows)) return replyMarkup;
   return {
-    inline_keyboard: rows.map((row) =>
+    inline_keyboard: rows.map((/** @type {unknown} */ row) =>
       Array.isArray(row)
-        ? row.map((btn) =>
+        ? row.map((/** @type {KvBlob} */ btn) =>
             btn && btn.callback_data === tappedData && !String(btn.text).startsWith('✓')
               ? { ...btn, text: `✓ ${btn.text}` }
               : btn,
@@ -273,12 +332,19 @@ export function markButtonDone(replyMarkup, tappedData) {
 // На чат+тему; більш ніж достатньо для будь-якого розумного /clear N (max 50).
 const SENT_MESSAGES_CAP = 50;
 
-/** Ключ ring-buffer-а в об'єкті sentMessages: один на чат+тему. */
+/** Ключ ring-buffer-а в об'єкті sentMessages: один на чат+тему.
+ *  @param {string|number|null|undefined} chatId
+ *  @param {string|number|null|undefined} threadId */
 export function sentMessagesKey(chatId, threadId) {
   return `${chatId}:${threadId ?? ''}`;
 }
 
-/** Додати message_id у ring buffer (чиста — повертає новий об'єкт, капнутий). */
+/** Додати message_id у ring buffer (чиста — повертає новий об'єкт, капнутий).
+ *  @param {KvBlob|null|undefined} sentMessages
+ *  @param {string|number|null|undefined} chatId
+ *  @param {string|number|null|undefined} threadId
+ *  @param {number} messageId
+ *  @returns {KvBlob} */
 export function recordSentMessage(sentMessages, chatId, threadId, messageId) {
   const key = sentMessagesKey(chatId, threadId);
   const store = sentMessages && typeof sentMessages === 'object' ? sentMessages : {};
@@ -286,7 +352,12 @@ export function recordSentMessage(sentMessages, chatId, threadId, messageId) {
   return { ...store, [key]: [...list, messageId].slice(-SENT_MESSAGES_CAP) };
 }
 
-/** Останні N message_id для чат+теми (найновіші останні) — кандидати на /clear. */
+/** Останні N message_id для чат+теми (найновіші останні) — кандидати на /clear.
+ *  @param {KvBlob|null|undefined} sentMessages
+ *  @param {string|number|null|undefined} chatId
+ *  @param {string|number|null|undefined} threadId
+ *  @param {number} n
+ *  @returns {number[]} */
 export function lastSentMessages(sentMessages, chatId, threadId, n) {
   const list = sentMessages?.[sentMessagesKey(chatId, threadId)];
   return Array.isArray(list) ? list.slice(-n) : [];
@@ -295,24 +366,34 @@ export function lastSentMessages(sentMessages, chatId, threadId, n) {
 /** Розібрати аргумент /clear -> клампована кількість [1,maxN]; невалідне/відсутнє -> defaultN.
  *  maxN=40 (не 50) — запас перед типовим лімітом ~50 subrequests/інвокацію
  *  Cloudflare Worker: /clear ще й читає+пише sentMessages (±2) і шле
- *  підсумкове повідомлення (ще ±2) поверх самих deleteMessage-викликів. */
+ *  підсумкове повідомлення (ще ±2) поверх самих deleteMessage-викликів.
+ *  @param {string|null|undefined} args
+ *  @param {number} [defaultN]
+ *  @param {number} [maxN] */
 export function parseClearCount(args, defaultN = 20, maxN = 40) {
-  const n = parseInt(args, 10);
+  const n = parseInt(String(args ?? ''), 10);
   if (!Number.isFinite(n) || n <= 0) return defaultN;
   return Math.min(maxN, n);
 }
 
 /** Розбити масив на шматки розміром size (останній може бути коротшим) —
  *  для /clear: видаляти пачками, не всі N одразу (обережність до rate-limit
- *  Telegram) і не повністю послідовно (менше wall-clock часу в ctx.waitUntil). */
+ *  Telegram) і не повністю послідовно (менше wall-clock часу в ctx.waitUntil).
+ *  @template T
+ *  @param {T[]} arr
+ *  @param {number} size
+ *  @returns {T[][]} */
 export function chunkArray(arr, size) {
+  /** @type {T[][]} */
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
 }
 
 /** Підсумкове повідомлення після спроби видалення (Telegram не дає видалити
- *  повідомлення старші за 48 год — deleted може бути менше за attempted). */
+ *  повідомлення старші за 48 год — deleted може бути менше за attempted).
+ *  @param {number} deleted
+ *  @param {number} attempted */
 export function formatClearResult(deleted, attempted) {
   if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю повідомлень у цьому чаті.';
   return `🗑 Видалено ${deleted} із ${attempted} повідомлень (старші за 48 год Telegram не дає видалити).`;
@@ -323,6 +404,9 @@ export function formatClearResult(deleted, attempted) {
  * від спаму `workflow_dispatch` (палить хвилини Actions + квоту KV/новин), бо
  * guard гасить лише подвійну ВІДПРАВКУ, а джоба однаково стартує. Некоректний
  * lastMs (не число / ≤0) -> 0 (дозволити, перший запуск).
+ * @param {unknown} lastMs
+ * @param {number} nowMs
+ * @param {number} cooldownMs
  */
 export function briefCooldownRemainingMs(lastMs, nowMs, cooldownMs) {
   if (typeof lastMs !== 'number' || !(lastMs > 0)) return 0;
@@ -355,6 +439,10 @@ export const MIN_DISPATCH_GAP_MS = 15 * 60_000;
  *   lastAutoDate  — ми вже успішно диспатчили сьогодні (мітка ставиться ЛИШЕ
  *                   після підтвердження GitHub, тож збій ретраїться наступним тіком);
  *   lastDispatchMs — БУДЬ-ЯКИЙ dispatch (у т.ч. ручний /brief) свіжіший за 15 хв.
+ *
+ * @param {{ kyivHour: number, todayKey: unknown, nowMs: number,
+ *           lastAutoDate?: unknown, lastDispatchMs?: unknown,
+ *           lastSentDate?: unknown }} opts
  */
 export function shouldAutoDispatchBrief({
   kyivHour,
@@ -369,11 +457,15 @@ export function shouldAutoDispatchBrief({
   if (typeof todayKey !== 'string' || !todayKey) return false;
   if (lastSentDate === todayKey) return false;
   if (lastAutoDate === todayKey) return false;
+  // Локальна змінна замість прямого lastDispatchMs: значення приходить із
+  // блоба KV, тобто нетипізоване, а Number.isFinite саме собою типу не звужує.
+  // Поведінка та сама — нечисло й раніше провалювало першу ж перевірку.
+  const lastMs = typeof lastDispatchMs === 'number' ? lastDispatchMs : NaN;
   if (
     Number.isFinite(nowMs) &&
-    Number.isFinite(lastDispatchMs) &&
-    lastDispatchMs > 0 &&
-    nowMs - lastDispatchMs < MIN_DISPATCH_GAP_MS
+    Number.isFinite(lastMs) &&
+    lastMs > 0 &&
+    nowMs - lastMs < MIN_DISPATCH_GAP_MS
   ) {
     return false;
   }
@@ -443,6 +535,7 @@ export function locateKeyboard() {
 }
 
 // Лейбл reply-keyboard кнопки -> та сама команда, що й відповідний "/xxx".
+/** @type {Record<string, string>} */
 const KEYBOARD_ALIASES = {
   '📅 Сьогодні': 'agenda',
   '🧠 План дня': 'plan',
@@ -454,6 +547,8 @@ const KEYBOARD_ALIASES = {
  * Розібрати вхідне повідомлення на команду: slash-команда (з опційним
  * "@botname" у групових чатах) АБО лейбл reply-keyboard — обидва мапляться
  * в один канонічний {cmd, args}. Звичайний текст (майбутній асистент, P2) -> null.
+ * @param {unknown} text
+ * @returns {{ cmd: string, args: string }|null}
  */
 export function parseCommand(text) {
   if (typeof text !== 'string') return null;
@@ -462,7 +557,8 @@ export function parseCommand(text) {
   if (KEYBOARD_ALIASES[trimmed]) return { cmd: KEYBOARD_ALIASES[trimmed], args: '' };
   if (!trimmed.startsWith('/')) return null;
   const [head, ...rest] = trimmed.slice(1).split(/\s+/);
-  const cmd = head ? head.split('@')[0].toLowerCase() : '';
+  // `?? ''` недосяжне: split завжди віддає щонайменше один елемент.
+  const cmd = head ? (head.split('@')[0] ?? '').toLowerCase() : '';
   if (!cmd) return null;
   return { cmd, args: rest.join(' ') };
 }
@@ -477,6 +573,9 @@ export function parseCommand(text) {
  * практиці виглядає як зіпсоване/зафарбоване зображення, а не як індикатор
  * прогресу (баг, знайдений на живому скріншоті). Дужки+код-блок дають чітку
  * межу й моноширинність незалежно від клієнта/шрифту.
+ * @param {number} done
+ * @param {number} total
+ * @param {number} [width]
  */
 export function progressBar(done, total, width = 10) {
   if (!(total > 0)) return '';
@@ -487,6 +586,7 @@ export function progressBar(done, total, width = 10) {
 
 // Дзеркало STAGES зі stats-core.mjs (worker.js не імпортує TS, а тут — тексти для
 // Telegram). Термінальні (F1) — в кінці: це вихід із воронки, не прогрес.
+/** @type {Record<string, string>} */
 const STAGE_LABEL = {
   saved: '💾 Збережено',
   applied: '✅ Подано',
@@ -497,33 +597,40 @@ const STAGE_LABEL = {
 };
 const STAGE_ORDER = ['saved', 'applied', 'interview', 'offer', 'rejected', 'failed'];
 
-/** /jobs — активна воронка вакансій, згрупована за стадією (з /api/stats.funnelList). */
+/** /jobs — активна воронка вакансій, згрупована за стадією (з /api/stats.funnelList).
+ *  @param {unknown} funnelList */
 export function formatJobsMessage(funnelList) {
+  /** @type {KvBlob[]} */
   const list = Array.isArray(funnelList) ? funnelList : [];
   if (list.length === 0) {
     return '💼 <b>Воронка вакансій</b>\n\nПоки порожньо — тисни 💾/✅ під вакансіями в брифінгу.';
   }
-  const byStage = new Map(STAGE_ORDER.map((st) => [st, []]));
-  for (const it of list) if (byStage.has(it.stage)) byStage.get(it.stage).push(it);
+  const byStage = new Map(STAGE_ORDER.map((st) => /** @type {[string, KvBlob[]]} */ ([st, []])));
+  // `?.push` замість has+get — той самий результат: ключів поза STAGE_ORDER тут
+  // немає, тож `get` невизначене рівно тоді, коли `has` було б false.
+  for (const it of list) byStage.get(it.stage)?.push(it);
 
   const lines = ['💼 <b>Воронка вакансій</b>', ''];
   for (const st of STAGE_ORDER) {
-    const items = byStage.get(st);
+    const items = byStage.get(st) ?? [];
     if (items.length === 0) continue;
-    lines.push(STAGE_LABEL[st]);
+    lines.push(STAGE_LABEL[st] ?? st);
     for (const it of items) lines.push(`• ${escapeHtml(it.title || it.url || '?')}`);
     lines.push('');
   }
   return lines.join('\n').trimEnd();
 }
 
+/** @type {Record<string, string>} */
 const KIND_ICON = { news: '🗞', fact: '🧠', quote: '🏛', question: '🎤' };
 
 /** /save — останнє збережене (факти/цитати/новини/питання), з /api/stats.savedList.
  *  Фаза C2: news-записи мають url (Mini App-версія лінкує) — тепер клікабельні
  *  й тут; fact/quote/question url не мають (dedup по id=textHash), лишаються
- *  плейн-текстом, як і раніше. */
+ *  плейн-текстом, як і раніше.
+ *  @param {unknown} savedList */
 export function formatSavedMessage(savedList) {
+  /** @type {KvBlob[]} */
   const list = Array.isArray(savedList) ? savedList : [];
   if (list.length === 0) {
     return '🔖 <b>Збережене</b>\n\nПоки нічого — тисни 🔖/💾 в брифінгу.';
@@ -544,6 +651,8 @@ export function formatSavedMessage(savedList) {
  * форми «багато». Правило «дивись лише на останню цифру» дає «11 співбесіда».
  * Дзеркало pluralUk із web/app/src/lib/plural.ts — клієнт і воркер живуть у
  * різних світах модулів (.ts проти .mjs), тож імпортувати одне в інше нічим.
+ * @param {number} n
+ * @param {[string, string, string]} forms
  */
 function plural(n, forms) {
   const mod10 = Math.abs(n) % 10;
@@ -554,9 +663,11 @@ function plural(n, forms) {
 }
 
 /** Підпис стадії у зведенні «без руху». */
+/** @type {Record<string, string>} */
 const STALE_STAGE = { saved: 'збережено', applied: 'подано', interview: 'співбесіда' };
 
 /** Підпис кроку воронки — «куди дійшли»: саме це очікування й міряється. */
+/** @type {Record<string, string>} */
 const SPEED_STEP = {
   applied: 'Збережено → подано',
   interview: 'Подано → співбесіда',
@@ -581,6 +692,7 @@ const CHAT_GAP_MIN = 15;
  *
  * Кожен блок зʼявляється, ЛИШЕ коли має вміст: «0 вакансій без руху» — рядок,
  * який щодня займає місце й нічого не каже.
+ * @param {KvBlob|null|undefined} stats
  */
 export function formatStatsMessage(stats) {
   const s = stats || {};
@@ -619,6 +731,7 @@ export function formatStatsMessage(stats) {
   }
 
   // Найдієвіше з усього повідомлення: список того, що чекає на рух.
+  /** @type {KvBlob[]} */
   const stale = Array.isArray(speed.stale) ? speed.stale : [];
   if (stale.length > 0) {
     lines.push('', `⏳ <b>Лежить без руху</b> (${speed.staleAfterDays ?? 21}+ дн.)`);
@@ -631,9 +744,9 @@ export function formatStatsMessage(stats) {
 
   // Медіани кроків — лише там, де вони є. Крок без медіани в чат не йде:
   // «замало переходів» доречне на дашборді, а тут це шум у зведенні.
-  const steps = (Array.isArray(speed.steps) ? speed.steps : []).filter(
-    (st) => typeof st.medianDays === 'number',
-  );
+  /** @type {KvBlob[]} */
+  const rawSteps = Array.isArray(speed.steps) ? speed.steps : [];
+  const steps = rawSteps.filter((st) => typeof st.medianDays === 'number');
   if (steps.length > 0) {
     lines.push('');
     for (const st of steps) {
@@ -644,9 +757,13 @@ export function formatStatsMessage(stats) {
   // Розрив «відмітив пройденим ↔ питання не даються» — список на повторення.
   // Теми без питань (easePct === null) сюди не потрапляють за побудовою: нуль
   // тут означав би найгіршу оцінку за те, що тему жодного разу не питали.
-  const gaps = (s.mastery?.topics ?? [])
+  /** @type {KvBlob[]} */
+  const topics = s.mastery?.topics ?? [];
+  const gaps = topics
     .filter((t) => typeof t.easePct === 'number' && t.total > 0)
-    .map((t) => ({ ...t, donePct: Math.round((t.done / t.total) * 100) }))
+    // Приведення потрібне через розсипання Record: у літералі індексна
+    // сигнатура KvBlob губиться, і лишається сам donePct.
+    .map((t) => /** @type {KvBlob} */ ({ ...t, donePct: Math.round((t.done / t.total) * 100) }))
     .filter((t) => t.donePct - t.easePct >= CHAT_GAP_MIN)
     .sort((a, b) => b.donePct - b.easePct - (a.donePct - a.easePct));
   if (gaps.length > 0) {
@@ -664,6 +781,10 @@ export function formatStatsMessage(stats) {
  * знайти реальні id тем після створення forum-супергрупи (натиснути в
  * кожній темі, скопіювати значення для TOPIC_*-секретів) — без потреби
  * грепати логи Worker'а.
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
+ * @param {{ can_read_all_group_messages?: boolean }|null} [me] відповідь getMe
+ * @param {string|number|null} [assistantTopic] undefined = не звіряти тему
  */
 export function formatWhereAmI(chatId, threadId, me = null, assistantTopic = undefined) {
   const lines = [

@@ -46,7 +46,7 @@ import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './maste
  *  у KV лежать старі голоси, і саме їх треба коректно відкотити, коли власник
  *  лайкне раніше дизлайкнуту новину. Викинеш 'down' із читання — відкотиш не
  *  ту дельту й тихо зіпсуєш вагу теми назавжди. */
-export async function handleVote(request, env) {
+export async function handleVote(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
@@ -103,7 +103,7 @@ export async function handleVote(request, env) {
  * (Блок P1) проходять через ЦЕ, щоб jobPrefs/mockWeights/stats не дублювались
  * і не розходились між двома джерелами подій.
  */
-export async function applyEvent(env, body) {
+export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body) {
   // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
   //
   // Термінальні стадії (F1: rejected/failed) сюди СВІДОМО не входять — падають у
@@ -182,7 +182,7 @@ export async function applyEvent(env, body) {
  *  locked (checkin, вже підтверджений блок) — сурфейсимо чесно, той самий
  *  контракт, що runRecordAction (агент): {ok:true} саме по собі не каже,
  *  чи запис реально відбувся. */
-export async function handleEvent(request, env) {
+export async function handleEvent(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
@@ -202,7 +202,7 @@ export async function handleEvent(request, env) {
  * OAuth-обмін (зайва латентність + мережева залежність на екрані, який просто
  * показує стан). Кеш ще порожній -> віддаємо за наявністю секретів.
  */
-async function googleConnectors(env) {
+async function googleConnectors(/** @type {Env} */ env) {
   const hasGoogleCreds = Boolean(
     env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN,
   );
@@ -233,7 +233,7 @@ async function googleConnectors(env) {
  * (goal.weeklyTarget агрегується поруч із weeklyApplied) і виставляється подією
  * `set_goal` через /api/event, як решта мутацій дашборда.
  */
-export async function handleSettings(request, env) {
+export async function handleSettings(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
 
   if (request.method === 'GET') {
@@ -272,7 +272,7 @@ export async function handleSettings(request, env) {
  * заради рядка «Ти зберіг N» — марно. Архів у KV не обрізаний ніколи; його лише
  * не показували.
  */
-export async function handleSaved(request, env) {
+export async function handleSaved(/** @type {Request} */ request, /** @type {Env} */ env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   const url = new URL(request.url);
@@ -290,12 +290,14 @@ export async function handleSaved(request, env) {
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
  *  воронка, інтереси — приватні; без initData -> 401/403 (фронт ховає таб). */
-export async function handleStats(request, env) {
+export async function handleStats(/** @type {Request} */ request, /** @type {Env} */ env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   // Два незалежні KV-читання — паралельно (найгарячіший читальний шлях).
   const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
-  const stats = aggregateStats(store, kyivDateKey());
+  // Блоб: нижче до агрегату дописуються роадмеп/майстерність/голоси —
+  // поля, яких aggregateStats не знає й знати не мусить.
+  const stats = /** @type {KvBlob} */ (aggregateStats(store, kyivDateKey()));
   // roadmap/mastery — окремий KV-блоб (state, не stats); aggregateStats лишається
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
   const progress = state.roadmapProgress ?? {};

@@ -151,7 +151,11 @@ const AGENT_HOST_HEALTH_KEY = 'agentHostHealth';
  * кроків тому) читанні latest/funnelList: те, на що вказував дайджест, могло
  * зникнути чи зсунутись між readOwnData і цим кроком.
  */
-export async function runRecordAction(env, parsed, action) {
+export async function runRecordAction(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {KvBlob} */ action,
+) {
   const sendText = sendTo(env, parsed);
 
   if (action.kind === 'checkin') {
@@ -166,7 +170,8 @@ export async function runRecordAction(env, parsed, action) {
 
   if (action.kind === 'voteNews') {
     const latest = await loadLatest(env);
-    const groups = latest?.blocks?.find((b) => b?.id === 'news')?.data?.groups;
+    const groups = latest?.blocks?.find((/** @type {KvBlob} */ b) => b?.id === 'news')?.data
+      ?.groups;
     const flat = [];
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const it of Array.isArray(g?.items) ? g.items : []) {
@@ -232,7 +237,7 @@ export async function runRecordAction(env, parsed, action) {
   return sendText('✅ Позначив у роадмепі вивченим.');
 }
 
-async function loadAgentRuns(env) {
+async function loadAgentRuns(/** @type {Env} */ env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get(AGENT_RUNS_KEY)) ?? '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
@@ -242,7 +247,7 @@ async function loadAgentRuns(env) {
 }
 
 /** Прибрати старе + втримати кап (найсвіжіші за startedMs/finishedMs). */
-function pruneAgentRuns(runs, nowMs) {
+function pruneAgentRuns(/** @type {KvBlob} */ runs, /** @type {number} */ nowMs) {
   const entries = Object.entries(runs).filter(([, r]) => {
     const t = Number(r?.finishedMs ?? r?.startedMs);
     return Number.isFinite(t) && nowMs - t < AGENT_RUN_KEEP_MS;
@@ -251,12 +256,16 @@ function pruneAgentRuns(runs, nowMs) {
   return Object.fromEntries(entries.slice(0, MAX_TRACKED_RUNS));
 }
 
-async function markRunStarted(env, runId, info) {
+async function markRunStarted(
+  /** @type {Env} */ env,
+  /** @type {string} */ runId,
+  /** @type {KvBlob} */ info,
+) {
   try {
     const runs = await loadAgentRuns(env);
     runs[runId] = info;
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, info.startedMs)));
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     // Best-effort: марка потрібна лише сторожу. Збій KV не сміє зірвати запит.
     console.error('agentRuns mark start failed (не блокує прогін)', e);
   }
@@ -276,7 +285,11 @@ async function markRunStarted(env, runId, info) {
    лишається підпис токена, — тож його відсутність не має валити асистента. З
    того самого мотиву й збій DO пускає крок далі: блип платформи інакше забирав
    би асистента цілком, а це гірший розмін. */
-async function claimAgentStep(env, claims, nowMs) {
+async function claimAgentStep(
+  /** @type {Env} */ env,
+  /** @type {import('./agent-run-core.mjs').RunClaims} */ claims,
+  /** @type {number} */ nowMs,
+) {
   const ns = env.AGENT_RUN;
   if (typeof ns?.getByName !== 'function') {
     console.error('agent-step: AGENT_RUN не привʼязано — надгробок лишається best-effort (KV)');
@@ -286,7 +299,7 @@ async function claimAgentStep(env, claims, nowMs) {
   try {
     const claim = await ns.getByName(agentRunDoName(claims)).claimStep(claims.step, nowMs);
     return claim?.ok ? { ok: true } : { ok: false, error: claim?.error || 'step-rejected' };
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('agent-step: DO-клейм впав (крок пускаємо далі)', e?.message);
     return { ok: true };
   }
@@ -294,12 +307,16 @@ async function claimAgentStep(env, claims, nowMs) {
 
 /** Надгробок у DO — парний до claimAgentStep і best-effort із того самого
  *  мотиву: KV-марку (її читає сторож) ставить markRunFinished окремо. */
-async function finishAgentRunDo(env, claims, nowMs) {
+async function finishAgentRunDo(
+  /** @type {Env} */ env,
+  /** @type {import('./agent-run-core.mjs').RunClaims} */ claims,
+  /** @type {number} */ nowMs,
+) {
   const ns = env.AGENT_RUN;
   if (typeof ns?.getByName !== 'function') return;
   try {
     await ns.getByName(agentRunDoName(claims)).finish(nowMs);
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('agent-step: DO-фініш впав (не блокує відповідь)', e?.message);
   }
 }
@@ -314,21 +331,25 @@ async function finishAgentRunDo(env, claims, nowMs) {
  * обірваний запит. Надгробок же виживає в обох порядках: навіть якщо запис
  * старту загубився, сторож бачить finishedMs і мовчить.
  */
-async function markRunFinished(env, runId, nowMs = Date.now()) {
+async function markRunFinished(
+  /** @type {Env} */ env,
+  /** @type {string} */ runId,
+  nowMs = Date.now(),
+) {
   if (!runId) return;
   try {
     const runs = await loadAgentRuns(env);
     runs[runId] = { ...(runs[runId] ?? {}), finishedMs: nowMs };
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('agentRuns mark finish failed', e);
   }
 }
 
 /** message_id щойно надісланого повідомлення; null, якщо Telegram не дав. */
-async function messageIdOf(res) {
+async function messageIdOf(/** @type {Response} */ res) {
   try {
-    const j = await res.clone().json();
+    const j = /** @type {any} */ (await res.clone().json());
     const id = j?.result?.message_id;
     return typeof id === 'number' ? id : null;
   } catch {
@@ -337,11 +358,15 @@ async function messageIdOf(res) {
 }
 
 /** Тихо прибрати повідомлення «⏳ Працюю…» — його відмова нічого не ламає. */
-async function deleteProgressMessage(env, chatId, messageId) {
+async function deleteProgressMessage(
+  /** @type {Env} */ env,
+  /** @type {string|number|null|undefined} */ chatId,
+  /** @type {number|null|undefined} */ messageId,
+) {
   if (typeof messageId !== 'number') return;
   try {
     await tgCall(env, 'deleteMessage', { chat_id: chatId, message_id: messageId });
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('progress delete failed (не блокує відповідь)', e?.message);
   }
 }
@@ -349,11 +374,16 @@ async function deleteProgressMessage(env, chatId, messageId) {
 /** Переписати «⏳ Працюю…» під поточний крок (проміжний прогрес). Best-effort:
  *  збій редагування (мережа чи «message is not modified» на повторній дії) не
  *  блокує прогін — тут лише косметика. */
-async function editProgressMessage(env, chatId, messageId, text) {
+async function editProgressMessage(
+  /** @type {Env} */ env,
+  /** @type {string|number|null|undefined} */ chatId,
+  /** @type {number|null|undefined} */ messageId,
+  /** @type {string} */ text,
+) {
   if (typeof messageId !== 'number') return;
   try {
     await tgCall(env, 'editMessageText', { chat_id: chatId, message_id: messageId, text });
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('progress edit failed (не блокує прогін)', e?.message);
   }
 }
@@ -369,14 +399,22 @@ async function editProgressMessage(env, chatId, messageId, text) {
    assistantPending/sentMessages/agentRuns: наївні read-modify-write писарі
    `state` затирали б слот назад. Ключ той самий, що в історії розмови, тож
    тема з темою не змішуються. */
-function assistantResumeKey(chatId, threadId) {
+function assistantResumeKey(
+  /** @type {string|number|null|undefined} */ chatId,
+  /** @type {string|number|null|undefined} */ threadId,
+) {
   return `assistantResume:${historyKey(chatId, threadId)}`;
 }
 
 /** Покласти слот. Без нотатки не кладемо: продовжувати не було б чим, а
  *  порожній слот лише плутав би наступний запит. Збій KV не блокує питання —
  *  власник має його отримати в будь-якому разі. */
-async function saveAssistantResume(env, claims, note, nowMs) {
+async function saveAssistantResume(
+  /** @type {Env} */ env,
+  /** @type {import('./agent-run-core.mjs').RunClaims} */ claims,
+  /** @type {string|null|undefined} */ note,
+  /** @type {number} */ nowMs,
+) {
   if (!note) return;
   try {
     await env.BRIEFING.put(
@@ -388,14 +426,18 @@ async function saveAssistantResume(env, claims, note, nowMs) {
       JSON.stringify({ note, tainted: claims.tainted === true, atMs: nowMs }),
       { expirationTtl: Math.round(ASSISTANT_RESUME_TTL_MS / 1000) },
     );
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('assistantResume write failed (не блокує питання)', e);
   }
 }
 
 /** Забрати слот — ОДНОРАЗОВО: продовження буває рівно одне, а невидалений слот
  *  чіплявся б до наступних, уже інших запитів. */
-async function takeAssistantResume(env, chatId, threadId) {
+async function takeAssistantResume(
+  /** @type {Env} */ env,
+  /** @type {string|number|null|undefined} */ chatId,
+  /** @type {string|number|null|undefined} */ threadId,
+) {
   const key = assistantResumeKey(chatId, threadId);
   let rec = null;
   try {
@@ -406,7 +448,7 @@ async function takeAssistantResume(env, chatId, threadId) {
   if (!rec) return null;
   try {
     await env.BRIEFING.delete(key);
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('assistantResume delete failed (не блокує прогін)', e);
   }
   return rec;
@@ -416,7 +458,11 @@ async function takeAssistantResume(env, chatId, threadId) {
  * Новий вхід у агента: жодного циклу — надіслати «⏳», віддати роботу хосту.
  * Уся тривала частина живе на VPS, тож ця функція завершується за ~300мс.
  */
-export async function runAssistantAgent(env, parsed, userText) {
+export async function runAssistantAgent(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ userText,
+) {
   const sendText = sendTo(env, parsed);
   if (!userText || !userText.trim()) return sendText(UNKNOWN_REPLY); // стікер/фото/порожнє — не LLM
   if (!agentHostUrl(env) || !env.LLM_HOST_SECRET) return sendText(UNKNOWN_REPLY); // хост не налаштований
@@ -497,7 +543,11 @@ export async function runAssistantAgent(env, parsed, userText) {
  * assistant-data-core (щоб не підробив розділювачі транскрипту), а системний
  * промпт окремо попереджає не виконувати команди звідти.
  */
-async function runReadAction(env, action, nowMs) {
+async function runReadAction(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ action,
+  /** @type {number} */ nowMs,
+) {
   if (action.action === 'readBatch') {
     /* C3: кілька читань — ОДИН крок. Кожен крок циклу коштує окремий spawn
        `claude` (~11 с виміряно на проді), тож «календар + пошта» по одному
@@ -506,7 +556,7 @@ async function runReadAction(env, action, nowMs) {
        Збій ОДНОГО читання не валить решту: модель отримає те, що вдалось, і
        чесний рядок про те, що не вдалось. */
     const results = await Promise.all(
-      action.reads.map((sub) =>
+      action.reads.map((/** @type {KvBlob} */ sub) =>
         runReadAction(env, sub, nowMs).catch((e) => {
           console.error(`agent-step: ${sub.action} у батчі впало`, e?.message);
           return `${sub.action}: не спрацювало.`;
@@ -519,7 +569,7 @@ async function runReadAction(env, action, nowMs) {
     return formatMailForPrompt(await readMail(env, action.mailQuery));
   }
   if (action.action === 'readMailBody') {
-    return formatMailBodyForPrompt(await readMailBody(env, action.mailId));
+    return formatMailBodyForPrompt(await readMailBody(env, String(action.mailId ?? '')));
   }
   if (action.action === 'readDrive') {
     return formatDriveForPrompt(await searchDrive(env, action.driveQuery));
@@ -574,7 +624,7 @@ async function runReadAction(env, action, nowMs) {
  * Відповідь: {done:true} | {done:false, append, token} (текст у транскрипт + токен
  * наступного кроку).
  */
-export async function handleAgentStep(request, env) {
+export async function handleAgentStep(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.LLM_HOST_SECRET || !env.TELEGRAM_WEBHOOK_SECRET) {
     return json({ ok: false, error: 'not-configured' }, 503);
   }
@@ -615,7 +665,10 @@ export async function handleAgentStep(request, env) {
 
   /** Спільний фінал: прибрати «⏳», віддати відповідь, записати памʼять, зняти
    *  марку (KV — для сторожа, DO — щоб наступний крок цього прогону не пройшов). */
-  const finish = async (send, assistantSummary) => {
+  const finish = async (
+    /** @type {() => any} */ send,
+    /** @type {string|null|undefined} */ assistantSummary = undefined,
+  ) => {
     await deleteProgressMessage(env, claims.chatId, claims.progressMsgId);
     await send();
     if (assistantSummary) await rememberExchange(env, claims, assistantSummary);
@@ -730,7 +783,7 @@ export async function handleAgentStep(request, env) {
   // taint-гейті (S2).
   const tainting =
     action.action === 'readBatch'
-      ? action.reads.some((r) => TAINTING_READ_ACTIONS.has(r.action))
+      ? action.reads.some((/** @type {KvBlob} */ r) => TAINTING_READ_ACTIONS.has(r.action))
       : TAINTING_READ_ACTIONS.has(action.action);
   const tainted = claims.tainted || tainting;
   const nextToken = await nextRunToken(env.TELEGRAM_WEBHOOK_SECRET, { ...claims, tainted });
@@ -749,7 +802,7 @@ export async function handleAgentStep(request, env) {
   let append;
   try {
     append = await runReadAction(env, action, nowMs);
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     // Збій інструмента НЕ валить прогін: кажемо моделі про невдачу й даємо
     // дійти до фінальної дії з тим, що вже є.
     console.error('agent-step: читальна дія впала', e?.message);
@@ -772,7 +825,7 @@ export async function handleAgentStep(request, env) {
  * Алармуємо лише на записах зі `startedMs` без `finishedMs`, старших за
  * AGENT_RUN_STALE_MS (тобто вже й токен мертвий — прогін не міг би продовжитись).
  */
-export async function agentRunWatchdog(env) {
+export async function agentRunWatchdog(/** @type {Env} */ env) {
   const nowMs = Date.now();
   const runs = await loadAgentRuns(env);
   const stale = Object.entries(runs).filter(
@@ -795,7 +848,7 @@ export async function agentRunWatchdog(env) {
   }
   try {
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('agentRuns watchdog write failed', e);
   }
 }
@@ -812,7 +865,7 @@ export async function agentRunWatchdog(env) {
  * лежачий хост власник і так бачить на першому ж запиті («недоступний»), а
  * флапаючий VPS не має спамити тему «Система».
  */
-export async function agentHostHealthCheck(env) {
+export async function agentHostHealthCheck(/** @type {Env} */ env) {
   const url = agentHostUrl(env);
   // Без URL/секрету асистент свідомо вимкнений — стежити нема за чим. Без
   // TELEGRAM_CHAT_ID нема куди слати алерт.
@@ -832,7 +885,7 @@ export async function agentHostHealthCheck(env) {
       signal: ctrl.signal,
     });
     probe = { reached: true, status: res.status };
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('host health probe failed (не аварія)', e?.message);
   } finally {
     clearTimeout(timer);
@@ -861,7 +914,7 @@ export async function agentHostHealthCheck(env) {
         AGENT_HOST_HEALTH_KEY,
         JSON.stringify({ state: next, atMs: Date.now() }),
       );
-    } catch (e) {
+    } catch (/** @type {any} */ e) {
       console.error('host health state write failed', e);
     }
   }

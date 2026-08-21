@@ -63,15 +63,35 @@ const TOKEN_VERSION = 1;
  *  (worker.js) — токен їздить у кожному кроці, роздувати його нічим. */
 const MAX_TOKEN_USER_TEXT = 500;
 
+/**
+ * Вміст токена прогону після перевірки підпису.
+ * @typedef {object} RunClaims
+ * @property {string} runId
+ * @property {string|number} chatId
+ * @property {string|number|null} threadId
+ * @property {number|null} progressMsgId
+ * @property {string} userText
+ * @property {number} step
+ * @property {boolean} tainted таint-біт (S2): у транскрипті вже є чужий текст
+ * @property {number} expMs протухання ЦЬОГО кроку
+ * @property {number} deadlineMs дедлайн УСЬОГО прогону (кроком не поновлюється)
+ */
+
+/**
+ * Стан прогону в Durable Object. Обидва поля опційні: свіжий прогін не має
+ * жодного.
+ * @typedef {{ lastStep?: number, finishedMs?: number }} AgentRunState
+ */
+
 /* ── base64url без padding'у (btoa/atob є і в Worker'і, і в Node ≥16) ────── */
 
-function b64urlEncode(bytes) {
+function b64urlEncode(/** @type {Uint8Array} */ bytes) {
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function b64urlDecode(s) {
+function b64urlDecode(/** @type {unknown} */ s) {
   const bin = atob(String(s).replace(/-/g, '+').replace(/_/g, '/'));
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -86,20 +106,31 @@ function b64urlDecode(s) {
  * нього з фіксованим міткою-контекстом. Компрометація одного застосування не
  * дає підробити інше, і сам секрет із токена не відновити.
  */
-async function deriveRunKey(secret) {
+async function deriveRunKey(/** @type {string} */ secret) {
   const material = new TextEncoder().encode(`svitanok-agent-run:v${TOKEN_VERSION}:${secret}`);
   const digest = await crypto.subtle.digest('SHA-256', material);
   return crypto.subtle.importKey('raw', digest, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
 }
 
-/** Порівняння підписів за константний час (той самий мотив, що verifySecret). */
+/**
+ * Порівняння підписів за константний час (той самий мотив, що verifySecret).
+ * @param {Uint8Array} a
+ * @param {Uint8Array} b
+ */
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  // `?? 0` ніколи не спрацьовує (довжини звірено вище, i < a.length), але без
+  // нього noUncheckedIndexedAccess бачить `number|undefined`. Це не гілка за
+  // даними — вартість однакова на кожній ітерації, тож константний час цілий.
+  for (let i = 0; i < a.length; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
   return diff === 0;
 }
 
+/**
+ * @param {string} secret
+ * @param {string} payloadB64
+ */
 async function sign(secret, payloadB64) {
   const key = await deriveRunKey(secret);
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payloadB64));
@@ -125,6 +156,18 @@ async function sign(secret, payloadB64) {
  * read-your-writes: марка, покладена на старті, могла б бути ще не видною
  * через 5 секунд. У підписаному токені текст їде з прогоном і підробці не
  * піддається.
+ *
+ * @param {string} secret TELEGRAM_WEBHOOK_SECRET — його НЕ знає хост
+ * @param {object} opts
+ * @param {string} opts.runId
+ * @param {string|number} opts.chatId
+ * @param {string|number|null} [opts.threadId]
+ * @param {number|null} [opts.progressMsgId]
+ * @param {string} [opts.userText]
+ * @param {number} [opts.step]
+ * @param {boolean} [opts.tainted]
+ * @param {number} [opts.nowMs]
+ * @param {number} [opts.ttlMs]
  */
 export async function mintRunToken(
   secret,
@@ -167,6 +210,14 @@ export async function mintRunToken(
  * Порядок перевірок принциповий: спершу ПІДПИС, тоді вміст. Інакше ми б робили
  * висновки (протух / забагато кроків) із непідтверджених даних, а повідомлення
  * про помилку саме по собі ставало б оракулом для підбору.
+ *
+ * `secret` і `token` — `unknown` навмисно: обидва приходять ззовні (секрет
+ * може бути незаданим, токен — довільним рядком із мережі), і саме перші дві
+ * перевірки нижче звужують їх до рядків.
+ * @param {unknown} secret
+ * @param {unknown} token
+ * @param {number} [nowMs]
+ * @returns {Promise<{ ok: true, claims: RunClaims } | { ok: false, error: string }>}
  */
 export async function verifyRunToken(secret, token, nowMs = Date.now()) {
   if (typeof secret !== 'string' || !secret) return { ok: false, error: 'no-secret' };
@@ -246,13 +297,19 @@ export const AGENT_RUN_DO_KEEP_MS = AGENT_RUN_TTL_MS + 60_000;
  * `lastStep` монотонний — саме тому одного числа досить замість переліку
  * зайнятих кроків: легітимна петля лише зростає (крок n віддає токен на n+1),
  * тож будь-яке «≤ вже зайнятого» — це або реплей, або зіпсований токен.
+ * @param {AgentRunState|null|undefined} state
+ * @param {number} step
+ * @returns {{ ok: true, state: AgentRunState } | { ok: false, error: string }}
  */
 export function decideStepClaim(state, step) {
   if (state?.finishedMs) return { ok: false, error: 'run-finished' };
   if (!Number.isFinite(step) || step < 0 || step >= AGENT_MAX_STEPS) {
     return { ok: false, error: 'too-many-steps' };
   }
-  if (Number.isFinite(state?.lastStep) && step <= state.lastStep) {
+  // `typeof` тут не додає перевірки, а лише повідомляє її компілятору:
+  // Number.isFinite уже істинний ЛИШЕ для чисел, але звуження типу не дає.
+  const last = state?.lastStep;
+  if (typeof last === 'number' && Number.isFinite(last) && step <= last) {
     return { ok: false, error: 'step-replayed' };
   }
   return { ok: true, state: { ...(state ?? {}), lastStep: step } };
@@ -263,6 +320,7 @@ export function decideStepClaim(state, step) {
  * дедлайн прогону: збіг runId через місяці не має шансу натрапити на чужий
  * (уже мертвий) стан і зарубати живий прогін. Дедлайн їде в токені й жодним
  * кроком не поновлюється — отже, стабільний для всього прогону.
+ * @param {Partial<RunClaims>|null|undefined} claims
  */
 export function agentRunDoName(claims) {
   return `${claims?.runId ?? ''}:${claims?.deadlineMs ?? 0}`;
@@ -275,6 +333,10 @@ export function agentRunDoName(claims) {
  * кроком, продовжувала б собі життя нескінченно, і межа AGENT_RUN_TTL_MS не
  * значила б нічого. `e` (вікно кроку) видається свіже, але ніколи не переступає
  * `d`. Повертає null, коли кроки вичерпано (викликач віддає це як фінал прогону).
+ * @param {string} secret
+ * @param {RunClaims} claims
+ * @param {number} [nowMs]
+ * @returns {Promise<string|null>}
  */
 export async function nextRunToken(secret, claims, nowMs = Date.now()) {
   const step = claims.step + 1;

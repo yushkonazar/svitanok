@@ -61,7 +61,7 @@ const MIN_CANCEL_MATCH_LEN = 4;
  * до кінця виконує інструкцію «прибери слово частини доби») — якщо лишилось
  * "ввечері"/"вранці" тощо, НЕ довіряємо, а не мовчки ставимо хибний час.
  */
-export async function tryLlmReminderRewrite(env, text) {
+export async function tryLlmReminderRewrite(/** @type {Env} */ env, /** @type {string} */ text) {
   const now = Date.now();
   const res = await callLlmHost(env, {
     prompt: text,
@@ -88,7 +88,11 @@ export async function tryLlmReminderRewrite(env, text) {
  * «подій немає» (той самий graceful-degrade мотив, що computeOverlapWarnings):
  * пропозиція все одно йде, просто без реальної перевірки зайнятості.
  */
-export async function proposeDayPartReminder(env, parsed, dayPart) {
+export async function proposeDayPartReminder(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {KvBlob} */ dayPart,
+) {
   const nowMs = Date.now();
   const todayKey = kyivDateKey(new Date(nowMs));
   const tomorrowKey = addDaysToDateKey(todayKey, 1);
@@ -129,6 +133,12 @@ export async function proposeDayPartReminder(env, parsed, dayPart) {
  * бот питав «Що тебе запланувати на 24 липня?», а відповідь трактував як новий
  * запит). Для дії createReminder САМОГО агента fallback вимкнено — інакше
  * непарсибельний reminderText крутив би агента по колу.
+ */
+/**
+ * @param {Env} env
+ * @param {KvBlob} parsed
+ * @param {string} text
+ * @param {{ onUnparsed?: (() => any)|null }} [opts]
  */
 export async function createReminderFromText(env, parsed, text, { onUnparsed = null } = {}) {
   const sendText = sendTo(env, parsed);
@@ -183,22 +193,36 @@ export async function createReminderFromText(env, parsed, text, { onUnparsed = n
  * про це). Плоский текст відповіді (без parse_mode) — текст нагадування
  * довільний, Telegram не має інтерпретувати в ньому розмітку.
  */
+/**
+ * Знайти рівно одне активне нагадування за описом.
+ *
+ * Форма результату — пара «або-або» з явними `undefined`: саме так викликач
+ * після `if (found.reply) return …` дістає `found.reminder` без зайвої
+ * перевірки, і саме так tsc це бачить.
+ * @param {Env} env
+ * @param {unknown} matchText
+ * @returns {Promise<{ reply: string, reminder?: undefined }
+ *   | { reply?: undefined, reminder: import('./reminders-core.mjs').Reminder }>}
+ */
 export async function findReminderByText(env, matchText) {
   const state = await loadState(env);
   const q = String(matchText ?? '')
     .trim()
     .toLowerCase();
-  const matches = listActive(state.reminders).filter((r) =>
+  const matches = listActive(state.reminders).filter((/** @type {KvBlob} */ r) =>
     String(r.text).toLowerCase().includes(q),
   );
   if (matches.length === 0) {
     return { reply: `🤔 Не знайшов активного нагадування «${matchText}». Список — /reminders.` };
   }
   if (matches.length > 1) {
-    const list = matches.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
+    const list = matches
+      .map((/** @type {KvBlob} */ r, /** @type {number} */ i) => `${i + 1}. ${r.text}`)
+      .join('\n');
     return { reply: `🤔 Кілька нагадувань підходять — уточни, яке саме:\n${list}` };
   }
-  return { reminder: matches[0] };
+  // Приведення: гілки length===0 і length>1 уже повернули, отже елемент є.
+  return { reminder: /** @type {import('./reminders-core.mjs').Reminder} */ (matches[0]) };
 }
 
 /**
@@ -213,7 +237,11 @@ export async function findReminderByText(env, matchText) {
  * Taint-гейт (TAINT_BLOCKED_ACTIONS) НЕ послаблюємо: ✅ — це другий рубіж, а не
  * заміна першому. Після читання пошти дія і далі просто не доходить сюди.
  */
-export async function cancelReminderByText(env, parsed, matchText) {
+export async function cancelReminderByText(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ matchText,
+) {
   const sendText = sendTo(env, parsed);
   // Поріг довжини (S2): збіг іде по ПІДРЯДКУ, тож «о» чи «на» підходить майже
   // під будь-яке нагадування — і коли активне лишається одне, воно тихо
@@ -229,10 +257,14 @@ export async function cancelReminderByText(env, parsed, matchText) {
   }
   const found = await findReminderByText(env, matchText);
   if (found.reply) return sendText(found.reply);
+  // Приведення, а не `!== undefined` у гілці вище: `reply` — рядок, тож перевірка
+  // на істинність союз не розрізняє, а міняти умову на нерівність означало б
+  // міняти поведінку заради компілятора.
+  const reminder = /** @type {import('./reminders-core.mjs').Reminder} */ (found.reminder);
   return stageProposalItem(env, parsed, {
     kind: 'deleteReminder',
-    reminderId: found.reminder.id,
-    base: { title: found.reminder.text, whenMs: found.reminder.whenMs },
+    reminderId: reminder.id,
+    base: { title: reminder.text, whenMs: reminder.whenMs },
   });
 }
 
@@ -248,6 +280,11 @@ export async function cancelReminderByText(env, parsed, matchText) {
  * це ДО показу: непарсибельний час має давати чесну відповідь, а не пропозицію
  * «без змін».
  */
+/**
+ * @param {Env} env
+ * @param {KvBlob} parsed
+ * @param {{ reminderText?: unknown, reminderNewText?: unknown, when?: unknown }} opts
+ */
 export async function updateReminderByText(
   env,
   parsed,
@@ -256,11 +293,13 @@ export async function updateReminderByText(
   const sendText = sendTo(env, parsed);
   const found = await findReminderByText(env, matchText);
   if (found.reply) return sendText(found.reply);
+  const reminder = /** @type {import('./reminders-core.mjs').Reminder} */ (found.reminder);
 
+  /** @type {KvBlob} */
   const item = {
     kind: 'updateReminder',
-    reminderId: found.reminder.id,
-    base: { title: found.reminder.text, whenMs: found.reminder.whenMs },
+    reminderId: reminder.id,
+    base: { title: reminder.text, whenMs: reminder.whenMs },
   };
   if (reminderNewText) item.title = reminderNewText;
   if (when) {

@@ -303,13 +303,22 @@ PR у `develop` → merge → PR `develop`→`main` → merge. Жодних гі
 
 | Команда                                 | Що робить                                                |
 | --------------------------------------- | -------------------------------------------------------- |
-| `npm run typecheck`                     | `tsc --noEmit`                                           |
+| `npm run typecheck`                     | `tsc --noEmit` + `tsc -p web` (дві окремі програми)      |
+| `npm run typecheck:web`                 | лише код Worker'а (`web/*.mjs`, типи Cloudflare)         |
 | `npm run lint` / `npm run format:check` | ESLint / Prettier                                        |
 | `npm test`                              | vitest, увесь набір (`tests/`, дзеркалить `src/`+`web/`) |
 | `npm run dry-run`                       | оркестратор без реальної відправки                       |
 | `npm run build:web`                     | білд React Mini App у `web/public/app`                   |
 | `node scripts/check-telegram.mjs`       | діагностика бота, пошук `chat_id`                        |
 | `node scripts/guard.mjs [--force]`      | той самий guard, що й у CI                               |
+
+**Дві програми TypeScript, не одна.** `tsconfig.json` перевіряє `src/` і
+`tests/` (рантайм — node), `web/tsconfig.json` — код Worker'а (рантайм —
+workerd, типи `@cloudflare/workers-types`). Спільний конфіг означав би або
+node-глобали в коді Worker'а, або відсутні `KVNamespace`/`DurableObject`.
+`web/*.mjs` — JavaScript із JSDoc-типами під `checkJs`; прив'язки й секрети
+оголошені в `web/worker-env.d.ts`, і його розбіжність із `web/wrangler.jsonc`
+tsc НЕ побачить — звіряти вручну.
 
 **Деплой — по-різному для кожного компонента:**
 

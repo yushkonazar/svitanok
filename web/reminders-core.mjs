@@ -12,12 +12,23 @@
 
 import { escapeHtml } from './tg-core.mjs';
 
+/** @typedef {import('./calendar-core.mjs').CalEvent} CalEvent */
+
+/**
+ * Нагадування у state.reminders. `chatId`/`threadId` опційні НАВМИСНО (B12):
+ * запис без них означає «адреси не знаємо», і доставка чесно йде у фолбек,
+ * а не в «null-чат».
+ * @typedef {{ id: string, text: string, whenMs: number, createdMs?: number,
+ *             firedTs?: number|null, chatId?: string|number,
+ *             threadId?: string|number|null }} Reminder
+ */
+
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 export const SNOOZE_MINUTES = 10;
 
 /** UTC-офсет Києва (хв) у момент nowMs — DST-aware через Intl shortOffset. */
-function kyivOffsetMinutes(nowMs) {
+function kyivOffsetMinutes(/** @type {number} */ nowMs) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Europe/Kyiv',
     timeZoneName: 'shortOffset',
@@ -28,7 +39,8 @@ function kyivOffsetMinutes(nowMs) {
   return (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] || 0));
 }
 
-/** Київська дата "YYYY-MM-DD" у момент nowMs. */
+/** Київська дата "YYYY-MM-DD" у момент nowMs.
+ *  @param {number} nowMs */
 function kyivDateKeyOf(nowMs) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Kyiv',
@@ -43,6 +55,10 @@ function kyivDateKeyOf(nowMs) {
 // північ, а НЕ +N*86400000мс на реальний інстант (те друге ламається на
 // DST-переході, коли Y-M-D зсув і +1год стрибок комбінуються і "перестрибують"
 // через межу доби двічі — перевірено на весняному переході).
+/**
+ * @param {string} dateKey
+ * @param {number} days
+ */
 export function addDaysToDateKey(dateKey, days) {
   const d = new Date(dateKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + days);
@@ -58,6 +74,9 @@ export function addDaysToDateKey(dateKey, days) {
  * застосувався б до зимової дати й нагадування спрацювало б на годину раніше.
  * Два проходи: перший офсет — за наївним інстантом, другий — уточнення вже за
  * порахованим (рятує, коли перший прохід перестрибнув саму межу DST).
+ * @param {string} dateKey
+ * @param {number} hh
+ * @param {number} mm
  */
 function kyivHmToUtcMs(dateKey, hh, mm) {
   const naiveUtc = Date.parse(
@@ -73,13 +92,25 @@ function kyivHmToUtcMs(dateKey, hh, mm) {
 // Прибрати тригер-фразу з початку ("нагадай/нагадати/нагадуй [мені] [про]") —
 // спільна точка входу і для "/remind <args>" (де її вже нема), і для вільного
 // тексту в чаті (де вона є).
-function stripTrigger(text) {
+function stripTrigger(/** @type {string} */ text) {
   return text.replace(/^\s*нагад(ай|ати|уй)(\s+мені)?(\s+про)?\s*/i, '');
 }
 
+/**
+ * @param {string} text
+ * @param {string|(string|undefined)[]} matched
+ */
 function cleanRemainder(text, matched) {
   // matched — рядок або масив рядків (дата + час стрипаються обидва).
-  const parts = Array.isArray(matched) ? matched.filter(Boolean) : [matched];
+  // Розгорнуто в цикл замість filter(Boolean): виведення предиката з filter
+  // тут не спрацьовує, а результат мусить бути саме string[]. Умова та сама.
+  /** @type {string[]} */
+  const parts = [];
+  if (Array.isArray(matched)) {
+    for (const p of matched) if (typeof p === 'string' && p !== '') parts.push(p);
+  } else {
+    parts.push(matched);
+  }
   let rest = text;
   for (const p of parts) rest = rest.replace(p, '');
   rest = rest.replace(/\s{2,}/g, ' ').trim();
@@ -104,6 +135,7 @@ const MONTHS = [
   ['листопад', 'листопада'],
   ['грудень', 'грудня'],
 ];
+/** @type {Record<string, number>} */
 const MONTH_TO_NUM = {};
 MONTHS.forEach((forms, i) => forms.forEach((f) => (MONTH_TO_NUM[f] = i + 1)));
 // Довші форми першими (щоб «листопада» не обрізалось на «листопад» перед межею).
@@ -126,12 +158,14 @@ export const DEFAULT_DATE_HOUR = 10;
 // бути аж за 2-3 роки — ревʼю B; +5 покриває будь-який високосний випадок).
 const MAX_YEAR_LOOKAHEAD = 5;
 
-/** Київський рік у момент nowMs (для «24 липня» без року). */
+/** Київський рік у момент nowMs (для «24 липня» без року).
+ *  @param {number} nowMs */
 function kyivYearOf(nowMs) {
   return Number(kyivDateKeyOf(nowMs).slice(0, 4));
 }
 
-/** Витягти час «о HH[:.]MM» будь-де в тексті -> {hh,mm,matched}|null (валідний час). */
+/** Витягти час «о HH[:.]MM» будь-де в тексті -> {hh,mm,matched}|null (валідний час).
+ *  @param {string} text */
 function extractTime(text) {
   const m = text.match(TIME_RE);
   if (!m) return null;
@@ -152,6 +186,9 @@ function extractTime(text) {
  * Час («о HH») витягується ОКРЕМО (extractTime) і застосовується до дня/дати
  * незалежно від того, чи стоїть він упритул (ревʼю B: «завтра підписати договір
  * о 14» раніше ігнорувало «завтра», «24 липня подзвонити мамі о 15» — «о 15»).
+ * @param {unknown} rawText
+ * @param {number} [nowMs]
+ * @returns {{ whenMs: number, remainder: string }|null}
  */
 export function parseReminderTime(rawText, nowMs = Date.now()) {
   if (typeof rawText !== 'string') return null;
@@ -162,7 +199,7 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
   if (rel) {
     const n = Number(rel[1]);
     if (n > 0) {
-      const isHours = /^год/i.test(rel[2]);
+      const isHours = /^год/i.test(rel[2] ?? '');
       return {
         whenMs: nowMs + n * (isHours ? HOUR : MINUTE),
         remainder: cleanRemainder(text, rel[0]),
@@ -177,7 +214,7 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
   // не беремо: «завтра» саме по собі не задає години — хай далі вирішує LLM.
   const dayWord = text.match(/(?<![а-яіїєґ])(завтра|сьогодні)(?![а-яіїєґ])/i);
   if (dayWord && time) {
-    const isTomorrow = /завтра/i.test(dayWord[1]);
+    const isTomorrow = /завтра/i.test(dayWord[1] ?? '');
     const today = kyivDateKeyOf(nowMs);
     const dateKey = isTomorrow ? addDaysToDateKey(today, 1) : today;
     const whenMs = kyivHmToUtcMs(dateKey, time.hh, time.mm);
@@ -196,7 +233,9 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
   const dm = named || numeric;
   if (dm) {
     const day = Number(dm[1]);
-    const month = named ? MONTH_TO_NUM[dm[2].toLowerCase()] : Number(dm[2]);
+    // `?? NaN` дає той самий результат, що й колишній undefined: обидва
+    // провалюють перевірку `month >= 1` нижче.
+    const month = named ? (MONTH_TO_NUM[(dm[2] ?? '').toLowerCase()] ?? NaN) : Number(dm[2]);
     const hh = time ? time.hh : DEFAULT_DATE_HOUR;
     const mm = time ? time.mm : 0;
     // Явний рік — лише в числовій формі («24.07.2026»); 2-значний -> 20xx.
@@ -210,8 +249,9 @@ export function parseReminderTime(rawText, nowMs = Date.now()) {
     if (day >= 1 && month >= 1 && month <= 12) {
       // Довжина місяця — ОБОВʼЯЗКОВО, і саме тут: Date.parse('2026-02-31T…') у V8
       // не дає NaN, а перекочує на 3 березня. «31.02» -> NaN -> відмова.
-      const daysInMonth = (year) => new Date(Date.UTC(year, month, 0)).getUTCDate();
-      const build = (year) =>
+      const daysInMonth = (/** @type {number} */ year) =>
+        new Date(Date.UTC(year, month, 0)).getUTCDate();
+      const build = (/** @type {number} */ year) =>
         day > daysInMonth(year)
           ? NaN
           : kyivHmToUtcMs(
@@ -299,6 +339,8 @@ const REMINDER_TRIGGER_RE = /нагад/i;
  * Кому віддати вільний текст із «нагад»: 'agent' (складніший намір) чи
  * 'reminder' (звичайне «нагадай ‹що› ‹коли›» — наявний, швидкий шлях).
  * Дефолт — 'reminder': до агента йдемо лише за СИЛЬНИМ сигналом.
+ * @param {unknown} rawText
+ * @returns {'agent'|'reminder'}
  */
 export function classifyReminderIntent(rawText) {
   if (typeof rawText !== 'string' || !rawText.trim()) return 'reminder';
@@ -350,6 +392,7 @@ export const DAY_PART_RANGES = [
  * forcedDay: 'tomorrow'/'today', коли текст явно каже «завтра»/«сьогодні»
  * поруч (worker.js звужує пошук вільної години до ОДНОГО дня); null -> не
  * вказано, шукати можна і сьогодні, і завтра.
+ * @param {unknown} rawText
  */
 export function matchDayPartRange(rawText) {
   if (typeof rawText !== 'string' || !rawText) return null;
@@ -364,7 +407,7 @@ export function matchDayPartRange(rawText) {
       startHour: part.startHour,
       endHour: part.endHour,
       matched: m[0],
-      forcedDay: dayWord ? (/завтра/i.test(dayWord[1]) ? 'tomorrow' : 'today') : null,
+      forcedDay: dayWord ? (/завтра/i.test(dayWord[1] ?? '') ? 'tomorrow' : 'today') : null,
       remainder: cleanRemainder(text, [m[0], dayWord?.[0]]),
     };
   }
@@ -382,6 +425,12 @@ const SLOT_CHECK_MIN = 30;
  * формат, що calendar-core.parseEvents). `nowMs` відсікає вже минулі години
  * (0 -> нічого не минуло, для «завтра», де це не має сенсу). Немає вільної ->
  * null (викликач сам вирішує запасний варіант).
+ * @param {CalEvent[]|null|undefined} events
+ * @param {string} dateKey
+ * @param {number} startHour
+ * @param {number} endHour
+ * @param {number} [nowMs]
+ * @returns {number|null}
  */
 export function findFreeHourInRange(events, dateKey, startHour, endHour, nowMs = 0) {
   const list = Array.isArray(events) ? events : [];
@@ -394,8 +443,8 @@ export function findFreeHourInRange(events, dateKey, startHour, endHour, nowMs =
         e &&
         Number.isFinite(e.startMs) &&
         Number.isFinite(e.endMs) &&
-        e.startMs < slotEnd &&
-        e.endMs > slotStart,
+        (e.startMs ?? 0) < slotEnd &&
+        (e.endMs ?? 0) > slotStart,
     );
     if (!busy) return h;
   }
@@ -412,6 +461,10 @@ export function findFreeHourInRange(events, dateKey, startHour, endHour, nowMs =
  *
  * `days` = [{dateKey, events, nowMs, isToday}] у порядку пріоритету (типово
  * сьогодні тоді завтра; worker.js звужує до одного дня, коли forcedDay заданий).
+ * @param {{ dateKey: string, events: CalEvent[]|null, nowMs?: number,
+ *           isToday?: boolean }[]} days
+ * @param {number} startHour
+ * @param {number} endHour
  */
 export function pickDayPartSlot(days, startHour, endHour) {
   for (const day of days) {
@@ -420,15 +473,21 @@ export function pickDayPartSlot(days, startHour, endHour) {
   }
   for (const day of days) {
     const endMs = kyivHmToUtcMs(day.dateKey, endHour, 0);
-    if (!Number.isFinite(day.nowMs) || !Number.isFinite(endMs) || endMs > day.nowMs) {
+    if (!Number.isFinite(day.nowMs) || !Number.isFinite(endMs) || endMs > (day.nowMs ?? 0)) {
       return { dateKey: day.dateKey, hour: startHour, isToday: Boolean(day.isToday) };
     }
   }
-  const first = days[0];
+  // Порожній `days` тут і раніше падав на `first.dateKey` — приведення нічого
+  // не змінює, лише не вигадує нової гілки.
+  const first = /** @type {{ dateKey: string, isToday?: boolean }} */ (days[0]);
   return { dateKey: first.dateKey, hour: startHour, isToday: Boolean(first.isToday) };
 }
 
-/** Додати нагадування (id/nowMs — від виклику, щоб функція лишалась чистою). */
+/** Додати нагадування (id/nowMs — від виклику, щоб функція лишалась чистою).
+ *  @param {Reminder[]|null|undefined} reminders
+ *  @param {{ id: string, text: string, whenMs: number, nowMs: number,
+ *            chatId?: string|number|null, threadId?: string|number|null }} opts
+ *  @returns {Reminder[]} */
 export function addReminder(reminders, { id, text, whenMs, nowMs, chatId, threadId }) {
   const list = Array.isArray(reminders) ? reminders : [];
   return [
@@ -450,21 +509,29 @@ export function addReminder(reminders, { id, text, whenMs, nowMs, chatId, thread
   ];
 }
 
-/** Нагадування «на видачу»: час настав і ще не спрацьовувало. */
+/** Нагадування «на видачу»: час настав і ще не спрацьовувало.
+ *  @param {Reminder[]|null|undefined} reminders
+ *  @param {number} nowMs */
 export function dueReminders(reminders, nowMs) {
   return (Array.isArray(reminders) ? reminders : []).filter(
     (r) => r && typeof r.whenMs === 'number' && r.whenMs <= nowMs && !r.firedTs,
   );
 }
 
-/** Позначити спрацьованим (ідемпотентно — уже виставлений firedTs не чіпаємо). */
+/** Позначити спрацьованим (ідемпотентно — уже виставлений firedTs не чіпаємо).
+ *  @param {Reminder[]|null|undefined} reminders
+ *  @param {string} id
+ *  @param {number} nowMs */
 export function markFired(reminders, id, nowMs) {
   return (Array.isArray(reminders) ? reminders : []).map((r) =>
     r.id === id ? { ...r, firedTs: r.firedTs ?? nowMs } : r,
   );
 }
 
-/** Відкласти на SNOOZE_MINUTES: новий whenMs, скинути firedTs (спрацює знову). */
+/** Відкласти на SNOOZE_MINUTES: новий whenMs, скинути firedTs (спрацює знову).
+ *  @param {Reminder[]|null|undefined} reminders
+ *  @param {string} id
+ *  @param {number} nowMs */
 export function snoozeReminder(reminders, id, nowMs) {
   return (Array.isArray(reminders) ? reminders : []).map((r) =>
     r.id === id ? { ...r, whenMs: nowMs + SNOOZE_MINUTES * MINUTE, firedTs: null } : r,
@@ -490,7 +557,11 @@ export const SNOOZE_PRESETS = [
   { minutes: 1440, label: '😴 завтра' },
 ];
 
-/** Відкласти на пресет за індексом (SNOOZE_PRESETS) — невідомий індекс -> без змін. */
+/** Відкласти на пресет за індексом (SNOOZE_PRESETS) — невідомий індекс -> без змін.
+ *  @param {Reminder[]|null|undefined} reminders
+ *  @param {string} id
+ *  @param {number} presetIdx
+ *  @param {number} nowMs */
 export function snoozeReminderPreset(reminders, id, presetIdx, nowMs) {
   const preset = SNOOZE_PRESETS[presetIdx];
   if (!preset) return Array.isArray(reminders) ? reminders : [];
@@ -501,7 +572,10 @@ export function snoozeReminderPreset(reminders, id, presetIdx, nowMs) {
 
 export const REMINDER_SNOOZE_CB_PREFIX = 'rs:';
 
-/** `rs:<presetIdx>:<id>`; ≤64 байти, невалідний presetIdx -> null. */
+/** `rs:<presetIdx>:<id>`; ≤64 байти, невалідний presetIdx -> null.
+ *  @param {number} presetIdx
+ *  @param {string} id
+ *  @returns {string|null} */
 export function buildReminderSnoozeCallbackData(presetIdx, id) {
   if (!Number.isInteger(presetIdx) || presetIdx < 0 || presetIdx >= SNOOZE_PRESETS.length)
     return null;
@@ -509,7 +583,8 @@ export function buildReminderSnoozeCallbackData(presetIdx, id) {
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-/** Розібрати `rs:<presetIdx>:<id>` -> {presetIdx,id}|null. */
+/** Розібрати `rs:<presetIdx>:<id>` -> {presetIdx,id}|null.
+ *  @param {unknown} data */
 export function parseReminderSnoozeCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(REMINDER_SNOOZE_CB_PREFIX)) return null;
   const rest = data.slice(REMINDER_SNOOZE_CB_PREFIX.length);
@@ -524,7 +599,8 @@ export function parseReminderSnoozeCallbackData(data) {
 }
 
 /** Рядок кнопок-пресетів snooze + «✅ Виконано» для повідомлення «спрацювало»
- *  (checkReminders) — власник або відкладає, або одразу закриває нагадування. */
+ *  (checkReminders) — власник або відкладає, або одразу закриває нагадування.
+ *  @param {string} id */
 export function buildSnoozeRow(id) {
   const snoozeBtns = SNOOZE_PRESETS.map((preset, i) => {
     const cb = buildReminderSnoozeCallbackData(i, id);
@@ -540,6 +616,8 @@ export function buildSnoozeRow(id) {
  * СПРАВЖНЄ видалення (немає окремого поля cancelled/done — статус лише
  * через firedTs), бо скасоване нагадування не повинно лишати сліду. No-op,
  * якщо id невідомий (та сама ідемпотентна поведінка, що markFired).
+ * @param {Reminder[]|null|undefined} reminders
+ * @param {string} id
  */
 export function cancelReminder(reminders, id) {
   return (Array.isArray(reminders) ? reminders : []).filter((r) => r.id !== id);
@@ -552,6 +630,9 @@ export function cancelReminder(reminders, id) {
  * часу скидає firedTs (як snooze — нагадування знову «на видачу»); зміна
  * ЛИШЕ тексту його не чіпає. No-op на невідомий id (та сама ідемпотентна
  * поведінка, що markFired/cancelReminder).
+ * @param {Reminder[]|null|undefined} reminders
+ * @param {string} id
+ * @param {{ text?: string, whenMs?: number }} [patch]
  */
 export function updateReminder(reminders, id, patch = {}) {
   return (Array.isArray(reminders) ? reminders : []).map((r) => {
@@ -567,7 +648,9 @@ export function updateReminder(reminders, id, patch = {}) {
 }
 
 /** Активні (ще не спрацювали) нагадування, за зростанням часу спрацювання —
- *  для /reminders (список+скасувати, §C4). */
+ *  для /reminders (список+скасувати, §C4).
+ *  @param {Reminder[]|null|undefined} reminders
+ *  @returns {Reminder[]} */
 export function listActive(reminders) {
   return (Array.isArray(reminders) ? reminders : [])
     .filter((r) => r && !r.firedTs)
@@ -585,18 +668,21 @@ export function listActive(reminders) {
 // префікса вже достатня, дату/ніч рахує сервер (checkinDateKey), як і чек-ін.
 export const SLEEP_START_CB_PREFIX = 'sl:';
 export const buildSleepStartCallbackData = () => `${SLEEP_START_CB_PREFIX}1`;
-export const isSleepStartCallback = (data) =>
+export const isSleepStartCallback = (/** @type {unknown} */ data) =>
   typeof data === 'string' && data.startsWith(SLEEP_START_CB_PREFIX);
 
 export const REMINDER_CANCEL_CB_PREFIX = 'rc:';
 
-/** callback_data «скасувати нагадування id»; ≤64 байти (Telegram-ліміт), інакше null. */
+/** callback_data «скасувати нагадування id»; ≤64 байти (Telegram-ліміт), інакше null.
+ *  @param {string} id
+ *  @returns {string|null} */
 export function buildReminderCancelCallbackData(id) {
   const s = `${REMINDER_CANCEL_CB_PREFIX}${id}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-/** Розібрати `rc:<id>` -> id; не той префікс чи порожній id -> null. */
+/** Розібрати `rc:<id>` -> id; не той префікс чи порожній id -> null.
+ *  @param {unknown} data */
 export function parseReminderCancelCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(REMINDER_CANCEL_CB_PREFIX)) return null;
   const id = data.slice(REMINDER_CANCEL_CB_PREFIX.length);
@@ -608,13 +694,16 @@ export function parseReminderCancelCallbackData(data) {
 // історії, worker.js). Окремий простір від rc:/rm: (жоден не префікс іншого).
 export const REMINDER_EDIT_CB_PREFIX = 'ru:';
 
-/** callback_data «редагувати нагадування id»; ≤64 байти, інакше null. */
+/** callback_data «редагувати нагадування id»; ≤64 байти, інакше null.
+ *  @param {string} id
+ *  @returns {string|null} */
 export function buildReminderEditCallbackData(id) {
   const s = `${REMINDER_EDIT_CB_PREFIX}${id}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-/** Розібрати `ru:<id>` -> id; не той префікс чи порожній id -> null. */
+/** Розібрати `ru:<id>` -> id; не той префікс чи порожній id -> null.
+ *  @param {unknown} data */
 export function parseReminderEditCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(REMINDER_EDIT_CB_PREFIX)) return null;
   const id = data.slice(REMINDER_EDIT_CB_PREFIX.length);
@@ -626,13 +715,16 @@ export function parseReminderEditCallbackData(data) {
 // від rc:/ru:/rs:/rm: — і від 'rd:' (roadmap-core.mjs), з яким інакше збігся б.
 export const REMINDER_DONE_CB_PREFIX = 'rk:';
 
-/** callback_data «нагадування виконано id»; ≤64 байти, інакше null. */
+/** callback_data «нагадування виконано id»; ≤64 байти, інакше null.
+ *  @param {string} id
+ *  @returns {string|null} */
 export function buildReminderDoneCallbackData(id) {
   const s = `${REMINDER_DONE_CB_PREFIX}${id}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-/** Розібрати `rk:<id>` -> id; не той префікс чи порожній id -> null. */
+/** Розібрати `rk:<id>` -> id; не той префікс чи порожній id -> null.
+ *  @param {unknown} data */
 export function parseReminderDoneCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(REMINDER_DONE_CB_PREFIX)) return null;
   const id = data.slice(REMINDER_DONE_CB_PREFIX.length);
@@ -640,12 +732,14 @@ export function parseReminderDoneCallbackData(data) {
 }
 
 /** Текст ПІСЛЯ «✅ Виконано» — перепис повідомлення (editMessageText), клавіатура
- *  прибирається повністю (worker.js) — статус видно одразу, тапати вже нема куди. */
+ *  прибирається повністю (worker.js) — статус видно одразу, тапати вже нема куди.
+ *  @param {string} text */
 export function formatReminderDone(text) {
   return `✅ <b>Виконано</b>\n${escapeHtml(text)}`;
 }
 
-/** /reminders — список активних нагадувань (найближче спершу), Київський час. */
+/** /reminders — список активних нагадувань (найближче спершу), Київський час.
+ *  @param {Reminder[]|null|undefined} reminders */
 export function formatRemindersListMessage(reminders) {
   const active = listActive(reminders);
   if (active.length === 0) {
@@ -672,6 +766,7 @@ export function formatRemindersListMessage(reminders) {
 // буквальне 'all' ніколи не збігнеться зі справжнім id (extra c, схвалено власником).
 const CANCEL_ALL_ID = 'all';
 
+/** @param {Reminder[]|null|undefined} reminders */
 export function buildRemindersKeyboard(reminders) {
   const active = listActive(reminders);
   const rows = active
@@ -690,7 +785,10 @@ export function buildRemindersKeyboard(reminders) {
   return { inline_keyboard: rows };
 }
 
-/** Підтвердження одразу після створення нагадування ("/remind"-відповідь). */
+/** Підтвердження одразу після створення нагадування ("/remind"-відповідь).
+ *  @param {number} whenMs
+ *  @param {string} remainder
+ *  @param {number} [nowMs] */
 export function formatReminderConfirm(whenMs, remainder, nowMs = Date.now()) {
   // Рік показуємо, лише коли він НЕ поточний (B1): «3 січня», сказане в липні,
   // котиться на наступний рік — і це має бути видно, інакше «03.01 о 10:00»
@@ -707,7 +805,8 @@ export function formatReminderConfirm(whenMs, remainder, nowMs = Date.now()) {
   return `✅ Нагадаю ${time}: ${escapeHtml(remainder)}`;
 }
 
-/** Текст самого нагадування, коли час настав. */
+/** Текст самого нагадування, коли час настав.
+ *  @param {string} text */
 export function formatReminderFired(text) {
   return `⏰ <b>Нагадування</b>\n${escapeHtml(text)}`;
 }
@@ -746,6 +845,7 @@ export const CANONICAL_EXAMPLES = [
  * канонічних патернів (з поточним київським часом як контекст — потрібен
  * лише для відносних понять на кшталт «післязавтра»/«в обід», НЕ для того,
  * щоб LLM сама рахувала UTC — це робить parseReminderTime вдруге, надійно).
+ * @param {number} nowMs
  */
 export function buildLlmRewriteSystemPrompt(nowMs) {
   const kyivNow = new Intl.DateTimeFormat('uk-UA', {
@@ -777,12 +877,15 @@ export function buildLlmRewriteSystemPrompt(nowMs) {
 // модель лишила буквальне "о 8:00" замість "о 20:00", "ввечері" протекло в текст).
 const AMBIGUOUS_TIME_WORDS = /вранці|зранку|вдень|ввечері|вночі|опівдні|опівночі|в обід/i;
 
-/** Чи rewrite ненадійний — досі містить нерозв'язане слово частини доби. */
+/** Чи rewrite ненадійний — досі містить нерозв'язане слово частини доби.
+ *  @param {string} rewritten */
 export function isAmbiguousRewrite(rewritten) {
   return AMBIGUOUS_TIME_WORDS.test(rewritten);
 }
 
-/** Витягнути валідний rewritten-рядок зі structured-відповіді хоста; інакше null. */
+/** Витягнути валідний rewritten-рядок зі structured-відповіді хоста; інакше null.
+ *  @param {KvBlob|null|undefined} structured
+ *  @returns {string|null} */
 export function extractLlmRewrite(structured) {
   const rewritten = structured?.rewritten;
   return typeof rewritten === 'string' && rewritten.trim() ? rewritten.trim() : null;

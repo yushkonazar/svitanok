@@ -21,7 +21,17 @@
 import { normalizeSettings } from './settings-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
 
-/** Спільний читач: JSON із ключа або дефолт. Биття/відсутність -> дефолт. */
+/**
+ * Спільний читач: JSON із ключа або дефолт. Биття/відсутність -> дефолт.
+ *
+ * `any` тут — не лінь, а точне твердження: жоден із цих ключів поки що не має
+ * оголошеної схеми (див. KvBlob у worker-env.d.ts). Публічні читачі нижче
+ * звужують результат до KvBlob кожен за себе.
+ * @param {Env} env
+ * @param {string} key
+ * @param {unknown} fallback
+ * @returns {Promise<any>}
+ */
 async function readJson(env, key, fallback) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
@@ -33,49 +43,67 @@ async function readJson(env, key, fallback) {
 
 /** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
  *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
- *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts). */
+ *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts).
+ *  @param {Env} env */
 export async function loadSettings(env) {
   return normalizeSettings(await readJson(env, 'settings', null));
 }
 
-/** Прочитати стор статистики з KV (ключ `stats`); биття -> {}. */
+/** Прочитати стор статистики з KV (ключ `stats`); биття -> {}.
+ *  @param {Env} env
+ *  @returns {Promise<KvBlob>} */
 export async function loadStats(env) {
   return readJson(env, 'stats', {});
 }
 
+/**
+ * @param {Env} env
+ * @returns {Promise<KvBlob>}
+ */
 export async function loadState(env) {
   return readJson(env, 'state', {});
 }
 
 /** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
  *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
- *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state'). */
+ *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state').
+ *  @param {Env} env
+ *  @returns {Promise<KvBlob>} */
 export async function loadSentMessages(env) {
   return readJson(env, 'sentMessages', {});
 }
 
 /** Писар того самого ring-buffer. Окремо від читача, бо писарів двоє (репліки
  *  бота й вхідні повідомлення власника) — і обидва мусять merge-before-flush
- *  через recordSentMessage, а не класти сирий обʼєкт. */
+ *  через recordSentMessage, а не класти сирий обʼєкт.
+ *  @param {Env} env
+ *  @param {KvBlob} sentMessages */
 export async function putSentMessages(env, sentMessages) {
   await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
 }
 
 /** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
- *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}. */
+ *  дайджесту асистента (CC4, dataScope "briefing"/"all"); биття -> {}.
+ *  @param {Env} env
+ *  @returns {Promise<KvBlob>} */
 export async function loadLatest(env) {
   return readJson(env, 'latest', {});
 }
 
 /** Прочитати ІСТОРИЧНИЙ (не latest!) снапшот дня — callback завжди резолвиться
- *  проти того самого брифінгу, що бачив власник, навіть через кілька днів. */
+ *  проти того самого брифінгу, що бачив власник, навіть через кілька днів.
+ *  @param {Env} env
+ *  @param {string} dateKey київська дата "YYYY-MM-DD"
+ *  @returns {Promise<KvBlob>} */
 export async function loadBriefingForDate(env, dateKey) {
   return readJson(env, `briefing:${dateKey}`, {});
 }
 
 /** Історія діалогу асистента per-thread (ключ `assistantHistory`, CM) — ОКРЕМИЙ
  *  KV-ключ від 'state' (як sentMessages: запис на кожен обмін не ділить гонку
- *  писарів state-блоба). Биття -> {}. */
+ *  писарів state-блоба). Биття -> {}.
+ *  @param {Env} env
+ *  @returns {Promise<KvBlob>} */
 export async function loadAssistantHistory(env) {
   return readJson(env, 'assistantHistory', {});
 }
@@ -87,6 +115,8 @@ export async function loadAssistantHistory(env) {
  *
  * TTL тут — «стільки тиші»: кожен запис відсуває межу, тож жива розмова не
  * зникає посеред себе, а покинута прибирається сама.
+ * @param {Env} env
+ * @param {KvBlob} history
  */
 export async function putAssistantHistory(env, history) {
   await env.BRIEFING.put('assistantHistory', JSON.stringify(history), {
@@ -114,6 +144,10 @@ export async function putAssistantHistory(env, history) {
  * замість того щоб мовчки затерти чужі зміни. НІКОЛИ не кладіть сюди
  * побічні ефекти (Telegram-виклики тощо) — вони виконались би двічі при
  * ретраї; лише саму мутацію стану, ПІСЛЯ того як side-effects уже сталися.
+ *
+ * @param {Env} env
+ * @param {(store: KvBlob) => KvBlob} patch
+ * @returns {Promise<KvBlob>}
  */
 export async function updateStats(env, patch) {
   const raw1 = (await env.BRIEFING.get('stats')) ?? '{}';
@@ -154,6 +188,8 @@ export const ASSISTANT_PENDING_KEY = 'assistantPending';
  * Брифінг (src/orchestrator, mail.ts) тепер теж пише СЮДИ напряму (writeKvJson
  * на assistantPending, не в блоб `state`) — legacy-фолбек на `state.assistantPending`
  * прибрано разом із самим записом на тому боці.
+ * @param {Env} env
+ * @returns {Promise<KvBlob|null>}
  */
 export async function loadAssistantPending(env) {
   return readJson(env, ASSISTANT_PENDING_KEY, null);
@@ -176,6 +212,8 @@ export async function loadAssistantPending(env) {
  * Put-null тумбстоун (не delete: KV без read-your-writes, і delete немає в
  * частині тест-моків — той самий мотив, що markRunFinished). Повертає true,
  * якщо саме цей виклик списав.
+ * @param {Env} env
+ * @param {string} id
  */
 export async function claimAssistantPending(env, id) {
   const pending = await loadAssistantPending(env);
@@ -188,7 +226,7 @@ export async function claimAssistantPending(env, id) {
  *  подвійний тап, і будь-який ретрай доставки; довше тримати нема сенсу —
  *  пропозиція з таким id вже не повернеться. */
 const EXECUTED_TTL_S = 86_400;
-const executedKey = (id) => `assistantExecuted:${id}`;
+const executedKey = (/** @type {string} */ id) => `assistantExecuted:${id}`;
 
 /**
  * Позначити пропозицію ВИКОНАНОЮ. true — цей виклик перший, можна робити
@@ -204,6 +242,8 @@ const executedKey = (id) => `assistantExecuted:${id}`;
  * помилка, за яку виправлено коментар вище. Разом зі зняттям клавіатури одразу
  * після claim цього досить, щоб подвійний тап людини не створював другої події;
  * гарантію дає лише Durable Object.
+ * @param {Env} env
+ * @param {string|null|undefined} id
  */
 export async function markProposalExecuted(env, id) {
   if (!id) return false;

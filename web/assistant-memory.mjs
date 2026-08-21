@@ -16,11 +16,16 @@
 import { appendTurn } from './assistant-memory-core.mjs';
 import { loadAssistantHistory, putAssistantHistory } from './kv-store.mjs';
 
+/** @typedef {import('./agent-run-core.mjs').RunClaims} RunClaims */
+
 /**
  * Записати обмін у памʼять треду. Викликається ЛИШЕ на успішному фініші — як і
  * до переходу: провалений (часто оверсайз) обмін інакше отруював би контекст
  * наступних повідомлень. Текст користувача приїхав у підписаному токені, тож
  * KV-розсинхрон не може його загубити.
+ * @param {Env} env
+ * @param {RunClaims} claims
+ * @param {string} assistantSummary
  */
 export async function rememberExchange(env, claims, assistantSummary) {
   try {
@@ -39,6 +44,9 @@ export async function rememberExchange(env, claims, assistantSummary) {
  * user-репліки просто немає. Наступне СПРАВЖНЄ повідомлення власника ляже
  * поверх — «ПРОДОВЖЕННЯ РОЗМОВИ» у системному промпті (agent-core.mjs) вже
  * навчена трактувати його як відповідь на щойно задане питання.
+ * @param {Env} env
+ * @param {import('./tg-core.mjs').SendTarget} parsed
+ * @param {string} text
  */
 export async function rememberAssistantQuestion(env, parsed, text) {
   try {
