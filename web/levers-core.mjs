@@ -36,6 +36,7 @@ import { asList, isDateKey, dayKey, weekStartKey, FLAME_VALUES } from './stats-c
 // НЕ переставляти, лише дописувати в кінець.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** @type {Record<string, string>} */
 export const LEVER_DOMAINS = {
   recovery: 'Відновлення',
   affect: 'Самопочуття',
@@ -45,19 +46,118 @@ export const LEVER_DOMAINS = {
   attention: 'Увага',
 };
 
-/** @type {{key: string, domain: string, label: string, emoji: string, unit: string}[]} */
+/**
+ * ⚠️ `more`/`less` — ГОТОВІ ФРАЗИ, а не рід із прикметником у шаблоні.
+ *
+ * Перша версія збирала речення як «коли {label} вищий за звичайний», і на
+ * екрані виходило «оцінка дня більше» та «коли роадмеп вищий» — прикметник не
+ * узгоджувався з родом ознаки. Граматичний рушій заради одинадцяти рядків був
+ * би дорожчим за самі рядки й однаково помилявся б на наступній ознаці, тож
+ * форма лежить поруч із назвою: додав ознаку — написав дві фрази.
+ *
+ * @type {{key: string, domain: string, label: string, emoji: string, unit: string,
+ *         more: string, less: string}[]}
+ */
 export const LEVER_FEATURES = [
-  { key: 'sleep', domain: 'recovery', label: 'Сон', emoji: '🌙', unit: 'год' },
-  { key: 'energy', domain: 'affect', label: 'Енергія', emoji: '⚡', unit: '' },
-  { key: 'mood', domain: 'affect', label: 'Настрій', emoji: '🙂', unit: '' },
-  { key: 'dayScore', domain: 'affect', label: 'Оцінка дня', emoji: '⭐', unit: '' },
-  { key: 'flames', domain: 'habits', label: 'Вогники', emoji: '🔥', unit: '' },
-  { key: 'mock', domain: 'learning', label: 'Питання', emoji: '🧠', unit: '' },
-  { key: 'roadmap', domain: 'learning', label: 'Роадмеп', emoji: '📚', unit: 'тем' },
-  { key: 'applied', domain: 'search', label: 'Подачі', emoji: '📨', unit: '' },
-  { key: 'funnelMoves', domain: 'search', label: 'Рух воронки', emoji: '📈', unit: '' },
-  { key: 'news', domain: 'attention', label: 'Новини', emoji: '📰', unit: '' },
-  { key: 'opens', domain: 'attention', label: 'Відкриття', emoji: '👀', unit: '' },
+  {
+    key: 'sleep',
+    domain: 'recovery',
+    label: 'Сон',
+    emoji: '🌙',
+    unit: 'год',
+    more: 'більше сну',
+    less: 'менше сну',
+  },
+  {
+    key: 'energy',
+    domain: 'affect',
+    label: 'Енергія',
+    emoji: '⚡',
+    unit: '',
+    more: 'більше енергії',
+    less: 'менше енергії',
+  },
+  {
+    key: 'mood',
+    domain: 'affect',
+    label: 'Настрій',
+    emoji: '🙂',
+    unit: '',
+    more: 'кращий настрій',
+    less: 'гірший настрій',
+  },
+  {
+    key: 'dayScore',
+    domain: 'affect',
+    label: 'Оцінка дня',
+    emoji: '⭐',
+    unit: '',
+    more: 'вища оцінка дня',
+    less: 'нижча оцінка дня',
+  },
+  {
+    key: 'flames',
+    domain: 'habits',
+    label: 'Вогники',
+    emoji: '🔥',
+    unit: '',
+    more: 'більше вогників',
+    less: 'менше вогників',
+  },
+  {
+    key: 'mock',
+    domain: 'learning',
+    label: 'Питання',
+    emoji: '🧠',
+    unit: '',
+    more: 'більше питань',
+    less: 'менше питань',
+  },
+  {
+    key: 'roadmap',
+    domain: 'learning',
+    label: 'Роадмеп',
+    emoji: '📚',
+    unit: 'тем',
+    more: 'більше тем роадмепу',
+    less: 'менше тем роадмепу',
+  },
+  {
+    key: 'applied',
+    domain: 'search',
+    label: 'Подачі',
+    emoji: '📨',
+    unit: '',
+    more: 'більше подач',
+    less: 'менше подач',
+  },
+  {
+    key: 'funnelMoves',
+    domain: 'search',
+    label: 'Рух воронки',
+    emoji: '📈',
+    unit: '',
+    more: 'більше руху у воронці',
+    less: 'менше руху у воронці',
+  },
+  {
+    key: 'news',
+    domain: 'attention',
+    label: 'Новини',
+    emoji: '📰',
+    unit: '',
+    more: 'більше новин',
+    less: 'менше новин',
+  },
+  {
+    key: 'opens',
+    domain: 'attention',
+    label: 'Відкриття',
+    emoji: '👀',
+    unit: '',
+    more: 'більше відкриттів',
+    less: 'менше відкриттів',
+  },
 ];
 
 export const LEVER_FEATURE_KEYS = LEVER_FEATURES.map((f) => f.key);

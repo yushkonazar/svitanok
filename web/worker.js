@@ -39,6 +39,7 @@ import {
 } from './api-dashboard.mjs';
 import { handleStatus } from './api-status.mjs';
 import { handleArchiveRequest } from './api-archive.mjs';
+import { handleLeversRequest } from './api-levers.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -321,6 +322,12 @@ export default {
       // 10 мс CPU на кожен відкритий дашборд, а це потрібно лише коли людина
       // відкриє «Історію».
       return handleArchiveRequest(request, env);
+    }
+    if (url.pathname === '/api/levers') {
+      // Шар звʼязків — ОКРЕМО від /api/stats, як і архів: додаткове читання KV
+      // заради блоку, який дивляться раз на тиждень, не має коштувати на
+      // кожному відкритті дашборда.
+      return handleLeversRequest(request, env);
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
