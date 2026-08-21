@@ -725,9 +725,16 @@ function ranks(xs) {
 }
 
 /** Spearman rho + p (t-апроксимація — той самий формула, що scipy.stats.spearmanr).
+ *
+ *  `nEff` підмінює ЛИШЕ число ступенів свободи, не сам rho. Потрібне «Важелям»
+ *  (levers-core.mjs): на автокорельованих тижневих рядах незалежної інформації
+ *  менше, ніж спостережень, і p з n у знаменнику систематично занижене. Тут це
+ *  параметр, а не окрема копія функції — інакше дві реалізації rho розʼїхались
+ *  би, а золоті вектори порівнювали б різну математику.
  *  @param {number[]} xs
- *  @param {number[]} ys */
-export function spearman(xs, ys) {
+ *  @param {number[]} ys
+ *  @param {number} [nEff] */
+export function spearman(xs, ys, nEff) {
   const n = xs.length;
   const rx = ranks(xs);
   const ry = ranks(ys);
@@ -745,9 +752,10 @@ export function spearman(xs, ys) {
   }
   const denom = Math.sqrt(dx2 * dy2);
   const rho = denom > 1e-12 ? num / denom : 0;
-  if (n <= 2 || Math.abs(rho) >= 1) return { rho, p: Math.abs(rho) >= 1 ? 0 : 1 };
-  const t = (rho * Math.sqrt(n - 2)) / Math.sqrt(1 - rho * rho);
-  return { rho, p: studentTTwoSidedP(t, n - 2) };
+  const df = (nEff ?? n) - 2;
+  if (df <= 0 || Math.abs(rho) >= 1) return { rho, p: Math.abs(rho) >= 1 ? 0 : 1 };
+  const t = (rho * Math.sqrt(df)) / Math.sqrt(1 - rho * rho);
+  return { rho, p: studentTTwoSidedP(t, df) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
