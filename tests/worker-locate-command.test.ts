@@ -225,6 +225,50 @@ describe('POST /api/weather/locate-prompt — тригер із Mini App', () =>
     expect(markup.keyboard[0]?.[0]).toMatchObject({ request_location: true });
   });
 
+  /* Регресія, знайдена рев'ю PR #334.
+   *
+   * Доки initData їхав у ТІЛІ, GET сюди не проходив сам собою: тіла в нього
+   * немає, автентифікація не складалась, відповідь була 401 — тобто метод
+   * гейтився випадково, побічним ефектом місця, звідки читали initData.
+   * Після переносу в заголовок (M3) той самий GET став валідним, і побічна
+   * дія — бот шле власнику повідомлення — поїхала б на методі, який усі
+   * вважають читанням: превʼю посилання, префетч, повтор із девтулзів.
+   *
+   * Перевіряємо не лише статус, а й що Telegram НЕ смикнули: 405 із уже
+   * надісланим повідомленням був би найгіршим варіантом — виглядає як відмова,
+   * а дія сталась. */
+  for (const method of ['GET', 'HEAD', 'PUT', 'DELETE'] as const) {
+    it(`${method} із валідним заголовком власника -> 405 і ЖОДНОГО sendMessage`, async () => {
+      const initData = await buildInitData(OWNER, 'bot-token');
+      const res = await worker.fetch(
+        new Request('https://svitanok.example/api/weather/locate-prompt', {
+          method,
+          headers: { 'X-Telegram-Init-Data': initData },
+        }),
+        env(),
+        { waitUntil: () => {} },
+      );
+      expect(res.status).toBe(405);
+      expect(lastSend()).toBeUndefined();
+    });
+  }
+
+  it('POST без тіла (саме так шле клієнт) -> 200, автентифікація заголовком', async () => {
+    // Клієнт після M3 не шле тіла взагалі; серверні тести вище шлють `{}`,
+    // тобто гілку, якою прод не ходить. Ця перевіряє реальну форму запиту.
+    const initData = await buildInitData(OWNER, 'bot-token');
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/weather/locate-prompt', {
+        method: 'POST',
+        headers: { 'X-Telegram-Init-Data': initData },
+      }),
+      env(),
+      { waitUntil: () => {} },
+    );
+    expect(res.status).toBe(200);
+    expect(lastSend()?.body).toMatchObject({ chat_id: String(OWNER) });
+  });
+
   it('Telegram sendMessage повернув помилку -> 502, не тихий «ok:true»', async () => {
     vi.stubGlobal('fetch', async (input: unknown) => {
       if (String(input).includes('api.telegram.org')) return new Response('down', { status: 500 });

@@ -459,9 +459,17 @@ export async function handleWeatherLocatePrompt(
   /** @type {Request} */ request,
   /** @type {Env} */ env,
 ) {
+  // ⚠️ Гейт методу СТОЇТЬ ПЕРШИМ і не є формальністю. Доки initData їхав у
+  // тілі, GET сюди не проходив сам собою: тіла в нього немає, тож автентифікація
+  // не складалась і відповідь була 401. Після переносу автентифікації в
+  // заголовок (M3) той самий GET став валідним — тобто побічна дія (бот шле
+  // власнику повідомлення) поїхала б на «безпечному» методі, який будь-хто
+  // вважає читанням: превʼю посилання, префетч, повтор запиту з девтулзів.
+  if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
+
   const parsedBody = await readJsonBody(request);
-  // Тіло тут НЕ обовʼязкове (DELETE без тіла) -> биття JSON = null, як і було;
-  // а от завелике тіло відкидаємо явно (S3).
+  // Тіло тут НЕ обовʼязкове (клієнт шле POST зовсім без нього) -> биття JSON =
+  // null, як і було; а от завелике тіло відкидаємо явно (S3).
   if (!parsedBody.ok && parsedBody.status === 413) {
     return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   }
