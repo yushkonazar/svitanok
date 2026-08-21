@@ -20,7 +20,7 @@ const OWNER = 4242;
 
 let kv: Map<string, string>;
 let tg: { method: string; body: Record<string, unknown> }[];
-let dispatches: { body: Record<string, unknown> }[];
+let dispatches: { url: string; body: Record<string, unknown> }[];
 let dispatchStatus: number;
 
 function env(overrides: Record<string, unknown> = {}) {
@@ -78,7 +78,7 @@ beforeEach(() => {
     const url = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     if (url.includes('api.github.com')) {
-      dispatches.push({ body });
+      dispatches.push({ url, body });
       // null, а не '': конструктор Response забороняє тіло при 204 (саме цей
       // статус і віддає GitHub на успішний workflow_dispatch).
       return new Response(null, { status: dispatchStatus });
@@ -161,5 +161,30 @@ describe('/brief -> workflow_dispatch', () => {
 
     expect(dispatches).toHaveLength(1);
     expect(lastSendText()).toContain('нещодавно запускався');
+  });
+});
+
+/* Слаг репозиторію в URL диспетчу (P4). Раніше він був зашитий у cron.mjs, тож
+ * форк чи перейменування вимагали правки коду. Дефолт лишається той самий —
+ * новий обовʼязковий секрет тут завів би прод у стан «брифінг не диспатчиться,
+ * доки власник не поставить змінну в двох місцях». */
+describe('workflow_dispatch — слаг репозиторію', () => {
+  it('без GH_REPO — дефолтний слаг', async () => {
+    await sendCommand('/brief');
+    expect(dispatches[0]?.url).toBe(
+      'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches',
+    );
+  });
+
+  it('GH_REPO перекриває слаг', async () => {
+    await sendCommand('/brief', env({ GH_REPO: 'someone/fork' }));
+    expect(dispatches[0]?.url).toBe(
+      'https://api.github.com/repos/someone/fork/actions/workflows/brief.yml/dispatches',
+    );
+  });
+
+  it('порожній GH_REPO — дефолт, а не порожній сегмент шляху', async () => {
+    await sendCommand('/brief', env({ GH_REPO: '   ' }));
+    expect(dispatches[0]?.url).toContain('/repos/yushkonazar/svitanok/');
   });
 });
