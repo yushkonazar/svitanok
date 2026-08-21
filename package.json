@@ -2,6 +2,7 @@
   "name": "svitanok",
   "version": "0.1.0",
   "description": "Персональний ранковий брифінг-бот у Telegram (GitHub Actions + claude -p)",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "engines": {
