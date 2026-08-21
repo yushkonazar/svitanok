@@ -34,7 +34,19 @@ const MAX_REQUEST_BODY_BYTES = 16 * 1024;
  * ⚠️ Rate-limit сам по собі тут НЕ вирішується — це конфіг Cloudflare WAF на
  * /api/*, поза кодом (див. AUDIT §8 S3).
  *
+ * ⚠️ ТІЛО МУСИТЬ БУТИ ПЛОСКИМ ОБʼЄКТОМ. `JSON.parse` радо віддає масив, рядок,
+ * число чи `null` — і кожен викликач далі індексує його як обʼєкт. `'x'.type`
+ * тихо дає undefined, `[].initData` теж, тож помилковий запит проходив би
+ * далі мовчки, замість зупинитись на межі. Жоден `/api/*` не приймає
+ * не-обʼєкт, тож перевірка нічого легітимного не відкидає.
+ *
+ * `KvBlob`, а не `unknown`: перевірка стверджує лише ФОРМУ, не вміст. Поля й
+ * далі валідує кожен ендпоінт сам (`typeof body.title === 'string'`,
+ * `cleanCheckin`, `isSafeKey`) — цей рядок їх не заміняє.
+ *
  * @param {Request} request
+ * @returns {Promise<{ ok: true, body: KvBlob }
+ *   | { ok: false, status: number, error: string }>}
  */
 export async function readJsonBody(request) {
   const declared = Number(request.headers.get('content-length'));
@@ -53,7 +65,11 @@ export async function readJsonBody(request) {
     return { ok: false, status: 413, error: 'body-too-large' };
   }
   try {
-    return { ok: true, body: JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, status: 400, error: 'bad-json' };
+    }
+    return { ok: true, body: parsed };
   } catch {
     return { ok: false, status: 400, error: 'bad-json' };
   }
