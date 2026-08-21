@@ -38,6 +38,23 @@ import { constantTimeEqual } from './tg-core.mjs';
  * @typedef {AuthOk | AuthFail} AuthResult
  */
 
+/**
+ * Скільки живе підпис. 86400 — рівно те, що радить документація Telegram, і
+ * саме стільки триває сесія Mini App: `auth_date` видається ОДИН раз на запуск
+ * і не оновлюється, доки апку не перезапустили. Вужче вікно віддавало б 401
+ * апці, відкритій довше за нього, без способу поновити підпис.
+ */
+const INIT_DATA_MAX_AGE_SEC = 86_400;
+
+/**
+ * Допуск на розбіжність годинників для дати З МАЙБУТНЬОГО.
+ *
+ * Мале й асиметричне навмисно: розбіжність годинника клієнта й Cloudflare —
+ * це секунди, а не години. Усе, що далі, — не «трохи спішить», а підписана
+ * дата, якої ще не було.
+ */
+const INIT_DATA_MAX_SKEW_SEC = 300;
+
 /* ── Telegram WebApp initData (HMAC-SHA256, WebCrypto) ─────────────────── */
 
 /**
@@ -106,7 +123,16 @@ export async function validateInitData(initData, botToken) {
   // розбіжного байта — той самий інваріант, що verifyWebhookSecret/timingSafeEqual.
   if (!constantTimeEqual(computed, hash)) return null;
   const authDate = Number(params.get('auth_date') ?? 0);
-  if (!authDate || Date.now() / 1000 - authDate > 86400) return null; // старіше 24 год
+  // Вік підпису в секундах: додатний — у минулому, відʼємний — у майбутньому.
+  const ageSec = Date.now() / 1000 - authDate;
+  if (!authDate || ageSec > INIT_DATA_MAX_AGE_SEC) return null;
+  // ⚠️ ДРУГИЙ БІК того самого вікна (SV-B3). Доти перевірялась лише верхня
+  // межа, тож `auth_date` із майбутнього проходив без обмежень — заміряно на
+  // +10 років. Підпис при цьому валідний: дату підписує той, хто підписує
+  // initData, тобто вона НЕ доказ свіжості, доки її не звірили з обох боків.
+  // Наслідок був конкретний: один такий initData ставав ключем без терміну
+  // придатності — 24-годинне вікно для нього просто не наставало.
+  if (ageSec < -INIT_DATA_MAX_SKEW_SEC) return null;
   try {
     return { user: JSON.parse(params.get('user') ?? 'null') };
   } catch {
