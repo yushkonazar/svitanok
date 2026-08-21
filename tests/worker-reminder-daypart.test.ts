@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
 
 /* Інтеграційні тести «нагадування з фрази частини доби» (вранці/в обід/після
  * обіду/ввечері тощо, БЕЗ явної години) — createReminderFromText мусить не
@@ -21,9 +22,7 @@ let googleEventsByDate: Map<string, { summary: string; start: string; end: strin
 function env() {
   return {
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
@@ -215,9 +214,7 @@ describe('доставка нагадування за адресою створ
 
   const cronEnv = (kv: Map<string, string>) => ({
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_CHAT_ID: GROUP_CHAT,

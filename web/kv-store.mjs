@@ -209,9 +209,13 @@ export async function loadAssistantPending(env) {
  * (web/proposals.mjs). Справжня серіалізація — Durable Object, він у проєкті
  * уже є (AGENT_RUN), і це стратегічний фікс, а не сьогоднішній.
  *
- * Put-null тумбстоун (не delete: KV без read-your-writes, і delete немає в
- * частині тест-моків — той самий мотив, що markRunFinished). Повертає true,
- * якщо саме цей виклик списав.
+ * Put-null тумбстоун, а не delete: KV не має read-your-writes, тож видалений
+ * ключ ще якийсь час читається як наявний, а покладений `null` — як `null`
+ * одразу (той самий мотив, що markRunFinished). Повертає true, якщо саме цей
+ * виклик списав.
+ *
+ * (Раніше тут стояла й друга причина — «delete немає в частині тест-моків».
+ * Вона відпала: спільний стаб tests/helpers/kv.ts його має.)
  * @param {Env} env
  * @param {string} id
  */

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
 
 /* Інтеграційні тести autoTelegramSetup (щоденний самозапуск /api/telegram/setup
  * з крону) — власник більше не мусить руками виконувати curl після зміни
@@ -22,9 +23,7 @@ let calls: string[];
 function env(overrides: Record<string, unknown> = {}) {
   return {
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     TELEGRAM_WEBHOOK_SECRET: 'tg-webhook-secret',
     TELEGRAM_BOT_TOKEN: 'bot-token',

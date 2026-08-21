@@ -5,6 +5,7 @@ import worker from '../web/worker.js';
 import { mintRunToken } from '../web/agent-run-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import { ASSISTANT_RESUME_TTL_MS } from '../web/agent-core.mjs';
+import { memoryKv } from './helpers/kv.js';
 
 /* U3 (аудит §10) — уточнення перестає бути кінцем роботи.
  *
@@ -33,10 +34,7 @@ let agentRuns: Call[];
 function env(over: Record<string, unknown> = {}) {
   return {
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      delete: async (k: string) => void kv.delete(k),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
