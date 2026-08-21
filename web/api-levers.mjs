@@ -21,8 +21,15 @@ import { checkOwnerRead } from './auth-core.mjs';
 import { loadLevers } from './kv-store.mjs';
 import { LEVER_FEATURES, LEVER_DOMAINS, GATE_WEEKS, USEFUL_WEEKS } from './levers-core.mjs';
 
-/** key -> {label, emoji, unit, domain, domainLabel} для підписів на екрані. */
-const FEATURES = Object.fromEntries(
+/**
+ * key -> {label, emoji, unit, more, less, domain, domainLabel} для підписів.
+ *
+ * ⚠️ Мапа, а не обʼєкт. `FEATURES['constructor']` на звичайному обʼєкті
+ * правдиве через ланцюг прототипів, тож рядок із такою «ознакою» пройшов би
+ * фільтр нижче й доїхав до екрана порожнім. Той самий клас, від якого в
+ * stats-core.mjs живе `isSafeKey`.
+ */
+const FEATURE_MAP = new Map(
   LEVER_FEATURES.map((f) => [
     f.key,
     {
@@ -36,6 +43,9 @@ const FEATURES = Object.fromEntries(
     },
   ]),
 );
+
+/** Той самий вміст простим обʼєктом — рівно для серіалізації у відповідь. */
+const FEATURES = Object.fromEntries(FEATURE_MAP);
 
 /**
  * Збережений блоб -> відповідь дашборда.
@@ -86,8 +96,10 @@ function shape(/** @type {KvBlob|null} */ raw) {
     weeksNeeded: Number(raw.weeksNeeded) || 0,
     tested: Number(raw.tested) || 0,
     shown: Number(raw.shown) || 0,
-    rows: rows.filter((/** @type {KvBlob} */ r) => r && FEATURES[r.from] && FEATURES[r.to]),
-    skipped: skipped.filter((/** @type {KvBlob} */ s) => s && FEATURES[s.key]),
+    rows: rows.filter(
+      (/** @type {KvBlob} */ r) => r && FEATURE_MAP.has(r.from) && FEATURE_MAP.has(r.to),
+    ),
+    skipped: skipped.filter((/** @type {KvBlob} */ s) => s && FEATURE_MAP.has(s.key)),
   };
 }
 
@@ -95,5 +107,11 @@ function shape(/** @type {KvBlob|null} */ raw) {
  *  @param {Request} request
  *  @param {Env} env */
 export async function handleLeversRequest(request, env) {
+  // ⚠️ Гейт методу — ПЕРЕД автентифікацією й перед читанням KV. Ендпоінт
+  // read-only, тож POST сюди нічого не ламає; але той самий клас уже
+  // виправляли для /api/weather/locate-prompt (ревʼю PR #334), і лишати новий
+  // маршрут відкритим для будь-якого дієслова означає повторювати те, від чого
+  // щойно відмовились.
+  if (request.method !== 'GET') return json({ ok: false, error: 'method' }, 405);
   return handleLevers(env, await checkOwnerRead(request, env));
 }

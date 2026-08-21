@@ -340,9 +340,9 @@ export async function archiveMonthly(/** @type {Env} */ env) {
  * тиждень: усі ряди тижневі, і всередині тижня відповідь не змінюється.
  *
  * Заміряно на стору з ПОВНИМ роком даних (311 чек-інів, 365 діб активності,
- * 324 подачі, 132 вакансії у воронці): `buildWeeklySeries` 2.71 мс +
- * `analyzeLevers` 0.89 мс = 3.59 мс. Дорожчий саме ЗБІР, не математика —
- * математика на 52 точках коштує 0.88 мс навіть коли рахуються всі 24
+ * 324 подачі, 132 вакансії у воронці): `buildWeeklySeries` 2.24 мс +
+ * `analyzeLevers` 0.86 мс = 3.10 мс. Дорожчий саме ЗБІР, не математика —
+ * математика на 52 точках коштує 0.80 мс навіть коли рахуються всі 24
  * гіпотези без жодної діри.
  *
  * ⚠️ ГЕЙТ — НЕ ГОДИНА, А ТИЖДЕНЬ. Решта задач гейтяться за `kyivHour()` +
@@ -366,7 +366,13 @@ export async function computeLevers(/** @type {Env} */ env) {
 
     // ⚠️ Два блоби, бо ряди живуть у двох: усе, що з чек-іну й активності — у
     // `stats`, а рух роадмепу — у `state.roadmapProgress`.
-    const [store, state] = [await loadStats(env), await loadState(env)];
+    //
+    // Promise.all, а не масив із двох await: другий у масивному літералі
+    // почався б лише після завершення першого, тобто задача чекала б дві RTT
+    // замість однієї. Тут це безпечно — обидва ЧИТАННЯ, різні ключі, жодного
+    // read-modify-write; саме запис у цьому файлі свідомо лишається
+    // послідовним (інваріант ізоляції B11).
+    const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
     const built = buildWeeklySeries(store, state, today, LEVERS_WEEKS_WINDOW);
     const analysis = analyzeLevers(built.series, built.weeksUsable);
 

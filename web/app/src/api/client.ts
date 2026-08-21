@@ -123,9 +123,11 @@ export async function fetchLevers(): Promise<LeversResult> {
       () => EMPTY_LEVERS,
     );
   const res = await fetch('/api/levers', { cache: 'no-store', headers: authHeaders() });
-  if (res.status === 401 || res.status === 403) {
-    return { levers: null, features: {}, gate: 26, useful: 39 };
-  }
+  // ⚠️ Порожній результат збирає САМА схема, а не літерали тут: інакше число
+  // гейта жило б у трьох місцях клієнта (схема, цей фолбек, компонент) і
+  // мовчки розійшлося б зі `GATE_WEEKS` на сервері — а видно його саме в
+  // стані «потрібно ще N тижнів», де воно і є всім змістом екрана.
+  if (res.status === 401 || res.status === 403) return leversSchema.parse({});
   if (!res.ok) throw new Error(`Не вдалося завантажити важелі (${res.status})`);
   const parsed = leversSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат важелів змінився — оновіть застосунок');

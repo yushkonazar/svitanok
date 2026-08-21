@@ -407,7 +407,15 @@ const round6 = (/** @type {number} */ v) => Math.round(v * 1e6) / 1e6;
  * @param {number} lag
  */
 export function contrast(drv, tgt, lag) {
-  const { xs, ys } = levelSamples(drv, tgt, lag);
+  return contrastOf(levelSamples(drv, tgt, lag));
+}
+
+/**
+ * Те саме на ВЖЕ вирівняній вибірці — щоб `analyzeLevers` не будував її
+ * втретє: рівневі пари там пораховані ще до поправок.
+ * @param {{xs: number[], ys: number[]}} samples
+ */
+export function contrastOf({ xs, ys }) {
   if (xs.length < MIN_PAIR_N) return null;
   const med = median(xs);
   /** @type {number[]} */
@@ -437,11 +445,15 @@ export function contrast(drv, tgt, lag) {
 export function analyzeLevers(series, weeksUsable, hypotheses = LEVER_HYPOTHESES) {
   /** @type {{key: string, reason: string}[]} */
   const skipped = [];
-  /** @type {Record<string, boolean>} */
-  const usable = {};
+  // ⚠️ Map, а не обʼєкт: `usable['constructor']` на звичайному обʼєкті
+  // правдиве через ланцюг прототипів, тож гіпотеза з таким імʼям ознаки
+  // пройшла б гейт придатності. Той самий клас, від якого в stats-core.mjs
+  // живе `isSafeKey`.
+  /** @type {Map<string, boolean>} */
+  const usable = new Map();
   for (const key of LEVER_FEATURE_KEYS) {
     const v = seriesUsable(series[key] ?? []);
-    usable[key] = v.ok;
+    usable.set(key, v.ok);
     if (!v.ok) skipped.push({ key, reason: v.reason });
   }
 
@@ -451,27 +463,32 @@ export function analyzeLevers(series, weeksUsable, hypotheses = LEVER_HYPOTHESES
   const pEff = [];
   /** @type {number[]} */
   const pDiff = [];
+  /** @type {{xs: number[], ys: number[]}[]} */
+  const levels = [];
   for (const h of hypotheses) {
-    if (!usable[h.from] || !usable[h.to]) continue;
+    if (!usable.get(h.from) || !usable.get(h.to)) continue;
     const drv = series[h.from] ?? [];
     const tgt = series[h.to] ?? [];
     const lvl = levelSamples(drv, tgt, h.lag);
     const dif = diffSamples(drv, tgt, h.lag);
     if (lvl.xs.length < MIN_PAIR_N || dif.xs.length < MIN_PAIR_N) continue;
-    const level = spearman(lvl.xs, lvl.ys);
+    // ⚠️ ОДИН виклик на рівневу пару, не два. `nEff` підмінює лише ступені
+    // свободи, тож `rho` в обох випадках той самий — другий виклик заново
+    // сортував би ті самі ранги заради числа, яке вже пораховане.
     const withEff = spearman(lvl.xs, lvl.ys, effN(lvl.xs, lvl.ys));
     const diff = spearman(dif.xs, dif.ys);
     considered.push({
       from: h.from,
       to: h.to,
       lag: h.lag,
-      rho: round4(level.rho),
+      rho: round4(withEff.rho),
       rhoDiff: round4(diff.rho),
       n: lvl.xs.length,
       nDiff: dif.xs.length,
     });
     pEff.push(withEff.p);
     pDiff.push(diff.p);
+    levels.push(lvl);
   }
 
   const keepEff = bhKeep(pEff);
@@ -492,11 +509,7 @@ export function analyzeLevers(series, weeksUsable, hypotheses = LEVER_HYPOTHESES
       // p рядка — ГІРШИЙ із двох, не кращий: рядок настільки надійний,
       // наскільки надійна слабша з двох поправок.
       p: round6(Math.max(pEff[i] ?? 1, pDiff[i] ?? 1)),
-      effect: contrast(
-        series[/** @type {string} */ (c.from)] ?? [],
-        series[/** @type {string} */ (c.to)] ?? [],
-        /** @type {number} */ (c.lag),
-      ),
+      effect: contrastOf(levels[i] ?? { xs: [], ys: [] }),
     });
   });
   rows.sort(
@@ -559,54 +572,112 @@ export function buildWeeklySeries(store, state, todayKey, weeks) {
     weekStarts.push(dayKey(new Date(Date.parse(lastFull + 'T00:00:00Z') - i * 7 * 86400000)));
   }
   const index = new Map(weekStarts.map((w, i) => [w, i]));
-  const inRange = (/** @type {string} */ k) => isDateKey(k) && index.has(weekStartKey(k));
-  const slotOf = (/** @type {string} */ k) => index.get(weekStartKey(k)) ?? -1;
+  /**
+   * Дата -> номер кошика, або -1 поза вікном.
+   *
+   * ⚠️ ОДНА функція замість пари inRange/slotOf: обидві рахували
+   * `weekStartKey`, а той конструює Date і форматує рядок — тобто кожен запис
+   * стору платив за це двічі. На 365 добах це коштувало більше, ніж уся
+   * математика блоку разом.
+   */
+  const slotOf = (/** @type {string} */ k) =>
+    isDateKey(k) ? (index.get(weekStartKey(k)) ?? -1) : -1;
 
   /** @type {Record<string, number[][]>} накопичувачі значень по тижнях */
   const acc = {};
   for (const key of LEVER_FEATURE_KEYS) acc[key] = weekStarts.map(() => []);
   const checkinDays = weekStarts.map(() => 0);
 
+  /**
+   * Найраніший тиждень вікна, у якому стор має ХОЧ ЩОСЬ.
+   *
+   * ⚠️ БЕЗ ЦЬОГО ЛІЧИЛЬНИКИ БРЕХАЛИ Б. Вікно — 52 тижні, а історія коротша:
+   * `days` пишеться з 07.07.2026, чек-ін із 17.07. Тижні до появи даних
+   * діставали нуль («подій не було») замість діри («даних не було») — і
+   * СПІЛЬНИЙ блок фальшивих нулів робив будь-які два лічильники схожими.
+   *
+   * Заміряно на двох НЕЗАЛЕЖНИХ випадкових лічильниках (400 прогонів): без
+   * префікса середній |rho| = 0.158 і обидві поправки проходять у 6% випадків;
+   * із 26-тижневим нуль-префіксом — |rho| = 0.675 і 32%. Гейт `modeShare > 0.5`
+   * тут не рятує: за рівно половини нулів частка дорівнює 0.500, тобто не
+   * більша. Саме така пропорція буде в січні 2027, коли блок уперше вмикається.
+   */
+  let firstData = weekStarts.length;
+  const seen = (/** @type {number} */ i) => {
+    if (i >= 0 && i < firstData) firstData = i;
+  };
+
   for (const [d, rec] of Object.entries(checkins)) {
-    if (!inRange(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
+    if (d > todayKey || !rec || typeof rec !== 'object') continue;
     const i = slotOf(d);
+    if (i < 0) continue;
     const slots = ['morning', 'afternoon', 'evening'].filter(
       (sl) => rec[sl] && typeof rec[sl] === 'object',
     );
     if (!slots.length) continue;
-    checkinDays[i] = (checkinDays[i] ?? 0) + 1;
+    seen(i);
+    // ⚠️ Доба рахується за ЗАПИСАНИМ ЗНАЧЕННЯМ, а не за наявністю обʼєкта
+    // слоту. Порожній `{}` — теж обʼєкт, і без цієї перевірки тиждень із
+    // трьох порожніх слотів ставав «придатним», тобто йшов у знаменник
+    // гейта 26 тижнів, не давши жодного числа.
+    let recorded = false;
     const sleepH = sleepHoursOf(rec.morning);
-    if (typeof sleepH === 'number') acc.sleep?.[i]?.push(sleepH);
-    if (typeof rec.evening?.dayScore === 'number') acc.dayScore?.[i]?.push(rec.evening.dayScore);
-    for (const sl of slots) {
-      if (typeof rec[sl].energy === 'number') acc.energy?.[i]?.push(rec[sl].energy);
-      if (typeof rec[sl].mood === 'number') acc.mood?.[i]?.push(rec[sl].mood);
+    if (typeof sleepH === 'number') {
+      acc.sleep?.[i]?.push(sleepH);
+      recorded = true;
     }
-    if (rec.evening && typeof rec.evening === 'object') {
+    if (typeof rec.evening?.dayScore === 'number') {
+      acc.dayScore?.[i]?.push(rec.evening.dayScore);
+      recorded = true;
+    }
+    for (const sl of slots) {
+      if (typeof rec[sl].energy === 'number') {
+        acc.energy?.[i]?.push(rec[sl].energy);
+        recorded = true;
+      }
+      if (typeof rec[sl].mood === 'number') {
+        acc.mood?.[i]?.push(rec[sl].mood);
+        recorded = true;
+      }
+    }
+    // ⚠️ Вогники пишемо, ЛИШЕ якщо поле справді є. Інакше вечір, у якому про
+    // них не питали, ставав нулем — і «не запалив жодного» зливалося з
+    // «питання не було», зміщуючи весь ряд донизу.
+    if (rec.evening && typeof rec.evening === 'object' && rec.evening.flames !== undefined) {
       const flames = asList(rec.evening.flames).filter((f) => FLAME_VALUES.includes(f));
       acc.flames?.[i]?.push(flames.length);
+      recorded = true;
     }
+    if (recorded) checkinDays[i] = (checkinDays[i] ?? 0) + 1;
   }
 
   for (const [d, rec] of Object.entries(days)) {
-    if (!inRange(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
+    if (d > todayKey || !rec || typeof rec !== 'object') continue;
     const i = slotOf(d);
+    if (i < 0) continue;
+    seen(i);
     acc.mock?.[i]?.push(dayNum(rec, 'mock'));
     acc.news?.[i]?.push(dayNum(rec, 'news'));
     acc.opens?.[i]?.push(dayNum(rec, 'opens'));
   }
 
   for (const a of Array.isArray(s.appliedLog) ? s.appliedLog : []) {
-    if (a && typeof a.ts === 'string' && inRange(a.ts) && a.ts <= todayKey) {
-      acc.applied?.[slotOf(a.ts)]?.push(1);
+    if (a && typeof a.ts === 'string' && a.ts <= todayKey) {
+      const i = slotOf(a.ts);
+      if (i < 0) continue;
+      seen(i);
+      acc.applied?.[i]?.push(1);
     }
   }
 
   const funnelMeta = s.funnelMeta && typeof s.funnelMeta === 'object' ? s.funnelMeta : {};
   for (const meta of Object.values(funnelMeta)) {
     for (const h of Array.isArray(meta?.history) ? meta.history : []) {
-      if (h && typeof h.ts === 'string' && inRange(h.ts) && h.ts <= todayKey) {
-        acc.funnelMoves?.[slotOf(h.ts)]?.push(1);
+      if (h && typeof h.ts === 'string' && h.ts <= todayKey) {
+        const i = slotOf(h.ts);
+        if (i < 0) continue;
+        seen(i);
+        acc.funnelMoves?.[i]?.push(1);
       }
     }
   }
@@ -618,7 +689,11 @@ export function buildWeeklySeries(store, state, todayKey, weeks) {
   for (const iso of Object.values(progress)) {
     if (typeof iso !== 'string') continue;
     const d = iso.slice(0, 10);
-    if (inRange(d) && d <= todayKey) acc.roadmap?.[slotOf(d)]?.push(1);
+    if (d > todayKey) continue;
+    const i = slotOf(d);
+    if (i < 0) continue;
+    seen(i);
+    acc.roadmap?.[i]?.push(1);
   }
 
   // Придатний тиждень — той, де чек-ін заповнено достатньо діб. Той САМИЙ
@@ -635,11 +710,13 @@ export function buildWeeklySeries(store, state, todayKey, weeks) {
       const vals = acc[f.key]?.[i] ?? [];
       if (fromCheckin) {
         // Середнє по заповнених добах; непридатний тиждень — діра, не нуль.
-        if (!usableWeek[i] || !vals.length) return null;
+        if (i < firstData || !usableWeek[i] || !vals.length) return null;
         return round2(mean(vals));
       }
-      // Лічильники: відсутність запису означає «нуль подій», а не «немає
-      // даних», тож нуль тут чесний.
+      // Лічильники: у межах ери даних відсутність запису означає «нуль
+      // подій», і нуль тут чесний. ДО початку історії — діра: там не було не
+      // подій, а самого запису.
+      if (i < firstData) return null;
       return vals.reduce((a, b) => a + b, 0);
     });
   }

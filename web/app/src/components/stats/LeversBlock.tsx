@@ -24,12 +24,33 @@ import type { LeverRow, LeverFeature } from '../../api/schema.ts';
 // повідомлення, яке не змінюється місяцями. Розгортання ж робить окреме
 // читання KV — те саме рішення, що в «Історії».
 
-/** '2026-08-17' або ISO -> '17.08'. Рік не потрібен: блок про останній рік. */
-function shortDate(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso.length <= 10 ? iso + 'T00:00:00Z' : iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+/**
+ * '2026-08-17' або ISO-мить -> '17.08'. Рік не потрібен: блок про останній рік.
+ *
+ * ⚠️ ДВА РІЗНІ ВХОДИ, і плутати їх не можна. `weekOf`/`lastWeek` — це вже
+ * КИЇВСЬКІ дати рядком, тож ріжемо їх посимвольно, без Date: будь-який розбір
+ * дав би зсув у часовому поясі там, де його немає.
+ *
+ * `computedAt` — мить UTC, і саме тут була помилка: читання через getUTCDate
+ * показувало добу НАЗАД. Крон спрацьовує на першому тіку київського тижня,
+ * тобто в понеділок о 00:05 Київ = 21:05 UTC НЕДІЛІ — отже «17.08» ставало
+ * «16.08», причому не зрідка, а ЗАВЖДИ, і суперечило `weekOf` у тому ж payload.
+ *
+ * Форматуємо явно в Europe/Kyiv, а не локаллю пристрою: увесь застосунок
+ * рахує київські доби на сервері, і дата на екрані не має залежати від того,
+ * де зараз телефон. Той самий мотив, що в `kyivMinutes` (lib/weather.ts).
+ */
+const KYIV_DM = new Intl.DateTimeFormat('uk-UA', {
+  timeZone: 'Europe/Kyiv',
+  day: '2-digit',
+  month: '2-digit',
+});
+
+function shortDate(value: string | null): string {
+  if (!value) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return `${value.slice(8, 10)}.${value.slice(5, 7)}`;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? '' : KYIV_DM.format(d);
 }
 
 const weeksWord = (n: number) => pluralUk(n, ['тиждень', 'тижні', 'тижнів']);
@@ -89,7 +110,9 @@ export function LeversBlock() {
 
   const payload = data?.levers ?? null;
   const features = data?.features ?? {};
-  const gate = data?.gate ?? 26;
+  // Гейт приходить ІЗ СЕРВЕРА разом із даними — жодного літерала тут: інакше
+  // зміна GATE_WEEKS лишила б на екрані застаріле число.
+  const gate = data?.gate ?? 0;
 
   return (
     <div className="flex flex-col gap-3">

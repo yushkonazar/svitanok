@@ -425,9 +425,11 @@ describe('levers-core — збір тижневих рядів зі стору',
      з 7), а систематичний зсув в останній точці — рівно те, що рангова
      кореляція прийме за сигнал. */
   it('дані поточного тижня не течуть у жоден інший кошик', () => {
-    expect(built.series.applied).toEqual([0, 2, 0]);
-    expect(built.series.opens).toEqual([0, 2, 1]);
-    expect(built.series.roadmap).toEqual([0, 1, 0]);
+    // Перший кошик (2026-07-27) — ДО початку історії стору, тому null, а не
+    // нуль: там не було не подій, а самого запису.
+    expect(built.series.applied).toEqual([null, 2, 0]);
+    expect(built.series.opens).toEqual([null, 2, 1]);
+    expect(built.series.roadmap).toEqual([null, 1, 0]);
   });
 
   it('тиждень із замалою явкою чек-іну — діра, а не нуль', () => {
@@ -437,9 +439,14 @@ describe('levers-core — збір тижневих рядів зі стору',
     expect(built.weeksUsable).toBe(1);
   });
 
-  it('лічильники в порожньому тижні — чесний нуль (події не було, дані є)', () => {
-    expect(built.series.news).toEqual([0, 1, 4]);
-    expect(built.series.funnelMoves).toEqual([0, 1, 1]);
+  /* ⚠️ Нуль і діра — РІЗНІ відповіді, і саме тут вони розходяться. Усередині
+     ери даних відсутність запису означає «події не було» — це чесний нуль.
+     ДО першого запису в сторі нуля не існує: там немає даних. Без цієї межі
+     спільний блок фальшивих нулів робив будь-які два лічильники схожими
+     (заміряно: |rho| 0.158 -> 0.675, проходження поправок 6% -> 32%). */
+  it('нуль лише в межах ери даних, до неї — діра', () => {
+    expect(built.series.news).toEqual([null, 1, 4]);
+    expect(built.series.funnelMoves).toEqual([null, 1, 1]);
   });
 
   it('вогники рахуються як кількість за вечір, невідомі значення відкидаються', () => {
@@ -466,7 +473,8 @@ describe('levers-core — збір тижневих рядів зі стору',
     expect(Object.keys(s.series).sort()).toEqual([...LEVER_FEATURE_KEYS].sort());
     expect(s.weeksUsable).toBe(0);
     expect(s.series.sleep).toEqual([null, null, null, null]);
-    expect(s.series.applied).toEqual([0, 0, 0, 0]);
+    // Порожній стор — ери даних немає взагалі, тож і нулів немає.
+    expect(s.series.applied).toEqual([null, null, null, null]);
   });
 
   it('зібрані ряди лягають в analyzeLevers без переробки', () => {
@@ -476,6 +484,122 @@ describe('levers-core — збір тижневих рядів зі стору',
   });
 
   const s2 = buildWeeklySeries(store, state, '2026-08-21', 8);
+});
+
+describe('levers-core — межа початку історії (знахідка ревʼю)', () => {
+  /* ⚠️ НАЙСЕРЙОЗНІШИЙ ДЕФЕКТ ЦЬОГО БЛОКУ, і його не ловив жоден тест: усі
+     сіди заповнювали вікно від самого початку. Вікно ж 52 тижні, а історія
+     коротша — `days` пишеться з 07.07.2026, чек-ін із 17.07. Тижні до появи
+     даних діставали 0 замість null, і СПІЛЬНИЙ блок фальшивих нулів робив
+     будь-які два лічильники схожими.
+
+     Заміряно на двох НЕЗАЛЕЖНИХ випадкових лічильниках (400 прогонів): без
+     префікса |rho| = 0.158 і обидві поправки проходять у 6%; із 26-тижневим
+     нуль-префіксом |rho| = 0.675 і 32%. Гейт `modeShare > 0.5` не рятує: за
+     рівно половини нулів частка дорівнює 0.500. Саме така пропорція буде в
+     січні 2027, коли блок уперше вмикається. */
+  const store = {
+    days: {
+      '2026-08-03': { opens: 3, mock: 2, news: 1 },
+      '2026-08-05': { opens: 1, mock: 0, news: 4 },
+      '2026-08-11': { opens: 2, mock: 5, news: 2 },
+    },
+    appliedLog: [{ url: 'a', ts: '2026-08-04' }],
+  };
+
+  it('тижні до першого запису — діра, а не нуль подій', () => {
+    const b = buildWeeklySeries(store, {}, '2026-08-21', 6);
+    expect(b.weekStarts).toEqual([
+      '2026-07-06',
+      '2026-07-13',
+      '2026-07-20',
+      '2026-07-27',
+      '2026-08-03',
+      '2026-08-10',
+    ]);
+    expect(b.series.opens).toEqual([null, null, null, null, 4, 2]);
+    expect(b.series.applied).toEqual([null, null, null, null, 1, 0]);
+  });
+
+  it('усередині ери даних нуль лишається нулем', () => {
+    const b = buildWeeklySeries(
+      { days: { '2026-08-03': { opens: 1 }, '2026-08-17': { opens: 1 } } },
+      {},
+      '2026-08-28',
+      4,
+    );
+    // 2026-08-03 — початок; 2026-08-10 порожній АЛЕ вже в ері даних -> 0
+    expect(b.series.opens).toEqual([null, 1, 0, 1]);
+  });
+
+  it('чек-ін теж не починається раніше за перший запис', () => {
+    const b = buildWeeklySeries(store, {}, '2026-08-21', 6);
+    expect(b.series.sleep!.slice(0, 4)).toEqual([null, null, null, null]);
+  });
+});
+
+describe('levers-core — придатність тижня рахується за ЗНАЧЕННЯМИ (знахідка ревʼю)', () => {
+  /* Порожній `{}` — теж обʼєкт, і доти тиждень із трьох порожніх слотів ішов
+     у знаменник гейта 26 тижнів, не давши жодного числа. */
+  it('порожні слоти не роблять тиждень придатним', () => {
+    const b = buildWeeklySeries(
+      {
+        checkins: {
+          '2026-08-03': { morning: {}, afternoon: {}, evening: {} },
+          '2026-08-04': { morning: {} },
+          '2026-08-05': { evening: {} },
+        },
+      },
+      {},
+      '2026-08-21',
+      3,
+    );
+    expect(b.checkinDays).toEqual([0, 0, 0]);
+    expect(b.weeksUsable).toBe(0);
+  });
+
+  it('доба з бодай одним записаним значенням рахується', () => {
+    const b = buildWeeklySeries(
+      {
+        checkins: {
+          '2026-08-03': { morning: { sleepH: 7 }, evening: {} },
+          '2026-08-04': { afternoon: { mood: 4 } },
+          '2026-08-05': { evening: { dayScore: 3 } },
+        },
+      },
+      {},
+      '2026-08-21',
+      3,
+    );
+    expect(b.checkinDays).toEqual([0, 3, 0]);
+    expect(b.weeksUsable).toBe(1);
+  });
+});
+
+describe('levers-core — вогники (знахідка ревʼю)', () => {
+  const week = (evening: Record<string, unknown>) => ({
+    checkins: {
+      '2026-08-03': { morning: { sleepH: 7 }, evening: { dayScore: 4, ...evening } },
+      '2026-08-04': { morning: { sleepH: 7 }, evening: { dayScore: 4, ...evening } },
+      '2026-08-05': { morning: { sleepH: 7 }, evening: { dayScore: 4, ...evening } },
+    },
+  });
+
+  /* «Не запалив жодного» і «питання не ставили» — різні відповіді. Доти обидві
+     давали 0, і ряд вогників зміщувався донизу тим сильніше, чим частіше
+     питання пропускалось. */
+  // Чек-іни лежать у тижні 2026-08-03 — ПЕРШОМУ кошику з двох.
+  it('вечір без поля flames не дає нуля', () => {
+    const b = buildWeeklySeries(week({}), {}, '2026-08-21', 2);
+    expect(b.series.flames).toEqual([null, null]);
+    // при цьому сам тиждень придатний — інші поля записані
+    expect(b.weeksUsable).toBe(1);
+  });
+
+  it('порожній список вогників — це справжній нуль', () => {
+    const b = buildWeeklySeries(week({ flames: [] }), {}, '2026-08-21', 2);
+    expect(b.series.flames).toEqual([0, null]);
+  });
 });
 
 describe('levers-core — контраст', () => {

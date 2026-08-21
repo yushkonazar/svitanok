@@ -3,6 +3,7 @@ import worker from '../web/worker.js';
 import { handleLevers } from '../web/api-levers.mjs';
 import { LEVERS_KEY } from '../web/kv-store.mjs';
 import { LEVER_FEATURE_KEYS, GATE_WEEKS } from '../web/levers-core.mjs';
+import { leversSchema } from '../web/app/src/api/schema.ts';
 import { workerEnv } from './helpers/env.js';
 
 /* GET /api/levers — читання шару звʼязків.
@@ -64,6 +65,20 @@ describe('GET /api/levers — доступ', () => {
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
 
+  /* ⚠️ ЗНАХІДКА РЕВʼЮ. Ендпоінт read-only, тож POST нічого не ламає — але той
+     самий клас уже виправляли для /api/weather/locate-prompt (ревʼю PR #334),
+     і лишати новий маршрут відкритим для будь-якого дієслова означає
+     повторювати те, від чого щойно відмовились. */
+  it.each(['POST', 'PUT', 'DELETE', 'PATCH'])('%s -> 405, а не дані', async (method) => {
+    const res = await worker.fetch(
+      new Request('https://svitanok.yushko.dev/api/levers', { method }),
+      env(JSON.stringify(READY)),
+      { waitUntil: () => {} },
+    );
+    expect(res.status).toBe(405);
+    expect(JSON.stringify(await res.json())).not.toContain('applied');
+  });
+
   it('приватне й тижневе — не кешується', async () => {
     const res = await handleLevers(env(JSON.stringify(READY)), { ok: true });
     expect(res.headers.get('cache-control')).toBe('no-store');
@@ -119,6 +134,26 @@ describe('GET /api/levers — стійкість до битих даних', ()
     };
     expect(body.levers.rows.map((r) => r.from)).toEqual(['sleep']);
   });
+
+  /* ⚠️ ЗНАХІДКА РЕВʼЮ. `FEATURES['constructor']` на звичайному обʼєкті
+     правдиве через ланцюг прототипів, тож такий рядок проходив фільтр і
+     доїжджав до екрана порожнім. Той самий клас, від якого в stats-core.mjs
+     живе `isSafeKey`. */
+  it.each(['constructor', '__proto__', 'prototype', 'toString'])(
+    'ознака «%s» не вважається відомою',
+    async (key) => {
+      const raw = JSON.stringify({
+        ...READY,
+        rows: [...READY.rows, { ...READY.rows[0], from: key }],
+        skipped: [...READY.skipped, { key, reason: 'x' }],
+      });
+      const body = (await (await handleLevers(env(raw), { ok: true })).json()) as {
+        levers: { rows: { from: string }[]; skipped: { key: string }[] };
+      };
+      expect(body.levers.rows.map((r) => r.from)).toEqual(['sleep']);
+      expect(body.levers.skipped.map((x) => x.key)).toEqual(['roadmap']);
+    },
+  );
 
   it('виключений ряд із невідомим ключем теж відкидається', async () => {
     const raw = JSON.stringify({
@@ -187,6 +222,43 @@ describe('GET /api/levers — підписи й знаменник чеснос�
     expect(body.levers.weekOf).toBe('2026-08-17');
     expect(body.levers.firstWeek).toBe('2025-08-18');
     expect(body.levers.lastWeek).toBe('2026-08-10');
+  });
+});
+
+describe('GET /api/levers — відповідь сервера проти контракту клієнта', () => {
+  /* ⚠️ Тест саме КОРЕНЕВИЙ: лише звідси видно одночасно хендлер воркера й
+     схему Mini App, тобто розбіжність між тим, що віддає сервер, і тим, що
+     приймає екран (та сама причина, що в dashboard-schema.test.ts). */
+  it('справжня відповідь хендлера проходить схему клієнта', async () => {
+    const body = await (await handleLevers(env(JSON.stringify(READY)), { ok: true })).json();
+    const parsed = leversSchema.safeParse(body);
+    expect(parsed.success).toBe(true);
+  });
+
+  /* ⚠️ ЗНАХІДКА РЕВʼЮ. Блоб пише крон і перезаписує лише в понеділок. Доти
+     `rho`/`p`/`n`/`lag` не мали дефолтів, тож один рядок старішої форми валив
+     `safeParse` ЦІЛКОМ — і блок показував би «формат змінився» аж до
+     наступного перерахунку. `archiveMonthSchema` двома схемами вище тримає
+     протилежне правило саме з цієї причини. */
+  it('рядок старішої форми не валить увесь блок, а добирає дефолти', () => {
+    const parsed = leversSchema.safeParse({
+      levers: {
+        weekOf: '2026-08-17',
+        ready: true,
+        rows: [{ from: 'sleep', to: 'applied' }],
+      },
+      features: {},
+    });
+    expect(parsed.success).toBe(true);
+    const row = parsed.data!.levers!.rows[0]!;
+    expect(row.p).toBe(1);
+    expect(row.rho).toBe(0);
+    expect(row.effect).toBeNull();
+  });
+
+  it('а без мітки тижня схема таки падає — це єдине незамінне поле', () => {
+    const parsed = leversSchema.safeParse({ levers: { ready: true, rows: [] }, features: {} });
+    expect(parsed.success).toBe(false);
   });
 });
 

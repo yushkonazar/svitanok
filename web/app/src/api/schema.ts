@@ -975,22 +975,30 @@ export type Roadmap = z.infer<typeof roadmapSchema>;
  * зроблений старішою версією, не має валити екран через нове поле.
  */
 export const leverEffectSchema = z.object({
-  high: num,
-  low: num,
-  nHigh: int,
-  nLow: int,
-  d: num,
+  high: num.default(0),
+  low: num.default(0),
+  nHigh: int.default(0),
+  nLow: int.default(0),
+  d: num.default(0),
 });
 
+/**
+ * ⚠️ ВСЕ, крім `from`/`to`, — з дефолтами, як в `archiveMonthSchema` вище й
+ * рівно з тієї самої причини: блоб пише крон і перезаписує його лише в
+ * понеділок. Одне нове обовʼязкове поле — і рядки, записані попереднім
+ * тижнем, завалили б `safeParse` цілком, а блок показував би «формат
+ * змінився» до наступного перерахунку. `from`/`to` дефолтів не мають свідомо:
+ * рядок без ознак намалювати нічим, і сервер такі вже відкидає.
+ */
 export const leverRowSchema = z.object({
   from: z.string(),
   to: z.string(),
-  lag: int,
-  rho: num,
+  lag: int.default(1),
+  rho: num.default(0),
   rhoDiff: num.default(0),
-  n: int,
+  n: int.default(0),
   nDiff: int.default(0),
-  p: num,
+  p: num.default(1),
   effect: leverEffectSchema.nullable().default(null),
 });
 
@@ -1008,6 +1016,9 @@ export const leverFeatureSchema = z.object({
 
 export const leversPayloadSchema = z.object({
   computedAt: z.string().nullable().default(null),
+  // `weekOf` без дефолту — єдине поле, без якого результат нечитабельний:
+  // саме воно відрізняє свіжий розрахунок від торішнього. Сервер такий блоб
+  // уже зводить до null.
   weekOf: z.string(),
   firstWeek: z.string().nullable().default(null),
   lastWeek: z.string().nullable().default(null),

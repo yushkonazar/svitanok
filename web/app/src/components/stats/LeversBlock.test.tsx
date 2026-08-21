@@ -230,4 +230,32 @@ describe('LeversBlock — чесність', () => {
     expect(screen.getByText(/РАХУВАЛОСЬ 19\.08/)).toBeInTheDocument();
     expect(screen.getByText(/ВІКНО ДО 10\.08/)).toBeInTheDocument();
   });
+
+  /* ⚠️ ЗНАХІДКА РЕВʼЮ. Крон спрацьовує на першому тіку київського тижня —
+     понеділок 00:05 Київ, тобто 21:05 UTC НЕДІЛІ. Читання через getUTCDate
+     показувало добу назад, і мітка свіжості завжди суперечила `weekOf` у тому
+     ж payload. Тест навмисно бере саме цю мить; він не залежить від часового
+     поясу раннера, бо формат прибитий до Europe/Kyiv. */
+  it('мить перед київською півноччю читається як НАСТУПНА доба', async () => {
+    setData(payload({ computedAt: '2026-08-16T21:05:00.000Z', weekOf: '2026-08-17' }));
+    render(<LeversBlock />);
+    await open();
+    expect(screen.getByText(/РАХУВАЛОСЬ 17\.08/)).toBeInTheDocument();
+  });
+
+  it('зимовий зсув теж київський, а не UTC', async () => {
+    setData(payload({ computedAt: '2027-01-10T22:30:00.000Z' }));
+    render(<LeversBlock />);
+    await open();
+    expect(screen.getByText(/РАХУВАЛОСЬ 11\.01/)).toBeInTheDocument();
+  });
+
+  /* Межі вікна — вже КИЇВСЬКІ дати рядком; розбирати їх через Date означало б
+     внести зсув там, де його немає. */
+  it('дата-рядок не проходить через часовий пояс', async () => {
+    setData(payload({ lastWeek: '2026-08-10' }));
+    render(<LeversBlock />);
+    await open();
+    expect(screen.getByText(/ВІКНО ДО 10\.08/)).toBeInTheDocument();
+  });
 });
