@@ -299,9 +299,10 @@ export function formatEventsForPrompt(events) {
  * "подій немає". Події вже відсортовані Google (orderBy=startTime).
  *
  * Кап (рев'ю CC1): діапазон до 7 днів може дати десятки подій — без обмеження
- * transcript ризикує перевищити MAX_PROMPT_LEN=4000 хоста (-> prompt-too-long
- * -> тихий фолбек замість відповіді). Тому ≤MAX_RANGE_EVENTS подій і ≤MAX_RANGE_LEN
- * символів; надлишок -> маркер «…(ще N)».
+ * transcript роздувається ще ДО першого кроку агента. Стелю хоста
+ * MAX_PROMPT_LEN відтоді підняли, але далі її доїдають результати інструментів,
+ * а переповнення ріже середину транскрипту. Тому ≤MAX_RANGE_EVENTS подій і
+ * ≤MAX_RANGE_LEN символів; надлишок -> маркер «…(ще N)».
  * @param {unknown} events — той самий мотив, що formatEventsForPrompt
  */
 export function formatRangeEventsForPrompt(events) {
