@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль хоста без типів (namespace-імпорт).
 import * as loop from '../host/agent-loop-core.mjs';
-// @ts-expect-error — JS-модуль хоста без типів.
 import { MAX_PROMPT_LEN, MAX_SCHEMA_LEN } from '../host/llm-host-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { AGENT_MAX_STEPS } from '../web/agent-run-core.mjs';
 
 const {
@@ -29,15 +26,15 @@ describe('validateAgentRequest', () => {
   it('приймає повний коректний запит', () => {
     const res = validateAgentRequest(okBody());
     expect(res.ok).toBe(true);
-    expect(res.value.model).toBe('sonnet');
-    expect(res.value.schemaStr).toContain('action');
+    expect(res.value!.model).toBe('sonnet');
+    expect(res.value!.schemaStr).toContain('action');
   });
 
   it('systemPrompt і jsonSchema опційні', () => {
     const res = validateAgentRequest({ token: 't.s', transcript: 'привіт' });
     expect(res.ok).toBe(true);
-    expect(res.value.systemPrompt).toBeUndefined();
-    expect(res.value.schemaStr).toBeUndefined();
+    expect(res.value!.systemPrompt).toBeUndefined();
+    expect(res.value!.schemaStr).toBeUndefined();
   });
 
   it('відкидає запит без токена — без нього крок нікуди віддати', () => {

@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as mem from '../web/assistant-memory-core.mjs';
 const { historyKey, appendTurn, renderHistoryForPrompt, MAX_HISTORY_TURNS } = mem;
 

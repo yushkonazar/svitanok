@@ -6,7 +6,6 @@ import {
   isPrimaryOwner,
   checkOwner,
   checkPrimaryOwner,
-  // @ts-expect-error — JS-модуль Worker'а без типів.
 } from '../web/auth-core.mjs';
 
 /* Єдина безпекова поверхня дашборда, витягнута з worker.js (Фаза 5).

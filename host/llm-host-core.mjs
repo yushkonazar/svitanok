@@ -121,6 +121,10 @@ export function validateLlmRequest(body) {
  * --strict-mcp-config   — не підхоплює жоден MCP-сервер з навколишнього конфігу.
  * --permission-mode default — ніколи bypassPermissions.
  * --max-budget-usd      — жорсткий цінник-запобіжник на один виклик.
+ *
+ * @param {{ prompt: string, systemPrompt?: string, schemaStr?: string,
+ *           model?: string }} opts
+ * @returns {string[]}
  */
 export function buildClaudeArgs({ prompt, systemPrompt, schemaStr, model }) {
   const args = [

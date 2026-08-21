@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as dd from '../web/assistant-data-core.mjs';
 const {
   digestReminders,

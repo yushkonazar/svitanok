@@ -1,13 +1,8 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { MOCK_TO_ROADMAP, roadmapToMock, masteryHints, themeOfWeek } from '../web/mastery-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
 import { mockMaterials } from '../web/mastery-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { masteryTopics } from '../web/mastery-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { ROADMAP_TOPICS } from '../web/roadmap-data.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { progressKey } from '../web/roadmap-core.mjs';
 import { MOCK_TOPICS } from '../src/modules/mock.js';
 
@@ -65,8 +60,8 @@ describe('mastery-core — masteryHints', () => {
       progress,
     );
     expect(hints).toHaveLength(1);
-    expect(hints[0].mockTopic).toBe('Алгоритми');
-    expect(hints[0].themes[0]).toMatchObject({
+    expect(hints[0]!.mockTopic).toBe('Алгоритми');
+    expect(hints[0]!.themes[0]).toMatchObject({
       id: 'algorithms',
       done: 1,
       total: alg.subtopics.length,
@@ -76,7 +71,7 @@ describe('mastery-core — masteryHints', () => {
   it('биті входи не валять: порожньо/не-обʼєкт progress', () => {
     expect(masteryHints(null, null)).toEqual([]);
     const hints = masteryHints([{ name: 'HTTP', value: 10 }], 'bad');
-    expect(hints[0].themes.every((t: { done: number }) => t.done === 0)).toBe(true);
+    expect(hints[0]!.themes!.every((t: { done: number }) => t.done === 0)).toBe(true);
   });
 });
 
@@ -84,10 +79,10 @@ describe('mastery-core — themeOfWeek', () => {
   it('детермінована в межах тижня, ротується наступного', () => {
     const a = themeOfWeek({}, '2026-07-06'); // понеділок
     const b = themeOfWeek({}, '2026-07-12'); // неділя того ж тижня
-    expect(a.topicId).toBe(b.topicId);
-    expect(a.week).toBe('2026-07-06');
+    expect(a!.topicId).toBe(b!.topicId);
+    expect(a!.week).toBe('2026-07-06');
     const c = themeOfWeek({}, '2026-07-13'); // наступний тиждень
-    expect(c.topicId).not.toBe(a.topicId); // >1 незавершеної теми -> зсув ротації
+    expect(c!.topicId).not.toBe(a!.topicId); // >1 незавершеної теми -> зсув ротації
   });
 
   it('завершені теми пропускаються; все завершено -> null', () => {
@@ -99,30 +94,30 @@ describe('mastery-core — themeOfWeek', () => {
     const keep = TOPICS[3]!;
     const almost = { ...all };
     for (const s of keep.subtopics) delete almost[progressKey(keep.id, s.id)];
-    expect(themeOfWeek(almost, '2026-07-06').topicId).toBe(keep.id);
-    expect(themeOfWeek(almost, '2026-07-13').topicId).toBe(keep.id);
+    expect(themeOfWeek(almost, '2026-07-06')!.topicId).toBe(keep.id);
+    expect(themeOfWeek(almost, '2026-07-13')!.topicId).toBe(keep.id);
   });
 
   it('форма: прогрес теми + mockTopics зі зворотної мапи', () => {
     const t = themeOfWeek({}, '2026-07-06');
     expect(t).toMatchObject({ done: 0 });
-    expect(t.total).toBeGreaterThan(0);
-    expect(Array.isArray(t.mockTopics)).toBe(true);
+    expect(t!.total).toBeGreaterThan(0);
+    expect(Array.isArray(t!.mockTopics)).toBe(true);
   });
 
   it('завершення НЕдотичної теми серед тижня не перемикає тему тижня', () => {
     const before = themeOfWeek({}, '2026-07-08');
     // повністю завершуємо будь-яку іншу тему
-    const other = TOPICS.find((t) => t.id !== before.topicId)!;
+    const other = TOPICS.find((t) => t.id !== before!.topicId)!;
     const progress: Record<string, string> = {};
     for (const s of other.subtopics) progress[progressKey(other.id, s.id)] = '2026-07-08T00:00:00Z';
-    expect(themeOfWeek(progress, '2026-07-08').topicId).toBe(before.topicId);
+    expect(themeOfWeek(progress, '2026-07-08')!.topicId).toBe(before!.topicId);
     // а завершення САМОЇ теми тижня — переводить до наступної незавершеної
     const own: Record<string, string> = {};
-    const theme = TOPICS.find((t) => t.id === before.topicId)!;
+    const theme = TOPICS.find((t) => t.id === before!.topicId)!;
     for (const s of theme.subtopics) own[progressKey(theme.id, s.id)] = '2026-07-08T00:00:00Z';
     const next = themeOfWeek(own, '2026-07-08');
-    expect(next.topicId).not.toBe(before.topicId);
+    expect(next!.topicId).not.toBe(before!.topicId);
   });
 });
 
@@ -146,15 +141,15 @@ describe('mastery-core — masteryTopics (готовність по темах)'
   it('зшиває прогрес роадмепу з mock-статистикою по КОЖНІЙ темі', () => {
     const rows = masteryTopics(progress([]), { HTTP: { seen: 10, weak: 4 } });
     const http = rows.find((r: { id: string }) => r.id === 'networking');
-    expect(http.seen).toBe(10);
-    expect(http.weak).toBe(4);
+    expect(http!.seen).toBe(10);
+    expect(http!.weak).toBe(4);
   });
 
   it('mock-тема, що мапиться на КІЛЬКА тем роадмепу, рахується в кожній', () => {
     // HTTP -> ['networking', 'backend'] (MOCK_TO_ROADMAP)
     const rows = masteryTopics({}, { HTTP: { seen: 10, weak: 4 } });
     for (const id of ['networking', 'backend']) {
-      expect(rows.find((r: { id: string }) => r.id === id).seen).toBe(10);
+      expect(rows.find((r: { id: string }) => r.id === id)!.seen).toBe(10);
     }
   });
 
@@ -162,8 +157,8 @@ describe('mastery-core — masteryTopics (готовність по темах)'
     // backend <- 'HTTP' і 'Патерни'
     const rows = masteryTopics({}, { HTTP: { seen: 10, weak: 4 }, Патерни: { seen: 6, weak: 1 } });
     const backend = rows.find((r: { id: string }) => r.id === 'backend');
-    expect(backend.seen).toBe(16);
-    expect(backend.weak).toBe(5);
+    expect(backend!.seen).toBe(16);
+    expect(backend!.weak).toBe(5);
   });
 
   it('віддає ВСІ теми роадмепу, навіть без жодного питання', () => {
@@ -176,8 +171,8 @@ describe('mastery-core — masteryTopics (готовність по темах)'
     const t = TOPICS[0]!;
     const rows = masteryTopics(progress([[t.id, t.subtopics[0]!.id]]), {});
     const row = rows.find((r: { id: string }) => r.id === t.id);
-    expect(row.done).toBe(1);
-    expect(row.total).toBe(t.subtopics.length);
+    expect(row!.done).toBe(1);
+    expect(row!.total).toBe(t.subtopics.length);
   });
 
   it('seen=0 -> easePct НУЛЬ НЕ ставиться (це «не питали», а не «погано»)', () => {
@@ -187,7 +182,7 @@ describe('mastery-core — masteryTopics (готовність по темах)'
 
   it('easePct — частка НЕвідмічених складними, від 0 до 100', () => {
     const rows = masteryTopics({}, { Алгоритми: { seen: 10, weak: 3 } });
-    expect(rows.find((r: { id: string }) => r.id === 'algorithms').easePct).toBe(70);
+    expect(rows.find((r: { id: string }) => r.id === 'algorithms')!.easePct).toBe(70);
   });
 
   it('битий вхід не валить агрегат', () => {
@@ -198,6 +193,6 @@ describe('mastery-core — masteryTopics (готовність по темах)'
 
   it('weak більший за seen не дає відʼємної легкості', () => {
     const rows = masteryTopics({}, { Алгоритми: { seen: 2, weak: 5 } });
-    expect(rows.find((r: { id: string }) => r.id === 'algorithms').easePct).toBe(0);
+    expect(rows.find((r: { id: string }) => r.id === 'algorithms')!.easePct).toBe(0);
   });
 });

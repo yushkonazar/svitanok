@@ -10,9 +10,7 @@ import {
   updateStats,
   loadAssistantPending,
   claimAssistantPending,
-  // @ts-expect-error — JS-модуль Worker'а без типів.
 } from '../web/kv-store.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
 
 /* Доступ до KV, витягнутий із worker.js (Фаза 5). Два інваріанти, які тут і

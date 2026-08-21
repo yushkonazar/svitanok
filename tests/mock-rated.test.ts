@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 
 /* mockRated: таймстемп і тема на оцінці.
@@ -73,8 +72,8 @@ describe('mock.easeTrend — чи стає легше', () => {
     for (let i = 0; i < 6; i++) s = rate(s, `new${i}`, 'easy', 'HTTP', 1 + i);
     const trend = aggregateStats(s, TODAY).mock.easeTrend;
     const withData = trend.filter((w: { n: number }) => w.n > 0);
-    expect(withData[0].easePct).toBe(0);
-    expect(withData[withData.length - 1].easePct).toBe(100);
+    expect(withData[0]!.easePct).toBe(0);
+    expect(withData[withData.length - 1]!.easePct).toBe(100);
   });
 
   it('тиждень без оцінок -> easePct null, а не нуль', () => {

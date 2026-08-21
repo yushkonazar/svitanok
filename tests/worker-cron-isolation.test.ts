@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker, { CRON_TASKS, runCronTasks } from '../web/worker.js';
 
 /* B11 (аудит 11.08.2026): вісім крон-задач були awaited підряд в ОДНОМУ

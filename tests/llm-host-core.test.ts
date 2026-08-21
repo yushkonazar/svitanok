@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
-// @ts-expect-error — JS-модуль хоста без типів (namespace-імпорт: prettier не
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as core from '../host/llm-host-core.mjs';
 const {
@@ -47,8 +46,8 @@ describe('llm-host-core — validateLlmRequest', () => {
       model: 'sonnet',
     });
     expect(ok.ok).toBe(true);
-    expect(ok.value.schemaStr).toBe(JSON.stringify({ type: 'object' }));
-    expect(ok.value.model).toBe('sonnet');
+    expect(ok.value!.schemaStr).toBe(JSON.stringify({ type: 'object' }));
+    expect(ok.value!.model).toBe('sonnet');
 
     expect(validateLlmRequest({ prompt: 'x', systemPrompt: 42 }).error).toBe('bad-system-prompt');
     expect(validateLlmRequest({ prompt: 'x', jsonSchema: 'not-an-object' }).error).toBe(

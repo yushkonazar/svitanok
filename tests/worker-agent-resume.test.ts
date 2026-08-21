@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { mintRunToken } from '../web/agent-run-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { ASSISTANT_RESUME_TTL_MS } from '../web/agent-core.mjs';
 import { memoryKv } from './helpers/kv.js';
 

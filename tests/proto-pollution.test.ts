@@ -1,5 +1,4 @@
 import { describe, it, expect, afterEach } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 
 /* Забруднення прототипу через ключі стору.

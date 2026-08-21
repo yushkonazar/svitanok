@@ -1,12 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { OWN_DATA_SCOPES } from '../web/assistant-data-core.mjs';
 // Межі довжини — з реального контракту хоста (той самий репо, окремий деплой).
-// @ts-expect-error — JS-модуль хоста без типів.
 import { MAX_SYSTEM_PROMPT_LEN, MAX_SCHEMA_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
@@ -1146,14 +1143,14 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     const kb = buildProposalKeyboard('id123456', [{ kind: 'deleteEvent', eventId: 'ev1' }], {});
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
-    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
+    expect(row!.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
   });
 
   it('settings-клавіатура (PR-9): лише Застосувати/Скасувати, нічого циклити', () => {
     const kb = buildProposalKeyboard('id123456', [{ kind: 'settings', settings: {} }], {});
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
-    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
+    expect(row!.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
   });
 
   it('contact-клавіатура (PR-13): лише Зберегти/Скасувати, нічого циклити', () => {
@@ -1164,7 +1161,7 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     );
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
-    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Зберегти', '❌ Скасувати']);
+    expect(row!.map((b: { text: string }) => b.text)).toEqual(['✅ Зберегти', '❌ Скасувати']);
   });
 
   it('зсув циклиться по колу, включно з «завтра, той самий час»', () => {
@@ -1378,9 +1375,9 @@ describe('доналаштування пропозиції — циклери �
       leadMin: 30,
     });
     expect(withEvent.inline_keyboard).toHaveLength(2); // циклери + accept/cancel
-    expect(withEvent.inline_keyboard[0][0].text).toContain('1 год');
-    expect(withEvent.inline_keyboard[0][1].text).toContain('за 30 хв');
-    expect(withEvent.inline_keyboard[0][0].callback_data).toBe('pd:d:id123456');
+    expect(withEvent.inline_keyboard[0]![0]!.text).toContain('1 год');
+    expect(withEvent.inline_keyboard[0]![1]!.text).toContain('за 30 хв');
+    expect(withEvent.inline_keyboard[0]![0]!.callback_data).toBe('pd:d:id123456');
 
     // Кілька пунктів (не рівно один reminder) -> без ⏳/⏰ (не події) і без 🕐
     // (циклер часу — лише для ОДНОГО reminder, нижче) — просто accept/cancel.
@@ -1390,15 +1387,15 @@ describe('доналаштування пропозиції — циклери �
       {},
     );
     expect(multi.inline_keyboard).toHaveLength(1);
-    expect(multi.inline_keyboard[0][0].text).toContain('Прийняти');
+    expect(multi.inline_keyboard[0]![0]!.text).toContain('Прийняти');
   });
 
   it('клавіатура: create-режим з ОДНИМ reminder -> циклер часу 🕐 (окремо від подієвих ⏳/⏰)', () => {
     const kb = buildProposalKeyboard('id123456', [{ kind: 'reminder', shiftMin: 30 }], {});
     expect(kb.inline_keyboard).toHaveLength(2); // 🕐 + accept/cancel
-    expect(kb.inline_keyboard[0][0].text).toContain('+30 хв');
-    expect(kb.inline_keyboard[0][0].callback_data).toBe('pd:s:id123456');
-    expect(kb.inline_keyboard[1][0].text).toContain('Прийняти');
+    expect(kb.inline_keyboard[0]![0]!.text).toContain('+30 хв');
+    expect(kb.inline_keyboard[0]![0]!.callback_data).toBe('pd:s:id123456');
+    expect(kb.inline_keyboard[1]![0]!.text).toContain('Прийняти');
   });
 
   it('proposalHasEvent: подія -> true, лише нагадування -> false', () => {

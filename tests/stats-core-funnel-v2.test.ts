@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats, reachedCounts } from '../web/stats-core.mjs';
 
 // Воронка v2 (роадмеп v3, F1): термінальні стадії rejected/failed, журнал

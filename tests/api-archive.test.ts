@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { ARCHIVE_KEY } from '../web/stats-archive.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { handleArchive } from '../web/api-archive.mjs';
 
 /* GET /api/archive — читання холодного архіву місячних згорток.
@@ -54,13 +51,15 @@ describe('GET /api/archive — форма відповіді', () => {
       '2026-05': { checkinDays: 28, sleepAvg: 6.8 },
       '2026-06': { checkinDays: 29, sleepAvg: 7.0 },
     });
-    const body = await (await handleArchive(env(raw), { ok: true })).json();
+    const body = (await (await handleArchive(env(raw), { ok: true })).json()) as {
+      months: { month: string; sleepAvg?: number }[];
+    };
     expect(body.months.map((m: { month: string }) => m.month)).toEqual([
       '2026-05',
       '2026-06',
       '2026-07',
     ]);
-    expect(body.months[0].sleepAvg).toBe(6.8);
+    expect(body.months[0]!.sleepAvg).toBe(6.8);
   });
 
   it('битий архів -> порожній список, а не 500', async () => {
@@ -75,7 +74,9 @@ describe('GET /api/archive — форма відповіді', () => {
       'не-місяць': { x: 1 },
       bad: null,
     });
-    const body = await (await handleArchive(env(raw), { ok: true })).json();
+    const body = (await (await handleArchive(env(raw), { ok: true })).json()) as {
+      months: { month: string; sleepAvg?: number }[];
+    };
     expect(body.months.map((m: { month: string }) => m.month)).toEqual(['2026-07']);
   });
 
