@@ -114,8 +114,11 @@ export async function readMail(/** @type {Env} */ env, /** @type {unknown} */ ra
       console.error('gmail list HTTP', res.status, await res.text().catch(() => ''));
       return null;
     }
+    // БЕЗ `?.`: тіло-`null` — це збій, і він мусить кинути й дати `null`
+    // («пошта недоступна»), а не порожній масив («листів немає»). Ці два
+    // стани formatMailForPrompt розрізняє, і плутати їх не можна.
     const list = /** @type {any} */ (await res.json());
-    const ids = (list?.messages ?? [])
+    const ids = (list.messages ?? [])
       .slice(0, MAIL_MAX_RESULTS)
       .map((/** @type {KvBlob} */ m) => m.id);
     if (ids.length === 0) return [];
@@ -453,7 +456,7 @@ export async function createCalendarEvent(
       return { ok: false };
     }
     const json = /** @type {any} */ (await res.json());
-    return { ok: true, id: typeof json?.id === 'string' ? json.id : null };
+    return { ok: true, id: typeof json.id === 'string' ? json.id : null };
   } catch (/** @type {any} */ err) {
     console.error('google calendar create failed', err.message);
     return { ok: false };

@@ -107,8 +107,8 @@ export const ASSISTANT_EMPTY_REPLY = '🤔 Відповідь вийшла по�
  * триває десятки секунд, і статичне «Працюю…» весь цей час читається як «завис».
  * Лише для читальних дій — термінальні прибирають повідомлення зовсім.
  */
-export /** @type {KvBlob} */
-const ASSISTANT_STEP_LABELS = {
+/** @type {KvBlob} */
+export const ASSISTANT_STEP_LABELS = {
   readBatch: '⏳ Збираю дані…',
   readMail: '⏳ Шукаю в пошті…',
   readMailBody: '⏳ Читаю листа…',
@@ -119,9 +119,7 @@ const ASSISTANT_STEP_LABELS = {
 
 /** Підпис прогресу для дії або null (термінальні/невідомі — без підпису). */
 export function assistantStepLabel(/** @type {unknown} */ action) {
-  return (
-    (typeof action === 'string' && /** @type {KvBlob} */ (ASSISTANT_STEP_LABELS)[action]) || null
-  );
+  return (typeof action === 'string' && ASSISTANT_STEP_LABELS[action]) || null;
 }
 
 /* ── Health-check хоста: рання діагностика розсинхрону версій ──────────────────
