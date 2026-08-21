@@ -44,7 +44,7 @@ import {
   buildMapsUrl,
 } from './calendar-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
-import { loadState } from './kv-store.mjs';
+import { loadState, updateState } from './kv-store.mjs';
 import { applyEvent } from './api-dashboard.mjs';
 import { readCalendarRange, getCalendarEvent } from './google.mjs';
 import { tgCall, sendTo } from './telegram-client.mjs';
@@ -102,8 +102,11 @@ async function resolveReminderAction(env, parsed, reminderId, mutate, successToa
   if (!reminders.some((/** @type {KvBlob} */ r) => r.id === reminderId))
     return '⚠️ Це нагадування вже неактуальне.';
 
-  state.reminders = mutate(reminders, reminderId, Date.now());
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  const nowMs = Date.now();
+  await updateState(env, (s) => ({
+    ...s,
+    reminders: mutate(Array.isArray(s.reminders) ? s.reminders : [], reminderId, nowMs),
+  }));
   if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
     await tgCall(env, 'editMessageReplyMarkup', {
       chat_id: parsed.chatId,
@@ -201,8 +204,10 @@ export async function resolveReminderDone(
   const reminder = reminders.find((r) => r.id === reminderId);
   if (!reminder) return '⚠️ Це нагадування вже неактуальне.';
 
-  state.reminders = cancelReminder(reminders, reminderId);
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  await updateState(env, (s) => ({
+    ...s,
+    reminders: cancelReminder(Array.isArray(s.reminders) ? s.reminders : [], reminderId),
+  }));
   if (parsed.chatId != null && parsed.messageId != null) {
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
@@ -229,15 +234,23 @@ export async function resolveReminderCancelAll(
   const active = listActive(state.reminders);
   if (active.length === 0) return 'Нема що скасовувати.';
 
-  state.reminders = active.reduce((rs, r) => cancelReminder(rs, r.id), state.reminders);
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  // Скасовуємо ПОІМЕННО, а не «перезаписуємо список»: на свіжішій копії міг
+  // зʼявитись новий пункт, і пакетне скасування не має його зачепити.
+  const ids = active.map((/** @type {KvBlob} */ r) => r.id);
+  const next = await updateState(env, (s) => ({
+    ...s,
+    reminders: ids.reduce(
+      (rs, id) => cancelReminder(rs, id),
+      Array.isArray(s.reminders) ? s.reminders : [],
+    ),
+  }));
 
   if (parsed.chatId != null && parsed.messageId != null) {
-    const keyboard = buildRemindersKeyboard(state.reminders);
+    const keyboard = buildRemindersKeyboard(next.reminders);
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
-      text: formatRemindersListMessage(state.reminders),
+      text: formatRemindersListMessage(next.reminders),
       parse_mode: 'HTML',
       ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
     });
@@ -400,19 +413,24 @@ export async function resolveRoadmapCallback(
   if (!topic || !subtopic) return '⚠️ Цей підпункт більше не існує.';
 
   const state = await loadState(env);
-  const before = state.roadmapProgress ?? {};
-  const wasDone = progressKey(cb.topicId, cb.subtopicId) in before;
-  state.roadmapProgress = toggleProgress(
-    before,
-    cb.topicId,
-    cb.subtopicId,
-    new Date().toISOString(),
-  );
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  const key = progressKey(cb.topicId, cb.subtopicId);
+  const wasDone = key in (state.roadmapProgress ?? {});
+  const toggledAt = new Date().toISOString();
+  // Тут перемикач — це і є намір власника, тож патч ЦІЛИТЬСЯ в результат, а не
+  // повторює toggle наосліп: інакше на свіжішій копії, де прапорець уже такий,
+  // як ми хочемо, другий виклик перевернув би його назад.
+  const next = await updateState(env, (s) => {
+    const progress = s.roadmapProgress ?? {};
+    if (key in progress === !wasDone) return s; // копія вже в цільовому стані
+    return {
+      ...s,
+      roadmapProgress: toggleProgress(progress, cb.topicId, cb.subtopicId, toggledAt),
+    };
+  });
 
   await editText(
-    formatTopicMessage(topic, state.roadmapProgress),
-    buildTopicKeyboard(topic, state.roadmapProgress),
+    formatTopicMessage(topic, next.roadmapProgress),
+    buildTopicKeyboard(topic, next.roadmapProgress),
   );
   return wasDone ? '↩️ Знято позначку' : '✅ Позначено';
 }

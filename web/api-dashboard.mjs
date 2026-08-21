@@ -14,7 +14,7 @@
 
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
-import { loadStats, loadState, loadSettings, updateStats } from './kv-store.mjs';
+import { loadStats, loadState, loadSettings, updateStats, updateState } from './kv-store.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 import {
   kyivDateKey,
@@ -59,31 +59,28 @@ export async function handleVote(/** @type {Request} */ request, /** @type {Env}
   const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  const state = await loadState(env);
   let weight;
+  /** @type {string|null} */
   let prevDir = null;
+  /** @type {string|null} */
   let prevCategory = null;
   let newDir = dir;
-  if (typeof url === 'string' && url) {
-    // Чесний облік: кожен url впливає на вагу максимум раз (C3).
-    const r = applyUrlVote(
-      state.preferenceWeights ?? {},
-      state.votedUrls ?? {},
-      url,
-      category,
-      dir,
-    );
-    state.preferenceWeights = r.weights;
-    state.votedUrls = r.votedUrls;
-    prevDir = r.prevDir;
-    prevCategory = r.prevCategory;
-    newDir = r.newDir;
-    weight = r.weights[category];
-  } else {
-    state.preferenceWeights = applyVote(state.preferenceWeights ?? {}, category, dir);
-    weight = state.preferenceWeights[category];
-  }
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  // Вихідні дані заповнює сам patch: при розбіжності updateState викликає його
+  // вдруге, і тут лишаються значення ТІЄЇ копії, яку зрештою записали.
+  await updateState(env, (s) => {
+    if (typeof url === 'string' && url) {
+      // Чесний облік: кожен url впливає на вагу максимум раз (C3).
+      const r = applyUrlVote(s.preferenceWeights ?? {}, s.votedUrls ?? {}, url, category, dir);
+      prevDir = r.prevDir;
+      prevCategory = r.prevCategory;
+      newDir = r.newDir;
+      weight = r.weights[category];
+      return { ...s, preferenceWeights: r.weights, votedUrls: r.votedUrls };
+    }
+    const weights = applyVote(s.preferenceWeights ?? {}, category, dir);
+    weight = weights[category];
+    return { ...s, preferenceWeights: weights };
+  });
   // Інтерес у stats (таб «Статистика» → «твої інтереси»): знімаємо старий голос
   // з ЙОГО теми і додаємо новий до поточної (ревʼю C: той самий url може прийти
   // під іншою темою — інтерес мусить бути category-aware, як і ваги). prevCategory
@@ -119,10 +116,10 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
         ? body.stage
         : null;
   if (jobSignal && typeof body.title === 'string' && body.title) {
-    const state = await loadState(env);
-    const prefs = state.jobPrefs ?? { liked: [], disliked: [] };
-    state.jobPrefs = updateJobPrefs(prefs, jobSignal, body.title);
-    await env.BRIEFING.put('state', JSON.stringify(state));
+    await updateState(env, (s) => ({
+      ...s,
+      jobPrefs: updateJobPrefs(s.jobPrefs ?? { liked: [], disliked: [] }, jobSignal, body.title),
+    }));
   }
 
   // mockWeights: слабкі теми самооцінки (Блок F) -> частіше в наступному батчі.
@@ -132,10 +129,10 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     body.topic &&
     (body.rating === 'easy' || body.rating === 'hard')
   ) {
-    const state = await loadState(env);
-    const weights = state.mockWeights ?? {};
-    state.mockWeights = updateMockWeight(weights, body.topic, body.rating);
-    await env.BRIEFING.put('state', JSON.stringify(state));
+    await updateState(env, (s) => ({
+      ...s,
+      mockWeights: updateMockWeight(s.mockWeights ?? {}, body.topic, body.rating),
+    }));
   }
 
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;

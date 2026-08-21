@@ -71,7 +71,7 @@ import {
 } from './weather-geo.mjs';
 import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent-runtime.mjs';
 import { resolveProposalCallback } from './proposals.mjs';
-import { loadState } from './kv-store.mjs';
+import { loadState, updateState } from './kv-store.mjs';
 
 /**
  * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
@@ -150,10 +150,9 @@ async function processTelegramUpdate(
     }
 
     if (typeof parsed.updateId === 'number') {
-      // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
-      const state = await loadState(env);
-      state.lastUpdateId = parsed.updateId;
-      await env.BRIEFING.put('state', JSON.stringify(state));
+      // Читання ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state';
+      // updateState перечитує сам і мержить, а не кладе зверху свою копію.
+      await updateState(env, (s) => ({ ...s, lastUpdateId: parsed.updateId }));
     }
   } catch (err) {
     console.error('processTelegramUpdate failed', err);

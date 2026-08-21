@@ -8,6 +8,7 @@ import {
   loadAssistantHistory,
   putAssistantHistory,
   updateStats,
+  updateState,
   loadAssistantPending,
   claimAssistantPending,
 } from '../web/kv-store.mjs';
@@ -25,15 +26,17 @@ import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
 
 let kv: Map<string, string>;
 let putOpts: Map<string, unknown>;
-/** Хук «конкурентний писар»: спрацьовує МІЖ двома читаннями updateStats. */
+/** Хук «конкурентний писар»: спрацьовує МІЖ двома читаннями update*. */
 let onSecondRead: (() => void) | null;
+/** Який ключ стежити (updateStats -> 'stats', updateState -> 'state'). */
+let watchKey: string;
 
 function env() {
   let reads = 0;
   return {
     BRIEFING: {
       get: async (k: string) => {
-        if (k === 'stats' && ++reads === 2 && onSecondRead) onSecondRead();
+        if (k === watchKey && ++reads === 2 && onSecondRead) onSecondRead();
         return kv.get(k) ?? null;
       },
       put: async (k: string, v: string, opts?: unknown) => {
@@ -48,6 +51,7 @@ beforeEach(() => {
   kv = new Map();
   putOpts = new Map();
   onSecondRead = null;
+  watchKey = 'stats';
 });
 
 describe('читачі — биття JSON дає нейтральний дефолт, а не виняток', () => {
@@ -143,5 +147,68 @@ describe('памʼять розмови — TTL стоїть в одному м�
       expirationTtl: ASSISTANT_HISTORY_TTL_S,
     });
     expect(await loadAssistantHistory(env())).toMatchObject({ '42:': [{ role: 'user' }] });
+  });
+});
+
+describe("updateState — той самий захист для 'state' (C4)", () => {
+  /* 'state' ділять писарі, яких послідовний прогін крону НЕ ізолює один від
+   * одного: вебхук (lastUpdateId), `/api/*` (jobPrefs, mockWeights), асистент
+   * (roadmapProgress), пропозиції (reminders). Досі кожен робив наївний
+   * load -> mutate -> put, і той, хто прочитав раніше, а записав пізніше,
+   * мовчки затирав чужу зміну цілим блобом. */
+  beforeEach(() => {
+    watchKey = 'state';
+  });
+
+  it('без конкурента: patch застосовано один раз', async () => {
+    kv.set('state', JSON.stringify({ lastUpdateId: 1 }));
+    const res = await updateState(env(), (s: { lastUpdateId: number }) => ({
+      ...s,
+      lastUpdateId: 2,
+    }));
+    expect(res).toEqual({ lastUpdateId: 2 });
+    expect(JSON.parse(kv.get('state')!)).toEqual({ lastUpdateId: 2 });
+  });
+
+  it('конкурент між читаннями: його зміна ВИЖИВАЄ, наша теж', async () => {
+    // Саме той збиток, заради якого все це: вебхук пише lastUpdateId, а крон
+    // одночасно позначає нагадування надісланим. Раніше друге зникало.
+    kv.set('state', JSON.stringify({ lastUpdateId: 1, reminders: [] }));
+    onSecondRead = () =>
+      kv.set('state', JSON.stringify({ lastUpdateId: 1, reminders: [{ id: 'r1', fired: true }] }));
+
+    const res = await updateState(env(), (s: Record<string, unknown>) => ({
+      ...s,
+      lastUpdateId: 2,
+    }));
+
+    expect(res).toEqual({ lastUpdateId: 2, reminders: [{ id: 'r1', fired: true }] });
+    expect(JSON.parse(kv.get('state')!)).toEqual({
+      lastUpdateId: 2,
+      reminders: [{ id: 'r1', fired: true }],
+    });
+  });
+
+  it('биття в ключі -> patch стартує з {}, запит не падає', async () => {
+    kv.set('state', '{зламано');
+    const res = await updateState(env(), (s: Record<string, unknown>) => ({ ...s, ok: true }));
+    expect(res).toEqual({ ok: true });
+  });
+
+  it('не-обʼєкт у ключі теж дає {} — patch завжди бачить блоб', async () => {
+    // JSON.parse радо віддає масив або число; кожен patch індексує аргумент як
+    // обʼєкт, тож `[].lastUpdateId = 2` тихо пішло б у KV масивом із полем.
+    kv.set('state', '[1,2,3]');
+    const res = await updateState(env(), (s: Record<string, unknown>) => ({ ...s, ok: true }));
+    expect(res).toEqual({ ok: true });
+    expect(Array.isArray(JSON.parse(kv.get('state')!))).toBe(false);
+  });
+
+  it('патч, що повертає той самий store, нічого не ламає (no-op)', async () => {
+    // Ідіом «уже позначено — не чіпаю»: саме так виглядає ідемпотентний патч,
+    // без якого повторний toggle на свіжішій копії зняв би чужий прапорець.
+    kv.set('state', JSON.stringify({ roadmapProgress: { 'a/b': '2026-01-01' } }));
+    const res = await updateState(env(), (s: Record<string, unknown>) => s);
+    expect(res).toEqual({ roadmapProgress: { 'a/b': '2026-01-01' } });
   });
 });

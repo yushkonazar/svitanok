@@ -46,7 +46,7 @@ import {
 import { isQuietMinute } from './settings-core.mjs';
 import { shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
-import { loadState, loadStats, loadSettings, updateStats } from './kv-store.mjs';
+import { loadState, loadStats, loadSettings, updateStats, updateState } from './kv-store.mjs';
 import { tgCall, trackSentMessage } from './telegram-client.mjs';
 
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
@@ -131,9 +131,9 @@ export async function checkReminders(/** @type {Env} */ env) {
     // §C5: трекаємо для /clear — cron-контекст, немає вхідного parsed, тож
     // chatId/threadId явні (той самий trackSentMessage, що й sendTo()).
     await trackSentMessage(env, res, chatId, threadId);
-    const fresh = await loadState(env); // перечитати — попередня ітерація вже писала
-    fresh.reminders = markFired(fresh.reminders, r.id, now);
-    await env.BRIEFING.put('state', JSON.stringify(fresh));
+    // updateState перечитує сам — і попередню ітерацію цього ж циклу, і чужий
+    // запис, що встиг лягти між Telegram-викликом вище й цим рядком.
+    await updateState(env, (s) => ({ ...s, reminders: markFired(s.reminders, r.id, now) }));
   }
 }
 
@@ -184,9 +184,7 @@ export async function autoTelegramSetup(/** @type {Env} */ env) {
   if (state.telegramSetupDate === today) return;
   const origin = env.MINI_APP_URL.replace(/\/+$/, '');
   await runTelegramSetup(env, origin);
-  const fresh = await loadState(env); // перечитати — попередні кроки могли писати state (пін)
-  fresh.telegramSetupDate = today;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
+  await updateState(env, (s) => ({ ...s, telegramSetupDate: today }));
 }
 
 /**
@@ -249,12 +247,10 @@ export async function ensureAppWelcomePin(
     message_id: newId,
     disable_notification: true,
   });
-  // Перечитати — між першим loadState (вище) і тепер минуло 2 await Telegram-
-  // виклики, конкурентний писар того ж блоба (checkReminders/вебхук на тому
-  // самому 5-хвилинному тіку) міг оновити щось інше в 'state' за цей час.
-  const fresh = await loadState(env);
-  fresh.appWelcomePinMsgId = newId;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
+  // Між першим loadState (вище) і цим рядком минуло 2 await Telegram-виклики,
+  // тобто конкурентний писар того ж блоба (checkReminders/вебхук на тому самому
+  // 5-хвилинному тіку) міг устигнути. updateState перечитує й мержить сам.
+  await updateState(env, (s) => ({ ...s, appWelcomePinMsgId: newId }));
 }
 
 /** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
@@ -264,8 +260,9 @@ export async function ensureAppWelcomePin(
  *  оркестратор masteryFocus не пише -> merge-гонок класу H2 нема. */
 export async function updateMasteryFocus(/** @type {Env} */ env) {
   try {
+    const dateKey = kyivDateKey();
     const state = await loadState(env);
-    const focus = themeOfWeek(state.roadmapProgress ?? {}, kyivDateKey());
+    const focus = themeOfWeek(state.roadmapProgress ?? {}, dateKey);
     // Тема детермінована на тиждень -> 6/7 щоденних записів були б ідентичні.
     // Пропускаємо no-op: кожен зайвий read-modify-write усього state-блоба —
     // дармове вікно клобберу конкурентних писарів (вебхук/події).
@@ -274,8 +271,13 @@ export async function updateMasteryFocus(/** @type {Env} */ env) {
       (focus === null && cur === null) ||
       (focus && cur && cur.week === focus.week && cur.topicId === focus.topicId);
     if (same) return;
-    state.masteryFocus = focus; // null коли роадмеп завершено — теж валідний стан
-    await env.BRIEFING.put('state', JSON.stringify(state));
+    // Тему рахуємо ЩЕ РАЗ, уже на копії, яку зрештою пишемо: прогрес роадмепу
+    // міг змінитись між читанням і записом, і тоді збережена тема була б
+    // порахована не з того. null (роадмеп завершено) — теж валідний стан.
+    await updateState(env, (s) => ({
+      ...s,
+      masteryFocus: themeOfWeek(s.roadmapProgress ?? {}, dateKey),
+    }));
   } catch (/** @type {any} */ e) {
     console.error('updateMasteryFocus failed', e); // не блокує dispatch
   }

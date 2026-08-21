@@ -150,29 +150,79 @@ export async function putAssistantHistory(env, history) {
  * @returns {Promise<KvBlob>}
  */
 export async function updateStats(env, patch) {
-  const raw1 = (await env.BRIEFING.get('stats')) ?? '{}';
-  let parsed1;
-  try {
-    parsed1 = JSON.parse(raw1);
-  } catch {
-    parsed1 = {};
-  }
-  const result1 = patch(parsed1);
+  return updateJson(env, 'stats', patch);
+}
+
+/**
+ * Те саме для 'state' (C4). Ключ ділять НЕЗАЛЕЖНІ писарі: вебхук (lastUpdateId),
+ * крон нагадувань, дашборд (jobPrefs/mockWeights), асистент (roadmapProgress),
+ * пропозиції. Крон ізольований послідовним прогоном — а вебхук і `/api/*`
+ * бʼються з ним паралельно й цією ізоляцією не покриті.
+ *
+ * ⚠️ ЩО ЦЕ НЕ ЛАГОДИТЬ. Це не CAS: між другим читанням і `put` вікно лишається.
+ * Воно на порядки вужче (мілісекунди замість «читання -> Telegram-виклик ->
+ * запис»), але не нульове. Справжня межа тут — Durable Object на ключ; поки
+ * писарів мало, дешевий варіант знімає рівно той клас утрат, який спостерігали.
+ *
+ * ⚠️ КОНТРАКТ PATCH. Чиста функція без побічних ефектів: при розбіжності вона
+ * викликається вдруге, на свіжішій копії. Дельта («додай +1») від цього
+ * коректна — вона застосується РІВНО раз, до тієї копії, яку зрештою пишемо.
+ * А от `toggle` небезпечний: якщо чужий запис уже виставив той самий прапорець,
+ * повторний toggle зніме його. Такі патчі мусять самі перевіряти стан
+ * (`if (already) return store`), як це роблять виклики roadmapProgress.
+ *
+ * @param {Env} env
+ * @param {(store: KvBlob) => KvBlob} patch
+ * @returns {Promise<KvBlob>}
+ */
+export async function updateState(env, patch) {
+  return updateJson(env, 'state', patch);
+}
+
+/**
+ * Спільне ядро updateStats/updateState: прочитати, застосувати patch,
+ * перечитати; якщо сирий рядок змінився — застосувати patch до свіжішої копії
+ * замість того, щоб покласти зверху свою застарілу.
+ *
+ * Порівнюється саме СИРИЙ рядок, а не розібраний обʼєкт: будь-яка різниця
+ * означає, що між читаннями хтось писав, і цього досить, щоб не ризикувати.
+ *
+ * @param {Env} env
+ * @param {string} key
+ * @param {(store: KvBlob) => KvBlob} patch
+ * @returns {Promise<KvBlob>}
+ */
+async function updateJson(env, key, patch) {
+  const raw1 = (await env.BRIEFING.get(key)) ?? '{}';
+  const result1 = patch(parseBlob(raw1));
   const json1 = JSON.stringify(result1);
-  const raw2 = (await env.BRIEFING.get('stats')) ?? '{}';
+  const raw2 = (await env.BRIEFING.get(key)) ?? '{}';
   if (raw2 === raw1) {
-    await env.BRIEFING.put('stats', json1);
+    await env.BRIEFING.put(key, json1);
     return result1;
   }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(raw2);
-  } catch {
-    parsed2 = {};
-  }
-  const result2 = patch(parsed2);
-  await env.BRIEFING.put('stats', JSON.stringify(result2));
+  const result2 = patch(parseBlob(raw2));
+  await env.BRIEFING.put(key, JSON.stringify(result2));
   return result2;
+}
+
+/**
+ * Розібрати блоб; биття -> {}.
+ *
+ * Масив теж відкидається: `typeof [] === 'object'`, тож наївна перевірка його
+ * пропускає, а кожен patch індексує аргумент як обʼєкт — `[].lastUpdateId = 2`
+ * не кинуло б помилки, а тихо поклало б у KV масив із полем.
+ *
+ * @param {string} raw
+ * @returns {any}
+ */
+function parseBlob(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 /** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'. Причина: блоб 'state' пишуть

@@ -50,6 +50,7 @@ import {
   loadAssistantPending,
   claimAssistantPending,
   markProposalExecuted,
+  updateState,
 } from './kv-store.mjs';
 import {
   getCalendarEvent,
@@ -437,16 +438,18 @@ export async function resolveProposalCallback(
   for (const item of pending.items) {
     if (item.kind === 'reminder') {
       const newId = crypto.randomUUID();
-      const fresh = await loadState(env);
-      fresh.reminders = addReminder(fresh.reminders, {
-        id: newId,
-        text: item.title,
-        whenMs: item.whenMs,
-        nowMs: Date.now(),
-        chatId: parsed.chatId,
-        threadId: parsed.threadId,
-      });
-      await env.BRIEFING.put('state', JSON.stringify(fresh));
+      const nowMs = Date.now();
+      await updateState(env, (s) => ({
+        ...s,
+        reminders: addReminder(s.reminders, {
+          id: newId,
+          text: item.title,
+          whenMs: item.whenMs,
+          nowMs,
+          chatId: parsed.chatId,
+          threadId: parsed.threadId,
+        }),
+      }));
       results.push({ ok: true, id: newId });
     } else if (item.kind === 'event') {
       // Доналаштування: глобальний durMin/leadMin перекриває дефолти (null -> «як є»).
@@ -497,14 +500,16 @@ export async function resolveProposalCallback(
       if (!target) {
         results.push({ ok: false });
       } else {
-        fresh.reminders =
-          item.kind === 'deleteReminder'
-            ? cancelReminder(fresh.reminders, item.reminderId)
-            : updateReminder(fresh.reminders, item.reminderId, {
-                ...(item.title ? { text: item.title } : {}),
-                ...(Number.isFinite(item.whenMs) ? { whenMs: item.whenMs } : {}),
-              });
-        await env.BRIEFING.put('state', JSON.stringify(fresh));
+        await updateState(env, (s) => ({
+          ...s,
+          reminders:
+            item.kind === 'deleteReminder'
+              ? cancelReminder(s.reminders, item.reminderId)
+              : updateReminder(s.reminders, item.reminderId, {
+                  ...(item.title ? { text: item.title } : {}),
+                  ...(Number.isFinite(item.whenMs) ? { whenMs: item.whenMs } : {}),
+                }),
+        }));
         results.push({ ok: true });
       }
     } else if (item.kind === 'settings') {
