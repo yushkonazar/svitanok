@@ -300,7 +300,16 @@ describe('GET /api/weather — геопозиція власника (request.cf
     const body = (await res.json()) as { locations: { name: string }[] };
     // Твоя точка -> слот 1, Львів (WEATHER_LOCATIONS[0]) зсунувся у слот 2.
     expect(body.locations.map((l) => l.name)).toEqual(['Твоя точка', 'Львів']);
-    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({ lat: 49.84, lon: 24.03 });
+    /* ⚠️ Разом із координатами лягає й НАЗВА — заради ранкового брифінгу, а не
+       заради цього запиту. Оркестратор читає той самий ключ, але зворотного
+       геокодування зробити не може: ран о 08:00 не має ні `request.cf`, ні
+       причини палити квоту OpenWeather на назву, з'ясовану тут. Без назви
+       оверрайд у брифінгу свідомо не спрацьовує. */
+    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({
+      lat: 49.84,
+      lon: 24.03,
+      name: 'Твоя точка',
+    });
   });
 
   it('та сама позиція вдруге -> ownerGeo НЕ переписується, кеш обслуговує без нового фетчу', async () => {
@@ -325,7 +334,31 @@ describe('GET /api/weather — геопозиція власника (request.cf
     const body = (await res.json()) as { locations: { name: string }[] };
     expect(body.locations.map((l) => l.name)).toEqual(['Твоя точка', 'Львів']);
     expect(openWeatherCalls.length).toBeGreaterThan(callsAfterFirst); // кеш під СТАРУ позицію не рахується валідним
-    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({ lat: 50.45, lon: 30.52 });
+    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({
+      lat: 50.45,
+      lon: 30.52,
+      name: 'Твоя точка',
+    });
+  });
+
+  /* ⚠️ РОЗРІЗНЯЛЬНИЙ ВИПАДОК, і перша версія цього тесту його не ловила.
+     Ручний блоб ІЗ назвою взагалі не доходить до зворотного геокодування —
+     `name` уже є, і блок пропускається цілком. Гейт `!manualGeo` стереже
+     інше: ручний блоб БЕЗ назви (легасі/битий запис). Тоді `effectiveGeo` —
+     це РУЧНІ координати, і без гейта вони з щойно з'ясованою назвою лягли б
+     у `ownerGeo`, тобто в ключ авто-детекції. А оркестратор, відкинувши
+     безіменний ручний блоб, узяв би ці координати з авто-ключа — і обійшов
+     би саму вимогу назви, заради якої гейт існує. */
+  it('ручний блоб без назви не підміняє собою ключ авто-детекції', async () => {
+    kv.set('ownerGeoManual', JSON.stringify({ lat: 50.45, lon: 30.52 })); // без name
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const res = await getWeather(initData, env(), LVIV_CF);
+    expect(res.status).toBe(200);
+    const stored = kv.get('ownerGeo');
+    expect(stored).toBeTruthy();
+    // у ключі авто-детекції — координати З CF (Львів), а не ручні київські
+    expect(JSON.parse(stored!).lat).toBeCloseTo(49.84, 2);
+    expect(JSON.parse(stored!).lon).toBeCloseTo(24.03, 2);
   });
 
   it('незначний джиттер координат (у межах ~2км) -> трактується як «та сама позиція», без перезапису', async () => {
