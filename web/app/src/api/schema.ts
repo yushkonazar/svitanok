@@ -962,3 +962,72 @@ export type Mastery = z.infer<typeof masterySchema>;
 export type MasteryHint = z.infer<typeof masteryHintSchema>;
 export type ThemeOfWeek = z.infer<typeof themeOfWeekSchema>;
 export type Roadmap = z.infer<typeof roadmapSchema>;
+
+/**
+ * Шар звʼязків «Важелі» (GET /api/levers).
+ *
+ * ⚠️ `levers: null` — окремий, ЗНАЧУЩИЙ стан, а не «порожньо»: крон рахує раз
+ * на тиждень, тож між деплоєм і першим понеділком розрахунку немає взагалі.
+ * Це не те саме, що `ready:false` («порахували, але тижнів замало»), і екран
+ * мусить казати різне.
+ *
+ * ⚠️ Усе, крім `weekOf`, — з дефолтами, як в архіві: блоб пише крон, і запис,
+ * зроблений старішою версією, не має валити екран через нове поле.
+ */
+export const leverEffectSchema = z.object({
+  high: num,
+  low: num,
+  nHigh: int,
+  nLow: int,
+  d: num,
+});
+
+export const leverRowSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  lag: int,
+  rho: num,
+  rhoDiff: num.default(0),
+  n: int,
+  nDiff: int.default(0),
+  p: num,
+  effect: leverEffectSchema.nullable().default(null),
+});
+
+export const leverFeatureSchema = z.object({
+  label: z.string(),
+  emoji: z.string().default(''),
+  unit: z.string().default(''),
+  // Готові фрази «більше сну» / «вища оцінка дня»: рід і відмінок живуть у
+  // реєстрі ознак, не в шаблоні речення (див. LEVER_FEATURES у levers-core.mjs).
+  more: z.string().default(''),
+  less: z.string().default(''),
+  domain: z.string().default(''),
+  domainLabel: z.string().default(''),
+});
+
+export const leversPayloadSchema = z.object({
+  computedAt: z.string().nullable().default(null),
+  weekOf: z.string(),
+  firstWeek: z.string().nullable().default(null),
+  lastWeek: z.string().nullable().default(null),
+  ready: z.boolean().default(false),
+  weeks: int.default(0),
+  weeksNeeded: int.default(0),
+  tested: int.default(0),
+  shown: int.default(0),
+  rows: z.array(leverRowSchema).default([]),
+  skipped: z.array(z.object({ key: z.string(), reason: z.string() })).default([]),
+});
+
+export const leversSchema = z.object({
+  levers: leversPayloadSchema.nullable().default(null),
+  features: z.record(z.string(), leverFeatureSchema).default({}),
+  gate: int.default(26),
+  useful: int.default(39),
+});
+
+export type LeverRow = z.infer<typeof leverRowSchema>;
+export type LeverFeature = z.infer<typeof leverFeatureSchema>;
+export type LeversPayload = z.infer<typeof leversPayloadSchema>;
+export type LeversResult = z.infer<typeof leversSchema>;

@@ -1,6 +1,8 @@
 import { tg, inTelegram } from '../telegram.ts';
-import { statsSchema, archiveSchema, type Stats, type ArchiveMonth } from './schema.ts';
+import { statsSchema, archiveSchema, leversSchema } from './schema.ts';
+import type { Stats, ArchiveMonth, LeversResult } from './schema.ts';
 import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE, SAMPLE_ARCHIVE } from './sample.ts';
+import { SAMPLE_LEVERS, EMPTY_LEVERS } from './sample.ts';
 import {
   briefSchema,
   liveWeatherResponseSchema,
@@ -102,6 +104,32 @@ export async function fetchArchive(): Promise<ArchiveMonth[]> {
   const parsed = archiveSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат історії змінився — оновіть застосунок');
   return parsed.data.months;
+}
+
+/**
+ * Шар звʼязків «Важелі» (GET /api/levers).
+ *
+ * ⚠️ 401/403 -> `levers: null`, а не порожній список рядків. Порожній список
+ * означав би «перевірили й звʼязків немає» — твердження, якого ми не робили.
+ * Немає доступу — немає й відповіді.
+ *
+ * ⚠️ Поза Telegram демо показує ОБИДВА стани через demoGate, і «замало даних»
+ * тут не менш важливий за заповнений: саме його видно на екрані місяцями.
+ */
+export async function fetchLevers(): Promise<LeversResult> {
+  if (!inTelegram())
+    return demoGate(
+      () => SAMPLE_LEVERS,
+      () => EMPTY_LEVERS,
+    );
+  const res = await fetch('/api/levers', { cache: 'no-store', headers: authHeaders() });
+  if (res.status === 401 || res.status === 403) {
+    return { levers: null, features: {}, gate: 26, useful: 39 };
+  }
+  if (!res.ok) throw new Error(`Не вдалося завантажити важелі (${res.status})`);
+  const parsed = leversSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат важелів змінився — оновіть застосунок');
+  return parsed.data;
 }
 
 /** Брифінг дня + прапор демо. Та сама політика, що й fetchStats. */

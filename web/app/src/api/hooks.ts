@@ -3,6 +3,7 @@ import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
   fetchArchive,
+  fetchLevers,
   fetchBriefing,
   fetchLiveWeather,
   fetchSettings,
@@ -48,6 +49,23 @@ export function useArchive(enabled = true) {
     queryFn: fetchArchive,
     enabled,
     staleTime: 60 * 60 * 1000,
+  });
+}
+
+/**
+ * Шар звʼязків (GET /api/levers).
+ *
+ * ⚠️ Та сама політика, що в `useArchive`: окрема черга й вантаження ЛИШЕ коли
+ * блок розгорнуто. Але staleTime тут ще щедріший — блоб перераховується КРОНОМ
+ * раз на тиждень, тож повторний запит усередині доби не може принести нічого
+ * нового, лише зайве читання KV.
+ */
+export function useLevers(enabled = true) {
+  return useQuery({
+    queryKey: ['levers'],
+    queryFn: fetchLevers,
+    enabled,
+    staleTime: 12 * 60 * 60 * 1000,
   });
 }
 
