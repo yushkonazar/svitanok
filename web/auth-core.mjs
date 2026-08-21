@@ -236,3 +236,23 @@ export async function checkPrimaryOwner(initData, env) {
 export async function checkOwnerRead(request, env) {
   return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
 }
+
+/**
+ * initData МУТАЦІЇ: заголовок, а якщо його немає — поле в тілі (M3).
+ *
+ * Читання завжди ходили заголовком, мутації — полем у JSON. Різниці в безпеці
+ * між ними немає (тіло так само не осідає в логах, на відміну від query), але
+ * два різні шляхи до однієї перевірки — це два місця, де можна помилитись, і
+ * рівно одне з них хтось колись забуде.
+ *
+ * ⚠️ Фолбек на тіло — ПЕРЕХІДНИЙ. Mini App у вебвʼю Telegram кешується, тож
+ * одразу після релізу стара збірка ще шле поле; без фолбека вона отримала б
+ * 401 на кожну дію. Прибрати, коли впевнено, що старих клієнтів не лишилось.
+ *
+ * @param {Request} request
+ * @param {KvBlob|null|undefined} body
+ * @returns {string|null}
+ */
+export function mutationInitData(request, body) {
+  return request.headers.get('X-Telegram-Init-Data') ?? body?.initData ?? null;
+}

@@ -153,7 +153,7 @@ export async function fetchLiveWeather(): Promise<LiveWeatherResponse | null> {
 }
 
 /**
- * POST /api/weather/location {city, initData} -> ручне перевизначення локації
+ * POST /api/weather/location {city} -> ручне перевизначення локації
  * (фідбек власника: IP-геолокація не встигає за реальним рухом). Поза Telegram
  * — null (як postSettings/postEvent: демо не персиститься, і живої погоди в
  * демо однаково немає — редагувати нічого). УСЕРЕДИНІ Telegram цей шлях
@@ -164,8 +164,8 @@ export async function setWeatherLocation(city: string): Promise<{ name: string }
   if (!inTelegram() || !tg) return null;
   const res = await fetch('/api/weather/location', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ city, initData: tg.initData }),
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ city }),
   });
   if (res.status === 404) throw new Error('Місто не знайдено');
   if (!res.ok) throw new Error(`Не вдалося встановити локацію (${res.status})`);
@@ -185,8 +185,8 @@ export async function setWeatherLocationExact(
   if (!inTelegram() || !tg) return null;
   const res = await fetch('/api/weather/location', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...pick, initData: tg.initData }),
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(pick),
   });
   if (!res.ok) throw new Error(`Не вдалося встановити локацію (${res.status})`);
   const data = (await res.json()) as { manualGeo: { name: string } };
@@ -225,8 +225,7 @@ export async function clearWeatherLocation(): Promise<void> {
   if (!inTelegram() || !tg) return;
   const res = await fetch('/api/weather/location', {
     method: 'DELETE',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ initData: tg.initData }),
+    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`Не вдалося прибрати локацію (${res.status})`);
 }
@@ -241,15 +240,14 @@ export async function requestLocatePrompt(): Promise<void> {
   if (!inTelegram() || !tg) return;
   const res = await fetch('/api/weather/locate-prompt', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ initData: tg.initData }),
+    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`Не вдалося надіслати запит (${res.status})`);
 }
 
 /**
- * Мутація POST /api/event (роадмеп v3, E2). На відміну від GET-читань, initData
- * їде В ТІЛІ JSON (як vanilla sendEvent), не заголовком; сервер валідує owner.
+ * Мутація POST /api/event (роадмеп v3, E2). initData їде заголовком — тим самим,
+ * що й у GET-читаннях (M3); сервер валідує owner.
  * Поза Telegram — no-op (демо не персиститься; оптимістичне оновлення кешу
  * робить хук-мутація локально).
  */
@@ -257,8 +255,8 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
   if (!inTelegram() || !tg) return;
   const res = await fetch('/api/event', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type, ...payload, initData: tg.initData }),
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ type, ...payload }),
   });
   if (!res.ok) throw new Error(`Подію не збережено (${res.status})`);
 }
@@ -302,8 +300,8 @@ export async function postSettings(next: Settings): Promise<SettingsResponse | n
   if (!inTelegram() || !tg) return null;
   const res = await fetch('/api/settings', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ settings: next, initData: tg.initData }),
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ settings: next }),
   });
   if (!res.ok) throw new Error(`Налаштування не збережено (${res.status})`);
 
@@ -379,8 +377,8 @@ export async function postVote(category: string, url: string): Promise<VoteResul
   if (!inTelegram() || !tg) return null;
   const res = await fetch('/api/vote', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ category, dir: 'up', url, initData: tg.initData }),
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ category, dir: 'up', url }),
   });
   if (!res.ok) throw new Error(`Голос не зараховано (${res.status})`);
   const data = (await res.json()) as { weight?: number; voted?: VoteDir };

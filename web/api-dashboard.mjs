@@ -13,7 +13,7 @@
 // голос із чату й три 5-хвилинні крони. Прямий put тут колись уже втрачав дані.
 
 import { json, readJsonBody } from './http-core.mjs';
-import { checkOwnerRead, checkPrimaryOwner } from './auth-core.mjs';
+import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import { loadStats, loadState, loadSettings, updateStats } from './kv-store.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 import {
@@ -35,7 +35,8 @@ import { normalizeSettings, connectorStatus } from './settings-core.mjs';
 import { totalProgress, roadmapWeekly } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './mastery-core.mjs';
 
-/** POST /api/vote {category, dir:'up', url?, initData} -> preferenceWeights + інтерес.
+/** POST /api/vote {category, dir:'up', url?} -> preferenceWeights + інтерес.
+ *  Автентифікація — заголовком X-Telegram-Init-Data (див. mutationInitData).
  *  url (C3): якщо переданий — голос дедуплюється per-url (повторний = зняти).
  *  Без url — стара поведінка (кожен клік зсуває вагу), щоб не ламати клієнтів,
  *  які url ще не шлють.
@@ -51,11 +52,11 @@ export async function handleVote(/** @type {Request} */ request, /** @type {Env}
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
-  const { category, dir, url, initData } = body ?? {};
+  const { category, dir, url } = body ?? {};
   if (typeof category !== 'string' || !category || dir !== 'up') {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
-  const auth = await checkPrimaryOwner(initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const state = await loadState(env);
@@ -178,7 +179,7 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   if (body.type === 'checkin') return { locked: false };
 }
 
-/** POST /api/event {type, …, initData} -> записати подію у стор статистики.
+/** POST /api/event {type, …} -> записати подію у стор статистики.
  *  locked (checkin, вже підтверджений блок) — сурфейсимо чесно, той самий
  *  контракт, що runRecordAction (агент): {ok:true} саме по собі не каже,
  *  чи запис реально відбувся. */
@@ -188,7 +189,7 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
   if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
-  const auth = await checkPrimaryOwner(body.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const result = await applyEvent(env, body);
@@ -219,7 +220,7 @@ async function googleConnectors(/** @type {Env} */ env) {
 
 /**
  * GET /api/settings -> налаштування власника + статус конекторів.
- * POST /api/settings {settings, initData} -> ЗАМІНИТИ блоб цілком (PUT-семантика).
+ * POST /api/settings {settings} -> ЗАМІНИТИ блоб цілком (PUT-семантика).
  *
  * Свідомо БЕЗ read-modify-write. Спокуса «прочитати + накласти патч» тут
  * оманлива: KV не має ні CAS, ні гарантії read-your-writes (~до 60с), а екран
@@ -248,7 +249,7 @@ export async function handleSettings(/** @type {Request} */ request, /** @type {
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
-  const auth = await checkPrimaryOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   // Вимагаємо ПОВНИЙ блоб: часткове тіло normalizeSettings мовчки добив би
