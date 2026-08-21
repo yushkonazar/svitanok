@@ -1,4 +1,4 @@
-import type { Stats, HeatmapCell, SavedItem, ArchiveMonth } from './schema.ts';
+import type { Stats, HeatmapCell, SavedItem, ArchiveMonth, LeversResult } from './schema.ts';
 
 // Демо-статистика поза Telegram (роадмеп v3, E1) — перенесена 1:1 з
 // web/public/index.html SAMPLE_STATS, щоб власник бачив заповнений UI без
@@ -1109,3 +1109,179 @@ export const SAMPLE_SAVED_ARCHIVE: SavedItem[] = [
     ts: '2026-07-01',
   },
 ];
+
+/**
+ * Демо «Важелів»: два звʼязки, що витримали поправку, з 21 перевіреного.
+ *
+ * ⚠️ Знаменник (21 проти 2) — не декорація демо, а суть блоку: три рядки без
+ * нього читаються як істина, а не як три вижилі. Демо мусить показувати ту
+ * саму чесність, що й реальний екран, інакше воно вчить читати неправильно.
+ */
+export const SAMPLE_LEVERS: LeversResult = {
+  levers: {
+    computedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+    weekOf: '2026-08-17',
+    firstWeek: '2025-11-03',
+    lastWeek: '2026-08-10',
+    ready: true,
+    weeks: 41,
+    weeksNeeded: 0,
+    tested: 21,
+    shown: 2,
+    rows: [
+      {
+        from: 'sleep',
+        to: 'applied',
+        lag: 1,
+        rho: 0.54,
+        rhoDiff: 0.47,
+        n: 40,
+        nDiff: 38,
+        p: 0.0016,
+        effect: { high: 11.4, low: 5.6, nHigh: 18, nLow: 22, d: 0.98 },
+      },
+      {
+        from: 'roadmap',
+        to: 'dayScore',
+        lag: 0,
+        rho: 0.46,
+        rhoDiff: 0.41,
+        n: 41,
+        nDiff: 39,
+        p: 0.0094,
+        effect: { high: 3.9, low: 3.3, nHigh: 19, nLow: 22, d: 0.71 },
+      },
+    ],
+    skipped: [{ key: 'funnelMoves', reason: 'одне значення в більшості тижнів' }],
+  },
+  features: {
+    sleep: {
+      label: 'Сон',
+      emoji: '🌙',
+      unit: 'год',
+      more: 'більше сну',
+      less: 'менше сну',
+      domain: 'recovery',
+      domainLabel: 'Відновлення',
+    },
+    energy: {
+      label: 'Енергія',
+      emoji: '⚡',
+      unit: '',
+      more: 'більше енергії',
+      less: 'менше енергії',
+      domain: 'affect',
+      domainLabel: 'Самопочуття',
+    },
+    mood: {
+      label: 'Настрій',
+      emoji: '🙂',
+      unit: '',
+      more: 'кращий настрій',
+      less: 'гірший настрій',
+      domain: 'affect',
+      domainLabel: 'Самопочуття',
+    },
+    dayScore: {
+      label: 'Оцінка дня',
+      emoji: '⭐',
+      unit: '',
+      more: 'вища оцінка дня',
+      less: 'нижча оцінка дня',
+      domain: 'affect',
+      domainLabel: 'Самопочуття',
+    },
+    flames: {
+      label: 'Вогники',
+      emoji: '🔥',
+      unit: '',
+      more: 'більше вогників',
+      less: 'менше вогників',
+      domain: 'habits',
+      domainLabel: 'Звички',
+    },
+    mock: {
+      label: 'Питання',
+      emoji: '🧠',
+      unit: '',
+      more: 'більше питань',
+      less: 'менше питань',
+      domain: 'learning',
+      domainLabel: 'Навчання',
+    },
+    roadmap: {
+      label: 'Роадмеп',
+      emoji: '📚',
+      unit: 'тем',
+      more: 'більше тем роадмепу',
+      less: 'менше тем роадмепу',
+      domain: 'learning',
+      domainLabel: 'Навчання',
+    },
+    applied: {
+      label: 'Подачі',
+      emoji: '📨',
+      unit: '',
+      more: 'більше подач',
+      less: 'менше подач',
+      domain: 'search',
+      domainLabel: 'Пошук роботи',
+    },
+    funnelMoves: {
+      label: 'Рух воронки',
+      emoji: '📈',
+      unit: '',
+      more: 'більше руху у воронці',
+      less: 'менше руху у воронці',
+      domain: 'search',
+      domainLabel: 'Пошук роботи',
+    },
+    news: {
+      label: 'Новини',
+      emoji: '📰',
+      unit: '',
+      more: 'більше новин',
+      less: 'менше новин',
+      domain: 'attention',
+      domainLabel: 'Увага',
+    },
+    opens: {
+      label: 'Відкриття',
+      emoji: '👀',
+      unit: '',
+      more: 'більше відкриттів',
+      less: 'менше відкриттів',
+      domain: 'attention',
+      domainLabel: 'Увага',
+    },
+  },
+  gate: 26,
+  useful: 39,
+};
+
+/**
+ * Демо «даних ще замало» — і це НЕ вигаданий стан заради повноти.
+ *
+ * Саме його власник бачитиме на екрані місяцями: чек-ін пишеться з 17.07.2026,
+ * тобто до гейта в 26 тижнів лишається близько двадцяти. Демо, яке показує
+ * лише заповнений блок, приховало б рівно те, що буде насправді.
+ */
+export const EMPTY_LEVERS: LeversResult = {
+  ...SAMPLE_LEVERS,
+  levers: {
+    computedAt: new Date(Date.now() - 86400000).toISOString(),
+    weekOf: '2026-08-17',
+    firstWeek: '2026-07-13',
+    lastWeek: '2026-08-10',
+    ready: false,
+    weeks: 5,
+    weeksNeeded: 21,
+    tested: 0,
+    shown: 0,
+    rows: [],
+    skipped: [
+      { key: 'roadmap', reason: 'майже стале значення' },
+      { key: 'funnelMoves', reason: 'мало тижнів' },
+    ],
+  },
+};

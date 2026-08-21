@@ -1,6 +1,8 @@
 import { tg, inTelegram } from '../telegram.ts';
-import { statsSchema, archiveSchema, type Stats, type ArchiveMonth } from './schema.ts';
+import { statsSchema, archiveSchema, leversSchema } from './schema.ts';
+import type { Stats, ArchiveMonth, LeversResult } from './schema.ts';
 import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE, SAMPLE_ARCHIVE } from './sample.ts';
+import { SAMPLE_LEVERS, EMPTY_LEVERS } from './sample.ts';
 import {
   briefSchema,
   liveWeatherResponseSchema,
@@ -102,6 +104,42 @@ export async function fetchArchive(): Promise<ArchiveMonth[]> {
   const parsed = archiveSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат історії змінився — оновіть застосунок');
   return parsed.data.months;
+}
+
+/**
+ * Шар звʼязків «Важелі» (GET /api/levers).
+ *
+ * ⚠️ 401/403 -> `levers: null`, а не порожній список рядків. Порожній список
+ * означав би «перевірили й звʼязків немає» — твердження, якого ми не робили.
+ * Немає доступу — немає й відповіді.
+ *
+ * ⚠️ Поза Telegram демо показує ОБИДВА стани через demoGate, і «замало даних»
+ * тут не менш важливий за заповнений: саме його видно на екрані місяцями.
+ */
+export async function fetchLevers(): Promise<LeversResult> {
+  if (!inTelegram())
+    return demoGate(
+      () => SAMPLE_LEVERS,
+      () => EMPTY_LEVERS,
+    );
+  const res = await fetch('/api/levers', { cache: 'no-store', headers: authHeaders() });
+  // ⚠️ Порожній результат збирає САМА схема, а не літерали тут: інакше число
+  // гейта жило б у трьох місцях клієнта (схема, цей фолбек, компонент) і
+  // мовчки розійшлося б зі `GATE_WEEKS` на сервері — а видно його саме в
+  // стані «потрібно ще N тижнів», де воно і є всім змістом екрана.
+  //
+  // safeParse, а не parse: одне нове обовʼязкове поле у схемі перетворило б
+  // відмову в доступі на ВИКИНУТИЙ ВИНЯТОК усередині фетчера, і блок показав
+  // би помилку замість чесного порожнього стану. Числа у фолбеку недосяжні —
+  // гейт читається лише коли payload існує, а тут він null.
+  if (res.status === 401 || res.status === 403) {
+    const empty = leversSchema.safeParse({});
+    return empty.success ? empty.data : { levers: null, features: {}, gate: 0, useful: 0 };
+  }
+  if (!res.ok) throw new Error(`Не вдалося завантажити важелі (${res.status})`);
+  const parsed = leversSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат важелів змінився — оновіть застосунок');
+  return parsed.data;
 }
 
 /** Брифінг дня + прапор демо. Та сама політика, що й fetchStats. */
