@@ -1,6 +1,6 @@
 // Крон-задачі Worker'а (Фаза 5, модуляризація worker.js, план A2 §5).
 //
-// ОДИН крон раз на 5 хвилин — і вісім задач усередині. Кожна САМА вирішує, чи
+// ОДИН крон раз на 5 хвилин — і десяток задач усередині. Кожна САМА вирішує, чи
 // її час: гейт за київською годиною в момент виконання + ідемпотентність за
 // добу (мітка в KV). Причина такої форми, а не кількох крон-виразів: крон
 // Cloudflare Free має jitter у десятки хвилин, і розклад «о 08:05» означав би
@@ -33,7 +33,9 @@ import {
   staleSleepNudges,
   shouldSendSleepNudge,
   SLEEP_NUDGE_TEXT,
+  weekStartKey,
 } from './stats-core.mjs';
+import { buildWeeklySeries, analyzeLevers, LEVERS_WEEKS_WINDOW } from './levers-core.mjs';
 import { themeOfWeek } from './mastery-core.mjs';
 import {
   monthlyRollup,
@@ -47,6 +49,7 @@ import { isQuietMinute } from './settings-core.mjs';
 import { shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
 import { loadState, loadStats, loadSettings, updateStats, updateState } from './kv-store.mjs';
+import { loadLevers, putLevers } from './kv-store.mjs';
 import { tgCall, trackSentMessage } from './telegram-client.mjs';
 
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
@@ -325,6 +328,58 @@ export async function archiveMonthly(/** @type {Env} */ env) {
     await writeRollup(env, WEEKLY_ARCHIVE_KEY, weeklyRollup(store, today), mergeWeekly, today);
   } catch (/** @type {any} */ e) {
     console.error('archiveMonthly failed', e); // не блокує решту крону
+  }
+}
+
+/**
+ * Перерахувати шар звʼязків «Важелі» — раз на тиждень, у власний KV-ключ.
+ *
+ * ⚠️ ЧОМУ КРОНОМ, А НЕ НА /api/stats. Перебір гіпотез — єдина частина
+ * статистики, що не вміщається в бюджет запиту: на `/api/stats` стеля 10 мс, і
+ * `aggregateStats` уже зʼїдає 3.74 мс. Розрахунок же потрібен рівно раз на
+ * тиждень: усі ряди тижневі, і всередині тижня відповідь не змінюється.
+ *
+ * Заміряно на стору з ПОВНИМ роком даних (311 чек-інів, 365 діб активності,
+ * 324 подачі, 132 вакансії у воронці): `buildWeeklySeries` 2.71 мс +
+ * `analyzeLevers` 0.89 мс = 3.59 мс. Дорожчий саме ЗБІР, не математика —
+ * математика на 52 точках коштує 0.88 мс навіть коли рахуються всі 24
+ * гіпотези без жодної діри.
+ *
+ * ⚠️ ГЕЙТ — НЕ ГОДИНА, А ТИЖДЕНЬ. Решта задач гейтяться за `kyivHour()` +
+ * міткою за добу; тут мітка — сам понеділок у записаному payload. Тобто задача
+ * спрацьовує на першому тіку нового тижня (пн ~00:0x Київ) і мовчить решту
+ * 2015 тіків. Окрема мітка «зроблено» не потрібна: результат САМ несе тиждень,
+ * за який порахований, тож зайвого стану, який міг би розійтися з даними,
+ * не зʼявляється.
+ *
+ * ⚠️ ЗБІЙ ЛИШАЄ СТАРИЙ РЕЗУЛЬТАТ — і це видно. `computedAt`/`weekOf` їдуть у
+ * payload саме тому: показ мусить могти сказати «рахувалось тоді-то», а не
+ * видати минулотижневі рядки за свіжі. Тихої деградації тут немає лише доти,
+ * доки ці два поля читаються на екрані.
+ */
+export async function computeLevers(/** @type {Env} */ env) {
+  try {
+    const today = kyivDateKey();
+    const weekOf = weekStartKey(today);
+    const prev = await loadLevers(env);
+    if (prev?.weekOf === weekOf) return; // цього тижня вже рахували
+
+    // ⚠️ Два блоби, бо ряди живуть у двох: усе, що з чек-іну й активності — у
+    // `stats`, а рух роадмепу — у `state.roadmapProgress`.
+    const [store, state] = [await loadStats(env), await loadState(env)];
+    const built = buildWeeklySeries(store, state, today, LEVERS_WEEKS_WINDOW);
+    const analysis = analyzeLevers(built.series, built.weeksUsable);
+
+    await putLevers(env, {
+      computedAt: new Date().toISOString(),
+      weekOf,
+      window: LEVERS_WEEKS_WINDOW,
+      firstWeek: built.weekStarts[0] ?? null,
+      lastWeek: built.weekStarts.at(-1) ?? null,
+      ...analysis,
+    });
+  } catch (/** @type {any} */ e) {
+    console.error('computeLevers failed', e); // не блокує решту крону (B11)
   }
 }
 
