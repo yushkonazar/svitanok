@@ -132,6 +132,11 @@ jobs:
           MINI_APP_URL: ${{ secrets.MINI_APP_URL }} # опційно, кнопка «Відкрити Mini App» у сповіщенні
           TELEGRAM_BOT_USERNAME: ${{ secrets.TELEGRAM_BOT_USERNAME }} # опційно, Direct Link Mini App (initData з групи)
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          # ⚠️ Без цього рядка секрет у GitHub Secrets НЕ ДОЇЖДЖАЄ до рану, і
+          # брифінг щодня шле погоду по публічному фолбеку (Львів + Рівне)
+          # замість справжніх локацій — мовчки, бо loadConfig просто лишає
+          # config.yml. Той самий клас, що GOOGLE_TRANSLATE_API_KEY нижче.
+          OWNER_LOCATIONS: ${{ secrets.OWNER_LOCATIONS }}
           NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
           # ⚠️ Без цього рядка переклад world-новин НЕ ПРАЦЮЄ, скільки б ключів
           # не було заведено: optionalSecret() читає process.env, а в Actions
