@@ -414,7 +414,7 @@ export async function loadBriefDispatch(/** @type {Env} */ env) {
  *  ручного /brief захищає lastMs (MIN_DISPATCH_GAP_MS, tg-core.mjs). */
 export async function recordBriefDispatch(
   /** @type {Env} */ env,
-  /** @type {string|null} */ autoDate,
+  /** @type {string|null} */ autoDate = null,
 ) {
   const cur = await loadBriefDispatch(env);
   const next = { ...cur, lastMs: Date.now() };

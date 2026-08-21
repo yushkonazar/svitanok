@@ -309,7 +309,7 @@ export function formatDriveForPrompt(/** @type {any[]|null|undefined} */ files) 
 export const MAX_MAIL_BODY_LEN = 4000;
 
 /** Дайджест повного листа для промпту; null -> недоступний/не знайдений. */
-export function formatMailBodyForPrompt(/** @type {KvBlob} */ message) {
+export function formatMailBodyForPrompt(/** @type {KvBlob|null|undefined} */ message) {
   if (!message) return 'Лист: не знайшов його або немає доступу.';
   const from = clip(message.from, MAX_FROM_LEN) || '(невідомо)';
   const subject = clip(message.subject, MAX_SUBJECT_LEN) || '(без теми)';

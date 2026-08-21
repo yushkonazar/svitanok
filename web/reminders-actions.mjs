@@ -284,7 +284,7 @@ export async function cancelReminderByText(
 /**
  * @param {Env} env
  * @param {KvBlob} parsed
- * @param {{ reminderText: string, reminderNewText?: string, when?: string }} opts
+ * @param {{ reminderText?: unknown, reminderNewText?: unknown, when?: unknown }} opts
  */
 export async function updateReminderByText(
   env,

@@ -178,7 +178,7 @@ export function parseUpdate(update) {
  * бот) АБО множиною дозволених id (Set/масив — кілька учасників супергрупи,
  * TELEGRAM_ALLOWED_USER_IDS). Той самий виклик, той самий сенс — worker.js
  * вирішує, один id прийшов чи декілька.
- * @param {{ fromId?: number|string|null }|null|undefined} parsed
+ * @param {KvBlob|null|undefined} parsed
  * @param {Set<string>|Array<string|number>|string|number|null|undefined} ownerIds
  */
 export function isOwner(parsed, ownerIds) {

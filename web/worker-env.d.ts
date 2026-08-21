@@ -26,8 +26,13 @@ interface Env {
   BRIEFING: KVNamespace;
   /** Статика React-дашборда (`web/public`), біндинг `assets`. */
   ASSETS: Fetcher;
-  /** Durable Object прогону асистента, клас `AgentRun` (`web/agent-run-do.mjs`). */
-  AGENT_RUN: DurableObjectNamespace;
+  /**
+   * Durable Object прогону асистента (`web/agent-run-do.mjs`).
+   *
+   * Клас у параметрі — не церемонія: без нього стаб має лише базові методи, і
+   * виклики `claimStep`/`finish` не перевіряються взагалі.
+   */
+  AGENT_RUN: DurableObjectNamespace<import('./agent-run-do.mjs').AgentRun>;
 
   /* ── Telegram ───────────────────────────────────────────────────────── */
 
