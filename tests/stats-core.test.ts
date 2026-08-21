@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, normalize, recordEvent, aggregateStats } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { dayKey } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
 import { recordReliability, weekStartKey } from '../web/stats-core.mjs';
 
 describe('stats-core — recordEvent', () => {
@@ -243,7 +240,7 @@ describe('stats-core — recordEvent', () => {
   it('save_news позначає kind:"news"', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'save_news', url: 'u1', title: 'T' }, '2026-07-07');
-    expect(s.saved[0].kind).toBe('news');
+    expect(s.saved[0]!.kind).toBe('news');
   });
 });
 
@@ -437,12 +434,12 @@ describe('stats-core — aggregateStats', () => {
     const st = aggregateStats(seed(), '2026-07-07');
     expect(st.streaks.openDays).toBe(3);
     expect(st.weekly).toHaveLength(7);
-    expect(st.weekly[6].active).toBe(true); // сьогодні активний (останній)
+    expect(st.weekly[6]!.active).toBe(true); // сьогодні активний (останній)
     expect(st.funnel).toMatchObject({ applied: 1, interview: 1 });
     expect(st.goal.weeklyApplied).toBe(1);
     expect(st.goal.weeklyTarget).toBe(5);
     expect(st.avgFitApplied).toBe(90);
-    expect(st.interests[0].topic).toBe('Технології'); // 1(click)+2(save)=3
+    expect(st.interests[0]!.topic).toBe('Технології'); // 1(click)+2(save)=3
     expect(st.timeToOpenMin).toBe(20);
   });
 
@@ -560,11 +557,11 @@ describe('stats-core — розширені метрики (A2)', () => {
       s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06'); // +open нижче
     s = recordEvent(s, { type: 'open' }, '2026-07-06'); // 4 дії -> l3
     const hm = aggregateStats(s, '2026-07-07').heatmap;
-    expect(new Date(hm[0].d + 'T00:00:00Z').getUTCDay()).toBe(1); // понеділок
-    expect(hm[hm.length - 1].d).toBe('2026-07-07'); // сьогодні
-    expect(hm[0].d).toBe(weekStartKey('2026-01-01')); // без стелі — від тижня НАЙДАВНІШОГО запису
+    expect(new Date(hm[0]!.d + 'T00:00:00Z').getUTCDay()).toBe(1); // понеділок
+    expect(hm[hm.length - 1]!.d).toBe('2026-07-07'); // сьогодні
+    expect(hm[0]!.d).toBe(weekStartKey('2026-01-01')); // без стелі — від тижня НАЙДАВНІШОГО запису
     expect(hm.length).toBe(191); // рівно стільки днів між цими двома датами
-    const byDate = Object.fromEntries(hm.map((c: { d: string }) => [c.d, c]));
+    const byDate = Object.fromEntries(hm.map((c: KvBlob) => [c.d, c]));
     expect(byDate['2026-07-07']).toMatchObject({ v: 1, l: 1 });
     expect(byDate['2026-07-06']).toMatchObject({ v: 4, l: 3 });
     expect(byDate['2026-07-05']).toMatchObject({ v: 0, l: 0 });
@@ -576,7 +573,7 @@ describe('stats-core — розширені метрики (A2)', () => {
     s = recordEvent(s, { type: 'open' }, '2026-07-07');
     const hm = aggregateStats(s, '2026-07-07').heatmap;
     expect(hm).toHaveLength(2); // не 84 — даних раніше 07-06 узагалі нема
-    expect(hm[0].d).toBe('2026-07-06');
+    expect(hm[0]!.d).toBe('2026-07-06');
   });
 
   it('heatmap: клітинка несе СКЛАД активності (o/m/n), не лише суму', () => {
@@ -585,11 +582,11 @@ describe('stats-core — розширені метрики (A2)', () => {
     s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
     s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
     const hm = aggregateStats(s, '2026-07-07').heatmap;
-    const cell = hm.find((c: { d: string }) => c.d === '2026-07-06');
+    const cell = hm.find((c: KvBlob) => c.d === '2026-07-06');
     // Сума лишається як була, але тепер видно, ЩО саме її склало.
-    expect(cell.o + cell.m + cell.n).toBe(cell.v);
-    expect(cell.n).toBe(2);
-    expect(cell.m).toBe(0);
+    expect(cell!.o + cell!.m + cell!.n).toBe(cell!.v);
+    expect(cell!.n).toBe(2);
+    expect(cell!.m).toBe(0);
   });
 
   it('openRhythm: розподіл (не лише медіана); замало точок -> ready=false', () => {
@@ -621,9 +618,9 @@ describe('stats-core — розширені метрики (A2)', () => {
     s = recordEvent(s, { type: 'open' }, '2026-07-07');
     const hw = aggregateStats(s, '2026-07-07').habitWeekly;
     const cur = hw[hw.length - 1];
-    expect(cur.week).toBe('2026-07-06');
-    expect(cur.days).toBe(2); // не 7 — інакше живий тиждень завжди «провальний»
-    expect(cur.active).toBe(2);
+    expect(cur!.week).toBe('2026-07-06');
+    expect(cur!.days).toBe(2); // не 7 — інакше живий тиждень завжди «провальний»
+    expect(cur!.active).toBe(2);
   });
 
   it('habitWeekly: склад активності по кошиках, вікно сягає аж до найдавнішого запису (без стелі)', () => {
@@ -633,11 +630,11 @@ describe('stats-core — розширені метрики (A2)', () => {
     s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
     const hw = aggregateStats(s, '2026-07-07').habitWeekly;
     expect(hw).toHaveLength(28);
-    expect(hw[0].week).toBe(weekStartKey('2026-01-01'));
+    expect(hw[0]!.week).toBe(weekStartKey('2026-01-01'));
     const cur = hw[hw.length - 1];
     // news_click рахується ЛИШЕ в news — окремі лічильники, не подвійний облік
     // (той самий інваріант, що вже перевіряє heatmap-тест вище).
-    expect([cur.opens, cur.news]).toEqual([1, 1]);
+    expect([cur!.opens, cur!.news]).toEqual([1, 1]);
   });
 
   it('habitWeekly/interestsTrend: вікно росте потижнево від першого запису, не стрибає одразу на максимум (фідбек власника)', () => {
@@ -664,7 +661,7 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(aw).toHaveLength(8);
     expect(aw[7]).toEqual({ week: '2026-07-06', count: 1 }); // поточний останній
     expect(aw[6]).toEqual({ week: '2026-06-29', count: 2 });
-    expect(aw[5].count).toBe(0); // порожній тиждень присутній
+    expect(aw[5]!.count).toBe(0); // порожній тиждень присутній
   });
 
   it('fitWeekly: середній fit по тижнях, null для тижня без fit-записів (не 0)', () => {
@@ -676,7 +673,7 @@ describe('stats-core — розширені метрики (A2)', () => {
     expect(fw).toHaveLength(8);
     expect(fw[7]).toEqual({ week: '2026-07-06', avgFit: 70 }); // (80+60)/2
     expect(fw[6]).toEqual({ week: '2026-06-29', avgFit: null }); // подача була, fit — ні
-    expect(fw[5].avgFit).toBeNull(); // порожній тиждень
+    expect(fw[5]!.avgFit).toBeNull(); // порожній тиждень
   });
 
   it('interestsWeekly: події дзеркаляться у тижневі кошики (клік/сейв/голос)', () => {
@@ -702,10 +699,10 @@ describe('stats-core — розширені метрики (A2)', () => {
     const tech = tr.topics.find((t: { topic: string }) => t.topic === 'Технології');
     // Технології — тиждень 2026-06-29 (передостанній), 0 у решті серії.
     const techIdx = tr.weeks.indexOf('2026-06-29');
-    expect(tech.series[techIdx]).toBe(2);
-    expect(tech.series.filter((v: number) => v !== 0)).toEqual([2]);
+    expect(tech!.series[techIdx]).toBe(2);
+    expect(tech!.series!.filter((v: number) => v !== 0)).toEqual([2]);
     // топ-1 — Технології (2 > 1)
-    expect(tr.topics[0].topic).toBe('Технології');
+    expect(tr.topics[0]!.topic).toBe('Технології');
   });
 
   it('interestsWeekly капиться на 26 тижнів; normalize терпить старий стор', () => {

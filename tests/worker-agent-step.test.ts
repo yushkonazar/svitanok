@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { mintRunToken, AGENT_MAX_STEPS } from '../web/agent-run-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { AgentRun } from '../web/agent-run-do.mjs';
+import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційний тест зворотного ендпоінта /api/agent-step — через СПРАВЖНІЙ
    fetch-хендлер воркера. Юніти покривають чисті шматки (токен, allowlist дій),
@@ -20,18 +19,14 @@ let kv: Map<string, string>;
 let tgCalls: Call[];
 
 function makeEnv(over: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     LLM_HOST_SECRET: HOST_SECRET,
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: '1',
     ...over,
-  };
+  });
 }
 
 const CTX = { waitUntil: () => {}, passThroughOnException: () => {} };

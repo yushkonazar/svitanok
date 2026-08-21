@@ -18,8 +18,36 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "allowJs": false,
-    "resolveJsonModule": true
+    // JS у програмі — так, перевірка JS — НІ, і це не суперечність.
+    //
+    // allowJs потрібен, щоб `tests/**` бачили ОГОЛОШЕНІ типи модулів Worker'а
+    // (`web/*.mjs` під JSDoc), а не `any` через 97 директив @ts-expect-error.
+    //
+    // checkJs при цьому мусить лишатись false: інакше `web/*.mjs` перевірялись
+    // би ТУТ, із node-глобалами й без KVNamespace, паралельно до власної
+    // програми `web/tsconfig.json`. Node-side JS (`host/**`, `scripts/**`)
+    // вмикає перевірку сам — прагмою `// @ts-check` угорі файлу; для нього
+    // рантайм тут правильний.
+    "allowJs": true,
+    "resolveJsonModule": true,
+    // `cloudflare:workers` існує лише в workerd. У ЦІЙ програмі (node) тести
+    // ганяють worker.js із заглушкою (vitest.config.ts), тож і типи мусять
+    // вказувати на неї — інакше базовий клас DurableObject стає `any`, а
+    // `new AgentRun(ctx, env)` читається як конструктор без аргументів.
+    //
+    // ⚠️ `web/tsconfig.json` цей мапінг СКИДАЄ: там рантайм справжній, і модуль
+    // має резолвитись у @cloudflare/workers-types.
+    "paths": { "cloudflare:workers": ["./tests/stubs/cloudflare-workers.ts"] }
   },
-  "include": ["src/**/*", "tests/**/*"]
+  // host/scripts тут ЯВНО, а не транзитивно через імпорти тестів: інакше
+  // файл, якого жоден тест не імпортує (host/server.mjs, генератори), тихо
+  // лишався б поза програмою — тобто поза перевіркою.
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "host/**/*.mjs",
+    "scripts/**/*.mjs",
+    "web/scripts/**/*.mjs",
+    "web/worker-env.d.ts"
+  ]
 }

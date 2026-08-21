@@ -18,8 +18,49 @@
 
 import { constantTimeEqual } from './tg-core.mjs';
 
+/**
+ * Користувач Telegram із initData.
+ *
+ * Перелічено рівно ті поля, які читає код. Форму приймаємо на віру НЕ з
+ * недогляду: до цього місця підпис initData уже перевірено HMAC-ом на
+ * bot-токені, тобто дані прийшли від Telegram, а не від викликача.
+ * @typedef {{ id: number, first_name?: string, last_name?: string, username?: string,
+ *             language_code?: string, is_premium?: boolean }} TelegramUser
+ */
+
+/**
+ * Ухвала авторизації. Літеральні `true`/`false` тут ОБОВʼЯЗКОВІ: без них
+ * виведення розширює `ok` до `boolean`, союз перестає розрізнятись, і
+ * `checkPrimaryOwner` втрачає гарантію, що після `!auth.ok` лишився саме
+ * успішний варіант із `user`.
+ * @typedef {{ ok: true, user: TelegramUser }} AuthOk
+ * @typedef {{ ok: false, status: number, error: string }} AuthFail
+ * @typedef {AuthOk | AuthFail} AuthResult
+ */
+
+/**
+ * Скільки живе підпис. 86400 — рівно те, що радить документація Telegram, і
+ * саме стільки триває сесія Mini App: `auth_date` видається ОДИН раз на запуск
+ * і не оновлюється, доки апку не перезапустили. Вужче вікно віддавало б 401
+ * апці, відкритій довше за нього, без способу поновити підпис.
+ */
+const INIT_DATA_MAX_AGE_SEC = 86_400;
+
+/**
+ * Допуск на розбіжність годинників для дати З МАЙБУТНЬОГО.
+ *
+ * Мале й асиметричне навмисно: розбіжність годинника клієнта й Cloudflare —
+ * це секунди, а не години. Усе, що далі, — не «трохи спішить», а підписана
+ * дата, якої ще не було.
+ */
+const INIT_DATA_MAX_SKEW_SEC = 300;
+
 /* ── Telegram WebApp initData (HMAC-SHA256, WebCrypto) ─────────────────── */
 
+/**
+ * @param {Uint8Array} keyBytes
+ * @param {Uint8Array} msgBytes
+ */
 async function hmac(keyBytes, msgBytes) {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -31,9 +72,19 @@ async function hmac(keyBytes, msgBytes) {
   return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
 }
 
-const toHex = (buf) => [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+const toHex = (/** @type {Uint8Array} */ buf) =>
+  [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-/** Перевіряє initData за алгоритмом Telegram; повертає {user} або null. */
+/**
+ * Перевіряє initData за алгоритмом Telegram; повертає {user} або null.
+ *
+ * `botToken` — `unknown`, а не `string`: нижче він проходить через
+ * `String(...).trim()` саме тому, що джерело (секрет Cloudflare) може бути й
+ * незаданим, і з хвостовим переносом рядка.
+ * @param {string|null|undefined} initData
+ * @param {unknown} botToken
+ * @returns {Promise<{ user: TelegramUser|null }|null>}
+ */
 export async function validateInitData(initData, botToken) {
   // ⚠️ Без цієї перевірки: enc.encode(undefined) -> порожній масив байтів,
   // тож секрет вироджується у HMAC("WebAppData", "") — публічну константу,
@@ -72,7 +123,16 @@ export async function validateInitData(initData, botToken) {
   // розбіжного байта — той самий інваріант, що verifyWebhookSecret/timingSafeEqual.
   if (!constantTimeEqual(computed, hash)) return null;
   const authDate = Number(params.get('auth_date') ?? 0);
-  if (!authDate || Date.now() / 1000 - authDate > 86400) return null; // старіше 24 год
+  // Вік підпису в секундах: додатний — у минулому, відʼємний — у майбутньому.
+  const ageSec = Date.now() / 1000 - authDate;
+  if (!authDate || ageSec > INIT_DATA_MAX_AGE_SEC) return null;
+  // ⚠️ ДРУГИЙ БІК того самого вікна (SV-B3). Доти перевірялась лише верхня
+  // межа, тож `auth_date` із майбутнього проходив без обмежень — заміряно на
+  // +10 років. Підпис при цьому валідний: дату підписує той, хто підписує
+  // initData, тобто вона НЕ доказ свіжості, доки її не звірили з обох боків.
+  // Наслідок був конкретний: один такий initData ставав ключем без терміну
+  // придатності — 24-годинне вікно для нього просто не наставало.
+  if (ageSec < -INIT_DATA_MAX_SKEW_SEC) return null;
   try {
     return { user: JSON.parse(params.get('user') ?? 'null') };
   } catch {
@@ -94,8 +154,17 @@ export async function validateInitData(initData, botToken) {
  * синхронізовані у ДВОХ місцях (GitHub + Cloudflare), і якби код перестав її
  * читати в мить деплою, співвласник утратив би доступ до дашборда раніше, ніж
  * власник встиг би перейменувати змінну. Прибрати після перейменування.
+ *
+ * Параметр звужено до ТРЬОХ полів, які функція справді читає, а не до всього
+ * `Env`: вимагати від викликача 25 прив'язок заради трьох означало б, що жоден
+ * тест не може покликати її без повного оточення — і кожен зробив би
+ * приведення, тобто знову ніяких типів.
+ * @param {Pick<Env, 'TELEGRAM_OWNER_USER_ID' | 'TELEGRAM_COOWNER_USER_IDS'
+ *   | 'TELEGRAM_ALLOWED_USER_IDS'>} env
+ * @returns {Set<string>}
  */
 export function allowedUserIds(env) {
+  /** @type {Set<string>} */
   const ids = new Set();
   if (env.TELEGRAM_OWNER_USER_ID) ids.add(String(env.TELEGRAM_OWNER_USER_ID));
   const coOwners = env.TELEGRAM_COOWNER_USER_IDS ?? env.TELEGRAM_ALLOWED_USER_IDS ?? '';
@@ -116,6 +185,8 @@ export function allowedUserIds(env) {
  *
  * Fail-closed: змінна не задана -> false (як і allowedUserIds, яка тоді віддає
  * порожній Set і нікого не пускає навіть читати).
+ * @param {Pick<Env, 'TELEGRAM_OWNER_USER_ID'>} env
+ * @param {string|number|null|undefined} userId
  */
 export function isPrimaryOwner(env, userId) {
   const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
@@ -128,6 +199,9 @@ export function isPrimaryOwner(env, userId) {
  * TELEGRAM_CHAT_ID — той тепер лише «куди слати», в супергрупі це вже
  * груповий id, ніколи не рівний user id людини). Fail-closed: жодного
  * дозволеного id не задано -> forbidden, не fail-open.
+ * @param {string|null|undefined} initData
+ * @param {Env} env
+ * @returns {Promise<AuthResult>}
  */
 export async function checkOwner(initData, env) {
   const v = await validateInitData(initData, env.TELEGRAM_BOT_TOKEN);
@@ -144,6 +218,9 @@ export async function checkOwner(initData, env) {
  * власника (settings, гео, чек-ін/події, голоси) чи запускають від його імені
  * дії назовні. Читальні ендпоінти лишаються на checkOwner (S1: розділяємо
  * «подивитись» і «змінити»).
+ * @param {string|null|undefined} initData
+ * @param {Env} env
+ * @returns {Promise<AuthResult>}
  */
 export async function checkPrimaryOwner(initData, env) {
   const auth = await checkOwner(initData, env);
@@ -158,7 +235,30 @@ export async function checkPrimaryOwner(initData, env) {
  * Той самий власник-чек, що й POST-и (/api/vote|/api/event). Дашборд — дані
  * одного власника (події календаря, воронка вакансій, збережене), тож
  * читання НЕ публічне: без валідного initData -> 401/403, фронт деградує на SAMPLE.
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<AuthResult>}
  */
 export async function checkOwnerRead(request, env) {
   return checkOwner(request.headers.get('X-Telegram-Init-Data'), env);
+}
+
+/**
+ * initData МУТАЦІЇ: заголовок, а якщо його немає — поле в тілі (M3).
+ *
+ * Читання завжди ходили заголовком, мутації — полем у JSON. Різниці в безпеці
+ * між ними немає (тіло так само не осідає в логах, на відміну від query), але
+ * два різні шляхи до однієї перевірки — це два місця, де можна помилитись, і
+ * рівно одне з них хтось колись забуде.
+ *
+ * ⚠️ Фолбек на тіло — ПЕРЕХІДНИЙ. Mini App у вебвʼю Telegram кешується, тож
+ * одразу після релізу стара збірка ще шле поле; без фолбека вона отримала б
+ * 401 на кожну дію. Прибрати, коли впевнено, що старих клієнтів не лишилось.
+ *
+ * @param {Request} request
+ * @param {KvBlob|null|undefined} body
+ * @returns {string|null}
+ */
+export function mutationInitData(request, body) {
+  return request.headers.get('X-Telegram-Init-Data') ?? body?.initData ?? null;
 }

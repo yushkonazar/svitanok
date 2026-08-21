@@ -46,7 +46,7 @@ import {
 import { isQuietMinute } from './settings-core.mjs';
 import { shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
-import { loadState, loadStats, loadSettings, updateStats } from './kv-store.mjs';
+import { loadState, loadStats, loadSettings, updateStats, updateState } from './kv-store.mjs';
 import { tgCall, trackSentMessage } from './telegram-client.mjs';
 
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
@@ -55,8 +55,18 @@ import { tgCall, trackSentMessage } from './telegram-client.mjs';
 // «не доставлено» й хибний промах у reliability за день, який зрештою доставили.
 const DEAD_MAN_HOUR = 12;
 
-const GH_DISPATCH_URL =
-  'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
+/**
+ * Слаг репозиторію для workflow_dispatch.
+ *
+ * Env ПЕРЕКРИВАЄ, а не вимагає: форк чи перейменування не має означати правку
+ * коду, але й новий обовʼязковий секрет тут завів би прод у стан, де брифінг
+ * не диспатчиться, доки власник не поставить змінну у двох місцях. Дефолт —
+ * рівно те значення, що стояло зашитим.
+ */
+const DEFAULT_GH_REPO = 'yushkonazar/svitanok';
+const ghDispatchUrl = (/** @type {Env} */ env) =>
+  `https://api.github.com/repos/${env.GH_REPO?.trim() || DEFAULT_GH_REPO}` +
+  '/actions/workflows/brief.yml/dispatches';
 
 /**
  * Знайти прострочені нагадування, надіслати + позначити спрацьованими.
@@ -86,7 +96,7 @@ const APP_WELCOME_TEXT =
   'одному місці. Це повідомлення закріплене, щоб кнопка нижче завжди була ' +
   'під рукою.';
 
-export async function checkReminders(env) {
+export async function checkReminders(/** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
   const now = Date.now();
   const due = dueReminders((await loadState(env)).reminders, now);
@@ -121,9 +131,9 @@ export async function checkReminders(env) {
     // §C5: трекаємо для /clear — cron-контекст, немає вхідного parsed, тож
     // chatId/threadId явні (той самий trackSentMessage, що й sendTo()).
     await trackSentMessage(env, res, chatId, threadId);
-    const fresh = await loadState(env); // перечитати — попередня ітерація вже писала
-    fresh.reminders = markFired(fresh.reminders, r.id, now);
-    await env.BRIEFING.put('state', JSON.stringify(fresh));
+    // updateState перечитує сам — і попередню ітерацію цього ж циклу, і чужий
+    // запис, що встиг лягти між Telegram-викликом вище й цим рядком.
+    await updateState(env, (s) => ({ ...s, reminders: markFired(s.reminders, r.id, now) }));
   }
 }
 
@@ -134,7 +144,7 @@ export async function checkReminders(env) {
  * слеша (URL.origin це гарантує; env.MINI_APP_URL перевіряємо явно, бо туди
  * значення вводить власник руками).
  */
-export async function runTelegramSetup(env, origin) {
+export async function runTelegramSetup(/** @type {Env} */ env, /** @type {string} */ origin) {
   const res = await tgCall(env, 'setWebhook', {
     url: `${origin}/api/telegram`,
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,
@@ -167,16 +177,14 @@ export async function runTelegramSetup(env, origin) {
  *
  * Раз на добу — той самий "остання дата" ідіом, що dispatch.lastAutoDate.
  */
-export async function autoTelegramSetup(env) {
+export async function autoTelegramSetup(/** @type {Env} */ env) {
   if (!env.MINI_APP_URL || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) return;
   const today = kyivDateKey();
   const state = await loadState(env);
   if (state.telegramSetupDate === today) return;
   const origin = env.MINI_APP_URL.replace(/\/+$/, '');
   await runTelegramSetup(env, origin);
-  const fresh = await loadState(env); // перечитати — попередні кроки могли писати state (пін)
-  fresh.telegramSetupDate = today;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
+  await updateState(env, (s) => ({ ...s, telegramSetupDate: today }));
 }
 
 /**
@@ -189,7 +197,10 @@ export async function autoTelegramSetup(env) {
  * -> шлемо нове й закріплюємо знову (self-healing замість «закріпилось один
  * раз і забули»).
  */
-export async function ensureAppWelcomePin(env, miniAppUrl) {
+export async function ensureAppWelcomePin(
+  /** @type {Env} */ env,
+  /** @type {string} */ miniAppUrl,
+) {
   if (!env.TELEGRAM_CHAT_ID) return;
   const chatId = env.TELEGRAM_CHAT_ID;
 
@@ -205,7 +216,7 @@ export async function ensureAppWelcomePin(env, miniAppUrl) {
     const chatRes = await tgCall(env, 'getChat', { chat_id: chatId });
     const chatJson = await chatRes.json();
     pinnedId = chatJson?.result?.pinned_message?.message_id;
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('ensureAppWelcomePin: getChat не вдався — пропускаємо цикл', e?.message);
     return;
   }
@@ -236,12 +247,10 @@ export async function ensureAppWelcomePin(env, miniAppUrl) {
     message_id: newId,
     disable_notification: true,
   });
-  // Перечитати — між першим loadState (вище) і тепер минуло 2 await Telegram-
-  // виклики, конкурентний писар того ж блоба (checkReminders/вебхук на тому
-  // самому 5-хвилинному тіку) міг оновити щось інше в 'state' за цей час.
-  const fresh = await loadState(env);
-  fresh.appWelcomePinMsgId = newId;
-  await env.BRIEFING.put('state', JSON.stringify(fresh));
+  // Між першим loadState (вище) і цим рядком минуло 2 await Telegram-виклики,
+  // тобто конкурентний писар того ж блоба (checkReminders/вебхук на тому самому
+  // 5-хвилинному тіку) міг устигнути. updateState перечитує й мержить сам.
+  await updateState(env, (s) => ({ ...s, appWelcomePinMsgId: newId }));
 }
 
 /** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
@@ -249,10 +258,11 @@ export async function ensureAppWelcomePin(env, miniAppUrl) {
  *  mock-батч темою з роадмепу (web-код у src/ не імпортується — межа src/↔web/).
  *  Ротація детермінована за тижнем, тож щоденний перезапис безпечний;
  *  оркестратор masteryFocus не пише -> merge-гонок класу H2 нема. */
-export async function updateMasteryFocus(env) {
+export async function updateMasteryFocus(/** @type {Env} */ env) {
   try {
+    const dateKey = kyivDateKey();
     const state = await loadState(env);
-    const focus = themeOfWeek(state.roadmapProgress ?? {}, kyivDateKey());
+    const focus = themeOfWeek(state.roadmapProgress ?? {}, dateKey);
     // Тема детермінована на тиждень -> 6/7 щоденних записів були б ідентичні.
     // Пропускаємо no-op: кожен зайвий read-modify-write усього state-блоба —
     // дармове вікно клобберу конкурентних писарів (вебхук/події).
@@ -261,9 +271,14 @@ export async function updateMasteryFocus(env) {
       (focus === null && cur === null) ||
       (focus && cur && cur.week === focus.week && cur.topicId === focus.topicId);
     if (same) return;
-    state.masteryFocus = focus; // null коли роадмеп завершено — теж валідний стан
-    await env.BRIEFING.put('state', JSON.stringify(state));
-  } catch (e) {
+    // Тему рахуємо ЩЕ РАЗ, уже на копії, яку зрештою пишемо: прогрес роадмепу
+    // міг змінитись між читанням і записом, і тоді збережена тема була б
+    // порахована не з того. null (роадмеп завершено) — теж валідний стан.
+    await updateState(env, (s) => ({
+      ...s,
+      masteryFocus: themeOfWeek(s.roadmapProgress ?? {}, dateKey),
+    }));
+  } catch (/** @type {any} */ e) {
     console.error('updateMasteryFocus failed', e); // не блокує dispatch
   }
 }
@@ -299,7 +314,7 @@ export async function updateMasteryFocus(env) {
  * No-op, якщо нічого не змінилось: зайвий read-modify-write — це дармове вікно
  * клобберу (той самий мотив, що в updateMasteryFocus вище).
  */
-export async function archiveMonthly(env) {
+export async function archiveMonthly(/** @type {Env} */ env) {
   try {
     const store = await loadStats(env);
     const today = kyivDateKey();
@@ -308,13 +323,20 @@ export async function archiveMonthly(env) {
     // заради того самого обʼєкта.
     await writeRollup(env, ARCHIVE_KEY, monthlyRollup(store, today), mergeArchive, today);
     await writeRollup(env, WEEKLY_ARCHIVE_KEY, weeklyRollup(store, today), mergeWeekly, today);
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('archiveMonthly failed', e); // не блокує решту крону
   }
 }
 
 /** Прочитати-злити-записати один рівень архіву. No-op, якщо нічого не змінилось:
  *  зайвий read-modify-write — дармове вікно клобберу. */
+/**
+ * @param {Env} env
+ * @param {string} key
+ * @param {KvBlob} fresh
+ * @param {(prev: KvBlob, fresh: KvBlob, today: string) => KvBlob} merge
+ * @param {string} today
+ */
 async function writeRollup(env, key, fresh, merge, today) {
   if (!Object.keys(fresh).length) return;
   const prev = await readArchive(env, key);
@@ -325,7 +347,7 @@ async function writeRollup(env, key, fresh, merge, today) {
 }
 
 /** Архів; биття -> порожньо (краще дописати заново, ніж упасти). */
-async function readArchive(env, key = ARCHIVE_KEY) {
+async function readArchive(/** @type {Env} */ env, key = ARCHIVE_KEY) {
   try {
     const raw = await env.BRIEFING.get(key);
     const parsed = JSON.parse(raw ?? 'null');
@@ -335,13 +357,17 @@ async function readArchive(env, key = ARCHIVE_KEY) {
   }
 }
 
+/**
+ * @param {Env} env
+ * @param {{ forceWindow?: boolean }} [opts]
+ */
 export async function dispatchBrief(env, { forceWindow = false } = {}) {
   if (!env.GH_DISPATCH_TOKEN) {
     console.error('GH_DISPATCH_TOKEN відсутній — dispatch пропущено');
     return false;
   }
   try {
-    const resp = await fetch(GH_DISPATCH_URL, {
+    const resp = await fetch(ghDispatchUrl(env), {
       method: 'POST',
       headers: {
         authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,
@@ -367,7 +393,7 @@ export async function dispatchBrief(env, { forceWindow = false } = {}) {
       return false;
     }
     return true;
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('workflow_dispatch error', e?.message);
     return false;
   }
@@ -384,7 +410,7 @@ export async function dispatchBrief(env, { forceWindow = false } = {}) {
  * Після деплою ключа ще немає -> кулдаун /brief один раз стартує «з нуля»
  * (нешкідливо: максимум один зайвий ручний запуск).
  */
-export async function loadBriefDispatch(env) {
+export async function loadBriefDispatch(/** @type {Env} */ env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get('briefDispatch')) ?? '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
@@ -397,7 +423,10 @@ export async function loadBriefDispatch(env) {
  *  autoDate (A2) ставиться тільки з авто-гілки: ручний /brief може бути й поза
  *  вікном, тож «сьогодні вже диспатчили» — не про нього. Від дубля відразу після
  *  ручного /brief захищає lastMs (MIN_DISPATCH_GAP_MS, tg-core.mjs). */
-export async function recordBriefDispatch(env, autoDate) {
+export async function recordBriefDispatch(
+  /** @type {Env} */ env,
+  /** @type {string|null} */ autoDate = null,
+) {
   const cur = await loadBriefDispatch(env);
   const next = { ...cur, lastMs: Date.now() };
   if (autoDate) next.lastAutoDate = autoDate;
@@ -411,7 +440,7 @@ export async function recordBriefDispatch(env, autoDate) {
  * Тепер до 36 спроб; помилка GitHub ретраїться за 15 хв, а не «завтра».
  * Умови дубля — shouldAutoDispatchBrief (tg-core.mjs, тестовано).
  */
-export async function autoBriefDispatch(env) {
+export async function autoBriefDispatch(/** @type {Env} */ env) {
   const today = kyivDateKey();
   const [state, dispatch] = await Promise.all([loadState(env), loadBriefDispatch(env)]);
   const due = shouldAutoDispatchBrief({
@@ -437,7 +466,7 @@ export async function autoBriefDispatch(env) {
  * дату записав" ідіом, що dispatch.lastAutoDate/reliability.lastCheckDate —
  * не зростаючий журнал, один рядок на слот).
  */
-export async function checkinNudgeCheck(env) {
+export async function checkinNudgeCheck(/** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
   const minuteOfDay = kyivMinuteOfDay(new Date());
   const win = matchCheckinNudgeWindow(minuteOfDay);
@@ -482,7 +511,7 @@ export async function checkinNudgeCheck(env) {
  * не стався. Обидва кроки в одній функції — обидва читають/пишуть один і той
  * самий store, зайвий проліт у KV не потрібен.
  */
-export async function sleepNudgeCheck(env) {
+export async function sleepNudgeCheck(/** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
   const minuteOfDay = kyivMinuteOfDay(new Date());
   const store = await loadStats(env);
@@ -494,6 +523,7 @@ export async function sleepNudgeCheck(env) {
   // крон (мережеві виклики Telegram — секунди) переписав би своєю
   // застарілою до-заповнення копією щойно записане авто-заповнення сну з
   // ранкового 'open' (реальний кейс, що й привів до цього фіксу).
+  /** @type {string[]} */
   const clearedDateKeys = [];
 
   // 1) Ночі з надісланим, але НЕ натиснутим нагадуванням — уже не поточна ніч
@@ -561,7 +591,7 @@ export async function sleepNudgeCheck(env) {
  *  на пʼятихвилинний крон, бо погодинний із гейтом kyivHour()===10 гинув від того
  *  самого jitter'а, від якого ми щойно врятували dispatch — зсув на годину, і
  *  сторож просто мовчав би цілий день). */
-export async function deadMansCheck(env) {
+export async function deadMansCheck(/** @type {Env} */ env) {
   if (kyivHour() < DEAD_MAN_HOUR) return;
   const today = kyivDateKey();
   // Дешевий гейт «уже перевіряли сьогодні» ПЕРЕД будь-якою іншою роботою: без
@@ -584,7 +614,7 @@ export async function deadMansCheck(env) {
   // lastCheckDate, тож повторне застосування при конфлікті — безпечне).
   try {
     await updateStats(env, (curStore) => recordReliability(curStore, today, fresh));
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('reliability write failed', e);
   }
   if (fresh) return;

@@ -17,7 +17,12 @@
 import { recordSentMessage } from './tg-core.mjs';
 import { loadSentMessages, putSentMessages } from './kv-store.mjs';
 
-/** Тонкий клієнт Telegram Bot API (порт src/core/telegram.ts:call — Worker не імпортує TS). */
+/** @typedef {import('./tg-core.mjs').SendTarget} SendTarget */
+
+/** Тонкий клієнт Telegram Bot API (порт src/core/telegram.ts:call — Worker не імпортує TS).
+ *  @param {Env} env
+ *  @param {string} method
+ *  @param {unknown} body */
 export async function tgCall(env, method, body) {
   const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: 'POST',
@@ -36,11 +41,15 @@ export async function tgCall(env, method, body) {
  * checkReminders() (cron-контекст, немає вхідного parsed) — тому приймає
  * chatId/threadId явно, а не через parsed. res.clone() перед .json(), щоб не
  * спожити тіло Response для можливих майбутніх консюмерів повернутого значення.
+ * @param {Env} env
+ * @param {Response} res
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
  */
 export async function trackSentMessage(env, res, chatId, threadId) {
   if (!res.ok) return;
   try {
-    const json = await res.clone().json();
+    const json = /** @type {any} */ (await res.clone().json());
     const messageId = json?.result?.message_id;
     if (typeof messageId === 'number') {
       await putSentMessages(
@@ -57,7 +66,9 @@ export async function trackSentMessage(env, res, chatId, threadId) {
  *  sentMessages, щоб /clear видаляв і його репліки, не лише відповіді бота (у
  *  супергрупі бот-адмін із can_delete_messages може; у DM Telegram не дає
  *  видаляти повідомлення користувача — тоді deleteMessage просто відмовить,
- *  оброблено як звичайну відмову). Merge-before-flush, як trackSentMessage. */
+ *  оброблено як звичайну відмову). Merge-before-flush, як trackSentMessage.
+ *  @param {Env} env
+ *  @param {SendTarget} parsed */
 export async function trackIncomingMessage(env, parsed) {
   if (typeof parsed.messageId !== 'number') return;
   try {
@@ -75,9 +86,11 @@ export async function trackIncomingMessage(env, parsed) {
   }
 }
 
-/** sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4 хендлерів нижче). */
+/** sendMessage-closure з chat_id/thread_id вже зашитими (спільна для 4 хендлерів нижче).
+ *  @param {Env} env
+ *  @param {SendTarget} parsed */
 export function sendTo(env, parsed) {
-  return async (text, extra) => {
+  return async (/** @type {string} */ text, /** @type {KvBlob|undefined} */ extra = undefined) => {
     const res = await tgCall(env, 'sendMessage', {
       chat_id: parsed.chatId,
       message_thread_id: parsed.threadId ?? undefined,

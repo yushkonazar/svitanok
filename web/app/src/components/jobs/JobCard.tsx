@@ -66,7 +66,11 @@ export function JobCard({
       style={
         on
           ? danger
-            ? { background: 'rgba(255,120,120,.12)', border: '1px solid var(--color-neg)', color: 'var(--color-neg)' }
+            ? {
+                background: 'rgba(255,120,120,.12)',
+                border: '1px solid var(--color-neg)',
+                color: 'var(--color-neg)',
+              }
             : { background: 'var(--grad)', color: 'var(--color-onacc)' }
           : {
               background: 'var(--color-glass)',

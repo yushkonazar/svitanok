@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { parseConfig, loadConfig, locationsFromEnv } from '../src/core/config.js';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { TOGGLEABLE_MODULE_IDS } from '../web/settings-core.mjs';
 
 // Мінімальний валідний конфіг для негативних кейсів.

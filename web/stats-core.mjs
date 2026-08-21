@@ -47,6 +47,7 @@ const TERMINAL_STAGES = ['rejected', 'failed'];
 // має відкидати НЕ-STAGES значення, а не пускати їх у recordEvent(job_stage),
 // де відсутня/невідома стадія тихо ВИДАЛЯЄ вакансію з воронки (див. ⚠️ вище).
 export const STAGES = [...LINEAR_STAGES, ...TERMINAL_STAGES];
+/** @type {KvBlob} */
 const STAGE_RANK = { saved: 0, applied: 1, interview: 2, offer: 3 };
 
 // Скільки збереженого показує /api/stats (прев'ю на вкладці «Інтереси»).
@@ -68,7 +69,7 @@ const HISTORY_PER_JOB = 12;
 const GOAL_MIN = 1;
 const GOAL_MAX = 10;
 const GOAL_DEFAULT = 5;
-const clampGoal = (v) => Math.min(GOAL_MAX, Math.max(GOAL_MIN, v));
+const clampGoal = (/** @type {number} */ v) => Math.min(GOAL_MAX, Math.max(GOAL_MIN, v));
 
 /* ── Чек-ін (фідбек власника, п.7) ─────────────────────────────────────────
    Три блоки за часом доби. Межі — рішення власника: 08:00 / 14:00 / 20:00.
@@ -120,9 +121,13 @@ export const SLEEP_H_BUCKETS = [3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5];
  *
  * floor(h)+0.5 — рівно семантика діапазонів: 7.0..7.99 -> «7–8».
  */
-export function snapSleepHours(h) {
+export function snapSleepHours(/** @type {number} */ h) {
   const mid = Math.floor(h) + 0.5;
-  return Math.min(SLEEP_H_BUCKETS[SLEEP_H_BUCKETS.length - 1], Math.max(SLEEP_H_BUCKETS[0], mid));
+  // `?? mid` недосяжне: SLEEP_H_BUCKETS — непорожній літерал вище.
+  return Math.min(
+    SLEEP_H_BUCKETS[SLEEP_H_BUCKETS.length - 1] ?? mid,
+    Math.max(SLEEP_H_BUCKETS[0] ?? mid, mid),
+  );
 }
 
 // Дев'ять життєвих категорій (v2, трекер життя) — дзеркало CATEGORIES у
@@ -338,6 +343,10 @@ export const CHECKIN_FIELDS = {
  * в KV лежать роки таких записів. Кожен читач цих полів мусить іти через цей
  * хелпер, інакше стара доба тихо випаде з аналітики (а не впаде помітно).
  */
+/**
+ * @param {unknown} v
+ * @returns {string[]}
+ */
 export function asList(v) {
   if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x);
   return typeof v === 'string' && v ? [v] : [];
@@ -365,8 +374,8 @@ export function asList(v) {
  * `confirmed` НЕ рахується сам по собі: підтвердити порожній блок неможливо
  * (recordEvent це відсікає), тож ключ ніколи не буває там наодинці.
  */
-export function isCheckinSlotFilled(rec, slot) {
-  const v = rec?.[slot];
+export function isCheckinSlotFilled(/** @type {unknown} */ rec, /** @type {string} */ slot) {
+  const v = /** @type {KvBlob|null|undefined} */ (rec)?.[slot];
   return !!v && typeof v === 'object' && Object.keys(v).length > 0;
 }
 
@@ -387,7 +396,7 @@ const CHECKIN_EVENING_END_H = 2;
  * перелік годин розійшовся б із першим тихо: таймер обіцяв би час, якого блок
  * уже не має.
  */
-export function checkinSlotEndsInMin(minuteOfDay) {
+export function checkinSlotEndsInMin(/** @type {number} */ minuteOfDay) {
   if (typeof minuteOfDay !== 'number' || !Number.isFinite(minuteOfDay)) return null;
   const m = Math.floor(minuteOfDay);
   if (m < 0 || m >= 1440) return null;
@@ -401,7 +410,7 @@ export function checkinSlotEndsInMin(minuteOfDay) {
   return m >= CHECKIN_FROM.evening * 60 ? 1440 + end - m : end - m;
 }
 
-export function checkinSlot(hour) {
+export function checkinSlot(/** @type {number} */ hour) {
   // Суворо number, без Number(): Number(null) === 0, а нуль — ВАЛІДНА година,
   // яка падає рівно у вечірнє вікно (h < 2). Тобто м'яке приведення робило б із
   // null/''/[] «вечір» — та сама пастка, що колись ставила goal=1 на будь-яке
@@ -423,7 +432,7 @@ export function checkinSlot(hour) {
  * обидві: у вчорашньої зник би вечір, у сьогоднішньої зʼявився б вечір раніше за
  * ранок. Тому ніч до 6-ї віддаємо попередній добі.
  */
-export function checkinDateKey(kyivDate, hour) {
+export function checkinDateKey(/** @type {string} */ kyivDate, /** @type {number} */ hour) {
   if (!isDateKey(kyivDate)) return kyivDate;
   // Суворо number — інакше Number(null)===0 зсунув би дату на вчора «просто так».
   // Сумнів завжди на користь НЕ зсувати: зсунути помилково гірше, ніж не зсунути.
@@ -437,7 +446,7 @@ export function checkinDateKey(kyivDate, hour) {
 
 /** dateKey, зсунутий на n діб (може бути відʼємним). Ніч сну -> ранок, що йде
  *  за нею (case 'open', авто-заповнення sleepH/bedtime), використовує n=1. */
-function addDays(dateKey, n) {
+function addDays(/** @type {string} */ dateKey, /** @type {number} */ n) {
   const d = new Date(dateKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
   return dayKey(d);
@@ -471,7 +480,7 @@ export const CHECKIN_NUDGE_WINDOWS = [
 
 /** Яке вікно нагадування відповідає поточній київській хвилині доби (0..1439)
  *  -> {slot,text}|null. Чисто lookup, жодного I/O. */
-export function matchCheckinNudgeWindow(minuteOfDay) {
+export function matchCheckinNudgeWindow(/** @type {number} */ minuteOfDay) {
   return (
     CHECKIN_NUDGE_WINDOWS.find((w) => minuteOfDay >= w.fromMin && minuteOfDay < w.toMin) ?? null
   );
@@ -482,6 +491,9 @@ export function matchCheckinNudgeWindow(minuteOfDay) {
  * прапорці з KV: тихі години, чи вже нагадали цей слот сьогодні, чи слот уже
  * заповнено) -> boolean. Той самий стиль, що shouldAutoDispatchBrief
  * (tg-core.mjs) — уся логіка "чи" ізольована й тестована без KV/fetch.
+ */
+/**
+ * @param {{ quiet: boolean, alreadyNudgedToday: boolean, slotFilled: boolean }} opts
  */
 export function shouldSendCheckinNudge({ quiet, alreadyNudgedToday, slotFilled }) {
   if (quiet) return false;
@@ -499,11 +511,14 @@ export function shouldSendCheckinNudge({ quiet, alreadyNudgedToday, slotFilled }
 export const SLEEP_NUDGE_TEXT = '🌙 Ще не зафіксував відхід до сну — тисни, якщо вже лягаєш.';
 
 /** У вікні нагадування «Ліг спати» (23:00–23:59 АБО 00:00–01:59)? */
-export function inSleepNudgeWindow(minuteOfDay) {
+export function inSleepNudgeWindow(/** @type {number} */ minuteOfDay) {
   return (minuteOfDay >= 1380 && minuteOfDay <= 1439) || (minuteOfDay >= 0 && minuteOfDay < 120);
 }
 
 /** Чи слати нагадування «Ліг спати» зараз — той самий стиль, що shouldSendCheckinNudge. */
+/**
+ * @param {{ quiet: boolean, alreadySentTonight: boolean }} opts
+ */
 export function shouldSendSleepNudge({ quiet, alreadySentTonight }) {
   if (quiet) return false;
   if (alreadySentTonight) return false;
@@ -516,7 +531,10 @@ export function shouldSendSleepNudge({ quiet, alreadySentTonight }) {
  * просто висіти, якщо тап так і не стався — worker.js бере цей список і
  * прибирає кнопку/дописує текст на кожній.
  */
-export function staleSleepNudges(sleepLog, currentNightKey) {
+export function staleSleepNudges(
+  /** @type {KvBlob} */ sleepLog,
+  /** @type {string} */ currentNightKey,
+) {
   return Object.entries(sleepLog ?? {})
     .filter(
       ([k, v]) => v?.nudgeMsgId != null && !v.startedAt && !v.nudgeCleared && k !== currentNightKey,
@@ -543,10 +561,14 @@ export function staleSleepNudges(sleepLog, currentNightKey) {
  * Повертає { set, clear }: `set` — нові/змінені значення (як раніше єдиний
  * обʼєкт), `clear` — ключі, які треба ВИДАЛИТИ з існуючого блоку.
  */
-function cleanCheckin(slot, ev) {
-  const spec = CHECKIN_FIELDS[slot];
+function cleanCheckin(/** @type {string} */ slot, /** @type {KvBlob} */ ev) {
+  // Приведення CHECKIN_FIELDS до блоба: точна форма реєстру потрібна тестам
+  // (enum ⊆ levels), а тут по ньому ходять довільним рядком-слотом.
+  const spec = /** @type {KvBlob} */ (CHECKIN_FIELDS)[slot];
   if (!spec) return null;
+  /** @type {KvBlob} */
   const set = {};
+  /** @type {string[]} */
   const clear = [];
   for (const [k, rule] of Object.entries(spec)) {
     const v = ev[k];
@@ -588,14 +610,14 @@ function cleanCheckin(slot, ev) {
 }
 
 /** Кап чек-інів: лишаємо останні CHECKIN_CAP діб (ключі сортуються лексично). */
-function capCheckins(s) {
+function capCheckins(/** @type {KvBlob} */ s) {
   const keys = Object.keys(s.checkins).sort();
   for (const k of keys.slice(0, Math.max(0, keys.length - CHECKIN_CAP))) delete s.checkins[k];
 }
 
 const RELIABILITY_CAP = 90;
 /** Кап журналу надійності: лишаємо останні RELIABILITY_CAP діб. */
-function capReliabilityDays(s) {
+function capReliabilityDays(/** @type {KvBlob} */ s) {
   const keys = Object.keys(s.reliability.days).sort();
   for (const k of keys.slice(0, Math.max(0, keys.length - RELIABILITY_CAP))) {
     delete s.reliability.days[k];
@@ -612,7 +634,7 @@ function capReliabilityDays(s) {
  * на початок).
  */
 export const SAVED_CAP = 1000;
-function capSaved(s) {
+function capSaved(/** @type {KvBlob} */ s) {
   if (s.saved.length > SAVED_CAP) s.saved.length = SAVED_CAP;
 }
 
@@ -621,20 +643,29 @@ function capSaved(s) {
  * days (стрік, тренди, «активний день тижня»), і так дивиться максимум на рік.
  */
 export const DAYS_CAP = CHECKIN_CAP;
-function capDays(s) {
+function capDays(/** @type {KvBlob} */ s) {
   const keys = Object.keys(s.days).sort();
   for (const k of keys.slice(0, Math.max(0, keys.length - DAYS_CAP))) delete s.days[k];
 }
 
 const SLEEP_LOG_CAP = 90;
 /** Кап журналу сну: лишаємо останні SLEEP_LOG_CAP ночей. */
-function capSleepLog(s) {
+function capSleepLog(/** @type {KvBlob} */ s) {
   const keys = Object.keys(s.sleepLog).sort();
   for (const k of keys.slice(0, Math.max(0, keys.length - SLEEP_LOG_CAP))) {
     delete s.sleepLog[k];
   }
 }
 
+/**
+ * Порожній стор.
+ *
+ * `KvBlob`, а не виведений літерал: це та сама форма, що віддають normalize і
+ * recordEvent, і саме нею її вживають далі — зокрема тести, які читають
+ * `s.days['2026-07-07']`. Виведений літерал зробив би порожній стор ІНШИМ
+ * типом, ніж заповнений, хоч це один і той самий блоб.
+ * @returns {KvBlob}
+ */
 export function emptyStore() {
   return {
     days: {},
@@ -657,10 +688,17 @@ export function emptyStore() {
   };
 }
 
-/** Нормалізувати частковий стор до повної форми (стійко до старих/битих даних). */
-export function normalize(s) {
+/** Нормалізувати частковий стор до повної форми (стійко до старих/битих даних).
+ *  `unknown`, а не `KvBlob`: стійкість тут — ОБІЦЯНКА, і в KV справді лежить
+ *  усе що завгодно (рядок, null, масив після ручної правки ключа).
+ *  @param {unknown} rawStore
+ *  @returns {KvBlob} */
+export function normalize(rawStore) {
   const e = emptyStore();
-  if (!s || typeof s !== 'object') return e;
+  if (!rawStore || typeof rawStore !== 'object') return e;
+  // Після гарду TS звужує `unknown` до `object` — без індексної сигнатури,
+  // тож поля читаються через явний KvBlob.
+  const s = /** @type {KvBlob} */ (rawStore);
   return {
     days: s.days && typeof s.days === 'object' ? s.days : e.days,
     funnel: s.funnel && typeof s.funnel === 'object' ? s.funnel : e.funnel,
@@ -696,10 +734,14 @@ export function normalize(s) {
   };
 }
 
-const bump = (obj, key, by = 1) => {
+const bump = (
+  /** @type {KvBlob} */ obj,
+  /** @type {string} */ key,
+  /** @type {number} */ by = 1,
+) => {
   obj[key] = (Number(obj[key]) || 0) + by;
 };
-const dayBucket = (store, dateKey) => {
+const dayBucket = (/** @type {KvBlob} */ store, /** @type {string} */ dateKey) => {
   // Пересоздаємо бакет і коли він битий (примітив зі старого/зіпсутого стору) —
   // bump по примітиву в strict mode кидає TypeError.
   const cur = store.days[dateKey];
@@ -719,8 +761,8 @@ const dayBucket = (store, dateKey) => {
  * getUTC* навмисно: увесь date-шар модуля працює в UTC, тож локальна зона
  * не має жодного шансу зсунути ключ.
  */
-const pad2 = (n) => (n < 10 ? '0' + n : String(n));
-export function dayKey(d) {
+const pad2 = (/** @type {number} */ n) => (n < 10 ? '0' + n : String(n));
+export function dayKey(/** @type {Date} */ d) {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 }
 
@@ -741,20 +783,21 @@ export function dayKey(d) {
  * на записі й на читанні, — бо стор, записаний до гарда, уже лежить у KV, і
  * виправити його заднім числом неможливо.
  */
-export const isSafeKey = (k) =>
+export const isSafeKey = (/** @type {unknown} */ k) =>
   typeof k === 'string' && k !== '__proto__' && k !== 'constructor' && k !== 'prototype';
 
-export const isDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
+export const isDateKey = (/** @type {unknown} */ k) =>
+  typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
 // Кап історійних масивів (opensMin/fitApplied/appliedLog): медіані/трендам
 // достатньо останнього року, стор не росте безмежно.
 const HISTORY_CAP = 365;
-const capPush = (arr, v) => {
+const capPush = (/** @type {any[]} */ arr, /** @type {unknown} */ v) => {
   arr.push(v);
   if (arr.length > HISTORY_CAP) arr.splice(0, arr.length - HISTORY_CAP);
 };
 
 /** Понеділок тижня, що містить dateKey (ключ тижневих кошиків/трендів). */
-export function weekStartKey(dateKey) {
+export function weekStartKey(/** @type {string} */ dateKey) {
   const d = new Date(dateKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
   return dayKey(d);
@@ -764,7 +807,12 @@ export function weekStartKey(dateKey) {
 const WEEKLY_CAP = 26;
 /** ЄДИНА точка інкременту інтересу: сумарний бал + тижневий кошик разом —
  *  щоб нова подія не могла підняти чипи, забувши тренд (або навпаки). */
-const bumpInterest = (s, dateKey, topic, by = 1) => {
+const bumpInterest = (
+  /** @type {KvBlob} */ s,
+  /** @type {string} */ dateKey,
+  /** @type {string} */ topic,
+  /** @type {number} */ by = 1,
+) => {
   bump(s.interests, topic, by);
   const wk = weekStartKey(dateKey);
   if (!s.interestsWeekly[wk] || typeof s.interestsWeekly[wk] !== 'object')
@@ -779,7 +827,12 @@ const bumpInterest = (s, dateKey, topic, by = 1) => {
  *  open · news_click · save_news · unsave_news · save_item · unsave_item ·
  *  job_stage · job_dismiss · mock_answer · step_done · vote.
  *  `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
- */
+ *  @param {KvBlob|null|undefined} store
+ *  @param {any} ev сира подія з POST /api/event: ні схеми, ні гарантії форми
+ *  @param {string} dateKey
+ *  @param {number|null} [nowMin]
+ *  @param {string|null} [nowIso]
+ *  @returns {KvBlob} */
 export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
   const s = normalize(store);
   if (!isDateKey(dateKey)) return s; // без валідної дати подію не приймаємо (не валимо)
@@ -861,7 +914,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       if (ev.category) bumpInterest(s, dateKey, ev.category, 1);
       break;
     case 'save_news':
-      if (ev.url && !s.saved.some((x) => x.url === ev.url)) {
+      if (ev.url && !s.saved.some((/** @type {KvBlob} */ x) => x.url === ev.url)) {
         s.saved.unshift({
           kind: 'news',
           url: ev.url,
@@ -873,18 +926,24 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       }
       break;
     case 'unsave_news':
-      s.saved = s.saved.filter((x) => x.url !== ev.url);
+      s.saved = s.saved.filter((/** @type {KvBlob} */ x) => x.url !== ev.url);
       break;
     case 'save_item':
       // Обране для нетекстових-з-url блоків (факт/цитата/питання): id рахує
       // клієнт (детермінований хеш тексту) — стабільний ключ дедупу замість url.
-      if (ev.kind && ev.id && !s.saved.some((x) => x.kind === ev.kind && x.id === ev.id)) {
+      if (
+        ev.kind &&
+        ev.id &&
+        !s.saved.some((/** @type {KvBlob} */ x) => x.kind === ev.kind && x.id === ev.id)
+      ) {
         s.saved.unshift({ kind: ev.kind, id: ev.id, title: ev.title || '', ts: dateKey });
         if (ev.topic) bumpInterest(s, dateKey, ev.topic, 2);
       }
       break;
     case 'unsave_item':
-      s.saved = s.saved.filter((x) => !(x.kind === ev.kind && x.id === ev.id));
+      s.saved = s.saved.filter(
+        (/** @type {KvBlob} */ x) => !(x.kind === ev.kind && x.id === ev.id),
+      );
       break;
     case 'vote': {
       // Category-aware облік інтересу (C3, ревʼю): знімаємо ефект СТАРОГО голосу
@@ -899,7 +958,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // коли власник лайкне раніше дизлайкнуту новину, сюди прилетить
       // prevDir:'down'. Прибереш гілку — val('down') стане 0 замість -1, старий
       // мінус не знімешся, і бал теми назавжди лишиться на одиницю нижчим.
-      const val = (d) => (d === 'up' ? 1 : d === 'down' ? -1 : 0);
+      const val = (/** @type {unknown} */ d) => (d === 'up' ? 1 : d === 'down' ? -1 : 0);
       const prevCat = ev.prevCategory ?? ev.category;
       if (prevCat && ev.prevDir) bumpInterest(s, dateKey, prevCat, -val(ev.prevDir));
       if (ev.category && ev.dir) bumpInterest(s, dateKey, ev.category, val(ev.dir));
@@ -936,21 +995,22 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
             // самому записі). Повторний applied того ж url (напр. після delete+
             // re-apply з D5-контролів) оновлює дату/fit, а не додає рядок — інакше
             // «подач за тиждень» і гістограма fit роздувались.
-            s.appliedLog = s.appliedLog.filter((a) => a.url !== ev.url);
+            s.appliedLog = s.appliedLog.filter((/** @type {KvBlob} */ a) => a.url !== ev.url);
+            /** @type {KvBlob} */
             const entry = { url: ev.url, ts: dateKey };
             if (typeof ev.fit === 'number' && ev.fit >= 0) entry.fit = ev.fit;
             capPush(s.appliedLog, entry);
           } else if (ev.stage === 'saved') {
             // Назад у «збережено» = подачу знято -> прибрати з лічильника.
             // interview/offer НЕ чіпаємо: вакансію таки подано, вона прогресує.
-            s.appliedLog = s.appliedLog.filter((a) => a.url !== ev.url);
+            s.appliedLog = s.appliedLog.filter((/** @type {KvBlob} */ a) => a.url !== ev.url);
           }
         } else {
           delete s.funnel[ev.url]; // stage null -> зняти
           delete s.funnelMeta[ev.url];
           // Видалення з воронки -> прибрати й з appliedLog (ревʼю D: інакше
           // видалена вакансія й далі рахувалась як подача).
-          s.appliedLog = s.appliedLog.filter((a) => a.url !== ev.url);
+          s.appliedLog = s.appliedLog.filter((/** @type {KvBlob} */ a) => a.url !== ev.url);
         }
       }
       break;
@@ -961,7 +1021,11 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // React-стан `hidden` (сесійний Set) скидався на кожен перезахід,
       // тож вакансія поверталась. Дедуп по url — повторний тап того самого
       // «Не цікавить» не мусить роздувати список.
-      if (typeof ev.url === 'string' && ev.url && !s.dismissedUrls.some((d) => d.url === ev.url)) {
+      if (
+        typeof ev.url === 'string' &&
+        ev.url &&
+        !s.dismissedUrls.some((/** @type {KvBlob} */ d) => d.url === ev.url)
+      ) {
         capPush(s.dismissedUrls, { url: ev.url, ts: dateKey });
       }
       break;
@@ -1104,7 +1168,12 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
  * свідомо рахується як deadman (алерт тоді вже відправлено). Ідемпотентно за день
  * через reliability.lastCheckDate — повторний виклик тим самим dateKey — no-op.
  */
-export function recordReliability(store, dateKey, delivered) {
+export function recordReliability(
+  // unknown, бо функція СВІДОМО стійка до битих даних (перевіряється тестом)
+  /** @type {unknown} */ store,
+  /** @type {string} */ dateKey,
+  /** @type {unknown} */ delivered,
+) {
   const s = normalize(store);
   const r = s.reliability;
   if (r.lastCheckDate === dateKey) return s;
@@ -1121,7 +1190,11 @@ export function recordReliability(store, dateKey, delivered) {
  *  Грейс: якщо сьогодні ще «не зіграно», стрік НЕ зламано — рахуємо від учора
  *  (інакше лічильник обнулявся б щоночі до першої дії, а /api/stats при
  *  завантаженні гнався б із асинхронною подією open). */
-function streak(days, dateKey, pred) {
+function streak(
+  /** @type {KvBlob} */ days,
+  /** @type {string} */ dateKey,
+  /** @type {(d: any) => boolean} */ pred,
+) {
   let cur = 0;
   const d = new Date(dateKey + 'T00:00:00Z');
   if (!pred(days[dateKey])) d.setUTCDate(d.getUTCDate() - 1);
@@ -1134,7 +1207,7 @@ function streak(days, dateKey, pred) {
   }
   return cur;
 }
-function bestStreak(days, pred) {
+function bestStreak(/** @type {KvBlob} */ days, /** @type {(d: any) => boolean} */ pred) {
   const keys = Object.keys(days).sort();
   let best = 0,
     run = 0,
@@ -1152,7 +1225,7 @@ function bestStreak(days, pred) {
   }
   return best;
 }
-function dayDiff(a, b) {
+function dayDiff(/** @type {string} */ a, /** @type {string} */ b) {
   return Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 }
 
@@ -1164,16 +1237,16 @@ function dayDiff(a, b) {
  * Є — це вже факт, не "ще не сьогодні", і грейс сховав би сьогоднішній
  * зрив до завтра). Явний збій сьогодні -> стрік=0 одразу, без грейсу.
  */
-function reliabilityStreak(days, dateKey) {
+function reliabilityStreak(/** @type {KvBlob} */ days, /** @type {string} */ dateKey) {
   const today = days[dateKey];
   if (today !== undefined && today.ok !== true) return 0;
   return streak(days, dateKey, (d) => d?.ok === true);
 }
-const median = (arr) => {
+const median = (/** @type {number[]} */ arr) => {
   if (!arr.length) return null;
   const a = [...arr].sort((x, y) => x - y);
   const m = Math.floor(a.length / 2);
-  return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
+  return a.length % 2 ? a[m] : Math.round(((a[m - 1] ?? 0) + (a[m] ?? 0)) / 2);
 };
 
 /** Теплокарта активності: від понеділка тижня ПЕРШОГО реального запису
@@ -1184,9 +1257,10 @@ const median = (arr) => {
  *  o/m/n — СКЛАД тієї суми (opens/mock/news). Доти клітинка знала лише «скільки»,
  *  і три різні дні (тричі заходив / відповів на питання / читав новини) виглядали
  *  однаково. Тепер тап по клітинці може сказати, ЩО саме то був за день. */
-function buildHeatmap(days, todayKey) {
+function buildHeatmap(/** @type {KvBlob} */ days, /** @type {string} */ todayKey) {
   const weeks = weeksSinceFirst(days, todayKey);
   const d = new Date(lastWeekStarts(todayKey, weeks)[0] + 'T00:00:00Z');
+  /** @type {KvBlob[]} */
   const out = [];
   for (;;) {
     const k = dayKey(d);
@@ -1276,8 +1350,13 @@ export const STATS_WINDOWS = {
  * потрібне сам. Розріджено (лише заповнені доби) — дірки нічого не додають,
  * а на порожньому старті це різниця між {} і 90 пустишками.
  */
-function buildCheckinRaw(checkins, todayKey, days = STATS_WINDOWS.checkinDeep) {
+function buildCheckinRaw(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinDeep,
+) {
   const from = addDays(todayKey, -(days - 1));
+  /** @type {KvBlob} */
   const records = {};
   for (const [key, rec] of Object.entries(checkins ?? {})) {
     if (key < from || key > todayKey) continue;
@@ -1298,6 +1377,7 @@ function buildCheckinRaw(checkins, todayKey, days = STATS_WINDOWS.checkinDeep) {
    тому й тиша» — привід написати, а не чекати далі. */
 
 /** Лінійні кроки воронки; термінальні (rejected/failed) сюди не входять. */
+/** @type {[string, string][]} */
 const SPEED_STEPS = [
   ['saved', 'applied'],
   ['applied', 'interview'],
@@ -1321,9 +1401,15 @@ const STALE_AFTER_DAYS = 21;
 /** Активні стадії: у термінальних нічого не «лежить», там уже все вирішено. */
 const ACTIVE_STAGES = ['saved', 'applied', 'interview'];
 
-function funnelSpeed(funnel, funnelMeta, todayKey) {
+function funnelSpeed(
+  /** @type {KvBlob} */ funnel,
+  /** @type {KvBlob} */ funnelMeta,
+  /** @type {string} */ todayKey,
+) {
   const meta = funnelMeta && typeof funnelMeta === 'object' ? funnelMeta : {};
-  const durations = new Map(SPEED_STEPS.map(([, to]) => [to, []]));
+  const durations = new Map(
+    SPEED_STEPS.map(([, to]) => /** @type {[string, number[]]} */ ([to, []])),
+  );
 
   for (const m of Object.values(meta)) {
     const hist = Array.isArray(m?.history) ? m.history : [];
@@ -1337,12 +1423,14 @@ function funnelSpeed(funnel, funnelMeta, todayKey) {
       const pair = SPEED_STEPS.find(([f, t]) => f === from.stage && t === to.stage);
       if (!pair) continue;
       const d = dayDiff(from.ts, to.ts);
-      if (d >= 0) durations.get(to.stage).push(d);
+      // `?.push` замість прямого get: ключі мапи — рівно SPEED_STEPS, тож
+      // невизначене значення тут недосяжне, лише в типі.
+      if (d >= 0) durations.get(to.stage)?.push(d);
     }
   }
 
   const steps = SPEED_STEPS.map(([from, to]) => {
-    const xs = durations.get(to).sort((a, b) => a - b);
+    const xs = (durations.get(to) ?? []).sort((a, b) => a - b);
     return {
       from,
       to,
@@ -1387,6 +1475,7 @@ const MOCK_RECENT_DAYS = 60;
  * де для цього досить самої оцінки, і мовчки випадає там, де потрібен час: це
  * чесніше за здогадку про дату, яка вигадала б хронологію.
  */
+/** @param {any} v запис mockRated: легасі-рядок або обʼєкт, без гарантій форми */
 function readRating(v) {
   if (v === 'easy' || v === 'hard') return { r: v, at: null, topic: null };
   if (!v || typeof v !== 'object') return null;
@@ -1400,9 +1489,15 @@ function readRating(v) {
 }
 
 /** Частка «легко» по тижнях — той самий {week,...}-шейп, що інші тижневі ряди. */
-function buildEaseTrend(mockRated, todayKey, weeks = EASE_TREND_WEEKS) {
+function buildEaseTrend(
+  /** @type {KvBlob} */ mockRated,
+  /** @type {string} */ todayKey,
+  weeks = EASE_TREND_WEEKS,
+) {
   const starts = lastWeekStarts(todayKey, weeks);
-  const buckets = Object.fromEntries(starts.map((k) => [k, { easy: 0, n: 0 }]));
+  const buckets = /** @type {KvBlob} */ (
+    Object.fromEntries(starts.map((k) => [k, { easy: 0, n: 0 }]))
+  );
   for (const raw of Object.values(mockRated ?? {})) {
     const rec = readRating(raw);
     if (!rec || !rec.at) continue;
@@ -1413,7 +1508,7 @@ function buildEaseTrend(mockRated, todayKey, weeks = EASE_TREND_WEEKS) {
     if (rec.r === 'easy') b.easy++;
   }
   return starts.map((week) => {
-    const b = buckets[week];
+    const b = /** @type {KvBlob} */ (buckets[week]);
     // n=0 -> null, а не 0: «тиждень без питань» і «тиждень, де все було
     // складно» — протилежні відповіді, і нуль злив би їх в одну.
     return { week, n: b.n, easePct: b.n ? Math.round((b.easy / b.n) * 100) : null };
@@ -1421,8 +1516,13 @@ function buildEaseTrend(mockRated, todayKey, weeks = EASE_TREND_WEEKS) {
 }
 
 /** {тема: {seen, weak}} за останні MOCK_RECENT_DAYS — на противагу all-time. */
-function buildRecentByTopic(mockRated, todayKey, days = MOCK_RECENT_DAYS) {
+function buildRecentByTopic(
+  /** @type {KvBlob} */ mockRated,
+  /** @type {string} */ todayKey,
+  days = MOCK_RECENT_DAYS,
+) {
   const from = addDays(todayKey, -(days - 1));
+  /** @type {KvBlob} */
   const out = {};
   for (const raw of Object.values(mockRated ?? {})) {
     const rec = readRating(raw);
@@ -1436,13 +1536,16 @@ function buildRecentByTopic(mockRated, todayKey, days = MOCK_RECENT_DAYS) {
 }
 
 /** Персентиль за лінійною інтерполяцією (той самий метод, що median вище). */
-function percentile(sorted, p) {
+function percentile(/** @type {number[]} */ sorted, /** @type {number} */ p) {
   if (!sorted.length) return null;
   const idx = (sorted.length - 1) * p;
   const lo = Math.floor(idx);
   const hi = Math.ceil(idx);
-  if (lo === hi) return sorted[lo];
-  return Math.round(sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo));
+  // `?? null`/`?? 0` недосяжні: масив непорожній, а lo/hi у його межах.
+  if (lo === hi) return sorted[lo] ?? null;
+  const a = sorted[lo] ?? 0;
+  const b = sorted[hi] ?? 0;
+  return Math.round(a + (b - a) * (idx - lo));
 }
 
 /**
@@ -1458,10 +1561,12 @@ function percentile(sorted, p) {
 /** Мінімум записів на половину, щоб порівнювати «раніше» з «тепер». */
 const RHYTHM_HALF_MIN = 8;
 
-function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
+function buildOpenRhythm(/** @type {unknown[]} */ opensMin, days = STATS_WINDOWS.rhythmOpens) {
   // slice ДО фільтра: вікно рахується в записах журналу, а не у валідних
   // значеннях — інакше пачка битих записів мовчки розтягнула б період.
-  const win = opensMin.slice(-days).filter((v) => typeof v === 'number' && v >= 0);
+  const win = /** @type {number[]} */ (
+    opensMin.slice(-days).filter((v) => typeof v === 'number' && v >= 0)
+  );
   const xs = [...win].sort((a, b) => a - b);
   if (xs.length < 5) return { ready: false, n: xs.length, needed: 5 };
   const q1 = percentile(xs, 0.25);
@@ -1475,7 +1580,7 @@ function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
     q3,
     p90: percentile(xs, 0.9),
     // Розкид середньої половини діб — і є «наскільки це ритуал».
-    iqr: q3 - q1,
+    iqr: (q3 ?? 0) - (q1 ?? 0),
     // ⚠️ ДРЕЙФ — відповідь на питання, заради якого блок існує: «наскільки це
     // ВЖЕ ритуал». Сама коробка описує вікно цілком, тобто каже, як було
     // загалом, — але не каже, чи звичка ЗАТИСКАЄТЬСЯ. Тому вікно ділиться
@@ -1490,14 +1595,14 @@ function buildOpenRhythm(opensMin, days = STATS_WINDOWS.rhythmOpens) {
 }
 
 /** Медіана й розкид у першій та другій половині вікна (за порядком записів). */
-function driftHalves(win) {
+function driftHalves(/** @type {number[]} */ win) {
   const half = Math.floor(win.length / 2);
   if (half < RHYTHM_HALF_MIN) return null;
-  const box = (arr) => {
+  const box = (/** @type {number[]} */ arr) => {
     const s = [...arr].sort((a, b) => a - b);
     const a = percentile(s, 0.25);
     const b = percentile(s, 0.75);
-    return { n: s.length, median: percentile(s, 0.5), iqr: b - a };
+    return { n: s.length, median: percentile(s, 0.5), iqr: (b ?? 0) - (a ?? 0) };
   };
   return { early: box(win.slice(0, half)), late: box(win.slice(-half)) };
 }
@@ -1507,13 +1612,13 @@ function driftHalves(win) {
  * Теплокарта показує щоденну щільність, але не відповідає на «чи я тримаюсь
  * краще, ніж місяць тому» — для цього потрібен тренд, а не сітка.
  */
-function buildHabitWeekly(days, todayKey) {
+function buildHabitWeekly(/** @type {KvBlob} */ days, /** @type {string} */ todayKey) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(days, todayKey));
-  const buckets = Object.fromEntries(
-    starts.map((k) => [k, { active: 0, days: 0, opens: 0, mock: 0, news: 0 }]),
+  const buckets = /** @type {KvBlob} */ (
+    Object.fromEntries(starts.map((k) => [k, { active: 0, days: 0, opens: 0, mock: 0, news: 0 }]))
   );
   const today = new Date(todayKey + 'T00:00:00Z');
-  const first = new Date(starts[0] + 'T00:00:00Z');
+  const first = new Date((starts[0] ?? todayKey) + 'T00:00:00Z');
   for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
     const k = dayKey(d);
     const b = buckets[weekStartKey(k)];
@@ -1560,21 +1665,25 @@ function buildHabitWeekly(days, todayKey) {
  *   - streak/best — той самий generic streak()/bestStreak(), що вже рахує
  *     reliability/openDays, лише інший предикат.
  */
-function buildFlameStats(checkins, todayKey) {
+function buildFlameStats(/** @type {KvBlob} */ checkins, /** @type {string} */ todayKey) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(checkins, todayKey));
   // ⚠️ active і full — ДВА РІЗНІ ПРЕДИКАТИ, і саме їх мовчазне сусідство робило
   // блок незрозумілим: графік малював «хоч один вогник за вечір», а стрік поруч
   // вимагав УСІ ПʼЯТЬ. Тобто графік показував «майже завжди повно», а стрік —
   // нуль, і обидва були праві. Тепер full їде в payload, і перемикач на екрані
   // показує обидва явно, замість того щоб один із них лишався невидимим.
-  const buckets = Object.fromEntries(
-    starts.map((k) => [k, { active: 0, full: 0, days: 0, constructive: 0, consumptive: 0 }]),
+  const buckets = /** @type {KvBlob} */ (
+    Object.fromEntries(
+      starts.map((k) => [k, { active: 0, full: 0, days: 0, constructive: 0, consumptive: 0 }]),
+    )
   );
+  /** @type {KvBlob} */
   const counts = {};
+  /** @type {KvBlob} */
   const completeDays = {};
   let activeNights = 0;
   const today = new Date(todayKey + 'T00:00:00Z');
-  const first = new Date(starts[0] + 'T00:00:00Z');
+  const first = new Date((starts[0] ?? todayKey) + 'T00:00:00Z');
   for (const d = new Date(first); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
     const k = dayKey(d);
     const flames = asList(checkins[k]?.evening?.flames).filter((f) => FLAME_VALUES.includes(f));
@@ -1603,9 +1712,10 @@ function buildFlameStats(checkins, todayKey) {
 }
 
 /** Понеділки останніх `n` тижнів (старіші→новіші), включно з поточним. */
-export function lastWeekStarts(todayKey, n) {
+export function lastWeekStarts(/** @type {string} */ todayKey, /** @type {number} */ n) {
   const d = new Date(weekStartKey(todayKey) + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 7 * (n - 1));
+  /** @type {string[]} */
   const out = [];
   for (let i = 0; i < n; i++) {
     out.push(dayKey(d));
@@ -1615,7 +1725,7 @@ export function lastWeekStarts(todayKey, n) {
 }
 
 /** Понеділок тижня НАЙДАВНІШОГО ключа "YYYY-MM-DD" в obj, або null коли порожньо. */
-function earliestWeekStart(dateKeyedObj) {
+function earliestWeekStart(/** @type {KvBlob} */ dateKeyedObj) {
   // Мінімум одним проходом замість filter+sort: ISO-ключі лексикографічно
   // впорядковані так само, як хронологічно, тож сортувати весь рік заради
   // першого елемента — зайва робота. ⚠️ На заміру це НЕ дало помітного
@@ -1642,7 +1752,7 @@ function earliestWeekStart(dateKeyedObj) {
  * узагалі існував — порожні тижні тягнули середні показники вниз і псували
  * графіки (heatmap/«найактивніший день»/утримання/тренд інтересу).
  */
-function weeksSinceFirst(dateKeyedObj, todayKey) {
+function weeksSinceFirst(/** @type {KvBlob} */ dateKeyedObj, /** @type {string} */ todayKey) {
   const first = earliestWeekStart(dateKeyedObj);
   if (!first) return 1;
   return Math.floor(dayDiff(first, weekStartKey(todayKey)) / 7) + 1;
@@ -1660,13 +1770,20 @@ function weeksSinceFirst(dateKeyedObj, todayKey) {
 
 const CORR_MIN_N = 8;
 
-const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
-const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
-const round2 = (v) => (v === null ? null : Math.round(v * 100) / 100);
-const round4 = (v) => (v === null ? null : Math.round(v * 10000) / 10000);
+const avg = (/** @type {number[]} */ xs) =>
+  xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+const round1 = (/** @type {number|null} */ v) => (v === null ? null : Math.round(v * 10) / 10);
+const round2 = (/** @type {number|null} */ v) => (v === null ? null : Math.round(v * 100) / 100);
+const round4 = (/** @type {number|null} */ v) =>
+  v === null ? null : Math.round(v * 10000) / 10000;
 
 /** Ряд «сон / енергія / оцінка дня» за останні N діб (лише заповнені). */
-function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildCheckinSeries(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob[]} */
   const out = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1711,7 +1828,12 @@ function buildCheckinSeries(checkins, todayKey, days = STATS_WINDOWS.checkinRece
 /** Пара «планував X -> зʼїло Y» мусить трапитись двічі, щоб щось означати. */
 const DRIFT_PAIR_MIN_N = 2;
 
-function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildIntentDrift(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob} */
   const pairs = {};
   let full = 0;
   let partial = 0;
@@ -1778,7 +1900,12 @@ function buildIntentDrift(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
  *
  * Гейт CORR_MIN_N: на пʼятьох добах «ти песиміст» — це монетка.
  */
-function buildExpectCalibration(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildExpectCalibration(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob[]} */
   const pairs = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1809,6 +1936,7 @@ function buildExpectCalibration(checkins, todayKey, days = STATS_WINDOWS.checkin
 }
 
 /** Рівні наміру й факту руху на одній ординальній шкалі. */
+/** @type {KvBlob} */
 const MOVE_RANK = { none: 0, light: 1, active: 2, workout: 3 };
 
 /**
@@ -1822,7 +1950,11 @@ const MOVE_RANK = { none: 0, light: 1, active: 2, workout: 3 };
  * Намір вважається виконаним, коли ФАКТ не нижчий за план: запланував легкий
  * рух, а вийшло тренування — це виконано, а не «мимо».
  */
-function buildMoveIntent(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildMoveIntent(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
   let planned = 0;
   let keptPlan = 0;
   let noPlanButMoved = 0;
@@ -1869,7 +2001,16 @@ const MOVE_MIN_N = 5;
  * Явка по блоках за останні N діб. Самі пропуски — теж сигнал: ранок заповнений
  * 25 разів, а вечір 4 — це вже висновок, і чесніший за будь-яку кореляцію.
  */
-function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+/** Спред `KvBlob` в обʼєктний літерал ГУБИТЬ індексну сигнатуру: результат
+ *  звужується до перелічених полів, і `.morning` стає помилкою типів, хоч
+ *  у рантаймі поле там є. Тому тип результату оголошено явно.
+ *  @returns {KvBlob} */
+function buildCheckinFill(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob} */
   const fill = { morning: 0, afternoon: 0, evening: 0 };
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1886,8 +2027,14 @@ function buildCheckinFill(checkins, todayKey, days = STATS_WINDOWS.checkinRecent
  * кожному CORR_MIN_N днів. Загальний звʼязок «як ніч впливає на день» — без
  * привʼязки до пошуку роботи (v2). Інакше null: краще нічого, ніж вигадка.
  */
-function buildSleepVsDayScore(checkins, todayKey, days = STATS_WINDOWS.checkinMid) {
+function buildSleepVsDayScore(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinMid,
+) {
+  /** @type {number[]} */
   const low = [];
+  /** @type {number[]} */
   const ok = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1924,7 +2071,12 @@ const CATEGORY_SCORE_MIN = 4;
  * оцінку показуємо лише для категорій із >=CATEGORY_SCORE_MIN оцінених днів
  * (інакше null — та сама дисципліна «не брехати на дрібній вибірці»).
  */
-function buildCategoryInsight(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildCategoryInsight(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob} */
   const buckets = {};
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -1958,7 +2110,11 @@ function buildCategoryInsight(checkins, todayKey, days = STATS_WINDOWS.checkinRe
  * тією ж добою). Рано (до 00:00) vs пізно (після 01:00); межу 00–01 не рахуємо.
  * Гейт CORR_MIN_N — та сама дисципліна «не брехати на малій вибірці».
  */
-function buildBedtimeVsEnergy(checkins, todayKey, days = STATS_WINDOWS.checkinMid) {
+function buildBedtimeVsEnergy(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinMid,
+) {
   // Середину 00–01 (e01) НЕ рахуємо в жодному кошику: краї мають контрастувати,
   // а не змазуватись (та сама логіка, що виключення нейтральної середини всюди).
   const EARLY = new Set(['e23', 'e00']);
@@ -2004,9 +2160,16 @@ function buildBedtimeVsEnergy(checkins, todayKey, days = STATS_WINDOWS.checkinMi
  * тому порівняння БІНАРНЕ: «сам» проти «решта разом», найконтрастніша й
  * найреалістичніша межа, яка взагалі має шанс набрати вибірку.
  */
-function buildSocialContext(checkins, todayKey, days = STATS_WINDOWS.checkinMid) {
+function buildSocialContext(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinMid,
+) {
+  /** @type {KvBlob} */
   const counts = {};
+  /** @type {number[]} */
   const aloneScores = [];
+  /** @type {number[]} */
   const otherScores = [];
   let filled = 0;
   const d = new Date(todayKey + 'T00:00:00Z');
@@ -2050,7 +2213,7 @@ function buildSocialContext(checkins, todayKey, days = STATS_WINDOWS.checkinMid)
 const TOPS_RANK_LIMIT = 5;
 
 /** Обʼєкт лічильників {value: n} -> рейтинг спадання (нічия — за абеткою), TOP N. */
-function rankCounts(counts, limit = TOPS_RANK_LIMIT) {
+function rankCounts(/** @type {KvBlob} */ counts, limit = TOPS_RANK_LIMIT) {
   return Object.entries(counts)
     .map(([value, n]) => ({ value, n }))
     .sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
@@ -2075,9 +2238,16 @@ function rankCounts(counts, limit = TOPS_RANK_LIMIT) {
  * причина пізнього відбою теж ніде, крім тут, не показується (вільна від
  * реєстру моделі за тією ж логікою — це причина-тег, а не скалярне поле).
  */
-function buildCheckinTops(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildCheckinTops(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob} */
   const bC = {};
+  /** @type {KvBlob} */
   const hC = {};
+  /** @type {KvBlob} */
   const lC = {};
   let filled = 0;
   let lateNights = 0;
@@ -2152,7 +2322,12 @@ const QUADRANT_LO = 2;
  *  у карті станів): середнє двох діб — це оцінка двох діб, а не типу днів. */
 const QUADRANT_SCORE_MIN = 4;
 
-function buildWorkQuadrants(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+function buildWorkQuadrants(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob} */
   const cells = {
     flow: { n: 0, scores: [] },
     hardwin: { n: 0, scores: [] },
@@ -2220,10 +2395,19 @@ function buildWorkQuadrants(checkins, todayKey, days = STATS_WINDOWS.checkinRece
  * зіпсовані ночі рідкісні, і «після безсонної ночі день гірший на 1.2» на двох
  * спостереженнях було б не висновком, а монеткою.
  */
-function buildNightKinds(checkins, todayKey, days = STATS_WINDOWS.checkinRecent) {
+/** @returns {KvBlob} (див. buildCheckinFill — та сама причина) */
+function buildNightKinds(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinRecent,
+) {
+  /** @type {KvBlob} */
   const kinds = { slept: 0, naps: 0, none: 0 };
+  /** @type {KvBlob} */
   const reasons = {};
+  /** @type {number[]} */
   const roughScores = [];
+  /** @type {number[]} */
   const restScores = [];
   const roughDates = [];
   const d = new Date(todayKey + 'T00:00:00Z');
@@ -2276,7 +2460,11 @@ function buildNightKinds(checkins, todayKey, days = STATS_WINDOWS.checkinRecent)
  * ітерації, що вже в buildCheckinSeries/buildCheckinFill (день за днем,
  * незалежно від наявності запису).
  */
-function buildCheckinModel(checkins, todayKey, days = STATS_WINDOWS.checkinDeep) {
+function buildCheckinModel(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  days = STATS_WINDOWS.checkinDeep,
+) {
   const flat = [];
   const d = new Date(todayKey + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - (days - 1));
@@ -2289,8 +2477,13 @@ function buildCheckinModel(checkins, todayKey, days = STATS_WINDOWS.checkinDeep)
 }
 
 /** Чек-ін по тижнях: середні сон / енергія / оцінка дня + скільки діб заповнено. */
-function buildCheckinWeekly(checkins, todayKey, weeks = STATS_WINDOWS.checkinWeeks) {
+function buildCheckinWeekly(
+  /** @type {KvBlob} */ checkins,
+  /** @type {string} */ todayKey,
+  weeks = STATS_WINDOWS.checkinWeeks,
+) {
   const starts = lastWeekStarts(todayKey, weeks);
+  /** @type {KvBlob} */
   const buckets = {};
   for (const w of starts) buckets[w] = { sleep: [], energy: [], score: [], n: 0 };
   for (const [key, c] of Object.entries(checkins)) {
@@ -2318,9 +2511,13 @@ function buildCheckinWeekly(checkins, todayKey, weeks = STATS_WINDOWS.checkinWee
 }
 
 /** Подачі по тижнях (останні 8, нульові тижні присутні; поточний — частковий). */
-function buildAppliedWeekly(appliedLog, todayKey, weeks = STATS_WINDOWS.trendWeeks) {
+function buildAppliedWeekly(
+  /** @type {any[]} */ appliedLog,
+  /** @type {string} */ todayKey,
+  weeks = STATS_WINDOWS.trendWeeks,
+) {
   const starts = lastWeekStarts(todayKey, weeks);
-  const counts = Object.fromEntries(starts.map((k) => [k, 0]));
+  const counts = /** @type {KvBlob} */ (Object.fromEntries(starts.map((k) => [k, 0])));
   for (const a of appliedLog) {
     const wk = isDateKey(a?.ts) ? weekStartKey(a.ts) : null;
     if (wk && counts[wk] != null) counts[wk]++;
@@ -2333,23 +2530,32 @@ function buildAppliedWeekly(appliedLog, todayKey, weeks = STATS_WINDOWS.trendWee
  *  сюди НЕ йде (немає ts, поділити на тижні нічим) — той самий виняток,
  *  що вже в buildAppliedWeekly. null для тижня без жодного fit-запису
  *  (не 0 — 0% виглядав би як «поганий fit», а не «даних немає»). */
-function buildFitWeekly(appliedLog, todayKey, weeks = STATS_WINDOWS.trendWeeks) {
+function buildFitWeekly(
+  /** @type {any[]} */ appliedLog,
+  /** @type {string} */ todayKey,
+  weeks = STATS_WINDOWS.trendWeeks,
+) {
   const starts = lastWeekStarts(todayKey, weeks);
-  const buckets = Object.fromEntries(starts.map((k) => [k, []]));
+  const buckets = /** @type {KvBlob} */ (Object.fromEntries(starts.map((k) => [k, []])));
   for (const a of appliedLog) {
     const wk = isDateKey(a?.ts) ? weekStartKey(a.ts) : null;
     if (wk && buckets[wk] && typeof a.fit === 'number') buckets[wk].push(a.fit);
   }
   return starts.map((k) => ({
     week: k,
-    avgFit: buckets[k].length ? Math.round(avg(buckets[k])) : null,
+    avgFit: buckets[k].length ? Math.round(avg(buckets[k]) ?? 0) : null,
   }));
 }
 
 /** Тренд інтересів: топ-`topN` тем за всю історію × усі тижні від першого
  *  тижневого кошика (weeksSinceFirst) — верхньої межі нема, лише природна
  *  стеля WEEKLY_CAP на самому сторі interestsWeekly (bumpInterest). */
-function buildInterestsTrend(interests, interestsWeekly, todayKey, topN = 5) {
+function buildInterestsTrend(
+  /** @type {KvBlob} */ interests,
+  /** @type {KvBlob} */ interestsWeekly,
+  /** @type {string} */ todayKey,
+  topN = 5,
+) {
   const starts = lastWeekStarts(todayKey, weeksSinceFirst(interestsWeekly, todayKey));
   const topics = Object.entries(interests)
     .filter(([, v]) => v > 0)
@@ -2380,11 +2586,12 @@ function buildInterestsTrend(interests, interestsWeekly, todayKey, topN = 5) {
  * стара формула, тож регресії немає — лише поступова заміна на факти в міру
  * накопичення журналу.
  */
-export function reachedCounts(store) {
+export function reachedCounts(/** @type {unknown} */ store) {
   const s = normalize(store);
-  const out = Object.fromEntries(LINEAR_STAGES.map((st) => [st, 0]));
+  const out = /** @type {KvBlob} */ (Object.fromEntries(LINEAR_STAGES.map((st) => [st, 0])));
   for (const [url, cur] of Object.entries(s.funnel)) {
     const hist = s.funnelMeta[url]?.history;
+    /** @type {Set<string>} */
     const seen = new Set();
     if (Array.isArray(hist) && hist.length) {
       for (const h of hist) if (STAGE_RANK[h?.stage] != null) seen.add(h.stage);
@@ -2398,7 +2605,7 @@ export function reachedCounts(store) {
 }
 
 /** Один запис збереженого у формі контракту (спільна для прев'ю і сторінок). */
-function savedRow(x) {
+function savedRow(/** @type {KvBlob} */ x) {
   return {
     kind: x.kind || 'news',
     id: x.id || x.url || null,
@@ -2414,6 +2621,11 @@ function savedRow(x) {
  * сховища: лише чесного доступу до того, що вже лежить.
  * Порядок — новіші перші (s.saved наповнюється unshift).
  */
+/**
+ * @param {unknown} store unknown, бо функція СВІДОМО стійка до битих даних (перевіряється тестом)
+ * @param {{ offset?: unknown, limit?: unknown }} [opts] сирі query-параметри;
+ *        кламп і дефолти — тут, а не у викликача
+ */
 export function pageSaved(store, { offset = 0, limit = 20 } = {}) {
   const s = normalize(store);
   const off = Math.max(0, Math.floor(Number(offset)) || 0);
@@ -2428,7 +2640,7 @@ export function pageSaved(store, { offset = 0, limit = 20 } = {}) {
  * автоматичне «прокинувся» з першого відкриття наступного дня); одна нога без
  * другої — null, а не здогадка.
  */
-function buildSleepLog(sleepLog, nights = 30) {
+function buildSleepLog(/** @type {KvBlob} */ sleepLog, nights = 30) {
   return Object.keys(sleepLog ?? {})
     .sort()
     .slice(-nights)
@@ -2447,13 +2659,13 @@ function buildSleepLog(sleepLog, nights = 30) {
     });
 }
 
-export function aggregateStats(store, todayKey) {
+export function aggregateStats(/** @type {KvBlob} */ store, /** @type {string} */ todayKey) {
   const s = normalize(store);
   // Битий todayKey не валить агрегат (RangeError у date-математиці) — детермінований
   // фолбек: форма валідна, стріки/тиждень порожні.
   if (!isDateKey(todayKey)) todayKey = '1970-01-01';
-  const opened = (x) => (x?.opens || 0) > 0;
-  const mocked = (x) => (x?.mock || 0) > 0;
+  const opened = (/** @type {KvBlob} */ x) => (x?.opens || 0) > 0;
+  const mocked = (/** @type {KvBlob} */ x) => (x?.mock || 0) > 0;
 
   // тижнева активність (останні 7 днів, старіші→новіші)
   const weekly = [];
@@ -2470,7 +2682,7 @@ export function aggregateStats(store, todayKey) {
   const funnel = Object.fromEntries(STAGES.map((st) => [st, 0]));
   for (const st of Object.values(s.funnel)) if (funnel[st] != null) funnel[st]++;
   // Порядок показу: лінійні за прогресом, термінальні — в кінці.
-  const listOrder = Object.fromEntries(STAGES.map((st, i) => [st, i]));
+  const listOrder = /** @type {KvBlob} */ (Object.fromEntries(STAGES.map((st, i) => [st, i])));
   const funnelList = Object.entries(s.funnel)
     .filter(([, st]) => listOrder[st] != null)
     .map(([url, st]) => ({
@@ -2490,14 +2702,15 @@ export function aggregateStats(store, todayKey) {
   const weekAgo = new Date(todayKey + 'T00:00:00Z');
   weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
   const weekAgoKey = dayKey(weekAgo);
-  const weeklyApplied = s.appliedLog.filter((a) => a.ts >= weekAgoKey).length;
+  const weeklyApplied = s.appliedLog.filter((/** @type {KvBlob} */ a) => a.ts >= weekAgoKey).length;
 
-  const conv = (a, b) => (a > 0 ? Math.round((b / a) * 100) : 0);
+  const conv = (/** @type {number} */ a, /** @type {number} */ b) =>
+    a > 0 ? Math.round((b / a) * 100) : 0;
   const reached = reachedCounts(s);
   // fit% подач — з самих записів appliedLog (дедуплено по url, ревʼю D), плюс
   // легасі s.fitApplied (стара форма без url — щоб не втратити історію до фіксу;
   // у новий стор більше не пишемо, тож подвійного рахунку немає).
-  const fits = [...s.appliedLog.map((a) => a.fit), ...s.fitApplied].filter(
+  const fits = [...s.appliedLog.map((/** @type {KvBlob} */ a) => a.fit), ...s.fitApplied].filter(
     (f) => typeof f === 'number' && f >= 0,
   );
   const avgFit = fits.length ? Math.round(fits.reduce((x, y) => x + y, 0) / fits.length) : null;
@@ -2518,7 +2731,11 @@ export function aggregateStats(store, todayKey) {
   // інакше вся історія оцінок зникла б у день деплою. Час і тема в неї просто
   // відсутні — тоді запис рахується в загальному відсотку, але не в тих
   // зрізах, які без них порахувати неможливо.
-  const mockRatings = Object.values(s.mockRated).map(readRating).filter(Boolean);
+  // `!== null` замість filter(Boolean): та сама умова (readRating віддає
+  // або обʼєкт, або null), але з неї виводиться звуження типу.
+  const mockRatings = Object.values(s.mockRated)
+    .map(readRating)
+    .filter((r) => r !== null);
   const mockRecentEasyPct = mockRatings.length
     ? Math.round((mockRatings.filter((r) => r.r === 'easy').length / mockRatings.length) * 100)
     : null;
@@ -2574,12 +2791,12 @@ export function aggregateStats(store, todayKey) {
     // «Не цікавить» (job_dismiss) — персистентне (фідбек власника): клієнт
     // фільтрує сьогоднішній список брифінгу за цими url, не лише за
     // сесійним React-станом.
-    dismissedUrls: s.dismissedUrls.map((d) => d.url),
+    dismissedUrls: s.dismissedUrls.map((/** @type {KvBlob} */ d) => d.url),
     savedCount: s.saved.length,
     // ТОП-8 у /api/stats — свідомо: це «останнє збережене» на вкладці, а не
     // архів. Повний список — окремим ендпоінтом /api/saved (F3), бо тягти сотні
     // записів у кожен /api/stats заради рядка «Ти зберіг N» — марно.
-    savedList: s.saved.slice(0, SAVED_PREVIEW).map((x) => ({
+    savedList: s.saved.slice(0, SAVED_PREVIEW).map((/** @type {KvBlob} */ x) => ({
       kind: x.kind || 'news',
       id: x.id || x.url || null,
       title: x.title || '',

@@ -11,6 +11,7 @@ import {
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+import { memState } from './helpers/state.js';
 
 describe('pluralizeLysty — укр відмінювання', () => {
   it('1/21/31 -> лист; 2-4/22-24 -> листи; 5-20/11-14/25 -> листів', () => {
@@ -111,16 +112,6 @@ describe('sanitizeInterviewWhen', () => {
     expect(sanitizeInterviewWhen('2026-13-01', '10:00', NOW)).toBeNull();
   });
 });
-
-function memState(initial: Record<string, unknown> = {}): StateStore {
-  const data = { ...initial };
-  return {
-    get: <T>(k: string) => data[k] as T | undefined,
-    set: <T>(k: string, v: T) => void (data[k] = v),
-    prune: () => {},
-    flush: async () => {},
-  };
-}
 
 function makeCtx(over: { state?: StateStore; llm?: Ctx['llm'] } = {}): Ctx<AppConfig> {
   const noop = () => {};

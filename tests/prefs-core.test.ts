@@ -6,7 +6,6 @@ import {
   updateMockWeight,
   WEIGHT_MIN,
   WEIGHT_MAX,
-  // @ts-expect-error — JS-модуль Worker'а без типів.
 } from '../web/prefs-core.mjs';
 // Канонічні (TS) версії тих самих формул — Worker тримає ДЗЕРКАЛО, бо не
 // імпортує TS. Саме розходження дзеркал і ловить цей файл.

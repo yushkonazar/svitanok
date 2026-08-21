@@ -27,7 +27,7 @@ const MAX_LIST_ITEMS = 8;
  *  підробити розділювачі транскрипту («Твої дані:»/«Користувач написав:»);
  *  тримаємо весь own-data однорядковим (те саме, що digestBriefing робить із
  *  summary). */
-function clip(s, n) {
+function clip(/** @type {unknown} */ s, /** @type {number} */ n) {
   const t = String(s ?? '')
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
@@ -35,7 +35,7 @@ function clip(s, n) {
 }
 
 /** Київська дата "YYYY-MM-DD" ISO-моменту; null якщо не парситься. */
-function kyivDateOfIso(iso) {
+function kyivDateOfIso(/** @type {string} */ iso) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return null;
   return new Intl.DateTimeFormat('en-CA', {
@@ -47,13 +47,13 @@ function kyivDateOfIso(iso) {
 }
 
 /** "YYYY-MM-DD" -> "DD.MM". */
-function ddmmOf(dateKey) {
+function ddmmOf(/** @type {string} */ dateKey) {
   const [, m, d] = String(dateKey).split('-');
   return `${d}.${m}`;
 }
 
 /** Київський "DD.MM HH:MM" абсолютного моменту. */
-function kyivDayTime(ms) {
+function kyivDayTime(/** @type {number} */ ms) {
   return new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
     day: '2-digit',
@@ -64,7 +64,7 @@ function kyivDayTime(ms) {
 }
 
 /** Дайджест активних нагадувань (найближче спершу, той самий listActive, що /reminders). */
-export function digestReminders(reminders) {
+export function digestReminders(/** @type {any[]|null|undefined} */ reminders) {
   const active = listActive(reminders).slice(0, MAX_LIST_ITEMS);
   if (active.length === 0) return 'Нагадування: активних немає.';
   const items = active.map(
@@ -74,7 +74,7 @@ export function digestReminders(reminders) {
 }
 
 /** Дайджест воронки вакансій (вхід — вихід aggregateStats). */
-export function digestJobs(agg) {
+export function digestJobs(/** @type {KvBlob|null|undefined} */ agg) {
   const f = agg?.funnel ?? {};
   const g = agg?.goal ?? {};
   const parts = [
@@ -93,17 +93,21 @@ export function digestJobs(agg) {
   // ІНДЕКС, worker резолвить у url свіжим читанням funnelList на момент дії).
   const list = Array.isArray(agg?.funnelList) ? agg.funnelList.slice(0, MAX_LIST_ITEMS) : [];
   if (list.length) {
-    const items = list.map((x, i) => `${i + 1}) [${x.stage}] ${clip(x.title || x.url, 50)}`);
+    const items = list.map(
+      (/** @type {KvBlob} */ x, /** @type {number} */ i) =>
+        `${i + 1}) [${x.stage}] ${clip(x.title || x.url, 50)}`,
+    );
     parts.push(`список (jobIndex): ${items.join('; ')}`);
   }
   return parts.join('; ') + '.';
 }
 
+/** @type {KvBlob} */
 const CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
 
 /** Дайджест сьогоднішнього чек-іну — що вже заповнено по слотах (вхід — agg.checkinToday),
  *  щоб recordAction(kind:checkin) не перепитував уже наявні поля. */
-export function digestCheckin(checkinToday) {
+export function digestCheckin(/** @type {KvBlob|null|undefined} */ checkinToday) {
   const c = checkinToday && typeof checkinToday === 'object' ? checkinToday : {};
   const slots = ['morning', 'afternoon', 'evening'].filter((s) => c[s] && typeof c[s] === 'object');
   if (!slots.length) return 'Чек-ін сьогодні: ще не робив.';
@@ -117,15 +121,18 @@ export function digestCheckin(checkinToday) {
 }
 
 /** Дайджест збереженого (факти/цитати/новини) — читає вже готовий agg.savedList. */
-export function digestSaved(agg) {
+export function digestSaved(/** @type {KvBlob|null|undefined} */ agg) {
   const list = Array.isArray(agg?.savedList) ? agg.savedList.slice(0, MAX_LIST_ITEMS) : [];
   if (!list.length) return 'Збережене: порожньо.';
-  const items = list.map((x, i) => `${i + 1}) ${x.kind ?? 'news'}: ${clip(x.title, 60)}`);
+  const items = list.map(
+    (/** @type {KvBlob} */ x, /** @type {number} */ i) =>
+      `${i + 1}) ${x.kind ?? 'news'}: ${clip(x.title, 60)}`,
+  );
   return `Збережене (${list.length}): ${items.join('; ')}.`;
 }
 
 /** Дайджест поточних налаштувань (нормалізований блоб /api/settings). */
-export function digestSettings(settings) {
+export function digestSettings(/** @type {KvBlob|null|undefined} */ settings) {
   const s = settings && typeof settings === 'object' ? settings : {};
   const q = s.quiet ?? {};
   const modules = s.modules && typeof s.modules === 'object' ? s.modules : {};
@@ -148,9 +155,9 @@ export function digestSettings(settings) {
 /** Дайджест новин з останнього брифінгу — індексований список (НЕ сирий url,
  *  той самий index-only мотив, що jobIndex): recordAction/voteNews посилається
  *  на newsIndex, worker резолвить у {url,topic} свіжим читанням latest.blocks. */
-export function digestNews(latest) {
+export function digestNews(/** @type {KvBlob|null|undefined} */ latest) {
   const blocks = Array.isArray(latest?.blocks) ? latest.blocks : [];
-  const groups = blocks.find((b) => b?.id === 'news')?.data?.groups;
+  const groups = blocks.find((/** @type {KvBlob} */ b) => b?.id === 'news')?.data?.groups;
   const flat = [];
   for (const g of Array.isArray(groups) ? groups : []) {
     for (const it of Array.isArray(g?.items) ? g.items : []) {
@@ -165,7 +172,10 @@ export function digestNews(latest) {
 }
 
 /** Дайджест активності/навчання: стрік відкриттів, прогрес роадмепу, слабкі mock-теми. */
-export function digestProgress(agg, roadmap) {
+export function digestProgress(
+  /** @type {KvBlob|null|undefined} */ agg,
+  /** @type {KvBlob|null|undefined} */ roadmap,
+) {
   const st = agg?.streaks ?? {};
   const parts = [
     `Активність: стрік відкриттів ${st.openDays ?? 0} дн (рекорд ${st.bestOpenDays ?? 0})`,
@@ -174,10 +184,12 @@ export function digestProgress(agg, roadmap) {
     parts.push(`роадмеп ${roadmap.done ?? 0}/${roadmap.total} пройдено`);
   }
   const weak = Array.isArray(agg?.mock?.weakTopics)
-    ? agg.mock.weakTopics.filter((t) => t && t.value > 0).slice(0, 4)
+    ? agg.mock.weakTopics.filter((/** @type {KvBlob} */ t) => t && t.value > 0).slice(0, 4)
     : [];
   if (weak.length) {
-    const list = weak.map((t) => `${clip(t.name, 24)} ${t.value}%`).join(', ');
+    const list = weak
+      .map((/** @type {KvBlob} */ t) => `${clip(t.name, 24)} ${t.value}%`)
+      .join(', ');
     parts.push(`слабкі теми (mock): ${list}`);
   }
   return parts.join('; ') + '.';
@@ -190,10 +202,13 @@ export function digestProgress(agg, roadmap) {
  * інакше LLM видала б стару погоду/курс за сьогоднішні). Тому звіряємо
  * latest.generatedAt із todayKey і чесно позначаємо заголовок.
  */
-export function digestBriefing(latest, todayKey) {
+export function digestBriefing(
+  /** @type {KvBlob|null|undefined} */ latest,
+  /** @type {string|undefined} */ todayKey,
+) {
   const blocks = Array.isArray(latest?.blocks) ? latest.blocks : [];
   const lines = blocks
-    .map((b) => {
+    .map((/** @type {KvBlob} */ b) => {
       // summary модулів багаторядковий (календар/погода/onthisday) — плющимо в " / ".
       const sum = clip(String(b?.summary ?? '').replace(/\s*\n+\s*/g, ' / '), MAX_SUMMARY_LEN);
       if (!sum) return null;
@@ -226,7 +241,7 @@ const DEFAULT_MAIL_QUERY = 'in:inbox newer_than:7d';
 const MAX_MAIL_QUERY_LEN = 120;
 
 /** Нормалізувати пошуковий запит від LLM: один рядок, з капом; порожній -> дефолт. */
-export function sanitizeMailQuery(raw) {
+export function sanitizeMailQuery(/** @type {unknown} */ raw) {
   const q = String(raw ?? '')
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
@@ -237,7 +252,7 @@ export function sanitizeMailQuery(raw) {
 /** Дайджест листів для промпту (вхід — вже нормалізовані {id,from,subject,date,snippet}).
  *  id віддаємо моделі, щоб вона могла попросити повний текст саме цього листа
  *  (дія readMailBody) замість того, щоб ми лили тіла всіх п'яти наосліп. */
-export function formatMailForPrompt(messages) {
+export function formatMailForPrompt(/** @type {any[]|null|undefined} */ messages) {
   if (messages === null) return 'Пошта: недоступна (немає доступу до Gmail).';
   const list = Array.isArray(messages) ? messages.slice(0, MAX_MAIL_ITEMS) : [];
   if (list.length === 0) return 'Пошта: за цим запитом нічого не знайшов.';
@@ -269,7 +284,7 @@ export const MAX_DRIVE_LEN = 700;
 const MAX_DRIVE_NAME_LEN = 100;
 
 /** Дайджест результатів пошуку в Drive (вхід — вже нормалізовані {name,webViewLink}). */
-export function formatDriveForPrompt(files) {
+export function formatDriveForPrompt(/** @type {any[]|null|undefined} */ files) {
   if (files === null) return 'Drive: недоступний (немає доступу).';
   const list = Array.isArray(files) ? files.slice(0, MAX_DRIVE_ITEMS) : [];
   if (list.length === 0) return 'Drive: за цим запитом нічого не знайшов.';
@@ -293,7 +308,7 @@ export function formatDriveForPrompt(files) {
 export const MAX_MAIL_BODY_LEN = 4000;
 
 /** Дайджест повного листа для промпту; null -> недоступний/не знайдений. */
-export function formatMailBodyForPrompt(message) {
+export function formatMailBodyForPrompt(/** @type {KvBlob|null|undefined} */ message) {
   if (!message) return 'Лист: не знайшов його або немає доступу.';
   const from = clip(message.from, MAX_FROM_LEN) || '(невідомо)';
   const subject = clip(message.subject, MAX_SUBJECT_LEN) || '(без теми)';
@@ -320,7 +335,7 @@ export const OWN_DATA_SCOPES = [
 ];
 
 /** Нормалізувати dataScope (невідоме/відсутнє -> 'all'). */
-export function normalizeScope(scope) {
+export function normalizeScope(/** @type {any} */ scope) {
   return OWN_DATA_SCOPES.includes(scope) ? scope : 'all';
 }
 
@@ -328,6 +343,10 @@ export function normalizeScope(scope) {
  * Зібрати own-data дайджест за scope. Worker передає вже прочитані/агреговані
  * джерела; секції для відсутніх даних граційно деградують (не кидають).
  * Результат обрізаний до MAX_DIGEST_LEN (бюджет промпту хоста).
+ */
+/**
+ * @param {{ scope?: unknown, reminders?: any[]|null, agg?: KvBlob, roadmap?: KvBlob,
+ *           latest?: KvBlob, todayKey?: string, settings?: KvBlob }} opts
  */
 export function buildOwnDataDigest({ scope, reminders, agg, roadmap, latest, todayKey, settings }) {
   const s = normalizeScope(scope);

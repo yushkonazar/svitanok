@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 
 /* Швидкість воронки.
@@ -22,7 +21,7 @@ const back = (n: number) => {
 };
 
 /** Провести вакансію стадіями: [стадія, скільки діб тому]. */
-const job = (s: unknown, url: string, path: [string, number][], title = 'Вакансія') => {
+const job = (s: KvBlob, url: string, path: [string, number][], title = 'Вакансія') => {
   let st = s;
   for (const [stage, daysAgo] of path) {
     st = recordEvent(st, { type: 'job_stage', url, stage, title }, back(daysAgo));
@@ -30,7 +29,7 @@ const job = (s: unknown, url: string, path: [string, number][], title = 'Вак�
   return st;
 };
 
-const speedOf = (s: unknown) => aggregateStats(s, TODAY).funnelSpeed;
+const speedOf = (s: KvBlob) => aggregateStats(s, TODAY).funnelSpeed;
 
 describe('funnelSpeed — скільки триває кожен крок', () => {
   it('медіана діб між стадіями рахується з журналу переходів', () => {
@@ -49,8 +48,8 @@ describe('funnelSpeed — скільки триває кожен крок', () =
       ['applied', 14],
     ]);
     const step = speedOf(s).steps.find((x: { to: string }) => x.to === 'applied');
-    expect(step.n).toBe(3);
-    expect(step.medianDays).toBe(4);
+    expect(step!.n).toBe(3);
+    expect(step!.medianDays).toBe(4);
   });
 
   it('замало переходів -> медіани НЕМАЄ, лише лічильник', () => {
@@ -60,8 +59,8 @@ describe('funnelSpeed — скільки триває кожен крок', () =
       ['applied', 8],
     ]);
     const step = speedOf(s).steps.find((x: { to: string }) => x.to === 'applied');
-    expect(step.n).toBe(1);
-    expect(step.medianDays).toBeNull();
+    expect(step!.n).toBe(1);
+    expect(step!.medianDays).toBeNull();
   });
 
   it('стрибок через стадію не вигадує проміжного кроку', () => {
@@ -72,7 +71,7 @@ describe('funnelSpeed — скільки триває кожен крок', () =
       ['interview', 5],
     ]);
     const applied = speedOf(s).steps.find((x: { to: string }) => x.to === 'applied');
-    expect(applied.n).toBe(0);
+    expect(applied!.n).toBe(0);
   });
 
   it('рух НАЗАД у воронці не рахується як крок уперед', () => {
@@ -85,10 +84,10 @@ describe('funnelSpeed — скільки триває кожен крок', () =
     ]);
     const step = speedOf(s).steps.find((x: { to: string }) => x.to === 'applied');
     // Два переходи saved->applied: 5 діб і 5 діб. Відкат сам по собі — не крок.
-    expect(step.n).toBe(2);
+    expect(step!.n).toBe(2);
     // ...і на двох спостереженнях медіани все одно немає — гейт не обходиться
     // тим, що переходи «свої». Два правила діють разом, а не по черзі.
-    expect(step.medianDays).toBeNull();
+    expect(step!.medianDays).toBeNull();
   });
 
   it('після відкату відлік починається ЗАНОВО, від дати відкату', () => {
@@ -103,11 +102,11 @@ describe('funnelSpeed — скільки триває кожен крок', () =
       ]);
     }
     const step = speedOf(s).steps.find((x: { to: string }) => x.to === 'applied');
-    expect(step.n).toBe(6);
+    expect(step!.n).toBe(6);
     // Перший підхід — 10 діб, другий — 5. Медіана шести значень (по три
     // кожного) — 7.5; головне, що другий підхід НЕ рахується від першого
     // збереження (це дало б 35 діб і зіпсувало б усю оцінку).
-    expect(step.medianDays).toBeLessThan(11);
+    expect(step!.medianDays).toBeLessThan(11);
   });
 
   it('порожня воронка -> кроки є, але всі нульові, і це не виняток', () => {

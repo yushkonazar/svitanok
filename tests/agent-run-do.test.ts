@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { AgentRun } from '../web/agent-run-do.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { AGENT_RUN_DO_KEEP_MS } from '../web/agent-run-core.mjs';
 
 /* Durable Object прогону — сам обʼєкт, а не чиста ухвала (та в

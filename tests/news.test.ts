@@ -16,6 +16,7 @@ import {
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+import { memState } from './helpers/state.js';
 
 describe('news — buildNewsUrl (category / q)', () => {
   const key = 'K';
@@ -297,15 +298,6 @@ describe('news — ❤️ поверх легасі-дизлайків (фідб
 });
 
 // --- пайплайн (NewsData) ---
-function memState(initial: Record<string, unknown> = {}): StateStore {
-  const data = { ...initial };
-  return {
-    get: <T>(k: string) => data[k] as T | undefined,
-    set: <T>(k: string, v: T) => void (data[k] = v),
-    prune: () => {},
-    flush: async () => {},
-  };
-}
 
 function makeCtx(
   state: StateStore = memState(),
@@ -939,6 +931,40 @@ describe('news — недільний decay ваг: рівно раз на до�
     await run(state, true);
     await run(state, true);
     await run(state, true);
+    expect((state.get('preferenceWeights') as Record<string, number>).Тех).toBeCloseTo(0.55);
+  });
+
+  it('ваги йдуть через update, а мітка дня — через set', async () => {
+    /* Не причіпка до реалізації, а сам зміст фікса (рев'ю PR #334).
+     *
+     * `preferenceWeights` пише ще й Worker (❤️ у Mini App), а ран триває
+     * хвилини. `set` поклав би на flush ваги, пораховані на ПОЧАТКУ рану, тобто
+     * скасував би голос, поданий за цей час — і зробив би це тихо, бо
+     * `votedUrls` лишився б чужим і url рахувався б уже проголосованим.
+     * Різниця між set і update видна ЛИШЕ на flush KV-стора, тож memState її
+     * показати не може — але може показати, який метод обрано.
+     *
+     * `lastDecayDate` навпаки: значення авторитетне саме по собі, знімок тут
+     * правильний. */
+    const state = memState({ preferenceWeights: { Тех: 0.5 } });
+    const calls: string[] = [];
+    const spy = {
+      ...state,
+      set: <T>(k: string, v: T) => {
+        calls.push(`set:${k}`);
+        state.set(k, v);
+      },
+      update: <T>(k: string, fn: (cur: T | undefined) => T) => {
+        calls.push(`update:${k}`);
+        state.update(k, fn);
+      },
+    };
+    await run(spy, true);
+
+    expect(calls).toContain('update:preferenceWeights');
+    expect(calls).not.toContain('set:preferenceWeights');
+    expect(calls).toContain('set:lastDecayDate');
+    // І результат той самий, що й раніше — метод змінився, поведінка ні.
     expect((state.get('preferenceWeights') as Record<string, number>).Тех).toBeCloseTo(0.55);
   });
 

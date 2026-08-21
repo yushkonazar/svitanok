@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* B23 (аудит 11.08.2026, підтверджено власником НАЖИВО — T4/T6/T7).
  *
@@ -26,12 +27,8 @@ let agentCalls: { url: string; body: Record<string, unknown> }[];
 let llmCalls: number;
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_CHAT_ID: String(OWNER),
@@ -39,7 +36,7 @@ function env(overrides: Record<string, unknown> = {}) {
     LLM_HOST_URL: HOST,
     LLM_HOST_SECRET: 'host-secret',
     ...overrides,
-  };
+  });
 }
 
 function ctx() {

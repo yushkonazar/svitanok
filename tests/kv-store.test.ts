@@ -8,12 +8,12 @@ import {
   loadAssistantHistory,
   putAssistantHistory,
   updateStats,
+  updateState,
   loadAssistantPending,
   claimAssistantPending,
-  // @ts-expect-error — JS-модуль Worker'а без типів.
 } from '../web/kv-store.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
+import { workerEnv } from './helpers/env.js';
 
 /* Доступ до KV, витягнутий із worker.js (Фаза 5). Два інваріанти, які тут і
  * перевіряються, — це вся причина, чому цей шар узагалі існує:
@@ -27,15 +27,17 @@ import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
 
 let kv: Map<string, string>;
 let putOpts: Map<string, unknown>;
-/** Хук «конкурентний писар»: спрацьовує МІЖ двома читаннями updateStats. */
+/** Хук «конкурентний писар»: спрацьовує МІЖ двома читаннями update*. */
 let onSecondRead: (() => void) | null;
+/** Який ключ стежити (updateStats -> 'stats', updateState -> 'state'). */
+let watchKey: string;
 
 function env() {
   let reads = 0;
-  return {
+  return workerEnv({
     BRIEFING: {
       get: async (k: string) => {
-        if (k === 'stats' && ++reads === 2 && onSecondRead) onSecondRead();
+        if (k === watchKey && ++reads === 2 && onSecondRead) onSecondRead();
         return kv.get(k) ?? null;
       },
       put: async (k: string, v: string, opts?: unknown) => {
@@ -43,13 +45,14 @@ function env() {
         putOpts.set(k, opts);
       },
     },
-  };
+  });
 }
 
 beforeEach(() => {
   kv = new Map();
   putOpts = new Map();
   onSecondRead = null;
+  watchKey = 'stats';
 });
 
 describe('читачі — биття JSON дає нейтральний дефолт, а не виняток', () => {
@@ -97,7 +100,7 @@ describe('читачі — биття JSON дає нейтральний деф�
 describe('updateStats — оптимістичний read-modify-write (KV не має CAS)', () => {
   it('без конкурента: patch застосовано один раз', async () => {
     kv.set('stats', JSON.stringify({ n: 1 }));
-    const res = await updateStats(env(), (s: { n: number }) => ({ ...s, n: s.n + 1 }));
+    const res = await updateStats(env(), (s: KvBlob) => ({ ...s, n: s.n + 1 }));
     expect(res).toEqual({ n: 2 });
     expect(JSON.parse(kv.get('stats')!)).toEqual({ n: 2 });
   });
@@ -145,5 +148,114 @@ describe('памʼять розмови — TTL стоїть в одному м�
       expirationTtl: ASSISTANT_HISTORY_TTL_S,
     });
     expect(await loadAssistantHistory(env())).toMatchObject({ '42:': [{ role: 'user' }] });
+  });
+});
+
+describe("updateState — той самий захист для 'state' (C4)", () => {
+  /* 'state' ділять писарі, яких послідовний прогін крону НЕ ізолює один від
+   * одного: вебхук (lastUpdateId), `/api/*` (jobPrefs, mockWeights), асистент
+   * (roadmapProgress), пропозиції (reminders). Досі кожен робив наївний
+   * load -> mutate -> put, і той, хто прочитав раніше, а записав пізніше,
+   * мовчки затирав чужу зміну цілим блобом. */
+  beforeEach(() => {
+    watchKey = 'state';
+  });
+
+  it('без конкурента: patch застосовано один раз', async () => {
+    kv.set('state', JSON.stringify({ lastUpdateId: 1 }));
+    const res = await updateState(env(), (s: KvBlob) => ({
+      ...s,
+      lastUpdateId: 2,
+    }));
+    expect(res).toEqual({ lastUpdateId: 2 });
+    expect(JSON.parse(kv.get('state')!)).toEqual({ lastUpdateId: 2 });
+  });
+
+  it('конкурент між читаннями: його зміна ВИЖИВАЄ, наша теж', async () => {
+    // Саме той збиток, заради якого все це: вебхук пише lastUpdateId, а крон
+    // одночасно позначає нагадування надісланим. Раніше друге зникало.
+    kv.set('state', JSON.stringify({ lastUpdateId: 1, reminders: [] }));
+    onSecondRead = () =>
+      kv.set('state', JSON.stringify({ lastUpdateId: 1, reminders: [{ id: 'r1', fired: true }] }));
+
+    const res = await updateState(env(), (s: Record<string, unknown>) => ({
+      ...s,
+      lastUpdateId: 2,
+    }));
+
+    expect(res).toEqual({ lastUpdateId: 2, reminders: [{ id: 'r1', fired: true }] });
+    expect(JSON.parse(kv.get('state')!)).toEqual({
+      lastUpdateId: 2,
+      reminders: [{ id: 'r1', fired: true }],
+    });
+  });
+
+  it('биття в ключі -> patch стартує з {}, запит не падає', async () => {
+    kv.set('state', '{зламано');
+    const res = await updateState(env(), (s: Record<string, unknown>) => ({ ...s, ok: true }));
+    expect(res).toEqual({ ok: true });
+  });
+
+  it('не-обʼєкт у ключі теж дає {} — patch завжди бачить блоб', async () => {
+    // JSON.parse радо віддає масив або число; кожен patch індексує аргумент як
+    // обʼєкт, тож `[].lastUpdateId = 2` тихо пішло б у KV масивом із полем.
+    kv.set('state', '[1,2,3]');
+    const res = await updateState(env(), (s: Record<string, unknown>) => ({ ...s, ok: true }));
+    expect(res).toEqual({ ok: true });
+    expect(Array.isArray(JSON.parse(kv.get('state')!))).toBe(false);
+  });
+
+  it('патч, що повертає той самий store, нічого не ламає (no-op)', async () => {
+    // Ідіом «уже позначено — не чіпаю»: саме так виглядає ідемпотентний патч,
+    // без якого повторний toggle на свіжішій копії зняв би чужий прапорець.
+    kv.set('state', JSON.stringify({ roadmapProgress: { 'a/b': '2026-01-01' } }));
+    const res = await updateState(env(), (s: Record<string, unknown>) => s);
+    expect(res).toEqual({ roadmapProgress: { 'a/b': '2026-01-01' } });
+  });
+});
+
+describe("updateJson — межа мітигації (закриття знахідки рев'ю PR #334)", () => {
+  /* Решта тестів цього файлу мокає KV як Map, тобто з МИТТЄВОЮ консистентністю,
+   * якої в справжньому KV немає: читання кешується в колонії (мінімальний
+   * cacheTtl — 60 с, знизити не можна). Два `get` підряд майже напевно віддають
+   * той самий кешований рядок, тож `raw2 === raw1` означає «моя колонія не
+   * бачила змін», а не «ніхто не писав».
+   *
+   * Цей тест НЕ перевіряє фікс — він фіксує МЕЖУ, щоб вона перестала бути
+   * усною. Поки він зелений, updateState лишається мітигацією; коли ключ
+   * переїде на Durable Object, тест почервоніє й змусить переписати опис.
+   */
+  it('несвіже друге читання -> конфлікт НЕ помічено, чужий запис затерто', async () => {
+    watchKey = 'state';
+    kv.set('state', JSON.stringify({ mine: 0 }));
+
+    // Колонія віддає закешований рядок обидва рази, хоча в KV уже інше значення.
+    const cached = JSON.stringify({ mine: 0 });
+    const e = workerEnv({
+      BRIEFING: {
+        get: async () => cached,
+        put: async (k: string, v: string) => void kv.set(k, v),
+      },
+    });
+    // Чужий писар (інша колонія) уже поклав своє.
+    kv.set('state', JSON.stringify({ mine: 0, theirs: 'важливе' }));
+
+    await updateState(e, (s: Record<string, unknown>) => ({ ...s, mine: 1 }));
+
+    const written = JSON.parse(kv.get('state')!);
+    expect(written.mine).toBe(1); // наша зміна лягла...
+    expect(written.theirs).toBeUndefined(); // ...а чужа зникла: retry її не побачив
+  });
+
+  it('той самий сценарій зі СВІЖИМ другим читанням — чужа зміна виживає', async () => {
+    // Контроль: механізм працює, коли колонія таки бачить запис. Без цієї пари
+    // тест вище читався б як «updateState не працює», хоча він про інше.
+    watchKey = 'state';
+    kv.set('state', JSON.stringify({ mine: 0 }));
+    onSecondRead = () => kv.set('state', JSON.stringify({ mine: 0, theirs: 'важливе' }));
+
+    await updateState(env(), (s: Record<string, unknown>) => ({ ...s, mine: 1 }));
+
+    expect(JSON.parse(kv.get('state')!)).toEqual({ mine: 1, theirs: 'важливе' });
   });
 });

@@ -50,6 +50,7 @@ import {
   loadAssistantPending,
   claimAssistantPending,
   markProposalExecuted,
+  updateState,
 } from './kv-store.mjs';
 import {
   getCalendarEvent,
@@ -71,7 +72,11 @@ export const PENDING_TTL_MS = 30 * 60_000;
  * Показати пропозицію під ✅/❌ (той самий цикл, що подієві stageItemEdit/
  * stageItemDelete: власний KV-ключ + buildProposalKeyboard + accept-гілка).
  */
-export async function stageProposalItem(env, parsed, item) {
+export async function stageProposalItem(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {KvBlob} */ item,
+) {
   const id = crypto.randomUUID().slice(0, 8);
   await env.BRIEFING.put(
     ASSISTANT_PENDING_KEY,
@@ -93,7 +98,7 @@ export async function stageProposalItem(env, parsed, item) {
  * резолвиться (подію видалено між readCalendar і пропозицією) — дропається,
  * не падає весь пакет.
  */
-export async function enrichEventItems(env, items) {
+export async function enrichEventItems(/** @type {Env} */ env, /** @type {KvBlob[]} */ items) {
   const out = [];
   for (const item of items) {
     if (item.kind === 'settings') {
@@ -125,7 +130,7 @@ export async function enrichEventItems(env, items) {
         base: {
           title: fresh.title,
           whenMs: fresh.startMs,
-          durationMin: (fresh.endMs - fresh.startMs) / 60_000,
+          durationMin: ((fresh.endMs ?? 0) - (fresh.startMs ?? 0)) / 60_000,
         },
       });
       continue;
@@ -138,7 +143,7 @@ export async function enrichEventItems(env, items) {
       base: {
         title: fresh.title,
         whenMs: fresh.startMs,
-        durationMin: (fresh.endMs - fresh.startMs) / 60_000,
+        durationMin: ((fresh.endMs ?? 0) - (fresh.startMs ?? 0)) / 60_000,
       },
     });
   }
@@ -152,10 +157,14 @@ export async function enrichEventItems(env, items) {
  * дешевше й достатньо для типового пакета (≤MAX_PROPOSAL_ITEMS). Інформативно,
  * НЕ блокує пропозицію; збій читання -> тихо без попереджень (не критично).
  */
-export async function computeOverlapWarnings(env, items) {
+export async function computeOverlapWarnings(
+  /** @type {Env} */ env,
+  /** @type {KvBlob[]} */ items,
+) {
+  /** @type {Map<number, string[]>} */
   const warnings = new Map();
   const spans = items
-    .map((item, index) => {
+    .map((/** @type {KvBlob} */ item, /** @type {number} */ index) => {
       if (item.kind === 'event' && Number.isFinite(item.whenMs)) {
         return { index, eventId: null, start: item.whenMs, dur: item.durationMin ?? 60 };
       }
@@ -169,7 +178,9 @@ export async function computeOverlapWarnings(env, items) {
       }
       return null;
     })
-    .filter(Boolean);
+    // `!== null` замість filter(Boolean): та сама умова, але з неї виводиться
+    // звуження типу, і `s.start` нижче більше не читається з можливого null.
+    .filter((s) => s !== null);
   if (spans.length === 0) return warnings;
 
   const minMs = Math.min(...spans.map((s) => s.start));
@@ -194,7 +205,11 @@ export async function computeOverlapWarnings(env, items) {
 }
 
 /** Зберегти пропозицію (власний KV-ключ, ОДИН слот) + кнопки ✅/❌ підтвердження. */
-export async function proposeCalendarChanges(env, parsed, rawProposal) {
+export async function proposeCalendarChanges(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {any} */ rawProposal,
+) {
   const sendText = sendTo(env, parsed);
 
   const { items: rawItems, droppedCount } = sanitizeProposal(rawProposal, Date.now());
@@ -230,20 +245,25 @@ export async function proposeCalendarChanges(env, parsed, rawProposal) {
  * agent-core.mjs (той жодного з них не знає, лишається чистим від Worker-
  * специфічних callback-неймспейсів).
  */
-export function buildResultKeyboard(items, results) {
+export function buildResultKeyboard(
+  /** @type {KvBlob[]} */ items,
+  /** @type {KvBlob[]} */ results,
+) {
   const mode = proposalMode(items);
 
   if (mode === 'edit') {
     if (!results[0]?.ok) return { inline_keyboard: [] };
-    const d = buildAgendaCallbackData('d', items[0].eventId);
+    // edit-режим — це рівно один пункт (proposalMode), тож items[0] є.
+    const d = buildAgendaCallbackData('d', items[0]?.eventId);
     return d
       ? { inline_keyboard: [[{ text: '🗑 Видалити', callback_data: d }]] }
       : { inline_keyboard: [] };
   }
   if (mode === 'delete') return { inline_keyboard: [] };
 
+  /** @type {KvBlob[][]} */
   const rows = [];
-  items.forEach((it, i) => {
+  items.forEach((/** @type {KvBlob} */ it, /** @type {number} */ i) => {
     const r = results[i];
     if (!r?.ok || !r.id) return;
     if (it.kind === 'event') {
@@ -282,7 +302,11 @@ export function buildResultKeyboard(items, results) {
  * кнопки: власник має бачити результат (успіх/провал) і, для щойно
  * створених/оновлених подій-нагадувань, кнопки Edit/Delete НА МІСЦІ.
  */
-export async function resolveProposalCallback(env, parsed, cb) {
+export async function resolveProposalCallback(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {KvBlob} */ cb,
+) {
   const pending = await loadAssistantPending(env);
   const stale = !pending || pending.id !== cb.id || Date.now() - pending.createdMs > PENDING_TTL_MS;
   if (stale) return '⚠️ Застаріла пропозиція.';
@@ -326,7 +350,9 @@ export async function resolveProposalCallback(env, parsed, cb) {
       ? (item.baseWhenMs ?? item.whenMs ?? 0)
       : (item.base?.whenMs ?? 0);
     const nextShift = cycleEventShift(item.shiftMin ?? 0);
-    const nextItems = [{ ...item, shiftMin: nextShift, whenMs: anchorMs + nextShift * 60_000 }];
+    const nextItems = [
+      { ...item, shiftMin: nextShift, whenMs: anchorMs + (nextShift ?? 0) * 60_000 },
+    ];
     await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify({ ...pending, items: nextItems }));
     if (parsed.chatId != null && parsed.messageId != null) {
       await tgCall(env, 'editMessageText', {
@@ -412,16 +438,18 @@ export async function resolveProposalCallback(env, parsed, cb) {
   for (const item of pending.items) {
     if (item.kind === 'reminder') {
       const newId = crypto.randomUUID();
-      const fresh = await loadState(env);
-      fresh.reminders = addReminder(fresh.reminders, {
-        id: newId,
-        text: item.title,
-        whenMs: item.whenMs,
-        nowMs: Date.now(),
-        chatId: parsed.chatId,
-        threadId: parsed.threadId,
-      });
-      await env.BRIEFING.put('state', JSON.stringify(fresh));
+      const nowMs = Date.now();
+      await updateState(env, (s) => ({
+        ...s,
+        reminders: addReminder(s.reminders, {
+          id: newId,
+          text: item.title,
+          whenMs: item.whenMs,
+          nowMs,
+          chatId: parsed.chatId,
+          threadId: parsed.threadId,
+        }),
+      }));
       results.push({ ok: true, id: newId });
     } else if (item.kind === 'event') {
       // Доналаштування: глобальний durMin/leadMin перекриває дефолти (null -> «як є»).
@@ -472,14 +500,16 @@ export async function resolveProposalCallback(env, parsed, cb) {
       if (!target) {
         results.push({ ok: false });
       } else {
-        fresh.reminders =
-          item.kind === 'deleteReminder'
-            ? cancelReminder(fresh.reminders, item.reminderId)
-            : updateReminder(fresh.reminders, item.reminderId, {
-                ...(item.title ? { text: item.title } : {}),
-                ...(Number.isFinite(item.whenMs) ? { whenMs: item.whenMs } : {}),
-              });
-        await env.BRIEFING.put('state', JSON.stringify(fresh));
+        await updateState(env, (s) => ({
+          ...s,
+          reminders:
+            item.kind === 'deleteReminder'
+              ? cancelReminder(s.reminders, item.reminderId)
+              : updateReminder(s.reminders, item.reminderId, {
+                  ...(item.title ? { text: item.title } : {}),
+                  ...(Number.isFinite(item.whenMs) ? { whenMs: item.whenMs } : {}),
+                }),
+        }));
         results.push({ ok: true });
       }
     } else if (item.kind === 'settings') {
@@ -528,7 +558,11 @@ export async function resolveProposalCallback(env, parsed, cb) {
  *  застарілим), будує single-item updateEvent-пропозицію (shiftMin=0 -> «як
  *  заплановано») і шле тим самим шляхом, що звичайна пропозиція (той самий
  *  keyboard/accept-цикл, що LLM-шлях, resolveProposalCallback). */
-export async function stageItemEdit(env, parsed, eventId) {
+export async function stageItemEdit(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ eventId,
+) {
   const fresh = await getCalendarEvent(env, eventId);
   if (!fresh) return '🤔 Цю подію вже не знайти — можливо, видалено.';
 
@@ -537,7 +571,7 @@ export async function stageItemEdit(env, parsed, eventId) {
     whenMs: fresh.startMs,
     durationMin:
       Number.isFinite(fresh.endMs) && Number.isFinite(fresh.startMs)
-        ? (fresh.endMs - fresh.startMs) / 60_000
+        ? ((fresh.endMs ?? 0) - (fresh.startMs ?? 0)) / 60_000
         : 60,
   };
   const item = { kind: 'updateEvent', eventId, shiftMin: 0, whenMs: base.whenMs, base };
@@ -555,7 +589,11 @@ export async function stageItemEdit(env, parsed, eventId) {
 
 /** Стейджити ВИДАЛЕННЯ існуючої події (`ev:d:<id>`) — той самий підтверджувальний
  *  цикл, що create/update (✅/❌, delete-режим клавіатури — лише Так/Ні). */
-export async function stageItemDelete(env, parsed, eventId) {
+export async function stageItemDelete(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ eventId,
+) {
   const fresh = await getCalendarEvent(env, eventId);
   if (!fresh) return '🤔 Цю подію вже не знайти — можливо, видалено.';
 

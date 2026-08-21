@@ -70,7 +70,7 @@ export function sunGeom(srMin: number, ssMin: number, nowMin: number): Geom {
 
   const noon = (sr + ss) / 2;
   const dayMin = ss - sr;
-  const half = (dayMin / 1440) * 360 / 2;
+  const half = ((dayMin / 1440) * 360) / 2;
 
   // Кут від ВЕРХУ за годинниковою стрілкою; нормалізуємо в (−180, 180], щоб
   // |theta| < half читалось як «день» без окремих випадків біля півночі.

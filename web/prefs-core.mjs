@@ -20,14 +20,29 @@ export const WEIGHT_MIN = 0.5;
 export const WEIGHT_MAX = 2.0;
 export const WEIGHT_STEP = 0.15;
 
-const clampWeight = (w) => Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, w));
+/**
+ * Шкала ваг: тема/токен -> множник. Порожній обʼєкт означає «жодного голосу»,
+ * а не «нулі»: відсутній ключ читається як 1.0.
+ * @typedef {Record<string, number>} WeightMap
+ */
 
+const clampWeight = (/** @type {number} */ w) => Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, w));
+
+/**
+ * @param {WeightMap} weights
+ * @param {string} category
+ * @param {string} dir 'up' | 'down'
+ * @returns {WeightMap}
+ */
 export function applyVote(weights, category, dir) {
   const cur = weights[category] ?? 1.0;
   return { ...weights, [category]: clampWeight(cur + (dir === 'up' ? WEIGHT_STEP : -WEIGHT_STEP)) };
 }
 
-/** Застосувати зсув до ваги теми з clamp; повернути {weights, delta(реальний)}. */
+/** Застосувати зсув до ваги теми з clamp; повернути {weights, delta(реальний)}.
+ *  @param {WeightMap} weights
+ *  @param {string} category
+ *  @param {number} step */
 function bumpWeight(weights, category, step) {
   const before = weights[category] ?? 1.0;
   const after = clampWeight(before + step);
@@ -39,10 +54,17 @@ function bumpWeight(weights, category, step) {
  * канонічна версія тестована в news.test.ts). Кожен url впливає на вагу максимум
  * раз; повторний той самий голос знімає, зміна — переставляє. `delta` — реально
  * застосований зсув (після clamp), щоб відкат був точним і на межі [0.5,2.0].
+ * @param {WeightMap|null|undefined} weights
+ * @param {KvBlob|null|undefined} votedUrls
+ * @param {string} url
+ * @param {string} category
+ * @param {string} clickedDir 'up' | 'down'
  */
 export function applyUrlVote(weights, votedUrls, url, category, clickedDir) {
+  /** @type {KvBlob} */
   const vu = votedUrls && typeof votedUrls === 'object' ? { ...votedUrls } : {};
   const prev = vu[url];
+  /** @type {WeightMap} */
   let w = weights ?? {};
   if (prev && typeof prev.delta === 'number' && prev.delta !== 0) {
     const cat = prev.category ?? category;
@@ -94,12 +116,17 @@ const JOB_STOP_WORDS = new Set([
   'stack',
 ]);
 
-function titleTokens(title) {
+function titleTokens(/** @type {string} */ title) {
   return (title.toLowerCase().match(/[a-zа-яїієґ0-9+#.]{3,}/gi) ?? []).filter(
     (t) => !JOB_STOP_WORDS.has(t),
   );
 }
 
+/**
+ * @param {{ liked: string[], disliked: string[] }} prefs
+ * @param {string} signal 'dismiss' -> у disliked, решта -> у liked
+ * @param {string} title
+ */
 export function updateJobPrefs(prefs, signal, title) {
   const tokens = titleTokens(title);
   if (tokens.length === 0) return prefs;
@@ -119,8 +146,15 @@ export const MOCK_WEIGHT_MIN = 0.5;
 export const MOCK_WEIGHT_MAX = 2.0;
 export const MOCK_WEIGHT_STEP = 0.2;
 
-const clampMockWeight = (w) => Math.min(MOCK_WEIGHT_MAX, Math.max(MOCK_WEIGHT_MIN, w));
+const clampMockWeight = (/** @type {number} */ w) =>
+  Math.min(MOCK_WEIGHT_MAX, Math.max(MOCK_WEIGHT_MIN, w));
 
+/**
+ * @param {WeightMap} weights
+ * @param {string|null|undefined} topic
+ * @param {string} rating 'hard' підіймає вагу, решта опускає
+ * @returns {WeightMap}
+ */
 export function updateMockWeight(weights, topic, rating) {
   if (!topic) return weights;
   const cur = weights[topic] ?? 1.0;

@@ -243,6 +243,14 @@ describe('state-kv — overlayChanged (per-key merge, H2)', () => {
     const fresh = { x: 1 };
     expect(overlayChanged(fresh, { x: 2 }, [])).toEqual({ x: 1 });
   });
+
+  it('ключ із трансформацією рахується від СВІЖОГО значення, не від мого', () => {
+    // Знімок (`mine`) навмисно неправдоподібний: якби його взяли, це видно одразу.
+    const fresh = { w: 10 };
+    const mine = { w: 999 };
+    const transforms = new Map([['w', (cur: unknown) => (cur as number) * 2]]);
+    expect(overlayChanged(fresh, mine, ['w'], transforms)).toEqual({ w: 20 });
+  });
 });
 
 describe('state-kv — readKvEnv', () => {
@@ -329,5 +337,84 @@ describe('state-kv — writeKvJson (assistantPending: власний ключ, �
         writeKvJson({ ...OPTS, fetchImpl, log: quiet }, 'assistantPending', { id: 'x' }),
       ).resolves.toBe(false);
     }
+  });
+});
+
+describe('state-kv — update проти set на ключі, який пише ще й Worker', () => {
+  /* Закриття знахідки рев'ю PR #334.
+   *
+   * `preferenceWeights` — не ексклюзивне поле оркестратора: у той самий блоб їх
+   * пише Worker, коли власник тапає ❤️ у Mini App. Недільний ран триває хвилини,
+   * і `set` клав на flush ваги, пораховані на його ПОЧАТКУ — тобто скасовував
+   * голос, поданий за цей час. Гірше: `votedUrls` ран не чіпає, тож url лишався
+   * позначеним як проголосований, а вага — відкоченою, і повторне ❤️ голос
+   * ЗНІМАЛО б замість поставити.
+   *
+   * Тест ставить писаря рівно у вікно між завантаженням і flush.
+   */
+  function storeWithRacer(initial: unknown, fresh: unknown) {
+    const puts: unknown[] = [];
+    let reads = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'PUT') {
+        puts.push(JSON.parse(String(init?.body ?? 'null')));
+        return okResp('{}');
+      }
+      // Перше читання — завантаження на старті рану; друге — re-read на flush,
+      // і саме там уже видно чужий запис.
+      return okResp(JSON.stringify(++reads === 1 ? initial : fresh));
+    });
+    return { fetchImpl: fetchImpl as unknown as typeof fetch, puts };
+  }
+
+  const INITIAL = { preferenceWeights: { tech: 1.0 }, votedUrls: {} };
+  // Поки ран працював, власник тапнув ❤️: вага зросла, url записаний.
+  const FRESH = {
+    preferenceWeights: { tech: 1.1 },
+    votedUrls: { 'https://ex/1': { dir: 'up', category: 'tech' } },
+  };
+
+  it('update: голос, поданий під час рану, ВИЖИВАЄ (decay лягає на свіжу вагу)', async () => {
+    const { fetchImpl, puts } = storeWithRacer(INITIAL, FRESH);
+    const s = await createKvStateStore({ ...OPTS, fetchImpl });
+
+    // Той самий decay, що в src/modules/news.ts: до 1.0 на 10% шляху.
+    s.update<Record<string, number>>('preferenceWeights', (cur) =>
+      Object.fromEntries(Object.entries(cur ?? {}).map(([k, v]) => [k, 1 + (v - 1) * 0.9])),
+    );
+    s.set('lastDecayDate', '2026-08-23');
+    await s.flush();
+
+    const body = puts[0] as { preferenceWeights: Record<string, number>; votedUrls: unknown };
+    // 1.1 -> 1.09: decay порахований від СВІЖОЇ ваги, тобто голос не зник.
+    expect(body.preferenceWeights.tech).toBeCloseTo(1.09, 5);
+    expect(body.votedUrls).toEqual(FRESH.votedUrls); // і дедуп-запис на місці
+  });
+
+  it('set на тому самому місці голос ЗАТЕР би — ось із чим порівнюємо', async () => {
+    const { fetchImpl, puts } = storeWithRacer(INITIAL, FRESH);
+    const s = await createKvStateStore({ ...OPTS, fetchImpl });
+
+    const stale = s.get<Record<string, number>>('preferenceWeights') ?? {};
+    s.set(
+      'preferenceWeights',
+      Object.fromEntries(Object.entries(stale).map(([k, v]) => [k, 1 + (v - 1) * 0.9])),
+    );
+    await s.flush();
+
+    const body = puts[0] as { preferenceWeights: Record<string, number>; votedUrls: unknown };
+    expect(body.preferenceWeights.tech).toBe(1.0); // ❤️ зникло
+    expect(body.votedUrls).toEqual(FRESH.votedUrls); // а дедуп лишився -> неконсистентно
+  });
+
+  it('set ПІСЛЯ update на тому ж ключі перемагає: знімок явніший за намір', async () => {
+    const { fetchImpl, puts } = storeWithRacer(INITIAL, FRESH);
+    const s = await createKvStateStore({ ...OPTS, fetchImpl });
+
+    s.update<Record<string, number>>('preferenceWeights', () => ({ tech: 5 }));
+    s.set('preferenceWeights', { tech: 7 });
+    await s.flush();
+
+    expect((puts[0] as { preferenceWeights: unknown }).preferenceWeights).toEqual({ tech: 7 });
   });
 });

@@ -17,6 +17,7 @@ import { findTopic, topicProgress, topicMaterials } from './roadmap-core.mjs';
 import { weekStartKey } from './stats-core.mjs';
 
 /** mock-тема (ключ MOCK_TOPICS/mockWeights) -> id тем роадмепу. */
+/** @type {KvBlob} */
 export const MOCK_TO_ROADMAP = {
   // 'Мова' віддала typescript окремій темі (F4): профіль скрізь TS, і зливати
   // його з ванільним JS в одну вагу означало ховати, що саме кульгає.
@@ -39,15 +40,18 @@ export const MOCK_TO_ROADMAP = {
 /** Зворотна мапа: id теми роадмепу -> mock-теми (порожньо для roadmap-only тем).
  *  Обидва входи — модульні константи, тож рахуємо раз і заморожуємо (Worker
  *  кличе це на кожен /api/stats). */
-const ROADMAP_TO_MOCK = (() => {
-  const out = {};
-  for (const t of ROADMAP_TOPICS) out[t.id] = [];
-  for (const [mockTopic, ids] of Object.entries(MOCK_TO_ROADMAP)) {
-    for (const id of ids) if (out[id]) out[id].push(mockTopic);
-  }
-  for (const k of Object.keys(out)) Object.freeze(out[k]);
-  return Object.freeze(out);
-})();
+const ROADMAP_TO_MOCK = /** @type {KvBlob} */ (
+  (() => {
+    /** @type {KvBlob} */
+    const out = {};
+    for (const t of ROADMAP_TOPICS) out[t.id] = [];
+    for (const [mockTopic, ids] of Object.entries(MOCK_TO_ROADMAP)) {
+      for (const id of ids) if (out[id]) out[id].push(mockTopic);
+    }
+    for (const k of Object.keys(out)) Object.freeze(out[k]);
+    return Object.freeze(out);
+  })()
+);
 
 export function roadmapToMock() {
   return ROADMAP_TO_MOCK;
@@ -65,8 +69,10 @@ export function roadmapToMock() {
  * /api/stats) і заморожуємо.
  */
 const MOCK_MATERIALS = (() => {
+  /** @type {KvBlob} */
   const out = {};
   for (const [mockTopic, ids] of Object.entries(MOCK_TO_ROADMAP)) {
+    /** @type {KvBlob[]} */
     const mats = [];
     for (const id of ids) {
       const t = findTopic(id);
@@ -86,14 +92,17 @@ export function mockMaterials() {
  * weakTopics = [{name, value}] з aggregateStats -> для кожної слабкої теми
  * повʼязані теми роадмепу з прогресом. Теми без мапінгу відпадають.
  */
-export function masteryHints(weakTopics, progress) {
+export function masteryHints(
+  /** @type {any[]|null|undefined} */ weakTopics,
+  /** @type {unknown} */ progress,
+) {
   const p = progress && typeof progress === 'object' ? progress : {};
   return (Array.isArray(weakTopics) ? weakTopics : [])
-    .filter((w) => w && typeof w.name === 'string')
-    .map((w) => ({
+    .filter((/** @type {KvBlob} */ w) => w && typeof w.name === 'string')
+    .map((/** @type {KvBlob} */ w) => ({
       mockTopic: w.name,
       themes: (MOCK_TO_ROADMAP[w.name] ?? [])
-        .map((id) => {
+        .map((/** @type {string} */ id) => {
           const t = findTopic(id);
           if (!t) return null;
           const { done, total } = topicProgress(p, t);
@@ -123,9 +132,14 @@ export function masteryHints(weakTopics, progress) {
  * її жодного разу не питали. Клієнт мусить показати такі теми окремо («ще не
  * перевірено»), а не в одному рейтингу з реально слабкими.
  */
-export function masteryTopics(progress, mockTopics) {
-  const p = progress && typeof progress === 'object' ? progress : {};
-  const m = mockTopics && typeof mockTopics === 'object' ? mockTopics : {};
+export function masteryTopics(
+  // unknown: обидва аргументи приходять із KV, і функція СВІДОМО стійка до
+  // битих даних — це перевіряється тестом «битий вхід не валить агрегат».
+  /** @type {unknown} */ progress,
+  /** @type {unknown} */ mockTopics,
+) {
+  const p = /** @type {KvBlob} */ (progress && typeof progress === 'object' ? progress : {});
+  const m = /** @type {KvBlob} */ (mockTopics && typeof mockTopics === 'object' ? mockTopics : {});
   return ROADMAP_TOPICS.map((t) => {
     const { done, total } = topicProgress(p, t);
     let seen = 0;
@@ -151,7 +165,10 @@ export function masteryTopics(progress, mockTopics) {
  * ISO-тижня (той самий результат для будь-якого dateKey одного тижня — тому
  * щоденний перезапис state.masteryFocus безпечний). Все завершено -> null.
  */
-export function themeOfWeek(progress, dateKey) {
+export function themeOfWeek(
+  /** @type {KvBlob|null|undefined} */ progress,
+  /** @type {string} */ dateKey,
+) {
   const p = progress && typeof progress === 'object' ? progress : {};
   const week = weekStartKey(dateKey);
   const weekIdx = Math.round(Date.parse(week + 'T00:00:00Z') / 604800000);
@@ -163,7 +180,9 @@ export function themeOfWeek(progress, dateKey) {
   const n = ROADMAP_TOPICS.length;
   const start = ((weekIdx % n) + n) % n;
   for (let i = 0; i < n; i++) {
-    const t = ROADMAP_TOPICS[(start + i) % n];
+    // Приведення: індекс завжди в межах масиву (% n), тож undefined тут
+    // недосяжний — лише в типі.
+    const t = /** @type {KvBlob} */ (ROADMAP_TOPICS[(start + i) % n]);
     const { done, total } = topicProgress(p, t);
     if (done < total) {
       return {

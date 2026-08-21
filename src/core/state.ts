@@ -42,6 +42,13 @@ export function createStateStore(opts: StateStoreOptions = {}): StateStore {
       data[key] = value;
       dirty = true;
     },
+    // Файловий стор — єдиний писар свого файлу, тож трансформація застосовується
+    // одразу й нічим не відрізняється від set. Метод існує заради спільного
+    // інтерфейсу з KV-стором, де різниця саме на flush.
+    update<T>(key: string, fn: (current: T | undefined) => T): void {
+      data[key] = fn(data[key] as T | undefined);
+      dirty = true;
+    },
     prune(): void {
       if (pruners.length === 0) return;
       for (const p of pruners) p(data);

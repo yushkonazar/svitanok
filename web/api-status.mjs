@@ -16,17 +16,32 @@
 /** Ключ у неймспейсі BRIEFING. Пише оркестратор ПІСЛЯ успішної відправки. */
 export const STATUS_KEY = 'publicStatus';
 
-const HEADERS = {
-  'content-type': 'application/json; charset=utf-8',
-  // Звужений origin, а не '*': ендпоінт мінімальний, але обмеження нічого не
-  // коштує. Обробник OPTIONS не потрібен — запит без кастомних заголовків і
-  // без credentials, тож preflight не відбувається.
-  'access-control-allow-origin': 'https://yushko.dev',
-  // Значення змінюється раз на добу, а споживач має 3-секундний таймаут:
-  // пʼять хвилин кешу знімають навантаження й не роблять дані застарілими в
-  // жодному видимому сенсі.
-  'cache-control': 'public, max-age=300',
-};
+/** Хто саме читає бейдж. Звужений origin, а не '*': ендпоінт мінімальний, але
+ *  обмеження нічого не коштує. Обробник OPTIONS не потрібен — запит без
+ *  кастомних заголовків і без credentials, тож preflight не відбувається. */
+const DEFAULT_STATUS_ORIGIN = 'https://yushko.dev';
+
+/** Рівно один https-origin і нічого більше.
+ *
+ * ⚠️ Валідація тут НЕ формальність. Це ЄДИНИЙ ендпоінт без авторизації, і
+ * значення з конфігу йде прямо в CORS-заголовок: порожній рядок, `*` чи
+ * список через кому розширили б доступ мовчки. Не пройшло — беремо дефолт,
+ * тобто помилка в конфізі звужує, а не розширює. */
+const ORIGIN_RE = /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+
+/** @param {Env} env */
+function statusHeaders(env) {
+  const configured = env.PUBLIC_STATUS_ORIGIN?.trim();
+  return {
+    'content-type': 'application/json; charset=utf-8',
+    'access-control-allow-origin':
+      configured && ORIGIN_RE.test(configured) ? configured : DEFAULT_STATUS_ORIGIN,
+    // Значення змінюється раз на добу, а споживач має 3-секундний таймаут:
+    // пʼять хвилин кешу знімають навантаження й не роблять дані застарілими в
+    // жодному видимому сенсі.
+    'cache-control': 'public, max-age=300',
+  };
+}
 
 /**
  * Мітка часу останнього брифінгу або null.
@@ -36,6 +51,9 @@ const HEADERS = {
  * і це рівно та поведінка, якої треба в кожному з цих випадків. Кидати 500 на
  * биті дані означало б, що бейдж показує «сервіс лежить» тоді, коли лежить
  * лише один KV-запис.
+ *
+ * @param {Request} _request
+ * @param {Env} env
  */
 export async function handleStatus(_request, env) {
   let lastBriefingAt = null;
@@ -50,5 +68,8 @@ export async function handleStatus(_request, env) {
   // 200 з null, а не 404: споживач трактує обидва однаково, але рівний 200
   // лишає його гілку помилки для СПРАВЖНІХ помилок (мережа, таймаут), а не
   // для нормального стану «брифінгу ще не було».
-  return new Response(JSON.stringify({ lastBriefingAt }), { status: 200, headers: HEADERS });
+  return new Response(JSON.stringify({ lastBriefingAt }), {
+    status: 200,
+    headers: statusHeaders(env),
+  });
 }

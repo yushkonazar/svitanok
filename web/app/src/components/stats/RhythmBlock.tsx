@@ -60,7 +60,9 @@ function ConversionRow({
 }) {
   const [open, setOpen] = useState(false);
   if (den <= 0) {
-    return <StatRow label={label} value={<span className="font-normal text-tx3">ще не було</span>} />;
+    return (
+      <StatRow label={label} value={<span className="font-normal text-tx3">ще не було</span>} />
+    );
   }
   if (!has(pct)) return null;
   const row = (
@@ -150,7 +152,11 @@ export function RhythmBody({ s }: { s: Stats }) {
   // й смуги навичок у MasteryBlock.
   const [goalRef, goalInView] = useInView<HTMLDivElement>();
   const goalPct = has(s.goal.weeklyTarget)
-    ? clamp(Math.round(((s.goal.weeklyApplied || 0) / Math.max(1, s.goal.weeklyTarget!)) * 100), 0, 100)
+    ? clamp(
+        Math.round(((s.goal.weeklyApplied || 0) / Math.max(1, s.goal.weeklyTarget!)) * 100),
+        0,
+        100,
+      )
     : 0;
   const appliedSum = s.appliedWeekly.reduce((a, w) => a + (w.count || 0), 0);
 
@@ -213,9 +219,7 @@ export function RhythmBody({ s }: { s: Stats }) {
           </span>
           {speed.steps.map((st) => (
             <div key={st.to} className="flex items-baseline gap-2 text-[11.5px]">
-              <span className="flex-1 text-tx2">
-                {STEP_LABEL[st.to] ?? st.to}
-              </span>
+              <span className="flex-1 text-tx2">{STEP_LABEL[st.to] ?? st.to}</span>
               {st.medianDays !== null ? (
                 <span className="font-mono text-[11px] font-semibold">
                   {st.medianDays} {pluralUk(st.medianDays, ['доба', 'доби', 'діб'])}
@@ -255,15 +259,13 @@ export function RhythmBody({ s }: { s: Stats }) {
             </div>
           ))}
           {speed.stale.length > 5 && (
-            <span className="font-mono text-[10px] text-tx3">
-              …і ще {speed.stale.length - 5}
-            </span>
+            <span className="font-mono text-[10px] text-tx3">…і ще {speed.stale.length - 5}</span>
           )}
           <Hint>
-            Скільки діб вакансія стоїть на тій самій стадії. Рахується від ОСТАННЬОГО руху, а не
-            від дати збереження: вакансія може бути у воронці пів року, але якщо стадію змінили
-            вчора — це рух. Термінальні (відмова/провал/офер) сюди не потрапляють: там уже нічого
-            не чекають.
+            Скільки діб вакансія стоїть на тій самій стадії. Рахується від ОСТАННЬОГО руху, а не від
+            дати збереження: вакансія може бути у воронці пів року, але якщо стадію змінили вчора —
+            це рух. Термінальні (відмова/провал/офер) сюди не потрапляють: там уже нічого не
+            чекають.
           </Hint>
         </div>
       )}

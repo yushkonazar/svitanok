@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
+import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести GET /api/weather (PR-7, «жива погода в Mini App» — фідбек
  * власника: статична температура з брифінгу вже за обідом не відповідала
@@ -18,50 +20,16 @@ let geocodeEmpty: boolean;
 let geocodeDirectEmpty: boolean;
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      delete: async (k: string) => void kv.delete(k),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     WEATHER_API_KEY: 'wkey',
     ...overrides,
-  };
+  });
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */
-async function buildInitData(userId: number, botToken: string, authDateSec?: number) {
-  const user = JSON.stringify({ id: userId, first_name: 'O' });
-  const authDate = authDateSec ?? Math.floor(Date.now() / 1000);
-  const params = new URLSearchParams({ user, auth_date: String(authDate) });
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode('WebAppData'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
-  const secretKey = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
-  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
-  params.set('hash', hash);
-  return params.toString();
-}
 
 async function getWeather(initData: string | null, e = env(), cf?: Record<string, unknown>) {
   const req = new Request('https://svitanok.example/api/weather', {

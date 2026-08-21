@@ -20,10 +20,10 @@ import { isDateKey, dayKey, weekStartKey } from './stats-core.mjs';
 /** Ключ у тому самому KV-неймспейсі, що `stats`/`state`. */
 export const ARCHIVE_KEY = 'statsArchive';
 
-const monthOf = (dateKey) => dateKey.slice(0, 7);
-const round1 = (v) => Math.round(v * 10) / 10;
+const monthOf = (/** @type {string} */ dateKey) => dateKey.slice(0, 7);
+const round1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;
 
-function bucket(out, month) {
+function bucket(/** @type {KvBlob} */ out, /** @type {string} */ month) {
   if (!out[month]) {
     out[month] = {
       checkinDays: 0,
@@ -41,7 +41,8 @@ function bucket(out, month) {
   return out[month];
 }
 
-const avg = (xs) => (xs.length ? round1(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+const avg = (/** @type {number[]} */ xs) =>
+  xs.length ? round1(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
 
 /**
  * Стор -> {'YYYY-MM': згортка} по всіх місяцях, що ще є в живих даних.
@@ -52,11 +53,13 @@ const avg = (xs) => (xs.length ? round1(xs.reduce((a, b) => a + b, 0) / xs.lengt
  * спав, яка була енергія/настрій/оцінка дня, скільки був активний і скільки
  * подавався.
  */
-export function monthlyRollup(store, todayKey) {
+export function monthlyRollup(/** @type {KvBlob} */ store, /** @type {string} */ todayKey) {
   const s = store && typeof store === 'object' ? store : {};
+  /** @type {KvBlob} */
   const out = {};
 
   const checkins = s.checkins && typeof s.checkins === 'object' ? s.checkins : {};
+  /** @type {KvBlob} */
   const acc = {};
   for (const [d, rec] of Object.entries(checkins)) {
     if (!isDateKey(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
@@ -110,9 +113,17 @@ export function monthlyRollup(store, todayKey) {
  * інакше, старі місяці лишаться порахованими по-старому. Це чесніша ціна, ніж
  * втрата даних, і саме тому набір полів тут навмисно вузький.
  */
-export function mergeArchive(prevArchive, fresh, todayKey) {
-  const prev = prevArchive && typeof prevArchive === 'object' ? prevArchive : {};
+export function mergeArchive(
+  // unknown, бо функція СВІДОМО стійка до битих даних (перевіряється тестом)
+  /** @type {unknown} */ prevArchive,
+  /** @type {KvBlob} */ fresh,
+  /** @type {string} */ todayKey,
+) {
+  const prev = /** @type {KvBlob} */ (
+    prevArchive && typeof prevArchive === 'object' ? prevArchive : {}
+  );
   const current = monthOf(todayKey);
+  /** @type {KvBlob} */
   const out = { ...prev };
   for (const [month, rollup] of Object.entries(fresh ?? {})) {
     if (month !== current && Object.prototype.hasOwnProperty.call(prev, month)) continue;
@@ -122,7 +133,7 @@ export function mergeArchive(prevArchive, fresh, todayKey) {
 }
 
 /** Місяць «сьогодні» за київським ключем доби — для тестів і крону. */
-export function currentMonth(todayKey) {
+export function currentMonth(/** @type {string} */ todayKey) {
   return monthOf(isDateKey(todayKey) ? todayKey : dayKey(new Date()));
 }
 
@@ -175,11 +186,13 @@ const weekOf = weekStartKey;
  * архіву з різними полями — це два формати, які розійдуться при першій же
  * правці. Плюс споживач може рахувати на них однаковим кодом.
  */
-export function weeklyRollup(store, todayKey) {
+export function weeklyRollup(/** @type {KvBlob} */ store, /** @type {string} */ todayKey) {
   const s = store && typeof store === 'object' ? store : {};
+  /** @type {KvBlob} */
   const out = {};
 
   const checkins = s.checkins && typeof s.checkins === 'object' ? s.checkins : {};
+  /** @type {KvBlob} */
   const acc = {};
   for (const [d, rec] of Object.entries(checkins)) {
     if (!isDateKey(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
@@ -228,7 +241,11 @@ export function weeklyRollup(store, todayKey) {
  * оновлюється щодня. Плюс кап — найстаріші тижні відпадають, коли їх стає
  * більше за WEEKLY_ARCHIVE_CAP.
  */
-export function mergeWeekly(prevArchive, fresh, todayKey) {
+export function mergeWeekly(
+  /** @type {KvBlob} */ prevArchive,
+  /** @type {KvBlob} */ fresh,
+  /** @type {string} */ todayKey,
+) {
   const prev = prevArchive && typeof prevArchive === 'object' ? prevArchive : {};
   const current = weekOf(isDateKey(todayKey) ? todayKey : dayKey(new Date()));
   const out = { ...prev };

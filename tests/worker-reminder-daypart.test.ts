@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести «нагадування з фрази частини доби» (вранці/в обід/після
  * обіду/ввечері тощо, БЕЗ явної години) — createReminderFromText мусить не
@@ -19,19 +20,15 @@ let tg: { method: string; body: Record<string, unknown> }[];
 let googleEventsByDate: Map<string, { summary: string; start: string; end: string }[]>;
 
 function env() {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     GOOGLE_CLIENT_ID: 'gid',
     GOOGLE_CLIENT_SECRET: 'gsecret',
     GOOGLE_REFRESH_TOKEN: 'grefresh',
-  };
+  });
 }
 
 function ctx() {
@@ -213,16 +210,13 @@ describe('доставка нагадування за адресою створ
   const OWNER_CHAT = 777;
   const GROUP_CHAT = '-100999';
 
-  const cronEnv = (kv: Map<string, string>) => ({
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
-    TELEGRAM_BOT_TOKEN: 'bot-token',
-    TELEGRAM_CHAT_ID: GROUP_CHAT,
-    TOPIC_ASSISTANT: '42',
-  });
+  const cronEnv = (kv: Map<string, string>) =>
+    workerEnv({
+      BRIEFING: memoryKv(kv),
+      TELEGRAM_BOT_TOKEN: 'bot-token',
+      TELEGRAM_CHAT_ID: GROUP_CHAT,
+      TOPIC_ASSISTANT: '42',
+    });
 
   const runCron = async (kv: Map<string, string>) => {
     const promises: Promise<unknown>[] = [];

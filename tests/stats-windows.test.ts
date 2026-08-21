@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats, STATS_WINDOWS } from '../web/stats-core.mjs';
 
 /* Вікна агрегації.
@@ -124,7 +123,7 @@ describe('оголошене вікно = справжня межа даних',
   it('checkinSeries не бере нічого старшого за checkinRecent', () => {
     const edge = STATS_WINDOWS.checkinRecent - 1;
     const s = withCheckins([0, edge, edge + 1, edge + 40], {});
-    const days = aggregateStats(s, TODAY).checkinSeries.map((p: { d: string }) => p.d);
+    const days = aggregateStats(s, TODAY).checkinSeries.map((p: KvBlob) => p.d);
     expect(days).toContain(back(edge));
     expect(days).not.toContain(back(edge + 1));
   });
@@ -196,14 +195,14 @@ describe('openRhythm — чи затискається ритм', () => {
     const tight = Array.from({ length: 20 }, (_, i) => 60 + (i % 2));
     const d = aggregateStats(store([...chaos, ...tight]), TODAY).openRhythm.drift;
     expect(d).not.toBeNull();
-    expect(d.early.iqr).toBeGreaterThan(100);
-    expect(d.late.iqr).toBeLessThan(5);
+    expect(d!.early!.iqr).toBeGreaterThan(100);
+    expect(d!.late!.iqr).toBeLessThan(5);
   });
 
   it('половини рівні -> обидва розкиди однакові, висновку про зміну немає', () => {
     const mins = Array.from({ length: 40 }, (_, i) => (i % 2 ? 30 : 90));
     const d = aggregateStats(store(mins), TODAY).openRhythm.drift;
-    expect(d.early.iqr).toBe(d.late.iqr);
+    expect(d!.early!.iqr).toBe(d!.late.iqr);
   });
 
   /* Гейт на КОЖНУ половину окремо. «Замало для порівняння» і «розкид не
@@ -218,7 +217,7 @@ describe('openRhythm — чи затискається ритм', () => {
     // Якби ділили відсортований ряд, «раніше» завжди було б меншим за «тепер».
     const mins = [...Array(20).fill(200), ...Array(20).fill(10)];
     const d = aggregateStats(store(mins), TODAY).openRhythm.drift;
-    expect(d.early.median).toBe(200);
-    expect(d.late.median).toBe(10);
+    expect(d!.early!.median).toBe(200);
+    expect(d!.late!.median).toBe(10);
   });
 });

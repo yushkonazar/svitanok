@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
+import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* TELEGRAM_ALLOWED_USER_IDS (кілька учасників супергрупи можуть користуватись
  * тим самим ботом/Mini App) — перевіряємо ОБИДВА шляхи авторизації, які
@@ -18,17 +20,13 @@ let kv: Map<string, string>;
 let tg: { method: string; body: Record<string, unknown> }[];
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     ...overrides,
-  };
+  });
 }
 
 function ctx() {
@@ -60,37 +58,8 @@ async function sendCommand(fromId: number, text: string, e = env(), updateId = 1
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */
-async function buildInitData(userId: number, botToken: string) {
-  const user = JSON.stringify({ id: userId, first_name: 'U' });
-  const authDate = Math.floor(Date.now() / 1000);
-  const params = new URLSearchParams({ user, auth_date: String(authDate) });
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode('WebAppData'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
-  const secretKey = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
-  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
-  params.set('hash', hash);
-  return params.toString();
-}
 
-async function getStats(initData: string, e: Record<string, unknown>) {
+async function getStats(initData: string, e: Env) {
   return worker.fetch(
     new Request('https://svitanok.example/api/stats', {
       headers: { 'X-Telegram-Init-Data': initData },
@@ -176,7 +145,7 @@ describe('Mini App (/api/stats) — TELEGRAM_ALLOWED_USER_IDS', () => {
  * будь-яка мутація стану власника й агент вимагають ГОЛОВНОГО власника
  * (TELEGRAM_OWNER_USER_ID). Нижче — обидві сторони межі. */
 
-async function postJson(path: string, body: unknown, e: Record<string, unknown>, method = 'POST') {
+async function postJson(path: string, body: unknown, e: Env, method = 'POST') {
   return worker.fetch(
     new Request(`https://svitanok.example${path}`, {
       method,
@@ -350,5 +319,70 @@ describe('розділення ролей — межа проходить по �
     expect(kv.get('stats')).toBeUndefined();
     const answer = tg.find((x) => x.method === 'answerCallbackQuery');
     expect(String(answer?.body.text ?? '')).toContain('Лише власник');
+  });
+});
+
+/* Стеля тіла вебхука — регресія, знайдена рев'ю PR #334.
+ *
+ * Спільна стеля 16 КБ менша за максимальний ЗАКОННИЙ апдейт Telegram: текст до
+ * 4096 символів, кирилиця в UTF-8 — два байти на літеру, і якщо повідомлення є
+ * ВІДПОВІДДЮ, у тому ж апдейті їде вкладений reply_to_message такого самого
+ * розміру. Бот віддавав би 413, Telegram кілька разів повторив би доставку й
+ * зрештою кинув її — повідомлення власника не оброблялось би взагалі, тихо.
+ *
+ * Перевіряємо саме МАРШРУТ, а не readJsonBody: одиничний тест на функцію не
+ * помітив би, що worker.js забув передати їй окрему стелю.
+ */
+describe('вебхук приймає максимальний законний апдейт Telegram', () => {
+  const longCyrillic = 'я'.repeat(4096);
+
+  it('reply на довге кириличне повідомлення (>16КБ) обробляється, а не 413', async () => {
+    const body = JSON.stringify({
+      update_id: 501,
+      message: {
+        message_id: 2,
+        chat: { id: OWNER },
+        from: { id: OWNER },
+        text: longCyrillic,
+        reply_to_message: { message_id: 1, chat: { id: OWNER }, text: longCyrillic },
+      },
+    });
+    expect(new TextEncoder().encode(body).length).toBeGreaterThan(16 * 1024);
+
+    const c = ctx();
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/telegram', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+        },
+        body,
+      }),
+      env(),
+      c,
+    );
+    await c.settle();
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+    // Апдейт реально дійшов до обробки: дедуп записав його id.
+    expect(JSON.parse(kv.get('state') ?? '{}').lastUpdateId).toBe(501);
+  });
+
+  it('справді величезне тіло (понад 128КБ) вебхук усе одно відкидає', async () => {
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/telegram', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+        },
+        body: JSON.stringify({ update_id: 502, pad: 'я'.repeat(70_000) }),
+      }),
+      env(),
+      ctx(),
+    );
+    expect(res.status).toBe(413);
   });
 });

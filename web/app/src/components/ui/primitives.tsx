@@ -6,7 +6,9 @@ import { haptic } from '../../telegram.ts';
 /** Моно-лейбл секції: «КУРС НБУ», «ФАКТ ДНЯ» — розріджений капс. */
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="font-mono text-[10px] font-semibold tracking-[0.12em] text-tx2">{children}</span>
+    <span className="font-mono text-[10px] font-semibold tracking-[0.12em] text-tx2">
+      {children}
+    </span>
   );
 }
 
@@ -31,9 +33,7 @@ export function GlassCard({
   children: ReactNode;
   className?: string;
 }) {
-  return (
-    <div className={`rounded-2xl border border-glassb bg-glass ${className}`}>{children}</div>
-  );
+  return <div className={`rounded-2xl border border-glassb bg-glass ${className}`}>{children}</div>;
 }
 
 /** Рядок «підпис → значення» (текст Manrope зліва, моно-число справа). */

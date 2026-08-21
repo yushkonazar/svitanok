@@ -469,14 +469,7 @@ const MORNING_KINDS = new Set([
   'control',
   'moveplan',
 ]);
-const AFTERNOON_KINDS = new Set([
-  'pace',
-  'with',
-  'rushed',
-  'interrupted',
-  'progress',
-  'outnow',
-]);
+const AFTERNOON_KINDS = new Set(['pace', 'with', 'rushed', 'interrupted', 'progress', 'outnow']);
 
 /**
  * Якому слоту належить факт.
@@ -530,7 +523,7 @@ function causesOf(raw: CheckinRaw, picked: StateReading[], rest: StateReading[])
     // Згладжування (+0.5/+1): без нього «0 проти 20» дає Infinity, а «10 проти
     // 0» — ділення на нуль. Обидва випадки реальні й обидва мусять лишитись
     // числом, яке можна відсортувати.
-    const lift = ((n + 0.5) / (of + 1)) / ((bn + 0.5) / (baseOf + 1));
+    const lift = (n + 0.5) / (of + 1) / ((bn + 0.5) / (baseOf + 1));
     if (lift < LIFT_THRESHOLD && lift > 1 / LIFT_THRESHOLD) continue;
     rows.push({ key, label: causeLabel(key), n, of, share, baseShare, lift });
   }

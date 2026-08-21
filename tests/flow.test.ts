@@ -5,8 +5,9 @@ import { parseConfig, type AppConfig } from '../src/core/config.js';
 import { createRunBus } from '../src/core/bus.js';
 import { MAIL_PROPOSAL_BUS_KEY } from '../src/modules/mail.js';
 import { CALENDAR_BUS_KEY, type CalendarEvent } from '../src/modules/calendar.js';
-import type { Module, Block, StateStore, Clock } from '../src/core/types.js';
+import type { Module, Block, Clock } from '../src/core/types.js';
 import type { Notifier as NotifierType, TgButton } from '../src/core/telegram.js';
+import { memState } from './helpers/state.js';
 
 const baseConfig = {
   timezone: 'Europe/Kyiv',
@@ -47,16 +48,6 @@ const fakeClock: Clock = {
   todayKey: () => '2026-06-29',
   isSunday: () => false,
 };
-
-function memState(initial: Record<string, unknown> = {}): StateStore {
-  const data = { ...initial };
-  return {
-    get: <T>(k: string) => data[k] as T | undefined,
-    set: <T>(k: string, v: T) => void (data[k] = v),
-    prune: () => {},
-    flush: async () => {},
-  };
-}
 
 /** Фейкові CF-креденшели + fetchImpl, що ловить writeKvJson-виклики
  *  (метод/URL/тіло) — для перевірки прямого запису assistantPending. */

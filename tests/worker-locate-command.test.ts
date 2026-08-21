@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
+import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести /locate -> ownerGeoManual (фідбек власника: одноразовий
  * GPS-тап у чаті замість Live Location — фонового ОС-дозволу й 8-годинного
@@ -16,12 +18,8 @@ let tg: { method: string; body: Record<string, unknown> }[];
 let openWeatherCalls: string[];
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
@@ -29,7 +27,7 @@ function env(overrides: Record<string, unknown> = {}) {
     TOPIC_ASSISTANT: '5',
     WEATHER_API_KEY: 'wkey',
     ...overrides,
-  };
+  });
 }
 
 function ctx() {
@@ -43,35 +41,6 @@ function ctx() {
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData
  *  (потрібен лише для POST /api/weather/locate-prompt — Mini App auth, НЕ
  *  webhook secret-token, яким автентифікуються решта тестів цього файлу). */
-async function buildInitData(userId: number, botToken: string) {
-  const user = JSON.stringify({ id: userId, first_name: 'O' });
-  const authDate = Math.floor(Date.now() / 1000);
-  const params = new URLSearchParams({ user, auth_date: String(authDate) });
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode('WebAppData'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
-  const secretKey = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
-  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
-  params.set('hash', hash);
-  return params.toString();
-}
 
 async function postLocatePrompt(initData: string | null, e = env()) {
   return worker.fetch(
@@ -253,6 +222,50 @@ describe('POST /api/weather/locate-prompt — тригер із Mini App', () =>
     expect(sent?.body.text).toContain('GPS-позицію');
     const markup = sent?.body.reply_markup as { keyboard: unknown[][] };
     expect(markup.keyboard[0]?.[0]).toMatchObject({ request_location: true });
+  });
+
+  /* Регресія, знайдена рев'ю PR #334.
+   *
+   * Доки initData їхав у ТІЛІ, GET сюди не проходив сам собою: тіла в нього
+   * немає, автентифікація не складалась, відповідь була 401 — тобто метод
+   * гейтився випадково, побічним ефектом місця, звідки читали initData.
+   * Після переносу в заголовок (M3) той самий GET став валідним, і побічна
+   * дія — бот шле власнику повідомлення — поїхала б на методі, який усі
+   * вважають читанням: превʼю посилання, префетч, повтор із девтулзів.
+   *
+   * Перевіряємо не лише статус, а й що Telegram НЕ смикнули: 405 із уже
+   * надісланим повідомленням був би найгіршим варіантом — виглядає як відмова,
+   * а дія сталась. */
+  for (const method of ['GET', 'HEAD', 'PUT', 'DELETE'] as const) {
+    it(`${method} із валідним заголовком власника -> 405 і ЖОДНОГО sendMessage`, async () => {
+      const initData = await buildInitData(OWNER, 'bot-token');
+      const res = await worker.fetch(
+        new Request('https://svitanok.example/api/weather/locate-prompt', {
+          method,
+          headers: { 'X-Telegram-Init-Data': initData },
+        }),
+        env(),
+        { waitUntil: () => {} },
+      );
+      expect(res.status).toBe(405);
+      expect(lastSend()).toBeUndefined();
+    });
+  }
+
+  it('POST без тіла (саме так шле клієнт) -> 200, автентифікація заголовком', async () => {
+    // Клієнт після M3 не шле тіла взагалі; серверні тести вище шлють `{}`,
+    // тобто гілку, якою прод не ходить. Ця перевіряє реальну форму запиту.
+    const initData = await buildInitData(OWNER, 'bot-token');
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/weather/locate-prompt', {
+        method: 'POST',
+        headers: { 'X-Telegram-Init-Data': initData },
+      }),
+      env(),
+      { waitUntil: () => {} },
+    );
+    expect(res.status).toBe(200);
+    expect(lastSend()?.body).toMatchObject({ chat_id: String(OWNER) });
   });
 
   it('Telegram sendMessage повернув помилку -> 502, не тихий «ok:true»', async () => {

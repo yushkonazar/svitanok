@@ -4,21 +4,13 @@ import { readFileSync } from 'node:fs';
 // рядків, і однорядковий @ts-expect-error відʼїжджає від рядка з помилкою —
 // тоді директива «невикористана», а помилка типів лишається. Патерн проєкту:
 // окремий import на директиву, кожен має влазити в один рядок.
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { checkinSlot, checkinDateKey } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { CHECKIN_NUDGE_WINDOWS, matchCheckinNudgeWindow } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { isCheckinSlotFilled } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { asList, CATEGORY_VALUES } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { flattenCheckinDay, dayIndices } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { shouldSendCheckinNudge } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { inSleepNudgeWindow, shouldSendSleepNudge, staleSleepNudges } from '../web/stats-core.mjs';
 
 // Щоденний чек-ін (фідбек власника, п.7). Межі 08:00 / 14:00 / 20:00 — рішення
@@ -322,8 +314,8 @@ describe('aggregateStats — чек-ін', () => {
     s = recordEvent(s, ck('afternoon', { energy: 4 }), '2026-07-17');
     s = recordEvent(s, ck('evening', { energy: 3 }), '2026-07-17');
     const row = aggregateStats(s, '2026-07-17').checkinSeries.at(-1);
-    expect(row.energy).toBe(3); // (2+4+3)/3
-    expect(row.slots).toBe(3);
+    expect(row!.energy).toBe(3); // (2+4+3)/3
+    expect(row!.slots).toBe(3);
   });
 
   it('явка по блоках рахує пропуски — вони теж сигнал', () => {
@@ -387,9 +379,9 @@ describe('aggregateStats — чек-ін', () => {
     s = recordEvent(s, ck('evening', { dayScore: 4 }), '2026-07-13');
     s = recordEvent(s, ck('morning', { sleepH: 8 }), '2026-07-14');
     const w = aggregateStats(s, '2026-07-17').checkinWeekly.at(-1);
-    expect(w.n).toBe(2);
-    expect(w.sleepAvg).toBe(7);
-    expect(w.dayScoreAvg).toBe(4);
+    expect(w!.n).toBe(2);
+    expect(w!.sleepAvg).toBe(7);
+    expect(w!.dayScoreAvg).toBe(4);
   });
 
   it('легасі-стор без checkins не валить агрегат', () => {
@@ -576,8 +568,8 @@ describe('чек-ін — мультивибір (plan/ate/blocker/helper)', () 
     // легасі-доба: рядок замість масиву
     s.checkins['2026-07-16'] = { afternoon: { ate: 'work' } };
     const rows = aggregateStats(s, '2026-07-16').categoryInsight.rows;
-    expect(rows.find((r: { cat: string }) => r.cat === 'work').n).toBe(2);
-    expect(rows.find((r: { cat: string }) => r.cat === 'learn').n).toBe(1);
+    expect(rows.find((r: { cat: string }) => r.cat === 'work')!.n).toBe(2);
+    expect(rows.find((r: { cat: string }) => r.cat === 'learn')!.n).toBe(1);
   });
 });
 
@@ -651,10 +643,10 @@ describe('чек-ін — крива енергії/настрою (форма �
     s = recordEvent(s, ck('afternoon', { energy: 3 }), '2026-07-16');
     s = recordEvent(s, ck('evening', { energy: 1, mood: 2 }), '2026-07-16');
     const row = aggregateStats(s, '2026-07-16').checkinSeries.at(-1);
-    expect(row.energyCurve).toEqual([5, 3, 1]);
+    expect(row!.energyCurve).toEqual([5, 3, 1]);
     // Незаповнений слот -> null (дірка), а не 0: нуль читався б як «сил немає».
-    expect(row.moodCurve).toEqual([4, null, 2]);
-    expect(row.energy).toBe(3); // середнє лишається для сумісності
+    expect(row!.moodCurve).toEqual([4, null, 2]);
+    expect(row!.energy).toBe(3); // середнє лишається для сумісності
   });
 });
 
@@ -789,8 +781,8 @@ describe('aggregateStats — нова аналітика чек-іну', () => {
     expect(m.dayIndex).toMatchObject({ last: null, mean: null, scored: 0 });
     expect(m.drivers).toEqual([]);
     expect(m.archetypes.ready).toBe(false);
-    expect(m.lagged.recovery.ready).toBe(false);
-    expect(m.lagged.body.ready).toBe(false);
+    expect(m.lagged.recovery!.ready).toBe(false);
+    expect(m.lagged.body!.ready).toBe(false);
   });
 
   it('checkinModel: 25 діб стабільно хороших даних -> ваги вчаться, індекс дня близький до 100', () => {

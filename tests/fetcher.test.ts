@@ -77,3 +77,44 @@ describe('fetcher — ретрай з бекофом', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2); // 1 + 1 retry
   });
 });
+
+/* User-Agent (P4). Значення саме по собі неважливе — важливо, що слаг
+ * репозиторію в ньому БІЛЬШЕ НЕ ЗАШИТИЙ: форк має міняти його змінною, а не
+ * правкою коду. Модуль читає env один раз при імпорті, тому override
+ * перевіряється через resetModules + свіжий import. */
+describe('fetcher — User-Agent і GH_REPO (P4)', () => {
+  const uaOf = async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string, _init?: RequestInit) => new Response('ok', { status: 200 }),
+    );
+    const { createFetcher: fresh } = await import('../src/core/fetcher.js');
+    const f = fresh({
+      allowlist: ['x.com'],
+      timeoutMs: 1000,
+      retries: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await f.fetch('https://x.com/feed');
+    const headers = fetchImpl.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    return headers['user-agent'];
+  };
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('без GH_REPO — дефолтний слаг', async () => {
+    vi.stubEnv('GH_REPO', '');
+    vi.resetModules();
+    expect(await uaOf()).toBe(
+      'Mozilla/5.0 (compatible; svitanok-bot/1.0; +https://github.com/yushkonazar/svitanok)',
+    );
+  });
+
+  it('GH_REPO перекриває слаг', async () => {
+    vi.stubEnv('GH_REPO', 'someone/fork');
+    vi.resetModules();
+    expect(await uaOf()).toContain('+https://github.com/someone/fork)');
+  });
+});

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
-// @ts-expect-error — JS-модуль хоста без типів (namespace-імпорт: prettier не
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as core from '../host/llm-host-core.mjs';
 const {
@@ -22,6 +21,15 @@ const {
   USAGE_LIMIT_ERROR,
 } = core;
 
+/**
+ * Код відмови валідатора.
+ *
+ * Валідатори віддають РОЗРІЗНЯЛЬНИЙ союз (`ok:true` з value / `ok:false` з
+ * error), тож `.error` напряму читати не можна — і це правильно: саме така
+ * форма й змушує викликача перевірити `ok` перед тим, як брати `value`.
+ */
+const errOf = <T extends { ok: boolean }>(r: T) => ('error' in r ? r.error : undefined);
+
 describe('llm-host-core — verifySecret', () => {
   it('точний збіг -> true; будь-яка відмінність/довжина/тип/порожнє -> false', () => {
     expect(verifySecret('s3cr3t', 's3cr3t')).toBe(true);
@@ -35,7 +43,7 @@ describe('llm-host-core — verifySecret', () => {
 describe('llm-host-core — validateLlmRequest', () => {
   it('валідний мінімальний запит (лише prompt)', () => {
     const r = validateLlmRequest({ prompt: '  нагадай через 20 хв  ' });
-    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(`очікувався ok, отримано ${r.error}`);
     expect(r.value).toMatchObject({ prompt: 'нагадай через 20 хв', model: 'haiku' });
   });
 
@@ -46,25 +54,25 @@ describe('llm-host-core — validateLlmRequest', () => {
       jsonSchema: { type: 'object' },
       model: 'sonnet',
     });
-    expect(ok.ok).toBe(true);
+    if (!ok.ok) throw new Error(`очікувався ok, отримано ${ok.error}`);
     expect(ok.value.schemaStr).toBe(JSON.stringify({ type: 'object' }));
     expect(ok.value.model).toBe('sonnet');
 
-    expect(validateLlmRequest({ prompt: 'x', systemPrompt: 42 }).error).toBe('bad-system-prompt');
-    expect(validateLlmRequest({ prompt: 'x', jsonSchema: 'not-an-object' }).error).toBe(
+    expect(errOf(validateLlmRequest({ prompt: 'x', systemPrompt: 42 }))).toBe('bad-system-prompt');
+    expect(errOf(validateLlmRequest({ prompt: 'x', jsonSchema: 'not-an-object' }))).toBe(
       'bad-schema',
     );
-    expect(validateLlmRequest({ prompt: 'x', jsonSchema: [] }).error).toBe('bad-schema');
-    expect(validateLlmRequest({ prompt: 'x', jsonSchema: null }).error).toBe('bad-schema'); // явний null -> відхиляємо, не ігноруємо мовчки
-    expect(validateLlmRequest({ prompt: 'x', model: 'rm -rf /' }).error).toBe('bad-model');
-    expect(validateLlmRequest({ prompt: 'x', model: '../../etc' }).error).toBe('bad-model');
+    expect(errOf(validateLlmRequest({ prompt: 'x', jsonSchema: [] }))).toBe('bad-schema');
+    expect(errOf(validateLlmRequest({ prompt: 'x', jsonSchema: null }))).toBe('bad-schema'); // явний null -> відхиляємо, не ігноруємо мовчки
+    expect(errOf(validateLlmRequest({ prompt: 'x', model: 'rm -rf /' }))).toBe('bad-model');
+    expect(errOf(validateLlmRequest({ prompt: 'x', model: '../../etc' }))).toBe('bad-model');
     // ⚠️ Регресія: регекс без якоря на перший символ (`^[a-z0-9-]+$`) пропускав
     // значення, що виглядають як прапорці CLI. spawn({shell:false}) інʼєкцію
     // команд не дає, але argv-слот після `--model` таким заповнювати не варто.
-    expect(validateLlmRequest({ prompt: 'x', model: '--dangerously-skip-permissions' }).error).toBe(
-      'bad-model',
-    );
-    expect(validateLlmRequest({ prompt: 'x', model: '-p' }).error).toBe('bad-model');
+    expect(
+      errOf(validateLlmRequest({ prompt: 'x', model: '--dangerously-skip-permissions' })),
+    ).toBe('bad-model');
+    expect(errOf(validateLlmRequest({ prompt: 'x', model: '-p' }))).toBe('bad-model');
     // ...а нормальні alias'и й повні id мусять і далі проходити.
     for (const model of ['haiku', 'sonnet', 'claude-opus-4-8', 'claude-haiku-4-5-20251001']) {
       expect(validateLlmRequest({ prompt: 'x', model }).ok).toBe(true);
@@ -72,25 +80,26 @@ describe('llm-host-core — validateLlmRequest', () => {
   });
 
   it('відсутній/порожній/не-рядок prompt -> no-prompt; не-обʼєкт body -> bad-body', () => {
-    expect(validateLlmRequest({}).error).toBe('no-prompt');
-    expect(validateLlmRequest({ prompt: '   ' }).error).toBe('no-prompt');
-    expect(validateLlmRequest({ prompt: 42 }).error).toBe('no-prompt');
-    expect(validateLlmRequest(null).error).toBe('bad-body');
-    expect(validateLlmRequest('string').error).toBe('bad-body');
+    expect(errOf(validateLlmRequest({}))).toBe('no-prompt');
+    expect(errOf(validateLlmRequest({ prompt: '   ' }))).toBe('no-prompt');
+    expect(errOf(validateLlmRequest({ prompt: 42 }))).toBe('no-prompt');
+    expect(errOf(validateLlmRequest(null))).toBe('bad-body');
+    expect(errOf(validateLlmRequest('string'))).toBe('bad-body');
   });
 
   it('ліміти довжини (prompt/systemPrompt/schema)', () => {
-    expect(validateLlmRequest({ prompt: 'x'.repeat(MAX_PROMPT_LEN + 1) }).error).toBe(
+    expect(errOf(validateLlmRequest({ prompt: 'x'.repeat(MAX_PROMPT_LEN + 1) }))).toBe(
       'prompt-too-long',
     );
     expect(
-      validateLlmRequest({ prompt: 'x', systemPrompt: 'y'.repeat(MAX_SYSTEM_PROMPT_LEN + 1) })
-        .error,
+      errOf(
+        validateLlmRequest({ prompt: 'x', systemPrompt: 'y'.repeat(MAX_SYSTEM_PROMPT_LEN + 1) }),
+      ),
     ).toBe('system-prompt-too-long');
     // Від межі, а не від магічного числа: інакше кожне підняття ліміту тихо
     // перетворює цей рядок на перевірку «валідна схема валідна».
     expect(
-      validateLlmRequest({ prompt: 'x', jsonSchema: { huge: 'z'.repeat(MAX_SCHEMA_LEN) } }).error,
+      errOf(validateLlmRequest({ prompt: 'x', jsonSchema: { huge: 'z'.repeat(MAX_SCHEMA_LEN) } })),
     ).toBe('schema-too-long');
   });
 });

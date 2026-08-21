@@ -29,7 +29,7 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 export { AgentRun } from './agent-run-do.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
-import { json, readJsonBody } from './http-core.mjs';
+import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
 import {
   handleVote,
   handleEvent,
@@ -71,7 +71,7 @@ import {
 } from './weather-geo.mjs';
 import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent-runtime.mjs';
 import { resolveProposalCallback } from './proposals.mjs';
-import { loadState } from './kv-store.mjs';
+import { loadState, updateState } from './kv-store.mjs';
 
 /**
  * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
@@ -84,7 +84,11 @@ import { loadState } from './kv-store.mjs';
  * Try/catch — waitUntil мовчки ковтає необроблені reject, лишаючи слід лише
  * в логах.
  */
-async function processTelegramUpdate(env, parsed, origin) {
+async function processTelegramUpdate(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ origin,
+) {
   try {
     if (parsed.kind === 'callback') {
       const proposalCb = parseProposalCallbackData(parsed.data);
@@ -146,10 +150,9 @@ async function processTelegramUpdate(env, parsed, origin) {
     }
 
     if (typeof parsed.updateId === 'number') {
-      // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
-      const state = await loadState(env);
-      state.lastUpdateId = parsed.updateId;
-      await env.BRIEFING.put('state', JSON.stringify(state));
+      // Читання ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state';
+      // updateState перечитує сам і мержить, а не кладе зверху свою копію.
+      await updateState(env, (s) => ({ ...s, lastUpdateId: parsed.updateId }));
     }
   } catch (err) {
     console.error('processTelegramUpdate failed', err);
@@ -157,7 +160,11 @@ async function processTelegramUpdate(env, parsed, origin) {
 }
 
 /** POST /api/telegram — Telegram Bot API webhook. Secret-token + owner + дедуп. */
-async function handleTelegramWebhook(request, env, ctx) {
+async function handleTelegramWebhook(
+  /** @type {Request} */ request,
+  /** @type {Env} */ env,
+  /** @type {ExecutionContext} */ ctx,
+) {
   if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
     return json({ ok: false, error: 'no-webhook-secret' }, 500);
   }
@@ -166,7 +173,9 @@ async function handleTelegramWebhook(request, env, ctx) {
     return json({ ok: false, error: 'bad-secret' }, 401);
   }
 
-  const parsedBody = await readJsonBody(request);
+  // Вебхук має ВЛАСНУ стелю: 16 КБ, що вистачає будь-якому /api/*, менші за
+  // максимальний законний апдейт Telegram (див. MAX_WEBHOOK_BODY_BYTES).
+  const parsedBody = await readJsonBody(request, MAX_WEBHOOK_BODY_BYTES);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const update = parsedBody.body;
   const parsed = parseUpdate(update);
@@ -190,7 +199,7 @@ async function handleTelegramWebhook(request, env, ctx) {
  *  заголовком, що й вебхук (X-Telegram-Bot-Api-Secret-Token) — не query-param
  *  (не осідає в логах). Лишається як фолбек/діагностика — щоденний
  *  autoTelegramSetup (нижче) робить те саме без ручного curl. */
-async function handleTelegramSetup(request, env) {
+async function handleTelegramSetup(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) {
     return json({ ok: false, error: 'no-webhook-secret' }, 500);
   }
@@ -239,6 +248,10 @@ export const CRON_TASKS = [
  * втрачена мітка dispatch -> зайвий Actions-ран) — рівно та причина, з якої
  * вони колись і стали послідовними (ревʼю A). Ізолюємо збій, а не порядок.
  */
+/**
+ * @param {{ name: string, run: (env: Env) => Promise<unknown> }[]} tasks
+ * @param {Env} env
+ */
 export async function runCronTasks(tasks, env) {
   for (const task of tasks) {
     try {
@@ -250,7 +263,11 @@ export async function runCronTasks(tasks, env) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(
+    /** @type {Request} */ request,
+    /** @type {Env} */ env,
+    /** @type {ExecutionContext} */ ctx,
+  ) {
     const url = new URL(request.url);
     if (url.pathname === '/briefing.json') {
       // Приватні дані власника (події календаря, воронка, збережене) — лише
@@ -286,7 +303,7 @@ export default {
       // Список наявних дат (для гортання в Mini App), новіші перші.
       const list = await env.BRIEFING.list({ prefix: 'briefing:' });
       const dates = list.keys
-        .map((k) => k.name.slice('briefing:'.length))
+        .map((/** @type {KvBlob} */ k) => k.name.slice('briefing:'.length))
         .sort()
         .reverse();
       return json({ dates });
@@ -344,7 +361,11 @@ export default {
     return env.ASSETS.fetch(request); // статичні ассети React (/app/*)
   },
 
-  async scheduled(_event, env, ctx) {
+  async scheduled(
+    /** @type {ScheduledController} */ _event,
+    /** @type {Env} */ env,
+    /** @type {ExecutionContext} */ ctx,
+  ) {
     ctx.waitUntil(runCronTasks(CRON_TASKS, env));
   },
 };

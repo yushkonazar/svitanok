@@ -2,14 +2,16 @@
   "name": "svitanok",
   "version": "0.1.0",
   "description": "Персональний ранковий брифінг-бот у Telegram (GitHub Actions + claude -p)",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck",
+    "typecheck": "tsc --noEmit && tsc -p web",
+    "typecheck:web": "tsc -p web",
     "build:web": "npm --prefix web/app ci && npm --prefix web/app run build",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -26,6 +28,9 @@
       "eslint --fix",
       "prettier --write"
     ],
+    "*.{tsx,css,html}": [
+      "prettier --write"
+    ],
     "*.{json,jsonc,md,yml,yaml}": [
       "prettier --write"
     ]
@@ -35,6 +40,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20260820.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.10",

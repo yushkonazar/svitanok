@@ -71,7 +71,12 @@ export function InterestTrend({ trend }: { trend: InterestsTrend }) {
             />
           ),
         )}
-        <path d={areaOf(active.series) ?? undefined} fill={`url(#${gradId})`} opacity="0.14" stroke="none" />
+        <path
+          d={areaOf(active.series) ?? undefined}
+          fill={`url(#${gradId})`}
+          opacity="0.14"
+          stroke="none"
+        />
         <path
           d={lineOf(active.series) ?? undefined}
           fill="none"
@@ -95,7 +100,10 @@ export function InterestTrend({ trend }: { trend: InterestsTrend }) {
         </span>
         <span
           className="font-mono"
-          style={{ color: delta > 0 ? 'var(--color-pos)' : delta < 0 ? 'var(--color-neg)' : 'var(--color-tx3)' }}
+          style={{
+            color:
+              delta > 0 ? 'var(--color-pos)' : delta < 0 ? 'var(--color-neg)' : 'var(--color-tx3)',
+          }}
         >
           {delta > 0 ? '↑' : delta < 0 ? '↓' : '→'} {Math.abs(delta)} за {trend.weeks.length} тиж.
         </span>
@@ -113,8 +121,16 @@ export function InterestTrend({ trend }: { trend: InterestsTrend }) {
             className="rounded-full border px-2.5 py-1 text-[10px] font-semibold"
             style={
               i === focus
-                ? { borderColor: 'rgba(255,164,92,.28)', background: 'rgba(255,164,92,.12)', color: 'var(--color-a2)' }
-                : { borderColor: 'var(--color-glassb)', background: 'var(--color-glass)', color: 'var(--color-tx2)' }
+                ? {
+                    borderColor: 'rgba(255,164,92,.28)',
+                    background: 'rgba(255,164,92,.12)',
+                    color: 'var(--color-a2)',
+                  }
+                : {
+                    borderColor: 'var(--color-glassb)',
+                    background: 'var(--color-glass)',
+                    color: 'var(--color-tx2)',
+                  }
             }
           >
             {topicEmoji(t.topic)} {t.topic}

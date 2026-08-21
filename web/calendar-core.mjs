@@ -8,16 +8,40 @@
 
 import { escapeHtml } from './tg-core.mjs';
 
-/** Зсув TZ у мс для конкретного інстанту (через toLocaleString-трюк). */
+/**
+ * Подія календаря після parseEvents — саме ця форма ходить між усіма
+ * функціями нижче, а не сирий JSON Google.
+ * @typedef {{ id: string|null, title: string, time: string|null, date: string|null,
+ *             startMs: number|null, endMs: number|null, location: string|null }} CalEvent
+ */
+
+/**
+ * Мінімум, потрібний для перевірки перетину: лише межі (і `id`, щоб виключити
+ * саму себе). `CalEvent` йому відповідає, зворотне не потрібне — тож функції
+ * накладок беруть саме цей тип, а не повну подію. Так фікстура з двома полями
+ * лишається легальним входом, а не приводом дописувати їй `title` і `date`.
+ * @typedef {{ id?: string|null, title?: string, startMs?: number|null,
+ *             endMs?: number|null }} EventSpan
+ */
+
+/** Зсув TZ у мс для конкретного інстанту (через toLocaleString-трюк).
+ *  @param {string} timeZone
+ *  @param {Date} date */
 function tzOffsetMs(timeZone, date) {
   const utc = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
   const tz = new Date(date.toLocaleString('en-US', { timeZone }));
   return tz.getTime() - utc.getTime();
 }
 
-/** Межі київської доби dateKey як UTC-інстанти (RFC3339, DST-коректно). */
+/** Межі київської доби dateKey як UTC-інстанти (RFC3339, DST-коректно).
+ *  @param {string} dateKey */
 export function kyivDayBoundsUtc(dateKey) {
-  const [y, m, d] = dateKey.split('-').map(Number);
+  // `?? NaN` замість деструктуризації з дефолтом: биту дату треба лишити NaN,
+  // як було, а не підмінити нулем (той дав би реальну, але не ту дату).
+  const parts = dateKey.split('-').map(Number);
+  const y = parts[0] ?? NaN;
+  const m = parts[1] ?? NaN;
+  const d = parts[2] ?? NaN;
   const asUtcMidnight = Date.UTC(y, m - 1, d, 0, 0, 0);
   const offset = tzOffsetMs('Europe/Kyiv', new Date(asUtcMidnight));
   const startUtc = asUtcMidnight - offset; // київська 00:00 у реальному UTC
@@ -32,6 +56,10 @@ export function kyivDayBoundsUtc(dateKey) {
  * одним subrequest'ом (а не по дню в циклі). endKey МАЄ бути >= startKey
  * (гарантує викликач — extractAssistantAction клампить end до >= start).
  */
+/**
+ * @param {string} startKey
+ * @param {string} endKey
+ */
 export function kyivRangeBoundsUtc(startKey, endKey) {
   return {
     timeMin: kyivDayBoundsUtc(startKey).timeMin,
@@ -39,7 +67,7 @@ export function kyivRangeBoundsUtc(startKey, endKey) {
   };
 }
 
-function kyivHhMm(iso) {
+function kyivHhMm(/** @type {string} */ iso) {
   const fmt = new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
     hour: '2-digit',
@@ -49,7 +77,8 @@ function kyivHhMm(iso) {
   return fmt.format(new Date(iso));
 }
 
-/** Київська дата "YYYY-MM-DD" інстанту (для date-поля timed-подій). */
+/** Київська дата "YYYY-MM-DD" інстанту (для date-поля timed-подій).
+ *  @param {string} iso */
 function kyivDateKeyOf(iso) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Kyiv',
@@ -60,7 +89,7 @@ function kyivDateKeyOf(iso) {
 }
 
 /** "YYYY-MM-DD" -> "DD.MM" (компактна дата для багатоденного промпту). */
-function ddmm(dateKey) {
+function ddmm(/** @type {string} */ dateKey) {
   const [, m, d] = dateKey.split('-');
   return `${d}.${m}`;
 }
@@ -73,7 +102,7 @@ const MAX_RANGE_LEN = 900;
  *  третьосторонньою — спільна/запрошення — багаторядкова назва інакше могла б
  *  підробити розділювачі транскрипту «Користувач написав:»/«Твої дані:»,
  *  prompt-injection) і обрізати довжину. Порожня -> заглушка. */
-function cleanTitle(summary) {
+function cleanTitle(/** @type {unknown} */ summary) {
   const t = String(summary ?? '')
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
@@ -85,7 +114,7 @@ const MAX_LOCATION_LEN = 200;
 /** Місце події для промпту/показу: той самий анти-injection мотив, що
  *  cleanTitle (сплющити переноси, обрізати) — але БЕЗ заглушки «(без назви)»,
  *  бо порожнє місце — легітимний, частий стан (не всі події мають адресу). */
-function cleanLocation(location) {
+function cleanLocation(/** @type {unknown} */ location) {
   const t = String(location ?? '')
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
@@ -96,6 +125,7 @@ function cleanLocation(location) {
  * Google Maps «universal» пошук-URL (PR-12) — БЕЗ API-ключа й білінгу, просто
  * посилання, що Maps сам резолвить у найкращий збіг. null для порожнього
  * location (немає що показувати).
+ * @param {unknown} location
  */
 export function buildMapsUrl(location) {
   const loc = cleanLocation(location);
@@ -105,7 +135,7 @@ export function buildMapsUrl(location) {
 /** Інстант початку/кінця Google-подій — timed через dateTime, all-day через
  *  date (kyivDayBoundsUtc: `end.date` у Google ЕКСКЛЮЗИВНИЙ — «день ПІСЛЯ
  *  останнього дня події» — тож його ж 00:00 і є коректним кінцем інтервалу). */
-function eventInstantMs(part) {
+function eventInstantMs(/** @type {KvBlob|null|undefined} */ part) {
   if (part?.dateTime) {
     const ms = Date.parse(part.dateTime);
     return Number.isFinite(ms) ? ms : null;
@@ -126,6 +156,8 @@ function eventInstantMs(part) {
  * обчислення нового endIso з durationMin) — додаткові, НЕ ламають наявних
  * споживачів (formatEventsForPrompt/formatRangeEventsForPrompt читають лише
  * .time/.title/.date).
+ * @param {any} json сира відповідь events.list
+ * @returns {CalEvent[]}
  */
 export function parseEvents(json) {
   const items = json?.items;
@@ -149,6 +181,10 @@ export function parseEvents(json) {
  * `attendees` (PR-10, опційно) — ВЖЕ РЕЗОЛЬВЛЕНІ email-адреси (worker резолвить
  * імена через People API ДО виклику цієї функції) — сюди нічого, крім готових
  * email, не потрапляє.
+ * @param {{ title: string, startIso: string, endIso: string,
+ *           reminderMinutes?: number|null, location?: string|null,
+ *           attendees?: string[]|null }} opts
+ * @returns {KvBlob}
  */
 export function buildCreateEventBody({
   title,
@@ -158,6 +194,7 @@ export function buildCreateEventBody({
   location,
   attendees,
 }) {
+  /** @type {KvBlob} */
   const body = {
     summary: title,
     start: { dateTime: startIso, timeZone: 'Europe/Kyiv' },
@@ -181,8 +218,12 @@ export function buildCreateEventBody({
  * worker завжди резолвить title/startIso/endIso до повних значень (мерджить
  * із свіжопрочитаною подією) ще ДО виклику — тут лишається захисно-опційним,
  * щоб не вимагати зайвого від викликача/тестів.
+ * @param {{ title?: string|null, startIso?: string|null, endIso?: string|null,
+ *           location?: string|null, attendees?: string[]|null }} opts
+ * @returns {KvBlob}
  */
 export function buildUpdateEventBody({ title, startIso, endIso, location, attendees }) {
+  /** @type {KvBlob} */
   const body = {};
   if (title != null) body.summary = title;
   if (startIso != null) body.start = { dateTime: startIso, timeZone: 'Europe/Kyiv' };
@@ -197,6 +238,16 @@ export function buildUpdateEventBody({ title, startIso, endIso, location, attend
  * накладку в пропозиції (звичайний напівінтервал: суміжні події НЕ накладаються).
  * `excludeId` — id самої події, що редагується (updateEvent інакше сам на себе
  * «накладався» б).
+ * Узагальнено по типу події: усередині читаються лише межі й `id`, тож
+ * викликач із повним CalEvent отримує назад CalEvent, а тест зі спрощеною
+ * фікстурою — свою ж форму. Без цього фікстура дописувала б title/date лише
+ * заради типу.
+ * @template {EventSpan} T
+ * @param {readonly T[]|null|undefined} events
+ * @param {number} startMs
+ * @param {number} endMs
+ * @param {string|null} [excludeId]
+ * @returns {T[]}
  */
 export function findOverlaps(events, startMs, endMs, excludeId = null) {
   if (!Array.isArray(events) || !Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
@@ -206,8 +257,8 @@ export function findOverlaps(events, startMs, endMs, excludeId = null) {
       e.id !== excludeId &&
       Number.isFinite(e.startMs) &&
       Number.isFinite(e.endMs) &&
-      e.startMs < endMs &&
-      e.endMs > startMs,
+      (e.startMs ?? 0) < endMs &&
+      (e.endMs ?? 0) > startMs,
   );
 }
 
@@ -226,8 +277,15 @@ export function findOverlaps(events, startMs, endMs, excludeId = null) {
  * а не «[id:null]» — інакше модель радо скопіювала б слово «null».
  */
 const EVENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const idMark = (e) => (typeof e?.id === 'string' && EVENT_ID_RE.test(e.id) ? ` [id:${e.id}]` : '');
+const idMark = (/** @type {CalEvent} */ e) =>
+  typeof e?.id === 'string' && EVENT_ID_RE.test(e.id) ? ` [id:${e.id}]` : '';
 
+/**
+ * `unknown`, бо перший рядок функції — це саме перевірка на сміття
+ * (`Array.isArray(events) || … -> 'подій немає'`). Вужчий тип описував би не
+ * контракт, а побажання.
+ * @param {unknown} events
+ */
 export function formatEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
   return events
@@ -244,6 +302,7 @@ export function formatEventsForPrompt(events) {
  * transcript ризикує перевищити MAX_PROMPT_LEN=4000 хоста (-> prompt-too-long
  * -> тихий фолбек замість відповіді). Тому ≤MAX_RANGE_EVENTS подій і ≤MAX_RANGE_LEN
  * символів; надлишок -> маркер «…(ще N)».
+ * @param {unknown} events — той самий мотив, що formatEventsForPrompt
  */
 export function formatRangeEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
@@ -266,6 +325,8 @@ export function formatRangeEventsForPrompt(events) {
  * expMs у майбутньому. Worker кешує токен у KV, щоб N раундів агента (кожен
  * читає календар) НЕ робили N окремих OAuth-обмінів. Биття/відсутність -> false
  * (перевидати). Час рахує викликач (чистота).
+ * @param {KvBlob|null|undefined} cached
+ * @param {number} nowMs
  */
 export function isAccessTokenFresh(cached, nowMs) {
   return (
@@ -289,10 +350,14 @@ const MAX_AGENDA_BUTTON_LEN = 30;
 
 /** Майбутні (>= nowMs) події з .id, капнуто на MAX_AGENDA_ITEMS — той самий
  *  зріз ділять formatAgendaMessage і buildAgendaKeyboard (щоб нумерація
- *  тексту й порядок кнопок завжди збігались). */
+ *  тексту й порядок кнопок завжди збігались).
+ *  @template {EventSpan} T
+ *  @param {readonly T[]|null|undefined} events
+ *  @param {number} nowMs
+ *  @returns {{ shown: T[], hiddenCount: number }} */
 function upcomingAgendaEvents(events, nowMs) {
   const upcoming = (Array.isArray(events) ? events : []).filter(
-    (e) => e?.id && Number.isFinite(e.startMs) && e.startMs >= nowMs,
+    (e) => e?.id && Number.isFinite(e.startMs) && (e.startMs ?? 0) >= nowMs,
   );
   return {
     shown: upcoming.slice(0, MAX_AGENDA_ITEMS),
@@ -308,13 +373,18 @@ const agendaTimeFmt = new Intl.DateTimeFormat('uk-UA', {
   minute: '2-digit',
 });
 
-/** Telegram-текст /agenda (HTML) — нумерований список, «…ще N» за капом. */
+/** Telegram-текст /agenda (HTML) — нумерований список, «…ще N» за капом.
+ *  @param {readonly EventSpan[]|null|undefined} events
+ *  @param {number} nowMs */
 export function formatAgendaMessage(events, nowMs) {
   const { shown, hiddenCount } = upcomingAgendaEvents(events, nowMs);
   if (shown.length === 0) return '📅 Найближчим часом подій немає.';
   const lines = ['📅 <b>Найближчі події:</b>', ''];
   shown.forEach((e, i) => {
-    lines.push(`${i + 1}. ${agendaTimeFmt.format(new Date(e.startMs))} — ${escapeHtml(e.title)}`);
+    // `?? 0` недосяжне: upcomingAgendaEvents лишає лише скінченні startMs.
+    lines.push(
+      `${i + 1}. ${agendaTimeFmt.format(new Date(e.startMs ?? 0))} — ${escapeHtml(e.title)}`,
+    );
   });
   if (hiddenCount > 0) lines.push(`\n…ще ${hiddenCount}`);
   return lines.join('\n');
@@ -326,32 +396,43 @@ export const AGENDA_CB_PREFIX = 'ev:';
 // v=деталі пункту, e=стейджити редагування, d=стейджити видалення, b=назад до списку.
 const AGENDA_ACTIONS = new Set(['v', 'e', 'd', 'b']);
 
-/** `ev:<action>:<id>`; ≤64 байти (Telegram-ліміт, той самий guard, що pd:). */
+/** `ev:<action>:<id>`; ≤64 байти (Telegram-ліміт, той самий guard, що pd:).
+ *  @param {string} action
+ *  @param {string} id
+ *  @returns {string|null} */
 export function buildAgendaCallbackData(action, id) {
   if (!AGENDA_ACTIONS.has(action)) return null;
   const s = `${AGENDA_CB_PREFIX}${action}:${id}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
-/** Розібрати `ev:...` callback_data -> {action:'v'|'e'|'d'|'b', id}|null. */
+/** Розібрати `ev:...` callback_data -> {action:'v'|'e'|'d'|'b', id}|null.
+ *  @param {unknown} data */
 export function parseAgendaCallbackData(data) {
   if (typeof data !== 'string' || !data.startsWith(AGENDA_CB_PREFIX)) return null;
-  const [action, id] = data.slice(AGENDA_CB_PREFIX.length).split(':');
+  // Дефолт '' замість undefined: Set.has('') так само false, зате тип чистий.
+  const [action = '', id] = data.slice(AGENDA_CB_PREFIX.length).split(':');
   if (!AGENDA_ACTIONS.has(action) || !id) return null;
   return { action, id };
 }
 
-/** Одна кнопка на подію (`ev:v:<id>`) — той самий зріз/порядок, що текст. */
+/** Одна кнопка на подію (`ev:v:<id>`) — той самий зріз/порядок, що текст.
+ *  @param {readonly EventSpan[]|null|undefined} events
+ *  @param {number} nowMs */
 export function buildAgendaKeyboard(events, nowMs) {
   const { shown } = upcomingAgendaEvents(events, nowMs);
   const rows = shown
     .map((e, i) => {
-      const cb = buildAgendaCallbackData('v', e.id);
+      // upcomingAgendaEvents уже відсіяв події без id.
+      const cb = buildAgendaCallbackData('v', /** @type {string} */ (e.id));
       if (!cb) return null;
+      // `?? ''` не змінює нічого для подій із parseEvents (там title завжди є,
+      // хай і '(без назви)'), але робить кнопку стійкою до спрощеної події.
+      const title = e.title ?? '';
       const label =
-        e.title.length > MAX_AGENDA_BUTTON_LEN
-          ? `${e.title.slice(0, MAX_AGENDA_BUTTON_LEN - 1)}…`
-          : e.title;
+        title.length > MAX_AGENDA_BUTTON_LEN
+          ? `${title.slice(0, MAX_AGENDA_BUTTON_LEN - 1)}…`
+          : title;
       return [{ text: `${i + 1}. ${label}`, callback_data: cb }];
     })
     .filter(Boolean);

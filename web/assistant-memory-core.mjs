@@ -27,13 +27,20 @@ const MAX_RENDER_LEN = 500;
  */
 export const ASSISTANT_HISTORY_TTL_S = 30 * 86_400;
 
-/** Ключ історії за (chatId, threadId) — той самий формат, що sentMessagesKey. */
+/**
+ * Одна репліка розмови.
+ * @typedef {{ role: 'user'|'assistant', text: string }} HistoryTurn
+ */
+
+/** Ключ історії за (chatId, threadId) — той самий формат, що sentMessagesKey.
+ *  @param {string|number|null|undefined} chatId
+ *  @param {string|number|null|undefined} threadId */
 export function historyKey(chatId, threadId) {
   return `${chatId}:${threadId ?? ''}`;
 }
 
 /** Сплющити переноси рядків + обрізати одну репліку (як clip в assistant-data-core). */
-function clipTurn(text) {
+function clipTurn(/** @type {unknown} */ text) {
   const t = String(text ?? '')
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
@@ -44,6 +51,12 @@ function clipTurn(text) {
  * Додати репліку до історії треду (новий обʼєкт). role: 'user'|'assistant'
  * (будь-що інше -> 'user'). Порожня після clip репліка не додається (не
  * засмічуємо історію). Кап на MAX_HISTORY_TURNS останніх.
+ * @param {KvBlob|null|undefined} history
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
+ * @param {string} role
+ * @param {unknown} text
+ * @returns {KvBlob}
  */
 export function appendTurn(history, chatId, threadId, role, text) {
   const clipped = clipTurn(text);
@@ -60,10 +73,14 @@ export function appendTurn(history, chatId, threadId, role, text) {
  * репліки в межах MAX_RENDER_LEN (старіші відкидає, якщо бюджет вичерпано).
  * Порожня історія -> '' (без префікса). Формат:
  *   "Попередня розмова:\nКористувач: ...\nТи: ...\n\n"
+ * @param {KvBlob|null|undefined} history
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
  */
 export function renderHistoryForPrompt(history, chatId, threadId) {
   const list = history?.[historyKey(chatId, threadId)];
   if (!Array.isArray(list) || list.length === 0) return '';
+  /** @type {string[]} */
   const lines = [];
   let total = 0;
   for (let i = list.length - 1; i >= 0; i--) {

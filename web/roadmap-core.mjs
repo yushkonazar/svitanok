@@ -14,19 +14,22 @@ import { weekStartKey, lastWeekStarts } from './stats-core.mjs';
 export const ROADMAP_CB_PREFIX = 'rd:';
 
 /** Глобальний ключ прогресу — ОДНЕ джерело істини (дерево ROADMAP_TOPICS), не дублювати в даних. */
-export function progressKey(topicId, subtopicId) {
+export function progressKey(/** @type {string} */ topicId, /** @type {string} */ subtopicId) {
   return `${topicId}.${subtopicId}`;
 }
 
 /** Знайти тему за id; null якщо невідома (застарілий контент/чужа кнопка). */
-export function findTopic(topicId) {
+export function findTopic(/** @type {string} */ topicId) {
   return ROADMAP_TOPICS.find((t) => t.id === topicId) ?? null;
 }
 
 /** Знайти підпункт у вже знайденій темі; null якщо тема відсутня чи підпункт невідомий. */
-export function findSubtopic(topic, subtopicId) {
+export function findSubtopic(
+  /** @type {KvBlob|null|undefined} */ topic,
+  /** @type {string} */ subtopicId,
+) {
   if (!topic) return null;
-  return topic.subtopics.find((s) => s.id === subtopicId) ?? null;
+  return topic.subtopics.find((/** @type {KvBlob} */ s) => s.id === subtopicId) ?? null;
 }
 
 /** callback_data кореня («список тем»). */
@@ -35,13 +38,16 @@ export function buildRootCallbackData() {
 }
 
 /** callback_data теми («список підпунктів»); ≤64 байти (Telegram-ліміт), інакше null. */
-export function buildTopicCallbackData(topicId) {
+export function buildTopicCallbackData(/** @type {string} */ topicId) {
   const s = `${ROADMAP_CB_PREFIX}t:${topicId}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
 
 /** callback_data toggle конкретного підпункту; ≤64 байти, інакше null. */
-export function buildToggleCallbackData(topicId, subtopicId) {
+export function buildToggleCallbackData(
+  /** @type {string} */ topicId,
+  /** @type {string} */ subtopicId,
+) {
   const s = `${ROADMAP_CB_PREFIX}s:${topicId}:${subtopicId}`;
   return new TextEncoder().encode(s).length <= 64 ? s : null;
 }
@@ -50,7 +56,7 @@ export function buildToggleCallbackData(topicId, subtopicId) {
  * Розібрати `rd:...` callback_data ->
  * {kind:'root'} | {kind:'topic',topicId} | {kind:'toggle',topicId,subtopicId} | null.
  */
-export function parseRoadmapCallbackData(data) {
+export function parseRoadmapCallbackData(/** @type {unknown} */ data) {
   if (typeof data !== 'string' || !data.startsWith(ROADMAP_CB_PREFIX)) return null;
   const rest = data.slice(ROADMAP_CB_PREFIX.length);
   if (rest === 'r') return { kind: 'root' };
@@ -65,7 +71,12 @@ export function parseRoadmapCallbackData(data) {
 }
 
 /** Чистий touch — справжній toggle (додає якщо нема, прибирає якщо є). Новий об'єкт. */
-export function toggleProgress(progress, topicId, subtopicId, nowIso) {
+export function toggleProgress(
+  /** @type {KvBlob} */ progress,
+  /** @type {string} */ topicId,
+  /** @type {string} */ subtopicId,
+  /** @type {string} */ nowIso,
+) {
   const key = progressKey(topicId, subtopicId);
   const next = { ...progress };
   if (key in next) delete next[key];
@@ -74,14 +85,16 @@ export function toggleProgress(progress, topicId, subtopicId, nowIso) {
 }
 
 /** {done,total} для однієї теми. */
-export function topicProgress(progress, topic) {
+export function topicProgress(/** @type {KvBlob} */ progress, /** @type {KvBlob} */ topic) {
   const total = topic.subtopics.length;
-  const done = topic.subtopics.filter((s) => progressKey(topic.id, s.id) in progress).length;
+  const done = topic.subtopics.filter(
+    (/** @type {KvBlob} */ s) => progressKey(topic.id, s.id) in progress,
+  ).length;
   return { done, total };
 }
 
 /** {done,total} по всіх темах разом. */
-export function totalProgress(progress) {
+export function totalProgress(/** @type {KvBlob} */ progress) {
   let done = 0;
   let total = 0;
   for (const topic of ROADMAP_TOPICS) {
@@ -100,7 +113,11 @@ export function totalProgress(progress) {
  * самий {week,count}-шейп, що appliedWeekly (stats-core.mjs) — не вигадую
  * нову форму контракту.
  */
-export function roadmapWeekly(progress, todayKey, weeks = 12) {
+export function roadmapWeekly(
+  /** @type {KvBlob} */ progress,
+  /** @type {string} */ todayKey,
+  weeks = 12,
+) {
   const starts = lastWeekStarts(todayKey, weeks);
   const counts = Object.fromEntries(starts.map((k) => [k, 0]));
   for (const iso of Object.values(progress)) {
@@ -108,11 +125,14 @@ export function roadmapWeekly(progress, todayKey, weeks = 12) {
     const wk = weekStartKey(iso.slice(0, 10));
     if (counts[wk] != null) counts[wk]++;
   }
-  return starts.map((k) => ({ week: k, count: counts[k] }));
+  // `?? 0` недосяжне: ключі беруться з тих самих `starts`, якими заповнено
+  // counts. Без нього тиждень без подій мав би тип `number|undefined` —
+  // тобто «даних немає» замість «нуль», а це різні речі для споживача.
+  return starts.map((k) => ({ week: k, count: counts[k] ?? 0 }));
 }
 
 /** Перший невідмічений підпункт у канонічному порядку тем/підпунктів; null якщо все зроблено. */
-export function findNextIncomplete(progress) {
+export function findNextIncomplete(/** @type {KvBlob} */ progress) {
   for (const topic of ROADMAP_TOPICS) {
     for (const sub of topic.subtopics) {
       if (!(progressKey(topic.id, sub.id) in progress)) {
@@ -124,14 +144,14 @@ export function findNextIncomplete(progress) {
 }
 
 /** Повідомлення кореня: загальний прогрес + список тем. */
-export function formatRootMessage(progress) {
+export function formatRootMessage(/** @type {KvBlob} */ progress) {
   const { done, total } = totalProgress(progress);
   const bar = progressBar(done, total);
   return `🗺 <b>IT-роадмеп</b> — ${bar ? bar + ' ' : ''}${done}/${total}\n\nОбери тему:`;
 }
 
 /** Inline-клавіатура кореня: рядок на тему + рядок «▶️ Наступний». */
-export function buildRootKeyboard(progress) {
+export function buildRootKeyboard(/** @type {KvBlob} */ progress) {
   const rows = ROADMAP_TOPICS.map((topic) => {
     const { done, total } = topicProgress(progress, topic);
     const cb = buildTopicCallbackData(topic.id);
@@ -147,16 +167,17 @@ export function buildRootKeyboard(progress) {
 }
 
 /** Повідомлення теми: назва+прогрес теми + інструкція. */
-export function formatTopicMessage(topic, progress) {
+export function formatTopicMessage(/** @type {KvBlob} */ topic, /** @type {KvBlob} */ progress) {
   const { done, total } = topicProgress(progress, topic);
   const bar = progressBar(done, total);
   return `${escapeHtml(topic.title)} — ${bar ? bar + ' ' : ''}${done}/${total}\n\nТисни на пункт, щоб позначити пройденим:`;
 }
 
 /** Матеріали теми (F5): [{title,url}] або порожньо, якщо не курували. */
-export function topicMaterials(topic) {
+export function topicMaterials(/** @type {KvBlob} */ topic) {
   return (Array.isArray(topic?.materials) ? topic.materials : []).filter(
-    (m) => m && typeof m.title === 'string' && /^https:\/\//.test(m.url ?? ''),
+    (/** @type {KvBlob} */ m) =>
+      m && typeof m.title === 'string' && /^https:\/\//.test(m.url ?? ''),
   );
 }
 
@@ -168,15 +189,15 @@ export function topicMaterials(topic) {
  * битим значенням) валить увесь sendMessage помилкою Telegram, а не тихо
  * зникає, тож фільтр у topicMaterials боронить усе повідомлення.
  */
-export function buildTopicKeyboard(topic, progress) {
+export function buildTopicKeyboard(/** @type {KvBlob} */ topic, /** @type {KvBlob} */ progress) {
   const rows = topic.subtopics
-    .map((sub) => {
+    .map((/** @type {KvBlob} */ sub) => {
       const done = progressKey(topic.id, sub.id) in progress;
       const cb = buildToggleCallbackData(topic.id, sub.id);
       if (!cb) return [];
       return [{ text: `${done ? '✅' : '▫️'} ${sub.title}`, callback_data: cb }];
     })
-    .filter((row) => row.length > 0);
+    .filter((/** @type {unknown[]} */ row) => row.length > 0);
   for (const m of topicMaterials(topic)) rows.push([{ text: `📚 ${m.title}`, url: m.url }]);
   rows.push([{ text: '⬅️ Назад', callback_data: buildRootCallbackData() }]);
   return { inline_keyboard: rows };

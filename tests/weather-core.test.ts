@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { parseOneCall, emojiFor, adviceFor } from '../web/weather-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { mergeAqi, COLD_THRESHOLD_C } from '../web/weather-core.mjs';
 
 // Дзеркало tests/weather.test.ts (src/modules/weather.ts) — той самий парсер,
@@ -45,30 +43,30 @@ const oneCall = {
 describe('weather-core (Worker-порт) — parseOneCall', () => {
   it('актуальна температура/стан/willRain/willBeCold — той самий результат, що src/modules/weather.ts', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01');
-    expect(w.name).toBe('Львів');
-    expect(w.tempC).toBe(8);
-    expect(w.condition).toBe('дощ');
-    expect(w.emoji).toBe('🌧');
-    expect(w.willRain).toBe(true);
-    expect(w.popPercent).toBe(80);
-    expect(w.willBeCold).toBe(true);
+    expect(w!.name).toBe('Львів');
+    expect(w!.tempC).toBe(8);
+    expect(w!.condition).toBe('дощ');
+    expect(w!.emoji).toBe('🌧');
+    expect(w!.willRain).toBe(true);
+    expect(w!.popPercent).toBe(80);
+    expect(w!.willBeCold).toBe(true);
   });
 
   it('збагачені поля: відч./вітер+пориви/вологість/UV/мін-макс', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01');
-    expect(w.feelsLikeC).toBe(6);
-    expect(w.windMps).toBe(5);
-    expect(w.gustMps).toBe(9);
-    expect(w.humidity).toBe(70);
-    expect(w.uv).toBe(6);
-    expect(w.minC).toBe(7);
-    expect(w.maxC).toBe(16);
+    expect(w!.feelsLikeC).toBe(6);
+    expect(w!.windMps).toBe(5);
+    expect(w!.gustMps).toBe(9);
+    expect(w!.humidity).toBe(70);
+    expect(w!.uv).toBe(6);
+    expect(w!.minC).toBe(7);
+    expect(w!.maxC).toBe(16);
   });
 
   it('вікно дощу + hourly {h,t} за сьогодні', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01');
-    expect(w.rainWindow).toBe('12:00–16:00');
-    expect(w.hourly).toEqual([
+    expect(w!.rainWindow).toBe('12:00–16:00');
+    expect(w!.hourly).toEqual([
       { h: 9, t: 10 },
       { h: 12, t: 8 },
       { h: 15, t: 12 },
@@ -78,9 +76,9 @@ describe('weather-core (Worker-порт) — parseOneCall', () => {
 
   it('advice + схід/захід з добового запису', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01');
-    expect(w.advice).toBe('Прохолодно — куртка');
-    expect(w.sunrise).toBe(SUNRISE);
-    expect(w.sunset).toBe(SUNSET);
+    expect(w!.advice).toBe('Прохолодно — куртка');
+    expect(w!.sunrise).toBe(SUNRISE);
+    expect(w!.sunset).toBe(SUNSET);
   });
 
   it('порожній/некоректний -> null', () => {

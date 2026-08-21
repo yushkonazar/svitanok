@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт: prettier не
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as tg from '../web/tg-core.mjs';
 const {
@@ -30,6 +29,18 @@ const {
   REPLY_KEYBOARD,
   mdToTelegramHtml,
 } = tg;
+
+/**
+ * Звузити ParsedUpdate до message-гілки.
+ *
+ * `parseUpdate` віддає РОЗРІЗНЯЛЬНИЙ союз за `kind`, тож `.text`/`.location` є
+ * лише в message-варіанті. Тест і так стверджує, що розбір дав саме його —
+ * тепер це твердження явне, а не мовчазне припущення.
+ */
+function asMessage(u: ReturnType<typeof parseUpdate>) {
+  if (u.kind !== 'message') throw new Error(`очікувався message, отримано ${u.kind}`);
+  return u;
+}
 
 describe('tg-core — constantTimeEqual', () => {
   it('рівні рядки -> true; різниця/довжина/тип -> false (без короткого замикання)', () => {
@@ -90,30 +101,35 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
     ).toMatchObject({ kind: 'message', text: 'привіт', fromId: 9, messageId: 42 });
     // без message_id -> null (не блокує, просто не трекнемо для /clear)
     expect(
-      parseUpdate({ update_id: 5, message: { from: { id: 9 }, text: 'x' } }).messageId,
+      asMessage(parseUpdate({ update_id: 5, message: { from: { id: 9 }, text: 'x' } })).messageId,
     ).toBeNull();
     expect(parseUpdate({ update_id: 6, edited_message: {} }).kind).toBe('other');
     expect(parseUpdate(null).kind).toBe('other');
   });
 
   it('message з location (/locate) -> location:{latitude,longitude}; без location -> null', () => {
-    const withLoc = parseUpdate({
-      update_id: 7,
-      message: {
-        message_id: 1,
-        from: { id: 9 },
-        chat: { id: 9 },
-        location: { latitude: 50.62, longitude: 26.24, horizontal_accuracy: 12 },
-      },
-    });
+    const withLoc = asMessage(
+      parseUpdate({
+        update_id: 7,
+        message: {
+          message_id: 1,
+          from: { id: 9 },
+          chat: { id: 9 },
+          location: { latitude: 50.62, longitude: 26.24, horizontal_accuracy: 12 },
+        },
+      }),
+    );
     // horizontal_accuracy свідомо НЕ читаємо — лише координати нам треба.
     expect(withLoc.location).toEqual({ latitude: 50.62, longitude: 26.24 });
 
-    expect(parseUpdate({ update_id: 8, message: { text: 'привіт' } }).location).toBeNull();
+    expect(
+      asMessage(parseUpdate({ update_id: 8, message: { text: 'привіт' } })).location,
+    ).toBeNull();
     // биті координати (не число) -> теж null, не NaN у сторі
     expect(
-      parseUpdate({ update_id: 9, message: { location: { latitude: 'x', longitude: 26.24 } } })
-        .location,
+      asMessage(
+        parseUpdate({ update_id: 9, message: { location: { latitude: 'x', longitude: 26.24 } } }),
+      ).location,
     ).toBeNull();
   });
 
@@ -204,7 +220,7 @@ describe('tg-core — resolveCallback', () => {
       fit: 88,
     });
     // score -1 (без скорингу) -> без fit
-    expect(resolveCallback(briefing, 'ja', 1).event.fit).toBeUndefined();
+    expect(resolveCallback(briefing, 'ja', 1).event!.fit).toBeUndefined();
   });
 
   it('sf/sq -> save_item з id=textHash(того самого рядка, що й дашборд)', () => {
@@ -243,10 +259,10 @@ describe('tg-core — markButtonDone', () => {
       ],
     };
     const out = markButtonDone(rm, 'v1:2026-07-09:js:0');
-    expect(out.inline_keyboard[0][0].text).toBe('✓ 💾 Зберегти');
-    expect(out.inline_keyboard[0][1].text).toBe('✅ Подав');
+    expect(out!.inline_keyboard[0][0].text).toBe('✓ 💾 Зберегти');
+    expect(out!.inline_keyboard[0][1].text).toBe('✅ Подав');
     // повторно — без подвійного ✓
-    expect(markButtonDone(out, 'v1:2026-07-09:js:0').inline_keyboard[0][0].text).toBe(
+    expect(markButtonDone(out!, 'v1:2026-07-09:js:0')!.inline_keyboard[0][0].text!).toBe(
       '✓ 💾 Зберегти',
     );
   });

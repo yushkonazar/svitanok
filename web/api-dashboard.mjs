@@ -13,8 +13,8 @@
 // голос із чату й три 5-хвилинні крони. Прямий put тут колись уже втрачав дані.
 
 import { json, readJsonBody } from './http-core.mjs';
-import { checkOwnerRead, checkPrimaryOwner } from './auth-core.mjs';
-import { loadStats, loadState, loadSettings, updateStats } from './kv-store.mjs';
+import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
+import { loadStats, loadState, loadSettings, updateStats, updateState } from './kv-store.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 import {
   kyivDateKey,
@@ -35,7 +35,8 @@ import { normalizeSettings, connectorStatus } from './settings-core.mjs';
 import { totalProgress, roadmapWeekly } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './mastery-core.mjs';
 
-/** POST /api/vote {category, dir:'up', url?, initData} -> preferenceWeights + інтерес.
+/** POST /api/vote {category, dir:'up', url?} -> preferenceWeights + інтерес.
+ *  Автентифікація — заголовком X-Telegram-Init-Data (див. mutationInitData).
  *  url (C3): якщо переданий — голос дедуплюється per-url (повторний = зняти).
  *  Без url — стара поведінка (кожен клік зсуває вагу), щоб не ламати клієнтів,
  *  які url ще не шлють.
@@ -46,43 +47,40 @@ import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './maste
  *  у KV лежать старі голоси, і саме їх треба коректно відкотити, коли власник
  *  лайкне раніше дизлайкнуту новину. Викинеш 'down' із читання — відкотиш не
  *  ту дельту й тихо зіпсуєш вагу теми назавжди. */
-export async function handleVote(request, env) {
+export async function handleVote(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
-  const { category, dir, url, initData } = body ?? {};
+  const { category, dir, url } = body ?? {};
   if (typeof category !== 'string' || !category || dir !== 'up') {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
-  const auth = await checkPrimaryOwner(initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  const state = await loadState(env);
   let weight;
+  /** @type {string|null} */
   let prevDir = null;
+  /** @type {string|null} */
   let prevCategory = null;
   let newDir = dir;
-  if (typeof url === 'string' && url) {
-    // Чесний облік: кожен url впливає на вагу максимум раз (C3).
-    const r = applyUrlVote(
-      state.preferenceWeights ?? {},
-      state.votedUrls ?? {},
-      url,
-      category,
-      dir,
-    );
-    state.preferenceWeights = r.weights;
-    state.votedUrls = r.votedUrls;
-    prevDir = r.prevDir;
-    prevCategory = r.prevCategory;
-    newDir = r.newDir;
-    weight = r.weights[category];
-  } else {
-    state.preferenceWeights = applyVote(state.preferenceWeights ?? {}, category, dir);
-    weight = state.preferenceWeights[category];
-  }
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  // Вихідні дані заповнює сам patch: при розбіжності updateState викликає його
+  // вдруге, і тут лишаються значення ТІЄЇ копії, яку зрештою записали.
+  await updateState(env, (s) => {
+    if (typeof url === 'string' && url) {
+      // Чесний облік: кожен url впливає на вагу максимум раз (C3).
+      const r = applyUrlVote(s.preferenceWeights ?? {}, s.votedUrls ?? {}, url, category, dir);
+      prevDir = r.prevDir;
+      prevCategory = r.prevCategory;
+      newDir = r.newDir;
+      weight = r.weights[category];
+      return { ...s, preferenceWeights: r.weights, votedUrls: r.votedUrls };
+    }
+    const weights = applyVote(s.preferenceWeights ?? {}, category, dir);
+    weight = weights[category];
+    return { ...s, preferenceWeights: weights };
+  });
   // Інтерес у stats (таб «Статистика» → «твої інтереси»): знімаємо старий голос
   // з ЙОГО теми і додаємо новий до поточної (ревʼю C: той самий url може прийти
   // під іншою темою — інтерес мусить бути category-aware, як і ваги). prevCategory
@@ -103,7 +101,7 @@ export async function handleVote(request, env) {
  * (Блок P1) проходять через ЦЕ, щоб jobPrefs/mockWeights/stats не дублювались
  * і не розходились між двома джерелами подій.
  */
-export async function applyEvent(env, body) {
+export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body) {
   // jobPrefs: памʼять скорера з живої воронки (dismiss/applied→interview→offer).
   //
   // Термінальні стадії (F1: rejected/failed) сюди СВІДОМО не входять — падають у
@@ -118,10 +116,10 @@ export async function applyEvent(env, body) {
         ? body.stage
         : null;
   if (jobSignal && typeof body.title === 'string' && body.title) {
-    const state = await loadState(env);
-    const prefs = state.jobPrefs ?? { liked: [], disliked: [] };
-    state.jobPrefs = updateJobPrefs(prefs, jobSignal, body.title);
-    await env.BRIEFING.put('state', JSON.stringify(state));
+    await updateState(env, (s) => ({
+      ...s,
+      jobPrefs: updateJobPrefs(s.jobPrefs ?? { liked: [], disliked: [] }, jobSignal, body.title),
+    }));
   }
 
   // mockWeights: слабкі теми самооцінки (Блок F) -> частіше в наступному батчі.
@@ -131,10 +129,10 @@ export async function applyEvent(env, body) {
     body.topic &&
     (body.rating === 'easy' || body.rating === 'hard')
   ) {
-    const state = await loadState(env);
-    const weights = state.mockWeights ?? {};
-    state.mockWeights = updateMockWeight(weights, body.topic, body.rating);
-    await env.BRIEFING.put('state', JSON.stringify(state));
+    await updateState(env, (s) => ({
+      ...s,
+      mockWeights: updateMockWeight(s.mockWeights ?? {}, body.topic, body.rating),
+    }));
   }
 
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
@@ -178,17 +176,17 @@ export async function applyEvent(env, body) {
   if (body.type === 'checkin') return { locked: false };
 }
 
-/** POST /api/event {type, …, initData} -> записати подію у стор статистики.
+/** POST /api/event {type, …} -> записати подію у стор статистики.
  *  locked (checkin, вже підтверджений блок) — сурфейсимо чесно, той самий
  *  контракт, що runRecordAction (агент): {ok:true} саме по собі не каже,
  *  чи запис реально відбувся. */
-export async function handleEvent(request, env) {
+export async function handleEvent(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
   if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
-  const auth = await checkPrimaryOwner(body.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const result = await applyEvent(env, body);
@@ -202,7 +200,7 @@ export async function handleEvent(request, env) {
  * OAuth-обмін (зайва латентність + мережева залежність на екрані, який просто
  * показує стан). Кеш ще порожній -> віддаємо за наявністю секретів.
  */
-async function googleConnectors(env) {
+async function googleConnectors(/** @type {Env} */ env) {
   const hasGoogleCreds = Boolean(
     env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN,
   );
@@ -219,7 +217,7 @@ async function googleConnectors(env) {
 
 /**
  * GET /api/settings -> налаштування власника + статус конекторів.
- * POST /api/settings {settings, initData} -> ЗАМІНИТИ блоб цілком (PUT-семантика).
+ * POST /api/settings {settings} -> ЗАМІНИТИ блоб цілком (PUT-семантика).
  *
  * Свідомо БЕЗ read-modify-write. Спокуса «прочитати + накласти патч» тут
  * оманлива: KV не має ні CAS, ні гарантії read-your-writes (~до 60с), а екран
@@ -233,7 +231,7 @@ async function googleConnectors(env) {
  * (goal.weeklyTarget агрегується поруч із weeklyApplied) і виставляється подією
  * `set_goal` через /api/event, як решта мутацій дашборда.
  */
-export async function handleSettings(request, env) {
+export async function handleSettings(/** @type {Request} */ request, /** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no-token' }, 500);
 
   if (request.method === 'GET') {
@@ -248,7 +246,7 @@ export async function handleSettings(request, env) {
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
-  const auth = await checkPrimaryOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   // Вимагаємо ПОВНИЙ блоб: часткове тіло normalizeSettings мовчки добив би
@@ -272,7 +270,7 @@ export async function handleSettings(request, env) {
  * заради рядка «Ти зберіг N» — марно. Архів у KV не обрізаний ніколи; його лише
  * не показували.
  */
-export async function handleSaved(request, env) {
+export async function handleSaved(/** @type {Request} */ request, /** @type {Env} */ env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   const url = new URL(request.url);
@@ -290,12 +288,14 @@ export async function handleSaved(request, env) {
 
 /** GET /api/stats -> агрегат для табу «Статистика». Auth власника (H1): стрік,
  *  воронка, інтереси — приватні; без initData -> 401/403 (фронт ховає таб). */
-export async function handleStats(request, env) {
+export async function handleStats(/** @type {Request} */ request, /** @type {Env} */ env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   // Два незалежні KV-читання — паралельно (найгарячіший читальний шлях).
   const [store, state] = await Promise.all([loadStats(env), loadState(env)]);
-  const stats = aggregateStats(store, kyivDateKey());
+  // Блоб: нижче до агрегату дописуються роадмеп/майстерність/голоси —
+  // поля, яких aggregateStats не знає й знати не мусить.
+  const stats = /** @type {KvBlob} */ (aggregateStats(store, kyivDateKey()));
   // roadmap/mastery — окремий KV-блоб (state, не stats); aggregateStats лишається
   // чистим агрегатором stats-блоба, роадмеп-контент йому знати не треба.
   const progress = state.roadmapProgress ?? {};

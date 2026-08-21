@@ -1,15 +1,11 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent } from '../web/stats-core.mjs';
 // ⚠️ Кілька імпортів, а не один список — той самий прийом, що в
 // checkin-model.test.ts. Prettier переносить довгий список на кілька рядків, і
 // однорядковий @ts-expect-error відʼїжджає від рядка з помилкою: директива стає
 // «невикористаною», а помилка типів лишається. Наступив на це вдруге.
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { monthlyRollup, mergeArchive, ARCHIVE_KEY } from '../web/stats-archive.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { weeklyRollup, mergeWeekly } from '../web/stats-archive.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { WEEKLY_ARCHIVE_KEY, WEEKLY_ARCHIVE_CAP } from '../web/stats-archive.mjs';
 
 /* Холодний архів місячних згорток.

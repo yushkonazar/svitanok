@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { SLEEP_H_BUCKETS, snapSleepHours } from '../web/stats-core.mjs';
+import { memoryKv } from './helpers/kv.js';
+import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційний тест повного циклу «Ліг спати» -> ранкове відкриття ->
  * автозаповнення чек-іну, через СПРАВЖНІЙ worker.fetch (POST /api/event), а
@@ -32,48 +33,15 @@ const BOT_TOKEN = 'bot-token-abc';
 let kv: Map<string, string>;
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     ...overrides,
-  };
+  });
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */
-async function buildInitData(userId: number, botToken: string, authDateSec?: number) {
-  const user = JSON.stringify({ id: userId, first_name: 'O' });
-  const authDate = authDateSec ?? Math.floor(Date.now() / 1000);
-  const params = new URLSearchParams({ user, auth_date: String(authDate) });
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode('WebAppData'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
-  const secretKey = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
-  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
-  params.set('hash', hash);
-  return params.toString();
-}
 
 async function postEvt(body: Record<string, unknown>, e = env()) {
   return worker.fetch(
@@ -90,13 +58,20 @@ async function postEvt(body: Record<string, unknown>, e = env()) {
 /** Просуває фейковий годинник і одразу шле подію в цей момент — щоб kyivHour/
  *  kyivDateKey/checkinDateKey усередині worker.js рахували ТОЙ САМИЙ момент,
  *  що бачить тест (а не розсинхронізований nowIso). */
-async function at(
-  iso: string,
-  type: string,
-  initData: string,
-  extra: Record<string, unknown> = {},
-) {
+/**
+ * Подія в конкретний момент.
+ *
+ * ⚠️ initData підписується НА ТОЙ САМИЙ момент, що й запит. Сценарій крутить
+ * годинник на дні назад, тож підпис, зроблений один раз наперед, для воркера
+ * лежав би в МАЙБУТНЬОМУ — і двобічна перевірка auth_date (SV-B3) чесно його
+ * відкидала б. Це не обхід перевірки, а виправлення фікстури: справжній клієнт
+ * теж підписує в момент запиту.
+ */
+async function at(iso: string, type: string, extra: Record<string, unknown> = {}) {
   vi.setSystemTime(new Date(iso));
+  const initData = await buildInitData(OWNER, BOT_TOKEN, {
+    authDateSec: Math.floor(new Date(iso).getTime() / 1000),
+  });
   return postEvt({ type, initData, ...extra });
 }
 
@@ -109,13 +84,11 @@ afterEach(() => vi.useRealTimers());
 
 describe('sleepStart -> open: повний цикл через worker.fetch, дві ночі поспіль', () => {
   it('Ніч 1 (звичайний сценарій, 8.0 год) і Ніч 2 (РЕГРЕСІЯ: передсонний open того ж календарного дня, 5.0 год) — обидві коректно підставляють sleepH+bedtime', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
-
     // ── Ніч 1: 23:00 Київ 04.08 -> 07:00 Київ 05.08 (рівно 8 год) ──────────
-    let res = await at('2026-08-04T20:00:00Z', 'sleepStart', initData); // Kyiv 23:00
+    let res = await at('2026-08-04T20:00:00Z', 'sleepStart'); // Kyiv 23:00
     expect(res.status).toBe(200);
 
-    res = await at('2026-08-05T04:00:00Z', 'open', initData); // Kyiv 07:00, наступний день
+    res = await at('2026-08-05T04:00:00Z', 'open'); // Kyiv 07:00, наступний день
     expect(res.status).toBe(200);
 
     let stats = JSON.parse(kv.get('stats')!);
@@ -132,11 +105,11 @@ describe('sleepStart -> open: повний цикл через worker.fetch, д�
     // ── Ніч 2: РЕГРЕСІЯ. Спершу пізній передсонний open ТОГО Ж календарного
     //    дня (Kyiv 01:00 06.08 — вже після півночі, ДО тапу «Ліг спати»),
     //    який раніше зʼїдав firstOpenToday. ─────────────────────────────────
-    res = await at('2026-08-05T22:00:00Z', 'open', initData); // Kyiv 01:00 06.08
+    res = await at('2026-08-05T22:00:00Z', 'open'); // Kyiv 01:00 06.08
     expect(res.status).toBe(200);
 
     // Тап «Ліг спати» 15 хв по тому — checkinDateKey зсуває ніч на 05.08.
-    res = await at('2026-08-05T22:15:00Z', 'sleepStart', initData); // Kyiv 01:15 06.08
+    res = await at('2026-08-05T22:15:00Z', 'sleepStart'); // Kyiv 01:15 06.08
     expect(res.status).toBe(200);
 
     stats = JSON.parse(kv.get('stats')!);
@@ -145,7 +118,7 @@ describe('sleepStart -> open: повний цикл через worker.fetch, д�
 
     // Реальне ранкове відкриття — ТОЙ САМИЙ календарний день (06.08), що й
     // передсонний open вище. Рівно 5 год потому.
-    res = await at('2026-08-06T03:15:00Z', 'open', initData); // Kyiv 06:15
+    res = await at('2026-08-06T03:15:00Z', 'open'); // Kyiv 06:15
     expect(res.status).toBe(200);
 
     stats = JSON.parse(kv.get('stats')!);
@@ -161,11 +134,10 @@ describe('sleepStart -> open: повний цикл через worker.fetch, д�
   });
 
   it('РЕГРЕСІЯ (фідбек власника: «досі не працює автоматична підстановка часу сну»): підставлене значення ЗАВЖДИ з набору бакетів UI, а не точне число', async () => {
-    const initData = await buildInitData(OWNER, BOT_TOKEN);
     // 7 год 36 хв — саме той «некруглий» сон, що давав 7.6 і не підсвічувався
     // (UI звіряє суворою рівністю з SLEEP_H_BUCKETS).
-    await at('2026-08-04T20:00:00Z', 'sleepStart', initData); // Kyiv 23:00
-    await at('2026-08-05T03:36:00Z', 'open', initData); // Kyiv 06:36 -> 7.6 год
+    await at('2026-08-04T20:00:00Z', 'sleepStart'); // Kyiv 23:00
+    await at('2026-08-05T03:36:00Z', 'open'); // Kyiv 06:36 -> 7.6 год
 
     const stats = JSON.parse(kv.get('stats')!);
     const { sleepH } = stats.checkins['2026-08-05'].morning;
@@ -214,8 +186,7 @@ describe('bedtimeBucketForHour (worker.js, приватна — лише чер�
   for (const [hour, utcIso] of KYIV_HOUR_TO_UTC_DATE) {
     it(`Київ ${hour}:00 -> bedtimeBucket "${EXPECTED[hour]}"`, async () => {
       kv = new Map();
-      const initData = await buildInitData(OWNER, BOT_TOKEN);
-      const res = await at(utcIso, 'sleepStart', initData);
+      const res = await at(utcIso, 'sleepStart');
       expect(res.status).toBe(200);
       const stats = JSON.parse(kv.get('stats')!);
       const [night] = Object.values(stats.sleepLog) as { bedtimeBucket: string }[];

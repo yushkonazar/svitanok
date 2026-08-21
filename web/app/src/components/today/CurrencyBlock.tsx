@@ -191,7 +191,9 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                   )}
                   {/* toFixed(2) — як у макеті: без нього 59.4 губить хвостовий
                       нуль і колонка значень «стрибає» в моно-шрифті */}
-                  <span className="ml-auto font-mono text-base font-semibold">{value.toFixed(2)}</span>
+                  <span className="ml-auto font-mono text-base font-semibold">
+                    {value.toFixed(2)}
+                  </span>
                 </button>
 
                 {/* Тап-to-expand розкриває ОБИДВА: тижневий діапазон (п.6.2,
@@ -200,7 +202,10 @@ export function CurrencyBlock({ d, date }: { d: CurrencyData | null; date: strin
                     конвертером «скільки в грн» (п.6.3, той самий
                     інтеракційний патерн, що «Відповідь ↓» у QuestionBlock). */}
                 {isOpen && (
-                  <div className="flex flex-col gap-1 py-1 pl-9" style={{ animation: 'fadeUp .2s ease' }}>
+                  <div
+                    className="flex flex-col gap-1 py-1 pl-9"
+                    style={{ animation: 'fadeUp .2s ease' }}
+                  >
                     {minMax && (
                       <div className="font-mono text-[10px] text-tx3">
                         {def.label} за {WEEK_DAYS}Д: {minMax.min.toFixed(2)}–{minMax.max.toFixed(2)}

@@ -277,7 +277,8 @@ export function WeatherBlock({
                 haptic('success');
                 closeEditor();
               },
-              onError: (e) => setErr(e instanceof Error ? e.message : 'Не вдалося встановити локацію'),
+              onError: (e) =>
+                setErr(e instanceof Error ? e.message : 'Не вдалося встановити локацію'),
             });
           }}
           className="-mt-2 flex flex-wrap items-center gap-1.5"
@@ -380,14 +381,25 @@ export function WeatherBlock({
       {/* циферблат між лініями сходу/заходу */}
       <div className="flex items-center gap-3">
         <div className="flex flex-1 translate-y-3 flex-col gap-1.5">
-          <div style={{ height: 1.5, background: 'linear-gradient(90deg,transparent,var(--color-a2))' }} />
+          <div
+            style={{
+              height: 1.5,
+              background: 'linear-gradient(90deg,transparent,var(--color-a2))',
+            }}
+          />
           <div className="whitespace-nowrap font-mono text-[10px] font-semibold text-tx2">
             <span className="text-a2">↑</span> СХІД {fmtClock(l.sunrise)}
           </div>
         </div>
         <SunDial sunrise={l.sunrise} sunset={l.sunset} />
         <div className="flex flex-1 translate-y-3 flex-col items-end gap-1.5">
-          <div className="w-full" style={{ height: 1.5, background: 'linear-gradient(90deg,var(--color-a1),transparent)' }} />
+          <div
+            className="w-full"
+            style={{
+              height: 1.5,
+              background: 'linear-gradient(90deg,var(--color-a1),transparent)',
+            }}
+          />
           <div className="whitespace-nowrap font-mono text-[10px] font-semibold text-tx2">
             ЗАХІД {fmtClock(l.sunset)} <span className="text-a1">↓</span>
           </div>

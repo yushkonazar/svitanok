@@ -5,11 +5,8 @@ import {
   coreQuestions,
   visibleQuestions,
 } from '../web/app/src/components/checkin/questions.ts';
-// @ts-expect-error — JS-модулі Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats, BLOCKER_VALUES } from '../web/stats-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { FIELDS, normalizeField, dayIndices } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { checkinSlot, checkinSlotEndsInMin } from '../web/stats-core.mjs';
 
 /* Умовні питання чек-іну: сховане питання не перестає існувати для сервера й
@@ -187,7 +184,7 @@ describe('sleepHoursOf — одне джерело виведення на вс�
   it('ніч без сну входить у криву сну нулем, а не пропуском', () => {
     const st = build([{ sleepKind: 'slept', sleepH: 8 }, { sleepKind: 'none' }], { dayScore: 3 });
     const series = aggregateStats(st, TODAY).checkinSeries;
-    expect(series.map((p: { sleepH: number | null }) => p.sleepH)).toEqual([8, 0]);
+    expect(series.map((p: KvBlob) => p.sleepH)).toEqual([8, 0]);
   });
 
   it('тижневий середній сон більше не рахується лише по ночах, коли ти спав', () => {
@@ -279,7 +276,7 @@ describe('checkinSlotEndsInMin — скільки блоку лишилось ж
 
   it('вечір перетинає північ безперервно — жодного стрибка на 00:00', () => {
     // 23:59 -> 121, 00:00 -> 120: різниця рівно хвилина, а не «ще 24 години».
-    expect(checkinSlotEndsInMin(23 * 60 + 59) - checkinSlotEndsInMin(0)).toBe(1);
+    expect(checkinSlotEndsInMin(23 * 60 + 59)! - checkinSlotEndsInMin(0)!).toBe(1);
   });
 
   it('битий вхід -> null, а не випадкове число (та сама пастка, що в checkinSlot)', () => {
@@ -310,7 +307,7 @@ describe('workQuadrants — чотири типи робочого дня', () =
       { effort: 5, output: 1 }, // гриндж
       { effort: 1, output: 1 }, // тихий
     ]);
-    expect([q.cells.flow.n, q.cells.hardwin.n, q.cells.grind.n, q.cells.quiet.n]).toEqual([
+    expect([q.cells.flow!.n, q.cells.hardwin!.n, q.cells.grind!.n, q.cells.quiet!.n]).toEqual([
       1, 1, 1, 1,
     ]);
     expect(q.n).toBe(4);
@@ -339,9 +336,9 @@ describe('workQuadrants — чотири типи робочого дня', () =
      найгірша оцінка там, де оцінки просто немає. */
   it('середня оцінка кута мовчить, поки діб менше за поріг', () => {
     const q3 = build(Array.from({ length: 3 }, () => ({ effort: 5, output: 1, dayScore: 2 })));
-    expect(q3.cells.grind.n).toBe(3);
-    expect(q3.cells.grind.dayScore).toBeNull();
+    expect(q3.cells.grind!.n).toBe(3);
+    expect(q3.cells.grind!.dayScore).toBeNull();
     const q4 = build(Array.from({ length: 4 }, () => ({ effort: 5, output: 1, dayScore: 2 })));
-    expect(q4.cells.grind.dayScore).toBe(2);
+    expect(q4.cells.grind!.dayScore).toBe(2);
   });
 });

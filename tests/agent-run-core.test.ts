@@ -1,29 +1,14 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
-import * as run from '../web/agent-run-core.mjs';
-
-const {
+import {
   AGENT_MAX_STEPS,
   AGENT_RUN_TTL_MS,
   AGENT_STEP_TTL_MS,
   mintRunToken,
   verifyRunToken,
   nextRunToken,
-} = run as {
-  AGENT_MAX_STEPS: number;
-  AGENT_RUN_TTL_MS: number;
-  AGENT_STEP_TTL_MS: number;
-  mintRunToken: (s: string, o: Record<string, unknown>) => Promise<string>;
-  verifyRunToken: (
-    s: string,
-    t: unknown,
-    now?: number,
-  ) => Promise<
-    | { ok: true; claims: Record<string, unknown> & { expMs: number; deadlineMs: number } }
-    | { ok: false; error: string }
-  >;
-  nextRunToken: (s: string, c: Record<string, unknown>, now?: number) => Promise<string | null>;
-};
+  decideStepClaim,
+  agentRunDoName,
+} from '../web/agent-run-core.mjs';
 
 const SECRET = 'worker-only-secret-abcdef0123456789';
 const NOW = 1_752_800_000_000;
@@ -248,35 +233,26 @@ describe('agent-run-core: кроки прогону', () => {
  *
  * Тут — чиста ухвала; сам DO і його сховище — у agent-run-do.test.ts. */
 describe('agent-run-core: ухвала про крок (DO)', () => {
-  const { decideStepClaim, agentRunDoName } = run as {
-    decideStepClaim: (
-      state: Record<string, unknown> | null,
-      step: number,
-    ) => { ok: boolean; error?: string; state?: Record<string, unknown> };
-    agentRunDoName: (claims: Record<string, unknown>) => string;
-  };
-
   it('перший крок прогону приймається й запамʼятовується', () => {
-    const d = decideStepClaim(null, 0);
-    expect(d.ok).toBe(true);
-    expect(d.state).toMatchObject({ lastStep: 0 });
+    expect(decideStepClaim(null, 0)).toMatchObject({ ok: true, state: { lastStep: 0 } });
   });
 
   it('кроки йдуть уперед: 0 -> 1 -> 2', () => {
-    let state: Record<string, unknown> | null = null;
+    let state: import('../web/agent-run-core.mjs').AgentRunState | null = null;
     for (const step of [0, 1, 2]) {
       const d = decideStepClaim(state, step);
-      expect(d.ok).toBe(true);
-      state = d.state!;
+      if (!d.ok) throw new Error(`крок ${step} мав пройти, а віддав ${d.error}`);
+      state = d.state;
     }
     expect(state).toMatchObject({ lastStep: 2 });
   });
 
   it('ПОВТОР того самого кроку відхиляється — це і є реплей', () => {
     const first = decideStepClaim(null, 3);
-    expect(decideStepClaim(first.state!, 3)).toMatchObject({ ok: false, error: 'step-replayed' });
+    if (!first.ok) throw new Error('перший крок мав пройти');
+    expect(decideStepClaim(first.state, 3)).toMatchObject({ ok: false, error: 'step-replayed' });
     // Так само й крок «назад»: легітимна петля лише зростає.
-    expect(decideStepClaim(first.state!, 2)).toMatchObject({ ok: false, error: 'step-replayed' });
+    expect(decideStepClaim(first.state, 2)).toMatchObject({ ok: false, error: 'step-replayed' });
   });
 
   it('крок для завершеного прогону відхиляється (надгробок, тепер атомарний)', () => {

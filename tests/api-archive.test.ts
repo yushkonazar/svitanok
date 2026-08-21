@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { ARCHIVE_KEY } from '../web/stats-archive.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { handleArchive } from '../web/api-archive.mjs';
+import { workerEnv } from './helpers/env.js';
 
 /* GET /api/archive — читання холодного архіву місячних згорток.
  *
@@ -16,13 +14,14 @@ import { handleArchive } from '../web/api-archive.mjs';
  * ⚠️ ПРИВАТНИЙ, на відміну від /api/status: тут середні по сну, енергії й
  * настрою за роки — це не «сервіс живий», це щоденник. */
 
-const env = (value: string | null, extra: Record<string, unknown> = {}) => ({
-  BRIEFING: { get: async (k: string) => (k === ARCHIVE_KEY ? value : null) },
-  ASSETS: { fetch: async () => new Response('nf', { status: 404 }) },
-  ...extra,
-});
+const env = (value: string | null, extra: Partial<Env> = {}) =>
+  workerEnv({
+    BRIEFING: { get: async (k: string) => (k === ARCHIVE_KEY ? value : null) },
+    ASSETS: { fetch: async () => new Response('nf', { status: 404 }) },
+    ...extra,
+  });
 
-const call = (e: unknown, headers: Record<string, string> = {}) =>
+const call = (e: Env, headers: Record<string, string> = {}) =>
   worker.fetch(new Request('https://svitanok.yushko.dev/api/archive', { headers }), e, {
     waitUntil: () => {},
   });
@@ -54,13 +53,15 @@ describe('GET /api/archive — форма відповіді', () => {
       '2026-05': { checkinDays: 28, sleepAvg: 6.8 },
       '2026-06': { checkinDays: 29, sleepAvg: 7.0 },
     });
-    const body = await (await handleArchive(env(raw), { ok: true })).json();
+    const body = (await (await handleArchive(env(raw), { ok: true })).json()) as {
+      months: { month: string; sleepAvg?: number }[];
+    };
     expect(body.months.map((m: { month: string }) => m.month)).toEqual([
       '2026-05',
       '2026-06',
       '2026-07',
     ]);
-    expect(body.months[0].sleepAvg).toBe(6.8);
+    expect(body.months[0]!.sleepAvg).toBe(6.8);
   });
 
   it('битий архів -> порожній список, а не 500', async () => {
@@ -75,7 +76,9 @@ describe('GET /api/archive — форма відповіді', () => {
       'не-місяць': { x: 1 },
       bad: null,
     });
-    const body = await (await handleArchive(env(raw), { ok: true })).json();
+    const body = (await (await handleArchive(env(raw), { ok: true })).json()) as {
+      months: { month: string; sleepAvg?: number }[];
+    };
     expect(body.months.map((m: { month: string }) => m.month)).toEqual(['2026-07']);
   });
 

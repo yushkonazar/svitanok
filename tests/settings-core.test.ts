@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptySettings, normalizeSettings } from '../web/settings-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів (окремий рядок: директива діє на 1 рядок)
 import { parseHhmm, fmtHhmm, isQuietMinute, connectorStatus } from '../web/settings-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { TOGGLEABLE_MODULE_IDS } from '../web/settings-core.mjs';
 
 const at = (h: number, m = 0) => h * 60 + m;

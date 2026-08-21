@@ -1,12 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { USAGE_LIMIT_TEXTS, NON_LIMIT_TEXTS } from './usage-limit-fixtures.js';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as agent from '../web/agent-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { OWN_DATA_SCOPES } from '../web/assistant-data-core.mjs';
 // Межі довжини — з реального контракту хоста (той самий репо, окремий деплой).
-// @ts-expect-error — JS-модуль хоста без типів.
 import { MAX_SYSTEM_PROMPT_LEN, MAX_SCHEMA_LEN, MAX_PROMPT_LEN } from '../host/llm-host-core.mjs';
 const {
   MAX_PROPOSAL_ITEMS,
@@ -600,7 +597,7 @@ describe('sanitizeProposal', () => {
     expect(droppedCount).toBe(0);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: 'event', title: 'Стоматолог', durationMin: 30 });
-    expect(typeof items[0].whenMs).toBe('number');
+    expect(typeof items[0]!.whenMs).toBe('number');
   });
 
   it('reminder-пункт без durationMin (не потрібен), з анкером для циклера часу (🕐)', () => {
@@ -611,11 +608,11 @@ describe('sanitizeProposal', () => {
     expect(items[0]).toEqual({
       kind: 'reminder',
       title: 'Подати CV',
-      whenMs: items[0].whenMs,
-      baseWhenMs: items[0].whenMs,
+      whenMs: items[0]!.whenMs,
+      baseWhenMs: items[0]!.whenMs,
       shiftMin: 0,
     });
-    expect(items[0].durationMin).toBeUndefined();
+    expect(items[0]!.durationMin).toBeUndefined();
   });
 
   it('durationMin клампиться в [15,480], відсутній -> дефолт 60', () => {
@@ -627,7 +624,7 @@ describe('sanitizeProposal', () => {
       ],
       SUMMER_NOW,
     );
-    expect(items.map((i: { durationMin: number }) => i.durationMin)).toEqual([15, 480, 60]);
+    expect(items.map((i: KvBlob) => i.durationMin)).toEqual([15, 480, 60]);
   });
 
   it('непарсибельний when / відсутній title/kind -> дропається, не валить решту', () => {
@@ -642,7 +639,7 @@ describe('sanitizeProposal', () => {
       SUMMER_NOW,
     );
     expect(items).toHaveLength(1);
-    expect(items[0].title).toBe('Добра');
+    expect(items[0]!.title).toBe('Добра');
     expect(droppedCount).toBe(4);
   });
 
@@ -687,10 +684,10 @@ describe('sanitizeProposal', () => {
         SUMMER_NOW,
       );
       expect(items).toHaveLength(1);
-      expect(items[0].eventId).toBe('ev1');
-      expect(typeof items[0].whenMs).toBe('number');
-      expect(items[0].title).toBeUndefined();
-      expect(items[0].durationMin).toBeUndefined();
+      expect(items[0]!.eventId).toBe('ev1');
+      expect(typeof items[0]!.whenMs).toBe('number');
+      expect(items[0]!.title).toBeUndefined();
+      expect(items[0]!.durationMin).toBeUndefined();
     });
 
     it('updateEvent: лише title (перейменування без зміни часу)', () => {
@@ -720,7 +717,7 @@ describe('sanitizeProposal', () => {
         title: 'Дантист',
         durationMin: 45,
       });
-      expect(typeof items[0].whenMs).toBe('number');
+      expect(typeof items[0]!.whenMs).toBe('number');
     });
 
     it('updateEvent: жодного патч-поля -> дропається (нічого не змінює)', () => {
@@ -776,8 +773,8 @@ describe('sanitizeProposal', () => {
         [{ kind: 'event', title: 'X', when: 'о 10:00' }],
         SUMMER_NOW,
       );
-      expect(items[0].location).toBeUndefined();
-      expect(items[0].attendees).toBeUndefined();
+      expect(items[0]!.location).toBeUndefined();
+      expect(items[0]!.attendees).toBeUndefined();
     });
 
     it('reminder: location/attendees ІГНОРУЮТЬСЯ (лише event/updateEvent несуть гостей)', () => {
@@ -796,8 +793,8 @@ describe('sanitizeProposal', () => {
       expect(items[0]).toEqual({
         kind: 'reminder',
         title: 'X',
-        whenMs: items[0].whenMs,
-        baseWhenMs: items[0].whenMs,
+        whenMs: items[0]!.whenMs,
+        baseWhenMs: items[0]!.whenMs,
         shiftMin: 0,
       });
     });
@@ -815,8 +812,8 @@ describe('sanitizeProposal', () => {
         ],
         SUMMER_NOW,
       );
-      expect(items[0].location).toBeUndefined();
-      expect(items[0].attendees).toEqual(['Валідне Імʼя']);
+      expect(items[0]!.location).toBeUndefined();
+      expect(items[0]!.attendees).toEqual(['Валідне Імʼя']);
     });
 
     it('капи: >10 гостей -> зрізає до 10; довге ім’я/location -> зрізає', () => {
@@ -832,8 +829,8 @@ describe('sanitizeProposal', () => {
         ],
         SUMMER_NOW,
       );
-      expect(items[0].location).toHaveLength(200);
-      expect(items[0].attendees).toHaveLength(10);
+      expect(items[0]!.location).toHaveLength(200);
+      expect(items[0]!.attendees).toHaveLength(10);
     });
   });
 
@@ -1146,14 +1143,14 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     const kb = buildProposalKeyboard('id123456', [{ kind: 'deleteEvent', eventId: 'ev1' }], {});
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
-    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
+    expect(row!.map((b: { text: string }) => b.text)).toEqual(['✅ Так, видалити', '❌ Ні']);
   });
 
   it('settings-клавіатура (PR-9): лише Застосувати/Скасувати, нічого циклити', () => {
     const kb = buildProposalKeyboard('id123456', [{ kind: 'settings', settings: {} }], {});
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
-    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
+    expect(row!.map((b: { text: string }) => b.text)).toEqual(['✅ Застосувати', '❌ Скасувати']);
   });
 
   it('contact-клавіатура (PR-13): лише Зберегти/Скасувати, нічого циклити', () => {
@@ -1164,7 +1161,7 @@ describe('proposalMode + edit/delete-клавіатура', () => {
     );
     expect(kb.inline_keyboard).toHaveLength(1);
     const [row] = kb.inline_keyboard;
-    expect(row.map((b: { text: string }) => b.text)).toEqual(['✅ Зберегти', '❌ Скасувати']);
+    expect(row!.map((b: { text: string }) => b.text)).toEqual(['✅ Зберегти', '❌ Скасувати']);
   });
 
   it('зсув циклиться по колу, включно з «завтра, той самий час»', () => {
@@ -1378,9 +1375,9 @@ describe('доналаштування пропозиції — циклери �
       leadMin: 30,
     });
     expect(withEvent.inline_keyboard).toHaveLength(2); // циклери + accept/cancel
-    expect(withEvent.inline_keyboard[0][0].text).toContain('1 год');
-    expect(withEvent.inline_keyboard[0][1].text).toContain('за 30 хв');
-    expect(withEvent.inline_keyboard[0][0].callback_data).toBe('pd:d:id123456');
+    expect(withEvent.inline_keyboard[0]![0]!.text).toContain('1 год');
+    expect(withEvent.inline_keyboard[0]![1]!.text).toContain('за 30 хв');
+    expect(withEvent.inline_keyboard[0]![0]!.callback_data).toBe('pd:d:id123456');
 
     // Кілька пунктів (не рівно один reminder) -> без ⏳/⏰ (не події) і без 🕐
     // (циклер часу — лише для ОДНОГО reminder, нижче) — просто accept/cancel.
@@ -1390,15 +1387,15 @@ describe('доналаштування пропозиції — циклери �
       {},
     );
     expect(multi.inline_keyboard).toHaveLength(1);
-    expect(multi.inline_keyboard[0][0].text).toContain('Прийняти');
+    expect(multi.inline_keyboard[0]![0]!.text).toContain('Прийняти');
   });
 
   it('клавіатура: create-режим з ОДНИМ reminder -> циклер часу 🕐 (окремо від подієвих ⏳/⏰)', () => {
     const kb = buildProposalKeyboard('id123456', [{ kind: 'reminder', shiftMin: 30 }], {});
     expect(kb.inline_keyboard).toHaveLength(2); // 🕐 + accept/cancel
-    expect(kb.inline_keyboard[0][0].text).toContain('+30 хв');
-    expect(kb.inline_keyboard[0][0].callback_data).toBe('pd:s:id123456');
-    expect(kb.inline_keyboard[1][0].text).toContain('Прийняти');
+    expect(kb.inline_keyboard[0]![0]!.text).toContain('+30 хв');
+    expect(kb.inline_keyboard[0]![0]!.callback_data).toBe('pd:s:id123456');
+    expect(kb.inline_keyboard[1]![0]!.text).toContain('Прийняти');
   });
 
   it('proposalHasEvent: подія -> true, лише нагадування -> false', () => {

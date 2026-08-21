@@ -18,7 +18,7 @@
 // перемикань локації).
 
 import { json, readJsonBody } from './http-core.mjs';
-import { checkOwnerRead, checkPrimaryOwner } from './auth-core.mjs';
+import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import { parseOneCall, mergeAqi } from './weather-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
 import { tgCall } from './telegram-client.mjs';
@@ -46,7 +46,7 @@ const WEATHER_LOCATIONS_FALLBACK = [
  * тут означало б зачорнити дашборд через одну зіпсовану змінну. Але й тихо
  * підмінити локацію не можна — тому в лог іде явна причина.
  */
-function ownerLocations(env) {
+function ownerLocations(/** @type {Env} */ env) {
   const raw = (env?.OWNER_LOCATIONS ?? '').trim();
   if (!raw) return WEATHER_LOCATIONS_FALLBACK;
   try {
@@ -55,7 +55,7 @@ function ownerLocations(env) {
       Array.isArray(parsed) &&
       parsed.length > 0 &&
       parsed.every(
-        (l) =>
+        (/** @type {KvBlob} */ l) =>
           l &&
           typeof l.lat === 'number' &&
           typeof l.lon === 'number' &&
@@ -64,7 +64,7 @@ function ownerLocations(env) {
       );
     if (!ok) throw new Error('очікується непорожній масив {lat, lon, name}');
     return parsed;
-  } catch (e) {
+  } catch (/** @type {any} */ e) {
     console.error('OWNER_LOCATIONS невалідні — працюю на публічному фолбеку:', e.message);
     return WEATHER_LOCATIONS_FALLBACK;
   }
@@ -87,13 +87,13 @@ const WEATHER_LIVE_DAILY_LIMIT = 150;
 // тонший поріг спричиняв би зайві «геопозиції відрізняються» і зайві KV-записи.
 const GEO_MATCH_TOLERANCE = 0.02;
 
-function roundGeo(n) {
+function roundGeo(/** @type {number} */ n) {
   return Math.round(n * 100) / 100;
 }
 
 /** true, якщо обидві точки «та сама позиція» (з допуском) АБО обидві null
  *  (немає жодного сигналу — трактуємо як «нічого не змінилось»). */
-function sameGeo(a, b) {
+function sameGeo(/** @type {KvBlob|null|undefined} */ a, /** @type {KvBlob|null|undefined} */ b) {
   if (!a && !b) return true;
   if (!a || !b) return false;
   return (
@@ -119,7 +119,7 @@ function sameGeo(a, b) {
  * може бути ВІДСУТНІМ узагалі (локальний dev без --remote, деякі внутрішні
  * типи запитів) — null тоді, graceful.
  */
-export function requestGeo(request) {
+export function requestGeo(/** @type {Request} */ request) {
   const cf = request.cf;
   if (!cf) return null;
   const latRaw = cf.latitude;
@@ -135,7 +135,11 @@ export function requestGeo(request) {
  *  тір від One Call 3.0, той самий WEATHER_API_KEY). Українська назва
  *  (local_names.uk), якщо є, інакше — що дав API. null на будь-який збій —
  *  виклик graceful-деградує до дефолтного підпису, не валить живу погоду. */
-export async function reverseGeocodeCity(lat, lon, apiKey) {
+export async function reverseGeocodeCity(
+  /** @type {number} */ lat,
+  /** @type {number} */ lon,
+  /** @type {string} */ apiKey,
+) {
   try {
     const url = new URL('https://api.openweathermap.org/geo/1.0/reverse');
     url.searchParams.set('lat', String(lat));
@@ -144,7 +148,7 @@ export async function reverseGeocodeCity(lat, lon, apiKey) {
     url.searchParams.set('appid', apiKey);
     const res = await fetch(url.toString());
     if (!res.ok) return null;
-    const data = await res.json();
+    const data = /** @type {any} */ (await res.json());
     const first = Array.isArray(data) ? data[0] : null;
     return first?.local_names?.uk ?? first?.name ?? null;
   } catch {
@@ -159,7 +163,7 @@ export async function reverseGeocodeCity(lat, lon, apiKey) {
  *  «звичайна пошукова логіка» без мережевого запиту на кожен keystroke, див.
  *  web/scripts/gen-settlements.mjs). null на збій/порожній результат —
  *  виклик сам поверне власнику чесну 404, не впаде мовчки. */
-export async function geocodeCity(query, apiKey) {
+export async function geocodeCity(/** @type {string} */ query, /** @type {string} */ apiKey) {
   try {
     const url = new URL('https://api.openweathermap.org/geo/1.0/direct');
     url.searchParams.set('q', query);
@@ -167,7 +171,7 @@ export async function geocodeCity(query, apiKey) {
     url.searchParams.set('appid', apiKey);
     const res = await fetch(url.toString());
     if (!res.ok) return null;
-    const data = await res.json();
+    const data = /** @type {any} */ (await res.json());
     const first = Array.isArray(data) ? data[0] : null;
     if (!first || !Number.isFinite(first.lat) || !Number.isFinite(first.lon)) return null;
     return { lat: first.lat, lon: first.lon, name: first.local_names?.uk ?? first.name ?? query };
@@ -190,7 +194,7 @@ export async function geocodeCity(query, apiKey) {
  * пару: кеш зберігає, ЯКА позиція в ньому лежить (weatherLive.geo), і
  * інвалідується, коли ефективна позиція змінюється, — не лише по TTL.
  */
-export async function handleLiveWeather(request, env) {
+export async function handleLiveWeather(/** @type {Request} */ request, /** @type {Env} */ env) {
   const auth = await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
@@ -288,7 +292,7 @@ export async function handleLiveWeather(request, env) {
   }
 
   const todayKey = today;
-  const fetchLocation = async (loc) => {
+  const fetchLocation = async (/** @type {KvBlob} */ loc) => {
     counter.count++;
     const oneCallUrl = new URL('https://api.openweathermap.org/data/3.0/onecall');
     oneCallUrl.searchParams.set('lat', String(loc.lat));
@@ -296,10 +300,11 @@ export async function handleLiveWeather(request, env) {
     oneCallUrl.searchParams.set('units', 'metric');
     oneCallUrl.searchParams.set('lang', 'ua');
     oneCallUrl.searchParams.set('exclude', 'minutely');
-    oneCallUrl.searchParams.set('appid', env.WEATHER_API_KEY);
+    // `?? ''` недосяжне: handleLiveWeather віддає 503 без ключа ще до сюди.
+    oneCallUrl.searchParams.set('appid', env.WEATHER_API_KEY ?? '');
     const res = await fetch(oneCallUrl.toString());
     if (!res.ok) throw new Error(`OpenWeather HTTP ${res.status}`);
-    const parsed = parseOneCall(await res.json(), loc.name, todayKey);
+    const parsed = /** @type {KvBlob} */ (parseOneCall(await res.json(), loc.name, todayKey));
     if (!parsed) throw new Error(`порожній onecall для ${loc.name}`);
 
     counter.count++;
@@ -307,7 +312,7 @@ export async function handleLiveWeather(request, env) {
       const aqiUrl = new URL('https://api.openweathermap.org/data/2.5/air_pollution');
       aqiUrl.searchParams.set('lat', String(loc.lat));
       aqiUrl.searchParams.set('lon', String(loc.lon));
-      aqiUrl.searchParams.set('appid', env.WEATHER_API_KEY);
+      aqiUrl.searchParams.set('appid', env.WEATHER_API_KEY ?? '');
       const aqiRes = await fetch(aqiUrl.toString());
       if (aqiRes.ok) {
         const aqi = mergeAqi(await aqiRes.json());
@@ -342,10 +347,11 @@ export async function handleLiveWeather(request, env) {
   const results = await Promise.allSettled(targetLocations.map(fetchLocation));
   await env.BRIEFING.put('weatherLiveCounter', JSON.stringify(counter));
 
+  /** @type {KvBlob[]} */
   const locations = [];
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') locations.push(r.value);
-    else console.error(`жива погода для ${targetLocations[i].name} впала:`, r.reason?.message);
+    else console.error(`жива погода для ${targetLocations[i]?.name} впала:`, r.reason?.message);
   });
 
   if (locations.length === 0) {
@@ -369,23 +375,26 @@ export async function handleLiveWeather(request, env) {
 }
 
 /**
- * POST /api/weather/location {city, initData} -> ручне перевизначення геопозиції
+ * POST /api/weather/location {city} -> ручне перевизначення геопозиції
  * (фідбек власника, продовження PR-7: IP-геолокація фізично не встигає за
  * реальним переміщенням на мобільній мережі — оператор мапить IP на місто
  * приблизно й не в реальному часі). Пряме геокодування (geocodeCity) введеної
  * назви -> {lat, lon, name} у ownerGeoManual, і ВІД ЦЬОГО МОМЕНТУ
  * handleLiveWeather повністю ігнорує request.cf, доки власник сам не прибере.
  *
- * АБО {lat, lon, name, initData} -> явний вибір з автозаповнення (клієнт
+ * АБО {lat, lon, name} -> явний вибір з автозаповнення (клієнт
  * шукає по web/app/public/settlements.json, координати вже відомі) —
  * геокодування пропускаємо, інакше повторний запит по одній лише назві міг
  * би повернути ІНШЕ місто, ніж власник візуально обрав (однойменні населені
  * пункти в різних областях/країнах).
  *
- * DELETE /api/weather/location {initData} -> прибрати перевизначення,
+ * DELETE /api/weather/location -> прибрати перевизначення,
  * повернутись до авто-детекції по IP (ownerGeo лишався живим весь час).
  */
-export async function handleWeatherLocation(request, env) {
+export async function handleWeatherLocation(
+  /** @type {Request} */ request,
+  /** @type {Env} */ env,
+) {
   const parsedBody = await readJsonBody(request);
   // Тіло тут НЕ обовʼязкове (DELETE без тіла) -> биття JSON = null, як і було;
   // а от завелике тіло відкидаємо явно (S3).
@@ -395,14 +404,14 @@ export async function handleWeatherLocation(request, env) {
   const body = parsedBody.ok ? parsedBody.body : null;
 
   if (request.method === 'DELETE') {
-    const auth = await checkPrimaryOwner(body?.initData, env);
+    const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
     if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
     await env.BRIEFING.delete('ownerGeoManual');
     return json({ ok: true, manualGeo: null });
   }
 
   if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
-  const auth = await checkPrimaryOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const hasExactPick =
@@ -433,7 +442,7 @@ export async function handleWeatherLocation(request, env) {
 }
 
 /**
- * POST /api/weather/locate-prompt {initData} -> тригер /locate-промпту
+ * POST /api/weather/locate-prompt -> тригер /locate-промпту
  * (кнопка request_location), ІНІЦІЙОВАНИЙ З MINI APP (фідбек власника:
  * «можна зробити цю кнопку тригер у самій апці?»). WebView не вміє показати
  * нативну кнопку геолокації сама — request_location існує ВИКЛЮЧНО як
@@ -446,10 +455,21 @@ export async function handleWeatherLocation(request, env) {
  * sendLocatePrompt сам шле в ПРИВАТНИЙ чат (TELEGRAM_OWNER_USER_ID) —
  * request_location недоступний у груповому чаті бота (TOPIC_ASSISTANT).
  */
-export async function handleWeatherLocatePrompt(request, env) {
+export async function handleWeatherLocatePrompt(
+  /** @type {Request} */ request,
+  /** @type {Env} */ env,
+) {
+  // ⚠️ Гейт методу СТОЇТЬ ПЕРШИМ і не є формальністю. Доки initData їхав у
+  // тілі, GET сюди не проходив сам собою: тіла в нього немає, тож автентифікація
+  // не складалась і відповідь була 401. Після переносу автентифікації в
+  // заголовок (M3) той самий GET став валідним — тобто побічна дія (бот шле
+  // власнику повідомлення) поїхала б на «безпечному» методі, який будь-хто
+  // вважає читанням: превʼю посилання, префетч, повтор запиту з девтулзів.
+  if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
+
   const parsedBody = await readJsonBody(request);
-  // Тіло тут НЕ обовʼязкове (DELETE без тіла) -> биття JSON = null, як і було;
-  // а от завелике тіло відкидаємо явно (S3).
+  // Тіло тут НЕ обовʼязкове (клієнт шле POST зовсім без нього) -> биття JSON =
+  // null, як і було; а от завелике тіло відкидаємо явно (S3).
   if (!parsedBody.ok && parsedBody.status === 413) {
     return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   }
@@ -457,7 +477,7 @@ export async function handleWeatherLocatePrompt(request, env) {
   // TELEGRAM_OWNER_USER_ID гарантовано задано, якщо checkOwner пройшов —
   // allowedUserIds(env) (усередині checkOwner) сама на нього спирається,
   // тож окрема not-configured-перевірка тут була б недосяжним кодом.
-  const auth = await checkPrimaryOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const res = await sendLocatePrompt(env);
@@ -477,7 +497,7 @@ export async function handleWeatherLocatePrompt(request, env) {
  * листування. chat_id тут = TELEGRAM_OWNER_USER_ID: приватний DM із ботом
  * уже «розблокований» — власник і так писав туди (як мінімум /start).
  */
-export async function sendLocatePrompt(env) {
+export async function sendLocatePrompt(/** @type {Env} */ env) {
   return tgCall(env, 'sendMessage', {
     chat_id: env.TELEGRAM_OWNER_USER_ID,
     text: 'Тисни кнопку нижче, щоб надіслати поточну GPS-позицію 📍',
@@ -496,6 +516,11 @@ export async function sendLocatePrompt(env) {
  * lat/lon гарантовано скінченні числа — parseUpdate (tg-core.mjs) вже
  * відфільтрував биті координати до null ДО того, як handleCommand
  * викликає це (parsed.location взагалі не було б truthy інакше).
+ */
+/**
+ * @param {Env} env
+ * @param {KvBlob} parsed
+ * @param {(text: string, extra?: KvBlob) => Promise<unknown>} sendText
  */
 export async function handleLocationShare(env, parsed, sendText) {
   const { latitude: lat, longitude: lon } = parsed.location;

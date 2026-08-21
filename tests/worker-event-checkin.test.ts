@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести POST /api/event для checkin (Mini App шлях, на відміну
  * від /api/agent-step, який тестує worker-agent-step.test.ts для агента).
@@ -18,7 +19,7 @@ let kv: Map<string, string>;
 let putCalls: string[];
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
+  return workerEnv({
     BRIEFING: {
       get: async (k: string) => kv.get(k) ?? null,
       put: async (k: string, v: string) => {
@@ -30,39 +31,10 @@ function env(overrides: Record<string, unknown> = {}) {
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     ...overrides,
-  };
+  });
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */
-async function buildInitData(userId: number, botToken: string, authDateSec?: number) {
-  const user = JSON.stringify({ id: userId, first_name: 'O' });
-  const authDate = authDateSec ?? Math.floor(Date.now() / 1000);
-  const params = new URLSearchParams({ user, auth_date: String(authDate) });
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode('WebAppData'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
-  const secretKey = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
-  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
-  params.set('hash', hash);
-  return params.toString();
-}
 
 async function postCheckin(body: Record<string, unknown>, e = env()) {
   return worker.fetch(

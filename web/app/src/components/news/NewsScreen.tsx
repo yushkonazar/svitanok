@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { useBriefing, useSettings } from '../../api/hooks.ts';
-import { readBlock, newsDataSchema, type NewsGroup as NewsGroupT } from '../../api/briefing-schema.ts';
+import {
+  readBlock,
+  newsDataSchema,
+  type NewsGroup as NewsGroupT,
+} from '../../api/briefing-schema.ts';
 import { isReleaseTopic, topicKey } from '../../lib/topicKind.ts';
 import { markTopicSeen } from '../../lib/newsSeen.ts';
 import { LoadingSkeleton, ErrorState, EmptyState } from '../ui/states.tsx';
@@ -41,7 +45,15 @@ const SCOPES = [
 const HERO_COUNT = 3;
 
 const NewsIcon = (
-  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-tx3)" strokeWidth="1.6" strokeLinecap="round">
+  <svg
+    width="26"
+    height="26"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="var(--color-tx3)"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+  >
     <path d="M3 12h5l2 3h4l2-3h5" />
     <path d="M4.5 8 6 4h12l1.5 4" />
     <path d="M3 12v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" />
@@ -58,7 +70,9 @@ export function NewsScreen() {
   if (isError || !data) {
     return (
       <ErrorState
-        message={error instanceof Error ? error.message : 'Перевір з’єднання з мережею й спробуй ще раз.'}
+        message={
+          error instanceof Error ? error.message : 'Перевір з’єднання з мережею й спробуй ще раз.'
+        }
         onRetry={() => refetch()}
       />
     );

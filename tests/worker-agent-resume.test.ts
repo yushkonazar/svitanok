@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { mintRunToken } from '../web/agent-run-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { ASSISTANT_RESUME_TTL_MS } from '../web/agent-core.mjs';
+import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* U3 (аудит §10) — уточнення перестає бути кінцем роботи.
  *
@@ -31,13 +30,8 @@ let tg: Call[];
 let agentRuns: Call[];
 
 function env(over: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      delete: async (k: string) => void kv.delete(k),
-      list: async () => ({ keys: [] }),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_CHAT_ID: String(OWNER),
@@ -45,7 +39,7 @@ function env(over: Record<string, unknown> = {}) {
     LLM_HOST_URL: HOST,
     LLM_HOST_SECRET: HOST_SECRET,
     ...over,
-  };
+  });
 }
 
 function ctx() {

@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats, reachedCounts } from '../web/stats-core.mjs';
 
 // Воронка v2 (роадмеп v3, F1): термінальні стадії rejected/failed, журнал
@@ -31,15 +30,15 @@ interface Agg {
   avgFitApplied: number | null;
 }
 
-const rec = (s: unknown, ev: Record<string, unknown>, day = '2026-07-01') =>
+const rec = (s: KvBlob, ev: Record<string, unknown>, day = '2026-07-01') =>
   recordEvent(s, ev, day) as Store;
-const agg = (s: unknown, day: string) => aggregateStats(s, day) as Agg;
+const agg = (s: KvBlob, day: string) => aggregateStats(s, day) as Agg;
 const stageOf = (s: Store, url: string) => s.funnel[url];
 const meta = (s: Store, url: string) => s.funnelMeta[url]!;
 
 /** Провести вакансію ланцюжком стадій (кожна — свій день, якщо задано). */
 const walk = (url: string, steps: Array<[string, string]>) => {
-  let s: Store = emptyStore();
+  let s: Store = emptyStore() as Store;
   for (const [stage, day] of steps) s = rec(s, { type: 'job_stage', url, stage }, day);
   return s;
 };
@@ -144,7 +143,7 @@ describe('воронка v2 — журнал переходів і дата вх
   });
 
   it('журнал обмежений — блоб KV не росте безмежно', () => {
-    let s: Store = emptyStore();
+    let s: Store = emptyStore() as Store;
     for (let i = 0; i < 40; i++) {
       s = rec(s, { type: 'job_stage', url: 'u1', stage: i % 2 ? 'applied' : 'saved' });
     }
@@ -176,7 +175,7 @@ describe('воронка v2 — журнал переходів і дата вх
 
 describe('воронка v2 — конверсії без survivorship bias', () => {
   const two = (a: Array<[string, string]>, b: Array<[string, string]>) => {
-    let s: Store = emptyStore();
+    let s: Store = emptyStore() as Store;
     for (const [stage, day] of a) s = rec(s, { type: 'job_stage', url: 'u1', stage }, day);
     for (const [stage, day] of b) s = rec(s, { type: 'job_stage', url: 'u2', stage }, day);
     return s;

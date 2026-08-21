@@ -102,7 +102,9 @@ function OptionButton({
       className="min-w-[40px] flex-auto rounded-[10px] border px-1.5 py-2 text-[11.5px] font-semibold transition-colors disabled:cursor-default"
       style={{
         borderColor: on ? 'var(--color-a2)' : 'var(--color-glassb)',
-        background: on ? 'color-mix(in srgb, var(--color-a2) 16%, transparent)' : 'var(--color-bg2)',
+        background: on
+          ? 'color-mix(in srgb, var(--color-a2) 16%, transparent)'
+          : 'var(--color-bg2)',
         color: on ? 'var(--color-tx)' : 'var(--color-tx2)',
       }}
     >
@@ -154,8 +156,7 @@ function QuestionRow({
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {(q.o ?? []).map(([lbl, v]) => {
-            const on =
-              q.kind === 'multi' ? asList(answers[q.id]).includes(v) : answers[q.id] === v;
+            const on = q.kind === 'multi' ? asList(answers[q.id]).includes(v) : answers[q.id] === v;
             return (
               <OptionButton
                 key={String(v)}
