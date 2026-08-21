@@ -428,9 +428,12 @@ export async function resolveRoadmapCallback(
     };
   });
 
-  await editText(
-    formatTopicMessage(topic, next.roadmapProgress),
-    buildTopicKeyboard(topic, next.roadmapProgress),
-  );
+  // `?? {}` тут ОБОВʼЯЗКОВИЙ: на no-op-гілці патч віддає `s` як є, а `s` — це
+  // свіжий блоб із KV, у якому поля roadmapProgress може не бути взагалі.
+  // topicProgress робить `ключ in progress`, а `in undefined` — TypeError, і
+  // власник побачив би мертву кнопку. До переходу на updateState поле завжди
+  // присвоювалось результатом toggleProgress, тож undefined був неможливий.
+  const progress = next.roadmapProgress ?? {};
+  await editText(formatTopicMessage(topic, progress), buildTopicKeyboard(topic, progress));
   return wasDone ? '↩️ Знято позначку' : '✅ Позначено';
 }
