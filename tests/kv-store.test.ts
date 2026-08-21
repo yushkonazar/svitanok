@@ -212,3 +212,49 @@ describe("updateState — той самий захист для 'state' (C4)", (
     expect(res).toEqual({ roadmapProgress: { 'a/b': '2026-01-01' } });
   });
 });
+
+describe("updateJson — межа мітигації (закриття знахідки рев'ю PR #334)", () => {
+  /* Решта тестів цього файлу мокає KV як Map, тобто з МИТТЄВОЮ консистентністю,
+   * якої в справжньому KV немає: читання кешується в колонії (мінімальний
+   * cacheTtl — 60 с, знизити не можна). Два `get` підряд майже напевно віддають
+   * той самий кешований рядок, тож `raw2 === raw1` означає «моя колонія не
+   * бачила змін», а не «ніхто не писав».
+   *
+   * Цей тест НЕ перевіряє фікс — він фіксує МЕЖУ, щоб вона перестала бути
+   * усною. Поки він зелений, updateState лишається мітигацією; коли ключ
+   * переїде на Durable Object, тест почервоніє й змусить переписати опис.
+   */
+  it('несвіже друге читання -> конфлікт НЕ помічено, чужий запис затерто', async () => {
+    watchKey = 'state';
+    kv.set('state', JSON.stringify({ mine: 0 }));
+
+    // Колонія віддає закешований рядок обидва рази, хоча в KV уже інше значення.
+    const cached = JSON.stringify({ mine: 0 });
+    const e = {
+      BRIEFING: {
+        get: async () => cached,
+        put: async (k: string, v: string) => void kv.set(k, v),
+      },
+    };
+    // Чужий писар (інша колонія) уже поклав своє.
+    kv.set('state', JSON.stringify({ mine: 0, theirs: 'важливе' }));
+
+    await updateState(e, (s: Record<string, unknown>) => ({ ...s, mine: 1 }));
+
+    const written = JSON.parse(kv.get('state')!);
+    expect(written.mine).toBe(1); // наша зміна лягла...
+    expect(written.theirs).toBeUndefined(); // ...а чужа зникла: retry її не побачив
+  });
+
+  it('той самий сценарій зі СВІЖИМ другим читанням — чужа зміна виживає', async () => {
+    // Контроль: механізм працює, коли колонія таки бачить запис. Без цієї пари
+    // тест вище читався б як «updateState не працює», хоча він про інше.
+    watchKey = 'state';
+    kv.set('state', JSON.stringify({ mine: 0 }));
+    onSecondRead = () => kv.set('state', JSON.stringify({ mine: 0, theirs: 'важливе' }));
+
+    await updateState(env(), (s: Record<string, unknown>) => ({ ...s, mine: 1 }));
+
+    expect(JSON.parse(kv.get('state')!)).toEqual({ mine: 1, theirs: 'важливе' });
+  });
+});
