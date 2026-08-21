@@ -426,7 +426,7 @@ const SLOT_CHECK_MIN = 30;
  * формат, що calendar-core.parseEvents). `nowMs` відсікає вже минулі години
  * (0 -> нічого не минуло, для «завтра», де це не має сенсу). Немає вільної ->
  * null (викликач сам вирішує запасний варіант).
- * @param {CalEvent[]} events
+ * @param {CalEvent[]|null|undefined} events
  * @param {string} dateKey
  * @param {number} startHour
  * @param {number} endHour
@@ -462,7 +462,8 @@ export function findFreeHourInRange(events, dateKey, startHour, endHour, nowMs =
  *
  * `days` = [{dateKey, events, nowMs, isToday}] у порядку пріоритету (типово
  * сьогодні тоді завтра; worker.js звужує до одного дня, коли forcedDay заданий).
- * @param {{ dateKey: string, events: CalEvent[], nowMs?: number, isToday?: boolean }[]} days
+ * @param {{ dateKey: string, events: CalEvent[]|null, nowMs?: number,
+ *           isToday?: boolean }[]} days
  * @param {number} startHour
  * @param {number} endHour
  */

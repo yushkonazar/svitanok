@@ -25,7 +25,10 @@ export function findTopic(/** @type {string} */ topicId) {
 }
 
 /** Знайти підпункт у вже знайденій темі; null якщо тема відсутня чи підпункт невідомий. */
-export function findSubtopic(/** @type {KvBlob} */ topic, /** @type {string} */ subtopicId) {
+export function findSubtopic(
+  /** @type {KvBlob|null|undefined} */ topic,
+  /** @type {string} */ subtopicId,
+) {
   if (!topic) return null;
   return topic.subtopics.find((/** @type {KvBlob} */ s) => s.id === subtopicId) ?? null;
 }

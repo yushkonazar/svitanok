@@ -1,3 +1,4 @@
+// @ts-check
 // Обробники inline-кнопок (Фаза 5, модуляризація worker.js, план A2 §5).
 //
 // Кожна кнопка бота приходить сюди як `callback_data` у власному просторі
@@ -58,7 +59,7 @@ export const REMINDER_CB_PREFIX = 'rm:';
 
 /** Обробити callback: застосувати подію (якщо валідна) + позначити кнопку ✓;
  *  повертає текст тосту для answerCallbackQuery (успіх/застаріло/невідомо). */
-export async function resolveCallbackToast(env, parsed) {
+export async function resolveCallbackToast(/** @type {Env} */ env, /** @type {KvBlob} */ parsed) {
   const cb = parseCallbackData(parsed.data);
   if (!cb) return '⚠️ Застаріла кнопка.';
 
@@ -89,10 +90,18 @@ export async function resolveCallbackToast(env, parsed) {
  * editMessageText доречний для навігації меню). Розрізняються лише mutate-
  * функцією й текстом тосту.
  */
+/**
+ * @param {Env} env
+ * @param {KvBlob} parsed
+ * @param {string} reminderId
+ * @param {(reminders: any[], id: string, nowMs: number) => any[]} mutate
+ * @param {string} successToast
+ */
 async function resolveReminderAction(env, parsed, reminderId, mutate, successToast) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  if (!reminders.some((r) => r.id === reminderId)) return '⚠️ Це нагадування вже неактуальне.';
+  if (!reminders.some((/** @type {KvBlob} */ r) => r.id === reminderId))
+    return '⚠️ Це нагадування вже неактуальне.';
 
   state.reminders = mutate(reminders, reminderId, Date.now());
   await env.BRIEFING.put('state', JSON.stringify(state));
@@ -107,7 +116,11 @@ async function resolveReminderAction(env, parsed, reminderId, mutate, successToa
 }
 
 /** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
-export async function resolveReminderSnooze(env, parsed, reminderId) {
+export async function resolveReminderSnooze(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ reminderId,
+) {
   // ⚠️ РЯДОК ВІД КОНСТАНТИ, не літерал. Доти тут стояло жорстке «10 хв», не
   // звʼязане зі SNOOZE_MINUTES нічим: зміни константу — і бот щовечора
   // писатиме користувачеві число, якого не робить. Сюїт цього не ловив
@@ -123,18 +136,28 @@ export async function resolveReminderSnooze(env, parsed, reminderId) {
 }
 
 /** Обробити `rs:<presetIdx>:<id>` (extra b) — snooze за одним із трьох пресетів. */
-export async function resolveReminderSnoozePreset(env, parsed, presetIdx, reminderId) {
+export async function resolveReminderSnoozePreset(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {number} */ presetIdx,
+  /** @type {string} */ reminderId,
+) {
   return resolveReminderAction(
     env,
     parsed,
     reminderId,
-    (reminders, id, nowMs) => snoozeReminderPreset(reminders, id, presetIdx, nowMs),
+    (/** @type {any[]} */ reminders, /** @type {string} */ id, /** @type {number} */ nowMs) =>
+      snoozeReminderPreset(reminders, id, presetIdx, nowMs),
     '😴 Відкладено',
   );
 }
 
 /** Обробити cancel-callback (`rc:<id>`, §C4) — видалити нагадування назавжди. */
-export async function resolveReminderCancel(env, parsed, reminderId) {
+export async function resolveReminderCancel(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ reminderId,
+) {
   return resolveReminderAction(env, parsed, reminderId, cancelReminder, '🗑 Нагадування скасовано');
 }
 
@@ -146,7 +169,7 @@ export async function resolveReminderCancel(env, parsed, reminderId) {
  * тап на ту саму ніч і так нічого не змінить (recordEvent ідемпотентний), але
  * бачити стару кнопку після підтвердження нема сенсу.
  */
-export async function resolveSleepStart(env, parsed) {
+export async function resolveSleepStart(/** @type {Env} */ env, /** @type {KvBlob} */ parsed) {
   await applyEvent(env, { type: 'sleepStart' });
   if (parsed.chatId != null && parsed.messageId != null) {
     await tgCall(env, 'editMessageText', {
@@ -169,7 +192,11 @@ export async function resolveSleepStart(env, parsed) {
  * що cancelReminder (нема окремого поля done — статус лише через видалення,
  * той самий інваріант, що вже задокументовано в reminders-core.mjs).
  */
-export async function resolveReminderDone(env, parsed, reminderId) {
+export async function resolveReminderDone(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ reminderId,
+) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
   const reminder = reminders.find((r) => r.id === reminderId);
@@ -195,7 +222,10 @@ export async function resolveReminderDone(env, parsed, reminderId) {
  * лише тік кнопки: список активних змінюється ПОВНІСТЮ, старий текст одразу
  * зробився б неправдивим (усе ще показував би скасовані пункти).
  */
-export async function resolveReminderCancelAll(env, parsed) {
+export async function resolveReminderCancelAll(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+) {
   const state = await loadState(env);
   const active = listActive(state.reminders);
   if (active.length === 0) return 'Нема що скасовувати.';
@@ -218,7 +248,7 @@ export async function resolveReminderCancelAll(env, parsed) {
 
 /** Київський DD.MM HH:MM — для питань редагування нагадування (людський час,
  *  не epoch). */
-function kyivWhen(ms) {
+function kyivWhen(/** @type {number} */ ms) {
   return new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
     day: '2-digit',
@@ -237,7 +267,11 @@ function kyivWhen(ms) {
  * (reminderText — сам текст нагадування, природний пошуковий ключ, той
  * самий, що cancelReminderByText уже використовує — жодного id не треба).
  */
-export async function resolveReminderEditPrompt(env, parsed, reminderId) {
+export async function resolveReminderEditPrompt(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {string} */ reminderId,
+) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
   const r = reminders.find((x) => x.id === reminderId && !x.firedTs);
@@ -257,7 +291,7 @@ export async function resolveReminderEditPrompt(env, parsed, reminderId) {
 }
 
 /** Прочитати найближчий тиждень і повернути {events}|null (null -> читання впало). */
-export async function readUpcomingWeek(env) {
+export async function readUpcomingWeek(/** @type {Env} */ env) {
   const today = kyivDateKey();
   return readCalendarRange(env, today, addDaysToDateKey(today, 7));
 }
@@ -269,7 +303,11 @@ export async function readUpcomingWeek(env) {
  * Google Calendar API, callback_data теоретично може бути підроблений
  * (хоч webhook уже гейтить не-власника раніше в ланцюжку).
  */
-export async function resolveAgendaCallback(env, parsed, cb) {
+export async function resolveAgendaCallback(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {KvBlob} */ cb,
+) {
   if (cb.action === 'b') {
     const events = await readUpcomingWeek(env);
     if (!events) return '🔌 Не вдалось прочитати календар.';
@@ -303,7 +341,7 @@ export async function resolveAgendaCallback(env, parsed, cb) {
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
-      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs)}${locLine}`,
+      text: `📅 <b>${escapeHtml(fresh.title)}</b>\n${kyivWhen(fresh.startMs ?? 0)}${locLine}`,
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
@@ -328,9 +366,13 @@ export async function resolveAgendaCallback(env, parsed, cb) {
  * тоді ре-рендер тієї самої теми. Невідомий topicId/subtopicId (застарілий
  * контент) -> toast замість крашу.
  */
-export async function resolveRoadmapCallback(env, parsed, cb) {
+export async function resolveRoadmapCallback(
+  /** @type {Env} */ env,
+  /** @type {KvBlob} */ parsed,
+  /** @type {KvBlob} */ cb,
+) {
   if (parsed.chatId == null || parsed.messageId == null) return '';
-  const editText = (text, replyMarkup) =>
+  const editText = (/** @type {string} */ text, /** @type {KvBlob} */ replyMarkup) =>
     tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
