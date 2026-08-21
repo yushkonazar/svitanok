@@ -17,7 +17,12 @@ const PAD_Y = 6;
 export function MiniTrend({ weeks, series }: { weeks: string[]; series: (number | null)[] }) {
   const gradId = useId();
   const [ref, inView] = useInView<SVGSVGElement>();
-  const { lineOf, areaOf } = buildTrendPaths([series], { width: W, height: H, padX: PAD_X, padY: PAD_Y });
+  const { lineOf, areaOf } = buildTrendPaths([series], {
+    width: W,
+    height: H,
+    padX: PAD_X,
+    padY: PAD_Y,
+  });
   const values = series.filter((v): v is number => v != null);
   if (values.length < 2) {
     return <div className="py-1 font-mono text-[9.5px] text-tx3">НЕДОСТАТНЬО ДАНИХ</div>;

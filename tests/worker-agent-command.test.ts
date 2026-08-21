@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { COMMANDS } from '../web/tg-core.mjs';
 import { memoryKv } from './helpers/kv.js';
 

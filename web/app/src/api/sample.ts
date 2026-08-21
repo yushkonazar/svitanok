@@ -142,7 +142,9 @@ function sampleCheckinSeries() {
         d: dayKey(d),
         sleepH: sleep[i]!,
         energy: base,
-        energyCurve: three ? [clamp(base + 1), clamp(base), clamp(base - 1)] : [clamp(base), null, null],
+        energyCurve: three
+          ? [clamp(base + 1), clamp(base), clamp(base - 1)]
+          : [clamp(base), null, null],
         moodCurve: three ? [clamp(base), clamp(base), clamp(base - 1)] : [null, null, clamp(base)],
         dayScore: i % 3 === 0 ? 4 : 3,
         slots: three ? 3 : 1,
@@ -207,7 +209,13 @@ function sampleCheckinRaw(): Stats['checkinRaw'] {
             : i % 5 === 0
               ? ['procrast']
               : ['none'],
-          helper: low ? (i % 4 === 0 ? ['breaks'] : ['none']) : i % 3 === 1 ? ['early'] : ['early', 'list'],
+          helper: low
+            ? i % 4 === 0
+              ? ['breaks']
+              : ['none']
+            : i % 3 === 1
+              ? ['early']
+              : ['early', 'list'],
           moved: low ? (i % 3 === 0 ? 'none' : 'light') : i % 2 === 0 ? 'active' : 'workout',
         },
       };
@@ -217,7 +225,6 @@ function sampleCheckinRaw(): Stats['checkinRaw'] {
   d.setDate(d.getDate() - 1);
   return { days: 90, from, to: dayKey(d), records };
 }
-
 
 /**
  * Демо-архів: 14 місяців із видимою динамікою.
@@ -384,19 +391,83 @@ export const SAMPLE_STATS: Stats = {
     // стани, які блок і має розрізняти: розрив («відмітив, а не дається»),
     // рівний прогрес і теми, яких жодного разу не питали.
     topics: [
-      { id: 'frontend', title: '🌐 Frontend основи', done: 7, total: 7, seen: 22, weak: 3, easePct: 86 },
-      { id: 'typescript', title: '🟦 TypeScript', done: 5, total: 6, seen: 14, weak: 9, easePct: 36 },
+      {
+        id: 'frontend',
+        title: '🌐 Frontend основи',
+        done: 7,
+        total: 7,
+        seen: 22,
+        weak: 3,
+        easePct: 86,
+      },
+      {
+        id: 'typescript',
+        title: '🟦 TypeScript',
+        done: 5,
+        total: 6,
+        seen: 14,
+        weak: 9,
+        easePct: 36,
+      },
       { id: 'react', title: '⚛️ React', done: 3, total: 6, seen: 18, weak: 6, easePct: 67 },
-      { id: 'networking', title: '📡 HTTP / мережі (поглиблено)', done: 4, total: 5, seen: 11, weak: 8, easePct: 27 },
-      { id: 'backend', title: '🖥 Backend / Node.js', done: 4, total: 7, seen: 16, weak: 7, easePct: 56 },
+      {
+        id: 'networking',
+        title: '📡 HTTP / мережі (поглиблено)',
+        done: 4,
+        total: 5,
+        seen: 11,
+        weak: 8,
+        easePct: 27,
+      },
+      {
+        id: 'backend',
+        title: '🖥 Backend / Node.js',
+        done: 4,
+        total: 7,
+        seen: 16,
+        weak: 7,
+        easePct: 56,
+      },
       { id: 'databases', title: '🗄 Бази даних', done: 2, total: 6, seen: 9, weak: 4, easePct: 56 },
-      { id: 'algorithms', title: '🧮 Алгоритми та структури даних', done: 2, total: 6, seen: 12, weak: 7, easePct: 42 },
+      {
+        id: 'algorithms',
+        title: '🧮 Алгоритми та структури даних',
+        done: 2,
+        total: 6,
+        seen: 12,
+        weak: 7,
+        easePct: 42,
+      },
       { id: 'security', title: '🔒 Безпека', done: 1, total: 5, seen: 4, weak: 3, easePct: 25 },
       { id: 'ai-dev', title: '🤖 AI у розробці', done: 2, total: 4, seen: 6, weak: 1, easePct: 83 },
-      { id: 'testing-adv', title: '🧪 Тестування (поглиблено)', done: 0, total: 5, seen: 0, weak: 0, easePct: null },
+      {
+        id: 'testing-adv',
+        title: '🧪 Тестування (поглиблено)',
+        done: 0,
+        total: 5,
+        seen: 0,
+        weak: 0,
+        easePct: null,
+      },
       { id: 'tools', title: '🛠 Git / CI', done: 3, total: 5, seen: 0, weak: 0, easePct: null },
-      { id: 'ecosystem', title: '📦 Тулінг і екосистема', done: 1, total: 4, seen: 0, weak: 0, easePct: null },
-      { id: 'perf-a11y', title: '⚡ Продуктивність і a11y', done: 0, total: 4, seen: 0, weak: 0, easePct: null },
+      {
+        id: 'ecosystem',
+        title: '📦 Тулінг і екосистема',
+        done: 1,
+        total: 4,
+        seen: 0,
+        weak: 0,
+        easePct: null,
+      },
+      {
+        id: 'perf-a11y',
+        title: '⚡ Продуктивність і a11y',
+        done: 0,
+        total: 4,
+        seen: 0,
+        weak: 0,
+        easePct: null,
+      },
     ],
     themeOfWeek: {
       week: '',
@@ -424,7 +495,13 @@ export const SAMPLE_STATS: Stats = {
   ],
   savedCount: 5,
   savedList: [
-    { kind: 'question', id: 'q1', title: 'Чим відрізняється let від var?', url: null, ts: '2026-07-08' },
+    {
+      kind: 'question',
+      id: 'q1',
+      title: 'Чим відрізняється let від var?',
+      url: null,
+      ts: '2026-07-08',
+    },
     {
       kind: 'news',
       id: 'https://example.com/news1',
@@ -432,7 +509,13 @@ export const SAMPLE_STATS: Stats = {
       title: 'Стартап із Києва підняв $2М',
       ts: '2026-07-07',
     },
-    { kind: 'quote', id: 'qt1', title: '«Дій, а не бажай» — Марк Аврелій', url: null, ts: '2026-07-06' },
+    {
+      kind: 'quote',
+      id: 'qt1',
+      title: '«Дій, а не бажай» — Марк Аврелій',
+      url: null,
+      ts: '2026-07-06',
+    },
   ],
   readPerDay: 6,
   // 30 днів, один dead-man 9 днів тому — стрік=9 (від наступного дня),
@@ -487,8 +570,18 @@ export const SAMPLE_STATS: Stats = {
       { from: 'interview' as const, to: 'offer' as const, n: 1, medianDays: null },
     ],
     stale: [
-      { url: 'https://jobs.example.com/1', stage: 'applied' as const, title: 'Frontend Engineer — Aurora', days: 34 },
-      { url: 'https://jobs.example.com/2', stage: 'saved' as const, title: 'React Developer — Northwind', days: 27 },
+      {
+        url: 'https://jobs.example.com/1',
+        stage: 'applied' as const,
+        title: 'Frontend Engineer — Aurora',
+        days: 34,
+      },
+      {
+        url: 'https://jobs.example.com/2',
+        stage: 'saved' as const,
+        title: 'React Developer — Northwind',
+        days: 27,
+      },
     ],
   },
   appliedWeekly: [
@@ -603,9 +696,24 @@ export const SAMPLE_STATS: Stats = {
   checkinSeries: sampleCheckinSeries(),
   checkinRaw: sampleCheckinRaw(),
   sleepLog: [
-    { d: '2026-07-30', startedAt: '2026-07-30T23:12:00.000Z', wokeAt: '2026-07-31T07:05:00.000Z', durationMin: 473 },
-    { d: '2026-07-31', startedAt: '2026-07-31T23:58:00.000Z', wokeAt: '2026-08-01T07:20:00.000Z', durationMin: 442 },
-    { d: '2026-08-01', startedAt: '2026-08-02T00:34:00.000Z', wokeAt: '2026-08-02T08:10:00.000Z', durationMin: 456 },
+    {
+      d: '2026-07-30',
+      startedAt: '2026-07-30T23:12:00.000Z',
+      wokeAt: '2026-07-31T07:05:00.000Z',
+      durationMin: 473,
+    },
+    {
+      d: '2026-07-31',
+      startedAt: '2026-07-31T23:58:00.000Z',
+      wokeAt: '2026-08-01T07:20:00.000Z',
+      durationMin: 442,
+    },
+    {
+      d: '2026-08-01',
+      startedAt: '2026-08-02T00:34:00.000Z',
+      wokeAt: '2026-08-02T08:10:00.000Z',
+      durationMin: 456,
+    },
     { d: '2026-08-02', startedAt: '2026-08-02T23:20:00.000Z', wokeAt: null, durationMin: null },
   ],
   // 30 діб, у 19 план збігся з тим, що реально зайняло час. Топ-пари — куди
@@ -774,10 +882,50 @@ export const SAMPLE_STATS: Stats = {
     drivers: [
       // q/passesBH — поправка на множинні порівняння: демо показує обидва
       // стани, бо саме різниця між «p<0.05» і «витримує поправку» тут і нова.
-      { field: 'output', index: 'work', delta: 1.05, d: 1.42, p: 0.001, q: 0.019, passesBH: true, nHigh: 22, nLow: 18 },
-      { field: 'rumination', index: 'recovery', delta: 0.82, d: 1.05, p: 0.004, q: 0.038, passesBH: true, nHigh: 24, nLow: 20 },
-      { field: 'autonomy', index: 'agency', delta: 0.71, d: 0.88, p: 0.011, q: 0.07, passesBH: false, nHigh: 19, nLow: 21 },
-      { field: 'moved', index: 'body', delta: 0.6, d: 0.74, p: 0.023, q: 0.11, passesBH: false, nHigh: 15, nLow: 17 },
+      {
+        field: 'output',
+        index: 'work',
+        delta: 1.05,
+        d: 1.42,
+        p: 0.001,
+        q: 0.019,
+        passesBH: true,
+        nHigh: 22,
+        nLow: 18,
+      },
+      {
+        field: 'rumination',
+        index: 'recovery',
+        delta: 0.82,
+        d: 1.05,
+        p: 0.004,
+        q: 0.038,
+        passesBH: true,
+        nHigh: 24,
+        nLow: 20,
+      },
+      {
+        field: 'autonomy',
+        index: 'agency',
+        delta: 0.71,
+        d: 0.88,
+        p: 0.011,
+        q: 0.07,
+        passesBH: false,
+        nHigh: 19,
+        nLow: 21,
+      },
+      {
+        field: 'moved',
+        index: 'body',
+        delta: 0.6,
+        d: 0.74,
+        p: 0.023,
+        q: 0.11,
+        passesBH: false,
+        nHigh: 15,
+        nLow: 17,
+      },
       { field: 'screen', index: 'recovery', delta: -0.55, d: -0.69, p: 0.031, nHigh: 12, nLow: 26 },
     ],
     lagged: {
@@ -843,7 +991,7 @@ export const EMPTY_STATS: Stats = {
   dismissedUrls: [],
   savedCount: 0,
   savedList: [],
-  mock: { weakTopics: [], streak: 0, recentEasyPct: null , easeTrend: [], recentByTopic: {} },
+  mock: { weakTopics: [], streak: 0, recentEasyPct: null, easeTrend: [], recentByTopic: {} },
   heatmap: [],
   funnelSpeed: { steps: [], stale: [], staleAfterDays: 21 },
   appliedWeekly: [],

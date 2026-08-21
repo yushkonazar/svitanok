@@ -35,7 +35,7 @@ import {
   isAmbiguousRewrite,
   addDaysToDateKey,
 } from './reminders-core.mjs';
-import { loadState } from './kv-store.mjs';
+import { loadState, updateState } from './kv-store.mjs';
 import { readCalendarRange } from './google.mjs';
 import { callLlmHost } from './llm-host.mjs';
 import { sendTo } from './telegram-client.mjs';
@@ -168,17 +168,20 @@ export async function createReminderFromText(env, parsed, text, { onUnparsed = n
     return sendText(REMINDER_HELP);
   }
 
-  const state = await loadState(env);
-  state.reminders = addReminder(state.reminders, {
-    id: crypto.randomUUID(),
-    text: parsedTime.remainder,
-    whenMs: parsedTime.whenMs,
-    nowMs: Date.now(),
-    // Куди відповідати, коли час настане (B12) — туди ж, де попросили.
-    chatId: parsed.chatId,
-    threadId: parsed.threadId,
-  });
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  const nowMs = Date.now();
+  const newId = crypto.randomUUID();
+  await updateState(env, (s) => ({
+    ...s,
+    reminders: addReminder(s.reminders, {
+      id: newId,
+      text: parsedTime.remainder,
+      whenMs: parsedTime.whenMs,
+      nowMs,
+      // Куди відповідати, коли час настане (B12) — туди ж, де попросили.
+      chatId: parsed.chatId,
+      threadId: parsed.threadId,
+    }),
+  }));
   return sendText(formatReminderConfirm(parsedTime.whenMs, parsedTime.remainder, Date.now()), {
     parse_mode: 'HTML',
   });

@@ -36,11 +36,8 @@ vi.mock('../web/tg-core.mjs', async (importOriginal) => {
 // Імпорти ПІСЛЯ vi.mock — інакше модулі підхоплять справжні функції.
 const { constantTimeEqual: realEqual, verifyWebhookSecret: realVerify } =
   await vi.importActual<Record<string, unknown>>('../web/tg-core.mjs');
-// @ts-expect-error — JS-модуль Worker'а без типів.
 const { validateInitData } = await import('../web/auth-core.mjs');
-// @ts-expect-error — JS-модуль Worker'а без типів.
 const { default: worker } = await import('../web/worker.js');
-// @ts-expect-error — JS-модуль Worker'а без типів.
 const { handleAgentStep } = await import('../web/agent-runtime.mjs');
 
 const BOT_TOKEN = '123456:test-bot-token';

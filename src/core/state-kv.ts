@@ -118,14 +118,25 @@ async function readBlob(
   return { ok: false, reason };
 }
 
-/** Накласти змінені оркестратором ключі поверх свіжого блоба (per-key merge, H2). */
+/**
+ * Накласти змінені оркестратором ключі поверх свіжого блоба (per-key merge, H2).
+ *
+ * Ключ із ТРАНСФОРМАЦІЄЮ (`state.update`) рахується тут заново, від свіжого
+ * значення. Різниця не косметична: ран триває хвилини, і за цей час Worker
+ * встигає записати в той самий блоб. `mine[k]` поклав би зверху значення,
+ * пораховане на ПОЧАТКУ рану, тобто мовчки скасував би чужу зміну.
+ */
 export function overlayChanged(
   fresh: StateData,
   mine: StateData,
   changed: Iterable<string>,
+  transforms: ReadonlyMap<string, (current: unknown) => unknown> = new Map(),
 ): StateData {
   const merged: StateData = { ...fresh };
-  for (const k of changed) merged[k] = mine[k];
+  for (const k of changed) {
+    const fn = transforms.get(k);
+    merged[k] = fn ? fn(fresh[k]) : mine[k];
+  }
   return merged;
 }
 
@@ -180,6 +191,8 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
   let dirty = false;
   // Ключі, які цей ран реально змінив (для per-key merge на flush, H2).
   const changed = new Set<string>();
+  // Ключі, змінені ТРАНСФОРМАЦІЄЮ: на flush рахуються від свіжого значення.
+  const transforms = new Map<string, (current: unknown) => unknown>();
 
   return {
     get<T>(k: string): T | undefined {
@@ -188,6 +201,13 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
     set<T>(k: string, value: T): void {
       data[k] = value;
       changed.add(k);
+      transforms.delete(k); // знімок перекриває раніший update на цьому ключі
+      dirty = true;
+    },
+    update<T>(k: string, fn: (current: T | undefined) => T): void {
+      data[k] = fn(data[k] as T | undefined);
+      changed.add(k);
+      transforms.set(k, (cur) => fn(cur as T | undefined));
       dirty = true;
     },
     prune(): void {
@@ -243,7 +263,7 @@ export async function createKvStateStore(opts: KvStateOptions): Promise<StateSto
 
       // value === null тут означає ЧЕСНИЙ 404 при успішному завантаженні:
       // ключа справді немає (перший запис) -> пишемо повний блоб.
-      const body = read.value ? overlayChanged(read.value, data, changed) : data;
+      const body = read.value ? overlayChanged(read.value, data, changed, transforms) : data;
 
       const resp = await kvFetch(
         f,

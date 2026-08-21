@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 // Namespace-імпорт (не список): prettier переносить довгий список на кілька
 // рядків, і однорядковий @ts-expect-error відʼїжджає від рядка з помилкою —
 // директива стає «невикористаною», а помилка типів лишається.
-// @ts-expect-error — JS-модуль Worker'а без типів
 import * as stats from '../web/stats-core.mjs';
 const { emptyStore, recordEvent, aggregateStats, pageSaved, SAVED_CAP, DAYS_CAP } = stats;
 
@@ -119,7 +118,7 @@ describe('кепи росту стору (S3)', () => {
     }
     expect(store.saved).toHaveLength(SAVED_CAP);
     // unshift кладе найновіше на початок -> обрізаємо з ХВОСТА.
-    expect(store.saved[0].url).toBe(`https://x/${SAVED_CAP + 24}`);
+    expect(store.saved[0]!.url).toBe(`https://x/${SAVED_CAP + 24}`);
     expect(store.saved.some((x: { url: string }) => x.url === 'https://x/0')).toBe(false);
   });
 

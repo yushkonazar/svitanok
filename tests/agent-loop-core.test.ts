@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль хоста без типів (namespace-імпорт).
 import * as loop from '../host/agent-loop-core.mjs';
-// @ts-expect-error — JS-модуль хоста без типів.
 import { MAX_PROMPT_LEN, MAX_SCHEMA_LEN } from '../host/llm-host-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { AGENT_MAX_STEPS } from '../web/agent-run-core.mjs';
 
 const {
@@ -25,38 +22,47 @@ const okBody = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/**
+ * Код відмови валідатора.
+ *
+ * Валідатори віддають РОЗРІЗНЯЛЬНИЙ союз (`ok:true` з value / `ok:false` з
+ * error), тож `.error` напряму читати не можна — і це правильно: саме така
+ * форма й змушує викликача перевірити `ok` перед тим, як брати `value`.
+ */
+const errOf = <T extends { ok: boolean }>(r: T) => ('error' in r ? r.error : undefined);
+
 describe('validateAgentRequest', () => {
   it('приймає повний коректний запит', () => {
     const res = validateAgentRequest(okBody());
-    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(`очікувався ok, отримано ${res.error}`);
     expect(res.value.model).toBe('sonnet');
     expect(res.value.schemaStr).toContain('action');
   });
 
   it('systemPrompt і jsonSchema опційні', () => {
     const res = validateAgentRequest({ token: 't.s', transcript: 'привіт' });
-    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(`очікувався ok, отримано ${res.error}`);
     expect(res.value.systemPrompt).toBeUndefined();
     expect(res.value.schemaStr).toBeUndefined();
   });
 
   it('відкидає запит без токена — без нього крок нікуди віддати', () => {
-    expect(validateAgentRequest(okBody({ token: undefined })).error).toBe('no-token');
-    expect(validateAgentRequest(okBody({ token: '   ' })).error).toBe('no-token');
-    expect(validateAgentRequest(okBody({ token: 'x'.repeat(5000) })).error).toBe('token-too-long');
+    expect(errOf(validateAgentRequest(okBody({ token: undefined })))).toBe('no-token');
+    expect(errOf(validateAgentRequest(okBody({ token: '   ' })))).toBe('no-token');
+    expect(errOf(validateAgentRequest(okBody({ token: 'x'.repeat(5000) })))).toBe('token-too-long');
   });
 
   it('відкидає порожній або завеликий транскрипт', () => {
-    expect(validateAgentRequest(okBody({ transcript: '' })).error).toBe('no-transcript');
-    expect(validateAgentRequest(okBody({ transcript: 'я'.repeat(MAX_PROMPT_LEN + 1) })).error).toBe(
-      'prompt-too-long',
-    );
+    expect(errOf(validateAgentRequest(okBody({ transcript: '' })))).toBe('no-transcript');
+    expect(
+      errOf(validateAgentRequest(okBody({ transcript: 'я'.repeat(MAX_PROMPT_LEN + 1) }))),
+    ).toBe('prompt-too-long');
   });
 
   it('відкидає схему-масив і завелику схему', () => {
-    expect(validateAgentRequest(okBody({ jsonSchema: [] })).error).toBe('bad-schema');
+    expect(errOf(validateAgentRequest(okBody({ jsonSchema: [] })))).toBe('bad-schema');
     expect(
-      validateAgentRequest(okBody({ jsonSchema: { s: 'я'.repeat(MAX_SCHEMA_LEN) } })).error,
+      errOf(validateAgentRequest(okBody({ jsonSchema: { s: 'я'.repeat(MAX_SCHEMA_LEN) } }))),
     ).toBe('schema-too-long');
   });
 

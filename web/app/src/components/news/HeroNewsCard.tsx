@@ -13,13 +13,7 @@ import { pluralizeNova } from './pluralize.ts';
 // теми) відкриває повний Sheet. Це і є "не голі картки" з фідбеку власника —
 // різниця з CompactNewsCard саме в обсязі видимого одразу, без тапу.
 
-export function HeroNewsCard({
-  group,
-  onOpenAll,
-}: {
-  group: NewsGroupT;
-  onOpenAll: () => void;
-}) {
+export function HeroNewsCard({ group, onOpenAll }: { group: NewsGroupT; onOpenAll: () => void }) {
   const lead = group.items[0];
   const peek = group.items[1] ?? group.more[0];
   const count = group.items.length + group.more.length;

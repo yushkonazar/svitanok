@@ -29,7 +29,7 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 export { AgentRun } from './agent-run-do.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
-import { json, readJsonBody } from './http-core.mjs';
+import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
 import {
   handleVote,
   handleEvent,
@@ -71,7 +71,7 @@ import {
 } from './weather-geo.mjs';
 import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent-runtime.mjs';
 import { resolveProposalCallback } from './proposals.mjs';
-import { loadState } from './kv-store.mjs';
+import { loadState, updateState } from './kv-store.mjs';
 
 /**
  * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
@@ -150,10 +150,9 @@ async function processTelegramUpdate(
     }
 
     if (typeof parsed.updateId === 'number') {
-      // Перечитати ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state'.
-      const state = await loadState(env);
-      state.lastUpdateId = parsed.updateId;
-      await env.BRIEFING.put('state', JSON.stringify(state));
+      // Читання ПІСЛЯ applyEvent — той міг оновити jobPrefs/mockWeights у 'state';
+      // updateState перечитує сам і мержить, а не кладе зверху свою копію.
+      await updateState(env, (s) => ({ ...s, lastUpdateId: parsed.updateId }));
     }
   } catch (err) {
     console.error('processTelegramUpdate failed', err);
@@ -174,7 +173,9 @@ async function handleTelegramWebhook(
     return json({ ok: false, error: 'bad-secret' }, 401);
   }
 
-  const parsedBody = await readJsonBody(request);
+  // Вебхук має ВЛАСНУ стелю: 16 КБ, що вистачає будь-якому /api/*, менші за
+  // максимальний законний апдейт Telegram (див. MAX_WEBHOOK_BODY_BYTES).
+  const parsedBody = await readJsonBody(request, MAX_WEBHOOK_BODY_BYTES);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const update = parsedBody.body;
   const parsed = parseUpdate(update);

@@ -234,7 +234,7 @@ export function parseCallbackData(data) {
  * кожного з них писати `'error' in res`.
  * @param {KvBlob|null|undefined} briefing
  * @param {string} code
- * @param {number|null} idx
+ * @param {number|null} [idx] відсутній = блок-сінглтон (fact/stoic)
  * @returns {{ event?: KvBlob, toast?: string, error?: 'stale'|'unknown' }}
  */
 export function resolveCallback(briefing, code, idx) {
@@ -290,8 +290,8 @@ export function resolveCallback(briefing, code, idx) {
  *    BUTTON_TYPE_INVALID у групі інакше).
  * @param {string} text
  * @param {string} url
- * @param {string|number|null|undefined} chatId
- * @param {string|null|undefined} botUsername
+ * @param {string|number|null} [chatId]
+ * @param {string|null} [botUsername] не заданий -> фолбек за chatId
  */
 export function buildMiniAppButton(text, url, chatId, botUsername) {
   const username = botUsername ? String(botUsername).trim().replace(/^@/, '') : '';
@@ -440,7 +440,10 @@ export const MIN_DISPATCH_GAP_MS = 15 * 60_000;
  *                   після підтвердження GitHub, тож збій ретраїться наступним тіком);
  *   lastDispatchMs — БУДЬ-ЯКИЙ dispatch (у т.ч. ручний /brief) свіжіший за 15 хв.
  *
- * @param {{ kyivHour: number, todayKey: unknown, nowMs: number,
+ * Кожне поле опційне НАВМИСНО: функція сама відсіює все, що не проходить
+ * `Number.isFinite`/`typeof`, і викликач цілком може не мати частини стану
+ * (перший запуск — порожній блоб briefDispatch).
+ * @param {{ kyivHour?: unknown, todayKey?: unknown, nowMs?: unknown,
  *           lastAutoDate?: unknown, lastDispatchMs?: unknown,
  *           lastSentDate?: unknown }} opts
  */
@@ -452,7 +455,10 @@ export function shouldAutoDispatchBrief({
   lastDispatchMs,
   lastSentDate,
 }) {
-  if (!Number.isFinite(kyivHour)) return false;
+  // `typeof` тут нічого не додає до перевірки — Number.isFinite і так істинний
+  // лише для чисел, — але повідомляє її компілятору. Той самий прийом, що
+  // нижче для lastDispatchMs.
+  if (typeof kyivHour !== 'number' || !Number.isFinite(kyivHour)) return false;
   if (kyivHour < BRIEF_WINDOW_START_HOUR || kyivHour >= BRIEF_WINDOW_END_HOUR) return false;
   if (typeof todayKey !== 'string' || !todayKey) return false;
   if (lastSentDate === todayKey) return false;
@@ -461,11 +467,12 @@ export function shouldAutoDispatchBrief({
   // блоба KV, тобто нетипізоване, а Number.isFinite саме собою типу не звужує.
   // Поведінка та сама — нечисло й раніше провалювало першу ж перевірку.
   const lastMs = typeof lastDispatchMs === 'number' ? lastDispatchMs : NaN;
+  const now = typeof nowMs === 'number' ? nowMs : NaN;
   if (
-    Number.isFinite(nowMs) &&
+    Number.isFinite(now) &&
     Number.isFinite(lastMs) &&
     lastMs > 0 &&
-    nowMs - lastMs < MIN_DISPATCH_GAP_MS
+    now - lastMs < MIN_DISPATCH_GAP_MS
   ) {
     return false;
   }
@@ -783,7 +790,7 @@ export function formatStatsMessage(stats) {
  * грепати логи Worker'а.
  * @param {string|number|null|undefined} chatId
  * @param {string|number|null|undefined} threadId
- * @param {{ can_read_all_group_messages?: boolean }|null} [me] відповідь getMe
+ * @param {KvBlob|null} [me] відповідь getMe (форми не гарантує ніхто)
  * @param {string|number|null} [assistantTopic] undefined = не звіряти тему
  */
 export function formatWhereAmI(chatId, threadId, me = null, assistantTopic = undefined) {

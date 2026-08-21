@@ -12,8 +12,11 @@
 //      записом мовчки губить дані — це вже ламало прод (19.07: писар `state`
 //      затирав пропозицію асистента, і кожен ✅ падав у «Застаріла»). Звідси
 //      окремі sentMessages/agentRuns/assistantHistory/assistantPending.
-//   2. Де писарів у ключа все одно кілька (`stats`) — читання-запис іде через
-//      updateStats з одним retry, а не наївним put.
+//   2. Де писарів у ключа все одно кілька (`stats` і `state`) — читання-запис
+//      іде через updateStats/updateState з одним retry, а не наївним put.
+//      ⚠️ Додаєш писаря в один із цих ключів — бери update*, не put: наївний
+//      load -> mutate -> put повертає рівно той клас утрат, який ці функції
+//      й закривають.
 //   3. Биття JSON НІКОЛИ не валить запит: кожен читач має свій нейтральний
 //      дефолт. Порожній стан гірший за помилку лише в теорії; на практиці
 //      власник побачив би 500 замість дашборда.
@@ -150,37 +153,111 @@ export async function putAssistantHistory(env, history) {
  * @returns {Promise<KvBlob>}
  */
 export async function updateStats(env, patch) {
-  const raw1 = (await env.BRIEFING.get('stats')) ?? '{}';
-  let parsed1;
-  try {
-    parsed1 = JSON.parse(raw1);
-  } catch {
-    parsed1 = {};
-  }
-  const result1 = patch(parsed1);
+  return updateJson(env, 'stats', patch);
+}
+
+/**
+ * Те саме для 'state' (C4). Ключ ділять НЕЗАЛЕЖНІ писарі: вебхук (lastUpdateId),
+ * крон нагадувань, дашборд (jobPrefs/mockWeights), асистент (roadmapProgress),
+ * пропозиції. Крон ізольований послідовним прогоном — а вебхук і `/api/*`
+ * бʼються з ним паралельно й цією ізоляцією не покриті.
+ *
+ * ⚠️ ЩО ЦЕ НЕ ЛАГОДИТЬ — ДВІ РІЗНІ ДІРКИ, і плутати їх не варто.
+ *
+ * 1. Це не CAS. Між другим читанням і `put` вікно лишається — на порядки
+ *    вужче (мілісекунди замість «читання -> Telegram-виклик -> запис»), але
+ *    не нульове.
+ * 2. Друге читання може ВЗАГАЛІ не побачити чужого запису. KV кешує читання в
+ *    колонії (мінімальний cacheTtl — 60 с, знизити не можна), тож два `get`
+ *    підряд майже напевно віддають той самий кешований рядок. `raw2 === raw1`
+ *    означає «моя колонія не бачила змін», а не «ніхто не писав». Власний
+ *    `put` кеш колонії інвалідує, тому послідовні писарі в ОДНІЙ колонії
+ *    одне одного бачать; писар з іншої колонії (крон Cloudflare проти запиту
+ *    власника) може лишитись невидимим до хвилини.
+ *
+ * Тобто виграш реальний, але це мітигація, а не гарантія. Справжня межа —
+ * Durable Object на ключ `state` (інфраструктура вже є: AGENT_RUN); поки
+ * писарів мало, дешевий варіант знімає рівно той клас утрат, який спостерігали.
+ *
+ * ⚠️ Тести цього шару мокають KV як `Map` — з миттєвою консистентністю, якої в
+ * KV немає. Вони доводять ЛОГІКУ retry, не поведінку проти справжнього KV;
+ * межу задокументовано тестом `updateJson — межа мітигації` в
+ * tests/kv-store.test.ts.
+ *
+ * ⚠️ КОНТРАКТ PATCH. Чиста функція без побічних ефектів: при розбіжності вона
+ * викликається вдруге, на свіжішій копії. Дельта («додай +1») від цього
+ * коректна — вона застосується РІВНО раз, до тієї копії, яку зрештою пишемо.
+ * А от `toggle` небезпечний: якщо чужий запис уже виставив той самий прапорець,
+ * повторний toggle зніме його. Такі патчі мусять самі перевіряти стан
+ * (`if (already) return store`), як це роблять виклики roadmapProgress.
+ *
+ * @param {Env} env
+ * @param {(store: KvBlob) => KvBlob} patch
+ * @returns {Promise<KvBlob>}
+ */
+export async function updateState(env, patch) {
+  return updateJson(env, 'state', patch);
+}
+
+/**
+ * Спільне ядро updateStats/updateState: прочитати, застосувати patch,
+ * перечитати; якщо сирий рядок змінився — застосувати patch до свіжішої копії
+ * замість того, щоб покласти зверху свою застарілу.
+ *
+ * Порівнюється саме СИРИЙ рядок, а не розібраний обʼєкт: будь-яка різниця
+ * означає, що між читаннями хтось писав, і цього досить, щоб не ризикувати.
+ *
+ * @param {Env} env
+ * @param {string} key
+ * @param {(store: KvBlob) => KvBlob} patch
+ * @returns {Promise<KvBlob>}
+ */
+async function updateJson(env, key, patch) {
+  const raw1 = (await env.BRIEFING.get(key)) ?? '{}';
+  const result1 = patch(parseBlob(raw1));
   const json1 = JSON.stringify(result1);
-  const raw2 = (await env.BRIEFING.get('stats')) ?? '{}';
+  const raw2 = (await env.BRIEFING.get(key)) ?? '{}';
   if (raw2 === raw1) {
-    await env.BRIEFING.put('stats', json1);
+    await env.BRIEFING.put(key, json1);
     return result1;
   }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(raw2);
-  } catch {
-    parsed2 = {};
-  }
-  const result2 = patch(parsed2);
-  await env.BRIEFING.put('stats', JSON.stringify(result2));
+  const result2 = patch(parseBlob(raw2));
+  await env.BRIEFING.put(key, JSON.stringify(result2));
   return result2;
 }
 
-/** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'. Причина: блоб 'state' пишуть
- *  наївні read-modify-write писарі (lastUpdateId у вебхуку, крон checkReminders,
- *  дашборд applyEvent) БЕЗ merge-before-flush; KV не має read-your-writes, тож
- *  писар, що прочитав блоб за мить до запису пропозиції, затирає її назад — і
- *  кожен ✅ падає в «Застаріла пропозиція» (баг, знайдений на проді 19.07). Той
- *  самий мотив, що [sentMessages]/[agentRuns]/[assistantHistory] — окремий ключ. */
+/**
+ * Розібрати блоб; биття -> {}.
+ *
+ * Масив теж відкидається: `typeof [] === 'object'`, тож наївна перевірка його
+ * пропускає, а кожен patch індексує аргумент як обʼєкт — `[].lastUpdateId = 2`
+ * не кинуло б помилки, а тихо поклало б у KV масив із полем.
+ *
+ * @param {string} raw
+ * @returns {any}
+ */
+function parseBlob(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'.
+ *
+ *  Причина історична й лишається чинною. Блоб 'state' пишуть кілька незалежних
+ *  писарів (lastUpdateId у вебхуку, крон checkReminders, дашборд applyEvent), і
+ *  доки вони робили наївний read-modify-write, писар, що прочитав блоб за мить
+ *  до запису пропозиції, затирав її назад — кожен ✅ падав у «Застаріла
+ *  пропозиція» (баг, знайдений на проді 19.07).
+ *
+ *  ⚠️ Відтоді всі вони ходять через updateState (C4), тож САМЕ ЦЕЙ сценарій
+ *  закрито. Ключ лишається окремим свідомо: updateState звужує вікно, але не
+ *  прибирає його (це не CAS), а пропозиція — стан, де програна гонка коштує
+ *  власнику дії, яку він щойно підтвердив. Той самий мотив, що
+ *  [sentMessages]/[agentRuns]/[assistantHistory]. */
 export const ASSISTANT_PENDING_KEY = 'assistantPending';
 
 /**

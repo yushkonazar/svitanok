@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 // CI-гейт guard (§2, §19.1): запускається РАНО на системному node runner-а
 // (без npm ci), читає config.yml + state.json, друкує рішення й пише його в
 // $GITHUB_OUTPUT. Логіку порівняння бере з guard-core.mjs (єдине джерело).
@@ -13,12 +14,12 @@ import { decideSend } from '../src/core/guard-core.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Прочитати два числові top-level ключі з config.yml без YAML-залежності. */
-function readConfigNumbers(path) {
+function readConfigNumbers(/** @type {string} */ path) {
   const text = readFileSync(path, 'utf8');
-  const num = (key) => {
+  const num = (/** @type {string} */ key) => {
     const m = text.match(new RegExp(`^${key}\\s*:\\s*(\\d+)`, 'm'));
     if (!m) throw new Error(`config.yml: не знайдено числовий ключ "${key}"`);
-    return parseInt(m[1], 10);
+    return parseInt(m[1] ?? '', 10);
   };
   return { sendHour: num('sendHour'), sendWindowHours: num('sendWindowHours') };
 }
@@ -34,12 +35,12 @@ function kyivParts(now = new Date()) {
     hour12: false,
   });
   const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
-  const kyivHour = parseInt(parts.hour, 10) % 24; // "24" опівночі в деяких ICU -> 0
+  const kyivHour = parseInt(parts.hour ?? '', 10) % 24; // "24" опівночі в деяких ICU -> 0
   return { todayKey: `${parts.year}-${parts.month}-${parts.day}`, kyivHour };
 }
 
 /** lastSentDate зі state.json; биття -> null (можливий дубль прийнятний, §8). */
-function readLastSentDate(path) {
+function readLastSentDate(/** @type {string} */ path) {
   if (!existsSync(path)) return null;
   try {
     const state = JSON.parse(readFileSync(path, 'utf8'));

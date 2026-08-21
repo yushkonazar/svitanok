@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { mintRunToken } from '../web/agent-run-core.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
 
 /* Борг (аудит §KV): «жоден ключ не має TTL — нічого не протухає».

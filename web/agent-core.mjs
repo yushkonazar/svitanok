@@ -1102,17 +1102,17 @@ const nextInCycle = (/** @type {(number|null)[]} */ steps, /** @type {number|nul
   /** @type {number|null} */ (steps[(steps.findIndex((s) => s === cur) + 1) % steps.length]);
 
 /** Наступна тривалість по колу (невідоме/undefined -> перший крок). */
-export function cycleProposalDuration(/** @type {number|null} */ cur) {
+export function cycleProposalDuration(/** @type {number|null} */ cur = null) {
   return nextInCycle(PROPOSAL_DURATION_STEPS, cur ?? null);
 }
 
 /** Наступний lead-time по колу. */
-export function cycleProposalLead(/** @type {number|null} */ cur) {
+export function cycleProposalLead(/** @type {number|null} */ cur = null) {
   return nextInCycle(PROPOSAL_LEAD_STEPS, cur ?? null);
 }
 
 /** Наступний зсув часу по колу. */
-export function cycleEventShift(/** @type {number|null} */ cur) {
+export function cycleEventShift(/** @type {number|null} */ cur = null) {
   return nextInCycle(EVENT_SHIFT_STEPS, cur ?? 0);
 }
 

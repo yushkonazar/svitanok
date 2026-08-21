@@ -1,3 +1,4 @@
+// @ts-check
 // Чиста логіка циклу агента на хості (варіант Б). І/O — server.mjs.
 //
 // НАВІЩО ЦИКЛ ТУТ. Доти його крутив Cloudflare Worker у ctx.waitUntil і впирався
@@ -51,7 +52,7 @@ const MAX_APPEND_LEN = 8000;
  * (історія + запит) і кінець (останні дані), а виріз позначаємо явно — щоб
  * модель бачила, що дані неповні, і не вигадувала відсутнє.
  */
-export function clipAgentTranscript(text, max = MAX_PROMPT_LEN) {
+export function clipAgentTranscript(/** @type {unknown} */ text, max = MAX_PROMPT_LEN) {
   const s = String(text ?? '');
   if (s.length <= max) return s;
   const marker = '\n\n…(частину проміжних кроків обрізано)…\n\n';
@@ -64,6 +65,15 @@ export function clipAgentTranscript(text, max = MAX_PROMPT_LEN) {
 /**
  * Валідувати тіло POST /agent -> {ok:true,value} | {ok:false,error}.
  * Ті самі капи, що й у /llm: хост стоїть в інтернеті й спавнить процеси.
+ */
+/**
+ * ⚠️ Літеральні `true`/`false` в `ok` обовʼязкові: без них виведення розширює
+ * поле до `boolean`, союз перестає розрізнятись, і викликач після
+ * `if (!validated.ok) return` не отримує гарантії, що `value` є.
+ * @param {any} body
+ * @returns {{ ok: false, error: string }
+ *   | { ok: true, value: { token: string, transcript: string, systemPrompt?: string,
+ *                          schemaStr?: string, model?: string } }}
  */
 export function validateAgentRequest(body) {
   if (!body || typeof body !== 'object') return { ok: false, error: 'bad-body' };
@@ -116,7 +126,7 @@ export function validateAgentRequest(body) {
  * JSON чи відсутній токен мусять зупиняти прогін, а не крутити його вічно.
  * `done:true` — фінал (Worker уже відповів власнику), далі петлі немає.
  */
-export function parseStepResponse(data) {
+export function parseStepResponse(/** @type {any} */ data) {
   if (!data || typeof data !== 'object') return { kind: 'stop', error: 'bad-step-response' };
   if (data.done === true) return { kind: 'done' };
   if (data.ok !== true) {
@@ -132,7 +142,7 @@ export function parseStepResponse(data) {
  * Звести збій CLI у форму, яку Worker уміє класифікувати (assistantErrorReply).
  * Сирий stderr сюди НЕ потрапляє — той самий інваріант, що в /llm.
  */
-export function buildFailurePayload(result) {
+export function buildFailurePayload(/** @type {any} */ result) {
   return {
     status: 502,
     error: typeof result?.error === 'string' ? result.error : 'llm-error',
@@ -151,6 +161,11 @@ export function buildFailurePayload(result) {
  *
  * Повертає {outcome, steps} — для логів і тестів.
  */
+/**
+ * @param {any} deps середовище прогону (fetch, spawn, log) — підміняється в тестах
+ * @param {{ token: string, transcript: string, systemPrompt?: string,
+ *           schemaStr?: string, model?: string }} req
+ */
 export async function runAgentLoop(deps, { token, transcript, systemPrompt, schemaStr, model }) {
   const {
     runClaude,
@@ -166,10 +181,10 @@ export async function runAgentLoop(deps, { token, transcript, systemPrompt, sche
   /* Повідомити Worker про провал — щоб власник отримав чесну причину, а не
      мовчанку. Сам звіт теж може впасти (мережа), і це вже нічим не рятується:
      тоді спрацює сторож Worker'а й скаже про обірваний запит. */
-  const report = async (failure) => {
+  const report = async (/** @type {any} */ failure) => {
     try {
       await callWorkerStep({ token: currentToken, failure });
-    } catch (e) {
+    } catch (/** @type {any} */ e) {
       log('agent: не вдалось відзвітувати про провал:', e?.message);
     }
   };
@@ -223,7 +238,7 @@ export async function runAgentLoop(deps, { token, transcript, systemPrompt, sche
     log(`agent: локальна стеля ${MAX_AGENT_STEPS} кроків вичерпана`);
     await report({ status: 0, error: 'max-steps' });
     return { outcome: 'max-steps', steps: MAX_AGENT_STEPS };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     log('agent: цикл упав —', err?.message);
     await report({ status: 0, error: 'loop-crashed' });
     return { outcome: 'crashed', steps: -1 };

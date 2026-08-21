@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-// @ts-expect-error — JS-модуль Worker'а без типів (namespace-імпорт).
 import * as rem from '../web/reminders-core.mjs';
 const {
   SNOOZE_MINUTES,
@@ -73,8 +72,8 @@ describe('reminders-core — parseReminderTime: відносний час', () =
       whenMs: SUMMER_NOW + 20 * 60_000,
       remainder: 'зробити паузу',
     });
-    expect(parseReminderTime('через 1 хвилину', SUMMER_NOW).whenMs).toBe(SUMMER_NOW + 60_000);
-    expect(parseReminderTime('через 5 хв', SUMMER_NOW).whenMs).toBe(SUMMER_NOW + 5 * 60_000);
+    expect(parseReminderTime('через 1 хвилину', SUMMER_NOW)!.whenMs).toBe(SUMMER_NOW + 60_000);
+    expect(parseReminderTime('через 5 хв', SUMMER_NOW)!.whenMs).toBe(SUMMER_NOW + 5 * 60_000);
   });
 
   it('"через N год/годин/години" — DST-незалежно (відносний зсув)', () => {
@@ -82,7 +81,7 @@ describe('reminders-core — parseReminderTime: відносний час', () =
       whenMs: SUMMER_NOW + 2 * 3_600_000,
       remainder: 'подзвонити',
     });
-    expect(parseReminderTime('через 1 год', WINTER_NOW).whenMs).toBe(WINTER_NOW + 3_600_000);
+    expect(parseReminderTime('через 1 год', WINTER_NOW)!.whenMs).toBe(WINTER_NOW + 3_600_000);
   });
 
   it('через 0 хвилин -> невалідно (не запланувати в минуле/зараз)', () => {
@@ -98,7 +97,7 @@ describe('reminders-core — parseReminderTime: завтра/сьогодні о
       remainder: 'подати резюме',
     });
     // Зима: завтра (2026-01-11) 09:30 Київ (UTC+2) -> 07:30 UTC.
-    expect(parseReminderTime('завтра о 9:30', WINTER_NOW).whenMs).toBe(
+    expect(parseReminderTime('завтра о 9:30', WINTER_NOW)!.whenMs).toBe(
       Date.parse('2026-01-11T07:30:00Z'),
     );
   });
@@ -123,41 +122,41 @@ describe('reminders-core — parseReminderTime: календарна дата (B
   // канонічних прикладів для LLM-рерайту).
   it('«24 липня» без часу -> 10:00 Київ того дня, залишок = текст нагадування', () => {
     const r = parseReminderTime('нагадай 24 липня скасувати підписку на канал webDev', SUMMER_NOW);
-    expect(r.remainder).toBe('скасувати підписку на канал webDev');
-    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-24T07:00:00.000Z'); // 10:00 EEST
+    expect(r!.remainder).toBe('скасувати підписку на канал webDev');
+    expect(new Date(r!.whenMs).toISOString()).toBe('2026-07-24T07:00:00.000Z'); // 10:00 EEST
     expect(DEFAULT_DATE_HOUR).toBe(10);
   });
 
   it('«24 липня о 18:30» -> саме той час (а не «о 18:30» на сьогодні)', () => {
     const r = parseReminderTime('24 липня о 18:30 зустріч', SUMMER_NOW);
-    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-24T15:30:00.000Z');
-    expect(r.remainder).toBe('зустріч');
+    expect(new Date(r!.whenMs).toISOString()).toBe('2026-07-24T15:30:00.000Z');
+    expect(r!.remainder).toBe('зустріч');
   });
 
   it('числова форма «24.07» і «24.07.2027»', () => {
-    expect(new Date(parseReminderTime('24.07 подзвонити', SUMMER_NOW).whenMs).toISOString()).toBe(
+    expect(new Date(parseReminderTime('24.07 подзвонити', SUMMER_NOW)!.whenMs).toISOString()).toBe(
       '2026-07-24T07:00:00.000Z',
     );
-    expect(new Date(parseReminderTime('24.07.2027 о 9:00', SUMMER_NOW).whenMs).toISOString()).toBe(
+    expect(new Date(parseReminderTime('24.07.2027 о 9:00', SUMMER_NOW)!.whenMs).toISOString()).toBe(
       '2027-07-24T06:00:00.000Z',
     );
   });
 
   it('зимова дата з літа -> DST-коректно (EET, UTC+2)', () => {
     // 3 січня вже минуло цього року -> котиться на наступний, і о 10:00 за EET.
-    expect(new Date(parseReminderTime('3 січня подарунки', SUMMER_NOW).whenMs).toISOString()).toBe(
+    expect(new Date(parseReminderTime('3 січня подарунки', SUMMER_NOW)!.whenMs).toISOString()).toBe(
       '2027-01-03T08:00:00.000Z',
     );
   });
 
   it('дата без року, що вже минула -> наступний рік (і це видно в підтвердженні)', () => {
     const r = parseReminderTime('1 січня вітання', SUMMER_NOW); // SUMMER_NOW = липень
-    expect(new Date(r.whenMs).getUTCFullYear()).toBe(2027);
+    expect(new Date(r!.whenMs).getUTCFullYear()).toBe(2027);
     // formatReminderConfirm показує рік, коли він не поточний — інакше «01.01»
     // виглядало б як щось за пів року, а не за пів року НАСТУПНОГО.
-    expect(formatReminderConfirm(r.whenMs, r.remainder, SUMMER_NOW)).toContain('2027');
+    expect(formatReminderConfirm(r!.whenMs, r!.remainder, SUMMER_NOW)).toContain('2027');
     expect(
-      formatReminderConfirm(parseReminderTime('24 липня x', SUMMER_NOW).whenMs, 'x', SUMMER_NOW),
+      formatReminderConfirm(parseReminderTime('24 липня x', SUMMER_NOW)!.whenMs, 'x', SUMMER_NOW),
     ).not.toContain('2026');
   });
 
@@ -178,9 +177,9 @@ describe('reminders-core — parseReminderTime: календарна дата (B
   it('«о 11.05» — це ЧАС 11:05, а не дата 11 травня (ревʼю B)', () => {
     // Європейський запис часу з крапкою не має ставати датою в майбутньому.
     const r = parseReminderTime('дзвінок о 11.05', SUMMER_NOW); // now = 11:00 -> 11:05 сьогодні
-    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-10T08:05:00.000Z'); // 11:05 EEST
-    expect(r.remainder).toBe('дзвінок');
-    expect(parseReminderTime('зустріч о 9.12', SUMMER_NOW).whenMs).toBe(
+    expect(new Date(r!.whenMs).toISOString()).toBe('2026-07-10T08:05:00.000Z'); // 11:05 EEST
+    expect(r!.remainder).toBe('дзвінок');
+    expect(parseReminderTime('зустріч о 9.12', SUMMER_NOW)!.whenMs).toBe(
       Date.parse('2026-07-11T06:12:00Z'), // 9:12 вже минуло -> завтра
     );
   });
@@ -197,22 +196,22 @@ describe('reminders-core — parseReminderTime: календарна дата (B
   it('час не впритул до дати — усе одно застосовується (ревʼю B)', () => {
     // «24 липня подзвонити мамі о 15» -> 24.07 о 15:00, а не о 10:00 з «о 15» у тексті.
     const r = parseReminderTime('24 липня подзвонити мамі о 15', SUMMER_NOW);
-    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-24T12:00:00.000Z'); // 15:00 EEST
-    expect(r.remainder).toBe('подзвонити мамі');
+    expect(new Date(r!.whenMs).toISOString()).toBe('2026-07-24T12:00:00.000Z'); // 15:00 EEST
+    expect(r!.remainder).toBe('подзвонити мамі');
   });
 
   it('«завтра» не впритул до часу — день усе одно завтра (ревʼю B)', () => {
     // «завтра підписати договір о 14» раніше ставало СЬОГОДНІ 14:00.
     const r = parseReminderTime('завтра підписати договір о 14', SUMMER_NOW);
-    expect(new Date(r.whenMs).toISOString()).toBe('2026-07-11T11:00:00.000Z'); // завтра 14:00 EEST
-    expect(r.remainder).toBe('підписати договір');
+    expect(new Date(r!.whenMs).toISOString()).toBe('2026-07-11T11:00:00.000Z'); // завтра 14:00 EEST
+    expect(r!.remainder).toBe('підписати договір');
   });
 
   it('«29 лютого» знаходить найближчий високосний рік, а не null (ревʼю B)', () => {
     // З липня 2026: 2026 і 2027 невисокосні -> найближчий 29.02 це 2028.
     const r = parseReminderTime('29 лютого річниця', SUMMER_NOW);
-    expect(new Date(r.whenMs).getUTCFullYear()).toBe(2028);
-    expect(new Date(r.whenMs).toISOString().slice(5, 10)).toBe('02-29');
+    expect(new Date(r!.whenMs).getUTCFullYear()).toBe(2028);
+    expect(new Date(r!.whenMs).toISOString().slice(5, 10)).toBe('02-29');
   });
 });
 
@@ -234,7 +233,7 @@ describe('reminders-core — parseReminderTime: голе "о HH[:MM]"', () => {
       whenMs: SUMMER_NOW + 10 * 60_000,
       remainder: 'випити води',
     });
-    expect(parseReminderTime('нагадати через 10 хв', SUMMER_NOW).remainder).toBe('Нагадування');
+    expect(parseReminderTime('нагадати через 10 хв', SUMMER_NOW)!.remainder).toBe('Нагадування');
   });
 
   it('без розпізнаного часу -> null', () => {
@@ -270,7 +269,7 @@ describe('reminders-core — matchDayPartRange (частини доби без �
   it('«після обіду» — ОКРЕМИЙ, пізніший діапазон від голого «в обід»', () => {
     const r = matchDayPartRange('нагадай після обіду зробити х');
     expect(r).toMatchObject({ label: 'після обіду', startHour: 14, endHour: 17 });
-    expect(r.remainder).toBe('зробити х');
+    expect(r!.remainder).toBe('зробити х');
   });
 
   it('«обіду» (генітив, тільки в "після обіду") НЕ хибно ловиться голим "в обід"', () => {
@@ -430,23 +429,23 @@ describe('reminders-core — стор: addReminder/dueReminders/markFired/snooze
 
     // повторний markFired — ідемпотентно (firedTs не змінюється в null/undefined)
     const twice = markFired(reminders, 'r1', SUMMER_NOW + 999_000);
-    expect(twice[0].firedTs).toBe(SUMMER_NOW + 60_000);
+    expect(twice[0]!.firedTs).toBe(SUMMER_NOW + 60_000);
   });
 
   it('snoozeReminder — новий whenMs (+SNOOZE_MINUTES), firedTs скидається -> знову на видачу', () => {
     let reminders = addReminder([], { id: 'r2', text: 'Y', whenMs: SUMMER_NOW, nowMs: SUMMER_NOW });
     reminders = markFired(reminders, 'r2', SUMMER_NOW);
     reminders = snoozeReminder(reminders, 'r2', SUMMER_NOW);
-    expect(reminders[0].firedTs).toBeNull();
+    expect(reminders[0]!.firedTs).toBeNull();
     // ⚠️ ЛІТЕРАЛ, а не SNOOZE_MINUTES. Доти обидві сторони рівності брали ТУ
     // САМУ константу, тобто асерція трималась істинною за будь-якого її
     // значення: мутація 10 -> 11 лишала весь сюїт (1961 тест) зеленим, поки
     // callbacks.mjs жорстко обіцяв користувачеві «10 хв». Тепер зміна
     // константи ГАСИТЬ цей тест — і це навмисно: інтервал у тості й у
     // пресеті мусить переглянути людина, а не дізнатись про це користувач.
-    expect(reminders[0].whenMs).toBe(SUMMER_NOW + 10 * 60_000);
+    expect(reminders[0]!.whenMs).toBe(SUMMER_NOW + 10 * 60_000);
     expect(dueReminders(reminders, SUMMER_NOW)).toHaveLength(0); // ще не настав новий час
-    expect(dueReminders(reminders, reminders[0].whenMs)).toHaveLength(1);
+    expect(dueReminders(reminders, reminders[0]!.whenMs)).toHaveLength(1);
   });
 
   it('невідомий id — no-op (не падає, не чіпає інші записи)', () => {
@@ -472,7 +471,7 @@ describe('reminders-core — cancelReminder/listActive (§C4: /reminders спи�
     });
     reminders = cancelReminder(reminders, 'r1');
     expect(reminders).toHaveLength(1);
-    expect(reminders[0].id).toBe('r2');
+    expect(reminders[0]!.id).toBe('r2');
   });
 
   it('cancelReminder: невідомий id — no-op', () => {
@@ -593,7 +592,7 @@ describe('updateReminder — CRUD: змінити текст і/або час а
   });
 
   it('лише час -> текст не чіпає, firedTs скидається (як snooze)', () => {
-    const fired = [{ ...base[0], firedTs: 999 }];
+    const fired = [{ ...base[0]!, firedTs: 999 }];
     const out = updateReminder(fired, 'r1', { whenMs: 2000 });
     expect(out[0]).toMatchObject({ text: 'Купити квитки', whenMs: 2000, firedTs: null });
   });
@@ -639,9 +638,11 @@ describe('reminders-core — formatRemindersListMessage/buildRemindersKeyboard (
     const kb = buildRemindersKeyboard(reminders);
     // +1 рядок «Скасувати всі» (extra c) — 2+ активних.
     expect(kb.inline_keyboard).toHaveLength(3);
-    expect(kb.inline_keyboard[0][0].text).toBe('❌ Скасувати 1');
-    expect(kb.inline_keyboard[0][0].callback_data).toBe(buildReminderCancelCallbackData('sooner'));
-    expect(kb.inline_keyboard[1][0].text).toBe('❌ Скасувати 2');
+    expect(kb.inline_keyboard[0]![0]!.text).toBe('❌ Скасувати 1');
+    expect(kb.inline_keyboard[0]![0]!.callback_data).toBe(
+      buildReminderCancelCallbackData('sooner'),
+    );
+    expect(kb.inline_keyboard[1]![0]!.text).toBe('❌ Скасувати 2');
   });
 
   describe('«Скасувати всі» (extra c) — лише коли є сенс (2+ активних)', () => {
@@ -671,9 +672,9 @@ describe('reminders-core — formatRemindersListMessage/buildRemindersKeyboard (
       });
       const kb = buildRemindersKeyboard(reminders);
       const last = kb.inline_keyboard.at(-1)!;
-      expect(last[0].text).toBe('🗑 Скасувати всі (2)');
-      expect(last[0].callback_data).toBe('rc:all');
-      expect(parseReminderCancelCallbackData(last[0].callback_data)).toBe('all');
+      expect(last[0]!.text).toBe('🗑 Скасувати всі (2)');
+      expect(last[0]!.callback_data).toBe('rc:all');
+      expect(parseReminderCancelCallbackData(last[0]!.callback_data)).toBe('all');
     });
 
     it('спрацьовані (не активні) не рахуються в поріг 2+', () => {
@@ -852,8 +853,8 @@ describe('reminders-core — rs: callback_data (пресет snooze, extra b)', 
      ці тести стережуть саме звʼязок, а не значення. */
 
   it('перший пресет виводиться з SNOOZE_MINUTES — і числом, і підписом', () => {
-    expect(SNOOZE_PRESETS[0].minutes).toBe(SNOOZE_MINUTES);
-    expect(SNOOZE_PRESETS[0].label).toContain(String(SNOOZE_MINUTES));
+    expect(SNOOZE_PRESETS[0]!.minutes).toBe(SNOOZE_MINUTES);
+    expect(SNOOZE_PRESETS[0]!.label).toContain(String(SNOOZE_MINUTES));
   });
 
   /* Читання сирцю — той самий прийом, що вже застосований у
@@ -868,8 +869,8 @@ describe('reminders-core — rs: callback_data (пресет snooze, extra b)', 
   it('buildSnoozeRow — по кнопці на пресет + «✅ Виконано» останньою', () => {
     const row = buildSnoozeRow('rem1');
     expect(row).toHaveLength(4); // 3 snooze-пресети + Виконано
-    expect(row[0].text).toBe('😴 10 хв');
-    expect(row[2].text).toBe('😴 завтра');
+    expect(row[0]!.text).toBe('😴 10 хв');
+    expect(row[2]!.text).toBe('😴 завтра');
     expect(
       row.slice(0, 3).every((b: { callback_data: string }) => b.callback_data.startsWith('rs:')),
     ).toBe(true);

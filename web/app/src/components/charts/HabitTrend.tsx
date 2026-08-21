@@ -236,8 +236,7 @@ export function HabitTrend({ weeks }: { weeks: Stats['habitWeekly'] }) {
             )}
           </div>
           <div className="text-[10.5px] text-tx2">
-            Активних <span className="font-mono font-semibold">{sel.active}</span> із {sel.days}{' '}
-            діб
+            Активних <span className="font-mono font-semibold">{sel.active}</span> із {sel.days} діб
             <span className="ml-1 font-mono text-tx3">
               {Math.round(cover(sel) * 100)}% покриття
             </span>

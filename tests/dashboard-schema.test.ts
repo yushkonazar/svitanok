@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { statsSchema } from '../web/app/src/api/schema.ts';
 import { settingsSchema, settingsResponseSchema } from '../web/app/src/api/settings-schema.ts';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 
 // Контракти Mini App (/api/stats, /api/settings) — покриття кореневим vitest.

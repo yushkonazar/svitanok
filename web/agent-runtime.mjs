@@ -74,6 +74,7 @@ import {
   loadLatest,
   loadAssistantHistory,
   updateStats,
+  updateState,
 } from './kv-store.mjs';
 import { readMail, readMailBody, searchDrive, readCalendarRange } from './google.mjs';
 import { agentHostUrl, startAgentRun } from './llm-host.mjs';
@@ -181,17 +182,15 @@ export async function runRecordAction(
     const item = flat[action.newsIndex - 1];
     if (!item?.url)
       return sendText('🤔 Не знайшов цю новину — спробуй readOwnData(scope=news) ще раз.');
-    const state = await loadState(env);
-    const r = applyUrlVote(
-      state.preferenceWeights ?? {},
-      state.votedUrls ?? {},
-      item.url,
-      item.topic,
-      'up',
-    );
-    state.preferenceWeights = r.weights;
-    state.votedUrls = r.votedUrls;
-    await env.BRIEFING.put('state', JSON.stringify(state));
+    // `r` заповнює сам patch: при розбіжності updateState викликає його вдруге,
+    // і тут лишається результат ТІЄЇ копії, яку зрештою записали, — саме її
+    // дельту й треба віддати в recordEvent нижче.
+    /** @type {any} */
+    let r;
+    await updateState(env, (s) => {
+      r = applyUrlVote(s.preferenceWeights ?? {}, s.votedUrls ?? {}, item.url, item.topic, 'up');
+      return { ...s, preferenceWeights: r.weights, votedUrls: r.votedUrls };
+    });
     const voteDateKey = kyivDateKey();
     await updateStats(env, (curStore) =>
       recordEvent(
@@ -227,13 +226,22 @@ export async function runRecordAction(
   const state = await loadState(env);
   const key = progressKey(action.roadmapTopicId, action.roadmapSubtopicId);
   if (state.roadmapProgress?.[key]) return sendText('✅ Уже позначено вивченим.');
-  state.roadmapProgress = toggleProgress(
-    state.roadmapProgress ?? {},
-    action.roadmapTopicId,
-    action.roadmapSubtopicId,
-    new Date().toISOString(),
-  );
-  await env.BRIEFING.put('state', JSON.stringify(state));
+  const doneAt = new Date().toISOString();
+  await updateState(env, (s) => {
+    // toggleProgress — ПЕРЕМИКАЧ: на свіжішій копії, де прапорець уже стоїть
+    // (власник устиг тапнути те саме в чаті), повторний виклик зняв би його.
+    const progress = s.roadmapProgress ?? {};
+    if (progress[key]) return s;
+    return {
+      ...s,
+      roadmapProgress: toggleProgress(
+        progress,
+        action.roadmapTopicId,
+        action.roadmapSubtopicId,
+        doneAt,
+      ),
+    };
+  });
   return sendText('✅ Позначив у роадмепі вивченим.');
 }
 

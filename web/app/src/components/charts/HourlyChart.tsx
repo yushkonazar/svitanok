@@ -31,7 +31,9 @@ export function HourlyChart({
 
   const pts = (hourly || []).filter((p) => p && typeof p.t === 'number' && isFinite(p.t));
   if (pts.length < 2) {
-    return <div className="py-2 text-center font-mono text-[9.5px] text-tx3">НЕДОСТАТНЬО ДАНИХ</div>;
+    return (
+      <div className="py-2 text-center font-mono text-[9.5px] text-tx3">НЕДОСТАТНЬО ДАНИХ</div>
+    );
   }
 
   const temps = pts.map((p) => p.t);
@@ -75,7 +77,10 @@ export function HourlyChart({
   const labelPts =
     LABELS <= 1
       ? pts.slice(0, 1)
-      : Array.from({ length: LABELS }, (_, i) => pts[Math.round((i * (pts.length - 1)) / (LABELS - 1))]);
+      : Array.from(
+          { length: LABELS },
+          (_, i) => pts[Math.round((i * (pts.length - 1)) / (LABELS - 1))],
+        );
 
   // Маркер — поточна година (притиснута до діапазону даних).
   const nowH = kyivMinutes(new Date()) / 60;
@@ -135,7 +140,13 @@ export function HourlyChart({
         {marks.map(([v, y], i) => (
           <g key={i}>
             <line x1={XL} y1={y} x2={XR} y2={y} stroke="var(--color-hair)" />
-            <text x="0" y={y + 3} fill="var(--color-tx3)" fontFamily="JetBrains Mono Variable" fontSize="9">
+            <text
+              x="0"
+              y={y + 3}
+              fill="var(--color-tx3)"
+              fontFamily="JetBrains Mono Variable"
+              fontSize="9"
+            >
               {v}°
             </text>
           </g>

@@ -93,7 +93,8 @@ const hex = (h: string): [number, number, number] => [
   parseInt(h.slice(3, 5), 16),
   parseInt(h.slice(5, 7), 16),
 ];
-const rgb = (a: number[]) => `#${a.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+const rgb = (a: number[]) =>
+  `#${a.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
 const mix = (a: string, b: string, t: number) => {
   const k = Math.min(1, Math.max(0, t));
   const [ar, ag, ab] = hex(a);
@@ -169,12 +170,26 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
         style={{ filter: 'drop-shadow(0 20px 56px rgba(255,110,122,.24))' }}
       >
         <defs>
-          <linearGradient id={id('d')} x1="0" y1={CY - R} x2="0" y2={g.horizonY} gradientUnits="userSpaceOnUse">
+          <linearGradient
+            id={id('d')}
+            x1="0"
+            y1={CY - R}
+            x2="0"
+            y2={g.horizonY}
+            gradientUnits="userSpaceOnUse"
+          >
             <stop className="dial-stop" offset="0" stopColor={day.top} />
             <stop className="dial-stop" offset=".55" stopColor={day.mid} />
             <stop className="dial-stop" offset="1" stopColor={day.low} />
           </linearGradient>
-          <linearGradient id={id('n')} x1="0" y1={g.horizonY} x2="0" y2={CY + R} gradientUnits="userSpaceOnUse">
+          <linearGradient
+            id={id('n')}
+            x1="0"
+            y1={g.horizonY}
+            x2="0"
+            y2={CY + R}
+            gradientUnits="userSpaceOnUse"
+          >
             <stop className="dial-stop" offset="0" stopColor={night.hi} />
             <stop className="dial-stop" offset=".5" stopColor={night.mid} />
             <stop className="dial-stop" offset="1" stopColor={night.low} />
@@ -241,10 +256,7 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
           {g.isDay && (
             <g clipPath={`url(#${id('dc')})`}>
               {BIRDS.map((b, i) => (
-                <g
-                  key={i}
-                  style={{ animation: `birdDrift ${b.dur}s linear ${b.delay}s infinite` }}
-                >
+                <g key={i} style={{ animation: `birdDrift ${b.dur}s linear ${b.delay}s infinite` }}>
                   <path
                     d={b.d}
                     transform={`translate(${b.x} ${b.y}) scale(${b.s})`}
@@ -298,7 +310,10 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
                   ))}
                 </g>
               </g>
-              <g filter={`url(#${id('fs')})`} style={{ animation: 'flareShift 9s ease-in-out infinite' }}>
+              <g
+                filter={`url(#${id('fs')})`}
+                style={{ animation: 'flareShift 9s ease-in-out infinite' }}
+              >
                 {FLARES.map((o, i) => (
                   <circle
                     key={i}

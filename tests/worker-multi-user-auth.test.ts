@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
@@ -321,5 +320,70 @@ describe('розділення ролей — межа проходить по �
     expect(kv.get('stats')).toBeUndefined();
     const answer = tg.find((x) => x.method === 'answerCallbackQuery');
     expect(String(answer?.body.text ?? '')).toContain('Лише власник');
+  });
+});
+
+/* Стеля тіла вебхука — регресія, знайдена рев'ю PR #334.
+ *
+ * Спільна стеля 16 КБ менша за максимальний ЗАКОННИЙ апдейт Telegram: текст до
+ * 4096 символів, кирилиця в UTF-8 — два байти на літеру, і якщо повідомлення є
+ * ВІДПОВІДДЮ, у тому ж апдейті їде вкладений reply_to_message такого самого
+ * розміру. Бот віддавав би 413, Telegram кілька разів повторив би доставку й
+ * зрештою кинув її — повідомлення власника не оброблялось би взагалі, тихо.
+ *
+ * Перевіряємо саме МАРШРУТ, а не readJsonBody: одиничний тест на функцію не
+ * помітив би, що worker.js забув передати їй окрему стелю.
+ */
+describe('вебхук приймає максимальний законний апдейт Telegram', () => {
+  const longCyrillic = 'я'.repeat(4096);
+
+  it('reply на довге кириличне повідомлення (>16КБ) обробляється, а не 413', async () => {
+    const body = JSON.stringify({
+      update_id: 501,
+      message: {
+        message_id: 2,
+        chat: { id: OWNER },
+        from: { id: OWNER },
+        text: longCyrillic,
+        reply_to_message: { message_id: 1, chat: { id: OWNER }, text: longCyrillic },
+      },
+    });
+    expect(new TextEncoder().encode(body).length).toBeGreaterThan(16 * 1024);
+
+    const c = ctx();
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/telegram', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+        },
+        body,
+      }),
+      env(),
+      c,
+    );
+    await c.settle();
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+    // Апдейт реально дійшов до обробки: дедуп записав його id.
+    expect(JSON.parse(kv.get('state') ?? '{}').lastUpdateId).toBe(501);
+  });
+
+  it('справді величезне тіло (понад 128КБ) вебхук усе одно відкидає', async () => {
+    const res = await worker.fetch(
+      new Request('https://svitanok.example/api/telegram', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': WEBHOOK_SECRET,
+        },
+        body: JSON.stringify({ update_id: 502, pad: 'я'.repeat(70_000) }),
+      }),
+      env(),
+      ctx(),
+    );
+    expect(res.status).toBe(413);
   });
 });

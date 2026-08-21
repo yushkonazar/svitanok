@@ -84,7 +84,10 @@ function Row({ item, i }: { item: SavedItem; i: number }) {
     //      сусідні групи однаково стрибають.
     // Робочий шлях — затримати мутацію на час анімації, але тоді вихід з екрана
     // під час таймера ЗАГУБИТЬ видалення. Різкість краща за втрату даних.
-    <div className="flex items-start gap-2.5 border-t border-hair py-2.5 first:border-t-0" style={entry}>
+    <div
+      className="flex items-start gap-2.5 border-t border-hair py-2.5 first:border-t-0"
+      style={entry}
+    >
       <div className="min-w-0 flex-1">
         {isLink ? (
           <button
@@ -125,8 +128,16 @@ function Row({ item, i }: { item: SavedItem; i: number }) {
 }
 
 export function SavedScreen() {
-  const { data, isLoading, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
-    useSavedArchive();
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useSavedArchive();
 
   if (isLoading) return <LoadingSkeleton />;
   // Помилку на весь екран показуємо, ЛИШЕ якщо показувати більше нічого. Інакше
@@ -134,7 +145,10 @@ export function SavedScreen() {
   // мережевий блимок користувач втрачав би список, який тримає в руках.
   if (isError && !data)
     return (
-      <ErrorState message={(error as Error)?.message ?? 'Спробуй ще раз'} onRetry={() => void refetch()} />
+      <ErrorState
+        message={(error as Error)?.message ?? 'Спробуй ще раз'}
+        onRetry={() => void refetch()}
+      />
     );
 
   const items = data?.pages.flatMap((p) => p.items) ?? [];
@@ -144,7 +158,16 @@ export function SavedScreen() {
     return (
       <EmptyState
         icon={
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-tx2)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="26"
+            height="26"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--color-tx2)"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1Z" />
           </svg>
         }

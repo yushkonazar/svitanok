@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { emptyStore, recordEvent, aggregateStats } from '../web/stats-core.mjs';
 
 // «Питання дня» v2 (роадмеп v3, F4): оцінка привʼязана до ПИТАННЯ (qId), а не

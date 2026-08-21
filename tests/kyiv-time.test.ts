@@ -5,7 +5,6 @@ import {
   kyivMinAfter8,
   kyivMinuteOfDay,
   bedtimeBucketForHour,
-  // @ts-expect-error — JS-модуль Worker'а без типів.
 } from '../web/kyiv-time.mjs';
 
 /* Київський час, витягнутий із worker.js (Фаза 5, модуляризація). Досі ці

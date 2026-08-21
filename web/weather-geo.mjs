@@ -18,7 +18,7 @@
 // перемикань локації).
 
 import { json, readJsonBody } from './http-core.mjs';
-import { checkOwnerRead, checkPrimaryOwner } from './auth-core.mjs';
+import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import { parseOneCall, mergeAqi } from './weather-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
 import { tgCall } from './telegram-client.mjs';
@@ -375,20 +375,20 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
 }
 
 /**
- * POST /api/weather/location {city, initData} -> ручне перевизначення геопозиції
+ * POST /api/weather/location {city} -> ручне перевизначення геопозиції
  * (фідбек власника, продовження PR-7: IP-геолокація фізично не встигає за
  * реальним переміщенням на мобільній мережі — оператор мапить IP на місто
  * приблизно й не в реальному часі). Пряме геокодування (geocodeCity) введеної
  * назви -> {lat, lon, name} у ownerGeoManual, і ВІД ЦЬОГО МОМЕНТУ
  * handleLiveWeather повністю ігнорує request.cf, доки власник сам не прибере.
  *
- * АБО {lat, lon, name, initData} -> явний вибір з автозаповнення (клієнт
+ * АБО {lat, lon, name} -> явний вибір з автозаповнення (клієнт
  * шукає по web/app/public/settlements.json, координати вже відомі) —
  * геокодування пропускаємо, інакше повторний запит по одній лише назві міг
  * би повернути ІНШЕ місто, ніж власник візуально обрав (однойменні населені
  * пункти в різних областях/країнах).
  *
- * DELETE /api/weather/location {initData} -> прибрати перевизначення,
+ * DELETE /api/weather/location -> прибрати перевизначення,
  * повернутись до авто-детекції по IP (ownerGeo лишався живим весь час).
  */
 export async function handleWeatherLocation(
@@ -404,14 +404,14 @@ export async function handleWeatherLocation(
   const body = parsedBody.ok ? parsedBody.body : null;
 
   if (request.method === 'DELETE') {
-    const auth = await checkPrimaryOwner(body?.initData, env);
+    const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
     if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
     await env.BRIEFING.delete('ownerGeoManual');
     return json({ ok: true, manualGeo: null });
   }
 
   if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
-  const auth = await checkPrimaryOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const hasExactPick =
@@ -442,7 +442,7 @@ export async function handleWeatherLocation(
 }
 
 /**
- * POST /api/weather/locate-prompt {initData} -> тригер /locate-промпту
+ * POST /api/weather/locate-prompt -> тригер /locate-промпту
  * (кнопка request_location), ІНІЦІЙОВАНИЙ З MINI APP (фідбек власника:
  * «можна зробити цю кнопку тригер у самій апці?»). WebView не вміє показати
  * нативну кнопку геолокації сама — request_location існує ВИКЛЮЧНО як
@@ -459,9 +459,17 @@ export async function handleWeatherLocatePrompt(
   /** @type {Request} */ request,
   /** @type {Env} */ env,
 ) {
+  // ⚠️ Гейт методу СТОЇТЬ ПЕРШИМ і не є формальністю. Доки initData їхав у
+  // тілі, GET сюди не проходив сам собою: тіла в нього немає, тож автентифікація
+  // не складалась і відповідь була 401. Після переносу автентифікації в
+  // заголовок (M3) той самий GET став валідним — тобто побічна дія (бот шле
+  // власнику повідомлення) поїхала б на «безпечному» методі, який будь-хто
+  // вважає читанням: превʼю посилання, префетч, повтор запиту з девтулзів.
+  if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
+
   const parsedBody = await readJsonBody(request);
-  // Тіло тут НЕ обовʼязкове (DELETE без тіла) -> биття JSON = null, як і було;
-  // а от завелике тіло відкидаємо явно (S3).
+  // Тіло тут НЕ обовʼязкове (клієнт шле POST зовсім без нього) -> биття JSON =
+  // null, як і було; а от завелике тіло відкидаємо явно (S3).
   if (!parsedBody.ok && parsedBody.status === 413) {
     return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   }
@@ -469,7 +477,7 @@ export async function handleWeatherLocatePrompt(
   // TELEGRAM_OWNER_USER_ID гарантовано задано, якщо checkOwner пройшов —
   // allowedUserIds(env) (усередині checkOwner) сама на нього спирається,
   // тож окрема not-configured-перевірка тут була б недосяжним кодом.
-  const auth = await checkPrimaryOwner(body?.initData, env);
+  const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const res = await sendLocatePrompt(env);

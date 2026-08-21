@@ -34,38 +34,71 @@
 
 ```mermaid
 flowchart TB
-    subgraph GH[GitHub Actions - cron]
-        O[orchestrator.ts<br/>щоденний брифінг]
+    subgraph CF["Cloudflare Worker — бекенд і головний планувальник"]
+        W["worker.js<br/>Telegram-бот + Mini App host"]
+        CR["cron кожні 5 хв<br/>нагадування · тригер брифінгу · dead-man"]
+        DO[("Durable Object AGENT_RUN<br/>авторитетний лічильник кроків асистента")]
     end
-    subgraph CF[Cloudflare Worker]
-        W[worker.js<br/>Telegram-бот + Mini App host]
+    subgraph GH["GitHub Actions — виконавець брифінгу"]
+        SCHED["schedule 05:00 і 06:00 UTC<br/>резерв на випадок відмови CF"]
+        O["orchestrator.ts"]
+        CLI["claude -p у ранері<br/>курація: пошта · вакансії · факт"]
     end
-    subgraph VPS[VPS-хост]
-        H[LLM relay<br/>Pro/Max підписка]
+    subgraph VPS["VPS-хост"]
+        H["LLM relay<br/>цикл tool-use поза стелею часу Cloudflare"]
     end
-    subgraph App[Mini App]
-        M[React-дашборд]
+    subgraph App["Mini App"]
+        M["React-дашборд"]
     end
 
-    O -->|публікує briefing.json| KV[(Cloudflare KV)]
-    W <-->|читає/пише стан| KV
-    W <-->|вебхук, inline-кнопки| TG((Telegram))
-    W <-->|агент-цикл /agent| H
-    H -->|spawn claude CLI| Claude[Claude Pro/Max]
-    W -->|serve /app| M
-    M -->|той самий /api/*| W
-    W --> Google[Google Calendar/Gmail/People/Drive]
-    W --> Maps[Google Maps]
-    O --> NewsData[NewsData.io/RSS]
-    O --> Weather[OpenWeather]
+    CR -->|"workflow_dispatch у вікні 08–11<br/>dead-man від 12:00"| O
+    SCHED -.->|"той самий guard: одна відправка на добу, поки читається стан"| O
+    O --> CLI
+    CLI --> Claude["Claude Pro/Max<br/>підписка власника, не платний API"]
+    O -->|"публікує briefing.json"| KV[("Cloudflare KV")]
+    W <-->|"читає/пише стан"| KV
+    W <--> DO
+    W <-->|"вебхук, inline-кнопки"| TG(("Telegram"))
+    W <-->|"агент-цикл /agent"| H
+    H -->|"spawn claude CLI"| Claude
+    W -->|"serve /app"| M
+    M -->|"той самий /api/*, автентифікація initData"| W
+    W -->|"GET /api/status — єдиний /api/* без auth"| Badge["бейдж «живий сервіс» на yushko.dev"]
+    W --> Google["Google Calendar/Gmail/People/Drive"]
+    W --> Maps["Google Maps"]
+    O --> NewsData["NewsData.io/RSS"]
+    O --> Weather["OpenWeather"]
 ```
 
-| Компонент                                            | Що робить                                                                                                                                               | Деплой                                                                                                          |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **GitHub Actions orchestrator** (`src/`)             | Раз на день будує й надсилає ранковий брифінг: детерміновані модулі (погода/курс/новини-RSS) + кураційні через `claude -p` (вакансії/пошта/факт/мок)    | Cron у `.github/workflows/brief.yml`, читає/пише стан у Cloudflare KV напряму через CF API                      |
-| **Cloudflare Worker** (`web/*.mjs`, `web/worker.js`) | Бекенд Telegram-бота: команди, inline-кнопки, вебхук, LLM tool-use асистент, `/api/*` для Mini App                                                      | Автодеплой із `main` через Git-інтеграцію Cloudflare (push у `main` = живий прод за секунди)                    |
-| **VPS LLM-хост** (`host/`)                           | Тонке реле: приймає запит від Worker, спавнить `claude` CLI під підпискою власника (не платне API), гарантує цикл tool-use без обмежень часу Cloudflare | **Вручну**: `scp` + `systemctl restart` (див. `host/README.md`) — НЕ автодеплоїться разом із Worker             |
-| **Mini App** (`web/app/`, React)                     | Дашборд: сьогодні, новини, вакансії (список/канбан), чек-ін, статистика, налаштування, збережене                                                        | Той САМИЙ деплой, що Worker — Cloudflare білдить `web/app` і кладе результат у `web/public/app`, деплоїть разом |
+**Чотири речі, яких на старій схемі не було видно взагалі.**
+
+1. **Тригерів у брифінгу два, і точний — не GitHub.** Час дає Worker: тік
+   кожні 5 хвилин, `workflow_dispatch` у вікні 08–11 Київ, ідемпотентно за
+   добу. `schedule` самого GitHub лишається резервом на випадок відмови
+   Cloudflare (два крони під DST) — він спрацьовує пізніше, але той самий
+   guard не дасть дубль. Плюс dead-man від 12:00: якщо брифінг не пішов, це
+   помітить не власник, а система.
+2. **Шляхів до Claude два, і вони незалежні.** Курація брифінгу спавнить
+   `claude -p` ПРЯМО В РАНЕРІ Actions (пін версії CLI, `--tools ''`), а
+   асистент ходить через VPS-реле. Падіння одного не забирає другий.
+3. **Стан асистента живе не тільки в KV.** Лічильник кроків прогону — Durable
+   Object на SQLite: у KV немає ні CAS, ні read-your-writes, тож «скільки кроків
+   уже зроблено» там було б здогадкою, а не фактом.
+4. **Дані власника віддає рівно один `/api/*`-маршрут без автентифікації.**
+   `GET /api/status` — одне поле, мітка часу останнього брифінгу, з ОКРЕМОГО
+   KV-ключа. Решта `/api/*` закрита, але не однаково: `/api/telegram` і
+   `/api/telegram/setup` — секретом вебхука (`X-Telegram-Bot-Api-Secret-Token`),
+   `/api/agent-step` — спільним секретом VPS-хоста плюс підписаним ран-токеном,
+   і лише все інше — HMAC-перевіркою `initData` власника. Статика Mini App
+   (`/app/*`) публічна за призначенням: це фронтенд, який без `initData` показує
+   демо-дані.
+
+| Компонент                                            | Що робить                                                                                                                                               | Деплой                                                                                                                         |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **GitHub Actions orchestrator** (`src/`)             | Раз на день будує й надсилає ранковий брифінг: детерміновані модулі (погода/курс/новини-RSS) + кураційні через `claude -p` (вакансії/пошта/факт/мок)    | `workflow_dispatch` від крону Worker (`schedule` у `brief.yml` — резерв), читає/пише стан у Cloudflare KV напряму через CF API |
+| **Cloudflare Worker** (`web/*.mjs`, `web/worker.js`) | Бекенд Telegram-бота: команди, inline-кнопки, вебхук, LLM tool-use асистент, `/api/*` для Mini App                                                      | Автодеплой із `main` через Git-інтеграцію Cloudflare (push у `main` = живий прод за секунди)                                   |
+| **VPS LLM-хост** (`host/`)                           | Тонке реле: приймає запит від Worker, спавнить `claude` CLI під підпискою власника (не платне API), гарантує цикл tool-use без обмежень часу Cloudflare | **Вручну**: `scp` + `systemctl restart` (див. `host/README.md`) — НЕ автодеплоїться разом із Worker                            |
+| **Mini App** (`web/app/`, React)                     | Дашборд: сьогодні, новини, вакансії (список/канбан), чек-ін, статистика, налаштування, збережене                                                        | Той САМИЙ деплой, що Worker — Cloudflare білдить `web/app` і кладе результат у `web/public/app`, деплоїть разом                |
 
 **Чому VPS-хост, а не виклик Claude API прямо з Worker.** Дві причини, обидві — реальні інциденти під час розробки:
 

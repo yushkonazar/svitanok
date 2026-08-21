@@ -1,3 +1,4 @@
+// @ts-check
 // Svitanok LLM-хост: тонкий HTTP-реле на claude CLI (підписка, не платний API).
 // POST /llm {prompt, systemPrompt?, jsonSchema?, model?} -> spawn('claude', ...)
 // -> {ok,result,structured,costUsd}. Уся валідація/безпековий локдаун argv —
@@ -61,17 +62,18 @@ if (!WORKER_STEP_URL) {
 
 const rateLimiter = createRateLimiter(RATE_LIMIT);
 
-const json = (res, status, obj) => {
+const json = (/** @type {any} */ res, /** @type {number} */ status, /** @type {unknown} */ obj) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(obj));
 };
 
 /** Прочитати тіло запиту з жорстким лімітом розміру (не JSON.parse на завеликому). */
-function readBody(req) {
+function readBody(/** @type {any} */ req) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    /** @type {Buffer[]} */
     const chunks = [];
-    req.on('data', (chunk) => {
+    req.on('data', (/** @type {Buffer} */ chunk) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         reject(new Error('body-too-large'));
@@ -86,7 +88,7 @@ function readBody(req) {
 }
 
 /** Викликати claude CLI з готовим argv (llm-host-core.buildClaudeArgs). */
-function runClaude(args) {
+function runClaude(/** @type {string[]} */ args) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -100,7 +102,7 @@ function runClaude(args) {
         windowsHide: true,
       });
     } catch (err) {
-      console.error('claude spawn threw synchronously:', err.message);
+      console.error('claude spawn threw synchronously:', /** @type {any} */ (err).message);
       resolve({ ok: false, error: 'spawn-failed' });
       return;
     }
@@ -155,11 +157,12 @@ function runClaude(args) {
 let activeRuns = 0;
 
 /** POST у Worker на /api/agent-step. Ніколи не кидає — {ok:false} при будь-якому збої. */
-async function callWorkerStep(body) {
+async function callWorkerStep(/** @type {unknown} */ body) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), WORKER_STEP_TIMEOUT_MS);
   try {
-    const res = await fetch(WORKER_STEP_URL, {
+    // `?? ''` недосяжне: виклик стоїть за перевіркою WORKER_STEP_URL вище.
+    const res = await fetch(WORKER_STEP_URL ?? '', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-llm-host-secret': SECRET },
       body: JSON.stringify(body),
@@ -173,15 +176,18 @@ async function callWorkerStep(body) {
       return { ok: false, error: `http-${res.status}` };
     }
   } catch (err) {
-    console.error('worker step call failed:', err?.message);
-    return { ok: false, error: err?.name === 'AbortError' ? 'timeout' : 'offline' };
+    console.error('worker step call failed:', /** @type {any} */ (err)?.message);
+    return {
+      ok: false,
+      error: /** @type {any} */ (err)?.name === 'AbortError' ? 'timeout' : 'offline',
+    };
   } finally {
     clearTimeout(timer);
   }
 }
 
 /** POST /agent — прийняти прогін і одразу відпустити викликача. */
-async function handleAgent(req, res) {
+async function handleAgent(/** @type {any} */ req, /** @type {any} */ res) {
   if (!WORKER_STEP_URL) {
     json(res, 503, { ok: false, error: 'not-configured' });
     return;

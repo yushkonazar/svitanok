@@ -4,17 +4,11 @@ import { join } from 'node:path';
 // ⚠️ Кілька імпортів, а не один список: prettier переносить довгий список на
 // кілька рядків, і однорядковий @ts-expect-error відʼїжджає від рядка з
 // помилкою — тоді директива «невикористана», а помилка типів лишається.
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { FIELDS, INDICES, normalizeField } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { dayIndices, fitWeights, dayIndexScore } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { computeDrivers, computeLagged, computeArchetypes } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { analyzeCheckinModel, flattenCheckinDay } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { RIDGE_GRID, MIN_INDICES_FOR_SCORE, indicesPresent } from '../web/checkin-model.mjs';
-// @ts-expect-error — JS-модуль Worker'а без типів
 import { CHECKIN_FIELDS } from '../web/stats-core.mjs';
 
 // Золоті вектори — згенеровані research/checkin_model.py (Python/numpy/scipy,
@@ -25,8 +19,15 @@ import { CHECKIN_FIELDS } from '../web/stats-core.mjs';
 // заради того, щоб це порівняння мало сенс.
 const golden = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'checkin-golden.json'), 'utf8'));
 
-const near = (a: number | null, b: number | null, eps = 1e-6) => {
-  if (a === null || b === null) return a === b;
+/**
+ * Порівняння з допуском.
+ *
+ * `undefined` приймається НАВМИСНО: golden-вектори читаються з JSON, а бік
+ * реалізації індексується рядковим ключем — обидва можуть віддати «нічого».
+ * Тоді рівність вимагає «нічого» з обох боків, а не тихого проходження.
+ */
+const near = (a: number | null | undefined, b: number | null | undefined, eps = 1e-6) => {
+  if (a == null || b == null) return a == null && b == null;
   return Math.abs(a - b) < eps;
 };
 
@@ -196,11 +197,11 @@ describe('checkin-model — архетипи (k-means, детермінован�
     const got = computeArchetypes(days);
     const want = golden.archetypes;
     expect(got.ready).toBe(want.ready);
-    expect(got.groups.length).toBe(want.groups.length);
-    for (let i = 0; i < got.groups.length; i++) {
-      expect(got.groups[i].n).toBe(want.groups[i].n);
-      expect(got.groups[i].top).toBe(want.groups[i].top);
-      expect(got.groups[i].low).toBe(want.groups[i].low);
+    expect(got.groups!.length).toBe(want.groups.length);
+    for (let i = 0; i < got.groups!.length; i++) {
+      expect(got.groups![i]!.n).toBe(want.groups[i].n);
+      expect(got.groups![i]!.top).toBe(want.groups[i].top);
+      expect(got.groups![i]!.low).toBe(want.groups[i].low);
     }
   });
 
@@ -401,9 +402,9 @@ describe('статфікс 2 — знак β зберігається в рах�
     const days = golden.days as Array<Record<string, unknown> & { dayScore: number }>;
     const fit = fitWeights(days.map((d) => ({ indices: dayIndices(d), dayScore: d.dayScore })));
     for (const i of INDICES as string[]) {
-      expect(Math.abs(fit.signs[i])).toBe(1);
+      expect(Math.abs(fit!.signs![i]!)).toBe(1);
       expect(fit.weights[i]).toBeGreaterThanOrEqual(0); // величина завжди невідʼємна
-      expect(Math.sign(fit.beta[i]) || 1).toBe(fit.signs[i]);
+      expect(Math.sign(fit!.beta![i]!) || 1).toBe(fit!.signs![i]!);
     }
   });
 });
@@ -447,7 +448,7 @@ describe('статфікс 4 — λ за крос-валідацією і CV-R²
 
   it('CV-R² не більший за внутрішньовибірковий — інакше це не крос-валідація', () => {
     const f = fit();
-    expect(f.r2cv).toBeLessThanOrEqual(f.r2 + 1e-9);
+    expect(f.r2cv!).toBeLessThanOrEqual(f.r2! + 1e-9);
   });
 
   it('CV-R² віддається як є, без обрізання знизу', () => {
@@ -468,7 +469,7 @@ describe('статфікс 4 — λ за крос-валідацією і CV-R²
     }));
     const f = fitWeights(noise.map((d) => ({ indices: dayIndices(d), dayScore: d.dayScore })));
     expect(typeof f.r2cv).toBe('number');
-    expect(f.r2cv).toBeLessThan(f.r2);
+    expect(f.r2cv!).toBeLessThan(f.r2!);
   });
 
   it('мала вибірка -> апріорні ваги, без λ і CV', () => {

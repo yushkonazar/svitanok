@@ -134,11 +134,7 @@ export function Heatmap({ cells }: { cells: HeatmapCell[] }) {
                   label: `${fmtDay(c.d)}: ${
                     c.v === 0
                       ? 'тиша'
-                      : [
-                          c.o && `${c.o} відкриттів`,
-                          c.m && `${c.m} питань`,
-                          c.n && `${c.n} новин`,
-                        ]
+                      : [c.o && `${c.o} відкриттів`, c.m && `${c.m} питань`, c.n && `${c.n} новин`]
                           .filter(Boolean)
                           .join(', ')
                   }`,

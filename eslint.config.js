@@ -23,12 +23,30 @@ export default tseslint.config(
     },
   },
   {
-    // guard-core.mjs та scripts/*.mjs виконуються на «голому» node — звичайний JS
+    // host/**, scripts/** і генератори виконуються на «голому» node.
     files: ['**/*.mjs', '**/*.js'],
     extends: [js.configs.recommended],
     languageOptions: {
       globals: { ...globals.node },
       sourceType: 'module',
+    },
+  },
+  {
+    // ⚠️ Код Worker'а виконує workerd, а не node. Блок вище давав йому
+    // node-глобали, тож `no-undef` мовчав би на `process.env` чи `Buffer` —
+    // тобто рівно на тому, що в проді падає. Тут набір інший: глобали
+    // service-worker-подібного рантайму (fetch/Response/crypto/caches/…).
+    //
+    // ⚠️ node-глобали доводиться гасити ПОІМЕННО ('off' на кожен). Конфіги в
+    // flat config ЗЛИВАЮТЬСЯ, і `languageOptions.globals` мержиться вглиб —
+    // `globals: {}` тут нічого не скидає, воно просто нічого не додає. Спокуса
+    // «спростити» цей рядок саме так поверне node-глобали мовчки.
+    files: ['web/*.mjs', 'web/worker.js'],
+    languageOptions: {
+      globals: {
+        ...Object.fromEntries(Object.keys(globals.node).map((k) => [k, 'off'])),
+        ...globals.serviceworker,
+      },
     },
   },
   prettier,

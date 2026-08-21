@@ -63,7 +63,8 @@ declare global {
 export const tg: TelegramWebApp | null = window.Telegram?.WebApp ?? null;
 
 /** Чи ми всередині Telegram із initData (інакше — демо/SAMPLE поза Telegram). */
-export const inTelegram = (): boolean => !!tg && typeof tg.initData === 'string' && tg.initData.length > 0;
+export const inTelegram = (): boolean =>
+  !!tg && typeof tg.initData === 'string' && tg.initData.length > 0;
 
 /** Ініціалізувати Mini App (ready+expand) — викликати раз на старті. */
 export function initTelegram(): void {

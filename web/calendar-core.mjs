@@ -15,6 +15,15 @@ import { escapeHtml } from './tg-core.mjs';
  *             startMs: number|null, endMs: number|null, location: string|null }} CalEvent
  */
 
+/**
+ * Мінімум, потрібний для перевірки перетину: лише межі (і `id`, щоб виключити
+ * саму себе). `CalEvent` йому відповідає, зворотне не потрібне — тож функції
+ * накладок беруть саме цей тип, а не повну подію. Так фікстура з двома полями
+ * лишається легальним входом, а не приводом дописувати їй `title` і `date`.
+ * @typedef {{ id?: string|null, title?: string, startMs?: number|null,
+ *             endMs?: number|null }} EventSpan
+ */
+
 /** Зсув TZ у мс для конкретного інстанту (через toLocaleString-трюк).
  *  @param {string} timeZone
  *  @param {Date} date */
@@ -172,8 +181,9 @@ export function parseEvents(json) {
  * `attendees` (PR-10, опційно) — ВЖЕ РЕЗОЛЬВЛЕНІ email-адреси (worker резолвить
  * імена через People API ДО виклику цієї функції) — сюди нічого, крім готових
  * email, не потрапляє.
- * @param {{ title: string, startIso: string, endIso: string, reminderMinutes?: number,
- *           location?: string|null, attendees?: string[]|null }} opts
+ * @param {{ title: string, startIso: string, endIso: string,
+ *           reminderMinutes?: number|null, location?: string|null,
+ *           attendees?: string[]|null }} opts
  * @returns {KvBlob}
  */
 export function buildCreateEventBody({
@@ -228,10 +238,16 @@ export function buildUpdateEventBody({ title, startIso, endIso, location, attend
  * накладку в пропозиції (звичайний напівінтервал: суміжні події НЕ накладаються).
  * `excludeId` — id самої події, що редагується (updateEvent інакше сам на себе
  * «накладався» б).
- * @param {CalEvent[]} events
+ * Узагальнено по типу події: усередині читаються лише межі й `id`, тож
+ * викликач із повним CalEvent отримує назад CalEvent, а тест зі спрощеною
+ * фікстурою — свою ж форму. Без цього фікстура дописувала б title/date лише
+ * заради типу.
+ * @template {EventSpan} T
+ * @param {readonly T[]|null|undefined} events
  * @param {number} startMs
  * @param {number} endMs
  * @param {string|null} [excludeId]
+ * @returns {T[]}
  */
 export function findOverlaps(events, startMs, endMs, excludeId = null) {
   if (!Array.isArray(events) || !Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
@@ -264,7 +280,12 @@ const EVENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const idMark = (/** @type {CalEvent} */ e) =>
   typeof e?.id === 'string' && EVENT_ID_RE.test(e.id) ? ` [id:${e.id}]` : '';
 
-/** @param {CalEvent[]} events */
+/**
+ * `unknown`, бо перший рядок функції — це саме перевірка на сміття
+ * (`Array.isArray(events) || … -> 'подій немає'`). Вужчий тип описував би не
+ * контракт, а побажання.
+ * @param {unknown} events
+ */
 export function formatEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
   return events
@@ -281,7 +302,7 @@ export function formatEventsForPrompt(events) {
  * transcript ризикує перевищити MAX_PROMPT_LEN=4000 хоста (-> prompt-too-long
  * -> тихий фолбек замість відповіді). Тому ≤MAX_RANGE_EVENTS подій і ≤MAX_RANGE_LEN
  * символів; надлишок -> маркер «…(ще N)».
- * @param {CalEvent[]} events
+ * @param {unknown} events — той самий мотив, що formatEventsForPrompt
  */
 export function formatRangeEventsForPrompt(events) {
   if (!Array.isArray(events) || events.length === 0) return 'подій немає';
@@ -330,8 +351,10 @@ const MAX_AGENDA_BUTTON_LEN = 30;
 /** Майбутні (>= nowMs) події з .id, капнуто на MAX_AGENDA_ITEMS — той самий
  *  зріз ділять formatAgendaMessage і buildAgendaKeyboard (щоб нумерація
  *  тексту й порядок кнопок завжди збігались).
- *  @param {CalEvent[]} events
- *  @param {number} nowMs */
+ *  @template {EventSpan} T
+ *  @param {readonly T[]|null|undefined} events
+ *  @param {number} nowMs
+ *  @returns {{ shown: T[], hiddenCount: number }} */
 function upcomingAgendaEvents(events, nowMs) {
   const upcoming = (Array.isArray(events) ? events : []).filter(
     (e) => e?.id && Number.isFinite(e.startMs) && (e.startMs ?? 0) >= nowMs,
@@ -351,7 +374,7 @@ const agendaTimeFmt = new Intl.DateTimeFormat('uk-UA', {
 });
 
 /** Telegram-текст /agenda (HTML) — нумерований список, «…ще N» за капом.
- *  @param {CalEvent[]} events
+ *  @param {readonly EventSpan[]|null|undefined} events
  *  @param {number} nowMs */
 export function formatAgendaMessage(events, nowMs) {
   const { shown, hiddenCount } = upcomingAgendaEvents(events, nowMs);
@@ -394,7 +417,7 @@ export function parseAgendaCallbackData(data) {
 }
 
 /** Одна кнопка на подію (`ev:v:<id>`) — той самий зріз/порядок, що текст.
- *  @param {CalEvent[]} events
+ *  @param {readonly EventSpan[]|null|undefined} events
  *  @param {number} nowMs */
 export function buildAgendaKeyboard(events, nowMs) {
   const { shown } = upcomingAgendaEvents(events, nowMs);
@@ -403,10 +426,13 @@ export function buildAgendaKeyboard(events, nowMs) {
       // upcomingAgendaEvents уже відсіяв події без id.
       const cb = buildAgendaCallbackData('v', /** @type {string} */ (e.id));
       if (!cb) return null;
+      // `?? ''` не змінює нічого для подій із parseEvents (там title завжди є,
+      // хай і '(без назви)'), але робить кнопку стійкою до спрощеної події.
+      const title = e.title ?? '';
       const label =
-        e.title.length > MAX_AGENDA_BUTTON_LEN
-          ? `${e.title.slice(0, MAX_AGENDA_BUTTON_LEN - 1)}…`
-          : e.title;
+        title.length > MAX_AGENDA_BUTTON_LEN
+          ? `${title.slice(0, MAX_AGENDA_BUTTON_LEN - 1)}…`
+          : title;
       return [{ text: `${i + 1}. ${label}`, callback_data: cb }];
     })
     .filter(Boolean);

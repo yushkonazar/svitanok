@@ -6,7 +6,6 @@ import {
   isPrimaryOwner,
   checkOwner,
   checkPrimaryOwner,
-  // @ts-expect-error — JS-модуль Worker'а без типів.
 } from '../web/auth-core.mjs';
 
 /* Єдина безпекова поверхня дашборда, витягнута з worker.js (Фаза 5).
@@ -87,6 +86,38 @@ describe('validateInitData — підпис Telegram', () => {
     const old = Math.floor(Date.now() / 1000) - 86_401;
     const stale = signInitData({ user: JSON.stringify(OWNER) }, BOT_TOKEN, old);
     expect(await validateInitData(stale, BOT_TOKEN)).toBeNull();
+  });
+
+  /* SV-B3 — ДРУГИЙ бік того самого вікна.
+   *
+   * Доти перевірялась лише верхня межа, і `auth_date` із майбутнього проходив
+   * без обмежень: підпис-бо валідний, а дату підписує той самий, хто підписує
+   * initData. Практичний наслідок — не «дивна дата», а ключ без терміну
+   * придатності: 24-годинне вікно для нього просто ніколи не наставало. */
+  const withSkew = (deltaSec: number) =>
+    signInitData(
+      { user: JSON.stringify(OWNER) },
+      BOT_TOKEN,
+      Math.floor(Date.now() / 1000) + deltaSec,
+    );
+
+  it('дата з далекого майбутнього -> null, а не вічний перепустк', async () => {
+    expect(await validateInitData(withSkew(10 * 365 * 86_400), BOT_TOKEN)).toBeNull();
+    expect(await validateInitData(withSkew(3600), BOT_TOKEN)).toBeNull();
+    expect(await validateInitData(withSkew(301), BOT_TOKEN)).toBeNull();
+  });
+
+  it('розбіжність годинників у межах допуску проходить', async () => {
+    // Клієнт, що спішить на хвилину, — це норма, а не атака.
+    expect(await validateInitData(withSkew(60), BOT_TOKEN)).not.toBeNull();
+    expect(await validateInitData(withSkew(0), BOT_TOKEN)).not.toBeNull();
+  });
+
+  it('нижня межа вікна не зрушила: 24 години мінус хвилина ще валідні', async () => {
+    // Гарантія проти «полагодили майбутнє, зламали сесію»: Telegram видає
+    // auth_date РАЗ на запуск Mini App, тож звуження вікна вниз віддавало б
+    // 401 апці, відкритій довше за нього.
+    expect(await validateInitData(withSkew(-86_340), BOT_TOKEN)).not.toBeNull();
   });
 });
 

@@ -125,7 +125,10 @@ export function roadmapWeekly(
     const wk = weekStartKey(iso.slice(0, 10));
     if (counts[wk] != null) counts[wk]++;
   }
-  return starts.map((k) => ({ week: k, count: counts[k] }));
+  // `?? 0` недосяжне: ключі беруться з тих самих `starts`, якими заповнено
+  // counts. Без нього тиждень без подій мав би тип `number|undefined` —
+  // тобто «даних немає» замість «нуль», а це різні речі для споживача.
+  return starts.map((k) => ({ week: k, count: counts[k] ?? 0 }));
 }
 
 /** Перший невідмічений підпункт у канонічному порядку тем/підпунктів; null якщо все зроблено. */

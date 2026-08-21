@@ -27,7 +27,10 @@ const isMonthKey = (/** @type {unknown} */ k) =>
  * Биті дані зводяться до порожнього списку, а не до 500: архів дописується
  * кроном, і зіпсований запис не має валити екран — блок просто не покажеться.
  * @param {Env} env
- * @param {import('./auth-core.mjs').AuthResult|null|undefined} auth
+ * Тип auth — МІНІМУМ, який тут справді читається, а не повний AuthResult:
+ * функція лише гейтить за `ok` і віддає `status`/`error` назад. Вимагати
+ * повну ухвалу означало б, що фікстура дописує `user` заради типу.
+ * @param {{ ok?: unknown, status?: number, error?: string }|null|undefined} auth
  */
 export async function handleArchive(env, auth) {
   if (!auth?.ok) return json({ ok: false, error: auth?.error ?? 'auth' }, auth?.status ?? 401);

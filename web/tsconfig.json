@@ -25,7 +25,10 @@
     // Глобали workerd замість node: `KVNamespace`, `DurableObject`,
     // `ExecutionContext`, `caches`, а також fetch/Request/Response у їхньому
     // варіанті Cloudflare, а не undici.
-    "types": ["@cloudflare/workers-types"]
+    "types": ["@cloudflare/workers-types"],
+    // Скидаємо `paths` кореневого конфіга: там `cloudflare:workers` веде на
+    // тестову заглушку для node, а тут рантайм справжній.
+    "paths": {}
   },
   // Лише верхній рівень: `app/` — окремий пакет React зі своїм tsconfig,
   // `public/` — статика, `scripts/` — node-генератор даних.

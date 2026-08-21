@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 // Telegram-діагностика (§6, §19.3): валідність токена (getMe), пошук chat_id
 // (getUpdates), тест доставки (sendMessage). Без залежностей; токен у виводі
 // маскований. Рятує від класу «бот мовчить, бо chat_id не той / не натиснув Start».
@@ -16,11 +17,13 @@ function loadEnv() {
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (!m) continue;
-    let val = m[2];
+    // `?? ''` недосяжні: обидві групи регулярки обовʼязкові, тож збіг їх має.
+    const key = m[1] ?? '';
+    let val = m[2] ?? '';
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
-    if (!(m[1] in process.env)) process.env[m[1]] = val;
+    if (!(key in process.env)) process.env[key] = val;
   }
 }
 
@@ -29,10 +32,10 @@ loadEnv();
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chatId = process.env.TELEGRAM_CHAT_ID;
 
-const mask = (t) =>
+const mask = (/** @type {string|undefined} */ t) =>
   !t ? '(відсутній)' : t.length <= 8 ? '***' : `${t.slice(0, 4)}…${t.slice(-4)}`;
 
-async function api(method, body) {
+async function api(/** @type {string} */ method, /** @type {unknown} */ body = undefined) {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -49,7 +52,7 @@ async function main() {
   }
 
   // 1) getMe — валідність токена
-  const me = await api('getMe');
+  const me = /** @type {{ status: number, json: any }} */ (await api('getMe'));
   if (!me.json.ok) {
     console.error(`❌ getMe: HTTP ${me.status} ${JSON.stringify(me.json)} — токен невалідний?`);
     process.exit(1);
@@ -57,7 +60,7 @@ async function main() {
   console.log(`✅ getMe: @${me.json.result.username} (id ${me.json.result.id})`);
 
   // 2) getUpdates — показати chat_id тих, хто писав боту
-  const upd = await api('getUpdates');
+  const upd = /** @type {{ status: number, json: any }} */ (await api('getUpdates'));
   const chats = new Map();
   for (const u of upd.json.result ?? []) {
     const chat = u.message?.chat ?? u.channel_post?.chat;
@@ -80,10 +83,12 @@ async function main() {
     console.log('ℹ️  TELEGRAM_CHAT_ID не заданий — пропускаю тест відправки. Візьми id вище.');
     return;
   }
-  const sent = await api('sendMessage', {
-    chat_id: chatId,
-    text: '✅ Svitanok: тест доставки. Бачиш це — chat_id правильний.',
-  });
+  const sent = /** @type {{ status: number, json: any }} */ (
+    await api('sendMessage', {
+      chat_id: chatId,
+      text: '✅ Svitanok: тест доставки. Бачиш це — chat_id правильний.',
+    })
+  );
   if (sent.json.ok) {
     console.log(`✅ sendMessage у ${chatId}: доставлено.`);
   } else {
