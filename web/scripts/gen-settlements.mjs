@@ -1,3 +1,4 @@
+// @ts-check
 // Одноразовий/повторюваний генератор web/app/public/settlements.json з
 // GeoNames-дампів. Запуск:
 //   node web/scripts/gen-settlements.mjs <UA.txt> <cities15000.txt> <uk-alt-names.txt>
@@ -30,6 +31,7 @@ if (!uaPath || !worldPath || !ukAltPath) {
 // Стандартні короткі назви областей (номінатив) — GeoNames admin1 не дає
 // кирилицю, тож мапимо код -> назву власноруч (фіксований, добре відомий
 // перелік, 27 записів).
+/** @type {Record<string, string>} */
 const UA_OBLAST = {
   '01': 'Черкаська обл.',
   '02': 'Чернігівська обл.',
@@ -60,14 +62,15 @@ const UA_OBLAST = {
   27: 'Житомирська обл.',
 };
 
-const round3 = (n) => Math.round(n * 1000) / 1000;
+const round3 = (/** @type {number} */ n) => Math.round(n * 1000) / 1000;
 
 /** geonameid -> офіційна українська назва (isolanguage==='uk'). Перевага
  *  isPreferredName==='1'; серед решти — перша за файлом (стабільно, без
  *  подальшого здогаду). Формат рядка (GeoNames alternate names table):
  *  alternateNameId, geonameid, isolanguage, name, isPreferred, isShort,
  *  isColloquial, isHistoric, from, to. */
-function buildUkNameMap(text) {
+function buildUkNameMap(/** @type {string} */ text) {
+  /** @type {Map<string, string>} */
   const map = new Map();
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -85,6 +88,10 @@ function buildUkNameMap(text) {
 const UA_ADMIN_SEAT_CODES = new Set(['PPLC', 'PPLA', 'PPLA2', 'PPLA3', 'PPLA4', 'PPLA5']);
 const UA_MIN_PLAIN_POP = 3000;
 
+/**
+ * @param {string} text
+ * @param {Map<string, string>} ukNames
+ */
 function parseUA(text, ukNames) {
   const out = [];
   for (const line of text.split('\n')) {
@@ -94,24 +101,29 @@ function parseUA(text, ukNames) {
     // 8 feature code, 9 country, 11 admin1, 15 population
     const [geonameid, name, , , latS, lonS, , featureCode, , , admin1, , , , popS] = f;
     const population = Number(popS) || 0;
-    const isAdminSeat = UA_ADMIN_SEAT_CODES.has(featureCode);
+    const isAdminSeat = UA_ADMIN_SEAT_CODES.has(featureCode ?? '');
     if (!isAdminSeat && !(featureCode === 'PPL' && population >= UA_MIN_PLAIN_POP)) continue;
     const lat = Number(latS);
     const lon = Number(lonS);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     out.push({
-      name: ukNames.get(geonameid) ?? name, // фолбек — латинська asciiname/name, НІКОЛИ інша кирилиця
+      // `?? ''` недосяжні: рядок GeoNames має фіксовану кількість колонок.
+      name: ukNames.get(geonameid ?? '') ?? name, // фолбек — латинська asciiname/name
       lat: round3(lat),
       lon: round3(lon),
       country: 'UA',
-      region: UA_OBLAST[admin1] ?? null,
+      region: UA_OBLAST[admin1 ?? ''] ?? null,
       population,
-      hasUk: ukNames.has(geonameid),
+      hasUk: ukNames.has(geonameid ?? ''),
     });
   }
   return out;
 }
 
+/**
+ * @param {string} text
+ * @param {Map<string, string>} ukNames
+ */
 function parseWorld(text, ukNames) {
   const out = [];
   for (const line of text.split('\n')) {
@@ -124,7 +136,8 @@ function parseWorld(text, ukNames) {
     const lon = Number(lonS);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     out.push({
-      name: ukNames.get(geonameid) ?? name, // є укр. екзонім (Лондон, Париж…) -> береться; інакше локальна/англ. назва
+      // `?? ''` недосяжне: рядок GeoNames має фіксовану кількість колонок.
+      name: ukNames.get(geonameid ?? '') ?? name, // укр. екзонім, інакше локальна/англ. назва
       lat: round3(lat),
       lon: round3(lon),
       country,

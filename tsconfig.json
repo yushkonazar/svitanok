@@ -39,5 +39,8 @@
     // має резолвитись у @cloudflare/workers-types.
     "paths": { "cloudflare:workers": ["./tests/stubs/cloudflare-workers.ts"] }
   },
-  "include": ["src/**/*", "tests/**/*"]
+  // host/scripts тут ЯВНО, а не транзитивно через імпорти тестів: інакше
+  // файл, якого жоден тест не імпортує (host/server.mjs, генератори), тихо
+  // лишався б поза програмою — тобто поза перевіркою.
+  "include": ["src/**/*", "tests/**/*", "host/**/*.mjs", "scripts/**/*.mjs", "web/scripts/**/*.mjs"]
 }

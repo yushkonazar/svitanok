@@ -1,3 +1,4 @@
+// @ts-check
 // Чиста логіка LLM-хоста (VPS-реле на claude CLI, підписка): валідація запиту,
 // const-time secret (той самий патерн, що web/tg-core.mjs — окремий копі,
 // host/ деплоїться самостійно, без залежності на web/), побудова argv для
@@ -39,7 +40,7 @@ const DEFAULT_MODEL = 'haiku';
 export const MODEL_RE = /^[a-z0-9][a-z0-9-]{0,39}$/i;
 
 /** Константний-час порівняння секрету (дзеркало web/tg-core.mjs verifyWebhookSecret). */
-export function verifySecret(header, secret) {
+export function verifySecret(/** @type {unknown} */ header, /** @type {unknown} */ secret) {
   if (typeof header !== 'string' || typeof secret !== 'string' || !secret) return false;
   if (header.length !== secret.length) return false;
   let diff = 0;
@@ -51,6 +52,13 @@ export function verifySecret(header, secret) {
  * Валідувати тіло запиту {prompt, systemPrompt?, jsonSchema?, model?}.
  * -> {ok:true, value} | {ok:false, error}. Кожне текстове поле — з жорстким
  * лімітом довжини (захист від зловживання/завеликих payload'ів).
+ */
+/**
+ * Літеральні `true`/`false` — з того самого мотиву, що validateAgentRequest.
+ * @param {any} body
+ * @returns {{ ok: false, error: string }
+ *   | { ok: true, value: { prompt: string, systemPrompt?: string,
+ *                          schemaStr?: string, model?: string } }}
  */
 export function validateLlmRequest(body) {
   if (!body || typeof body !== 'object') return { ok: false, error: 'bad-body' };
@@ -177,7 +185,7 @@ export const PINNED_CLAUDE_VERSION = '2.1.195';
  * Витягти семвер із виводу `claude --version` ('2.1.195 (Claude Code)').
  * Не розпізнали — null: краще чесне «не знаю», ніж вигадана версія.
  */
-export function parseClaudeVersion(out) {
+export function parseClaudeVersion(/** @type {unknown} */ out) {
   const m = String(out ?? '').match(/(\d+\.\d+\.\d+)/);
   return m ? m[1] : null;
 }
@@ -190,7 +198,10 @@ export function parseClaudeVersion(out) {
  * ймовірну проблему на гарантовану. Але мовчати теж не можна — саме мовчання й
  * було дефектом.
  */
-export function claudeVersionWarning(installed, pinned = PINNED_CLAUDE_VERSION) {
+export function claudeVersionWarning(
+  /** @type {string|null|undefined} */ installed,
+  pinned = PINNED_CLAUDE_VERSION,
+) {
   if (!installed) {
     return `не вдалось визначити версію claude CLI (очікується ${pinned}) — локдаун --tools не перевірено`;
   }
@@ -214,21 +225,22 @@ const RESET_EPOCH_RE = /limit reached\|(\d{13}|\d{10})(?!\d)/i;
  * resetAtMs — лише коли CLI дав epoch; інакше undefined (Worker скаже
  * «спробуй пізніше» без години, а не вигадає її).
  */
-export function detectUsageLimit(text) {
+export function detectUsageLimit(/** @type {unknown} */ text) {
   const s = typeof text === 'string' ? text : '';
   if (!USAGE_LIMIT_RE.test(s)) return { limit: false };
   const m = RESET_EPOCH_RE.exec(s);
   if (!m) return { limit: true };
   const n = Number(m[1]);
   if (!Number.isFinite(n) || n <= 0) return { limit: true };
-  return { limit: true, resetAtMs: m[1].length >= 13 ? n : n * 1000 };
+  return { limit: true, resetAtMs: (m[1] ?? '').length >= 13 ? n : n * 1000 };
 }
 
 /** Розібрати stdout claude -p --output-format json -> {ok,result,structured,costUsd}|{ok:false,error}. */
-export function parseClaudeOutput(stdout) {
+export function parseClaudeOutput(/** @type {unknown} */ stdout) {
   let parsed;
   try {
-    parsed = JSON.parse(stdout);
+    // String() нічого не змінює: JSON.parse і сам зводить аргумент до рядка.
+    parsed = JSON.parse(String(stdout));
   } catch {
     return { ok: false, error: 'bad-output' };
   }
@@ -263,9 +275,9 @@ export function parseClaudeOutput(stdout) {
  * «кеш не спрацював» і «CLI не повідомив» — різні відповіді, і саме їх ми тут
  * і розрізняємо.
  */
-export function formatUsage(usage) {
+export function formatUsage(/** @type {any} */ usage) {
   if (!usage || typeof usage !== 'object') return 'usage=-';
-  const n = (v) => (typeof v === 'number' ? v : '-');
+  const n = (/** @type {unknown} */ v) => (typeof v === 'number' ? v : '-');
   return (
     `in=${n(usage.input_tokens)} out=${n(usage.output_tokens)} ` +
     `cacheRead=${n(usage.cache_read_input_tokens)} cacheCreate=${n(usage.cache_creation_input_tokens)}`
@@ -286,11 +298,14 @@ export function resolveBindHost(env = process.env) {
 }
 
 /** Проста фіксовано-вікна rate-limiter у памʼяті (один процес = один лічильник). */
+/**
+ * @param {{ windowMs: number, max: number }} opts
+ */
 export function createRateLimiter({ windowMs, max }) {
   let windowStart = 0;
   let count = 0;
   return {
-    allow(nowMs) {
+    allow(/** @type {number} */ nowMs) {
       if (nowMs - windowStart >= windowMs) {
         windowStart = nowMs;
         count = 0;
