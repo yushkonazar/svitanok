@@ -532,6 +532,60 @@ describe('levers-core — межа початку історії (знахідк
     expect(b.series.opens).toEqual([null, 1, 0, 1]);
   });
 
+  /* ⚠️ ЗНАХІДКА ДРУГОГО РЕВʼЮ, і вона показала, що перший фікс був неповний.
+     Перша версія межі бралася з БУДЬ-ЯКОГО джерела, а вони мають різний вік:
+     `state.roadmapProgress` живе в іншому блобі, НЕ має капа й старший за стор
+     `stats`. Один запис роадмепу 47-тижневої давнини повертав 22 фальшиві
+     нулі одночасно в `opens` і `applied` (modeShare 0.458 — гейт знову
+     мовчить). Тепер межу ставлять лише ДОБОВІ записи (`checkins`/`days`),
+     сама наявність яких доводить, що стор тоді вже вівся. */
+  it('журнал подій зі старим записом НЕ зсуває межу назад', () => {
+    const withOldRoadmap = buildWeeklySeries(
+      store,
+      { roadmapProgress: { 'topic/a': '2026-06-01T10:00:00.000Z' } },
+      '2026-08-21',
+      12,
+    );
+    const withoutIt = buildWeeklySeries(store, {}, '2026-08-21', 12);
+    expect(withOldRoadmap.series.opens).toEqual(withoutIt.series.opens);
+    expect(withOldRoadmap.series.applied).toEqual(withoutIt.series.applied);
+    // сам запис усе одно порахований у своєму тижні, просто межі не рухає
+    expect(withOldRoadmap.series.roadmap!.filter((v) => v === 1)).toEqual([]);
+  });
+
+  /* ⚠️ Тест вище не розрізняв би регресію в `appliedLog`/`funnelMeta`: там
+     найраніший запис не давніший за `days`, тож межа й так не рухалась.
+     Розрізняльний випадок — коли запис ЖУРНАЛУ ПОДІЙ старший за будь-який
+     добовий: якщо він поставить межу, попередні тижні перестануть бути дірами. */
+  it('подача, старша за будь-який добовий запис, теж не зсуває межу', () => {
+    const early = {
+      ...store,
+      appliedLog: [{ url: 'old', ts: '2026-06-15' }, ...store.appliedLog],
+    };
+    const b = buildWeeklySeries(early, {}, '2026-08-21', 12);
+    // тижні до першого запису в `days` лишаються дірами, попри ранню подачу
+    expect(b.series.opens!.slice(0, 8).every((v) => v === null)).toBe(true);
+    expect(b.series.applied!.slice(0, 8).every((v) => v === null)).toBe(true);
+  });
+
+  it('рух воронки, старший за добові записи, теж не зсуває межу', () => {
+    const early = {
+      ...store,
+      funnelMeta: {
+        old: { title: 'x', ts: '2026-06-15', history: [{ stage: 'applied', ts: '2026-06-15' }] },
+      },
+    };
+    const b = buildWeeklySeries(early, {}, '2026-08-21', 12);
+    expect(b.series.funnelMoves!.slice(0, 8).every((v) => v === null)).toBe(true);
+  });
+
+  it('після появи стору нуль у журналі подій лишається чесним нулем', () => {
+    const b = buildWeeklySeries(store, {}, '2026-08-21', 6);
+    // тиждень 2026-08-10 має запис у `days`, але жодної подачі -> справжній 0
+    expect(b.series.applied!.at(-1)).toBe(0);
+    expect(b.series.opens!.at(-1)).toBe(2);
+  });
+
   it('чек-ін теж не починається раніше за перший запис', () => {
     const b = buildWeeklySeries(store, {}, '2026-08-21', 6);
     expect(b.series.sleep!.slice(0, 4)).toEqual([null, null, null, null]);

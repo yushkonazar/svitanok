@@ -127,7 +127,15 @@ export async function fetchLevers(): Promise<LeversResult> {
   // гейта жило б у трьох місцях клієнта (схема, цей фолбек, компонент) і
   // мовчки розійшлося б зі `GATE_WEEKS` на сервері — а видно його саме в
   // стані «потрібно ще N тижнів», де воно і є всім змістом екрана.
-  if (res.status === 401 || res.status === 403) return leversSchema.parse({});
+  //
+  // safeParse, а не parse: одне нове обовʼязкове поле у схемі перетворило б
+  // відмову в доступі на ВИКИНУТИЙ ВИНЯТОК усередині фетчера, і блок показав
+  // би помилку замість чесного порожнього стану. Числа у фолбеку недосяжні —
+  // гейт читається лише коли payload існує, а тут він null.
+  if (res.status === 401 || res.status === 403) {
+    const empty = leversSchema.safeParse({});
+    return empty.success ? empty.data : { levers: null, features: {}, gate: 0, useful: 0 };
+  }
   if (!res.ok) throw new Error(`Не вдалося завантажити важелі (${res.status})`);
   const parsed = leversSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат важелів змінився — оновіть застосунок');

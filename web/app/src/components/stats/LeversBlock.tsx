@@ -55,6 +55,38 @@ function shortDate(value: string | null): string {
 
 const weeksWord = (n: number) => pluralUk(n, ['тиждень', 'тижні', 'тижнів']);
 
+/**
+ * Пояснення до КОЖНОЇ причини виключення ряду.
+ *
+ * ⚠️ Перша версія друкувала одну зашиту фразу «забракло розкиду між тижнями»
+ * на всі випадки — і для «мало тижнів» це просто неправда, а саме ця причина
+ * буде в майже всіх рядів до гейта, тобто в стані, який видно місяцями. Ядро
+ * рахує причину, API її везе, тести пінять — і виходило, що останній крок її
+ * викидав.
+ */
+const SKIPPED_TEXT: Record<string, string> = {
+  'мало тижнів': 'для них ще замало тижнів; зʼявляться, коли назбирається історія.',
+  'майже стале значення':
+    'у них майже всі тижні однакові. Ряд без розкиду не покаже звʼязку ні за якого обсягу даних.',
+  'одне значення в більшості тижнів':
+    'одне значення займає більш ніж половину тижнів. Такий ряд не покаже звʼязку ні за якого ' +
+    'обсягу даних — це не про кількість, а про форму.',
+};
+
+/** Згрупувати виключені ряди за причиною, щоб не повторювати пояснення. */
+function groupSkipped(
+  skipped: { key: string; reason: string }[],
+  features: Record<string, LeverFeature>,
+): { reason: string; labels: string[] }[] {
+  const byReason = new Map<string, string[]>();
+  for (const s of skipped) {
+    const labels = byReason.get(s.reason) ?? [];
+    labels.push(features[s.key]?.label ?? s.key);
+    byReason.set(s.reason, labels);
+  }
+  return [...byReason].map(([reason, labels]) => ({ reason, labels }));
+}
+
 /** Один рядок-важіль. */
 function LeverCard({ row, features }: { row: LeverRow; features: Record<string, LeverFeature> }) {
   const from = features[row.from];
@@ -113,6 +145,7 @@ export function LeversBlock() {
   // Гейт приходить ІЗ СЕРВЕРА разом із даними — жодного літерала тут: інакше
   // зміна GATE_WEEKS лишила б на екрані застаріле число.
   const gate = data?.gate ?? 0;
+  const useful = data?.useful ?? 0;
 
   return (
     <div className="flex flex-col gap-3">
@@ -157,6 +190,13 @@ export function LeversBlock() {
               {gate}, тобто ще {payload.weeksNeeded}. Тиждень вважається придатним, коли чек-ін
               заповнено щонайменше три доби: тижневе середнє з однієї-двох діб каже більше про те,
               які доби випадково заповнились, ніж про сам тиждень.
+              {useful > gate && (
+                <>
+                  {' '}
+                  Перші звʼязки зʼявляться близько {gate}-го тижня, але помітним блок стає ближче до{' '}
+                  {useful}-го: доти видно лише найсильніші.
+                </>
+              )}
             </Note>
           )}
 
@@ -184,10 +224,15 @@ export function LeversBlock() {
 
           {payload && payload.skipped.length > 0 && (
             <div className="text-[10.5px] leading-[1.5] text-tx3">
-              Не перевірялись:{' '}
-              {payload.skipped.map((s) => features[s.key]?.label ?? s.key).join(', ')} — забракло
-              розкиду між тижнями. Ряд, де майже всі тижні однакові, не покаже звʼязку ні за якого
-              обсягу даних, тож чесніше назвати його, ніж мовчки не знайти нічого.
+              {/* Заголовок ОДИН, далі рядок на кожну причину: два абзаци поспіль,
+                  що починаються з «Не перевірялись:», читаються як помилка
+                  верстки, а не як перелік. */}
+              Не перевірялись:
+              {groupSkipped(payload.skipped, features).map((g) => (
+                <div key={g.reason} className="mt-0.5">
+                  {g.labels.join(', ')} — {SKIPPED_TEXT[g.reason] ?? g.reason}
+                </div>
+              ))}
             </div>
           )}
 

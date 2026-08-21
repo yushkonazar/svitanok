@@ -133,6 +133,16 @@ describe('LeversBlock — три порожні стани, і жоден не �
     expect(screen.queryByText(/жоден не витримав/)).not.toBeInTheDocument();
   });
 
+  /* Гейт каже, коли блок ЗАГОВОРИТЬ; заміряна межа корисності — коли він стане
+     помітним. Без другої людина чекає на 26-й тиждень як на вимикач, хоча
+     потужність там 20-44% і рядків здебільшого не буде. */
+  it('поруч із гейтом стоїть заміряна межа корисності', async () => {
+    setData(payload({ ready: false, weeks: 5, weeksNeeded: 21, tested: 0, shown: 0, rows: [] }));
+    render(<LeversBlock />);
+    await open();
+    expect(screen.getByText(/помітним блок стає ближче до 39-го/)).toBeInTheDocument();
+  });
+
   /* ⚠️ ЄДИНИЙ зі станів, що є твердженням про дані: перевірили — не витримало.
      Два попередні кажуть, що твердження ще немає взагалі. */
   it('перевірено й нічого не витримало -> так і каже, з кількістю', async () => {
@@ -218,8 +228,47 @@ describe('LeversBlock — чесність', () => {
     setData(payload({ skipped: [{ key: 'roadmap', reason: 'майже стале значення' }] }));
     render(<LeversBlock />);
     await open();
-    expect(screen.getByText(/Не перевірялись: Роадмеп/)).toBeInTheDocument();
-    expect(screen.getByText(/забракло розкиду/)).toBeInTheDocument();
+    expect(document.body.textContent).toMatch(/Не перевірялись:\s*Роадмеп/);
+    expect(screen.getByText(/майже всі тижні однакові/)).toBeInTheDocument();
+  });
+
+  /* ⚠️ ЗНАХІДКА ДРУГОГО РЕВʼЮ. Блок друкував ОДНУ зашиту фразу «забракло
+     розкиду між тижнями» на всі причини — а для «мало тижнів» це неправда,
+     і саме вона буде в майже всіх рядів до гейта, тобто в стані, який видно
+     місяцями. Ядро рахує причину, API її везе, тести пінять — і останній крок
+     її викидав. */
+  it('кожна причина має СВОЄ пояснення, а не одне на всіх', async () => {
+    setData(
+      payload({
+        skipped: [
+          { key: 'roadmap', reason: 'мало тижнів' },
+          { key: 'applied', reason: 'майже стале значення' },
+        ],
+      }),
+    );
+    render(<LeversBlock />);
+    await open();
+    const body = document.body.textContent ?? '';
+    expect(body).toMatch(/Роадмеп — для них ще замало тижнів/);
+    expect(body).toMatch(/Подачі — у них майже всі тижні однакові/);
+    // «мало тижнів» більше не видається за брак розкиду
+    expect(body).not.toMatch(/Роадмеп — у них майже всі тижні однакові/);
+    // заголовок один на весь перелік, а не на кожен рядок
+    expect(body.match(/Не перевірялись:/g)).toHaveLength(1);
+  });
+
+  it('ряди з однаковою причиною групуються в один рядок', async () => {
+    setData(
+      payload({
+        skipped: [
+          { key: 'roadmap', reason: 'мало тижнів' },
+          { key: 'applied', reason: 'мало тижнів' },
+        ],
+      }),
+    );
+    render(<LeversBlock />);
+    await open();
+    expect(screen.getByText(/Роадмеп, Подачі —/)).toBeInTheDocument();
   });
 
   /* ⚠️ Єдине, що відрізняє свіжий результат від «крон упав три тижні тому, а
