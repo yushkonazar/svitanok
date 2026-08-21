@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { walkFiles } from './helpers/repo-files.js';
 
 /* Звірка: чи доїжджають до рану ті змінні, які оркестратор читає.
  *
@@ -26,19 +27,10 @@ import { join } from 'node:path';
 const ROOT = join(__dirname, '..');
 const WORKFLOW = join(ROOT, '.github', 'workflows', 'brief.yml');
 
-/** Усі .ts під src/, рекурсивно. */
-function tsFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const full = join(dir, name);
-    if (statSync(full).isDirectory()) return tsFiles(full);
-    return name.endsWith('.ts') ? [full] : [];
-  });
-}
-
 /** Імена з `optionalSecret('X')` — канонічний спосіб читати опційний секрет. */
 function declaredSecrets(): string[] {
   const found = new Set<string>();
-  for (const file of tsFiles(join(ROOT, 'src'))) {
+  for (const file of walkFiles(join(ROOT, 'src'), { exts: ['.ts'] })) {
     const src = readFileSync(file, 'utf8');
     for (const m of src.matchAll(/optionalSecret\(\s*'([A-Z][A-Z0-9_]*)'/g)) {
       found.add(m[1]!);
