@@ -1,3 +1,4 @@
+// @ts-check
 // Google API — єдина точка доступу Worker'а до сервісів власника
 // (Фаза 5, модуляризація worker.js, план A2 §5).
 //
@@ -34,7 +35,7 @@ import { sanitizeMailQuery } from './assistant-data-core.mjs';
  * будь-яка мережева помилка -> null (graceful, той самий стиль що calendar.ts
  * і callLlmHost — виклик іде далі без календаря, не валить обробку апдейту).
  */
-export async function googleAccessToken(env) {
+export async function googleAccessToken(/** @type {Env} */ env) {
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
   // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
   // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
@@ -82,12 +83,12 @@ export async function googleAccessToken(env) {
             ...(typeof json.scope === 'string' ? { scope: json.scope } : {}),
           }),
         );
-      } catch (e) {
+      } catch (/** @type {any} */ e) {
         console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
       }
     }
     return token;
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('google token failed', err.message);
     return null;
   }
@@ -101,7 +102,7 @@ const MAIL_MAX_RESULTS = 5;
 const MAIL_HEADERS = ['From', 'Subject', 'Date'];
 
 /** Пошук у Gmail -> [{from,subject,date,snippet}] | [] (нічого) | null (немає доступу/збій). */
-export async function readMail(env, rawQuery) {
+export async function readMail(/** @type {Env} */ env, /** @type {unknown} */ rawQuery) {
   const token = await googleAccessToken(env);
   if (!token) return null;
   const auth = { Authorization: `Bearer ${token}` };
@@ -114,10 +115,13 @@ export async function readMail(env, rawQuery) {
       console.error('gmail list HTTP', res.status, await res.text().catch(() => ''));
       return null;
     }
-    const ids = ((await res.json()).messages ?? []).slice(0, MAIL_MAX_RESULTS).map((m) => m.id);
+    const list = /** @type {any} */ (await res.json());
+    const ids = (list?.messages ?? [])
+      .slice(0, MAIL_MAX_RESULTS)
+      .map((/** @type {KvBlob} */ m) => m.id);
     if (ids.length === 0) return [];
     const msgs = await Promise.all(
-      ids.map(async (id) => {
+      ids.map(async (/** @type {string} */ id) => {
         // Try/catch НАВКОЛО кожного листа (ревʼю B): кинутий fetch (транзієнтна
         // мережева помилка/abort) інакше зронив би весь Promise.all -> null ->
         // «пошта недоступна», хоча акаунт авторизований і решта листів дістались.
@@ -128,10 +132,11 @@ export async function readMail(env, rawQuery) {
           for (const h of MAIL_HEADERS) u.searchParams.append('metadataHeaders', h);
           const r = await fetch(u.toString(), { headers: auth });
           if (!r.ok) return null;
-          const j = await r.json();
+          const j = /** @type {any} */ (await r.json());
           const headers = j?.payload?.headers ?? [];
-          const get = (name) =>
-            headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
+          const get = (/** @type {string} */ name) =>
+            headers.find((/** @type {KvBlob} */ h) => String(h?.name).toLowerCase() === name)
+              ?.value ?? '';
           return {
             id,
             from: get('from'),
@@ -139,14 +144,14 @@ export async function readMail(env, rawQuery) {
             date: get('date'),
             snippet: j?.snippet ?? '',
           };
-        } catch (e) {
+        } catch (/** @type {any} */ e) {
           console.error('gmail message fetch failed (один лист пропущено)', e?.message);
           return null;
         }
       }),
     );
     return msgs.filter(Boolean);
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('gmail read failed', err.message);
     return null;
   }
@@ -159,7 +164,12 @@ export async function readMail(env, rawQuery) {
    даних (текст пише хтось чужий) потрапляє в контекст дозовано. */
 
 /** Рекурсивно знайти перше text/plain-тіло в дереві частин MIME (fallback — text/html). */
-function pickMailPart(payload) {
+function pickMailPart(/** @type {any} */ payload) {
+  /**
+   * @param {any} node
+   * @param {string} mime
+   * @returns {string|null}
+   */
   const walk = (node, mime) => {
     if (!node) return null;
     if (node.mimeType === mime && node.body?.data) return node.body.data;
@@ -173,7 +183,7 @@ function pickMailPart(payload) {
 }
 
 /** base64url (Gmail) -> текст; биття -> ''. */
-function decodeMailData(data) {
+function decodeMailData(/** @type {unknown} */ data) {
   try {
     const bin = atob(String(data).replace(/-/g, '+').replace(/_/g, '/'));
     const bytes = new Uint8Array(bin.length);
@@ -185,7 +195,7 @@ function decodeMailData(data) {
 }
 
 /** Грубо зняти теги з HTML-листа, коли text/plain-частини немає. */
-function stripHtml(html) {
+function stripHtml(/** @type {unknown} */ html) {
   return String(html)
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
@@ -198,7 +208,7 @@ function stripHtml(html) {
 }
 
 /** Повний лист за id -> {from,subject,date,body} | null (немає доступу/не знайдено). */
-export async function readMailBody(env, messageId) {
+export async function readMailBody(/** @type {Env} */ env, /** @type {string} */ messageId) {
   const token = await googleAccessToken(env);
   if (!token) return null;
   try {
@@ -210,9 +220,11 @@ export async function readMailBody(env, messageId) {
       console.error('gmail body HTTP', res.status, await res.text().catch(() => ''));
       return null;
     }
-    const j = await res.json();
+    const j = /** @type {any} */ (await res.json());
     const headers = j?.payload?.headers ?? [];
-    const get = (name) => headers.find((h) => String(h?.name).toLowerCase() === name)?.value ?? '';
+    const get = (/** @type {string} */ name) =>
+      headers.find((/** @type {KvBlob} */ h) => String(h?.name).toLowerCase() === name)?.value ??
+      '';
     const { plain, html } = pickMailPart(j?.payload);
     const raw = plain
       ? decodeMailData(plain)
@@ -225,7 +237,7 @@ export async function readMailBody(env, messageId) {
       date: get('date'),
       body: raw,
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('gmail body read failed', err.message);
     return null;
   }
@@ -243,7 +255,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Пошук контакту за іменем -> [email,...] (0 -> нема скоупу/збігів, обидва
  *  випадки трактуємо однаково — розрізняти нема сенсу, дія однакова: не резолвити). */
-export async function searchContact(env, name) {
+export async function searchContact(/** @type {Env} */ env, /** @type {string} */ name) {
   const token = await googleAccessToken(env);
   if (!token) return [];
   try {
@@ -258,14 +270,15 @@ export async function searchContact(env, name) {
       }
       return [];
     }
-    const results = (await res.json())?.results;
+    const results = /** @type {any} */ (await res.json())?.results;
+    /** @type {string[]} */
     const emails = [];
     for (const r of Array.isArray(results) ? results : []) {
       const email = r?.person?.emailAddresses?.[0]?.value;
       if (typeof email === 'string' && email) emails.push(email);
     }
     return emails;
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('people search failed', err.message);
     return [];
   }
@@ -279,8 +292,13 @@ export async function searchContact(env, name) {
  * (не вгадуємо котрий) — обидва граничні випадки віддаємо як notes, не як
  * помилку: решта пропозиції (час/назва/інші гості) не має через це провалитись.
  */
-export async function resolveAttendees(env, names) {
+export async function resolveAttendees(
+  /** @type {Env} */ env,
+  /** @type {unknown[]|null|undefined} */ names,
+) {
+  /** @type {string[]} */
   const emails = [];
+  /** @type {string[]} */
   const notes = [];
   for (const raw of Array.isArray(names) ? names : []) {
     const name = String(raw ?? '').trim();
@@ -291,7 +309,8 @@ export async function resolveAttendees(env, names) {
     }
     const found = await searchContact(env, name);
     if (found.length === 1) {
-      emails.push(found[0]);
+      // `?? ''` недосяжне: гілка входить лише при found.length === 1.
+      emails.push(found[0] ?? '');
     } else if (found.length === 0) {
       notes.push(`«${name}» не знайдено в контактах — додай email вручну, якщо треба`);
     } else {
@@ -306,6 +325,10 @@ export async function resolveAttendees(env, names) {
  * при збої (403 без contacts-скоупу — той самий "тихо не резолвили" мотив,
  * що searchContact, ЛИШЕ тут це вже TERMінальна дія в accept-циклі, тож
  * помилку показуємо власнику текстом, не мовчки ігноруємо).
+ */
+/**
+ * @param {Env} env
+ * @param {{ name: string, email: string }} opts
  */
 export async function createContact(env, { name, email }) {
   const token = await googleAccessToken(env);
@@ -324,7 +347,7 @@ export async function createContact(env, { name, email }) {
       return { ok: false };
     }
     return { ok: true };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('people createContact failed', err.message);
     return { ok: false };
   }
@@ -339,7 +362,7 @@ const DRIVE_MAX_RESULTS = 5;
  * [{name,webViewLink}] | [] (нема збігів) | null (немає доступу/збій —
  * ТОЙ САМИЙ контракт, що readMail: formatDriveForPrompt різнить тексти).
  */
-export async function searchDrive(env, rawQuery) {
+export async function searchDrive(/** @type {Env} */ env, /** @type {unknown} */ rawQuery) {
   const token = await googleAccessToken(env);
   if (!token) return null;
   const query = String(rawQuery ?? '')
@@ -364,7 +387,7 @@ export async function searchDrive(env, rawQuery) {
     }
     const json = await res.json();
     return Array.isArray(json.files) ? json.files : [];
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('drive search failed', err.message);
     return null;
   }
@@ -372,7 +395,11 @@ export async function searchDrive(env, rawQuery) {
 
 /** Події діапазону [startKey..endKey] (Київ) через Google Calendar API (read, CC1 —
  *  один запит на весь діапазон, timeMin/timeMax). null при будь-якому збої. */
-export async function readCalendarRange(env, startKey, endKey) {
+export async function readCalendarRange(
+  /** @type {Env} */ env,
+  /** @type {string} */ startKey,
+  /** @type {string} */ endKey,
+) {
   const token = await googleAccessToken(env);
   if (!token) return null;
   const { timeMin, timeMax } = kyivRangeBoundsUtc(startKey, endKey);
@@ -389,7 +416,7 @@ export async function readCalendarRange(env, startKey, endKey) {
       return null;
     }
     return parseEvents(await res.json());
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('google calendar read failed', err.message);
     return null;
   }
@@ -400,6 +427,11 @@ export async function readCalendarRange(env, startKey, endKey) {
  * {ok:false} при збої. `sendUpdates=all`, коли є гості (PR-10) — інакше Google
  * НЕ шле запрошення (дефолт `none`), а сенс attendees саме в сповіщенні;
  * без гостей лишаємо старий тихий шлях (жоден лист нікому не піде).
+ */
+/**
+ * @param {Env} env
+ * @param {{ title: string, startIso: string, endIso: string, reminderMinutes?: number,
+ *           location?: string|null, attendees?: string[]|null }} opts
  */
 export async function createCalendarEvent(
   env,
@@ -421,9 +453,9 @@ export async function createCalendarEvent(
       console.error('google calendar create HTTP', res.status, await res.text().catch(() => ''));
       return { ok: false };
     }
-    const json = await res.json();
-    return { ok: true, id: typeof json.id === 'string' ? json.id : null };
-  } catch (err) {
+    const json = /** @type {any} */ (await res.json());
+    return { ok: true, id: typeof json?.id === 'string' ? json.id : null };
+  } catch (/** @type {any} */ err) {
     console.error('google calendar create failed', err.message);
     return { ok: false };
   }
@@ -431,7 +463,7 @@ export async function createCalendarEvent(
 
 /** URL одного events.get/patch/delete — eventId ВАЛІДУЄ викликач (той самий
  *  мотив, що mailId: рядок іде в шлях URL). */
-function calendarEventUrl(eventId) {
+function calendarEventUrl(/** @type {string} */ eventId) {
   return `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`;
 }
 
@@ -442,7 +474,7 @@ function calendarEventUrl(eventId) {
  * (той самий title/час-парсинг, що читання діапазону) — обгортаємо єдиний
  * обʼєкт у {items:[...]} замість дублювати нормалізацію.
  */
-export async function getCalendarEvent(env, eventId) {
+export async function getCalendarEvent(/** @type {Env} */ env, /** @type {string} */ eventId) {
   const token = await googleAccessToken(env);
   if (!token) return null;
   try {
@@ -455,9 +487,9 @@ export async function getCalendarEvent(env, eventId) {
       }
       return null;
     }
-    const json = await res.json();
+    const json = /** @type {any} */ (await res.json());
     return parseEvents({ items: [json] })[0] ?? null;
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('google calendar get failed', err.message);
     return null;
   }
@@ -465,6 +497,10 @@ export async function getCalendarEvent(env, eventId) {
 
 /** Частково оновити подію (write-scope, CRUD). Ніколи не кидає — {ok:false} при збої.
  *  `sendUpdates=all`, коли патч зачіпає attendees (PR-10) — той самий мотив, що create. */
+/**
+ * @param {Env} env
+ * @param {{ eventId: string, patch: KvBlob }} opts
+ */
 export async function updateCalendarEvent(env, { eventId, patch }) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
@@ -483,7 +519,7 @@ export async function updateCalendarEvent(env, { eventId, patch }) {
       return { ok: false };
     }
     return { ok: true };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('google calendar update failed', err.message);
     return { ok: false };
   }
@@ -494,6 +530,10 @@ export async function updateCalendarEvent(env, { eventId, patch }) {
  * прибрав з іншого пристрою, чи подвійний тап) рахуємо УСПІХОМ: мета
  * («події більше немає») уже досягнута, показувати «⚠️ не вдалось» тут
  * оманливо.
+ */
+/**
+ * @param {Env} env
+ * @param {{ eventId: string }} opts
  */
 export async function deleteCalendarEvent(env, { eventId }) {
   const token = await googleAccessToken(env);
@@ -508,7 +548,7 @@ export async function deleteCalendarEvent(env, { eventId }) {
       return { ok: false };
     }
     return { ok: true };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.error('google calendar delete failed', err.message);
     return { ok: false };
   }

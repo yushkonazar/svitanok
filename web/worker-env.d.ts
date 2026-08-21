@@ -53,6 +53,11 @@ interface Env {
 
   MINI_APP_URL: WorkerSecret;
   WEATHER_API_KEY: WorkerSecret;
+  /**
+   * Домашні координати власника: JSON-масив `{lat, lon, name}`. Незаданий —
+   * `web/weather-geo.mjs` працює на публічному фолбеку.
+   */
+  OWNER_LOCATIONS: WorkerSecret;
   GOOGLE_CLIENT_ID: WorkerSecret;
   GOOGLE_CLIENT_SECRET: WorkerSecret;
   GOOGLE_REFRESH_TOKEN: WorkerSecret;
