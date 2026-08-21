@@ -6,6 +6,7 @@ import { RhythmBlock } from './RhythmBlock.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
 import { MasteryBlock } from './MasteryBlock.tsx';
+import { LeversBlock } from './LeversBlock.tsx';
 import { HistoryBlock } from './HistoryBlock.tsx';
 
 // Вкладка «Статистика» (дизайн v2, Svitanok.dc.html): секції з ритмом 26px,
@@ -51,6 +52,12 @@ export function StatsScreen() {
           речі, і саме тому він тепер під кнопкою, а не в потоці. */}
       <RhythmBlock s={s} />
       <MasteryBlock s={s} />
+      {/* Важелі — четвертий згорнутий. Гейт 26 тижнів даних означає, що
+          місяцями блок казатиме лише «потрібно ще N»; тримати таке
+          розгорнутим щодня — платити увагою за повідомлення, яке не
+          змінюється. Поруч з «Історією» ще й тематично: обидва про
+          довгий погляд назад, обидва читають окреме сховище. */}
+      <LeversBlock />
       <HistoryBlock />
     </div>
   );

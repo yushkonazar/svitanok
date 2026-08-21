@@ -8,7 +8,7 @@
 //   commands / callbacks        — текстові команди й inline-кнопки
 //   agent-runtime               — прогін асистента (старт, крок, сторож)
 //   proposals / reminders-actions — дії під ✅ і робота з нагадуваннями
-//   cron                        — вісім задач п'ятихвилинного тіку
+//   cron                        — задачі п'ятихвилинного тіку
 //   kv-store / google / telegram-client / llm-host — межі з зовнішнім світом
 //
 // Тут лишаються три речі, які НЕ мають дому деінде: розбір і автентифікація
@@ -39,6 +39,7 @@ import {
 } from './api-dashboard.mjs';
 import { handleStatus } from './api-status.mjs';
 import { handleArchiveRequest } from './api-archive.mjs';
+import { handleLeversRequest } from './api-levers.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -63,6 +64,7 @@ import {
   runTelegramSetup,
   autoTelegramSetup,
   archiveMonthly,
+  computeLevers,
 } from './cron.mjs';
 import {
   handleLiveWeather,
@@ -219,7 +221,7 @@ async function handleTelegramSetup(/** @type {Request} */ request, /** @type {En
  * крону.
  *
  * Назва поруч із функцією — не косметика: у логах Cloudflare падіння інакше
- * виглядає як анонімний стек із waitUntil, і незрозуміло, ЯКА з восьми задач
+ * виглядає як анонімний стек із waitUntil, і незрозуміло, ЯКА із задач
  * впала (B11).
  */
 export const CRON_TASKS = [
@@ -232,6 +234,7 @@ export const CRON_TASKS = [
   { name: 'sleepNudgeCheck', run: sleepNudgeCheck }, // «Ліг спати» 23:00–02:00 + прибирання
   { name: 'autoTelegramSetup', run: autoTelegramSetup }, // самозапуск setup, раз на добу
   { name: 'archiveMonthly', run: archiveMonthly }, // місячні згортки в холодний ключ
+  { name: 'computeLevers', run: computeLevers }, // шар звʼязків «Важелі», раз на тиждень
 ];
 
 /**
@@ -319,6 +322,12 @@ export default {
       // 10 мс CPU на кожен відкритий дашборд, а це потрібно лише коли людина
       // відкриє «Історію».
       return handleArchiveRequest(request, env);
+    }
+    if (url.pathname === '/api/levers') {
+      // Шар звʼязків — ОКРЕМО від /api/stats, як і архів: додаткове читання KV
+      // заради блоку, який дивляться раз на тиждень, не має коштувати на
+      // кожному відкритті дашборда.
+      return handleLeversRequest(request, env);
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);

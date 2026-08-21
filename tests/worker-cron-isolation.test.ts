@@ -83,7 +83,10 @@ describe('runCronTasks — збій однієї задачі не забира�
     expect(order).toEqual(['a:start', 'a:end', 'b:start', 'b:end']);
   });
 
-  it('CRON_TASKS — усі девʼять задач, кожна з назвою для логів', () => {
+  /* Список, а не лічильник: точний перелік ловить і зайву задачу, і забуту
+     реєстрацію нової. Число в назві прибрано свідомо — воно протухало з
+     кожним додаванням, і три коментарі поруч уже показували 'вісім'. */
+  it('CRON_TASKS — усі задачі, кожна з назвою для логів', () => {
     expect(CRON_TASKS.map((t: { name: string }) => t.name)).toEqual([
       'checkReminders',
       'agentRunWatchdog',
@@ -94,6 +97,7 @@ describe('runCronTasks — збій однієї задачі не забира�
       'sleepNudgeCheck',
       'autoTelegramSetup',
       'archiveMonthly',
+      'computeLevers',
     ]);
   });
 });

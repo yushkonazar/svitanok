@@ -128,6 +128,41 @@ export async function putAssistantHistory(env, history) {
 }
 
 /**
+ * Ключ шару звʼязків «Важелі».
+ *
+ * ⚠️ ОКРЕМИЙ КЛЮЧ, не поле в `stats` і не в `state`. Обидва блоби читаються й
+ * ПЕРЕЗАПИСУЮТЬСЯ на кожну подію (тап чек-іну, голос, зміна стадії), тож усе,
+ * що в них лежить, коштує на кожному тапі. «Важелі» ж пишуться раз на тиждень
+ * і читаються лише коли відкрито вкладку статистики. Той самий мотив, що в
+ * `statsArchive`/`statsArchiveWeekly`.
+ *
+ * ⚠️ Назва оголошена ОДИН раз і тут. Розʼїзд літерала між писарем і читачем —
+ * уже спійманий у цьому репозиторії клас помилки (ключ publicStatus).
+ */
+export const LEVERS_KEY = 'levers';
+
+/** Прочитати шар звʼязків; биття або відсутність -> null (блок покаже, що ще
+ *  не рахувалось, а не вдаватиме порожній результат).
+ *  @param {Env} env
+ *  @returns {Promise<KvBlob|null>} */
+export async function loadLevers(env) {
+  return readJson(env, LEVERS_KEY, null);
+}
+
+/**
+ * Єдиний писар «Важелів» — тижневий крон.
+ *
+ * Без read-modify-write і без CAS свідомо: писар один, і зміст повністю
+ * перераховується з нуля, тобто зливати нема з чим. Це не та ситуація, що з
+ * `stats`, де писарів кілька й кожен міняє СВОЄ поле.
+ * @param {Env} env
+ * @param {KvBlob} payload
+ */
+export async function putLevers(env, payload) {
+  await env.BRIEFING.put(LEVERS_KEY, JSON.stringify(payload));
+}
+
+/**
  * Безпечний read-modify-write для 'stats' (оптимістична конкуренція, один
  * retry). KV не має вбудованого CAS, а незалежних писарів у цей ключ кілька:
  * Mini App-події (open/checkin/sleepStart), голосування за новину з чату,
