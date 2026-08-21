@@ -298,9 +298,7 @@ export const checkinAfternoonSchema = z.object({
   mood: int.optional(),
   ate: multi(category),
   rushed: int.optional(),
-  withWhom: lenient(
-    z.enum(['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed']),
-  ),
+  withWhom: lenient(z.enum(['alone', 'partner', 'family', 'friends', 'work', 'public', 'mixed'])),
   outdoorNow: lenient(z.enum(['none', 'short', 'long'])),
   mainProgress: lenient(z.enum(['none', 'started', 'half', 'most'])),
   interrupted: lenient(z.enum(['none', 'few', 'many'])),
@@ -729,7 +727,12 @@ export const checkinModelSchema = z.object({
 
 const EMPTY_CHECKIN_MODEL = {
   n: 0,
-  fit: { weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 }, r2: null, n: 0, learned: false },
+  fit: {
+    weights: { recovery: 0.2, resource: 0.2, work: 0.2, agency: 0.2, body: 0.2 },
+    r2: null,
+    n: 0,
+    learned: false,
+  },
   dayIndex: { last: null, mean: null, lastCoverage: 0, needCoverage: 3, scored: 0 },
   drivers: [],
   lagged: { recovery: { ready: false, n: 0 }, body: { ready: false, n: 0 } },
@@ -771,7 +774,9 @@ export const statsSchema = z.object({
      * складно»: нуль злив би дві протилежні відповіді.
      */
     easeTrend: z
-      .array(z.object({ week: z.string(), n: int.default(0), easePct: num.nullable().default(null) }))
+      .array(
+        z.object({ week: z.string(), n: int.default(0), easePct: num.nullable().default(null) }),
+      )
       .default([]),
     /** {тема: {seen, weak}} за останні 60 діб — на противагу all-time weakTopics. */
     recentByTopic: z
@@ -899,7 +904,14 @@ export const statsSchema = z.object({
   }),
   // Працює на ВЖЕ зібраних даних (plan/ate є роками) — не чекає накопичення
   // нових полів чек-іну.
-  intentDrift: intentDriftSchema.default({ days: 30, total: 0, full: 0, partial: 0, pct: null, top: [] }),
+  intentDrift: intentDriftSchema.default({
+    days: 30,
+    total: 0,
+    full: 0,
+    partial: 0,
+    pct: null,
+    top: [],
+  }),
 });
 
 export type Stats = z.infer<typeof statsSchema>;

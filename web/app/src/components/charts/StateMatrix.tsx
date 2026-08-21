@@ -64,8 +64,8 @@ export function StateMatrix({ raw, periods = [] }: { raw: CheckinRaw; periods?: 
   if (total < MIN_READINGS) {
     return (
       <Note>
-        Сітка зʼявиться після {MIN_READINGS} зрізів — зараз {total}. Один заповнений блок
-        чек-іну (ранок, день або вечір) — це один зріз.
+        Сітка зʼявиться після {MIN_READINGS} зрізів — зараз {total}. Один заповнений блок чек-іну
+        (ранок, день або вечір) — це один зріз.
       </Note>
     );
   }
@@ -229,9 +229,7 @@ export function StateMatrix({ raw, periods = [] }: { raw: CheckinRaw; periods?: 
       {/* win, не raw: причини мусять бути пораховані на тому самому періоді,
           що й сітка, інакше клітинка каже «17 вечорів», а пояснення під нею
           спирається на дев'яносто діб. */}
-      {tapped && (
-        <CellPanel raw={win} filter={slot} energy={5 - tapped.r} mood={tapped.c + 1} />
-      )}
+      {tapped && <CellPanel raw={win} filter={slot} energy={5 - tapped.r} mood={tapped.c + 1} />}
     </div>
   );
 }
@@ -307,7 +305,9 @@ function CellPanel({
             {fmtDay(r.d)}
           </span>
         ))}
-        {hidden > 0 && <span className="self-center font-mono text-[10px] text-tx3">+{hidden}</span>}
+        {hidden > 0 && (
+          <span className="self-center font-mono text-[10px] text-tx3">+{hidden}</span>
+        )}
       </div>
 
       {dayScore && (
@@ -367,15 +367,15 @@ function CellPanel({
           ))}
           {scope === 'zone' && (
             <div className="text-[9.5px] leading-[1.45] text-tx3">
-              У самій клітинці ще замало зрізів для порівняння, тож пораховано по сусідніх
-              станах. Це чесніше, ніж робити висновок із {readings.length}.
+              У самій клітинці ще замало зрізів для порівняння, тож пораховано по сусідніх станах.
+              Це чесніше, ніж робити висновок із {readings.length}.
             </div>
           )}
         </div>
       ) : (
         <div className="border-t border-glassb pt-2 text-[10px] leading-[1.45] text-tx3">
-          Замало даних, щоб порівнювати причини — потрібно щонайменше {CAUSE_MIN_N} зрізів у
-          цьому стані або поруч із ним. Дати вище вже точні.
+          Замало даних, щоб порівнювати причини — потрібно щонайменше {CAUSE_MIN_N} зрізів у цьому
+          стані або поруч із ним. Дати вище вже точні.
         </div>
       )}
     </div>

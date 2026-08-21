@@ -30,7 +30,9 @@ const stats = (topics: MasteryTopic[], weekly: number[] = [1, 1, 1, 1]): Stats =
 
 describe('MasteryBlock — розрив', () => {
   it('показує ОБИДВІ смуги з числами, а не одну оцінку', () => {
-    render(<MasteryBody s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />);
+    render(
+      <MasteryBody s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />,
+    );
     expect(screen.getByText('відмічено')).toBeInTheDocument();
     expect(screen.getByText('дається')).toBeInTheDocument();
     expect(screen.getByText('80%')).toBeInTheDocument();
@@ -38,12 +40,16 @@ describe('MasteryBlock — розрив', () => {
   });
 
   it('великий розрив позначений явно — це і є інсайт блоку', () => {
-    render(<MasteryBody s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />);
+    render(
+      <MasteryBody s={stats([topic({ id: 'HTTP', done: 8, total: 10, seen: 20, easePct: 30 })])} />,
+    );
     expect(screen.getByText(/розрив 50/)).toBeInTheDocument();
   });
 
   it('дрібний розрив НЕ позначається — інакше значок втрачає сенс', () => {
-    render(<MasteryBody s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 45 })])} />);
+    render(
+      <MasteryBody s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 45 })])} />,
+    );
     // Саме ЗНАЧОК, не згадка слова в підказці під карткою.
     expect(screen.queryByText(/^розрив \d+$/)).toBeNull();
   });
@@ -62,7 +68,9 @@ describe('MasteryBlock — розрив', () => {
   });
 
   it('видно розмір вибірки — 50% з 6 питань і з 60 читаються по-різному', () => {
-    render(<MasteryBody s={stats([topic({ id: 'A', done: 5, total: 10, seen: 6, easePct: 50 })])} />);
+    render(
+      <MasteryBody s={stats([topic({ id: 'A', done: 5, total: 10, seen: 6, easePct: 50 })])} />,
+    );
     expect(screen.getByText(/6 питань/)).toBeInTheDocument();
   });
 });
@@ -129,7 +137,9 @@ describe('MasteryBlock — порожній стан', () => {
  * тобто розгорнутий блок довго показує майже порожнечу. */
 describe('MasteryBlock — оболонка', () => {
   it('згорнутий за замовчуванням: видно заголовок і кнопку, не вміст', () => {
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 40 })])} />);
+    render(
+      <MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 40 })])} />,
+    );
     expect(screen.getByText('Майстерність')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Відкрити/ })).toBeInTheDocument();
     expect(screen.queryByText('ВІДМІЧЕНО ПРОТИ «ДАЄТЬСЯ»')).toBeNull();
@@ -137,7 +147,9 @@ describe('MasteryBlock — оболонка', () => {
 
   it('кнопка відкриває вміст і міняє власний підпис', async () => {
     const user = userEvent.setup();
-    render(<MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 40 })])} />);
+    render(
+      <MasteryBlock s={stats([topic({ id: 'A', done: 5, total: 10, seen: 20, easePct: 40 })])} />,
+    );
     await user.click(screen.getByRole('button', { name: /Відкрити/ }));
     expect(screen.getByText('ВІДМІЧЕНО ПРОТИ «ДАЄТЬСЯ»')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Згорнути/ })).toBeInTheDocument();

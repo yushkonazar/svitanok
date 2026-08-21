@@ -19,7 +19,9 @@ function point(i: number, value: number): [number, number] {
 
 function ringPath(scale: number): string {
   return (
-    INDEX_ORDER.map((_, i) => point(i, scale).join(',')).join(' L ').replace(/^/, 'M ') + ' Z'
+    INDEX_ORDER.map((_, i) => point(i, scale).join(','))
+      .join(' L ')
+      .replace(/^/, 'M ') + ' Z'
   );
 }
 
@@ -57,7 +59,11 @@ function RadarCard({ g }: { g: Group }) {
   );
 }
 
-export function ArchetypeRadar({ archetypes }: { archetypes: Stats['checkinModel']['archetypes'] }) {
+export function ArchetypeRadar({
+  archetypes,
+}: {
+  archetypes: Stats['checkinModel']['archetypes'];
+}) {
   if (!archetypes.ready || !archetypes.groups.length) return null;
   return (
     <div className="flex flex-col gap-2.5">

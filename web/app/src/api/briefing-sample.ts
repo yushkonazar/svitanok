@@ -154,7 +154,8 @@ export const SAMPLE_BRIEF: Brief = {
             topic: 'Тех/IT',
             items: [
               {
-                title: 'Warning shot or publicity stunt — how worried should we be about the OpenAI hack?',
+                title:
+                  'Warning shot or publicity stunt — how worried should we be about the OpenAI hack?',
                 url: 'https://www.theguardian.com/technology/2026/jul/27/openai-hack',
                 why: 'обговорення "радикальної прозорості" після інциденту',
                 publishedAt: new Date(Date.now() - 45 * 60_000).toISOString(),
@@ -178,7 +179,8 @@ export const SAMPLE_BRIEF: Brief = {
             topic: 'Наука',
             items: [
               {
-                title: "'It's not rocket science': a day in the life of a Nasa behavioral health scientist",
+                title:
+                  "'It's not rocket science': a day in the life of a Nasa behavioral health scientist",
                 url: 'https://www.theguardian.com/science/2026/jul/27/nasa-scientist',
                 publishedAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
               },
@@ -233,7 +235,8 @@ export const SAMPLE_BRIEF: Brief = {
             topic: 'Загальне',
             items: [
               {
-                title: '"З усією повагою до Сирського і Федорова..." Зеленський — у інтервʼю Sky News',
+                title:
+                  '"З усією повагою до Сирського і Федорова..." Зеленський — у інтервʼю Sky News',
                 url: 'https://feeds.bbci.co.uk/ukrainian/interview',
                 publishedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
               },
@@ -321,7 +324,11 @@ export const SAMPLE_BRIEF: Brief = {
       id: 'onthisday',
       data: {
         events: [
-          { year: 1789, text: 'Демо-подія: стародавня (гарантований слот).', url: 'https://uk.wikipedia.org/wiki/1789' },
+          {
+            year: 1789,
+            text: 'Демо-подія: стародавня (гарантований слот).',
+            url: 'https://uk.wikipedia.org/wiki/1789',
+          },
           { year: 1863, text: 'Демо-подія: стародавня (гарантований слот).' },
           { year: 1996, text: 'Демо-подія: XX ст. (найновіша з квоти).' },
           { year: 1990, text: 'Демо-подія: XX ст.' },

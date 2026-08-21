@@ -67,10 +67,10 @@ createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider onReady={attachToastSink}>
         <SavedProvider>
-        <ThemeProvider>
-          <HashRouter>
-            <App />
-          </HashRouter>
+          <ThemeProvider>
+            <HashRouter>
+              <App />
+            </HashRouter>
           </ThemeProvider>
         </SavedProvider>
       </ToastProvider>

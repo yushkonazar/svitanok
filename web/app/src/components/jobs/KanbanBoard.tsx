@@ -125,7 +125,15 @@ export function KanbanBoard({
   return (
     <>
       <div className="flex items-center gap-1.5 text-[10.5px] font-medium leading-[1.4] text-tx3">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-a2)" strokeWidth="1.7" strokeLinecap="round">
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--color-a2)"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        >
           <path d="M9 3v18M15 3v18M3 9h18M3 15h18" />
         </svg>
         Перетягуй картки між стадіями
@@ -162,38 +170,49 @@ export function KanbanBoard({
                   const dim = dragging && dragUrl === c.url;
                   return (
                     <Cascade key={c.url} i={i} step={40} cap={5}>
-                    <div
-                      onPointerDown={(e) => onDown(e, c)}
-                      onPointerMove={onMove}
-                      onPointerUp={onUp}
-                      onPointerCancel={onCancel}
-                      className="flex select-none items-center gap-2 rounded-xl border border-glassb bg-bg2 px-[11px] py-2.5 transition-opacity duration-150"
-                      style={{ cursor: 'grab', touchAction: 'none', opacity: dim ? 0.35 : 1 }}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[12.5px] font-bold leading-[1.25]">
-                          {prettyJobTitle(c.url, c.title)}
+                      <div
+                        onPointerDown={(e) => onDown(e, c)}
+                        onPointerMove={onMove}
+                        onPointerUp={onUp}
+                        onPointerCancel={onCancel}
+                        className="flex select-none items-center gap-2 rounded-xl border border-glassb bg-bg2 px-[11px] py-2.5 transition-opacity duration-150"
+                        style={{ cursor: 'grab', touchAction: 'none', opacity: dim ? 0.35 : 1 }}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[12.5px] font-bold leading-[1.25]">
+                            {prettyJobTitle(c.url, c.title)}
+                          </div>
                         </div>
+                        {fit && (
+                          <span
+                            className="flex-none font-mono text-[10px] font-bold"
+                            style={{ color: fit.tx }}
+                          >
+                            {c.score}%
+                          </span>
+                        )}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="var(--color-tx3)"
+                          className="flex-none opacity-50"
+                        >
+                          <circle cx="8" cy="7" r="1.6" />
+                          <circle cx="8" cy="12" r="1.6" />
+                          <circle cx="8" cy="17" r="1.6" />
+                          <circle cx="15" cy="7" r="1.6" />
+                          <circle cx="15" cy="12" r="1.6" />
+                          <circle cx="15" cy="17" r="1.6" />
+                        </svg>
                       </div>
-                      {fit && (
-                        <span className="flex-none font-mono text-[10px] font-bold" style={{ color: fit.tx }}>
-                          {c.score}%
-                        </span>
-                      )}
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--color-tx3)" className="flex-none opacity-50">
-                        <circle cx="8" cy="7" r="1.6" />
-                        <circle cx="8" cy="12" r="1.6" />
-                        <circle cx="8" cy="17" r="1.6" />
-                        <circle cx="15" cy="7" r="1.6" />
-                        <circle cx="15" cy="12" r="1.6" />
-                        <circle cx="15" cy="17" r="1.6" />
-                      </svg>
-                    </div>
                     </Cascade>
                   );
                 })}
                 {!laneCards.length && (
-                  <div className="px-0.5 py-1.5 text-[10.5px] font-medium text-tx3">— порожньо —</div>
+                  <div className="px-0.5 py-1.5 text-[10.5px] font-medium text-tx3">
+                    — порожньо —
+                  </div>
                 )}
               </div>
             </div>
@@ -221,16 +240,17 @@ export function KanbanBoard({
             {prettyJobTitle(dragCard.url, dragCard.title)}
           </span>
           {dragCard.score != null && dragCard.score >= 0 && (
-            <span className="flex-none font-mono text-[10px] font-bold" style={{ color: fitStyle(dragCard.score).tx }}>
+            <span
+              className="flex-none font-mono text-[10px] font-bold"
+              style={{ color: fitStyle(dragCard.score).tx }}
+            >
               {dragCard.score}%
             </span>
           )}
         </div>
       )}
 
-      {celebrate && (
-        <StageCelebration kind={celebrate} onClose={() => setCelebrate(null)} />
-      )}
+      {celebrate && <StageCelebration kind={celebrate} onClose={() => setCelebrate(null)} />}
     </>
   );
 }

@@ -83,7 +83,9 @@ export function QuestionBlock({ d }: { d: MockData }) {
         )}
         <SectionLabel>ПИТАННЯ ДНЯ</SectionLabel>
         {streak > 0 && (
-          <span className="ml-auto font-mono text-[10px] font-semibold text-a2">🔥 СТРІК {streak}</span>
+          <span className="ml-auto font-mono text-[10px] font-semibold text-a2">
+            🔥 СТРІК {streak}
+          </span>
         )}
         <div className={streak > 0 ? '' : 'ml-auto'}>
           <SaveButton kind="question" id={qId} title={d.question} />
@@ -102,7 +104,10 @@ export function QuestionBlock({ d }: { d: MockData }) {
               {d.answer}
             </div>
           ) : (
-            <div className="py-0.5 pl-3 text-[13px] leading-[1.6] text-tx3" style={{ borderLeft: '2px solid var(--color-glassb)' }}>
+            <div
+              className="py-0.5 pl-3 text-[13px] leading-[1.6] text-tx3"
+              style={{ borderLeft: '2px solid var(--color-glassb)' }}
+            >
               Відповідь з’явиться згодом. Спробуй відповісти вголос — тренування до співбесіди.
             </div>
           )}

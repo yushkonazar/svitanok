@@ -40,7 +40,9 @@ export function InterestsBlock({ s }: { s: Stats }) {
 
   // Напрямок vs минулий тиждень — із тренду головної теми.
   let trend = '';
-  const series = top ? s.interestsTrend.topics.find((t) => t.topic === top.topic)?.series : undefined;
+  const series = top
+    ? s.interestsTrend.topics.find((t) => t.topic === top.topic)?.series
+    : undefined;
   if (series && series.length >= 2) {
     const last = series[series.length - 1];
     const prev = series[series.length - 2];
@@ -53,7 +55,10 @@ export function InterestsBlock({ s }: { s: Stats }) {
 
       {top ? (
         <>
-          <div ref={heroRef} className="flex items-center gap-3.5 rounded-2xl border border-glassb bg-glass p-4">
+          <div
+            ref={heroRef}
+            className="flex items-center gap-3.5 rounded-2xl border border-glassb bg-glass p-4"
+          >
             <div className="flex min-w-0 flex-col">
               <span className="font-mono text-[9.5px] font-medium tracking-[0.08em] text-tx3">
                 ГОЛОВНИЙ ЦЬОГО ТИЖНЯ
@@ -147,10 +152,10 @@ export function InterestsBlock({ s }: { s: Stats }) {
                 </div>
               ))}
               <Hint>
-                Реакції за останні 4 тижні проти попередніх 4. Показані лише помітні зміни —
-                рівні теми й дрібні коливання сюди не потрапляють, інакше список щотижня був би
-                повний і нічого не означав. «Згасла» тема не гірша за іншу: це просто те, що
-                тебе зараз цікавить менше.
+                Реакції за останні 4 тижні проти попередніх 4. Показані лише помітні зміни — рівні
+                теми й дрібні коливання сюди не потрапляють, інакше список щотижня був би повний і
+                нічого не означав. «Згасла» тема не гірша за іншу: це просто те, що тебе зараз
+                цікавить менше.
               </Hint>
             </div>
           )}
@@ -172,10 +177,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
       )}
 
       {focus !== null && (
-        <StatRow
-          label="Зосередженість"
-          value={`${focus}% реакцій — на головній темі`}
-        />
+        <StatRow label="Зосередженість" value={`${focus}% реакцій — на головній темі`} />
       )}
       {/* ⚠️ НЕ «новин на день» — так це називалось доти, і назва була
           неправдою. Лічильник s.days[].news інкрементує ВИКЛЮЧНО подія
@@ -192,10 +194,7 @@ export function InterestsBlock({ s }: { s: Stats }) {
           активністю за всю історію (кап 365), тож вікно теж підписане: доти
           це був єдиний показник блоку без нього. */}
       {has(s.readPerDay) && (
-        <StatRow
-          label="Переходів на джерела · на активну добу"
-          value={s.readPerDay}
-        />
+        <StatRow label="Переходів на джерела · на активну добу" value={s.readPerDay} />
       )}
       {s.savedCount > 0 && <StatRow label="🔖 Збережено" value={s.savedCount} />}
     </div>

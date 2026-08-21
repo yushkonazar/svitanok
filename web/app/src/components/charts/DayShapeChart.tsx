@@ -127,7 +127,13 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
           return (
             <g key={v}>
               <line x1={8} x2={W - 8} y1={y} y2={y} stroke="var(--color-hair)" strokeWidth="1" />
-              <text x={0} y={y + 3} fontSize="8" fill="var(--color-tx3)" fontFamily="var(--font-mono)">
+              <text
+                x={0}
+                y={y + 3}
+                fontSize="8"
+                fill="var(--color-tx3)"
+                fontFamily="var(--font-mono)"
+              >
                 {Number.isInteger(v) ? v : v.toFixed(1)}
               </text>
             </g>
@@ -161,13 +167,7 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
           energy.map(
             (v, i) =>
               v !== null && (
-                <circle
-                  key={i}
-                  cx={xOf(i)}
-                  cy={yOf(v)}
-                  r={2.6}
-                  fill="var(--color-a2)"
-                />
+                <circle key={i} cx={xOf(i)} cy={yOf(v)} r={2.6} fill="var(--color-a2)" />
               ),
           )}
         {SLOT_LABEL.map((lbl, i) => (
@@ -185,7 +185,10 @@ export function DayShapeChart({ series }: { series: CheckinPoint[] }) {
       </svg>
       <div className="flex items-center gap-3 text-[10px] text-tx3">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-[2px] w-3 rounded-full" style={{ background: 'var(--color-a2)' }} />
+          <span
+            className="inline-block h-[2px] w-3 rounded-full"
+            style={{ background: 'var(--color-a2)' }}
+          />
           енергія
         </span>
         <span className="flex items-center gap-1">

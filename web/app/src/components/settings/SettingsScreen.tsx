@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useSettings, useSaveSettings, useStats, useSetGoal, useBriefing } from '../../api/hooks.ts';
+import {
+  useSettings,
+  useSaveSettings,
+  useStats,
+  useSetGoal,
+  useBriefing,
+} from '../../api/hooks.ts';
 import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { getDemoState, setDemoState, type DemoState } from '../../api/client.ts';
@@ -172,15 +178,13 @@ export function SettingsScreen() {
   // потрапляє, і зняти приглушення стало б неможливо.
   const news = readBlock(briefData?.brief.blocks ?? [], 'news', newsDataSchema);
   const muted = settings.mutedTopics;
-  const topics = [...new Set([...(news?.groups ?? []).map((g) => g.topic), ...muted])].sort((a, b) =>
-    a.localeCompare(b, 'uk'),
+  const topics = [...new Set([...(news?.groups ?? []).map((g) => g.topic), ...muted])].sort(
+    (a, b) => a.localeCompare(b, 'uk'),
   );
   const toggleTopic = (topic: string, on: boolean) => {
     // Set, а не [...muted, topic]: подвійний тап інакше слав би дубль (сервер його
     // дедупить, але слати сміття не варто).
-    const next = on
-      ? muted.filter((t) => t !== topic)
-      : [...new Set([...muted, topic])];
+    const next = on ? muted.filter((t) => t !== topic) : [...new Set([...muted, topic])];
     save.mutate({ mutedTopics: next });
   };
 
@@ -327,7 +331,11 @@ export function SettingsScreen() {
             return (
               <SettingRow
                 key={t}
-                icon={<span className="w-[22px] flex-none text-center text-[15px]">{topicEmoji(t)}</span>}
+                icon={
+                  <span className="w-[22px] flex-none text-center text-[15px]">
+                    {topicEmoji(t)}
+                  </span>
+                }
                 title={t}
               >
                 <Switch label={t} checked={on} onChange={(next) => toggleTopic(t, next)} />
@@ -343,7 +351,12 @@ export function SettingsScreen() {
       <Section title="ТЕМА">
         <div className="flex gap-2" role="radiogroup" aria-label="Тема">
           {THEMES.map((t) => (
-            <Chip key={t.id} active={pref === t.id} pressed={pref === t.id} onClick={() => setPref(t.id)}>
+            <Chip
+              key={t.id}
+              active={pref === t.id}
+              pressed={pref === t.id}
+              onClick={() => setPref(t.id)}
+            >
               {t.label}
             </Chip>
           ))}

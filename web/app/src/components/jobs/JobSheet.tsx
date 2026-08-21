@@ -67,85 +67,85 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
 
   return (
     <Sheet onClose={onClose} label="Вакансія">
-        <div className="mb-1 flex items-center gap-2.5">
-          {fit ? (
-            <span
-              className="rounded-full border px-[9px] py-[3px] font-mono text-[10px] font-bold"
-              style={{ color: fit.tx, background: fit.bg, borderColor: fit.brd }}
-            >
-              {card.score}% fit
-            </span>
-          ) : (
-            <span className="rounded-full border border-glassb bg-glass px-[9px] py-[3px] font-mono text-[10px] font-bold text-tx2">
-              без оцінки
-            </span>
-          )}
-          <span className="ml-auto font-mono text-[10px] font-semibold text-tx3">
-            {STAGE_LABEL[card.stage]}
+      <div className="mb-1 flex items-center gap-2.5">
+        {fit ? (
+          <span
+            className="rounded-full border px-[9px] py-[3px] font-mono text-[10px] font-bold"
+            style={{ color: fit.tx, background: fit.bg, borderColor: fit.brd }}
+          >
+            {card.score}% fit
           </span>
-        </div>
+        ) : (
+          <span className="rounded-full border border-glassb bg-glass px-[9px] py-[3px] font-mono text-[10px] font-bold text-tx2">
+            без оцінки
+          </span>
+        )}
+        <span className="ml-auto font-mono text-[10px] font-semibold text-tx3">
+          {STAGE_LABEL[card.stage]}
+        </span>
+      </div>
 
+      <button
+        type="button"
+        onClick={() => openLink(card.url)}
+        className="block text-left text-lg font-extrabold leading-[1.25] tracking-[-0.01em]"
+      >
+        {prettyJobTitle(card.url, card.title)}
+      </button>
+      {host && <div className="mt-0.5 font-mono text-[11.5px] font-medium text-tx2">{host}</div>}
+
+      {/* Історія — журнал переходів (F1). У вакансій, доданих до F1, його немає:
+            тоді чесно показуємо лише дату входу, нічого не домальовуючи. */}
+      {card.history.length > 0 ? (
+        <div className="mt-[18px]">
+          <div className="mb-2.5 font-mono text-[10px] font-semibold tracking-[0.12em] text-tx3">
+            ІСТОРІЯ
+          </div>
+          <History events={card.history} />
+        </div>
+      ) : (
+        ts && (
+          <div className="mt-4 font-mono text-[10px] font-semibold tracking-[0.12em] text-tx3">
+            У ВОРОНЦІ З {dayShort(ts)}
+          </div>
+        )
+      )}
+
+      <div className="mb-2.5 mt-[18px] font-mono text-[10px] font-semibold tracking-[0.12em] text-tx3">
+        ПЕРЕВЕСТИ НА СТАДІЮ
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {FUNNEL_STAGES.map((s) => {
+          const on = card.stage === s.key;
+          return (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => move(on ? null : s.key)}
+              className="rounded-full px-3 py-[7px] text-[11px] font-semibold transition-colors"
+              style={
+                on
+                  ? { background: 'var(--grad)', color: 'var(--color-onacc)' }
+                  : {
+                      background: 'var(--color-glass)',
+                      border: '1px solid var(--color-glassb)',
+                      color: 'var(--color-tx2)',
+                    }
+              }
+            >
+              {s.short}
+            </button>
+          );
+        })}
         <button
           type="button"
-          onClick={() => openLink(card.url)}
-          className="block text-left text-lg font-extrabold leading-[1.25] tracking-[-0.01em]"
+          onClick={() => move(null)}
+          className="rounded-full px-3 py-[7px] text-[11px] font-semibold text-tx3"
+          style={{ background: 'var(--color-glass)', border: '1px solid var(--color-glassb)' }}
         >
-          {prettyJobTitle(card.url, card.title)}
+          Прибрати з воронки
         </button>
-        {host && <div className="mt-0.5 font-mono text-[11.5px] font-medium text-tx2">{host}</div>}
-
-        {/* Історія — журнал переходів (F1). У вакансій, доданих до F1, його немає:
-            тоді чесно показуємо лише дату входу, нічого не домальовуючи. */}
-        {card.history.length > 0 ? (
-          <div className="mt-[18px]">
-            <div className="mb-2.5 font-mono text-[10px] font-semibold tracking-[0.12em] text-tx3">
-              ІСТОРІЯ
-            </div>
-            <History events={card.history} />
-          </div>
-        ) : (
-          ts && (
-            <div className="mt-4 font-mono text-[10px] font-semibold tracking-[0.12em] text-tx3">
-              У ВОРОНЦІ З {dayShort(ts)}
-            </div>
-          )
-        )}
-
-        <div className="mb-2.5 mt-[18px] font-mono text-[10px] font-semibold tracking-[0.12em] text-tx3">
-          ПЕРЕВЕСТИ НА СТАДІЮ
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {FUNNEL_STAGES.map((s) => {
-            const on = card.stage === s.key;
-            return (
-              <button
-                key={s.key}
-                type="button"
-                onClick={() => move(on ? null : s.key)}
-                className="rounded-full px-3 py-[7px] text-[11px] font-semibold transition-colors"
-                style={
-                  on
-                    ? { background: 'var(--grad)', color: 'var(--color-onacc)' }
-                    : {
-                        background: 'var(--color-glass)',
-                        border: '1px solid var(--color-glassb)',
-                        color: 'var(--color-tx2)',
-                      }
-                }
-              >
-                {s.short}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => move(null)}
-            className="rounded-full px-3 py-[7px] text-[11px] font-semibold text-tx3"
-            style={{ background: 'var(--color-glass)', border: '1px solid var(--color-glassb)' }}
-          >
-            Прибрати з воронки
-          </button>
-        </div>
+      </div>
     </Sheet>
   );
 }

@@ -353,7 +353,9 @@ describe('useJobStage', () => {
 
   it('зберігає ts/title наявного запису — сервер їх не перезаписує', async () => {
     seedStats({
-      funnelList: [{ url: 'j1', stage: 'saved', title: 'Стара назва', ts: '2026-01-02', history: [] }],
+      funnelList: [
+        { url: 'j1', stage: 'saved', title: 'Стара назва', ts: '2026-01-02', history: [] },
+      ],
       funnel: { ...EMPTY_STATS.funnel, saved: 1 },
     });
     const { result } = renderHook(() => useJobStage(), { wrapper });
@@ -471,9 +473,7 @@ describe('useSaveSettings', () => {
       await result.current.mutateAsync({ mutedTopics: [] });
     });
 
-    expect(client.postSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ mutedTopics: [] }),
-    );
+    expect(client.postSettings).toHaveBeenCalledWith(expect.objectContaining({ mutedTopics: [] }));
   });
 
   it('збій відкочує тумблер', async () => {

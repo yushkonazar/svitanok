@@ -4,7 +4,15 @@ import { useInView } from '../../lib/useInView.ts';
 // Спарклайн (дизайн v2, Svitanok.dc.html): лінія з градієнтом a2→a1 + м'яка
 // заливка донизу + крапка на останній точці. Використовує блок «Подачі · 8 тижнів».
 
-export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: number; h?: number }) {
+export function Sparkline({
+  values,
+  w = 330,
+  h = 52,
+}: {
+  values: number[];
+  w?: number;
+  h?: number;
+}) {
   const uid = useId();
   // Хук ДО раннього return («недостатньо даних») — порядок хуків сталий.
   const [ref, inView] = useInView<SVGSVGElement>();
@@ -26,7 +34,9 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
     y: pad + (h - pad * 2) * (1 - (v - min) / span),
   }));
 
-  const line = coords.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(0)} ${p.y.toFixed(0)}`).join(' ');
+  const line = coords
+    .map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(0)} ${p.y.toFixed(0)}`)
+    .join(' ');
   const last = coords[coords.length - 1];
   const area = `${line} L${w} ${h} L0 ${h} Z`;
 
@@ -52,7 +62,14 @@ export function Sparkline({ values, w = 330, h = 52 }: { values: number[]; w?: n
       </defs>
       {/* Заливка проявляється, поки лінія малюється — інакше вона стояла б
           готовою під олівцем, що ще їде. */}
-      <path d={area} fill={`url(#${fillId})`} style={{ animation: 'fadeInSoft .9s ease-out backwards', animationPlayState: inView ? 'running' : 'paused' }} />
+      <path
+        d={area}
+        fill={`url(#${fillId})`}
+        style={{
+          animation: 'fadeInSoft .9s ease-out backwards',
+          animationPlayState: inView ? 'running' : 'paused',
+        }}
+      />
       {/* pathLength="1" нормалізує довжину шляху в одиницю — без цього CSS не
           знає, скільки там пікселів, і намалювати лінію «від початку до кінця»
           нічим. dashoffset у DOM = 0, тобто лінія намальована; кадр лише каже,

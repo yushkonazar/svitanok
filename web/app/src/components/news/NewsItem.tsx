@@ -59,7 +59,11 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
           не рестартує кадри на зміну класу, лише на появу елемента.
           Сам pop лежав у index.css написаний і НЕ ВИКОРИСТАНИЙ ніде — тап у
           серце (головний жест вкладки) досі просто міняв колір. */}
-      <span key={String(on)} className="block" style={{ animation: 'pop .28s cubic-bezier(.22,1,.36,1)' }}>
+      <span
+        key={String(on)}
+        className="block"
+        style={{ animation: 'pop .28s cubic-bezier(.22,1,.36,1)' }}
+      >
         {label}
       </span>
     </button>
@@ -81,7 +85,9 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
         )}
         <span className="block text-[13.5px] font-semibold leading-[1.35]">{item.title}</span>
         {has(item.why) && (
-          <span className="mt-0.5 block font-mono text-[10.5px] font-medium text-a2">{item.why}</span>
+          <span className="mt-0.5 block font-mono text-[10.5px] font-medium text-a2">
+            {item.why}
+          </span>
         )}
       </button>
       <div className="flex flex-none gap-1.5">

@@ -21,7 +21,10 @@ export function FunnelWidget({ counts }: { counts: Record<FunnelStage, number> }
   const closed = (counts.rejected || 0) + (counts.failed || 0);
 
   return (
-    <div ref={ref} className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass px-1.5 py-3.5">
+    <div
+      ref={ref}
+      className="flex flex-col gap-2 rounded-2xl border border-glassb bg-glass px-1.5 py-3.5"
+    >
       <div className="flex items-stretch">
         {FUNNEL_STAGES.filter((s) => WIDGET_STAGES.includes(s.key)).map((s) => {
           const n = counts[s.key] || 0;

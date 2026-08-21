@@ -71,12 +71,38 @@ export function OpenRhythm({ rhythm }: { rhythm: Stats['openRhythm'] }) {
         </span>
       </div>
 
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }} role="img"
-        aria-label={`Медіана ${clockLabel(med)}, середня половина діб між ${clockLabel(q1)} і ${clockLabel(q3)}`}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ height: H }}
+        role="img"
+        aria-label={`Медіана ${clockLabel(med)}, середня половина діб між ${clockLabel(q1)} і ${clockLabel(q3)}`}
+      >
         {/* вуса p10..p90 */}
-        <line x1={x(p10)} x2={x(p90)} y1={cy} y2={cy} stroke="var(--color-glassb)" strokeWidth="2" />
-        <line x1={x(p10)} x2={x(p10)} y1={cy - 6} y2={cy + 6} stroke="var(--color-tx3)" strokeWidth="1.5" />
-        <line x1={x(p90)} x2={x(p90)} y1={cy - 6} y2={cy + 6} stroke="var(--color-tx3)" strokeWidth="1.5" />
+        <line
+          x1={x(p10)}
+          x2={x(p90)}
+          y1={cy}
+          y2={cy}
+          stroke="var(--color-glassb)"
+          strokeWidth="2"
+        />
+        <line
+          x1={x(p10)}
+          x2={x(p10)}
+          y1={cy - 6}
+          y2={cy + 6}
+          stroke="var(--color-tx3)"
+          strokeWidth="1.5"
+        />
+        <line
+          x1={x(p90)}
+          x2={x(p90)}
+          y1={cy - 6}
+          y2={cy + 6}
+          stroke="var(--color-tx3)"
+          strokeWidth="1.5"
+        />
         {/* коробка q1..q3 — середня половина діб */}
         <rect
           x={x(q1)}
@@ -89,12 +115,34 @@ export function OpenRhythm({ rhythm }: { rhythm: Stats['openRhythm'] }) {
           strokeWidth="1.2"
         />
         {/* медіана */}
-        <line x1={x(med)} x2={x(med)} y1={cy - 11} y2={cy + 11} stroke="var(--color-a2)" strokeWidth="2.5" strokeLinecap="round" />
+        <line
+          x1={x(med)}
+          x2={x(med)}
+          y1={cy - 11}
+          y2={cy + 11}
+          stroke="var(--color-a2)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        />
         {/* підписи-фолбек: числа читаються без графіка */}
-        <text x={x(p10)} y={H - 2} fontSize="9" textAnchor="start" fill="var(--color-tx3)" fontFamily="var(--font-mono)">
+        <text
+          x={x(p10)}
+          y={H - 2}
+          fontSize="9"
+          textAnchor="start"
+          fill="var(--color-tx3)"
+          fontFamily="var(--font-mono)"
+        >
           {clockLabel(p10)}
         </text>
-        <text x={x(p90)} y={H - 2} fontSize="9" textAnchor="end" fill="var(--color-tx3)" fontFamily="var(--font-mono)">
+        <text
+          x={x(p90)}
+          y={H - 2}
+          fontSize="9"
+          textAnchor="end"
+          fill="var(--color-tx3)"
+          fontFamily="var(--font-mono)"
+        >
           {clockLabel(p90)}
         </text>
       </svg>
@@ -141,7 +189,13 @@ export function OpenRhythm({ rhythm }: { rhythm: Stats['openRhythm'] }) {
 /** Рядок половини. ⚠️ Оголошений ЗОВНІ RhythmDrift: компонент, створений під
  *  час рендера, щоразу новий, тобто скидає власний стан і ламає узгодження
  *  React (правило react-x/no-nested-component-definitions). */
-function HalfRow({ label, h }: { label: string; h: { n: number; median: number | null; iqr: number | null } }) {
+function HalfRow({
+  label,
+  h,
+}: {
+  label: string;
+  h: { n: number; median: number | null; iqr: number | null };
+}) {
   return (
     <div className="flex items-baseline gap-2 text-[10.5px] text-tx2">
       <span className="w-[52px] shrink-0 text-tx3">{label}</span>
@@ -171,7 +225,10 @@ function RhythmDrift({ drift }: { drift: NonNullable<Stats['openRhythm']['drift'
     <div className="flex flex-col gap-1 rounded-xl border border-glassb bg-glass px-2.5 py-2">
       <HalfRow label="раніше" h={early} />
       <HalfRow label="тепер" h={late} />
-      <div className="mt-0.5 border-t border-glassb pt-1 text-[10.5px]" style={{ color: verdict.color }}>
+      <div
+        className="mt-0.5 border-t border-glassb pt-1 text-[10.5px]"
+        style={{ color: verdict.color }}
+      >
         {verdict.text}
         <span className="ml-1 font-mono text-[9.5px] text-tx3">
           розкид {dIqr > 0 ? '+' : ''}

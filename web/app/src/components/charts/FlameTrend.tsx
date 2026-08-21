@@ -84,9 +84,7 @@ export function FlameTrend({ weeks }: { weeks: Stats['flameStats']['weekly'] }) 
               setTap(null);
             }}
             className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${
-              mode === m.key
-                ? 'border-glassb bg-glass text-tx'
-                : 'border-transparent text-tx3'
+              mode === m.key ? 'border-glassb bg-glass text-tx' : 'border-transparent text-tx3'
             }`}
           >
             {m.label}

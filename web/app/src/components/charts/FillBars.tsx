@@ -27,7 +27,11 @@ const dm = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
  * список дат — це стіна цифр, у якій нічого не видно. «5–8 серпня» одразу
  * читається як провал у чотири доби, а чотири окремі дати — як чотири випадки.
  */
-function missedRanges(raw: Stats['checkinRaw'], slot: 'morning' | 'afternoon' | 'evening', days: number) {
+function missedRanges(
+  raw: Stats['checkinRaw'],
+  slot: 'morning' | 'afternoon' | 'evening',
+  days: number,
+) {
   const all = Object.keys(raw.records).sort();
   if (!all.length) return [];
   // Вікно рахуємо від СЬОГОДНІ назад, а не від першого запису: картка каже
@@ -60,13 +64,7 @@ function missedRanges(raw: Stats['checkinRaw'], slot: 'morning' | 'afternoon' | 
   );
 }
 
-export function FillBars({
-  fill,
-  raw,
-}: {
-  fill: Stats['checkinFill'];
-  raw?: Stats['checkinRaw'];
-}) {
+export function FillBars({ fill, raw }: { fill: Stats['checkinFill']; raw?: Stats['checkinRaw'] }) {
   const [openSlot, setOpenSlot] = useState<string | null>(null);
   const rows = (['morning', 'afternoon', 'evening'] as const).map((slot) => ({
     slot,
@@ -114,9 +112,7 @@ export function FillBars({
             {openSlot === r.slot && (
               <div className="rounded-xl border border-glassb bg-glass px-2.5 py-1.5 font-mono text-[9.5px] leading-[1.5] text-tx3">
                 {missed && missed.length > 0 ? (
-                  <>
-                    пропущено: {missed.join(' · ')}
-                  </>
+                  <>пропущено: {missed.join(' · ')}</>
                 ) : (
                   <>жодного пропуску за {fill.days} діб</>
                 )}
@@ -126,8 +122,8 @@ export function FillBars({
         ))}
       </div>
       <Hint>
-        Скільки діб із {fill.days} ти заповнював кожен блок. Пропуски — теж дані: вони кажуть,
-        коли тобі не до чек-іну.
+        Скільки діб із {fill.days} ти заповнював кожен блок. Пропуски — теж дані: вони кажуть, коли
+        тобі не до чек-іну.
         {weakest.slot === 'evening' && weakest.pct < 60 && (
           <>
             {' '}

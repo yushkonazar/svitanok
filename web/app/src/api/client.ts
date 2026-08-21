@@ -210,7 +210,9 @@ function tupleToSettlement([name, lat, lon, country, region]: SettlementTuple): 
  */
 export async function fetchSettlements(): Promise<Settlement[]> {
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}settlements.json`, { cache: 'force-cache' });
+    const res = await fetch(`${import.meta.env.BASE_URL}settlements.json`, {
+      cache: 'force-cache',
+    });
     if (!res.ok) return [];
     const parsed = settlementsSchema.safeParse(await res.json());
     return parsed.success ? parsed.data.map(tupleToSettlement) : [];

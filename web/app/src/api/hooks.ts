@@ -1,9 +1,4 @@
-import {
-  useInfiniteQuery,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
@@ -140,9 +135,7 @@ function patchStats(
   qc: ReturnType<typeof useQueryClient>,
   fn: (s: StatsResult['stats']) => StatsResult['stats'],
 ) {
-  qc.setQueryData<StatsResult>(['stats'], (old) =>
-    old ? { ...old, stats: fn(old.stats) } : old,
-  );
+  qc.setQueryData<StatsResult>(['stats'], (old) => (old ? { ...old, stats: fn(old.stats) } : old));
 }
 
 type SavedInfinite = { pages: SavedPage[]; pageParams: number[] };
@@ -424,7 +417,9 @@ export function useJobStage() {
               // Реальна зміна стадії -> новий запис у журналі (без дати: її знає
               // лише сервер, київський день). Повтор тієї ж стадії журнал не чіпає.
               history:
-                existing?.stage === stage ? history : [...history, { stage, ts: existing?.ts ?? '' }],
+                existing?.stage === stage
+                  ? history
+                  : [...history, { stage, ts: existing?.ts ?? '' }],
             },
             ...list,
           ];
