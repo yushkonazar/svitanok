@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести autoTelegramSetup (щоденний самозапуск /api/telegram/setup
  * з крону) — власник більше не мусить руками виконувати curl після зміни
@@ -20,15 +21,13 @@ let kv: Map<string, string>;
 let calls: string[];
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: 'tg-webhook-secret',
     TELEGRAM_BOT_TOKEN: 'bot-token',
     MINI_APP_URL: 'https://svitanok.example.workers.dev',
     ...overrides,
-  };
+  });
 }
 
 function ctx() {

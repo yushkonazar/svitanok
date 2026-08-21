@@ -1,3 +1,4 @@
+import { workerEnv } from './helpers/env.js';
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,18 +17,19 @@ import { STATUS_KEY } from '../web/api-status.mjs';
  * публічної відповіді.
  */
 
-const envWith = (value: string | null, overrides: Record<string, unknown> = {}) => ({
-  BRIEFING: {
-    get: async (key: string) => (key === STATUS_KEY ? value : null),
-  },
-  ...overrides,
-  // Фолбек статики: усе, що не збіглося з маршрутом, воркер віддає сюди. Без
-  // цієї заглушки «маршрут не спрацював» виглядало б як падіння, а не як
-  // провал у статику — тобто тест не відрізняв би одне від одного.
-  ASSETS: { fetch: async () => new Response('not found', { status: 404 }) },
-});
+const envWith = (value: string | null, overrides: Record<string, unknown> = {}) =>
+  workerEnv({
+    BRIEFING: {
+      get: async (key: string) => (key === STATUS_KEY ? value : null),
+    },
+    ...overrides,
+    // Фолбек статики: усе, що не збіглося з маршрутом, воркер віддає сюди. Без
+    // цієї заглушки «маршрут не спрацював» виглядало б як падіння, а не як
+    // провал у статику — тобто тест не відрізняв би одне від одного.
+    ASSETS: { fetch: async () => new Response('not found', { status: 404 }) },
+  });
 
-const call = (env: unknown, path = '/api/status', method = 'GET') =>
+const call = (env: Env, path = '/api/status', method = 'GET') =>
   worker.fetch(new Request(`https://svitanok.yushko.dev${path}`, { method }), env, {
     waitUntil: () => {},
   });
@@ -36,7 +38,7 @@ describe('GET /api/status — контракт тіла', () => {
   it('віддає РІВНО один ключ і нічого більше', async () => {
     const res = await call(envWith(JSON.stringify({ lastBriefingAt: '2026-08-13T06:05:00.000Z' })));
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as KvBlob;
     expect(Object.keys(body)).toEqual(['lastBriefingAt']);
     expect(body.lastBriefingAt).toBe('2026-08-13T06:05:00.000Z');
   });
@@ -47,7 +49,7 @@ describe('GET /api/status — контракт тіла', () => {
     const res = await call(
       envWith(JSON.stringify({ lastBriefingAt: '2026-08-13T06:05:00.000Z', chatId: 12345 })),
     );
-    const body = await res.json();
+    const body = (await res.json()) as KvBlob;
     expect(Object.keys(body)).toEqual(['lastBriefingAt']);
     expect(JSON.stringify(body)).not.toContain('12345');
   });

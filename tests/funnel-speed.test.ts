@@ -21,7 +21,7 @@ const back = (n: number) => {
 };
 
 /** Провести вакансію стадіями: [стадія, скільки діб тому]. */
-const job = (s: unknown, url: string, path: [string, number][], title = 'Вакансія') => {
+const job = (s: KvBlob, url: string, path: [string, number][], title = 'Вакансія') => {
   let st = s;
   for (const [stage, daysAgo] of path) {
     st = recordEvent(st, { type: 'job_stage', url, stage, title }, back(daysAgo));
@@ -29,7 +29,7 @@ const job = (s: unknown, url: string, path: [string, number][], title = 'Вак�
   return st;
 };
 
-const speedOf = (s: unknown) => aggregateStats(s, TODAY).funnelSpeed;
+const speedOf = (s: KvBlob) => aggregateStats(s, TODAY).funnelSpeed;
 
 describe('funnelSpeed — скільки триває кожен крок', () => {
   it('медіана діб між стадіями рахується з журналу переходів', () => {

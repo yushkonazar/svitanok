@@ -1,3 +1,4 @@
+import { workerEnv } from './helpers/env.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 
@@ -56,17 +57,18 @@ function signInitData(hashOverride?: string) {
   return new URLSearchParams({ ...params, hash }).toString();
 }
 
-const env = () => ({
-  BRIEFING: {
-    get: async () => null,
-    put: async () => {},
-    list: async () => ({ keys: [] }),
-  },
-  TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
-  TELEGRAM_BOT_TOKEN: BOT_TOKEN,
-  TELEGRAM_OWNER_USER_ID: '42',
-  LLM_HOST_SECRET: HOST_SECRET,
-});
+const env = () =>
+  workerEnv({
+    BRIEFING: {
+      get: async () => null,
+      put: async () => {},
+      list: async () => ({ keys: [] }),
+    },
+    TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
+    TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+    TELEGRAM_OWNER_USER_ID: '42',
+    LLM_HOST_SECRET: HOST_SECRET,
+  });
 
 const webhookReq = (secretHeader: string, path = '/api/telegram') =>
   new Request(`https://svitanok.example${path}`, {

@@ -87,7 +87,7 @@ describe('checkin-model — sampleIndices (перші 3 доби golden-набо
   it('dayIndices на перших 3 добах збігається з Python', () => {
     const days = golden.days as Array<Record<string, unknown>>;
     for (let i = 0; i < 3; i++) {
-      const got = dayIndices(days[i]);
+      const got = dayIndices(days[i]!);
       const want = golden.sampleIndices[i];
       for (const idx of INDICES as string[]) expect(near(got[idx], want[idx])).toBe(true);
     }
@@ -157,10 +157,10 @@ describe('checkin-model — драйвери (Welch, без PRNG)', () => {
     for (let i = 0; i < Math.min(6, want.length); i++) {
       const g = got[i];
       const w = want[i]!;
-      expect(g.field).toBe(w.field);
-      expect(near(g.delta, w.delta, 1e-2)).toBe(true);
-      expect(near(g.d, w.d, 1e-2)).toBe(true);
-      expect(near(g.p, w.p, 5e-3)).toBe(true);
+      expect(g!.field).toBe(w.field);
+      expect(near(g!.delta, w.delta, 1e-2)).toBe(true);
+      expect(near(g!.d, w.d, 1e-2)).toBe(true);
+      expect(near(g!.p, w.p, 5e-3)).toBe(true);
     }
   });
 
@@ -170,7 +170,7 @@ describe('checkin-model — драйвери (Welch, без PRNG)', () => {
       dayScore: 3 + (i % 2),
     }));
     const got = computeDrivers(days);
-    expect(got.find((r: { field: string }) => r.field === 'output')).toBeUndefined();
+    expect(got.find((r: KvBlob) => r.field === 'output')).toBeUndefined();
   });
 });
 
@@ -427,13 +427,13 @@ describe('статфікс 3 — поправка Бенʼяміні-Хохбе�
 
   it('q монотонний за p: рядок із більшим p не може мати менший q', () => {
     const rows = [...computeDrivers(days)].sort((a, b) => a.p - b.p);
-    for (let i = 1; i < rows.length; i++) expect(rows[i].q).toBeGreaterThanOrEqual(rows[i - 1].q);
+    for (let i = 1; i < rows.length; i++) expect(rows[i]!.q).toBeGreaterThanOrEqual(rows[i - 1]!.q);
   });
 
   it('витримати поправку строго важче, ніж власний p<0.05', () => {
     const rows = computeDrivers(days);
-    const byP = rows.filter((r: { p: number }) => r.p < 0.05).length;
-    const byQ = rows.filter((r: { passesBH: boolean }) => r.passesBH).length;
+    const byP = rows.filter((r: KvBlob) => r.p < 0.05).length;
+    const byQ = rows.filter((r: KvBlob) => r.passesBH).length;
     expect(byQ).toBeLessThanOrEqual(byP);
   });
 });

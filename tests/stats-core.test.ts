@@ -557,11 +557,11 @@ describe('stats-core — розширені метрики (A2)', () => {
       s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06'); // +open нижче
     s = recordEvent(s, { type: 'open' }, '2026-07-06'); // 4 дії -> l3
     const hm = aggregateStats(s, '2026-07-07').heatmap;
-    expect(new Date(hm[0].d + 'T00:00:00Z').getUTCDay()).toBe(1); // понеділок
-    expect(hm[hm.length - 1].d).toBe('2026-07-07'); // сьогодні
-    expect(hm[0].d).toBe(weekStartKey('2026-01-01')); // без стелі — від тижня НАЙДАВНІШОГО запису
+    expect(new Date(hm[0]!.d + 'T00:00:00Z').getUTCDay()).toBe(1); // понеділок
+    expect(hm[hm.length - 1]!.d).toBe('2026-07-07'); // сьогодні
+    expect(hm[0]!.d).toBe(weekStartKey('2026-01-01')); // без стелі — від тижня НАЙДАВНІШОГО запису
     expect(hm.length).toBe(191); // рівно стільки днів між цими двома датами
-    const byDate = Object.fromEntries(hm.map((c: { d: string }) => [c.d, c]));
+    const byDate = Object.fromEntries(hm.map((c: KvBlob) => [c.d, c]));
     expect(byDate['2026-07-07']).toMatchObject({ v: 1, l: 1 });
     expect(byDate['2026-07-06']).toMatchObject({ v: 4, l: 3 });
     expect(byDate['2026-07-05']).toMatchObject({ v: 0, l: 0 });
@@ -573,7 +573,7 @@ describe('stats-core — розширені метрики (A2)', () => {
     s = recordEvent(s, { type: 'open' }, '2026-07-07');
     const hm = aggregateStats(s, '2026-07-07').heatmap;
     expect(hm).toHaveLength(2); // не 84 — даних раніше 07-06 узагалі нема
-    expect(hm[0].d).toBe('2026-07-06');
+    expect(hm[0]!.d).toBe('2026-07-06');
   });
 
   it('heatmap: клітинка несе СКЛАД активності (o/m/n), не лише суму', () => {
@@ -582,11 +582,11 @@ describe('stats-core — розширені метрики (A2)', () => {
     s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
     s = recordEvent(s, { type: 'news_click', category: 'Т' }, '2026-07-06');
     const hm = aggregateStats(s, '2026-07-07').heatmap;
-    const cell = hm.find((c: { d: string }) => c.d === '2026-07-06');
+    const cell = hm.find((c: KvBlob) => c.d === '2026-07-06');
     // Сума лишається як була, але тепер видно, ЩО саме її склало.
-    expect(cell.o + cell.m + cell.n).toBe(cell.v);
-    expect(cell.n).toBe(2);
-    expect(cell.m).toBe(0);
+    expect(cell!.o + cell!.m + cell!.n).toBe(cell!.v);
+    expect(cell!.n).toBe(2);
+    expect(cell!.m).toBe(0);
   });
 
   it('openRhythm: розподіл (не лише медіана); замало точок -> ready=false', () => {

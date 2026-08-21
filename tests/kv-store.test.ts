@@ -13,6 +13,7 @@ import {
   claimAssistantPending,
 } from '../web/kv-store.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from '../web/assistant-memory-core.mjs';
+import { workerEnv } from './helpers/env.js';
 
 /* Доступ до KV, витягнутий із worker.js (Фаза 5). Два інваріанти, які тут і
  * перевіряються, — це вся причина, чому цей шар узагалі існує:
@@ -33,7 +34,7 @@ let watchKey: string;
 
 function env() {
   let reads = 0;
-  return {
+  return workerEnv({
     BRIEFING: {
       get: async (k: string) => {
         if (k === watchKey && ++reads === 2 && onSecondRead) onSecondRead();
@@ -44,7 +45,7 @@ function env() {
         putOpts.set(k, opts);
       },
     },
-  };
+  });
 }
 
 beforeEach(() => {
@@ -99,7 +100,7 @@ describe('читачі — биття JSON дає нейтральний деф�
 describe('updateStats — оптимістичний read-modify-write (KV не має CAS)', () => {
   it('без конкурента: patch застосовано один раз', async () => {
     kv.set('stats', JSON.stringify({ n: 1 }));
-    const res = await updateStats(env(), (s: { n: number }) => ({ ...s, n: s.n + 1 }));
+    const res = await updateStats(env(), (s: KvBlob) => ({ ...s, n: s.n + 1 }));
     expect(res).toEqual({ n: 2 });
     expect(JSON.parse(kv.get('stats')!)).toEqual({ n: 2 });
   });
@@ -162,7 +163,7 @@ describe("updateState — той самий захист для 'state' (C4)", (
 
   it('без конкурента: patch застосовано один раз', async () => {
     kv.set('state', JSON.stringify({ lastUpdateId: 1 }));
-    const res = await updateState(env(), (s: { lastUpdateId: number }) => ({
+    const res = await updateState(env(), (s: KvBlob) => ({
       ...s,
       lastUpdateId: 2,
     }));
@@ -230,12 +231,12 @@ describe("updateJson — межа мітигації (закриття знах�
 
     // Колонія віддає закешований рядок обидва рази, хоча в KV уже інше значення.
     const cached = JSON.stringify({ mine: 0 });
-    const e = {
+    const e = workerEnv({
       BRIEFING: {
         get: async () => cached,
         put: async (k: string, v: string) => void kv.set(k, v),
       },
-    };
+    });
     // Чужий писар (інша колонія) уже поклав своє.
     kv.set('state', JSON.stringify({ mine: 0, theirs: 'важливе' }));
 

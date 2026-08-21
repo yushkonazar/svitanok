@@ -314,8 +314,8 @@ describe('aggregateStats — чек-ін', () => {
     s = recordEvent(s, ck('afternoon', { energy: 4 }), '2026-07-17');
     s = recordEvent(s, ck('evening', { energy: 3 }), '2026-07-17');
     const row = aggregateStats(s, '2026-07-17').checkinSeries.at(-1);
-    expect(row.energy).toBe(3); // (2+4+3)/3
-    expect(row.slots).toBe(3);
+    expect(row!.energy).toBe(3); // (2+4+3)/3
+    expect(row!.slots).toBe(3);
   });
 
   it('явка по блоках рахує пропуски — вони теж сигнал', () => {
@@ -643,10 +643,10 @@ describe('чек-ін — крива енергії/настрою (форма �
     s = recordEvent(s, ck('afternoon', { energy: 3 }), '2026-07-16');
     s = recordEvent(s, ck('evening', { energy: 1, mood: 2 }), '2026-07-16');
     const row = aggregateStats(s, '2026-07-16').checkinSeries.at(-1);
-    expect(row.energyCurve).toEqual([5, 3, 1]);
+    expect(row!.energyCurve).toEqual([5, 3, 1]);
     // Незаповнений слот -> null (дірка), а не 0: нуль читався б як «сил немає».
-    expect(row.moodCurve).toEqual([4, null, 2]);
-    expect(row.energy).toBe(3); // середнє лишається для сумісності
+    expect(row!.moodCurve).toEqual([4, null, 2]);
+    expect(row!.energy).toBe(3); // середнє лишається для сумісності
   });
 });
 

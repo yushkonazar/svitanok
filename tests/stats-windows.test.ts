@@ -123,7 +123,7 @@ describe('оголошене вікно = справжня межа даних',
   it('checkinSeries не бере нічого старшого за checkinRecent', () => {
     const edge = STATS_WINDOWS.checkinRecent - 1;
     const s = withCheckins([0, edge, edge + 1, edge + 40], {});
-    const days = aggregateStats(s, TODAY).checkinSeries.map((p: { d: string }) => p.d);
+    const days = aggregateStats(s, TODAY).checkinSeries.map((p: KvBlob) => p.d);
     expect(days).toContain(back(edge));
     expect(days).not.toContain(back(edge + 1));
   });

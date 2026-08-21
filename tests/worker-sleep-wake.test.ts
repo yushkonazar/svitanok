@@ -3,6 +3,7 @@ import worker from '../web/worker.js';
 import { SLEEP_H_BUCKETS, snapSleepHours } from '../web/stats-core.mjs';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційний тест повного циклу «Ліг спати» -> ранкове відкриття ->
  * автозаповнення чек-іну, через СПРАВЖНІЙ worker.fetch (POST /api/event), а
@@ -32,14 +33,12 @@ const BOT_TOKEN = 'bot-token-abc';
 let kv: Map<string, string>;
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     ...overrides,
-  };
+  });
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */

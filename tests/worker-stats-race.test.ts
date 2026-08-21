@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Регресія на реальний баг (фідбек власника, 2026-08-05): тапнув «Ліг спати»
  * вночі, вранці відкрив застосунок — авто-заповнення сну в чек-іні не
@@ -25,16 +26,14 @@ const BOT_TOKEN = 'bot-token-abc';
 let kv: Map<string, string>;
 
 function baseEnv() {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
-  };
+  });
 }
 
-async function postEvent(body: Record<string, unknown>, e: unknown) {
+async function postEvent(body: Record<string, unknown>, e: Env) {
   return worker.fetch(
     new Request('https://svitanok.example/api/event', {
       method: 'POST',
@@ -46,7 +45,7 @@ async function postEvent(body: Record<string, unknown>, e: unknown) {
   );
 }
 
-async function postVote(body: Record<string, unknown>, e: unknown) {
+async function postVote(body: Record<string, unknown>, e: Env) {
   return worker.fetch(
     new Request('https://svitanok.example/api/vote', {
       method: 'POST',
@@ -82,7 +81,7 @@ describe('updateStats — конкурентний запис між двома 
     );
 
     let getCalls = 0;
-    const e = {
+    const e = workerEnv({
       ...baseEnv(),
       BRIEFING: {
         get: async (k: string) => {
@@ -117,7 +116,7 @@ describe('updateStats — конкурентний запис між двома 
         put: async (k: string, v: string) => void kv.set(k, v),
         list: async () => ({ keys: [] }),
       },
-    };
+    });
 
     const res = await postEvent({ type: 'open', initData }, e);
     expect(res.status).toBe(200);
@@ -171,7 +170,7 @@ describe('handleVote — голос за новину не затирає кон
     kv.set('stats', JSON.stringify({ interests: {}, sleepLog: {}, days: {} }));
 
     let getCalls = 0;
-    const e = {
+    const e = workerEnv({
       ...baseEnv(),
       BRIEFING: {
         get: async (k: string) => {
@@ -195,7 +194,7 @@ describe('handleVote — голос за новину не затирає кон
         put: async (k: string, v: string) => void kv.set(k, v),
         list: async () => ({ keys: [] }),
       },
-    };
+    });
 
     const res = await postVote({ category: 'Технології', dir: 'up', initData }, e);
     expect(res.status).toBe(200);

@@ -74,11 +74,14 @@ export function fmtHhmm(mins) {
 }
 
 /** Нормалізувати частковий/битий блоб до повної форми (як normalize у stats-core).
- *  @param {KvBlob|null|undefined} raw
+ *  @param {unknown} rawSettings
  *  @returns {Settings} */
-export function normalizeSettings(raw) {
+export function normalizeSettings(rawSettings) {
   const e = emptySettings();
-  if (!raw || typeof raw !== 'object') return e;
+  if (!rawSettings || typeof rawSettings !== 'object') return e;
+  // Після гарду TS звужує `unknown` до `object` — без індексної сигнатури,
+  // тож поля читаються через явний KvBlob.
+  const raw = /** @type {KvBlob} */ (rawSettings);
 
   const q = raw.quiet && typeof raw.quiet === 'object' ? raw.quiet : {};
   const from = parseHhmm(q.from);

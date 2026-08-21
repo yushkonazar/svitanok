@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Інтеграційні тести GET /api/weather (PR-7, «жива погода в Mini App» — фідбек
  * власника: статична температура з брифінгу вже за обідом не відповідала
@@ -19,15 +20,13 @@ let geocodeEmpty: boolean;
 let geocodeDirectEmpty: boolean;
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     WEATHER_API_KEY: 'wkey',
     ...overrides,
-  };
+  });
 }
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */

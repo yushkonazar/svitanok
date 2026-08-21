@@ -160,7 +160,7 @@ describe('topicProgress / totalProgress', () => {
   it('topicProgress рахує лише свою тему', () => {
     const first = ROADMAP_TOPICS[0];
     const key = progressKey(first!.id, first!.subtopics[0]!.id);
-    const { done, total } = topicProgress({ [key]: '2026-07-11T00:00:00.000Z' }, first);
+    const { done, total } = topicProgress({ [key]: '2026-07-11T00:00:00.000Z' }, first!);
     expect(done).toBe(1);
     expect(total).toBe(first!.subtopics!.length);
   });
@@ -240,7 +240,7 @@ describe('buildRootKeyboard / buildTopicKeyboard', () => {
 
   it('topic: рядок на підпункт + «Назад» останнім', () => {
     const first = ROADMAP_TOPICS[0];
-    const kb = buildTopicKeyboard(first, {});
+    const kb = buildTopicKeyboard(first!, {});
     // підпункти + матеріали (F5) + «Назад»
     expect(kb.inline_keyboard).toHaveLength(first!.subtopics!.length + first!.materials.length + 1);
     expect(kb.inline_keyboard[0][0].text).toContain('▫️');
@@ -251,7 +251,7 @@ describe('buildRootKeyboard / buildTopicKeyboard', () => {
   it('позначений підпункт -> ✅ замість ▫️', () => {
     const first = ROADMAP_TOPICS[0];
     const key = progressKey(first!.id, first!.subtopics[0]!.id);
-    const kb = buildTopicKeyboard(first, { [key]: '2026-07-11T00:00:00.000Z' });
+    const kb = buildTopicKeyboard(first!, { [key]: '2026-07-11T00:00:00.000Z' });
     expect(kb.inline_keyboard[0][0].text).toContain('✅');
   });
 });
@@ -274,7 +274,7 @@ describe('roadmap — матеріали тем (F5)', () => {
 
   it('матеріали стають URL-кнопками в клавіатурі теми', () => {
     const topic = ROADMAP_TOPICS[0];
-    const rows = buildTopicKeyboard(topic, {}).inline_keyboard;
+    const rows = buildTopicKeyboard(topic!, {}).inline_keyboard;
     const urlBtns = rows.flat().filter((b: Record<string, unknown>) => 'url' in b);
     expect(urlBtns).toHaveLength(topic!.materials!.length);
     expect(urlBtns[0].text).toContain(topic!.materials[0]!.title);

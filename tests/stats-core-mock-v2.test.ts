@@ -20,8 +20,8 @@ const rate = (
   s: unknown,
   o: { qId?: string; topic?: string; rating?: unknown },
   day = '2026-07-07',
-) => recordEvent(s, { type: 'mock_answer', ...o }, day) as Store;
-const agg = (s: unknown, day: string) => aggregateStats(s, day) as Agg;
+) => recordEvent(s!, { type: 'mock_answer', ...o }, day) as Store;
+const agg = (s: KvBlob, day: string) => aggregateStats(s, day) as Agg;
 
 describe('mock v2 — оцінка по питанню (дедуп)', () => {
   it('повторна оцінка ТОГО САМОГО питання не рахує тему двічі', () => {
@@ -76,7 +76,7 @@ describe('mock v2 — оцінка по питанню (дедуп)', () => {
   });
 
   it('журнал оцінок обмежений — блоб не росте роками', () => {
-    let s: Store = emptyStore();
+    let s: Store = emptyStore() as Store;
     for (let i = 0; i < 80; i++) s = rate(s, { qId: `q${i}`, topic: 'Мова', rating: 'easy' });
     const keys = Object.keys(s.mockRated);
     expect(keys.length).toBeLessThanOrEqual(60);

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* TELEGRAM_ALLOWED_USER_IDS (кілька учасників супергрупи можуть користуватись
  * тим самим ботом/Mini App) — перевіряємо ОБИДВА шляхи авторизації, які
@@ -19,15 +20,13 @@ let kv: Map<string, string>;
 let tg: { method: string; body: Record<string, unknown> }[];
 
 function env(overrides: Record<string, unknown> = {}) {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     ...overrides,
-  };
+  });
 }
 
 function ctx() {
@@ -60,7 +59,7 @@ async function sendCommand(fromId: number, text: string, e = env(), updateId = 1
 
 /** Той самий HMAC-алгоритм Telegram WebApp initData, що worker.js validateInitData. */
 
-async function getStats(initData: string, e: Record<string, unknown>) {
+async function getStats(initData: string, e: Env) {
   return worker.fetch(
     new Request('https://svitanok.example/api/stats', {
       headers: { 'X-Telegram-Init-Data': initData },
@@ -146,7 +145,7 @@ describe('Mini App (/api/stats) — TELEGRAM_ALLOWED_USER_IDS', () => {
  * будь-яка мутація стану власника й агент вимагають ГОЛОВНОГО власника
  * (TELEGRAM_OWNER_USER_ID). Нижче — обидві сторони межі. */
 
-async function postJson(path: string, body: unknown, e: Record<string, unknown>, method = 'POST') {
+async function postJson(path: string, body: unknown, e: Env, method = 'POST') {
   return worker.fetch(
     new Request(`https://svitanok.example${path}`, {
       method,

@@ -20,7 +20,7 @@ const back = (n: number) => {
   d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
 };
-const rate = (s: unknown, qId: string, rating: string, topic: string, daysAgo = 0) =>
+const rate = (s: KvBlob, qId: string, rating: string, topic: string, daysAgo = 0) =>
   recordEvent(s, { type: 'mock_answer', qId, rating, topic }, back(daysAgo));
 
 describe('recordEvent — оцінка несе час і тему', () => {

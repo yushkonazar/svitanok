@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* Регресія на прод-баг 19.07: пропозиція асистента (✅/❌) жила в блобі 'state',
    і наївні писарі 'state' (lastUpdateId у вебхуку, крон, дашборд) БЕЗ
@@ -21,17 +22,15 @@ let googleEvents: Map<
 >;
 
 function env() {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     GOOGLE_CLIENT_ID: 'gid',
     GOOGLE_CLIENT_SECRET: 'gsecret',
     GOOGLE_REFRESH_TOKEN: 'grefresh',
-  };
+  });
 }
 
 /** CTX, чий waitUntil РЕАЛЬНО тримає проміси — вебхук обробляє апдейт у фоні. */

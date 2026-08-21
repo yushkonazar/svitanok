@@ -1,3 +1,4 @@
+import { workerEnv } from './helpers/env.js';
 import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
@@ -150,11 +151,11 @@ describe('allowedUserIds / isPrimaryOwner — fail-closed', () => {
 });
 
 describe('checkOwner / checkPrimaryOwner — дивитись ≠ міняти', () => {
-  const env = {
+  const env = workerEnv({
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: '1',
     TELEGRAM_COOWNER_USER_IDS: String(OWNER.id),
-  };
+  });
 
   it('співвласник ПРОХОДИТЬ читання і НЕ проходить запис', async () => {
     const init = ownerInit();
@@ -170,7 +171,7 @@ describe('checkOwner / checkPrimaryOwner — дивитись ≠ міняти',
   });
 
   it('порожній список дозволених -> 403 навіть із валідним підписом', async () => {
-    const res = await checkOwner(ownerInit(), { TELEGRAM_BOT_TOKEN: BOT_TOKEN });
+    const res = await checkOwner(ownerInit(), workerEnv({ TELEGRAM_BOT_TOKEN: BOT_TOKEN }));
     expect(res).toMatchObject({ ok: false, status: 403 });
   });
 });

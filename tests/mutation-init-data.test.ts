@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { memoryKv } from './helpers/kv.js';
 import { buildInitData } from './helpers/init-data.js';
+import { workerEnv } from './helpers/env.js';
 
 /* M3 — initData мутацій їде ЗАГОЛОВКОМ, як і в читаннях.
  *
@@ -33,12 +34,12 @@ const BOT_TOKEN = 'bot-token-abc';
 let kv: Map<string, string>;
 
 function env() {
-  return {
-    BRIEFING: { ...memoryKv(kv) },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
     WEATHER_API_KEY: 'wkey',
-  };
+  });
 }
 
 const SETTINGS = {

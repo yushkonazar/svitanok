@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { COMMANDS } from '../web/tg-core.mjs';
 import { memoryKv } from './helpers/kv.js';
+import { workerEnv } from './helpers/env.js';
 
 /* /agent (PR-11) — статичний перелік можливостей АСИСТЕНТА (вільний текст),
    окремо від /help (slash-команди бота). Не чіпає промпт/схема-бюджет хоста —
@@ -15,14 +16,12 @@ let kv: Map<string, string>;
 let tg: { method: string; body: Record<string, unknown> }[];
 
 function env() {
-  return {
-    BRIEFING: {
-      ...memoryKv(kv),
-    },
+  return workerEnv({
+    BRIEFING: memoryKv(kv),
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_OWNER_USER_ID: String(OWNER),
-  };
+  });
 }
 
 function ctx() {
