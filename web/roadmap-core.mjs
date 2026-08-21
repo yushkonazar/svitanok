@@ -1,4 +1,3 @@
-// @ts-check
 // Чиста логіка IT-роадмепу (Блок P3, 🗺Роадмеп): callback_data кодек,
 // прогрес (чистий state-transform), форматування Telegram-повідомлень.
 // Без I/O — Worker робить KV/editMessageText (worker.js:resolveRoadmapCallback).

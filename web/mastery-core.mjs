@@ -1,4 +1,3 @@
-// @ts-check
 // Звʼязка mock↔roadmap (Фаза A4): ЯВНА таблиця мапінгу словника mock-тем
 // (src/modules/mock.ts MOCK_TOPICS — вони ж ключі mockWeights) на СТАБІЛЬНІ id
 // тем роадмепу (web/roadmap-data.mjs). Назви не рівні рядково (mock 'HTTP' vs

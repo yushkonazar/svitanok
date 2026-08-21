@@ -1,4 +1,3 @@
-// @ts-check
 // Чиста логіка Telegram-вебхука (P0/P1): парсинг апдейтів, перевірка secret-token,
 // власник, дедуп, callback_data (кодування/декодування), резолв callback → подія
 // для recordEvent. Без I/O — щоб покрити тестами (worker.js імпортує це, KV/HTTP

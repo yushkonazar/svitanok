@@ -1,4 +1,3 @@
-// @ts-check
 // Курований (НЕ скопійований вербатим з roadmap.sh) кістяк IT-роадмепу для
 // junior Full Stack (той самий профіль, що config.yml modules.jobs.profile/
 // modules.mock.profile: JS/TS, React, Node.js, HTML/CSS). Блок P3.

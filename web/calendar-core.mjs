@@ -1,4 +1,3 @@
-// @ts-check
 // Чиста логіка Google Calendar для Worker-агента (Блок P2b): межі дня (DST-safe,
 // той самий трюк що src/modules/calendar.ts — окремий порт, Worker і orchestrator
 // різні рантайми без спільного бандлера, той самий патерн що tg-core.mjs/telegram.ts),

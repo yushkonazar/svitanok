@@ -1,4 +1,3 @@
-// @ts-check
 // Чиста логіка погоди для Worker'а (PR-7, «жива погода в Mini App») — дзеркало
 // src/modules/weather.ts (та сама межа src/↔web/, що tg-core.mjs/calendar-core.mjs/
 // reminders-core.mjs): оркестратор фетчить OpenWeather РАЗ/добу для щоденного
