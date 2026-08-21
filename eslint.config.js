@@ -37,8 +37,10 @@ export default tseslint.config(
     // тобто рівно на тому, що в проді падає. Тут набір інший: глобали
     // service-worker-подібного рантайму (fetch/Response/crypto/caches/…).
     //
-    // `globals: {}` перед розсипанням СКИДАЄ успадковані node-глобали:
-    // конфіги ESLint зливаються, а не заміщуються.
+    // ⚠️ node-глобали доводиться гасити ПОІМЕННО ('off' на кожен). Конфіги в
+    // flat config ЗЛИВАЮТЬСЯ, і `languageOptions.globals` мержиться вглиб —
+    // `globals: {}` тут нічого не скидає, воно просто нічого не додає. Спокуса
+    // «спростити» цей рядок саме так поверне node-глобали мовчки.
     files: ['web/*.mjs', 'web/worker.js'],
     languageOptions: {
       globals: {

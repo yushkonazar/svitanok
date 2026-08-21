@@ -110,10 +110,14 @@ describe("updateState — конкурентний писар 'state' не гу�
   it('вебхук (lastUpdateId) не затирає нагадування, додане в той самий момент', async () => {
     kv.set('state', JSON.stringify({ lastUpdateId: 1, reminders: [] }));
 
-    // Вебхук читає 'state' тричі: раз у резолві callback'а і двічі всередині
-    // updateState. Писар мусить вклинитись саме на ТРЕТЬОМУ — між першим і
-    // другим читанням retry. На другому він приїхав би ще ДО patch, і тест
-    // проходив би навіть з наївним put, нічого не доводячи.
+    // Вебхук читає 'state' тричі: перше — дедуп-перевірка lastUpdateId у
+    // handleTelegramWebhook (web/worker.js), далі пара всередині updateState.
+    // (Резолв callback'а тут 'state' НЕ читає взагалі: `noop:xxx` не парситься,
+    // тож resolveCallbackToast виходить на першому ж рядку.)
+    //
+    // Писар мусить вклинитись саме на ТРЕТЬОМУ — між першим і другим читанням
+    // retry. На другому він приїхав би ще ДО patch, і тест проходив би навіть
+    // з наївним put, нічого не доводячи.
     const { env, calls } = envWithRacer(3, () =>
       kv.set(
         'state',
