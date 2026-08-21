@@ -105,3 +105,86 @@ export function applyTopicMutes(config: AppConfig, settings: unknown): TopicMute
     muted,
   };
 }
+
+/**
+ * Геопозиція власника з KV поверх config.locations (22.08.2026).
+ *
+ * ⚠️ ПРИВІД. Локацію можна задати ТРЬОМА способами — авто-детекція Cloudflare,
+ * «Вказати локацію вручну» й пошук міста в Mini App, — і жоден із них не
+ * доходив до ранкового брифінгу. Той крутиться в GitHub Actions о 08:00: ні
+ * браузера, ні власника, ні `request.cf`. Єдиним його джерелом лишався
+ * `config.locations`, тобто змінна `OWNER_LOCATIONS`. Виходило, що власник
+ * щодня вказує локацію в застосунку, а брифінг щоранку шле інше місто — і
+ * ніде не видно, чому.
+ *
+ * ⚠️ ПРАВИЛО ТЕ САМЕ, ЩО В MINI APP (`handleLiveWeather`), і це головне: не
+ * заміна, а ЗСУВ. Локація з KV стає першою, налаштована — другою. Два екрани,
+ * що показують погоду одного ранку, мусять узгоджуватись; окреме правило тут
+ * означало б, що вони розходяться, і жодна зі сторін не буде «неправильною».
+ *
+ * ⚠️ ІМʼЯ ОБОВʼЯЗКОВЕ. Ручний вибір несе назву, підтверджену власником при
+ * встановленні; авто-детекція — лише координати, і назву їй проставляє Worker
+ * тоді, коли й так робить зворотне геокодування для Mini App. Немає назви —
+ * оверрайд НЕ застосовується: краще лишити налаштоване місто, ніж написати в
+ * брифінгу «Поточна локація» або вигадати назву тут другим шляхом.
+ */
+const GEO_MATCH_TOLERANCE = 0.02; // ~2 км, той самий поріг, що sameGeo у Worker'і
+
+export interface OwnerGeo {
+  lat: number;
+  lon: number;
+  name: string;
+}
+
+export interface OwnerGeoResult {
+  config: AppConfig;
+  /** Звідки взялась перша локація — для логу рану; null = нічого не змінили. */
+  source: 'manual' | 'auto' | null;
+  name: string | null;
+}
+
+/** Валідний {lat, lon, name} із KV-блоба, або null. Блоб пише Worker, але межу
+ *  процесу він перетнув — перевіряємо структурно, а не на віру. */
+function parseGeo(raw: unknown): OwnerGeo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const g = raw as Record<string, unknown>;
+  const { lat, lon, name } = g;
+  if (typeof lat !== 'number' || !Number.isFinite(lat) || lat < -90 || lat > 90) return null;
+  if (typeof lon !== 'number' || !Number.isFinite(lon) || lon < -180 || lon > 180) return null;
+  if (typeof name !== 'string' || name.trim() === '') return null;
+  return { lat, lon, name: name.trim() };
+}
+
+/** Накласти геопозицію власника на config.locations. Чиста функція. */
+export function applyOwnerGeo(
+  config: AppConfig,
+  manualRaw: unknown,
+  autoRaw: unknown,
+): OwnerGeoResult {
+  const manual = parseGeo(manualRaw);
+  const auto = manual ? null : parseGeo(autoRaw);
+  const pick = manual ?? auto;
+  if (!pick) return { config, source: null, name: null };
+
+  const configured = config.locations;
+  const first = configured[0];
+  // Власник ТАМ, де вже налаштовано, — оверрайд лише продублював би місто в
+  // обох слотах брифінгу. Нічого не міняємо: це не «не спрацювало», а «нема
+  // чого міняти».
+  if (
+    first &&
+    Math.abs(first.lat - pick.lat) < GEO_MATCH_TOLERANCE &&
+    Math.abs(first.lon - pick.lon) < GEO_MATCH_TOLERANCE
+  ) {
+    return { config, source: null, name: null };
+  }
+
+  // Друга локація — ПЕРША налаштована, не друга: той самий 2-слотовий вміст,
+  // що в Mini App, тож обидва екрани показують одну пару.
+  const locations = first ? [pick, first] : [pick];
+  return {
+    config: { ...config, locations } as AppConfig,
+    source: manual ? 'manual' : 'auto',
+    name: pick.name,
+  };
+}

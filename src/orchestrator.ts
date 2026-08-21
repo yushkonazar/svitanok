@@ -21,6 +21,7 @@ import {
 import {
   applyModuleOverrides,
   applyTopicMutes,
+  applyOwnerGeo,
   formatOverrides,
 } from './core/settings-overrides.js';
 import { createRunBus } from './core/bus.js';
@@ -384,6 +385,28 @@ function applyModuleOverridesFromKv(
   return pruned;
 }
 
+/**
+ * Накласти геопозицію власника з KV на config.locations.
+ *
+ * Два ключі, два читання: `ownerGeoManual` (ручний вибір/пошук міста, несе
+ * підтверджену назву) має пріоритет над `ownerGeo` (авто-детекція). Той самий
+ * порядок, що в Mini App — інакше два екрани показували б різні міста одного
+ * ранку.
+ */
+async function applyOwnerGeoFromKv(
+  config: AppConfig,
+  kv: KvStateOptions,
+  log: Logger,
+): Promise<AppConfig> {
+  const [manual, auto] = await Promise.all([
+    readKvJson(kv, 'ownerGeoManual'),
+    readKvJson(kv, 'ownerGeo'),
+  ]);
+  const { config: next, source, name } = applyOwnerGeo(config, manual, auto);
+  if (source) log.info(`локація з Mini App (${source}): ${name}`);
+  return next;
+}
+
 /** Хости allowlist для SourceFetcher — з jobs.sources (§8). Новини тепер через
  *  фіксований NewsData API (прямий fetch, не allowlisted). */
 function fetchAllowlist(config: AppConfig): string[] {
@@ -432,9 +455,18 @@ async function main(): Promise<void> {
   // цього оверрайду перемикач у налаштуваннях нічого б не змінював: config.yml —
   // файл репозиторію, і ран у GitHub Actions про натискання не знає. Читання
   // best-effort: немає KV / немає ключа / збій -> дефолти config.yml.
-  const config = kvEnv
+  const withToggles = kvEnv
     ? applyModuleOverridesFromKv(configYml, await readKvJson({ ...kvEnv, log }, 'settings'), log)
     : configYml;
+
+  // Геопозиція власника з Mini App (22.08): три способи вказати локацію —
+  // авто-детекція, ручний вибір, пошук міста — писали в KV, але до брифінгу не
+  // доходили, бо ран у Actions не має ні браузера, ні `request.cf`. Читання
+  // best-effort і в тому самому стилі, що тумблери вище: немає KV / немає
+  // ключа / збій -> лишається config.yml.
+  const config = kvEnv
+    ? await applyOwnerGeoFromKv(withToggles, { ...kvEnv, log }, log)
+    : withToggles;
 
   // Стан: KV (CF env присутні — CI/прод) або файл (локально). KV прибирає крихку
   // git-гілку `state`. Асинхронне завантаження блоба перед реєстрацією модулів.

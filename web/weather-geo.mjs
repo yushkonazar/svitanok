@@ -334,6 +334,24 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
     if (!name) {
       counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
       name = await reverseGeocodeCity(effectiveGeo.lat, effectiveGeo.lon, env.WEATHER_API_KEY);
+      // ⚠️ Назву ЗБЕРІГАЄМО в ownerGeo — заради РАНКОВОГО БРИФІНГУ, не заради
+      // цього запиту. Оркестратор читає той самий ключ (applyOwnerGeo у
+      // settings-overrides.ts), але зворотного геокодування зробити не може:
+      // ран у GitHub Actions о 08:00 не має ні `request.cf`, ні причини
+      // витрачати квоту OpenWeather на назву, яку ми щойно з'ясували тут.
+      //
+      // Без назви оверрайд у брифінгу свідомо НЕ спрацьовує (краще налаштоване
+      // місто, ніж «Поточна локація»), тож цей запис — єдине, що вмикає
+      // авто-детекцію для брифінгу. Ручний вибір назву несе сам.
+      //
+      // Пишемо лише коли геопозиція АВТОМАТИЧНА: під manual override ownerGeo
+      // веде своє життя як точка, куди повернутись, і чужа назва там збрехала б.
+      if (name && !manualGeo) {
+        await env.BRIEFING.put(
+          'ownerGeo',
+          JSON.stringify({ lat: effectiveGeo.lat, lon: effectiveGeo.lon, name }),
+        );
+      }
     }
     // Перша налаштована локація зсувається у другий слот замість другої —
     // той самий 2-слотовий UI (головна температура + рядок біля UV/AQI), лише

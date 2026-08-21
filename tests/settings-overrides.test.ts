@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   applyModuleOverrides,
   applyTopicMutes,
+  applyOwnerGeo,
   formatOverrides,
 } from '../src/core/settings-overrides.js';
 import type { AppConfig } from '../src/core/config.js';
@@ -195,5 +196,108 @@ describe('settings-overrides — formatOverrides', () => {
         { id: 'calendar', enabled: true },
       ]),
     ).toBe('news вимкнено, calendar увімкнено');
+  });
+});
+
+/* Геопозиція власника з Mini App поверх config.locations.
+ *
+ * ⚠️ ПРИВІД. Локацію можна задати трьома способами — авто-детекція Cloudflare,
+ * «Вказати локацію вручну» й пошук міста, — і жоден не доходив до ранкового
+ * брифінгу: той крутиться в Actions о 08:00 без браузера й без `request.cf`.
+ * Виходило, що власник щодня вказує локацію в застосунку, а брифінг щоранку
+ * шле інше місто, і ніде не видно чому. */
+
+const LVIV = { lat: 49.8397, lon: 24.0297, name: 'Львів' };
+const RIVNE = { lat: 50.6199, lon: 26.2516, name: 'Рівне' };
+const geoCfg = (locations: unknown[]) => ({ locations, modules: {} }) as unknown as AppConfig;
+
+describe('settings-overrides — applyOwnerGeo', () => {
+  it('ручний вибір стає першою локацією, налаштована зсувається у другу', () => {
+    const kyiv = { lat: 50.45, lon: 30.52, name: 'Київ' };
+    const { config, source, name } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), kyiv, null);
+    expect(config.locations).toEqual([kyiv, LVIV]);
+    expect(source).toBe('manual');
+    expect(name).toBe('Київ');
+  });
+
+  /* Той самий порядок, що в Mini App (`handleLiveWeather`): два екрани, що
+     показують погоду одного ранку, мусять узгоджуватись. */
+  it('ручний вибір має пріоритет над авто-детекцією', () => {
+    const manual = { lat: 50.45, lon: 30.52, name: 'Київ' };
+    const auto = { lat: 48.92, lon: 24.71, name: 'Івано-Франківськ' };
+    const { config, source } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), manual, auto);
+    expect(config.locations?.[0]).toEqual(manual);
+    expect(source).toBe('manual');
+  });
+
+  it('без ручного береться авто-детекція', () => {
+    const auto = { lat: 48.92, lon: 24.71, name: 'Івано-Франківськ' };
+    const { config, source } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), null, auto);
+    expect(config.locations).toEqual([auto, LVIV]);
+    expect(source).toBe('auto');
+  });
+
+  it('жодного сигналу -> config недоторканий', () => {
+    const before = geoCfg([LVIV, RIVNE]);
+    const { config, source, name } = applyOwnerGeo(before, null, null);
+    expect(config).toBe(before);
+    expect(source).toBeNull();
+    expect(name).toBeNull();
+  });
+
+  /* ⚠️ Головна причина, чому оверрайд гейтиться назвою: авто-детекція дає лише
+     координати, а назву їй проставляє Worker тоді, коли й так робить зворотне
+     геокодування для Mini App. Немає назви — краще лишити налаштоване місто,
+     ніж написати «Поточна локація» чи геокодувати тут другим шляхом. */
+  it('координати без назви ігноруються, а не показуються без підпису', () => {
+    const { config, source } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), null, {
+      lat: 48.92,
+      lon: 24.71,
+    });
+    expect(config.locations).toEqual([LVIV, RIVNE]);
+    expect(source).toBeNull();
+  });
+
+  it.each([
+    ['порожня назва', { lat: 48.9, lon: 24.7, name: '   ' }],
+    ['lat поза межами', { lat: 91, lon: 24.7, name: 'X' }],
+    ['lon поза межами', { lat: 48.9, lon: 181, name: 'X' }],
+    ['lat не число', { lat: '48.9', lon: 24.7, name: 'X' }],
+    ['NaN', { lat: Number.NaN, lon: 24.7, name: 'X' }],
+    ['не обʼєкт', 'Львів'],
+    ['null', null],
+  ])('битий блоб (%s) -> config недоторканий', (_label, raw) => {
+    const { config, source } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), raw, null);
+    expect(config.locations).toEqual([LVIV, RIVNE]);
+    expect(source).toBeNull();
+  });
+
+  /* Власник ТАМ, де вже налаштовано: оверрайд лише продублював би місто в обох
+     слотах брифінгу. Це не «не спрацювало», а «нема чого міняти». */
+  it('позиція збігається з налаштованою -> без дублювання міста', () => {
+    const jitter = { lat: 49.845, lon: 24.035, name: 'Львів' }; // ~0.5 км
+    const { config, source } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), jitter, null);
+    expect(config.locations).toEqual([LVIV, RIVNE]);
+    expect(source).toBeNull();
+  });
+
+  it('зсув понад поріг -> оверрайд таки застосовується', () => {
+    const moved = { lat: 49.9, lon: 24.1, name: 'Передмістя' }; // ~7 км
+    const { config, source } = applyOwnerGeo(geoCfg([LVIV, RIVNE]), moved, null);
+    expect(config.locations?.[0]).toEqual(moved);
+    expect(source).toBe('manual');
+  });
+
+  it('порожній список локацій у конфігу -> одна локація, без падіння', () => {
+    const kyiv = { lat: 50.45, lon: 30.52, name: 'Київ' };
+    const { config } = applyOwnerGeo(geoCfg([]), kyiv, null);
+    expect(config.locations).toEqual([kyiv]);
+  });
+
+  it('решта конфіга не чіпається', () => {
+    const before = geoCfg([LVIV, RIVNE]);
+    const { config } = applyOwnerGeo(before, { lat: 50.45, lon: 30.52, name: 'Київ' }, null);
+    expect(config.modules).toBe(before.modules);
+    expect(before.locations).toEqual([LVIV, RIVNE]); // вхідний конфіг не мутовано
   });
 });
