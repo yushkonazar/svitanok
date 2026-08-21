@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import { COMMANDS } from '../web/tg-core.mjs';
+import { memoryKv } from './helpers/kv.js';
 
 /* /agent (PR-11) — статичний перелік можливостей АСИСТЕНТА (вільний текст),
    окремо від /help (slash-команди бота). Не чіпає промпт/схема-бюджет хоста —
@@ -18,9 +19,7 @@ let tg: { method: string; body: Record<string, unknown> }[];
 function env() {
   return {
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
     TELEGRAM_BOT_TOKEN: 'bot-token',

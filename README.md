@@ -251,7 +251,7 @@ svitanok/
   scripts/
     check-telegram.mjs      # діагностика бота / пошук chat_id
     guard.mjs               # той самий guard, що orchestrator, для CI-гейту
-  tests/                   # дзеркалить src/ і web/ — vitest, ~1080 тестів
+  tests/                   # дзеркалить src/ і web/ — vitest, ≈2000 тестів (web/app має власні ≈80)
   other/                   # референс-матеріали дизайну (не частина деплою)
   config.yml
   .env.example
@@ -365,10 +365,12 @@ React-дашборд (ловить поломки збірки, не депло�
 
    **Вручну** — той самий ефект прямо зараз (напр. відразу після першого
    деплою, до того як `MINI_APP_URL` заданий, або якщо не хочеш чекати до
-   наступного крон-тіку):
+   наступного крон-тіку). ⚠️ Домен — КАСТОМНИЙ, не `*.workers.dev`: той
+   вимкнено в `wrangler.jsonc` (`workers_dev: false`, аудит S3), тож адреса
+   на workers.dev не відповість:
 
    ```bash
-   curl -X POST "https://svitanok.yushko-nazar.workers.dev/api/telegram/setup" -H "X-Telegram-Bot-Api-Secret-Token: <TELEGRAM_WEBHOOK_SECRET>"
+   curl -X POST "https://<домен-воркера>/api/telegram/setup" -H "X-Telegram-Bot-Api-Secret-Token: <TELEGRAM_WEBHOOK_SECRET>"
    ```
 
    Вітальний пін — self-healing: якщо власник зняв закріплення вручну чи видалив

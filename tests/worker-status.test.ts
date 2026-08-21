@@ -18,10 +18,11 @@ import { STATUS_KEY } from '../web/api-status.mjs';
  * публічної відповіді.
  */
 
-const envWith = (value: string | null) => ({
+const envWith = (value: string | null, overrides: Record<string, unknown> = {}) => ({
   BRIEFING: {
     get: async (key: string) => (key === STATUS_KEY ? value : null),
   },
+  ...overrides,
   // Фолбек статики: усе, що не збіглося з маршрутом, воркер віддає сюди. Без
   // цієї заглушки «маршрут не спрацював» виглядало б як падіння, а не як
   // провал у статику — тобто тест не відрізняв би одне від одного.
@@ -156,4 +157,50 @@ describe('ключ статусу — одна назва на обох бока
     expect(sendAt).toBeGreaterThan(0);
     expect(writeAt).toBeGreaterThan(sendAt);
   });
+});
+
+/* CORS-origin із конфігу (P4).
+ *
+ * ⚠️ Це ЄДИНИЙ ендпоінт без авторизації, тож напрям помилки тут принциповий:
+ * будь-яке невалідне значення мусить ЗВУЖУВАТИ доступ до дефолту, а не
+ * розширювати. Саме тому тести на '*' і на список через кому — не формальність:
+ * обидва рядки браузер прийняв би, якби ми пропустили їх у заголовок. */
+describe('GET /api/status — origin із конфігу', () => {
+  const originOf = async (configured?: unknown) =>
+    (
+      await call(
+        envWith(
+          JSON.stringify({ lastBriefingAt: '2026-08-13T06:05:00.000Z' }),
+          configured === undefined ? {} : { PUBLIC_STATUS_ORIGIN: configured },
+        ),
+      )
+    ).headers.get('access-control-allow-origin');
+
+  it('не задано -> дефолт', async () => {
+    expect(await originOf()).toBe('https://yushko.dev');
+  });
+
+  it('валідний https-origin -> береться з конфігу', async () => {
+    expect(await originOf('https://example.com')).toBe('https://example.com');
+  });
+
+  it('пробіли обрізаються', async () => {
+    expect(await originOf('  https://example.com  ')).toBe('https://example.com');
+  });
+
+  for (const bad of [
+    '*',
+    '',
+    '   ',
+    'https://a.com, https://b.com',
+    'http://example.com', // не https
+    'https://example.com/path', // origin — це не URL зі шляхом
+    'https://example.com:8443', // порт у цьому заголовку нам не потрібен
+    'example.com', // без схеми
+    'https://*.example.com',
+  ]) {
+    it(`невалідне ${JSON.stringify(bad)} -> дефолт, а не ширший доступ`, async () => {
+      expect(await originOf(bad)).toBe('https://yushko.dev');
+    });
+  }
 });

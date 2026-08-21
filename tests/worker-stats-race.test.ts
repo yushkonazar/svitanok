@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import worker from '../web/worker.js';
+import { memoryKv } from './helpers/kv.js';
+import { buildInitData } from './helpers/init-data.js';
 
 /* Регресія на реальний баг (фідбек власника, 2026-08-05): тапнув «Ліг спати»
  * вночі, вранці відкрив застосунок — авто-заповнення сну в чек-іні не
@@ -26,43 +28,11 @@ let kv: Map<string, string>;
 function baseEnv() {
   return {
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: String(OWNER),
   };
-}
-
-async function buildInitData(userId: number, botToken: string, authDateSec?: number) {
-  const user = JSON.stringify({ id: userId, first_name: 'O' });
-  const authDate = authDateSec ?? Math.floor(Date.now() / 1000);
-  const params = new URLSearchParams({ user, auth_date: String(authDate) });
-  const dataCheck = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join('\n');
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode('WebAppData'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const secretBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(botToken)));
-  const secretKey = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheck)));
-  const hash = [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
-  params.set('hash', hash);
-  return params.toString();
 }
 
 async function postEvent(body: Record<string, unknown>, e: unknown) {

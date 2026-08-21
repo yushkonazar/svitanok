@@ -55,8 +55,18 @@ import { tgCall, trackSentMessage } from './telegram-client.mjs';
 // «не доставлено» й хибний промах у reliability за день, який зрештою доставили.
 const DEAD_MAN_HOUR = 12;
 
-const GH_DISPATCH_URL =
-  'https://api.github.com/repos/yushkonazar/svitanok/actions/workflows/brief.yml/dispatches';
+/**
+ * Слаг репозиторію для workflow_dispatch.
+ *
+ * Env ПЕРЕКРИВАЄ, а не вимагає: форк чи перейменування не має означати правку
+ * коду, але й новий обовʼязковий секрет тут завів би прод у стан, де брифінг
+ * не диспатчиться, доки власник не поставить змінну у двох місцях. Дефолт —
+ * рівно те значення, що стояло зашитим.
+ */
+const DEFAULT_GH_REPO = 'yushkonazar/svitanok';
+const ghDispatchUrl = (/** @type {Env} */ env) =>
+  `https://api.github.com/repos/${env.GH_REPO?.trim() || DEFAULT_GH_REPO}` +
+  '/actions/workflows/brief.yml/dispatches';
 
 /**
  * Знайти прострочені нагадування, надіслати + позначити спрацьованими.
@@ -355,7 +365,7 @@ export async function dispatchBrief(env, { forceWindow = false } = {}) {
     return false;
   }
   try {
-    const resp = await fetch(GH_DISPATCH_URL, {
+    const resp = await fetch(ghDispatchUrl(env), {
       method: 'POST',
       headers: {
         authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`,

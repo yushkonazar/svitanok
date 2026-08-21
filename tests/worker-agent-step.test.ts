@@ -5,6 +5,7 @@ import worker from '../web/worker.js';
 import { mintRunToken, AGENT_MAX_STEPS } from '../web/agent-run-core.mjs';
 // @ts-expect-error — JS-модуль Worker'а без типів.
 import { AgentRun } from '../web/agent-run-do.mjs';
+import { memoryKv } from './helpers/kv.js';
 
 /* Інтеграційний тест зворотного ендпоінта /api/agent-step — через СПРАВЖНІЙ
    fetch-хендлер воркера. Юніти покривають чисті шматки (токен, allowlist дій),
@@ -22,9 +23,7 @@ let tgCalls: Call[];
 function makeEnv(over: Record<string, unknown> = {}) {
   return {
     BRIEFING: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-      list: async () => ({ keys: [] }),
+      ...memoryKv(kv),
     },
     LLM_HOST_SECRET: HOST_SECRET,
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,

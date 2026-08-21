@@ -18,8 +18,14 @@ const backoffMs = (attempt: number) => Math.min(500 * 2 ** attempt, 5000);
 const MAX_REDIRECTS = 5;
 
 // Деякі RSS-сервери віддають 403 без User-Agent — шлемо явний.
-const USER_AGENT =
-  'Mozilla/5.0 (compatible; svitanok-bot/1.0; +https://github.com/yushkonazar/svitanok)';
+//
+// Слаг репозиторію перекривається через GH_REPO: форк чи перейменування не має
+// означати правку коду. Саме перекривається, а не вимагається — обовʼязкова
+// змінна тут коштувала б новим секретом у двох місцях заради рядка, який
+// бачить лише чужий сервер. Дефолт — те саме значення, що стояло зашитим.
+const DEFAULT_GH_REPO = 'yushkonazar/svitanok';
+const GH_REPO = process.env.GH_REPO?.trim() || DEFAULT_GH_REPO;
+const USER_AGENT = `Mozilla/5.0 (compatible; svitanok-bot/1.0; +https://github.com/${GH_REPO})`;
 
 export function createFetcher(opts: FetcherOptions): SourceFetcher {
   const allow = new Set(opts.allowlist.map((h) => h.toLowerCase()));

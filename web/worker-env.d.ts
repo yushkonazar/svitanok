@@ -68,6 +68,13 @@ interface Env {
   GOOGLE_REFRESH_TOKEN: WorkerSecret;
   /** `repository_dispatch` у brief.yml (крон-диспетч брифінгу). */
   GH_DISPATCH_TOKEN: WorkerSecret;
+  /** Слаг `owner/repo` для того ж диспетчу. Незаданий -> дефолт у `cron.mjs`. */
+  GH_REPO: WorkerSecret;
+  /**
+   * Origin, якому дозволено читати публічний `/api/status`. Незаданий або
+   * невалідний -> дефолт у `api-status.mjs` (помилка конфігу звужує доступ).
+   */
+  PUBLIC_STATUS_ORIGIN: WorkerSecret;
 
   /** LLM-хост на VPS: `/llm` (синхронний) і `/agent` (прогін асистента). */
   LLM_HOST_URL: WorkerSecret;
