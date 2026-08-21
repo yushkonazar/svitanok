@@ -9,6 +9,14 @@ on:
     # `edited` доданий через реальний випадок: PR перецілили з однієї бази на
     # іншу, і жоден прогін не стартував — а старі галочки в інтерфейсі
     # виглядали як свіжі, тобто мовчання читалось як «перевірено».
+    #
+    # ⚠️ `edited` прилітає і на правку заголовка чи опису, тобто зайвий прогін
+    # там теж буде. Спроба відсіяти їх умовою `github.event.changes.base` на
+    # задачах ПЕРЕВІРЕНА й відкинута: `if` не скасовує задачу, а робить її
+    # skipped — і рядок перевірки на PR стає «skipping» ЗАМІСТЬ попереднього
+    # зеленого. Тобто економія хвилини ціною рівно тієї ж хвороби, від якої
+    # лікуємось: стан у інтерфейсі перестає показувати реальний результат.
+    # Хвилина прогону дешевша.
     types: [opened, synchronize, reopened, edited]
   push:
     branches: [develop, main]
@@ -23,12 +31,6 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # `edited` прилітає і на правку заголовка чи опису — ганяти через це повний
-    # прогін дарма. Пускаємо лише зміну БАЗИ: саме вона міняє те, з чим
-    # порівнюється гілка. Умова написана так, що будь-яка помилка в ній
-    # безпечна: `action != 'edited'` істинне для opened/synchronize/reopened і
-    # для push, тож звичайний шлях не залежить від правої частини взагалі.
-    if: github.event.action != 'edited' || github.event.changes.base != null
     # Точкове право (§8): checkout приватного репо потребує read,
     # інакше токен бачить 404 «Repository not found».
     permissions:
@@ -68,7 +70,6 @@ jobs:
   # рендером (jsdom + Testing Library).
   dashboard:
     runs-on: ubuntu-latest
-    if: github.event.action != 'edited' || github.event.changes.base != null
     permissions:
       contents: read
     defaults:
