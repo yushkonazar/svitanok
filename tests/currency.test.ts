@@ -3,6 +3,7 @@ import { pickRates, createCurrencyModule } from '../src/modules/currency.js';
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+import { memState } from './helpers/state.js';
 
 describe('currency — pickRates', () => {
   it('бере USD/EUR (обов), PLN/GBP (опц), округлює до копійок', () => {
@@ -31,15 +32,6 @@ describe('currency — pickRates', () => {
 });
 
 const noop = () => {};
-function memState(initial: Record<string, unknown> = {}): StateStore {
-  const data = { ...initial };
-  return {
-    get: <T>(k: string) => data[k] as T | undefined,
-    set: <T>(k: string, v: T) => void (data[k] = v),
-    prune: () => {},
-    flush: async () => {},
-  };
-}
 const ctx = (state: StateStore = memState()): Ctx<AppConfig> =>
   ({
     bus: createRunBus(),

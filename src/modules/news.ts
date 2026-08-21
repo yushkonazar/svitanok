@@ -461,8 +461,16 @@ export function createNewsModule(opts: NewsModuleOptions = {}): Module<AppConfig
       // твої ❤️ розмивались утричі швидше, ніж «раз на тиждень» за задумом.
       let weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
       if (ctx.clock.isSunday() && ctx.state.get<string>('lastDecayDate') !== today) {
-        weights = applyWeeklyDecay(weights);
-        ctx.state.set('preferenceWeights', weights);
+        // ⚠️ update, а НЕ set. Ваги — не наше ексклюзивне поле: у той самий блоб
+        // їх пише Worker, коли власник тапає ❤️ у Mini App. Недільний ран триває
+        // хвилини (LLM, новини, пошта), і `set` поклав би на flush ваги,
+        // пораховані на його ПОЧАТКУ — тобто скасував би голос, поданий за цей
+        // час. Гірше того, `votedUrls` цей ран не чіпає, тож url лишався б
+        // позначеним як проголосований, а вага - відкоченою: повторне ❤️ зняло б
+        // голос замість поставити. Decay - трансформація, тож рахуємо його від
+        // того значення, яке лежить у KV у момент запису.
+        ctx.state.update<Weights>('preferenceWeights', (cur) => applyWeeklyDecay(cur ?? {}));
+        weights = ctx.state.get<Weights>('preferenceWeights') ?? {};
         ctx.state.set('lastDecayDate', today);
       }
       const weightFor = (t: string) => weights[t] ?? 1.0;

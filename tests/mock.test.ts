@@ -11,6 +11,7 @@ import {
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+import { memState } from './helpers/state.js';
 
 describe('mock — buildMockPrompt', () => {
   it('містить профіль і кількість', () => {
@@ -77,16 +78,6 @@ describe('mock — updateMockWeight', () => {
     expect(updateMockWeight(w, '', 'hard')).toBe(w);
   });
 });
-
-function memState(initial: Record<string, unknown> = {}): StateStore {
-  const data = { ...initial };
-  return {
-    get: <T>(k: string) => data[k] as T | undefined,
-    set: <T>(k: string, v: T) => void (data[k] = v),
-    prune: () => {},
-    flush: async () => {},
-  };
-}
 
 function makeCtx(over: { state?: StateStore; llm?: Ctx['llm'] }): Ctx<AppConfig> {
   const noop = () => {};

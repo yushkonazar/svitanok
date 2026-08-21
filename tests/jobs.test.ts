@@ -11,6 +11,7 @@ import {
 import { createRunBus } from '../src/core/bus.js';
 import type { Ctx, StateStore } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
+import { memState } from './helpers/state.js';
 
 describe('jobs — parseScores', () => {
   it('парсить масив із прози, клампить 0..100, тримить why', () => {
@@ -109,16 +110,6 @@ describe('jobs — updateJobPrefs', () => {
     expect(updateJobPrefs(prefs, 'dismiss', 'Junior Trainee Full Time')).toEqual(prefs);
   });
 });
-
-function memState(initial: Record<string, unknown> = {}): StateStore {
-  const data = { ...initial };
-  return {
-    get: <T>(k: string) => data[k] as T | undefined,
-    set: <T>(k: string, v: T) => void (data[k] = v),
-    prune: () => {},
-    flush: async () => {},
-  };
-}
 
 const feed = (items: [string, string][]) =>
   `<rss><channel>${items

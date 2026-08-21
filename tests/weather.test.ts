@@ -203,8 +203,12 @@ function makeCtx(seed: Record<string, unknown> = {}): Ctx<AppConfig> {
     log: { debug: noop, info: noop, warn: noop, error: noop },
     config: { locations } as AppConfig,
     state: {
+      // Свій стор, а не memState: тут дані живуть у Map, яку тест засіває й
+      // читає ззовні.
       get: <T>(k: string) => store.get(k) as T | undefined,
       set: <T>(k: string, v: T) => void store.set(k, v),
+      update: <T>(k: string, fn: (cur: T | undefined) => T) =>
+        void store.set(k, fn(store.get(k) as T | undefined)),
       flush: async () => {},
       prune: () => {},
     },
