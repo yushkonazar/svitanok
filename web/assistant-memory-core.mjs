@@ -34,7 +34,7 @@ export const ASSISTANT_HISTORY_TTL_S = 30 * 86_400;
  */
 
 /** Ключ історії за (chatId, threadId) — той самий формат, що sentMessagesKey.
- *  @param {string|number} chatId
+ *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId */
 export function historyKey(chatId, threadId) {
   return `${chatId}:${threadId ?? ''}`;
@@ -53,7 +53,7 @@ function clipTurn(/** @type {unknown} */ text) {
  * (будь-що інше -> 'user'). Порожня після clip репліка не додається (не
  * засмічуємо історію). Кап на MAX_HISTORY_TURNS останніх.
  * @param {KvBlob|null|undefined} history
- * @param {string|number} chatId
+ * @param {string|number|null|undefined} chatId
  * @param {string|number|null|undefined} threadId
  * @param {string} role
  * @param {unknown} text
@@ -75,7 +75,7 @@ export function appendTurn(history, chatId, threadId, role, text) {
  * Порожня історія -> '' (без префікса). Формат:
  *   "Попередня розмова:\nКористувач: ...\nТи: ...\n\n"
  * @param {KvBlob|null|undefined} history
- * @param {string|number} chatId
+ * @param {string|number|null|undefined} chatId
  * @param {string|number|null|undefined} threadId
  */
 export function renderHistoryForPrompt(history, chatId, threadId) {

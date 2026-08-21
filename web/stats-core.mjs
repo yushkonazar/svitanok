@@ -2604,7 +2604,8 @@ function savedRow(/** @type {KvBlob} */ x) {
  */
 /**
  * @param {KvBlob} store
- * @param {{ offset?: number, limit?: number }} [opts]
+ * @param {{ offset?: unknown, limit?: unknown }} [opts] сирі query-параметри;
+ *        кламп і дефолти — тут, а не у викликача
  */
 export function pageSaved(store, { offset = 0, limit = 20 } = {}) {
   const s = normalize(store);

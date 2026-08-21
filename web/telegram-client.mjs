@@ -44,7 +44,7 @@ export async function tgCall(env, method, body) {
  * спожити тіло Response для можливих майбутніх консюмерів повернутого значення.
  * @param {Env} env
  * @param {Response} res
- * @param {string|number} chatId
+ * @param {string|number|null|undefined} chatId
  * @param {string|number|null|undefined} threadId
  */
 export async function trackSentMessage(env, res, chatId, threadId) {
@@ -91,7 +91,7 @@ export async function trackIncomingMessage(env, parsed) {
  *  @param {Env} env
  *  @param {SendTarget} parsed */
 export function sendTo(env, parsed) {
-  return async (/** @type {string} */ text, /** @type {KvBlob} */ extra) => {
+  return async (/** @type {string} */ text, /** @type {KvBlob|undefined} */ extra = undefined) => {
     const res = await tgCall(env, 'sendMessage', {
       chat_id: parsed.chatId,
       message_thread_id: parsed.threadId ?? undefined,

@@ -46,7 +46,7 @@ export async function rememberExchange(env, claims, assistantSummary) {
  * поверх — «ПРОДОВЖЕННЯ РОЗМОВИ» у системному промпті (agent-core.mjs) вже
  * навчена трактувати його як відповідь на щойно задане питання.
  * @param {Env} env
- * @param {{ chatId: string|number, threadId?: string|number|null }} parsed
+ * @param {import('./tg-core.mjs').SendTarget} parsed
  * @param {string} text
  */
 export async function rememberAssistantQuestion(env, parsed, text) {

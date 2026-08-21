@@ -20,9 +20,13 @@ export const CB_VERSION = 'v1';
  */
 
 /**
- * Куди слати відповідь. Окремо від ParsedUpdate: у крон-контексті вхідного
- * апдейту немає взагалі, а адресат є.
- * @typedef {{ chatId: string|number, threadId?: string|number|null,
+ * Куди слати відповідь. Окремо від ParsedUpdate з двох причин: у крон-контексті
+ * вхідного апдейту немає взагалі, а обробники дістають уже обрану гілку союзу.
+ *
+ * Усі поля опційні НАВМИСНО: parseUpdate віддає `chatId: null`, коли Telegram
+ * його не дав, і робити тут поле обовʼязковим означало б описувати не те, що
+ * справді приходить.
+ * @typedef {{ chatId?: string|number|null, threadId?: string|number|null,
  *             messageId?: number|null }} SendTarget
  */
 
@@ -330,7 +334,7 @@ export function markButtonDone(replyMarkup, tappedData) {
 const SENT_MESSAGES_CAP = 50;
 
 /** Ключ ring-buffer-а в об'єкті sentMessages: один на чат+тему.
- *  @param {string|number} chatId
+ *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId */
 export function sentMessagesKey(chatId, threadId) {
   return `${chatId}:${threadId ?? ''}`;
@@ -338,7 +342,7 @@ export function sentMessagesKey(chatId, threadId) {
 
 /** Додати message_id у ring buffer (чиста — повертає новий об'єкт, капнутий).
  *  @param {KvBlob|null|undefined} sentMessages
- *  @param {string|number} chatId
+ *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId
  *  @param {number} messageId
  *  @returns {KvBlob} */
@@ -351,7 +355,7 @@ export function recordSentMessage(sentMessages, chatId, threadId, messageId) {
 
 /** Останні N message_id для чат+теми (найновіші останні) — кандидати на /clear.
  *  @param {KvBlob|null|undefined} sentMessages
- *  @param {string|number} chatId
+ *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId
  *  @param {number} n
  *  @returns {number[]} */
