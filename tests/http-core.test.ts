@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { readJsonBody, json } from '../web/http-core.mjs';
+import {
+  readJsonBody,
+  json,
+  MAX_REQUEST_BODY_BYTES,
+  MAX_WEBHOOK_BODY_BYTES,
+} from '../web/http-core.mjs';
 
 /* Межа входу КОЖНОГО `/api/*`.
  *
@@ -97,5 +102,86 @@ describe('json — відповідь', () => {
 
   it('статус передається', () => {
     expect(json({ ok: false }, 503).status).toBe(503);
+  });
+});
+
+/* Стеля має бути МЕЖЕЮ, а не лічильником.
+ *
+ * Доти тіло читалось через `request.text()` — тобто матеріалізувалось ЦІЛКОМ, і
+ * лише потім його можна було зміряти. Для запиту без Content-Length (chunked)
+ * це означало, що вартість задає той, хто шле: Worker буферизує скільки
+ * завгодно, а 413 віддає вже після того, як памʼять витрачено.
+ *
+ * Тест міряє не статус (він був правильний і раніше), а СКІЛЬКИ прочитано.
+ */
+describe('readJsonBody — стеля зупиняє читання, а не лише відповідь', () => {
+  const CHUNK = 4 * 1024;
+
+  function streamed(chunks: number, pulled: { n: number }) {
+    const piece = new Uint8Array(CHUNK).fill(0x61); // 'a'
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= chunks) return void controller.close();
+        sent++;
+        pulled.n++;
+        controller.enqueue(piece);
+      },
+    });
+    // duplex обовʼязковий для потокового тіла; у типах Node його немає.
+    return new Request('https://svitanok.example/api/event', {
+      method: 'POST',
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+  }
+
+  it('4 МБ без Content-Length -> 413, прочитано ~стелю, а не все', async () => {
+    const pulled = { n: 0 };
+    const res = await readJsonBody(streamed(1024, pulled)); // 1024 × 4КБ = 4МБ
+    expect(res).toEqual({ ok: false, status: 413, error: 'body-too-large' });
+    // 16КБ стелі = 4 шматки; пʼятий переводить лічильник за межу й читання
+    // припиняється. Головне тут — що це НЕ 1024.
+    expect(pulled.n).toBeLessThanOrEqual(6);
+  });
+
+  it('тіло під стелею дочитується повністю', async () => {
+    const pulled = { n: 0 };
+    // 2 шматки по 4КБ = 8КБ сирих 'a' — не JSON, тож 400; важливо, що не 413.
+    const res = await readJsonBody(streamed(2, pulled));
+    expect(res).toMatchObject({ status: 400, error: 'bad-json' });
+    expect(pulled.n).toBe(2);
+  });
+});
+
+describe('стеля вебхука Telegram — окрема від /api/*', () => {
+  /* 16КБ менші за максимальний ЗАКОННИЙ апдейт: 4096 символів кирилиці — це
+   * ~8КБ, а якщо повідомлення є відповіддю, у тому ж апдейті їде вкладений
+   * reply_to_message такого самого розміру. Бот відповідав би 413 і не обробляв
+   * повідомлення власника взагалі. */
+  const bigUpdate = JSON.stringify({
+    update_id: 1,
+    message: {
+      message_id: 2,
+      chat: { id: 1 },
+      from: { id: 1 },
+      text: 'я'.repeat(4096),
+      reply_to_message: { message_id: 1, text: 'я'.repeat(4096) },
+    },
+  });
+
+  it('реалістичний апдейт справді переходить за стелю /api/*', () => {
+    const bytes = new TextEncoder().encode(bigUpdate).length;
+    expect(bytes).toBeGreaterThan(MAX_REQUEST_BODY_BYTES);
+    expect(bytes).toBeLessThan(MAX_WEBHOOK_BODY_BYTES);
+  });
+
+  it('зі стелею вебхука такий апдейт проходить', async () => {
+    const res = await readJsonBody(post(bigUpdate), MAX_WEBHOOK_BODY_BYTES);
+    expect(res.ok).toBe(true);
+  });
+
+  it('той самий апдейт на /api/* — 413, стеля не послаблена глобально', async () => {
+    expect(await readJsonBody(post(bigUpdate))).toMatchObject({ status: 413 });
   });
 });

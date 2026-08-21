@@ -29,7 +29,7 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 export { AgentRun } from './agent-run-do.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
-import { json, readJsonBody } from './http-core.mjs';
+import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
 import {
   handleVote,
   handleEvent,
@@ -173,7 +173,9 @@ async function handleTelegramWebhook(
     return json({ ok: false, error: 'bad-secret' }, 401);
   }
 
-  const parsedBody = await readJsonBody(request);
+  // Вебхук має ВЛАСНУ стелю: 16 КБ, що вистачає будь-якому /api/*, менші за
+  // максимальний законний апдейт Telegram (див. MAX_WEBHOOK_BODY_BYTES).
+  const parsedBody = await readJsonBody(request, MAX_WEBHOOK_BODY_BYTES);
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const update = parsedBody.body;
   const parsed = parseUpdate(update);
