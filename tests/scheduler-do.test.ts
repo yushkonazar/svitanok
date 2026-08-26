@@ -8,6 +8,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, vi } from 'vitest';
 import { SchedulerDO } from '../web/core/scheduler/do.mjs';
+import { SCHEDULER_TASKS } from '../web/core/scheduler/tasks.mjs';
 import { WATCHDOG_GRACE_MS } from '../web/core/scheduler/core.mjs';
 
 const T0 = Date.parse('2026-08-26T10:00:00.000Z');
@@ -68,7 +69,8 @@ describe('SchedulerDO — сівба реєстру і сторож', () => {
     // #syncRegistry), тож тікати нема по що: перша поява — через period.
     expect(res.ticked).toBe(false);
     const jobs = await jobsOf(scheduler);
-    expect(jobs.map((j) => j.kind)).toEqual(['heartbeat']);
+    // Не пінимо перелік — він росте з реєстром; контракт: усі види посіяні.
+    expect(jobs.map((j) => j.kind).sort()).toEqual(Object.keys(SCHEDULER_TASKS).sort());
     expect(ctx.alarm).toBe(T0 + MIN5);
   });
 
@@ -80,7 +82,10 @@ describe('SchedulerDO — сівба реєстру і сторож', () => {
   });
 
   it('прострочений понад грейс alarm — сторож рятує і виконує задачу', async () => {
-    const { scheduler } = makeDo({ ASSISTANT_V2: 'shadow' });
+    const { scheduler } = makeDo(
+      { ASSISTANT_V2: 'shadow' },
+      { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
+    );
     await scheduler.watchdogTick(T0); // поява о T0+5хв
     const late = T0 + MIN5 + WATCHDOG_GRACE_MS + 1_000;
     const res = await scheduler.watchdogTick(late);
@@ -182,6 +187,29 @@ describe('SchedulerDO — тік', () => {
     const [job] = await jobsOf(scheduler);
     expect(job?.due_at).toBe(new Date(T0 + 2 * MIN5).toISOString());
     expect(ctx.alarm).toBe(T0 + 2 * MIN5);
+  });
+
+  it('конкурентний вхід у вікні await задачі не подвоює ефект (in-flight guard)', async () => {
+    // Реальна траєкторія в DO: alarm-тік виконує задачу з fetch (input-gate
+    // відкритий), у цю мить приходить крон-сторож; alarm уже спожито,
+    // dedupe_key ще не записано — без прапорця задача виконалась би двічі.
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const run = vi.fn(async () => {
+      await gate;
+    });
+    const { scheduler } = await seeded({ ASSISTANT_V2: 'on' }, { slow: { periodMin: 5, run } });
+    const first = scheduler.tick(T0 + MIN5, 'alarm'); // не чекаємо — задача «висить» на fetch
+    await new Promise((r) => setTimeout(r, 0)); // дати тіку дійти до await run
+    expect(run).toHaveBeenCalledTimes(1);
+    const second = await scheduler.tick(T0 + MIN5 + 1_000, 'watchdog');
+    expect(second.ticked).toBe(false);
+    expect(await scheduler.watchdogTick(T0 + MIN5 + 1_000)).toEqual({ ticked: false });
+    release();
+    await first;
+    expect(run).toHaveBeenCalledTimes(1); // рівно один ефект
   });
 
   it('разова задача (period=null) зникає після успіху', async () => {
