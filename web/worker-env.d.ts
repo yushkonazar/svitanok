@@ -47,6 +47,14 @@ interface Env {
    * `undefined`, і код зобовʼязаний падати явно, а не типово-тихо.
    */
   DB?: import('@cloudflare/workers-types').D1Database;
+  /**
+   * Durable Object планувальника (`web/core/scheduler/do.mjs`, етап 1, PR-2).
+   * Опційний, але на відміну від AGENT_RUN відсутність при ввімкненому
+   * прапорці — помилка конфігурації, і schedulerWatchdog каже про це вголос.
+   */
+  SCHEDULER?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/scheduler/do.mjs').SchedulerDO
+  >;
 
   /** Прапорець редизайну асистента: 'off' | 'shadow' | 'on' (01-architecture §5). */
   ASSISTANT_V2?: string;

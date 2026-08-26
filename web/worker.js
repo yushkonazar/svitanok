@@ -27,6 +27,7 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 // Клас Durable Object мусить бути експортований із ГОЛОВНОГО модуля Worker'а
 // (це вимога Cloudflare), тож ре-експорт — не стилістика, а контракт деплою.
 export { AgentRun } from './agent-run-do.mjs';
+export { SchedulerDO } from './core/scheduler/do.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
@@ -265,6 +266,28 @@ export async function runCronTasks(tasks, env) {
   }
 }
 
+/**
+ * Сторож планувальника (етап 1, PR-2): у shadow/on кожен 5-хвилинний крон-тік
+ * будить Scheduler DO — той сам вирішує (shouldWatchdogTick), чи alarm живий і
+ * тікати не треба. При off не викликається взагалі (01 §5: код є, не
+ * викликається). Збій сторожа не зачіпає runCronTasks — окремий waitUntil.
+ */
+export async function schedulerWatchdog(/** @type {Env} */ env) {
+  if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return;
+  const ns = env.SCHEDULER;
+  if (typeof ns?.getByName !== 'function') {
+    // Прапорець увімкнено, а привʼязки немає — це помилка конфігурації, і вона
+    // мусить бути видимою, а не тихою деградацією (правило «помилка видима»).
+    console.error(`scheduler: ASSISTANT_V2=${env.ASSISTANT_V2}, але SCHEDULER не привʼязано`);
+    return;
+  }
+  try {
+    await ns.getByName('scheduler').watchdogTick(Date.now());
+  } catch (/** @type {any} */ e) {
+    console.error('scheduler: сторож упав (крон-задачі не зачеплені)', e?.message);
+  }
+}
+
 export default {
   async fetch(
     /** @type {Request} */ request,
@@ -376,5 +399,9 @@ export default {
     /** @type {ExecutionContext} */ ctx,
   ) {
     ctx.waitUntil(runCronTasks(CRON_TASKS, env));
+    // Окремий waitUntil, а не хвіст runCronTasks: збій/зависання сторожа не
+    // сміє відкласти чи забрати крон-задачі (і навпаки) — той самий мотив
+    // ізоляції B11, тільки на рівень вище.
+    ctx.waitUntil(schedulerWatchdog(env));
   },
 };
