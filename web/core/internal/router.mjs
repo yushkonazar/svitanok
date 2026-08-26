@@ -8,8 +8,8 @@
 // Дешеве і зовнішнє - першим; жодна гілка не виконує роботи до підпису.
 
 import { json } from '../../http-core.mjs';
-import { verifyInternalRequest } from './auth.mjs';
-import { registryHas } from '../run-registry/client.mjs';
+import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
+import { registryHas, registryConsumeNonce } from '../run-registry/client.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -52,13 +52,28 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
   }
   const bodyText = new TextDecoder().decode(bodyBytes);
 
-  const auth = await verifyInternalRequest({ headers: request.headers, bodyText, nowMs, env });
+  const path = new URL(request.url).pathname;
+  const auth = await verifyInternalRequest({
+    method: request.method,
+    path,
+    headers: request.headers,
+    bodyText,
+    nowMs,
+    env,
+  });
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   // Прогін мусить бути живим у RunRegistry (07 §3): підпис доводить «хто»,
   // run_id - «навіщо саме зараз». Збій реєстру = відмова, не пропуск.
   if (!(await registryHas(env, auth.runId))) {
     return json({ ok: false, error: 'run-unknown' }, 403);
+  }
+  // Nonce споживається ПІСЛЯ підпису й run_id (інакше атакер без ключа міг би
+  // «випалювати» чужі nonce) і ПЕРЕД будь-якою роботою: повтор підписаного
+  // запиту в вікні TTL — реплей, а не друга дія. Памʼять — 2×TTL: доки підпис
+  // узагалі міг би пройти, память про nonce мусить жити.
+  if (!(await registryConsumeNonce(env, auth.runId, auth.nonce, nowMs, 2 * INTERNAL_SIG_TTL_MS))) {
+    return json({ ok: false, error: 'replayed' }, 401);
   }
 
   /** @type {unknown} */
@@ -69,7 +84,6 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
     return json({ ok: false, error: 'bad-json' }, 400);
   }
 
-  const path = new URL(request.url).pathname;
   const toolMatch = path.match(/^\/internal\/tool\/([a-z0-9._-]+)$/);
   if (toolMatch) {
     const contract = validateAgainst(TOOL_REQUEST_SCHEMA, body);

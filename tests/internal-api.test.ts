@@ -1,6 +1,7 @@
-// Internal API (етап 1, PR-5): підпис, TTL, run_id, контракти, маршрути.
-// Приймальна сходинка цього PR: 401 без підпису → 403 невідомий прогін →
-// 501 валідний виклик (виконавці — наступні PR-и). Кожна сходинка тут — тест.
+// Internal API (етап 1, PR-5): підпис (метод+шлях+ts+run+nonce+тіло), TTL,
+// nonce-антиреплей, run_id, контракти, маршрути. Приймальна сходинка PR:
+// 401 без підпису → 403 невідомий прогін → 501 валідний виклик — кожна
+// сходинка і кожен вектор реплею тут — тест.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -14,32 +15,55 @@ import { workerEnv } from './helpers/env.js';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'test-hmac-key';
+const PATH = '/internal/tool/data.read';
+
+type SignOpts = {
+  method?: string;
+  path?: string;
+  runId?: string;
+  key?: string;
+  ts?: number;
+  nonce?: string;
+};
+
+const signedHeaders = async (bodyText: string, opts: SignOpts = {}) => {
+  const { method = 'POST', path = PATH, runId = 'r1', key = KEY, ts = NOW, nonce = 'n-1' } = opts;
+  return {
+    'X-Internal-Timestamp': String(ts),
+    'X-Internal-Run': runId,
+    'X-Internal-Nonce': nonce,
+    'X-Internal-Signature': await signInternal(key, {
+      method,
+      path,
+      timestampMs: ts,
+      runId,
+      nonce,
+      rawBody: bodyText,
+    }),
+  };
+};
 
 const verify = (
   headers: Record<string, string>,
   bodyText: string,
   env: Record<string, unknown>,
-  nowMs = NOW,
+  opts: { method?: string; path?: string; nowMs?: number } = {},
 ) =>
   verifyInternalRequest({
+    method: opts.method ?? 'POST',
+    path: opts.path ?? PATH,
     headers: new Headers(headers),
     bodyText,
-    nowMs,
+    nowMs: opts.nowMs ?? NOW,
     env: env as never,
   });
-
-const signedHeaders = async (bodyText: string, { runId = 'r1', key = KEY, ts = NOW } = {}) => ({
-  'X-Internal-Timestamp': String(ts),
-  'X-Internal-Run': runId,
-  'X-Internal-Signature': await signInternal(key, ts, runId, bodyText),
-});
 
 describe('verifyInternalRequest — підпис і TTL', () => {
   const env = { INTERNAL_HMAC_KEY: KEY };
 
-  it('валідний підпис проходить і повертає runId', async () => {
+  it('валідний підпис проходить і повертає runId + nonce', async () => {
     const res = await verify(await signedHeaders('{"a":1}'), '{"a":1}', env);
-    expect(res).toEqual({ ok: true, runId: 'r1' });
+    expect(res).toEqual({ ok: true, runId: 'r1', nonce: 'n-1' });
   });
 
   it('чужий ключ — bad-signature, не інша помилка (діагностованість)', async () => {
@@ -47,11 +71,29 @@ describe('verifyInternalRequest — підпис і TTL', () => {
     expect(res).toMatchObject({ ok: false, status: 401, error: 'bad-signature' });
   });
 
-  it('підпис не переноситься на інше тіло і інший runId', async () => {
+  it('підпис не переноситься: інше тіло, інший runId, інший nonce', async () => {
     const h = await signedHeaders('{"a":1}');
     expect(await verify(h, '{"a":2}', env)).toMatchObject({ error: 'bad-signature' });
     expect(await verify({ ...h, 'X-Internal-Run': 'r2' }, '{"a":1}', env)).toMatchObject({
       error: 'bad-signature',
+    });
+    expect(await verify({ ...h, 'X-Internal-Nonce': 'n-2' }, '{"a":1}', env)).toMatchObject({
+      error: 'bad-signature',
+    });
+  });
+
+  it('підпис не переноситься на ІНШИЙ ендпоїнт і метод — шлях у повідомленні', async () => {
+    // Головний вектор із security-ревʼю: статусний рядок, перекинутий на
+    // /internal/deliver, ставав би доставленим повідомленням.
+    const h = await signedHeaders('{"text":"x"}', { path: '/internal/status' });
+    expect(await verify(h, '{"text":"x"}', env, { path: '/internal/deliver' })).toMatchObject({
+      error: 'bad-signature',
+    });
+    expect(
+      await verify(h, '{"text":"x"}', env, { path: '/internal/status', method: 'PUT' }),
+    ).toMatchObject({ error: 'bad-signature' });
+    expect(await verify(h, '{"text":"x"}', env, { path: '/internal/status' })).toMatchObject({
+      ok: true,
     });
   });
 
@@ -87,7 +129,12 @@ describe('verifyInternalRequest — підпис і TTL', () => {
 
   it('бракує будь-якого заголовка — 401 missing-auth', async () => {
     const h = await signedHeaders('{}');
-    for (const drop of ['X-Internal-Timestamp', 'X-Internal-Run', 'X-Internal-Signature']) {
+    for (const drop of [
+      'X-Internal-Timestamp',
+      'X-Internal-Run',
+      'X-Internal-Nonce',
+      'X-Internal-Signature',
+    ]) {
       const partial: Record<string, string> = { ...h };
       delete partial[drop];
       expect(await verify(partial, '{}', env)).toMatchObject({ status: 401 });
@@ -122,15 +169,16 @@ describe('validateAgainst — контракти', () => {
 
 describe('handleInternal — маршрутизатор', () => {
   let env: Env;
+  let consumed: Set<string>;
 
   const request = async (
     path: string,
     bodyObj: unknown,
-    opts: { runId?: string; key?: string; ts?: number; method?: string; sign?: boolean } = {},
+    opts: SignOpts & { method?: string; sign?: boolean; rawBody?: string } = {},
   ) => {
-    const body = JSON.stringify(bodyObj);
+    const body = opts.rawBody ?? JSON.stringify(bodyObj);
     const headers: Record<string, string> =
-      opts.sign === false ? {} : await signedHeaders(body, opts);
+      opts.sign === false ? {} : await signedHeaders(body, { ...opts, path });
     return new Request(`https://svitanok.test${path}`, {
       method: opts.method ?? 'POST',
       headers,
@@ -140,44 +188,43 @@ describe('handleInternal — маршрутизатор', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    consumed = new Set();
     env = workerEnv({
       ASSISTANT_V2: 'shadow',
       INTERNAL_HMAC_KEY: KEY,
-      RUN_REGISTRY: { getByName: () => ({ has: async (id: string) => id === 'r1' }) },
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async (runId: string, nonce: string) => {
+            const key = `${runId}:${nonce}`;
+            if (consumed.has(key)) return false;
+            consumed.add(key);
+            return true;
+          },
+        }),
+      },
     });
   });
 
   it('off: 404 як для неіснуючого шляху — код «не існує»', async () => {
     const offEnv = workerEnv({ INTERNAL_HMAC_KEY: KEY });
-    const res = await handleInternal(
-      await request('/internal/tool/data.read', { args: {} }),
-      offEnv,
-      NOW,
-    );
+    const res = await handleInternal(await request(PATH, { args: {} }), offEnv, NOW);
     expect(res.status).toBe(404);
   });
 
   it('не-POST — 405', async () => {
-    const res = await handleInternal(
-      await request('/internal/tool/data.read', {}, { method: 'GET' }),
-      env,
-      NOW,
-    );
+    const res = await handleInternal(await request(PATH, {}, { method: 'GET' }), env, NOW);
     expect(res.status).toBe(405);
   });
 
   it('без підпису — 401, робота не виконується', async () => {
-    const res = await handleInternal(
-      await request('/internal/tool/data.read', { args: {} }, { sign: false }),
-      env,
-      NOW,
-    );
+    const res = await handleInternal(await request(PATH, { args: {} }, { sign: false }), env, NOW);
     expect(res.status).toBe(401);
   });
 
   it('підпис є, прогін невідомий реєстру — 403 run-unknown', async () => {
     const res = await handleInternal(
-      await request('/internal/tool/data.read', { args: {} }, { runId: 'ghost' }),
+      await request(PATH, { args: {} }, { runId: 'ghost' }),
       env,
       NOW,
     );
@@ -185,9 +232,24 @@ describe('handleInternal — маршрутизатор', () => {
     expect(await res.json()).toMatchObject({ error: 'run-unknown' });
   });
 
+  it('той самий підписаний запит удруге — 401 replayed (nonce спожито)', async () => {
+    const first = await handleInternal(await request(PATH, { args: {} }), env, NOW);
+    expect(first.status).toBe(501);
+    const second = await handleInternal(await request(PATH, { args: {} }), env, NOW);
+    expect(second.status).toBe(401);
+    expect(await second.json()).toMatchObject({ error: 'replayed' });
+    // Інший nonce — інший запит: проходить.
+    const third = await handleInternal(
+      await request(PATH, { args: {} }, { nonce: 'n-2' }),
+      env,
+      NOW,
+    );
+    expect(third.status).toBe(501);
+  });
+
   it('валідний виклик інструмента — 501 not-implemented з імʼям (PR-6 замінить)', async () => {
     const res = await handleInternal(
-      await request('/internal/tool/data.read', { args: { scope: 'briefing' } }),
+      await request(PATH, { args: { scope: 'briefing' } }),
       env,
       NOW,
     );
@@ -196,20 +258,14 @@ describe('handleInternal — маршрутизатор', () => {
   });
 
   it('порушення контракту — 400 зі шляхом поля', async () => {
-    const res = await handleInternal(await request('/internal/tool/data.read', {}), env, NOW);
+    const res = await handleInternal(await request(PATH, {}), env, NOW);
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'contract: $: бракує поля "args"' });
   });
 
   it('битий JSON — 400 bad-json (підпис перевіряється ПО сирому тілу раніше)', async () => {
-    const bodyText = '{не json';
-    const headers = await signedHeaders(bodyText);
     const res = await handleInternal(
-      new Request('https://svitanok.test/internal/deliver', {
-        method: 'POST',
-        headers,
-        body: bodyText,
-      }),
+      await request('/internal/deliver', null, { rawBody: '{не json' }),
       env,
       NOW,
     );
@@ -218,20 +274,12 @@ describe('handleInternal — маршрутизатор', () => {
   });
 
   it('deliver/status/runs — контракти живі, виконавців ще немає (501)', async () => {
-    expect(
-      (await handleInternal(await request('/internal/deliver', { text: 'привіт' }), env, NOW))
-        .status,
-    ).toBe(501);
-    expect(
-      (await handleInternal(await request('/internal/status', { text: '▸ думаю' }), env, NOW))
-        .status,
-    ).toBe(501);
-    expect(
-      (await handleInternal(await request('/internal/runs', { steps: [] }), env, NOW)).status,
-    ).toBe(501);
-    expect(
-      (await handleInternal(await request('/internal/deliver', { no: 'text' }), env, NOW)).status,
-    ).toBe(400);
+    const post = (path: string, body: unknown, nonce: string) =>
+      request(path, body, { nonce }).then((r) => handleInternal(r, env, NOW));
+    expect((await post('/internal/deliver', { text: 'привіт' }, 'a')).status).toBe(501);
+    expect((await post('/internal/status', { text: '▸ думаю' }, 'b')).status).toBe(501);
+    expect((await post('/internal/runs', { steps: [] }, 'c')).status).toBe(501);
+    expect((await post('/internal/deliver', { no: 'text' }, 'd')).status).toBe(400);
   });
 
   it('невідомий /internal/шлях — 404 (після auth, не до)', async () => {
@@ -265,11 +313,7 @@ describe('handleInternal — маршрутизатор', () => {
         }),
       },
     });
-    const res = await handleInternal(
-      await request('/internal/tool/data.read', { args: {} }),
-      broken,
-      NOW,
-    );
+    const res = await handleInternal(await request(PATH, { args: {} }), broken, NOW);
     expect(res.status).toBe(403);
   });
 });

@@ -17,6 +17,10 @@ import { DurableObject } from 'cloudflare:workers';
 
 const ACTIVE_KEY = 'active';
 
+/** Спожиті nonce internal API: {`runId:nonce` -> expiresMs}. Окремий ключ від
+ *  активних прогонів — інший життєвий цикл і інший писар (router, не агент). */
+const NONCES_KEY = 'nonces';
+
 export class RunRegistryDO extends DurableObject {
   /** @returns {Promise<Record<string, ActiveRun>>} */
   async #active() {
@@ -98,6 +102,31 @@ export class RunRegistryDO extends DurableObject {
    *  @param {string} id */
   async has(id) {
     return Boolean((await this.#active())[id]);
+  }
+
+  /**
+   * Спожити nonce запиту internal API: true = вперше (запит пускаємо),
+   * false = уже бачили (реплей у вікні TTL). Атомарність дає сам DO
+   * (виклики серіалізовані). Спожиті чистяться за віком на кожному виклику —
+   * набір обмежений кількістю запитів за 2×TTL, тобто десятками.
+   * @param {string} runId
+   * @param {string} nonce
+   * @param {number} nowMs
+   * @param {number} keepMs — скільки памʼятати (2×TTL підпису: доки підпис
+   *   узагалі міг би пройти, памʼять про nonce мусить жити)
+   */
+  async consumeNonce(runId, nonce, nowMs, keepMs) {
+    const seen = /** @type {Record<string, number>} */ (
+      (await this.ctx.storage.get(NONCES_KEY)) ?? {}
+    );
+    for (const [key, expiresMs] of Object.entries(seen)) {
+      if (expiresMs <= nowMs) delete seen[key];
+    }
+    const key = `${runId}:${nonce}`;
+    if (key in seen) return false;
+    seen[key] = nowMs + keepMs;
+    await this.ctx.storage.put(NONCES_KEY, seen);
+    return true;
   }
 
   /**

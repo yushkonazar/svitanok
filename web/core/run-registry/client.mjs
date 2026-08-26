@@ -63,6 +63,28 @@ export async function registryHas(env, id) {
   }
 }
 
+/**
+ * Спожити nonce запиту internal API. Fail-closed, як registryHas: збій DO =
+ * false = відмова, бо результат гейтить доступ, а не журнал.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {string} nonce
+ * @param {number} nowMs
+ * @param {number} keepMs
+ */
+export async function registryConsumeNonce(env, runId, nonce, nowMs, keepMs) {
+  const ns = registryNs(env);
+  if (!ns) return false;
+  try {
+    return Boolean(
+      await ns.getByName(RUN_REGISTRY_DO_NAME).consumeNonce(runId, nonce, nowMs, keepMs),
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: consumeNonce впав - трактуємо як реплей', e?.message);
+    return false;
+  }
+}
+
 /** @param {Env} env */
 function registryNs(env) {
   if (!enabled(env)) return null;
