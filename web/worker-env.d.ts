@@ -41,6 +41,15 @@ interface Env {
   AGENT_RUN?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./agent-run-do.mjs').AgentRun
   >;
+  /**
+   * D1 нового асистента (редизайн, етап 1; схема — final/07-schema §1).
+   * Опційний з тієї ж причини, що AGENT_RUN: незадана привʼязка в рантаймі —
+   * `undefined`, і код зобовʼязаний падати явно, а не типово-тихо.
+   */
+  DB?: import('@cloudflare/workers-types').D1Database;
+
+  /** Прапорець редизайну асистента: 'off' | 'shadow' | 'on' (01-architecture §5). */
+  ASSISTANT_V2?: string;
 
   /* ── Telegram ───────────────────────────────────────────────────────── */
 
