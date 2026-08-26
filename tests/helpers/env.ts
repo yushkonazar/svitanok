@@ -29,12 +29,13 @@ import { memoryKv } from './kv.js';
  * знявши перевірку заразом і з секретів.
  */
 export interface WorkerEnvOverrides extends Partial<
-  Omit<Env, 'BRIEFING' | 'ASSETS' | 'AGENT_RUN' | 'SCHEDULER'>
+  Omit<Env, 'BRIEFING' | 'ASSETS' | 'AGENT_RUN' | 'SCHEDULER' | 'RUN_REGISTRY'>
 > {
   BRIEFING?: unknown;
   ASSETS?: unknown;
   AGENT_RUN?: unknown;
   SCHEDULER?: unknown;
+  RUN_REGISTRY?: unknown;
 }
 
 /**

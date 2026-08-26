@@ -55,6 +55,14 @@ interface Env {
   SCHEDULER?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/scheduler/do.mjs').SchedulerDO
   >;
+  /**
+   * Durable Object реєстру прогонів (`web/core/run-registry/do.mjs`, етап 1,
+   * PR-4). Опційний; при ввімкненому прапорці відсутність — помилка
+   * конфігурації, клієнт (client.mjs) каже про це вголос.
+   */
+  RUN_REGISTRY?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/run-registry/do.mjs').RunRegistryDO
+  >;
 
   /** Прапорець редизайну асистента: 'off' | 'shadow' | 'on' (01-architecture §5). */
   ASSISTANT_V2?: string;

@@ -28,6 +28,7 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 // (це вимога Cloudflare), тож ре-експорт — не стилістика, а контракт деплою.
 export { AgentRun } from './agent-run-do.mjs';
 export { SchedulerDO } from './core/scheduler/do.mjs';
+export { RunRegistryDO } from './core/run-registry/do.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
