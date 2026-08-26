@@ -64,9 +64,9 @@ describe('SchedulerDO — сівба реєстру і сторож', () => {
   it('перший watchdogTick сіє задачі реєстру і ставить alarm на найближчу появу', async () => {
     const { scheduler, ctx } = makeDo({ ASSISTANT_V2: 'shadow' });
     const res = await scheduler.watchdogTick(T0);
-    // Alarm був відсутній -> тікнули; задач прострочених ще нема (перша поява
-    // через period від зараз), але alarm уже стоїть.
-    expect(res.ticked).toBe(true);
+    // Сівба сама озброїла alarm (інваріант alarm=min(due_at) живе в
+    // #syncRegistry), тож тікати нема по що: перша поява — через period.
+    expect(res.ticked).toBe(false);
     const jobs = await jobsOf(scheduler);
     expect(jobs.map((j) => j.kind)).toEqual(['heartbeat']);
     expect(ctx.alarm).toBe(T0 + MIN5);
@@ -269,5 +269,35 @@ describe('SchedulerDO — прапорець і реєстр', () => {
     await scheduler.watchdogTick(T0 + 60_000);
     const [after] = await jobsOf(scheduler);
     expect(after?.due_at).toBe(before?.due_at);
+  });
+
+  it('нова задача з раннім due переставляє alarm навіть при свіжому alarm', async () => {
+    // Інваріант alarm=min(due_at): задача з добовим періодом ставить alarm
+    // далеко; додана поруч 5-хвилинна не сміє чекати добу під «свіжим» alarm.
+    const daily = { periodMin: 1440, shadowSafe: true, run: async () => {} };
+    const { scheduler, ctx } = makeDo({ ASSISTANT_V2: 'shadow' }, { daily });
+    await scheduler.watchdogTick(T0);
+    expect(ctx.alarm).toBe(T0 + 1440 * 60_000);
+    scheduler.tasks = {
+      daily,
+      fast: { periodMin: 5, shadowSafe: true, run: async () => {} },
+    } as never;
+    const res = await scheduler.watchdogTick(T0 + 60_000);
+    expect(res.ticked).toBe(false); // alarm свіжий — тік не потрібен…
+    expect(ctx.alarm).toBe(T0 + 60_000 + MIN5); // …але alarm уже на новій появі
+  });
+
+  it('зміна periodMin наявного kind доїжджає до таблиці (стара каденція не вічна)', async () => {
+    const { scheduler } = makeDo(
+      { ASSISTANT_V2: 'shadow' },
+      {
+        t: { periodMin: 5, shadowSafe: true, run: async () => {} },
+      },
+    );
+    await scheduler.watchdogTick(T0);
+    scheduler.tasks = { t: { periodMin: 15, shadowSafe: true, run: async () => {} } } as never;
+    await scheduler.watchdogTick(T0 + 60_000);
+    const [job] = await jobsOf(scheduler);
+    expect(job?.period).toBe(15);
   });
 });

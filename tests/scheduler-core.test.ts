@@ -76,10 +76,10 @@ describe('advanceDueAt', () => {
 });
 
 describe('occurrenceDedupeKey', () => {
-  it('формат kind:дата:хвилина-доби (київські)', () => {
-    // 10:00 UTC влітку = 13:00 Київ = хвилина 780.
+  it('формат kind:київська-дата:UTC-ISO появи', () => {
+    // 10:00 UTC влітку = 13:00 Київ — дата київська, slot лишається UTC.
     expect(occurrenceDedupeKey('heartbeat', '2026-08-26T10:00:00.000Z')).toBe(
-      'heartbeat:2026-08-26:780',
+      'heartbeat:2026-08-26:2026-08-26T10:00:00.000Z',
     );
   });
 
@@ -87,6 +87,15 @@ describe('occurrenceDedupeKey', () => {
     const a = occurrenceDedupeKey('x', '2026-08-26T10:00:00.000Z');
     expect(occurrenceDedupeKey('x', '2026-08-26T10:00:00.000Z')).toBe(a);
     expect(occurrenceDedupeKey('x', '2026-08-26T10:05:00.000Z')).not.toBe(a);
+  });
+
+  it('переведення годинника назад: повторна київська година НЕ колайдить', () => {
+    // 2026-10-25 (остання неділя жовтня): 00:05 UTC (EEST) і 01:05 UTC (EET)
+    // обидві показуються в Києві як 03:05 — київська хвилина доби однакова,
+    // але це ДВІ різні появи погодинної задачі, і друга не сміє загубитись.
+    const summer = occurrenceDedupeKey('hourly', '2026-10-25T00:05:00.000Z');
+    const winter = occurrenceDedupeKey('hourly', '2026-10-25T01:05:00.000Z');
+    expect(summer).not.toBe(winter);
   });
 });
 

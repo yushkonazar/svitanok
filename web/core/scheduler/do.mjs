@@ -84,7 +84,9 @@ export class SchedulerDO extends DurableObject {
    */
   async #syncRegistry(nowMs) {
     const known = Object.keys(this.tasks).sort();
-    const snapshot = known.join(',');
+    // Знімок містить і periodMin: інакше зміна періоду наявного kind не
+    // перетинала б early-return, і стара каденція жила б у таблиці вічно.
+    const snapshot = known.map((k) => `${k}:${this.tasks[k]?.periodMin}`).join(',');
     if ((await this.ctx.storage.get(REGISTRY_KEY)) === snapshot) return;
     if (known.length === 0) {
       // `NOT IN ()` — синтаксична помилка SQLite; порожній реєстр = порожня таблиця.
@@ -101,8 +103,20 @@ export class SchedulerDO extends DurableObject {
         new Date(nowMs + def.periodMin * 60_000).toISOString(),
         def.periodMin,
       );
+      // INSERT OR IGNORE наявний рядок не чіпає — період звіряємо окремо.
+      // `period IS NOT NULL` береже разові задачі того ж kind від перетворення
+      // на періодичні.
+      this.ctx.storage.sql.exec(
+        'UPDATE jobs SET period = ? WHERE kind = ? AND period IS NOT NULL AND period != ?',
+        def.periodMin,
+        kind,
+        def.periodMin,
+      );
     }
     await this.ctx.storage.put(REGISTRY_KEY, snapshot);
+    // Нова задача могла отримати найранішу появу — інваріант alarm=min(due_at)
+    // мусить вижити і на гілці сторожа «alarm свіжий, тікати не треба».
+    await this.#setNextAlarm();
   }
 
   /**

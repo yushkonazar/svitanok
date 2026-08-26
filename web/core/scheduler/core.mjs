@@ -3,7 +3,7 @@
 // обгортка (Durable Object, SQL, alarm API) — у сусідньому do.mjs; тут нічого
 // з workerd немає, і саме це тестується без платформи.
 
-import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 
 /**
  * Рядок таблиці `jobs` (07 §7). `period` — хвилини між появами; null = разова
@@ -59,15 +59,17 @@ export function nextAlarmMs(jobs) {
 }
 
 /**
- * Dedupe-ключ появи: `kind:YYYY-MM-DD[:slot]` (07 §7), slot — київська хвилина
- * доби запланованої появи. Той самий ключ у alarm'а і сторожа, що прийшли по
- * одну появу; інший — у наступної появи.
+ * Dedupe-ключ появи: `kind:YYYY-MM-DD:slot` (07 §7), де slot — UTC-час появи
+ * (ISO). Той самий ключ у alarm'а і сторожа, що прийшли по одну появу; інший —
+ * у наступної появи. Slot НАВМИСНО не київський: у день переведення годинника
+ * назад київська хвилина доби повторюється двічі, і погодинна задача тихо
+ * губила б одну появу на рік — UTC-момент унікальний завжди. Київська дата
+ * лишається людським префіксом для логів і /status.
  * @param {string} kind
  * @param {string} dueAtIso
  */
 export function occurrenceDedupeKey(kind, dueAtIso) {
-  const due = new Date(dueAtIso);
-  return `${kind}:${kyivDateKey(due)}:${kyivMinuteOfDay(due)}`;
+  return `${kind}:${kyivDateKey(new Date(dueAtIso))}:${dueAtIso}`;
 }
 
 /**
