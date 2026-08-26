@@ -126,6 +126,9 @@ export class SchedulerDO extends DurableObject {
    * @param {number} nowMs
    */
   async watchdogTick(nowMs) {
+    // Тік уже в польоті (сторож зайшов у вікно await задачі alarm-тіка) —
+    // це не «загублений alarm», і в лічильник рятунків воно йти не мусить.
+    if (this.#ticking) return { ticked: false };
     this.#ensureSchema();
     await this.#syncRegistry(nowMs);
     const alarmMs = await this.ctx.storage.getAlarm();
@@ -157,6 +160,14 @@ export class SchedulerDO extends DurableObject {
     await this.tick(Date.now(), 'alarm');
   }
 
+  /** Тік уже виконується. Input-gate DO відкривається на await зовнішніх
+   *  викликів усередині задачі (fetch у Telegram/GitHub), і в це вікно може
+   *  зайти сторож: alarm на той момент уже спожито (getAlarm=null), dedupe_key
+   *  ще не записано — без прапорця та сама поява виконалась би двічі. Поле, а
+   *  не storage: подієвий цикл DO однопотоковий, читання/запис прапорця
+   *  атомарні, а після падіння ізоляту він чесно скидається разом з інстансом. */
+  #ticking = false;
+
   /**
    * Тік: прострочені задачі послідовно, кожна у своєму try/catch; замір
    * джитера — лише для alarm-тіків (сторож приходить о своїй годині, його
@@ -165,6 +176,20 @@ export class SchedulerDO extends DurableObject {
    * @param {'alarm' | 'watchdog'} source
    */
   async tick(nowMs, source) {
+    if (this.#ticking) return { ticked: false, due: 0, ran: 0 };
+    this.#ticking = true;
+    try {
+      return await this.#tickLocked(nowMs, source);
+    } finally {
+      this.#ticking = false;
+    }
+  }
+
+  /**
+   * @param {number} nowMs
+   * @param {'alarm' | 'watchdog'} source
+   */
+  async #tickLocked(nowMs, source) {
     this.#ensureSchema();
     const due = dueJobs(this.#loadJobs(), nowMs);
 

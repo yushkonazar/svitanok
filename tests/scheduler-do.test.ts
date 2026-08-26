@@ -189,6 +189,29 @@ describe('SchedulerDO — тік', () => {
     expect(ctx.alarm).toBe(T0 + 2 * MIN5);
   });
 
+  it('конкурентний вхід у вікні await задачі не подвоює ефект (in-flight guard)', async () => {
+    // Реальна траєкторія в DO: alarm-тік виконує задачу з fetch (input-gate
+    // відкритий), у цю мить приходить крон-сторож; alarm уже спожито,
+    // dedupe_key ще не записано — без прапорця задача виконалась би двічі.
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const run = vi.fn(async () => {
+      await gate;
+    });
+    const { scheduler } = await seeded({ ASSISTANT_V2: 'on' }, { slow: { periodMin: 5, run } });
+    const first = scheduler.tick(T0 + MIN5, 'alarm'); // не чекаємо — задача «висить» на fetch
+    await new Promise((r) => setTimeout(r, 0)); // дати тіку дійти до await run
+    expect(run).toHaveBeenCalledTimes(1);
+    const second = await scheduler.tick(T0 + MIN5 + 1_000, 'watchdog');
+    expect(second.ticked).toBe(false);
+    expect(await scheduler.watchdogTick(T0 + MIN5 + 1_000)).toEqual({ ticked: false });
+    release();
+    await first;
+    expect(run).toHaveBeenCalledTimes(1); // рівно один ефект
+  });
+
   it('разова задача (period=null) зникає після успіху', async () => {
     const { scheduler } = makeDo(
       { ASSISTANT_V2: 'on' },
