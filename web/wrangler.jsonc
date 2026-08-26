@@ -43,11 +43,15 @@
       // Планувальник редизайну (етап 1, PR-2): таблиця jobs + один alarm у
       // власному SQLite DO; тікає лише при ASSISTANT_V2=shadow/on.
       { "name": "SCHEDULER", "class_name": "SchedulerDO" },
+      // Реєстр прогонів (етап 1, PR-4): активний набір + телеметрія в D1 runs;
+      // поки лише запис для старого агента, слоти/handshake - етап 2.
+      { "name": "RUN_REGISTRY", "class_name": "RunRegistryDO" },
     ],
   },
   "exports": {
     "AgentRun": { "type": "durable-object", "storage": "sqlite" },
     "SchedulerDO": { "type": "durable-object", "storage": "sqlite" },
+    "RunRegistryDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // ОДИН крон (A2): нагадування (Блок P2a) + dispatch брифінгу у вікні 08:00–11:00
   // Київ + dead-man від 12:00 — кожна задача гейтиться за kyivHour() у момент

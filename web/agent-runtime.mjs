@@ -21,6 +21,7 @@
 // реалізована — вони живуть у proposals/reminders-actions/api-dashboard. Цей
 // модуль — диспетчер між ними й протокол прогону.
 
+import { registryBegin, registryFinish } from './core/run-registry/client.mjs';
 import {
   ASSISTANT_WORKING_REPLY,
   ASSISTANT_FALLBACK_REPLY,
@@ -277,6 +278,16 @@ async function markRunStarted(
     // Best-effort: марка потрібна лише сторожу. Збій KV не сміє зірвати запит.
     console.error('agentRuns mark start failed (не блокує прогін)', e);
   }
+  // Телеметрія редизайну (етап 1, PR-4): рядок у D1 runs через RunRegistry.
+  // Чокпойнт саме тут - усі старти прогону проходять через цю марку. Клієнт
+  // сам гейтиться прапорцем і сам ковтає збої (запис не блокує прогін).
+  await registryBegin(env, {
+    id: runId,
+    trigger: 'chat',
+    threadId: info.threadId ?? null,
+    model: ASSISTANT_MODEL,
+    startedMs: info.startedMs,
+  });
 }
 
 /* ── Клейм кроку (Фаза 4) ─────────────────────────────────────────────────
@@ -352,6 +363,9 @@ async function markRunFinished(
   } catch (/** @type {any} */ e) {
     console.error('agentRuns mark finish failed', e);
   }
+  // Парний чокпойнт до registryBegin у markRunStarted (обидва шляхи фінішу -
+  // відповідь хоста і відмова старту - проходять тут; сторож закриває окремо).
+  await registryFinish(env, runId, { finishedMs: nowMs });
 }
 
 /** message_id щойно надісланого повідомлення; null, якщо Telegram не дав. */
@@ -853,6 +867,8 @@ export async function agentRunWatchdog(/** @type {Env} */ env) {
       text: ASSISTANT_STALLED_REPLY,
     });
     runs[runId] = { ...r, finishedMs: nowMs };
+    // Закриття сторожем - це теж фініш, але з явною причиною в телеметрії.
+    await registryFinish(env, runId, { finishedMs: nowMs, error: 'watchdog-timeout' });
   }
   try {
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
