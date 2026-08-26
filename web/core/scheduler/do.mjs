@@ -199,6 +199,8 @@ export class SchedulerDO extends DurableObject {
       await this.ctx.storage.put(JITTER_KEY, recordJitterSample(samples, nowMs - plannedMs));
     }
 
+    /** @type {{ kind: string, status: string }[]} */
+    const outcomes = [];
     let ran = 0;
     for (const job of due) {
       const key = occurrenceDedupeKey(job.kind, job.due_at);
@@ -209,6 +211,7 @@ export class SchedulerDO extends DurableObject {
         continue;
       }
       const status = await this.#runJob(job);
+      outcomes.push({ kind: job.kind, status });
       ran += 1;
       if (job.period == null && status === 'ok') {
         this.ctx.storage.sql.exec('DELETE FROM jobs WHERE id = ?', job.id);
@@ -226,7 +229,46 @@ export class SchedulerDO extends DurableObject {
     }
 
     await this.#setNextAlarm();
+    if (outcomes.length > 0) await this.#recordTickRun(nowMs, source, outcomes);
     return { ticked: true, due: due.length, ran };
+  }
+
+  /**
+   * Рядок телеметрії тіка в D1 `runs` (приймання етапу: порівняння того, що
+   * «виконав би» планувальник, із чинним кроном - за добу). Best-effort: збій
+   * запису не сміє зачепити ні задачі, ні alarm - тому ПІСЛЯ #setNextAlarm і
+   * в try/catch. Режим (shadow/on) їде в tools_json поруч із outcomes - без
+   * нього рядки обох режимів були б нерозрізненні, а чужі колонки (profile,
+   * cost_note) для цього не позичаємо.
+   * @param {number} nowMs
+   * @param {'alarm' | 'watchdog'} source
+   * @param {{ kind: string, status: string }[]} outcomes
+   */
+  async #recordTickRun(nowMs, source, outcomes) {
+    const env = /** @type {Env} */ (this.env);
+    const db = env.DB;
+    if (!db) {
+      console.error('scheduler: привʼязки DB немає - тік не записано в runs');
+      return;
+    }
+    try {
+      const iso = new Date(nowMs).toISOString();
+      await db
+        .prepare(
+          `INSERT INTO runs (id, trigger, started_at, finished_at, duration_ms, steps, tools_json)
+           VALUES (?, 'scheduler', ?, ?, 0, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          iso,
+          iso,
+          outcomes.length,
+          JSON.stringify({ source, mode: env.ASSISTANT_V2 ?? null, outcomes }),
+        )
+        .run();
+    } catch (/** @type {any} */ e) {
+      console.error('scheduler: запис тіка в runs впав (задачі не зачеплені)', e?.message);
+    }
   }
 
   /**

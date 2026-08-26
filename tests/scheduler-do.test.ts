@@ -329,3 +329,63 @@ describe('SchedulerDO — прапорець і реєстр', () => {
     expect(job?.period).toBe(15);
   });
 });
+
+describe('SchedulerDO — телеметрія тіка в runs (PR-4)', () => {
+  const makeDb = () => {
+    const calls: { sql: string; args: unknown[] }[] = [];
+    return {
+      calls,
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          run: async () => {
+            calls.push({ sql, args });
+          },
+        }),
+      }),
+    };
+  };
+
+  it('тік із появами пише один рядок runs: outcomes + режим', async () => {
+    const db = makeDb();
+    const { scheduler } = makeDo(
+      { ASSISTANT_V2: 'shadow', DB: db },
+      { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
+    );
+    await scheduler.watchdogTick(T0);
+    await scheduler.tick(T0 + MIN5, 'alarm');
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0]?.sql).toContain('INSERT INTO runs');
+    const tools = JSON.parse(String(db.calls[0]?.args[4]));
+    // Режим - у tools_json: без нього рядки shadow і on були б нерозрізненні.
+    expect(tools).toEqual({
+      source: 'alarm',
+      mode: 'shadow',
+      outcomes: [{ kind: 'hb', status: 'ok' }],
+    });
+  });
+
+  it('тік без прострочених появ рядка не пише (не шуміти в журналі)', async () => {
+    const db = makeDb();
+    const { scheduler } = makeDo(
+      { ASSISTANT_V2: 'shadow', DB: db },
+      { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
+    );
+    await scheduler.watchdogTick(T0); // сівба, нічого не прострочено
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it('без привʼязки DB тік не падає — задачі важливіші за журнал', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { scheduler } = makeDo(
+      { ASSISTANT_V2: 'shadow' },
+      { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
+    );
+    await scheduler.watchdogTick(T0);
+    await expect(scheduler.tick(T0 + MIN5, 'alarm')).resolves.toMatchObject({
+      ticked: true,
+      ran: 1,
+    });
+    expect(err.mock.calls.join('\n')).toContain('DB');
+    err.mockRestore();
+  });
+});

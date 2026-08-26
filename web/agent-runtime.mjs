@@ -21,6 +21,7 @@
 // реалізована — вони живуть у proposals/reminders-actions/api-dashboard. Цей
 // модуль — диспетчер між ними й протокол прогону.
 
+import { registryBegin, registryFinish } from './core/run-registry/client.mjs';
 import {
   ASSISTANT_WORKING_REPLY,
   ASSISTANT_FALLBACK_REPLY,
@@ -277,6 +278,16 @@ async function markRunStarted(
     // Best-effort: марка потрібна лише сторожу. Збій KV не сміє зірвати запит.
     console.error('agentRuns mark start failed (не блокує прогін)', e);
   }
+  // Телеметрія редизайну (етап 1, PR-4): рядок у D1 runs через RunRegistry.
+  // Чокпойнт саме тут - усі старти прогону проходять через цю марку. Клієнт
+  // сам гейтиться прапорцем і сам ковтає збої (запис не блокує прогін).
+  await registryBegin(env, {
+    id: runId,
+    trigger: 'chat',
+    threadId: info.threadId ?? null,
+    model: ASSISTANT_MODEL,
+    startedMs: info.startedMs,
+  });
 }
 
 /* ── Клейм кроку (Фаза 4) ─────────────────────────────────────────────────
@@ -343,6 +354,7 @@ async function markRunFinished(
   /** @type {Env} */ env,
   /** @type {string} */ runId,
   nowMs = Date.now(),
+  /** @type {number|null} */ steps = null,
 ) {
   if (!runId) return;
   try {
@@ -352,6 +364,9 @@ async function markRunFinished(
   } catch (/** @type {any} */ e) {
     console.error('agentRuns mark finish failed', e);
   }
+  // Парний чокпойнт до registryBegin у markRunStarted (обидва шляхи фінішу -
+  // відповідь хоста і відмова старту - проходять тут; сторож закриває окремо).
+  await registryFinish(env, runId, { finishedMs: nowMs, steps });
 }
 
 /** message_id щойно надісланого повідомлення; null, якщо Telegram не дав. */
@@ -680,7 +695,8 @@ export async function handleAgentStep(/** @type {Request} */ request, /** @type 
     await deleteProgressMessage(env, claims.chatId, claims.progressMsgId);
     await send();
     if (assistantSummary) await rememberExchange(env, claims, assistantSummary);
-    await markRunFinished(env, claims.runId, nowMs);
+    // claims.step - номер останнього кроку прогону: єдине місце, де він відомий.
+    await markRunFinished(env, claims.runId, nowMs, claims.step ?? null);
     await finishAgentRunDo(env, claims, nowMs);
     return json({ ok: true, done: true });
   };
@@ -853,6 +869,9 @@ export async function agentRunWatchdog(/** @type {Env} */ env) {
       text: ASSISTANT_STALLED_REPLY,
     });
     runs[runId] = { ...r, finishedMs: nowMs };
+    // Закриття сторожем - це теж фініш, але з явною причиною в телеметрії.
+    // Мітка та сама, що в sweepStale реєстру: одне явище - одне слово.
+    await registryFinish(env, runId, { finishedMs: nowMs, error: 'timeout' });
   }
   try {
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
