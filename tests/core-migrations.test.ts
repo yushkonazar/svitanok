@@ -191,44 +191,55 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   ],
 };
 
-/** Первинні ключі, які несуть семантику (07 §1). */
+/**
+ * Первинні ключі, що відрізняються від конвенційного `id` (07 §1). Таблиця,
+ * якої тут немає, зобовʼязана мати PK рівно `['id']` — перевіряється для всіх.
+ */
 const EXPECTED_PK: Record<string, string[]> = {
-  facts: ['id'],
   sessions: ['thread_id'],
   places: ['place_id'],
-  transactions: ['id'],
   instructions: ['name'],
+  // Append-only журнал без власного ключа — лише rowid.
+  instruction_history: [],
   migrations_meta: ['name'],
   day_plans: ['date'],
   // Рядок на місяць — інакше ретенція «12 міс» із 07 §1 недосяжна.
   quota_counters: ['key', 'period'],
 };
 
-/** Індекси (набори колонок) — дослівно колонка «Індекси» 07 §1. */
-const EXPECTED_INDEXES: Record<string, string[][]> = {
-  facts: [['kind', 'key']], // UNIQUE
-  memory_chunks: [['thread_id', 'at']],
-  reminders: [['status', 'due_at']],
-  proposals: [['status', 'expires_at']],
-  chains: [['status']],
-  outbox: [['status', 'next_at']],
-  runs: [['started_at'], ['profile']],
-  run_steps: [['run_id', 'n']],
-  places: [['name']],
-  ideas: [['status'], ['domain']],
-  idea_events: [['idea_id', 'at']],
-  wishes: [['type', 'status']],
-  price_points: [['wish_id', 'at']],
-  trips: [['date_from']],
-  transactions: [['at'], ['category']],
-  subscriptions: [['next_at']],
-  inbox_messages: [['chat_id', 'at']],
-  inbox_digests: [['created_at']],
-  collections: [['name']], // UNIQUE
-  records: [['collection_id', 'created_at']],
-  reports: [['kind', 'created_at']],
-  style_corpus: [['at']],
-  plan_items: [['date'], ['status']],
+type IndexSpec = { cols: string[]; unique?: boolean };
+
+/**
+ * Індекси — дослівно колонка «Індекси» 07 §1, включно з UNIQUE-константами
+ * (вони теж індекси, origin 'u'). Таблиця, якої тут немає, зобовʼязана не мати
+ * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
+ */
+const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  facts: [{ cols: ['kind', 'key'], unique: true }],
+  memory_chunks: [{ cols: ['thread_id', 'at'] }],
+  reminders: [{ cols: ['status', 'due_at'] }],
+  proposals: [{ cols: ['status', 'expires_at'] }],
+  chains: [{ cols: ['status'] }],
+  outbox: [{ cols: ['status', 'next_at'] }],
+  runs: [{ cols: ['started_at'] }, { cols: ['profile'] }],
+  run_steps: [{ cols: ['run_id', 'n'] }],
+  places: [{ cols: ['name'] }],
+  ideas: [{ cols: ['status'] }, { cols: ['domain'] }],
+  idea_events: [{ cols: ['idea_id', 'at'] }],
+  wishes: [{ cols: ['type', 'status'] }],
+  price_points: [{ cols: ['wish_id', 'at'] }],
+  trips: [{ cols: ['date_from'] }],
+  transactions: [{ cols: ['at'] }, { cols: ['category'] }],
+  subscriptions: [{ cols: ['next_at'] }],
+  inbox_messages: [{ cols: ['chat_id', 'at'] }],
+  inbox_digests: [{ cols: ['created_at'] }],
+  collections: [{ cols: ['name'], unique: true }],
+  records: [{ cols: ['collection_id', 'created_at'] }],
+  reports: [{ cols: ['kind', 'created_at'] }],
+  style_corpus: [{ cols: ['at'] }],
+  // Понад 07 §1 (там «-»): пошук історії за імʼям — єдиний спосіб її читати.
+  instruction_history: [{ cols: ['name', 'deployed_at'] }],
+  plan_items: [{ cols: ['date'] }, { cols: ['status'] }],
 };
 
 /** FTS5-таблиці: перша колонка — місток id (UNINDEXED). */
@@ -249,17 +260,19 @@ beforeAll(() => {
   for (const f of files) db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8'));
 });
 
+// Внутрішні таблиці (sqlite_*) і тіні FTS5 (ideas_fts_data, …_idx, …_content,
+// …_docsize, …_config — створює сам модуль) не належать контракту.
 const tableNames = (): string[] =>
   (
     db
       .prepare(
-        // Внутрішні платформні таблиці (sqlite_*) і тіні FTS5 (*_fts_data тощо)
-        // не належать контракту — за межами тесту.
         `SELECT name FROM sqlite_master
-         WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'`,
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
       )
       .all() as { name: string }[]
-  ).map((r) => r.name);
+  )
+    .map((r) => r.name)
+    .filter((n) => !/_fts_(data|idx|content|docsize|config)$/.test(n));
 
 const columnsOf = (table: string): { name: string; pk: number }[] =>
   db.prepare(`PRAGMA table_info(${JSON.stringify(table)})`).all() as {
@@ -285,12 +298,7 @@ describe('міграції D1 — файли', () => {
 describe('міграції D1 — таблиці за 07-schema §1', () => {
   it('перелік таблиць повний і без зайвих', () => {
     const expected = new Set([...Object.keys(EXPECTED_COLUMNS), ...Object.keys(EXPECTED_FTS)]);
-    const actual = tableNames().filter(
-      // Тіні FTS5 (ideas_fts_data, …_idx, …_content, …_docsize, …_config)
-      // створює сам модуль — контракт лише про видимі таблиці.
-      (n) => !/_fts_(data|idx|content|docsize|config)$/.test(n),
-    );
-    expect(new Set(actual)).toEqual(expected);
+    expect(new Set(tableNames())).toEqual(expected);
   });
 
   for (const [table, cols] of Object.entries(EXPECTED_COLUMNS)) {
@@ -305,8 +313,9 @@ describe('міграції D1 — таблиці за 07-schema §1', () => {
     });
   }
 
-  for (const [table, pk] of Object.entries(EXPECTED_PK)) {
-    it(`${table}: первинний ключ (${pk.join(', ')})`, () => {
+  for (const table of Object.keys(EXPECTED_COLUMNS)) {
+    const pk = EXPECTED_PK[table] ?? ['id'];
+    it(`${table}: первинний ключ (${pk.join(', ') || 'rowid'})`, () => {
       const actual = columnsOf(table)
         .filter((c) => c.pk > 0)
         .sort((a, b) => a.pk - b.pk)
@@ -317,21 +326,29 @@ describe('міграції D1 — таблиці за 07-schema §1', () => {
 });
 
 describe('міграції D1 — індекси за 07-schema §1', () => {
-  for (const [table, indexSets] of Object.entries(EXPECTED_INDEXES)) {
-    it(`${table}: ${indexSets.map((s) => `(${s.join(',')})`).join(' ')}`, () => {
+  // Ключ порівняння: "unique|col1,col2". Порядок у списку не значущий — множини.
+  const keyOf = (s: IndexSpec) => `${s.unique ? 'U' : '-'}|${s.cols.join(',')}`;
+
+  for (const table of Object.keys(EXPECTED_COLUMNS)) {
+    const specs = EXPECTED_INDEXES[table] ?? [];
+    it(`${table}: ${specs.map((s) => `(${s.cols.join(',')}${s.unique ? ' U' : ''})`).join(' ') || 'без індексів'}`, () => {
       const list = db.prepare(`PRAGMA index_list(${JSON.stringify(table)})`).all() as {
         name: string;
+        unique: number;
+        origin: string; // 'c' — CREATE INDEX, 'u' — UNIQUE, 'pk' — первинний ключ
       }[];
-      const actual = list.map((ix) =>
-        (
-          db.prepare(`PRAGMA index_info(${JSON.stringify(ix.name)})`).all() as {
-            name: string;
-          }[]
-        ).map((c) => c.name),
-      );
-      for (const wanted of indexSets) {
-        expect(actual, `${table}: немає індексу (${wanted.join(', ')})`).toContainEqual(wanted);
-      }
+      const actual = list
+        .filter((ix) => ix.origin !== 'pk')
+        .map((ix) => ({
+          cols: (
+            db.prepare(`PRAGMA index_info(${JSON.stringify(ix.name)})`).all() as {
+              name: string;
+            }[]
+          ).map((c) => c.name),
+          unique: ix.unique === 1,
+        }));
+      // Точна звірка в обидва боки: загублений індекс І зайвий — обидва дефекти.
+      expect(new Set(actual.map(keyOf))).toEqual(new Set(specs.map(keyOf)));
     });
   }
 });
@@ -343,6 +360,5 @@ describe('міграції D1 — FTS5 працює з українською', 
       id: string;
     };
     expect(row.id).toBe('01X');
-    db.exec(`DELETE FROM ideas_fts`);
   });
 });
