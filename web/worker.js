@@ -28,6 +28,7 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 // (це вимога Cloudflare), тож ре-експорт — не стилістика, а контракт деплою.
 export { AgentRun } from './agent-run-do.mjs';
 export { SchedulerDO } from './core/scheduler/do.mjs';
+import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
@@ -282,7 +283,7 @@ export async function schedulerWatchdog(/** @type {Env} */ env) {
     return;
   }
   try {
-    await ns.getByName('scheduler').watchdogTick(Date.now());
+    await ns.getByName(SCHEDULER_DO_NAME).watchdogTick(Date.now());
   } catch (/** @type {any} */ e) {
     console.error('scheduler: сторож упав (крон-задачі не зачеплені)', e?.message);
   }

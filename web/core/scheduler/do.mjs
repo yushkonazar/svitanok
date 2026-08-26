@@ -27,6 +27,20 @@ import {
  *  аргумент, що STATE_KEY у agent-run-do.mjs). */
 const JITTER_KEY = 'jitter';
 
+/** Лічильник рятунків сторожа — чесність заміру джитера: втрачений alarm
+ *  семпла не лишає (появу виконує сторож, а спізнілий alarm бачить порожні
+ *  due), тож без цього числа p95/max систематично занижували б саме той
+ *  найгірший хвіст, який замір мав показати. */
+const RESCUES_KEY = 'watchdogRescues';
+
+/** Знімок реєстру, з яким востаннє синхронізовано таблицю jobs: сівба на
+ *  кожен 5-хвилинний тік була б DELETE+N×INSERT назавжди заради no-op. */
+const REGISTRY_KEY = 'registrySnapshot';
+
+/** Єдиний інстанс планувальника. Імʼя — константа, а не літерал у викликача:
+ *  розсинхрон імені означав би тихий ДРУГИЙ інстанс із порожньою таблицею. */
+export const SCHEDULER_DO_NAME = 'scheduler';
+
 export class SchedulerDO extends DurableObject {
   /** Реєстр задач — полем, а не імпортом у методах: тести підставляють свій
    *  (збійна задача, шпигуни) без мутації спільного модуля. */
@@ -64,12 +78,21 @@ export class SchedulerDO extends DurableObject {
    * Звести таблицю з реєстром: додати нові kind'и (перша поява — через period
    * від зараз), прибрати рядки без виконавця. Прибирання — не косметика:
    * задача без виконавця вічно падала б «невідомий kind» на кожній появі.
+   * No-op, поки реєстр не змінився (знімок у KV): інакше це DELETE+N×INSERT
+   * на кожен 5-хвилинний тік назавжди — заради нічого.
    * @param {number} nowMs
    */
-  #syncRegistry(nowMs) {
-    const known = Object.keys(this.tasks);
-    const placeholders = known.map(() => '?').join(', ');
-    this.ctx.storage.sql.exec(`DELETE FROM jobs WHERE kind NOT IN (${placeholders})`, ...known);
+  async #syncRegistry(nowMs) {
+    const known = Object.keys(this.tasks).sort();
+    const snapshot = known.join(',');
+    if ((await this.ctx.storage.get(REGISTRY_KEY)) === snapshot) return;
+    if (known.length === 0) {
+      // `NOT IN ()` — синтаксична помилка SQLite; порожній реєстр = порожня таблиця.
+      this.ctx.storage.sql.exec('DELETE FROM jobs');
+    } else {
+      const placeholders = known.map(() => '?').join(', ');
+      this.ctx.storage.sql.exec(`DELETE FROM jobs WHERE kind NOT IN (${placeholders})`, ...known);
+    }
     for (const [kind, def] of Object.entries(this.tasks)) {
       this.ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO jobs (id, kind, due_at, period) VALUES (?, ?, ?, ?)`,
@@ -79,6 +102,7 @@ export class SchedulerDO extends DurableObject {
         def.periodMin,
       );
     }
+    await this.ctx.storage.put(REGISTRY_KEY, snapshot);
   }
 
   /**
@@ -89,14 +113,32 @@ export class SchedulerDO extends DurableObject {
    */
   async watchdogTick(nowMs) {
     this.#ensureSchema();
-    this.#syncRegistry(nowMs);
+    await this.#syncRegistry(nowMs);
     const alarmMs = await this.ctx.storage.getAlarm();
     if (!shouldWatchdogTick(alarmMs, nowMs)) return { ticked: false };
+    // Рятунок із простроченими появами = alarm їх проґавив. Семпла джитера
+    // від нього не буде (появи виконає сторож), тож слід — у лічильнику.
+    if (alarmMs != null && dueJobs(this.#loadJobs(), nowMs).length > 0) {
+      const rescues = /** @type {number} */ ((await this.ctx.storage.get(RESCUES_KEY)) ?? 0);
+      await this.ctx.storage.put(RESCUES_KEY, rescues + 1);
+    }
     return this.tick(nowMs, 'watchdog');
   }
 
-  /** Платформний вхід alarm'а. @override */
+  /**
+   * Платформний вхід alarm'а. При ASSISTANT_V2 поза shadow/on — згаснути БЕЗ
+   * перепостановки: інакше одного разу озброєний у shadow alarm самовідтворю-
+   * вався б вічно (tick → setAlarm → tick), і «off» прапорця не вимикав би
+   * планувальник насправді. Сторож (worker.js) при off теж мовчить, тож DO
+   * просто засинає, доки прапорець не повернуть.
+   * @override
+   */
   async alarm() {
+    const env = /** @type {Env} */ (this.env);
+    if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') {
+      console.log(`scheduler: alarm згасає — ASSISTANT_V2=${env.ASSISTANT_V2 ?? 'off'}`);
+      return;
+    }
     this.#ensureSchema();
     await this.tick(Date.now(), 'alarm');
   }
@@ -195,12 +237,14 @@ export class SchedulerDO extends DurableObject {
   }
 
   /** Стан для /status (приймання етапу: планувальник + задачі + час останнього
-   *  тіку) і для тестів приймання джитера. */
+   *  тіку) і для тестів приймання джитера. watchdogRescues поруч зі
+   *  статистикою — без нього p95/max мовчали б про втрачені alarm'и. */
   async status() {
     this.#ensureSchema();
     return {
       jobs: this.#loadJobs(),
       jitter: jitterStats(/** @type {number[]} */ ((await this.ctx.storage.get(JITTER_KEY)) ?? [])),
+      watchdogRescues: /** @type {number} */ ((await this.ctx.storage.get(RESCUES_KEY)) ?? 0),
     };
   }
 }

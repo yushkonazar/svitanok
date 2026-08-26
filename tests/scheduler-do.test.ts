@@ -221,4 +221,53 @@ describe('SchedulerDO — джитер', () => {
     await scheduler.tick(T0 + MIN5 + 7_000, 'watchdog');
     expect((await scheduler.status()).jitter).toBeNull();
   });
+
+  it('рятунок простроченої появи рахується у watchdogRescues — слід втраченого alarm', async () => {
+    const { scheduler } = makeDo(
+      { ASSISTANT_V2: 'shadow' },
+      { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
+    );
+    await scheduler.watchdogTick(T0); // alarm = T0+5хв
+    // Alarm «загубився»: сторож приходить далеко після появи і рятує її.
+    await scheduler.watchdogTick(T0 + MIN5 + WATCHDOG_GRACE_MS + 1_000);
+    const { watchdogRescues, jitter } = await scheduler.status();
+    expect(watchdogRescues).toBe(1);
+    expect(jitter).toBeNull(); // семпла немає — саме тому і є лічильник
+  });
+});
+
+describe('SchedulerDO — прапорець і реєстр', () => {
+  it('alarm при ASSISTANT_V2=off згасає: не виконує задач і не переставляє себе', async () => {
+    const run = vi.fn(async () => {});
+    const { scheduler, ctx } = makeDo(
+      { ASSISTANT_V2: 'shadow' },
+      { hb: { periodMin: 5, shadowSafe: true, run } },
+    );
+    await scheduler.watchdogTick(T0); // озброїли alarm у shadow
+    // Прапорець повернули на off — DO прокидається востаннє і засинає.
+    (scheduler.env as { ASSISTANT_V2: string }).ASSISTANT_V2 = 'off';
+    ctx.alarm = null; // workerd знімає alarm перед викликом обробника
+    await scheduler.alarm();
+    expect(run).not.toHaveBeenCalled();
+    expect(ctx.alarm).toBeNull(); // не переозброївся — «off» справді вимикає
+  });
+
+  it('порожній реєстр не ламає сівбу (NOT IN () — синтаксична пастка SQLite)', async () => {
+    const { scheduler } = makeDo({ ASSISTANT_V2: 'shadow' }, {});
+    const res = await scheduler.watchdogTick(T0);
+    expect(res.ticked).toBe(true);
+    expect(await jobsOf(scheduler)).toEqual([]);
+  });
+
+  it('незмінний реєстр не пересівається щотіку: перша поява НЕ зсувається', async () => {
+    const { scheduler } = makeDo({ ASSISTANT_V2: 'shadow' });
+    await scheduler.watchdogTick(T0);
+    const [before] = await jobsOf(scheduler);
+    // Другий сторож-виклик пізніше: якби сівба бігала щоразу, INSERT OR IGNORE
+    // був би no-op і так, але DELETE+INSERT — зайва робота; знімок реєстру
+    // робить сівбу разовою. Поява лишається тією самою.
+    await scheduler.watchdogTick(T0 + 60_000);
+    const [after] = await jobsOf(scheduler);
+    expect(after?.due_at).toBe(before?.due_at);
+  });
 });
