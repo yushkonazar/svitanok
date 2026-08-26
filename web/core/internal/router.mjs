@@ -7,7 +7,7 @@
 // Порядок перевірок: прапорець → метод → розмір → підпис → run_id → контракт.
 // Дешеве і зовнішнє - першим; жодна гілка не виконує роботи до підпису.
 
-import { json } from '../../http-core.mjs';
+import { json, readCappedBody } from '../../http-core.mjs';
 import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
 import { registryHas, registryConsumeNonce } from '../run-registry/client.mjs';
 import {
@@ -42,15 +42,21 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
   }
   if (request.method !== 'POST') return json({ ok: false, error: 'method-not-allowed' }, 405);
 
-  // Кап розміру ПЕРЕД читанням у памʼять: content-length бреше лише в менший
-  // бік (Cloudflare звіряє), а фактичну довжину звіряємо ще раз після читання.
-  const declared = Number(request.headers.get('content-length') ?? 0);
-  if (declared > MAX_INTERNAL_BODY_BYTES) return json({ ok: false, error: 'body-too-large' }, 413);
-  const bodyBytes = await request.arrayBuffer();
-  if (bodyBytes.byteLength > MAX_INTERNAL_BODY_BYTES) {
+  // Кап розміру: content-length — дешевий ранній відсів, але вірити йому не
+  // можна (на chunked/HTTP2 його просто немає), тож читання — ЛИШЕ потоком зі
+  // стелею (readCappedBody рве стрім на першому байті понад кап). Інакше
+  // atacker без підпису змушував би матеріалізувати мегабайти ДО криптографії.
+  const declared = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_INTERNAL_BODY_BYTES) {
     return json({ ok: false, error: 'body-too-large' }, 413);
   }
-  const bodyText = new TextDecoder().decode(bodyBytes);
+  const read = await readCappedBody(request, MAX_INTERNAL_BODY_BYTES);
+  if (!read.ok) {
+    return read.tooLarge
+      ? json({ ok: false, error: 'body-too-large' }, 413)
+      : json({ ok: false, error: 'no-body' }, 400);
+  }
+  const bodyText = read.raw;
 
   const path = new URL(request.url).pathname;
   const auth = await verifyInternalRequest({
@@ -94,7 +100,11 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
 
   const route = path.match(/^\/internal\/(deliver|status|runs)$/)?.[1];
   if (route) {
-    const contract = validateAgainst(ROUTE_SCHEMAS[route] ?? { type: 'object' }, body);
+    const schema = ROUTE_SCHEMAS[route];
+    // Регекс розширили, а схему забули — гучний 500, не мовчазний пропуск
+    // повз контракт (перманентний ?? {type:'object'} саме це й маскував би).
+    if (!schema) return json({ ok: false, error: 'no-contract' }, 500);
+    const contract = validateAgainst(schema, body);
     if (!contract.ok) return json({ ok: false, error: `contract: ${contract.error}` }, 400);
     return json({ ok: false, error: 'not-implemented', route }, 501);
   }

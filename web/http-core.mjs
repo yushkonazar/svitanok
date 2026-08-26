@@ -45,11 +45,14 @@ export const MAX_WEBHOOK_BODY_BYTES = 128 * 1024;
  * байтах робила б із рядка ще одну повну копію. Тут памʼять обмежена стелею
  * плюс один шматок, скільки б відправник не надіслав.
  *
+ * Експортовано для /internal/* (роутеру потрібен САМЕ сирий рядок — по ньому
+ * рахується HMAC, тож readJsonBody із його парсингом не підходить).
+ *
  * @param {Request} request
  * @param {number} maxBytes
  * @returns {Promise<{ ok: true, raw: string } | { ok: false, tooLarge: boolean }>}
  */
-async function readCappedBody(request, maxBytes) {
+export async function readCappedBody(request, maxBytes) {
   const stream = request.body;
   if (!stream) return { ok: false, tooLarge: false }; // тіла немає (GET/DELETE)
 

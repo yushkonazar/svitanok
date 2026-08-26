@@ -301,6 +301,42 @@ describe('handleInternal — маршрутизатор', () => {
     expect(res.status).toBe(413);
   });
 
+  it('тіло без Content-Length (chunked) понад кап — теж 413, потік рветься на стелі', async () => {
+    // Вектор з ультраревʼю: arrayBuffer() матеріалізував би все тіло ДО капу,
+    // коли заголовка немає. readCappedBody рве стрім на першому байті понад
+    // стелю — памʼять обмежена стелею плюс один шматок.
+    const chunk = new Uint8Array(64 * 1024).fill(120);
+    let sent = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (sent > MAX_INTERNAL_BODY_BYTES + chunk.byteLength) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+        sent += chunk.byteLength;
+      },
+    });
+    const req = new Request('https://svitanok.test/internal/deliver', {
+      method: 'POST',
+      body: stream,
+      duplex: 'half',
+    } as RequestInit);
+    expect(req.headers.get('content-length')).toBeNull(); // саме той вектор
+    const res = await handleInternal(req, env, NOW);
+    expect(res.status).toBe(413);
+  });
+
+  it('POST без тіла — 400 no-body, не виняток', async () => {
+    const res = await handleInternal(
+      new Request('https://svitanok.test/internal/deliver', { method: 'POST' }),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'no-body' });
+  });
+
   it('збій реєстру = відмова (fail-closed), не пропуск', async () => {
     const broken = workerEnv({
       ASSISTANT_V2: 'shadow',
