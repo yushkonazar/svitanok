@@ -45,6 +45,24 @@ export async function registryFinish(env, id, patch) {
   }
 }
 
+/**
+ * Чи прогін живий у реєстрі (перевірка run_id для internal API, PR-5).
+ * На відміну від begin/finish, збій тут = false, НЕ пропуск: невідомість -
+ * це відмова (fail-closed), бо результат гейтить доступ, а не журнал.
+ * @param {Env} env
+ * @param {string} id
+ */
+export async function registryHas(env, id) {
+  const ns = registryNs(env);
+  if (!ns) return false;
+  try {
+    return Boolean(await ns.getByName(RUN_REGISTRY_DO_NAME).has(id));
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: has впав - трактуємо як невідомий прогін', e?.message);
+    return false;
+  }
+}
+
 /** @param {Env} env */
 function registryNs(env) {
   if (!enabled(env)) return null;
