@@ -32,6 +32,10 @@ concurrency:
 jobs:
   migrate:
     runs-on: ubuntu-latest
+    # Дефолтні 360 хв + cancel-in-progress: false вище означали б, що завислий
+    # HTTP-виклик (npm або Cloudflare API) тримає чергу міграцій пів дня без
+    # жодного червоного статусу. Здорове застосування — лічені хвилини.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

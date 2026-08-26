@@ -18,7 +18,7 @@
   "preview_urls": false,
   "kv_namespaces": [{ "binding": "BRIEFING", "id": "389ff22c124a476bb18d2f5e6a5334c0" }],
   // D1 нового асистента (редизайн, етап 1). Схема — final/07-schema §1; міграції
-  // застосовує job `migrate` у ci.yml (push у main). Поки ASSISTANT_V2=off,
+  // застосовує workflow .github/workflows/migrate.yml (push у main). Поки ASSISTANT_V2=off,
   // жоден код цю базу не читає — таблиці лежать порожні поруч зі старим агентом.
   "d1_databases": [
     {
