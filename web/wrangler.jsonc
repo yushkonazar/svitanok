@@ -37,8 +37,18 @@
   // на Workers Free доступні ЛИШЕ SQLite-бекенди DO. Оголошення через `exports`
   // (декларативне) замість легасі-масиву `migrations` — так радить поточна
   // документація для нових класів; обидва способи взаємовиключні.
-  "durable_objects": { "bindings": [{ "name": "AGENT_RUN", "class_name": "AgentRun" }] },
-  "exports": { "AgentRun": { "type": "durable-object", "storage": "sqlite" } },
+  "durable_objects": {
+    "bindings": [
+      { "name": "AGENT_RUN", "class_name": "AgentRun" },
+      // Планувальник редизайну (етап 1, PR-2): таблиця jobs + один alarm у
+      // власному SQLite DO; тікає лише при ASSISTANT_V2=shadow/on.
+      { "name": "SCHEDULER", "class_name": "SchedulerDO" },
+    ],
+  },
+  "exports": {
+    "AgentRun": { "type": "durable-object", "storage": "sqlite" },
+    "SchedulerDO": { "type": "durable-object", "storage": "sqlite" },
+  },
   // ОДИН крон (A2): нагадування (Блок P2a) + dispatch брифінгу у вікні 08:00–11:00
   // Київ + dead-man від 12:00 — кожна задача гейтиться за kyivHour() у момент
   // виконання й ідемпотентна за добу. Погодинні крони (0 5/6/7/8 UTC) прибрано:

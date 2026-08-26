@@ -19,12 +19,16 @@ export class DurableObject<Env = unknown> {
   }
 }
 
-/** Мінімум, який вживає AgentRun; тести підставляють Map замість сховища. */
+/** Мінімум, який вживають AgentRun і SchedulerDO; тести підставляють Map
+ *  замість KV-сховища і node:sqlite замість SQL-сховища. getAlarm/sql —
+ *  опційні, щоб фейки AgentRun-тестів (без SQL) лишались валідними. */
 interface DurableObjectState {
   storage: {
     get: (key: string) => Promise<unknown>;
     put: (key: string, value: unknown) => Promise<void>;
     deleteAll: () => Promise<void>;
     setAlarm: (scheduledTime: number) => Promise<void>;
+    getAlarm?: () => Promise<number | null>;
+    sql?: { exec: (query: string, ...bindings: unknown[]) => { toArray: () => unknown[] } };
   };
 }

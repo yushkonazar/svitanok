@@ -38,7 +38,7 @@ export default defineConfig({
       reporter: ['text-summary', 'json-summary'],
       // Міряємо ТЕ, ЩО деплоїться: src/ (оркестратор), web/*.mjs (Worker),
       // host/ (реле). web/app має власний раннер і власні числа.
-      include: ['src/**/*.ts', 'web/*.mjs', 'web/worker.js', 'host/*.mjs'],
+      include: ['src/**/*.ts', 'web/*.mjs', 'web/core/**/*.mjs', 'web/worker.js', 'host/*.mjs'],
       exclude: ['**/*.d.ts', '**/*.d.mts'],
       thresholds: { statements: 85, branches: 80, functions: 85, lines: 85 },
     },
