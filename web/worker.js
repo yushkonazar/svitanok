@@ -399,7 +399,11 @@ export default {
     /** @type {Env} */ env,
     /** @type {ExecutionContext} */ ctx,
   ) {
-    ctx.waitUntil(runCronTasks(CRON_TASKS, env));
+    // При ASSISTANT_V2=on крон-задачі виконує планувальник (реєстр
+    // core/scheduler/tasks.mjs посилається на ТІ САМІ функції) — легасі-цикл
+    // мовчить, інакше кожен ефект був би подвійним. Сам CRON_TASKS лишається
+    // живим до кінця етапу 2: «off» повертає все одним перемиканням (03-plan).
+    if (env.ASSISTANT_V2 !== 'on') ctx.waitUntil(runCronTasks(CRON_TASKS, env));
     // Окремий waitUntil, а не хвіст runCronTasks: збій/зависання сторожа не
     // сміє відкласти чи забрати крон-задачі (і навпаки) — той самий мотив
     // ізоляції B11, тільки на рівень вище.

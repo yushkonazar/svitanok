@@ -21,18 +21,20 @@ import { memoryKv } from './kv.js';
  * ⚠️ СЕКРЕТИ типізовані строго — саме заради них усе це й робиться: описка в
  * імені (`TELEGRAM_BOT_TOKN`) або число замість рядка ловляться компілятором.
  *
- * ⚠️ ПРИВʼЯЗКИ (BRIEFING/ASSETS/AGENT_RUN) навмисно `unknown`. Тест підміняє їх
- * власним стабом на дві-три потрібні йому операції; вимагати від такого стаба
- * повний `KVNamespace` (з getWithMetadata і чотирма перевантаженнями `get`)
- * означало б імітувати те, чого код не викликає, — і кожен тест однаково втік
- * би в приведення, знявши перевірку заразом і з секретів.
+ * ⚠️ ПРИВʼЯЗКИ (BRIEFING/ASSETS/AGENT_RUN/SCHEDULER) навмисно `unknown`. Тест
+ * підміняє їх власним стабом на дві-три потрібні йому операції; вимагати від
+ * такого стаба повний `KVNamespace` (з getWithMetadata і чотирма
+ * перевантаженнями `get`) чи повний `DurableObjectStub` означало б імітувати
+ * те, чого код не викликає, — і кожен тест однаково втік би в приведення,
+ * знявши перевірку заразом і з секретів.
  */
 export interface WorkerEnvOverrides extends Partial<
-  Omit<Env, 'BRIEFING' | 'ASSETS' | 'AGENT_RUN'>
+  Omit<Env, 'BRIEFING' | 'ASSETS' | 'AGENT_RUN' | 'SCHEDULER'>
 > {
   BRIEFING?: unknown;
   ASSETS?: unknown;
   AGENT_RUN?: unknown;
+  SCHEDULER?: unknown;
 }
 
 /**
