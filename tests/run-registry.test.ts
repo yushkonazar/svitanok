@@ -74,14 +74,8 @@ describe('RunRegistryDO', () => {
   it('finish невідомого id: рядок закривається без duration, без падіння', async () => {
     const db = makeDb();
     const { registry } = makeRegistry(db);
-    await registry.finish('ghost', { finishedMs: T0, error: 'watchdog-timeout' });
-    expect(db.calls[0]?.args).toEqual([
-      new Date(T0).toISOString(),
-      null,
-      'watchdog-timeout',
-      null,
-      'ghost',
-    ]);
+    await registry.finish('ghost', { finishedMs: T0, error: 'timeout' });
+    expect(db.calls[0]?.args).toEqual([new Date(T0).toISOString(), null, 'timeout', null, 'ghost']);
   });
 
   it('sweepStale: закриває лише прострочені, з error=timeout', async () => {
@@ -186,7 +180,7 @@ describe('registryBegin/registryFinish — клієнт', () => {
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
-    expect(finishes).toEqual([['r1', expect.objectContaining({ error: 'watchdog-timeout' })]]);
+    expect(finishes).toEqual([['r1', expect.objectContaining({ error: 'timeout' })]]);
   });
 
   it('збій DO не пробивається до викликача', async () => {

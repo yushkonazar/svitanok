@@ -354,6 +354,7 @@ async function markRunFinished(
   /** @type {Env} */ env,
   /** @type {string} */ runId,
   nowMs = Date.now(),
+  /** @type {number|null} */ steps = null,
 ) {
   if (!runId) return;
   try {
@@ -365,7 +366,7 @@ async function markRunFinished(
   }
   // Парний чокпойнт до registryBegin у markRunStarted (обидва шляхи фінішу -
   // відповідь хоста і відмова старту - проходять тут; сторож закриває окремо).
-  await registryFinish(env, runId, { finishedMs: nowMs });
+  await registryFinish(env, runId, { finishedMs: nowMs, steps });
 }
 
 /** message_id щойно надісланого повідомлення; null, якщо Telegram не дав. */
@@ -694,7 +695,8 @@ export async function handleAgentStep(/** @type {Request} */ request, /** @type 
     await deleteProgressMessage(env, claims.chatId, claims.progressMsgId);
     await send();
     if (assistantSummary) await rememberExchange(env, claims, assistantSummary);
-    await markRunFinished(env, claims.runId, nowMs);
+    // claims.step - номер останнього кроку прогону: єдине місце, де він відомий.
+    await markRunFinished(env, claims.runId, nowMs, claims.step ?? null);
     await finishAgentRunDo(env, claims, nowMs);
     return json({ ok: true, done: true });
   };
@@ -868,7 +870,8 @@ export async function agentRunWatchdog(/** @type {Env} */ env) {
     });
     runs[runId] = { ...r, finishedMs: nowMs };
     // Закриття сторожем - це теж фініш, але з явною причиною в телеметрії.
-    await registryFinish(env, runId, { finishedMs: nowMs, error: 'watchdog-timeout' });
+    // Мітка та сама, що в sweepStale реєстру: одне явище - одне слово.
+    await registryFinish(env, runId, { finishedMs: nowMs, error: 'timeout' });
   }
   try {
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));

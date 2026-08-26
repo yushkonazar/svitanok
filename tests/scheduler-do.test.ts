@@ -356,8 +356,12 @@ describe('SchedulerDO — телеметрія тіка в runs (PR-4)', () => {
     expect(db.calls).toHaveLength(1);
     expect(db.calls[0]?.sql).toContain('INSERT INTO runs');
     const tools = JSON.parse(String(db.calls[0]?.args[4]));
-    expect(tools).toEqual({ source: 'alarm', outcomes: [{ kind: 'hb', status: 'ok' }] });
-    expect(db.calls[0]?.args[5]).toBe('shadow'); // без режиму рядки нерозрізненні
+    // Режим - у tools_json: без нього рядки shadow і on були б нерозрізненні.
+    expect(tools).toEqual({
+      source: 'alarm',
+      mode: 'shadow',
+      outcomes: [{ kind: 'hb', status: 'ok' }],
+    });
   });
 
   it('тік без прострочених появ рядка не пише (не шуміти в журналі)', async () => {

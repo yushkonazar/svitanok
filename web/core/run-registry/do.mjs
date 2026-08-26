@@ -111,7 +111,15 @@ export class RunRegistryDO extends DurableObject {
     const stale = Object.entries(active)
       .filter(([, r]) => nowMs - r.startedMs > staleMs)
       .map(([id]) => id);
-    for (const id of stale) await this.finish(id, { finishedMs: nowMs, error: 'timeout' });
+    for (const id of stale) {
+      try {
+        await this.finish(id, { finishedMs: nowMs, error: 'timeout' });
+      } catch (/** @type {any} */ e) {
+        // Збій D1 на одному id не сміє обірвати решту прибирання (той самий
+        // інваріант ізоляції, що в тіку планувальника).
+        console.error(`run-registry: sweep не закрив ${id}`, e?.message);
+      }
+    }
     return stale;
   }
 

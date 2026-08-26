@@ -237,8 +237,9 @@ export class SchedulerDO extends DurableObject {
    * Рядок телеметрії тіка в D1 `runs` (приймання етапу: порівняння того, що
    * «виконав би» планувальник, із чинним кроном - за добу). Best-effort: збій
    * запису не сміє зачепити ні задачі, ні alarm - тому ПІСЛЯ #setNextAlarm і
-   * в try/catch. cost_note несе режим (shadow/on) - без нього рядки обох
-   * режимів були б нерозрізненні.
+   * в try/catch. Режим (shadow/on) їде в tools_json поруч із outcomes - без
+   * нього рядки обох режимів були б нерозрізненні, а чужі колонки (profile,
+   * cost_note) для цього не позичаємо.
    * @param {number} nowMs
    * @param {'alarm' | 'watchdog'} source
    * @param {{ kind: string, status: string }[]} outcomes
@@ -254,16 +255,15 @@ export class SchedulerDO extends DurableObject {
       const iso = new Date(nowMs).toISOString();
       await db
         .prepare(
-          `INSERT INTO runs (id, trigger, profile, started_at, finished_at, duration_ms, steps, tools_json, cost_note)
-           VALUES (?, 'scheduler', 'tick', ?, ?, 0, ?, ?, ?)`,
+          `INSERT INTO runs (id, trigger, started_at, finished_at, duration_ms, steps, tools_json)
+           VALUES (?, 'scheduler', ?, ?, 0, ?, ?)`,
         )
         .bind(
           crypto.randomUUID(),
           iso,
           iso,
           outcomes.length,
-          JSON.stringify({ source, outcomes }),
-          env.ASSISTANT_V2 ?? null,
+          JSON.stringify({ source, mode: env.ASSISTANT_V2 ?? null, outcomes }),
         )
         .run();
     } catch (/** @type {any} */ e) {
