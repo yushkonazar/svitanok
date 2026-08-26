@@ -60,6 +60,33 @@ jobs:
       # більше немає: інакше він щоразу спливав би як незакритий борг.
       # SPEC §10/§18 у частині security-review вважати нечинними.
 
+  # Міграції D1 нового асистента (05-ops §4): застосовуються з main. Порядок із
+  # деплоєм Worker'а best-effort — деплой запускає Git-інтеграція Cloudflare, не
+  # цей workflow, — але поки ASSISTANT_V2=off, код таблиць не читає, тож гонка
+  # нешкідлива. Червоний прогін = міграція не пройшла: деплой від цього не
+  # ламається, а власник бачить збій в Actions і чинить за 05-ops §7.6.
+  # Wrangler пінований до точної версії: job тягне його через npx у рантаймі,
+  # і плаваюча major-версія тут означала б неперевірену зміну поведінки міграцій.
+  migrate:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        # Захисне обрізання пробілів — секрет уже колись містив зайвий \r\n.
+        run: |
+          export CLOUDFLARE_API_TOKEN=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]')
+          export CLOUDFLARE_ACCOUNT_ID=$(printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')
+          npx wrangler@4.126.0 d1 migrations apply svitanok --remote --config web/wrangler.jsonc
+
   # React-дашборд (web/app, роадмеп v3 E) — окремий toolchain (Vite+React+TS+
   # Tailwind), власний package.json. Білд у CI ловить поломки міграції; артефакт
   # (web/public/app) не комітиться, збирається при деплої.
