@@ -11,6 +11,8 @@
  *   properties?: Record<string, InternalSchema>,
  *   items?: InternalSchema,
  *   maxLength?: number,
+ *   minimum?: number,
+ *   maximum?: number,
  * }} InternalSchema
  */
 
@@ -83,6 +85,12 @@ export function validateAgainst(schema, value, path = '$') {
     if (/** @type {string} */ (value).length > schema.maxLength) {
       return fail(`довше за ${schema.maxLength}`);
     }
+  }
+  if (schema.type === 'number') {
+    const n = /** @type {number} */ (value);
+    if (!Number.isFinite(n)) return fail('очікується скінченне число');
+    if (schema.minimum != null && n < schema.minimum) return fail(`менше за ${schema.minimum}`);
+    if (schema.maximum != null && n > schema.maximum) return fail(`більше за ${schema.maximum}`);
   }
   return { ok: true };
 }
