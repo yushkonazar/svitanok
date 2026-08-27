@@ -10,6 +10,7 @@ import { json, readCappedBody } from '../../http-core.mjs';
 import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
 import { registryHas, registryConsumeNonce, registryRunInfo } from '../run-registry/client.mjs';
 import { TOOLS } from '../tools/index.mjs';
+import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -135,10 +136,70 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
     if (!schema) return json({ ok: false, error: 'no-contract' }, 500);
     const contract = validateAgainst(schema, body);
     if (!contract.ok) return json({ ok: false, error: `contract: ${contract.error}` }, 400);
+    if (route === 'deliver')
+      return handleDeliver(env, auth.runId, /** @type {any} */ (body), nowMs);
+    if (route === 'status') return handleStatus(env, /** @type {any} */ (body), nowMs);
+    // runs-телеметрія мозку - етап 2 (RunRegistry вже вміє, бракує викликача).
     return json({ ok: false, error: 'not-implemented', route }, 501);
   }
 
   return json({ ok: false, error: 'not-found' }, 404);
+}
+
+/**
+ * Фінальна відповідь прогону (07 §3): Rich message (HTML + кнопки) у тему
+ * прогону через outbox. Довший за стелю Telegram текст розбивається на
+ * частини ще в enqueue; кнопки їдуть на останній. Драйн - одразу (відповідь
+ * мозку чекає доставки; пауза між частинами ~1 с - прийнятно), ретраї 429 -
+ * sweeper планувальника.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {{ text: string, buttons?: { text: string, callback_data: string }[][] }} body
+ * @param {number} nowMs
+ */
+async function handleDeliver(env, runId, body, nowMs) {
+  if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  const info = await registryRunInfo(env, runId);
+  const threadId = info?.threadId ?? env.TOPIC_ASSISTANT ?? null;
+  const { queued } = await enqueueOutbox(
+    env,
+    {
+      chatId: env.TELEGRAM_CHAT_ID,
+      threadId,
+      kind: 'send',
+      payload: {
+        text: body.text,
+        parse_mode: 'HTML',
+        ...(body.buttons ? { reply_markup: { inline_keyboard: body.buttons } } : {}),
+      },
+    },
+    nowMs,
+  );
+  const drained = await drainOutbox(env, { nowMs });
+  return json({ ok: true, queued, ...drained });
+}
+
+/**
+ * Оновлення статус-повідомлення (07 §3): незіслані edit-и того ж message_id
+ * заміняються новішим - це і є троттлінг до фактичної швидкості відправки.
+ * @param {Env} env
+ * @param {{ message_id: number, text: string }} body
+ * @param {number} nowMs
+ */
+async function handleStatus(env, body, nowMs) {
+  if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  await dropPendingEdits(env, env.TELEGRAM_CHAT_ID, body.message_id);
+  const { queued } = await enqueueOutbox(
+    env,
+    {
+      chatId: env.TELEGRAM_CHAT_ID,
+      kind: 'edit',
+      payload: { message_id: body.message_id, text: body.text },
+    },
+    nowMs,
+  );
+  const drained = await drainOutbox(env, { nowMs });
+  return json({ ok: true, queued, ...drained });
 }
 
 /**

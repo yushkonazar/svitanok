@@ -25,6 +25,7 @@ import {
   computeLevers,
 } from '../../cron.mjs';
 import { agentRunWatchdog, agentHostHealthCheck } from '../../agent-runtime.mjs';
+import { drainOutbox } from '../tg/outbox.mjs';
 
 /**
  * @typedef {{
@@ -57,4 +58,7 @@ export const SCHEDULER_TASKS = {
   'tg-setup': { periodMin: 5, run: autoTelegramSetup },
   'archive-monthly': { periodMin: 5, run: archiveMonthly },
   'levers-weekly': { periodMin: 5, run: computeLevers },
+  // Sweeper outbox (PR-7): ретраї 429/збоїв і повернення завислих claim-ів.
+  // Основний драйн - одразу в deliver/status; це страховка.
+  'outbox-drain': { periodMin: 5, run: async (env) => drainOutbox(env) },
 };
