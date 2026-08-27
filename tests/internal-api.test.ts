@@ -392,13 +392,17 @@ describe('handleInternal — маршрутизатор', () => {
     expect(await res.json()).toMatchObject({ error: 'bad-json' });
   });
 
-  it('deliver/status/runs — контракти живі, виконавців ще немає (501)', async () => {
+  it('deliver/status бойові (без TG-конфігу — явний 500); runs — ще 501', async () => {
     const post = (path: string, body: unknown, nonce: string) =>
       request(path, body, { nonce }).then((r) => handleInternal(r, env, NOW));
-    expect((await post('/internal/deliver', { text: 'привіт' }, 'a')).status).toBe(501);
-    expect((await post('/internal/status', { text: '▸ думаю' }, 'b')).status).toBe(501);
+    // Повні сценарії доставки — tests/outbox.test.ts; тут лише межа роутера.
+    expect((await post('/internal/deliver', { text: 'привіт' }, 'a')).status).toBe(500);
+    expect((await post('/internal/status', { message_id: 5, text: '▸ думаю' }, 'b')).status).toBe(
+      500,
+    );
     expect((await post('/internal/runs', { steps: [] }, 'c')).status).toBe(501);
     expect((await post('/internal/deliver', { no: 'text' }, 'd')).status).toBe(400);
+    expect((await post('/internal/status', { text: 'без message_id' }, 'e')).status).toBe(400);
   });
 
   it('невідомий /internal/шлях — 404 (після auth, не до)', async () => {

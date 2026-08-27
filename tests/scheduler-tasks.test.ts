@@ -22,7 +22,7 @@ import { agentRunWatchdog, agentHostHealthCheck } from '../web/agent-runtime.mjs
 import { workerEnv } from './helpers/env.js';
 
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
-  it('канонічні kind-и: heartbeat + десять перенесених крон-задач', () => {
+  it('канонічні kind-и: heartbeat + десять крон-задач + sweeper outbox', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
       'heartbeat',
       'reminder',
@@ -35,6 +35,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'tg-setup',
       'archive-monthly',
       'levers-weekly',
+      'outbox-drain',
     ]);
   });
 
