@@ -31,6 +31,7 @@ export { SchedulerDO } from './core/scheduler/do.mjs';
 export { RunRegistryDO } from './core/run-registry/do.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
+import { handleAssistantStatus } from './core/assistant-status.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
@@ -387,6 +388,11 @@ export default {
     // 404 сам (код є, не викликається).
     if (url.pathname.startsWith('/internal/')) {
       return handleInternal(request, env, Date.now(), ctx);
+    }
+    // Стан нового асистента для власника (етап 1, PR-10): планувальник,
+    // прогони, квоти. Приватний (initData), при off — 404 зсередини.
+    if (url.pathname === '/api/assistant-status' && request.method === 'GET') {
+      return handleAssistantStatus(request, env);
     }
     if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
       return handleTelegramSetup(request, env);
