@@ -9,6 +9,7 @@
 // on - повний шлях для всього.
 
 import { tgCall } from '../telegram-client.mjs';
+import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
 import {
   registryBegin,
@@ -69,13 +70,18 @@ const HINTS = {
 /**
  * Головний вхід з worker.js. true = оброблено новим шляхом (легасі не чіпати).
  * @param {Env} env
- * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null }} parsed
+ * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null }} parsed
  * @param {number} [nowMs]
  */
 export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   const mode = env.ASSISTANT_V2;
   if (mode !== 'shadow' && mode !== 'on') return false;
   if (parsed.kind !== 'message' || parsed.chatId == null) return false;
+  // S1/B1 (security-ревʼю PR-3): новий шлях - ЛИШЕ головний власник, як і
+  // callback-гілка. Співвласник падає в легасі, де handleCommand сам відсіює
+  // (вільний текст = відмова) - інакше він запускав би прогони мозку з сесією
+  // власника, «стоп» і /new.
+  if (!isPrimaryOwner(env, parsed.fromId)) return false;
   let text = String(parsed.text ?? '').trim();
   if (!text) return false;
   // Той самий периметр, що в легасі (commands.mjs): тема «Асистент» або DM.

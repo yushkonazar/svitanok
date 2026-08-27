@@ -189,6 +189,7 @@ const parsedMsg = (text: string, over: Record<string, unknown> = {}) => ({
   chatId: 555,
   threadId: null,
   messageId: 1,
+  fromId: 777,
   text,
   ...over,
 });
@@ -200,6 +201,7 @@ function makeEnv(reg: ReturnType<typeof makeRegistryStub>, db: unknown, mode = '
     BRAIN_URL: 'https://brain.example',
     TELEGRAM_BOT_TOKEN: 'bot-token',
     TELEGRAM_CHAT_ID: '555',
+    TELEGRAM_OWNER_USER_ID: '777',
     TOPIC_ASSISTANT: '99',
     RUN_REGISTRY: reg.ns,
     DB: db,
@@ -280,6 +282,19 @@ describe('prerouteMessage: режими', () => {
     const env = makeEnv(reg, d1FromSqlite().stub);
     expect(await prerouteMessage(env, parsedMsg('привіт', { threadId: 123 }), NOW)).toBe(false);
     expect(await prerouteMessage(env, parsedMsg('/stats'), NOW)).toBe(false);
+  });
+
+  it('СПІВВЛАСНИК не отримує новий шлях (security-ревʼю PR-3): false і жодних ефектів', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const env = makeEnv(reg, d1FromSqlite().stub);
+    for (const text of ['привіт', 'v2: привіт', 'стоп', '/new', '/status']) {
+      expect(await prerouteMessage(env, parsedMsg(text, { fromId: 888 }), NOW)).toBe(false);
+    }
+    expect(tg).toHaveLength(0);
+    expect(brain).toHaveLength(0);
+    expect(reg.begins).toHaveLength(0);
+    expect(reg.threads.size).toBe(0);
   });
 });
 
