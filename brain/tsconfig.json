@@ -1,0 +1,22 @@
+{
+  // Власна програма мозку: компілюється СВОЇМИ node_modules (SDK-типи), тому
+  // не входить у кореневий `tsc --noEmit` (його include явний). Кореневі тести
+  // імпортують лише SDK-незалежні модулі src/ - ті перевіряються двічі.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"]
+}
