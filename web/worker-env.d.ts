@@ -67,6 +67,11 @@ interface Env {
   /** Прапорець редизайну асистента: 'off' | 'shadow' | 'on' (01-architecture §5). */
   ASSISTANT_V2?: string;
 
+  /** HMAC internal API ядро↔мозок (05-ops §2; покладений на етапі 0). */
+  INTERNAL_HMAC_KEY?: string;
+  /** Другий ключ на вікно ротації (05-ops §3, двоключова ротація 24 год). */
+  INTERNAL_HMAC_KEY_NEXT?: string;
+
   /* ── Telegram ───────────────────────────────────────────────────────── */
 
   TELEGRAM_BOT_TOKEN?: string;

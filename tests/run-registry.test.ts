@@ -91,6 +91,16 @@ describe('RunRegistryDO', () => {
     expect(update?.args).toContain('timeout');
   });
 
+  it('consumeNonce: перший раз true, повтор false, старі чистяться за віком', async () => {
+    const { registry } = makeRegistry();
+    expect(await registry.consumeNonce('r1', 'n1', T0, 20 * 60_000)).toBe(true);
+    expect(await registry.consumeNonce('r1', 'n1', T0 + 1_000, 20 * 60_000)).toBe(false);
+    // Інший прогін із тим самим nonce — інший ключ, не колізія.
+    expect(await registry.consumeNonce('r2', 'n1', T0, 20 * 60_000)).toBe(true);
+    // Після вікна памʼяті nonce забуто (сам підпис на той час уже stale).
+    expect(await registry.consumeNonce('r1', 'n1', T0 + 21 * 60_000, 20 * 60_000)).toBe(true);
+  });
+
   it('без привʼязки DB — гучний виняток, не тихий пропуск', async () => {
     const { registry } = makeRegistry(null);
     await expect(registry.begin({ id: 'r1', trigger: 'chat', startedMs: T0 })).rejects.toThrow(
