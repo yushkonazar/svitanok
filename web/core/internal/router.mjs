@@ -8,7 +8,12 @@
 
 import { json, readCappedBody } from '../../http-core.mjs';
 import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
-import { registryHas, registryConsumeNonce, registryRunInfo } from '../run-registry/client.mjs';
+import {
+  registryHas,
+  registryConsumeNonce,
+  registryRunInfo,
+  registryFinish,
+} from '../run-registry/client.mjs';
 import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
@@ -190,8 +195,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       return handleDeliver(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
     if (route === 'status') return handleStatus(env, ctx, /** @type {any} */ (body), nowMs);
     if (route === 'session') return handleSession(env, /** @type {any} */ (body), nowMs);
-    // runs-телеметрія мозку - етап 2 (RunRegistry вже вміє, бракує викликача).
-    return json({ ok: false, error: 'not-implemented', route }, 501);
+    return handleRuns(env, auth.runId, /** @type {any} */ (body), nowMs);
   }
 
   return json({ ok: false, error: 'not-found' }, 404);
@@ -291,6 +295,54 @@ async function scheduleDrain(env, ctx, nowMs) {
     return;
   }
   await drained;
+}
+
+/**
+ * Телеметрія прогону від мозку (07 §3, дротування - етап 2 PR-2): кроки в
+ * run_steps + закриття прогону в RunRegistry (ідемпотентність фіналу тримає
+ * сам реєстр: finished_at IS NULL). Поля кроків коерсяться дбайливо - контракт
+ * RUNS_SCHEMA гарантує лише «масив обʼєктів», а телеметрія не сміє валити
+ * прогін через криве поле.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {{ steps: Record<string, unknown>[] }} body
+ * @param {number} nowMs
+ */
+async function handleRuns(env, runId, body, nowMs) {
+  if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
+  const steps = body.steps;
+  try {
+    for (let i = 0; i < steps.length; i += 1) {
+      const s = steps[i] ?? {};
+      const ms = Number(s.ms);
+      await env.DB.prepare(
+        `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          crypto.randomUUID(),
+          runId,
+          Number.isFinite(Number(s.n)) ? Number(s.n) : i + 1,
+          typeof s.at === 'string' ? s.at : new Date(nowMs).toISOString(),
+          typeof s.kind === 'string' ? s.kind : 'tool',
+          s.name != null ? String(s.name).slice(0, 128) : null,
+          Number.isFinite(ms) ? ms : null,
+          s.ok == null ? null : s.ok ? 1 : 0,
+          s.note != null ? String(s.note).slice(0, 500) : null,
+        )
+        .run();
+    }
+  } catch (/** @type {any} */ e) {
+    console.error('internal: запис run_steps впав', e?.message);
+    return json({ ok: false, error: 'steps-not-persisted' }, 500);
+  }
+  const failed = steps.some((s) => s && s.kind === 'error');
+  await registryFinish(env, runId, {
+    finishedMs: nowMs,
+    error: failed ? 'brain-error' : null,
+    steps: steps.length,
+  });
+  return json({ ok: true, steps: steps.length });
 }
 
 /**
