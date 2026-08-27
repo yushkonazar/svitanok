@@ -140,6 +140,15 @@ describe('CoreClient: політика помилок', () => {
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ text: 'питання', buttons });
   });
 
+  it('транспортний збій callTool - {ok:false, error:network…}, не виняток (модель бачить відмову одного інструмента)', async () => {
+    const boom = vi.fn(async () => {
+      throw new Error('мережа впала');
+    }) as unknown as typeof fetch;
+    const outcome = await makeClient(boom).callTool('run-1', 'geo.last', {});
+    expect(outcome).toMatchObject({ ok: false, status: 0 });
+    expect(String((outcome as { error: string }).error)).toMatch(/^network:/);
+  });
+
   it('status і reportRuns мовчать на збоях мережі та не-2xx; runs терпить 501', async () => {
     const boom = vi.fn(async () => {
       throw new Error('мережа впала');

@@ -9,7 +9,7 @@
 import type { CoreClient, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
 import { PROFILES, buildSystemPrompt, type RunProfile } from './profiles.js';
-import { TOOL_BY_CORE_NAME, type BrainToolDef } from './tools/schemas.js';
+import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
 
 /** Виконання інструмента з погляду рушія: текст для моделі + прапор помилки. */
 export interface ToolExecution {
@@ -22,6 +22,8 @@ export interface EngineRunOptions {
   model: string;
   maxTurns: number;
   toolNames: string[];
+  /** Чи потрібні часткові тексти (є куди стрімити статус). */
+  streamPartials: boolean;
   abortSignal: AbortSignal;
   onToolCall: (mcpName: string, args: unknown) => Promise<ToolExecution>;
   onPartialText: (text: string) => void;
@@ -45,12 +47,17 @@ export interface RunnerDeps {
   statusIntervalMs?: number;
 }
 
-const DELIVER_MAX_CHARS = 65_000;
-const ESCALATE_PREFIX = 'ESCALATE:';
+// Стелі deliver/status - тіньові копії ядрових меж, парність тримає тест
+// «парність стель» у tests/brain-tool-parity.test.ts:
+//  - символи: DELIVER_SCHEMA text ≤ 65 536, STATUS_SCHEMA text ≤ 4 096;
+//  - байти: кап сирого тіла /internal/* = 128 KiB ДО підпису (router.mjs) -
+//    тому deliver ріжеться і по байтах UTF-8, із запасом на JSON-обгортку
+//    та екранування.
+export const DELIVER_MAX_CHARS = 65_000;
+export const DELIVER_MAX_BYTES = 100_000;
+export const STATUS_MAX_CHARS = 3_900;
 
-const MCP_TOOLS: ReadonlyMap<string, BrainToolDef> = new Map(
-  [...TOOL_BY_CORE_NAME.values()].map((t) => [t.mcpName, t]),
-);
+const ESCALATE_PREFIX = 'ESCALATE:';
 
 interface Step {
   n: number;
@@ -83,7 +90,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
 
     const onToolCall = async (mcpName: string, args: unknown): Promise<ToolExecution> => {
       const t0 = now();
-      const def = MCP_TOOLS.get(mcpName);
+      const def = TOOL_BY_MCP_NAME.get(mcpName);
       const fail = (text: string, note: string): ToolExecution => {
         pushStep({ kind: 'tool', name: mcpName, ms: now() - t0, ok: false, note });
         return { text, isError: true };
@@ -118,6 +125,16 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         return fail(`Інструмент ${def.coreName} відмовив: ${outcome.error}.`, outcome.error);
       }
       tainted = tainted || outcome.tainted;
+      // Ескалація policy ядра: mode='proposed' означає, що запис НЕ виконано -
+      // створено пропозицію під ✅ власника. Без цієї гілки модель бачила б
+      // "null" з isError:false і брехала власнику «Записав» (знахідка ревʼю).
+      if (outcome.mode === 'proposed') {
+        pushStep({ kind: 'tool', name: def.coreName, ms: now() - t0, ok: true, note: 'proposed' });
+        return {
+          text: `Запис НЕ виконано: створено пропозицію, що чекає підтвердження власника (✅). Деталі: ${JSON.stringify(outcome.proposal ?? null)}. Скажи власнику, що потрібне підтвердження.`,
+          isError: false,
+        };
+      }
       pushStep({ kind: 'tool', name: def.coreName, ms: now() - t0, ok: true });
       const text =
         typeof outcome.result === 'string'
@@ -131,7 +148,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       const t = now();
       if (t - lastStatusMs < statusIntervalMs) return;
       lastStatusMs = t;
-      void deps.client.status(req.run_id, req.status_message_id, clip(text, 3900));
+      // Хвіст, не голова: інформативний саме поточний шматок роботи, а голова
+      // після 3 900 символів замерзала б у байт-у-байт однакові edit-и.
+      void deps.client.status(req.run_id, req.status_message_id, clipStatusTail(text));
     };
 
     try {
@@ -141,6 +160,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           model: profile.model,
           maxTurns: profile.maxTurns,
           toolNames: profile.toolNames,
+          streamPartials: req.status_message_id != null,
           abortSignal: abort.signal,
           onToolCall,
           onPartialText,
@@ -152,11 +172,12 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       if (profile.name === 'quick' && finalText.startsWith(ESCALATE_PREFIX)) {
         // Ескалацію вирішує ядро (07 §5, prerouter - етап 2 PR-3); мозок лише
         // чесно звітує і НЕ доставляє службовий рядок власнику.
+        // ⚠️ Відомий борг (знахідка ревʼю): надійний канал ескалації (не
+        // best-effort /internal/runs, що нині 501) - обовʼязковий пункт PR-3.
         pushStep({ kind: 'reply', name: 'escalate', ms: now() - startedMs, ok: true });
         return;
       }
-      const delivered =
-        finalText === '' ? '(порожня відповідь моделі)' : clip(finalText, DELIVER_MAX_CHARS);
+      const delivered = finalText === '' ? '(порожня відповідь моделі)' : clipDeliver(finalText);
       await deps.client.deliver(req.run_id, delivered);
       pushStep({ kind: 'reply', name: 'deliver', ms: now() - startedMs, ok: finalText !== '' });
     } catch (err) {
@@ -182,9 +203,34 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
   };
 }
 
-function clip(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}…`;
+/**
+ * Зріз голови під ОБИДВІ стелі - символи (контракт DELIVER_SCHEMA) і байти
+ * UTF-8 (кап тіла ядра). Ітерація код-поїнтами не полишає самотніх сурогатів
+ * (ядровий splitMessage від цього захищений - тут той самий інваріант шаром
+ * вище, бо ядро валідує вже обрізаний текст).
+ */
+export function clipDeliver(text: string): string {
+  let bytes = 0;
+  let i = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) as number;
+    const b = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (i + ch.length > DELIVER_MAX_CHARS || bytes + b > DELIVER_MAX_BYTES) {
+      return `${text.slice(0, i)}…`;
+    }
+    bytes += b;
+    i += ch.length;
+  }
+  return text;
+}
+
+/** Хвіст статусу ≤ 3 900 символів; не починається з самотнього низького сурогата. */
+export function clipStatusTail(text: string): string {
+  if (text.length <= STATUS_MAX_CHARS) return text;
+  let start = text.length - STATUS_MAX_CHARS;
+  const code = text.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  return `…${text.slice(start)}`;
 }
 
 function shortError(err: unknown): string {

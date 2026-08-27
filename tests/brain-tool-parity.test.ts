@@ -6,8 +6,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { TOOLS } from '../web/core/tools/index.mjs';
-import { validateAgainst } from '../web/core/internal/schemas.mjs';
+import { DELIVER_SCHEMA, STATUS_SCHEMA, validateAgainst } from '../web/core/internal/schemas.mjs';
+import { MAX_INTERNAL_BODY_BYTES } from '../web/core/internal/router.mjs';
 import { BRAIN_TOOLS, TOOL_BY_CORE_NAME } from '../brain/src/tools/schemas.js';
+import { DELIVER_MAX_BYTES, DELIVER_MAX_CHARS, STATUS_MAX_CHARS } from '../brain/src/agent.js';
 
 type CoreSchema = (typeof TOOLS)[keyof typeof TOOLS]['args'];
 
@@ -124,4 +126,21 @@ describe('парність інструментів мозок↔ядро', () =
       }
     });
   }
+});
+
+describe('парність стель deliver/status мозок↔ядро', () => {
+  it('символьні стелі мозку (+1 на «…») влазять у maxLength контрактів ядра', () => {
+    expect(DELIVER_MAX_CHARS + 1).toBeLessThanOrEqual(
+      DELIVER_SCHEMA.properties?.text?.maxLength ?? 0,
+    );
+    expect(STATUS_MAX_CHARS + 1).toBeLessThanOrEqual(
+      STATUS_SCHEMA.properties?.text?.maxLength ?? 0,
+    );
+  });
+
+  it('байтова стеля deliver лишає кап тіла ядра із запасом на обгортку й екранування', () => {
+    // 4 KiB запасу: JSON-обгортка {"text":""} - 11 байт, екранування \n і лапок
+    // додає ≤1 байта на символ лише для й так 1-байтових знаків.
+    expect(DELIVER_MAX_BYTES + 4096).toBeLessThanOrEqual(MAX_INTERNAL_BODY_BYTES);
+  });
 });

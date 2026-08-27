@@ -28,15 +28,23 @@ export function createSdkEngine(): RunEngine {
   return {
     async run(opts: EngineRunOptions, inputText: string): Promise<EngineOutcome> {
       const active = BRAIN_TOOLS.filter((t) => opts.toolNames.includes(t.mcpName));
-      const server = createSdkMcpServer({
-        name: 'svitanok',
-        tools: active.map((t) =>
-          tool(t.mcpName, t.description, t.args.shape, async (args) => {
-            const out = await opts.onToolCall(t.mcpName, args);
-            return { content: [{ type: 'text' as const, text: out.text }], isError: out.isError };
-          }),
-        ),
-      });
+      // Сервер per-run: хендлери замикають onToolCall саме цього прогону.
+      // Для профілю без інструментів (quick) не створюємо взагалі.
+      const mcpServers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
+      if (active.length > 0) {
+        mcpServers.svitanok = createSdkMcpServer({
+          name: 'svitanok',
+          tools: active.map((t) =>
+            tool(t.mcpName, t.description, t.args.shape, async (args) => {
+              const out = await opts.onToolCall(t.mcpName, args);
+              return {
+                content: [{ type: 'text' as const, text: out.text }],
+                isError: out.isError,
+              };
+            }),
+          ),
+        });
+      }
 
       // Міст сигналів: agent.ts тримає таймаут профілю на AbortSignal, SDK
       // хоче власний AbortController.
@@ -55,8 +63,15 @@ export function createSdkEngine(): RunEngine {
             model: opts.model,
             maxTurns: opts.maxTurns,
             abortController,
-            includePartialMessages: true,
-            mcpServers: active.length > 0 ? { svitanok: server } : {},
+            // Партіали лише коли є куди стрімити (знахідка ревʼю: інакше
+            // потік дельт з сабпроцеса викидався в порожній колбек).
+            includePartialMessages: opts.streamPartials,
+            mcpServers,
+            // tools: [] - СТРОГИЙ гейт доступності вбудованих інструментів
+            // (d.ts: allowedTools лише авто-апрувить дозволи, доступність
+            // обмежує tools). Денайлист нижче - пояс до цих шлейок: новий
+            // builtin майбутнього SDK не зʼявиться мовчки (знахідка ревʼю).
+            tools: [],
             allowedTools: active.map((t) => `mcp__svitanok__${t.mcpName}`),
             disallowedTools: SDK_BUILTIN_TOOLS_OFF,
           },

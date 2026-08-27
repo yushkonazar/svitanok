@@ -1,8 +1,11 @@
 // HTTP-шар мозку (01 §2.2): GET /health і POST /run на 127.0.0.1 за Tunnel.
 // Обробник чистий (метод+шлях+заголовки+тіло → статус+тіло) - node:http
-// підключає index.ts. Порядок перевірок /run - як в ядровому router.mjs:
-// метод → підпис по сирому тілу → нонс → JSON → контракт; коди помилок ті
-// самі (401 replayed, 400 contract, 500 hmac-not-configured).
+// підключає index.ts. Порядок перевірок /run: метод → підпис по сирому тілу →
+// JSON → контракт → run-mismatch → слоти → НОНС → 202; коди помилок ті самі,
+// що в ядровому router.mjs (401 replayed, 400 contract, 500 hmac-not-configured),
+// але нонс свідомо споживається ОСТАННІМ - інакше валідно підписаний запит,
+// відбитий 429 busy чи 400, не можна було б повторити тим самим підписом
+// (знахідка ревʼю; уся ділянка синхронна, тому consume+слот атомарні).
 //
 // /run відповідає 202 ОДРАЗУ, прогін іде у фоні: викликач (ядро) не тримає
 // зʼєднання на 4 хв прогону. Помилки прогону runner ловить сам - інакше
@@ -94,7 +97,6 @@ export function createHandler(deps: ServerDeps): BrainHandler {
       keys: deps.config.hmacKeys,
     });
     if (!verdict.ok) return err(verdict.status, verdict.error);
-    if (!nonces.consume(verdict.runId, verdict.nonce, now())) return err(401, 'replayed');
 
     let parsed: unknown;
     try {
@@ -113,6 +115,7 @@ export function createHandler(deps: ServerDeps): BrainHandler {
     if (run.data.run_id !== verdict.runId) return err(400, 'run-mismatch');
 
     if (active >= maxConcurrent) return err(429, 'busy');
+    if (!nonces.consume(verdict.runId, verdict.nonce, now())) return err(401, 'replayed');
     active += 1;
     void deps
       .runner(run.data)

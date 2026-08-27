@@ -23,16 +23,22 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
   }
 
   const internalApiUrl = String(env.INTERNAL_API_URL).trim().replace(/\/+$/, '');
-  let apiHost: string;
+  let apiUrl: URL;
   try {
-    apiHost = new URL(internalApiUrl).hostname;
+    apiUrl = new URL(internalApiUrl);
   } catch {
     throw new Error('конфігурація: INTERNAL_API_URL не є URL');
   }
   // Інцидент 24.08: адреса *.workers.dev вимкнена (workers_dev:false), хост
   // «висів» на 202 без відповіді. Канон - лише кастомний домен.
-  if (apiHost.endsWith('.workers.dev')) {
+  if (apiUrl.hostname.endsWith('.workers.dev')) {
     throw new Error('конфігурація: INTERNAL_API_URL на *.workers.dev - лише кастомний домен');
+  }
+  // База зі шляхом дала б підпис по '/internal/…', а ядро звіряє повний
+  // pathname ('/api/internal/…') - кожен запит бився б 401 у проді. Краще
+  // гучно на старті (знахідка ревʼю).
+  if (apiUrl.pathname !== '/' || apiUrl.search !== '') {
+    throw new Error('конфігурація: INTERNAL_API_URL мусить бути лише origin, без шляху і query');
   }
 
   // Trim - задокументована пастка проєкту (\r\n із панелі/вставки).

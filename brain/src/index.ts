@@ -44,9 +44,14 @@ const client = new CoreClient({
 });
 
 // Проба «401-не-404» (інцидент 24.08): результат видно в /health, а не-ok -
-// гучний лог одразу на старті.
+// гучний лог одразу на старті. З Access-парою очікування - строго 401 від
+// HMAC-шару ядра: чужий Access-хост так не відповість.
 let internalApiProbe = 'pending';
-void probeInternalApi(config.internalApiUrl).then((r) => {
+const probeAccess =
+  config.accessClientId && config.accessClientSecret
+    ? { clientId: config.accessClientId, clientSecret: config.accessClientSecret }
+    : null;
+void probeInternalApi(config.internalApiUrl, fetch, probeAccess).then((r) => {
   internalApiProbe = r;
   if (r !== 'ok') console.error(`internal API проба: ${r} - перевір INTERNAL_API_URL`);
 });
@@ -110,9 +115,25 @@ server.listen(config.port, config.host, () => {
   );
 });
 
-// systemd stop: даємо активним прогонам дотекти, нові зʼєднання не приймаємо.
+// systemd stop: нові зʼєднання не приймаємо і ЧЕКАЄМО активні прогони через
+// handler.activeRuns() - server.close() їх не бачить, бо /run відповів 202 і
+// прогін живе поза зʼєднанням (знахідка ревʼю: рестарт убивав прогін мовчки).
+// Стеля 85 с < systemd TimeoutStopSec (90 с типово): далі чесно виходимо з
+// логом, скільки прогонів утрачено.
 process.on('SIGTERM', () => {
-  console.log('SIGTERM: закриваю сервер');
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 10_000).unref();
+  console.log(`SIGTERM: закриваю сервер, активних прогонів: ${handler.activeRuns()}`);
+  server.close();
+  const startedAt = Date.now();
+  const drain = setInterval(() => {
+    const active = handler.activeRuns();
+    if (active === 0) {
+      clearInterval(drain);
+      process.exit(0);
+    }
+    if (Date.now() - startedAt > 85_000) {
+      console.error(`SIGTERM: таймаут дренажу, втрачаю ${active} активних прогонів`);
+      clearInterval(drain);
+      process.exit(0);
+    }
+  }, 500);
 });

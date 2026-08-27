@@ -54,12 +54,15 @@ const QUICK_STUB = `Ти - швидка смуга Світанку. Відпо�
 Якщо питання потребує даних власника (календар, пошта, нагадування, памʼять) або довших міркувань - відповідай РІВНО одним рядком:
 ESCALATE: <причина двома-трьома словами>`;
 
+// Форматер стейтлес - конструктор Intl дорогий, тримаємо один на модуль.
+const KYIV_FMT = new Intl.DateTimeFormat('uk-UA', {
+  timeZone: 'Europe/Kyiv',
+  dateStyle: 'full',
+  timeStyle: 'short',
+});
+
 export function buildSystemPrompt(profile: RunProfile, nowMs: number): string {
-  const kyiv = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kyiv',
-    dateStyle: 'full',
-    timeStyle: 'short',
-  }).format(new Date(nowMs));
+  const kyiv = KYIV_FMT.format(new Date(nowMs));
   const base = profile.name === 'quick' ? QUICK_STUB : PERSONA_STUB;
   return `${base}\n\nЗараз у Києві: ${kyiv}.`;
 }

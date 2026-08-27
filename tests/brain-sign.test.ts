@@ -79,16 +79,19 @@ describe('парність підпису мозок↔ядро', () => {
 });
 
 describe('перевірка /run на боці мозку', () => {
+  // Через бойовий buildSignedHeaders (а не ручну збірку): інакше перейменування
+  // заголовка в білдері лишило б ці тести зеленими на форматі, якого ніхто не шле.
   function signedHeaders(over: Partial<typeof INPUT> = {}) {
     const i = { ...INPUT, ...over };
-    const sig = signInternal(KEY, i);
-    const map = new Map([
-      ['X-Internal-Timestamp', String(i.timestampMs)],
-      ['X-Internal-Run', i.runId],
-      ['X-Internal-Nonce', i.nonce],
-      ['X-Internal-Signature', sig],
-    ]);
-    return (n: string) => map.get(n) ?? null;
+    const headers = buildSignedHeaders(KEY, {
+      method: i.method,
+      path: i.path,
+      runId: i.runId,
+      rawBody: i.rawBody,
+      nowMs: i.timestampMs,
+      nonce: i.nonce,
+    });
+    return (n: string) => headers[n] ?? null;
   }
 
   it('підміна тіла, методу або шляху ламає підпис', () => {

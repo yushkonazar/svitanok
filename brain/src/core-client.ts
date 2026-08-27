@@ -49,7 +49,15 @@ export class CoreClient {
 
   async callTool(runId: string, coreName: string, args: unknown): Promise<ToolCallOutcome> {
     const path = `/internal/tool/${coreName}`;
-    const res = await this.post(path, runId, { args });
+    let res: { status: number; body: unknown };
+    try {
+      res = await this.post(path, runId, { args });
+    } catch (err) {
+      // Транспортний збій (мережа, таймаут 15 с) - відмова ОДНОГО інструмента,
+      // не всього прогону: модель бачить {ok:false}, як і на HTTP-помилках.
+      console.warn(`core-client: ${path} транспорт: ${String(err).slice(0, 120)}`);
+      return { ok: false, status: 0, error: `network: ${String(err).slice(0, 120)}` };
+    }
     if (res.status >= 200 && res.status < 300 && isRecord(res.body)) {
       const b = res.body;
       return {

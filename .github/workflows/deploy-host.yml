@@ -55,6 +55,9 @@ jobs:
         run: |
           SHA="${INPUT_SHA:-$GITHUB_SHA}"
           git cat-file -e "$SHA^{commit}" || { echo "невідомий sha: $SHA"; exit 1; }
+          # Підлога відкату: sha ДО появи brain/ пройде цю перевірку, але
+          # деплой-скрипт упаде на `cd brain` - відкочуватись є куди лише в
+          # межах комітів, де каталог існує.
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - name: deploy over ssh
         env:

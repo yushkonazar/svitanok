@@ -38,20 +38,32 @@ export function buildHealthPayload(i: HealthInput): Record<string, unknown> {
 
 /**
  * Стартова проба INTERNAL_API_URL (урок інциденту 24.08: жива, але ЧУЖА адреса
- * висіла мовчки). Непідписаний POST на /internal/* мусить дати 401/403 (Access
- * або HMAC-шар) - буде «ok». 404 означає не ту адресу або вимкнений маршрут -
- * гучний лог, і стан видно в /health.
+ * висіла мовчки). Непідписаний POST з Access-парою (коли вона є) мусить
+ * пробитись КРІЗЬ Access і впертись у HMAC-шар ядра - строго 401. Без пари
+ * (локальний dev) приймаємо 401/403. Access-пара обовʼязкова для розрізнення:
+ * будь-який чужий Access-захищений хост теж відповідає 403, і проба без
+ * кредів казала б «ok» не тій адресі (знахідка ревʼю). redirect:'manual' -
+ * щоб 302 на login-сторінку не оберталося на оманливий фінальний 200.
  */
 export async function probeInternalApi(
   baseUrl: string,
   fetchFn: typeof fetch = fetch,
+  access: { clientId: string; clientSecret: string } | null = null,
 ): Promise<string> {
   try {
+    const headers: Record<string, string> = {};
+    if (access) {
+      headers['CF-Access-Client-Id'] = access.clientId;
+      headers['CF-Access-Client-Secret'] = access.clientSecret;
+    }
     const res = await fetchFn(`${baseUrl}/internal/tool/geo.last`, {
       method: 'POST',
       body: '{}',
+      headers,
+      redirect: 'manual',
       signal: AbortSignal.timeout(8000),
     });
+    if (access) return res.status === 401 ? 'ok' : `unexpected-${res.status}`;
     if (res.status === 401 || res.status === 403) return 'ok';
     return `unexpected-${res.status}`;
   } catch {

@@ -176,7 +176,7 @@ describe('/run: сходинка відмов', () => {
     expect(res).toMatchObject({ status: 500, body: { error: 'hmac-not-configured' } });
   });
 
-  it('слоти: третій одночасний прогін - 429 busy; після завершення слот вільний', async () => {
+  it('слоти: третій одночасний прогін - 429 busy, нонс НЕ згорає: той самий підписаний запит проходить після звільнення', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -189,14 +189,25 @@ describe('/run: сходинка відмов', () => {
     expect(
       (await handler.handle(signedReq(runBody({ run_id: 'r2' }), { runId: 'r2' }))).status,
     ).toBe(202);
-    const third = await handler.handle(signedReq(runBody({ run_id: 'r3' }), { runId: 'r3' }));
+    const thirdReq = signedReq(runBody({ run_id: 'r3' }), { runId: 'r3', nonce: 'busy-n' });
+    const third = await handler.handle(thirdReq);
     expect(third).toMatchObject({ status: 429, body: { error: 'busy' } });
     expect(handler.activeRuns()).toBe(2);
 
     release();
     await vi.waitFor(() => expect(handler.activeRuns()).toBe(0));
-    const again = await handler.handle(signedReq(runBody({ run_id: 'r4' }), { runId: 'r4' }));
-    expect(again.status).toBe(202);
+    // Ретрай БАЙТ-У-БАЙТ тим самим запитом (той самий nonce/підпис) - 202:
+    // 429 не спалює нонс (знахідка ревʼю).
+    const retry = await handler.handle(thirdReq);
+    expect(retry).toMatchObject({ status: 202, body: { run_id: 'r3' } });
+  });
+
+  it('400 contract не спалює нонс: після відмови той самий нонс із валідним тілом проходить', async () => {
+    const { handler } = makeHandler();
+    const bad = await handler.handle(signedReq(runBody({ profile: 'weekly' }), { nonce: 'ctr-n' }));
+    expect(bad.status).toBe(400);
+    const good = await handler.handle(signedReq(runBody(), { nonce: 'ctr-n' }));
+    expect(good.status).toBe(202);
   });
 
   it('збій runner-а не топить обробник: 202 віддано, слот звільнено', async () => {
@@ -212,9 +223,9 @@ describe('/run: сходинка відмов', () => {
 });
 
 describe('probeInternalApi', () => {
-  it('401/403 - ok; 404 - unexpected-404; мережевий збій - unreachable', async () => {
-    const mk = (status: number) =>
-      (async () => new Response('', { status })) as unknown as typeof fetch;
+  const mk = (status: number) => (async () => new Response(null, { status })) as never;
+
+  it('без Access-пари (локальний dev): 401/403 - ok; 404 - unexpected-404; збій - unreachable', async () => {
     expect(await probeInternalApi('https://x', mk(401))).toBe('ok');
     expect(await probeInternalApi('https://x', mk(403))).toBe('ok');
     expect(await probeInternalApi('https://x', mk(404))).toBe('unexpected-404');
@@ -222,5 +233,24 @@ describe('probeInternalApi', () => {
       throw new Error('мережа');
     }) as unknown as typeof fetch;
     expect(await probeInternalApi('https://x', boom)).toBe('unreachable');
+  });
+
+  it('з Access-парою: шле креди, redirect=manual, ok - ЛИШЕ строгий 401 від HMAC-шару (чужий Access-хост із 403 не «ok»)', async () => {
+    const access = { clientId: 'id', clientSecret: 'secret' };
+    const calls: RequestInit[] = [];
+    const capture = (status: number) =>
+      (async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push(init ?? {});
+        return new Response(null, { status });
+      }) as unknown as typeof fetch;
+
+    expect(await probeInternalApi('https://x', capture(401), access)).toBe('ok');
+    expect(await probeInternalApi('https://x', capture(403), access)).toBe('unexpected-403');
+    expect(await probeInternalApi('https://x', capture(200), access)).toBe('unexpected-200');
+
+    const headers = new Headers(calls[0]!.headers as Record<string, string>);
+    expect(headers.get('CF-Access-Client-Id')).toBe('id');
+    expect(headers.get('CF-Access-Client-Secret')).toBe('secret');
+    expect(calls[0]!.redirect).toBe('manual');
   });
 });

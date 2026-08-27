@@ -103,3 +103,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
 export const TOOL_BY_CORE_NAME: ReadonlyMap<string, BrainToolDef> = new Map(
   BRAIN_TOOLS.map((t) => [t.coreName, t]),
 );
+
+export const TOOL_BY_MCP_NAME: ReadonlyMap<string, BrainToolDef> = new Map(
+  BRAIN_TOOLS.map((t) => [t.mcpName, t]),
+);
