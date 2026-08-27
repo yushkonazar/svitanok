@@ -1,0 +1,108 @@
+# Деплой мозку на VPS (05-ops §4, етап 1 PR-9). Тригер - зміни в brain/**
+# (каталог зʼявиться на етапі 2; доти workflow лежить готовий і не бігає) або
+# ручний workflow_dispatch із sha для відкату.
+#
+# БЕЗ сторонніх ssh-actions: конвенція репо пінить сторонні Actions по SHA, а
+# ssh-клієнт і так є на раннері - менша поверхня, ніж чужий контейнер із
+# доступом до deploy-ключа. StrictHostKeyChecking=yes із known_hosts у vars:
+# «accept-new» відчиняв би MITM при першому конекті з нового раннера (тобто
+# ЗАВЖДИ - раннери ефемерні).
+#
+# Handshake версій (01 §2.2): після рестарту юніта скрипт чекає /health і
+# ЗВІРЯЄ gitSha з задеплоєним комітом - розбіжність валить джоб; потім
+# очікувані version+gitSha їдуть у KV `brainExpected`, і задача brain-health
+# ядра щопʼять хвилин порівнює їх із живим /health (розсинхрон = алерт у
+# TOPIC_SYSTEM). Ручний деплой повз main більше не може лишитись непоміченим
+# (інцидент 19.07.2026).
+name: deploy host
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'brain/**'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Коміт для деплою/відкату (порожньо = HEAD main)'
+        required: false
+        default: ''
+
+permissions: {}
+
+# Один деплой за раз, без cancel: обірваний посеред npm ci юніт - гірше, ніж
+# зачекати чергу (той самий мотив, що migrate.yml).
+concurrency:
+  group: deploy-brain
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: resolve sha
+        id: rev
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          SHA="${INPUT_SHA:-$GITHUB_SHA}"
+          git cat-file -e "$SHA^{commit}" || { echo "невідомий sha: $SHA"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: deploy over ssh
+        env:
+          DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
+          SHA: ${{ steps.rev.outputs.sha }}
+        run: |
+          for v in DEPLOY_KEY VPS_HOST VPS_USER VPS_KNOWN_HOSTS; do
+            [ -n "$(eval echo "\$$v")" ] || { echo "не задано $v"; exit 1; }
+          done
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -seuo pipefail' <<SCRIPT
+          cd /opt/svitanok-brain
+          git fetch origin
+          git checkout --detach "$SHA"
+          npm ci --omit=dev
+          npm run build
+          sudo systemctl restart svitanok-brain
+          # Health з ретраями: юніту треба секунди на старт.
+          for i in \$(seq 1 10); do
+            sleep 2
+            HEALTH=\$(curl -sf http://127.0.0.1:8788/health) && break || HEALTH=""
+          done
+          [ -n "\$HEALTH" ] || { echo "health не піднявся"; exit 1; }
+          echo "\$HEALTH"
+          # Handshake на місці: живий gitSha = щойно задеплоєний коміт.
+          echo "\$HEALTH" | grep -q "$SHA" || { echo "health віддає ІНШИЙ gitSha"; exit 1; }
+          SCRIPT
+      - name: publish expected versions to KV (brainExpected)
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NAMESPACE_ID: '389ff22c124a476bb18d2f5e6a5334c0' # namespace BRIEFING
+          SHA: ${{ steps.rev.outputs.sha }}
+        # Захисне обрізання пробілів - секрет уже колись містив зайвий \r\n.
+        run: |
+          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN" | tr -d '[:space:]')
+          CF_ACCOUNT_ID=$(printf '%s' "$CF_ACCOUNT_ID" | tr -d '[:space:]')
+          VERSION=$(node -p "require('./brain/package.json').version" 2>/dev/null || echo "")
+          BODY=$(printf '{"version":"%s","gitSha":"%s","at":"%s"}' "$VERSION" "$SHA" "$(date -u +%FT%TZ)")
+          code=$(curl -s -o /tmp/kv.json -w "%{http_code}" -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/brainExpected" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary "$BODY")
+          echo "KV HTTP $code"; cat /tmp/kv.json; echo
+          # Червоний джоб, якщо очікування не записано: деплой без handshake -
+          # це рівно та сліпота, яку цей workflow і закриває.
+          [ "$code" = "200" ]
