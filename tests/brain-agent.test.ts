@@ -20,7 +20,13 @@ interface ClientMock {
   callTool: Mock<(runId: string, coreName: string, args: unknown) => Promise<ToolCallOutcome>>;
   deliver: Mock<(runId: string, text: string) => Promise<void>>;
   status: Mock<(runId: string, messageId: number, text: string) => Promise<void>>;
-  reportRuns: Mock<(runId: string, steps: object[]) => Promise<void>>;
+  reportRuns: Mock<
+    (
+      runId: string,
+      steps: object[],
+      outcome?: { escalate: { text: string; status_message_id?: number } },
+    ) => Promise<void>
+  >;
   session: Mock<(runId: string, body: Record<string, unknown>) => Promise<boolean>>;
 }
 
@@ -482,6 +488,10 @@ describe('makeRunner: «стоп» і ескалація (ADR-039)', () => {
       name: 'escalate',
       note: 'коли зустріч?',
       status_message_id: 42,
+    });
+    // Керівний сигнал - КОНТРАКТНИЙ outcome (ADR-039, ревʼю PR-3), не крок.
+    expect(client.reportRuns.mock.calls[0]![2]).toEqual({
+      escalate: { text: 'коли зустріч?', status_message_id: 42 },
     });
   });
 });

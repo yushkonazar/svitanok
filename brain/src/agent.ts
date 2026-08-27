@@ -93,6 +93,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     let tainted = req.tainted ?? false;
     let toolCalls = 0;
     let lastStatusMs = 0;
+    let escalateOutcome: { escalate: { text: string; status_message_id?: number } } | undefined;
 
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort('timeout'), profile.timeoutMs);
@@ -241,9 +242,16 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       }
 
       if (profile.name === 'quick' && finalText.startsWith(ESCALATE_PREFIX)) {
-        // Канал ескалації (ADR-039): ядро читає цей крок у handleRuns і
-        // перезапускає chat тим самим текстом у той самий статусник. Мозок
-        // службовий рядок власнику НЕ доставляє.
+        // Канал ескалації (ADR-039, уточнено ревʼю PR-3): рішення їде
+        // КОНТРАКТНИМ outcome у /internal/runs (ядро перезапустить chat тим
+        // самим текстом у той самий статусник), а крок - лише журнальний слід
+        // у run_steps. Мозок службовий рядок власнику НЕ доставляє.
+        escalateOutcome = {
+          escalate: {
+            text: req.input.text,
+            ...(req.status_message_id != null ? { status_message_id: req.status_message_id } : {}),
+          },
+        };
         pushStep({
           kind: 'reply',
           name: 'escalate',
@@ -292,7 +300,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     } finally {
       clearTimeout(timeout);
       deps.aborts?.delete(req.run_id);
-      await deps.client.reportRuns(req.run_id, steps);
+      await deps.client.reportRuns(req.run_id, steps, escalateOutcome);
     }
   };
 }

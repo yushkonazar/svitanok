@@ -24,12 +24,15 @@ import {
   registrySweep,
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
+import { readExpected } from './brain/health.mjs';
 import { parsePolicyCallback } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 
 export const THREAD_DM = 'dm';
-export const STATUS_DRAFT = '▸ Думаю…';
-export const START_MAX_ATTEMPTS = 3;
+// Не експортуються свідомо (ревʼю PR-3): споживачів назовні немає, а export
+// сигналив би «на це хтось спирається».
+const STATUS_DRAFT = '▸ Думаю…';
+const START_MAX_ATTEMPTS = 3;
 
 const MODELS = { chat: 'claude-sonnet-5', quick: 'claude-haiku-4-5' };
 
@@ -438,14 +441,10 @@ async function resetThreadSession(env, threadKey, nowMs) {
  *  @param {Env} env */
 async function systemStatusLine(env) {
   const parts = [];
-  try {
-    const expected = JSON.parse((await env.BRIEFING.get('brainExpected')) ?? 'null');
-    parts.push(
-      expected?.gitSha ? `Мозок: ${String(expected.gitSha).slice(0, 8)}` : 'Мозок: невідомо',
-    );
-  } catch {
-    parts.push('Мозок: невідомо');
-  }
+  const expected = await readExpected(env);
+  parts.push(
+    expected?.gitSha ? `Мозок: ${String(expected.gitSha).slice(0, 8)}` : 'Мозок: невідомо',
+  );
   const threads = await registryThreadsSnapshot(env);
   const active = Object.values(threads).filter((t) => t.activeRunId != null).length;
   const queued = Object.values(threads).reduce((n, t) => n + t.queue.length, 0);

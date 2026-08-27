@@ -4,18 +4,17 @@
 // (sessions/outbox), стаб RUN_REGISTRY (DO-логіка окремо в thread-queue.test),
 // стаб fetch (Telegram + мозок).
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   classifyRoute,
   parseNewCommand,
   prerouteMessage,
+  handleBrainCallback,
   startClaimedRun,
   kickPendingThreads,
 } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
+import { d1FromSqlite } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'prerouter-test-key';
@@ -55,36 +54,6 @@ describe('parseNewCommand', () => {
 });
 
 // ── Обвʼязка потоків ─────────────────────────────────────────────────────────
-
-const d1FromSqlite = () => {
-  const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_base.sql', '0002_assistant.sql']) {
-    db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', f), 'utf8'));
-  }
-  return {
-    db,
-    stub: {
-      prepare: (sql: string) => ({
-        bind: (...args: unknown[]) => ({
-          run: async () => {
-            // @ts-expect-error варіативні біндинги node:sqlite
-            const info = db.prepare(sql).run(...args);
-            // Драйн outbox звіряє meta.changes (claim конкурентного драйну).
-            return { meta: { changes: Number(info.changes) } };
-          },
-          all: async () => ({
-            // @ts-expect-error те саме
-            results: db.prepare(sql).all(...args),
-          }),
-          first: async () => {
-            // @ts-expect-error те саме
-            return db.prepare(sql).get(...args) ?? null;
-          },
-        }),
-      }),
-    },
-  };
-};
 
 type ThreadState = {
   activeRunId: string | null;
@@ -224,7 +193,7 @@ describe('prerouteMessage: режими', () => {
   it('off → false, нічого не робиться', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub, 'off');
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub, 'off');
     expect(await prerouteMessage(env, parsedMsg('привіт'), NOW)).toBe(false);
     expect(tg).toHaveLength(0);
     expect(reg.begins).toHaveLength(0);
@@ -233,7 +202,7 @@ describe('prerouteMessage: режими', () => {
   it('shadow без v2: класифікує, пише runs з trigger=shadow і віддає легасі', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub, 'shadow');
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub, 'shadow');
     expect(await prerouteMessage(env, parsedMsg('скільки 2+2'), NOW)).toBe(false);
     // trigger='shadow' (ревʼю PR-3): класифікація відрізняється від бойових.
     expect(reg.begins[0]).toMatchObject({ trigger: 'shadow', profile: 'quick', threadId: 'dm' });
@@ -245,7 +214,7 @@ describe('prerouteMessage: режими', () => {
   it('shadow з v2: - повний шлях (статусник, begin, /run мозку з сесією)', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const d1 = d1FromSqlite();
+    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
     d1.db
       .prepare(
         `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
@@ -272,7 +241,7 @@ describe('prerouteMessage: режими', () => {
   it('on: два повідомлення - друге дістає СТАТУСНИК «▸ Черга: 1» (S-0-2, редагований), мозок кликаний раз', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('перше питання про мій день'), NOW);
     await prerouteMessage(env, parsedMsg('друге питання про мої плани'), NOW + 1000);
     expect(brain).toHaveLength(1);
@@ -288,7 +257,7 @@ describe('prerouteMessage: режими', () => {
   it('інша тема - false; легасі-команда /stats - false', async () => {
     const reg = makeRegistryStub();
     makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     expect(await prerouteMessage(env, parsedMsg('привіт', { threadId: 123 }), NOW)).toBe(false);
     expect(await prerouteMessage(env, parsedMsg('/stats'), NOW)).toBe(false);
   });
@@ -296,7 +265,7 @@ describe('prerouteMessage: режими', () => {
   it('СПІВВЛАСНИК не отримує новий шлях (security-ревʼю PR-3): false і жодних ефектів', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     for (const text of ['привіт', 'v2: привіт', 'стоп', '/new', '/status']) {
       expect(await prerouteMessage(env, parsedMsg(text, { fromId: 888 }), NOW)).toBe(false);
     }
@@ -311,7 +280,7 @@ describe('prerouteMessage: нові команди', () => {
   it('/new: sdk-сесія скинута, taint 0, згортка ЛИШАЄТЬСЯ (S-0-4)', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();
-    const d1 = d1FromSqlite();
+    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
     d1.db
       .prepare(
         `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
@@ -331,7 +300,7 @@ describe('prerouteMessage: нові команди', () => {
   it('підказки R26 і /status відповідають; /forget - чесна заглушка', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('/idea'), NOW);
     await prerouteMessage(env, parsedMsg('/status'), NOW);
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
@@ -346,7 +315,7 @@ describe('«стоп» (S-0-3)', () => {
   it('активний прогін: /abort мозку, finish stopped, статусник «Зупинив.», черга очищена', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     reg.threads.set('dm', {
       activeRunId: 'run-active',
       statusMessageId: 77,
@@ -364,7 +333,7 @@ describe('«стоп» (S-0-3)', () => {
   it('нема активного - «Нема чого зупиняти.»', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('Стоп!'), NOW);
     expect(tg.some((c) => String(c.body.text).includes('Нема чого'))).toBe(true);
   });
@@ -374,7 +343,7 @@ describe('S-0-7: мозок недоступний', () => {
   it('невдалий старт: retry у чергу (attempts+1) + статус «спробую ще раз», finish з brain-start', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub(502);
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('питання про мої справи'), NOW);
     expect(reg.retries).toHaveLength(1);
     expect(reg.retries[0]!.entry).toMatchObject({ attempts: 1, statusMessageId: 101 });
@@ -385,7 +354,7 @@ describe('S-0-7: мозок недоступний', () => {
   it('третя невдача - «Не вдалося…», без retry', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub(502);
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     reg.threads.set('dm', { activeRunId: 'pending', statusMessageId: null, queue: [] });
     await startClaimedRun(
       env,
@@ -401,7 +370,7 @@ describe('S-0-7: мозок недоступний', () => {
   it('kickPendingThreads піднімає вільний тред із чергою, REUSE статусника', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub(202);
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     reg.threads.set('dm', {
       activeRunId: null,
       statusMessageId: null,
@@ -427,7 +396,7 @@ describe('ревʼю PR-3: класифікатор, стоп-вікно, тра
   it('claimed:false від setRun («стоп» у вікні pending): мозок НЕ кличеться, прогін cancelled, статусник видалено', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     // Тред зник ДО setRun - стаб поверне claimed:false (треду немає в мапі).
     await startClaimedRun(
       env,
@@ -458,11 +427,106 @@ describe('ревʼю PR-3: класифікатор, стоп-вікно, тра
         throw new Error('tunnel мовчить');
       }),
     );
-    const env = makeEnv(reg, d1FromSqlite().stub);
+    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('питання про мої плани'), NOW);
     expect(reg.finishes).toHaveLength(0);
     expect(reg.retries).toHaveLength(0);
     expect(reg.threads.get('dm')?.activeRunId).not.toBeNull();
     expect(tgLog.some((c) => String(c.body.text).includes('повільний'))).toBe(true);
+  });
+});
+
+describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на міграціях)', () => {
+  const cbEnv = () => {
+    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+    const { tg } = makeFetchStub();
+    const env = makeEnv(makeRegistryStub(), d1.stub);
+    return { env, db: d1.db, tg };
+  };
+  const seedProposal = (
+    db: InstanceType<typeof import('node:sqlite').DatabaseSync>,
+    over: Record<string, unknown> = {},
+  ) => {
+    const row = {
+      id: 'prop1',
+      level: 'T1',
+      kind: 'facts.set',
+      payload_json: JSON.stringify({ kind: 'setting', key: 'k', value: 1 }),
+      thread_id: 'dm',
+      word: null,
+      expires_at: new Date(NOW + 60_000).toISOString(),
+      status: 'open',
+      created_at: new Date(NOW).toISOString(),
+      ...over,
+    };
+    db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, word, expires_at, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      ...[
+        row.id,
+        row.level,
+        row.kind,
+        row.payload_json,
+        row.thread_id,
+        row.word,
+        row.expires_at,
+        row.status,
+        row.created_at,
+      ],
+    );
+  };
+
+  it('p:ok виконує пропозицію (facts.set у D1), тост «Підтверджено ✅», клавіатура знята', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db);
+    const toast = await handleBrainCallback(
+      env,
+      { data: 'p:prop1:ok', chatId: 555, messageId: 42 },
+      NOW,
+    );
+    expect(toast).toBe('Підтверджено ✅');
+    const fact = db.prepare(`SELECT * FROM facts WHERE key='k'`).get() as Record<string, unknown>;
+    expect(fact).toBeDefined();
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+  });
+
+  it('p:no - «Відхилено.»; повторний тап - «Вже вирішено»; прострочена - «Прострочено»', async () => {
+    const { env, db } = cbEnv();
+    seedProposal(db);
+    expect(await handleBrainCallback(env, { data: 'p:prop1:no', chatId: 555 }, NOW)).toBe(
+      'Відхилено.',
+    );
+    expect(
+      String(await handleBrainCallback(env, { data: 'p:prop1:ok', chatId: 555 }, NOW)),
+    ).toContain('Вже вирішено');
+    seedProposal(db, { id: 'prop2', expires_at: new Date(NOW - 1000).toISOString() });
+    expect(
+      String(await handleBrainCallback(env, { data: 'p:prop2:ok', chatId: 555 }, NOW)),
+    ).toContain('Прострочено');
+  });
+
+  it('T2 без слова - чесний тост про слово; невідомий id - «Не вийшло»', async () => {
+    const { env, db } = cbEnv();
+    seedProposal(db, { id: 'prop3', level: 'T2', word: 'ЗАБУТИ' });
+    expect(
+      String(await handleBrainCallback(env, { data: 'p:prop3:ok', chatId: 555 }, NOW)),
+    ).toContain('слово');
+    expect(
+      String(await handleBrainCallback(env, { data: 'p:nope:ok', chatId: 555 }, NOW)),
+    ).toContain('Не вийшло');
+  });
+
+  it('заглушки c:/r:/a:/m: чесні; чужі префікси (rc:, v1:) і off-режим - null (легасі)', async () => {
+    const { env } = cbEnv();
+    expect(String(await handleBrainCallback(env, { data: 'c:x:go', chatId: 555 }, NOW))).toContain(
+      'етапі 5',
+    );
+    expect(await handleBrainCallback(env, { data: 'rc:123', chatId: 555 }, NOW)).toBeNull();
+    expect(
+      await handleBrainCallback(env, { data: 'v1:2026-08-27:up', chatId: 555 }, NOW),
+    ).toBeNull();
+    const offEnv = makeEnv(makeRegistryStub(), d1FromSqlite(['0001_base.sql']).stub, 'off');
+    expect(await handleBrainCallback(offEnv, { data: 'p:prop1:ok', chatId: 555 }, NOW)).toBeNull();
   });
 });

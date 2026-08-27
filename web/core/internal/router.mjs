@@ -323,7 +323,7 @@ async function scheduleDrain(env, ctx, nowMs) {
  * @param {Env} env
  * @param {ExecutionContext | undefined} ctx
  * @param {string} runId
- * @param {{ steps: Record<string, unknown>[] }} body
+ * @param {{ steps: Record<string, unknown>[], outcome?: { escalate?: { text?: string, status_message_id?: number } } }} body
  * @param {number} nowMs
  */
 async function handleRuns(env, ctx, runId, body, nowMs) {
@@ -366,8 +366,18 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
   if (info?.threadId != null) {
     const threadKey = String(info.threadId);
     const target = parsedForThread(env, threadKey, info.chatId ?? null);
-    const esc = steps.find((s) => s && s.kind === 'reply' && s.name === 'escalate');
-    const escText = typeof esc?.note === 'string' ? esc.note : '';
+    // Керівний сигнал - із КОНТРАКТНОГО body.outcome (ревʼю PR-3: телеметрія
+    // не транспорт керування); крок name='escalate' - лише журнальний слід і
+    // fallback на вікно деплою, поки мозок ще шле старий формат.
+    const outcomeEsc = body.outcome?.escalate;
+    const stepEsc = steps.find((s) => s && s.kind === 'reply' && s.name === 'escalate');
+    const esc = outcomeEsc ?? stepEsc;
+    const escText =
+      typeof outcomeEsc?.text === 'string'
+        ? outcomeEsc.text
+        : typeof stepEsc?.note === 'string'
+          ? stepEsc.note
+          : '';
     // Строго number ≥ 1: Number(null) дав би message_id 0 (ревʼю PR-3).
     const escStatusId =
       typeof esc?.status_message_id === 'number' && esc.status_message_id >= 1

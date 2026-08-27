@@ -10,36 +10,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { workerEnv } from './helpers/env.js';
+import { d1FromSqlite } from './helpers/d1.js';
 
 const KEY = 'runs-test-key';
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const PATH = '/internal/runs';
-
-const d1FromSqlite = () => {
-  const db = new DatabaseSync(':memory:');
-  for (const file of ['0001_base.sql', '0003_telemetry.sql']) {
-    db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', file), 'utf8'));
-  }
-  return {
-    db,
-    stub: {
-      prepare: (sql: string) => ({
-        bind: (...args: unknown[]) => ({
-          run: async () => {
-            // @ts-expect-error node:sqlite приймає біндинги варіативно
-            const info = db.prepare(sql).run(...args);
-            // Драйн outbox звіряє meta.changes (claim конкурентного драйну).
-            return { meta: { changes: Number(info.changes) } };
-          },
-          all: async () => ({
-            // @ts-expect-error те саме для all
-            results: db.prepare(sql).all(...args),
-          }),
-        }),
-      }),
-    },
-  };
-};
 
 let nonceSeq = 0;
 const request = async (bodyObj: unknown) => {
@@ -72,7 +47,7 @@ describe('POST /internal/runs', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d1 = d1FromSqlite();
+    const d1 = d1FromSqlite(['0001_base.sql', '0003_telemetry.sql']);
     db = d1.db;
     finishes = [];
     env = workerEnv({
@@ -157,7 +132,7 @@ describe('POST /internal/runs', () => {
 
 describe('handleRuns: ескалація і черга треду', () => {
   const richEnv = () => {
-    const d1 = d1FromSqlite();
+    const d1 = d1FromSqlite(['0001_base.sql', '0003_telemetry.sql']);
     // Outbox для статус-редагувань продовження.
     d1.db.exec(
       readFileSync(
@@ -212,6 +187,25 @@ describe('handleRuns: ескалація і черга треду', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('outcome.escalate (контракт) працює і БЕЗ журнального кроку - телеметрія не транспорт', async () => {
+    const { env, brain } = richEnv();
+    const res = await handleInternal(
+      await request({
+        steps: [{ n: 1, kind: 'reply', name: 'deliver-skip', ok: true }],
+        outcome: { escalate: { text: 'через outcome', status_message_id: 55 } },
+      }),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    const runCall = brain.find((c) => c.path === '/run');
+    expect(runCall?.body).toMatchObject({
+      profile: 'chat',
+      input: { text: 'через outcome' },
+      status_message_id: 55,
+    });
   });
 
   it('S-N3-6: крок escalate → «Думаю довше…» у ТОЙ САМИЙ статусник + chat-прогін з тим самим текстом', async () => {

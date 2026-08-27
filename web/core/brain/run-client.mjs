@@ -1,114 +1,41 @@
-// Клієнт ядро→мозок (ADR-038): POST /run за Tunnel - перший бойовий викликач.
+// Клієнт ядро→мозок (ADR-038/039): POST /run і POST /abort за Tunnel.
 // Підпис - той самий ADR-037 (signInternal по сирому тілу), плюс Access
 // service token. run_id МУСИТЬ бути зареєстрованим (registryBegin) ДО виклику:
 // мозок відповідає назад у /internal/*, а роутер відкидає невідомі прогони.
 // Місконфіг - явна відмова з причиною, не тихий пропуск (00-README п.6).
+//
+// Спільний транспорт signedBrainPost (ревʼю PR-3: дві копії підпису/Access/
+// таймауту тихо розʼїхались би) - callBrainRun/callBrainAbort лише
+// інтерпретують статус.
 
 import { signInternal } from '../internal/auth.mjs';
 
 const RUN_TIMEOUT_MS = 10_000;
 
 /**
+ * Підписаний POST у мозок. status 0 = транспортна невизначеність (мережа або
+ * таймаут - запит МІГ дійти); body - розібраний JSON відповіді або null.
  * @param {Env} env
- * @param {{
- *   runId: string,
- *   profile: 'chat' | 'quick' | 'summarize',
- *   threadId: string,
- *   inputText: string,
- *   tainted?: boolean,
- *   statusMessageId?: number,
- *   session?: { sdk_session_id: string | null, summary_md: string | null },
- * }} req
- * @param {number} nowMs
- * @returns {Promise<{ ok: true } | { ok: false, status: number, detail: string }>}
- */
-export async function callBrainRun(env, req, nowMs) {
-  const url = String(env.BRAIN_URL ?? '')
-    .trim()
-    .replace(/\/+$/, '');
-  const key = String(env.INTERNAL_HMAC_KEY ?? '').trim();
-  const clientId = String(env.BRAIN_ACCESS_CLIENT_ID ?? '').trim();
-  const clientSecret = String(env.BRAIN_ACCESS_CLIENT_SECRET ?? '').trim();
-  if (!url) return { ok: false, status: 0, detail: 'BRAIN_URL не задано' };
-  if (!key) return { ok: false, status: 0, detail: 'INTERNAL_HMAC_KEY не задано' };
-
-  const rawBody = JSON.stringify({
-    run_id: req.runId,
-    profile: req.profile,
-    thread_id: req.threadId,
-    input: { text: req.inputText },
-    ...(req.tainted != null ? { tainted: req.tainted } : {}),
-    ...(req.statusMessageId != null ? { status_message_id: req.statusMessageId } : {}),
-    ...(req.session ? { session: req.session } : {}),
-  });
-  const nonce = crypto.randomUUID();
-  const signature = await signInternal(key, {
-    method: 'POST',
-    path: '/run',
-    timestampMs: nowMs,
-    runId: req.runId,
-    nonce,
-    rawBody,
-  });
-  /** @type {Record<string, string>} */
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-Internal-Timestamp': String(nowMs),
-    'X-Internal-Run': req.runId,
-    'X-Internal-Nonce': nonce,
-    'X-Internal-Signature': signature,
-  };
-  if (clientId && clientSecret) {
-    headers['CF-Access-Client-Id'] = clientId;
-    headers['CF-Access-Client-Secret'] = clientSecret;
-  }
-
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), RUN_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${url}/run`, {
-      method: 'POST',
-      headers,
-      body: rawBody,
-      signal: ctrl.signal,
-    });
-    if (res.status === 202) return { ok: true };
-    const body = /** @type {any} */ (await res.json().catch(() => null));
-    return {
-      ok: false,
-      status: res.status,
-      detail: String(body?.error ?? `HTTP ${res.status}`),
-    };
-  } catch (/** @type {any} */ e) {
-    return { ok: false, status: 0, detail: `мозок недосяжний: ${String(e?.message ?? 'мережа')}` };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * «стоп» (ADR-039): POST /abort мозку - перервати активний прогін. Той самий
- * підпис і Access, що /run; тіло {run_id}.
- * @param {Env} env
+ * @param {string} path
  * @param {string} runId
+ * @param {string} rawBody
  * @param {number} nowMs
- * @returns {Promise<{ ok: true, aborted: boolean } | { ok: false, status: number, detail: string }>}
+ * @returns {Promise<{ status: number, body: any } | { misconfig: string }>}
  */
-export async function callBrainAbort(env, runId, nowMs) {
+async function signedBrainPost(env, path, runId, rawBody, nowMs) {
   const url = String(env.BRAIN_URL ?? '')
     .trim()
     .replace(/\/+$/, '');
   const key = String(env.INTERNAL_HMAC_KEY ?? '').trim();
   const clientId = String(env.BRAIN_ACCESS_CLIENT_ID ?? '').trim();
   const clientSecret = String(env.BRAIN_ACCESS_CLIENT_SECRET ?? '').trim();
-  if (!url) return { ok: false, status: 0, detail: 'BRAIN_URL не задано' };
-  if (!key) return { ok: false, status: 0, detail: 'INTERNAL_HMAC_KEY не задано' };
+  if (!url) return { misconfig: 'BRAIN_URL не задано' };
+  if (!key) return { misconfig: 'INTERNAL_HMAC_KEY не задано' };
 
-  const rawBody = JSON.stringify({ run_id: runId });
   const nonce = crypto.randomUUID();
   const signature = await signInternal(key, {
     method: 'POST',
-    path: '/abort',
+    path,
     timestampMs: nowMs,
     runId,
     nonce,
@@ -126,21 +53,66 @@ export async function callBrainAbort(env, runId, nowMs) {
     headers['CF-Access-Client-Id'] = clientId;
     headers['CF-Access-Client-Secret'] = clientSecret;
   }
+
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), RUN_TIMEOUT_MS);
   try {
-    const res = await fetch(`${url}/abort`, {
+    const res = await fetch(`${url}${path}`, {
       method: 'POST',
       headers,
       body: rawBody,
       signal: ctrl.signal,
     });
     const body = /** @type {any} */ (await res.json().catch(() => null));
-    if (res.status === 200) return { ok: true, aborted: Boolean(body?.aborted) };
-    return { ok: false, status: res.status, detail: String(body?.error ?? `HTTP ${res.status}`) };
+    return { status: res.status, body };
   } catch (/** @type {any} */ e) {
-    return { ok: false, status: 0, detail: `мозок недосяжний: ${String(e?.message ?? 'мережа')}` };
+    return { status: 0, body: { error: `мозок недосяжний: ${String(e?.message ?? 'мережа')}` } };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * @param {Env} env
+ * @param {{
+ *   runId: string,
+ *   profile: 'chat' | 'quick' | 'summarize',
+ *   threadId: string,
+ *   inputText: string,
+ *   tainted?: boolean,
+ *   statusMessageId?: number,
+ *   session?: { sdk_session_id: string | null, summary_md: string | null },
+ * }} req
+ * @param {number} nowMs
+ * @returns {Promise<{ ok: true } | { ok: false, status: number, detail: string }>}
+ */
+export async function callBrainRun(env, req, nowMs) {
+  const rawBody = JSON.stringify({
+    run_id: req.runId,
+    profile: req.profile,
+    thread_id: req.threadId,
+    input: { text: req.inputText },
+    ...(req.tainted != null ? { tainted: req.tainted } : {}),
+    ...(req.statusMessageId != null ? { status_message_id: req.statusMessageId } : {}),
+    ...(req.session ? { session: req.session } : {}),
+  });
+  const res = await signedBrainPost(env, '/run', req.runId, rawBody, nowMs);
+  if ('misconfig' in res) return { ok: false, status: 0, detail: res.misconfig };
+  if (res.status === 202) return { ok: true };
+  return { ok: false, status: res.status, detail: String(res.body?.error ?? `HTTP ${res.status}`) };
+}
+
+/**
+ * «стоп» (ADR-039): POST /abort мозку - перервати активний прогін.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {number} nowMs
+ * @returns {Promise<{ ok: true, aborted: boolean } | { ok: false, status: number, detail: string }>}
+ */
+export async function callBrainAbort(env, runId, nowMs) {
+  const rawBody = JSON.stringify({ run_id: runId });
+  const res = await signedBrainPost(env, '/abort', runId, rawBody, nowMs);
+  if ('misconfig' in res) return { ok: false, status: 0, detail: res.misconfig };
+  if (res.status === 200) return { ok: true, aborted: Boolean(res.body?.aborted) };
+  return { ok: false, status: res.status, detail: String(res.body?.error ?? `HTTP ${res.status}`) };
 }

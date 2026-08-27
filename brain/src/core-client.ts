@@ -120,11 +120,19 @@ export class CoreClient {
     }
   }
 
-  /** Телеметрія кроків (run_steps + закриття прогону в реєстрі); best-effort -
-   *  журнал не сміє валити прогін. 501 терпимо: старе ядро до PR-2. */
-  async reportRuns(runId: string, steps: object[]): Promise<void> {
+  /** Телеметрія кроків (run_steps + закриття прогону в реєстрі) + опційний
+   *  керівний outcome (ескалація, ADR-039: контракт, не журнальний крок);
+   *  best-effort - журнал не сміє валити прогін. 501 терпимо: ядро до PR-2. */
+  async reportRuns(
+    runId: string,
+    steps: object[],
+    outcome?: { escalate: { text: string; status_message_id?: number } },
+  ): Promise<void> {
     try {
-      const res = await this.post('/internal/runs', runId, { steps });
+      const res = await this.post('/internal/runs', runId, {
+        steps,
+        ...(outcome ? { outcome } : {}),
+      });
       if (res.status !== 501 && (res.status < 200 || res.status >= 300)) {
         console.warn(`core-client: /internal/runs ${res.status}`);
       }
