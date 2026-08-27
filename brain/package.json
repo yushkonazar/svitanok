@@ -1,0 +1,21 @@
+{
+  "name": "svitanok-brain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Мозок Світанку: сервіс Claude Agent SDK на VPS за Cloudflare Tunnel (01-architecture §2.2)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/stamp-build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.247",
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3",
+    "zod": "4.4.3"
+  }
+}
