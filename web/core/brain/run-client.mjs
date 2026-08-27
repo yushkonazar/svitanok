@@ -85,3 +85,62 @@ export async function callBrainRun(env, req, nowMs) {
     clearTimeout(timer);
   }
 }
+
+/**
+ * «стоп» (ADR-039): POST /abort мозку - перервати активний прогін. Той самий
+ * підпис і Access, що /run; тіло {run_id}.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {number} nowMs
+ * @returns {Promise<{ ok: true, aborted: boolean } | { ok: false, status: number, detail: string }>}
+ */
+export async function callBrainAbort(env, runId, nowMs) {
+  const url = String(env.BRAIN_URL ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  const key = String(env.INTERNAL_HMAC_KEY ?? '').trim();
+  const clientId = String(env.BRAIN_ACCESS_CLIENT_ID ?? '').trim();
+  const clientSecret = String(env.BRAIN_ACCESS_CLIENT_SECRET ?? '').trim();
+  if (!url) return { ok: false, status: 0, detail: 'BRAIN_URL не задано' };
+  if (!key) return { ok: false, status: 0, detail: 'INTERNAL_HMAC_KEY не задано' };
+
+  const rawBody = JSON.stringify({ run_id: runId });
+  const nonce = crypto.randomUUID();
+  const signature = await signInternal(key, {
+    method: 'POST',
+    path: '/abort',
+    timestampMs: nowMs,
+    runId,
+    nonce,
+    rawBody,
+  });
+  /** @type {Record<string, string>} */
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Internal-Timestamp': String(nowMs),
+    'X-Internal-Run': runId,
+    'X-Internal-Nonce': nonce,
+    'X-Internal-Signature': signature,
+  };
+  if (clientId && clientSecret) {
+    headers['CF-Access-Client-Id'] = clientId;
+    headers['CF-Access-Client-Secret'] = clientSecret;
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), RUN_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${url}/abort`, {
+      method: 'POST',
+      headers,
+      body: rawBody,
+      signal: ctrl.signal,
+    });
+    const body = /** @type {any} */ (await res.json().catch(() => null));
+    if (res.status === 200) return { ok: true, aborted: Boolean(body?.aborted) };
+    return { ok: false, status: res.status, detail: String(body?.error ?? `HTTP ${res.status}`) };
+  } catch (/** @type {any} */ e) {
+    return { ok: false, status: 0, detail: `мозок недосяжний: ${String(e?.message ?? 'мережа')}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}

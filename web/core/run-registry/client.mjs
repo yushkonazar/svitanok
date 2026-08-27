@@ -138,7 +138,7 @@ export async function registryThreadSetRun(env, threadId, runId, statusMessageId
 }
 
 /** @param {Env} env @param {string} threadId
- *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number } | null }>} */
+ *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null } | null }>} */
 export async function registryThreadFinish(env, threadId) {
   const ns = registryNs(env);
   if (!ns) return { next: null };
@@ -159,6 +159,31 @@ export async function registryThreadClear(env, threadId) {
   } catch (/** @type {any} */ e) {
     console.error('run-registry: threadClear впав', e?.message);
     return { activeRunId: null, statusMessageId: null, cleared: 0 };
+  }
+}
+
+/** @param {Env} env @param {string} threadId
+ *  @param {{ text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null }} entry */
+export async function registryThreadRetry(env, threadId, entry) {
+  const ns = registryNs(env);
+  if (!ns) return;
+  try {
+    await ns.getByName(RUN_REGISTRY_DO_NAME).threadRetry(threadId, entry);
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadRetry впав (запит втрачено з черги)', e?.message);
+  }
+}
+
+/** @param {Env} env @param {string} threadId
+ *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null } | null }>} */
+export async function registryThreadKickNext(env, threadId) {
+  const ns = registryNs(env);
+  if (!ns) return { next: null };
+  try {
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadKickNext(threadId);
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadKickNext впав', e?.message);
+    return { next: null };
   }
 }
 

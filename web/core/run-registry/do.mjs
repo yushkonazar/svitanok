@@ -189,7 +189,9 @@ export class RunRegistryDO extends DurableObject {
   async threadClaim(threadId, entry) {
     const threads = await this.#threads();
     const t = threads[threadId] ?? { activeRunId: null, statusMessageId: null, queue: [] };
-    if (t.activeRunId != null) {
+    // Старт лише коли тред вільний І черга порожня: тред без активного прогону,
+    // але з чергою - це «чекаємо ретраю» (S-0-7), нове повідомлення стає ЗА ним.
+    if (t.activeRunId != null || t.queue.length > 0) {
       if (t.queue.length >= THREAD_QUEUE_MAX) return { queued: -1 };
       t.queue.push({ ...entry, attempts: entry.attempts ?? 0 });
       threads[threadId] = t;
@@ -201,6 +203,44 @@ export class RunRegistryDO extends DurableObject {
     threads[threadId] = t;
     await this.ctx.storage.put(THREADS_KEY, threads);
     return { start: true };
+  }
+
+  /**
+   * Невдалий старт (мозок недоступний, S-0-7): запис повертається на ПОЧАТОК
+   * черги, тред звільняється - «підняття» (threadKickNext з задачі
+   * brain-health) спробує знову, а нові повідомлення стають позаду.
+   * @param {string} threadId
+   * @param {{ text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null }} entry
+   */
+  async threadRetry(threadId, entry) {
+    const threads = await this.#threads();
+    const t = threads[threadId] ?? { activeRunId: null, statusMessageId: null, queue: [] };
+    t.queue.unshift(entry);
+    t.activeRunId = null;
+    t.statusMessageId = null;
+    threads[threadId] = t;
+    await this.ctx.storage.put(THREADS_KEY, threads);
+  }
+
+  /**
+   * «Підняти» вільний тред із непорожньою чергою: взяти голову черги під
+   * прогін. Тред з активним прогоном - тихий null (нічого піднімати).
+   * @param {string} threadId
+   */
+  async threadKickNext(threadId) {
+    const threads = await this.#threads();
+    const t = threads[threadId];
+    if (!t || t.activeRunId != null) return { next: null };
+    const next = t.queue.shift() ?? null;
+    if (!next) {
+      delete threads[threadId];
+    } else {
+      t.activeRunId = 'pending';
+      t.statusMessageId = null;
+      threads[threadId] = t;
+    }
+    await this.ctx.storage.put(THREADS_KEY, threads);
+    return { next };
   }
 
   /** Прогін треду стартував по-справжньому: запамʼятати runId і статусник
