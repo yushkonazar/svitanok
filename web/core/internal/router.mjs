@@ -18,6 +18,7 @@ import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
+import { startClaimedRun, registryThreadFinishAndKick, THREAD_DM } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -195,7 +196,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       return handleDeliver(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
     if (route === 'status') return handleStatus(env, ctx, /** @type {any} */ (body), nowMs);
     if (route === 'session') return handleSession(env, /** @type {any} */ (body), nowMs);
-    return handleRuns(env, auth.runId, /** @type {any} */ (body), nowMs);
+    return handleRuns(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
   }
 
   return json({ ok: false, error: 'not-found' }, 404);
@@ -303,13 +304,19 @@ async function scheduleDrain(env, ctx, nowMs) {
  * сам реєстр: finished_at IS NULL). Поля кроків коерсяться дбайливо - контракт
  * RUNS_SCHEMA гарантує лише «масив обʼєктів», а телеметрія не сміє валити
  * прогін через криве поле.
+ * Після закриття прогону тут же живе продовження треду (ADR-039): ескалація
+ * quick→chat (крок name='escalate' з текстом у note) або наступний запис
+ * черги; обидва - у waitUntil, щоб відповідь мозку не чекала нового прогону.
  * @param {Env} env
+ * @param {ExecutionContext | undefined} ctx
  * @param {string} runId
  * @param {{ steps: Record<string, unknown>[] }} body
  * @param {number} nowMs
  */
-async function handleRuns(env, runId, body, nowMs) {
+async function handleRuns(env, ctx, runId, body, nowMs) {
   if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
+  // Інфо ДО finish: finish прибирає прогін з активних, і threadId зник би.
+  const info = await registryRunInfo(env, runId);
   const steps = body.steps;
   try {
     for (let i = 0; i < steps.length; i += 1) {
@@ -342,6 +349,52 @@ async function handleRuns(env, runId, body, nowMs) {
     error: failed ? 'brain-error' : null,
     steps: steps.length,
   });
+
+  if (info?.threadId != null) {
+    const threadKey = String(info.threadId);
+    const target = {
+      chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
+      threadId: threadKey === THREAD_DM ? null : threadKey,
+    };
+    const esc = steps.find((s) => s && s.kind === 'reply' && s.name === 'escalate');
+    const escText = typeof esc?.note === 'string' ? esc.note : '';
+    const escStatusId = Number.isFinite(Number(esc?.status_message_id))
+      ? Number(esc?.status_message_id)
+      : null;
+    const continueThread = async () => {
+      if (esc && escText) {
+        // S-N3-6: статус «думаю довше…», той самий текст у chat, той самий
+        // статусник; тред НЕ звільняється - ескалація є продовженням.
+        if (escStatusId != null && env.TELEGRAM_CHAT_ID) {
+          await enqueueOutbox(
+            env,
+            {
+              chatId: Number(env.TELEGRAM_CHAT_ID),
+              kind: 'edit',
+              payload: { message_id: escStatusId, text: '▸ Думаю довше…' },
+            },
+            nowMs,
+          );
+          await drainOutbox(env, { nowMs }).catch(() => {});
+        }
+        await startClaimedRun(
+          env,
+          target,
+          threadKey,
+          { text: escText, route: 'chat', attempts: 0, atMs: nowMs },
+          nowMs,
+          escStatusId,
+        );
+        return;
+      }
+      await registryThreadFinishAndKick(env, target, threadKey, nowMs);
+    };
+    const cont = continueThread().catch(
+      (/** @type {any} */ e) => void console.error('internal: продовження треду впало', e?.message),
+    );
+    if (ctx?.waitUntil) ctx.waitUntil(cont);
+    else await cont;
+  }
   return json({ ok: true, steps: steps.length });
 }
 

@@ -31,6 +31,7 @@ export { SchedulerDO } from './core/scheduler/do.mjs';
 export { RunRegistryDO } from './core/run-registry/do.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
+import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
 import { handleAssistantStatus } from './core/assistant-status.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
@@ -108,41 +109,48 @@ async function processTelegramUpdate(
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const isSleepStart = isSleepStartCallback(parsed.data); // 'sl:' — «🌙 Ліг спати»
+      // Простір мозку 07 §9 (p:/c:/r:/a:/u:/m:, ADR-039): свої префікси, з
+      // легасі не перетинаються (rc:/ru:/… - дволітерні). null = не наш.
+      const brainToast = isPrimaryOwner(env, parsed.fromId)
+        ? await handleBrainCallback(env, parsed)
+        : null;
       // S1/B1: кнопки — це ВИКЛЮЧНО мутації стану власника (прийняти пропозицію
       // в його календар, скасувати його нагадування, записати його сон, відмітити
       // його роадмеп). Жодної читальної серед них немає, тож межа рівно тут.
       const toast = !isPrimaryOwner(env, parsed.fromId)
         ? COOWNER_DENIED_TOAST
-        : proposalCb
-          ? await resolveProposalCallback(env, parsed, proposalCb)
-          : agendaCb
-            ? await resolveAgendaCallback(env, parsed, agendaCb)
-            : roadmapCb
-              ? await resolveRoadmapCallback(env, parsed, roadmapCb)
-              : reminderCancelId === 'all'
-                ? await resolveReminderCancelAll(env, parsed)
-                : reminderCancelId
-                  ? await resolveReminderCancel(env, parsed, reminderCancelId)
-                  : reminderEditId
-                    ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
-                    : reminderDoneId
-                      ? await resolveReminderDone(env, parsed, reminderDoneId)
-                      : snoozePreset
-                        ? await resolveReminderSnoozePreset(
-                            env,
-                            parsed,
-                            snoozePreset.presetIdx,
-                            snoozePreset.id,
-                          )
-                        : isReminderSnooze
-                          ? await resolveReminderSnooze(
+        : brainToast != null
+          ? brainToast
+          : proposalCb
+            ? await resolveProposalCallback(env, parsed, proposalCb)
+            : agendaCb
+              ? await resolveAgendaCallback(env, parsed, agendaCb)
+              : roadmapCb
+                ? await resolveRoadmapCallback(env, parsed, roadmapCb)
+                : reminderCancelId === 'all'
+                  ? await resolveReminderCancelAll(env, parsed)
+                  : reminderCancelId
+                    ? await resolveReminderCancel(env, parsed, reminderCancelId)
+                    : reminderEditId
+                      ? await resolveReminderEditPrompt(env, parsed, reminderEditId)
+                      : reminderDoneId
+                        ? await resolveReminderDone(env, parsed, reminderDoneId)
+                        : snoozePreset
+                          ? await resolveReminderSnoozePreset(
                               env,
                               parsed,
-                              parsed.data.slice(REMINDER_CB_PREFIX.length),
+                              snoozePreset.presetIdx,
+                              snoozePreset.id,
                             )
-                          : isSleepStart
-                            ? await resolveSleepStart(env, parsed)
-                            : await resolveCallbackToast(env, parsed);
+                          : isReminderSnooze
+                            ? await resolveReminderSnooze(
+                                env,
+                                parsed,
+                                parsed.data.slice(REMINDER_CB_PREFIX.length),
+                              )
+                            : isSleepStart
+                              ? await resolveSleepStart(env, parsed)
+                              : await resolveCallbackToast(env, parsed);
       if (parsed.callbackId) {
         await tgCall(env, 'answerCallbackQuery', {
           callback_query_id: parsed.callbackId,
@@ -153,7 +161,11 @@ async function processTelegramUpdate(
       // G1: спершу трекнути вхідне (перед handleCommand) — щоб уже цей-таки /clear
       // міг видалити й своє тригер-повідомлення разом із рештою.
       await trackIncomingMessage(env, parsed);
-      await handleCommand(env, parsed, origin);
+      // Новий шлях (ADR-039): on - усе в темі Асистент/DM; shadow - лише
+      // префікс v2: (решта класифікується в runs і йде далі легасі); off/чуже -
+      // false, і легасі працює як завжди.
+      const handled = await prerouteMessage(env, parsed);
+      if (!handled) await handleCommand(env, parsed, origin);
     }
 
     if (typeof parsed.updateId === 'number') {

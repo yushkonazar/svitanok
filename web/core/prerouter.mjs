@@ -22,6 +22,8 @@ import {
   registryThreadsSnapshot,
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
+import { parsePolicyCallback } from './policy/core.mjs';
+import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 
 export const THREAD_DM = 'dm';
 export const STATUS_DRAFT = '▸ Думаю…';
@@ -67,7 +69,7 @@ const HINTS = {
 /**
  * Головний вхід з worker.js. true = оброблено новим шляхом (легасі не чіпати).
  * @param {Env} env
- * @param {{ kind: string, chatId: number | null, threadId: number | string | null, text?: string, messageId?: number | null }} parsed
+ * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null }} parsed
  * @param {number} [nowMs]
  */
 export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
@@ -81,17 +83,20 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     parsed.threadId == null || String(parsed.threadId) === String(env.TOPIC_ASSISTANT ?? '');
   if (!inAssistant) return false;
 
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+
   if (mode === 'shadow') {
     if (!/^v2:/i.test(text)) {
-      await shadowClassifyLog(env, parsed, text, nowMs);
+      await shadowClassifyLog(env, target, text, nowMs);
       return false;
     }
     text = text.replace(/^v2:\s*/i, '');
     if (!text) return false;
   }
 
-  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
-  const send = (/** @type {string} */ body) => reply(env, parsed, body, nowMs);
+  const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
+  const send = (/** @type {string} */ body) => reply(env, target, body, nowMs);
 
   const cmd = parseNewCommand(text);
   if (cmd) {
@@ -117,7 +122,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   if (text.startsWith('/')) return false;
 
   if (/^стоп[.!]?$/i.test(text)) {
-    await stopThread(env, parsed, threadKey, nowMs);
+    await stopThread(env, target, threadKey, nowMs);
     return true;
   }
 
@@ -129,7 +134,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     );
     return true;
   }
-  await startClaimedRun(env, parsed, threadKey, { text, route, attempts: 0, atMs: nowMs }, nowMs);
+  await startClaimedRun(env, target, threadKey, { text, route, attempts: 0, atMs: nowMs }, nowMs);
   return true;
 }
 
@@ -232,6 +237,64 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
     kicked += 1;
   }
   return { kicked };
+}
+
+/**
+ * Callback-и простору мозку 07 §9 (дротування p:/u: - борг PR-8 етапу 1).
+ * Повертає текст тосту або null («не наш» - легасі-ланцюг worker.js).
+ * p:/u: - бойові (policy PR-8); c:/r:/a:/m: - чесні заглушки до своїх етапів.
+ * @param {Env} env
+ * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null }} parsed
+ * @param {number} [nowMs]
+ * @returns {Promise<string | null>}
+ */
+export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
+  if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
+  const data = String(parsed.data ?? '');
+  const policy = parsePolicyCallback(data);
+  if (policy) {
+    if (policy.kind === 'undo') {
+      return undoToast(await resolveUndo(env, policy.id, nowMs));
+    }
+    const res = await resolveProposal(env, { id: policy.id, choice: policy.choice }, nowMs);
+    // Прибрати клавіатуру після рішення - best-effort: тост важливіший.
+    if (res.ok && 'status' in res && parsed.messageId != null && parsed.chatId != null) {
+      await tgCall(env, 'editMessageReplyMarkup', {
+        chat_id: parsed.chatId,
+        message_id: parsed.messageId,
+      }).catch(() => {});
+    }
+    return proposalToast(res);
+  }
+  const stub = data.match(/^([cram]):/)?.[1];
+  if (!stub) return null;
+  return {
+    c: 'Ланцюги приїдуть на етапі 5.',
+    r: 'Нагадування нового шляху - з інструментами запису (PR-6).',
+    a: 'Відповіді на питання прогону - пізніше цим етапом.',
+    m: 'Меню - пізніше.',
+  }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
+}
+
+/** @param {Awaited<ReturnType<typeof resolveProposal>>} res */
+function proposalToast(res) {
+  if (!res.ok) {
+    if (res.error === 'word-required') return 'Це T2: напиши слово-підтвердження текстом.';
+    if (res.error.startsWith('no-executor'))
+      return 'Прийнято, але виконавця ще немає - лишив відкритою.';
+    return `Не вийшло: ${res.error}`;
+  }
+  if ('already' in res) return `Вже вирішено (${res.already}).`;
+  if (res.status === 'approved') return res.executed ? 'Підтверджено ✅' : 'Підтверджено.';
+  if (res.status === 'rejected') return 'Відхилено.';
+  return 'Прострочено - створи запит заново.';
+}
+
+/** @param {Awaited<ReturnType<typeof resolveUndo>>} res */
+function undoToast(res) {
+  if (!res.ok) return `Не вийшло: ${res.error}`;
+  if ('already' in res) return 'Вже застосовано.';
+  return res.status === 'undone' ? 'Відкочено ↩' : 'Вікно скасування минуло (10 хв).';
 }
 
 /** @typedef {{ chatId: number | null, threadId: number | string | null }} ThreadTarget */
