@@ -76,6 +76,10 @@ jobs:
           cd /opt/svitanok-brain
           git fetch origin
           git checkout --detach "$SHA"
+          # /opt/svitanok-brain - клон УСЬОГО репо; сервіс живе в brain/ зі
+          # своїм package.json (провізіонінг 27.08; кореневий npm ci тут падав
+          # би на husky з prepare). Збірка без devDeps - tsc у dependencies.
+          cd brain
           npm ci --omit=dev
           npm run build
           sudo systemctl restart svitanok-brain

@@ -68,6 +68,29 @@ jobs:
   # web/app», «нуль компонентних тестів»). Кореневий vitest лишається для чистої
   # логіки — він швидкий і без DOM; сюди йде те, що можна перевірити лише
   # рендером (jsdom + Testing Library).
+  # Мозок (brain/, редизайн етап 2) — окремий сервіс зі СВОЇМИ node_modules:
+  # кореневий tsc його не бачить (include явний), тож job за прецедентом
+  # dashboard. Логіку мозку ганяє КОРЕНЕВИЙ vitest (SDK-вільні модулі, tests/
+  # brain-*.test.ts); тут — типи проти справжніх d.ts Agent SDK і збірка зі
+  # штампом sha (та сама команда, що на VPS у deploy-host.yml).
+  brain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: brain
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: brain/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
   dashboard:
     runs-on: ubuntu-latest
     permissions:
