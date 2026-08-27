@@ -39,6 +39,11 @@
     // 27.08 (етап 2 PR-1) - канал ядро→мозок вмикається цим рядком.
     "BRAIN_URL": "https://brain.yushko.dev",
   },
+  // Памʼять асистента (ADR-038, етап 2 PR-2): згортки тредів → ембединги
+  // bge-m3 (Workers AI) → Vectorize svitanok-memory (1024, cosine; індекс
+  // створено wrangler-ом 27.08). Обидві привʼязки читає лише memory-модуль.
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "svitanok-memory" }],
+  "ai": { "binding": "AI" },
   // Durable Object прогону асистента (Фаза 4 аудиту): авторитетний лічильник
   // кроків замість best-effort надгробка в KV. `storage:"sqlite"` — не смак:
   // на Workers Free доступні ЛИШЕ SQLite-бекенди DO. Оголошення через `exports`

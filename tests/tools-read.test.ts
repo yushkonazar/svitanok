@@ -296,7 +296,7 @@ describe('facts.* на справжній міграції 0001', () => {
 });
 
 describe('реєстр TOOLS', () => {
-  it('склад PR-6: читання + facts; drive.write свідомо відсутній до policy', () => {
+  it('склад: читання + facts (PR-6) + memory.search (етап 2 PR-2); drive.write свідомо відсутній до policy', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
       'data.read',
@@ -307,6 +307,7 @@ describe('реєстр TOOLS', () => {
       'geo.last',
       'mail.read',
       'mail.search',
+      'memory.search',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
   });

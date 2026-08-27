@@ -12,6 +12,7 @@ import { registryHas, registryConsumeNonce, registryRunInfo } from '../run-regis
 import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
+import { writeMemoryChunks } from '../memory.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -328,6 +329,24 @@ async function handleSession(env, body, nowMs) {
   } catch (/** @type {any} */ e) {
     console.error('internal: upsert session впав', e?.message);
     return json({ ok: false, error: 'session-not-persisted' }, 500);
+  }
+  // Згортка → памʼять (memory_chunks + Vectorize). Сесія ВЖЕ персистована,
+  // тому збій памʼяті не 500 (це відкотило б у мозку те, що насправді
+  // записано), а чесне поле у відповіді + гучний лог; згортка в будь-якому
+  // разі лежить у sessions.summary_md (резерв ADR-020).
+  if (body.summary_md != null) {
+    try {
+      const { written } = await writeMemoryChunks(env, body.thread_id, body.summary_md, nowMs);
+      return json({ ok: true, thread_id: body.thread_id, memory_chunks: written });
+    } catch (/** @type {any} */ e) {
+      console.error('internal: запис памʼяті впав (згортка збережена в sessions)', e?.message);
+      return json({
+        ok: true,
+        thread_id: body.thread_id,
+        memory: 'failed',
+        reason: String(e?.message ?? ''),
+      });
+    }
   }
   return json({ ok: true, thread_id: body.thread_id });
 }
