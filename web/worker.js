@@ -30,6 +30,7 @@ export { AgentRun } from './agent-run-do.mjs';
 export { SchedulerDO } from './core/scheduler/do.mjs';
 export { RunRegistryDO } from './core/run-registry/do.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
+import { handleInternal } from './core/internal/router.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
@@ -380,6 +381,12 @@ export default {
     // ран-токен. Свідомо БЕЗ CORS — це міжсерверний роут, не для браузера.
     if (url.pathname === '/api/agent-step' && request.method === 'POST') {
       return handleAgentStep(request, env);
+    }
+    // Internal API редизайну (етап 1, PR-5): HMAC + run_id, деталі — router.
+    // Свідомо без CORS з тієї ж причини, що /api/agent-step. При off віддає
+    // 404 сам (код є, не викликається).
+    if (url.pathname.startsWith('/internal/')) {
+      return handleInternal(request, env);
     }
     if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
       return handleTelegramSetup(request, env);
