@@ -26,6 +26,7 @@ import {
 } from '../../cron.mjs';
 import { agentRunWatchdog, agentHostHealthCheck } from '../../agent-runtime.mjs';
 import { drainOutbox } from '../tg/outbox.mjs';
+import { checkBrainHandshake } from '../brain/health.mjs';
 
 /**
  * @typedef {{
@@ -48,9 +49,21 @@ export const SCHEDULER_TASKS = {
   },
   reminder: { periodMin: 5, run: checkReminders },
   'run-watchdog': { periodMin: 5, run: agentRunWatchdog },
-  // Сьогодні це перевірка СТАРОГО хоста (agentHostHealthCheck); kind
-  // канонічний — на етапі 2 під ним стане handshake нового мозку (01 §2.2).
-  'brain-health': { periodMin: 5, run: agentHostHealthCheck },
+  // Обидва мозки під одним канонічним kind: старий хост (agentHostHealthCheck,
+  // живе до кінця етапу 2) і handshake нового (checkBrainHandshake - тихий
+  // no-op, доки BRAIN_URL не заданий). Збої ізольовані: розсинхрон нового не
+  // глушить перевірку старого і навпаки.
+  'brain-health': {
+    periodMin: 5,
+    run: async (env) => {
+      try {
+        await agentHostHealthCheck(env);
+      } catch (/** @type {any} */ e) {
+        console.error('brain-health: перевірка старого хоста впала', e?.message);
+      }
+      await checkBrainHandshake(env);
+    },
+  },
   'brief-dispatch': { periodMin: 5, run: autoBriefDispatch },
   'dead-man': { periodMin: 5, run: deadMansCheck },
   'checkin-nudge': { periodMin: 5, run: checkinNudgeCheck },
