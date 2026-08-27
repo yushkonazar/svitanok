@@ -55,6 +55,11 @@ describe('markup — маркування зовнішнього вмісту', 
     expect(out).toContain('‹/external>');
   });
 
+  it('пробіли навколо слеша не рятують: < /external> і </ external> теж ламаються', () => {
+    const out = neutralizeExternalTags('a < /external> b </ external> c <  external d');
+    expect(out).not.toMatch(/<\s*\/?\s*external/i);
+  });
+
   it('id санітизується до [A-Za-z0-9_-]', () => {
     expect(wrapExternal('mail', 'x', 'a"b<c>1')).toContain('id="abc1"');
   });
@@ -89,6 +94,17 @@ describe('data.read', () => {
 });
 
 describe('calendar.read', () => {
+  it('джерело недоступне (null) — гучний виняток, не «подій немає»', async () => {
+    // Жодного кешованого токена і жодних GOOGLE_* → readCalendarRange = null.
+    const env = workerEnv({ BRIEFING: kvBriefing().stub });
+    await expect(runCalendarRead(env, { days: 0 }, NOW)).rejects.toThrow(/недоступний/);
+  });
+
+  it('дробові days — виняток (addDays на пів доби — не контракт)', async () => {
+    const env = workerEnv({ BRIEFING: kvBriefing().stub });
+    await expect(runCalendarRead(env, { days: 1.5 }, NOW)).rejects.toThrow(/цілим/);
+  });
+
   it('days=0 — один день, days>0 — діапазон', async () => {
     vi.stubGlobal(
       'fetch',
@@ -219,12 +235,33 @@ describe('facts.* на справжній міграції 0001', () => {
     (env as { DB?: unknown }).DB = d1FromSqlite();
   });
 
-  it('set → get roundtrip: upsert за (kind, key), value крізь JSON', async () => {
+  it('set → get roundtrip: upsert за (kind, key), дефолтний source=inferred', async () => {
     await runFactsSet(env, { kind: 'setting', key: 'lang', value: 'uk' }, NOW);
     await runFactsSet(env, { kind: 'setting', key: 'lang', value: 'en' }, NOW + 1_000);
     const { result } = await runFactsGet(env, { kind: 'setting', key: 'lang' });
     expect(result).toHaveLength(1); // upsert, не дубль
-    expect(result[0]).toMatchObject({ kind: 'setting', key: 'lang', value: 'en', source: 'owner' });
+    // Дефолт БЕЗ source - inferred: викликач цього шляху - модель (07 §4);
+    // owner - лише явний opt-in (гейт - policy у PR-8).
+    expect(result[0]).toMatchObject({
+      kind: 'setting',
+      key: 'lang',
+      value: 'en',
+      source: 'inferred',
+    });
+    await runFactsSet(
+      env,
+      { kind: 'setting', key: 'lang', value: 'en', source: 'owner' },
+      NOW + 2_000,
+    );
+    const owned = await runFactsGet(env, { kind: 'setting', key: 'lang' });
+    expect(owned.result[0]).toMatchObject({ source: 'owner' });
+  });
+
+  it('порожній key - виняток і на set, і на get', async () => {
+    await expect(runFactsSet(env, { kind: 'habit', key: '', value: 1 }, NOW)).rejects.toThrow(
+      /порожнім/,
+    );
+    await expect(runFactsGet(env, { kind: 'habit', key: '' })).rejects.toThrow(/порожнім/);
   });
 
   it('невідомий kind і чужий source — винятки', async () => {

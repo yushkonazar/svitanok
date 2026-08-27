@@ -341,6 +341,41 @@ describe('handleInternal — маршрутизатор', () => {
     vi.unstubAllGlobals();
   });
 
+  it('taint не персистувався — 503, зовнішній вміст НЕ віддається (fail-closed)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })),
+    );
+    const noThreadEnv = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      GOOGLE_CLIENT_ID: 'c',
+      GOOGLE_CLIENT_SECRET: 's',
+      GOOGLE_REFRESH_TOKEN: 'r',
+      BRIEFING: {
+        get: async (k: string) =>
+          k === 'googleToken' ? JSON.stringify({ token: 't', expMs: NOW + 3_600_000 }) : null,
+        put: async () => {},
+        list: async () => ({ keys: [] }),
+      },
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async () => true,
+          runInfo: async () => null, // прогін без threadId - персистувати нікуди
+        }),
+      },
+    });
+    const res = await handleInternal(
+      await request('/internal/tool/mail.search', { args: { q: 'пошта' } }),
+      noThreadEnv,
+      NOW,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: 'taint-not-persisted' });
+    vi.unstubAllGlobals();
+  });
+
   it('порушення контракту — 400 зі шляхом поля', async () => {
     const res = await handleInternal(await request(PATH, {}), env, NOW);
     expect(res.status).toBe(400);

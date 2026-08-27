@@ -73,13 +73,15 @@ export async function runDataRead(env, args, nowMs) {
  * @param {number} nowMs
  */
 export async function runCalendarRead(env, args, nowMs) {
+  if (!Number.isInteger(args.days)) throw new Error('days має бути цілим 0-7');
   const today = kyivDateKey(new Date(nowMs));
   const endKey = addDaysToDateKey(today, args.days);
   const events = await readCalendarRange(env, today, endKey);
+  // null = джерело недоступне (токен/мережа) - це НЕ «подій немає»: тиха
+  // підміна змусила б модель упевнено брехати про порожній календар.
+  if (events == null) throw new Error('календар недоступний (токен або мережа)');
   const single = args.days === 0;
-  const body = single
-    ? formatEventsForPrompt(events ?? [])
-    : formatRangeEventsForPrompt(events ?? []);
+  const body = single ? formatEventsForPrompt(events) : formatRangeEventsForPrompt(events);
   return { result: `Календар (${single ? today : `${today}…${endKey}`}): ${body}` };
 }
 
@@ -126,7 +128,11 @@ export async function runGeoLast(env) {
   const read = async (/** @type {string} */ key) => {
     try {
       const parsed = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
-      return parsed && typeof parsed === 'object' ? parsed : null;
+      // Битий запис (масив, обʼєкт без чисел-координат) = локації немає, а не
+      // {known:true} з undefined-полями, що випадають із JSON-відповіді.
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+      if (typeof parsed.lat !== 'number' || typeof parsed.lon !== 'number') return null;
+      return parsed;
     } catch {
       return null;
     }

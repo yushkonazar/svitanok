@@ -116,8 +116,13 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
 
     // Подвійний барʼєр (01 §4.2), половина ядра: після tainting-інструмента
     // тред прогону позначається в sessions.tainted - навіть якщо хук мозку
-    // обійдено, policy (PR-8) побачить прапорець тут.
-    if (tool.tainting) await markRunThreadTainted(env, auth.runId, nowMs);
+    // обійдено, policy (PR-8) побачить прапорець тут. FAIL-CLOSED: якщо
+    // прапорець НЕ вдалось персистувати, зовнішній вміст не віддається -
+    // інакше транзієнтний збій DO/D1 давав би прогін із зовнішнім вмістом,
+    // який policy вважатиме чистим.
+    if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+      return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
+    }
 
     return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
   }
@@ -139,8 +144,9 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
 /**
  * Половина подвійного барʼєра, що живе в ядрі (01 §4.2): тред прогону, який
  * прочитав зовнішнє, позначається в D1 sessions.tainted=1 - policy (PR-8)
- * дивитиметься СЮДИ, а не вірити хуку мозку. Best-effort зі слідом: збій
- * запису не валить відповідь інструмента, але без DB/треду - console.error.
+ * дивитиметься СЮДИ, а не вірити хуку мозку. Повертає true лише коли прапорець
+ * СПРАВДІ персистовано - викликач на false відмовляє у видачі зовнішнього
+ * вмісту (fail-closed), тому кожен зрив тут і гучний, і не тихо-пропущений.
  * @param {Env} env
  * @param {string} runId
  * @param {number} nowMs
@@ -151,11 +157,11 @@ async function markRunThreadTainted(env, runId, nowMs) {
     const threadId = info?.threadId;
     if (threadId == null) {
       console.error(`internal: прогін ${runId} без threadId - taint не записано в sessions`);
-      return;
+      return false;
     }
     if (!env.DB) {
       console.error('internal: привʼязки DB немає - taint не записано в sessions');
-      return;
+      return false;
     }
     const iso = new Date(nowMs).toISOString();
     await env.DB.prepare(
@@ -165,7 +171,9 @@ async function markRunThreadTainted(env, runId, nowMs) {
     )
       .bind(String(threadId), iso, iso)
       .run();
+    return true;
   } catch (/** @type {any} */ e) {
     console.error('internal: запис taint у sessions впав', e?.message);
+    return false;
   }
 }

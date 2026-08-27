@@ -12,7 +12,8 @@
  * @param {string} text
  */
 export function neutralizeExternalTags(text) {
-  return text.replace(/<(\/?\s*external)/gi, '‹$1');
+  // \s* з ОБОХ боків слеша: '< /external>' і '</ external>' - теж спроби тега.
+  return text.replace(/<(\s*\/?\s*external)/gi, '‹$1');
 }
 
 /**

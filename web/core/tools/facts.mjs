@@ -37,6 +37,7 @@ export async function runFactsGet(env, args) {
     binds.push(args.kind);
   }
   if (args.key != null) {
+    if (!args.key) throw new Error('key не може бути порожнім');
     where.push('key = ?');
     binds.push(args.key);
   }
@@ -70,7 +71,12 @@ export async function runFactsGet(env, args) {
  */
 export async function runFactsSet(env, args, nowMs) {
   if (!FACT_KINDS.includes(args.kind)) throw new Error(`невідомий kind "${args.kind}"`);
-  const source = args.source ?? 'owner';
+  if (!args.key) throw new Error('key не може бути порожнім');
+  // Дефолт - inferred, НЕ owner: викликач цього інструмента - модель, а канон
+  // 07 §4 дозволяє її виводу лише source=inferred. owner - явний opt-in, який
+  // policy (PR-8) гейтитиме; без цього промпт-інʼєкція з листа записувала б
+  // факт від імені власника, і він пережив би прогін.
+  const source = args.source ?? 'inferred';
   if (source !== 'owner' && source !== 'inferred') {
     throw new Error(`source лише owner|inferred, не "${source}"`);
   }
