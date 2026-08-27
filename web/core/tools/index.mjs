@@ -16,12 +16,13 @@ import {
   runGeoLast,
   runGeoGeocode,
 } from './read.mjs';
-import { runFactsGet, runFactsSet } from './facts.mjs';
+import { runFactsGet } from './facts.mjs';
 
 /**
  * @typedef {{
  *   args: import('../internal/schemas.mjs').InternalSchema,
  *   tainting?: boolean,
+ *   write?: { kind: string },
  *   run: (env: Env, args: any, nowMs: number) => Promise<{ result: unknown }>,
  * }} InternalToolDef
  */
@@ -103,6 +104,11 @@ export const TOOLS = {
         source: { type: 'string', maxLength: 16 },
       },
     },
-    run: (env, args, nowMs) => runFactsSet(env, args, nowMs),
+    // Write-інструмент: виконує НЕ run, а policy (PR-8) - T0 у чистій сесії
+    // з «↩», у tainted - пропозиція T1. runFactsSet кличе executor policy.
+    write: { kind: 'facts.set' },
+    run: () => {
+      throw new Error('facts.set виконується через policy, не напряму');
+    },
   },
 };
