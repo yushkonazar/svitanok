@@ -184,10 +184,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           return;
         }
         // Хвіст: свіжі повідомлення важливіші за початок довгої сесії.
-        inputText =
-          transcript.length > TRANSCRIPT_MAX_CHARS
-            ? `…${transcript.slice(-TRANSCRIPT_MAX_CHARS)}`
-            : transcript;
+        inputText = clipTail(transcript, TRANSCRIPT_MAX_CHARS);
       }
 
       const outcome = await deps.engine.run(
@@ -225,7 +222,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         const saved = await deps.client.session(req.run_id, {
           thread_id: req.thread_id,
           // Кап схеми ядра 20 000; модель просили ≤1500, зріз - страховка.
-          summary_md: finalText.length > 19_000 ? `${finalText.slice(0, 19_000)}…` : finalText,
+          summary_md: clipHead(finalText, 19_000),
         });
         pushStep({
           kind: 'reply',
@@ -302,13 +299,28 @@ export function clipDeliver(text: string): string {
   return text;
 }
 
-/** Хвіст статусу ≤ 3 900 символів; не починається з самотнього низького сурогата. */
-export function clipStatusTail(text: string): string {
-  if (text.length <= STATUS_MAX_CHARS) return text;
-  let start = text.length - STATUS_MAX_CHARS;
+/** Хвіст тексту ≤ max символів із префіксом «…»; межа не лишає самотнього
+ *  низького сурогата (той самий інваріант, що clipDeliver, але з кінця). */
+export function clipTail(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let start = text.length - max;
   const code = text.charCodeAt(start);
   if (code >= 0xdc00 && code <= 0xdfff) start += 1;
   return `…${text.slice(start)}`;
+}
+
+/** Голова тексту ≤ max символів із суфіксом «…»; межа не розрубує сурогатну
+ *  пару (для summary_md у D1 - той самий клас, що clipDeliver у Telegram). */
+export function clipHead(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}…`;
+}
+
+export function clipStatusTail(text: string): string {
+  return clipTail(text, STATUS_MAX_CHARS);
 }
 
 function shortError(err: unknown): string {

@@ -33,6 +33,8 @@ const d1FromSqlite = () => {
     stub: {
       prepare: (sql: string) => ({
         bind: (...args: unknown[]) => ({
+          sql,
+          args,
           run: async () => {
             // @ts-expect-error node:sqlite приймає біндинги варіативно
             db.prepare(sql).run(...args);
@@ -43,6 +45,22 @@ const d1FromSqlite = () => {
           }),
         }),
       }),
+      // D1 batch: одна транзакція навколо DELETE+INSERT-ів (атомарність
+      // заміни чанків). Стаб виконує послідовно в транзакції node:sqlite.
+      batch: async (stmts: { sql: string; args: unknown[] }[]) => {
+        db.exec('BEGIN');
+        try {
+          for (const s of stmts) {
+            // @ts-expect-error варіативні біндинги
+            db.prepare(s.sql).run(...s.args);
+          }
+          db.exec('COMMIT');
+        } catch (e) {
+          db.exec('ROLLBACK');
+          throw e;
+        }
+        return stmts.map(() => ({ success: true }));
+      },
     },
   };
 };
@@ -56,10 +74,13 @@ const aiStub = () => ({
 
 const vectorizeStub = (matches: { id: string; score: number }[] = []) => {
   const upserts: unknown[][] = [];
+  const deletes: string[][] = [];
   return {
     upserts,
+    deletes,
     stub: {
       upsert: vi.fn(async (rows: unknown[]) => void upserts.push(rows)),
+      deleteByIds: vi.fn(async (ids: string[]) => void deletes.push(ids)),
       query: vi.fn(async () => ({ matches })),
     },
   };
@@ -115,6 +136,27 @@ describe('writeMemoryChunks + searchMemory', () => {
     (env as { VECTORIZE?: unknown }).VECTORIZE = undefined;
     await expect(writeMemoryChunks(env, 'dm', 'текст', NOW)).rejects.toThrow(/VECTORIZE/);
     expect(db.prepare('SELECT COUNT(*) c FROM memory_chunks').get()).toMatchObject({ c: 0 });
+  });
+
+  it('заміна, не накопичення: повторна згортка треду прибирає старі чанки з D1 і Vectorize', async () => {
+    await writeMemoryChunks(env, 'dm', 'перша версія', NOW);
+    const firstIds = (
+      db.prepare('SELECT id FROM memory_chunks WHERE thread_id = ?').all('dm') as { id: string }[]
+    ).map((r) => r.id);
+    expect(firstIds).toHaveLength(1);
+
+    await writeMemoryChunks(env, 'dm', 'друга версія', NOW + 1000);
+    const rows = db.prepare('SELECT id, text FROM memory_chunks WHERE thread_id = ?').all('dm') as {
+      id: string;
+      text: string;
+    }[];
+    // Один рядок, це НОВА версія; старий vector_id пішов у deleteByIds.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text).toBe('друга версія');
+    expect(vec.deletes[0]).toEqual(firstIds);
+    // Чужий тред не зачеплено.
+    await writeMemoryChunks(env, 'інший', 'його згортка', NOW);
+    expect(db.prepare('SELECT COUNT(*) c FROM memory_chunks').get()).toMatchObject({ c: 2 });
   });
 
   it('searchMemory: цитати з датами в порядку релевантності; сироти-вектори не вигадуються', async () => {

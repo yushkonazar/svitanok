@@ -4,7 +4,13 @@
 // deliver збою, телеметрія steps наприкінці за будь-якого результату.
 
 import { describe, expect, it, vi, type Mock } from 'vitest';
-import { makeRunner, type EngineOutcome, type EngineRunOptions } from '../brain/src/agent.js';
+import {
+  clipHead,
+  clipTail,
+  makeRunner,
+  type EngineOutcome,
+  type EngineRunOptions,
+} from '../brain/src/agent.js';
 import type { ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
@@ -379,6 +385,28 @@ describe('makeRunner: summarize', () => {
     expect(
       (failing.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>)[0],
     ).toMatchObject({ kind: 'reply', name: 'summary', ok: false, note: 'session-endpoint-failed' });
+  });
+});
+
+describe('clipTail / clipHead: зріз по код-поїнтах', () => {
+  it('коротший за межу - без змін; рівний межі - без змін', () => {
+    expect(clipTail('абвг', 4)).toBe('абвг');
+    expect(clipHead('абвг', 4)).toBe('абвг');
+  });
+
+  it('clipTail: хвіст із «…», не лишає самотнього низького сурогата', () => {
+    const text = '😀'.repeat(10) + 'кінець';
+    const out = clipTail(text, 6);
+    expect(out.startsWith('…')).toBe(true);
+    expect(out.endsWith('кінець')).toBe(true);
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+  });
+
+  it('clipHead: голова із «…», не розрубує сурогатну пару на межі', () => {
+    const text = 'початок' + '😀'.repeat(10);
+    const out = clipHead(text, 8);
+    expect(out.endsWith('…')).toBe(true);
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
   });
 });
 

@@ -78,7 +78,8 @@ export function chunkSummary(summaryMd) {
  * @returns {Promise<{ written: number }>}
  */
 export async function writeMemoryChunks(env, threadId, summaryMd, nowMs) {
-  if (!env.DB) throw new Error('памʼять: привʼязки DB немає');
+  const db = env.DB;
+  if (!db) throw new Error('памʼять: привʼязки DB немає');
   if (!env.VECTORIZE) throw new Error('памʼять: привʼязки VECTORIZE немає');
   const chunks = chunkSummary(summaryMd);
   if (chunks.length === 0) return { written: 0 };
@@ -91,13 +92,30 @@ export async function writeMemoryChunks(env, threadId, summaryMd, nowMs) {
     vector: /** @type {number[]} */ (vectors[i]),
   }));
 
-  for (const row of rows) {
-    await env.DB.prepare(
-      'INSERT INTO memory_chunks (id, thread_id, at, text, vector_id) VALUES (?1, ?2, ?3, ?4, ?1)',
-    )
-      .bind(row.id, threadId, at, row.text)
-      .run();
-  }
+  // Згортка треду ЗАМІЩУЄ попередню, а не накопичується (ревʼю PR-2): інакше
+  // memory.search віддавав би N застарілих версій тих самих подій. Стара
+  // партія чанків цього треду - геть: спершу з Vectorize (за зібраними
+  // vector_id), потім з D1 і вставка нової - усе D1 однією batch-транзакцією,
+  // тож часткова вставка неможлива (ревʼю PR-2: осиротілі рядки без векторів).
+  const { results } = await db
+    .prepare('SELECT vector_id FROM memory_chunks WHERE thread_id = ?')
+    .bind(threadId)
+    .all();
+  const oldVectorIds = /** @type {{ vector_id: string }[]} */ (results ?? [])
+    .map((r) => r.vector_id)
+    .filter(Boolean);
+  if (oldVectorIds.length > 0) await env.VECTORIZE.deleteByIds(oldVectorIds);
+
+  await db.batch([
+    db.prepare('DELETE FROM memory_chunks WHERE thread_id = ?').bind(threadId),
+    ...rows.map((row) =>
+      db
+        .prepare(
+          'INSERT INTO memory_chunks (id, thread_id, at, text, vector_id) VALUES (?1, ?2, ?3, ?4, ?1)',
+        )
+        .bind(row.id, threadId, at, row.text),
+    ),
+  ]);
   await env.VECTORIZE.upsert(
     rows.map((row) => ({
       id: row.id,

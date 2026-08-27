@@ -144,6 +144,7 @@ describe('callBrainRun', () => {
 describe('memorySummarize', () => {
   let db: DatabaseSync;
   let begins: Record<string, unknown>[];
+  let finishes: { id: unknown; patch: Record<string, unknown> }[] = [];
   let env: Env;
   let kv: Map<string, string>;
 
@@ -160,6 +161,7 @@ describe('memorySummarize', () => {
       readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0001_base.sql'), 'utf8'),
     );
     begins = [];
+    finishes = [];
     const k = kvStub();
     kv = k.kv;
     env = workerEnv({
@@ -184,6 +186,8 @@ describe('memorySummarize', () => {
       RUN_REGISTRY: {
         getByName: () => ({
           begin: async (run: Record<string, unknown>) => void begins.push(run),
+          finish: async (id: unknown, patch: Record<string, unknown>) =>
+            void finishes.push({ id, patch }),
         }),
       },
     });
@@ -224,13 +228,38 @@ describe('memorySummarize', () => {
     expect(begins).toHaveLength(1);
   });
 
-  it('відмова мозку логувалась, але мітка ставиться (дубль дешевший за втрачений день)', async () => {
+  it('відмова мозку: мітка НЕ ставиться (наступна поява повторить), реєстр закривається самі', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     captureFetch(429, { ok: false, error: 'busy' });
     seedSession('dm', new Date(NOW_04 - 3_600_000).toISOString(), 'sess-1');
     const res = await memorySummarize(env, NOW_04);
     expect(res).toEqual({ started: 0, threads: 1 });
-    expect(kv.get('memorySummarizedDay')).toBe('2026-08-27');
+    // Мітки нема - вранішній збій мозку не губить згортки дня мовчки.
+    expect(kv.get('memorySummarizedDay')).toBeUndefined();
+    // registryBegin без /internal/runs закрився б sweepStale - закриваємо самі.
+    expect(finishes).toEqual([
+      { id: begins[0]!.id, patch: { finishedMs: NOW_04, error: 'brain-run: 429' } },
+    ]);
+  });
+
+  it('частковий успіх: мітка НЕ ставиться, поки не всі треди прийнято', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Перший 202, другий 429.
+    const calls: RequestInit[] = [];
+    let n = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, init?: RequestInit) => {
+        calls.push(init ?? {});
+        n += 1;
+        return new Response(JSON.stringify({ ok: n === 1 }), { status: n === 1 ? 202 : 429 });
+      }),
+    );
+    seedSession('a', new Date(NOW_04 - 60_000).toISOString(), 's-a');
+    seedSession('b', new Date(NOW_04 - 120_000).toISOString(), 's-b');
+    const res = await memorySummarize(env, NOW_04);
+    expect(res).toEqual({ started: 1, threads: 2 });
+    expect(kv.get('memorySummarizedDay')).toBeUndefined();
   });
 
   it('стеля тредів на добу тримається', async () => {
