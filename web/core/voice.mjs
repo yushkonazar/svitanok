@@ -163,6 +163,76 @@ async function whisperTranscribe(env, audio) {
   }
 }
 
+/* ── voice_pending: стан між кнопками v: і тапом (0009, ADR-040) ────────────
+   callback_data ≤ 64 байт не вміщає ні транскрипт, ні file_id - вони чекають
+   тапу в D1. Життя ≤ 30 хв (lazy expiry, як proposals T1): протухле віддає
+   null, чистка - принагідно при кожній вставці, окремого сторожа немає. */
+
+export const VOICE_PENDING_TTL_MS = 30 * 60_000;
+
+/**
+ * @typedef {{ kind: 'transcript', text: string } | { kind: 'file', fileId: string }} VoicePayload
+ */
+
+/**
+ * Покласти очікування тапу. Повертає короткий id для v:<id>:<choice>.
+ * @param {Env} env
+ * @param {VoicePayload & { durationS: number, chatId: number | string | null,
+ *   threadId: number | string | null }} entry
+ * @param {number} nowMs
+ */
+export async function savePendingVoice(env, entry, nowMs) {
+  if (!env.DB) throw new Error('привʼязки DB немає - voice_pending недоступна');
+  // Принагідна чистка протухлих: таблиця не росте без окремої задачі.
+  await env.DB.prepare('DELETE FROM voice_pending WHERE created_at < ?')
+    .bind(new Date(nowMs - VOICE_PENDING_TTL_MS).toISOString())
+    .run();
+  const id = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
+  await env.DB.prepare(
+    `INSERT INTO voice_pending (id, kind, text, file_id, duration_s, chat_id, thread_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      entry.kind,
+      entry.kind === 'transcript' ? entry.text : null,
+      entry.kind === 'file' ? entry.fileId : null,
+      Math.round(entry.durationS),
+      entry.chatId == null ? null : String(entry.chatId),
+      entry.threadId == null ? null : String(entry.threadId),
+      new Date(nowMs).toISOString(),
+    )
+    .run();
+  return id;
+}
+
+/**
+ * Забрати очікування тапу - claim-first: DELETE…RETURNING віддає ряд рівно
+ * одному з двох одночасних тапів (як CAS у proposals). Протухле - теж null.
+ * @param {Env} env
+ * @param {string} id
+ * @param {number} nowMs
+ * @returns {Promise<{ kind: string, text: string | null, fileId: string | null,
+ *   durationS: number, chatId: string | null, threadId: string | null } | null>}
+ */
+export async function takePendingVoice(env, id, nowMs) {
+  if (!env.DB) return null;
+  const { results } = await env.DB.prepare('DELETE FROM voice_pending WHERE id = ? RETURNING *')
+    .bind(id)
+    .all();
+  const row = /** @type {any} */ (results?.[0]);
+  if (!row) return null;
+  if (Date.parse(row.created_at) < nowMs - VOICE_PENDING_TTL_MS) return null;
+  return {
+    kind: row.kind,
+    text: row.text ?? null,
+    fileId: row.file_id ?? null,
+    durationS: Number(row.duration_s) || 0,
+    chatId: row.chat_id ?? null,
+    threadId: row.thread_id ?? null,
+  };
+}
+
 /** btoa на чанках: String.fromCharCode(...весь буфер) переповнив би стек.
  *  @param {ArrayBuffer} buf */
 function toBase64(buf) {

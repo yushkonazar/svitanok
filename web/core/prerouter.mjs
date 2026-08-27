@@ -27,6 +27,7 @@ import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
 import { parsePolicyCallback } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
+import { transcribeVoice, savePendingVoice, takePendingVoice, VOICE_LONG_S } from './voice.mjs';
 
 export const THREAD_DM = 'dm';
 // Не експортуються свідомо (ревʼю PR-3): споживачів назовні немає, а export
@@ -76,7 +77,7 @@ const HINTS = {
 /**
  * Головний вхід з worker.js. true = оброблено новим шляхом (легасі не чіпати).
  * @param {Env} env
- * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null }} parsed
+ * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null, voice?: { fileId: string, durationS: number, fileSize: number | null } | null }} parsed
  * @param {number} [nowMs]
  */
 export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
@@ -88,8 +89,6 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // (вільний текст = відмова) - інакше він запускав би прогони мозку з сесією
   // власника, «стоп» і /new.
   if (!isPrimaryOwner(env, parsed.fromId)) return false;
-  let text = String(parsed.text ?? '').trim();
-  if (!text) return false;
   // Той самий периметр, що в легасі (commands.mjs): тема «Асистент» або DM.
   const inAssistant =
     parsed.threadId == null || String(parsed.threadId) === String(env.TOPIC_ASSISTANT ?? '');
@@ -97,6 +96,18 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
 
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+
+  // Голос (кейс 6, ADR-040) - ДО текстових гілок: у голосового text порожній.
+  // У shadow працює БЕЗ префікса v2: (усвідомлене відхилення, назване в
+  // ADR-040): префікс не вимовиш, а легасі голосові ніколи не обробляв - новий
+  // шлях нічого в нього не краде. Прогін стартує лише після тапу ✅.
+  if (parsed.voice) {
+    await handleVoiceMessage(env, target, parsed.voice, nowMs);
+    return true;
+  }
+
+  let text = String(parsed.text ?? '').trim();
+  if (!text) return false;
 
   if (mode === 'shadow') {
     if (!/^v2:/i.test(text)) {
@@ -133,9 +144,25 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // Інші /-команди - легасі (07 §10: «лишаються як є»).
   if (text.startsWith('/')) return false;
 
+  await routeThreadText(env, target, threadKey, text, nowMs);
+  return true;
+}
+
+/**
+ * Вільний текст у тред: «стоп» → abort; інакше класифікація → статусник →
+ * черга → прогін. Спільний хвіст двох входів - повідомлення власника і
+ * підтвердженого ✅ транскрипта голосового (ADR-040): голос далі ЙДЕ ЯК ТЕКСТ,
+ * включно зі «стоп».
+ * @param {Env} env
+ * @param {ThreadTarget} target
+ * @param {string} threadKey
+ * @param {string} text
+ * @param {number} nowMs
+ */
+async function routeThreadText(env, target, threadKey, text, nowMs) {
   if (/^стоп[.!]?$/i.test(text)) {
     await stopThread(env, target, threadKey, nowMs);
-    return true;
+    return;
   }
 
   const route = classifyRoute(text);
@@ -156,11 +183,106 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     const note =
       claim.queued === -1 ? 'Черга повна - спробуй трохи пізніше.' : `▸ Черга: ${claim.queued}`;
     if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
-    else await send(note);
-    return true;
+    else await reply(env, target, note, nowMs);
+    return;
   }
   await startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
-  return true;
+}
+
+/**
+ * Голосове повідомлення (S-6-1..5, ADR-040): коротке - одразу розпізнати й
+ * показати «Я почув» з ✅/✏️; довге (> 5 хв) - спершу спитати «Розпізнати?»
+ * (S-6-4; file_id чекає тапу в voice_pending, бо в callback_data не влазить).
+ * @param {Env} env
+ * @param {ThreadTarget} target
+ * @param {{ fileId: string, durationS: number, fileSize?: number | null }} voice
+ * @param {number} nowMs
+ */
+async function handleVoiceMessage(env, target, voice, nowMs) {
+  if (voice.durationS > VOICE_LONG_S) {
+    const id = await savePendingVoice(
+      env,
+      {
+        kind: 'file',
+        fileId: voice.fileId,
+        durationS: voice.durationS,
+        chatId: target.chatId,
+        threadId: target.threadId,
+      },
+      nowMs,
+    ).catch((/** @type {any} */ e) => {
+      console.error('prerouter: voice_pending не записано', e?.message);
+      return null;
+    });
+    if (id == null) {
+      await reply(env, target, 'Не вдалося прийняти голосове - спробуй ще раз.', nowMs);
+      return;
+    }
+    await reply(
+      env,
+      target,
+      `Довге голосове (~${Math.round(voice.durationS / 60)} хв) - можу розпізнати, але краще коротше.`,
+      nowMs,
+      voiceKeyboard([{ text: 'Розпізнати', callback_data: `v:${id}:go` }]),
+    );
+    return;
+  }
+  await transcribeAndPresent(env, target, voice, nowMs);
+}
+
+/** Розпізнати і показати транскрипт із ✅/✏️ (T0: дія - лише після тапу).
+ *  @param {Env} env @param {ThreadTarget} target
+ *  @param {{ fileId: string, durationS: number, fileSize?: number | null }} voice
+ *  @param {number} nowMs */
+async function transcribeAndPresent(env, target, voice, nowMs) {
+  const res = await transcribeVoice(env, voice, nowMs);
+  if (!res.ok) {
+    const msg = {
+      misconfigured: 'Розпізнавання не налаштоване (ключа Deepgram немає).',
+      'too-big': 'Голосове завелике - Telegram віддає ботам файли до 20 МБ.',
+      failed: 'Не вдалося розпізнати - спробуй ще раз або напиши текстом.',
+    }[res.error];
+    await reply(env, target, msg, nowMs);
+    return;
+  }
+  if (!res.text) {
+    await reply(env, target, 'Не розчув - повтори або напиши.', nowMs);
+    return;
+  }
+  const id = await savePendingVoice(
+    env,
+    {
+      kind: 'transcript',
+      text: res.text,
+      durationS: voice.durationS,
+      chatId: target.chatId,
+      threadId: target.threadId,
+    },
+    nowMs,
+  ).catch((/** @type {any} */ e) => {
+    console.error('prerouter: voice_pending не записано', e?.message);
+    return null;
+  });
+  if (id == null) {
+    await reply(env, target, 'Не вдалося прийняти голосове - спробуй ще раз.', nowMs);
+    return;
+  }
+  const mark = res.fallback ? '\n(резервний розпізнавач)' : '';
+  await reply(
+    env,
+    target,
+    `Я почув: «${res.text}»${mark}`,
+    nowMs,
+    voiceKeyboard([
+      { text: '✅', callback_data: `v:${id}:ok` },
+      { text: '✏️', callback_data: `v:${id}:edit` },
+    ]),
+  );
+}
+
+/** @param {{ text: string, callback_data: string }[]} row */
+function voiceKeyboard(row) {
+  return { reply_markup: { inline_keyboard: [row] } };
 }
 
 /**
@@ -350,6 +472,16 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
     }
     return proposalToast(res);
   }
+  const vm = data.match(/^v:([0-9a-f]{12}):(ok|edit|go)$/);
+  if (vm) {
+    return voiceCallbackToast(
+      env,
+      parsed,
+      /** @type {string} */ (vm[1]),
+      /** @type {'ok' | 'edit' | 'go'} */ (vm[2]),
+      nowMs,
+    );
+  }
   const stub = data.match(/^([cram]):/)?.[1];
   if (!stub) return null;
   return {
@@ -358,6 +490,52 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
     a: 'Відповіді на питання прогону - пізніше цим етапом.',
     m: 'Меню - пізніше.',
   }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
+}
+
+/**
+ * Тап кнопки голосу (ADR-040): ✅ - транскрипт іде в тред як текст; ✏️ -
+ * скасувати; «Розпізнати» - довге голосове в роботу. takePendingVoice - це
+ * claim (DELETE…RETURNING): подвійний тап другому віддає «Застаріло», не
+ * другий прогін.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null }} parsed
+ * @param {string} id
+ * @param {'ok' | 'edit' | 'go'} choice
+ * @param {number} nowMs
+ * @returns {Promise<string>}
+ */
+async function voiceCallbackToast(env, parsed, id, choice, nowMs) {
+  const row = await takePendingVoice(env, id, nowMs);
+  if (!row) return 'Застаріло - надішли голосове ще раз.';
+  // Прибрати клавіатуру після рішення - best-effort, як у пропозицій.
+  if (parsed.messageId != null && parsed.chatId != null) {
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+    }).catch(() => {});
+  }
+  if (choice === 'edit') return 'Ок - напиши текстом.';
+  /** @type {ThreadTarget} */
+  const target = {
+    chatId: row.chatId != null ? Number(row.chatId) : (parsed.chatId ?? null),
+    threadId: row.threadId,
+  };
+  if (choice === 'ok' && row.kind === 'transcript' && row.text) {
+    const threadKey = row.threadId == null ? THREAD_DM : String(row.threadId);
+    await routeThreadText(env, target, threadKey, row.text, nowMs);
+    return 'Прийняв ✅';
+  }
+  if (choice === 'go' && row.kind === 'file' && row.fileId) {
+    await transcribeAndPresent(
+      env,
+      target,
+      { fileId: row.fileId, durationS: row.durationS },
+      nowMs,
+    );
+    return 'Розпізнаю…';
+  }
+  // Розсинхрон kind↔choice (не трапляється зі своїх кнопок) - чесна відмова.
+  return 'Застаріло - надішли голосове ще раз.';
 }
 
 /** @param {Awaited<ReturnType<typeof resolveProposal>>} res */
@@ -466,8 +644,10 @@ export function parsedForThread(env, threadKey, chatId = null) {
 }
 
 /** Відповідь новим шляхом - через outbox (порядок і 429 як у deliver).
- *  @param {Env} env @param {ThreadTarget} parsed @param {string} text @param {number} nowMs */
-async function reply(env, parsed, text, nowMs) {
+ *  extra - додаткові поля payload (reply_markup кнопок v:, ADR-040).
+ *  @param {Env} env @param {ThreadTarget} parsed @param {string} text
+ *  @param {number} nowMs @param {Record<string, unknown>} [extra] */
+async function reply(env, parsed, text, nowMs, extra = undefined) {
   if (parsed.chatId == null) return;
   await enqueueOutbox(
     env,
@@ -475,7 +655,7 @@ async function reply(env, parsed, text, nowMs) {
       chatId: parsed.chatId,
       threadId: parsed.threadId == null ? null : parsed.threadId,
       kind: 'send',
-      payload: { text },
+      payload: { text, ...(extra ?? {}) },
     },
     nowMs,
   );
