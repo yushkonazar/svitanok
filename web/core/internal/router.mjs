@@ -18,7 +18,7 @@ import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
-import { startClaimedRun, registryThreadFinishAndKick, THREAD_DM } from '../prerouter.mjs';
+import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -194,7 +194,8 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     if (!contract.ok) return json({ ok: false, error: `contract: ${contract.error}` }, 400);
     if (route === 'deliver')
       return handleDeliver(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
-    if (route === 'status') return handleStatus(env, ctx, /** @type {any} */ (body), nowMs);
+    if (route === 'status')
+      return handleStatus(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
     if (route === 'session') return handleSession(env, /** @type {any} */ (body), nowMs);
     return handleRuns(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
   }
@@ -233,13 +234,20 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       }
     }
   }
+  // Ціль - чат ПРОГОНУ (ревʼю PR-3): без chatId відповідь DM-прогону летіла в
+  // супергрупу з нечисловим thread_id 'dm' → Bad Request → failed-ряд outbox.
   const info = await registryRunInfo(env, runId);
-  const threadId = info?.threadId ?? env.TOPIC_ASSISTANT ?? null;
+  const threadKey = info?.threadId ?? env.TOPIC_ASSISTANT ?? null;
+  const target =
+    threadKey == null
+      ? { chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null, threadId: null }
+      : parsedForThread(env, String(threadKey), info?.chatId ?? null);
+  if (target.chatId == null) return json({ ok: false, error: 'chat-not-configured' }, 500);
   const { queued } = await enqueueOutbox(
     env,
     {
-      chatId: env.TELEGRAM_CHAT_ID,
-      threadId,
+      chatId: target.chatId,
+      threadId: target.threadId,
       kind: 'send',
       payload: {
         text: body.text,
@@ -258,16 +266,21 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
  * заміняються новішим - це і є троттлінг до фактичної швидкості відправки.
  * @param {Env} env
  * @param {ExecutionContext | undefined} ctx
+ * @param {string} runId
  * @param {{ message_id: number, text: string }} body
  * @param {number} nowMs
  */
-async function handleStatus(env, ctx, body, nowMs) {
-  if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'chat-not-configured' }, 500);
-  await dropPendingEdits(env, env.TELEGRAM_CHAT_ID, body.message_id);
+async function handleStatus(env, ctx, runId, body, nowMs) {
+  // Той самий принцип, що в handleDeliver: edit іде в чат ПРОГОНУ, інакше
+  // статусник DM-прогону «редагувався» б у чужому чаті (ревʼю PR-3).
+  const info = await registryRunInfo(env, runId);
+  const chatId = info?.chatId ?? (env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null);
+  if (chatId == null) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  await dropPendingEdits(env, chatId, body.message_id);
   const { queued } = await enqueueOutbox(
     env,
     {
-      chatId: env.TELEGRAM_CHAT_ID,
+      chatId,
       kind: 'edit',
       payload: { message_id: body.message_id, text: body.text },
     },
@@ -315,8 +328,6 @@ async function scheduleDrain(env, ctx, nowMs) {
  */
 async function handleRuns(env, ctx, runId, body, nowMs) {
   if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
-  // Інфо ДО finish: finish прибирає прогін з активних, і threadId зник би.
-  const info = await registryRunInfo(env, runId);
   const steps = body.steps;
   try {
     for (let i = 0; i < steps.length; i += 1) {
@@ -344,7 +355,9 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     return json({ ok: false, error: 'steps-not-persisted' }, 500);
   }
   const failed = steps.some((s) => s && s.kind === 'error');
-  await registryFinish(env, runId, {
+  // finish повертає threadId/chatId щойно закритого прогону - окремий
+  // runInfo-виклик до фінішу більше не потрібен (ревʼю PR-3, efficiency).
+  const info = await registryFinish(env, runId, {
     finishedMs: nowMs,
     error: failed ? 'brain-error' : null,
     steps: steps.length,
@@ -352,24 +365,23 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
 
   if (info?.threadId != null) {
     const threadKey = String(info.threadId);
-    const target = {
-      chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
-      threadId: threadKey === THREAD_DM ? null : threadKey,
-    };
+    const target = parsedForThread(env, threadKey, info.chatId ?? null);
     const esc = steps.find((s) => s && s.kind === 'reply' && s.name === 'escalate');
     const escText = typeof esc?.note === 'string' ? esc.note : '';
-    const escStatusId = Number.isFinite(Number(esc?.status_message_id))
-      ? Number(esc?.status_message_id)
-      : null;
+    // Строго number ≥ 1: Number(null) дав би message_id 0 (ревʼю PR-3).
+    const escStatusId =
+      typeof esc?.status_message_id === 'number' && esc.status_message_id >= 1
+        ? esc.status_message_id
+        : null;
     const continueThread = async () => {
       if (esc && escText) {
         // S-N3-6: статус «думаю довше…», той самий текст у chat, той самий
         // статусник; тред НЕ звільняється - ескалація є продовженням.
-        if (escStatusId != null && env.TELEGRAM_CHAT_ID) {
+        if (escStatusId != null && target.chatId != null) {
           await enqueueOutbox(
             env,
             {
-              chatId: Number(env.TELEGRAM_CHAT_ID),
+              chatId: target.chatId,
               kind: 'edit',
               payload: { message_id: escStatusId, text: '▸ Думаю довше…' },
             },
@@ -381,13 +393,13 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
           env,
           target,
           threadKey,
-          { text: escText, route: 'chat', attempts: 0, atMs: nowMs },
+          { text: escText, route: 'chat', attempts: 0, atMs: nowMs, chatId: target.chatId },
           nowMs,
           escStatusId,
         );
         return;
       }
-      await registryThreadFinishAndKick(env, target, threadKey, nowMs);
+      await registryThreadFinishAndKick(env, target, threadKey, runId, nowMs);
     };
     const cont = continueThread().catch(
       (/** @type {any} */ e) => void console.error('internal: продовження треду впало', e?.message),

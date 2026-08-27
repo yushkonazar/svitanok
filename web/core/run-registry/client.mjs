@@ -15,9 +15,9 @@ const enabled = (/** @type {Env} */ env) =>
   env.ASSISTANT_V2 === 'shadow' || env.ASSISTANT_V2 === 'on';
 
 /**
- * Прогін почався. run: {id, trigger, profile?, threadId?, model?, startedMs}.
+ * Прогін почався. run: {id, trigger, profile?, threadId?, chatId?, model?, startedMs}.
  * @param {Env} env
- * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, model?: string | null, startedMs: number }} run
+ * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number }} run
  */
 export async function registryBegin(env, run) {
   const ns = registryNs(env);
@@ -30,18 +30,21 @@ export async function registryBegin(env, run) {
 }
 
 /**
- * Прогін завершився (успіх, відмова або сторож).
+ * Прогін завершився (успіх, відмова або сторож). Повертає threadId/chatId
+ * щойно закритого прогону (для продовження треду) або null.
  * @param {Env} env
  * @param {string} id
  * @param {{ finishedMs: number, error?: string | null, steps?: number | null }} patch
+ * @returns {Promise<{ threadId: string | number | null, chatId: number | null } | null>}
  */
 export async function registryFinish(env, id, patch) {
   const ns = registryNs(env);
-  if (!ns) return;
+  if (!ns) return null;
   try {
-    await ns.getByName(RUN_REGISTRY_DO_NAME).finish(id, patch);
+    return (await ns.getByName(RUN_REGISTRY_DO_NAME).finish(id, patch)) ?? null;
   } catch (/** @type {any} */ e) {
     console.error('run-registry: finish впав (не блокує відповідь)', e?.message);
+    return null;
   }
 }
 
@@ -67,7 +70,7 @@ export async function registryHas(env, id) {
  * Дані активного прогону (threadId для taint-запису). null = невідомий/збій.
  * @param {Env} env
  * @param {string} id
- * @returns {Promise<{ threadId: string | number | null } | null>}
+ * @returns {Promise<{ threadId: string | number | null, chatId: number | null } | null>}
  */
 export async function registryRunInfo(env, id) {
   const ns = registryNs(env);
@@ -112,43 +115,80 @@ export async function registryConsumeNonce(env, runId, nonce, nowMs, keepMs) {
  * відмова «спробуй ще раз», ніж два паралельні прогони в одному треді.
  * @param {Env} env
  * @param {string} threadId
- * @param {{ text: string, route: string, attempts?: number, atMs: number }} entry
+ * @param {{ text: string, route: string, attempts?: number, atMs: number, chatId?: number | null, statusMessageId?: number | null }} entry
  * @returns {Promise<{ start: true } | { queued: number }>}
  */
 export async function registryThreadClaim(env, threadId, entry) {
   const ns = registryNs(env);
   if (!ns) return { queued: -1 };
   try {
-    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadClaim(threadId, entry);
+    return await ns
+      .getByName(RUN_REGISTRY_DO_NAME)
+      .threadClaim(threadId, { ...entry, attempts: entry.attempts ?? 0 });
   } catch (/** @type {any} */ e) {
     console.error('run-registry: threadClaim впав', e?.message);
     return { queued: -1 };
   }
 }
 
-/** @param {Env} env @param {string} threadId @param {string} runId @param {number | null} statusMessageId */
-export async function registryThreadSetRun(env, threadId, runId, statusMessageId) {
+/** Привʼязати прогін до треду. claimed:false = тред уже зник («стоп» у вікні
+ *  pending) - викликач НЕ сміє запускати мозок; збій DO трактуємо так само
+ *  (fail-closed: краще не стартувати, ніж прогін-сирота).
+ *  @param {Env} env @param {string} threadId @param {string} runId
+ *  @param {number | null} statusMessageId @param {number} nowMs
+ *  @returns {Promise<{ claimed: boolean }>} */
+export async function registryThreadSetRun(env, threadId, runId, statusMessageId, nowMs) {
   const ns = registryNs(env);
-  if (!ns) return;
+  if (!ns) return { claimed: false };
   try {
-    await ns.getByName(RUN_REGISTRY_DO_NAME).threadSetRun(threadId, runId, statusMessageId);
+    return await ns
+      .getByName(RUN_REGISTRY_DO_NAME)
+      .threadSetRun(threadId, runId, statusMessageId, nowMs);
   } catch (/** @type {any} */ e) {
     console.error('run-registry: threadSetRun впав', e?.message);
+    return { claimed: false };
   }
 }
 
-/** @param {Env} env @param {string} threadId
- *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null } | null }>} */
-export async function registryThreadFinish(env, threadId) {
+/** @param {Env} env @param {string} threadId @param {string | null} runId -
+ *  власник claim-у (ревʼю PR-3: чужий finish не краде чергу)
+ *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number, chatId?: number | null, statusMessageId?: number | null } | null, notOwner?: true }>} */
+export async function registryThreadFinish(env, threadId, runId) {
   const ns = registryNs(env);
   if (!ns) return { next: null };
   try {
-    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadFinish(threadId);
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadFinish(threadId, runId ?? null);
   } catch (/** @type {any} */ e) {
     console.error('run-registry: threadFinish впав (черга треду може застрягти)', e?.message);
     return { next: null };
   }
 }
+
+/**
+ * Сторож (ревʼю PR-3): закрити прострочені прогони (sweepStale - досі не мав
+ * викликача!) і звільнити треди з мертвим claim-ом (threadSweep).
+ * @param {Env} env @param {number} nowMs
+ * @returns {Promise<{ staleRuns: string[], freedThreads: { threadId: string, statusMessageId: number | null, chatId: number | null, queued: number }[] }>}
+ */
+export async function registrySweep(env, nowMs) {
+  const ns = registryNs(env);
+  if (!ns) return { staleRuns: [], freedThreads: [] };
+  try {
+    const stub = ns.getByName(RUN_REGISTRY_DO_NAME);
+    const staleRuns = (await stub.sweepStale(nowMs, RUN_STALE_MS)) ?? [];
+    const freedThreads = (await stub.threadSweep(nowMs, THREAD_CLAIM_GRACE_MS)) ?? [];
+    return { staleRuns, freedThreads };
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: sweep впав', e?.message);
+    return { staleRuns: [], freedThreads: [] };
+  }
+}
+
+/** Прогін довший за це - обірваний (01 §2.1: сторож > 6 хв). */
+export const RUN_STALE_MS = 6 * 60_000;
+/** Мертвий claim треду живе не довше: покриває і вічний pending (ізолят помер
+ *  між claim і setRun), і прогін, чий фініш/звіт загубився. */
+export const THREAD_CLAIM_GRACE_MS = 90_000;
 
 /** @param {Env} env @param {string} threadId */
 export async function registryThreadClear(env, threadId) {
@@ -175,7 +215,7 @@ export async function registryThreadRetry(env, threadId, entry) {
 }
 
 /** @param {Env} env @param {string} threadId
- *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null } | null }>} */
+ *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number, chatId?: number | null, statusMessageId?: number | null } | null }>} */
 export async function registryThreadKickNext(env, threadId) {
   const ns = registryNs(env);
   if (!ns) return { next: null };

@@ -13,7 +13,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
-/** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null }} ActiveRun */
+/** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null, chatId: number | null }} ActiveRun */
 
 const ACTIVE_KEY = 'active';
 
@@ -21,10 +21,12 @@ const ACTIVE_KEY = 'active';
  *  активних прогонів — інший життєвий цикл і інший писар (router, не агент). */
 const NONCES_KEY = 'nonces';
 
-/** Черги тредів (ADR-039): {threadId -> {activeRunId, statusMessageId, queue}}. */
+/** Черги тредів (ADR-039): {threadId -> {activeRunId, statusMessageId, chatId, sinceMs, queue}}. */
 const THREADS_KEY = 'threads';
 /** Стеля черги одного треду: далі чесна відмова, не безмежний хвіст. */
 export const THREAD_QUEUE_MAX = 5;
+/** Сентинел «тред взято, runId ще не відомий» (між claim і setRun). */
+export const RUN_PENDING = 'pending';
 
 export class RunRegistryDO extends DurableObject {
   /** @returns {Promise<Record<string, ActiveRun>>} */
@@ -46,7 +48,7 @@ export class RunRegistryDO extends DurableObject {
    * Прогін почався: у активний набір + рядок у D1 `runs`. ON CONFLICT DO
    * NOTHING — повторний begin того самого id (ретрай викликача) не падає і
    * не дублює рядок.
-   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, model?: string | null, startedMs: number }} run
+   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number }} run
    */
   async begin(run) {
     const active = await this.#active();
@@ -55,6 +57,9 @@ export class RunRegistryDO extends DurableObject {
       trigger: run.trigger,
       profile: run.profile ?? null,
       threadId: run.threadId ?? null,
+      // chatId прогону (ревʼю PR-3): без нього deliver DM-прогону летів у
+      // супергрупу - TELEGRAM_CHAT_ID не єдиний чат системи.
+      chatId: run.chatId ?? null,
     };
     await this.ctx.storage.put(ACTIVE_KEY, active);
     await this.#db()
@@ -85,7 +90,8 @@ export class RunRegistryDO extends DurableObject {
    */
   async finish(id, patch) {
     const active = await this.#active();
-    const startedMs = active[id]?.startedMs;
+    const entry = active[id];
+    const startedMs = entry?.startedMs;
     delete active[id];
     await this.ctx.storage.put(ACTIVE_KEY, active);
     await this.#db()
@@ -101,6 +107,9 @@ export class RunRegistryDO extends DurableObject {
         id,
       )
       .run();
+    // Дані щойно закритого прогону - викликачу (handleRuns продовжує тред без
+    // окремого runInfo-виклику; ревʼю PR-3, efficiency).
+    return entry ? { threadId: entry.threadId, chatId: entry.chatId ?? null } : null;
   }
 
   /** Чи прогін зараз активний — перевірка run_id для internal API (PR-5).
@@ -109,11 +118,12 @@ export class RunRegistryDO extends DurableObject {
     return Boolean((await this.#active())[id]);
   }
 
-  /** Дані активного прогону (threadId для taint-запису, PR-6). null = немає.
+  /** Дані активного прогону (threadId для taint-запису, chatId для deliver).
+   *  null = немає.
    *  @param {string} id */
   async runInfo(id) {
     const run = (await this.#active())[id];
-    return run ? { threadId: run.threadId } : null;
+    return run ? { threadId: run.threadId, chatId: run.chatId ?? null } : null;
   }
 
   /**
@@ -169,26 +179,53 @@ export class RunRegistryDO extends DurableObject {
     return { active: await this.#active() };
   }
 
-  // ── Черга треду (ADR-039, етап 2 PR-3) ────────────────────────────────────
+  // ── Черга треду (ADR-039, етап 2 PR-3; переписано за ревʼю PR-3) ─────────
   // Один активний прогін на тред (01 §2.1): claim бере тред або ставить у
-  // чергу; finish віддає наступний запис. Стан - один ключ на всі треди
-  // (тредів у власника одиниці). Глобальні слоти ≤2 тут НЕ дублюються - їх
-  // тримає мозок (429 busy → повернення в чергу викликачем).
+  // чергу; finish віддає наступний запис І ПЕРЕВІРЯЄ ВЛАСНИКА (summarize-звіт
+  // чужого прогону не сміє красти claim). sinceMs + threadSweep - сторож
+  // тредів: best-effort звіт мозку більше не єдиний знімач claim-у. Стан -
+  // один ключ на всі треди (тредів у власника одиниці). Глобальні слоти ≤2
+  // тут НЕ дублюються - їх тримає мозок (429 busy → черга викликачем).
 
-  /** @returns {Promise<Record<string, { activeRunId: string | null, statusMessageId: number | null, queue: { text: string, route: string, attempts: number, atMs: number }[] }>>} */
+  /** @typedef {{ text: string, route: string, attempts: number, atMs: number, chatId?: number | null, statusMessageId?: number | null }} QueueEntry */
+  /** @typedef {{ activeRunId: string | null, statusMessageId: number | null, chatId: number | null, sinceMs: number, queue: QueueEntry[] }} ThreadState */
+
+  /** @returns {Promise<Record<string, ThreadState>>} */
   async #threads() {
     return /** @type {any} */ ((await this.ctx.storage.get(THREADS_KEY)) ?? {});
+  }
+
+  /** Голова черги → під прогін, або звільнення/видалення порожнього треду.
+   *  @param {Record<string, ThreadState>} threads @param {string} threadId @param {ThreadState} t */
+  #advance(threads, threadId, t) {
+    const next = t.queue.shift() ?? null;
+    if (next) {
+      t.activeRunId = RUN_PENDING;
+      t.statusMessageId = next.statusMessageId ?? null;
+      t.chatId = next.chatId ?? null;
+      t.sinceMs = next.atMs;
+      threads[threadId] = t;
+    } else {
+      delete threads[threadId];
+    }
+    return next;
   }
 
   /**
    * Взяти тред під прогін або стати в чергу.
    * @param {string} threadId
-   * @param {{ text: string, route: string, attempts?: number, atMs: number }} entry
+   * @param {QueueEntry} entry
    * @returns {Promise<{ start: true } | { queued: number }>}
    */
   async threadClaim(threadId, entry) {
     const threads = await this.#threads();
-    const t = threads[threadId] ?? { activeRunId: null, statusMessageId: null, queue: [] };
+    const t = threads[threadId] ?? {
+      activeRunId: null,
+      statusMessageId: null,
+      chatId: null,
+      sinceMs: 0,
+      queue: [],
+    };
     // Старт лише коли тред вільний І черга порожня: тред без активного прогону,
     // але з чергою - це «чекаємо ретраю» (S-0-7), нове повідомлення стає ЗА ним.
     if (t.activeRunId != null || t.queue.length > 0) {
@@ -198,8 +235,10 @@ export class RunRegistryDO extends DurableObject {
       await this.ctx.storage.put(THREADS_KEY, threads);
       return { queued: t.queue.length };
     }
-    t.activeRunId = 'pending';
-    t.statusMessageId = null;
+    t.activeRunId = RUN_PENDING;
+    t.statusMessageId = entry.statusMessageId ?? null;
+    t.chatId = entry.chatId ?? null;
+    t.sinceMs = entry.atMs;
     threads[threadId] = t;
     await this.ctx.storage.put(THREADS_KEY, threads);
     return { start: true };
@@ -210,11 +249,17 @@ export class RunRegistryDO extends DurableObject {
    * черги, тред звільняється - «підняття» (threadKickNext з задачі
    * brain-health) спробує знову, а нові повідомлення стають позаду.
    * @param {string} threadId
-   * @param {{ text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null }} entry
+   * @param {QueueEntry} entry
    */
   async threadRetry(threadId, entry) {
     const threads = await this.#threads();
-    const t = threads[threadId] ?? { activeRunId: null, statusMessageId: null, queue: [] };
+    const t = threads[threadId] ?? {
+      activeRunId: null,
+      statusMessageId: null,
+      chatId: null,
+      sinceMs: 0,
+      queue: [],
+    };
     t.queue.unshift(entry);
     t.activeRunId = null;
     t.statusMessageId = null;
@@ -231,49 +276,44 @@ export class RunRegistryDO extends DurableObject {
     const threads = await this.#threads();
     const t = threads[threadId];
     if (!t || t.activeRunId != null) return { next: null };
-    const next = t.queue.shift() ?? null;
-    if (!next) {
-      delete threads[threadId];
-    } else {
-      t.activeRunId = 'pending';
-      t.statusMessageId = null;
-      threads[threadId] = t;
-    }
+    const next = this.#advance(threads, threadId, t);
     await this.ctx.storage.put(THREADS_KEY, threads);
     return { next };
   }
 
-  /** Прогін треду стартував по-справжньому: запамʼятати runId і статусник
-   *  (для «стоп» і ескалації).
-   *  @param {string} threadId @param {string} runId @param {number | null} statusMessageId */
-  async threadSetRun(threadId, runId, statusMessageId) {
+  /**
+   * Прогін треду стартував по-справжньому. claimed:false = треду вже немає
+   * («стоп» у вікні pending, ревʼю PR-3) - викликач мусить НЕ запускати мозок.
+   * Ескалація легітимно переписує activeRunId ще живого claim-у.
+   * @param {string} threadId @param {string} runId
+   * @param {number | null} statusMessageId @param {number} nowMs
+   */
+  async threadSetRun(threadId, runId, statusMessageId, nowMs) {
     const threads = await this.#threads();
     const t = threads[threadId];
-    if (!t) return;
+    if (!t) return { claimed: false };
     t.activeRunId = runId;
     t.statusMessageId = statusMessageId ?? null;
+    t.sinceMs = nowMs;
     await this.ctx.storage.put(THREADS_KEY, threads);
+    return { claimed: true };
   }
 
   /**
-   * Прогін треду завершився: віддати наступний запис черги (тред лишається
-   * взятим під нього) або звільнити тред. Тред без claim - тихий null
-   * (summarize-прогони фінішать без черги).
+   * Прогін треду завершився: віддати наступний запис черги або звільнити тред.
+   * ВЛАСНІСТЬ (ревʼю PR-3): finish діє лише коли runId = activeRunId - звіт
+   * summarize-прогону (чи будь-якого чужого) не краде claim і не знімає чергу.
+   * Тред без claim - тихий null.
    * @param {string} threadId
-   * @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number } | null }>}
+   * @param {string | null} runId
+   * @returns {Promise<{ next: QueueEntry | null, notOwner?: true }>}
    */
-  async threadFinish(threadId) {
+  async threadFinish(threadId, runId) {
     const threads = await this.#threads();
     const t = threads[threadId];
     if (!t) return { next: null };
-    const next = t.queue.shift() ?? null;
-    if (next) {
-      t.activeRunId = 'pending';
-      t.statusMessageId = null;
-      threads[threadId] = t;
-    } else {
-      delete threads[threadId];
-    }
+    if (runId != null && t.activeRunId !== runId) return { next: null, notOwner: true };
+    const next = this.#advance(threads, threadId, t);
     await this.ctx.storage.put(THREADS_KEY, threads);
     return { next };
   }
@@ -285,13 +325,48 @@ export class RunRegistryDO extends DurableObject {
     const t = threads[threadId];
     if (!t) return { activeRunId: null, statusMessageId: null, cleared: 0 };
     const out = {
-      activeRunId: t.activeRunId === 'pending' ? null : t.activeRunId,
+      activeRunId: t.activeRunId === RUN_PENDING ? null : t.activeRunId,
       statusMessageId: t.statusMessageId,
       cleared: t.queue.length,
     };
     delete threads[threadId];
     await this.ctx.storage.put(THREADS_KEY, threads);
     return out;
+  }
+
+  /**
+   * Сторож тредів (ревʼю PR-3: раніше best-effort звіт мозку був ЄДИНИМ
+   * знімачем claim-у - один мережевий збій блокував тред назавжди). Тред,
+   * чий activeRunId не значиться в активних (або вічний pending) довше за
+   * graceMs, - звільняється; черга лишається і підніметься kick-ом.
+   * Повертає звільнені треди зі статусниками - викликач чесно скаже власнику.
+   * @param {number} nowMs
+   * @param {number} graceMs
+   */
+  async threadSweep(nowMs, graceMs) {
+    const threads = await this.#threads();
+    const active = await this.#active();
+    /** @type {{ threadId: string, statusMessageId: number | null, chatId: number | null, queued: number }[]} */
+    const freed = [];
+    let dirty = false;
+    for (const [threadId, t] of Object.entries(threads)) {
+      if (t.activeRunId == null) continue;
+      const runAlive = t.activeRunId !== RUN_PENDING && Boolean(active[t.activeRunId]);
+      if (runAlive) continue;
+      if (nowMs - (t.sinceMs ?? 0) <= graceMs) continue;
+      freed.push({
+        threadId,
+        statusMessageId: t.statusMessageId,
+        chatId: t.chatId ?? null,
+        queued: t.queue.length,
+      });
+      t.activeRunId = null;
+      t.statusMessageId = null;
+      if (t.queue.length === 0) delete threads[threadId];
+      dirty = true;
+    }
+    if (dirty) await this.ctx.storage.put(THREADS_KEY, threads);
+    return freed;
   }
 
   /** Стан тредів (для «підняття» черг після відновлення мозку і /status). */

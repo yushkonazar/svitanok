@@ -195,18 +195,19 @@ describe('handleRuns: ескалація і черга треду', () => {
           has: async (id: string) => id === 'r1',
           consumeNonce: async () => true,
           begin: async () => undefined,
-          finish: async () => undefined,
-          runInfo: async (id: string) => (id === 'r1' ? { threadId: 'dm' } : null),
+          // finish повертає інфо прогону - на ньому тримається продовження.
+          finish: async (id: string) => (id === 'r1' ? { threadId: 'dm', chatId: 999 } : null),
+          runInfo: async (id: string) => (id === 'r1' ? { threadId: 'dm', chatId: 999 } : null),
           threadFinish: async (threadId: string) => {
             const t = threads.get(threadId);
             const queue = (t?.queue as Record<string, unknown>[]) ?? [];
             return { next: queue.shift() ?? null };
           },
-          threadSetRun: async () => undefined,
+          threadSetRun: async () => ({ claimed: true }),
         }),
       },
     });
-    return { env, threads, tg, brain };
+    return { env, threads, tg, brain, db: d1.db };
   };
 
   afterEach(() => {
@@ -267,5 +268,36 @@ describe('handleRuns: ескалація і черга треду', () => {
       NOW,
     );
     expect(brain.filter((c) => c.path === '/run')).toHaveLength(0);
+  });
+
+  it('deliver DM-прогону йде в chatId прогону з thread_id NULL, не в супергрупу з "dm"', async () => {
+    const { env, db } = richEnv();
+    const bodyObj = { text: 'відповідь у приват' };
+    const body = JSON.stringify(bodyObj);
+    const nonce = `dm-${Math.random()}`;
+    const req = new Request('https://svitanok.test/internal/deliver', {
+      method: 'POST',
+      headers: {
+        'X-Internal-Timestamp': String(NOW),
+        'X-Internal-Run': 'r1',
+        'X-Internal-Nonce': nonce,
+        'X-Internal-Signature': await signInternal(KEY, {
+          method: 'POST',
+          path: '/internal/deliver',
+          timestampMs: NOW,
+          runId: 'r1',
+          nonce,
+          rawBody: body,
+        }),
+      },
+      body,
+    });
+    const res = await handleInternal(req, env, NOW);
+    expect(res.status).toBe(200);
+    const row = db
+      .prepare(`SELECT chat_id, thread_id FROM outbox ORDER BY id DESC LIMIT 1`)
+      .get() as Record<string, unknown>;
+    expect(String(row.chat_id)).toBe('999');
+    expect(row.thread_id).toBeNull();
   });
 });

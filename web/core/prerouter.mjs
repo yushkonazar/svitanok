@@ -21,6 +21,7 @@ import {
   registryThreadRetry,
   registryThreadKickNext,
   registryThreadsSnapshot,
+  registrySweep,
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { parsePolicyCallback } from './policy/core.mjs';
@@ -39,7 +40,9 @@ const ANCHOR_RE =
   /(мій|моя|мої|мене|мені|зустріч|календар|пошт|лист|нагада|запиши|збережи|знайди в|покажи|витрат|іде[яїй]|бажан|поїздк|столик|чат)/i;
 const URL_RE = /https?:\/\/|www\./i;
 const FACT_QUESTION_RE = /(скільки|коли|хто такий|хто така|хто |що таке|який рік|якого року)/i;
-const NUMBER_OP_RE = /\d[\d\s.,]*\s*[%+\-*/×÷^]|[%+\-*/×÷^]\s*\d/;
+// Мінус НЕ в класі операторів (ревʼю PR-3: «2026-08-27», «топ-5», «18-30»
+// ставали quick) - віднімання ловиться лише відділеним пробілами « - ».
+const NUMBER_OP_RE = /\d[\d\s.,]*\s*[%+*/×÷^]|[%+*/×÷^]\s*\d|\d\s+-\s+\d/;
 
 /** Класифікація N3: тривіальне → quick, решта → chat.
  *  @param {string} text */
@@ -133,14 +136,27 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   }
 
   const route = classifyRoute(text);
-  const claim = await registryThreadClaim(env, threadKey, { text, route, atMs: nowMs });
+  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «▸ Думаю…»
+  // прогону, при черзі - редагованим «▸ Черга: N» (не вічним повідомленням-
+  // сиротою), а його id поїде в queue-entry для reuse при підйомі.
+  const statusMessageId = await sendStatusDraft(env, target);
+  const entry = {
+    text,
+    route,
+    attempts: 0,
+    atMs: nowMs,
+    chatId: target.chatId,
+    statusMessageId,
+  };
+  const claim = await registryThreadClaim(env, threadKey, entry);
   if ('queued' in claim) {
-    await send(
-      claim.queued === -1 ? 'Черга повна - спробуй трохи пізніше.' : `▸ Черга: ${claim.queued}`,
-    );
+    const note =
+      claim.queued === -1 ? 'Черга повна - спробуй трохи пізніше.' : `▸ Черга: ${claim.queued}`;
+    if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
+    else await send(note);
     return true;
   }
-  await startClaimedRun(env, target, threadKey, { text, route, attempts: 0, atMs: nowMs }, nowMs);
+  await startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
   return true;
 }
 
@@ -151,7 +167,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
  * @param {Env} env
  * @param {{ chatId: number | null, threadId: number | string | null }} parsed
  * @param {string} threadKey
- * @param {{ text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null }} entry
+ * @param {{ text: string, route: string, attempts: number, atMs: number, chatId?: number | null, statusMessageId?: number | null }} entry
  * @param {number} nowMs
  * @param {number | null} [reuseStatusId] - ескалація quick→chat редагує той
  *   самий статусник, нового не шле
@@ -164,10 +180,23 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     trigger: entry.route,
     profile: entry.route,
     threadId: threadKey,
+    chatId: parsed.chatId,
     model: MODELS[/** @type {'chat' | 'quick'} */ (entry.route)] ?? null,
     startedMs: nowMs,
   });
-  await registryThreadSetRun(env, threadKey, runId, statusMessageId);
+  const { claimed } = await registryThreadSetRun(env, threadKey, runId, statusMessageId, nowMs);
+  if (!claimed) {
+    // «стоп» устиг у вікні pending (ревʼю PR-3): тред зник - мозок НЕ кличемо,
+    // інакше прогін-сирота доставив би відповідь після «Зупинив.».
+    await registryFinish(env, runId, { finishedMs: nowMs, error: 'cancelled' });
+    if (reuseStatusId == null && statusMessageId != null && parsed.chatId != null) {
+      await tgCall(env, 'deleteMessage', {
+        chat_id: parsed.chatId,
+        message_id: statusMessageId,
+      }).catch(() => {});
+    }
+    return;
+  }
 
   const sess = entry.route === 'chat' ? await readSession(env, threadKey) : null;
   const res = await callBrainRun(
@@ -187,12 +216,24 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   );
   if (res.ok) return;
 
-  // Мозок не взяв: закрити прогін, повернути запит у чергу або чесно здатись.
-  await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
   console.error(`prerouter: /run не стартував (${res.status} ${res.detail})`);
+  if (res.status === 0) {
+    // Транспортна невизначеність (таймаут 10 с / мережа): 202 міг ЗАГУБИТИСЬ,
+    // а прогін у мозку жити - ретрай дав би подвійну LLM-роботу, а finish
+    // зробив би живому прогону 403 на кожен колбек (ревʼю PR-3). Лишаємо
+    // активним: живий - доставить, мертвий - сторож (registrySweep) звільнить
+    // тред і чесно скаже власнику.
+    await editStatus(env, parsed, statusMessageId, 'Звʼязок із мозком повільний - чекаю…', nowMs);
+    return;
+  }
+
+  // Мозок ВІДПОВІВ відмовою - прогін точно не стартував. Спершу повернути
+  // запис у чергу, потім закривати прогін: зворотний порядок лишав би тред
+  // взятим фантомом при смерті ізоляту між викликами (ревʼю PR-3).
   const attempts = entry.attempts + 1;
   if (attempts >= START_MAX_ATTEMPTS) {
-    await registryThreadFinishAndKick(env, parsed, threadKey, nowMs);
+    await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
+    await registryThreadFinishAndKick(env, parsed, threadKey, runId, nowMs);
     await editStatus(
       env,
       parsed,
@@ -203,6 +244,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     return;
   }
   await registryThreadRetry(env, threadKey, { ...entry, attempts, statusMessageId });
+  await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
   await editStatus(
     env,
     parsed,
@@ -214,33 +256,66 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
 
 /**
  * Після завершення прогону треду (кличе handleRuns роутера): віддати чергу.
+ * runId - власник claim-у: чужий finish (summarize) - no-op у DO (ревʼю PR-3).
  * @param {Env} env
  * @param {{ chatId: number | null, threadId: number | string | null }} parsed
  * @param {string} threadKey
+ * @param {string | null} runId
  * @param {number} nowMs
  */
-export async function registryThreadFinishAndKick(env, parsed, threadKey, nowMs) {
-  const { next } = await registryThreadFinish(env, threadKey);
-  if (next)
-    await startClaimedRun(env, parsed, threadKey, next, nowMs, next.statusMessageId ?? null);
+export async function registryThreadFinishAndKick(env, parsed, threadKey, runId, nowMs) {
+  const { next } = await registryThreadFinish(env, threadKey, runId);
+  if (!next) return;
+  const target = next.chatId != null ? { ...parsed, chatId: next.chatId } : parsed;
+  // «▸ Черга: N» цього запису стає «▸ Думаю…» його прогону.
+  if (next.statusMessageId != null) {
+    await editStatus(env, target, next.statusMessageId, STATUS_DRAFT, nowMs);
+  }
+  await startClaimedRun(env, target, threadKey, next, nowMs, next.statusMessageId ?? null);
 }
 
 /**
  * «Підняття» черг після відновлення мозку (задача brain-health, S-0-7):
- * вільні треди з чергою стартують голову.
+ * спершу сторож (звільнити мертві claim-и, чесно закрити їхні статусники),
+ * потім вільні треди з чергою стартують голову. Збій одного треду не зупиняє
+ * решту (ізоляція, як у тіку планувальника).
  * @param {Env} env
  * @param {number} [nowMs]
  */
 export async function kickPendingThreads(env, nowMs = Date.now()) {
+  const { freedThreads } = await registrySweep(env, nowMs);
+  for (const freed of freedThreads) {
+    console.error(
+      `prerouter: сторож звільнив тред ${freed.threadId} (мертвий claim, у черзі ${freed.queued})`,
+    );
+    if (freed.statusMessageId != null) {
+      const target = parsedForThread(env, freed.threadId, freed.chatId);
+      await editStatus(
+        env,
+        target,
+        freed.statusMessageId,
+        'Не дочекався відповіді мозку - напиши ще раз.',
+        nowMs,
+      ).catch(() => {});
+    }
+  }
+
   const threads = await registryThreadsSnapshot(env);
   let kicked = 0;
   for (const [threadKey, t] of Object.entries(threads)) {
     if (t.activeRunId != null || t.queue.length === 0) continue;
-    const { next } = await registryThreadKickNext(env, threadKey);
-    if (!next) continue;
-    const parsed = parsedForThread(env, threadKey);
-    await startClaimedRun(env, parsed, threadKey, next, nowMs, next.statusMessageId ?? null);
-    kicked += 1;
+    try {
+      const { next } = await registryThreadKickNext(env, threadKey);
+      if (!next) continue;
+      const parsed = parsedForThread(env, threadKey, next.chatId ?? null);
+      if (next.statusMessageId != null) {
+        await editStatus(env, parsed, next.statusMessageId, STATUS_DRAFT, nowMs);
+      }
+      await startClaimedRun(env, parsed, threadKey, next, nowMs, next.statusMessageId ?? null);
+      kicked += 1;
+    } catch (/** @type {any} */ e) {
+      console.error(`prerouter: підняття треду ${threadKey} впало`, e?.message);
+    }
   }
   return { kicked };
 }
@@ -329,9 +404,12 @@ async function shadowClassifyLog(env, parsed, text, nowMs) {
   const route = classifyRoute(text);
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   const runId = crypto.randomUUID();
+  // trigger='shadow' (ревʼю PR-3): інакше класифікація була б невідрізненна
+  // від бойових прогонів у runs і забруднила б статистику назавжди; profile
+  // лишається route - саме його порівнює приймання.
   await registryBegin(env, {
     id: runId,
-    trigger: route,
+    trigger: 'shadow',
     profile: route,
     threadId: threadKey,
     model: null,
@@ -378,10 +456,12 @@ async function systemStatusLine(env) {
 
 // ── Транспортні дрібниці ─────────────────────────────────────────────────────
 
-/** @param {Env} env @param {string} threadKey @returns {ThreadTarget} */
-function parsedForThread(env, threadKey) {
+/** Ціль відправки для треду: chatId прогону/запису або спільний чат.
+ *  @param {Env} env @param {string} threadKey @param {number | null} [chatId]
+ *  @returns {ThreadTarget} */
+export function parsedForThread(env, threadKey, chatId = null) {
   return {
-    chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
+    chatId: chatId ?? (env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null),
     threadId: threadKey === THREAD_DM ? null : threadKey,
   };
 }

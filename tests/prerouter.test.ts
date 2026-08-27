@@ -113,19 +113,22 @@ function makeRegistryStub() {
     },
     threadSetRun: async (threadId: string, runId: string, statusMessageId: number | null) => {
       const t = threads.get(threadId);
-      if (t) {
-        t.activeRunId = runId;
-        t.statusMessageId = statusMessageId;
-      }
+      if (!t) return { claimed: false };
+      t.activeRunId = runId;
+      t.statusMessageId = statusMessageId;
+      return { claimed: true };
     },
-    threadFinish: async (threadId: string) => {
+    threadFinish: async (threadId: string, runId: string | null) => {
       const t = threads.get(threadId);
       if (!t) return { next: null };
+      if (runId != null && t.activeRunId !== runId) return { next: null, notOwner: true };
       const next = t.queue.shift() ?? null;
       if (next) t.activeRunId = 'pending';
       else threads.delete(threadId);
       return { next };
     },
+    sweepStale: async () => [],
+    threadSweep: async () => [],
     threadClear: async (threadId: string) => {
       const t = threads.get(threadId);
       threads.delete(threadId);
@@ -227,12 +230,13 @@ describe('prerouteMessage: режими', () => {
     expect(reg.begins).toHaveLength(0);
   });
 
-  it('shadow без v2: класифікує, пише runs (begin+finish) і віддає легасі', async () => {
+  it('shadow без v2: класифікує, пише runs з trigger=shadow і віддає легасі', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(reg, d1FromSqlite().stub, 'shadow');
     expect(await prerouteMessage(env, parsedMsg('скільки 2+2'), NOW)).toBe(false);
-    expect(reg.begins[0]).toMatchObject({ trigger: 'quick', profile: 'quick', threadId: 'dm' });
+    // trigger='shadow' (ревʼю PR-3): класифікація відрізняється від бойових.
+    expect(reg.begins[0]).toMatchObject({ trigger: 'shadow', profile: 'quick', threadId: 'dm' });
     expect(reg.finishes).toHaveLength(1);
     expect(tg).toHaveLength(0);
     expect(brain).toHaveLength(0);
@@ -265,15 +269,20 @@ describe('prerouteMessage: режими', () => {
     expect(reg.threads.get('dm')?.statusMessageId).toBe(101);
   });
 
-  it('on: два повідомлення - друге в чергу з «▸ Черга: 1» (S-0-2), мозок кликаний раз', async () => {
+  it('on: два повідомлення - друге дістає СТАТУСНИК «▸ Черга: 1» (S-0-2, редагований), мозок кликаний раз', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(reg, d1FromSqlite().stub);
     await prerouteMessage(env, parsedMsg('перше питання про мій день'), NOW);
     await prerouteMessage(env, parsedMsg('друге питання про мої плани'), NOW + 1000);
     expect(brain).toHaveLength(1);
-    const queueNotice = tg.find((c) => String(c.body.text).includes('Черга: 1'));
-    expect(queueNotice).toBeDefined();
+    // Черга - це EDIT статусника (не вічне повідомлення-сирота, ревʼю PR-3).
+    const queueEdit = tg.find(
+      (c) => c.method === 'editMessageText' && String(c.body.text).includes('Черга: 1'),
+    );
+    expect(queueEdit).toBeDefined();
+    // Його id збережено в queue-entry для reuse при підйомі.
+    expect(reg.threads.get('dm')?.queue[0]).toMatchObject({ statusMessageId: 102 });
   });
 
   it('інша тема - false; легасі-команда /stats - false', async () => {
@@ -403,5 +412,57 @@ describe('S-0-7: мозок недоступний', () => {
     expect(brain[0]!.body).toMatchObject({ input: { text: 'відкладене' }, status_message_id: 88 });
     // Нового статусника НЕ шлемо - редагуватиметься 88.
     expect(tg.filter((c) => c.method === 'sendMessage')).toHaveLength(0);
+  });
+});
+
+describe('ревʼю PR-3: класифікатор, стоп-вікно, транспортна невизначеність', () => {
+  it('дефіс - не оператор: дати/діапазони/топ-N лишаються chat; « - » з пробілами - quick', () => {
+    expect(classifyRoute('підсумуй розмову за 2026-08-27')).toBe('chat');
+    expect(classifyRoute('топ-5 фільмів десятиліття назви')).toBe('chat');
+    expect(classifyRoute('о 18-30 підходить?')).toBe('chat');
+    expect(classifyRoute('скільки буде 100 - 37')).toBe('quick');
+    expect(classifyRoute('скільки 17 % від 4 200')).toBe('quick');
+  });
+
+  it('claimed:false від setRun («стоп» у вікні pending): мозок НЕ кличеться, прогін cancelled, статусник видалено', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const env = makeEnv(reg, d1FromSqlite().stub);
+    // Тред зник ДО setRun - стаб поверне claimed:false (треду немає в мапі).
+    await startClaimedRun(
+      env,
+      { chatId: 555, threadId: null },
+      'dm',
+      { text: 'запізніле', route: 'chat', attempts: 0, atMs: NOW },
+      NOW,
+    );
+    expect(brain).toHaveLength(0);
+    expect(reg.finishes[0]).toMatchObject({ patch: { error: 'cancelled' } });
+    expect(tg.some((c) => c.method === 'deleteMessage')).toBe(true);
+  });
+
+  it('транспортний збій /run (status 0): прогін НЕ закривається і НЕ ретраїться - чекаємо/сторож', async () => {
+    const reg = makeRegistryStub();
+    const tgLog: { method: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        if (u.includes('api.telegram.org')) {
+          tgLog.push({ method: u.split('/').pop() ?? '', body });
+          return new Response(JSON.stringify({ ok: true, result: { message_id: 300 } }), {
+            status: 200,
+          });
+        }
+        throw new Error('tunnel мовчить');
+      }),
+    );
+    const env = makeEnv(reg, d1FromSqlite().stub);
+    await prerouteMessage(env, parsedMsg('питання про мої плани'), NOW);
+    expect(reg.finishes).toHaveLength(0);
+    expect(reg.retries).toHaveLength(0);
+    expect(reg.threads.get('dm')?.activeRunId).not.toBeNull();
+    expect(tgLog.some((c) => String(c.body.text).includes('повільний'))).toBe(true);
   });
 });

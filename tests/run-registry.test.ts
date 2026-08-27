@@ -210,7 +210,8 @@ describe('registryBegin/registryFinish — клієнт', () => {
     await expect(
       registryBegin(env, { id: 'r', trigger: 'chat', startedMs: T0 }),
     ).resolves.toBeUndefined();
-    await expect(registryFinish(env, 'r', { finishedMs: T0 })).resolves.toBeUndefined();
+    // finish тепер повертає інфо прогону; збій DO - чесний null, не виняток.
+    await expect(registryFinish(env, 'r', { finishedMs: T0 })).resolves.toBeNull();
     expect(errors.join('\n')).toContain('begin впав');
   });
 });
