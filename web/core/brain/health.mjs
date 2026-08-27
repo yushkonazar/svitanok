@@ -65,12 +65,20 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
   }
 
   const prev = await readState(env);
-  const changed = prev?.state !== observed.state || prev?.detail !== observed.detail;
+  // down-стан порівнюємо ЛИШЕ за станом: текст мережевої помилки мінливий
+  // (timeout ↔ refused), і алерт на кожну зміну формулювання - той самий спам,
+  // від якого дедуп і рятує. Для desync detail значущий (інший sha = інший
+  // розсинхрон).
+  const changed =
+    prev?.state !== observed.state ||
+    (observed.state === 'desync' && prev?.detail !== observed.detail);
   let alerted = false;
   if (changed) {
-    await env.BRIEFING.put(STATE_KEY, JSON.stringify(observed));
     const text = alertText(prev?.state ?? null, observed);
     if (text && env.TELEGRAM_CHAT_ID) {
+      // Enqueue ПЕРЕД записом стану: якщо покласти в чергу не вдалось, стан
+      // лишається старим і наступний тік повторить спробу - інакше перехід
+      // «згорів» би без алерту назавжди. Drain - best-effort (добере sweeper).
       await enqueueOutbox(
         env,
         {
@@ -81,9 +89,10 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
         },
         nowMs,
       );
-      await drainOutbox(env, { nowMs });
       alerted = true;
     }
+    await env.BRIEFING.put(STATE_KEY, JSON.stringify(observed));
+    if (alerted) await drainOutbox(env, { nowMs }).catch(() => {});
   }
   return { state: observed.state, alerted };
 }
