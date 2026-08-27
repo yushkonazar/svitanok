@@ -82,32 +82,48 @@ function db(env) {
 export async function applyPolicy(env, action, nowMs) {
   const decision = decideLevel(action.kind, action.tainted);
   if ('error' in decision) return { mode: 'error', error: decision.error };
+  let level = decision.level;
 
-  if (decision.level === 'T0') {
+  // source='owner' - привласнення слів власника, і воно потребує ЙОГО ✅:
+  // 07 §4 дозволяє виводу моделі лише inferred, тож T0-шлях із owner
+  // ескалюється до пропозиції (після ✅ attribution легітимний).
+  if (level === 'T0' && action.kind === 'facts.set' && action.payload.source === 'owner') {
+    level = 'T1';
+  }
+
+  if (level === 'T0') {
     const executor = EXECUTORS[action.kind];
     if (!executor) return { mode: 'error', error: `no-executor: ${action.kind}` };
     const { prev, result } = await executor.execute(env, action.payload, nowMs);
     if (prev === undefined || !executor.undo) return { mode: 'executed', result };
-    const undoId = crypto.randomUUID();
-    await insertRow(env, {
-      id: undoId,
-      level: 'T0',
-      kind: `undo:${action.kind}`,
-      payloadJson: JSON.stringify(prev),
-      threadId: action.threadId,
-      word: null,
-      expiresAt: new Date(nowMs + UNDO_WINDOW_MS).toISOString(),
-      nowMs,
-    });
-    return { mode: 'executed', result, undo: { id: undoId, buttons: undoButton(undoId) } };
+    try {
+      const undoId = crypto.randomUUID();
+      await insertRow(env, {
+        id: undoId,
+        level: 'T0',
+        kind: `undo:${action.kind}`,
+        payloadJson: JSON.stringify(prev),
+        threadId: action.threadId,
+        word: null,
+        expiresAt: new Date(nowMs + UNDO_WINDOW_MS).toISOString(),
+        nowMs,
+      });
+      return { mode: 'executed', result, undo: { id: undoId, buttons: undoButton(undoId) } };
+    } catch (/** @type {any} */ e) {
+      // Дію ВЖЕ виконано - збій undo-рядка не сміє звітувати «не виконано»
+      // (мозок повторив би запис). Просто без кнопки «↩», зі слідом у логах.
+      console.error('policy: undo-рядок не записано (дія виконана)', e?.message);
+      return { mode: 'executed', result };
+    }
   }
 
   const id = crypto.randomUUID();
-  const word = decision.level === 'T2' ? pickT2Word() : null;
-  const expiresAt = new Date(nowMs + PROPOSAL_TTL_MS[decision.level]).toISOString();
+  const proposalLevel = /** @type {'T1' | 'T2'} */ (level); // T0 повернувся вище
+  const word = proposalLevel === 'T2' ? pickT2Word() : null;
+  const expiresAt = new Date(nowMs + PROPOSAL_TTL_MS[proposalLevel]).toISOString();
   await insertRow(env, {
     id,
-    level: decision.level,
+    level,
     kind: action.kind,
     payloadJson: JSON.stringify(action.payload),
     threadId: action.threadId,
@@ -119,7 +135,7 @@ export async function applyPolicy(env, action, nowMs) {
     mode: 'proposed',
     proposal: {
       id,
-      level: decision.level,
+      level,
       word,
       expires_at: expiresAt,
       buttons: proposalButtons(id),
@@ -170,9 +186,21 @@ export async function resolveProposal(env, input, nowMs) {
   } catch {
     return { ok: false, error: 'bad-payload' };
   }
-  const { result } = await executor.execute(env, payload, nowMs);
-  await setStatus(env, row.id, 'approved', nowMs);
-  return { ok: true, status: 'approved', executed: true, result };
+  // CLAIM ПЕРЕД виконанням (TOCTOU): подвійний тап ✅ = два вебхуки = два
+  // конкурентні resolve, і обидва бачили status='open' вище. CAS пускає до
+  // виконавця рівно одного; на етапі 2 це різниця між однією і двома подіями
+  // в календарі.
+  if (!(await setStatus(env, row.id, 'approved', nowMs))) {
+    return { ok: true, already: 'approved' };
+  }
+  try {
+    const { result } = await executor.execute(env, payload, nowMs);
+    return { ok: true, status: 'approved', executed: true, result };
+  } catch (/** @type {any} */ e) {
+    // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.
+    console.error(`policy: виконання ${row.kind} після ✅ впало`, e?.message);
+    return { ok: false, error: `execute-failed: ${String(e?.message ?? '')}` };
+  }
 }
 
 /**
@@ -200,8 +228,11 @@ export async function resolveUndo(env, id, nowMs) {
   } catch {
     return { ok: false, error: 'bad-payload' };
   }
-  await executor.undo(env, snapshot, nowMs);
-  await setStatus(env, id, 'approved', nowMs); // approved = «↩ застосовано»
+  // Той самий claim-first, що в resolveProposal: подвійний «↩» - один відкат.
+  if (!(await setStatus(env, id, 'approved', nowMs))) {
+    return { ok: true, already: 'approved' };
+  }
+  await executor.undo(env, snapshot, nowMs); // approved = «↩ застосовано»
   return { ok: true, status: 'undone' };
 }
 
@@ -236,10 +267,12 @@ async function loadRow(env, id) {
   return /** @type {ProposalRow | undefined} */ (results?.[0]) ?? null;
 }
 
-/** @param {Env} env @param {string} id @param {string} status @param {number} nowMs */
+/** CAS open→status; true = саме ЦЕЙ виклик забрав рішення (changes === 1).
+ *  @param {Env} env @param {string} id @param {string} status @param {number} nowMs */
 async function setStatus(env, id, status, nowMs) {
-  await db(env)
+  const res = await db(env)
     .prepare(`UPDATE proposals SET status = ?, decided_at = ? WHERE id = ? AND status = 'open'`)
     .bind(status, new Date(nowMs).toISOString(), id)
     .run();
+  return (res.meta?.changes ?? 0) === 1;
 }

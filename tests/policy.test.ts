@@ -16,7 +16,7 @@ import {
   UNDO_WINDOW_MS,
 } from '../web/core/policy/core.mjs';
 import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
-import { runFactsGet } from '../web/core/tools/facts.mjs';
+import { runFactsGet, runFactsSet } from '../web/core/tools/facts.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -101,17 +101,13 @@ describe('policy core — таблиця рівнів', () => {
 
 describe('T0: виконати одразу + «↩» 10 хв', () => {
   it('facts.set у чистій сесії пишеться одразу, undo повертає ЯК БУЛО', async () => {
-    // Було value=uk (owner); T0 перезаписує на en.
-    const seed = await applyPolicy(
+    // Було value=uk (owner) — сід напряму, як шлях команд власника (поза
+    // мозком): через applyPolicy source=owner тепер ескалюється (тест нижче).
+    await runFactsSet(
       env,
-      {
-        kind: 'facts.set',
-        payload: { kind: 'setting', key: 'lang', value: 'uk', source: 'owner' },
-        tainted: false,
-      },
+      { kind: 'setting', key: 'lang', value: 'uk', source: 'owner' },
       NOW - 1000,
     );
-    expect(seed.mode).toBe('executed');
     const out = await applyPolicy(
       env,
       { kind: 'facts.set', payload: { kind: 'setting', key: 'lang', value: 'en' }, tainted: false },
@@ -227,6 +223,44 @@ describe('T1/T2: пропозиції', () => {
       status: string;
     };
     expect(row.status).toBe('open');
+  });
+
+  it('source=owner з T0-шляху ескалюється до пропозиції: attribution потребує ✅', async () => {
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'facts.set',
+        payload: { kind: 'contact', key: 'мама', value: 'x', source: 'owner' },
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(out.mode).toBe('proposed'); // НЕ executed, хоч сесія чиста
+    const id = out.mode === 'proposed' ? out.proposal.id : '';
+    // ДО ✅ факту немає.
+    expect((await runFactsGet(env, { kind: 'contact', key: 'мама' })).result).toHaveLength(0);
+    await resolveProposal(env, { id, choice: 'ok' }, NOW + 1000);
+    // ПІСЛЯ ✅ власника owner-attribution легітимний.
+    expect((await runFactsGet(env, { kind: 'contact', key: 'мама' })).result[0]).toMatchObject({
+      source: 'owner',
+    });
+  });
+
+  it('подвійний тап ✅ (конкурентні resolve) — виконання рівно одне', async () => {
+    const out = await applyPolicy(
+      env,
+      { kind: 'facts.set', payload: { kind: 'setting', key: 'dbl', value: 1 }, tainted: true },
+      NOW,
+    );
+    const id = out.mode === 'proposed' ? out.proposal.id : '';
+    const [a, b] = await Promise.all([
+      resolveProposal(env, { id, choice: 'ok' }, NOW + 1000),
+      resolveProposal(env, { id, choice: 'ok' }, NOW + 1001),
+    ]);
+    const executed = [a, b].filter((r) => 'status' in r && r.status === 'approved');
+    const already = [a, b].filter((r) => 'already' in r);
+    expect(executed).toHaveLength(1);
+    expect(already).toHaveLength(1);
   });
 
   it('невідомий kind дії — error без рядка в proposals', async () => {
