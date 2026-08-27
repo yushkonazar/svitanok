@@ -233,28 +233,147 @@ describe('handleInternal — маршрутизатор', () => {
   });
 
   it('той самий підписаний запит удруге — 401 replayed (nonce спожито)', async () => {
-    const first = await handleInternal(await request(PATH, { args: {} }), env, NOW);
-    expect(first.status).toBe(501);
-    const second = await handleInternal(await request(PATH, { args: {} }), env, NOW);
+    const args = { args: { scope: 'reminders' } };
+    const first = await handleInternal(await request(PATH, args), env, NOW);
+    expect(first.status).toBe(200);
+    const second = await handleInternal(await request(PATH, args), env, NOW);
     expect(second.status).toBe(401);
     expect(await second.json()).toMatchObject({ error: 'replayed' });
     // Інший nonce — інший запит: проходить.
-    const third = await handleInternal(
-      await request(PATH, { args: {} }, { nonce: 'n-2' }),
-      env,
-      NOW,
-    );
-    expect(third.status).toBe(501);
+    const third = await handleInternal(await request(PATH, args, { nonce: 'n-2' }), env, NOW);
+    expect(third.status).toBe(200);
   });
 
-  it('валідний виклик інструмента — 501 not-implemented з імʼям (PR-6 замінить)', async () => {
+  it('валідний виклик інструмента виконується: 200 {ok, tool, tainted, result}', async () => {
     const res = await handleInternal(
-      await request(PATH, { args: { scope: 'briefing' } }),
+      await request(PATH, { args: { scope: 'reminders' } }),
       env,
       NOW,
     );
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({ error: 'not-implemented', tool: 'data.read' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      tool: string;
+      tainted: boolean;
+      result: unknown;
+    };
+    expect(body).toMatchObject({ ok: true, tool: 'data.read', tainted: false });
+    expect(typeof body.result).toBe('string');
+  });
+
+  it('невідомий інструмент — 404 tool-unknown (імʼя обмежене регексом)', async () => {
+    const res = await handleInternal(
+      await request('/internal/tool/mail.explode', { args: {} }),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'tool-unknown' });
+  });
+
+  it('args поза контрактом інструмента — 400 зі шляхом (days > 7)', async () => {
+    const res = await handleInternal(
+      await request('/internal/tool/calendar.read', { args: { days: 9 } }),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'contract: $.days: більше за 7' });
+  });
+
+  it('збій джерела — 502 tool-failed із причиною, не тиха деградація', async () => {
+    // geo.geocode без WEATHER_API_KEY кидає — рівно той шлях.
+    const res = await handleInternal(
+      await request('/internal/tool/geo.geocode', { args: { text: 'Львів' } }),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ error: 'tool-failed', tool: 'geo.geocode' });
+  });
+
+  it('tainting-інструмент ставить sessions.tainted=1 треду прогону', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })),
+    );
+    const sessionWrites: { sql: string; args: unknown[] }[] = [];
+    const taintEnv = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      GOOGLE_CLIENT_ID: 'c',
+      GOOGLE_CLIENT_SECRET: 's',
+      GOOGLE_REFRESH_TOKEN: 'r',
+      BRIEFING: {
+        get: async (k: string) =>
+          k === 'googleToken' ? JSON.stringify({ token: 't', expMs: NOW + 3_600_000 }) : null,
+        put: async () => {},
+        list: async () => ({ keys: [] }),
+      },
+      DB: {
+        prepare: (sql: string) => ({
+          bind: (...args: unknown[]) => ({
+            run: async () => {
+              sessionWrites.push({ sql, args });
+            },
+          }),
+        }),
+      },
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async () => true,
+          runInfo: async () => ({ threadId: 'thread-7' }),
+        }),
+      },
+    });
+    const res = await handleInternal(
+      await request('/internal/tool/mail.search', { args: { q: 'пошта' } }),
+      taintEnv,
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, tainted: true });
+    expect(sessionWrites).toHaveLength(1);
+    expect(sessionWrites[0]?.sql).toContain('INSERT INTO sessions');
+    expect(sessionWrites[0]?.sql).toContain('tainted = 1');
+    expect(sessionWrites[0]?.args[0]).toBe('thread-7');
+    vi.unstubAllGlobals();
+  });
+
+  it('taint не персистувався — 503, зовнішній вміст НЕ віддається (fail-closed)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })),
+    );
+    const noThreadEnv = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      GOOGLE_CLIENT_ID: 'c',
+      GOOGLE_CLIENT_SECRET: 's',
+      GOOGLE_REFRESH_TOKEN: 'r',
+      BRIEFING: {
+        get: async (k: string) =>
+          k === 'googleToken' ? JSON.stringify({ token: 't', expMs: NOW + 3_600_000 }) : null,
+        put: async () => {},
+        list: async () => ({ keys: [] }),
+      },
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async () => true,
+          runInfo: async () => null, // прогін без threadId - персистувати нікуди
+        }),
+      },
+    });
+    const res = await handleInternal(
+      await request('/internal/tool/mail.search', { args: { q: 'пошта' } }),
+      noThreadEnv,
+      NOW,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: 'taint-not-persisted' });
+    vi.unstubAllGlobals();
   });
 
   it('порушення контракту — 400 зі шляхом поля', async () => {
