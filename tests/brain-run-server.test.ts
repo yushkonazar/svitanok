@@ -278,3 +278,56 @@ describe('probeInternalApi', () => {
     expect(calls[0]!.redirect).toBe('manual');
   });
 });
+
+describe('POST /abort (ADR-039)', () => {
+  const abortReq = (runId: string, body?: string, nonce?: string) => {
+    const bodyText = body ?? JSON.stringify({ run_id: runId });
+    const headers = buildSignedHeaders(KEY, {
+      method: 'POST',
+      path: '/abort',
+      runId,
+      rawBody: bodyText,
+      nowMs: NOW,
+      nonce: nonce ?? `an-${Math.random()}`,
+    });
+    return {
+      method: 'POST',
+      path: '/abort',
+      getHeader: (n: string) => headers[n] ?? null,
+      bodyText,
+    };
+  };
+
+  it('валідний підписаний abort рве активний прогін; без активного - aborted:false', async () => {
+    const aborted: string[] = [];
+    const { handler } = makeHandler({
+      abortRun: (runId: string) => {
+        aborted.push(runId);
+        return runId === 'run-live';
+      },
+    });
+    const live = await handler.handle(abortReq('run-live'));
+    expect(live).toMatchObject({ status: 200, body: { ok: true, aborted: true } });
+    const gone = await handler.handle(abortReq('run-gone'));
+    expect(gone).toMatchObject({ status: 200, body: { ok: true, aborted: false } });
+    expect(aborted).toEqual(['run-live', 'run-gone']);
+  });
+
+  it('сходинка: без підпису 401; run-mismatch 400; повтор нонса 401 replayed', async () => {
+    const { handler } = makeHandler({ abortRun: () => true });
+    const naked = await handler.handle({
+      method: 'POST',
+      path: '/abort',
+      getHeader: () => null,
+      bodyText: JSON.stringify({ run_id: 'r' }),
+    });
+    expect(naked.status).toBe(401);
+
+    const mismatch = await handler.handle(abortReq('run-a', JSON.stringify({ run_id: 'run-b' })));
+    expect(mismatch).toMatchObject({ status: 400, body: { error: 'run-mismatch' } });
+
+    const first = abortReq('run-x', undefined, 'abort-n1');
+    expect((await handler.handle(first)).status).toBe(200);
+    expect(await handler.handle(first)).toMatchObject({ status: 401, body: { error: 'replayed' } });
+  });
+});

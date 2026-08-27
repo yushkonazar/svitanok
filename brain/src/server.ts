@@ -47,6 +47,8 @@ export interface ServerDeps {
   sdkVersion: string | null;
   claudeVersion: string | null;
   internalApiProbe: () => string;
+  /** «стоп» (ADR-039): перервати активний прогін. true = було кого рвати. */
+  abortRun?: (runId: string) => boolean;
   now?: () => number;
   /** Слоти прогонів - як у RunRegistry ядра (01 §2.1: ≤ 2). */
   maxConcurrent?: number;
@@ -91,6 +93,34 @@ export function createHandler(deps: ServerDeps): BrainHandler {
           internalApiProbe: deps.internalApiProbe(),
         }),
       };
+    }
+
+    if (req.path === '/abort') {
+      // ADR-039: та сама сходинка, що /run (підпис по сирому тілу → контракт →
+      // run-mismatch → нонс); тіло {run_id}. aborted:false = прогін уже
+      // завершився - для «стоп» це не помилка.
+      if (req.method !== 'POST') return err(405, 'method-not-allowed');
+      const verdict = verifySignedRequest({
+        method: req.method,
+        path: req.path,
+        getHeader: req.getHeader,
+        bodyText: req.bodyText,
+        nowMs: now(),
+        keys: deps.config.hmacKeys,
+      });
+      if (!verdict.ok) return err(verdict.status, verdict.error);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.bodyText);
+      } catch {
+        return err(400, 'bad-json');
+      }
+      const runId = (parsed as { run_id?: unknown } | null)?.run_id;
+      if (typeof runId !== 'string' || runId === '') return err(400, 'contract: $.run_id');
+      if (runId !== verdict.runId) return err(400, 'run-mismatch');
+      if (!nonces.consume(verdict.runId, verdict.nonce, now())) return err(401, 'replayed');
+      const aborted = deps.abortRun ? deps.abortRun(runId) : false;
+      return { status: 200, body: { ok: true, aborted } };
     }
 
     if (req.path !== '/run') return err(404, 'not-found');
