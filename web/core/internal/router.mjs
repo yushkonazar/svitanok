@@ -11,6 +11,7 @@ import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
 import { registryHas, registryConsumeNonce, registryRunInfo } from '../run-registry/client.mjs';
 import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
+import { applyPolicy } from '../policy/proposals.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -103,6 +104,50 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     const args = /** @type {{ args: Record<string, unknown> }} */ (body).args;
     const contract = validateAgainst(tool.args, args);
     if (!contract.ok) return json({ ok: false, error: `contract: ${contract.error}` }, 400);
+
+    // Write-інструменти йдуть ЛИШЕ через policy (01 §2.1: policy - єдине
+    // місце, що викликає виконавців запису): T0 - виконати + «↩», tainted -
+    // ескалація до пропозиції T1 (другий барʼєр, який хук мозку не обійде).
+    if (tool.write) {
+      const info = await registryRunInfo(env, auth.runId);
+      const threadId = info?.threadId ?? null;
+      const tainted = await readThreadTainted(env, threadId);
+      /** @type {Awaited<ReturnType<typeof applyPolicy>>} */
+      let policyOut;
+      try {
+        policyOut = await applyPolicy(
+          env,
+          { kind: tool.write.kind, payload: args, threadId, tainted },
+          nowMs,
+        );
+      } catch (/** @type {any} */ e) {
+        console.error(`internal: policy ${tool.write.kind} впала`, e?.message);
+        return json(
+          { ok: false, error: 'tool-failed', tool: name, reason: String(e?.message ?? '') },
+          502,
+        );
+      }
+      if (policyOut.mode === 'error') {
+        return json({ ok: false, error: `policy: ${policyOut.error}`, tool: name }, 400);
+      }
+      if (policyOut.mode === 'proposed') {
+        return json({
+          ok: true,
+          tool: name,
+          tainted,
+          mode: 'proposed',
+          proposal: policyOut.proposal,
+        });
+      }
+      return json({
+        ok: true,
+        tool: name,
+        tainted,
+        mode: 'executed',
+        result: policyOut.result,
+        ...(policyOut.undo ? { undo: policyOut.undo } : {}),
+      });
+    }
 
     /** @type {{ result: unknown }} */
     let out;
@@ -242,6 +287,32 @@ async function scheduleDrain(env, ctx, nowMs) {
     return;
   }
   await drained;
+}
+
+/**
+ * Прапорець taint треду з D1 sessions - джерело істини для policy (01 §4.2).
+ * FAIL-SAFE: невідомий тред / збій D1 = вважаємо tainted (ескалація до
+ * пропозиції) - помилка інфраструктури не сміє відчиняти T0-запис.
+ * @param {Env} env
+ * @param {string | number | null} threadId
+ */
+async function readThreadTainted(env, threadId) {
+  if (threadId == null) return true;
+  if (!env.DB) {
+    console.error('internal: привʼязки DB немає - taint вважаємо true (fail-safe)');
+    return true;
+  }
+  try {
+    const { results } = await env.DB.prepare('SELECT tainted FROM sessions WHERE thread_id = ?')
+      .bind(String(threadId))
+      .all();
+    const row = /** @type {{ tainted?: number } | undefined} */ (results?.[0]);
+    // Треду ще немає в sessions = зовнішнього не читали = чиста сесія.
+    return row ? row.tainted === 1 : false;
+  } catch (/** @type {any} */ e) {
+    console.error('internal: читання taint впало - вважаємо true (fail-safe)', e?.message);
+    return true;
+  }
 }
 
 /**
