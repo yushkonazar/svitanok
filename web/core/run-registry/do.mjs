@@ -21,6 +21,11 @@ const ACTIVE_KEY = 'active';
  *  активних прогонів — інший життєвий цикл і інший писар (router, не агент). */
 const NONCES_KEY = 'nonces';
 
+/** Черги тредів (ADR-039): {threadId -> {activeRunId, statusMessageId, queue}}. */
+const THREADS_KEY = 'threads';
+/** Стеля черги одного треду: далі чесна відмова, не безмежний хвіст. */
+export const THREAD_QUEUE_MAX = 5;
+
 export class RunRegistryDO extends DurableObject {
   /** @returns {Promise<Record<string, ActiveRun>>} */
   async #active() {
@@ -162,5 +167,95 @@ export class RunRegistryDO extends DurableObject {
   /** Стан для /status. */
   async snapshot() {
     return { active: await this.#active() };
+  }
+
+  // ── Черга треду (ADR-039, етап 2 PR-3) ────────────────────────────────────
+  // Один активний прогін на тред (01 §2.1): claim бере тред або ставить у
+  // чергу; finish віддає наступний запис. Стан - один ключ на всі треди
+  // (тредів у власника одиниці). Глобальні слоти ≤2 тут НЕ дублюються - їх
+  // тримає мозок (429 busy → повернення в чергу викликачем).
+
+  /** @returns {Promise<Record<string, { activeRunId: string | null, statusMessageId: number | null, queue: { text: string, route: string, attempts: number, atMs: number }[] }>>} */
+  async #threads() {
+    return /** @type {any} */ ((await this.ctx.storage.get(THREADS_KEY)) ?? {});
+  }
+
+  /**
+   * Взяти тред під прогін або стати в чергу.
+   * @param {string} threadId
+   * @param {{ text: string, route: string, attempts?: number, atMs: number }} entry
+   * @returns {Promise<{ start: true } | { queued: number }>}
+   */
+  async threadClaim(threadId, entry) {
+    const threads = await this.#threads();
+    const t = threads[threadId] ?? { activeRunId: null, statusMessageId: null, queue: [] };
+    if (t.activeRunId != null) {
+      if (t.queue.length >= THREAD_QUEUE_MAX) return { queued: -1 };
+      t.queue.push({ ...entry, attempts: entry.attempts ?? 0 });
+      threads[threadId] = t;
+      await this.ctx.storage.put(THREADS_KEY, threads);
+      return { queued: t.queue.length };
+    }
+    t.activeRunId = 'pending';
+    t.statusMessageId = null;
+    threads[threadId] = t;
+    await this.ctx.storage.put(THREADS_KEY, threads);
+    return { start: true };
+  }
+
+  /** Прогін треду стартував по-справжньому: запамʼятати runId і статусник
+   *  (для «стоп» і ескалації).
+   *  @param {string} threadId @param {string} runId @param {number | null} statusMessageId */
+  async threadSetRun(threadId, runId, statusMessageId) {
+    const threads = await this.#threads();
+    const t = threads[threadId];
+    if (!t) return;
+    t.activeRunId = runId;
+    t.statusMessageId = statusMessageId ?? null;
+    await this.ctx.storage.put(THREADS_KEY, threads);
+  }
+
+  /**
+   * Прогін треду завершився: віддати наступний запис черги (тред лишається
+   * взятим під нього) або звільнити тред. Тред без claim - тихий null
+   * (summarize-прогони фінішать без черги).
+   * @param {string} threadId
+   * @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number } | null }>}
+   */
+  async threadFinish(threadId) {
+    const threads = await this.#threads();
+    const t = threads[threadId];
+    if (!t) return { next: null };
+    const next = t.queue.shift() ?? null;
+    if (next) {
+      t.activeRunId = 'pending';
+      t.statusMessageId = null;
+      threads[threadId] = t;
+    } else {
+      delete threads[threadId];
+    }
+    await this.ctx.storage.put(THREADS_KEY, threads);
+    return { next };
+  }
+
+  /** «стоп»: очистити чергу і віддати активний прогін для abort.
+   *  @param {string} threadId */
+  async threadClear(threadId) {
+    const threads = await this.#threads();
+    const t = threads[threadId];
+    if (!t) return { activeRunId: null, statusMessageId: null, cleared: 0 };
+    const out = {
+      activeRunId: t.activeRunId === 'pending' ? null : t.activeRunId,
+      statusMessageId: t.statusMessageId,
+      cleared: t.queue.length,
+    };
+    delete threads[threadId];
+    await this.ctx.storage.put(THREADS_KEY, threads);
+    return out;
+  }
+
+  /** Стан тредів (для «підняття» черг після відновлення мозку і /status). */
+  async threadsSnapshot() {
+    return await this.#threads();
   }
 }

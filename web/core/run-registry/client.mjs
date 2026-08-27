@@ -102,6 +102,78 @@ export async function registryConsumeNonce(env, runId, nonce, nowMs, keepMs) {
   }
 }
 
+// ── Черга треду (ADR-039, PR-3) ──────────────────────────────────────────────
+// На відміну від телеметрії, черга ГЕЙТИТЬ обробку повідомлень - збої тут
+// fail-closed у бік «не стартувати другий прогін» (threadClaim → queued -1),
+// але «дати відповісти хоч якось» для finish/clear (null/порожньо + гучний лог).
+
+/**
+ * Взяти тред під прогін або стати в чергу. Збій DO = {queued:-1}: краще чесна
+ * відмова «спробуй ще раз», ніж два паралельні прогони в одному треді.
+ * @param {Env} env
+ * @param {string} threadId
+ * @param {{ text: string, route: string, attempts?: number, atMs: number }} entry
+ * @returns {Promise<{ start: true } | { queued: number }>}
+ */
+export async function registryThreadClaim(env, threadId, entry) {
+  const ns = registryNs(env);
+  if (!ns) return { queued: -1 };
+  try {
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadClaim(threadId, entry);
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadClaim впав', e?.message);
+    return { queued: -1 };
+  }
+}
+
+/** @param {Env} env @param {string} threadId @param {string} runId @param {number | null} statusMessageId */
+export async function registryThreadSetRun(env, threadId, runId, statusMessageId) {
+  const ns = registryNs(env);
+  if (!ns) return;
+  try {
+    await ns.getByName(RUN_REGISTRY_DO_NAME).threadSetRun(threadId, runId, statusMessageId);
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadSetRun впав', e?.message);
+  }
+}
+
+/** @param {Env} env @param {string} threadId
+ *  @returns {Promise<{ next: { text: string, route: string, attempts: number, atMs: number } | null }>} */
+export async function registryThreadFinish(env, threadId) {
+  const ns = registryNs(env);
+  if (!ns) return { next: null };
+  try {
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadFinish(threadId);
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadFinish впав (черга треду може застрягти)', e?.message);
+    return { next: null };
+  }
+}
+
+/** @param {Env} env @param {string} threadId */
+export async function registryThreadClear(env, threadId) {
+  const ns = registryNs(env);
+  if (!ns) return { activeRunId: null, statusMessageId: null, cleared: 0 };
+  try {
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadClear(threadId);
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadClear впав', e?.message);
+    return { activeRunId: null, statusMessageId: null, cleared: 0 };
+  }
+}
+
+/** @param {Env} env */
+export async function registryThreadsSnapshot(env) {
+  const ns = registryNs(env);
+  if (!ns) return {};
+  try {
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).threadsSnapshot();
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: threadsSnapshot впав', e?.message);
+    return {};
+  }
+}
+
 /** @param {Env} env */
 function registryNs(env) {
   if (!enabled(env)) return null;
