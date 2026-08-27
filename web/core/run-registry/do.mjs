@@ -104,6 +104,13 @@ export class RunRegistryDO extends DurableObject {
     return Boolean((await this.#active())[id]);
   }
 
+  /** Дані активного прогону (threadId для taint-запису, PR-6). null = немає.
+   *  @param {string} id */
+  async runInfo(id) {
+    const run = (await this.#active())[id];
+    return run ? { threadId: run.threadId } : null;
+  }
+
   /**
    * Спожити nonce запиту internal API: true = вперше (запит пускаємо),
    * false = уже бачили (реплей у вікні TTL). Атомарність дає сам DO

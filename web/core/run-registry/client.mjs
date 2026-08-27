@@ -64,6 +64,23 @@ export async function registryHas(env, id) {
 }
 
 /**
+ * Дані активного прогону (threadId для taint-запису). null = невідомий/збій.
+ * @param {Env} env
+ * @param {string} id
+ * @returns {Promise<{ threadId: string | number | null } | null>}
+ */
+export async function registryRunInfo(env, id) {
+  const ns = registryNs(env);
+  if (!ns) return null;
+  try {
+    return (await ns.getByName(RUN_REGISTRY_DO_NAME).runInfo(id)) ?? null;
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: runInfo впав', e?.message);
+    return null;
+  }
+}
+
+/**
  * Спожити nonce запиту internal API. Fail-closed, як registryHas: збій DO =
  * false = відмова, бо результат гейтить доступ, а не журнал.
  * @param {Env} env

@@ -1,15 +1,15 @@
-// Маршрутизатор internal API (етап 1, PR-5): автентифікація + контракти.
-// Самі виконавці приходять пізніше (tools - PR-6, deliver/status - PR-7,
-// runs-телеметрія мозку - етап 2), тому валідні запити зараз чесно отримують
-// 501 not-implemented - НЕ 404: сходинка «401 без підпису → 403 невідомий
-// прогін → 501 валідний виклик» і є приймальною перевіркою цього PR.
+// Маршрутизатор internal API (етап 1, PR-5 auth + PR-6 tools): інструменти
+// /internal/tool/* виконуються з реєстру core/tools; deliver/status (PR-7) і
+// runs-телеметрія мозку (етап 2) поки чесно відповідають 501 not-implemented.
 //
-// Порядок перевірок: прапорець → метод → розмір → підпис → run_id → контракт.
-// Дешеве і зовнішнє - першим; жодна гілка не виконує роботи до підпису.
+// Порядок перевірок: прапорець → метод → розмір → підпис → run_id → nonce →
+// контракт → виконання. Дешеве і зовнішнє - першим; жодна гілка не виконує
+// роботи до підпису.
 
 import { json, readCappedBody } from '../../http-core.mjs';
 import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
-import { registryHas, registryConsumeNonce } from '../run-registry/client.mjs';
+import { registryHas, registryConsumeNonce, registryRunInfo } from '../run-registry/client.mjs';
+import { TOOLS } from '../tools/index.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
   DELIVER_SCHEMA,
@@ -92,10 +92,39 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
 
   const toolMatch = path.match(/^\/internal\/tool\/([a-z0-9._-]+)$/);
   if (toolMatch) {
-    const contract = validateAgainst(TOOL_REQUEST_SCHEMA, body);
+    const name = /** @type {string} */ (toolMatch[1]);
+    const tool = TOOLS[name];
+    if (!tool) return json({ ok: false, error: 'tool-unknown', tool: name }, 404);
+    const envelope = validateAgainst(TOOL_REQUEST_SCHEMA, body);
+    if (!envelope.ok) return json({ ok: false, error: `contract: ${envelope.error}` }, 400);
+    const args = /** @type {{ args: Record<string, unknown> }} */ (body).args;
+    const contract = validateAgainst(tool.args, args);
     if (!contract.ok) return json({ ok: false, error: `contract: ${contract.error}` }, 400);
-    // Виконавці інструментів - PR-6; контракт і auth уже бойові.
-    return json({ ok: false, error: 'not-implemented', tool: toolMatch[1] }, 501);
+
+    /** @type {{ result: unknown }} */
+    let out;
+    try {
+      out = await tool.run(env, args, nowMs);
+    } catch (/** @type {any} */ e) {
+      // Збій джерела - явний 502 із причиною, не тиха деградація і не 500-стек.
+      console.error(`internal: інструмент ${name} впав`, e?.message);
+      return json(
+        { ok: false, error: 'tool-failed', tool: name, reason: String(e?.message ?? '') },
+        502,
+      );
+    }
+
+    // Подвійний барʼєр (01 §4.2), половина ядра: після tainting-інструмента
+    // тред прогону позначається в sessions.tainted - навіть якщо хук мозку
+    // обійдено, policy (PR-8) побачить прапорець тут. FAIL-CLOSED: якщо
+    // прапорець НЕ вдалось персистувати, зовнішній вміст не віддається -
+    // інакше транзієнтний збій DO/D1 давав би прогін із зовнішнім вмістом,
+    // який policy вважатиме чистим.
+    if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+      return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
+    }
+
+    return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
   }
 
   const route = path.match(/^\/internal\/(deliver|status|runs)$/)?.[1];
@@ -110,4 +139,41 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
   }
 
   return json({ ok: false, error: 'not-found' }, 404);
+}
+
+/**
+ * Половина подвійного барʼєра, що живе в ядрі (01 §4.2): тред прогону, який
+ * прочитав зовнішнє, позначається в D1 sessions.tainted=1 - policy (PR-8)
+ * дивитиметься СЮДИ, а не вірити хуку мозку. Повертає true лише коли прапорець
+ * СПРАВДІ персистовано - викликач на false відмовляє у видачі зовнішнього
+ * вмісту (fail-closed), тому кожен зрив тут і гучний, і не тихо-пропущений.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {number} nowMs
+ */
+async function markRunThreadTainted(env, runId, nowMs) {
+  try {
+    const info = await registryRunInfo(env, runId);
+    const threadId = info?.threadId;
+    if (threadId == null) {
+      console.error(`internal: прогін ${runId} без threadId - taint не записано в sessions`);
+      return false;
+    }
+    if (!env.DB) {
+      console.error('internal: привʼязки DB немає - taint не записано в sessions');
+      return false;
+    }
+    const iso = new Date(nowMs).toISOString();
+    await env.DB.prepare(
+      `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count)
+       VALUES (?, ?, ?, 1, 0)
+       ON CONFLICT (thread_id) DO UPDATE SET tainted = 1, last_at = excluded.last_at`,
+    )
+      .bind(String(threadId), iso, iso)
+      .run();
+    return true;
+  } catch (/** @type {any} */ e) {
+    console.error('internal: запис taint у sessions впав', e?.message);
+    return false;
+  }
 }
