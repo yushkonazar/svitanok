@@ -161,6 +161,30 @@ describe('CoreClient: політика помилок', () => {
     await expect(makeClient(fetchFn).reportRuns('run-1', [{ n: 1 }])).resolves.toBeUndefined();
   });
 
+  it('session: true на 2xx; false (не виняток) на відмову ядра і мережу', async () => {
+    const okCap = captureFetch(200, { ok: true, thread_id: 'dm' });
+    expect(
+      await makeClient(okCap.fetchFn).session('run-1', {
+        thread_id: 'dm',
+        sdk_session_id: 's1',
+        turns_inc: 1,
+      }),
+    ).toBe(true);
+    expect(okCap.calls[0]!.url).toBe('https://svitanok.example/internal/session');
+    expect(JSON.parse(String(okCap.calls[0]!.init.body))).toEqual({
+      thread_id: 'dm',
+      sdk_session_id: 's1',
+      turns_inc: 1,
+    });
+
+    const failCap = captureFetch(500, { ok: false, error: 'session-not-persisted' });
+    expect(await makeClient(failCap.fetchFn).session('run-1', { thread_id: 'dm' })).toBe(false);
+    const boom = vi.fn(async () => {
+      throw new Error('мережа впала');
+    }) as unknown as typeof fetch;
+    expect(await makeClient(boom).session('run-1', { thread_id: 'dm' })).toBe(false);
+  });
+
   it('status шле {message_id, text} за контрактом STATUS_SCHEMA', async () => {
     const { fetchFn, calls } = captureFetch(200, { ok: true, queued: 1 });
     await makeClient(fetchFn).status('run-1', 42, '▸ Читаю пошту…');

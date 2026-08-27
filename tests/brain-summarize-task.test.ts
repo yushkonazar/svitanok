@@ -11,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { callBrainRun } from '../web/core/brain/run-client.mjs';
 import { memorySummarize, SUMMARIZE_MAX_THREADS } from '../web/core/brain/summarize.mjs';
 import { verifySignedRequest } from '../brain/src/sign.js';
+import { RUN_REQUEST_SCHEMA } from '../brain/src/server.js';
 import { workerEnv } from './helpers/env.js';
 
 // 04:10 Києва (01:10 UTC у серпні, UTC+3).
@@ -87,9 +88,10 @@ describe('callBrainRun', () => {
     });
     expect(verdict).toMatchObject({ ok: true, runId: 'run-9' });
 
-    // Повна звірка з RUN_REQUEST_SCHEMA мозку - у brain-session тестах
-    // (контракт мозку розширюється профілем summarize в тому ж PR).
-    expect(JSON.parse(rawBody)).toMatchObject({
+    // Тіло, яке шле ЯДРО, парситься СХЕМОЮ МОЗКУ - контракт /run наскрізь.
+    const parsed = RUN_REQUEST_SCHEMA.safeParse(JSON.parse(rawBody));
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data).toMatchObject({
       run_id: 'run-9',
       profile: 'summarize',
       thread_id: 'dm',

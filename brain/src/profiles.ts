@@ -4,7 +4,7 @@
 
 import { BRAIN_TOOLS } from './tools/schemas.js';
 
-export type ProfileName = 'chat' | 'quick';
+export type ProfileName = 'chat' | 'quick' | 'summarize';
 
 export interface RunProfile {
   name: ProfileName;
@@ -33,6 +33,16 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     maxTurns: 1,
     timeoutMs: 60_000,
   },
+  // Внутрішній профіль (ADR-038): вхід - транскрипт сесії, вихід -
+  // /internal/session, НЕ deliver. Викликає лише задача memory-summarize.
+  summarize: {
+    name: 'summarize',
+    model: 'claude-haiku-4-5',
+    toolNames: [],
+    maxToolCalls: 0,
+    maxTurns: 1,
+    timeoutMs: 120_000,
+  },
 };
 
 /** Моделі для /health.limits (01 §2.2). */
@@ -54,6 +64,18 @@ const QUICK_STUB = `Ти - швидка смуга Світанку. Відпо�
 Якщо питання потребує даних власника (календар, пошта, нагадування, памʼять) або довших міркувань - відповідай РІВНО одним рядком:
 ESCALATE: <причина двома-трьома словами>`;
 
+// Правило згортки (ADR-038): вихід іде в sessions.summary_md і далі в
+// memory_chunks - цілі числа/дати/рішення, жодних загальних слів.
+const SUMMARIZE_STUB = `Ти згортаєш розмову власника з асистентом у памʼятку для майбутніх розмов.
+- До 1500 символів, markdown-рядки без преамбул і заголовків.
+- Лише конкретика: факти, рішення, доручення, дати, числа, назви - те, що знадобиться через тиждень.
+- Відкриті питання познач «(відкрито)».
+- Жодних оцінок розмови і жодного переказу службових реплік.
+Відповідь - ЛИШЕ текст згортки.`;
+
+/** Стеля транскрипта для згортки (стеля Кроку 10: 24k символів). */
+export const TRANSCRIPT_MAX_CHARS = 24_000;
+
 // Форматер стейтлес - конструктор Intl дорогий, тримаємо один на модуль.
 const KYIV_FMT = new Intl.DateTimeFormat('uk-UA', {
   timeZone: 'Europe/Kyiv',
@@ -61,8 +83,18 @@ const KYIV_FMT = new Intl.DateTimeFormat('uk-UA', {
   timeStyle: 'short',
 });
 
-export function buildSystemPrompt(profile: RunProfile, nowMs: number): string {
+export function buildSystemPrompt(
+  profile: RunProfile,
+  nowMs: number,
+  opts: { summary?: string | null } = {},
+): string {
   const kyiv = KYIV_FMT.format(new Date(nowMs));
-  const base = profile.name === 'quick' ? QUICK_STUB : PERSONA_STUB;
-  return `${base}\n\nЗараз у Києві: ${kyiv}.`;
+  if (profile.name === 'quick') return `${QUICK_STUB}\n\nЗараз у Києві: ${kyiv}.`;
+  if (profile.name === 'summarize') return `${SUMMARIZE_STUB}\n\nЗараз у Києві: ${kyiv}.`;
+  // Згортка треду - в системний промпт chat (01 §2.2): модель памʼятає
+  // попередні дні навіть у свіжій sdk-сесії.
+  const summaryBlock = opts.summary
+    ? `\n\nЗгортка попередніх розмов у цьому треді:\n${opts.summary}`
+    : '';
+  return `${PERSONA_STUB}\n\nЗараз у Києві: ${kyiv}.${summaryBlock}`;
 }

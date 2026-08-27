@@ -8,7 +8,7 @@
 
 import type { CoreClient, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
-import { PROFILES, buildSystemPrompt, type RunProfile } from './profiles.js';
+import { PROFILES, TRANSCRIPT_MAX_CHARS, buildSystemPrompt, type RunProfile } from './profiles.js';
 import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
 
 /** Виконання інструмента з погляду рушія: текст для моделі + прапор помилки. */
@@ -22,6 +22,8 @@ export interface EngineRunOptions {
   model: string;
   maxTurns: number;
   toolNames: string[];
+  /** Сесія SDK для resume (профіль chat); null - свіжа сесія. */
+  resumeSessionId: string | null;
   /** Чи потрібні часткові тексти (є куди стрімити статус). */
   streamPartials: boolean;
   abortSignal: AbortSignal;
@@ -32,15 +34,20 @@ export interface EngineRunOptions {
 export interface EngineOutcome {
   /** Фінальний текст результату; null - рушій завершився без result. */
   finalText: string | null;
+  /** Ідентифікатор sdk-сесії прогону (для resume наступного) - null, якщо
+   *  рушій його не побачив. */
+  sessionId: string | null;
 }
 
 /** Рушій прогону: бойовий - Agent SDK (sdk/engine.ts), у тестах - мок. */
 export interface RunEngine {
   run: (opts: EngineRunOptions, inputText: string) => Promise<EngineOutcome>;
+  /** Транскрипт сесії з локального сховища SDK (для згортки); null - нема. */
+  readTranscript: (sessionId: string) => Promise<string | null>;
 }
 
 export interface RunnerDeps {
-  client: Pick<CoreClient, 'callTool' | 'deliver' | 'status' | 'reportRuns'>;
+  client: Pick<CoreClient, 'callTool' | 'deliver' | 'status' | 'reportRuns' | 'session'>;
   engine: RunEngine;
   now?: () => number;
   /** Мін. інтервал оновлень статусу; ядро й так троттлить (07 §3). */
@@ -154,32 +161,103 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     };
 
     try {
+      // Summarize: вхід - НЕ текст запиту, а транскрипт сесії з локального
+      // сховища SDK (ADR-038: без resume - службовий хід не бруднить сесію).
+      let inputText = req.input.text;
+      if (profile.name === 'summarize') {
+        const sid = req.session?.sdk_session_id;
+        if (!sid) {
+          pushStep({ kind: 'error', name: 'summarize', ms: 0, ok: false, note: 'no-session' });
+          console.error(`run ${req.run_id}: summarize без sdk_session_id`);
+          return;
+        }
+        const transcript = await deps.engine.readTranscript(sid);
+        if (!transcript) {
+          pushStep({
+            kind: 'error',
+            name: 'summarize',
+            ms: now() - startedMs,
+            ok: false,
+            note: 'transcript-unavailable',
+          });
+          console.error(`run ${req.run_id}: транскрипт сесії недоступний`);
+          return;
+        }
+        // Хвіст: свіжі повідомлення важливіші за початок довгої сесії.
+        inputText =
+          transcript.length > TRANSCRIPT_MAX_CHARS
+            ? `…${transcript.slice(-TRANSCRIPT_MAX_CHARS)}`
+            : transcript;
+      }
+
       const outcome = await deps.engine.run(
         {
-          systemPrompt: buildSystemPrompt(profile, startedMs),
+          systemPrompt: buildSystemPrompt(profile, startedMs, {
+            summary: profile.name === 'chat' ? (req.session?.summary_md ?? null) : null,
+          }),
           model: profile.model,
           maxTurns: profile.maxTurns,
           toolNames: profile.toolNames,
+          resumeSessionId: profile.name === 'chat' ? (req.session?.sdk_session_id ?? null) : null,
           streamPartials: req.status_message_id != null,
           abortSignal: abort.signal,
           onToolCall,
           onPartialText,
         },
-        req.input.text,
+        inputText,
       );
 
       const finalText = (outcome.finalText ?? '').trim();
+
+      if (profile.name === 'summarize') {
+        // Вихід - у sessions.summary_md, НЕ власнику. Втрачена згортка не сміє
+        // виглядати зробленою: невдача каналу = error-крок у телеметрії.
+        if (finalText === '') {
+          pushStep({
+            kind: 'error',
+            name: 'summarize',
+            ms: now() - startedMs,
+            ok: false,
+            note: 'empty-summary',
+          });
+          return;
+        }
+        const saved = await deps.client.session(req.run_id, {
+          thread_id: req.thread_id,
+          // Кап схеми ядра 20 000; модель просили ≤1500, зріз - страховка.
+          summary_md: finalText.length > 19_000 ? `${finalText.slice(0, 19_000)}…` : finalText,
+        });
+        pushStep({
+          kind: 'reply',
+          name: 'summary',
+          ms: now() - startedMs,
+          ok: saved,
+          ...(saved ? {} : { note: 'session-endpoint-failed' }),
+        });
+        return;
+      }
+
       if (profile.name === 'quick' && finalText.startsWith(ESCALATE_PREFIX)) {
         // Ескалацію вирішує ядро (07 §5, prerouter - етап 2 PR-3); мозок лише
         // чесно звітує і НЕ доставляє службовий рядок власнику.
         // ⚠️ Відомий борг (знахідка ревʼю): надійний канал ескалації (не
-        // best-effort /internal/runs, що нині 501) - обовʼязковий пункт PR-3.
+        // best-effort /internal/runs) - обовʼязковий пункт PR-3.
         pushStep({ kind: 'reply', name: 'escalate', ms: now() - startedMs, ok: true });
         return;
       }
       const delivered = finalText === '' ? '(порожня відповідь моделі)' : clipDeliver(finalText);
       await deps.client.deliver(req.run_id, delivered);
       pushStep({ kind: 'reply', name: 'deliver', ms: now() - startedMs, ok: finalText !== '' });
+
+      // Сесія для наступного resume (chat): best-effort - невдача означає лише
+      // свіжу сесію наступного разу, і про це скаже warn клієнта.
+      if (profile.name === 'chat' && outcome.sessionId) {
+        await deps.client.session(req.run_id, {
+          thread_id: req.thread_id,
+          sdk_session_id: outcome.sessionId,
+          turns_inc: 1,
+        });
+      }
     } catch (err) {
       const reason = abort.signal.aborted ? 'таймаут профілю' : shortError(err);
       pushStep({
