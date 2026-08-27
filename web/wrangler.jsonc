@@ -31,7 +31,14 @@
   // Прапорець редизайну (01-architecture §5): off → shadow → on. Живе ТУТ, а не
   // в дашборді: деплой іде з main через wrangler deploy, який заміщує vars
   // конфігом, — значення з дашборда не пережило б наступного деплою.
-  "vars": { "ASSISTANT_V2": "shadow" },
+  "vars": {
+    "ASSISTANT_V2": "shadow",
+    // Адреса мозку за Tunnel (01 §2.2). Поява цього var ОЗБРОЮЄ задачу
+    // brain-health (етап 1 PR-9: no-op, поки порожньо): щоп'ять хвилин проба
+    // /health з Access-парою і звірка з brainExpected у KV. Мозок задеплоєно
+    // 27.08 (етап 2 PR-1) - канал ядро→мозок вмикається цим рядком.
+    "BRAIN_URL": "https://brain.yushko.dev",
+  },
   // Durable Object прогону асистента (Фаза 4 аудиту): авторитетний лічильник
   // кроків замість best-effort надгробка в KV. `storage:"sqlite"` — не смак:
   // на Workers Free доступні ЛИШЕ SQLite-бекенди DO. Оголошення через `exports`
