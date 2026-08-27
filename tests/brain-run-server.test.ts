@@ -170,6 +170,30 @@ describe('/run: сходинка відмов', () => {
     expect(badJson).toMatchObject({ status: 400, body: { error: 'bad-json' } });
   });
 
+  it('session (ADR-038): nullable-поля і профіль summarize приймаються; крива session - 400', async () => {
+    const { handler, runs } = makeHandler();
+    const ok = await handler.handle(
+      signedReq(
+        runBody({
+          profile: 'summarize',
+          session: { sdk_session_id: 'sess-1', summary_md: null },
+        }),
+      ),
+    );
+    expect(ok.status).toBe(202);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]).toMatchObject({
+      profile: 'summarize',
+      session: { sdk_session_id: 'sess-1', summary_md: null },
+    });
+
+    const bad = await handler.handle(
+      signedReq(runBody({ session: { sdk_session_id: 5, summary_md: null } })),
+    );
+    expect(bad.status).toBe(400);
+    expect(String(bad.body.error)).toMatch(/^contract: \$\.session/);
+  });
+
   it('без ключів HMAC - 500 hmac-not-configured (fail-closed)', async () => {
     const { handler } = makeHandler({ config: { ...CONFIG, hmacKeys: [] } });
     const res = await handler.handle(signedReq(runBody()));

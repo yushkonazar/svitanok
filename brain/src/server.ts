@@ -19,12 +19,20 @@ import { buildHealthPayload, type BuildInfo, type HealthLimits } from './health.
 
 export const RUN_REQUEST_SCHEMA = z.object({
   run_id: z.string().min(1).max(64),
-  profile: z.enum(['chat', 'quick']),
+  profile: z.enum(['chat', 'quick', 'summarize']),
   thread_id: z.string().min(1).max(64),
   input: z.object({ text: z.string().min(1).max(30_000) }),
   tainted: z.boolean().optional(),
   /** message_id статус-повідомлення «▸ …» - куди стрімити прогрес. */
   status_message_id: z.number().int().min(1).optional(),
+  /** Сесійний стан із D1 ядра (ADR-038): resume для chat, транскрипт для
+   *  summarize; summary_md вставляється в системний промпт chat. */
+  session: z
+    .object({
+      sdk_session_id: z.string().max(128).nullable(),
+      summary_md: z.string().max(20_000).nullable(),
+    })
+    .optional(),
 });
 export type RunRequest = z.infer<typeof RUN_REQUEST_SCHEMA>;
 

@@ -1,7 +1,8 @@
 // Internal API (етап 1, PR-5): підпис (метод+шлях+ts+run+nonce+тіло), TTL,
 // nonce-антиреплей, run_id, контракти, маршрути. Приймальна сходинка PR:
-// 401 без підпису → 403 невідомий прогін → 501 валідний виклик — кожна
-// сходинка і кожен вектор реплею тут — тест.
+// 401 без підпису → 403 невідомий прогін → валідний виклик — кожна
+// сходинка і кожен вектор реплею тут — тест. (501-заглушку /internal/runs
+// здротовано на етапі 2 PR-2 — сценарії в tests/internal-runs.test.ts.)
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -392,15 +393,16 @@ describe('handleInternal — маршрутизатор', () => {
     expect(await res.json()).toMatchObject({ error: 'bad-json' });
   });
 
-  it('deliver/status бойові (без TG-конфігу — явний 500); runs — ще 501', async () => {
+  it('deliver/status бойові (без TG-конфігу — явний 500); runs без DB — явний 500', async () => {
     const post = (path: string, body: unknown, nonce: string) =>
       request(path, body, { nonce }).then((r) => handleInternal(r, env, NOW));
     // Повні сценарії доставки — tests/outbox.test.ts; тут лише межа роутера.
+    // Повні сценарії runs (дротування етапу 2 PR-2) — tests/internal-runs.test.ts.
     expect((await post('/internal/deliver', { text: 'привіт' }, 'a')).status).toBe(500);
     expect((await post('/internal/status', { message_id: 5, text: '▸ думаю' }, 'b')).status).toBe(
       500,
     );
-    expect((await post('/internal/runs', { steps: [] }, 'c')).status).toBe(501);
+    expect((await post('/internal/runs', { steps: [] }, 'c')).status).toBe(500);
     expect((await post('/internal/deliver', { no: 'text' }, 'd')).status).toBe(400);
     expect((await post('/internal/status', { text: 'без message_id' }, 'e')).status).toBe(400);
   });

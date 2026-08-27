@@ -4,7 +4,13 @@
 // deliver збою, телеметрія steps наприкінці за будь-якого результату.
 
 import { describe, expect, it, vi, type Mock } from 'vitest';
-import { makeRunner, type EngineOutcome, type EngineRunOptions } from '../brain/src/agent.js';
+import {
+  clipHead,
+  clipTail,
+  makeRunner,
+  type EngineOutcome,
+  type EngineRunOptions,
+} from '../brain/src/agent.js';
 import type { ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
@@ -15,6 +21,7 @@ interface ClientMock {
   deliver: Mock<(runId: string, text: string) => Promise<void>>;
   status: Mock<(runId: string, messageId: number, text: string) => Promise<void>>;
   reportRuns: Mock<(runId: string, steps: object[]) => Promise<void>>;
+  session: Mock<(runId: string, body: Record<string, unknown>) => Promise<boolean>>;
 }
 
 function makeClient(over: Partial<ClientMock> = {}): ClientMock {
@@ -28,6 +35,7 @@ function makeClient(over: Partial<ClientMock> = {}): ClientMock {
     deliver: vi.fn(async () => undefined),
     status: vi.fn(async () => undefined),
     reportRuns: vi.fn(async () => undefined),
+    session: vi.fn(async () => true),
     ...over,
   };
 }
@@ -42,16 +50,27 @@ function req(over: Partial<RunRequest> = {}): RunRequest {
   };
 }
 
-/** Рушій, що виконує задані виклики інструментів і віддає фінальний текст. */
-function scriptedEngine(script: (opts: EngineRunOptions) => Promise<EngineOutcome>) {
+/** Рушій, що виконує задані виклики інструментів і віддає фінальний текст.
+ *  script може повертати EngineOutcome без sessionId - дозаповнюється null. */
+function scriptedEngine(
+  script: (opts: EngineRunOptions, inputText: string) => Promise<Partial<EngineOutcome>>,
+  transcript: string | null = 'Власник: привіт\nСвітанок: Вітаю.',
+) {
   const seen: EngineRunOptions[] = [];
+  const inputs: string[] = [];
+  const readTranscript = vi.fn(async () => transcript);
   return {
     seen,
+    inputs,
+    readTranscript,
     engine: {
-      run: async (opts: EngineRunOptions): Promise<EngineOutcome> => {
+      run: async (opts: EngineRunOptions, inputText: string): Promise<EngineOutcome> => {
         seen.push(opts);
-        return script(opts);
+        inputs.push(inputText);
+        const out = await script(opts, inputText);
+        return { finalText: out.finalText ?? null, sessionId: out.sessionId ?? null };
       },
+      readTranscript,
     },
   };
 }
@@ -249,6 +268,145 @@ describe('makeRunner: quick і збої', () => {
     });
     await expect(makeRunner({ client, engine })(req())).resolves.toBeUndefined();
     expect(client.reportRuns).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('makeRunner: сесії (chat)', () => {
+  it('resume і згортка з req.session; після deliver сесія звітується з turns_inc=1', async () => {
+    const client = makeClient();
+    const { engine, seen } = scriptedEngine(async () => ({
+      finalText: 'Готово',
+      sessionId: 'sess-нова',
+    }));
+    await makeRunner({ client, engine })(
+      req({ session: { sdk_session_id: 'sess-стара', summary_md: 'Вчора: обрали Креденс' } }),
+    );
+    expect(seen[0]!.resumeSessionId).toBe('sess-стара');
+    expect(seen[0]!.systemPrompt).toContain('Згортка попередніх розмов');
+    expect(seen[0]!.systemPrompt).toContain('обрали Креденс');
+    expect(client.deliver).toHaveBeenCalledWith('run-1', 'Готово');
+    expect(client.session).toHaveBeenCalledWith('run-1', {
+      thread_id: 'dm',
+      sdk_session_id: 'sess-нова',
+      turns_inc: 1,
+    });
+  });
+
+  it('без session - свіжа сесія, без згортки; без sessionId від рушія - session не кличеться', async () => {
+    const client = makeClient();
+    const { engine, seen } = scriptedEngine(async () => ({ finalText: 'Готово' }));
+    await makeRunner({ client, engine })(req());
+    expect(seen[0]!.resumeSessionId).toBeNull();
+    expect(seen[0]!.systemPrompt).not.toContain('Згортка попередніх');
+    expect(client.session).not.toHaveBeenCalled();
+  });
+
+  it('quick НЕ звітує сесію навіть із sessionId (сесії - лише chat)', async () => {
+    const client = makeClient();
+    const { engine } = scriptedEngine(async () => ({ finalText: '42', sessionId: 's' }));
+    await makeRunner({ client, engine })(req({ profile: 'quick' }));
+    expect(client.session).not.toHaveBeenCalled();
+  });
+});
+
+describe('makeRunner: summarize', () => {
+  const summarizeReq = (over: Partial<RunRequest> = {}) =>
+    req({
+      profile: 'summarize',
+      input: { text: 'згорни розмову' },
+      session: { sdk_session_id: 'sess-1', summary_md: null },
+      ...over,
+    });
+
+  it('щасливий шлях: транскрипт → рушій → summary у client.session; deliver НЕ кличеться', async () => {
+    const client = makeClient();
+    const { engine, seen, inputs, readTranscript } = scriptedEngine(
+      async () => ({ finalText: 'Згортка: обрали Креденс.' }),
+      'Власник: привіт\nСвітанок: Вітаю.',
+    );
+    await makeRunner({ client, engine })(summarizeReq());
+    expect(readTranscript).toHaveBeenCalledWith('sess-1');
+    expect(seen[0]!.systemPrompt).toContain('згортаєш розмову');
+    expect(seen[0]!.resumeSessionId).toBeNull();
+    expect(inputs[0]).toBe('Власник: привіт\nСвітанок: Вітаю.');
+    expect(client.deliver).not.toHaveBeenCalled();
+    expect(client.session).toHaveBeenCalledWith('run-1', {
+      thread_id: 'dm',
+      summary_md: 'Згортка: обрали Креденс.',
+    });
+    const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    expect(steps[0]).toMatchObject({ kind: 'reply', name: 'summary', ok: true });
+  });
+
+  it('довгий транскрипт ріжеться ХВОСТОМ до 24 000', async () => {
+    const client = makeClient();
+    const long = 'а'.repeat(30_000) + 'КІНЕЦЬ';
+    const { engine, inputs } = scriptedEngine(async () => ({ finalText: 'зг' }), long);
+    await makeRunner({ client, engine })(summarizeReq());
+    expect(inputs[0]!.length).toBeLessThanOrEqual(24_001);
+    expect(inputs[0]!.endsWith('КІНЕЦЬ')).toBe(true);
+    expect(inputs[0]!.startsWith('…')).toBe(true);
+  });
+
+  it('без sdk_session_id або без транскрипта - error-крок, рушій/deliver не чіпаються', async () => {
+    const noSid = makeClient();
+    const s1 = scriptedEngine(async () => ({ finalText: 'x' }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await makeRunner({ client: noSid, engine: s1.engine })(summarizeReq({ session: undefined }));
+    expect(s1.seen).toHaveLength(0);
+    expect(noSid.session).not.toHaveBeenCalled();
+    expect((noSid.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>)[0]).toMatchObject(
+      { kind: 'error', note: 'no-session' },
+    );
+
+    const noTr = makeClient();
+    const s2 = scriptedEngine(async () => ({ finalText: 'x' }), null);
+    await makeRunner({ client: noTr, engine: s2.engine })(summarizeReq());
+    expect(s2.seen).toHaveLength(0);
+    expect((noTr.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>)[0]).toMatchObject({
+      kind: 'error',
+      note: 'transcript-unavailable',
+    });
+  });
+
+  it('порожня згортка - error-крок; відмова /internal/session - ok:false у кроці', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const empty = makeClient();
+    const s1 = scriptedEngine(async () => ({ finalText: '' }));
+    await makeRunner({ client: empty, engine: s1.engine })(summarizeReq());
+    expect(empty.session).not.toHaveBeenCalled();
+    expect((empty.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>)[0]).toMatchObject(
+      { kind: 'error', note: 'empty-summary' },
+    );
+
+    const failing = makeClient({ session: vi.fn(async () => false) });
+    const s2 = scriptedEngine(async () => ({ finalText: 'зг' }));
+    await makeRunner({ client: failing, engine: s2.engine })(summarizeReq());
+    expect(
+      (failing.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>)[0],
+    ).toMatchObject({ kind: 'reply', name: 'summary', ok: false, note: 'session-endpoint-failed' });
+  });
+});
+
+describe('clipTail / clipHead: зріз по код-поїнтах', () => {
+  it('коротший за межу - без змін; рівний межі - без змін', () => {
+    expect(clipTail('абвг', 4)).toBe('абвг');
+    expect(clipHead('абвг', 4)).toBe('абвг');
+  });
+
+  it('clipTail: хвіст із «…», не лишає самотнього низького сурогата', () => {
+    const text = '😀'.repeat(10) + 'кінець';
+    const out = clipTail(text, 6);
+    expect(out.startsWith('…')).toBe(true);
+    expect(out.endsWith('кінець')).toBe(true);
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+  });
+
+  it('clipHead: голова із «…», не розрубує сурогатну пару на межі', () => {
+    const text = 'початок' + '😀'.repeat(10);
+    const out = clipHead(text, 8);
+    expect(out.endsWith('…')).toBe(true);
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
   });
 });
 

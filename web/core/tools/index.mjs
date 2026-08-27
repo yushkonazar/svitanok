@@ -17,6 +17,7 @@ import {
   runGeoGeocode,
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
+import { runMemorySearch } from '../memory.mjs';
 
 /**
  * @typedef {{
@@ -83,6 +84,20 @@ export const TOOLS = {
       properties: { text: { type: 'string', maxLength: 200 } },
     },
     run: (env, args) => runGeoGeocode(env, args),
+  },
+  // ADR-038 (етап 2 PR-2): пошук у згортках власних розмов - НЕ tainting
+  // (зовнішнього вмісту тут немає за побудовою: memory_chunks пише лише
+  // /internal/session зі згорток мозку).
+  'memory.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: {
+        q: { type: 'string', maxLength: 200 },
+        limit: { type: 'number', minimum: 1, maximum: 10 },
+      },
+    },
+    run: (env, args) => runMemorySearch(env, args),
   },
   'facts.get': {
     args: {
