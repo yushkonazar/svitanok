@@ -94,7 +94,34 @@ export class CoreClient {
     }
   }
 
-  /** Телеметрія кроків; ядро поки відповідає 501 - шлемо і терпимо мовчки. */
+  /**
+   * Сесійний стан → /internal/session (ADR-038). Повертає успіх: для chat
+   * невдача - лише warn (наступний прогін почне свіжу сесію), для summarize
+   * викликач робить із false видимий error-крок - втрачена згортка не сміє
+   * виглядати як зроблена.
+   */
+  async session(
+    runId: string,
+    body: {
+      thread_id: string;
+      sdk_session_id?: string;
+      summary_md?: string;
+      turns_inc?: number;
+    },
+  ): Promise<boolean> {
+    try {
+      const res = await this.post('/internal/session', runId, body);
+      if (res.status >= 200 && res.status < 300) return true;
+      console.warn(`core-client: /internal/session ${res.status} ${errorText(res.body)}`);
+      return false;
+    } catch (err) {
+      console.warn(`core-client: /internal/session недоступний: ${String(err)}`);
+      return false;
+    }
+  }
+
+  /** Телеметрія кроків (run_steps + закриття прогону в реєстрі); best-effort -
+   *  журнал не сміє валити прогін. 501 терпимо: старе ядро до PR-2. */
   async reportRuns(runId: string, steps: object[]): Promise<void> {
     try {
       const res = await this.post('/internal/runs', runId, { steps });

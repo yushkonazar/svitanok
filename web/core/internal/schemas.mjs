@@ -65,6 +65,20 @@ export const RUNS_SCHEMA = /** @type {InternalSchema} */ ({
   properties: { steps: { type: 'array', items: { type: 'object' } } },
 });
 
+/** POST /internal/session — сесійний стан від мозку (ADR-038): sdk_session_id
+ *  після прогону chat, summary_md від профілю summarize, turns_inc - інкремент
+ *  лічильника ходів. Єдиний канал, яким мозок оновлює sessions. */
+export const SESSION_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['thread_id'],
+  properties: {
+    thread_id: { type: 'string', maxLength: 64 },
+    sdk_session_id: { type: 'string', maxLength: 128 },
+    summary_md: { type: 'string', maxLength: 20_000 },
+    turns_inc: { type: 'number', minimum: 0, maximum: 1000 },
+  },
+});
+
 /**
  * Структурна звірка значення зі схемою. Перша розбіжність — назад зі шляхом:
  * помилка контракту має називати поле, а не «щось не так».

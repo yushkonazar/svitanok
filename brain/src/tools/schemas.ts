@@ -80,6 +80,12 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     args: z.object({ text: z.string().max(200) }),
   }),
   tool({
+    coreName: 'memory.search',
+    description:
+      'Пошук у памʼяті минулих розмов (згортки з датами) за запитом q; limit - скільки цитат (1-10).',
+    args: z.object({ q: z.string().max(200), limit: z.number().min(1).max(10).optional() }),
+  }),
+  tool({
     coreName: 'facts.get',
     description: 'Факти про власника; kind і key - необовʼязкові фільтри.',
     args: z.object({ kind: z.string().max(32).optional(), key: z.string().max(128).optional() }),

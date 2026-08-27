@@ -29,7 +29,10 @@ import { memoryKv } from './kv.js';
  * знявши перевірку заразом і з секретів.
  */
 export interface WorkerEnvOverrides extends Partial<
-  Omit<Env, 'BRIEFING' | 'ASSETS' | 'AGENT_RUN' | 'SCHEDULER' | 'RUN_REGISTRY' | 'DB'>
+  Omit<
+    Env,
+    'BRIEFING' | 'ASSETS' | 'AGENT_RUN' | 'SCHEDULER' | 'RUN_REGISTRY' | 'DB' | 'AI' | 'VECTORIZE'
+  >
 > {
   BRIEFING?: unknown;
   ASSETS?: unknown;
@@ -37,6 +40,10 @@ export interface WorkerEnvOverrides extends Partial<
   SCHEDULER?: unknown;
   RUN_REGISTRY?: unknown;
   DB?: unknown;
+  // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві
+  // операції, а не імітація повного інтерфейсу Workers AI/Vectorize.
+  AI?: unknown;
+  VECTORIZE?: unknown;
 }
 
 /**

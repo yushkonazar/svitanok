@@ -27,6 +27,7 @@ import {
 import { agentRunWatchdog, agentHostHealthCheck } from '../../agent-runtime.mjs';
 import { drainOutbox } from '../tg/outbox.mjs';
 import { checkBrainHandshake } from '../brain/health.mjs';
+import { memorySummarize } from '../brain/summarize.mjs';
 
 /**
  * @typedef {{
@@ -74,4 +75,7 @@ export const SCHEDULER_TASKS = {
   // Sweeper outbox (PR-7): ретраї 429/збоїв і повернення завислих claim-ів.
   // Основний драйн - одразу в deliver/status; це страховка.
   'outbox-drain': { periodMin: 5, run: async (env) => drainOutbox(env) },
+  // Згортки памʼяті (етап 2 PR-2, ADR-038): 04:00 Києва, гейт усередині
+  // задачі; без shadowSafe - у shadow лише лог, бойово з ASSISTANT_V2=on.
+  'memory-summarize': { periodMin: 5, run: async (env) => memorySummarize(env) },
 };

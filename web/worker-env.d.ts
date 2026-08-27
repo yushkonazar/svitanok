@@ -64,6 +64,15 @@ interface Env {
     import('./core/run-registry/do.mjs').RunRegistryDO
   >;
 
+  /**
+   * Vectorize-індекс памʼяті (ADR-038, етап 2 PR-2): svitanok-memory,
+   * bge-m3/1024/cosine. Опційний: без нього memory.search чесно відмовляє,
+   * а згортки живуть лише в sessions.summary_md (резерв ADR-020).
+   */
+  VECTORIZE?: import('@cloudflare/workers-types').VectorizeIndex;
+  /** Workers AI - ембединги bge-m3 для памʼяті (01 §2.1). Опційний, як VECTORIZE. */
+  AI?: import('@cloudflare/workers-types').Ai;
+
   /** Прапорець редизайну асистента: 'off' | 'shadow' | 'on' (01-architecture §5). */
   ASSISTANT_V2?: string;
 

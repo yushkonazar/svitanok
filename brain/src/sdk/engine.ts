@@ -6,7 +6,12 @@
 // делегує в opts.onToolCall, де agent.ts тримає стелю, taint-барʼєр і маршрут
 // у /internal/tool ядра. Вбудовані інструменти SDK вимкнені (07 §4).
 
-import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkMcpServer,
+  getSessionMessages,
+  query,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutcome, EngineRunOptions, RunEngine } from '../agent.js';
 import { BRAIN_TOOLS } from '../tools/schemas.js';
 
@@ -54,6 +59,7 @@ export function createSdkEngine(): RunEngine {
       else opts.abortSignal.addEventListener('abort', onAbort, { once: true });
 
       let finalText: string | null = null;
+      let sessionId: string | null = null;
       let partial = '';
       try {
         const q = query({
@@ -62,6 +68,8 @@ export function createSdkEngine(): RunEngine {
             systemPrompt: opts.systemPrompt,
             model: opts.model,
             maxTurns: opts.maxTurns,
+            // Resume сесії треду (01 §2.2, профіль chat); undefined - свіжа.
+            resume: opts.resumeSessionId ?? undefined,
             abortController,
             // Партіали лише коли є куди стрімити (знахідка ревʼю: інакше
             // потік дельт з сабпроцеса викидався в порожній колбек).
@@ -77,6 +85,11 @@ export function createSdkEngine(): RunEngine {
           },
         });
         for await (const message of q) {
+          // session_id несе кожне повідомлення SDK; для resume наступного
+          // прогону потрібен актуальний (SDK може форкнути сесію).
+          if ('session_id' in message && typeof message.session_id === 'string') {
+            sessionId = message.session_id;
+          }
           if (message.type === 'stream_event') {
             const event = message.event;
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
@@ -96,7 +109,42 @@ export function createSdkEngine(): RunEngine {
       } finally {
         opts.abortSignal.removeEventListener('abort', onAbort);
       }
-      return { finalText };
+      return { finalText, sessionId };
+    },
+
+    // Транскрипт із локального сховища SDK (HOME=data на VPS) - для згортки
+    // БЕЗ resume: службовий хід не бруднить сесію (ADR-038). null = чесна
+    // відсутність (сесію вичищено/не знайдено) - викликач робить error-крок.
+    async readTranscript(sessionId: string): Promise<string | null> {
+      try {
+        const messages = await getSessionMessages(sessionId, { limit: 400 });
+        const lines: string[] = [];
+        for (const m of messages) {
+          if (m.type !== 'user' && m.type !== 'assistant') continue;
+          const raw = m.message as { content?: unknown } | undefined;
+          const text = extractText(raw?.content);
+          if (!text) continue;
+          lines.push(`${m.type === 'user' ? 'Власник' : 'Світанок'}: ${text}`);
+        }
+        return lines.length > 0 ? lines.join('\n') : null;
+      } catch (err) {
+        console.error(`readTranscript(${sessionId}): ${String(err)}`);
+        return null;
+      }
     },
   };
+}
+
+function extractText(content: unknown): string {
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block) =>
+      block && typeof block === 'object' && (block as { type?: string }).type === 'text'
+        ? String((block as { text?: unknown }).text ?? '')
+        : '',
+    )
+    .filter(Boolean)
+    .join('\n')
+    .trim();
 }
