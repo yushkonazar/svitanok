@@ -47,21 +47,19 @@ export async function bumpQuota(env, input) {
   const period = quotaPeriod(nowMs);
   const iso = new Date(nowMs).toISOString();
 
-  await env.DB.prepare(
+  // RETURNING, а не окремий SELECT: інакше конкурентний bump між INSERT і
+  // читанням давав би обом викликам «пізнє» value, і перетин 80 % міг не
+  // зафіксуватись ЖОДНИМ із них (before рахується від власного amount).
+  const { results } = await env.DB.prepare(
     `INSERT INTO quota_counters (key, period, value, limit_value, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT (key, period) DO UPDATE SET
        value = quota_counters.value + excluded.value,
        limit_value = excluded.limit_value,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at
+     RETURNING value`,
   )
     .bind(input.key, period, input.amount, input.limit, iso)
-    .run();
-
-  const { results } = await env.DB.prepare(
-    'SELECT value FROM quota_counters WHERE key = ? AND period = ?',
-  )
-    .bind(input.key, period)
     .all();
   const value = Number(/** @type {{ value?: number } | undefined} */ (results?.[0])?.value ?? 0);
   const before = value - input.amount;
