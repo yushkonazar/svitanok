@@ -18,7 +18,7 @@ import {
   archiveMonthly,
   computeLevers,
 } from '../web/cron.mjs';
-import { agentRunWatchdog, agentHostHealthCheck } from '../web/agent-runtime.mjs';
+import { agentRunWatchdog } from '../web/agent-runtime.mjs';
 import { workerEnv } from './helpers/env.js';
 
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
@@ -43,7 +43,8 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     const expected: Record<string, (env: never) => Promise<unknown>> = {
       reminder: checkReminders,
       'run-watchdog': agentRunWatchdog,
-      'brain-health': agentHostHealthCheck,
+      // brain-health - композит (легасі-хост + handshake нового мозку, PR-9),
+      // тотожність там неможлива; його склад перевіряє окремий тест нижче.
       'brief-dispatch': autoBriefDispatch,
       'dead-man': deadMansCheck,
       'checkin-nudge': checkinNudgeCheck,
@@ -58,6 +59,12 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     // І легасі-список зібраний із тих самих функцій — обидва читачі однієї логіки.
     const legacy = new Set(CRON_TASKS.map((t: { run: unknown }) => t.run));
     for (const fn of Object.values(expected)) expect(legacy.has(fn)).toBe(true);
+  });
+
+  it('brain-health: композит не кидає, коли ні старий хост, ні мозок не сконфігуровані', async () => {
+    // Легасі-перевірка рано виходить без LLM_HOST_*, handshake — без BRAIN_URL;
+    // жоден із них не сміє валити задачу (ізоляція всередині композита).
+    await SCHEDULER_TASKS['brain-health']?.run(workerEnv() as never); // не кидає
   });
 
   it('усі появи 5-хвилинні; shadowSafe — лише heartbeat', () => {

@@ -67,6 +67,13 @@ interface Env {
   /** Прапорець редизайну асистента: 'off' | 'shadow' | 'on' (01-architecture §5). */
   ASSISTANT_V2?: string;
 
+  /** Origin мозку через Tunnel (напр. https://brain.yushko.dev); незаданий на
+   *  етапі 1 - норма, handshake тихо пропускається до появи мозку. */
+  BRAIN_URL?: string;
+  /** Access service token для викликів ядро→мозок (05-ops §2, етап 0). */
+  BRAIN_ACCESS_CLIENT_ID?: string;
+  BRAIN_ACCESS_CLIENT_SECRET?: string;
+
   /** HMAC internal API ядро↔мозок (05-ops §2; покладений на етапі 0). */
   INTERNAL_HMAC_KEY?: string;
   /** Другий ключ на вікно ротації (05-ops §3, двоключова ротація 24 год). */
