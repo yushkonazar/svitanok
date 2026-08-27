@@ -31,7 +31,7 @@
   // Прапорець редизайну (01-architecture §5): off → shadow → on. Живе ТУТ, а не
   // в дашборді: деплой іде з main через wrangler deploy, який заміщує vars
   // конфігом, — значення з дашборда не пережило б наступного деплою.
-  "vars": { "ASSISTANT_V2": "off" },
+  "vars": { "ASSISTANT_V2": "shadow" },
   // Durable Object прогону асистента (Фаза 4 аудиту): авторитетний лічильник
   // кроків замість best-effort надгробка в KV. `storage:"sqlite"` — не смак:
   // на Workers Free доступні ЛИШЕ SQLite-бекенди DO. Оголошення через `exports`
