@@ -23,18 +23,39 @@ export const TOOL_REQUEST_SCHEMA = /** @type {InternalSchema} */ ({
   properties: { args: { type: 'object' } },
 });
 
-/** POST /internal/deliver — фінальна відповідь прогону в тему. */
+/** POST /internal/deliver — фінальна відповідь прогону в тему. Кнопки —
+ *  inline-клавіатура рядами; callback_data ≤ 64 байт (07 §9). */
 export const DELIVER_SCHEMA = /** @type {InternalSchema} */ ({
   type: 'object',
   required: ['text'],
-  properties: { text: { type: 'string', maxLength: 65_536 } },
+  properties: {
+    text: { type: 'string', maxLength: 65_536 },
+    buttons: {
+      type: 'array',
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['text', 'callback_data'],
+          properties: {
+            text: { type: 'string', maxLength: 64 },
+            callback_data: { type: 'string', maxLength: 64 },
+          },
+        },
+      },
+    },
+  },
 });
 
-/** POST /internal/status — оновлення статус-повідомлення (ядро троттлить). */
+/** POST /internal/status — оновлення статус-повідомлення (ядро троттлить,
+ *  застарілі незіслані edit-и того ж message_id заміняються новішим). */
 export const STATUS_SCHEMA = /** @type {InternalSchema} */ ({
   type: 'object',
-  required: ['text'],
-  properties: { text: { type: 'string', maxLength: 4_096 } },
+  required: ['message_id', 'text'],
+  properties: {
+    message_id: { type: 'number', minimum: 1 },
+    text: { type: 'string', maxLength: 4_096 },
+  },
 });
 
 /** POST /internal/runs — телеметрія кроків прогону. */

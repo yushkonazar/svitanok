@@ -386,7 +386,7 @@ export default {
     // Свідомо без CORS з тієї ж причини, що /api/agent-step. При off віддає
     // 404 сам (код є, не викликається).
     if (url.pathname.startsWith('/internal/')) {
-      return handleInternal(request, env);
+      return handleInternal(request, env, Date.now(), ctx);
     }
     if (url.pathname === '/api/telegram/setup' && request.method === 'POST') {
       return handleTelegramSetup(request, env);

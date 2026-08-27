@@ -1,0 +1,374 @@
+// Outbox Telegram (етап 1, PR-7): розбиття 4096, бекоф, claim проти дублю,
+// fallback розмітки, 429 → retry_after, deliver/status через router.
+// D1 - node:sqlite зі СПРАВЖНЬОЮ міграцією 0002 (таблиця outbox як у проді).
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  splitMessage,
+  nextAttemptAt,
+  isParseEntitiesError,
+  TG_TEXT_LIMIT,
+  MAX_ATTEMPTS,
+} from '../web/core/tg/outbox-core.mjs';
+import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../web/core/tg/outbox.mjs';
+import { handleInternal } from '../web/core/internal/router.mjs';
+import { signInternal } from '../web/core/internal/auth.mjs';
+import { workerEnv } from './helpers/env.js';
+
+const NOW = Date.parse('2026-08-27T12:00:00.000Z');
+const noSleep = async () => {};
+
+/** D1-фейк на node:sqlite зі справжньою міграцією 0002 (містить outbox). */
+function d1() {
+  const db = new DatabaseSync(':memory:');
+  db.exec(
+    readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0002_assistant.sql'), 'utf8'),
+  );
+  return {
+    raw: db,
+    prepare: (sql: string) => ({
+      bind: (...args: unknown[]) => ({
+        run: async () => {
+          // @ts-expect-error node:sqlite приймає біндинги варіативно
+          const info = db.prepare(sql).run(...args);
+          return { meta: { changes: Number(info.changes) } };
+        },
+        all: async () => ({
+          // @ts-expect-error те саме для all
+          results: db.prepare(sql).all(...args),
+        }),
+      }),
+    }),
+  };
+}
+
+const rowsOf = (d: ReturnType<typeof d1>) =>
+  d.raw.prepare('SELECT * FROM outbox ORDER BY next_at, id').all() as {
+    status: string;
+    kind: string;
+    attempts: number;
+    payload_json: string;
+  }[];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('outbox-core — чиста логіка', () => {
+  it('splitMessage: короткий текст цілим, довгий — частинами ≤ 4096 по межах', () => {
+    expect(splitMessage('привіт')).toEqual(['привіт']);
+    expect(splitMessage('   ')).toEqual([]);
+    const long = Array.from({ length: 300 }, (_, i) => `рядок ${i} ${'x'.repeat(30)}`).join('\n');
+    const parts = splitMessage(long);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const p of parts) expect(p.length).toBeLessThanOrEqual(TG_TEXT_LIMIT);
+    // Нічого не загублено: склеєне назад містить перший і останній рядок.
+    expect(parts[0]).toContain('рядок 0');
+    expect(parts.at(-1)).toContain('рядок 299');
+  });
+
+  it('nextAttemptAt: retry_after Telegram переважає, інакше експонента з капом', () => {
+    expect(nextAttemptAt(0, 1, 7)).toBe(7_000);
+    expect(nextAttemptAt(0, 1)).toBe(30_000);
+    expect(nextAttemptAt(0, 2)).toBe(60_000);
+    expect(nextAttemptAt(0, 99)).toBe(30 * 60_000); // кап
+  });
+
+  it('isParseEntitiesError: лише 400 із parse entities', () => {
+    expect(isParseEntitiesError(400, "Bad Request: can't parse entities")).toBe(true);
+    expect(isParseEntitiesError(400, 'Bad Request: chat not found')).toBe(false);
+    expect(isParseEntitiesError(429, "can't parse entities")).toBe(false);
+  });
+});
+
+describe('outbox — enqueue і drain', () => {
+  let store: ReturnType<typeof d1>;
+  let env: Env;
+  let calls: { url: string; body: unknown }[];
+
+  const tgOk = () =>
+    vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    });
+
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    store = d1();
+    calls = [];
+    env = workerEnv({ TELEGRAM_BOT_TOKEN: 'bot-t', DB: store });
+  });
+
+  it('довгий deliver-текст стає кількома рядами; кнопки лише на останньому', async () => {
+    const text = `${'а'.repeat(5000)}\n\nхвіст`;
+    const { queued } = await enqueueOutbox(
+      env,
+      {
+        chatId: '-100',
+        threadId: 7,
+        kind: 'send',
+        payload: {
+          text,
+          reply_markup: { inline_keyboard: [[{ text: 'ok', callback_data: 'a:1' }]] },
+        },
+      },
+      NOW,
+    );
+    expect(queued).toBeGreaterThan(1);
+    const rows = rowsOf(store);
+    const withButtons = rows.filter((r) => JSON.parse(r.payload_json).reply_markup);
+    expect(withButtons).toHaveLength(1);
+    expect(rows.at(-1)?.payload_json).toContain('inline_keyboard');
+  });
+
+  it('drain шле послідовно і ставить sent; порядок частин збережено', async () => {
+    vi.stubGlobal('fetch', tgOk());
+    await enqueueOutbox(env, { chatId: '-100', kind: 'send', payload: { text: 'один' } }, NOW);
+    await enqueueOutbox(env, { chatId: '-100', kind: 'send', payload: { text: 'два' } }, NOW + 10);
+    const res = await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(res).toMatchObject({ sent: 2, retried: 0, failed: 0 });
+    expect(calls.map((c) => (c.body as { text: string }).text)).toEqual(['один', 'два']);
+    expect(rowsOf(store).map((r) => r.status)).toEqual(['sent', 'sent']);
+  });
+
+  it('429 з retry_after: ряд лишається pending із next_at у майбутньому', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ok: false, parameters: { retry_after: 17 } }), {
+            status: 429,
+          }),
+      ),
+    );
+    await enqueueOutbox(env, { chatId: '-100', kind: 'send', payload: { text: 'x' } }, NOW);
+    const res = await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(res).toMatchObject({ sent: 0, retried: 1 });
+    const [row] = rowsOf(store);
+    expect(row?.status).toBe('pending');
+    expect(row?.attempts).toBe(1);
+    // Наступний драйн ДО retry_after нічого не бере.
+    const again = await drainOutbox(env, { nowMs: NOW + 5_000, sleep: noSleep });
+    expect(again).toMatchObject({ sent: 0, retried: 0 });
+  });
+
+  it('розмітка не парситься — повтор БЕЗ parse_mode тим самим текстом', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      calls.push({ url, body });
+      if (body.parse_mode) {
+        return new Response(
+          JSON.stringify({ ok: false, description: "Bad Request: can't parse entities" }),
+          { status: 400 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await enqueueOutbox(
+      env,
+      { chatId: '-100', kind: 'send', payload: { text: '<b>зламаний', parse_mode: 'HTML' } },
+      NOW,
+    );
+    const res = await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(res).toMatchObject({ sent: 1 });
+    expect(calls).toHaveLength(2);
+    expect((calls[1]?.body as { parse_mode?: string }).parse_mode).toBeUndefined();
+  });
+
+  it('після MAX_ATTEMPTS ряд стає failed — видима поломка, не вічний цикл', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"ok":false}', { status: 500 })),
+    );
+    await enqueueOutbox(env, { chatId: '-100', kind: 'send', payload: { text: 'x' } }, NOW);
+    for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
+      store.raw.prepare(`UPDATE outbox SET next_at = ? WHERE 1=1`).run(new Date(NOW).toISOString());
+      await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    }
+    expect(rowsOf(store)[0]?.status).toBe('failed');
+  });
+
+  it('claim: два конкурентні драйни не шлють той самий ряд двічі', async () => {
+    vi.stubGlobal('fetch', tgOk());
+    await enqueueOutbox(env, { chatId: '-100', kind: 'send', payload: { text: 'раз' } }, NOW);
+    const [a, b] = await Promise.all([
+      drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep }),
+      drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep }),
+    ]);
+    expect((a?.sent ?? 0) + (b?.sent ?? 0)).toBe(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('dropPendingEdits заміняє незісланий статус новішим', async () => {
+    await enqueueOutbox(
+      env,
+      { chatId: '-100', kind: 'edit', payload: { message_id: 42, text: 'старий' } },
+      NOW,
+    );
+    await dropPendingEdits(env, '-100', 42);
+    await enqueueOutbox(
+      env,
+      { chatId: '-100', kind: 'edit', payload: { message_id: 42, text: 'новий' } },
+      NOW + 10,
+    );
+    const rows = rowsOf(store);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload_json).toContain('новий');
+  });
+
+  it('документ іде multipart-ом на sendDocument', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body ?? null });
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await enqueueOutbox(
+      env,
+      { chatId: '-100', kind: 'document', payload: { filename: 'звіт.md', content: '# Звіт' } },
+      NOW,
+    );
+    await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(String(calls[0]?.url)).toContain('/sendDocument');
+    expect(calls[0]?.body).toBeInstanceOf(FormData);
+  });
+});
+
+describe('deliver/status через router', () => {
+  const KEY = 'k';
+  let store: ReturnType<typeof d1>;
+  let env: Env;
+  let sends: { url: string; body: Record<string, unknown> }[];
+
+  const signedRequest = async (path: string, bodyObj: unknown, nonce: string) => {
+    const body = JSON.stringify(bodyObj);
+    return new Request(`https://svitanok.test${path}`, {
+      method: 'POST',
+      headers: {
+        'X-Internal-Timestamp': String(NOW),
+        'X-Internal-Run': 'r1',
+        'X-Internal-Nonce': nonce,
+        'X-Internal-Signature': await signInternal(KEY, {
+          method: 'POST',
+          path,
+          timestampMs: NOW,
+          runId: 'r1',
+          nonce,
+          rawBody: body,
+        }),
+      },
+      body,
+    });
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    store = d1();
+    sends = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        sends.push({
+          url,
+          body: typeof init?.body === 'string' ? JSON.parse(init.body) : { form: true },
+        });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 5 } }), {
+          status: 200,
+        });
+      }),
+    );
+    env = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      TELEGRAM_BOT_TOKEN: 'bot-t',
+      TELEGRAM_CHAT_ID: '-100',
+      TOPIC_ASSISTANT: '33',
+      DB: store,
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async () => true,
+          runInfo: async () => ({ threadId: 77 }),
+        }),
+      },
+    });
+  });
+
+  it('deliver: тред прогону, HTML + кнопки, доставка одразу', async () => {
+    const res = await handleInternal(
+      await signedRequest(
+        '/internal/deliver',
+        { text: 'Готово ✅', buttons: [[{ text: '↩', callback_data: 'u:1' }]] },
+        'n-d1',
+      ),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    // Відповідь - лише факт постановки в чергу; доставку підтверджують sends
+    // нижче (без ctx драйн awaited синхронно ще до відповіді).
+    expect(await res.json()).toMatchObject({ ok: true, queued: 1 });
+    expect(sends[0]?.body).toMatchObject({
+      chat_id: '-100',
+      message_thread_id: '77',
+      parse_mode: 'HTML',
+    });
+    expect(JSON.stringify(sends[0]?.body.reply_markup)).toContain('u:1');
+  });
+
+  it('deliver понад 4096 — кілька частин по порядку (приймання етапу)', async () => {
+    const res = await handleInternal(
+      await signedRequest('/internal/deliver', { text: 'щось дуже довге '.repeat(700) }, 'n-d2'),
+      env,
+      NOW,
+    );
+    const body = (await res.json()) as { queued: number };
+    expect(body.queued).toBeGreaterThanOrEqual(3);
+    expect(sends).toHaveLength(body.queued);
+  });
+
+  it('deliver з callback_data поза простором 07 §9 — 400 (confused deputy)', async () => {
+    const res = await handleInternal(
+      await signedRequest(
+        '/internal/deliver',
+        { text: 'x', buttons: [[{ text: 'Читати далі', callback_data: 'rc:all' }]] },
+        'n-d3',
+      ),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining('07 §9') });
+    expect(sends).toHaveLength(0); // нічого не покладено і не відправлено
+  });
+
+  it('status: edit статусника; без TELEGRAM_CHAT_ID — явний 500', async () => {
+    const ok = await handleInternal(
+      await signedRequest('/internal/status', { message_id: 5, text: '▸ читаю пошту' }, 'n-s1'),
+      env,
+      NOW,
+    );
+    expect(ok.status).toBe(200);
+    expect(String(sends[0]?.url)).toContain('/editMessageText');
+
+    const bare = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      DB: store,
+      RUN_REGISTRY: {
+        getByName: () => ({ has: async () => true, consumeNonce: async () => true }),
+      },
+    });
+    const fail = await handleInternal(
+      await signedRequest('/internal/status', { message_id: 5, text: 'x' }, 'n-s2'),
+      bare,
+      NOW,
+    );
+    expect(fail.status).toBe(500);
+    expect(await fail.json()).toMatchObject({ error: 'chat-not-configured' });
+  });
+});
