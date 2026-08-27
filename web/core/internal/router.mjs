@@ -17,6 +17,7 @@ import {
   DELIVER_SCHEMA,
   STATUS_SCHEMA,
   RUNS_SCHEMA,
+  SESSION_SCHEMA,
   validateAgainst,
 } from './schemas.mjs';
 
@@ -29,6 +30,7 @@ const ROUTE_SCHEMAS = {
   deliver: DELIVER_SCHEMA,
   status: STATUS_SCHEMA,
   runs: RUNS_SCHEMA,
+  session: SESSION_SCHEMA,
 };
 
 /**
@@ -175,7 +177,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
   }
 
-  const route = path.match(/^\/internal\/(deliver|status|runs)$/)?.[1];
+  const route = path.match(/^\/internal\/(deliver|status|runs|session)$/)?.[1];
   if (route) {
     const schema = ROUTE_SCHEMAS[route];
     // Регекс розширили, а схему забули — гучний 500, не мовчазний пропуск
@@ -186,6 +188,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     if (route === 'deliver')
       return handleDeliver(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
     if (route === 'status') return handleStatus(env, ctx, /** @type {any} */ (body), nowMs);
+    if (route === 'session') return handleSession(env, /** @type {any} */ (body), nowMs);
     // runs-телеметрія мозку - етап 2 (RunRegistry вже вміє, бракує викликача).
     return json({ ok: false, error: 'not-implemented', route }, 501);
   }
@@ -287,6 +290,46 @@ async function scheduleDrain(env, ctx, nowMs) {
     return;
   }
   await drained;
+}
+
+/**
+ * Сесійний стан від мозку (ADR-038): upsert у D1 sessions. sdk_session_id і
+ * summary_md оновлюються ЛИШЕ коли передані (COALESCE) - виклик з самим
+ * turns_inc не затирає збережену згортку; tainted тут НЕ чіпається (його
+ * ведуть markRunThreadTainted і policy - інакше мозок міг би зняти прапорець).
+ * Помилка D1 - явний 500: мовчазна втрата sdk_session_id означала б нову
+ * сесію наступного дня без жодного сліду чому.
+ * @param {Env} env
+ * @param {{ thread_id: string, sdk_session_id?: string, summary_md?: string,
+ *   turns_inc?: number }} body
+ * @param {number} nowMs
+ */
+async function handleSession(env, body, nowMs) {
+  if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
+  const iso = new Date(nowMs).toISOString();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
+       VALUES (?1, ?2, ?3, ?3, 0, ?4, ?5)
+       ON CONFLICT (thread_id) DO UPDATE SET
+         sdk_session_id = COALESCE(excluded.sdk_session_id, sessions.sdk_session_id),
+         summary_md = COALESCE(excluded.summary_md, sessions.summary_md),
+         last_at = excluded.last_at,
+         turn_count = sessions.turn_count + ?5`,
+    )
+      .bind(
+        body.thread_id,
+        body.sdk_session_id ?? null,
+        iso,
+        body.summary_md ?? null,
+        body.turns_inc ?? 0,
+      )
+      .run();
+  } catch (/** @type {any} */ e) {
+    console.error('internal: upsert session впав', e?.message);
+    return json({ ok: false, error: 'session-not-persisted' }, 500);
+  }
+  return json({ ok: true, thread_id: body.thread_id });
 }
 
 /**
