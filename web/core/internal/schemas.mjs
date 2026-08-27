@@ -58,11 +58,28 @@ export const STATUS_SCHEMA = /** @type {InternalSchema} */ ({
   },
 });
 
-/** POST /internal/runs — телеметрія кроків прогону. */
+/** POST /internal/runs — телеметрія кроків прогону + опційний КЕРІВНИЙ
+ *  outcome (ревʼю PR-3: ескалація - контракт, не поле журнального кроку;
+ *  крок escalate лишається слідом у run_steps, рішення ядро читає звідси). */
 export const RUNS_SCHEMA = /** @type {InternalSchema} */ ({
   type: 'object',
   required: ['steps'],
-  properties: { steps: { type: 'array', items: { type: 'object' } } },
+  properties: {
+    steps: { type: 'array', items: { type: 'object' } },
+    outcome: {
+      type: 'object',
+      properties: {
+        escalate: {
+          type: 'object',
+          required: ['text'],
+          properties: {
+            text: { type: 'string', maxLength: 4096 },
+            status_message_id: { type: 'number', minimum: 1 },
+          },
+        },
+      },
+    },
+  },
 });
 
 /** POST /internal/session — сесійний стан від мозку (ADR-038): sdk_session_id

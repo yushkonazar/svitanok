@@ -5,7 +5,7 @@
 // (обгортка, копія, інша функція) означало б, що shadow-порівняння і майбутнє
 // перемикання зіставляють різну поведінку.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker, { CRON_TASKS } from '../web/worker.js';
 import { SCHEDULER_TASKS } from '../web/core/scheduler/tasks.mjs';
 import {
@@ -136,5 +136,60 @@ describe('scheduled() — гейт легасі-крону за прапорце
     await runScheduled(makeEnv('on'));
     expect(reads).not.toContain('agentRuns');
     expect(watchdogCalls).toEqual(['scheduler']);
+  });
+});
+
+describe('brain-health → підняття черг (ревʼю PR-3)', () => {
+  const kickEnv = (fetchOk: boolean) => {
+    const kv = new Map<string, string>();
+    kv.set('brainExpected', JSON.stringify({ version: '1.0.0', gitSha: 'same-sha' }));
+    let snapshotCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        fetchOk
+          ? new Response(JSON.stringify({ version: '1.0.0', gitSha: 'same-sha' }), { status: 200 })
+          : new Response('gateway error', { status: 502 }),
+      ),
+    );
+    const env = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      BRAIN_URL: 'https://brain.test',
+      BRAIN_ACCESS_CLIENT_ID: 'cid',
+      BRAIN_ACCESS_CLIENT_SECRET: 'csec',
+      BRIEFING: {
+        get: async (k: string) => kv.get(k) ?? null,
+        put: async (k: string, v: string) => void kv.set(k, v),
+        delete: async () => undefined,
+        list: async () => ({ keys: [] }),
+      },
+      RUN_REGISTRY: {
+        getByName: () => ({
+          sweepStale: async () => [],
+          threadSweep: async () => [],
+          threadsSnapshot: async () => {
+            snapshotCalls += 1;
+            return {};
+          },
+        }),
+      },
+    });
+    return { env, calls: () => snapshotCalls };
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('handshake ok → сторож+kick викликані (threadsSnapshot торкнуто)', async () => {
+    const { env, calls } = kickEnv(true);
+    await SCHEDULER_TASKS['brain-health']?.run(env as never);
+    expect(calls()).toBeGreaterThan(0);
+  });
+
+  it('handshake down → kick НЕ викликається', async () => {
+    const { env, calls } = kickEnv(false);
+    await SCHEDULER_TASKS['brain-health']?.run(env as never);
+    expect(calls()).toBe(0);
   });
 });

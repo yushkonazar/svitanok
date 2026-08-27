@@ -126,8 +126,10 @@ async function probeHealth(env, url, clientId, clientSecret) {
   }
 }
 
-/** @param {Env} env */
-async function readExpected(env) {
+/** Очікувані version/gitSha мозку з KV (пише deploy-host.yml). Експорт - для
+ *  /status prerouter-а: літерал ключа поза цим модулем дрейфував би мовчки.
+ *  @param {Env} env */
+export async function readExpected(env) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get(BRAIN_EXPECTED_KEY)) ?? 'null');
     return parsed && typeof parsed === 'object' ? parsed : null;
