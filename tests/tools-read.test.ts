@@ -37,8 +37,12 @@ const kvBriefing = (seed: Record<string, string> = {}) => {
   };
 };
 
-/** Свіжий кеш googleToken — обхід refresh-грант у тестах google-шляхів. */
-const FRESH_TOKEN = JSON.stringify({ token: 'tok-1', expMs: NOW + 3_600_000 });
+/** Свіжий кеш googleToken — обхід refresh-грант у тестах google-шляхів.
+ *  ⚠️ expMs — від РЕАЛЬНОГО Date.now(), не від NOW: свіжість токена код міряє
+ *  справжнім годинником (isAccessTokenFresh), і якір до константи NOW зробив
+ *  тест бомбою — він почервонів рівно 27.08 о 13:00 UTC, коли реальний час
+ *  переріс NOW+1h. */
+const FRESH_TOKEN = JSON.stringify({ token: 'tok-1', expMs: Date.now() + 3_600_000 });
 
 afterEach(() => {
   vi.unstubAllGlobals();

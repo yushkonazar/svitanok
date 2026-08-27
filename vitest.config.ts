@@ -38,8 +38,19 @@ export default defineConfig({
       reporter: ['text-summary', 'json-summary'],
       // Міряємо ТЕ, ЩО деплоїться: src/ (оркестратор), web/*.mjs (Worker),
       // host/ (реле). web/app має власний раннер і власні числа.
-      include: ['src/**/*.ts', 'web/*.mjs', 'web/core/**/*.mjs', 'web/worker.js', 'host/*.mjs'],
-      exclude: ['**/*.d.ts', '**/*.d.mts'],
+      include: [
+        'src/**/*.ts',
+        'web/*.mjs',
+        'web/core/**/*.mjs',
+        'web/worker.js',
+        'host/*.mjs',
+        'brain/src/**/*.ts',
+      ],
+      // brain: index.ts і sdk/ — wiring без власної логіки (node:http-обвʼязка
+      // та єдине місце імпорту Agent SDK); їх перевіряють tsc -p brain проти
+      // справжніх d.ts, збірка в CI і смоук деплою (health-greп по sha) — у
+      // node-тестах їм нема чого міряти, а нулі лише зсували б пороги.
+      exclude: ['**/*.d.ts', '**/*.d.mts', 'brain/src/index.ts', 'brain/src/sdk/**'],
       thresholds: { statements: 85, branches: 80, functions: 85, lines: 85 },
     },
   },
