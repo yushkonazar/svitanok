@@ -147,11 +147,11 @@ describe('memorySummarize', () => {
   let env: Env;
   let kv: Map<string, string>;
 
-  const seedSession = (threadId: string, lastAt: string, sid: string | null) => {
+  const seedSession = (threadId: string, lastAt: string, sid: string | null, tainted = 0) => {
     db.prepare(
       `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, turn_count)
-       VALUES (?, ?, ?, ?, 0, 1)`,
-    ).run(threadId, sid, lastAt, lastAt);
+       VALUES (?, ?, ?, ?, ?, 1)`,
+    ).run(threadId, sid, lastAt, lastAt, tainted);
   };
 
   beforeEach(() => {
@@ -202,7 +202,11 @@ describe('memorySummarize', () => {
     seedSession('старий', new Date(NOW_04 - 48 * 3_600_000).toISOString(), 'sess-2');
     seedSession('без-сесії', new Date(NOW_04 - 3_600_000).toISOString(), null);
 
+    seedSession('брудний', new Date(NOW_04 - 3_600_000).toISOString(), 'sess-3', 1);
+
     const res = await memorySummarize(env, NOW_04);
+    // Брудний тред НЕ згортається (security-ревʼю: інакше зовнішній вміст
+    // відмився б у памʼять); лишається лише чистий 'dm'.
     expect(res).toEqual({ started: 1, threads: 1 });
     expect(begins).toHaveLength(1);
     expect(begins[0]).toMatchObject({ trigger: 'scheduler', profile: 'summarize', threadId: 'dm' });

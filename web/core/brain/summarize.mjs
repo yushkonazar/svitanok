@@ -29,10 +29,14 @@ export async function memorySummarize(env, nowMs = Date.now()) {
   }
 
   // Без sdk_session_id згортати нема чого: транскрипт живе в сесії SDK на VPS.
+  // tainted=0 - ОБОВʼЯЗКОВО (security-ревʼю PR-2): згортка брудного треду
+  // занесла б у memory_chunks зовнішній вміст (лист/чат), а memory.search
+  // віддає його БЕЗ маркування й НЕ позначає сесію - інструкція з листа
+  // «відмилась» би в довірену памʼять і обійшла подвійний барʼєр 01 §4.2.
   const since = new Date(nowMs - 24 * 3_600_000).toISOString();
   const { results } = await env.DB.prepare(
     `SELECT thread_id, sdk_session_id FROM sessions
-     WHERE last_at > ?1 AND sdk_session_id IS NOT NULL
+     WHERE last_at > ?1 AND sdk_session_id IS NOT NULL AND tainted = 0
      ORDER BY last_at DESC LIMIT ?2`,
   )
     .bind(since, SUMMARIZE_MAX_THREADS)

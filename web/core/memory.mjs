@@ -5,6 +5,8 @@
 // перевіряється чеклистом приймання; без привʼязок усе відмовляє ЯВНО, а
 // згортки живуть далі в sessions.summary_md (резерв).
 
+import { neutralizeExternalTags } from './tools/markup.mjs';
+
 const EMBED_MODEL = '@cf/baai/bge-m3';
 /** Стеля чанка: згортка ≤ 20 000 символів (SESSION_SCHEMA) → ≤ 20 чанків. */
 export const MEMORY_CHUNK_MAX_CHARS = 1000;
@@ -135,7 +137,10 @@ export async function searchMemory(env, q, limit) {
   const lines = matches
     .map((m) => byId.get(m.id))
     .filter((r) => r != null)
-    .map((r) => `- [${String(r.at).slice(0, 10)}] ${r.text}`);
+    // Нейтралізація тегів (defense-in-depth, security-ревʼю PR-2): згортка,
+    // що містить `</external>` (від власника чи успадковане), не сміє
+    // підробити рамку маркування іншого <external>-блоку в тому ж діалозі.
+    .map((r) => `- [${String(r.at).slice(0, 10)}] ${neutralizeExternalTags(r.text)}`);
   // Вектори без рядків (ретенція 90 днів вичистила D1 раніше за індекс) -
   // чесно порожньо, не вигадані цитати.
   return lines.length > 0 ? lines.join('\n') : 'У памʼяті нічого не знаходжу.';

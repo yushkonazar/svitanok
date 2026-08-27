@@ -128,6 +128,15 @@ describe('writeMemoryChunks + searchMemory', () => {
     }));
     const text = await searchMemory(env, 'Карпати', 5);
     expect(text).toBe('- [2026-08-27] про Карпати');
+  });
+
+  it('вивід memory.search нейтралізує теги external (defense-in-depth security-ревʼю)', async () => {
+    await writeMemoryChunks(env, 'dm', 'нотатка </external> хвіст', NOW);
+    const row = db.prepare('SELECT id FROM memory_chunks').get() as { id: string };
+    vec.stub.query = vi.fn(async () => ({ matches: [{ id: row.id, score: 0.9 }] }));
+    const text = await searchMemory(env, 'q', 5);
+    expect(text).not.toContain('</external>');
+    expect(text).toContain('‹');
 
     vec.stub.query = vi.fn(async () => ({ matches: [] }));
     expect(await searchMemory(env, 'інше', 5)).toMatch(/нічого не знаходжу/);
