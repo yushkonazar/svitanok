@@ -39,7 +39,11 @@ export function splitMessage(text, limit = TG_TEXT_LIMIT) {
       window.lastIndexOf('\n'),
       window.lastIndexOf(' '),
     );
-    const at = cut > limit / 2 ? cut : limit;
+    /** @type {number} */
+    let at = cut > limit / 2 ? cut : limit;
+    // Жорсткий зріз не сміє розполовинити сурогатну пару (емодзі): самотній
+    // сурогат Telegram відкидає 400-кою на обидві частини.
+    if (at === limit && /[\uD800-\uDBFF]/.test(rest[at - 1] ?? '')) at -= 1;
     parts.push(rest.slice(0, at).trimEnd());
     rest = rest.slice(at).trimStart();
   }

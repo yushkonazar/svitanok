@@ -309,7 +309,9 @@ describe('deliver/status через router', () => {
       NOW,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, queued: 1, sent: 1 });
+    // Відповідь - лише факт постановки в чергу; доставку підтверджують sends
+    // нижче (без ctx драйн awaited синхронно ще до відповіді).
+    expect(await res.json()).toMatchObject({ ok: true, queued: 1 });
     expect(sends[0]?.body).toMatchObject({
       chat_id: '-100',
       message_thread_id: '77',
@@ -324,10 +326,24 @@ describe('deliver/status через router', () => {
       env,
       NOW,
     );
-    const body = (await res.json()) as { queued: number; sent: number };
+    const body = (await res.json()) as { queued: number };
     expect(body.queued).toBeGreaterThanOrEqual(3);
-    expect(body.sent).toBe(body.queued);
     expect(sends).toHaveLength(body.queued);
+  });
+
+  it('deliver з callback_data поза простором 07 §9 — 400 (confused deputy)', async () => {
+    const res = await handleInternal(
+      await signedRequest(
+        '/internal/deliver',
+        { text: 'x', buttons: [[{ text: 'Читати далі', callback_data: 'rc:all' }]] },
+        'n-d3',
+      ),
+      env,
+      NOW,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining('07 §9') });
+    expect(sends).toHaveLength(0); // нічого не покладено і не відправлено
   });
 
   it('status: edit статусника; без TELEGRAM_CHAT_ID — явний 500', async () => {

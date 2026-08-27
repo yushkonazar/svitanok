@@ -1,6 +1,6 @@
-// Маршрутизатор internal API (етап 1, PR-5 auth + PR-6 tools): інструменти
-// /internal/tool/* виконуються з реєстру core/tools; deliver/status (PR-7) і
-// runs-телеметрія мозку (етап 2) поки чесно відповідають 501 not-implemented.
+// Маршрутизатор internal API (етап 1: PR-5 auth, PR-6 tools, PR-7 deliver/
+// status через outbox); runs-телеметрія мозку (етап 2) поки чесно відповідає
+// 501 not-implemented.
 //
 // Порядок перевірок: прапорець → метод → розмір → підпис → run_id → nonce →
 // контракт → виконання. Дешеве і зовнішнє - першим; жодна гілка не виконує
@@ -35,8 +35,10 @@ const ROUTE_SCHEMAS = {
  * @param {Request} request
  * @param {Env} env
  * @param {number} [nowMs]
+ * @param {ExecutionContext} [ctx] - для драйну outbox ПІСЛЯ відповіді
+ *   (waitUntil); без нього (юніт-тести) драйн awaited синхронно.
  */
-export async function handleInternal(request, env, nowMs = Date.now()) {
+export async function handleInternal(request, env, nowMs = Date.now(), ctx = undefined) {
   // off: коду «не існує» - та сама відповідь, що на будь-який невідомий шлях.
   if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') {
     return json({ ok: false, error: 'not-found' }, 404);
@@ -137,8 +139,8 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
     const contract = validateAgainst(schema, body);
     if (!contract.ok) return json({ ok: false, error: `contract: ${contract.error}` }, 400);
     if (route === 'deliver')
-      return handleDeliver(env, auth.runId, /** @type {any} */ (body), nowMs);
-    if (route === 'status') return handleStatus(env, /** @type {any} */ (body), nowMs);
+      return handleDeliver(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
+    if (route === 'status') return handleStatus(env, ctx, /** @type {any} */ (body), nowMs);
     // runs-телеметрія мозку - етап 2 (RunRegistry вже вміє, бракує викликача).
     return json({ ok: false, error: 'not-implemented', route }, 501);
   }
@@ -153,12 +155,30 @@ export async function handleInternal(request, env, nowMs = Date.now()) {
  * мозку чекає доставки; пауза між частинами ~1 с - прийнятно), ретраї 429 -
  * sweeper планувальника.
  * @param {Env} env
+ * @param {ExecutionContext | undefined} ctx
  * @param {string} runId
  * @param {{ text: string, buttons?: { text: string, callback_data: string }[][] }} body
  * @param {number} nowMs
  */
-async function handleDeliver(env, runId, body, nowMs) {
+async function handleDeliver(env, ctx, runId, body, nowMs) {
   if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  // Кнопки мозку живуть у ВЛАСНОМУ просторі префіксів 07 §9 (p·c·r·a·u·m):
+  // callback_data поза ним міг би адресувати легасі-обробники (rc:, sl:, ev:…)
+  // і виконати дію БЕЗ підтвердження - тап власника є згодою на НАПИС кнопки,
+  // не на її payload (confused deputy із security-ревʼю).
+  for (const rowBtns of body.buttons ?? []) {
+    for (const btn of rowBtns) {
+      if (!/^(p|c|r|a|u|m):/.test(btn.callback_data)) {
+        return json(
+          {
+            ok: false,
+            error: `contract: callback_data поза простором 07 §9: "${btn.callback_data}"`,
+          },
+          400,
+        );
+      }
+    }
+  }
   const info = await registryRunInfo(env, runId);
   const threadId = info?.threadId ?? env.TOPIC_ASSISTANT ?? null;
   const { queued } = await enqueueOutbox(
@@ -175,18 +195,19 @@ async function handleDeliver(env, runId, body, nowMs) {
     },
     nowMs,
   );
-  const drained = await drainOutbox(env, { nowMs });
-  return json({ ok: true, queued, ...drained });
+  await scheduleDrain(env, ctx, nowMs);
+  return json({ ok: true, queued });
 }
 
 /**
  * Оновлення статус-повідомлення (07 §3): незіслані edit-и того ж message_id
  * заміняються новішим - це і є троттлінг до фактичної швидкості відправки.
  * @param {Env} env
+ * @param {ExecutionContext | undefined} ctx
  * @param {{ message_id: number, text: string }} body
  * @param {number} nowMs
  */
-async function handleStatus(env, body, nowMs) {
+async function handleStatus(env, ctx, body, nowMs) {
   if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'chat-not-configured' }, 500);
   await dropPendingEdits(env, env.TELEGRAM_CHAT_ID, body.message_id);
   const { queued } = await enqueueOutbox(
@@ -198,8 +219,29 @@ async function handleStatus(env, body, nowMs) {
     },
     nowMs,
   );
-  const drained = await drainOutbox(env, { nowMs });
-  return json({ ok: true, queued, ...drained });
+  await scheduleDrain(env, ctx, nowMs);
+  return json({ ok: true, queued });
+}
+
+/**
+ * Драйн ПІСЛЯ відповіді (ctx.waitUntil): доставка 16 частин з паузами - це
+ * ~17 с, і тримати відповідь мозку стільки означало б хибний таймаут на його
+ * боці, хоча все відправлено. Без ctx (юніт-тести кличуть router напряму) -
+ * чесний await, щоб тест бачив доставку синхронно.
+ * @param {Env} env
+ * @param {ExecutionContext | undefined} ctx
+ * @param {number} nowMs
+ */
+async function scheduleDrain(env, ctx, nowMs) {
+  const drained = drainOutbox(env, { nowMs }).catch(
+    (/** @type {any} */ e) =>
+      void console.error('outbox: драйн після deliver/status впав (sweeper добере)', e?.message),
+  );
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(drained);
+    return;
+  }
+  await drained;
 }
 
 /**

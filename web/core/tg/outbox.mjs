@@ -105,13 +105,23 @@ export async function drainOutbox(env, opts = {}) {
   const nowMs = opts.nowMs ?? Date.now();
   const sleep = opts.sleep ?? ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
 
-  // Завислий claim (ізолят умер посеред відправки) - назад у чергу зі спробою.
+  // Завислий claim (ізолят умер посеред відправки): вичерпані спроби - failed
+  // (інакше отруйний ряд крутився б pending↔sending вічно), решта - назад у
+  // чергу зі спробою.
+  const stuckCut = new Date(nowMs - STUCK_SENDING_MS).toISOString();
+  await db(env)
+    .prepare(
+      `UPDATE outbox SET status = 'failed', attempts = attempts + 1
+       WHERE status = 'sending' AND next_at < ? AND attempts >= ?`,
+    )
+    .bind(stuckCut, MAX_ATTEMPTS - 1)
+    .run();
   await db(env)
     .prepare(
       `UPDATE outbox SET status = 'pending', attempts = attempts + 1
        WHERE status = 'sending' AND next_at < ?`,
     )
-    .bind(new Date(nowMs - STUCK_SENDING_MS).toISOString())
+    .bind(stuckCut)
     .run();
 
   const due = /** @type {{ results: OutboxRow[] }} */ (
@@ -141,7 +151,12 @@ export async function drainOutbox(env, opts = {}) {
     if ((claim.meta?.changes ?? 1) !== 1) continue; // забрав конкурентний драйн
     if (!first) await sleep(THROTTLE_MS);
     first = false;
-    const outcome = await sendRow(env, row);
+    // Виняток fetch (мережа впала, не HTTP-помилка) - ретрай цього ряда, а не
+    // обрив усього драйну з рядом, навічно завислим у 'sending'.
+    const outcome = await sendRow(env, row).catch((/** @type {any} */ e) => {
+      console.error(`outbox: відправка ${row.id} кинула виняток`, e?.message);
+      return { ok: false, retryAfterSec: null };
+    });
     if (outcome.ok) {
       await db(env).prepare(`UPDATE outbox SET status = 'sent' WHERE id = ?`).bind(row.id).run();
       sent += 1;
