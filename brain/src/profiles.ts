@@ -3,6 +3,7 @@
 // maxToolCalls (виконує agent.ts через onToolCall) і maxTurns (страховка SDK).
 
 import { BRAIN_TOOLS } from './tools/schemas.js';
+import { QUICK_WORKER, WORKER_MODEL_IDS } from './workers.js';
 
 export type ProfileName = 'chat' | 'quick' | 'summarize';
 
@@ -25,12 +26,16 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     maxTurns: 30,
     timeoutMs: 4 * 60_000,
   },
+  // Швидка смуга - це працівник quick (07 §5): модель, стеля ходів і
+  // інструменти беруться з agents/quick.md через QUICK_WORKER, щоб правка
+  // файлу не розходилась із поведінкою профілю. Стелі прогону (maxToolCalls,
+  // timeoutMs) лишаються профільними - вони про рантайм, не про інструкцію.
   quick: {
     name: 'quick',
-    model: 'claude-haiku-4-5',
-    toolNames: [],
+    model: WORKER_MODEL_IDS[QUICK_WORKER.model],
+    toolNames: QUICK_WORKER.toolNames,
     maxToolCalls: 0,
-    maxTurns: 1,
+    maxTurns: QUICK_WORKER.maxSteps,
     timeoutMs: 60_000,
   },
   // Внутрішній профіль (ADR-038): вхід - транскрипт сесії, вихід -

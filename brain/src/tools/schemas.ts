@@ -20,6 +20,9 @@ export interface BrainToolDef {
   tainting: boolean;
   /** Write-інструмент: ядро виконує через policy (T0/T1), не напряму. */
   write: boolean;
+  /** Внутрішній інструмент (07 §4 «(внутр.)»): виконавця в ядрі НЕМАЄ,
+   *  роботу робить сам мозок - у /internal/tool такий виклик не йде. */
+  internal: boolean;
 }
 
 function tool(def: {
@@ -28,6 +31,7 @@ function tool(def: {
   args: z.ZodObject<z.ZodRawShape>;
   tainting?: boolean;
   write?: boolean;
+  internal?: boolean;
 }): BrainToolDef {
   return {
     coreName: def.coreName,
@@ -36,6 +40,7 @@ function tool(def: {
     args: def.args,
     tainting: def.tainting ?? false,
     write: def.write ?? false,
+    internal: def.internal ?? false,
   };
 }
 
@@ -162,6 +167,21 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       source: z.string().max(16).optional(),
     }),
     write: true,
+  }),
+  // delegate - ВНУТРІШНІЙ інструмент (07 §4): у ядрі виконавця немає,
+  // працівника запускає сам мозок окремим прогоном SDK. Імена - файли
+  // docs/assistant/agents/<name>.md, бо саме вони стають промптом працівника;
+  // персона знає їх під українськими назвами, тож перелік тут явний.
+  tool({
+    coreName: 'delegate',
+    description:
+      'Передати задачу працівнику: worker - імʼя (researcher·analyst·planner·day-planner·copywriter·editor·finance·mail-secretary·tutor·quick), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат.',
+    args: z.object({
+      worker: z.string().max(32),
+      task: z.string().max(4000),
+      format: z.string().max(200),
+    }),
+    internal: true,
   }),
 ];
 
