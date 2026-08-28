@@ -9,6 +9,7 @@
 import type { CoreClient, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
 import { PROFILES, TRANSCRIPT_MAX_CHARS, buildSystemPrompt, type RunProfile } from './profiles.js';
+import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
 
 /** Виконання інструмента з погляду рушія: текст для моделі + прапор помилки. */
@@ -168,6 +169,30 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     };
 
     try {
+      // Інструкція профілю (PR-5): текст із D1 ядра, хеш перерахований тут.
+      // Розбіжність або відсутність - прогін не стартує: замовчувати це
+      // означало б відповідати власнику від імені невідомо якої персони.
+      let instructionBody: string | null = null;
+      if (profile.name !== 'summarize') {
+        try {
+          instructionBody = verifyInstruction(req.instruction, profile.name);
+        } catch (e) {
+          const note = e instanceof Error ? e.message : String(e);
+          pushStep({ kind: 'error', name: 'instruction', ms: now() - startedMs, ok: false, note });
+          console.error(`run ${req.run_id}: ${note}`);
+          // Тиша тут читалась би як «асистент завис»; deliver - best-effort.
+          try {
+            await deps.client.deliver(
+              req.run_id,
+              'Інструкції асистента не на місці - синк не відпрацював.',
+            );
+          } catch (deliverErr) {
+            console.error(`run ${req.run_id}: deliver про інструкцію впав: ${String(deliverErr)}`);
+          }
+          return;
+        }
+      }
+
       // Summarize: вхід - НЕ текст запиту, а транскрипт сесії з локального
       // сховища SDK (ADR-038: без resume - службовий хід не бруднить сесію).
       let inputText = req.input.text;
@@ -198,6 +223,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         {
           systemPrompt: buildSystemPrompt(profile, startedMs, {
             summary: profile.name === 'chat' ? (req.session?.summary_md ?? null) : null,
+            instruction: instructionBody,
           }),
           model: profile.model,
           maxTurns: profile.maxTurns,

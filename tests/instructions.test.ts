@@ -185,6 +185,29 @@ describe('loadInstruction (D1)', () => {
   });
 });
 
+describe('парність хешів між ядром, мозком і сідом тестів', () => {
+  it('три реалізації sha256 тіла дають той самий hex', async () => {
+    const { instructionHash: brainHash } = await import('../brain/src/instructions.js');
+    const { syncInstructionHash } = await import('./helpers/instructions.js');
+    for (const body of ['Ти - Світанок.', files[0]!.raw, 'рядок\r\nз CRLF\r\n']) {
+      const core = await instructionHash(body);
+      expect(brainHash(body)).toBe(core);
+      expect(syncInstructionHash(body)).toBe(core);
+    }
+  });
+
+  it('мозок відмовляє на розбіжності хешу і на відсутній інструкції', async () => {
+    const { verifyInstruction } = await import('../brain/src/instructions.js');
+    const body = 'Ти - Світанок.';
+    const good = { name: 'persona', version_hash: await instructionHash(body), body_md: body };
+    expect(verifyInstruction(good, 'chat')).toBe(body);
+    expect(() => verifyInstruction({ ...good, body_md: 'підмінене тіло' }, 'chat')).toThrow(
+      'розійшовся з тілом',
+    );
+    expect(() => verifyInstruction(undefined, 'chat')).toThrow('без інструкції');
+  });
+});
+
 describe('CANON_TOOLS проти живого реєстру ядра', () => {
   it('усі імена реєстру входять у канонічний перелік 07 §4', async () => {
     const { TOOLS } = await import('../web/core/tools/index.mjs');

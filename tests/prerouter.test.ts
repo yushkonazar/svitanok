@@ -15,6 +15,7 @@ import {
 } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
+import { d1WithInstructions, syncInstructionHash, TEST_PERSONA } from './helpers/instructions.js';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'prerouter-test-key';
@@ -189,11 +190,57 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
+describe('інструкція профілю в /run (PR-5)', () => {
+  it('chat несе persona, quick несе quick - з тіла D1 і його ж хешем', async () => {
+    // Окремі реєстри: один тред тримає один активний прогін, і друге
+    // повідомлення в тому ж треді пішло б у чергу, а не в мозок.
+    const runInstruction = async (text: string) => {
+      const reg = makeRegistryStub();
+      const { brain } = makeFetchStub();
+      const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+      await prerouteMessage(makeEnv(reg, d1.stub), parsedMsg(text), NOW);
+      return brain[0]!.body.instruction as {
+        name: string;
+        body_md: string;
+        version_hash: string;
+      };
+    };
+
+    const chat = await runInstruction('нагадай про зустріч'); // якір N3 → chat
+    expect(chat.name).toBe('persona');
+    expect(chat.body_md).toBe(TEST_PERSONA);
+    expect(chat.version_hash).toBe(syncInstructionHash(TEST_PERSONA));
+
+    const quick = await runInstruction('скільки 2+2');
+    expect(quick.name).toBe('quick');
+  });
+
+  it('немає рядка в D1 - прогін НЕ стартує, статус чесний, тред звільнено', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    // База БЕЗ сіду інструкцій - як у вікні між деплоєм і синком.
+    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql', '0007_instructions_plans.sql']);
+    const env = makeEnv(reg, d1.stub);
+
+    expect(await prerouteMessage(env, parsedMsg('привіт'), NOW)).toBe(true);
+    expect(brain).toHaveLength(0);
+    expect(
+      tg.some((c) => String(c.body.text ?? '').includes('Інструкції асистента не синхронізовані')),
+    ).toBe(true);
+    expect(reg.finishes.at(-1)?.patch).toMatchObject({ error: 'no-instruction' });
+    expect(reg.threads.get('dm')).toBeUndefined();
+  });
+});
+
 describe('prerouteMessage: режими', () => {
   it('off → false, нічого не робиться', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub, 'off');
+    const env = makeEnv(
+      reg,
+      d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub,
+      'off',
+    );
     expect(await prerouteMessage(env, parsedMsg('привіт'), NOW)).toBe(false);
     expect(tg).toHaveLength(0);
     expect(reg.begins).toHaveLength(0);
@@ -202,7 +249,11 @@ describe('prerouteMessage: режими', () => {
   it('shadow без v2: класифікує, пише runs з trigger=shadow і віддає легасі', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub, 'shadow');
+    const env = makeEnv(
+      reg,
+      d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub,
+      'shadow',
+    );
     expect(await prerouteMessage(env, parsedMsg('скільки 2+2'), NOW)).toBe(false);
     // trigger='shadow' (ревʼю PR-3): класифікація відрізняється від бойових.
     expect(reg.begins[0]).toMatchObject({ trigger: 'shadow', profile: 'quick', threadId: 'dm' });
@@ -214,7 +265,7 @@ describe('prerouteMessage: режими', () => {
   it('shadow з v2: - повний шлях (статусник, begin, /run мозку з сесією)', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
     d1.db
       .prepare(
         `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
@@ -241,7 +292,7 @@ describe('prerouteMessage: режими', () => {
   it('on: два повідомлення - друге дістає СТАТУСНИК «▸ Черга: 1» (S-0-2, редагований), мозок кликаний раз', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('перше питання про мій день'), NOW);
     await prerouteMessage(env, parsedMsg('друге питання про мої плани'), NOW + 1000);
     expect(brain).toHaveLength(1);
@@ -257,7 +308,7 @@ describe('prerouteMessage: режими', () => {
   it('інша тема - false; легасі-команда /stats - false', async () => {
     const reg = makeRegistryStub();
     makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     expect(await prerouteMessage(env, parsedMsg('привіт', { threadId: 123 }), NOW)).toBe(false);
     expect(await prerouteMessage(env, parsedMsg('/stats'), NOW)).toBe(false);
   });
@@ -265,7 +316,7 @@ describe('prerouteMessage: режими', () => {
   it('СПІВВЛАСНИК не отримує новий шлях (security-ревʼю PR-3): false і жодних ефектів', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     for (const text of ['привіт', 'v2: привіт', 'стоп', '/new', '/status']) {
       expect(await prerouteMessage(env, parsedMsg(text, { fromId: 888 }), NOW)).toBe(false);
     }
@@ -280,7 +331,7 @@ describe('prerouteMessage: нові команди', () => {
   it('/new: sdk-сесія скинута, taint 0, згортка ЛИШАЄТЬСЯ (S-0-4)', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();
-    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
     d1.db
       .prepare(
         `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
@@ -300,7 +351,7 @@ describe('prerouteMessage: нові команди', () => {
   it('підказки R26 і /status відповідають; /forget - чесна заглушка', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('/idea'), NOW);
     await prerouteMessage(env, parsedMsg('/status'), NOW);
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
@@ -315,7 +366,7 @@ describe('«стоп» (S-0-3)', () => {
   it('активний прогін: /abort мозку, finish stopped, статусник «Зупинив.», черга очищена', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     reg.threads.set('dm', {
       activeRunId: 'run-active',
       statusMessageId: 77,
@@ -333,7 +384,7 @@ describe('«стоп» (S-0-3)', () => {
   it('нема активного - «Нема чого зупиняти.»', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('Стоп!'), NOW);
     expect(tg.some((c) => String(c.body.text).includes('Нема чого'))).toBe(true);
   });
@@ -343,7 +394,7 @@ describe('S-0-7: мозок недоступний', () => {
   it('невдалий старт: retry у чергу (attempts+1) + статус «спробую ще раз», finish з brain-start', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub(502);
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('питання про мої справи'), NOW);
     expect(reg.retries).toHaveLength(1);
     expect(reg.retries[0]!.entry).toMatchObject({ attempts: 1, statusMessageId: 101 });
@@ -354,7 +405,7 @@ describe('S-0-7: мозок недоступний', () => {
   it('третя невдача - «Не вдалося…», без retry', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub(502);
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     reg.threads.set('dm', { activeRunId: 'pending', statusMessageId: null, queue: [] });
     await startClaimedRun(
       env,
@@ -370,7 +421,7 @@ describe('S-0-7: мозок недоступний', () => {
   it('kickPendingThreads піднімає вільний тред із чергою, REUSE статусника', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub(202);
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     reg.threads.set('dm', {
       activeRunId: null,
       statusMessageId: null,
@@ -396,7 +447,7 @@ describe('ревʼю PR-3: класифікатор, стоп-вікно, тра
   it('claimed:false від setRun («стоп» у вікні pending): мозок НЕ кличеться, прогін cancelled, статусник видалено', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     // Тред зник ДО setRun - стаб поверне claimed:false (треду немає в мапі).
     await startClaimedRun(
       env,
@@ -427,7 +478,7 @@ describe('ревʼю PR-3: класифікатор, стоп-вікно, тра
         throw new Error('tunnel мовчить');
       }),
     );
-    const env = makeEnv(reg, d1FromSqlite(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
     await prerouteMessage(env, parsedMsg('питання про мої плани'), NOW);
     expect(reg.finishes).toHaveLength(0);
     expect(reg.retries).toHaveLength(0);
@@ -438,7 +489,7 @@ describe('ревʼю PR-3: класифікатор, стоп-вікно, тра
 
 describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на міграціях)', () => {
   const cbEnv = () => {
-    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
     const { tg } = makeFetchStub();
     const env = makeEnv(makeRegistryStub(), d1.stub);
     return { env, db: d1.db, tg };

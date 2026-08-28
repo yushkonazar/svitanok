@@ -14,6 +14,7 @@ import {
 import type { ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
+import { instructionHash } from '../brain/src/instructions.js';
 import { BRAIN_TOOLS } from '../brain/src/tools/schemas.js';
 
 interface ClientMock {
@@ -46,12 +47,20 @@ function makeClient(over: Partial<ClientMock> = {}): ClientMock {
   };
 }
 
+/** Інструкція профілю з правильним хешем - без неї прогін не стартує (PR-5). */
+export const TEST_INSTRUCTION_BODY = 'Ти - Світанок. Відповідай коротко.';
+
 function req(over: Partial<RunRequest> = {}): RunRequest {
   return {
     run_id: 'run-1',
     profile: 'chat',
     thread_id: 'dm',
     input: { text: 'привіт' },
+    instruction: {
+      name: 'persona',
+      version_hash: instructionHash(TEST_INSTRUCTION_BODY),
+      body_md: TEST_INSTRUCTION_BODY,
+    },
     ...over,
   };
 }

@@ -34,6 +34,7 @@ import {
   finishPendingVoice,
   VOICE_LONG_S,
 } from './voice.mjs';
+import { loadInstruction } from './instructions.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -363,10 +364,33 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     return;
   }
 
+  // Інструкція профілю з D1 (PR-5): мозок не має доступу до бази, тож текст
+  // їде в тілі /run разом із хешем. Немає рядка - прогін НЕ стартує: вшитих
+  // запасних персон більше немає, і мовчазна підміна тону гірша за відмову.
+  const instructionName = entry.route === 'chat' ? 'persona' : 'quick';
+  let instruction;
+  try {
+    const loaded = await loadInstruction(env, instructionName);
+    instruction = { name: loaded.name, version_hash: loaded.hash, body_md: loaded.body };
+  } catch (/** @type {any} */ e) {
+    console.error(`prerouter: інструкція «${instructionName}» недоступна`, e?.message);
+    await registryFinish(env, runId, { finishedMs: nowMs, error: 'no-instruction' });
+    await registryThreadFinishAndKick(env, parsed, threadKey, runId, nowMs);
+    await editStatus(
+      env,
+      parsed,
+      statusMessageId,
+      'Інструкції асистента не синхронізовані - спробуй пізніше.',
+      nowMs,
+    );
+    return;
+  }
+
   const sess = entry.route === 'chat' ? await readSession(env, threadKey) : null;
   const res = await callBrainRun(
     env,
     {
+      instruction,
       runId,
       profile: /** @type {'chat' | 'quick'} */ (entry.route),
       threadId: threadKey,
