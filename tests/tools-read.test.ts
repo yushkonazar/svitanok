@@ -296,7 +296,7 @@ describe('facts.* на справжній міграції 0001', () => {
 });
 
 describe('реєстр TOOLS', () => {
-  it('склад: читання + facts + memory.search + нагадування (етап 2 PR-6); drive.write свідомо відсутній до адаптерів Google', () => {
+  it('склад: читання + facts + memory.search + нагадування і record (етап 2 PR-6); drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
       'data.read',
@@ -308,6 +308,7 @@ describe('реєстр TOOLS', () => {
       'mail.read',
       'mail.search',
       'memory.search',
+      'record',
       'reminders.cancel',
       'reminders.create',
       'reminders.update',
@@ -324,6 +325,7 @@ describe('реєстр TOOLS', () => {
     // ним, і розсинхрон тут мовчки змінив би рівень підтвердження.
     expect(writes).toEqual([
       ['facts.set', 'facts.set'],
+      ['record', 'record'],
       ['reminders.cancel', 'reminders.cancel'],
       ['reminders.create', 'reminders.create'],
       ['reminders.update', 'reminders.update'],

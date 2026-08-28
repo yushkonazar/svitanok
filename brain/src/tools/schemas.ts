@@ -118,6 +118,16 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     write: true,
   }),
   tool({
+    coreName: 'record',
+    description:
+      'Записати локальну подію: kind = checkin | news-vote | job-stage | roadmap. payload: checkin - поля чек-іна; news-vote - {index}; job-stage - {index, stage}; roadmap - {topic_id, subtopic_id}. Позиції беруться зі списків, які щойно прочитав.',
+    args: z.object({
+      kind: z.string().max(16),
+      payload: z.record(z.string(), z.unknown()).optional(),
+    }),
+    write: true,
+  }),
+  tool({
     coreName: 'facts.set',
     description:
       'Записати факт про власника (kind, key, value). Виконує ядро за policy: у чистій сесії - одразу з «↩», у tainted - як пропозиція.',

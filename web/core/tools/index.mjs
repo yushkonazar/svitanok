@@ -152,6 +152,22 @@ export const TOOLS = {
       throw new Error('reminders.cancel виконується через policy, не напряму');
     },
   },
+  // record (PR-6): чотири види локальних записів одним інструментом. Слот
+  // чек-іна і позиції у списках рахує КОД - модель дає лише kind і payload.
+  record: {
+    args: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', maxLength: 16 },
+        payload: { type: 'object' },
+      },
+    },
+    write: { kind: 'record' },
+    run: () => {
+      throw new Error('record виконується через policy, не напряму');
+    },
+  },
   'facts.set': {
     args: {
       type: 'object',

@@ -17,6 +17,7 @@ import {
   UNDO_WINDOW_MS,
 } from './core.mjs';
 import { runFactsSet, runFactsGet } from '../tools/facts.mjs';
+import { runRecord } from '../tools/record.mjs';
 import {
   runRemindersCreate,
   runRemindersUpdate,
@@ -82,6 +83,17 @@ export const EXECUTORS = {
         { text: snapshot.text, whenMs: snapshot.whenMs, restoreId: snapshot.id },
         nowMs,
       );
+    },
+  },
+  // record: БЕЗ undo. Чинні модулі (applyEvent, recordEvent, toggleProgress)
+  // зворотної операції не мають - стрік, ваги преференцій і воронка
+  // перераховуються з подій, і «відкат» тут означав би писати компенсаційну
+  // подію, тобто брехати історії. Кнопки «↩» не буде: прогін віддає prev
+  // undefined (policy тоді її не показує).
+  record: {
+    async execute(env, payload, nowMs) {
+      const { result } = await runRecord(env, payload, nowMs);
+      return { result };
     },
   },
   'facts.set': {
