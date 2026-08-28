@@ -22,6 +22,7 @@ import {
   snoozeReminder,
   snoozeReminderPreset,
   SNOOZE_MINUTES,
+  SNOOZE_PRESETS,
   formatReminderDone,
   buildRemindersKeyboard,
   formatRemindersListMessage,
@@ -45,6 +46,13 @@ import {
 } from './calendar-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
 import { loadState, updateState } from './kv-store.mjs';
+// Нагадування нового шляху (етап 2 PR-7) живуть у D1: кнопки під ними ті самі,
+// тож обробники мусять уміти обидва сховища.
+import {
+  snoozeReminder as d1Snooze,
+  cancelReminder as d1Cancel,
+  completeReminder as d1Complete,
+} from './core/reminders/store.mjs';
 import { applyEvent } from './api-dashboard.mjs';
 import { readCalendarRange, getCalendarEvent } from './google.mjs';
 import { tgCall, sendTo } from './telegram-client.mjs';
@@ -95,26 +103,47 @@ export async function resolveCallbackToast(/** @type {Env} */ env, /** @type {Kv
  * @param {string} reminderId
  * @param {(reminders: any[], id: string, nowMs: number) => any[]} mutate
  * @param {string} successToast
+ * @param {(env: Env, id: string, nowMs: number) => Promise<boolean>} [d1Fallback]
+ *   те саме для нагадувань нового шляху (D1); без нього - лише KV
  */
-async function resolveReminderAction(env, parsed, reminderId, mutate, successToast) {
+async function resolveReminderAction(env, parsed, reminderId, mutate, successToast, d1Fallback) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  if (!reminders.some((/** @type {KvBlob} */ r) => r.id === reminderId))
+  if (!reminders.some((/** @type {KvBlob} */ r) => r.id === reminderId)) {
+    // Нагадування нового шляху живуть у D1 (етап 2 PR-7), а кнопка під ними -
+    // та сама. Без цього фолбеку власник тиснув «відкласти» на щойно
+    // надісланому нагадуванні й діставав «неактуальне» (ревʼю PR-7).
+    if (d1Fallback && env.DB) {
+      const done = await d1Fallback(env, reminderId, Date.now()).catch((/** @type {any} */ e) => {
+        console.error(`callbacks: D1-нагадування ${reminderId}`, e?.message);
+        return false;
+      });
+      if (done) {
+        await clearReminderKeyboard(env, parsed);
+        return successToast;
+      }
+    }
     return '⚠️ Це нагадування вже неактуальне.';
+  }
 
   const nowMs = Date.now();
   await updateState(env, (s) => ({
     ...s,
     reminders: mutate(Array.isArray(s.reminders) ? s.reminders : [], reminderId, nowMs),
   }));
-  if (parsed.chatId != null && parsed.messageId != null && parsed.replyMarkup) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-      reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
-    });
-  }
+  await clearReminderKeyboard(env, parsed);
   return successToast;
+}
+
+/** Позначити натиснуту кнопку галкою - однаково для KV- і D1-нагадувань.
+ *  @param {Env} env @param {KvBlob} parsed */
+async function clearReminderKeyboard(env, parsed) {
+  if (parsed.chatId == null || parsed.messageId == null || !parsed.replyMarkup) return;
+  await tgCall(env, 'editMessageReplyMarkup', {
+    chat_id: parsed.chatId,
+    message_id: parsed.messageId,
+    reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+  });
 }
 
 /** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
@@ -134,6 +163,7 @@ export async function resolveReminderSnooze(
     reminderId,
     snoozeReminder,
     `😴 Відкладено на ${SNOOZE_MINUTES} хв`,
+    (env2, id, nowMs) => d1Snooze(env2, id, nowMs + SNOOZE_MINUTES * 60_000),
   );
 }
 
@@ -151,6 +181,11 @@ export async function resolveReminderSnoozePreset(
     (/** @type {any[]} */ reminders, /** @type {string} */ id, /** @type {number} */ nowMs) =>
       snoozeReminderPreset(reminders, id, presetIdx, nowMs),
     '😴 Відкладено',
+    (env2, id, nowMs) => {
+      const preset = SNOOZE_PRESETS[presetIdx];
+      if (!preset) return Promise.resolve(false);
+      return d1Snooze(env2, id, nowMs + preset.minutes * 60_000);
+    },
   );
 }
 
@@ -160,7 +195,14 @@ export async function resolveReminderCancel(
   /** @type {KvBlob} */ parsed,
   /** @type {string} */ reminderId,
 ) {
-  return resolveReminderAction(env, parsed, reminderId, cancelReminder, '🗑 Нагадування скасовано');
+  return resolveReminderAction(
+    env,
+    parsed,
+    reminderId,
+    cancelReminder,
+    '🗑 Нагадування скасовано',
+    (env2, id) => d1Cancel(env2, id),
+  );
 }
 
 /**
@@ -201,13 +243,24 @@ export async function resolveReminderDone(
 ) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
-  const reminder = reminders.find((r) => r.id === reminderId);
-  if (!reminder) return '⚠️ Це нагадування вже неактуальне.';
-
-  await updateState(env, (s) => ({
-    ...s,
-    reminders: cancelReminder(Array.isArray(s.reminders) ? s.reminders : [], reminderId),
-  }));
+  let reminder = reminders.find((r) => r.id === reminderId);
+  if (!reminder) {
+    // Нагадування з D1 (новий шлях): термінальний статус done і той самий
+    // текст «виконано» у повідомленні.
+    const fromD1 = env.DB
+      ? await d1Complete(env, reminderId).catch((/** @type {any} */ e) => {
+          console.error(`callbacks: rk для D1-нагадування ${reminderId}`, e?.message);
+          return null;
+        })
+      : null;
+    if (!fromD1) return '⚠️ Це нагадування вже неактуальне.';
+    reminder = { id: fromD1.id, text: fromD1.text };
+  } else {
+    await updateState(env, (s) => ({
+      ...s,
+      reminders: cancelReminder(Array.isArray(s.reminders) ? s.reminders : [], reminderId),
+    }));
+  }
   if (parsed.chatId != null && parsed.messageId != null) {
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,

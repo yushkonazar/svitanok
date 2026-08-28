@@ -24,6 +24,7 @@ import {
   runRemindersCancel,
   readActiveReminders,
 } from '../tools/reminders.mjs';
+import { restoreReminder } from '../reminders/store.mjs';
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -71,14 +72,14 @@ export const EXECUTORS = {
       );
       // Знімок ДО правки: undo кладе назад і текст, і час.
       return {
-        prev: before ? { id: before.id, text: before.text, whenMs: before.whenMs } : null,
+        prev: before ? { id: before.id, text: before.text, dueAt: before.dueAt } : null,
         result,
       };
     },
     async undo(env, snapshot, nowMs) {
       if (!snapshot) return;
       await runRemindersUpdate(env, { id: snapshot.id, text: snapshot.text }, nowMs, {
-        whenMs: snapshot.whenMs,
+        dueAtMs: Date.parse(snapshot.dueAt),
       });
     },
   },
@@ -89,16 +90,18 @@ export const EXECUTORS = {
       const { result } = await runRemindersCancel(env, { id: payload.id });
       return { prev: before ?? null, result };
     },
-    async undo(env, snapshot, nowMs) {
+    async undo(env, snapshot) {
       if (!snapshot) return;
-      // Скасоване нагадування зникло зі списку - «↩» створює його наново з
-      // тим самим id, текстом і часом; адреса теж повертається зі знімка.
-      await runRemindersCreate(env, { text: snapshot.text }, nowMs, {
-        whenMs: snapshot.whenMs,
-        restoreId: snapshot.id,
-        chatId: snapshot.chatId,
-        threadId: snapshot.threadId,
-      });
+      // Рядок нікуди не зник - у D1 він лежить зі статусом cancelled, тож
+      // «↩» просто повертає його в гру: id, текст, час і адреса ті самі, і
+      // жодного шансу створити дубль.
+      const restored = await restoreReminder(env, snapshot.id);
+      if (!restored) {
+        // Рядок уже не cancelled (власник устиг створити знову або статус
+        // змінили): мовчазний «успіх» тут показав би тост «Відкочено ↩» після
+        // нульової дії (ревʼю PR-7).
+        throw new Error(`нагадування ${snapshot.id} не відновлено - воно вже не скасоване`);
+      }
     },
   },
   // record: БЕЗ undo. Чинні модулі (applyEvent, recordEvent, toggleProgress)
