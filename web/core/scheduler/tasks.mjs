@@ -28,6 +28,7 @@ import { agentRunWatchdog, agentHostHealthCheck } from '../../agent-runtime.mjs'
 import { drainOutbox } from '../tg/outbox.mjs';
 import { checkBrainHandshake } from '../brain/health.mjs';
 import { memorySummarize } from '../brain/summarize.mjs';
+import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
  * @typedef {{
@@ -62,7 +63,20 @@ export const SCHEDULER_TASKS = {
       } catch (/** @type {any} */ e) {
         console.error('brain-health: перевірка старого хоста впала', e?.message);
       }
-      await checkBrainHandshake(env);
+      const handshake = await checkBrainHandshake(env);
+      // «Підняття» черг тредів (ADR-039, S-0-7) + сторож мертвих claim-ів
+      // (усередині kickPendingThreads): щойно мозок ЖИВИЙ - ok АБО desync
+      // (ревʼю PR-3: desync = версії розійшлись, /run працює; блокувати
+      // підняття означало б повторити сліпоту інциденту 19.07). Без нового
+      // kind - той самий 5-хвилинний такт.
+      const state = /** @type {any} */ (handshake)?.state;
+      if (state === 'ok' || state === 'desync') {
+        try {
+          await kickPendingThreads(env);
+        } catch (/** @type {any} */ e) {
+          console.error('brain-health: підняття черг впало', e?.message);
+        }
+      }
     },
   },
   'brief-dispatch': { periodMin: 5, run: autoBriefDispatch },

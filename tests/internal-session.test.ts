@@ -3,41 +3,16 @@
 // (виклик без поля не затирає збережене), turn_count-інкремент, незмінність
 // tainted (мозок не сміє знімати прапорець), сходинка відмов роутера.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { workerEnv } from './helpers/env.js';
+import { d1FromSqlite } from './helpers/d1.js';
 
 const KEY = 'session-test-key';
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const PATH = '/internal/session';
-
-const d1FromSqlite = () => {
-  const db = new DatabaseSync(':memory:');
-  db.exec(
-    readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0001_base.sql'), 'utf8'),
-  );
-  return {
-    db,
-    stub: {
-      prepare: (sql: string) => ({
-        bind: (...args: unknown[]) => ({
-          run: async () => {
-            // @ts-expect-error node:sqlite приймає біндинги варіативно
-            db.prepare(sql).run(...args);
-          },
-          all: async () => ({
-            // @ts-expect-error те саме для all
-            results: db.prepare(sql).all(...args),
-          }),
-        }),
-      }),
-    },
-  };
-};
 
 let nonceSeq = 0;
 const request = async (bodyObj: unknown, opts: { rawBody?: string } = {}) => {
@@ -73,7 +48,7 @@ describe('POST /internal/session', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d1 = d1FromSqlite();
+    const d1 = d1FromSqlite(['0001_base.sql']);
     db = d1.db;
     const consumed = new Set<string>();
     env = workerEnv({

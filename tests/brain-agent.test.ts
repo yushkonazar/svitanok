@@ -20,7 +20,13 @@ interface ClientMock {
   callTool: Mock<(runId: string, coreName: string, args: unknown) => Promise<ToolCallOutcome>>;
   deliver: Mock<(runId: string, text: string) => Promise<void>>;
   status: Mock<(runId: string, messageId: number, text: string) => Promise<void>>;
-  reportRuns: Mock<(runId: string, steps: object[]) => Promise<void>>;
+  reportRuns: Mock<
+    (
+      runId: string,
+      steps: object[],
+      outcome?: { escalate: { text: string; status_message_id?: number } },
+    ) => Promise<void>
+  >;
   session: Mock<(runId: string, body: Record<string, unknown>) => Promise<boolean>>;
 }
 
@@ -450,5 +456,42 @@ describe('makeRunner: стрімінг статусу', () => {
     expect(text.startsWith('…')).toBe(true);
     expect(text.endsWith('КІНЕЦЬ')).toBe(true);
     expect(text.length).toBeLessThanOrEqual(3901);
+  });
+});
+
+describe('makeRunner: «стоп» і ескалація (ADR-039)', () => {
+  it('abort із reason=stop: без deliver і без «Прогін не вдався», крок stopped, реєстр очищено', async () => {
+    const client = makeClient();
+    const aborts = new Map<string, AbortController>();
+    const { engine } = scriptedEngine(async (opts) => {
+      // Прогін «висить», ядро рве через /abort → reason='stop'.
+      aborts.get('run-1')!.abort('stop');
+      opts.abortSignal.throwIfAborted();
+      return { finalText: 'не доїде' };
+    });
+    await makeRunner({ client, engine, aborts })(req());
+    expect(client.deliver).not.toHaveBeenCalled();
+    const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    expect(steps[0]).toMatchObject({ kind: 'reply', name: 'stopped', ok: true });
+    expect(aborts.size).toBe(0);
+  });
+
+  it('крок escalate несе оригінальний текст і status_message_id (канал для handleRuns)', async () => {
+    const client = makeClient();
+    const { engine } = scriptedEngine(async () => ({ finalText: 'ESCALATE: треба календар' }));
+    await makeRunner({ client, engine })(
+      req({ profile: 'quick', input: { text: 'коли зустріч?' }, status_message_id: 42 }),
+    );
+    const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    expect(steps[0]).toMatchObject({
+      kind: 'reply',
+      name: 'escalate',
+      note: 'коли зустріч?',
+      status_message_id: 42,
+    });
+    // Керівний сигнал - КОНТРАКТНИЙ outcome (ADR-039, ревʼю PR-3), не крок.
+    expect(client.reportRuns.mock.calls[0]![2]).toEqual({
+      escalate: { text: 'коли зустріч?', status_message_id: 42 },
+    });
   });
 });

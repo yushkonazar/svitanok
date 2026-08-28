@@ -56,6 +56,9 @@ void probeInternalApi(config.internalApiUrl, fetch, probeAccess).then((r) => {
   if (r !== 'ok') console.error(`internal API проба: ${r} - перевір INTERNAL_API_URL`);
 });
 
+// Реєстр активних AbortController-ів (ADR-039): runner кладе, /abort рве.
+const aborts = new Map<string, AbortController>();
+
 const handler = createHandler({
   config,
   buildInfo,
@@ -64,10 +67,16 @@ const handler = createHandler({
     models: PROFILE_MODELS,
     maxSteps: PROFILES.chat.maxToolCalls,
   },
-  runner: makeRunner({ client, engine: createSdkEngine() }),
+  runner: makeRunner({ client, engine: createSdkEngine(), aborts }),
   sdkVersion: sdkPkg.version ?? null,
   claudeVersion: sdkPkg.claudeCodeVersion ?? null,
   internalApiProbe: () => internalApiProbe,
+  abortRun: (runId) => {
+    const ctrl = aborts.get(runId);
+    if (!ctrl) return false;
+    ctrl.abort('stop');
+    return true;
+  },
 });
 
 function respond(res: ServerResponse, status: number, body: Record<string, unknown>): void {

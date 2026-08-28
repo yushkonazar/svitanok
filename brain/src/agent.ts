@@ -52,6 +52,9 @@ export interface RunnerDeps {
   now?: () => number;
   /** Мін. інтервал оновлень статусу; ядро й так троттлить (07 §3). */
   statusIntervalMs?: number;
+  /** Реєстр активних прогонів для POST /abort (ADR-039): runId → controller.
+   *  Заповнює runner, читає обробник /abort у server/index. */
+  aborts?: Map<string, AbortController>;
 }
 
 // Стелі deliver/status - тіньові копії ядрових меж, парність тримає тест
@@ -74,6 +77,8 @@ interface Step {
   ms: number;
   ok: boolean;
   note?: string;
+  /** Лише крок escalate (ADR-039): статусник для «Думаю довше…» ядра. */
+  status_message_id?: number;
 }
 
 /** Збудувати Runner для server.ts: один виклик = один прогін профілю. */
@@ -88,9 +93,11 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     let tainted = req.tainted ?? false;
     let toolCalls = 0;
     let lastStatusMs = 0;
+    let escalateOutcome: { escalate: { text: string; status_message_id?: number } } | undefined;
 
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort('timeout'), profile.timeoutMs);
+    deps.aborts?.set(req.run_id, abort);
 
     const pushStep = (s: Omit<Step, 'n' | 'at'>) =>
       steps.push({ n: steps.length + 1, at: new Date(now()).toISOString(), ...s });
@@ -235,11 +242,24 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       }
 
       if (profile.name === 'quick' && finalText.startsWith(ESCALATE_PREFIX)) {
-        // Ескалацію вирішує ядро (07 §5, prerouter - етап 2 PR-3); мозок лише
-        // чесно звітує і НЕ доставляє службовий рядок власнику.
-        // ⚠️ Відомий борг (знахідка ревʼю): надійний канал ескалації (не
-        // best-effort /internal/runs) - обовʼязковий пункт PR-3.
-        pushStep({ kind: 'reply', name: 'escalate', ms: now() - startedMs, ok: true });
+        // Канал ескалації (ADR-039, уточнено ревʼю PR-3): рішення їде
+        // КОНТРАКТНИМ outcome у /internal/runs (ядро перезапустить chat тим
+        // самим текстом у той самий статусник), а крок - лише журнальний слід
+        // у run_steps. Мозок службовий рядок власнику НЕ доставляє.
+        escalateOutcome = {
+          escalate: {
+            text: req.input.text,
+            ...(req.status_message_id != null ? { status_message_id: req.status_message_id } : {}),
+          },
+        };
+        pushStep({
+          kind: 'reply',
+          name: 'escalate',
+          ms: now() - startedMs,
+          ok: true,
+          note: req.input.text,
+          ...(req.status_message_id != null ? { status_message_id: req.status_message_id } : {}),
+        });
         return;
       }
       const delivered = finalText === '' ? '(порожня відповідь моделі)' : clipDeliver(finalText);
@@ -256,6 +276,12 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         });
       }
     } catch (err) {
+      // «стоп» власника (POST /abort, reason='stop') - НЕ збій: тишу розриває
+      // ядро («Зупинив.»), а деліверити обірвану відповідь було б шумом.
+      if (abort.signal.aborted && abort.signal.reason === 'stop') {
+        pushStep({ kind: 'reply', name: 'stopped', ms: now() - startedMs, ok: true });
+        return;
+      }
       const reason = abort.signal.aborted ? 'таймаут профілю' : shortError(err);
       pushStep({
         kind: 'error',
@@ -273,7 +299,8 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       }
     } finally {
       clearTimeout(timeout);
-      await deps.client.reportRuns(req.run_id, steps);
+      deps.aborts?.delete(req.run_id);
+      await deps.client.reportRuns(req.run_id, steps, escalateOutcome);
     }
   };
 }
