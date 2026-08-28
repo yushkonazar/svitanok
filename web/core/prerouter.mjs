@@ -27,13 +27,24 @@ import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
 import { parsePolicyCallback } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
-import { transcribeVoice, savePendingVoice, takePendingVoice, VOICE_LONG_S } from './voice.mjs';
+import {
+  transcribeVoice,
+  savePendingVoice,
+  claimPendingVoice,
+  finishPendingVoice,
+  VOICE_LONG_S,
+} from './voice.mjs';
 
 export const THREAD_DM = 'dm';
+/** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
+ *  (Telegram ріже на 4096, а клавіатура лишається лише на останній частині).
+ *  У прогін іде ПОВНИЙ текст із voice_pending. */
+const VOICE_PREVIEW_MAX_CHARS = 700;
 // Не експортуються свідомо (ревʼю PR-3): споживачів назовні немає, а export
 // сигналив би «на це хтось спирається».
 const STATUS_DRAFT = '▸ Думаю…';
 const START_MAX_ATTEMPTS = 3;
+const STOP_RE = /^стоп[.!]?$/i;
 
 const MODELS = { chat: 'claude-sonnet-5', quick: 'claude-haiku-4-5' };
 
@@ -109,8 +120,18 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   let text = String(parsed.text ?? '').trim();
   if (!text) return false;
 
+  const threadKeyEarly = target.threadId == null ? THREAD_DM : String(target.threadId);
   if (mode === 'shadow') {
     if (!/^v2:/i.test(text)) {
+      // «стоп» у shadow (ревʼю PR-4): голос запускає прогони БЕЗ префікса
+      // (ADR-040), тож зупиняти їх теж треба без нього - інакше єдиний спосіб
+      // спинити голосовий прогін це написати «v2: стоп», про що ніде не
+      // сказано. Перехоплюємо лише коли є що зупиняти: без активного прогону
+      // «стоп» лишається легасі-агенту, як і раніше.
+      if (STOP_RE.test(text) && (await hasLiveThread(env, threadKeyEarly))) {
+        await stopThread(env, target, threadKeyEarly, nowMs);
+        return true;
+      }
       await shadowClassifyLog(env, target, text, nowMs);
       return false;
     }
@@ -160,7 +181,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
  * @param {number} nowMs
  */
 async function routeThreadText(env, target, threadKey, text, nowMs) {
-  if (/^стоп[.!]?$/i.test(text)) {
+  if (STOP_RE.test(text)) {
     await stopThread(env, target, threadKey, nowMs);
     return;
   }
@@ -200,8 +221,9 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
  */
 async function handleVoiceMessage(env, target, voice, nowMs) {
   if (voice.durationS > VOICE_LONG_S) {
-    const id = await savePendingVoice(
+    const id = await pendingOrFail(
       env,
+      target,
       {
         kind: 'file',
         fileId: voice.fileId,
@@ -210,14 +232,8 @@ async function handleVoiceMessage(env, target, voice, nowMs) {
         threadId: target.threadId,
       },
       nowMs,
-    ).catch((/** @type {any} */ e) => {
-      console.error('prerouter: voice_pending не записано', e?.message);
-      return null;
-    });
-    if (id == null) {
-      await reply(env, target, 'Не вдалося прийняти голосове - спробуй ще раз.', nowMs);
-      return;
-    }
+    );
+    if (id == null) return;
     await reply(
       env,
       target,
@@ -231,26 +247,31 @@ async function handleVoiceMessage(env, target, voice, nowMs) {
 }
 
 /** Розпізнати і показати транскрипт із ✅/✏️ (T0: дія - лише після тапу).
+ *  Повертає false, коли показати не вдалося, - викликач із claim-ом на це
+ *  спирається (ряд лишається в грі для повторного тапу).
  *  @param {Env} env @param {ThreadTarget} target
  *  @param {{ fileId: string, durationS: number, fileSize?: number | null }} voice
- *  @param {number} nowMs */
+ *  @param {number} nowMs @returns {Promise<boolean>} */
 async function transcribeAndPresent(env, target, voice, nowMs) {
   const res = await transcribeVoice(env, voice, nowMs);
   if (!res.ok) {
     const msg = {
-      misconfigured: 'Розпізнавання не налаштоване (ключа Deepgram немає).',
+      misconfigured: 'Розпізнавання не налаштоване - перевір ключ Deepgram.',
       'too-big': 'Голосове завелике - Telegram віддає ботам файли до 20 МБ.',
       failed: 'Не вдалося розпізнати - спробуй ще раз або напиши текстом.',
     }[res.error];
     await reply(env, target, msg, nowMs);
-    return;
+    // Транспортний збій вартий повторного тапу; misconfig і завеликий файл -
+    // ні, повтор дасть те саме.
+    return res.error !== 'failed';
   }
   if (!res.text) {
     await reply(env, target, 'Не розчув - повтори або напиши.', nowMs);
-    return;
+    return true;
   }
-  const id = await savePendingVoice(
+  const id = await pendingOrFail(
     env,
+    target,
     {
       kind: 'transcript',
       text: res.text,
@@ -259,25 +280,44 @@ async function transcribeAndPresent(env, target, voice, nowMs) {
       threadId: target.threadId,
     },
     nowMs,
-  ).catch((/** @type {any} */ e) => {
-    console.error('prerouter: voice_pending не записано', e?.message);
-    return null;
-  });
-  if (id == null) {
-    await reply(env, target, 'Не вдалося прийняти голосове - спробуй ще раз.', nowMs);
-    return;
-  }
+  );
+  if (id == null) return false;
   const mark = res.fallback ? '\n(резервний розпізнавач)' : '';
+  // Стеля ПОКАЗУ окремо від стелі транскрипта (ревʼю PR-4): у прогін піде
+  // повний текст із voice_pending, а «Я почув» лишається одним повідомленням
+  // із кнопками - інакше довге голосове рветься на пʼять частин, і ✅/✏️
+  // опиняються під стіною тексту на останній.
   await reply(
     env,
     target,
-    `Я почув: «${res.text}»${mark}`,
+    `Я почув: «${previewText(res.text)}»${mark}`,
     nowMs,
     voiceKeyboard([
       { text: '✅', callback_data: `v:${id}:ok` },
       { text: '✏️', callback_data: `v:${id}:edit` },
     ]),
   );
+  return true;
+}
+
+/** Записати очікування тапу; збій - чесна відповідь і null (спільний хвіст
+ *  обох гілок голосу).
+ *  @param {Env} env @param {ThreadTarget} target
+ *  @param {Parameters<typeof savePendingVoice>[1]} entry @param {number} nowMs */
+async function pendingOrFail(env, target, entry, nowMs) {
+  try {
+    return await savePendingVoice(env, entry, nowMs);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: voice_pending не записано', e?.message);
+    await reply(env, target, 'Не вдалося прийняти голосове - спробуй ще раз.', nowMs);
+    return null;
+  }
+}
+
+/** @param {string} text */
+function previewText(text) {
+  if (text.length <= VOICE_PREVIEW_MAX_CHARS) return text;
+  return [...text].slice(0, VOICE_PREVIEW_MAX_CHARS).join('') + '…';
 }
 
 /** @param {{ text: string, callback_data: string }[]} row */
@@ -448,13 +488,21 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
 /**
  * Callback-и простору мозку 07 §9 (дротування p:/u: - борг PR-8 етапу 1).
  * Повертає текст тосту або null («не наш» - легасі-ланцюг worker.js).
- * p:/u: - бойові (policy PR-8); c:/r:/a:/m: - чесні заглушки до своїх етапів.
+ * p:/u: - бойові (policy PR-8); v: - голос (ADR-040, кнопки ядра, не мозку);
+ * c:/r:/a:/m: - чесні заглушки до своїх етапів.
+ *
+ * `defer` (ревʼю PR-4): куди скласти РОБОТУ, що триває довше за вікно
+ * answerCallbackQuery (розпізнавання - до 45 с, старт прогону - до 10 с).
+ * Telegram інвалідує callback_query за секунди, тож тост мусить повернутись
+ * одразу, а робота - виконатись після відповіді, у тому ж waitUntil. Без
+ * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
  * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null }} parsed
  * @param {number} [nowMs]
+ * @param {((work: () => Promise<void>) => void) | null} [defer]
  * @returns {Promise<string | null>}
  */
-export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
+export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer = null) {
   if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
   const data = String(parsed.data ?? '');
   const policy = parsePolicyCallback(data);
@@ -463,13 +511,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
       return undoToast(await resolveUndo(env, policy.id, nowMs));
     }
     const res = await resolveProposal(env, { id: policy.id, choice: policy.choice }, nowMs);
-    // Прибрати клавіатуру після рішення - best-effort: тост важливіший.
-    if (res.ok && 'status' in res && parsed.messageId != null && parsed.chatId != null) {
-      await tgCall(env, 'editMessageReplyMarkup', {
-        chat_id: parsed.chatId,
-        message_id: parsed.messageId,
-      }).catch(() => {});
-    }
+    if (res.ok && 'status' in res) await clearKeyboard(env, parsed);
     return proposalToast(res);
   }
   const vm = data.match(/^v:([0-9a-f]{12}):(ok|edit|go)$/);
@@ -480,6 +522,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
       /** @type {string} */ (vm[1]),
       /** @type {'ok' | 'edit' | 'go'} */ (vm[2]),
       nowMs,
+      defer,
     );
   }
   const stub = data.match(/^([cram]):/)?.[1];
@@ -494,48 +537,88 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now()) {
 
 /**
  * Тап кнопки голосу (ADR-040): ✅ - транскрипт іде в тред як текст; ✏️ -
- * скасувати; «Розпізнати» - довге голосове в роботу. takePendingVoice - це
- * claim (DELETE…RETURNING): подвійний тап другому віддає «Застаріло», не
- * другий прогін.
+ * скасувати; «Розпізнати» - довге голосове в роботу.
+ *
+ * claimPendingVoice - CAS (claimed_at): подвійний тап другому віддає
+ * «Застаріло», не другий прогін. Ряд ЛИШАЄТЬСЯ до відомого результату: при
+ * збої «Розпізнати» його повертають у гру разом із живою кнопкою - інакше
+ * file_id зникав би назавжди на першій же мережевій невдачі (ревʼю PR-4).
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null }} parsed
  * @param {string} id
  * @param {'ok' | 'edit' | 'go'} choice
  * @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
  * @returns {Promise<string>}
  */
-async function voiceCallbackToast(env, parsed, id, choice, nowMs) {
-  const row = await takePendingVoice(env, id, nowMs);
+async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
+  const row = await claimPendingVoice(env, id, nowMs);
   if (!row) return 'Застаріло - надішли голосове ще раз.';
-  // Прибрати клавіатуру після рішення - best-effort, як у пропозицій.
-  if (parsed.messageId != null && parsed.chatId != null) {
-    await tgCall(env, 'editMessageReplyMarkup', {
-      chat_id: parsed.chatId,
-      message_id: parsed.messageId,
-    }).catch(() => {});
+  const run = async (/** @type {() => Promise<void>} */ work) => {
+    if (defer) defer(work);
+    else await work();
+  };
+
+  if (choice === 'edit') {
+    await finishPendingVoice(env, id, true);
+    await clearKeyboard(env, parsed);
+    return 'Ок - напиши текстом.';
   }
-  if (choice === 'edit') return 'Ок - напиши текстом.';
+
   /** @type {ThreadTarget} */
   const target = {
     chatId: row.chatId != null ? Number(row.chatId) : (parsed.chatId ?? null),
     threadId: row.threadId,
   };
+
   if (choice === 'ok' && row.kind === 'transcript' && row.text) {
     const threadKey = row.threadId == null ? THREAD_DM : String(row.threadId);
-    await routeThreadText(env, target, threadKey, row.text, nowMs);
+    const text = row.text;
+    // Рішення власника прийнято - кнопки зайві незалежно від долі прогону.
+    await clearKeyboard(env, parsed);
+    await run(async () => {
+      try {
+        await routeThreadText(env, target, threadKey, text, nowMs);
+      } catch (/** @type {any} */ e) {
+        console.error('prerouter: підтверджений транскрипт не поїхав', e?.message);
+        await reply(env, target, 'Не вдалося запустити - напиши ще раз.', nowMs).catch(() => {});
+      }
+      await finishPendingVoice(env, id, true);
+    });
     return 'Прийняв ✅';
   }
+
   if (choice === 'go' && row.kind === 'file' && row.fileId) {
-    await transcribeAndPresent(
-      env,
-      target,
-      { fileId: row.fileId, durationS: row.durationS },
-      nowMs,
-    );
+    const fileId = row.fileId;
+    const durationS = row.durationS;
+    await run(async () => {
+      const ok = await transcribeAndPresent(env, target, { fileId, durationS }, nowMs).catch(
+        (/** @type {any} */ e) => {
+          console.error('prerouter: розпізнавання довгого голосового впало', e?.message);
+          return false;
+        },
+      );
+      await finishPendingVoice(env, id, ok);
+      // Кнопку знімаємо ЛИШЕ при успіху: інакше повторний тап - єдиний спосіб
+      // дістати те саме аудіо, і він має лишитись.
+      if (ok) await clearKeyboard(env, parsed);
+    });
     return 'Розпізнаю…';
   }
+
   // Розсинхрон kind↔choice (не трапляється зі своїх кнопок) - чесна відмова.
+  await finishPendingVoice(env, id, true);
   return 'Застаріло - надішли голосове ще раз.';
+}
+
+/** Зняти інлайн-клавіатуру - best-effort: тост важливіший за косметику.
+ *  @param {Env} env @param {{ chatId?: number | null, messageId?: number | null }} parsed */
+async function clearKeyboard(env, parsed) {
+  if (parsed.messageId == null || parsed.chatId == null) return;
+  await tgCall(env, 'editMessageReplyMarkup', {
+    chat_id: parsed.chatId,
+    message_id: parsed.messageId,
+  }).catch(() => {});
 }
 
 /** @param {Awaited<ReturnType<typeof resolveProposal>>} res */
@@ -576,6 +659,20 @@ async function stopThread(env, parsed, threadKey, nowMs) {
   }
   if (statusMessageId != null) await editStatus(env, parsed, statusMessageId, 'Зупинив.', nowMs);
   else await reply(env, parsed, 'Зупинив.', nowMs);
+}
+
+/** Чи має тред що зупиняти (активний прогін або чергу) - дешевий знімок DO.
+ *  Збій читання не має ковтати «стоп»: невідомо = ні, лишаємо легасі.
+ *  @param {Env} env @param {string} threadKey */
+async function hasLiveThread(env, threadKey) {
+  try {
+    const threads = await registryThreadsSnapshot(env);
+    const t = Object.entries(threads).find(([key]) => key === threadKey)?.[1];
+    return Boolean(t && (t.activeRunId != null || t.queue.length > 0));
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: знімок тредів для «стоп» не прочитано', e?.message);
+    return false;
+  }
 }
 
 /** Shadow-класифікація без відповіді (01 §5): рядок у runs для приймального

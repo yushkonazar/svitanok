@@ -109,10 +109,19 @@ async function processTelegramUpdate(
       const isReminderSnooze =
         typeof parsed.data === 'string' && parsed.data.startsWith(REMINDER_CB_PREFIX);
       const isSleepStart = isSleepStartCallback(parsed.data); // 'sl:' — «🌙 Ліг спати»
-      // Простір мозку 07 §9 (p:/c:/r:/a:/u:/m:, ADR-039): свої префікси, з
-      // легасі не перетинаються (rc:/ru:/… - дволітерні). null = не наш.
+      // Простір мозку 07 §9 (p:/c:/r:/a:/u:/m:, ADR-039) + голос v: (ADR-040):
+      // свої префікси, з легасі не перетинаються (rc:/ru:/… - дволітерні).
+      // null = не наш.
+      //
+      // deferred (ревʼю PR-4): робота, довша за вікно answerCallbackQuery
+      // (розпізнавання - десятки секунд), виконується ПІСЛЯ відповіді на
+      // callback - інакше Telegram устигає інвалідувати запит, і власник не
+      // бачить тосту взагалі. Ми вже всередині ctx.waitUntil, тож проміс
+      // дочекаються.
+      /** @type {(() => Promise<void>)[]} */
+      const deferred = [];
       const brainToast = isPrimaryOwner(env, parsed.fromId)
-        ? await handleBrainCallback(env, parsed)
+        ? await handleBrainCallback(env, parsed, Date.now(), (work) => deferred.push(work))
         : null;
       // S1/B1: кнопки — це ВИКЛЮЧНО мутації стану власника (прийняти пропозицію
       // в його календар, скасувати його нагадування, записати його сон, відмітити
@@ -156,6 +165,10 @@ async function processTelegramUpdate(
           callback_query_id: parsed.callbackId,
           text: toast,
         });
+      }
+      // Тост уже в дорозі - тепер довга частина (розпізнавання, старт прогону).
+      for (const work of deferred) {
+        await work().catch((err) => console.error('deferred callback work failed', err));
       }
     } else if (parsed.kind === 'message' && parsed.chatId != null) {
       // G1: спершу трекнути вхідне (перед handleCommand) — щоб уже цей-таки /clear

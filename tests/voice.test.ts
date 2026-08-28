@@ -6,10 +6,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   transcribeVoice,
   savePendingVoice,
-  takePendingVoice,
+  claimPendingVoice,
+  finishPendingVoice,
   VOICE_MAX_FILE_BYTES,
   VOICE_TRANSCRIPT_MAX_CHARS,
   VOICE_PENDING_TTL_MS,
+  VOICE_FALLBACK_MAX_BYTES,
 } from '../web/core/voice.mjs';
 import { prerouteMessage, handleBrainCallback } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -194,31 +196,103 @@ describe('transcribeVoice: резерв і відмови', () => {
       error: 'too-big',
     });
   });
+
+  it('Deepgram 401 → misconfigured, резерв НЕ ховає битий ключ', async () => {
+    makeFetchStub({ deepgramStatus: 401 });
+    const ai = makeAiStub();
+    const { env } = makeEnv({ AI: ai });
+    expect(await transcribeVoice(env, { fileId: 'F1', durationS: 10 }, NOW)).toEqual({
+      ok: false,
+      error: 'misconfigured',
+    });
+    expect(ai.run).not.toHaveBeenCalled();
+  });
+
+  it('файл понад стелю резерву не йде у Whisper (памʼять ізоляту) → failed', async () => {
+    makeFetchStub({
+      deepgramStatus: 503,
+      fileBytes: new Uint8Array(VOICE_FALLBACK_MAX_BYTES + 1).buffer,
+    });
+    const ai = makeAiStub();
+    const { env } = makeEnv({ AI: ai });
+    expect(await transcribeVoice(env, { fileId: 'F1', durationS: 400 }, NOW)).toEqual({
+      ok: false,
+      error: 'failed',
+    });
+    expect(ai.run).not.toHaveBeenCalled();
+  });
+
+  it('getFile «file is too big» → too-big, а не невиразне failed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ok: false, description: 'Bad Request: file is too big' }), {
+            status: 400,
+          }),
+      ),
+    );
+    const { env } = makeEnv();
+    expect(await transcribeVoice(env, { fileId: 'F1', durationS: 600 }, NOW)).toEqual({
+      ok: false,
+      error: 'too-big',
+    });
+  });
 });
 
 // ── voice_pending: claim і TTL ───────────────────────────────────────────────
 
-describe('savePendingVoice / takePendingVoice', () => {
-  it('take - це claim: перший тап забирає ряд, другий отримує null', async () => {
-    const { env } = makeEnv();
+describe('savePendingVoice / claimPendingVoice / finishPendingVoice', () => {
+  it('claim - це CAS: другий одночасний тап отримує null, ряд лишається до finish', async () => {
+    const { env, db } = makeEnv();
     const id = await savePendingVoice(
       env,
       { kind: 'transcript', text: 'привіт', durationS: 5, chatId: 555, threadId: null },
       NOW,
     );
-    const first = await takePendingVoice(env, id, NOW);
+    const first = await claimPendingVoice(env, id, NOW);
     expect(first).toMatchObject({ kind: 'transcript', text: 'привіт', chatId: '555' });
-    expect(await takePendingVoice(env, id, NOW)).toBeNull();
+    expect(await claimPendingVoice(env, id, NOW)).toBeNull();
+    // Ряд НЕ видалено: робота ще не завершилась.
+    expect(db.prepare(`SELECT count(*) AS n FROM voice_pending`).get()).toEqual({ n: 1 });
+
+    await finishPendingVoice(env, id, true);
+    expect(db.prepare(`SELECT count(*) AS n FROM voice_pending`).get()).toEqual({ n: 0 });
   });
 
-  it('протухле (> 30 хв) → null; вставка принагідно чистить старі ряди', async () => {
+  it('finish(false) повертає ряд у гру - повторний тап працює', async () => {
+    const { env } = makeEnv();
+    const id = await savePendingVoice(
+      env,
+      { kind: 'file', fileId: 'F9', durationS: 400, chatId: 555, threadId: '99' },
+      NOW,
+    );
+    await claimPendingVoice(env, id, NOW);
+    await finishPendingVoice(env, id, false);
+    expect(await claimPendingVoice(env, id, NOW)).toMatchObject({ kind: 'file', fileId: 'F9' });
+  });
+
+  it('мертвий claim відпускається за VOICE_CLAIM_STALE_MS', async () => {
+    const { env } = makeEnv();
+    const id = await savePendingVoice(
+      env,
+      { kind: 'file', fileId: 'F9', durationS: 400, chatId: 555, threadId: null },
+      NOW,
+    );
+    await claimPendingVoice(env, id, NOW);
+    // Через 2 хв ізолят із claim-ом уже мертвий - ряд знову беруть.
+    expect(await claimPendingVoice(env, id, NOW + 120_000)).toMatchObject({ fileId: 'F9' });
+  });
+
+  it('протухле (> TTL) → null і ряд прибрано; вставка чистить старі ряди', async () => {
     const { env, db } = makeEnv();
     const id = await savePendingVoice(
       env,
       { kind: 'file', fileId: 'F9', durationS: 400, chatId: 555, threadId: '99' },
       NOW,
     );
-    expect(await takePendingVoice(env, id, NOW + VOICE_PENDING_TTL_MS + 1)).toBeNull();
+    expect(await claimPendingVoice(env, id, NOW + VOICE_PENDING_TTL_MS + 1)).toBeNull();
+    expect(db.prepare(`SELECT count(*) AS n FROM voice_pending`).get()).toEqual({ n: 0 });
 
     db.prepare(
       `INSERT INTO voice_pending (id, kind, text, duration_s, created_at)
@@ -266,7 +340,17 @@ function makeRegistryStub() {
       t.statusMessageId = statusMessageId;
       return { claimed: true };
     },
-    threadClear: async () => ({ activeRunId: null, statusMessageId: null, cleared: 0 }),
+    threadClear: async (threadId: string) => {
+      const t = threads.get(threadId);
+      threads.delete(threadId);
+      if (!t) return { activeRunId: null, statusMessageId: null, cleared: 0 };
+      return {
+        activeRunId: t.activeRunId === 'pending' ? null : t.activeRunId,
+        statusMessageId: t.statusMessageId,
+        cleared: t.queue.length,
+      };
+    },
+    threadsSnapshot: async () => Object.fromEntries(threads),
   };
   return { begins, threads, ns: { getByName: () => stub } };
 }
@@ -382,6 +466,26 @@ describe('prerouteMessage: голосове', () => {
     expect(tg.find((c) => c.method === 'sendMessage')!.body.text).toContain('Я почув');
   });
 
+  it('shadow: «стоп» без префікса зупиняє голосовий прогін (ревʼю PR-4)', async () => {
+    const { tg } = makeFlowFetchStub();
+    const { env, reg } = makeFlowEnv('shadow');
+    // Тред узятий голосовим прогоном (як після ✅ у shadow).
+    reg.threads.set('dm', { activeRunId: 'run-1', statusMessageId: 42, queue: [] });
+
+    expect(await prerouteMessage(env, { ...voiceMsg(), voice: null, text: 'стоп' }, NOW)).toBe(
+      true,
+    );
+    expect(tg.some((c) => c.method === 'editMessageText' || c.method === 'sendMessage')).toBe(true);
+  });
+
+  it('shadow: «стоп» без активного треду лишається легасі', async () => {
+    makeFlowFetchStub();
+    const { env } = makeFlowEnv('shadow');
+    expect(await prerouteMessage(env, { ...voiceMsg(), voice: null, text: 'стоп' }, NOW)).toBe(
+      false,
+    );
+  });
+
   it('off: false і жодного мережевого виклику', async () => {
     const { tg } = makeFlowFetchStub();
     const { env } = makeFlowEnv('off');
@@ -474,6 +578,64 @@ describe('handleBrainCallback: v:-тапи', () => {
     expect(await handleBrainCallback(env, { data: `v:${id}:ok`, chatId: 555 }, NOW)).toBe(
       'Застаріло - надішли голосове ще раз.',
     );
+  });
+
+  it('defer: тост повертається ДО довгої роботи, робота чекає виклику', async () => {
+    const { brain } = makeFlowFetchStub();
+    const { env, db } = makeFlowEnv();
+    const id = await present(env, db);
+
+    const deferred: (() => Promise<void>)[] = [];
+    const toast = await handleBrainCallback(
+      env,
+      { data: `v:${id}:ok`, chatId: 555, messageId: 101 },
+      NOW,
+      (work: () => Promise<void>) => deferred.push(work),
+    );
+    // Тост готовий, а мозок ще не чіпали - саме це рятує від «query is too old».
+    expect(toast).toBe('Прийняв ✅');
+    expect(deferred).toHaveLength(1);
+    expect(brain).toHaveLength(0);
+
+    await deferred[0]!();
+    expect(brain).toHaveLength(1);
+  });
+
+  it('збій «Розпізнати» повертає ряд у гру і лишає кнопку живою', async () => {
+    const { tg } = makeFlowFetchStub({ deepgramStatus: 500 });
+    const { env, db } = makeFlowEnv();
+    await prerouteMessage(env, voiceMsg({ voice: { fileId: 'F9', durationS: 400 } }), NOW);
+    const id = (db.prepare(`SELECT id FROM voice_pending`).get() as { id: string }).id;
+
+    expect(
+      await handleBrainCallback(env, { data: `v:${id}:go`, chatId: 555, messageId: 7 }, NOW),
+    ).toBe('Розпізнаю…');
+    // Транскрипція впала: ряд лишився вільним для повторного тапу…
+    const row = db.prepare(`SELECT kind, file_id, claimed_at FROM voice_pending`).get() as {
+      kind: string;
+      file_id: string;
+      claimed_at: string | null;
+    };
+    expect(row).toEqual({ kind: 'file', file_id: 'F9', claimed_at: null });
+    // …а клавіатуру не знято - інакше повторити було б нічим.
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(false);
+  });
+
+  it('довгий транскрипт: «Я почув» - одне повідомлення, у pending повний текст', async () => {
+    const long = 'слово '.repeat(400).trim(); // ~2400 символів
+    const { tg } = makeFlowFetchStub({ deepgramTranscript: long });
+    const { env, db } = makeFlowEnv();
+    await prerouteMessage(env, voiceMsg(), NOW);
+
+    const sent = tg.find((c) => c.method === 'sendMessage')!;
+    // Одне повідомлення з кнопками (виразно менше за 4096 - splitMessage не
+    // втручається, і ✅/✏️ лишаються під самим транскриптом).
+    expect(String(sent.body.text).length).toBeLessThan(1000);
+    expect(String(sent.body.text).endsWith('…»')).toBe(true);
+    expect(sent.body.reply_markup).toBeDefined();
+    // У прогін піде ПОВНИЙ текст.
+    const row = db.prepare(`SELECT text FROM voice_pending`).get() as { text: string };
+    expect(row.text).toBe(long);
   });
 
   it('✏️ → «напиши текстом», прогін не стартує, pending знищено', async () => {

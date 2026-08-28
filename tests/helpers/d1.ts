@@ -8,18 +8,21 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+interface D1Bound {
+  run: () => Promise<{ meta: { changes: number } }>;
+  all: () => Promise<{ results: unknown[] }>;
+  first: () => Promise<unknown>;
+}
+
 export interface D1Stub {
   /** Сира база - для сідів і прямих SELECT-звірок у тестах. */
   db: DatabaseSync;
   /** Обʼєкт, який підставляється в env.DB. */
   stub: {
-    prepare: (sql: string) => {
-      bind: (...args: unknown[]) => {
-        run: () => Promise<{ meta: { changes: number } }>;
-        all: () => Promise<{ results: unknown[] }>;
-        first: () => Promise<unknown>;
-      };
-    };
+    prepare: (sql: string) => { bind: (...args: unknown[]) => D1Bound };
+    /** D1 виконує batch однією транзакцією; тут послідовно - для тестів
+     *  важливо, що ВСІ твердження відпрацювали, а не як саме згруповані. */
+    batch: (statements: D1Bound[]) => Promise<{ results: unknown[] }[]>;
   };
 }
 
@@ -50,6 +53,11 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
           },
         }),
       }),
+      batch: async (statements: D1Bound[]) => {
+        const out = [];
+        for (const st of statements) out.push(await st.all());
+        return out;
+      },
     },
   };
 }

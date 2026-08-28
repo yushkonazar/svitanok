@@ -36,6 +36,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'chat_id',
     'thread_id',
     'created_at',
+    'claimed_at',
   ],
   reminders: ['id', 'due_at', 'text', 'chain_id', 'status', 'snooze_count', 'source_msg_id'],
   proposals: [
