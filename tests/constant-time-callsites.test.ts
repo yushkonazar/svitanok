@@ -95,9 +95,21 @@ const ctx = () => ({ waitUntil: () => {} });
 beforeEach(() => {
   spies.constantTimeEqual.mockReset().mockImplementation(realEqual as never);
   spies.verifyWebhookSecret.mockReset().mockImplementation(realVerify as never);
+  // ⚠️ Мережа тут не потрібна, але без стабу вона ВИКОРИСТОВУЄТЬСЯ: пройдений
+  // гейт /api/telegram/setup веде далі в runTelegramSetup, а той шле справжній
+  // setWebhook на api.telegram.org. Роками це виглядало зеленим (Telegram
+  // відповідав 401 на тестовий токен), доки раннер CI не отримав ETIMEDOUT -
+  // і тест про КОНСТАНТНОЧАСНЕ ПОРІВНЯННЯ впав через мережу.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200 })),
+  );
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe('H7a — initData (validateInitData)', () => {
   it('порівняння підпису йде через constantTimeEqual, а не через ===', async () => {
