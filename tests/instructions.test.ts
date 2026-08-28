@@ -3,8 +3,9 @@
 // цей тест робить «правка інструкції» безпечною операцією: помилку видно до
 // того, як синк покладе текст у D1 і модель почне ним користуватись.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { walkFiles } from './helpers/repo-files.js';
 import { describe, it, expect } from 'vitest';
 import {
   parseInstruction,
@@ -19,16 +20,11 @@ import { d1FromSqlite } from './helpers/d1.js';
 
 const DOCS = join(__dirname, '..', 'docs', 'assistant');
 
-/** Усі .md рекурсивно, окрім README (опис механізму, не інструкція). */
-function instructionFiles(dir: string = DOCS): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) out.push(...instructionFiles(full));
-    else if (entry.endsWith('.md') && entry !== 'README.md') out.push(full);
-  }
-  return out;
-}
+/** Усі .md рекурсивно, окрім README (опис механізму, не інструкція). Обхід -
+ *  спільний walkFiles: третій свій обхід дерева в тестах саме те, від чого
+ *  той хелпер і з'явився. */
+const instructionFiles = (): string[] =>
+  walkFiles(DOCS, { exts: ['.md'] }).filter((f) => !f.endsWith('README.md'));
 
 const files = instructionFiles().map((full) => ({
   path: relative(DOCS, full).replaceAll('\\', '/'),
@@ -196,15 +192,44 @@ describe('парність хешів між ядром, мозком і сід�
     }
   });
 
-  it('мозок відмовляє на розбіжності хешу і на відсутній інструкції', async () => {
+  it('мозок відмовляє на розбіжності хешу, відсутній і ЧУЖІЙ інструкції', async () => {
     const { verifyInstruction } = await import('../brain/src/instructions.js');
     const body = 'Ти - Світанок.';
     const good = { name: 'persona', version_hash: await instructionHash(body), body_md: body };
-    expect(verifyInstruction(good, 'chat')).toBe(body);
+    expect(verifyInstruction(good, 'chat', 'persona')).toBe(body);
     expect(() => verifyInstruction({ ...good, body_md: 'підмінене тіло' }, 'chat')).toThrow(
       'розійшовся з тілом',
     );
     expect(() => verifyInstruction(undefined, 'chat')).toThrow('без інструкції');
+    // Ядро надіслало quick для профілю chat: цілий хеш, чужа персона.
+    const quickBody = 'Ти - швидка смуга.';
+    const quick = {
+      name: 'quick',
+      version_hash: await instructionHash(quickBody),
+      body_md: quickBody,
+    };
+    expect(() => verifyInstruction(quick, 'chat', 'persona')).toThrow('чекав «persona»');
+  });
+
+  it('buildSystemPrompt: chat дістає час і згортку, quick - лише інструкцію', async () => {
+    const { buildSystemPrompt, PROFILES } = await import('../brain/src/profiles.js');
+    const at = Date.parse('2026-08-28T09:00:00Z');
+
+    const chat = buildSystemPrompt(PROFILES.chat, at, {
+      instruction: 'ПЕРСОНА',
+      summary: 'ЗГОРТКА',
+    });
+    expect(chat).toContain('ПЕРСОНА');
+    expect(chat).toContain('Зараз у Києві');
+    expect(chat).toContain('ЗГОРТКА');
+
+    // quick БЕЗ дати: agents/quick.md будує ескалацію саме на «дати немає».
+    const quick = buildSystemPrompt(PROFILES.quick, at, { instruction: 'ШВИДКА' });
+    expect(quick).toBe('ШВИДКА');
+
+    // summarize - службовий, працює без інструкції; chat/quick без неї - кидає.
+    expect(buildSystemPrompt(PROFILES.summarize, at)).toContain('згортаєш розмову');
+    expect(() => buildSystemPrompt(PROFILES.chat, at)).toThrow('без інструкції');
   });
 });
 

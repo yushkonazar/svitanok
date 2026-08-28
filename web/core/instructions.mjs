@@ -78,7 +78,16 @@ const REQUIRED_SECTIONS = {
     'Формат відповіді',
     'Приклад',
   ],
-  checklist: ['Коли застосовується', 'T-30', 'T-7', 'T-1', 'У дорозі', 'Чого не робити'],
+  checklist: [
+    'Коли застосовується',
+    'T-30',
+    'T-7',
+    'T-1',
+    'У дорозі',
+    'питає при створенні поїздки',
+    'рахує автоматично',
+    'Чого не робити',
+  ],
   profile: ['0.', '1.', '2.', '3.', '4.', '5.', '6.'],
 };
 
@@ -111,7 +120,11 @@ export function parseInstruction(raw) {
     const kv = /^([a-z_]+):\s*(.*)$/.exec(line);
     if (!kv) return { ok: false, error: `не розібрав рядок front-matter: «${line.trim()}»` };
     const key = /** @type {string} */ (kv[1]);
-    const rawValue = /** @type {string} */ (kv[2]).replace(/\s+#.*$/, '').trim();
+    const value = /** @type {string} */ (kv[2]).trim();
+    // Коментар зрізається лише в НЕлапкованому значенні (ревʼю PR-5): інакше
+    // `title: "щось # тут"` мовчки ставало б «щось», і автор дізнався б про це
+    // з поведінки моделі, а не з помилки.
+    const rawValue = /^['"]/.test(value) ? value : value.replace(/\s+#.*$/, '').trim();
     front[key] = parseScalar(rawValue);
   }
   return { ok: true, front, body: /** @type {string} */ (m[2]).trim() };
@@ -171,6 +184,17 @@ export function validateInstruction(file) {
   }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(front.updated ?? ''))) fail('updated має бути YYYY-MM-DD');
+
+  // model і tainted_output теж контракт, а не прикраса: перше обирає модель
+  // прогону, друге вирішує, чи стає сесія tainted (ревʼю PR-5 - без перевірки
+  // «model: sonet» проходило зеленим).
+  const model = String(front.model ?? '');
+  if (!['haiku', 'sonnet', '-'].includes(model)) fail(`model «${model}» поза переліком`);
+  if (kind === 'checklist' && model !== '-') fail('checklist не має моделі - має бути «-»');
+  if (typeof front.tainted_output !== 'boolean') fail('tainted_output має бути true або false');
+  if ('max_steps' in front && !Number.isInteger(Number(front.max_steps))) {
+    fail('max_steps має бути цілим');
+  }
 
   for (const section of REQUIRED_SECTIONS[/** @type {keyof typeof REQUIRED_SECTIONS} */ (kind)] ??
     []) {

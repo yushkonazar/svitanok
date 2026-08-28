@@ -175,7 +175,11 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       let instructionBody: string | null = null;
       if (profile.name !== 'summarize') {
         try {
-          instructionBody = verifyInstruction(req.instruction, profile.name);
+          instructionBody = verifyInstruction(
+            req.instruction,
+            profile.name,
+            profile.name === 'chat' ? 'persona' : 'quick',
+          );
         } catch (e) {
           const note = e instanceof Error ? e.message : String(e);
           pushStep({ kind: 'error', name: 'instruction', ms: now() - startedMs, ok: false, note });
@@ -267,7 +271,12 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         return;
       }
 
-      if (profile.name === 'quick' && finalText.startsWith(ESCALATE_PREFIX)) {
+      // Огорожа ```/лапки навколо службового рядка (ревʼю PR-5): quick.md
+      // показує формат у код-блоці, і модель іноді відтворює саме його -
+      // строгий startsWith тоді пропускав би «ESCALATE: …» власнику як
+      // відповідь замість перезапуску chat.
+      const escalateProbe = finalText.replace(/^[`'"\s]+/, '');
+      if (profile.name === 'quick' && escalateProbe.startsWith(ESCALATE_PREFIX)) {
         // Канал ескалації (ADR-039, уточнено ревʼю PR-3): рішення їде
         // КОНТРАКТНИМ outcome у /internal/runs (ядро перезапустить chat тим
         // самим текстом у той самий статусник), а крок - лише журнальний слід

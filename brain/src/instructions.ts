@@ -23,9 +23,18 @@ export function instructionHash(body: string): string {
 export function verifyInstruction(
   instruction: { name: string; version_hash: string; body_md: string } | undefined,
   profileName: string,
+  expectedName?: string,
 ): string {
   if (!instruction) {
     throw new Error(`instructions: профіль ${profileName} прийшов без інструкції`);
+  }
+  // Ім'я звіряється з очікуваним для профілю (ревʼю PR-5): помилка ядра, що
+  // надішле quick для chat, інакше дала б відповідь чужою персоною - і жодного
+  // сліду, бо хеш при цьому цілий.
+  if (expectedName && instruction.name !== expectedName) {
+    throw new Error(
+      `instructions: профіль ${profileName} чекав «${expectedName}», прийшла «${instruction.name}»`,
+    );
   }
   const actual = instructionHash(instruction.body_md);
   if (actual !== instruction.version_hash) {

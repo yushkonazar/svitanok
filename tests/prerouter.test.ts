@@ -215,7 +215,7 @@ describe('інструкція профілю в /run (PR-5)', () => {
     expect(quick.name).toBe('quick');
   });
 
-  it('немає рядка в D1 - прогін НЕ стартує, статус чесний, тред звільнено', async () => {
+  it('немає рядка в D1 - прогін НЕ стартує, запис у черзі, прогону не заведено', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     // База БЕЗ сіду інструкцій - як у вікні між деплоєм і синком.
@@ -224,11 +224,39 @@ describe('інструкція профілю в /run (PR-5)', () => {
 
     expect(await prerouteMessage(env, parsedMsg('привіт'), NOW)).toBe(true);
     expect(brain).toHaveLength(0);
+    // Вікно між деплоєм і синком самозагоюється, тож запис чекає, а не гине.
+    expect(
+      tg.some((c) => String(c.body.text ?? '').includes('Інструкції ще синхронізуються')),
+    ).toBe(true);
+    expect(reg.retries).toHaveLength(1);
+    expect(reg.retries[0]!.entry).toMatchObject({ attempts: 1, text: 'привіт' });
+    // Прогін не заводився взагалі: перевірка стоїть ДО begin (ревʼю PR-5).
+    expect(reg.begins).toHaveLength(0);
+    expect(reg.finishes).toHaveLength(0);
+  });
+
+  it('вичерпані спроби - тред очищено, без рекурсивного підйому черги', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql', '0007_instructions_plans.sql']);
+    const env = makeEnv(reg, d1.stub);
+    reg.threads.set('dm', { activeRunId: 'pending', statusMessageId: 42, queue: [] });
+
+    await startClaimedRun(
+      env,
+      { chatId: 555, threadId: null },
+      'dm',
+      { text: 'привіт', route: 'chat', attempts: 2, atMs: NOW },
+      NOW,
+      42,
+    );
+
+    expect(brain).toHaveLength(0);
+    expect(reg.retries).toHaveLength(0); // стеля вичерпана - без нового ретраю
+    expect(reg.threads.get('dm')).toBeUndefined(); // тред віддано
     expect(
       tg.some((c) => String(c.body.text ?? '').includes('Інструкції асистента не синхронізовані')),
     ).toBe(true);
-    expect(reg.finishes.at(-1)?.patch).toMatchObject({ error: 'no-instruction' });
-    expect(reg.threads.get('dm')).toBeUndefined();
   });
 });
 

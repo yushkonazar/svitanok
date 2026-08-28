@@ -339,6 +339,28 @@ function voiceKeyboard(row) {
  *   самий статусник, нового не шле
  */
 export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reuseStatusId = null) {
+  // Інструкція профілю з D1 (PR-5) - ПЕРШОЮ дією: мозок не має доступу до
+  // бази, тож текст їде в тілі /run разом із хешем, і без нього прогону не
+  // буде. Перевірка до begin/claim свідома (ревʼю PR-5): інакше кожна відмова
+  // відкочувала б три записи, а гілка відкоту через finishAndKick піднімала б
+  // наступний запис черги - той падав би так само, і один вебхук давав би до
+  // шести однакових відмов поспіль.
+  const instructionName = entry.route === 'chat' ? 'persona' : 'quick';
+  let instruction;
+  try {
+    const loaded = await loadInstruction(env, instructionName);
+    instruction = { name: loaded.name, version_hash: loaded.hash, body_md: loaded.body };
+  } catch (/** @type {any} */ e) {
+    console.error(`prerouter: інструкція «${instructionName}» недоступна`, e?.message);
+    // Найімовірніша причина - вікно між деплоєм воркера і синком, тобто стан
+    // самозагойний: той самий шлях, що для недоступного мозку (S-0-7).
+    await retryOrGiveUp(env, parsed, threadKey, entry, nowMs, reuseStatusId, {
+      retry: 'Інструкції ще синхронізуються - спробую за ~5 хв.',
+      giveUp: 'Інструкції асистента не синхронізовані - скажи, коли полагодимо.',
+    });
+    return;
+  }
+
   const statusMessageId = reuseStatusId ?? (await sendStatusDraft(env, parsed));
   const runId = crypto.randomUUID();
   await registryBegin(env, {
@@ -361,28 +383,6 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
         message_id: statusMessageId,
       }).catch(() => {});
     }
-    return;
-  }
-
-  // Інструкція профілю з D1 (PR-5): мозок не має доступу до бази, тож текст
-  // їде в тілі /run разом із хешем. Немає рядка - прогін НЕ стартує: вшитих
-  // запасних персон більше немає, і мовчазна підміна тону гірша за відмову.
-  const instructionName = entry.route === 'chat' ? 'persona' : 'quick';
-  let instruction;
-  try {
-    const loaded = await loadInstruction(env, instructionName);
-    instruction = { name: loaded.name, version_hash: loaded.hash, body_md: loaded.body };
-  } catch (/** @type {any} */ e) {
-    console.error(`prerouter: інструкція «${instructionName}» недоступна`, e?.message);
-    await registryFinish(env, runId, { finishedMs: nowMs, error: 'no-instruction' });
-    await registryThreadFinishAndKick(env, parsed, threadKey, runId, nowMs);
-    await editStatus(
-      env,
-      parsed,
-      statusMessageId,
-      'Інструкції асистента не синхронізовані - спробуй пізніше.',
-      nowMs,
-    );
     return;
   }
 
@@ -441,6 +441,31 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     'Мозок недоступний - спробую ще раз за ~5 хв.',
     nowMs,
   );
+}
+
+/**
+ * Старт не вдався з ПЕРЕХІДНОЇ причини (мозок лежить, інструкції ще не
+ * синхронізовані): повернути запис у чергу зі спробою+1 і чесно сказати, або,
+ * вичерпавши стелю, здатися й звільнити тред. Прогону тут ще немає - claim
+ * знімає сам threadRetry, тож рекурсивного підйому черги (а з ним і серії
+ * однакових відмов на один вебхук) не буває.
+ * @param {Env} env
+ * @param {ThreadTarget} parsed
+ * @param {string} threadKey
+ * @param {{ text: string, route: string, attempts: number, atMs: number, chatId?: number | null, statusMessageId?: number | null }} entry
+ * @param {number} nowMs
+ * @param {number | null} statusMessageId
+ * @param {{ retry: string, giveUp: string }} texts
+ */
+async function retryOrGiveUp(env, parsed, threadKey, entry, nowMs, statusMessageId, texts) {
+  const attempts = entry.attempts + 1;
+  if (attempts >= START_MAX_ATTEMPTS) {
+    await registryThreadClear(env, threadKey);
+    await editStatus(env, parsed, statusMessageId, texts.giveUp, nowMs);
+    return;
+  }
+  await registryThreadRetry(env, threadKey, { ...entry, attempts, statusMessageId });
+  await editStatus(env, parsed, statusMessageId, texts.retry, nowMs);
 }
 
 /**
@@ -748,8 +773,29 @@ async function systemStatusLine(env) {
   const active = Object.values(threads).filter((t) => t.activeRunId != null).length;
   const queued = Object.values(threads).reduce((n, t) => n + t.queue.length, 0);
   parts.push(`Прогони: ${active} активних, ${queued} у черзі`);
+  // Інструкції (ревʼю PR-5): після переходу на D1 «не синхронізовані» - чи не
+  // найімовірніша причина мертвого чату, а /status був першим, куди власник
+  // дивиться, і мовчав про них.
+  parts.push(await instructionsStatusLine(env));
   parts.push(`Режим: ${env.ASSISTANT_V2}`);
   return parts.join(' · ');
+}
+
+/** @param {Env} env */
+async function instructionsStatusLine(env) {
+  if (!env.DB) return 'Інструкції: немає DB';
+  try {
+    const { results } = await env.DB.prepare(
+      'SELECT count(*) AS n, max(deployed_at) AS last FROM instructions',
+    ).all();
+    const row = /** @type {any} */ (results?.[0]);
+    const n = Number(row?.n ?? 0);
+    if (n === 0) return 'Інструкції: НЕМАЄ (синк не відпрацював)';
+    return `Інструкції: ${n}, оновлені ${String(row?.last ?? '?').slice(0, 10)}`;
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: читання instructions для /status', e?.message);
+    return 'Інструкції: невідомо';
+  }
 }
 
 // ── Транспортні дрібниці ─────────────────────────────────────────────────────

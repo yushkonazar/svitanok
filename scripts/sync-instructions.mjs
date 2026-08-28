@@ -132,7 +132,9 @@ async function main() {
                 kind = excluded.kind, version_hash = excluded.version_hash,
                 body_md = excluded.body_md, max_chars = excluded.max_chars,
                 deployed_at = excluded.deployed_at`,
-        params: [i.name, i.kind, i.hash, i.body, i.maxChars, at],
+        // ⚠️ params D1 REST - масив РЯДКІВ (VERIFIED у схемі API): число тут
+        // валить запит валідацією тіла, і в D1 не потрапляє жодна інструкція.
+        params: [i.name, i.kind, i.hash, i.body, String(i.maxChars), at],
       },
       {
         sql: `INSERT INTO instruction_history (name, version_hash, body_md, deployed_at)
@@ -144,13 +146,14 @@ async function main() {
     console.log(`оновлено: ${i.name} (${i.hash.slice(0, 12)})`);
   }
 
-  // Парність ПІСЛЯ запису - те, що 01 §3.10 називає тестом парності: читаємо
-  // назад і звіряємо з репо. Без цього «синк пройшов» означало б лише «запит
-  // не впав», а не «у D1 лежить те саме, що в main».
+  // Парність ПІСЛЯ запису - те, що 01 §3.10 називає тестом парності. Читаємо
+  // ТІЛА, а не хеші: звірка хеша з хешем не помітила б пошкодженого тіла при
+  // цілому version_hash, а саме таке пошкодження ламає кожен прогін chat -
+  // рантайм ядра рахує sha256(body_md) і не визнає рядок (ревʼю PR-5).
   const after = new Map();
-  for (const row of (await d1Query(cf, [{ sql: 'SELECT name, version_hash FROM instructions' }]))[0]
+  for (const row of (await d1Query(cf, [{ sql: 'SELECT name, body_md FROM instructions' }]))[0]
     ?.results ?? []) {
-    after.set(row.name, row.version_hash);
+    after.set(row.name, await instructionHash(String(row.body_md ?? '')));
   }
   const mismatched = parsed.filter((i) => after.get(i.name) !== i.hash);
   if (mismatched.length > 0) {

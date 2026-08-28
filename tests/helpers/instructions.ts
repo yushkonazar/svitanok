@@ -2,22 +2,20 @@
 // startClaimedRun чесно відмовляється (PR-5), тож кожен такий тест мусить
 // покласти persona і quick - рівно те, що в проді робить sync-instructions.
 //
-// Хеш тут рахує node:crypto СИНХРОННО (ядро - через crypto.subtle, async):
-// інакше сід тягнув би await у два десятки місць. Те, що обидві реалізації
-// дають той самий hex, перевіряє tests/instructions.test.ts - без цієї проби
-// сід міг би тихо класти хеш, який ядро не визнає.
+// Хеш синхронний (ядро рахує через crypto.subtle, тобто async): інакше сід
+// тягнув би await у два десятки місць. Парність із ядром перевіряє
+// tests/instructions.test.ts.
 
-import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { instructionHash as syncInstructionHash } from '../../brain/src/instructions.js';
 import { d1FromSqlite, type D1Stub } from './d1.js';
 
 export const TEST_PERSONA = 'Ти - Світанок, секретар власника. Коротко, українською.';
 export const TEST_QUICK = 'Ти - швидка смуга. Тривіальне - одним рядком.';
 
-/** Дзеркало web/core/instructions.mjs instructionHash (sha256 тіла з LF). */
-export function syncInstructionHash(body: string): string {
-  return createHash('sha256').update(body.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
-}
+// Синхронний хеш беремо з МОЗКУ (node:crypto), а не пишемо третій: він уже
+// синхронний, уже в парності з ядром і вже імпортується тестами (ревʼю PR-5).
+export { syncInstructionHash };
 
 /** Покласти persona і quick із коректними хешами (потрібна міграція 0007). */
 export function seedInstructions(db: DatabaseSync): void {

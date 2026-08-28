@@ -45,6 +45,13 @@ describe('workflow sync-instructions.yml', () => {
     expect(wf).toContain('web/core/instructions.mjs');
   });
 
+  it('ручний запуск дозволений ЛИШЕ з main (security-ревʼю PR-5)', () => {
+    // Без цього гейта dispatch на будь-якій гілці заливав би довільну персону
+    // в прод-D1 повз ревʼю PR і захист main.
+    expect(wf).toContain('workflow_dispatch:');
+    expect(wf).toContain("if: github.ref == 'refs/heads/main'");
+  });
+
   it('кличе скрипт із секретами акаунта і без cancel-in-progress', () => {
     expect(wf).toContain('node scripts/sync-instructions.mjs');
     expect(wf).toContain('secrets.CF_API_TOKEN');

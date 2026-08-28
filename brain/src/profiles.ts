@@ -90,7 +90,11 @@ export function buildSystemPrompt(
   if (!opts.instruction) {
     throw new Error(`profiles: профіль ${profile.name} без інструкції - прогін неможливий`);
   }
-  if (profile.name === 'quick') return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;
+  // quick БЕЗ дати й часу (ревʼю PR-5): agents/quick.md прямо каже «дати в тебе
+  // немає - ескалюй», а дописаний рядок «Зараз у Києві…» суперечив би цьому в
+  // одному й тому ж промпті, і поведінка на «скільки днів до 1 вересня»
+  // стрибала б між відповіддю і ескалацією.
+  if (profile.name === 'quick') return opts.instruction;
   // Згортка треду - в системний промпт chat (01 §2.2): модель памʼятає
   // попередні дні навіть у свіжій sdk-сесії.
   const summaryBlock = opts.summary
