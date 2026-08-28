@@ -13,7 +13,8 @@ export const CB_VERSION = 'v1';
  *             threadId: number|null, data: string, replyMarkup: KvBlob|null }} ParsedCallback
  * @typedef {{ kind: 'message', updateId: number|null, fromId: number|null,
  *             chatId: number|null, messageId: number|null, threadId: number|null,
- *             text: string, location: { latitude: number, longitude: number }|null }} ParsedMessage
+ *             text: string, location: { latitude: number, longitude: number }|null,
+ *             voice: { fileId: string, durationS: number, fileSize: number|null }|null }} ParsedMessage
  * @typedef {{ kind: 'other', updateId: number|null }} ParsedOther
  * @typedef {ParsedCallback|ParsedMessage|ParsedOther} ParsedUpdate
  */
@@ -158,6 +159,18 @@ export function parseUpdate(update) {
       loc && Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude)
         ? { latitude: loc.latitude, longitude: loc.longitude }
         : null;
+    // voice (кейс 6, 01 §3.3) — лише посилання: file_id для getFile, тривалість
+    // для гейта «довге голосове» і квоти deepgram_min. Саме аудіо сюди не
+    // приходить і ніде не зберігається (ADR-010).
+    const v = m.voice;
+    const voice =
+      v && typeof v.file_id === 'string' && v.file_id
+        ? {
+            fileId: v.file_id,
+            durationS: Number.isFinite(v.duration) ? Number(v.duration) : 0,
+            fileSize: Number.isFinite(v.file_size) ? Number(v.file_size) : null,
+          }
+        : null;
     return {
       kind: 'message',
       updateId,
@@ -167,6 +180,7 @@ export function parseUpdate(update) {
       threadId: m.message_thread_id ?? null,
       text: typeof m.text === 'string' ? m.text : '',
       location,
+      voice,
     };
   }
   return { kind: 'other', updateId };
