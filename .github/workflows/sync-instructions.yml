@@ -1,0 +1,55 @@
+# Синк інструкцій асистента docs/assistant/** → D1 `instructions` (01 §3.10).
+#
+# ОКРЕМИЙ workflow, а не job у ci.yml, з тієї ж причини, що й migrate.yml: там
+# run-рівневий `cancel-in-progress: true`, і другий швидкий push у main скасував
+# би синк ПОСЕРЕДИНІ - частина інструкцій нова, частина стара, і жоден статус
+# про це не сказав би. Тут своя черга без cancel.
+#
+# Порядок із деплоєм Worker'а не критичний: ядро читає інструкції в момент
+# прогону, а не при старті, тож «код новий, інструкція ще стара» триває
+# щонайбільше секунди до кінця цього job'а. Але сам синк ОБОВʼЯЗКОВИЙ: ядро не
+# має фолбеку на вшитий текст (01 §2.1), і без рядка в D1 профіль chat чесно
+# відмовить.
+#
+# Червоний прогін = інструкції в D1 НЕ оновлені: власник бачить збій в Actions,
+# прод працює на попередній версії (не ламається).
+name: Sync instructions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/assistant/**'
+      - 'scripts/sync-instructions.mjs'
+      - 'web/core/instructions.mjs'
+  # Ручний запуск: після відновлення D1 з бекапу або коли синк колись упав.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: instructions-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # Сторонні Actions пінено по commit SHA, як у ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: sync instructions to D1
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          # id бази скрипт бере з web/wrangler.jsonc - одне джерело істини.
+        # Захисне обрізання пробілів - секрет уже колись містив зайвий \r\n.
+        run: |
+          export CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN" | tr -d '[:space:]')
+          export CF_ACCOUNT_ID=$(printf '%s' "$CF_ACCOUNT_ID" | tr -d '[:space:]')
+          node scripts/sync-instructions.mjs
