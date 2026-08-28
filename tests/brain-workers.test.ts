@@ -7,7 +7,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi, type Mock } from 'vitest';
-import { makeRunner, type EngineOutcome, type EngineRunOptions } from '../brain/src/agent.js';
+import {
+  makeRunner,
+  type EngineOutcome,
+  type EngineRunOptions,
+  type ToolExecution,
+} from '../brain/src/agent.js';
 import { QUICK_WORKER, WORKER_MODEL_IDS, runWorker } from '../brain/src/workers.js';
 import { PROFILES } from '../brain/src/profiles.js';
 import { instructionHash } from '../brain/src/instructions.js';
@@ -139,19 +144,23 @@ describe('профіль quick як працівник', () => {
 describe('delegate', () => {
   it('чесно відмовляє, у ядро не йде, а імʼя працівника лишає в телеметрії', async () => {
     const client = makeClient();
+    let out: ToolExecution | null = null;
     const { engine } = scriptedEngine(async (opts) => {
-      const out = await opts.onToolCall('delegate', {
+      out = await opts.onToolCall('delegate', {
         worker: 'researcher',
         task: 'правила вʼїзду в Польщу',
         format: 'чат',
       });
-      expect(out.isError).toBe(true);
-      expect(out.text).toContain('researcher');
-      expect(out.text).toContain('сам');
       return { finalText: 'Зробив сам.' };
     });
     await makeRunner({ client, engine })(req());
 
+    // Перевірка ЗЗОВНІ колбека: усередині нього runner ловить будь-який виняток
+    // (у т.ч. невдалий expect) і перетворює на «Прогін не вдався», тож
+    // assert там був би декоративним - тест лишався б зеленим (проба).
+    expect(out!.isError).toBe(true);
+    expect(out!.text).toContain('researcher');
+    expect(out!.text).toContain('сам');
     // Внутрішній інструмент не має виконавця в ядрі - походу туди бути не може.
     expect(client.callTool).not.toHaveBeenCalled();
     expect(steps(client)[0]).toMatchObject({
@@ -164,25 +173,28 @@ describe('delegate', () => {
 
   it('у профілі quick недоступний - гейт профілю спрацьовує раніше', async () => {
     const client = makeClient();
+    let out: ToolExecution | null = null;
     const { engine } = scriptedEngine(async (opts) => {
-      const out = await opts.onToolCall('delegate', { worker: 'editor', task: 'x', format: 'чат' });
-      expect(out.isError).toBe(true);
+      out = await opts.onToolCall('delegate', { worker: 'editor', task: 'x', format: 'чат' });
       return { finalText: 'ESCALATE: потрібен працівник' };
     });
     await makeRunner({ client, engine })(req({ profile: 'quick' }));
 
+    expect(out!.isError).toBe(true);
     expect(steps(client)[0]).toMatchObject({ name: 'delegate', note: 'not-in-profile' });
   });
 
   it('аргументи не за контрактом - відмова без вигаданого імені працівника', async () => {
     const client = makeClient();
+    let out: ToolExecution | null = null;
     const { engine } = scriptedEngine(async (opts) => {
-      const out = await opts.onToolCall('delegate', { worker: 'editor' });
-      expect(out.isError).toBe(true);
+      out = await opts.onToolCall('delegate', { worker: 'editor' });
       return { finalText: 'ок' };
     });
     await makeRunner({ client, engine })(req());
 
+    expect(out!.isError).toBe(true);
+    expect(out!.text).not.toContain('editor');
     expect(steps(client)[0]).toMatchObject({ name: 'delegate', note: 'bad-args' });
   });
 });

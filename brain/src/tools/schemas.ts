@@ -175,7 +175,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'delegate',
     description:
-      'Передати задачу працівнику: worker - імʼя (researcher·analyst·planner·day-planner·copywriter·editor·finance·mail-secretary·tutor·quick), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат.',
+      'Передати задачу працівнику: worker - імʼя (researcher·analyst·planner·day-planner·copywriter·editor·finance·mail-secretary·tutor), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат.',
     args: z.object({
       worker: z.string().max(32),
       task: z.string().max(4000),

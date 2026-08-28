@@ -28,7 +28,9 @@ export interface WorkerDef {
   maxSteps: number;
   /** `tools` у mcp-іменах; порожньо - працівник без інструментів. */
   toolNames: string[];
-  /** `tainted_output` - вихід працівника є зовнішнім вмістом. */
+  /** `tainted_output` - вихід працівника є зовнішнім вмістом. Поки лише
+   *  описове поле: успадкування taint приїде разом із рештою працівників, а
+   *  єдиний підключений (quick) має false, тож розбіжності немає. */
   taintedOutput: boolean;
 }
 

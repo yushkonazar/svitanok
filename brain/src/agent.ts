@@ -246,14 +246,21 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // шляхом, яким на етапі 4 підуть решта десять: свіжа сесія, модель і
       // стеля ходів із front-matter файлу. Так шлях працівника перевіряється
       // в проді щодня, а не вперше на етапі 4.
+      // Спільне для обох гілок: канал інструментів, статусу і скасування.
+      const runCtx = {
+        abortSignal: abort.signal,
+        onToolCall,
+        onPartialText,
+        streamPartials: req.status_message_id != null,
+      };
       const outcome =
         profile.name === 'quick'
-          ? await runWorker(deps.engine, { ...QUICK_WORKER, prompt: systemPrompt }, inputText, {
-              abortSignal: abort.signal,
-              onToolCall,
-              onPartialText,
-              streamPartials: req.status_message_id != null,
-            })
+          ? await runWorker(
+              deps.engine,
+              { ...QUICK_WORKER, prompt: systemPrompt },
+              inputText,
+              runCtx,
+            )
           : await deps.engine.run(
               {
                 systemPrompt,
@@ -262,10 +269,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
                 toolNames: profile.toolNames,
                 resumeSessionId:
                   profile.name === 'chat' ? (req.session?.sdk_session_id ?? null) : null,
-                streamPartials: req.status_message_id != null,
-                abortSignal: abort.signal,
-                onToolCall,
-                onPartialText,
+                ...runCtx,
               },
               inputText,
             );
