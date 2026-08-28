@@ -1,0 +1,65 @@
+# Синк інструкцій асистента docs/assistant/** → D1 `instructions` (01 §3.10).
+#
+# ОКРЕМИЙ workflow, а не job у ci.yml, з тієї ж причини, що й migrate.yml: там
+# run-рівневий `cancel-in-progress: true`, і другий швидкий push у main скасував
+# би синк ПОСЕРЕДИНІ - частина інструкцій нова, частина стара, і жоден статус
+# про це не сказав би. Тут своя черга без cancel.
+#
+# Порядок із деплоєм Worker'а: ядро читає інструкції в момент прогону, тож
+# оновлення тексту доїжджає за час цього job'а. АЛЕ на ПЕРШОМУ мержі рядків у
+# D1 ще немає взагалі, і до кінця job'а chat/quick чесно відмовляють («ще
+# синхронізуються», запис чекає в черзі й підіймається сам) - фолбеку на вшитий
+# текст немає свідомо (01 §2.1). Щоб вікна не було: залити інструкції руками
+# ДО мержу (`node scripts/sync-instructions.mjs` із секретами акаунта) - D1
+# спільна, рядки переживають деплой.
+#
+# Червоний прогін = інструкції в D1 НЕ оновлені: власник бачить збій в Actions,
+# прод лишається на попередній версії текстів. Вікно при цьому НЕ обмежене
+# нічим, крім уваги власника, - тому job має бути зеленим, а не «на потім».
+name: Sync instructions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/assistant/**'
+      - 'scripts/sync-instructions.mjs'
+      - 'web/core/instructions.mjs'
+  # Ручний запуск: після відновлення D1 з бекапу або коли синк колись упав.
+  # ЛИШЕ з main - гейт нижче (security-ревʼю PR-5).
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: instructions-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Системний промпт моделі змінюється ЛИШЕ комітом у main (ADR-016).
+    # Без цього гейта workflow_dispatch на будь-якій гілці заливав би довільну
+    # персону в прод-D1 з секретами акаунта - повз ревʼю PR, захист main і
+    # деплой воркера, і без сліду: instruction_history зберігає лише хеш тіла,
+    # а не гілку чи sha коміту (security-ревʼю PR-5).
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # Сторонні Actions пінено по commit SHA, як у ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: sync instructions to D1
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          # id бази скрипт бере з web/wrangler.jsonc - одне джерело істини.
+        # Захисне обрізання пробілів - секрет уже колись містив зайвий \r\n.
+        run: |
+          export CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN" | tr -d '[:space:]')
+          export CF_ACCOUNT_ID=$(printf '%s' "$CF_ACCOUNT_ID" | tr -d '[:space:]')
+          node scripts/sync-instructions.mjs

@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { workerEnv } from './helpers/env.js';
-import { d1FromSqlite } from './helpers/d1.js';
+import { d1WithInstructions } from './helpers/instructions.js';
 
 const KEY = 'runs-test-key';
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
@@ -47,7 +47,7 @@ describe('POST /internal/runs', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d1 = d1FromSqlite(['0001_base.sql', '0003_telemetry.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0003_telemetry.sql']);
     db = d1.db;
     finishes = [];
     env = workerEnv({
@@ -132,7 +132,7 @@ describe('POST /internal/runs', () => {
 
 describe('handleRuns: ескалація і черга треду', () => {
   const richEnv = () => {
-    const d1 = d1FromSqlite(['0001_base.sql', '0003_telemetry.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0003_telemetry.sql']);
     // Outbox для статус-редагувань продовження.
     d1.db.exec(
       readFileSync(

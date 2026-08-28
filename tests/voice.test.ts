@@ -16,6 +16,7 @@ import {
 import { prerouteMessage, handleBrainCallback } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
+import { d1WithInstructions } from './helpers/instructions.js';
 
 const NOW = Date.parse('2026-08-28T12:00:00.000Z');
 const AUDIO = new Uint8Array([1, 2, 3, 4, 5]).buffer;
@@ -405,7 +406,7 @@ function makeFlowFetchStub(opts: { deepgramStatus?: number; deepgramTranscript?:
 }
 
 function makeFlowEnv(mode = 'on', over: Record<string, unknown> = {}) {
-  const d1 = d1FromSqlite([
+  const d1 = d1WithInstructions([
     '0001_base.sql',
     '0002_assistant.sql',
     '0003_telemetry.sql',
