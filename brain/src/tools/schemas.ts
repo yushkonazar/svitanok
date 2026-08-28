@@ -127,6 +127,28 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     }),
     write: true,
   }),
+  // proposals.create: усе, що виходить ЗА МЕЖІ власного сховища, іде лише
+  // так - і лише після ✅ власника (07 §4).
+  tool({
+    coreName: 'proposals.create',
+    description:
+      'Запропонувати дію назовні (календар, контакт, Drive, Tasks, налаштування, експорт): kind - вид дії, payload - її поля. Нічого не виконується без підтвердження власника; після ✅ ядро зробить запис саме.',
+    args: z.object({
+      kind: z.string().max(32),
+      payload: z.record(z.string(), z.unknown()).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'chain.start',
+    description:
+      'Почати багатокроковий ланцюг (столик, поїздка, відстеження ціни). Поки НЕ виконується: ланцюги приїдуть на етапі 5 - скажи власнику про це прямо, замість обхідних шляхів.',
+    args: z.object({
+      kind: z.string().max(32),
+      payload: z.record(z.string(), z.unknown()).optional(),
+    }),
+    write: true,
+  }),
   tool({
     coreName: 'facts.set',
     description:

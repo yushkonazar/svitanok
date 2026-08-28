@@ -118,6 +118,17 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     // місце, що викликає виконавців запису): T0 - виконати + «↩», tainted -
     // ескалація до пропозиції T1 (другий барʼєр, який хук мозку не обійде).
     if (tool.write) {
+      // Зазвичай kind інструмента статичний. Виняток - proposals.create
+      // (07 §4): він сам НЕ дія, а обгортка «створи пропозицію на дію X», тож
+      // рівень підтвердження визначає kind із аргументів. Гілки за іменем
+      // інструмента тут немає свідомо: контракт описаний у самому реєстрі
+      // (write.kindFrom), і наступний такий інструмент не потребуватиме правки
+      // роутера.
+      const writeKind =
+        tool.write.kind ?? String(/** @type {any} */ (args)?.[tool.write.kindFrom ?? ''] ?? '');
+      if (!writeKind) {
+        return json({ ok: false, error: 'policy: kind не заданий', tool: name }, 400);
+      }
       const info = await registryRunInfo(env, auth.runId);
       const threadId = info?.threadId ?? null;
       const tainted = await readThreadTainted(env, threadId);
@@ -126,11 +137,21 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       try {
         policyOut = await applyPolicy(
           env,
-          { kind: tool.write.kind, payload: args, threadId, tainted },
+          {
+            kind: writeKind,
+            // proposals.create передає у виконавця САМ payload дії, а не
+            // обгортку {kind, payload} - інакше виконавець отримав би зайвий
+            // рівень вкладеності.
+            payload: tool.write.kindFrom
+              ? /** @type {any} */ ((args)?.payload ?? {})
+              : /** @type {any} */ (args),
+            threadId,
+            tainted,
+          },
           nowMs,
         );
       } catch (/** @type {any} */ e) {
-        console.error(`internal: policy ${tool.write.kind} впала`, e?.message);
+        console.error(`internal: policy ${writeKind} впала`, e?.message);
         return json(
           { ok: false, error: 'tool-failed', tool: name, reason: String(e?.message ?? '') },
           502,

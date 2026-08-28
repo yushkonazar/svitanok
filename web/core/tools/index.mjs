@@ -23,7 +23,7 @@ import { runMemorySearch } from '../memory.mjs';
  * @typedef {{
  *   args: import('../internal/schemas.mjs').InternalSchema,
  *   tainting?: boolean,
- *   write?: { kind: string },
+ *   write?: { kind?: string, kindFrom?: string },
  *   run: (env: Env, args: any, nowMs: number) => Promise<{ result: unknown }>,
  * }} InternalToolDef
  */
@@ -166,6 +166,43 @@ export const TOOLS = {
     write: { kind: 'record' },
     run: () => {
       throw new Error('record виконується через policy, не напряму');
+    },
+  },
+  // proposals.create (07 §4): єдиний шлях запису НАЗОВНІ - календар, контакти,
+  // Drive, Tasks, налаштування, експорт. Сам інструмент дією не є: він
+  // просить policy створити пропозицію на дію `kind`, і рівень (T1/T2) бере
+  // ACTION_LEVELS саме за ним. Виконавців для цих kind-ів ще немає (адаптери
+  // Google - пізніші етапи), тож після ✅ власник дістане чесне «виконавця ще
+  // немає», а не тишу.
+  'proposals.create': {
+    args: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        payload: { type: 'object' },
+      },
+    },
+    write: { kindFrom: 'kind' },
+    run: () => {
+      throw new Error('proposals.create виконується через policy, не напряму');
+    },
+  },
+  // chain.start - ЗАГЛУШКА до етапу 5 (Workflows). Інструмент присутній, щоб
+  // модель знала межу («ланцюг почнеться пізніше»), а не вигадувала обхід;
+  // виконавця немає навмисно, тож policy відповість no-executor.
+  'chain.start': {
+    args: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        payload: { type: 'object' },
+      },
+    },
+    write: { kind: 'chain.start' },
+    run: () => {
+      throw new Error('chain.start виконується через policy, не напряму');
     },
   },
   'facts.set': {
