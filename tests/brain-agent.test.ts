@@ -14,6 +14,7 @@ import {
 import type { ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
+import { instructionHash } from '../brain/src/instructions.js';
 import { BRAIN_TOOLS } from '../brain/src/tools/schemas.js';
 
 interface ClientMock {
@@ -46,12 +47,23 @@ function makeClient(over: Partial<ClientMock> = {}): ClientMock {
   };
 }
 
+/** Інструкція профілю з правильним хешем - без неї прогін не стартує (PR-5). */
+export const TEST_INSTRUCTION_BODY = 'Ти - Світанок. Відповідай коротко.';
+
 function req(over: Partial<RunRequest> = {}): RunRequest {
+  const profile = over.profile ?? 'chat';
   return {
     run_id: 'run-1',
     profile: 'chat',
     thread_id: 'dm',
     input: { text: 'привіт' },
+    // Ім'я мусить відповідати профілю: мозок звіряє його (ревʼю PR-5), бо
+    // інакше чужа персона проїхала б із цілим хешем.
+    instruction: {
+      name: profile === 'chat' ? 'persona' : 'quick',
+      version_hash: instructionHash(TEST_INSTRUCTION_BODY),
+      body_md: TEST_INSTRUCTION_BODY,
+    },
     ...over,
   };
 }
@@ -250,6 +262,45 @@ describe('makeRunner: quick і збої', () => {
     expect(client.deliver).not.toHaveBeenCalled();
     const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
     expect(steps[0]).toMatchObject({ kind: 'reply', name: 'escalate' });
+  });
+
+  it('ESCALATE у код-огорожі теж ескалює, а не їде власнику (ревʼю PR-5)', async () => {
+    const client = makeClient();
+    // quick.md показує формат у ```-блоці, і модель іноді відтворює огорожу.
+    const { engine } = scriptedEngine(async () => ({
+      finalText: '```\nESCALATE: треба календар\n```',
+    }));
+    await makeRunner({ client, engine })(req({ profile: 'quick' }));
+    expect(client.deliver).not.toHaveBeenCalled();
+    const outcome = client.reportRuns.mock.calls[0]![2];
+    expect(outcome).toMatchObject({ escalate: { text: 'привіт' } });
+  });
+
+  it('прогін без інструкції не стартує: рушій не кликаний, власник попереджений', async () => {
+    const client = makeClient();
+    const { engine, seen } = scriptedEngine(async () => ({ finalText: 'не має статись' }));
+    await makeRunner({ client, engine })(req({ instruction: undefined }));
+    expect(seen).toHaveLength(0);
+    expect(String(client.deliver.mock.calls[0]![1])).toContain('Інструкції асистента не на місці');
+    const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    expect(steps[0]).toMatchObject({ kind: 'error', name: 'instruction', ok: false });
+  });
+
+  it('підмінене тіло інструкції (хеш не сходиться) - той самий шлях відмови', async () => {
+    const client = makeClient();
+    const { engine, seen } = scriptedEngine(async () => ({ finalText: 'не має статись' }));
+    await makeRunner({ client, engine })(
+      req({
+        instruction: {
+          name: 'persona',
+          version_hash: instructionHash(TEST_INSTRUCTION_BODY),
+          body_md: 'підмінена персона',
+        },
+      }),
+    );
+    expect(seen).toHaveLength(0);
+    const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
+    expect(String(steps[0]!.note)).toContain('розійшовся з тілом');
   });
 
   it('збій рушія: власник бачить «Прогін не вдався», steps звітуються з error', async () => {

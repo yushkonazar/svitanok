@@ -33,6 +33,17 @@ export const RUN_REQUEST_SCHEMA = z.object({
       summary_md: z.string().max(20_000).nullable(),
     })
     .optional(),
+  /** Інструкція профілю з D1 ядра (PR-5): тіло + хеш, який мозок звіряє сам.
+   *  Мозок не має доступу до D1, тож текст приходить у тілі; хеш робить цю
+   *  передачу перевірною - розбіжність означає, що персона в дорозі змінилась,
+   *  і прогін не стартує (вшитих запасних текстів більше немає). */
+  instruction: z
+    .object({
+      name: z.string().min(1).max(64),
+      version_hash: z.string().regex(/^[0-9a-f]{64}$/),
+      body_md: z.string().min(1).max(20_000),
+    })
+    .optional(),
 });
 export type RunRequest = z.infer<typeof RUN_REQUEST_SCHEMA>;
 

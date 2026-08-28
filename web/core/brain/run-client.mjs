@@ -82,6 +82,7 @@ async function signedBrainPost(env, path, runId, rawBody, nowMs) {
  *   tainted?: boolean,
  *   statusMessageId?: number,
  *   session?: { sdk_session_id: string | null, summary_md: string | null },
+ *   instruction?: { name: string, version_hash: string, body_md: string },
  * }} req
  * @param {number} nowMs
  * @returns {Promise<{ ok: true } | { ok: false, status: number, detail: string }>}
@@ -95,6 +96,7 @@ export async function callBrainRun(env, req, nowMs) {
     ...(req.tainted != null ? { tainted: req.tainted } : {}),
     ...(req.statusMessageId != null ? { status_message_id: req.statusMessageId } : {}),
     ...(req.session ? { session: req.session } : {}),
+    ...(req.instruction ? { instruction: req.instruction } : {}),
   });
   const res = await signedBrainPost(env, '/run', req.runId, rawBody, nowMs);
   if ('misconfig' in res) return { ok: false, status: 0, detail: res.misconfig };
