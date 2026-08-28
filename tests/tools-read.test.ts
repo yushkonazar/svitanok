@@ -296,7 +296,7 @@ describe('facts.* на справжній міграції 0001', () => {
 });
 
 describe('реєстр TOOLS', () => {
-  it('склад: читання + facts (PR-6) + memory.search (етап 2 PR-2); drive.write свідомо відсутній до policy', () => {
+  it('склад: читання + facts + memory.search + нагадування (етап 2 PR-6); drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
       'data.read',
@@ -308,8 +308,26 @@ describe('реєстр TOOLS', () => {
       'mail.read',
       'mail.search',
       'memory.search',
+      'reminders.cancel',
+      'reminders.create',
+      'reminders.update',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
+  });
+
+  it('write рівно там, де запис іде через policy (07 §4)', () => {
+    const writes = Object.entries(TOOLS)
+      .filter(([, def]) => def.write != null)
+      .map(([name, def]) => [name, def.write?.kind])
+      .sort();
+    // kind збігається з іменем інструмента: рівень бере ACTION_LEVELS саме за
+    // ним, і розсинхрон тут мовчки змінив би рівень підтвердження.
+    expect(writes).toEqual([
+      ['facts.set', 'facts.set'],
+      ['reminders.cancel', 'reminders.cancel'],
+      ['reminders.create', 'reminders.create'],
+      ['reminders.update', 'reminders.update'],
+    ]);
   });
 
   it('tainting рівно там, де зовнішній вміст (07 §4)', () => {

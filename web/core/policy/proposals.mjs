@@ -17,6 +17,12 @@ import {
   UNDO_WINDOW_MS,
 } from './core.mjs';
 import { runFactsSet, runFactsGet } from '../tools/facts.mjs';
+import {
+  runRemindersCreate,
+  runRemindersUpdate,
+  runRemindersCancel,
+  readActiveReminders,
+} from '../tools/reminders.mjs';
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -29,6 +35,55 @@ import { runFactsSet, runFactsGet } from '../tools/facts.mjs';
  * }>}
  */
 export const EXECUTORS = {
+  // Нагадування (PR-6). undo вертає ТОЙ САМИЙ id: власник бачить у списку той
+  // самий рядок, що й до «↩», а не новий - інакше друге «↩» після ручної
+  // правки скасувало б чуже нагадування.
+  'reminders.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runRemindersCreate(env, payload, nowMs);
+      return { prev: { id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      await runRemindersCancel(env, { id: snapshot.id }).catch(() => {});
+    },
+  },
+  'reminders.update': {
+    async execute(env, payload, nowMs) {
+      const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
+      const { result } = await runRemindersUpdate(env, payload, nowMs);
+      // Знімок ДО правки: undo кладе назад і текст, і час.
+      return {
+        prev: before ? { id: before.id, text: before.text, whenMs: before.whenMs } : null,
+        result,
+      };
+    },
+    async undo(env, snapshot, nowMs) {
+      if (!snapshot) return;
+      await runRemindersUpdate(
+        env,
+        { id: snapshot.id, text: snapshot.text, whenMs: snapshot.whenMs },
+        nowMs,
+      );
+    },
+  },
+  'reminders.cancel': {
+    // nowMs не потрібен: скасування не рахує часу, лише прибирає рядок.
+    async execute(env, payload) {
+      const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
+      const { result } = await runRemindersCancel(env, payload);
+      return { prev: before ?? null, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      if (!snapshot) return;
+      // Скасоване нагадування зникло зі списку - «↩» створює його наново з
+      // тим самим id, текстом і часом.
+      await runRemindersCreate(
+        env,
+        { text: snapshot.text, whenMs: snapshot.whenMs, restoreId: snapshot.id },
+        nowMs,
+      );
+    },
+  },
   'facts.set': {
     async execute(env, payload, nowMs) {
       const before = await runFactsGet(env, { kind: payload.kind, key: payload.key });

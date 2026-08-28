@@ -109,6 +109,49 @@ export const TOOLS = {
     },
     run: (env, args) => runFactsGet(env, args),
   },
+  // Нагадування (PR-6). Час приходить ПРИРОДНИМ текстом: рахує його parser
+  // ядра, не модель - інакше вона сама переводила б київські години й
+  // помилялася тихо. Усі три - write, тобто йдуть через policy.
+  'reminders.create': {
+    args: {
+      type: 'object',
+      required: ['when'],
+      properties: {
+        when: { type: 'string', maxLength: 120 },
+        text: { type: 'string', maxLength: 200 },
+      },
+    },
+    write: { kind: 'reminders.create' },
+    run: () => {
+      throw new Error('reminders.create виконується через policy, не напряму');
+    },
+  },
+  'reminders.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        when: { type: 'string', maxLength: 120 },
+        text: { type: 'string', maxLength: 200 },
+      },
+    },
+    write: { kind: 'reminders.update' },
+    run: () => {
+      throw new Error('reminders.update виконується через policy, не напряму');
+    },
+  },
+  'reminders.cancel': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', maxLength: 64 } },
+    },
+    write: { kind: 'reminders.cancel' },
+    run: () => {
+      throw new Error('reminders.cancel виконується через policy, не напряму');
+    },
+  },
   'facts.set': {
     args: {
       type: 'object',

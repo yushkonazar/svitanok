@@ -90,6 +90,33 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     description: 'Факти про власника; kind і key - необовʼязкові фільтри.',
     args: z.object({ kind: z.string().max(32).optional(), key: z.string().max(128).optional() }),
   }),
+  // Нагадування (PR-6). `when` - природний текст («через 20 хв», «завтра о
+  // 9»): час рахує ядро тим самим парсером, що обслуговує /remind, тож моделі
+  // не треба знати ні київський зсув, ні переведення годинника.
+  tool({
+    coreName: 'reminders.create',
+    description:
+      'Створити нагадування. when - природний текст часу («через 20 хв», «завтра о 9»); text - про що нагадати (можна лишити порожнім, якщо зміст уже в when).',
+    args: z.object({ when: z.string().max(120), text: z.string().max(200).optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'reminders.update',
+    description:
+      'Змінити активне нагадування за id: новий текст і/або новий час (природним текстом). id бери зі списку нагадувань.',
+    args: z.object({
+      id: z.string().max(64),
+      when: z.string().max(120).optional(),
+      text: z.string().max(200).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'reminders.cancel',
+    description: 'Скасувати активне нагадування за id зі списку.',
+    args: z.object({ id: z.string().max(64) }),
+    write: true,
+  }),
   tool({
     coreName: 'facts.set',
     description:
