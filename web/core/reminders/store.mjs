@@ -179,6 +179,47 @@ export async function claimReminderSent(env, id) {
   return (res.meta?.changes ?? 0) === 1;
 }
 
+/**
+ * Відкласти надіслане нагадування (кнопка «😴» під повідомленням). Працює
+ * саме з `sent`: кнопка живе на вже доставленому, а не на активному.
+ * @param {Env} env @param {string} id @param {number} dueAtMs
+ * @returns {Promise<boolean>} false = такого надісланого немає
+ */
+export async function snoozeReminder(env, id, dueAtMs) {
+  const res = await db(env)
+    .prepare(
+      `UPDATE reminders SET due_at = ?, status = 'snoozed', snooze_count = snooze_count + 1
+       WHERE id = ? AND status IN ('sent', 'pending', 'snoozed')`,
+    )
+    .bind(new Date(dueAtMs).toISOString(), id)
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Позначити виконаним (кнопка «✅»). Термінальний статус: більше не спливе.
+ * @param {Env} env @param {string} id
+ * @returns {Promise<ReminderRow | null>} рядок ДО зміни (для тексту відповіді)
+ */
+export async function completeReminder(env, id) {
+  const before = await getReminder(env, id);
+  if (!before || before.status === 'done') return null;
+  await db(env).prepare(`UPDATE reminders SET status = 'done' WHERE id = ?`).bind(id).run();
+  return before;
+}
+
+/**
+ * Повернути в чергу після невдалої відправки: claim уже стоїть, а
+ * повідомлення не пішло - без цього нагадування мовчки зникло б назавжди.
+ * @param {Env} env @param {string} id
+ */
+export async function releaseSentClaim(env, id) {
+  await db(env)
+    .prepare(`UPDATE reminders SET status = 'pending' WHERE id = ? AND status = 'sent'`)
+    .bind(id)
+    .run();
+}
+
 /** Скільки активних - для перевірки кількості при міграції з KV.
  *  @param {Env} env */
 export async function countActiveReminders(env) {

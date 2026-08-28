@@ -138,6 +138,35 @@ describe('deliverDueReminders', () => {
     expect(statusOf(d1, 'r1')).toBe('pending');
   });
 
+  it('збій черги знімає claim - наступний тік перешле, а не загубить', async () => {
+    // Claim стоїть ДО enqueue; без компенсації нагадування лишалося б у
+    // статусі sent, так і не дійшовши (ревʼю PR-7).
+    fetchStub();
+    const { d1, env } = makeEnv([{ id: 'r1', text: 'важливе', dueAtMs: NOW - 1000 }]);
+    // Ламаємо саме запис у чергу, не мережу.
+    const broken = {
+      ...d1.stub,
+      prepare: (sql: string) =>
+        sql.includes('INSERT INTO outbox')
+          ? {
+              bind: () => ({
+                run: async () => {
+                  throw new Error('outbox недоступний');
+                },
+                all: async () => ({ results: [] }),
+                first: async () => null,
+              }),
+            }
+          : d1.stub.prepare(sql),
+    };
+    // Приведення через unknown: стаб навмисно вужчий за D1Database (exec/dump
+    // ніхто не кличе) - та сама причина, що в helpers/d1.
+    const envBroken = { ...env, DB: broken } as unknown as typeof env;
+
+    expect(await deliverDueReminders(envBroken, NOW)).toEqual({ sent: 0 });
+    expect(statusOf(d1, 'r1')).toBe('pending');
+  });
+
   it('без привʼязки DB - тихий no-op, а не виняток у тіку планувальника', async () => {
     const env = workerEnv({ TELEGRAM_CHAT_ID: '555' });
     expect(await deliverDueReminders(env, NOW)).toEqual({ sent: 0 });

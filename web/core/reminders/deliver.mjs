@@ -15,7 +15,7 @@ import { isQuietMinute } from '../../settings-core.mjs';
 import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { formatReminderFired, buildSnoozeRow } from '../../reminders-core.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
-import { dueReminders, claimReminderSent } from './store.mjs';
+import { dueReminders, claimReminderSent, releaseSentClaim } from './store.mjs';
 
 /**
  * Надіслати те, що вже мало спрацювати. Повертає скільки відправлено -
@@ -59,9 +59,13 @@ export async function deliverDueReminders(env, nowMs = Date.now()) {
       );
       sent += 1;
     } catch (/** @type {any} */ e) {
-      // Claim уже стоїть, а в чергу не лягло: нагадування втрачене - це має
-      // бути видно в логах, а не зникнути мовчки.
+      // Claim уже стоїть, а в чергу не лягло. Лог тут недостатній: власник
+      // логів не читає, а нагадування зникло б назавжди. Знімаємо claim -
+      // наступний тік спробує ще раз (ревʼю PR-7).
       console.error(`reminders: ${r.id} не покладено в чергу після claim`, e?.message);
+      await releaseSentClaim(env, r.id).catch((/** @type {any} */ e2) =>
+        console.error(`reminders: claim ${r.id} не знято - нагадування втрачено`, e2?.message),
+      );
     }
   }
 

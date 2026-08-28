@@ -61,7 +61,10 @@ export async function runDataRead(env, args, nowMs) {
   const todayKey = kyivDateKey(new Date(nowMs));
   const digest = buildOwnDataDigest({
     scope: args.scope,
-    reminders: [...(state.reminders ?? []), ...fromD1],
+    // Дедуп за id з пріоритетом D1 (ревʼю PR-7): у вікні часткової міграції
+    // той самий запис лежить в обох сховищах, і без цього модель бачила б
+    // його двічі, а скасування зняло б лише одну копію.
+    reminders: mergeReminders(state.reminders, fromD1),
     agg: aggregateStats(stats, todayKey),
     roadmap: totalProgress(state.roadmapProgress ?? {}),
     latest,
@@ -69,6 +72,15 @@ export async function runDataRead(env, args, nowMs) {
     settings,
   });
   return { result: digest.slice(0, cap) };
+}
+
+/** KV + D1 без дублів: за одним id перемагає D1 (там свіжий статус).
+ *  @param {any[] | undefined} fromKv @param {any[]} fromD1 */
+function mergeReminders(fromKv, fromD1) {
+  const byId = new Map();
+  for (const r of Array.isArray(fromKv) ? fromKv : []) byId.set(String(r?.id), r);
+  for (const r of fromD1) byId.set(String(r.id), r);
+  return [...byId.values()];
 }
 
 /** Активні нагадування з D1 у формі дайджесту (whenMs/text/firedTs).

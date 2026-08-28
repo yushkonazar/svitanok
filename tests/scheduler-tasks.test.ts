@@ -89,6 +89,36 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     vi.resetModules();
   });
 
+  it('reminder: після фліпа KV-гілка МОВЧИТЬ - інакше подвійна доставка', async () => {
+    // У вікні міграції запис лежить в обох сховищах; якби обидві гілки
+    // працювали при `on`, власник отримав би дві копії одного нагадування
+    // (ревʼю PR-7).
+    const calls: string[] = [];
+    vi.doMock('../web/cron.mjs', async (orig) => ({
+      ...(await orig<Record<string, unknown>>()),
+      checkReminders: async () => void calls.push('kv'),
+    }));
+    vi.doMock('../web/core/reminders/deliver.mjs', () => ({
+      deliverDueReminders: async () => {
+        calls.push('d1');
+        return { sent: 0 };
+      },
+    }));
+    vi.resetModules();
+    const { SCHEDULER_TASKS: fresh } = await import('../web/core/scheduler/tasks.mjs');
+
+    await fresh.reminder!.run(workerEnv({ ASSISTANT_V2: 'on' }));
+    expect(calls).toEqual(['d1']);
+
+    calls.length = 0;
+    await fresh.reminder!.run(workerEnv({ ASSISTANT_V2: 'shadow' }));
+    expect(calls).toEqual(['kv', 'd1']);
+
+    vi.doUnmock('../web/cron.mjs');
+    vi.doUnmock('../web/core/reminders/deliver.mjs');
+    vi.resetModules();
+  });
+
   it('brain-health: композит не кидає, коли ні старий хост, ні мозок не сконфігуровані', async () => {
     // Легасі-перевірка рано виходить без LLM_HOST_*, handshake — без BRAIN_URL;
     // жоден із них не сміє валити задачу (ізоляція всередині композита).

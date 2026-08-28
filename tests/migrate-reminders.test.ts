@@ -76,6 +76,22 @@ describe('readDatabaseId', () => {
 describe('скрипт як контракт', () => {
   const src = readFileSync(join(__dirname, '..', 'scripts', 'migrate-reminders.mjs'), 'utf8');
 
+  it('перечитує state перед чисткою і прибирає ЛИШЕ підтверджені id', () => {
+    // Інакше запис знімка «до» затер би все, що змінилось за час міграції
+    // (lastUpdateId вебхука, roadmapProgress, votedUrls), а обнулення масиву
+    // знищило б биті записи, які в D1 не поїхали (security-ревʼю PR-7).
+    expect(src).toContain("const freshRaw = await kvGet(kv, 'state');");
+    expect(src).toContain('migratedIds');
+    expect(src).toContain('!migratedIds.has(String(r?.id))');
+    expect(src).not.toContain('reminders: [] }');
+    // Перечитування мусить стояти ПІСЛЯ звірки і ПЕРЕД записом.
+    const verifyAt = src.indexOf('бракує ${missing.length}');
+    const rereadAt = src.indexOf('const freshRaw');
+    const putAt = src.indexOf("kvPut(kv, 'state'");
+    expect(rereadAt).toBeGreaterThan(verifyAt);
+    expect(putAt).toBeGreaterThan(rereadAt);
+  });
+
   it('не чистить KV раніше за звірку кількості', () => {
     // Порядок кроків - головна гарантія: аварія між записом і чисткою лишає
     // дані в ОБОХ місцях, а не в жодному.

@@ -95,7 +95,13 @@ export const EXECUTORS = {
       // Рядок нікуди не зник - у D1 він лежить зі статусом cancelled, тож
       // «↩» просто повертає його в гру: id, текст, час і адреса ті самі, і
       // жодного шансу створити дубль.
-      await restoreReminder(env, snapshot.id);
+      const restored = await restoreReminder(env, snapshot.id);
+      if (!restored) {
+        // Рядок уже не cancelled (власник устиг створити знову або статус
+        // змінили): мовчазний «успіх» тут показав би тост «Відкочено ↩» після
+        // нульової дії (ревʼю PR-7).
+        throw new Error(`нагадування ${snapshot.id} не відновлено - воно вже не скасоване`);
+      }
     },
   },
   // record: БЕЗ undo. Чинні модулі (applyEvent, recordEvent, toggleProgress)

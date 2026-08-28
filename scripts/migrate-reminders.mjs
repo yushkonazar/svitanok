@@ -125,6 +125,18 @@ async function main() {
     throw new Error('вкажи --dry-run (подивитись) або --apply (перенести)');
   }
 
+  // Запобіжник режиму (ревʼю PR-7): до фліпа D1-гілка задачі не виконується
+  // (у shadow задача без shadowSafe лише логується), тож спорожнений KV
+  // означав би тишу замість нагадувань. Після фліпа мовчить KV-гілка - саме
+  // тому порядок «спершу on, потім міграція» обовʼязковий.
+  const confirmed = process.argv.includes('--after-flip');
+  if (apply && !confirmed) {
+    throw new Error(
+      'міграція виконується ПІСЛЯ фліпа ASSISTANT_V2=on (інакше нагадування замовкнуть ' +
+        'до перемикання). Переконайся, що прод уже на `on`, і додай --after-flip',
+    );
+  }
+
   const accountId = (process.env.CF_ACCOUNT_ID ?? '').trim();
   const token = (process.env.CF_API_TOKEN ?? '').trim();
   const namespaceId = (process.env.KV_NAMESPACE_ID ?? '').trim();
@@ -185,9 +197,27 @@ async function main() {
   console.log(`\nу D1 після перенесення: ${afterIds.size} записів, ${activeAfter.length} активних`);
 
   // Аж тепер прибираємо з KV: доти джерелом лишався він.
-  const cleaned = { ...state, reminders: [] };
-  await kvPut(kv, 'state', JSON.stringify(cleaned));
-  console.log('KV `state.reminders` очищено - джерелом стала D1');
+  //
+  // ⚠️ ДВА правила, обидва з security-ревʼю PR-7:
+  //  1. Перечитати state БЕЗПОСЕРЕДНЬО перед записом. Між першим читанням і
+  //     цим моментом минули десятки HTTP-викликів до D1, і за цей час у той
+  //     самий блоб могли писати вебхук (lastUpdateId), крон, Mini App
+  //     (roadmapProgress, votedUrls, jobPrefs) і /remind. Запис знімка «до»
+  //     затер би все це - у воркері той самий блоб і тому ходить через
+  //     read-modify-write (kv-store updateState).
+  //  2. Прибирати ЛИШЕ підтверджені в D1 id. Записи, які selectMigratable
+  //     відкинула як биті, у D1 не поїхали - обнулення масиву знищило б їх
+  //     назавжди.
+  const migratedIds = new Set(rows.map((r) => r.id).filter((id) => afterIds.has(id)));
+  const freshRaw = await kvGet(kv, 'state');
+  const fresh = freshRaw ? JSON.parse(freshRaw) : {};
+  const before = Array.isArray(fresh.reminders) ? fresh.reminders : [];
+  const left = before.filter((/** @type {any} */ r) => !migratedIds.has(String(r?.id)));
+  await kvPut(kv, 'state', JSON.stringify({ ...fresh, reminders: left }));
+  console.log(
+    `KV: прибрано ${before.length - left.length} перенесених, лишилось ${left.length}` +
+      (left.length > 0 ? ' (биті або створені під час міграції - перевір їх окремо)' : ''),
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

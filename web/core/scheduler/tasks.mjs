@@ -58,10 +58,17 @@ export const SCHEDULER_TASKS = {
   reminder: {
     periodMin: 5,
     run: async (env) => {
-      try {
-        await checkReminders(env);
-      } catch (/** @type {any} */ e) {
-        console.error('reminder: легасі-джерело (KV) впало', e?.message);
+      // ⚠️ KV-гілка мовчить при `on` (ревʼю PR-7): після фліпа джерелом стає
+      // D1, і залишений KV-читач слав би те саме вдруге - міграція копіює
+      // записи, тож у вікні між вставкою і чисткою вони лежать в обох
+      // сховищах, і кожне джерело доставило б свою копію. Власник не може
+      // відрізнити повтор від нового нагадування.
+      if (env.ASSISTANT_V2 !== 'on') {
+        try {
+          await checkReminders(env);
+        } catch (/** @type {any} */ e) {
+          console.error('reminder: легасі-джерело (KV) впало', e?.message);
+        }
       }
       await deliverDueReminders(env);
     },
