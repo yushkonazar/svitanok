@@ -38,7 +38,18 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'created_at',
     'claimed_at',
   ],
-  reminders: ['id', 'due_at', 'text', 'chain_id', 'status', 'snooze_count', 'source_msg_id'],
+  reminders: [
+    'id',
+    'due_at',
+    'text',
+    'chain_id',
+    'status',
+    'snooze_count',
+    'source_msg_id',
+    // Адреса доставки (0010): нагадування приходить туди, де його попросили.
+    'chat_id',
+    'thread_id',
+  ],
   proposals: [
     'id',
     'level',
@@ -294,7 +305,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('девʼять файлів 0001–0009, нумерація без дірок', () => {
+  it('десять файлів 0001–0010, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -305,6 +316,7 @@ describe('міграції D1 — файли', () => {
       '0007',
       '0008',
       '0009',
+      '0010',
     ]);
   });
 });

@@ -9,7 +9,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker, { CRON_TASKS } from '../web/worker.js';
 import { SCHEDULER_TASKS } from '../web/core/scheduler/tasks.mjs';
 import {
-  checkReminders,
   autoBriefDispatch,
   deadMansCheck,
   checkinNudgeCheck,
@@ -42,7 +41,8 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
 
   it('run — ті САМІ функції, що виконує легасі CRON_TASKS (тотожність)', () => {
     const expected: Record<string, (env: never) => Promise<unknown>> = {
-      reminder: checkReminders,
+      // reminder тепер композит (етап 2 PR-7): легасі-джерело KV + нове D1.
+      // Тотожність там неможлива; склад перевіряє окремий тест нижче.
       'run-watchdog': agentRunWatchdog,
       // brain-health - композит (легасі-хост + handshake нового мозку, PR-9),
       // тотожність там неможлива; його склад перевіряє окремий тест нижче.
@@ -60,6 +60,33 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     // І легасі-список зібраний із тих самих функцій — обидва читачі однієї логіки.
     const legacy = new Set(CRON_TASKS.map((t: { run: unknown }) => t.run));
     for (const fn of Object.values(expected)) expect(legacy.has(fn)).toBe(true);
+  });
+
+  it('reminder: композит шле з ОБОХ джерел, і збій KV не глушить D1', async () => {
+    // До фліпа ASSISTANT_V2=on нагадування живуть у двох сховищах: створені
+    // через /remind - у KV, створені мозком - у D1. Пропустити одне з них
+    // означало б мовчки не доставити частину.
+    const calls: string[] = [];
+    vi.doMock('../web/cron.mjs', async (orig) => ({
+      ...(await orig<Record<string, unknown>>()),
+      checkReminders: async () => {
+        calls.push('kv');
+        throw new Error('KV лежить');
+      },
+    }));
+    vi.doMock('../web/core/reminders/deliver.mjs', () => ({
+      deliverDueReminders: async () => {
+        calls.push('d1');
+        return { sent: 0 };
+      },
+    }));
+    vi.resetModules();
+    const { SCHEDULER_TASKS: fresh } = await import('../web/core/scheduler/tasks.mjs');
+    await expect(fresh.reminder!.run(workerEnv({}))).resolves.not.toThrow();
+    expect(calls).toEqual(['kv', 'd1']);
+    vi.doUnmock('../web/cron.mjs');
+    vi.doUnmock('../web/core/reminders/deliver.mjs');
+    vi.resetModules();
   });
 
   it('brain-health: композит не кидає, коли ні старий хост, ні мозок не сконфігуровані', async () => {
