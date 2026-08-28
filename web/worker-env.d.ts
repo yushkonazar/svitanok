@@ -83,6 +83,9 @@ interface Env {
   BRAIN_ACCESS_CLIENT_ID?: string;
   BRAIN_ACCESS_CLIENT_SECRET?: string;
 
+  /** Deepgram nova-3 - розпізнавання голосових (ADR-010; покладений на етапі 0). */
+  DEEPGRAM_API_KEY?: string;
+
   /** HMAC internal API ядро↔мозок (05-ops §2; покладений на етапі 0). */
   INTERNAL_HMAC_KEY?: string;
   /** Другий ключ на вікно ротації (05-ops §3, двоключова ротація 24 год). */

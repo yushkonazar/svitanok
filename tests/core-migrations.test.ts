@@ -27,6 +27,17 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   ],
   memory_chunks: ['id', 'thread_id', 'at', 'text', 'vector_id'],
   migrations_meta: ['name', 'applied_at'],
+  voice_pending: [
+    'id',
+    'kind',
+    'text',
+    'file_id',
+    'duration_s',
+    'chat_id',
+    'thread_id',
+    'created_at',
+    'claimed_at',
+  ],
   reminders: ['id', 'due_at', 'text', 'chain_id', 'status', 'snooze_count', 'source_msg_id'],
   proposals: [
     'id',
@@ -240,6 +251,8 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   // Понад 07 §1 (там «-»): пошук історії за імʼям — єдиний спосіб її читати.
   instruction_history: [{ cols: ['name', 'deployed_at'] }],
   plan_items: [{ cols: ['date'] }, { cols: ['status'] }],
+  // Прибирання протухлих (lazy expiry + чистка при вставці) шукає за часом.
+  voice_pending: [{ cols: ['created_at'] }],
 };
 
 /** FTS5-таблиці: перша колонка — місток id (UNINDEXED). */
@@ -281,7 +294,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('вісім файлів 0001–0008, нумерація без дірок', () => {
+  it('девʼять файлів 0001–0009, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -291,6 +304,7 @@ describe('міграції D1 — файли', () => {
       '0006',
       '0007',
       '0008',
+      '0009',
     ]);
   });
 });

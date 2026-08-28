@@ -133,6 +133,32 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
     ).toBeNull();
   });
 
+  it('message з voice (кейс 6) -> {fileId,durationS,fileSize}; без voice -> null', () => {
+    const withVoice = asMessage(
+      parseUpdate({
+        update_id: 10,
+        message: {
+          message_id: 2,
+          from: { id: 9 },
+          chat: { id: 9 },
+          voice: { file_id: 'AwACAg', duration: 6, mime_type: 'audio/ogg', file_size: 12_345 },
+        },
+      }),
+    );
+    expect(withVoice.voice).toEqual({ fileId: 'AwACAg', durationS: 6, fileSize: 12_345 });
+    expect(withVoice.text).toBe(''); // голосове без тексту — text лишається ''
+
+    expect(asMessage(parseUpdate({ update_id: 11, message: { text: 'привіт' } })).voice).toBeNull();
+    // без file_id розпізнавати нічого — voice:null, а не обʼєкт-каліка
+    expect(
+      asMessage(parseUpdate({ update_id: 12, message: { voice: { duration: 6 } } })).voice,
+    ).toBeNull();
+    // відсутні duration/file_size не роблять NaN
+    expect(
+      asMessage(parseUpdate({ update_id: 13, message: { voice: { file_id: 'F' } } })).voice,
+    ).toEqual({ fileId: 'F', durationS: 0, fileSize: null });
+  });
+
   it('isOwner порівнює from.id з дозволеним', () => {
     const p = parseUpdate({ callback_query: { from: { id: 111 }, message: {} } });
     expect(isOwner(p, 111)).toBe(true);
