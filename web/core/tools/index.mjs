@@ -23,7 +23,7 @@ import { runMemorySearch } from '../memory.mjs';
  * @typedef {{
  *   args: import('../internal/schemas.mjs').InternalSchema,
  *   tainting?: boolean,
- *   write?: { kind: string },
+ *   write?: { kind?: string, kindFrom?: string },
  *   run: (env: Env, args: any, nowMs: number) => Promise<{ result: unknown }>,
  * }} InternalToolDef
  */
@@ -108,6 +108,102 @@ export const TOOLS = {
       },
     },
     run: (env, args) => runFactsGet(env, args),
+  },
+  // Нагадування (PR-6). Час приходить ПРИРОДНИМ текстом: рахує його parser
+  // ядра, не модель - інакше вона сама переводила б київські години й
+  // помилялася тихо. Усі три - write, тобто йдуть через policy.
+  'reminders.create': {
+    args: {
+      type: 'object',
+      required: ['when'],
+      properties: {
+        when: { type: 'string', maxLength: 120 },
+        text: { type: 'string', maxLength: 200 },
+      },
+    },
+    write: { kind: 'reminders.create' },
+    run: () => {
+      throw new Error('reminders.create виконується через policy, не напряму');
+    },
+  },
+  'reminders.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        when: { type: 'string', maxLength: 120 },
+        text: { type: 'string', maxLength: 200 },
+      },
+    },
+    write: { kind: 'reminders.update' },
+    run: () => {
+      throw new Error('reminders.update виконується через policy, не напряму');
+    },
+  },
+  'reminders.cancel': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', maxLength: 64 } },
+    },
+    write: { kind: 'reminders.cancel' },
+    run: () => {
+      throw new Error('reminders.cancel виконується через policy, не напряму');
+    },
+  },
+  // record (PR-6): чотири види локальних записів одним інструментом. Слот
+  // чек-іна і позиції у списках рахує КОД - модель дає лише kind і payload.
+  record: {
+    args: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', maxLength: 16 },
+        payload: { type: 'object' },
+      },
+    },
+    write: { kind: 'record' },
+    run: () => {
+      throw new Error('record виконується через policy, не напряму');
+    },
+  },
+  // proposals.create (07 §4): єдиний шлях запису НАЗОВНІ - календар, контакти,
+  // Drive, Tasks, налаштування, експорт. Сам інструмент дією не є: він
+  // просить policy створити пропозицію на дію `kind`, і рівень (T1/T2) бере
+  // ACTION_LEVELS саме за ним. Виконавців для цих kind-ів ще немає (адаптери
+  // Google - пізніші етапи), тож після ✅ власник дістане чесне «виконавця ще
+  // немає», а не тишу.
+  'proposals.create': {
+    args: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        payload: { type: 'object' },
+      },
+    },
+    write: { kindFrom: 'kind' },
+    run: () => {
+      throw new Error('proposals.create виконується через policy, не напряму');
+    },
+  },
+  // chain.start - ЗАГЛУШКА до етапу 5 (Workflows). Інструмент присутній, щоб
+  // модель знала межу («ланцюг почнеться пізніше»), а не вигадувала обхід;
+  // виконавця немає навмисно, тож policy відповість no-executor.
+  'chain.start': {
+    args: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        payload: { type: 'object' },
+      },
+    },
+    write: { kind: 'chain.start' },
+    run: () => {
+      throw new Error('chain.start виконується через policy, не напряму');
+    },
   },
   'facts.set': {
     args: {
