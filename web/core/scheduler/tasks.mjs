@@ -26,6 +26,7 @@ import {
 } from '../../cron.mjs';
 import { agentRunWatchdog, agentHostHealthCheck } from '../../agent-runtime.mjs';
 import { drainOutbox } from '../tg/outbox.mjs';
+import { deliverDueReminders } from '../reminders/deliver.mjs';
 import { checkBrainHandshake } from '../brain/health.mjs';
 import { memorySummarize } from '../brain/summarize.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
@@ -49,7 +50,29 @@ export const SCHEDULER_TASKS = {
       console.log('scheduler: heartbeat');
     },
   },
-  reminder: { periodMin: 5, run: checkReminders },
+  // Нагадування з ДВОХ сховищ до фліпа (етап 2 PR-7): легасі-крон шле з KV
+  // (там живе все, створене через /remind), нова гілка - з D1 (там усе, що
+  // створив мозок інструментом). Записи різні, тож дублів немає; після фліпа
+  // й міграції KV-джерело зникає разом із легасі-циклом. Збій одного джерела
+  // не глушить друге - та сама ізоляція, що в brain-health.
+  reminder: {
+    periodMin: 5,
+    run: async (env) => {
+      // ⚠️ KV-гілка мовчить при `on` (ревʼю PR-7): після фліпа джерелом стає
+      // D1, і залишений KV-читач слав би те саме вдруге - міграція копіює
+      // записи, тож у вікні між вставкою і чисткою вони лежать в обох
+      // сховищах, і кожне джерело доставило б свою копію. Власник не може
+      // відрізнити повтор від нового нагадування.
+      if (env.ASSISTANT_V2 !== 'on') {
+        try {
+          await checkReminders(env);
+        } catch (/** @type {any} */ e) {
+          console.error('reminder: легасі-джерело (KV) впало', e?.message);
+        }
+      }
+      await deliverDueReminders(env);
+    },
+  },
   'run-watchdog': { periodMin: 5, run: agentRunWatchdog },
   // Обидва мозки під одним канонічним kind: старий хост (agentHostHealthCheck,
   // живе до кінця етапу 2) і handshake нового (checkBrainHandshake - тихий

@@ -8,22 +8,21 @@
 // готовий timestamp означало б, що вона рахує київський час і переведення
 // годинника - вона це робить неправильно, і помилка тиха.
 //
-// Сховище - KV `state.reminders` через чинні примітиви reminders-core (той
-// самий масив, який читає крон і показує /reminders). D1-таблиця `reminders`
-// існує з міграції 0002, але порожня: перенесення - PR-7 етапу 2, і робити
-// це тут означало б дві правди одночасно.
+// Сховище - D1 `reminders` (07 §1) через core/reminders/store. KV
+// `state.reminders` лишається джерелом ЛЕГАСІ-шляху (крон + /remind) до фліпа
+// ASSISTANT_V2=on; перенесення робить scripts/migrate-reminders.mjs під час
+// фліпа, коли легасі-цикл уже заглушено - інакше те саме нагадування прийшло б
+// двічі, з обох сховищ.
 
-import { loadState, updateState } from '../../kv-store.mjs';
+import { parseReminderTime } from '../../reminders-core.mjs';
 import {
-  parseReminderTime,
-  addReminder,
-  cancelReminder,
+  createReminder,
   updateReminder,
-  listActive,
-} from '../../reminders-core.mjs';
+  cancelReminder,
+  listActiveReminders,
+  getReminder,
+} from '../reminders/store.mjs';
 
-/** Стеля списку в результаті: моделі потрібен вибір, не архів. */
-const MAX_LIST = 20;
 /** Стеля тексту нагадування - як у легасі-шляху (повідомлення Telegram). */
 const MAX_TEXT = 200;
 /** Підпис-заглушка cleanRemainder: не зміст, а «щось таки треба показати». */
@@ -42,7 +41,7 @@ function resolveWhen(when, nowMs) {
       `не розібрав час "${when}" - попроси власника сказати інакше («через 20 хв», «завтра о 9»)`,
     );
   }
-  // Стосується лише розібраного з ТЕКСТУ часу. Внутрішній whenMs (undo) цю
+  // Стосується лише розібраного з ТЕКСТУ часу. Внутрішній dueAtMs (undo) цю
   // перевірку свідомо минає: «↩» має повернути нагадування таким, яким воно
   // було, навіть якщо термін настав, поки власник роздумував.
   if (parsed.whenMs <= nowMs) throw new Error('час уже минув - потрібен момент у майбутньому');
@@ -50,35 +49,32 @@ function resolveWhen(when, nowMs) {
 }
 
 /**
- * reminders.create: {text, when} → нагадування в KV.
+ * reminders.create: {text, when} → рядок у D1.
  * `when` - природний текст; якщо в ньому лишився зміст («нагадай купити хліб
  * через годину»), парсер віддає remainder, і він стає текстом, коли `text`
  * не заданий явно.
+ *
+ * ⚠️ Внутрішні поля - ОКРЕМИЙ параметр, не частина args (security-ревʼю PR-6):
+ * proposals.create приймає довільний payload, тож усе, що лежить в args,
+ * досяжне для моделі - зокрема адреса доставки й обхід парсера.
  * @param {Env} env
  * @param {{ text?: string, when?: string }} args - те, що дає МОДЕЛЬ
  * @param {number} nowMs
- * @param {{ whenMs?: number, restoreId?: string, chatId?: number | string | null,
+ * @param {{ dueAtMs?: number, restoreId?: string, chatId?: number | string | null,
  *   threadId?: number | string | null }} [internal] - лише ядро: адреса
  *   прогону і відновлення після «↩»
  */
 export async function runRemindersCreate(env, args, nowMs, internal = {}) {
-  // ⚠️ Внутрішні поля - ОКРЕМИЙ параметр, не частина args (security-ревʼю
-  // PR-6). Доти вони жили в args із поміткою «у схемі їх немає, тож модель не
-  // передасть» - і це було хибно: proposals.create приймає довільний payload,
-  // тож через нього модель дотягувалась і до whenMs (обхід парсера й
-  // перевірки майбутнього), і до restoreId, і до адреси доставки.
-  let whenMs;
+  let dueAtMs;
   let remainder;
-  if (typeof internal.whenMs === 'number') {
-    whenMs = internal.whenMs;
+  if (typeof internal.dueAtMs === 'number') {
+    dueAtMs = internal.dueAtMs;
   } else {
     if (!args.when) throw new Error('when обовʼязковий');
-    ({ whenMs, remainder } = resolveWhen(args.when, nowMs));
+    ({ whenMs: dueAtMs, remainder } = resolveWhen(args.when, nowMs));
   }
-  // ⚠️ remainder НІКОЛИ не буває порожнім: cleanRemainder віддає підпис-
-  // заглушку «Нагадування», коли крім часу в тексті нічого немає (ревʼю PR-6).
-  // Без цієї перевірки «нагадай через 20 хв» створювало б нагадування з
-  // текстом «Нагадування», а перевірка порожнечі нижче була б мертвою.
+  // remainder НІКОЛИ не буває порожнім: cleanRemainder віддає підпис-заглушку
+  // «Нагадування», коли крім часу в тексті нічого немає (ревʼю PR-6).
   const fromRemainder = remainder === REMINDER_FALLBACK_TEXT ? '' : (remainder ?? '');
   const text = String(args.text ?? fromRemainder).trim();
   if (!text) {
@@ -87,21 +83,17 @@ export async function runRemindersCreate(env, args, nowMs, internal = {}) {
   if (text.length > MAX_TEXT) throw new Error(`text довший за ${MAX_TEXT} символів`);
 
   const id = internal.restoreId ?? crypto.randomUUID().slice(0, 8);
-  await updateState(env, (s) => ({
-    ...s,
-    reminders: addReminder(s.reminders, {
-      id,
-      text,
-      whenMs,
-      nowMs,
-      // Адресу задає ЯДРО з контексту прогону: доти вона приходила з
-      // аргументів, і через proposals.create модель могла надіслати
-      // нагадування з даними власника в довільний чат (security-ревʼю PR-6).
-      ...(internal.chatId != null ? { chatId: internal.chatId } : {}),
-      ...(internal.threadId != null ? { threadId: internal.threadId } : {}),
-    }),
-  }));
-  return { result: { id, text, when: new Date(whenMs).toISOString() } };
+  const created = await createReminder(env, {
+    id,
+    text,
+    dueAtMs,
+    // Адресу задає ЯДРО з контексту прогону: доти вона приходила з аргументів,
+    // і через proposals.create модель могла надіслати нагадування з даними
+    // власника в довільний чат (security-ревʼю PR-6).
+    chatId: internal.chatId ?? null,
+    threadId: internal.threadId ?? null,
+  });
+  return { result: { id: created.id, text: created.text, when: created.dueAt } };
 }
 
 /**
@@ -109,16 +101,16 @@ export async function runRemindersCreate(env, args, nowMs, internal = {}) {
  * @param {Env} env
  * @param {{ id: string, text?: string, when?: string }} args
  * @param {number} nowMs
- * @param {{ whenMs?: number }} [internal] - лише ядро (undo)
+ * @param {{ dueAtMs?: number }} [internal] - лише ядро (undo)
  */
 export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
   if (!args.id) throw new Error('id обовʼязковий');
-  if (args.text == null && args.when == null && internal.whenMs == null) {
+  if (args.text == null && args.when == null && internal.dueAtMs == null) {
     throw new Error('нема що змінювати: ні text, ні when');
   }
   const before = await findActive(env, args.id);
 
-  /** @type {{ text?: string, whenMs?: number }} */
+  /** @type {{ text?: string, dueAtMs?: number }} */
   const patch = {};
   if (args.text != null) {
     const text = String(args.text).trim();
@@ -126,15 +118,16 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
     if (text.length > MAX_TEXT) throw new Error(`text довший за ${MAX_TEXT} символів`);
     patch.text = text;
   }
-  if (typeof internal.whenMs === 'number') patch.whenMs = internal.whenMs;
-  else if (args.when != null) patch.whenMs = resolveWhen(args.when, nowMs).whenMs;
+  if (typeof internal.dueAtMs === 'number') patch.dueAtMs = internal.dueAtMs;
+  else if (args.when != null) patch.dueAtMs = resolveWhen(args.when, nowMs).whenMs;
 
-  await updateState(env, (s) => ({ ...s, reminders: updateReminder(s.reminders, args.id, patch) }));
+  const ok = await updateReminder(env, args.id, patch);
+  if (!ok) throw new Error(`нагадування ${args.id} не оновилось - перечитай список`);
   return {
     result: {
       id: args.id,
       text: patch.text ?? before.text,
-      when: new Date(patch.whenMs ?? before.whenMs).toISOString(),
+      when: patch.dueAtMs != null ? new Date(patch.dueAtMs).toISOString() : before.dueAt,
     },
   };
 }
@@ -147,7 +140,8 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
 export async function runRemindersCancel(env, args) {
   if (!args.id) throw new Error('id обовʼязковий');
   const before = await findActive(env, args.id);
-  await updateState(env, (s) => ({ ...s, reminders: cancelReminder(s.reminders, args.id) }));
+  const ok = await cancelReminder(env, args.id);
+  if (!ok) throw new Error(`нагадування ${args.id} не скасувалось - перечитай список`);
   return { result: { id: args.id, text: before.text, cancelled: true } };
 }
 
@@ -158,15 +152,14 @@ export async function runRemindersCancel(env, args) {
  * @param {Env} env
  */
 export async function readActiveReminders(env) {
-  const state = await loadState(env);
-  return listActive(state.reminders).slice(0, MAX_LIST);
+  return listActiveReminders(env);
 }
 
 /** Знайти АКТИВНЕ нагадування або впасти з чесним текстом для моделі.
  *  @param {Env} env @param {string} id */
 async function findActive(env, id) {
-  const found = (await readActiveReminders(env)).find((r) => r.id === id);
-  if (!found) {
+  const found = await getReminder(env, id);
+  if (!found || (found.status !== 'pending' && found.status !== 'snoozed')) {
     throw new Error(`нагадування ${id} не знайдено серед активних - перечитай список`);
   }
   return found;
