@@ -113,6 +113,21 @@ describe('proposals.create: рівень бере kind з аргументів',
     expect(String(body.error)).toContain('kind не заданий');
   });
 
+  it('T0-дію через обгортку НЕ пускає: підтвердження обіцяне - має бути справжнім', async () => {
+    // Інакше модель викликала б proposals.create(kind='record'|'reminders.create')
+    // і дія виконалась би миттєво, повз схему самого інструмента, хоча опис
+    // у мозку обіцяє власнику протилежне (security-ревʼю PR-6).
+    const { env } = makeEnv();
+    for (const kind of ['record', 'reminders.create', 'facts.set']) {
+      const { status, body } = await callTool(env, 'proposals.create', {
+        kind,
+        payload: { kind: 'roadmap', payload: {} },
+      });
+      expect(status).toBe(400);
+      expect(String(body.error)).toContain('direct-tool');
+    }
+  });
+
   it('після ✅ без виконавця - ЧЕСНЕ «no-executor», а не «прийнято і забуто»', async () => {
     const { env } = makeEnv();
     const { body } = await callTool(env, 'proposals.create', {
@@ -126,9 +141,9 @@ describe('proposals.create: рівень бере kind з аргументів',
   });
 
   it('payload дії передається виконавцю БЕЗ обгортки {kind, payload}', async () => {
-    // Перевіряємо на kind, у якого виконавець є: facts.set. Через
-    // proposals.create він приходить у payload, і policy має отримати саме
-    // поля факту, а не вкладений обʼєкт.
+    // Виконавець є лише у facts.set, і сам по собі це T0. Але з source=owner
+    // policy ескалює його до T1 - саме такий випадок і легітимний для
+    // обгортки: підтвердження справді потрібне.
     const { d1, env } = makeEnv();
     const { body } = await callTool(env, 'proposals.create', {
       kind: 'facts.set',

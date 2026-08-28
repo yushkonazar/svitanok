@@ -143,10 +143,14 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
             // обгортку {kind, payload} - інакше виконавець отримав би зайвий
             // рівень вкладеності.
             payload: tool.write.kindFrom
-              ? /** @type {any} */ ((args)?.payload ?? {})
+              ? /** @type {any} */ (args?.payload ?? {})
               : /** @type {any} */ (args),
             threadId,
+            // Адреса прогону - для виконавців, що шлють щось власнику
+            // (нагадування): її задає ядро, не модель (security-ревʼю PR-6).
+            chatId: info?.chatId ?? null,
             tainted,
+            viaProposal: Boolean(tool.write.kindFrom),
           },
           nowMs,
         );

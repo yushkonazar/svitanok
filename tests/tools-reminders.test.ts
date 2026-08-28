@@ -90,16 +90,15 @@ describe('reminders.create', () => {
     expect(result.when.slice(0, 10)).toBe('2026-08-29');
   });
 
-  it('внутрішній whenMs минулого ДОЗВОЛЕНИЙ - це шлях undo', async () => {
+  it('внутрішній whenMs минулого ДОЗВОЛЕНИЙ - це шлях undo (окремий параметр, не args)', async () => {
     // «↩» після скасування має повернути нагадування таким, яким воно було.
     // Якщо термін настав, поки власник роздумував, воно спрацює найближчим
     // тіком - це правильніше, ніж мовчки відмовити у відновленні.
     const { env } = makeEnv();
-    const { result } = await runRemindersCreate(
-      env,
-      { text: 'вчорашнє', whenMs: NOW - 1000, restoreId: 'old1' },
-      NOW,
-    );
+    const { result } = await runRemindersCreate(env, { text: 'вчорашнє' }, NOW, {
+      whenMs: NOW - 1000,
+      restoreId: 'old1',
+    });
     expect(result.id).toBe('old1');
     expect(Date.parse(result.when)).toBe(NOW - 1000);
   });
@@ -107,7 +106,7 @@ describe('reminders.create', () => {
   it('порожній текст і задовгий текст відкидаються', async () => {
     const { env } = makeEnv();
     await expect(runRemindersCreate(env, { text: '   ', when: 'через 5 хв' }, NOW)).rejects.toThrow(
-      /text порожній/,
+      /не зрозумів, ПРО ЩО нагадати/,
     );
     await expect(
       runRemindersCreate(env, { text: 'я'.repeat(201), when: 'через 5 хв' }, NOW),
@@ -186,6 +185,44 @@ describe('реєстрація в реєстрі інструментів', () =
 });
 
 // ── Policy-шлях: T0 з «↩», tainted → пропозиція, справжній відкат ────────────
+
+describe('адресу і внутрішні поля задає ЯДРО (security-ревʼю PR-6)', () => {
+  it('chat_id/thread_id з аргументів моделі ігноруються повністю', async () => {
+    // Доти вони жили в args, і через proposals.create модель могла надіслати
+    // нагадування з даними власника в ЧУЖИЙ чат: крон шле саме на r.chatId.
+    const { store, env } = makeEnv();
+    await runRemindersCreate(
+      env,
+      { text: 'секрет', when: 'через 20 хв', chat_id: 777_000, thread_id: 5 } as never,
+      NOW,
+    );
+    const saved = state(store).reminders[0];
+    expect(saved.chatId).toBeUndefined();
+    expect(saved.threadId).toBeUndefined();
+  });
+
+  it('whenMs/restoreId з аргументів моделі теж ігноруються', async () => {
+    const { store, env } = makeEnv();
+    const { result } = await runRemindersCreate(
+      env,
+      { text: 'x', when: 'через 20 хв', whenMs: NOW - 60_000, restoreId: 'hijack' } as never,
+      NOW,
+    );
+    // Час - із парсера, id - випадковий: обидва поля з args не діють.
+    expect(Date.parse(result.when) - NOW).toBe(20 * 60_000);
+    expect(result.id).not.toBe('hijack');
+    expect(state(store).reminders[0].whenMs).toBe(NOW + 20 * 60_000);
+  });
+
+  it('адреса приходить окремим параметром - її ставить ядро з контексту прогону', async () => {
+    const { store, env } = makeEnv();
+    await runRemindersCreate(env, { text: 'x', when: 'через 5 хв' }, NOW, {
+      chatId: 555,
+      threadId: 99,
+    });
+    expect(state(store).reminders[0]).toMatchObject({ chatId: 555, threadId: 99 });
+  });
+});
 
 describe('нагадування через policy (PR-8 × PR-6)', () => {
   const seededEnv = (reminders: unknown[] = []) => {

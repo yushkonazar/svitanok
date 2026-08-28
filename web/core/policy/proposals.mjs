@@ -31,7 +31,9 @@ import {
  * Виконавці записів. execute повертає {prev} - знімок для undo (undefined =
  * відкочувати нічого, undo-кнопки не буде). undo приймає той знімок.
  * @type {Record<string, {
- *   execute: (env: Env, payload: any, nowMs: number) => Promise<{ prev?: unknown, result?: unknown }>,
+ *   execute: (env: Env, payload: any, nowMs: number,
+ *     ctx?: { chatId?: number | string | null, threadId?: number | string | null })
+ *     => Promise<{ prev?: unknown, result?: unknown }>,
  *   undo?: (env: Env, prev: any, nowMs: number) => Promise<void>,
  * }>}
  */
@@ -40,18 +42,33 @@ export const EXECUTORS = {
   // самий рядок, що й до «↩», а не новий - інакше друге «↩» після ручної
   // правки скасувало б чуже нагадування.
   'reminders.create': {
-    async execute(env, payload, nowMs) {
-      const { result } = await runRemindersCreate(env, payload, nowMs);
+    async execute(env, payload, nowMs, ctx) {
+      // ⚠️ ЛИШЕ відомі поля (security-ревʼю PR-6): payload приходить із
+      // proposals.create без схеми, тож передавати його виконавцю as-is
+      // означало б дати моделі доступ і до внутрішніх полів, і до адреси
+      // доставки. Адресу бере ядро з контексту прогону.
+      const { result } = await runRemindersCreate(
+        env,
+        { text: payload.text, when: payload.when },
+        nowMs,
+        { chatId: ctx?.chatId, threadId: ctx?.threadId },
+      );
       return { prev: { id: result.id }, result };
     },
     async undo(env, snapshot) {
-      await runRemindersCancel(env, { id: snapshot.id }).catch(() => {});
+      // Без .catch: нагадування могло вже спрацювати, і тоді відкоту немає -
+      // краще чесна помилка, ніж тост «Відкочено ↩» при нульовій дії.
+      await runRemindersCancel(env, { id: snapshot.id });
     },
   },
   'reminders.update': {
     async execute(env, payload, nowMs) {
       const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
-      const { result } = await runRemindersUpdate(env, payload, nowMs);
+      const { result } = await runRemindersUpdate(
+        env,
+        { id: payload.id, text: payload.text, when: payload.when },
+        nowMs,
+      );
       // Знімок ДО правки: undo кладе назад і текст, і час.
       return {
         prev: before ? { id: before.id, text: before.text, whenMs: before.whenMs } : null,
@@ -60,29 +77,28 @@ export const EXECUTORS = {
     },
     async undo(env, snapshot, nowMs) {
       if (!snapshot) return;
-      await runRemindersUpdate(
-        env,
-        { id: snapshot.id, text: snapshot.text, whenMs: snapshot.whenMs },
-        nowMs,
-      );
+      await runRemindersUpdate(env, { id: snapshot.id, text: snapshot.text }, nowMs, {
+        whenMs: snapshot.whenMs,
+      });
     },
   },
   'reminders.cancel': {
     // nowMs не потрібен: скасування не рахує часу, лише прибирає рядок.
     async execute(env, payload) {
       const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
-      const { result } = await runRemindersCancel(env, payload);
+      const { result } = await runRemindersCancel(env, { id: payload.id });
       return { prev: before ?? null, result };
     },
     async undo(env, snapshot, nowMs) {
       if (!snapshot) return;
       // Скасоване нагадування зникло зі списку - «↩» створює його наново з
-      // тим самим id, текстом і часом.
-      await runRemindersCreate(
-        env,
-        { text: snapshot.text, whenMs: snapshot.whenMs, restoreId: snapshot.id },
-        nowMs,
-      );
+      // тим самим id, текстом і часом; адреса теж повертається зі знімка.
+      await runRemindersCreate(env, { text: snapshot.text }, nowMs, {
+        whenMs: snapshot.whenMs,
+        restoreId: snapshot.id,
+        chatId: snapshot.chatId,
+        threadId: snapshot.threadId,
+      });
     },
   },
   // record: БЕЗ undo. Чинні модулі (applyEvent, recordEvent, toggleProgress)
@@ -92,7 +108,13 @@ export const EXECUTORS = {
   // undefined (policy тоді її не показує).
   record: {
     async execute(env, payload, nowMs) {
-      const { result } = await runRecord(env, payload, nowMs);
+      // kind і payload дії - і нічого більше: обгортка з proposals.create не
+      // має підсовувати виконавцю зайвих полів.
+      const { result } = await runRecord(
+        env,
+        { kind: payload.kind, payload: payload.payload },
+        nowMs,
+      );
       return { result };
     },
   },
@@ -138,7 +160,9 @@ function db(env) {
  * write-шляхів router'а.
  * @param {Env} env
  * @param {{ kind: string, payload: Record<string, unknown>,
- *   threadId?: string | number | null, tainted: boolean }} action
+ *   threadId?: string | number | null, chatId?: number | string | null,
+ *   tainted: boolean, viaProposal?: boolean }} action - viaProposal: дію
+ *   просить обгортка proposals.create (тоді T0 заборонений)
  * @param {number} nowMs
  * @returns {Promise<
  *   | { mode: 'executed', result: unknown, undo?: { id: string, buttons: unknown } }
@@ -158,10 +182,25 @@ export async function applyPolicy(env, action, nowMs) {
     level = 'T1';
   }
 
+  // ⚠️ Гейт стоїть ПІСЛЯ ескалацій (security-ревʼю PR-6): обгортка
+  // proposals.create просить підтвердження - і мусить його дати. Інакше через
+  // неї модель виконувала б T0-дії миттєво й повз схему самого інструмента,
+  // хоча опис у мозку обіцяє власнику протилежне. Дія, яку ескалювали до
+  // T1 (напр. facts.set із source=owner), через обгортку легітимна.
+  if (action.viaProposal && level === 'T0') {
+    return {
+      mode: 'error',
+      error: `direct-tool: ${action.kind} - це T0, клич інструмент напряму, не proposals.create`,
+    };
+  }
+
   if (level === 'T0') {
     const executor = EXECUTORS[action.kind];
     if (!executor) return { mode: 'error', error: `no-executor: ${action.kind}` };
-    const { prev, result } = await executor.execute(env, action.payload, nowMs);
+    const { prev, result } = await executor.execute(env, action.payload, nowMs, {
+      chatId: action.chatId ?? null,
+      threadId: action.threadId ?? null,
+    });
     if (prev === undefined || !executor.undo) return { mode: 'executed', result };
     try {
       const undoId = crypto.randomUUID();

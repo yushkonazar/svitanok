@@ -26,6 +26,8 @@ import {
 const MAX_LIST = 20;
 /** Стеля тексту нагадування - як у легасі-шляху (повідомлення Telegram). */
 const MAX_TEXT = 200;
+/** Підпис-заглушка cleanRemainder: не зміст, а «щось таки треба показати». */
+const REMINDER_FALLBACK_TEXT = 'Нагадування';
 
 /**
  * Розібрати час і текст. Повертає помилку СЛОВАМИ моделі: вона має або
@@ -53,28 +55,38 @@ function resolveWhen(when, nowMs) {
  * через годину»), парсер віддає remainder, і він стає текстом, коли `text`
  * не заданий явно.
  * @param {Env} env
- * @param {{ text?: string, when?: string, chat_id?: number, thread_id?: number,
- *   whenMs?: number, restoreId?: string }} args - whenMs/restoreId лише для undo
+ * @param {{ text?: string, when?: string }} args - те, що дає МОДЕЛЬ
  * @param {number} nowMs
+ * @param {{ whenMs?: number, restoreId?: string, chatId?: number | string | null,
+ *   threadId?: number | string | null }} [internal] - лише ядро: адреса
+ *   прогону і відновлення після «↩»
  */
-export async function runRemindersCreate(env, args, nowMs) {
-  // whenMs/restoreId - ВНУТРІШНІ поля (undo policy): у схемі інструмента їх
-  // немає, тож модель їх не передасть. Потрібні тому, що парсер розуміє
-  // природні фрази, а не ISO, а відновлення після «↩» мусить лягти хвилина в
-  // хвилину і тим самим id.
+export async function runRemindersCreate(env, args, nowMs, internal = {}) {
+  // ⚠️ Внутрішні поля - ОКРЕМИЙ параметр, не частина args (security-ревʼю
+  // PR-6). Доти вони жили в args із поміткою «у схемі їх немає, тож модель не
+  // передасть» - і це було хибно: proposals.create приймає довільний payload,
+  // тож через нього модель дотягувалась і до whenMs (обхід парсера й
+  // перевірки майбутнього), і до restoreId, і до адреси доставки.
   let whenMs;
   let remainder;
-  if (typeof args.whenMs === 'number') {
-    whenMs = args.whenMs;
+  if (typeof internal.whenMs === 'number') {
+    whenMs = internal.whenMs;
   } else {
     if (!args.when) throw new Error('when обовʼязковий');
     ({ whenMs, remainder } = resolveWhen(args.when, nowMs));
   }
-  const text = String(args.text ?? remainder ?? '').trim();
-  if (!text) throw new Error('text порожній - нагадування без змісту не створюємо');
+  // ⚠️ remainder НІКОЛИ не буває порожнім: cleanRemainder віддає підпис-
+  // заглушку «Нагадування», коли крім часу в тексті нічого немає (ревʼю PR-6).
+  // Без цієї перевірки «нагадай через 20 хв» створювало б нагадування з
+  // текстом «Нагадування», а перевірка порожнечі нижче була б мертвою.
+  const fromRemainder = remainder === REMINDER_FALLBACK_TEXT ? '' : (remainder ?? '');
+  const text = String(args.text ?? fromRemainder).trim();
+  if (!text) {
+    throw new Error('не зрозумів, ПРО ЩО нагадати - постав text або спитай власника');
+  }
   if (text.length > MAX_TEXT) throw new Error(`text довший за ${MAX_TEXT} символів`);
 
-  const id = args.restoreId ?? crypto.randomUUID().slice(0, 8);
+  const id = internal.restoreId ?? crypto.randomUUID().slice(0, 8);
   await updateState(env, (s) => ({
     ...s,
     reminders: addReminder(s.reminders, {
@@ -82,8 +94,11 @@ export async function runRemindersCreate(env, args, nowMs) {
       text,
       whenMs,
       nowMs,
-      ...(args.chat_id != null ? { chatId: args.chat_id } : {}),
-      ...(args.thread_id != null ? { threadId: args.thread_id } : {}),
+      // Адресу задає ЯДРО з контексту прогону: доти вона приходила з
+      // аргументів, і через proposals.create модель могла надіслати
+      // нагадування з даними власника в довільний чат (security-ревʼю PR-6).
+      ...(internal.chatId != null ? { chatId: internal.chatId } : {}),
+      ...(internal.threadId != null ? { threadId: internal.threadId } : {}),
     }),
   }));
   return { result: { id, text, when: new Date(whenMs).toISOString() } };
@@ -92,12 +107,13 @@ export async function runRemindersCreate(env, args, nowMs) {
 /**
  * reminders.update: {id, text?, when?} - патч активного нагадування.
  * @param {Env} env
- * @param {{ id: string, text?: string, when?: string, whenMs?: number }} args
+ * @param {{ id: string, text?: string, when?: string }} args
  * @param {number} nowMs
+ * @param {{ whenMs?: number }} [internal] - лише ядро (undo)
  */
-export async function runRemindersUpdate(env, args, nowMs) {
+export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
   if (!args.id) throw new Error('id обовʼязковий');
-  if (args.text == null && args.when == null && args.whenMs == null) {
+  if (args.text == null && args.when == null && internal.whenMs == null) {
     throw new Error('нема що змінювати: ні text, ні when');
   }
   const before = await findActive(env, args.id);
@@ -110,7 +126,7 @@ export async function runRemindersUpdate(env, args, nowMs) {
     if (text.length > MAX_TEXT) throw new Error(`text довший за ${MAX_TEXT} символів`);
     patch.text = text;
   }
-  if (typeof args.whenMs === 'number') patch.whenMs = args.whenMs;
+  if (typeof internal.whenMs === 'number') patch.whenMs = internal.whenMs;
   else if (args.when != null) patch.whenMs = resolveWhen(args.when, nowMs).whenMs;
 
   await updateState(env, (s) => ({ ...s, reminders: updateReminder(s.reminders, args.id, patch) }));

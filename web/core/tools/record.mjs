@@ -21,6 +21,10 @@ export const RECORD_KINDS = ['checkin', 'news-vote', 'job-stage', 'roadmap'];
 /** Стадії воронки, які модель може ставити (термінальні - теж рішення власника). */
 const JOB_STAGES = ['saved', 'applied', 'interview', 'offer', 'rejected', 'failed'];
 
+/** Скільки позицій показує data.read (MAX_LIST_ITEMS у assistant-data-core):
+ *  голосувати й міняти стадію можна лише в межах побаченого. */
+const NEWS_LIST_CAP = 8;
+
 /**
  * record: {kind, payload} → запис у чинне сховище.
  * Повертає {result} з тим, що САМЕ записано - модель переказує це власнику, і
@@ -47,7 +51,12 @@ export async function runRecord(env, args, nowMs) {
 async function recordCheckin(env, payload, now) {
   const slot = checkinSlot(kyivHour(now));
   if (!slot) throw new Error('зараз тиха зона (02:00-08:00) - чек-ін не пишемо');
-  const result = await applyEvent(env, { type: 'checkin', ...payload });
+  // ⚠️ `type` ОСТАННІЙ і поверх payload (security-ревʼю PR-6): при
+  // `{ type: 'checkin', ...payload }` ключ `type` усередині payload перекривав
+  // би свій же літерал, і виклик «запиши чек-ін» писав би job_stage з
+  // довільним url - повз RECORD_KINDS, перелік стадій і привʼязку до воронки
+  // власника, ще й зі звітом «записав чек-ін».
+  const result = await applyEvent(env, { ...payload, type: 'checkin' });
   if (result?.locked) {
     // Уже підтверджений блок - НЕ помилка інструмента, але й не запис:
     // модель мусить сказати власнику правду, а не «записав».
@@ -67,7 +76,12 @@ async function recordNewsVote(env, payload, now) {
   for (const g of Array.isArray(groups) ? groups : []) {
     for (const it of Array.isArray(g?.items) ? g.items : []) {
       flat.push({ url: it?.url, topic: g.topic, title: it?.title });
+      // Та сама стеля, що в digestNews (assistant-data-core): модель голосує
+      // рівно за те, що бачила у списку. Без неї індекс 9+ ставив би вподобання
+      // новині, якої в її контексті не було (ревʼю PR-6).
+      if (flat.length >= NEWS_LIST_CAP) break;
     }
+    if (flat.length >= NEWS_LIST_CAP) break;
   }
   const item = flat[index - 1];
   if (!item?.url) throw new Error(`новини №${index} немає у свіжому брифінгу - перечитай список`);
@@ -108,7 +122,7 @@ async function recordJobStage(env, payload, now) {
     throw new Error(`невідома стадія "${stage}" - лише ${JOB_STAGES.join('·')}`);
   }
   const agg = aggregateStats(await loadStats(env), kyivDateKey(now));
-  const item = (agg.funnelList ?? [])[index - 1];
+  const item = (agg.funnelList ?? []).slice(0, NEWS_LIST_CAP)[index - 1];
   if (!item?.url) throw new Error(`вакансії №${index} немає у воронці - перечитай список`);
   await applyEvent(env, { type: 'job_stage', url: item.url, stage, title: item.title });
   return { result: { kind: 'job-stage', title: item.title || item.url, stage } };

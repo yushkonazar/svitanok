@@ -147,6 +147,33 @@ describe('record: стадія вакансії і роадмеп', () => {
   });
 });
 
+describe('record: payload не може перекрити службові поля (security-ревʼю PR-6)', () => {
+  it('type у payload НЕ підміняє вид події', async () => {
+    // Доти `{ type: 'checkin', ...payload }` дозволяв виклику «запиши чек-ін»
+    // записати job_stage з довільним url - повз RECORD_KINDS, перелік стадій і
+    // привʼязку до воронки власника, ще й зі звітом «записав чек-ін».
+    const { store, env } = makeEnv();
+    const { result } = await runRecord(
+      env,
+      {
+        kind: 'checkin',
+        payload: {
+          type: 'job_stage',
+          url: 'https://evil.example/1',
+          stage: 'applied',
+          title: 'Чужа вакансія',
+        },
+      },
+      NOON,
+    );
+
+    expect(result).toMatchObject({ kind: 'checkin' });
+    const stats = JSON.stringify(read(store, 'stats'));
+    expect(stats).not.toContain('evil.example');
+    expect(stats).not.toContain('Чужа вакансія');
+  });
+});
+
 describe('record: контракт інструмента', () => {
   it('невідомий kind відкидається переліком', async () => {
     const { env } = makeEnv();
