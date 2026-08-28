@@ -17,6 +17,7 @@ import { TOOLS } from '../web/core/tools/index.mjs';
 import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
+import { memoryKv } from './helpers/kv.js';
 
 const NOW = Date.parse('2026-08-28T09:00:00.000Z'); // 12:00 у Києві
 const MIGRATIONS = ['0001_base.sql', '0002_assistant.sql', '0010_reminders_address.sql'];
@@ -309,6 +310,29 @@ describe('нагадування через policy (PR-8 × PR-6)', () => {
       ),
     ).rejects.toThrow(/не розібрав час/);
     expect(rows(d1)).toHaveLength(0);
+  });
+});
+
+describe('модель бачить те, що створила (data.read × D1)', () => {
+  it('нагадування з D1 потрапляє у дайджест разом із KV-записами', async () => {
+    // Інакше модель створює нагадування інструментом і не знаходить його id -
+    // ані змінити, ані скасувати (розрив, що зʼявився при переході на D1).
+    const { runDataRead } = await import('../web/core/tools/read.mjs');
+    const d1 = d1FromSqlite(MIGRATIONS);
+    const kv = new Map<string, string>();
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: [{ id: 'kv1', text: 'з легасі', whenMs: NOW + 900_000, firedTs: null }],
+      }),
+    );
+    const env = workerEnv({ DB: d1.stub, BRIEFING: memoryKv(kv) });
+
+    await runRemindersCreate(env, { text: 'з мозку', when: 'через 30 хв' }, NOW);
+    const { result } = await runDataRead(env, { scope: 'reminders' }, NOW);
+
+    expect(String(result)).toContain('з мозку');
+    expect(String(result)).toContain('з легасі');
   });
 });
 

@@ -22,6 +22,7 @@ import { loadState, loadStats, loadLatest, loadSettings } from '../../kv-store.m
 import { aggregateStats } from '../../stats-core.mjs';
 import { totalProgress } from '../../roadmap-core.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { listActiveReminders } from '../reminders/store.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { wrapExternal } from './markup.mjs';
 
@@ -46,16 +47,21 @@ export async function runDataRead(env, args, nowMs) {
     Math.max(Math.trunc(args.cap ?? DATA_READ_DEFAULT_CAP), 500),
     DATA_READ_MAX_CAP,
   );
-  const [state, stats, latest, settings] = await Promise.all([
+  const [state, stats, latest, settings, fromD1] = await Promise.all([
     loadState(env),
     loadStats(env),
     loadLatest(env),
     loadSettings(env),
+    // Нагадування живуть у ДВОХ сховищах до фліпа (PR-7): створені через
+    // /remind - у KV, створені мозком - у D1. Модель мусить бачити обидва:
+    // інакше вона не знаходить id того, що сама щойно створила, і не може
+    // ані змінити, ані скасувати.
+    readD1Reminders(env),
   ]);
   const todayKey = kyivDateKey(new Date(nowMs));
   const digest = buildOwnDataDigest({
     scope: args.scope,
-    reminders: state.reminders,
+    reminders: [...(state.reminders ?? []), ...fromD1],
     agg: aggregateStats(stats, todayKey),
     roadmap: totalProgress(state.roadmapProgress ?? {}),
     latest,
@@ -63,6 +69,26 @@ export async function runDataRead(env, args, nowMs) {
     settings,
   });
   return { result: digest.slice(0, cap) };
+}
+
+/** Активні нагадування з D1 у формі дайджесту (whenMs/text/firedTs).
+ *  Збій читання не має валити весь data.read - тоді власник бачить хоча б
+ *  KV-частину, і про це є слід у логах.
+ *  @param {Env} env */
+async function readD1Reminders(env) {
+  if (!env.DB) return [];
+  try {
+    const rows = await listActiveReminders(env);
+    return rows.map((r) => ({
+      id: r.id,
+      text: r.text,
+      whenMs: Date.parse(r.dueAt),
+      firedTs: null,
+    }));
+  } catch (/** @type {any} */ e) {
+    console.error('data.read: нагадування з D1 не прочитались', e?.message);
+    return [];
+  }
 }
 
 /**
