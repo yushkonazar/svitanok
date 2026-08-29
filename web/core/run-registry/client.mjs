@@ -67,10 +67,13 @@ export async function registryHas(env, id) {
 }
 
 /**
- * Дані активного прогону (threadId для taint-запису). null = невідомий/збій.
+ * Дані активного прогону: threadId для taint-запису, chatId для доставки,
+ * statusMessageId - чернетка «▸ …» цього прогону (null, якщо тред уже пішов
+ * далі). null = невідомий прогін або збій.
  * @param {Env} env
  * @param {string} id
- * @returns {Promise<{ threadId: string | number | null, chatId: number | null } | null>}
+ * @returns {Promise<{ threadId: string | number | null, chatId: number | null,
+ *   statusMessageId?: number | null } | null>}
  */
 export async function registryRunInfo(env, id) {
   const ns = registryNs(env);

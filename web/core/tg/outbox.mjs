@@ -13,6 +13,7 @@ import {
   splitMessage,
   nextAttemptAt,
   isParseEntitiesError,
+  isNotModifiedError,
   THROTTLE_MS,
   DRAIN_BATCH_LIMIT,
   MAX_ATTEMPTS,
@@ -33,28 +34,40 @@ function db(env) {
 /**
  * Покласти відправку в чергу. text-повідомлення довші за стелю Telegram
  * розбиваються на частини ЩЕ ТУТ - кожна частина окремий ряд, порядок тримає
- * next_at (+1 мс на частину).
+ * id (час + індекс частини).
+ *
+ * `editFirstMessageId` - фінал прогону заміняє ЧЕРНЕТКУ статусу (01 §3.1
+ * «Rich draft»): перша частина їде editMessageText у вказане повідомлення,
+ * решта - звичайними send. Розбиття, порядок і правило «кнопки лише на
+ * останній частині» лишаються тут, в одному місці: у викликача розкладати
+ * частини по окремих enqueue не можна - усі ряди мали б однаковий префікс id,
+ * і порядок вирішував би випадковий uuid.
  * @param {Env} env
  * @param {{ chatId: string | number, threadId?: string | number | null,
  *   kind: 'send' | 'edit' | 'document',
- *   payload: Record<string, unknown> }} item
+ *   payload: Record<string, unknown>, editFirstMessageId?: number | null }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
 export async function enqueueOutbox(env, item, nowMs) {
-  /** @type {Record<string, unknown>[]} */
-  let payloads = [item.payload];
+  /** @type {{ kind: 'send' | 'edit' | 'document', payload: Record<string, unknown> }[]} */
+  let rows = [{ kind: item.kind, payload: item.payload }];
   if (item.kind === 'send') {
     const parts = splitMessage(String(item.payload.text ?? ''));
     if (parts.length === 0) return { queued: 0 };
+    const draftId = item.editFirstMessageId ?? null;
     // Кнопки - лише на ОСТАННІЙ частині: інакше три клавіатури на одну відповідь.
-    payloads = parts.map((text, i) => ({
-      ...item.payload,
-      text,
-      ...(i < parts.length - 1 ? { reply_markup: undefined } : {}),
+    rows = parts.map((text, i) => ({
+      kind: /** @type {'send' | 'edit'} */ (i === 0 && draftId != null ? 'edit' : 'send'),
+      payload: {
+        ...item.payload,
+        text,
+        ...(i === 0 && draftId != null ? { message_id: draftId } : {}),
+        ...(i < parts.length - 1 ? { reply_markup: undefined } : {}),
+      },
     }));
   }
-  const statements = payloads.map((payload, i) =>
+  const statements = rows.map((row, i) =>
     db(env)
       .prepare(
         `INSERT INTO outbox (id, chat_id, thread_id, kind, payload_json, attempts, next_at, status)
@@ -67,13 +80,13 @@ export async function enqueueOutbox(env, item, nowMs) {
         `${String(nowMs).padStart(15, '0')}-${i}-${crypto.randomUUID()}`,
         String(item.chatId),
         item.threadId == null ? null : String(item.threadId),
-        item.kind,
-        JSON.stringify(payload),
+        row.kind,
+        JSON.stringify(row.payload),
         new Date(nowMs).toISOString(),
       ),
   );
   for (const s of statements) await s.run();
-  return { queued: payloads.length };
+  return { queued: rows.length };
 }
 
 /**
@@ -240,6 +253,10 @@ async function sendRow(env, row) {
     res = await attempt(plain);
   }
   if (res.ok) return { ok: true };
+  // Редагування в той самий текст - уже доставлено, не збій (див.
+  // isNotModifiedError): інакше ряд пішов би в ретраї й failed на відповіді,
+  // яку власник давно бачить.
+  if (row.kind === 'edit' && isNotModifiedError(res.status, res.text)) return { ok: true };
   let retryAfterSec = null;
   if (res.status === 429) {
     try {

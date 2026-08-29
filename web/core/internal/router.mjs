@@ -268,12 +268,22 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       ? { chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null, threadId: null }
       : parsedForThread(env, String(threadKey), info?.chatId ?? null);
   if (target.chatId == null) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  // Статус-повідомлення - це ЧЕРНЕТКА відповіді (01 §3.1 «Rich draft»), тож
+  // фінал заміняє її, а не лягає другим повідомленням. Без цього чернетка
+  // назавжди лишалась на останньому партіалі, і власник бачив обірваний
+  // шматок («2 494,24 (14 672») плюс повну відповідь окремо. Розбиття довгої
+  // відповіді й порядок частин лишаються в enqueueOutbox.
+  const draftId = info?.statusMessageId ?? null;
+  // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
+  // спершу покаже обірваний шматок і лише потім фінал.
+  if (draftId != null) await dropPendingEdits(env, target.chatId, draftId);
   const { queued } = await enqueueOutbox(
     env,
     {
       chatId: target.chatId,
       threadId: target.threadId,
       kind: 'send',
+      editFirstMessageId: draftId,
       payload: {
         text: body.text,
         parse_mode: 'HTML',
@@ -283,7 +293,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     nowMs,
   );
   await scheduleDrain(env, ctx, nowMs);
-  return json({ ok: true, queued });
+  return json({ ok: true, queued, ...(draftId != null ? { edited: draftId } : {}) });
 }
 
 /**

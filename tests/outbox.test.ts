@@ -331,6 +331,106 @@ describe('deliver/status через router', () => {
     expect(sends).toHaveLength(body.queued);
   });
 
+  // Статус-повідомлення - ЧЕРНЕТКА відповіді (01 §3.1): фінал заміняє її, а не
+  // лягає другим повідомленням. До фіксу власник бачив обірваний партіал
+  // («2 494,24 (14 672») і повну відповідь окремо - два повідомлення на один
+  // запит, причому перше зі зрізаною формулою.
+  const envWithDraft = (statusMessageId: number) =>
+    workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      TELEGRAM_BOT_TOKEN: 'bot-t',
+      TELEGRAM_CHAT_ID: '-100',
+      TOPIC_ASSISTANT: '33',
+      DB: store,
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async () => true,
+          runInfo: async () => ({ threadId: 77, statusMessageId }),
+        }),
+      },
+    });
+
+  it('deliver із чернеткою: фінал ЗАМІНЯЄ статусник, другого повідомлення немає', async () => {
+    const res = await handleInternal(
+      await signedRequest(
+        '/internal/deliver',
+        { text: '2 494,24 (14 672 × 0,17)', buttons: [[{ text: '↩', callback_data: 'u:1' }]] },
+        'n-d4',
+      ),
+      envWithDraft(629),
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.url).toContain('editMessageText');
+    expect(sends[0]?.body).toMatchObject({
+      message_id: 629,
+      text: '2 494,24 (14 672 × 0,17)',
+      parse_mode: 'HTML',
+    });
+    // Кнопки їдуть із фіналом, бо відповідь ціла в чернетці.
+    expect(JSON.stringify(sends[0]?.body.reply_markup)).toContain('u:1');
+    expect(sends.some((c) => c.url.includes('sendMessage'))).toBe(false);
+  });
+
+  it('деліверу довшого за 4096: перша частина в чернетку, решта - окремі повідомлення', async () => {
+    const res = await handleInternal(
+      await signedRequest(
+        '/internal/deliver',
+        {
+          text: 'щось дуже довге '.repeat(700),
+          buttons: [[{ text: '↩', callback_data: 'u:2' }]],
+        },
+        'n-d5',
+      ),
+      envWithDraft(630),
+      NOW,
+    );
+    const body = (await res.json()) as { queued: number };
+    expect(body.queued).toBeGreaterThanOrEqual(3);
+    expect(sends).toHaveLength(body.queued);
+    expect(sends[0]?.url).toContain('editMessageText');
+    expect(sends[0]?.body).toMatchObject({ message_id: 630 });
+    // Кнопки - на ОСТАННІЙ частині, як і в звичайного send.
+    expect(sends[0]?.body.reply_markup).toBeUndefined();
+    expect(sends.slice(1).every((c) => c.url.includes('sendMessage'))).toBe(true);
+    expect(JSON.stringify(sends.at(-1)?.body.reply_markup)).toContain('u:2');
+  });
+
+  it('редагування в той самий текст - успіх, а не ретраї (message is not modified)', async () => {
+    // Останній партіал уже дорівнював фіналу: Telegram відповідає 400, і без
+    // окремої гілки ряд ішов би в ретраї, а потім у failed - на відповіді,
+    // яку власник давно бачить.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        sends.push({
+          url,
+          body: typeof init?.body === 'string' ? JSON.parse(init.body) : { form: true },
+        });
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error_code: 400,
+            description: 'Bad Request: message is not modified',
+          }),
+          { status: 400 },
+        );
+      }),
+    );
+    const res = await handleInternal(
+      await signedRequest('/internal/deliver', { text: 'вже там' }, 'n-d6'),
+      envWithDraft(631),
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    const rows = store.raw.prepare('SELECT status, attempts FROM outbox').all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'sent', attempts: 0 });
+  });
+
   it('deliver з callback_data поза простором 07 §9 — 400 (confused deputy)', async () => {
     const res = await handleInternal(
       await signedRequest(
