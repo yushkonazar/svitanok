@@ -41,7 +41,17 @@ function minimalArgs(schema: CoreSchema): Record<string, unknown> {
 
 describe('парність інструментів мозок↔ядро', () => {
   it('набори імен збігаються', () => {
-    expect(BRAIN_TOOLS.map((t) => t.coreName).sort()).toEqual(Object.keys(TOOLS).sort());
+    const routed = BRAIN_TOOLS.filter((t) => !t.internal);
+    expect(routed.map((t) => t.coreName).sort()).toEqual(Object.keys(TOOLS).sort());
+  });
+
+  // Внутрішній інструмент (07 §4 «(внутр.)») виконує мозок, і виконавця в
+  // ядрі в нього НЕ повинно бути: зʼявиться однойменний - виклик поїде в
+  // /internal/tool повз мозок, тихо змінивши те, ЩО робить delegate.
+  it('внутрішні інструменти не мають виконавця в ядрі', () => {
+    const internal = BRAIN_TOOLS.filter((t) => t.internal);
+    expect(internal.map((t) => t.coreName)).toEqual(['delegate']);
+    for (const t of internal) expect(TOOLS[t.coreName as keyof typeof TOOLS]).toBeUndefined();
   });
 
   it('mcpName без крапок і без колізій', () => {

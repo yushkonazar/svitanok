@@ -11,6 +11,7 @@ import type { RunRequest } from './server.js';
 import { PROFILES, TRANSCRIPT_MAX_CHARS, buildSystemPrompt, type RunProfile } from './profiles.js';
 import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
+import { QUICK_WORKER, runWorker } from './workers.js';
 
 /** Виконання інструмента з погляду рушія: текст для моделі + прапор помилки. */
 export interface ToolExecution {
@@ -127,6 +128,20 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           'tool-cap',
         );
       }
+      // Внутрішні інструменти (07 §4 «(внутр.)») в ядро не йдуть - їх виконує
+      // сам мозок. Єдиний такий зараз - delegate: файли працівників приїдуть
+      // на етапі 4, тож поки чесна відмова з іменем працівника в нотатці
+      // кроку - run_steps покажуть, кого модель кличе насправді, і етап 4
+      // почнеться з фактів, а не з припущень.
+      if (def.internal) {
+        const parsed = def.args.safeParse(args);
+        if (!parsed.success) return fail(`Аргументи ${mcpName} не за контрактом.`, 'bad-args');
+        const worker = String(parsed.data.worker ?? '');
+        return fail(
+          `Працівника «${worker}» ще не підключено. Зроби цю задачу сам у цій самій відповіді або скажи власнику прямо, що вона поки не автоматизована; delegate більше не викликай.`,
+          `worker-unavailable:${worker}`,
+        );
+      }
       if (tainted && def.write) {
         // Перша половина подвійного барʼєра: у tainted-сесії прямий запис
         // заборонено ще ДО ядра; policy ядра - друга половина.
@@ -223,23 +238,41 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         inputText = clipTail(transcript, TRANSCRIPT_MAX_CHARS);
       }
 
-      const outcome = await deps.engine.run(
-        {
-          systemPrompt: buildSystemPrompt(profile, startedMs, {
-            summary: profile.name === 'chat' ? (req.session?.summary_md ?? null) : null,
-            instruction: instructionBody,
-          }),
-          model: profile.model,
-          maxTurns: profile.maxTurns,
-          toolNames: profile.toolNames,
-          resumeSessionId: profile.name === 'chat' ? (req.session?.sdk_session_id ?? null) : null,
-          streamPartials: req.status_message_id != null,
-          abortSignal: abort.signal,
-          onToolCall,
-          onPartialText,
-        },
-        inputText,
-      );
+      const systemPrompt = buildSystemPrompt(profile, startedMs, {
+        summary: profile.name === 'chat' ? (req.session?.summary_md ?? null) : null,
+        instruction: instructionBody,
+      });
+      // Швидка смуга - це працівник quick (07 §5), і йде вона ТИМ САМИМ
+      // шляхом, яким на етапі 4 підуть решта десять: свіжа сесія, модель і
+      // стеля ходів із front-matter файлу. Так шлях працівника перевіряється
+      // в проді щодня, а не вперше на етапі 4.
+      // Спільне для обох гілок: канал інструментів, статусу і скасування.
+      const runCtx = {
+        abortSignal: abort.signal,
+        onToolCall,
+        onPartialText,
+        streamPartials: req.status_message_id != null,
+      };
+      const outcome =
+        profile.name === 'quick'
+          ? await runWorker(
+              deps.engine,
+              { ...QUICK_WORKER, prompt: systemPrompt },
+              inputText,
+              runCtx,
+            )
+          : await deps.engine.run(
+              {
+                systemPrompt,
+                model: profile.model,
+                maxTurns: profile.maxTurns,
+                toolNames: profile.toolNames,
+                resumeSessionId:
+                  profile.name === 'chat' ? (req.session?.sdk_session_id ?? null) : null,
+                ...runCtx,
+              },
+              inputText,
+            );
 
       const finalText = (outcome.finalText ?? '').trim();
 

@@ -30,8 +30,16 @@ const read = (store: Map<string, string>, key: string) => JSON.parse(store.get(k
 
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  // Слот чек-іна applyEvent бере з РЕАЛЬНОГО годинника (kyivHour), а не з
+  // nowMs інструмента, тож без замороженого часу файл червонів о 02:00-07:59
+  // за Києвом - тобто вночі за UTC у CI. Підмінюємо лише Date: таймери мають
+  // лишитись справжніми, інакше await у сховищах не дочекається.
+  vi.useFakeTimers({ toFake: ['Date'], now: NOON });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('record: чек-ін', () => {
   it('слот рахує КОД за київською годиною, запис іде через applyEvent', async () => {
