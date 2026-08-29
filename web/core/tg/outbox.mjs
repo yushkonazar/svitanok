@@ -13,6 +13,8 @@ import {
   splitMessage,
   nextAttemptAt,
   isParseEntitiesError,
+  isNotModifiedError,
+  isEditTargetGone,
   THROTTLE_MS,
   DRAIN_BATCH_LIMIT,
   MAX_ATTEMPTS,
@@ -33,28 +35,42 @@ function db(env) {
 /**
  * Покласти відправку в чергу. text-повідомлення довші за стелю Telegram
  * розбиваються на частини ЩЕ ТУТ - кожна частина окремий ряд, порядок тримає
- * next_at (+1 мс на частину).
+ * id (час + індекс частини).
+ *
+ * `editFirstMessageId` - фінал прогону заміняє ЧЕРНЕТКУ статусу (01 §3.1
+ * «Rich draft»): перша частина їде editMessageText у вказане повідомлення,
+ * решта - звичайними send. Розбиття, порядок і правило «кнопки лише на
+ * останній частині» лишаються тут, в одному місці: у викликача розкладати
+ * частини по окремих enqueue не можна - усі ряди мали б однаковий префікс id,
+ * і порядок вирішував би випадковий uuid.
  * @param {Env} env
  * @param {{ chatId: string | number, threadId?: string | number | null,
  *   kind: 'send' | 'edit' | 'document',
- *   payload: Record<string, unknown> }} item
+ *   payload: Record<string, unknown>, editFirstMessageId?: number | null }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
 export async function enqueueOutbox(env, item, nowMs) {
-  /** @type {Record<string, unknown>[]} */
-  let payloads = [item.payload];
+  /** @type {{ kind: 'send' | 'edit' | 'document', payload: Record<string, unknown> }[]} */
+  let rows = [{ kind: item.kind, payload: item.payload }];
   if (item.kind === 'send') {
     const parts = splitMessage(String(item.payload.text ?? ''));
     if (parts.length === 0) return { queued: 0 };
+    const draftId = item.editFirstMessageId ?? null;
     // Кнопки - лише на ОСТАННІЙ частині: інакше три клавіатури на одну відповідь.
-    payloads = parts.map((text, i) => ({
-      ...item.payload,
-      text,
-      ...(i < parts.length - 1 ? { reply_markup: undefined } : {}),
+    rows = parts.map((text, i) => ({
+      kind: /** @type {'send' | 'edit'} */ (i === 0 && draftId != null ? 'edit' : 'send'),
+      payload: {
+        ...item.payload,
+        text,
+        // fallback_send - службовий прапорець ряду, у Telegram не їде
+        // (sendRow його зрізає): «це відповідь, а не статусний партіал».
+        ...(i === 0 && draftId != null ? { message_id: draftId, fallback_send: true } : {}),
+        ...(i < parts.length - 1 ? { reply_markup: undefined } : {}),
+      },
     }));
   }
-  const statements = payloads.map((payload, i) =>
+  const statements = rows.map((row, i) =>
     db(env)
       .prepare(
         `INSERT INTO outbox (id, chat_id, thread_id, kind, payload_json, attempts, next_at, status)
@@ -67,13 +83,13 @@ export async function enqueueOutbox(env, item, nowMs) {
         `${String(nowMs).padStart(15, '0')}-${i}-${crypto.randomUUID()}`,
         String(item.chatId),
         item.threadId == null ? null : String(item.threadId),
-        item.kind,
-        JSON.stringify(payload),
+        row.kind,
+        JSON.stringify(row.payload),
         new Date(nowMs).toISOString(),
       ),
   );
   for (const s of statements) await s.run();
-  return { queued: payloads.length };
+  return { queued: rows.length };
 }
 
 /**
@@ -223,9 +239,14 @@ async function sendRow(env, row) {
     console.error(`outbox: ряд ${row.id} з битим payload_json`);
     return { ok: false, retryAfterSec: null };
   }
+  // fallback_send - наш прапорець, не поле Bot API: зрізаємо до виклику.
+  const fallbackSend = payload.fallback_send === true;
+  delete payload.fallback_send;
   const base = {
     chat_id: row.chat_id,
-    message_thread_id: row.thread_id ?? undefined,
+    // editMessageText адресує повідомлення за message_id; тема йому не
+    // потрібна, і статусний шлях її ніколи не передавав.
+    ...(row.kind === 'edit' ? {} : { message_thread_id: row.thread_id ?? undefined }),
   };
   const attempt = (/** @type {Record<string, unknown>} */ body) => {
     if (row.kind === 'document') return tgApi(env, 'sendDocument', documentForm(row, body));
@@ -240,6 +261,24 @@ async function sendRow(env, row) {
     res = await attempt(plain);
   }
   if (res.ok) return { ok: true };
+  // Редагування в той самий текст - уже доставлено, не збій (див.
+  // isNotModifiedError): інакше ряд пішов би в ретраї й failed на відповіді,
+  // яку власник давно бачить.
+  if (row.kind === 'edit' && isNotModifiedError(res.status, res.text)) return { ok: true };
+  // Чернетки вже немає (власник стер статусник) - відповідь не сміє зникнути
+  // разом із нею: шлемо її новим повідомленням, як робив би deliver без
+  // чернетки. Для статусних партіалів прапорця немає, і вони тихо гаснуть -
+  // саме так і треба, застарілий партіал окремим повідомленням не потрібен.
+  if (row.kind === 'edit' && fallbackSend && isEditTargetGone(res.status, res.text)) {
+    const asSend = { ...payload };
+    delete asSend.message_id;
+    res = await tgApi(env, 'sendMessage', {
+      chat_id: row.chat_id,
+      message_thread_id: row.thread_id ?? undefined,
+      ...asSend,
+    });
+    if (res.ok) return { ok: true };
+  }
   let retryAfterSec = null;
   if (res.status === 429) {
     try {

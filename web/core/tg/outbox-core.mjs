@@ -77,3 +77,27 @@ export function nextAttemptAt(nowMs, attempts, retryAfterSec) {
 export function isParseEntitiesError(status, description) {
   return status === 400 && /parse entities/i.test(description);
 }
+
+/**
+ * «Текст той самий» - Telegram відповідає 400 на editMessageText, коли новий
+ * текст дослівно дорівнює поточному. Для нас це УСПІХ, а не збій: фінал
+ * заміняє чернетку статусу, і якщо останній партіал уже був повною
+ * відповіддю, редагувати нічого. Без цієї гілки ряд ішов би в ретраї, а
+ * потім у failed - на повністю доставленій відповіді.
+ * @param {number} status
+ * @param {string} description
+ */
+export function isNotModifiedError(status, description) {
+  return status === 400 && /message is not modified/i.test(description);
+}
+
+/**
+ * Чернетки, яку мали відредагувати, більше немає (власник стер статусник або
+ * його не можна редагувати). Для ВІДПОВІДІ це не кінець: викликач шле її
+ * новим повідомленням, інакше відповідь зникла б разом із чернеткою.
+ * @param {number} status
+ * @param {string} description
+ */
+export function isEditTargetGone(status, description) {
+  return status === 400 && /message to edit not found|message can't be edited/i.test(description);
+}
