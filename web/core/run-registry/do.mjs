@@ -118,12 +118,22 @@ export class RunRegistryDO extends DurableObject {
     return Boolean((await this.#active())[id]);
   }
 
-  /** Дані активного прогону (threadId для taint-запису, chatId для deliver).
-   *  null = немає.
+  /** Дані активного прогону (threadId для taint-запису, chatId для deliver,
+   *  statusMessageId - щоб фінал замінив чернетку «▸ …», а не лишив її з
+   *  обірваним партіалом). null = немає.
    *  @param {string} id */
   async runInfo(id) {
     const run = (await this.#active())[id];
-    return run ? { threadId: run.threadId, chatId: run.chatId ?? null } : null;
+    if (!run) return null;
+    // Чернетка належить ТРЕДУ, не прогону: віддаємо її лише тому прогону, що
+    // зараз активний у цьому треді. Інакше запізнілий deliver уже закритого
+    // прогону відредагував би чернетку наступного.
+    const t = run.threadId == null ? null : (await this.#threads())[String(run.threadId)];
+    return {
+      threadId: run.threadId,
+      chatId: run.chatId ?? null,
+      statusMessageId: t?.activeRunId === id ? (t?.statusMessageId ?? null) : null,
+    };
   }
 
   /**

@@ -215,3 +215,27 @@ describe('registryBegin/registryFinish — клієнт', () => {
     expect(errors.join('\n')).toContain('begin впав');
   });
 });
+
+describe('runInfo: чернетка статусу', () => {
+  it('віддається лише активному прогону треду - запізнілий deliver чужу не редагує', async () => {
+    const { registry } = makeRegistry();
+    await registry.begin({ id: 'r1', trigger: 'chat', threadId: 'dm', startedMs: T0 });
+    await registry.begin({ id: 'r2', trigger: 'chat', threadId: 'dm', startedMs: T0 });
+    await registry.threadClaim('dm', { text: 'перше', route: 'chat', attempts: 0, atMs: T0 });
+    await registry.threadSetRun('dm', 'r1', 629, T0);
+
+    expect(await registry.runInfo('r1')).toMatchObject({ threadId: 'dm', statusMessageId: 629 });
+
+    // Тред пішов далі (ескалація або наступний запис черги) - чернетка тепер
+    // чужа, і фінал r1 не сміє її переписати.
+    await registry.threadSetRun('dm', 'r2', 700, T0);
+    expect((await registry.runInfo('r1'))?.statusMessageId).toBeNull();
+    expect((await registry.runInfo('r2'))?.statusMessageId).toBe(700);
+  });
+
+  it('прогін без треду (summarize) - чернетки немає, а не виняток', async () => {
+    const { registry } = makeRegistry();
+    await registry.begin({ id: 's1', trigger: 'scheduler', threadId: null, startedMs: T0 });
+    expect(await registry.runInfo('s1')).toMatchObject({ statusMessageId: null });
+  });
+});
