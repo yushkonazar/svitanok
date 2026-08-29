@@ -68,6 +68,8 @@ export function createSdkEngine(): RunEngine {
             systemPrompt: opts.systemPrompt,
             model: opts.model,
             maxTurns: opts.maxTurns,
+            // Рівень зусиль профілю/працівника; не задано - дефолт SDK.
+            ...(opts.effort ? { effort: opts.effort } : {}),
             // Resume сесії треду (01 §2.2, профіль chat); undefined - свіжа.
             resume: opts.resumeSessionId ?? undefined,
             abortController,

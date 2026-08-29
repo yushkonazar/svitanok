@@ -113,6 +113,31 @@ describe('runWorker', () => {
       streamPartials: false,
     });
   });
+
+  it('рівень зусиль передається рушію; без нього поле не зʼявляється', async () => {
+    const base = {
+      name: 'w',
+      prompt: 'П',
+      model: 'haiku' as const,
+      maxSteps: 1,
+      toolNames: [],
+      taintedOutput: false,
+    };
+    const ctx = {
+      abortSignal: new AbortController().signal,
+      onToolCall: async () => ({ text: '', isError: false }),
+      onPartialText: () => {},
+      streamPartials: false,
+    };
+    const low = scriptedEngine(async () => ({ finalText: 'x' }));
+    await runWorker(low.engine, { ...base, effort: 'low' }, 'задача', ctx);
+    expect(low.seen[0]!.effort).toBe('low');
+
+    // Не задано - лишаємо дефолт SDK, а не вигадуємо свій.
+    const none = scriptedEngine(async () => ({ finalText: 'x' }));
+    await runWorker(none.engine, base, 'задача', ctx);
+    expect('effort' in none.seen[0]!).toBe(false);
+  });
 });
 
 describe('профіль quick як працівник', () => {
@@ -122,6 +147,7 @@ describe('профіль quick як працівник', () => {
     await makeRunner({ client, engine })(req({ profile: 'quick' }));
 
     expect(seen[0]!.model).toBe(WORKER_MODEL_IDS[QUICK_WORKER.model]);
+    expect(seen[0]!.effort).toBe(QUICK_WORKER.effort);
     expect(seen[0]!.maxTurns).toBe(QUICK_WORKER.maxSteps);
     expect(seen[0]!.toolNames).toEqual([]);
     expect(client.deliver).toHaveBeenCalledWith('run-w', '4');
@@ -214,6 +240,7 @@ describe('парність QUICK_WORKER з docs/assistant/agents/quick.md', () =
     expect(QUICK_WORKER.toolNames).toEqual(front.tools);
     expect(QUICK_WORKER.maxSteps).toBe(front.max_steps);
     expect(QUICK_WORKER.taintedOutput).toBe(front.tainted_output);
+    expect(QUICK_WORKER.effort).toBe(front.effort);
   });
 
   it('профіль quick побудований з того самого опису', () => {

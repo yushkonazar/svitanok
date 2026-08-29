@@ -11,7 +11,7 @@ import type { RunRequest } from './server.js';
 import { PROFILES, TRANSCRIPT_MAX_CHARS, buildSystemPrompt, type RunProfile } from './profiles.js';
 import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
-import { QUICK_WORKER, runWorker } from './workers.js';
+import { QUICK_WORKER, runWorker, type WorkerEffort } from './workers.js';
 
 /** Виконання інструмента з погляду рушія: текст для моделі + прапор помилки. */
 export interface ToolExecution {
@@ -24,6 +24,8 @@ export interface EngineRunOptions {
   model: string;
   maxTurns: number;
   toolNames: string[];
+  /** Рівень зусиль моделі; не задано - дефолт SDK ('high'). */
+  effort?: WorkerEffort;
   /** Сесія SDK для resume (профіль chat); null - свіжа сесія. */
   resumeSessionId: string | null;
   /** Чи потрібні часткові тексти (є куди стрімити статус). */

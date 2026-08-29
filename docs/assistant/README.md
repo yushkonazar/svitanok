@@ -35,6 +35,7 @@ tainted_output: true        # вихід = зовнішній вміст → с�
 updated: 2026-08-23
 max_chars: 7000             # стеля довжини; перевищення = помилка збірки
 max_steps: 30               # лише agent: maxTurns/ліміт викликів інструментів (типово 6)
+effort: low                 # необовʼязково: low | medium | high | xhigh | max (дефолт SDK - high)
 ---
 ```
 
