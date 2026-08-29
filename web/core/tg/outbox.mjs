@@ -14,6 +14,7 @@ import {
   nextAttemptAt,
   isParseEntitiesError,
   isNotModifiedError,
+  isEditTargetGone,
   THROTTLE_MS,
   DRAIN_BATCH_LIMIT,
   MAX_ATTEMPTS,
@@ -62,7 +63,9 @@ export async function enqueueOutbox(env, item, nowMs) {
       payload: {
         ...item.payload,
         text,
-        ...(i === 0 && draftId != null ? { message_id: draftId } : {}),
+        // fallback_send - службовий прапорець ряду, у Telegram не їде
+        // (sendRow його зрізає): «це відповідь, а не статусний партіал».
+        ...(i === 0 && draftId != null ? { message_id: draftId, fallback_send: true } : {}),
         ...(i < parts.length - 1 ? { reply_markup: undefined } : {}),
       },
     }));
@@ -236,9 +239,14 @@ async function sendRow(env, row) {
     console.error(`outbox: ряд ${row.id} з битим payload_json`);
     return { ok: false, retryAfterSec: null };
   }
+  // fallback_send - наш прапорець, не поле Bot API: зрізаємо до виклику.
+  const fallbackSend = payload.fallback_send === true;
+  delete payload.fallback_send;
   const base = {
     chat_id: row.chat_id,
-    message_thread_id: row.thread_id ?? undefined,
+    // editMessageText адресує повідомлення за message_id; тема йому не
+    // потрібна, і статусний шлях її ніколи не передавав.
+    ...(row.kind === 'edit' ? {} : { message_thread_id: row.thread_id ?? undefined }),
   };
   const attempt = (/** @type {Record<string, unknown>} */ body) => {
     if (row.kind === 'document') return tgApi(env, 'sendDocument', documentForm(row, body));
@@ -257,6 +265,20 @@ async function sendRow(env, row) {
   // isNotModifiedError): інакше ряд пішов би в ретраї й failed на відповіді,
   // яку власник давно бачить.
   if (row.kind === 'edit' && isNotModifiedError(res.status, res.text)) return { ok: true };
+  // Чернетки вже немає (власник стер статусник) - відповідь не сміє зникнути
+  // разом із нею: шлемо її новим повідомленням, як робив би deliver без
+  // чернетки. Для статусних партіалів прапорця немає, і вони тихо гаснуть -
+  // саме так і треба, застарілий партіал окремим повідомленням не потрібен.
+  if (row.kind === 'edit' && fallbackSend && isEditTargetGone(res.status, res.text)) {
+    const asSend = { ...payload };
+    delete asSend.message_id;
+    res = await tgApi(env, 'sendMessage', {
+      chat_id: row.chat_id,
+      message_thread_id: row.thread_id ?? undefined,
+      ...asSend,
+    });
+    if (res.ok) return { ok: true };
+  }
   let retryAfterSec = null;
   if (res.status === 429) {
     try {

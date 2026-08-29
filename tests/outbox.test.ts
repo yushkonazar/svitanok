@@ -373,6 +373,9 @@ describe('deliver/status через router', () => {
     // Кнопки їдуть із фіналом, бо відповідь ціла в чернетці.
     expect(JSON.stringify(sends[0]?.body.reply_markup)).toContain('u:1');
     expect(sends.some((c) => c.url.includes('sendMessage'))).toBe(false);
+    // editMessageText адресує повідомлення за id: тема тут зайва (той самий
+    // виклик, що робить статусник).
+    expect(sends[0]?.body.message_thread_id).toBeUndefined();
   });
 
   it('деліверу довшого за 4096: перша частина в чернетку, решта - окремі повідомлення', async () => {
@@ -429,6 +432,73 @@ describe('deliver/status через router', () => {
     const rows = store.raw.prepare('SELECT status, attempts FROM outbox').all();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: 'sent', attempts: 0 });
+  });
+
+  it('чернетки вже немає - відповідь іде новим повідомленням, а не зникає', async () => {
+    // Власник стер статусник, поки прогін ішов. До фолбеку відповідь просто
+    // губилась би: ряд-edit ішов у ретраї й failed, і власник не діставав
+    // нічого - гірше, ніж було до фіксу.
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+        calls.push({ url, body });
+        if (url.includes('editMessageText')) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error_code: 400,
+              description: 'Bad Request: message to edit not found',
+            }),
+            { status: 400 },
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 9 } }), {
+          status: 200,
+        });
+      }),
+    );
+    const res = await handleInternal(
+      await signedRequest('/internal/deliver', { text: 'відповідь' }, 'n-d7'),
+      envWithDraft(632),
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    expect(calls[0]?.url).toContain('editMessageText');
+    expect(calls[1]?.url).toContain('sendMessage');
+    expect(calls[1]?.body).toMatchObject({ text: 'відповідь', message_thread_id: '77' });
+    // Службовий прапорець і чужий message_id у Telegram не їдуть.
+    expect(calls[1]?.body.message_id).toBeUndefined();
+    expect(calls[1]?.body.fallback_send).toBeUndefined();
+    const rows = store.raw.prepare('SELECT status FROM outbox').all();
+    expect(rows[0]).toMatchObject({ status: 'sent' });
+  });
+
+  it('статусний партіал БЕЗ чернетки не перетворюється на нове повідомлення', async () => {
+    // Дзеркальний випадок: у статусника прапорця немає, тож застарілий
+    // партіал має тихо згаснути, а не лягти в чат окремим повідомленням.
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error_code: 400,
+            description: 'Bad Request: message to edit not found',
+          }),
+          { status: 400 },
+        );
+      }),
+    );
+    await handleInternal(
+      await signedRequest('/internal/status', { message_id: 640, text: '▸ Думаю…' }, 'n-s9'),
+      envWithDraft(640),
+      NOW,
+    );
+    expect(calls.filter((u) => u.includes('sendMessage'))).toHaveLength(0);
   });
 
   it('deliver з callback_data поза простором 07 §9 — 400 (confused deputy)', async () => {

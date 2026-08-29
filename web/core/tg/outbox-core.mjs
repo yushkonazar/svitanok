@@ -90,3 +90,14 @@ export function isParseEntitiesError(status, description) {
 export function isNotModifiedError(status, description) {
   return status === 400 && /message is not modified/i.test(description);
 }
+
+/**
+ * Чернетки, яку мали відредагувати, більше немає (власник стер статусник або
+ * його не можна редагувати). Для ВІДПОВІДІ це не кінець: викликач шле її
+ * новим повідомленням, інакше відповідь зникла б разом із чернеткою.
+ * @param {number} status
+ * @param {string} description
+ */
+export function isEditTargetGone(status, description) {
+  return status === 400 && /message to edit not found|message can't be edited/i.test(description);
+}
