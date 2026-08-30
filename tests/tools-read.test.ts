@@ -146,6 +146,54 @@ describe('mail.* і зовнішнє маркування', () => {
     expect(String(result).endsWith('</external>')).toBe(true);
   });
 
+  // Приймання етапу 2: «знайди лист від Steam» не знаходив нічого, хоч лист
+  // був. Дві причини - Gmail шукає слова як AND (фраза не збігається ні з чим)
+  // і видача була обрізана до пʼяти найсвіжіших листів.
+  it('mail.search: порожня видача на фразу → повтор зі значущими словами', async () => {
+    const queries: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const q = new URL(url).searchParams.get('q');
+        if (q != null) queries.push(q);
+        // Перший (точний) запит - порожньо; другий (розширений) - один лист.
+        if (queries.length === 1 && q != null)
+          return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+        if (q != null)
+          return new Response(JSON.stringify({ messages: [{ id: 'm1' }] }), { status: 200 });
+        return new Response(
+          JSON.stringify({
+            payload: {
+              headers: [
+                { name: 'From', value: 'Steam' },
+                { name: 'Subject', value: 'Ваш чек' },
+              ],
+            },
+            snippet: 'Дякуємо за покупку',
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+    const { result } = await runMailSearch(gmailEnv(), { q: 'лист від Steam' });
+    expect(queries).toEqual(['лист від Steam', 'Steam']);
+    expect(String(result)).toContain('Steam');
+    expect(String(result)).toContain('Ваш чек');
+  });
+
+  it('mail.search: запит з оператором Gmail не розширюється', async () => {
+    const queries: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        queries.push(new URL(url).searchParams.get('q') ?? '');
+        return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+      }),
+    );
+    await runMailSearch(gmailEnv(), { q: 'from:steam newer_than:7d' });
+    expect(queries).toEqual(['from:steam newer_than:7d']);
+  });
+
   it('mail.read: невалідний id — виняток ДО будь-якого fetch', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
