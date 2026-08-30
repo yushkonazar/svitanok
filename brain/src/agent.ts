@@ -2,9 +2,13 @@
 // інʼєкцією RunEngine - тести ганяють мок, бойову реалізацію дає
 // sdk/engine.ts) → інструменти через ядро → стрімінг у статус → deliver.
 //
-// Тут же барʼєри мозку (01 §4.2, перша половина подвійного барʼєра; другу
-// тримає policy ядра): стеля викликів інструментів профілю, блок
-// write-інструментів у tainted-сесії, taint від відповіді ядра.
+// Барʼєр мозку тут один - стеля викликів інструментів профілю. Рівень
+// підтвердження в tainted-сесії визначає ЯДРО: 01 §4.2 каже «навіть якщо хук
+// обійдено, policy… не виконує T0-запис без пропозиції», а 01 §4.3 відносить
+// «усе T0 у tainted-сесії» до T1 (одне ✅/❌). Мозок прямого запису не має
+// взагалі - усе йде через /internal/tool, - тож власна заборона тут нічого не
+// додавала до безпеки, зате робила недосяжною саму пропозицію: власник діставав
+// «не можу записати» замість кнопки підтвердження (приймання етапу 2, 30.08).
 
 import type { CoreClient, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
@@ -94,7 +98,6 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     const profile: RunProfile = PROFILES[req.profile];
     const startedMs = now();
     const steps: Step[] = [];
-    let tainted = req.tainted ?? false;
     let toolCalls = 0;
     let lastStatusMs = 0;
     let escalateOutcome: { escalate: { text: string; status_message_id?: number } } | undefined;
@@ -144,19 +147,10 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           `worker-unavailable:${worker}`,
         );
       }
-      if (tainted && def.write) {
-        // Перша половина подвійного барʼєра: у tainted-сесії прямий запис
-        // заборонено ще ДО ядра; policy ядра - друга половина.
-        return fail(
-          'Сесія містить зовнішній вміст: прямий запис заборонено. Поясни власнику, що потрібне підтвердження.',
-          'taint-blocked',
-        );
-      }
       const outcome: ToolCallOutcome = await deps.client.callTool(req.run_id, def.coreName, args);
       if (!outcome.ok) {
         return fail(`Інструмент ${def.coreName} відмовив: ${outcome.error}.`, outcome.error);
       }
-      tainted = tainted || outcome.tainted;
       // Ескалація policy ядра: mode='proposed' означає, що запис НЕ виконано -
       // створено пропозицію під ✅ власника. Без цієї гілки модель бачила б
       // "null" з isError:false і брехала власнику «Записав» (знахідка ревʼю).
