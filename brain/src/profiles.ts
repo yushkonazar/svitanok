@@ -3,7 +3,7 @@
 // maxToolCalls (виконує agent.ts через onToolCall) і maxTurns (страховка SDK).
 
 import { BRAIN_TOOLS } from './tools/schemas.js';
-import { QUICK_WORKER, WORKER_MODEL_IDS } from './workers.js';
+import { QUICK_WORKER, WORKER_MODEL_IDS, type WorkerEffort } from './workers.js';
 
 export type ProfileName = 'chat' | 'quick' | 'summarize';
 
@@ -15,6 +15,8 @@ export interface RunProfile {
   maxToolCalls: number;
   maxTurns: number;
   timeoutMs: number;
+  /** Рівень зусиль моделі; не задано - дефолт SDK ('high'). */
+  effort?: WorkerEffort;
 }
 
 export const PROFILES: Record<ProfileName, RunProfile> = {
@@ -47,6 +49,10 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     maxToolCalls: 0,
     maxTurns: 1,
     timeoutMs: 120_000,
+    // Один хід, вхід - готовий транскрипт, вихід - памʼятка на 1500 символів:
+    // думати тут майже нема над чим, а дефолтний 'high' дав 86 с на прогоні
+    // 30.08 (і саме на ньому запис сесії не дійшов).
+    effort: 'low',
   },
 };
 

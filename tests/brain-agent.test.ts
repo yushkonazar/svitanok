@@ -7,6 +7,7 @@ import { describe, expect, it, vi, type Mock } from 'vitest';
 import {
   clipHead,
   clipTail,
+  STATUS_MIN_CHARS,
   makeRunner,
   type EngineOutcome,
   type EngineRunOptions,
@@ -493,7 +494,9 @@ describe('makeRunner: стрімінг статусу', () => {
     const client = makeClient();
     const { engine, seen } = scriptedEngine(async (opts) => {
       for (let i = 0; i < 10; i += 1) {
-        opts.onPartialText(`частина ${i}`);
+        // Довші за STATUS_MIN_CHARS: коротші партіали свідомо не йдуть у
+        // чернетку (окремий тест нижче), і тут перевіряється саме троттлінг.
+        opts.onPartialText(`частина ${i} ${'текст '.repeat(12)}`);
         t += 300;
       }
       return { finalText: 'Готово' };
@@ -514,6 +517,22 @@ describe('makeRunner: стрімінг статусу', () => {
     await makeRunner({ client: silent, engine: scripted.engine })(req());
     expect(scripted.seen[0]!.streamPartials).toBe(false);
     expect(silent.status).not.toHaveBeenCalled();
+  });
+
+  it('короткий партіал у чернетку не йде - вона не мигає одним символом', async () => {
+    // Приймання 30.08: власник бачив, як «▸ Думаю…» на мить ставало «В» і
+    // «Не про». Тепер чернетку чіпаємо лише коли є що читати.
+    const client = makeClient();
+    const { engine } = scriptedEngine(async (opts) => {
+      opts.onPartialText('В');
+      opts.onPartialText('Не про');
+      opts.onPartialText('х'.repeat(STATUS_MIN_CHARS - 1));
+      return { finalText: 'Готово' };
+    });
+    await makeRunner({ client, engine })(req({ status_message_id: 42 }));
+    expect(client.status).not.toHaveBeenCalled();
+    // Сама відповідь при цьому доставлена - чернетку замінить deliver.
+    expect(client.deliver).toHaveBeenCalledWith('run-1', 'Готово');
   });
 
   it('статус показує ХВІСТ довгого партіала, а не замерзлу голову', async () => {

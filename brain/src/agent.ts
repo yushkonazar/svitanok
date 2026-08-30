@@ -74,6 +74,11 @@ export interface RunnerDeps {
 export const DELIVER_MAX_CHARS = 65_000;
 export const DELIVER_MAX_BYTES = 100_000;
 export const STATUS_MAX_CHARS = 3_900;
+/** Доки часткова відповідь коротша за це, у чернетку її не шлемо: на прийманні
+ *  30.08 власник бачив, як «▸ Думаю…» на мить ставало «В», «П» або «Не про» -
+ *  це мигання, а не прогрес. Коротка відповідь тепер просто заміняє чернетку
+ *  цілою. */
+export const STATUS_MIN_CHARS = 60;
 
 const ESCALATE_PREFIX = 'ESCALATE:';
 
@@ -171,6 +176,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
 
     const onPartialText = (text: string): void => {
       if (req.status_message_id == null) return;
+      if (text.length < STATUS_MIN_CHARS) return;
       const t = now();
       if (t - lastStatusMs < statusIntervalMs) return;
       lastStatusMs = t;
@@ -263,6 +269,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
                 model: profile.model,
                 maxTurns: profile.maxTurns,
                 toolNames: profile.toolNames,
+                ...(profile.effort ? { effort: profile.effort } : {}),
                 resumeSessionId:
                   profile.name === 'chat' ? (req.session?.sdk_session_id ?? null) : null,
                 ...runCtx,
