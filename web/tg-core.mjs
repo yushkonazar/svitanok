@@ -346,6 +346,10 @@ export function markButtonDone(replyMarkup, tappedData) {
 // На чат+тему; більш ніж достатньо для будь-якого розумного /clear N (max 50).
 const SENT_MESSAGES_CAP = 50;
 
+/** Скільки повідомлень /clear видаляє за раз: кожне - окремий підзапит
+ *  Worker'а, і стеля тут та сама, що тримала maxN у parseClearCount. */
+const MAX_CLEAR_DELETES = 40;
+
 /** Ключ ring-buffer-а в об'єкті sentMessages: один на чат+тему.
  *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId */
@@ -418,7 +422,11 @@ export function lastExchangeMessages(sentMessages, chatId, threadId, n, triggerI
   }
   // Жодного запиту власника в буфері - це або порожньо, або записи старого
   // формату (голі числа). Тоді поводимось як раніше: останні N повідомлень.
-  const ids = seen === 0 ? rest.slice(-n).map((e) => e.id) : rest.slice(from).map((e) => e.id);
+  const picked = seen === 0 ? rest.slice(-n) : rest.slice(from);
+  // Стеля ВИДАЛЕНЬ, не обмінів: один обмін - це кілька повідомлень, і «40
+  // обмінів» легко перетворились би на сотню deleteMessage, тобто вихід за
+  // ліміт підзапитів Worker'а. Ріжемо найстаріші - свіже важливіше.
+  const ids = picked.slice(-MAX_CLEAR_DELETES).map((e) => e.id);
   return triggerId == null ? ids : [...ids, triggerId];
 }
 
