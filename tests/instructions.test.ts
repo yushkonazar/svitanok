@@ -260,4 +260,54 @@ describe('CANON_TOOLS проти живого реєстру ядра', () => {
       expect(INSTRUCTION_KINDS).toContain(String(parsed.front.kind));
     }
   });
+
+  // Канон 07 §4 записує реєстри власника згорнуто («ideas.*, wishes.*,
+  // collections.*, records.*»), тож повнота списку в коді - те, що легко
+  // загубити: інструкція з `collections.create` у tools впала б як «невідомий
+  // інструмент», хоча документ її дозволяє.
+  it('розгорнуті імена реєстрів і плану дня є в каноні (07 §4)', () => {
+    for (const name of [
+      'ideas.create',
+      'ideas.analyze',
+      'wishes.create',
+      'collections.create',
+      'records.search',
+      'plan.intent',
+      'plan.review',
+    ]) {
+      expect(CANON_TOOLS).toContain(name);
+    }
+  });
+});
+
+// weekly-review v2 (етап 3 PR-1): структура звіту - контракт між інструкцією
+// і приймальним чеклистом. Блок, що зник із файлу, інакше виявився б лише в
+// неділю о 09:00 - і мовчки.
+describe('weekly-review.md - блоки звіту', () => {
+  const weekly = files.find((f) => f.path === 'weekly-review.md');
+
+  it('усі блоки §5 на місці, включно з ДНІ (S-P-16)', () => {
+    const parsed = parseInstruction(weekly?.raw ?? '');
+    if (!parsed.ok) throw new Error(parsed.error);
+    for (const block of [
+      'ЩО ЗМІНИЛОСЬ',
+      'ЩО ПОТРЕБУЄ ДІЇ',
+      'ГРОШІ',
+      'СИСТЕМА',
+      'ДНІ',
+      'МІСЯЦЬ',
+      'ПРО САМУ СТАТИСТИКУ',
+      'ЧОГО Я НЕ БАЧИВ',
+    ]) {
+      expect(parsed.body).toContain(`\n${block}`);
+    }
+  });
+
+  it('джерела даних §1 - рівно три інструменти front-matter', () => {
+    const parsed = parseInstruction(weekly?.raw ?? '');
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.front.tools).toEqual(['data.read', 'finance.query', 'runs.query']);
+    expect(parsed.body).toContain('data.read(scope=weekly)');
+    expect(parsed.body).toContain('runs.query(period=тиждень)');
+  });
 });
