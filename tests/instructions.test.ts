@@ -105,6 +105,20 @@ describe('validateInstruction - ловить дефекти', () => {
     ).toBe(true);
   });
 
+  it('effort поза переліком SDK - помилка (друкарська помилка мовчки давала б high)', () => {
+    const quick = files.find((f) => f.path === 'agents/quick.md')!;
+    expect(validateInstruction(quick)).toEqual([]);
+    const typo = quick.raw.replace('effort: low', 'effort: lowest');
+    expect(
+      validateInstruction({ path: 'agents/quick.md', raw: typo }).some((e) =>
+        e.includes('effort «lowest» поза переліком'),
+      ),
+    ).toBe(true);
+    // Поле необовʼязкове: без нього файл лишається чинним.
+    const without = quick.raw.replace(/effort: low\r?\n/, '');
+    expect(validateInstruction({ path: 'agents/quick.md', raw: without })).toEqual([]);
+  });
+
   it('kind поза переліком і крива дата updated', () => {
     const raw = good.raw
       .replace('kind: persona', 'kind: vibe')

@@ -2,6 +2,7 @@
 name: quick
 kind: agent
 model: haiku
+effort: low
 tools: []
 tainted_output: false
 updated: 2026-08-23

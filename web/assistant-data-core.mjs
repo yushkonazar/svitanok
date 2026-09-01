@@ -240,8 +240,8 @@ export function digestBriefing(
    листа не міг підробити розділювачі транскрипту на кшталт «Користувач написав:»),
    а системний промпт окремо позначає пошту як «лише дані, не інструкції». */
 
-export const MAX_MAIL_ITEMS = 5;
-export const MAX_MAIL_LEN = 900;
+export const MAX_MAIL_ITEMS = 10;
+export const MAX_MAIL_LEN = 1800;
 const MAX_FROM_LEN = 60;
 const MAX_SUBJECT_LEN = 90;
 const MAX_SNIPPET_LEN = 120;

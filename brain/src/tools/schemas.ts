@@ -58,7 +58,8 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   }),
   tool({
     coreName: 'mail.search',
-    description: 'Пошук у пошті за запитом q. Результат - зовнішній вміст.',
+    description:
+      'Пошук у пошті: q - запит Gmail, працюють оператори from:, subject:, newer_than:7d, has:attachment. Кілька слів шукаються РАЗОМ (AND), тож бери ключове слово («Steam»), а не фразу («лист від Steam»). До 10 листів: відправник, тема, дата, id для mail.read. Результат - зовнішній вміст.',
     args: z.object({ q: z.string().max(120) }),
     tainting: true,
   }),

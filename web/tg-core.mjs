@@ -346,6 +346,10 @@ export function markButtonDone(replyMarkup, tappedData) {
 // На чат+тему; більш ніж достатньо для будь-якого розумного /clear N (max 50).
 const SENT_MESSAGES_CAP = 50;
 
+/** Скільки повідомлень /clear видаляє за раз: кожне - окремий підзапит
+ *  Worker'а, і стеля тут та сама, що тримала maxN у parseClearCount. */
+const MAX_CLEAR_DELETES = 40;
+
 /** Ключ ring-buffer-а в об'єкті sentMessages: один на чат+тему.
  *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId */
@@ -353,28 +357,77 @@ export function sentMessagesKey(chatId, threadId) {
   return `${chatId}:${threadId ?? ''}`;
 }
 
+/** Запис ring-buffer-а: id повідомлення і чиє воно.
+ *  @typedef {{ id: number, own: boolean }} TrackedMessage */
+
+/** Нормалізувати список: старі записи - голі числа (усі від бота).
+ *  @param {unknown} list
+ *  @returns {TrackedMessage[]} */
+export function trackedMessages(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((e) =>
+      typeof e === 'number'
+        ? { id: e, own: false }
+        : e && typeof e === 'object' && typeof (/** @type {any} */ (e).id) === 'number'
+          ? { id: /** @type {any} */ (e).id, own: Boolean(/** @type {any} */ (e).own) }
+          : null,
+    )
+    .filter((/** @type {TrackedMessage|null} */ e) => e !== null);
+}
+
 /** Додати message_id у ring buffer (чиста — повертає новий об'єкт, капнутий).
+ *  `own` - повідомлення ВЛАСНИКА, не бота: /clear рахує обміни за ними.
  *  @param {KvBlob|null|undefined} sentMessages
  *  @param {string|number|null|undefined} chatId
  *  @param {string|number|null|undefined} threadId
  *  @param {number} messageId
+ *  @param {boolean} [own]
  *  @returns {KvBlob} */
-export function recordSentMessage(sentMessages, chatId, threadId, messageId) {
+export function recordSentMessage(sentMessages, chatId, threadId, messageId, own = false) {
   const key = sentMessagesKey(chatId, threadId);
   const store = sentMessages && typeof sentMessages === 'object' ? sentMessages : {};
-  const list = Array.isArray(store[key]) ? store[key] : [];
-  return { ...store, [key]: [...list, messageId].slice(-SENT_MESSAGES_CAP) };
+  const list = trackedMessages(store[key]);
+  return { ...store, [key]: [...list, { id: messageId, own }].slice(-SENT_MESSAGES_CAP) };
 }
 
-/** Останні N message_id для чат+теми (найновіші останні) — кандидати на /clear.
- *  @param {KvBlob|null|undefined} sentMessages
- *  @param {string|number|null|undefined} chatId
- *  @param {string|number|null|undefined} threadId
- *  @param {number} n
- *  @returns {number[]} */
-export function lastSentMessages(sentMessages, chatId, threadId, n) {
-  const list = sentMessages?.[sentMessagesKey(chatId, threadId)];
-  return Array.isArray(list) ? list.slice(-n) : [];
+/**
+ * Що видаляє /clear N. N - це ОБМІНИ, а не повідомлення: рахуються запити
+ * власника, а разом із кожним іде все, що асистент на нього відповів. Раніше
+ * N означало «останні N рядків чату», тож «/clear 3» зазвичай зносив два
+ * запити власника й одну відповідь - половину розмови замість трьох обмінів
+ * (скарга власника 30.08).
+ *
+ * Саме тригерне повідомлення (/clear …) у рахунок НЕ йде, але видаляється:
+ * інакше команда зʼїдала б один із замовлених обмінів.
+ *
+ * @param {KvBlob|null|undefined} sentMessages
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
+ * @param {number} n
+ * @param {number|null} [triggerId] - message_id самої команди
+ * @returns {number[]} id у порядку від найстаршого
+ */
+export function lastExchangeMessages(sentMessages, chatId, threadId, n, triggerId = null) {
+  const all = trackedMessages(sentMessages?.[sentMessagesKey(chatId, threadId)]);
+  const rest = triggerId == null ? all : all.filter((e) => e.id !== triggerId);
+  let seen = 0;
+  let from = rest.length;
+  for (let i = rest.length - 1; i >= 0; i -= 1) {
+    if (rest[i]?.own) {
+      seen += 1;
+      from = i;
+      if (seen === n) break;
+    }
+  }
+  // Жодного запиту власника в буфері - це або порожньо, або записи старого
+  // формату (голі числа). Тоді поводимось як раніше: останні N повідомлень.
+  const picked = seen === 0 ? rest.slice(-n) : rest.slice(from);
+  // Стеля ВИДАЛЕНЬ, не обмінів: один обмін - це кілька повідомлень, і «40
+  // обмінів» легко перетворились би на сотню deleteMessage, тобто вихід за
+  // ліміт підзапитів Worker'а. Ріжемо найстаріші - свіже важливіше.
+  const ids = picked.slice(-MAX_CLEAR_DELETES).map((e) => e.id);
+  return triggerId == null ? ids : [...ids, triggerId];
 }
 
 /** Розібрати аргумент /clear -> клампована кількість [1,maxN]; невалідне/відсутнє -> defaultN.
@@ -408,9 +461,12 @@ export function chunkArray(arr, size) {
  *  повідомлення старші за 48 год — deleted може бути менше за attempted).
  *  @param {number} deleted
  *  @param {number} attempted */
-export function formatClearResult(deleted, attempted) {
+export function formatClearResult(deleted, attempted, exchanges = 0) {
   if (attempted === 0) return 'Нема що очищати — я ще не памʼятаю повідомлень у цьому чаті.';
-  return `🗑 Видалено ${deleted} із ${attempted} повідомлень (старші за 48 год Telegram не дає видалити).`;
+  // plural - той самий хелпер, що й у решті зведень цього модуля.
+  const what =
+    exchanges > 0 ? ` (${exchanges} ${plural(exchanges, ['обмін', 'обміни', 'обмінів'])})` : '';
+  return `🗑 Видалено ${deleted} із ${attempted} повідомлень${what}. Старші за 48 год Telegram не дає видалити.`;
 }
 
 /**

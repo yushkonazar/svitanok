@@ -7,9 +7,11 @@ import { describe, expect, it, vi, type Mock } from 'vitest';
 import {
   clipHead,
   clipTail,
+  STATUS_MIN_CHARS,
   makeRunner,
   type EngineOutcome,
   type EngineRunOptions,
+  type ToolExecution,
 } from '../brain/src/agent.js';
 import type { ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
@@ -170,19 +172,37 @@ describe('makeRunner: барʼєри', () => {
     expect(client.callTool).toHaveBeenCalledTimes(PROFILES.chat.maxToolCalls);
   });
 
-  it('tainted-сесія блокує write-інструмент ДО ядра; читання проходить', async () => {
-    const client = makeClient();
+  // Рівень підтвердження в tainted-сесії визначає ЯДРО (01 §4.3: «усе T0 у
+  // tainted-сесії» = T1 з одним ✅). Мозок власної заборони не має: вона
+  // робила недосяжною саму пропозицію - на приймання 30.08 власник діставав
+  // «не можу записати» замість кнопки підтвердження.
+  it('tainted-сесія НЕ блокує write у мозку: виклик іде в ядро, воно ескалює', async () => {
+    const client = makeClient({
+      callTool: vi.fn(async () => ({
+        ok: true as const,
+        tool: 'facts.set',
+        tainted: true,
+        mode: 'proposed' as const,
+        proposal: { id: 'p9' },
+      })),
+    });
+    let write: ToolExecution | null = null;
     const { engine } = scriptedEngine(async (opts) => {
-      const read = await opts.onToolCall('facts_get', {});
-      expect(read.isError).toBe(false);
-      const write = await opts.onToolCall('facts_set', { kind: 'setting', key: 'k', value: 1 });
-      expect(write.isError).toBe(true);
-      expect(write.text).toContain('зовнішній вміст');
+      write = await opts.onToolCall('facts_set', { kind: 'setting', key: 'k', value: 1 });
       return { finalText: 'ок' };
     });
     await makeRunner({ client, engine })(req({ tainted: true }));
-    expect(client.callTool).toHaveBeenCalledTimes(1);
-    expect(client.callTool).toHaveBeenCalledWith('run-1', 'facts.get', {});
+
+    expect(client.callTool).toHaveBeenCalledWith('run-1', 'facts.set', {
+      kind: 'setting',
+      key: 'k',
+      value: 1,
+    });
+    // Модель бачить не відмову, а «створено пропозицію» - і скаже власнику
+    // саме це.
+    expect(write!.isError).toBe(false);
+    expect(write!.text).toContain('НЕ виконано');
+    expect(write!.text).toContain('p9');
   });
 
   it('mode=proposed: модель бачить «НЕ виконано» з деталями пропозиції, не "null"', async () => {
@@ -209,18 +229,19 @@ describe('makeRunner: барʼєри', () => {
     expect(steps[0]).toMatchObject({ kind: 'tool', ok: true, note: 'proposed' });
   });
 
-  it('taint приходить із відповіді ядра: після tainting-читання write блокується', async () => {
+  it('після tainting-читання запис теж доходить до ядра (барʼєр - там)', async () => {
     const client = makeClient({
       callTool: vi.fn(async () => ({ ok: true, tool: 'mail.search', tainted: true, result: 'x' })),
     });
     const { engine } = scriptedEngine(async (opts) => {
       await opts.onToolCall('mail_search', { q: 'нова пошта' });
-      const write = await opts.onToolCall('facts_set', { kind: 'setting', key: 'k', value: 1 });
-      expect(write.isError).toBe(true);
+      await opts.onToolCall('facts_set', { kind: 'setting', key: 'k', value: 1 });
       return { finalText: 'ок' };
     });
     await makeRunner({ client, engine })(req());
-    expect(client.callTool).toHaveBeenCalledTimes(1);
+    // Два виклики, не один: ядро саме читає sessions.tainted (fail-safe) і
+    // саме вирішує, виконати чи створити пропозицію.
+    expect(client.callTool).toHaveBeenCalledTimes(2);
   });
 
   it('невідомий і не-профільний інструмент - відмова без виклику ядра', async () => {
@@ -473,7 +494,9 @@ describe('makeRunner: стрімінг статусу', () => {
     const client = makeClient();
     const { engine, seen } = scriptedEngine(async (opts) => {
       for (let i = 0; i < 10; i += 1) {
-        opts.onPartialText(`частина ${i}`);
+        // Довші за STATUS_MIN_CHARS: коротші партіали свідомо не йдуть у
+        // чернетку (окремий тест нижче), і тут перевіряється саме троттлінг.
+        opts.onPartialText(`частина ${i} ${'текст '.repeat(12)}`);
         t += 300;
       }
       return { finalText: 'Готово' };
@@ -494,6 +517,22 @@ describe('makeRunner: стрімінг статусу', () => {
     await makeRunner({ client: silent, engine: scripted.engine })(req());
     expect(scripted.seen[0]!.streamPartials).toBe(false);
     expect(silent.status).not.toHaveBeenCalled();
+  });
+
+  it('короткий партіал у чернетку не йде - вона не мигає одним символом', async () => {
+    // Приймання 30.08: власник бачив, як «▸ Думаю…» на мить ставало «В» і
+    // «Не про». Тепер чернетку чіпаємо лише коли є що читати.
+    const client = makeClient();
+    const { engine } = scriptedEngine(async (opts) => {
+      opts.onPartialText('В');
+      opts.onPartialText('Не про');
+      opts.onPartialText('х'.repeat(STATUS_MIN_CHARS - 1));
+      return { finalText: 'Готово' };
+    });
+    await makeRunner({ client, engine })(req({ status_message_id: 42 }));
+    expect(client.status).not.toHaveBeenCalled();
+    // Сама відповідь при цьому доставлена - чернетку замінить deliver.
+    expect(client.deliver).toHaveBeenCalledWith('run-1', 'Готово');
   });
 
   it('статус показує ХВІСТ довгого партіала, а не замерзлу голову', async () => {

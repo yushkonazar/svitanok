@@ -172,6 +172,23 @@ describe('T1/T2: пропозиції', () => {
     });
   });
 
+  // Сценарій приймання етапу 2 (пункт 6): після листа сесія брудна, і
+  // «нагадай завтра забрати» мусить прийти ПРОПОЗИЦІЄЮ з ✅, а не відмовою.
+  // Мозок власного барʼєра більше не має - рішення тут.
+  it('tainted reminders.create → пропозиція T1, а не відмова (01 §4.3)', async () => {
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'reminders.create',
+        payload: { text: 'забрати посилку', when: 'завтра о 10' },
+        tainted: true,
+      },
+      NOW,
+    );
+    expect(out.mode).toBe('proposed');
+    expect(out.mode === 'proposed' && out.proposal.level).toBe('T1');
+  });
+
   it('❌ — rejected без виконання; прострочена — expired', async () => {
     const a = await applyPolicy(
       env,

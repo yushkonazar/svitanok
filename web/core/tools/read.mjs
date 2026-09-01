@@ -129,8 +129,66 @@ export async function runCalendarRead(env, args, nowMs) {
  * @param {{ q: string }} args
  */
 export async function runMailSearch(env, args) {
-  const text = formatMailForPrompt(await readMail(env, args.q));
-  return { result: wrapExternal('mail', text) };
+  const q = String(args.q ?? '').trim();
+  let messages = await readMail(env, q);
+  // Gmail шукає кілька слів як AND, тож природна фраза («лист від Steam»)
+  // не знаходить нічого, хоч лист є - саме це сталось на прийманні 30.08.
+  // Якщо в запиті немає операторів Gmail і видача порожня, пробуємо ще раз
+  // зі значущими словами через OR. Один додатковий запит, не цикл.
+  if (Array.isArray(messages) && messages.length === 0) {
+    const broadened = broadenMailQuery(q);
+    if (broadened) messages = await readMail(env, broadened);
+  }
+  return { result: wrapExternal('mail', formatMailForPrompt(messages)) };
+}
+
+/** Слова, що несуть нуль пошукового сенсу в запиті до пошти. */
+const MAIL_STOPWORDS = new Set([
+  'лист',
+  'листа',
+  'листи',
+  'листів',
+  'від',
+  'про',
+  'знайди',
+  'знайти',
+  'пошта',
+  'пошті',
+  'пошту',
+  'пошук',
+  'мені',
+  'мій',
+  'моя',
+  'моє',
+  'мою',
+  'останній',
+  'останні',
+  'новий',
+  'нові',
+  'mail',
+  'email',
+  'letter',
+  'find',
+]);
+
+/**
+ * «лист від Steam за минулий тиждень» → «Steam OR минулий OR тиждень».
+ * Порожній рядок = розширювати нічого (запит уже з оператором Gmail, одне
+ * слово або самі стоп-слова).
+ * @param {string} q
+ */
+export function broadenMailQuery(q) {
+  // Оператор Gmail (from:, subject:, newer_than:, лапки, дужки) означає, що
+  // запит уже точний - розширення лише зіпсувало б його.
+  if (/[:()"]/.test(q)) return '';
+  const words = q
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}\p{N}_-]/gu, ''))
+    .filter((w) => w.length >= 3 && !MAIL_STOPWORDS.has(w.toLowerCase()));
+  if (words.length === 0) return '';
+  const broadened = words.slice(0, 5).join(' OR ');
+  // Той самий запит переспрашувати нема сенсу - Gmail відповість так само.
+  return broadened === q ? '' : broadened;
 }
 
 /**

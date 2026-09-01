@@ -17,6 +17,7 @@ import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../web/core/tg/out
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
+import { memoryKv } from './helpers/kv.js';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const noSleep = async () => {};
@@ -499,6 +500,39 @@ describe('deliver/status через router', () => {
       NOW,
     );
     expect(calls.filter((u) => u.includes('sendMessage'))).toHaveLength(0);
+  });
+
+  it('надіслане чергою потрапляє в буфер /clear, відредаговане - ні', async () => {
+    // Борг етапу 1: канал outbox не трекався, тож /clear лишав у чаті самі
+    // відповіді асистента. Чернетку трекає prerouter при створенні, тож
+    // рядок-edit другого запису не додає.
+    const kv = new Map<string, string>();
+    const envTrack = workerEnv({
+      ASSISTANT_V2: 'shadow',
+      INTERNAL_HMAC_KEY: KEY,
+      TELEGRAM_BOT_TOKEN: 'bot-t',
+      TELEGRAM_CHAT_ID: '-100',
+      TOPIC_ASSISTANT: '33',
+      DB: store,
+      BRIEFING: memoryKv(kv),
+      RUN_REGISTRY: {
+        getByName: () => ({
+          has: async (id: string) => id === 'r1',
+          consumeNonce: async () => true,
+          runInfo: async () => ({ threadId: 77 }),
+        }),
+      },
+    });
+    await handleInternal(
+      await signedRequest('/internal/deliver', { text: 'нова відповідь' }, 'n-t1'),
+      envTrack,
+      NOW,
+    );
+    const tracked = JSON.parse(kv.get('sentMessages') ?? '{}') as Record<
+      string,
+      { id: number; own: boolean }[]
+    >;
+    expect(tracked['-100:77']).toEqual([{ id: 5, own: false }]);
   });
 
   it('deliver з callback_data поза простором 07 §9 — 400 (confused deputy)', async () => {

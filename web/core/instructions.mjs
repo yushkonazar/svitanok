@@ -16,6 +16,9 @@
 /** Дозволені kind (README «Front-matter»). */
 export const INSTRUCTION_KINDS = ['persona', 'agent', 'checklist', 'profile'];
 
+/** Рівні зусиль моделі (SDK EffortLevel); дзеркало WORKER_EFFORTS мозку. */
+export const INSTRUCTION_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
 /** Вбудовані інструменти SDK, дозволені у front-matter поруч із нашими. */
 const BUILTIN_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
 
@@ -192,6 +195,11 @@ export function validateInstruction(file) {
   if (!['haiku', 'sonnet', '-'].includes(model)) fail(`model «${model}» поза переліком`);
   if (kind === 'checklist' && model !== '-') fail('checklist не має моделі - має бути «-»');
   if (typeof front.tainted_output !== 'boolean') fail('tainted_output має бути true або false');
+  // effort - необовʼязкове, але якщо задане, то з переліку SDK: друкарська
+  // помилка інакше мовчки поверне прогін на дефолтний 'high'.
+  if ('effort' in front && !INSTRUCTION_EFFORTS.includes(String(front.effort))) {
+    fail(`effort «${front.effort}» поза переліком (${INSTRUCTION_EFFORTS.join(' | ')})`);
+  }
   if ('max_steps' in front && !Number.isInteger(Number(front.max_steps))) {
     fail('max_steps має бути цілим');
   }

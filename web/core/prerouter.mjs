@@ -9,6 +9,8 @@
 // on - повний шлях для всього.
 
 import { tgCall } from '../telegram-client.mjs';
+import { loadSentMessages, putSentMessages } from '../kv-store.mjs';
+import { recordSentMessage } from '../tg-core.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
 import {
@@ -844,7 +846,18 @@ async function sendStatusDraft(env, parsed) {
     });
     const body = /** @type {any} */ (await res.json().catch(() => null));
     const id = body?.result?.message_id;
-    return typeof id === 'number' ? id : null;
+    if (typeof id !== 'number') return null;
+    // Чернетка стає самою відповіддю (фікс 30.08), тож /clear мусить знати про
+    // неї - інакше відповіді асистента переживають очищення.
+    try {
+      await putSentMessages(
+        env,
+        recordSentMessage(await loadSentMessages(env), parsed.chatId, parsed.threadId, id),
+      );
+    } catch (/** @type {any} */ e) {
+      console.error('prerouter: трекінг чернетки для /clear не вдався', e?.message);
+    }
+    return id;
   } catch (/** @type {any} */ e) {
     console.error('prerouter: статусник не надіслано', e?.message);
     return null;
