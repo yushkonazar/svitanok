@@ -66,7 +66,14 @@ export function decideLevel(kind, tainted) {
   const base = ACTION_LEVELS[kind];
   // Невідомий kind - НЕ дефолт-рівень, а відмова: дія без рядка в таблиці
   // не має права існувати (та сама логіка, що «помилка видима»).
-  if (!base) return { error: `невідомий kind дії "${kind}"` };
+  if (!base) {
+    // Перелік у самій помилці: інакше модель перебирає здогади («calendar_event»,
+    // «calendar.create», «calendar_add»), витрачає кроки і лишає власника без
+    // пропозиції (приймання 01.09).
+    return {
+      error: `невідомий kind дії "${kind}"; дозволені: ${Object.keys(ACTION_LEVELS).join(', ')}`,
+    };
+  }
   if (base === 'T0' && tainted) return { level: 'T1' };
   return { level: base };
 }

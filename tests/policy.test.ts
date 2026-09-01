@@ -189,6 +189,22 @@ describe('T1/T2: пропозиції', () => {
     expect(out.mode === 'proposed' && out.proposal.level).toBe('T1');
   });
 
+  // Приймання 01.09: модель тричі вгадувала kind для календаря
+  // (calendar_event → calendar.create → calendar_add) і жодного разу не
+  // влучила, бо помилка не називала правильних варіантів.
+  it('невідомий kind - відмова З ПЕРЕЛІКОМ дозволених', async () => {
+    const out = await applyPolicy(
+      env,
+      { kind: 'calendar_event', payload: {}, tainted: false },
+      NOW,
+    );
+    expect(out.mode).toBe('error');
+    const error = out.mode === 'error' ? out.error : '';
+    expect(error).toContain('невідомий kind');
+    expect(error).toContain('calendar.event');
+    expect(error).toContain('tasks.create');
+  });
+
   it('❌ — rejected без виконання; прострочена — expired', async () => {
     const a = await applyPolicy(
       env,

@@ -138,7 +138,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'proposals.create',
     description:
-      'Запропонувати дію назовні (календар, контакт, Drive, Tasks, налаштування, експорт): kind - вид дії, payload - її поля. Нічого не виконується без підтвердження власника; після ✅ ядро зробить запис саме.',
+      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, forget, data.export, gemini.video. payload - поля дії. Нічого не виконується без підтвердження власника; після ✅ ядро зробить запис саме.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),

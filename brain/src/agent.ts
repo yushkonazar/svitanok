@@ -79,6 +79,10 @@ export const STATUS_MAX_CHARS = 3_900;
  *  це мигання, а не прогрес. Коротка відповідь тепер просто заміняє чернетку
  *  цілою. */
 export const STATUS_MIN_CHARS = 60;
+/** І приріст між оновленнями: без цього довга відповідь давала ~40 редагувань
+ *  поспіль (по одному на секунду), кожне - ряд у черзі й виклик Telegram.
+ *  Абзац за раз читається не гірше, а коштує вчетверо менше. */
+export const STATUS_MIN_GROWTH = 200;
 
 const ESCALATE_PREFIX = 'ESCALATE:';
 
@@ -110,6 +114,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     let proposalId: string | null = null;
     let undoId: string | null = null;
     let lastStatusMs = 0;
+    let lastStatusLen = 0;
     let escalateOutcome: { escalate: { text: string; status_message_id?: number } } | undefined;
 
     const abort = new AbortController();
@@ -190,9 +195,11 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     const onPartialText = (text: string): void => {
       if (req.status_message_id == null) return;
       if (text.length < STATUS_MIN_CHARS) return;
+      if (lastStatusLen > 0 && text.length - lastStatusLen < STATUS_MIN_GROWTH) return;
       const t = now();
       if (t - lastStatusMs < statusIntervalMs) return;
       lastStatusMs = t;
+      lastStatusLen = text.length;
       // Хвіст, не голова: інформативний саме поточний шматок роботи, а голова
       // після 3 900 символів замерзала б у байт-у-байт однакові edit-и.
       void deps.client.status(req.run_id, req.status_message_id, clipStatusTail(text));
