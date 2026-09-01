@@ -5,8 +5,11 @@
 
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import {
+  callbackId,
   clipHead,
   clipTail,
+  confirmButtons,
+  searchNote,
   STATUS_MIN_CHARS,
   makeRunner,
   type EngineOutcome,
@@ -18,10 +21,11 @@ import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
 import { instructionHash } from '../brain/src/instructions.js';
 import { BRAIN_TOOLS } from '../brain/src/tools/schemas.js';
+import { parsePolicyCallback } from '../web/core/policy/core.mjs';
 
 interface ClientMock {
   callTool: Mock<(runId: string, coreName: string, args: unknown) => Promise<ToolCallOutcome>>;
-  deliver: Mock<(runId: string, text: string) => Promise<void>>;
+  deliver: Mock<(runId: string, text: string, buttons?: unknown) => Promise<void>>;
   status: Mock<(runId: string, messageId: number, text: string) => Promise<void>>;
   reportRuns: Mock<
     (
@@ -242,6 +246,75 @@ describe('makeRunner: барʼєри', () => {
     // Два виклики, не один: ядро саме читає sessions.tainted (fail-safe) і
     // саме вирішує, виконати чи створити пропозицію.
     expect(client.callTool).toHaveBeenCalledTimes(2);
+  });
+
+  // Приймання 01.09: пропозиція створювалась, модель писала «натисни ✅» - а
+  // кнопки під повідомленням не було взагалі, бо її ніхто не додавав. Те саме
+  // з «↩» під виконаним T0.
+  it('пропозиція і undo приходять КНОПКАМИ, які ядро вміє розібрати', async () => {
+    const client = makeClient({
+      callTool: vi.fn(async (_run: string, name: string) =>
+        name === 'facts.set'
+          ? {
+              ok: true as const,
+              tool: name,
+              tainted: false,
+              mode: 'proposed' as const,
+              proposal: { id: '605e1c26-0503-4e58-a81d-c30da6adc1bd' },
+            }
+          : {
+              ok: true as const,
+              tool: name,
+              tainted: false,
+              mode: 'executed' as const,
+              result: 'ok',
+              undo: { id: 'undo-1' },
+            },
+      ),
+    });
+    const { engine } = scriptedEngine(async (opts) => {
+      await opts.onToolCall('facts_set', { kind: 'setting', key: 'k', value: 1 });
+      await opts.onToolCall('record', { kind: 'checkin' });
+      return { finalText: 'Готово' };
+    });
+    await makeRunner({ client, engine })(req());
+
+    const buttons = client.deliver.mock.calls[0]![2] as {
+      text: string;
+      callback_data: string;
+    }[][];
+    expect(buttons).toEqual([
+      [
+        { text: '✅ Так', callback_data: 'p:605e1c26-0503-4e58-a81d-c30da6adc1bd:ok' },
+        { text: '❌ Ні', callback_data: 'p:605e1c26-0503-4e58-a81d-c30da6adc1bd:no' },
+      ],
+      [{ text: '↩ Скасувати', callback_data: 'u:undo-1' }],
+    ]);
+    // Ядро мусить розібрати рівно ці рядки, інакше кнопка мертва.
+    expect(parsePolicyCallback(buttons[0]![0]!.callback_data)).toEqual({
+      kind: 'proposal',
+      id: '605e1c26-0503-4e58-a81d-c30da6adc1bd',
+      choice: 'ok',
+    });
+    expect(parsePolicyCallback(buttons[1]![0]!.callback_data)).toEqual({
+      kind: 'undo',
+      id: 'undo-1',
+    });
+  });
+
+  it('без пропозиції і undo кнопок немає; чужий формат id - теж', () => {
+    expect(confirmButtons(null, null)).toEqual([]);
+    expect(callbackId({ id: 'нормальний-id' })).toBeNull();
+    expect(callbackId({ id: 'a'.repeat(41) })).toBeNull();
+    expect(callbackId({})).toBeNull();
+    expect(callbackId({ id: 'ok-1' })).toBe('ok-1');
+  });
+
+  it('запит пошуку лишається в телеметрії - інакше не зрозуміти, ЧОМУ не знайшлось', () => {
+    expect(searchNote('mail.search', { q: 'Steam' })).toBe('q=Steam');
+    expect(searchNote('mail.search', {})).toBe('q=(немає)');
+    // У решти інструментів в аргументах особисті дані - їх у журнал не пишемо.
+    expect(searchNote('facts.set', { key: 'секрет' })).toBe('');
   });
 
   it('невідомий і не-профільний інструмент - відмова без виклику ядра', async () => {

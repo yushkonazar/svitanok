@@ -104,6 +104,11 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     const startedMs = now();
     const steps: Step[] = [];
     let toolCalls = 0;
+    // Що прогін лишив власникові на тап: пропозиція чекає ✅, виконаний T0 -
+    // вікно «↩». Кнопки будує мозок, бо лише він знає, ЩО сталось у прогоні;
+    // ядро валідує префікси (07 §9).
+    let proposalId: string | null = null;
+    let undoId: string | null = null;
     let lastStatusMs = 0;
     let escalateOutcome: { escalate: { text: string; status_message_id?: number } } | undefined;
 
@@ -160,13 +165,21 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // створено пропозицію під ✅ власника. Без цієї гілки модель бачила б
       // "null" з isError:false і брехала власнику «Записав» (знахідка ревʼю).
       if (outcome.mode === 'proposed') {
+        proposalId = callbackId(outcome.proposal) ?? proposalId;
         pushStep({ kind: 'tool', name: def.coreName, ms: now() - t0, ok: true, note: 'proposed' });
         return {
           text: `Запис НЕ виконано: створено пропозицію, що чекає підтвердження власника (✅). Деталі: ${JSON.stringify(outcome.proposal ?? null)}. Скажи власнику, що потрібне підтвердження.`,
           isError: false,
         };
       }
-      pushStep({ kind: 'tool', name: def.coreName, ms: now() - t0, ok: true });
+      if (outcome.undo) undoId = callbackId(outcome.undo) ?? undoId;
+      pushStep({
+        kind: 'tool',
+        name: def.coreName,
+        ms: now() - t0,
+        ok: true,
+        ...(searchNote(def.coreName, args) ? { note: searchNote(def.coreName, args) } : {}),
+      });
       const text =
         typeof outcome.result === 'string'
           ? outcome.result
@@ -334,7 +347,11 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         return;
       }
       const delivered = finalText === '' ? '(порожня відповідь моделі)' : clipDeliver(finalText);
-      await deps.client.deliver(req.run_id, delivered);
+      const buttons = confirmButtons(proposalId, undoId);
+      // Третій аргумент лише коли є що показати: deliver без кнопок лишається
+      // тим самим викликом, що й був.
+      if (buttons.length > 0) await deps.client.deliver(req.run_id, delivered, buttons);
+      else await deps.client.deliver(req.run_id, delivered);
       pushStep({ kind: 'reply', name: 'deliver', ms: now() - startedMs, ok: finalText !== '' });
 
       // Сесія для наступного resume (chat): best-effort - невдача означає лише
@@ -424,4 +441,42 @@ export function clipStatusTail(text: string): string {
 function shortError(err: unknown): string {
   if (err instanceof Error) return err.message.slice(0, 200);
   return String(err).slice(0, 200);
+}
+
+/** Id для callback-даних 07 §9: рівно те, що приймає parsePolicyCallback ядра.
+ *  Чужий формат - кнопки не буде: мертва кнопка гірша за її відсутність. */
+export function callbackId(source: unknown): string | null {
+  const id = (source as { id?: unknown } | null)?.id;
+  return typeof id === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(id) ? id : null;
+}
+
+/**
+ * Кнопки під відповіддю (07 §9): ✅/❌ для пропозиції, що чекає рішення, і
+ * «↩» для щойно виконаного T0. Без них пропозиція лишалась у базі, а власник
+ * бачив лише текст «потрібне підтвердження» і не мав, що натиснути
+ * (приймання етапу 2, 01.09).
+ */
+export function confirmButtons(
+  proposalId: string | null,
+  undoId: string | null,
+): Array<Array<{ text: string; callback_data: string }>> {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  if (proposalId) {
+    rows.push([
+      { text: '✅ Так', callback_data: `p:${proposalId}:ok` },
+      { text: '❌ Ні', callback_data: `p:${proposalId}:no` },
+    ]);
+  }
+  if (undoId) rows.push([{ text: '↩ Скасувати', callback_data: `u:${undoId}` }]);
+  return rows;
+}
+
+/** Запит пошукового інструмента - у нотатку кроку. Без цього неможливо
+ *  зʼясувати, ЧОМУ пошук нічого не знайшов: у телеметрії лишалось саме імʼя
+ *  інструмента (діагностика пошти 01.09). Лише пошукові - у решти в
+ *  аргументах особисті дані. */
+export function searchNote(coreName: string, args: unknown): string {
+  if (!['mail.search', 'drive.search', 'memory.search'].includes(coreName)) return '';
+  const q = (args as { q?: unknown } | null)?.q;
+  return typeof q === 'string' ? `q=${q.slice(0, 80)}` : 'q=(немає)';
 }
