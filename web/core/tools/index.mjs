@@ -50,7 +50,11 @@ export const TOOLS = {
     args: {
       type: 'object',
       required: ['q'],
-      properties: { q: { type: 'string', maxLength: 120 } },
+      // minLength: порожній q підставляв дефолт «вхідні за тиждень», і на
+      // «знайди лист від Steam» власник діставав список свіжих розсилок -
+      // тиха підміна пошуку переглядом (приймання 01.09). Тепер це чесна
+      // помилка контракту, і модель мусить сказати, ЩО шукає.
+      properties: { q: { type: 'string', minLength: 2, maxLength: 120 } },
     },
     tainting: true,
     run: (env, args) => runMailSearch(env, args),

@@ -11,6 +11,7 @@
  *   properties?: Record<string, InternalSchema>,
  *   items?: InternalSchema,
  *   maxLength?: number,
+ *   minLength?: number,
  *   minimum?: number,
  *   maximum?: number,
  * }} InternalSchema
@@ -136,6 +137,11 @@ export function validateAgainst(schema, value, path = '$') {
   if (schema.type === 'string' && schema.maxLength != null) {
     if (/** @type {string} */ (value).length > schema.maxLength) {
       return fail(`довше за ${schema.maxLength}`);
+    }
+  }
+  if (schema.type === 'string' && schema.minLength != null) {
+    if (/** @type {string} */ (value).length < schema.minLength) {
+      return fail(`коротше за ${schema.minLength}`);
     }
   }
   if (schema.type === 'number') {

@@ -18,7 +18,8 @@ function sampleFor(schema: CoreSchema | undefined): unknown {
   if (!schema) return 'x';
   switch (schema.type) {
     case 'string':
-      return 'x';
+      // Нижню межу теж поважаємо: у mail.search q мусить бути змістовним.
+      return 'x'.repeat(Math.max(1, schema.minLength ?? 1));
     case 'number':
       return schema.minimum ?? 1;
     case 'boolean':
@@ -106,6 +107,15 @@ describe('парність інструментів мозок↔ядро', () =
             expect(brainOk(atLimit)).toBe(true);
             expect(coreOk(overLimit)).toBe(false);
             expect(brainOk(overLimit)).toBe(false);
+          });
+        }
+        const minLength = prop.type === 'string' ? prop.minLength : undefined;
+        if (minLength != null && minLength > 1) {
+          it(`"${key}" коротший за ${minLength} відкидають обидва`, () => {
+            const base = minimalArgs(core.args);
+            const tooShort = { ...base, [key]: 'а'.repeat(minLength - 1) };
+            expect(coreOk(tooShort)).toBe(false);
+            expect(brainOk(tooShort)).toBe(false);
           });
         }
         if (prop.type === 'number') {
