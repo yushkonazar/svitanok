@@ -9,6 +9,8 @@
 // ланцюгами). Rich Message = send з parse_mode HTML + кнопки; фолбек - той
 // самий текст без розмітки (isParseEntitiesError).
 
+import { loadSentMessages, putSentMessages } from '../../kv-store.mjs';
+import { recordSentMessage } from '../../tg-core.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -260,7 +262,12 @@ async function sendRow(env, row) {
     delete plain.parse_mode;
     res = await attempt(plain);
   }
-  if (res.ok) return { ok: true };
+  if (res.ok) {
+    // Нове повідомлення - у ring-buffer /clear (борг етапу 1: канал outbox не
+    // трекався, тож відповіді асистента переживали очищення).
+    if (row.kind === 'send') await trackOutboxSend(env, row, res);
+    return { ok: true };
+  }
   // Редагування в той самий текст - уже доставлено, не збій (див.
   // isNotModifiedError): інакше ряд пішов би в ретраї й failed на відповіді,
   // яку власник давно бачить.
@@ -277,7 +284,10 @@ async function sendRow(env, row) {
       message_thread_id: row.thread_id ?? undefined,
       ...asSend,
     });
-    if (res.ok) return { ok: true };
+    if (res.ok) {
+      await trackOutboxSend(env, row, res);
+      return { ok: true };
+    }
   }
   let retryAfterSec = null;
   if (res.status === 429) {
@@ -308,4 +318,24 @@ function documentForm(row, payload) {
     String(payload.filename ?? 'document.txt'),
   );
   return form;
+}
+
+/**
+ * Запамʼятати відправлене чергою повідомлення для /clear. Best-effort: збій
+ * трекінгу не сміє валити доставку - це лише зручність очищення.
+ * @param {Env} env
+ * @param {OutboxRow} row
+ * @param {{ text: string }} res
+ */
+async function trackOutboxSend(env, row, res) {
+  try {
+    const id = JSON.parse(res.text)?.result?.message_id;
+    if (typeof id !== 'number') return;
+    await putSentMessages(
+      env,
+      recordSentMessage(await loadSentMessages(env), row.chat_id, row.thread_id, id),
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('outbox: трекінг для /clear не вдався', e?.message);
+  }
 }

@@ -26,7 +26,8 @@ import {
   LOCATE_CANCEL_LABEL,
   chunkArray,
   formatClearResult,
-  lastSentMessages,
+  lastExchangeMessages,
+  trackedMessages,
   briefCooldownRemainingMs,
   buildMiniAppButton,
 } from './tg-core.mjs';
@@ -345,7 +346,19 @@ export async function handleCommand(
     }
     case 'clear': {
       const n = parseClearCount(cmd.args);
-      const ids = lastSentMessages(await loadSentMessages(env), parsed.chatId, parsed.threadId, n);
+      // N - це ОБМІНИ (запит власника + усе, що асистент відповів), а не рядки
+      // чату; саме повідомлення з командою в рахунок не йде, але зникає теж.
+      const store = await loadSentMessages(env);
+      const ids = lastExchangeMessages(
+        store,
+        parsed.chatId,
+        parsed.threadId,
+        n,
+        typeof parsed.messageId === 'number' ? parsed.messageId : null,
+      );
+      const exchanges = trackedMessages(
+        store[sentMessagesKey(parsed.chatId, parsed.threadId)],
+      ).filter((e) => e.own && ids.includes(e.id) && e.id !== parsed.messageId).length;
       let deleted = 0;
       /** @type {number[]} */
       const forget = []; // остаточно відмовлені id (>48г/без прав) — не пробувати знову
@@ -378,9 +391,9 @@ export async function handleCommand(
       // якого sentMessages узагалі живе в окремому ключі від 'state').
       const key = sentMessagesKey(parsed.chatId, parsed.threadId);
       const fresh = await loadSentMessages(env);
-      fresh[key] = (fresh[key] ?? []).filter((/** @type {number} */ id) => !forget.includes(id));
+      fresh[key] = trackedMessages(fresh[key]).filter((e) => !forget.includes(e.id));
       await env.BRIEFING.put('sentMessages', JSON.stringify(fresh));
-      return sendText(formatClearResult(deleted, ids.length));
+      return sendText(formatClearResult(deleted, ids.length, exchanges));
     }
     case 'whereami': {
       // getMe -> can_read_all_group_messages: єдиний спосіб дізнатись, чи не

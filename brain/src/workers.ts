@@ -18,6 +18,13 @@ export const WORKER_MODEL_IDS = {
 
 export type WorkerModel = keyof typeof WORKER_MODEL_IDS;
 
+/** `effort:` з front-matter - скільки моделі думати перед відповіддю
+ *  (SDK Options.effort). Дефолт SDK - 'high', тож поле має сенс саме тоді,
+ *  коли працівникові стільки думати НЕ треба. */
+export type WorkerEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export const WORKER_EFFORTS: readonly WorkerEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
 /** Дзеркало front-matter працівника (07 §5: front-matter → AgentDefinition). */
 export interface WorkerDef {
   name: string;
@@ -28,6 +35,8 @@ export interface WorkerDef {
   maxSteps: number;
   /** `tools` у mcp-іменах; порожньо - працівник без інструментів. */
   toolNames: string[];
+  /** `effort` - рівень зусиль; не задано = дефолт SDK. */
+  effort?: WorkerEffort;
   /** `tainted_output` - вихід працівника є зовнішнім вмістом. Поки лише
    *  описове поле: успадкування taint приїде разом із рештою працівників, а
    *  єдиний підключений (quick) має false, тож розбіжності немає. */
@@ -45,6 +54,9 @@ export const QUICK_WORKER: Omit<WorkerDef, 'prompt'> = {
   model: 'haiku',
   maxSteps: 1,
   toolNames: [],
+  // Один хід, 1-3 рядки, без інструментів - думати тут майже нема над чим, а
+  // дефолтний 'high' коштував 8 с на «17 % від 14 672» (замір 29.08).
+  effort: 'low',
   taintedOutput: false,
 };
 
@@ -74,6 +86,7 @@ export function runWorker(
       model: WORKER_MODEL_IDS[def.model],
       maxTurns: def.maxSteps,
       toolNames: def.toolNames,
+      ...(def.effort ? { effort: def.effort } : {}),
       resumeSessionId: null,
       streamPartials: ctx.streamPartials,
       abortSignal: ctx.abortSignal,

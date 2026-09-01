@@ -79,6 +79,7 @@ export async function trackIncomingMessage(env, parsed) {
         parsed.chatId,
         parsed.threadId,
         parsed.messageId,
+        true,
       ),
     );
   } catch (e) {

@@ -21,7 +21,7 @@ const {
   progressBar,
   sentMessagesKey,
   recordSentMessage,
-  lastSentMessages,
+  lastExchangeMessages,
   parseClearCount,
   chunkArray,
   formatClearResult,
@@ -378,26 +378,53 @@ describe('tg-core — sentMessages ring buffer (§C5: /clear)', () => {
 
   it('recordSentMessage: додає в правильний ключ, не чіпає інші чат/теми', () => {
     let store = recordSentMessage({}, '1', '2', 100);
-    store = recordSentMessage(store, '1', '2', 101);
+    store = recordSentMessage(store, '1', '2', 101, true);
     store = recordSentMessage(store, '1', '3', 999); // інша тема — окремий ключ
-    expect(store['1:2']).toEqual([100, 101]);
-    expect(store['1:3']).toEqual([999]);
+    expect(store['1:2']).toEqual([
+      { id: 100, own: false },
+      { id: 101, own: true },
+    ]);
+    expect(store['1:3']).toEqual([{ id: 999, own: false }]);
   });
 
   it('recordSentMessage: капається на 50 (найстаріші відкидаються)', () => {
-    let store: Record<string, number[]> = {};
+    let store: Record<string, unknown> = {};
     for (let i = 0; i < 55; i++) store = recordSentMessage(store, '1', null, i);
-    expect(store['1:']).toHaveLength(50);
-    expect(store['1:']?.[0]).toBe(5); // перші 5 (0..4) зрізано
-    expect(store['1:']?.[49]).toBe(54);
+    const list = store['1:'] as { id: number }[];
+    expect(list).toHaveLength(50);
+    expect(list[0]?.id).toBe(5); // перші 5 (0..4) зрізано
+    expect(list[49]?.id).toBe(54);
   });
 
-  it('lastSentMessages: останні N (найновіші останні); відсутній ключ -> []', () => {
-    const store = { '1:2': [10, 11, 12, 13, 14] };
-    expect(lastSentMessages(store, '1', '2', 3)).toEqual([12, 13, 14]);
-    expect(lastSentMessages(store, '1', '2', 100)).toEqual([10, 11, 12, 13, 14]);
-    expect(lastSentMessages(store, 'ghost', null, 5)).toEqual([]);
-    expect(lastSentMessages(undefined, '1', '2', 5)).toEqual([]);
+  // N у /clear - це ОБМІНИ: запит власника разом з усім, що асистент на нього
+  // відповів. Раніше N рахувало рядки чату, тож «/clear 3» зносив два запити
+  // й одну відповідь - половину розмови (скарга власника 30.08).
+  it('lastExchangeMessages: N обмінів, тригер зверху і поза рахунком', () => {
+    let store = {};
+    // власник, чернетка, відповідь, власник, відповідь, сама команда
+    for (const [id, own] of [
+      [10, true],
+      [11, false],
+      [12, false],
+      [13, true],
+      [14, false],
+      [15, true],
+    ] as [number, boolean][]) {
+      store = recordSentMessage(store, '1', '2', id, own);
+    }
+    expect(lastExchangeMessages(store, '1', '2', 1, 15)).toEqual([13, 14, 15]);
+    expect(lastExchangeMessages(store, '1', '2', 2, 15)).toEqual([10, 11, 12, 13, 14, 15]);
+    // Замовили більше, ніж є - віддаємо все, що знаємо, без винятку.
+    expect(lastExchangeMessages(store, '1', '2', 9, 15)).toEqual([10, 11, 12, 13, 14, 15]);
+    expect(lastExchangeMessages(store, 'ghost', null, 5, null)).toEqual([]);
+    expect(lastExchangeMessages(undefined, '1', '2', 5, null)).toEqual([]);
+  });
+
+  it('lastExchangeMessages: старий формат (голі числа) - поведінка як раніше', () => {
+    // Перший /clear після деплою бачить буфер без позначок автора: тоді N =
+    // останні N повідомлень, як було, а не «нема що чистити».
+    const legacy = { '1:2': [10, 11, 12, 13, 14] };
+    expect(lastExchangeMessages(legacy, '1', '2', 3, null)).toEqual([12, 13, 14]);
   });
 
   it('parseClearCount: валідне число клампується [1,maxN]; невалідне -> default', () => {

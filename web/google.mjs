@@ -97,7 +97,11 @@ export async function googleAccessToken(/** @type {Env} */ env) {
 // gmail.readonly уже у GOOGLE_REFRESH_TOKEN (Блок P2c, ре-консент зроблено) —
 // нового консенту НЕ потрібно. Читаємо ЛИШЕ метадані (format=metadata) + snippet:
 // повні тіла листів не тягнемо ні в промпт, ні навіть у память Worker'а.
-const MAIL_MAX_RESULTS = 5;
+// 10, не 5: на прийманні 30.08 пошук «лист від Steam» повертав лише пʼять
+// найсвіжіших розсилок, і потрібний лист лишався за вікном. Кожен лист - це
+// ще один підзапит (1 список + N метаданих), тож 11 добре вкладається в
+// стелю підзапитів Worker'а.
+const MAIL_MAX_RESULTS = 10;
 const MAIL_HEADERS = ['From', 'Subject', 'Date'];
 
 /** Пошук у Gmail -> [{from,subject,date,snippet}] | [] (нічого) | null (немає доступу/збій). */
