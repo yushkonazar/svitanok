@@ -11,6 +11,7 @@ import {
   confirmButtons,
   searchNote,
   STATUS_MIN_CHARS,
+  STATUS_MIN_GROWTH,
   makeRunner,
   type EngineOutcome,
   type EngineRunOptions,
@@ -606,6 +607,27 @@ describe('makeRunner: стрімінг статусу', () => {
     expect(client.status).not.toHaveBeenCalled();
     // Сама відповідь при цьому доставлена - чернетку замінить deliver.
     expect(client.deliver).toHaveBeenCalledWith('run-1', 'Готово');
+  });
+
+  it('між оновленнями статусу потрібен приріст, а не лише секунда', async () => {
+    // Довга відповідь давала ~40 редагувань поспіль (приймання 01.09):
+    // секунда минала, а тексту додавалось на пів рядка.
+    let t = 0;
+    const client = makeClient();
+    const { engine } = scriptedEngine(async (opts) => {
+      let text = 'п'.repeat(STATUS_MIN_CHARS);
+      for (let i = 0; i < 20; i += 1) {
+        text += 'щ'.repeat(Math.floor(STATUS_MIN_GROWTH / 4)); // приріст менший за поріг
+        opts.onPartialText(text);
+        t += 1500; // часу вистачає завжди
+      }
+      return { finalText: 'Готово' };
+    });
+    await makeRunner({ client, engine, now: () => t })(req({ status_message_id: 42 }));
+    // 20 подій, приріст 50 символів: замість 20 оновлень - лише ті, де
+    // назбиралось ≥ 200 символів.
+    expect(client.status.mock.calls.length).toBeLessThanOrEqual(6);
+    expect(client.status.mock.calls.length).toBeGreaterThan(0);
   });
 
   it('статус показує ХВІСТ довгого партіала, а не замерзлу голову', async () => {
