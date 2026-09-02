@@ -18,6 +18,7 @@ import {
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
 import { runRunsQuery } from './runs.mjs';
+import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runMemorySearch } from '../memory.mjs';
 
 /**
@@ -222,6 +223,95 @@ export const TOOLS = {
     write: { kind: 'chain.start' },
     run: () => {
       throw new Error('chain.start виконується через policy, не напряму');
+    },
+  },
+  // Ідеї (етап 3 PR-4, 07 §4 `ideas.*`): list/search - читання власної бази;
+  // create/update/analyze - T0 через policy («↩»), delete - T1. Номер ідеї
+  // для власника - rowid («ідея #12»); id приймає і номер, і ulid.
+  'ideas.list': {
+    args: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', maxLength: 16 },
+        status: { type: 'string', maxLength: 16 },
+        limit: { type: 'number', minimum: 1, maximum: 10 },
+      },
+    },
+    run: (env, args) => runIdeasList(env, args),
+  },
+  'ideas.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: { q: { type: 'string', minLength: 2, maxLength: 120 } },
+    },
+    run: (env, args) => runIdeasSearch(env, args),
+  },
+  'ideas.create': {
+    args: {
+      type: 'object',
+      required: ['title'],
+      properties: {
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        body_md: { type: 'string', maxLength: 20_000 },
+        domain: { type: 'string', maxLength: 16 },
+        priority: { type: 'number', minimum: 1, maximum: 3 },
+        effort: { type: 'string', maxLength: 1 },
+        tags: { type: 'array', items: { type: 'string', maxLength: 32 } },
+        next_action: { type: 'string', maxLength: 300 },
+      },
+    },
+    write: { kind: 'ideas.create' },
+    run: () => {
+      throw new Error('ideas.create виконується через policy, не напряму');
+    },
+  },
+  'ideas.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        title: { type: 'string', maxLength: 200 },
+        body_md: { type: 'string', maxLength: 20_000 },
+        domain: { type: 'string', maxLength: 16 },
+        status: { type: 'string', maxLength: 16 },
+        priority: { type: 'number', minimum: 1, maximum: 3 },
+        effort: { type: 'string', maxLength: 1 },
+        next_action: { type: 'string', maxLength: 300 },
+        tags: { type: 'array', items: { type: 'string', maxLength: 32 } },
+        analysis_md: { type: 'string', maxLength: 20_000 },
+        plan_md: { type: 'string', maxLength: 20_000 },
+      },
+    },
+    write: { kind: 'ideas.update' },
+    run: () => {
+      throw new Error('ideas.update виконується через policy, не напряму');
+    },
+  },
+  'ideas.analyze': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        mode: { type: 'string', maxLength: 8 },
+      },
+    },
+    write: { kind: 'ideas.analyze' },
+    run: () => {
+      throw new Error('ideas.analyze виконується через policy, не напряму');
+    },
+  },
+  'ideas.delete': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', maxLength: 64 } },
+    },
+    write: { kind: 'ideas.delete' },
+    run: () => {
+      throw new Error('ideas.delete виконується через policy, не напряму');
     },
   },
   'facts.set': {
