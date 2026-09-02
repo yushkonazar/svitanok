@@ -95,6 +95,40 @@ export async function enqueueOutbox(env, item, nowMs) {
 }
 
 /**
+ * Алерт у тему TOPIC_SYSTEM: enqueue + best-effort drain (добере sweeper).
+ * Одне місце для квот, здоровʼя мозку і задач планувальника - копії цього
+ * шматка вже розходились (одна без drain, інша без гейта TELEGRAM_CHAT_ID).
+ * Збій черги не кидає: алерт - не привід зламати задачу, що його шле.
+ * @param {Env} env
+ * @param {string} text
+ * @param {number} nowMs
+ * @returns {Promise<boolean>} true = покладено в чергу
+ */
+export async function sendSystemAlert(env, text, nowMs) {
+  if (!env.TELEGRAM_CHAT_ID) {
+    console.error('alert: TELEGRAM_CHAT_ID відсутній - нікуди слати:', text);
+    return false;
+  }
+  try {
+    await enqueueOutbox(
+      env,
+      {
+        chatId: env.TELEGRAM_CHAT_ID,
+        threadId: env.TOPIC_SYSTEM ?? null,
+        kind: 'send',
+        payload: { text },
+      },
+      nowMs,
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('alert: не покладено в чергу', e?.message);
+    return false;
+  }
+  await drainOutbox(env, { nowMs }).catch(() => {});
+  return true;
+}
+
+/**
  * Статусні edit-и того самого повідомлення заміняють НЕЗІСЛАНІ попередні:
  * черга з 30 застарілих «▸ думаю…» нікому не потрібна - це і є троттлінг
  * статусу до фактичної швидкості відправки (01 §2.1: ядро троттлить).

@@ -179,6 +179,18 @@ describe('вхід прогону (§0) і reports', () => {
     });
     expect(second.text).toContain('2026-08-24 - 2026-08-30');
     expect(second.text).toContain('минулий звіт про сон');
+
+    // Звіт ПОТОЧНОГО тижня (недільний) - не «попередній» для «звіт зараз» у
+    // середу: порівняння «до минулого тижня» інакше рахувалось би від себе.
+    d1.db
+      .prepare(
+        `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at)
+         VALUES ('rep-2', 'weekly', '2026-08-31', '2026-09-06', 'цьоготижневий', 'h', '2026-09-06T06:00:00Z')`,
+      )
+      .run();
+    const third = await buildWeeklyReviewInput(env, WEDNESDAY, 'c'.repeat(64));
+    expect(third.text).toContain('минулий звіт про сон');
+    expect(third.text).not.toContain('цьоготижневий');
   });
 
   it('saveWeeklyReport: рядок kind=weekly з періодом і хешем інструкції з D1; readRunProfile читає runs', async () => {
@@ -290,8 +302,23 @@ describe('вхід прогону (§0) і reports', () => {
 describe('задача weekly-review (нд 09:00, повтор 12:00, алерт)', () => {
   const start = vi.mocked(startOrQueueThreadText);
 
-  function taskEnv(runRows: { id: string; error: string | null; finished: boolean }[] = []) {
-    const d1 = d1FromSqlite(['0003_telemetry.sql', '0002_assistant.sql']);
+  function taskEnv(
+    runRows: { id: string; error: string | null; finished: boolean }[] = [],
+    reportToday = false,
+  ) {
+    const d1 = d1FromSqlite([
+      '0003_telemetry.sql',
+      '0002_assistant.sql',
+      '0007_instructions_plans.sql',
+    ]);
+    if (reportToday) {
+      d1.db
+        .prepare(
+          `INSERT INTO reports (id, kind, period_from, period_to, text_md, instruction_hash, created_at)
+           VALUES ('rep-today', 'weekly', '2026-08-31', '2026-09-06', 'звіт', 'h', '2026-09-06T06:20:00Z')`,
+        )
+        .run();
+    }
     for (const r of runRows) {
       d1.db
         .prepare(
@@ -350,8 +377,9 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
     expect(start).toHaveBeenCalledTimes(1);
   });
 
-  it('12:10 - перший прогін ok → нічого; впав → алерт у TOPIC_SYSTEM і повтор; 13:10 після невдалого повтору - алерт, більше спроб немає', async () => {
-    const okCase = taskEnv([{ id: 'run-w1', error: null, finished: true }]);
+  it('12:10 - звіт уже в reports → нічого; звіту нема → алерт у TOPIC_SYSTEM і повтор; 13:10 після невдалого повтору - алерт, більше спроб немає', async () => {
+    // Успіх - доставлений звіт (рядок у reports), а не «прогін без помилки».
+    const okCase = taskEnv([{ id: 'run-w1', error: null, finished: true }], true);
     okCase.kv.set(
       WEEKLY_REVIEW_STATE_KEY,
       JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
@@ -400,11 +428,22 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
     expect(start).toHaveBeenCalledTimes(1);
   });
 
-  it('прогін у черзі треду (runId null) - спроба рахується, вердикт о 12:00 дає повтор', async () => {
+  it('прогін у черзі треду (runId null): звіту о 12:00 нема - повтор; звіт з черги ДОСТАВЛЕНО - без повтору (ревʼю: дубль звіту)', async () => {
     start.mockResolvedValueOnce(null);
     const { env, kv } = taskEnv();
     expect(await weeklyReviewTask(env, SUNDAY_0910)).toEqual({ started: false, queued: true });
     expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}').runIds).toEqual(['queued']);
     expect(await weeklyReviewTask(env, SUNDAY_1210)).toEqual({ started: true, queued: false });
+
+    // Той самий старт із черги, але прогін із черги встиг доставити звіт:
+    // reports має рядок за сьогодні - другий звіт НЕ стартує.
+    start.mockResolvedValueOnce(null);
+    const delivered = taskEnv([], true);
+    await weeklyReviewTask(delivered.env, SUNDAY_0910);
+    expect(await weeklyReviewTask(delivered.env, SUNDAY_1210)).toEqual({ skipped: 'ok' });
+    expect(await weeklyReviewTask(delivered.env, SUNDAY_1310)).toEqual({ skipped: 'ok' });
+    // Три старти на два середовища: 09:10 + повтор 12:10 у першому, лише
+    // 09:10 у другому - повтору після доставленого звіту немає.
+    expect(start).toHaveBeenCalledTimes(3);
   });
 });

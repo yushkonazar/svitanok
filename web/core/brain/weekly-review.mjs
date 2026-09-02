@@ -29,7 +29,7 @@ export async function buildWeeklyReviewInput(env, nowMs, instructionHashHex) {
   const dayOfMonth = Number(today.slice(8, 10));
   const isSunday = new Date(`${today}T00:00:00Z`).getUTCDay() === 0;
   const firstSunday = isSunday && dayOfMonth <= 7;
-  const previous = await readPreviousReport(env);
+  const previous = await readPreviousReport(env, from);
   const lines = [
     `period_from: ${from}`,
     `period_to: ${to}`,
@@ -46,15 +46,20 @@ export async function buildWeeklyReviewInput(env, nowMs, instructionHashHex) {
   return { text: lines.join('\n'), periodFrom: from, periodTo: to, firstSunday };
 }
 
-/** @param {Env} env */
-async function readPreviousReport(env) {
+/**
+ * Останній звіт ПОПЕРЕДНІХ тижнів: «звіт зараз» після недільного не має
+ * бачити цьогорічний тиждень як «попередній» - інакше порівняння «до
+ * минулого тижня» рахувалось би від самого себе.
+ * @param {Env} env @param {string} currentFrom
+ */
+async function readPreviousReport(env, currentFrom) {
   if (!env.DB) return null;
   const row = /** @type {any} */ (
     await env.DB.prepare(
       `SELECT period_from, period_to, text_md FROM reports
-       WHERE kind = 'weekly' ORDER BY created_at DESC LIMIT 1`,
+       WHERE kind = 'weekly' AND period_from < ? ORDER BY created_at DESC LIMIT 1`,
     )
-      .bind()
+      .bind(currentFrom)
       .first()
   );
   if (!row) return null;
