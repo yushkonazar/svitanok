@@ -12,7 +12,13 @@
 
 import type { CoreClient, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
-import { PROFILES, TRANSCRIPT_MAX_CHARS, buildSystemPrompt, type RunProfile } from './profiles.js';
+import {
+  INSTRUCTION_NAME_BY_PROFILE,
+  PROFILES,
+  TRANSCRIPT_MAX_CHARS,
+  buildSystemPrompt,
+  type RunProfile,
+} from './profiles.js';
 import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
 import { QUICK_WORKER, runWorker, type WorkerEffort } from './workers.js';
@@ -215,7 +221,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           instructionBody = verifyInstruction(
             req.instruction,
             profile.name,
-            profile.name === 'chat' ? 'persona' : 'quick',
+            INSTRUCTION_NAME_BY_PROFILE[profile.name],
           );
         } catch (e) {
           const note = e instanceof Error ? e.message : String(e);

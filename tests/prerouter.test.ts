@@ -215,6 +215,33 @@ describe('інструкція профілю в /run (PR-5)', () => {
     expect(quick.name).toBe('quick');
   });
 
+  // S-9-5 (етап 3 PR-3): «звіт зараз» - профіль weekly-review тим самим
+  // шляхом; вхід прогону будує ядро (§0 інструкції), а не текст власника.
+  it('«звіт зараз» → /run з profile=weekly-review, інструкцією weekly-review і входом §0', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const body = '# Тижневий звіт';
+    d1.db
+      .prepare(
+        `INSERT INTO instructions (name, kind, version_hash, body_md, max_chars, deployed_at)
+         VALUES ('weekly-review', 'profile', ?, ?, 12000, '2026-09-01T00:00:00Z')`,
+      )
+      .run(syncInstructionHash(body), body);
+    expect(await prerouteMessage(makeEnv(reg, d1.stub), parsedMsg('звіт зараз'), NOW)).toBe(true);
+    expect(brain).toHaveLength(1);
+    const sent = brain[0]!.body as {
+      profile: string;
+      instruction: { name: string };
+      input: { text: string };
+    };
+    expect(sent.profile).toBe('weekly-review');
+    expect(sent.instruction.name).toBe('weekly-review');
+    expect(sent.input.text).toContain('period_from: 2026-08-24');
+    expect(sent.input.text).toContain(`instruction_hash: ${syncInstructionHash(body)}`);
+    expect(reg.begins[0]).toMatchObject({ profile: 'weekly-review', model: 'claude-sonnet-5' });
+  });
+
   it('немає рядка в D1 - прогін НЕ стартує, запис у черзі, прогону не заведено', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
