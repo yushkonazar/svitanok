@@ -13,6 +13,7 @@
 
 import { totalProgress } from '../../roadmap-core.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { weekStartKey } from '../../stats-core.mjs';
 
 /** Глибина сирих чек-інів у weekly за замовчуванням = вікно моделі
  *  «Індексу дня» (STATS_WINDOWS.checkinDeep). */
@@ -47,11 +48,9 @@ export function parsePeriodDays(raw) {
  * @param {string} todayKey YYYY-MM-DD
  */
 export function weekBounds(todayKey) {
-  // getUTCDay на «дата + T00:00Z» - той самий прийом, що weekStartKey у
-  // stats-core: ключ уже київський, зсув потрібен лише день тижня.
-  const dow = new Date(`${todayKey}T00:00:00Z`).getUTCDay(); // 0 = нд
-  const back = dow === 0 ? 6 : dow - 1;
-  const from = addDaysToDateKey(todayKey, -back);
+  // Понеділок - зі stats-core, а не своя копія: архів і звіт мусять кейзити
+  // тижні однією арифметикою (шапка stats-archive.mjs про той самий дубль).
+  const from = weekStartKey(todayKey);
   return { from, to: addDaysToDateKey(from, 6) };
 }
 
@@ -113,7 +112,9 @@ export function buildWeeklyDigest(input) {
     },
     funnel: {
       counts: agg.funnel ?? null,
-      list: Array.isArray(agg.funnelList) ? agg.funnelList : [],
+      // Копії рядків: драбина нижче знімає history з КОЖНОГО ряду, а агрегат
+      // належить викликачу - функція не має правити чужий обʼєкт.
+      list: Array.isArray(agg.funnelList) ? agg.funnelList.map((row) => ({ ...row })) : [],
       speed: agg.funnelSpeed ?? null,
       goal: agg.goal ?? null,
       conversion: agg.conversion ?? null,
@@ -153,9 +154,13 @@ export function buildArchiveDigest(input) {
 
 /** Сирі чек-іни за останні `days` діб із агрегованого checkinRaw (записи
  *  лежать під ключами YYYY-MM-DD, тож вікно - порівняння ключів).
- *  @param {any} raw @param {string} todayKey @param {number} days */
-function windowRaw(raw, todayKey, days) {
+ *  @param {any} raw @param {string} todayKey @param {number} requestedDays */
+function windowRaw(raw, todayKey, requestedDays) {
   const records = raw?.records && typeof raw.records === 'object' ? raw.records : {};
+  // Джерело вже обрізане агрегатором (checkinDeep = 90): просити глибше
+  // можна, дістати - ні, і заявлена глибина мусить казати правду.
+  const sourceDays = Number.isFinite(raw?.days) ? Number(raw.days) : requestedDays;
+  const days = Math.min(requestedDays, sourceDays);
   const from = addDaysToDateKey(todayKey, -(days - 1));
   /** @type {Record<string, unknown>} */
   const out = {};

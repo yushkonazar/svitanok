@@ -8,7 +8,7 @@
 // токенів, щоб модель не написала «токени 0/0» як факт.
 
 import { readQuotas, QUOTA_LIMITS } from '../quota/quota.mjs';
-import { parsePeriodDays } from './weekly.mjs';
+import { parsePeriodDays, shrinkToCap } from './weekly.mjs';
 
 /** Стеля рядків за період: тиждень власника - сотні прогонів, тисячі -
  *  вже аномалія, яку варто побачити як `capped:true`, а не тягнути мегабайт. */
@@ -60,10 +60,21 @@ export async function runRunsQuery(env, args, nowMs) {
     // сказати це прямо, ніж дати моделі порожній масив «усе гаразд».
     secrets: { note: 'терміни секретів ще не ведуться (задача secret-expiry - етап 7)' },
   };
-  const text = JSON.stringify(doc);
+  // Та сама стеля, що в data.read: спершу знімаються списки помилок і квот,
+  // і лише потім - зріз із маркером `truncated`, щоб обрив був видимий.
   return {
-    result: text.length > RUNS_QUERY_MAX_CHARS ? text.slice(0, RUNS_QUERY_MAX_CHARS) : text,
+    result: shrinkToCap(doc, RUNS_QUERY_MAX_CHARS, [
+      { name: 'runs.errors', apply: (d) => nullify(d.runs, 'errors') },
+      { name: 'quotas', apply: (d) => nullify(d, 'quotas') },
+    ]).text,
   };
+}
+
+/** @param {any} obj @param {string} key */
+function nullify(obj, key) {
+  if (!obj || obj[key] == null) return false;
+  obj[key] = null;
+  return true;
 }
 
 /**

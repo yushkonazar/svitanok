@@ -137,6 +137,35 @@ describe('buildWeeklyDigest', () => {
     expect(doc.truncated).toBeUndefined();
   });
 
+  it('period глибший за джерело: заявлена глибина = фактична (90), не запитана', () => {
+    const { text } = buildWeeklyDigest({
+      agg,
+      plans: { days: [], items: [] },
+      todayKey: TODAY,
+      rawDays: 120,
+      cap: DATA_READ_WEEKLY_CAP,
+    });
+    const raw = JSON.parse(text).checkin.raw;
+    expect(raw.days).toBe(WEEKLY_RAW_DAYS);
+    expect(Object.keys(raw.records)).toHaveLength(WEEKLY_RAW_DAYS);
+  });
+
+  it('драбина не мутує вхідний агрегат: history рядків воронки лишається у викликача', () => {
+    const withFunnel = {
+      ...agg,
+      funnelList: [
+        { url: 'u', stage: 'applied', title: 'X', ts: '', history: [{ stage: 'applied' }] },
+      ],
+    };
+    buildWeeklyDigest({
+      agg: withFunnel,
+      plans: { days: [], items: [] },
+      todayKey: TODAY,
+      cap: 3_000,
+    });
+    expect(withFunnel.funnelList[0]?.history).toHaveLength(1);
+  });
+
   it('кап менший за скелет - жорсткий зріз із маркером truncated', () => {
     const { text } = shrinkToCap({ a: 'x'.repeat(2_000), b: 'y'.repeat(2_000) }, 600, []);
     expect(text.length).toBe(600);
@@ -165,6 +194,23 @@ describe('buildArchiveDigest', () => {
     expect(doc.archive.weeksTotal).toBe(60);
     expect(doc.levers).toBeNull();
     expect(doc.checkin).toBeUndefined();
+  });
+
+  it('тісний кап: спершу знімаються тижневі згортки, потім важелі - і це названо', () => {
+    const weeks = Object.fromEntries(
+      Array.from({ length: 52 }, (_, i) => [`2025-w${i}`, { text: 'x'.repeat(100) }]),
+    );
+    const { text, dropped } = buildArchiveDigest({
+      archive: { '2026-01': { checkinDays: 3 } },
+      weeklyArchive: weeks,
+      levers: { note: 'y'.repeat(2_000) },
+      todayKey: TODAY,
+      cap: 1_000,
+    });
+    expect(text.length).toBeLessThanOrEqual(1_000);
+    expect(dropped).toEqual(['archive.weekly', 'levers']);
+    const doc = JSON.parse(text);
+    expect(doc.archive.monthly['2026-01'].checkinDays).toBe(3);
   });
 });
 
@@ -229,6 +275,22 @@ describe('runDataRead: weekly і archive наскрізь (KV + D1 0007)', () =>
     e.DB = undefined;
     const doc = JSON.parse(String((await runDataRead(e, { scope: 'weekly' }, NOW)).result));
     expect(doc.plan.error).toMatch(/DB/);
+    expect(doc.habits).toBeDefined();
+  });
+
+  it('weekly: збій D1 у плані - блок error, решта data.read не падає', async () => {
+    const e = env();
+    e.DB = {
+      prepare: () => ({
+        bind: () => ({
+          all: async () => {
+            throw new Error('D1_ERROR: no such table');
+          },
+        }),
+      }),
+    } as unknown as Env['DB'];
+    const doc = JSON.parse(String((await runDataRead(e, { scope: 'weekly' }, NOW)).result));
+    expect(doc.plan.error).toMatch(/не прочитався: D1_ERROR/);
     expect(doc.habits).toBeDefined();
   });
 

@@ -94,7 +94,7 @@ describe('data.read', () => {
   it('невідомий scope — виняток із переліком чинних', async () => {
     const env = workerEnv({ BRIEFING: kvBriefing().stub });
     // weekly і archive з етапу 3 - чинні; невідомий - вигаданий.
-    await expect(runDataRead(env, { scope: 'usе' }, NOW)).rejects.toThrow(/невідомий scope/);
+    await expect(runDataRead(env, { scope: 'unknown' }, NOW)).rejects.toThrow(/невідомий scope/);
   });
 });
 
