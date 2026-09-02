@@ -93,7 +93,8 @@ describe('data.read', () => {
 
   it('невідомий scope — виняток із переліком чинних', async () => {
     const env = workerEnv({ BRIEFING: kvBriefing().stub });
-    await expect(runDataRead(env, { scope: 'weekly' }, NOW)).rejects.toThrow(/невідомий scope/);
+    // weekly і archive з етапу 3 - чинні; невідомий - вигаданий.
+    await expect(runDataRead(env, { scope: 'usе' }, NOW)).rejects.toThrow(/невідомий scope/);
   });
 });
 
@@ -344,7 +345,7 @@ describe('facts.* на справжній міграції 0001', () => {
 });
 
 describe('реєстр TOOLS', () => {
-  it('склад: читання + усі write-інструменти етапу 2 PR-6; drive.write свідомо відсутній до адаптерів Google', () => {
+  it('склад: читання + write-інструменти етапу 2 + runs.query етапу 3; drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
       'chain.start',
@@ -362,6 +363,7 @@ describe('реєстр TOOLS', () => {
       'reminders.cancel',
       'reminders.create',
       'reminders.update',
+      'runs.query',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
   });

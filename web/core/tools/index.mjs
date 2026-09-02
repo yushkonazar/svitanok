@@ -17,6 +17,7 @@ import {
   runGeoGeocode,
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
+import { runRunsQuery } from './runs.mjs';
 import { runMemorySearch } from '../memory.mjs';
 
 /**
@@ -34,9 +35,23 @@ export const TOOLS = {
     args: {
       type: 'object',
       required: ['scope'],
-      properties: { scope: { type: 'string', maxLength: 32 }, cap: { type: 'number' } },
+      properties: {
+        scope: { type: 'string', maxLength: 32 },
+        cap: { type: 'number' },
+        // period (07 §4: «30d», «12w») - звужує сирі серії у weekly (етап 3).
+        period: { type: 'string', maxLength: 16 },
+      },
     },
     run: (env, args, nowMs) => runDataRead(env, args, nowMs),
+  },
+  // runs.query (етап 3 PR-2): телеметрія власних прогонів + квоти місяця -
+  // блок СИСТЕМА тижневого звіту. Власні таблиці ядра, не tainting.
+  'runs.query': {
+    args: {
+      type: 'object',
+      properties: { period: { type: 'string', maxLength: 16 } },
+    },
+    run: (env, args, nowMs) => runRunsQuery(env, args, nowMs),
   },
   'calendar.read': {
     args: {
