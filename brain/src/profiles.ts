@@ -2,10 +2,17 @@
 // Стеля профілю рахує ВИКЛИКИ ІНСТРУМЕНТІВ, не ходи (07 §4) - тому окремо
 // maxToolCalls (виконує agent.ts через onToolCall) і maxTurns (страховка SDK).
 
-import { BRAIN_TOOLS } from './tools/schemas.js';
+import { BRAIN_TOOLS, TOOL_BY_MCP_NAME } from './tools/schemas.js';
 import { QUICK_WORKER, WORKER_MODEL_IDS, type WorkerEffort } from './workers.js';
 
-export type ProfileName = 'chat' | 'quick' | 'summarize';
+export type ProfileName = 'chat' | 'quick' | 'summarize' | 'weekly-review';
+
+/** Інструменти профілю weekly-review за front-matter docs/assistant/
+ *  weekly-review.md (07 §5): data.read(weekly), finance.query, runs.query.
+ *  finance.query приїде на етапі 6 - доти профіль дістає лише ті, що вже
+ *  описані (фільтр нижче), а інструкція каже писати про недоступне в «ЧОГО Я
+ *  НЕ БАЧИВ». Парність із файлом тримає тест weekly-review-profile. */
+export const WEEKLY_REVIEW_TOOL_NAMES = ['data_read', 'finance_query', 'runs_query'] as const;
 
 export interface RunProfile {
   name: ProfileName;
@@ -54,6 +61,26 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     // 30.08 (і саме на ньому запис сесії не дійшов).
     effort: 'low',
   },
+  // Тижневий звіт (07 §5, етап 3 PR-3): Sonnet, 6 інструментів, 6 хв, свіжа
+  // сесія без resume; інструкція - weekly-review.md з D1; вихід - deliver у
+  // тему, ядро кладе текст у reports.
+  'weekly-review': {
+    name: 'weekly-review',
+    model: 'claude-sonnet-5',
+    toolNames: WEEKLY_REVIEW_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
+    maxToolCalls: 6,
+    maxTurns: 30,
+    timeoutMs: 6 * 60_000,
+  },
+};
+
+/** Імʼя інструкції в D1 для профілю (те, що ядро кладе в тіло /run і що
+ *  мозок звіряє з `instruction.name`). summarize інструкції не має - його
+ *  правило вшите нижче. */
+export const INSTRUCTION_NAME_BY_PROFILE: Record<Exclude<ProfileName, 'summarize'>, string> = {
+  chat: 'persona',
+  quick: 'quick',
+  'weekly-review': 'weekly-review',
 };
 
 /** Моделі для /health.limits (01 §2.2). */
@@ -106,6 +133,8 @@ export function buildSystemPrompt(
   // одному й тому ж промпті, і поведінка на «скільки днів до 1 вересня»
   // стрибала б між відповіддю і ескалацією.
   if (profile.name === 'quick') return opts.instruction;
+  // Звіт самодостатній (weekly-review §0): дата потрібна, згортка розмов - ні.
+  if (profile.name === 'weekly-review') return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;
   // Згортка треду - в системний промпт chat (01 §2.2): модель памʼятає
   // попередні дні навіть у свіжій sdk-сесії.
   const summaryBlock = opts.summary

@@ -18,6 +18,7 @@ import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
+import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
@@ -293,7 +294,23 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     nowMs,
   );
   await scheduleDrain(env, ctx, nowMs);
-  return json({ ok: true, queued, ...(draftId != null ? { edited: draftId } : {}) });
+  // Звіт профілю weekly-review (S-9-1): текст у reports разом із хешем
+  // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
+  // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.
+  let reportId = null;
+  if ((await readRunProfile(env, runId).catch(() => null)) === 'weekly-review') {
+    try {
+      reportId = (await saveWeeklyReport(env, body.text, nowMs)).id;
+    } catch (/** @type {any} */ e) {
+      console.error('internal: звіт не збережено в reports', e?.message);
+    }
+  }
+  return json({
+    ok: true,
+    queued,
+    ...(draftId != null ? { edited: draftId } : {}),
+    ...(reportId ? { report_id: reportId } : {}),
+  });
 }
 
 /**

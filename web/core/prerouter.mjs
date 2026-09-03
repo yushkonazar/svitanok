@@ -37,6 +37,7 @@ import {
   VOICE_LONG_S,
 } from './voice.mjs';
 import { loadInstruction } from './instructions.mjs';
+import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -49,7 +50,14 @@ const STATUS_DRAFT = '▸ Думаю…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
 
-const MODELS = { chat: 'claude-sonnet-5', quick: 'claude-haiku-4-5' };
+const MODELS = {
+  chat: 'claude-sonnet-5',
+  quick: 'claude-haiku-4-5',
+  'weekly-review': 'claude-sonnet-5',
+};
+/** Імʼя інструкції в D1 за маршрутом (дзеркало INSTRUCTION_NAME_BY_PROFILE мозку). */
+const INSTRUCTION_BY_ROUTE = { chat: 'persona', quick: 'quick', 'weekly-review': 'weekly-review' };
+/** @typedef {'chat' | 'quick' | 'weekly-review'} RunRoute */
 
 // N3 (04-scenarios §N3): якорі власних даних - будь-який збіг = chat.
 // Суперсет канону безпечний: хибний chat коштує лише секунд, хибний quick -
@@ -189,7 +197,26 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
     return;
   }
 
-  const route = classifyRoute(text);
+  // «звіт зараз» (S-9-5) - профіль weekly-review за запитом: той самий шлях
+  // (черга, статусник, ретраї), інша інструкція й модель.
+  const route = WEEKLY_NOW_RE.test(text) ? 'weekly-review' : classifyRoute(text);
+  await startOrQueueThreadText(env, target, threadKey, text, route, nowMs);
+}
+
+/**
+ * Поставити текст у тред: статусник → claim → старт або черга. Спільний вхід
+ * для повідомлення власника і для планувальника (задача weekly-review кладе
+ * «звіт зараз» у тему сама - S-9-1). Повертає runId стартованого прогону або
+ * null, якщо запит став у чергу (стартує після поточного) чи старт не вдався.
+ * @param {Env} env
+ * @param {ThreadTarget} target
+ * @param {string} threadKey
+ * @param {string} text
+ * @param {RunRoute} route
+ * @param {number} nowMs
+ * @returns {Promise<string | null>}
+ */
+export async function startOrQueueThreadText(env, target, threadKey, text, route, nowMs) {
   // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «▸ Думаю…»
   // прогону, при черзі - редагованим «▸ Черга: N» (не вічним повідомленням-
   // сиротою), а його id поїде в queue-entry для reuse при підйомі.
@@ -208,9 +235,9 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
       claim.queued === -1 ? 'Черга повна - спробуй трохи пізніше.' : `▸ Черга: ${claim.queued}`;
     if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
     else await reply(env, target, note, nowMs);
-    return;
+    return null;
   }
-  await startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
+  return startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
 }
 
 /**
@@ -347,7 +374,8 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   // відкочувала б три записи, а гілка відкоту через finishAndKick піднімала б
   // наступний запис черги - той падав би так само, і один вебхук давав би до
   // шести однакових відмов поспіль.
-  const instructionName = entry.route === 'chat' ? 'persona' : 'quick';
+  const route = /** @type {RunRoute} */ (entry.route);
+  const instructionName = INSTRUCTION_BY_ROUTE[route] ?? 'persona';
   let instruction;
   try {
     const loaded = await loadInstruction(env, instructionName);
@@ -360,18 +388,24 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       retry: 'Інструкції ще синхронізуються - спробую за ~5 хв.',
       giveUp: 'Інструкції асистента не синхронізовані - скажи, коли полагодимо.',
     });
-    return;
+    return null;
   }
+  // Вхід звіту (weekly-review §0) будує ЯДРО: період, перша неділя, попередній
+  // звіт, хеш інструкції - текст власника («звіт зараз») моделі не потрібен.
+  const inputText =
+    route === 'weekly-review'
+      ? (await buildWeeklyReviewInput(env, nowMs, instruction.version_hash)).text
+      : entry.text;
 
   const statusMessageId = reuseStatusId ?? (await sendStatusDraft(env, parsed));
   const runId = crypto.randomUUID();
   await registryBegin(env, {
     id: runId,
-    trigger: entry.route,
-    profile: entry.route,
+    trigger: route,
+    profile: route,
     threadId: threadKey,
     chatId: parsed.chatId,
-    model: MODELS[/** @type {'chat' | 'quick'} */ (entry.route)] ?? null,
+    model: MODELS[route] ?? null,
     startedMs: nowMs,
   });
   const { claimed } = await registryThreadSetRun(env, threadKey, runId, statusMessageId, nowMs);
@@ -385,18 +419,18 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
         message_id: statusMessageId,
       }).catch(() => {});
     }
-    return;
+    return null;
   }
 
-  const sess = entry.route === 'chat' ? await readSession(env, threadKey) : null;
+  const sess = route === 'chat' ? await readSession(env, threadKey) : null;
   const res = await callBrainRun(
     env,
     {
       instruction,
       runId,
-      profile: /** @type {'chat' | 'quick'} */ (entry.route),
+      profile: route,
       threadId: threadKey,
-      inputText: entry.text,
+      inputText,
       tainted: sess?.tainted ?? false,
       ...(statusMessageId != null ? { statusMessageId } : {}),
       ...(sess
@@ -405,7 +439,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     },
     nowMs,
   );
-  if (res.ok) return;
+  if (res.ok) return runId;
 
   console.error(`prerouter: /run не стартував (${res.status} ${res.detail})`);
   if (res.status === 0) {
@@ -415,7 +449,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     // активним: живий - доставить, мертвий - сторож (registrySweep) звільнить
     // тред і чесно скаже власнику.
     await editStatus(env, parsed, statusMessageId, 'Звʼязок із мозком повільний - чекаю…', nowMs);
-    return;
+    return runId;
   }
 
   // Мозок ВІДПОВІВ відмовою - прогін точно не стартував. Спершу повернути
@@ -432,7 +466,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       'Не вдалося - мозок недоступний. Напиши пізніше.',
       nowMs,
     );
-    return;
+    return null;
   }
   await registryThreadRetry(env, threadKey, { ...entry, attempts, statusMessageId });
   await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
@@ -443,6 +477,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     'Мозок недоступний - спробую ще раз за ~5 хв.',
     nowMs,
   );
+  return null;
 }
 
 /**
