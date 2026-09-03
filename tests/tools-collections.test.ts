@@ -127,6 +127,44 @@ describe('схема (07 §2)', () => {
   });
 });
 
+describe('правки ревʼю PR-5', () => {
+  it('дата з календарною перевіркою: 31.02 і 2026-13-45 - помилки, 29.02.2028 - ок', () => {
+    expect(() => coerceValue({ name: 'd', type: 'date' }, '31.02.2026')).toThrow(/дата/);
+    expect(() => coerceValue({ name: 'd', type: 'date' }, '2026-13-45')).toThrow(/дата/);
+    expect(coerceValue({ name: 'd', type: 'date' }, '29.02.2028')).toBe('2028-02-29');
+  });
+
+  it('поля «id» і «_updated» зарезервовані (їх додає records.list до рядка)', () => {
+    expect(() => normalizeFields([{ name: 'ID', type: 'text' }])).toThrow(/зарезервована/);
+    expect(() => normalizeFields([{ name: '_updated', type: 'date' }])).toThrow(/зарезервована/);
+  });
+
+  it('зміна схеми без sort_by: зникле поле сортування скидається, а не валить оновлення', async () => {
+    await services();
+    const { result } = await runCollectionsUpdate(env, {
+      collection: 'Сервіси',
+      fields: [{ name: 'назва', type: 'text' }],
+    });
+    expect(result.fields).toEqual(['назва']);
+    expect((await findCollection(env, 'Сервіси'))?.sort_by).toBeNull();
+    await expect(
+      runCollectionsUpdate(env, { collection: 'Сервіси', sort_by: 'дата_списання' }),
+    ).rejects.toThrow(/sort_by/);
+  });
+
+  it('CSV: клітинки з = + - @ на початку екрануються апострофом (формули Excel)', async () => {
+    await services();
+    await runRecordsCreate(
+      env,
+      { collection: 'Сервіси', data: { назва: '=HYPERLINK("x")', нотатки: '-5 грн' } },
+      NOW,
+    );
+    const csv = await exportCollectionCsv(env, 'Сервіси');
+    expect(csv.content).toContain(`"'=HYPERLINK(""x"")"`);
+    expect(csv.content).toContain(`"'-5 грн"`);
+  });
+});
+
 describe('compileWhere - компілятор фільтрів', () => {
   const fields = normalizeFields(SERVICES_FIELDS);
 

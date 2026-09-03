@@ -29,6 +29,8 @@ export const CHOICE_OPTIONS_MAX = 50;
 export const EXPORT_ROWS_MAX = 5_000;
 
 const FIELD_NAME_RE = /^[\p{L}\p{N}_][\p{L}\p{N}_ -]{0,63}$/u;
+/** Ключі, які records.list додає до кожного рядка поверх даних. */
+const RESERVED_FIELD_NAMES = new Set(['id', '_updated']);
 /** BOM для Excel - через код символу, не літерал: невидимий символ у
  *  джерелі лінтер (no-irregular-whitespace) і читач сприймають за сміття. */
 const CSV_BOM = String.fromCharCode(0xfeff);
@@ -66,6 +68,9 @@ export function normalizeFields(raw) {
     if (!FIELD_NAME_RE.test(name))
       throw new Error(`назва поля «${name}» - літери, цифри, _, до 64`);
     const key = name.toLowerCase();
+    // Службові ключі рядка у відповіді records.list: поле з таким імʼям
+    // затерло б id запису, і модель не змогла б його оновити.
+    if (RESERVED_FIELD_NAMES.has(key)) throw new Error(`назва поля «${name}» зарезервована`);
     if (seen.has(key)) throw new Error(`поле «${name}» повторюється`);
     seen.add(key);
     if (!FIELD_TYPES.includes(type)) {
@@ -140,12 +145,19 @@ export function coerceValue(field, value) {
     case 'date': {
       const s = String(value).trim();
       const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
-      if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
       const ua = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(s);
-      if (ua) {
-        return `${ua[3]}-${String(ua[2]).padStart(2, '0')}-${String(ua[1]).padStart(2, '0')}`;
+      const key = iso
+        ? `${iso[1]}-${iso[2]}-${iso[3]}`
+        : ua
+          ? `${ua[3]}-${String(ua[2]).padStart(2, '0')}-${String(ua[1]).padStart(2, '0')}`
+          : null;
+      // Календарна перевірка: «2026-13-45» проходить регекс, а Date його
+      // нормалізує в інший день - тож звіряємо, що дата повертається такою ж.
+      const ms = key ? Date.parse(`${key}T00:00:00Z`) : Number.NaN;
+      if (!key || !Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 10) !== key) {
+        throw new Error(`«${field.name}»: дата як YYYY-MM-DD або DD.MM.YYYY, не «${s}»`);
       }
-      throw new Error(`«${field.name}»: дата як YYYY-MM-DD або DD.MM.YYYY, не «${s}»`);
+      return key;
     }
     case 'choice': {
       const s = String(value).trim();
@@ -290,10 +302,14 @@ export async function runCollectionsUpdate(env, args) {
     const clash = await findCollection(env, next.name);
     if (clash && clash.id !== col.id) throw new Error(`колекція «${next.name}» уже є`);
   }
-  next.sort_by = normalizeSortBy(
-    next.fields,
-    args.sort_by !== undefined ? args.sort_by : col.sort_by,
-  );
+  // Явний sort_by звіряється; успадкований, чиє поле зникло зі схеми, -
+  // просто скидається (зміна схеми не має падати через старе сортування).
+  next.sort_by =
+    args.sort_by !== undefined
+      ? normalizeSortBy(next.fields, args.sort_by)
+      : next.fields.some((f) => f.name === col.sort_by)
+        ? col.sort_by
+        : null;
   await db(env)
     .prepare(
       'UPDATE collections SET name = ?, description = ?, fields_json = ?, sort_by = ? WHERE id = ?',
@@ -705,6 +721,9 @@ async function reindexCollection(env, col) {
 /** @param {unknown} v */
 function csvCell(v) {
   if (v == null) return '';
-  const s = typeof v === 'boolean' ? (v ? 'так' : 'ні') : String(v);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = typeof v === 'boolean' ? (v ? 'так' : 'ні') : String(v);
+  // Клітинка, що починається з = + - @ (і табуляції/CR перед ними), в Excel -
+  // формула: дані йдуть у чужий інтерпретатор, тож екрануємо апострофом.
+  if (/^[\t\r]*[=+\-@]/.test(s)) s = `'${s}`;
+  return /[",\r\n']/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }

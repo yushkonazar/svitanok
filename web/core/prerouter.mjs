@@ -27,7 +27,7 @@ import {
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
-import { parsePolicyCallback } from './policy/core.mjs';
+import { parsePolicyCallback, T2_WORDS } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 import {
   transcribeVoice,
@@ -223,7 +223,9 @@ async function sendForgetMenu(env, target, nowMs) {
 async function resolveT2Word(env, target, threadKey, text, nowMs) {
   if (!env.DB) return false;
   const word = text.trim().toUpperCase();
-  if (!/^[А-ЯІЇЄҐ-]{3,16}$/u.test(word)) return false;
+  // Лише відомі слова T2 (їх чотири): «дякую» чи «привіт» не мають ходити в
+  // D1 перед кожним прогоном.
+  if (!T2_WORDS.includes(word)) return false;
   let row;
   try {
     row = /** @type {any} */ (
