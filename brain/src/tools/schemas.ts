@@ -48,8 +48,18 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'data.read',
     description:
-      'Дані Світанку за scope (briefing·jobs·progress·reminders·checkin·saved·news·settings·archive·all); cap - стеля символів відповіді.',
-    args: z.object({ scope: z.string().max(32), cap: z.number().optional() }),
+      'Дані Світанку за scope: briefing·jobs·progress·reminders·checkin·saved·news·settings - короткі зрізи; archive - холодні місячні/тижневі згортки і важелі; weekly - ВСЕ для тижневого звіту одним читанням (JSON до 50k, лише профіль звіту). period («30d», «12w», «тиждень») звужує сирі серії у weekly; cap - стеля символів відповіді.',
+    args: z.object({
+      scope: z.string().max(32),
+      cap: z.number().optional(),
+      period: z.string().max(16).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'runs.query',
+    description:
+      'Телеметрія системи за період (типово тиждень; «30d», «місяць»): прогони за профілями (кількість, медіана і p90 тривалості, помилки, кроки), останні помилки, квоти місяця з лімітами. Для блоку СИСТЕМА звіту.',
+    args: z.object({ period: z.string().max(16).optional() }),
   }),
   tool({
     coreName: 'calendar.read',

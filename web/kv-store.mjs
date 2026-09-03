@@ -35,7 +35,7 @@ import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
  * @param {unknown} fallback
  * @returns {Promise<any>}
  */
-async function readJson(env, key, fallback) {
+export async function readJson(env, key, fallback) {
   try {
     const parsed = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
     return parsed && typeof parsed === 'object' ? parsed : fallback;
