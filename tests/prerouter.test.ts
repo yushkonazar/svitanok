@@ -403,17 +403,65 @@ describe('prerouteMessage: нові команди', () => {
     expect(tg.some((c) => String(c.body.text).includes('чистого аркуша'))).toBe(true);
   });
 
-  it('підказки R26 і /status відповідають; /forget - чесна заглушка', async () => {
+  it('підказки R26 і /status відповідають; /forget без колекцій - чесно порожньо', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
-    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    const env = makeEnv(
+      reg,
+      d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0006_inbox_collections.sql'])
+        .stub,
+    );
     await prerouteMessage(env, parsedMsg('/idea'), NOW);
     await prerouteMessage(env, parsedMsg('/status'), NOW);
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
     expect(tg.some((c) => String(c.body.text).includes('збережи ідею'))).toBe(true);
     expect(tg.some((c) => String(c.body.text).includes('Режим: on'))).toBe(true);
-    expect(tg.some((c) => String(c.body.text).includes('етап 3'))).toBe(true);
+    expect(tg.some((c) => String(c.body.text).includes('Забувати поки нічого'))).toBe(true);
     expect(brain).toHaveLength(0);
+  });
+
+  // S-0-5 (етап 3 PR-5): /forget → кнопки колекцій → тап m:fg → пропозиція T2
+  // зі словом → слово текстом → «Стерто: …».
+  it('/forget з колекцією: меню → m:fg → слово → колекцію стерто (S-0-5, S-N4-5)', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0006_inbox_collections.sql',
+      '0008_fts.sql',
+    ]);
+    d1.db
+      .prepare(
+        `INSERT INTO collections (id, name, fields_json, created_at) VALUES ('col-1', 'Сервіси', '[{"name":"назва","type":"text"}]', '2026-08-27T00:00:00Z')`,
+      )
+      .run();
+    const env = makeEnv(reg, d1.stub);
+    await prerouteMessage(env, parsedMsg('/forget'), NOW);
+    const menu = tg.find((c) => String(c.body.text).includes('Що забути'));
+    const keyboard = (menu?.body.reply_markup as { inline_keyboard: { callback_data: string }[][] })
+      .inline_keyboard;
+    expect(keyboard[0]?.[0]?.callback_data).toBe('m:fg:col-1');
+
+    const toast = await handleBrainCallback(
+      env,
+      { data: 'm:fg:col-1', chatId: 555, messageId: 42, threadId: null },
+      NOW,
+    );
+    expect(toast).toBe('Чекаю слово');
+    const ask = tg.find((c) => String(c.body.text).includes('напиши слово'));
+    const word = /слово: ([А-ЯІЇЄҐ-]+)/u.exec(String(ask?.body.text))?.[1];
+    expect(word).toBeTruthy();
+
+    // Чуже слово - звичайне повідомлення (їде в мозок), не рішення.
+    expect(await prerouteMessage(env, parsedMsg('ПРИВІТ'), NOW + 1)).toBe(true);
+    expect(d1.db.prepare(`SELECT COUNT(*) AS n FROM collections`).get()).toEqual({ n: 1 });
+    // Слово - рішення: колекцію стерто, у чат «Стерто: …», мозок не кликано.
+    const brainBefore = brain.length;
+    expect(await prerouteMessage(env, parsedMsg(String(word).toLowerCase()), NOW + 2)).toBe(true);
+    expect(brain).toHaveLength(brainBefore);
+    expect(tg.some((c) => String(c.body.text).includes('Стерто: колекція «Сервіси»'))).toBe(true);
+    expect(d1.db.prepare(`SELECT COUNT(*) AS n FROM collections`).get()).toEqual({ n: 0 });
   });
 });
 

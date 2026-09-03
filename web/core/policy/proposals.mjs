@@ -31,6 +31,18 @@ import {
   runIdeasDelete,
   runIdeasAnalyze,
 } from '../tools/ideas.mjs';
+import {
+  runCollectionsCreate,
+  runCollectionsUpdate,
+  restoreCollection,
+  deleteCollection,
+  runRecordsCreate,
+  runRecordsUpdate,
+  runRecordsDelete,
+  restoreRecord,
+  exportCollectionCsv,
+} from '../tools/collections.mjs';
+import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -179,6 +191,114 @@ export const EXECUTORS = {
     async execute(env, payload) {
       const { result } = await runIdeasDelete(env, { id: payload.id });
       return { result };
+    },
+  },
+  // Колекції (етап 3 PR-5). create/update - T0 з «↩» (create ↔ видалення
+  // порожньої колекції, update ↔ попередній рядок цілком); записи - T0 з
+  // «↩» (create ↔ delete, update ↔ попередній data_json); records.delete -
+  // T1; forget (T2, зі словом) - колекція з усіма записами; collection.export
+  // (T1) - .csv документом у чат прогону.
+  'collections.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runCollectionsCreate(
+        env,
+        {
+          name: payload.name,
+          description: payload.description,
+          fields: payload.fields,
+          sort_by: payload.sort_by,
+        },
+        nowMs,
+      );
+      return { prev: { id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      await deleteCollection(env, snapshot.id);
+    },
+  },
+  'collections.update': {
+    async execute(env, payload) {
+      const { result, prev } = await runCollectionsUpdate(env, payload);
+      return { prev, result };
+    },
+    async undo(env, snapshot) {
+      await restoreCollection(env, snapshot);
+    },
+  },
+  'records.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runRecordsCreate(
+        env,
+        { collection: payload.collection, data: payload.data },
+        nowMs,
+      );
+      return { prev: { collection: result.collection, id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      await runRecordsDelete(env, { collection: snapshot.collection, id: snapshot.id });
+    },
+  },
+  'records.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runRecordsUpdate(
+        env,
+        { collection: payload.collection, id: payload.id, data: payload.data },
+        nowMs,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      await restoreRecord(env, snapshot, nowMs);
+    },
+  },
+  'records.delete': {
+    async execute(env, payload) {
+      const { result } = await runRecordsDelete(env, {
+        collection: payload.collection,
+        id: payload.id,
+      });
+      return { result };
+    },
+  },
+  // forget (T2): target вирішує, що саме стирається. Колекція - тут; чат -
+  // етап 6, «усе» - етап 7 (експорт спершу) - до того чесна відмова.
+  forget: {
+    async execute(env, payload) {
+      const target = String(payload.target ?? (payload.collection != null ? 'collection' : ''));
+      if (target === 'collection') {
+        const { name, records } = await deleteCollection(env, payload.collection ?? payload.id);
+        return { result: { erased: `колекція «${name}» (${records} зап.)` } };
+      }
+      throw new Error(`forget: ціль «${target}» ще не підтримується (чат - етап 6, усе - етап 7)`);
+    },
+  },
+  'collection.export': {
+    async execute(env, payload, nowMs, ctx) {
+      const csv = await exportCollectionCsv(env, payload.collection);
+      // Адреса: чат прогону, а після ✅ (resolveProposal) - за thread_id
+      // пропозиції: тема супергрупи або DM власника.
+      const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
+      const isDm = threadKey === 'dm';
+      const chatId =
+        ctx?.chatId ??
+        (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+      if (chatId == null) throw new Error('collection.export: чат для документа невідомий');
+      await enqueueOutbox(
+        env,
+        {
+          chatId,
+          threadId: isDm || threadKey == null ? null : Number(threadKey),
+          kind: 'document',
+          payload: {
+            filename: csv.filename,
+            content: csv.content,
+            caption: `Експорт: ${csv.rows} рядк.`,
+          },
+        },
+        nowMs,
+      );
+      await drainOutbox(env, { nowMs }).catch(() => {});
+      return { result: { filename: csv.filename, rows: csv.rows } };
     },
   },
   'facts.set': {
@@ -363,7 +483,12 @@ export async function resolveProposal(env, input, nowMs) {
     return { ok: true, already: 'approved' };
   }
   try {
-    const { result } = await executor.execute(env, payload, nowMs);
+    // Контекст після ✅: chatId прогону вже невідомий, лишається тред
+    // пропозиції - виконавцям, що щось шлють (експорт), цього досить.
+    const { result } = await executor.execute(env, payload, nowMs, {
+      chatId: null,
+      threadId: row.thread_id,
+    });
     return { ok: true, status: 'approved', executed: true, result };
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.

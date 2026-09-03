@@ -349,6 +349,10 @@ describe('реєстр TOOLS', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
       'chain.start',
+      'collections.create',
+      'collections.delete',
+      'collections.list',
+      'collections.update',
       'data.read',
       'drive.search',
       'facts.get',
@@ -366,6 +370,11 @@ describe('реєстр TOOLS', () => {
       'memory.search',
       'proposals.create',
       'record',
+      'records.create',
+      'records.delete',
+      'records.list',
+      'records.search',
+      'records.update',
       'reminders.cancel',
       'reminders.create',
       'reminders.update',
@@ -384,6 +393,10 @@ describe('реєстр TOOLS', () => {
     // proposals.create: він не дія, а обгортка, тож kind приходить у args.
     expect(writes).toEqual([
       ['chain.start', 'chain.start'],
+      // Видалення колекції з записами - T2 forget (07 §4): інструмент є, kind - forget.
+      ['collections.create', 'collections.create'],
+      ['collections.delete', 'forget'],
+      ['collections.update', 'collections.update'],
       ['facts.set', 'facts.set'],
       ['ideas.analyze', 'ideas.analyze'],
       ['ideas.create', 'ideas.create'],
@@ -391,6 +404,9 @@ describe('реєстр TOOLS', () => {
       ['ideas.update', 'ideas.update'],
       ['proposals.create', '<kind>'],
       ['record', 'record'],
+      ['records.create', 'records.create'],
+      ['records.delete', 'records.delete'],
+      ['records.update', 'records.update'],
       ['reminders.cancel', 'reminders.cancel'],
       ['reminders.create', 'reminders.create'],
       ['reminders.update', 'reminders.update'],
