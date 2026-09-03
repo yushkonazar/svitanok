@@ -30,6 +30,7 @@ import { deliverDueReminders } from '../reminders/deliver.mjs';
 import { checkBrainHandshake } from '../brain/health.mjs';
 import { memorySummarize } from '../brain/summarize.mjs';
 import { weeklyReviewTask } from '../brain/weekly-review-task.mjs';
+import { backupTask } from '../backup/task.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -119,4 +120,7 @@ export const SCHEDULER_TASKS = {
   // Тижневий звіт (етап 3 PR-3, S-9-1/S-9-4): неділя 09:00 Києва, повтор о
   // 12:00 при збої; гейти й стан тижня - усередині задачі.
   'weekly-review': { periodMin: 5, run: async (env) => weeklyReviewTask(env) },
+  // Бекап (етап 3 PR-6, 05-ops §бекапи): неділя 03:00 Києва → Drive; алерт
+  // при збої і о 04:00 без файлу; стан тижня - у задачі.
+  backup: { periodMin: 5, run: async (env) => backupTask(env) },
 };

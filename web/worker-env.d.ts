@@ -123,6 +123,9 @@ interface Env {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_REFRESH_TOKEN?: string;
+  /** Ключ шифрування бекапів (05-ops §2; етап 0). Довільний рядок ≥ 16
+   *  символів - у ключ AES його перетворює SHA-256 (core/backup/core.mjs). */
+  BACKUP_ENC_KEY?: string;
   /** `repository_dispatch` у brief.yml (крон-диспетч брифінгу). */
   GH_DISPATCH_TOKEN?: string;
   /** Слаг `owner/repo` для того ж диспетчу. Незаданий -> дефолт у `cron.mjs`. */

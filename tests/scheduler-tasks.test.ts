@@ -37,6 +37,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'outbox-drain',
       'memory-summarize',
       'weekly-review',
+      'backup',
     ]);
   });
 
