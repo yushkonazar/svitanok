@@ -200,7 +200,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'ideas.update',
     description:
-      'Змінити ідею за id (номер або повний id): будь-які з title, body_md, domain, status, priority, effort, next_action, tags, analysis_md, plan_md. Статуси: нова·в аналізі·план готовий·погоджено·у роботі·зроблено·відкладено·відхилено. «план у роботу» = status «у роботі»; «погоджую план» = «погоджено». T0 з «↩».',
+      'Змінити ідею за id - РЯДКОМ: номер («12») або повний id. Будь-які з title, body_md, domain, status, priority, effort, next_action, tags, analysis_md, plan_md. Статуси: нова·в аналізі·план готовий·погоджено·у роботі·зроблено·відкладено·відхилено. «план у роботу» = status «у роботі»; «погоджую план» = «погоджено». T0 з «↩».',
     args: z.object({
       id: z.string().max(64),
       title: z.string().max(200).optional(),
@@ -219,13 +219,14 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'ideas.analyze',
     description:
-      'Почати аналіз ідеї за id: mode=plan - ядро повертає ідею і ти САМ пишеш аналіз і план у цій відповіді, потім зберігаєш їх через ideas.update(analysis_md, plan_md, status="план готовий"); mode=code (аналіз по коду репозиторію) поки недоступний - етап 4. Якщо власник не сказав, який режим, спитай: «По коду чи лише план?».',
+      'Почати аналіз ідеї за id (рядком: «12» або повний id): mode=plan - ядро повертає ідею і ти САМ пишеш аналіз і план у цій відповіді, потім зберігаєш їх через ideas.update(analysis_md, plan_md, status="план готовий"); mode=code (аналіз по коду репозиторію) поки недоступний - етап 4. Якщо власник не сказав, який режим, спитай: «По коду чи лише план?».',
     args: z.object({ id: z.string().max(64), mode: z.string().max(8).optional() }),
     write: true,
   }),
   tool({
     coreName: 'ideas.delete',
-    description: 'Видалити ідею за id разом з історією. Потребує ✅ власника (T1).',
+    description:
+      'Видалити ідею за id (рядком: «12» або повний id) разом з історією. Потребує ✅ власника (T1).',
     args: z.object({ id: z.string().max(64) }),
     write: true,
   }),

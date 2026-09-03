@@ -259,6 +259,30 @@ describe('policy: рівні й виконавці ідей', () => {
     expect(count('SELECT COUNT(*) AS n FROM ideas')).toBe(0);
   });
 
+  it('undo update повертає tags (масив ↔ tags_json) і поле, що було NULL; title: null - помилка, не назва «null»', async () => {
+    await runIdeasCreate(env, { title: 'Ідея', tags: ['a', 'b'] }, NOW);
+    const updated = await applyPolicy(
+      env,
+      {
+        kind: 'ideas.update',
+        payload: { id: '1', tags: ['c'], next_action: 'подзвонити' },
+        tainted: false,
+      },
+      NOW + 1,
+    );
+    if (updated.mode !== 'executed' || !updated.undo) throw new Error('очікувався T0 з undo');
+    expect(await resolveUndo(env, updated.undo.id, NOW + 2)).toEqual({
+      ok: true,
+      status: 'undone',
+    });
+    const row = d1.db.prepare('SELECT tags_json, next_action FROM ideas').get() as {
+      tags_json: string;
+      next_action: string | null;
+    };
+    expect(row).toEqual({ tags_json: '["a","b"]', next_action: null });
+    await expect(runIdeasUpdate(env, { id: '1', title: null }, NOW)).rejects.toThrow(/title/);
+  });
+
   it('tainted-сесія: create стає пропозицією T1, а не записом', async () => {
     const out = await applyPolicy(
       env,

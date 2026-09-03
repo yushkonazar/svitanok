@@ -97,34 +97,39 @@ export async function runIdeasCreate(env, args, nowMs) {
   const id = crypto.randomUUID();
   const iso = new Date(nowMs).toISOString();
   const body = clipText(args.body_md);
-  await db(env)
-    .prepare(
-      `INSERT INTO ideas (id, title, body_md, domain, status, priority, effort, next_action,
-         tags_json, source_msg_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'нова', ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      id,
-      title.slice(0, 200),
-      body,
-      domain,
-      priority,
-      effort,
-      clipShort(args.next_action),
-      tags ? JSON.stringify(tags) : null,
-      args.source_msg_id == null ? null : String(args.source_msg_id).slice(0, 64),
-      iso,
-      iso,
-    )
-    .run();
-  await ftsReplace(env, id, title, body);
+  const storedTitle = title.slice(0, 200);
+  // RETURNING rowid - номер тим самим запитом, без окремого SELECT.
+  const inserted = /** @type {{ number: number } | null} */ (
+    await db(env)
+      .prepare(
+        `INSERT INTO ideas (id, title, body_md, domain, status, priority, effort, next_action,
+           tags_json, source_msg_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'нова', ?, ?, ?, ?, ?, ?, ?)
+         RETURNING rowid AS number`,
+      )
+      .bind(
+        id,
+        storedTitle,
+        body,
+        domain,
+        priority,
+        effort,
+        clipShort(args.next_action),
+        tags ? JSON.stringify(tags) : null,
+        args.source_msg_id == null ? null : String(args.source_msg_id).slice(0, 64),
+        iso,
+        iso,
+      )
+      .first()
+  );
+  // Індекс - з тим самим текстом, що й рядок (не з необрізаної назви).
+  await ftsReplace(env, id, storedTitle, body);
   await logEvent(env, id, 'created', null, nowMs);
-  const row = await findIdea(env, id);
   return {
     result: {
       id,
-      number: row?.number ?? null,
-      title: title.slice(0, 200),
+      number: inserted?.number ?? null,
+      title: storedTitle,
       domain,
       status: 'нова',
       priority,
@@ -162,7 +167,9 @@ export async function runIdeasUpdate(env, args, nowMs) {
   if ('priority' in patch) patch.priority = normalizePriority(patch.priority);
   if ('effort' in patch) patch.effort = normalizeEffort(patch.effort);
   if ('title' in patch) {
-    const t = String(patch.title ?? '').trim();
+    // null тут - не «не чіпати», а спроба стерти назву: String(null) дав би
+    // ідею з назвою «null» без жодної помилки.
+    const t = patch.title == null ? '' : String(patch.title).trim();
     if (!t) throw new Error('title не може бути порожнім');
     patch.title = t.slice(0, 200);
   }
