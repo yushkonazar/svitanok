@@ -13,7 +13,7 @@
 // не вмирає (00-README п.6: помилка видима, але без тиші).
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { kyivDateKey } from '../../kyiv-time.mjs';
+import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
@@ -22,16 +22,18 @@ import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { callBrainRun } from '../brain/run-client.mjs';
 import { loadInstruction } from '../instructions.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
-import { computeSlots, formatDraft, energyBySlot, hhmmToMin } from './slots.mjs';
+import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
 import {
   readDayPlanConfig,
   upsertDayPlan,
   replaceItems,
   normalizeItem,
   acceptPlan,
+  updateItems,
   reviewPlan,
   carryItems,
   carriedInto,
+  markReviewed,
   listItems,
   kyivMs,
   nextPlannedDay,
@@ -44,6 +46,8 @@ export const WAIT_INTENT_MS = 3 * 3_600_000;
 export const WAIT_ANSWER_MS = 3_600_000;
 export const WAIT_WORKER_MS = 10 * 60_000;
 export const WAIT_CARRY_MS = 2 * 3_600_000;
+/** Стеля змін від працівника в replan (day-planner.md §5: «не більше 3»). */
+export const REPLAN_MAX_CHANGES = 3;
 export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
 
 /**
@@ -139,7 +143,7 @@ export async function runDayPlanChain(env, params, step, io) {
       });
       for (let qi = 0; qi < questions.length; qi += 1) {
         const answer = await waitOrNull(step, `wait-answer-${qi}`, 'answer', WAIT_ANSWER_MS);
-        items = applyAnswer(items, questions, answer);
+        items = applyAnswer(items, questions, answer, qi);
       }
     }
   }
@@ -214,17 +218,31 @@ export async function runDayPlanChain(env, params, step, io) {
     // нагадувань, хоч власник сам назвав пункти (S-P-9: без відповіді - план
     // лише з календаря; тут відповідь була).
     const res = await acceptPlan(env, date, io.now(), address(env));
-    if (decision?.choice === 'calendar') await proposeCalendar(env, date, io.now());
-    return { edit: false, ...res };
+    if (decision?.choice === 'calendar') await proposeCalendar(env, date, res.items, io.now());
+    return { edit: false, reminders: res.reminders };
   });
   if (accepted.edit) {
     const change = await waitOrNull(step, 'wait-edit', 'answer', WAIT_ANSWER_MS);
+    const started =
+      typeof change?.text === 'string'
+        ? await step.do('worker-replan', () =>
+            io.startWorker('replan', { text: change.text, date, items }),
+          )
+        : false;
+    // Працівник повертає JSON {done[], moves[{id,to}], drop[]} - застосовуємо
+    // через updateItems ДО прийняття, інакше нагадування стануть на старий час.
+    const replan = started ? await waitOrNull(step, 'wait-replan', 'worker', WAIT_WORKER_MS) : null;
     await step.do('replan', async () => {
-      if (typeof change?.text === 'string') {
-        const started = await io.startWorker('replan', { text: change.text, date, items });
-        // Відповідь працівника тут не чекаємо окремим кроком: правки вдень
-        // ідуть через plan.update у чаті (S-P-14), а ланцюг не сміє зависнути.
-        if (!started) await io.send('Зміни збережу через чат: напиши, коли буде зручно.');
+      const out = replan?.output && typeof replan.output === 'object' ? replan.output : null;
+      if (out) {
+        try {
+          await updateItems(env, date, replanChanges(out), io.now());
+        } catch (/** @type {any} */ e) {
+          console.error(`day-plan ${chainId}: зміни працівника не застосовано`, e?.message);
+          await io.send(`Зміни не застосував (${String(e?.message ?? '')}) - напиши їх у чат.`);
+        }
+      } else if (typeof change?.text === 'string') {
+        await io.send('Зміни збережу через чат: напиши, коли буде зручно.');
       }
       await acceptPlan(env, date, io.now(), address(env));
     });
@@ -234,10 +252,8 @@ export async function runDayPlanChain(env, params, step, io) {
   await step.sleepUntil('morning-at', kyivMs(date, config.settings.morning_at) ?? io.now());
   await step.do('morning', async () => {
     await setChainState(env, chainId, { status: 'running', awaiting: null });
-    const events = await io.readCalendar(date);
-    const rows = await listItems(env, date);
-    const text = morningText(date, rows, events);
-    await io.send(text);
+    const [events, rows] = await Promise.all([io.readCalendar(date), listItems(env, date)]);
+    await io.send(morningText(date, rows, events));
   });
 
   // 5. Вечірній огляд (S-P-15).
@@ -270,7 +286,7 @@ export async function runDayPlanChain(env, params, step, io) {
         );
       }
     } else {
-      await carryItems(env, date, to, ['__none__'], io.now());
+      await markReviewed(env, date, io.now());
     }
     await setChainState(env, chainId, { status: 'done', awaiting: null });
   });
@@ -337,14 +353,46 @@ export function normalizeIntent(output, intentText) {
 }
 
 /**
+ * Зміни від працівника (mode=replan, day-planner.md §5): {done[], moves[{id,to}],
+ * drop[]} → аргументи updateItems; чужі поля відкидаються, ≤ 3 зміни.
+ * @param {Record<string, unknown>} out
+ */
+export function replanChanges(out) {
+  const strings = (/** @type {unknown} */ v) =>
+    Array.isArray(v) ? v.filter((x) => typeof x === 'string').map(String) : [];
+  const moves = Array.isArray(out.moves)
+    ? out.moves
+        .filter(
+          (m) => m && typeof m === 'object' && typeof m.id === 'string' && typeof m.to === 'string',
+        )
+        .map((m) => ({ id: String(m.id), to: String(m.to) }))
+    : [];
+  const all = [
+    ...strings(out.done).map((id) => ({ kind: 'done', id })),
+    ...moves.map((m) => ({ kind: 'move', ...m })),
+    ...strings(out.drop).map((id) => ({ kind: 'drop', id })),
+  ].slice(0, REPLAN_MAX_CHANGES);
+  return {
+    done: all.filter((c) => c.kind === 'done').map((c) => c.id),
+    moves: all
+      .filter((c) => c.kind === 'move')
+      .map((c) => ({ id: c.id, to: String(/** @type {any} */ (c).to) })),
+    drop: all.filter((c) => c.kind === 'drop').map((c) => c.id),
+  };
+}
+
+/**
  * Відповідь на уточнення: варіант «1 год»/«30 хв»/«2 год» → est_min пункту.
+ * Кнопка несе {item, option}; текст із prerouter - лише {text}, тоді пункт -
+ * той, чиє питання зараз чекає відповіді (qiDefault).
  * @param {ReturnType<typeof normalizeItem>[]} items
  * @param {any[]} questions
  * @param {{ item?: number, option?: number, text?: string } | null} answer
+ * @param {number} [qiDefault]
  */
-export function applyAnswer(items, questions, answer) {
+export function applyAnswer(items, questions, answer, qiDefault = 0) {
   if (!answer) return items;
-  const qi = Number(answer.item);
+  const qi = Number.isInteger(answer.item) ? Number(answer.item) : qiDefault;
   const q = questions[qi];
   const target = items[Number(q?.item ?? qi)];
   if (!target) return items;
@@ -373,16 +421,19 @@ export function morningText(date, rows, events) {
   const timed = rows.filter((r) => r.window_start && r.status === 'planned');
   for (const r of timed) lines.push(`• ${r.window_start}-${r.window_end} ${r.title}`);
   for (const e of events) {
-    if (e.startMin != null) lines.push(`• ${hhmmOf(e.startMin)} ${e.title} (календар)`);
+    if (e.startMin != null) lines.push(`• ${minToHhmm(e.startMin)} ${e.title} (календар)`);
   }
   const flex = rows.filter((r) => !r.window_start && r.status === 'planned');
   if (flex.length) lines.push(`Гнучке: ${flex.map((f) => f.title).join(', ')}`);
   return lines.join('\n');
 }
 
-/** «У календар» (S-P-12): пропозиція T1 на кожен новий блок із часом. @param {Env} env @param {string} date @param {number} nowMs */
-async function proposeCalendar(env, date, nowMs) {
-  const rows = await listItems(env, date);
+/**
+ * «У календар» (S-P-12): пропозиція T1 на кожен блок із часом. rows - те, що
+ * acceptPlan щойно прочитав (без другого SELECT).
+ * @param {Env} env @param {string} date @param {{ title: string, window_start: string | null, window_end: string | null }[]} rows @param {number} nowMs
+ */
+async function proposeCalendar(env, date, rows, nowMs) {
   for (const r of rows.filter((x) => x.window_start && x.window_end)) {
     const startMs = kyivMs(date, String(r.window_start));
     const endMs = kyivMs(date, String(r.window_end));
@@ -416,11 +467,6 @@ function address(env) {
 function ddmm(date) {
   const [, m, d] = date.split('-');
   return `${d}.${m}`;
-}
-
-/** @param {number} min */
-function hhmmOf(min) {
-  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 }
 
 // ── Стан ланцюга в D1 (`chains`) ───────────────────────────────────────────
@@ -539,8 +585,14 @@ export async function startDayPlannerRun(env, req, nowMs) {
   return false;
 }
 
-/** Бойове io ланцюга. @param {Env} env */
-export function productionIo(env) {
+/**
+ * Бойове io ланцюга. chainId/date замикаються тут: кожна задача працівника
+ * несе chain_id, щоб його відповідь (outcome.chain) знайшла саме цей ланцюг.
+ * Доставка - enqueue + best-effort drain (як у підказках/експорті): збій
+ * драйну лишає повідомлення в outbox сторожу `outbox-drain`, але в лог іде.
+ * @param {Env} env @param {string} chainId @param {string} date
+ */
+export function productionIo(env, chainId, date) {
   return /** @type {ChainIo} */ ({
     now: () => Date.now(),
     send: async (text, btns) => {
@@ -555,39 +607,31 @@ export function productionIo(env) {
         },
         Date.now(),
       );
-      await drainOutbox(env, { nowMs: Date.now() }).catch(() => {});
+      await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
+        console.error(`day-plan ${chainId}: драйн outbox впав, доставить sweeper`, e?.message);
+      });
     },
-    startWorker: async (mode, task) => {
-      const chainId = String(task.chain_id ?? '');
-      return startDayPlannerRun(
+    startWorker: async (mode, task) =>
+      startDayPlannerRun(
         env,
-        { chainId, date: String(task.date ?? ''), mode, task },
+        { chainId, date, mode, task: { ...task, chain_id: chainId, date } },
         Date.now(),
-      );
-    },
-    readCalendar: async (date) => {
-      const events = await readCalendarRange(env, date, date);
+      ),
+    readCalendar: async (day) => {
+      const events = await readCalendarRange(env, day, day);
+      // Чат-шлях (plan.intent) без календаря відмовляє; ланцюг мусить дожити
+      // до ранку - планує без подій, але не мовчки.
+      if (events == null) {
+        console.error(`day-plan ${chainId}: календар недоступний, розкладка без подій`);
+      }
       return (events ?? []).map((e) => ({
         title: String(e.title ?? ''),
-        startMin: typeof e.startMs === 'number' ? kyivMinuteOf(e.startMs) : null,
-        endMin: typeof e.endMs === 'number' ? kyivMinuteOf(e.endMs) : null,
+        startMin: typeof e.startMs === 'number' ? kyivMinuteOfDay(new Date(e.startMs)) : null,
+        endMin: typeof e.endMs === 'number' ? kyivMinuteOfDay(new Date(e.endMs)) : null,
       }));
     },
     readEnergy: async () => energyBySlot((await loadStats(env)).checkins ?? {}),
   });
-}
-
-/** Хвилина київської доби для моменту. @param {number} ms */
-function kyivMinuteOf(ms) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(ms));
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24;
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
-  return h * 60 + m;
 }
 
 /** Workflow-клас (wrangler.jsonc `workflows`, worker.js export). */
@@ -600,15 +644,9 @@ export class DayPlanChain extends WorkflowEntrypoint {
   async run(event, step) {
     const env = /** @type {Env} */ (this.env);
     const params = /** @type {{ chainId: string, date: string }} */ (event.payload);
-    const io = productionIo(env);
-    // chain_id у кожній задачі працівника - щоб його відповідь знайшла ланцюг.
-    const wrapped = /** @type {ChainIo} */ ({
-      ...io,
-      startWorker: (mode, task) =>
-        io.startWorker(mode, { ...task, chain_id: params.chainId, date: params.date }),
-    });
+    const io = productionIo(env, params.chainId, params.date);
     try {
-      return await runDayPlanChain(env, params, step, wrapped);
+      return await runDayPlanChain(env, params, step, io);
     } catch (/** @type {any} */ e) {
       console.error(`day-plan chain ${params.chainId} впав`, e?.message);
       await setChainState(env, params.chainId, { status: 'failed', awaiting: null }).catch(

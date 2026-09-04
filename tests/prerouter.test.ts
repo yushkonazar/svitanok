@@ -779,6 +779,10 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(String(await handleBrainCallback(env, { data: 'c:x:go', chatId: 555 }, NOW))).toContain(
       'Невідома кнопка плану',
     );
+    // c: не за форматом (без choice) - та сама чесна відмова, не легасі «Застаріла кнопка».
+    expect(await handleBrainCallback(env, { data: 'c:bad', chatId: 555 }, NOW)).toBe(
+      'Невідома кнопка плану.',
+    );
     expect(await handleBrainCallback(env, { data: 'rc:123', chatId: 555 }, NOW)).toBeNull();
     expect(
       await handleBrainCallback(env, { data: 'v1:2026-08-27:up', chatId: 555 }, NOW),

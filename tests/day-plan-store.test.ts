@@ -20,6 +20,8 @@ import {
   carriedInto,
   nextPlannedDay,
   kyivMs,
+  markReviewed,
+  resolveItemRef,
   ITEMS_MAX,
 } from '../web/core/day-plan/store.mjs';
 import { computeSlots } from '../web/core/day-plan/slots.mjs';
@@ -217,6 +219,51 @@ describe('прийняття, зміни, огляд', () => {
     expect(db.prepare(`SELECT status FROM reminders`).get()).toEqual({ status: 'cancelled' });
     expect((await listItems(env, DATE)).every((r) => r.reminder_id == null)).toBe(true);
     expect((await getDayPlan(env, DATE))?.status).toBe('draft');
+  });
+
+  it('undoAccept другого прийняття не чіпає нагадувань першого; повторний accept не дублює', async () => {
+    const { env, db } = setup();
+    await seedDraft(env, ['Презентація']);
+    const first = await acceptPlan(env, DATE, NOW, { chatId: '555', threadId: '99' });
+    expect(first.reminders).toBe(1);
+    // Новий пункт зʼявився пізніше - друге прийняття дає нагадування лише йому.
+    db.prepare(
+      `INSERT INTO plan_items (id, date, title, kind, est_min, window_start, window_end, status) VALUES ('late', ?, 'Пізній', 'call', 15, '18:00', '18:20', 'planned')`,
+    ).run(DATE);
+    const second = await acceptPlan(env, DATE, NOW + 1, { chatId: '555', threadId: '99' });
+    expect(second.reminders).toBe(1);
+    await undoAccept(env, second, NOW + 2);
+    const rows = await listItems(env, DATE);
+    expect(rows.find((r) => r.title === 'Презентація')?.reminder_id).toBe(first.reminderIds[0]);
+    expect(rows.find((r) => r.title === 'Пізній')?.reminder_id).toBeNull();
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM reminders WHERE status = 'pending'`).get(),
+    ).toEqual({ n: 1 });
+    // Третє прийняття - лише пізньому, першому дубля немає.
+    const third = await acceptPlan(env, DATE, NOW + 3, { chatId: '555', threadId: '99' });
+    expect(third.reminders).toBe(1);
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM reminders WHERE status = 'pending'`).get(),
+    ).toEqual({ n: 2 });
+  });
+
+  it('moves: довжина блоку з вікна, кінець клемпиться до 23:59; markReviewed; resolveItemRef', async () => {
+    const { env } = setup();
+    const items = await seedDraft(env, ['Ніч']);
+    await updateItems(env, DATE, { moves: [{ id: items[0]!.id, to: '23:50' }] }, NOW);
+    expect((await listItems(env, DATE))[0]).toMatchObject({
+      window_start: '23:50',
+      window_end: '23:59',
+    });
+    await markReviewed(env, DATE, NOW);
+    expect(await getDayPlan(env, DATE)).toMatchObject({
+      status: 'reviewed',
+      reviewed_at: new Date(NOW).toISOString(),
+    });
+    const open = [{ id: 'abcdefgh-1', title: 'Пошта' }];
+    expect(resolveItemRef(open, 'abcdefgh', 'тут').id).toBe('abcdefgh-1');
+    expect(resolveItemRef(open, 'ПОШТА', 'тут').id).toBe('abcdefgh-1');
+    expect(() => resolveItemRef(open, 'abc', 'серед відкритих')).toThrow('серед відкритих немає');
   });
 
   it('acceptPlan: блок, чий час уже минув, нагадування не отримує', async () => {

@@ -6,18 +6,18 @@
 import { runFactsGet } from '../tools/facts.mjs';
 import { runRemindersCreate, runRemindersCancel } from '../tools/reminders.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import {
   DAY_PLAN_DEFAULTS,
   HABIT_DEFAULTS,
   ITEM_KINDS,
   hhmmToMin,
+  minToHhmm,
   parseWeekdays,
 } from './slots.mjs';
 
 /** Статуси дня - дослівно 07 §1. */
 export const PLAN_STATUSES = ['intent', 'draft', 'accepted', 'reviewed', 'skipped'];
-/** Статуси пункту - дослівно 07 §1. */
-export const ITEM_STATUSES = ['planned', 'done', 'skipped', 'carried'];
 /** Стеля пунктів на день (день-planner.md: «понад 6 - лиши 6»). */
 export const ITEMS_MAX = 6;
 /** Перенесений пункт живе 3 дні, далі «забути чи в ідеї?» (S-P-15). */
@@ -191,8 +191,16 @@ export function normalizeItem(raw, index) {
  */
 export async function replaceItems(env, date, slots, items) {
   const byId = new Map(items.map((i) => [i.id, i]));
+  // est_min у рядку - СИРА оцінка власника/моделі (для «оцінка проти факту»
+  // у тижневому звіті і щоб plan.draft не множив запас удруге); довжина
+  // блоку з запасом живе у window_start/window_end.
   const rows = [
-    ...slots.placed.map((p) => ({ ...byId.get(p.id), ...p, flexible: 0 })),
+    ...slots.placed.map((p) => ({
+      ...byId.get(p.id),
+      ...p,
+      est_min: byId.get(p.id)?.est_min ?? null,
+      flexible: 0,
+    })),
     ...slots.flexible.map((f) => ({
       ...byId.get(f.id),
       ...f,
@@ -245,37 +253,81 @@ export async function replaceItems(env, date, slots, items) {
  */
 export async function acceptPlan(env, date, nowMs, address) {
   const items = await listItems(env, date);
+  const d = db(env);
   /** @type {string[]} */
   const reminderIds = [];
+  const stmts = [];
   for (const it of items) {
     if (!it.window_start || it.reminder_id) continue;
     const dueAtMs = kyivMs(date, it.window_start);
     if (dueAtMs == null || dueAtMs <= nowMs) continue;
+    // Послідовно: кожне створення повертає id, потрібний для UPDATE нижче.
     const { result } = await runRemindersCreate(env, { text: `План: ${it.title}` }, nowMs, {
       dueAtMs,
       chatId: address.chatId,
       threadId: address.threadId,
     });
     reminderIds.push(result.id);
-    await db(env)
-      .prepare('UPDATE plan_items SET reminder_id = ? WHERE id = ?')
-      .bind(result.id, it.id)
-      .run();
+    it.reminder_id = result.id;
+    stmts.push(
+      d.prepare('UPDATE plan_items SET reminder_id = ? WHERE id = ?').bind(result.id, it.id),
+    );
   }
+  if (stmts.length) await d.batch(stmts);
   await upsertDayPlan(env, date, { status: 'accepted' }, nowMs);
-  return { date, reminders: reminderIds.length, reminderIds };
+  return { date, reminders: reminderIds.length, reminderIds, items };
 }
 
-/** Відкат прийняття: скасувати нагадування, статус назад у draft. @param {Env} env @param {{ date: string, reminderIds: string[] }} snapshot @param {number} nowMs */
+/**
+ * Відкат прийняття: скасувати ЛИШЕ нагадування з цього знімку і відвʼязати
+ * лише їх (інші пункти дати могли бути прийняті раніше - їхні нагадування
+ * живі), статус назад у draft. Збій скасування - у лог, відкат триває.
+ * @param {Env} env @param {{ date: string, reminderIds: string[] }} snapshot @param {number} nowMs
+ */
 export async function undoAccept(env, snapshot, nowMs) {
+  const d = db(env);
   for (const id of snapshot.reminderIds) {
-    await runRemindersCancel(env, { id }).catch(() => {});
+    await runRemindersCancel(env, { id }).catch((/** @type {any} */ e) => {
+      console.error(`day-plan: нагадування ${id} не скасовано при «↩»`, e?.message);
+    });
   }
-  await db(env)
-    .prepare('UPDATE plan_items SET reminder_id = NULL WHERE date = ?')
-    .bind(snapshot.date)
-    .run();
+  if (snapshot.reminderIds.length) {
+    await d.batch(
+      snapshot.reminderIds.map((id) =>
+        d.prepare('UPDATE plan_items SET reminder_id = NULL WHERE reminder_id = ?').bind(id),
+      ),
+    );
+  }
   await upsertDayPlan(env, snapshot.date, { status: 'draft' }, nowMs);
+}
+
+/** День переглянуто без переносу (S-P-15 «Ні»/усе закрито). @param {Env} env @param {string} date @param {number} nowMs */
+export async function markReviewed(env, date, nowMs) {
+  await upsertDayPlan(
+    env,
+    date,
+    { status: 'reviewed', reviewed_at: new Date(nowMs).toISOString() },
+    nowMs,
+  );
+}
+
+/**
+ * Пункт за посиланням: точний id → префікс id (≥ ID_PREFIX_MIN) → назва без
+ * регістру. Спільний для updateItems і plan.review.
+ * @template {{ id: string, title: string }} T
+ * @param {T[]} items @param {string} ref @param {string} where - для тексту помилки
+ * @returns {T}
+ */
+export function resolveItemRef(items, ref, where) {
+  const hit =
+    items.find((i) => i.id === ref) ??
+    items.find(
+      (i) =>
+        (ref.length >= ID_PREFIX_MIN && i.id.startsWith(ref)) ||
+        i.title.toLowerCase() === ref.toLowerCase(),
+    );
+  if (!hit) throw new Error(`пункту «${ref}» ${where} немає`);
+  return hit;
 }
 
 /**
@@ -289,18 +341,7 @@ export async function undoAccept(env, snapshot, nowMs) {
  */
 export async function updateItems(env, date, changes, nowMs) {
   const items = await listItems(env, date);
-  const byId = new Map(items.map((i) => [i.id, i]));
-  const resolve = (/** @type {string} */ ref) => {
-    const hit =
-      byId.get(ref) ??
-      items.find(
-        (i) =>
-          (ref.length >= ID_PREFIX_MIN && i.id.startsWith(ref)) ||
-          i.title.toLowerCase() === ref.toLowerCase(),
-      );
-    if (!hit) throw new Error(`пункту «${ref}» у плані ${date} немає`);
-    return hit;
-  };
+  const resolve = (/** @type {string} */ ref) => resolveItemRef(items, ref, `у плані ${date}`);
   /** @type {{ id: string, status: string, done_at: string | null, window_start: string | null, window_end: string | null }[]} */
   const prev = [];
   const iso = new Date(nowMs).toISOString();
@@ -317,14 +358,18 @@ export async function updateItems(env, date, changes, nowMs) {
     const it = resolve(mv.id);
     const start = hhmmToMin(mv.to);
     if (start == null) throw new Error(`час «${mv.to}» - очікую HH:MM`);
-    const est = it.est_min ?? 30;
+    // Довжина блоку - з наявного вікна (уже з запасом); без вікна - сира
+    // оцінка або 30 хв. Кінець клемпиться до 23:59 (minToHhmm).
+    const ws = hhmmToMin(it.window_start);
+    const we = hhmmToMin(it.window_end);
+    const len = ws != null && we != null && we > ws ? we - ws : (it.est_min ?? 30);
     prev.push(snapshot(it));
     stmts.push(
       d
         .prepare(
           `UPDATE plan_items SET window_start = ?, window_end = ?, flexible = 0 WHERE id = ?`,
         )
-        .bind(hhmm(start), hhmm(start + est), it.id),
+        .bind(minToHhmm(start), minToHhmm(start + len), it.id),
     );
   }
   for (const ref of changes.drop ?? []) {
@@ -446,11 +491,6 @@ function snapshot(it) {
   };
 }
 
-/** @param {number} min */
-function hhmm(min) {
-  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
-}
-
 /**
  * Київський момент дати+часу в мс (літній/зимовий зсув - через Intl).
  * @param {string} date @param {string} hhmmStr
@@ -459,17 +499,8 @@ export function kyivMs(date, hhmmStr) {
   const min = hhmmToMin(hhmmStr);
   if (min == null) return null;
   const guess = Date.parse(`${date}T${hhmmStr.padStart(5, '0')}:00Z`);
-  // Зсув Києва для цієї дати: різниця між «як Intl показує guess у Києві» і UTC.
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(guess));
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24;
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
-  const shownMin = h * 60 + m;
-  let offset = shownMin - min;
+  // Зсув Києва для цієї дати: різниця між «як Київ показує guess» і UTC.
+  let offset = kyivMinuteOfDay(new Date(guess)) - min;
   if (offset > 12 * 60) offset -= 24 * 60;
   if (offset < -12 * 60) offset += 24 * 60;
   return guess - offset * 60_000;

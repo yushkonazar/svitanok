@@ -474,7 +474,17 @@ export const TOOLS = {
       properties: {
         date: { type: 'string', maxLength: 16 },
         done: { type: 'array', items: { type: 'string', maxLength: 80 } },
-        moves: { type: 'array', items: { type: 'object' } },
+        moves: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'to'],
+            properties: {
+              id: { type: 'string', maxLength: 80 },
+              to: { type: 'string', maxLength: 5 },
+            },
+          },
+        },
         drop: { type: 'array', items: { type: 'string', maxLength: 80 } },
       },
     },

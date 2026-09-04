@@ -81,7 +81,7 @@ describe('plan.* через policy', () => {
   });
 
   it('plan.intent: пункти → чернетка з календарем; без «↩»; порожній список - помилка', async () => {
-    const { env, act } = setup();
+    const { env, db, act } = setup();
     const out = await act('plan.intent', { date: 'завтра', items: ITEMS });
     expect(out.mode).toBe('executed');
     if (out.mode !== 'executed') return;
@@ -94,6 +94,22 @@ describe('plan.* через policy', () => {
     expect(out.undo).toBeUndefined();
     expect((await getDayPlan(env, DATE))?.status).toBe('draft');
     expect(await listItems(env, DATE)).toHaveLength(2);
+
+    // id від моделі не приймається: рядок іншої дати з тим самим id живе далі.
+    db.prepare(
+      `INSERT INTO plan_items (id, date, title, status, reminder_id) VALUES ('keep-id', '2026-09-09', 'Чужий день', 'planned', 'rem-9')`,
+    ).run();
+    const spoof = await act('plan.intent', {
+      date: DATE,
+      items: [{ id: 'keep-id', title: 'Підміна' }],
+    });
+    expect(spoof.mode).toBe('executed');
+    expect(
+      db.prepare(`SELECT date, reminder_id FROM plan_items WHERE id = 'keep-id'`).get(),
+    ).toEqual({
+      date: '2026-09-09',
+      reminder_id: 'rem-9',
+    });
 
     // Помилка виконавця T0 летить винятком - маршрут інструмента віддає її
     // моделі як відмову інструмента, не як «executed».

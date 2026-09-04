@@ -5,11 +5,11 @@
 //   plan.draft   {date}                  - перерахувати чернетку з наявних пунктів
 //   plan.accept  {date, calendar?}       - прийняти (нагадування; календар - T1)
 //   plan.update  {date, done[], moves[], drop[]} - зміни вдень
-//   plan.review  {date, carry[] | all}   - огляд і перенос на наступний день
+//   plan.review  {date, carry[]}          - огляд і перенос (["all"] - усі відкриті)
 
 import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
-import { kyivDateKey } from '../../kyiv-time.mjs';
+import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { computeSlots, formatDraft, energyBySlot } from './../day-plan/slots.mjs';
@@ -26,10 +26,10 @@ import {
   undoUpdateItems,
   reviewPlan,
   carryItems,
+  resolveItemRef,
   nextPlannedDay,
   kyivMs,
   ITEMS_MAX,
-  ID_PREFIX_MIN,
 } from '../day-plan/store.mjs';
 
 /** «сьогодні»/«завтра»/YYYY-MM-DD → дата; порожньо = сьогодні. @param {unknown} raw @param {number} nowMs */
@@ -55,8 +55,8 @@ async function draftFor(env, date, items, nowMs) {
     throw new Error('календар недоступний (токен або мережа) - без нього розкладка сліпа');
   const events = calendar.map((e) => ({
     title: String(e.title ?? ''),
-    startMin: minuteOf(e.startMs),
-    endMin: minuteOf(e.endMs),
+    startMin: typeof e.startMs === 'number' ? kyivMinuteOfDay(new Date(e.startMs)) : null,
+    endMin: typeof e.endMs === 'number' ? kyivMinuteOfDay(new Date(e.endMs)) : null,
   }));
   const slots = computeSlots({
     date,
@@ -91,13 +91,16 @@ export async function runPlanIntent(env, args, nowMs) {
   const date = resolvePlanDate(args.date, nowMs);
   if (!Array.isArray(args.items) || args.items.length === 0)
     throw new Error('items - непорожній список пунктів');
-  const before = await listItems(env, date);
+  // id від моделі не приймаємо (те саме, що normalizeIntent у ланцюзі):
+  // replaceItems робить INSERT OR REPLACE за глобальним id, і чужий id
+  // перетягнув би рядок іншої дати разом із reminder_id.
   const items = args.items
     .slice(0, ITEMS_MAX)
-    .map((r, i) => normalizeItem(/** @type {Record<string, unknown>} */ (r ?? {}), i));
+    .map((r, i) =>
+      normalizeItem({ .../** @type {Record<string, unknown>} */ (r ?? {}), id: undefined }, i),
+    );
   await upsertDayPlan(env, date, { status: 'intent' }, nowMs);
-  const result = await draftFor(env, date, items, nowMs);
-  return { result, prev: { date, items: before } };
+  return { result: await draftFor(env, date, items, nowMs) };
 }
 
 /**
@@ -124,8 +127,7 @@ export async function runPlanDraft(env, args, nowMs) {
       i,
     ),
   );
-  const result = await draftFor(env, date, items, nowMs);
-  return { result, prev: { date, items: rows } };
+  return { result: await draftFor(env, date, items, nowMs) };
 }
 
 /**
@@ -147,7 +149,7 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   /** @type {string[]} */
   const proposals = [];
   if (args.calendar === true) {
-    for (const r of (await listItems(env, date)).filter((x) => x.window_start && x.window_end)) {
+    for (const r of res.items.filter((x) => x.window_start && x.window_end)) {
       const startMs = kyivMs(date, String(r.window_start));
       const endMs = kyivMs(date, String(r.window_end));
       if (startMs == null || endMs == null) continue;
@@ -202,50 +204,22 @@ export async function undoPlanUpdate(env, snap) {
 }
 
 /**
- * plan.review (T0): огляд і перенос. carry - id/назви пунктів або "all";
- * порожньо - лише огляд без переносу.
+ * plan.review (T0): огляд і перенос. carry - id/назви пунктів, ["all"] - усі
+ * відкриті; порожньо - лише огляд без переносу.
  * @param {Env} env
- * @param {{ date?: string, carry?: string[] | 'all' }} args
+ * @param {{ date?: string, carry?: string[] }} args
  * @param {number} nowMs
  */
 export async function runPlanReview(env, args, nowMs) {
   const date = resolvePlanDate(args.date, nowMs);
   const review = await reviewPlan(env, date);
-  if (args.carry == null || (Array.isArray(args.carry) && args.carry.length === 0)) {
-    return { result: review };
-  }
+  if (!Array.isArray(args.carry) || args.carry.length === 0) return { result: review };
   const config = await readDayPlanConfig(env);
   const to = nextPlannedDay(date, config.weekdays);
-  const all = args.carry === 'all' || (args.carry.length === 1 && args.carry[0] === 'all');
-  const ids = all ? [] : resolveIds(review.open, /** @type {string[]} */ (args.carry));
+  const all = args.carry.length === 1 && args.carry[0] === 'all';
+  const ids = all
+    ? []
+    : args.carry.map((ref) => resolveItemRef(review.open, ref, 'серед відкритих').id);
   const carried = await carryItems(env, date, to, ids, nowMs);
   return { result: { ...review, carried_to: to, carried: carried.carried, stale: carried.stale } };
-}
-
-/** @param {{ id: string, title: string }[]} open @param {string[]} refs */
-function resolveIds(open, refs) {
-  return refs.map((ref) => {
-    const hit = open.find(
-      (o) =>
-        o.id === ref ||
-        (ref.length >= ID_PREFIX_MIN && o.id.startsWith(ref)) ||
-        o.title.toLowerCase() === ref.toLowerCase(),
-    );
-    if (!hit) throw new Error(`пункту «${ref}» серед відкритих немає`);
-    return hit.id;
-  });
-}
-
-/** @param {unknown} ms */
-function minuteOf(ms) {
-  if (typeof ms !== 'number') return null;
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Kyiv',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(ms));
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24;
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
-  return h * 60 + m;
 }

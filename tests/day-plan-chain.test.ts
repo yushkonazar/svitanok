@@ -15,7 +15,11 @@ import {
   setChainState,
   normalizeIntent,
   parseDurationMin,
+  applyAnswer,
+  replanChanges,
+  hhmmToMin,
   CHAIN_KIND,
+  REPLAN_MAX_CHANGES,
 } from '../web/core/day-plan/chain.mjs';
 import { getDayPlan, listItems } from '../web/core/day-plan/store.mjs';
 import { syncInstructionHash } from './helpers/instructions.js';
@@ -182,10 +186,12 @@ describe('runDayPlanChain', () => {
     expect((await getDayPlan(env, DATE))?.intent_text).toBe(
       'презентація 2 год, банк, зателефонувати Олені',
     );
-    // 3. Розкладка ядром: відповідь «1 год» → Банк 60 хв × 1,3 = 80 хв блоку;
-    //    explain - працівником.
+    // 3. Розкладка ядром: відповідь «1 год» → Банк est_min 60 (сира оцінка),
+    //    блок із запасом 60 × 1,3 = 80 хв у вікні; explain - працівником.
     const items = await listItems(env, DATE);
-    expect(items.find((i) => i.title === 'Банк')).toMatchObject({ est_min: 80, kind: 'errand' });
+    const bank = items.find((i) => i.title === 'Банк');
+    expect(bank).toMatchObject({ est_min: 60, kind: 'errand' });
+    expect((hhmmToMin(bank?.window_end) ?? 0) - (hhmmToMin(bank?.window_start) ?? 0)).toBe(80);
     expect(items.filter((i) => i.window_start)).toHaveLength(3);
     expect(startWorker.mock.calls[1]?.[0]).toBe('explain');
     expect(startWorker.mock.calls[1]?.[1]).toMatchObject({ date: DATE });
@@ -249,7 +255,13 @@ describe('runDayPlanChain', () => {
     };
     const { step } = fakeStep({
       intent: [{ payload: { text: 'банк' } }],
-      worker: [noQuestions, WORKER_EXPLAIN],
+      worker: [
+        noQuestions,
+        WORKER_EXPLAIN,
+        // Працівник replan повертає зміни за назвою; ланцюг застосовує їх ДО
+        // прийняття - нагадування стає на новий час.
+        { payload: { mode: 'replan', output: { moves: [{ id: 'Банк', to: '16:00' }] } } },
+      ],
       accept: [{ payload: { choice: 'edit' } }],
       answer: [{ payload: { text: 'банк на 16:00' } }],
       carry: [{ payload: { choice: 'carry_none' } }],
@@ -263,7 +275,11 @@ describe('runDayPlanChain', () => {
     );
     expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['intent', 'explain', 'replan']);
     expect(startWorker.mock.calls[2]?.[1]).toMatchObject({ text: 'банк на 16:00', date: DATE });
-    expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 1 });
+    const bank = (await listItems(env, DATE)).find((i) => i.title === 'Банк');
+    expect(bank).toMatchObject({ window_start: '16:00', flexible: 0 });
+    const rem = db.prepare(`SELECT due_at FROM reminders`).all() as { due_at: string }[];
+    expect(rem).toHaveLength(1);
+    expect(Date.parse(rem[0]!.due_at)).toBe(Date.parse('2026-09-07T13:00:00.000Z'));
     // «Ні» на перенос - нічого не переїхало, день reviewed.
     expect(await listItems(env, '2026-09-08')).toHaveLength(0);
     expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
@@ -340,6 +356,31 @@ describe('helpers ланцюга', () => {
     expect(parseDurationMin('1,5 год')).toBe(90);
     expect(parseDurationMin('30 хв')).toBe(30);
     expect(parseDurationMin('не знаю')).toBeNull();
+  });
+
+  it('applyAnswer: кнопка {item, option} або текст {text} для питання, що чекає (qiDefault)', () => {
+    const questions = [{ q: 'Скільки?', item: 1, options: ['30 хв', '1 год'] }];
+    const mk = () =>
+      normalizeIntent({ items: [{ title: 'A' }, { title: 'Банк', kind: 'errand' }] }, '');
+    expect(applyAnswer(mk(), questions, { item: 0, option: 1 })[1]?.est_min).toBe(60);
+    // Текст із prerouter не несе item - пункт береться з поточного питання.
+    expect(applyAnswer(mk(), questions, { text: '2 год' }, 0)[1]?.est_min).toBe(120);
+    const dunno = applyAnswer(mk(), questions, { text: 'не знаю' }, 0)[1];
+    expect(dunno).toMatchObject({ est_min: null, flexible: true });
+    expect(applyAnswer(mk(), questions, null, 0)[1]?.est_min).toBeNull();
+  });
+
+  it('replanChanges: лише done/moves/drop з відомою формою, ≤ 3 зміни', () => {
+    expect(
+      replanChanges({
+        done: ['a', 7],
+        moves: [{ id: 'b', to: '16:00' }, { id: 'x' }, 'junk'],
+        drop: ['c', 'd', 'e'],
+        extra: 'ignored',
+      }),
+    ).toEqual({ done: ['a'], moves: [{ id: 'b', to: '16:00' }], drop: ['c'] });
+    expect(REPLAN_MAX_CHANGES).toBe(3);
+    expect(replanChanges({})).toEqual({ done: [], moves: [], drop: [] });
   });
 
   it('startDayPlannerRun: інструкція day-planner з D1 → /run профілю day-planner із JSON-задачею; без інструкції - false і без мережі', async () => {

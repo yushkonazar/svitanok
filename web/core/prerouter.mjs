@@ -227,7 +227,11 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // подією в Workflow, не в мозок. Інші теми не чіпаємо: питання ставилось
   // саме тут. Збій доставки - у мозок, як звичайне повідомлення.
   if (threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
-    const awaiting = await findAwaitingDayPlan(env).catch(() => null);
+    const awaiting = await findAwaitingDayPlan(env).catch((/** @type {any} */ e) => {
+      // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
+      console.error('prerouter: пошук ланцюга плану впав', e?.message);
+      return null;
+    });
     if (awaiting) {
       try {
         await sendDayPlanEvent(env, awaiting.id, awaiting.awaiting, { text });
@@ -752,13 +756,16 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       /** @type {string} */ (cm[2]),
     );
   }
-  const stub = data.match(/^([ram]):/)?.[1];
+  const stub = data.match(/^([cram]):/)?.[1];
   if (!stub) return null;
   return {
+    // c: не за форматом вище (чужий/пошкоджений chainId або choice) - чесна
+    // відмова, а не легасі «Застаріла кнопка» з іншою причиною.
+    c: 'Невідома кнопка плану.',
     r: 'Нагадування нового шляху - з інструментами запису (PR-6).',
     a: 'Відповіді на питання прогону - пізніше цим етапом.',
     m: 'Меню - пізніше.',
-  }[/** @type {'r' | 'a' | 'm'} */ (stub)];
+  }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
 }
 
 /**
