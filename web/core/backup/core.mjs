@@ -9,6 +9,8 @@
 // це детермінованим і незалежним від того, як власник його згенерував.
 // Ротації ключа немає (R16): втрата ключа = бекапи нечитабельні.
 
+import { recordFtsText } from '../tools/collections.mjs';
+
 /** Магія формату - версія 1. */
 export const BACKUP_MAGIC = 'SVB1';
 /** Версія документа всередині (структура JSON). */
@@ -197,10 +199,21 @@ export function restoreSql(doc) {
   for (const [fts, spec] of Object.entries(BACKUP_FTS)) {
     lines.push(`DELETE FROM ${fts};`);
     if (fts === 'records_fts') {
-      // data_text = назва колекції + значення: те саме, що пише код при записі.
-      lines.push(
-        `INSERT INTO records_fts (id, data_text) SELECT r.id, c.name || ' ' || r.data_json FROM records r JOIN collections c ON c.id = r.collection_id;`,
+      // data_text рахується тією самою формулою, що при записі
+      // (recordFtsText): назва колекції + значення, а не сирий JSON із
+      // ключами - інакше пошук після відновлення знаходив би імена полів.
+      const names = new Map(
+        (doc.d1.collections ?? []).map((c) => [String(c.id), String(c.name ?? '')]),
       );
+      for (const r of doc.d1.records ?? []) {
+        const text = recordFtsText(
+          names.get(String(r.collection_id)) ?? '',
+          parseJsonObject(r.data_json),
+        );
+        lines.push(
+          `INSERT INTO records_fts (id, data_text) VALUES (${sqlLiteral(r.id)}, ${sqlLiteral(text)});`,
+        );
+      }
       continue;
     }
     const cols = spec.columns.join(', ');
@@ -208,6 +221,18 @@ export function restoreSql(doc) {
   }
   lines.push('COMMIT;');
   return lines.join('\n');
+}
+
+/** data_json запису → обʼєкт; биття - порожній обʼєкт (як parseData у collections). @param {unknown} raw */
+function parseJsonObject(raw) {
+  try {
+    const v = JSON.parse(String(raw ?? ''));
+    return v && typeof v === 'object' && !Array.isArray(v)
+      ? /** @type {Record<string, unknown>} */ (v)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 /** @param {unknown} v */

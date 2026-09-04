@@ -145,7 +145,7 @@ describe('документ і крипто', () => {
     expect(sql).toContain(
       'INSERT INTO ideas_fts (id, title, body_md) SELECT id, title, body_md FROM ideas;',
     );
-    expect(sql).toContain('INSERT INTO records_fts');
+    expect(sql).toContain('DELETE FROM records_fts;');
     // SQL справді виконується на схемі міграцій: round-trip у sqlite.
     const db = new DatabaseSync(':memory:');
     for (const f of ALL_MIGRATIONS) {
@@ -154,6 +154,31 @@ describe('документ і крипто', () => {
     db.exec(sql);
     expect((db.prepare('SELECT COUNT(*) AS n FROM ideas').get() as { n: number }).n).toBe(2);
     expect((db.prepare('SELECT COUNT(*) AS n FROM ideas_fts').get() as { n: number }).n).toBe(2);
+  });
+
+  it('records_fts після відновлення = тому, що пише код (назва + значення, без ключів JSON)', () => {
+    const doc = buildBackupDocument({
+      createdMs: SUNDAY_0310,
+      envName: 'on',
+      tables: {
+        collections: [{ id: 'c1', name: 'Сервіси', fields_json: '[]', created_at: 'x' }],
+        records: [
+          {
+            id: 'r1',
+            collection_id: 'c1',
+            data_json: JSON.stringify({ назва: 'Spotify', ціна_міс: 4.99 }),
+            created_at: 'x',
+            updated_at: 'x',
+          },
+        ],
+      },
+      kv: {},
+    });
+    const sql = restoreSql(doc);
+    expect(sql).toContain(
+      `INSERT INTO records_fts (id, data_text) VALUES ('r1', 'Сервіси Spotify 4.99');`,
+    );
+    expect(sql).not.toContain('data_json FROM records');
   });
 });
 
@@ -290,6 +315,37 @@ describe('задача backup (нд 03:00)', () => {
       d1.db.prepare('SELECT payload_json FROM outbox').all() as { payload_json: string }[]
     ).map((r) => JSON.parse(r.payload_json).text as string);
     expect(texts.some((t) => t.includes('BACKUP_ENC_KEY'))).toBe(true);
+  });
+
+  it('KV читається сторінками (list_complete=false + cursor): жоден ключ не губиться', async () => {
+    driveStub();
+    const { env, d1 } = taskEnv();
+    const pages = [
+      { keys: [{ name: 'stats' }], list_complete: false, cursor: 'c1' },
+      { keys: [{ name: 'levers' }, { name: 'googleToken' }], list_complete: true },
+    ];
+    const values: Record<string, string> = {
+      stats: '{"s":1}',
+      levers: '{"l":1}',
+      // Свіжий кеш токена - інакше адаптер Drive пішов би по refresh-грант.
+      googleToken: JSON.stringify({ token: 't', expMs: Date.now() + 3_600_000 }),
+    };
+    let calls = 0;
+    env.BRIEFING = {
+      list: async (opts: { cursor?: string }) => pages[opts?.cursor ? 1 : 0],
+      get: async (k: string) => {
+        calls += 1;
+        return values[k] ?? null;
+      },
+      put: async () => {},
+      delete: async () => {},
+    } as unknown as Env['BRIEFING'];
+    expect(await backupTask(env, SUNDAY_0310)).toMatchObject({ done: true, kvKeys: 2 });
+    expect(calls).toBeGreaterThanOrEqual(3);
+    const fact = d1.db.prepare(`SELECT value_json FROM facts WHERE key = 'last_backup'`).get() as {
+      value_json: string;
+    };
+    expect(JSON.parse(fact.value_json).kvKeys).toBe(2);
   });
 
   it('isQuarterlySunday: 13-й, 26-й, 39-й, 52-й ISO-тижні', () => {

@@ -66,7 +66,9 @@ export async function restore(args, deps) {
     throw new Error('без --dry-run потрібен --local або --remote --apply');
   }
   mkdirSync(deps.outDir, { recursive: true });
-  const stamp = doc.created_at.slice(0, 10);
+  // Дата в імені файлу - лише за формою YYYY-MM-DD: імʼя на диску не має
+  // залежати від того, що лежить у полі документа.
+  const stamp = /^\d{4}-\d{2}-\d{2}/.exec(String(doc.created_at ?? ''))?.[0] ?? 'unknown-date';
   const sqlPath = join(deps.outDir, `restore-${stamp}.sql`);
   const kvPath = join(deps.outDir, `restore-${stamp}-kv.json`);
   writeFileSync(sqlPath, restoreSql(doc), 'utf8');
@@ -74,11 +76,13 @@ export async function restore(args, deps) {
   log(`SQL: ${sqlPath}\nKV (вручну): ${kvPath}`);
 
   const target = args.local ? '--local' : '--remote';
-  // Без shell: аргументи йдуть масивом (шлях до SQL - наш, але звичка
-  // важливіша); на Windows npx - це npx.cmd.
-  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  // Аргументи масивом. На Windows npx - це npx.cmd, який Node запускає лише
+  // через shell (EINVAL без нього - захист від CVE-2024-27980); усі аргументи
+  // тут константи або наш власний шлях із датою за регексом, тож shell
+  // нічого чужого не розкриє.
+  const win = process.platform === 'win32';
   const cmd = [
-    npx,
+    win ? 'npx.cmd' : 'npx',
     'wrangler',
     'd1',
     'execute',
@@ -92,7 +96,7 @@ export async function restore(args, deps) {
   const exec =
     deps.exec ??
     ((c) => {
-      const r = spawnSync(c[0] ?? '', c.slice(1), { stdio: 'inherit' });
+      const r = spawnSync(c[0] ?? '', c.slice(1), { stdio: 'inherit', shell: win });
       return r.status ?? 1;
     });
   log(`Виконую: ${cmd.join(' ')}`);

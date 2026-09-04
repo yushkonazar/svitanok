@@ -136,18 +136,20 @@ async function dumpTables(env) {
   const db = /** @type {NonNullable<Env['DB']>} */ (env.DB);
   /** @type {Record<string, Record<string, unknown>[]>} */
   const out = {};
-  for (const table of BACKUP_TABLES) {
-    // Імʼя таблиці - з константного списку, не з вводу.
-    const { results } = await db
-      .prepare(`SELECT * FROM ${table} LIMIT ${BACKUP_ROWS_PER_TABLE + 1}`)
-      .bind()
-      .all();
-    const rows = /** @type {Record<string, unknown>[]} */ (results ?? []);
+  // Один batch замість 30 послідовних запитів: імена таблиць - з константного
+  // списку, не з вводу.
+  const pages = await db.batch(
+    BACKUP_TABLES.map((table) =>
+      db.prepare(`SELECT * FROM ${table} LIMIT ${BACKUP_ROWS_PER_TABLE + 1}`).bind(),
+    ),
+  );
+  BACKUP_TABLES.forEach((table, i) => {
+    const rows = /** @type {Record<string, unknown>[]} */ (pages[i]?.results ?? []);
     if (rows.length > BACKUP_ROWS_PER_TABLE) {
       throw new Error(`таблиця ${table} понад ${BACKUP_ROWS_PER_TABLE} рядків - бекап зупинено`);
     }
     out[table] = rows;
-  }
+  });
   return out;
 }
 
