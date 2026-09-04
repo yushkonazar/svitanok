@@ -420,6 +420,26 @@ describe('prerouteMessage: нові команди', () => {
     expect(brain).toHaveLength(0);
   });
 
+  // S-0-16 (етап 3 PR-7): «не нагадуй про X» - детерміновано у facts, без прогону.
+  it('«не нагадуй про ideas» → hint_mute_json у facts, відповідь із «↩», мозок не кликано', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    expect(await prerouteMessage(env, parsedMsg('Більше не нагадуй про ideas'), NOW)).toBe(true);
+    expect(brain).toHaveLength(0);
+    const fact = d1.db
+      .prepare(`SELECT value_json FROM facts WHERE kind = 'setting' AND key = 'hint_mute_json'`)
+      .get() as { value_json: string };
+    expect(JSON.parse(fact.value_json)).toEqual({ topics: ['ideas'] });
+    const msg = tg.find((c) => String(c.body.text).includes('Вимкнув підказки про ideas'));
+    expect(msg).toBeDefined();
+    expect(JSON.stringify(msg?.body.reply_markup)).toContain('"u:');
+    // Невідома тема - звичайне повідомлення в мозок.
+    expect(await prerouteMessage(env, parsedMsg('не нагадуй про погоду'), NOW + 1)).toBe(true);
+    expect(brain).toHaveLength(1);
+  });
+
   // S-0-5 (етап 3 PR-5): /forget → кнопки колекцій → тап m:fg → пропозиція T2
   // зі словом → слово текстом → «Стерто: …».
   it('/forget з колекцією: меню → m:fg → слово → колекцію стерто (S-0-5, S-N4-5)', async () => {

@@ -40,6 +40,7 @@ import { loadInstruction } from './instructions.mjs';
 import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs';
 import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
+import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -181,6 +182,38 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // Слово-підтвердження T2 (01 §4.3): відкрита пропозиція цього треду з таким
   // словом - це рішення власника, а не повідомлення для моделі.
   if (await resolveT2Word(env, target, threadKey, text, nowMs)) return true;
+
+  // «Не нагадуй про X» (S-0-16): тема підказок вимикається детерміновано,
+  // без прогону - модель не мусить угадувати ключ і форму факту.
+  const mute = /^(?:більше\s+)?не\s+нагадуй\s+про\s+([a-z]+)\.?$/i.exec(text);
+  if (mute && HINT_TOPICS.includes(String(mute[1]).toLowerCase())) {
+    const topic = String(mute[1]).toLowerCase();
+    const sess = await readSession(env, threadKey);
+    const out = await muteHintTopic(
+      env,
+      topic,
+      { threadId: threadKey, tainted: sess.tainted },
+      nowMs,
+    );
+    if (out.mode === 'executed') {
+      await reply(env, target, `Вимкнув підказки про ${topic}.`, nowMs, {
+        ...(out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : {}),
+      });
+    } else if (out.mode === 'proposed') {
+      await reply(
+        env,
+        target,
+        `Вимкнути підказки про ${topic}? Сесія з зовнішнім вмістом - потрібне ✅.`,
+        nowMs,
+        {
+          reply_markup: { inline_keyboard: out.proposal.buttons },
+        },
+      );
+    } else {
+      await reply(env, target, `Не вийшло: ${out.error}`, nowMs);
+    }
+    return true;
+  }
 
   await routeThreadText(env, target, threadKey, text, nowMs);
   return true;
