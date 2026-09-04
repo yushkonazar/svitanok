@@ -10,7 +10,7 @@
 // додавала до безпеки, зате робила недосяжною саму пропозицію: власник діставав
 // «не можу записати» замість кнопки підтвердження (приймання етапу 2, 30.08).
 
-import type { CoreClient, ToolCallOutcome } from './core-client.js';
+import type { CoreClient, RunOutcome, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
 import {
   INSTRUCTION_NAME_BY_PROFILE,
@@ -121,7 +121,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     let undoId: string | null = null;
     let lastStatusMs = 0;
     let lastStatusLen = 0;
-    let escalateOutcome: { escalate: { text: string; status_message_id?: number } } | undefined;
+    let escalateOutcome: RunOutcome | undefined;
 
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort('timeout'), profile.timeoutMs);
@@ -333,6 +333,47 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         return;
       }
 
+      // Денний працівник (етап 3 PR-8): вихід - подія `worker` у ланцюг через
+      // outcome.chain, БЕЗ deliver у чат (ланцюг сам пише власнику). chain_id і
+      // mode - з JSON задачі у вході; json-режим - розібраний обʼєкт, chat -
+      // текст як є. Кривий вхід або порожній вихід - error-крок, ланцюг
+      // дочекається таймауту і піде резервом (formatDraft / наївний розбір).
+      if (profile.name === 'day-planner') {
+        const task = parseTaskInput(req.input.text);
+        if (!task) {
+          pushStep({
+            kind: 'error',
+            name: 'day-planner',
+            ms: now() - startedMs,
+            ok: false,
+            note: 'bad-task',
+          });
+          return;
+        }
+        const output = task.format === 'json' ? parseJsonOutput(finalText) : finalText;
+        if (output == null || output === '') {
+          pushStep({
+            kind: 'error',
+            name: 'day-planner',
+            ms: now() - startedMs,
+            ok: false,
+            note: 'empty-output',
+          });
+          return;
+        }
+        escalateOutcome = {
+          chain: { id: task.chain_id, event: 'worker', payload: { mode: task.mode, output } },
+        };
+        pushStep({
+          kind: 'reply',
+          name: 'chain',
+          ms: now() - startedMs,
+          ok: true,
+          note: task.mode,
+        });
+        return;
+      }
+
       // Огорожа ```/лапки навколо службового рядка (ревʼю PR-5): quick.md
       // показує формат у код-блоці, і модель іноді відтворює саме його -
       // строгий startsWith тоді пропускав би «ESCALATE: …» власнику як
@@ -449,6 +490,32 @@ export function clipHead(text: string, max: number): string {
 
 export function clipStatusTail(text: string): string {
   return clipTail(text, STATUS_MAX_CHARS);
+}
+
+/** Задача Денного з входу /run: {chain_id, mode, date, task, format}. */
+export function parseTaskInput(
+  text: string,
+): { chain_id: string; mode: string; format: 'json' | 'chat' } | null {
+  try {
+    const v = JSON.parse(text) as Record<string, unknown>;
+    const chainId = typeof v.chain_id === 'string' ? v.chain_id : '';
+    const mode = typeof v.mode === 'string' ? v.mode : '';
+    if (!/^[A-Za-z0-9-]{1,40}$/.test(chainId) || !mode) return null;
+    return { chain_id: chainId, mode, format: v.format === 'chat' ? 'chat' : 'json' };
+  } catch {
+    return null;
+  }
+}
+
+/** JSON з відповіді моделі: чистий або в огорожі ```json … ```. */
+export function parseJsonOutput(text: string): Record<string, unknown> | null {
+  const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try {
+    const v = JSON.parse(stripped) as unknown;
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 function shortError(err: unknown): string {

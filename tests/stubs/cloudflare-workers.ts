@@ -19,6 +19,23 @@ export class DurableObject<Env = unknown> {
   }
 }
 
+/** Базовий клас Workflow (етап 3 PR-8, DayPlanChain): так само лише ctx/env
+ *  на this. Машина станів ланцюга тестується напряму (runDayPlanChain) з
+ *  фейковим step - клас потрібен тесту лише щоб імпорт worker.js не впав. */
+export class WorkflowEntrypoint<Env = unknown, Params = unknown> {
+  ctx: unknown;
+  env: Env;
+
+  constructor(ctx: unknown, env: Env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+
+  async run(_event: { payload: Params }, _step: unknown): Promise<unknown> {
+    return undefined;
+  }
+}
+
 /** Мінімум, який вживають AgentRun і SchedulerDO; тести підставляють Map
  *  замість KV-сховища і node:sqlite замість SQL-сховища. getAlarm/sql —
  *  опційні, щоб фейки AgentRun-тестів (без SQL) лишались валідними. */

@@ -12,6 +12,7 @@ import {
   handleBrainCallback,
   startClaimedRun,
   kickPendingThreads,
+  dayPlanChoiceEvent,
 } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
@@ -440,6 +441,44 @@ describe('prerouteMessage: нові команди', () => {
     expect(brain).toHaveLength(1);
   });
 
+  // S-P-9/S-P-10 (етап 3 PR-8): ланцюг плану чекає слова власника в темі
+  // «Асистент» - текст іде подією у Workflow, не в мозок; в іншій темі - як
+  // завжди, у мозок.
+  it('ланцюг плану awaiting=intent: текст у темі «Асистент» → подія intent {text}, мозок не кликано; інша тема → мозок', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const events: { id: string; ev: unknown }[] = [];
+    const env = makeEnv(reg, d1.stub);
+    (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
+      create: async () => undefined,
+      get: async (id: string) => ({
+        sendEvent: async (ev: unknown) => void events.push({ id, ev }),
+      }),
+    };
+    d1.db
+      .prepare(
+        `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+         VALUES ('ch-1', 'day-plan', 'ch-1', '{"date":"2026-09-07","awaiting":"intent"}', 'waiting', '2026-09-06T17:30:00Z', '2026-09-06T17:30:00Z')`,
+      )
+      .run();
+    expect(await prerouteMessage(env, parsedMsg('презентація і банк', { threadId: 99 }), NOW)).toBe(
+      true,
+    );
+    expect(events).toEqual([
+      { id: 'ch-1', ev: { type: 'intent', payload: { text: 'презентація і банк' } } },
+    ]);
+    expect(brain).toHaveLength(0);
+    // Той самий текст у DM (не тема «Асистент») - звичайний прогін.
+    expect(await prerouteMessage(env, parsedMsg('презентація і банк'), NOW + 1)).toBe(true);
+    expect(brain).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    // Ланцюг уже не чекає слова - текст у темі теж іде в мозок.
+    d1.db.prepare(`UPDATE chains SET state_json = '{"awaiting":"accept"}'`).run();
+    expect(await prerouteMessage(env, parsedMsg('ще текст', { threadId: 99 }), NOW + 2)).toBe(true);
+    expect(events).toHaveLength(1);
+  });
+
   // S-0-5 (етап 3 PR-5): /forget → кнопки колекцій → тап m:fg → пропозиція T2
   // зі словом → слово текстом → «Стерто: …».
   it('/forget з колекцією: меню → m:fg → слово → колекцію стерто (S-0-5, S-N4-5)', async () => {
@@ -691,10 +730,54 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     ).toContain('Не вийшло');
   });
 
-  it('заглушки c:/r:/a:/m: чесні; чужі префікси (rc:, v1:) і off-режим - null (легасі)', async () => {
+  // Етап 3 PR-8: c:<chainId>:<choice> - кнопки ланцюга плану → подія у Workflow.
+  it('c:<id>:<choice> → sendEvent за мапою choice→type, клавіатура знята; збій Workflow - чесний тост', async () => {
+    const { env, tg } = cbEnv();
+    const events: { id: string; ev: unknown }[] = [];
+    (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
+      create: async () => undefined,
+      get: async (id: string) => ({
+        sendEvent: async (ev: unknown) => {
+          if (id === 'dead') throw new Error('instance not found');
+          events.push({ id, ev });
+        },
+      }),
+    };
+    const tap = (data: string) =>
+      handleBrainCallback(env, { data, chatId: 555, messageId: 7, threadId: 99 }, NOW);
+    expect(await tap('c:ch-1:accept')).toBe('Прийняв.');
+    expect(await tap('c:ch-1:a1_0')).toBe('Прийняв.');
+    expect(await tap('c:ch-1:carry_none')).toBe('Прийняв.');
+    expect(await tap('c:ch-1:skip')).toBe('Прийняв.');
+    expect(events.map((e) => e.ev)).toEqual([
+      { type: 'accept', payload: { choice: 'accept' } },
+      { type: 'answer', payload: { item: 1, option: 0 } },
+      { type: 'carry', payload: { choice: 'carry_none' } },
+      { type: 'intent', payload: { choice: 'skip' } },
+    ]);
+    expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(4);
+    expect(await tap('c:dead:accept')).toContain('не відповідає');
+    expect(await tap('c:ch-1:go')).toBe('Невідома кнопка плану.');
+    expect(events).toHaveLength(4);
+
+    expect(dayPlanChoiceEvent('none')).toEqual({ type: 'intent', payload: { choice: 'none' } });
+    expect(dayPlanChoiceEvent('edit')).toEqual({ type: 'accept', payload: { choice: 'edit' } });
+    expect(dayPlanChoiceEvent('calendar')).toEqual({
+      type: 'accept',
+      payload: { choice: 'calendar' },
+    });
+    expect(dayPlanChoiceEvent('carry_all')).toEqual({
+      type: 'carry',
+      payload: { choice: 'carry_all' },
+    });
+    expect(dayPlanChoiceEvent('a0_3')).toEqual({ type: 'answer', payload: { item: 0, option: 3 } });
+    expect(dayPlanChoiceEvent('ok')).toBeNull();
+  });
+
+  it('заглушки r:/a:/m: чесні; невідома кнопка c: - чесна відмова; чужі префікси (rc:, v1:) і off-режим - null (легасі)', async () => {
     const { env } = cbEnv();
     expect(String(await handleBrainCallback(env, { data: 'c:x:go', chatId: 555 }, NOW))).toContain(
-      'етапі 5',
+      'Невідома кнопка плану',
     );
     expect(await handleBrainCallback(env, { data: 'rc:123', chatId: 555 }, NOW)).toBeNull();
     expect(

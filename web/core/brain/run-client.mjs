@@ -76,7 +76,7 @@ async function signedBrainPost(env, path, runId, rawBody, nowMs) {
  * @param {Env} env
  * @param {{
  *   runId: string,
- *   profile: 'chat' | 'quick' | 'summarize' | 'weekly-review',
+ *   profile: 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner',
  *   threadId: string,
  *   inputText: string,
  *   tainted?: boolean,

@@ -43,6 +43,15 @@ import {
   exportCollectionCsv,
 } from '../tools/collections.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import {
+  runPlanIntent,
+  runPlanDraft,
+  runPlanAccept,
+  undoPlanAccept,
+  runPlanUpdate,
+  undoPlanUpdate,
+  runPlanReview,
+} from '../tools/plan.mjs';
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -257,6 +266,63 @@ export const EXECUTORS = {
         collection: payload.collection,
         id: payload.id,
       });
+      return { result };
+    },
+  },
+  // План дня v2 (етап 3 PR-8, 07 §4 plan.*): усі T0. «↩» лише для accept
+  // (скасувати нагадування, статус назад у draft) і update (попередні стани
+  // пунктів); intent/draft перераховують чернетку - відкат безглуздий, бо
+  // наступний intent її і так замінює; review - читання + перенос без undo.
+  'plan.intent': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runPlanIntent(
+        env,
+        { date: payload.date, items: payload.items },
+        nowMs,
+      );
+      return { result };
+    },
+  },
+  'plan.draft': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runPlanDraft(env, { date: payload.date }, nowMs);
+      return { result };
+    },
+  },
+  'plan.accept': {
+    async execute(env, payload, nowMs, ctx) {
+      const { result, prev } = await runPlanAccept(
+        env,
+        { date: payload.date, calendar: payload.calendar === true },
+        nowMs,
+        ctx,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      await undoPlanAccept(env, snapshot, nowMs);
+    },
+  },
+  'plan.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runPlanUpdate(
+        env,
+        { date: payload.date, done: payload.done, moves: payload.moves, drop: payload.drop },
+        nowMs,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot) {
+      await undoPlanUpdate(env, snapshot);
+    },
+  },
+  'plan.review': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runPlanReview(
+        env,
+        { date: payload.date, carry: payload.carry },
+        nowMs,
+      );
       return { result };
     },
   },

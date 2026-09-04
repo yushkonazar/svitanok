@@ -5,7 +5,16 @@
 import { BRAIN_TOOLS, TOOL_BY_MCP_NAME } from './tools/schemas.js';
 import { QUICK_WORKER, WORKER_MODEL_IDS, type WorkerEffort } from './workers.js';
 
-export type ProfileName = 'chat' | 'quick' | 'summarize' | 'weekly-review';
+export type ProfileName = 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner';
+
+/** Інструменти Денного за front-matter agents/day-planner.md (07 §5):
+ *  calendar.read, data.read, facts.get, routes.eta (етап 5 - поки нема). */
+export const DAY_PLANNER_TOOL_NAMES = [
+  'calendar_read',
+  'data_read',
+  'facts_get',
+  'routes_eta',
+] as const;
 
 /** Інструменти профілю weekly-review за front-matter docs/assistant/
  *  weekly-review.md (07 §5): data.read(weekly), finance.query, runs.query.
@@ -72,6 +81,18 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     maxTurns: 30,
     timeoutMs: 6 * 60_000,
   },
+  // Денний (ADR-035, етап 3 PR-8): працівник DayPlanChain. Вхід - JSON задачі
+  // (chain_id, mode, date, task), вихід - подія `worker` у ланцюг через
+  // outcome.chain у /internal/runs, БЕЗ deliver у чат (ланцюг сам пише
+  // власнику). Свіжа сесія, max_steps 6 з front-matter.
+  'day-planner': {
+    name: 'day-planner',
+    model: 'claude-sonnet-5',
+    toolNames: DAY_PLANNER_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
+    maxToolCalls: 6,
+    maxTurns: 12,
+    timeoutMs: 3 * 60_000,
+  },
 };
 
 /** Імʼя інструкції в D1 для профілю (те, що ядро кладе в тіло /run і що
@@ -81,6 +102,7 @@ export const INSTRUCTION_NAME_BY_PROFILE: Record<Exclude<ProfileName, 'summarize
   chat: 'persona',
   quick: 'quick',
   'weekly-review': 'weekly-review',
+  'day-planner': 'day-planner',
 };
 
 /** Моделі для /health.limits (01 §2.2). */
@@ -133,8 +155,11 @@ export function buildSystemPrompt(
   // одному й тому ж промпті, і поведінка на «скільки днів до 1 вересня»
   // стрибала б між відповіддю і ескалацією.
   if (profile.name === 'quick') return opts.instruction;
-  // Звіт самодостатній (weekly-review §0): дата потрібна, згортка розмов - ні.
-  if (profile.name === 'weekly-review') return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;
+  // Звіт і Денний самодостатні (weekly-review §0, day-planner «Що отримує»):
+  // дата потрібна, згортка розмов - ні.
+  if (profile.name === 'weekly-review' || profile.name === 'day-planner') {
+    return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;
+  }
   // Згортка треду - в системний промпт chat (01 §2.2): модель памʼятає
   // попередні дні навіть у свіжій sdk-сесії.
   const summaryBlock = opts.summary
