@@ -696,11 +696,21 @@ function parseData(raw) {
   }
 }
 
-/** @param {Env} env @param {string} id @param {string} collectionName @param {Record<string, unknown>} data */
-async function ftsReplace(env, id, collectionName, data) {
-  const text = [collectionName, ...Object.values(data).map((v) => (v == null ? '' : String(v)))]
+/**
+ * Текст FTS запису: назва колекції + усі значення через пробіл. Єдине місце
+ * формули - її ж використовує відновлення з бекапу (backup/core.mjs), щоб
+ * індекс після restore був байт у байт тим, що пише код.
+ * @param {string} collectionName @param {Record<string, unknown>} data
+ */
+export function recordFtsText(collectionName, data) {
+  return [collectionName, ...Object.values(data).map((v) => (v == null ? '' : String(v)))]
     .filter(Boolean)
     .join(' ');
+}
+
+/** @param {Env} env @param {string} id @param {string} collectionName @param {Record<string, unknown>} data */
+async function ftsReplace(env, id, collectionName, data) {
+  const text = recordFtsText(collectionName, data);
   await db(env).batch([
     db(env).prepare('DELETE FROM records_fts WHERE id = ?').bind(id),
     db(env).prepare('INSERT INTO records_fts (id, data_text) VALUES (?, ?)').bind(id, text),
