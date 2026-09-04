@@ -479,6 +479,106 @@ describe('prerouteMessage: нові команди', () => {
     expect(events).toHaveLength(1);
   });
 
+  // Приймання етапу 3 (05.09): taint живе TAINT_TTL_MS після останнього
+  // зовнішнього читання - у /run іде tainted за TTL, не «назавжди до /new».
+  it('taint у /run: позначка 5 хв тому → tainted=true; 31 хв тому або легасі 1 → false', async () => {
+    const seedAndRun = async (marker: number, text: string) => {
+      const reg = makeRegistryStub();
+      const { brain } = makeFetchStub();
+      const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+      d1.db
+        .prepare(
+          `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, turn_count)
+           VALUES ('dm', 'sess-t', '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z', ?, 1)`,
+        )
+        .run(marker);
+      await prerouteMessage(makeEnv(reg, d1.stub), parsedMsg(text), NOW);
+      return brain[0]!.body.tainted;
+    };
+    expect(await seedAndRun(NOW - 5 * 60_000, 'нагадай про зустріч')).toBe(true);
+    expect(await seedAndRun(NOW - 31 * 60_000, 'нагадай про зустріч')).toBe(false);
+    expect(await seedAndRun(1, 'нагадай про зустріч')).toBe(false);
+  });
+
+  // Приймання 05.09: після ✅ модель казала «колекція ще не створена» - вона
+  // не бачить рішень по кнопках. Дайджест рішень після останнього chat-прогону
+  // йде на початку наступного входу.
+  it('дайджест рішень: пропозиції, вирішені після останнього прогону треду, стають префіксом входу', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, profile, thread_id, started_at, finished_at) VALUES ('r-old', 'chat', 'chat', 'dm', '2026-08-27T11:00:00Z', '2026-08-27T11:00:10Z')`,
+      )
+      .run();
+    const ins = d1.db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, word, expires_at, status, created_at, decided_at)
+       VALUES (?, 'T1', ?, ?, 'dm', NULL, '2026-08-27T12:30:00Z', ?, '2026-08-27T11:05:00Z', ?)`,
+    );
+    ins.run(
+      'p-a',
+      'collections.create',
+      JSON.stringify({ name: 'Підписки' }),
+      'approved',
+      '2026-08-27T11:06:00Z',
+    );
+    ins.run(
+      'p-b',
+      'ideas.delete',
+      JSON.stringify({ title: 'Sheets' }),
+      'rejected',
+      '2026-08-27T11:07:00Z',
+    );
+    ins.run(
+      'p-c',
+      'undo:facts.set',
+      JSON.stringify({ kind: 'setting', key: 'k' }),
+      'approved',
+      '2026-08-27T11:08:00Z',
+    );
+    // Вирішено ДО останнього прогону - у дайджест не потрапляє.
+    ins.run(
+      'p-old',
+      'facts.set',
+      JSON.stringify({ kind: 'setting', key: 'old' }),
+      'approved',
+      '2026-08-27T10:00:00Z',
+    );
+    // Інший тред - теж ні.
+    ins.run(
+      'p-other',
+      'facts.set',
+      JSON.stringify({ kind: 'setting', key: 'x' }),
+      'approved',
+      '2026-08-27T11:09:00Z',
+    );
+    d1.db.prepare(`UPDATE proposals SET thread_id = '99' WHERE id = 'p-other'`).run();
+
+    await prerouteMessage(makeEnv(reg, d1.stub), parsedMsg('додай туди Netflix'), NOW);
+    const text = String((brain[0]!.body.input as { text: string }).text);
+    expect(text.startsWith('[Ядро] Рішення власника по твоїх пропозиціях')).toBe(true);
+    expect(text).toContain('✅ виконано: collections.create «Підписки»');
+    expect(text).toContain('❌ відхилено: ideas.delete «Sheets»');
+    expect(text).toContain('↩ скасовано: facts.set «setting.k»');
+    expect(text).not.toContain('«setting.old»');
+    expect(text).not.toContain('«setting.x»');
+    expect(text.endsWith('\n\nдодай туди Netflix')).toBe(true);
+
+    // Без рішень - вхід чистий.
+    const reg2 = makeRegistryStub();
+    const { brain: brain2 } = makeFetchStub();
+    await prerouteMessage(
+      makeEnv(
+        reg2,
+        d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']).stub,
+      ),
+      parsedMsg('додай туди Netflix'),
+      NOW,
+    );
+    expect((brain2[0]!.body.input as { text: string }).text).toBe('додай туди Netflix');
+  });
+
   // S-0-5 (етап 3 PR-5): /forget → кнопки колекцій → тап m:fg → пропозиція T2
   // зі словом → слово текстом → «Стерто: …».
   it('/forget з колекцією: меню → m:fg → слово → колекцію стерто (S-0-5, S-N4-5)', async () => {
@@ -702,6 +802,21 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     const fact = db.prepare(`SELECT * FROM facts WHERE key='k'`).get() as Record<string, unknown>;
     expect(fact).toBeDefined();
     expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+    // Рішення й результат стоять у треді, не лише в тості (приймання 05.09).
+    const sent = tg.find((c) => c.method === 'sendMessage');
+    expect(sent?.body.text).toBe('✅ Виконано: facts.set «setting.k».');
+  });
+
+  it('p:no - у тред іде «❌ Відхилено: …»', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, {
+      kind: 'ideas.delete',
+      payload_json: JSON.stringify({ id: '7', title: 'Sheets' }),
+    });
+    await handleBrainCallback(env, { data: 'p:prop1:no', chatId: 555, messageId: 42 }, NOW);
+    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe(
+      '❌ Відхилено: ideas.delete «Sheets».',
+    );
   });
 
   it('p:no - «Відхилено.»; повторний тап - «Вже вирішено»; прострочена - «Прострочено»', async () => {
