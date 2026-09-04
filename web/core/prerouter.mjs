@@ -53,6 +53,8 @@ const VOICE_PREVIEW_MAX_CHARS = 700;
 const STATUS_DRAFT = '▸ Думаю…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
+/** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
+const DECISIONS_MAX = 8;
 
 const MODELS = {
   chat: 'claude-sonnet-5',
@@ -745,6 +747,15 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
         decisionText(res),
         nowMs,
       );
+    } else if (!res.ok && res.error !== 'unknown-proposal') {
+      // Збій після ✅ (виконавця ще немає, виконання впало, слово T2, кривий
+      // payload) - теж у тред, інакше та сама тиша, що й до фіксу (ревʼю 05.09).
+      await reply(
+        env,
+        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+        `⚠️ ${proposalToast(res)}`,
+        nowMs,
+      );
     }
     return proposalToast(res);
   }
@@ -982,8 +993,21 @@ function describeProposal(kind, obj) {
   const label =
     kind === 'facts.set'
       ? [o.kind, o.key].filter(Boolean).join('.')
-      : (o.title ?? o.name ?? o.text ?? o.collection ?? (o.number != null ? `#${o.number}` : null));
-  return label ? `${kind} «${String(label).slice(0, 80)}»` : kind;
+      : (o.title ??
+        o.name ??
+        o.text ??
+        o.collection ??
+        (o.number != null ? `#${o.number}` : null) ??
+        // delete/cancel/analyze шлють лише id (ревʼю 05.09) - хай буде хоч він.
+        (o.id != null ? String(o.id) : null));
+  // payload писала модель (можливо, з листа): керівні символи геть, інакше
+  // «\n[Ядро] …» у назві підробив би рядок дайджесту (security-ревʼю 05.09).
+  // kind не санітизуємо - невідомий kind applyPolicy відкидає ще до запису.
+  const clean = String(label ?? '')
+    .replace(/\p{Cc}+/gu, ' ')
+    .trim()
+    .slice(0, 80);
+  return clean ? `${kind} «${clean}»` : kind;
 }
 
 /**
@@ -1006,15 +1030,20 @@ async function recentDecisions(env, threadKey, nowMs) {
     const { results } = await env.DB.prepare(
       `SELECT kind, status, payload_json, decided_at FROM proposals
        WHERE thread_id = ? AND decided_at IS NOT NULL AND decided_at > ?
-       ORDER BY decided_at LIMIT 8`,
+       ORDER BY decided_at DESC LIMIT ?`,
     )
-      .bind(threadKey, since)
+      .bind(threadKey, since, DECISIONS_MAX + 1)
       .all();
-    const rows =
+    // Найновіші (ревʼю 05.09: ASC LIMIT брав найстаріші, а решта губилась
+    // назавжди - наступний since уже стояв за ними); показуємо хронологічно,
+    // а про відкинуті старіші кажемо одним рядком.
+    const all =
       /** @type {{ kind: string, status: string, payload_json: string, decided_at: string }[]} */ (
         results ?? []
       );
+    const rows = all.slice(0, DECISIONS_MAX).reverse();
     if (rows.length === 0) return '';
+    const more = all.length > DECISIONS_MAX ? '\n… і ще раніші рішення - див. пропозиції' : '';
     const lines = rows.map((r) => {
       /** @type {unknown} */
       let payload = null;
@@ -1034,7 +1063,7 @@ async function recentDecisions(env, threadKey, nowMs) {
             : '⌛ прострочено';
       return `${verdict}: ${describeProposal(kind, payload)}`;
     });
-    return `[Ядро] Рішення власника по твоїх пропозиціях після попередньої відповіді (виконано ядром, не повторюй):\n${lines.join('\n')}`;
+    return `[Ядро] Рішення власника по твоїх пропозиціях після попередньої відповіді (виконано ядром, не повторюй):\n${lines.join('\n')}${more}`;
   } catch (/** @type {any} */ e) {
     console.error('prerouter: дайджест рішень не зібрано', e?.message);
     return '';

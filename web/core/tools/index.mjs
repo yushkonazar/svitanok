@@ -1,6 +1,7 @@
 // Реєстр інструментів internal API (07-schema §4): name -> {args-схема,
 // tainting, run}. Router (core/internal/router.mjs) звіряє args зі схемою ДО
-// виконання, а після tainting-інструмента ставить sessions.tainted=1 - подвійний
+// виконання, а після tainting-інструмента ставить sessions.tainted (epoch-ms
+// читання, діє TAINT_TTL_MS) - подвійний
 // барʼєр 01 §4.2 починається саме тут, у ядрі.
 //
 // У PR-6 - лише читання (+ facts.set: запис у ВЛАСНУ D1, не назовні).
