@@ -29,6 +29,7 @@ import {
   nextPlannedDay,
   kyivMs,
   ITEMS_MAX,
+  ID_PREFIX_MIN,
 } from '../day-plan/store.mjs';
 
 /** «сьогодні»/«завтра»/YYYY-MM-DD → дата; порожньо = сьогодні. @param {unknown} raw @param {number} nowMs */
@@ -225,7 +226,10 @@ export async function runPlanReview(env, args, nowMs) {
 function resolveIds(open, refs) {
   return refs.map((ref) => {
     const hit = open.find(
-      (o) => o.id === ref || o.id.startsWith(ref) || o.title.toLowerCase() === ref.toLowerCase(),
+      (o) =>
+        o.id === ref ||
+        (ref.length >= ID_PREFIX_MIN && o.id.startsWith(ref)) ||
+        o.title.toLowerCase() === ref.toLowerCase(),
     );
     if (!hit) throw new Error(`пункту «${ref}» серед відкритих немає`);
     return hit.id;

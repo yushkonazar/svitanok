@@ -262,6 +262,11 @@ describe('прийняття, зміни, огляд', () => {
     expect(back.find((r) => r.title === 'Банк')?.window_start).not.toBe('16:00');
 
     await expect(updateItems(env, DATE, {}, NOW)).rejects.toThrow('нічого змінювати');
+    // Короткий/порожній ref - не префікс id (інакше влучав би в перший рядок).
+    await expect(updateItems(env, DATE, { done: [''] }, NOW)).rejects.toThrow('немає');
+    await expect(updateItems(env, DATE, { done: [items[0]!.id.slice(0, 4)] }, NOW)).rejects.toThrow(
+      'немає',
+    );
     await expect(updateItems(env, DATE, { done: ['Немає такого'] }, NOW)).rejects.toThrow(
       'у плані 2026-09-07 немає',
     );

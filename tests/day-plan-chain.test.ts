@@ -330,6 +330,9 @@ describe('helpers ланцюга', () => {
     );
     expect(fromWorker).toHaveLength(1);
     expect(fromWorker[0]).toMatchObject({ title: 'Банк', kind: 'errand', est_min: 45 });
+    // id від працівника не приймається: ядро видає свій (INSERT OR REPLACE за id).
+    const spoofed = normalizeIntent({ items: [{ id: 'keep', title: 'Чужий рядок' }] }, '');
+    expect(spoofed[0]?.id).not.toBe('keep');
     const naive = normalizeIntent(null, 'презентація; банк і пошта\nдзвінок');
     expect(naive.map((i) => i.title)).toEqual(['презентація', 'банк', 'пошта', 'дзвінок']);
     expect(naive.every((i) => i.kind === 'routine' && i.est_min === null)).toBe(true);

@@ -331,7 +331,9 @@ export function normalizeIntent(output, intentText) {
         .map((s) => s.trim())
         .filter(Boolean)
         .map((title) => ({ title, kind: 'routine' }));
-  return raw.slice(0, ITEMS_MAX).map((r, i) => normalizeItem(r, i));
+  // id від працівника не приймаємо: replaceItems робить INSERT OR REPLACE за
+  // id, і чужий id «перетягнув» би рядок іншої дати разом із reminder_id.
+  return raw.slice(0, ITEMS_MAX).map((r, i) => normalizeItem({ ...r, id: undefined }, i));
 }
 
 /**

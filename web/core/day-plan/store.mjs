@@ -22,6 +22,9 @@ export const ITEM_STATUSES = ['planned', 'done', 'skipped', 'carried'];
 export const ITEMS_MAX = 6;
 /** Перенесений пункт живе 3 дні, далі «забути чи в ідеї?» (S-P-15). */
 export const CARRY_MAX_DAYS = 3;
+/** Мінімум символів, щоб префікс id рахувався посиланням на пункт (короткий
+ *  або порожній ref інакше влучав би в перший-ліпший рядок). */
+export const ID_PREFIX_MIN = 8;
 
 /** @param {Env} env */
 function db(env) {
@@ -290,7 +293,11 @@ export async function updateItems(env, date, changes, nowMs) {
   const resolve = (/** @type {string} */ ref) => {
     const hit =
       byId.get(ref) ??
-      items.find((i) => i.id.startsWith(ref) || i.title.toLowerCase() === ref.toLowerCase());
+      items.find(
+        (i) =>
+          (ref.length >= ID_PREFIX_MIN && i.id.startsWith(ref)) ||
+          i.title.toLowerCase() === ref.toLowerCase(),
+      );
     if (!hit) throw new Error(`пункту «${ref}» у плані ${date} немає`);
     return hit;
   };
