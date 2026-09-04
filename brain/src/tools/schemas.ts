@@ -230,6 +230,89 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     args: z.object({ id: z.string().max(64) }),
     write: true,
   }),
+  // Колекції (етап 3 PR-5, S-N4-1…5). Схему пропонуй через ask, фільтри -
+  // структурні (ядро компілює SQL само).
+  tool({
+    coreName: 'collections.list',
+    description: 'Колекції власника: назва, опис, поля (назва/тип/варіанти), кількість записів.',
+    args: z.object({}),
+  }),
+  tool({
+    coreName: 'collections.create',
+    description:
+      'Створити колекцію: name, description, fields - список {name, type (text·number·date·bool·choice·url·money), required?, options? (для choice), currency? (для money), default?}, sort_by - поле сортування. Схему СПОЧАТКУ погодь з власником через ask. T0 з «↩».',
+    args: z.object({
+      name: z.string().min(1).max(64),
+      description: z.string().max(500).optional(),
+      fields: z.array(z.record(z.string(), z.unknown())),
+      sort_by: z.string().max(64).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'collections.update',
+    description:
+      'Змінити колекцію (collection - назва або id): нова name, description, fields (повна схема), sort_by. Старі записи лишаються як є. T0 з «↩».',
+    args: z.object({
+      collection: z.string().max(64),
+      name: z.string().max(64).optional(),
+      description: z.string().max(500).optional(),
+      fields: z.array(z.record(z.string(), z.unknown())).optional(),
+      sort_by: z.string().max(64).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'collections.delete',
+    description:
+      'Видалити колекцію з УСІМА записами. Це T2: ядро створить пропозицію зі словом-підтвердженням - назви його власнику; без слова нічого не станеться.',
+    args: z.object({ collection: z.string().max(64) }),
+    write: true,
+  }),
+  tool({
+    coreName: 'records.create',
+    description:
+      'Додати запис у колекцію: collection - назва, data - {поле: значення} за схемою (імена полів - зі схеми; число/дата/так-ні ядро приведе саме). T0 з «↩».',
+    args: z.object({
+      collection: z.string().max(64),
+      data: z.record(z.string(), z.unknown()),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'records.update',
+    description:
+      'Змінити поля запису (id зі списку): data - лише ті поля, що змінюються. T0 з «↩».',
+    args: z.object({
+      collection: z.string().max(64),
+      id: z.string().max(64),
+      data: z.record(z.string(), z.unknown()),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'records.list',
+    description:
+      'Записи колекції (≤ 20): where - список умов {field, op, value}, op одне з = != > >= < <= contains in empty not_empty (числа й дати порівнюються як значення); sort - поле, desc - за спаданням. «покажи Сервіси де ціна > 100» → where:[{field:"ціна_міс", op:">", value:100}].',
+    args: z.object({
+      collection: z.string().max(64),
+      where: z.array(z.record(z.string(), z.unknown())).optional(),
+      sort: z.string().max(64).optional(),
+      desc: z.boolean().optional(),
+      limit: z.number().min(1).max(20).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'records.search',
+    description: 'Повнотекстовий пошук по значеннях записів (усі колекції або одна); ≤ 20.',
+    args: z.object({ q: z.string().min(2).max(120), collection: z.string().max(64).optional() }),
+  }),
+  tool({
+    coreName: 'records.delete',
+    description: 'Видалити один запис (id зі списку). Потребує ✅ власника (T1).',
+    args: z.object({ collection: z.string().max(64), id: z.string().max(64) }),
+    write: true,
+  }),
   tool({
     coreName: 'facts.set',
     description:

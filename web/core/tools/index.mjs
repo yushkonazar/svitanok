@@ -19,6 +19,7 @@ import {
 import { runFactsGet } from './facts.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
+import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 
 /**
@@ -312,6 +313,126 @@ export const TOOLS = {
     write: { kind: 'ideas.delete' },
     run: () => {
       throw new Error('ideas.delete виконується через policy, не напряму');
+    },
+  },
+  // Колекції (етап 3 PR-5, 07 §2/§4): list/search - читання; create/update -
+  // T0 з «↩»; records.delete - T1; видалення колекції з записами - T2 через
+  // forget (collections.delete = той самий kind, той самий шлях зі словом).
+  // Фільтр records.list - структурний, компілює ядро (модель SQL не пише).
+  'collections.list': {
+    args: { type: 'object' },
+    run: (env) => runCollectionsList(env),
+  },
+  'collections.create': {
+    args: {
+      type: 'object',
+      required: ['name', 'fields'],
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 64 },
+        description: { type: 'string', maxLength: 500 },
+        fields: { type: 'array', items: { type: 'object' } },
+        sort_by: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'collections.create' },
+    run: () => {
+      throw new Error('collections.create виконується через policy, не напряму');
+    },
+  },
+  'collections.update': {
+    args: {
+      type: 'object',
+      required: ['collection'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        name: { type: 'string', maxLength: 64 },
+        description: { type: 'string', maxLength: 500 },
+        fields: { type: 'array', items: { type: 'object' } },
+        sort_by: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'collections.update' },
+    run: () => {
+      throw new Error('collections.update виконується через policy, не напряму');
+    },
+  },
+  'collections.delete': {
+    args: {
+      type: 'object',
+      required: ['collection'],
+      properties: { collection: { type: 'string', maxLength: 64 } },
+    },
+    write: { kind: 'forget' },
+    run: () => {
+      throw new Error('collections.delete виконується через policy (forget, T2), не напряму');
+    },
+  },
+  'records.create': {
+    args: {
+      type: 'object',
+      required: ['collection', 'data'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        data: { type: 'object' },
+      },
+    },
+    write: { kind: 'records.create' },
+    run: () => {
+      throw new Error('records.create виконується через policy, не напряму');
+    },
+  },
+  'records.update': {
+    args: {
+      type: 'object',
+      required: ['collection', 'id', 'data'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        id: { type: 'string', maxLength: 64 },
+        data: { type: 'object' },
+      },
+    },
+    write: { kind: 'records.update' },
+    run: () => {
+      throw new Error('records.update виконується через policy, не напряму');
+    },
+  },
+  'records.list': {
+    args: {
+      type: 'object',
+      required: ['collection'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        where: { type: 'array', items: { type: 'object' } },
+        sort: { type: 'string', maxLength: 64 },
+        desc: { type: 'boolean' },
+        limit: { type: 'number', minimum: 1, maximum: 20 },
+      },
+    },
+    run: (env, args) => runRecordsList(env, args),
+  },
+  'records.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: {
+        q: { type: 'string', minLength: 2, maxLength: 120 },
+        collection: { type: 'string', maxLength: 64 },
+      },
+    },
+    run: (env, args) => runRecordsSearch(env, args),
+  },
+  'records.delete': {
+    args: {
+      type: 'object',
+      required: ['collection', 'id'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        id: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'records.delete' },
+    run: () => {
+      throw new Error('records.delete виконується через policy, не напряму');
     },
   },
   'facts.set': {

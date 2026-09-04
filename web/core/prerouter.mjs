@@ -27,7 +27,7 @@ import {
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
-import { parsePolicyCallback } from './policy/core.mjs';
+import { parsePolicyCallback, T2_WORDS } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 import {
   transcribeVoice,
@@ -38,6 +38,8 @@ import {
 } from './voice.mjs';
 import { loadInstruction } from './instructions.mjs';
 import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs';
+import { runCollectionsList } from './tools/collections.mjs';
+import { applyPolicy } from './policy/proposals.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -168,15 +170,83 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       await send(await systemStatusLine(env));
       return true;
     }
-    // /forget: меню T2 потребує колекцій (етап 3) і чатів (етап 6) - чесна
-    // заглушка замість порожнього меню.
-    await send('Забування приїде разом із колекціями (етап 3) і чатами (етап 6).');
+    // /forget (S-0-5): меню T2 - колекції (етап 3); чати - етап 6, «усе» -
+    // етап 7 (спершу експорт). Кнопка m:fg:<id> створює пропозицію зі словом.
+    await sendForgetMenu(env, target, nowMs);
     return true;
   }
   // Інші /-команди - легасі (07 §10: «лишаються як є»).
   if (text.startsWith('/')) return false;
 
+  // Слово-підтвердження T2 (01 §4.3): відкрита пропозиція цього треду з таким
+  // словом - це рішення власника, а не повідомлення для моделі.
+  if (await resolveT2Word(env, target, threadKey, text, nowMs)) return true;
+
   await routeThreadText(env, target, threadKey, text, nowMs);
+  return true;
+}
+
+/**
+ * Меню /forget: по кнопці на колекцію (T2 зі словом). Порожньо - чесно.
+ * @param {Env} env @param {ThreadTarget} target @param {number} nowMs
+ */
+async function sendForgetMenu(env, target, nowMs) {
+  /** @type {{ id: string, name: string, records: number }[]} */
+  let collections;
+  try {
+    collections = /** @type {{ id: string, name: string, records: number }[]} */ (
+      (await runCollectionsList(env)).result
+    );
+  } catch (/** @type {any} */ e) {
+    await reply(env, target, `Колекції недоступні: ${String(e?.message ?? '')}`, nowMs);
+    return;
+  }
+  if (collections.length === 0) {
+    await reply(env, target, 'Забувати поки нічого: колекцій немає (чати - етап 6).', nowMs);
+    return;
+  }
+  const rows = collections
+    .slice(0, 10)
+    .map((c) => [{ text: `🗑 ${c.name} (${c.records})`, callback_data: `m:fg:${c.id}` }]);
+  await reply(env, target, 'Що забути? Це T2 - після кнопки попрошу слово.', nowMs, {
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+/**
+ * Напис власника збігся зі словом відкритої T2-пропозиції треду → виконати.
+ * Слово порівнюється без регістру; пропозицій зі словом у треді - одиниці.
+ * @param {Env} env @param {ThreadTarget} target @param {string} threadKey
+ * @param {string} text @param {number} nowMs
+ * @returns {Promise<boolean>} true = це було слово, оброблено
+ */
+async function resolveT2Word(env, target, threadKey, text, nowMs) {
+  if (!env.DB) return false;
+  const word = text.trim().toUpperCase();
+  // Лише відомі слова T2 (їх чотири): «дякую» чи «привіт» не мають ходити в
+  // D1 перед кожним прогоном.
+  if (!T2_WORDS.includes(word)) return false;
+  let row;
+  try {
+    row = /** @type {any} */ (
+      await env.DB.prepare(
+        `SELECT id FROM proposals WHERE status = 'open' AND level = 'T2' AND word = ?
+         AND thread_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+        .bind(word, threadKey)
+        .first()
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: пошук T2-слова впав', e?.message);
+    return false;
+  }
+  if (!row) return false;
+  const res = await resolveProposal(env, { id: String(row.id), choice: 'ok', word }, nowMs);
+  const erased =
+    res.ok && 'status' in res && res.status === 'approved' && res.executed
+      ? String(/** @type {any} */ (res.result)?.erased ?? 'готово')
+      : null;
+  await reply(env, target, erased ? `Стерто: ${erased}.` : proposalToast(res), nowMs);
   return true;
 }
 
@@ -583,7 +653,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * одразу, а робота - виконатись після відповіді, у тому ж waitUntil. Без
  * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
- * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null }} parsed
+ * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
  * @param {number} [nowMs]
  * @param {((work: () => Promise<void>) => void) | null} [defer]
  * @returns {Promise<string | null>}
@@ -611,6 +681,10 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:fg:<id> - меню /forget (S-0-5): пропозиція T2 forget(collection) зі
+  // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
+  const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
+  if (fg) return forgetMenuToast(env, parsed, /** @type {string} */ (fg[1]), nowMs);
   const stub = data.match(/^([cram]):/)?.[1];
   if (!stub) return null;
   return {
@@ -619,6 +693,41 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
     a: 'Відповіді на питання прогону - пізніше цим етапом.',
     m: 'Меню - пізніше.',
   }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
+}
+
+/**
+ * Тап у меню /forget: створити T2-пропозицію forget(collection) і сказати
+ * слово. Тред пропозиції - тред кнопки, щоб слово з того ж треду її знайшло.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} collectionId
+ * @param {number} nowMs
+ */
+async function forgetMenuToast(env, parsed, collectionId, nowMs) {
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  const out = await applyPolicy(
+    env,
+    {
+      kind: 'forget',
+      payload: { target: 'collection', collection: collectionId },
+      threadId: threadKey,
+      chatId: parsed.chatId ?? null,
+      tainted: false,
+    },
+    nowMs,
+  );
+  if (out.mode !== 'proposed')
+    return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+  await clearKeyboard(env, parsed);
+  await reply(
+    env,
+    target,
+    `Щоб стерти колекцію з усіма записами, напиши слово: ${out.proposal.word} (діє 10 хв).`,
+    nowMs,
+  );
+  return 'Чекаю слово';
 }
 
 /**
