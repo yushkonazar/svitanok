@@ -41,6 +41,7 @@ import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs
 import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
+import { findAwaitingDayPlan, sendDayPlanEvent } from './day-plan/chain.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -57,10 +58,16 @@ const MODELS = {
   chat: 'claude-sonnet-5',
   quick: 'claude-haiku-4-5',
   'weekly-review': 'claude-sonnet-5',
+  'day-planner': 'claude-sonnet-5',
 };
 /** Імʼя інструкції в D1 за маршрутом (дзеркало INSTRUCTION_NAME_BY_PROFILE мозку). */
-const INSTRUCTION_BY_ROUTE = { chat: 'persona', quick: 'quick', 'weekly-review': 'weekly-review' };
-/** @typedef {'chat' | 'quick' | 'weekly-review'} RunRoute */
+const INSTRUCTION_BY_ROUTE = {
+  chat: 'persona',
+  quick: 'quick',
+  'weekly-review': 'weekly-review',
+  'day-planner': 'day-planner',
+};
+/** @typedef {'chat' | 'quick' | 'weekly-review' | 'day-planner'} RunRoute */
 
 // N3 (04-scenarios §N3): якорі власних даних - будь-який збіг = chat.
 // Суперсет канону безпечний: хибний chat коштує лише секунд, хибний quick -
@@ -213,6 +220,26 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       await reply(env, target, `Не вийшло: ${out.error}`, nowMs);
     }
     return true;
+  }
+
+  // План дня (етап 3 PR-8, S-P-9/S-P-10): ланцюг чекає слова власника в темі
+  // «Асистент» (намір на завтра або відповідь на уточнення) - текст іде
+  // подією в Workflow, не в мозок. Інші теми не чіпаємо: питання ставилось
+  // саме тут. Збій доставки - у мозок, як звичайне повідомлення.
+  if (threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
+    const awaiting = await findAwaitingDayPlan(env).catch((/** @type {any} */ e) => {
+      // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
+      console.error('prerouter: пошук ланцюга плану впав', e?.message);
+      return null;
+    });
+    if (awaiting) {
+      try {
+        await sendDayPlanEvent(env, awaiting.id, awaiting.awaiting, { text });
+        return true;
+      } catch (/** @type {any} */ e) {
+        console.error('prerouter: подія в ланцюг плану не доставлена', e?.message);
+      }
+    }
   }
 
   await routeThreadText(env, target, threadKey, text, nowMs);
@@ -718,14 +745,63 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
   const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
   if (fg) return forgetMenuToast(env, parsed, /** @type {string} */ (fg[1]), nowMs);
+  // c:<chainId>:<choice> - кнопки ланцюга плану дня (етап 3 PR-8, 07 §9):
+  // вибір іде подією у Workflow; який тип події - вирішує назва кнопки.
+  const cm = data.match(/^c:([A-Za-z0-9-]{1,40}):([a-z_0-9]{1,16})$/);
+  if (cm) {
+    return dayPlanCallbackToast(
+      env,
+      parsed,
+      /** @type {string} */ (cm[1]),
+      /** @type {string} */ (cm[2]),
+    );
+  }
   const stub = data.match(/^([cram]):/)?.[1];
   if (!stub) return null;
   return {
-    c: 'Ланцюги приїдуть на етапі 5.',
+    // c: не за форматом вище (чужий/пошкоджений chainId або choice) - чесна
+    // відмова, а не легасі «Застаріла кнопка» з іншою причиною.
+    c: 'Невідома кнопка плану.',
     r: 'Нагадування нового шляху - з інструментами запису (PR-6).',
     a: 'Відповіді на питання прогону - пізніше цим етапом.',
     m: 'Меню - пізніше.',
   }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
+}
+
+/**
+ * Кнопка ланцюга → подія. Мапа choice → {type, payload} - єдине місце, де
+ * назви кнопок chain.mjs зустрічаються з типами подій машини станів.
+ * @param {string} choice
+ * @returns {{ type: string, payload: Record<string, unknown> } | null}
+ */
+export function dayPlanChoiceEvent(choice) {
+  if (choice === 'none' || choice === 'skip') return { type: 'intent', payload: { choice } };
+  if (choice === 'accept' || choice === 'edit' || choice === 'calendar') {
+    return { type: 'accept', payload: { choice } };
+  }
+  if (choice === 'carry_all' || choice === 'carry_none')
+    return { type: 'carry', payload: { choice } };
+  const a = choice.match(/^a(\d)_(\d)$/);
+  if (a) return { type: 'answer', payload: { item: Number(a[1]), option: Number(a[2]) } };
+  return null;
+}
+
+/**
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} chainId @param {string} choice
+ */
+async function dayPlanCallbackToast(env, parsed, chainId, choice) {
+  const ev = dayPlanChoiceEvent(choice);
+  if (!ev) return 'Невідома кнопка плану.';
+  try {
+    await sendDayPlanEvent(env, chainId, ev.type, ev.payload);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: кнопка ланцюга плану не доставлена', e?.message);
+    return 'Ланцюг плану не відповідає - напиши текстом.';
+  }
+  await clearKeyboard(env, parsed);
+  return 'Прийняв.';
 }
 
 /**

@@ -10,6 +10,13 @@ import { buildSignedHeaders } from './sign.js';
 
 export type DeliverButtons = Array<Array<{ text: string; callback_data: string }>>;
 
+/** Керівний outcome /internal/runs (RUNS_SCHEMA ядра): ескалація quick→chat
+ *  (ADR-039) або подія в ланцюг від працівника (етап 3 PR-8, DayPlanChain). */
+export type RunOutcome = {
+  escalate?: { text: string; status_message_id?: number };
+  chain?: { id: string; event: string; payload: Record<string, unknown> };
+};
+
 export interface CoreClientConfig {
   /** База internal API без хвостового слеша (config.internalApiUrl). */
   baseUrl: string;
@@ -123,11 +130,7 @@ export class CoreClient {
   /** Телеметрія кроків (run_steps + закриття прогону в реєстрі) + опційний
    *  керівний outcome (ескалація, ADR-039: контракт, не журнальний крок);
    *  best-effort - журнал не сміє валити прогін. 501 терпимо: ядро до PR-2. */
-  async reportRuns(
-    runId: string,
-    steps: object[],
-    outcome?: { escalate: { text: string; status_message_id?: number } },
-  ): Promise<void> {
+  async reportRuns(runId: string, steps: object[], outcome?: RunOutcome): Promise<void> {
     try {
       const res = await this.post('/internal/runs', runId, {
         steps,

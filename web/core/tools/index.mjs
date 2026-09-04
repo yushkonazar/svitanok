@@ -435,6 +435,78 @@ export const TOOLS = {
       throw new Error('records.delete виконується через policy, не напряму');
     },
   },
+  // План дня v2 (етап 3 PR-8, 07 §4 plan.*): усі write через policy (T0),
+  // розкладку рахує ядро.
+  'plan.intent': {
+    args: {
+      type: 'object',
+      required: ['items'],
+      properties: {
+        date: { type: 'string', maxLength: 16 },
+        items: { type: 'array', items: { type: 'object' } },
+      },
+    },
+    write: { kind: 'plan.intent' },
+    run: () => {
+      throw new Error('plan.intent виконується через policy, не напряму');
+    },
+  },
+  'plan.draft': {
+    args: { type: 'object', properties: { date: { type: 'string', maxLength: 16 } } },
+    write: { kind: 'plan.draft' },
+    run: () => {
+      throw new Error('plan.draft виконується через policy, не напряму');
+    },
+  },
+  'plan.accept': {
+    args: {
+      type: 'object',
+      properties: { date: { type: 'string', maxLength: 16 }, calendar: { type: 'boolean' } },
+    },
+    write: { kind: 'plan.accept' },
+    run: () => {
+      throw new Error('plan.accept виконується через policy, не напряму');
+    },
+  },
+  'plan.update': {
+    args: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', maxLength: 16 },
+        done: { type: 'array', items: { type: 'string', maxLength: 80 } },
+        moves: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'to'],
+            properties: {
+              id: { type: 'string', maxLength: 80 },
+              to: { type: 'string', maxLength: 5 },
+            },
+          },
+        },
+        drop: { type: 'array', items: { type: 'string', maxLength: 80 } },
+      },
+    },
+    write: { kind: 'plan.update' },
+    run: () => {
+      throw new Error('plan.update виконується через policy, не напряму');
+    },
+  },
+  'plan.review': {
+    args: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', maxLength: 16 },
+        // id/назви пунктів для переносу; ["all"] - усі відкриті.
+        carry: { type: 'array', items: { type: 'string', maxLength: 80 } },
+      },
+    },
+    write: { kind: 'plan.review' },
+    run: () => {
+      throw new Error('plan.review виконується через policy, не напряму');
+    },
+  },
   'facts.set': {
     args: {
       type: 'object',

@@ -39,6 +39,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'weekly-review',
       'backup',
       'daily-hint',
+      'day-plan-kick',
     ]);
   });
 

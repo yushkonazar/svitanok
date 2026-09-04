@@ -32,6 +32,7 @@ import { memorySummarize } from '../brain/summarize.mjs';
 import { weeklyReviewTask } from '../brain/weekly-review-task.mjs';
 import { backupTask } from '../backup/task.mjs';
 import { dailyHintTask } from '../hints/daily-hint.mjs';
+import { dayPlanKickTask } from '../day-plan/kick.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -127,4 +128,7 @@ export const SCHEDULER_TASKS = {
   // Проактивна підказка (етап 3 PR-7, S-0-16): 10:00 Києва, ≤ 1 на добу,
   // один кандидат за пріоритетом; теми вимикає facts.setting.hint_mute_json.
   'daily-hint': { periodMin: 5, run: async (env) => dailyHintTask(env) },
+  // План дня v2 (етап 3 PR-8, ADR-035): 00:05 Києва - ланцюг DayPlanChain на
+  // завтра, якщо день робочий і не поїздка; вимикач - facts.setting.day_plan.
+  'day-plan-kick': { periodMin: 5, run: async (env) => dayPlanKickTask(env) },
 };

@@ -313,6 +313,56 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     args: z.object({ collection: z.string().max(64), id: z.string().max(64) }),
     write: true,
   }),
+  // План дня v2 (ADR-035, S-P-14): розкладку рахує ядро - модель дає пункти
+  // й зміни, а часи бере з відповіді.
+  tool({
+    coreName: 'plan.intent',
+    description:
+      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM»), deadline?, place?, priority?}. Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
+    args: z.object({
+      date: z.string().max(16).optional(),
+      // Порожній список і >6 пунктів відкидає ядро (runPlanIntent/ITEMS_MAX):
+      // валідатор ядра не має minItems, а парність тримає обидва боки рівними.
+      items: z.array(z.record(z.string(), z.unknown())),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.draft',
+    description:
+      'Перерахувати чернетку плану на date з пунктів, що вже записані (після змін календаря).',
+    args: z.object({ date: z.string().max(16).optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.accept',
+    description:
+      'Прийняти план на date: нагадування на початок кожного блоку (T0 з «↩»); calendar=true - додатково пропозиції T1 створити події в календарі.',
+    args: z.object({ date: z.string().max(16).optional(), calendar: z.boolean().optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.update',
+    description:
+      'Зміни вдень: done - id або назви зроблених пунктів; moves - [{id, to:"HH:MM"}]; drop - пропустити. T0 з «↩».',
+    args: z.object({
+      date: z.string().max(16).optional(),
+      done: z.array(z.string().max(80)).optional(),
+      moves: z.array(z.object({ id: z.string().max(80), to: z.string().max(5) })).optional(),
+      drop: z.array(z.string().max(80)).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.review',
+    description:
+      'Огляд дня: скільки зроблено, що відкрите; carry - id/назви пунктів для переносу на наступний робочий день, ["all"] - усі відкриті; без carry - лише огляд.',
+    args: z.object({
+      date: z.string().max(16).optional(),
+      carry: z.array(z.string().max(80)).optional(),
+    }),
+    write: true,
+  }),
   tool({
     coreName: 'facts.set',
     description:

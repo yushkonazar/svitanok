@@ -126,6 +126,42 @@ describe('POST /internal/runs', () => {
     expect(broken.status).toBe(500);
     expect(await broken.json()).toMatchObject({ error: 'steps-not-persisted' });
   });
+
+  // Етап 3 PR-8: outcome.chain - подія від працівника в DayPlanChain.
+  it('outcome.chain → sendEvent в інстанс Workflow за id; без привʼязки - лог, не 500; крива подія - 400', async () => {
+    const events: { id: string; ev: unknown }[] = [];
+    (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
+      create: async () => undefined,
+      get: async (id: string) => ({
+        sendEvent: async (ev: unknown) => void events.push({ id, ev }),
+      }),
+    };
+    const chain = {
+      id: 'ch-1',
+      event: 'worker',
+      payload: { mode: 'intent', output: { items: [] } },
+    };
+    const res = await handleInternal(await request({ steps: [], outcome: { chain } }), env, NOW);
+    expect(res.status).toBe(200);
+    expect(events).toEqual([
+      { id: 'ch-1', ev: { type: 'worker', payload: { mode: 'intent', output: { items: [] } } } },
+    ]);
+
+    (env as { DAY_PLAN?: unknown }).DAY_PLAN = undefined;
+    const noBinding = await handleInternal(
+      await request({ steps: [], outcome: { chain } }),
+      env,
+      NOW,
+    );
+    expect(noBinding.status).toBe(200);
+
+    const bad = await handleInternal(
+      await request({ steps: [], outcome: { chain: { id: 'ch-1' } } }),
+      env,
+      NOW,
+    );
+    expect(bad.status).toBe(400);
+  });
 });
 
 // ── Продовження треду після прогону (ADR-039) ────────────────────────────────
