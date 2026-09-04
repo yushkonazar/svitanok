@@ -25,6 +25,12 @@ import {
   readActiveReminders,
 } from '../tools/reminders.mjs';
 import { restoreReminder } from '../reminders/store.mjs';
+import {
+  runIdeasCreate,
+  runIdeasUpdate,
+  runIdeasDelete,
+  runIdeasAnalyze,
+} from '../tools/ideas.mjs';
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -118,6 +124,60 @@ export const EXECUTORS = {
         { kind: payload.kind, payload: payload.payload },
         nowMs,
       );
+      return { result };
+    },
+  },
+  // Ідеї (етап 3 PR-4): create/update/analyze - T0 з «↩», delete - T1 без
+  // відкату (видалення одного запису - 01 §4.3). Виконавці передають лише
+  // відомі поля - схема інструмента вже їх звузила, а payload пропозиції ні.
+  'ideas.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runIdeasCreate(
+        env,
+        {
+          title: payload.title,
+          body_md: payload.body_md,
+          domain: payload.domain,
+          priority: payload.priority,
+          effort: payload.effort,
+          tags: payload.tags,
+          next_action: payload.next_action,
+        },
+        nowMs,
+      );
+      return { prev: { id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      // «↩» на створення - видалити щойно записану ідею разом із подіями.
+      await runIdeasDelete(env, { id: snapshot.id });
+    },
+  },
+  'ideas.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runIdeasUpdate(env, payload, nowMs);
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      // Повернути ЛИШЕ ті поля, що правились, як були до правки.
+      await runIdeasUpdate(env, { id: snapshot.id, ...snapshot.fields }, nowMs);
+    },
+  },
+  'ideas.analyze': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runIdeasAnalyze(
+        env,
+        { id: payload.id, mode: payload.mode },
+        nowMs,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      await runIdeasUpdate(env, { id: snapshot.id, status: snapshot.status }, nowMs);
+    },
+  },
+  'ideas.delete': {
+    async execute(env, payload) {
+      const { result } = await runIdeasDelete(env, { id: payload.id });
       return { result };
     },
   },

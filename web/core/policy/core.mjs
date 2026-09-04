@@ -18,6 +18,7 @@ export const ACTION_LEVELS = {
   'reminders.cancel': 'T0',
   'ideas.create': 'T0',
   'ideas.update': 'T0',
+  'ideas.analyze': 'T0',
   'wishes.create': 'T0',
   'wishes.update': 'T0',
   'collections.create': 'T0',

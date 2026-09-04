@@ -165,6 +165,71 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     }),
     write: true,
   }),
+  // Ідеї (етап 3 PR-4, S-3-1…7). Номер ідеї для власника - те, що повертає
+  // create («#12»); id приймає і номер, і повний id.
+  tool({
+    coreName: 'ideas.list',
+    description:
+      'Список ідей (до 10, свіжі першими): фільтри domain (svitanok·робота·побут·бізнес·інше) і status (нова·в аналізі·план готовий·погоджено·у роботі·зроблено·відкладено·відхилено); без status - усе, крім зробленого й відхиленого.',
+    args: z.object({
+      domain: z.string().max(16).optional(),
+      status: z.string().max(16).optional(),
+      limit: z.number().min(1).max(10).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'ideas.search',
+    description: 'Повнотекстовий пошук ідей за словами q (назва і тіло); до 10 результатів.',
+    args: z.object({ q: z.string().min(2).max(120) }),
+  }),
+  tool({
+    coreName: 'ideas.create',
+    description:
+      'Записати ідею: title (коротко), body_md (суть), domain визнач сам (svitanok - цей проєкт; робота; побут; бізнес; інше), priority 1-3 (типово 2), effort S|M|L якщо очевидно, tags, next_action. Відповідь містить number - так власник посилатиметься на ідею («ідея #12»). T0 з «↩».',
+    args: z.object({
+      title: z.string().min(1).max(200),
+      body_md: z.string().max(20_000).optional(),
+      domain: z.string().max(16).optional(),
+      priority: z.number().min(1).max(3).optional(),
+      effort: z.string().max(1).optional(),
+      tags: z.array(z.string().max(32)).optional(),
+      next_action: z.string().max(300).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'ideas.update',
+    description:
+      'Змінити ідею за id - РЯДКОМ: номер («12») або повний id. Будь-які з title, body_md, domain, status, priority, effort, next_action, tags, analysis_md, plan_md. Статуси: нова·в аналізі·план готовий·погоджено·у роботі·зроблено·відкладено·відхилено. «план у роботу» = status «у роботі»; «погоджую план» = «погоджено». T0 з «↩».',
+    args: z.object({
+      id: z.string().max(64),
+      title: z.string().max(200).optional(),
+      body_md: z.string().max(20_000).optional(),
+      domain: z.string().max(16).optional(),
+      status: z.string().max(16).optional(),
+      priority: z.number().min(1).max(3).optional(),
+      effort: z.string().max(1).optional(),
+      next_action: z.string().max(300).optional(),
+      tags: z.array(z.string().max(32)).optional(),
+      analysis_md: z.string().max(20_000).optional(),
+      plan_md: z.string().max(20_000).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'ideas.analyze',
+    description:
+      'Почати аналіз ідеї за id (рядком: «12» або повний id): mode=plan - ядро повертає ідею і ти САМ пишеш аналіз і план у цій відповіді, потім зберігаєш їх через ideas.update(analysis_md, plan_md, status="план готовий"); mode=code (аналіз по коду репозиторію) поки недоступний - етап 4. Якщо власник не сказав, який режим, спитай: «По коду чи лише план?».',
+    args: z.object({ id: z.string().max(64), mode: z.string().max(8).optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'ideas.delete',
+    description:
+      'Видалити ідею за id (рядком: «12» або повний id) разом з історією. Потребує ✅ власника (T1).',
+    args: z.object({ id: z.string().max(64) }),
+    write: true,
+  }),
   tool({
     coreName: 'facts.set',
     description:
