@@ -31,6 +31,7 @@ import { checkBrainHandshake } from '../brain/health.mjs';
 import { memorySummarize } from '../brain/summarize.mjs';
 import { weeklyReviewTask } from '../brain/weekly-review-task.mjs';
 import { backupTask } from '../backup/task.mjs';
+import { dailyHintTask } from '../hints/daily-hint.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -123,4 +124,7 @@ export const SCHEDULER_TASKS = {
   // Бекап (етап 3 PR-6, 05-ops §бекапи): неділя 03:00 Києва → Drive; алерт
   // при збої і о 04:00 без файлу; стан тижня - у задачі.
   backup: { periodMin: 5, run: async (env) => backupTask(env) },
+  // Проактивна підказка (етап 3 PR-7, S-0-16): 10:00 Києва, ≤ 1 на добу,
+  // один кандидат за пріоритетом; теми вимикає facts.setting.hint_mute_json.
+  'daily-hint': { periodMin: 5, run: async (env) => dailyHintTask(env) },
 };
