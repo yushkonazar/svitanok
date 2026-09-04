@@ -8,7 +8,7 @@
 // `quota-check` (щоденні КРЕДИТИ, не лічильники) прийде разом з адаптерами.
 
 import { kyivDateKey } from '../../kyiv-time.mjs';
-import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { sendSystemAlert } from '../tg/outbox.mjs';
 
 /**
  * Місячні стелі з 01 §7 - довідник для адаптерів (передається в bump явно,
@@ -98,24 +98,7 @@ export async function readQuotas(env, nowMs = Date.now()) {
  * @param {number} nowMs
  */
 async function sendQuotaAlert(env, text, nowMs) {
-  if (!env.TELEGRAM_CHAT_ID) {
-    console.error('quota: TELEGRAM_CHAT_ID відсутній - алерт нікуди слати:', text);
-    return;
-  }
-  try {
-    await enqueueOutbox(
-      env,
-      {
-        chatId: env.TELEGRAM_CHAT_ID,
-        threadId: env.TOPIC_SYSTEM ?? null,
-        kind: 'send',
-        payload: { text },
-      },
-      nowMs,
-    );
-    await drainOutbox(env, { nowMs }).catch(() => {});
-  } catch (/** @type {any} */ e) {
-    // Алерт - не привід втратити сам облік виклику API.
-    console.error('quota: алерт не покладено в чергу', e?.message);
-  }
+  // Спільний алерт (outbox.sendSystemAlert): збій черги не кидає - алерт не
+  // привід втратити сам облік виклику API.
+  await sendSystemAlert(env, text, nowMs);
 }

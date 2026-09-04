@@ -18,6 +18,8 @@ import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
+import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
+import { sendDayPlanEvent } from '../day-plan/chain.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
@@ -293,7 +295,23 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     nowMs,
   );
   await scheduleDrain(env, ctx, nowMs);
-  return json({ ok: true, queued, ...(draftId != null ? { edited: draftId } : {}) });
+  // Звіт профілю weekly-review (S-9-1): текст у reports разом із хешем
+  // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
+  // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.
+  let reportId = null;
+  if ((await readRunProfile(env, runId).catch(() => null)) === 'weekly-review') {
+    try {
+      reportId = (await saveWeeklyReport(env, body.text, nowMs)).id;
+    } catch (/** @type {any} */ e) {
+      console.error('internal: звіт не збережено в reports', e?.message);
+    }
+  }
+  return json({
+    ok: true,
+    queued,
+    ...(draftId != null ? { edited: draftId } : {}),
+    ...(reportId ? { report_id: reportId } : {}),
+  });
 }
 
 /**
@@ -397,6 +415,24 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     error: failed ? 'brain-error' : null,
     steps: steps.length,
   });
+
+  // Подія в ланцюг від працівника (етап 3 PR-8): доставляється ДО продовження
+  // треду і незалежно від нього; збій sendEvent - у лог, ланцюг дочекається
+  // таймауту і піде резервом (машина станів терпить тишу працівника).
+  const chainOut =
+    /** @type {{ id?: unknown, event?: unknown, payload?: Record<string, unknown> } | undefined} */ (
+      /** @type {any} */ (body.outcome)?.chain
+    );
+  if (chainOut && typeof chainOut.id === 'string' && typeof chainOut.event === 'string') {
+    try {
+      await sendDayPlanEvent(env, chainOut.id, chainOut.event, chainOut.payload ?? {});
+    } catch (/** @type {any} */ e) {
+      console.error(
+        `internal: подія ${chainOut.event} у ланцюг ${chainOut.id} не доставлена`,
+        e?.message,
+      );
+    }
+  }
 
   if (info?.threadId != null) {
     const threadKey = String(info.threadId);

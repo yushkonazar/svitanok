@@ -18,6 +18,7 @@ export const ACTION_LEVELS = {
   'reminders.cancel': 'T0',
   'ideas.create': 'T0',
   'ideas.update': 'T0',
+  'ideas.analyze': 'T0',
   'wishes.create': 'T0',
   'wishes.update': 'T0',
   'collections.create': 'T0',
@@ -25,6 +26,12 @@ export const ACTION_LEVELS = {
   'records.create': 'T0',
   'records.update': 'T0',
   'chain.start': 'T0',
+  // План дня v2 (07 §4, ADR-035): усі T0, «↩» для accept/update.
+  'plan.intent': 'T0',
+  'plan.draft': 'T0',
+  'plan.accept': 'T0',
+  'plan.update': 'T0',
+  'plan.review': 'T0',
   // T1 - одне ✅/❌, TTL 30 хв
   'calendar.event': 'T1',
   'calendar.update': 'T1',
@@ -52,7 +59,7 @@ export const PROPOSAL_TTL_MS = { T1: 30 * 60_000, T2: 10 * 60_000 };
 export const UNDO_WINDOW_MS = 10 * 60_000;
 
 /** Слова підтвердження T2: короткі, українські, без омографів з ✅-кнопками. */
-const T2_WORDS = ['ВИКОНАТИ', 'ПІДТВЕРДЖУЮ', 'ТАК-ЗРОБИ', 'ЗГОДЕН'];
+export const T2_WORDS = ['ВИКОНАТИ', 'ПІДТВЕРДЖУЮ', 'ТАК-ЗРОБИ', 'ЗГОДЕН'];
 
 /**
  * Рівень дії з урахуванням taint: усе T0 у заплямованій сесії стає T1

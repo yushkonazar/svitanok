@@ -229,10 +229,10 @@ describe('T1/T2: пропозиції', () => {
     expect((await runFactsGet(env, { kind: 'place', key: 'дача' })).result).toHaveLength(0);
   });
 
-  it('T2: ✅ без слова відхиляється, зі словом — no-executor вголос (виконавець - пізніший етап)', async () => {
+  it('T2: ✅ без слова відхиляється; зі словом - виконавець forget каже вголос, що ціль «чат» ще не підтримується (етап 6)', async () => {
     const out = await applyPolicy(
       env,
-      { kind: 'forget', payload: { what: 'чат' }, tainted: false },
+      { kind: 'forget', payload: { target: 'chat', what: 'чат' }, tainted: false },
       NOW,
     );
     expect(out.mode).toBe('proposed');
@@ -244,18 +244,20 @@ describe('T1/T2: пропозиції', () => {
       ok: false,
       error: 'word-required',
     });
+    // Виконавець forget є з етапу 3 (колекції); чат - етап 6, тож збій
+    // виконання названо вголос, а не тихо «прийнято».
     expect(
       await resolveProposal(
         env,
         { id, choice: 'ok', word: ` ${String(word).toLowerCase()} ` },
         NOW + 2000,
       ),
-    ).toMatchObject({ ok: false, error: `no-executor: forget` });
-    // Пропозиція лишилась open - власник не винен, що виконавця ще немає.
+    ).toMatchObject({ ok: false, error: expect.stringContaining('етап 6') });
+    // Клейм стоїть: повторний тап не переграє виконання.
     const row = store.raw.prepare('SELECT status FROM proposals WHERE id = ?').get(id) as {
       status: string;
     };
-    expect(row.status).toBe('open');
+    expect(row.status).toBe('approved');
   });
 
   it('source=owner з T0-шляху ескалюється до пропозиції: attribution потребує ✅', async () => {

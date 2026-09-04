@@ -18,6 +18,8 @@ import {
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
 import { runRunsQuery } from './runs.mjs';
+import { runIdeasList, runIdeasSearch } from './ideas.mjs';
+import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 
 /**
@@ -222,6 +224,287 @@ export const TOOLS = {
     write: { kind: 'chain.start' },
     run: () => {
       throw new Error('chain.start виконується через policy, не напряму');
+    },
+  },
+  // Ідеї (етап 3 PR-4, 07 §4 `ideas.*`): list/search - читання власної бази;
+  // create/update/analyze - T0 через policy («↩»), delete - T1. Номер ідеї
+  // для власника - rowid («ідея #12»); id приймає і номер, і ulid.
+  'ideas.list': {
+    args: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', maxLength: 16 },
+        status: { type: 'string', maxLength: 16 },
+        limit: { type: 'number', minimum: 1, maximum: 10 },
+      },
+    },
+    run: (env, args) => runIdeasList(env, args),
+  },
+  'ideas.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: { q: { type: 'string', minLength: 2, maxLength: 120 } },
+    },
+    run: (env, args) => runIdeasSearch(env, args),
+  },
+  'ideas.create': {
+    args: {
+      type: 'object',
+      required: ['title'],
+      properties: {
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        body_md: { type: 'string', maxLength: 20_000 },
+        domain: { type: 'string', maxLength: 16 },
+        priority: { type: 'number', minimum: 1, maximum: 3 },
+        effort: { type: 'string', maxLength: 1 },
+        tags: { type: 'array', items: { type: 'string', maxLength: 32 } },
+        next_action: { type: 'string', maxLength: 300 },
+      },
+    },
+    write: { kind: 'ideas.create' },
+    run: () => {
+      throw new Error('ideas.create виконується через policy, не напряму');
+    },
+  },
+  'ideas.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        title: { type: 'string', maxLength: 200 },
+        body_md: { type: 'string', maxLength: 20_000 },
+        domain: { type: 'string', maxLength: 16 },
+        status: { type: 'string', maxLength: 16 },
+        priority: { type: 'number', minimum: 1, maximum: 3 },
+        effort: { type: 'string', maxLength: 1 },
+        next_action: { type: 'string', maxLength: 300 },
+        tags: { type: 'array', items: { type: 'string', maxLength: 32 } },
+        analysis_md: { type: 'string', maxLength: 20_000 },
+        plan_md: { type: 'string', maxLength: 20_000 },
+      },
+    },
+    write: { kind: 'ideas.update' },
+    run: () => {
+      throw new Error('ideas.update виконується через policy, не напряму');
+    },
+  },
+  'ideas.analyze': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        mode: { type: 'string', maxLength: 8 },
+      },
+    },
+    write: { kind: 'ideas.analyze' },
+    run: () => {
+      throw new Error('ideas.analyze виконується через policy, не напряму');
+    },
+  },
+  'ideas.delete': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', maxLength: 64 } },
+    },
+    write: { kind: 'ideas.delete' },
+    run: () => {
+      throw new Error('ideas.delete виконується через policy, не напряму');
+    },
+  },
+  // Колекції (етап 3 PR-5, 07 §2/§4): list/search - читання; create/update -
+  // T0 з «↩»; records.delete - T1; видалення колекції з записами - T2 через
+  // forget (collections.delete = той самий kind, той самий шлях зі словом).
+  // Фільтр records.list - структурний, компілює ядро (модель SQL не пише).
+  'collections.list': {
+    args: { type: 'object' },
+    run: (env) => runCollectionsList(env),
+  },
+  'collections.create': {
+    args: {
+      type: 'object',
+      required: ['name', 'fields'],
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 64 },
+        description: { type: 'string', maxLength: 500 },
+        fields: { type: 'array', items: { type: 'object' } },
+        sort_by: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'collections.create' },
+    run: () => {
+      throw new Error('collections.create виконується через policy, не напряму');
+    },
+  },
+  'collections.update': {
+    args: {
+      type: 'object',
+      required: ['collection'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        name: { type: 'string', maxLength: 64 },
+        description: { type: 'string', maxLength: 500 },
+        fields: { type: 'array', items: { type: 'object' } },
+        sort_by: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'collections.update' },
+    run: () => {
+      throw new Error('collections.update виконується через policy, не напряму');
+    },
+  },
+  'collections.delete': {
+    args: {
+      type: 'object',
+      required: ['collection'],
+      properties: { collection: { type: 'string', maxLength: 64 } },
+    },
+    write: { kind: 'forget' },
+    run: () => {
+      throw new Error('collections.delete виконується через policy (forget, T2), не напряму');
+    },
+  },
+  'records.create': {
+    args: {
+      type: 'object',
+      required: ['collection', 'data'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        data: { type: 'object' },
+      },
+    },
+    write: { kind: 'records.create' },
+    run: () => {
+      throw new Error('records.create виконується через policy, не напряму');
+    },
+  },
+  'records.update': {
+    args: {
+      type: 'object',
+      required: ['collection', 'id', 'data'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        id: { type: 'string', maxLength: 64 },
+        data: { type: 'object' },
+      },
+    },
+    write: { kind: 'records.update' },
+    run: () => {
+      throw new Error('records.update виконується через policy, не напряму');
+    },
+  },
+  'records.list': {
+    args: {
+      type: 'object',
+      required: ['collection'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        where: { type: 'array', items: { type: 'object' } },
+        sort: { type: 'string', maxLength: 64 },
+        desc: { type: 'boolean' },
+        limit: { type: 'number', minimum: 1, maximum: 20 },
+      },
+    },
+    run: (env, args) => runRecordsList(env, args),
+  },
+  'records.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: {
+        q: { type: 'string', minLength: 2, maxLength: 120 },
+        collection: { type: 'string', maxLength: 64 },
+      },
+    },
+    run: (env, args) => runRecordsSearch(env, args),
+  },
+  'records.delete': {
+    args: {
+      type: 'object',
+      required: ['collection', 'id'],
+      properties: {
+        collection: { type: 'string', maxLength: 64 },
+        id: { type: 'string', maxLength: 64 },
+      },
+    },
+    write: { kind: 'records.delete' },
+    run: () => {
+      throw new Error('records.delete виконується через policy, не напряму');
+    },
+  },
+  // План дня v2 (етап 3 PR-8, 07 §4 plan.*): усі write через policy (T0),
+  // розкладку рахує ядро.
+  'plan.intent': {
+    args: {
+      type: 'object',
+      required: ['items'],
+      properties: {
+        date: { type: 'string', maxLength: 16 },
+        items: { type: 'array', items: { type: 'object' } },
+      },
+    },
+    write: { kind: 'plan.intent' },
+    run: () => {
+      throw new Error('plan.intent виконується через policy, не напряму');
+    },
+  },
+  'plan.draft': {
+    args: { type: 'object', properties: { date: { type: 'string', maxLength: 16 } } },
+    write: { kind: 'plan.draft' },
+    run: () => {
+      throw new Error('plan.draft виконується через policy, не напряму');
+    },
+  },
+  'plan.accept': {
+    args: {
+      type: 'object',
+      properties: { date: { type: 'string', maxLength: 16 }, calendar: { type: 'boolean' } },
+    },
+    write: { kind: 'plan.accept' },
+    run: () => {
+      throw new Error('plan.accept виконується через policy, не напряму');
+    },
+  },
+  'plan.update': {
+    args: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', maxLength: 16 },
+        done: { type: 'array', items: { type: 'string', maxLength: 80 } },
+        moves: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'to'],
+            properties: {
+              id: { type: 'string', maxLength: 80 },
+              to: { type: 'string', maxLength: 5 },
+            },
+          },
+        },
+        drop: { type: 'array', items: { type: 'string', maxLength: 80 } },
+      },
+    },
+    write: { kind: 'plan.update' },
+    run: () => {
+      throw new Error('plan.update виконується через policy, не напряму');
+    },
+  },
+  'plan.review': {
+    args: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', maxLength: 16 },
+        // id/назви пунктів для переносу; ["all"] - усі відкриті.
+        carry: { type: 'array', items: { type: 'string', maxLength: 80 } },
+      },
+    },
+    write: { kind: 'plan.review' },
+    run: () => {
+      throw new Error('plan.review виконується через policy, не напряму');
     },
   },
   'facts.set': {

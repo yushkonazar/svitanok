@@ -25,6 +25,33 @@ import {
   readActiveReminders,
 } from '../tools/reminders.mjs';
 import { restoreReminder } from '../reminders/store.mjs';
+import {
+  runIdeasCreate,
+  runIdeasUpdate,
+  runIdeasDelete,
+  runIdeasAnalyze,
+} from '../tools/ideas.mjs';
+import {
+  runCollectionsCreate,
+  runCollectionsUpdate,
+  restoreCollection,
+  deleteCollection,
+  runRecordsCreate,
+  runRecordsUpdate,
+  runRecordsDelete,
+  restoreRecord,
+  exportCollectionCsv,
+} from '../tools/collections.mjs';
+import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import {
+  runPlanIntent,
+  runPlanDraft,
+  runPlanAccept,
+  undoPlanAccept,
+  runPlanUpdate,
+  undoPlanUpdate,
+  runPlanReview,
+} from '../tools/plan.mjs';
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -119,6 +146,225 @@ export const EXECUTORS = {
         nowMs,
       );
       return { result };
+    },
+  },
+  // Ідеї (етап 3 PR-4): create/update/analyze - T0 з «↩», delete - T1 без
+  // відкату (видалення одного запису - 01 §4.3). Виконавці передають лише
+  // відомі поля - схема інструмента вже їх звузила, а payload пропозиції ні.
+  'ideas.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runIdeasCreate(
+        env,
+        {
+          title: payload.title,
+          body_md: payload.body_md,
+          domain: payload.domain,
+          priority: payload.priority,
+          effort: payload.effort,
+          tags: payload.tags,
+          next_action: payload.next_action,
+        },
+        nowMs,
+      );
+      return { prev: { id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      // «↩» на створення - видалити щойно записану ідею разом із подіями.
+      await runIdeasDelete(env, { id: snapshot.id });
+    },
+  },
+  'ideas.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runIdeasUpdate(env, payload, nowMs);
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      // Повернути ЛИШЕ ті поля, що правились, як були до правки.
+      await runIdeasUpdate(env, { id: snapshot.id, ...snapshot.fields }, nowMs);
+    },
+  },
+  'ideas.analyze': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runIdeasAnalyze(
+        env,
+        { id: payload.id, mode: payload.mode },
+        nowMs,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      await runIdeasUpdate(env, { id: snapshot.id, status: snapshot.status }, nowMs);
+    },
+  },
+  'ideas.delete': {
+    async execute(env, payload) {
+      const { result } = await runIdeasDelete(env, { id: payload.id });
+      return { result };
+    },
+  },
+  // Колекції (етап 3 PR-5). create/update - T0 з «↩» (create ↔ видалення
+  // порожньої колекції, update ↔ попередній рядок цілком); записи - T0 з
+  // «↩» (create ↔ delete, update ↔ попередній data_json); records.delete -
+  // T1; forget (T2, зі словом) - колекція з усіма записами; collection.export
+  // (T1) - .csv документом у чат прогону.
+  'collections.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runCollectionsCreate(
+        env,
+        {
+          name: payload.name,
+          description: payload.description,
+          fields: payload.fields,
+          sort_by: payload.sort_by,
+        },
+        nowMs,
+      );
+      return { prev: { id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      await deleteCollection(env, snapshot.id);
+    },
+  },
+  'collections.update': {
+    async execute(env, payload) {
+      const { result, prev } = await runCollectionsUpdate(env, payload);
+      return { prev, result };
+    },
+    async undo(env, snapshot) {
+      await restoreCollection(env, snapshot);
+    },
+  },
+  'records.create': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runRecordsCreate(
+        env,
+        { collection: payload.collection, data: payload.data },
+        nowMs,
+      );
+      return { prev: { collection: result.collection, id: result.id }, result };
+    },
+    async undo(env, snapshot) {
+      await runRecordsDelete(env, { collection: snapshot.collection, id: snapshot.id });
+    },
+  },
+  'records.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runRecordsUpdate(
+        env,
+        { collection: payload.collection, id: payload.id, data: payload.data },
+        nowMs,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      await restoreRecord(env, snapshot, nowMs);
+    },
+  },
+  'records.delete': {
+    async execute(env, payload) {
+      const { result } = await runRecordsDelete(env, {
+        collection: payload.collection,
+        id: payload.id,
+      });
+      return { result };
+    },
+  },
+  // План дня v2 (етап 3 PR-8, 07 §4 plan.*): усі T0. «↩» лише для accept
+  // (скасувати нагадування, статус назад у draft) і update (попередні стани
+  // пунктів); intent/draft перераховують чернетку - відкат безглуздий, бо
+  // наступний intent її і так замінює; review - читання + перенос без undo.
+  'plan.intent': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runPlanIntent(
+        env,
+        { date: payload.date, items: payload.items },
+        nowMs,
+      );
+      return { result };
+    },
+  },
+  'plan.draft': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runPlanDraft(env, { date: payload.date }, nowMs);
+      return { result };
+    },
+  },
+  'plan.accept': {
+    async execute(env, payload, nowMs, ctx) {
+      const { result, prev } = await runPlanAccept(
+        env,
+        { date: payload.date, calendar: payload.calendar === true },
+        nowMs,
+        ctx,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot, nowMs) {
+      await undoPlanAccept(env, snapshot, nowMs);
+    },
+  },
+  'plan.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runPlanUpdate(
+        env,
+        { date: payload.date, done: payload.done, moves: payload.moves, drop: payload.drop },
+        nowMs,
+      );
+      return { prev, result };
+    },
+    async undo(env, snapshot) {
+      await undoPlanUpdate(env, snapshot);
+    },
+  },
+  'plan.review': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runPlanReview(
+        env,
+        { date: payload.date, carry: payload.carry },
+        nowMs,
+      );
+      return { result };
+    },
+  },
+  // forget (T2): target вирішує, що саме стирається. Колекція - тут; чат -
+  // етап 6, «усе» - етап 7 (експорт спершу) - до того чесна відмова.
+  forget: {
+    async execute(env, payload) {
+      const target = String(payload.target ?? (payload.collection != null ? 'collection' : ''));
+      if (target === 'collection') {
+        const { name, records } = await deleteCollection(env, payload.collection ?? payload.id);
+        return { result: { erased: `колекція «${name}» (${records} зап.)` } };
+      }
+      throw new Error(`forget: ціль «${target}» ще не підтримується (чат - етап 6, усе - етап 7)`);
+    },
+  },
+  'collection.export': {
+    async execute(env, payload, nowMs, ctx) {
+      const csv = await exportCollectionCsv(env, payload.collection);
+      // Адреса: чат прогону, а після ✅ (resolveProposal) - за thread_id
+      // пропозиції: тема супергрупи або DM власника.
+      const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
+      const isDm = threadKey === 'dm';
+      const chatId =
+        ctx?.chatId ??
+        (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+      if (chatId == null) throw new Error('collection.export: чат для документа невідомий');
+      await enqueueOutbox(
+        env,
+        {
+          chatId,
+          threadId: isDm || threadKey == null ? null : Number(threadKey),
+          kind: 'document',
+          payload: {
+            filename: csv.filename,
+            content: csv.content,
+            caption: `Експорт: ${csv.rows} рядк.`,
+          },
+        },
+        nowMs,
+      );
+      await drainOutbox(env, { nowMs }).catch(() => {});
+      return { result: { filename: csv.filename, rows: csv.rows } };
     },
   },
   'facts.set': {
@@ -303,7 +549,12 @@ export async function resolveProposal(env, input, nowMs) {
     return { ok: true, already: 'approved' };
   }
   try {
-    const { result } = await executor.execute(env, payload, nowMs);
+    // Контекст після ✅: chatId прогону вже невідомий, лишається тред
+    // пропозиції - виконавцям, що щось шлють (експорт), цього досить.
+    const { result } = await executor.execute(env, payload, nowMs, {
+      chatId: null,
+      threadId: row.thread_id,
+    });
     return { ok: true, status: 'approved', executed: true, result };
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.

@@ -71,6 +71,12 @@
     "SchedulerDO": { "type": "durable-object", "storage": "sqlite" },
     "RunRegistryDO": { "type": "durable-object", "storage": "sqlite" },
   },
+  // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
+  // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і
+  // текст власника. Решта чотири ланцюги - етапи 5-6.
+  "workflows": [
+    { "name": "svitanok-day-plan", "binding": "DAY_PLAN", "class_name": "DayPlanChain" },
+  ],
   // ОДИН крон (A2): нагадування (Блок P2a) + dispatch брифінгу у вікні 08:00–11:00
   // Київ + dead-man від 12:00 — кожна задача гейтиться за kyivHour() у момент
   // виконання й ідемпотентна за добу. Погодинні крони (0 5/6/7/8 UTC) прибрано:
