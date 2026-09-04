@@ -18,35 +18,94 @@ import {
 import { readMail, readMailBody, searchDrive, readCalendarRange } from '../../google.mjs';
 import { formatEventsForPrompt, formatRangeEventsForPrompt } from '../../calendar-core.mjs';
 import { geocodeCity } from '../../weather-geo.mjs';
-import { loadState, loadStats, loadLatest, loadSettings } from '../../kv-store.mjs';
+import {
+  loadState,
+  loadStats,
+  loadLatest,
+  loadSettings,
+  loadLevers,
+  readJson,
+} from '../../kv-store.mjs';
 import { aggregateStats } from '../../stats-core.mjs';
 import { totalProgress } from '../../roadmap-core.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { ARCHIVE_KEY, WEEKLY_ARCHIVE_KEY } from '../../stats-archive.mjs';
 import { listActiveReminders } from '../reminders/store.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { wrapExternal } from './markup.mjs';
+import {
+  buildWeeklyDigest,
+  buildArchiveDigest,
+  parsePeriodDays,
+  WEEKLY_PLAN_DAYS,
+} from './weekly.mjs';
 
 /** Кап data.read за замовчуванням = профіль chat (07 §4: chat 12k). */
 export const DATA_READ_DEFAULT_CAP = 12_000;
-const DATA_READ_MAX_CAP = 50_000; // стеля weekly-профілю - більшого не існує
+/** Кап профілю weekly (07 §4: weekly 50k) - і стеля взагалі: більшого не існує. */
+export const DATA_READ_WEEKLY_CAP = 50_000;
+const DATA_READ_MAX_CAP = DATA_READ_WEEKLY_CAP;
+
+/** Скоупи data.read (07 §4): чинні дайджести assistant-data-core + два нові
+ *  етапу 3 - `archive` (холодні згортки) і `weekly` (усе для звіту одним
+ *  читанням). Список тут, а не в assistant-data-core: там кап 1 500 на
+ *  однорядкові зрізи, а ці два - JSON зі своєю стелею. */
+export const DATA_READ_SCOPES = [...OWN_DATA_SCOPES, 'archive', 'weekly'];
 
 const MAIL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/; // той самий контракт, що в agent-core
 
 /**
- * data.read: дайджест власних даних за scope. Скоупи - чинні OWN_DATA_SCOPES;
- * scope=weekly приходить на етапі 3 разом із даними архіву (там його PR).
+ * data.read: дайджест власних даних за scope. `period` (07 §4: «30d», «12w»)
+ * звужує сирі серії у weekly; для чинних скоупів він не має сенсу і
+ * ігнорується. Кап - профільний: weekly 50k, решта 12k, якщо модель не
+ * попросила менше.
  * @param {Env} env
- * @param {{ scope: string, cap?: number }} args
+ * @param {{ scope: string, cap?: number, period?: string }} args
  * @param {number} nowMs
  */
 export async function runDataRead(env, args, nowMs) {
-  if (!OWN_DATA_SCOPES.includes(args.scope)) {
-    throw new Error(`невідомий scope "${args.scope}" (чинні: ${OWN_DATA_SCOPES.join(', ')})`);
+  if (!DATA_READ_SCOPES.includes(args.scope)) {
+    throw new Error(`невідомий scope "${args.scope}" (чинні: ${DATA_READ_SCOPES.join(', ')})`);
   }
-  const cap = Math.min(
-    Math.max(Math.trunc(args.cap ?? DATA_READ_DEFAULT_CAP), 500),
-    DATA_READ_MAX_CAP,
-  );
+  const defaultCap = args.scope === 'weekly' ? DATA_READ_WEEKLY_CAP : DATA_READ_DEFAULT_CAP;
+  const cap = Math.min(Math.max(Math.trunc(args.cap ?? defaultCap), 500), DATA_READ_MAX_CAP);
+  // period звіряється ДО читань: крива форма - помилка контракту, а не
+  // тихий дефолт після того, як KV уже прочитано.
+  const periodDays = parsePeriodDays(args.period);
+  const todayKey = kyivDateKey(new Date(nowMs));
+
+  if (args.scope === 'archive') {
+    const [archive, weeklyArchive, levers] = await Promise.all([
+      readJson(env, ARCHIVE_KEY, null),
+      readJson(env, WEEKLY_ARCHIVE_KEY, null),
+      loadLevers(env),
+    ]);
+    return { result: buildArchiveDigest({ archive, weeklyArchive, levers, todayKey, cap }).text };
+  }
+
+  if (args.scope === 'weekly') {
+    const [stats, state, archive, weeklyArchive, levers, plans] = await Promise.all([
+      loadStats(env),
+      loadState(env),
+      readJson(env, ARCHIVE_KEY, null),
+      readJson(env, WEEKLY_ARCHIVE_KEY, null),
+      loadLevers(env),
+      readPlanRows(env, todayKey, WEEKLY_PLAN_DAYS),
+    ]);
+    const digest = buildWeeklyDigest({
+      agg: aggregateStats(stats, todayKey),
+      roadmapProgress: state.roadmapProgress ?? {},
+      archive,
+      weeklyArchive,
+      levers,
+      plans,
+      todayKey,
+      rawDays: periodDays,
+      cap,
+    });
+    return { result: digest.text };
+  }
+
   const [state, stats, latest, settings, fromD1] = await Promise.all([
     loadState(env),
     loadStats(env),
@@ -58,7 +117,6 @@ export async function runDataRead(env, args, nowMs) {
     // ані змінити, ані скасувати.
     readD1Reminders(env),
   ]);
-  const todayKey = kyivDateKey(new Date(nowMs));
   const digest = buildOwnDataDigest({
     scope: args.scope,
     // Дедуп за id з пріоритетом D1 (ревʼю PR-7): у вікні часткової міграції
@@ -72,6 +130,39 @@ export async function runDataRead(env, args, nowMs) {
     settings,
   });
   return { result: digest.slice(0, cap) };
+}
+
+/**
+ * Ряди плану дня за останні `days` діб (weekly-review §1 «План дня»): дні з
+ * їхніми пунктами. Без DB - явний error у блоці (модель пише «ЧОГО Я НЕ
+ * БАЧИВ»), збій читання - теж error, а не порожній масив «планів не було».
+ * @param {Env} env @param {string} todayKey @param {number} days
+ * @returns {Promise<{ days: any[], items: any[] } | { error: string }>}
+ */
+async function readPlanRows(env, todayKey, days) {
+  if (!env.DB) return { error: 'привʼязки DB немає' };
+  const from = addDaysToDateKey(todayKey, -(days - 1));
+  try {
+    const [plans, items] = await Promise.all([
+      env.DB.prepare(
+        `SELECT date, status, fill_ratio, intent_text, reviewed_at FROM day_plans
+         WHERE date >= ?1 AND date <= ?2 ORDER BY date`,
+      )
+        .bind(from, todayKey)
+        .all(),
+      env.DB.prepare(
+        `SELECT date, title, kind, est_min, hard_at, window_start, window_end, status, done_at,
+                carried_from, priority
+         FROM plan_items WHERE date >= ?1 AND date <= ?2 ORDER BY date, window_start`,
+      )
+        .bind(from, todayKey)
+        .all(),
+    ]);
+    return { days: plans.results ?? [], items: items.results ?? [] };
+  } catch (/** @type {any} */ e) {
+    console.error('data.read: план дня не прочитався', e?.message);
+    return { error: `план дня не прочитався: ${String(e?.message ?? '')}` };
+  }
 }
 
 /** KV + D1 без дублів: за одним id перемагає D1 (там свіжий статус).

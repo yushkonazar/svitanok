@@ -93,7 +93,8 @@ describe('data.read', () => {
 
   it('невідомий scope — виняток із переліком чинних', async () => {
     const env = workerEnv({ BRIEFING: kvBriefing().stub });
-    await expect(runDataRead(env, { scope: 'weekly' }, NOW)).rejects.toThrow(/невідомий scope/);
+    // weekly і archive з етапу 3 - чинні; невідомий - вигаданий.
+    await expect(runDataRead(env, { scope: 'unknown' }, NOW)).rejects.toThrow(/невідомий scope/);
   });
 });
 
@@ -344,24 +345,45 @@ describe('facts.* на справжній міграції 0001', () => {
 });
 
 describe('реєстр TOOLS', () => {
-  it('склад: читання + усі write-інструменти етапу 2 PR-6; drive.write свідомо відсутній до адаптерів Google', () => {
+  it('склад: читання + write-інструменти етапу 2 + runs.query етапу 3; drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
       'chain.start',
+      'collections.create',
+      'collections.delete',
+      'collections.list',
+      'collections.update',
       'data.read',
       'drive.search',
       'facts.get',
       'facts.set',
       'geo.geocode',
       'geo.last',
+      'ideas.analyze',
+      'ideas.create',
+      'ideas.delete',
+      'ideas.list',
+      'ideas.search',
+      'ideas.update',
       'mail.read',
       'mail.search',
       'memory.search',
+      'plan.accept',
+      'plan.draft',
+      'plan.intent',
+      'plan.review',
+      'plan.update',
       'proposals.create',
       'record',
+      'records.create',
+      'records.delete',
+      'records.list',
+      'records.search',
+      'records.update',
       'reminders.cancel',
       'reminders.create',
       'reminders.update',
+      'runs.query',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
   });
@@ -376,9 +398,25 @@ describe('реєстр TOOLS', () => {
     // proposals.create: він не дія, а обгортка, тож kind приходить у args.
     expect(writes).toEqual([
       ['chain.start', 'chain.start'],
+      // Видалення колекції з записами - T2 forget (07 §4): інструмент є, kind - forget.
+      ['collections.create', 'collections.create'],
+      ['collections.delete', 'forget'],
+      ['collections.update', 'collections.update'],
       ['facts.set', 'facts.set'],
+      ['ideas.analyze', 'ideas.analyze'],
+      ['ideas.create', 'ideas.create'],
+      ['ideas.delete', 'ideas.delete'],
+      ['ideas.update', 'ideas.update'],
+      ['plan.accept', 'plan.accept'],
+      ['plan.draft', 'plan.draft'],
+      ['plan.intent', 'plan.intent'],
+      ['plan.review', 'plan.review'],
+      ['plan.update', 'plan.update'],
       ['proposals.create', '<kind>'],
       ['record', 'record'],
+      ['records.create', 'records.create'],
+      ['records.delete', 'records.delete'],
+      ['records.update', 'records.update'],
       ['reminders.cancel', 'reminders.cancel'],
       ['reminders.create', 'reminders.create'],
       ['reminders.update', 'reminders.update'],

@@ -78,6 +78,17 @@ export const RUNS_SCHEMA = /** @type {InternalSchema} */ ({
             status_message_id: { type: 'number', minimum: 1 },
           },
         },
+        // Подія в ланцюг від працівника (етап 3 PR-8, DayPlanChain): ядро
+        // шле її у Workflow через sendEvent; payload - вихід працівника.
+        chain: {
+          type: 'object',
+          required: ['id', 'event'],
+          properties: {
+            id: { type: 'string', maxLength: 40 },
+            event: { type: 'string', maxLength: 32 },
+            payload: { type: 'object' },
+          },
+        },
       },
     },
   },

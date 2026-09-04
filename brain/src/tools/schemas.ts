@@ -48,8 +48,18 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'data.read',
     description:
-      'Дані Світанку за scope (briefing·jobs·progress·reminders·checkin·saved·news·settings·archive·all); cap - стеля символів відповіді.',
-    args: z.object({ scope: z.string().max(32), cap: z.number().optional() }),
+      'Дані Світанку за scope: briefing·jobs·progress·reminders·checkin·saved·news·settings - короткі зрізи; archive - холодні місячні/тижневі згортки і важелі; weekly - ВСЕ для тижневого звіту одним читанням (JSON до 50k, лише профіль звіту). period («30d», «12w», «тиждень») звужує сирі серії у weekly; cap - стеля символів відповіді.',
+    args: z.object({
+      scope: z.string().max(32),
+      cap: z.number().optional(),
+      period: z.string().max(16).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'runs.query',
+    description:
+      'Телеметрія системи за період (типово тиждень; «30d», «місяць»): прогони за профілями (кількість, медіана і p90 тривалості, помилки, кроки), останні помилки, квоти місяця з лімітами. Для блоку СИСТЕМА звіту.',
+    args: z.object({ period: z.string().max(16).optional() }),
   }),
   tool({
     coreName: 'calendar.read',
@@ -152,6 +162,204 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),
+    }),
+    write: true,
+  }),
+  // Ідеї (етап 3 PR-4, S-3-1…7). Номер ідеї для власника - те, що повертає
+  // create («#12»); id приймає і номер, і повний id.
+  tool({
+    coreName: 'ideas.list',
+    description:
+      'Список ідей (до 10, свіжі першими): фільтри domain (svitanok·робота·побут·бізнес·інше) і status (нова·в аналізі·план готовий·погоджено·у роботі·зроблено·відкладено·відхилено); без status - усе, крім зробленого й відхиленого.',
+    args: z.object({
+      domain: z.string().max(16).optional(),
+      status: z.string().max(16).optional(),
+      limit: z.number().min(1).max(10).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'ideas.search',
+    description: 'Повнотекстовий пошук ідей за словами q (назва і тіло); до 10 результатів.',
+    args: z.object({ q: z.string().min(2).max(120) }),
+  }),
+  tool({
+    coreName: 'ideas.create',
+    description:
+      'Записати ідею: title (коротко), body_md (суть), domain визнач сам (svitanok - цей проєкт; робота; побут; бізнес; інше), priority 1-3 (типово 2), effort S|M|L якщо очевидно, tags, next_action. Відповідь містить number - так власник посилатиметься на ідею («ідея #12»). T0 з «↩».',
+    args: z.object({
+      title: z.string().min(1).max(200),
+      body_md: z.string().max(20_000).optional(),
+      domain: z.string().max(16).optional(),
+      priority: z.number().min(1).max(3).optional(),
+      effort: z.string().max(1).optional(),
+      tags: z.array(z.string().max(32)).optional(),
+      next_action: z.string().max(300).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'ideas.update',
+    description:
+      'Змінити ідею за id - РЯДКОМ: номер («12») або повний id. Будь-які з title, body_md, domain, status, priority, effort, next_action, tags, analysis_md, plan_md. Статуси: нова·в аналізі·план готовий·погоджено·у роботі·зроблено·відкладено·відхилено. «план у роботу» = status «у роботі»; «погоджую план» = «погоджено». T0 з «↩».',
+    args: z.object({
+      id: z.string().max(64),
+      title: z.string().max(200).optional(),
+      body_md: z.string().max(20_000).optional(),
+      domain: z.string().max(16).optional(),
+      status: z.string().max(16).optional(),
+      priority: z.number().min(1).max(3).optional(),
+      effort: z.string().max(1).optional(),
+      next_action: z.string().max(300).optional(),
+      tags: z.array(z.string().max(32)).optional(),
+      analysis_md: z.string().max(20_000).optional(),
+      plan_md: z.string().max(20_000).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'ideas.analyze',
+    description:
+      'Почати аналіз ідеї за id (рядком: «12» або повний id): mode=plan - ядро повертає ідею і ти САМ пишеш аналіз і план у цій відповіді, потім зберігаєш їх через ideas.update(analysis_md, plan_md, status="план готовий"); mode=code (аналіз по коду репозиторію) поки недоступний - етап 4. Якщо власник не сказав, який режим, спитай: «По коду чи лише план?».',
+    args: z.object({ id: z.string().max(64), mode: z.string().max(8).optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'ideas.delete',
+    description:
+      'Видалити ідею за id (рядком: «12» або повний id) разом з історією. Потребує ✅ власника (T1).',
+    args: z.object({ id: z.string().max(64) }),
+    write: true,
+  }),
+  // Колекції (етап 3 PR-5, S-N4-1…5). Схему пропонуй через ask, фільтри -
+  // структурні (ядро компілює SQL само).
+  tool({
+    coreName: 'collections.list',
+    description: 'Колекції власника: назва, опис, поля (назва/тип/варіанти), кількість записів.',
+    args: z.object({}),
+  }),
+  tool({
+    coreName: 'collections.create',
+    description:
+      'Створити колекцію: name, description, fields - список {name, type (text·number·date·bool·choice·url·money), required?, options? (для choice), currency? (для money), default?}, sort_by - поле сортування. Схему СПОЧАТКУ погодь з власником через ask. T0 з «↩».',
+    args: z.object({
+      name: z.string().min(1).max(64),
+      description: z.string().max(500).optional(),
+      fields: z.array(z.record(z.string(), z.unknown())),
+      sort_by: z.string().max(64).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'collections.update',
+    description:
+      'Змінити колекцію (collection - назва або id): нова name, description, fields (повна схема), sort_by. Старі записи лишаються як є. T0 з «↩».',
+    args: z.object({
+      collection: z.string().max(64),
+      name: z.string().max(64).optional(),
+      description: z.string().max(500).optional(),
+      fields: z.array(z.record(z.string(), z.unknown())).optional(),
+      sort_by: z.string().max(64).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'collections.delete',
+    description:
+      'Видалити колекцію з УСІМА записами. Це T2: ядро створить пропозицію зі словом-підтвердженням - назви його власнику; без слова нічого не станеться.',
+    args: z.object({ collection: z.string().max(64) }),
+    write: true,
+  }),
+  tool({
+    coreName: 'records.create',
+    description:
+      'Додати запис у колекцію: collection - назва, data - {поле: значення} за схемою (імена полів - зі схеми; число/дата/так-ні ядро приведе саме). T0 з «↩».',
+    args: z.object({
+      collection: z.string().max(64),
+      data: z.record(z.string(), z.unknown()),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'records.update',
+    description:
+      'Змінити поля запису (id зі списку): data - лише ті поля, що змінюються. T0 з «↩».',
+    args: z.object({
+      collection: z.string().max(64),
+      id: z.string().max(64),
+      data: z.record(z.string(), z.unknown()),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'records.list',
+    description:
+      'Записи колекції (≤ 20): where - список умов {field, op, value}, op одне з = != > >= < <= contains in empty not_empty (числа й дати порівнюються як значення); sort - поле, desc - за спаданням. «покажи Сервіси де ціна > 100» → where:[{field:"ціна_міс", op:">", value:100}].',
+    args: z.object({
+      collection: z.string().max(64),
+      where: z.array(z.record(z.string(), z.unknown())).optional(),
+      sort: z.string().max(64).optional(),
+      desc: z.boolean().optional(),
+      limit: z.number().min(1).max(20).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'records.search',
+    description: 'Повнотекстовий пошук по значеннях записів (усі колекції або одна); ≤ 20.',
+    args: z.object({ q: z.string().min(2).max(120), collection: z.string().max(64).optional() }),
+  }),
+  tool({
+    coreName: 'records.delete',
+    description: 'Видалити один запис (id зі списку). Потребує ✅ власника (T1).',
+    args: z.object({ collection: z.string().max(64), id: z.string().max(64) }),
+    write: true,
+  }),
+  // План дня v2 (ADR-035, S-P-14): розкладку рахує ядро - модель дає пункти
+  // й зміни, а часи бере з відповіді.
+  tool({
+    coreName: 'plan.intent',
+    description:
+      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM»), deadline?, place?, priority?}. Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
+    args: z.object({
+      date: z.string().max(16).optional(),
+      // Порожній список і >6 пунктів відкидає ядро (runPlanIntent/ITEMS_MAX):
+      // валідатор ядра не має minItems, а парність тримає обидва боки рівними.
+      items: z.array(z.record(z.string(), z.unknown())),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.draft',
+    description:
+      'Перерахувати чернетку плану на date з пунктів, що вже записані (після змін календаря).',
+    args: z.object({ date: z.string().max(16).optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.accept',
+    description:
+      'Прийняти план на date: нагадування на початок кожного блоку (T0 з «↩»); calendar=true - додатково пропозиції T1 створити події в календарі.',
+    args: z.object({ date: z.string().max(16).optional(), calendar: z.boolean().optional() }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.update',
+    description:
+      'Зміни вдень: done - id або назви зроблених пунктів; moves - [{id, to:"HH:MM"}]; drop - пропустити. T0 з «↩».',
+    args: z.object({
+      date: z.string().max(16).optional(),
+      done: z.array(z.string().max(80)).optional(),
+      moves: z.array(z.object({ id: z.string().max(80), to: z.string().max(5) })).optional(),
+      drop: z.array(z.string().max(80)).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'plan.review',
+    description:
+      'Огляд дня: скільки зроблено, що відкрите; carry - id/назви пунктів для переносу на наступний робочий день, ["all"] - усі відкриті; без carry - лише огляд.',
+    args: z.object({
+      date: z.string().max(16).optional(),
+      carry: z.array(z.string().max(80)).optional(),
     }),
     write: true,
   }),

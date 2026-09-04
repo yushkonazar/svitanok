@@ -27,7 +27,7 @@ import {
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
-import { parsePolicyCallback } from './policy/core.mjs';
+import { parsePolicyCallback, T2_WORDS } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 import {
   transcribeVoice,
@@ -37,6 +37,11 @@ import {
   VOICE_LONG_S,
 } from './voice.mjs';
 import { loadInstruction } from './instructions.mjs';
+import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs';
+import { runCollectionsList } from './tools/collections.mjs';
+import { applyPolicy } from './policy/proposals.mjs';
+import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
+import { findAwaitingDayPlan, sendDayPlanEvent } from './day-plan/chain.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -49,7 +54,20 @@ const STATUS_DRAFT = '▸ Думаю…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
 
-const MODELS = { chat: 'claude-sonnet-5', quick: 'claude-haiku-4-5' };
+const MODELS = {
+  chat: 'claude-sonnet-5',
+  quick: 'claude-haiku-4-5',
+  'weekly-review': 'claude-sonnet-5',
+  'day-planner': 'claude-sonnet-5',
+};
+/** Імʼя інструкції в D1 за маршрутом (дзеркало INSTRUCTION_NAME_BY_PROFILE мозку). */
+const INSTRUCTION_BY_ROUTE = {
+  chat: 'persona',
+  quick: 'quick',
+  'weekly-review': 'weekly-review',
+  'day-planner': 'day-planner',
+};
+/** @typedef {'chat' | 'quick' | 'weekly-review' | 'day-planner'} RunRoute */
 
 // N3 (04-scenarios §N3): якорі власних даних - будь-який збіг = chat.
 // Суперсет канону безпечний: хибний chat коштує лише секунд, хибний quick -
@@ -160,15 +178,135 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       await send(await systemStatusLine(env));
       return true;
     }
-    // /forget: меню T2 потребує колекцій (етап 3) і чатів (етап 6) - чесна
-    // заглушка замість порожнього меню.
-    await send('Забування приїде разом із колекціями (етап 3) і чатами (етап 6).');
+    // /forget (S-0-5): меню T2 - колекції (етап 3); чати - етап 6, «усе» -
+    // етап 7 (спершу експорт). Кнопка m:fg:<id> створює пропозицію зі словом.
+    await sendForgetMenu(env, target, nowMs);
     return true;
   }
   // Інші /-команди - легасі (07 §10: «лишаються як є»).
   if (text.startsWith('/')) return false;
 
+  // Слово-підтвердження T2 (01 §4.3): відкрита пропозиція цього треду з таким
+  // словом - це рішення власника, а не повідомлення для моделі.
+  if (await resolveT2Word(env, target, threadKey, text, nowMs)) return true;
+
+  // «Не нагадуй про X» (S-0-16): тема підказок вимикається детерміновано,
+  // без прогону - модель не мусить угадувати ключ і форму факту.
+  const mute = /^(?:більше\s+)?не\s+нагадуй\s+про\s+([a-z]+)\.?$/i.exec(text);
+  if (mute && HINT_TOPICS.includes(String(mute[1]).toLowerCase())) {
+    const topic = String(mute[1]).toLowerCase();
+    const sess = await readSession(env, threadKey);
+    const out = await muteHintTopic(
+      env,
+      topic,
+      { threadId: threadKey, tainted: sess.tainted },
+      nowMs,
+    );
+    if (out.mode === 'executed') {
+      await reply(env, target, `Вимкнув підказки про ${topic}.`, nowMs, {
+        ...(out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : {}),
+      });
+    } else if (out.mode === 'proposed') {
+      await reply(
+        env,
+        target,
+        `Вимкнути підказки про ${topic}? Сесія з зовнішнім вмістом - потрібне ✅.`,
+        nowMs,
+        {
+          reply_markup: { inline_keyboard: out.proposal.buttons },
+        },
+      );
+    } else {
+      await reply(env, target, `Не вийшло: ${out.error}`, nowMs);
+    }
+    return true;
+  }
+
+  // План дня (етап 3 PR-8, S-P-9/S-P-10): ланцюг чекає слова власника в темі
+  // «Асистент» (намір на завтра або відповідь на уточнення) - текст іде
+  // подією в Workflow, не в мозок. Інші теми не чіпаємо: питання ставилось
+  // саме тут. Збій доставки - у мозок, як звичайне повідомлення.
+  if (threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
+    const awaiting = await findAwaitingDayPlan(env).catch((/** @type {any} */ e) => {
+      // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
+      console.error('prerouter: пошук ланцюга плану впав', e?.message);
+      return null;
+    });
+    if (awaiting) {
+      try {
+        await sendDayPlanEvent(env, awaiting.id, awaiting.awaiting, { text });
+        return true;
+      } catch (/** @type {any} */ e) {
+        console.error('prerouter: подія в ланцюг плану не доставлена', e?.message);
+      }
+    }
+  }
+
   await routeThreadText(env, target, threadKey, text, nowMs);
+  return true;
+}
+
+/**
+ * Меню /forget: по кнопці на колекцію (T2 зі словом). Порожньо - чесно.
+ * @param {Env} env @param {ThreadTarget} target @param {number} nowMs
+ */
+async function sendForgetMenu(env, target, nowMs) {
+  /** @type {{ id: string, name: string, records: number }[]} */
+  let collections;
+  try {
+    collections = /** @type {{ id: string, name: string, records: number }[]} */ (
+      (await runCollectionsList(env)).result
+    );
+  } catch (/** @type {any} */ e) {
+    await reply(env, target, `Колекції недоступні: ${String(e?.message ?? '')}`, nowMs);
+    return;
+  }
+  if (collections.length === 0) {
+    await reply(env, target, 'Забувати поки нічого: колекцій немає (чати - етап 6).', nowMs);
+    return;
+  }
+  const rows = collections
+    .slice(0, 10)
+    .map((c) => [{ text: `🗑 ${c.name} (${c.records})`, callback_data: `m:fg:${c.id}` }]);
+  await reply(env, target, 'Що забути? Це T2 - після кнопки попрошу слово.', nowMs, {
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+/**
+ * Напис власника збігся зі словом відкритої T2-пропозиції треду → виконати.
+ * Слово порівнюється без регістру; пропозицій зі словом у треді - одиниці.
+ * @param {Env} env @param {ThreadTarget} target @param {string} threadKey
+ * @param {string} text @param {number} nowMs
+ * @returns {Promise<boolean>} true = це було слово, оброблено
+ */
+async function resolveT2Word(env, target, threadKey, text, nowMs) {
+  if (!env.DB) return false;
+  const word = text.trim().toUpperCase();
+  // Лише відомі слова T2 (їх чотири): «дякую» чи «привіт» не мають ходити в
+  // D1 перед кожним прогоном.
+  if (!T2_WORDS.includes(word)) return false;
+  let row;
+  try {
+    row = /** @type {any} */ (
+      await env.DB.prepare(
+        `SELECT id FROM proposals WHERE status = 'open' AND level = 'T2' AND word = ?
+         AND thread_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+        .bind(word, threadKey)
+        .first()
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: пошук T2-слова впав', e?.message);
+    return false;
+  }
+  if (!row) return false;
+  const res = await resolveProposal(env, { id: String(row.id), choice: 'ok', word }, nowMs);
+  const erased =
+    res.ok && 'status' in res && res.status === 'approved' && res.executed
+      ? String(/** @type {any} */ (res.result)?.erased ?? 'готово')
+      : null;
+  await reply(env, target, erased ? `Стерто: ${erased}.` : proposalToast(res), nowMs);
   return true;
 }
 
@@ -189,7 +327,26 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
     return;
   }
 
-  const route = classifyRoute(text);
+  // «звіт зараз» (S-9-5) - профіль weekly-review за запитом: той самий шлях
+  // (черга, статусник, ретраї), інша інструкція й модель.
+  const route = WEEKLY_NOW_RE.test(text) ? 'weekly-review' : classifyRoute(text);
+  await startOrQueueThreadText(env, target, threadKey, text, route, nowMs);
+}
+
+/**
+ * Поставити текст у тред: статусник → claim → старт або черга. Спільний вхід
+ * для повідомлення власника і для планувальника (задача weekly-review кладе
+ * «звіт зараз» у тему сама - S-9-1). Повертає runId стартованого прогону або
+ * null, якщо запит став у чергу (стартує після поточного) чи старт не вдався.
+ * @param {Env} env
+ * @param {ThreadTarget} target
+ * @param {string} threadKey
+ * @param {string} text
+ * @param {RunRoute} route
+ * @param {number} nowMs
+ * @returns {Promise<string | null>}
+ */
+export async function startOrQueueThreadText(env, target, threadKey, text, route, nowMs) {
   // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «▸ Думаю…»
   // прогону, при черзі - редагованим «▸ Черга: N» (не вічним повідомленням-
   // сиротою), а його id поїде в queue-entry для reuse при підйомі.
@@ -208,9 +365,9 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
       claim.queued === -1 ? 'Черга повна - спробуй трохи пізніше.' : `▸ Черга: ${claim.queued}`;
     if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
     else await reply(env, target, note, nowMs);
-    return;
+    return null;
   }
-  await startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
+  return startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
 }
 
 /**
@@ -347,7 +504,8 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   // відкочувала б три записи, а гілка відкоту через finishAndKick піднімала б
   // наступний запис черги - той падав би так само, і один вебхук давав би до
   // шести однакових відмов поспіль.
-  const instructionName = entry.route === 'chat' ? 'persona' : 'quick';
+  const route = /** @type {RunRoute} */ (entry.route);
+  const instructionName = INSTRUCTION_BY_ROUTE[route] ?? 'persona';
   let instruction;
   try {
     const loaded = await loadInstruction(env, instructionName);
@@ -360,18 +518,24 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       retry: 'Інструкції ще синхронізуються - спробую за ~5 хв.',
       giveUp: 'Інструкції асистента не синхронізовані - скажи, коли полагодимо.',
     });
-    return;
+    return null;
   }
+  // Вхід звіту (weekly-review §0) будує ЯДРО: період, перша неділя, попередній
+  // звіт, хеш інструкції - текст власника («звіт зараз») моделі не потрібен.
+  const inputText =
+    route === 'weekly-review'
+      ? (await buildWeeklyReviewInput(env, nowMs, instruction.version_hash)).text
+      : entry.text;
 
   const statusMessageId = reuseStatusId ?? (await sendStatusDraft(env, parsed));
   const runId = crypto.randomUUID();
   await registryBegin(env, {
     id: runId,
-    trigger: entry.route,
-    profile: entry.route,
+    trigger: route,
+    profile: route,
     threadId: threadKey,
     chatId: parsed.chatId,
-    model: MODELS[/** @type {'chat' | 'quick'} */ (entry.route)] ?? null,
+    model: MODELS[route] ?? null,
     startedMs: nowMs,
   });
   const { claimed } = await registryThreadSetRun(env, threadKey, runId, statusMessageId, nowMs);
@@ -385,18 +549,18 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
         message_id: statusMessageId,
       }).catch(() => {});
     }
-    return;
+    return null;
   }
 
-  const sess = entry.route === 'chat' ? await readSession(env, threadKey) : null;
+  const sess = route === 'chat' ? await readSession(env, threadKey) : null;
   const res = await callBrainRun(
     env,
     {
       instruction,
       runId,
-      profile: /** @type {'chat' | 'quick'} */ (entry.route),
+      profile: route,
       threadId: threadKey,
-      inputText: entry.text,
+      inputText,
       tainted: sess?.tainted ?? false,
       ...(statusMessageId != null ? { statusMessageId } : {}),
       ...(sess
@@ -405,7 +569,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     },
     nowMs,
   );
-  if (res.ok) return;
+  if (res.ok) return runId;
 
   console.error(`prerouter: /run не стартував (${res.status} ${res.detail})`);
   if (res.status === 0) {
@@ -415,7 +579,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     // активним: живий - доставить, мертвий - сторож (registrySweep) звільнить
     // тред і чесно скаже власнику.
     await editStatus(env, parsed, statusMessageId, 'Звʼязок із мозком повільний - чекаю…', nowMs);
-    return;
+    return runId;
   }
 
   // Мозок ВІДПОВІВ відмовою - прогін точно не стартував. Спершу повернути
@@ -432,7 +596,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       'Не вдалося - мозок недоступний. Напиши пізніше.',
       nowMs,
     );
-    return;
+    return null;
   }
   await registryThreadRetry(env, threadKey, { ...entry, attempts, statusMessageId });
   await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
@@ -443,6 +607,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     'Мозок недоступний - спробую ще раз за ~5 хв.',
     nowMs,
   );
+  return null;
 }
 
 /**
@@ -548,7 +713,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * одразу, а робота - виконатись після відповіді, у тому ж waitUntil. Без
  * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
- * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null }} parsed
+ * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
  * @param {number} [nowMs]
  * @param {((work: () => Promise<void>) => void) | null} [defer]
  * @returns {Promise<string | null>}
@@ -576,14 +741,102 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:fg:<id> - меню /forget (S-0-5): пропозиція T2 forget(collection) зі
+  // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
+  const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
+  if (fg) return forgetMenuToast(env, parsed, /** @type {string} */ (fg[1]), nowMs);
+  // c:<chainId>:<choice> - кнопки ланцюга плану дня (етап 3 PR-8, 07 §9):
+  // вибір іде подією у Workflow; який тип події - вирішує назва кнопки.
+  const cm = data.match(/^c:([A-Za-z0-9-]{1,40}):([a-z_0-9]{1,16})$/);
+  if (cm) {
+    return dayPlanCallbackToast(
+      env,
+      parsed,
+      /** @type {string} */ (cm[1]),
+      /** @type {string} */ (cm[2]),
+    );
+  }
   const stub = data.match(/^([cram]):/)?.[1];
   if (!stub) return null;
   return {
-    c: 'Ланцюги приїдуть на етапі 5.',
+    // c: не за форматом вище (чужий/пошкоджений chainId або choice) - чесна
+    // відмова, а не легасі «Застаріла кнопка» з іншою причиною.
+    c: 'Невідома кнопка плану.',
     r: 'Нагадування нового шляху - з інструментами запису (PR-6).',
     a: 'Відповіді на питання прогону - пізніше цим етапом.',
     m: 'Меню - пізніше.',
   }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
+}
+
+/**
+ * Кнопка ланцюга → подія. Мапа choice → {type, payload} - єдине місце, де
+ * назви кнопок chain.mjs зустрічаються з типами подій машини станів.
+ * @param {string} choice
+ * @returns {{ type: string, payload: Record<string, unknown> } | null}
+ */
+export function dayPlanChoiceEvent(choice) {
+  if (choice === 'none' || choice === 'skip') return { type: 'intent', payload: { choice } };
+  if (choice === 'accept' || choice === 'edit' || choice === 'calendar') {
+    return { type: 'accept', payload: { choice } };
+  }
+  if (choice === 'carry_all' || choice === 'carry_none')
+    return { type: 'carry', payload: { choice } };
+  const a = choice.match(/^a(\d)_(\d)$/);
+  if (a) return { type: 'answer', payload: { item: Number(a[1]), option: Number(a[2]) } };
+  return null;
+}
+
+/**
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} chainId @param {string} choice
+ */
+async function dayPlanCallbackToast(env, parsed, chainId, choice) {
+  const ev = dayPlanChoiceEvent(choice);
+  if (!ev) return 'Невідома кнопка плану.';
+  try {
+    await sendDayPlanEvent(env, chainId, ev.type, ev.payload);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: кнопка ланцюга плану не доставлена', e?.message);
+    return 'Ланцюг плану не відповідає - напиши текстом.';
+  }
+  await clearKeyboard(env, parsed);
+  return 'Прийняв.';
+}
+
+/**
+ * Тап у меню /forget: створити T2-пропозицію forget(collection) і сказати
+ * слово. Тред пропозиції - тред кнопки, щоб слово з того ж треду її знайшло.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} collectionId
+ * @param {number} nowMs
+ */
+async function forgetMenuToast(env, parsed, collectionId, nowMs) {
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  const out = await applyPolicy(
+    env,
+    {
+      kind: 'forget',
+      payload: { target: 'collection', collection: collectionId },
+      threadId: threadKey,
+      chatId: parsed.chatId ?? null,
+      tainted: false,
+    },
+    nowMs,
+  );
+  if (out.mode !== 'proposed')
+    return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+  await clearKeyboard(env, parsed);
+  await reply(
+    env,
+    target,
+    `Щоб стерти колекцію з усіма записами, напиши слово: ${out.proposal.word} (діє 10 хв).`,
+    nowMs,
+  );
+  return 'Чекаю слово';
 }
 
 /**

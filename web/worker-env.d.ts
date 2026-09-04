@@ -123,6 +123,21 @@ interface Env {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_REFRESH_TOKEN?: string;
+  /** Ключ шифрування бекапів (05-ops §2; етап 0). Довільний рядок ≥ 16
+   *  символів - у ключ AES його перетворює SHA-256 (core/backup/core.mjs). */
+  BACKUP_ENC_KEY?: string;
+  /**
+   * Workflow плану дня (ADR-035, етап 3 PR-8): `workflows` у wrangler.jsonc.
+   * Мінімальний контракт, який вживає core/day-plan/chain.mjs (create + get
+   * + sendEvent); повний тип Workflow із workers-types не потрібен.
+   */
+  DAY_PLAN?: {
+    create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;
+    get: (id: string) => Promise<{
+      sendEvent: (event: { type: string; payload?: unknown }) => Promise<void>;
+      status?: () => Promise<unknown>;
+    }>;
+  };
   /** `repository_dispatch` у brief.yml (крон-диспетч брифінгу). */
   GH_DISPATCH_TOKEN?: string;
   /** Слаг `owner/repo` для того ж диспетчу. Незаданий -> дефолт у `cron.mjs`. */

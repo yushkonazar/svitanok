@@ -29,6 +29,8 @@ import { parseProposalCallbackData } from './agent-core.mjs';
 export { AgentRun } from './agent-run-do.mjs';
 export { SchedulerDO } from './core/scheduler/do.mjs';
 export { RunRegistryDO } from './core/run-registry/do.mjs';
+// Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
+export { DayPlanChain } from './core/day-plan/chain.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
