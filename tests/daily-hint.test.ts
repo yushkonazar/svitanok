@@ -8,6 +8,7 @@ import {
   dailyHintTask,
   pickHint,
   formatHint,
+  muteHintTopic,
   DAILY_HINT_MARKER_KEY,
   HINT_TOPICS,
 } from '../web/core/hints/daily-hint.mjs';
@@ -204,6 +205,37 @@ describe('pickHint - пріоритет і mute', () => {
       sent: true,
       topic: 'security',
     });
+  });
+
+  it('тиха зона власника (settings.quiet) - підказка чекає, мітка не ставиться', async () => {
+    const { d1, env, kv } = setup();
+    d1.db
+      .prepare(
+        `INSERT INTO ideas (id, title, status, created_at, updated_at) VALUES ('i1', 'Стара', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+      )
+      .run();
+    // Тиха зона 09:00-11:00 - 10:10 усередині.
+    kv.set('settings', JSON.stringify({ quiet: { enabled: true, from: '09:00', to: '11:00' } }));
+    expect(await dailyHintTask(env, AT_1010)).toEqual({ skipped: 'quiet' });
+    expect(kv.get(DAILY_HINT_MARKER_KEY)).toBeUndefined();
+  });
+
+  it('muteHintTopic: додає тему до hint_mute_json через policy (T0 з «↩»), невідома тема - помилка', async () => {
+    const { d1, env } = setup();
+    const out = await muteHintTopic(env, 'ideas', { threadId: 'dm', tainted: false }, AT_1010);
+    expect(out.mode).toBe('executed');
+    const again = await muteHintTopic(env, 'security', { threadId: 'dm', tainted: false }, AT_1010);
+    expect(again.mode).toBe('executed');
+    const fact = d1.db
+      .prepare(`SELECT value_json FROM facts WHERE key = 'hint_mute_json'`)
+      .get() as { value_json: string };
+    expect(JSON.parse(fact.value_json)).toEqual({ topics: ['ideas', 'security'] });
+    await expect(
+      muteHintTopic(env, 'погода', { threadId: 'dm', tainted: false }, AT_1010),
+    ).rejects.toThrow(/невідома тема/);
+    // tainted - пропозиція T1, не запис.
+    const tainted = await muteHintTopic(env, 'trips', { threadId: 'dm', tainted: true }, AT_1010);
+    expect(tainted.mode).toBe('proposed');
   });
 
   it('formatHint екранує HTML у тексті кандидата', () => {

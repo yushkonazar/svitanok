@@ -12,9 +12,12 @@
 // таблиці порожні - кандидатів немає, а коли наповняться - підказки підуть
 // без правок тут.
 
-import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
+import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
+import { loadSettings } from '../../kv-store.mjs';
+import { isQuietMinute } from '../../settings-core.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
+import { applyPolicy } from '../policy/proposals.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { escapeHtml } from '../../tg-core.mjs';
 
@@ -52,6 +55,9 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
     return { skipped: 'no-db' };
   }
   if (!env.TELEGRAM_CHAT_ID) return { skipped: 'no-chat' };
+  // Тиха зона власника (та сама, що для нагадувань): підказка чекає
+  // наступного тіку у вікні 10:00, а після вікна - тиша до завтра.
+  if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
 
   const muted = await readMuted(env);
   const hint = await pickHint(env, today, nowMs, muted);
@@ -219,6 +225,31 @@ async function readMuted(env) {
     );
     return [];
   }
+}
+
+/**
+ * «Не нагадуй про X» (S-0-16): тема додається до facts.setting.hint_mute_json
+ * через policy (T0 з «↩» у чистій сесії; у tainted - пропозиція T1). Викликає
+ * prerouter детерміновано - без здогадок моделі про ключ і форму факту.
+ * @param {Env} env
+ * @param {string} topic - одна з HINT_TOPICS
+ * @param {{ threadId?: string | null, tainted: boolean }} ctx
+ * @param {number} nowMs
+ */
+export async function muteHintTopic(env, topic, ctx, nowMs) {
+  if (!HINT_TOPICS.includes(topic)) throw new Error(`невідома тема підказок «${topic}»`);
+  const current = await readMuted(env);
+  const topics = current.includes(topic) ? current : [...current, topic];
+  return applyPolicy(
+    env,
+    {
+      kind: 'facts.set',
+      payload: { kind: 'setting', key: 'hint_mute_json', value: { topics }, source: 'inferred' },
+      threadId: ctx.threadId ?? null,
+      tainted: ctx.tainted,
+    },
+    nowMs,
+  );
 }
 
 /** @param {Hint} hint */
