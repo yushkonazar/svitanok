@@ -293,7 +293,7 @@ describe('handleInternal — маршрутизатор', () => {
     expect(await res.json()).toMatchObject({ error: 'tool-failed', tool: 'geo.geocode' });
   });
 
-  it('tainting-інструмент ставить sessions.tainted=1 треду прогону', async () => {
+  it('tainting-інструмент ставить у sessions.tainted позначку часу читання (epoch-ms)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })),
@@ -337,8 +337,10 @@ describe('handleInternal — маршрутизатор', () => {
     expect(await res.json()).toMatchObject({ ok: true, tainted: true });
     expect(sessionWrites).toHaveLength(1);
     expect(sessionWrites[0]?.sql).toContain('INSERT INTO sessions');
-    expect(sessionWrites[0]?.sql).toContain('tainted = 1');
+    // Позначка - момент читання (epoch-ms), не прапорець 1: policy рахує TTL.
+    expect(sessionWrites[0]?.sql).toContain('tainted = excluded.tainted');
     expect(sessionWrites[0]?.args[0]).toBe('thread-7');
+    expect(sessionWrites[0]?.args[3]).toBe(NOW);
     vi.unstubAllGlobals();
   });
 

@@ -14,6 +14,8 @@ import {
   proposalButtons,
   PROPOSAL_TTL_MS,
   UNDO_WINDOW_MS,
+  TAINT_TTL_MS,
+  isTaintActive,
 } from '../web/core/policy/core.mjs';
 import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { runFactsGet, runFactsSet } from '../web/core/tools/facts.mjs';
@@ -355,12 +357,12 @@ describe('router: write-інструмент через policy', () => {
     expect(body.undo?.id).toBeTruthy();
   });
 
-  it('tainted-сесія (sessions.tainted=1): mode=proposed, факт НЕ записано', async () => {
+  it('tainted-сесія (позначка 5 хв тому): mode=proposed, факт НЕ записано', async () => {
     store.raw
       .prepare(
-        `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count) VALUES ('thr-1', '', '', 1, 0)`,
+        `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count) VALUES ('thr-1', '', '', ?, 0)`,
       )
-      .run();
+      .run(NOW - 5 * 60_000);
     const res = await handleInternal(
       await signedRequest({ args: { kind: 'setting', key: 'x', value: 1 } }, 'n2'),
       routerEnv(),
@@ -371,5 +373,32 @@ describe('router: write-інструмент через policy', () => {
     expect(body).toMatchObject({ ok: true, mode: 'proposed', tainted: true });
     expect(body.proposal?.level).toBe('T1');
     expect((await runFactsGet(env, { kind: 'setting', key: 'x' })).result).toHaveLength(0);
+  });
+
+  // Рішення власника 05.09 (приймання етапу 3): taint живе TAINT_TTL_MS після
+  // останнього зовнішнього читання, не «до /new».
+  it('taint прострочений (позначка 31 хв тому) або легасі 1: T0 виконується одразу з «↩»', async () => {
+    store.raw
+      .prepare(
+        `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count) VALUES ('thr-1', '', '', ?, 0)`,
+      )
+      .run(NOW - TAINT_TTL_MS - 60_000);
+    const res = await handleInternal(
+      await signedRequest({ args: { kind: 'setting', key: 'y', value: 1 } }, 'n3'),
+      routerEnv(),
+      NOW,
+    );
+    const body = (await res.json()) as { mode: string; undo?: { id: string } };
+    expect(body).toMatchObject({ ok: true, mode: 'executed', tainted: false });
+    expect(body.undo?.id).toBeTruthy();
+    expect((await runFactsGet(env, { kind: 'setting', key: 'y' })).result).toHaveLength(1);
+
+    expect(TAINT_TTL_MS).toBe(30 * 60_000);
+    expect(isTaintActive(0, NOW)).toBe(false);
+    expect(isTaintActive(1, NOW)).toBe(false);
+    expect(isTaintActive(null, NOW)).toBe(false);
+    expect(isTaintActive(NOW, NOW)).toBe(true);
+    expect(isTaintActive(NOW - TAINT_TTL_MS + 1, NOW)).toBe(true);
+    expect(isTaintActive(NOW - TAINT_TTL_MS, NOW)).toBe(false);
   });
 });

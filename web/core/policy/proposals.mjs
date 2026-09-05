@@ -505,8 +505,8 @@ export async function applyPolicy(env, action, nowMs) {
  * @param {{ id: string, choice: 'ok' | 'no', word?: string | null }} input
  * @param {number} nowMs
  * @returns {Promise<
- *   | { ok: true, status: 'approved', executed: boolean, result?: unknown, error?: string }
- *   | { ok: true, status: 'rejected' | 'expired' }
+ *   | { ok: true, status: 'approved', executed: boolean, kind: string, result?: unknown, error?: string }
+ *   | { ok: true, status: 'rejected' | 'expired', kind: string, payload: unknown }
  *   | { ok: true, already: string }
  *   | { ok: false, error: string }>}
  */
@@ -516,11 +516,11 @@ export async function resolveProposal(env, input, nowMs) {
   if (row.status !== 'open') return { ok: true, already: row.status };
   if (Date.parse(row.expires_at) <= nowMs) {
     await setStatus(env, row.id, 'expired', nowMs);
-    return { ok: true, status: 'expired' };
+    return { ok: true, status: 'expired', kind: row.kind, payload: shownPayload(row) };
   }
   if (input.choice === 'no') {
     await setStatus(env, row.id, 'rejected', nowMs);
-    return { ok: true, status: 'rejected' };
+    return { ok: true, status: 'rejected', kind: row.kind, payload: shownPayload(row) };
   }
   if (row.level === 'T2') {
     // Слово - другий фактор T2: без нього ✅ не достатньо (01 §4.3).
@@ -555,7 +555,7 @@ export async function resolveProposal(env, input, nowMs) {
       chatId: null,
       threadId: row.thread_id,
     });
-    return { ok: true, status: 'approved', executed: true, result };
+    return { ok: true, status: 'approved', executed: true, kind: row.kind, result };
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.
     console.error(`policy: виконання ${row.kind} після ✅ впало`, e?.message);
@@ -619,6 +619,15 @@ async function insertRow(env, row) {
       new Date(row.nowMs).toISOString(),
     )
     .run();
+}
+
+/** Payload для тексту рішення власнику; кривий JSON - null, не помилка. @param {ProposalRow} row */
+function shownPayload(row) {
+  try {
+    return JSON.parse(row.payload_json);
+  } catch {
+    return null;
+  }
 }
 
 /** @param {Env} env @param {string} id @returns {Promise<ProposalRow | null>} */

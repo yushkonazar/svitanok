@@ -58,6 +58,27 @@ export const PROPOSAL_TTL_MS = { T1: 30 * 60_000, T2: 10 * 60_000 };
 /** Вікно «↩» після T0 (01 §4.3). */
 export const UNDO_WINDOW_MS = 10 * 60_000;
 
+/**
+ * Скільки живе taint після ОСТАННЬОГО зовнішнього читання (рішення власника
+ * на прийманні етапу 3, 05.09.2026: «до /new або 24 год тиші» з 01 §4.2
+ * робило кожен запис у треді пропозицією на весь день). Інʼєкція з листа
+ * діє в тому ж прогоні або одразу після - півгодини її накриває; далі T0
+ * знову T0 з «↩». `sessions.tainted` зберігає epoch-ms позначки (0 = чисто).
+ */
+export const TAINT_TTL_MS = 30 * 60_000;
+
+/**
+ * Чи taint ще діє. marker - значення `sessions.tainted`: 0 = чисто; epoch-ms
+ * останнього зовнішнього читання; легасі `1` (до TTL) читається як давно
+ * прострочене.
+ * @param {unknown} marker @param {number} nowMs
+ */
+export function isTaintActive(marker, nowMs) {
+  const at = Number(marker);
+  if (!Number.isFinite(at) || at <= 0) return false;
+  return nowMs - at < TAINT_TTL_MS;
+}
+
 /** Слова підтвердження T2: короткі, українські, без омографів з ✅-кнопками. */
 export const T2_WORDS = ['ВИКОНАТИ', 'ПІДТВЕРДЖУЮ', 'ТАК-ЗРОБИ', 'ЗГОДЕН'];
 

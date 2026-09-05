@@ -27,7 +27,7 @@ import {
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
-import { parsePolicyCallback, T2_WORDS } from './policy/core.mjs';
+import { parsePolicyCallback, T2_WORDS, isTaintActive } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 import {
   transcribeVoice,
@@ -53,6 +53,8 @@ const VOICE_PREVIEW_MAX_CHARS = 700;
 const STATUS_DRAFT = '▸ Думаю…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
+/** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
+const DECISIONS_MAX = 8;
 
 const MODELS = {
   chat: 'claude-sonnet-5',
@@ -195,7 +197,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   const mute = /^(?:більше\s+)?не\s+нагадуй\s+про\s+([a-z]+)\.?$/i.exec(text);
   if (mute && HINT_TOPICS.includes(String(mute[1]).toLowerCase())) {
     const topic = String(mute[1]).toLowerCase();
-    const sess = await readSession(env, threadKey);
+    const sess = await readSession(env, threadKey, nowMs);
     const out = await muteHintTopic(
       env,
       topic,
@@ -522,10 +524,16 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   }
   // Вхід звіту (weekly-review §0) будує ЯДРО: період, перша неділя, попередній
   // звіт, хеш інструкції - текст власника («звіт зараз») моделі не потрібен.
+  // Рішення власника по пропозиціях (✅/❌/«↩») після попередньої відповіді
+  // моделі в цьому треді: модель їх не бачить (виконує ядро по кнопці), і без
+  // цього рядка казала «колекція ще не створена» після ✅ (приймання 05.09).
+  const decisions = route === 'chat' ? await recentDecisions(env, threadKey, nowMs) : '';
   const inputText =
     route === 'weekly-review'
       ? (await buildWeeklyReviewInput(env, nowMs, instruction.version_hash)).text
-      : entry.text;
+      : decisions
+        ? `${decisions}\n\n${entry.text}`
+        : entry.text;
 
   const statusMessageId = reuseStatusId ?? (await sendStatusDraft(env, parsed));
   const runId = crypto.randomUUID();
@@ -552,7 +560,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     return null;
   }
 
-  const sess = route === 'chat' ? await readSession(env, threadKey) : null;
+  const sess = route === 'chat' ? await readSession(env, threadKey, nowMs) : null;
   const res = await callBrainRun(
     env,
     {
@@ -727,7 +735,28 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       return undoToast(await resolveUndo(env, policy.id, nowMs));
     }
     const res = await resolveProposal(env, { id: policy.id, choice: policy.choice }, nowMs);
-    if (res.ok && 'status' in res) await clearKeyboard(env, parsed);
+    if (res.ok && 'status' in res) {
+      await clearKeyboard(env, parsed);
+      // Тост Telegram зникає за секунди й не лишається в історії - рішення й
+      // результат мусять стояти в треді (приймання 05.09: «після ✅ нічого не
+      // відбувається»). Модель дізнається про нього дайджестом у наступному
+      // прогоні (recentDecisions).
+      await reply(
+        env,
+        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+        decisionText(res),
+        nowMs,
+      );
+    } else if (!res.ok && res.error !== 'unknown-proposal') {
+      // Збій після ✅ (виконавця ще немає, виконання впало, слово T2, кривий
+      // payload) - теж у тред, інакше та сама тиша, що й до фіксу (ревʼю 05.09).
+      await reply(
+        env,
+        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+        `⚠️ ${proposalToast(res)}`,
+        nowMs,
+      );
+    }
     return proposalToast(res);
   }
   const vm = data.match(/^v:([0-9a-f]{12}):(ok|edit|go)$/);
@@ -939,6 +968,108 @@ function proposalToast(res) {
   return 'Прострочено - створи запит заново.';
 }
 
+/**
+ * Рядок у тред після рішення по пропозиції: що саме сталось і з чим.
+ * @param {Awaited<ReturnType<typeof resolveProposal>>} res
+ */
+function decisionText(res) {
+  if (!res.ok || !('status' in res)) return proposalToast(res);
+  const what = describeProposal(
+    res.kind,
+    res.status === 'approved' ? res.result : 'payload' in res ? res.payload : null,
+  );
+  if (res.status === 'approved') return `✅ Виконано: ${what}.`;
+  if (res.status === 'rejected') return `❌ Відхилено: ${what}.`;
+  return `⌛ Прострочено: ${what} - попроси ще раз, якщо ще актуально.`;
+}
+
+/**
+ * Коротко про дію для власника: kind + впізнаваний ключ із payload/result
+ * (назва, текст, ключ факту). Без JSON у чаті.
+ * @param {string} kind @param {unknown} obj
+ */
+function describeProposal(kind, obj) {
+  const o = /** @type {Record<string, unknown>} */ (obj && typeof obj === 'object' ? obj : {});
+  const label =
+    kind === 'facts.set'
+      ? [o.kind, o.key].filter(Boolean).join('.')
+      : (o.title ??
+        o.name ??
+        o.text ??
+        o.collection ??
+        (o.number != null ? `#${o.number}` : null) ??
+        // delete/cancel/analyze шлють лише id (ревʼю 05.09) - хай буде хоч він.
+        (o.id != null ? String(o.id) : null));
+  // payload писала модель (можливо, з листа): керівні символи геть, інакше
+  // «\n[Ядро] …» у назві підробив би рядок дайджесту (security-ревʼю 05.09).
+  // kind не санітизуємо - невідомий kind applyPolicy відкидає ще до запису.
+  const clean = String(label ?? '')
+    .replace(/\p{Cc}+/gu, ' ')
+    .trim()
+    .slice(0, 80);
+  return clean ? `${kind} «${clean}»` : kind;
+}
+
+/**
+ * Дайджест рішень власника по пропозиціях цього треду, ухвалених ПІСЛЯ
+ * останнього завершеного chat-прогону (кнопки ✅/❌/«↩» виконує ядро, модель
+ * їх не бачить). Порожній рядок, якщо рішень не було.
+ * @param {Env} env @param {string} threadKey @param {number} nowMs
+ */
+async function recentDecisions(env, threadKey, nowMs) {
+  if (!env.DB) return '';
+  try {
+    const last = /** @type {{ t?: string } | null} */ (
+      await env.DB.prepare(
+        `SELECT max(finished_at) AS t FROM runs WHERE thread_id = ? AND finished_at IS NOT NULL AND profile = 'chat'`,
+      )
+        .bind(threadKey)
+        .first()
+    );
+    const since = last?.t ?? new Date(nowMs - 24 * 3_600_000).toISOString();
+    const { results } = await env.DB.prepare(
+      `SELECT kind, status, payload_json, decided_at FROM proposals
+       WHERE thread_id = ? AND decided_at IS NOT NULL AND decided_at > ?
+       ORDER BY decided_at DESC LIMIT ?`,
+    )
+      .bind(threadKey, since, DECISIONS_MAX + 1)
+      .all();
+    // Найновіші (ревʼю 05.09: ASC LIMIT брав найстаріші, а решта губилась
+    // назавжди - наступний since уже стояв за ними); показуємо хронологічно,
+    // а про відкинуті старіші кажемо одним рядком.
+    const all =
+      /** @type {{ kind: string, status: string, payload_json: string, decided_at: string }[]} */ (
+        results ?? []
+      );
+    const rows = all.slice(0, DECISIONS_MAX).reverse();
+    if (rows.length === 0) return '';
+    const more = all.length > DECISIONS_MAX ? '\n… і ще раніші рішення - див. пропозиції' : '';
+    const lines = rows.map((r) => {
+      /** @type {unknown} */
+      let payload = null;
+      try {
+        payload = JSON.parse(r.payload_json);
+      } catch {
+        // кривий JSON - лише kind без деталей
+      }
+      const undo = r.kind.startsWith('undo:');
+      const kind = undo ? r.kind.slice('undo:'.length) : r.kind;
+      const verdict = undo
+        ? '↩ скасовано'
+        : r.status === 'approved'
+          ? '✅ виконано'
+          : r.status === 'rejected'
+            ? '❌ відхилено'
+            : '⌛ прострочено';
+      return `${verdict}: ${describeProposal(kind, payload)}`;
+    });
+    return `[Ядро] Рішення власника по твоїх пропозиціях після попередньої відповіді (виконано ядром, не повторюй):\n${lines.join('\n')}${more}`;
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: дайджест рішень не зібрано', e?.message);
+    return '';
+  }
+}
+
 /** @param {Awaited<ReturnType<typeof resolveUndo>>} res */
 function undoToast(res) {
   if (!res.ok) return `Не вийшло: ${res.error}`;
@@ -1134,8 +1265,8 @@ async function editStatus(env, parsed, messageId, text, nowMs) {
 
 /** Сесія треду з D1 для resume (ADR-038). Збій читання - чесний null-стан
  *  (свіжа сесія) з fail-safe tainted=true, як у router.readThreadTainted.
- *  @param {Env} env @param {string} threadKey */
-async function readSession(env, threadKey) {
+ *  @param {Env} env @param {string} threadKey @param {number} nowMs */
+async function readSession(env, threadKey, nowMs) {
   if (!env.DB) return { sdkSessionId: null, summaryMd: null, tainted: true };
   try {
     const { results } = await env.DB.prepare(
@@ -1148,7 +1279,8 @@ async function readSession(env, threadKey) {
     return {
       sdkSessionId: row.sdk_session_id ?? null,
       summaryMd: row.summary_md ?? null,
-      tainted: row.tainted === 1,
+      // Позначка - epoch-ms останнього зовнішнього читання, діє TAINT_TTL_MS.
+      tainted: isTaintActive(row.tainted, nowMs),
     };
   } catch (/** @type {any} */ e) {
     console.error('prerouter: читання сесії впало - свіжа сесія, tainted fail-safe', e?.message);
