@@ -29,7 +29,13 @@ import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-09-03T10:00:00.000Z');
-const MIGRATIONS = ['0001_base.sql', '0002_assistant.sql', '0004_ideas_travel.sql', '0008_fts.sql'];
+const MIGRATIONS = [
+  '0001_base.sql',
+  '0002_assistant.sql',
+  '0004_ideas_travel.sql',
+  '0008_fts.sql',
+  '0011_ideas_number.sql',
+];
 
 let d1: ReturnType<typeof d1FromSqlite>;
 let env: Env;
@@ -43,7 +49,24 @@ beforeEach(() => {
 const count = (sql: string) => (d1.db.prepare(sql).get() as { n: number }).n;
 
 describe('ideas.create / findIdea (S-3-1)', () => {
-  it('записує ідею: статус «нова», priority 2, domain «інше» за замовчуванням; номер = rowid; подія created; FTS', async () => {
+  // Приймання 05.09, B5: після видалення останньої ідеї нова знову ставала
+  // «#1» (rowid повторюється) - номер тепер з монотонного лічильника.
+  it('номер не повторюється після видалення останньої ідеї; без лічильника - гучна помилка', async () => {
+    const first = await runIdeasCreate(env, { title: 'Перша' }, NOW);
+    expect(first.result.number).toBe(1);
+    await runIdeasDelete(env, { id: '1' });
+    const second = await runIdeasCreate(env, { title: 'Друга' }, NOW + 1);
+    expect(second.result.number).toBe(2);
+    expect(await findIdea(env, '#1')).toBeNull();
+    expect((await findIdea(env, '2'))?.title).toBe('Друга');
+    expect(d1.db.prepare(`SELECT value FROM counters WHERE name = 'ideas'`).get()).toEqual({
+      value: 2,
+    });
+    d1.db.prepare(`DELETE FROM counters`).run();
+    await expect(runIdeasCreate(env, { title: 'Третя' }, NOW + 2)).rejects.toThrow('міграція 0011');
+  });
+
+  it('записує ідею: статус «нова», priority 2, domain «інше» за замовчуванням; номер з лічильника; подія created; FTS', async () => {
     const { result } = await runIdeasCreate(env, { title: 'Експорт колекцій у Sheets' }, NOW);
     expect(result).toMatchObject({ number: 1, status: 'нова', priority: 2, domain: 'інше' });
     const second = await runIdeasCreate(

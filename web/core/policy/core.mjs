@@ -62,10 +62,28 @@ export const UNDO_WINDOW_MS = 10 * 60_000;
  * Скільки живе taint після ОСТАННЬОГО зовнішнього читання (рішення власника
  * на прийманні етапу 3, 05.09.2026: «до /new або 24 год тиші» з 01 §4.2
  * робило кожен запис у треді пропозицією на весь день). Інʼєкція з листа
- * діє в тому ж прогоні або одразу після - півгодини її накриває; далі T0
- * знову T0 з «↩». `sessions.tainted` зберігає epoch-ms позначки (0 = чисто).
+ * діє в тому ж прогоні або одразу після - десять хвилин її накривають (30 хв
+ * власник 05.09 назвав задовгими); далі T0 знову T0 з «↩».
+ * `sessions.tainted` зберігає epoch-ms позначки (0 = чисто).
  */
-export const TAINT_TTL_MS = 30 * 60_000;
+export const TAINT_TTL_MS = 10 * 60_000;
+
+/**
+ * T0-дії, які taint НЕ ескалює: читання/перерахунок власного плану без
+ * зовнішнього ефекту (приймання 05.09, B3: «що там з планом» під taint
+ * просило ✅, а результат після ✅ не показувався). plan.review - лише БЕЗ
+ * carry: з carry він переносить пункти (запис без «↩»), і інʼєкція з листа
+ * «перенеси все на завтра» мусить упертись у ✅ (security-ревʼю 05.09).
+ * @param {string} kind @param {Record<string, unknown> | undefined} payload
+ */
+export function isTaintExempt(kind, payload) {
+  if (kind === 'plan.draft') return true;
+  if (kind === 'plan.review') {
+    const carry = payload?.carry;
+    return !(Array.isArray(carry) && carry.length > 0);
+  }
+  return false;
+}
 
 /**
  * Чи taint ще діє. marker - значення `sessions.tainted`: 0 = чисто; epoch-ms
@@ -88,9 +106,10 @@ export const T2_WORDS = ['ВИКОНАТИ', 'ПІДТВЕРДЖУЮ', 'ТАК-�
  * не ескалюють - вони і так проходять через власника.
  * @param {string} kind
  * @param {boolean} tainted
+ * @param {Record<string, unknown>} [payload] - для винятків, що залежать від аргументів
  * @returns {{ level: 'T0' | 'T1' | 'T2' } | { error: string }}
  */
-export function decideLevel(kind, tainted) {
+export function decideLevel(kind, tainted, payload = undefined) {
   const base = ACTION_LEVELS[kind];
   // Невідомий kind - НЕ дефолт-рівень, а відмова: дія без рядка в таблиці
   // не має права існувати (та сама логіка, що «помилка видима»).
@@ -102,7 +121,7 @@ export function decideLevel(kind, tainted) {
       error: `невідомий kind дії "${kind}"; дозволені: ${Object.keys(ACTION_LEVELS).join(', ')}`,
     };
   }
-  if (base === 'T0' && tainted) return { level: 'T1' };
+  if (base === 'T0' && tainted && !isTaintExempt(kind, payload)) return { level: 'T1' };
   return { level: base };
 }
 

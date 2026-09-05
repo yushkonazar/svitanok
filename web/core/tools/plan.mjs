@@ -12,6 +12,7 @@ import { loadStats } from '../../kv-store.mjs';
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
+import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { computeSlots, formatDraft, energyBySlot } from './../day-plan/slots.mjs';
 import {
   readDayPlanConfig,
@@ -142,8 +143,14 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   const date = resolvePlanDate(args.date, nowMs);
   const plan = await getDayPlan(env, date);
   if (!plan) throw new Error(`на ${date} немає чернетки - спершу plan.intent`);
+  // Адреса як у collection.export: chat прогону, а без нього - DM власника
+  // для треду 'dm' і група для теми (ревʼю 05.09: група замість DM - помилка).
+  const threadKey = ctx.threadId == null ? null : String(ctx.threadId);
+  const isDm = threadKey === 'dm';
+  const chatId =
+    ctx.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
   const res = await acceptPlan(env, date, nowMs, {
-    chatId: ctx.chatId ?? env.TELEGRAM_CHAT_ID ?? null,
+    chatId,
     threadId: ctx.threadId ?? env.TOPIC_ASSISTANT ?? null,
   });
   /** @type {string[]} */
@@ -167,7 +174,17 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
         },
         nowMs,
       );
-      if (out.mode === 'proposed') proposals.push(out.proposal.id);
+      if (out.mode !== 'proposed') continue;
+      proposals.push(out.proposal.id);
+      // Пропозицію створило ядро, не модель - кнопки ✅/❌ шле теж ядро, інакше
+      // вона лежить open без сліду в чаті (приймання 05.09, B2).
+      await sendCalendarProposal(
+        env,
+        { chatId, threadId: ctx.threadId ?? null },
+        { title: r.title, date, start: String(r.window_start), end: String(r.window_end) },
+        out.proposal.buttons,
+        nowMs,
+      );
     }
   }
   return {
@@ -222,4 +239,43 @@ export async function runPlanReview(env, args, nowMs) {
     : args.carry.map((ref) => resolveItemRef(review.open, ref, 'серед відкритих').id);
   const carried = await carryItems(env, date, to, ids, nowMs);
   return { result: { ...review, carried_to: to, carried: carried.carried, stale: carried.stale } };
+}
+
+/**
+ * Текст пропозиції «блок у календар» - спільний для plan.accept і ланцюга.
+ * @param {{ title: string, date: string, start: string, end: string }} b
+ */
+export function calendarProposalText(b) {
+  const [, m, d] = b.date.split('-');
+  return `🗓 «${b.title}» ${d}.${m} ${b.start}-${b.end} - додати в календар?`;
+}
+
+/**
+ * Надіслати пропозицію з кнопками в тред (T1 виконавець календаря - етап 7,
+ * до того після ✅ буде чесне «виконавця ще немає»).
+ * @param {Env} env
+ * @param {{ chatId: number | string | null, threadId: number | string | null }} to
+ * @param {{ title: string, date: string, start: string, end: string }} block
+ * @param {unknown} buttons
+ * @param {number} nowMs
+ */
+async function sendCalendarProposal(env, to, block, buttons, nowMs) {
+  if (to.chatId == null) {
+    console.error('plan.accept: чат для пропозиції календаря невідомий');
+    return;
+  }
+  const threadKey = to.threadId == null ? null : String(to.threadId);
+  await enqueueOutbox(
+    env,
+    {
+      chatId: to.chatId,
+      threadId: threadKey == null || threadKey === 'dm' ? null : Number(threadKey),
+      kind: 'send',
+      payload: { text: calendarProposalText(block), reply_markup: { inline_keyboard: buttons } },
+    },
+    nowMs,
+  );
+  await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) => {
+    console.error('plan.accept: драйн пропозиції календаря впав, доставить sweeper', e?.message);
+  });
 }

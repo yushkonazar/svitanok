@@ -22,6 +22,7 @@ const MIGRATIONS = [
   '0002_assistant.sql',
   '0004_ideas_travel.sql',
   '0005_finance.sql',
+  '0011_ideas_number.sql',
 ];
 // Пʼятниця 04.09.2026 10:10 Києва = 07:10Z.
 const AT_1010 = Date.parse('2026-09-04T07:10:00.000Z');
@@ -79,7 +80,7 @@ describe('dailyHintTask - гейти і дедуп', () => {
     const { d1, env, sentTexts } = setup();
     d1.db
       .prepare(
-        `INSERT INTO ideas (id, title, status, created_at, updated_at) VALUES ('i1', 'Експорт у Sheets', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+        `INSERT INTO ideas (id, number, title, status, created_at, updated_at) VALUES ('i1', 1, 'Експорт у Sheets', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
       )
       .run();
     expect(await dailyHintTask(env, AT_1010)).toEqual({ sent: true, topic: 'ideas' });
@@ -97,12 +98,12 @@ describe('pickHint - пріоритет і mute', () => {
     const { d1, env } = setup();
     d1.db
       .prepare(
-        `INSERT INTO ideas (id, title, status, created_at, updated_at) VALUES ('i1', 'Стара', 'у роботі', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+        `INSERT INTO ideas (id, number, title, status, created_at, updated_at) VALUES ('i1', 1, 'Стара', 'у роботі', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
       )
       .run();
     d1.db
       .prepare(
-        `INSERT INTO ideas (id, title, status, created_at, updated_at) VALUES ('i2', 'Свіжа', 'нова', '2026-09-01T00:00:00Z', '2026-09-03T00:00:00Z')`,
+        `INSERT INTO ideas (id, number, title, status, created_at, updated_at) VALUES ('i2', 2, 'Свіжа', 'нова', '2026-09-01T00:00:00Z', '2026-09-03T00:00:00Z')`,
       )
       .run();
     d1.db
@@ -168,7 +169,7 @@ describe('pickHint - пріоритет і mute', () => {
     const { d1, env, kv } = setup();
     d1.db
       .prepare(
-        `INSERT INTO ideas (id, title, status, created_at, updated_at) VALUES ('i1', 'Стара', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+        `INSERT INTO ideas (id, number, title, status, created_at, updated_at) VALUES ('i1', 1, 'Стара', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
       )
       .run();
     await runFactsSet(
@@ -211,7 +212,7 @@ describe('pickHint - пріоритет і mute', () => {
     const { d1, env, kv } = setup();
     d1.db
       .prepare(
-        `INSERT INTO ideas (id, title, status, created_at, updated_at) VALUES ('i1', 'Стара', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+        `INSERT INTO ideas (id, number, title, status, created_at, updated_at) VALUES ('i1', 1, 'Стара', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
       )
       .run();
     // Тиха зона 09:00-11:00 - 10:10 усередині.

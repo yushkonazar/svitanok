@@ -229,7 +229,8 @@ export const TOOLS = {
   },
   // Ідеї (етап 3 PR-4, 07 §4 `ideas.*`): list/search - читання власної бази;
   // create/update/analyze - T0 через policy («↩»), delete - T1. Номер ідеї
-  // для власника - rowid («ідея #12»); id приймає і номер, і ulid.
+  // для власника - `number` з лічильника («ідея #12», міграція 0011); id
+  // приймає і номер, і ulid.
   'ideas.list': {
     args: {
       type: 'object',

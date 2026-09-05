@@ -22,6 +22,7 @@ import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { callBrainRun } from '../brain/run-client.mjs';
 import { loadInstruction } from '../instructions.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
+import { calendarProposalText } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
 import {
   readDayPlanConfig,
@@ -218,7 +219,7 @@ export async function runDayPlanChain(env, params, step, io) {
     // нагадувань, хоч власник сам назвав пункти (S-P-9: без відповіді - план
     // лише з календаря; тут відповідь була).
     const res = await acceptPlan(env, date, io.now(), address(env));
-    if (decision?.choice === 'calendar') await proposeCalendar(env, date, res.items, io.now());
+    if (decision?.choice === 'calendar') await proposeCalendar(env, date, res.items, io.now(), io);
     return { edit: false, reminders: res.reminders };
   });
   if (accepted.edit) {
@@ -432,13 +433,14 @@ export function morningText(date, rows, events) {
  * «У календар» (S-P-12): пропозиція T1 на кожен блок із часом. rows - те, що
  * acceptPlan щойно прочитав (без другого SELECT).
  * @param {Env} env @param {string} date @param {{ title: string, window_start: string | null, window_end: string | null }[]} rows @param {number} nowMs
+ * @param {ChainIo} io
  */
-async function proposeCalendar(env, date, rows, nowMs) {
+async function proposeCalendar(env, date, rows, nowMs, io) {
   for (const r of rows.filter((x) => x.window_start && x.window_end)) {
     const startMs = kyivMs(date, String(r.window_start));
     const endMs = kyivMs(date, String(r.window_end));
     if (startMs == null || endMs == null) continue;
-    await applyPolicy(
+    const out = await applyPolicy(
       env,
       {
         kind: 'calendar.event',
@@ -452,6 +454,19 @@ async function proposeCalendar(env, date, rows, nowMs) {
       },
       nowMs,
     );
+    // Кнопки ✅/❌ шле ланцюг сам - пропозицію створило ядро, а не модель
+    // (приймання 05.09, B2: без цього вона лежала open без сліду в чаті).
+    if (out.mode === 'proposed') {
+      await io.send(
+        calendarProposalText({
+          title: r.title,
+          date,
+          start: String(r.window_start),
+          end: String(r.window_end),
+        }),
+        /** @type {{ text: string, callback_data: string }[][]} */ (out.proposal.buttons),
+      );
+    }
   }
 }
 

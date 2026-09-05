@@ -1,10 +1,9 @@
 // Реєстр ідей (07 §1 `ideas`/`idea_events`, §4 `ideas.*`, S-3-1/2/6/7,
 // етап 3 PR-4): create/update/analyze - T0 через policy з «↩», delete - T1,
-// list/search - читання. Номер ідеї для власника («ідея #12») - rowid
-// таблиці: ulid у чаті не вимовиш, а окремої колонки-лічильника канон не має
-// і додавати міграцію заради номера не варто - rowid у SQLite стабільний для
-// таблиці з TEXT PRIMARY KEY (без WITHOUT ROWID) і не повторюється після
-// видалення, доки живий максимум (D1 дає саме таку таблицю).
+// list/search - читання. Номер ідеї для власника («ідея #12») - колонка
+// `number` з монотонного лічильника counters('ideas') (міграція 0011):
+// ulid у чаті не вимовиш, а rowid після видалення останнього рядка
+// повторювався - нова ідея ставала «#1» слідом за стертою (приймання 05.09).
 //
 // FTS (ideas_fts, ADR-036): синхронізацію веде код разом із записом у базову
 // таблицю - DELETE + INSERT на кожну правку, бо таблиця standalone.
@@ -52,7 +51,7 @@ function db(env) {
 }
 
 /**
- * Ідея за посиланням власника: число - номер (rowid), інакше - id.
+ * Ідея за посиланням власника: число - номер (`number`), інакше - id.
  * @param {Env} env
  * @param {unknown} ref
  * @returns {Promise<IdeaRow | null>}
@@ -61,7 +60,7 @@ export async function findIdea(env, ref) {
   const s = String(ref ?? '').trim();
   if (!s) return null;
   const byNumber = /^#?(\d{1,9})$/.exec(s);
-  const sql = `SELECT rowid AS number, * FROM ideas WHERE ${byNumber ? 'rowid = ?' : 'id = ?'}`;
+  const sql = `SELECT * FROM ideas WHERE ${byNumber ? 'number = ?' : 'id = ?'}`;
   const row = await db(env)
     .prepare(sql)
     .bind(byNumber ? Number(byNumber[1]) : s)
@@ -98,37 +97,44 @@ export async function runIdeasCreate(env, args, nowMs) {
   const iso = new Date(nowMs).toISOString();
   const body = clipText(args.body_md);
   const storedTitle = title.slice(0, 200);
-  // RETURNING rowid - номер тим самим запитом, без окремого SELECT.
-  const inserted = /** @type {{ number: number } | null} */ (
+  // Номер - з монотонного лічильника (міграція 0011): rowid після видалення
+  // останнього рядка повторювався, і нова ідея ставала «#1» слідом за стертою.
+  const counter = /** @type {{ value: number } | null} */ (
     await db(env)
-      .prepare(
-        `INSERT INTO ideas (id, title, body_md, domain, status, priority, effort, next_action,
-           tags_json, source_msg_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'нова', ?, ?, ?, ?, ?, ?, ?)
-         RETURNING rowid AS number`,
-      )
-      .bind(
-        id,
-        storedTitle,
-        body,
-        domain,
-        priority,
-        effort,
-        clipShort(args.next_action),
-        tags ? JSON.stringify(tags) : null,
-        args.source_msg_id == null ? null : String(args.source_msg_id).slice(0, 64),
-        iso,
-        iso,
-      )
+      .prepare(`UPDATE counters SET value = value + 1 WHERE name = 'ideas' RETURNING value`)
+      .bind()
       .first()
   );
+  if (counter == null) throw new Error('лічильник ideas відсутній - міграція 0011 не застосована');
+  const number = Number(counter.value);
+  await db(env)
+    .prepare(
+      `INSERT INTO ideas (id, number, title, body_md, domain, status, priority, effort, next_action,
+         tags_json, source_msg_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'нова', ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      number,
+      storedTitle,
+      body,
+      domain,
+      priority,
+      effort,
+      clipShort(args.next_action),
+      tags ? JSON.stringify(tags) : null,
+      args.source_msg_id == null ? null : String(args.source_msg_id).slice(0, 64),
+      iso,
+      iso,
+    )
+    .run();
   // Індекс - з тим самим текстом, що й рядок (не з необрізаної назви).
   await ftsReplace(env, id, storedTitle, body);
   await logEvent(env, id, 'created', null, nowMs);
   return {
     result: {
       id,
-      number: inserted?.number ?? null,
+      number,
       title: storedTitle,
       domain,
       status: 'нова',
@@ -264,7 +270,7 @@ export async function runIdeasList(env, args) {
   const limit = Math.min(Math.max(Math.trunc(args.limit ?? IDEAS_LIST_MAX), 1), IDEAS_LIST_MAX);
   const { results } = await db(env)
     .prepare(
-      `SELECT rowid AS number, id, title, domain, status, priority, effort, next_action, updated_at
+      `SELECT number, id, title, domain, status, priority, effort, next_action, updated_at
        FROM ideas WHERE ${where.join(' AND ')} ORDER BY updated_at DESC LIMIT ${limit}`,
     )
     .bind(...binds)
@@ -283,7 +289,7 @@ export async function runIdeasSearch(env, args) {
   if (!match) throw new Error('q має містити хоч одне слово');
   const { results } = await db(env)
     .prepare(
-      `SELECT i.rowid AS number, i.id, i.title, i.domain, i.status, i.next_action, i.updated_at
+      `SELECT i.number, i.id, i.title, i.domain, i.status, i.next_action, i.updated_at
        FROM ideas_fts f JOIN ideas i ON i.id = f.id
        WHERE ideas_fts MATCH ? ORDER BY rank LIMIT ${IDEAS_LIST_MAX}`,
     )
