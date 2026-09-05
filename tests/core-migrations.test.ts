@@ -118,7 +118,10 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'source_msg_id',
     'created_at',
     'updated_at',
+    // 0011: номер для власника з монотонного лічильника (rowid повторювався).
+    'number',
   ],
+  counters: ['name', 'value'],
   idea_events: ['id', 'idea_id', 'at', 'kind', 'note'],
   wishes: ['id', 'type', 'title', 'payload_json', 'status', 'created_at'],
   price_points: ['id', 'wish_id', 'at', 'source', 'price', 'currency', 'url', 'is_low'],
@@ -227,6 +230,7 @@ const EXPECTED_PK: Record<string, string[]> = {
   day_plans: ['date'],
   // Рядок на місяць — інакше ретенція «12 міс» із 07 §1 недосяжна.
   quota_counters: ['key', 'period'],
+  counters: ['name'],
 };
 
 type IndexSpec = { cols: string[]; unique?: boolean };
@@ -246,7 +250,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   runs: [{ cols: ['started_at'] }, { cols: ['profile'] }],
   run_steps: [{ cols: ['run_id', 'n'] }],
   places: [{ cols: ['name'] }],
-  ideas: [{ cols: ['status'] }, { cols: ['domain'] }],
+  ideas: [{ cols: ['status'] }, { cols: ['domain'] }, { cols: ['number'], unique: true }],
   idea_events: [{ cols: ['idea_id', 'at'] }],
   wishes: [{ cols: ['type', 'status'] }],
   price_points: [{ cols: ['wish_id', 'at'] }],
@@ -305,7 +309,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('десять файлів 0001–0010, нумерація без дірок', () => {
+  it('одинадцять файлів 0001–0011, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -317,6 +321,7 @@ describe('міграції D1 — файли', () => {
       '0008',
       '0009',
       '0010',
+      '0011',
     ]);
   });
 });

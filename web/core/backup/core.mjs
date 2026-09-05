@@ -53,6 +53,7 @@ export const BACKUP_TABLES = [
   'day_plans',
   'plan_items',
   'voice_pending',
+  'counters',
 ];
 
 /** FTS-таблиці, які restore перебудовує з базових (ADR-036: standalone). */

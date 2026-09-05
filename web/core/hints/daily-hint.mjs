@@ -179,7 +179,7 @@ async function ideaHint(env, nowMs) {
   const row = /** @type {any} */ (
     await db(env)
       .prepare(
-        `SELECT rowid AS number, title, status, updated_at FROM ideas
+        `SELECT number, title, status, updated_at FROM ideas
          WHERE status IN ('нова', 'план готовий', 'погоджено', 'у роботі') AND updated_at <= ?
          ORDER BY updated_at LIMIT 1`,
       )
