@@ -17,6 +17,7 @@ import {
 import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
+import { isTaintActive } from '../policy/core.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
 import { sendDayPlanEvent } from '../day-plan/chain.mjs';
@@ -133,7 +134,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       }
       const info = await registryRunInfo(env, auth.runId);
       const threadId = info?.threadId ?? null;
-      const tainted = await readThreadTainted(env, threadId);
+      const tainted = await readThreadTainted(env, threadId, nowMs);
       /** @type {Awaited<ReturnType<typeof applyPolicy>>} */
       let policyOut;
       try {
@@ -551,12 +552,15 @@ async function handleSession(env, body, nowMs) {
 
 /**
  * Прапорець taint треду з D1 sessions - джерело істини для policy (01 §4.2).
- * FAIL-SAFE: невідомий тред / збій D1 = вважаємо tainted (ескалація до
- * пропозиції) - помилка інфраструктури не сміє відчиняти T0-запис.
+ * Позначка - epoch-ms останнього зовнішнього читання; діє TAINT_TTL_MS
+ * (policy/core). FAIL-SAFE: невідомий тред / збій D1 = вважаємо tainted
+ * (ескалація до пропозиції) - помилка інфраструктури не сміє відчиняти
+ * T0-запис.
  * @param {Env} env
  * @param {string | number | null} threadId
+ * @param {number} nowMs
  */
-async function readThreadTainted(env, threadId) {
+async function readThreadTainted(env, threadId, nowMs) {
   if (threadId == null) return true;
   if (!env.DB) {
     console.error('internal: привʼязки DB немає - taint вважаємо true (fail-safe)');
@@ -568,7 +572,7 @@ async function readThreadTainted(env, threadId) {
       .all();
     const row = /** @type {{ tainted?: number } | undefined} */ (results?.[0]);
     // Треду ще немає в sessions = зовнішнього не читали = чиста сесія.
-    return row ? row.tainted === 1 : false;
+    return row ? isTaintActive(row.tainted, nowMs) : false;
   } catch (/** @type {any} */ e) {
     console.error('internal: читання taint впало - вважаємо true (fail-safe)', e?.message);
     return true;
@@ -577,7 +581,8 @@ async function readThreadTainted(env, threadId) {
 
 /**
  * Половина подвійного барʼєра, що живе в ядрі (01 §4.2): тред прогону, який
- * прочитав зовнішнє, позначається в D1 sessions.tainted=1 - policy (PR-8)
+ * прочитав зовнішнє, позначається в D1 sessions.tainted (epoch-ms читання,
+ * діє TAINT_TTL_MS) - policy (PR-8)
  * дивитиметься СЮДИ, а не вірити хуку мозку. Повертає true лише коли прапорець
  * СПРАВДІ персистовано - викликач на false відмовляє у видачі зовнішнього
  * вмісту (fail-closed), тому кожен зрив тут і гучний, і не тихо-пропущений.
@@ -598,12 +603,13 @@ async function markRunThreadTainted(env, runId, nowMs) {
       return false;
     }
     const iso = new Date(nowMs).toISOString();
+    // Позначка - момент читання (epoch-ms): policy рахує від нього TAINT_TTL_MS.
     await env.DB.prepare(
       `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count)
-       VALUES (?, ?, ?, 1, 0)
-       ON CONFLICT (thread_id) DO UPDATE SET tainted = 1, last_at = excluded.last_at`,
+       VALUES (?, ?, ?, ?, 0)
+       ON CONFLICT (thread_id) DO UPDATE SET tainted = excluded.tainted, last_at = excluded.last_at`,
     )
-      .bind(String(threadId), iso, iso)
+      .bind(String(threadId), iso, iso, nowMs)
       .run();
     return true;
   } catch (/** @type {any} */ e) {
