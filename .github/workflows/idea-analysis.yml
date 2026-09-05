@@ -10,13 +10,17 @@
 #
 # Ізоляція: job бачить ЛИШЕ checkout цільового репо на sha (read-only PAT)
 # і цей репозиторій заради інструкції та скрипта. claude -p дістає Read/Grep/
-# Glob і нічого більше (денайлист у scripts/idea-analysis.mjs). Результат
+# Glob і нічого більше, налаштування лише користувача раннера (--setting-
+# sources user --strict-mcp-config: хуки й MCP-сервери з .claude/ цільового
+# репо не вантажаться, а самі файли лишаються доступними для Read як дані),
+# env дочірнього процесу - лише PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN. Результат
 # їде в ядро POST /internal/artifact з підписом ADR-037 (HMAC + Access
 # service token) - ядро кладе його в ideas.analysis_md і шле документ у тему.
 #
-# Стеля 40 хв (07 §6): ядро чекає стільки ж; кожен збій ДО аналізу (checkout,
-# CLI) теж їде в ядро як status=failed кроком `if: failure()` - інакше
-# власник дізнавався б про нього лише з таймауту ланцюга.
+# Стеля 40 хв (07 §6): ядро чекає стільки ж. Збій усередині аналізу скрипт
+# сам шле як status=failed; збій ДО нього (checkout, CLI) - крок
+# `if: failure()` (S-3-5). Лише стеля job (скасування) лишає ядро без
+# відповіді - тоді спрацьовує його власний таймаут.
 name: idea-analysis
 
 on:
@@ -51,7 +55,8 @@ on:
 permissions: {}
 
 # Одна ідея - один аналіз за раз; без cancel: обірваний посеред claude -p job
-# не віддав би в ядро ані результату, ані failed.
+# не віддав би в ядро ані результату, ані failed. Другий аналіз тієї самої
+# ідеї, поки перший іде, ядро не диспатчить (IdeaAnalysis дедуплікує).
 concurrency:
   group: idea-analysis-${{ inputs.idea_id }}
   cancel-in-progress: false
@@ -70,6 +75,9 @@ jobs:
       IA_TITLE: ${{ inputs.title }}
       IA_IDEA: ${{ inputs.idea }}
       TARGET_DIR: ${{ github.workspace }}/target
+      # Адреса ядра - змінна репозиторію (Settings → Variables), не константа
+      # в коді: лише кастомний домен (скрипт відкидає *.workers.dev).
+      INTERNAL_API_URL: ${{ vars.INTERNAL_API_URL }}
     steps:
       # Сторонні Actions пінено по commit SHA, як у ci.yml.
       # 1. Цей репозиторій - заради docs/assistant/agents/code-reviewer.md і
@@ -105,12 +113,6 @@ jobs:
             }
           }
           JSON
-      # Конфіг цільового репо для claude - геть ДО запуску (security-ревʼю
-      # PR-1): хуки з .claude/settings.json і сервери з .mcp.json - код чужого
-      # репо в довіреній теці. Скрипт додатково передає --setting-sources user
-      # і --strict-mcp-config; тут - пояс до цих шлейок.
-      - name: strip target-side claude config
-        run: rm -rf target/.claude target/.mcp.json
       # Секрети ядра - лише кроками, що постять артефакт (не в env job):
       # дочірньому claude скрипт віддає рівно PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN.
       - id: analyze
@@ -122,8 +124,8 @@ jobs:
           BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
         run: node scripts/idea-analysis.mjs run
       # Збій ДО аналізу (checkout, CLI, preseed) - ядру теж треба сказати
-      # (S-3-5): крок analyze при власному збої вже надіслав failed сам, тож
-      # тут лише випадки, коли він не стартував.
+      # (S-3-5): крок analyze при власному збої шле failed сам (усередині
+      # скрипта), тож тут лише випадки, коли він не стартував.
       - name: report failure to core
         if: failure() && steps.analyze.outcome != 'failure'
         env:

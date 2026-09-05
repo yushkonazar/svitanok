@@ -56,6 +56,40 @@ export async function signInternal(key, { method, path, timestampMs, runId, nonc
 }
 
 /**
+ * Заголовки підписаного запиту в internal API (ядро→мозок /run і /abort;
+ * Actions→ядро /internal/artifact): X-Internal-* + Access-пара, коли вона є.
+ * Один збирач на всіх, хто підписує з боку web/ (ревʼю етапу 4 PR-1: третя
+ * копія заголовків розʼїхалась би з першими двома так само тихо, як і підпис).
+ * @param {string} key
+ * @param {{ method: string, path: string, runId: string, rawBody: string, nowMs: number,
+ *   nonce?: string, access?: { clientId: string, clientSecret: string } | null }} req
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function signedInternalHeaders(key, req) {
+  const nonce = req.nonce ?? crypto.randomUUID();
+  /** @type {Record<string, string>} */
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Internal-Timestamp': String(req.nowMs),
+    'X-Internal-Run': req.runId,
+    'X-Internal-Nonce': nonce,
+    'X-Internal-Signature': await signInternal(key, {
+      method: req.method,
+      path: req.path,
+      timestampMs: req.nowMs,
+      runId: req.runId,
+      nonce,
+      rawBody: req.rawBody,
+    }),
+  };
+  if (req.access) {
+    headers['CF-Access-Client-Id'] = req.access.clientId;
+    headers['CF-Access-Client-Secret'] = req.access.clientSecret;
+  }
+  return headers;
+}
+
+/**
  * Чинні ключі HMAC. Trim — задокументована пастка проєкту (хвостовий \r\n із
  * панелі); рядок із самих пробілів = незаданий ключ (та сама семантика, що
  * validateInitData). Порожній список — fail-closed: 500, не тихий пропуск.

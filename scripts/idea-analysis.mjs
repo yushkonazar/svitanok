@@ -4,7 +4,8 @@
 //
 //   node scripts/idea-analysis.mjs run      - claude -p з code-reviewer.md над
 //                                             checkout цільового репо → звіт →
-//                                             POST /internal/artifact (status ok)
+//                                             POST /internal/artifact (status ok);
+//                                             будь-який власний збій → failed
 //   node scripts/idea-analysis.mjs failed   - лише POST status=failed (крок
 //                                             `if: failure()` воркфлоу, коли
 //                                             упало ДО аналізу: checkout, CLI)
@@ -13,43 +14,48 @@
 // артефакт тим самим підписом ADR-037, що й мозок: HMAC по сирому тілу з
 // run_id, який ядро зареєструвало ДО dispatch (Workflow IdeaAnalysis, PR-2),
 // + Access service token на периметрі. Секрети в лог не потрапляють: лише
-// шлях, статус і довжина звіту.
+// шлях, статус і довжина звіту; stderr claude - з вирізаним токеном.
 //
-// Без залежностей (npm ci у job не потрібен): підпис - node:crypto, парсер
-// інструкції - web/core/instructions.mjs (платформно-чистий).
+// Без npm-залежностей (npm ci у job не потрібен): підпис - web/core/internal/
+// auth.mjs (той самий, що в ядрі), парсер інструкції - web/core/instructions.mjs.
 
-import { createHmac, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseInstruction } from '../web/core/instructions.mjs';
+import { signedInternalHeaders } from '../web/core/internal/auth.mjs';
 
 /** Inputs воркфлоу = поля dispatch з ядра (парність тримають тести обох боків). */
 export const WORKFLOW_INPUTS = ['run_id', 'idea_id', 'repo', 'sha', 'title', 'idea'];
 
-/** Секрети/змінні, без яких скрипт не має права починати. */
+/** Без цього не можна навіть повідомити ядру про збій (обидва режими). */
 export const REQUIRED_ENV = [
   'IA_RUN_ID',
   'IA_IDEA_ID',
-  'IA_REPO',
-  'IA_SHA',
+  'INTERNAL_API_URL',
   'INTERNAL_HMAC_KEY',
   'BRAIN_ACCESS_CLIENT_ID',
   'BRAIN_ACCESS_CLIENT_SECRET',
 ];
+/** Додатково для режиму run: без них нема чого аналізувати. */
+export const RUN_REQUIRED_ENV = ['IA_REPO', 'IA_SHA', 'TARGET_DIR', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-/** Репозиторії, доступні для аналізу (S-3-8; той самий перелік у ядрі). */
+/** Репозиторії, доступні для аналізу (S-3-8; парність із ядром тримає тест). */
 export const IDEA_REPOS = ['svitanok', 'portfolio', 'moviehouse', 'modern-blog'];
 
-/** Канон internal API - лише кастомний домен (інцидент 24.08). */
-export const DEFAULT_INTERNAL_API_URL = 'https://svitanok.yushko.dev';
 export const ARTIFACT_PATH = '/internal/artifact';
-/** Кап звіту в артефакті: тіло /internal/* ≤ 128 KiB, кирилиця - 2 байти/символ. */
-export const ARTIFACT_MD_MAX = 40_000;
+/** Кап звіту в артефакті - у БАЙТАХ UTF-8: тіло /internal/* ≤ 128 KiB
+ *  (MAX_INTERNAL_BODY_BYTES ядра), запас - на JSON-екранування й решту полів. */
+export const ARTIFACT_MD_MAX_BYTES = 96_000;
 /** Кап тексту ідеї у промпті (inputs воркфлоу ≤ 65 535 символів разом). */
 export const IDEA_TEXT_MAX = 12_000;
 /** Бюджет claude -p: інструкція каже ≤ 25 хв, стеля job - 40. */
 export const CLAUDE_TIMEOUT_MS = 25 * 60_000;
+/** SIGTERM проігноровано (посеред виклику інструмента) - SIGKILL, інакше
+ *  висіли б до стелі job, а та вбиває без failed у ядро. */
+export const CLAUDE_KILL_GRACE_MS = 10_000;
+/** Один повтор POST після мережевого збою чи 5xx: 25 хв аналізу дорожчі за 5 с. */
+export const POST_RETRY_DELAY_MS = 5_000;
 export const INSTRUCTION_FILE = 'docs/assistant/agents/code-reviewer.md';
 /** Вбудовані інструменти, дозволені Код-оглядачу (07 §4: Read, Grep, Glob). */
 export const ALLOWED_TOOLS = ['Read', 'Grep', 'Glob'];
@@ -65,46 +71,18 @@ export const DISALLOWED_TOOLS = [
   'Task',
   'TodoWrite',
 ];
+/** Змінні, які дістає дочірній claude - і ТІЛЬКИ вони. Секрети ядра
+ *  (INTERNAL_HMAC_KEY, Access-пара) процесу моделі не потрібні; хук із
+ *  чужого репо, навіть якби завантажився, їх би не побачив (security-ревʼю). */
+export const CHILD_ENV_KEYS = ['PATH', 'HOME', 'CLAUDE_CODE_OAUTH_TOKEN'];
 const MODEL_IDS = { sonnet: 'claude-sonnet-5', haiku: 'claude-haiku-4-5' };
 
-/**
- * Підпис ADR-037 - той самий рядок, що verifyInternalRequest ядра:
- * `${method}\n${path}\n${ts}\n${runId}\n${nonce}\n${body}`.
- * @param {string} key
- * @param {{ method: string, path: string, timestampMs: number, runId: string, nonce: string, rawBody: string }} input
- */
-export function signInternal(key, { method, path, timestampMs, runId, nonce, rawBody }) {
-  return createHmac('sha256', key)
-    .update(`${method}\n${path}\n${timestampMs}\n${runId}\n${nonce}\n${rawBody}`, 'utf8')
-    .digest('hex');
-}
-
-/**
- * Заголовки підписаного POST у ядро (+ Access service token, коли пара є).
- * @param {{ hmacKey: string, accessClientId?: string | null, accessClientSecret?: string | null }} cfg
- * @param {{ path: string, runId: string, rawBody: string, nowMs: number, nonce?: string }} req
- */
-export function signedHeaders(cfg, { path, runId, rawBody, nowMs, nonce = randomUUID() }) {
-  /** @type {Record<string, string>} */
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-Internal-Timestamp': String(nowMs),
-    'X-Internal-Run': runId,
-    'X-Internal-Nonce': nonce,
-    'X-Internal-Signature': signInternal(cfg.hmacKey, {
-      method: 'POST',
-      path,
-      timestampMs: nowMs,
-      runId,
-      nonce,
-      rawBody,
-    }),
-  };
-  if (cfg.accessClientId && cfg.accessClientSecret) {
-    headers['CF-Access-Client-Id'] = cfg.accessClientId;
-    headers['CF-Access-Client-Secret'] = cfg.accessClientSecret;
-  }
-  return headers;
+/** @param {NodeJS.ProcessEnv} env */
+export function childEnv(env) {
+  /** @type {NodeJS.ProcessEnv} */
+  const out = {};
+  for (const k of CHILD_ENV_KEYS) if (env[k] != null) out[k] = env[k];
+  return out;
 }
 
 /**
@@ -125,7 +103,10 @@ export function buildTaskPrompt({ idea, title, repo, sha }) {
 
 /**
  * Аргументи claude -p: системний промпт = тіло інструкції, стеля ходів і
- * модель - з її front-matter, інструменти - лише Read/Grep/Glob.
+ * модель - з її front-matter, інструменти - лише Read/Grep/Glob, налаштування
+ * лише користувача раннера (security-ревʼю PR-1: без цього claude -p підхопив
+ * би .claude/settings.json цільового репо, а хуки в ньому - shell-команди в
+ * довіреній теці; те саме для .mcp.json).
  * @param {{ instructionRaw: string, prompt: string }} input
  */
 export function claudeArgs({ instructionRaw, prompt }) {
@@ -152,9 +133,6 @@ export function claudeArgs({ instructionRaw, prompt }) {
     ...ALLOWED_TOOLS,
     '--disallowedTools',
     ...DISALLOWED_TOOLS,
-    // Налаштування ЛИШЕ користувача раннера (security-ревʼю PR-1): без цього
-    // claude -p підхопив би .claude/settings.json цільового репо, а хуки в
-    // ньому - shell-команди в довіреній теці. Те саме для .mcp.json.
     '--setting-sources',
     'user',
     '--strict-mcp-config',
@@ -162,10 +140,12 @@ export function claudeArgs({ instructionRaw, prompt }) {
 }
 
 /**
- * Результат claude -p --output-format json: обʼєкт {type:'result', result,
- * is_error, subtype, num_turns} або масив повідомлень з ним наприкінці.
+ * Результат claude -p --output-format json: один обʼєкт {type:'result', result,
+ * is_error, subtype, num_turns}. Стеля ходів (error_max_turns) із непорожнім
+ * текстом - НЕ збій, а частковий звіт (S-7-5 «не вклався - ось що встиг»):
+ * 20 хв читання коду не викидаються.
  * @param {string} stdout
- * @returns {{ ok: true, md: string, meta: { num_turns: number | null, duration_ms: number | null } }
+ * @returns {{ ok: true, md: string, meta: { num_turns: number | null, duration_ms: number | null, partial?: true } }
  *         | { ok: false, reason: string }}
  */
 export function parseClaudeOutput(stdout) {
@@ -176,24 +156,46 @@ export function parseClaudeOutput(stdout) {
   } catch {
     return { ok: false, reason: 'вивід claude не JSON' };
   }
-  const result = Array.isArray(parsed)
-    ? parsed.findLast((m) => m && typeof m === 'object' && m.type === 'result')
-    : parsed;
-  if (!result || typeof result !== 'object') return { ok: false, reason: 'без result' };
-  const r = /** @type {Record<string, unknown>} */ (result);
-  if (r.is_error || (typeof r.subtype === 'string' && r.subtype !== 'success')) {
-    return { ok: false, reason: `claude: ${String(r.subtype ?? 'error')}` };
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, reason: 'без result' };
   }
+  const r = /** @type {Record<string, unknown>} */ (parsed);
   const md = typeof r.result === 'string' ? r.result.trim() : '';
+  const subtype = typeof r.subtype === 'string' ? r.subtype : 'success';
+  const partial = subtype === 'error_max_turns' && md !== '';
+  if (r.is_error || (subtype !== 'success' && !partial)) {
+    return { ok: false, reason: `claude: ${subtype}` };
+  }
   if (!md) return { ok: false, reason: 'порожній звіт' };
+  const num = (/** @type {unknown} */ v) =>
+    v == null || !Number.isFinite(Number(v)) ? null : Number(v);
   return {
     ok: true,
-    md,
+    md: partial ? `> Не вклався у стелю ходів - ось що встиг.\n\n${md}` : md,
     meta: {
-      num_turns: Number.isFinite(Number(r.num_turns)) ? Number(r.num_turns) : null,
-      duration_ms: Number.isFinite(Number(r.duration_ms)) ? Number(r.duration_ms) : null,
+      num_turns: num(r.num_turns),
+      duration_ms: num(r.duration_ms),
+      ...(partial ? { partial: true } : {}),
     },
   };
+}
+
+/**
+ * Зріз під кап у байтах UTF-8 (не символах: «→», «≤» і емодзі - 3-4 байти).
+ * Межа не розрубує код-поїнт.
+ * @param {string} text @param {number} maxBytes
+ */
+export function clipToBytes(text, maxBytes) {
+  let bytes = 0;
+  let i = 0;
+  for (const ch of text) {
+    const cp = /** @type {number} */ (ch.codePointAt(0));
+    const b = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (bytes + b > maxBytes) return text.slice(0, i);
+    bytes += b;
+    i += ch.length;
+  }
+  return text;
 }
 
 /**
@@ -205,29 +207,18 @@ export function parseClaudeOutput(stdout) {
 export function artifactBody(ctx, outcome) {
   const base = { idea_id: ctx.ideaId, repo: ctx.repo, sha: ctx.sha };
   if (!outcome.ok) return { ...base, status: 'failed', reason: outcome.reason.slice(0, 500) };
+  const clipped = clipToBytes(outcome.md, ARTIFACT_MD_MAX_BYTES);
   const md =
-    outcome.md.length > ARTIFACT_MD_MAX
-      ? `${outcome.md.slice(0, ARTIFACT_MD_MAX)}\n\n…(звіт обрізано до ${ARTIFACT_MD_MAX} символів)`
+    clipped.length < outcome.md.length
+      ? `${clipped}\n\n…(звіт обрізано до ${ARTIFACT_MD_MAX_BYTES} байт)`
       : outcome.md;
   return { ...base, status: 'ok', md, ...(outcome.meta ? { meta: outcome.meta } : {}) };
 }
 
-/** Змінні, які дістає дочірній claude - і ТІЛЬКИ вони. Секрети ядра
- *  (INTERNAL_HMAC_KEY, Access-пара) процесу моделі не потрібні; хук із
- *  чужого репо, навіть якби завантажився, їх би не побачив (security-ревʼю). */
-export const CHILD_ENV_KEYS = ['PATH', 'HOME', 'CLAUDE_CODE_OAUTH_TOKEN'];
-
-/** @param {NodeJS.ProcessEnv} env */
-export function childEnv(env) {
-  /** @type {NodeJS.ProcessEnv} */
-  const out = {};
-  for (const k of CHILD_ENV_KEYS) if (env[k] != null) out[k] = env[k];
-  return out;
-}
-
 /**
- * Запустити claude -p у теці checkout-у; вихід - stdout цілком. Таймаут -
- * SIGTERM і чесна відмова (стеля job вище страхує зависання самого kill).
+ * Запустити claude -p у теці checkout-у; вихід - stdout цілком (utf8 з
+ * декодером потоку, а не по чанках: розрубаний на межі чанка символ дав би
+ * U+FFFD посеред звіту). Таймаут - SIGTERM, за CLAUDE_KILL_GRACE_MS - SIGKILL.
  * @param {{ bin: string, args: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv }} opts
  * @returns {Promise<{ code: number | null, stdout: string, stderr: string, timedOut: boolean }>}
  */
@@ -237,118 +228,184 @@ export function runClaude({ bin, args, cwd, timeoutMs, env }) {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    /** @type {NodeJS.Timeout | null} */
+    let killer = null;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGTERM');
+      killer = setTimeout(() => child.kill('SIGKILL'), CLAUDE_KILL_GRACE_MS);
     }, timeoutMs);
-    child.stdout.on('data', (chunk) => (stdout += String(chunk)));
-    child.stderr.on('data', (chunk) => (stderr += String(chunk)));
-    child.on('error', (e) => {
+    const clear = () => {
       clearTimeout(timer);
+      if (killer) clearTimeout(killer);
+    };
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => (stdout += chunk));
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.on('error', (e) => {
+      clear();
       reject(e);
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      clear();
       resolve({ code, stdout, stderr, timedOut });
     });
   });
 }
 
 /**
- * Надіслати артефакт у ядро. Відповідь ≠ 2xx - виняток із кодом: невідданий
- * результат = червоний job, а не тиша.
- * @param {NodeJS.ProcessEnv} env
+ * Надіслати артефакт у ядро. Мережевий збій чи 5xx - один повтор; відповідь
+ * ≠ 2xx після нього - виняток із кодом: невідданий результат = червоний job,
+ * а не тиша.
+ * @param {{ apiUrl: string, hmacKey: string, access: { clientId: string, clientSecret: string }, runId: string }} ctx
  * @param {Record<string, unknown>} body
  * @param {typeof fetch} [fetchFn]
+ * @param {(ms: number) => Promise<void>} [sleep]
  */
-export async function postArtifact(env, body, fetchFn = fetch) {
-  const base = String(env.INTERNAL_API_URL ?? DEFAULT_INTERNAL_API_URL)
-    .trim()
-    .replace(/\/+$/, '');
-  if (new URL(base).hostname.endsWith('.workers.dev')) {
-    throw new Error('INTERNAL_API_URL на *.workers.dev - лише кастомний домен');
-  }
+export async function postArtifact(ctx, body, fetchFn = fetch, sleep = defaultSleep) {
   const rawBody = JSON.stringify(body);
-  const headers = signedHeaders(
-    {
-      hmacKey: String(env.INTERNAL_HMAC_KEY ?? '').trim(),
-      accessClientId: String(env.BRAIN_ACCESS_CLIENT_ID ?? '').trim() || null,
-      accessClientSecret: String(env.BRAIN_ACCESS_CLIENT_SECRET ?? '').trim() || null,
-    },
-    { path: ARTIFACT_PATH, runId: String(env.IA_RUN_ID), rawBody, nowMs: Date.now() },
-  );
-  const res = await fetchFn(`${base}${ARTIFACT_PATH}`, {
-    method: 'POST',
-    headers,
-    body: rawBody,
-    signal: AbortSignal.timeout(30_000),
-  });
+  const attempt = async () => {
+    const headers = await signedInternalHeaders(ctx.hmacKey, {
+      method: 'POST',
+      path: ARTIFACT_PATH,
+      runId: ctx.runId,
+      rawBody,
+      nowMs: Date.now(),
+      access: ctx.access,
+    });
+    return fetchFn(`${ctx.apiUrl}${ARTIFACT_PATH}`, {
+      method: 'POST',
+      headers,
+      body: rawBody,
+      signal: AbortSignal.timeout(30_000),
+    });
+  };
+  /** @type {Response | null} */
+  let res = null;
+  /** @type {unknown} */
+  let transportErr = null;
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      res = await attempt();
+      transportErr = null;
+      if (res.status < 500) break;
+    } catch (e) {
+      transportErr = e;
+    }
+    if (i === 0) await sleep(POST_RETRY_DELAY_MS);
+  }
+  if (!res) {
+    throw new Error(`/internal/artifact недосяжний: ${String(transportErr).slice(0, 200)}`);
+  }
   const text = await res.text().catch(() => '');
   if (!res.ok) throw new Error(`/internal/artifact ${res.status}: ${text.slice(0, 200)}`);
   return res.status;
 }
 
-/** @param {NodeJS.ProcessEnv} env */
-export function readContext(env) {
-  const missing = REQUIRED_ENV.filter((k) => !String(env[k] ?? '').trim());
+/** @param {number} ms */
+function defaultSleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Контекст із env. Режим failed перевіряє лише те, без чого не можна
+ * повідомити ядру (run_id, адреса, ключі): збій через кривий repo/sha теж має
+ * доїхати як failed, а не впасти вдруге на власній валідації.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {'run' | 'failed'} mode
+ */
+export function readContext(env, mode) {
+  const need = mode === 'run' ? [...REQUIRED_ENV, ...RUN_REQUIRED_ENV] : REQUIRED_ENV;
+  const missing = need.filter((k) => !String(env[k] ?? '').trim());
   if (missing.length) throw new Error(`не задано: ${missing.join(', ')}`);
-  const repo = String(env.IA_REPO).trim();
-  if (!IDEA_REPOS.includes(repo)) {
-    throw new Error(`repo «${repo}» поза переліком: ${IDEA_REPOS.join(', ')}`);
+  const apiUrl = String(env.INTERNAL_API_URL).trim().replace(/\/+$/, '');
+  // Канон internal API - лише кастомний домен (інцидент 24.08).
+  if (new URL(apiUrl).hostname.endsWith('.workers.dev')) {
+    throw new Error('INTERNAL_API_URL на *.workers.dev - лише кастомний домен');
   }
-  const sha = String(env.IA_SHA).trim();
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('sha має бути 40 hex');
+  const repo = String(env.IA_REPO ?? '').trim();
+  const sha = String(env.IA_SHA ?? '').trim();
+  const idea = String(env.IA_IDEA ?? '').trim();
+  const title = String(env.IA_TITLE ?? '').trim();
+  if (mode === 'run') {
+    if (!IDEA_REPOS.includes(repo)) {
+      throw new Error(`repo «${repo}» поза переліком: ${IDEA_REPOS.join(', ')}`);
+    }
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('sha має бути 40 hex');
+    if (!idea && !title) throw new Error('порожня ідея - нема чого аналізувати');
+  }
   return {
     runId: String(env.IA_RUN_ID).trim(),
     ideaId: String(env.IA_IDEA_ID).trim(),
-    repo,
-    sha,
-    title: String(env.IA_TITLE ?? ''),
-    idea: String(env.IA_IDEA ?? ''),
-    targetDir: String(env.TARGET_DIR ?? 'target'),
+    apiUrl,
+    hmacKey: String(env.INTERNAL_HMAC_KEY).trim(),
+    access: {
+      clientId: String(env.BRAIN_ACCESS_CLIENT_ID).trim(),
+      clientSecret: String(env.BRAIN_ACCESS_CLIENT_SECRET).trim(),
+    },
+    repo: repo.slice(0, 64),
+    sha: sha.slice(0, 64),
+    title,
+    idea,
+    targetDir: String(env.TARGET_DIR ?? '').trim(),
   };
+}
+
+/** stderr дочірнього процесу без значення токена (він у env дитини).
+ *  @param {string} text @param {string} token */
+export function redact(text, token) {
+  return token ? text.split(token).join('***') : text;
 }
 
 async function main() {
   const mode = process.argv[2];
   const env = process.env;
-  const ctx = readContext(env);
+  if (mode !== 'run' && mode !== 'failed') throw new Error('режим: run | failed');
+  const ctx = readContext(env, mode);
 
   if (mode === 'failed') {
     const reason = String(env.IA_REASON ?? 'job упав до аналізу');
-    await postArtifact(env, artifactBody(ctx, { ok: false, reason }));
+    await postArtifact(ctx, artifactBody(ctx, { ok: false, reason }));
     console.log(`артефакт: failed (${reason})`);
     return;
   }
-  if (mode !== 'run') throw new Error('режим: run | failed');
 
-  if (!String(env.CLAUDE_CODE_OAUTH_TOKEN ?? '').trim()) {
-    throw new Error('не задано: CLAUDE_CODE_OAUTH_TOKEN');
+  // Будь-який збій нижче - failed у ядро від самого скрипта (ревʼю PR-1):
+  // крок воркфлоу `if: failure()` покриває лише те, що впало ДО цього кроку.
+  /** @type {ReturnType<typeof parseClaudeOutput>} */
+  let outcome;
+  try {
+    const instructionRaw = readFileSync(INSTRUCTION_FILE, 'utf8');
+    const args = claudeArgs({ instructionRaw, prompt: buildTaskPrompt(ctx) });
+    const started = Date.now();
+    const proc = await runClaude({
+      bin: String(env.CLAUDE_BIN ?? 'claude'),
+      args,
+      cwd: ctx.targetDir,
+      timeoutMs: CLAUDE_TIMEOUT_MS,
+      env: childEnv(env),
+    });
+    console.log(
+      `claude -p: код ${proc.code}, ${Math.round((Date.now() - started) / 1000)} с, stdout ${proc.stdout.length} симв.`,
+    );
+    if (proc.stderr.trim()) {
+      console.error(redact(proc.stderr.slice(-2000), String(env.CLAUDE_CODE_OAUTH_TOKEN ?? '')));
+    }
+    outcome = proc.timedOut
+      ? { ok: false, reason: `таймаут ${CLAUDE_TIMEOUT_MS / 60_000} хв` }
+      : parseClaudeOutput(proc.stdout);
+  } catch (e) {
+    outcome = { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
-  const instructionRaw = readFileSync(INSTRUCTION_FILE, 'utf8');
-  const args = claudeArgs({ instructionRaw, prompt: buildTaskPrompt(ctx) });
-  const started = Date.now();
-  const proc = await runClaude({
-    bin: String(env.CLAUDE_BIN ?? 'claude'),
-    args,
-    cwd: ctx.targetDir,
-    timeoutMs: CLAUDE_TIMEOUT_MS,
-    env: childEnv(env),
-  });
-  console.log(
-    `claude -p: код ${proc.code}, ${Math.round((Date.now() - started) / 1000)} с, stdout ${proc.stdout.length} симв.`,
-  );
-  if (proc.stderr.trim()) console.error(proc.stderr.slice(-2000));
-
-  const outcome = proc.timedOut
-    ? { ok: /** @type {const} */ (false), reason: `таймаут ${CLAUDE_TIMEOUT_MS / 60_000} хв` }
-    : parseClaudeOutput(proc.stdout);
-  await postArtifact(env, artifactBody(ctx, outcome));
+  await postArtifact(ctx, artifactBody(ctx, outcome));
   if (!outcome.ok) {
     console.error(`артефакт: failed (${outcome.reason})`);
     process.exit(1);
   }
-  console.log(`артефакт: ok, звіт ${outcome.md.length} симв.`);
+  console.log(
+    `артефакт: ok, звіт ${outcome.md.length} симв.${outcome.meta.partial ? ' (частковий)' : ''}`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
