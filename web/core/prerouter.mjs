@@ -974,10 +974,11 @@ function proposalToast(res) {
  */
 function decisionText(res) {
   if (!res.ok || !('status' in res)) return proposalToast(res);
-  const what = describeProposal(
-    res.kind,
-    res.status === 'approved' ? res.result : 'payload' in res ? res.payload : null,
-  );
+  // Підпис із результату виконавця; без назви там - із payload пропозиції
+  // (export віддає {filename, rows}, accept - {date}; приймання 05.09, B4).
+  const payload = 'payload' in res ? res.payload : null;
+  const fromResult = res.status === 'approved' ? describeProposal(res.kind, res.result) : res.kind;
+  const what = fromResult !== res.kind ? fromResult : describeProposal(res.kind, payload);
   if (res.status === 'approved') return `✅ Виконано: ${what}.`;
   if (res.status === 'rejected') return `❌ Відхилено: ${what}.`;
   return `⌛ Прострочено: ${what} - попроси ще раз, якщо ще актуально.`;
@@ -988,14 +989,19 @@ function decisionText(res) {
  * (назва, текст, ключ факту). Без JSON у чаті.
  * @param {string} kind @param {unknown} obj
  */
-function describeProposal(kind, obj) {
+export function describeProposal(kind, obj) {
   const o = /** @type {Record<string, unknown>} */ (obj && typeof obj === 'object' ? obj : {});
+  // Порядок: назва → дата (plan.*) → файл (export) → короткий текст → колекція
+  // → номер → id. Довгий text (чернетка плану) - не підпис (приймання 05.09, B4).
+  const shortText = typeof o.text === 'string' && o.text.length <= 80 ? o.text : null;
   const label =
     kind === 'facts.set'
       ? [o.kind, o.key].filter(Boolean).join('.')
       : (o.title ??
         o.name ??
-        o.text ??
+        o.date ??
+        o.filename ??
+        shortText ??
         o.collection ??
         (o.number != null ? `#${o.number}` : null) ??
         // delete/cancel/analyze шлють лише id (ревʼю 05.09) - хай буде хоч він.

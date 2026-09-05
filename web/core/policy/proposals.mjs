@@ -16,7 +16,7 @@ import {
   PROPOSAL_TTL_MS,
   UNDO_WINDOW_MS,
 } from './core.mjs';
-import { runFactsSet, runFactsGet } from '../tools/facts.mjs';
+import { runFactsSet, runFactsGet, FACT_KINDS } from '../tools/facts.mjs';
 import { runRecord } from '../tools/record.mjs';
 import {
   runRemindersCreate,
@@ -443,6 +443,17 @@ export async function applyPolicy(env, action, nowMs) {
     };
   }
 
+  // kind факту звіряємо ДО виконання чи пропозиції (приймання 05.09, B1):
+  // модель обрала «preference», перевірка стояла лише у виконавці, і помилка
+  // вилізла вже після ✅ власника. Тепер модель дістає відмову з переліком
+  // одразу. Гейт ПІСЛЯ direct-tool: той висновок важливіший за деталі payload.
+  if (action.kind === 'facts.set' && !FACT_KINDS.includes(String(action.payload?.kind))) {
+    return {
+      mode: 'error',
+      error: `facts.set: невідомий kind "${String(action.payload?.kind)}"; дозволені: ${FACT_KINDS.join(', ')}`,
+    };
+  }
+
   if (level === 'T0') {
     const executor = EXECUTORS[action.kind];
     if (!executor) return { mode: 'error', error: `no-executor: ${action.kind}` };
@@ -505,7 +516,7 @@ export async function applyPolicy(env, action, nowMs) {
  * @param {{ id: string, choice: 'ok' | 'no', word?: string | null }} input
  * @param {number} nowMs
  * @returns {Promise<
- *   | { ok: true, status: 'approved', executed: boolean, kind: string, result?: unknown, error?: string }
+ *   | { ok: true, status: 'approved', executed: boolean, kind: string, payload?: unknown, result?: unknown, error?: string }
  *   | { ok: true, status: 'rejected' | 'expired', kind: string, payload: unknown }
  *   | { ok: true, already: string }
  *   | { ok: false, error: string }>}
@@ -555,7 +566,7 @@ export async function resolveProposal(env, input, nowMs) {
       chatId: null,
       threadId: row.thread_id,
     });
-    return { ok: true, status: 'approved', executed: true, kind: row.kind, result };
+    return { ok: true, status: 'approved', executed: true, kind: row.kind, payload, result };
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.
     console.error(`policy: виконання ${row.kind} після ✅ впало`, e?.message);

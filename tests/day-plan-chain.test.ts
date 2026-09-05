@@ -285,6 +285,34 @@ describe('runDayPlanChain', () => {
     expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
   });
 
+  // Приймання 05.09, B2: «🗓 У календар» створює пропозиції T1 - і ланцюг сам
+  // шле кожну з кнопками ✅/❌, інакше вони лежать open без сліду в чаті.
+  it('«🗓 У календар»: план прийнято, кожна пропозиція calendar.event іде в тред із кнопками p:', async () => {
+    const { db, env } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW);
+    const noQuestions = {
+      payload: {
+        mode: 'intent',
+        output: { items: [{ title: 'Банк', kind: 'errand', est_min: 60 }] },
+      },
+    };
+    const { step } = fakeStep({
+      intent: [{ payload: { text: 'банк' } }],
+      worker: [noQuestions, WORKER_EXPLAIN],
+      accept: [{ payload: { choice: 'calendar' } }],
+      carry: [{ payload: { choice: 'carry_none' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId);
+    await runDayPlanChain(env, { chainId, date: DATE }, step, io);
+    const cal = sent.find((s) => s.text.startsWith('🗓 «Банк» 07.09 '));
+    expect(cal?.text).toBe('🗓 «Банк» 07.09 08:00-09:20 - додати в календар?');
+    expect(cal?.buttons.some((b) => /^p:[0-9a-f-]{36}:ok$/.test(b))).toBe(true);
+    expect(
+      db.prepare(`SELECT kind, level, status FROM proposals WHERE kind = 'calendar.event'`).all(),
+    ).toEqual([{ kind: 'calendar.event', level: 'T1', status: 'open' }]);
+    expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
+  });
+
   it('«Не питай сьогодні» - день skipped, ланцюг done, більше нічого не шле', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);

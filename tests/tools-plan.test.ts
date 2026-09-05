@@ -165,6 +165,19 @@ describe('plan.* через policy', () => {
       { kind: 'calendar.event', level: 'T1', status: 'open' },
       { kind: 'calendar.event', level: 'T1', status: 'open' },
     ]);
+    // Пропозиції створило ядро - кнопки ✅/❌ теж шле ядро в тред (приймання
+    // 05.09, B2: інакше вони лежали open без сліду в чаті).
+    const sent = (
+      db.prepare(`SELECT thread_id, payload_json FROM outbox WHERE kind = 'send'`).all() as {
+        thread_id: string;
+        payload_json: string;
+      }[]
+    ).map((r) => ({ thread: r.thread_id, p: JSON.parse(r.payload_json) }));
+    expect(sent).toHaveLength(2);
+    expect(sent[0]?.thread).toBe('99');
+    expect(sent[0]?.p.text).toBe('🗓 «Презентація» 07.09 08:00-09:20 - додати в календар?');
+    expect(JSON.stringify(sent[0]?.p.reply_markup)).toContain(`"p:${ids[0]}:ok"`);
+    expect(sent[1]?.p.text).toContain('«Банк»');
 
     await expect(act('plan.accept', { date: '2026-09-09' })).rejects.toThrow('немає чернетки');
   });

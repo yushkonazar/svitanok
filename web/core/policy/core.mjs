@@ -62,10 +62,18 @@ export const UNDO_WINDOW_MS = 10 * 60_000;
  * Скільки живе taint після ОСТАННЬОГО зовнішнього читання (рішення власника
  * на прийманні етапу 3, 05.09.2026: «до /new або 24 год тиші» з 01 §4.2
  * робило кожен запис у треді пропозицією на весь день). Інʼєкція з листа
- * діє в тому ж прогоні або одразу після - півгодини її накриває; далі T0
- * знову T0 з «↩». `sessions.tainted` зберігає epoch-ms позначки (0 = чисто).
+ * діє в тому ж прогоні або одразу після - десять хвилин її накривають (30 хв
+ * власник 05.09 назвав задовгими); далі T0 знову T0 з «↩».
+ * `sessions.tainted` зберігає epoch-ms позначки (0 = чисто).
  */
-export const TAINT_TTL_MS = 30 * 60_000;
+export const TAINT_TTL_MS = 10 * 60_000;
+
+/**
+ * T0-дії, які taint НЕ ескалює: читання/перерахунок власного плану без
+ * зовнішнього ефекту (приймання 05.09, B3: «що там з планом» під taint
+ * просило ✅, а результат після ✅ не показувався).
+ */
+export const TAINT_EXEMPT_KINDS = new Set(['plan.review', 'plan.draft']);
 
 /**
  * Чи taint ще діє. marker - значення `sessions.tainted`: 0 = чисто; epoch-ms
@@ -102,7 +110,7 @@ export function decideLevel(kind, tainted) {
       error: `невідомий kind дії "${kind}"; дозволені: ${Object.keys(ACTION_LEVELS).join(', ')}`,
     };
   }
-  if (base === 'T0' && tainted) return { level: 'T1' };
+  if (base === 'T0' && tainted && !TAINT_EXEMPT_KINDS.has(kind)) return { level: 'T1' };
   return { level: base };
 }
 

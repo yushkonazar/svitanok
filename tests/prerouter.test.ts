@@ -13,6 +13,7 @@ import {
   startClaimedRun,
   kickPendingThreads,
   dayPlanChoiceEvent,
+  describeProposal,
 } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
@@ -930,6 +931,32 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     });
     expect(dayPlanChoiceEvent('a0_3')).toEqual({ type: 'answer', payload: { item: 0, option: 3 } });
     expect(dayPlanChoiceEvent('ok')).toBeNull();
+  });
+
+  // Приймання 05.09, B4: підпис «✅ Виконано» - назва, дата, файл, короткий
+  // текст; довга чернетка плану - не підпис; лише id - хоч id.
+  it('describeProposal: назва → дата → файл → короткий текст → id; довгий text не підпис', () => {
+    expect(describeProposal('collection.export', { filename: 'Підписки.csv', rows: 1 })).toBe(
+      'collection.export «Підписки.csv»',
+    );
+    expect(
+      describeProposal('plan.intent', { date: '2026-09-06', text: 'План на 06.09\n'.repeat(20) }),
+    ).toBe('plan.intent «2026-09-06»');
+    expect(describeProposal('plan.accept', { date: '2026-09-06', reminders: 3 })).toBe(
+      'plan.accept «2026-09-06»',
+    );
+    expect(describeProposal('reminders.create', { id: 'r1', text: 'Полити квіти' })).toBe(
+      'reminders.create «Полити квіти»',
+    );
+    expect(describeProposal('ideas.delete', { id: '7' })).toBe('ideas.delete «7»');
+    // Довгий text без дати/назви - не підпис: падаємо до id.
+    expect(describeProposal('reminders.create', { id: 'r1', text: 'х'.repeat(100) })).toBe(
+      'reminders.create «r1»',
+    );
+    expect(describeProposal('facts.set', { kind: 'setting', key: 'k' })).toBe(
+      'facts.set «setting.k»',
+    );
+    expect(describeProposal('forget', null)).toBe('forget');
   });
 
   it('заглушки r:/a:/m: чесні; невідома кнопка c: - чесна відмова; чужі префікси (rc:, v1:) і off-режим - null (легасі)', async () => {
