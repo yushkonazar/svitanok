@@ -91,6 +91,18 @@ describe('RunRegistryDO', () => {
     expect(update?.args).toContain('timeout');
   });
 
+  // Етап 4 PR-2: прогін в Actions (idea-analysis) живе до 40 хв - власна
+  // стеля сторожа, інакше run_id закривався б до артефакту (403 run-unknown).
+  it('sweepStale: staleMs прогону перекриває загальну стелю', async () => {
+    const db = makeDb();
+    const { registry } = makeRegistry(db);
+    await registry.begin({ id: 'long', trigger: 'actions', startedMs: T0, staleMs: 45 * 60_000 });
+    await registry.begin({ id: 'chat', trigger: 'chat', startedMs: T0 });
+    expect(await registry.sweepStale(T0 + 20 * 60_000, 6 * 60_000)).toEqual(['chat']);
+    expect(await registry.has('long')).toBe(true);
+    expect(await registry.sweepStale(T0 + 46 * 60_000, 6 * 60_000)).toEqual(['long']);
+  });
+
   it('consumeNonce: перший раз true, повтор false, старі чистяться за віком', async () => {
     const { registry } = makeRegistry();
     expect(await registry.consumeNonce('r1', 'n1', T0, 20 * 60_000)).toBe(true);

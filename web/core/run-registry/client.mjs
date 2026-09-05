@@ -15,9 +15,9 @@ const enabled = (/** @type {Env} */ env) =>
   env.ASSISTANT_V2 === 'shadow' || env.ASSISTANT_V2 === 'on';
 
 /**
- * Прогін почався. run: {id, trigger, profile?, threadId?, chatId?, model?, startedMs}.
+ * Прогін почався. run: {id, trigger, profile?, threadId?, chatId?, model?, startedMs, staleMs?}.
  * @param {Env} env
- * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number }} run
+ * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number, staleMs?: number }} run
  */
 export async function registryBegin(env, run) {
   const ns = registryNs(env);

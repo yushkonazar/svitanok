@@ -13,7 +13,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
-/** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null, chatId: number | null }} ActiveRun */
+/** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null, chatId: number | null, staleMs?: number }} ActiveRun */
 
 const ACTIVE_KEY = 'active';
 
@@ -48,7 +48,7 @@ export class RunRegistryDO extends DurableObject {
    * Прогін почався: у активний набір + рядок у D1 `runs`. ON CONFLICT DO
    * NOTHING — повторний begin того самого id (ретрай викликача) не падає і
    * не дублює рядок.
-   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number }} run
+   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number, staleMs?: number }} run
    */
   async begin(run) {
     const active = await this.#active();
@@ -60,6 +60,10 @@ export class RunRegistryDO extends DurableObject {
       // chatId прогону (ревʼю PR-3): без нього deliver DM-прогону летів у
       // супергрупу - TELEGRAM_CHAT_ID не єдиний чат системи.
       chatId: run.chatId ?? null,
+      // Власна стеля сторожа (етап 4): прогін в Actions живе до 40 хв, а
+      // загальна RUN_STALE_MS (6 хв) закрила б його ДО артефакту - і підпис
+      // з його run_id дістав би 403 run-unknown.
+      ...(Number.isFinite(run.staleMs) ? { staleMs: Number(run.staleMs) } : {}),
     };
     await this.ctx.storage.put(ACTIVE_KEY, active);
     await this.#db()
@@ -170,7 +174,7 @@ export class RunRegistryDO extends DurableObject {
   async sweepStale(nowMs, staleMs) {
     const active = await this.#active();
     const stale = Object.entries(active)
-      .filter(([, r]) => nowMs - r.startedMs > staleMs)
+      .filter(([, r]) => nowMs - r.startedMs > (r.staleMs ?? staleMs))
       .map(([id]) => id);
     for (const id of stale) {
       try {
