@@ -71,9 +71,19 @@ export const TAINT_TTL_MS = 10 * 60_000;
 /**
  * T0-дії, які taint НЕ ескалює: читання/перерахунок власного плану без
  * зовнішнього ефекту (приймання 05.09, B3: «що там з планом» під taint
- * просило ✅, а результат після ✅ не показувався).
+ * просило ✅, а результат після ✅ не показувався). plan.review - лише БЕЗ
+ * carry: з carry він переносить пункти (запис без «↩»), і інʼєкція з листа
+ * «перенеси все на завтра» мусить упертись у ✅ (security-ревʼю 05.09).
+ * @param {string} kind @param {Record<string, unknown> | undefined} payload
  */
-export const TAINT_EXEMPT_KINDS = new Set(['plan.review', 'plan.draft']);
+export function isTaintExempt(kind, payload) {
+  if (kind === 'plan.draft') return true;
+  if (kind === 'plan.review') {
+    const carry = payload?.carry;
+    return !(Array.isArray(carry) && carry.length > 0);
+  }
+  return false;
+}
 
 /**
  * Чи taint ще діє. marker - значення `sessions.tainted`: 0 = чисто; epoch-ms
@@ -96,9 +106,10 @@ export const T2_WORDS = ['ВИКОНАТИ', 'ПІДТВЕРДЖУЮ', 'ТАК-�
  * не ескалюють - вони і так проходять через власника.
  * @param {string} kind
  * @param {boolean} tainted
+ * @param {Record<string, unknown>} [payload] - для винятків, що залежать від аргументів
  * @returns {{ level: 'T0' | 'T1' | 'T2' } | { error: string }}
  */
-export function decideLevel(kind, tainted) {
+export function decideLevel(kind, tainted, payload = undefined) {
   const base = ACTION_LEVELS[kind];
   // Невідомий kind - НЕ дефолт-рівень, а відмова: дія без рядка в таблиці
   // не має права існувати (та сама логіка, що «помилка видима»).
@@ -110,7 +121,7 @@ export function decideLevel(kind, tainted) {
       error: `невідомий kind дії "${kind}"; дозволені: ${Object.keys(ACTION_LEVELS).join(', ')}`,
     };
   }
-  if (base === 'T0' && tainted && !TAINT_EXEMPT_KINDS.has(kind)) return { level: 'T1' };
+  if (base === 'T0' && tainted && !isTaintExempt(kind, payload)) return { level: 'T1' };
   return { level: base };
 }
 

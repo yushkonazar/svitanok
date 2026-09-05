@@ -143,8 +143,14 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   const date = resolvePlanDate(args.date, nowMs);
   const plan = await getDayPlan(env, date);
   if (!plan) throw new Error(`на ${date} немає чернетки - спершу plan.intent`);
+  // Адреса як у collection.export: chat прогону, а без нього - DM власника
+  // для треду 'dm' і група для теми (ревʼю 05.09: група замість DM - помилка).
+  const threadKey = ctx.threadId == null ? null : String(ctx.threadId);
+  const isDm = threadKey === 'dm';
+  const chatId =
+    ctx.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
   const res = await acceptPlan(env, date, nowMs, {
-    chatId: ctx.chatId ?? env.TELEGRAM_CHAT_ID ?? null,
+    chatId,
     threadId: ctx.threadId ?? env.TOPIC_ASSISTANT ?? null,
   });
   /** @type {string[]} */
@@ -174,7 +180,7 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
       // вона лежить open без сліду в чаті (приймання 05.09, B2).
       await sendCalendarProposal(
         env,
-        { chatId: ctx.chatId ?? env.TELEGRAM_CHAT_ID ?? null, threadId: ctx.threadId ?? null },
+        { chatId, threadId: ctx.threadId ?? null },
         { title: r.title, date, start: String(r.window_start), end: String(r.window_end) },
         out.proposal.buttons,
         nowMs,

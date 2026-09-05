@@ -155,6 +155,27 @@ describe('документ і крипто', () => {
     db.exec(sql);
     expect((db.prepare('SELECT COUNT(*) AS n FROM ideas').get() as { n: number }).n).toBe(2);
     expect((db.prepare('SELECT COUNT(*) AS n FROM ideas_fts').get() as { n: number }).n).toBe(2);
+    // Бекап до 0011 (без number/counters): номери з rowid, лічильник з
+    // максимуму - ідеї не «#null», create не падає хибним «міграція не
+    // застосована» (ревʼю 05.09).
+    expect(db.prepare('SELECT id, number FROM ideas ORDER BY number').all()).toEqual([
+      { id: 'i1', number: 1 },
+      { id: 'i2', number: 2 },
+    ]);
+    expect(db.prepare(`SELECT value FROM counters WHERE name = 'ideas'`).get()).toEqual({
+      value: 2,
+    });
+    // Свіжий бекап (із counters) - лічильник з бекапу, не перерахунок.
+    const fresh = buildBackupDocument({
+      createdMs: SUNDAY_0310,
+      envName: 'on',
+      tables: { counters: [{ name: 'ideas', value: 42 }] },
+      kv: {},
+    });
+    db.exec(restoreSql(fresh));
+    expect(db.prepare(`SELECT value FROM counters WHERE name = 'ideas'`).get()).toEqual({
+      value: 42,
+    });
   });
 
   it('records_fts після відновлення = тому, що пише код (назва + значення, без ключів JSON)', () => {

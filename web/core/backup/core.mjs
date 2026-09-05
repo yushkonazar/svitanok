@@ -197,6 +197,15 @@ export function restoreSql(doc) {
       lines.push(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${values.join(', ')});`);
     }
   }
+  // Бекап до міграції 0011 (ideas без number, без counters): номери - з
+  // rowid, лічильник - з максимуму; інакше відновлені ідеї були б «#null»,
+  // а create падав би з хибним «міграція не застосована» (ревʼю 05.09).
+  lines.push('UPDATE ideas SET number = rowid WHERE number IS NULL;');
+  // OR IGNORE, не WHERE NOT EXISTS: агрегат MAX() віддає рядок навіть із
+  // хибним WHERE, і INSERT падав би на PK, коли лічильник уже відновлено.
+  lines.push(
+    `INSERT OR IGNORE INTO counters (name, value) SELECT 'ideas', COALESCE(MAX(number), 0) FROM ideas;`,
+  );
   for (const [fts, spec] of Object.entries(BACKUP_FTS)) {
     lines.push(`DELETE FROM ${fts};`);
     if (fts === 'records_fts') {

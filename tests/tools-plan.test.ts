@@ -180,6 +180,32 @@ describe('plan.* через policy', () => {
     expect(sent[1]?.p.text).toContain('«Банк»');
 
     await expect(act('plan.accept', { date: '2026-09-09' })).rejects.toThrow('немає чернетки');
+
+    // DM-тред без chatId прогону (після ✅ resolveProposal дає chatId=null):
+    // адреса - DM власника, не супергрупа (ревʼю 05.09).
+    (env as { TELEGRAM_OWNER_USER_ID?: string }).TELEGRAM_OWNER_USER_ID = '777';
+    await act('plan.intent', { date: '2026-09-10', items: ITEMS }, NOW + 3000);
+    const dm = await applyPolicy(
+      env,
+      {
+        kind: 'plan.accept',
+        payload: { date: '2026-09-10', calendar: true },
+        threadId: 'dm',
+        chatId: null,
+        tainted: false,
+      },
+      NOW + 4000,
+    );
+    expect(dm.mode).toBe('executed');
+    const dmRows = db
+      .prepare(
+        `SELECT chat_id, thread_id FROM outbox WHERE kind = 'send' ORDER BY rowid DESC LIMIT 2`,
+      )
+      .all();
+    expect(dmRows).toEqual([
+      { chat_id: '777', thread_id: null },
+      { chat_id: '777', thread_id: null },
+    ]);
   });
 
   it('plan.update: done/moves/drop за назвою з «↩»; plan.review - огляд і перенос ["all"]', async () => {

@@ -404,8 +404,15 @@ describe('router: write-інструмент через policy', () => {
   });
 
   // Приймання 05.09, B3: читання/перерахунок власного плану taint не ескалює.
-  it('plan.review і plan.draft під taint лишаються T0; решта T0 → T1', () => {
+  it('plan.review без carry і plan.draft під taint лишаються T0; review з carry і решта T0 → T1', () => {
     expect(decideLevel('plan.review', true)).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.review', true, { date: 'сьогодні', carry: [] })).toEqual({
+      level: 'T0',
+    });
+    // carry переносить пункти (запис без «↩») - інʼєкція «перенеси все на
+    // завтра» з листа мусить упертись у ✅ (security-ревʼю 05.09).
+    expect(decideLevel('plan.review', true, { carry: ['all'] })).toEqual({ level: 'T1' });
+    expect(decideLevel('plan.review', false, { carry: ['all'] })).toEqual({ level: 'T0' });
     expect(decideLevel('plan.draft', true)).toEqual({ level: 'T0' });
     expect(decideLevel('plan.accept', true)).toEqual({ level: 'T1' });
     expect(decideLevel('facts.set', true)).toEqual({ level: 'T1' });

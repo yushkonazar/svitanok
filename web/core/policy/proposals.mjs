@@ -420,7 +420,7 @@ function db(env) {
  *   | { mode: 'error', error: string }>}
  */
 export async function applyPolicy(env, action, nowMs) {
-  const decision = decideLevel(action.kind, action.tainted);
+  const decision = decideLevel(action.kind, action.tainted, action.payload);
   if ('error' in decision) return { mode: 'error', error: decision.error };
   let level = decision.level;
 
