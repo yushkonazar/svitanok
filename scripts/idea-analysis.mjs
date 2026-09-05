@@ -152,6 +152,12 @@ export function claudeArgs({ instructionRaw, prompt }) {
     ...ALLOWED_TOOLS,
     '--disallowedTools',
     ...DISALLOWED_TOOLS,
+    // Налаштування ЛИШЕ користувача раннера (security-ревʼю PR-1): без цього
+    // claude -p підхопив би .claude/settings.json цільового репо, а хуки в
+    // ньому - shell-команди в довіреній теці. Те саме для .mcp.json.
+    '--setting-sources',
+    'user',
+    '--strict-mcp-config',
   ];
 }
 
@@ -204,6 +210,19 @@ export function artifactBody(ctx, outcome) {
       ? `${outcome.md.slice(0, ARTIFACT_MD_MAX)}\n\n…(звіт обрізано до ${ARTIFACT_MD_MAX} символів)`
       : outcome.md;
   return { ...base, status: 'ok', md, ...(outcome.meta ? { meta: outcome.meta } : {}) };
+}
+
+/** Змінні, які дістає дочірній claude - і ТІЛЬКИ вони. Секрети ядра
+ *  (INTERNAL_HMAC_KEY, Access-пара) процесу моделі не потрібні; хук із
+ *  чужого репо, навіть якби завантажився, їх би не побачив (security-ревʼю). */
+export const CHILD_ENV_KEYS = ['PATH', 'HOME', 'CLAUDE_CODE_OAUTH_TOKEN'];
+
+/** @param {NodeJS.ProcessEnv} env */
+export function childEnv(env) {
+  /** @type {NodeJS.ProcessEnv} */
+  const out = {};
+  for (const k of CHILD_ENV_KEYS) if (env[k] != null) out[k] = env[k];
+  return out;
 }
 
 /**
@@ -314,7 +333,7 @@ async function main() {
     args,
     cwd: ctx.targetDir,
     timeoutMs: CLAUDE_TIMEOUT_MS,
-    env,
+    env: childEnv(env),
   });
   console.log(
     `claude -p: код ${proc.code}, ${Math.round((Date.now() - started) / 1000)} с, stdout ${proc.stdout.length} симв.`,

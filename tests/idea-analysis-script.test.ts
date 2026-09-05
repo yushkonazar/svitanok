@@ -28,6 +28,8 @@ import {
   IDEA_TEXT_MAX,
   ARTIFACT_PATH,
   INSTRUCTION_FILE,
+  CHILD_ENV_KEYS,
+  childEnv,
 } from '../scripts/idea-analysis.mjs';
 import { verifyInternalRequest, signInternal as coreSign } from '../web/core/internal/auth.mjs';
 import { parseInstruction } from '../web/core/instructions.mjs';
@@ -131,6 +133,20 @@ describe('claude -p: аргументи з code-reviewer.md', () => {
       expect(denied).toContain(t);
     }
     expect(denied.some((t) => ALLOWED_TOOLS.includes(t))).toBe(false);
+  });
+
+  it('налаштування лише користувача раннера і strict MCP (хуки/сервери чужого репо не вантажаться)', () => {
+    expect(at('--setting-sources')).toBe('user');
+    expect(args).toContain('--strict-mcp-config');
+  });
+
+  it('дочірній claude дістає лише PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN - секрети ядра ні', () => {
+    const env = { ...baseEnv(), PATH: '/usr/bin', HOME: '/home/r', CLAUDE_CODE_OAUTH_TOKEN: 't' };
+    const child = childEnv(env);
+    expect(Object.keys(child).sort()).toEqual([...CHILD_ENV_KEYS].sort());
+    expect(child).not.toHaveProperty('INTERNAL_HMAC_KEY');
+    expect(child).not.toHaveProperty('BRAIN_ACCESS_CLIENT_SECRET');
+    expect(childEnv({ PATH: '/x' })).toEqual({ PATH: '/x' });
   });
 
   it('зламаний front-matter - гучна помилка, не дефолти', () => {
@@ -312,7 +328,28 @@ describe('idea-analysis.yml - парність зі скриптом і ci.yml',
 
   it('усі REQUIRED_ENV скрипта і CLAUDE_CODE_OAUTH_TOKEN доїжджають до кроків', () => {
     const jobEnv = new Set(Object.keys(job.env));
-    for (const name of REQUIRED_ENV) expect(jobEnv.has(name)).toBe(true);
+    const analyzeEnv = new Set(Object.keys(job.steps.find((s) => s.id === 'analyze')?.env ?? {}));
+    const failedEnv = new Set(
+      Object.keys(
+        job.steps.find((s) => s.run === 'node scripts/idea-analysis.mjs failed')?.env ?? {},
+      ),
+    );
+    for (const name of REQUIRED_ENV) {
+      expect(jobEnv.has(name) || analyzeEnv.has(name)).toBe(true);
+      expect(jobEnv.has(name) || failedEnv.has(name)).toBe(true);
+    }
+    // Секрети ядра - лише на кроках, що постять артефакт, не в env усього job
+    // (security-ревʼю PR-1).
+    for (const secret of [
+      'INTERNAL_HMAC_KEY',
+      'BRAIN_ACCESS_CLIENT_ID',
+      'BRAIN_ACCESS_CLIENT_SECRET',
+    ]) {
+      expect(jobEnv.has(secret)).toBe(false);
+    }
+    const strip = job.steps.find((s) => s.run?.startsWith('rm -rf target/.claude'));
+    expect(strip?.run).toContain('target/.mcp.json');
+    expect(job.steps.indexOf(strip!)).toBeLessThan(job.steps.findIndex((s) => s.id === 'analyze'));
     const analyze = job.steps.find((s) => s.id === 'analyze');
     expect(analyze?.env?.CLAUDE_CODE_OAUTH_TOKEN).toContain('secrets.CLAUDE_CODE_OAUTH_TOKEN');
     expect(analyze?.run).toBe('node scripts/idea-analysis.mjs run');

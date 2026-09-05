@@ -70,9 +70,6 @@ jobs:
       IA_TITLE: ${{ inputs.title }}
       IA_IDEA: ${{ inputs.idea }}
       TARGET_DIR: ${{ github.workspace }}/target
-      INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
-      BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
-      BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
     steps:
       # Сторонні Actions пінено по commit SHA, як у ci.yml.
       # 1. Цей репозиторій - заради docs/assistant/agents/code-reviewer.md і
@@ -108,10 +105,21 @@ jobs:
             }
           }
           JSON
+      # Конфіг цільового репо для claude - геть ДО запуску (security-ревʼю
+      # PR-1): хуки з .claude/settings.json і сервери з .mcp.json - код чужого
+      # репо в довіреній теці. Скрипт додатково передає --setting-sources user
+      # і --strict-mcp-config; тут - пояс до цих шлейок.
+      - name: strip target-side claude config
+        run: rm -rf target/.claude target/.mcp.json
+      # Секрети ядра - лише кроками, що постять артефакт (не в env job):
+      # дочірньому claude скрипт віддає рівно PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN.
       - id: analyze
         name: analyze idea against code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
+          BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
+          BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
         run: node scripts/idea-analysis.mjs run
       # Збій ДО аналізу (checkout, CLI, preseed) - ядру теж треба сказати
       # (S-3-5): крок analyze при власному збої вже надіслав failed сам, тож
@@ -119,5 +127,8 @@ jobs:
       - name: report failure to core
         if: failure() && steps.analyze.outcome != 'failure'
         env:
+          INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
+          BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
+          BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
           IA_REASON: 'job упав до аналізу (checkout або CLI) - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
         run: node scripts/idea-analysis.mjs failed
