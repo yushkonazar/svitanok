@@ -21,6 +21,7 @@ import { isTaintActive } from '../policy/core.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
 import { sendDayPlanEvent } from '../day-plan/chain.mjs';
+import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
@@ -28,6 +29,7 @@ import {
   STATUS_SCHEMA,
   RUNS_SCHEMA,
   SESSION_SCHEMA,
+  ARTIFACT_SCHEMA,
   validateAgainst,
 } from './schemas.mjs';
 
@@ -41,6 +43,7 @@ const ROUTE_SCHEMAS = {
   status: STATUS_SCHEMA,
   runs: RUNS_SCHEMA,
   session: SESSION_SCHEMA,
+  artifact: ARTIFACT_SCHEMA,
 };
 
 /**
@@ -212,7 +215,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
   }
 
-  const route = path.match(/^\/internal\/(deliver|status|runs|session)$/)?.[1];
+  const route = path.match(/^\/internal\/(deliver|status|runs|session|artifact)$/)?.[1];
   if (route) {
     const schema = ROUTE_SCHEMAS[route];
     // Регекс розширили, а схему забули — гучний 500, не мовчазний пропуск
@@ -225,6 +228,8 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     if (route === 'status')
       return handleStatus(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
     if (route === 'session') return handleSession(env, /** @type {any} */ (body), nowMs);
+    if (route === 'artifact')
+      return handleArtifact(env, auth.runId, /** @type {any} */ (body), nowMs);
     return handleRuns(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
   }
 
@@ -490,6 +495,53 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     else await cont;
   }
   return json({ ok: true, steps: steps.length });
+}
+
+/**
+ * Артефакт idea-analysis.yml (07 §3, етап 4 PR-2): job в Actions підписав
+ * run_id, який ядро зареєструвало до dispatch. Ланцюг - за run_id зі стану
+ * chains; idea_id тіла мусить збігатися (підпис доводить «хто», збіг - «про
+ * що»). Прогін закривається тут (ok / actions-failed), подія їде у Workflow
+ * IdeaAnalysis, який і зберігає результат. Ланцюг, що вже не чекає (таймаут,
+ * «↩»), - 409: Actions побачить це в лозі, власник - нічого зайвого.
+ * @param {Env} env
+ * @param {string} runId
+ * @param {{ idea_id: string, status: string, repo?: string, sha?: string, md?: string, reason?: string, meta?: Record<string, unknown> }} body
+ * @param {number} nowMs
+ */
+async function handleArtifact(env, runId, body, nowMs) {
+  if (body.status !== 'ok' && body.status !== 'failed') {
+    return json({ ok: false, error: 'contract: status лише ok|failed' }, 400);
+  }
+  if (body.status === 'ok' && !(typeof body.md === 'string' && body.md.trim())) {
+    return json({ ok: false, error: 'contract: ok без md' }, 400);
+  }
+  if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
+  const chain = await findAnalysisByRun(env, runId);
+  if (!chain) return json({ ok: false, error: 'chain-unknown' }, 404);
+  if (chain.state.idea_id !== body.idea_id) {
+    return json({ ok: false, error: 'idea-mismatch' }, 400);
+  }
+  if (chain.status !== 'waiting' && chain.status !== 'running') {
+    return json({ ok: false, error: 'chain-not-waiting', status: chain.status }, 409);
+  }
+  await registryFinish(env, runId, {
+    finishedMs: nowMs,
+    error: body.status === 'failed' ? 'actions-failed' : null,
+    steps: 1,
+  });
+  try {
+    await sendAnalysisEvent(env, chain.id, {
+      status: body.status,
+      ...(body.md != null ? { md: body.md } : {}),
+      ...(body.reason != null ? { reason: body.reason } : {}),
+      ...(body.sha != null ? { sha: body.sha } : {}),
+    });
+  } catch (/** @type {any} */ e) {
+    console.error(`internal: подія artifact у ланцюг ${chain.id} не доставлена`, e?.message);
+    return json({ ok: false, error: 'chain-not-waiting', reason: String(e?.message ?? '') }, 409);
+  }
+  return json({ ok: true, chain_id: chain.id, status: body.status });
 }
 
 /**

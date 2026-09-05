@@ -66,7 +66,7 @@ const DEAD_MAN_HOUR = 12;
  * не диспатчиться, доки власник не поставить змінну у двох місцях. Дефолт —
  * рівно те значення, що стояло зашитим.
  */
-const DEFAULT_GH_REPO = 'yushkonazar/svitanok';
+export const DEFAULT_GH_REPO = 'yushkonazar/svitanok';
 const ghDispatchUrl = (/** @type {Env} */ env) =>
   `https://api.github.com/repos/${env.GH_REPO?.trim() || DEFAULT_GH_REPO}` +
   '/actions/workflows/brief.yml/dispatches';

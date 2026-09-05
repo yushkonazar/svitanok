@@ -138,7 +138,20 @@ interface Env {
       status?: () => Promise<unknown>;
     }>;
   };
-  /** `repository_dispatch` у brief.yml (крон-диспетч брифінгу). */
+  /**
+   * Workflow аналізу ідеї по коду (етап 4 PR-2, 07 §6 IdeaAnalysis): той
+   * самий мінімальний контракт, що DAY_PLAN.
+   */
+  IDEA_ANALYSIS?: {
+    create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;
+    get: (id: string) => Promise<{
+      sendEvent: (event: { type: string; payload?: unknown }) => Promise<void>;
+      status?: () => Promise<unknown>;
+    }>;
+  };
+  /** Read-only PAT на 4 репо (етап 0): HEAD-sha для кешу аналізу ідеї. */
+  REPO_READ_PAT?: string;
+  /** `workflow_dispatch` у brief.yml (крон-диспетч брифінгу) та idea-analysis.yml. */
   GH_DISPATCH_TOKEN?: string;
   /** Слаг `owner/repo` для того ж диспетчу. Незаданий -> дефолт у `cron.mjs`. */
   GH_REPO?: string;

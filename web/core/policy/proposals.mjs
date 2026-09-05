@@ -31,6 +31,7 @@ import {
   runIdeasDelete,
   runIdeasAnalyze,
 } from '../tools/ideas.mjs';
+import { cancelAnalysis } from '../ideas/analysis.mjs';
 import {
   runCollectionsCreate,
   runCollectionsUpdate,
@@ -184,16 +185,21 @@ export const EXECUTORS = {
     },
   },
   'ideas.analyze': {
-    async execute(env, payload, nowMs) {
+    // ctx - тред запиту: документ кешованого аналізу (mode=code) іде туди.
+    async execute(env, payload, nowMs, ctx) {
       const { result, prev } = await runIdeasAnalyze(
         env,
-        { id: payload.id, mode: payload.mode },
+        { id: payload.id, mode: payload.mode, repo: payload.repo, force: payload.force },
         nowMs,
+        { chatId: ctx?.chatId, threadId: ctx?.threadId },
       );
       return { prev, result };
     },
     async undo(env, snapshot, nowMs) {
       await runIdeasUpdate(env, { id: snapshot.id, status: snapshot.status }, nowMs);
+      // Аналіз по коду вже диспатчено: ланцюг позначається cancelled, і його
+      // результат буде відкинуто мовчки (Actions не зупиняємо - 40 хв стелі).
+      if (snapshot.chain_id) await cancelAnalysis(env, snapshot.chain_id);
     },
   },
   'ideas.delete': {

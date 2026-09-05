@@ -8,8 +8,8 @@
 // FTS (ideas_fts, ADR-036): синхронізацію веде код разом із записом у базову
 // таблицю - DELETE + INSERT на кожну правку, бо таблиця standalone.
 //
-// Аналіз по коду (mode=code) - етап 4 (IdeaAnalysis Workflow + Actions):
-// тут чесна відмова, а не тиха підміна планом.
+// Аналіз по коду (mode=code, етап 4 PR-2) - core/ideas/analysis.mjs:
+// кеш за head_sha, Workflow IdeaAnalysis, Actions.
 
 /** Домени - дослівно 07 §1. */
 export const IDEA_DOMAINS = ['svitanok', 'робота', 'побут', 'бізнес', 'інше'];
@@ -29,6 +29,8 @@ export const IDEA_EFFORTS = ['S', 'M', 'L'];
 export const IDEAS_LIST_MAX = 10;
 /** Кап тіла ідеї/аналізу/плану в базі: документ ≤ 3 500 у чаті або .md (S-3-2). */
 export const IDEA_TEXT_MAX = 20_000;
+
+import { startIdeaAnalysis } from '../ideas/analysis.mjs';
 
 /** Поля, які приймає update (усе інше в args ігнорується свідомо). */
 const UPDATABLE = [
@@ -73,6 +75,7 @@ export async function findIdea(env, ref) {
  *   domain: string | null, status: string, priority: number | null, effort: string | null,
  *   next_action: string | null, tags_json: string | null, analysis_md: string | null,
  *   plan_md: string | null, plan_approved_at: string | null, repo: string | null,
+ *   head_sha: string | null, artifact_drive_id: string | null,
  *   created_at: string, updated_at: string }} IdeaRow
  */
 
@@ -317,21 +320,23 @@ export async function runIdeasDelete(env, args) {
 /**
  * ideas.analyze (S-3-2): mode=plan - статус «в аналізі», ідея повертається
  * моделі, яка пише analysis_md/plan_md у тій самій сесії і кладе їх через
- * ideas.update(status='план готовий'). mode=code - етап 4.
+ * ideas.update(status='план готовий'). mode=code (S-3-3…5, S-3-8) - Workflow
+ * IdeaAnalysis: репо, кеш sha, dispatch Actions; результат прийде документом.
  * @param {Env} env
- * @param {{ id: unknown, mode?: string }} args
+ * @param {{ id: unknown, mode?: string, repo?: unknown, force?: unknown }} args
  * @param {number} nowMs
+ * @param {{ chatId?: number | string | null, threadId?: number | string | null }} [ctx] - тред запиту (документ кешу йде туди)
  */
-export async function runIdeasAnalyze(env, args, nowMs) {
+export async function runIdeasAnalyze(env, args, nowMs, ctx = {}) {
   const mode = args.mode ?? 'plan';
-  if (mode === 'code') {
-    throw new Error(
-      'аналіз по коду (IdeaAnalysis у GitHub Actions) приїде на етапі 4 - поки лише план (mode=plan)',
-    );
+  if (mode !== 'plan' && mode !== 'code') {
+    throw new Error(`mode лише plan|code, не "${String(mode)}"`);
   }
-  if (mode !== 'plan') throw new Error(`mode лише plan|code, не "${String(mode)}"`);
   const idea = await findIdea(env, args.id);
   if (!idea) throw new Error(`ідеї «${String(args.id)}» немає`);
+  if (mode === 'code') {
+    return startIdeaAnalysis(env, idea, { repo: args.repo, force: args.force }, nowMs, ctx);
+  }
   const iso = new Date(nowMs).toISOString();
   await db(env)
     .prepare(`UPDATE ideas SET status = 'в аналізі', updated_at = ? WHERE id = ?`)

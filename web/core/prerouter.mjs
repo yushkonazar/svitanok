@@ -770,6 +770,10 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:ia:<ideaId> - «Все одно запустити» під кешованим аналізом (S-3-4, етап 4
+  // PR-2): повторний прогін по коду попри кеш; T0 через policy, як і з чату.
+  const ia = data.match(/^m:ia:([A-Za-z0-9-]{1,40})$/);
+  if (ia) return ideaRerunToast(env, parsed, /** @type {string} */ (ia[1]), nowMs, defer);
   // m:fg:<id> - меню /forget (S-0-5): пропозиція T2 forget(collection) зі
   // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
   const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
@@ -866,6 +870,63 @@ async function forgetMenuToast(env, parsed, collectionId, nowMs) {
     nowMs,
   );
   return 'Чекаю слово';
+}
+
+/**
+ * «Все одно запустити» (S-3-4): аналіз по коду заново, попри кеш sha. Тап
+ * власника - чиста сесія (tainted:false, як у forgetMenuToast); результат
+ * старту - у тред, сам звіт прийде з Workflow документом. Робота - у defer
+ * (GitHub API для HEAD + dispatch - секунди, тост має піти одразу).
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} ideaId @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  const work = async () => {
+    let text;
+    try {
+      const out = await applyPolicy(
+        env,
+        {
+          kind: 'ideas.analyze',
+          payload: { id: ideaId, mode: 'code', force: true },
+          threadId: threadKey,
+          chatId: parsed.chatId ?? null,
+          tainted: false,
+        },
+        nowMs,
+      );
+      text =
+        out.mode === 'executed'
+          ? rerunText(/** @type {Record<string, unknown>} */ (out.result))
+          : `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+    } catch (/** @type {any} */ e) {
+      text = `Не вийшло: ${String(e?.message ?? e)}`;
+    }
+    await reply(env, target, text, nowMs);
+  };
+  await clearKeyboard(env, parsed);
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: повторний аналіз ідеї впав', e?.message),
+      ),
+    );
+  } else await work();
+  return 'Запускаю аналіз заново';
+}
+
+/** Текст у тред після старту заново. @param {Record<string, unknown>} r */
+export function rerunText(r) {
+  const n = r.number != null ? `#${String(r.number)}` : '';
+  if (r.started)
+    return `Запустив аналіз ідеї ${n} по коду ${String(r.repo)}@${String(r.sha)} заново - ${String(r.eta)}, результат прийде документом.`;
+  if (r.running) return `Аналіз ідеї ${n} уже йде - дочекайся документа.`;
+  return `Аналіз ідеї ${n}: ${String(r.note ?? 'без змін')}`;
 }
 
 /**

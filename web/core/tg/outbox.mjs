@@ -346,6 +346,9 @@ function documentForm(row, payload) {
   form.set('chat_id', row.chat_id);
   if (row.thread_id != null) form.set('message_thread_id', row.thread_id);
   if (payload.caption) form.set('caption', String(payload.caption));
+  // Кнопки під документом (етап 4: «Все одно запустити» під попереднім
+  // аналізом) - multipart приймає reply_markup як JSON-рядок.
+  if (payload.reply_markup) form.set('reply_markup', JSON.stringify(payload.reply_markup));
   form.set(
     'document',
     new Blob([String(payload.content ?? '')], { type: 'text/plain' }),

@@ -94,6 +94,23 @@ export const RUNS_SCHEMA = /** @type {InternalSchema} */ ({
   },
 });
 
+/** POST /internal/artifact - результат idea-analysis.yml (07 §3, етап 4 PR-2):
+ *  status ok (md - звіт, кап у байтах тримає скрипт) або failed (reason).
+ *  run_id - у підписі; idea_id звіряється зі станом ланцюга. */
+export const ARTIFACT_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['idea_id', 'status'],
+  properties: {
+    idea_id: { type: 'string', maxLength: 64 },
+    status: { type: 'string', maxLength: 16 },
+    repo: { type: 'string', maxLength: 64 },
+    sha: { type: 'string', maxLength: 64 },
+    md: { type: 'string', maxLength: 100_000 },
+    reason: { type: 'string', maxLength: 500 },
+    meta: { type: 'object' },
+  },
+});
+
 /** POST /internal/session — сесійний стан від мозку (ADR-038): sdk_session_id
  *  після прогону chat, summary_md від профілю summarize, turns_inc - інкремент
  *  лічильника ходів. Єдиний канал, яким мозок оновлює sessions. */
