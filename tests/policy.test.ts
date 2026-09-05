@@ -393,12 +393,48 @@ describe('router: write-інструмент через policy', () => {
     expect(body.undo?.id).toBeTruthy();
     expect((await runFactsGet(env, { kind: 'setting', key: 'y' })).result).toHaveLength(1);
 
-    expect(TAINT_TTL_MS).toBe(30 * 60_000);
+    // 10 хв - рішення власника 05.09 (30 назвав задовгими).
+    expect(TAINT_TTL_MS).toBe(10 * 60_000);
     expect(isTaintActive(0, NOW)).toBe(false);
     expect(isTaintActive(1, NOW)).toBe(false);
     expect(isTaintActive(null, NOW)).toBe(false);
     expect(isTaintActive(NOW, NOW)).toBe(true);
     expect(isTaintActive(NOW - TAINT_TTL_MS + 1, NOW)).toBe(true);
     expect(isTaintActive(NOW - TAINT_TTL_MS, NOW)).toBe(false);
+  });
+
+  // Приймання 05.09, B3: читання/перерахунок власного плану taint не ескалює.
+  it('plan.review без carry і plan.draft під taint лишаються T0; review з carry і решта T0 → T1', () => {
+    expect(decideLevel('plan.review', true)).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.review', true, { date: 'сьогодні', carry: [] })).toEqual({
+      level: 'T0',
+    });
+    // carry переносить пункти (запис без «↩») - інʼєкція «перенеси все на
+    // завтра» з листа мусить упертись у ✅ (security-ревʼю 05.09).
+    expect(decideLevel('plan.review', true, { carry: ['all'] })).toEqual({ level: 'T1' });
+    expect(decideLevel('plan.review', false, { carry: ['all'] })).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.draft', true)).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.accept', true)).toEqual({ level: 'T1' });
+    expect(decideLevel('facts.set', true)).toEqual({ level: 'T1' });
+  });
+
+  // Приймання 05.09, B1: kind факту звіряється ДО пропозиції, не у виконавці
+  // після ✅ («preference» дало execute-failed уже після кнопки).
+  it('facts.set із невідомим kind - відмова з переліком одразу, пропозиції немає', async () => {
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'facts.set',
+        payload: { kind: 'preference', key: 'чай', value: 'зелений' },
+        tainted: true,
+      },
+      NOW,
+    );
+    expect(out.mode).toBe('error');
+    if (out.mode === 'error') {
+      expect(out.error).toContain('невідомий kind "preference"');
+      expect(out.error).toContain('profile, habit');
+    }
+    expect(store.raw.prepare(`SELECT count(*) AS n FROM proposals`).get()).toEqual({ n: 0 });
   });
 });

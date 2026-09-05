@@ -366,7 +366,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'facts.set',
     description:
-      'Записати факт про власника (kind, key, value). Виконує ядро за policy: у чистій сесії - одразу з «↩», у tainted - як пропозиція.',
+      'Записати факт про власника. kind - РІВНО одне з: profile (про власника: імʼя, уподобання, звички смаку), habit (розпорядок: day_start, lunch_at, estimate_bias), contact, place, vehicle, setting (налаштування асистента), inferred (твій висновок). key - коротко латиницею/укр без пробілів, value - будь-який JSON. Виконує ядро за policy: у чистій сесії - одразу з «↩», у tainted - як пропозиція.',
     args: z.object({
       kind: z.string().max(32),
       key: z.string().max(128),

@@ -42,6 +42,7 @@ const ALL_MIGRATIONS = [
   '0008_fts.sql',
   '0009_voice.sql',
   '0010_reminders_address.sql',
+  '0011_ideas_number.sql',
 ];
 const SECRET = 'backup-secret-for-tests-32-chars!!';
 // Неділя 06.09.2026 03:10 Києва = 00:10Z; 04:10 = 01:10Z.
@@ -154,6 +155,27 @@ describe('документ і крипто', () => {
     db.exec(sql);
     expect((db.prepare('SELECT COUNT(*) AS n FROM ideas').get() as { n: number }).n).toBe(2);
     expect((db.prepare('SELECT COUNT(*) AS n FROM ideas_fts').get() as { n: number }).n).toBe(2);
+    // Бекап до 0011 (без number/counters): номери з rowid, лічильник з
+    // максимуму - ідеї не «#null», create не падає хибним «міграція не
+    // застосована» (ревʼю 05.09).
+    expect(db.prepare('SELECT id, number FROM ideas ORDER BY number').all()).toEqual([
+      { id: 'i1', number: 1 },
+      { id: 'i2', number: 2 },
+    ]);
+    expect(db.prepare(`SELECT value FROM counters WHERE name = 'ideas'`).get()).toEqual({
+      value: 2,
+    });
+    // Свіжий бекап (із counters) - лічильник з бекапу, не перерахунок.
+    const fresh = buildBackupDocument({
+      createdMs: SUNDAY_0310,
+      envName: 'on',
+      tables: { counters: [{ name: 'ideas', value: 42 }] },
+      kv: {},
+    });
+    db.exec(restoreSql(fresh));
+    expect(db.prepare(`SELECT value FROM counters WHERE name = 'ideas'`).get()).toEqual({
+      value: 42,
+    });
   });
 
   it('records_fts після відновлення = тому, що пише код (назва + значення, без ключів JSON)', () => {
@@ -259,7 +281,8 @@ describe('задача backup (нд 03:00)', () => {
     const { uploads, created } = driveStub();
     const { env, d1, kv } = taskEnv();
     const out = await backupTask(env, SUNDAY_0310);
-    expect(out).toMatchObject({ done: true, driveId: 'file-1', rows: 1 });
+    // rows: 1 ідея + 1 рядок counters('ideas') з міграції 0011.
+    expect(out).toMatchObject({ done: true, driveId: 'file-1', rows: 2 });
     expect(created).toEqual(BACKUP_FOLDER_PATH);
     expect(uploads[0]?.name).toBe('svitanok-2026-09-06.enc');
     const fact = d1.db
