@@ -1,9 +1,10 @@
 // Аналіз ідеї по коду в ядрі (етап 4 PR-2, S-3-3…S-3-5, S-3-8): репо і кеш
 // sha (startIdeaAnalysis на справжніх міграціях), машина станів IdeaAnalysis
-// на фейкових step/io (ok → зберегти + документ; failed/таймаут → статус назад
-// + алерт; «↩» → результат відкинуто; збій dispatch), маршрут
-// POST /internal/artifact (підпис → ланцюг за run_id → подія), кнопка
-// m:ia: у prerouter, парність зі скриптом Actions і з wrangler/worker.
+// на фейкових step/io (ok → Drive → зберегти + документ; failed/таймаут →
+// статус назад + алерт; «↩» → результат відкинуто; збій dispatch), маршрут
+// POST /internal/artifact (підпис → ланцюг за run_id → подія; прогін закриває
+// лише Workflow), кнопка m:ia: у prerouter з «↩», адреса DM, парність із
+// wrangler/worker.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -11,15 +12,15 @@ import { join } from 'node:path';
 import {
   IDEA_REPOS,
   DISPATCH_INPUTS,
-  DISPATCH_IDEA_MAX,
   ANALYSIS_MD_MAX,
   ANALYSIS_RUN_STALE_MS,
-  JOB_TIMEOUT_MIN,
   WAIT_ARTIFACT_MS,
   CHAIN_KIND,
   resolveRepo,
   shortOf,
+  clipAnalysis,
   ddmm,
+  targetOf,
   fetchHeadSha,
   dispatchIdeaAnalysis,
   startIdeaAnalysis,
@@ -37,12 +38,7 @@ import { signInternal, signedInternalHeaders } from '../web/core/internal/auth.m
 import { ARTIFACT_SCHEMA, validateAgainst } from '../web/core/internal/schemas.mjs';
 import { handleBrainCallback, rerunText } from '../web/core/prerouter.mjs';
 import { RUN_STALE_MS } from '../web/core/run-registry/client.mjs';
-import {
-  WORKFLOW_INPUTS,
-  IDEA_REPOS as SCRIPT_REPOS,
-  IDEA_TEXT_MAX as SCRIPT_IDEA_MAX,
-  ARTIFACT_MD_MAX_BYTES,
-} from '../scripts/idea-analysis.mjs';
+import { WORKFLOW_INPUTS, ARTIFACT_MD_MAX_BYTES } from '../scripts/idea-analysis.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
@@ -60,6 +56,7 @@ const MIGRATIONS = [
   '0011_ideas_number.sql',
 ];
 
+type Params = Parameters<typeof runIdeaAnalysisChain>[1];
 type Step = Parameters<typeof runIdeaAnalysisChain>[2];
 type Io = Parameters<typeof runIdeaAnalysisChain>[3];
 
@@ -72,15 +69,20 @@ beforeEach(() => {
 });
 
 function fakeWorkflow() {
-  const created: { id: string; params: Record<string, unknown> }[] = [];
+  const created: { id: string; params: Params }[] = [];
   const events: { id: string; ev: unknown }[] = [];
   let reject = false;
+  let createFails = false;
   return {
     created,
     events,
     setReject: (v: boolean) => void (reject = v),
+    setCreateFails: (v: boolean) => void (createFails = v),
     binding: {
-      create: async (o: { id: string; params: Record<string, unknown> }) => void created.push(o),
+      create: async (o: { id: string; params: Params }) => {
+        if (createFails) throw new Error('workflows down');
+        created.push(o);
+      },
       get: async (id: string) => ({
         sendEvent: async (ev: unknown) => {
           if (reject) throw new Error('instance not waiting');
@@ -158,6 +160,7 @@ function setup(over: Partial<Env> = {}) {
     DB: d1.stub,
     TELEGRAM_BOT_TOKEN: 'bot',
     TELEGRAM_CHAT_ID: '555',
+    TELEGRAM_OWNER_USER_ID: '777',
     TOPIC_ASSISTANT: '99',
     TOPIC_SYSTEM: '77',
     REPO_READ_PAT: 'pat',
@@ -181,14 +184,18 @@ async function createIdea(env: Env, over: Record<string, unknown> = {}) {
 }
 
 const ctx = { chatId: 555, threadId: 99 };
+const IDEA_STATUS = () => 'SELECT status FROM ideas';
 
-/** Кроки Workflow: do виконує одразу; artifact - з черги (Error = таймаут). */
+/** Кроки Workflow: do виконує одразу (з конфігом або без); artifact - з черги (Error = таймаут). */
 function fakeStep(events: ({ payload: unknown } | Error)[]) {
   const log: string[] = [];
+  const cfgs: Record<string, unknown> = {};
   const step: Step = {
-    do: async (name, fn) => {
+    do: async (name, cfgOrFn, fn) => {
       log.push(`do:${name}`);
-      return fn();
+      if (typeof cfgOrFn === 'function') return cfgOrFn();
+      cfgs[name] = cfgOrFn;
+      return fn!();
     },
     waitForEvent: async (name, { type, timeout }) => {
       log.push(`wait:${name}:${type}:${timeout}`);
@@ -198,7 +205,7 @@ function fakeStep(events: ({ payload: unknown } | Error)[]) {
       return next as { payload: unknown };
     },
   };
-  return { step, log };
+  return { step, log, cfgs };
 }
 
 function fakeIo(over: Partial<Io> & { dispatchFails?: boolean; driveId?: string | null } = {}) {
@@ -234,7 +241,7 @@ const REPORT = `## Коротко
 `;
 
 describe('чисті помічники', () => {
-  it('resolveRepo: аргумент → колонка → svitanok за domain; чуже - S-3-8; нічого - питання', () => {
+  it('resolveRepo: аргумент → колонка → domain-репо; чуже - S-3-8; нічого - питання', () => {
     expect(resolveRepo({ repo: null, domain: 'svitanok' }, undefined)).toBe('svitanok');
     expect(resolveRepo({ repo: 'portfolio', domain: 'інше' }, '')).toBe('portfolio');
     expect(resolveRepo({ repo: 'portfolio', domain: 'інше' }, 'moviehouse')).toBe('moviehouse');
@@ -244,12 +251,17 @@ describe('чисті помічники', () => {
     );
   });
 
-  it('shortOf: розділ «Коротко» ≤ 600; без розділу - початок; ddmm; filename; кнопка', () => {
+  it('shortOf, clipAnalysis, ddmm, filename, кнопка, тексти', () => {
     expect(shortOf(REPORT)).toBe(
       '- Колекції в D1, Sheets-API немає.\n- L - нова залежність + скоуп.\n- Ризик: consent.',
     );
     expect(shortOf('просто текст')).toBe('просто текст');
     expect(shortOf(`## Коротко\n${'а'.repeat(700)}\n\n## Аналіз\n- x`).length).toBe(600);
+    const clipped = clipAnalysis('д'.repeat(ANALYSIS_MD_MAX + 5));
+    expect(clipped.length).toBe(ANALYSIS_MD_MAX);
+    expect(clipped.endsWith('повний - у документі й Drive)')).toBe(true);
+    expect(clipAnalysis('коротко')).toBe('коротко');
+    expect(ANALYSIS_MD_MAX).toBe(IDEA_TEXT_MAX);
     expect(ddmm('2026-09-05T12:00:00Z')).toBe('05.09');
     expect(ddmm(null)).toBe('?');
     expect(analysisFilename(12)).toBe('idea-12-analysis.md');
@@ -260,6 +272,25 @@ describe('чисті помічники', () => {
       rerunText({ started: true, number: 3, repo: 'svitanok', sha: 'abc1234', eta: 'до 40 хв' }),
     ).toContain('Запустив аналіз ідеї #3 по коду svitanok@abc1234 заново');
     expect(rerunText({ running: true, number: 3 })).toContain('уже йде');
+  });
+
+  it('targetOf: тема з контексту; dm → приватний чат власника; без контексту - тема «Асистент»; без чату - помилка', () => {
+    const { env } = setup();
+    expect(targetOf(env, { chatId: 555, threadId: 99 })).toEqual({ chatId: 555, threadId: '99' });
+    expect(targetOf(env, { chatId: 777, threadId: 'dm' })).toEqual({ chatId: 777, threadId: null });
+    expect(targetOf(env, { chatId: null, threadId: 'dm' })).toEqual({
+      chatId: 777,
+      threadId: null,
+    });
+    // Після ✅ пропозиції ядро знає лише тред (chatId null) - тема лишається темою.
+    expect(targetOf(env, { chatId: null, threadId: '123' })).toEqual({
+      chatId: 555,
+      threadId: '123',
+    });
+    expect(targetOf(env, {})).toEqual({ chatId: 555, threadId: '99' });
+    expect(() => targetOf({ ...env, TELEGRAM_CHAT_ID: undefined } as Env, {})).toThrow(
+      /немає чату/,
+    );
   });
 });
 
@@ -310,7 +341,7 @@ describe('GitHub: HEAD-sha і dispatch', () => {
 });
 
 describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () => {
-  it('старт: ланцюг idea/waiting зі станом, прогін actions зі staleMs 45 хв, статус «в аналізі», подія, інстанс Workflow', async () => {
+  it('старт: ланцюг idea/waiting, прогін actions зі staleMs понад очікування, статус «в аналізі», подія, інстанс з повними params', async () => {
     const { env, db, wf, reg } = setup();
     stubFetch();
     const idea = await createIdea(env);
@@ -321,7 +352,12 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       repo: 'svitanok',
       sha: 'bbbbbbb',
     });
-    expect(out.prev).toEqual({ id: idea.id, status: 'нова', chain_id: out.result.chain_id });
+    expect(out.prev).toEqual({
+      id: idea.id,
+      status: 'нова',
+      repo: null,
+      chain_id: out.result.chain_id,
+    });
     const chain = db.prepare('SELECT id, kind, status, state_json FROM chains').get() as {
       id: string;
       kind: string;
@@ -330,15 +366,7 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     };
     expect(chain).toMatchObject({ id: out.result.chain_id, kind: CHAIN_KIND, status: 'waiting' });
     const state = JSON.parse(chain.state_json);
-    expect(state).toMatchObject({
-      idea_id: idea.id,
-      repo: 'svitanok',
-      sha: SHA,
-      prev_status: 'нова',
-      chat_id: 555,
-      thread_id: '99',
-      awaiting: 'artifact',
-    });
+    expect(Object.keys(state).sort()).toEqual(['idea_id', 'repo', 'run_id', 'sha']);
     expect(reg.begins[0]).toMatchObject({
       id: state.run_id,
       trigger: 'actions',
@@ -357,6 +385,9 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
         runId: state.run_id,
         repo: 'svitanok',
         sha: SHA,
+        prevStatus: 'нова',
+        chatId: 555,
+        threadId: '99',
       },
     });
     expect(db.prepare('SELECT status, repo FROM ideas').get()).toEqual({
@@ -367,9 +398,10 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       (db.prepare(`SELECT note FROM idea_events WHERE kind = 'analysis'`).get() as { note: string })
         .note,
     ).toBe('code: dispatch svitanok@bbbbbbb');
-    expect(await findAnalysisByRun(env, state.run_id)).toMatchObject({
+    expect(await findAnalysisByRun(env, state.run_id)).toEqual({
       id: chain.id,
       status: 'waiting',
+      ideaId: idea.id,
     });
     expect(await findRunningAnalysis(env, idea.id)).toBe(chain.id);
   });
@@ -408,7 +440,6 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     });
     expect(wf.created).toHaveLength(0);
     expect(db.prepare('SELECT COUNT(*) AS n FROM chains').get()).toEqual({ n: 0 });
-    // Документ - у тред запиту, з підписом і кнопкою m:ia:.
     const doc = tg.find((c) => c.method === 'sendDocument');
     const form = doc!.form as FormData;
     expect(form.get('chat_id')).toBe('555');
@@ -418,7 +449,6 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       inline_keyboard: rerunButton(idea.id),
     });
     expect((form.get('document') as File).name).toBe('idea-1-analysis.md');
-    // force=true - кеш ігнорується, ланцюг стартує.
     const forced = await startIdeaAnalysis(
       env,
       (await findIdea(env, idea.id))!,
@@ -428,6 +458,24 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     );
     expect(forced.result).toMatchObject({ started: true });
     expect(wf.created).toHaveLength(1);
+  });
+
+  it('кеш у DM: документ іде в приватний чат без message_thread_id', async () => {
+    const { env, db } = setup();
+    const { tg } = stubFetch();
+    const idea = await createIdea(env);
+    db.prepare(`UPDATE ideas SET head_sha = ?, analysis_md = ? WHERE id = ?`).run(
+      SHA,
+      REPORT,
+      idea.id,
+    );
+    await startIdeaAnalysis(env, (await findIdea(env, idea.id))!, {}, NOW, {
+      chatId: 777,
+      threadId: 'dm',
+    });
+    const form = tg.find((c) => c.method === 'sendDocument')!.form as FormData;
+    expect(form.get('chat_id')).toBe('777');
+    expect(form.get('message_thread_id')).toBeNull();
   });
 
   it('інший sha - не кеш: новий прогін попри наявний звіт', async () => {
@@ -449,7 +497,7 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     stubFetch();
     const idea = await createIdea(env);
     await expect(startIdeaAnalysis(env, idea, {}, NOW, ctx)).rejects.toThrow(/REPO_READ_PAT/);
-    expect(db.prepare('SELECT status FROM ideas').get()).toEqual({ status: 'нова' });
+    expect(db.prepare(IDEA_STATUS()).get()).toEqual({ status: 'нова' });
     expect(wf.created).toHaveLength(0);
     const noWf = setup({ IDEA_ANALYSIS: undefined });
     stubFetch();
@@ -457,15 +505,32 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     await expect(startIdeaAnalysis(noWf.env, idea2, {}, NOW, ctx)).rejects.toThrow(/IDEA_ANALYSIS/);
   });
 
-  it('policy: T0 з «↩»; «↩» повертає статус і скасовує ланцюг', async () => {
-    const { env, db } = setup();
+  it('create Workflow упав - ланцюг failed, статус назад, прогін закрито, помилка нагору (не «вже йде» назавжди)', async () => {
+    const { env, db, wf, reg } = setup();
     stubFetch();
+    wf.setCreateFails(true);
     const idea = await createIdea(env);
+    await expect(startIdeaAnalysis(env, idea, {}, NOW, ctx)).rejects.toThrow(/не стартував/);
+    expect(db.prepare('SELECT status FROM chains').get()).toEqual({ status: 'failed' });
+    expect(db.prepare(IDEA_STATUS()).get()).toEqual({ status: 'нова' });
+    expect(reg.finishes[0]!.patch.error).toContain('Workflow не створено');
+    expect(await findRunningAnalysis(env, idea.id)).toBeNull();
+    // Наступний запит - знову спроба, не «вже йде».
+    wf.setCreateFails(false);
+    const again = await startIdeaAnalysis(env, (await findIdea(env, idea.id))!, {}, NOW + 1, ctx);
+    expect(again.result).toMatchObject({ started: true });
+  });
+
+  it('policy: T0 з «↩»; «↩» повертає статус і repo, скасовує ланцюг подією; tainted → пропозиція', async () => {
+    const { env, db, wf } = setup();
+    stubFetch();
+    const idea = await createIdea(env, { domain: 'інше' });
+    db.prepare(`UPDATE ideas SET repo = 'portfolio' WHERE id = ?`).run(idea.id);
     const out = await applyPolicy(
       env,
       {
         kind: 'ideas.analyze',
-        payload: { id: '1', mode: 'code' },
+        payload: { id: '1', mode: 'code', repo: 'svitanok' },
         threadId: '99',
         chatId: 555,
         tainted: false,
@@ -475,15 +540,23 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     expect(out.mode).toBe('executed');
     if (out.mode !== 'executed') return;
     expect(out.undo).toBeTruthy();
-    expect(db.prepare('SELECT status FROM ideas').get()).toEqual({ status: 'в аналізі' });
+    expect(db.prepare('SELECT status, repo FROM ideas').get()).toEqual({
+      status: 'в аналізі',
+      repo: 'svitanok',
+    });
     expect(await resolveUndo(env, out.undo!.id, NOW + 1000)).toEqual({
       ok: true,
       status: 'undone',
     });
-    expect(db.prepare('SELECT status FROM ideas').get()).toEqual({ status: 'нова' });
+    expect(db.prepare('SELECT status, repo FROM ideas').get()).toEqual({
+      status: 'нова',
+      repo: 'portfolio',
+    });
     expect(db.prepare('SELECT status FROM chains').get()).toEqual({ status: 'cancelled' });
+    expect(wf.events).toEqual([
+      { id: wf.created[0]!.id, ev: { type: 'artifact', payload: { status: 'cancelled' } } },
+    ]);
     expect(await findRunningAnalysis(env, idea.id)).toBeNull();
-    // У tainted-сесії - пропозиція, dispatch не йде.
     const tainted = await applyPolicy(
       env,
       {
@@ -505,13 +578,13 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
     stubFetch();
     const idea = await createIdea(s.env);
     const out = await startIdeaAnalysis(s.env, idea, {}, NOW, ctx);
-    const params = s.wf.created[0]!.params as Parameters<typeof runIdeaAnalysisChain>[1];
+    const params = s.wf.created[0]!.params;
     return { ...s, idea, params, chainId: String(out.result.chain_id) };
   }
 
-  it('ok: dispatch з inputs → артефакт → analysis_md/head_sha/статус, Drive, «Коротко» + документ, done', async () => {
+  it('ok: dispatch без повторів → артефакт → Drive окремим кроком → analysis_md/head_sha/статус → прогін закрито → «Коротко» + документ', async () => {
     const { env, db, params, chainId } = await started();
-    const { step, log } = fakeStep([{ payload: { status: 'ok', md: REPORT, sha: SHA } }]);
+    const { step, log, cfgs } = fakeStep([{ payload: { status: 'ok', md: REPORT } }]);
     const { io, sent, docs, alerts, dispatched, finished } = fakeIo();
     expect(await runIdeaAnalysisChain(env, params, step, io)).toEqual({
       outcome: 'done',
@@ -525,8 +598,19 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
       title: 'Експорт у Sheets',
       idea: 'кнопка експорту',
     });
-    expect(Object.keys(dispatched[0]!)).toEqual(DISPATCH_INPUTS);
-    expect(log).toContain(`wait:wait-artifact:artifact:${WAIT_ARTIFACT_MS / 1000} seconds`);
+    expect(Object.keys(dispatched[0]!)).toEqual([...DISPATCH_INPUTS]);
+    expect(cfgs.dispatch).toEqual({ retries: { limit: 0 } });
+    expect(log).toEqual([
+      'do:idea',
+      'do:dispatch',
+      `wait:wait-artifact:artifact:${WAIT_ARTIFACT_MS / 1000} seconds`,
+      'do:cancelled',
+      'do:drive',
+      'do:save',
+      'do:finish-run',
+      'do:deliver-text',
+      'do:deliver-doc',
+    ]);
     expect(
       db.prepare('SELECT status, head_sha, analysis_md, artifact_drive_id, repo FROM ideas').get(),
     ).toEqual({
@@ -557,10 +641,10 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
     expect(await findRunningAnalysis(env, params.ideaId)).toBeNull();
   });
 
-  it('довгий звіт: у D1 - кап ANALYSIS_MD_MAX, у документ - цілий; без Drive - позначка в тексті', async () => {
+  it('довгий/частковий звіт: у D1 - кап із позначкою, у документ - цілий; без Drive - позначка; partial - у тексті й події', async () => {
     const { env, db, params } = await started();
     const long = `## Коротко\n- x\n\n## Аналіз\n${'д'.repeat(ANALYSIS_MD_MAX + 500)}`;
-    const { step } = fakeStep([{ payload: { status: 'ok', md: long } }]);
+    const { step } = fakeStep([{ payload: { status: 'ok', md: long, partial: true } }]);
     const { io, sent, docs } = fakeIo({ driveId: null });
     await runIdeaAnalysisChain(env, params, step, io);
     const row = db.prepare('SELECT analysis_md, artifact_drive_id FROM ideas').get() as {
@@ -568,15 +652,23 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
       artifact_drive_id: string | null;
     };
     expect(row.analysis_md.length).toBe(ANALYSIS_MD_MAX);
+    expect(row.analysis_md.endsWith('Drive)')).toBe(true);
     expect(row.artifact_drive_id).toBeNull();
     expect(docs[0]!.content.length).toBe(long.length);
     expect(sent[0]).toContain('копію в Drive не збережено');
-    expect(ANALYSIS_MD_MAX).toBe(IDEA_TEXT_MAX);
+    expect(sent[0]).toContain('частковий');
+    expect(
+      (
+        db.prepare(`SELECT note FROM idea_events WHERE note LIKE 'code ok%'`).get() as {
+          note: string;
+        }
+      ).note,
+    ).toBe('code ok svitanok@bbbbbbb (частковий) (без Drive)');
   });
 
-  it('failed від Actions (S-3-5): статус назад, подія, «не вдався» власнику, алерт у системний, прогін з помилкою', async () => {
+  it('failed від Actions (S-3-5): статус назад, подія, «не вдався» власнику, алерт у системний, прогін з помилкою - окремими кроками', async () => {
     const { env, db, params, chainId } = await started();
-    const { step } = fakeStep([
+    const { step, log } = fakeStep([
       { payload: { status: 'failed', reason: 'claude: error_during_execution' } },
     ]);
     const { io, sent, docs, alerts, finished } = fakeIo();
@@ -584,6 +676,7 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
       outcome: 'failed',
       reason: 'claude: error_during_execution',
     });
+    expect(log.slice(-4)).toEqual(['do:fail-db', 'do:fail-run', 'do:fail-notify', 'do:fail-alert']);
     expect(db.prepare('SELECT status, analysis_md FROM ideas').get()).toEqual({
       status: 'нова',
       analysis_md: null,
@@ -600,23 +693,15 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
       runId: params.runId,
       error: 'actions: claude: error_during_execution',
     });
-    expect(
-      (
-        db.prepare(`SELECT note FROM idea_events WHERE note LIKE 'code failed%'`).get() as {
-          note: string;
-        }
-      ).note,
-    ).toContain('error_during_execution');
   });
 
-  it('таймаут очікування (> 40 хв) - failed з причиною таймауту', async () => {
+  it('таймаут очікування - failed з причиною таймауту', async () => {
     const { env, params } = await started();
     const { step } = fakeStep([new Error('timeout')]);
     const { io, sent, alerts } = fakeIo();
-    const out = await runIdeaAnalysisChain(env, params, step, io);
-    expect(out).toMatchObject({
+    expect(await runIdeaAnalysisChain(env, params, step, io)).toMatchObject({
       outcome: 'failed',
-      reason: `таймаут ${JOB_TIMEOUT_MIN} хв - Actions не відповів`,
+      reason: `таймаут ${WAIT_ARTIFACT_MS / 60_000} хв - Actions не відповів`,
     });
     expect(sent[0]).toContain('не вдався');
     expect(alerts[0]).toContain('таймаут');
@@ -631,22 +716,27 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
       reason: 'dispatch: dispatch 403: forbidden',
     });
     expect(log.some((l) => l.startsWith('wait:'))).toBe(false);
-    expect(db.prepare('SELECT status FROM ideas').get()).toEqual({ status: 'нова' });
+    expect(db.prepare(IDEA_STATUS()).get()).toEqual({ status: 'нова' });
     expect(alerts[0]).toContain('dispatch 403');
     expect(finished[0]!.error).toContain('dispatch');
   });
 
-  it('«↩» після старту: результат відкидається мовчки, прогін закривається cancelled', async () => {
+  it('«↩» після старту: подія cancelled або статус cancelled - результат відкинуто мовчки', async () => {
     const { env, db, params, chainId } = await started();
-    await cancelAnalysis(env, chainId);
-    const { step } = fakeStep([{ payload: { status: 'ok', md: REPORT } }]);
+    const { step } = fakeStep([{ payload: { status: 'cancelled' } }]);
     const { io, sent, docs, alerts, finished } = fakeIo();
     expect(await runIdeaAnalysisChain(env, params, step, io)).toEqual({ outcome: 'cancelled' });
     expect(sent).toEqual([]);
     expect(docs).toEqual([]);
     expect(alerts).toEqual([]);
-    expect(db.prepare('SELECT analysis_md FROM ideas').get()).toEqual({ analysis_md: null });
     expect(finished).toEqual([{ runId: params.runId, error: 'cancelled' }]);
+    // Статус у базі теж достатній (подія не дійшла, артефакт прийшов).
+    db.prepare(`UPDATE chains SET status = 'cancelled' WHERE id = ?`).run(chainId);
+    const again = fakeStep([{ payload: { status: 'ok', md: REPORT } }]);
+    expect(await runIdeaAnalysisChain(env, params, again.step, fakeIo().io)).toEqual({
+      outcome: 'cancelled',
+    });
+    expect(db.prepare('SELECT analysis_md FROM ideas').get()).toEqual({ analysis_md: null });
   });
 
   it('статус «в аналізі», змінений власником тим часом, при збої не перезаписується', async () => {
@@ -654,7 +744,7 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
     db.prepare(`UPDATE ideas SET status = 'відкладено'`).run();
     const { step } = fakeStep([{ payload: { status: 'failed', reason: 'x' } }]);
     await runIdeaAnalysisChain(env, params, step, fakeIo().io);
-    expect(db.prepare('SELECT status FROM ideas').get()).toEqual({ status: 'відкладено' });
+    expect(db.prepare(IDEA_STATUS()).get()).toEqual({ status: 'відкладено' });
   });
 });
 
@@ -694,7 +784,7 @@ describe('POST /internal/artifact', () => {
     expect(ARTIFACT_SCHEMA.properties!.md!.maxLength).toBeGreaterThanOrEqual(ARTIFACT_MD_MAX_BYTES);
   });
 
-  it('ok: підпис + живий run_id → прогін закрито, подія artifact у Workflow, 200', async () => {
+  it('ok: підпис + живий run_id → подія artifact у Workflow (з partial), прогін НЕ закривається тут', async () => {
     const { env, runId, chainId, wf, reg, idea } = await startedChain();
     const res = await post(env, runId, {
       idea_id: idea.id,
@@ -702,22 +792,23 @@ describe('POST /internal/artifact', () => {
       repo: 'svitanok',
       sha: SHA,
       md: REPORT,
+      meta: { partial: true, num_turns: 90 },
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, chain_id: chainId, status: 'ok' });
-    expect(reg.finishes).toEqual([
-      { id: runId, patch: { finishedMs: NOW, error: null, steps: 1 } },
-    ]);
+    expect(reg.finishes).toEqual([]);
     expect(wf.events).toEqual([
-      { id: chainId, ev: { type: 'artifact', payload: { status: 'ok', md: REPORT, sha: SHA } } },
+      {
+        id: chainId,
+        ev: { type: 'artifact', payload: { status: 'ok', md: REPORT, partial: true } },
+      },
     ]);
   });
 
-  it('failed: прогін закрито з actions-failed, подія з reason', async () => {
-    const { env, runId, chainId, wf, reg, idea } = await startedChain();
+  it('failed: подія з reason', async () => {
+    const { env, runId, chainId, wf, idea } = await startedChain();
     const res = await post(env, runId, { idea_id: idea.id, status: 'failed', reason: 'таймаут' });
     expect(res.status).toBe(200);
-    expect(reg.finishes[0]!.patch.error).toBe('actions-failed');
     expect(wf.events[0]).toEqual({
       id: chainId,
       ev: { type: 'artifact', payload: { status: 'failed', reason: 'таймаут' } },
@@ -735,8 +826,8 @@ describe('POST /internal/artifact', () => {
     expect((await post(env, runId, { idea_id: 'other', status: 'ok', md: 'x' })).status).toBe(400);
     expect((await post(env, runId, { idea_id: idea.id, status: 'ok' })).status).toBe(400);
     expect((await post(env, runId, { idea_id: idea.id, status: 'meh' })).status).toBe(400);
-    // Ланцюг уже не чекає (таймаут/«↩») - 409, подія не шлеться.
     await cancelAnalysis(env, chainId);
+    wf.events.length = 0;
     const res = await post(env, runId, { idea_id: idea.id, status: 'ok', md: 'x' });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: 'chain-not-waiting', status: 'cancelled' });
@@ -751,13 +842,13 @@ describe('POST /internal/artifact', () => {
     expect(await res.json()).toMatchObject({ error: 'chain-unknown' });
   });
 
-  it('sendEvent відкинуто інстансом - 409 (прогін уже закрито, Actions побачить у лозі)', async () => {
+  it('sendEvent відкинуто інстансом - 409', async () => {
     const { env, runId, wf, idea } = await startedChain();
     wf.setReject(true);
     expect((await post(env, runId, { idea_id: idea.id, status: 'ok', md: 'x' })).status).toBe(409);
   });
 
-  it('підпис зі старого скрипта (signInternal) - той самий формат', async () => {
+  it('підпис signInternal напряму - той самий формат', async () => {
     const { env, runId, idea } = await startedChain();
     const raw = JSON.stringify({ idea_id: idea.id, status: 'ok', md: 'x' });
     const res = await handleInternal(
@@ -786,7 +877,7 @@ describe('POST /internal/artifact', () => {
 });
 
 describe('кнопка m:ia: (prerouter)', () => {
-  it('тап: клавіатуру знято, force-старт через policy, у тред «Запустив … заново», тост', async () => {
+  it('тап: клавіатуру знято, force-старт через policy, у тред «Запустив … заново» з «↩», тост', async () => {
     const { env, db, wf } = setup();
     const { tg } = stubFetch();
     const idea = await createIdea(env);
@@ -803,7 +894,7 @@ describe('кнопка m:ia: (prerouter)', () => {
       (work) => deferred.push(work),
     );
     expect(toast).toBe('Запускаю аналіз заново');
-    expect(wf.created).toHaveLength(0); // робота - у defer
+    expect(wf.created).toHaveLength(0);
     for (const w of deferred) await w();
     expect(wf.created).toHaveLength(1);
     expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
@@ -811,9 +902,12 @@ describe('кнопка m:ia: (prerouter)', () => {
       (c) =>
         c.method === 'sendMessage' &&
         String((c.form as Record<string, unknown>).text).includes('заново'),
-    );
-    expect(String((msg!.form as Record<string, unknown>).message_thread_id)).toBe('99');
-    expect(db.prepare('SELECT status FROM ideas').get()).toEqual({ status: 'в аналізі' });
+    )!.form as Record<string, unknown>;
+    expect(String(msg.message_thread_id)).toBe('99');
+    const kb = (msg.reply_markup as { inline_keyboard: { callback_data: string }[][] })
+      .inline_keyboard;
+    expect(kb[0]![0]!.callback_data).toMatch(/^u:/);
+    expect(db.prepare(IDEA_STATUS()).get()).toEqual({ status: 'в аналізі' });
   });
 
   it('невідома ідея - «Не вийшло» у тред, без падіння', async () => {
@@ -831,19 +925,17 @@ describe('кнопка m:ia: (prerouter)', () => {
   });
 });
 
-describe('парність зі скриптом Actions і з конфігом Worker', () => {
-  it('DISPATCH_INPUTS = WORKFLOW_INPUTS; IDEA_REPOS однакові; кап ідеї в inputs однаковий', () => {
-    expect([...DISPATCH_INPUTS]).toEqual([...WORKFLOW_INPUTS]);
-    expect([...IDEA_REPOS]).toEqual([...SCRIPT_REPOS]);
-    expect(DISPATCH_IDEA_MAX).toBe(SCRIPT_IDEA_MAX);
+describe('контракт і конфіг Worker', () => {
+  it('скрипт Actions і ядро читають один контракт', () => {
+    expect(WORKFLOW_INPUTS).toBe(DISPATCH_INPUTS);
+    expect(IDEA_REPOS).toEqual(['svitanok', 'portfolio', 'moviehouse', 'modern-blog']);
   });
 
-  it('wrangler.jsonc: Workflow IdeaAnalysis з привʼязкою IDEA_ANALYSIS; worker.js експортує клас', () => {
+  it('wrangler.jsonc: Workflow IdeaAnalysis з привʼязкою IDEA_ANALYSIS; worker.js експортує кожен class_name', () => {
     const wrangler = readFileSync(join(ROOT, 'web', 'wrangler.jsonc'), 'utf8');
     expect(wrangler).toMatch(/"binding":\s*"IDEA_ANALYSIS",\s*"class_name":\s*"IdeaAnalysis"/);
     const worker = readFileSync(join(ROOT, 'web', 'worker.js'), 'utf8');
     expect(worker).toContain("export { IdeaAnalysis } from './core/ideas/analysis.mjs';");
-    // Кожен class_name з workflows має експорт у worker.js.
     for (const m of wrangler.matchAll(/"class_name":\s*"(\w+)"/g)) {
       expect(worker).toMatch(new RegExp(`export \\{ ${m[1]} \\}`));
     }

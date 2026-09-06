@@ -24,9 +24,15 @@ import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseInstruction } from '../web/core/instructions.mjs';
 import { signedInternalHeaders } from '../web/core/internal/auth.mjs';
+import {
+  IDEA_REPOS,
+  DISPATCH_INPUTS,
+  DISPATCH_IDEA_MAX,
+  ARTIFACT_MD_MAX_BYTES,
+} from '../web/core/ideas/contract.mjs';
 
-/** Inputs воркфлоу = поля dispatch з ядра (парність тримають тести обох боків). */
-export const WORKFLOW_INPUTS = ['run_id', 'idea_id', 'repo', 'sha', 'title', 'idea'];
+/** Inputs воркфлоу = поля dispatch з ядра (контракт; парність з yml тримає тест). */
+export const WORKFLOW_INPUTS = DISPATCH_INPUTS;
 
 /** Без цього не можна навіть повідомити ядру про збій (обидва режими). */
 export const REQUIRED_ENV = [
@@ -40,16 +46,11 @@ export const REQUIRED_ENV = [
 /** Додатково для режиму run: без них нема чого аналізувати. */
 export const RUN_REQUIRED_ENV = ['IA_REPO', 'IA_SHA', 'TARGET_DIR', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-/** Репозиторії, доступні для аналізу (S-3-8; парність із ядром тримає тест). */
-export const IDEA_REPOS = ['svitanok', 'portfolio', 'moviehouse', 'modern-blog'];
-
+export { IDEA_REPOS, ARTIFACT_MD_MAX_BYTES };
+/** Кап тексту ідеї у промпті - з контракту. */
+export const IDEA_TEXT_MAX = DISPATCH_IDEA_MAX;
 export const ARTIFACT_PATH = '/internal/artifact';
-/** Кап звіту в артефакті - у БАЙТАХ UTF-8: тіло /internal/* ≤ 128 KiB
- *  (MAX_INTERNAL_BODY_BYTES ядра), запас - на JSON-екранування й решту полів. */
-export const ARTIFACT_MD_MAX_BYTES = 96_000;
-/** Кап тексту ідеї у промпті (inputs воркфлоу ≤ 65 535 символів разом). */
-export const IDEA_TEXT_MAX = 12_000;
-/** Бюджет claude -p: інструкція каже ≤ 25 хв, стеля job - 40. */
+/** Бюджет claude -p: інструкція каже ≤ 25 хв, стеля job - JOB_TIMEOUT_MIN. */
 export const CLAUDE_TIMEOUT_MS = 25 * 60_000;
 /** SIGTERM проігноровано (посеред виклику інструмента) - SIGKILL, інакше
  *  висіли б до стелі job, а та вбиває без failed у ядро. */

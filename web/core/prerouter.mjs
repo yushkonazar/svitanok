@@ -888,6 +888,8 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
   const work = async () => {
     let text;
+    /** @type {Record<string, unknown> | undefined} */
+    let extra;
     try {
       const out = await applyPolicy(
         env,
@@ -904,10 +906,14 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
         out.mode === 'executed'
           ? rerunText(/** @type {Record<string, unknown>} */ (out.result))
           : `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+      // T0 з кнопки - теж із «↩» (ревʼю PR-2): без неї undo-рядок лежав би
+      // в базі, а власник не мав би що натиснути.
+      if (out.mode === 'executed' && out.undo)
+        extra = { reply_markup: { inline_keyboard: out.undo.buttons } };
     } catch (/** @type {any} */ e) {
       text = `Не вийшло: ${String(e?.message ?? e)}`;
     }
-    await reply(env, target, text, nowMs);
+    await reply(env, target, text, nowMs, extra);
   };
   await clearKeyboard(env, parsed);
   if (defer) {

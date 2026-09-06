@@ -3,43 +3,60 @@
 // репо з переліку, HEAD-sha через GitHub API (REPO_READ_PAT), кеш за
 // `ideas.head_sha` (той самий sha + є звіт = попередній документ без прогону,
 // кнопка «Все одно запустити»), інакше - рядок у `chains` (kind idea), прогін
-// у RunRegistry (trigger actions, стеля сторожа 45 хв) і інстанс Workflow.
+// у RunRegistry (trigger actions, стеля сторожа понад очікування артефакту)
+// і інстанс Workflow.
 //
 // Машина станів runIdeaAnalysisChain: dispatch idea-analysis.yml
-// (workflow_dispatch, inputs = поля скрипта) → waitForEvent(artifact, 42 хв)
-// → зберегти (ideas.analysis_md, head_sha, статус «план готовий», копія в
-// Drive) → «Коротко» + документ у тред → done; failed/таймаут/збій dispatch →
-// статус назад, «Аналіз не вдався» власнику + алерт у TOPIC_SYSTEM (S-3-5).
-// Подія artifact приходить із /internal/artifact (Actions підписує run_id).
-// Вихід у світ - через io, як у DayPlanChain: тести ганяють машину з фейками.
+// (workflow_dispatch, inputs = контракт) → waitForEvent(artifact) → Drive →
+// зберегти (ideas.analysis_md, head_sha, статус «план готовий») → «Коротко»
+// + документ у тред → done; failed/таймаут/збій dispatch → статус назад,
+// «Аналіз не вдався» власнику + алерт у TOPIC_SYSTEM (S-3-5). Подія artifact
+// приходить із /internal/artifact (Actions підписує run_id). Життя прогону в
+// RunRegistry закриває ЛИШЕ Workflow - на кожному термінальному шляху.
+//
+// Кожен побічний ефект - окремий step.do (ревʼю PR-2): Workflows повторюють
+// крок, що кинув, цілком, і два ефекти в одному кроці означали б подвоєне
+// повідомлення чи другий файл у Drive після збою на другому з них. Dispatch -
+// без повторів: таймаут після того, як GitHub уже прийняв запит, породив би
+// другий раннер. Вихід у світ - через io, як у DayPlanChain.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { DEFAULT_GH_REPO } from '../../cron.mjs';
+import { GITHUB_API, ghHeaders, ghOwner, ghRepoSlug } from '../adapters/github.mjs';
 import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { ensureFolderPath, uploadFile } from '../adapters/drive.mjs';
+import { setChainState, readChainState } from '../chains/state.mjs';
+import {
+  IDEA_REPOS,
+  DISPATCH_INPUTS,
+  DISPATCH_IDEA_MAX,
+  JOB_TIMEOUT_MIN,
+  IDEA_TEXT_MAX,
+} from './contract.mjs';
+// Лише функція (виклик у рантаймі): ideas.mjs імпортує цей модуль, і будь-яка
+// константа звідти на верхньому рівні тут упала б у TDZ циклу.
+import { logIdeaEvent } from '../tools/ideas.mjs';
+
+export { IDEA_REPOS, DISPATCH_INPUTS, DISPATCH_IDEA_MAX, JOB_TIMEOUT_MIN };
 
 export const CHAIN_KIND = 'idea';
 export const ANALYSIS_PROFILE = 'idea-analysis';
-/** Репозиторії, доступні для аналізу (S-3-8; парність зі скриптом тримає тест). */
-export const IDEA_REPOS = ['svitanok', 'portfolio', 'moviehouse', 'modern-blog'];
-/** Стеля job в Actions (07 §6) + запас на старт раннера. */
-export const JOB_TIMEOUT_MIN = 40;
-export const WAIT_ARTIFACT_MS = (JOB_TIMEOUT_MIN + 2) * 60_000;
-/** Сторож RunRegistry для цього прогону: загальні 6 хв закрили б run_id до артефакту. */
-export const ANALYSIS_RUN_STALE_MS = 45 * 60_000;
-/** Inputs воркфлоу - ті самі імена, що WORKFLOW_INPUTS скрипта (тест парності). */
-export const DISPATCH_INPUTS = ['run_id', 'idea_id', 'repo', 'sha', 'title', 'idea'];
-/** Кап тексту ідеї в inputs (= IDEA_TEXT_MAX скрипта; inputs ≤ 65 535 разом). */
-export const DISPATCH_IDEA_MAX = 12_000;
-/** Кап analysis_md у D1 (= IDEA_TEXT_MAX реєстру ідей); повний звіт - у документі й Drive. */
-export const ANALYSIS_MD_MAX = 20_000;
+/** Очікування артефакту: стеля job + запас на чергу раннера (ревʼю PR-2: 2 хв
+ *  не покривали чергу - повний звіт прилітав у вже закритий ланцюг). */
+export const WAIT_ARTIFACT_MS = (JOB_TIMEOUT_MIN + 10) * 60_000;
+/** Сторож RunRegistry для цього прогону - завжди ПІСЛЯ кінця очікування:
+ *  загальні 6 хв закрили б run_id до артефакту. */
+export const ANALYSIS_RUN_STALE_MS = WAIT_ARTIFACT_MS + 3 * 60_000;
+/** Кап analysis_md у D1 (= IDEA_TEXT_MAX реєстру); повний звіт - у документі й Drive. */
+export const ANALYSIS_MD_MAX = IDEA_TEXT_MAX;
 /** «Коротко» в чат ≤ 600 символів (code-reviewer.md «Формат відповіді»). */
 export const SHORT_MAX = 600;
 export const DRIVE_FOLDER_PATH = ['Світанок', 'ideas'];
 const WORKFLOW_FILE = 'idea-analysis.yml';
-const GITHUB_API = 'https://api.github.com';
 const GITHUB_TIMEOUT_MS = 10_000;
+/** Модель Код-оглядача - з front-matter code-reviewer.md (той самий id, що в мозку). */
+const ANALYSIS_MODEL = 'claude-sonnet-5';
+const TRUNCATED_NOTE = '\n\n…(звіт обрізано для бази; повний - у документі й Drive)';
 
 /**
  * @typedef {{
@@ -51,13 +68,13 @@ const GITHUB_TIMEOUT_MS = 10_000;
  *   uploadDrive: (name: string, content: string) => Promise<string | null>,
  *   finishRun: (runId: string, error: string | null) => Promise<void>,
  * }} AnalysisIo
+ * @typedef {{ retries?: { limit: number, delay?: string | number, backoff?: string } }} StepConfig
  * @typedef {{
- *   do: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
+ *   do: <T>(name: string, cfgOrFn: StepConfig | (() => Promise<T>), fn?: () => Promise<T>) => Promise<T>,
  *   waitForEvent: (name: string, opts: { type: string, timeout: string }) => Promise<{ payload: any }>,
  * }} AnalysisStep
- * @typedef {{ chainId: string, ideaId: string, runId: string, repo: string, sha: string }} AnalysisParams
- * @typedef {{ idea_id: string, run_id: string, repo: string, sha: string, prev_status: string,
- *   chat_id: number | null, thread_id: string | null, awaiting: string | null }} ChainState
+ * @typedef {{ chainId: string, ideaId: string, runId: string, repo: string, sha: string,
+ *   prevStatus: string, chatId: number, threadId: string | null }} AnalysisParams
  */
 
 /** @param {Env} env */
@@ -66,27 +83,20 @@ function db(env) {
   return env.DB;
 }
 
-/** Власник GitHub - із GH_REPO (owner/repo), як у dispatch брифінгу. @param {Env} env */
-export function repoOwner(env) {
-  return String(env.GH_REPO?.trim() || DEFAULT_GH_REPO).split('/')[0] ?? '';
-}
-
 /**
  * HEAD default-гілки репо (кеш S-3-4). Без REPO_READ_PAT - явна відмова: тихо
  * запускати аналіз без кешу означало б 40 хв Actions на кожне «проаналізуй».
- * @param {Env} env @param {string} repo @param {typeof fetch} [fetchFn]
+ * @param {Env} env @param {string} repo
  */
-export async function fetchHeadSha(env, repo, fetchFn = fetch) {
+export async function fetchHeadSha(env, repo) {
   const token = String(env.REPO_READ_PAT ?? '').trim();
   if (!token) throw new Error('REPO_READ_PAT не задано в Cloudflare - аналіз по коду недоступний');
   if (!IDEA_REPOS.includes(repo)) throw new Error(`repo «${repo}» поза переліком`);
-  const res = await fetchFn(`${GITHUB_API}/repos/${repoOwner(env)}/${repo}/commits/HEAD`, {
-    headers: {
-      authorization: `Bearer ${token}`,
+  const res = await fetch(`${GITHUB_API}/repos/${ghOwner(env)}/${repo}/commits/HEAD`, {
+    headers: ghHeaders(token, {
       accept: 'application/vnd.github.sha',
-      'x-github-api-version': '2022-11-28',
-      'user-agent': 'svitanok-idea-analysis',
-    },
+      agent: 'svitanok-idea-analysis',
+    }),
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
   });
   const text = (await res.text().catch(() => '')).trim();
@@ -98,26 +108,19 @@ export async function fetchHeadSha(env, repo, fetchFn = fetch) {
 /**
  * Запуск idea-analysis.yml (workflow_dispatch; відхилення від repository_dispatch
  * - plan.md етапу 4). inputs - лише DISPATCH_INPUTS, рядками.
- * @param {Env} env @param {Record<string, string>} inputs @param {typeof fetch} [fetchFn]
+ * @param {Env} env @param {Record<string, string>} inputs
  */
-export async function dispatchIdeaAnalysis(env, inputs, fetchFn = fetch) {
+export async function dispatchIdeaAnalysis(env, inputs) {
   const token = String(env.GH_DISPATCH_TOKEN ?? '').trim();
   if (!token) throw new Error('GH_DISPATCH_TOKEN не задано');
   /** @type {Record<string, string>} */
   const body = {};
   for (const k of DISPATCH_INPUTS) body[k] = String(inputs[k] ?? '');
-  const slug = env.GH_REPO?.trim() || DEFAULT_GH_REPO;
-  const res = await fetchFn(
-    `${GITHUB_API}/repos/${slug}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
+  const res = await fetch(
+    `${GITHUB_API}/repos/${ghRepoSlug(env)}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
     {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28',
-        'user-agent': 'svitanok-idea-analysis',
-        'content-type': 'application/json',
-      },
+      headers: ghHeaders(token, { agent: 'svitanok-idea-analysis', json: true }),
       body: JSON.stringify({ ref: 'main', inputs: body }),
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     },
@@ -129,13 +132,14 @@ export async function dispatchIdeaAnalysis(env, inputs, fetchFn = fetch) {
 }
 
 /**
- * Репо для ідеї: явний аргумент → колонка ideas.repo → svitanok для domain
- * svitanok; інакше - чесне питання власнику (S-3-2/S-3-8).
+ * Репо для ідеї: явний аргумент → колонка ideas.repo → domain, якщо він сам є
+ * репозиторієм (svitanok); інакше - чесне питання власнику (S-3-2/S-3-8).
  * @param {{ repo: string | null, domain: string | null }} idea @param {unknown} arg
  */
 export function resolveRepo(idea, arg) {
   const explicit = String(arg ?? '').trim();
-  const repo = explicit || idea.repo || (idea.domain === 'svitanok' ? 'svitanok' : '');
+  const byDomain = idea.domain && IDEA_REPOS.includes(idea.domain) ? idea.domain : '';
+  const repo = explicit || idea.repo || byDomain;
   if (!repo) throw new Error(`вкажи repo (одне з: ${IDEA_REPOS.join(', ')})`);
   if (!IDEA_REPOS.includes(repo)) {
     throw new Error(`Доступ є лише до ${IDEA_REPOS.join(', ')} - не до «${repo}»`);
@@ -144,7 +148,7 @@ export function resolveRepo(idea, arg) {
 }
 
 /**
- * Розділ «## Коротко» звіту (≤ SHORT_MAX) - у чат; без розділу - перші рядки.
+ * Розділ «## Коротко» звіту (≤ SHORT_MAX) - у чат; без розділу - початок.
  * @param {string} md
  */
 export function shortOf(md) {
@@ -158,6 +162,12 @@ export function shortOf(md) {
   }
   const text = picked.trim();
   return text.length > SHORT_MAX ? `${text.slice(0, SHORT_MAX - 1)}…` : text;
+}
+
+/** Звіт під кап бази - з позначкою, щоб кешована копія не видавала себе за повну. @param {string} md */
+export function clipAnalysis(md) {
+  if (md.length <= ANALYSIS_MD_MAX) return md;
+  return md.slice(0, ANALYSIS_MD_MAX - TRUNCATED_NOTE.length) + TRUNCATED_NOTE;
 }
 
 /** @param {number} n */
@@ -191,67 +201,55 @@ export async function findRunningAnalysis(env, ideaId) {
 /**
  * Ланцюг за run_id прогону в Actions (/internal/artifact підписує ним).
  * @param {Env} env @param {string} runId
- * @returns {Promise<{ id: string, status: string, state: ChainState } | null>}
+ * @returns {Promise<{ id: string, status: string, ideaId: string } | null>}
  */
 export async function findAnalysisByRun(env, runId) {
-  const row = /** @type {{ id: string, status: string, state_json: string } | null} */ (
+  const row = /** @type {{ id: string, status: string, idea_id: string } | null} */ (
     await db(env)
       .prepare(
-        `SELECT id, status, state_json FROM chains WHERE kind = ? AND json_extract(state_json, '$.run_id') = ? LIMIT 1`,
+        `SELECT id, status, json_extract(state_json, '$.idea_id') AS idea_id FROM chains
+           WHERE kind = ? AND json_extract(state_json, '$.run_id') = ? LIMIT 1`,
       )
       .bind(CHAIN_KIND, runId)
       .first()
   );
-  if (!row) return null;
-  return { id: String(row.id), status: String(row.status), state: JSON.parse(row.state_json) };
+  return row
+    ? { id: String(row.id), status: String(row.status), ideaId: String(row.idea_id) }
+    : null;
 }
 
 /**
+ * «↩» після старту (undo ideas.analyze): ланцюг - cancelled, і подія будить
+ * Workflow одразу (ревʼю PR-2: інакше він спав би до кінця очікування, а
+ * прогін висів у реєстрі). Actions зупинити нема як (dispatch не повертає id
+ * запуску) - його артефакт упреться в 409, і це чесний мінімум.
  * @param {Env} env @param {string} chainId
- * @returns {Promise<{ status: string, state: ChainState } | null>}
  */
-async function readChain(env, chainId) {
-  const row = /** @type {{ status: string, state_json: string } | null} */ (
-    await db(env)
-      .prepare('SELECT status, state_json FROM chains WHERE id = ?')
-      .bind(chainId)
-      .first()
-  );
-  return row ? { status: String(row.status), state: JSON.parse(row.state_json) } : null;
-}
-
-/**
- * @param {Env} env @param {string} chainId
- * @param {{ status: string, awaiting: string | null }} patch
- */
-export async function setAnalysisState(env, chainId, patch) {
-  await db(env)
-    .prepare(
-      `UPDATE chains SET status = ?, state_json = json_set(COALESCE(state_json, '{}'), '$.awaiting', ?), updated_at = ? WHERE id = ?`,
-    )
-    .bind(patch.status, patch.awaiting, new Date().toISOString(), chainId)
-    .run();
-}
-
-/** «↩» після старту (undo ideas.analyze): скасувати ланцюг - результат буде відкинуто. @param {Env} env @param {string} chainId */
 export async function cancelAnalysis(env, chainId) {
-  await db(env)
+  const { meta } = await db(env)
     .prepare(
       `UPDATE chains SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('running', 'waiting')`,
     )
     .bind(new Date().toISOString(), chainId)
     .run();
+  if (!meta?.changes) return false;
+  try {
+    await sendAnalysisEvent(env, chainId, { status: 'cancelled' });
+  } catch (/** @type {any} */ e) {
+    console.error(
+      `idea-analysis ${chainId}: подія cancelled не доставлена (закриє таймаут)`,
+      e?.message,
+    );
+  }
+  return true;
 }
 
-/** @param {Env} env @param {string} ideaId @param {string} note @param {number} nowMs */
-async function ideaEvent(env, ideaId, note, nowMs) {
-  await db(env)
-    .prepare('INSERT INTO idea_events (id, idea_id, at, kind, note) VALUES (?, ?, ?, ?, ?)')
-    .bind(crypto.randomUUID(), ideaId, new Date(nowMs).toISOString(), 'analysis', note)
-    .run();
+/** Повернути ideas.repo після «↩» (старт міг його переписати). @param {Env} env @param {string} ideaId @param {string | null} repo */
+export async function restoreIdeaRepo(env, ideaId, repo) {
+  await db(env).prepare('UPDATE ideas SET repo = ? WHERE id = ?').bind(repo, ideaId).run();
 }
 
-/** Дата останнього успішного аналізу по коду (для «не змінювався з DD.MM»). @param {Env} env @param {string} ideaId */
+/** Дата останнього успішного аналізу по коду («не змінювався з DD.MM»). @param {Env} env @param {string} ideaId */
 async function lastAnalyzedAt(env, ideaId) {
   const row = /** @type {{ at: string } | null} */ (
     await db(env)
@@ -274,6 +272,33 @@ export function ddmm(iso) {
 }
 
 /**
+ * Адреса треду, з якого просили аналіз (та сама мапа, що parsedForThread
+ * prerouter-а): тред 'dm' = приватний чат власника, тема - спільний чат;
+ * без контексту - тема «Асистент». Без чату - помилка, не тиша (ревʼю PR-2).
+ * @param {Env} env @param {{ chatId?: number | string | null, threadId?: number | string | null }} ctx
+ */
+export function targetOf(env, ctx) {
+  const key = ctx.threadId == null ? null : String(ctx.threadId);
+  const isDm = key === 'dm';
+  const chatId =
+    ctx.chatId != null
+      ? Number(ctx.chatId)
+      : isDm
+        ? env.TELEGRAM_OWNER_USER_ID
+          ? Number(env.TELEGRAM_OWNER_USER_ID)
+          : null
+        : env.TELEGRAM_CHAT_ID
+          ? Number(env.TELEGRAM_CHAT_ID)
+          : null;
+  const threadId = isDm
+    ? null
+    : (key ?? (env.TOPIC_ASSISTANT == null ? null : String(env.TOPIC_ASSISTANT)));
+  if (chatId == null)
+    throw new Error('немає чату для відповіді (TELEGRAM_CHAT_ID / контекст прогону)');
+  return { chatId, threadId };
+}
+
+/**
  * Старт аналізу по коду з чату (виконавець ideas.analyze mode=code, T0).
  * Повертає результат для моделі; документ і кнопка кешу йдуть у тред самі.
  * @param {Env} env
@@ -281,9 +306,8 @@ export function ddmm(iso) {
  * @param {{ repo?: unknown, force?: unknown }} args
  * @param {number} nowMs
  * @param {{ chatId?: number | string | null, threadId?: number | string | null }} ctx
- * @param {{ fetchFn?: typeof fetch }} [deps]
  */
-export async function startIdeaAnalysis(env, idea, args, nowMs, ctx, deps = {}) {
+export async function startIdeaAnalysis(env, idea, args, nowMs, ctx) {
   const repo = resolveRepo(idea, args.repo);
   const running = await findRunningAnalysis(env, idea.id);
   if (running) {
@@ -296,28 +320,28 @@ export async function startIdeaAnalysis(env, idea, args, nowMs, ctx, deps = {}) 
       },
     };
   }
-  const sha = await fetchHeadSha(env, repo, deps.fetchFn);
+  const sha = await fetchHeadSha(env, repo);
   const target = targetOf(env, ctx);
   if (!args.force && idea.head_sha === sha && idea.analysis_md) {
     const since = ddmm(await lastAnalyzedAt(env, idea.id));
-    if (target.chatId != null) {
-      await enqueueOutbox(
-        env,
-        {
-          chatId: target.chatId,
-          threadId: target.threadId,
-          kind: 'document',
-          payload: {
-            filename: analysisFilename(idea.number),
-            content: idea.analysis_md,
-            caption: `Код ${repo} не змінювався з ${since} - ось попередній аналіз ідеї #${idea.number}.`,
-            reply_markup: { inline_keyboard: rerunButton(idea.id) },
-          },
+    await enqueueOutbox(
+      env,
+      {
+        chatId: target.chatId,
+        threadId: target.threadId,
+        kind: 'document',
+        payload: {
+          filename: analysisFilename(idea.number),
+          content: idea.analysis_md,
+          caption: `Код ${repo} не змінювався з ${since} - ось попередній аналіз ідеї #${idea.number}.`,
+          reply_markup: { inline_keyboard: rerunButton(idea.id) },
         },
-        nowMs,
-      );
-      await drainOutbox(env, { nowMs }).catch(() => {});
-    }
+      },
+      nowMs,
+    );
+    await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
+      console.error('idea-analysis: драйн outbox впав (sweeper добере)', e?.message),
+    );
     return {
       result: {
         number: idea.number,
@@ -334,30 +358,37 @@ export async function startIdeaAnalysis(env, idea, args, nowMs, ctx, deps = {}) 
   const chainId = crypto.randomUUID();
   const runId = crypto.randomUUID();
   const iso = new Date(nowMs).toISOString();
-  /** @type {ChainState} */
-  const state = {
-    idea_id: idea.id,
-    run_id: runId,
+  /** @type {AnalysisParams} */
+  const params = {
+    chainId,
+    ideaId: idea.id,
+    runId,
     repo,
     sha,
-    prev_status: idea.status,
-    chat_id: target.chatId,
-    thread_id: target.threadId == null ? null : String(target.threadId),
-    awaiting: 'artifact',
+    prevStatus: idea.status,
+    chatId: target.chatId,
+    threadId: target.threadId,
   };
   await db(env)
     .prepare(
       `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'waiting', ?, ?)`,
     )
-    .bind(chainId, CHAIN_KIND, chainId, JSON.stringify(state), iso, iso)
+    .bind(
+      chainId,
+      CHAIN_KIND,
+      chainId,
+      JSON.stringify({ idea_id: idea.id, run_id: runId, repo, sha }),
+      iso,
+      iso,
+    )
     .run();
   await registryBegin(env, {
     id: runId,
     trigger: 'actions',
     profile: ANALYSIS_PROFILE,
-    threadId: state.thread_id ?? 'dm',
-    chatId: target.chatId == null ? null : Number(target.chatId),
-    model: 'claude-sonnet-5',
+    threadId: target.threadId ?? 'dm',
+    chatId: target.chatId,
+    model: ANALYSIS_MODEL,
     startedMs: nowMs,
     staleMs: ANALYSIS_RUN_STALE_MS,
   });
@@ -365,11 +396,21 @@ export async function startIdeaAnalysis(env, idea, args, nowMs, ctx, deps = {}) 
     .prepare(`UPDATE ideas SET status = 'в аналізі', repo = ?, updated_at = ? WHERE id = ?`)
     .bind(repo, iso, idea.id)
     .run();
-  await ideaEvent(env, idea.id, `code: dispatch ${repo}@${sha.slice(0, 7)}`, nowMs);
-  await env.IDEA_ANALYSIS.create({
-    id: chainId,
-    params: /** @type {AnalysisParams} */ ({ chainId, ideaId: idea.id, runId, repo, sha }),
-  });
+  await logIdeaEvent(env, idea.id, 'analysis', `code: dispatch ${repo}@${sha.slice(0, 7)}`, nowMs);
+  try {
+    await env.IDEA_ANALYSIS.create({ id: chainId, params });
+  } catch (/** @type {any} */ e) {
+    // Інстанса немає - ланцюг не сміє лишитись waiting назавжди (кожен наступний
+    // запит бачив би «вже йде»): відкат до стану до старту, помилка - моделі.
+    await markAnalysisCrashed(
+      env,
+      params,
+      `Workflow не створено: ${String(e?.message ?? e)}`,
+      nowMs,
+      false,
+    );
+    throw new Error(`Workflow аналізу не стартував: ${String(e?.message ?? e)}`, { cause: e });
+  }
   return {
     result: {
       number: idea.number,
@@ -380,20 +421,34 @@ export async function startIdeaAnalysis(env, idea, args, nowMs, ctx, deps = {}) 
       eta: `до ${JOB_TIMEOUT_MIN} хв`,
       note: 'результат прийде окремим повідомленням з документом; кажи власнику лише що запущено',
     },
-    prev: { id: idea.id, status: idea.status, chain_id: chainId },
+    prev: { id: idea.id, status: idea.status, repo: idea.repo, chain_id: chainId },
   };
 }
 
-/** Адреса треду, з якого просили аналіз; без чату - спільна тема. @param {Env} env @param {{ chatId?: number | string | null, threadId?: number | string | null }} ctx */
-function targetOf(env, ctx) {
-  const chatId =
-    ctx.chatId != null
-      ? Number(ctx.chatId)
-      : env.TELEGRAM_CHAT_ID
-        ? Number(env.TELEGRAM_CHAT_ID)
-        : null;
-  const threadId = ctx.chatId != null ? (ctx.threadId ?? null) : (env.TOPIC_ASSISTANT ?? null);
-  return { chatId, threadId: threadId === 'dm' ? null : threadId };
+/**
+ * Аварійне закриття (Workflow не створено / впав повз машину станів): ланцюг
+ * failed, статус ідеї назад, прогін закрито, алерт - помилка видима (S-3-5).
+ * @param {Env} env @param {AnalysisParams} p @param {string} reason @param {number} nowMs @param {boolean} alert
+ */
+export async function markAnalysisCrashed(env, p, reason, nowMs, alert = true) {
+  const iso = new Date(nowMs).toISOString();
+  await db(env)
+    .prepare(`UPDATE ideas SET status = ?, updated_at = ? WHERE id = ? AND status = 'в аналізі'`)
+    .bind(p.prevStatus, iso, p.ideaId)
+    .run();
+  await logIdeaEvent(env, p.ideaId, 'analysis', `code failed: ${reason.slice(0, 200)}`, nowMs);
+  await setChainState(env, p.chainId, { status: 'failed', awaiting: null });
+  await registryFinish(env, p.runId, {
+    finishedMs: nowMs,
+    error: `actions: ${reason.slice(0, 100)}`,
+    steps: 1,
+  });
+  if (alert)
+    await sendSystemAlert(
+      env,
+      `Аналіз ідеї по коду ${p.repo}@${p.sha.slice(0, 7)} впав: ${reason.slice(0, 300)}`,
+      nowMs,
+    );
 }
 
 // ── Машина станів Workflow ─────────────────────────────────────────────────
@@ -405,7 +460,7 @@ function targetOf(env, ctx) {
  * @param {AnalysisIo} io
  */
 export async function runIdeaAnalysisChain(env, params, step, io) {
-  const { chainId, ideaId, runId, repo, sha } = params;
+  const { chainId, ideaId, runId, repo, sha, prevStatus } = params;
   const idea = await step.do('idea', async () => {
     const row = /** @type {{ number: number, title: string, body_md: string | null } | null} */ (
       await db(env)
@@ -417,28 +472,30 @@ export async function runIdeaAnalysisChain(env, params, step, io) {
     return row;
   });
   const fail = async (/** @type {string} */ reason) => {
-    await step.do('fail', async () => {
-      const chain = await readChain(env, chainId);
-      const prev = chain?.state.prev_status ?? 'нова';
+    await step.do('fail-db', async () => {
       await db(env)
         .prepare(
           `UPDATE ideas SET status = ?, updated_at = ? WHERE id = ? AND status = 'в аналізі'`,
         )
-        .bind(prev, new Date(io.now()).toISOString(), ideaId)
+        .bind(prevStatus, new Date(io.now()).toISOString(), ideaId)
         .run();
-      await ideaEvent(env, ideaId, `code failed: ${reason.slice(0, 200)}`, io.now());
-      await setAnalysisState(env, chainId, { status: 'failed', awaiting: null });
-      await io.finishRun(runId, `actions: ${reason.slice(0, 100)}`);
-      await io.send(`Аналіз ідеї #${idea.number} не вдався (лог у системному чаті).`);
-      await io.alert(
-        `Аналіз ідеї #${idea.number} по коду ${repo}@${sha.slice(0, 7)} не вдався: ${reason.slice(0, 300)}`,
-      );
+      await logIdeaEvent(env, ideaId, 'analysis', `code failed: ${reason.slice(0, 200)}`, io.now());
+      await setChainState(env, chainId, { status: 'failed', awaiting: null });
     });
+    await step.do('fail-run', () => io.finishRun(runId, `actions: ${reason.slice(0, 100)}`));
+    await step.do('fail-notify', () =>
+      io.send(`Аналіз ідеї #${idea.number} не вдався (лог у системному чаті).`),
+    );
+    await step.do('fail-alert', () =>
+      io.alert(
+        `Аналіз ідеї #${idea.number} по коду ${repo}@${sha.slice(0, 7)} не вдався: ${reason.slice(0, 300)}`,
+      ),
+    );
     return { outcome: 'failed', reason };
   };
 
   try {
-    await step.do('dispatch', () =>
+    await step.do('dispatch', { retries: { limit: 0 } }, () =>
       io.dispatch({
         run_id: runId,
         idea_id: ideaId,
@@ -453,7 +510,7 @@ export async function runIdeaAnalysisChain(env, params, step, io) {
   }
 
   // Таймаут очікування у Workflows - виняток; тут це чесний null (S-3-5).
-  /** @type {{ status?: string, md?: string, reason?: string, sha?: string } | null} */
+  /** @type {{ status?: string, md?: string, reason?: string, partial?: boolean } | null} */
   const artifact = await step
     .waitForEvent('wait-artifact', {
       type: 'artifact',
@@ -464,59 +521,57 @@ export async function runIdeaAnalysisChain(env, params, step, io) {
 
   // «↩» після старту: результат відкидається мовчки (власник сам скасував).
   const cancelled = await step.do(
-    'cancelled?',
-    async () => (await readChain(env, chainId))?.status === 'cancelled',
+    'cancelled',
+    async () =>
+      artifact?.status === 'cancelled' ||
+      (await readChainState(env, chainId))?.status === 'cancelled',
   );
   if (cancelled) {
     await step.do('discard', () => io.finishRun(runId, 'cancelled'));
     return { outcome: 'cancelled' };
   }
-  if (!artifact) return fail(`таймаут ${JOB_TIMEOUT_MIN} хв - Actions не відповів`);
+  if (!artifact) return fail(`таймаут ${WAIT_ARTIFACT_MS / 60_000} хв - Actions не відповів`);
   if (artifact.status !== 'ok' || typeof artifact.md !== 'string' || !artifact.md.trim()) {
     return fail(String(artifact.reason ?? 'Actions: failed').slice(0, 300));
   }
 
   const md = artifact.md;
-  const saved = await step.do('save', async () => {
+  const partial = artifact.partial === true;
+  // Drive - окремим кроком ДО бази: повтор save після збою D1 не заливав би
+  // другий файл (крок памʼятає результат).
+  const driveId = await step.do('drive', () => io.uploadDrive(analysisFilename(idea.number), md));
+  await step.do('save', async () => {
     const nowMs = io.now();
-    const iso = new Date(nowMs).toISOString();
-    const driveId = await io.uploadDrive(analysisFilename(idea.number), md);
     await db(env)
       .prepare(
         `UPDATE ideas SET analysis_md = ?, head_sha = ?, repo = ?, artifact_drive_id = COALESCE(?, artifact_drive_id),
            status = 'план готовий', updated_at = ? WHERE id = ?`,
       )
-      .bind(
-        md.length > ANALYSIS_MD_MAX ? md.slice(0, ANALYSIS_MD_MAX) : md,
-        sha,
-        repo,
-        driveId,
-        iso,
-        ideaId,
-      )
+      .bind(clipAnalysis(md), sha, repo, driveId, new Date(nowMs).toISOString(), ideaId)
       .run();
-    await ideaEvent(
+    await logIdeaEvent(
       env,
       ideaId,
-      `code ok ${repo}@${sha.slice(0, 7)}${driveId ? '' : ' (без Drive)'}`,
+      'analysis',
+      `code ok ${repo}@${sha.slice(0, 7)}${partial ? ' (частковий)' : ''}${driveId ? '' : ' (без Drive)'}`,
       nowMs,
     );
-    await setAnalysisState(env, chainId, { status: 'done', awaiting: null });
-    await io.finishRun(runId, null);
-    return { driveId };
+    await setChainState(env, chainId, { status: 'done', awaiting: null });
   });
-  await step.do('deliver', async () => {
-    const short = shortOf(md);
-    await io.send(
-      `📄 Аналіз ідеї #${idea.number} «${idea.title}» по коду ${repo}@${sha.slice(0, 7)}:\n${short}${saved.driveId ? '' : '\n(копію в Drive не збережено - див. лог)'}`,
-    );
-    await io.sendDocument(analysisFilename(idea.number), md, `Повний звіт: ідея #${idea.number}`);
-  });
-  return { outcome: 'done', driveId: saved.driveId };
+  await step.do('finish-run', () => io.finishRun(runId, null));
+  await step.do('deliver-text', () =>
+    io.send(
+      `📄 Аналіз ідеї #${idea.number} «${idea.title}» по коду ${repo}@${sha.slice(0, 7)}${partial ? ' (частковий - не вклався у стелю ходів)' : ''}:\n${shortOf(md)}${driveId ? '' : '\n(копію в Drive не збережено - див. лог)'}`,
+    ),
+  );
+  await step.do('deliver-doc', () =>
+    io.sendDocument(analysisFilename(idea.number), md, `Повний звіт: ідея #${idea.number}`),
+  );
+  return { outcome: 'done', driveId };
 }
 
 /**
- * Подія в ланцюг аналізу (з /internal/artifact).
+ * Подія в ланцюг аналізу (з /internal/artifact або скасування).
  * @param {Env} env @param {string} chainId @param {Record<string, unknown>} payload
  */
 export async function sendAnalysisEvent(env, chainId, payload) {
@@ -527,24 +582,19 @@ export async function sendAnalysisEvent(env, chainId, payload) {
 }
 
 /**
- * Бойове io: адреса треду - зі стану ланцюга (звідки просили), документ і
- * текст через outbox, алерт - спільний sendSystemAlert, Drive - best-effort
+ * Бойове io: адреса треду - з параметрів (звідки просили), документ і текст
+ * через outbox, алерт - спільний sendSystemAlert, Drive - best-effort
  * (null = не збережено, у лог і в текст власнику).
- * @param {Env} env @param {string} chainId
+ * @param {Env} env @param {AnalysisParams} p
  */
-export async function productionIo(env, chainId) {
-  const chain = await readChain(env, chainId);
-  const chatId =
-    chain?.state.chat_id ?? (env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null);
-  const threadId = chain?.state.thread_id ?? env.TOPIC_ASSISTANT ?? null;
+export function productionIo(env, p) {
   const post = async (
     /** @type {'send' | 'document'} */ kind,
     /** @type {Record<string, unknown>} */ payload,
   ) => {
-    if (chatId == null) throw new Error('TELEGRAM_CHAT_ID не задано');
-    await enqueueOutbox(env, { chatId, threadId, kind, payload }, Date.now());
+    await enqueueOutbox(env, { chatId: p.chatId, threadId: p.threadId, kind, payload }, Date.now());
     await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
-      console.error(`idea-analysis ${chainId}: драйн outbox впав, доставить sweeper`, e?.message);
+      console.error(`idea-analysis ${p.chainId}: драйн outbox впав, доставить sweeper`, e?.message);
     });
   };
   return /** @type {AnalysisIo} */ ({
@@ -565,7 +615,7 @@ export async function productionIo(env, chainId) {
         });
         return up.id;
       } catch (/** @type {any} */ e) {
-        console.error(`idea-analysis ${chainId}: копія в Drive не збережена`, e?.message);
+        console.error(`idea-analysis ${p.chainId}: копія в Drive не збережена`, e?.message);
         return null;
       }
     },
@@ -585,13 +635,15 @@ export class IdeaAnalysis extends WorkflowEntrypoint {
   async run(event, step) {
     const env = /** @type {Env} */ (this.env);
     const params = /** @type {AnalysisParams} */ (event.payload);
-    const io = await productionIo(env, params.chainId);
     try {
-      return await runIdeaAnalysisChain(env, params, step, io);
+      return await runIdeaAnalysisChain(env, params, step, productionIo(env, params));
     } catch (/** @type {any} */ e) {
+      // Збій повз машину станів (крок вичерпав повтори): той самий видимий
+      // фінал, що й у fail() - статус, прогін, алерт (ревʼю PR-2).
       console.error(`idea-analysis chain ${params.chainId} впав`, e?.message);
-      await setAnalysisState(env, params.chainId, { status: 'failed', awaiting: null }).catch(
-        () => {},
+      await markAnalysisCrashed(env, params, String(e?.message ?? e), Date.now()).catch(
+        (/** @type {any} */ e2) =>
+          console.error(`idea-analysis ${params.chainId}: аварійне закриття впало`, e2?.message),
       );
       throw e;
     }

@@ -31,7 +31,7 @@ import {
   runIdeasDelete,
   runIdeasAnalyze,
 } from '../tools/ideas.mjs';
-import { cancelAnalysis } from '../ideas/analysis.mjs';
+import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
 import {
   runCollectionsCreate,
   runCollectionsUpdate,
@@ -199,7 +199,10 @@ export const EXECUTORS = {
       await runIdeasUpdate(env, { id: snapshot.id, status: snapshot.status }, nowMs);
       // Аналіз по коду вже диспатчено: ланцюг позначається cancelled, і його
       // результат буде відкинуто мовчки (Actions не зупиняємо - 40 хв стелі).
-      if (snapshot.chain_id) await cancelAnalysis(env, snapshot.chain_id);
+      if (snapshot.chain_id) {
+        await cancelAnalysis(env, snapshot.chain_id);
+        await restoreIdeaRepo(env, snapshot.id, snapshot.repo ?? null);
+      }
     },
   },
   'ideas.delete': {
