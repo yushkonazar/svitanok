@@ -16,6 +16,7 @@ import {
 } from '../run-registry/client.mjs';
 import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits, sendSystemAlert } from '../tg/outbox.mjs';
+import { renderMdParts } from '../tg/markdown.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { isTaintActive } from '../policy/core.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
@@ -320,8 +321,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       threadId: target.threadId,
       kind: 'send',
       editFirstMessageId: draftId,
+      // Markdown моделі → HTML Telegram частинами (tg/markdown.mjs); текст у
+      // reports/сесії лишається Markdown.
+      parts: renderMdParts(body.text),
       payload: {
-        text: body.text,
         parse_mode: 'HTML',
         ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
       },

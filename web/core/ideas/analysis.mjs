@@ -23,6 +23,7 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { GITHUB_API, ghHeaders, ghOwner, ghRepoSlug } from '../adapters/github.mjs';
 import { enqueueOutbox, drainOutbox, sendDocument, sendSystemAlert } from '../tg/outbox.mjs';
+import { renderMdParts } from '../tg/markdown.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { uploadMarkdown } from '../adapters/drive.mjs';
 import { setChainState, readChainState } from '../chains/state.mjs';
@@ -594,16 +595,26 @@ export function productionIo(env, p) {
   const post = async (
     /** @type {'send' | 'document'} */ kind,
     /** @type {Record<string, unknown>} */ payload,
+    /** @type {Record<string, unknown>[] | undefined} */ parts = undefined,
   ) => {
-    await enqueueOutbox(env, { chatId: p.chatId, threadId: p.threadId, kind, payload }, Date.now());
+    await enqueueOutbox(
+      env,
+      { chatId: p.chatId, threadId: p.threadId, kind, payload, ...(parts ? { parts } : {}) },
+      Date.now(),
+    );
     await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
       console.error(`idea-analysis ${p.chainId}: драйн outbox впав, доставить sweeper`, e?.message);
     });
   };
   return /** @type {AnalysisIo} */ ({
     now: () => Date.now(),
+    // «Коротко» зі звіту - Markdown → HTML Telegram, як deliver.
     send: (text, btns) =>
-      post('send', { text, ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) }),
+      post(
+        'send',
+        { parse_mode: 'HTML', ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) },
+        renderMdParts(text),
+      ),
     sendDocument: (filename, content, caption) =>
       sendDocument(
         env,

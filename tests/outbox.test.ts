@@ -181,6 +181,39 @@ describe('outbox — enqueue і drain', () => {
     expect((calls[1]?.body as { parse_mode?: string }).parse_mode).toBeUndefined();
   });
 
+  it('parts із plain_text: розмітку відхилено → фолбек шле ОРИГІНАЛ Markdown, а не голі теги; plain_text у Telegram не їде', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      calls.push({ url, body });
+      if (body.parse_mode) {
+        return new Response(
+          JSON.stringify({ ok: false, description: "Bad Request: can't parse entities" }),
+          { status: 400 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await enqueueOutbox(
+      env,
+      {
+        chatId: '-100',
+        kind: 'send',
+        parts: [{ text: '<b>жирно</b>', plain_text: '**жирно**' }],
+        payload: { parse_mode: 'HTML' },
+      },
+      NOW,
+    );
+    const res = await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(res).toMatchObject({ sent: 1 });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.body).toMatchObject({ text: '<b>жирно</b>', parse_mode: 'HTML' });
+    expect(calls[0]?.body).not.toHaveProperty('plain_text');
+    expect(calls[1]?.body).toMatchObject({ text: '**жирно**' });
+    expect(calls[1]?.body).not.toHaveProperty('parse_mode');
+    expect(calls[1]?.body).not.toHaveProperty('plain_text');
+  });
+
   it('після MAX_ATTEMPTS ряд стає failed — видима поломка, не вічний цикл', async () => {
     vi.stubGlobal(
       'fetch',
@@ -299,11 +332,11 @@ describe('deliver/status через router', () => {
     });
   });
 
-  it('deliver: тред прогону, HTML + кнопки, доставка одразу', async () => {
+  it('deliver: тред прогону, Markdown → HTML + кнопки, доставка одразу', async () => {
     const res = await handleInternal(
       await signedRequest(
         '/internal/deliver',
-        { text: 'Готово ✅', buttons: [[{ text: '↩', callback_data: 'u:1' }]] },
+        { text: '**Готово** ✅ <3', buttons: [[{ text: '↩', callback_data: 'u:1' }]] },
         'n-d1',
       ),
       env,
@@ -313,11 +346,14 @@ describe('deliver/status через router', () => {
     // Відповідь - лише факт постановки в чергу; доставку підтверджують sends
     // нижче (без ctx драйн awaited синхронно ще до відповіді).
     expect(await res.json()).toMatchObject({ ok: true, queued: 1 });
+    // Модель пише Markdown, у Telegram їде HTML (приймання етапу 4: «**» текстом).
     expect(sends[0]?.body).toMatchObject({
       chat_id: '-100',
       message_thread_id: '77',
       parse_mode: 'HTML',
+      text: '<b>Готово</b> ✅ &lt;3',
     });
+    expect(sends[0]?.body).not.toHaveProperty('plain_text');
     expect(JSON.stringify(sends[0]?.body.reply_markup)).toContain('u:1');
   });
 
