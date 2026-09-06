@@ -2,16 +2,19 @@
 // етап 5 PR-1): Places Text Search (New, SKU Pro), Place Details (New, SKU
 // Enterprise - лише для ОБРАНОГО закладу), Routes computeRoutes, Geocoding.
 // Один ключ MAPS_API_KEY (обмежений трьома API в консолі). Кожен успішний
-// виклик - bumpQuota у quota_counters (01 §7: алерт 80 %, при 100 % виклику
+// виклик - countQuota у quota_counters (01 §7: алерт 80 %, при 100 % виклику
 // НЕМАЄ - S-1-14: Places живе з кешу `places`, Routes/Geocoding відмовляють
-// явно). Кеш `places` (07 §1) - джерело для чату й ланцюга столика, тому
-// details пишуть у нього телефон/сайт/години, а пошук - лише адресу й
-// координати, не затираючи деталей.
+// явно). Кеш `places` (07 §1) - джерело для чату й ланцюга столика: details
+// пишуть телефон/сайт/години і fetched_at, пошук - лише адресу й координати
+// (новий рядок - з fetched_at пошуку, hours_json порожній = деталей ще не
+// було), не затираючи ані деталей, ані оцінки/улюбленого власника.
 //
 // Field mask - контракт SKU: поле поза списком Pro/Enterprise тягне дорожчий
 // SKU, тож маски тримаємо константами, не будуємо з аргументів.
 
-import { bumpQuota, quotaExhausted, QUOTA_LIMITS } from '../quota/quota.mjs';
+import { assertQuota, countQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
+
+export { QuotaExhaustedError } from '../quota/quota.mjs';
 
 export const PLACES_SEARCH_MAX = 8;
 /** Деталі закладу з кешу без походу в API, поки їм менше тижня. */
@@ -20,6 +23,9 @@ const TIMEOUT_MS = 10_000;
 const PLACES_API = 'https://places.googleapis.com/v1';
 const ROUTES_API = 'https://routes.googleapis.com/directions/v2:computeRoutes';
 const GEOCODE_API = 'https://maps.googleapis.com/maps/api/geocode/json';
+/** Мова/регіон відповідей - власник один, українською; константа, не конфіг. */
+const LANGUAGE = 'uk';
+const REGION = 'UA';
 /** Text Search: лише поля SKU Pro (id/displayName/formattedAddress/location/googleMapsUri). */
 export const SEARCH_FIELD_MASK =
   'places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri';
@@ -32,7 +38,6 @@ export const TRAVEL_MODES = /** @type {const} */ ({
   walk: 'WALK',
   transit: 'TRANSIT',
   car: 'DRIVE',
-  bike: 'BICYCLE',
 });
 const PLACE_ID_RE = /^[A-Za-z0-9_-]{1,300}$/;
 /** Радіус locationBias для «near» (метри): місто, не квартал. */
@@ -42,7 +47,8 @@ const NEAR_RADIUS_M = 15_000;
  * @typedef {{ place_id: string, name: string, address: string | null, lat: number | null,
  *   lon: number | null, maps_uri: string | null }} PlaceCandidate
  * @typedef {PlaceCandidate & { phone: string | null, site: string | null,
- *   hours: string[], rating_owner: number | null, is_favorite: boolean, visits: number }} PlaceDetails
+ *   hours: string[], rating_owner: number | null, is_favorite: boolean, visits: number,
+ *   fetched_at: string | null }} PlaceDetails
  */
 
 /** @param {Env} env */
@@ -58,49 +64,22 @@ export function mapsApiKey(env) {
   return key;
 }
 
-/** Виняток «стеля 100 %» - викликачі відрізняють його від збою API. */
-export class QuotaExhaustedError extends Error {
-  /** @param {string} key */
-  constructor(key) {
-    super(`квота ${key} вичерпана на цей місяць (100 %)`);
-    this.name = 'QuotaExhaustedError';
-    this.quotaKey = key;
-  }
-}
-
-/** Стеля з довідника; відсутній ключ - помилка коду, не «без ліміту». @param {string} key */
-function limitOf(key) {
-  const limit = QUOTA_LIMITS[key];
-  if (!limit) throw new Error(`quota: немає стелі для ${key}`);
-  return limit;
-}
-
-/** @param {Env} env @param {string} key @param {number} nowMs */
-async function isExhausted(env, key, nowMs) {
-  return quotaExhausted(env, key, limitOf(key), nowMs);
-}
-
-/** @param {Env} env @param {string} key @param {number} nowMs */
-async function assertQuota(env, key, nowMs) {
-  if (await isExhausted(env, key, nowMs)) throw new QuotaExhaustedError(key);
-}
-
-/** @param {Env} env @param {string} key @param {number} nowMs */
-async function count(env, key, nowMs) {
-  await bumpQuota(env, { key, amount: 1, limit: limitOf(key), nowMs });
-}
-
 /**
+ * fetch + таймаут + тіло → JSON. Текст помилки - без URL (у Geocoding ключ
+ * іде query-параметром, бо legacy-API іншого способу не має) і без ключа з
+ * тіла відповіді Google.
  * @param {string} url @param {RequestInit} init @param {string} what
  * @returns {Promise<any>}
  */
 async function callJson(url, init, what) {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  let res;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (/** @type {any} */ e) {
+    throw new Error(`${what}: мережа - ${String(e?.name ?? e)}`, { cause: e });
+  }
   const text = await res.text().catch(() => '');
   if (!res.ok) {
-    // Тіло помилки Google містить message без ключа; 300 символів вистачає
-    // для діагнозу (REQUEST_DENIED / API not enabled), і ключ у URL не
-    // потрапляє в текст: він іде заголовком або зрізається нижче.
     throw new Error(
       `${what}: HTTP ${res.status} ${text.slice(0, 300).replace(/key=[^&\s"]+/g, 'key=***')}`,
     );
@@ -133,6 +112,44 @@ function candidateOf(p) {
   };
 }
 
+/** Рядок `places` → PlaceDetails (кандидат - його підмножина). @param {any} row @returns {PlaceDetails} */
+function detailsOfRow(row) {
+  /** @type {string[]} */
+  let hours = [];
+  if (row.hours_json) {
+    try {
+      const parsed = JSON.parse(String(row.hours_json));
+      if (Array.isArray(parsed?.weekday)) hours = parsed.weekday.map(String);
+    } catch {
+      console.error(`places: битий hours_json у ${String(row.place_id)}`);
+    }
+  }
+  return {
+    place_id: String(row.place_id),
+    name: String(row.name ?? ''),
+    address: row.address == null ? null : String(row.address),
+    lat: row.lat == null ? null : Number(row.lat),
+    lon: row.lon == null ? null : Number(row.lon),
+    maps_uri: row.maps_uri == null ? null : String(row.maps_uri),
+    phone: row.phone == null ? null : String(row.phone),
+    site: row.site == null ? null : String(row.site),
+    hours,
+    rating_owner: row.rating_owner == null ? null : Number(row.rating_owner),
+    is_favorite: Number(row.is_favorite) === 1,
+    visits: Number(row.visits) || 0,
+    fetched_at: row.fetched_at == null ? null : String(row.fetched_at),
+  };
+}
+
+/** Рядок кешу як є (null - немає). @param {Env} env @param {string} placeId */
+export async function readPlace(env, placeId) {
+  const row = await db(env)
+    .prepare('SELECT * FROM places WHERE place_id = ?')
+    .bind(placeId)
+    .first();
+  return row ? detailsOfRow(row) : null;
+}
+
 /**
  * Пошук закладів за текстом (S-1-1/S-1-3): ≤ 8 кандидатів у кеш `places`.
  * `near` - зсув до координат власника (geo.last), `city` - місто з тексту
@@ -147,16 +164,19 @@ function candidateOf(p) {
 export async function placesSearch(env, input, nowMs) {
   const query = String(input.query ?? '').trim();
   if (!query) throw new Error('places.search: порожній query');
-  const limit = Math.min(PLACES_SEARCH_MAX, Math.max(1, Number(input.limit) || PLACES_SEARCH_MAX));
+  const limit = Math.min(
+    PLACES_SEARCH_MAX,
+    Math.max(1, Math.floor(Number(input.limit) || PLACES_SEARCH_MAX)),
+  );
+  const key = mapsApiKey(env);
   const textQuery = input.city ? `${query}, ${String(input.city).trim()}` : query;
-  if (await isExhausted(env, 'places_text', nowMs)) {
+  if ((await quotaUsed(env, 'places_text', nowMs)) >= quotaLimitOf('places_text')) {
     const cached = await searchCache(env, query, limit);
-    if (cached.length === 0) throw new QuotaExhaustedError('places_text');
+    if (cached.length === 0) await assertQuota(env, 'places_text', nowMs);
     return { places: cached, source: 'cache' };
   }
-  const key = mapsApiKey(env);
   /** @type {Record<string, unknown>} */
-  const body = { textQuery, pageSize: limit, languageCode: 'uk', regionCode: 'UA' };
+  const body = { textQuery, pageSize: limit, languageCode: LANGUAGE, regionCode: REGION };
   if (input.near && Number.isFinite(input.near.lat) && Number.isFinite(input.near.lon)) {
     body.locationBias = {
       circle: {
@@ -178,25 +198,26 @@ export async function placesSearch(env, input, nowMs) {
     },
     'Places search',
   );
-  await count(env, 'places_text', nowMs);
-  const places = (Array.isArray(json.places) ? json.places : [])
-    .map(candidateOf)
-    .filter((/** @type {PlaceCandidate | null} */ p) => p != null)
-    .slice(0, limit);
-  const iso = new Date(nowMs).toISOString();
-  for (const p of places) {
-    // Пошук оновлює лише «зовнішні» поля; телефон/сайт/години з details і
-    // оцінка/улюблене власника лишаються.
-    await db(env)
-      .prepare(
-        `INSERT INTO places (place_id, name, address, lat, lon, maps_uri, fetched_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (place_id) DO UPDATE SET name = excluded.name, address = excluded.address,
-           lat = excluded.lat, lon = excluded.lon, maps_uri = excluded.maps_uri,
-           fetched_at = excluded.fetched_at`,
-      )
-      .bind(p.place_id, p.name, p.address, p.lat, p.lon, p.maps_uri, iso)
-      .run();
+  await countQuota(env, 'places_text', nowMs);
+  /** @type {PlaceCandidate[]} */
+  const places = [];
+  for (const raw of Array.isArray(json.places) ? json.places : []) {
+    const p = candidateOf(raw);
+    if (p && places.length < limit) places.push(p);
+  }
+  if (places.length) {
+    const iso = new Date(nowMs).toISOString();
+    // Пошук оновлює лише «зовнішні» поля; телефон/сайт/години з details,
+    // fetched_at деталей і оцінка/улюблене власника лишаються.
+    const stmt = db(env).prepare(
+      `INSERT INTO places (place_id, name, address, lat, lon, maps_uri, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (place_id) DO UPDATE SET name = excluded.name, address = excluded.address,
+         lat = excluded.lat, lon = excluded.lon, maps_uri = excluded.maps_uri`,
+    );
+    await db(env).batch(
+      places.map((p) => stmt.bind(p.place_id, p.name, p.address, p.lat, p.lon, p.maps_uri, iso)),
+    );
   }
   return { places, source: 'api' };
 }
@@ -205,100 +226,49 @@ export async function placesSearch(env, input, nowMs) {
 async function searchCache(env, query, limit) {
   const { results } = await db(env)
     .prepare(
-      `SELECT place_id, name, address, lat, lon, maps_uri FROM places
-       WHERE name LIKE ? ORDER BY is_favorite DESC, visits DESC, fetched_at DESC LIMIT ?`,
+      `SELECT * FROM places WHERE name LIKE ? ORDER BY is_favorite DESC, visits DESC, fetched_at DESC LIMIT ?`,
     )
     .bind(`%${query.replace(/[%_]/g, '')}%`, limit)
     .all();
-  return /** @type {PlaceCandidate[]} */ (results ?? []).map((r) => ({
-    place_id: String(r.place_id),
-    name: String(r.name ?? ''),
-    address: r.address == null ? null : String(r.address),
-    lat: r.lat == null ? null : Number(r.lat),
-    lon: r.lon == null ? null : Number(r.lon),
-    maps_uri: r.maps_uri == null ? null : String(r.maps_uri),
-  }));
-}
-
-/** @param {any} row @returns {PlaceDetails} */
-function detailsOfRow(row) {
-  /** @type {string[]} */
-  let hours = [];
-  try {
-    const parsed = row.hours_json ? JSON.parse(String(row.hours_json)) : null;
-    if (Array.isArray(parsed?.weekday)) hours = parsed.weekday.map(String);
-  } catch {
-    hours = [];
-  }
-  return {
-    place_id: String(row.place_id),
-    name: String(row.name ?? ''),
-    address: row.address == null ? null : String(row.address),
-    lat: row.lat == null ? null : Number(row.lat),
-    lon: row.lon == null ? null : Number(row.lon),
-    maps_uri: row.maps_uri == null ? null : String(row.maps_uri),
-    phone: row.phone == null ? null : String(row.phone),
-    site: row.site == null ? null : String(row.site),
-    hours,
-    rating_owner: row.rating_owner == null ? null : Number(row.rating_owner),
-    is_favorite: Number(row.is_favorite) === 1,
-    visits: Number(row.visits) || 0,
-  };
-}
-
-/** Рядок кешу як є (null - немає). @param {Env} env @param {string} placeId */
-export async function readPlace(env, placeId) {
-  const row = await db(env)
-    .prepare('SELECT * FROM places WHERE place_id = ?')
-    .bind(placeId)
-    .first();
-  return row ? detailsOfRow(row) : null;
-}
-
-/** Час останнього details у hours_json ($.at): пошук теж пише fetched_at, тож свіжість деталей - окремо. @param {any} row */
-function detailsAt(row) {
-  try {
-    const at = row?.hours_json ? JSON.parse(String(row.hours_json))?.at : null;
-    return typeof at === 'string' ? Date.parse(at) : NaN;
-  } catch {
-    return NaN;
-  }
+  return (results ?? []).map((r) => {
+    const { place_id, name, address, lat, lon, maps_uri } = detailsOfRow(r);
+    return { place_id, name, address, lat, lon, maps_uri };
+  });
 }
 
 /**
- * Деталі обраного закладу (S-1-7): телефон, сайт, години. Свіжий кеш (< 7 днів)
- * - без API; квота 100 % - кеш будь-якої давнини або QuotaExhaustedError.
+ * Деталі обраного закладу (S-1-7): телефон, сайт, години. Деталі є, якщо
+ * hours_json не порожній (details пише його завжди, хоч і з порожнім
+ * списком); свіжі (< 7 днів за fetched_at) - без API. Квота 100 % - будь-який
+ * рядок кешу (хоч лише з пошуку) або QuotaExhaustedError.
  * @param {Env} env @param {string} placeId @param {number} nowMs
  * @returns {Promise<{ place: PlaceDetails, source: 'api' | 'cache' }>}
  */
 export async function placeDetails(env, placeId, nowMs) {
   if (!PLACE_ID_RE.test(placeId)) throw new Error('places.details: некоректний place_id');
+  const key = mapsApiKey(env);
   const row = /** @type {any} */ (
     await db(env).prepare('SELECT * FROM places WHERE place_id = ?').bind(placeId).first()
   );
-  const at = detailsAt(row);
-  if (row && Number.isFinite(at) && nowMs - at < PLACE_DETAILS_FRESH_MS) {
+  const hasDetails = row != null && row.hours_json != null;
+  const fetchedMs = row?.fetched_at ? Date.parse(String(row.fetched_at)) : NaN;
+  if (hasDetails && Number.isFinite(fetchedMs) && nowMs - fetchedMs < PLACE_DETAILS_FRESH_MS) {
     return { place: detailsOfRow(row), source: 'cache' };
   }
-  if (await isExhausted(env, 'places_details', nowMs)) {
-    if (row && Number.isFinite(at)) return { place: detailsOfRow(row), source: 'cache' };
-    throw new QuotaExhaustedError('places_details');
+  if ((await quotaUsed(env, 'places_details', nowMs)) >= quotaLimitOf('places_details')) {
+    if (row) return { place: detailsOfRow(row), source: 'cache' };
+    await assertQuota(env, 'places_details', nowMs);
   }
-  const key = mapsApiKey(env);
   const json = await callJson(
-    `${PLACES_API}/places/${encodeURIComponent(placeId)}?languageCode=uk&regionCode=UA`,
+    `${PLACES_API}/places/${encodeURIComponent(placeId)}?languageCode=${LANGUAGE}&regionCode=${REGION}`,
     { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': DETAILS_FIELD_MASK } },
     'Place details',
   );
-  await count(env, 'places_details', nowMs);
-  const base = candidateOf(json) ?? {
-    place_id: placeId,
-    name: String(row?.name ?? ''),
-    address: row?.address ?? null,
-    lat: row?.lat ?? null,
-    lon: row?.lon ?? null,
-    maps_uri: row?.maps_uri ?? null,
-  };
+  await countQuota(env, 'places_details', nowMs);
+  // Відповідь без назви (заклад зник/змінив id) - назва з кешу; немає й
+  // її - помилка, а не порожній рядок у кеші.
+  const base = candidateOf(json) ?? (row ? detailsOfRow(row) : null);
+  if (!base) throw new Error(`Place details: заклад ${placeId} без назви`);
   const phone =
     typeof json.internationalPhoneNumber === 'string'
       ? json.internationalPhoneNumber
@@ -306,7 +276,7 @@ export async function placeDetails(env, placeId, nowMs) {
         ? json.nationalPhoneNumber
         : null;
   const site = typeof json.websiteUri === 'string' ? json.websiteUri : null;
-  const weekday = Array.isArray(json.regularOpeningHours?.weekdayDescriptions)
+  const hours = Array.isArray(json.regularOpeningHours?.weekdayDescriptions)
     ? json.regularOpeningHours.weekdayDescriptions.map(String)
     : [];
   const iso = new Date(nowMs).toISOString();
@@ -326,16 +296,29 @@ export async function placeDetails(env, placeId, nowMs) {
       base.lon,
       phone,
       site,
-      JSON.stringify({ weekday, at: iso }),
+      JSON.stringify({ weekday: hours }),
       base.maps_uri,
       iso,
     )
     .run();
-  const fresh = await db(env)
-    .prepare('SELECT * FROM places WHERE place_id = ?')
-    .bind(placeId)
-    .first();
-  return { place: detailsOfRow(fresh), source: 'api' };
+  return {
+    place: {
+      place_id: placeId,
+      name: base.name,
+      address: base.address,
+      lat: base.lat,
+      lon: base.lon,
+      maps_uri: base.maps_uri,
+      phone,
+      site,
+      hours,
+      rating_owner: row?.rating_owner == null ? null : Number(row.rating_owner),
+      is_favorite: Number(row?.is_favorite) === 1,
+      visits: Number(row?.visits) || 0,
+      fetched_at: iso,
+    },
+    source: 'api',
+  };
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -357,11 +340,12 @@ function waypointBody(w) {
 /**
  * Відстань і час (S-1-8/S-1-9, S-5-6). Авто з часом виїзду - з трафіком
  * (TRAFFIC_AWARE лише для DRIVE); час виїзду в минулому Routes відкидає,
- * тож він передається лише коли попереду.
+ * тож він передається лише коли попереду, а в результаті `traffic` каже,
+ * чи його враховано.
  * @param {Env} env
  * @param {{ from: Waypoint, to: Waypoint, mode: keyof typeof TRAVEL_MODES, departAtMs?: number | null }} input
  * @param {number} nowMs
- * @returns {Promise<{ distance_m: number, duration_s: number, duration_min: number, mode: string }>}
+ * @returns {Promise<{ distance_m: number, duration_s: number, duration_min: number, mode: string, traffic: boolean }>}
  */
 export async function routesEta(env, input, nowMs) {
   const travelMode = TRAVEL_MODES[input.mode];
@@ -370,22 +354,22 @@ export async function routesEta(env, input, nowMs) {
       `routes.eta: mode «${String(input.mode)}» - дозволені ${Object.keys(TRAVEL_MODES).join(', ')}`,
     );
   }
-  await assertQuota(env, 'routes', nowMs);
   const key = mapsApiKey(env);
+  await assertQuota(env, 'routes', nowMs);
   /** @type {Record<string, unknown>} */
   const body = {
     origin: waypointBody(input.from),
     destination: waypointBody(input.to),
     travelMode,
-    languageCode: 'uk',
+    languageCode: LANGUAGE,
     units: 'METRIC',
   };
   const departAtMs = input.departAtMs ?? null;
-  if (
+  const timed =
     departAtMs != null &&
     departAtMs > nowMs &&
-    (travelMode === 'DRIVE' || travelMode === 'TRANSIT')
-  ) {
+    (travelMode === 'DRIVE' || travelMode === 'TRANSIT');
+  if (timed) {
     body.departureTime = new Date(departAtMs).toISOString();
     if (travelMode === 'DRIVE') body.routingPreference = 'TRAFFIC_AWARE';
   }
@@ -402,52 +386,59 @@ export async function routesEta(env, input, nowMs) {
     },
     'Routes',
   );
-  await count(env, 'routes', nowMs);
+  await countQuota(env, 'routes', nowMs);
   const route = Array.isArray(json.routes) ? json.routes[0] : null;
-  const durationS = Number(String(route?.duration ?? '').replace(/s$/, ''));
+  const durationMatch = /^(\d+(?:\.\d+)?)s$/.exec(String(route?.duration ?? ''));
   const distanceM = Number(route?.distanceMeters);
-  if (!route || !Number.isFinite(durationS) || !Number.isFinite(distanceM)) {
+  if (!route || !durationMatch || !Number.isFinite(distanceM)) {
     throw new Error('Routes: маршрут не знайдено');
   }
+  const durationS = Number(durationMatch[1]);
   return {
     distance_m: Math.round(distanceM),
     duration_s: Math.round(durationS),
     duration_min: Math.max(1, Math.round(durationS / 60)),
     mode: input.mode,
+    traffic: timed && travelMode === 'DRIVE',
   };
 }
 
 // ── Geocoding ──────────────────────────────────────────────────────────────
 
 /**
- * Місто/адреса → координати (07 §4 geo.geocode; замінює OpenWeather з етапу 1).
+ * Місто/адреса → координати (07 §4 geo.geocode; замінює OpenWeather з етапу 1
+ * лише в інструменті - /locate і зворотне геокодування Mini App лишаються на
+ * безкоштовному OpenWeather). `name` - коротка назва (locality), як було в
+ * контракті; повна адреса - `address`.
  * @param {Env} env @param {string} text @param {number} nowMs
- * @returns {Promise<{ found: false } | { found: true, lat: number, lon: number, name: string, locality: string | null }>}
+ * @returns {Promise<{ found: false } | { found: true, lat: number, lon: number, name: string, address: string, locality: string | null }>}
  */
 export async function geocodeAddress(env, text, nowMs) {
   const address = String(text ?? '').trim();
-  if (!address) throw new Error('geo.geocode: порожній text');
-  await assertQuota(env, 'geocoding', nowMs);
+  if (!address) return { found: false };
   const key = mapsApiKey(env);
+  await assertQuota(env, 'geocoding', nowMs);
   const url = new URL(GEOCODE_API);
   url.searchParams.set('address', address);
-  url.searchParams.set('language', 'uk');
-  url.searchParams.set('region', 'ua');
+  url.searchParams.set('language', LANGUAGE);
+  url.searchParams.set('region', REGION.toLowerCase());
+  // Legacy Geocoding API приймає ключ лише query-параметром; callJson не
+  // кладе URL у текст помилок, а тіло відповіді ріже `key=`.
   url.searchParams.set('key', key);
   const json = await callJson(url.toString(), {}, 'Geocoding');
   const status = String(json.status ?? '');
-  if (status === 'ZERO_RESULTS') {
-    await count(env, 'geocoding', nowMs);
-    return { found: false };
-  }
-  if (status !== 'OK') {
+  if (status !== 'OK' && status !== 'ZERO_RESULTS') {
     throw new Error(`Geocoding: ${status} ${String(json.error_message ?? '').slice(0, 200)}`);
   }
-  await count(env, 'geocoding', nowMs);
+  // ZERO_RESULTS - теж платний виклик.
+  await countQuota(env, 'geocoding', nowMs);
   const first = json.results?.[0];
   const lat = Number(first?.geometry?.location?.lat);
   const lon = Number(first?.geometry?.location?.lng);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { found: false };
+  if (status === 'ZERO_RESULTS' || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return { found: false };
+  }
+  const formatted = String(first.formatted_address ?? address);
   const locality = Array.isArray(first.address_components)
     ? (first.address_components.find(
         (/** @type {any} */ c) => Array.isArray(c?.types) && c.types.includes('locality'),
@@ -457,7 +448,8 @@ export async function geocodeAddress(env, text, nowMs) {
     found: true,
     lat,
     lon,
-    name: String(first.formatted_address ?? address),
+    name: locality == null ? formatted : String(locality),
+    address: formatted,
     locality: locality == null ? null : String(locality),
   };
 }

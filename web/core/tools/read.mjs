@@ -307,8 +307,9 @@ export async function runDriveSearch(env, args) {
 /**
  * geo.last: остання відома локація власника. Ручне перевизначення
  * (ownerGeoManual) переважає авто (ownerGeo) - той самий порядок, що в
- * handleLiveWeather. Віку сховище не тримає (без timestamp) - чесний null,
- * а не вигадане число.
+ * handleLiveWeather. Вік - з setAtMs запису (/locate і авто-детекція з
+ * етапу 5 пишуть його); старий запис без нього - чесний null, а не вигадане
+ * число.
  * @param {Env} env
  * @param {number} [nowMs]
  */
@@ -325,8 +326,7 @@ export async function runGeoLast(env, nowMs = Date.now()) {
       return null;
     }
   };
-  const manual = await read('ownerGeoManual');
-  const auto = await read('ownerGeo');
+  const [manual, auto] = await Promise.all([read('ownerGeoManual'), read('ownerGeo')]);
   const geo = manual ?? auto;
   if (!geo) return { result: { known: false } };
   return {
@@ -336,9 +336,6 @@ export async function runGeoLast(env, nowMs = Date.now()) {
       lon: geo.lon,
       name: geo.name ?? null,
       source: manual ? 'manual' : 'auto',
-      // Вік - лише коли запис несе setAtMs (ручна позиція з /locate); авто-
-      // локація часу не тримає, і брехати числом не будемо (S-1-2: > 6 год
-      // або невідомо → спитати «Де ти зараз?»).
       ageMs: typeof geo.setAtMs === 'number' ? Math.max(0, nowMs - geo.setAtMs) : null,
     },
   };
@@ -361,6 +358,7 @@ export async function runGeoGeocode(env, args, nowMs = Date.now()) {
       lat: found.lat,
       lon: found.lon,
       name: found.name,
+      address: found.address,
       locality: found.locality,
     },
   };

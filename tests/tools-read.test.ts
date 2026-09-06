@@ -243,6 +243,12 @@ describe('geo.*', () => {
     });
     const empty = await runGeoLast(workerEnv({ BRIEFING: kvBriefing().stub }));
     expect(empty.result).toEqual({ known: false });
+    // setAtMs (з /locate або авто-детекції) → вік від nowMs прогону.
+    const aged = kvBriefing({
+      ownerGeo: JSON.stringify({ lat: 50.4, lon: 30.5, setAtMs: 1_000_000 }),
+    });
+    const withAge = await runGeoLast(workerEnv({ BRIEFING: aged.stub }), 1_000_000 + 7_200_000);
+    expect(withAge.result).toMatchObject({ known: true, source: 'auto', ageMs: 7_200_000 });
   });
 
   it('geo.geocode (Google, етап 5): знайдене місто → координати; без ключа — гучний виняток', async () => {
@@ -269,7 +275,14 @@ describe('geo.*', () => {
     const found = await runGeoGeocode(workerEnv({ MAPS_API_KEY: 'k', DB: d1.stub }), {
       text: 'Львів',
     });
-    expect(found.result).toMatchObject({ found: true, lat: 49.84, lon: 24.03, locality: 'Львів' });
+    expect(found.result).toMatchObject({
+      found: true,
+      lat: 49.84,
+      lon: 24.03,
+      name: 'Львів',
+      address: 'Львів, Львівська область, Україна',
+      locality: 'Львів',
+    });
     await expect(runGeoGeocode(workerEnv({ DB: d1.stub }), { text: 'Львів' })).rejects.toThrow(
       /MAPS_API_KEY/,
     );

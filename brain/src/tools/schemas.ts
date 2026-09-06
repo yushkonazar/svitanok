@@ -89,12 +89,13 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'geo.last',
     description:
-      'Остання відома локація власника (lat, lon, name) та її вік ageMs (null = невідомий). Немає або старша за 6 год - перед пошуком закладів спитай «Де ти зараз?» (місто текстом або кнопка m:loc для GPS).',
+      'Остання відома локація власника (lat, lon, name) та її вік ageMs (null = запис без часу). Немає або старша за 6 год - перед пошуком закладів спитай «Де ти зараз?» (місто текстом).',
     args: z.object({}),
   }),
   tool({
     coreName: 'geo.geocode',
-    description: 'Координати за текстом (місто або адреса) через Google Geocoding.',
+    description:
+      'Координати за текстом (місто або адреса) через Google Geocoding: lat, lon, name (коротка назва), address (повна), locality.',
     args: z.object({ text: z.string().max(200) }),
   }),
   // Google Maps (етап 5): заклади - зовнішній текст (taint), маршрут - числа.
@@ -120,7 +121,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'routes.eta',
     description:
-      'Час і відстань маршруту (Google Routes). from/to - «lat,lon», «place:<place_id>», «home» (дім власника), «here» (остання локація) або адреса; mode - walk·transit·car·bike; depart_at - ISO-8601 (авто з трафіком, лише майбутній час).',
+      'Час і відстань маршруту (Google Routes). from/to - «lat,lon», «place:<place_id>», «home» (дім власника), «here» (остання локація, не старша за 6 год) або адреса; mode - walk·transit·car; depart_at - ISO-8601 ЗІ ЗСУВОМ (напр. 2026-09-07T18:00:00+03:00; авто з трафіком, лише майбутній час; traffic у відповіді каже, чи враховано).',
     args: z.object({
       from: z.string().min(1).max(300),
       to: z.string().min(1).max(300),

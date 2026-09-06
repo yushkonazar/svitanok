@@ -89,6 +89,15 @@ describe('places.search', () => {
     expect(empty.result.note).toMatch(/назву точніше/);
   });
 
+  it('порожній query - found:0 без походу в API', async () => {
+    const { env } = setup();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = /** @type {any} */ await runPlacesSearch(env, { query: '   ' }, NOW);
+    expect(result.found).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('квота 100 % без кешу - «Довідник закладів тимчасово недоступний»', async () => {
     const { env, db } = setup();
     db.prepare(
@@ -127,25 +136,35 @@ describe('routes.eta', () => {
     const { env } = setup({
       ownerGeoManual: JSON.stringify({ lat: 50.4, lon: 30.5, name: 'Київ' }),
     });
-    expect(await resolveWaypoint(env, '49.84, 24.03')).toEqual({ lat: 49.84, lon: 24.03 });
-    expect(await resolveWaypoint(env, 'place:ChIJ1')).toEqual({ place_id: 'ChIJ1' });
-    expect(await resolveWaypoint(env, 'home')).toEqual({ lat: 49.8, lon: 24.0 });
+    expect(await resolveWaypoint(env, '49.84, 24.03', NOW)).toEqual({ lat: 49.84, lon: 24.03 });
+    expect(await resolveWaypoint(env, 'place:ChIJ1', NOW)).toEqual({ place_id: 'ChIJ1' });
+    expect(await resolveWaypoint(env, 'home', NOW)).toEqual({ lat: 49.8, lon: 24.0 });
     await runFactsSet(
       env,
       { kind: 'place', key: 'home', value: { address: 'вул. Шевченка 1' }, source: 'owner' },
       NOW,
     );
-    expect(await resolveWaypoint(env, 'дім')).toEqual({ address: 'вул. Шевченка 1' });
-    expect(await resolveWaypoint(env, 'here')).toEqual({ lat: 50.4, lon: 30.5 });
-    expect(await resolveWaypoint(env, 'пл. Ринок, Львів')).toEqual({ address: 'пл. Ринок, Львів' });
-    await expect(resolveWaypoint(env, '')).rejects.toThrow(/порожня/);
+    expect(await resolveWaypoint(env, 'дім', NOW)).toEqual({ address: 'вул. Шевченка 1' });
+    expect(await resolveWaypoint(env, 'here', NOW)).toEqual({ lat: 50.4, lon: 30.5 });
+    expect(await resolveWaypoint(env, 'пл. Ринок, Львів', NOW)).toEqual({
+      address: 'пл. Ринок, Львів',
+    });
+    await expect(resolveWaypoint(env, '', NOW)).rejects.toThrow(/порожня/);
   });
 
-  it('here без локації і home без нічого - чесні відмови', async () => {
+  it('here без локації, here старша за 6 год, home без нічого - чесні відмови', async () => {
     const { env } = setup();
     (env as { OWNER_LOCATIONS?: string }).OWNER_LOCATIONS = undefined;
-    await expect(resolveWaypoint(env, 'here')).rejects.toThrow(/локація невідома/);
-    await expect(resolveWaypoint(env, 'home')).rejects.toThrow(/дім невідомий/);
+    await expect(resolveWaypoint(env, 'here', NOW)).rejects.toThrow(/локація невідома/);
+    await expect(resolveWaypoint(env, 'home', NOW)).rejects.toThrow(/дім невідомий/);
+    const stale = setup({
+      ownerGeoManual: JSON.stringify({ lat: 50.4, lon: 30.5, setAtMs: NOW - 7 * 3_600_000 }),
+    });
+    await expect(resolveWaypoint(stale.env, 'here', NOW)).rejects.toThrow(/старша за 7 год/);
+    const fresh = setup({
+      ownerGeoManual: JSON.stringify({ lat: 50.4, lon: 30.5, setAtMs: NOW - 5 * 3_600_000 }),
+    });
+    expect(await resolveWaypoint(fresh.env, 'here', NOW)).toEqual({ lat: 50.4, lon: 30.5 });
   });
 
   it('результат: хвилини, км, текст «32 хв пішки»; кривий mode/depart_at - помилка до fetch', async () => {
@@ -163,13 +182,53 @@ describe('routes.eta', () => {
       duration_min: 32,
       distance_km: 2.3,
       text: '32 хв пішки (2.3 км)',
+      traffic: false,
     });
     await expect(runRoutesEta(env, { from: 'a', to: 'b', mode: 'plane' }, NOW)).rejects.toThrow(
+      /mode/,
+    );
+    await expect(runRoutesEta(env, { from: 'a', to: 'b', mode: 'bike' }, NOW)).rejects.toThrow(
       /mode/,
     );
     await expect(
       runRoutesEta(env, { from: 'a', to: 'b', mode: 'car', depart_at: 'завтра' }, NOW),
     ).rejects.toThrow(/ISO-8601/);
+    // Без зони - теж відмова: Workers читає такий час як UTC, а власник у Києві.
+    await expect(
+      runRoutesEta(env, { from: 'a', to: 'b', mode: 'car', depart_at: '2026-09-07T18:00:00' }, NOW),
+    ).rejects.toThrow(/зі зсувом/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('авто з майбутнім виїздом зі зсувом: «з трафіком», години через formatDurationLabel', async () => {
+    const { env } = setup();
+    const fetchMock = vi.fn(async () =>
+      ok({ routes: [{ duration: '5400s', distanceMeters: 92000 }] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = /** @type {any} */ await runRoutesEta(
+      env,
+      { from: 'home', to: 'Буковель', mode: 'car', depart_at: '2026-09-07T18:00:00+03:00' },
+      NOW,
+    );
+    expect(result).toMatchObject({
+      duration_min: 90,
+      traffic: true,
+      text: '1.5 год авто (92.0 км), з трафіком',
+    });
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init.body));
+    expect(body.departureTime).toBe('2026-09-07T15:00:00.000Z');
+    expect(body.routingPreference).toBe('TRAFFIC_AWARE');
+  });
+
+  it('квота routes 100 % - «Маршрути тимчасово недоступні» (текст із quota.mjs)', async () => {
+    const { env, db } = setup();
+    db.prepare(
+      `INSERT INTO quota_counters (key, period, value, limit_value, updated_at) VALUES ('routes', '2026-09', ?, ?, 'x')`,
+    ).run(QUOTA_LIMITS.routes ?? 0, QUOTA_LIMITS.routes ?? 0);
+    await expect(runRoutesEta(env, { from: 'a', to: 'b', mode: 'walk' }, NOW)).rejects.toThrow(
+      /Маршрути тимчасово недоступні/,
+    );
   });
 });

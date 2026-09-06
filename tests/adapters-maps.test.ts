@@ -133,6 +133,28 @@ describe('placesSearch', () => {
     expect(await quotaUsed(env, 'places_text', NOW)).toBe(1);
   });
 
+  it('near без city: textQuery = query, locationBias є', async () => {
+    const { env } = setup();
+    const calls = stubFetch([ok(SEARCH_BODY)]);
+    await placesSearch(env, { query: 'піцерія', near: { lat: 49.84, lon: 24.03 } }, NOW);
+    const body = JSON.parse(String(calls[0]!.init?.body));
+    expect(body.textQuery).toBe('піцерія');
+    expect(body.locationBias.circle.center).toEqual({ latitude: 49.84, longitude: 24.03 });
+  });
+
+  it('мережевий збій - текст без URL і без ключа', async () => {
+    const { env } = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed https://x?key=maps-key');
+      }),
+    );
+    await expect(placesSearch(env, { query: 'x' }, NOW)).rejects.toThrow(
+      /^Places search: мережа - TypeError$/,
+    );
+  });
+
   it('пошук не затирає телефон/години/улюблене з кешу; limit ≤ 8', async () => {
     const { env, db } = setup();
     db.prepare(
@@ -162,7 +184,7 @@ describe('placesSearch', () => {
       new Response('{"error":{"message":"API key not valid key=maps-key"}}', { status: 403 }),
     ]);
     await expect(placesSearch(env, { query: 'x' }, NOW)).rejects.toThrow(/HTTP 403/);
-    await expect(placesSearch(env, { query: 'x' }, NOW)).rejects.toThrow(/несподіваний fetch/);
+    await expect(placesSearch(env, { query: 'x' }, NOW)).rejects.toThrow(/мережа - Error/);
     expect(await quotaUsed(env, 'places_text', NOW)).toBe(0);
   });
 
@@ -248,18 +270,52 @@ describe('placeDetails', () => {
     expect(await quotaUsed(env, 'places_details', NOW)).toBe(2);
   });
 
-  it('квота 100 %: кеш будь-якої давнини, без кешу - QuotaExhaustedError; телефону немає - null', async () => {
+  it('квота 100 %: кеш будь-якої давнини (навіть лише з пошуку), без кешу - QuotaExhaustedError; телефону немає - null', async () => {
     const { env, db } = setup();
     stubFetch([
       ok({ ...DETAILS_BODY, internationalPhoneNumber: undefined, nationalPhoneNumber: undefined }),
+      ok(SEARCH_BODY),
     ]);
     const first = await placeDetails(env, 'ChIJabc', NOW);
     expect(first.place.phone).toBeNull();
+    await placesSearch(env, { query: 'Креденс' }, NOW);
     exhaust(db, 'places_details');
     // Той самий місяць (період квоти), але старше за 7 днів.
     const stale = await placeDetails(env, 'ChIJabc', NOW + 10 * 86_400_000);
     expect(stale.source).toBe('cache');
+    // Рядок лише з пошуку (без деталей) при 100 % теж віддається - адреса й
+    // карта кращі за відмову.
+    const searchOnly = await placeDetails(env, 'ChIJdef', NOW);
+    expect(searchOnly).toMatchObject({
+      source: 'cache',
+      place: { name: 'Креденс Дім', phone: null },
+    });
     await expect(placeDetails(env, 'ChIJother', NOW)).rejects.toBeInstanceOf(QuotaExhaustedError);
+    await expect(placeDetails(env, 'ChIJother', NOW)).rejects.toThrow(
+      /Довідник закладів тимчасово недоступний/,
+    );
+  });
+
+  it('відповідь без назви: назва з кешу; без кешу - помилка, порожній рядок не пишеться', async () => {
+    const { env, db } = setup();
+    stubFetch([
+      ok({ id: 'ChIJnew' }),
+      ok(SEARCH_BODY),
+      ok({ id: 'ChIJabc', websiteUri: 'https://x' }),
+    ]);
+    await expect(placeDetails(env, 'ChIJnew', NOW)).rejects.toThrow(/без назви/);
+    expect(db.prepare('SELECT count(*) AS n FROM places').get()).toEqual({ n: 0 });
+    await placesSearch(env, { query: 'Креденс' }, NOW);
+    const out = await placeDetails(env, 'ChIJabc', NOW);
+    expect(out.place).toMatchObject({ name: 'Креденс Кафе', site: 'https://x' });
+  });
+
+  it('limit дробовий → ціле', async () => {
+    const { env } = setup();
+    const calls = stubFetch([ok(SEARCH_BODY)]);
+    const out = await placesSearch(env, { query: 'Креденс', limit: 1.7 }, NOW);
+    expect(JSON.parse(String(calls[0]!.init?.body)).pageSize).toBe(1);
+    expect(out.places).toHaveLength(1);
   });
 
   it('place_id поза [A-Za-z0-9_-] не йде в URL', async () => {
@@ -284,7 +340,13 @@ describe('routesEta', () => {
       },
       NOW,
     );
-    expect(out).toEqual({ distance_m: 2340, duration_s: 1920, duration_min: 32, mode: 'car' });
+    expect(out).toEqual({
+      distance_m: 2340,
+      duration_s: 1920,
+      duration_min: 32,
+      mode: 'car',
+      traffic: true,
+    });
     expect(calls[0]!.url).toBe('https://routes.googleapis.com/directions/v2:computeRoutes');
     const headers = calls[0]!.init?.headers as Record<string, string>;
     expect(headers['X-Goog-FieldMask']).toBe('routes.duration,routes.distanceMeters');
@@ -339,9 +401,12 @@ describe('routesEta', () => {
     expect(JSON.parse(String(calls[0]!.init?.body)).origin).toEqual({ address: 'дім' });
   });
 
-  it('невідомий mode / порожній маршрут / квота 100 % - винятки', async () => {
+  it('невідомий mode / порожній маршрут / без duration / квота 100 % - винятки', async () => {
     const { env, db } = setup();
-    stubFetch([ok({ routes: [] })]);
+    stubFetch([ok({ routes: [] }), ok({ routes: [{ distanceMeters: 5200 }] })]);
+    await expect(
+      routesEta(env, { from: { address: 'a' }, to: { address: 'b' }, mode: 'walk' }, NOW),
+    ).rejects.toThrow(/не знайдено/);
     await expect(
       routesEta(env, { from: { address: 'a' }, to: { address: 'b' }, mode: 'plane' as never }, NOW),
     ).rejects.toThrow(/mode/);
@@ -375,7 +440,8 @@ describe('geocodeAddress', () => {
       found: true,
       lat: 49.84,
       lon: 24.03,
-      name: 'Львів, Львівська область, Україна',
+      name: 'Львів',
+      address: 'Львів, Львівська область, Україна',
       locality: 'Львів',
     });
     const url = new URL(calls[0]!.url);
@@ -394,6 +460,9 @@ describe('geocodeAddress', () => {
     ]);
     expect(await geocodeAddress(env, 'Нуль', NOW)).toEqual({ found: false });
     await expect(geocodeAddress(env, 'x', NOW)).rejects.toThrow(/REQUEST_DENIED.*not enabled/);
+    expect(await quotaUsed(env, 'geocoding', NOW)).toBe(1);
+    // Порожній текст - found:false без виклику і без квоти.
+    expect(await geocodeAddress(env, '  ', NOW)).toEqual({ found: false });
     expect(await quotaUsed(env, 'geocoding', NOW)).toBe(1);
     exhaust(db, 'geocoding');
     await expect(geocodeAddress(env, 'x', NOW)).rejects.toBeInstanceOf(QuotaExhaustedError);

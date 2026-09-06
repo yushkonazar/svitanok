@@ -92,9 +92,49 @@ export async function quotaUsed(env, key, nowMs = Date.now()) {
   return Number(row?.value ?? 0);
 }
 
-/** Стеля вичерпана (value ≥ limit). @param {Env} env @param {string} key @param {number} limit @param {number} [nowMs] */
-export async function quotaExhausted(env, key, limit, nowMs = Date.now()) {
-  return (await quotaUsed(env, key, nowMs)) >= limit;
+/**
+ * Стеля 100 % (01 §7, S-1-14): викликачі відрізняють її від збою API і
+ * кажуть власнику зрозумілим текстом (за ключем), а не «HTTP 4xx».
+ */
+export class QuotaExhaustedError extends Error {
+  /** @param {string} key @param {number} limit */
+  constructor(key, limit) {
+    super(`${QUOTA_USER_TEXT[key] ?? `Квота ${key}`} - стеля ${limit} на місяць вичерпана (100 %)`);
+    this.name = 'QuotaExhaustedError';
+    this.quotaKey = key;
+  }
+}
+
+/** Формулювання для власника за ключем (S-1-14 «Довідник закладів тимчасово недоступний»). */
+const QUOTA_USER_TEXT = /** @type {Record<string, string>} */ ({
+  places_text: 'Довідник закладів тимчасово недоступний',
+  places_details: 'Довідник закладів тимчасово недоступний',
+  routes: 'Маршрути тимчасово недоступні',
+  geocoding: 'Геокодування тимчасово недоступне',
+});
+
+/** Стеля з довідника; невідомий ключ - помилка коду, не «без ліміту». @param {string} key */
+export function quotaLimitOf(key) {
+  const limit = QUOTA_LIMITS[key];
+  if (!limit) throw new Error(`quota: немає стелі для ${key}`);
+  return limit;
+}
+
+/**
+ * Гейт 100 %: стеля з QUOTA_LIMITS, value ≥ limit → QuotaExhaustedError.
+ * Перевірка-потім-інкремент не атомарна: два паралельні виклики на межі
+ * пройдуть обидва - ціна цього одна зайва одиниця квоти, не гроші поза
+ * кредитом, тож умовний INSERT тут не вартий другої гілки коду.
+ * @param {Env} env @param {string} key @param {number} [nowMs]
+ */
+export async function assertQuota(env, key, nowMs = Date.now()) {
+  const limit = quotaLimitOf(key);
+  if ((await quotaUsed(env, key, nowMs)) >= limit) throw new QuotaExhaustedError(key, limit);
+}
+
+/** Один виклик платного API (+1 до лічильника, алерти 80/100 %). @param {Env} env @param {string} key @param {number} [nowMs] */
+export async function countQuota(env, key, nowMs = Date.now()) {
+  await bumpQuota(env, { key, amount: 1, limit: quotaLimitOf(key), nowMs });
 }
 
 /**

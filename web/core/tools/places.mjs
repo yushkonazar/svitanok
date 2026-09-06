@@ -1,31 +1,21 @@
 // places.search / places.details / routes.eta (07 §4, етап 5 PR-1) -
 // обгортки над adapters/maps.mjs для internal API. Текст закладів - зовнішній
 // вміст (tainting у реєстрі), routes.eta - числа, без taint. Квота 100 % -
-// чесна відмова з формулюванням S-1-14 («Довідник закладів тимчасово
-// недоступний»), кеш - якщо є.
+// QuotaExhaustedError із текстом для власника (S-1-14) прямо з quota.mjs.
 
-import {
-  placesSearch,
-  placeDetails,
-  routesEta,
-  QuotaExhaustedError,
-  TRAVEL_MODES,
-} from '../adapters/maps.mjs';
+import { placesSearch, placeDetails, routesEta, TRAVEL_MODES } from '../adapters/maps.mjs';
+import { formatDurationLabel } from '../../agent-core.mjs';
+import { configuredLocations } from '../../weather-geo.mjs';
 import { runFactsGet } from './facts.mjs';
 import { runGeoLast } from './read.mjs';
 import { wrapExternal } from './markup.mjs';
 
 const LATLON_RE = /^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/;
-
-/** @param {unknown} e */
-function quotaMessage(e) {
-  if (e instanceof QuotaExhaustedError) {
-    return new Error(
-      `Довідник закладів тимчасово недоступний (${e.quotaKey} 100 % за місяць) - попроси назву/номер у власника`,
-    );
-  }
-  return e;
-}
+/** ISO-8601 зі зсувом або Z: без зони Date.parse у Workers читає як UTC, а власник живе в Києві. */
+const ISO_WITH_ZONE_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/;
+/** Локація старша за це - не «тут» (S-1-2: > 6 год → спитати, де власник). */
+export const HERE_MAX_AGE_MS = 6 * 3_600_000;
 
 /**
  * @param {Env} env
@@ -33,20 +23,19 @@ function quotaMessage(e) {
  * @param {number} nowMs
  */
 export async function runPlacesSearch(env, args, nowMs) {
+  const query = String(args.query ?? '').trim();
+  if (!query) {
+    return { result: { found: 0, note: 'порожній query - потрібна назва або тип закладу' } };
+  }
   const near =
     args.near && Number.isFinite(Number(args.near.lat)) && Number.isFinite(Number(args.near.lon))
       ? { lat: Number(args.near.lat), lon: Number(args.near.lon) }
       : null;
-  let out;
-  try {
-    out = await placesSearch(
-      env,
-      { query: args.query, city: args.city ?? null, near, limit: args.limit },
-      nowMs,
-    );
-  } catch (e) {
-    throw quotaMessage(e);
-  }
+  const out = await placesSearch(
+    env,
+    { query, city: args.city ?? null, near, limit: args.limit },
+    nowMs,
+  );
   if (out.places.length === 0) {
     return {
       result: {
@@ -74,12 +63,7 @@ export async function runPlacesSearch(env, args, nowMs) {
  * @param {number} nowMs
  */
 export async function runPlacesDetails(env, args, nowMs) {
-  let out;
-  try {
-    out = await placeDetails(env, args.place_id, nowMs);
-  } catch (e) {
-    throw quotaMessage(e);
-  }
+  const out = await placeDetails(env, args.place_id, nowMs);
   const p = out.place;
   const lines = [
     p.name,
@@ -103,49 +87,48 @@ export async function runPlacesDetails(env, args, nowMs) {
 
 /**
  * Точка маршруту з рядка моделі: «lat,lon» · «place:<id>» · «home» (facts
- * place.home або перша з OWNER_LOCATIONS) · «here» (geo.last) · адреса.
- * @param {Env} env @param {string} raw
+ * place.home, інакше перша з OWNER_LOCATIONS) · «here» (geo.last не старша
+ * за 6 год) · адреса.
+ * @param {Env} env @param {string} raw @param {number} nowMs
  * @returns {Promise<import('../adapters/maps.mjs').Waypoint>}
  */
-export async function resolveWaypoint(env, raw) {
+export async function resolveWaypoint(env, raw, nowMs) {
   const text = String(raw ?? '').trim();
   if (!text) throw new Error('routes.eta: порожня точка');
   const ll = text.match(LATLON_RE);
   if (ll) return { lat: Number(ll[1]), lon: Number(ll[2]) };
   if (text.startsWith('place:')) return { place_id: text.slice('place:'.length) };
-  if (text.toLowerCase() === 'here' || text.toLowerCase() === 'тут') {
-    const geo = /** @type {any} */ ((await runGeoLast(env)).result);
-    if (!geo.known) throw new Error('routes.eta: остання локація невідома - спитай, де власник');
-    return { lat: geo.lat, lon: geo.lon };
-  }
-  if (text.toLowerCase() === 'home' || text.toLowerCase() === 'дім') {
-    const fact = /** @type {any} */ (
-      (await runFactsGet(env, { kind: 'place', key: 'home' })).result[0]
-    );
-    const v = fact?.value;
-    if (v && Number.isFinite(Number(v.lat)) && Number.isFinite(Number(v.lon))) {
-      return { lat: Number(v.lat), lon: Number(v.lon) };
-    }
-    if (typeof v?.address === 'string' && v.address.trim()) return { address: v.address };
-    const first = ownerHome(env);
-    if (first) return first;
-    throw new Error('routes.eta: дім невідомий - запиши facts place.home {lat, lon} або {address}');
-  }
+  const lower = text.toLowerCase();
+  if (lower === 'here' || lower === 'тут') return resolveHere(env, nowMs);
+  if (lower === 'home' || lower === 'дім') return resolveHome(env);
   return { address: text };
 }
 
-/** Перша локація з OWNER_LOCATIONS (та сама, що в погоді) як «дім» за замовчуванням. @param {Env} env */
-function ownerHome(env) {
-  try {
-    const list = JSON.parse(String(env.OWNER_LOCATIONS ?? '[]'));
-    const first = Array.isArray(list) ? list[0] : null;
-    if (first && Number.isFinite(Number(first.lat)) && Number.isFinite(Number(first.lon))) {
-      return { lat: Number(first.lat), lon: Number(first.lon) };
-    }
-  } catch {
-    /* невалідний секрет - як «немає дому», про це вже кричить weather-geo */
+/** @param {Env} env @param {number} nowMs */
+async function resolveHere(env, nowMs) {
+  const geo = /** @type {any} */ ((await runGeoLast(env, nowMs)).result);
+  if (!geo.known) throw new Error('routes.eta: остання локація невідома - спитай, де власник');
+  if (geo.ageMs != null && geo.ageMs > HERE_MAX_AGE_MS) {
+    throw new Error(
+      `routes.eta: остання локація старша за ${Math.round(geo.ageMs / 3_600_000)} год - спитай, де власник`,
+    );
   }
-  return null;
+  return { lat: geo.lat, lon: geo.lon };
+}
+
+/** @param {Env} env */
+async function resolveHome(env) {
+  const fact = /** @type {any} */ (
+    (await runFactsGet(env, { kind: 'place', key: 'home' })).result[0]
+  );
+  const v = fact?.value;
+  if (v && Number.isFinite(Number(v.lat)) && Number.isFinite(Number(v.lon))) {
+    return { lat: Number(v.lat), lon: Number(v.lon) };
+  }
+  if (typeof v?.address === 'string' && v.address.trim()) return { address: v.address };
+  const first = configuredLocations(env)?.[0];
+  if (first) return { lat: first.lat, lon: first.lon };
+  throw new Error('routes.eta: дім невідомий - запиши facts place.home {lat, lon} або {address}');
 }
 
 /**
@@ -155,35 +138,35 @@ function ownerHome(env) {
  */
 export async function runRoutesEta(env, args, nowMs) {
   const mode = /** @type {keyof typeof TRAVEL_MODES} */ (String(args.mode ?? '').toLowerCase());
-  if (!(mode in TRAVEL_MODES)) {
+  if (!Object.hasOwn(TRAVEL_MODES, mode)) {
     throw new Error(
       `routes.eta: mode «${args.mode}» - дозволені ${Object.keys(TRAVEL_MODES).join(', ')}`,
     );
   }
-  const departAtMs = args.depart_at ? Date.parse(args.depart_at) : null;
-  if (args.depart_at && !Number.isFinite(departAtMs)) {
-    throw new Error('routes.eta: depart_at має бути ISO-8601');
+  let departAtMs = null;
+  if (args.depart_at) {
+    departAtMs = Date.parse(args.depart_at);
+    if (!ISO_WITH_ZONE_RE.test(args.depart_at.trim()) || !Number.isFinite(departAtMs)) {
+      throw new Error(
+        'routes.eta: depart_at має бути ISO-8601 зі зсувом (напр. 2026-09-07T18:00:00+03:00)',
+      );
+    }
   }
   const [from, to] = await Promise.all([
-    resolveWaypoint(env, args.from),
-    resolveWaypoint(env, args.to),
+    resolveWaypoint(env, args.from, nowMs),
+    resolveWaypoint(env, args.to, nowMs),
   ]);
-  let out;
-  try {
-    out = await routesEta(env, { from, to, mode, departAtMs }, nowMs);
-  } catch (e) {
-    throw quotaMessage(e);
-  }
+  const out = await routesEta(env, { from, to, mode, departAtMs }, nowMs);
   return {
     result: {
       ...out,
       distance_km: Math.round(out.distance_m / 100) / 10,
-      text: `${out.duration_min} хв ${modeWord(mode)} (${(out.distance_m / 1000).toFixed(1)} км)`,
+      text: `${formatDurationLabel(out.duration_min)} ${modeWord(mode)} (${(out.distance_m / 1000).toFixed(1)} км)${out.traffic ? ', з трафіком' : ''}`,
     },
   };
 }
 
 /** @param {keyof typeof TRAVEL_MODES} mode */
 export function modeWord(mode) {
-  return { walk: 'пішки', transit: 'транспортом', car: 'авто', bike: 'велосипедом' }[mode];
+  return { walk: 'пішки', transit: 'транспортом', car: 'авто' }[mode];
 }

@@ -118,8 +118,6 @@ interface Env {
   /** Google Maps Platform (ADR-011, етап 0): один ключ на Places (New),
    *  Routes, Geocoding - `core/adapters/maps.mjs`, квоти в quota_counters. */
   MAPS_API_KEY?: string;
-  /** IsThereAnyDeal (етап 0): ціни ігор для steam-check (S-5-3). */
-  ITAD_API_KEY?: string;
   /**
    * Домашні координати власника: JSON-масив `{lat, lon, name}`. Незаданий —
    * `web/weather-geo.mjs` працює на публічному фолбеку.
