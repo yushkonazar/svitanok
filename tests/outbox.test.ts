@@ -15,6 +15,7 @@ import {
 } from '../web/core/tg/outbox-core.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../web/core/tg/outbox.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
+import { productionIo } from '../web/core/ideas/analysis.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
@@ -357,6 +358,28 @@ describe('deliver/status через router', () => {
     expect(JSON.stringify(sends[0]?.body.reply_markup)).toContain('u:1');
   });
 
+  it('productionIo аналізу ідеї: «Коротко» Markdown → HTML з кнопками (той самий шлях, що deliver)', async () => {
+    const io = productionIo(env, {
+      chainId: 'c1',
+      ideaId: 'i1',
+      runId: 'r1',
+      repo: 'svitanok',
+      sha: 'a'.repeat(40),
+      prevStatus: 'нова',
+      chatId: -100,
+      threadId: '33',
+    });
+    await io.send('## Коротко\n- **є** <3', [[{ text: '🔁', callback_data: 'm:ia:i1' }]]);
+    expect(sends[0]?.body).toMatchObject({
+      chat_id: '-100',
+      message_thread_id: '33',
+      parse_mode: 'HTML',
+      text: '<b>Коротко</b>\n• <b>є</b> &lt;3',
+    });
+    expect(sends[0]?.body).not.toHaveProperty('plain_text');
+    expect(JSON.stringify(sends[0]?.body.reply_markup)).toContain('m:ia:i1');
+  });
+
   it('deliver понад 4096 — кілька частин по порядку (приймання етапу)', async () => {
     const res = await handleInternal(
       await signedRequest('/internal/deliver', { text: 'щось дуже довге '.repeat(700) }, 'n-d2'),
@@ -510,6 +533,50 @@ describe('deliver/status через router', () => {
     expect(calls[1]?.body.fallback_send).toBeUndefined();
     const rows = store.raw.prepare('SELECT status FROM outbox').all();
     expect(rows[0]).toMatchObject({ status: 'sent' });
+  });
+
+  it('чернетки немає І розмітку відхилено: нове повідомлення їде plain, а не HTML знову', async () => {
+    // Ланцюг: edit(HTML) → parse-помилка → edit(plain) → «чернетки немає» →
+    // send мусить нести plain (те, що пройшло б), інакше HTML знову впав би.
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+        calls.push({ url, body });
+        if (body.parse_mode) {
+          return new Response(
+            JSON.stringify({ ok: false, description: "Bad Request: can't parse entities" }),
+            { status: 400 },
+          );
+        }
+        if (url.includes('editMessageText')) {
+          return new Response(
+            JSON.stringify({ ok: false, description: 'Bad Request: message to edit not found' }),
+            { status: 400 },
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 9 } }), {
+          status: 200,
+        });
+      }),
+    );
+    const res = await handleInternal(
+      await signedRequest('/internal/deliver', { text: '**відповідь**' }, 'n-d8'),
+      envWithDraft(633),
+      NOW,
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url.split('/').pop())).toEqual([
+      'editMessageText',
+      'editMessageText',
+      'sendMessage',
+    ]);
+    expect(calls[2]?.body).toMatchObject({ text: '**відповідь**' });
+    expect(calls[2]?.body.parse_mode).toBeUndefined();
+    expect(store.raw.prepare('SELECT status FROM outbox').all()[0]).toMatchObject({
+      status: 'sent',
+    });
   });
 
   it('статусний партіал БЕЗ чернетки не перетворюється на нове повідомлення', async () => {

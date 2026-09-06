@@ -45,6 +45,8 @@ describe('classifyRoute (N3)', () => {
     expect(classifyRoute('Редактор, переклади: скільки коштує')).toBe('chat');
     expect(classifyRoute('секретар-пошта: що таке лист від банку')).toBe('chat');
     expect(classifyRoute('скільки коштує аналітик')).toBe('quick');
+    expect(classifyRoute('редактор - скільки коштує')).toBe('chat');
+    expect(classifyRoute('редактор-бот скільки коштує')).toBe('quick');
   });
   it('URL → chat; без числа і питального слова → chat', () => {
     expect(classifyRoute('скільки коштує https://example.com')).toBe('chat');

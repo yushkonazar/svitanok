@@ -46,12 +46,12 @@ function db(env) {
  * частини по окремих enqueue не можна - усі ряди мали б однаковий префікс id,
  * і порядок вирішував би випадковий uuid.
  * @param {Env} env
- * `parts` - готові частини send (текст уже порізано; поля частини лягають
- * поверх payload: text, plain_text для фолбеку, parse_mode: undefined).
+ * `parts` - готові частини send (tg/markdown.mjs: текст уже порізано, кожна
+ * частина сама несе parse_mode і plain_text для фолбеку; лягають поверх payload).
  * @param {{ chatId: string | number, threadId?: string | number | null,
  *   kind: 'send' | 'edit' | 'document',
  *   payload: Record<string, unknown>, editFirstMessageId?: number | null,
- *   parts?: Record<string, unknown>[] }} item
+ *   parts?: import('./markdown.mjs').MdPart[] }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
@@ -320,12 +320,16 @@ async function sendRow(env, row) {
     return tgApi(env, method, { ...base, ...body });
   };
 
-  let res = await attempt(payload);
+  // body - те, що реально пішло останнім: після відмови розмітки це plain,
+  // і гілка «чернетки немає» нижче мусить слати САМЕ його, не HTML знову.
+  let body = payload;
+  let res = await attempt(body);
   if (!res.ok && isParseEntitiesError(res.status, res.text) && payload.parse_mode) {
     const plain = { ...payload };
     if (plainText != null) plain.text = plainText;
     delete plain.parse_mode;
-    res = await attempt(plain);
+    body = plain;
+    res = await attempt(body);
   }
   if (res.ok) {
     // Нове повідомлення - у ring-buffer /clear (борг етапу 1: канал outbox не
@@ -342,7 +346,7 @@ async function sendRow(env, row) {
   // чернетки. Для статусних партіалів прапорця немає, і вони тихо гаснуть -
   // саме так і треба, застарілий партіал окремим повідомленням не потрібен.
   if (row.kind === 'edit' && fallbackSend && isEditTargetGone(res.status, res.text)) {
-    const asSend = { ...payload };
+    const asSend = { ...body };
     delete asSend.message_id;
     res = await tgApi(env, 'sendMessage', {
       chat_id: row.chat_id,

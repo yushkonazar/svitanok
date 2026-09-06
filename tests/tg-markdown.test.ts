@@ -40,6 +40,25 @@ describe('mdToTelegramHtml', () => {
     expect(mdToTelegramHtml('2 * 3 * 4')).toBe('2 * 3 * 4');
   });
 
+  it('«_» і «*» всередині URL - не розмітка: посилання й голі адреси в сховку', () => {
+    expect(mdToTelegramHtml('[док](https://a.b/_foo_/x) і https://ex.com/_bar_ тут')).toBe(
+      '<a href="https://a.b/_foo_/x">док</a> і https://ex.com/_bar_ тут',
+    );
+    expect(mdToTelegramHtml('[вікі](https://uk.wikipedia.org/wiki/Київ_(місто))')).toBe(
+      '<a href="https://uk.wikipedia.org/wiki/Київ_(місто)">вікі</a>',
+    );
+  });
+
+  it('однорядковий ```code``` не втрачає вміст; мова - лише з переносом', () => {
+    expect(mdToTelegramHtml('```ls -la```')).toBe('<pre>ls -la</pre>');
+    expect(mdToTelegramHtml('```bash\nls -la\n```')).toBe('<pre>ls -la</pre>');
+  });
+
+  it('дандери посеред слова - не жирний', () => {
+    expect(mdToTelegramHtml('файл __init__.py і __main__')).toBe('файл __init__.py і __main__');
+    expect(mdToTelegramHtml('__жирно__ тут')).toBe('<b>жирно</b> тут');
+  });
+
   it('порожнє → порожнє; 3+ переноси стискаються', () => {
     expect(mdToTelegramHtml('')).toBe('');
     expect(mdToTelegramHtml(null)).toBe('');
@@ -48,8 +67,14 @@ describe('mdToTelegramHtml', () => {
 });
 
 describe('renderMdParts', () => {
-  it('одна частина: HTML + plain_text оригінал', () => {
-    expect(renderMdParts('**a**')).toEqual([{ text: '<b>a</b>', plain_text: '**a**' }]);
+  it('одна частина: HTML + parse_mode + plain_text оригінал', () => {
+    expect(renderMdParts('**a**')).toEqual([
+      { text: '<b>a</b>', parse_mode: 'HTML', plain_text: '**a**' },
+    ]);
+  });
+
+  it('літеральні маркери вийнятого коду (U+E000/U+E001) у тексті моделі не підставляють код', () => {
+    expect(mdToTelegramHtml('`x` і 0')).toBe('<code>x</code> і 0');
   });
 
   it('ріже Markdown ДО конвертації - тег не ділиться між частинами', () => {
@@ -64,9 +89,22 @@ describe('renderMdParts', () => {
     }
   });
 
+  it('розріз усередині код-блоку: огорожа закривається в цій частині й відкривається в наступній', () => {
+    const code = '```\n' + '**не жирне** `не код`\n'.repeat(400) + '```';
+    const parts = renderMdParts('до\n\n' + code + '\n\nпісля');
+    expect(parts.length).toBeGreaterThan(1);
+    for (const p of parts) {
+      expect(p.text).not.toContain('<b>');
+      expect(p.text).not.toContain('<code>');
+      expect((p.text.match(/<pre>/g) ?? []).length).toBe((p.text.match(/<\/pre>/g) ?? []).length);
+    }
+    expect(parts[0]!.text).toContain('<pre>');
+    expect(parts[parts.length - 1]!.text).toMatch(/<\/pre>\n\nпісля$/);
+  });
+
   it('частина, що після конвертації переросла 4096, їде звичайним текстом', () => {
     // «&» подвоюється в &amp; - 3 500 символів Markdown → понад 4 096 HTML.
     const md = '&'.repeat(MD_PART_LIMIT);
-    expect(renderMdParts(md)).toEqual([{ text: md, parse_mode: undefined }]);
+    expect(renderMdParts(md)).toEqual([{ text: md }]);
   });
 });

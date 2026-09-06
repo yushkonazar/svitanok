@@ -595,11 +595,11 @@ export function productionIo(env, p) {
   const post = async (
     /** @type {'send' | 'document'} */ kind,
     /** @type {Record<string, unknown>} */ payload,
-    /** @type {Record<string, unknown>[] | undefined} */ parts = undefined,
+    /** @type {import('../tg/markdown.mjs').MdPart[]} [parts] */ parts,
   ) => {
     await enqueueOutbox(
       env,
-      { chatId: p.chatId, threadId: p.threadId, kind, payload, ...(parts ? { parts } : {}) },
+      { chatId: p.chatId, threadId: p.threadId, kind, payload, parts },
       Date.now(),
     );
     await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
@@ -610,11 +610,7 @@ export function productionIo(env, p) {
     now: () => Date.now(),
     // «Коротко» зі звіту - Markdown → HTML Telegram, як deliver.
     send: (text, btns) =>
-      post(
-        'send',
-        { parse_mode: 'HTML', ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) },
-        renderMdParts(text),
-      ),
+      post('send', btns ? { reply_markup: { inline_keyboard: btns } } : {}, renderMdParts(text)),
     sendDocument: (filename, content, caption) =>
       sendDocument(
         env,

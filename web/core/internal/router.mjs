@@ -324,10 +324,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       // Markdown моделі → HTML Telegram частинами (tg/markdown.mjs); текст у
       // reports/сесії лишається Markdown.
       parts: renderMdParts(body.text),
-      payload: {
-        parse_mode: 'HTML',
-        ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
-      },
+      payload: buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {},
     },
     nowMs,
   );

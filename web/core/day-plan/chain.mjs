@@ -596,10 +596,7 @@ export function productionIo(env, chainId, date) {
           kind: 'send',
           // Текст плану - Markdown працівника → HTML Telegram, як deliver.
           parts: renderMdParts(text),
-          payload: {
-            parse_mode: 'HTML',
-            ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}),
-          },
+          payload: btns ? { reply_markup: { inline_keyboard: btns } } : {},
         },
         Date.now(),
       );
