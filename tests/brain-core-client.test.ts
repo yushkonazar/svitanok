@@ -195,3 +195,60 @@ describe('CoreClient: політика помилок', () => {
     });
   });
 });
+
+describe('CoreClient: instruction / taint / deliver з працівником (етап 4)', () => {
+  it('instruction: POST /internal/instruction {name} → тіло з хешем; 404 і транспорт - {ok:false}', async () => {
+    const { fetchFn, calls } = captureFetch(200, {
+      ok: true,
+      name: 'editor',
+      version_hash: 'a'.repeat(64),
+      body_md: '# Редактор',
+    });
+    const out = await makeClient(fetchFn).instruction('run-1', 'editor');
+    expect(out).toEqual({
+      ok: true,
+      name: 'editor',
+      version_hash: 'a'.repeat(64),
+      body_md: '# Редактор',
+    });
+    expect(calls[0]!.url).toBe('https://svitanok.example/internal/instruction');
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ name: 'editor' });
+    const missing = captureFetch(404, { ok: false, error: 'instruction-missing', reason: 'немає' });
+    expect(await makeClient(missing.fetchFn).instruction('run-1', 'ghost')).toEqual({
+      ok: false,
+      status: 404,
+      error: 'instruction-missing: немає',
+    });
+    const boom = vi.fn(async () => {
+      throw new Error('мережа');
+    }) as unknown as typeof fetch;
+    expect(await makeClient(boom).instruction('run-1', 'editor')).toMatchObject({
+      ok: false,
+      status: 0,
+    });
+    // Неповне тіло 200 - теж не ok (хеш чи тіло без імені не приймаємо).
+    const partial = captureFetch(200, { ok: true, name: 'editor' });
+    expect((await makeClient(partial.fetchFn).instruction('run-1', 'editor')).ok).toBe(false);
+  });
+
+  it('taint: true лише на 2xx; 503 і мережа - false (fail-closed у викликача)', async () => {
+    const ok = captureFetch(200, { ok: true, tainted: true });
+    expect(await makeClient(ok.fetchFn).taint('run-1', 'worker:researcher')).toBe(true);
+    expect(JSON.parse(String(ok.calls[0]!.init.body))).toEqual({ source: 'worker:researcher' });
+    const fail = captureFetch(503, { ok: false, error: 'taint-not-persisted' });
+    expect(await makeClient(fail.fetchFn).taint('run-1', 'worker:researcher')).toBe(false);
+    const boom = vi.fn(async () => {
+      throw new Error('мережа');
+    }) as unknown as typeof fetch;
+    expect(await makeClient(boom).taint('run-1', 'w')).toBe(false);
+  });
+
+  it('deliver з працівником шле {text, buttons?, worker}; без кнопок - buttons відсутній', async () => {
+    const { fetchFn, calls } = captureFetch(200, { ok: true, queued: 1 });
+    await makeClient(fetchFn).deliver('run-1', 'готово', [], { name: 'editor', text: 'hello' });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      text: 'готово',
+      worker: { name: 'editor', text: 'hello' },
+    });
+  });
+});

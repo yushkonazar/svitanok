@@ -129,6 +129,26 @@ export async function sendSystemAlert(env, text, nowMs) {
 }
 
 /**
+ * Текстовий документ у чат/тред через чергу з негайним драйном (best-effort:
+ * збій драйну лишає ряд sweeper-у, у лог). Один вхід для експорту колекції,
+ * звіту аналізу ідеї й результату працівника.
+ * @param {Env} env
+ * @param {{ chatId: number | string, threadId: number | string | null }} target
+ * @param {{ filename: string, content: string, caption?: string, reply_markup?: unknown }} doc
+ * @param {number} nowMs
+ */
+export async function sendDocument(env, target, doc, nowMs) {
+  await enqueueOutbox(
+    env,
+    { chatId: target.chatId, threadId: target.threadId, kind: 'document', payload: { ...doc } },
+    nowMs,
+  );
+  await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
+    console.error('outbox: драйн документа впав (sweeper добере)', e?.message),
+  );
+}
+
+/**
  * Статусні edit-и того самого повідомлення заміняють НЕЗІСЛАНІ попередні:
  * черга з 30 застарілих «▸ думаю…» нікому не потрібна - це і є троттлінг
  * статусу до фактичної швидкості відправки (01 §2.1: ядро троттлить).
@@ -346,6 +366,9 @@ function documentForm(row, payload) {
   form.set('chat_id', row.chat_id);
   if (row.thread_id != null) form.set('message_thread_id', row.thread_id);
   if (payload.caption) form.set('caption', String(payload.caption));
+  // Кнопки під документом (етап 4: «Все одно запустити» під попереднім
+  // аналізом) - multipart приймає reply_markup як JSON-рядок.
+  if (payload.reply_markup) form.set('reply_markup', JSON.stringify(payload.reply_markup));
   form.set(
     'document',
     new Blob([String(payload.content ?? '')], { type: 'text/plain' }),

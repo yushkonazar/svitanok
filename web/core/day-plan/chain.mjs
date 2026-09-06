@@ -19,6 +19,7 @@ import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
+import { setChainState, waitOrNull } from '../chains/state.mjs';
 import { callBrainRun } from '../brain/run-client.mjs';
 import { loadInstruction } from '../instructions.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
@@ -297,23 +298,6 @@ export async function runDayPlanChain(env, params, step, io) {
 // ── Кроки-помічники ────────────────────────────────────────────────────────
 
 /**
- * Очікування події з таймаутом: у Workflows таймаут кидає - тут це чесний
- * null (тиша власника - штатний шлях сценарію, не збій).
- * @param {ChainStep} step @param {string} name @param {string} type @param {number} ms
- */
-async function waitOrNull(step, name, type, ms) {
-  try {
-    const ev = await step.waitForEvent(name, {
-      type,
-      timeout: `${Math.max(1, Math.ceil(ms / 1000))} seconds`,
-    });
-    return ev?.payload ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Пояснений текст чернетки (Денний, mode=explain) або резерв formatDraft.
  * @param {ChainStep} step @param {ChainIo} io @param {string} date
  * @param {{ slots: ReturnType<typeof computeSlots>, events: any[] }} draft
@@ -486,18 +470,9 @@ function ddmm(date) {
 
 // ── Стан ланцюга в D1 (`chains`) ───────────────────────────────────────────
 
-/**
- * @param {Env} env @param {string} chainId
- * @param {{ status: 'running' | 'waiting' | 'done' | 'failed' | 'cancelled', awaiting: string | null }} state
- */
-export async function setChainState(env, chainId, state) {
-  if (!env.DB) throw new Error('привʼязки DB немає');
-  await env.DB.prepare(
-    `UPDATE chains SET status = ?, state_json = json_set(COALESCE(state_json, '{}'), '$.awaiting', ?), updated_at = ? WHERE id = ?`,
-  )
-    .bind(state.status, state.awaiting, new Date().toISOString(), chainId)
-    .run();
-}
+// setChainState живе в chains/state.mjs (спільний з IdeaAnalysis); реекспорт
+// заради тестів і prerouter, що імпортують його звідси.
+export { setChainState };
 
 /**
  * Ланцюг плану, що чекає слова власника (intent/answer): prerouter віддає

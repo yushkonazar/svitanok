@@ -9,7 +9,12 @@ import { TOOLS } from '../web/core/tools/index.mjs';
 import { DELIVER_SCHEMA, STATUS_SCHEMA, validateAgainst } from '../web/core/internal/schemas.mjs';
 import { MAX_INTERNAL_BODY_BYTES } from '../web/core/internal/router.mjs';
 import { BRAIN_TOOLS, TOOL_BY_CORE_NAME } from '../brain/src/tools/schemas.js';
-import { DELIVER_MAX_BYTES, DELIVER_MAX_CHARS, STATUS_MAX_CHARS } from '../brain/src/agent.js';
+import {
+  DELIVER_MAX_BYTES,
+  DELIVER_MAX_CHARS,
+  DELIVER_WORKER_MAX_CHARS,
+  STATUS_MAX_CHARS,
+} from '../brain/src/agent.js';
 
 type CoreSchema = (typeof TOOLS)[keyof typeof TOOLS]['args'];
 
@@ -162,5 +167,13 @@ describe('парність стель deliver/status мозок↔ядро', () 
     // 4 KiB запасу: JSON-обгортка {"text":""} - 11 байт, екранування \n і лапок
     // додає ≤1 байта на символ лише для й так 1-байтових знаків.
     expect(DELIVER_MAX_BYTES + 4096).toBeLessThanOrEqual(MAX_INTERNAL_BODY_BYTES);
+  });
+
+  // Етап 4: текст працівника їде в тому ж тілі deliver; мозок ріже його під
+  // maxLength ядра (+1 на «…»), а deliver-текст - з резервом на його байти.
+  it('стеля тексту працівника мозку (+1 на «…») влазить у DELIVER_SCHEMA.worker.text', () => {
+    expect(DELIVER_WORKER_MAX_CHARS + 1).toBeLessThanOrEqual(
+      DELIVER_SCHEMA.properties?.worker?.properties?.text?.maxLength ?? 0,
+    );
   });
 });

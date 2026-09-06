@@ -299,6 +299,9 @@ export const TOOLS = {
       properties: {
         id: { type: 'string', maxLength: 64 },
         mode: { type: 'string', maxLength: 8 },
+        // mode=code (етап 4): репо з переліку і force - повторний прогін попри кеш.
+        repo: { type: 'string', maxLength: 32 },
+        force: { type: 'boolean' },
       },
     },
     write: { kind: 'ideas.analyze' },
