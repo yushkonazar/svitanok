@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as tg from '../web/tg-core.mjs';
+// Конвертер живе в core/tg/markdown.mjs (єдина реалізація для легасі й deliver).
+import { mdToTelegramHtml } from '../web/core/tg/markdown.mjs';
 const {
   textHash,
   verifyWebhookSecret,
@@ -27,7 +29,6 @@ const {
   formatClearResult,
   COMMANDS,
   REPLY_KEYBOARD,
-  mdToTelegramHtml,
 } = tg;
 
 /**
