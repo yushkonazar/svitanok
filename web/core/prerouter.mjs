@@ -83,11 +83,18 @@ const FACT_QUESTION_RE = /(скільки|коли|хто такий|хто та
 // ставали quick) - віднімання ловиться лише відділеним пробілами « - ».
 const NUMBER_OP_RE = /\d[\d\s.,]*\s*[%+*/×÷^]|[%+*/×÷^]\s*\d|\d\s+-\s+\d/;
 
+/** Звернення до працівника на імʼя («аналітик: скільки…», «редактор, переклади»)
+ *  - завжди chat: quick працівників не має і лише ескалює, а це 8-10 с
+ *  (замір приймання етапу 4, 06.09). Імена - з таблиці persona.md. */
+const WORKER_PREFIX_RE =
+  /^(копірайтер|редактор|дослідник|аналітик|навчальний|планувальник|фінансист|секретар(-пошт[а-яії]*)?)\s*[:,-]/i;
+
 /** Класифікація N3: тривіальне → quick, решта → chat.
  *  @param {string} text */
 export function classifyRoute(text) {
   const t = text.trim();
   if (t.length > 120) return 'chat';
+  if (WORKER_PREFIX_RE.test(t)) return 'chat';
   if (ANCHOR_RE.test(t)) return 'chat';
   if (URL_RE.test(t)) return 'chat';
   if (NUMBER_OP_RE.test(t) || FACT_QUESTION_RE.test(t)) return 'quick';
