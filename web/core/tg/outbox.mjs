@@ -5,9 +5,10 @@
 // дублюють відправки. Збій - ретрай з бекофом до MAX_ATTEMPTS, далі failed
 // (видимий у таблиці, не вічний цикл).
 //
-// kind (07 §1): send · edit · document (contact/venue - етап 5 разом із
-// ланцюгами). Rich Message = send з parse_mode HTML + кнопки; фолбек - той
-// самий текст без розмітки (isParseEntitiesError).
+// kind (07 §1): send · edit · document · contact · venue (два останні -
+// ланцюг столика, етап 5: sendContact/sendVenue з JSON-тілом як sendMessage).
+// Rich Message = send з parse_mode HTML + кнопки; фолбек - той самий текст
+// без розмітки (isParseEntitiesError).
 
 import { loadSentMessages, putSentMessages } from '../../kv-store.mjs';
 import { recordSentMessage } from '../../tg-core.mjs';
@@ -49,14 +50,14 @@ function db(env) {
  * `parts` - готові частини send (tg/markdown.mjs: текст уже порізано, кожна
  * частина сама несе parse_mode і plain_text для фолбеку; лягають поверх payload).
  * @param {{ chatId: string | number, threadId?: string | number | null,
- *   kind: 'send' | 'edit' | 'document',
+ *   kind: 'send' | 'edit' | 'document' | 'contact' | 'venue',
  *   payload: Record<string, unknown>, editFirstMessageId?: number | null,
  *   parts?: import('./markdown.mjs').MdPart[] }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
 export async function enqueueOutbox(env, item, nowMs) {
-  /** @type {{ kind: 'send' | 'edit' | 'document', payload: Record<string, unknown> }[]} */
+  /** @type {{ kind: 'send' | 'edit' | 'document' | 'contact' | 'venue', payload: Record<string, unknown> }[]} */
   let rows = [{ kind: item.kind, payload: item.payload }];
   if (item.kind === 'send') {
     // Готові частини (deliver: Markdown порізано ДО конвертації в HTML) або
@@ -316,7 +317,14 @@ async function sendRow(env, row) {
   };
   const attempt = (/** @type {Record<string, unknown>} */ body) => {
     if (row.kind === 'document') return tgApi(env, 'sendDocument', documentForm(row, body));
-    const method = row.kind === 'edit' ? 'editMessageText' : 'sendMessage';
+    const method =
+      row.kind === 'edit'
+        ? 'editMessageText'
+        : row.kind === 'contact'
+          ? 'sendContact'
+          : row.kind === 'venue'
+            ? 'sendVenue'
+            : 'sendMessage';
     return tgApi(env, method, { ...base, ...body });
   };
 
@@ -334,7 +342,9 @@ async function sendRow(env, row) {
   if (res.ok) {
     // Нове повідомлення - у ring-buffer /clear (борг етапу 1: канал outbox не
     // трекався, тож відповіді асистента переживали очищення).
-    if (row.kind === 'send') await trackOutboxSend(env, row, res);
+    if (row.kind === 'send' || row.kind === 'contact' || row.kind === 'venue') {
+      await trackOutboxSend(env, row, res);
+    }
     return { ok: true };
   }
   // Редагування в той самий текст - уже доставлено, не збій (див.
