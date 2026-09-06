@@ -23,6 +23,7 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { GITHUB_API, ghHeaders, ghOwner, ghRepoSlug } from '../adapters/github.mjs';
 import { enqueueOutbox, drainOutbox, sendDocument, sendSystemAlert } from '../tg/outbox.mjs';
+import { renderMdParts } from '../tg/markdown.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { uploadMarkdown } from '../adapters/drive.mjs';
 import { setChainState, readChainState } from '../chains/state.mjs';
@@ -68,7 +69,7 @@ const TRUNCATED_NOTE = '\n\n…(звіт обрізано для бази; по�
  *   uploadDrive: (name: string, content: string) => Promise<string | null>,
  *   finishRun: (runId: string, error: string | null) => Promise<void>,
  * }} AnalysisIo
- * @typedef {{ retries?: { limit: number, delay?: string | number, backoff?: string } }} StepConfig
+ * @typedef {{ retries?: { limit: number, delay: string | number, backoff?: string } }} StepConfig
  * @typedef {{
  *   do: <T>(name: string, cfgOrFn: StepConfig | (() => Promise<T>), fn?: () => Promise<T>) => Promise<T>,
  *   waitForEvent: (name: string, opts: { type: string, timeout: string }) => Promise<{ payload: any }>,
@@ -495,7 +496,10 @@ export async function runIdeaAnalysisChain(env, params, step, io) {
   };
 
   try {
-    await step.do('dispatch', { retries: { limit: 0 } }, () =>
+    // Без повторів: другий dispatch = другий job на ту саму ідею. Рушій
+    // Workflows вимагає `delay` навіть при limit 0 - без нього крок падає
+    // WorkflowFatalError «invalid format» (приймання 06.09).
+    await step.do('dispatch', { retries: { limit: 0, delay: 0 } }, () =>
       io.dispatch({
         run_id: runId,
         idea_id: ideaId,
@@ -591,16 +595,22 @@ export function productionIo(env, p) {
   const post = async (
     /** @type {'send' | 'document'} */ kind,
     /** @type {Record<string, unknown>} */ payload,
+    /** @type {import('../tg/markdown.mjs').MdPart[]} [parts] */ parts,
   ) => {
-    await enqueueOutbox(env, { chatId: p.chatId, threadId: p.threadId, kind, payload }, Date.now());
+    await enqueueOutbox(
+      env,
+      { chatId: p.chatId, threadId: p.threadId, kind, payload, parts },
+      Date.now(),
+    );
     await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
       console.error(`idea-analysis ${p.chainId}: драйн outbox впав, доставить sweeper`, e?.message);
     });
   };
   return /** @type {AnalysisIo} */ ({
     now: () => Date.now(),
+    // «Коротко» зі звіту - Markdown → HTML Telegram, як deliver.
     send: (text, btns) =>
-      post('send', { text, ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) }),
+      post('send', btns ? { reply_markup: { inline_keyboard: btns } } : {}, renderMdParts(text)),
     sendDocument: (filename, content, caption) =>
       sendDocument(
         env,

@@ -62,6 +62,14 @@ export interface EngineOutcome {
   /** Ідентифікатор sdk-сесії прогону (для resume наступного) - null, якщо
    *  рушій його не побачив. */
   sessionId: string | null;
+  /** Час у API моделі (duration_api_ms результату SDK); решта ms кроку -
+   *  накладні CLI/сесії. Не задано - рушій не звітує. */
+  apiMs?: number | null;
+}
+
+/** «api 12.3 с» для нотатки кроку; undefined - без нотатки (JSON її відкине). */
+export function apiNote(apiMs: number | null | undefined): string | undefined {
+  return typeof apiMs === 'number' ? `api ${(apiMs / 1000).toFixed(1)} с` : undefined;
 }
 
 /**
@@ -358,6 +366,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       };
       let text: string;
       let partial = false;
+      let workerApi: string | undefined;
       try {
         const out = await runWorker(
           deps.engine,
@@ -373,6 +382,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           },
         );
         text = (out.finalText ?? '').trim();
+        workerApi = apiNote(out.apiMs);
       } catch (e) {
         // Стеля ходів із текстом - частковий результат (S-7-5), решта - збій.
         if (
@@ -409,7 +419,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         name: worker,
         ms: now() - t0,
         ok: true,
-        note: `${partial ? 'partial ' : ''}${text.length} симв., ${workerCalls} інстр.`,
+        note: `${partial ? 'partial ' : ''}${text.length} симв., ${workerCalls} інстр.${workerApi ? `, ${workerApi}` : ''}`,
       });
       return {
         text: `${partial ? 'Працівник не вклався у стелю ходів - ось що встиг' : `Результат працівника «${worker}»`}:\n${visible}`,
@@ -636,7 +646,13 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       if (lastWorker) await deps.client.deliver(req.run_id, delivered, buttons, lastWorker);
       else if (buttons.length > 0) await deps.client.deliver(req.run_id, delivered, buttons);
       else await deps.client.deliver(req.run_id, delivered);
-      pushStep({ kind: 'reply', name: 'deliver', ms: now() - startedMs, ok: finalText !== '' });
+      pushStep({
+        kind: 'reply',
+        name: 'deliver',
+        ms: now() - startedMs,
+        ok: finalText !== '',
+        note: apiNote(outcome.apiMs),
+      });
 
       // Сесія для наступного resume (chat): best-effort - невдача означає лише
       // свіжу сесію наступного разу, і про це скаже warn клієнта.

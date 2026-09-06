@@ -53,7 +53,8 @@ import {
   nextRunToken,
   verifyRunToken,
 } from './agent-run-core.mjs';
-import { verifyWebhookSecret, mdToTelegramHtml } from './tg-core.mjs';
+import { verifyWebhookSecret } from './tg-core.mjs';
+import { mdToTelegramHtml } from './core/tg/markdown.mjs';
 import { historyKey, renderHistoryForPrompt } from './assistant-memory-core.mjs';
 import {
   buildOwnDataDigest,
