@@ -1,6 +1,6 @@
 // Профіль day-planner у мозку (етап 3 PR-8): Sonnet, 6 інструментів = tools
-// з front-matter agents/day-planner.md ∩ описані (routes.eta - етап 5, тож
-// його в профілі поки немає); контракт /run; прогін: JSON-задача на вході →
+// з front-matter agents/day-planner.md ∩ описані (routes.eta описаний з
+// етапу 5 PR-1 - тепер у профілі); контракт /run; прогін: JSON-задача на вході →
 // вихід (JSON або текст) іде НЕ в deliver, а подією `worker` у ланцюг через
 // outcome.chain; крива задача чи порожній вихід - error-крок без події.
 
@@ -75,7 +75,7 @@ const task = (over: Record<string, unknown> = {}) =>
   });
 
 describe('профіль day-planner', () => {
-  it('Sonnet, 6 інструментів, 3 хв; інструменти = front-matter ∩ описані (без routes.eta)', () => {
+  it('Sonnet, 6 інструментів, 3 хв; інструменти = front-matter ∩ описані (з routes.eta, етап 5)', () => {
     const p = PROFILES['day-planner'];
     expect(p).toMatchObject({ model: 'claude-sonnet-5', maxToolCalls: 6, timeoutMs: 3 * 60_000 });
     const parsed = parseInstruction(FILE);
@@ -85,7 +85,7 @@ describe('профіль day-planner', () => {
     expect([...DAY_PLANNER_TOOL_NAMES]).toEqual(fromFile);
     const described = fromFile.filter((n) => TOOL_BY_CORE_NAME.has(n.replaceAll('_', '.')));
     expect(p.toolNames).toEqual(described);
-    expect(p.toolNames).toEqual(['calendar_read', 'data_read', 'facts_get']);
+    expect(p.toolNames).toEqual(['calendar_read', 'data_read', 'facts_get', 'routes_eta']);
   });
 
   it('контракт /run приймає day-planner; інструкція day-planner; промпт із датою, без згортки', () => {

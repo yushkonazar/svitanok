@@ -88,13 +88,45 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   }),
   tool({
     coreName: 'geo.last',
-    description: 'Остання відома локація власника та її вік.',
+    description:
+      'Остання відома локація власника (lat, lon, name) та її вік ageMs (null = невідомий). Немає або старша за 6 год - перед пошуком закладів спитай «Де ти зараз?» (місто текстом або кнопка m:loc для GPS).',
     args: z.object({}),
   }),
   tool({
     coreName: 'geo.geocode',
-    description: 'Координати за текстом (місто або адреса).',
+    description: 'Координати за текстом (місто або адреса) через Google Geocoding.',
     args: z.object({ text: z.string().max(200) }),
+  }),
+  // Google Maps (етап 5): заклади - зовнішній текст (taint), маршрут - числа.
+  tool({
+    coreName: 'places.search',
+    description:
+      'Пошук закладів (Google Places): query - назва/тип («Креденс», «піцерія»), city - місто з тексту власника («у Києві»), near - {lat, lon} з geo.last, limit ≤ 8. Повертає до 8 кандидатів з place_id для places.details і chain.start(table). Результат - зовнішній вміст.',
+    args: z.object({
+      query: z.string().min(1).max(120),
+      city: z.string().max(60).optional(),
+      near: z.object({ lat: z.number(), lon: z.number() }).optional(),
+      limit: z.number().min(1).max(8).optional(),
+    }),
+    tainting: true,
+  }),
+  tool({
+    coreName: 'places.details',
+    description:
+      'Телефон, сайт, години і карта ОДНОГО закладу за place_id (платніший SKU - лише для обраного, не для всіх кандидатів). Результат - зовнішній вміст.',
+    args: z.object({ place_id: z.string().min(1).max(300) }),
+    tainting: true,
+  }),
+  tool({
+    coreName: 'routes.eta',
+    description:
+      'Час і відстань маршруту (Google Routes). from/to - «lat,lon», «place:<place_id>», «home» (дім власника), «here» (остання локація) або адреса; mode - walk·transit·car·bike; depart_at - ISO-8601 (авто з трафіком, лише майбутній час).',
+    args: z.object({
+      from: z.string().min(1).max(300),
+      to: z.string().min(1).max(300),
+      mode: z.string().min(3).max(8),
+      depart_at: z.string().max(40).optional(),
+    }),
   }),
   tool({
     coreName: 'memory.search',

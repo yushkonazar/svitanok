@@ -8,7 +8,7 @@ import { QUICK_WORKER, WORKER_MODEL_IDS, workerMaxTurns, type WorkerEffort } fro
 export type ProfileName = 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner';
 
 /** Інструменти Денного за front-matter agents/day-planner.md (07 §5):
- *  calendar.read, data.read, facts.get, routes.eta (етап 5 - поки нема). */
+ *  calendar.read, data.read, facts.get, routes.eta (описаний з етапу 5). */
 export const DAY_PLANNER_TOOL_NAMES = [
   'calendar_read',
   'data_read',

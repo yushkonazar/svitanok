@@ -21,6 +21,7 @@ import {
 import { runFactsGet, runFactsSet, FACT_KINDS } from '../web/core/tools/facts.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
 import { workerEnv } from './helpers/env.js';
+import { d1FromSqlite as d1Migrated } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 
@@ -244,19 +245,34 @@ describe('geo.*', () => {
     expect(empty.result).toEqual({ known: false });
   });
 
-  it('geo.geocode: знайдене місто → координати; без ключа — гучний виняток', async () => {
+  it('geo.geocode (Google, етап 5): знайдене місто → координати; без ключа — гучний виняток', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(
         async () =>
-          new Response(JSON.stringify([{ lat: 49.84, lon: 24.03, local_names: { uk: 'Львів' } }]), {
-            status: 200,
-          }),
+          new Response(
+            JSON.stringify({
+              status: 'OK',
+              results: [
+                {
+                  formatted_address: 'Львів, Львівська область, Україна',
+                  geometry: { location: { lat: 49.84, lng: 24.03 } },
+                  address_components: [{ long_name: 'Львів', types: ['locality'] }],
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
       ),
     );
-    const found = await runGeoGeocode(workerEnv({ WEATHER_API_KEY: 'w' }), { text: 'Львів' });
-    expect(found.result).toMatchObject({ found: true, lat: 49.84, lon: 24.03 });
-    await expect(runGeoGeocode(workerEnv(), { text: 'Львів' })).rejects.toThrow(/WEATHER_API_KEY/);
+    const d1 = d1Migrated(['0002_assistant.sql', '0003_telemetry.sql']);
+    const found = await runGeoGeocode(workerEnv({ MAPS_API_KEY: 'k', DB: d1.stub }), {
+      text: 'Львів',
+    });
+    expect(found.result).toMatchObject({ found: true, lat: 49.84, lon: 24.03, locality: 'Львів' });
+    await expect(runGeoGeocode(workerEnv({ DB: d1.stub }), { text: 'Львів' })).rejects.toThrow(
+      /MAPS_API_KEY/,
+    );
   });
 });
 
@@ -368,6 +384,8 @@ describe('реєстр TOOLS', () => {
       'mail.read',
       'mail.search',
       'memory.search',
+      'places.details',
+      'places.search',
       'plan.accept',
       'plan.draft',
       'plan.intent',
@@ -383,6 +401,7 @@ describe('реєстр TOOLS', () => {
       'reminders.cancel',
       'reminders.create',
       'reminders.update',
+      'routes.eta',
       'runs.query',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
@@ -428,6 +447,12 @@ describe('реєстр TOOLS', () => {
       .filter(([, def]) => def.tainting === true)
       .map(([name]) => name)
       .sort();
-    expect(tainting).toEqual(['drive.search', 'mail.read', 'mail.search']);
+    expect(tainting).toEqual([
+      'drive.search',
+      'mail.read',
+      'mail.search',
+      'places.details',
+      'places.search',
+    ]);
   });
 });

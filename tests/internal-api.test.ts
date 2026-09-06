@@ -283,7 +283,7 @@ describe('handleInternal — маршрутизатор', () => {
   });
 
   it('збій джерела — 502 tool-failed із причиною, не тиха деградація', async () => {
-    // geo.geocode без WEATHER_API_KEY кидає — рівно той шлях.
+    // geo.geocode без MAPS_API_KEY/DB кидає — рівно той шлях.
     const res = await handleInternal(
       await request('/internal/tool/geo.geocode', { args: { text: 'Львів' } }),
       env,

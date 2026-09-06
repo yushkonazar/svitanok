@@ -18,6 +18,7 @@ import {
   runGeoGeocode,
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
+import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
@@ -97,7 +98,7 @@ export const TOOLS = {
   },
   'geo.last': {
     args: { type: 'object' },
-    run: (env) => runGeoLast(env),
+    run: (env, _args, nowMs) => runGeoLast(env, nowMs),
   },
   'geo.geocode': {
     args: {
@@ -105,7 +106,49 @@ export const TOOLS = {
       required: ['text'],
       properties: { text: { type: 'string', maxLength: 200 } },
     },
-    run: (env, args) => runGeoGeocode(env, args),
+    run: (env, args, nowMs) => runGeoGeocode(env, args, nowMs),
+  },
+  // Google Maps (етап 5 PR-1, ADR-011): заклади - зовнішній текст (tainting),
+  // маршрут - числа. Квоти рахує адаптер; 100 % - чесна відмова/кеш (S-1-14).
+  'places.search': {
+    args: {
+      type: 'object',
+      required: ['query'],
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 120 },
+        city: { type: 'string', maxLength: 60 },
+        near: {
+          type: 'object',
+          required: ['lat', 'lon'],
+          properties: { lat: { type: 'number' }, lon: { type: 'number' } },
+        },
+        limit: { type: 'number', minimum: 1, maximum: 8 },
+      },
+    },
+    tainting: true,
+    run: (env, args, nowMs) => runPlacesSearch(env, args, nowMs),
+  },
+  'places.details': {
+    args: {
+      type: 'object',
+      required: ['place_id'],
+      properties: { place_id: { type: 'string', minLength: 1, maxLength: 300 } },
+    },
+    tainting: true,
+    run: (env, args, nowMs) => runPlacesDetails(env, args, nowMs),
+  },
+  'routes.eta': {
+    args: {
+      type: 'object',
+      required: ['from', 'to', 'mode'],
+      properties: {
+        from: { type: 'string', minLength: 1, maxLength: 300 },
+        to: { type: 'string', minLength: 1, maxLength: 300 },
+        mode: { type: 'string', minLength: 3, maxLength: 8 },
+        depart_at: { type: 'string', maxLength: 40 },
+      },
+    },
+    run: (env, args, nowMs) => runRoutesEta(env, args, nowMs),
   },
   // ADR-038 (етап 2 PR-2): пошук у згортках власних розмов - НЕ tainting
   // (зовнішнього вмісту тут немає за побудовою: memory_chunks пише лише

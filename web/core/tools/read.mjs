@@ -17,7 +17,7 @@ import {
 } from '../../assistant-data-core.mjs';
 import { readMail, readMailBody, searchDrive, readCalendarRange } from '../../google.mjs';
 import { formatEventsForPrompt, formatRangeEventsForPrompt } from '../../calendar-core.mjs';
-import { geocodeCity } from '../../weather-geo.mjs';
+import { geocodeAddress } from '../adapters/maps.mjs';
 import {
   loadState,
   loadStats,
@@ -310,8 +310,9 @@ export async function runDriveSearch(env, args) {
  * handleLiveWeather. Віку сховище не тримає (без timestamp) - чесний null,
  * а не вигадане число.
  * @param {Env} env
+ * @param {number} [nowMs]
  */
-export async function runGeoLast(env) {
+export async function runGeoLast(env, nowMs = Date.now()) {
   const read = async (/** @type {string} */ key) => {
     try {
       const parsed = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
@@ -335,21 +336,32 @@ export async function runGeoLast(env) {
       lon: geo.lon,
       name: geo.name ?? null,
       source: manual ? 'manual' : 'auto',
-      ageMs: null, // сховище не тримає часу запису - брехати числом не будемо
+      // Вік - лише коли запис несе setAtMs (ручна позиція з /locate); авто-
+      // локація часу не тримає, і брехати числом не будемо (S-1-2: > 6 год
+      // або невідомо → спитати «Де ти зараз?»).
+      ageMs: typeof geo.setAtMs === 'number' ? Math.max(0, nowMs - geo.setAtMs) : null,
     },
   };
 }
 
 /**
- * geo.geocode: назва міста/адреси -> координати. Поки через чинний
- * OpenWeather Geocoding (безкоштовний, уже в проді для /locate); Google
- * Geocoding із quota_counters замінить його на етапі 5 (там адаптер Maps).
+ * geo.geocode: назва міста/адреси -> координати через Google Geocoding
+ * (етап 5 PR-1, ADR-011; до того - OpenWeather). Квота в quota_counters
+ * (geocoding, 10 000/міс); без MAPS_API_KEY - гучна відмова.
  * @param {Env} env
  * @param {{ text: string }} args
+ * @param {number} [nowMs]
  */
-export async function runGeoGeocode(env, args) {
-  if (!env.WEATHER_API_KEY) throw new Error('WEATHER_API_KEY відсутній');
-  const found = await geocodeCity(args.text, env.WEATHER_API_KEY);
-  if (!found) return { result: { found: false } };
-  return { result: { found: true, lat: found.lat, lon: found.lon, name: found.name ?? null } };
+export async function runGeoGeocode(env, args, nowMs = Date.now()) {
+  const found = await geocodeAddress(env, args.text, nowMs);
+  if (!found.found) return { result: { found: false } };
+  return {
+    result: {
+      found: true,
+      lat: found.lat,
+      lon: found.lon,
+      name: found.name,
+      locality: found.locality,
+    },
+  };
 }

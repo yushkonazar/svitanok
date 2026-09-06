@@ -3,9 +3,9 @@
 // перетині 80 % і 100 % - рівно один раз на перетин (точка перетину відома
 // лише тут, у момент інкременту; окремій задачі-обхіднику нема чого ловити).
 //
-// Споживачі bump - адаптери платних API: Places/Routes/Gemini (етап 5/7),
-// Deepgram (етап 2). Етап 1 постачає механізм і довідник лімітів; задача
-// `quota-check` (щоденні КРЕДИТИ, не лічильники) прийде разом з адаптерами.
+// Споживачі bump - адаптери платних API: Google Maps (adapters/maps.mjs,
+// етап 5), Deepgram (етап 2), Gemini (етап 7). Задача `quota-check` (щоденні
+// КРЕДИТИ Gemini/Deepgram, не лічильники) - етап 7 разом із gemini.*.
 
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
@@ -75,6 +75,26 @@ export async function bumpQuota(env, input) {
     );
   }
   return { value, limit: input.limit, crossed80, crossed100 };
+}
+
+/**
+ * Використано за поточний період (0, якщо рядка ще немає) - гейт 100 % для
+ * адаптерів (S-1-14: при 100 % Places не викликається, ланцюг живе з кешем).
+ * @param {Env} env @param {string} key @param {number} [nowMs]
+ */
+export async function quotaUsed(env, key, nowMs = Date.now()) {
+  if (!env.DB) throw new Error('привʼязки DB немає - quota_counters недоступні');
+  const row = /** @type {{ value?: number } | null} */ (
+    await env.DB.prepare('SELECT value FROM quota_counters WHERE key = ? AND period = ?')
+      .bind(key, quotaPeriod(nowMs))
+      .first()
+  );
+  return Number(row?.value ?? 0);
+}
+
+/** Стеля вичерпана (value ≥ limit). @param {Env} env @param {string} key @param {number} limit @param {number} [nowMs] */
+export async function quotaExhausted(env, key, limit, nowMs = Date.now()) {
+  return (await quotaUsed(env, key, nowMs)) >= limit;
 }
 
 /**
