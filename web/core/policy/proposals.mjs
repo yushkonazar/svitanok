@@ -32,6 +32,8 @@ import {
   runIdeasAnalyze,
 } from '../tools/ideas.mjs';
 import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
+import { startTableChain, cancelTableChain, findActiveTableChain } from '../chains/table.mjs';
+import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
 import {
   runCollectionsCreate,
   runCollectionsUpdate,
@@ -376,6 +378,62 @@ export const EXECUTORS = {
       return { result: { filename: csv.filename, rows: csv.rows } };
     },
   },
+  // Ланцюги (етап 5 PR-2, 07 §4 chain.start/cancel): table - тут; trip і
+  // price - наступні PR етапу, до того чесна відмова з назвою етапу.
+  'chain.start': {
+    async execute(env, payload, nowMs, ctx) {
+      const kind = String(payload.kind ?? '');
+      const inner = payload.payload && typeof payload.payload === 'object' ? payload.payload : {};
+      if (kind === 'table') {
+        const { result, prev } = await startTableChain(env, inner, nowMs, {
+          chatId: ctx?.chatId ?? null,
+          threadId: ctx?.threadId ?? null,
+        });
+        return { result, prev };
+      }
+      if (kind === 'trip' || kind === 'price') {
+        throw new Error(`ланцюг «${kind}» приїде наступним PR етапу 5 - скажи власнику прямо`);
+      }
+      throw new Error(
+        `chain.start: невідомий kind «${kind}»; дозволені: table (trip, price - пізніше)`,
+      );
+    },
+    async undo(env, snapshot) {
+      // «↩» одразу після старту = скасування (S-1-12): ланцюг cancelled,
+      // Workflow прокидається подією.
+      if (!(await cancelTableChain(env, String(snapshot.chain_id)))) {
+        throw new Error('ланцюг уже не активний - скасовувати нічого');
+      }
+    },
+  },
+  'chain.cancel': {
+    async execute(env, payload) {
+      const chainId = payload.chain_id ? String(payload.chain_id) : null;
+      const active = await findActiveTableChain(env, chainId);
+      if (!active) throw new Error('активного ланцюга столика немає');
+      const ok = await cancelTableChain(env, active.id);
+      return {
+        result: {
+          cancelled: ok,
+          chain_id: active.id,
+          venue: active.venue,
+          text: `Скасував ланцюг «столик у ${active.venue}»`,
+        },
+      };
+    },
+  },
+  // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -
+  // етап 7): після ✅ подія створюється справді, а не «виконавця ще немає».
+  'calendar.event': {
+    async execute(env, payload) {
+      return { result: await createEventFromPayload(env, payload, false) };
+    },
+  },
+  invite: {
+    async execute(env, payload) {
+      return { result: await createEventFromPayload(env, payload, true) };
+    },
+  },
   'facts.set': {
     async execute(env, payload, nowMs) {
       const before = await runFactsGet(env, { kind: payload.kind, key: payload.key });
@@ -405,6 +463,41 @@ export const EXECUTORS = {
     },
   },
 };
+
+/**
+ * Подія в Google Calendar з payload пропозиції (calendar.event / invite):
+ * title, startIso, endIso обовʼязкові; attendees - email-и або імена (імена
+ * резолвить Contacts; для invite без жодного email - відмова, не тиха подія
+ * без гостей).
+ * @param {Env} env @param {Record<string, any>} payload @param {boolean} requireAttendees
+ */
+async function createEventFromPayload(env, payload, requireAttendees) {
+  const title = String(payload.title ?? '')
+    .trim()
+    .slice(0, 200);
+  const startMs = Date.parse(String(payload.startIso ?? ''));
+  const endMs = Date.parse(String(payload.endIso ?? ''));
+  if (!title || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw new Error('calendar: потрібні title, startIso, endIso (кінець після початку)');
+  }
+  const { emails, notes } = await resolveAttendees(env, payload.attendees);
+  if (requireAttendees && emails.length === 0) {
+    throw new Error(`invite: жодного email (${notes.join('; ') || 'учасників не вказано'})`);
+  }
+  const reminderMinutes = Number.isFinite(Number(payload.reminderMinutes))
+    ? Number(payload.reminderMinutes)
+    : undefined;
+  const created = await createCalendarEvent(env, {
+    title,
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(endMs).toISOString(),
+    reminderMinutes,
+    location: typeof payload.location === 'string' ? payload.location : null,
+    attendees: emails.length ? emails : null,
+  });
+  if (!created.ok) throw new Error('calendar: Google не створив подію (лог)');
+  return { title, event_id: created.id, attendees: emails, notes };
+}
 
 /** @param {Env} env */
 function db(env) {
