@@ -67,9 +67,9 @@ export interface EngineOutcome {
   apiMs?: number | null;
 }
 
-/** «api 12.3 с» для нотатки кроку; null - без нотатки. */
-export function apiNote(apiMs: number | null | undefined): string | null {
-  return typeof apiMs === 'number' ? `api ${(apiMs / 1000).toFixed(1)} с` : null;
+/** «api 12.3 с» для нотатки кроку; undefined - без нотатки (JSON її відкине). */
+export function apiNote(apiMs: number | null | undefined): string | undefined {
+  return typeof apiMs === 'number' ? `api ${(apiMs / 1000).toFixed(1)} с` : undefined;
 }
 
 /**
@@ -366,7 +366,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       };
       let text: string;
       let partial = false;
-      let workerApi: string | null = null;
+      let workerApi: string | undefined;
       try {
         const out = await runWorker(
           deps.engine,
@@ -651,7 +651,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         name: 'deliver',
         ms: now() - startedMs,
         ok: finalText !== '',
-        ...(apiNote(outcome.apiMs) ? { note: apiNote(outcome.apiMs) ?? undefined } : {}),
+        note: apiNote(outcome.apiMs),
       });
 
       // Сесія для наступного resume (chat): best-effort - невдача означає лише

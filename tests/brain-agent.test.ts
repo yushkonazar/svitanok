@@ -104,7 +104,7 @@ function scriptedEngine(
         return {
           finalText: out.finalText ?? null,
           sessionId: out.sessionId ?? null,
-          ...(out.apiMs != null ? { apiMs: out.apiMs } : {}),
+          apiMs: out.apiMs,
         };
       },
       readTranscript,
