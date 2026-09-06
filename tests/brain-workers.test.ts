@@ -211,7 +211,11 @@ describe('delegate (етап 4): працівник з інструкцією з
           seen.push(opts);
           inputs.push(inputText);
           const out = seen.length === 1 ? await chat(opts) : await worker(opts, inputText);
-          return { finalText: out.finalText ?? null, sessionId: out.sessionId ?? null };
+          return {
+            finalText: out.finalText ?? null,
+            sessionId: out.sessionId ?? null,
+            ...(out.apiMs != null ? { apiMs: out.apiMs } : {}),
+          };
         },
         readTranscript: vi.fn(async () => null),
       },
@@ -231,7 +235,7 @@ describe('delegate (етап 4): працівник з інструкцією з
         });
         return { finalText: 'Ось переклад: hello' };
       },
-      async () => ({ finalText: 'hello' }),
+      async () => ({ finalText: 'hello', apiMs: 1234 }),
     );
     await makeRunner({ client, engine })(req());
 
@@ -256,7 +260,8 @@ describe('delegate (етап 4): працівник з інструкцією з
     expect(steps(client).find((s) => s.kind === 'subagent')).toMatchObject({
       name: 'editor',
       ok: true,
-      note: '5 симв., 0 інстр.',
+      // «api» - час у моделі з результату SDK: різниця з ms кроку = накладні.
+      note: '5 симв., 0 інстр., api 1.2 с',
     });
   });
 
