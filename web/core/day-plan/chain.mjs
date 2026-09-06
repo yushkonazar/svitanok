@@ -18,6 +18,7 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { renderMdParts } from '../tg/markdown.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { setChainState, waitOrNull } from '../chains/state.mjs';
 import { callBrainRun } from '../brain/run-client.mjs';
@@ -593,7 +594,9 @@ export function productionIo(env, chainId, date) {
           chatId: env.TELEGRAM_CHAT_ID,
           threadId: env.TOPIC_ASSISTANT ?? null,
           kind: 'send',
-          payload: { text, ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) },
+          // Текст плану - Markdown працівника → HTML Telegram, як deliver.
+          parts: renderMdParts(text),
+          payload: btns ? { reply_markup: { inline_keyboard: btns } } : {},
         },
         Date.now(),
       );

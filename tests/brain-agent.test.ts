@@ -101,7 +101,11 @@ function scriptedEngine(
         seen.push(opts);
         inputs.push(inputText);
         const out = await script(opts, inputText);
-        return { finalText: out.finalText ?? null, sessionId: out.sessionId ?? null };
+        return {
+          finalText: out.finalText ?? null,
+          sessionId: out.sessionId ?? null,
+          apiMs: out.apiMs,
+        };
       },
       readTranscript,
     },
@@ -115,7 +119,7 @@ describe('makeRunner: щасливий шлях', () => {
       const out = await opts.onToolCall('data_read', { scope: 'briefing' });
       expect(out.isError).toBe(false);
       expect(out.text).toBe('дані');
-      return { finalText: 'Готово' };
+      return { finalText: 'Готово', apiMs: 500 };
     });
     await makeRunner({ client, engine })(req());
 
@@ -126,6 +130,8 @@ describe('makeRunner: щасливий шлях', () => {
     expect(client.deliver).toHaveBeenCalledWith('run-1', 'Готово');
     const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
     expect(steps.map((s) => s.kind)).toEqual(['tool', 'reply']);
+    // Час у моделі з результату SDK - у нотатці кроку deliver (замір швидкості).
+    expect(steps[1]).toMatchObject({ name: 'deliver', note: 'api 0.5 с' });
     expect(steps[0]).toMatchObject({ n: 1, name: 'data.read', ok: true });
   });
 

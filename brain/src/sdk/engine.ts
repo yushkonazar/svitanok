@@ -69,6 +69,7 @@ export function createSdkEngine(): RunEngine {
 
       let finalText: string | null = null;
       let sessionId: string | null = null;
+      let apiMs: number | null = null;
       let partial = '';
       try {
         const q = query({
@@ -112,6 +113,9 @@ export function createSdkEngine(): RunEngine {
               opts.onPartialText(partial);
             }
           } else if (message.type === 'result') {
+            // Час у API моделі проти повного часу прогону (замір швидкості,
+            // 06.09): різниця - накладні CLI/сесії, не генерація.
+            if (typeof message.duration_api_ms === 'number') apiMs = message.duration_api_ms;
             if (message.subtype === 'success') {
               finalText = message.result;
             } else {
@@ -125,7 +129,7 @@ export function createSdkEngine(): RunEngine {
       } finally {
         opts.abortSignal.removeEventListener('abort', onAbort);
       }
-      return { finalText, sessionId };
+      return { finalText, sessionId, apiMs };
     },
 
     // Транскрипт із локального сховища SDK (HOME=data на VPS) - для згортки

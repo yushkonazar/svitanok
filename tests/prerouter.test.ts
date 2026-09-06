@@ -40,6 +40,14 @@ describe('classifyRoute (N3)', () => {
   it('S-N3-5: «скільки я витратив учора» → якір витрат → chat', () => {
     expect(classifyRoute('скільки я витратив учора')).toBe('chat');
   });
+  it('звернення до працівника на імʼя → chat навіть із «скільки» (quick лише ескалював би)', () => {
+    expect(classifyRoute('аналітик: скільки в середньому спав за 2 тижні')).toBe('chat');
+    expect(classifyRoute('Редактор, переклади: скільки коштує')).toBe('chat');
+    expect(classifyRoute('секретар-пошта: що таке лист від банку')).toBe('chat');
+    expect(classifyRoute('скільки коштує аналітик')).toBe('quick');
+    expect(classifyRoute('редактор - скільки коштує')).toBe('chat');
+    expect(classifyRoute('редактор-бот скільки коштує')).toBe('quick');
+  });
   it('URL → chat; без числа і питального слова → chat', () => {
     expect(classifyRoute('скільки коштує https://example.com')).toBe('chat');
     expect(classifyRoute('привіт')).toBe('chat');

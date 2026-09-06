@@ -46,9 +46,12 @@ function db(env) {
  * частини по окремих enqueue не можна - усі ряди мали б однаковий префікс id,
  * і порядок вирішував би випадковий uuid.
  * @param {Env} env
+ * `parts` - готові частини send (tg/markdown.mjs: текст уже порізано, кожна
+ * частина сама несе parse_mode і plain_text для фолбеку; лягають поверх payload).
  * @param {{ chatId: string | number, threadId?: string | number | null,
  *   kind: 'send' | 'edit' | 'document',
- *   payload: Record<string, unknown>, editFirstMessageId?: number | null }} item
+ *   payload: Record<string, unknown>, editFirstMessageId?: number | null,
+ *   parts?: import('./markdown.mjs').MdPart[] }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
@@ -56,15 +59,18 @@ export async function enqueueOutbox(env, item, nowMs) {
   /** @type {{ kind: 'send' | 'edit' | 'document', payload: Record<string, unknown> }[]} */
   let rows = [{ kind: item.kind, payload: item.payload }];
   if (item.kind === 'send') {
-    const parts = splitMessage(String(item.payload.text ?? ''));
+    // Готові частини (deliver: Markdown порізано ДО конвертації в HTML) або
+    // розбиття сирого тексту тут.
+    const parts =
+      item.parts ?? splitMessage(String(item.payload.text ?? '')).map((text) => ({ text }));
     if (parts.length === 0) return { queued: 0 };
     const draftId = item.editFirstMessageId ?? null;
     // Кнопки - лише на ОСТАННІЙ частині: інакше три клавіатури на одну відповідь.
-    rows = parts.map((text, i) => ({
+    rows = parts.map((part, i) => ({
       kind: /** @type {'send' | 'edit'} */ (i === 0 && draftId != null ? 'edit' : 'send'),
       payload: {
         ...item.payload,
-        text,
+        ...part,
         // fallback_send - службовий прапорець ряду, у Telegram не їде
         // (sendRow його зрізає): «це відповідь, а не статусний партіал».
         ...(i === 0 && draftId != null ? { message_id: draftId, fallback_send: true } : {}),
@@ -298,6 +304,10 @@ async function sendRow(env, row) {
   // fallback_send - наш прапорець, не поле Bot API: зрізаємо до виклику.
   const fallbackSend = payload.fallback_send === true;
   delete payload.fallback_send;
+  // plain_text - теж службове: оригінал Markdown для фолбеку розмітки, щоб
+  // власник не побачив голі <b>-теги замість тексту.
+  const plainText = typeof payload.plain_text === 'string' ? payload.plain_text : null;
+  delete payload.plain_text;
   const base = {
     chat_id: row.chat_id,
     // editMessageText адресує повідомлення за message_id; тема йому не
@@ -310,11 +320,16 @@ async function sendRow(env, row) {
     return tgApi(env, method, { ...base, ...body });
   };
 
-  let res = await attempt(payload);
+  // body - те, що реально пішло останнім: після відмови розмітки це plain,
+  // і гілка «чернетки немає» нижче мусить слати САМЕ його, не HTML знову.
+  let body = payload;
+  let res = await attempt(body);
   if (!res.ok && isParseEntitiesError(res.status, res.text) && payload.parse_mode) {
     const plain = { ...payload };
+    if (plainText != null) plain.text = plainText;
     delete plain.parse_mode;
-    res = await attempt(plain);
+    body = plain;
+    res = await attempt(body);
   }
   if (res.ok) {
     // Нове повідомлення - у ring-buffer /clear (борг етапу 1: канал outbox не
@@ -331,7 +346,7 @@ async function sendRow(env, row) {
   // чернетки. Для статусних партіалів прапорця немає, і вони тихо гаснуть -
   // саме так і треба, застарілий партіал окремим повідомленням не потрібен.
   if (row.kind === 'edit' && fallbackSend && isEditTargetGone(res.status, res.text)) {
-    const asSend = { ...payload };
+    const asSend = { ...body };
     delete asSend.message_id;
     res = await tgApi(env, 'sendMessage', {
       chat_id: row.chat_id,
