@@ -16,6 +16,7 @@
 // повтор на цілу добу.
 
 import { COMMANDS, buildMiniAppButton } from './tg-core.mjs';
+import { GITHUB_API, ghRepoSlug } from './core/adapters/github.mjs';
 import {
   dueReminders,
   markFired,
@@ -58,18 +59,9 @@ import { tgCall, trackSentMessage } from './telegram-client.mjs';
 // «не доставлено» й хибний промах у reliability за день, який зрештою доставили.
 const DEAD_MAN_HOUR = 12;
 
-/**
- * Слаг репозиторію для workflow_dispatch.
- *
- * Env ПЕРЕКРИВАЄ, а не вимагає: форк чи перейменування не має означати правку
- * коду, але й новий обовʼязковий секрет тут завів би прод у стан, де брифінг
- * не диспатчиться, доки власник не поставить змінну у двох місцях. Дефолт —
- * рівно те значення, що стояло зашитим.
- */
-const DEFAULT_GH_REPO = 'yushkonazar/svitanok';
+/** Слаг репозиторію для workflow_dispatch - з адаптера GitHub (спільний з аналізом ідей). */
 const ghDispatchUrl = (/** @type {Env} */ env) =>
-  `https://api.github.com/repos/${env.GH_REPO?.trim() || DEFAULT_GH_REPO}` +
-  '/actions/workflows/brief.yml/dispatches';
+  `${GITHUB_API}/repos/${ghRepoSlug(env)}/actions/workflows/brief.yml/dispatches`;
 
 /**
  * Знайти прострочені нагадування, надіслати + позначити спрацьованими.

@@ -1,0 +1,136 @@
+# Аналіз ідеї по коду (01 §3.9, 07 §5 профіль `idea-analysis`, ADR-014;
+# етап 4 PR-1). Запускає ядро (Workflow IdeaAnalysis) через workflow_dispatch:
+# inputs = поля з ядра, run_id - прогін, зареєстрований у RunRegistry ДО
+# dispatch, ним же підписується відповідь.
+#
+# workflow_dispatch, а не repository_dispatch (відхилення від 03-plan, названо
+# в plan.md етапу 4): GH_DISPATCH_TOKEN ядра вже має actions:write для
+# brief.yml, а repository_dispatch потребував би contents:write на репо -
+# ширший токен у Worker'і заради тієї самої дії.
+#
+# Ізоляція: job бачить ЛИШЕ checkout цільового репо на sha (read-only PAT)
+# і цей репозиторій заради інструкції та скрипта. claude -p дістає Read/Grep/
+# Glob і нічого більше, налаштування лише користувача раннера (--setting-
+# sources user --strict-mcp-config: хуки й MCP-сервери з .claude/ цільового
+# репо не вантажаться, а самі файли лишаються доступними для Read як дані),
+# env дочірнього процесу - лише PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN. Результат
+# їде в ядро POST /internal/artifact з підписом ADR-037 (HMAC + Access
+# service token) - ядро кладе його в ideas.analysis_md і шле документ у тему.
+#
+# Стеля 40 хв (07 §6): ядро чекає стільки ж. Збій усередині аналізу скрипт
+# сам шле як status=failed; збій ДО нього (checkout, CLI) - крок
+# `if: failure()` (S-3-5). Лише стеля job (скасування) лишає ядро без
+# відповіді - тоді спрацьовує його власний таймаут.
+name: idea-analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'run_id прогону в RunRegistry ядра (підпис артефакту)'
+        required: true
+        type: string
+      idea_id:
+        description: 'id ідеї (ideas.id)'
+        required: true
+        type: string
+      repo:
+        description: 'svitanok | portfolio | moviehouse | modern-blog'
+        required: true
+        type: string
+      sha:
+        description: 'HEAD цільового репо (40 hex) - checkout і кеш'
+        required: true
+        type: string
+      title:
+        description: 'назва ідеї'
+        required: false
+        type: string
+        default: ''
+      idea:
+        description: 'текст ідеї дослівно'
+        required: true
+        type: string
+
+permissions: {}
+
+# Одна ідея - один аналіз за раз; без cancel: обірваний посеред claude -p job
+# не віддав би в ядро ані результату, ані failed. Другий аналіз тієї самої
+# ідеї, поки перший іде, ядро не диспатчить (IdeaAnalysis дедуплікує).
+concurrency:
+  group: idea-analysis-${{ inputs.idea_id }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      IA_RUN_ID: ${{ inputs.run_id }}
+      IA_IDEA_ID: ${{ inputs.idea_id }}
+      IA_REPO: ${{ inputs.repo }}
+      IA_SHA: ${{ inputs.sha }}
+      IA_TITLE: ${{ inputs.title }}
+      IA_IDEA: ${{ inputs.idea }}
+      TARGET_DIR: ${{ github.workspace }}/target
+      # Адреса ядра - змінна репозиторію (Settings → Variables), не константа
+      # в коді: лише кастомний домен (скрипт відкидає *.workers.dev).
+      INTERNAL_API_URL: ${{ vars.INTERNAL_API_URL }}
+    steps:
+      # Сторонні Actions пінено по commit SHA, як у ci.yml.
+      # 1. Цей репозиторій - заради docs/assistant/agents/code-reviewer.md і
+      #    scripts/idea-analysis.mjs (без npm ci: скрипт без залежностей).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # 2. Цільовий репозиторій на ТОМУ САМОМУ sha, що ядро поклало в кеш:
+      #    read-only PAT, credentials не лишаються в .git (Код-оглядач не
+      #    має ані Bash, ані git, але «немає» краще за «не має доступу»).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.repo }}
+          ref: ${{ inputs.sha }}
+          token: ${{ secrets.REPO_READ_PAT }}
+          path: target
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      # Пін версії CLI (як у brief.yml; тут новіша - з --system-prompt).
+      - name: install claude CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.251
+      # Неінтерактивність claude -p: onboarding + довіра до теки checkout-у
+      # (інакше діалог довіри → exit 1, як у brief.yml).
+      - name: preseed claude non-interactive
+        run: |
+          cat > "$HOME/.claude.json" <<JSON
+          {
+            "hasCompletedOnboarding": true,
+            "projects": {
+              "${{ github.workspace }}/target": { "hasTrustDialogAccepted": true }
+            }
+          }
+          JSON
+      # Секрети ядра - лише кроками, що постять артефакт (не в env job):
+      # дочірньому claude скрипт віддає рівно PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN.
+      - id: analyze
+        name: analyze idea against code
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
+          BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
+          BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
+        run: node scripts/idea-analysis.mjs run
+      # Збій ДО аналізу (checkout, CLI, preseed) - ядру теж треба сказати
+      # (S-3-5): крок analyze при власному збої шле failed сам (усередині
+      # скрипта), тож тут лише випадки, коли він не стартував.
+      - name: report failure to core
+        if: failure() && steps.analyze.outcome != 'failure'
+        env:
+          INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
+          BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
+          BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
+          IA_REASON: 'job упав до аналізу (checkout або CLI) - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+        run: node scripts/idea-analysis.mjs failed

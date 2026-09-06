@@ -187,8 +187,12 @@ describe('ideas.analyze (S-3-2)', () => {
   it('plan: статус «в аналізі», подія analysis, ідея й інструкція моделі у відповіді, prev зі старим статусом', async () => {
     const { result: created } = await runIdeasCreate(env, { title: 'A', body_md: 'суть' }, NOW);
     const { result, prev } = await runIdeasAnalyze(env, { id: created.id, mode: 'plan' }, NOW + 1);
-    expect(result).toMatchObject({ number: 1, title: 'A', body_md: 'суть' });
-    expect(result.instruction).toContain('ideas.update');
+    expect(result).toMatchObject({
+      number: 1,
+      title: 'A',
+      body_md: 'суть',
+      instruction: expect.stringContaining('ideas.update'),
+    });
     expect(prev).toEqual({ id: created.id, status: 'нова' });
     expect((d1.db.prepare('SELECT status FROM ideas').get() as { status: string }).status).toBe(
       'в аналізі',
@@ -196,11 +200,20 @@ describe('ideas.analyze (S-3-2)', () => {
     expect(count("SELECT COUNT(*) AS n FROM idea_events WHERE kind = 'analysis'")).toBe(1);
   });
 
-  it('code - чесна відмова до етапу 4, статус не чіпається; чужий mode - помилка', async () => {
+  // mode=code (етап 4 PR-2) - core/ideas/analysis.mjs; тут лише межі входу:
+  // без repo (domain не svitanok) - питання; чуже repo - S-3-8; без
+  // REPO_READ_PAT - явна відмова; статус не чіпається.
+  it('code: repo/PAT перевіряються ДО будь-якої зміни; чужий mode - помилка', async () => {
     const { result: created } = await runIdeasCreate(env, { title: 'A' }, NOW);
     await expect(runIdeasAnalyze(env, { id: created.id, mode: 'code' }, NOW)).rejects.toThrow(
-      /етапі 4/,
+      /вкажи repo/,
     );
+    await expect(
+      runIdeasAnalyze(env, { id: created.id, mode: 'code', repo: 'other' }, NOW),
+    ).rejects.toThrow(/Доступ є лише до svitanok, portfolio, moviehouse, modern-blog/);
+    await expect(
+      runIdeasAnalyze(env, { id: created.id, mode: 'code', repo: 'svitanok' }, NOW),
+    ).rejects.toThrow(/REPO_READ_PAT/);
     await expect(runIdeasAnalyze(env, { id: created.id, mode: 'магія' }, NOW)).rejects.toThrow(
       /mode/,
     );

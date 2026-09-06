@@ -10,18 +10,26 @@
 // додавала до безпеки, зате робила недосяжною саму пропозицію: власник діставав
 // «не можу записати» замість кнопки підтвердження (приймання етапу 2, 30.08).
 
-import type { CoreClient, RunOutcome, ToolCallOutcome } from './core-client.js';
+import type { CoreClient, DeliverWorker, RunOutcome, ToolCallOutcome } from './core-client.js';
 import type { RunRequest } from './server.js';
 import {
   INSTRUCTION_NAME_BY_PROFILE,
   PROFILES,
   TRANSCRIPT_MAX_CHARS,
   buildSystemPrompt,
+  buildWorkerPrompt,
   type RunProfile,
 } from './profiles.js';
 import { verifyInstruction } from './instructions.js';
-import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
-import { QUICK_WORKER, runWorker, type WorkerEffort } from './workers.js';
+import { TOOL_BY_MCP_NAME, type BrainToolDef } from './tools/schemas.js';
+import {
+  DELEGATE_WORKERS,
+  QUICK_WORKER,
+  WORKERS,
+  runWorker,
+  workerInput,
+  type WorkerEffort,
+} from './workers.js';
 
 /** Виконання інструмента з погляду рушія: текст для моделі + прапор помилки. */
 export interface ToolExecution {
@@ -34,6 +42,9 @@ export interface EngineRunOptions {
   model: string;
   maxTurns: number;
   toolNames: string[];
+  /** Вбудовані інструменти SDK, дозволені цьому прогону (лише працівники:
+   *  WebSearch/WebFetch у Дослідника, 01 §2.2); не задано - жодного. */
+  builtinTools?: string[];
   /** Рівень зусиль моделі; не задано - дефолт SDK ('high'). */
   effort?: WorkerEffort;
   /** Сесія SDK для resume (профіль chat); null - свіжа сесія. */
@@ -53,6 +64,21 @@ export interface EngineOutcome {
   sessionId: string | null;
 }
 
+/**
+ * Рушій зупинився не результатом (стеля ходів, збій виконання): subtype SDK
+ * і частковий текст, який модель встигла написати. Для chat це збій прогону,
+ * для працівника на стелі ходів - «не вклався - ось що встиг» (S-7-5).
+ */
+export class EngineStopError extends Error {
+  constructor(
+    readonly subtype: string,
+    readonly partialText: string,
+  ) {
+    super(`SDK: ${subtype}`);
+    this.name = 'EngineStopError';
+  }
+}
+
 /** Рушій прогону: бойовий - Agent SDK (sdk/engine.ts), у тестах - мок. */
 export interface RunEngine {
   run: (opts: EngineRunOptions, inputText: string) => Promise<EngineOutcome>;
@@ -61,7 +87,10 @@ export interface RunEngine {
 }
 
 export interface RunnerDeps {
-  client: Pick<CoreClient, 'callTool' | 'deliver' | 'status' | 'reportRuns' | 'session'>;
+  client: Pick<
+    CoreClient,
+    'callTool' | 'deliver' | 'status' | 'reportRuns' | 'session' | 'instruction' | 'taint'
+  >;
   engine: RunEngine;
   now?: () => number;
   /** Мін. інтервал оновлень статусу; ядро й так троттлить (07 §3). */
@@ -79,6 +108,9 @@ export interface RunnerDeps {
 //    та екранування.
 export const DELIVER_MAX_CHARS = 65_000;
 export const DELIVER_MAX_BYTES = 100_000;
+/** Текст працівника в deliver (DELIVER_SCHEMA.worker.text ядра, парність тестом);
+ *  байти його їдуть у тому ж тілі - deliver-текст ріжеться з резервом на нього. */
+export const DELIVER_WORKER_MAX_CHARS = 19_000;
 export const STATUS_MAX_CHARS = 3_900;
 /** Доки часткова відповідь коротша за це, у чернетку її не шлемо: на прийманні
  *  30.08 власник бачив, як «▸ Думаю…» на мить ставало «В», «П» або «Не про» -
@@ -95,7 +127,7 @@ const ESCALATE_PREFIX = 'ESCALATE:';
 interface Step {
   n: number;
   at: string;
-  kind: 'tool' | 'reply' | 'error';
+  kind: 'tool' | 'subagent' | 'reply' | 'error';
   name: string;
   ms: number;
   ok: boolean;
@@ -119,6 +151,10 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     // ядро валідує префікси (07 §9).
     let proposalId: string | null = null;
     let undoId: string | null = null;
+    // Результат останнього працівника - у deliver (S-7-1: кнопки «Коротше /
+    // Інший тон / .md» будує ядро, бо воно ж тримає текст у базі).
+    // Обʼєкт, не let: присвоєння йде з колбека, і TS звузив би let до null.
+    const last: { worker: DeliverWorker | null } = { worker: null };
     let lastStatusMs = 0;
     let lastStatusLen = 0;
     let escalateOutcome: RunOutcome | undefined;
@@ -155,47 +191,233 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         );
       }
       // Внутрішні інструменти (07 §4 «(внутр.)») в ядро не йдуть - їх виконує
-      // сам мозок. Єдиний такий зараз - delegate: файли працівників приїдуть
-      // на етапі 4, тож поки чесна відмова з іменем працівника в нотатці
-      // кроку - run_steps покажуть, кого модель кличе насправді, і етап 4
-      // почнеться з фактів, а не з припущень.
+      // сам мозок. Єдиний такий - delegate (етап 4): працівник = окремий прогін
+      // SDK зі своєю інструкцією з D1 (через ядро, з хешем), моделлю, стелею
+      // й інструментами з реєстру; назад - лише текст.
       if (def.internal) {
         const parsed = def.args.safeParse(args);
         if (!parsed.success) return fail(`Аргументи ${mcpName} не за контрактом.`, 'bad-args');
-        const worker = String(parsed.data.worker ?? '');
-        return fail(
-          `Працівника «${worker}» ще не підключено. Зроби цю задачу сам у цій самій відповіді або скажи власнику прямо, що вона поки не автоматизована; delegate більше не викликай.`,
-          `worker-unavailable:${worker}`,
+        const out = await delegate(
+          String(parsed.data.worker ?? ''),
+          String(parsed.data.task ?? ''),
+          String(parsed.data.format ?? ''),
+          t0,
         );
+        if (out.worker) last.worker = out.worker;
+        return { text: out.text, isError: out.isError };
       }
+      const r = await callCore(def, args, { okName: def.coreName, failName: mcpName, t0 });
+      if (r.proposalId) proposalId = r.proposalId;
+      if (r.undoId) undoId = r.undoId;
+      return { text: r.text, isError: r.isError };
+    };
+
+    /**
+     * Спільний хвіст виклику інструмента ядра (профіль і працівник): крок у
+     * телеметрії, відмова, ескалація policy (mode='proposed' - запис НЕ
+     * виконано, створено пропозицію під ✅; без цієї гілки модель бачила б
+     * "null" і брехала «Записав»), текст результату. Кнопки (proposalId/undoId)
+     * бере лише профільний виклик.
+     */
+    const callCore = async (
+      def: BrainToolDef,
+      args: unknown,
+      names: { okName: string; failName: string; t0: number },
+    ): Promise<ToolExecution & { proposalId?: string; undoId?: string }> => {
       const outcome: ToolCallOutcome = await deps.client.callTool(req.run_id, def.coreName, args);
       if (!outcome.ok) {
-        return fail(`Інструмент ${def.coreName} відмовив: ${outcome.error}.`, outcome.error);
+        pushStep({
+          kind: 'tool',
+          name: names.failName,
+          ms: now() - names.t0,
+          ok: false,
+          note: outcome.error,
+        });
+        return { text: `Інструмент ${def.coreName} відмовив: ${outcome.error}.`, isError: true };
       }
-      // Ескалація policy ядра: mode='proposed' означає, що запис НЕ виконано -
-      // створено пропозицію під ✅ власника. Без цієї гілки модель бачила б
-      // "null" з isError:false і брехала власнику «Записав» (знахідка ревʼю).
       if (outcome.mode === 'proposed') {
-        proposalId = callbackId(outcome.proposal) ?? proposalId;
-        pushStep({ kind: 'tool', name: def.coreName, ms: now() - t0, ok: true, note: 'proposed' });
+        pushStep({
+          kind: 'tool',
+          name: names.okName,
+          ms: now() - names.t0,
+          ok: true,
+          note: 'proposed',
+        });
+        const proposalId = callbackId(outcome.proposal);
         return {
           text: `Запис НЕ виконано: створено пропозицію, що чекає підтвердження власника (✅). Деталі: ${JSON.stringify(outcome.proposal ?? null)}. Скажи власнику, що потрібне підтвердження.`,
           isError: false,
+          ...(proposalId ? { proposalId } : {}),
         };
       }
-      if (outcome.undo) undoId = callbackId(outcome.undo) ?? undoId;
       pushStep({
         kind: 'tool',
-        name: def.coreName,
-        ms: now() - t0,
+        name: names.okName,
+        ms: now() - names.t0,
         ok: true,
         ...(searchNote(def.coreName, args) ? { note: searchNote(def.coreName, args) } : {}),
       });
-      const text =
-        typeof outcome.result === 'string'
-          ? outcome.result
-          : JSON.stringify(outcome.result ?? null);
-      return { text, isError: false };
+      const undoId = callbackId(outcome.undo);
+      return {
+        text:
+          typeof outcome.result === 'string'
+            ? outcome.result
+            : JSON.stringify(outcome.result ?? null),
+        isError: false,
+        ...(undoId ? { undoId } : {}),
+      };
+    };
+
+    /**
+     * delegate (07 §4, S-7-1…5): інструкція працівника з D1 ядра → свіжий
+     * прогін SDK → текст. Інструменти працівника йдуть у ядро тим самим run_id
+     * (taint від mail.* тощо ядро ставить само); tainted_output працівника -
+     * окремий /internal/taint, fail-closed: без персистованого прапорця
+     * результат моделі не видається. Стеля ходів - «не вклався - ось що
+     * встиг» із частковим текстом. Усі відмови - текстом моделі + крок.
+     */
+    // Інструкції працівників у межах прогону (ревʼю PR-3): другий delegate до
+    // того самого працівника не ходить у ядро й D1 ще раз; відмову теж
+    // памʼятаємо - інакше кожна спроба моделі давала б новий алерт власнику.
+    const instructionCache = new Map<string, { body: string } | { error: string; note: string }>();
+    const workerInstruction = async (worker: string) => {
+      const cached = instructionCache.get(worker);
+      if (cached) return cached;
+      const ins = await deps.client.instruction(req.run_id, worker);
+      let out: { body: string } | { error: string; note: string };
+      if (!ins.ok) out = { error: ins.error, note: `worker-instruction:${ins.error.slice(0, 60)}` };
+      else {
+        try {
+          out = { body: verifyInstruction(ins, `worker:${worker}`, worker) };
+        } catch (e) {
+          out = {
+            error: e instanceof Error ? e.message : String(e),
+            note: 'worker-instruction:hash',
+          };
+        }
+      }
+      instructionCache.set(worker, out);
+      return out;
+    };
+
+    const delegate = async (
+      worker: string,
+      task: string,
+      format: string,
+      t0: number,
+    ): Promise<ToolExecution & { worker?: DeliverWorker }> => {
+      const stepFail = (text: string, note: string): ToolExecution => {
+        pushStep({ kind: 'subagent', name: worker || 'delegate', ms: now() - t0, ok: false, note });
+        return { text, isError: true };
+      };
+      const specDef = DELEGATE_WORKERS.includes(worker) ? WORKERS[worker] : undefined;
+      if (!specDef) {
+        return stepFail(
+          `Невідомий працівник «${worker}». Доступні: ${DELEGATE_WORKERS.join(', ')}.`,
+          `worker-unknown:${worker}`,
+        );
+      }
+      if (!task.trim()) return stepFail('delegate: порожня задача.', 'bad-args');
+      // Інструкція - з D1 через ядро (S-7-3: немає рядка = «не налаштований»,
+      // алерт шле ядро); хеш перераховується тут, як для персони.
+      const ins = await workerInstruction(worker);
+      if ('error' in ins) {
+        return stepFail(
+          `Працівник «${worker}» не налаштований (${ins.error}). Зроби задачу сам або скажи власнику прямо.`,
+          ins.note,
+        );
+      }
+      const body = ins.body;
+      // Інструменти працівника - лише його власні (front-matter) з описаних;
+      // стеля - його max_steps, окремо від стелі профілю (07 §5).
+      const toolNames = specDef.toolNames.filter((n) => TOOL_BY_MCP_NAME.has(n));
+      let workerCalls = 0;
+      const workerToolCall = async (name: string, wargs: unknown): Promise<ToolExecution> => {
+        const wt0 = now();
+        const wdef = TOOL_BY_MCP_NAME.get(name);
+        const wfail = (text: string, note: string): ToolExecution => {
+          pushStep({ kind: 'tool', name: `${worker}/${name}`, ms: now() - wt0, ok: false, note });
+          return { text, isError: true };
+        };
+        if (!wdef || wdef.internal || !toolNames.includes(name)) {
+          return wfail(`Інструмент ${name} недоступний працівнику ${worker}.`, 'not-in-worker');
+        }
+        workerCalls += 1;
+        if (workerCalls > specDef.maxSteps) {
+          return wfail(
+            `Стеля інструментів працівника (${specDef.maxSteps}) вичерпана - віддай, що є.`,
+            'worker-cap',
+          );
+        }
+        const r = await callCore(wdef, wargs, {
+          okName: `${worker}/${wdef.coreName}`,
+          failName: `${worker}/${name}`,
+          t0: wt0,
+        });
+        return { text: r.text, isError: r.isError };
+      };
+      let text: string;
+      let partial = false;
+      try {
+        const out = await runWorker(
+          deps.engine,
+          { ...specDef, toolNames, prompt: buildWorkerPrompt(body, now()) },
+          workerInput(task, format),
+          {
+            abortSignal: abort.signal,
+            onToolCall: workerToolCall,
+            onPartialText: () => {},
+            // Partials потрібні не для статусу, а щоб на стелі ходів лишився
+            // частковий текст (EngineStopError.partialText).
+            streamPartials: true,
+          },
+        );
+        text = (out.finalText ?? '').trim();
+      } catch (e) {
+        // Стеля ходів із текстом - частковий результат (S-7-5), решта - збій.
+        if (
+          e instanceof EngineStopError &&
+          e.subtype === 'error_max_turns' &&
+          e.partialText.trim()
+        ) {
+          text = e.partialText.trim();
+          partial = true;
+        } else {
+          return stepFail(
+            `Працівник «${worker}» впав: ${shortError(e)}.`,
+            `worker-failed:${shortError(e).slice(0, 60)}`,
+          );
+        }
+      }
+      if (!text)
+        return stepFail(`Працівник «${worker}» повернув порожній результат.`, 'worker-empty');
+      // tainted_output (01 §4.2): прапорець у ядрі ПЕРЕД видачею тексту моделі;
+      // не персистувався - результат не видається (той самий fail-closed, що
+      // в ядра для tainting-інструментів).
+      let visible = text;
+      if (specDef.taintedOutput) {
+        if (!(await deps.client.taint(req.run_id, `worker:${worker}`))) {
+          return stepFail(
+            `Результат працівника «${worker}» не видано: не вдалося позначити сесію (taint). Скажи власнику, що потрібно повторити.`,
+            'taint-not-persisted',
+          );
+        }
+        visible = `<external source="worker:${worker}">\n${neutralizeExternalTags(text)}\n</external>`;
+      }
+      pushStep({
+        kind: 'subagent',
+        name: worker,
+        ms: now() - t0,
+        ok: true,
+        note: `${partial ? 'partial ' : ''}${text.length} симв., ${workerCalls} інстр.`,
+      });
+      return {
+        text: `${partial ? 'Працівник не вклався у стелю ходів - ось що встиг' : `Результат працівника «${worker}»`}:\n${visible}`,
+        isError: false,
+        // Під кап DELIVER_SCHEMA.worker.text: довший результат ядро відкинуло б
+        // 400 разом з усією відповіддю (ревʼю PR-3).
+        worker: { name: worker, text: clipHead(text, DELIVER_WORKER_MAX_CHARS) },
+      };
     };
 
     const onPartialText = (text: string): void => {
@@ -400,11 +622,19 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         });
         return;
       }
-      const delivered = finalText === '' ? '(порожня відповідь моделі)' : clipDeliver(finalText);
+      // Текст працівника їде в тому ж тілі /internal/deliver - deliver-текст
+      // ріжеться з резервом на його байти, інакше 128 KiB ядра рвалися б.
+      const lastWorker = last.worker;
+      const reserve = lastWorker ? Buffer.byteLength(lastWorker.text, 'utf8') + 256 : 0;
+      const delivered =
+        finalText === ''
+          ? '(порожня відповідь моделі)'
+          : clipDeliver(finalText, DELIVER_MAX_BYTES - reserve);
       const buttons = confirmButtons(proposalId, undoId);
-      // Третій аргумент лише коли є що показати: deliver без кнопок лишається
-      // тим самим викликом, що й був.
-      if (buttons.length > 0) await deps.client.deliver(req.run_id, delivered, buttons);
+      // Додаткові аргументи лише коли є що показати: deliver без кнопок і без
+      // працівника лишається тим самим викликом, що й був.
+      if (lastWorker) await deps.client.deliver(req.run_id, delivered, buttons, lastWorker);
+      else if (buttons.length > 0) await deps.client.deliver(req.run_id, delivered, buttons);
       else await deps.client.deliver(req.run_id, delivered);
       pushStep({ kind: 'reply', name: 'deliver', ms: now() - startedMs, ok: finalText !== '' });
 
@@ -453,13 +683,13 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
  * (ядровий splitMessage від цього захищений - тут той самий інваріант шаром
  * вище, бо ядро валідує вже обрізаний текст).
  */
-export function clipDeliver(text: string): string {
+export function clipDeliver(text: string, maxBytes: number = DELIVER_MAX_BYTES): string {
   let bytes = 0;
   let i = 0;
   for (const ch of text) {
     const cp = ch.codePointAt(0) as number;
     const b = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
-    if (i + ch.length > DELIVER_MAX_CHARS || bytes + b > DELIVER_MAX_BYTES) {
+    if (i + ch.length > DELIVER_MAX_CHARS || bytes + b > maxBytes) {
       return `${text.slice(0, i)}…`;
     }
     bytes += b;
@@ -486,6 +716,14 @@ export function clipHead(text: string, max: number): string {
   const code = text.charCodeAt(end - 1);
   if (code >= 0xd800 && code <= 0xdbff) end -= 1;
   return `${text.slice(0, end)}…`;
+}
+
+/**
+ * Дзеркало web/core/tools/markup.mjs neutralizeExternalTags: вихід працівника
+ * (Дослідник читав чужі сторінки) не сміє закрити <external> зсередини.
+ */
+export function neutralizeExternalTags(text: string): string {
+  return text.replace(/<(\s*\/?\s*external)/gi, '‹$1');
 }
 
 export function clipStatusTail(text: string): string {

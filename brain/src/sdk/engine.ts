@@ -12,7 +12,12 @@ import {
   query,
   tool,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { EngineOutcome, EngineRunOptions, RunEngine } from '../agent.js';
+import {
+  EngineStopError,
+  type EngineOutcome,
+  type EngineRunOptions,
+  type RunEngine,
+} from '../agent.js';
 import { BRAIN_TOOLS } from '../tools/schemas.js';
 
 const SDK_BUILTIN_TOOLS_OFF = [
@@ -33,6 +38,10 @@ export function createSdkEngine(): RunEngine {
   return {
     async run(opts: EngineRunOptions, inputText: string): Promise<EngineOutcome> {
       const active = BRAIN_TOOLS.filter((t) => opts.toolNames.includes(t.mcpName));
+      // Вбудовані інструменти SDK - лише ті, що явно дозволені цьому прогону
+      // (Дослідник: WebSearch/WebFetch); решта денайлисту лишається.
+      const builtin = opts.builtinTools ?? [];
+      const builtinOff = SDK_BUILTIN_TOOLS_OFF.filter((t) => !builtin.includes(t));
       // Сервер per-run: хендлери замикають onToolCall саме цього прогону.
       // Для профілю без інструментів (quick) не створюємо взагалі.
       const mcpServers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
@@ -81,9 +90,9 @@ export function createSdkEngine(): RunEngine {
             // (d.ts: allowedTools лише авто-апрувить дозволи, доступність
             // обмежує tools). Денайлист нижче - пояс до цих шлейок: новий
             // builtin майбутнього SDK не зʼявиться мовчки (знахідка ревʼю).
-            tools: [],
-            allowedTools: active.map((t) => `mcp__svitanok__${t.mcpName}`),
-            disallowedTools: SDK_BUILTIN_TOOLS_OFF,
+            tools: builtin,
+            allowedTools: [...active.map((t) => `mcp__svitanok__${t.mcpName}`), ...builtin],
+            disallowedTools: builtinOff,
           },
         });
         for await (const message of q) {
@@ -94,6 +103,10 @@ export function createSdkEngine(): RunEngine {
           }
           if (message.type === 'stream_event') {
             const event = message.event;
+            // Нове повідомлення моделі - partial з нуля (ревʼю PR-3): інакше
+            // «частковий результат» на стелі ходів був би склейкою всієї
+            // нарації прогону, а статусник - хвостом усіх ходів разом.
+            if (event.type === 'message_start') partial = '';
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
               partial += event.delta.text;
               opts.onPartialText(partial);
@@ -103,8 +116,9 @@ export function createSdkEngine(): RunEngine {
               finalText = message.result;
             } else {
               // 'error_max_turns' | 'error_during_execution' | usage-limit -
-              // явна помилка прогону, agent.ts доставить її власнику чесно.
-              throw new Error(`SDK: ${message.subtype}`);
+              // явна помилка прогону: agent.ts доставить її власнику чесно, а
+              // для працівника на стелі ходів віддасть частковий текст (S-7-5).
+              throw new EngineStopError(message.subtype, partial);
             }
           }
         }

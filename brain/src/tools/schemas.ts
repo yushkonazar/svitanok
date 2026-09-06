@@ -7,6 +7,7 @@
 // SDK живе як 'data_read'; у /internal/tool/:name іде coreName.
 
 import { z } from 'zod';
+import { DELEGATE_WORKERS } from '../workers.js';
 
 export interface BrainToolDef {
   /** Канонічне імʼя ядра (07 §4) - шлях /internal/tool/:name. */
@@ -219,8 +220,13 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'ideas.analyze',
     description:
-      'Почати аналіз ідеї за id (рядком: «12» або повний id): mode=plan - ядро повертає ідею і ти САМ пишеш аналіз і план у цій відповіді, потім зберігаєш їх через ideas.update(analysis_md, plan_md, status="план готовий"); mode=code (аналіз по коду репозиторію) поки недоступний - етап 4. Якщо власник не сказав, який режим, спитай: «По коду чи лише план?».',
-    args: z.object({ id: z.string().max(64), mode: z.string().max(8).optional() }),
+      'Почати аналіз ідеї за id (рядком: «12» або повний id): mode=plan - ядро повертає ідею і ти САМ пишеш аналіз і план у цій відповіді, потім зберігаєш їх через ideas.update(analysis_md, plan_md, status="план готовий"); mode=code - аналіз по коду репозиторію в GitHub Actions (repo - одне з svitanok·portfolio·moviehouse·modern-blog; для domain svitanok можна не вказувати): ядро запускає прогін до 40 хв, результат прийде окремим повідомленням з документом - НЕ вигадуй його; якщо код не змінювався, ядро саме надішле попередній звіт і кнопку «Все одно запустити» (force=true - повторити попри кеш). Якщо власник не сказав, який режим, спитай: «По коду чи лише план?».',
+    args: z.object({
+      id: z.string().max(64),
+      mode: z.string().max(8).optional(),
+      repo: z.string().max(32).optional(),
+      force: z.boolean().optional(),
+    }),
     write: true,
   }),
   tool({
@@ -383,8 +389,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   // персона знає їх під українськими назвами, тож перелік тут явний.
   tool({
     coreName: 'delegate',
-    description:
-      'Передати задачу працівнику: worker - імʼя (researcher·analyst·planner·day-planner·copywriter·editor·finance·mail-secretary·tutor), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат.',
+    description: `Передати задачу працівнику: worker - імʼя (${DELEGATE_WORKERS.join('·')}), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат (chat або md).`,
     args: z.object({
       worker: z.string().max(32),
       task: z.string().max(4000),

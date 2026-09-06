@@ -45,7 +45,33 @@ export const DELIVER_SCHEMA = /** @type {InternalSchema} */ ({
         },
       },
     },
+    // Результат останнього працівника (етап 4, S-7-1): ядро кладе в reports
+    // і додає кнопки «Коротше / Інший тон / .md»; понад 3 500 - файл + Drive.
+    worker: {
+      type: 'object',
+      required: ['name', 'text'],
+      properties: {
+        name: { type: 'string', maxLength: 32 },
+        text: { type: 'string', maxLength: 20_000 },
+      },
+    },
   },
+});
+
+/** POST /internal/instruction - інструкція працівника з D1 для delegate
+ *  (етап 4): мозок не має D1, тіло їде з хешем, як персона в /run. */
+export const INSTRUCTION_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['name'],
+  properties: { name: { type: 'string', minLength: 1, maxLength: 64 } },
+});
+
+/** POST /internal/taint - позначити тред прогону tainted (01 §4.2: вихід
+ *  працівника з tainted_output - зовнішній вміст; source - хто саме). */
+export const TAINT_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['source'],
+  properties: { source: { type: 'string', minLength: 1, maxLength: 64 } },
 });
 
 /** POST /internal/status — оновлення статус-повідомлення (ядро троттлить,
@@ -91,6 +117,23 @@ export const RUNS_SCHEMA = /** @type {InternalSchema} */ ({
         },
       },
     },
+  },
+});
+
+/** POST /internal/artifact - результат idea-analysis.yml (07 §3, етап 4 PR-2):
+ *  status ok (md - звіт, кап у байтах тримає скрипт) або failed (reason).
+ *  run_id - у підписі; idea_id звіряється зі станом ланцюга. */
+export const ARTIFACT_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['idea_id', 'status'],
+  properties: {
+    idea_id: { type: 'string', maxLength: 64 },
+    status: { type: 'string', maxLength: 16 },
+    repo: { type: 'string', maxLength: 64 },
+    sha: { type: 'string', maxLength: 64 },
+    md: { type: 'string', maxLength: 100_000 },
+    reason: { type: 'string', maxLength: 500 },
+    meta: { type: 'object' },
   },
 });
 

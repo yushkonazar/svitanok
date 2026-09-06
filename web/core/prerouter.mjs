@@ -41,6 +41,7 @@ import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs
 import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
+import { loadWorkerResult, sendWorkerDocument, WORKER_FOLLOWUPS } from './brain/worker-results.mjs';
 import { findAwaitingDayPlan, sendDayPlanEvent } from './day-plan/chain.mjs';
 
 export const THREAD_DM = 'dm';
@@ -770,6 +771,23 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
+  // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
+  const wm = data.match(/^m:w:([A-Za-z0-9-]{1,40}):(short|tone|md)$/);
+  if (wm) {
+    return workerResultToast(
+      env,
+      parsed,
+      /** @type {string} */ (wm[1]),
+      /** @type {'short' | 'tone' | 'md'} */ (wm[2]),
+      nowMs,
+      defer,
+    );
+  }
+  // m:ia:<ideaId> - «Все одно запустити» під кешованим аналізом (S-3-4, етап 4
+  // PR-2): повторний прогін по коду попри кеш; T0 через policy, як і з чату.
+  const ia = data.match(/^m:ia:([A-Za-z0-9-]{1,40})$/);
+  if (ia) return ideaRerunToast(env, parsed, /** @type {string} */ (ia[1]), nowMs, defer);
   // m:fg:<id> - меню /forget (S-0-5): пропозиція T2 forget(collection) зі
   // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
   const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
@@ -866,6 +884,112 @@ async function forgetMenuToast(env, parsed, collectionId, nowMs) {
     nowMs,
   );
   return 'Чекаю слово';
+}
+
+/**
+ * «Все одно запустити» (S-3-4): аналіз по коду заново, попри кеш sha. Тап
+ * власника - чиста сесія (tainted:false, як у forgetMenuToast); результат
+ * старту - у тред, сам звіт прийде з Workflow документом. Робота - у defer
+ * (GitHub API для HEAD + dispatch - секунди, тост має піти одразу).
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} ideaId @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  const work = async () => {
+    let text;
+    /** @type {Record<string, unknown> | undefined} */
+    let extra;
+    try {
+      const out = await applyPolicy(
+        env,
+        {
+          kind: 'ideas.analyze',
+          payload: { id: ideaId, mode: 'code', force: true },
+          threadId: threadKey,
+          chatId: parsed.chatId ?? null,
+          tainted: false,
+        },
+        nowMs,
+      );
+      text =
+        out.mode === 'executed'
+          ? rerunText(/** @type {Record<string, unknown>} */ (out.result))
+          : `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+      // T0 з кнопки - теж із «↩» (ревʼю PR-2): без неї undo-рядок лежав би
+      // в базі, а власник не мав би що натиснути.
+      if (out.mode === 'executed' && out.undo)
+        extra = { reply_markup: { inline_keyboard: out.undo.buttons } };
+    } catch (/** @type {any} */ e) {
+      text = `Не вийшло: ${String(e?.message ?? e)}`;
+    }
+    await reply(env, target, text, nowMs, extra);
+  };
+  await clearKeyboard(env, parsed);
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: повторний аналіз ідеї впав', e?.message),
+      ),
+    );
+  } else await work();
+  return 'Запускаю аналіз заново';
+}
+
+/**
+ * Кнопки під результатом працівника (S-7-1): «Коротше»/«Інший тон» - підказка
+ * в тред як текст власника (chat-сесія памʼятає задачу й результат), «.md» -
+ * файл із бази. Клавіатуру не знімаємо: кнопки можна тиснути кілька разів.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} id @param {'short' | 'tone' | 'md'} choice @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer - старт прогону довший за
+ *   вікно тосту (як у ideaRerunToast)
+ */
+async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
+  /** @type {Awaited<ReturnType<typeof loadWorkerResult>>} */
+  let result;
+  try {
+    result = await loadWorkerResult(env, id);
+  } catch (/** @type {any} */ e) {
+    // Збій бази - не «протухло» (ревʼю PR-3): власник має бачити різницю.
+    console.error('prerouter: результат працівника не прочитано', e?.message);
+    return 'База недоступна - спробуй пізніше.';
+  }
+  if (!result) return 'Результат уже не в базі.';
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  if (choice === 'md') {
+    await sendWorkerDocument(env, /** @type {any} */ (target), result, nowMs);
+    return 'Файл у треді';
+  }
+  const work = () =>
+    startOrQueueThreadText(env, target, threadKey, WORKER_FOLLOWUPS[choice], 'chat', nowMs).then(
+      () => undefined,
+    );
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: підказка за кнопкою працівника впала', e?.message),
+      ),
+    );
+  } else await work();
+  return choice === 'short' ? 'Скорочую' : 'Міняю тон';
+}
+
+/** Текст у тред після старту заново. @param {Record<string, unknown>} r */
+export function rerunText(r) {
+  const n = r.number != null ? `#${String(r.number)}` : '';
+  if (r.started)
+    return `Запустив аналіз ідеї ${n} по коду ${String(r.repo)}@${String(r.sha)} заново - ${String(r.eta)}, результат прийде документом.`;
+  if (r.running) return `Аналіз ідеї ${n} уже йде - дочекайся документа.`;
+  return `Аналіз ідеї ${n}: ${String(r.note ?? 'без змін')}`;
 }
 
 /**

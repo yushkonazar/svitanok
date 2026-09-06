@@ -108,6 +108,12 @@ describe('профіль weekly-review у мозку', () => {
       status: vi.fn(async () => undefined),
       reportRuns: vi.fn(async () => undefined),
       session: vi.fn(async () => true),
+      instruction: vi.fn(async () => ({
+        ok: false as const,
+        status: 404,
+        error: 'instruction-missing',
+      })),
+      taint: vi.fn(async () => true),
     };
     const run = makeRunner({
       client,

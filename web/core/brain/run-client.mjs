@@ -8,7 +8,7 @@
 // таймауту тихо розʼїхались би) - callBrainRun/callBrainAbort лише
 // інтерпретують статус.
 
-import { signInternal } from '../internal/auth.mjs';
+import { signedInternalHeaders } from '../internal/auth.mjs';
 
 const RUN_TIMEOUT_MS = 10_000;
 
@@ -32,27 +32,14 @@ async function signedBrainPost(env, path, runId, rawBody, nowMs) {
   if (!url) return { misconfig: 'BRAIN_URL не задано' };
   if (!key) return { misconfig: 'INTERNAL_HMAC_KEY не задано' };
 
-  const nonce = crypto.randomUUID();
-  const signature = await signInternal(key, {
+  const headers = await signedInternalHeaders(key, {
     method: 'POST',
     path,
-    timestampMs: nowMs,
     runId,
-    nonce,
     rawBody,
+    nowMs,
+    access: clientId && clientSecret ? { clientId, clientSecret } : null,
   });
-  /** @type {Record<string, string>} */
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-Internal-Timestamp': String(nowMs),
-    'X-Internal-Run': runId,
-    'X-Internal-Nonce': nonce,
-    'X-Internal-Signature': signature,
-  };
-  if (clientId && clientSecret) {
-    headers['CF-Access-Client-Id'] = clientId;
-    headers['CF-Access-Client-Secret'] = clientSecret;
-  }
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), RUN_TIMEOUT_MS);
