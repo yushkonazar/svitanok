@@ -186,6 +186,22 @@ async function createIdea(env: Env, over: Record<string, unknown> = {}) {
 const ctx = { chatId: 555, threadId: 99 };
 const IDEA_STATUS = () => 'SELECT status FROM ideas';
 
+/**
+ * Дзеркало isValidStepConfig рушія Workflows (workers-sdk/workflows-shared):
+ * retries.limit ≥ 0, retries.delay ОБОВʼЯЗКОВИЙ (число мс або рядок тривалості),
+ * timeout не 0. У проді неправильний конфіг = WorkflowFatalError на кроці.
+ */
+function assertStepConfig(name: string, cfg: unknown) {
+  const c = cfg as { retries?: Record<string, unknown>; timeout?: unknown };
+  if (c.retries) {
+    const { limit, delay } = c.retries;
+    if (typeof limit !== 'number' || limit < 0) throw new Error(`step ${name}: retries.limit`);
+    if (!(typeof delay === 'number' || typeof delay === 'string'))
+      throw new Error(`step ${name}: retries.delay обовʼязковий`);
+  }
+  if (c.timeout === 0) throw new Error(`step ${name}: timeout 0`);
+}
+
 /** Кроки Workflow: do виконує одразу (з конфігом або без); artifact - з черги (Error = таймаут). */
 function fakeStep(events: ({ payload: unknown } | Error)[]) {
   const log: string[] = [];
@@ -194,6 +210,7 @@ function fakeStep(events: ({ payload: unknown } | Error)[]) {
     do: async (name, cfgOrFn, fn) => {
       log.push(`do:${name}`);
       if (typeof cfgOrFn === 'function') return cfgOrFn();
+      assertStepConfig(name, cfgOrFn);
       cfgs[name] = cfgOrFn;
       return fn!();
     },
@@ -599,7 +616,7 @@ describe('runIdeaAnalysisChain (машина станів)', () => {
       idea: 'кнопка експорту',
     });
     expect(Object.keys(dispatched[0]!)).toEqual([...DISPATCH_INPUTS]);
-    expect(cfgs.dispatch).toEqual({ retries: { limit: 0 } });
+    expect(cfgs.dispatch).toEqual({ retries: { limit: 0, delay: 0 } });
     expect(log).toEqual([
       'do:idea',
       'do:dispatch',

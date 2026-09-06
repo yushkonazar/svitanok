@@ -68,7 +68,7 @@ const TRUNCATED_NOTE = '\n\n…(звіт обрізано для бази; по�
  *   uploadDrive: (name: string, content: string) => Promise<string | null>,
  *   finishRun: (runId: string, error: string | null) => Promise<void>,
  * }} AnalysisIo
- * @typedef {{ retries?: { limit: number, delay?: string | number, backoff?: string } }} StepConfig
+ * @typedef {{ retries?: { limit: number, delay: string | number, backoff?: string } }} StepConfig
  * @typedef {{
  *   do: <T>(name: string, cfgOrFn: StepConfig | (() => Promise<T>), fn?: () => Promise<T>) => Promise<T>,
  *   waitForEvent: (name: string, opts: { type: string, timeout: string }) => Promise<{ payload: any }>,
@@ -495,7 +495,10 @@ export async function runIdeaAnalysisChain(env, params, step, io) {
   };
 
   try {
-    await step.do('dispatch', { retries: { limit: 0 } }, () =>
+    // Без повторів: другий dispatch = другий job на ту саму ідею. Рушій
+    // Workflows вимагає `delay` навіть при limit 0 - без нього крок падає
+    // WorkflowFatalError «invalid format» (приймання 06.09).
+    await step.do('dispatch', { retries: { limit: 0, delay: 0 } }, () =>
       io.dispatch({
         run_id: runId,
         idea_id: ideaId,
