@@ -47,7 +47,7 @@ describe('POST /internal/runs', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d1 = d1WithInstructions(['0001_base.sql', '0003_telemetry.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
     db = d1.db;
     finishes = [];
     env = workerEnv({
@@ -130,6 +130,11 @@ describe('POST /internal/runs', () => {
   // Етап 3 PR-8: outcome.chain - подія від працівника в DayPlanChain.
   it('outcome.chain → sendEvent в інстанс Workflow за id; без привʼязки - лог, не 500; крива подія - 400', async () => {
     const events: { id: string; ev: unknown }[] = [];
+    // Привʼязку вибирає kind рядка chains (етап 5: реєстр ланцюгів).
+    db.prepare(
+      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+       VALUES ('ch-1', 'day-plan', 'ch-1', '{}', 'waiting', 'x', 'x')`,
+    ).run();
     (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
       create: async () => undefined,
       get: async (id: string) => ({

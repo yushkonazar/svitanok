@@ -253,9 +253,8 @@ export const TOOLS = {
       throw new Error('proposals.create виконується через policy, не напряму');
     },
   },
-  // chain.start - ЗАГЛУШКА до етапу 5 (Workflows). Інструмент присутній, щоб
-  // модель знала межу («ланцюг почнеться пізніше»), а не вигадувала обхід;
-  // виконавця немає навмисно, тож policy відповість no-executor.
+  // chain.start / chain.cancel (07 §4, етап 5): T0 через policy; виконавці -
+  // chains/table.mjs (kind=table), trip/price - наступні PR етапу.
   'chain.start': {
     args: {
       type: 'object',
@@ -268,6 +267,19 @@ export const TOOLS = {
     write: { kind: 'chain.start' },
     run: () => {
       throw new Error('chain.start виконується через policy, не напряму');
+    },
+  },
+  'chain.cancel': {
+    args: {
+      type: 'object',
+      properties: {
+        chain_id: { type: 'string', maxLength: 64 },
+        kind: { type: 'string', maxLength: 32 },
+      },
+    },
+    write: { kind: 'chain.cancel' },
+    run: () => {
+      throw new Error('chain.cancel виконується через policy, не напряму');
     },
   },
   // Ідеї (етап 3 PR-4, 07 §4 `ideas.*`): list/search - читання власної бази;

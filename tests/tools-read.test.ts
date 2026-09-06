@@ -377,6 +377,7 @@ describe('реєстр TOOLS', () => {
   it('склад: читання + write-інструменти етапу 2 + runs.query етапу 3; drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
+      'chain.cancel',
       'chain.start',
       'collections.create',
       'collections.delete',
@@ -429,6 +430,7 @@ describe('реєстр TOOLS', () => {
     // ним, і розсинхрон тут мовчки змінив би рівень підтвердження. Виняток -
     // proposals.create: він не дія, а обгортка, тож kind приходить у args.
     expect(writes).toEqual([
+      ['chain.cancel', 'chain.cancel'],
       ['chain.start', 'chain.start'],
       // Видалення колекції з записами - T2 forget (07 §4): інструмент є, kind - forget.
       ['collections.create', 'collections.create'],

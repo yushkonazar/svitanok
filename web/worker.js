@@ -32,6 +32,7 @@ export { RunRegistryDO } from './core/run-registry/do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';
+export { TableChain } from './core/chains/table.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';

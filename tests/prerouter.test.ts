@@ -851,10 +851,11 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     );
   });
 
-  it('✅ без виконавця (calendar.event) - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
+  it('✅ без виконавця (tasks.create) - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
     const { env, db, tg } = cbEnv();
+    // calendar.event має виконавця з етапу 5; без виконавця лишається tasks.create (етап 7).
     seedProposal(db, {
-      kind: 'calendar.event',
+      kind: 'tasks.create',
       payload_json: JSON.stringify({ title: 'Зустріч' }),
     });
     const toast = await handleBrainCallback(
@@ -899,7 +900,14 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
 
   // Етап 3 PR-8: c:<chainId>:<choice> - кнопки ланцюга плану → подія у Workflow.
   it('c:<id>:<choice> → sendEvent за мапою choice→type, клавіатура знята; збій Workflow - чесний тост', async () => {
-    const { env, tg } = cbEnv();
+    const { env, db, tg } = cbEnv();
+    // kind ланцюга читається з рядка chains (етап 5: реєстр ланцюгів).
+    for (const id of ['ch-1', 'dead']) {
+      db.prepare(
+        `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+         VALUES (?, 'day-plan', ?, '{}', 'waiting', 'x', 'x')`,
+      ).run(id, id);
+    }
     const events: { id: string; ev: unknown }[] = [];
     (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
       create: async () => undefined,
@@ -924,7 +932,8 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     ]);
     expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(4);
     expect(await tap('c:dead:accept')).toContain('не відповідає');
-    expect(await tap('c:ch-1:go')).toBe('Невідома кнопка плану.');
+    expect(await tap('c:ch-1:go')).toBe('Невідома кнопка ланцюга.');
+    expect(await tap('c:nope:accept')).toBe('Ланцюг не знайдено - напиши текстом.');
     expect(events).toHaveLength(4);
 
     expect(dayPlanChoiceEvent('none')).toEqual({ type: 'intent', payload: { choice: 'none' } });
@@ -970,11 +979,11 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
   it('заглушки r:/a:/m: чесні; невідома кнопка c: - чесна відмова; чужі префікси (rc:, v1:) і off-режим - null (легасі)', async () => {
     const { env } = cbEnv();
     expect(String(await handleBrainCallback(env, { data: 'c:x:go', chatId: 555 }, NOW))).toContain(
-      'Невідома кнопка плану',
+      'Ланцюг не знайдено',
     );
     // c: не за форматом (без choice) - та сама чесна відмова, не легасі «Застаріла кнопка».
     expect(await handleBrainCallback(env, { data: 'c:bad', chatId: 555 }, NOW)).toBe(
-      'Невідома кнопка плану.',
+      'Невідома кнопка ланцюга.',
     );
     expect(await handleBrainCallback(env, { data: 'rc:123', chatId: 555 }, NOW)).toBeNull();
     expect(

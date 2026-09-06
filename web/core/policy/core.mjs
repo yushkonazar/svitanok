@@ -26,6 +26,7 @@ export const ACTION_LEVELS = {
   'records.create': 'T0',
   'records.update': 'T0',
   'chain.start': 'T0',
+  'chain.cancel': 'T0',
   // План дня v2 (07 §4, ADR-035): усі T0, «↩» для accept/update.
   'plan.intent': 'T0',
   'plan.draft': 'T0',

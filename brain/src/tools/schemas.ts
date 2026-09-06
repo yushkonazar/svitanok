@@ -192,10 +192,20 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.start',
     description:
-      'Почати багатокроковий ланцюг (столик, поїздка, відстеження ціни). Поки НЕ виконується: ланцюги приїдуть на етапі 5 - скажи власнику про це прямо, замість обхідних шляхів.',
+      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». Відповідь містить text - скажи власнику саме його. kind=trip і kind=price - пізніше цим етапом (скажи прямо).',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'chain.cancel',
+    description:
+      'Скасувати активний ланцюг («скасуй столик»): chain_id, якщо відомий, або kind (table) - тоді найсвіжіший активний цього виду.',
+    args: z.object({
+      chain_id: z.string().max(64).optional(),
+      kind: z.string().max(32).optional(),
     }),
     write: true,
   }),

@@ -163,25 +163,25 @@ describe('proposals.create: рівень бере kind з аргументів',
   });
 });
 
-describe('chain.start: заглушка до етапу 5', () => {
-  it('є в реєстрі як write, але виконавця немає - чесна відмова', async () => {
+describe('chain.start: kind поза етапом - чесна відмова', () => {
+  it('є в реєстрі як write (T0); trip/price - «приїде наступним PR», невідомий kind - перелік', async () => {
     expect(TOOLS['chain.start']!.write).toEqual({ kind: 'chain.start' });
     expect(ACTION_LEVELS['chain.start']).toBe('T0');
+    expect(ACTION_LEVELS['chain.cancel']).toBe('T0');
 
     const { env } = makeEnv();
-    const res = await applyPolicy(
-      env,
-      { kind: 'chain.start', payload: { kind: 'trip' }, tainted: false },
-      NOW,
-    );
-    expect(res).toMatchObject({ mode: 'error' });
-    expect(String((res as { error: string }).error)).toContain('no-executor');
+    await expect(
+      applyPolicy(env, { kind: 'chain.start', payload: { kind: 'trip' }, tainted: false }, NOW),
+    ).rejects.toThrow(/приїде наступним PR/);
+    await expect(
+      applyPolicy(env, { kind: 'chain.start', payload: { kind: 'x' }, tainted: false }, NOW),
+    ).rejects.toThrow(/дозволені: table/);
   });
 
-  it('через router відмова доходить до мозку як 400 з причиною', async () => {
+  it('через router відмова доходить до мозку як 502 tool-failed з причиною', async () => {
     const { env } = makeEnv();
     const { status, body } = await callTool(env, 'chain.start', { kind: 'trip' });
-    expect(status).toBe(400);
-    expect(String(body.error)).toContain('no-executor');
+    expect(status).toBe(502);
+    expect(String(body.reason)).toContain('приїде наступним PR');
   });
 });
