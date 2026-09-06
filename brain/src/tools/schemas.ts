@@ -7,6 +7,7 @@
 // SDK живе як 'data_read'; у /internal/tool/:name іде coreName.
 
 import { z } from 'zod';
+import { DELEGATE_WORKERS } from '../workers.js';
 
 export interface BrainToolDef {
   /** Канонічне імʼя ядра (07 §4) - шлях /internal/tool/:name. */
@@ -388,8 +389,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   // персона знає їх під українськими назвами, тож перелік тут явний.
   tool({
     coreName: 'delegate',
-    description:
-      'Передати задачу працівнику: worker - імʼя (researcher·analyst·planner·day-planner·copywriter·editor·finance·mail-secretary·tutor), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат.',
+    description: `Передати задачу працівнику: worker - імʼя (${DELEGATE_WORKERS.join('·')}), task - самодостатнє формулювання БЕЗ історії розмови (працівник її не бачить), format - який вигляд має мати результат (chat або md).`,
     args: z.object({
       worker: z.string().max(32),
       task: z.string().max(4000),

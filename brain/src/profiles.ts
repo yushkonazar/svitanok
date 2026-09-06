@@ -3,7 +3,7 @@
 // maxToolCalls (виконує agent.ts через onToolCall) і maxTurns (страховка SDK).
 
 import { BRAIN_TOOLS, TOOL_BY_MCP_NAME } from './tools/schemas.js';
-import { QUICK_WORKER, WORKER_MODEL_IDS, type WorkerEffort } from './workers.js';
+import { QUICK_WORKER, WORKER_MODEL_IDS, workerMaxTurns, type WorkerEffort } from './workers.js';
 
 export type ProfileName = 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner';
 
@@ -53,7 +53,7 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     model: WORKER_MODEL_IDS[QUICK_WORKER.model],
     toolNames: QUICK_WORKER.toolNames,
     maxToolCalls: 0,
-    maxTurns: QUICK_WORKER.maxSteps,
+    maxTurns: workerMaxTurns(QUICK_WORKER.maxSteps),
     timeoutMs: 60_000,
   },
   // Внутрішній профіль (ADR-038): вхід - транскрипт сесії, вихід -

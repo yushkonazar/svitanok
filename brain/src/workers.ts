@@ -120,11 +120,24 @@ export const WORKERS: Readonly<Record<string, WorkerSpec>> = {
 /** quick - профіль швидкої смуги; його опис читає profiles.ts. */
 export const QUICK_WORKER: WorkerSpec = WORKERS.quick as WorkerSpec;
 
-/** Кого можна кликати через delegate: усі, крім quick (він - профіль, не
- *  субагент) - той самий перелік, що в описі інструмента delegate. */
+/** Кого можна кликати через delegate: усі, крім quick (він - профіль швидкої
+ *  смуги) і day-planner (він - працівник DayPlanChain з JSON-контрактом
+ *  intent/explain/replan; у чаті план дня будує сам chat через plan.*, ревʼю
+ *  PR-3). Опис інструмента delegate будується з цього ж переліку. */
 export const DELEGATE_WORKERS: readonly string[] = Object.keys(WORKERS).filter(
-  (n) => n !== 'quick',
+  (n) => n !== 'quick' && n !== 'day-planner',
 );
+
+/**
+ * Стеля ходів SDK для працівника: max_steps рахує ВИКЛИКИ інструментів, а
+ * хід SDK - одне повідомлення моделі, тож N послідовних викликів + фінальна
+ * відповідь = N+1 ходів (ревʼю PR-3: при maxTurns = max_steps стеля
+ * інструментів була недосяжна, а фінал упирався в error_max_turns).
+ * Один хід (quick) лишається одним.
+ */
+export function workerMaxTurns(maxSteps: number): number {
+  return maxSteps <= 1 ? 1 : maxSteps + 2;
+}
 
 export interface WorkerRunContext {
   abortSignal: AbortSignal;
@@ -150,7 +163,7 @@ export function runWorker(
     {
       systemPrompt: def.prompt,
       model: WORKER_MODEL_IDS[def.model],
-      maxTurns: def.maxSteps,
+      maxTurns: workerMaxTurns(def.maxSteps),
       toolNames: def.toolNames,
       ...(def.builtinTools.length ? { builtinTools: [...def.builtinTools] } : {}),
       ...(def.effort ? { effort: def.effort } : {}),

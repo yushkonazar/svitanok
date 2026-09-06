@@ -335,11 +335,15 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       saved,
       nowMs,
     );
+  }
+  await scheduleDrain(env, ctx, nowMs);
+  // Копія в Drive - ПІСЛЯ драйну і у фоні: два-три виклики Google не сміють
+  // затримувати відповідь мозку (той самий мотив, що в scheduleDrain).
+  if (saved && longWorker) {
     const drive = uploadWorkerResult(env, saved, nowMs);
     if (ctx?.waitUntil) ctx.waitUntil(drive);
     else await drive;
   }
-  await scheduleDrain(env, ctx, nowMs);
   // Звіт профілю weekly-review (S-9-1): текст у reports разом із хешем
   // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
   // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.

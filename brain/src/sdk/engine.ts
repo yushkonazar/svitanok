@@ -103,6 +103,10 @@ export function createSdkEngine(): RunEngine {
           }
           if (message.type === 'stream_event') {
             const event = message.event;
+            // Нове повідомлення моделі - partial з нуля (ревʼю PR-3): інакше
+            // «частковий результат» на стелі ходів був би склейкою всієї
+            // нарації прогону, а статусник - хвостом усіх ходів разом.
+            if (event.type === 'message_start') partial = '';
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
               partial += event.delta.text;
               opts.onPartialText(partial);

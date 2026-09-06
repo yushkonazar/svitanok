@@ -100,6 +100,28 @@ export async function ensureFolderPath(env, path) {
 }
 
 /**
+ * Markdown-файл у теку за шляхом - best-effort: null = не збережено (у лог
+ * із префіксом), бо документ у чаті власник уже має (аналіз ідеї, результат
+ * працівника).
+ * @param {Env} env @param {string[]} folderPath @param {string} name @param {string} text @param {string} logPrefix
+ */
+export async function uploadMarkdown(env, folderPath, name, text, logPrefix) {
+  try {
+    const folderId = await ensureFolderPath(env, folderPath);
+    const up = await uploadFile(env, {
+      name,
+      parentId: folderId,
+      bytes: new TextEncoder().encode(text),
+      mimeType: 'text/markdown',
+    });
+    return up.id;
+  } catch (/** @type {any} */ e) {
+    console.error(`${logPrefix}: копія в Drive не збережена`, e?.message);
+    return null;
+  }
+}
+
+/**
  * Завантажити файл (multipart: метадані + вміст) у теку.
  * @param {Env} env
  * @param {{ name: string, parentId: string, bytes: Uint8Array, mimeType?: string }} file

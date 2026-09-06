@@ -5,12 +5,11 @@
 // задачу); «📎 .md» - файл із базою. Понад 3 500 символів - файл іде одразу
 // разом із копією в Drive (Світанок/workers), кнопки .md тоді немає.
 
-import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
-import { ensureFolderPath, uploadFile } from '../adapters/drive.mjs';
+import { sendDocument } from '../tg/outbox.mjs';
+import { uploadMarkdown } from '../adapters/drive.mjs';
 
 /** Стеля тексту працівника в чаті (S-7-1): довше - файл + Drive. */
 export const WORKER_CHAT_MAX = 3_500;
-export const WORKER_TEXT_MAX = 20_000;
 export const WORKER_DRIVE_FOLDER = ['Світанок', 'workers'];
 /** Підказки в тред за кнопками - модель дістає їх як текст власника. */
 export const WORKER_FOLLOWUPS = {
@@ -48,7 +47,8 @@ export function workerFilename(name, nowMs) {
 export async function saveWorkerResult(env, worker, nowMs) {
   const name = String(worker.name ?? '');
   if (!NAME_RE.test(name)) throw new Error(`worker: імʼя «${name.slice(0, 40)}» не за форматом`);
-  const text = String(worker.text ?? '').slice(0, WORKER_TEXT_MAX);
+  // Довжину тримає DELIVER_SCHEMA.worker.text (20 000) ДО цього виклику.
+  const text = String(worker.text ?? '');
   if (!text.trim()) throw new Error('worker: порожній текст');
   const id = crypto.randomUUID();
   await db(env)
@@ -87,22 +87,15 @@ export async function loadWorkerResult(env, id) {
  * @param {{ name: string, text: string }} result @param {number} nowMs
  */
 export async function sendWorkerDocument(env, target, result, nowMs) {
-  await enqueueOutbox(
+  await sendDocument(
     env,
+    target,
     {
-      chatId: target.chatId,
-      threadId: target.threadId,
-      kind: 'document',
-      payload: {
-        filename: workerFilename(result.name, nowMs),
-        content: result.text,
-        caption: `Результат працівника «${result.name}»`,
-      },
+      filename: workerFilename(result.name, nowMs),
+      content: result.text,
+      caption: `Результат працівника «${result.name}»`,
     },
     nowMs,
-  );
-  await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
-    console.error('worker-results: драйн outbox впав (sweeper добере)', e?.message),
   );
 }
 
@@ -111,18 +104,12 @@ export async function sendWorkerDocument(env, target, result, nowMs) {
  * лог, файл у чаті власник уже має.
  * @param {Env} env @param {{ name: string, text: string }} result @param {number} nowMs
  */
-export async function uploadWorkerResult(env, result, nowMs) {
-  try {
-    const folderId = await ensureFolderPath(env, WORKER_DRIVE_FOLDER);
-    const up = await uploadFile(env, {
-      name: workerFilename(result.name, nowMs),
-      parentId: folderId,
-      bytes: new TextEncoder().encode(result.text),
-      mimeType: 'text/markdown',
-    });
-    return up.id;
-  } catch (/** @type {any} */ e) {
-    console.error('worker-results: копія в Drive не збережена', e?.message);
-    return null;
-  }
+export function uploadWorkerResult(env, result, nowMs) {
+  return uploadMarkdown(
+    env,
+    WORKER_DRIVE_FOLDER,
+    workerFilename(result.name, nowMs),
+    result.text,
+    'worker-results',
+  );
 }

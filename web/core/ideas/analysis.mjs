@@ -22,9 +22,9 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { GITHUB_API, ghHeaders, ghOwner, ghRepoSlug } from '../adapters/github.mjs';
-import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
+import { enqueueOutbox, drainOutbox, sendDocument, sendSystemAlert } from '../tg/outbox.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
-import { ensureFolderPath, uploadFile } from '../adapters/drive.mjs';
+import { uploadMarkdown } from '../adapters/drive.mjs';
 import { setChainState, readChainState } from '../chains/state.mjs';
 import {
   IDEA_REPOS,
@@ -601,24 +601,17 @@ export function productionIo(env, p) {
     now: () => Date.now(),
     send: (text, btns) =>
       post('send', { text, ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) }),
-    sendDocument: (filename, content, caption) => post('document', { filename, content, caption }),
+    sendDocument: (filename, content, caption) =>
+      sendDocument(
+        env,
+        { chatId: p.chatId, threadId: p.threadId },
+        { filename, content, caption },
+        Date.now(),
+      ),
     alert: async (text) => void (await sendSystemAlert(env, text, Date.now())),
     dispatch: (inputs) => dispatchIdeaAnalysis(env, inputs),
-    uploadDrive: async (name, content) => {
-      try {
-        const folderId = await ensureFolderPath(env, DRIVE_FOLDER_PATH);
-        const up = await uploadFile(env, {
-          name,
-          parentId: folderId,
-          bytes: new TextEncoder().encode(content),
-          mimeType: 'text/markdown',
-        });
-        return up.id;
-      } catch (/** @type {any} */ e) {
-        console.error(`idea-analysis ${p.chainId}: копія в Drive не збережена`, e?.message);
-        return null;
-      }
-    },
+    uploadDrive: (name, content) =>
+      uploadMarkdown(env, DRIVE_FOLDER_PATH, name, content, `idea-analysis ${p.chainId}`),
     finishRun: async (runId, error) => {
       await registryFinish(env, runId, { finishedMs: Date.now(), error, steps: 1 });
     },

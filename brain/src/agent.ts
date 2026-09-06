@@ -21,7 +21,7 @@ import {
   type RunProfile,
 } from './profiles.js';
 import { verifyInstruction } from './instructions.js';
-import { TOOL_BY_MCP_NAME } from './tools/schemas.js';
+import { TOOL_BY_MCP_NAME, type BrainToolDef } from './tools/schemas.js';
 import {
   DELEGATE_WORKERS,
   QUICK_WORKER,
@@ -108,6 +108,9 @@ export interface RunnerDeps {
 //    та екранування.
 export const DELIVER_MAX_CHARS = 65_000;
 export const DELIVER_MAX_BYTES = 100_000;
+/** Текст працівника в deliver (DELIVER_SCHEMA.worker.text ядра, парність тестом);
+ *  байти його їдуть у тому ж тілі - deliver-текст ріжеться з резервом на нього. */
+export const DELIVER_WORKER_MAX_CHARS = 19_000;
 export const STATUS_MAX_CHARS = 3_900;
 /** Доки часткова відповідь коротша за це, у чернетку її не шлемо: на прийманні
  *  30.08 власник бачив, як «▸ Думаю…» на мить ставало «В», «П» або «Не про» -
@@ -150,7 +153,8 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     let undoId: string | null = null;
     // Результат останнього працівника - у deliver (S-7-1: кнопки «Коротше /
     // Інший тон / .md» будує ядро, бо воно ж тримає текст у базі).
-    let lastWorker: DeliverWorker | null = null;
+    // Обʼєкт, не let: присвоєння йде з колбека, і TS звузив би let до null.
+    const last: { worker: DeliverWorker | null } = { worker: null };
     let lastStatusMs = 0;
     let lastStatusLen = 0;
     let escalateOutcome: RunOutcome | undefined;
@@ -199,37 +203,69 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           String(parsed.data.format ?? ''),
           t0,
         );
-        if (out.worker) lastWorker = out.worker;
+        if (out.worker) last.worker = out.worker;
         return { text: out.text, isError: out.isError };
       }
+      const r = await callCore(def, args, { okName: def.coreName, failName: mcpName, t0 });
+      if (r.proposalId) proposalId = r.proposalId;
+      if (r.undoId) undoId = r.undoId;
+      return { text: r.text, isError: r.isError };
+    };
+
+    /**
+     * Спільний хвіст виклику інструмента ядра (профіль і працівник): крок у
+     * телеметрії, відмова, ескалація policy (mode='proposed' - запис НЕ
+     * виконано, створено пропозицію під ✅; без цієї гілки модель бачила б
+     * "null" і брехала «Записав»), текст результату. Кнопки (proposalId/undoId)
+     * бере лише профільний виклик.
+     */
+    const callCore = async (
+      def: BrainToolDef,
+      args: unknown,
+      names: { okName: string; failName: string; t0: number },
+    ): Promise<ToolExecution & { proposalId?: string; undoId?: string }> => {
       const outcome: ToolCallOutcome = await deps.client.callTool(req.run_id, def.coreName, args);
       if (!outcome.ok) {
-        return fail(`Інструмент ${def.coreName} відмовив: ${outcome.error}.`, outcome.error);
+        pushStep({
+          kind: 'tool',
+          name: names.failName,
+          ms: now() - names.t0,
+          ok: false,
+          note: outcome.error,
+        });
+        return { text: `Інструмент ${def.coreName} відмовив: ${outcome.error}.`, isError: true };
       }
-      // Ескалація policy ядра: mode='proposed' означає, що запис НЕ виконано -
-      // створено пропозицію під ✅ власника. Без цієї гілки модель бачила б
-      // "null" з isError:false і брехала власнику «Записав» (знахідка ревʼю).
       if (outcome.mode === 'proposed') {
-        proposalId = callbackId(outcome.proposal) ?? proposalId;
-        pushStep({ kind: 'tool', name: def.coreName, ms: now() - t0, ok: true, note: 'proposed' });
+        pushStep({
+          kind: 'tool',
+          name: names.okName,
+          ms: now() - names.t0,
+          ok: true,
+          note: 'proposed',
+        });
+        const proposalId = callbackId(outcome.proposal);
         return {
           text: `Запис НЕ виконано: створено пропозицію, що чекає підтвердження власника (✅). Деталі: ${JSON.stringify(outcome.proposal ?? null)}. Скажи власнику, що потрібне підтвердження.`,
           isError: false,
+          ...(proposalId ? { proposalId } : {}),
         };
       }
-      if (outcome.undo) undoId = callbackId(outcome.undo) ?? undoId;
       pushStep({
         kind: 'tool',
-        name: def.coreName,
-        ms: now() - t0,
+        name: names.okName,
+        ms: now() - names.t0,
         ok: true,
         ...(searchNote(def.coreName, args) ? { note: searchNote(def.coreName, args) } : {}),
       });
-      const text =
-        typeof outcome.result === 'string'
-          ? outcome.result
-          : JSON.stringify(outcome.result ?? null);
-      return { text, isError: false };
+      const undoId = callbackId(outcome.undo);
+      return {
+        text:
+          typeof outcome.result === 'string'
+            ? outcome.result
+            : JSON.stringify(outcome.result ?? null),
+        isError: false,
+        ...(undoId ? { undoId } : {}),
+      };
     };
 
     /**
@@ -240,6 +276,30 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
      * результат моделі не видається. Стеля ходів - «не вклався - ось що
      * встиг» із частковим текстом. Усі відмови - текстом моделі + крок.
      */
+    // Інструкції працівників у межах прогону (ревʼю PR-3): другий delegate до
+    // того самого працівника не ходить у ядро й D1 ще раз; відмову теж
+    // памʼятаємо - інакше кожна спроба моделі давала б новий алерт власнику.
+    const instructionCache = new Map<string, { body: string } | { error: string; note: string }>();
+    const workerInstruction = async (worker: string) => {
+      const cached = instructionCache.get(worker);
+      if (cached) return cached;
+      const ins = await deps.client.instruction(req.run_id, worker);
+      let out: { body: string } | { error: string; note: string };
+      if (!ins.ok) out = { error: ins.error, note: `worker-instruction:${ins.error.slice(0, 60)}` };
+      else {
+        try {
+          out = { body: verifyInstruction(ins, `worker:${worker}`, worker) };
+        } catch (e) {
+          out = {
+            error: e instanceof Error ? e.message : String(e),
+            note: 'worker-instruction:hash',
+          };
+        }
+      }
+      instructionCache.set(worker, out);
+      return out;
+    };
+
     const delegate = async (
       worker: string,
       task: string,
@@ -260,23 +320,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       if (!task.trim()) return stepFail('delegate: порожня задача.', 'bad-args');
       // Інструкція - з D1 через ядро (S-7-3: немає рядка = «не налаштований»,
       // алерт шле ядро); хеш перераховується тут, як для персони.
-      const ins = await deps.client.instruction(req.run_id, worker);
-      if (!ins.ok) {
+      const ins = await workerInstruction(worker);
+      if ('error' in ins) {
         return stepFail(
           `Працівник «${worker}» не налаштований (${ins.error}). Зроби задачу сам або скажи власнику прямо.`,
-          `worker-instruction:${ins.error.slice(0, 60)}`,
+          ins.note,
         );
       }
-      let body: string;
-      try {
-        body = verifyInstruction(ins, `worker:${worker}`, worker);
-      } catch (e) {
-        const note = e instanceof Error ? e.message : String(e);
-        return stepFail(
-          `Працівник «${worker}» не налаштований (${note}).`,
-          'worker-instruction:hash',
-        );
-      }
+      const body = ins.body;
       // Інструменти працівника - лише його власні (front-matter) з описаних;
       // стеля - його max_steps, окремо від стелі профілю (07 §5).
       const toolNames = specDef.toolNames.filter((n) => TOOL_BY_MCP_NAME.has(n));
@@ -298,29 +349,12 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
             'worker-cap',
           );
         }
-        const outcome = await deps.client.callTool(req.run_id, wdef.coreName, wargs);
-        if (!outcome.ok)
-          return wfail(`Інструмент ${wdef.coreName} відмовив: ${outcome.error}.`, outcome.error);
-        pushStep({
-          kind: 'tool',
-          name: `${worker}/${wdef.coreName}`,
-          ms: now() - wt0,
-          ok: true,
-          ...(outcome.mode === 'proposed' ? { note: 'proposed' } : {}),
+        const r = await callCore(wdef, wargs, {
+          okName: `${worker}/${wdef.coreName}`,
+          failName: `${worker}/${name}`,
+          t0: wt0,
         });
-        if (outcome.mode === 'proposed') {
-          return {
-            text: 'Запис НЕ виконано: створено пропозицію, що чекає ✅ власника. Скажи про це у відповіді.',
-            isError: false,
-          };
-        }
-        return {
-          text:
-            typeof outcome.result === 'string'
-              ? outcome.result
-              : JSON.stringify(outcome.result ?? null),
-          isError: false,
-        };
+        return { text: r.text, isError: r.isError };
       };
       let text: string;
       let partial = false;
@@ -368,7 +402,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
             'taint-not-persisted',
           );
         }
-        visible = `<external source="worker:${worker}">\n${text}\n</external>`;
+        visible = `<external source="worker:${worker}">\n${neutralizeExternalTags(text)}\n</external>`;
       }
       pushStep({
         kind: 'subagent',
@@ -380,7 +414,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       return {
         text: `${partial ? 'Працівник не вклався у стелю ходів - ось що встиг' : `Результат працівника «${worker}»`}:\n${visible}`,
         isError: false,
-        worker: { name: worker, text },
+        // Під кап DELIVER_SCHEMA.worker.text: довший результат ядро відкинуло б
+        // 400 разом з усією відповіддю (ревʼю PR-3).
+        worker: { name: worker, text: clipHead(text, DELIVER_WORKER_MAX_CHARS) },
       };
     };
 
@@ -586,7 +622,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         });
         return;
       }
-      const delivered = finalText === '' ? '(порожня відповідь моделі)' : clipDeliver(finalText);
+      // Текст працівника їде в тому ж тілі /internal/deliver - deliver-текст
+      // ріжеться з резервом на його байти, інакше 128 KiB ядра рвалися б.
+      const lastWorker = last.worker;
+      const reserve = lastWorker ? Buffer.byteLength(lastWorker.text, 'utf8') + 256 : 0;
+      const delivered =
+        finalText === ''
+          ? '(порожня відповідь моделі)'
+          : clipDeliver(finalText, DELIVER_MAX_BYTES - reserve);
       const buttons = confirmButtons(proposalId, undoId);
       // Додаткові аргументи лише коли є що показати: deliver без кнопок і без
       // працівника лишається тим самим викликом, що й був.
@@ -640,13 +683,13 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
  * (ядровий splitMessage від цього захищений - тут той самий інваріант шаром
  * вище, бо ядро валідує вже обрізаний текст).
  */
-export function clipDeliver(text: string): string {
+export function clipDeliver(text: string, maxBytes: number = DELIVER_MAX_BYTES): string {
   let bytes = 0;
   let i = 0;
   for (const ch of text) {
     const cp = ch.codePointAt(0) as number;
     const b = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
-    if (i + ch.length > DELIVER_MAX_CHARS || bytes + b > DELIVER_MAX_BYTES) {
+    if (i + ch.length > DELIVER_MAX_CHARS || bytes + b > maxBytes) {
       return `${text.slice(0, i)}…`;
     }
     bytes += b;
@@ -673,6 +716,14 @@ export function clipHead(text: string, max: number): string {
   const code = text.charCodeAt(end - 1);
   if (code >= 0xd800 && code <= 0xdbff) end -= 1;
   return `${text.slice(0, end)}…`;
+}
+
+/**
+ * Дзеркало web/core/tools/markup.mjs neutralizeExternalTags: вихід працівника
+ * (Дослідник читав чужі сторінки) не сміє закрити <external> зсередини.
+ */
+export function neutralizeExternalTags(text: string): string {
+  return text.replace(/<(\s*\/?\s*external)/gi, '‹$1');
 }
 
 export function clipStatusTail(text: string): string {

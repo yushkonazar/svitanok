@@ -781,6 +781,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       /** @type {string} */ (wm[1]),
       /** @type {'short' | 'tone' | 'md'} */ (wm[2]),
       nowMs,
+      defer,
     );
   }
   // m:ia:<ideaId> - «Все одно запустити» під кешованим аналізом (S-3-4, етап 4
@@ -946,9 +947,19 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
  * @param {string} id @param {'short' | 'tone' | 'md'} choice @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer - старт прогону довший за
+ *   вікно тосту (як у ideaRerunToast)
  */
-async function workerResultToast(env, parsed, id, choice, nowMs) {
-  const result = await loadWorkerResult(env, id).catch(() => null);
+async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
+  /** @type {Awaited<ReturnType<typeof loadWorkerResult>>} */
+  let result;
+  try {
+    result = await loadWorkerResult(env, id);
+  } catch (/** @type {any} */ e) {
+    // Збій бази - не «протухло» (ревʼю PR-3): власник має бачити різницю.
+    console.error('prerouter: результат працівника не прочитано', e?.message);
+    return 'База недоступна - спробуй пізніше.';
+  }
   if (!result) return 'Результат уже не в базі.';
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   /** @type {ThreadTarget} */
@@ -958,7 +969,17 @@ async function workerResultToast(env, parsed, id, choice, nowMs) {
     await sendWorkerDocument(env, /** @type {any} */ (target), result, nowMs);
     return 'Файл у треді';
   }
-  await startOrQueueThreadText(env, target, threadKey, WORKER_FOLLOWUPS[choice], 'chat', nowMs);
+  const work = () =>
+    startOrQueueThreadText(env, target, threadKey, WORKER_FOLLOWUPS[choice], 'chat', nowMs).then(
+      () => undefined,
+    );
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: підказка за кнопкою працівника впала', e?.message),
+      ),
+    );
+  } else await work();
   return choice === 'short' ? 'Скорочую' : 'Міняю тон';
 }
 
