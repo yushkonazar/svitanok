@@ -1,11 +1,16 @@
 // Працівники (07 §5): працівник - окремий прогін SDK зі СВОЇМ системним
 // промптом, моделлю і стелею ходів. Розмови власника він не бачить: на вхід
-// іде лише задача й формат, назад - текст. Тут опис працівника (дзеркало
-// front-matter agents/<name>.md) і його запуск.
+// іде лише задача й формат, назад - текст. Тут реєстр працівників (дзеркало
+// front-matter docs/assistant/agents/<name>.md - парність тримає тест
+// brain-workers, тож правка файлу без правки реєстру червонить CI) і запуск.
 //
-// Етап 2 підключає одного - quick, він же профіль швидкої смуги: інструкція
-// приїжджає в тілі /run, тож шлях працівника щодня перевіряється в проді ще
-// до того, як на етапі 4 ним поїдуть решта десять.
+// Тіло інструкції (промпт) у реєстрі НЕ живе: воно приїжджає з D1 ядра через
+// /internal/instruction у момент delegate і звіряється хешем (ADR-016), як
+// персона в /run. Front-matter (модель, інструменти, стеля, taint) - тут, бо
+// в D1 його немає, а мозку він потрібен ДО прогону.
+//
+// Етап 2 підключив одного - quick (він же профіль швидкої смуги); етап 4 -
+// решту девʼятьох через delegate (тим самим runWorker).
 
 import type { EngineOutcome, EngineRunOptions, RunEngine } from './agent.js';
 
@@ -25,40 +30,101 @@ export type WorkerEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const WORKER_EFFORTS: readonly WorkerEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+/** Вбудовані інструменти SDK, які працівник може мати замість наших (01 §2.2:
+ *  WebSearch/WebFetch - лише в Дослідника). */
+export const BUILTIN_WORKER_TOOLS = ['WebSearch', 'WebFetch'] as const;
+export type BuiltinWorkerTool = (typeof BUILTIN_WORKER_TOOLS)[number];
+
 /** Дзеркало front-matter працівника (07 §5: front-matter → AgentDefinition). */
 export interface WorkerDef {
   name: string;
   /** Тіло agents/<name>.md - системний промпт працівника. */
   prompt: string;
   model: WorkerModel;
-  /** `max_steps` - стеля ходів SDK. */
+  /** `max_steps` - стеля ходів SDK і викликів інструментів працівника. */
   maxSteps: number;
-  /** `tools` у mcp-іменах; порожньо - працівник без інструментів. */
+  /** `tools` у mcp-іменах; порожньо - працівник без наших інструментів. */
   toolNames: string[];
+  /** `tools`, що є вбудованими інструментами SDK (WebSearch, WebFetch). */
+  builtinTools: BuiltinWorkerTool[];
   /** `effort` - рівень зусиль; не задано = дефолт SDK. */
   effort?: WorkerEffort;
-  /** `tainted_output` - вихід працівника є зовнішнім вмістом. Поки лише
-   *  описове поле: успадкування taint приїде разом із рештою працівників, а
-   *  єдиний підключений (quick) має false, тож розбіжності немає. */
+  /** `tainted_output` - вихід працівника є зовнішнім вмістом: мозок маркує
+   *  його <external> і просить ядро поставити taint треду (01 §4.2). */
   taintedOutput: boolean;
 }
 
+/** Опис без промпту - те, що є в реєстрі до приїзду інструкції з D1. */
+export type WorkerSpec = Omit<WorkerDef, 'prompt'>;
+
+/** `tools` з front-matter → mcp-імена наших інструментів + вбудовані окремо. */
+function spec(
+  name: string,
+  model: WorkerModel,
+  tools: readonly string[],
+  maxSteps: number,
+  taintedOutput: boolean,
+  effort?: WorkerEffort,
+): WorkerSpec {
+  const builtinTools = tools.filter((t): t is BuiltinWorkerTool =>
+    (BUILTIN_WORKER_TOOLS as readonly string[]).includes(t),
+  );
+  const toolNames = tools
+    .filter((t) => !(BUILTIN_WORKER_TOOLS as readonly string[]).includes(t))
+    .map((t) => t.replaceAll('.', '_'));
+  return {
+    name,
+    model,
+    maxSteps,
+    toolNames,
+    builtinTools,
+    taintedOutput,
+    ...(effort ? { effort } : {}),
+  };
+}
+
 /**
- * quick (agents/quick.md) - єдиний підключений працівник етапу 2. Значення -
- * дзеркало front-matter файлу; парність тримає тест brain-workers, тож
- * правка файлу без правки цього обʼєкта червонить CI, а не тихо змінює
- * поведінку швидкої смуги.
+ * Реєстр: значення - дзеркало front-matter файлів docs/assistant/agents/*.md
+ * (крім code-reviewer - він живе в GitHub Actions, не в мозку). Інструменти,
+ * ще не описані в ядрі (finance.query, routes.eta, places.*), лишаються тут
+ * як у файлі - у прогін ідуть лише описані (фільтр у availableTools), а
+ * інструкція каже працівникові писати про недоступне чесно.
  */
-export const QUICK_WORKER: Omit<WorkerDef, 'prompt'> = {
-  name: 'quick',
-  model: 'haiku',
-  maxSteps: 1,
-  toolNames: [],
+export const WORKERS: Readonly<Record<string, WorkerSpec>> = {
+  analyst: spec('analyst', 'sonnet', ['data.read', 'finance.query'], 8, false),
+  copywriter: spec('copywriter', 'sonnet', [], 4, false),
+  'day-planner': spec(
+    'day-planner',
+    'sonnet',
+    ['calendar.read', 'data.read', 'facts.get', 'routes.eta'],
+    6,
+    false,
+  ),
+  editor: spec('editor', 'haiku', [], 3, false),
+  finance: spec('finance', 'sonnet', ['finance.query'], 6, false),
+  'mail-secretary': spec('mail-secretary', 'sonnet', ['mail.search', 'mail.read'], 20, true),
+  planner: spec(
+    'planner',
+    'sonnet',
+    ['routes.eta', 'places.search', 'places.details', 'calendar.read'],
+    10,
+    true,
+  ),
   // Один хід, 1-3 рядки, без інструментів - думати тут майже нема над чим, а
   // дефолтний 'high' коштував 8 с на «17 % від 14 672» (замір 29.08).
-  effort: 'low',
-  taintedOutput: false,
+  quick: spec('quick', 'haiku', [], 1, false, 'low'),
+  researcher: spec('researcher', 'sonnet', ['WebSearch', 'WebFetch'], 30, true),
+  tutor: spec('tutor', 'haiku', ['data.read'], 6, false),
 };
+
+/** quick - профіль швидкої смуги; його опис читає profiles.ts. */
+export const QUICK_WORKER: WorkerSpec = WORKERS.quick as WorkerSpec;
+
+/** Кого можна кликати через delegate: усі, крім quick (він - профіль, не
+ *  субагент) - той самий перелік, що в описі інструмента delegate. */
+export const DELEGATE_WORKERS: readonly string[] = Object.keys(WORKERS).filter(
+  (n) => n !== 'quick',
+);
 
 export interface WorkerRunContext {
   abortSignal: AbortSignal;
@@ -86,6 +152,7 @@ export function runWorker(
       model: WORKER_MODEL_IDS[def.model],
       maxTurns: def.maxSteps,
       toolNames: def.toolNames,
+      ...(def.builtinTools.length ? { builtinTools: [...def.builtinTools] } : {}),
       ...(def.effort ? { effort: def.effort } : {}),
       resumeSessionId: null,
       streamPartials: ctx.streamPartials,
@@ -95,4 +162,9 @@ export function runWorker(
     },
     task,
   );
+}
+
+/** Вхід працівника (07 §4 delegate): лише задача і формат, без розмови. */
+export function workerInput(task: string, format: string): string {
+  return `Задача:\n${task.trim()}\n\nФормат: ${format.trim() || 'chat'}`;
 }

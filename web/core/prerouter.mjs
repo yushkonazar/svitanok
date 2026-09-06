@@ -41,6 +41,7 @@ import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs
 import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
+import { loadWorkerResult, sendWorkerDocument, WORKER_FOLLOWUPS } from './brain/worker-results.mjs';
 import { findAwaitingDayPlan, sendDayPlanEvent } from './day-plan/chain.mjs';
 
 export const THREAD_DM = 'dm';
@@ -770,6 +771,18 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
+  // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
+  const wm = data.match(/^m:w:([A-Za-z0-9-]{1,40}):(short|tone|md)$/);
+  if (wm) {
+    return workerResultToast(
+      env,
+      parsed,
+      /** @type {string} */ (wm[1]),
+      /** @type {'short' | 'tone' | 'md'} */ (wm[2]),
+      nowMs,
+    );
+  }
   // m:ia:<ideaId> - «Все одно запустити» під кешованим аналізом (S-3-4, етап 4
   // PR-2): повторний прогін по коду попри кеш; T0 через policy, як і з чату.
   const ia = data.match(/^m:ia:([A-Za-z0-9-]{1,40})$/);
@@ -924,6 +937,29 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
     );
   } else await work();
   return 'Запускаю аналіз заново';
+}
+
+/**
+ * Кнопки під результатом працівника (S-7-1): «Коротше»/«Інший тон» - підказка
+ * в тред як текст власника (chat-сесія памʼятає задачу й результат), «.md» -
+ * файл із бази. Клавіатуру не знімаємо: кнопки можна тиснути кілька разів.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} id @param {'short' | 'tone' | 'md'} choice @param {number} nowMs
+ */
+async function workerResultToast(env, parsed, id, choice, nowMs) {
+  const result = await loadWorkerResult(env, id).catch(() => null);
+  if (!result) return 'Результат уже не в базі.';
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  if (choice === 'md') {
+    await sendWorkerDocument(env, /** @type {any} */ (target), result, nowMs);
+    return 'Файл у треді';
+  }
+  await startOrQueueThreadText(env, target, threadKey, WORKER_FOLLOWUPS[choice], 'chat', nowMs);
+  return choice === 'short' ? 'Скорочую' : 'Міняю тон';
 }
 
 /** Текст у тред після старту заново. @param {Record<string, unknown>} r */

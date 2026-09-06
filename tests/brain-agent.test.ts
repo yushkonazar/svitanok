@@ -17,7 +17,7 @@ import {
   type EngineRunOptions,
   type ToolExecution,
 } from '../brain/src/agent.js';
-import type { ToolCallOutcome } from '../brain/src/core-client.js';
+import type { InstructionOutcome, ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
 import { instructionHash } from '../brain/src/instructions.js';
@@ -36,6 +36,8 @@ interface ClientMock {
     ) => Promise<void>
   >;
   session: Mock<(runId: string, body: Record<string, unknown>) => Promise<boolean>>;
+  instruction: Mock<(runId: string, name: string) => Promise<InstructionOutcome>>;
+  taint: Mock<(runId: string, source: string) => Promise<boolean>>;
 }
 
 function makeClient(over: Partial<ClientMock> = {}): ClientMock {
@@ -50,6 +52,12 @@ function makeClient(over: Partial<ClientMock> = {}): ClientMock {
     status: vi.fn(async () => undefined),
     reportRuns: vi.fn(async () => undefined),
     session: vi.fn(async () => true),
+    instruction: vi.fn(async () => ({
+      ok: false as const,
+      status: 404,
+      error: 'instruction-missing',
+    })),
+    taint: vi.fn(async () => true),
     ...over,
   };
 }

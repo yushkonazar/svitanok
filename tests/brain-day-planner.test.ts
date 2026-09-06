@@ -40,6 +40,12 @@ function client() {
     status: vi.fn(async () => undefined),
     reportRuns: vi.fn(async (_runId: string, _steps: object[], _outcome?: RunOutcome) => undefined),
     session: vi.fn(async () => true),
+    instruction: vi.fn(async () => ({
+      ok: false as const,
+      status: 404,
+      error: 'instruction-missing',
+    })),
+    taint: vi.fn(async () => true),
   };
 }
 

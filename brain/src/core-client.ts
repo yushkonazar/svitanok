@@ -3,7 +3,8 @@
 // Політика помилок за місцем виклику: callTool повертає {ok:false} (модель
 // має побачити відмову інструмента), deliver кидає (втрата відповіді - збій
 // прогону), status і reportRuns - best-effort (утрата статусного рядка чи
-// телеметрії не має валити прогін; /internal/runs до дротування - 501).
+// телеметрії не має валити прогін); instruction/taint (етап 4, delegate) -
+// повертають результат, а рішення «чи видавати працівника» лишають agent.ts.
 // У логи йдуть лише шлях і статус - ні заголовків, ні тіл.
 
 import { buildSignedHeaders } from './sign.js';
@@ -16,6 +17,10 @@ export type RunOutcome = {
   escalate?: { text: string; status_message_id?: number };
   chain?: { id: string; event: string; payload: Record<string, unknown> };
 };
+
+/** Результат працівника до deliver (етап 4, S-7-1): ядро кладе його в базу і
+ *  додає кнопки «Коротше / Інший тон / .md» під відповіддю. */
+export type DeliverWorker = { name: string; text: string };
 
 export interface CoreClientConfig {
   /** База internal API без хвостового слеша (config.internalApiUrl). */
@@ -39,6 +44,12 @@ export type ToolCallOutcome =
       proposal?: unknown;
       undo?: unknown;
     }
+  | { ok: false; status: number; error: string };
+
+/** Інструкція працівника з D1 ядра (/internal/instruction): тіло + хеш, який
+ *  мозок перераховує сам (instructions.ts), як і для персони. */
+export type InstructionOutcome =
+  | { ok: true; name: string; version_hash: string; body_md: string }
   | { ok: false; status: number; error: string };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -80,9 +91,19 @@ export class CoreClient {
     return { ok: false, status: res.status, error: errorText(res.body) };
   }
 
-  /** Фінальна відповідь прогону. Невдача - виняток: без deliver прогін німий. */
-  async deliver(runId: string, text: string, buttons?: DeliverButtons): Promise<void> {
-    const body = buttons?.length ? { text, buttons } : { text };
+  /** Фінальна відповідь прогону. Невдача - виняток: без deliver прогін німий.
+   *  `worker` - результат останнього працівника (S-7-1), лише коли він був. */
+  async deliver(
+    runId: string,
+    text: string,
+    buttons?: DeliverButtons,
+    worker?: DeliverWorker,
+  ): Promise<void> {
+    const body = {
+      text,
+      ...(buttons?.length ? { buttons } : {}),
+      ...(worker ? { worker } : {}),
+    };
     const res = await this.post('/internal/deliver', runId, body);
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`deliver: ${res.status} ${errorText(res.body)}`);
@@ -123,6 +144,51 @@ export class CoreClient {
       return false;
     } catch (err) {
       console.warn(`core-client: /internal/session недоступний: ${String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Інструкція працівника з D1 (етап 4, delegate). {ok:false} - працівник не
+   * налаштований або ядро недоступне: agent.ts перетворює це на чесну відмову
+   * моделі (S-7-3), алерт власнику шле ядро.
+   */
+  async instruction(runId: string, name: string): Promise<InstructionOutcome> {
+    let res: { status: number; body: unknown };
+    try {
+      res = await this.post('/internal/instruction', runId, { name });
+    } catch (err) {
+      console.warn(`core-client: /internal/instruction транспорт: ${String(err).slice(0, 120)}`);
+      return { ok: false, status: 0, error: `network: ${String(err).slice(0, 120)}` };
+    }
+    const b = res.body;
+    if (
+      res.status >= 200 &&
+      res.status < 300 &&
+      isRecord(b) &&
+      typeof b.name === 'string' &&
+      typeof b.version_hash === 'string' &&
+      typeof b.body_md === 'string'
+    ) {
+      return { ok: true, name: b.name, version_hash: b.version_hash, body_md: b.body_md };
+    }
+    return { ok: false, status: res.status, error: errorText(b) };
+  }
+
+  /**
+   * Позначити тред прогону tainted (01 §4.2: результат працівника з
+   * tainted_output - зовнішній вміст). true = ядро ПЕРСИСТУВАЛО прапорець;
+   * false - викликач НЕ видає результат моделі (fail-closed, як ядро для
+   * tainting-інструментів).
+   */
+  async taint(runId: string, source: string): Promise<boolean> {
+    try {
+      const res = await this.post('/internal/taint', runId, { source });
+      if (res.status >= 200 && res.status < 300) return true;
+      console.warn(`core-client: /internal/taint ${res.status} ${errorText(res.body)}`);
+      return false;
+    } catch (err) {
+      console.warn(`core-client: /internal/taint недоступний: ${String(err)}`);
       return false;
     }
   }

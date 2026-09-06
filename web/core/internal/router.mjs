@@ -15,13 +15,21 @@ import {
   registryFinish,
 } from '../run-registry/client.mjs';
 import { TOOLS } from '../tools/index.mjs';
-import { enqueueOutbox, drainOutbox, dropPendingEdits } from '../tg/outbox.mjs';
+import { enqueueOutbox, drainOutbox, dropPendingEdits, sendSystemAlert } from '../tg/outbox.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { isTaintActive } from '../policy/core.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
 import { sendDayPlanEvent } from '../day-plan/chain.mjs';
 import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
+import { loadInstruction } from '../instructions.mjs';
+import {
+  WORKER_CHAT_MAX,
+  saveWorkerResult,
+  sendWorkerDocument,
+  uploadWorkerResult,
+  workerButtons,
+} from '../brain/worker-results.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
@@ -30,6 +38,8 @@ import {
   RUNS_SCHEMA,
   SESSION_SCHEMA,
   ARTIFACT_SCHEMA,
+  INSTRUCTION_SCHEMA,
+  TAINT_SCHEMA,
   validateAgainst,
 } from './schemas.mjs';
 
@@ -44,6 +54,8 @@ const ROUTE_SCHEMAS = {
   runs: RUNS_SCHEMA,
   session: SESSION_SCHEMA,
   artifact: ARTIFACT_SCHEMA,
+  instruction: INSTRUCTION_SCHEMA,
+  taint: TAINT_SCHEMA,
 };
 
 /**
@@ -215,7 +227,9 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
   }
 
-  const route = path.match(/^\/internal\/(deliver|status|runs|session|artifact)$/)?.[1];
+  const route = path.match(
+    /^\/internal\/(deliver|status|runs|session|artifact|instruction|taint)$/,
+  )?.[1];
   if (route) {
     const schema = ROUTE_SCHEMAS[route];
     // Регекс розширили, а схему забули — гучний 500, не мовчазний пропуск
@@ -229,6 +243,8 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       return handleStatus(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
     if (route === 'session') return handleSession(env, /** @type {any} */ (body), nowMs);
     if (route === 'artifact') return handleArtifact(env, auth.runId, /** @type {any} */ (body));
+    if (route === 'instruction') return handleInstruction(env, /** @type {any} */ (body), nowMs);
+    if (route === 'taint') return handleTaint(env, auth.runId, /** @type {any} */ (body), nowMs);
     return handleRuns(env, ctx, auth.runId, /** @type {any} */ (body), nowMs);
   }
 
@@ -244,7 +260,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
  * @param {Env} env
  * @param {ExecutionContext | undefined} ctx
  * @param {string} runId
- * @param {{ text: string, buttons?: { text: string, callback_data: string }[][] }} body
+ * @param {{ text: string, buttons?: { text: string, callback_data: string }[][], worker?: { name: string, text: string } }} body
  * @param {number} nowMs
  */
 async function handleDeliver(env, ctx, runId, body, nowMs) {
@@ -281,6 +297,19 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // шматок («2 494,24 (14 672») плюс повну відповідь окремо. Розбиття довгої
   // відповіді й порядок частин лишаються в enqueueOutbox.
   const draftId = info?.statusMessageId ?? null;
+  // Результат працівника (S-7-1): рядок у reports ДО відправки, бо кнопки
+  // несуть його id; довгий - файлом одразу (кнопки .md тоді немає) + Drive.
+  /** @type {{ id: string, name: string, text: string } | null} */
+  let saved = null;
+  if (body.worker) {
+    try {
+      saved = await saveWorkerResult(env, body.worker, nowMs);
+    } catch (/** @type {any} */ e) {
+      return json({ ok: false, error: `contract: ${String(e?.message ?? '')}` }, 400);
+    }
+  }
+  const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
+  const buttons = [...(body.buttons ?? []), ...(saved ? workerButtons(saved.id, !longWorker) : [])];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
   // спершу покаже обірваний шматок і лише потім фінал.
   if (draftId != null) await dropPendingEdits(env, target.chatId, draftId);
@@ -294,11 +323,22 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       payload: {
         text: body.text,
         parse_mode: 'HTML',
-        ...(body.buttons ? { reply_markup: { inline_keyboard: body.buttons } } : {}),
+        ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
       },
     },
     nowMs,
   );
+  if (saved && longWorker) {
+    await sendWorkerDocument(
+      env,
+      { chatId: target.chatId, threadId: target.threadId },
+      saved,
+      nowMs,
+    );
+    const drive = uploadWorkerResult(env, saved, nowMs);
+    if (ctx?.waitUntil) ctx.waitUntil(drive);
+    else await drive;
+  }
   await scheduleDrain(env, ctx, nowMs);
   // Звіт профілю weekly-review (S-9-1): текст у reports разом із хешем
   // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
@@ -316,7 +356,47 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
     queued,
     ...(draftId != null ? { edited: draftId } : {}),
     ...(reportId ? { report_id: reportId } : {}),
+    ...(saved ? { worker_result_id: saved.id } : {}),
   });
+}
+
+/**
+ * Інструкція працівника для delegate (етап 4, S-7-3): лише kind=agent (персону
+ * цим шляхом не віддаємо - вона їде в /run). Немає рядка або хеш розійшовся -
+ * 404 + алерт власнику «не налаштований»: мозок скаже це моделі, а власник
+ * побачить у системному чаті, чому.
+ * @param {Env} env @param {{ name: string }} body @param {number} nowMs
+ */
+async function handleInstruction(env, body, nowMs) {
+  if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
+  /** @type {Awaited<ReturnType<typeof loadInstruction>>} */
+  let ins;
+  try {
+    ins = await loadInstruction(env, body.name);
+  } catch (/** @type {any} */ e) {
+    console.error(`internal: інструкція працівника «${body.name}» недоступна`, e?.message);
+    await sendSystemAlert(
+      env,
+      `Працівник «${body.name}» не налаштований: ${String(e?.message ?? '')}`,
+      nowMs,
+    );
+    return json({ ok: false, error: 'instruction-missing', reason: String(e?.message ?? '') }, 404);
+  }
+  if (ins.kind !== 'agent') return json({ ok: false, error: 'not-a-worker', kind: ins.kind }, 400);
+  return json({ ok: true, name: ins.name, version_hash: ins.hash, body_md: ins.body });
+}
+
+/**
+ * Taint від мозку (01 §4.2): вихід працівника з tainted_output - зовнішній
+ * вміст, і тред позначається так само, як після mail.*: FAIL-CLOSED - без
+ * персистованого прапорця мозок результат не видає.
+ * @param {Env} env @param {string} runId @param {{ source: string }} body @param {number} nowMs
+ */
+async function handleTaint(env, runId, body, nowMs) {
+  if (!(await markRunThreadTainted(env, runId, nowMs))) {
+    return json({ ok: false, error: 'taint-not-persisted', source: body.source }, 503);
+  }
+  return json({ ok: true, source: body.source, tainted: true });
 }
 
 /**

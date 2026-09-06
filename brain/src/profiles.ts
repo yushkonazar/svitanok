@@ -167,3 +167,12 @@ export function buildSystemPrompt(
     : '';
   return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.${summaryBlock}`;
 }
+
+/**
+ * Системний промпт працівника (delegate, етап 4): тіло інструкції з D1 +
+ * дата й час у Києві - працівники датують джерела й рахують періоди, а
+ * розмови власника не бачать (01 §4.2: лише task + формат).
+ */
+export function buildWorkerPrompt(instruction: string, nowMs: number): string {
+  return `${instruction}\n\nЗараз у Києві: ${KYIV_FMT.format(new Date(nowMs))}.`;
+}

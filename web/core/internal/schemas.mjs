@@ -45,7 +45,33 @@ export const DELIVER_SCHEMA = /** @type {InternalSchema} */ ({
         },
       },
     },
+    // Результат останнього працівника (етап 4, S-7-1): ядро кладе в reports
+    // і додає кнопки «Коротше / Інший тон / .md»; понад 3 500 - файл + Drive.
+    worker: {
+      type: 'object',
+      required: ['name', 'text'],
+      properties: {
+        name: { type: 'string', maxLength: 32 },
+        text: { type: 'string', maxLength: 20_000 },
+      },
+    },
   },
+});
+
+/** POST /internal/instruction - інструкція працівника з D1 для delegate
+ *  (етап 4): мозок не має D1, тіло їде з хешем, як персона в /run. */
+export const INSTRUCTION_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['name'],
+  properties: { name: { type: 'string', minLength: 1, maxLength: 64 } },
+});
+
+/** POST /internal/taint - позначити тред прогону tainted (01 §4.2: вихід
+ *  працівника з tainted_output - зовнішній вміст; source - хто саме). */
+export const TAINT_SCHEMA = /** @type {InternalSchema} */ ({
+  type: 'object',
+  required: ['source'],
+  properties: { source: { type: 'string', minLength: 1, maxLength: 64 } },
 });
 
 /** POST /internal/status — оновлення статус-повідомлення (ядро троттлить,
