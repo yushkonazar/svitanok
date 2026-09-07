@@ -22,6 +22,7 @@ import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
+import { formatMoney, cleanSource } from '../format.mjs';
 import { patchChainState, readChainState, waitOrNull } from './state.mjs';
 import { sendChainEvent } from './registry.mjs';
 import { chainTarget } from './table.mjs';
@@ -82,25 +83,6 @@ function db(env) {
 
 // ── Гроші й звіт Дослідника ────────────────────────────────────────────────
 
-const CURRENCY_LABEL = /** @type {Record<string, string>} */ ({
-  UAH: 'грн',
-  USD: '$',
-  EUR: '€',
-  PLN: 'zł',
-});
-
-/** 329950 UAH → «3 299,50 грн»; 329900 → «3 299 грн». @param {number} minor @param {string} currency */
-export function formatMoney(minor, currency) {
-  const abs = Math.abs(Math.round(minor));
-  const whole = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const cents = abs % 100;
-  const num = `${minor < 0 ? '−' : ''}${whole}${cents ? `,${String(cents).padStart(2, '0')}` : ''}`;
-  // Object.hasOwn: валюта приходить із чужих API, і «constructor» витягнув
-  // би функцію з прототипу прямо в текст власнику.
-  const label = Object.hasOwn(CURRENCY_LABEL, currency) ? CURRENCY_LABEL[currency] : currency;
-  return `${num} ${label}`;
-}
-
 const CURRENCY_TOKENS = /** @type {[RegExp, string][]} */ ([
   [/грн|uah|₴/i, 'UAH'],
   [/\$|usd/i, 'USD'],
@@ -150,17 +132,6 @@ function hostOf(url) {
 /** Хост належить дозволеному домену (сам домен або піддомен). @param {string} host @param {string[]} allowed */
 export function hostAllowed(host, allowed) {
   return allowed.some((d) => host === d || host.endsWith(`.${d}`));
-}
-
-/** Назва магазину без розмітки й посилань: [текст](url) → текст, голі URL геть. @param {string} s */
-export function cleanSource(s, max = 40) {
-  return s
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/https?:\/\/\S+/gi, '')
-    .replace(/[^\p{L}\p{N} .'&-]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
 }
 
 /**

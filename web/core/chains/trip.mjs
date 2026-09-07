@@ -19,7 +19,8 @@ import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { patchChainState, readChainState, waitOrNull } from './state.mjs';
 import { chainTarget } from './table.mjs';
-import { formatMoney, parseAmount, parsePrice } from './price.mjs';
+import { parseAmount, parsePrice } from './price.mjs';
+import { formatMoney } from '../format.mjs';
 import {
   loadChecklist,
   blocksDueNow,

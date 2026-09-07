@@ -7,13 +7,8 @@
 // status done/cancelled або delete - зупинка ланцюга. Ігри (Steam/ITAD) -
 // PR-5 (steam-check + import).
 
-import {
-  startPriceTrack,
-  cancelPriceTrack,
-  formatMoney,
-  parseAmount,
-  trackingText,
-} from '../chains/price.mjs';
+import { startPriceTrack, cancelPriceTrack, parseAmount, trackingText } from '../chains/price.mjs';
+import { formatMoney } from '../format.mjs';
 import { resolveGameWish } from '../steam/check.mjs';
 
 export const WISH_TYPES = ['game', 'trip', 'purchase'];

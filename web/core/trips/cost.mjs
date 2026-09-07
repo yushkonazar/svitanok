@@ -6,7 +6,7 @@
 // Browser Rendering - окремий спайк).
 
 import { runFactsGet } from '../tools/facts.mjs';
-import { formatMoney } from '../chains/price.mjs';
+import { formatMoney } from '../format.mjs';
 
 /** @typedef {{ key: string, name: string, per100: number | null, fuel: string | null }} Vehicle */
 
