@@ -9,13 +9,8 @@
 
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
-import { CHAIN_KIND, NUDGE_SECOND_MS, NUDGES_MAX, chainTarget } from './table.mjs';
-
-/** @param {Env} env */
-function db(env) {
-  if (!env.DB) throw new Error('привʼязки DB немає');
-  return env.DB;
-}
+import { chainTarget, db } from './state.mjs';
+import { CHAIN_KIND, NUDGE_SECOND_MS, NUDGES_MAX } from './table.mjs';
 
 /** @typedef {{ id: string, venue: string, n: number, awaiting: string | null, chat_id: string | null, thread_id: string | null }} DueNudge */
 

@@ -17,7 +17,6 @@ import {
   resolveCandidates,
   phoneOf,
   streetOf,
-  chainTarget,
   productionIo,
   CHAIN_KIND,
   WAIT_VENUE_MS,
@@ -25,6 +24,7 @@ import {
   NUDGE_FIRST_MS,
   LEAVE_BUFFER_MIN,
 } from '../web/core/chains/table.mjs';
+import { chainTarget } from '../web/core/chains/state.mjs';
 import { readChainState, patchChainState } from '../web/core/chains/state.mjs';
 import { applyPolicy, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';

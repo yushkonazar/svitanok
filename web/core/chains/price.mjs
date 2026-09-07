@@ -18,14 +18,20 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
-import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
+import { sendSystemAlert } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
 import { formatMoney, cleanSource } from '../format.mjs';
-import { patchChainState, readChainState, waitOrNull } from './state.mjs';
+import {
+  chainTarget,
+  db,
+  patchChainState,
+  postChainMessage,
+  readChainState,
+  waitOrNull,
+} from './state.mjs';
 import { sendChainEvent } from './registry.mjs';
-import { chainTarget } from './table.mjs';
 
 export const CHAIN_KIND = 'price';
 export const PRICE_CHECK_PROFILE = 'price-check';
@@ -74,12 +80,6 @@ export const DEFAULT_SHOPS = [
  *   chat_id: number | string | null, thread_id: string | null, awaiting: string | null, misses?: number }} PriceState
  * @typedef {{ chainId: string, state?: PriceState }} PriceParams
  */
-
-/** @param {Env} env */
-function db(env) {
-  if (!env.DB) throw new Error('привʼязки DB немає - ланцюг недоступний');
-  return env.DB;
-}
 
 // ── Гроші й звіт Дослідника ────────────────────────────────────────────────
 
@@ -564,22 +564,18 @@ export function productionIo(env, chainId, state) {
     now: () => Date.now(),
     wish: () => readWishSnapshot(env, state.wish_id),
     startCheck: (task) => startPriceCheckRun(env, { chainId, task }, Date.now()),
-    send: async (text, btns) => {
-      await enqueueOutbox(
+    send: (text, btns) =>
+      postChainMessage(
         env,
+        { chatId, threadId },
         {
-          chatId,
-          threadId,
           kind: 'send',
+          payload: {},
+          buttons: btns,
           parts: renderMdParts(text),
-          payload: btns ? { reply_markup: { inline_keyboard: btns } } : {},
+          label: `price-track ${chainId}`,
         },
-        Date.now(),
-      );
-      await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
-        console.error(`price-track ${chainId}: драйн outbox впав, доставить sweeper`, e?.message);
-      });
-    },
+      ),
     alert: async (text) => void (await sendSystemAlert(env, text, Date.now())),
   };
 }

@@ -15,10 +15,16 @@ import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { kyivDateKey, kyivClock } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivMs } from '../day-plan/store.mjs';
-import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { patchChainState, readChainState, waitOrNull } from './state.mjs';
-import { chainTarget } from './table.mjs';
+import {
+  Cancelled,
+  chainTarget,
+  db,
+  patchChainState,
+  postChainMessage,
+  readChainState,
+  waitOrNull,
+} from './state.mjs';
 import { parseAmount, parsePrice } from './price.mjs';
 import { formatMoney } from '../format.mjs';
 import {
@@ -74,12 +80,6 @@ const EVENTS_PER_WINDOW = 12;
  *   thread_id: string | null, awaiting: string | null }} TripState
  * @typedef {{ chainId: string, state?: TripState }} TripParams
  */
-
-/** @param {Env} env */
-function db(env) {
-  if (!env.DB) throw new Error('привʼязки DB немає - ланцюг недоступний');
-  return env.DB;
-}
 
 /** «12.09». @param {string} date */
 function ddmm(date) {
@@ -414,7 +414,6 @@ export async function loadTripState(env, chainId) {
 
 // ── Машина станів ──────────────────────────────────────────────────────────
 
-class Cancelled extends Error {}
 class Rescheduled extends Error {}
 
 /**
@@ -724,22 +723,18 @@ export function weatherNote(reason, dateFrom) {
  */
 export function productionIo(env, chainId, state) {
   const { chatId, threadId } = chainTarget(env, state);
-  const send = async (/** @type {string} */ text, /** @type {unknown} */ btns = undefined) => {
-    await enqueueOutbox(
+  const send = (/** @type {string} */ text, /** @type {unknown} */ btns = undefined) =>
+    postChainMessage(
       env,
+      { chatId, threadId },
       {
-        chatId,
-        threadId,
         kind: 'send',
+        payload: {},
+        buttons: btns,
         parts: renderMdParts(text),
-        payload: btns ? { reply_markup: { inline_keyboard: btns } } : {},
+        label: `trip-chain ${chainId}`,
       },
-      Date.now(),
     );
-    await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
-      console.error(`trip-chain ${chainId}: драйн outbox впав, доставить sweeper`, e?.message);
-    });
-  };
   return {
     now: () => Date.now(),
     send,
