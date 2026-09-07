@@ -79,6 +79,12 @@
     // Аналіз ідеї по коду (етап 4 PR-2): dispatch Actions → wait(artifact 42 хв)
     // → ideas.analysis_md + документ у тред.
     { "name": "svitanok-idea-analysis", "binding": "IDEA_ANALYSIS", "class_name": "IdeaAnalysis" },
+    // Столик (етап 5 PR-2): від нагадування до «Як було?», події з кнопок c:.
+    { "name": "svitanok-table-chain", "binding": "TABLE_CHAIN", "class_name": "TableChain" },
+    // Відстеження ціни (етап 5 PR-3): щодня профіль price-check → price_points.
+    { "name": "svitanok-price-track", "binding": "PRICE_TRACK", "class_name": "PriceTrack" },
+    // Поїздка (етап 5 PR-4): чекліст T-30/T-7/T-1, «пора виходити», підсумок.
+    { "name": "svitanok-trip-chain", "binding": "TRIP_CHAIN", "class_name": "TripChain" },
   ],
   // ОДИН крон (A2): нагадування (Блок P2a) + dispatch брифінгу у вікні 08:00–11:00
   // Київ + dead-man від 12:00 — кожна задача гейтиться за kyivHour() у момент

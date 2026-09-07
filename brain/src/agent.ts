@@ -527,6 +527,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
                 model: profile.model,
                 maxTurns: profile.maxTurns,
                 toolNames: profile.toolNames,
+                ...(profile.builtinTools?.length
+                  ? { builtinTools: [...profile.builtinTools] }
+                  : {}),
                 ...(profile.effort ? { effort: profile.effort } : {}),
                 resumeSessionId:
                   profile.name === 'chat' ? (req.session?.sdk_session_id ?? null) : null,
@@ -570,12 +573,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // mode - з JSON задачі у вході; json-режим - розібраний обʼєкт, chat -
       // текст як є. Кривий вхід або порожній вихід - error-крок, ланцюг
       // дочекається таймауту і піде резервом (formatDraft / наївний розбір).
-      if (profile.name === 'day-planner') {
+      // price-check (етап 5 PR-3) - той самий контракт ланцюга: звіт Дослідника
+      // текстом (format chat) → подія worker; ціни парсить ядро.
+      if (profile.name === 'day-planner' || profile.name === 'price-check') {
         const task = parseTaskInput(req.input.text);
         if (!task) {
           pushStep({
             kind: 'error',
-            name: 'day-planner',
+            name: profile.name,
             ms: now() - startedMs,
             ok: false,
             note: 'bad-task',
@@ -586,7 +591,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         if (output == null || output === '') {
           pushStep({
             kind: 'error',
-            name: 'day-planner',
+            name: profile.name,
             ms: now() - startedMs,
             ok: false,
             note: 'empty-output',

@@ -305,10 +305,12 @@ describe('GET /api/weather — геопозиція власника (request.cf
        геокодування зробити не може: ран о 08:00 не має ні `request.cf`, ні
        причини палити квоту OpenWeather на назву, з'ясовану тут. Без назви
        оверрайд у брифінгу свідомо не спрацьовує. */
+    // setAtMs - вік локації для geo.last (етап 5); решта як доти.
     expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({
       lat: 49.84,
       lon: 24.03,
       name: 'Твоя точка',
+      setAtMs: expect.any(Number),
     });
   });
 
@@ -338,6 +340,7 @@ describe('GET /api/weather — геопозиція власника (request.cf
       lat: 50.45,
       lon: 30.52,
       name: 'Твоя точка',
+      setAtMs: expect.any(Number),
     });
   });
 
@@ -470,7 +473,11 @@ describe('POST/DELETE /api/weather/location — ручне перевизнач�
     expect(body.locations.map((l) => l.name)).toEqual(['Рівне', 'Львів']);
     expect(body.manualGeo).toEqual({ name: 'Рівне' });
     // Авто-детекція все одно пишеться в ownerGeo (є на що впасти після clear).
-    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({ lat: 50.45, lon: 30.52 });
+    expect(JSON.parse(kv.get('ownerGeo')!)).toEqual({
+      lat: 50.45,
+      lon: 30.52,
+      setAtMs: expect.any(Number),
+    });
   });
 
   it('manual override не викликає зворотне геокодування — назва напряму з geocodeCity', async () => {

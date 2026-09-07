@@ -5,7 +5,7 @@
 // пропозицію на дію X». Тому тут перевіряється наскрізний шлях через router
 // (де живе write.kindFrom), а не лише виконавець.
 //
-// chain.start - свідома заглушка до етапу 5: інструмент є, виконавця немає,
+// chain.start - з етапу 5 виконує kind=table; trip/price - чесна відмова,
 // і власник дістає чесне «виконавця ще немає» замість тиші.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -22,7 +22,13 @@ const KEY = 'proposals-test-key';
 const RUN_ID = 'run-1';
 
 function makeEnv(over: Record<string, unknown> = {}) {
-  const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+  // 0004 - через wishes: етап 5 додав write-інструмент wishes.import.
+  const d1 = d1FromSqlite([
+    '0001_base.sql',
+    '0002_assistant.sql',
+    '0003_telemetry.sql',
+    '0004_ideas_travel.sql',
+  ]);
   const env = workerEnv({
     ASSISTANT_V2: 'on',
     INTERNAL_HMAC_KEY: KEY,
@@ -163,25 +169,51 @@ describe('proposals.create: рівень бере kind з аргументів',
   });
 });
 
-describe('chain.start: заглушка до етапу 5', () => {
-  it('є в реєстрі як write, але виконавця немає - чесна відмова', async () => {
+describe('write-інструмент із зовнішнім вмістом позначає тред (етап 5 PR-5)', () => {
+  it('wishes.import: результат несе назви зі Steam - sessions.tainted виставлено', async () => {
+    const { env, d1 } = makeEnv();
+    // Публічний wishlist Steam і назви ігор - зовнішній вміст.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) =>
+        String(input).includes('GetWishlist')
+          ? new Response(JSON.stringify({ response: { items: [{ appid: 7 }] } }), { status: 200 })
+          : new Response(JSON.stringify({ '7': { success: true, data: { name: 'Гра сімка' } } }), {
+              status: 200,
+            }),
+      ),
+    );
+    const { status, body } = await callTool(env, 'wishes.import', {
+      source: 'steam',
+      steam_id: '76561198000000000',
+    });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, mode: 'executed' });
+    const row = d1.db.prepare('SELECT tainted FROM sessions WHERE thread_id = ?').get('dm') as
+      { tainted: number | null } | undefined;
+    expect(Number(row?.tainted)).toBe(NOW);
+  });
+});
+
+describe('chain.start: невідомий kind і брак привʼязки - чесна відмова', () => {
+  it('є в реєстрі як write (T0); без привʼязки Workflow - її назва, невідомий kind - перелік', async () => {
     expect(TOOLS['chain.start']!.write).toEqual({ kind: 'chain.start' });
     expect(ACTION_LEVELS['chain.start']).toBe('T0');
+    expect(ACTION_LEVELS['chain.cancel']).toBe('T0');
 
     const { env } = makeEnv();
-    const res = await applyPolicy(
-      env,
-      { kind: 'chain.start', payload: { kind: 'trip' }, tainted: false },
-      NOW,
-    );
-    expect(res).toMatchObject({ mode: 'error' });
-    expect(String((res as { error: string }).error)).toContain('no-executor');
+    await expect(
+      applyPolicy(env, { kind: 'chain.start', payload: { kind: 'trip' }, tainted: false }, NOW),
+    ).rejects.toThrow(/TRIP_CHAIN/);
+    await expect(
+      applyPolicy(env, { kind: 'chain.start', payload: { kind: 'x' }, tainted: false }, NOW),
+    ).rejects.toThrow(/дозволені: table/);
   });
 
-  it('через router відмова доходить до мозку як 400 з причиною', async () => {
+  it('через router відмова доходить до мозку як 502 tool-failed з причиною', async () => {
     const { env } = makeEnv();
     const { status, body } = await callTool(env, 'chain.start', { kind: 'trip' });
-    expect(status).toBe(400);
-    expect(String(body.error)).toContain('no-executor');
+    expect(status).toBe(502);
+    expect(String(body.reason)).toContain('TRIP_CHAIN');
   });
 });

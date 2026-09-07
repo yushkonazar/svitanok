@@ -122,9 +122,14 @@ async function tripHint(env, today) {
   const row = /** @type {any} */ (
     await db(env)
       .prepare(
-        `SELECT to_text, date_from FROM trips
-         WHERE date_from >= ? AND date_from <= ? AND (status IS NULL OR status NOT IN ('done', 'cancelled'))
-         ORDER BY date_from LIMIT 1`,
+        // Поїздки з живим ланцюгом пропускаємо: TripChain шле чеклист сам
+        // (T-7 о 10:00, T-1 ввечері), підказка сказала б те саме вдруге.
+        `SELECT t.to_text, t.date_from FROM trips t
+         WHERE t.date_from >= ? AND t.date_from <= ? AND (t.status IS NULL OR t.status NOT IN ('done', 'cancelled'))
+           AND NOT EXISTS (
+             SELECT 1 FROM chains c WHERE c.id = t.workflow_id AND c.status IN ('running', 'waiting')
+           )
+         ORDER BY t.date_from LIMIT 1`,
       )
       .bind(today, until)
       .first()

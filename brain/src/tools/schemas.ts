@@ -88,13 +88,46 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   }),
   tool({
     coreName: 'geo.last',
-    description: 'Остання відома локація власника та її вік.',
+    description:
+      'Остання відома локація власника (lat, lon, name) та її вік ageMs (null = запис без часу). Немає або старша за 6 год - перед пошуком закладів спитай «Де ти зараз?» (місто текстом).',
     args: z.object({}),
   }),
   tool({
     coreName: 'geo.geocode',
-    description: 'Координати за текстом (місто або адреса).',
+    description:
+      'Координати за текстом (місто або адреса) через Google Geocoding: lat, lon, name (коротка назва), address (повна), locality.',
     args: z.object({ text: z.string().max(200) }),
+  }),
+  // Google Maps (етап 5): заклади - зовнішній текст (taint), маршрут - числа.
+  tool({
+    coreName: 'places.search',
+    description:
+      'Пошук закладів (Google Places): query - назва/тип («Креденс», «піцерія»), city - місто з тексту власника («у Києві»), near - {lat, lon} з geo.last, limit ≤ 8. Повертає до 8 кандидатів з place_id для places.details і chain.start(table). Результат - зовнішній вміст.',
+    args: z.object({
+      query: z.string().min(1).max(120),
+      city: z.string().max(60).optional(),
+      near: z.object({ lat: z.number(), lon: z.number() }).optional(),
+      limit: z.number().min(1).max(8).optional(),
+    }),
+    tainting: true,
+  }),
+  tool({
+    coreName: 'places.details',
+    description:
+      'Телефон, сайт, години і карта ОДНОГО закладу за place_id (платніший SKU - лише для обраного, не для всіх кандидатів). Результат - зовнішній вміст.',
+    args: z.object({ place_id: z.string().min(1).max(300) }),
+    tainting: true,
+  }),
+  tool({
+    coreName: 'routes.eta',
+    description:
+      'Час і відстань маршруту (Google Routes). from/to - «lat,lon», «place:<place_id>», «home» (дім власника), «here» (остання локація, не старша за 6 год) або адреса; mode - walk·transit·car; depart_at - ISO-8601 ЗІ ЗСУВОМ (напр. 2026-09-07T18:00:00+03:00; авто з трафіком, лише майбутній час; traffic у відповіді каже, чи враховано).',
+    args: z.object({
+      from: z.string().min(1).max(300),
+      to: z.string().min(1).max(300),
+      mode: z.string().min(3).max(8),
+      depart_at: z.string().max(40).optional(),
+    }),
   }),
   tool({
     coreName: 'memory.search',
@@ -159,11 +192,87 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.start',
     description:
-      'Почати багатокроковий ланцюг (столик, поїздка, відстеження ціни). Поки НЕ виконується: ланцюги приїдуть на етапі 5 - скажи власнику про це прямо, замість обхідних шляхів.',
+      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip («їдемо в Карпати 12-15 жовтня автом»): payload {to - куди, date_from і date_to? - YYYY-MM-DD, mode - car·bus·train·plane, from_city? - звідки, country? - країна (не Україна → кордонний чекліст), vehicle_key? - ключ facts.vehicle, depart_at? - година виїзду «HH:MM», trip_id? - ТІЛЬКИ щоб перенести наявну поїздку на нові дати}. Ядро веде чекліст T-30/T-7/T-1, «пора виходити» і підсумок витрат.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),
     }),
+    write: true,
+  }),
+  tool({
+    coreName: 'chain.cancel',
+    description:
+      'Скасувати активний ланцюг («скасуй столик», «стоп відстежувати», «поїздка скасувалась»): chain_id, якщо відомий, або kind (table | price | trip) - тоді найсвіжіший активний цього виду; для поїздки можна trip_id або її назву.',
+    args: z.object({
+      chain_id: z.string().max(64).optional(),
+      kind: z.string().max(32).optional(),
+      trip_id: z.string().max(120).optional(),
+    }),
+    write: true,
+  }),
+  // Бажання (етап 5 PR-3, 07 §4 wishes.*): purchase з url - відстеження ціни
+  // (S-5-11); game - Steam/ITAD (PR-5); trip - разом із поїздкою.
+  tool({
+    coreName: 'wishes.list',
+    description:
+      'Бажання (до 20): type game·trip·purchase, status active·done·cancelled або all (типово active); з останньою і найнижчою ціною.',
+    args: z.object({
+      type: z.string().max(16).optional(),
+      status: z.string().max(16).optional(),
+      limit: z.number().min(1).max(20).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'wishes.search',
+    description: 'Пошук бажань за назвою (q, усі статуси).',
+    args: z.object({ q: z.string().min(2).max(120) }),
+  }),
+  tool({
+    coreName: 'wishes.create',
+    description:
+      'Записати бажання (T0 з «↩»): type game·trip·purchase, title; purchase - url товару і target_price (в основних одиницях, напр. 3299; currency типово UAH) - ядро одразу починає щоденне відстеження ціни й скаже при −5 % або ≤ target; game («хочу гру Hades II») - ядро само знайде її в Steam і в IsThereAnyDeal і щодня о 10:00 скаже про знижку чи історичний мінімум (steam_appid - лише якщо власник назвав його). Відповідь містить text - скажи власнику саме його.',
+    args: z.object({
+      type: z.string().max(16),
+      title: z.string().min(1).max(200),
+      url: z.string().max(500).optional(),
+      target_price: z.number().min(0).optional(),
+      currency: z.string().max(3).optional(),
+      steam_appid: z.number().min(1).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'wishes.import',
+    description:
+      'Імпорт бажань з публічного wishlist Steam (T0 з «↩»): «імпортуй мій wishlist steam». steam_id (17 цифр) - лише якщо власник назвав його зараз; інакше ядро візьме facts.setting.steam_id і скаже, якщо його немає. limit - скільки ігор максимум (типово 100). Наявні ігри не дублюються. Відповідь містить text - скажи власнику саме його.',
+    args: z.object({
+      source: z.string().max(16).optional(),
+      steam_id: z.string().max(20).optional(),
+      limit: z.number().min(1).max(200).optional(),
+    }),
+    write: true,
+    // Назви ігор приходять зі Steam - зовнішній вміст: після імпорту записи
+    // в тому самому треді 10 хв ідуть через ✅ (S-7-2).
+    tainting: true,
+  }),
+  tool({
+    coreName: 'wishes.update',
+    description:
+      'Змінити бажання (T0 з «↩»): id або точна назва; title, url, target_price, currency, status (done/cancelled зупиняє відстеження - «стоп відстежувати»).',
+    args: z.object({
+      id: z.string().max(200),
+      title: z.string().max(200).optional(),
+      url: z.string().max(500).optional(),
+      target_price: z.number().min(0).optional(),
+      currency: z.string().max(3).optional(),
+      status: z.string().max(16).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'wishes.delete',
+    description: 'Видалити бажання разом з історією цін (T1 - ✅ власника).',
+    args: z.object({ id: z.string().max(200) }),
     write: true,
   }),
   // Ідеї (етап 3 PR-4, S-3-1…7). Номер ідеї для власника - те, що повертає

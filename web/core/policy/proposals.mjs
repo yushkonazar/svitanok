@@ -32,6 +32,25 @@ import {
   runIdeasAnalyze,
 } from '../tools/ideas.mjs';
 import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
+import { startTableChain, cancelTableChain, findActiveTableChain } from '../chains/table.mjs';
+import { startTripChain, cancelTripChain } from '../chains/trip.mjs';
+import { importSteamWishlist } from '../steam/check.mjs';
+import {
+  startPriceTrack,
+  cancelPriceTrack,
+  cancelPriceChain,
+  findActivePriceChain,
+  trackingText,
+} from '../chains/price.mjs';
+import {
+  runWishesCreate,
+  runWishesUpdate,
+  runWishesDelete,
+  restoreWish,
+  deleteWishRow,
+  findWish,
+} from '../tools/wishes.mjs';
+import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
 import {
   runCollectionsCreate,
   runCollectionsUpdate,
@@ -376,6 +395,224 @@ export const EXECUTORS = {
       return { result: { filename: csv.filename, rows: csv.rows } };
     },
   },
+  // Ланцюги (07 §4 chain.start/cancel): table (PR-2), price (PR-3), trip
+  // (PR-4). Кожен kind - свій стартер; невідомий - чесна відмова.
+  'chain.start': {
+    async execute(env, payload, nowMs, ctx) {
+      const kind = String(payload.kind ?? '');
+      const inner = payload.payload && typeof payload.payload === 'object' ? payload.payload : {};
+      if (kind === 'table') {
+        const { result, prev } = await startTableChain(env, inner, nowMs, {
+          chatId: ctx?.chatId ?? null,
+          threadId: ctx?.threadId ?? null,
+        });
+        return { result, prev };
+      }
+      if (kind === 'price') {
+        // Відстеження ціни (S-5-11): бажання за id або нове purchase з url.
+        if (inner.wish_id) {
+          const wish = await findWish(env, inner.wish_id);
+          if (!wish) throw new Error(`бажання «${String(inner.wish_id)}» немає`);
+          if (typeof wish.payload.url !== 'string') {
+            throw new Error('у бажання немає url - додай посилання через wishes.update');
+          }
+          const out = await startPriceTrack(
+            env,
+            {
+              id: wish.id,
+              title: wish.title,
+              url: wish.payload.url,
+              target_price: wish.payload.target_price ?? null,
+              currency: String(wish.payload.currency ?? 'UAH'),
+            },
+            nowMs,
+            { chatId: ctx?.chatId ?? null, threadId: ctx?.threadId ?? null },
+          );
+          return {
+            result: {
+              chain_id: out.chainId,
+              wish_id: wish.id,
+              text: out.existing
+                ? `«${wish.title}» уже відстежую`
+                : trackingText(
+                    wish.title,
+                    wish.payload.target_price ?? null,
+                    String(wish.payload.currency ?? 'UAH'),
+                  ),
+            },
+            prev: out.existing ? undefined : { kind, chain_id: out.chainId, wish_id: wish.id },
+          };
+        }
+        // type завжди purchase: модель могла покласти в payload своє поле.
+        const created = await runWishesCreate(env, { ...inner, type: 'purchase' }, nowMs, {
+          chatId: ctx?.chatId ?? null,
+          threadId: ctx?.threadId ?? null,
+        });
+        return {
+          result: created.result,
+          prev: {
+            kind,
+            chain_id: created.result.chain_id ?? null,
+            wish_id: created.prev.id,
+            created: true,
+          },
+        };
+      }
+      if (kind === 'trip') {
+        // Поїздка (S-5-5): нова або - з trip_id - нові дати наявної.
+        const { result, prev } = await startTripChain(env, inner, nowMs, {
+          chatId: ctx?.chatId ?? null,
+          threadId: ctx?.threadId ?? null,
+        });
+        return { result, prev: prev ? { kind, ...prev } : undefined };
+      }
+      throw new Error(`chain.start: невідомий kind «${kind}»; дозволені: table, price, trip`);
+    },
+    async undo(env, snapshot, nowMs) {
+      // «↩» одразу після старту = скасування (S-1-12): ланцюг cancelled,
+      // Workflow прокидається подією; для price створене бажання теж геть.
+      if (snapshot.kind === 'price') {
+        if (snapshot.created) {
+          await deleteWishRow(env, String(snapshot.wish_id), nowMs);
+          return;
+        }
+        if (!(await cancelPriceTrack(env, String(snapshot.wish_id), nowMs))) {
+          throw new Error('відстеження вже не активне - зупиняти нічого');
+        }
+        return;
+      }
+      if (snapshot.kind === 'trip') {
+        if (!(await cancelTripChain(env, String(snapshot.trip_id), nowMs))) {
+          throw new Error('поїздка вже не активна - скасовувати нічого');
+        }
+        return;
+      }
+      if (!(await cancelTableChain(env, String(snapshot.chain_id)))) {
+        throw new Error('ланцюг уже не активний - скасовувати нічого');
+      }
+    },
+  },
+  'chain.cancel': {
+    async execute(env, payload, nowMs) {
+      const kind = payload.kind == null ? 'table' : String(payload.kind);
+      const chainId = payload.chain_id ? String(payload.chain_id) : null;
+      if (kind === 'price') {
+        const active = await findActivePriceChain(env, { chainId });
+        if (!active) throw new Error('активного відстеження ціни немає');
+        await cancelPriceChain(env, active.id, nowMs);
+        return {
+          result: {
+            cancelled: true,
+            chain_id: active.id,
+            title: active.title,
+            text: `Зупинив відстеження «${active.title}»`,
+          },
+        };
+      }
+      if (kind === 'trip') {
+        const ref = payload.trip_id ? String(payload.trip_id) : (chainId ?? null);
+        const trip = await cancelTripChain(env, ref, nowMs);
+        if (!trip) throw new Error('активної поїздки немає');
+        return {
+          result: {
+            cancelled: true,
+            trip_id: trip.id,
+            text: `Скасував поїздку «${trip.to}»`,
+          },
+        };
+      }
+      if (kind !== 'table') {
+        throw new Error(
+          `chain.cancel: скасувати можна table, price або trip (kind «${kind}» невідомий)`,
+        );
+      }
+      const active = await findActiveTableChain(env, chainId);
+      if (!active) throw new Error('активного ланцюга столика немає');
+      const ok = await cancelTableChain(env, active.id);
+      return {
+        result: {
+          cancelled: ok,
+          chain_id: active.id,
+          venue: active.venue,
+          text: `Скасував ланцюг «столик у ${active.venue}»`,
+        },
+      };
+    },
+  },
+  // Бажання (етап 5 PR-3): create/update - T0 з «↩», delete - T1.
+  'wishes.create': {
+    async execute(env, payload, nowMs, ctx) {
+      const { result, prev } = await runWishesCreate(
+        env,
+        {
+          type: payload.type,
+          title: payload.title,
+          url: payload.url,
+          target_price: payload.target_price,
+          currency: payload.currency,
+          steam_appid: payload.steam_appid,
+        },
+        nowMs,
+        { chatId: ctx?.chatId ?? null, threadId: ctx?.threadId ?? null },
+      );
+      return { result, prev };
+    },
+    async undo(env, snapshot, nowMs) {
+      await deleteWishRow(env, String(snapshot.id), nowMs);
+    },
+  },
+  // Імпорт wishlist Steam (S-5-2): T0 з «↩» - відкат прибирає рівно ті
+  // бажання, які створив імпорт.
+  'wishes.import': {
+    async execute(env, payload, nowMs) {
+      const source = payload.source == null ? 'steam' : String(payload.source);
+      if (source !== 'steam')
+        throw new Error(`wishes.import: джерело «${source}» не підтримується`);
+      return importSteamWishlist(env, payload, nowMs);
+    },
+    async undo(env, snapshot, nowMs) {
+      const ids = Array.isArray(snapshot.ids) ? snapshot.ids.map(String) : [];
+      for (const id of ids) await deleteWishRow(env, id, nowMs);
+    },
+  },
+  'wishes.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runWishesUpdate(
+        env,
+        {
+          id: payload.id,
+          title: payload.title,
+          url: payload.url,
+          target_price: payload.target_price,
+          currency: payload.currency,
+          status: payload.status,
+        },
+        nowMs,
+      );
+      return { result, prev };
+    },
+    async undo(env, snapshot) {
+      await restoreWish(env, snapshot);
+    },
+  },
+  'wishes.delete': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runWishesDelete(env, { id: payload.id }, nowMs);
+      return { result };
+    },
+  },
+  // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -
+  // етап 7): після ✅ подія створюється справді, а не «виконавця ще немає».
+  'calendar.event': {
+    async execute(env, payload) {
+      return { result: await createEventFromPayload(env, payload, false) };
+    },
+  },
+  invite: {
+    async execute(env, payload) {
+      return { result: await createEventFromPayload(env, payload, true) };
+    },
+  },
   'facts.set': {
     async execute(env, payload, nowMs) {
       const before = await runFactsGet(env, { kind: payload.kind, key: payload.key });
@@ -405,6 +642,45 @@ export const EXECUTORS = {
     },
   },
 };
+
+/**
+ * Подія в Google Calendar з payload пропозиції (calendar.event / invite):
+ * title, startIso, endIso обовʼязкові; attendees - email-и або імена (імена
+ * резолвить Contacts; для invite без жодного email - відмова, не тиха подія
+ * без гостей).
+ * @param {Env} env @param {Record<string, any>} payload @param {boolean} requireAttendees
+ */
+async function createEventFromPayload(env, payload, requireAttendees) {
+  const title = String(payload.title ?? '')
+    .trim()
+    .slice(0, 200);
+  const startMs = Date.parse(String(payload.startIso ?? ''));
+  const endMs = Date.parse(String(payload.endIso ?? ''));
+  if (!title || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw new Error('calendar: потрібні title, startIso, endIso (кінець після початку)');
+  }
+  const { emails, notes } = await resolveAttendees(env, payload.attendees);
+  if (requireAttendees && emails.length === 0) {
+    throw new Error(`invite: жодного email (${notes.join('; ') || 'учасників не вказано'})`);
+  }
+  const reminderMinutes =
+    typeof payload.reminderMinutes === 'number' &&
+    Number.isInteger(payload.reminderMinutes) &&
+    payload.reminderMinutes >= 0 &&
+    payload.reminderMinutes <= 40_320
+      ? payload.reminderMinutes
+      : undefined;
+  const created = await createCalendarEvent(env, {
+    title,
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(endMs).toISOString(),
+    reminderMinutes,
+    location: typeof payload.location === 'string' ? payload.location : null,
+    attendees: emails.length ? emails : null,
+  });
+  if (!created.ok) throw new Error('calendar: Google не створив подію (лог)');
+  return { title, event_id: created.id, attendees: emails, notes };
+}
 
 /** @param {Env} env */
 function db(env) {

@@ -9,8 +9,6 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   runDayPlanChain,
   startDayPlanChain,
-  sendDayPlanEvent,
-  findAwaitingDayPlan,
   startDayPlannerRun,
   setChainState,
   normalizeIntent,
@@ -22,6 +20,7 @@ import {
   REPLAN_MAX_CHANGES,
 } from '../web/core/day-plan/chain.mjs';
 import { getDayPlan, listItems } from '../web/core/day-plan/store.mjs';
+import { findAwaitingChain, sendChainEvent } from '../web/core/chains/registry.mjs';
 import { syncInstructionHash } from './helpers/instructions.js';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
@@ -353,15 +352,19 @@ describe('helpers ланцюга', () => {
     await expect(startDayPlanChain(env, '2026-09-08', NOW)).rejects.toThrow('DAY_PLAN');
   });
 
-  it('findAwaitingDayPlan бачить лише waiting intent/answer; sendDayPlanEvent іде в інстанс за id', async () => {
+  it('реєстр ланцюгів бачить план лише в waiting intent/answer; подія іде в інстанс DAY_PLAN за id', async () => {
     const { env, wf } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
-    expect(await findAwaitingDayPlan(env)).toBeNull();
+    expect(await findAwaitingChain(env)).toBeNull();
     await setChainState(env, chainId, { status: 'waiting', awaiting: 'intent' });
-    expect(await findAwaitingDayPlan(env)).toEqual({ id: chainId, awaiting: 'intent' });
+    expect(await findAwaitingChain(env)).toEqual({
+      id: chainId,
+      kind: 'day-plan',
+      awaiting: 'intent',
+    });
     await setChainState(env, chainId, { status: 'waiting', awaiting: 'accept' });
-    expect(await findAwaitingDayPlan(env)).toBeNull();
-    await sendDayPlanEvent(env, chainId, 'accept', { choice: 'accept' });
+    expect(await findAwaitingChain(env)).toBeNull();
+    await sendChainEvent(env, chainId, 'accept', { choice: 'accept' });
     expect(wf.events).toEqual([
       { id: chainId, ev: { type: 'accept', payload: { choice: 'accept' } } },
     ]);

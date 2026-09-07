@@ -33,6 +33,9 @@ import { weeklyReviewTask } from '../brain/weekly-review-task.mjs';
 import { backupTask } from '../backup/task.mjs';
 import { dailyHintTask } from '../hints/daily-hint.mjs';
 import { dayPlanKickTask } from '../day-plan/kick.mjs';
+import { chainNudgeTask } from '../chains/nudge.mjs';
+import { priceTrackKickTask } from '../chains/price.mjs';
+import { steamCheckTask } from '../steam/check.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -131,4 +134,13 @@ export const SCHEDULER_TASKS = {
   // План дня v2 (етап 3 PR-8, ADR-035): 00:05 Києва - ланцюг DayPlanChain на
   // завтра, якщо день робочий і не поїздка; вимикач - facts.setting.day_plan.
   'day-plan-kick': { periodMin: 5, run: async (env) => dayPlanKickTask(env) },
+  // Ланцюги (етап 5 PR-2, S-1-6): «не натиснув кнопку» +5/+20 хв; стан
+  // нагадувань - у state_json ланцюга, далі тиша.
+  'chain-nudge': { periodMin: 5, run: async (env) => chainNudgeTask(env) },
+  // Відстеження цін (етап 5 PR-3, 07 §7): 09:00 Києва - бажання purchase з url
+  // без активного PriceTrack → старт (після збою Workflow чи появи привʼязки).
+  'price-track-kick': { periodMin: 5, run: async (env) => priceTrackKickTask(env) },
+  // Знижки на ігри (етап 5 PR-5, 07 §7): 10:00 Києва - батч ITAD по бажаннях
+  // type=game; гейт години й мітка дня - усередині задачі.
+  'steam-check': { periodMin: 5, run: async (env) => steamCheckTask(env) },
 };

@@ -120,6 +120,9 @@ export const WORKERS: Readonly<Record<string, WorkerSpec>> = {
 /** quick - профіль швидкої смуги; його опис читає profiles.ts. */
 export const QUICK_WORKER: WorkerSpec = WORKERS.quick as WorkerSpec;
 
+/** researcher - працівник профілю price-check (07 §5): WebSearch/WebFetch, sonnet, 30 ходів. */
+export const RESEARCHER_WORKER: WorkerSpec = WORKERS.researcher as WorkerSpec;
+
 /** Кого можна кликати через delegate: усі, крім quick (він - профіль швидкої
  *  смуги) і day-planner (він - працівник DayPlanChain з JSON-контрактом
  *  intent/explain/replan; у чаті план дня будує сам chat через plan.*, ревʼю

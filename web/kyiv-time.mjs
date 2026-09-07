@@ -53,6 +53,12 @@ export function kyivMinAfter8(now = new Date()) {
   return mins >= 0 && mins <= 720 ? mins : null;
 }
 
+/** «18:25» за Києвом для моменту в мс (повідомлення ланцюгів, етап 5). @param {number} ms */
+export function kyivClock(ms) {
+  const { h, m } = kyivHourMinute(new Date(ms));
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 /** Хвилина київської доби (0..1439) — для вікна тихих годин (F2). */
 export function kyivMinuteOfDay(now = new Date()) {
   const { h, m } = kyivHourMinute(now);

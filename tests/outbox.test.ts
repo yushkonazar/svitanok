@@ -256,6 +256,44 @@ describe('outbox — enqueue і drain', () => {
     expect(rows[0]?.payload_json).toContain('новий');
   });
 
+  it('contact і venue (етап 5) йдуть JSON-ом на sendContact/sendVenue з темою і кнопками', async () => {
+    vi.stubGlobal('fetch', tgOk());
+    await enqueueOutbox(
+      env,
+      {
+        chatId: '-100',
+        threadId: '99',
+        kind: 'contact',
+        payload: {
+          phone_number: '+380',
+          first_name: 'Креденс',
+          reply_markup: { inline_keyboard: [[{ text: 'x', callback_data: 'c:1:called' }]] },
+        },
+      },
+      NOW,
+    );
+    await enqueueOutbox(
+      env,
+      {
+        chatId: '-100',
+        kind: 'venue',
+        payload: { latitude: 49.8, longitude: 24.0, title: 'Креденс', address: 'адреса' },
+      },
+      NOW + 1,
+    );
+    await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(calls.map((c) => String(c.url).split('/').pop())).toEqual(['sendContact', 'sendVenue']);
+    expect(calls[0]?.body).toMatchObject({
+      chat_id: '-100',
+      message_thread_id: '99',
+      phone_number: '+380',
+      first_name: 'Креденс',
+      reply_markup: { inline_keyboard: [[{ text: 'x', callback_data: 'c:1:called' }]] },
+    });
+    expect(calls[1]?.body).toMatchObject({ latitude: 49.8, longitude: 24.0, title: 'Креденс' });
+    expect(rowsOf(store).map((r) => r.status)).toEqual(['sent', 'sent']);
+  });
+
   it('документ іде multipart-ом на sendDocument', async () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, body: init?.body ?? null });
