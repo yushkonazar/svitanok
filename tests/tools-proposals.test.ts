@@ -22,7 +22,13 @@ const KEY = 'proposals-test-key';
 const RUN_ID = 'run-1';
 
 function makeEnv(over: Record<string, unknown> = {}) {
-  const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+  // 0004 - через wishes: етап 5 додав write-інструмент wishes.import.
+  const d1 = d1FromSqlite([
+    '0001_base.sql',
+    '0002_assistant.sql',
+    '0003_telemetry.sql',
+    '0004_ideas_travel.sql',
+  ]);
   const env = workerEnv({
     ASSISTANT_V2: 'on',
     INTERNAL_HMAC_KEY: KEY,
@@ -160,6 +166,32 @@ describe('proposals.create: рівень бере kind з аргументів',
     };
     expect(row).toMatchObject({ key: 'мова' });
     expect(JSON.parse(row.value_json)).toBe('укр');
+  });
+});
+
+describe('write-інструмент із зовнішнім вмістом позначає тред (етап 5 PR-5)', () => {
+  it('wishes.import: результат несе назви зі Steam - sessions.tainted виставлено', async () => {
+    const { env, d1 } = makeEnv();
+    // Публічний wishlist Steam і назви ігор - зовнішній вміст.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) =>
+        String(input).includes('GetWishlist')
+          ? new Response(JSON.stringify({ response: { items: [{ appid: 7 }] } }), { status: 200 })
+          : new Response(JSON.stringify({ '7': { success: true, data: { name: 'Гра сімка' } } }), {
+              status: 200,
+            }),
+      ),
+    );
+    const { status, body } = await callTool(env, 'wishes.import', {
+      source: 'steam',
+      steam_id: '76561198000000000',
+    });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, mode: 'executed' });
+    const row = d1.db.prepare('SELECT tainted FROM sessions WHERE thread_id = ?').get('dm') as
+      { tainted: number | null } | undefined;
+    expect(Number(row?.tainted)).toBe(NOW);
   });
 });
 

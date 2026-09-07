@@ -14,6 +14,12 @@ const ITAD_LOOKUP = 'https://api.isthereanydeal.com/games/lookup/v1';
 const ITAD_PRICES = 'https://api.isthereanydeal.com/games/prices/v3';
 
 const TIMEOUT_MS = 12_000;
+/** Стеля тіла відповіді: більше - це вже не ціни, а щось не те. */
+const BODY_MAX = 2_000_000;
+/** Валюта - рівно три великі літери (далі вона йде у formatMoney і в чат). */
+const CURRENCY_RE = /^[A-Z]{3}$/;
+/** Стеля довжини URL пропозиції (та сама, що в price_points у price.mjs). */
+const URL_MAX = 500;
 /** Країна цін і мова назв (власник у Києві). */
 export const COUNTRY = 'UA';
 const LANG = 'ukrainian';
@@ -42,8 +48,11 @@ async function callJson(url, init, who) {
     throw new Error(`${who}: запит не пройшов (${String(e?.name ?? 'error')})`, { cause: e });
   }
   if (!res.ok) throw new Error(`${who}: HTTP ${res.status}`);
+  const text = await res.text();
+  // Розбір гігантської відповіді зʼїв би памʼять ізоляту - краще гучна межа.
+  if (text.length > BODY_MAX) throw new Error(`${who}: відповідь понад ${BODY_MAX} байтів`);
   try {
-    return /** @type {any} */ (await res.json());
+    return /** @type {any} */ (JSON.parse(text));
   } catch (/** @type {any} */ e) {
     throw new Error(`${who}: відповідь не JSON`, { cause: e });
   }
@@ -77,7 +86,7 @@ export async function steamSearch(query, limit = 5) {
  * Ціни й назви за appid (батчем). `filters=price_overview` не віддає назву,
  * тож назву беремо лише коли просять (`withName`) - це другий виклик.
  * @param {number[]} appids @param {{ withName?: boolean }} [opts]
- * @returns {Promise<Map<number, { name: string | null, price_minor: number | null, initial_minor: number | null, discount: number, currency: string | null, free: boolean }>>}
+ * @returns {Promise<Map<number, { name: string | null, price_minor: number | null, initial_minor: number | null, discount: number, currency: string | null }>>}
  */
 export async function steamAppDetails(appids, opts = {}) {
   /** @type {Map<number, any>} */
@@ -105,8 +114,6 @@ export async function steamAppDetails(appids, opts = {}) {
             ? Number(price.discount_percent)
             : 0,
         currency: price?.currency ? String(price.currency) : null,
-        // Без price_overview гра або безкоштовна, або не продається в регіоні.
-        free: !price,
       });
     }
   }
@@ -151,7 +158,7 @@ export async function itadLookup(env, appid) {
 /**
  * Батч цін ITAD: найкраща поточна пропозиція + історичний мінімум.
  * @param {Env} env @param {string[]} ids
- * @returns {Promise<Map<string, { best: { shop: string, price_minor: number, currency: string, cut: number, url: string } | null, low_minor: number | null, low_currency: string | null }>>}
+ * @returns {Promise<Map<string, { best: { shop: string, price_minor: number, currency: string, cut: number, url: string } | null, low_all: number | null, low_year: number | null, low_currency: string | null }>>}
  */
 export async function itadPrices(env, ids) {
   /** @type {Map<string, any>} */
@@ -187,24 +194,49 @@ export function bestDeal(deals) {
   for (const d of Array.isArray(deals) ? deals : []) {
     const minor = Number(d?.price?.amountInt);
     const currency = String(d?.price?.currency ?? '');
-    if (!Number.isFinite(minor) || minor <= 0 || !currency) continue;
+    // Валюта з чужого API йде у formatMoney: дозволяємо лише три літери,
+    // інакше «toString» витягнув би функцію з прототипу мапи валют.
+    if (!Number.isFinite(minor) || minor <= 0 || !CURRENCY_RE.test(currency)) continue;
     if (best && minor >= best.price_minor) continue;
     best = {
       shop: String(d?.shop?.name ?? '—').slice(0, 60),
       price_minor: Math.round(minor),
       currency,
       cut: Number.isFinite(Number(d?.cut)) ? Number(d.cut) : 0,
-      url: typeof d?.url === 'string' ? d.url : '',
+      url: safeUrl(d?.url),
     };
   }
   return best;
 }
 
+/** URL пропозиції: лише https і ≤ 500 символів; решта - порожньо. @param {unknown} raw */
+export function safeUrl(raw) {
+  const s = typeof raw === 'string' ? raw.trim().slice(0, URL_MAX) : '';
+  if (!s) return '';
+  try {
+    return new URL(s).protocol === 'https:' ? s : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Історичний мінімум («all» - за весь час). @param {any} low */
 export function historyLow(low) {
-  const all = low?.all ?? low ?? null;
-  const minor = Number(all?.amountInt);
-  return Number.isFinite(minor) && minor > 0
-    ? { low_minor: Math.round(minor), low_currency: String(all?.currency ?? '') }
-    : { low_minor: null, low_currency: null };
+  // ITAD дає три вікна: `all`, `y1` (рік) і `m3`. S-5-3 говорить про «мінімум
+  // за рік», але «за весь час» - сильніше твердження, тож віддаємо обидва, а
+  // формулювання вибирає викликач.
+  const pick = (/** @type {any} */ v) => {
+    const minor = Number(v?.amountInt);
+    const currency = String(v?.currency ?? '');
+    return Number.isFinite(minor) && minor > 0 && CURRENCY_RE.test(currency)
+      ? { minor: Math.round(minor), currency }
+      : null;
+  };
+  const all = pick(low?.all ?? (low?.amountInt ? low : null));
+  const year = pick(low?.y1);
+  return {
+    low_all: all?.minor ?? null,
+    low_year: year?.minor ?? null,
+    low_currency: all?.currency ?? year?.currency ?? null,
+  };
 }

@@ -95,7 +95,10 @@ export function formatMoney(minor, currency) {
   const whole = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   const cents = abs % 100;
   const num = `${minor < 0 ? '−' : ''}${whole}${cents ? `,${String(cents).padStart(2, '0')}` : ''}`;
-  return `${num} ${CURRENCY_LABEL[currency] ?? currency}`;
+  // Object.hasOwn: валюта приходить із чужих API, і «constructor» витягнув
+  // би функцію з прототипу прямо в текст власнику.
+  const label = Object.hasOwn(CURRENCY_LABEL, currency) ? CURRENCY_LABEL[currency] : currency;
+  return `${num} ${label}`;
 }
 
 const CURRENCY_TOKENS = /** @type {[RegExp, string][]} */ ([
@@ -150,14 +153,14 @@ export function hostAllowed(host, allowed) {
 }
 
 /** Назва магазину без розмітки й посилань: [текст](url) → текст, голі URL геть. @param {string} s */
-function cleanSource(s) {
+export function cleanSource(s, max = 40) {
   return s
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/https?:\/\/\S+/gi, '')
     .replace(/[^\p{L}\p{N} .'&-]/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 40);
+    .slice(0, max);
 }
 
 /**

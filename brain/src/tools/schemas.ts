@@ -251,6 +251,9 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       limit: z.number().min(1).max(200).optional(),
     }),
     write: true,
+    // Назви ігор приходять зі Steam - зовнішній вміст: після імпорту записи
+    // в тому самому треді 10 хв ідуть через ✅ (S-7-2).
+    tainting: true,
   }),
   tool({
     coreName: 'wishes.update',

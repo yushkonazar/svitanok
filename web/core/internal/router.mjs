@@ -183,6 +183,13 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       if (policyOut.mode === 'error') {
         return json({ ok: false, error: `policy: ${policyOut.error}`, tool: name }, 400);
       }
+      // Write-інструмент, чий РЕЗУЛЬТАТ несе зовнішній текст (назви ігор із
+      // Steam), теж позначає тред: інакше зовнішній вміст ішов би в контекст
+      // моделі, а сесія лишалась би «чистою», і наступні T0 виконувались би
+      // без ✅. Той самий FAIL-CLOSED, що й для читання нижче.
+      if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+        return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
+      }
       if (policyOut.mode === 'proposed') {
         return json({
           ok: true,

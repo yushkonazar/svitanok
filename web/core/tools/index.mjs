@@ -620,6 +620,9 @@ export const TOOLS = {
       },
     },
     write: { kind: 'wishes.import' },
+    // Результат несе назви ігор зі Steam - це зовнішній вміст, тож тред
+    // позначається (роутер робить це і на write-шляху).
+    tainting: true,
     run: () => {
       throw new Error('wishes.import виконується через policy, не напряму');
     },

@@ -478,6 +478,9 @@ describe('реєстр TOOLS', () => {
       'mail.search',
       'places.details',
       'places.search',
+      // wishes.import несе назви ігор зі Steam - зовнішній текст, тому
+      // роутер позначає тред і на write-шляху (етап 5 PR-5).
+      'wishes.import',
     ]);
   });
 });

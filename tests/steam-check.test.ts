@@ -99,7 +99,10 @@ function routeFetch(routes: { match: string; body: unknown; status?: number }[])
 const PRICES = (over: Record<string, unknown> = {}) => [
   {
     id: 'itad-1',
-    historyLow: { all: { amount: 4.99, amountInt: 49900, currency: 'UAH' } },
+    historyLow: {
+      all: { amount: 4.99, amountInt: 49900, currency: 'UAH' },
+      y1: { amount: 5.19, amountInt: 51900, currency: 'UAH' },
+    },
     deals: [
       {
         shop: { id: 61, name: 'Steam' },
@@ -194,7 +197,8 @@ describe('адаптери Steam і ITAD', () => {
         cut: 20,
         url: 'https://store.steampowered.com/app/1145350/',
       },
-      low_minor: 49900,
+      low_all: 49900,
+      low_year: 51900,
       low_currency: 'UAH',
     });
     // Помилка не несе ані ключа, ані URL.
@@ -214,10 +218,26 @@ describe('адаптери Steam і ITAD', () => {
       ]),
     ).toMatchObject({ shop: 'B', price_minor: 500 });
     expect(historyLow({ all: { amountInt: 100, currency: 'UAH' } })).toEqual({
-      low_minor: 100,
+      low_all: 100,
+      low_year: null,
       low_currency: 'UAH',
     });
-    expect(historyLow(null)).toEqual({ low_minor: null, low_currency: null });
+    expect(historyLow(null)).toEqual({ low_all: null, low_year: null, low_currency: null });
+    // Валюта не з трьох великих літер - як відсутня (далі вона йде в чат).
+    expect(historyLow({ all: { amountInt: 100, currency: 'constructor' } }).low_all).toBeNull();
+    expect(
+      bestDeal([{ shop: { name: 'X' }, price: { amountInt: 1, currency: 'toString' } }]),
+    ).toBeNull();
+    // URL пропозиції - лише https і не довший за 500.
+    expect(
+      bestDeal([
+        {
+          shop: { name: 'X' },
+          price: { amountInt: 1, currency: 'UAH' },
+          url: 'javascript:alert(1)',
+        },
+      ])?.url,
+    ).toBe('');
   });
 });
 
@@ -275,11 +295,18 @@ describe('задача steam-check', () => {
     const { env, db } = setup();
     seedWish(db, 'w1', 'Hades II', { steam_appid: 1, itad_id: 'itad-1' });
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Збій на початку вікна 10:00 добу НЕ спалює: тік через 5 хв повторить.
+    routeFetch([{ match: 'games/prices', body: {}, status: 503 }]);
+    const early = await steamCheckTask(env, Date.parse('2026-09-07T07:10:00.000Z'));
+    expect(early).toMatchObject({ retry: true });
+    expect(await env.BRIEFING.get(STEAM_MARKER_KEY)).toBeNull();
+    // Наприкінці години збій уже рахується пропуском дня.
     for (const day of ['2026-09-07', '2026-09-08', '2026-09-09']) {
       routeFetch([{ match: 'games/prices', body: {}, status: 503 }]);
       await env.BRIEFING.delete(STEAM_MARKER_KEY);
-      const out = await steamCheckTask(env, Date.parse(`${day}T07:10:00.000Z`));
-      expect(out).toMatchObject({ skipped: 'itad-failed' });
+      const out = await steamCheckTask(env, Date.parse(`${day}T07:56:00.000Z`));
+      expect(out).toMatchObject({ misses: expect.any(Number) });
+      expect(await env.BRIEFING.get(STEAM_MARKER_KEY)).toBe(day);
     }
     expect(await env.BRIEFING.get(STEAM_MISS_KEY)).toBe(String(MISS_ALERT));
     const rows = db.prepare('SELECT thread_id, payload_json FROM outbox').all() as {
@@ -294,14 +321,16 @@ describe('задача steam-check', () => {
     await env.BRIEFING.delete(STEAM_MARKER_KEY);
     await steamCheckTask(env, Date.parse('2026-09-10T07:10:00.000Z'));
     expect(await env.BRIEFING.get(STEAM_MISS_KEY)).toBe('0');
+    expect(await env.BRIEFING.get(STEAM_MARKER_KEY)).toBe('2026-09-10');
   });
 
   it('порожня відповідь ITAD - той самий пропуск дня, що й помилка', async () => {
     const { env, db } = setup();
     seedWish(db, 'w1', 'Hades II', { steam_appid: 1, itad_id: 'itad-1' });
     routeFetch([{ match: 'games/prices', body: [] }]);
-    const out = await steamCheckTask(env, AT_10);
-    expect(out).toMatchObject({ skipped: 'itad-empty', misses: 1 });
+    const out = await steamCheckTask(env, Date.parse('2026-09-07T07:56:00.000Z'));
+    expect(out).toMatchObject({ misses: 1 });
+    expect(String((out as { skipped: string }).skipped)).toContain('ціни лише для 0');
     expect(db.prepare('SELECT COUNT(*) AS n FROM price_points').get()).toMatchObject({ n: 0 });
   });
 
@@ -314,6 +343,98 @@ describe('задача steam-check', () => {
     ]);
     const out = await importSteamWishlist(env, { steam_id: '76561198000000000' }, AT_10);
     expect(out.result).toMatchObject({ added: 0, skipped: 1 });
+  });
+
+  it('десять ігор - ОДИН виклик цін (батч, а не по грі)', async () => {
+    const { env, db } = setup();
+    for (let i = 1; i <= 10; i += 1)
+      seedWish(db, `w${i}`, `Гра ${i}`, { steam_appid: i, itad_id: `itad-${i}` });
+    const body = Array.from({ length: 10 }, (_, i) => ({
+      id: `itad-${i + 1}`,
+      historyLow: { all: { amountInt: 10_000, currency: 'UAH' } },
+      deals: [
+        { shop: { name: 'Steam' }, price: { amountInt: 20_000, currency: 'UAH' }, cut: 0, url: '' },
+      ],
+    }));
+    const { calls } = routeFetch([{ match: 'games/prices', body }]);
+    const out = await steamCheckTask(env, AT_10);
+    expect(out).toMatchObject({ games: 10, priced: 10 });
+    expect(calls.filter((c) => c.includes('games/prices'))).toHaveLength(1);
+  });
+
+  it('повторний прогін після збою доставки все одно скаже про знижку', async () => {
+    const { env, db } = setup();
+    seedWish(db, 'w1', 'Hades II', { steam_appid: 1, itad_id: 'itad-1' });
+    seedPoint(db, 'w1', 64_900);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    routeFetch([{ match: 'games/prices', body: PRICES() }]);
+    const out = await steamCheckTask(env, AT_10);
+    expect(out).toMatchObject({ lines: 1 });
+    // Повторний прогін того самого дня (мітку зняв збій доставки): база
+    // порівняння лишилась вчорашньою, тож знижка НЕ губиться, а другої
+    // точки за сьогодні не зʼявляється.
+    await env.BRIEFING.delete(STEAM_MARKER_KEY);
+    routeFetch([{ match: 'games/prices', body: PRICES() }]);
+    const again = await steamCheckTask(env, AT_10 + 300_000);
+    expect(again).toMatchObject({ lines: 1 });
+    const points = db
+      .prepare("SELECT COUNT(*) AS n FROM price_points WHERE at >= '2026-09-07'")
+      .get() as { n: number };
+    expect(points.n).toBe(1);
+  });
+
+  it('половина списку без цін - пропуск дня, а не тиха тиша', async () => {
+    const { env, db } = setup();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (let i = 1; i <= 4; i += 1)
+      seedWish(db, `w${i}`, `Гра ${i}`, { steam_appid: i, itad_id: `itad-${i}` });
+    routeFetch([
+      {
+        match: 'games/prices',
+        body: [
+          {
+            id: 'itad-1',
+            historyLow: {},
+            deals: [
+              {
+                shop: { name: 'Steam' },
+                price: { amountInt: 100, currency: 'UAH' },
+                cut: 0,
+                url: '',
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const out = await steamCheckTask(env, Date.parse('2026-09-07T07:56:00.000Z'));
+    expect(String((out as { skipped: string }).skipped)).toContain('ціни лише для 1 з 4');
+  });
+
+  it('без ITAD_API_KEY - лог і той самий лічильник пропусків, а не тиша', async () => {
+    const { env, db } = setup();
+    (env as { ITAD_API_KEY?: string }).ITAD_API_KEY = undefined;
+    seedWish(db, 'w1', 'Hades II', { steam_appid: 1, itad_id: 'itad-1' });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = await steamCheckTask(env, Date.parse('2026-09-07T07:56:00.000Z'));
+    expect(out).toMatchObject({ misses: 1 });
+    expect(err).toHaveBeenCalled();
+  });
+
+  it('гру, якої ITAD не знає, не шукають щодня', async () => {
+    const { env, db } = setup();
+    seedWish(db, 'w1', 'Невідома', { steam_appid: 42 });
+    const { calls } = routeFetch([
+      { match: 'games/lookup', body: { found: false } },
+      { match: 'games/prices', body: [] },
+    ]);
+    await steamCheckTask(env, AT_10);
+    const wish = (await listGameWishes(env))[0]!;
+    expect(wish.itad_missing_at).toBeTruthy();
+    // Наступного дня пошук НЕ повторюється (вікно - тиждень).
+    await env.BRIEFING.delete(STEAM_MARKER_KEY);
+    await steamCheckTask(env, AT_10 + 86_400_000);
+    expect(calls.filter((c) => c.includes('games/lookup'))).toHaveLength(1);
   });
 
   it('розпродаж: кажемо лише про частку знижок і лише в день стрибка (S-5-4)', async () => {
@@ -332,6 +453,7 @@ describe('задача steam-check', () => {
       title: 'Hades II',
       appid: 1,
       itad_id: 'itad-1',
+      itad_missing_at: null,
       target_price: 52_000,
       currency: 'UAH',
     };
@@ -342,8 +464,34 @@ describe('задача steam-check', () => {
       cut: 20,
       url: 'https://store.steampowered.com/app/1/',
     };
-    const line = discountLine(wish, best, { low_minor: 49_900, isLow: true });
-    expect(line).toBe('• «Hades II» −20 % (519 грн, Steam, мінімум за весь час) 🎯 ціль');
+    // Наш власний мінімум НЕ називається «мінімумом за весь час»: ціна вища
+    // за історичний мінімум ITAD (49 900), тож формулювання чесне.
+    const line = discountLine(wish, best, {
+      low_all: 49_900,
+      low_year: 51_900,
+      low_currency: 'UAH',
+      ourLow: true,
+    });
+    expect(line).toBe('• «Hades II» −20 % (519 грн, Steam, мінімум за рік) 🎯 ціль');
+    const allTime = discountLine(
+      wish,
+      { ...best, price_minor: 49_900 },
+      { low_all: 49_900, low_year: 51_900, low_currency: 'UAH', ourLow: true },
+    );
+    expect(allTime).toContain('мінімум за весь час');
+    const ours = discountLine(
+      wish,
+      { ...best, price_minor: 60_000 },
+      { low_all: 49_900, low_year: 51_900, low_currency: 'UAH', ourLow: true },
+    );
+    expect(ours).toContain('найдешевше, відколи стежу');
+    // Ціль у гривні проти ціни в доларах - не «ціль»: різні шкали.
+    const usd = discountLine(
+      wish,
+      { ...best, currency: 'USD', price_minor: 1900 },
+      { low_all: null, low_year: null, low_currency: null, ourLow: false },
+    );
+    expect(usd).not.toContain('ціль');
   });
 });
 
@@ -477,7 +625,7 @@ describe('імпорт wishlist Steam (S-5-2)', () => {
     );
     if (out.mode !== 'executed') throw new Error(`mode ${out.mode}`);
     expect(out.result).toMatchObject({ added: 2, skipped: 1 });
-    expect(String((out.result as { text: string }).text)).toContain('Імпортував 2');
+    expect(String((out.result as { text: string }).text)).toContain('Імпортував 2 гри');
     expect((await listGameWishes(env)).map((w) => w.title).sort()).toEqual([
       'Гра 2',
       'Гра 3',
