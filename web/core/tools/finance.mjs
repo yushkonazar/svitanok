@@ -215,36 +215,54 @@ export async function runFinanceRule(env, args) {
       .run();
   }
 
-  const recategorized = category ? await recategorize(env, pattern, category) : 0;
+  const moved = category ? await recategorize(env, pattern, category) : { count: 0, previous: {} };
   return {
     result: {
       pattern,
       category,
       is_subscription: isSubscription,
-      recategorized,
+      recategorized: moved.count,
       created: !existing,
     },
-    prev,
+    prev: { rule: prev, pattern, categories: moved.previous },
   };
 }
 
-/** Відкат `finance.rule` для «↩». @param {Env} env @param {any} snapshot @param {string} pattern */
-export async function restoreRule(env, snapshot, pattern) {
-  if (snapshot) {
+/**
+ * Відкат `finance.rule` для «↩»: і рядок правила, і КОЖНА перекладена
+ * транзакція назад у свою стару категорію.
+ * @param {Env} env
+ * @param {{ rule: any, pattern: string, categories?: Record<string, string[]> }} snapshot
+ */
+export async function restoreRule(env, snapshot) {
+  const pattern = String(snapshot?.pattern ?? '');
+  if (snapshot?.rule) {
     await db(env)
       .prepare('UPDATE merchant_rules SET category = ?, is_subscription = ? WHERE pattern = ?')
-      .bind(snapshot.category, snapshot.is_subscription, snapshot.pattern)
+      .bind(snapshot.rule.category, snapshot.rule.is_subscription, snapshot.rule.pattern)
       .run();
-    return;
+  } else if (pattern) {
+    await db(env).prepare('DELETE FROM merchant_rules WHERE pattern = ?').bind(pattern).run();
   }
-  await db(env).prepare('DELETE FROM merchant_rules WHERE pattern = ?').bind(pattern).run();
+  for (const [category, ids] of Object.entries(snapshot?.categories ?? {})) {
+    for (let i = 0; i < ids.length; i += BATCH) {
+      await applyCategory(env, category, ids.slice(i, i + BATCH));
+    }
+  }
 }
 
 /**
  * Перекласти історію під нову категорію: збіг за НАЗВОЮ КАТЕГОРІЇ (
  * перейменування) або за ключем мерчанта (правило). Порівняння в JS - те саме,
  * що на записі транзакції; SQL `lower()` кирилиці не знає.
+ *
+ * Повертає ЗНІМОК попередніх категорій, згрупований за старою назвою. Це не
+ * надмірність: `finance.rule` - T0, тобто виконується без ✅, і єдина
+ * компенсація - «↩». Старі категорії в зачеплених рядках РІЗНІ (частина з
+ * довідника MCC, частина з іншого правила), тож «зворотним правилом» їх не
+ * відновити - без знімка відкат був би неправдою.
  * @param {Env} env @param {string} pattern @param {string} category
+ * @returns {Promise<{ count: number, previous: Record<string, string[]> }>}
  */
 async function recategorize(env, pattern, category) {
   const { results } = await db(env)
@@ -258,20 +276,30 @@ async function recategorize(env, pattern, category) {
   const merNeedle = merchantKey(pattern);
   /** @type {string[]} */
   const ids = [];
+  /** @type {Record<string, string[]>} */
+  const previous = {};
   for (const r of results ?? []) {
     const current = String(r.category ?? '');
     if (current === category) continue;
     const byCategory = current.toLowerCase() === catNeedle;
     const byMerchant = merNeedle.length > 0 && merchantKey(r.description).includes(merNeedle);
-    if (byCategory || byMerchant) ids.push(String(r.id));
+    if (!byCategory && !byMerchant) continue;
+    const id = String(r.id);
+    ids.push(id);
+    (previous[current] ??= []).push(id);
   }
   for (let i = 0; i < ids.length; i += BATCH) {
-    const chunk = ids.slice(i, i + BATCH);
-    await db(env).batch(
-      chunk.map((id) =>
-        db(env).prepare('UPDATE transactions SET category = ? WHERE id = ?').bind(category, id),
-      ),
-    );
+    await applyCategory(env, category, ids.slice(i, i + BATCH));
   }
-  return ids.length;
+  return { count: ids.length, previous };
+}
+
+/** @param {Env} env @param {string} category @param {string[]} ids */
+async function applyCategory(env, category, ids) {
+  if (!ids.length) return;
+  await db(env).batch(
+    ids.map((id) =>
+      db(env).prepare('UPDATE transactions SET category = ? WHERE id = ?').bind(category, id),
+    ),
+  );
 }

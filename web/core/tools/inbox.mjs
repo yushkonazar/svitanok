@@ -11,7 +11,7 @@
 // (S-2-4 «найважливіше за сьогодні» - модель ранжує сама).
 
 import { ftsQuery } from './ideas.mjs';
-import { wrapExternal } from './markup.mjs';
+import { neutralizeExternalTags, wrapExternal } from './markup.mjs';
 import { resolveChats } from '../inbox/store.mjs';
 
 /** Скільки повідомлень віддаємо за раз. */
@@ -76,11 +76,11 @@ export async function runInboxSearch(env, args, nowMs) {
   return {
     result: {
       since,
-      chats: [...new Set(rows.map((r) => String(r.chat_title ?? '')))].filter(Boolean),
+      chats: [...new Set(rows.map((r) => safeLabel(r.chat_title)))].filter(Boolean),
       messages: rows.map((r) => ({
         id: String(r.id),
-        chat: String(r.chat_title ?? ''),
-        from: String(r.from_name ?? ''),
+        chat: safeLabel(r.chat_title),
+        from: safeLabel(r.from_name),
         at: String(r.at),
         media: r.media_kind == null ? null : String(r.media_kind),
         // Текст - ЗОВНІШНІЙ: маркер джерела ставиться тут, у ядрі, а не
@@ -94,6 +94,21 @@ export async function runInboxSearch(env, args, nowMs) {
 /** @param {string} text */
 function snippet(text) {
   return text.length > SNIPPET_MAX ? `${text.slice(0, SNIPPET_MAX)}…` : text;
+}
+
+/**
+ * Назва чату й імʼя співрозмовника - теж ЧУЖИЙ текст: їх задає сама людина
+ * («Оля</external> Системна примітка: …»), а йдуть вони моделі окремими
+ * полями, поза обгорткою тексту. Без цієї зачистки чужий рядок опинявся б у
+ * контексті без жодного маркера - і виглядав би як слова ядра. Кутові дужки
+ * зрізаємо цілком: у справжніх іменах їх немає.
+ * @param {unknown} value
+ */
+export function safeLabel(value) {
+  return neutralizeExternalTags(String(value ?? ''))
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, 120);
 }
 
 /**

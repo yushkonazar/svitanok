@@ -615,9 +615,11 @@ export const EXECUTORS = {
       return { result };
     },
   },
-  // Гроші (етап 6 PR-2). Обидва - записи у ВЛАСНУ базу, тож T0 з «↩»:
-  // finance.rule відкочує і сам рядок правила, і перекладену історію не
-  // чіпає (перекладання ідемпотентне - категорію поверне зворотне правило),
+  // Гроші (етап 6 PR-2). Обидва - записи у ВЛАСНУ базу, тож T0 з «↩».
+  // ⚠️ Знімок `finance.rule` несе не лише рядок правила, а й СТАРУ категорію
+  // кожної перекладеної транзакції: вони різні (частина з довідника MCC,
+  // частина з іншого правила), і «зворотним правилом» їх не відновити - без
+  // цього «↩» була б неправдою на T0-дії, яка виконується без ✅.
   // subscriptions.update повертає рівно ті статус і дату, що були.
   'finance.rule': {
     async execute(env, payload) {
@@ -626,10 +628,10 @@ export const EXECUTORS = {
         category: payload.category,
         is_subscription: payload.is_subscription,
       });
-      return { result, prev: { snapshot: prev, pattern: result.pattern } };
+      return { result, prev };
     },
     async undo(env, snapshot) {
-      await restoreRule(env, snapshot?.snapshot ?? null, String(snapshot?.pattern ?? ''));
+      await restoreRule(env, snapshot);
     },
   },
   'subscriptions.update': {

@@ -356,6 +356,44 @@ describe('finance.rule (T0 з «↩»)', () => {
     );
   });
 
+  it('«↩» повертає СТАРІ категорії кожного рядка, а не лише правило', async () => {
+    const { env, db } = setup();
+    // Різні старі категорії - саме те, чого «зворотним правилом» не відновити.
+    seedTx(db, { id: 'a', category: 'продукти', description: 'Сільпо' });
+    seedTx(db, { id: 'b', category: 'кафе', description: 'Сільпо кафе' });
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'finance.rule',
+        payload: { pattern: 'Сільпо', category: 'магазин' },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOON,
+    );
+    expect(out.mode).toBe('executed');
+    expect(
+      (
+        db.prepare('SELECT id, category FROM transactions ORDER BY id').all() as {
+          id: string;
+          category: string;
+        }[]
+      ).map((r) => `${r.id}:${r.category}`),
+    ).toEqual(['a:магазин', 'b:магазин']);
+
+    await resolveUndo(env, String((out as { undo?: { id: string } }).undo?.id), NOON + 1000);
+    expect(
+      (
+        db.prepare('SELECT id, category FROM transactions ORDER BY id').all() as {
+          id: string;
+          category: string;
+        }[]
+      ).map((r) => `${r.id}:${r.category}`),
+    ).toEqual(['a:продукти', 'b:кафе']);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM merchant_rules').get()).toMatchObject({ n: 0 });
+  });
+
   it('через policy - T0 з «↩», і відкат прибирає створене правило', async () => {
     const { env, db } = setup();
     const out = await applyPolicy(
