@@ -12,7 +12,7 @@
 // «дослівно не копіювати» тримає інструкція працівника.
 
 import { formatMoney } from '../format.mjs';
-import { merchantKey, normalizeMerchant } from '../finance/rules.mjs';
+import { matchRule, merchantKey, normalizeMerchant } from '../finance/rules.mjs';
 import {
   LIST_MAX,
   merchantReference,
@@ -143,21 +143,17 @@ async function findRule(env, merchant) {
     .prepare('SELECT id, pattern, category, is_subscription FROM merchant_rules LIMIT 200')
     .bind()
     .all();
-  const hay = merchant.toLowerCase();
-  const hit = (results ?? []).find((r) =>
-    hay.includes(
-      String(r.pattern ?? '')
-        .trim()
-        .toLowerCase(),
-    ),
-  );
-  return hit
-    ? {
-        id: String(hit.id),
-        pattern: String(hit.pattern),
-        category: hit.category == null ? null : String(hit.category),
-      }
-    : null;
+  // Через ту саму matchRule, що й на записі транзакції: власна копія тут
+  // не мала захисту від порожнього pattern, а `''.includes` істинне завжди -
+  // і Фінансист пояснював би категорію неіснуючим правилом.
+  const rules = (results ?? []).map((r) => ({
+    pattern: String(r.pattern ?? ''),
+    category: r.category == null ? null : String(r.category),
+    is_subscription: r.is_subscription == null ? null : Number(r.is_subscription),
+    id: String(r.id),
+  }));
+  const hit = matchRule(rules, merchant);
+  return hit ? { id: hit.id, pattern: hit.pattern, category: hit.category } : null;
 }
 
 /**
@@ -276,8 +272,11 @@ async function recategorize(env, pattern, category) {
   const merNeedle = merchantKey(pattern);
   /** @type {string[]} */
   const ids = [];
-  /** @type {Record<string, string[]>} */
-  const previous = {};
+  // Map, а не обʼєкт: назву категорії задає модель, і `__proto__` у ролі
+  // ключа зробив би `previous[current] ??= []` присвоєнням у прототип, а
+  // `.push` - викликом на Object.prototype (падіння ПІСЛЯ запису правила).
+  /** @type {Map<string, string[]>} */
+  const previous = new Map();
   for (const r of results ?? []) {
     const current = String(r.category ?? '');
     if (current === category) continue;
@@ -286,12 +285,14 @@ async function recategorize(env, pattern, category) {
     if (!byCategory && !byMerchant) continue;
     const id = String(r.id);
     ids.push(id);
-    (previous[current] ??= []).push(id);
+    const bucket = previous.get(current);
+    if (bucket) bucket.push(id);
+    else previous.set(current, [id]);
   }
   for (let i = 0; i < ids.length; i += BATCH) {
     await applyCategory(env, category, ids.slice(i, i + BATCH));
   }
-  return { count: ids.length, previous };
+  return { count: ids.length, previous: Object.fromEntries(previous) };
 }
 
 /** @param {Env} env @param {string} category @param {string[]} ids */

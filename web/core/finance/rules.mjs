@@ -69,8 +69,10 @@ export function merchantKey(description) {
  * Правило власника для мерчанта (`merchant_rules`). `pattern` - ПІДРЯДОК без
  * регістру, не регулярка: власний regexp у базі означав би ReDoS на кожній
  * транзакції. Перше правило, що збіглося (порядок - як прийшли рядки).
- * @param {{ pattern: string, category: string | null, is_subscription: number | null }[]} rules
+ * @template {{ pattern: string, category: string | null, is_subscription: number | null }} R
+ * @param {R[]} rules
  * @param {string} merchant - нормалізована назва
+ * @returns {R | null}
  */
 export function matchRule(rules, merchant) {
   const hay = merchant.toLowerCase();
@@ -121,8 +123,9 @@ export function looksPeriodic(atMs, prevMs) {
 /**
  * @typedef {{
  *   amountUah: number | null,   // гривневий еквівалент у копійках (модуль)
- *   currency: string,           // валюта операції
+ *   currency: string,           // валюта операції за Mono (currencyCode)
  *   accountCurrency: string,    // валюта рахунку (типово UAH)
+ *   converted: boolean,         // сума операції ≠ сума у валюті рахунку
  *   isSpending: boolean,        // списання (Mono: amount < 0)
  *   knownMerchant: boolean,     // мерчант траплявся за HISTORY_MONTHS
  *   duplicate: boolean,         // той самий мерчант і сума за DUPLICATE_WINDOW_MS
@@ -149,7 +152,13 @@ export function computeFlags(input) {
     flags.push('over_threshold');
   }
   if (input.duplicate) flags.push('duplicate');
-  if (input.currency !== input.accountCurrency) flags.push('foreign');
+  // Контракт Фінансиста (agents/finance.md крок 3): «foreign - валюта не
+  // UAH». Саме так, а не «валюта операції ≠ валюта рахунку»: купівля доларами
+  // з доларового рахунку - теж не гривня, і у звіт вона мусить потрапити.
+  // Друга умова - страховка на неоднозначність Mono: якщо `currencyCode`
+  // виявиться кодом РАХУНКУ, а не операції, різниця `amount`/`operationAmount`
+  // усе одно видасть закордонну покупку.
+  if (input.currency !== 'UAH' || input.converted) flags.push('foreign');
   if (input.inSubscriptions || input.ruleSubscription || input.periodic) {
     flags.push('subscription');
   }

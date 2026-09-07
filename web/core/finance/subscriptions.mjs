@@ -67,7 +67,7 @@ export async function upsertSubscription(env, tx, stepDays, nowMs) {
   const key = merchantKey(tx.merchant);
   if (!key || !(stepDays > 0)) return null;
   const existing = await findSubscriptionByMerchant(env, key, { includeCancelled: true });
-  const nextAt = new Date(Date.parse(tx.at) + stepDays * 86_400_000).toISOString();
+  const nextAt = nextChargeAt(tx.at, stepDays);
   if (existing) {
     // Скасоване власником лишається скасованим (інакше кожне списання
     // повертало б рядок, який він щойно прибрав).
@@ -141,7 +141,9 @@ export async function listSubscriptions(env, limit = 50) {
 
 /**
  * `subscriptions.update` (07 §4, T0): статус і/або дата наступного списання.
- * @param {Env} env @param {{ id: string, status?: string, next_at?: string }} args
+ * `next_at`: `undefined` - не чіпати, `null` - стерти (саме так «↩» повертає
+ * підписку, у якої дати не було; `?? before` тут дав би 2026-10-01 замість NULL).
+ * @param {Env} env @param {{ id: string, status?: string, next_at?: string | null }} args
  */
 export async function updateSubscription(env, args) {
   const id = String(args.id ?? '').trim();
@@ -162,7 +164,12 @@ export async function updateSubscription(env, args) {
   );
   if (!before) throw new Error(`subscriptions.update: підписки ${id} немає`);
   const status = args.status ?? String(before.status);
-  const nextAt = args.next_at ?? (before.next_at == null ? null : String(before.next_at));
+  const nextAt =
+    args.next_at !== undefined
+      ? args.next_at
+      : before.next_at == null
+        ? null
+        : String(before.next_at);
   await db(env)
     .prepare('UPDATE subscriptions SET status = ?, next_at = ? WHERE id = ?')
     .bind(status, nextAt, id)
@@ -240,6 +247,20 @@ export async function subscriptionRemindTask(env, nowMs = Date.now()) {
     console.error('subscription-remind: драйн outbox впав, добере sweeper', e?.message),
   );
   return { sent: true, count: rows.length };
+}
+
+/**
+ * Дата наступного списання: КИЇВСЬКИЙ день операції + крок, і опівдні UTC.
+ * Час доби тут не знання, а сміття: майбутнє списання прийде коли завгодно.
+ * А опівдні - тому, що і нагадування, і підказка порівнюють `substr(next_at,
+ * 1, 10)` з київським ключем доби: збережений UTC-час вечірньої операції
+ * (22:30 UTC = 01:30 Києва) давав би дату на добу меншу, і «за два дні»
+ * приходило б за три.
+ * @param {string} atIso - час операції @param {number} stepDays
+ */
+export function nextChargeAt(atIso, stepDays) {
+  const day = kyivDateKey(new Date(Date.parse(atIso) + stepDays * 86_400_000));
+  return `${day}T12:00:00.000Z`;
 }
 
 /** YYYY-MM-DD + n діб. @param {string} dateKey @param {number} days */

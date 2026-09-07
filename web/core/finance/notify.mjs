@@ -12,8 +12,8 @@
 // через cleanSource, без розмітки й посилань, щоб чужий рядок не став ані
 // кнопкою, ані лінком у чаті власника.
 
-import { kyivDateKey } from '../../kyiv-time.mjs';
 import { cleanSource, formatMoney } from '../format.mjs';
+import { monthStartMs } from './query.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { FLAG_LABELS, isLoud } from './rules.mjs';
 import { categoryMonthTotal } from './store.mjs';
@@ -97,7 +97,10 @@ export async function announceTransaction(env, tx, nowMs) {
   /** @type {number | null} */
   let monthTotal = null;
   if (!duplicate) {
-    const monthStart = `${kyivDateKey(new Date(nowMs)).slice(0, 7)}-01T00:00:00.000Z`;
+    // Той самий розрахунок, що у finance.query: інакше «Техніка за місяць»
+    // під покупкою і відповідь на «скільки на техніку цього місяця» давали б
+    // різні числа для покупок першої ночі місяця.
+    const monthStart = new Date(monthStartMs(nowMs)).toISOString();
     monthTotal = await categoryMonthTotal(env, tx.category, monthStart, tx.at).catch(
       (/** @type {any} */ e) => {
         // Сума за місяць - приємне доповнення, а не сама новина: без неї

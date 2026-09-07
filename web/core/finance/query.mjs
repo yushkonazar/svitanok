@@ -25,9 +25,14 @@ function db(env) {
   return env.DB;
 }
 
-/** Київська північ доби, до якої належить момент. @param {number} nowMs */
+/**
+ * Київська північ доби, до якої належить момент. Секунди й мілісекунди
+ * зрізаємо теж: `kyivMinuteOfDay` дає цілі хвилини, тож без цього «північ»
+ * виходила б о 00:00:37 - і покупка о 00:00:20 випадала б із «сьогодні».
+ * @param {number} nowMs
+ */
 export function kyivDayStartMs(nowMs) {
-  return nowMs - kyivMinuteOfDay(new Date(nowMs)) * 60_000;
+  return nowMs - kyivMinuteOfDay(new Date(nowMs)) * 60_000 - (nowMs % 60_000);
 }
 
 /** Скільки діб від понеділка (київський тиждень). @param {number} nowMs */
@@ -100,7 +105,7 @@ export function resolvePeriod(raw, nowMs) {
 }
 
 /** Київська північ 1-го числа місяця, до якого належить момент. @param {number} nowMs */
-function monthStartMs(nowMs) {
+export function monthStartMs(nowMs) {
   return dayKeyToMs(`${kyivDateKey(new Date(nowMs)).slice(0, 7)}-01`);
 }
 

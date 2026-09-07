@@ -22,6 +22,8 @@ export const INBOX_COUNT_KEY = 'inboxDayCount';
 export const TEXT_MAX = 4000;
 /** Ретенція вхідних (07 §1). */
 export const RETENTION_DAYS = 30;
+/** Стеля звʼязаних параметрів на один запит D1 - платформна, не наша. */
+export const SQL_PARAMS_MAX = 100;
 
 /** @param {Env} env */
 function db(env) {
@@ -125,7 +127,7 @@ async function takeDailyRoom(env, nowMs) {
   if (n >= DAILY_CAP) {
     if (!alerted) {
       console.error(`inbox: добова стеля ${DAILY_CAP} вичерпана - нові повідомлення не пишу`);
-      await env.BRIEFING.put(INBOX_COUNT_KEY, JSON.stringify({ date: today, n, alerted: true }));
+      await putCount(env, { date: today, n, alerted: true });
       await sendSystemAlert(
         env,
         `⚠️ Вхідних із чатів за добу більше ${DAILY_CAP} - решту сьогодні не зберігаю.`,
@@ -134,8 +136,24 @@ async function takeDailyRoom(env, nowMs) {
     }
     return false;
   }
-  await env.BRIEFING.put(INBOX_COUNT_KEY, JSON.stringify({ date: today, n: n + 1, alerted }));
+  await putCount(env, { date: today, n: n + 1, alerted });
   return true;
+}
+
+/**
+ * Лічильник - НЕ барʼєр безпеки, а страховка від росту бази, тому й
+ * рахується приблизно: кожне повідомлення - окремий інвокейшн, тож пара
+ * «читання-запис» під потоком губить частину інкрементів. Головне тут -
+ * що збій KV не забирає з собою саме повідомлення: воно важливіше за
+ * точність лічильника.
+ * @param {Env} env @param {{ date: string, n: number, alerted: boolean }} value
+ */
+async function putCount(env, value) {
+  try {
+    await env.BRIEFING.put(INBOX_COUNT_KEY, JSON.stringify(value));
+  } catch (/** @type {any} */ e) {
+    console.error('inbox: лічильник доби не записано (повідомлення зберігаю)', e?.message);
+  }
 }
 
 /**
@@ -147,16 +165,23 @@ async function takeDailyRoom(env, nowMs) {
 export async function deleteInboxMessages(env, chatId, messageIds) {
   const ids = (messageIds ?? []).map((m) => inboxId(chatId, m));
   if (!ids.length) return { deleted: 0 };
-  const marks = ids.map(() => '?').join(', ');
-  const { meta } = await db(env)
-    .prepare(`DELETE FROM inbox_messages WHERE id IN (${marks})`)
-    .bind(...ids)
-    .run();
-  await db(env)
-    .prepare(`DELETE FROM inbox_fts WHERE id IN (${marks})`)
-    .bind(...ids)
-    .run();
-  return { deleted: Number(meta?.changes ?? 0) };
+  let deleted = 0;
+  // Пачками по SQL_PARAMS_MAX: D1 приймає не більше 100 звʼязаних параметрів
+  // на запит, а Telegram шле до 100 id за раз (parseUpdate ріже до 200).
+  for (let i = 0; i < ids.length; i += SQL_PARAMS_MAX) {
+    const chunk = ids.slice(i, i + SQL_PARAMS_MAX);
+    const marks = chunk.map(() => '?').join(', ');
+    const { meta } = await db(env)
+      .prepare(`DELETE FROM inbox_messages WHERE id IN (${marks})`)
+      .bind(...chunk)
+      .run();
+    await db(env)
+      .prepare(`DELETE FROM inbox_fts WHERE id IN (${marks})`)
+      .bind(...chunk)
+      .run();
+    deleted += Number(meta?.changes ?? 0);
+  }
+  return { deleted };
 }
 
 /**
@@ -175,8 +200,8 @@ export async function forgetChat(env, chat) {
       (await db(env).prepare('SELECT id FROM inbox_messages WHERE chat_id = ?').bind(chatId).all())
         .results ?? []
     );
-    for (let i = 0; i < ids.length; i += 100) {
-      const chunk = ids.slice(i, i + 100).map((r) => String(r.id));
+    for (let i = 0; i < ids.length; i += SQL_PARAMS_MAX) {
+      const chunk = ids.slice(i, i + SQL_PARAMS_MAX).map((r) => String(r.id));
       const marks = chunk.map(() => '?').join(', ');
       await db(env)
         .prepare(`DELETE FROM inbox_fts WHERE id IN (${marks})`)
@@ -228,7 +253,8 @@ export async function resolveChats(env, needle) {
         .toLowerCase()
         .includes(low),
   );
-  return hits.map((r) => String(r.chat_id));
+  // Стеля - та сама, платформна: список іде далі в `IN (...)` (inbox.search).
+  return hits.map((r) => String(r.chat_id)).slice(0, SQL_PARAMS_MAX / 2);
 }
 
 /** @param {Env} env @param {string[]} chatIds */

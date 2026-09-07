@@ -20,6 +20,7 @@ import {
   updateSubscription,
   subscriptionButtons,
   subscriptionRemindTask,
+  nextChargeAt,
   REMIND_MARKER_KEY,
   addDays,
 } from '../web/core/finance/subscriptions.mjs';
@@ -415,6 +416,41 @@ describe('finance.rule (T0 з «↩»)', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM merchant_rules').get()).toMatchObject({ n: 0 });
   });
 
+  it('стара категорія «__proto__» не ламає знімок для «↩»', async () => {
+    const { env, db } = setup();
+    // Назву категорії задає модель, тож службове імʼя в базі можливе.
+    seedTx(db, { id: 'a', category: '__proto__', description: 'Сільпо' });
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'finance.rule',
+        payload: { pattern: 'Сільпо', category: 'продукти' },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOON,
+    );
+    expect(out.mode).toBe('executed');
+    expect((out as { result?: { recategorized: number } }).result?.recategorized).toBe(1);
+    await resolveUndo(env, String((out as { undo?: { id: string } }).undo?.id), NOON + 1000);
+    expect(db.prepare('SELECT category FROM transactions WHERE id = ?').get('a')).toMatchObject({
+      category: '__proto__',
+    });
+  });
+
+  it('правило з порожнім pattern не «збігається» з усім підряд', async () => {
+    const { env, db } = setup();
+    seedTx(db, { id: 'a', description: 'Сільпо' });
+    db.prepare(
+      `INSERT INTO merchant_rules (id, pattern, category, is_subscription) VALUES ('r0', '  ', 'сміття', 0)`,
+    ).run();
+    const { result } = (await runFinanceQuery(env, { id: 'a' }, NOON)) as {
+      result: { rule: unknown };
+    };
+    expect(result.rule).toBeNull();
+  });
+
   it('порожній pattern і правило без змісту - чесна відмова', async () => {
     const { env } = setup();
     await expect(runFinanceRule(env, { pattern: '  ', category: 'Кафе' })).rejects.toThrow(
@@ -471,6 +507,11 @@ describe('облік підписок', () => {
     });
   });
 
+  it('next_at - КАЛЕНДАРНА дата: вечірнє списання не зсуває її на добу назад', () => {
+    // 07.09 22:30 UTC = 08.09 01:30 Києва; крок 30 діб → київське 08.10.
+    expect(nextChargeAt('2026-09-07T22:30:00.000Z', 30)).toBe('2026-10-08T12:00:00.000Z');
+  });
+
   it('скасована підписка не воскресає від наступного списання', async () => {
     const { env, db } = setup();
     db.prepare(
@@ -522,6 +563,30 @@ describe('облік підписок', () => {
     ).toMatchObject({
       status: 'active',
       next_at: '2026-09-09T00:00:00Z',
+    });
+  });
+
+  it('«↩» повертає next_at у NULL, якщо його не було', async () => {
+    const { env, db } = setup();
+    db.prepare(
+      `INSERT INTO subscriptions (id, merchant, period, amount, currency, next_at, status, created_at)
+       VALUES ('s1', 'Spotify', 'month', 20000, 'UAH', NULL, 'active', '2026-07-01T00:00:00Z')`,
+    ).run();
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'subscriptions.update',
+        payload: { id: 's1', next_at: '2026-10-01T12:00:00.000Z' },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOON,
+    );
+    expect(out.mode).toBe('executed');
+    await resolveUndo(env, String((out as { undo?: { id: string } }).undo?.id), NOON + 1000);
+    expect(db.prepare('SELECT next_at FROM subscriptions WHERE id = ?').get('s1')).toMatchObject({
+      next_at: null,
     });
   });
 

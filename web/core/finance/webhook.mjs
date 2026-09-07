@@ -53,7 +53,17 @@ export function monoWebhookUrl(env, origin) {
 export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = Date.now()) {
   const expected = String(env.MONO_WEBHOOK_SECRET ?? '').trim();
   if (!expected) return json({ ok: false, error: 'no-webhook-secret' }, 500);
-  const given = decodeURIComponent(new URL(request.url).pathname.slice(MONO_WEBHOOK_PREFIX.length));
+  const raw = new URL(request.url).pathname.slice(MONO_WEBHOOK_PREFIX.length);
+  /** @type {string} */
+  let given;
+  try {
+    given = decodeURIComponent(raw);
+  } catch {
+    // Криве відсоткове екранування («/api/mono/%») - те саме «не туди
+    // потрапив», що й чужий секрет. Без цього URIError виходив би 500-ю, і
+    // сторонній однією пробою відрізняв би наявний маршрут від відсутнього.
+    given = raw;
+  }
   if (!constantTimeEqual(given, expected)) {
     // Без деталей: 404, а не 401 - стороннім не підказуємо, що тут щось є.
     return json({ ok: false, error: 'not-found' }, 404);

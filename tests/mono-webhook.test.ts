@@ -192,6 +192,7 @@ describe('прапорці «незвичного»', () => {
     inSubscriptions: false,
     periodic: false,
     ruleSubscription: false,
+    converted: false,
     threshold: THRESHOLD_DEFAULT,
   };
 
@@ -214,6 +215,15 @@ describe('прапорці «незвичного»', () => {
   it('чужа валюта (S-4-5) і дубль (S-4-4)', () => {
     expect(computeFlags({ ...base, currency: 'USD' })).toEqual(['foreign']);
     expect(computeFlags({ ...base, duplicate: true })).toEqual(['duplicate']);
+  });
+
+  it('foreign - «не гривня» за контрактом Фінансиста, а не «≠ валюта рахунку»', () => {
+    // Долари з ДОЛАРОВОГО рахунку - теж не гривня: у звіт мусять потрапити.
+    expect(computeFlags({ ...base, currency: 'USD', accountCurrency: 'USD' })).toEqual(['foreign']);
+    // Страховка на неоднозначність Mono: якщо currencyCode виявиться кодом
+    // рахунку, різниця сум усе одно видасть закордонну покупку.
+    expect(computeFlags({ ...base, currency: 'UAH', converted: true })).toEqual(['foreign']);
+    expect(computeFlags({ ...base, currency: 'UAH', converted: false })).toEqual([]);
   });
 
   it('підписка: облік, правило власника або періодичність (S-4-6)', () => {
@@ -334,6 +344,21 @@ describe('вебхук: бар’єри', () => {
     const res = await handleMonoWebhook(env2req(env, 'not-the-secret'), env, undefined, NOON);
     expect(res.status).toBe(404);
     expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()).toMatchObject({ n: 0 });
+  });
+
+  it('криве відсоткове екранування в шляху - той самий 404, не 500', async () => {
+    const { env } = setup();
+    const res = await handleMonoWebhook(
+      new Request(`https://svitanok.yushko.dev${MONO_WEBHOOK_PREFIX}%`, {
+        method: 'POST',
+        body: '{}',
+        headers: { 'content-type': 'application/json' },
+      }),
+      env,
+      undefined,
+      NOON,
+    );
+    expect(res.status).toBe(404);
   });
 
   it('GET на адресу з правильним секретом - 200 (Mono пінгує перед збереженням)', async () => {
@@ -685,6 +710,28 @@ describe('звірка mono-reconcile', () => {
     // Третій тік уже нічого не робить.
     routeFetch([]);
     expect(await monoReconcileTask(env, NIGHT)).toEqual({ skipped: 'done' });
+  });
+
+  it('незакінчений сеанс продовжується ПІСЛЯ опівночі (шостий рахунок не губиться)', async () => {
+    const { env } = setup();
+    const expected = monoWebhookUrl(env, 'https://svitanok.yushko.dev');
+    const twoAccounts = {
+      name: 'Назар',
+      webHookUrl: expected,
+      accounts: [
+        { id: ACCOUNT, currencyCode: 980, type: 'black', maskedPan: ['44**11'] },
+        { id: 'acc-usd', currencyCode: 840, type: 'black', maskedPan: ['44**22'] },
+      ],
+    };
+    routeFetch([{ match: 'client-info', body: twoAccounts }]);
+    await monoReconcileTask(env, NIGHT);
+    routeFetch([{ match: 'statement', body: [] }]);
+    await monoReconcileTask(env, NIGHT);
+    // Наступний тік - уже нова київська доба (00:05), поза вікном 23:30.
+    const afterMidnight = Date.parse('2026-09-07T21:05:00.000Z');
+    routeFetch([{ match: 'statement', body: [] }]);
+    const out = await monoReconcileTask(env, afterMidnight);
+    expect(out).toMatchObject({ done: true });
   });
 
   it('перший запуск - історія за 31 добу МОВЧКИ (S-4-11)', async () => {

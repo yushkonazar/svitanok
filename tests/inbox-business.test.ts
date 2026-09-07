@@ -293,6 +293,76 @@ describe('вхідні повідомлення (S-2-2)', () => {
     expect(outboxTexts(db)).toHaveLength(before);
   });
 
+  it('видалення 150 повідомлень: пачками по 100 (ліміт параметрів D1)', async () => {
+    const { env, db, d1 } = setup();
+    // Стаб на node:sqlite приймає скільки завгодно параметрів, а D1 - рівно
+    // 100, тож пінимо саме АРНІСТЬ bind, а не «рядки зникли».
+    const arity: number[] = [];
+    const inner = d1.stub.prepare;
+    (env as { DB: unknown }).DB = {
+      ...d1.stub,
+      prepare: (sql: string) => {
+        const st = inner(sql);
+        return {
+          bind: (...args: unknown[]) => {
+            if (/ IN \(/.test(sql)) arity.push(args.length);
+            return st.bind(...args);
+          },
+        };
+      },
+    };
+    await connect(env);
+    for (let i = 1; i <= 150; i += 1) {
+      await handleBusinessMessage(env, businessMessage({ message_id: i }) as never, NOON);
+    }
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_messages').get()).toMatchObject({ n: 150 });
+    const del = parseUpdate({
+      deleted_business_messages: {
+        business_connection_id: CONN,
+        chat: { id: -100 },
+        message_ids: Array.from({ length: 150 }, (_, i) => i + 1),
+      },
+    });
+    expect(await handleBusinessDeleted(env, del as never)).toMatchObject({ deleted: 150 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_messages').get()).toMatchObject({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_fts').get()).toMatchObject({ n: 0 });
+    expect(arity).not.toHaveLength(0);
+    expect(Math.max(...arity)).toBeLessThanOrEqual(100);
+  });
+
+  it('збій KV-лічильника не губить повідомлення', async () => {
+    const { d1, db } = setup();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const kv = memoryKv(new Map());
+    const env = workerEnv({
+      DB: d1.stub,
+      BRIEFING: {
+        ...kv,
+        put: async () => {
+          throw new Error('KV лежить');
+        },
+      },
+      ASSISTANT_V2: 'on',
+      TELEGRAM_CHAT_ID: '555',
+      TOPIC_ASSISTANT: '99',
+      TELEGRAM_OWNER_USER_ID: OWNER,
+    });
+    await runFactsSet(
+      env,
+      {
+        kind: 'setting',
+        key: BUSINESS_FACT_KEY,
+        value: { id: CONN, enabled: true, user_id: OWNER, at: '2026-09-07T00:00:00Z' },
+        source: 'owner',
+      },
+      NOON,
+    );
+    expect(await handleBusinessMessage(env, businessMessage() as never, NOON)).toMatchObject({
+      saved: true,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_messages').get()).toMatchObject({ n: 1 });
+  });
+
   it('id рядка - chat_id:msg_id (07 §1)', () => {
     expect(inboxId(-100, 10)).toBe('-100:10');
   });

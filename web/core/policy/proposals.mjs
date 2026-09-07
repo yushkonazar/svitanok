@@ -648,7 +648,9 @@ export const EXECUTORS = {
       await updateSubscription(env, {
         id: String(snapshot.id),
         status: String(snapshot.status),
-        next_at: snapshot.next_at ?? undefined,
+        // Саме `null`, а не `undefined`: підписці без дати «↩» мусить
+        // повернути її відсутність, а не лишити щойно проставлену.
+        next_at: snapshot.next_at ?? null,
       });
     },
   },

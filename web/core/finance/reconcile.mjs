@@ -15,6 +15,7 @@
 // відмовляв би всім транзакціям до 23:30.
 
 import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
+import { kyivDayStartMs } from './query.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { MonoTooSoonError, clientInfo, setWebhook, statement } from '../adapters/mono.mjs';
 import { isLoud } from './rules.mjs';
@@ -42,8 +43,9 @@ export const ANNOUNCE_MAX = 3;
  *   initial: boolean, fromS: number, toS: number, imported: number, loud: number }} ReconcileState
  */
 
-/** @param {Env} env @param {string} today @returns {Promise<ReconcileState>} */
-async function readState(env, today) {
+/** Стан сеансу з KV; null - сеансу ще не було. @param {Env} env
+ *  @returns {Promise<ReconcileState | null>} */
+async function readState(env) {
   /** @type {any} */
   let saved = null;
   try {
@@ -51,18 +53,21 @@ async function readState(env, today) {
   } catch (/** @type {any} */ e) {
     console.error('mono-reconcile: стан не читається, починаю з нуля', e?.message);
   }
-  if (saved?.date === today) {
-    return {
-      date: today,
-      phase: saved.phase === 'statement' || saved.phase === 'done' ? saved.phase : 'client',
-      idx: Number.isInteger(saved.idx) ? saved.idx : 0,
-      initial: saved.initial === true,
-      fromS: Number(saved.fromS) || 0,
-      toS: Number(saved.toS) || 0,
-      imported: Number(saved.imported) || 0,
-      loud: Number(saved.loud) || 0,
-    };
-  }
+  if (!saved?.date) return null;
+  return {
+    date: String(saved.date),
+    phase: saved.phase === 'statement' || saved.phase === 'done' ? saved.phase : 'client',
+    idx: Number.isInteger(saved.idx) ? saved.idx : 0,
+    initial: saved.initial === true,
+    fromS: Number(saved.fromS) || 0,
+    toS: Number(saved.toS) || 0,
+    imported: Number(saved.imported) || 0,
+    loud: Number(saved.loud) || 0,
+  };
+}
+
+/** @param {string} today @returns {ReconcileState} */
+function freshState(today) {
   return {
     date: today,
     phase: 'client',
@@ -101,26 +106,35 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   const minute = kyivMinuteOfDay(now);
   const accounts = await readMonoAccounts(env);
   const dueByClock = kyivHour(now) === RECONCILE_HOUR && minute % 60 >= RECONCILE_MINUTE;
+
+  const state = await readState(env);
+  // Незакінчений сеанс ПРОДОВЖУЄМО в будь-яку годину. Вікно [23:30, 24:00) -
+  // це лише шість тіків, тобто пʼять рахунків після фази client-info; шостий
+  // не звірявся б ніколи, бо опівночі змінюється київська доба. Тепер доба
+  // визначає, коли сеанс ПОЧАТИ, а не коли його обірвати.
+  const running = state != null && state.phase !== 'done';
+  const startNew = dueByClock && state?.date !== today;
   // Списку рахунків немає - вебхук відмовляє всім транзакціям (S-4-12), тож
   // не чекаємо 23:30, а йдемо по нього одразу.
-  if (!dueByClock && accounts.length) return { skipped: 'not-due' };
-
-  const state = await readState(env, today);
-  if (state.phase === 'done') return { skipped: 'done' };
+  const startNow = !accounts.length && !running;
+  if (!running && !startNew && !startNow) {
+    return { skipped: state?.date === today ? 'done' : 'not-due' };
+  }
+  const live = running ? /** @type {ReconcileState} */ (state) : freshState(today);
 
   try {
-    if (state.phase === 'client') return await phaseClient(env, state, nowMs);
-    return await phaseStatement(env, state, accounts, nowMs);
+    if (live.phase === 'client') return await phaseClient(env, live, nowMs);
+    return await phaseStatement(env, live, accounts, nowMs);
   } catch (/** @type {any} */ e) {
     if (e instanceof MonoTooSoonError) {
       // Не збій: наступний тік через 5 хв - Mono вже пустить.
       console.log('mono-reconcile: Mono просить зачекати, спробую наступним тіком');
       return { skipped: 'too-soon' };
     }
-    console.error(`mono-reconcile: фаза ${state.phase} впала`, e?.message);
+    console.error(`mono-reconcile: фаза ${live.phase} впала`, e?.message);
     await sendSystemAlert(env, `⚠️ Звірка Mono впала: ${String(e?.message ?? e)}`, nowMs);
     // Мітка дня НЕ ставиться: наступний тік спробує ту саму фазу ще раз.
-    return { failed: state.phase };
+    return { failed: live.phase };
   }
 }
 
@@ -240,8 +254,8 @@ async function finish(env, state, nowMs) {
   return { done: true, imported: state.imported, loud: state.loud };
 }
 
-/** Київська північ сьогодні в unix-секундах. @param {number} nowMs */
+/** Київська північ сьогодні в unix-секундах (той самий розрахунок, що у
+ *  finance.query - разом із зрізаними секундами). @param {number} nowMs */
 function dayStartS(nowMs) {
-  const minute = kyivMinuteOfDay(new Date(nowMs));
-  return Math.floor((nowMs - minute * 60_000) / 1000);
+  return Math.floor(kyivDayStartMs(nowMs) / 1000);
 }

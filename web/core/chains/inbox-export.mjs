@@ -136,10 +136,37 @@ function exportMedia(m) {
  */
 export async function runInboxExport(env, params, step, io) {
   const { chainId } = params;
-  /** @type {any} */
-  const raw = await step.do('download', () => io.download(params.fileId));
-  const parsed = parseExport(raw);
-  if (!parsed) {
+  // ⚠️ ОДИН крок на завантаження, розбір і вставку - і повертає він лише
+  // ПІДСУМОК. Workflows зберігає значення, яке повернув крок, як стан кроку, а
+  // стеля цього стану - 1 МіБ: розібраний експорт (до 20 МБ) через межу кроку
+  // не пролізе, і ланцюг падав би на серіалізації, а не на даних. Ідемпотентність
+  // при повторі кроку дає дедуп за `chat_id:msg_id` у `saveInboxMessage`.
+  const summary =
+    /** @type {{ ok: boolean, imported?: number, skipped?: number,
+     *   chatId?: string, title?: string, years?: string }} */ (
+      await step.do('import', async () => {
+        const parsed = parseExport(await io.download(params.fileId));
+        if (!parsed) return { ok: false };
+        const take = parsed.messages.slice(0, IMPORT_MAX);
+        let imported = 0;
+        for (let i = 0; i < take.length; i += BATCH) {
+          for (const msg of take.slice(i, i + BATCH)) {
+            const out = await io.save(msg);
+            if (out.saved) imported += 1;
+          }
+        }
+        return {
+          ok: true,
+          imported,
+          skipped: parsed.messages.length - take.length,
+          chatId: parsed.chatId,
+          title: parsed.title,
+          years: yearsOf(take),
+        };
+      })
+    );
+
+  if (!summary.ok) {
     await step.do('reject', async () => {
       await io.send(HINT_WRONG_FORMAT);
       await patchChainState(env, chainId, 'failed', { awaiting: null, reason: 'bad-format' });
@@ -147,36 +174,20 @@ export async function runInboxExport(env, params, step, io) {
     return { ok: false, reason: 'bad-format' };
   }
 
-  const take = parsed.messages.slice(0, IMPORT_MAX);
-  const skipped = parsed.messages.length - take.length;
-  let imported = 0;
-  for (let i = 0; i < take.length; i += BATCH) {
-    const chunk = take.slice(i, i + BATCH);
-    imported += /** @type {number} */ (
-      await step.do(`import-${i / BATCH}`, async () => {
-        let n = 0;
-        for (const msg of chunk) {
-          const out = await io.save(msg);
-          if (out.saved) n += 1;
-        }
-        return n;
-      })
-    );
-  }
-
+  const imported = Number(summary.imported ?? 0);
+  const skipped = Number(summary.skipped ?? 0);
   await step.do('done', async () => {
-    const years = yearsOf(take);
     const tail = skipped ? ` Перші ${IMPORT_MAX} - решту (${skipped}) не брав.` : '';
     await io.send(
-      `Завантажив ${imported} ${messagesWord(imported)} чату «${parsed.title}»${years}.${tail} Що шукати?`,
+      `Завантажив ${imported} ${messagesWord(imported)} чату «${summary.title}»${summary.years}.${tail} Що шукати?`,
     );
     await patchChainState(env, chainId, 'done', {
       awaiting: null,
-      chat_id_import: parsed.chatId,
+      chat_id_import: summary.chatId,
       imported,
     });
   });
-  return { ok: true, imported, skipped, chatId: parsed.chatId };
+  return { ok: true, imported, skipped, chatId: summary.chatId };
 }
 
 /** « за 2024-2026» або порожньо. @param {import('../inbox/store.mjs').InboxInput[]} rows */

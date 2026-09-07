@@ -232,6 +232,45 @@ describe('машина станів InboxExport', () => {
     expect(sent[0]).toContain('решту (3) не брав');
   });
 
+  it('через межу кроку Workflow їде лише ПІДСУМОК, не розібраний експорт', async () => {
+    const { env, db } = setup();
+    db.prepare(
+      `INSERT INTO chains (id, kind, state_json, status, created_at, updated_at)
+       VALUES ('c1', 'inbox-export', '{}', 'running', '2026-09-07T00:00:00Z', '2026-09-07T00:00:00Z')`,
+    ).run();
+    // Стеля стану кроку Workflows - 1 МіБ: якщо крок поверне сам експорт,
+    // будь-який реальний файл не пролізе. Тут пінимо РОЗМІР того, що крок
+    // повертає, а не лише результат ланцюга.
+    const returned: unknown[] = [];
+    const sizedStep = {
+      do: async (_name: string, fn: () => Promise<unknown>) => {
+        const out = await fn();
+        returned.push(out);
+        return out;
+      },
+    };
+    // Файл навмисно великий: на двох повідомленнях різниця між «підсумок» і
+    // «увесь експорт» непомітна, і проба нічого не доводила б.
+    const big = {
+      name: 'Великий',
+      id: 5,
+      type: 'personal_chat',
+      messages: Array.from({ length: 500 }, (_, i) => ({
+        id: i + 1,
+        type: 'message',
+        date_unixtime: String(Math.floor(NOON / 1000) - i),
+        from: 'Хтось',
+        text: `рядок ${i} ${'х'.repeat(80)}`,
+      })),
+    };
+    const { io } = fakeIo({ download: async () => big });
+    await runInboxExport(env, { chainId: 'c1', fileId: 'f1' }, sizedStep, io as never);
+    expect(returned).not.toHaveLength(0);
+    for (const value of returned) {
+      expect(JSON.stringify(value ?? null).length).toBeLessThan(1000);
+    }
+  });
+
   it('імпорт НЕ витрачає добову стелю вхідних', async () => {
     const { env, db } = setup();
     const res = await saveInboxMessage(
