@@ -255,7 +255,7 @@ export const TOOLS = {
     },
   },
   // chain.start / chain.cancel (07 §4, етап 5): T0 через policy; виконавці -
-  // chains/table.mjs (kind=table), trip/price - наступні PR етапу.
+  // chains/table.mjs (table), chains/price.mjs (price), chains/trip.mjs (trip).
   'chain.start': {
     args: {
       type: 'object',
@@ -276,6 +276,7 @@ export const TOOLS = {
       properties: {
         chain_id: { type: 'string', maxLength: 64 },
         kind: { type: 'string', maxLength: 32 },
+        trip_id: { type: 'string', maxLength: 120 },
       },
     },
     write: { kind: 'chain.cancel' },

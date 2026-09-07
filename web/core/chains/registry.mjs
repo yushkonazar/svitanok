@@ -11,6 +11,7 @@ export const CHAIN_BINDINGS = /** @type {const} */ ({
   idea: 'IDEA_ANALYSIS',
   table: 'TABLE_CHAIN',
   price: 'PRICE_TRACK',
+  trip: 'TRIP_CHAIN',
 });
 
 /** «скасуй столик», «відміни» - це для мозку (chain.cancel), не відповідь ланцюгу. */
@@ -56,6 +57,11 @@ const DAY_PLAN_TEXT_AWAITS = ['intent', 'answer'];
 export const TABLE_TEXT_AWAITS = ['venue_text', 'phone', 'time', 'invitees'];
 /** Стани TableChain з кнопками, де текст теж приймається, але лише певної форми. */
 const TABLE_BUTTON_AWAITS = ['venue', 'contact', 'next'];
+/** Стани TripChain: 'spent' - будь-який текст (сума + як пройшло), 'checklist' - лише сума. */
+const TRIP_TEXT_AWAITS = ['spent'];
+const TRIP_BUTTON_AWAITS = ['checklist'];
+/** Сума без іншого тексту: «3500», «3 500 грн», «1 200,50». */
+const MONEY_ONLY_RE = /^\s*\d[\d\s]*(?:[.,]\d{1,2})?\s*(?:грн|uah|₴|eur|€|usd|\$)?\s*$/i;
 
 /**
  * Ланцюг, що чекає слова власника ТЕКСТОМ (не лише кнопкою) у цьому треді:
@@ -65,7 +71,13 @@ const TABLE_BUTTON_AWAITS = ['venue', 'contact', 'next'];
  * @returns {Promise<{ id: string, kind: string, awaiting: string } | null>}
  */
 export async function findAwaitingChain(env, threadKey = null) {
-  const awaits = [...DAY_PLAN_TEXT_AWAITS, ...TABLE_TEXT_AWAITS, ...TABLE_BUTTON_AWAITS];
+  const awaits = [
+    ...DAY_PLAN_TEXT_AWAITS,
+    ...TABLE_TEXT_AWAITS,
+    ...TABLE_BUTTON_AWAITS,
+    ...TRIP_TEXT_AWAITS,
+    ...TRIP_BUTTON_AWAITS,
+  ];
   const { results } = await db(env)
     .prepare(
       `SELECT id, kind, json_extract(state_json, '$.awaiting') AS awaiting,
@@ -85,7 +97,10 @@ export async function findAwaitingChain(env, threadKey = null) {
     if (kind === 'table' && ![...TABLE_TEXT_AWAITS, ...TABLE_BUTTON_AWAITS].includes(awaiting)) {
       continue;
     }
-    if (kind !== 'day-plan' && kind !== 'table') continue;
+    if (kind === 'trip' && ![...TRIP_TEXT_AWAITS, ...TRIP_BUTTON_AWAITS].includes(awaiting)) {
+      continue;
+    }
+    if (kind !== 'day-plan' && kind !== 'table' && kind !== 'trip') continue;
     return { id: String(r.id), kind, awaiting };
   }
   return null;
@@ -113,6 +128,13 @@ export function textEvent(kind, awaiting, text) {
   if (kind === 'day-plan') {
     return DAY_PLAN_TEXT_AWAITS.includes(awaiting) ? { type: awaiting, payload: { text } } : null;
   }
+  if (kind === 'trip') {
+    if (CANCEL_TEXT_RE.test(text)) return null;
+    const trip = { type: 'trip', payload: { action: 'text', text } };
+    if (TRIP_TEXT_AWAITS.includes(awaiting)) return trip;
+    // Між блоками ланцюг бере лише суму (ціна квитка); решта - розмова.
+    return MONEY_ONLY_RE.test(text) ? trip : null;
+  }
   if (kind !== 'table' || CANCEL_TEXT_RE.test(text)) return null;
   const table = { type: 'table', payload: { action: 'text', text } };
   if (TABLE_TEXT_AWAITS.includes(awaiting)) return table;
@@ -136,6 +158,7 @@ export function textEvent(kind, awaiting, text) {
 export function choiceEvent(kind, choice) {
   if (kind === 'day-plan') return dayPlanChoiceEvent(choice);
   if (kind === 'table') return tableChoiceEvent(choice);
+  if (kind === 'trip') return tripChoiceEvent(choice);
   // Відстеження ціни (PR-3): єдина кнопка - «Стоп».
   if (kind === 'price' && choice === 'stop') return { type: 'price', payload: { action: 'stop' } };
   return null;
@@ -176,5 +199,20 @@ export function tableChoiceEvent(choice) {
   const r = choice.match(/^r([1-5])$/);
   if (r) return table({ action: 'rating', stars: Number(r[1]) });
   if (choice === 'rskip') return table({ action: 'rating', stars: null });
+  return null;
+}
+
+/**
+ * Поїздка (S-5-5…S-5-10): d<block>_<idx> - ✅ пункт чекліста; newdate -
+ * власник хоче інші дати (нові дати ланцюг не парсить: питає текстом, а
+ * дати кладе мозок через chain.start з trip_id); cancel - скасувати.
+ * @param {string} choice
+ */
+export function tripChoiceEvent(choice) {
+  const trip = (/** @type {Record<string, unknown>} */ payload) => ({ type: 'trip', payload });
+  if (choice === 'cancel') return trip({ action: 'cancel' });
+  if (choice === 'newdate') return trip({ action: 'ask-date' });
+  const d = choice.match(/^d(t30|t7|t1|road)_(\d{1,2})$/);
+  if (d) return trip({ action: 'done', item: `${d[1]}:${d[2]}` });
   return null;
 }

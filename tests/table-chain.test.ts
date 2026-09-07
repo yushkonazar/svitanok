@@ -504,7 +504,7 @@ describe('startTableChain (виконавець chain.start kind=table)', () => 
         { kind: 'chain.cancel', payload: { kind: 'day-plan' }, tainted: false },
         NOW,
       ),
-    ).rejects.toThrow(/лише table або price/);
+    ).rejects.toThrow(/скасувати можна table, price або trip/);
     const out = await applyPolicy(env, { kind: 'chain.cancel', payload: {}, tainted: false }, NOW);
     expect(out).toMatchObject({
       mode: 'executed',

@@ -192,7 +192,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.start',
     description:
-      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip - пізніше цим етапом (скажи прямо).',
+      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip («їдемо в Карпати 12-15 жовтня автом»): payload {to - куди, date_from і date_to? - YYYY-MM-DD, mode - car·bus·train·plane, from_city? - звідки, country? - країна (не Україна → кордонний чекліст), vehicle_key? - ключ facts.vehicle, depart_at? - година виїзду «HH:MM», trip_id? - ТІЛЬКИ щоб перенести наявну поїздку на нові дати}. Ядро веде чекліст T-30/T-7/T-1, «пора виходити» і підсумок витрат.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),
@@ -202,10 +202,11 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.cancel',
     description:
-      'Скасувати активний ланцюг («скасуй столик», «стоп відстежувати»): chain_id, якщо відомий, або kind (table | price) - тоді найсвіжіший активний цього виду.',
+      'Скасувати активний ланцюг («скасуй столик», «стоп відстежувати», «поїздка скасувалась»): chain_id, якщо відомий, або kind (table | price | trip) - тоді найсвіжіший активний цього виду; для поїздки можна trip_id або її назву.',
     args: z.object({
       chain_id: z.string().max(64).optional(),
       kind: z.string().max(32).optional(),
+      trip_id: z.string().max(120).optional(),
     }),
     write: true,
   }),

@@ -33,6 +33,7 @@ import {
 } from '../tools/ideas.mjs';
 import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
 import { startTableChain, cancelTableChain, findActiveTableChain } from '../chains/table.mjs';
+import { startTripChain, cancelTripChain } from '../chains/trip.mjs';
 import {
   startPriceTrack,
   cancelPriceTrack,
@@ -393,8 +394,8 @@ export const EXECUTORS = {
       return { result: { filename: csv.filename, rows: csv.rows } };
     },
   },
-  // Ланцюги (етап 5 PR-2, 07 §4 chain.start/cancel): table - тут; trip і
-  // price - наступні PR етапу, до того чесна відмова з назвою етапу.
+  // Ланцюги (07 §4 chain.start/cancel): table (PR-2), price (PR-3), trip
+  // (PR-4). Кожен kind - свій стартер; невідомий - чесна відмова.
   'chain.start': {
     async execute(env, payload, nowMs, ctx) {
       const kind = String(payload.kind ?? '');
@@ -457,11 +458,14 @@ export const EXECUTORS = {
         };
       }
       if (kind === 'trip') {
-        throw new Error('ланцюг «trip» приїде наступним PR етапу 5 - скажи власнику прямо');
+        // Поїздка (S-5-5): нова або - з trip_id - нові дати наявної.
+        const { result, prev } = await startTripChain(env, inner, nowMs, {
+          chatId: ctx?.chatId ?? null,
+          threadId: ctx?.threadId ?? null,
+        });
+        return { result, prev: prev ? { kind, ...prev } : undefined };
       }
-      throw new Error(
-        `chain.start: невідомий kind «${kind}»; дозволені: table, price (trip - пізніше)`,
-      );
+      throw new Error(`chain.start: невідомий kind «${kind}»; дозволені: table, price, trip`);
     },
     async undo(env, snapshot, nowMs) {
       // «↩» одразу після старту = скасування (S-1-12): ланцюг cancelled,
@@ -473,6 +477,12 @@ export const EXECUTORS = {
         }
         if (!(await cancelPriceTrack(env, String(snapshot.wish_id), nowMs))) {
           throw new Error('відстеження вже не активне - зупиняти нічого');
+        }
+        return;
+      }
+      if (snapshot.kind === 'trip') {
+        if (!(await cancelTripChain(env, String(snapshot.trip_id), nowMs))) {
+          throw new Error('поїздка вже не активна - скасовувати нічого');
         }
         return;
       }
@@ -498,9 +508,21 @@ export const EXECUTORS = {
           },
         };
       }
+      if (kind === 'trip') {
+        const ref = payload.trip_id ? String(payload.trip_id) : (chainId ?? null);
+        const trip = await cancelTripChain(env, ref, nowMs);
+        if (!trip) throw new Error('активної поїздки немає');
+        return {
+          result: {
+            cancelled: true,
+            trip_id: trip.id,
+            text: `Скасував поїздку «${trip.to}»`,
+          },
+        };
+      }
       if (kind !== 'table') {
         throw new Error(
-          `chain.cancel: скасувати можна лише table або price (kind «${kind}» - не цього етапу)`,
+          `chain.cancel: скасувати можна table, price або trip (kind «${kind}» невідомий)`,
         );
       }
       const active = await findActiveTableChain(env, chainId);

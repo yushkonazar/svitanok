@@ -163,8 +163,8 @@ describe('proposals.create: рівень бере kind з аргументів',
   });
 });
 
-describe('chain.start: kind поза етапом - чесна відмова', () => {
-  it('є в реєстрі як write (T0); trip/price - «приїде наступним PR», невідомий kind - перелік', async () => {
+describe('chain.start: невідомий kind і брак привʼязки - чесна відмова', () => {
+  it('є в реєстрі як write (T0); без привʼязки Workflow - її назва, невідомий kind - перелік', async () => {
     expect(TOOLS['chain.start']!.write).toEqual({ kind: 'chain.start' });
     expect(ACTION_LEVELS['chain.start']).toBe('T0');
     expect(ACTION_LEVELS['chain.cancel']).toBe('T0');
@@ -172,7 +172,7 @@ describe('chain.start: kind поза етапом - чесна відмова', 
     const { env } = makeEnv();
     await expect(
       applyPolicy(env, { kind: 'chain.start', payload: { kind: 'trip' }, tainted: false }, NOW),
-    ).rejects.toThrow(/приїде наступним PR/);
+    ).rejects.toThrow(/TRIP_CHAIN/);
     await expect(
       applyPolicy(env, { kind: 'chain.start', payload: { kind: 'x' }, tainted: false }, NOW),
     ).rejects.toThrow(/дозволені: table/);
@@ -182,6 +182,6 @@ describe('chain.start: kind поза етапом - чесна відмова', 
     const { env } = makeEnv();
     const { status, body } = await callTool(env, 'chain.start', { kind: 'trip' });
     expect(status).toBe(502);
-    expect(String(body.reason)).toContain('приїде наступним PR');
+    expect(String(body.reason)).toContain('TRIP_CHAIN');
   });
 });
