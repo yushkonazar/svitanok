@@ -152,6 +152,24 @@ describe('POST /internal/runs', () => {
       { id: 'ch-1', ev: { type: 'worker', payload: { mode: 'intent', output: { items: [] } } } },
     ]);
 
+    // kind=table → привʼязка TABLE_CHAIN (реєстр), не DAY_PLAN.
+    db.prepare(
+      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+       VALUES ('t-1', 'table', 't-1', '{}', 'waiting', 'x', 'x')`,
+    ).run();
+    const tableEvents: unknown[] = [];
+    (env as { TABLE_CHAIN?: unknown }).TABLE_CHAIN = {
+      create: async () => undefined,
+      get: async () => ({ sendEvent: async (ev: unknown) => void tableEvents.push(ev) }),
+    };
+    await handleInternal(
+      await request({ steps: [], outcome: { chain: { ...chain, id: 't-1' } } }),
+      env,
+      NOW,
+    );
+    expect(tableEvents).toHaveLength(1);
+    expect(events).toHaveLength(1);
+
     (env as { DAY_PLAN?: unknown }).DAY_PLAN = undefined;
     const noBinding = await handleInternal(
       await request({ steps: [], outcome: { chain } }),

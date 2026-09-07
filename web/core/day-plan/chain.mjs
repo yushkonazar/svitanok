@@ -472,28 +472,9 @@ function ddmm(date) {
 // ── Стан ланцюга в D1 (`chains`) ───────────────────────────────────────────
 
 // setChainState живе в chains/state.mjs (спільний з IdeaAnalysis); реекспорт
-// заради тестів і prerouter, що імпортують його звідси.
+// заради тестів. Пошук ланцюга, що чекає тексту, і доставка подій - у
+// chains/registry.mjs (етап 5: kind рядка вибирає привʼязку).
 export { setChainState };
-
-/**
- * Ланцюг плану, що чекає слова власника (intent/answer): prerouter віддає
- * туди текст замість мозку.
- * @param {Env} env
- * @returns {Promise<{ id: string, awaiting: string } | null>}
- */
-export async function findAwaitingDayPlan(env) {
-  if (!env.DB) return null;
-  const row = /** @type {any} */ (
-    await env.DB.prepare(
-      `SELECT id, json_extract(state_json, '$.awaiting') AS awaiting FROM chains
-       WHERE kind = ? AND status = 'waiting' AND json_extract(state_json, '$.awaiting') IN ('intent', 'answer')
-       ORDER BY updated_at DESC LIMIT 1`,
-    )
-      .bind(CHAIN_KIND)
-      .first()
-  );
-  return row ? { id: String(row.id), awaiting: String(row.awaiting) } : null;
-}
 
 /**
  * Створити ланцюг на дату: рядок у chains + інстанс Workflow (id = chainId,
@@ -513,17 +494,6 @@ export async function startDayPlanChain(env, date, nowMs) {
   await env.DAY_PLAN.create({ id: chainId, params: { chainId, date } });
   await upsertDayPlan(env, date, { status: 'intent', workflow_id: chainId }, nowMs);
   return chainId;
-}
-
-/**
- * Подія в ланцюг (07 §3 /internal/chain/event, кнопки c:, текст власника).
- * @param {Env} env @param {string} chainId @param {string} type @param {Record<string, unknown>} payload
- */
-export async function sendDayPlanEvent(env, chainId, type, payload) {
-  if (!env.DAY_PLAN) throw new Error('привʼязки DAY_PLAN (Workflow) немає');
-  const instance = await env.DAY_PLAN.get(chainId);
-  await instance.sendEvent({ type, payload });
-  return true;
 }
 
 /**

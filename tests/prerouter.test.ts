@@ -488,6 +488,77 @@ describe('prerouteMessage: нові команди', () => {
     expect(events).toHaveLength(1);
   });
 
+  // Етап 5 (security-ревʼю): після ✅ підпис несе гостей з РЕЗУЛЬТАТУ виконавця.
+  it('describeProposal: гості з результату invite/calendar.event у підписі, без керівних символів', () => {
+    expect(
+      describeProposal('invite', {
+        title: 'Креденс',
+        attendees: ['olya@x.ua', `a${String.fromCharCode(10)}b@y.ua`],
+      }),
+    ).toBe('invite «Креденс» (гості: olya@x.ua, a b@y.ua)');
+    expect(describeProposal('calendar.event', { title: 'X', attendees: [] })).toBe(
+      'calendar.event «X»',
+    );
+  });
+
+  // Етап 5: ланцюг столика - текст за формою стану, «скасуй» - у мозок,
+  // мʼякий рядок після доби тиші раз на день і лише в треді ланцюга.
+  it('ланцюг столика: текст у стані time → подія table; «скасуй столик» → мозок; мʼякий рядок після доби', async () => {
+    const reg = makeRegistryStub();
+    const { brain, tg } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const events: { id: string; ev: unknown }[] = [];
+    const env = makeEnv(reg, d1.stub);
+    (env as { TABLE_CHAIN?: unknown }).TABLE_CHAIN = {
+      create: async () => undefined,
+      get: async (id: string) => ({
+        sendEvent: async (ev: unknown) => void events.push({ id, ev }),
+      }),
+    };
+    const since = new Date(NOW - 30 * 3_600_000).toISOString();
+    d1.db
+      .prepare(
+        `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+         VALUES ('t-1', 'table', 't-1', ?, 'waiting', ?, ?)`,
+      )
+      .run(
+        JSON.stringify({
+          venue: 'Креденс',
+          thread_id: '99',
+          awaiting: 'time',
+          awaiting_since: since,
+        }),
+        since,
+        since,
+      );
+    expect(await prerouteMessage(env, parsedMsg('на 19:00', { threadId: 99 }), NOW)).toBe(true);
+    expect(events).toEqual([
+      { id: 't-1', ev: { type: 'table', payload: { action: 'text', text: 'на 19:00' } } },
+    ]);
+    expect(brain).toHaveLength(0);
+    // «скасуй столик» - у мозок (chain.cancel), без мʼякого рядка.
+    expect(await prerouteMessage(env, parsedMsg('скасуй столик', { threadId: 99 }), NOW + 1)).toBe(
+      true,
+    );
+    expect(events).toHaveLength(1);
+    expect(brain).toHaveLength(1);
+    expect(tg.filter((c) => String(c.body.text ?? '').includes('чекає вибору'))).toHaveLength(0);
+    // Інший текст у тому ж треді: у мозок + один мʼякий рядок на день.
+    d1.db
+      .prepare(`UPDATE chains SET state_json = json_set(state_json, '$.awaiting', 'venue')`)
+      .run();
+    expect(
+      await prerouteMessage(env, parsedMsg('що там з погодою?', { threadId: 99 }), NOW + 2),
+    ).toBe(true);
+    // Прогін «скасуй» ще активний - другий текст стає в чергу треду, не в мозок.
+    expect(events).toHaveLength(1);
+    expect(tg.filter((c) => String(c.body.text ?? '').includes('чекає вибору'))).toHaveLength(1);
+    expect(await prerouteMessage(env, parsedMsg('ще питання', { threadId: 99 }), NOW + 3)).toBe(
+      true,
+    );
+    expect(tg.filter((c) => String(c.body.text ?? '').includes('чекає вибору'))).toHaveLength(1);
+  });
+
   // Приймання етапу 3 (05.09): taint живе TAINT_TTL_MS після останнього
   // зовнішнього читання - у /run іде tainted за TTL, не «назавжди до /new».
   it('taint у /run: позначка 5 хв тому → tainted=true; 31 хв тому або легасі 1 → false', async () => {

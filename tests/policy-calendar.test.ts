@@ -93,6 +93,20 @@ describe('calendar.event', () => {
     expect(create.url).not.toContain('sendUpdates');
   });
 
+  it('reminderMinutes null / відʼємне / дробове - подія без нагадування, не «0 хв»', async () => {
+    for (const bad of [null, -5, 2.5, '5']) {
+      const { env, calls } = setup();
+      await approve(env, 'calendar.event', {
+        title: 'X',
+        startIso: '2026-09-07T15:00:00.000Z',
+        endIso: '2026-09-07T16:00:00.000Z',
+        reminderMinutes: bad,
+      });
+      const create = calls.find((c) => c.url.includes('/calendars/primary/events'))!;
+      expect((create.body as { reminders?: unknown }).reminders).toBeUndefined();
+    }
+  });
+
   it('кривий payload (без title / кінець до початку) - execute-failed без походу в Google', async () => {
     const { env, calls } = setup();
     const res = await approve(env, 'calendar.event', {

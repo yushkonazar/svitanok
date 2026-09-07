@@ -12,6 +12,9 @@ export const CHAIN_BINDINGS = /** @type {const} */ ({
   table: 'TABLE_CHAIN',
 });
 
+/** «скасуй столик», «відміни» - це для мозку (chain.cancel), не відповідь ланцюгу. */
+export const CANCEL_TEXT_RE = /скасу|відмін|відмов|не треба|cancel/i;
+
 /** @param {Env} env */
 function db(env) {
   if (!env.DB) throw new Error('привʼязки DB немає');
@@ -46,51 +49,82 @@ export async function sendChainEvent(env, chainId, type, payload) {
   return true;
 }
 
+/** Стани плану дня, що годуються текстом. */
+const DAY_PLAN_TEXT_AWAITS = ['intent', 'answer'];
+/** Стани TableChain, у яких власник відповідає текстом безумовно (назва/номер, час, імена). */
+export const TABLE_TEXT_AWAITS = ['venue_text', 'phone', 'time', 'invitees'];
+/** Стани TableChain з кнопками, де текст теж приймається, але лише певної форми. */
+const TABLE_BUTTON_AWAITS = ['venue', 'contact', 'next'];
+
 /**
- * Ланцюг, що чекає слова власника ТЕКСТОМ (не лише кнопкою): найсвіжіший
- * waiting із awaiting, який його kind уміє прочитати з тексту.
- * @param {Env} env
+ * Ланцюг, що чекає слова власника ТЕКСТОМ (не лише кнопкою) у цьому треді:
+ * той, що спитав останнім (awaiting_since), серед станів, які його kind уміє
+ * прочитати з тексту.
+ * @param {Env} env @param {string | null} [threadKey] - тред повідомлення ('dm' або id теми); null - будь-який
  * @returns {Promise<{ id: string, kind: string, awaiting: string } | null>}
  */
-export async function findAwaitingChain(env) {
+export async function findAwaitingChain(env, threadKey = null) {
+  const awaits = [...DAY_PLAN_TEXT_AWAITS, ...TABLE_TEXT_AWAITS, ...TABLE_BUTTON_AWAITS];
   const { results } = await db(env)
     .prepare(
-      `SELECT id, kind, json_extract(state_json, '$.awaiting') AS awaiting FROM chains
-       WHERE status = 'waiting' AND json_extract(state_json, '$.awaiting') IS NOT NULL
-       ORDER BY updated_at DESC LIMIT 10`,
+      `SELECT id, kind, json_extract(state_json, '$.awaiting') AS awaiting,
+              json_extract(state_json, '$.thread_id') AS thread_id
+       FROM chains
+       WHERE status = 'waiting' AND json_extract(state_json, '$.awaiting') IN (${awaits.map(() => '?').join(', ')})
+       ORDER BY COALESCE(json_extract(state_json, '$.awaiting_since'), updated_at) DESC LIMIT 10`,
     )
-    .bind()
+    .bind(...awaits)
     .all();
   for (const r of results ?? []) {
     const kind = String(r.kind);
     const awaiting = String(r.awaiting);
-    if (textEvent(kind, awaiting, '') !== null) return { id: String(r.id), kind, awaiting };
+    // Ланцюг столика памʼятає тред старту; план дня живе в темі «Асистент».
+    if (threadKey != null && r.thread_id != null && String(r.thread_id) !== threadKey) continue;
+    if (kind === 'day-plan' && !DAY_PLAN_TEXT_AWAITS.includes(awaiting)) continue;
+    if (kind === 'table' && ![...TABLE_TEXT_AWAITS, ...TABLE_BUTTON_AWAITS].includes(awaiting)) {
+      continue;
+    }
+    if (kind !== 'day-plan' && kind !== 'table') continue;
+    return { id: String(r.id), kind, awaiting };
   }
   return null;
 }
 
+/** «на 19:00», «о 19», «19.30» - лише годинник, без іншого тексту. @param {string} text */
+export function looksLikeClock(text) {
+  return /^\s*(?:о|на)?\s*\d{1,2}(?:[:.]\d{2})?\s*$/i.test(text);
+}
+
+/** Телефон (≥ 9 цифр) - для станів, де ланцюг просив номер. @param {string} text */
+function looksLikePhone(text) {
+  return (text.match(/\d/g) ?? []).length >= 9 && /^[\d\s()+-]+$/.test(text.trim());
+}
+
 /**
- * Текст власника → подія для ланцюга, що на нього чекає; null - цей стан
- * текстом не годується (кнопки або нічого), і текст іде в мозок.
+ * Текст власника → подія для ланцюга, що на нього чекає; null - цей текст
+ * ланцюгу не годиться (кнопки або інший зміст), і він іде в мозок. Слова
+ * скасування завжди йдуть у мозок: там chain.cancel, а ланцюг сприйняв би їх
+ * як назву закладу.
  * @param {string} kind @param {string} awaiting @param {string} text
  * @returns {{ type: string, payload: Record<string, unknown> } | null}
  */
 export function textEvent(kind, awaiting, text) {
   if (kind === 'day-plan') {
-    return awaiting === 'intent' || awaiting === 'answer'
-      ? { type: awaiting, payload: { text } }
-      : null;
+    return DAY_PLAN_TEXT_AWAITS.includes(awaiting) ? { type: awaiting, payload: { text } } : null;
   }
-  if (kind === 'table') {
-    return TABLE_TEXT_AWAITS.includes(awaiting)
-      ? { type: 'table', payload: { action: 'text', text } }
-      : null;
+  if (kind !== 'table' || CANCEL_TEXT_RE.test(text)) return null;
+  const table = { type: 'table', payload: { action: 'text', text } };
+  if (TABLE_TEXT_AWAITS.includes(awaiting)) return table;
+  // Кнопкові стани: у списку закладів - коротка назва або номер («напиши
+  // назву» з нагадування), після контакту - лише номер, після «Подзвонив» -
+  // лише годинник («напиши «на 19:00»»). Решта - розмова з асистентом.
+  if (awaiting === 'venue') {
+    return looksLikePhone(text) || (text.length <= 40 && !text.includes('?')) ? table : null;
   }
+  if (awaiting === 'contact') return looksLikePhone(text) ? table : null;
+  if (awaiting === 'next') return looksLikeClock(text) ? table : null;
   return null;
 }
-
-/** Стани TableChain, у яких власник відповідає текстом (назва/номер, час, імена). */
-export const TABLE_TEXT_AWAITS = ['venue_text', 'phone', 'time', 'invitees'];
 
 /**
  * Кнопка ланцюга → подія. Мапа choice → {type, payload} - єдине місце, де

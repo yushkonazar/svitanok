@@ -6,20 +6,25 @@
 //
 // Машина станів runTableChain(env, params, step, io): усі кроки через
 // step.do, очікування - ОДИН тип події `table` з payload.action (кнопки
-// c:<id>:<choice> і текст власника перекладає chains/registry.mjs), вихід у
-// світ - через io (повідомлення, контакт, точка на карті, довідник, маршрут,
-// пропозиції). Скасування - дія `cancel` у будь-якому очікуванні. Тиша
-// власника - штатний шлях: після 24 год ланцюг лишається waiting і мовчить
-// (нагадування +5/+20 шле задача chain-nudge, мʼякий рядок - prerouter),
+// c:<id>:<choice> і текст власника перекладає chains/registry.mjs; так
+// `cancel` приходить у будь-яке очікування без другого механізму), вихід у
+// світ - через io. Імена кроків ДЕТЕРМІНОВАНІ: фіксовані для одноразових
+// стадій і з індексом ітерації всередині кожного циклу - Workflows
+// відтворює код з початку після кожного пробудження, і лічильник, який
+// залежить від часу, дав би інші імена, ніж при першому проході. Кожен
+// побічний ефект - окремий step.do (повтор кроку не подвоює повідомлення).
+// Тиша власника - штатний шлях: після 24 год ланцюг лишається waiting і
+// мовчить (нагадування +5/+20 шле chain-nudge, мʼякий рядок - prerouter),
 // через 7 днів без вибору - done без результату.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { parseReminderTime } from '../../reminders-core.mjs';
+import { parseReminderTime, addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivClock, kyivDateKey } from '../../kyiv-time.mjs';
 import { kyivMs } from '../day-plan/store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { setChainState, readChainState, waitOrNull } from './state.mjs';
+import { patchChainState, readChainState, waitOrNull } from './state.mjs';
+import { sendChainEvent } from './registry.mjs';
 import {
   placesSearch,
   placeDetails,
@@ -42,30 +47,37 @@ export const WAIT_VENUE_MS = 24 * 3_600_000;
 /** Після тиші - ще тиждень waiting, далі done без результату. */
 export const QUIET_MAX_MS = 7 * 86_400_000;
 /** Відповіді текстом/кнопками всередині одного стану. */
-export const WAIT_STEP_MS = 3_600_000;
+const WAIT_STEP_MS = 3_600_000;
 /** «Пізніше» - повторити контакт через пів години. */
-export const LATER_MS = 30 * 60_000;
+const LATER_MS = 30 * 60_000;
 /** Локація з geo.last годиться для пошуку, поки їй ≤ 6 год (S-1-2). */
-export const GEO_FRESH_MS = 6 * 3_600_000;
+const GEO_FRESH_MS = 6 * 3_600_000;
 /** Бронь без відомого часу: «Як було?» через стільки після нагадування. */
-export const UNKNOWN_BOOKING_SPAN_MS = 6 * 3_600_000;
+const UNKNOWN_BOOKING_SPAN_MS = 6 * 3_600_000;
 /** Тривалість вечора для «Як було?» (07 §6: end + 2 год) і події запрошення. */
-export const BOOKING_SPAN_MS = 2 * 3_600_000;
-export const AFTER_END_MS = 2 * 3_600_000;
+const BOOKING_SPAN_MS = 2 * 3_600_000;
+const AFTER_END_MS = 2 * 3_600_000;
 /** Запас до виходу поверх часу в дорозі (S-1-9: «+ 3 хв»). */
 export const LEAVE_BUFFER_MIN = 3;
 /** Нагадування «не натиснув кнопку» (S-1-6): +5 і ще раз через 15 (= +20). */
 export const NUDGE_FIRST_MS = 5 * 60_000;
 export const NUDGE_SECOND_MS = 15 * 60_000;
 export const NUDGES_MAX = 2;
+/** Стелі ітерацій циклів - для детермінованих імен кроків, не логіки. */
+const VENUE_ROUNDS_MAX = 4;
+const CONTACT_ROUNDS_MAX = 6;
+const ACTIONS_MAX = 20;
+const SLEEP_ROUNDS_MAX = 5;
 
 /**
+ * @typedef {{ text: string, callback_data?: string, url?: string }[][]} Keyboard
  * @typedef {{
  *   now: () => number,
- *   send: (text: string, buttons?: { text: string, callback_data?: string, url?: string }[][]) => Promise<void>,
- *   sendContact: (phone: string, name: string, buttons?: { text: string, callback_data?: string, url?: string }[][]) => Promise<void>,
- *   sendVenue: (lat: number, lon: number, title: string, address: string, buttons?: { text: string, callback_data?: string, url?: string }[][]) => Promise<void>,
+ *   send: (text: string, buttons?: Keyboard) => Promise<void>,
+ *   sendContact: (phone: string, name: string, buttons?: Keyboard) => Promise<void>,
+ *   sendVenue: (lat: number, lon: number, title: string, address: string, buttons?: Keyboard) => Promise<void>,
  *   search: (query: string) => Promise<import('../adapters/maps.mjs').PlaceCandidate[]>,
+ *   cached: (placeId: string) => Promise<import('../adapters/maps.mjs').PlaceDetails | null>,
  *   details: (placeId: string) => Promise<import('../adapters/maps.mjs').PlaceDetails | null>,
  *   eta: (to: { lat: number, lon: number } | { place_id: string } | { address: string }, mode: 'walk' | 'transit' | 'car', from: string, departAtMs: number | null) => Promise<{ duration_min: number, distance_m: number } | null>,
  *   propose: (kind: string, payload: Record<string, unknown>) => Promise<{ id: string, buttons: unknown } | null>,
@@ -85,6 +97,8 @@ export const NUDGES_MAX = 2;
  *   nudge?: { at: string, n: number } | null, place_id?: string | null,
  *   manual?: { name: string, phone: string | null } | null, mode?: string | null,
  * }} TableState
+ * @typedef {import('../adapters/maps.mjs').PlaceDetails} PlaceDetails
+ * @typedef {import('../adapters/maps.mjs').PlaceCandidate} PlaceCandidate
  */
 
 /** @param {Env} env */
@@ -93,44 +107,100 @@ function db(env) {
   return env.DB;
 }
 
-/** Кнопки ланцюга (07 §9 `c:<id>:<choice>`). @param {string} chainId @param {[string, string][]} pairs */
-export function buttons(chainId, pairs) {
+/** Ряд кнопок ланцюга (07 §9 `c:<id>:<choice>`). @param {string} chainId @param {[string, string][]} pairs */
+function row(chainId, pairs) {
   return pairs.map(([text, choice]) => ({ text, callback_data: `c:${chainId}:${choice}` }));
+}
+
+/** Клавіатура кандидатів: назва · вулиця по одному в ряд + «Інший» + «✖». @param {string} chainId @param {PlaceCandidate[]} list */
+export function venueKeyboard(chainId, list) {
+  return [
+    ...list
+      .slice(0, PLACES_SEARCH_MAX)
+      .map((p, i) => row(chainId, [[`${p.name}${streetOf(p.address)}`, `v${i}`]])),
+    row(chainId, [
+      ['Інший', 'vother'],
+      ['✖ Скасувати', 'cancel'],
+    ]),
+  ];
 }
 
 // ── Старт з чату (виконавець chain.start kind=table) ───────────────────────
 
 /** Слова, що самі задають день: тоді «о 9» у минулому - не помилка, а завтра/дата. */
-const DAY_MARKER_RE = /завтра|післязавтра|\bчерез\b|\d{1,2}\.\d{2}|\d{1,2}\s+[а-яіїє]{4,}/i;
+const DAY_MARKER_RE =
+  /завтра|післязавтра|(?:^|\s)через(?:\s|$)|\d{1,2}\.\d{1,2}\.\d{2,4}|\d{1,2}\s+(?:січ|лют|бер|кві|тра|чер|лип|сер|вер|жов|лис|гру)/i;
+/** Голий час «14:00», «на 19», «о 19.30» - без слів про день. */
+const BARE_CLOCK_RE = /^\s*(?:о|на)?\s*(\d{1,2})(?:[:.](\d{2}))?\s*$/i;
 
 /**
- * Час нагадування з тексту моделі: природний («о 14:00», «завтра о 12») або
- * ISO зі зсувом. Голе «о 9:00», коли вже 10:00, парсер мовчки переносить на
- * завтра - тут це S-1-15: підказка «завтра о HH:MM?» у помилці, власник
- * вирішує сам (модель повторює з «завтра»).
+ * Час нагадування з тексту моделі: природний («о 14:00», «завтра о 12»),
+ * голий («14:00») або ISO зі зсувом. Голе «о 9:00», коли вже 10:00, парсер
+ * мовчки переносить на завтра - тут це S-1-15: підказка «завтра о HH:MM?»
+ * у помилці, власник вирішує сам (модель повторює з «завтра»).
  * @param {unknown} raw @param {number} nowMs
  */
 export function resolveAt(raw, nowMs) {
   const text = String(raw ?? '').trim();
   if (!text) throw new Error('at обовʼязковий («о 14:00», «завтра о 12»)');
   const iso = /^\d{4}-\d{2}-\d{2}T/.test(text) ? Date.parse(text) : NaN;
-  const ms = Number.isFinite(iso) ? iso : parseReminderTime(text, nowMs)?.whenMs;
+  if (Number.isFinite(iso)) {
+    if (iso <= nowMs) throw pastError(iso);
+    return iso;
+  }
+  const bare = text.match(BARE_CLOCK_RE);
+  if (bare) {
+    const todayMs = clockOnDay(Number(bare[1]), Number(bare[2] ?? 0), kyivDateKey(new Date(nowMs)));
+    if (todayMs == null) throw new Error(`не розібрав час «${text}»`);
+    if (todayMs <= nowMs) throw pastError(todayMs);
+    return todayMs;
+  }
+  const ms = parseReminderTime(text, nowMs)?.whenMs;
   if (ms == null || !Number.isFinite(ms)) {
     throw new Error(`не розібрав час «${text}» - попроси власника сказати інакше («о 14:00»)`);
   }
-  const clock = kyivClock(ms);
-  const todayMs = kyivMs(kyivDateKey(new Date(nowMs)), clock);
+  // Парсер уже перекотив на завтра? Той самий годинник сьогодні в минулому і
+  // різниця ≈ доба (DST ±1 год) - без слова про день це S-1-15.
+  const todayMs = kyivMs(kyivDateKey(new Date(nowMs)), kyivClock(ms));
   const rolled =
-    !Number.isFinite(iso) &&
     !DAY_MARKER_RE.test(text) &&
     todayMs != null &&
     todayMs <= nowMs &&
-    ms - todayMs >= 86_400_000 - 3_600_000;
-  if (ms <= nowMs || rolled) {
-    throw new Error(
-      `${clock} уже минуло - спитай власника: «завтра о ${clock}?» і повтори з «завтра о ${clock}»`,
-    );
-  }
+    Math.abs(ms - todayMs - 86_400_000) <= 3_600_000;
+  if (ms <= nowMs || rolled) throw pastError(ms);
+  return ms;
+}
+
+/** @param {number} ms */
+function pastError(ms) {
+  const clock = kyivClock(ms);
+  return new Error(
+    `${clock} уже минуло - спитай власника: «завтра о ${clock}?» і повтори з «завтра о ${clock}»`,
+  );
+}
+
+/** Київський момент HH:MM у день dateKey (null - кривий годинник). @param {number} h @param {number} m @param {string} dateKey */
+function clockOnDay(h, m, dateKey) {
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h > 23 || m > 59) return null;
+  return kyivMs(dateKey, `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+}
+
+/**
+ * Час броні відносно ДНЯ нагадування (S-1-8 «На котру?»): «19:00» / «о 19» /
+ * «на 19.30» → того ж київського дня, що й at; раніше за at (бронь до
+ * нагадування) - наступного дня. ISO зі зсувом - як є.
+ * @param {string} text @param {number} atMs
+ */
+export function resolveBookingAt(text, atMs) {
+  const raw = String(text ?? '').trim();
+  const iso = /^\d{4}-\d{2}-\d{2}T/.test(raw) ? Date.parse(raw) : NaN;
+  if (Number.isFinite(iso)) return iso;
+  const m = raw.match(/(\d{1,2})(?:[:.](\d{2}))?/);
+  if (!m) return null;
+  const day = kyivDateKey(new Date(atMs));
+  let ms = clockOnDay(Number(m[1]), Number(m[2] ?? 0), day);
+  if (ms == null) return null;
+  if (ms < atMs) ms = clockOnDay(Number(m[1]), Number(m[2] ?? 0), addDaysToDateKey(day, 1));
   return ms;
 }
 
@@ -146,11 +216,18 @@ function stringList(v) {
  * @param {Env} env @param {{ venue: string, city: string | null, candidates: string[] }} input @param {number} nowMs
  */
 export async function resolveCandidates(env, input, nowMs) {
-  const known = [];
-  for (const id of input.candidates.slice(0, PLACES_SEARCH_MAX)) {
-    if (await readPlace(env, id)) known.push(id);
+  const wanted = input.candidates.slice(0, PLACES_SEARCH_MAX);
+  if (wanted.length) {
+    const { results } = await db(env)
+      .prepare(
+        `SELECT place_id FROM places WHERE place_id IN (${wanted.map(() => '?').join(', ')})`,
+      )
+      .bind(...wanted)
+      .all();
+    const known = new Set((results ?? []).map((r) => String(r.place_id)));
+    const ids = wanted.filter((id) => known.has(id));
+    if (ids.length) return { ids, searched: false };
   }
-  if (known.length) return { ids: known, searched: false };
   let near = null;
   if (!input.city) {
     const geo = /** @type {any} */ ((await runGeoLast(env, nowMs)).result);
@@ -194,7 +271,11 @@ export async function startTableChain(env, payload, nowMs, ctx) {
     .slice(0, 120);
   if (!venue) throw new Error('venue обовʼязковий (назва закладу)');
   const atMs = resolveAt(payload.at, nowMs);
-  const bookingMs = payload.booking_at ? resolveAt(payload.booking_at, nowMs) : null;
+  let bookingMs = null;
+  if (payload.booking_at) {
+    bookingMs = resolveBookingAt(String(payload.booking_at), atMs);
+    if (bookingMs == null) throw new Error(`не розібрав час броні «${String(payload.booking_at)}»`);
+  }
   const city = payload.city ? String(payload.city).trim().slice(0, 60) : null;
   const found = await resolveCandidates(
     env,
@@ -225,7 +306,7 @@ export async function startTableChain(env, payload, nowMs, ctx) {
   try {
     await env.TABLE_CHAIN.create({ id: chainId, params: { chainId } });
   } catch (/** @type {any} */ e) {
-    await setChainState(env, chainId, { status: 'failed', awaiting: null });
+    await patchChainState(env, chainId, 'failed', { awaiting: null }, { nowMs });
     throw new Error(`Workflow столика не стартував: ${String(e?.message ?? e)}`, { cause: e });
   }
   const n = found.ids.length;
@@ -250,7 +331,9 @@ export async function startTableChain(env, payload, nowMs, ctx) {
 
 /**
  * Скасування (S-1-12, «↩» після старту, chain.cancel): статус cancelled +
- * подія cancel, щоб Workflow прокинувся одразу. false - ланцюг уже не активний.
+ * подія cancel, щоб Workflow прокинувся одразу; не доставилась - машина
+ * станів побачить cancelled на наступному записі стану. false - ланцюг уже
+ * не активний.
  * @param {Env} env @param {string} chainId
  */
 export async function cancelTableChain(env, chainId) {
@@ -262,10 +345,10 @@ export async function cancelTableChain(env, chainId) {
     .run();
   if (!meta?.changes) return false;
   try {
-    await sendTableEvent(env, chainId, { action: 'cancel' });
+    await sendChainEvent(env, chainId, 'table', { action: 'cancel' });
   } catch (/** @type {any} */ e) {
     console.error(
-      `table-chain ${chainId}: подія cancel не доставлена (закриє таймаут)`,
+      `table-chain ${chainId}: подія cancel не доставлена (закриє наступний запис стану)`,
       e?.message,
     );
   }
@@ -296,34 +379,33 @@ export async function findActiveTableChain(env, chainId) {
   return { id: String(row.id), venue: venueOf(row.state_json) };
 }
 
-/** @param {Env} env @param {string} chainId @param {Record<string, unknown>} payload */
-export async function sendTableEvent(env, chainId, payload) {
-  if (!env.TABLE_CHAIN) throw new Error('привʼязки TABLE_CHAIN (Workflow) немає');
-  const instance = await env.TABLE_CHAIN.get(chainId);
-  await instance.sendEvent({ type: 'table', payload });
-  return true;
+/** Назва з state_json (битий JSON - порожньо). @param {string | null} stateJson */
+function venueOf(stateJson) {
+  try {
+    return String(JSON.parse(stateJson ?? '{}')?.venue ?? '');
+  } catch {
+    return '';
+  }
 }
 
-// ── Стан у D1 ──────────────────────────────────────────────────────────────
-
 /**
- * Часткове оновлення state_json (json_patch: null у patch стирає ключ) +
- * статус. Один UPDATE, щоб паралельний chain-nudge не затер поле.
- * @param {Env} env @param {string} chainId
- * @param {'running' | 'waiting' | 'done' | 'failed' | 'cancelled'} status
- * @param {Record<string, unknown>} patch
+ * Адреса доставки ланцюга: чат/тред старту (стан), DM - особистий чат
+ * власника. Один розрахунок для машини станів і chain-nudge.
+ * @param {Env} env @param {{ chat_id?: number | string | null, thread_id?: string | null }} state
+ * @returns {{ chatId: string, threadId: string | null }}
  */
-export async function patchTableState(env, chainId, status, patch) {
-  await db(env)
-    .prepare(
-      `UPDATE chains SET status = ?, state_json = json_patch(COALESCE(state_json, '{}'), ?), updated_at = ? WHERE id = ?`,
-    )
-    .bind(status, JSON.stringify(patch), new Date().toISOString(), chainId)
-    .run();
+export function chainTarget(env, state) {
+  const isDm = state.thread_id === 'dm';
+  const chatId =
+    state.chat_id ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+  if (chatId == null)
+    throw new Error('немає чату для ланцюга (TELEGRAM_CHAT_ID / контекст старту)');
+  const threadId = isDm ? null : (state.thread_id ?? env.TOPIC_ASSISTANT ?? null);
+  return { chatId: String(chatId), threadId: threadId == null ? null : String(threadId) };
 }
 
 /** @param {Env} env @param {string} chainId @returns {Promise<TableState>} */
-async function loadState(env, chainId) {
+export async function loadTableState(env, chainId) {
   const row = await readChainState(env, chainId);
   if (!row) throw new Error(`ланцюга ${chainId} немає`);
   return /** @type {TableState} */ (row.state);
@@ -335,76 +417,75 @@ class Cancelled extends Error {}
 
 /**
  * @param {Env} env
- * @param {TableParams} params
+ * @param {TableParams & { state?: TableState }} params
  * @param {ChainStep} step
  * @param {TableIo} io
  */
 export async function runTableChain(env, params, step, io) {
   const { chainId } = params;
-  const state = await step.do('state', () => loadState(env, chainId));
-  let n = 0;
-  const name = (/** @type {string} */ s) => `${s}-${(n += 1)}`;
+  const state = params.state ?? (await step.do('state', () => loadTableState(env, chainId)));
+  let lastAwaiting = /** @type {string | null} */ (null);
 
   /**
-   * Перейти в стан очікування і дочекатись події (cancel - виняток нагору).
-   * Тиша - null. Патч стану - разом зі статусом waiting.
-   * @param {string} awaiting @param {number} ms @param {Record<string, unknown>} [patch]
+   * Запис стану, що шанує cancelled: chain.cancel міг поставити статус без
+   * доставленої події - тоді рядок не змінюється, і машина станів зупиняється.
+   * @param {'running' | 'waiting'} status @param {Record<string, unknown>} patch
+   */
+  const write = async (status, patch) => {
+    const ok = await patchChainState(env, chainId, status, patch, {
+      unlessCancelled: true,
+      nowMs: io.now(),
+    });
+    if (!ok) throw new Cancelled();
+  };
+  /**
+   * Перейти в стан очікування і дочекатись події (cancel - виняток нагору,
+   * тиша - null). awaiting_since не оновлюється, поки стан той самий (S-1-6:
+   * «понад добу» рахується від першого питання).
+   * @param {string} label @param {string} awaiting @param {number} ms @param {Record<string, unknown>} [patch]
    * @returns {Promise<Record<string, any> | null>}
    */
-  const waitFor = async (awaiting, ms, patch = {}) => {
-    await step.do(name('await'), () =>
-      patchTableState(env, chainId, 'waiting', {
-        awaiting,
-        awaiting_since: new Date(io.now()).toISOString(),
-        ...patch,
-      }),
-    );
-    const ev = await waitOrNull(step, name('wait'), 'table', ms);
+  const waitFor = async (label, awaiting, ms, patch = {}) => {
+    const since =
+      awaiting === lastAwaiting ? {} : { awaiting_since: new Date(io.now()).toISOString() };
+    lastAwaiting = awaiting;
+    await step.do(`${label}-await`, () => write('waiting', { awaiting, ...since, ...patch }));
+    const ev = await waitOrNull(step, `${label}-wait`, 'table', ms);
     if (ev?.action === 'cancel') throw new Cancelled();
-    // Скасовано ззовні (chain.cancel без доставки події) - теж кінець.
-    if (
-      ev == null &&
-      (await step.do(name('check'), () => readChainState(env, chainId)))?.status === 'cancelled'
-    ) {
-      throw new Cancelled();
-    }
     return ev;
   };
-  const run = (/** @type {Record<string, unknown>} */ patch = {}) =>
-    step.do(name('run'), () =>
-      patchTableState(env, chainId, 'running', { awaiting: null, nudge: null, ...patch }),
+  const run = (/** @type {string} */ label, /** @type {Record<string, unknown>} */ patch = {}) =>
+    step.do(`${label}-run`, () => write('running', { awaiting: null, nudge: null, ...patch }));
+  const abandon = (/** @type {string} */ label) =>
+    step.do(`${label}-abandon`, () =>
+      patchChainState(env, chainId, 'done', { awaiting: null, nudge: null }, { nowMs: io.now() }),
     );
+  const nudgeFrom = () => ({
+    nudge: { at: new Date(io.now() + NUDGE_FIRST_MS).toISOString(), n: 0 },
+  });
 
   try {
     // 1. Спати до часу нагадування; cancel може прийти й тут, інші події
     // (кнопок ще немає) - ігноруються, сон триває.
     const atMs = Date.parse(state.at);
-    while (atMs > io.now()) {
-      const early = await waitOrNull(step, name('until-at'), 'table', atMs - io.now());
+    for (let i = 0; i < SLEEP_ROUNDS_MAX && atMs > io.now(); i += 1) {
+      const early = await waitOrNull(step, `until-at-${i}`, 'table', atMs - io.now());
       if (early?.action === 'cancel') throw new Cancelled();
     }
 
-    // 2. Список закладів (S-1-5) або поле «назва/номер» (S-1-4).
-    const candidates = await step.do('candidates', async () => {
+    // 2. Список закладів (S-1-5) - з кешу без API - або поле «назва/номер» (S-1-4).
+    /** @type {PlaceCandidate[]} */
+    let candidates = await step.do('candidates', async () => {
       const list = [];
       for (const id of state.candidates) {
-        const p = await io.details(id).catch(() => null);
+        const p = await io.cached(id);
         if (p) list.push(p);
       }
       return list;
     });
-    /** @type {import('../adapters/maps.mjs').PlaceDetails | null} */
-    let place = null;
-    /** @type {{ name: string, phone: string | null } | null} */
-    let manual = null;
     if (candidates.length) {
       await step.do('venue-buttons', () =>
-        io.send(`Столик у ${state.venue}: який заклад?`, [
-          ...candidates.map((p, i) =>
-            buttons(chainId, [[`${p.name}${streetOf(p.address)}`, `v${i}`]]),
-          ),
-          buttons(chainId, [['Інший', 'vother']]),
-        ]),
+        io.send(`Столик у ${state.venue}: який заклад?`, venueKeyboard(chainId, candidates)),
       );
     } else {
       await step.do('venue-ask', () =>
@@ -414,23 +495,24 @@ export async function runTableChain(env, params, step, io) {
       );
     }
     // Вибір - до 24 год з нагадуваннями +5/+20 (chain-nudge), далі тиша до тижня.
-    let ev = await waitFor(candidates.length ? 'venue' : 'venue_text', WAIT_VENUE_MS, {
-      nudge: { at: new Date(io.now() + NUDGE_FIRST_MS).toISOString(), n: 0 },
-    });
+    const venueState = candidates.length ? 'venue' : 'venue_text';
+    let ev = await waitFor('venue', venueState, WAIT_VENUE_MS, nudgeFrom());
+    if (!ev) ev = await waitFor('venue-quiet', venueState, QUIET_MAX_MS, { nudge: null });
     if (!ev) {
-      ev = await waitFor(candidates.length ? 'venue' : 'venue_text', QUIET_MAX_MS, { nudge: null });
-      if (!ev) {
-        await run({ awaiting: null });
-        await step.do('abandon', () =>
-          setChainState(env, chainId, { status: 'done', awaiting: null }),
-        );
-        return { outcome: 'abandoned' };
-      }
+      await abandon('venue');
+      return { outcome: 'abandoned' };
     }
-    // Кнопка v<i> / «Інший» / текст.
-    for (let guard = 0; guard < 4 && !place && !manual; guard += 1) {
-      if (ev?.action === 'venue' && Number.isInteger(ev.index) && candidates[ev.index]) {
-        place = candidates[ev.index] ?? null;
+
+    // Кнопка v<i> / «Інший» / текст (назва або номер) - до 4 раундів.
+    /** @type {PlaceCandidate | null} */
+    let chosen = null;
+    /** @type {{ name: string, phone: string | null } | null} */
+    let manual = null;
+    for (let r = 0; r < VENUE_ROUNDS_MAX && !chosen && !manual; r += 1) {
+      const pick =
+        ev?.action === 'venue' && Number.isInteger(ev.index) ? candidates[ev.index] : null;
+      if (pick) {
+        chosen = pick;
         break;
       }
       const text = ev?.action === 'text' ? String(ev.text ?? '').trim() : '';
@@ -440,240 +522,308 @@ export async function runTableChain(env, params, step, io) {
           manual = { name: state.venue, phone };
           break;
         }
-        const found = await step.do(name('search'), () => io.search(text).catch(() => []));
-        if (found.length === 1 || (found.length > 1 && guard >= 1)) {
-          place = await step.do(name('details'), () =>
-            io.details(found[0]?.place_id ?? '').catch(() => null),
-          );
-          if (place) break;
+        const found = await step.do(`venue-${r}-search`, () =>
+          io.search(text).catch((/** @type {any} */ e) => {
+            console.error(`table-chain ${chainId}: пошук «${text}» упав`, e?.message);
+            return [];
+          }),
+        );
+        if (found.length === 1) {
+          chosen = found[0] ?? null;
+          break;
         }
         if (found.length > 1) {
-          await step.do(name('again'), () =>
-            io.send(`Знайшов кілька:`, [
-              ...found
-                .slice(0, PLACES_SEARCH_MAX)
-                .map((p, i) => buttons(chainId, [[`${p.name}${streetOf(p.address)}`, `v${i}`]])),
-              buttons(chainId, [['Інший', 'vother']]),
-            ]),
+          candidates = found.slice(0, PLACES_SEARCH_MAX);
+          await step.do(`venue-${r}-again`, () =>
+            io.send('Знайшов кілька:', venueKeyboard(chainId, candidates)),
           );
-          candidates.splice(0, candidates.length);
-          for (const p of found.slice(0, PLACES_SEARCH_MAX)) {
-            const d = await step.do(name('cand'), () => io.details(p.place_id).catch(() => null));
-            if (d) candidates.push(d);
-          }
-          ev = await waitFor('venue', WAIT_STEP_MS);
+          ev = await waitFor(`venue-${r}`, 'venue', WAIT_STEP_MS);
           continue;
         }
         // Нічого не знайшов - беремо як назву без довідника.
         manual = { name: text.slice(0, 120), phone: null };
         break;
       }
-      await step.do(name('ask-name'), () => io.send('Напиши назву закладу або номер телефону.'));
-      ev = await waitFor('venue_text', WAIT_STEP_MS);
+      await step.do(`venue-${r}-ask-name`, () =>
+        io.send('Напиши назву закладу або номер телефону.'),
+      );
+      ev = await waitFor(`venue-${r}`, 'venue_text', WAIT_STEP_MS);
       if (!ev) {
-        await step.do('abandon-name', () =>
-          setChainState(env, chainId, { status: 'done', awaiting: null }),
-        );
+        await abandon(`venue-${r}`);
         return { outcome: 'abandoned' };
       }
     }
-    if (!place && !manual) manual = { name: state.venue, phone: null };
-    await run({ place_id: place?.place_id ?? null, manual });
+    if (!chosen && !manual) {
+      // Чотири раунди без вибору - чесно закриваємо, а не вдаємо заклад.
+      await step.do('venue-giveup', () =>
+        io.send(`Заклад так і не обрано - закриваю ланцюг «столик у ${state.venue}».`),
+      );
+      await abandon('venue-giveup');
+      return { outcome: 'abandoned' };
+    }
+    // Деталі (SKU Enterprise) - ОДИН раз, для обраного (S-1-7, контракт adapters/maps).
+    /** @type {PlaceDetails | null} */
+    const place = chosen
+      ? await step.do('details', () =>
+          io
+            .details(/** @type {PlaceCandidate} */ (chosen).place_id)
+            .catch((/** @type {any} */ e) => {
+              console.error(`table-chain ${chainId}: деталі закладу впали`, e?.message);
+              return null;
+            }),
+        )
+      : null;
+    // Деталі впали - лишаємось із тим, що знали з пошуку.
+    const known = place ?? chosen ?? null;
+    await run('chosen', { place_id: known?.place_id ?? null, manual });
 
     // 3. Контакт (S-1-7): телефон + години, або «телефону немає» + ввести номер.
-    const title = place?.name ?? manual?.name ?? state.venue;
+    const title = known?.name ?? manual?.name ?? state.venue;
     let phone = place?.phone ?? manual?.phone ?? null;
     const siteBtn = place?.site ? [{ text: '🌐 Сайт', url: place.site }] : null;
-    for (let tries = 0; tries < 3; tries += 1) {
+    let called = false;
+    for (let t = 0; t < CONTACT_ROUNDS_MAX && !called; t += 1) {
       if (phone) {
-        await step.do(name('contact'), () =>
+        await step.do(`contact-${t}-send`, () =>
           io.sendContact(/** @type {string} */ (phone), title, [
-            buttons(chainId, [
+            row(chainId, [
               ['📞 Подзвонив', 'called'],
               ['⏰ Пізніше', 'later'],
             ]),
             ...(siteBtn ? [siteBtn] : []),
           ]),
         );
-        if (place?.hours.length) {
-          await step.do(name('hours'), () => io.send(`Години: ${place.hours.join('; ')}`));
+        if (t === 0 && place?.hours.length) {
+          await step.do('contact-hours', () => io.send(`Години: ${place.hours.join('; ')}`));
         }
       } else {
-        await step.do(name('no-phone'), () =>
+        await step.do(`contact-${t}-nophone`, () =>
           io.send(`${title}: телефону в довіднику немає.`, [
             ...(siteBtn ? [siteBtn] : []),
-            buttons(chainId, [
+            row(chainId, [
               ['Ввести номер', 'phone'],
               ['📞 Подзвонив', 'called'],
             ]),
           ]),
         );
       }
-      ev = await waitFor('contact', WAIT_VENUE_MS, {
-        nudge: { at: new Date(io.now() + NUDGE_FIRST_MS).toISOString(), n: 0 },
-      });
-      if (!ev) {
-        await step.do('abandon-contact', () =>
-          setChainState(env, chainId, { status: 'done', awaiting: null }),
+      // Чужі/застарілі кнопки ігноруються - чекаємо далі в тому ж стані.
+      let action = null;
+      for (let w = 0; w < CONTACT_ROUNDS_MAX && action == null; w += 1) {
+        ev = await waitFor(
+          `contact-${t}-${w}`,
+          'contact',
+          WAIT_VENUE_MS,
+          w === 0 ? nudgeFrom() : {},
         );
-        return { outcome: 'abandoned' };
+        if (!ev) {
+          await abandon(`contact-${t}`);
+          return { outcome: 'abandoned' };
+        }
+        if (
+          ev.action === 'called' ||
+          ev.action === 'later' ||
+          ev.action === 'phone' ||
+          ev.action === 'text'
+        ) {
+          action = String(ev.action);
+        }
       }
-      if (ev.action === 'called') break;
-      if (ev.action === 'later') {
-        await run();
-        await step.sleepUntil(name('later'), io.now() + LATER_MS);
+      if (action === 'called') {
+        called = true;
+        break;
+      }
+      if (action === 'later') {
+        await run(`contact-${t}-later`);
+        await step.sleepUntil(`contact-${t}-later-sleep`, io.now() + LATER_MS);
         continue;
       }
-      if (ev.action === 'phone' || ev.action === 'text') {
-        if (ev.action === 'phone') {
-          await step.do(name('ask-phone'), () => io.send('Напиши номер телефону закладу.'));
-          ev = await waitFor('phone', WAIT_STEP_MS);
-        }
-        const typed = ev?.action === 'text' ? phoneOf(String(ev.text ?? '')) : null;
-        if (typed) {
-          phone = typed;
-          continue;
-        }
-        await step.do(name('bad-phone'), () => io.send('Номер не розпізнав - напиши цифрами.'));
+      if (action === 'phone') {
+        await step.do(`contact-${t}-ask-phone`, () => io.send('Напиши номер телефону закладу.'));
+        ev = await waitFor(`contact-${t}-phone`, 'phone', WAIT_STEP_MS);
       }
+      const typed = ev?.action === 'text' ? phoneOf(String(ev.text ?? '')) : null;
+      if (typed) phone = typed;
+      else
+        await step.do(`contact-${t}-bad-phone`, () =>
+          io.send('Номер не розпізнав - напиши цифрами.'),
+        );
     }
-    await run();
-
-    // 4. Час броні (S-1-8: «На котру?»), точка на карті й дії.
-    let bookingMs = state.booking_at ? Date.parse(state.booking_at) : NaN;
-    if (!Number.isFinite(bookingMs)) {
-      await step.do(name('ask-time'), () => io.send('На котру годину бронь?'));
-      const t = await waitFor('time', WAIT_STEP_MS);
-      const parsed = t?.action === 'text' ? parseClock(String(t.text ?? ''), atMs, io.now()) : null;
-      if (parsed != null) bookingMs = parsed;
+    if (!called) {
+      await abandon('contact');
+      return { outcome: 'abandoned' };
     }
-    const bookingKnown = Number.isFinite(bookingMs);
-    const endMs = bookingKnown ? bookingMs + BOOKING_SPAN_MS : atMs + UNKNOWN_BOOKING_SPAN_MS;
-    await run({ booking_at: bookingKnown ? new Date(bookingMs).toISOString() : null });
+    await run('called');
 
+    // 4. Час броні (S-1-8: «На котру?») - відносно дня нагадування.
+    const booking = await step.do('booking', async () => {
+      const preset = state.booking_at ? Date.parse(state.booking_at) : NaN;
+      return Number.isFinite(preset) ? preset : null;
+    });
+    let bookingMs = booking;
+    if (bookingMs == null) {
+      await step.do('ask-time', () => io.send('На котру годину бронь?'));
+      const t = await waitFor('time', 'time', WAIT_STEP_MS);
+      bookingMs = await step.do('booking-parse', async () =>
+        t?.action === 'text' ? resolveBookingAt(String(t.text ?? ''), atMs) : null,
+      );
+    }
+    const bookingKnown = bookingMs != null;
+    const endMs = Math.max(
+      bookingKnown
+        ? /** @type {number} */ (bookingMs) + BOOKING_SPAN_MS
+        : atMs + UNKNOWN_BOOKING_SPAN_MS,
+      atMs + 3_600_000,
+    );
+    await run('booking', {
+      booking_at: bookingKnown ? new Date(/** @type {number} */ (bookingMs)).toISOString() : null,
+    });
+
+    const whenLabel = bookingKnown ? ` о ${kyivClock(/** @type {number} */ (bookingMs))}` : '';
     const actions = [
-      buttons(chainId, [
+      row(chainId, [
         ['🗺 Маршрут', 'route'],
         ['🕒 Запланувати вихід', 'leave'],
       ]),
-      buttons(chainId, [
+      row(chainId, [
         ['👥 Запросити', 'invite'],
         ['⭐ В улюблені', 'fav'],
         ['Готово', 'done'],
       ]),
     ];
-    if (place && place.lat != null && place.lon != null) {
+    if (known && known.lat != null && known.lon != null) {
       await step.do('venue-card', () =>
         io.sendVenue(
-          /** @type {number} */ (place.lat),
-          /** @type {number} */ (place.lon),
-          `${title}${bookingKnown ? ` о ${kyivClock(bookingMs)}` : ''}`,
-          place.address ?? '',
+          /** @type {number} */ (known.lat),
+          /** @type {number} */ (known.lon),
+          `${title}${whenLabel}`,
+          known.address ?? title,
           actions,
         ),
       );
     } else {
-      await step.do('venue-text', () =>
-        io.send(`${title}${bookingKnown ? ` о ${kyivClock(bookingMs)}` : ''} - записав.`, actions),
-      );
+      await step.do('venue-text', () => io.send(`${title}${whenLabel} - записав.`, actions));
     }
 
-    // 5. Дії до кінця вечора (кожна повертає до кнопок).
+    // 5. Дії до кінця вечора (кожна повертає до кнопок). Індекс - за подією,
+    // не за часом: імена кроків ті самі на кожному відтворенні.
     let mode = state.mode ?? null;
-    while (io.now() < endMs) {
-      ev = await waitFor('next', Math.min(WAIT_VENUE_MS, Math.max(60_000, endMs - io.now())));
+    for (let k = 0; k < ACTIONS_MAX && io.now() < endMs; k += 1) {
+      const a = `act-${k}`;
+      ev = await waitFor(a, 'next', Math.min(WAIT_VENUE_MS, Math.max(60_000, endMs - io.now())));
       if (!ev) break;
+      // Текст «на 19:00» у стані next (registry пропускає лише годинник):
+      // уточнення часу броні без кнопки.
+      if (ev.action === 'text') {
+        const fixed = await step.do(`${a}-time`, async () =>
+          resolveBookingAt(String(ev?.text ?? ''), atMs),
+        );
+        if (fixed != null) {
+          bookingMs = fixed;
+          await run(`${a}-time`, { booking_at: new Date(fixed).toISOString() });
+          await step.do(`${a}-time-ok`, () => io.send(`Бронь о ${kyivClock(fixed)} - записав.`));
+        }
+        continue;
+      }
       const choice = ev.action === 'next' ? String(ev.choice) : null;
       if (choice === 'done') break;
-      if (choice === 'fav' && place) {
-        await step.do(name('fav'), async () => {
-          await db(env)
+      if (choice === 'fav' && known) {
+        await step.do(`${a}-fav-db`, () =>
+          db(env)
             .prepare('UPDATE places SET is_favorite = 1 WHERE place_id = ?')
-            .bind(place.place_id)
-            .run();
-          await io.send(`${title} - в улюблених ⭐`);
-        });
+            .bind(known.place_id)
+            .run(),
+        );
+        await step.do(`${a}-fav-text`, () => io.send(`${title} - в улюблених ⭐`));
         continue;
       }
       if (choice === 'route' || choice === 'leave') {
-        const to = place
-          ? place.lat != null && place.lon != null
-            ? { lat: place.lat, lon: place.lon }
-            : { place_id: place.place_id }
+        const to = known
+          ? known.lat != null && known.lon != null
+            ? { lat: known.lat, lon: known.lon }
+            : { place_id: known.place_id }
           : { address: manual?.name ?? state.venue };
-        if (choice === 'route' && place?.maps_uri) {
-          await step.do(name('maps'), () => io.send(`Карта: ${place.maps_uri}`));
+        if (choice === 'route' && known?.maps_uri) {
+          await step.do(`${a}-maps`, () => io.send(`Карта: ${known.maps_uri}`));
         }
         let picked =
           choice === 'leave'
-            ? (mode ?? (await step.do(name('default-mode'), () => io.defaultMode())))
+            ? (mode ?? (await step.do(`${a}-default-mode`, () => io.defaultMode())))
             : null;
         if (!picked) {
-          await step.do(name('ask-mode'), () =>
+          await step.do(`${a}-ask-mode`, () =>
             io.send('Як добираєшся?', [
-              buttons(chainId, [
+              row(chainId, [
                 ['🚶 Пішки', 'mwalk'],
                 ['🚌 Транспорт', 'mtransit'],
                 ['🚗 Авто', 'mcar'],
               ]),
             ]),
           );
-          const m = await waitFor('mode', WAIT_STEP_MS);
+          const m = await waitFor(`${a}-mode`, 'mode', WAIT_STEP_MS);
           picked = m?.action === 'mode' ? String(m.mode) : null;
           if (!picked) continue;
         }
         mode = picked;
-        await run({ mode });
         const modeKey = /** @type {'walk' | 'transit' | 'car'} */ (mode);
-        const eta = await step.do(name('eta'), () =>
+        await run(`${a}-mode`, { mode });
+        const eta = await step.do(`${a}-eta`, () =>
           io
             .eta(to, modeKey, choice === 'leave' ? 'home' : 'here', bookingKnown ? bookingMs : null)
-            .catch((e) => {
+            .catch((/** @type {any} */ e) => {
               console.error(`table-chain ${chainId}: routes.eta впав`, e?.message);
-              return null;
+              return { error: String(e?.message ?? 'збій') };
             }),
         );
-        if (!eta) {
-          await step.do(name('no-eta'), () =>
-            io.send('Маршрут порахувати не вдалось - подивись на карті.'),
+        if (!eta || 'error' in eta) {
+          await step.do(`${a}-no-eta`, () =>
+            io.send(
+              `Маршрут порахувати не вдалось (${eta && 'error' in eta ? eta.error : 'немає даних'}).`,
+            ),
           );
           continue;
         }
         if (choice === 'route') {
-          await step.do(name('eta-text'), () =>
+          await step.do(`${a}-eta-text`, () =>
             io.send(`${eta.duration_min} хв ${modeWord(modeKey)}.`),
           );
           continue;
         }
-        if (!bookingKnown) {
-          await step.do(name('no-time'), () =>
+        if (!bookingKnown || bookingMs == null) {
+          await step.do(`${a}-no-time`, () =>
             io.send('Не знаю часу броні - напиши «на 19:00», і порахую вихід.'),
           );
           continue;
         }
         const leaveMs = bookingMs - (eta.duration_min + LEAVE_BUFFER_MIN) * 60_000;
-        const proposal = await step.do(name('propose-leave'), () =>
+        const proposal = await step.do(`${a}-propose-leave`, () =>
           io.propose('calendar.event', {
             title: `Вийти до «${title}»`,
             startIso: new Date(leaveMs).toISOString(),
-            endIso: new Date(bookingMs).toISOString(),
+            endIso: new Date(/** @type {number} */ (bookingMs)).toISOString(),
             reminderMinutes: 5,
-            location: place?.address ?? null,
+            location: known?.address ?? null,
           }),
         );
-        await step.do(name('leave-text'), () =>
+        await step.do(`${a}-leave-text`, () =>
           io.send(
             `Вийти о ${kyivClock(leaveMs)} (${modeWord(modeKey)} ${eta.duration_min} хв + ${LEAVE_BUFFER_MIN} хв)${proposal ? ' - у календар?' : ' (пропозицію в календар створити не вдалось)'}`,
-            proposal ? /** @type {any} */ (proposal.buttons) : undefined,
+            proposal ? /** @type {Keyboard} */ (proposal.buttons) : undefined,
           ),
         );
         continue;
       }
       if (choice === 'invite') {
+        if (!bookingKnown || bookingMs == null) {
+          await step.do(`${a}-invite-no-time`, () =>
+            io.send('Не знаю часу броні - напиши «на 19:00», тоді запрошу.'),
+          );
+          continue;
+        }
         let names = state.participants;
         if (!names.length) {
-          await step.do(name('ask-who'), () => io.send('Кого запросити? Імена через кому.'));
-          const who = await waitFor('invitees', WAIT_STEP_MS);
+          await step.do(`${a}-ask-who`, () => io.send('Кого запросити? Імена через кому.'));
+          const who = await waitFor(`${a}-who`, 'invitees', WAIT_STEP_MS);
           names =
             who?.action === 'text'
               ? String(who.text ?? '')
@@ -683,34 +833,28 @@ export async function runTableChain(env, params, step, io) {
               : [];
           if (!names.length) continue;
         }
-        if (!bookingKnown) {
-          await step.do(name('invite-no-time'), () =>
-            io.send('Не знаю часу броні - напиши «на 19:00», тоді запрошу.'),
-          );
-          continue;
-        }
-        const found = await step.do(name('attendees'), () => io.attendees(names));
+        const found = await step.do(`${a}-attendees`, () => io.attendees(names));
         if (!found.emails.length) {
-          await step.do(name('no-emails'), () =>
+          await step.do(`${a}-no-emails`, () =>
             io.send(
               `Email не знайшов: ${found.notes.join('; ') || names.join(', ')}. Скажи «email Олі - …», і запишу контакт.`,
             ),
           );
           continue;
         }
-        const proposal = await step.do(name('propose-invite'), () =>
+        const proposal = await step.do(`${a}-propose-invite`, () =>
           io.propose('invite', {
-            title: `${title}`,
-            startIso: new Date(bookingMs).toISOString(),
-            endIso: new Date(bookingMs + BOOKING_SPAN_MS).toISOString(),
+            title,
+            startIso: new Date(/** @type {number} */ (bookingMs)).toISOString(),
+            endIso: new Date(/** @type {number} */ (bookingMs) + BOOKING_SPAN_MS).toISOString(),
             attendees: found.emails,
-            location: place?.address ?? null,
+            location: known?.address ?? null,
           }),
         );
-        await step.do(name('invite-text'), () =>
+        await step.do(`${a}-invite-text`, () =>
           io.send(
-            `Запросити ${names.join(', ')} на ${kyivClock(bookingMs)} у ${title} (Calendar-запрошення)?${found.notes.length ? `\n${found.notes.join('\n')}` : ''}`,
-            proposal ? /** @type {any} */ (proposal.buttons) : undefined,
+            `Запросити ${names.join(', ')} (${found.emails.join(', ')}) на ${kyivClock(/** @type {number} */ (bookingMs))} у ${title} (Calendar-запрошення)?${found.notes.length ? `\n${found.notes.join('\n')}` : ''}`,
+            proposal ? /** @type {Keyboard} */ (proposal.buttons) : undefined,
           ),
         );
         continue;
@@ -718,47 +862,60 @@ export async function runTableChain(env, params, step, io) {
     }
 
     // 6. «Як було?» через 2 год після кінця (S-1-11).
-    await run();
+    await run('evening');
     await step.sleepUntil('after-end', endMs + AFTER_END_MS);
     await step.do('ask-rating', () =>
       io.send(`Як було у ${title}?`, [
-        buttons(chainId, [
+        row(chainId, [
           ['⭐1', 'r1'],
           ['⭐2', 'r2'],
           ['⭐3', 'r3'],
           ['⭐4', 'r4'],
           ['⭐5', 'r5'],
         ]),
-        buttons(chainId, [['Пропустити', 'rskip']]),
+        row(chainId, [['Пропустити', 'rskip']]),
       ]),
     );
-    const rated = await waitFor('rating', WAIT_VENUE_MS);
-    await step.do('finish', async () => {
-      const stars =
-        rated?.action === 'rating' && Number.isInteger(rated.stars) ? Number(rated.stars) : null;
-      if (place) {
-        await db(env)
+    const rated = await waitFor('rating', 'rating', WAIT_VENUE_MS);
+    const stars =
+      rated?.action === 'rating' && Number.isInteger(rated.stars) ? Number(rated.stars) : null;
+    if (known) {
+      // Один UPDATE - ідемпотентний відносно повтору кроку (visits +1 рівно раз).
+      await step.do('finish-place', () =>
+        db(env)
           .prepare(
             'UPDATE places SET rating_owner = COALESCE(?, rating_owner), visits = visits + 1 WHERE place_id = ?',
           )
-          .bind(stars, place.place_id)
-          .run();
-      }
+          .bind(stars, known.place_id)
+          .run(),
+      );
+    }
+    await step.do('finish-state', () =>
       // json_patch: null стирає ключ, тож оцінка пишеться лише коли є.
-      await patchTableState(env, chainId, 'done', {
-        awaiting: null,
-        nudge: null,
-        ...(stars != null ? { rating: stars } : {}),
-      });
-      if (stars != null) await io.send(`Записав ${stars}/5 для ${title}.`);
-    });
-    return { outcome: 'done', place_id: place?.place_id ?? null };
+      patchChainState(
+        env,
+        chainId,
+        'done',
+        { awaiting: null, nudge: null, ...(stars != null ? { rating: stars } : {}) },
+        { nowMs: io.now() },
+      ),
+    );
+    if (stars != null) {
+      await step.do('finish-text', () => io.send(`Записав ${stars}/5 для ${title}.`));
+    }
+    return { outcome: 'done', place_id: known?.place_id ?? null };
   } catch (e) {
     if (e instanceof Cancelled) {
-      await step.do('cancelled', async () => {
-        await patchTableState(env, chainId, 'cancelled', { awaiting: null, nudge: null });
-        await io.send(`Скасував ланцюг «столик у ${state.venue}».`);
-      });
+      await step.do('cancelled-state', () =>
+        patchChainState(
+          env,
+          chainId,
+          'cancelled',
+          { awaiting: null, nudge: null },
+          { nowMs: io.now() },
+        ),
+      );
+      await step.do('cancelled-text', () => io.send(`Скасував ланцюг «столик у ${state.venue}».`));
       return { outcome: 'cancelled' };
     }
     throw e;
@@ -767,15 +924,6 @@ export async function runTableChain(env, params, step, io) {
 
 // ── Помічники ──────────────────────────────────────────────────────────────
 
-/** Назва з state_json (битий JSON - порожньо). @param {string | null} stateJson */
-function venueOf(stateJson) {
-  try {
-    return String(JSON.parse(stateJson ?? '{}')?.venue ?? '');
-  } catch {
-    return '';
-  }
-}
-
 /** «вул. Вірменська 6, Львів» → « · вул. Вірменська 6». @param {string | null} address */
 export function streetOf(address) {
   if (!address) return '';
@@ -783,44 +931,26 @@ export function streetOf(address) {
   return first ? ` · ${first.slice(0, 40)}` : '';
 }
 
-/** Телефон із тексту (≥ 7 цифр, можливий +). @param {string} text */
+/**
+ * Телефон із тексту: групи по ≥ 2 цифри (пробіли/дужки/дефіси між ними),
+ * разом ≥ 9 цифр, можливий +. «на 7 8 9 10» - не телефон.
+ * @param {string} text
+ */
 export function phoneOf(text) {
-  const m = text.match(/\+?[\d\s()-]{7,}/);
+  const m = text.match(/\+?\d{2,}(?:[\s()-]*\d{2,})*/);
   if (!m) return null;
   const digits = m[0].replace(/[^\d+]/g, '');
-  return digits.replace(/\D/g, '').length >= 7 ? digits : null;
-}
-
-/**
- * «19:00» / «о 19» / «19» / «на 19.30» → мс того ж київського дня, що й
- * нагадування (або наступного, якщо вже минуло).
- * @param {string} text @param {number} atMs @param {number} nowMs
- */
-export function parseClock(text, atMs, nowMs) {
-  const m = text.match(/(\d{1,2})(?:[:.](\d{2}))?/);
-  if (!m) return null;
-  const h = Number(m[1]);
-  const mm = Number(m[2] ?? 0);
-  if (h > 23 || mm > 59) return null;
-  const hhmm = `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-  let ms = kyivMs(kyivDateKey(new Date(atMs)), hhmm);
-  if (ms == null) return null;
-  if (ms < nowMs) ms += 86_400_000;
-  return ms;
+  return digits.replace(/\D/g, '').length >= 9 ? digits : null;
 }
 
 // ── Бойове io ──────────────────────────────────────────────────────────────
 
 /**
- * @param {Env} env @param {string} chainId
- * @returns {Promise<TableIo>}
+ * @param {Env} env @param {string} chainId @param {TableState} state
+ * @returns {TableIo}
  */
-export async function productionIo(env, chainId) {
-  const state = await loadState(env, chainId);
-  const chatId = state.chat_id ?? env.TELEGRAM_CHAT_ID ?? null;
-  const threadId =
-    state.thread_id === 'dm' ? null : (state.thread_id ?? env.TOPIC_ASSISTANT ?? null);
-  if (chatId == null) throw new Error('TELEGRAM_CHAT_ID не задано');
+export function productionIo(env, chainId, state) {
+  const { chatId, threadId } = chainTarget(env, state);
   const post = async (
     /** @type {'send' | 'contact' | 'venue'} */ kind,
     /** @type {Record<string, unknown>} */ payload,
@@ -851,6 +981,7 @@ export async function productionIo(env, chainId) {
       post('venue', { latitude: lat, longitude: lon, title, address }, btns),
     search: async (query) =>
       (await placesSearch(env, { query, city: state.city, near: null }, Date.now())).places,
+    cached: (placeId) => readPlace(env, placeId),
     details: async (placeId) => (await placeDetails(env, placeId, Date.now())).place,
     eta: async (to, mode, from, departAtMs) => {
       const nowMs = Date.now();
@@ -909,12 +1040,15 @@ export class TableChain extends WorkflowEntrypoint {
     const env = /** @type {Env} */ (this.env);
     const params = /** @type {TableParams} */ (event.payload);
     try {
-      const io = await productionIo(env, params.chainId);
-      return await runTableChain(env, params, step, io);
+      // Стан - один мемоїзований крок: io і машина станів читають його раз.
+      const state = await step.do('state', () => loadTableState(env, params.chainId));
+      const io = productionIo(env, params.chainId, state);
+      return await runTableChain(env, { ...params, state }, step, io);
     } catch (/** @type {any} */ e) {
       console.error(`table chain ${params.chainId} впав`, e?.message);
-      await setChainState(env, params.chainId, { status: 'failed', awaiting: null }).catch(
-        () => {},
+      await patchChainState(env, params.chainId, 'failed', { awaiting: null, nudge: null }).catch(
+        (/** @type {any} */ e2) =>
+          console.error(`table chain ${params.chainId}: статус failed не записано`, e2?.message),
       );
       throw e;
     }

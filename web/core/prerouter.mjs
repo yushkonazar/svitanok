@@ -49,6 +49,7 @@ import {
   choiceEvent,
   textEvent,
   dayPlanChoiceEvent,
+  CANCEL_TEXT_RE,
 } from './chains/registry.mjs';
 import { softWaitingLine } from './chains/nudge.mjs';
 
@@ -245,7 +246,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // - текст іде подією в Workflow, не в мозок. Інші теми не чіпаємо: питання
   // ставилось саме тут. Збій доставки - у мозок, як звичайне повідомлення.
   if (threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
-    const awaiting = await findAwaitingChain(env).catch((/** @type {any} */ e) => {
+    const awaiting = await findAwaitingChain(env, threadKey).catch((/** @type {any} */ e) => {
       // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
       console.error('prerouter: пошук ланцюга впав', e?.message);
       return null;
@@ -259,9 +260,15 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
         console.error('prerouter: подія в ланцюг не доставлена', e?.message);
       }
     }
-    // Ланцюг столика чекає понад добу (S-1-6): мʼякий рядок раз на день.
-    const soft = await softWaitingLine(env, nowMs).catch(() => null);
-    if (soft) await reply(env, target, soft, nowMs);
+    // Ланцюг столика чекає понад добу (S-1-6): мʼякий рядок раз на день - не
+    // на «скасуй столик» (мозок зараз скасує) і лише для ланцюгів цього треду.
+    if (!CANCEL_TEXT_RE.test(text)) {
+      const soft = await softWaitingLine(env, nowMs, threadKey).catch((/** @type {any} */ e) => {
+        console.error('prerouter: мʼякий рядок ланцюга впав', e?.message);
+        return null;
+      });
+      if (soft) await reply(env, target, soft, nowMs);
+    }
   }
 
   await routeThreadText(env, target, threadKey, text, nowMs);
@@ -1146,7 +1153,21 @@ export function describeProposal(kind, obj) {
     .replace(/\p{Cc}+/gu, ' ')
     .trim()
     .slice(0, 80);
-  return clean ? `${kind} «${clean}»` : kind;
+  // Гості з РЕЗУЛЬТАТУ виконавця (calendar.event/invite, етап 5): власник
+  // мусить бачити, кому справді пішло запрошення, а не лише назву з payload
+  // моделі (security-ревʼю етапу 5).
+  const guests = Array.isArray(o.attendees)
+    ? o.attendees
+        .map((a) =>
+          String(a ?? '')
+            .replace(/\p{Cc}+/gu, ' ')
+            .trim(),
+        )
+        .filter(Boolean)
+        .slice(0, 10)
+    : [];
+  const tail = guests.length ? ` (гості: ${guests.join(', ')})` : '';
+  return clean ? `${kind} «${clean}»${tail}` : `${kind}${tail}`;
 }
 
 /**

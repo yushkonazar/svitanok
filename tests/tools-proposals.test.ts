@@ -5,7 +5,7 @@
 // пропозицію на дію X». Тому тут перевіряється наскрізний шлях через router
 // (де живе write.kindFrom), а не лише виконавець.
 //
-// chain.start - свідома заглушка до етапу 5: інструмент є, виконавця немає,
+// chain.start - з етапу 5 виконує kind=table; trip/price - чесна відмова,
 // і власник дістає чесне «виконавця ще немає» замість тиші.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

@@ -408,6 +408,12 @@ export const EXECUTORS = {
   },
   'chain.cancel': {
     async execute(env, payload) {
+      const kind = payload.kind == null ? 'table' : String(payload.kind);
+      if (kind !== 'table') {
+        throw new Error(
+          `chain.cancel: скасувати можна лише ланцюг table (kind «${kind}» - не цього етапу)`,
+        );
+      }
       const chainId = payload.chain_id ? String(payload.chain_id) : null;
       const active = await findActiveTableChain(env, chainId);
       if (!active) throw new Error('активного ланцюга столика немає');
@@ -484,9 +490,13 @@ async function createEventFromPayload(env, payload, requireAttendees) {
   if (requireAttendees && emails.length === 0) {
     throw new Error(`invite: жодного email (${notes.join('; ') || 'учасників не вказано'})`);
   }
-  const reminderMinutes = Number.isFinite(Number(payload.reminderMinutes))
-    ? Number(payload.reminderMinutes)
-    : undefined;
+  const reminderMinutes =
+    typeof payload.reminderMinutes === 'number' &&
+    Number.isInteger(payload.reminderMinutes) &&
+    payload.reminderMinutes >= 0 &&
+    payload.reminderMinutes <= 40_320
+      ? payload.reminderMinutes
+      : undefined;
   const created = await createCalendarEvent(env, {
     title,
     startIso: new Date(startMs).toISOString(),
