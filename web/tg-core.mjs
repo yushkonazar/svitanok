@@ -14,7 +14,9 @@ export const CB_VERSION = 'v1';
  * @typedef {{ kind: 'message', updateId: number|null, fromId: number|null,
  *             chatId: number|null, messageId: number|null, threadId: number|null,
  *             text: string, location: { latitude: number, longitude: number }|null,
- *             voice: { fileId: string, durationS: number, fileSize: number|null }|null }} ParsedMessage
+ *             voice: { fileId: string, durationS: number, fileSize: number|null }|null,
+ *             document: { fileId: string, fileName: string, mimeType: string|null,
+ *                         fileSize: number|null }|null }} ParsedMessage
  * @typedef {{ kind: 'other', updateId: number|null }} ParsedOther
  * Telegram Business (кейс 2, ADR-013): підключення приходить ВІД власника,
  * повідомлення - від співрозмовника, тож у другому `fromId` до перевірки
@@ -137,6 +139,19 @@ export function parseUpdate(update) {
             fileSize: Number.isFinite(v.file_size) ? Number(v.file_size) : null,
           }
         : null;
+    // document - лише ПОСИЛАННЯ на файл (S-2-6: експорт історії чату). Сам
+    // файл сюди не приходить; читає його ланцюг InboxExport і лише за явною
+    // дією власника.
+    const doc = m.document;
+    const document =
+      doc && typeof doc.file_id === 'string' && doc.file_id
+        ? {
+            fileId: doc.file_id,
+            fileName: String(doc.file_name ?? '').slice(0, 120),
+            mimeType: typeof doc.mime_type === 'string' ? doc.mime_type : null,
+            fileSize: Number.isFinite(doc.file_size) ? Number(doc.file_size) : null,
+          }
+        : null;
     return {
       kind: 'message',
       updateId,
@@ -147,6 +162,7 @@ export function parseUpdate(update) {
       text: typeof m.text === 'string' ? m.text : '',
       location,
       voice,
+      document,
     };
   }
   // Telegram Business (кейс 2, ADR-013, етап 6 PR-3). Три види апдейтів, і

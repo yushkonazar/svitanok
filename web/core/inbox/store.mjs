@@ -44,7 +44,10 @@ export function inboxId(chatId, messageId) {
 /**
  * Записати повідомлення. Повертає, чи додано (повтор і перевищення стелі -
  * false). `edited: true` - правка вже наявного рядка.
- * @param {Env} env @param {InboxInput & { edited?: boolean }} msg @param {number} nowMs
+ * `viaImport` - імпорт експорту (InboxExport, PR-4): добова стеля не діє,
+ * бо вона захищає від ЧУЖОГО потоку, а імпорт - свідома дія власника.
+ * @param {Env} env @param {InboxInput & { edited?: boolean, viaImport?: boolean }} msg
+ * @param {number} nowMs
  */
 export async function saveInboxMessage(env, msg, nowMs) {
   const id = inboxId(msg.chatId, msg.messageId);
@@ -65,8 +68,9 @@ export async function saveInboxMessage(env, msg, nowMs) {
 
   // Стеля рахується ДО запису: інакше «ліміт» означав би «пишемо все, потім
   // жаліємось».
-  const room = await takeDailyRoom(env, nowMs);
-  if (!room) return { saved: false, capped: true };
+  if (!msg.viaImport && !(await takeDailyRoom(env, nowMs))) {
+    return { saved: false, capped: true };
+  }
 
   const { meta } = await db(env)
     .prepare(
@@ -189,6 +193,25 @@ export async function forgetChat(env, chat) {
   // неправдою - переказ розмови лишився б у базі.
   const digests = await deleteDigestsFor(env, chats);
   return { messages, digests, chats: chats.length };
+}
+
+/**
+ * Чати з кількістю повідомлень - для меню `/forget` (S-0-5, S-2-8).
+ * @param {Env} env @param {number} [limit]
+ */
+export async function listInboxChats(env, limit = 10) {
+  const { results } = await db(env)
+    .prepare(
+      `SELECT chat_id, chat_title, COUNT(*) AS n FROM inbox_messages
+       GROUP BY chat_id ORDER BY n DESC LIMIT ?`,
+    )
+    .bind(Math.max(1, Math.min(50, limit)))
+    .all();
+  return (results ?? []).map((r) => ({
+    id: String(r.chat_id),
+    title: String(r.chat_title ?? r.chat_id),
+    messages: Number(r.n ?? 0),
+  }));
 }
 
 /** Чати за назвою (без регістру) або за id. @param {Env} env @param {string} needle */

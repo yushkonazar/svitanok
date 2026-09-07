@@ -176,6 +176,17 @@ interface Env {
       status?: () => Promise<unknown>;
     }>;
   };
+  /**
+   * Workflow імпорту експорту чату (етап 6 PR-4, 07 §6 InboxExport) - той
+   * самий контракт; подій не має (`sendEvent` лишається заради спільного типу).
+   */
+  INBOX_EXPORT?: {
+    create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;
+    get: (id: string) => Promise<{
+      sendEvent: (event: { type: string; payload?: unknown }) => Promise<void>;
+      status?: () => Promise<unknown>;
+    }>;
+  };
   /** Ключ IsThereAnyDeal (етап 0, 05-ops §секрети): знижки на ігри, задача steam-check. */
   ITAD_API_KEY?: string;
   /** Токен Monobank personal API (етап 0, 05-ops §секрети): вебхук і виписка. */

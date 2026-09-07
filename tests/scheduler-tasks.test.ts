@@ -46,6 +46,8 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'mono-reconcile',
       'finance-evening',
       'subscription-remind',
+      'inbox-digest',
+      'retention-cleanup',
     ]);
   });
 

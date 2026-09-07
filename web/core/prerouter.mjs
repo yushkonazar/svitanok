@@ -52,6 +52,8 @@ import {
   CANCEL_TEXT_RE,
 } from './chains/registry.mjs';
 import { softWaitingLine } from './chains/nudge.mjs';
+import { startInboxExport, FILE_MAX_BYTES } from './chains/inbox-export.mjs';
+import { listInboxChats } from './inbox/store.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -71,6 +73,8 @@ const MODELS = {
   quick: 'claude-haiku-4-5',
   'weekly-review': 'claude-sonnet-5',
   'day-planner': 'claude-sonnet-5',
+  // Дайджест чатів (етап 6 PR-4, 07 §5): Haiku з єдиним inbox.search.
+  'inbox-digest': 'claude-haiku-4-5',
 };
 /** Імʼя інструкції в D1 за маршрутом (дзеркало INSTRUCTION_NAME_BY_PROFILE мозку). */
 const INSTRUCTION_BY_ROUTE = {
@@ -78,8 +82,11 @@ const INSTRUCTION_BY_ROUTE = {
   quick: 'quick',
   'weekly-review': 'weekly-review',
   'day-planner': 'day-planner',
+  // 07 §5: «persona + правило дайджесту» - правило їде в тексті задачі, тож
+  // окремої інструкції в D1 (і рядка в sync-instructions) не заводимо.
+  'inbox-digest': 'persona',
 };
-/** @typedef {'chat' | 'quick' | 'weekly-review' | 'day-planner'} RunRoute */
+/** @typedef {'chat' | 'quick' | 'weekly-review' | 'day-planner' | 'inbox-digest'} RunRoute */
 
 // N3 (04-scenarios §N3): якорі власних даних - будь-який збіг = chat.
 // Суперсет канону безпечний: хибний chat коштує лише секунд, хибний quick -
@@ -128,7 +135,7 @@ const HINTS = {
 /**
  * Головний вхід з worker.js. true = оброблено новим шляхом (легасі не чіпати).
  * @param {Env} env
- * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null, voice?: { fileId: string, durationS: number, fileSize: number | null } | null }} parsed
+ * @param {{ kind?: string, chatId?: number | null, threadId?: number | string | null, text?: unknown, messageId?: number | null, fromId?: number | string | null, voice?: { fileId: string, durationS: number, fileSize: number | null } | null, document?: { fileId: string, fileName: string, mimeType: string | null, fileSize: number | null } | null }} parsed
  * @param {number} [nowMs]
  */
 export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
@@ -155,6 +162,13 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   if (parsed.voice) {
     await handleVoiceMessage(env, target, parsed.voice, nowMs);
     return true;
+  }
+
+  // Документ (S-2-6): експорт історії чату з Telegram Desktop. Файл САМ по
+  // собі нічого не запускає, крім цього ланцюга - і лише .json від власника у
+  // темі асистента. У shadow не працює: ланцюг пише в бойову базу.
+  if (parsed.document && mode === 'on') {
+    if (await handleExportDocument(env, target, parsed.document, nowMs)) return true;
   }
 
   let text = String(parsed.text ?? '').trim();
@@ -290,13 +304,24 @@ async function sendForgetMenu(env, target, nowMs) {
     await reply(env, target, `Колекції недоступні: ${String(e?.message ?? '')}`, nowMs);
     return;
   }
-  if (collections.length === 0) {
-    await reply(env, target, 'Забувати поки нічого: колекцій немає (чати - етап 6).', nowMs);
+  // Чати з Business (S-2-8) - у тому ж меню: «забути» для власника одне
+  // поняття, а те, що всередині це різні цілі forget, його не обходить.
+  const chats = await listInboxChats(env, 5).catch((/** @type {any} */ e) => {
+    console.error('prerouter: список чатів для /forget не зібрано', e?.message);
+    return [];
+  });
+  if (collections.length === 0 && chats.length === 0) {
+    await reply(env, target, 'Забувати поки нічого: ані колекцій, ані збережених чатів.', nowMs);
     return;
   }
-  const rows = collections
-    .slice(0, 10)
-    .map((c) => [{ text: `🗑 ${c.name} (${c.records})`, callback_data: `m:fg:${c.id}` }]);
+  const rows = [
+    ...collections
+      .slice(0, 10)
+      .map((c) => [{ text: `🗑 ${c.name} (${c.records})`, callback_data: `m:fg:${c.id}` }]),
+    ...chats.map((c) => [
+      { text: `🗑 чат ${c.title} (${c.messages})`, callback_data: `m:fgc:${c.id}` },
+    ]),
+  ];
   await reply(env, target, 'Що забути? Це T2 - після кнопки попрошу слово.', nowMs, {
     reply_markup: { inline_keyboard: rows },
   });
@@ -817,7 +842,10 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // m:fg:<id> - меню /forget (S-0-5): пропозиція T2 forget(collection) зі
   // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
   const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
-  if (fg) return forgetMenuToast(env, parsed, /** @type {string} */ (fg[1]), nowMs);
+  if (fg) return forgetMenuToast(env, parsed, { collection: /** @type {string} */ (fg[1]) }, nowMs);
+  // m:fgc:<chatId> - те саме для чату з Business (S-2-8): та сама T2 зі словом.
+  const fgc = data.match(/^m:fgc:(-?[A-Za-z0-9_]{1,40})$/);
+  if (fgc) return forgetMenuToast(env, parsed, { chat: /** @type {string} */ (fgc[1]) }, nowMs);
   // m:fx:<txId>:<choice> - кнопки під незвичною покупкою (S-4-2, S-4-4, етап 6
   // PR-1). Повідомлення будує ядро без моделі; модель вмикається лише тут,
   // коли власник САМ попросив («Перевірити ціни», «Категорія»).
@@ -889,22 +917,25 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
 }
 
 /**
- * Тап у меню /forget: створити T2-пропозицію forget(collection) і сказати
- * слово. Тред пропозиції - тред кнопки, щоб слово з того ж треду її знайшло.
+ * Тап у меню /forget: створити T2-пропозицію і сказати слово. Тред пропозиції
+ * - тред кнопки, щоб слово з того ж треду її знайшло.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {string} collectionId
+ * @param {{ collection?: string, chat?: string }} pick
  * @param {number} nowMs
  */
-async function forgetMenuToast(env, parsed, collectionId, nowMs) {
+async function forgetMenuToast(env, parsed, pick, nowMs) {
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  const payload = pick.chat
+    ? { target: 'chat', chat: pick.chat }
+    : { target: 'collection', collection: pick.collection };
   const out = await applyPolicy(
     env,
     {
       kind: 'forget',
-      payload: { target: 'collection', collection: collectionId },
+      payload,
       threadId: threadKey,
       chatId: parsed.chatId ?? null,
       tainted: false,
@@ -914,10 +945,13 @@ async function forgetMenuToast(env, parsed, collectionId, nowMs) {
   if (out.mode !== 'proposed')
     return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
   await clearKeyboard(env, parsed);
+  const what = pick.chat
+    ? 'усі збережені повідомлення чату і дайджести про нього'
+    : 'колекцію з усіма записами';
   await reply(
     env,
     target,
-    `Щоб стерти колекцію з усіма записами, напиши слово: ${out.proposal.word} (діє 10 хв).`,
+    `Щоб стерти ${what}, напиши слово: ${out.proposal.word} (діє 10 хв).`,
     nowMs,
   );
   return 'Чекаю слово';
@@ -975,6 +1009,46 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
     );
   } else await work();
   return 'Запускаю аналіз заново';
+}
+
+/**
+ * Надісланий документ (S-2-6, S-2-7). Беремо лише .json: усе інше власник міг
+ * прислати просто так, і мовчазний старт розбору був би несподіванкою.
+ * Повертає true, якщо апдейт оброблено тут.
+ * @param {Env} env @param {ThreadTarget} target
+ * @param {{ fileId: string, fileName: string, mimeType: string | null, fileSize: number | null }} doc
+ * @param {number} nowMs
+ */
+async function handleExportDocument(env, target, doc, nowMs) {
+  const json = /\.json$/i.test(doc.fileName) || doc.mimeType === 'application/json';
+  if (!json) return false;
+  if (doc.fileSize != null && doc.fileSize > FILE_MAX_BYTES) {
+    await reply(
+      env,
+      target,
+      `Файл ${Math.round(doc.fileSize / 1024 / 1024)} МБ - Telegram віддає ботам не більше 20 МБ. Виріж коротший період в експорті.`,
+      nowMs,
+    );
+    return true;
+  }
+  try {
+    await startInboxExport(
+      env,
+      {
+        fileId: doc.fileId,
+        fileName: doc.fileName,
+        chatId: target.chatId,
+        threadId: target.threadId == null ? THREAD_DM : String(target.threadId),
+      },
+      nowMs,
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: імпорт експорту не стартував', e?.message);
+    await reply(env, target, `Не вийшло почати імпорт: ${String(e?.message ?? e)}`, nowMs);
+    return true;
+  }
+  await reply(env, target, 'Читаю експорт - скажу, коли завантажу.', nowMs);
+  return true;
 }
 
 /**

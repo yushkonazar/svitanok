@@ -51,6 +51,7 @@ import {
   findWish,
 } from '../tools/wishes.mjs';
 import { runFinanceRule, restoreRule } from '../tools/finance.mjs';
+import { forgetChat } from '../inbox/store.mjs';
 import { updateSubscription } from '../finance/subscriptions.mjs';
 import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
 import {
@@ -365,7 +366,18 @@ export const EXECUTORS = {
         const { name, records } = await deleteCollection(env, payload.collection ?? payload.id);
         return { result: { erased: `колекція «${name}» (${records} зап.)` } };
       }
-      throw new Error(`forget: ціль «${target}» ще не підтримується (чат - етап 6, усе - етап 7)`);
+      // S-2-8: чат цілком - повідомлення, індекс і дайджести ЛИШЕ про нього.
+      if (target === 'chat') {
+        const { messages, digests } = await forgetChat(env, payload.chat ?? payload.name);
+        return {
+          result: {
+            erased: `${messages} ${plural(messages, 'повідомлення', 'повідомлення', 'повідомлень')} і ${digests} ${plural(digests, 'дайджест', 'дайджести', 'дайджестів')}`,
+            messages,
+            digests,
+          },
+        };
+      }
+      throw new Error(`forget: ціль «${target}» ще не підтримується (усе - етап 7)`);
     },
   },
   'collection.export': {
@@ -977,4 +989,14 @@ async function setStatus(env, id, status, nowMs) {
     .bind(status, new Date(nowMs).toISOString(), id)
     .run();
   return (res.meta?.changes ?? 0) === 1;
+}
+
+/** Число + форма слова (одна / дві / пʼять). @param {number} n
+ *  @param {string} one @param {string} few @param {string} many */
+function plural(n, one, few, many) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
 }

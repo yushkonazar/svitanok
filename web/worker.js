@@ -35,6 +35,7 @@ export { IdeaAnalysis } from './core/ideas/analysis.mjs';
 export { TableChain } from './core/chains/table.mjs';
 export { PriceTrack } from './core/chains/price.mjs';
 export { TripChain } from './core/chains/trip.mjs';
+export { InboxExport } from './core/chains/inbox-export.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
 import { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } from './core/finance/webhook.mjs';
