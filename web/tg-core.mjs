@@ -16,7 +16,20 @@ export const CB_VERSION = 'v1';
  *             text: string, location: { latitude: number, longitude: number }|null,
  *             voice: { fileId: string, durationS: number, fileSize: number|null }|null }} ParsedMessage
  * @typedef {{ kind: 'other', updateId: number|null }} ParsedOther
- * @typedef {ParsedCallback|ParsedMessage|ParsedOther} ParsedUpdate
+ * Telegram Business (кейс 2, ADR-013): підключення приходить ВІД власника,
+ * повідомлення - від співрозмовника, тож у другому `fromId` до перевірки
+ * власника не придатний (див. коментар у parseUpdate).
+ * @typedef {{ kind: 'business_connection', updateId: number|null, fromId: number|null,
+ *             connectionId: string|null, isEnabled: boolean, canReply: boolean }} ParsedBusinessConnection
+ * @typedef {{ kind: 'business_message', updateId: number|null, edited: boolean,
+ *             connectionId: string|null, chatId: number|null, chatTitle: string,
+ *             fromId: number|null, fromName: string, messageId: number|null,
+ *             dateS: number|null, text: string, mediaKind: string|null,
+ *             replyTo: number|null }} ParsedBusinessMessage
+ * @typedef {{ kind: 'business_deleted', updateId: number|null, connectionId: string|null,
+ *             chatId: number|null, messageIds: number[] }} ParsedBusinessDeleted
+ * @typedef {ParsedCallback|ParsedMessage|ParsedOther|ParsedBusinessConnection
+ *           |ParsedBusinessMessage|ParsedBusinessDeleted} ParsedUpdate
  */
 
 /**
@@ -136,7 +149,85 @@ export function parseUpdate(update) {
       voice,
     };
   }
+  // Telegram Business (кейс 2, ADR-013, етап 6 PR-3). Три види апдейтів, і
+  // тільки перший приходить ВІД ВЛАСНИКА: `business_connection.user` - це він
+  // сам. У `business_message` `from` - співрозмовник, тож перевірку «це
+  // власник» до нього застосовувати НЕ можна: замість неї - звірка
+  // `business_connection_id` з тим, що власник підключив (core/inbox).
+  if (update.business_connection) {
+    const bc = update.business_connection;
+    return {
+      kind: 'business_connection',
+      updateId,
+      fromId: bc.user?.id ?? null,
+      connectionId: typeof bc.id === 'string' ? bc.id : null,
+      isEnabled: bc.is_enabled !== false,
+      // rights - новий формат прав (заміна can_reply); нас цікавить лише
+      // факт підключення, відповідати бот не має права за задумом (ADR-013).
+      canReply: bc.rights?.can_reply === true || bc.can_reply === true,
+    };
+  }
+  if (update.business_message || update.edited_business_message) {
+    const edited = !update.business_message;
+    const m = update.business_message ?? update.edited_business_message;
+    return {
+      kind: 'business_message',
+      updateId,
+      edited,
+      connectionId: typeof m.business_connection_id === 'string' ? m.business_connection_id : null,
+      chatId: m.chat?.id ?? null,
+      chatTitle: chatTitleOf(m.chat),
+      fromId: m.from?.id ?? null,
+      fromName: personName(m.from),
+      messageId: m.message_id ?? null,
+      dateS: Number.isFinite(m.date) ? Number(m.date) : null,
+      text: typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : '',
+      mediaKind: mediaKindOf(m),
+      replyTo: m.reply_to_message?.message_id ?? null,
+    };
+  }
+  if (update.deleted_business_messages) {
+    const d = update.deleted_business_messages;
+    return {
+      kind: 'business_deleted',
+      updateId,
+      connectionId: typeof d.business_connection_id === 'string' ? d.business_connection_id : null,
+      chatId: d.chat?.id ?? null,
+      messageIds: Array.isArray(d.message_ids)
+        ? d.message_ids.filter((/** @type {unknown} */ x) => Number.isInteger(x)).slice(0, 200)
+        : [],
+    };
+  }
   return { kind: 'other', updateId };
+}
+
+/** Назва чату для списку: title групи або імʼя людини. @param {KvBlob} chat */
+function chatTitleOf(chat) {
+  if (!chat) return '';
+  if (typeof chat.title === 'string' && chat.title) return chat.title.slice(0, 120);
+  return personName(chat);
+}
+
+/** Імʼя людини: «Імʼя Прізвище» або @username. @param {KvBlob} who */
+function personName(who) {
+  if (!who) return '';
+  const full = [who.first_name, who.last_name]
+    .filter((x) => typeof x === 'string' && x)
+    .join(' ')
+    .trim();
+  if (full) return full.slice(0, 120);
+  return typeof who.username === 'string' ? `@${who.username}`.slice(0, 120) : '';
+}
+
+/** Вид вкладення - лише ЯРЛИК, самі файли не читаються й не зберігаються. */
+const MEDIA_FIELDS = ['photo', 'video', 'voice', 'audio', 'document', 'sticker', 'video_note'];
+
+/** @param {KvBlob} m */
+function mediaKindOf(m) {
+  for (const field of MEDIA_FIELDS) {
+    if (m?.[field]) return field;
+  }
+  return null;
 }
 
 /**

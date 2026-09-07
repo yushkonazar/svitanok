@@ -40,6 +40,11 @@ import { handleInternal } from './core/internal/router.mjs';
 import { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } from './core/finance/webhook.mjs';
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
 import { handleAssistantStatus } from './core/assistant-status.mjs';
+import {
+  handleBusinessConnection,
+  handleBusinessMessage,
+  handleBusinessDeleted,
+} from './core/inbox/connection.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
 import { allowedUserIds, isPrimaryOwner, checkOwnerRead } from './auth-core.mjs';
 import { json, readJsonBody, MAX_WEBHOOK_BODY_BYTES } from './http-core.mjs';
@@ -105,6 +110,21 @@ async function processTelegramUpdate(
   /** @type {string} */ origin,
 ) {
   try {
+    // Telegram Business (кейс 2, етап 6 PR-3). Свідомо ПЕРШИМ і окремою
+    // гілкою: `business_message` пише співрозмовник, а не власник, тож ані
+    // trackIncomingMessage, ані prerouter, ані handleCommand до нього не
+    // застосовні — його шлях закінчується рядком у D1 без жодного прогону.
+    if (
+      parsed.kind === 'business_connection' ||
+      parsed.kind === 'business_message' ||
+      parsed.kind === 'business_deleted'
+    ) {
+      await handleBusinessUpdate(env, /** @type {any} */ (parsed), Date.now());
+      if (typeof parsed.updateId === 'number') {
+        await updateState(env, (s) => ({ ...s, lastUpdateId: parsed.updateId }));
+      }
+      return;
+    }
     if (parsed.kind === 'callback') {
       const proposalCb = parseProposalCallbackData(parsed.data);
       const agendaCb = parseAgendaCallbackData(parsed.data); // 'ev:' — CRUD /agenda
@@ -198,6 +218,33 @@ async function processTelegramUpdate(
   }
 }
 
+/**
+ * Апдейти Telegram Business (ADR-013): підключення власника, нове/виправлене
+ * повідомлення з дозволеного чату, стерті повідомлення. Працює лише при
+ * ASSISTANT_V2=on: до фліпа нового шляху немає, а старий про Business нічого
+ * не знає.
+ * @param {Env} env
+ * @param {import('./tg-core.mjs').ParsedBusinessConnection
+ *   | import('./tg-core.mjs').ParsedBusinessMessage
+ *   | import('./tg-core.mjs').ParsedBusinessDeleted} parsed
+ * @param {number} nowMs
+ */
+async function handleBusinessUpdate(env, parsed, nowMs) {
+  if (env.ASSISTANT_V2 !== 'on') return;
+  try {
+    if (parsed.kind === 'business_connection') {
+      await handleBusinessConnection(env, parsed, nowMs);
+    } else if (parsed.kind === 'business_message') {
+      await handleBusinessMessage(env, parsed, nowMs);
+    } else {
+      await handleBusinessDeleted(env, parsed);
+    }
+  } catch (/** @type {any} */ e) {
+    // Збій запису одного повідомлення не має валити обробку наступних.
+    console.error(`inbox: апдейт ${String(parsed.kind)} не оброблено`, e?.message);
+  }
+}
+
 /** POST /api/telegram — Telegram Bot API webhook. Secret-token + owner + дедуп. */
 async function handleTelegramWebhook(
   /** @type {Request} */ request,
@@ -219,7 +266,13 @@ async function handleTelegramWebhook(
   const update = parsedBody.body;
   const parsed = parseUpdate(update);
 
-  if (!isOwner(parsed, allowedUserIds(env))) {
+  // `business_message`/`business_deleted` приходять від СПІВРОЗМОВНИКА, тож
+  // гейт «це власник» до них не застосовний — їх автентичність доводить
+  // `business_connection_id`, який звіряється в core/inbox (той самий мотив,
+  // що перевірка `account` у вебхуці Mono). `business_connection` іде через
+  // гейт як звичайний апдейт: у ньому `user` — це власник.
+  const business = parsed.kind === 'business_message' || parsed.kind === 'business_deleted';
+  if (!business && !isOwner(parsed, allowedUserIds(env))) {
     // Не власник/не в списку дозволених — тихо ігноруємо, не палимо деталі стороннім.
     return json({ ok: true });
   }

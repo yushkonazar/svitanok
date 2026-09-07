@@ -397,6 +397,7 @@ describe('реєстр TOOLS', () => {
       'ideas.list',
       'ideas.search',
       'ideas.update',
+      'inbox.search',
       'mail.read',
       'mail.search',
       'memory.search',
@@ -479,6 +480,9 @@ describe('реєстр TOOLS', () => {
       .sort();
     expect(tainting).toEqual([
       'drive.search',
+      // inbox.search віддає текст, який писали ІНШІ люди (Telegram Business,
+      // етап 6 PR-3) - головний шлях, яким чужий текст входить у контекст.
+      'inbox.search',
       'mail.read',
       'mail.search',
       'places.details',

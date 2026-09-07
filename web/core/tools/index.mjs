@@ -25,6 +25,7 @@ import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 import { runFinanceQuery } from './finance.mjs';
+import { runInboxSearch } from './inbox.mjs';
 
 /**
  * @typedef {{
@@ -656,6 +657,22 @@ export const TOOLS = {
     run: () => {
       throw new Error('wishes.delete виконується через policy, не напряму');
     },
+  },
+  // Вхідні з чужих чатів (етап 6 PR-3, 07 §4, S-2-3/S-2-4). TAINTING: усе, що
+  // повертає, написали інші люди - кожен текст іде в <external source="inbox">,
+  // а роутер піднімає sessions.tainted.
+  'inbox.search': {
+    args: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', maxLength: 120 },
+        q: { type: 'string', maxLength: 120 },
+        since: { type: 'string', maxLength: 32 },
+        limit: { type: 'number', minimum: 1, maximum: 30 },
+      },
+    },
+    tainting: true,
+    run: (env, args, nowMs) => runInboxSearch(env, args, nowMs),
   },
   // Гроші (етап 6 PR-2, 07 §4): читання транзакцій і підписок. Не tainting -
   // це власна база ядра; опис мерчанта зберігається вже нормалізованим, а
