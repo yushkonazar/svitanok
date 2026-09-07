@@ -34,6 +34,7 @@ import {
 import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
 import { startTableChain, cancelTableChain, findActiveTableChain } from '../chains/table.mjs';
 import { startTripChain, cancelTripChain } from '../chains/trip.mjs';
+import { importSteamWishlist } from '../steam/check.mjs';
 import {
   startPriceTrack,
   cancelPriceTrack,
@@ -558,6 +559,20 @@ export const EXECUTORS = {
     },
     async undo(env, snapshot, nowMs) {
       await deleteWishRow(env, String(snapshot.id), nowMs);
+    },
+  },
+  // Імпорт wishlist Steam (S-5-2): T0 з «↩» - відкат прибирає рівно ті
+  // бажання, які створив імпорт.
+  'wishes.import': {
+    async execute(env, payload, nowMs) {
+      const source = payload.source == null ? 'steam' : String(payload.source);
+      if (source !== 'steam')
+        throw new Error(`wishes.import: джерело «${source}» не підтримується`);
+      return importSteamWishlist(env, payload, nowMs);
+    },
+    async undo(env, snapshot, nowMs) {
+      const ids = Array.isArray(snapshot.ids) ? snapshot.ids.map(String) : [];
+      for (const id of ids) await deleteWishRow(env, id, nowMs);
     },
   },
   'wishes.update': {

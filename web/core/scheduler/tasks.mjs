@@ -35,6 +35,7 @@ import { dailyHintTask } from '../hints/daily-hint.mjs';
 import { dayPlanKickTask } from '../day-plan/kick.mjs';
 import { chainNudgeTask } from '../chains/nudge.mjs';
 import { priceTrackKickTask } from '../chains/price.mjs';
+import { steamCheckTask } from '../steam/check.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -139,4 +140,7 @@ export const SCHEDULER_TASKS = {
   // Відстеження цін (етап 5 PR-3, 07 §7): 09:00 Києва - бажання purchase з url
   // без активного PriceTrack → старт (після збою Workflow чи появи привʼязки).
   'price-track-kick': { periodMin: 5, run: async (env) => priceTrackKickTask(env) },
+  // Знижки на ігри (етап 5 PR-5, 07 §7): 10:00 Києва - батч ITAD по бажаннях
+  // type=game; гейт години й мітка дня - усередині задачі.
+  'steam-check': { periodMin: 5, run: async (env) => steamCheckTask(env) },
 };

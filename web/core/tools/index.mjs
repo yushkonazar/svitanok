@@ -608,6 +608,22 @@ export const TOOLS = {
       throw new Error('wishes.create виконується через policy, не напряму');
     },
   },
+  // S-5-2: імпорт публічного wishlist Steam. steam_id - або з аргументів,
+  // або з facts.setting.steam_id; повтор нічого не дублює.
+  'wishes.import': {
+    args: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', maxLength: 16 },
+        steam_id: { type: 'string', maxLength: 20 },
+        limit: { type: 'number', minimum: 1, maximum: 200 },
+      },
+    },
+    write: { kind: 'wishes.import' },
+    run: () => {
+      throw new Error('wishes.import виконується через policy, не напряму');
+    },
+  },
   'wishes.update': {
     args: {
       type: 'object',

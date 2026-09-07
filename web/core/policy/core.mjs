@@ -21,6 +21,7 @@ export const ACTION_LEVELS = {
   'ideas.analyze': 'T0',
   'wishes.create': 'T0',
   'wishes.update': 'T0',
+  'wishes.import': 'T0',
   'collections.create': 'T0',
   'collections.update': 'T0',
   'records.create': 'T0',

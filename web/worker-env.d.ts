@@ -176,6 +176,8 @@ interface Env {
       status?: () => Promise<unknown>;
     }>;
   };
+  /** Ключ IsThereAnyDeal (етап 0, 05-ops §секрети): знижки на ігри, задача steam-check. */
+  ITAD_API_KEY?: string;
   /** Read-only PAT на 4 репо (етап 0): HEAD-sha для кешу аналізу ідеї. */
   REPO_READ_PAT?: string;
   /** `workflow_dispatch` у brief.yml (крон-диспетч брифінгу) та idea-analysis.yml. */

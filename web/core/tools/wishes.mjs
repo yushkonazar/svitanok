@@ -14,6 +14,7 @@ import {
   parseAmount,
   trackingText,
 } from '../chains/price.mjs';
+import { resolveGameWish } from '../steam/check.mjs';
 
 export const WISH_TYPES = ['game', 'trip', 'purchase'];
 export const WISH_STATUSES = ['active', 'done', 'cancelled'];
@@ -172,6 +173,25 @@ export async function runWishesCreate(env, args, nowMs, ctx = {}) {
     }
   } else if (type === 'purchase') {
     result.note = 'без url ціну не відстежую - попроси посилання на товар';
+  } else if (type === 'game') {
+    // S-5-1: знаходимо гру в Steam і в ITAD одразу - далі щоденна перевірка
+    // знижок бере її батчем без жодного пошуку.
+    try {
+      const game = await resolveGameWish(env, {
+        id,
+        title,
+        appid: args.steam_appid == null ? null : Number(args.steam_appid),
+      });
+      if (game) {
+        result.text = game.text;
+        result.tracking = true;
+      } else {
+        result.note = 'у Steam такої гри не знайшов - скажи точну назву або appid';
+      }
+    } catch (/** @type {any} */ e) {
+      console.error(`wishes.create: гра «${title}» не знайдена`, e?.message);
+      result.note = `Steam/ITAD недоступні (${String(e?.message ?? e).slice(0, 80)}) - бажання записав, знижки перевірю завтра`;
+    }
   }
   return { result, prev: { id } };
 }

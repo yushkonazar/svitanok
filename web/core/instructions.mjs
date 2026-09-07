@@ -66,6 +66,10 @@ export const CANON_TOOLS = [
   'ideas.analyze',
   'wishes.create',
   'wishes.update',
+  // Понад канон 07 §4 (там перелік create·update·list·search·delete):
+  // імпорт публічного wishlist Steam - S-5-2 без окремого інструмента не
+  // робиться, бо це не «створити одне бажання».
+  'wishes.import',
   'wishes.list',
   'wishes.search',
   'wishes.delete',

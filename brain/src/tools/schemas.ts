@@ -230,7 +230,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'wishes.create',
     description:
-      'Записати бажання (T0 з «↩»): type game·trip·purchase, title; purchase - url товару і target_price (в основних одиницях, напр. 3299; currency типово UAH) - ядро одразу починає щоденне відстеження ціни й скаже при −5 % або ≤ target; game - steam_appid, якщо відомий. Відповідь містить text - скажи власнику саме його.',
+      'Записати бажання (T0 з «↩»): type game·trip·purchase, title; purchase - url товару і target_price (в основних одиницях, напр. 3299; currency типово UAH) - ядро одразу починає щоденне відстеження ціни й скаже при −5 % або ≤ target; game («хочу гру Hades II») - ядро само знайде її в Steam і в IsThereAnyDeal і щодня о 10:00 скаже про знижку чи історичний мінімум (steam_appid - лише якщо власник назвав його). Відповідь містить text - скажи власнику саме його.',
     args: z.object({
       type: z.string().max(16),
       title: z.string().min(1).max(200),
@@ -238,6 +238,17 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       target_price: z.number().min(0).optional(),
       currency: z.string().max(3).optional(),
       steam_appid: z.number().min(1).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'wishes.import',
+    description:
+      'Імпорт бажань з публічного wishlist Steam (T0 з «↩»): «імпортуй мій wishlist steam». steam_id (17 цифр) - лише якщо власник назвав його зараз; інакше ядро візьме facts.setting.steam_id і скаже, якщо його немає. limit - скільки ігор максимум (типово 100). Наявні ігри не дублюються. Відповідь містить text - скажи власнику саме його.',
+    args: z.object({
+      source: z.string().max(16).optional(),
+      steam_id: z.string().max(20).optional(),
+      limit: z.number().min(1).max(200).optional(),
     }),
     write: true,
   }),

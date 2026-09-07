@@ -419,6 +419,7 @@ describe('реєстр TOOLS', () => {
       'runs.query',
       'wishes.create',
       'wishes.delete',
+      'wishes.import',
       'wishes.list',
       'wishes.search',
       'wishes.update',
@@ -461,6 +462,7 @@ describe('реєстр TOOLS', () => {
       ['reminders.update', 'reminders.update'],
       ['wishes.create', 'wishes.create'],
       ['wishes.delete', 'wishes.delete'],
+      ['wishes.import', 'wishes.import'],
       ['wishes.update', 'wishes.update'],
     ]);
   });
