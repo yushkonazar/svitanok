@@ -18,6 +18,8 @@ import {
   runGeoGeocode,
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
+import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
+import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
@@ -97,7 +99,7 @@ export const TOOLS = {
   },
   'geo.last': {
     args: { type: 'object' },
-    run: (env) => runGeoLast(env),
+    run: (env, _args, nowMs) => runGeoLast(env, nowMs),
   },
   'geo.geocode': {
     args: {
@@ -105,7 +107,49 @@ export const TOOLS = {
       required: ['text'],
       properties: { text: { type: 'string', maxLength: 200 } },
     },
-    run: (env, args) => runGeoGeocode(env, args),
+    run: (env, args, nowMs) => runGeoGeocode(env, args, nowMs),
+  },
+  // Google Maps (етап 5 PR-1, ADR-011): заклади - зовнішній текст (tainting),
+  // маршрут - числа. Квоти рахує адаптер; 100 % - чесна відмова/кеш (S-1-14).
+  'places.search': {
+    args: {
+      type: 'object',
+      required: ['query'],
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 120 },
+        city: { type: 'string', maxLength: 60 },
+        near: {
+          type: 'object',
+          required: ['lat', 'lon'],
+          properties: { lat: { type: 'number' }, lon: { type: 'number' } },
+        },
+        limit: { type: 'number', minimum: 1, maximum: 8 },
+      },
+    },
+    tainting: true,
+    run: (env, args, nowMs) => runPlacesSearch(env, args, nowMs),
+  },
+  'places.details': {
+    args: {
+      type: 'object',
+      required: ['place_id'],
+      properties: { place_id: { type: 'string', minLength: 1, maxLength: 300 } },
+    },
+    tainting: true,
+    run: (env, args, nowMs) => runPlacesDetails(env, args, nowMs),
+  },
+  'routes.eta': {
+    args: {
+      type: 'object',
+      required: ['from', 'to', 'mode'],
+      properties: {
+        from: { type: 'string', minLength: 1, maxLength: 300 },
+        to: { type: 'string', minLength: 1, maxLength: 300 },
+        mode: { type: 'string', minLength: 3, maxLength: 8 },
+        depart_at: { type: 'string', maxLength: 40 },
+      },
+    },
+    run: (env, args, nowMs) => runRoutesEta(env, args, nowMs),
   },
   // ADR-038 (етап 2 PR-2): пошук у згортках власних розмов - НЕ tainting
   // (зовнішнього вмісту тут немає за побудовою: memory_chunks пише лише
@@ -210,9 +254,8 @@ export const TOOLS = {
       throw new Error('proposals.create виконується через policy, не напряму');
     },
   },
-  // chain.start - ЗАГЛУШКА до етапу 5 (Workflows). Інструмент присутній, щоб
-  // модель знала межу («ланцюг почнеться пізніше»), а не вигадувала обхід;
-  // виконавця немає навмисно, тож policy відповість no-executor.
+  // chain.start / chain.cancel (07 §4, етап 5): T0 через policy; виконавці -
+  // chains/table.mjs (table), chains/price.mjs (price), chains/trip.mjs (trip).
   'chain.start': {
     args: {
       type: 'object',
@@ -225,6 +268,20 @@ export const TOOLS = {
     write: { kind: 'chain.start' },
     run: () => {
       throw new Error('chain.start виконується через policy, не напряму');
+    },
+  },
+  'chain.cancel': {
+    args: {
+      type: 'object',
+      properties: {
+        chain_id: { type: 'string', maxLength: 64 },
+        kind: { type: 'string', maxLength: 32 },
+        trip_id: { type: 'string', maxLength: 120 },
+      },
+    },
+    write: { kind: 'chain.cancel' },
+    run: () => {
+      throw new Error('chain.cancel виконується через policy, не напряму');
     },
   },
   // Ідеї (етап 3 PR-4, 07 §4 `ideas.*`): list/search - читання власної бази;
@@ -510,6 +567,93 @@ export const TOOLS = {
     write: { kind: 'plan.review' },
     run: () => {
       throw new Error('plan.review виконується через policy, не напряму');
+    },
+  },
+  // Бажання (етап 5 PR-3, 07 §4 wishes.*): list/search - читання; create/update
+  // - T0 з «↩»; delete - T1. Ціни - в основних одиницях (3 299), код множить.
+  'wishes.list': {
+    args: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', maxLength: 16 },
+        status: { type: 'string', maxLength: 16 },
+        limit: { type: 'number', minimum: 1, maximum: 20 },
+      },
+    },
+    run: (env, args) => runWishesList(env, args),
+  },
+  'wishes.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: { q: { type: 'string', minLength: 2, maxLength: 120 } },
+    },
+    run: (env, args) => runWishesSearch(env, args),
+  },
+  'wishes.create': {
+    args: {
+      type: 'object',
+      required: ['type', 'title'],
+      properties: {
+        type: { type: 'string', maxLength: 16 },
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        url: { type: 'string', maxLength: 500 },
+        target_price: { type: 'number', minimum: 0 },
+        currency: { type: 'string', maxLength: 3 },
+        steam_appid: { type: 'number', minimum: 1 },
+      },
+    },
+    write: { kind: 'wishes.create' },
+    run: () => {
+      throw new Error('wishes.create виконується через policy, не напряму');
+    },
+  },
+  // S-5-2: імпорт публічного wishlist Steam. steam_id - або з аргументів,
+  // або з facts.setting.steam_id; повтор нічого не дублює.
+  'wishes.import': {
+    args: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', maxLength: 16 },
+        steam_id: { type: 'string', maxLength: 20 },
+        limit: { type: 'number', minimum: 1, maximum: 200 },
+      },
+    },
+    write: { kind: 'wishes.import' },
+    // Результат несе назви ігор зі Steam - це зовнішній вміст, тож тред
+    // позначається (роутер робить це і на write-шляху).
+    tainting: true,
+    run: () => {
+      throw new Error('wishes.import виконується через policy, не напряму');
+    },
+  },
+  'wishes.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 200 },
+        title: { type: 'string', maxLength: 200 },
+        url: { type: 'string', maxLength: 500 },
+        target_price: { type: 'number', minimum: 0 },
+        currency: { type: 'string', maxLength: 3 },
+        status: { type: 'string', maxLength: 16 },
+      },
+    },
+    write: { kind: 'wishes.update' },
+    run: () => {
+      throw new Error('wishes.update виконується через policy, не напряму');
+    },
+  },
+  'wishes.delete': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', maxLength: 200 } },
+    },
+    write: { kind: 'wishes.delete' },
+    run: () => {
+      throw new Error('wishes.delete виконується через policy, не напряму');
     },
   },
   'facts.set': {

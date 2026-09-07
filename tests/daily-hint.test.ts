@@ -126,6 +126,17 @@ describe('pickHint - пріоритет і mute', () => {
       topic: 'trips',
       text: 'Поїздка «Львів» через 4 дні - перевір чеклист.',
     });
+    // Поїздку з живим ланцюгом підказка мовчки пропускає: чеклист шле сам
+    // ланцюг, інакше власник почув би про ту саму поїздку двічі.
+    d1.db.prepare(`UPDATE trips SET workflow_id = 'tc1' WHERE id = 't1'`).run();
+    d1.db
+      .prepare(
+        `INSERT INTO chains (id, kind, status, created_at, updated_at) VALUES ('tc1', 'trip', 'waiting', '2026-09-01T00:00:00Z', '2026-09-03T00:00:00Z')`,
+      )
+      .run();
+    expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('subscriptions');
+    d1.db.prepare(`UPDATE chains SET status = 'cancelled' WHERE id = 'tc1'`).run();
+    expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('trips');
     expect(await pickHint(env, TODAY, AT_1010, ['trips'])).toEqual({
       topic: 'subscriptions',
       text: 'Списання Spotify 4.99 USD - 06.09.',

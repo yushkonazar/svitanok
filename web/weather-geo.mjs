@@ -47,8 +47,20 @@ const WEATHER_LOCATIONS_FALLBACK = [
  * підмінити локацію не можна — тому в лог іде явна причина.
  */
 function ownerLocations(/** @type {Env} */ env) {
+  // KvBlob[] - як і доти (масив із секрету без оголошеної схеми, C1).
+  return /** @type {KvBlob[]} */ (configuredLocations(env) ?? WEATHER_LOCATIONS_FALLBACK);
+}
+
+/**
+ * Локації з секрету OWNER_LOCATIONS БЕЗ публічного фолбеку: null, коли
+ * секрету немає або він битий (у лог іде причина). Перша - «дім» для
+ * routes.eta (етап 5): публічний обласний центр домом бути не може.
+ * @param {Env} env
+ * @returns {{ lat: number, lon: number, name: string }[] | null}
+ */
+export function configuredLocations(env) {
   const raw = (env?.OWNER_LOCATIONS ?? '').trim();
-  if (!raw) return WEATHER_LOCATIONS_FALLBACK;
+  if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
     const ok =
@@ -66,7 +78,7 @@ function ownerLocations(/** @type {Env} */ env) {
     return parsed;
   } catch (/** @type {any} */ e) {
     console.error('OWNER_LOCATIONS невалідні — працюю на публічному фолбеку:', e.message);
-    return WEATHER_LOCATIONS_FALLBACK;
+    return null;
   }
 }
 const WEATHER_LIVE_TTL_MS = 30 * 60_000; // 30 хв — реальна свіжість, не «застигле» з брифінгу
@@ -215,7 +227,8 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
   let effectiveGeo = storedGeo;
   if (currentGeo && !sameGeo(currentGeo, storedGeo)) {
     effectiveGeo = currentGeo;
-    await env.BRIEFING.put('ownerGeo', JSON.stringify(currentGeo));
+    // setAtMs - вік локації для geo.last (етап 5, S-1-2: «> 6 год → спитати»).
+    await env.BRIEFING.put('ownerGeo', JSON.stringify({ ...currentGeo, setAtMs: nowMs }));
   }
 
   // Ручне перевизначення (фідбек власника): IP-геолокація (MaxMind через
@@ -349,7 +362,7 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
       if (name && !manualGeo) {
         await env.BRIEFING.put(
           'ownerGeo',
-          JSON.stringify({ lat: effectiveGeo.lat, lon: effectiveGeo.lon, name }),
+          JSON.stringify({ lat: effectiveGeo.lat, lon: effectiveGeo.lon, name, setAtMs: nowMs }),
         );
       }
     }
@@ -358,7 +371,7 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
     // інший вміст масиву.
     targetLocations = [
       { lat: effectiveGeo.lat, lon: effectiveGeo.lon, name: name ?? 'Твоя локація' },
-      configured[0],
+      /** @type {KvBlob} */ (configured[0]),
     ];
   }
 

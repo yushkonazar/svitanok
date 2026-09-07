@@ -21,7 +21,7 @@ import { applyPolicy } from '../policy/proposals.mjs';
 import { isTaintActive } from '../policy/core.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
-import { sendDayPlanEvent } from '../day-plan/chain.mjs';
+import { sendChainEvent } from '../chains/registry.mjs';
 import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
 import { loadInstruction } from '../instructions.mjs';
 import {
@@ -182,6 +182,13 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       }
       if (policyOut.mode === 'error') {
         return json({ ok: false, error: `policy: ${policyOut.error}`, tool: name }, 400);
+      }
+      // Write-інструмент, чий РЕЗУЛЬТАТ несе зовнішній текст (назви ігор із
+      // Steam), теж позначає тред: інакше зовнішній вміст ішов би в контекст
+      // моделі, а сесія лишалась би «чистою», і наступні T0 виконувались би
+      // без ✅. Той самий FAIL-CLOSED, що й для читання нижче.
+      if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+        return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
       }
       if (policyOut.mode === 'proposed') {
         return json({
@@ -514,7 +521,7 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     );
   if (chainOut && typeof chainOut.id === 'string' && typeof chainOut.event === 'string') {
     try {
-      await sendDayPlanEvent(env, chainOut.id, chainOut.event, chainOut.payload ?? {});
+      await sendChainEvent(env, chainOut.id, chainOut.event, chainOut.payload ?? {});
     } catch (/** @type {any} */ e) {
       console.error(
         `internal: подія ${chainOut.event} у ланцюг ${chainOut.id} не доставлена`,

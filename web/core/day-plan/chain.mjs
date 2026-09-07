@@ -19,10 +19,8 @@ import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { setChainState, waitOrNull } from '../chains/state.mjs';
-import { callBrainRun } from '../brain/run-client.mjs';
-import { loadInstruction } from '../instructions.mjs';
+import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { calendarProposalText } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
@@ -472,28 +470,9 @@ function ddmm(date) {
 // ── Стан ланцюга в D1 (`chains`) ───────────────────────────────────────────
 
 // setChainState живе в chains/state.mjs (спільний з IdeaAnalysis); реекспорт
-// заради тестів і prerouter, що імпортують його звідси.
+// заради тестів. Пошук ланцюга, що чекає тексту, і доставка подій - у
+// chains/registry.mjs (етап 5: kind рядка вибирає привʼязку).
 export { setChainState };
-
-/**
- * Ланцюг плану, що чекає слова власника (intent/answer): prerouter віддає
- * туди текст замість мозку.
- * @param {Env} env
- * @returns {Promise<{ id: string, awaiting: string } | null>}
- */
-export async function findAwaitingDayPlan(env) {
-  if (!env.DB) return null;
-  const row = /** @type {any} */ (
-    await env.DB.prepare(
-      `SELECT id, json_extract(state_json, '$.awaiting') AS awaiting FROM chains
-       WHERE kind = ? AND status = 'waiting' AND json_extract(state_json, '$.awaiting') IN ('intent', 'answer')
-       ORDER BY updated_at DESC LIMIT 1`,
-    )
-      .bind(CHAIN_KIND)
-      .first()
-  );
-  return row ? { id: String(row.id), awaiting: String(row.awaiting) } : null;
-}
 
 /**
  * Створити ланцюг на дату: рядок у chains + інстанс Workflow (id = chainId,
@@ -516,64 +495,30 @@ export async function startDayPlanChain(env, date, nowMs) {
 }
 
 /**
- * Подія в ланцюг (07 §3 /internal/chain/event, кнопки c:, текст власника).
- * @param {Env} env @param {string} chainId @param {string} type @param {Record<string, unknown>} payload
- */
-export async function sendDayPlanEvent(env, chainId, type, payload) {
-  if (!env.DAY_PLAN) throw new Error('привʼязки DAY_PLAN (Workflow) немає');
-  const instance = await env.DAY_PLAN.get(chainId);
-  await instance.sendEvent({ type, payload });
-  return true;
-}
-
-/**
  * Старт Денного працівника (профіль `day-planner` у мозку): вхід - JSON
  * задачі; вихід повернеться подією `worker` у ланцюг через /internal/runs.
  * @param {Env} env
  * @param {{ chainId: string, date: string, mode: string, task: Record<string, unknown> }} req
  * @param {number} nowMs
  */
-export async function startDayPlannerRun(env, req, nowMs) {
-  let instruction;
-  try {
-    const loaded = await loadInstruction(env, 'day-planner');
-    instruction = { name: loaded.name, version_hash: loaded.hash, body_md: loaded.body };
-  } catch (/** @type {any} */ e) {
-    console.error('day-plan: інструкція day-planner недоступна', e?.message);
-    return false;
-  }
-  const runId = crypto.randomUUID();
-  const threadId = env.TOPIC_ASSISTANT ? String(env.TOPIC_ASSISTANT) : 'dm';
-  await registryBegin(env, {
-    id: runId,
-    trigger: 'workflow',
-    profile: 'day-planner',
-    threadId,
-    chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
-    model: DAY_PLANNER_MODEL,
-    startedMs: nowMs,
-  });
-  const res = await callBrainRun(
+export function startDayPlannerRun(env, req, nowMs) {
+  return startChainWorkerRun(
     env,
     {
-      instruction,
-      runId,
       profile: 'day-planner',
-      threadId,
-      inputText: JSON.stringify({
+      instruction: 'day-planner',
+      model: DAY_PLANNER_MODEL,
+      input: {
         chain_id: req.chainId,
         mode: req.mode,
         date: req.date,
         task: req.task,
         format: req.mode === 'explain' ? 'chat' : 'json',
-      }),
+      },
+      log: 'day-plan',
     },
     nowMs,
   );
-  if (res.ok) return true;
-  console.error(`day-plan: працівник не стартував (${res.status} ${res.detail})`);
-  await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
-  return false;
 }
 
 /**

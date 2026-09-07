@@ -21,6 +21,7 @@ import {
 import { runFactsGet, runFactsSet, FACT_KINDS } from '../web/core/tools/facts.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
 import { workerEnv } from './helpers/env.js';
+import { d1FromSqlite as d1Migrated } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 
@@ -242,21 +243,49 @@ describe('geo.*', () => {
     });
     const empty = await runGeoLast(workerEnv({ BRIEFING: kvBriefing().stub }));
     expect(empty.result).toEqual({ known: false });
+    // setAtMs (з /locate або авто-детекції) → вік від nowMs прогону.
+    const aged = kvBriefing({
+      ownerGeo: JSON.stringify({ lat: 50.4, lon: 30.5, setAtMs: 1_000_000 }),
+    });
+    const withAge = await runGeoLast(workerEnv({ BRIEFING: aged.stub }), 1_000_000 + 7_200_000);
+    expect(withAge.result).toMatchObject({ known: true, source: 'auto', ageMs: 7_200_000 });
   });
 
-  it('geo.geocode: знайдене місто → координати; без ключа — гучний виняток', async () => {
+  it('geo.geocode (Google, етап 5): знайдене місто → координати; без ключа — гучний виняток', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(
         async () =>
-          new Response(JSON.stringify([{ lat: 49.84, lon: 24.03, local_names: { uk: 'Львів' } }]), {
-            status: 200,
-          }),
+          new Response(
+            JSON.stringify({
+              status: 'OK',
+              results: [
+                {
+                  formatted_address: 'Львів, Львівська область, Україна',
+                  geometry: { location: { lat: 49.84, lng: 24.03 } },
+                  address_components: [{ long_name: 'Львів', types: ['locality'] }],
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
       ),
     );
-    const found = await runGeoGeocode(workerEnv({ WEATHER_API_KEY: 'w' }), { text: 'Львів' });
-    expect(found.result).toMatchObject({ found: true, lat: 49.84, lon: 24.03 });
-    await expect(runGeoGeocode(workerEnv(), { text: 'Львів' })).rejects.toThrow(/WEATHER_API_KEY/);
+    const d1 = d1Migrated(['0002_assistant.sql', '0003_telemetry.sql']);
+    const found = await runGeoGeocode(workerEnv({ MAPS_API_KEY: 'k', DB: d1.stub }), {
+      text: 'Львів',
+    });
+    expect(found.result).toMatchObject({
+      found: true,
+      lat: 49.84,
+      lon: 24.03,
+      name: 'Львів',
+      address: 'Львів, Львівська область, Україна',
+      locality: 'Львів',
+    });
+    await expect(runGeoGeocode(workerEnv({ DB: d1.stub }), { text: 'Львів' })).rejects.toThrow(
+      /MAPS_API_KEY/,
+    );
   });
 });
 
@@ -348,6 +377,7 @@ describe('реєстр TOOLS', () => {
   it('склад: читання + write-інструменти етапу 2 + runs.query етапу 3; drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
       'calendar.read',
+      'chain.cancel',
       'chain.start',
       'collections.create',
       'collections.delete',
@@ -368,6 +398,8 @@ describe('реєстр TOOLS', () => {
       'mail.read',
       'mail.search',
       'memory.search',
+      'places.details',
+      'places.search',
       'plan.accept',
       'plan.draft',
       'plan.intent',
@@ -383,7 +415,14 @@ describe('реєстр TOOLS', () => {
       'reminders.cancel',
       'reminders.create',
       'reminders.update',
+      'routes.eta',
       'runs.query',
+      'wishes.create',
+      'wishes.delete',
+      'wishes.import',
+      'wishes.list',
+      'wishes.search',
+      'wishes.update',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
   });
@@ -397,6 +436,7 @@ describe('реєстр TOOLS', () => {
     // ним, і розсинхрон тут мовчки змінив би рівень підтвердження. Виняток -
     // proposals.create: він не дія, а обгортка, тож kind приходить у args.
     expect(writes).toEqual([
+      ['chain.cancel', 'chain.cancel'],
       ['chain.start', 'chain.start'],
       // Видалення колекції з записами - T2 forget (07 §4): інструмент є, kind - forget.
       ['collections.create', 'collections.create'],
@@ -420,6 +460,10 @@ describe('реєстр TOOLS', () => {
       ['reminders.cancel', 'reminders.cancel'],
       ['reminders.create', 'reminders.create'],
       ['reminders.update', 'reminders.update'],
+      ['wishes.create', 'wishes.create'],
+      ['wishes.delete', 'wishes.delete'],
+      ['wishes.import', 'wishes.import'],
+      ['wishes.update', 'wishes.update'],
     ]);
   });
 
@@ -428,6 +472,15 @@ describe('реєстр TOOLS', () => {
       .filter(([, def]) => def.tainting === true)
       .map(([name]) => name)
       .sort();
-    expect(tainting).toEqual(['drive.search', 'mail.read', 'mail.search']);
+    expect(tainting).toEqual([
+      'drive.search',
+      'mail.read',
+      'mail.search',
+      'places.details',
+      'places.search',
+      // wishes.import несе назви ігор зі Steam - зовнішній текст, тому
+      // роутер позначає тред і на write-шляху (етап 5 PR-5).
+      'wishes.import',
+    ]);
   });
 });

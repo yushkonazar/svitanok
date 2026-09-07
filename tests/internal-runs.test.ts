@@ -47,7 +47,7 @@ describe('POST /internal/runs', () => {
 
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d1 = d1WithInstructions(['0001_base.sql', '0003_telemetry.sql']);
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
     db = d1.db;
     finishes = [];
     env = workerEnv({
@@ -130,6 +130,11 @@ describe('POST /internal/runs', () => {
   // Етап 3 PR-8: outcome.chain - подія від працівника в DayPlanChain.
   it('outcome.chain → sendEvent в інстанс Workflow за id; без привʼязки - лог, не 500; крива подія - 400', async () => {
     const events: { id: string; ev: unknown }[] = [];
+    // Привʼязку вибирає kind рядка chains (етап 5: реєстр ланцюгів).
+    db.prepare(
+      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+       VALUES ('ch-1', 'day-plan', 'ch-1', '{}', 'waiting', 'x', 'x')`,
+    ).run();
     (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
       create: async () => undefined,
       get: async (id: string) => ({
@@ -146,6 +151,24 @@ describe('POST /internal/runs', () => {
     expect(events).toEqual([
       { id: 'ch-1', ev: { type: 'worker', payload: { mode: 'intent', output: { items: [] } } } },
     ]);
+
+    // kind=table → привʼязка TABLE_CHAIN (реєстр), не DAY_PLAN.
+    db.prepare(
+      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+       VALUES ('t-1', 'table', 't-1', '{}', 'waiting', 'x', 'x')`,
+    ).run();
+    const tableEvents: unknown[] = [];
+    (env as { TABLE_CHAIN?: unknown }).TABLE_CHAIN = {
+      create: async () => undefined,
+      get: async () => ({ sendEvent: async (ev: unknown) => void tableEvents.push(ev) }),
+    };
+    await handleInternal(
+      await request({ steps: [], outcome: { chain: { ...chain, id: 't-1' } } }),
+      env,
+      NOW,
+    );
+    expect(tableEvents).toHaveLength(1);
+    expect(events).toHaveLength(1);
 
     (env as { DAY_PLAN?: unknown }).DAY_PLAN = undefined;
     const noBinding = await handleInternal(
