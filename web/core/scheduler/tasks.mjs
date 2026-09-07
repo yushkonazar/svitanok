@@ -36,6 +36,7 @@ import { dayPlanKickTask } from '../day-plan/kick.mjs';
 import { chainNudgeTask } from '../chains/nudge.mjs';
 import { priceTrackKickTask } from '../chains/price.mjs';
 import { steamCheckTask } from '../steam/check.mjs';
+import { monoReconcileTask } from '../finance/reconcile.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -143,4 +144,9 @@ export const SCHEDULER_TASKS = {
   // Знижки на ігри (етап 5 PR-5, 07 §7): 10:00 Києва - батч ITAD по бажаннях
   // type=game; гейт години й мітка дня - усередині задачі.
   'steam-check': { periodMin: 5, run: async (env) => steamCheckTask(env) },
+  // Звірка Mono (етап 6 PR-1, 07 §7, S-4-9/S-4-11): 23:30 Києва - client-info,
+  // адреса вебхука і виписка за добу. РІВНО ОДИН зовнішній виклик за тік
+  // (ліміт Mono 1/60 с), крок - у KV; поки списку рахунків немає, фаза
+  // client-info вмикається в будь-яку годину (бар'єр вебхука S-4-12).
+  'mono-reconcile': { periodMin: 5, run: async (env) => monoReconcileTask(env) },
 };

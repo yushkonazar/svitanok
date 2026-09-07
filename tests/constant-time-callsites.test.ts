@@ -38,12 +38,15 @@ vi.mock('../web/tg-core.mjs', async (importOriginal) => {
 const { constantTimeEqual: realEqual, verifyWebhookSecret: realVerify } =
   await vi.importActual<Record<string, unknown>>('../web/tg-core.mjs');
 const { validateInitData } = await import('../web/auth-core.mjs');
+const { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } =
+  await import('../web/core/finance/webhook.mjs');
 const { default: worker } = await import('../web/worker.js');
 const { handleAgentStep } = await import('../web/agent-runtime.mjs');
 
 const BOT_TOKEN = '123456:test-bot-token';
 const WEBHOOK_SECRET = 'tg-webhook-secret-abcdef';
 const HOST_SECRET = 'llm-host-secret-abcdef';
+const MONO_SECRET = 'mono-webhook-secret-32-symbols-ok';
 
 /** initData за алгоритмом Telegram; `hashOverride` — щоб зібрати завідомо невірний. */
 function signInitData(hashOverride?: string) {
@@ -68,6 +71,8 @@ const env = () =>
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
     TELEGRAM_OWNER_USER_ID: '42',
     LLM_HOST_SECRET: HOST_SECRET,
+    MONO_WEBHOOK_SECRET: MONO_SECRET,
+    ASSISTANT_V2: 'on',
   });
 
 const webhookReq = (secretHeader: string, path = '/api/telegram') =>
@@ -192,5 +197,52 @@ describe('H7a — секрет LLM-хоста (handleAgentStep)', () => {
     const res = await handleAgentStep(agentStepReq('wrong-secret'), env());
     const body = (await res.json()) as { error?: string };
     expect(body.error).not.toBe('bad-secret'); // гейт секрету пройдено
+  });
+});
+
+/* Секрет вебхука Mono (етап 6 PR-1). Особливість цього місця: секрет лежить у
+ * ШЛЯХУ, а не в заголовку (Mono тіла не підписує), тож `===` тут витікав би
+ * позицією першого розбіжного байта так само, як у заголовку - лише
+ * зловмиснику не треба навіть підбирати заголовок, достатньо адреси. */
+describe('H7a — секрет у шляху вебхука Mono', () => {
+  const monoReq = (secret: string) =>
+    new Request(`https://svitanok.example${MONO_WEBHOOK_PREFIX}${secret}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'Other' }),
+    });
+
+  it('перевірка йде через constantTimeEqual зі шляхом і секретом env', async () => {
+    await handleMonoWebhook(monoReq(MONO_SECRET), env());
+
+    expect(spies.constantTimeEqual).toHaveBeenCalledWith(MONO_SECRET, MONO_SECRET);
+  });
+
+  it('РІШЕННЯ ухвалює саме він: підмінений false відкидає ВІРНИЙ секрет', async () => {
+    spies.constantTimeEqual.mockReturnValue(false);
+    const res = await handleMonoWebhook(monoReq(MONO_SECRET), env());
+    expect(res.status).toBe(404);
+  });
+
+  it('підмінений true пускає чужий секрет далі — до перевірки форми тіла', async () => {
+    spies.constantTimeEqual.mockReturnValue(true);
+    const res = await handleMonoWebhook(monoReq('wrong-secret'), env());
+    expect(res.status).toBe(400); // bad-type, тобто гейт секрету пройдено
+  });
+
+  it('той самий гейт на /internal/test/mono (заголовок X-Mono-Secret)', async () => {
+    const testReq = (secret: string) =>
+      new Request('https://svitanok.example/internal/test/mono', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Test': '1', 'X-Mono-Secret': secret },
+        body: JSON.stringify({ amount: -100 }),
+      });
+    // Гейт секрету стоїть ДО роботи з базою, а DB тут не привʼязана: падіння
+    // одразу за гейтом і є доказом, що гейт пройдено.
+    await handleMonoTest(testReq(MONO_SECRET), env()).catch(() => null);
+    expect(spies.constantTimeEqual).toHaveBeenCalledWith(MONO_SECRET, MONO_SECRET);
+
+    spies.constantTimeEqual.mockReturnValue(false);
+    expect((await handleMonoTest(testReq(MONO_SECRET), env())).status).toBe(404);
   });
 });

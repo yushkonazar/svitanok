@@ -43,6 +43,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'chain-nudge',
       'price-track-kick',
       'steam-check',
+      'mono-reconcile',
     ]);
   });
 

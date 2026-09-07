@@ -818,6 +818,20 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // словом; слово власник пише текстом, prerouter його впізнає (resolveT2Word).
   const fg = data.match(/^m:fg:([A-Za-z0-9-]{1,40})$/);
   if (fg) return forgetMenuToast(env, parsed, /** @type {string} */ (fg[1]), nowMs);
+  // m:fx:<txId>:<choice> - кнопки під незвичною покупкою (S-4-2, S-4-4, етап 6
+  // PR-1). Повідомлення будує ядро без моделі; модель вмикається лише тут,
+  // коли власник САМ попросив («Перевірити ціни», «Категорія»).
+  const fx = data.match(/^m:fx:([A-Za-z0-9_=-]{1,44}):(price|ok|cat|dupy)$/);
+  if (fx) {
+    return financeCallbackToast(
+      env,
+      parsed,
+      /** @type {string} */ (fx[1]),
+      /** @type {'price' | 'ok' | 'cat' | 'dupy'} */ (fx[2]),
+      nowMs,
+      defer,
+    );
+  }
   // c:<chainId>:<choice> - кнопки ланцюгів (07 §9): вибір іде подією у
   // Workflow; kind - з рядка chains, тип події - з назви кнопки (registry).
   const cm = data.match(/^c:([A-Za-z0-9-]{1,40}):([a-z_0-9]{1,16})$/);
@@ -957,6 +971,45 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
     );
   } else await work();
   return 'Запускаю аналіз заново';
+}
+
+/**
+ * Тап під повідомленням про незвичну покупку (S-4-2, S-4-4). «Ок» і «Ні» -
+ * просто зняти клавіатуру: власник подивився, питання закрите. «Перевірити
+ * ціни» і «Категорія» кладуть у тред текст ВІД ІМЕНІ ВЛАСНИКА тим самим
+ * шляхом, що його повідомлення (черга треду, статусник, ретраї) - жодного
+ * окремого стану й жодного нового профілю.
+ *
+ * Текст підказки будує ЯДРО з полів транзакції, не модель: description
+ * мерчанта в нього не потрапляє (це зовнішній текст - Фінансист візьме його
+ * сам через finance.query і за своїми правилами).
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} txId @param {'price' | 'ok' | 'cat' | 'dupy'} choice @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
+  if (choice === 'ok' || choice === 'dupy') {
+    await clearKeyboard(env, parsed);
+    return choice === 'ok' ? 'Ок' : 'Добре, перевір';
+  }
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  const text =
+    choice === 'price' ? `перевір ціни по покупці ${txId}` : `зміни категорію покупки ${txId}`;
+  const work = () =>
+    startOrQueueThreadText(env, target, threadKey, text, 'chat', nowMs).then(() => undefined);
+  await clearKeyboard(env, parsed);
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: кнопка фінансів впала', e?.message),
+      ),
+    );
+  } else await work();
+  return choice === 'price' ? 'Шукаю ціни' : 'Слухаю категорію';
 }
 
 /**

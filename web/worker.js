@@ -37,6 +37,7 @@ export { PriceTrack } from './core/chains/price.mjs';
 export { TripChain } from './core/chains/trip.mjs';
 import { SCHEDULER_DO_NAME } from './core/scheduler/do.mjs';
 import { handleInternal } from './core/internal/router.mjs';
+import { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } from './core/finance/webhook.mjs';
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
 import { handleAssistantStatus } from './core/assistant-status.mjs';
 import { parseRoadmapCallbackData } from './roadmap-core.mjs';
@@ -413,6 +414,18 @@ export default {
     // ран-токен. Свідомо БЕЗ CORS — це міжсерверний роут, не для браузера.
     if (url.pathname === '/api/agent-step' && request.method === 'POST') {
       return handleAgentStep(request, env);
+    }
+    // Вебхук Monobank (етап 6, S-4-1…S-4-5): ПУБЛІЧНИЙ шлях із секретом
+    // усередині, тому під префіксом /api/ — так на нього діє чинне правило
+    // WAF (60/10 с). Деталі перевірок — core/finance/webhook.mjs.
+    if (url.pathname.startsWith(MONO_WEBHOOK_PREFIX)) {
+      return handleMonoWebhook(request, env, ctx);
+    }
+    // Тестова транзакція для приймання (07 §3): за Access + X-Test: 1 +
+    // секрет вебхука. ПЕРЕД handleInternal — у того свій підпис ADR-037,
+    // якого власник руками не порахує.
+    if (url.pathname === '/internal/test/mono') {
+      return handleMonoTest(request, env);
     }
     // Internal API редизайну (етап 1, PR-5): HMAC + run_id, деталі — router.
     // Свідомо без CORS з тієї ж причини, що /api/agent-step. При off віддає
