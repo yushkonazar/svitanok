@@ -10,6 +10,7 @@ export const CHAIN_BINDINGS = /** @type {const} */ ({
   'day-plan': 'DAY_PLAN',
   idea: 'IDEA_ANALYSIS',
   table: 'TABLE_CHAIN',
+  price: 'PRICE_TRACK',
 });
 
 /** «скасуй столик», «відміни» - це для мозку (chain.cancel), не відповідь ланцюгу. */
@@ -135,6 +136,8 @@ export function textEvent(kind, awaiting, text) {
 export function choiceEvent(kind, choice) {
   if (kind === 'day-plan') return dayPlanChoiceEvent(choice);
   if (kind === 'table') return tableChoiceEvent(choice);
+  // Відстеження ціни (PR-3): єдина кнопка - «Стоп».
+  if (kind === 'price' && choice === 'stop') return { type: 'price', payload: { action: 'stop' } };
   return null;
 }
 

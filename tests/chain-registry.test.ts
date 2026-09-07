@@ -91,7 +91,10 @@ describe('мапи кнопок і тексту', () => {
     expect(choiceEvent('day-plan', 'accept')).toEqual(dayPlanChoiceEvent('accept'));
     expect(choiceEvent('table', 'called')).toEqual(tableChoiceEvent('called'));
     expect(choiceEvent('table', 'accept')).toBeNull();
+    expect(choiceEvent('price', 'stop')).toEqual({ type: 'price', payload: { action: 'stop' } });
+    expect(choiceEvent('price', 'v0')).toBeNull();
     expect(choiceEvent('idea', 'accept')).toBeNull();
+    expect(CHAIN_BINDINGS.price).toBe('PRICE_TRACK');
   });
 
   it('textEvent: план - intent/answer; столик - текстові стани безумовно, кнопкові - за формою; скасування - в мозок', () => {

@@ -41,6 +41,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'daily-hint',
       'day-plan-kick',
       'chain-nudge',
+      'price-track-kick',
     ]);
   });
 

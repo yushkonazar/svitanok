@@ -3,9 +3,16 @@
 // maxToolCalls (виконує agent.ts через onToolCall) і maxTurns (страховка SDK).
 
 import { BRAIN_TOOLS, TOOL_BY_MCP_NAME } from './tools/schemas.js';
-import { QUICK_WORKER, WORKER_MODEL_IDS, workerMaxTurns, type WorkerEffort } from './workers.js';
+import {
+  QUICK_WORKER,
+  RESEARCHER_WORKER,
+  WORKER_MODEL_IDS,
+  workerMaxTurns,
+  type WorkerEffort,
+} from './workers.js';
 
-export type ProfileName = 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner';
+export type ProfileName =
+  'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner' | 'price-check';
 
 /** Інструменти Денного за front-matter agents/day-planner.md (07 §5):
  *  calendar.read, data.read, facts.get, routes.eta (описаний з етапу 5). */
@@ -33,6 +40,9 @@ export interface RunProfile {
   timeoutMs: number;
   /** Рівень зусиль моделі; не задано - дефолт SDK ('high'). */
   effort?: WorkerEffort;
+  /** Вбудовані інструменти SDK (WebSearch/WebFetch) - лише профілі-працівники
+   *  з інструкцією Дослідника (price-check); решта - жодного. */
+  builtinTools?: string[];
 }
 
 export const PROFILES: Record<ProfileName, RunProfile> = {
@@ -93,6 +103,19 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     maxTurns: 12,
     timeoutMs: 3 * 60_000,
   },
+  // Перевірка ціни (07 §5, етап 5 PR-3): працівник PriceTrack - Дослідник
+  // (agents/researcher.md: sonnet, WebSearch/WebFetch, max_steps 30) у свіжій
+  // сесії; вхід - JSON задачі {chain_id, mode, task, format}, вихід - подія
+  // `worker` у ланцюг через outcome.chain, без deliver у чат.
+  'price-check': {
+    name: 'price-check',
+    model: WORKER_MODEL_IDS[RESEARCHER_WORKER.model],
+    toolNames: RESEARCHER_WORKER.toolNames,
+    builtinTools: [...RESEARCHER_WORKER.builtinTools],
+    maxToolCalls: 0,
+    maxTurns: workerMaxTurns(RESEARCHER_WORKER.maxSteps),
+    timeoutMs: 4 * 60_000,
+  },
 };
 
 /** Імʼя інструкції в D1 для профілю (те, що ядро кладе в тіло /run і що
@@ -103,6 +126,7 @@ export const INSTRUCTION_NAME_BY_PROFILE: Record<Exclude<ProfileName, 'summarize
   quick: 'quick',
   'weekly-review': 'weekly-review',
   'day-planner': 'day-planner',
+  'price-check': 'researcher',
 };
 
 /** Моделі для /health.limits (01 §2.2). */
@@ -157,7 +181,11 @@ export function buildSystemPrompt(
   if (profile.name === 'quick') return opts.instruction;
   // Звіт і Денний самодостатні (weekly-review §0, day-planner «Що отримує»):
   // дата потрібна, згортка розмов - ні.
-  if (profile.name === 'weekly-review' || profile.name === 'day-planner') {
+  if (
+    profile.name === 'weekly-review' ||
+    profile.name === 'day-planner' ||
+    profile.name === 'price-check'
+  ) {
     return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;
   }
   // Згортка треду - в системний промпт chat (01 §2.2): модель памʼятає

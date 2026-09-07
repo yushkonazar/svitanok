@@ -33,6 +33,20 @@ import {
 } from '../tools/ideas.mjs';
 import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
 import { startTableChain, cancelTableChain, findActiveTableChain } from '../chains/table.mjs';
+import {
+  startPriceTrack,
+  cancelPriceTrack,
+  cancelPriceChain,
+  findActivePriceChain,
+} from '../chains/price.mjs';
+import {
+  runWishesCreate,
+  runWishesUpdate,
+  runWishesDelete,
+  restoreWish,
+  deleteWishRow,
+  findWish,
+} from '../tools/wishes.mjs';
 import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
 import {
   runCollectionsCreate,
@@ -391,30 +405,98 @@ export const EXECUTORS = {
         });
         return { result, prev };
       }
-      if (kind === 'trip' || kind === 'price') {
-        throw new Error(`ланцюг «${kind}» приїде наступним PR етапу 5 - скажи власнику прямо`);
+      if (kind === 'price') {
+        // Відстеження ціни (S-5-11): бажання за id або нове purchase з url.
+        if (inner.wish_id) {
+          const wish = await findWish(env, inner.wish_id);
+          if (!wish) throw new Error(`бажання «${String(inner.wish_id)}» немає`);
+          if (typeof wish.payload.url !== 'string') {
+            throw new Error('у бажання немає url - додай посилання через wishes.update');
+          }
+          const out = await startPriceTrack(
+            env,
+            {
+              id: wish.id,
+              title: wish.title,
+              url: wish.payload.url,
+              target_price: wish.payload.target_price ?? null,
+              currency: String(wish.payload.currency ?? 'UAH'),
+            },
+            nowMs,
+            { chatId: ctx?.chatId ?? null, threadId: ctx?.threadId ?? null },
+          );
+          return {
+            result: {
+              chain_id: out.chainId,
+              wish_id: wish.id,
+              text: out.existing
+                ? `«${wish.title}» уже відстежую`
+                : `Відстежую ціну «${wish.title}» щодня`,
+            },
+            prev: out.existing ? undefined : { kind, chain_id: out.chainId, wish_id: wish.id },
+          };
+        }
+        const created = await runWishesCreate(env, { type: 'purchase', ...inner }, nowMs, {
+          chatId: ctx?.chatId ?? null,
+          threadId: ctx?.threadId ?? null,
+        });
+        return {
+          result: created.result,
+          prev: {
+            kind,
+            chain_id: created.result.chain_id ?? null,
+            wish_id: created.prev.id,
+            created: true,
+          },
+        };
+      }
+      if (kind === 'trip') {
+        throw new Error('ланцюг «trip» приїде наступним PR етапу 5 - скажи власнику прямо');
       }
       throw new Error(
-        `chain.start: невідомий kind «${kind}»; дозволені: table (trip, price - пізніше)`,
+        `chain.start: невідомий kind «${kind}»; дозволені: table, price (trip - пізніше)`,
       );
     },
-    async undo(env, snapshot) {
+    async undo(env, snapshot, nowMs) {
       // «↩» одразу після старту = скасування (S-1-12): ланцюг cancelled,
-      // Workflow прокидається подією.
+      // Workflow прокидається подією; для price створене бажання теж геть.
+      if (snapshot.kind === 'price') {
+        if (snapshot.created) {
+          await deleteWishRow(env, String(snapshot.wish_id), nowMs);
+          return;
+        }
+        if (!(await cancelPriceTrack(env, String(snapshot.wish_id), nowMs))) {
+          throw new Error('відстеження вже не активне - зупиняти нічого');
+        }
+        return;
+      }
       if (!(await cancelTableChain(env, String(snapshot.chain_id)))) {
         throw new Error('ланцюг уже не активний - скасовувати нічого');
       }
     },
   },
   'chain.cancel': {
-    async execute(env, payload) {
+    async execute(env, payload, nowMs) {
       const kind = payload.kind == null ? 'table' : String(payload.kind);
+      const chainId = payload.chain_id ? String(payload.chain_id) : null;
+      if (kind === 'price') {
+        const active = await findActivePriceChain(env, { chainId });
+        if (!active) throw new Error('активного відстеження ціни немає');
+        await cancelPriceChain(env, active.id, nowMs);
+        return {
+          result: {
+            cancelled: true,
+            chain_id: active.id,
+            title: active.title,
+            text: `Зупинив відстеження «${active.title}»`,
+          },
+        };
+      }
       if (kind !== 'table') {
         throw new Error(
-          `chain.cancel: скасувати можна лише ланцюг table (kind «${kind}» - не цього етапу)`,
+          `chain.cancel: скасувати можна лише table або price (kind «${kind}» - не цього етапу)`,
         );
       }
-      const chainId = payload.chain_id ? String(payload.chain_id) : null;
       const active = await findActiveTableChain(env, chainId);
       if (!active) throw new Error('активного ланцюга столика немає');
       const ok = await cancelTableChain(env, active.id);
@@ -426,6 +508,54 @@ export const EXECUTORS = {
           text: `Скасував ланцюг «столик у ${active.venue}»`,
         },
       };
+    },
+  },
+  // Бажання (етап 5 PR-3): create/update - T0 з «↩», delete - T1.
+  'wishes.create': {
+    async execute(env, payload, nowMs, ctx) {
+      const { result, prev } = await runWishesCreate(
+        env,
+        {
+          type: payload.type,
+          title: payload.title,
+          url: payload.url,
+          target_price: payload.target_price,
+          currency: payload.currency,
+          steam_appid: payload.steam_appid,
+        },
+        nowMs,
+        { chatId: ctx?.chatId ?? null, threadId: ctx?.threadId ?? null },
+      );
+      return { result, prev };
+    },
+    async undo(env, snapshot, nowMs) {
+      await deleteWishRow(env, String(snapshot.id), nowMs);
+    },
+  },
+  'wishes.update': {
+    async execute(env, payload, nowMs) {
+      const { result, prev } = await runWishesUpdate(
+        env,
+        {
+          id: payload.id,
+          title: payload.title,
+          url: payload.url,
+          target_price: payload.target_price,
+          currency: payload.currency,
+          status: payload.status,
+        },
+        nowMs,
+      );
+      return { result, prev };
+    },
+    async undo(env, snapshot) {
+      await restoreWish(env, snapshot);
+    },
+  },
+  'wishes.delete': {
+    async execute(env, payload, nowMs) {
+      const { result } = await runWishesDelete(env, { id: payload.id }, nowMs);
+      return { result };
     },
   },
   // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -

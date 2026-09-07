@@ -19,6 +19,7 @@ import {
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
 import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
+import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
@@ -565,6 +566,74 @@ export const TOOLS = {
     write: { kind: 'plan.review' },
     run: () => {
       throw new Error('plan.review виконується через policy, не напряму');
+    },
+  },
+  // Бажання (етап 5 PR-3, 07 §4 wishes.*): list/search - читання; create/update
+  // - T0 з «↩»; delete - T1. Ціни - в основних одиницях (3 299), код множить.
+  'wishes.list': {
+    args: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', maxLength: 16 },
+        status: { type: 'string', maxLength: 16 },
+        limit: { type: 'number', minimum: 1, maximum: 20 },
+      },
+    },
+    run: (env, args) => runWishesList(env, args),
+  },
+  'wishes.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: { q: { type: 'string', minLength: 2, maxLength: 120 } },
+    },
+    run: (env, args) => runWishesSearch(env, args),
+  },
+  'wishes.create': {
+    args: {
+      type: 'object',
+      required: ['type', 'title'],
+      properties: {
+        type: { type: 'string', maxLength: 16 },
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        url: { type: 'string', maxLength: 500 },
+        target_price: { type: 'number', minimum: 0 },
+        currency: { type: 'string', maxLength: 3 },
+        steam_appid: { type: 'number', minimum: 1 },
+      },
+    },
+    write: { kind: 'wishes.create' },
+    run: () => {
+      throw new Error('wishes.create виконується через policy, не напряму');
+    },
+  },
+  'wishes.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 200 },
+        title: { type: 'string', maxLength: 200 },
+        url: { type: 'string', maxLength: 500 },
+        target_price: { type: 'number', minimum: 0 },
+        currency: { type: 'string', maxLength: 3 },
+        status: { type: 'string', maxLength: 16 },
+      },
+    },
+    write: { kind: 'wishes.update' },
+    run: () => {
+      throw new Error('wishes.update виконується через policy, не напряму');
+    },
+  },
+  'wishes.delete': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', maxLength: 200 } },
+    },
+    write: { kind: 'wishes.delete' },
+    run: () => {
+      throw new Error('wishes.delete виконується через policy, не напряму');
     },
   },
   'facts.set': {

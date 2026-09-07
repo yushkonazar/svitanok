@@ -417,6 +417,11 @@ describe('реєстр TOOLS', () => {
       'reminders.update',
       'routes.eta',
       'runs.query',
+      'wishes.create',
+      'wishes.delete',
+      'wishes.list',
+      'wishes.search',
+      'wishes.update',
     ]);
     expect(TOOLS['drive.write']).toBeUndefined();
   });
@@ -454,6 +459,9 @@ describe('реєстр TOOLS', () => {
       ['reminders.cancel', 'reminders.cancel'],
       ['reminders.create', 'reminders.create'],
       ['reminders.update', 'reminders.update'],
+      ['wishes.create', 'wishes.create'],
+      ['wishes.delete', 'wishes.delete'],
+      ['wishes.update', 'wishes.update'],
     ]);
   });
 

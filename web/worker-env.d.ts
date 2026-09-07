@@ -160,6 +160,14 @@ interface Env {
       status?: () => Promise<unknown>;
     }>;
   };
+  /** Workflow відстеження ціни (етап 5 PR-3, 07 §6 PriceTrack) - той самий контракт. */
+  PRICE_TRACK?: {
+    create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;
+    get: (id: string) => Promise<{
+      sendEvent: (event: { type: string; payload?: unknown }) => Promise<void>;
+      status?: () => Promise<unknown>;
+    }>;
+  };
   /** Read-only PAT на 4 репо (етап 0): HEAD-sha для кешу аналізу ідеї. */
   REPO_READ_PAT?: string;
   /** `workflow_dispatch` у brief.yml (крон-диспетч брифінгу) та idea-analysis.yml. */

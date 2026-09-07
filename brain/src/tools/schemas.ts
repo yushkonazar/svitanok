@@ -192,7 +192,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.start',
     description:
-      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». Відповідь містить text - скажи власнику саме його. kind=trip і kind=price - пізніше цим етапом (скажи прямо).',
+      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip - пізніше цим етапом (скажи прямо).',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),
@@ -202,11 +202,62 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.cancel',
     description:
-      'Скасувати активний ланцюг («скасуй столик»): chain_id, якщо відомий, або kind (table) - тоді найсвіжіший активний цього виду.',
+      'Скасувати активний ланцюг («скасуй столик», «стоп відстежувати»): chain_id, якщо відомий, або kind (table | price) - тоді найсвіжіший активний цього виду.',
     args: z.object({
       chain_id: z.string().max(64).optional(),
       kind: z.string().max(32).optional(),
     }),
+    write: true,
+  }),
+  // Бажання (етап 5 PR-3, 07 §4 wishes.*): purchase з url - відстеження ціни
+  // (S-5-11); game - Steam/ITAD (PR-5); trip - разом із поїздкою.
+  tool({
+    coreName: 'wishes.list',
+    description:
+      'Бажання (до 20): type game·trip·purchase, status active·done·cancelled або all (типово active); з останньою і найнижчою ціною.',
+    args: z.object({
+      type: z.string().max(16).optional(),
+      status: z.string().max(16).optional(),
+      limit: z.number().min(1).max(20).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'wishes.search',
+    description: 'Пошук бажань за назвою (q, усі статуси).',
+    args: z.object({ q: z.string().min(2).max(120) }),
+  }),
+  tool({
+    coreName: 'wishes.create',
+    description:
+      'Записати бажання (T0 з «↩»): type game·trip·purchase, title; purchase - url товару і target_price (в основних одиницях, напр. 3299; currency типово UAH) - ядро одразу починає щоденне відстеження ціни й скаже при −5 % або ≤ target; game - steam_appid, якщо відомий. Відповідь містить text - скажи власнику саме його.',
+    args: z.object({
+      type: z.string().max(16),
+      title: z.string().min(1).max(200),
+      url: z.string().max(500).optional(),
+      target_price: z.number().min(0).optional(),
+      currency: z.string().max(3).optional(),
+      steam_appid: z.number().min(1).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'wishes.update',
+    description:
+      'Змінити бажання (T0 з «↩»): id або точна назва; title, url, target_price, currency, status (done/cancelled зупиняє відстеження - «стоп відстежувати»).',
+    args: z.object({
+      id: z.string().max(200),
+      title: z.string().max(200).optional(),
+      url: z.string().max(500).optional(),
+      target_price: z.number().min(0).optional(),
+      currency: z.string().max(3).optional(),
+      status: z.string().max(16).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'wishes.delete',
+    description: 'Видалити бажання разом з історією цін (T1 - ✅ власника).',
+    args: z.object({ id: z.string().max(200) }),
     write: true,
   }),
   // Ідеї (етап 3 PR-4, S-3-1…7). Номер ідеї для власника - те, що повертає
