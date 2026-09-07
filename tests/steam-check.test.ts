@@ -296,6 +296,26 @@ describe('задача steam-check', () => {
     expect(await env.BRIEFING.get(STEAM_MISS_KEY)).toBe('0');
   });
 
+  it('порожня відповідь ITAD - той самий пропуск дня, що й помилка', async () => {
+    const { env, db } = setup();
+    seedWish(db, 'w1', 'Hades II', { steam_appid: 1, itad_id: 'itad-1' });
+    routeFetch([{ match: 'games/prices', body: [] }]);
+    const out = await steamCheckTask(env, AT_10);
+    expect(out).toMatchObject({ skipped: 'itad-empty', misses: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM price_points').get()).toMatchObject({ n: 0 });
+  });
+
+  it('закрита гра не імпортується вдруге', async () => {
+    const { env, db } = setup();
+    seedWish(db, 'w1', 'Куплена', { steam_appid: 7 }, 'done');
+    routeFetch([
+      { match: 'GetWishlist', body: { response: { items: [{ appid: 7 }] } } },
+      { match: 'appdetails', body: {} },
+    ]);
+    const out = await importSteamWishlist(env, { steam_id: '76561198000000000' }, AT_10);
+    expect(out.result).toMatchObject({ added: 0, skipped: 1 });
+  });
+
   it('розпродаж: кажемо лише про частку знижок і лише в день стрибка (S-5-4)', async () => {
     const { env } = setup();
     expect(await salePrefix(env, 0.7, 10, 7)).toContain('великий розпродаж');

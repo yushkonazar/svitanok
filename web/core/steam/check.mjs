@@ -46,13 +46,18 @@ function db(env) {
  *   target_price: number | null, currency: string }} GameWish
  */
 
-/** Активні бажання-ігри. @param {Env} env @returns {Promise<GameWish[]>} */
-export async function listGameWishes(env) {
+/**
+ * Бажання-ігри. Типово - лише активні; `all` потрібен дедупу імпорту:
+ * закриту гру повторний імпорт додав би вдруге.
+ * @param {Env} env @param {{ all?: boolean }} [opts] @returns {Promise<GameWish[]>}
+ */
+export async function listGameWishes(env, opts = {}) {
   const { results } = await db(env)
     .prepare(
-      `SELECT id, title, payload_json FROM wishes WHERE type = 'game' AND status = 'active' ORDER BY created_at`,
+      `SELECT id, title, payload_json FROM wishes WHERE type = 'game'
+         AND (? = 1 OR status = 'active') ORDER BY created_at`,
     )
-    .bind()
+    .bind(opts.all ? 1 : 0)
     .all();
   return (results ?? []).map((r) => {
     /** @type {any} */
@@ -144,7 +149,9 @@ export async function importSteamWishlist(env, args, nowMs) {
       prev: undefined,
     };
   }
-  const known = new Set((await listGameWishes(env)).map((w) => w.appid).filter((a) => a != null));
+  const known = new Set(
+    (await listGameWishes(env, { all: true })).map((w) => w.appid).filter((a) => a != null),
+  );
   const fresh = appids.filter((a) => !known.has(a));
   const details = await steamAppDetails(fresh, { withName: true });
   const iso = new Date(nowMs).toISOString();
@@ -273,6 +280,21 @@ export async function steamCheckTask(env, nowMs = Date.now()) {
       );
     }
     return { skipped: 'itad-failed', misses };
+  }
+  // Порожня відповідь - той самий «недоступний» для власника, що й помилка
+  // (S-5-12): день пропущено, лічильник іде далі.
+  if (prices.size === 0) {
+    const misses = Number((await env.BRIEFING.get(STEAM_MISS_KEY)) ?? 0) + 1;
+    await env.BRIEFING.put(STEAM_MISS_KEY, String(misses));
+    await env.BRIEFING.put(STEAM_MARKER_KEY, today);
+    if (misses === MISS_ALERT) {
+      await alert(
+        env,
+        `Знижки Steam не перевіряються ${MISS_ALERT} дні поспіль: ITAD віддає порожню відповідь`,
+        nowMs,
+      );
+    }
+    return { skipped: 'itad-empty', misses };
   }
   await env.BRIEFING.put(STEAM_MISS_KEY, '0');
 
