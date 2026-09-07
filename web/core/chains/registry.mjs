@@ -151,9 +151,10 @@ export function textEvent(kind, awaiting, text) {
 
 /**
  * Кнопка ланцюга → подія. Мапа choice → {type, payload} - єдине місце, де
- * назви кнопок зустрічаються з типами подій машин станів.
+ * назви кнопок зустрічаються з типами подій машин станів. `keep` - не знімати
+ * клавіатуру повідомлення (кілька пунктів в одному блоці).
  * @param {string} kind @param {string} choice
- * @returns {{ type: string, payload: Record<string, unknown> } | null}
+ * @returns {{ type: string, payload: Record<string, unknown>, keep?: boolean } | null}
  */
 export function choiceEvent(kind, choice) {
   if (kind === 'day-plan') return dayPlanChoiceEvent(choice);
@@ -207,12 +208,15 @@ export function tableChoiceEvent(choice) {
  * власник хоче інші дати (нові дати ланцюг не парсить: питає текстом, а
  * дати кладе мозок через chain.start з trip_id); cancel - скасувати.
  * @param {string} choice
+ * @returns {{ type: string, payload: Record<string, unknown>, keep?: boolean } | null}
  */
 export function tripChoiceEvent(choice) {
   const trip = (/** @type {Record<string, unknown>} */ payload) => ({ type: 'trip', payload });
   if (choice === 'cancel') return trip({ action: 'cancel' });
   if (choice === 'newdate') return trip({ action: 'ask-date' });
+  // `keep` - клавіатуру блоку не знімати: у блоці кілька пунктів, і після
+  // першого ✅ решта кнопок мусить лишитись (на відміну від вибору столика).
   const d = choice.match(/^d(t30|t7|t1|road)_(\d{1,2})$/);
-  if (d) return trip({ action: 'done', item: `${d[1]}:${d[2]}` });
+  if (d) return { ...trip({ action: 'done', item: `${d[1]}:${d[2]}` }), keep: true };
   return null;
 }

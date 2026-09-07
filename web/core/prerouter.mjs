@@ -863,6 +863,9 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
     console.error('prerouter: кнопка ланцюга не доставлена', e?.message);
     return 'Ланцюг не відповідає - напиши текстом.';
   }
+  // Кнопка з `keep` (пункт чекліста поїздки) лишає клавіатуру: у блоці
+  // кілька пунктів, і власник відмічає їх один за одним.
+  if (ev.keep) return 'Відмітив.';
   await clearKeyboard(env, parsed);
   return 'Прийняв.';
 }

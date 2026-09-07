@@ -417,9 +417,11 @@ describe('вартість авто', () => {
 describe('реєстр: кнопки й текст поїздки', () => {
   it('привʼязка, кнопки блоку, «Змінити дати», «Скасувати»', () => {
     expect(CHAIN_BINDINGS.trip).toBe('TRIP_CHAIN');
+    // keep: клавіатура блоку лишається - у блоці кілька пунктів.
     expect(tripChoiceEvent('dt7_3')).toEqual({
       type: 'trip',
       payload: { action: 'done', item: 't7:3' },
+      keep: true,
     });
     expect(tripChoiceEvent('newdate')).toEqual({ type: 'trip', payload: { action: 'ask-date' } });
     expect(tripChoiceEvent('cancel')).toEqual({ type: 'trip', payload: { action: 'cancel' } });

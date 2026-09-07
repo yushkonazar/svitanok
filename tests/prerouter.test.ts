@@ -1021,6 +1021,32 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(dayPlanChoiceEvent('ok')).toBeNull();
   });
 
+  // Етап 5 PR-4: у блоці чекліста поїздки кілька пунктів - клавіатура після
+  // ✅ лишається, інакше решту пунктів не відмітити.
+  it('c:<id>:d<block>_<idx> - тост «Відмітив.», клавіатура блоку НЕ знімається', async () => {
+    const { env, db, tg } = cbEnv();
+    db.prepare(
+      `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
+       VALUES ('tr-1', 'trip', 'tr-1', '{}', 'waiting', 'x', 'x')`,
+    ).run();
+    const events: unknown[] = [];
+    (env as { TRIP_CHAIN?: unknown }).TRIP_CHAIN = {
+      create: async () => undefined,
+      get: async () => ({ sendEvent: async (ev: unknown) => void events.push(ev) }),
+    };
+    const tap = (data: string) =>
+      handleBrainCallback(env, { data, chatId: 555, messageId: 7, threadId: 99 }, NOW);
+    expect(await tap('c:tr-1:dt7_2')).toBe('Відмітив.');
+    expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(0);
+    // Кнопки «Змінити дати» і «Скасувати» - одноразові, клавіатуру знімають.
+    expect(await tap('c:tr-1:newdate')).toBe('Прийняв.');
+    expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(1);
+    expect(events).toEqual([
+      { type: 'trip', payload: { action: 'done', item: 't7:2' } },
+      { type: 'trip', payload: { action: 'ask-date' } },
+    ]);
+  });
+
   // Приймання 05.09, B4: підпис «✅ Виконано» - назва, дата, файл, короткий
   // текст; довга чернетка плану - не підпис; лише id - хоч id.
   it('describeProposal: назва → дата → файл → короткий текст → id; довгий text не підпис', () => {
