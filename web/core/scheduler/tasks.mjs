@@ -37,6 +37,8 @@ import { chainNudgeTask } from '../chains/nudge.mjs';
 import { priceTrackKickTask } from '../chains/price.mjs';
 import { steamCheckTask } from '../steam/check.mjs';
 import { monoReconcileTask } from '../finance/reconcile.mjs';
+import { financeEveningTask } from '../finance/evening.mjs';
+import { subscriptionRemindTask } from '../finance/subscriptions.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -149,4 +151,10 @@ export const SCHEDULER_TASKS = {
   // (ліміт Mono 1/60 с), крок - у KV; поки списку рахунків немає, фаза
   // client-info вмикається в будь-яку годину (бар'єр вебхука S-4-12).
   'mono-reconcile': { periodMin: 5, run: async (env) => monoReconcileTask(env) },
+  // Вечірній рядок про гроші (етап 6 PR-2, S-4-7): 21:00 Києва, тиша при
+  // нулі покупок; гейт години й мітка дня - усередині задачі.
+  'finance-evening': { periodMin: 5, run: async (env) => financeEveningTask(env) },
+  // Нагадування про підписку (етап 6 PR-2, S-4-6): 11:00 Києва за два дні до
+  // списання, з кнопкою «Скасувати підписку в обліку».
+  'subscription-remind': { periodMin: 5, run: async (env) => subscriptionRemindTask(env) },
 };

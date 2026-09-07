@@ -29,6 +29,8 @@ export const HINT_TOPICS = ['trips', 'subscriptions', 'chains', 'ideas', 'securi
  *  руху ≥ 3 доби, ідея без руху ≥ 30 діб, Security Checkup раз на квартал. */
 export const TRIP_DAYS_AHEAD = 7;
 export const SUBSCRIPTION_DAYS_AHEAD = 3;
+/** Скільки діб уперед покриває `subscription-remind` - підказка туди не лізе. */
+export const SUBSCRIPTION_REMIND_DAYS = 2;
 export const CHAIN_STALE_DAYS = 3;
 export const IDEA_STALE_DAYS = 30;
 export const SECURITY_CHECKUP_DAYS = 90;
@@ -139,8 +141,15 @@ async function tripHint(env, today) {
   return `Поїздка «${String(row.to_text ?? '')}» ${days === 0 ? 'сьогодні' : `через ${days} ${pluralDays(days)}`} - перевір чеклист.`;
 }
 
-/** @param {Env} env @param {string} today */
+/**
+ * Підказка про підписку бере ЛИШЕ дальній край вікна: ближче стоїть задача
+ * `subscription-remind` (етап 6 PR-2, S-4-6) з тим самим рядком і кнопкою
+ * «Скасувати підписку в обліку», і два повідомлення про одне списання - це
+ * не проактивність, а шум.
+ * @param {Env} env @param {string} today
+ */
 async function subscriptionHint(env, today) {
+  const from = addDaysToDateKey(today, SUBSCRIPTION_REMIND_DAYS + 1);
   const until = addDaysToDateKey(today, SUBSCRIPTION_DAYS_AHEAD);
   const row = /** @type {any} */ (
     await db(env)
@@ -149,7 +158,7 @@ async function subscriptionHint(env, today) {
          WHERE status = 'active' AND next_at IS NOT NULL AND substr(next_at, 1, 10) >= ? AND substr(next_at, 1, 10) <= ?
          ORDER BY next_at LIMIT 1`,
       )
-      .bind(today, until)
+      .bind(from, until)
       .first()
   );
   if (!row) return null;

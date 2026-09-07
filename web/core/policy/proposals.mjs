@@ -50,6 +50,8 @@ import {
   deleteWishRow,
   findWish,
 } from '../tools/wishes.mjs';
+import { runFinanceRule, restoreRule } from '../tools/finance.mjs';
+import { updateSubscription } from '../finance/subscriptions.mjs';
 import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
 import {
   runCollectionsCreate,
@@ -599,6 +601,41 @@ export const EXECUTORS = {
     async execute(env, payload, nowMs) {
       const { result } = await runWishesDelete(env, { id: payload.id }, nowMs);
       return { result };
+    },
+  },
+  // Гроші (етап 6 PR-2). Обидва - записи у ВЛАСНУ базу, тож T0 з «↩»:
+  // finance.rule відкочує і сам рядок правила, і перекладену історію не
+  // чіпає (перекладання ідемпотентне - категорію поверне зворотне правило),
+  // subscriptions.update повертає рівно ті статус і дату, що були.
+  'finance.rule': {
+    async execute(env, payload) {
+      const { result, prev } = await runFinanceRule(env, {
+        pattern: payload.pattern,
+        category: payload.category,
+        is_subscription: payload.is_subscription,
+      });
+      return { result, prev: { snapshot: prev, pattern: result.pattern } };
+    },
+    async undo(env, snapshot) {
+      await restoreRule(env, snapshot?.snapshot ?? null, String(snapshot?.pattern ?? ''));
+    },
+  },
+  'subscriptions.update': {
+    async execute(env, payload) {
+      const result = await updateSubscription(env, {
+        id: payload.id,
+        status: payload.status,
+        next_at: payload.next_at,
+      });
+      return { result, prev: { id: result.id, ...result.before } };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.id) return;
+      await updateSubscription(env, {
+        id: String(snapshot.id),
+        status: String(snapshot.status),
+        next_at: snapshot.next_at ?? undefined,
+      });
     },
   },
   // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -

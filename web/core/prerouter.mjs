@@ -832,6 +832,10 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:fs:<id>:cancel - «Скасувати підписку в обліку» (S-4-6): T0 через policy,
+  // як і з чату, тож «↩» повертає статус на місце.
+  const fs = data.match(/^m:fs:([A-Za-z0-9_-]{1,44}):cancel$/);
+  if (fs) return subscriptionCancelToast(env, parsed, /** @type {string} */ (fs[1]), nowMs);
   // c:<chainId>:<choice> - кнопки ланцюгів (07 §9): вибір іде подією у
   // Workflow; kind - з рядка chains, тип події - з назви кнопки (registry).
   const cm = data.match(/^c:([A-Za-z0-9-]{1,40}):([a-z_0-9]{1,16})$/);
@@ -971,6 +975,50 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
     );
   } else await work();
   return 'Запускаю аналіз заново';
+}
+
+/**
+ * «Скасувати підписку в обліку» (S-4-6): статус `cancelled` через policy - той
+ * самий шлях, що з чату, тож і «↩» тут справжня.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} subscriptionId @param {number} nowMs
+ */
+async function subscriptionCancelToast(env, parsed, subscriptionId, nowMs) {
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  /** @type {Awaited<ReturnType<typeof applyPolicy>>} */
+  let out;
+  try {
+    out = await applyPolicy(
+      env,
+      {
+        kind: 'subscriptions.update',
+        payload: { id: subscriptionId, status: 'cancelled' },
+        threadId: threadKey,
+        chatId: parsed.chatId ?? null,
+        tainted: false,
+      },
+      nowMs,
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: скасування підписки впало', e?.message);
+    return 'Не вийшло - спробуй текстом.';
+  }
+  if (out.mode !== 'executed') {
+    return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+  }
+  await clearKeyboard(env, parsed);
+  const merchant = String(/** @type {any} */ (out.result)?.merchant ?? 'підписку');
+  await reply(
+    env,
+    target,
+    `Прибрав ${merchant} з обліку підписок.`,
+    nowMs,
+    out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : undefined,
+  );
+  return 'Прибрав з обліку';
 }
 
 /**

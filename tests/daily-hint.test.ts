@@ -113,7 +113,7 @@ describe('pickHint - пріоритет і mute', () => {
       .run();
     d1.db
       .prepare(
-        `INSERT INTO subscriptions (id, merchant, period, amount, currency, next_at, status, created_at) VALUES ('s1', 'Spotify', 'month', 499, 'USD', '2026-09-06T00:00:00Z', 'active', '2026-08-01T00:00:00Z')`,
+        `INSERT INTO subscriptions (id, merchant, period, amount, currency, next_at, status, created_at) VALUES ('s1', 'Spotify', 'month', 499, 'USD', '2026-09-07T00:00:00Z', 'active', '2026-08-01T00:00:00Z')`,
       )
       .run();
     d1.db
@@ -139,8 +139,19 @@ describe('pickHint - пріоритет і mute', () => {
     expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('trips');
     expect(await pickHint(env, TODAY, AT_1010, ['trips'])).toEqual({
       topic: 'subscriptions',
-      text: 'Списання Spotify 4.99 USD - 06.09.',
+      text: 'Списання Spotify 4.99 USD - 07.09.',
     });
+
+    // Ближче за три доби підказка мовчить: там працює `subscription-remind`
+    // (етап 6 PR-2) з тим самим рядком і кнопкою - інакше вийшло б два
+    // повідомлення про одне списання.
+    d1.db
+      .prepare(`UPDATE subscriptions SET next_at = '2026-09-06T00:00:00Z' WHERE id = 's1'`)
+      .run();
+    expect((await pickHint(env, TODAY, AT_1010, ['trips']))?.topic).not.toBe('subscriptions');
+    d1.db
+      .prepare(`UPDATE subscriptions SET next_at = '2026-09-07T00:00:00Z' WHERE id = 's1'`)
+      .run();
     expect((await pickHint(env, TODAY, AT_1010, ['trips', 'subscriptions']))?.topic).toBe('chains');
     const idea = await pickHint(env, TODAY, AT_1010, ['trips', 'subscriptions', 'chains']);
     expect(idea?.topic).toBe('ideas');

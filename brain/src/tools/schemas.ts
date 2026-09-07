@@ -62,6 +62,43 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       'Телеметрія системи за період (типово тиждень; «30d», «місяць»): прогони за профілями (кількість, медіана і p90 тривалості, помилки, кроки), останні помилки, квоти місяця з лімітами. Для блоку СИСТЕМА звіту.',
     args: z.object({ period: z.string().max(16).optional() }),
   }),
+  // Гроші (етап 6 PR-2, 07 §4): читання транзакцій і підписок + правило
+  // категорії й облік підписок. Класифікацію і прапорці рахує ЯДРО - модель
+  // їх лише пояснює (ADR-029), тому інструмента «постав прапорець» немає.
+  tool({
+    coreName: 'finance.query',
+    description:
+      'Гроші власника з Mono. Або period (день·вчора·тиждень·місяць, «4w», «2026-08», «2026-08-01..2026-08-31») з фільтрами category/merchant/flags - суми, розрізи за категоріями й мерчантами, список і порівняння з ПОПЕРЕДНІМ таким самим періодом; або id однієї транзакції - її поля, довідка по мерчанту (скільки операцій за 24 міс, остання сума й дата), запис у підписках і правило власника. Суми - у копійках гривневого еквівалента; unconverted - скільки операцій без нього.',
+    args: z.object({
+      id: z.string().max(64).optional(),
+      period: z.string().max(32).optional(),
+      category: z.string().max(40).optional(),
+      merchant: z.string().max(60).optional(),
+      flags: z.array(z.string().max(20)).optional(),
+    }),
+  }),
+  tool({
+    coreName: 'finance.rule',
+    description:
+      'Правило власника про категорію (T0 з «↩»): pattern - підрядок назви мерчанта АБО точна назва наявної категорії («перейменуй «Рестор.» на «Кафе»»); category - нова назва; is_subscription - позначити мерчанта підпискою. Ядро перекладає і вже записану історію, щоб те саме питання не давало двох чисел.',
+    args: z.object({
+      pattern: z.string().min(2).max(60),
+      category: z.string().max(40).optional(),
+      is_subscription: z.boolean().optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'subscriptions.update',
+    description:
+      'Облік підписки (T0 з «↩»): status active·paused·cancelled і/або next_at (ISO-8601). «Скасувати підписку в обліку» - це cancelled: сам платіж у банку це не скасовує, лише наш облік.',
+    args: z.object({
+      id: z.string().max(64),
+      status: z.string().max(16).optional(),
+      next_at: z.string().max(32).optional(),
+    }),
+    write: true,
+  }),
   tool({
     coreName: 'calendar.read',
     description: 'Події календаря власника на days днів уперед (0 - лише сьогодні, максимум 7).',

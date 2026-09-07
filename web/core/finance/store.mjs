@@ -24,6 +24,7 @@ import {
   merchantKey,
   normalizeMerchant,
 } from './rules.mjs';
+import { stepDaysOf, upsertSubscription } from './subscriptions.mjs';
 
 /** Ключ факту зі списком рахунків Mono (id + валюта + маска). */
 export const ACCOUNTS_FACT_KEY = 'mono_accounts';
@@ -161,6 +162,28 @@ export async function ingestTransaction(env, input) {
       threshold,
     });
     if (dupAt != null) duplicateMinutes = Math.round((item.timeS * 1000 - dupAt) / 60_000);
+    // S-4-6: облік підписок веде ядро - повторне списання з кроком підписки
+    // САМЕ створює рядок, без участі моделі. Збій обліку не має ламати запис
+    // транзакції: вона важливіша.
+    if (flags.includes('subscription')) {
+      const stepDays = stepDaysOf(item.timeS * 1000, prevSame);
+      if (stepDays != null) {
+        await upsertSubscription(
+          env,
+          {
+            id: item.id,
+            at: atIso,
+            amount: item.operationAmount,
+            currency: item.currency,
+            merchant,
+          },
+          stepDays,
+          item.timeS * 1000,
+        ).catch((/** @type {any} */ e) =>
+          console.error(`mono: підписку за ${item.id} не записано`, e?.message),
+        );
+      }
+    }
   }
 
   const raw = { ...item, account, ...(input.test ? { test: 1 } : {}) };

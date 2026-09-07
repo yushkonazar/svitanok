@@ -24,6 +24,7 @@ import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
+import { runFinanceQuery } from './finance.mjs';
 
 /**
  * @typedef {{
@@ -654,6 +655,55 @@ export const TOOLS = {
     write: { kind: 'wishes.delete' },
     run: () => {
       throw new Error('wishes.delete виконується через policy, не напряму');
+    },
+  },
+  // Гроші (етап 6 PR-2, 07 §4): читання транзакцій і підписок. Не tainting -
+  // це власна база ядра; опис мерчанта зберігається вже нормалізованим, а
+  // «дослівно не копіювати» тримає інструкція Фінансиста.
+  'finance.query': {
+    args: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        period: { type: 'string', maxLength: 32 },
+        category: { type: 'string', maxLength: 40 },
+        merchant: { type: 'string', maxLength: 60 },
+        // Кількість елементів ріже сам інструмент: валідатор контрактів
+        // навмисно вузький (без maxItems), а фільтр із сотні прапорців усе
+        // одно нічого не знайде - це не спосіб навантажити ядро.
+        flags: { type: 'array', items: { type: 'string', maxLength: 20 } },
+      },
+    },
+    run: (env, args, nowMs) => runFinanceQuery(env, args, nowMs),
+  },
+  'finance.rule': {
+    args: {
+      type: 'object',
+      required: ['pattern'],
+      properties: {
+        pattern: { type: 'string', minLength: 2, maxLength: 60 },
+        category: { type: 'string', maxLength: 40 },
+        is_subscription: { type: 'boolean' },
+      },
+    },
+    write: { kind: 'finance.rule' },
+    run: () => {
+      throw new Error('finance.rule виконується через policy, не напряму');
+    },
+  },
+  'subscriptions.update': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        status: { type: 'string', maxLength: 16 },
+        next_at: { type: 'string', maxLength: 32 },
+      },
+    },
+    write: { kind: 'subscriptions.update' },
+    run: () => {
+      throw new Error('subscriptions.update виконується через policy, не напряму');
     },
   },
   'facts.set': {
