@@ -114,7 +114,9 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     builtinTools: [...RESEARCHER_WORKER.builtinTools],
     maxToolCalls: 0,
     maxTurns: workerMaxTurns(RESEARCHER_WORKER.maxSteps),
-    timeoutMs: 4 * 60_000,
+    // До 12 WebSearch + 15 WebFetch (researcher.md) по 10-15 с: 4 хв профілю
+    // chat замало. Ядро чекає звіт 12 хв, сторож прогону - ще довше.
+    timeoutMs: 8 * 60_000,
   },
 };
 

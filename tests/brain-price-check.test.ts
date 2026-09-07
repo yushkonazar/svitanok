@@ -70,7 +70,7 @@ describe('профіль price-check', () => {
     expect(p.toolNames).toEqual([]);
     expect(p.maxToolCalls).toBe(0);
     expect(p.maxTurns).toBe(Number(parsed.front.max_steps) + 2);
-    expect(p.timeoutMs).toBe(4 * 60_000);
+    expect(p.timeoutMs).toBe(8 * 60_000);
     expect(INSTRUCTION_NAME_BY_PROFILE['price-check']).toBe('researcher');
     expect(RUN_REQUEST_SCHEMA.shape.profile.options).toContain('price-check');
     const prompt = buildSystemPrompt(p, NOW, { instruction: BODY });

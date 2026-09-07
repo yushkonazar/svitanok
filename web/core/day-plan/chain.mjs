@@ -19,10 +19,8 @@ import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { setChainState, waitOrNull } from '../chains/state.mjs';
-import { callBrainRun } from '../brain/run-client.mjs';
-import { loadInstruction } from '../instructions.mjs';
+import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { calendarProposalText } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
@@ -503,47 +501,24 @@ export async function startDayPlanChain(env, date, nowMs) {
  * @param {{ chainId: string, date: string, mode: string, task: Record<string, unknown> }} req
  * @param {number} nowMs
  */
-export async function startDayPlannerRun(env, req, nowMs) {
-  let instruction;
-  try {
-    const loaded = await loadInstruction(env, 'day-planner');
-    instruction = { name: loaded.name, version_hash: loaded.hash, body_md: loaded.body };
-  } catch (/** @type {any} */ e) {
-    console.error('day-plan: інструкція day-planner недоступна', e?.message);
-    return false;
-  }
-  const runId = crypto.randomUUID();
-  const threadId = env.TOPIC_ASSISTANT ? String(env.TOPIC_ASSISTANT) : 'dm';
-  await registryBegin(env, {
-    id: runId,
-    trigger: 'workflow',
-    profile: 'day-planner',
-    threadId,
-    chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
-    model: DAY_PLANNER_MODEL,
-    startedMs: nowMs,
-  });
-  const res = await callBrainRun(
+export function startDayPlannerRun(env, req, nowMs) {
+  return startChainWorkerRun(
     env,
     {
-      instruction,
-      runId,
       profile: 'day-planner',
-      threadId,
-      inputText: JSON.stringify({
+      instruction: 'day-planner',
+      model: DAY_PLANNER_MODEL,
+      input: {
         chain_id: req.chainId,
         mode: req.mode,
         date: req.date,
         task: req.task,
         format: req.mode === 'explain' ? 'chat' : 'json',
-      }),
+      },
+      log: 'day-plan',
     },
     nowMs,
   );
-  if (res.ok) return true;
-  console.error(`day-plan: працівник не стартував (${res.status} ${res.detail})`);
-  await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
-  return false;
 }
 
 /**

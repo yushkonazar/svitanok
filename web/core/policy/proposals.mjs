@@ -38,6 +38,7 @@ import {
   cancelPriceTrack,
   cancelPriceChain,
   findActivePriceChain,
+  trackingText,
 } from '../chains/price.mjs';
 import {
   runWishesCreate,
@@ -431,12 +432,17 @@ export const EXECUTORS = {
               wish_id: wish.id,
               text: out.existing
                 ? `«${wish.title}» уже відстежую`
-                : `Відстежую ціну «${wish.title}» щодня`,
+                : trackingText(
+                    wish.title,
+                    wish.payload.target_price ?? null,
+                    String(wish.payload.currency ?? 'UAH'),
+                  ),
             },
             prev: out.existing ? undefined : { kind, chain_id: out.chainId, wish_id: wish.id },
           };
         }
-        const created = await runWishesCreate(env, { type: 'purchase', ...inner }, nowMs, {
+        // type завжди purchase: модель могла покласти в payload своє поле.
+        const created = await runWishesCreate(env, { ...inner, type: 'purchase' }, nowMs, {
           chatId: ctx?.chatId ?? null,
           threadId: ctx?.threadId ?? null,
         });

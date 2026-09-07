@@ -8,24 +8,35 @@
 // пропуск дня з логом, три поспіль - алерт у TOPIC_SYSTEM (S-5-12). Імена
 // кроків - з індексом дня: Workflow відтворює код з початку після кожного
 // пробудження. Через 180 днів - завершення з повідомленням.
+//
+// Звіт Дослідника - зовнішній вміст (сторінки магазинів): у повідомлення
+// власнику йде лише ціна у валюті бажання, назва магазину без розмітки і
+// URL з хоста бажання або відомих магазинів (security-ревʼю етапу 5:
+// сторінка не сміє підкинути фішинг-посилання під іменем магазину).
+// Бажання читається СВІЖИМ щодня: wishes.update міг змінити url, ціль або
+// зупинити відстеження.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
 import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { registryBegin, registryFinish } from '../run-registry/client.mjs';
-import { callBrainRun } from '../brain/run-client.mjs';
-import { loadInstruction } from '../instructions.mjs';
+import { startChainWorkerRun } from '../brain/chain-worker.mjs';
+import { runFactsGet } from '../tools/facts.mjs';
 import { patchChainState, readChainState, waitOrNull } from './state.mjs';
 import { sendChainEvent } from './registry.mjs';
+import { chainTarget } from './table.mjs';
 
 export const CHAIN_KIND = 'price';
 export const PRICE_CHECK_PROFILE = 'price-check';
 /** Інструкція профілю - Дослідник (07 §5 price-check → agents/researcher.md). */
 export const PRICE_CHECK_INSTRUCTION = 'researcher';
-export const PRICE_CHECK_MODEL = 'claude-sonnet-5';
-/** Звіт Дослідника - до 10 хв (профіль 4 хв + черга мозку). */
-export const WAIT_CHECK_MS = 10 * 60_000;
+const PRICE_CHECK_MODEL = 'claude-sonnet-5';
+/** Звіт Дослідника: профіль 8 хв + черга мозку; сторож прогону - довший. */
+export const WAIT_CHECK_MS = 12 * 60_000;
+const CHECK_RUN_STALE_MS = WAIT_CHECK_MS + 3 * 60_000;
+/** Мозок зайнятий (429 busy) або впав - друга спроба через 5 хв, далі пропуск дня. */
+const RETRY_MS = 5 * 60_000;
+const START_ATTEMPTS = 2;
 export const DAY_MS = 24 * 3_600_000;
 /** Стеля днів відстеження: далі - повідомлення й done (власник поновлює словом). */
 export const MAX_DAYS = 180;
@@ -34,12 +45,22 @@ export const DROP_RATIO = 0.05;
 /** Пропусків поспіль до алерту (S-5-12: «3 дні поспіль - алерт»). */
 export const MISSES_ALERT = 3;
 export const PRICE_TRACK_KICK_MARKER_KEY = 'priceTrackKickDay';
-export const PRICE_TRACK_KICK_HOUR = 9;
+const PRICE_TRACK_KICK_HOUR = 9;
+/** Магазини за замовчуванням; власник змінює через facts.setting.price_shops. */
+export const DEFAULT_SHOPS = [
+  'rozetka.com.ua',
+  'comfy.ua',
+  'allo.ua',
+  'foxtrot.com.ua',
+  'eldorado.ua',
+];
 
 /**
  * @typedef {{ source: string, price: number, currency: string, in_stock: boolean, url: string | null }} PricePoint
+ * @typedef {{ url: string, target_price: number | null, currency: string, active: boolean, shops: string[] }} WishSnapshot
  * @typedef {{
  *   now: () => number,
+ *   wish: () => Promise<WishSnapshot | null>,
  *   startCheck: (task: string) => Promise<boolean>,
  *   send: (text: string, buttons?: { text: string, callback_data: string }[][]) => Promise<void>,
  *   alert: (text: string) => Promise<void>,
@@ -49,8 +70,7 @@ export const PRICE_TRACK_KICK_HOUR = 9;
  *   waitForEvent: (name: string, opts: { type: string, timeout: string }) => Promise<{ payload: any }>,
  * }} PriceStep
  * @typedef {{ wish_id: string, title: string, url: string, target_price: number | null, currency: string,
- *   chat_id: number | string | null, thread_id: string | null, awaiting: string | null,
- *   misses?: number, last_price?: number | null }} PriceState
+ *   chat_id: number | string | null, thread_id: string | null, awaiting: string | null, misses?: number }} PriceState
  * @typedef {{ chainId: string, state?: PriceState }} PriceParams
  */
 
@@ -85,24 +105,73 @@ const CURRENCY_TOKENS = /** @type {[RegExp, string][]} */ ([
   [/zł|pln/i, 'PLN'],
 ]);
 
-/** «3 299 грн» / «3299.50 UAH» / «$12,99» → {price (копійки), currency}; null - не ціна. @param {string} text */
+/**
+ * Число в основних одиницях із тексту ціни: «3 299», «3.299» (крапка -
+ * роздільник тисяч), «3299.50», «3 299,50», «1.099,00». null - не число.
+ * Плутанина тисячника з копійками коштувала б «−99 %» у повідомленні й
+ * зіпсованого мінімуму в price_points, тож розбір явний, не Number().
+ * @param {string} text
+ */
+export function parseAmount(text) {
+  const raw = String(text ?? '')
+    .replace(/\s/g, '')
+    .match(/\d+(?:[.,]\d+)*/)?.[0];
+  if (!raw) return null;
+  // Останній роздільник із 1-2 цифрами після нього - копійки; решта - тисячі.
+  const m = raw.match(/[.,](\d{1,2})$/);
+  const cents = m ? m[1] : null;
+  const whole = (cents == null ? raw : raw.slice(0, -(cents.length + 1))).replace(/[.,]/g, '');
+  if (!/^\d+$/.test(whole)) return null;
+  const n = Number(cents == null ? whole : `${whole}.${cents}`);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** «3 299 грн» / «3.299 грн» / «$12,99» → {price (копійки), currency}; null - не ціна. @param {string} text */
 export function parsePrice(text) {
   const currency = CURRENCY_TOKENS.find(([re]) => re.test(text))?.[1] ?? null;
-  const m = text.replace(/\s/g, '').match(/\d+(?:[.,]\d{1,2})?/);
-  if (!m || !currency) return null;
-  const n = Number(m[0].replace(',', '.'));
-  if (!Number.isFinite(n) || n <= 0) return null;
+  const n = parseAmount(text);
+  if (n == null || n <= 0 || !currency) return null;
   return { price: Math.round(n * 100), currency };
+}
+
+/** Хост URL; null - не http(s). @param {string} url */
+function hostOf(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.hostname.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Хост належить дозволеному домену (сам домен або піддомен). @param {string} host @param {string[]} allowed */
+export function hostAllowed(host, allowed) {
+  return allowed.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+/** Назва магазину без розмітки й посилань: [текст](url) → текст, голі URL геть. @param {string} s */
+function cleanSource(s) {
+  return s
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/[^\p{L}\p{N} .'&-]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40);
 }
 
 /**
  * Розділ «## Ціни» звіту Дослідника (researcher.md «Формат відповіді»):
- * «- <Магазин> - <ціна> <валюта> - <наявність> - <дата> - <URL>». Рядки без
- * ціни або валюти пропускаються. Від найнижчої.
+ * «- <Магазин> - <ціна> <валюта> - <наявність> - <дата> - <URL>». Поля
+ * читаються з ХВОСТА (URL, дата), далі перше поле з валютою - ціна, усе до
+ * неї - назва магазину (у ній буває « - »). Лишаються лише ціни у валюті
+ * бажання (інакше «найдешевша» вийшла б у чужій валюті); URL - лише з
+ * дозволених хостів. Від найнижчої.
  * @param {string} text
+ * @param {{ currency: string, allowedHosts: string[] }} opts
  * @returns {PricePoint[]}
  */
-export function parsePriceReport(text) {
+export function parsePriceReport(text, opts) {
   const lines = String(text ?? '').split(/\r?\n/);
   const from = lines.findIndex((l) => /^##\s*Ціни/i.test(l.trim()));
   if (from < 0) return [];
@@ -112,21 +181,30 @@ export function parsePriceReport(text) {
     const line = raw.trim();
     if (/^##\s/.test(line)) break;
     if (!line.startsWith('-')) continue;
-    const parts = line
+    const tail = line
       .replace(/^-\s*/, '')
       .split(/\s+-\s+/)
       .map((p) => p.trim());
-    if (parts.length < 3) continue;
-    const parsed = parsePrice(parts[1] ?? '');
-    if (!parsed) continue;
-    const url = parts.find((p) => /^https?:\/\//i.test(p)) ?? null;
-    const availability = parts[2] ?? '';
+    if (tail.length < 3) continue;
+    const urlPart = /^https?:\/\//i.test(tail[tail.length - 1] ?? '') ? tail.pop() : null;
+    if (tail.length >= 3 && /\d{1,2}\.\d{2}\.\d{4}|відкрито/i.test(tail[tail.length - 1] ?? '')) {
+      tail.pop();
+    }
+    const priceIdx = tail.findIndex((p, i) => i > 0 && parsePrice(p) != null);
+    if (priceIdx < 0) continue;
+    const parsed = /** @type {{ price: number, currency: string }} */ (
+      parsePrice(tail[priceIdx] ?? '')
+    );
+    if (parsed.currency !== opts.currency) continue;
+    const source = cleanSource(tail.slice(0, priceIdx).join(' - ')) || 'магазин';
+    const availability = tail[priceIdx + 1] ?? '';
+    const host = urlPart ? hostOf(urlPart) : null;
     out.push({
-      source: (parts[0] ?? '').slice(0, 80),
+      source,
       price: parsed.price,
       currency: parsed.currency,
       in_stock: !/нема|відсутн|unknown|під замовлення/i.test(availability),
-      url: url ? url.slice(0, 500) : null,
+      url: urlPart && host && hostAllowed(host, opts.allowedHosts) ? urlPart.slice(0, 500) : null,
     });
   }
   return out.sort((a, b) => a.price - b.price);
@@ -137,44 +215,37 @@ export function pickBest(points) {
   return points.find((p) => p.in_stock) ?? points[0] ?? null;
 }
 
-/** Задача Дослідникові (researcher.md «Що отримує»). @param {PriceState} state */
-export function checkTask(state) {
+/** Задача Дослідникові (researcher.md «Що отримує»). @param {string} title @param {WishSnapshot} wish */
+export function checkTask(title, wish) {
   return (
-    `Ціна товару «${state.title}» - спершу сторінка ${state.url}, далі ті самі товар/модель у 3-5 магазинах України ` +
-    `(rozetka.com.ua, comfy.ua, allo.ua, foxtrot.com.ua, eldorado.ua): ціна як на сторінці, валюта, наявність, дата, URL. ` +
+    `Ціна товару «${title}» - спершу сторінка ${wish.url}, далі ті самі товар/модель у магазинах ` +
+    `(${wish.shops.join(', ')}): ціна як на сторінці, валюта, наявність, дата, URL. ` +
     `Лише ціни з відкритих сторінок, без прогнозів і без конвертації.`
   );
+}
+
+/** Дозволені хости посилань зі звіту: хост url бажання + магазини. @param {WishSnapshot} wish */
+export function allowedHostsOf(wish) {
+  const own = hostOf(wish.url);
+  return [...(own ? [own] : []), ...wish.shops];
 }
 
 // ── Старт / зупинка ────────────────────────────────────────────────────────
 
 /**
- * Активний ланцюг ціни за id ланцюга або бажання.
+ * Активний ланцюг ціни: за id ланцюга, за бажанням або найсвіжіший.
  * @param {Env} env @param {{ chainId?: string | null, wishId?: string | null }} q
  */
 export async function findActivePriceChain(env, q) {
   const row = /** @type {{ id: string, state_json: string } | null} */ (
-    q.chainId
-      ? await db(env)
-          .prepare(
-            `SELECT id, state_json FROM chains WHERE id = ? AND kind = ? AND status IN ('running', 'waiting')`,
-          )
-          .bind(q.chainId, CHAIN_KIND)
-          .first()
-      : q.wishId
-        ? await db(env)
-            .prepare(
-              `SELECT id, state_json FROM chains WHERE kind = ? AND status IN ('running', 'waiting')
-                 AND json_extract(state_json, '$.wish_id') = ? ORDER BY created_at DESC LIMIT 1`,
-            )
-            .bind(CHAIN_KIND, q.wishId)
-            .first()
-        : await db(env)
-            .prepare(
-              `SELECT id, state_json FROM chains WHERE kind = ? AND status IN ('running', 'waiting') ORDER BY created_at DESC LIMIT 1`,
-            )
-            .bind(CHAIN_KIND)
-            .first()
+    await db(env)
+      .prepare(
+        `SELECT id, state_json FROM chains WHERE kind = ? AND status IN ('running', 'waiting')
+           AND (? IS NULL OR id = ?) AND (? IS NULL OR json_extract(state_json, '$.wish_id') = ?)
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(CHAIN_KIND, q.chainId ?? null, q.chainId ?? null, q.wishId ?? null, q.wishId ?? null)
+      .first()
   );
   if (!row) return null;
   let title = '';
@@ -187,6 +258,11 @@ export async function findActivePriceChain(env, q) {
     /* битий стан - назви немає */
   }
   return { id: String(row.id), title, wishId };
+}
+
+/** Текст після старту - один для wishes.create і chain.start. @param {string} title @param {number | null} target @param {string} currency */
+export function trackingText(title, target, currency) {
+  return `Відстежую ціну «${title}» щодня; скажу при −5 % або ${target != null ? `≤ ${formatMoney(target, currency)}` : 'цільовій ціні'}.`;
 }
 
 /**
@@ -214,7 +290,6 @@ export async function startPriceTrack(env, wish, nowMs, ctx) {
     thread_id: ctx.threadId == null ? null : String(ctx.threadId),
     awaiting: null,
     misses: 0,
-    last_price: null,
   };
   await db(env)
     .prepare(
@@ -226,23 +301,28 @@ export async function startPriceTrack(env, wish, nowMs, ctx) {
     await env.PRICE_TRACK.create({ id: chainId, params: { chainId } });
   } catch (/** @type {any} */ e) {
     await patchChainState(env, chainId, 'failed', { awaiting: null }, { nowMs });
-    throw new Error(`Workflow відстеження не стартував: ${String(e?.message ?? e)}`, {
-      cause: e,
-    });
+    throw new Error(`Workflow відстеження не стартував: ${String(e?.message ?? e)}`, { cause: e });
   }
   return { chainId, existing: false };
 }
 
 /**
- * Зупинка (кнопка «Стоп», wishes.update(status), chain.cancel, «↩»): статус
- * cancelled + подія stop; не доставилась - машина побачить cancelled на
- * наступному записі стану. false - активного ланцюга для бажання немає.
+ * Зупинка (кнопка «Стоп», wishes.update(status), chain.cancel, «↩»): один
+ * UPDATE за бажанням → cancelled + подія stop; не доставилась - машина
+ * побачить cancelled на наступному записі стану. false - активного немає.
  * @param {Env} env @param {string} wishId @param {number} nowMs
  */
 export async function cancelPriceTrack(env, wishId, nowMs) {
-  const active = await findActivePriceChain(env, { wishId });
-  if (!active) return false;
-  return cancelPriceChain(env, active.id, nowMs);
+  const { results } = await db(env)
+    .prepare(
+      `UPDATE chains SET status = 'cancelled', updated_at = ? WHERE kind = ? AND status IN ('running', 'waiting')
+         AND json_extract(state_json, '$.wish_id') = ? RETURNING id`,
+    )
+    .bind(new Date(nowMs).toISOString(), CHAIN_KIND, wishId)
+    .all();
+  const ids = (results ?? []).map((r) => String(r.id));
+  for (const id of ids) await notifyStop(env, id);
+  return ids.length > 0;
 }
 
 /** @param {Env} env @param {string} chainId @param {number} nowMs */
@@ -254,6 +334,12 @@ export async function cancelPriceChain(env, chainId, nowMs) {
     .bind(new Date(nowMs).toISOString(), chainId, CHAIN_KIND)
     .run();
   if (!meta?.changes) return false;
+  await notifyStop(env, chainId);
+  return true;
+}
+
+/** @param {Env} env @param {string} chainId */
+async function notifyStop(env, chainId) {
   try {
     await sendChainEvent(env, chainId, 'price', { action: 'stop' });
   } catch (/** @type {any} */ e) {
@@ -262,7 +348,6 @@ export async function cancelPriceChain(env, chainId, nowMs) {
       e?.message,
     );
   }
-  return true;
 }
 
 /** @param {Env} env @param {string} chainId @returns {Promise<PriceState>} */
@@ -272,23 +357,74 @@ export async function loadPriceState(env, chainId) {
   return /** @type {PriceState} */ (row.state);
 }
 
+/**
+ * Свіжий знімок бажання: url/ціль/валюту міг змінити wishes.update після
+ * старту ланцюга, а «стоп відстежувати» - status. null - бажання немає.
+ * @param {Env} env @param {string} wishId
+ * @returns {Promise<WishSnapshot | null>}
+ */
+export async function readWishSnapshot(env, wishId) {
+  const row = /** @type {{ status: string, payload_json: string | null } | null} */ (
+    await db(env)
+      .prepare('SELECT status, payload_json FROM wishes WHERE id = ?')
+      .bind(wishId)
+      .first()
+  );
+  if (!row) return null;
+  /** @type {Record<string, any>} */
+  let payload;
+  try {
+    payload = row.payload_json ? JSON.parse(row.payload_json) : {};
+  } catch {
+    console.error(`price-track: битий payload_json бажання ${wishId}`);
+    payload = {};
+  }
+  return {
+    url: typeof payload.url === 'string' ? payload.url : '',
+    target_price: typeof payload.target_price === 'number' ? payload.target_price : null,
+    currency: String(payload.currency ?? 'UAH'),
+    active: row.status === 'active',
+    shops: await shopsOf(env),
+  };
+}
+
+/** Магазини для пошуку: facts.setting.price_shops (масив доменів) або типові. @param {Env} env */
+export async function shopsOf(env) {
+  try {
+    const fact = /** @type {any} */ (
+      (await runFactsGet(env, { kind: 'setting', key: 'price_shops' })).result[0]
+    );
+    const list = Array.isArray(fact?.value) ? fact.value : fact?.value?.shops;
+    if (Array.isArray(list) && list.length) {
+      return list
+        .map((s) => String(s).toLowerCase().trim())
+        .filter(Boolean)
+        .slice(0, 10);
+    }
+  } catch (/** @type {any} */ e) {
+    console.error('price-track: facts.setting.price_shops не прочитано', e?.message);
+  }
+  return DEFAULT_SHOPS;
+}
+
 // ── Машина станів ──────────────────────────────────────────────────────────
 
 class Stopped extends Error {}
 
 /**
  * Записати точку ціни; is_low = не вище за мінімум досі. Повертає попередню
- * і найнижчу ціну ДО запису (для порогів).
+ * і найнижчу ціну ДО запису (лише в тій самій валюті - інакше пороги
+ * порівнювали б гривні з доларами).
  * @param {Env} env @param {string} wishId @param {PricePoint} p @param {number} nowMs
  */
 export async function savePricePoint(env, wishId, p, nowMs) {
   const stats = /** @type {{ last_price: number | null, min_price: number | null } | null} */ (
     await db(env)
       .prepare(
-        `SELECT (SELECT price FROM price_points WHERE wish_id = ? ORDER BY at DESC LIMIT 1) AS last_price,
-                (SELECT MIN(price) FROM price_points WHERE wish_id = ?) AS min_price`,
+        `SELECT (SELECT price FROM price_points WHERE wish_id = ? AND currency = ? ORDER BY at DESC LIMIT 1) AS last_price,
+                (SELECT MIN(price) FROM price_points WHERE wish_id = ? AND currency = ?) AS min_price`,
       )
-      .bind(wishId, wishId)
+      .bind(wishId, p.currency, wishId, p.currency)
       .first()
   );
   const prev = stats?.last_price == null ? null : Number(stats.last_price);
@@ -315,20 +451,21 @@ export async function savePricePoint(env, wishId, p, nowMs) {
 /**
  * Що сказати власнику (null - мовчати): перша ціна - один раз; далі лише
  * ≤ target або падіння ≥ 5 % проти попередньої перевірки.
- * @param {PriceState} state @param {PricePoint} best @param {{ prev: number | null, min: number | null }} stats
+ * @param {string} title @param {number | null} target @param {PricePoint} best
+ * @param {{ prev: number | null, min: number | null }} stats
  */
-export function priceVerdict(state, best, stats) {
+export function priceVerdict(title, target, best, stats) {
   const money = (/** @type {number} */ v) => formatMoney(v, best.currency);
   const where = `${best.source}${best.url ? `: ${best.url}` : ''}`;
   if (stats.prev == null) {
-    return `Перша ціна «${state.title}»: ${money(best.price)} (${where}). Стежу далі.`;
+    return `Перша ціна «${title}»: ${money(best.price)} (${where}). Стежу далі.`;
   }
-  if (state.target_price != null && best.price <= state.target_price) {
-    return `🎯 «${state.title}» - ${money(best.price)}, не дорожче цільових ${money(state.target_price)} (${where}).`;
+  if (target != null && best.price <= target) {
+    return `🎯 «${title}» - ${money(best.price)}, не дорожче цільових ${money(target)} (${where}).`;
   }
   if (best.price <= stats.prev * (1 - DROP_RATIO)) {
     const pct = Math.round((1 - best.price / stats.prev) * 100);
-    return `📉 «${state.title}» подешевшало: ${money(best.price)} (−${pct} % від ${money(stats.prev)}${stats.min != null && best.price <= stats.min ? ', мінімум за весь час' : ''}) - ${where}.`;
+    return `📉 «${title}» подешевшало: ${money(best.price)} (−${pct} % від ${money(stats.prev)}${stats.min != null && best.price <= stats.min ? ', мінімум за весь час' : ''}) - ${where}.`;
   }
   return null;
 }
@@ -354,22 +491,38 @@ export async function runPriceTrack(env, params, step, io) {
   try {
     for (let d = 0; d < MAX_DAYS; d += 1) {
       const label = `d${d}`;
-      await write(`${label}-run`, 'running', { awaiting: null, day: d });
-      const started = await step.do(`${label}-start`, () => io.startCheck(checkTask(state)));
+      // Свіже бажання: url/ціль могли змінитись, «стоп відстежувати» - status.
+      const wish = await step.do(`${label}-wish`, () => io.wish());
+      if (!wish || !wish.active || !wish.url) throw new Stopped();
+      const task = checkTask(state.title, wish);
+      let started = false;
+      for (let a = 0; a < START_ATTEMPTS && !started; a += 1) {
+        started = await step.do(`${label}-start-${a}`, () => io.startCheck(task));
+        if (!started && a + 1 < START_ATTEMPTS) {
+          // Мозок зайнятий (429) чи впав - друга спроба; «Стоп» будить одразу.
+          const ev = await waitOrNull(step, `${label}-retry-${a}`, 'price', RETRY_MS);
+          if (ev?.action === 'stop' || ev?.action === 'cancel') throw new Stopped();
+        }
+      }
       const ev = started ? await waitOrNull(step, `${label}-wait`, 'worker', WAIT_CHECK_MS) : null;
+      // «Стоп» під час очікування звіту (подія іншого типу) видно тут - ДО
+      // запису ціни й повідомлення, тобто зупинений ланцюг більше не пише.
+      await write(`${label}-run`, 'running', { awaiting: null, day: d });
       const report = typeof ev?.output === 'string' ? ev.output : '';
-      const best = pickBest(parsePriceReport(report));
+      const best = pickBest(
+        parsePriceReport(report, { currency: wish.currency, allowedHosts: allowedHostsOf(wish) }),
+      );
       if (best) {
         misses = 0;
         const stats = await step.do(`${label}-save`, () =>
           savePricePoint(env, state.wish_id, best, io.now()),
         );
-        const verdict = priceVerdict(state, best, stats);
+        const verdict = priceVerdict(state.title, wish.target_price, best, stats);
         if (verdict) await step.do(`${label}-notify`, () => io.send(verdict, stopBtn));
       } else {
         misses += 1;
         console.error(
-          `price-track ${chainId}: день ${d} без ціни (${started ? (ev ? 'звіт без «## Ціни»' : 'мозок не відповів') : 'прогін не стартував'})`,
+          `price-track ${chainId}: день ${d} без ціни у ${wish.currency} (${started ? (ev ? 'звіт без придатних «## Ціни»' : 'мозок не відповів') : 'прогін не стартував'})`,
         );
         if (misses === MISSES_ALERT) {
           await step.do(`${label}-alert`, () =>
@@ -380,11 +533,7 @@ export async function runPriceTrack(env, params, step, io) {
         }
       }
       // Доба - як очікування події stop: кнопка або chain.cancel будять одразу.
-      await write(`${label}-sleep-state`, 'waiting', {
-        awaiting: null,
-        misses,
-        last_price: best?.price ?? state.last_price ?? null,
-      });
+      await write(`${label}-sleep-state`, 'waiting', { awaiting: null, misses });
       const stop = await waitOrNull(step, `${label}-sleep`, 'price', DAY_MS);
       if (stop?.action === 'stop' || stop?.action === 'cancel') throw new Stopped();
     }
@@ -412,51 +561,23 @@ export async function runPriceTrack(env, params, step, io) {
 // ── Бойове io ──────────────────────────────────────────────────────────────
 
 /**
- * Прогін профілю price-check у мозку (як startDayPlannerRun): інструкція
- * Дослідника з D1, вхід JSON {chain_id, mode, task, format}; результат
- * повернеться подією `worker` через /internal/runs outcome.chain.
+ * Прогін профілю price-check у мозку: інструкція Дослідника з D1, вхід JSON
+ * {chain_id, mode, task, format}; результат повернеться подією `worker`.
  * @param {Env} env @param {{ chainId: string, task: string }} req @param {number} nowMs
  */
-export async function startPriceCheckRun(env, req, nowMs) {
-  let instruction;
-  try {
-    const loaded = await loadInstruction(env, PRICE_CHECK_INSTRUCTION);
-    instruction = { name: loaded.name, version_hash: loaded.hash, body_md: loaded.body };
-  } catch (/** @type {any} */ e) {
-    console.error('price-track: інструкція researcher недоступна', e?.message);
-    return false;
-  }
-  const runId = crypto.randomUUID();
-  const threadId = env.TOPIC_ASSISTANT ? String(env.TOPIC_ASSISTANT) : 'dm';
-  await registryBegin(env, {
-    id: runId,
-    trigger: 'workflow',
-    profile: PRICE_CHECK_PROFILE,
-    threadId,
-    chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
-    model: PRICE_CHECK_MODEL,
-    startedMs: nowMs,
-  });
-  const res = await callBrainRun(
+export function startPriceCheckRun(env, req, nowMs) {
+  return startChainWorkerRun(
     env,
     {
-      instruction,
-      runId,
       profile: PRICE_CHECK_PROFILE,
-      threadId,
-      inputText: JSON.stringify({
-        chain_id: req.chainId,
-        mode: 'price',
-        task: req.task,
-        format: 'chat',
-      }),
+      instruction: PRICE_CHECK_INSTRUCTION,
+      model: PRICE_CHECK_MODEL,
+      input: { chain_id: req.chainId, mode: 'price', task: req.task, format: 'chat' },
+      staleMs: CHECK_RUN_STALE_MS,
+      log: 'price-track',
     },
     nowMs,
   );
-  if (res.ok) return true;
-  console.error(`price-track: прогін price-check не стартував (${res.status} ${res.detail})`);
-  await registryFinish(env, runId, { finishedMs: nowMs, error: `brain-start: ${res.status}` });
-  return false;
 }
 
 /**
@@ -464,14 +585,10 @@ export async function startPriceCheckRun(env, req, nowMs) {
  * @returns {PriceIo}
  */
 export function productionIo(env, chainId, state) {
-  const isDm = state.thread_id === 'dm';
-  const chatId =
-    state.chat_id ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
-  if (chatId == null)
-    throw new Error('немає чату для ланцюга (TELEGRAM_CHAT_ID / контекст старту)');
-  const threadId = isDm ? null : (state.thread_id ?? env.TOPIC_ASSISTANT ?? null);
+  const { chatId, threadId } = chainTarget(env, state);
   return {
     now: () => Date.now(),
+    wish: () => readWishSnapshot(env, state.wish_id),
     startCheck: (task) => startPriceCheckRun(env, { chainId, task }, Date.now()),
     send: async (text, btns) => {
       await enqueueOutbox(
@@ -525,8 +642,10 @@ export class PriceTrack extends WorkflowEntrypoint {
 // ── Задача price-track-kick (07 §7) ────────────────────────────────────────
 
 /**
- * Щодня о 09:00 Києва: активні бажання purchase з url без активного ланцюга
- * (Workflow упав, привʼязка зʼявилась після створення) → старт. Мітка доби в KV.
+ * Щодня о 09:00 Києва: активні бажання purchase з url, у яких ланцюга ще НЕ
+ * БУЛО або він упав (failed) → старт. Зупинені власником (cancelled) чи
+ * завершені (done) НЕ поновлюються: інакше кнопка «Стоп» діяла б до ранку.
+ * Мітка доби в KV.
  * @param {Env} env @param {number} [nowMs]
  */
 export async function priceTrackKickTask(env, nowMs = Date.now()) {
@@ -537,32 +656,28 @@ export async function priceTrackKickTask(env, nowMs = Date.now()) {
   if (!env.DB || !env.PRICE_TRACK) return { skipped: 'no-binding' };
   const { results } = await db(env)
     .prepare(
-      `SELECT w.id, w.title, w.payload_json FROM wishes w
-       WHERE w.type = 'purchase' AND w.status = 'active'
-         AND NOT EXISTS (SELECT 1 FROM chains c WHERE c.kind = ? AND c.status IN ('running', 'waiting')
-                         AND json_extract(c.state_json, '$.wish_id') = w.id)`,
+      `SELECT w.id, w.title, json_extract(w.payload_json, '$.url') AS url,
+              json_extract(w.payload_json, '$.target_price') AS target_price,
+              json_extract(w.payload_json, '$.currency') AS currency
+       FROM wishes w
+       WHERE w.type = 'purchase' AND w.status = 'active' AND json_extract(w.payload_json, '$.url') IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM chains c WHERE c.kind = ?
+                           AND c.status IN ('running', 'waiting', 'cancelled', 'done')
+                           AND json_extract(c.state_json, '$.wish_id') = w.id)`,
     )
     .bind(CHAIN_KIND)
     .all();
   const started = [];
   for (const r of results ?? []) {
-    /** @type {Record<string, any>} */
-    let payload;
-    try {
-      payload = r.payload_json ? JSON.parse(String(r.payload_json)) : {};
-    } catch {
-      payload = {};
-    }
-    if (typeof payload.url !== 'string' || !payload.url) continue;
     try {
       const out = await startPriceTrack(
         env,
         {
           id: String(r.id),
           title: String(r.title ?? ''),
-          url: payload.url,
-          target_price: payload.target_price ?? null,
-          currency: String(payload.currency ?? 'UAH'),
+          url: String(r.url),
+          target_price: r.target_price == null ? null : Number(r.target_price),
+          currency: String(r.currency ?? 'UAH'),
         },
         nowMs,
         {},

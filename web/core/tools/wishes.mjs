@@ -10,8 +10,9 @@
 import {
   startPriceTrack,
   cancelPriceTrack,
-  findActivePriceChain,
   formatMoney,
+  parseAmount,
+  trackingText,
 } from '../chains/price.mjs';
 
 export const WISH_TYPES = ['game', 'trip', 'purchase'];
@@ -46,12 +47,16 @@ function toWish(row) {
   };
 }
 
-/** Ціна від моделі (основні одиниці, число або «3 299,50») → копійки. @param {unknown} v */
+/** Ціна від моделі (основні одиниці: 3299, «3 299,50», «3.299») → копійки. @param {unknown} v */
 export function toMinor(v) {
   if (v == null || v === '') return null;
-  const cleaned = typeof v === 'number' ? v : String(v).replace(/\s/g, '').replace(',', '.');
+  // Той самий розбір, що в звіті Дослідника: крапка може бути тисячником.
   const n =
-    typeof cleaned === 'number' ? cleaned : /^\d+(?:\.\d+)?$/.test(cleaned) ? Number(cleaned) : NaN;
+    typeof v === 'number'
+      ? v
+      : /^[\d\s.,]+$/.test(String(v))
+        ? (parseAmount(String(v)) ?? NaN)
+        : NaN;
   if (!Number.isFinite(n) || n < 0) throw new Error(`ціна «${String(v)}» не число`);
   return Math.round(n * 100);
 }
@@ -88,14 +93,23 @@ function urlOf(v) {
 export async function findWish(env, ref) {
   const key = String(ref ?? '').trim();
   if (!key) return null;
-  const byId = await db(env).prepare('SELECT * FROM wishes WHERE id = ?').bind(key).first();
-  if (byId) return toWish(byId);
   const { results } = await db(env)
-    .prepare(`SELECT * FROM wishes WHERE title LIKE ? ORDER BY created_at DESC LIMIT 2`)
-    .bind(`%${key.replace(/[%_]/g, '')}%`)
+    .prepare(
+      `SELECT * FROM wishes WHERE id = ? OR title LIKE ?
+       ORDER BY (id = ?) DESC, (lower(title) = lower(?)) DESC, created_at DESC LIMIT 3`,
+    )
+    .bind(key, `%${key.replace(/[%_]/g, '')}%`, key, key)
     .all();
-  const rows = results ?? [];
-  return rows.length === 1 ? toWish(rows[0]) : null;
+  const rows = (results ?? []).map(toWish);
+  if (rows.length === 0) return null;
+  const exact = rows.find((w) => w.id === key || w.title.toLowerCase() === key.toLowerCase());
+  if (exact) return exact;
+  if (rows.length === 1) return rows[0] ?? null;
+  // Кілька збігів - помилка з переліком, а не «немає»: інакше модель створить
+  // дубль замість уточнення (ревʼю етапу 5).
+  throw new Error(
+    `«${key}» підходить до кількох бажань: ${rows.map((w) => `«${w.title}» (${w.id})`).join(', ')} - уточни id`,
+  );
 }
 
 /**
@@ -151,7 +165,7 @@ export async function runWishesCreate(env, args, nowMs, ctx = {}) {
       );
       result.tracking = true;
       result.chain_id = chain.chainId;
-      result.text = `Відстежую ціну «${title}» щодня; скажу при −5 % або ${target != null ? `≤ ${formatMoney(target, currency)}` : 'цільовій ціні'}.`;
+      result.text = trackingText(title, target, currency);
     } else {
       result.tracking = false;
       result.note = 'привʼязки PRICE_TRACK немає - відстеження ціни недоступне, бажання записано';
@@ -311,5 +325,3 @@ export async function deleteWishRow(env, id, nowMs) {
   await db(env).prepare('DELETE FROM price_points WHERE wish_id = ?').bind(id).run();
   await db(env).prepare('DELETE FROM wishes WHERE id = ?').bind(id).run();
 }
-
-export { findActivePriceChain };

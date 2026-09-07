@@ -218,13 +218,17 @@ describe('update / list / search / delete', () => {
     await expect(runWishesUpdate(env, { id: c.id, status: 'lost' }, NOW)).rejects.toThrow(/status/);
   });
 
-  it('findWish: id або унікальна назва (LIKE); два збіги - null', async () => {
+  it('findWish: id, точна назва або унікальна частина; кілька збігів - помилка з переліком, не «немає»', async () => {
     const { env } = setup();
     const a = await runWishesCreate(env, { type: 'game', title: 'Hades II' }, NOW);
     expect((await findWish(env, 'hades'))?.id).toBe(a.result.id);
-    await runWishesCreate(env, { type: 'game', title: 'Hades' }, NOW + 1);
-    expect(await findWish(env, 'hades')).toBeNull();
+    const b = await runWishesCreate(env, { type: 'game', title: 'Hades' }, NOW + 1);
+    // Точний збіг виграє в частковому; неоднозначне - помилка, щоб модель
+    // уточнила, а не створила дубль.
+    expect((await findWish(env, 'Hades'))?.id).toBe(b.result.id);
+    await expect(findWish(env, 'ades')).rejects.toThrow(/підходить до кількох бажань/);
     expect((await findWish(env, a.result.id))?.title).toBe('Hades II');
+    expect(await findWish(env, 'нема такого')).toBeNull();
   });
 
   it('list: активні за замовчуванням, з останньою/найнижчою ціною; фільтри type/status/all; search за назвою', async () => {
