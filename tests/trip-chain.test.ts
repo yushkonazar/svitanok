@@ -4,6 +4,7 @@
 // step/io (блоки → ✅ пункт → «пора виходити» → «як пройшло»), зміна дат,
 // скасування зсередини і ззовні, реєстр кнопок і тексту, погода на дати.
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   runTripChain,
@@ -16,13 +17,20 @@ import {
   isAbroad,
   moneyOf,
   hoursWord,
-  modeWord,
+  weatherNote,
+  likeRef,
+  failTripChain,
+  blocksTitle,
+  daysWord,
+  tripModeWord,
   productionIo,
   CHAIN_KIND,
 } from '../web/core/chains/trip.mjs';
 import {
   parseChecklist,
   loadChecklist,
+  humanLine,
+  renderBlocks,
   renderBlock,
   blocksDueNow,
   pickChecklistKey,
@@ -261,13 +269,34 @@ function fakeIo(
     markDone: async (id) => void done.push(id),
     route: async () => ({ distance_m: 250_000, duration_min: 200 }),
     carCost: async () => 'Пальне: 500 км × 8 л/100 км × 58.4 грн = 2 336,00 ₴ в обидва боки.',
-    weather: async () => ['10.09: 12…19 °, ясно'],
+    weather: async () => ({ lines: ['10.09: 12…19 °, ясно'], reason: null }),
     saveCost: async (patch) => void costs.push(patch),
     saveDates: async (from, to) => void dates.push({ from, to }),
     finish: async (status) => void finishes.push(status),
     ...over,
   };
   return { io, sent, done, costs, dates, finishes };
+}
+
+/** Кроки з гачком: побічна дія рівно перед названим кроком (скасування ззовні). */
+function stepWithHook(step: Step, at: string, hook: () => Promise<void>): Step {
+  const fire = async (name: string) => {
+    if (name === at) await hook();
+  };
+  return {
+    do: async (name, fn) => {
+      await fire(name);
+      return step.do(name, fn);
+    },
+    sleepUntil: async (name, ms) => {
+      await fire(name);
+      return step.sleepUntil(name, ms);
+    },
+    waitForEvent: async (name, opts) => {
+      await fire(name);
+      return step.waitForEvent(name, opts);
+    },
+  };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -296,6 +325,14 @@ describe('розклад і дрібні помічники', () => {
     expect(tomorrow[0]?.blocks).toEqual(['t30', 't7', 't1']);
   });
 
+  it('рівно 30 діб: блок T-30 показується ОДИН раз (платний маршрут теж один)', () => {
+    // 09:00 Києва: рівно 30 діб до виїзду, і момент T-30 (10:00) ще попереду -
+    // без захисту блок T-30 пішов би і «зараз», і о 10:00 (два платні маршрути).
+    const plan = schedule('2026-10-07', NOW - 3_600_000);
+    expect(plan.map((p) => p.blocks)).toEqual([['t30'], ['t7'], ['t1']]);
+    expect(plan.filter((p) => p.blocks.includes('t30'))).toHaveLength(1);
+  });
+
   it('дати поїздки, країна, сума й час словами', () => {
     expect(tripDates('2026-09-10', '2026-09-12')).toEqual([
       '2026-09-10',
@@ -306,12 +343,16 @@ describe('розклад і дрібні помічники', () => {
     expect(isAbroad('Польща')).toBe(true);
     expect(isAbroad('Україна')).toBe(false);
     expect(isAbroad('')).toBe(false);
-    expect(moneyOf('3 500 грн')).toBe(350_000);
-    expect(moneyOf('1 200,50')).toBe(120_050);
+    expect(moneyOf('3 500 грн')).toEqual({ minor: 350_000, currency: 'UAH' });
+    expect(moneyOf('1 200,50')).toEqual({ minor: 120_050, currency: 'UAH' });
+    // Крапка-тисячник (та сама пастка, що псувала мінімум цін) і валюта.
+    expect(moneyOf('3.500')).toEqual({ minor: 350_000, currency: 'UAH' });
+    expect(moneyOf('300 usd')).toEqual({ minor: 30_000, currency: 'USD' });
+    expect(moneyOf('12 год 20 хв')).toBeNull();
     expect(moneyOf('було чудово')).toBeNull();
     expect(hoursWord(200)).toBe('3 год 20 хв');
     expect(hoursWord(45)).toBe('45 хв');
-    expect(modeWord('train')).toBe('потяг');
+    expect(tripModeWord('train')).toBe('потяг');
   });
 });
 
@@ -351,6 +392,67 @@ describe('чеклісти з D1', () => {
   it('інструкції немає - помилка, а не порожній чекліст', async () => {
     const { env } = setup();
     await expect(loadChecklist(env, 'ua-car')).rejects.toThrow(/ua-car/);
+  });
+
+  it('у чат іде людський рядок, а не інструкція для моделі', () => {
+    const body = readFileSync('docs/assistant/checklists/ua-car.md', 'utf8');
+    const blocks = parseChecklist(body);
+    const view = renderBlocks('c1', {
+      blocks: ['t30'],
+      items: blocks,
+      done: [],
+      title: 'Поїздка «Буковель» 10.10 - за місяць:',
+    });
+    // Ані код-вставок, ані посилань на канон, ані службових дужок.
+    expect(view.text).not.toMatch(/[`{}§]/);
+    expect(view.text).not.toContain('facts.');
+    expect(view.text).not.toContain('routes.eta');
+    expect(view.text).not.toContain('T0, owner');
+    expect(view.text).toContain('• Авто обрано');
+    // Хвіст без машинних слів лишається - він корисний власнику.
+    expect(view.text).toContain('• Документи: посвідчення водія');
+    expect(humanLine({ label: 'ТО', text: 'ТО: дата й пробіг з `facts`', marker: null })).toBe(
+      'ТО',
+    );
+  });
+
+  it('пунктів більше за стелю - «ще N», і зникають ЗАКРИТІ, а не хвіст списку', () => {
+    const items = Array.from({ length: 12 }, (_, i) => ({
+      label: `Пункт ${i}`,
+      text: `Пункт ${i}`,
+      marker: null as null,
+    }));
+    const view = renderBlocks('c1', {
+      blocks: ['t30'],
+      items: { t30: items },
+      done: ['t30:0', 't30:1'],
+      title: 'Чекліст:',
+    });
+    expect(view.text).not.toContain('Пункт 0');
+    expect(view.text).toContain('Пункт 11'); // хвіст видно, бо два закриті
+    expect(view.text).not.toContain('ще 0');
+    const full = renderBlocks('c1', {
+      blocks: ['t30'],
+      items: { t30: items },
+      done: [],
+      title: 'Чекліст:',
+    });
+    expect(full.text).toContain('…і ще 2 пунктів у цьому блоці.');
+    expect(
+      full.buttons.flat().filter((b) => b.callback_data.startsWith('c:c1:dt30_')),
+    ).toHaveLength(10);
+  });
+
+  it('заголовок злитих блоків - за найближчим, дні словом', () => {
+    expect(blocksTitle(['t30', 't7'], 'Карпати', '2026-09-10')).toBe(
+      'Поїздка «Карпати» 10.09 - за тиждень:',
+    );
+    expect(blocksTitle(['t30', 't7', 't1'], 'Карпати', '2026-09-10')).toContain('завтра виїзд');
+    expect(daysWord(1)).toBe('1 день');
+    expect(daysWord(2)).toBe('2 дні');
+    expect(daysWord(5)).toBe('5 днів');
+    expect(daysWord(11)).toBe('11 днів');
+    expect(daysWord(21)).toBe('21 день');
   });
 
   it('renderBlock: [авто] без кнопки, закритий пункт зник, формат callback', () => {
@@ -454,6 +556,87 @@ describe('реєстр: кнопки й текст поїздки', () => {
   });
 });
 
+/** Виняток «інстанс заснув» - тіло Workflow буде відтворено з початку. */
+class Hibernate extends Error {}
+
+/**
+ * Кроки Workflow З ПАМʼЯТТЮ, як у платформи: завершений крок не виконується
+ * вдруге, а тіло run() проганяється з початку після кожного сну чи таймауту
+ * очікування. Саме тут видно помилки, яких не бачить «фейк без памʼяті»:
+ * імена кроків, що залежать від часу, і вікна, які мовчки зникають.
+ */
+function replayStep(clock: { now: number }, events: { at: number; payload: unknown }[]) {
+  const memo = new Map<string, { kind: 'value' | 'timeout'; value?: unknown }>();
+  const slept = new Set<string>();
+  const trace: string[] = [];
+  const pending = { restart: false };
+  const gate = () => {
+    if (!pending.restart) return;
+    pending.restart = false;
+    throw new Hibernate();
+  };
+  const step: Step = {
+    do: async (name, fn) => {
+      gate();
+      const hit = memo.get(name);
+      if (hit) return hit.value as never;
+      const value = await fn();
+      memo.set(name, { kind: 'value', value });
+      trace.push(`do:${name}`);
+      return value;
+    },
+    sleepUntil: async (name, ms) => {
+      gate();
+      if (slept.has(name)) return;
+      slept.add(name);
+      trace.push(`sleep:${name}`);
+      clock.now = Math.max(clock.now, ms);
+      throw new Hibernate();
+    },
+    waitForEvent: async (name, { timeout }) => {
+      gate();
+      const hit = memo.get(name);
+      if (hit) {
+        if (hit.kind === 'timeout') throw new Error('timeout');
+        return { payload: hit.value };
+      }
+      const deadline = clock.now + Number(String(timeout).replace(' seconds', '')) * 1000;
+      const idx = events.findIndex((e) => e.at <= deadline);
+      if (idx >= 0) {
+        const ev = events.splice(idx, 1)[0]!;
+        clock.now = Math.max(clock.now, ev.at);
+        memo.set(name, { kind: 'value', value: ev.payload });
+        trace.push(`wait:${name}:подія`);
+        return { payload: ev.payload };
+      }
+      memo.set(name, { kind: 'timeout' });
+      clock.now = deadline;
+      trace.push(`wait:${name}:таймаут`);
+      pending.restart = true;
+      throw new Error('timeout');
+    },
+  };
+  return { step, trace };
+}
+
+/** Прогнати ланцюг до кінця через відтворення (як робить платформа). */
+async function runToEnd(
+  env: Env,
+  chainId: string,
+  step: Step,
+  io: Io,
+  limit = 40,
+): Promise<unknown> {
+  for (let i = 0; i < limit; i += 1) {
+    try {
+      return await runTripChain(env, { chainId }, step, io);
+    } catch (e) {
+      if (!(e instanceof Hibernate)) throw e;
+    }
+  }
+  throw new Error('ланцюг не завершився за відведені прогони');
+}
+
 describe('машина станів', () => {
   it('повний прогін: блоки, ✅ пункт, «пора виходити», підсумок із витратами', async () => {
     const { env, db } = setup();
@@ -474,12 +657,13 @@ describe('машина станів', () => {
     const out = await runTripChain(env, { chainId: 'c1' }, step, io);
     expect(out).toMatchObject({ outcome: 'done', trip_id: 'c1' });
     expect(done).toEqual(['t30:0']);
-    expect(costs).toEqual([{ actual: 420_000 }]);
+    expect(costs).toEqual([{ actual: { minor: 420_000, currency: 'UAH' }, note: '4 200 грн' }]);
     expect(finishes).toEqual(['done']);
-    // Перший блок - злиті T-30 і T-7 (до поїздки 3 дні), з пальним і погодою.
-    expect(sent[0]?.text).toContain('за місяць');
+    // Перший блок - злиті T-30 і T-7 (до поїздки 3 дні): ОДНЕ повідомлення
+    // із заголовком за найближчим блоком, пальним і погодою.
+    expect(sent[0]?.text).toContain('за тиждень');
     expect(sent[0]?.text).toContain('Пальне:');
-    expect(sent[1]?.text).toContain('10.09: 12…19 °, ясно');
+    expect(sent[0]?.text).toContain('10.09: 12…19 °, ясно');
     expect(sent.some((s) => s.text.startsWith('Пора виходити'))).toBe(true);
     expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain('3 год 20 хв');
     expect(sent.at(-1)?.text).toContain('Записав витрати: 4 200 грн');
@@ -496,15 +680,66 @@ describe('машина станів', () => {
     expect(log.filter((l) => l.startsWith('do:')).length).toBeGreaterThan(5);
   });
 
+  it('відтворення тіла: блоки у свої дні, ✅ між блоками не губиться, «пора виходити» за 2 год', async () => {
+    const { env, db } = setup();
+    // Виїзд 17.09 о 08:00 Києва, сьогодні 07.09 - блоки T-30 (зараз), T-7, T-1.
+    seedTrip(db, 'c1', { date_from: '2026-09-17', date_to: '2026-09-19' });
+    seedChain(db, 'c1', { date_from: '2026-09-17', date_to: '2026-09-19' });
+    const clock = { now: NOW };
+    const sent: { at: number; text: string }[] = [];
+    const done: string[] = [];
+    const { step } = replayStep(clock, [
+      // Власник тисне ✅ між блоками - подія має дійти, а не чекати до кінця.
+      { at: Date.parse('2026-09-12T09:00:00.000Z'), payload: { action: 'done', item: 't30:0' } },
+    ]);
+    const io: Io = {
+      now: () => clock.now,
+      send: async (text) => void sent.push({ at: clock.now, text }),
+      checklist: async () => ({
+        t30: [{ label: 'Авто', text: 'Авто обрано', marker: null }],
+        t7: [{ label: 'Погода', text: 'Погода', marker: null }],
+        t1: [{ label: 'Заправитись', text: 'Заправитись', marker: null }],
+        road: [{ label: 'Зупинка', text: 'Зупинка', marker: null }],
+      }),
+      readDone: async () => [...done],
+      markDone: async (id) => void done.push(id),
+      route: async () => ({ distance_m: 250_000, duration_min: 200 }),
+      carCost: async () => 'Пальне: …',
+      weather: async () => ({ lines: ['17.09: 12…19 °, ясно'], reason: null }),
+      saveCost: async () => {},
+      saveDates: async () => {},
+      finish: async () => {},
+    };
+    await runToEnd(env, 'c1', step, io);
+    // ✅ дійшло саме між блоками (а не після поїздки).
+    expect(done).toEqual(['t30:0']);
+    const blocks = sent.filter((m) => m.text.startsWith('Поїздка «Карпати»'));
+    expect(blocks.map((m) => new Date(m.at).toISOString())).toEqual([
+      '2026-09-07T07:00:00.000Z', // T-30 зараз (до поїздки 10 діб)
+      '2026-09-10T07:00:00.000Z', // T-7 о 10:00 Києва
+      '2026-09-16T16:00:00.000Z', // T-1 о 19:00 Києва
+      '2026-09-17T03:00:00.000Z', // дорожній блок - разом із «пора виходити»
+    ]);
+    const leave = sent.find((m) => m.text.startsWith('Пора виходити'));
+    // Виїзд 08:00 Києва = 05:00Z, повідомлення - за 2 год до нього.
+    expect(new Date(leave!.at).toISOString()).toBe('2026-09-17T03:00:00.000Z');
+  });
+
   it('погоди на дати немає - чесний рядок, а не мовчання', async () => {
     const { env, db } = setup();
     seedTrip(db, 'c1');
     seedChain(db, 'c1');
     const clock = { now: NOW };
     const { step } = fakeStep([], clock);
-    const { io, sent } = fakeIo(db, 'c1', clock, { weather: async () => [] });
+    const { io, sent } = fakeIo(db, 'c1', clock, {
+      weather: async () => ({ lines: [], reason: null }),
+    });
     await runTripChain(env, { chainId: 'c1' }, step, io);
-    expect(sent[1]?.text).toContain('буде ближче до дати');
+    expect(sent[0]?.text).toContain('буде ближче до дати');
+    // Причина називається: без ключа це НЕ «дати задалеко».
+    expect(weatherNote('no-key', '2026-09-10')).toContain('WEATHER_API_KEY не заданий');
+    expect(weatherNote('failed', '2026-09-10')).toContain('не відповів');
+    expect(weatherNote('no-geo', '2026-09-10')).toContain('координат');
   });
 
   it('«Змінити дати»: питання, далі подія change-date перепланувала блоки', async () => {
@@ -532,7 +767,7 @@ describe('машина станів', () => {
     };
     expect(JSON.parse(state.state_json).date_from).toBe('2026-09-20');
     // Після переносу блоки надіслані знову - вже під нову дату.
-    expect(sent.filter((s) => s.text.includes('за місяць')).length).toBe(2);
+    expect(sent.filter((s) => s.text.includes('Поїздка «Карпати»')).length).toBeGreaterThan(1);
     expect(sent.some((s) => s.text.includes('20.09'))).toBe(true);
   });
 
@@ -553,6 +788,79 @@ describe('машина станів', () => {
     expect(row.status).toBe('cancelled');
   });
 
+  it('скасування ПІД ЧАС очікування: ні платного маршруту, ні «Пора виходити»', async () => {
+    const { env, db } = setup();
+    // Виїзд завтра: усі блоки одним повідомленням, далі одразу день виїзду.
+    seedTrip(db, 'c1', { date_from: '2026-09-08', date_to: '2026-09-09' });
+    seedChain(db, 'c1', { date_from: '2026-09-08', date_to: '2026-09-09' });
+    const clock = { now: NOW };
+    const base = fakeStep([null, null], clock);
+    const routes: string[] = [];
+    const { io, sent } = fakeIo(db, 'c1', clock, {
+      route: async (from) => {
+        routes.push(from);
+        return { distance_m: 250_000, duration_min: 200 };
+      },
+    });
+    // Блоки пішли; поки ланцюг чекає до виїзду, власник каже «скасуй».
+    const step = stepWithHook(base.step, 'r0-t30_t7_t1-w-0', async () => {
+      await patchChainState(env, 'c1', 'cancelled', { awaiting: null });
+    });
+    const out = await runTripChain(env, { chainId: 'c1' }, step, io);
+    expect(out).toEqual({ outcome: 'cancelled' });
+    expect(sent.some((s) => s.text.includes('завтра виїзд'))).toBe(true);
+    // Рівно один маршрут - для вартості в блоці T-30; другого (у день
+    // виїзду, після сну) немає: скасування помічене ДО платного виклику.
+    expect(routes).toEqual(['Львів']);
+    expect(sent.some((s) => s.text.startsWith('Пора виходити'))).toBe(false);
+  });
+
+  it('вичерпана квота Maps: причина в блоці, а не «не порахував відстань»', async () => {
+    const { env, db } = setup();
+    seedTrip(db, 'c1');
+    seedChain(db, 'c1');
+    const clock = { now: NOW };
+    const { step } = fakeStep([], clock);
+    const quota = Object.assign(
+      new Error('Маршрути тимчасово недоступні - стеля 1000 на місяць вичерпана (100 %)'),
+      {
+        name: 'QuotaExhaustedError',
+      },
+    );
+    const { io, sent } = fakeIo(db, 'c1', clock, {
+      route: async () => {
+        throw quota;
+      },
+    });
+    await runTripChain(env, { chainId: 'c1' }, step, io);
+    expect(sent[0]?.text).toContain('Маршрути тимчасово недоступні');
+    expect(sent[0]?.text).not.toContain('бракує');
+  });
+
+  it('change-date, що прийшов у вже скасований ланцюг, не воскрешає його', async () => {
+    const { env, db } = setup();
+    seedTrip(db, 'c1');
+    seedChain(db, 'c1');
+    const clock = { now: NOW };
+    const base = fakeStep(
+      [{ action: 'change-date', date_from: '2026-09-20', date_to: null }],
+      clock,
+    );
+    const { io, dates, sent } = fakeIo(db, 'c1', clock);
+    // Скасування встигло раніше за подію переносу (тап по старій кнопці).
+    const step = stepWithHook(base.step, 'r0-t30_t7-w-0', async () => {
+      await patchChainState(env, 'c1', 'cancelled', { awaiting: null });
+    });
+    const out = await runTripChain(env, { chainId: 'c1' }, step, io);
+    expect(out).toEqual({ outcome: 'cancelled' });
+    expect(dates).toEqual([]);
+    expect(sent.some((s) => s.text.startsWith('Дати оновив'))).toBe(false);
+    const row = db.prepare('SELECT status FROM chains WHERE id = ?').get('c1') as {
+      status: string;
+    };
+    expect(row.status).toBe('cancelled');
+  });
+
   it('ланцюг скасовано ззовні («↩») - машина зупиняється, блоків не шле', async () => {
     const { env, db } = setup();
     seedTrip(db, 'c1', { status: 'cancelled' });
@@ -563,8 +871,9 @@ describe('машина станів', () => {
     const { io, sent } = fakeIo(db, 'c1', clock);
     const out = await runTripChain(env, { chainId: 'c1' }, step, io);
     expect(out).toEqual({ outcome: 'cancelled' });
-    // Єдине повідомлення - про скасування: жодного блоку чекліста.
-    expect(sent.map((s) => s.text)).toEqual(['Скасував поїздку «Карпати».']);
+    // Ані блоків, ані «Скасував поїздку»: рядок уже cancelled, тобто це
+    // chain.cancel із чату - він власнику вже відповів.
+    expect(sent).toEqual([]);
   });
 });
 
@@ -637,6 +946,34 @@ describe('старт, перенос і скасування з чату', () =>
     ).rejects.toThrow(/TRIP_CHAIN/);
   });
 
+  it('дата виїзду в минулому - відмова, а не миттєвий прогін усіх блоків', async () => {
+    const { env, db } = setup();
+    await expect(
+      startTripChain(env, { to: 'Київ', mode: 'car', date_from: '2026-09-01' }, NOW, {}),
+    ).rejects.toThrow(/у минулому/);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM trips').get()).toMatchObject({ n: 0 });
+    // Сьогоднішня дата - чинна.
+    await expect(
+      startTripChain(env, { to: 'Київ', mode: 'car', date_from: '2026-09-07' }, NOW, {}),
+    ).resolves.toBeTruthy();
+  });
+
+  it('джокер замість назви не скасовує «якусь» поїздку', async () => {
+    const { env, db } = setup();
+    seedTrip(db, 't1');
+    expect(likeRef('%')).toBeNull();
+    expect(likeRef('Кар')).toBe('%Кар%');
+    await expect(
+      applyPolicy(
+        env,
+        { kind: 'chain.cancel', payload: { kind: 'trip', trip_id: '%' }, tainted: false },
+        NOW,
+      ),
+    ).rejects.toThrow(/активної поїздки немає/);
+    const row = db.prepare('SELECT status FROM trips WHERE id = ?').get('t1') as { status: string };
+    expect(row.status).toBe('active');
+  });
+
   it('trip_id у payload - перенос дат наявної поїздки подією в живий ланцюг', async () => {
     const { env, db, wf } = setup();
     seedTrip(db, 't1');
@@ -659,6 +996,10 @@ describe('старт, перенос і скасування з чату', () =>
     const row = db.prepare('SELECT date_from, date_to FROM trips WHERE id = ?').get('t1');
     expect(row).toMatchObject({ date_from: '2026-09-20', date_to: '2026-09-23' });
     await expect(changeTripDates(env, 'немає', '2026-09-20', null)).rejects.toThrow(/немає/);
+    // Джокери в посиланні на поїздку не роблять «будь-яка поїздка».
+    await expect(changeTripDates(env, '%', '2026-09-20', null)).rejects.toThrow(/немає/);
+    db.prepare(`UPDATE trips SET status = 'cancelled' WHERE id = 't1'`).run();
+    await expect(changeTripDates(env, 't1', '2026-09-25', null)).rejects.toThrow(/активної/);
   });
 
   it('chain.cancel kind=trip: рядок cancelled, подія в ланцюг, повторно - відмова', async () => {
@@ -678,6 +1019,96 @@ describe('старт, перенос і скасування з чату', () =>
     await expect(
       applyPolicy(env, { kind: 'chain.cancel', payload: { kind: 'trip' }, tainted: false }, NOW),
     ).rejects.toThrow(/активної поїздки немає/);
+  });
+});
+
+describe('після ревʼю: звʼязки, скасування за chain_id, видиме падіння', () => {
+  it('поїздка створює бажання type=trip і звʼязана з ним (07 §1)', async () => {
+    const { env, db } = setup();
+    const out = await startTripChain(
+      env,
+      { to: 'Буковель', mode: 'car', date_from: '2026-10-12', from_city: 'Львів' },
+      NOW,
+      {},
+    );
+    const trip = db.prepare('SELECT id, wish_id FROM trips').get() as {
+      id: string;
+      wish_id: string;
+    };
+    const wish = db.prepare('SELECT * FROM wishes').get() as Record<string, string>;
+    expect(wish).toMatchObject({ type: 'trip', title: 'Буковель', status: 'active' });
+    expect(JSON.parse(wish.payload_json!).trip_id).toBe(trip.id);
+    expect(trip.wish_id).toBe(wish.id);
+    expect((out.result as { wish_id: string }).wish_id).toBe(wish.id);
+  });
+
+  it('назва авто з фактів, а не ключ; «за N днів» словом', async () => {
+    const { env, db } = setup();
+    const iso = new Date(NOW).toISOString();
+    db.prepare(
+      `INSERT INTO facts (id, kind, key, value_json, source, confidence, created_at, updated_at)
+       VALUES ('f1', 'vehicle', 'octavia', ?, 'owner', 1, ?, ?)`,
+    ).run(JSON.stringify({ name: 'Octavia', per100: 8, fuel: 'A95' }), iso, iso);
+    const out = await startTripChain(
+      env,
+      {
+        to: 'Буковель',
+        mode: 'car',
+        date_from: '2026-10-31',
+        from_city: 'Львів',
+        vehicle_key: 'octavia',
+      },
+      NOW,
+      {},
+    );
+    const text = (out.result as { text: string }).text;
+    expect(text).toContain('авто Octavia');
+    expect(text).not.toContain('octavia');
+    expect(text).not.toContain(' , ');
+    expect(text).toContain('за 24 дні');
+  });
+
+  it('chain.cancel за chain_id знаходить поїздку', async () => {
+    const { env, db } = setup();
+    seedTrip(db, 't1', { workflow_id: 'ch-9' });
+    seedChain(db, 'ch-9');
+    expect(await findActiveTrip(env, 'ch-9')).toMatchObject({ id: 't1' });
+    const out = await applyPolicy(
+      env,
+      { kind: 'chain.cancel', payload: { kind: 'trip', chain_id: 'ch-9' }, tainted: false },
+      NOW,
+    );
+    expect(out).toMatchObject({ mode: 'executed', result: { cancelled: true, trip_id: 't1' } });
+  });
+
+  it('падіння ланцюга видиме: статуси failed і рядок власнику', async () => {
+    const { env, db } = setup();
+    seedTrip(db, 'c1');
+    seedChain(db, 'c1');
+    await failTripChain(env, 'c1', new Error('Workflow не витримав'));
+    const chain = db.prepare('SELECT status FROM chains WHERE id = ?').get('c1') as {
+      status: string;
+    };
+    const trip = db.prepare('SELECT status FROM trips WHERE id = ?').get('c1') as {
+      status: string;
+    };
+    expect(chain.status).toBe('failed');
+    expect(trip.status).toBe('failed');
+    const row = db.prepare('SELECT payload_json FROM outbox').get() as { payload_json: string };
+    expect(JSON.stringify(row)).toContain('зупинився через помилку');
+  });
+
+  it('після «Які нові дати?» текст іде в мозок, а не в суму', async () => {
+    const { env, db } = setup();
+    seedChain(db, 'c1');
+    await patchChainState(env, 'c1', 'waiting', {
+      awaiting: 'dates',
+      awaiting_since: new Date(NOW).toISOString(),
+    });
+    // Стану 'dates' немає серед текстових станів ланцюга - отже, «12.09»
+    // не стане «12,09 ₴», а піде в мозок як нові дати.
+    expect(textEvent('trip', 'dates', '12.09')).toBeNull();
+    expect(await findAwaitingChain(env, '99')).toBeNull();
   });
 });
 
@@ -704,6 +1135,11 @@ describe('прогноз на дати поїздки', () => {
                 temp: { min: 5, max: 10 },
                 weather: [{ description: 'хмарно' }],
               },
+              // День без температур пропускається: «0…0 °» гірше за мовчання.
+              {
+                dt: Date.parse('2026-09-12T09:00:00Z') / 1000,
+                weather: [{ description: 'сніг' }],
+              },
             ],
           }),
           { status: 200 },
@@ -713,16 +1149,23 @@ describe('прогноз на дати поїздки', () => {
     const out = await forecastForDates(
       { ...env, WEATHER_API_KEY: 'w' } as Env,
       { lat: 48.6, lon: 24.4 },
-      ['2026-09-10', '2026-09-11'],
+      ['2026-09-10', '2026-09-11', '2026-09-12'],
     );
-    expect(out).toEqual([
-      { date: '2026-09-10', min: 12, max: 19, desc: 'ясно' },
-      { date: '2026-09-11', min: 9, max: 15, desc: 'дощ' },
-    ]);
-    expect(forecastLine(out[0]!)).toBe('10.09: 12…19 °, ясно');
+    expect(out).toEqual({
+      days: [
+        { date: '2026-09-10', min: 12, max: 19, desc: 'ясно' },
+        { date: '2026-09-11', min: 9, max: 15, desc: 'дощ' },
+      ],
+      reason: null,
+    });
+    expect(forecastLine(out.days[0]!)).toBe('10.09: 12…19 °, ясно');
     const url = String(fetchMock.mock.calls[0]?.[0]);
     expect(url).toContain('exclude=current%2Cminutely%2Chourly%2Calerts');
-    expect(await forecastForDates(env, { lat: 48.6, lon: 24.4 }, ['2026-09-10'])).toEqual([]);
+    // Без ключа причина названа: викликач не скаже «дати задалеко».
+    expect(await forecastForDates(env, { lat: 48.6, lon: 24.4 }, ['2026-09-10'])).toEqual({
+      days: [],
+      reason: 'no-key',
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -737,7 +1180,7 @@ describe('прогноз на дати поїздки', () => {
       await forecastForDates({ ...env, WEATHER_API_KEY: 'w' } as Env, { lat: 1, lon: 2 }, [
         '2026-09-10',
       ]),
-    ).toEqual([]);
+    ).toEqual({ days: [], reason: 'failed' });
     expect(err).toHaveBeenCalled();
   });
 });

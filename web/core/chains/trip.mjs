@@ -19,11 +19,11 @@ import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { patchChainState, readChainState, waitOrNull } from './state.mjs';
 import { chainTarget } from './table.mjs';
-import { formatMoney } from './price.mjs';
+import { formatMoney, parseAmount, parsePrice } from './price.mjs';
 import {
   loadChecklist,
   blocksDueNow,
-  renderBlock,
+  renderBlocks,
   parseState,
   BLOCKS,
 } from '../trips/checklist.mjs';
@@ -44,6 +44,8 @@ const LEAVE_BEFORE_MS = 2 * 3_600_000;
 const AFTER_AT = '10:00';
 /** Стелі ітерацій (детерміновані імена кроків, не логіка). */
 const ROUNDS_MAX = 4;
+/** Скільки днів поїздки перелічуємо для погоди (прогноз усе одно 8 діб). */
+const TRIP_DAYS_MAX = 30;
 const EVENTS_PER_WINDOW = 12;
 
 /**
@@ -55,7 +57,7 @@ const EVENTS_PER_WINDOW = 12;
  *   markDone: (id: string) => Promise<void>,
  *   route: (from: string, to: string, mode: string) => Promise<{ distance_m: number, duration_min: number } | null>,
  *   carCost: (vehicleKey: string | null, distanceM: number | null) => Promise<string>,
- *   weather: (place: string, dates: string[]) => Promise<string[]>,
+ *   weather: (place: string, dates: string[]) => Promise<{ lines: string[], reason: string | null }>,
  *   saveCost: (patch: Record<string, unknown>) => Promise<void>,
  *   saveDates: (from: string, to: string | null) => Promise<void>,
  *   finish: (status: string) => Promise<void>,
@@ -88,7 +90,9 @@ function ddmm(date) {
 export function tripDates(from, to) {
   const dates = [from];
   let cur = from;
-  for (let i = 0; i < 14 && to && cur < to; i += 1) {
+  // Стеля 30 діб - лише щоб не будувати нескінченний список; прогноз усе
+  // одно дає 8 діб, і хвіст дат ніде не використовується.
+  for (let i = 0; i < TRIP_DAYS_MAX && to && cur < to; i += 1) {
     cur = addDaysToDateKey(cur, 1);
     dates.push(cur);
   }
@@ -119,7 +123,7 @@ export function schedule(dateFrom, nowMs) {
   const t1 = at(addDaysToDateKey(dateFrom, -1), BLOCK_AT.t1);
   const now = blocksDueNow(left);
   if (now.length) out.push({ at: nowMs, blocks: now });
-  if (t30 > nowMs) out.push({ at: t30, blocks: ['t30'] });
+  if (t30 > nowMs && !now.includes('t30')) out.push({ at: t30, blocks: ['t30'] });
   if (t7 > nowMs && !now.includes('t7')) out.push({ at: t7, blocks: ['t7'] });
   if (t1 > nowMs && !now.includes('t1')) out.push({ at: t1, blocks: ['t1'] });
   return out.sort((a, b) => a.at - b.at);
@@ -132,10 +136,27 @@ export function hoursWord(min) {
   return h ? `${h} год${m ? ` ${m} хв` : ''}` : `${m} хв`;
 }
 
-/** Заголовок блоку для власника. @param {string} block @param {string} to @param {string} dateFrom */
-function blockTitle(block, to, dateFrom) {
-  const when = { t30: 'за місяць', t7: 'за тиждень', t1: 'завтра виїзд', road: 'у дорозі' }[block];
-  return `Поїздка «${to}» ${ddmm(dateFrom)} - ${when}:`;
+/** «2 дні» / «5 днів» / «21 день». @param {number} n */
+export function daysWord(n) {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return `${n} днів`;
+  if (mod10 === 1) return `${n} день`;
+  if (mod10 >= 2 && mod10 <= 4) return `${n} дні`;
+  return `${n} днів`;
+}
+
+/**
+ * Заголовок повідомлення. Блоки могли злитися - тоді заголовок за найближчим
+ * (T-1 «завтра виїзд» важливіший за «за місяць»), а не три різні заголовки.
+ * @param {string[]} blocks @param {string} to @param {string} dateFrom
+ */
+export function blocksTitle(blocks, to, dateFrom) {
+  /** @type {Record<string, string>} */
+  const words = { t30: 'за місяць', t7: 'за тиждень', t1: 'завтра виїзд', road: 'у дорозі' };
+  const order = ['t30', 't7', 't1', 'road'];
+  const last = [...blocks].sort((a, b) => order.indexOf(a) - order.indexOf(b)).at(-1) ?? 't30';
+  return `Поїздка «${to}» ${ddmm(dateFrom)} - ${words[last] ?? 'чекліст'}:`;
 }
 
 // ── Старт із чату ──────────────────────────────────────────────────────────
@@ -167,6 +188,10 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   if (!dateFrom) throw new Error('date_from обовʼязковий у форматі YYYY-MM-DD');
   const dateTo = dateKeyOf(payload.date_to);
   if (dateTo && dateTo < dateFrom) throw new Error('date_to раніше за date_from');
+  // Дата в минулому прогнала б увесь ланцюг одним залпом (усі блоки, платний
+  // Routes і питання про витрати) - краще перепитати рік/місяць.
+  const today = kyivDateKey(new Date(nowMs));
+  if (dateFrom < today) throw new Error(`date_from ${dateFrom} у минулому (сьогодні ${today})`);
   if (payload.trip_id) return changeTripDates(env, String(payload.trip_id), dateFrom, dateTo);
   const to = String(payload.to ?? '')
     .trim()
@@ -181,15 +206,26 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   const checklistKey = (await import('../trips/checklist.mjs')).pickChecklistKey({ mode, abroad });
   const tripId = crypto.randomUUID();
   const chainId = crypto.randomUUID();
+  const wishId = crypto.randomUUID();
   const iso = new Date(nowMs).toISOString();
+  // Поїздка - це бажання type=trip (07 §1, S-5-5): без цього рядка «покажи
+  // бажання» не бачить поїздок, а payload бажання не веде на trips.
+  await db(env)
+    .prepare(
+      `INSERT INTO wishes (id, type, title, payload_json, status, created_at)
+       VALUES (?, 'trip', ?, ?, 'active', ?)`,
+    )
+    .bind(wishId, to, JSON.stringify({ trip_id: tripId, date_from: dateFrom, mode }), iso)
+    .run();
   await db(env)
     .prepare(
       `INSERT INTO trips (id, wish_id, from_city, to_text, country, date_from, date_to, mode, vehicle_key,
          checklist_key, cost_json, checklist_state_json, workflow_id, status)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'active')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'active')`,
     )
     .bind(
       tripId,
+      wishId,
       payload.from_city == null ? null : String(payload.from_city).trim().slice(0, 60),
       to,
       country,
@@ -231,40 +267,76 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     throw new Error(`Workflow поїздки не стартував: ${String(e?.message ?? e)}`, { cause: e });
   }
   const left = daysUntil(dateFrom, nowMs);
-  const vehicle = state.vehicle_key ? ` , авто ${state.vehicle_key}` : '';
+  // Назва авто - з фактів («Octavia»), а не ключ факту («octavia»); для авто
+  // слово способу вже сказане назвою, тож без подвоєння «авто, авто».
+  const vehicleName = state.vehicle_key ? await vehicleTitle(env, state.vehicle_key) : null;
+  const way = vehicleName ? `${tripModeWord(mode)} ${vehicleName}` : tripModeWord(mode);
   return {
     result: {
       trip_id: tripId,
       chain_id: chainId,
+      wish_id: wishId,
       checklist: checklistKey,
       text:
         `Поїздка створена: ${ddmm(dateFrom)}${dateTo ? `-${ddmm(dateTo)}` : ''}, ` +
-        `${state.from_city ? `${state.from_city} → ` : ''}${to}, ${modeWord(mode)}${vehicle}. ` +
-        `Чекліст ${checklistKey}: ${left > 30 ? `перший блок - за ${left - 30} ${left - 30 === 1 ? 'день' : 'днів'}` : 'перший блок надішлю зараз'}.`,
+        `${state.from_city ? `${state.from_city} → ` : ''}${to}, ${way}. ` +
+        `Чекліст ${checklistKey}: ${left >= 30 ? `перший блок - за ${daysWord(left - 30)}` : 'перший блок надішлю зараз'}.`,
       note: 'ланцюг далі веде ядро кнопками; власнику скажи саме text',
     },
-    prev: { chain_id: chainId, trip_id: tripId },
+    prev: { chain_id: chainId, trip_id: tripId, wish_id: wishId },
   };
 }
 
-/** @param {string} mode */
-export function modeWord(mode) {
+/**
+ * Назва авто з фактів (ADR-033); немає факту - сам ключ, щоб не мовчати.
+ * @param {Env} env @param {string} key
+ */
+async function vehicleTitle(env, key) {
+  try {
+    const found = (await listVehicles(env)).find((v) => v.key === key);
+    return found?.name ?? key;
+  } catch {
+    return key;
+  }
+}
+
+/** Спосіб поїздки словом (у tools/places.mjs своє modeWord - про транспорт маршруту). @param {string} mode */
+export function tripModeWord(mode) {
   return { car: 'авто', bus: 'автобус', train: 'потяг', plane: 'літак' }[mode] ?? mode;
 }
 
 /**
+ * Шаблон LIKE для пошуку за назвою: джокери знімаються, а надто короткий
+ * залишок (порожній рядок після «%») пошуком НЕ стає - інакше `LIKE '%%'`
+ * дав би довільну поїздку замість чесного «немає такої».
+ * @param {string | null} ref
+ */
+export function likeRef(ref) {
+  const clean = String(ref ?? '')
+    .replace(/[%_]/g, '')
+    .trim();
+  return clean.length >= 2 ? `%${clean}%` : null;
+}
+
+/**
  * Зміна дат наявної поїздки (S-5-9): рядок `trips` + подія change-date у
- * живий ланцюг, який перерахує сни.
+ * живий ланцюг, який перерахує сни. Лише активна поїздка: скасованій або
+ * завершеній дати не переписуються.
  * @param {Env} env @param {string} tripId @param {string} dateFrom @param {string | null} dateTo
  */
 export async function changeTripDates(env, tripId, dateFrom, dateTo) {
+  const like = likeRef(tripId);
   const row = /** @type {{ id: string, to_text: string, workflow_id: string | null } | null} */ (
     await db(env)
-      .prepare(`SELECT id, to_text, workflow_id FROM trips WHERE id = ? OR to_text LIKE ? LIMIT 1`)
-      .bind(tripId, `%${tripId.replace(/[%_]/g, '')}%`)
+      .prepare(
+        `SELECT id, to_text, workflow_id FROM trips
+           WHERE status = 'active' AND (id = ? OR (? IS NOT NULL AND to_text LIKE ?))
+           ORDER BY date_from LIMIT 1`,
+      )
+      .bind(tripId, like, like)
       .first()
   );
-  if (!row) throw new Error(`поїздки «${tripId}» немає`);
+  if (!row) throw new Error(`активної поїздки «${tripId}» немає`);
   await db(env)
     .prepare('UPDATE trips SET date_from = ?, date_to = ? WHERE id = ?')
     .bind(dateFrom, dateTo, row.id)
@@ -298,10 +370,12 @@ export async function findActiveTrip(env, ref) {
   const row = /** @type {any} */ (
     await db(env)
       .prepare(
+        // chain_id теж підходить: мозок часто знає саме його (07 §4).
         `SELECT id, to_text, workflow_id FROM trips WHERE status = 'active'
-           AND (? IS NULL OR id = ? OR to_text LIKE ?) ORDER BY date_from LIMIT 1`,
+           AND (? IS NULL OR id = ? OR workflow_id = ? OR (? IS NOT NULL AND to_text LIKE ?))
+           ORDER BY date_from LIMIT 1`,
       )
-      .bind(ref ?? null, ref ?? null, ref ? `%${ref.replace(/[%_]/g, '')}%` : '')
+      .bind(ref ?? null, ref ?? null, ref ?? null, likeRef(ref), likeRef(ref))
       .first()
   );
   return row
@@ -367,41 +441,56 @@ export async function runTripChain(env, params, step, io) {
     const rk = `r${round}`;
     try {
       const items = await step.do(`${rk}-checklist`, () => io.checklist(state.checklist_key));
-      const plan = schedule(state.date_from, io.now());
+      // План - ОДИН раз на раунд і всередині кроку: Workflows проганяє тіло з
+      // початку після кожного пробудження, і `schedule` від «зараз» дав би
+      // іншу кількість точок, а з нею - інші імена кроків (мемоїзований крок
+      // повернувся б замість нового очікування). Імена далі - з КЛЮЧІВ блоків.
+      const plan = await step.do(`${rk}-plan`, async () => schedule(state.date_from, io.now()));
+      const departMs = kyivMs(state.date_from, state.depart_at ?? DEFAULT_DEPART) ?? io.now();
+      const leaveMs = departMs - LEAVE_BEFORE_MS;
       for (const [bi, point] of plan.entries()) {
-        const label = `${rk}-b${bi}`;
-        if (point.at > io.now()) await step.sleepUntil(`${label}-sleep`, point.at);
-        await await_(`${label}-run`, 'checklist');
-        for (const [gi, block] of point.blocks.entries()) {
-          const extra = await step.do(`${label}-x${gi}`, () => blockExtras(io, state, block));
-          const done = await step.do(`${label}-done${gi}`, () => io.readDone());
-          const view = renderBlock(chainId, {
-            block,
-            items: items[block] ?? [],
-            done,
-            title: blockTitle(block, state.to_text, state.date_from),
-            extra,
-          });
-          await step.do(`${label}-send${gi}`, () => io.send(view.text, view.buttons));
+        const key = `${rk}-${point.blocks.join('_')}`;
+        if (point.at > io.now()) await step.sleepUntil(`${key}-sleep`, point.at);
+        await await_(`${key}-run`, 'checklist');
+        /** @type {string[]} */
+        const extra = [];
+        for (const block of point.blocks) {
+          extra.push(...(await step.do(`${key}-x-${block}`, () => blockExtras(io, state, block))));
         }
-        const until =
-          plan[bi + 1]?.at ??
-          kyivMs(state.date_from, state.depart_at ?? DEFAULT_DEPART) ??
-          io.now();
-        state = await waitWindow(step, io, env, chainId, `${label}-w`, until, state);
+        const done = await step.do(`${key}-done`, () => io.readDone());
+        // Злиті блоки - ОДНЕ повідомлення (07 §6 «зливається»), а не три
+        // із суперечливими заголовками «за місяць» / «завтра виїзд».
+        const view = renderBlocks(chainId, {
+          blocks: point.blocks,
+          items,
+          done,
+          title: blocksTitle(point.blocks, state.to_text, state.date_from),
+          extra,
+        });
+        await step.do(`${key}-send`, () => io.send(view.text, view.buttons));
+        // Останнє вікно тримається до «пора виходити» (за 2 год до виїзду), а
+        // не до самого виїзду - інакше нагадування прийшло б навздогін.
+        const until = plan[bi + 1]?.at ?? leaveMs;
+        state = await waitWindow(step, io, env, chainId, `${key}-w`, until, state);
       }
 
       // День виїзду: «пора виходити» за 2 год + перерахунок ETA (07 §6).
-      const departMs = kyivMs(state.date_from, state.depart_at ?? DEFAULT_DEPART) ?? io.now();
-      if (departMs - LEAVE_BEFORE_MS > io.now()) {
-        await step.sleepUntil(`${rk}-leave-sleep`, departMs - LEAVE_BEFORE_MS);
+      if (leaveMs > io.now()) {
+        await step.sleepUntil(`${rk}-leave-sleep`, leaveMs);
       }
-      const eta = await step.do(`${rk}-leave-eta`, () =>
-        io.route(state.from_city ?? 'home', state.to_text, state.mode),
-      );
+      // Прокинулись зі сну - спершу переконатись, що поїздку не скасували:
+      // інакше платний Routes і «Пора виходити» полетіли б у скасовану.
+      await await_(`${rk}-leave-run`, null);
+      const leave = await step.do(`${rk}-leave-eta`, () => safeRoute(io, state, state.mode));
+      const eta = leave.eta;
+      // Години виїзду власник міг не називати - тоді це припущення, і воно
+      // називається припущенням: на ньому стоїть увесь розклад дня виїзду.
+      const departWord = state.depart_at
+        ? `виїзд о ${kyivClock(departMs)}`
+        : `виїзд орієнтовно о ${kyivClock(departMs)} (скажи точний час - переставлю)`;
       await step.do(`${rk}-leave-send`, () =>
         io.send(
-          `Пора виходити: виїзд о ${kyivClock(departMs)}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}. Дорожній чекліст - нижче.`,
+          `Пора виходити: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''} Дорожній чекліст - нижче.`,
           [
             [
               { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
@@ -411,11 +500,11 @@ export async function runTripChain(env, params, step, io) {
         ),
       );
       const roadDone = await step.do(`${rk}-road-done`, () => io.readDone());
-      const road = renderBlock(chainId, {
-        block: 'road',
-        items: items.road ?? [],
+      const road = renderBlocks(chainId, {
+        blocks: ['road'],
+        items,
         done: roadDone,
-        title: blockTitle('road', state.to_text, state.date_from),
+        title: blocksTitle(['road'], state.to_text, state.date_from),
       });
       await step.do(`${rk}-road-send`, () => io.send(road.text, road.buttons));
 
@@ -432,11 +521,18 @@ export async function runTripChain(env, params, step, io) {
       const answer = await waitOrNull(step, `${rk}-back-wait`, 'trip', 3 * 86_400_000);
       if (answer?.action === 'cancel') throw new Cancelled();
       await step.do(`${rk}-back-save`, async () => {
-        const spent = answer?.action === 'text' ? moneyOf(String(answer.text ?? '')) : null;
-        if (spent != null) await io.saveCost({ actual: spent });
+        // S-5-10 питає ДВІ речі («як пройшло» і «скільки»): відповідь без
+        // числа теж зберігається і теж отримує відповідь, а не тишу.
+        const text = answer?.action === 'text' ? String(answer.text ?? '').slice(0, 500) : null;
+        const spent = text ? moneyOf(text) : null;
+        if (text) await io.saveCost({ ...(spent ? { actual: spent } : {}), note: text });
         await io.finish('done');
         await patchChainState(env, chainId, 'done', { awaiting: null }, { nowMs: io.now() });
-        if (spent != null) await io.send(`Записав витрати: ${formatMoney(spent, 'UAH')}.`);
+        if (spent) {
+          await io.send(`Записав витрати: ${formatMoney(spent.minor, spent.currency)}.`);
+        } else if (text) {
+          await io.send('Записав. Суми не побачив - скажи числом, і додам до вартості поїздки.');
+        }
       });
       return { outcome: 'done', trip_id: state.trip_id };
     } catch (e) {
@@ -446,18 +542,33 @@ export async function runTripChain(env, params, step, io) {
       }
       if (e instanceof Cancelled) {
         await step.do(`${rk}-cancelled`, async () => {
-          await patchChainState(env, chainId, 'cancelled', { awaiting: null }, { nowMs: io.now() });
+          // Рядок уже cancelled - скасування прийшло з чату, і chain.cancel
+          // уже відповів власнику. Мовчимо: інакше через тижні прилетіло б
+          // друге «Скасував поїздку» з порожнього місця.
+          const mine = await patchChainState(
+            env,
+            chainId,
+            'cancelled',
+            { awaiting: null },
+            { unlessCancelled: true, nowMs: io.now() },
+          );
           await io.finish('cancelled');
-          await io.send(`Скасував поїздку «${state.to_text}».`);
+          if (mine) await io.send(`Скасував поїздку «${state.to_text}».`);
         });
         return { outcome: 'cancelled' };
       }
       throw e;
     }
   }
-  await step.do('rounds-exhausted', () =>
-    patchChainState(env, chainId, 'done', { awaiting: null }, { nowMs: io.now() }),
-  );
+  // Стеля раундів (стільки разів переносили дати) - ланцюг закривається, але
+  // не мовчки: рядок поїздки й власник дізнаються про це.
+  await step.do('rounds-exhausted', async () => {
+    await patchChainState(env, chainId, 'done', { awaiting: null }, { nowMs: io.now() });
+    await io.finish('abandoned');
+    await io.send(
+      `Поїздку «${state.to_text}» переносили забагато разів - ланцюг закрив. Скажи «поїздка …», якщо ще актуально.`,
+    );
+  });
   return { outcome: 'abandoned' };
 }
 
@@ -474,27 +585,44 @@ async function waitWindow(step, io, env, chainId, label, untilMs, state) {
     if (!ev) return state;
     if (ev.action === 'cancel') throw new Cancelled();
     if (ev.action === 'change-date') {
-      await step.do(`${label}-${i}-date`, async () => {
+      const moved = await step.do(`${label}-${i}-date`, async () => {
         const from = String(ev.date_from ?? state.date_from);
         const to = ev.date_to == null ? state.date_to : String(ev.date_to);
-        await io.saveDates(from, to);
-        await patchChainState(
+        // Скасований ланцюг переносом дат НЕ оживає: спершу запис під
+        // unlessCancelled, і лише по ньому - рядок поїздки й повідомлення.
+        const ok = await patchChainState(
           env,
           chainId,
           'running',
           { date_from: from, date_to: to },
-          { nowMs: io.now() },
+          { unlessCancelled: true, nowMs: io.now() },
         );
+        if (!ok) return false;
+        await io.saveDates(from, to);
         await io.send(
           `Дати оновив: ${ddmm(from)}${to ? `-${ddmm(to)}` : ''}. Нагадування перерахував.`,
         );
+        return true;
       });
+      if (!moved) throw new Cancelled();
       throw new Rescheduled();
     }
     if (ev.action === 'ask-date') {
-      await step.do(`${label}-${i}-askdate`, () =>
-        io.send('Які нові дати? Напиши, наприклад «з 12 по 15 жовтня» - і я перенесу поїздку.'),
-      );
+      // Стан 'dates' немає в реєстрі текстових станів поїздки - отже, відповідь
+      // піде в мозок, який розбере дату і покличе chain.start з trip_id.
+      // Інакше «12.09» ланцюг прочитав би як 12,09 грн.
+      await step.do(`${label}-${i}-askdate`, async () => {
+        await patchChainState(
+          env,
+          chainId,
+          'waiting',
+          { awaiting: 'dates', awaiting_since: new Date(io.now()).toISOString() },
+          { unlessCancelled: true, nowMs: io.now() },
+        );
+        await io.send(
+          'Які нові дати? Напиши, наприклад «з 12 по 15 жовтня» - і я перенесу поїздку.',
+        );
+      });
       continue;
     }
     if (ev.action === 'done' && typeof ev.item === 'string') {
@@ -503,10 +631,12 @@ async function waitWindow(step, io, env, chainId, label, untilMs, state) {
     }
     if (ev.action === 'text') {
       const spent = moneyOf(String(ev.text ?? ''));
-      if (spent != null) {
+      if (spent) {
         await step.do(`${label}-${i}-cost`, async () => {
           await io.saveCost({ ticket: spent });
-          await io.send(`Записав до вартості поїздки: ${formatMoney(spent, 'UAH')}.`);
+          await io.send(
+            `Записав до вартості поїздки: ${formatMoney(spent.minor, spent.currency)}.`,
+          );
         });
       }
     }
@@ -514,14 +644,41 @@ async function waitWindow(step, io, env, chainId, label, untilMs, state) {
   return state;
 }
 
-/** Сума з тексту власника («3 500», «3 500 грн») у копійках; null - не сума. @param {string} text */
+/** Одиниця одразу після числа - не гроші («12 год», «300 км», «5 л»). */
+const UNIT_AFTER_RE = /^\s*(?:год|хв|хвилин|км|кг|л|шт|%)/i;
+
+/**
+ * Сума з тексту власника у копійках + валюта («3 500» → 350000 UAH,
+ * «3.500 грн» → 350000 UAH за правилом крапки-тисячника, «300 usd» → USD).
+ * Розбір - той самий, що для цін бажань (parseAmount/parsePrice): свій,
+ * простіший парсер уже раз коштував нам зіпсованого мінімуму.
+ * @param {string} text
+ * @returns {{ minor: number, currency: string } | null}
+ */
 export function moneyOf(text) {
-  const m = String(text ?? '')
-    .replace(/\s/g, '')
-    .match(/^\d+(?:[.,]\d{1,2})?/);
-  if (!m) return null;
-  const n = Number(m[0].replace(',', '.'));
-  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : null;
+  const raw = String(text ?? '');
+  const priced = parsePrice(raw);
+  if (priced) return { minor: priced.price, currency: priced.currency };
+  const m = raw.match(/\d[\d\u00a0 ]*(?:[.,]\d+)*/);
+  if (!m || m.index == null) return null;
+  if (UNIT_AFTER_RE.test(raw.slice(m.index + m[0].length))) return null;
+  const n = parseAmount(m[0]);
+  return n != null && n > 0 ? { minor: Math.round(n * 100), currency: 'UAH' } : null;
+}
+
+/**
+ * Маршрут для блоку: вичерпана квота Maps - окремий рядок власнику, а не
+ * «не порахував відстань» (S-1-14: причина називається).
+ * @param {TripIo} io @param {TripState} state @param {string} mode
+ * @returns {Promise<{ eta: { distance_m: number, duration_min: number } | null, note: string | null }>}
+ */
+async function safeRoute(io, state, mode) {
+  try {
+    return { eta: await io.route(state.from_city ?? 'home', state.to_text, mode), note: null };
+  } catch (/** @type {any} */ e) {
+    if (e?.name === 'QuotaExhaustedError') return { eta: null, note: String(e.message) };
+    throw e;
+  }
 }
 
 /**
@@ -534,19 +691,28 @@ async function blockExtras(io, state, block) {
   /** @type {string[]} */
   const extra = [];
   if (block === 't30' && state.mode === 'car') {
-    const eta = await io.route(state.from_city ?? 'home', state.to_text, 'car');
-    extra.push(await io.carCost(state.vehicle_key, eta?.distance_m ?? null));
+    const { eta, note } = await safeRoute(io, state, 'car');
+    extra.push(note ?? (await io.carCost(state.vehicle_key, eta?.distance_m ?? null)));
   }
   if (block === 't7') {
     const dates = tripDates(state.date_from, state.date_to);
-    const lines = await io.weather(state.to_text, dates);
-    extra.push(
-      lines.length
-        ? `Погода: ${lines.join('; ')}`
-        : `Погода на ${ddmm(state.date_from)} буде ближче до дати (прогноз - ${FORECAST_DAYS} діб).`,
-    );
+    const { lines, reason } = await io.weather(state.to_text, dates);
+    extra.push(lines.length ? `Погода: ${lines.join('; ')}` : weatherNote(reason, state.date_from));
   }
   return extra;
+}
+
+/**
+ * Чому погоди немає - причина називається, а не ховається за «буде ближче
+ * до дати» (00-README п.6: помилка має бути видимою).
+ * @param {string | null} reason @param {string} dateFrom
+ */
+export function weatherNote(reason, dateFrom) {
+  if (reason === 'no-key') return 'Погода: WEATHER_API_KEY не заданий - прогноз недоступний.';
+  if (reason === 'failed') return 'Погода: сервіс прогнозу не відповів, спробую на T-1.';
+  if (reason === 'no-geo') return 'Погода: не знайшов координат місця призначення.';
+  if (reason === 'quota') return 'Погода: геокодування тимчасово недоступне (квота).';
+  return `Погода на ${ddmm(dateFrom)} буде ближче до дати (прогноз - ${FORECAST_DAYS} діб).`;
 }
 
 // ── Бойове io ──────────────────────────────────────────────────────────────
@@ -609,6 +775,9 @@ export function productionIo(env, chainId, state) {
           nowMs,
         );
       } catch (/** @type {any} */ e) {
+        // Вичерпана квота Maps - не «маршрут не порахувався»: причину
+        // власнику скаже safeRoute, тому помилка йде нагору.
+        if (e?.name === 'QuotaExhaustedError') throw e;
         console.error(`trip-chain ${chainId}: маршрут не порахований`, e?.message);
         return null;
       }
@@ -624,12 +793,12 @@ export function productionIo(env, chainId, state) {
     weather: async (place, dates) => {
       try {
         const geo = await geocodeAddress(env, place, Date.now());
-        if (!geo.found) return [];
-        const forecast = await forecastForDates(env, { lat: geo.lat, lon: geo.lon }, dates);
-        return forecast.map(forecastLine);
+        if (!geo.found) return { lines: [], reason: 'no-geo' };
+        const { days, reason } = await forecastForDates(env, { lat: geo.lat, lon: geo.lon }, dates);
+        return { lines: days.map(forecastLine), reason };
       } catch (/** @type {any} */ e) {
         console.error(`trip-chain ${chainId}: погода не отримана`, e?.message);
-        return [];
+        return { lines: [], reason: e?.name === 'QuotaExhaustedError' ? 'quota' : 'failed' };
       }
     },
     saveCost: async (patch) => {
@@ -655,6 +824,24 @@ export function productionIo(env, chainId, state) {
   };
 }
 
+/**
+ * Ланцюг впав: статус ланцюга і поїздки + чесний рядок власнику (без стеку).
+ * @param {Env} env @param {string} chainId @param {any} err
+ */
+export async function failTripChain(env, chainId, err) {
+  await patchChainState(env, chainId, 'failed', { awaiting: null });
+  const row = await readChainState(env, chainId);
+  const state = /** @type {TripState | undefined} */ (row?.state);
+  if (!state?.trip_id) return;
+  await db(env)
+    .prepare(`UPDATE trips SET status = 'failed' WHERE id = ? AND status = 'active'`)
+    .bind(state.trip_id)
+    .run();
+  await productionIo(env, chainId, state).send(
+    `Ланцюг поїздки «${state.to_text}» зупинився через помилку (${String(err?.message ?? err).slice(0, 120)}). Скажи «поїздка …», щоб почати заново.`,
+  );
+}
+
 /** Workflow-клас (wrangler.jsonc `workflows`, worker.js export). */
 export class TripChain extends WorkflowEntrypoint {
   /**
@@ -675,9 +862,10 @@ export class TripChain extends WorkflowEntrypoint {
       );
     } catch (/** @type {any} */ e) {
       console.error(`trip chain ${params.chainId} впав`, e?.message);
-      await patchChainState(env, params.chainId, 'failed', { awaiting: null }).catch(
-        (/** @type {any} */ e2) =>
-          console.error(`trip chain ${params.chainId}: статус failed не записано`, e2?.message),
+      // Падіння не мовчазне: рядок поїздки і власник дізнаються про це, бо
+      // інакше поїздка просто «зникне» за тижні до дати.
+      await failTripChain(env, params.chainId, e).catch((/** @type {any} */ e2) =>
+        console.error(`trip chain ${params.chainId}: збій не записано`, e2?.message),
       );
       throw e;
     }

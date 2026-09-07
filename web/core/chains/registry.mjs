@@ -60,8 +60,14 @@ const TABLE_BUTTON_AWAITS = ['venue', 'contact', 'next'];
 /** Стани TripChain: 'spent' - будь-який текст (сума + як пройшло), 'checklist' - лише сума. */
 const TRIP_TEXT_AWAITS = ['spent'];
 const TRIP_BUTTON_AWAITS = ['checklist'];
-/** Сума без іншого тексту: «3500», «3 500 грн», «1 200,50». */
-const MONEY_ONLY_RE = /^\s*\d[\d\s]*(?:[.,]\d{1,2})?\s*(?:грн|uah|₴|eur|€|usd|\$)?\s*$/i;
+/**
+ * Сума без іншого тексту: «3500», «3 500 грн», «1 200,50». Класи НЕ
+ * перекриваються і довжина обмежена - інакше рядок «цифра + сотні пробілів»
+ * дає поліноміальний бектрекінг (заміряно: 3200 пробілів = 7 с CPU).
+ */
+const MONEY_ONLY_RE = /^\d[\d ]{0,20}(?:[.,]\d{1,2})?(?: ?(?:грн|uah|₴|eur|€|usd|\$))?$/i;
+/** Стеля довжини для тесту MONEY_ONLY_RE (сума довшою не буває). */
+const MONEY_MAX_LEN = 32;
 
 /**
  * Ланцюг, що чекає слова власника ТЕКСТОМ (не лише кнопкою) у цьому треді:
@@ -132,8 +138,12 @@ export function textEvent(kind, awaiting, text) {
     if (CANCEL_TEXT_RE.test(text)) return null;
     const trip = { type: 'trip', payload: { action: 'text', text } };
     if (TRIP_TEXT_AWAITS.includes(awaiting)) return trip;
+    // Стан 'dates' (після «Які нові дати?») - не наш: дату розбирає мозок і
+    // повертає її через chain.start(trip_id), інакше «12.09» стало б сумою.
+    if (!TRIP_BUTTON_AWAITS.includes(awaiting)) return null;
     // Між блоками ланцюг бере лише суму (ціна квитка); решта - розмова.
-    return MONEY_ONLY_RE.test(text) ? trip : null;
+    const money = text.trim().replace(/\u00a0/g, ' ');
+    return money.length <= MONEY_MAX_LEN && MONEY_ONLY_RE.test(money) ? trip : null;
   }
   if (kind !== 'table' || CANCEL_TEXT_RE.test(text)) return null;
   const table = { type: 'table', payload: { action: 'text', text } };
