@@ -6,10 +6,9 @@
 // найбільша покупка. Тестові транзакції (`/internal/test/mono`) у суму не
 // входять - вона зріз для звітів (07 §3).
 
-import { kyivDateKey, kyivHour } from '../../kyiv-time.mjs';
+import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
-import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { cleanSource, formatMoney } from '../format.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { kyivDayStartMs, selectSpending, summarize } from './query.mjs';

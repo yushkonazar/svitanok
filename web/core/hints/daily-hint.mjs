@@ -20,6 +20,7 @@ import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { escapeHtml } from '../../tg-core.mjs';
+import { REMIND_DAYS } from '../finance/subscriptions.mjs';
 
 export const DAILY_HINT_MARKER_KEY = 'dailyHintDay';
 export const DAILY_HINT_HOUR = 10;
@@ -29,8 +30,6 @@ export const HINT_TOPICS = ['trips', 'subscriptions', 'chains', 'ideas', 'securi
  *  руху ≥ 3 доби, ідея без руху ≥ 30 діб, Security Checkup раз на квартал. */
 export const TRIP_DAYS_AHEAD = 7;
 export const SUBSCRIPTION_DAYS_AHEAD = 3;
-/** Скільки діб уперед покриває `subscription-remind` - підказка туди не лізе. */
-export const SUBSCRIPTION_REMIND_DAYS = 2;
 export const CHAIN_STALE_DAYS = 3;
 export const IDEA_STALE_DAYS = 30;
 export const SECURITY_CHECKUP_DAYS = 90;
@@ -145,11 +144,12 @@ async function tripHint(env, today) {
  * Підказка про підписку бере ЛИШЕ дальній край вікна: ближче стоїть задача
  * `subscription-remind` (етап 6 PR-2, S-4-6) з тим самим рядком і кнопкою
  * «Скасувати підписку в обліку», і два повідомлення про одне списання - це
- * не проактивність, а шум.
+ * не проактивність, а шум. Межу беремо з самої задачі (`REMIND_DAYS`), а не
+ * копією числа: розійшлись би - або дубль, або діра в добу.
  * @param {Env} env @param {string} today
  */
 async function subscriptionHint(env, today) {
-  const from = addDaysToDateKey(today, SUBSCRIPTION_REMIND_DAYS + 1);
+  const from = addDaysToDateKey(today, REMIND_DAYS + 1);
   const until = addDaysToDateKey(today, SUBSCRIPTION_DAYS_AHEAD);
   const row = /** @type {any} */ (
     await db(env)

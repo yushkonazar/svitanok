@@ -20,8 +20,15 @@ import { sendSystemAlert } from '../tg/outbox.mjs';
 export const CLEANUP_HOUR = 4;
 /** Мітка «сьогодні вже прибирали». */
 export const CLEANUP_MARKER_KEY = 'retentionCleanupDay';
-/** Скільки рядків зносимо за один прохід таблиці (щоб не з'їсти CPU тіку). */
+/** Скільки рядків зносимо за одне твердження (щоб не з'їсти CPU тіку). */
 export const BATCH = 2000;
+/**
+ * Скільки таких проходів за одну таблицю на добу. Одного мало: вхідних може
+ * приходити до 5 000 на добу (`inbox/store.DAILY_CAP`), і при одному проході
+ * на 2 000 рядків черга простроченого росла б щодня, а «ретенція 30 діб»
+ * була б неправдою.
+ */
+export const PASSES = 5;
 
 const DAY = 86_400_000;
 /** «Місяць» ретенції - 30 діб: строки в 07 §1 задані в місяцях, не в датах. */
@@ -128,7 +135,13 @@ export async function retentionCleanupTask(env, nowMs = Date.now()) {
   const failed = [];
   for (const rule of RETENTION) {
     try {
-      const n = await applyRule(env, rule, nowMs);
+      let n = 0;
+      for (let pass = 0; pass < PASSES; pass += 1) {
+        const got = await applyRule(env, rule, nowMs);
+        n += got;
+        // Менше за стелю - таблиця вичищена, далі проходити нема чого.
+        if (got < BATCH) break;
+      }
       if (n) removed[rule.table] = n;
     } catch (/** @type {any} */ e) {
       // Збій однієї таблиці не зупиняє решту - та сама ізоляція, що в

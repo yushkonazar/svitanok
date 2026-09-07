@@ -487,6 +487,20 @@ describe('ретенція (07 §1)', () => {
     expect(db.prepare('SELECT id FROM outbox').all()).toEqual([{ id: 'pending-1' }]);
   });
 
+  it('за одну добу проходів кілька: 2 000 рядків стелі не лишають хвоста', async () => {
+    const { env, db } = setup();
+    // Понад одну стелю прострочених: один прохід лишив би 500 на завтра, а
+    // вхідних приходить до 5 000 на добу - черга росла б щодня.
+    const insert = db.prepare(
+      `INSERT INTO transactions (id, at, amount, currency, mcc, description, category, flags_json)
+       VALUES (?, '2020-01-01T00:00:00.000Z', -100, 'UAH', 0, 'x', 'інше', '[]')`,
+    );
+    for (let i = 0; i < 2500; i += 1) insert.run(`old-${i}`);
+    const out = await retentionCleanupTask(env, NIGHT);
+    expect(out).toMatchObject({ removed: { transactions: 2500 } });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM transactions').get()).toMatchObject({ n: 0 });
+  });
+
   it('задача: 04:00, раз на добу; збій однієї таблиці не зупиняє решту', async () => {
     const { env, db } = setup();
     db.prepare(
