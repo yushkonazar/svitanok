@@ -13,6 +13,7 @@ import {
   pickT2Word,
   proposalButtons,
   undoButton,
+  sanitizeGeminiPayload,
   PROPOSAL_TTL_MS,
   UNDO_WINDOW_MS,
 } from './core.mjs';
@@ -62,6 +63,16 @@ import {
   assertGoogleScope,
 } from '../../google.mjs';
 import { createTask } from '../adapters/tasks.mjs';
+import {
+  generateImage,
+  generateVideo,
+  videoUsd,
+  IMAGE_USD,
+  VIDEO_DEFAULT_SECONDS,
+  VIDEO_MAX_SECONDS,
+} from '../adapters/gemini.mjs';
+import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
+import { sendMediaBytes } from '../tg/media.mjs';
 import { ensureFolderPath, uploadCsvAsSheet, uploadFile } from '../adapters/drive.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
@@ -460,6 +471,54 @@ export const EXECUTORS = {
     },
     async undo(env, snapshot) {
       await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(snapshot)));
+    },
+  },
+  // Gemini (ADR-012/ADR-034, S-8-5/S-8-6, етап 7 PR-3). Ціну власник бачить у
+  // самій пропозиції - її дописує ЯДРО (policy/core.mjs proposalNotice), не
+  // модель. Тут лишається витрата: згенерувати, доставити, порахувати.
+  //
+  // Порядок «доставити → порахувати» неспроста: квота міряє ГРОШІ, а вони
+  // списані в момент генерації. Якби лічильник ішов лише після успішної
+  // доставки, невдала відправка робила б витрату невидимою для стелі.
+  'gemini.image': {
+    async execute(env, payload, nowMs, ctx) {
+      const { bytes, mime } = await generateImage(env, { prompt: String(payload.prompt ?? '') });
+      const cost = IMAGE_USD;
+      try {
+        await deliverGenerated(env, ctx, {
+          kind: 'photo',
+          bytes,
+          mime,
+          filename: 'svitanok.png',
+          caption: `≈ $${cost.toFixed(2)}`,
+        });
+      } finally {
+        await countGeminiSpend(env, cost, nowMs);
+      }
+      return { result: { generated: 'image', usd: cost, bytes: bytes.length } };
+    },
+  },
+  'gemini.video': {
+    async execute(env, payload, nowMs, ctx) {
+      const { seconds, model } = videoParams(payload);
+      const { bytes, mime } = await generateVideo(env, {
+        prompt: String(payload.prompt ?? ''),
+        seconds,
+        model,
+      });
+      const cost = videoUsd(seconds, model);
+      try {
+        await deliverGenerated(env, ctx, {
+          kind: 'video',
+          bytes,
+          mime,
+          filename: 'svitanok.mp4',
+          caption: `${seconds} с, ≈ $${cost.toFixed(2)}`,
+        });
+      } finally {
+        await countGeminiSpend(env, cost, nowMs);
+      }
+      return { result: { generated: 'video', usd: cost, seconds, model } };
     },
   },
   // Google Tasks (S-8-4, етап 7 PR-1): T1, без «↩» - видалити чужу задачу
@@ -932,6 +991,79 @@ async function buildEventPatch(env, payload) {
   return patch;
 }
 
+/**
+ * Параметри відео з payload: довжина в межах канону (S-8-6 називає ціну за
+ * 8 с) і модель. Кривий ввід - не «за замовчуванням», а межа: більше за
+ * стелю мовчки коштувало б власнику грошей понад показану ціну.
+ * @param {Record<string, any>} payload
+ * @returns {{ seconds: number, model: 'veo' | 'lite' }}
+ */
+function videoParams(payload) {
+  const raw = Number(payload.seconds);
+  const seconds = Number.isFinite(raw)
+    ? Math.min(Math.max(Math.round(raw), 1), VIDEO_MAX_SECONDS)
+    : VIDEO_DEFAULT_SECONDS;
+  return { seconds, model: payload.model === 'lite' ? 'lite' : 'veo' };
+}
+
+/**
+ * Стеля витрат Gemini ПЕРЕД пропозицією: місячний ліміт `gemini_usd` з
+ * quota_counters. Повертає текст відмови або null.
+ * @param {Env} env @param {string} kind @param {Record<string, unknown>} payload @param {number} nowMs
+ */
+async function geminiQuotaGuard(env, kind, payload, nowMs) {
+  if (!env.DB) return null; // без бази облік неможливий - не блокуємо дію мовчки
+  const { seconds, model } = videoParams(/** @type {any} */ (payload));
+  const cost = kind === 'gemini.image' ? IMAGE_USD : videoUsd(seconds, model);
+  try {
+    const limit = quotaLimitOf('gemini_usd');
+    const used = await quotaUsed(env, 'gemini_usd', nowMs);
+    if (used + cost > limit) {
+      return `Стеля витрат Gemini на місяць вичерпана: використано $${used.toFixed(2)} із $${limit.toFixed(2)}, ця генерація коштує $${cost.toFixed(2)}.`;
+    }
+  } catch (/** @type {any} */ e) {
+    // Облік не прочитався - це не привід тихо витратити гроші.
+    return `облік витрат Gemini недоступний: ${String(e?.message ?? '')}`;
+  }
+  return null;
+}
+
+/** Порахувати витрачене (алерти 80/100 % - усередині bumpQuota).
+ *  @param {Env} env @param {number} usd @param {number} nowMs */
+async function countGeminiSpend(env, usd, nowMs) {
+  try {
+    await bumpQuota(env, {
+      key: 'gemini_usd',
+      amount: usd,
+      limit: quotaLimitOf('gemini_usd'),
+      nowMs,
+    });
+  } catch (/** @type {any} */ e) {
+    // Гроші вже витрачені; збій обліку не сміє зробити вигляд, що дії не було.
+    console.error('gemini: витрата не порахована', e?.message);
+  }
+}
+
+/**
+ * Доставити згенероване в тред пропозиції. Медіа йде повз чергу (розмір), тож
+ * адреса рахується так само, як у collection.export.
+ * @param {Env} env
+ * @param {{ chatId?: number | string | null, threadId?: number | string | null } | undefined} ctx
+ * @param {{ kind: 'photo' | 'video', bytes: Uint8Array, mime: string, filename: string, caption: string }} media
+ */
+async function deliverGenerated(env, ctx, media) {
+  const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
+  const isDm = threadKey === 'dm';
+  const chatId =
+    ctx?.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+  if (chatId == null) throw new Error('gemini: чат для доставки невідомий');
+  await sendMediaBytes(
+    env,
+    { chatId, threadId: isDm || threadKey == null ? null : Number(threadKey) },
+    media,
+  );
+}
+
 /** @param {Env} env */
 function db(env) {
   if (!env.DB) throw new Error('привʼязки DB немає - policy неможлива');
@@ -976,6 +1108,32 @@ export async function applyPolicy(env, action, nowMs) {
       mode: 'error',
       error: `direct-tool: ${action.kind} - це T0, клич інструмент напряму, не proposals.create`,
     };
+  }
+
+  // Gemini (ADR-034): у чужий сервіс їде РІВНО prompt власника.
+  //
+  // Два барʼєри, і обидва тут, у ядрі, а не в описі інструмента.
+  //   1. Заплямована сесія - ВІДМОВА, не ескалація до ✅. Taint означає, що
+  //      модель щойно читала пошту або чужі чати, і будь-який текст, який
+  //      вона зараз складає, може нести їхній вміст. Ескалація тут не
+  //      допомогла б: власник підтвердив би картинку, не бачачи, що в
+  //      prompt-і переказано лист. Порада в тексті - /new.
+  //   2. Білий список полів: усе, крім prompt (і двох параметрів формату), -
+  //      помилка, тож id транзакції чи чату просто не має куди поїхати.
+  if (action.kind === 'gemini.image' || action.kind === 'gemini.video') {
+    if (action.tainted) {
+      return {
+        mode: 'error',
+        error: `${action.kind}: сесія читала зовнішній вміст (пошта/чати) - у Gemini з неї нічого не йде. Почни /new і повтори запит.`,
+      };
+    }
+    const narrowed = sanitizeGeminiPayload(action.kind, action.payload);
+    if ('error' in narrowed) return { mode: 'error', error: narrowed.error };
+    action = { ...action, payload: narrowed.payload };
+    // Стеля витрат - ДО пропозиції: показати ціну й отримати ✅, а вже потім
+    // упертись у квоту означало б витратити рішення власника даремно.
+    const guard = await geminiQuotaGuard(env, action.kind, narrowed.payload, nowMs);
+    if (guard) return { mode: 'error', error: guard };
   }
 
   // kind факту звіряємо ДО виконання чи пропозиції (приймання 05.09, B1):

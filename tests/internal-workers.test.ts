@@ -240,6 +240,41 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect((doc.get('document') as File).name).toBe(workerFilename('researcher', NOW));
   });
 
+  it('ціну gemini дописує ЯДРО під текстом моделі (S-8-5/S-8-6)', async () => {
+    // Модель просить схвалення - і не має права називати ціну, від якої це
+    // схвалення залежить. Тому рядок береться з kind+payload самої
+    // пропозиції в базі, а не з тексту, який надіслав мозок.
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, msg_id, word, expires_at, status, created_at)
+       VALUES ('g1', 'T2', 'gemini.video', '{"prompt":"море"}', '99', NULL, 'ВИКОНАТИ', ?, 'open', ?)`,
+    ).run(new Date(NOW + 600_000).toISOString(), new Date(NOW).toISOString());
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'Зробити відео?',
+      buttons: [[{ text: '✅ Так', callback_data: 'p:g1:ok' }]],
+    });
+    expect(res.status).toBe(200);
+    const msg = tg.find((c) => c.method === 'sendMessage')!.form as Record<string, unknown>;
+    expect(String(msg.text)).toContain('Зробити відео?');
+    expect(String(msg.text)).toContain('$3.20');
+  });
+
+  it('для звичайної пропозиції рядка ціни немає', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, msg_id, word, expires_at, status, created_at)
+       VALUES ('c1', 'T1', 'calendar.event', '{"title":"Зустріч"}', '99', NULL, NULL, ?, 'open', ?)`,
+    ).run(new Date(NOW + 600_000).toISOString(), new Date(NOW).toISOString());
+    await post(env, '/internal/deliver', 'r1', {
+      text: 'Створити подію?',
+      buttons: [[{ text: '✅ Так', callback_data: 'p:c1:ok' }]],
+    });
+    const msg = tg.find((c) => c.method === 'sendMessage')!.form as Record<string, unknown>;
+    expect(String(msg.text)).toBe('Створити подію?');
+  });
+
   it('контракт: чуже імʼя або порожній текст - 400, у базі нічого; схема deliver знає worker', async () => {
     const { env, db } = setup();
     stubTelegram();

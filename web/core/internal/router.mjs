@@ -18,7 +18,8 @@ import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits, sendSystemAlert } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
-import { isTaintActive } from '../policy/core.mjs';
+import { isTaintActive, proposalNotice } from '../policy/core.mjs';
+import { IMAGE_USD, VIDEO_DEFAULT_SECONDS, videoUsd } from '../adapters/gemini.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
 import { saveInboxDigest } from '../inbox/digest.mjs';
@@ -317,6 +318,12 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       return json({ ok: false, error: `contract: ${String(e?.message ?? '')}` }, 400);
     }
   }
+  // Ціна під пропозицією (S-8-5/S-8-6) - рядок ЯДРА, не моделі. Модель просить
+  // схвалення; довіряти їй же назвати ціну означало б дозволити просити $3.20,
+  // написавши «безкоштовно». Тому текст дописується тут, за kind і payload
+  // самої пропозиції, і зникнути з повідомлення не може.
+  const notice = await proposalNoticeFor(env, body.buttons ?? []);
+  const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
   const buttons = [...(body.buttons ?? []), ...(saved ? workerButtons(saved.id, !longWorker) : [])];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
@@ -331,7 +338,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       editFirstMessageId: draftId,
       // Markdown моделі → HTML Telegram частинами (tg/markdown.mjs); текст у
       // reports/сесії лишається Markdown.
-      parts: renderMdParts(body.text),
+      parts: renderMdParts(deliverText),
       payload: buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {},
     },
     nowMs,
@@ -765,5 +772,42 @@ async function markRunThreadTainted(env, runId, nowMs) {
   } catch (/** @type {any} */ e) {
     console.error('internal: запис taint у sessions впав', e?.message);
     return false;
+  }
+}
+
+/**
+ * Рядок ядра під пропозицією, якщо кнопки несуть `p:<id>:ok` і для її kind є
+ * що сказати (зараз - ціна gemini.*). Помилка читання не блокує доставку:
+ * без рядка повідомлення гірше, без повідомлення - гірше набагато.
+ * @param {Env} env
+ * @param {{ text: string, callback_data: string }[][]} buttons
+ * @returns {Promise<string>}
+ */
+async function proposalNoticeFor(env, buttons) {
+  const id = buttons
+    .flat()
+    .map((b) => b.callback_data.match(/^p:([A-Za-z0-9-]{1,40}):ok$/)?.[1])
+    .find(Boolean);
+  if (!id || !env.DB) return '';
+  try {
+    const row = /** @type {{ kind: string, payload_json: string } | null} */ (
+      await env.DB.prepare('SELECT kind, payload_json FROM proposals WHERE id = ?').bind(id).first()
+    );
+    if (!row) return '';
+    /** @type {Record<string, unknown> | null} */
+    let payload = null;
+    try {
+      payload = JSON.parse(row.payload_json);
+    } catch {
+      // кривий payload - ціну порахуємо з дефолтів kind-а
+    }
+    return proposalNotice(row.kind, payload, {
+      imageUsd: IMAGE_USD,
+      videoUsd,
+      defaultSeconds: VIDEO_DEFAULT_SECONDS,
+    });
+  } catch (/** @type {any} */ e) {
+    console.error('internal: рядок ціни не додано', e?.message);
+    return '';
   }
 }

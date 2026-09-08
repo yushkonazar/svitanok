@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TOOLS } from '../web/core/tools/index.mjs';
-import { applyPolicy, resolveProposal } from '../web/core/policy/proposals.mjs';
+import { applyPolicy, resolveProposal, EXECUTORS } from '../web/core/policy/proposals.mjs';
 import { ACTION_LEVELS } from '../web/core/policy/core.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
@@ -135,16 +135,25 @@ describe('proposals.create: рівень бере kind з аргументів',
   });
 
   it('після ✅ без виконавця - ЧЕСНЕ «no-executor», а не «прийнято і забуто»', async () => {
-    // gemini.image - останній kind без виконавця (приїде на етапі 7 PR-3);
-    // contact/tasks.create/drive.write/settings свої виконавці отримали в
-    // PR-1 «Google-ревізії», тож на них ця гілка вже не спрацьовує.
+    // ⚠️ Виконавця ЗНІМАЄМО навмисно, а не шукаємо kind без нього. На кінець
+    // етапу 7 виконавці є в усіх kind-ів таблиці рівнів, і тест, прибитий до
+    // «поточного kind без виконавця», доводив би не гілку, а склад реєстру -
+    // і ламався б на кожному новому виконавці (так і сталось тричі).
     const { env } = makeEnv();
     const { body } = await callTool(env, 'proposals.create', {
-      kind: 'gemini.image',
-      payload: { prompt: 'кіт у скафандрі' },
+      kind: 'calendar.event',
+      payload: { title: 'Зустріч' },
     });
     const proposal = body.proposal as { id: string };
-    const decided = await resolveProposal(env, { id: proposal.id, choice: 'ok' }, NOW + 1000);
+    const saved = EXECUTORS['calendar.event']!;
+    delete EXECUTORS['calendar.event'];
+    const decided = await resolveProposal(
+      env,
+      { id: proposal.id, choice: 'ok' },
+      NOW + 1000,
+    ).finally(() => {
+      EXECUTORS['calendar.event'] = saved;
+    });
     expect(decided).toMatchObject({ ok: false });
     expect(String((decided as { error: string }).error)).toContain('no-executor');
   });

@@ -15,6 +15,7 @@ import {
   dayPlanChoiceEvent,
   describeProposal,
 } from '../web/core/prerouter.mjs';
+import { EXECUTORS } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 import { d1WithInstructions, syncInstructionHash, TEST_PERSONA } from './helpers/instructions.js';
@@ -922,19 +923,24 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     );
   });
 
-  it('✅ без виконавця (gemini.image) - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
+  it('✅ без виконавця - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
     const { env, db, tg } = cbEnv();
-    // calendar.event має виконавця з етапу 5, tasks.create - з етапу 7 PR-1;
-    // без виконавця лишається gemini.image (етап 7 PR-3).
+    // ⚠️ Виконавця ЗНІМАЄМО навмисно: на кінець етапу 7 виконавці є в усіх
+    // kind-ів таблиці рівнів, і тест, прибитий до «поточного kind без
+    // виконавця», доводив би склад реєстру, а не саму гілку.
     seedProposal(db, {
-      kind: 'gemini.image',
-      payload_json: JSON.stringify({ prompt: 'кіт у скафандрі' }),
+      kind: 'calendar.event',
+      payload_json: JSON.stringify({ title: 'Зустріч' }),
     });
+    const saved = EXECUTORS['calendar.event']!;
+    delete EXECUTORS['calendar.event'];
     const toast = await handleBrainCallback(
       env,
       { data: 'p:prop1:ok', chatId: 555, messageId: 42 },
       NOW,
-    );
+    ).finally(() => {
+      EXECUTORS['calendar.event'] = saved;
+    });
     expect(toast).toContain('виконавця ще немає');
     expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe(
       '⚠️ Прийнято, але виконавця ще немає - лишив відкритою.',

@@ -132,6 +132,79 @@ export function decideLevel(kind, tainted, payload = undefined) {
 }
 
 /**
+ * Gemini (ADR-034): у чужий сервіс їде РІВНО prompt власника. Тому payload
+ * звужується до білого списку полів - не «відкидаємо відомі id транзакцій і
+ * чатів», а «пропускаємо лише перелічене». Різниця принципова: чорний список
+ * доводиться доповнювати щоразу, коли зʼявляється нове сховище, і саме той
+ * раз його забудуть.
+ * @type {Record<string, string[]>}
+ */
+export const GEMINI_ALLOWED_FIELDS = {
+  'gemini.image': ['prompt', 'aspect'],
+  'gemini.video': ['prompt', 'seconds', 'model'],
+};
+
+/** Стеля prompt-а: опис картинки, а не переказ листа. */
+export const GEMINI_PROMPT_MAX = 2_000;
+
+/**
+ * Звузити payload gemini.* до дозволених полів. Зайве поле - ПОМИЛКА, а не
+ * тихе відкидання: інакше модель «поклала id транзакції» і не дізналась би,
+ * що воно не поїхало, а власник не дізнався б, що вона намагалась.
+ * @param {string} kind @param {Record<string, unknown> | undefined} payload
+ * @returns {{ payload: Record<string, unknown> } | { error: string }}
+ */
+export function sanitizeGeminiPayload(kind, payload) {
+  const allowed = GEMINI_ALLOWED_FIELDS[kind];
+  if (!allowed) return { payload: payload ?? {} };
+  const src = payload && typeof payload === 'object' ? payload : {};
+  const extra = Object.keys(src).filter((k) => !allowed.includes(k));
+  if (extra.length) {
+    return {
+      error: `${kind}: у Gemini йде лише prompt власника (ADR-034); зайві поля: ${extra.join(', ')}. Дозволені: ${allowed.join(', ')}`,
+    };
+  }
+  const prompt = String(src.prompt ?? '').trim();
+  if (!prompt) return { error: `${kind}: потрібен prompt` };
+  if (prompt.length > GEMINI_PROMPT_MAX) {
+    return { error: `${kind}: prompt довший за ${GEMINI_PROMPT_MAX} символів` };
+  }
+  /** @type {Record<string, unknown>} */
+  const out = { prompt };
+  for (const key of allowed) {
+    if (key !== 'prompt' && src[key] !== undefined) out[key] = src[key];
+  }
+  return { payload: out };
+}
+
+/**
+ * Рядок, який ЯДРО дописує під пропозицією перед відправкою (S-8-5/S-8-6:
+ * «ціна показана ДО витрати»). Пишеться тут, а не моделлю: ціну, від якої
+ * залежить рішення власника, не можна довіряти тому, хто просить її схвалити.
+ * Порожній рядок - додавати нічого.
+ * @param {string} kind @param {Record<string, unknown> | null | undefined} payload
+ * @param {{ imageUsd: number, videoUsd: (seconds: number, model: 'veo' | 'lite') => number,
+ *   defaultSeconds: number }} prices
+ */
+export function proposalNotice(kind, payload, prices) {
+  if (kind === 'gemini.image') return `💵 Генерація зображення ≈ $${prices.imageUsd.toFixed(2)}.`;
+  if (kind === 'gemini.video') {
+    const o = payload && typeof payload === 'object' ? payload : {};
+    const seconds = Number.isFinite(Number(o.seconds))
+      ? Math.round(Number(o.seconds))
+      : prices.defaultSeconds;
+    const model = o.model === 'lite' ? 'lite' : 'veo';
+    const cost = prices.videoUsd(seconds, model);
+    const alt =
+      model === 'veo'
+        ? ` Дешевше - Lite ≈ $${prices.videoUsd(seconds, 'lite').toFixed(2)} або Flow у застосунку Gemini вручну.`
+        : '';
+    return `💵 Відео ${seconds} с ≈ $${cost.toFixed(2)}.${alt}`;
+  }
+  return '';
+}
+
+/**
  * Слово для T2 - криптовипадковий вибір (Math.random заборонений у DO-шляхах,
  * а передбачуване слово знецінює другий фактор).
  */
