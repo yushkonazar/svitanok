@@ -12,6 +12,11 @@ interface D1Bound {
   run: () => Promise<{ meta: { changes: number } }>;
   all: () => Promise<{ results: unknown[] }>;
   first: () => Promise<unknown>;
+  /** Один прогін для batch: і рядки, і meta - як у справжньої D1Result.
+   *  ⚠️ Саме ОДИН: викликати all() і run() поспіль означало б виконати
+   *  твердження двічі, і `INSERT … ON CONFLICT DO NOTHING` віддав би
+   *  changes=0 на другому заході. */
+  once: () => Promise<{ results: unknown[]; meta: { changes: number } }>;
 }
 
 export interface D1Stub {
@@ -22,7 +27,7 @@ export interface D1Stub {
     prepare: (sql: string) => { bind: (...args: unknown[]) => D1Bound };
     /** D1 виконує batch однією транзакцією; тут послідовно - для тестів
      *  важливо, що ВСІ твердження відпрацювали, а не як саме згруповані. */
-    batch: (statements: D1Bound[]) => Promise<{ results: unknown[] }[]>;
+    batch: (statements: D1Bound[]) => Promise<{ results: unknown[]; meta: { changes: number } }[]>;
   };
 }
 
@@ -51,11 +56,35 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
             // @ts-expect-error те саме
             return db.prepare(sql).get(...args) ?? null;
           },
+          once: async () => {
+            const st = db.prepare(sql);
+            // Читання - рядки без changes; RETURNING - і рядки, і changes за
+            // їхньою кількістю (саме так його рахує D1); решта - лише changes.
+            if (/^\s*(select|with)\b/i.test(sql)) {
+              // @ts-expect-error те саме
+              return { results: st.all(...args), meta: { changes: 0 } };
+            }
+            // ⚠️ RETURNING шукаємо лише В КІНЦІ твердження - там, де його
+            // й вимагає SQLite. Пошук будь-де ловив би слово всередині
+            // рядкового літерала й віддавав changes=0 замість справжнього
+            // (пастка «зеленого дарма», другий прохід ревʼю).
+            if (/\breturning\s+[^;]*$/i.test(sql.trim())) {
+              // @ts-expect-error те саме
+              const rows = st.all(...args);
+              return { results: rows, meta: { changes: rows.length } };
+            }
+            // @ts-expect-error те саме
+            const info = st.run(...args);
+            return { results: [], meta: { changes: Number(info.changes) } };
+          },
         }),
       }),
+      // ⚠️ Кожен рядок несе Й `results`, Й `meta.changes` - як справжня D1
+      // (D1Result[]). Доти batch віддавав лише `results`, і код, що рахує
+      // записане по `meta.changes`, у тестах бачив нуль, а в проді - правду.
       batch: async (statements: D1Bound[]) => {
         const out = [];
-        for (const st of statements) out.push(await st.all());
+        for (const st of statements) out.push(await st.once());
         return out;
       },
     },

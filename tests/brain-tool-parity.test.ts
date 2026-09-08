@@ -74,6 +74,11 @@ describe('парність інструментів мозок↔ядро', () =
       const brainOk = (args: unknown) => brain.args.safeParse(args).success;
 
       it('прапорці tainting і write збігаються', () => {
+        // ⚠️ У ядра `tainting` може бути ФУНКЦІЄЮ від аргументів (data.search:
+        // місця й покупки - чужий текст, власні ідеї - ні). Мозку в описі
+        // лишається консервативне «так»: модель має знати, що виклик МОЖЕ
+        // заплямувати сесію. Тому тут порівнюємо «плямує взагалі», а точний
+        // випадок перевіряє tests/tools-read.test.ts.
         expect(brain.tainting).toBe(Boolean(core.tainting));
         expect(brain.write).toBe(Boolean(core.write));
       });

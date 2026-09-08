@@ -30,11 +30,13 @@ import {
   trackedMessages,
   briefCooldownRemainingMs,
   buildMiniAppButton,
+  COMMANDS,
 } from './tg-core.mjs';
 import {
   classifyReminderIntent,
   buildRemindersKeyboard,
   formatRemindersListMessage,
+  listActive,
 } from './reminders-core.mjs';
 import { aggregateStats } from './stats-core.mjs';
 import { masteryTopics } from './mastery-core.mjs';
@@ -42,7 +44,7 @@ import { formatStatsMessage, formatJobsMessage, formatSavedMessage } from './tg-
 import { formatAgendaMessage, buildAgendaKeyboard } from './calendar-core.mjs';
 import { formatRootMessage, buildRootKeyboard } from './roadmap-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
-import { loadState, loadStats, loadSentMessages } from './kv-store.mjs';
+import { loadState, loadStats, loadSentMessages, putSentMessages } from './kv-store.mjs';
 
 /** /clear (§C5): скільки deleteMessage-викликів паралельно за раз — компроміс
  *  між швидкістю й обережністю до rate-limit Telegram/Cloudflare. */
@@ -50,12 +52,46 @@ const DELETE_CHUNK_SIZE = 10;
 import { tgCall, sendTo } from './telegram-client.mjs';
 import { agentHostUrl } from './llm-host.mjs';
 import { isPrimaryOwner } from './auth-core.mjs';
+import { listActiveReminders } from './core/reminders/store.mjs';
+
 import { runAssistantAgent } from './agent-runtime.mjs';
 import { createReminderFromText } from './reminders-actions.mjs';
 import { handleLocationShare, sendLocatePrompt } from './weather-geo.mjs';
 import { readUpcomingWeek } from './callbacks.mjs';
 import { dispatchBrief, loadBriefDispatch, recordBriefDispatch } from './cron.mjs';
 import { UNKNOWN_REPLY } from './agent-core.mjs';
+
+/**
+ * Активні нагадування для списку у формі, яку чекає легасі-форматер
+ * (`whenMs`/`firedTs`). Джерело - D1: з етапу 2 усе, що створює мозок, лежить
+ * там, і читання самого KV показувало порожньо (прогін 08.09). KV-записи
+ * домерджуються за id: у вікні до чистки той самий запис лежить в обох
+ * сховищах, і показати його двічі було б гірше, ніж не показати легасі.
+ * @param {Env} env
+ */
+export async function activeRemindersForList(env) {
+  // ⚠️ listActive, не сирий масив (ревʼю релізу): у KV лежать і спрацьовані
+  // (`firedTs`), і без фільтра «Скасувати всі» знімало б їх теж - тобто
+  // чіпало те, чого в показаному списку не було.
+  const fromKv = listActive((await loadState(env)).reminders);
+  /** @type {Map<string, any>} */
+  const byId = new Map();
+  for (const r of fromKv) byId.set(String(r?.id), r);
+  try {
+    for (const r of await listActiveReminders(env)) {
+      byId.set(String(r.id), {
+        id: r.id,
+        text: r.text,
+        whenMs: Date.parse(r.dueAt),
+        firedTs: null,
+      });
+    }
+  } catch (/** @type {any} */ e) {
+    // D1 недоступна - показуємо хоч KV, і слід у лозі.
+    console.error('список нагадувань: D1 не прочиталась', e?.message);
+  }
+  return [...byId.values()].sort((a, b) => (a?.whenMs ?? 0) - (b?.whenMs ?? 0));
+}
 
 // Фаза C3: /start (онбординг+keyboard) і /help (повний реєстр команд) розділено —
 // раніше /start і показував список, і переспамлював reply-keyboard в одному.
@@ -73,24 +109,16 @@ const START_TEXT = [
     'текстом — календар, нагадування, план дня.',
 ].join('\n');
 
+// ⚠️ /help перейшов у новий шлях (core/prerouter.mjs). Сюди він доходить лише
+// коли новий шлях вимкнено або для співвласника - тому тут те саме, але
+// зібране з реєстру меню, щоб два списки не розходились.
 const HELP_TEXT = [
   '📋 <b>Команди</b>',
   '',
-  '/brief — запустити ранковий брифінг',
-  '/stats — стрік і статистика',
-  '/jobs — активна воронка вакансій',
-  '/save — збережене',
-  '/remind — нагадування (напр. "через 20 хв ..." або "завтра о 10:00 ...")',
-  '/reminders — список активних нагадувань (можна скасувати)',
-  '/agenda — найближчі події календаря, тиждень наперед',
-  '/agent — що вміє асистент (вільний текст) — повний перелік',
-  '/plan — план дня (LLM прочитає календар і запропонує таймлайн)',
-  '/roadmap — IT-роадмеп (теми → підпункти, прогрес)',
-  '/settings — тихі години, ціль, модулі брифінгу',
-  '/clear [N] — видалити останні N повідомлень тут — мої та твої (за замовч. 20)',
-  '/whereami — chat_id/thread_id цього чату',
-  '/locate — оновити позицію за GPS (точна погода в Mini App, замість IP-приблизності)',
-].join('\n');
+  ...COMMANDS.filter((c) => c.command !== 'start').map((c) => `/${c.command} — ${c.description}`),
+  '',
+  'Решта - вільним текстом («нагадай через 20 хв …») або в Mini App.',
+].join(String.fromCharCode(10));
 
 /**
  * Перелік можливостей асистента (🤖Асистент, вільний текст) — окремо від
@@ -311,7 +339,11 @@ export async function handleCommand(
         onUnparsed: () => runAssistantAgent(env, parsed, cmd.args),
       });
     case 'reminders': {
-      const reminders = (await loadState(env)).reminders ?? [];
+      // ⚠️ ДЖЕРЕЛО - D1, не KV (прогін 08.09: список був порожній, хоч
+      // нагадування щойно створене). З етапу 2 (ASSISTANT_V2=on) усе, що
+      // створює мозок, лежить у D1, а KV-гілка мовчить; читати самий KV
+      // означало показувати лише легасі-записи.
+      const reminders = await activeRemindersForList(env);
       const keyboard = buildRemindersKeyboard(reminders);
       return sendText(formatRemindersListMessage(reminders), {
         parse_mode: 'HTML',
@@ -392,7 +424,10 @@ export async function handleCommand(
       const key = sentMessagesKey(parsed.chatId, parsed.threadId);
       const fresh = await loadSentMessages(env);
       fresh[key] = trackedMessages(fresh[key]).filter((e) => !forget.includes(e.id));
-      await env.BRIEFING.put('sentMessages', JSON.stringify(fresh));
+      // ⚠️ Через putSentMessages, і зі СПИСКОМ забутих: інакше луна читача
+      // повертала б щойно зняті id із застарілого KV-читання, і наступний
+      // /clear намагався б видалити їх знову (ревʼю релізу).
+      await putSentMessages(env, fresh, { key, ids: forget });
       return sendText(formatClearResult(deleted, ids.length, exchanges));
     }
     case 'whereami': {

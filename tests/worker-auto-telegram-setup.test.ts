@@ -19,6 +19,8 @@ import { workerEnv } from './helpers/env.js';
 
 let kv: Map<string, string>;
 let calls: string[];
+/** Тіла викликів за методом - меню й кнопка перевіряються за ВМІСТОМ. */
+let bodies: Map<string, unknown>;
 
 function env(overrides: Record<string, unknown> = {}) {
   return workerEnv({
@@ -50,9 +52,17 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-07-27T09:00:00Z'));
   kv = new Map();
   calls = [];
-  vi.stubGlobal('fetch', async (input: unknown) => {
+  bodies = new Map();
+  vi.stubGlobal('fetch', async (input: unknown, init?: RequestInit) => {
     const method = String(input).split('/').pop() ?? '';
     calls.push(method);
+    if (init?.body) {
+      try {
+        bodies.set(method, JSON.parse(String(init.body)));
+      } catch {
+        // multipart/форма - тіло не JSON, і воно тут не потрібне
+      }
+    }
     if (method === 'getChat') {
       return new Response(JSON.stringify({ ok: true, result: {} }), {
         status: 200,
@@ -105,6 +115,25 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
     ]);
     expect(JSON.parse(kv.get('state') ?? '{}').telegramSetupDate).toBe('2026-07-27');
     void e;
+  });
+
+  // ⚠️ Побажання власника 08.09: «основні команди додай у Menu Button».
+  // Доти кнопка відкривала Mini App, і команди були лише за «/» у полі вводу.
+  it('кнопка-меню показує КОМАНДИ, а меню - рівно вісім плюс /start', async () => {
+    await tick();
+    expect(bodies.get('setChatMenuButton')).toEqual({ menu_button: { type: 'commands' } });
+    const cmds = (bodies.get('setMyCommands') as { commands: { command: string }[] }).commands;
+    expect(cmds.map((c) => c.command)).toEqual([
+      'start',
+      'help',
+      'plan',
+      'remind',
+      'brief',
+      'status',
+      'clear',
+      'new',
+      'forget',
+    ]);
   });
 
   it('другий тік того самого дня — no-op (дата вже сьогоднішня)', async () => {

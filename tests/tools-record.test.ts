@@ -209,7 +209,7 @@ describe('record: контракт інструмента', () => {
     expect(res.undo).toBeUndefined();
   });
 
-  it('у tainted - пропозиція, стан не чіпається до ✅', async () => {
+  it('у tainted виконується одразу - це запис у власному стані (звуження 08.09)', async () => {
     const { store, env } = makeEnv();
     const res = await applyPolicy(
       env,
@@ -220,7 +220,7 @@ describe('record: контракт інструмента', () => {
       },
       NOON,
     );
-    expect(res.mode).toBe('proposed');
-    expect(read(store, 'state').roadmapProgress).toBeUndefined();
+    expect(res.mode).toBe('executed');
+    expect(read(store, 'state').roadmapProgress).toBeDefined();
   });
 });

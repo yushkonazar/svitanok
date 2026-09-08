@@ -22,6 +22,7 @@ import { isTaintActive, proposalNotice } from '../policy/core.mjs';
 import { IMAGE_USD, VIDEO_DEFAULT_SECONDS, videoUsd } from '../adapters/gemini.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
+import { reportButtons } from '../links.mjs';
 import { saveInboxDigest } from '../inbox/digest.mjs';
 import { sendChainEvent } from '../chains/registry.mjs';
 import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
@@ -194,7 +195,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       // Steam), теж позначає тред: інакше зовнішній вміст ішов би в контекст
       // моделі, а сесія лишалась би «чистою», і наступні T0 виконувались би
       // без ✅. Той самий FAIL-CLOSED, що й для читання нижче.
-      if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+      if (isTainting(tool, args) && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
         return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
       }
       if (policyOut.mode === 'proposed') {
@@ -243,11 +244,16 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     // прапорець НЕ вдалось персистувати, зовнішній вміст не віддається -
     // інакше транзієнтний збій DO/D1 давав би прогін із зовнішнім вмістом,
     // який policy вважатиме чистим.
-    if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+    // ⚠️ `tainting` може залежати від АРГУМЕНТІВ (другий прохід ревʼю):
+    // `data.search` по своїх ідеях чужого тексту не несе, а по місцях і
+    // покупках - несе. Безумовна позначка робила б із кожного пошуку ✅ на
+    // наступну дію назовні, тобто повертала б рівно те, від чого звужували.
+    const taints = isTainting(tool, args);
+    if (taints && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
       return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
     }
 
-    return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
+    return json({ ok: true, tool: name, tainted: taints, result: out.result });
   }
 
   const route = path.match(
@@ -344,7 +350,14 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   }
   const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
-  const buttons = [...(body.buttons ?? []), ...(saved ? workerButtons(saved.id, !longWorker) : [])];
+  // Профіль читаємо ДО відправки: під тижневим звітом мають стояти кнопки
+  // «що з цим робити» (PR-6 §2.5), а прикріпити їх можна лише разом із текстом.
+  const profile = await readRunProfile(env, runId).catch(() => null);
+  const buttons = [
+    ...(body.buttons ?? []),
+    ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),
+    ...(profile === 'weekly-review' ? reportButtons() : []),
+  ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
   // спершу покаже обірваний шматок і лише потім фінал.
   if (draftId != null) await dropPendingEdits(env, target.chatId, draftId);
@@ -382,7 +395,6 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
   // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.
   let reportId = null;
-  const profile = await readRunProfile(env, runId).catch(() => null);
   if (profile === 'weekly-review') {
     try {
       reportId = (await saveWeeklyReport(env, body.text, nowMs)).id;
@@ -590,7 +602,7 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
         : null;
     const continueThread = async () => {
       if (esc && escText) {
-        // S-N3-6: статус «думаю довше…», той самий текст у chat, той самий
+        // S-N3-6: статус «копаю глибше…», той самий текст у chat, той самий
         // статусник; тред НЕ звільняється - ескалація є продовженням.
         if (escStatusId != null && target.chatId != null) {
           await enqueueOutbox(
@@ -598,7 +610,7 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
             {
               chatId: target.chatId,
               kind: 'edit',
-              payload: { message_id: escStatusId, text: '▸ Думаю довше…' },
+              payload: { message_id: escStatusId, text: '▸ Копаю глибше…' },
             },
             nowMs,
           );
@@ -759,6 +771,18 @@ async function readThreadTaint(env, threadId, nowMs) {
     console.error('internal: читання taint впало - вважаємо true (fail-safe)', e?.message);
     return dirty;
   }
+}
+
+/**
+ * Чи цей ВИКЛИК несе зовнішній вміст. Прапорець інструмента може бути й
+ * функцією від аргументів - для тих, чиї джерела різні за природою.
+ * @param {{ tainting?: unknown }} tool
+ * @param {unknown} args
+ */
+function isTainting(tool, args) {
+  return typeof tool.tainting === 'function'
+    ? Boolean(tool.tainting(args))
+    : Boolean(tool.tainting);
 }
 
 /**

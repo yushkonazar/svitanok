@@ -286,10 +286,12 @@ describe('handleRuns: ескалація і черга треду', () => {
       input: { text: 'складне питання' },
       status_message_id: 42,
     });
-    // Нового статусника НЕ шлемо (reuse 42), був лише edit «Думаю довше».
+    // Нового статусника НЕ шлемо (reuse 42), був лише edit «Копаю глибше».
     expect(tg.filter((c) => c.method === 'sendMessage')).toHaveLength(0);
     expect(
-      tg.some((c) => c.method === 'editMessageText' && String(c.body.text).includes('Думаю довше')),
+      tg.some(
+        (c) => c.method === 'editMessageText' && String(c.body.text).includes('Копаю глибше'),
+      ),
     ).toBe(true);
   });
 

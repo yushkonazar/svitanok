@@ -2,9 +2,9 @@
 name: analyst
 kind: agent
 model: sonnet
-tools: [data.read, finance.query]
+tools: [data.read, data.search, finance.query]
 tainted_output: false
-updated: 2026-08-23
+updated: 2026-09-08
 max_chars: 7000
 max_steps: 8
 ---

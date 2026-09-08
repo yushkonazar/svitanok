@@ -22,6 +22,8 @@ import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
+import { runDataSearch, SEARCH_SOURCES } from './search.mjs';
+import { runStyleSamples } from '../style/corpus.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 import { runFinanceQuery } from './finance.mjs';
@@ -30,7 +32,7 @@ import { runInboxSearch } from './inbox.mjs';
 /**
  * @typedef {{
  *   args: import('../internal/schemas.mjs').InternalSchema,
- *   tainting?: boolean,
+ *   tainting?: boolean | ((args: any) => boolean),
  *   write?: { kind?: string, kindFrom?: string },
  *   run: (env: Env, args: any, nowMs: number) => Promise<{ result: unknown }>,
  * }} InternalToolDef
@@ -210,10 +212,20 @@ export const TOOLS = {
     },
   },
   'reminders.cancel': {
+    // ⚠️ Ні `id`, ні `ids` не обовʼязкові В СХЕМІ, але один із них потрібен -
+    // це перевіряє виконавець (PR-7 §3.4). Схема тут описує форму, а «хоч
+    // одне з двох» вона виразити не вміє, і вигадувати для цього oneOf у
+    // власному валідаторі дорожче за чесну перевірку в одному місці.
     args: {
       type: 'object',
-      required: ['id'],
-      properties: { id: { type: 'string', maxLength: 64 } },
+      required: [],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        // Стелю пачки (CANCEL_BATCH_MAX) тримає виконавець: валідатор
+        // internal-схем не має maxItems, і додавати його заради одного поля
+        // означало б розширити спільний контракт заради окремого випадку.
+        ids: { type: 'array', items: { type: 'string', maxLength: 64 } },
+      },
     },
     write: { kind: 'reminders.cancel' },
     run: () => {
@@ -300,6 +312,43 @@ export const TOOLS = {
       },
     },
     run: (env, args) => runIdeasList(env, args),
+  },
+  // Пошук по ВСІХ власних джерелах одним викликом (PR-7 §3.2).
+  //
+  // ⚠️ TAINTING (security-ревʼю релізу). Спершу стояло `false` - мовляв, це
+  // власні дані. Але назви й адреси місць пише Google Places, а описи
+  // транзакцій - мерчант: рівно той чужий текст, через який `places.search`
+  // і позначений tainting. Без позначки інʼєкція в назві закладу проходила б
+  // у контекст, а наступні `drive.write`/`tasks.create` йшли б без ✅.
+  'data.search': {
+    // ⚠️ Плямує ЗА АРГУМЕНТАМИ (другий прохід ревʼю): назви місць пише
+    // Google, описи покупок - мерчант, а власні ідеї й записи чужого тексту
+    // не несуть. Безумовна позначка робила б із «де я це записував» причину
+    // просити ✅ на наступну дію - те саме, від чого власник і відмовлявся.
+    tainting: (/** @type {any} */ args) => {
+      const asked = Array.isArray(args?.scopes)
+        ? args.scopes.map((/** @type {unknown} */ s) => String(s ?? '').toLowerCase())
+        : SEARCH_SOURCES;
+      return asked.includes('places') || asked.includes('money');
+    },
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: {
+        q: { type: 'string', minLength: 2, maxLength: 120 },
+        scopes: { type: 'array', items: { type: 'string', maxLength: 16 } },
+      },
+    },
+    run: (env, args) => runDataSearch(env, args),
+  },
+  // Зразки голосу власника для Копірайтера й Редактора (PR-8 §6A). Читання:
+  // корпус - ВЛАСНІ тексти власника, не зовнішній вміст, тож не tainting.
+  'style.samples': {
+    args: {
+      type: 'object',
+      properties: { limit: { type: 'number', minimum: 1, maximum: 30 } },
+    },
+    run: (env, args) => runStyleSamples(env, args),
   },
   'ideas.search': {
     args: {

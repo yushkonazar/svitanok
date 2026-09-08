@@ -304,10 +304,10 @@ describe('tg-core — parseCommand (Блок P4)', () => {
   });
 
   it('лейбл reply-keyboard мапиться на ту саму команду, що й "/xxx"', () => {
-    expect(parseCommand('📅 Сьогодні')).toEqual({ cmd: 'agenda', args: '' });
-    expect(parseCommand('🧠 План дня')).toEqual({ cmd: 'plan', args: '' });
-    expect(parseCommand('⏰ Нагадування')).toEqual({ cmd: 'reminders', args: '' });
+    expect(parseCommand('🧭 План дня')).toEqual({ cmd: 'plan', args: '' });
+    expect(parseCommand('⏰ Нагадування')).toEqual({ cmd: 'remind', args: '' });
     expect(parseCommand('🔄 Брифінг')).toEqual({ cmd: 'brief', args: '' });
+    expect(parseCommand('❓ Що я вмію')).toEqual({ cmd: 'help', args: '' });
   });
 
   it('звичайний текст/порожнє/не-рядок -> null (майбутній асистент, P2)', () => {
@@ -327,10 +327,10 @@ describe('tg-core — parseCommand (Блок P4)', () => {
 
   it('REPLY_KEYBOARD — дієві команди з негайною відповіддю в чаті, не дублі екранів Mini App', () => {
     const labels = REPLY_KEYBOARD.flat();
-    expect(labels).toContain('📅 Сьогодні');
+    expect(labels).toContain('🧭 План дня');
     expect(labels).toContain('⏰ Нагадування');
-    expect(parseCommand('📅 Сьогодні')).toEqual({ cmd: 'agenda', args: '' });
-    expect(parseCommand('⏰ Нагадування')).toEqual({ cmd: 'reminders', args: '' });
+    expect(parseCommand('🧭 План дня')).toEqual({ cmd: 'plan', args: '' });
+    expect(parseCommand('⏰ Нагадування')).toEqual({ cmd: 'remind', args: '' });
   });
 
   it('кожен лейбл REPLY_KEYBOARD резолвиться в команду з COMMANDS (без дрейфу двох реєстрів)', () => {

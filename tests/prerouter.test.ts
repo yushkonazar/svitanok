@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   classifyRoute,
   parseNewCommand,
+  NEW_COMMANDS,
   prerouteMessage,
   handleBrainCallback,
   startClaimedRun,
@@ -56,12 +57,60 @@ describe('classifyRoute (N3)', () => {
 });
 
 describe('parseNewCommand', () => {
-  it('нові команди ловляться (і з @botname), легасі - ні', () => {
-    expect(parseNewCommand('/new')).toBe('new');
-    expect(parseNewCommand('/status@svitanok_bot')).toBe('status');
-    expect(parseNewCommand('/idea щось')).toBe('idea');
+  it('вісім команд ловляться (і з @botname), решта - ні', () => {
+    expect(parseNewCommand('/new')).toEqual({ cmd: 'new', args: '' });
+    expect(parseNewCommand('/status@svitanok_bot')).toEqual({ cmd: 'status', args: '' });
+    expect(parseNewCommand('/remind через 20 хв полити квіти')).toEqual({
+      cmd: 'remind',
+      args: 'через 20 хв полити квіти',
+    });
+    // Прибрані команди падають у легасі, а не мовчать (скарги 2 і 12).
+    for (const gone of ['/idea щось', '/wish', '/money', '/inbox', '/agenda', '/reminders'])
+      expect(parseNewCommand(gone), gone).toBeNull();
     expect(parseNewCommand('/stats')).toBeNull();
     expect(parseNewCommand('текст /new усередині')).toBeNull();
+    // Лейбли reply-клавіатури - ті самі команди: інакше тап по паду йшов би в
+    // мозок вільним текстом і коштував прогону там, де є готова відповідь.
+    expect(parseNewCommand('⏰ Нагадування')).toEqual({ cmd: 'remind', args: '' });
+    expect(parseNewCommand('🧭 План дня')).toEqual({ cmd: 'plan', args: '' });
+    expect(parseNewCommand('❓ Що я вмію')).toEqual({ cmd: 'help', args: '' });
+    // «Брифінг» лишився в легасі - новий шлях його не перехоплює.
+    expect(parseNewCommand('🔄 Брифінг')).toBeNull();
+  });
+
+  it('лейбл легасі-команди ПАДАЄ в легасі, а не в мозок', async () => {
+    // ⚠️ Раніше «🔄 Брифінг» не збігався з parseNewCommand, не починався зі
+    // «/» - і йшов у мозок текстом, тобто прогін заради команди, яку легасі
+    // виконує миттєво (ревʼю релізу).
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    expect(await prerouteMessage(env, parsedMsg('🔄 Брифінг'), NOW)).toBe(false);
+    expect(brain).toHaveLength(0);
+  });
+
+  it('реєстр /help і меню Telegram - один список', () => {
+    expect(NEW_COMMANDS.map((c) => c.command)).toEqual([
+      'help',
+      'plan',
+      'remind',
+      'brief',
+      'status',
+      'clear',
+      'new',
+      'forget',
+    ]);
+    // ⚠️ Поіменно, а не «null або збіг» (ревʼю релізу: та умова була істинна
+    // завжди й лишалась би зеленою, навіть якби новий шлях перестав обробляти
+    // все). Тут прямо сказано, ЩО обробляє новий шлях, а що лишилось у легасі.
+    const byNewPath = NEW_COMMANDS.filter((c) => parseNewCommand(`/${c.command}`) !== null).map(
+      (c) => c.command,
+    );
+    expect(byNewPath).toEqual(['help', 'plan', 'remind', 'status', 'new', 'forget']);
+    // /brief і /clear лишились у легасі - там у них уже є робочі обробники.
+    for (const legacyOnly of ['brief', 'clear']) {
+      expect(parseNewCommand(`/${legacyOnly}`), legacyOnly).toBeNull();
+    }
   });
 });
 
@@ -228,7 +277,7 @@ describe('інструкція профілю в /run (PR-5)', () => {
 
   // S-9-5 (етап 3 PR-3): «звіт зараз» - профіль weekly-review тим самим
   // шляхом; вхід прогону будує ядро (§0 інструкції), а не текст власника.
-  it('«звіт зараз» → /run з profile=weekly-review, інструкцією weekly-review і входом §0', async () => {
+  it('«звіт зараз» → /run з profile=weekly-review, інструкцією weekly-review і входом §0 без хеша', async () => {
     const reg = makeRegistryStub();
     const { brain } = makeFetchStub();
     const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
@@ -249,7 +298,12 @@ describe('інструкція профілю в /run (PR-5)', () => {
     expect(sent.profile).toBe('weekly-review');
     expect(sent.instruction.name).toBe('weekly-review');
     expect(sent.input.text).toContain('period_from: 2026-08-24');
-    expect(sent.input.text).toContain(`instruction_hash: ${syncInstructionHash(body)}`);
+    // Хеш іде в ТІЛІ /run (instruction.version_hash), а у ВХІДНОМУ ТЕКСТІ
+    // його нема: звідти модель тягла його в підпис звіту (скарга 08.09).
+    expect(sent.input.text).not.toContain('instruction_hash');
+    expect(
+      (brain[0]!.body as { instruction: { version_hash: string } }).instruction.version_hash,
+    ).toBe(syncInstructionHash(body));
     expect(reg.begins[0]).toMatchObject({ profile: 'weekly-review', model: 'claude-sonnet-5' });
   });
 
@@ -342,7 +396,7 @@ describe('prerouteMessage: режими', () => {
 
     expect(await prerouteMessage(env, parsedMsg('v2: привіт, як справи?'), NOW)).toBe(true);
     expect(tg[0]!.method).toBe('sendMessage');
-    expect(tg[0]!.body.text).toBe('▸ Думаю…');
+    expect(tg[0]!.body.text).toBe('▸ Беруся…');
     expect(brain).toHaveLength(1);
     expect(brain[0]!.path).toBe('/run');
     expect(brain[0]!.body).toMatchObject({
@@ -355,7 +409,7 @@ describe('prerouteMessage: режими', () => {
     expect(reg.threads.get('dm')?.statusMessageId).toBe(101);
   });
 
-  it('on: два повідомлення - друге дістає СТАТУСНИК «▸ Черга: 1» (S-0-2, редагований), мозок кликаний раз', async () => {
+  it('on: друге повідомлення дістає редагований статусник про чергу (S-0-2), мозок кликаний раз', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
@@ -364,7 +418,7 @@ describe('prerouteMessage: режими', () => {
     expect(brain).toHaveLength(1);
     // Черга - це EDIT статусника (не вічне повідомлення-сирота, ревʼю PR-3).
     const queueEdit = tg.find(
-      (c) => c.method === 'editMessageText' && String(c.body.text).includes('Черга: 1'),
+      (c) => c.method === 'editMessageText' && String(c.body.text).includes('Дійду за 1'),
     );
     expect(queueEdit).toBeDefined();
     // Його id збережено в queue-entry для reuse при підйомі.
@@ -414,7 +468,7 @@ describe('prerouteMessage: нові команди', () => {
     expect(tg.some((c) => String(c.body.text).includes('чистого аркуша'))).toBe(true);
   });
 
-  it('підказки R26 і /status відповідають; /forget без колекцій - чесно порожньо', async () => {
+  it('/help, /status і /forget відповідають без прогону мозку', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(
@@ -422,11 +476,14 @@ describe('prerouteMessage: нові команди', () => {
       d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0006_inbox_collections.sql'])
         .stub,
     );
-    await prerouteMessage(env, parsedMsg('/idea'), NOW);
+    await prerouteMessage(env, parsedMsg('/help'), NOW);
     await prerouteMessage(env, parsedMsg('/status'), NOW);
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
-    expect(tg.some((c) => String(c.body.text).includes('збережи ідею'))).toBe(true);
-    expect(tg.some((c) => String(c.body.text).includes('Режим: on'))).toBe(true);
+    // /help веде вільним текстом, а не переліком екранів Mini App.
+    expect(tg.some((c) => String(c.body.text).includes('нагадай через 20 хв'))).toBe(true);
+    // /status - людською, і в ньому ж адреса чату (сюди переїхав /whereami).
+    const status = tg.find((c) => String(c.body.text).includes('режим on'))!;
+    expect(String(status.body.text)).toContain('Чат: 555');
     // /forget більше не буває порожнім: «усе» є завжди (етап 7 PR-4) - забути
     // можна ще й факти, гроші, плани й памʼять, навіть коли колекцій немає.
     const forgetMsg = tg.find((c) => String(c.body.text).includes('Що забути?'))!;
@@ -435,6 +492,32 @@ describe('prerouteMessage: нові команди', () => {
       .inline_keyboard;
     expect(kb.at(-1)![0]!.callback_data).toBe('m:fga');
     expect(brain).toHaveLength(0);
+  });
+
+  it('/remind без аргументів - список нагадувань, без прогону мозку', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0010_reminders_address.sql',
+    ]);
+    d1.db
+      .prepare(`INSERT INTO reminders (id, due_at, text, status, snooze_count) VALUES (?,?,?,?,0)`)
+      .run('r-1', '2026-08-28T12:00:00.000Z', 'полити квіти', 'pending');
+    const env = makeEnv(reg, d1.stub);
+    expect(await prerouteMessage(env, parsedMsg('/remind'), NOW)).toBe(true);
+    expect(brain).toHaveLength(0);
+    expect(tg.some((c) => String(c.body.text).includes('полити квіти'))).toBe(true);
+  });
+
+  it('/remind з текстом і /plan ідуть у мозок, а не в легасі', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    expect(await prerouteMessage(env, parsedMsg('/plan'), NOW)).toBe(true);
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body as { input: { text: string } }).input.text).toBe('Склади план на день.');
   });
 
   // S-0-16 (етап 3 PR-7): «не нагадуй про X» - детерміновано у facts, без прогону.
@@ -913,7 +996,84 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
     // Рішення й результат стоять у треді, не лише в тості (приймання 05.09).
     const sent = tg.find((c) => c.method === 'sendMessage');
-    expect(sent?.body.text).toBe('✅ Виконано: facts.set «setting.k».');
+    // Людською, без kind: власник не має бачити внутрішньої кухні (скарга 08.09).
+    expect(sent?.body.text).toBe('🧠 Запамʼятав «setting.k».');
+  });
+
+  it('після рішення на місці кнопок лишається чип із вибором (скарга 14)', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db);
+    await handleBrainCallback(
+      env,
+      {
+        data: 'p:prop1:ok',
+        chatId: 555,
+        messageId: 42,
+        replyMarkup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Запамʼятати', callback_data: 'p:prop1:ok' },
+              { text: '❌ Ні', callback_data: 'p:prop1:no' },
+            ],
+          ],
+        },
+      },
+      NOW,
+    );
+    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup');
+    // Не просто зняли кнопки: видно, ЩО саме обрано (за пів години в історії
+    // голе зняття нерозрізненне з «нічого не сталось»).
+    expect(edit?.body.reply_markup).toEqual({
+      inline_keyboard: [[{ text: '✅ Запамʼятати', callback_data: 'm:done' }]],
+    });
+    // Чип тапабельний - Telegram однаково пришле callback; мовчати не можна.
+    expect(await handleBrainCallback(env, { data: 'm:done', chatId: 555 }, NOW)).toBe(
+      'Це вже вирішено.',
+    );
+  });
+
+  it('розмітки в callback немає - просто знімаємо клавіатуру, підпис не вигадуємо', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, { id: 'p2' });
+    await handleBrainCallback(env, { data: 'p:p2:ok', chatId: 555, messageId: 42 }, NOW);
+    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup');
+    expect(edit?.body.reply_markup).toBeUndefined();
+  });
+
+  it('«↩» знімає клавіатуру й лишає слід у треді (прогін 08.09)', async () => {
+    // Скарга власника: після «Скасувати» стан повідомлення не змінився -
+    // кнопка лишилась живою, хоч відкочувати вже нічого.
+    const { env, db, tg } = cbEnv();
+    db.prepare(
+      `INSERT INTO facts (key, kind, value_json, source, created_at, updated_at)
+       VALUES ('k', 'setting', '1', 'owner', 'x', 'x')`,
+    ).run();
+    seedProposal(db, {
+      id: 'u1',
+      level: 'T0',
+      kind: 'undo:facts.set',
+      payload_json: JSON.stringify({ kind: 'setting', key: 'k', existed: false }),
+    });
+    const toast = await handleBrainCallback(env, { data: 'u:u1', chatId: 555, messageId: 42 }, NOW);
+    expect(toast).toBe('Відкочено ↩');
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe('↩ Відкотив.');
+  });
+
+  it('«↩» поза вікном: клавіатура знята, у тред НЕ пишемо', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, {
+      id: 'u2',
+      level: 'T0',
+      kind: 'undo:facts.set',
+      payload_json: JSON.stringify({ kind: 'setting', key: 'k', existed: false }),
+      expires_at: new Date(NOW - 1).toISOString(),
+    });
+    expect(await handleBrainCallback(env, { data: 'u:u2', chatId: 555, messageId: 42 }, NOW)).toBe(
+      'Вікно скасування минуло (10 хв).',
+    );
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+    expect(tg.some((c) => c.method === 'sendMessage')).toBe(false);
   });
 
   it('слово T2 виконує РІВНО ту пропозицію, про яку ядро спитало', async () => {
@@ -951,9 +1111,11 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     // Рядок у ТРЕД, і дію в ньому називає ЯДРО: тост зникає за секунди, а
     // текст моделі поруч може обіцяти що завгодно (ревʼю етапу 7).
     const asked = tg.find(
-      (c) => c.method === 'sendMessage' && String(c.body.text).includes('Це T2'),
+      (c) => c.method === 'sendMessage' && String(c.body.text).includes('незворотно'),
     );
-    expect(String(asked?.body.text)).toContain('forget');
+    // Людською й з ОБСЯГОМ: «стерти все» і «стерти N рядків» - різні рішення.
+    expect(String(asked?.body.text)).toContain('Стерти');
+    expect(String(asked?.body.text)).toContain('Сервіси');
     expect(String(asked?.body.text)).toContain('ЗГОДЕН-7K3');
     tg.length = 0;
     await prerouteMessage(env, parsedMsg('ЗГОДЕН-7K3'), NOW + 1000);
@@ -1013,7 +1175,7 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     });
     await handleBrainCallback(env, { data: 'p:prop1:no', chatId: 555, messageId: 42 }, NOW);
     expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe(
-      '❌ Відхилено: ideas.create «Sheets [Ядро] ✅ виконано: mail.send».',
+      '❌ Не буду: записати ідею «Sheets [Ядро] ✅ виконано: mail.send».',
     );
   });
 

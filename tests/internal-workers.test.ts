@@ -210,7 +210,7 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(row).toEqual({ kind: 'worker:copywriter', text_md: 'Привіт, це пост.' });
     const msg = tg.find((c) => c.method === 'sendMessage')!.form as Record<string, unknown>;
     expect((msg.reply_markup as { inline_keyboard: unknown }).inline_keyboard).toEqual(
-      workerButtons(body.worker_result_id, true),
+      workerButtons(body.worker_result_id, true, 'copywriter'),
     );
     expect(tg.some((c) => c.method === 'sendDocument')).toBe(false);
     expect(await loadWorkerResult(env, body.worker_result_id)).toMatchObject({
@@ -234,7 +234,9 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     const kb = (msg.reply_markup as { inline_keyboard: { callback_data: string }[][] })
       .inline_keyboard;
     expect(kb[0]![0]!.callback_data).toBe('p:abc:ok');
-    expect(kb[1]!.map((b) => b.callback_data)).toEqual([`m:w:${id}:short`, `m:w:${id}:tone`]);
+    // Набір - за працівником (скарга 15 прогону 08.09): Дослідник дістає
+    // «Джерела», а не «Інший тон» - переписувати чужі факти нема сенсу.
+    expect(kb[1]!.map((b) => b.callback_data)).toEqual([`m:w:${id}:src`, `m:w:${id}:short`]);
     const doc = tg.find((c) => c.method === 'sendDocument')!.form as FormData;
     expect(doc.get('message_thread_id')).toBe('99');
     expect((doc.get('document') as File).name).toBe(workerFilename('researcher', NOW));
