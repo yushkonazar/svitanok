@@ -22,7 +22,7 @@ import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
-import { runDataSearch } from './search.mjs';
+import { runDataSearch, SEARCH_SOURCES } from './search.mjs';
 import { runStyleSamples } from '../style/corpus.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
@@ -32,7 +32,7 @@ import { runInboxSearch } from './inbox.mjs';
 /**
  * @typedef {{
  *   args: import('../internal/schemas.mjs').InternalSchema,
- *   tainting?: boolean,
+ *   tainting?: boolean | ((args: any) => boolean),
  *   write?: { kind?: string, kindFrom?: string },
  *   run: (env: Env, args: any, nowMs: number) => Promise<{ result: unknown }>,
  * }} InternalToolDef
@@ -321,7 +321,16 @@ export const TOOLS = {
   // і позначений tainting. Без позначки інʼєкція в назві закладу проходила б
   // у контекст, а наступні `drive.write`/`tasks.create` йшли б без ✅.
   'data.search': {
-    tainting: true,
+    // ⚠️ Плямує ЗА АРГУМЕНТАМИ (другий прохід ревʼю): назви місць пише
+    // Google, описи покупок - мерчант, а власні ідеї й записи чужого тексту
+    // не несуть. Безумовна позначка робила б із «де я це записував» причину
+    // просити ✅ на наступну дію - те саме, від чого власник і відмовлявся.
+    tainting: (/** @type {any} */ args) => {
+      const asked = Array.isArray(args?.scopes)
+        ? args.scopes.map((/** @type {unknown} */ s) => String(s ?? '').toLowerCase())
+        : SEARCH_SOURCES;
+      return asked.includes('places') || asked.includes('money');
+    },
     args: {
       type: 'object',
       required: ['q'],

@@ -172,9 +172,10 @@ describe('подія → вихід (2.1)', () => {
 });
 
 describe('ідея → задача (2.3)', () => {
-  it('містком зникає ЛИШЕ натиснута кнопка, сусідні лишаються живими', async () => {
+  it('натиснута кнопка стає чипом, сусідні лишаються живими', async () => {
     // ⚠️ Під подією календаря стоять «🚶 Коли виходити» і «↩»: зняття всієї
-    // клавіатури забирало б і відкат (ревʼю релізу).
+    // клавіатури забирало б і відкат (ревʼю релізу). А без чипа на місці
+    // натиснутої повідомлення виглядало б точно як до тапу (скарга 14).
     const { env, tg } = setup();
     stubNet(tg);
     const out = await applyPolicy(
@@ -206,9 +207,34 @@ describe('ідея → задача (2.3)', () => {
       NOW,
     );
     const edit = tg.find((c) => c.method === 'editMessageReplyMarkup')!;
-    const left = (edit.body.reply_markup as { inline_keyboard: { callback_data: string }[][] })
-      .inline_keyboard;
-    expect(left.flat().map((b) => b.callback_data.split(':')[0])).toEqual(['u']);
+    const left = (
+      edit.body.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] }
+    ).inline_keyboard;
+    expect(left.flat().map((b) => b.callback_data)).toEqual([
+      'm:done',
+      rows.at(-1)![0]!.callback_data,
+    ]);
+    // Чип несе напис саме натиснутої кнопки.
+    expect(left.flat()[0]!.text).toContain('Коли виходити');
+  });
+
+  it('натиснутої кнопки в розмітці немає - клавіатуру знімаємо цілком', async () => {
+    // Повідомлення вже переписали: редагування «прибрати одну» було б no-op,
+    // і кнопка лишалась тапабельною (другий прохід ревʼю).
+    const { env, tg } = setup();
+    stubNet(tg);
+    await handleBrainCallback(
+      env,
+      {
+        data: 'm:wr:carry',
+        chatId: 555,
+        messageId: 7,
+        replyMarkup: { inline_keyboard: [[{ text: 'інше', callback_data: 'm:wr:idea' }]] },
+      },
+      NOW,
+    );
+    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup')!;
+    expect(edit.body.reply_markup).toBeUndefined();
   });
 
   it('тап створює задачу в Tasks і лишає «↩»', async () => {
@@ -268,6 +294,34 @@ describe('ідея → задача (2.3)', () => {
     expect(
       db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'undo:tasks.create'`).get(),
     ).toEqual({ n: 0 });
+  });
+
+  it('під taint місток ПОКАЗУЄ пропозицію з кнопками, а не «не створилась»', async () => {
+    // ⚠️ Регресія першого кола виправлень: гілка обробляла лише `executed`, і
+    // власник читав дослівно «⚠️ Задача не створилась: proposed», а сама
+    // пропозиція лежала open без кнопок - натиснуту вже зняли.
+    const { env, db, tg } = setup();
+    stubNet(tg);
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'ideas.create',
+        payload: { title: 'Профіль' },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW,
+    );
+    if (out.mode !== 'executed') throw new Error('mode');
+    db.prepare(
+      `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count)
+       VALUES ('dm', 'x', 'x', ?, 0)`,
+    ).run(NOW);
+    await handleBrainCallback(env, { data: `m:it:${String(out.undo?.id)}`, chatId: 555 }, NOW);
+    const line = tg.find((c) => String(c.body.text ?? '').includes('Поставити задачу'))!;
+    expect(String(line.body.text)).toContain('потрібне ✅');
+    expect(JSON.stringify(line.body.reply_markup)).toMatch(/"p:[0-9a-f-]+:ok"/);
   });
 
   it('id не від рядка «↩» місток не бере', async () => {

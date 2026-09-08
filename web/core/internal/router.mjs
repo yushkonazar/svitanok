@@ -195,7 +195,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       // Steam), теж позначає тред: інакше зовнішній вміст ішов би в контекст
       // моделі, а сесія лишалась би «чистою», і наступні T0 виконувались би
       // без ✅. Той самий FAIL-CLOSED, що й для читання нижче.
-      if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+      if (isTainting(tool, args) && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
         return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
       }
       if (policyOut.mode === 'proposed') {
@@ -244,11 +244,16 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
     // прапорець НЕ вдалось персистувати, зовнішній вміст не віддається -
     // інакше транзієнтний збій DO/D1 давав би прогін із зовнішнім вмістом,
     // який policy вважатиме чистим.
-    if (tool.tainting && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
+    // ⚠️ `tainting` може залежати від АРГУМЕНТІВ (другий прохід ревʼю):
+    // `data.search` по своїх ідеях чужого тексту не несе, а по місцях і
+    // покупках - несе. Безумовна позначка робила б із кожного пошуку ✅ на
+    // наступну дію назовні, тобто повертала б рівно те, від чого звужували.
+    const taints = isTainting(tool, args);
+    if (taints && !(await markRunThreadTainted(env, auth.runId, nowMs))) {
       return json({ ok: false, error: 'taint-not-persisted', tool: name }, 503);
     }
 
-    return json({ ok: true, tool: name, tainted: Boolean(tool.tainting), result: out.result });
+    return json({ ok: true, tool: name, tainted: taints, result: out.result });
   }
 
   const route = path.match(
@@ -766,6 +771,18 @@ async function readThreadTaint(env, threadId, nowMs) {
     console.error('internal: читання taint впало - вважаємо true (fail-safe)', e?.message);
     return dirty;
   }
+}
+
+/**
+ * Чи цей ВИКЛИК несе зовнішній вміст. Прапорець інструмента може бути й
+ * функцією від аргументів - для тих, чиї джерела різні за природою.
+ * @param {{ tainting?: unknown }} tool
+ * @param {unknown} args
+ */
+function isTainting(tool, args) {
+  return typeof tool.tainting === 'function'
+    ? Boolean(tool.tainting(args))
+    : Boolean(tool.tainting);
 }
 
 /**

@@ -930,6 +930,40 @@ describe('кнопка m:ia: (prerouter)', () => {
     expect(db.prepare(IDEA_STATUS()).get()).toEqual({ status: 'в аналізі' });
   });
 
+  it('у ЗАБРУДНЕНІЙ сесії кнопка просить ✅ - це гроші (40 хв Actions)', async () => {
+    // ⚠️ Кнопку `m:ia:` модель може намалювати сама: простір `m:` для неї
+    // відкритий. Жорсткий tainted:false робив би з неї шлях повз
+    // `ideas.analyze ∈ TAINT_ESCALATES` (другий прохід ревʼю).
+    const { env, db, wf } = setup();
+    const { tg } = stubFetch();
+    const idea = await createIdea(env);
+    db.prepare(`UPDATE ideas SET head_sha = ?, analysis_md = ? WHERE id = ?`).run(
+      SHA,
+      REPORT,
+      idea.id,
+    );
+    db.prepare(
+      `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count)
+       VALUES ('99', 'x', 'x', ?, 0)`,
+    ).run(NOW);
+    const deferred: (() => Promise<void>)[] = [];
+    await handleBrainCallback(
+      env,
+      { data: `m:ia:${idea.id}`, chatId: 555, messageId: 42, threadId: 99 },
+      NOW,
+      (work) => deferred.push(work),
+    );
+    for (const w of deferred) await w();
+    // Прогону Actions немає - лише пропозиція з ✅.
+    expect(wf.created).toHaveLength(0);
+    const asked = tg.find(
+      (c) =>
+        c.method === 'sendMessage' &&
+        String((c.form as Record<string, unknown>).text).includes('Потрібне ✅'),
+    );
+    expect(asked).toBeDefined();
+  });
+
   it('невідома ідея - «Не вийшло» у тред, без падіння', async () => {
     const { env } = setup();
     const { tg } = stubFetch();

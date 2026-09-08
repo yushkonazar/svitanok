@@ -87,14 +87,30 @@ const STOP_RE = /^стоп[.!]?$/i;
  * відкочувався останній рядок `undo:%` треду - ним могла бути подія в
  * календарі. Прохання зняти нагадування видаляло подію. Усе, що називає
  * ПРЕДМЕТ, тепер іде в мозок: він знає, що саме шукати.
+ *
+ * Форми без предмета перелічені явно, включно з «відкотити» й «останню» -
+ * другий прохід ревʼю показав, що звуження зачепило й їх, і кожна така фраза
+ * коштувала повного прогону мозку.
  */
 const UNDO_LAST_RE =
-  /^(?:відмін(?:и|ити)|скасуй|скасувати|відкоти)\s+(?:останн(?:є|ю\s+дію|ій\s+запис)|це)\s*[.!]?$/i;
+  /^(?:відмін(?:и|ити)|скасуй|скасувати|відкоти(?:ти)?)\s+(?:останн(?:є|ю|ій)(?:\s+(?:дію|запис|зміну))?|це)\s*[.!]?$/i;
 /** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
 const DECISIONS_MAX = 8;
 /** Запас до початку події поверх ETA і фолбек, коли маршрут не порахувався. */
 const DEPARTURE_BUFFER_MIN = 10;
 const DEPARTURE_FALLBACK_MIN = 30;
+/**
+ * Що зрізати з назви дії, яку писала модель: керівні символи, форматні й
+ * роздільники рядка - саме ними підробляють повідомлення (U+2028/U+2029 у
+ * \p{Cc}\p{Cf} не входять, але рядок рвуть так само).
+ *
+ * ⚠️ ZWJ (U+200D) - виняток. Формально він \p{Cf}, але саме він тримає «👨‍💻»
+ * одним емодзі: без нього назва «👨‍💻 Робота» показувалась би як «👨 💻
+ * Робота» (другий прохід ревʼю). Різниця множин `[…--[…]]` вимагала б
+ * прапорця `v`, тобто target ES2024 на весь проєкт заради одного регекса -
+ * тому виняток зроблено передпереглядом.
+ */
+const SANITIZE_RE = /(?:(?!‍)[\p{Cc}\p{Cf}\s])+/gu;
 
 const MODELS = {
   chat: 'claude-sonnet-5',
@@ -1258,6 +1274,16 @@ async function departureToast(env, parsed, undoId, nowMs, defer) {
       etaMin == null
         ? 'маршрут не порахувався, тож за пів години до початку'
         : `дорога ~${etaMin} хв плюс ${DEPARTURE_BUFFER_MIN} хв запасу`;
+    if (out.mode === 'proposed') {
+      await reply(
+        env,
+        target,
+        `⏰ Нагадати про вихід о ${kyivClock(whenMs)} (${how})? Потрібне ✅.`,
+        nowMs,
+        { reply_markup: { inline_keyboard: out.proposal.buttons } },
+      );
+      return;
+    }
     await reply(
       env,
       target,
@@ -1301,7 +1327,7 @@ async function ideaTaskToast(env, parsed, undoId, nowMs, defer) {
   // встигали б OAuth-токен і POST у Google Tasks, а callback_query Telegram
   // інвалідує за секунди - власник бачив би тап без жодної реакції.
   const work = async () => {
-    /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
+    /** @type {any} */
     const out = await applyPolicy(
       env,
       {
@@ -1316,6 +1342,20 @@ async function ideaTaskToast(env, parsed, undoId, nowMs, defer) {
       },
       nowMs,
     ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
+    // ⚠️ ГІЛКА «proposed» ОБОВʼЯЗКОВА (другий прохід ревʼю). У забрудненій
+    // сесії `tasks.create` - T1, і без цієї гілки власник читав дослівно
+    // «Задача не створилась: proposed», а сама пропозиція лежала open без
+    // кнопок: тап уже зняв натиснуту, а нових ніхто не слав.
+    if (out.mode === 'proposed') {
+      await reply(
+        env,
+        target,
+        `📋 Поставити задачу «${idea.title}»? Сесія з зовнішнім вмістом - потрібне ✅.`,
+        nowMs,
+        { reply_markup: { inline_keyboard: out.proposal.buttons } },
+      );
+      return;
+    }
     if (out.mode !== 'executed') {
       await reply(env, target, `⚠️ Задача не створилась: ${out.error ?? out.mode}.`, nowMs);
       return;
@@ -1377,7 +1417,7 @@ async function boughtToast(env, parsed, wishId, nowMs, defer) {
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
   await dropTappedButton(env, parsed);
   const work = async () => {
-    /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
+    /** @type {any} */
     const out = await applyPolicy(
       env,
       {
@@ -1389,6 +1429,12 @@ async function boughtToast(env, parsed, wishId, nowMs, defer) {
       },
       nowMs,
     ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
+    if (out.mode === 'proposed') {
+      await reply(env, target, '🎁 Закрити бажання? Потрібне ✅.', nowMs, {
+        reply_markup: { inline_keyboard: out.proposal.buttons },
+      });
+      return;
+    }
     if (out.mode !== 'executed') {
       await reply(env, target, '⚠️ Бажання не закрилось - подивись у списку.', nowMs);
       return;
@@ -1482,10 +1528,20 @@ async function ideaRerunToast(env, parsed, ideaId, nowMs, defer) {
           payload: { id: ideaId, mode: 'code', force: true },
           threadId: threadKey,
           chatId: parsed.chatId ?? null,
-          tainted: false,
+          // ⚠️ Позначка сесії, не false (другий прохід ревʼю). Аналіз по коду -
+          // 40-хвилинний прогін Actions, тобто гроші, і від 08.09 він у
+          // TAINT_ESCALATES. Простір `m:` відкритий моделі, тож жорстке false
+          // робило б із цієї кнопки шлях повз барʼєр.
+          tainted: await threadTainted(env, parsed, nowMs),
         },
         nowMs,
       );
+      if (out.mode === 'proposed') {
+        await reply(env, target, 'Запустити аналіз по коду ще раз? Потрібне ✅.', nowMs, {
+          reply_markup: { inline_keyboard: out.proposal.buttons },
+        });
+        return;
+      }
       text =
         out.mode === 'executed'
           ? rerunText(/** @type {Record<string, unknown>} */ (out.result))
@@ -1862,8 +1918,20 @@ async function dropTappedButton(env, parsed) {
   const data = String(parsed.data ?? '');
   const rows = /** @type {any} */ (parsed.replyMarkup)?.inline_keyboard;
   if (!Array.isArray(rows)) return clearKeyboard(env, parsed);
+  const label = tappedButtonLabel(parsed);
+  // Натиснутої кнопки в розмітці немає (повідомлення вже переписали) - зняти
+  // клавіатуру цілком: інакше editMessageReplyMarkup був би no-op, і кнопка
+  // лишалась тапабельною (другий прохід ревʼю).
+  if (!label) return clearKeyboard(env, parsed);
+  // Замість натиснутої - ЧИП із її написом, решта лишається живою: без чипа
+  // повідомлення виглядало б точно як до тапу (скарга 14, заради якої сліди
+  // й робили).
   const left = rows
-    .map((row) => (Array.isArray(row) ? row.filter((b) => b?.callback_data !== data) : []))
+    .map((row) =>
+      Array.isArray(row)
+        ? row.map((b) => (b?.callback_data === data ? { text: label, callback_data: 'm:done' } : b))
+        : [],
+    )
     .filter((row) => row.length > 0);
   if (left.length === 0) return clearKeyboard(env, parsed);
   await tgCall(env, 'editMessageReplyMarkup', {
@@ -1959,11 +2027,11 @@ function proposalLabel(kind, obj) {
   // payload писала модель (можливо, з листа): керівні символи геть, інакше
   // «\n[Ядро] …» у назві підробив би рядок дайджесту (security-ревʼю 05.09).
   // kind не санітизуємо - невідомий kind applyPolicy відкидає ще до запису.
-  // `\s` тут не для краси: U+2028/U+2029 у \p{Cc}\p{Cf} НЕ входять, а рядок
-  // рвуть так само - і саме ними підробляють повідомлення (той самий висновок,
-  // що в promptLine; ревʼю релізу знайшло розбіжність).
+  // Керівні символи, форматні й роздільники рядка - геть (ними підробляють
+  // повідомлення), але ZWJ лишається: без нього «👨‍💻» розпадається на два
+  // окремі емодзі просто в назві дії (другий прохід ревʼю).
   const clean = String(label ?? '')
-    .replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ')
+    .replace(SANITIZE_RE, ' ')
     .trim()
     .slice(0, 80);
   // Гості з РЕЗУЛЬТАТУ виконавця (calendar.event/invite, етап 5): власник

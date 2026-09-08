@@ -154,8 +154,8 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
     chatId,
     threadId: ctx.threadId ?? env.TOPIC_ASSISTANT ?? null,
   });
-  /** @type {{ added: number, failed: string[] }} */
-  let calendar = { added: 0, failed: [] };
+  /** @type {{ added: number, proposed: number, failed: string[] }} */
+  let calendar = { added: 0, proposed: 0, failed: [] };
   if (args.calendar === true) {
     calendar = await calendarizeBlocks(
       env,
@@ -181,6 +181,9 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
       status: 'accepted',
       reminders: res.reminders,
       calendar_added: calendar.added,
+      // Скільки чекає ✅ (заплямована сесія): без цього числа модель читала б
+      // «added 0» як «нічого не сталось» і повторювала виклик.
+      calendar_proposed: calendar.proposed,
       // Названо вголос: мовчазний пропуск блока лишав би план наполовину
       // перенесеним, і власник дізнався б про це лише з календаря.
       calendar_failed: calendar.failed,
@@ -259,10 +262,14 @@ export function calendarProposalText(b) {
  * @param {{ chatId: number | string | null, threadId: number | string | null }} to
  * @param {(text: string, buttons: unknown) => Promise<void>} send
  * @param {boolean} [tainted] - позначка сесії, з якої прийшов plan.accept
- * @returns {Promise<{ added: number, failed: string[] }>}
+ * @returns {Promise<{ added: number, proposed: number, failed: string[] }>}
  */
 export async function calendarizeBlocks(env, date, rows, nowMs, to, send, tainted = false) {
   let added = 0;
+  // ⚠️ Окремо від `added` (другий прохід ревʼю): без цього лічильника
+  // результат «added 0, failed []» не відрізнити від «нічого не робив»,
+  // хоча в чат уже пішли пропозиції з ✅ - і модель звітувала б «не переніс».
+  let proposed = 0;
   /** @type {string[]} */
   const failed = [];
   for (const r of rows.filter((x) => x.window_start && x.window_end)) {
@@ -308,6 +315,7 @@ export async function calendarizeBlocks(env, date, rows, nowMs, to, send, tainte
     // Рахуємо ЛИШЕ те, що справді сталось: пропозиція - ще не подія в
     // календарі, і звітувати про неї як про додану було б неправдою.
     if (out.mode === 'executed') added += 1;
+    else proposed += 1;
     const block = {
       title: r.title,
       date,
@@ -319,7 +327,7 @@ export async function calendarizeBlocks(env, date, rows, nowMs, to, send, tainte
     const buttons = out.mode === 'executed' ? (out.undo?.buttons ?? null) : out.proposal.buttons;
     await send(calendarProposalText(block), buttons);
   }
-  return { added, failed };
+  return { added, proposed, failed };
 }
 
 /**

@@ -93,6 +93,8 @@ export async function loadState(env) {
 const sentEcho = new WeakMap();
 /** Стеля забутих id НА ЧАТ. */
 const SENT_FORGOTTEN_CAP = 200;
+/** І стеля на кількість чатів, за якими взагалі щось памʼятаємо. */
+const SENT_FORGOTTEN_KEYS = 20;
 
 /** @param {Env} env */
 function echoSlot(env) {
@@ -134,6 +136,12 @@ export async function putSentMessages(env, sentMessages, forget = undefined) {
       set.delete(/** @type {number} */ (set.values().next().value));
     }
     slot.forgotten.set(forget.key, set);
+    // ⚠️ Стеля і на КІЛЬКІСТЬ чатів (другий прохід ревʼю): id обмежені в
+    // межах чату, а самих ключів ніщо не тримало. Практично їх одиниці, але
+    // інваріант має бути, а не «практично».
+    while (slot.forgotten.size > SENT_FORGOTTEN_KEYS) {
+      slot.forgotten.delete(/** @type {string} */ (slot.forgotten.keys().next().value));
+    }
   }
   slot.echo = sentMessages;
   await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));

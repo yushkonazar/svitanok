@@ -481,10 +481,6 @@ describe('реєстр TOOLS', () => {
       .map(([name]) => name)
       .sort();
     expect(tainting).toEqual([
-      // data.search дістає назви місць (пише Google Places) і описи покупок
-      // (пише мерчант) - той самий чужий текст, через який tainting стоїть на
-      // places.search. Без позначки інʼєкція в назві закладу проходила б далі.
-      'data.search',
       'drive.search',
       // inbox.search віддає текст, який писали ІНШІ люди (Telegram Business,
       // етап 6 PR-3) - головний шлях, яким чужий текст входить у контекст.
@@ -497,5 +493,16 @@ describe('реєстр TOOLS', () => {
       // роутер позначає тред і на write-шляху (етап 5 PR-5).
       'wishes.import',
     ]);
+    // ⚠️ data.search плямує ЗА АРГУМЕНТАМИ, а не завжди: назви місць пише
+    // Google, описи покупок - мерчант, а власні ідеї й записи чужого тексту
+    // не несуть. Безумовна позначка робила б із «де я це записував» причину
+    // просити ✅ на наступну дію назовні (другий прохід ревʼю).
+    const byArgs = TOOLS['data.search']?.tainting;
+    expect(typeof byArgs).toBe('function');
+    if (typeof byArgs !== 'function') return;
+    expect(byArgs({})).toBe(true); // без scopes шукаємо всюди
+    expect(byArgs({ scopes: ['places'] })).toBe(true);
+    expect(byArgs({ scopes: ['money'] })).toBe(true);
+    expect(byArgs({ scopes: ['ideas', 'records'] })).toBe(false);
   });
 });

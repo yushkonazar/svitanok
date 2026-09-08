@@ -140,6 +140,33 @@ describe('збір корпусу', () => {
     expect(db.prepare('SELECT count(*) AS n FROM style_corpus').get()).toEqual({ n: CORPUS_CAP });
   });
 
+  it('збій пачки не викидає того, що вже записано, і названий уголос', async () => {
+    // ⚠️ 200 рядків - це кілька batch-ів; збій третього не сміє викинути
+    // перші два (другий прохід ревʼю). Мовчазний «ок» тут виглядав би як
+    // повний корпус.
+    const { env, add, db } = setup();
+    for (let i = 0; i < 120; i += 1) {
+      add(
+        `m${i}`,
+        OWNER,
+        long(`текст ${i}`),
+        `2026-09-01T10:${String(i % 60).padStart(2, '0')}:00Z`,
+      );
+    }
+    const inner = env.DB as unknown as { batch: (s: unknown[]) => Promise<unknown> };
+    const realBatch = inner.batch.bind(inner);
+    let calls = 0;
+    (env.DB as unknown as { batch: unknown }).batch = async (sts: unknown[]) => {
+      calls += 1;
+      if (calls === 2) throw new Error('D1 відмовила');
+      return realBatch(sts);
+    };
+    const { result } = await collectOwnStyle(env, NOW);
+    expect(result.added).toBe(50); // перша пачка вціліла
+    expect(result.error).toContain('D1 відмовила');
+    expect(db.prepare('SELECT count(*) AS n FROM style_corpus').get()).toEqual({ n: 50 });
+  });
+
   it('стеля корпусу тримається між ЗБОРАМИ, найстаріші зайві зникають', async () => {
     // ⚠️ Двома заходами навмисно: сама вибірка вже має LIMIT, тож за один
     // збір стеля не перевищується ніколи, і тест перевіряв би нічого. Корпус

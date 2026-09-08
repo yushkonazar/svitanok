@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runDataSearch, SEARCH_SOURCES } from '../web/core/tools/search.mjs';
 import { runRemindersCancel, CANCEL_BATCH_MAX } from '../web/core/tools/reminders.mjs';
-import { applyPolicy, undoLastInThread } from '../web/core/policy/proposals.mjs';
+import { applyPolicy, resolveUndo, undoLastInThread } from '../web/core/policy/proposals.mjs';
 import { prerouteMessage } from '../web/core/prerouter.mjs';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
@@ -296,8 +296,14 @@ describe('«відміни останнє» (§3.5)', () => {
     executors['ideas.create']!.undo = async () => {
       throw new Error('Google відмовив');
     };
-    const failed = await undoLastInThread(env, 'dm', NOW + 1000);
-    executors['ideas.create']!.undo = real;
+    let failed;
+    try {
+      failed = await undoLastInThread(env, 'dm', NOW + 1000);
+    } finally {
+      // finally, не рядок після await: інакше падіння лишає підмінений
+      // виконавець решті файлу (другий прохід ревʼю).
+      executors['ideas.create']!.undo = real;
+    }
     expect(failed).toMatchObject({ ok: false, reason: 'failed' });
     // Друга спроба - уже зі справжнім виконавцем - має спрацювати.
     expect(await undoLastInThread(env, 'dm', NOW + 2000)).toMatchObject({ ok: true });
@@ -308,6 +314,55 @@ describe('«відміни останнє» (§3.5)', () => {
     await idea(env, 'позавчорашня', NOW);
     const twoDays = NOW + 2 * 24 * 60 * 60_000;
     expect(await undoLastInThread(env, 'dm', twoDays)).toEqual({ ok: false, reason: 'none' });
+  });
+
+  it('усі узагальнені форми ловляться без прогону мозку', async () => {
+    // ⚠️ Звуження першого кола зачепило й «відкотити останнє», і «відміни
+    // останню» без іменника - кожна коштувала повного прогону (другий прохід).
+    for (const phrase of [
+      'відміни останнє',
+      'відміни останню',
+      'відміни останню дію',
+      'відкотити останнє',
+      'скасуй останній запис',
+    ]) {
+      const { env, tg } = setup();
+      await idea(env, 'ідея', NOW);
+      await prerouteMessage(env, msg(phrase), NOW + 1000);
+      expect(
+        tg.some((c) => String(c.body.text ?? '').includes('Відкотив')),
+        phrase,
+      ).toBe(true);
+    }
+  });
+
+  it('«↩» після пачкового скасування повертає ВСІ, не одне', async () => {
+    // ⚠️ Знімок брався за `payload.id`, і для пачки виходив null: policy
+    // бачила «prev не undefined», малювала «↩», а відкат мовчки нічого не
+    // повертав - кнопка брехала (другий прохід ревʼю).
+    const { env, db } = setup();
+    for (const id of ['r1', 'r2', 'r3'])
+      db.prepare(
+        `INSERT INTO reminders (id, due_at, text, status, snooze_count) VALUES (?,?,?,'pending',0)`,
+      ).run(id, '2026-09-09T09:00:00.000Z', `справа ${id}`);
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'reminders.cancel',
+        payload: { ids: ['r1', 'r2', 'r3'] },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW,
+    );
+    if (out.mode !== 'executed') throw new Error('mode');
+    expect(out.undo?.id).toBeTruthy();
+    const undone = await resolveUndo(env, String(out.undo?.id), NOW + 1000);
+    expect(undone).toMatchObject({ ok: true, status: 'undone' });
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM reminders WHERE status = 'pending'`).get(),
+    ).toEqual({ n: 3 });
   });
 
   it('пачкове скасування доходить і через policy, не лише інструментом', async () => {

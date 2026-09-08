@@ -196,23 +196,36 @@ export const EXECUTORS = {
   'reminders.cancel': {
     // nowMs не потрібен: скасування не рахує часу, лише прибирає рядок.
     async execute(env, payload) {
-      const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
       // ⚠️ `ids` теж передаємо (ревʼю релізу): без нього пачкове скасування
       // існувало лише в інструменті й через policy падало на «id обовʼязковий».
       const { result } = await runRemindersCancel(env, { id: payload.id, ids: payload.ids });
-      return { prev: before ?? null, result };
+      // ⚠️ ЗНІМОК - ЗА РЕЗУЛЬТАТОМ, не за payload (другий прохід ревʼю).
+      // Раніше він шукав `payload.id`, і для пачки `{ids:[…]}` виходив
+      // `null`: policy бачила «prev не undefined», малювала «↩», а відкат
+      // мовчки нічого не повертав - тобто кнопка брехала.
+      const ids = Array.isArray(result.cancelled)
+        ? result.cancelled.map((/** @type {any} */ r) => String(r.id))
+        : result.id
+          ? [String(result.id)]
+          : [];
+      return { prev: ids.length > 0 ? { ids } : undefined, result };
     },
     async undo(env, snapshot) {
-      if (!snapshot) return;
+      const ids = Array.isArray(snapshot?.ids) ? snapshot.ids : [];
+      if (ids.length === 0) return;
       // Рядок нікуди не зник - у D1 він лежить зі статусом cancelled, тож
       // «↩» просто повертає його в гру: id, текст, час і адреса ті самі, і
       // жодного шансу створити дубль.
-      const restored = await restoreReminder(env, snapshot.id);
-      if (!restored) {
-        // Рядок уже не cancelled (власник устиг створити знову або статус
-        // змінили): мовчазний «успіх» тут показав би тост «Відкочено ↩» після
+      /** @type {string[]} */
+      const missed = [];
+      for (const id of ids) {
+        if (!(await restoreReminder(env, id))) missed.push(id);
+      }
+      if (missed.length === ids.length) {
+        // Жодне не повернулось (власник устиг створити заново або статус
+        // змінили): мовчазний «успіх» показав би тост «Відкочено ↩» після
         // нульової дії (ревʼю PR-7).
-        throw new Error(`нагадування ${snapshot.id} не відновлено - воно вже не скасоване`);
+        throw new Error(`нагадування ${missed.join(', ')} не відновлено - вони вже не скасовані`);
       }
     },
   },

@@ -64,7 +64,11 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
               // @ts-expect-error те саме
               return { results: st.all(...args), meta: { changes: 0 } };
             }
-            if (/\breturning\b/i.test(sql)) {
+            // ⚠️ RETURNING шукаємо лише В КІНЦІ твердження - там, де його
+            // й вимагає SQLite. Пошук будь-де ловив би слово всередині
+            // рядкового літерала й віддавав changes=0 замість справжнього
+            // (пастка «зеленого дарма», другий прохід ревʼю).
+            if (/\breturning\s+[^;]*$/i.test(sql.trim())) {
               // @ts-expect-error те саме
               const rows = st.all(...args);
               return { results: rows, meta: { changes: rows.length } };

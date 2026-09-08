@@ -109,6 +109,22 @@ describe('«/clear 10 видалив два» — луна читача прот
     expect(ids).toEqual([1, 2]);
   });
 
+  it('чатів у памʼяті забутого - не безліч', async () => {
+    // ⚠️ id обмежені в межах чату, а самих ключів не тримало ніщо: практично
+    // їх одиниці, але інваріант має бути, а не «практично» (другий прохід).
+    const kv = new Map<string, string>();
+    const env = workerEnv({ BRIEFING: memoryKv(kv) });
+    for (let chat = 1; chat <= 30; chat += 1) {
+      await putSentMessages(env, {}, { key: `c${chat}`, ids: [chat] });
+    }
+    // Найстаріші ключі витіснені: id 1 із першого чату більше не забутий.
+    kv.set('sentMessages', JSON.stringify({ c1: [{ id: 1, own: false }] }));
+    expect((await loadSentMessages(env)).c1).toEqual([{ id: 1, own: false }]);
+    // А найсвіжіший ключ памʼятає.
+    kv.set('sentMessages', JSON.stringify({ c30: [{ id: 30, own: false }] }));
+    expect((await loadSentMessages(env)).c30).toEqual([]);
+  });
+
   it('повторний запис того самого id не дублює рядок', () => {
     const once = recordSentMessage({}, -100, 77, 5, true);
     const twice = recordSentMessage(once, -100, 77, 5);

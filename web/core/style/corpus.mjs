@@ -44,7 +44,8 @@ function db(env) {
  * написати в двох чатах, і як зразок голосу воно одне).
  * @param {Env} env
  * @param {number} nowMs
- * @returns {Promise<{ result: { added: number, total: number, scanned: number } }>}
+ * @returns {Promise<{ result: { added: number, total: number, scanned: number,
+ *   error?: string } }>}
  */
 export async function collectOwnStyle(env, nowMs) {
   const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
@@ -77,13 +78,27 @@ export async function collectOwnStyle(env, nowMs) {
     stmts.push(insert.bind(await textKey(text), r.id, r.at ?? new Date(nowMs).toISOString(), text));
   }
   let added = 0;
+  /** @type {string | null} */
+  let broke = null;
   for (const chunk of chunks(stmts, BATCH_SIZE)) {
-    const res = await db(env).batch(chunk);
-    added += res.reduce((n, one) => n + (one.meta?.changes ?? 0), 0);
+    try {
+      const res = await db(env).batch(chunk);
+      added += res.reduce((n, one) => n + (one.meta?.changes ?? 0), 0);
+    } catch (/** @type {any} */ e) {
+      // ⚠️ Двісті рядків - це кілька batch-ів, і збій третього не сміє
+      // викинути те, що вже записали перші два (другий прохід ревʼю).
+      // Кажемо, скільки встигли, і НАЗИВАЄМО збій - мовчазний «ок» тут
+      // виглядав би як повний корпус.
+      broke = String(e?.message ?? e);
+      console.error('стиль: пачка не записалась', broke);
+      break;
+    }
   }
   await trimCorpus(env);
   const total = await corpusSize(env);
-  return { result: { added, total, scanned: rows.length } };
+  // `added` рахує вставлене ДО чистки: стеля могла зрізати частину як
+  // найстаріше. Тому в результаті є й `total` - скільки лишилось насправді.
+  return { result: { added, total, scanned: rows.length, ...(broke ? { error: broke } : {}) } };
 }
 
 /**

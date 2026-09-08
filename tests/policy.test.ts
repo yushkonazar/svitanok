@@ -142,12 +142,17 @@ describe('policy core — таблиця рівнів', () => {
         return { result: {} };
       },
     };
-    await applyPolicy(
-      env,
-      { kind: 'record', payload: { kind: 'roadmap', payload: {} }, tainted: false },
-      NOW,
-    );
-    EXECUTORS['record'] = saved;
+    try {
+      await applyPolicy(
+        env,
+        { kind: 'record', payload: { kind: 'roadmap', payload: {} }, tainted: false },
+        NOW,
+      );
+    } finally {
+      // ⚠️ finally, не рядок після await: падіння лишало б підмінений
+      // виконавець решті файлу (другий прохід ревʼю).
+      EXECUTORS['record'] = saved;
+    }
     expect(seen).toMatchObject({ tainted: false });
   });
 

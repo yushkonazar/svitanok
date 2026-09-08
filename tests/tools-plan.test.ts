@@ -303,7 +303,13 @@ describe('plan.* через policy', () => {
       threadId: '99',
       internal: { tainted: true },
     });
-    expect(out.result).toMatchObject({ calendar_added: 0, calendar_failed: [] });
+    // ⚠️ І `calendar_proposed`: «added 0, failed []» без нього не відрізнити
+    // від «нічого не робив», хоча в чат уже пішли пропозиції з ✅.
+    expect(out.result).toMatchObject({
+      calendar_added: 0,
+      calendar_proposed: 2,
+      calendar_failed: [],
+    });
     expect(
       db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'calendar.event'`).get(),
     ).toEqual({ n: 2 });
@@ -339,7 +345,11 @@ describe('plan.* через policy', () => {
     );
     expect(out.mode).toBe('executed');
     if (out.mode !== 'executed') return;
-    expect(out.result).toMatchObject({ calendar_added: 0, calendar_failed: ['Кривий час'] });
+    expect(out.result).toMatchObject({
+      calendar_added: 0,
+      calendar_proposed: 0,
+      calendar_failed: ['Кривий час'],
+    });
     vi.unstubAllGlobals();
   });
 

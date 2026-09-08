@@ -56,6 +56,10 @@ import { applyEvent } from './api-dashboard.mjs';
 import { readCalendarRange, getCalendarEvent } from './google.mjs';
 import { tgCall, sendTo } from './telegram-client.mjs';
 import { activeRemindersForList } from './commands.mjs';
+
+/** Скільки нагадувань знімає ОДИН тап «Скасувати всі»: кожне - запит у D1,
+ *  а їх на виклик Worker'а ~50. Решта - наступним тапом, і про це сказано. */
+const CANCEL_ALL_MAX = 20;
 import { rememberAssistantQuestion } from './assistant-memory.mjs';
 import { stageItemEdit, stageItemDelete } from './proposals.mjs';
 import { ID_RE } from './agent-core.mjs';
@@ -291,23 +295,43 @@ export async function resolveReminderCancelAll(
   const active = await activeRemindersForList(env);
   if (active.length === 0) return 'Нема що скасовувати.';
 
-  const ids = active.map((/** @type {KvBlob} */ r) => String(r.id));
+  // ⚠️ СТЕЛЯ НА ТАП (другий прохід ревʼю): кожне скасування - запит у D1,
+  // а їх на виклик Worker'а ~50. Без межі 45 активних нагадувань упирались
+  // би в стелю ПОСЕРЕД циклу: частина скасована, тост не пішов.
+  const ids = active.slice(0, CANCEL_ALL_MAX).map((/** @type {KvBlob} */ r) => String(r.id));
   // Скасовуємо ПОІМЕННО, а не «перезаписуємо список»: на свіжішій копії міг
   // зʼявитись новий пункт, і пакетне скасування не має його зачепити.
-  await updateState(env, (s) => ({
+  const next = await updateState(env, (s) => ({
     ...s,
     reminders: ids.reduce(
       (rs, id) => cancelReminder(rs, id),
       Array.isArray(s.reminders) ? s.reminders : [],
     ),
   }));
+  // Що САМЕ зникло: у KV це видно з блоба, який ми щойно записали (`next`),
+  // у D1 - з відповіді d1Cancel. Те, чого немає в жодному сховищі, не
+  // помилка: воно й було лише в одному з них.
+  const stillInKv = new Set(
+    (Array.isArray(next.reminders) ? next.reminders : []).map((/** @type {any} */ r) =>
+      String(r?.id),
+    ),
+  );
+  /** @type {Set<string>} */
+  const gone = new Set();
   for (const id of ids) {
-    await d1Cancel(env, id).catch((/** @type {any} */ e) => {
+    const inD1 = await d1Cancel(env, id).catch((/** @type {any} */ e) => {
       console.error('rc:all: D1-скасування впало', e?.message);
+      return false;
     });
+    if (inD1 || !stillInKv.has(id)) gone.add(id);
   }
 
-  const left = await activeRemindersForList(env);
+  // ⚠️ Перелік ПІСЛЯ - із того, що ми самі щойно зробили, а не з нового
+  // читання KV: read-your-writes там немає, і застаріле читання повертало б
+  // щойно скасовані пункти - тост «Скасовано 0» і список зі скасованими.
+  const left = (await activeRemindersForList(env)).filter(
+    (/** @type {KvBlob} */ r) => !gone.has(String(r.id)),
+  );
   if (parsed.chatId != null && parsed.messageId != null) {
     const keyboard = buildRemindersKeyboard(left);
     await tgCall(env, 'editMessageText', {
@@ -318,7 +342,8 @@ export async function resolveReminderCancelAll(
       ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
     });
   }
-  return `🗑 Скасовано ${active.length - left.length}`;
+  const rest = active.length - ids.length;
+  return `🗑 Скасовано ${gone.size}${rest > 0 ? ` (ще ${rest} - тапни ще раз)` : ''}`;
 }
 
 /** Київський DD.MM HH:MM — для питань редагування нагадування (людський час,
