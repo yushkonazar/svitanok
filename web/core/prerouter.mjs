@@ -255,7 +255,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       return true;
     }
     if (cmd.cmd === 'status') {
-      await send(await systemStatusLine(env));
+      await send(await systemStatusLine(env, target));
       return true;
     }
     // /plan і /remind - той самий шлях, що вільний текст: інакше вони жили б
@@ -1787,24 +1787,32 @@ async function resetThreadSession(env, threadKey, nowMs) {
     .run();
 }
 
-/** /status: стан системи одним повідомленням (мінімальний зріз PR-3).
- *  @param {Env} env */
-async function systemStatusLine(env) {
-  const parts = [];
-  const expected = await readExpected(env);
-  parts.push(
-    expected?.gitSha ? `Мозок: ${String(expected.gitSha).slice(0, 8)}` : 'Мозок: невідомо',
-  );
+/**
+ * /status: чи все живе - одним повідомленням.
+ *
+ * ⚠️ Сюди ж переїхала діагностика /whereami (реліз 08.09): окрема команда
+ * заради двох чисел, які потрібні раз на рік, не варта рядка в меню.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, threadId?: number | string | null }} [where]
+ */
+async function systemStatusLine(env, where = {}) {
   const threads = await registryThreadsSnapshot(env);
   const active = Object.values(threads).filter((t) => t.activeRunId != null).length;
   const queued = Object.values(threads).reduce((n, t) => n + t.queue.length, 0);
-  parts.push(`Прогони: ${active} активних, ${queued} у черзі`);
-  // Інструкції (ревʼю PR-5): після переходу на D1 «не синхронізовані» - чи не
-  // найімовірніша причина мертвого чату, а /status був першим, куди власник
-  // дивиться, і мовчав про них.
-  parts.push(await instructionsStatusLine(env));
-  parts.push(`Режим: ${env.ASSISTANT_V2}`);
-  return parts.join(' · ');
+  const expected = await readExpected(env);
+  const instructions = await instructionsStatusLine(env);
+  const brainOk = Boolean(expected?.gitSha);
+  const alive = brainOk && !instructions.includes('НЕМАЄ') && env.ASSISTANT_V2 === 'on';
+  const lines = [
+    alive ? '✅ Усе живе.' : '⚠️ Щось не так - подробиці нижче.',
+    active || queued ? `Зараз роблю: ${active}, чекає: ${queued}` : 'Черга порожня.',
+    instructions,
+    `Мозок: ${brainOk ? String(expected?.gitSha).slice(0, 8) : 'не відповідає'} · режим ${env.ASSISTANT_V2}`,
+  ];
+  if (where.chatId != null) {
+    lines.push(`Чат: ${where.chatId}${where.threadId != null ? ` · тема ${where.threadId}` : ''}`);
+  }
+  return lines.join(String.fromCharCode(10));
 }
 
 /** @param {Env} env */

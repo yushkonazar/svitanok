@@ -465,7 +465,9 @@ describe('prerouteMessage: нові команди', () => {
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
     // /help веде вільним текстом, а не переліком екранів Mini App.
     expect(tg.some((c) => String(c.body.text).includes('нагадай через 20 хв'))).toBe(true);
-    expect(tg.some((c) => String(c.body.text).includes('Режим: on'))).toBe(true);
+    // /status - людською, і в ньому ж адреса чату (сюди переїхав /whereami).
+    const status = tg.find((c) => String(c.body.text).includes('режим on'))!;
+    expect(String(status.body.text)).toContain('Чат: 555');
     // /forget більше не буває порожнім: «усе» є завжди (етап 7 PR-4) - забути
     // можна ще й факти, гроші, плани й памʼять, навіть коли колекцій немає.
     const forgetMsg = tg.find((c) => String(c.body.text).includes('Що забути?'))!;
