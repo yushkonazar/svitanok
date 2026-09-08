@@ -20,7 +20,8 @@ const MAX_LIST = 20;
 
 /**
  * @typedef {{ id: string, text: string, dueAt: string, status: string,
- *   chatId: string | null, threadId: string | null, snoozeCount: number }} ReminderRow
+ *   chatId: string | null, threadId: string | null, snoozeCount: number,
+ *   rrule: string | null, recurCount: number }} ReminderRow
  */
 
 /** @param {any} row */
@@ -33,6 +34,9 @@ function toReminder(row) {
     chatId: row.chat_id ?? null,
     threadId: row.thread_id ?? null,
     snoozeCount: Number(row.snooze_count) || 0,
+    // Повтор (0012): null = одноразове, тобто вся чинна поведінка.
+    rrule: row.rrule ? String(row.rrule) : null,
+    recurCount: Number(row.recur_count) || 0,
   };
 }
 
@@ -42,13 +46,14 @@ function toReminder(row) {
  * інтерпретувати.
  * @param {Env} env
  * @param {{ id: string, text: string, dueAtMs: number,
- *   chatId?: string | number | null, threadId?: string | number | null }} input
+ *   chatId?: string | number | null, threadId?: string | number | null,
+ *   rrule?: string | null, recurCount?: number }} input
  */
 export async function createReminder(env, input) {
   await db(env)
     .prepare(
-      `INSERT INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id)
-       VALUES (?, ?, ?, 'pending', 0, ?, ?)`,
+      `INSERT INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
+       VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
     )
     .bind(
       input.id,
@@ -56,9 +61,16 @@ export async function createReminder(env, input) {
       input.text,
       input.chatId == null ? null : String(input.chatId),
       input.threadId == null ? null : String(input.threadId),
+      input.rrule ?? null,
+      input.recurCount ?? 0,
     )
     .run();
-  return { id: input.id, text: input.text, dueAt: new Date(input.dueAtMs).toISOString() };
+  return {
+    id: input.id,
+    text: input.text,
+    dueAt: new Date(input.dueAtMs).toISOString(),
+    rrule: input.rrule ?? null,
+  };
 }
 
 /**
@@ -177,6 +189,20 @@ export async function claimReminderSent(env, id) {
     .bind(id)
     .run();
   return (res.meta?.changes ?? 0) === 1;
+}
+
+/**
+ * Зняти правило зі строки, яка вже породила наступну появу.
+ *
+ * ⚠️ НАВІЩО. Відкладене «+10 хв» повертає ТУ САМУ строку в доставку. Без цього
+ * вона на другому спрацюванні запланувала б ще одну наступну появу - і ряд
+ * роздвоювався б на кожне відкладення. Правило живе рівно в тій строці, що ще
+ * не передала естафету.
+ * @param {Env} env
+ * @param {string} id
+ */
+export async function clearRecurrence(env, id) {
+  await db(env).prepare(`UPDATE reminders SET rrule = NULL WHERE id = ?`).bind(id).run();
 }
 
 /**

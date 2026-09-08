@@ -33,6 +33,7 @@ const MIGRATIONS = [
   '0004_ideas_travel.sql',
   '0007_instructions_plans.sql',
   '0010_reminders_address.sql',
+  '0012_reminders_recurrence.sql',
 ];
 // Неділя 06.09.2026 18:00 Києва; план на понеділок 07.09.
 const NOW = Date.parse('2026-09-06T15:00:00.000Z');

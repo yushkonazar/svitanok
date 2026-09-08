@@ -15,6 +15,7 @@
 // двічі, з обох сховищ.
 
 import { parseReminderTime } from '../../reminders-core.mjs';
+import { parseRecurrence, recurrenceText, alignFirst } from '../reminders/recurrence.mjs';
 import {
   createReminder,
   updateReminder,
@@ -63,17 +64,36 @@ function resolveWhen(when, nowMs) {
  * @param {{ text?: string, when?: string }} args - те, що дає МОДЕЛЬ
  * @param {number} nowMs
  * @param {{ dueAtMs?: number, restoreId?: string, chatId?: number | string | null,
- *   threadId?: number | string | null }} [internal] - лише ядро: адреса
- *   прогону і відновлення після «↩»
+ *   threadId?: number | string | null, rrule?: string | null, recurCount?: number }} [internal]
+ *   - лише ядро: адреса прогону, відновлення після «↩» і правило повтору
  */
 export async function runRemindersCreate(env, args, nowMs, internal = {}) {
   let dueAtMs;
   let remainder;
+  /** @type {string | null} */
+  let rrule = internal.rrule ?? null;
   if (typeof internal.dueAtMs === 'number') {
     dueAtMs = internal.dueAtMs;
   } else {
     if (!args.when) throw new Error('when обовʼязковий');
-    ({ whenMs: dueAtMs, remainder } = resolveWhen(args.when, nowMs));
+    // ⚠️ ПОВТОР ДІСТАЄ ЯДРО з тієї самої фрази (§3.1). Слова про повторюваність
+    // зрізаються, і далі час розбирає штатний парсер: «щопонеділка о 9» стає
+    // «о 9», тобто перша поява рахується тим самим кодом, що й одноразова.
+    const rec = parseRecurrence(args.when);
+    const whenText = rec ? rec.rest : String(args.when);
+    if (rec && !whenText.trim()) {
+      throw new Error(
+        `повтор зрозумів, а час - ні: додай годину («${recurrenceText(rec.rrule)} о 9:00»)`,
+      );
+    }
+    ({ whenMs: dueAtMs, remainder } = resolveWhen(whenText, nowMs));
+    if (rec) {
+      rrule = rec.rrule;
+      // ⚠️ Перша поява вирівнюється ЗА ПРАВИЛОМ: «щопонеділка о 9», сказане у
+      // вівторок, парсер часу дав би на завтра - найближчий момент із такою
+      // годиною. Власник просив понеділок.
+      dueAtMs = alignFirst(rrule, dueAtMs);
+    }
   }
   // remainder НІКОЛИ не буває порожнім: cleanRemainder віддає підпис-заглушку
   // «Нагадування», коли крім часу в тексті нічого немає (ревʼю PR-6).
@@ -94,6 +114,8 @@ export async function runRemindersCreate(env, args, nowMs, internal = {}) {
     // власника в довільний чат (security-ревʼю PR-6).
     chatId: internal.chatId ?? null,
     threadId: internal.threadId ?? null,
+    rrule,
+    recurCount: internal.recurCount ?? 0,
   });
   return {
     result: {
@@ -101,6 +123,9 @@ export async function runRemindersCreate(env, args, nowMs, internal = {}) {
       text: created.text,
       when: created.dueAt,
       deliver_at: deliverAt(dueAtMs),
+      // Повтор людською - щоб модель сказала власнику саме його, а не
+      // переказувала RFC-рядок.
+      ...(rrule ? { repeat: recurrenceText(rrule) } : {}),
     },
   };
 }

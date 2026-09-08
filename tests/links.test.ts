@@ -20,6 +20,7 @@ const MIGRATIONS = [
   '0008_fts.sql',
   '0010_reminders_address.sql',
   '0011_ideas_number.sql',
+  '0012_reminders_recurrence.sql',
 ];
 
 function setup() {

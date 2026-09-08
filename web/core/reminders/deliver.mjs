@@ -15,7 +15,14 @@ import { isQuietMinute } from '../../settings-core.mjs';
 import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { formatReminderFired, buildSnoozeRow } from '../../reminders-core.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
-import { dueReminders, claimReminderSent, releaseSentClaim } from './store.mjs';
+import {
+  dueReminders,
+  claimReminderSent,
+  releaseSentClaim,
+  createReminder,
+  clearRecurrence,
+} from './store.mjs';
+import { nextOccurrence } from './recurrence.mjs';
 
 /**
  * Надіслати те, що вже мало спрацювати. Повертає скільки відправлено -
@@ -58,6 +65,11 @@ export async function deliverDueReminders(env, nowMs = Date.now()) {
         nowMs,
       );
       sent += 1;
+      // ⚠️ ПОВТОР ПЛАНУЄМО ПІСЛЯ УСПІШНОЇ ВІДПРАВКИ (§3.1). Порядок саме
+      // такий: якщо наступна поява не запишеться, власник уже отримав цю - і
+      // ряд обірветься на видимому місці, а не тихо. Зворотний порядок міг би
+      // дати дві появи на один тік.
+      if (r.rrule) await scheduleNext(env, r, nowMs);
     } catch (/** @type {any} */ e) {
       // Claim уже стоїть, а в чергу не лягло. Лог тут недостатній: власник
       // логів не читає, а нагадування зникло б назавжди. Знімаємо claim -
@@ -75,4 +87,47 @@ export async function deliverDueReminders(env, nowMs = Date.now()) {
     );
   }
   return { sent };
+}
+
+/**
+ * Наступна поява повторюваного нагадування - окремим рядком.
+ *
+ * ⚠️ ЧОМУ НОВИЙ РЯДОК, А НЕ ЗСУВ ЦЬОГО. Спрацьоване нагадування лишається в
+ * історії зі статусом `sent`; зсунувши час, ми стерли б слід, що воно взагалі
+ * приходило. Заразом це робить «скасуй» простим: поки наступний рядок не
+ * створено, ряд обривається сам - скасовувати нічого, крім поточного.
+ *
+ * Правило нечитабельне (ручна правка в базі, майбутній формат) - ряд тихо
+ * закінчується, і про це є слід у лозі: повторювати за здогадом гірше.
+ * @param {Env} env
+ * @param {{ id: string, text: string, dueAt: string, rrule: string | null,
+ *   recurCount: number, chatId: unknown, threadId: unknown }} r
+ * @param {number} nowMs
+ */
+async function scheduleNext(env, r, nowMs) {
+  try {
+    const prevMs = Date.parse(r.dueAt);
+    const nextMs = nextOccurrence(r.rrule, Number.isFinite(prevMs) ? prevMs : nowMs);
+    if (nextMs == null || !Number.isFinite(nextMs)) {
+      console.error(`reminders: правило «${r.rrule}» не читається - ряд ${r.id} закінчено`);
+      return;
+    }
+    await createReminder(env, {
+      id: crypto.randomUUID().slice(0, 8),
+      text: r.text,
+      dueAtMs: nextMs,
+      chatId: r.chatId == null ? null : String(r.chatId),
+      threadId: r.threadId == null ? null : String(r.threadId),
+      rrule: r.rrule,
+      recurCount: r.recurCount + 1,
+    });
+    // Естафету передано - ця строка більше не є носієм правила. Порядок саме
+    // такий: спадкоємець уже існує, тож навіть якщо зняття не пройде, ряд не
+    // урветься (гірший наслідок - зайва поява після відкладення).
+    await clearRecurrence(env, r.id);
+  } catch (/** @type {any} */ e) {
+    // Ряд обірвався - але власник ЦЮ появу вже отримав, тож мовчазна втрата
+    // тут не така, як утрата самого нагадування. Слід у лозі обовʼязковий.
+    console.error(`reminders: наступну появу ${r.id} не заплановано`, e?.message);
+  }
 }

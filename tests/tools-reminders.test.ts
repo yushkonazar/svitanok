@@ -20,7 +20,12 @@ import { d1FromSqlite } from './helpers/d1.js';
 import { memoryKv } from './helpers/kv.js';
 
 const NOW = Date.parse('2026-08-28T09:00:00.000Z'); // 12:00 у Києві
-const MIGRATIONS = ['0001_base.sql', '0002_assistant.sql', '0010_reminders_address.sql'];
+const MIGRATIONS = [
+  '0001_base.sql',
+  '0002_assistant.sql',
+  '0010_reminders_address.sql',
+  '0012_reminders_recurrence.sql',
+];
 
 type SeedReminder = { id: string; text: string; dueAtMs: number; status?: string };
 
