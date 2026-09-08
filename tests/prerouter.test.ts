@@ -715,7 +715,10 @@ describe('prerouteMessage: нові команди', () => {
     );
     expect(toast).toBe('Чекаю слово');
     const ask = tg.find((c) => String(c.body.text).includes('напиши слово'));
-    const word = /слово: ([А-ЯІЇЄҐ-]+)/u.exec(String(ask?.body.text))?.[1];
+    // Суфікс (латиниця + цифри) - частина слова: саме він робить його
+    // ідентифікатором пропозиції, а не просто типом підтвердження.
+    const word = /слово: ([А-ЯІЇЄҐA-Z0-9-]+)/u.exec(String(ask?.body.text))?.[1];
+    expect(word).toMatch(/-[A-Z0-9]{3}$/);
     expect(word).toBeTruthy();
 
     // Чуже слово - звичайне повідомлення (їде в мозок), не рішення.
@@ -924,16 +927,17 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       id: 'safe',
       level: 'T2',
       kind: 'forget',
-      word: 'ЗГОДЕН',
+      word: 'ЗГОДЕН-7K3',
       payload_json: JSON.stringify({ target: 'collection', collection: 'Сервіси' }),
       created_at: new Date(NOW - 1000).toISOString(),
     });
-    // Пропозиція-«тінь»: створена ПІЗНІШЕ, те саме слово, той самий тред.
+    // Пропозиція-«тінь»: створена ПІЗНІШЕ, той самий тред. Слово в неї СВОЄ -
+    // саме випадковий суфікс і робить збіг непідбірним.
     seedProposal(db, {
       id: 'shadow',
       level: 'T2',
       kind: 'forget',
-      word: 'ЗГОДЕН',
+      word: 'ЗГОДЕН-M92',
       payload_json: JSON.stringify({ target: 'all' }),
       created_at: new Date(NOW).toISOString(),
     });
@@ -943,16 +947,16 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       { data: 'p:safe:ok', chatId: 555, messageId: 42 },
       NOW,
     );
-    expect(String(toast)).toContain('ЗГОДЕН');
+    expect(String(toast)).toContain('ЗГОДЕН-7K3');
     // Рядок у ТРЕД, і дію в ньому називає ЯДРО: тост зникає за секунди, а
     // текст моделі поруч може обіцяти що завгодно (ревʼю етапу 7).
     const asked = tg.find(
       (c) => c.method === 'sendMessage' && String(c.body.text).includes('Це T2'),
     );
     expect(String(asked?.body.text)).toContain('forget');
-    expect(String(asked?.body.text)).toContain('ЗГОДЕН');
+    expect(String(asked?.body.text)).toContain('ЗГОДЕН-7K3');
     tg.length = 0;
-    await prerouteMessage(env, parsedMsg('ЗГОДЕН'), NOW + 1000);
+    await prerouteMessage(env, parsedMsg('ЗГОДЕН-7K3'), NOW + 1000);
     const statuses = Object.fromEntries(
       (
         db.prepare('SELECT id, status FROM proposals').all() as {
@@ -966,16 +970,32 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(statuses.shadow).toBe('open');
   });
 
-  it('слово без питання ядра нічого не виконує', async () => {
+  it('✅ на T2, слово якої не дістати, - усе одно рядок у тред, не сама тиша', async () => {
+    // Тост зникає за секунди; без рядка власник лишився б із враженням
+    // «нічого не сталося» - той самий дефект, що фіксували 05.09.
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, {
+      id: 'noword',
+      level: 'T2',
+      kind: 'forget',
+      word: null,
+      payload_json: JSON.stringify({ target: 'all' }),
+    });
+    await handleBrainCallback(env, { data: 'p:noword:ok', chatId: 555, messageId: 42 }, NOW);
+    expect(tg.some((c) => String(c.body.text).startsWith('⚠️'))).toBe(true);
+  });
+
+  it('слово БЕЗ суфікса нічого не виконує - воно вже не ідентифікатор', async () => {
     const { env, db } = cbEnv();
     seedProposal(db, {
       id: 'lone',
       level: 'T2',
       kind: 'forget',
-      word: 'ЗГОДЕН',
+      word: 'ЗГОДЕН-M92',
       payload_json: JSON.stringify({ target: 'all' }),
     });
     await prerouteMessage(env, parsedMsg('ЗГОДЕН'), NOW);
+    await prerouteMessage(env, parsedMsg('ЗГОДЕН-XXX'), NOW);
     expect(db.prepare("SELECT status FROM proposals WHERE id = 'lone'").get()).toEqual({
       status: 'open',
     });

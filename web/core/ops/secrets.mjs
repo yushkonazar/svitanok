@@ -20,6 +20,8 @@ export const ROTATED_KEY_PREFIX = 'secret_rotated_';
 export const EXPIRY_STATE_KEY = 'secret_expiry_state';
 /** Ключ мітки «уже казав про секрети без дати». */
 export const UNKNOWN_MARK_KEY = 'secret_expiry_unknown_at';
+/** Ключ мітки «уже казав про зайві скоупи Google». */
+export const EXTRA_SCOPES_MARK_KEY = 'secret_expiry_extra_scopes_at';
 /** Пороги нагадувань (05-ops §3: «за 30 і 7 днів»). */
 export const REMIND_STAGES = /** @type {[number, number]} */ ([30, 7]);
 /** Найширший поріг - межа, за якою нагадування вважається неактуальним. */

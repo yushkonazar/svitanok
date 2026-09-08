@@ -62,8 +62,17 @@ export const SKIP_LABELS = ['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL'];
 /**
  * @typedef {{ id: string, from: string, subject: string, snippet: string, atMs: number }} MailCandidate
  * @typedef {{ historyId: string | null, lastRunMs: number, fails: number,
- *   alerted: boolean, candidates: MailCandidate[] }} MailTriageState
+ *   alerted: boolean, candidates: MailCandidate[], seen: string[] }} MailTriageState
  */
+
+/**
+ * Скільки id тримаємо в «уже розібраних». Потрібне, бо кандидатом стає не
+ * кожен лист: промо й соцмережі відсіваються тут, а щось могло випасти за
+ * ретенцією. Без цього списку такі листи НАЗАВЖДИ лишались би в «недочитаних»,
+ * курсор історії застигав би, і тріаж щочверть години тягнув би ті самі
+ * п'ятнадцять листів (регресія, знайдена ревʼю виправлень).
+ */
+export const MAIL_SEEN_CAP = 300;
 
 /** @param {unknown} raw @returns {MailTriageState} */
 export function normalizeTriageState(raw) {
@@ -75,6 +84,9 @@ export function normalizeTriageState(raw) {
     alerted: o.alerted === true,
     candidates: Array.isArray(o.candidates)
       ? o.candidates.filter((/** @type {any} */ c) => c && typeof c.id === 'string')
+      : [],
+    seen: Array.isArray(o.seen)
+      ? o.seen.filter((/** @type {unknown} */ id) => typeof id === 'string').slice(0, MAIL_SEEN_CAP)
       : [],
   };
 }
@@ -132,20 +144,31 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
     blobNow.shownMail && typeof blobNow.shownMail === 'object' ? blobNow.shownMail : {};
   const known = new Set([
     ...state.candidates.map((c) => c.id),
+    ...state.seen,
     ...Object.keys(/** @type {Record<string, unknown>} */ (shownNow)),
   ]);
   const pending = sync.ids.filter((id) => !known.has(id));
   // Найновіші вперед: брифінг бере 15 найсвіжіших, а Gmail віддає історію за
   // зростанням - без цього при сплеску власник бачив би найстаріші листи.
   const batch = pending.slice(-MAIL_META_PER_TICK);
-  const drained = !sync.truncated && pending.length <= MAIL_META_PER_TICK;
 
   const token = await googleAccessToken(env);
   /** @type {MailCandidate[]} */
   const fresh = [];
+  /** @type {string[]} */
+  const seenNow = [];
+  let metaFailed = 0;
   for (const id of batch) {
     const meta = await gmailMessageMeta(env, id, token);
-    if (!meta) continue;
+    if (!meta) {
+      // Транзієнтний збій (429/5xx) - лист НЕ рахуємо розібраним: інакше
+      // хвиля rate-limit від Gmail тихо губила б листи назавжди.
+      metaFailed += 1;
+      continue;
+    }
+    // Розібраний - навіть якщо кандидатом не став (промо, соцмережі). Саме
+    // це не давало курсору застигнути.
+    seenNow.push(meta.id);
     if (meta.labels.some((l) => SKIP_LABELS.includes(l))) continue;
     fresh.push({
       id: meta.id,
@@ -154,6 +177,15 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
       snippet: meta.snippet,
       atMs: meta.atMs,
     });
+  }
+  // Курсор рухається, лише коли ВСЕ пройдено успішно: недочитані сторінки,
+  // залишок понад стелю або жоден збій метаданих - усе лишає стару точку.
+  const drained = !sync.truncated && pending.length <= MAIL_META_PER_TICK && metaFailed === 0;
+  if (metaFailed > 0 && fresh.length === 0) {
+    // Нічого не дістали - це збій, і лічильник має його побачити (інакше
+    // алерт після трьох невдач не спрацює ніколи).
+    await noteFailure(env, nowMs, `метадані не дістались для ${metaFailed} листів`);
+    return { failed: 'meta', metaFailed };
   }
 
   const store = await updateState(env, (blob) => {
@@ -169,6 +201,7 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
         fails: 0,
         alerted: false,
         candidates: mergeCandidates(prev.candidates, fresh, { nowMs, shown }),
+        seen: [...seenNow, ...prev.seen].slice(0, MAIL_SEEN_CAP),
       },
     };
   });
@@ -177,7 +210,9 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
     added: fresh.length,
     candidates: saved.candidates.length,
     cold: sync.cold,
-    pending: pending.length - batch.length,
+    // Скільки лишилось на наступну появу: і залишок понад стелю, і те, що не
+    // дістало метаданих цього разу.
+    pending: pending.length - batch.length + metaFailed,
   };
 }
 

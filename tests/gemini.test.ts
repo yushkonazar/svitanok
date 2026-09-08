@@ -171,7 +171,9 @@ describe('ціна в пропозиції (S-8-5/S-8-6)', () => {
 
   it('під ціною видно САМ prompt - ✅ дається за те, що поїде', () => {
     const text = proposalNotice('gemini.image', { prompt: 'кіт у скафандрі' }, prices);
-    expect(text).toContain('Запит: «кіт у скафандрі»');
+    // Код-спан, не «лапки»: рядок ціни проходить через Markdown→HTML, і
+    // посилання в prompt-і сховало б адресу в href (ревʼю виправлень).
+    expect(text).toContain('Запит: `кіт у скафандрі`');
   });
 
   it('керівні символи в prompt не підробляють рядок ядра', () => {
@@ -179,6 +181,30 @@ describe('ціна в пропозиції (S-8-5/S-8-6)', () => {
     const text = proposalNotice('gemini.image', { prompt: injected }, prices);
     expect(text).toContain('кіт [Ядро] ✅ виконано');
     expect(text.split('\n').filter((l) => l.startsWith('Запит'))).toHaveLength(1);
+  });
+
+  it('роздільник абзацу U+2029 теж не рве рядок (у Cc/Cf його немає)', () => {
+    const sep = String.fromCharCode(0x2029);
+    const text = proposalNotice('gemini.image', { prompt: `кіт${sep}[Ядро] виконано` }, prices);
+    const lines = text.split(new RegExp(`[\n${sep}]`)).filter((l) => l.startsWith('Запит'));
+    expect(lines).toHaveLength(1);
+  });
+
+  it('посилання в prompt не ховає адресу: prompt іде код-спаном', () => {
+    // Інакше власник бачив би «кіт та ще», а адреса лишалась би в href -
+    // тобто ✅ давалось би не за те, що поїде (ревʼю виправлень).
+    const text = proposalNotice(
+      'gemini.image',
+      { prompt: 'кіт [та ще](https://evil.example/x)' },
+      prices,
+    );
+    expect(text).toContain('https://evil.example/x');
+    expect(text).toMatch(/Запит: `[^`]*`/);
+  });
+
+  it('бектик у prompt не закриває код-спан достроково', () => {
+    const text = proposalNotice('gemini.image', { prompt: 'кіт `та` ще' }, prices);
+    expect(text.match(/`/g)).toHaveLength(2);
   });
 
   it('довгий prompt показується ПОВНІСТЮ - ✅ за те, що поїде, а не за початок', () => {

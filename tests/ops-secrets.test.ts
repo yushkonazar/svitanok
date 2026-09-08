@@ -227,6 +227,22 @@ describe('secret-expiry', () => {
     expect(quiet.some((t) => t.includes('зайвих скоупів'))).toBe(false);
   });
 
+  it('про зайві скоупи - раз на 30 діб, не щодня', async () => {
+    // Токен із зайвим скоупом живе, доки власник не перевидасть його руками,
+    // тобто тижнями. Щоденне «⚠️ Токен Google має 3 зайвих скоупів» він
+    // вимкне на третій день - разом із рештою алертів (ревʼю виправлень).
+    const scope = [...CORE_SCOPES, 'https://www.googleapis.com/auth/gmail.send'].join(' ');
+    const store = new Map<string, string>([
+      ['googleToken', JSON.stringify({ token: 'AT', expMs: TOKEN_EXP(), scope })],
+    ]);
+    const { env } = makeEnv({}, { BRIEFING: memoryKv(store) });
+    const sent = stubTelegram();
+    expect(await secretExpiryTask(env, NOW)).toMatchObject({ scopes: 'extra' });
+    // Наступна доба: мітка інша, скоупи ті самі - тиша.
+    expect(await secretExpiryTask(env, NOW + DAY)).toMatchObject({ scopes: 'extra-quiet' });
+    expect(sent.filter((t) => t.includes('зайвих скоупів'))).toHaveLength(1);
+  });
+
   it('поза годиною і вдруге за добу - нічого', async () => {
     const { env, store } = makeEnv();
     stubTelegram();

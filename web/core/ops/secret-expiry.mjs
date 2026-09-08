@@ -17,6 +17,7 @@ import {
   ROTATED_KEY_PREFIX,
   EXPIRY_STATE_KEY,
   UNKNOWN_MARK_KEY,
+  EXTRA_SCOPES_MARK_KEY,
   UNKNOWN_REPEAT_DAYS,
   WIDEST_STAGE,
   daysLeft,
@@ -82,7 +83,7 @@ export async function secretExpiryTask(env, nowMs = Date.now()) {
   }
   if (changed) await writeSetting(env, EXPIRY_STATE_KEY, state, nowMs);
 
-  const scopes = await auditGoogle(env, nowMs);
+  const scopes = await auditGoogle(env, nowMs, settings);
   await env.BRIEFING.put(SECRET_EXPIRY_MARKER, today);
   return { reminded, unknown: unknown.length, scopes };
 }
@@ -90,14 +91,24 @@ export async function secretExpiryTask(env, nowMs = Date.now()) {
 /**
  * Звірка виданих скоупів Google (етап 7 PR-1): брак ламає можливість - його
  * власник побачить сам; ЗАЙВИЙ не ламає нічого, тому про нього кажемо тут.
- * @param {Env} env @param {number} nowMs
+ * @param {Env} env @param {number} nowMs @param {Record<string, unknown>} settings
  */
-async function auditGoogle(env, nowMs) {
+async function auditGoogle(env, nowMs, settings) {
   try {
     const audit = auditScopes(await googleGrantedScopes(env));
     if (!audit.known) return 'unknown';
     if (audit.extra.length) {
+      // ⚠️ НЕ ЩОДНЯ (ревʼю виправлень). Токен із зайвим скоупом живе доти,
+      // доки власник не перевидасть його руками, тобто тижнями; щоденне «⚠️
+      // Токен Google має 3 зайвих скоупів» він вимкне на третій день - а
+      // разом із ним і решту алертів системної теми. Раз на 30 діб - той
+      // самий такт, що для секретів без дати ротації.
+      const last = settings[EXTRA_SCOPES_MARK_KEY];
+      const at = typeof last === 'string' ? Date.parse(last) : NaN;
+      const due = !Number.isFinite(at) || nowMs - at >= UNKNOWN_REPEAT_DAYS * 86_400_000;
+      if (!due) return 'extra-quiet';
       await sendSystemAlert(env, extraScopesAlertText(audit.extra), nowMs);
+      await writeSetting(env, EXTRA_SCOPES_MARK_KEY, new Date(nowMs).toISOString(), nowMs);
       return 'extra';
     }
     return audit.missing.length ? 'missing' : 'ok';

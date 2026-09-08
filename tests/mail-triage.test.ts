@@ -243,6 +243,59 @@ describe('mail-triage', () => {
     expect(normalizeTriageState(readState()[MAIL_TRIAGE_KEY]).historyId).toBe('999');
   });
 
+  it('відсіяні промо не блокують курсор назавжди (ступору немає)', async () => {
+    // Регресія, знайдена ревʼю виправлень: у «розібрані» потрапляли лише
+    // кандидати, тож промо-листи вічно лишались у «недочитаних», курсор
+    // застигав, і тріаж щочверть години тягнув ті самі листи.
+    const ids = Array.from({ length: MAIL_META_PER_TICK + 3 }, (_, i) => `p${i}`);
+    const meta = Object.fromEntries(
+      ids.map((id) => [
+        id,
+        { subject: 'Знижки', from: 'promo@shop', labels: ['CATEGORY_PROMOTIONS'] },
+      ]),
+    );
+    const { impl } = gmailFetch({ historyIds: ids, meta, profileHistoryId: '777' });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env, readState } = makeEnv({
+      [MAIL_TRIAGE_KEY]: { historyId: '100', lastRunMs: 0, fails: 0, candidates: [] },
+    });
+    await mailTriageTask(env, NOW);
+    const second = await mailTriageTask(env, NOW + MAIL_TRIAGE_PERIOD_MS);
+    // Другий прохід добирає решту й рухає курсор - кандидатів немає жодного,
+    // але «розібрані» вони таки є.
+    expect(second).toMatchObject({ added: 0, candidates: 0, pending: 0 });
+    expect(normalizeTriageState(readState()[MAIL_TRIAGE_KEY]).historyId).toBe('777');
+  });
+
+  it('збій метаданих не рухає курсор і НЕ гасить лічильник невдач', async () => {
+    // Інакше хвиля 429 від Gmail губила б листи назавжди й заразом скидала
+    // лічильник, який мав алертнути власника на третій невдачі.
+    const { impl } = gmailFetch({ historyIds: ['m1', 'm2'], meta: {}, profileHistoryId: '999' });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env, readState } = makeEnv({
+      [MAIL_TRIAGE_KEY]: { historyId: '100', lastRunMs: 0, fails: 2, candidates: [] },
+    });
+    expect(await mailTriageTask(env, NOW)).toMatchObject({ failed: 'meta' });
+    const saved = normalizeTriageState(readState()[MAIL_TRIAGE_KEY]);
+    expect(saved.historyId).toBe('100');
+    expect(saved.fails).toBe(3);
+  });
+
+  it('ЧАСТКОВИЙ збій метаданих теж не рухає курсор', async () => {
+    // Один лист дістався, другий - ні. Якщо курсор поїде, другий зникне.
+    const { impl } = gmailFetch({
+      historyIds: ['ok1', 'bad1'],
+      meta: { ok1: { subject: 'є', from: 'x@y' } },
+      profileHistoryId: '999',
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env, readState } = makeEnv({
+      [MAIL_TRIAGE_KEY]: { historyId: '100', lastRunMs: 0, fails: 0, candidates: [] },
+    });
+    expect(await mailTriageTask(env, NOW)).toMatchObject({ added: 1, pending: 1 });
+    expect(normalizeTriageState(readState()[MAIL_TRIAGE_KEY]).historyId).toBe('100');
+  });
+
   it('токен читається РАЗ на прохід, не на кожен лист (бюджет підзапитів)', async () => {
     const { impl } = gmailFetch({
       historyIds: ['m1', 'm2', 'm3'],
@@ -392,6 +445,14 @@ describe('знімок календаря', () => {
     expect(await refreshBriefCalendar(env, NOW + CALENDAR_SNAPSHOT_RETRY_MS)).toMatchObject({
       attempts: 2,
     });
+  });
+
+  it('спроб вистачає на все вікно 07:00-08:00', () => {
+    // Пауза × спроби мусять покривати годину до брифінгу: інакше невдача о
+    // 07:50 лишається без другого шансу (ревʼю виправлень).
+    expect(
+      CALENDAR_SNAPSHOT_RETRY_MS * (CALENDAR_SNAPSHOT_MAX_ATTEMPTS - 1),
+    ).toBeGreaterThanOrEqual(50 * 60_000);
   });
 
   it('після стелі спроб - алерт і тиша до завтра', async () => {

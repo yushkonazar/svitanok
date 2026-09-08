@@ -379,6 +379,22 @@ describe('forget target=all', () => {
     expect(store.get('lastUpdateId')).toBe('42');
   });
 
+  it('службовий стан переживає «усе»: інакше ламається /clear і бекап', async () => {
+    // sentMessages - ring-buffer id для /clear: стерши його, «забудь усе»
+    // прибрало б ЄДИНИЙ інструмент прибирання чату. backupState - мітка
+    // «бекап цієї неділі зроблено»: без неї полетів би алерт про неіснуючий
+    // збій (ревʼю виправлень).
+    const { env, store } = makeEnv({
+      sentMessages: '{"dm":[{"id":1}]}',
+      backupState: '{"date":"2026-09-06","done":true}',
+      monoReconcile: '{"date":"2026-09-07","phase":"done"}',
+    });
+    await forgetAll(env);
+    expect(store.get('sentMessages')).toBe('{"dm":[{"id":1}]}');
+    expect(store.get('backupState')).toBeDefined();
+    expect(store.get('monoReconcile')).toBeDefined();
+  });
+
   it('поля даних у `state` перелічені явно', () => {
     expect(FORGET_ALL_STATE_FIELDS).toContain('mailTriage');
     expect(FORGET_ALL_STATE_FIELDS).toContain('calendarToday');

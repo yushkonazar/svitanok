@@ -107,6 +107,29 @@ export function isTaintActive(marker, nowMs) {
 export const T2_WORDS = ['ВИКОНАТИ', 'ПІДТВЕРДЖУЮ', 'ТАК-ЗРОБИ', 'ЗГОДЕН'];
 
 /**
+ * Довжина випадкового суфікса слова T2 («ВИКОНАТИ-7K3»).
+ *
+ * ⚠️ ЗАРАДИ ЧОГО ВІН ІСНУЄ. Слів чотири, і доти слово адресувало «останню
+ * відкриту T2 з таким словом у треді»: модель могла створити кілька
+ * пропозицій поспіль, показати власнику невинну, а під його напис підставити
+ * іншу - аж до `forget target=all`. Суфікс робить слово ІДЕНТИФІКАТОРОМ:
+ * 4 x 32^3 - понад сто тисяч варіантів, тож зіткнення в межах треду за десять
+ * хвилин не підбереш, а сама модель слова не бачить узагалі (ядро зрізає його
+ * з відповіді інструмента й називає власнику саме).
+ *
+ * Чому не памʼять у KV: там немає ані read-your-writes, ані CAS (kv-store.mjs),
+ * а ціна програної гонки тут - невиконаний другий фактор. Слово вже лежить у
+ * `proposals.word`, тобто в строго консистентній D1: інше сховище зайве.
+ */
+export const T2_SUFFIX_LEN = 3;
+/** Алфавіт суфікса: без 0/O/1/I - їх плутають при перепечатуванні. */
+const T2_SUFFIX_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+/** Формат слова цілком - дешевий відсів тексту до звернення в базу. */
+export const T2_WORD_RE = new RegExp(
+  `^(?:${T2_WORDS.join('|')})-[${T2_SUFFIX_ALPHABET}]{${T2_SUFFIX_LEN}}$`,
+);
+
+/**
  * Рівень дії з урахуванням taint: усе T0 у заплямованій сесії стає T1
  * (01 §4.2 «подвійний барʼєр», §4.3 «усе T0 у tainted-сесії»). T1/T2 вище
  * не ескалюють - вони і так проходять через власника.
@@ -152,6 +175,20 @@ export const GEMINI_ALLOWED_FIELDS = {
 export const VIDEO_SECONDS_MIN = 1;
 export const VIDEO_SECONDS_MAX = 8;
 
+/**
+ * ЄДИНЕ місце, де довжина відео зводиться до дозволеної. Його кличуть і
+ * санітизація payload, і рядок ціни, і виконавець: доки clamp жив у трьох
+ * місцях із різними дефолтами, «одне число» трималось лише на тому, що всі
+ * три константи випадково дорівнювали 8 (ревʼю виправлень).
+ * @param {unknown} raw
+ */
+export function clampVideoSeconds(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n)
+    ? Math.min(Math.max(Math.round(n), VIDEO_SECONDS_MIN), VIDEO_SECONDS_MAX)
+    : VIDEO_SECONDS_MAX;
+}
+
 /** Стеля prompt-а: опис картинки, а не переказ листа. */
 export const GEMINI_PROMPT_MAX = 2_000;
 
@@ -186,12 +223,7 @@ export function sanitizeGeminiPayload(kind, payload) {
   // пропозицією ядро рахує з payload, і доки clamp жив лише у виконавці,
   // `seconds: 60` показувало «$24.00» при реальних $3.20, а `seconds: 0` -
   // «$0.00» при реальних $0.40. Одне число - один clamp.
-  if ('seconds' in out) {
-    const raw = Number(out.seconds);
-    out.seconds = Number.isFinite(raw)
-      ? Math.min(Math.max(Math.round(raw), VIDEO_SECONDS_MIN), VIDEO_SECONDS_MAX)
-      : VIDEO_SECONDS_MAX;
-  }
+  if ('seconds' in out) out.seconds = clampVideoSeconds(out.seconds);
   if ('model' in out && out.model !== 'lite') out.model = 'veo';
   return { payload: out };
 }
@@ -211,9 +243,9 @@ export function proposalNotice(kind, payload, prices) {
   }
   if (kind === 'gemini.video') {
     const o = payload && typeof payload === 'object' ? payload : {};
-    const seconds = Number.isFinite(Number(o.seconds))
-      ? Math.round(Number(o.seconds))
-      : prices.defaultSeconds;
+    // Той самий clamp, що в санітизації і у виконавця: відкриті пропозиції,
+    // створені до цього деплою, теж мусять показувати чесне число.
+    const seconds = o.seconds === undefined ? prices.defaultSeconds : clampVideoSeconds(o.seconds);
     const model = o.model === 'lite' ? 'lite' : 'veo';
     const cost = prices.videoUsd(seconds, model);
     const alt =
@@ -227,21 +259,28 @@ export function proposalNotice(kind, payload, prices) {
 
 /**
  * Сам prompt під ціною (security-ревʼю етапу 7): ✅ має даватись за ТЕ, що
- * поїде в чужий сервіс, а не за напис моделі поруч. Керівні символи геть -
- * рядок пише модель, і «
-[Ядро] …» у ньому підробив би повідомлення.
+ * поїде в чужий сервіс, а не за напис моделі поруч. Рядок пише модель, тож
+ * керівні символи геть (інакше «\n[Ядро] …» підробив би повідомлення), а сам
+ * prompt іде КОД-СПАНОМ: рядок ціни проходить через Markdown→HTML, і
+ * `[текст](https://…)` показав би власнику самий «текст», сховавши адресу в
+ * href - тобто ✅ давалось би не за те, що поїде (ревʼю виправлень).
  * @param {Record<string, unknown> | null | undefined} payload
  */
 function promptLine(payload) {
   const raw = payload && typeof payload === 'object' ? payload.prompt : null;
   const text = String(raw ?? '')
-    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    // `\s` тут не для краси: роздільники рядка й абзацу (U+2028/U+2029) у
+    // \p{Cc}\p{Cf} НЕ входять, а рядок рвуть так само - і саме ними
+    // підробляють повідомлення. Заразом схлопує переноси в один пробіл.
+    .replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ')
+    // Власний бектик закрив би код-спан достроково й віддав решту розмітці.
+    .replace(/`+/g, "'")
     .trim()
     // Обрізати НЕ можна: ✅ дається за те, що поїде, а sanitizeGeminiPayload
     // уже тримає prompt у межах GEMINI_PROMPT_MAX. Довге повідомлення ядро
     // саме розібʼє на частини (renderMdParts).
     .slice(0, GEMINI_PROMPT_MAX);
-  return text ? ['', `Запит: «${text}»`].join('\n') : '';
+  return text ? ['', `Запит: \`${text}\``].join('\n') : '';
 }
 
 /**
@@ -249,9 +288,14 @@ function promptLine(payload) {
  * а передбачуване слово знецінює другий фактор).
  */
 export function pickT2Word() {
-  const buf = new Uint32Array(1);
+  const buf = new Uint32Array(1 + T2_SUFFIX_LEN);
   crypto.getRandomValues(buf);
-  return /** @type {string} */ (T2_WORDS[(buf[0] ?? 0) % T2_WORDS.length]);
+  const base = /** @type {string} */ (T2_WORDS[(buf[0] ?? 0) % T2_WORDS.length]);
+  let suffix = '';
+  for (let i = 0; i < T2_SUFFIX_LEN; i++) {
+    suffix += T2_SUFFIX_ALPHABET[(buf[i + 1] ?? 0) % T2_SUFFIX_ALPHABET.length];
+  }
+  return `${base}-${suffix}`;
 }
 
 /**
