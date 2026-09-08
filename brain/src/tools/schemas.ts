@@ -214,9 +214,22 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     write: true,
   }),
   tool({
+    coreName: 'data.search',
+    description:
+      'Пошук по ВСІХ власних даних одним викликом: ідеї, записи колекцій, місця, транзакції. Питання «коли я востаннє був у X», «де я це записував», «чи є в мене щось про Y» - це ОДИН data.search, а не перебір інструментів. scopes звужує джерела (ideas·records·places·money); чати шукає окремий inbox.search.',
+    args: z.object({
+      q: z.string().min(2).max(120),
+      scopes: z.array(z.string().max(16)).max(4).optional(),
+    }),
+  }),
+  tool({
     coreName: 'reminders.cancel',
-    description: 'Скасувати активне нагадування за id зі списку.',
-    args: z.object({ id: z.string().max(64) }),
+    description:
+      'Скасувати активне нагадування за id зі списку. Кілька одразу - ids списком (до 20): «скасуй усі три» це ОДИН виклик, не три.',
+    args: z.object({
+      id: z.string().max(64).optional(),
+      ids: z.array(z.string().max(64)).max(20).optional(),
+    }),
     write: true,
   }),
   tool({

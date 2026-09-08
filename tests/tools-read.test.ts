@@ -384,6 +384,7 @@ describe('реєстр TOOLS', () => {
       'collections.list',
       'collections.update',
       'data.read',
+      'data.search',
       'drive.search',
       'facts.get',
       'facts.set',

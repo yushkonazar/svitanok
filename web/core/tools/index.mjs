@@ -22,6 +22,7 @@ import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
+import { runDataSearch } from './search.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 import { runFinanceQuery } from './finance.mjs';
@@ -210,10 +211,20 @@ export const TOOLS = {
     },
   },
   'reminders.cancel': {
+    // ⚠️ Ні `id`, ні `ids` не обовʼязкові В СХЕМІ, але один із них потрібен -
+    // це перевіряє виконавець (PR-7 §3.4). Схема тут описує форму, а «хоч
+    // одне з двох» вона виразити не вміє, і вигадувати для цього oneOf у
+    // власному валідаторі дорожче за чесну перевірку в одному місці.
     args: {
       type: 'object',
-      required: ['id'],
-      properties: { id: { type: 'string', maxLength: 64 } },
+      required: [],
+      properties: {
+        id: { type: 'string', maxLength: 64 },
+        // Стелю пачки (CANCEL_BATCH_MAX) тримає виконавець: валідатор
+        // internal-схем не має maxItems, і додавати його заради одного поля
+        // означало б розширити спільний контракт заради окремого випадку.
+        ids: { type: 'array', items: { type: 'string', maxLength: 64 } },
+      },
     },
     write: { kind: 'reminders.cancel' },
     run: () => {
@@ -300,6 +311,19 @@ export const TOOLS = {
       },
     },
     run: (env, args) => runIdeasList(env, args),
+  },
+  // Пошук по ВСІХ власних джерелах одним викликом (PR-7 §3.2). Не tainting:
+  // вхідні чати сюди свідомо не входять - див. шапку tools/search.mjs.
+  'data.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: {
+        q: { type: 'string', minLength: 2, maxLength: 120 },
+        scopes: { type: 'array', items: { type: 'string', maxLength: 16 } },
+      },
+    },
+    run: (env, args) => runDataSearch(env, args),
   },
   'ideas.search': {
     args: {

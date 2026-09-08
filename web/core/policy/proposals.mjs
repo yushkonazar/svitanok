@@ -1375,6 +1375,66 @@ export async function resolveProposal(env, input, nowMs) {
 }
 
 /**
+ * «Відміни останнє» (PR-7 §3.5): відкат ОСТАННЬОЇ дії треду словом, а не
+ * кнопкою - і навіть після того, як десятихвилинне вікно «↩» минуло.
+ *
+ * ⚠️ ЧОМУ ПІСЛЯ ВІКНА ЦЕ НЕ ТЕ САМЕ. Кнопка «↩» - частина самої дії: вона
+ * стоїть у повідомленні, і поки вікно живе, відкат виглядає як «нічого не
+ * було». Через годину це вже КОМПЕНСАЦІЯ: подія встигла показатись у чужому
+ * календарі, задача - у списку. Тому ядро робить відкат, але каже вголос, що
+ * вікно минуло, - щоб різницю було видно.
+ *
+ * Клейм такий самий, як у resolveUndo (CAS на статус), лише дозволяє ще й
+ * `expired`: подвійне «відміни останнє» не робить подвійного відкату.
+ * @param {Env} env
+ * @param {string | number | null} threadId
+ * @param {number} nowMs
+ * @returns {Promise<{ ok: true, kind: string, late: boolean }
+ *   | { ok: false, reason: 'none' | 'no-undo' | 'failed', error?: string }>}
+ */
+export async function undoLastInThread(env, threadId, nowMs) {
+  if (!env.DB) return { ok: false, reason: 'failed', error: 'D1 недоступна' };
+  const thread = threadId == null ? null : String(threadId);
+  const row = /** @type {ProposalRow | null} */ (
+    await env.DB.prepare(
+      `SELECT * FROM proposals
+       WHERE kind LIKE 'undo:%' AND status IN ('open', 'expired')
+         AND (thread_id IS ? OR thread_id = ?)
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+      .bind(thread, thread)
+      .first()
+  );
+  if (!row) return { ok: false, reason: 'none' };
+  const baseKind = row.kind.slice('undo:'.length);
+  const executor = EXECUTORS[baseKind];
+  if (!executor?.undo) return { ok: false, reason: 'no-undo' };
+  /** @type {any} */
+  let snapshot;
+  try {
+    snapshot = JSON.parse(row.payload_json);
+  } catch {
+    return { ok: false, reason: 'failed', error: 'знімок дії побитий' };
+  }
+  const late = Date.parse(row.expires_at) <= nowMs;
+  const claimed = await db(env)
+    .prepare(
+      `UPDATE proposals SET status = 'approved', decided_at = ?
+       WHERE id = ? AND status IN ('open', 'expired')`,
+    )
+    .bind(new Date(nowMs).toISOString(), row.id)
+    .run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return { ok: false, reason: 'none' };
+  try {
+    await executor.undo(env, snapshot, nowMs);
+  } catch (/** @type {any} */ e) {
+    console.error(`policy: пізній відкат ${row.kind} впав`, e?.message);
+    return { ok: false, reason: 'failed', error: String(e?.message ?? '') };
+  }
+  return { ok: true, kind: baseKind, late };
+}
+
+/**
  * «↩» по T0 (callback `u:`): відкат у вікні 10 хв, ідемпотентно.
  * @param {Env} env
  * @param {string} id

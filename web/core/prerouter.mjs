@@ -29,7 +29,7 @@ import {
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
 import { parsePolicyCallback, T2_WORD_RE, isTaintActive } from './policy/core.mjs';
-import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
+import { resolveProposal, resolveUndo, undoLastInThread } from './policy/proposals.mjs';
 import {
   transcribeVoice,
   savePendingVoice,
@@ -80,6 +80,9 @@ const VOICE_PREVIEW_MAX_CHARS = 700;
 const STATUS_DRAFT = '▸ Беруся…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
+/** «Відміни останнє» (PR-7 §3.5) - і кілька природних варіантів того самого. */
+const UNDO_LAST_RE =
+  /^(?:відмін(?:и|ити)|скасуй|скасувати|відкоти(?:и|ти)?)\s+(?:останн\S*(?:\s+\S+)?|це)\s*[.!]?$/i;
 /** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
 const DECISIONS_MAX = 8;
 /** Запас до початку події поверх ETA і фолбек, коли маршрут не порахувався. */
@@ -294,6 +297,14 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // Інші /-команди - легасі (07 §10: «лишаються як є»).
   if (text.startsWith('/')) return false;
 
+  // «Відміни останнє» (PR-7 §3.5): відкат словом, без кнопки - і після того,
+  // як вікно «↩» минуло. Детерміновано, без прогону: модель не мусить
+  // угадувати, яка саме дія була останньою.
+  if (UNDO_LAST_RE.test(text)) {
+    await sendUndoLast(env, target, threadKey, nowMs);
+    return true;
+  }
+
   // Слово-підтвердження T2 (01 §4.3): відкрита пропозиція цього треду з таким
   // словом - це рішення власника, а не повідомлення для моделі.
   if (await resolveT2Word(env, target, threadKey, text, nowMs)) return true;
@@ -362,6 +373,36 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
 
   await routeThreadText(env, target, threadKey, text, nowMs);
   return true;
+}
+
+/**
+ * «Відміни останнє»: відкат останньої дії треду, з чесним словом про вікно.
+ * @param {Env} env @param {ThreadTarget} target @param {string} threadKey @param {number} nowMs
+ */
+async function sendUndoLast(env, target, threadKey, nowMs) {
+  const out = await undoLastInThread(env, threadKey, nowMs).catch((/** @type {any} */ e) => {
+    console.error('prerouter: «відміни останнє» впало', e?.message);
+    return { ok: /** @type {const} */ (false), reason: /** @type {const} */ ('failed') };
+  });
+  if (out.ok) {
+    const what = lowerFirst(actionPhrase(out.kind, '', 'done'));
+    await reply(
+      env,
+      target,
+      out.late
+        ? `↩ Відкотив: ${what}. Вікно «↩» вже минуло, тож це не «нічого не було», а окрема дія назад.`
+        : `↩ Відкотив: ${what}.`,
+      nowMs,
+    );
+    return;
+  }
+  const why =
+    out.reason === 'none'
+      ? 'Нема чого відкочувати - остання дія або вже відкочена, або відкату не має.'
+      : out.reason === 'no-undo'
+        ? 'Цю дію назад не забрати.'
+        : `Не вийшло: ${'error' in out ? out.error : 'збій'}`;
+  await reply(env, target, why, nowMs);
 }
 
 /**

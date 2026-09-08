@@ -31,6 +31,9 @@ const BUILTIN_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
  */
 export const CANON_TOOLS = [
   'data.read',
+  // Пошук по всіх власних джерелах одним викликом - реліз 08.09 (PR-7 §3.2);
+  // у 07 §4 його не було, бо на час канону джерела шукались нарізно.
+  'data.search',
   'calendar.read',
   'mail.search',
   'mail.read',

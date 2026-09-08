@@ -91,7 +91,7 @@ function spec(
  * інструкція каже працівникові писати про недоступне чесно.
  */
 export const WORKERS: Readonly<Record<string, WorkerSpec>> = {
-  analyst: spec('analyst', 'sonnet', ['data.read', 'finance.query'], 8, false),
+  analyst: spec('analyst', 'sonnet', ['data.read', 'data.search', 'finance.query'], 8, false),
   copywriter: spec('copywriter', 'sonnet', [], 4, false),
   'day-planner': spec(
     'day-planner',

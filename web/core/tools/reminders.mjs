@@ -25,6 +25,8 @@ import {
 
 /** Стеля тексту нагадування - як у легасі-шляху (повідомлення Telegram). */
 const MAX_TEXT = 200;
+/** Стеля пачки скасування: більше за раз - це вже «скасуй усе», інший намір. */
+export const CANCEL_BATCH_MAX = 20;
 /** Підпис-заглушка cleanRemainder: не зміст, а «щось таки треба показати». */
 const REMINDER_FALLBACK_TEXT = 'Нагадування';
 
@@ -155,14 +157,50 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
 /**
  * reminders.cancel: {id} - зняти активне нагадування.
  * @param {Env} env
- * @param {{ id: string }} args
+ * @param {{ id?: string, ids?: unknown[] }} args
  */
 export async function runRemindersCancel(env, args) {
-  if (!args.id) throw new Error('id обовʼязковий');
-  const before = await findActive(env, args.id);
-  const ok = await cancelReminder(env, args.id);
-  if (!ok) throw new Error(`нагадування ${args.id} не скасувалось - перечитай список`);
-  return { result: { id: args.id, text: before.text, cancelled: true } };
+  // ⚠️ ПАЧКОЮ ТЕЖ (PR-7 §3.4): «скасуй усі три» доти означало три виклики
+  // інструмента, тобто три кроки прогону на дію, яка логічно одна. `ids`
+  // приймається поруч із `id` - старий контракт лишається чинним.
+  const ids = Array.isArray(args.ids)
+    ? args.ids.map((x) => String(x ?? '').trim()).filter(Boolean)
+    : args.id
+      ? [String(args.id)]
+      : [];
+  if (ids.length === 0) throw new Error('id обовʼязковий (або ids списком)');
+  if (ids.length > CANCEL_BATCH_MAX) {
+    throw new Error(`за раз скасовую щонайбільше ${CANCEL_BATCH_MAX} нагадувань`);
+  }
+  // Одне нагадування - стара поведінка дослівно: помилка летить як була
+  // («не знайдено», «вже надіслане»), бо саме її модель показує власнику.
+  if (ids.length === 1) {
+    const id = /** @type {string} */ (ids[0]);
+    const before = await findActive(env, id);
+    if (!(await cancelReminder(env, id))) {
+      throw new Error(`нагадування ${id} не скасувалось - перечитай список`);
+    }
+    return { result: { id, text: before.text, cancelled: true } };
+  }
+  /** @type {{ id: string, text: string }[]} */
+  const cancelled = [];
+  /** @type {string[]} */
+  const missed = [];
+  for (const id of ids) {
+    try {
+      const before = await findActive(env, id);
+      if (!(await cancelReminder(env, id))) throw new Error('не скасувалось');
+      cancelled.push({ id, text: before.text });
+    } catch {
+      // Одне зникле нагадування не сміє загубити решту пачки; але й мовчати
+      // про нього не можна - воно піде в `missed`, і модель скаже вголос.
+      missed.push(id);
+    }
+  }
+  if (cancelled.length === 0) {
+    throw new Error(`жодне з нагадувань не скасувалось (${missed.join(', ')}) - перечитай список`);
+  }
+  return { result: { cancelled, missed } };
 }
 
 /**
