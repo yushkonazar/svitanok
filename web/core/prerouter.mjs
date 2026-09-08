@@ -9,6 +9,7 @@
 // on - повний шлях для всього.
 
 import { tgCall } from '../telegram-client.mjs';
+import { parseCommand } from '../tg-core.mjs';
 import { loadSentMessages, putSentMessages } from '../kv-store.mjs';
 import { recordSentMessage } from '../tg-core.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
@@ -41,6 +42,8 @@ import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs
 import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
+import { activeRemindersForList } from '../commands.mjs';
+import { buildRemindersKeyboard, formatRemindersListMessage } from '../reminders-core.mjs';
 import { actionPhrase, actionIcon } from './tg/phrase.mjs';
 import { proposalVolume } from './policy/volume.mjs';
 import { renderMdParts } from './tg/markdown.mjs';
@@ -124,20 +127,55 @@ export function classifyRoute(text) {
   return 'chat';
 }
 
-/** Нові команди (07 §10: /new + підказки R26). null = не наша - легасі.
- *  @param {string} text */
+/**
+ * Команди нового шляху. null = не наша - падає в легасі (07 §10).
+ *
+ * ⚠️ ЗВІДКИ ЦЕЙ СПИСОК (реліз 08.09, скарги 2 і 12). Реєстр розрісся до
+ * шістнадцяти команд, половина з яких дублювала Mini App або вільний текст, а
+ * `/plan` узагалі ходив старим шляхом і відповідав не те. Лишились вісім - ті,
+ * що або роблять щось, чого текстом не скажеш (`/clear`, `/new`), або є
+ * входом у небезпечне (`/forget`), або відповідають швидше за прогін
+ * (`/status`, `/help`). Решта живе вільним текстом і в Mini App.
+ *
+ * @param {string} text
+ */
 export function parseNewCommand(text) {
-  const m = text.trim().match(/^\/(new|idea|wish|money|inbox|status|forget)(?:@\w+)?(?:\s|$)/);
-  return m ? /** @type {string} */ (m[1]) : null;
+  // parseCommand розбирає і «/x args», і ЛЕЙБЛИ reply-клавіатури («⏰
+  // Нагадування») - без нього тап по паду йшов би в мозок вільним текстом і
+  // коштував прогону там, де є детермінована відповідь.
+  const parsed = parseCommand(text);
+  if (!parsed || !NEW_COMMAND_NAMES.has(parsed.cmd)) return null;
+  return { cmd: parsed.cmd, args: parsed.args.trim() };
 }
 
-/** Підказки R26: підставляють текст - працює все і без команд. */
-const HINTS = {
-  idea: 'Напиши: «збережи ідею: …» - і я занесу її в реєстр.',
-  wish: 'Напиши: «хочу …» (гра, покупка, поїздка) - поставлю на відстеження.',
-  money: 'Напиши: «витрати за тиждень» або «куди пішли гроші в серпні».',
-  inbox: 'Напиши: «знайди в чаті <назва> …» - пошук по збережених чатах.',
-};
+/** Вісім команд і те, що вони роблять - джерело і для /help, і для меню Telegram. */
+export const NEW_COMMANDS = [
+  { command: 'help', description: 'Що я вмію' },
+  { command: 'plan', description: 'План на день' },
+  { command: 'remind', description: 'Нагадування: список або нове' },
+  { command: 'brief', description: 'Ранковий брифінг зараз' },
+  { command: 'status', description: 'Чи все живе' },
+  { command: 'clear', description: 'Прибрати останні повідомлення' },
+  { command: 'new', description: 'Почати розмову з чистого аркуша' },
+  { command: 'forget', description: 'Стерти дані' },
+];
+
+/** Швидкий відсів для parseNewCommand: рівно ті, що обробляє новий шлях. */
+const NEW_COMMAND_NAMES = new Set(['help', 'plan', 'remind', 'status', 'new', 'forget']);
+
+const HELP_TEXT = [
+  'Пиши як людині - командою майже нічого не треба.',
+  '',
+  '⏰ «нагадай через 20 хв полити квіти»',
+  '🗓 «постав зустріч із Марком завтра о 15:00»',
+  '💡 «збережи ідею: …» · 🎁 «хочу …» · 💸 «куди пішли гроші в серпні»',
+  '✉️ «що там у пошті» · 📍 «як доїхати до …» · 🖼 «намалюй …»',
+  '',
+  'Команди - лише там, де текст не підходить:',
+  ...NEW_COMMANDS.map((c) => `/${c.command} - ${c.description}`),
+  '',
+  'Решта - у Mini App: статистика, вакансії, збережене, роадмеп, налаштування.',
+].join(String.fromCharCode(10));
 
 /**
  * Головний вхід з worker.js. true = оброблено новим шляхом (легасі не чіпати).
@@ -205,21 +243,43 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
 
   const cmd = parseNewCommand(text);
   if (cmd) {
-    if (cmd in HINTS) {
-      await send(HINTS[/** @type {keyof typeof HINTS} */ (cmd)]);
+    if (cmd.cmd === 'help') {
+      await send(HELP_TEXT);
       return true;
     }
-    if (cmd === 'new') {
+    if (cmd.cmd === 'new') {
       await resetThreadSession(env, threadKey, nowMs);
-      await send('Почали з чистого аркуша.');
+      // ⚠️ Одразу кажемо, ЩО саме зникло: власник читав «/new» як «стерти
+      // памʼять» і не розумів, навіщо це в чаті з історією (скарга 7).
+      await send('Почали з чистого аркуша. Факти й памʼять розмов лишились - зникла лише нитка.');
       return true;
     }
-    if (cmd === 'status') {
+    if (cmd.cmd === 'status') {
       await send(await systemStatusLine(env));
       return true;
     }
-    // /forget (S-0-5): меню T2 - колекції (етап 3); чати - етап 6, «усе» -
-    // етап 7 (спершу експорт). Кнопка m:fg:<id> створює пропозицію зі словом.
+    // /plan і /remind - той самий шлях, що вільний текст: інакше вони жили б
+    // у легасі й відповідали не тим, чим асистент (скарга 12 прогону 08.09).
+    if (cmd.cmd === 'plan') {
+      await startOrQueueThreadText(
+        env,
+        target,
+        threadKey,
+        cmd.args ? `План на день: ${cmd.args}` : 'Склади план на день.',
+        'chat',
+        nowMs,
+      );
+      return true;
+    }
+    if (cmd.cmd === 'remind') {
+      if (!cmd.args) {
+        await sendRemindersList(env, target, nowMs);
+        return true;
+      }
+      await startOrQueueThreadText(env, target, threadKey, `Нагадай ${cmd.args}`, 'quick', nowMs);
+      return true;
+    }
+    // /forget (S-0-5): меню T2 - колекції, чати, «усе».
     await sendForgetMenu(env, target, nowMs);
     return true;
   }
@@ -294,6 +354,21 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
 
   await routeThreadText(env, target, threadKey, text, nowMs);
   return true;
+}
+
+/**
+ * Список активних нагадувань із кнопками скасування - «/remind» без аргументів.
+ * ⚠️ Прийшло сюди з окремої команди /reminders (реліз 08.09): дві команди на
+ * одну тему власник плутав, а список був порожній, бо читав самий KV.
+ * @param {Env} env @param {ThreadTarget} target @param {number} nowMs
+ */
+async function sendRemindersList(env, target, nowMs) {
+  const list = await activeRemindersForList(env);
+  const keyboard = buildRemindersKeyboard(list);
+  await reply(env, target, formatRemindersListMessage(list), nowMs, {
+    parse_mode: 'HTML',
+    ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
+  });
 }
 
 /**

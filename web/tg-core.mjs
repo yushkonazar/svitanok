@@ -650,27 +650,27 @@ export function shouldAutoDispatchBrief({
    Команди / Налаштування (Блок P4) — parseCommand + текстові форматери.
    ══════════════════════════════════════════════════════════════════════ */
 
-// Реєстр для Telegram "/" меню (setMyCommands) — команда без "/" + короткий опис.
-// Фаза C: /mock прибрано (був літеральним STUB_REPLY, обіцяв неготову функцію);
-// /help відокремлено від /start (§C3); /reminders (список+скасувати, §C4) і
-// /clear (§C5) додано за рекомендацією аудиту команд vs Mini App.
+/**
+ * Реєстр для Telegram "/" меню (setMyCommands) — команда без "/" + опис.
+ *
+ * ⚠️ ВІСІМ, не шістнадцять (реліз 08.09, скарги 2 і 12). Реєстр розрісся, і
+ * половина рядків дублювала або Mini App (`/stats`, `/jobs`, `/save`,
+ * `/roadmap`, `/settings`), або вільний текст (`/agenda`, `/reminders`,
+ * `/idea`, `/agent`), або була діагностикою для одного дня (`/whereami`).
+ * Джерело правди - NEW_COMMANDS у core/prerouter.mjs; тут лише порядок і
+ * `/start`, якого в новому шляху немає. Обробники прибраних команд ЛИШИЛИСЬ
+ * робочими: хто набере руками - дістане відповідь, а не «невідома команда».
+ */
 export const COMMANDS = [
   { command: 'start', description: 'Почати роботу з ботом' },
-  { command: 'help', description: 'Список усіх команд' },
-  { command: 'brief', description: 'Запустити ранковий брифінг' },
-  { command: 'stats', description: 'Стрік і статистика' },
-  { command: 'jobs', description: 'Активна воронка вакансій' },
-  { command: 'save', description: 'Збережене (факти/цитати/новини)' },
-  { command: 'settings', description: 'Відкрити Mini App' },
-  { command: 'remind', description: 'Нагадування (напр. через 20 хв ...)' },
-  { command: 'reminders', description: 'Список активних нагадувань' },
-  { command: 'agenda', description: 'Найближчі події календаря — тиждень наперед' },
-  { command: 'agent', description: 'Що вміє асистент — повний перелік (вільний текст)' },
-  { command: 'plan', description: 'План дня (LLM читає календар, пропонує таймлайн)' },
-  { command: 'roadmap', description: 'IT-роадмеп (теми, прогрес)' },
-  { command: 'clear', description: 'Видалити останні N повідомлень — мої та твої (за замовч. 20)' },
-  { command: 'whereami', description: 'chat_id/thread_id цього чату (для налаштування тем)' },
-  { command: 'locate', description: 'Оновити позицію за GPS (для точної погоди в Mini App)' },
+  { command: 'help', description: 'Що я вмію' },
+  { command: 'plan', description: 'План на день' },
+  { command: 'remind', description: 'Нагадування: список або нове' },
+  { command: 'brief', description: 'Ранковий брифінг зараз' },
+  { command: 'status', description: 'Чи все живе' },
+  { command: 'clear', description: 'Прибрати останні повідомлення' },
+  { command: 'new', description: 'Почати розмову з чистого аркуша' },
+  { command: 'forget', description: 'Стерти дані' },
 ];
 
 // Ярлик кнопки скасування тимчасової клавіатури /locate — окремий рядок, а не
@@ -685,9 +685,12 @@ export const LOCATE_CANCEL_LABEL = '⬅️ Скасувати';
 // переходу нікуди: план дня й нагадування читає LLM/rule-based фолбек,
 // «Сьогодні» — список подій, «Брифінг» — ручний перезапуск ранкового
 // повідомлення (тепер справді працює, §fix worker.js dispatchBrief force).
+// ⚠️ Від 08.09 пад веде лише на ЖИВІ команди (реліз, скарга 2): «Сьогодні»
+// вів на /agenda, а її більше немає в реєстрі - «що сьогодні» краще спитати
+// текстом, і асистент відповість із контекстом, а не голим списком подій.
 export const REPLY_KEYBOARD = [
-  ['📅 Сьогодні', '🧠 План дня'],
-  ['⏰ Нагадування', '🔄 Брифінг'],
+  ['🧭 План дня', '⏰ Нагадування'],
+  ['🔄 Брифінг', '❓ Що я вмію'],
 ];
 
 /** Звичайна reply-клавіатура (персистентна). Виноситься сюди разом із
@@ -711,10 +714,10 @@ export function locateKeyboard() {
 // Лейбл reply-keyboard кнопки -> та сама команда, що й відповідний "/xxx".
 /** @type {Record<string, string>} */
 const KEYBOARD_ALIASES = {
-  '📅 Сьогодні': 'agenda',
-  '🧠 План дня': 'plan',
-  '⏰ Нагадування': 'reminders',
+  '🧭 План дня': 'plan',
+  '⏰ Нагадування': 'remind',
   '🔄 Брифінг': 'brief',
+  '❓ Що я вмію': 'help',
 };
 
 /**

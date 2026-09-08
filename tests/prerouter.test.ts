@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   classifyRoute,
   parseNewCommand,
+  NEW_COMMANDS,
   prerouteMessage,
   handleBrainCallback,
   startClaimedRun,
@@ -56,12 +57,44 @@ describe('classifyRoute (N3)', () => {
 });
 
 describe('parseNewCommand', () => {
-  it('нові команди ловляться (і з @botname), легасі - ні', () => {
-    expect(parseNewCommand('/new')).toBe('new');
-    expect(parseNewCommand('/status@svitanok_bot')).toBe('status');
-    expect(parseNewCommand('/idea щось')).toBe('idea');
+  it('вісім команд ловляться (і з @botname), решта - ні', () => {
+    expect(parseNewCommand('/new')).toEqual({ cmd: 'new', args: '' });
+    expect(parseNewCommand('/status@svitanok_bot')).toEqual({ cmd: 'status', args: '' });
+    expect(parseNewCommand('/remind через 20 хв полити квіти')).toEqual({
+      cmd: 'remind',
+      args: 'через 20 хв полити квіти',
+    });
+    // Прибрані команди падають у легасі, а не мовчать (скарги 2 і 12).
+    for (const gone of ['/idea щось', '/wish', '/money', '/inbox', '/agenda', '/reminders'])
+      expect(parseNewCommand(gone), gone).toBeNull();
     expect(parseNewCommand('/stats')).toBeNull();
     expect(parseNewCommand('текст /new усередині')).toBeNull();
+    // Лейбли reply-клавіатури - ті самі команди: інакше тап по паду йшов би в
+    // мозок вільним текстом і коштував прогону там, де є готова відповідь.
+    expect(parseNewCommand('⏰ Нагадування')).toEqual({ cmd: 'remind', args: '' });
+    expect(parseNewCommand('🧭 План дня')).toEqual({ cmd: 'plan', args: '' });
+    expect(parseNewCommand('❓ Що я вмію')).toEqual({ cmd: 'help', args: '' });
+    // «Брифінг» лишився в легасі - новий шлях його не перехоплює.
+    expect(parseNewCommand('🔄 Брифінг')).toBeNull();
+  });
+
+  it('реєстр /help і меню Telegram - один список', () => {
+    expect(NEW_COMMANDS.map((c) => c.command)).toEqual([
+      'help',
+      'plan',
+      'remind',
+      'brief',
+      'status',
+      'clear',
+      'new',
+      'forget',
+    ]);
+    // Кожна команда меню або обробляється новим шляхом, або лишається в
+    // легасі (/brief, /clear) - «мертвих» рядків у меню бути не має.
+    for (const c of NEW_COMMANDS) {
+      const parsed = parseNewCommand(`/${c.command}`);
+      expect(parsed === null || parsed.cmd === c.command, c.command).toBe(true);
+    }
   });
 });
 
@@ -419,7 +452,7 @@ describe('prerouteMessage: нові команди', () => {
     expect(tg.some((c) => String(c.body.text).includes('чистого аркуша'))).toBe(true);
   });
 
-  it('підказки R26 і /status відповідають; /forget без колекцій - чесно порожньо', async () => {
+  it('/help, /status і /forget відповідають без прогону мозку', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(
@@ -427,10 +460,11 @@ describe('prerouteMessage: нові команди', () => {
       d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0006_inbox_collections.sql'])
         .stub,
     );
-    await prerouteMessage(env, parsedMsg('/idea'), NOW);
+    await prerouteMessage(env, parsedMsg('/help'), NOW);
     await prerouteMessage(env, parsedMsg('/status'), NOW);
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
-    expect(tg.some((c) => String(c.body.text).includes('збережи ідею'))).toBe(true);
+    // /help веде вільним текстом, а не переліком екранів Mini App.
+    expect(tg.some((c) => String(c.body.text).includes('нагадай через 20 хв'))).toBe(true);
     expect(tg.some((c) => String(c.body.text).includes('Режим: on'))).toBe(true);
     // /forget більше не буває порожнім: «усе» є завжди (етап 7 PR-4) - забути
     // можна ще й факти, гроші, плани й памʼять, навіть коли колекцій немає.
@@ -440,6 +474,32 @@ describe('prerouteMessage: нові команди', () => {
       .inline_keyboard;
     expect(kb.at(-1)![0]!.callback_data).toBe('m:fga');
     expect(brain).toHaveLength(0);
+  });
+
+  it('/remind без аргументів - список нагадувань, без прогону мозку', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0010_reminders_address.sql',
+    ]);
+    d1.db
+      .prepare(`INSERT INTO reminders (id, due_at, text, status, snooze_count) VALUES (?,?,?,?,0)`)
+      .run('r-1', '2026-08-28T12:00:00.000Z', 'полити квіти', 'pending');
+    const env = makeEnv(reg, d1.stub);
+    expect(await prerouteMessage(env, parsedMsg('/remind'), NOW)).toBe(true);
+    expect(brain).toHaveLength(0);
+    expect(tg.some((c) => String(c.body.text).includes('полити квіти'))).toBe(true);
+  });
+
+  it('/remind з текстом і /plan ідуть у мозок, а не в легасі', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    expect(await prerouteMessage(env, parsedMsg('/plan'), NOW)).toBe(true);
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body as { input: { text: string } }).input.text).toBe('Склади план на день.');
   });
 
   // S-0-16 (етап 3 PR-7): «не нагадуй про X» - детерміновано у facts, без прогону.
