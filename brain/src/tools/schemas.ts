@@ -234,7 +234,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'proposals.create',
     description:
-      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, forget, data.export, gemini.video. payload - поля дії. Нічого не виконується без підтвердження власника; після ✅ ядро зробить запис саме.',
+      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, forget, data.export, gemini.video. payload - поля дії: calendar.event/invite {title, startIso, endIso, location?, attendees?, reminderMinutes?}; calendar.update {event_id, title?, startIso+endIso разом, location?, attendees?}; calendar.delete {event_id}; contact {name, email}; tasks.create {title, notes?, due? - Tasks зберігає лише ДАТУ, години не буде: для сигналу о годині став reminders.create}; collection.export {collection, to?: "sheets" - Google Таблиця в Drive, інакше .csv документом}; drive.write {name, content_md}; gemini.image {prompt} і gemini.video {prompt, seconds? (до 8), model? "veo"|"lite"} - ЛИШЕ prompt власника: будь-яке інше поле policy відкидає, і в заплямованій сесії (після пошти/чатів) генерація недоступна взагалі. Ціну ядро дописує саме - не називай її. Нічого не виконується без підтвердження власника; після ✅ ядро зробить запис саме.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),

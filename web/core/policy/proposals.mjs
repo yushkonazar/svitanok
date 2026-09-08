@@ -13,6 +13,7 @@ import {
   pickT2Word,
   proposalButtons,
   undoButton,
+  sanitizeGeminiPayload,
   PROPOSAL_TTL_MS,
   UNDO_WINDOW_MS,
 } from './core.mjs';
@@ -52,8 +53,31 @@ import {
 } from '../tools/wishes.mjs';
 import { runFinanceRule, restoreRule } from '../tools/finance.mjs';
 import { forgetChat } from '../inbox/store.mjs';
+import { runDataExport } from '../export/data-export.mjs';
+import { forgetAll } from '../export/forget-all.mjs';
 import { updateSubscription } from '../finance/subscriptions.mjs';
-import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
+import {
+  createCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+  createContact,
+  resolveAttendees,
+  assertGoogleScope,
+} from '../../google.mjs';
+import { createTask } from '../adapters/tasks.mjs';
+import {
+  generateImage,
+  generateVideo,
+  videoUsd,
+  IMAGE_USD,
+  VIDEO_DEFAULT_SECONDS,
+  VIDEO_MAX_SECONDS,
+} from '../adapters/gemini.mjs';
+import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
+import { sendMediaBytes } from '../tg/media.mjs';
+import { ensureFolderPath, uploadCsvAsSheet, uploadFile } from '../adapters/drive.mjs';
+import { loadSettings } from '../../kv-store.mjs';
+import { normalizeSettings } from '../../settings-core.mjs';
 import {
   runCollectionsCreate,
   runCollectionsUpdate,
@@ -75,6 +99,32 @@ import {
   undoPlanUpdate,
   runPlanReview,
 } from '../tools/plan.mjs';
+
+/** Тека експортів у Drive (S-0-6, S-N4-4): одна на всі види вивантажень. */
+export const EXPORT_FOLDER_PATH = ['Світанок', 'export'];
+/** Тека нотаток (S-8-3). */
+export const DRIVE_NOTES_PATH = ['Світанок', 'нотатки'];
+/** Стеля нотатки: більше - це вже документ працівника, у нього свій шлях. */
+export const DRIVE_NOTE_MAX_CHARS = 100_000;
+
+/**
+ * Імʼя файла нотатки: назва приходить від моделі й іде в метадані Drive, тож
+ * роздільники шляху й керівні символи знімаються тут. Розширення .md - щоб
+ * файл відкривався як текст, а не тягнув здогад із вмісту.
+ * @param {unknown} raw
+ */
+function driveNoteName(raw) {
+  const base = String(raw ?? '')
+    // Керівні й форматні символи (зокрема bidi-override) - геть: назву пише
+    // модель, а файл із ними в Drive читається не так, як виглядає.
+    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    .replace(/[\\/]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  if (!base) throw new Error('drive.write: потрібна назва нотатки');
+  return /\.[A-Za-z0-9]{1,8}$/.test(base) ? base : `${base}.md`;
+}
 
 /** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
@@ -377,12 +427,155 @@ export const EXECUTORS = {
           },
         };
       }
-      throw new Error(`forget: ціль «${target}» ще не підтримується (усе - етап 7)`);
+      // S-0-5 «усе»: T2 зі словом. Експорт спершу - це порада в самому
+      // повідомленні меню, а не гейт у коді: вимагати доказу експорту
+      // означало б, що власник не може стерти дані, доки Drive недоступний.
+      if (target === 'all') {
+        const { tables, rows, kvKeys } = await forgetAll(env);
+        return {
+          result: {
+            erased: `${rows} ${plural(rows, 'рядок', 'рядки', 'рядків')} у ${tables} таблицях і ${kvKeys} ${plural(kvKeys, 'ключ', 'ключі', 'ключів')} KV`,
+            rows,
+            tables,
+            kvKeys,
+          },
+        };
+      }
+      throw new Error(`forget: ціль «${target}» невідома (chat | collection | all)`);
+    },
+  },
+  // Експорт даних (S-0-6): T2 - див. шапку core/export/data-export.mjs про
+  // суперечність канону з 04-scenarios.
+  'data.export': {
+    async execute(env, payload, nowMs) {
+      void payload; // експорт не має параметрів: беруться ВСІ дані
+      const out = await runDataExport(env, nowMs);
+      return { result: out };
+    },
+  },
+  // Нотатка в Drive (S-8-3, 07 §4 drive.write): T1, тека «Світанок/нотатки».
+  // Тут - НЕ uploadMarkdown: той best-effort і віддає null при збої, бо
+  // документ у власника вже є. Після ✅ такої підстраховки немає, тож збій
+  // мусить бути винятком.
+  'drive.write': {
+    async execute(env, payload) {
+      const name = driveNoteName(payload.name);
+      const content = String(payload.content_md ?? payload.content ?? '');
+      if (!content.trim()) throw new Error('drive.write: порожній вміст нотатки');
+      if (content.length > DRIVE_NOTE_MAX_CHARS) {
+        throw new Error(`drive.write: нотатка довша за ${DRIVE_NOTE_MAX_CHARS} символів`);
+      }
+      const folderId = await ensureFolderPath(env, DRIVE_NOTES_PATH);
+      const file = await uploadFile(env, {
+        name,
+        parentId: folderId,
+        bytes: new TextEncoder().encode(content),
+        mimeType: 'text/markdown',
+      });
+      return { result: { file_id: file.id, name: file.name, folder: DRIVE_NOTES_PATH.join('/') } };
+    },
+  },
+  // Налаштування Mini App (07 §4 kind=settings, T1): той самий блоб KV, що
+  // пише /api/settings, і та сама нормалізація - інакше модель могла б
+  // покласти туди форму, якої фронт не читає.
+  settings: {
+    async execute(env, payload) {
+      const patch = payload.patch ?? payload.settings ?? payload;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('settings: потрібен обʼєкт із полями quiet/modules/mutedTopics');
+      }
+      const current = await loadSettings(env);
+      const next = normalizeSettings({
+        ...current,
+        ...patch,
+        quiet: { ...current.quiet, ...(patch.quiet ?? {}) },
+        modules: { ...current.modules, ...(patch.modules ?? {}) },
+      });
+      await env.BRIEFING.put('settings', JSON.stringify(next));
+      return { prev: current, result: next };
+    },
+    async undo(env, snapshot) {
+      await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(snapshot)));
+    },
+  },
+  // Gemini (ADR-012/ADR-034, S-8-5/S-8-6, етап 7 PR-3). Ціну власник бачить у
+  // самій пропозиції - її дописує ЯДРО (policy/core.mjs proposalNotice), не
+  // модель. Тут лишається витрата: згенерувати, доставити, порахувати.
+  //
+  // Порядок «доставити → порахувати» неспроста: квота міряє ГРОШІ, а вони
+  // списані в момент генерації. Якби лічильник ішов лише після успішної
+  // доставки, невдала відправка робила б витрату невидимою для стелі.
+  'gemini.image': {
+    async execute(env, payload, nowMs, ctx) {
+      const { bytes, mime } = await generateImage(env, { prompt: String(payload.prompt ?? '') });
+      const cost = IMAGE_USD;
+      try {
+        await deliverGenerated(env, ctx, {
+          kind: 'photo',
+          bytes,
+          mime,
+          filename: 'svitanok.png',
+          caption: `≈ $${cost.toFixed(2)}`,
+        });
+      } finally {
+        await countGeminiSpend(env, cost, nowMs);
+      }
+      return { result: { generated: 'image', usd: cost, bytes: bytes.length } };
+    },
+  },
+  'gemini.video': {
+    async execute(env, payload, nowMs, ctx) {
+      const { seconds, model } = videoParams(payload);
+      const { bytes, mime } = await generateVideo(env, {
+        prompt: String(payload.prompt ?? ''),
+        seconds,
+        model,
+      });
+      const cost = videoUsd(seconds, model);
+      try {
+        await deliverGenerated(env, ctx, {
+          kind: 'video',
+          bytes,
+          mime,
+          filename: 'svitanok.mp4',
+          caption: `${seconds} с, ≈ $${cost.toFixed(2)}`,
+        });
+      } finally {
+        await countGeminiSpend(env, cost, nowMs);
+      }
+      return { result: { generated: 'video', usd: cost, seconds, model } };
+    },
+  },
+  // Google Tasks (S-8-4, етап 7 PR-1): T1, без «↩» - видалити чужу задачу
+  // одним рухом Tasks API не дає без окремого скоупа на видалення, а
+  // «відкотив» без реального видалення було б брехнею.
+  'tasks.create': {
+    async execute(env, payload) {
+      const { id, title, due, link } = await createTask(env, {
+        title: payload.title,
+        notes: payload.notes,
+        due: payload.due ?? payload.date ?? null,
+      });
+      return { result: { task_id: id, title, due, link } };
     },
   },
   'collection.export': {
     async execute(env, payload, nowMs, ctx) {
       const csv = await exportCollectionCsv(env, payload.collection);
+      // to=sheets (S-N4-4): та сама вибірка, інша адреса доставки - Google
+      // Таблиця в «Світанок/export/» замість документа в чат. Дефолт лишився
+      // файлом: він працює без Drive і без мережі власника.
+      if (String(payload.to ?? '') === 'sheets') {
+        const folderId = await ensureFolderPath(env, EXPORT_FOLDER_PATH);
+        const sheet = await uploadCsvAsSheet(env, {
+          name: csv.filename.replace(/\.csv$/, ''),
+          parentId: folderId,
+          csv: csv.content,
+        });
+        return {
+          result: { sheet_id: sheet.id, name: sheet.name, link: sheet.link, rows: csv.rows },
+        };
+      }
       // Адреса: чат прогону, а після ✅ (resolveProposal) - за thread_id
       // пропозиції: тема супергрупи або DM власника.
       const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
@@ -666,6 +859,46 @@ export const EXECUTORS = {
       return { result: await createEventFromPayload(env, payload, true) };
     },
   },
+  // Правка й видалення події (07 §4, ACTION_LEVELS T1) - етап 7 PR-1,
+  // «Google-ревізія»: рівні для них стояли в таблиці з етапу 1, а виконавців
+  // не було, тож ✅ власника впирався в «no-executor». Адаптери
+  // (updateCalendarEvent/deleteCalendarEvent) чинні з фази 5.
+  'calendar.update': {
+    async execute(env, payload) {
+      await assertGoogleScope(env, 'calendar');
+      const eventId = calendarEventId(payload);
+      const patch = await buildEventPatch(env, payload);
+      const res = await updateCalendarEvent(env, { eventId, patch });
+      if (!res.ok) throw new Error('calendar: Google не змінив подію (лог)');
+      return { result: { event_id: eventId, changed: Object.keys(patch) } };
+    },
+  },
+  'calendar.delete': {
+    async execute(env, payload) {
+      await assertGoogleScope(env, 'calendar');
+      const eventId = calendarEventId(payload);
+      const res = await deleteCalendarEvent(env, { eventId });
+      if (!res.ok) throw new Error('calendar: Google не видалив подію (лог)');
+      return { result: { event_id: eventId, deleted: true } };
+    },
+  },
+  // Новий контакт у Google Contacts (07 §4 kind=contact, T1). Не плутати з
+  // facts.contact: той - локальний факт ядра (T0), цей - запис у чужому
+  // сервісі, тож лише через ✅.
+  contact: {
+    async execute(env, payload) {
+      await assertGoogleScope(env, 'contacts');
+      const name = String(payload.name ?? payload.title ?? '')
+        .trim()
+        .slice(0, 120);
+      const email = String(payload.email ?? '').trim();
+      if (!name) throw new Error('contact: потрібне імʼя');
+      if (!CONTACT_EMAIL_RE.test(email)) throw new Error(`contact: «${email}» не схоже на email`);
+      const res = await createContact(env, { name, email });
+      if (!res.ok) throw new Error('contact: Google не створив контакт (лог)');
+      return { result: { name, email } };
+    },
+  },
   'facts.set': {
     async execute(env, payload, nowMs) {
       const before = await runFactsGet(env, { kind: payload.kind, key: payload.key });
@@ -704,6 +937,7 @@ export const EXECUTORS = {
  * @param {Env} env @param {Record<string, any>} payload @param {boolean} requireAttendees
  */
 async function createEventFromPayload(env, payload, requireAttendees) {
+  await assertGoogleScope(env, 'calendar');
   const title = String(payload.title ?? '')
     .trim()
     .slice(0, 200);
@@ -735,6 +969,131 @@ async function createEventFromPayload(env, payload, requireAttendees) {
   return { title, event_id: created.id, attendees: emails, notes };
 }
 
+/** id події їде в ШЛЯХ URL (google.mjs calendarEventUrl не екранує - «валідує
+ *  викликач»), тож формат перевіряється тут, до будь-якої мережі. */
+// Мусить ПОЧИНАТИСЬ з букви/цифри: інакше `..` проходив фільтр, а WHATWG-URL
+// згортав сегмент - і PATCH прилітав у ресурс КАЛЕНДАРЯ замість події
+// (ревʼю етапу 7).
+const EVENT_ID_RE = /^[A-Za-z0-9_@][A-Za-z0-9_@.-]{0,1023}$/;
+/** Той самий грубий фільтр, що в google.mjs: People API все одно перевірить. */
+const CONTACT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** @param {Record<string, any>} payload */
+function calendarEventId(payload) {
+  const id = String(payload.event_id ?? payload.eventId ?? payload.id ?? '').trim();
+  if (!EVENT_ID_RE.test(id)) throw new Error('calendar: потрібен event_id події');
+  return id;
+}
+
+/**
+ * Патч події з payload пропозиції: у Google їдуть ЛИШЕ названі поля - патч із
+ * зайвими ключами тихо переписав би те, чого власник не бачив у пропозиції.
+ * Порожній патч - помилка, а не «успішно нічого не змінив».
+ * @param {Env} env @param {Record<string, any>} payload
+ */
+async function buildEventPatch(env, payload) {
+  /** @type {Record<string, unknown>} */
+  const patch = {};
+  const title = String(payload.title ?? '').trim();
+  if (title) patch.summary = title.slice(0, 200);
+  if (typeof payload.location === 'string' && payload.location.trim()) {
+    patch.location = payload.location.trim().slice(0, 300);
+  }
+  const startMs = payload.startIso == null ? NaN : Date.parse(String(payload.startIso));
+  const endMs = payload.endIso == null ? NaN : Date.parse(String(payload.endIso));
+  // Час міняється ЛИШЕ парою: Google приймає патч одного кінця, і подія з
+  // кінцем раніше початку стає невидимою в сітці дня.
+  if (Number.isFinite(startMs) !== Number.isFinite(endMs)) {
+    throw new Error('calendar: час міняється парою startIso+endIso');
+  }
+  if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+    if (endMs <= startMs) throw new Error('calendar: кінець події раніше за початок');
+    patch.start = { dateTime: new Date(startMs).toISOString(), timeZone: 'Europe/Kyiv' };
+    patch.end = { dateTime: new Date(endMs).toISOString(), timeZone: 'Europe/Kyiv' };
+  }
+  if (payload.attendees != null) {
+    const { emails } = await resolveAttendees(env, payload.attendees);
+    if (emails.length) patch.attendees = emails.map((email) => ({ email }));
+  }
+  if (Object.keys(patch).length === 0) throw new Error('calendar: у патчі немає жодного поля');
+  return patch;
+}
+
+/**
+ * Параметри відео з payload: довжина в межах канону (S-8-6 називає ціну за
+ * 8 с) і модель. Кривий ввід - не «за замовчуванням», а межа: більше за
+ * стелю мовчки коштувало б власнику грошей понад показану ціну.
+ * @param {Record<string, any>} payload
+ * @returns {{ seconds: number, model: 'veo' | 'lite' }}
+ */
+function videoParams(payload) {
+  // Основний clamp живе в sanitizeGeminiPayload (щоб ціна й витрата рахувались
+  // з ОДНОГО числа); тут він лишається страховкою для шляхів повз санітизацію.
+  const raw = Number(payload.seconds);
+  const seconds = Number.isFinite(raw)
+    ? Math.min(Math.max(Math.round(raw), 1), VIDEO_MAX_SECONDS)
+    : VIDEO_DEFAULT_SECONDS;
+  return { seconds, model: payload.model === 'lite' ? 'lite' : 'veo' };
+}
+
+/**
+ * Стеля витрат Gemini ПЕРЕД пропозицією: місячний ліміт `gemini_usd` з
+ * quota_counters. Повертає текст відмови або null.
+ * @param {Env} env @param {string} kind @param {Record<string, unknown>} payload @param {number} nowMs
+ */
+async function geminiQuotaGuard(env, kind, payload, nowMs) {
+  if (!env.DB) return null; // без бази облік неможливий - не блокуємо дію мовчки
+  const { seconds, model } = videoParams(/** @type {any} */ (payload));
+  const cost = kind === 'gemini.image' ? IMAGE_USD : videoUsd(seconds, model);
+  try {
+    const limit = quotaLimitOf('gemini_usd');
+    const used = await quotaUsed(env, 'gemini_usd', nowMs);
+    if (used + cost > limit) {
+      return `Стеля витрат Gemini на місяць вичерпана: використано $${used.toFixed(2)} із $${limit.toFixed(2)}, ця генерація коштує $${cost.toFixed(2)}.`;
+    }
+  } catch (/** @type {any} */ e) {
+    // Облік не прочитався - це не привід тихо витратити гроші.
+    return `облік витрат Gemini недоступний: ${String(e?.message ?? '')}`;
+  }
+  return null;
+}
+
+/** Порахувати витрачене (алерти 80/100 % - усередині bumpQuota).
+ *  @param {Env} env @param {number} usd @param {number} nowMs */
+async function countGeminiSpend(env, usd, nowMs) {
+  try {
+    await bumpQuota(env, {
+      key: 'gemini_usd',
+      amount: usd,
+      limit: quotaLimitOf('gemini_usd'),
+      nowMs,
+    });
+  } catch (/** @type {any} */ e) {
+    // Гроші вже витрачені; збій обліку не сміє зробити вигляд, що дії не було.
+    console.error('gemini: витрата не порахована', e?.message);
+  }
+}
+
+/**
+ * Доставити згенероване в тред пропозиції. Медіа йде повз чергу (розмір), тож
+ * адреса рахується так само, як у collection.export.
+ * @param {Env} env
+ * @param {{ chatId?: number | string | null, threadId?: number | string | null } | undefined} ctx
+ * @param {{ kind: 'photo' | 'video', bytes: Uint8Array, mime: string, filename: string, caption: string }} media
+ */
+async function deliverGenerated(env, ctx, media) {
+  const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
+  const isDm = threadKey === 'dm';
+  const chatId =
+    ctx?.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+  if (chatId == null) throw new Error('gemini: чат для доставки невідомий');
+  await sendMediaBytes(
+    env,
+    { chatId, threadId: isDm || threadKey == null ? null : Number(threadKey) },
+    media,
+  );
+}
+
 /** @param {Env} env */
 function db(env) {
   if (!env.DB) throw new Error('привʼязки DB немає - policy неможлива');
@@ -748,7 +1107,7 @@ function db(env) {
  * @param {Env} env
  * @param {{ kind: string, payload: Record<string, unknown>,
  *   threadId?: string | number | null, chatId?: number | string | null,
- *   tainted: boolean, viaProposal?: boolean }} action - viaProposal: дію
+ *   tainted: boolean, taintedEver?: boolean, viaProposal?: boolean }} action - viaProposal: дію
  *   просить обгортка proposals.create (тоді T0 заборонений)
  * @param {number} nowMs
  * @returns {Promise<
@@ -779,6 +1138,37 @@ export async function applyPolicy(env, action, nowMs) {
       mode: 'error',
       error: `direct-tool: ${action.kind} - це T0, клич інструмент напряму, не proposals.create`,
     };
+  }
+
+  // Gemini (ADR-034): у чужий сервіс їде РІВНО prompt власника.
+  //
+  // Два барʼєри, і обидва тут, у ядрі, а не в описі інструмента.
+  //   1. Заплямована сесія - ВІДМОВА, не ескалація до ✅. Taint означає, що
+  //      модель щойно читала пошту або чужі чати, і будь-який текст, який
+  //      вона зараз складає, може нести їхній вміст. Ескалація тут не
+  //      допомогла б: власник підтвердив би картинку, не бачачи, що в
+  //      prompt-і переказано лист. Порада в тексті - /new.
+  //   2. Білий список полів: усе, крім prompt (і двох параметрів формату), -
+  //      помилка, тож id транзакції чи чату просто не має куди поїхати.
+  if (action.kind === 'gemini.image' || action.kind === 'gemini.video') {
+    // ⚠️ Не 10-хвилинний taint, а «читала зовнішнє ХОЧ РАЗ від /new»
+    // (security-ревʼю етапу 7): сесія мозку переживає межу прогону, і через
+    // 15 хвилин після листа його вміст усе ще в контексті - а звичайний taint
+    // уже прострочений. `taintedEver` не задано (виклики повз router) -
+    // падаємо на `tainted`, тобто барʼєр не слабший за попередній.
+    if (action.taintedEver ?? action.tainted) {
+      return {
+        mode: 'error',
+        error: `${action.kind}: сесія вже читала зовнішній вміст (пошта/чати) - у Gemini з неї нічого не йде. Почни /new і повтори запит.`,
+      };
+    }
+    const narrowed = sanitizeGeminiPayload(action.kind, action.payload);
+    if ('error' in narrowed) return { mode: 'error', error: narrowed.error };
+    action = { ...action, payload: narrowed.payload };
+    // Стеля витрат - ДО пропозиції: показати ціну й отримати ✅, а вже потім
+    // упертись у квоту означало б витратити рішення власника даремно.
+    const guard = await geminiQuotaGuard(env, action.kind, narrowed.payload, nowMs);
+    if (guard) return { mode: 'error', error: guard };
   }
 
   // kind факту звіряємо ДО виконання чи пропозиції (приймання 05.09, B1):

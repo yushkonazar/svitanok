@@ -142,60 +142,34 @@ function makeCtx(over: { state?: StateStore; llm?: Ctx['llm'] } = {}): Ctx<AppCo
   } as Ctx<AppConfig>;
 }
 
-const creds = {
-  GOOGLE_CLIENT_ID: 'id',
-  GOOGLE_CLIENT_SECRET: 'secret',
-  GOOGLE_REFRESH_TOKEN: 'refresh',
-};
-
-function mkFetch(
-  messageIds: string[],
-  headersById: Record<string, { subject: string; from: string; snippet: string }>,
+/** Кандидати з KV `state.mailTriage` - те, що поклало ядро (задача mail-triage). */
+function triage(
+  items: { id: string; subject: string; from: string; snippet: string }[],
+  atMs = Date.parse('2026-07-01T06:00:00Z'),
 ) {
-  return vi.fn(async (url: string) => {
-    if (url.includes('oauth2.googleapis.com/token')) {
-      return new Response(JSON.stringify({ access_token: 'AT' }), { status: 200 });
-    }
-    if (url.includes('/messages?')) {
-      return new Response(JSON.stringify({ messages: messageIds.map((id) => ({ id })) }), {
-        status: 200,
-      });
-    }
-    const idMatch = url.match(/\/messages\/([^?]+)/);
-    const id = idMatch?.[1] ?? '';
-    const h = headersById[id];
-    if (!h) return new Response('not found', { status: 404 });
-    return new Response(
-      JSON.stringify({
-        snippet: h.snippet,
-        payload: {
-          headers: [
-            { name: 'Subject', value: h.subject },
-            { name: 'From', value: h.from },
-          ],
-        },
-      }),
-      { status: 200 },
-    );
-  });
+  return {
+    historyId: '100',
+    lastRunMs: atMs,
+    fails: 0,
+    alerted: false,
+    candidates: items.map((i) => ({ ...i, atMs })),
+  };
 }
 
 describe('mail module', () => {
-  it('без GOOGLE_* секретів -> null', async () => {
-    const mod = createMailModule({ fetchImpl: vi.fn() as unknown as typeof fetch, env: {} });
-    expect(await mod.run(makeCtx())).toBeNull();
+  it('ключа mailTriage немає -> null із попередженням (тріаж у ядрі ще не ходив)', async () => {
+    const warns: string[] = [];
+    const ctx = makeCtx({ state: memState() });
+    ctx.log.warn = (m: string) => void warns.push(m);
+    expect(await createMailModule().run(ctx)).toBeNull();
+    expect(warns.join(' ')).toContain('mailTriage');
   });
 
-  it('401/invalid_grant на token -> null (не валить)', async () => {
-    const fetchImpl = vi.fn(async () => new Response('invalid_grant', { status: 400 }));
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    expect(await mod.run(makeCtx())).toBeNull();
-  });
-
-  it('порожня скринька -> null', async () => {
-    const fetchImpl = mkFetch([], {});
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    expect(await mod.run(makeCtx())).toBeNull();
+  it('порожній список кандидатів -> null, LLM не викликається', async () => {
+    const llm = { complete: vi.fn(async () => '[]') };
+    const state = memState({ mailTriage: triage([]) });
+    expect(await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] }))).toBeNull();
+    expect(llm.complete).not.toHaveBeenCalled();
   });
 
   it('малформед LLM-відповідь -> дедуп НЕ записано (лист повернеться завтра)', async () => {
@@ -205,13 +179,11 @@ describe('mail module', () => {
     // вичерпаний ліміт підписки повертає людський текст з exit 0, не throw.
     // Лист позначався прочитаним, випадав із вікна newer_than:3d і зникав
     // назавжди — мовчки. Завтра ліміт відпускає, і розгляд ЩЕ ЯК допоміг би.
-    const fetchImpl = mkFetch(['m1'], {
-      m1: { subject: 'Тема', from: 'a@b.com', snippet: 's' },
+    const state = memState({
+      mailTriage: triage([{ id: 'm1', subject: 'Тема', from: 'a@b.com', snippet: 's' }]),
     });
-    const state = memState();
     const llm = { complete: vi.fn(async () => 'не json') };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    const block = await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }));
+    const block = await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] }));
     expect(block).toBeNull();
     expect(state.get('shownMail')).toBeUndefined();
   });
@@ -220,19 +192,26 @@ describe('mail module', () => {
     // Так виглядає вичерпаний ліміт Pro: claude -p друкує це в stdout і виходить
     // з КОДОМ 0. Раніше цей текст ішов у mail як звичайна відповідь -> «0
     // важливих» -> усі листи позначені прочитаними -> запрошення на співбесіду
-    // втрачене без сліду (ні блоку «Пошта», ні попередження «⚠️ Система», бо у
-    // failures() теж нічого не писалось).
+    // втрачене без сліду.
     //
     // Ганяємо ВЕСЬ спільний фікстур-набір, а не один рядок: інакше новий текст
     // ліміту від Anthropic обійшов би захист мовчки, як і раніше.
     for (const text of USAGE_LIMIT_TEXTS) {
-      const fetchImpl = mkFetch(['m1'], {
-        m1: { subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
+      const state = memState({
+        mailTriage: triage([
+          {
+            id: 'm1',
+            subject: 'Запрошення на співбесіду',
+            from: 'hr@acme.com',
+            snippet: 'вітаємо',
+          },
+        ]),
       });
-      const state = memState();
       const llm = { complete: vi.fn(async () => text) };
-      const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-      expect(await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] })), text).toBeNull();
+      expect(
+        await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] })),
+        text,
+      ).toBeNull();
       expect(state.get('shownMail'), text).toBeUndefined();
     }
   });
@@ -241,21 +220,23 @@ describe('mail module', () => {
     // Межа, заради якої parseMailClassification розрізняє null і порожню Map:
     // «переглянув, важливого немає» — це повноцінна відповідь, і повторно палити
     // виклик на ті самі листи не треба.
-    const fetchImpl = mkFetch(['m1'], {
-      m1: { subject: 'Розсилка', from: 'news@shop.com', snippet: 'знижки' },
+    const state = memState({
+      mailTriage: triage([
+        { id: 'm1', subject: 'Розсилка', from: 'news@shop.com', snippet: 'знижки' },
+      ]),
     });
-    const state = memState();
     const llm = { complete: vi.fn(async () => '[]') };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    expect(await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }))).toBeNull();
+    expect(await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] }))).toBeNull();
     expect(state.get('shownMail')).toEqual({ m1: '2026-07-01' });
   });
 
   it('важливі листи -> Block з коректним рахунком, без subject/from/snippet у виводі', async () => {
-    const fetchImpl = mkFetch(['m1', 'm2', 'm3'], {
-      m1: { subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
-      m2: { subject: 'Знижки -50%', from: 'promo@shop.com', snippet: 'купуй зараз' },
-      m3: { subject: 'Ваша заявка отримана', from: 'noreply@corp.com', snippet: 'дякуємо' },
+    const state = memState({
+      mailTriage: triage([
+        { id: 'm1', subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
+        { id: 'm2', subject: 'Знижки -50%', from: 'promo@shop.com', snippet: 'купуй зараз' },
+        { id: 'm3', subject: 'Ваша заявка отримана', from: 'noreply@corp.com', snippet: 'дякуємо' },
+      ]),
     });
     const llm = {
       complete: vi.fn(async () =>
@@ -266,8 +247,7 @@ describe('mail module', () => {
         ]),
       ),
     };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    const block = await mod.run(makeCtx({ llm: llm as Ctx['llm'] }));
+    const block = await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] }));
     expect(block).toMatchObject({ id: 'mail', icon: '📧', summary: '2 листи про вакансії' });
     // data несе ЛИШЕ агрегований лічильник (Фаза B3, короткий рядок дня) —
     // жодних subject/from/snippet ні тут, ні деінде в блоці.
@@ -279,8 +259,10 @@ describe('mail module', () => {
   });
 
   it('запрошення на співбесіду з валідною датою -> MAIL_PROPOSAL_BUS_KEY', async () => {
-    const fetchImpl = mkFetch(['m1'], {
-      m1: { subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
+    const state = memState({
+      mailTriage: triage([
+        { id: 'm1', subject: 'Запрошення на співбесіду', from: 'hr@acme.com', snippet: 'вітаємо' },
+      ]),
     });
     const llm = {
       complete: vi.fn(async () =>
@@ -296,9 +278,8 @@ describe('mail module', () => {
         ]),
       ),
     };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    const ctx = makeCtx({ llm: llm as Ctx['llm'] });
-    await mod.run(ctx);
+    const ctx = makeCtx({ state, llm: llm as Ctx['llm'] });
+    await createMailModule().run(ctx);
     const proposal = ctx.bus.get<{ items: unknown[] }>(MAIL_PROPOSAL_BUS_KEY);
     expect(proposal?.items).toEqual([
       {
@@ -312,25 +293,27 @@ describe('mail module', () => {
   });
 
   it('збій LLM (throw) -> null і shownMail НЕ позначено (лист не втрачається)', async () => {
-    const fetchImpl = mkFetch(['m1'], {
-      m1: { subject: 'Запрошення', from: 'hr@acme.com', snippet: 'вітаємо' },
+    const state = memState({
+      mailTriage: triage([
+        { id: 'm1', subject: 'Запрошення', from: 'hr@acme.com', snippet: 'вітаємо' },
+      ]),
     });
-    const state = memState();
     const llm = {
       complete: vi.fn(async () => {
         throw new Error('claude -p таймаут');
       }),
     };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    const block = await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }));
+    const block = await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] }));
     expect(block).toBeNull();
     // На відміну від малформед-відповіді: throw -> НЕ позначаємо (ретрай завтра).
     expect(state.get('shownMail')).toBeUndefined();
   });
 
   it('interview:true але дата поза діапазоном/малий формат -> без bus-запису', async () => {
-    const fetchImpl = mkFetch(['m1'], {
-      m1: { subject: 'Запрошення', from: 'hr@acme.com', snippet: 'вітаємо' },
+    const state = memState({
+      mailTriage: triage([
+        { id: 'm1', subject: 'Запрошення', from: 'hr@acme.com', snippet: 'вітаємо' },
+      ]),
     });
     const llm = {
       complete: vi.fn(async () =>
@@ -346,30 +329,39 @@ describe('mail module', () => {
         ]),
       ),
     };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    const ctx = makeCtx({ llm: llm as Ctx['llm'] });
-    await mod.run(ctx);
+    const ctx = makeCtx({ state, llm: llm as Ctx['llm'] });
+    await createMailModule().run(ctx);
     expect(ctx.bus.get(MAIL_PROPOSAL_BUS_KEY)).toBeUndefined();
   });
 
   it('дедуп: лист у вікні shownMail не потрапляє в кандидатів', async () => {
-    const fetchImpl = mkFetch(['m1'], {
-      m1: { subject: 'Тема', from: 'a@b.com', snippet: 's' },
+    const state = memState({
+      shownMail: { m1: '2026-06-30' }, // учора, у вікні dedupDays=3
+      mailTriage: triage([{ id: 'm1', subject: 'Тема', from: 'a@b.com', snippet: 's' }]),
     });
-    const state = memState({ shownMail: { m1: '2026-06-30' } }); // учора, у вікні dedupDays=3
     const llm = { complete: vi.fn(async () => JSON.stringify([{ i: 1, important: true }])) };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    expect(await mod.run(makeCtx({ state, llm: llm as Ctx['llm'] }))).toBeNull();
+    expect(await createMailModule().run(makeCtx({ state, llm: llm as Ctx['llm'] }))).toBeNull();
     expect(llm.complete).not.toHaveBeenCalled();
   });
 
-  it('одиничний лист не завантажився -> пропускається, решта тріажу триває', async () => {
-    const fetchImpl = mkFetch(['m1', 'm2'], {
-      m2: { subject: 'Запрошення', from: 'hr@x.com', snippet: 's' },
-    }); // m1 -> 404 у mkFetch (немає в headersById)
-    const llm = { complete: vi.fn(async () => JSON.stringify([{ i: 1, important: true }])) };
-    const mod = createMailModule({ fetchImpl: fetchImpl as unknown as typeof fetch, env: creds });
-    const block = await mod.run(makeCtx({ llm: llm as Ctx['llm'] }));
-    expect(block!.summary).toBe('1 лист про вакансії');
+  it('кандидатів більше за maxCandidates -> у промпт іде рівно стеля', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      id: `m${i}`,
+      subject: `Тема ${i}`,
+      from: 'a@b.com',
+      snippet: 's',
+    }));
+    const state = memState({ mailTriage: triage(many) });
+    const seen: string[] = [];
+    const llm = {
+      complete: vi.fn(async (prompt: string) => {
+        seen.push(prompt);
+        return '[]';
+      }),
+    };
+    await createMailModule().run(makeCtx({ state, llm: llm as unknown as Ctx['llm'] }));
+    const prompt = seen[0] ?? '';
+    expect(prompt).toContain('Тема 14');
+    expect(prompt).not.toContain('Тема 15');
   });
 });
