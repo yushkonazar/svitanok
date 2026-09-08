@@ -143,7 +143,18 @@ export async function runTelegramSetup(/** @type {Env} */ env, /** @type {string
   const res = await tgCall(env, 'setWebhook', {
     url: `${origin}/api/telegram`,
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-    allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+    // Business-апдейти (ADR-013, етап 6 PR-3) - Telegram НЕ шле їх без явного
+    // переліку, тож без цього рядка підключення в Telegram Business виглядало
+    // б зробленим, а вхідних не було б жодного.
+    allowed_updates: [
+      'message',
+      'callback_query',
+      'my_chat_member',
+      'business_connection',
+      'business_message',
+      'edited_business_message',
+      'deleted_business_messages',
+    ],
   });
   // "/" меню команд + menu-button (кнопка біля поля вводу) -> запуск Mini App (Блок P4).
   await tgCall(env, 'setMyCommands', { commands: COMMANDS });

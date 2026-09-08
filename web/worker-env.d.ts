@@ -176,8 +176,27 @@ interface Env {
       status?: () => Promise<unknown>;
     }>;
   };
+  /**
+   * Workflow імпорту експорту чату (етап 6 PR-4, 07 §6 InboxExport) - той
+   * самий контракт; подій не має (`sendEvent` лишається заради спільного типу).
+   */
+  INBOX_EXPORT?: {
+    create: (opts: { id?: string; params?: unknown }) => Promise<unknown>;
+    get: (id: string) => Promise<{
+      sendEvent: (event: { type: string; payload?: unknown }) => Promise<void>;
+      status?: () => Promise<unknown>;
+    }>;
+  };
   /** Ключ IsThereAnyDeal (етап 0, 05-ops §секрети): знижки на ігри, задача steam-check. */
   ITAD_API_KEY?: string;
+  /** Токен Monobank personal API (етап 0, 05-ops §секрети): вебхук і виписка. */
+  MONO_TOKEN?: string;
+  /**
+   * Секрет у ШЛЯХУ вебхука Mono (05-ops §секрети, виняток із правила «секрет
+   * не в URL»): Mono тіло не підписує, тож автентичність дає лише адреса, яку
+   * знають двоє. ≥ 32 символи, ротація раз на рік.
+   */
+  MONO_WEBHOOK_SECRET?: string;
   /** Read-only PAT на 4 репо (етап 0): HEAD-sha для кешу аналізу ідеї. */
   REPO_READ_PAT?: string;
   /** `workflow_dispatch` у brief.yml (крон-диспетч брифінгу) та idea-analysis.yml. */

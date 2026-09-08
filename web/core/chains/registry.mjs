@@ -12,6 +12,7 @@ export const CHAIN_BINDINGS = /** @type {const} */ ({
   table: 'TABLE_CHAIN',
   price: 'PRICE_TRACK',
   trip: 'TRIP_CHAIN',
+  'inbox-export': 'INBOX_EXPORT',
 });
 
 /** «скасуй столик», «відміни» - це для мозку (chain.cancel), не відповідь ланцюгу. */

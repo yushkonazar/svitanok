@@ -21,9 +21,16 @@ import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { parseReminderTime, addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivClock, kyivDateKey } from '../../kyiv-time.mjs';
 import { kyivMs } from '../day-plan/store.mjs';
-import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { patchChainState, readChainState, waitOrNull } from './state.mjs';
+import {
+  Cancelled,
+  chainTarget,
+  db,
+  patchChainState,
+  postChainMessage,
+  readChainState,
+  waitOrNull,
+} from './state.mjs';
 import { sendChainEvent } from './registry.mjs';
 import {
   placesSearch,
@@ -100,12 +107,6 @@ const SLEEP_ROUNDS_MAX = 5;
  * @typedef {import('../adapters/maps.mjs').PlaceDetails} PlaceDetails
  * @typedef {import('../adapters/maps.mjs').PlaceCandidate} PlaceCandidate
  */
-
-/** @param {Env} env */
-function db(env) {
-  if (!env.DB) throw new Error('привʼязки DB немає - ланцюг недоступний');
-  return env.DB;
-}
 
 /** Ряд кнопок ланцюга (07 §9 `c:<id>:<choice>`). @param {string} chainId @param {[string, string][]} pairs */
 function row(chainId, pairs) {
@@ -388,22 +389,6 @@ function venueOf(stateJson) {
   }
 }
 
-/**
- * Адреса доставки ланцюга: чат/тред старту (стан), DM - особистий чат
- * власника. Один розрахунок для машини станів і chain-nudge.
- * @param {Env} env @param {{ chat_id?: number | string | null, thread_id?: string | null }} state
- * @returns {{ chatId: string, threadId: string | null }}
- */
-export function chainTarget(env, state) {
-  const isDm = state.thread_id === 'dm';
-  const chatId =
-    state.chat_id ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
-  if (chatId == null)
-    throw new Error('немає чату для ланцюга (TELEGRAM_CHAT_ID / контекст старту)');
-  const threadId = isDm ? null : (state.thread_id ?? env.TOPIC_ASSISTANT ?? null);
-  return { chatId: String(chatId), threadId: threadId == null ? null : String(threadId) };
-}
-
 /** @param {Env} env @param {string} chainId @returns {Promise<TableState>} */
 export async function loadTableState(env, chainId) {
   const row = await readChainState(env, chainId);
@@ -412,8 +397,6 @@ export async function loadTableState(env, chainId) {
 }
 
 // ── Машина станів Workflow ─────────────────────────────────────────────────
-
-class Cancelled extends Error {}
 
 /**
  * @param {Env} env
@@ -951,27 +934,17 @@ export function phoneOf(text) {
  */
 export function productionIo(env, chainId, state) {
   const { chatId, threadId } = chainTarget(env, state);
-  const post = async (
+  const post = (
     /** @type {'send' | 'contact' | 'venue'} */ kind,
     /** @type {Record<string, unknown>} */ payload,
     /** @type {unknown} */ btns,
     /** @type {import('../tg/markdown.mjs').MdPart[] | undefined} */ parts = undefined,
-  ) => {
-    await enqueueOutbox(
+  ) =>
+    postChainMessage(
       env,
-      {
-        chatId,
-        threadId,
-        kind,
-        payload: { ...payload, ...(btns ? { reply_markup: { inline_keyboard: btns } } : {}) },
-        parts,
-      },
-      Date.now(),
+      { chatId, threadId },
+      { kind, payload, buttons: btns, parts, label: `table-chain ${chainId}` },
     );
-    await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
-      console.error(`table-chain ${chainId}: драйн outbox впав, доставить sweeper`, e?.message);
-    });
-  };
   return {
     now: () => Date.now(),
     send: (text, btns) => post('send', {}, btns, renderMdParts(text)),

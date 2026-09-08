@@ -246,15 +246,15 @@ describe('T1/T2: пропозиції', () => {
       ok: false,
       error: 'word-required',
     });
-    // Виконавець forget є з етапу 3 (колекції); чат - етап 6, тож збій
-    // виконання названо вголос, а не тихо «прийнято».
+    // Ціль «усе» лишається етапом 7, тож збій виконання названо вголос, а не
+    // тихо «прийнято» (колекції - етап 3, чат - етап 6).
     expect(
       await resolveProposal(
         env,
         { id, choice: 'ok', word: ` ${String(word).toLowerCase()} ` },
         NOW + 2000,
       ),
-    ).toMatchObject({ ok: false, error: expect.stringContaining('етап 6') });
+    ).toMatchObject({ ok: false, error: expect.stringContaining('не сказано, який чат') });
     // Клейм стоїть: повторний тап не переграє виконання.
     const row = store.raw.prepare('SELECT status FROM proposals WHERE id = ?').get(id) as {
       status: string;

@@ -36,6 +36,11 @@ import { dayPlanKickTask } from '../day-plan/kick.mjs';
 import { chainNudgeTask } from '../chains/nudge.mjs';
 import { priceTrackKickTask } from '../chains/price.mjs';
 import { steamCheckTask } from '../steam/check.mjs';
+import { monoReconcileTask } from '../finance/reconcile.mjs';
+import { financeEveningTask } from '../finance/evening.mjs';
+import { subscriptionRemindTask } from '../finance/subscriptions.mjs';
+import { inboxDigestTask } from '../inbox/digest.mjs';
+import { retentionCleanupTask } from '../retention/cleanup.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 
 /**
@@ -143,4 +148,21 @@ export const SCHEDULER_TASKS = {
   // Знижки на ігри (етап 5 PR-5, 07 §7): 10:00 Києва - батч ITAD по бажаннях
   // type=game; гейт години й мітка дня - усередині задачі.
   'steam-check': { periodMin: 5, run: async (env) => steamCheckTask(env) },
+  // Звірка Mono (етап 6 PR-1, 07 §7, S-4-9/S-4-11): 23:30 Києва - client-info,
+  // адреса вебхука і виписка за добу. РІВНО ОДИН зовнішній виклик за тік
+  // (ліміт Mono 1/60 с), крок - у KV; поки списку рахунків немає, фаза
+  // client-info вмикається в будь-яку годину (бар'єр вебхука S-4-12).
+  'mono-reconcile': { periodMin: 5, run: async (env) => monoReconcileTask(env) },
+  // Вечірній рядок про гроші (етап 6 PR-2, S-4-7): 21:00 Києва, тиша при
+  // нулі покупок; гейт години й мітка дня - усередині задачі.
+  'finance-evening': { periodMin: 5, run: async (env) => financeEveningTask(env) },
+  // Нагадування про підписку (етап 6 PR-2, S-4-6): 11:00 Києва за два дні до
+  // списання, з кнопкою «Скасувати підписку в обліку».
+  'subscription-remind': { periodMin: 5, run: async (env) => subscriptionRemindTask(env) },
+  // Дайджест чатів (етап 6 PR-4, S-2-5): 08:30 Києва, лише коли ввімкнено у
+  // facts.setting.inbox_digest і є про що писати.
+  'inbox-digest': { periodMin: 5, run: async (env) => inboxDigestTask(env) },
+  // Ретенція (етап 6 PR-4, 07 §1): 04:00 Києва - вхідні 30 діб, транзакції
+  // 24 міс, телеметрія 90 діб і решта строків зі схеми.
+  'retention-cleanup': { periodMin: 5, run: async (env) => retentionCleanupTask(env) },
 };

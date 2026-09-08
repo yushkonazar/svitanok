@@ -17,7 +17,7 @@ import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
 import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
-import { formatMoney, cleanSource } from '../chains/price.mjs';
+import { formatMoney, cleanSource } from '../format.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
 import {
   itadLookup,
