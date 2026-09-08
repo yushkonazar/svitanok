@@ -344,7 +344,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   }
   const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
-  const buttons = [...(body.buttons ?? []), ...(saved ? workerButtons(saved.id, !longWorker) : [])];
+  const buttons = [
+    ...(body.buttons ?? []),
+    ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),
+  ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
   // спершу покаже обірваний шматок і лише потім фінал.
   if (draftId != null) await dropPendingEdits(env, target.chatId, draftId);

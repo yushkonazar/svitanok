@@ -15,7 +15,55 @@ export const WORKER_DRIVE_FOLDER = ['Світанок', 'workers'];
 export const WORKER_FOLLOWUPS = {
   short: 'Коротше: скороти результат працівника вдвічі, суть лиши.',
   tone: 'Інший тон: перепиши результат працівника в іншому тоні, зміст той самий.',
+  next: 'Покажи наступні листи з тих, що чекають.',
+  draft: 'Склади чернетку відповіді на лист, про який щойно йшлося.',
+  src: 'Дай джерела: звідки саме взято те, що ти щойно сказав.',
+  week: 'Розбий це по тижнях і покажи тренд.',
+  cal: 'Постав це в календар - запропонуй подію з часом.',
+  spend: 'Куди саме пішли ці гроші: розклади по категоріях.',
+  more: 'Дай ще питань на цю тему.',
 };
+
+/**
+ * ⚠️ КНОПКИ ЗА ПРАЦІВНИКОМ, а не однакові на все (скарга 15 прогону 08.09:
+ * під тріажем пошти висіли «Коротше / Інший тон» - кнопки для ТЕКСТУ, а не
+ * для переліку листів). Ключі - з WORKER_FOLLOWUPS; невідомий працівник
+ * дістає базовий набір, бо для довільного тексту він і правильний.
+ * @type {Record<string, { key: keyof typeof WORKER_FOLLOWUPS, text: string }[]>}
+ */
+const WORKER_ACTIONS = {
+  'mail-secretary': [
+    { key: 'draft', text: '✍️ Чернетка відповіді' },
+    { key: 'next', text: '✉️ Наступні листи' },
+  ],
+  researcher: [
+    { key: 'src', text: '🔎 Джерела' },
+    { key: 'short', text: '✏️ Коротше' },
+  ],
+  analyst: [
+    { key: 'week', text: '📊 По тижнях' },
+    { key: 'short', text: '✏️ Коротше' },
+  ],
+  planner: [
+    { key: 'cal', text: '🗓 У календар' },
+    { key: 'short', text: '✏️ Коротше' },
+  ],
+  finance: [
+    { key: 'spend', text: '💸 Куди пішли' },
+    { key: 'short', text: '✏️ Коротше' },
+  ],
+  tutor: [
+    { key: 'more', text: '🎓 Ще питань' },
+    { key: 'short', text: '✏️ Коротше' },
+  ],
+};
+
+/** Базовий набір - для тексту, який просять переписати (копірайтер, редактор). */
+const WORKER_ACTIONS_DEFAULT = [
+  { key: /** @type {const} */ ('short'), text: '✏️ Коротше' },
+  { key: /** @type {const} */ ('tone'), text: '🔁 Інший тон' },
+];
+
 const NAME_RE = /^[a-z][a-z0-9-]{1,31}$/;
 
 /** @param {Env} env */
@@ -24,12 +72,13 @@ function db(env) {
   return env.DB;
 }
 
-/** Кнопки під відповіддю (07 §9 `m:w:<id>:<choice>`). @param {string} id @param {boolean} withMd */
-export function workerButtons(id, withMd) {
-  const row = [
-    { text: '✏️ Коротше', callback_data: `m:w:${id}:short` },
-    { text: '🔁 Інший тон', callback_data: `m:w:${id}:tone` },
-  ];
+/** Кнопки під відповіддю (07 §9 `m:w:<id>:<choice>`), набір - за працівником.
+ *  @param {string} id @param {boolean} withMd @param {string} [worker] */
+export function workerButtons(id, withMd, worker = '') {
+  const row = (WORKER_ACTIONS[worker] ?? WORKER_ACTIONS_DEFAULT).map((a) => ({
+    text: a.text,
+    callback_data: `m:w:${id}:${a.key}`,
+  }));
   if (withMd) row.push({ text: '📎 .md', callback_data: `m:w:${id}:md` });
   return [row];
 }

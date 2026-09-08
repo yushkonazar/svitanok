@@ -922,6 +922,46 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(sent?.body.text).toBe('🧠 Запамʼятав «setting.k».');
   });
 
+  it('після рішення на місці кнопок лишається чип із вибором (скарга 14)', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db);
+    await handleBrainCallback(
+      env,
+      {
+        data: 'p:prop1:ok',
+        chatId: 555,
+        messageId: 42,
+        replyMarkup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Запамʼятати', callback_data: 'p:prop1:ok' },
+              { text: '❌ Ні', callback_data: 'p:prop1:no' },
+            ],
+          ],
+        },
+      },
+      NOW,
+    );
+    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup');
+    // Не просто зняли кнопки: видно, ЩО саме обрано (за пів години в історії
+    // голе зняття нерозрізненне з «нічого не сталось»).
+    expect(edit?.body.reply_markup).toEqual({
+      inline_keyboard: [[{ text: '✅ Запамʼятати', callback_data: 'm:done' }]],
+    });
+    // Чип тапабельний - Telegram однаково пришле callback; мовчати не можна.
+    expect(await handleBrainCallback(env, { data: 'm:done', chatId: 555 }, NOW)).toBe(
+      'Це вже вирішено.',
+    );
+  });
+
+  it('розмітки в callback немає - просто знімаємо клавіатуру, підпис не вигадуємо', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, { id: 'p2' });
+    await handleBrainCallback(env, { data: 'p:p2:ok', chatId: 555, messageId: 42 }, NOW);
+    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup');
+    expect(edit?.body.reply_markup).toBeUndefined();
+  });
+
   it('«↩» знімає клавіатуру й лишає слід у треді (прогін 08.09)', async () => {
     // Скарга власника: після «Скасувати» стан повідомлення не змінився -
     // кнопка лишилась живою, хоч відкочувати вже нічого.

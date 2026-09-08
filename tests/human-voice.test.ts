@@ -8,6 +8,7 @@ import { ACTION_LEVELS } from '../web/core/policy/core.mjs';
 import { describeProposal, humanAction } from '../web/core/prerouter.mjs';
 import { proposalVolume } from '../web/core/policy/volume.mjs';
 import { toolStatusWord } from '../brain/src/tools/status-words.js';
+import { workerButtons } from '../web/core/brain/worker-results.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
@@ -132,5 +133,28 @@ describe('plural - одне правило на весь проєкт', () => {
     expect([1, 2, 5, 11, 12, 21, 22, 25].map((n) => plural(n, 'рядок', 'рядки', 'рядків'))).toEqual(
       ['рядок', 'рядки', 'рядків', 'рядків', 'рядків', 'рядок', 'рядки', 'рядків'],
     );
+  });
+});
+
+describe('кнопки за працівником і слід вибору', () => {
+  it('пошта дістає свої кнопки, а не «Коротше / Інший тон»', () => {
+    const mail = workerButtons('w1', true, 'mail-secretary')[0]!;
+    expect(mail.map((b) => b.callback_data)).toEqual(['m:w:w1:draft', 'm:w:w1:next', 'm:w:w1:md']);
+    // Скарга 15: під тріажем висіли кнопки для ТЕКСТУ, а не для переліку листів.
+    expect(JSON.stringify(mail)).not.toContain('tone');
+  });
+
+  it('невідомий працівник - базовий набір (для довільного тексту він і правильний)', () => {
+    expect(workerButtons('w2', false, 'нема-такого')[0]!.map((b) => b.callback_data)).toEqual([
+      'm:w:w2:short',
+      'm:w:w2:tone',
+    ]);
+  });
+
+  it('довгий результат - без «.md» у рядку (він уже пішов файлом)', () => {
+    expect(workerButtons('w3', false, 'researcher')[0]!.map((b) => b.callback_data)).toEqual([
+      'm:w:w3:src',
+      'm:w:w3:short',
+    ]);
   });
 });

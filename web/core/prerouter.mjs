@@ -797,7 +797,9 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * одразу, а робота - виконатись після відповіді, у тому ж waitUntil. Без
  * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
- * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
+ * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null,
+ *   threadId?: number | string | null, replyMarkup?: unknown }} parsed - replyMarkup
+ *   потрібен, щоб на місці знятих кнопок лишити напис натиснутої
  * @param {number} [nowMs]
  * @param {((work: () => Promise<void>) => void) | null} [defer]
  * @returns {Promise<string | null>}
@@ -904,17 +906,22 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   }
   // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
   // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
-  const wm = data.match(/^m:w:([A-Za-z0-9-]{1,40}):(short|tone|md)$/);
+  const wm = data.match(
+    /^m:w:([A-Za-z0-9-]{1,40}):(short|tone|md|next|draft|src|week|cal|spend|more)$/,
+  );
   if (wm) {
     return workerResultToast(
       env,
       parsed,
       /** @type {string} */ (wm[1]),
-      /** @type {'short' | 'tone' | 'md'} */ (wm[2]),
+      /** @type {keyof typeof WORKER_FOLLOWUPS | 'md'} */ (wm[2]),
       nowMs,
       defer,
     );
   }
+  // m:done - чип на місці знятої клавіатури (скарга 14): тапати нема куди,
+  // але Telegram однаково шле callback, і мовчати на нього не можна.
+  if (data === 'm:done') return 'Це вже вирішено.';
   // m:ia:<ideaId> - «Все одно запустити» під кешованим аналізом (S-3-4, етап 4
   // PR-2): повторний прогін по коду попри кеш; T0 через policy, як і з чату.
   const ia = data.match(/^m:ia:([A-Za-z0-9-]{1,40})$/);
@@ -1215,13 +1222,29 @@ async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
   return choice === 'price' ? 'Шукаю ціни' : 'Слухаю категорію';
 }
 
+/** Тост під кожну кнопку працівника - щоб власник бачив, що саме прийнято.
+ *  @type {Record<string, string>} */
+const WORKER_TOASTS = {
+  short: 'Скорочую',
+  tone: 'Міняю тон',
+  next: 'Дивлюсь далі',
+  draft: 'Складаю чернетку',
+  src: 'Піднімаю джерела',
+  week: 'Рахую по тижнях',
+  cal: 'Готую подію',
+  spend: 'Розкладаю по категоріях',
+  more: 'Готую ще питань',
+};
+
 /**
- * Кнопки під результатом працівника (S-7-1): «Коротше»/«Інший тон» - підказка
- * в тред як текст власника (chat-сесія памʼятає задачу й результат), «.md» -
+ * Кнопки під результатом працівника (S-7-1): набір залежить від САМОГО
+ * працівника (worker-results.mjs), бо «Коротше / Інший тон» під тріажем пошти
+ * - кнопки не про той зміст (скарга 15 прогону 08.09). Вибір іде підказкою в
+ * тред як текст власника (chat-сесія памʼятає задачу й результат), «.md» -
  * файл із бази. Клавіатуру не знімаємо: кнопки можна тиснути кілька разів.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {string} id @param {'short' | 'tone' | 'md'} choice @param {number} nowMs
+ * @param {string} id @param {keyof typeof WORKER_FOLLOWUPS | 'md'} choice @param {number} nowMs
  * @param {((work: () => Promise<void>) => void) | null} defer - старт прогону довший за
  *   вікно тосту (як у ideaRerunToast)
  */
@@ -1255,7 +1278,7 @@ async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
       ),
     );
   } else await work();
-  return choice === 'short' ? 'Скорочую' : 'Міняю тон';
+  return WORKER_TOASTS[choice] ?? 'Беруся';
 }
 
 /** Текст у тред після старту заново. @param {Record<string, unknown>} r */
@@ -1379,14 +1402,53 @@ async function askT2Word(env, parsed, id) {
   }
 }
 
-/** Зняти інлайн-клавіатуру - best-effort: тост важливіший за косметику.
- *  @param {Env} env @param {{ chatId?: number | null, messageId?: number | null }} parsed */
+/**
+ * Зняти інлайн-клавіатуру й лишити на її місці слід вибору.
+ *
+ * ⚠️ ЧОМУ СЛІД, А НЕ ПРОСТО ЗНЯТТЯ (скарга 14 прогону 08.09: «стан
+ * повідомлення має оновитись, а кнопки зникнути»). Голе зняття лишає
+ * повідомлення точно таким, яким воно було ДО тапу: власник не бачить, що
+ * саме він обрав, і за пів години в історії це нерозрізненно. Текст
+ * повідомлення переписати не можна - Telegram віддає його в callback вже без
+ * розмітки, і editMessageText зʼїв би жирний і посилання. Тому на місці
+ * клавіатури лишається один нетапабельний на ділі рядок-чип із написом тієї
+ * кнопки, яку натиснули; його callback (`m:done`) лише каже «вже вирішено».
+ *
+ * Best-effort: тост і сама дія важливіші за косметику.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, data?: unknown,
+ *   replyMarkup?: unknown }} parsed
+ */
 async function clearKeyboard(env, parsed) {
   if (parsed.messageId == null || parsed.chatId == null) return;
+  const label = tappedButtonLabel(parsed);
   await tgCall(env, 'editMessageReplyMarkup', {
     chat_id: parsed.chatId,
     message_id: parsed.messageId,
+    ...(label
+      ? { reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'm:done' }]] } }
+      : {}),
   }).catch(() => {});
+}
+
+/** Напис натиснутої кнопки з розмітки самого повідомлення - Telegram присилає
+ *  її в callback_query. Не знайшли - null: вигадувати підпис не будемо.
+ *  @param {{ data?: unknown, replyMarkup?: unknown }} parsed */
+function tappedButtonLabel(parsed) {
+  const data = String(parsed.data ?? '');
+  const rows = /** @type {any} */ (parsed.replyMarkup)?.inline_keyboard;
+  if (!data || !Array.isArray(rows)) return null;
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue;
+    for (const btn of row) {
+      if (btn?.callback_data !== data) continue;
+      const text = String(btn?.text ?? '').trim();
+      // Кнопка вже могла бути чипом (подвійний тап) - другого «✅» не ліпимо.
+      if (!text) return null;
+      return text.startsWith('✅ ') ? text : `✅ ${text}`.slice(0, 64);
+    }
+  }
+  return null;
 }
 
 /** @param {Awaited<ReturnType<typeof resolveProposal>>} res */
@@ -1412,7 +1474,6 @@ function decisionText(res) {
   // Підпис із результату виконавця; без назви там - із payload пропозиції
   // (export віддає {filename, rows}, accept - {date}; приймання 05.09, B4).
   const payload = 'payload' in res ? res.payload : null;
-  // Підпис із результату виконавця, а без назви там - із payload пропозиції.
   const result = 'result' in res ? res.result : null;
   const fromResult = res.status === 'approved' ? proposalLabel(res.kind, result).label : '';
   const source = fromResult ? result : payload;
