@@ -446,7 +446,11 @@ describe('policy: рівні й виконавці колекцій', () => {
       { id: chat.proposal.id, choice: 'ok', word: chat.proposal.word },
       NOW + 1,
     );
-    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('етап 6') });
+    // Чат є з етапу 6, але без назви стирати нема чого - чесна відмова.
+    expect(res).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('не сказано, який чат'),
+    });
   });
 
   it('collection.export (T1): після ✅ документ .csv іде в outbox треду пропозиції', async () => {

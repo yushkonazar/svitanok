@@ -28,6 +28,10 @@ export const ACTION_LEVELS = {
   'records.update': 'T0',
   'chain.start': 'T0',
   'chain.cancel': 'T0',
+  // Гроші (етап 6 PR-2, 07 §4): правило категорії й облік підписок - записи в
+  // ВЛАСНУ базу, тож T0 з «↩», як facts.set.
+  'finance.rule': 'T0',
+  'subscriptions.update': 'T0',
   // План дня v2 (07 §4, ADR-035): усі T0, «↩» для accept/update.
   'plan.intent': 'T0',
   'plan.draft': 'T0',

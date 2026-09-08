@@ -50,6 +50,9 @@ import {
   deleteWishRow,
   findWish,
 } from '../tools/wishes.mjs';
+import { runFinanceRule, restoreRule } from '../tools/finance.mjs';
+import { forgetChat } from '../inbox/store.mjs';
+import { updateSubscription } from '../finance/subscriptions.mjs';
 import { createCalendarEvent, resolveAttendees } from '../../google.mjs';
 import {
   runCollectionsCreate,
@@ -363,7 +366,18 @@ export const EXECUTORS = {
         const { name, records } = await deleteCollection(env, payload.collection ?? payload.id);
         return { result: { erased: `колекція «${name}» (${records} зап.)` } };
       }
-      throw new Error(`forget: ціль «${target}» ще не підтримується (чат - етап 6, усе - етап 7)`);
+      // S-2-8: чат цілком - повідомлення, індекс і дайджести ЛИШЕ про нього.
+      if (target === 'chat') {
+        const { messages, digests } = await forgetChat(env, payload.chat ?? payload.name);
+        return {
+          result: {
+            erased: `${messages} ${plural(messages, 'повідомлення', 'повідомлення', 'повідомлень')} і ${digests} ${plural(digests, 'дайджест', 'дайджести', 'дайджестів')}`,
+            messages,
+            digests,
+          },
+        };
+      }
+      throw new Error(`forget: ціль «${target}» ще не підтримується (усе - етап 7)`);
     },
   },
   'collection.export': {
@@ -599,6 +613,45 @@ export const EXECUTORS = {
     async execute(env, payload, nowMs) {
       const { result } = await runWishesDelete(env, { id: payload.id }, nowMs);
       return { result };
+    },
+  },
+  // Гроші (етап 6 PR-2). Обидва - записи у ВЛАСНУ базу, тож T0 з «↩».
+  // ⚠️ Знімок `finance.rule` несе не лише рядок правила, а й СТАРУ категорію
+  // кожної перекладеної транзакції: вони різні (частина з довідника MCC,
+  // частина з іншого правила), і «зворотним правилом» їх не відновити - без
+  // цього «↩» була б неправдою на T0-дії, яка виконується без ✅.
+  // subscriptions.update повертає рівно ті статус і дату, що були.
+  'finance.rule': {
+    async execute(env, payload) {
+      const { result, prev } = await runFinanceRule(env, {
+        pattern: payload.pattern,
+        category: payload.category,
+        is_subscription: payload.is_subscription,
+      });
+      return { result, prev };
+    },
+    async undo(env, snapshot) {
+      await restoreRule(env, snapshot);
+    },
+  },
+  'subscriptions.update': {
+    async execute(env, payload) {
+      const result = await updateSubscription(env, {
+        id: payload.id,
+        status: payload.status,
+        next_at: payload.next_at,
+      });
+      return { result, prev: { id: result.id, ...result.before } };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.id) return;
+      await updateSubscription(env, {
+        id: String(snapshot.id),
+        status: String(snapshot.status),
+        // Саме `null`, а не `undefined`: підписці без дати «↩» мусить
+        // повернути її відсутність, а не лишити щойно проставлену.
+        next_at: snapshot.next_at ?? null,
+      });
     },
   },
   // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -
@@ -940,4 +993,14 @@ async function setStatus(env, id, status, nowMs) {
     .bind(status, new Date(nowMs).toISOString(), id)
     .run();
   return (res.meta?.changes ?? 0) === 1;
+}
+
+/** Число + форма слова (одна / дві / пʼять). @param {number} n
+ *  @param {string} one @param {string} few @param {string} many */
+function plural(n, one, few, many) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
 }

@@ -19,7 +19,15 @@ import { buildHealthPayload, type BuildInfo, type HealthLimits } from './health.
 
 export const RUN_REQUEST_SCHEMA = z.object({
   run_id: z.string().min(1).max(64),
-  profile: z.enum(['chat', 'quick', 'summarize', 'weekly-review', 'day-planner', 'price-check']),
+  profile: z.enum([
+    'chat',
+    'quick',
+    'summarize',
+    'weekly-review',
+    'day-planner',
+    'price-check',
+    'inbox-digest',
+  ]),
   thread_id: z.string().min(1).max(64),
   input: z.object({ text: z.string().min(1).max(30_000) }),
   tainted: z.boolean().optional(),

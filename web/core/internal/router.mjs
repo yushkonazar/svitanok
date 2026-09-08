@@ -21,6 +21,7 @@ import { applyPolicy } from '../policy/proposals.mjs';
 import { isTaintActive } from '../policy/core.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
+import { saveInboxDigest } from '../inbox/digest.mjs';
 import { sendChainEvent } from '../chains/registry.mjs';
 import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
 import { loadInstruction } from '../instructions.mjs';
@@ -355,11 +356,22 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
   // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.
   let reportId = null;
-  if ((await readRunProfile(env, runId).catch(() => null)) === 'weekly-review') {
+  const profile = await readRunProfile(env, runId).catch(() => null);
+  if (profile === 'weekly-review') {
     try {
       reportId = (await saveWeeklyReport(env, body.text, nowMs)).id;
     } catch (/** @type {any} */ e) {
       console.error('internal: звіт не збережено в reports', e?.message);
+    }
+  }
+  // Дайджест чатів (S-2-5): текст у `inbox_digests` - вони лишаються назавжди,
+  // навіть коли самі повідомлення зникнуть за ретенцією. Той самий порядок:
+  // спершу доставка власнику, потім запис.
+  if (profile === 'inbox-digest') {
+    try {
+      await saveInboxDigest(env, body.text, nowMs);
+    } catch (/** @type {any} */ e) {
+      console.error('internal: дайджест не збережено в inbox_digests', e?.message);
     }
   }
   return json({

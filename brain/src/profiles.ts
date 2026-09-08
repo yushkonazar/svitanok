@@ -12,7 +12,7 @@ import {
 } from './workers.js';
 
 export type ProfileName =
-  'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner' | 'price-check';
+  'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner' | 'price-check' | 'inbox-digest';
 
 /** Інструменти Денного за front-matter agents/day-planner.md (07 §5):
  *  calendar.read, data.read, facts.get, routes.eta (описаний з етапу 5). */
@@ -29,6 +29,9 @@ export const DAY_PLANNER_TOOL_NAMES = [
  *  описані (фільтр нижче), а інструкція каже писати про недоступне в «ЧОГО Я
  *  НЕ БАЧИВ». Парність із файлом тримає тест weekly-review-profile. */
 export const WEEKLY_REVIEW_TOOL_NAMES = ['data_read', 'finance_query', 'runs_query'] as const;
+
+/** Дайджест чатів (07 §5): РІВНО один інструмент - і жодного запису. */
+export const INBOX_DIGEST_TOOL_NAMES = ['inbox_search'] as const;
 
 export interface RunProfile {
   name: ProfileName;
@@ -103,6 +106,18 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
     maxTurns: 12,
     timeoutMs: 3 * 60_000,
   },
+  // Дайджест чатів (07 §5, етап 6 PR-4, S-2-5): Haiku, лише inbox.search,
+  // три виклики. Інструкція - persona, а правило дайджесту приходить у тексті
+  // задачі: окрема інструкція в D1 заради трьох рядків правила означала б ще
+  // один файл у sync-instructions і ще один хеш, який може розійтись.
+  'inbox-digest': {
+    name: 'inbox-digest',
+    model: 'claude-haiku-4-5',
+    toolNames: INBOX_DIGEST_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
+    maxToolCalls: 3,
+    maxTurns: 8,
+    timeoutMs: 2 * 60_000,
+  },
   // Перевірка ціни (07 §5, етап 5 PR-3): працівник PriceTrack - Дослідник
   // (agents/researcher.md: sonnet, WebSearch/WebFetch, max_steps 30) у свіжій
   // сесії; вхід - JSON задачі {chain_id, mode, task, format}, вихід - подія
@@ -129,6 +144,7 @@ export const INSTRUCTION_NAME_BY_PROFILE: Record<Exclude<ProfileName, 'summarize
   'weekly-review': 'weekly-review',
   'day-planner': 'day-planner',
   'price-check': 'researcher',
+  'inbox-digest': 'persona',
 };
 
 /** Моделі для /health.limits (01 §2.2). */
@@ -181,12 +197,13 @@ export function buildSystemPrompt(
   // одному й тому ж промпті, і поведінка на «скільки днів до 1 вересня»
   // стрибала б між відповіддю і ескалацією.
   if (profile.name === 'quick') return opts.instruction;
-  // Звіт і Денний самодостатні (weekly-review §0, day-planner «Що отримує»):
-  // дата потрібна, згортка розмов - ні.
+  // Звіт, Денний і дайджест самодостатні (weekly-review §0, day-planner «Що
+  // отримує»): дата потрібна, згортка розмов - ні.
   if (
     profile.name === 'weekly-review' ||
     profile.name === 'day-planner' ||
-    profile.name === 'price-check'
+    profile.name === 'price-check' ||
+    profile.name === 'inbox-digest'
   ) {
     return `${opts.instruction}\n\nЗараз у Києві: ${kyiv}.`;
   }

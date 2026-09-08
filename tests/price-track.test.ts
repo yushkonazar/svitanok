@@ -17,7 +17,6 @@ import {
   parsePriceReport,
   pickBest,
   hostAllowed,
-  formatMoney,
   priceVerdict,
   checkTask,
   trackingText,
@@ -34,6 +33,7 @@ import {
   DEFAULT_SHOPS,
   PRICE_TRACK_KICK_MARKER_KEY,
 } from '../web/core/chains/price.mjs';
+import { formatMoney } from '../web/core/format.mjs';
 import { readChainState } from '../web/core/chains/state.mjs';
 import { runWishesCreate, runWishesUpdate } from '../web/core/tools/wishes.mjs';
 import { runFactsSet } from '../web/core/tools/facts.mjs';

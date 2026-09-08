@@ -74,11 +74,9 @@ describe('профіль weekly-review у мозку', () => {
     const fromFile = (parsed.front.tools as string[]).map((t) => t.replaceAll('.', '_'));
     const described = fromFile.filter((n) => TOOL_BY_CORE_NAME.has(n.replaceAll('_', '.')));
     expect(p.toolNames).toEqual(described);
-    // data.read і runs.query уже описані; finance.query - етап 6, тож його
-    // в профілі поки немає, і це навмисно, а не пропуск.
-    expect(p.toolNames).toContain('data_read');
-    expect(p.toolNames).toContain('runs_query');
-    expect(p.toolNames).not.toContain('finance_query');
+    // Усі три з front-matter описані з етапу 6: блок «Гроші» тижневого звіту
+    // читає finance.query напряму, а не переказує Фінансиста.
+    expect(p.toolNames).toEqual(['data_read', 'finance_query', 'runs_query']);
   });
 
   it('контракт /run приймає profile=weekly-review; інструкція - weekly-review; промпт із датою, без згортки', () => {

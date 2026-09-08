@@ -85,6 +85,9 @@
     { "name": "svitanok-price-track", "binding": "PRICE_TRACK", "class_name": "PriceTrack" },
     // Поїздка (етап 5 PR-4): чекліст T-30/T-7/T-1, «пора виходити», підсумок.
     { "name": "svitanok-trip-chain", "binding": "TRIP_CHAIN", "class_name": "TripChain" },
+    // Імпорт експорту чату (етап 6 PR-4, S-2-6): result.json → inbox_messages
+    // батчами по кроках - десятки тисяч рядків не влазять в один запит.
+    { "name": "svitanok-inbox-export", "binding": "INBOX_EXPORT", "class_name": "InboxExport" },
   ],
   // ОДИН крон (A2): нагадування (Блок P2a) + dispatch брифінгу у вікні 08:00–11:00
   // Київ + dead-man від 12:00 — кожна задача гейтиться за kyivHour() у момент

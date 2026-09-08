@@ -18,13 +18,20 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
-import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
+import { sendSystemAlert } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
-import { patchChainState, readChainState, waitOrNull } from './state.mjs';
+import { formatMoney, cleanSource } from '../format.mjs';
+import {
+  chainTarget,
+  db,
+  patchChainState,
+  postChainMessage,
+  readChainState,
+  waitOrNull,
+} from './state.mjs';
 import { sendChainEvent } from './registry.mjs';
-import { chainTarget } from './table.mjs';
 
 export const CHAIN_KIND = 'price';
 export const PRICE_CHECK_PROFILE = 'price-check';
@@ -74,32 +81,7 @@ export const DEFAULT_SHOPS = [
  * @typedef {{ chainId: string, state?: PriceState }} PriceParams
  */
 
-/** @param {Env} env */
-function db(env) {
-  if (!env.DB) throw new Error('привʼязки DB немає - ланцюг недоступний');
-  return env.DB;
-}
-
 // ── Гроші й звіт Дослідника ────────────────────────────────────────────────
-
-const CURRENCY_LABEL = /** @type {Record<string, string>} */ ({
-  UAH: 'грн',
-  USD: '$',
-  EUR: '€',
-  PLN: 'zł',
-});
-
-/** 329950 UAH → «3 299,50 грн»; 329900 → «3 299 грн». @param {number} minor @param {string} currency */
-export function formatMoney(minor, currency) {
-  const abs = Math.abs(Math.round(minor));
-  const whole = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const cents = abs % 100;
-  const num = `${minor < 0 ? '−' : ''}${whole}${cents ? `,${String(cents).padStart(2, '0')}` : ''}`;
-  // Object.hasOwn: валюта приходить із чужих API, і «constructor» витягнув
-  // би функцію з прототипу прямо в текст власнику.
-  const label = Object.hasOwn(CURRENCY_LABEL, currency) ? CURRENCY_LABEL[currency] : currency;
-  return `${num} ${label}`;
-}
 
 const CURRENCY_TOKENS = /** @type {[RegExp, string][]} */ ([
   [/грн|uah|₴/i, 'UAH'],
@@ -150,17 +132,6 @@ function hostOf(url) {
 /** Хост належить дозволеному домену (сам домен або піддомен). @param {string} host @param {string[]} allowed */
 export function hostAllowed(host, allowed) {
   return allowed.some((d) => host === d || host.endsWith(`.${d}`));
-}
-
-/** Назва магазину без розмітки й посилань: [текст](url) → текст, голі URL геть. @param {string} s */
-export function cleanSource(s, max = 40) {
-  return s
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/https?:\/\/\S+/gi, '')
-    .replace(/[^\p{L}\p{N} .'&-]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
 }
 
 /**
@@ -593,22 +564,18 @@ export function productionIo(env, chainId, state) {
     now: () => Date.now(),
     wish: () => readWishSnapshot(env, state.wish_id),
     startCheck: (task) => startPriceCheckRun(env, { chainId, task }, Date.now()),
-    send: async (text, btns) => {
-      await enqueueOutbox(
+    send: (text, btns) =>
+      postChainMessage(
         env,
+        { chatId, threadId },
         {
-          chatId,
-          threadId,
           kind: 'send',
+          payload: {},
+          buttons: btns,
           parts: renderMdParts(text),
-          payload: btns ? { reply_markup: { inline_keyboard: btns } } : {},
+          label: `price-track ${chainId}`,
         },
-        Date.now(),
-      );
-      await drainOutbox(env, { nowMs: Date.now() }).catch((/** @type {any} */ e) => {
-        console.error(`price-track ${chainId}: драйн outbox впав, доставить sweeper`, e?.message);
-      });
-    },
+      ),
     alert: async (text) => void (await sendSystemAlert(env, text, Date.now())),
   };
 }
