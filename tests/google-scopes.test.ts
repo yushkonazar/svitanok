@@ -24,6 +24,11 @@ import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-09-08T09:00:00.000Z');
+// ⚠️ expMs - від РЕАЛЬНОГО годинника, не від NOW: свіжість кешу токена
+// перевіряє googleAccessToken за Date.now(), тож привʼязка до фіксованого
+// NOW робила б тест бомбою сповільненої дії - зеленим уранці й червоним
+// пополудні.
+const TOKEN_EXP = () => Date.now() + 3_600_000;
 const ALL = CORE_SCOPES.join(' ');
 
 /** Env із кешем токена в KV: саме звідти рантайм бере перелік скоупів. */
@@ -32,7 +37,7 @@ function makeEnv(scopes: string | null, over: Record<string, unknown> = {}) {
   if (scopes !== null) {
     store.set(
       'googleToken',
-      JSON.stringify({ token: 'tok', expMs: NOW + 600_000, ...(scopes ? { scope: scopes } : {}) }),
+      JSON.stringify({ token: 'tok', expMs: TOKEN_EXP(), ...(scopes ? { scope: scopes } : {}) }),
     );
   }
   const d1 = d1FromSqlite([
@@ -327,7 +332,7 @@ describe('виконавці етапу 7 у policy', () => {
 
   it('settings мержить патч і нормалізує; «↩» повертає попередній блоб', async () => {
     const store = new Map<string, string>();
-    store.set('googleToken', JSON.stringify({ token: 'tok', expMs: NOW + 600_000, scope: ALL }));
+    store.set('googleToken', JSON.stringify({ token: 'tok', expMs: TOKEN_EXP(), scope: ALL }));
     store.set(
       'settings',
       JSON.stringify({

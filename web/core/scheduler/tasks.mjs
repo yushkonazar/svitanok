@@ -44,6 +44,8 @@ import { retentionCleanupTask } from '../retention/cleanup.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 import { mailTriageTask } from '../brief/mail-triage.mjs';
 import { refreshBriefCalendar } from '../brief/calendar-snapshot.mjs';
+import { secretExpiryTask } from '../ops/secret-expiry.mjs';
+import { quotaCheckTask } from '../ops/quota-check.mjs';
 
 /**
  * @typedef {{
@@ -185,4 +187,10 @@ export const SCHEDULER_TASKS = {
   // Ретенція (етап 6 PR-4, 07 §1): 04:00 Києва - вхідні 30 діб, транзакції
   // 24 міс, телеметрія 90 діб і решта строків зі схеми.
   'retention-cleanup': { periodMin: 5, run: async (env) => retentionCleanupTask(env) },
+  // Строки секретів (етап 7 PR-5, 05-ops §3): 10:00 Києва - нагадування за 30
+  // і 7 днів + щоденна звірка скоупів Google. Дати - з facts, не з памʼяті.
+  'secret-expiry': { periodMin: 5, run: async (env) => secretExpiryTask(env) },
+  // Платні лічильники (етап 7 PR-5, 01 §7): 09:00 Києва - частка місяця й
+  // прогноз за темпом; алерти перетину в bumpQuota лишаються як були.
+  'quota-check': { periodMin: 5, run: async (env) => quotaCheckTask(env) },
 };

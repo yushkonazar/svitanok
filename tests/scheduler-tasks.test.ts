@@ -20,7 +20,7 @@ import { agentRunWatchdog } from '../web/agent-runtime.mjs';
 import { workerEnv } from './helpers/env.js';
 
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
-  it('канонічні kind-и: heartbeat + десять крон-задач + sweeper outbox + memory-summarize (етап 2 PR-2) + weekly-review (етап 3 PR-3) + mail-triage (етап 7 PR-2)', () => {
+  it('канонічні kind-и: heartbeat + десять крон-задач + sweeper outbox + memory-summarize (етап 2 PR-2) + weekly-review (етап 3 PR-3) + mail-triage / secret-expiry / quota-check (етап 7)', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
       'heartbeat',
       'reminder',
@@ -48,6 +48,8 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'subscription-remind',
       'inbox-digest',
       'retention-cleanup',
+      'secret-expiry',
+      'quota-check',
     ]);
   });
 

@@ -32,6 +32,11 @@ import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-09-08T09:30:00.000Z'); // 12:30 Києва
+// ⚠️ expMs - від РЕАЛЬНОГО годинника, не від NOW: свіжість кешу токена
+// перевіряє googleAccessToken за Date.now(), тож привʼязка до фіксованого
+// NOW робила б тест бомбою сповільненої дії - зеленим уранці й червоним
+// пополудні.
+const TOKEN_EXP = () => Date.now() + 3_600_000;
 const MIGRATIONS = [
   '0001_base.sql',
   '0002_assistant.sql',
@@ -53,7 +58,7 @@ function makeEnv(kvSeed: Record<string, string> = {}, over: Record<string, unkno
   if (!store.has('googleToken')) {
     store.set(
       'googleToken',
-      JSON.stringify({ token: 'AT', expMs: NOW + 600_000, scope: CORE_SCOPES.join(' ') }),
+      JSON.stringify({ token: 'AT', expMs: TOKEN_EXP(), scope: CORE_SCOPES.join(' ') }),
     );
   }
   const d1 = d1FromSqlite(MIGRATIONS);
