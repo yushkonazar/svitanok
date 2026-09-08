@@ -427,7 +427,13 @@ describe('prerouteMessage: нові команди', () => {
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
     expect(tg.some((c) => String(c.body.text).includes('збережи ідею'))).toBe(true);
     expect(tg.some((c) => String(c.body.text).includes('Режим: on'))).toBe(true);
-    expect(tg.some((c) => String(c.body.text).includes('Забувати поки нічого'))).toBe(true);
+    // /forget більше не буває порожнім: «усе» є завжди (етап 7 PR-4) - забути
+    // можна ще й факти, гроші, плани й памʼять, навіть коли колекцій немає.
+    const forgetMsg = tg.find((c) => String(c.body.text).includes('Що забути?'))!;
+    expect(String(forgetMsg.body.text)).toContain('спершу варто попросити експорт');
+    const kb = (forgetMsg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] })
+      .inline_keyboard;
+    expect(kb.at(-1)![0]!.callback_data).toBe('m:fga');
     expect(brain).toHaveLength(0);
   });
 

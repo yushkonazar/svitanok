@@ -53,6 +53,8 @@ import {
 } from '../tools/wishes.mjs';
 import { runFinanceRule, restoreRule } from '../tools/finance.mjs';
 import { forgetChat } from '../inbox/store.mjs';
+import { runDataExport } from '../export/data-export.mjs';
+import { forgetAll } from '../export/forget-all.mjs';
 import { updateSubscription } from '../finance/subscriptions.mjs';
 import {
   createCalendarEvent,
@@ -425,7 +427,30 @@ export const EXECUTORS = {
           },
         };
       }
-      throw new Error(`forget: ціль «${target}» ще не підтримується (усе - етап 7)`);
+      // S-0-5 «усе»: T2 зі словом. Експорт спершу - це порада в самому
+      // повідомленні меню, а не гейт у коді: вимагати доказу експорту
+      // означало б, що власник не може стерти дані, доки Drive недоступний.
+      if (target === 'all') {
+        const { tables, rows, kvKeys } = await forgetAll(env);
+        return {
+          result: {
+            erased: `${rows} ${plural(rows, 'рядок', 'рядки', 'рядків')} у ${tables} таблицях і ${kvKeys} ${plural(kvKeys, 'ключ', 'ключі', 'ключів')} KV`,
+            rows,
+            tables,
+            kvKeys,
+          },
+        };
+      }
+      throw new Error(`forget: ціль «${target}» невідома (chat | collection | all)`);
+    },
+  },
+  // Експорт даних (S-0-6): T2 - див. шапку core/export/data-export.mjs про
+  // суперечність канону з 04-scenarios.
+  'data.export': {
+    async execute(env, payload, nowMs) {
+      void payload; // експорт не має параметрів: беруться ВСІ дані
+      const out = await runDataExport(env, nowMs);
+      return { result: out };
     },
   },
   // Нотатка в Drive (S-8-3, 07 §4 drive.write): T1, тека «Світанок/нотатки».

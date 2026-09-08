@@ -310,10 +310,9 @@ async function sendForgetMenu(env, target, nowMs) {
     console.error('prerouter: список чатів для /forget не зібрано', e?.message);
     return [];
   });
-  if (collections.length === 0 && chats.length === 0) {
-    await reply(env, target, 'Забувати поки нічого: ані колекцій, ані збережених чатів.', nowMs);
-    return;
-  }
+  // «Усе» (етап 7 PR-4) є ЗАВЖДИ - навіть коли ні колекцій, ні чатів немає:
+  // забути можна ще й факти, ідеї, гроші, плани, памʼять. Тому меню більше
+  // не буває порожнім, і рядок «забувати нічого» пішов разом із ним.
   const rows = [
     ...collections
       .slice(0, 10)
@@ -321,10 +320,18 @@ async function sendForgetMenu(env, target, nowMs) {
     ...chats.map((c) => [
       { text: `🗑 чат ${c.title} (${c.messages})`, callback_data: `m:fgc:${c.id}` },
     ]),
+    [{ text: '☠️ УСЕ - стерти всі мої дані', callback_data: 'm:fga' }],
   ];
-  await reply(env, target, 'Що забути? Це T2 - після кнопки попрошу слово.', nowMs, {
-    reply_markup: { inline_keyboard: rows },
-  });
+  await reply(
+    env,
+    target,
+    [
+      'Що забути? Це T2 - після кнопки попрошу слово.',
+      '«Усе» стирає всі дані власника безповоротно; спершу варто попросити експорт.',
+    ].join('\n'),
+    nowMs,
+    { reply_markup: { inline_keyboard: rows } },
+  );
 }
 
 /**
@@ -846,6 +853,8 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // m:fgc:<chatId> - те саме для чату з Business (S-2-8): та сама T2 зі словом.
   const fgc = data.match(/^m:fgc:(-?[A-Za-z0-9_]{1,40})$/);
   if (fgc) return forgetMenuToast(env, parsed, { chat: /** @type {string} */ (fgc[1]) }, nowMs);
+  // m:fga - «усе» (S-0-5, етап 7 PR-4): та сама T2 зі словом, ціль all.
+  if (data === 'm:fga') return forgetMenuToast(env, parsed, { all: true }, nowMs);
   // m:fx:<txId>:<choice> - кнопки під незвичною покупкою (S-4-2, S-4-4, етап 6
   // PR-1). Повідомлення будує ядро без моделі; модель вмикається лише тут,
   // коли власник САМ попросив («Перевірити ціни», «Категорія»).
@@ -921,16 +930,18 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
  * - тред кнопки, щоб слово з того ж треду її знайшло.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {{ collection?: string, chat?: string }} pick
+ * @param {{ collection?: string, chat?: string, all?: boolean }} pick
  * @param {number} nowMs
  */
 async function forgetMenuToast(env, parsed, pick, nowMs) {
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
-  const payload = pick.chat
-    ? { target: 'chat', chat: pick.chat }
-    : { target: 'collection', collection: pick.collection };
+  const payload = pick.all
+    ? { target: 'all' }
+    : pick.chat
+      ? { target: 'chat', chat: pick.chat }
+      : { target: 'collection', collection: pick.collection };
   const out = await applyPolicy(
     env,
     {
@@ -945,9 +956,11 @@ async function forgetMenuToast(env, parsed, pick, nowMs) {
   if (out.mode !== 'proposed')
     return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
   await clearKeyboard(env, parsed);
-  const what = pick.chat
-    ? 'усі збережені повідомлення чату і дайджести про нього'
-    : 'колекцію з усіма записами';
+  const what = pick.all
+    ? 'УСІ дані власника - факти, ідеї, гроші, чати, плани, памʼять'
+    : pick.chat
+      ? 'усі збережені повідомлення чату і дайджести про нього'
+      : 'колекцію з усіма записами';
   await reply(
     env,
     target,
