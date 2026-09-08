@@ -23,9 +23,16 @@ export const VIDEO_MODELS = Object.freeze({
   lite: 'veo-3.0-fast-generate-001',
 });
 const GEMINI_TIMEOUT_MS = 60_000;
-/** Скільки чекаємо готове відео (Veo рендерить хвилинами). */
-export const VIDEO_POLL_MAX_MS = 8 * 60_000;
-export const VIDEO_POLL_STEP_MS = 10_000;
+/**
+ * Скільки чекаємо готове відео (Veo рендерить хвилинами) і як часто питаємо.
+ * ⚠️ Крок і стеля разом задають КІЛЬКІСТЬ ПІДЗАПИТІВ: на Workers Free їх 50
+ * на виклик, а цей же виклик уже витратив кілька на Telegram і витратить ще
+ * на відправку відео. 8 хв × 10 с = 48 опитувань - виклик помер би на «Too
+ * many subrequests», і чесне «кошти вже списані» не прозвучало б ніколи.
+ * 6 хв × 20 с = 18 опитувань лишають запас.
+ */
+export const VIDEO_POLL_MAX_MS = 6 * 60_000;
+export const VIDEO_POLL_STEP_MS = 20_000;
 
 /** Ціни (ADR-012, VERIFIED на момент рішення): $0.04 за зображення, $0.40/с
  *  за Veo, $0.075/с за Lite. Тримаються тут, поруч із викликом, який їх і
@@ -129,13 +136,19 @@ export async function generateVideo(env, input, opts = {}) {
   if (!opName) throw new Error('Gemini не повернув операцію відео');
 
   const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-  const deadline = (opts.nowMs ?? Date.now()) + VIDEO_POLL_MAX_MS;
+  // ⚠️ Дедлайн за РЕАЛЬНИМ годинником, не за переданим nowMs: із замороженим
+  // nowMs умова `nowMs > nowMs + 6 хв` хибна завжди, і цикл опитував би вічно
+  // (ревʼю етапу 7). Керованим лишається `sleep` - цього досить для тестів.
+  const deadline = Date.now() + VIDEO_POLL_MAX_MS;
+  const maxPolls = Math.ceil(VIDEO_POLL_MAX_MS / VIDEO_POLL_STEP_MS);
   /** @type {any} */
   let op = started;
-  while (!op?.done) {
-    if ((opts.nowMs ?? Date.now()) > deadline) {
+  for (let poll = 0; !op?.done; poll++) {
+    if (Date.now() > deadline || poll >= maxPolls) {
       // Гроші вже витрачені - мовчати про це не можна.
-      throw new Error('Відео не встигло за 8 хв; кошти вже списані, спробуй коротший запит');
+      throw new Error(
+        `Відео не встигло за ${Math.round(VIDEO_POLL_MAX_MS / 60_000)} хв; кошти вже списані, спробуй коротший запит`,
+      );
     }
     await sleep(VIDEO_POLL_STEP_MS);
     op = await geminiFetch(`${GEMINI_API}/${opName}`, { headers: { 'x-goog-api-key': key } });

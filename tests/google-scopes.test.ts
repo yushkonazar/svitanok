@@ -67,7 +67,9 @@ afterEach(() => vi.restoreAllMocks());
 describe('перелік скоупів ядра', () => {
   it('рівно пʼять і жодного скоупа на надсилання пошти', () => {
     expect([...CORE_SCOPES]).toEqual([
-      'https://www.googleapis.com/auth/calendar',
+      // calendar.events, не повний auth/calendar: ядро не керує списками
+      // календарів, а вужчий скоуп - менша поверхня при тій самій роботі.
+      'https://www.googleapis.com/auth/calendar.events',
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/contacts',
       'https://www.googleapis.com/auth/drive.file',
@@ -109,6 +111,48 @@ describe('auditScopes', () => {
     expect(audit.missing).toEqual([]);
     expect(audit.extra).toEqual(['https://www.googleapis.com/auth/gmail.send']);
     expect(extraScopesAlertText(audit.extra)).toContain('gmail.send');
+  });
+
+  it('ширший ВИДАНИЙ скоуп покриває вужчий потрібний - можливість працює', () => {
+    // Токен, виданий процедурою етапу 0, має calendar.readonly +
+    // calendar.events; токен зі старішого консенту - повний auth/calendar.
+    // Обидва мусять давати робочий календар: інакше код, виїхавши в прод,
+    // вимкнув би блок «Сьогодні в календарі» ще до перевидання токена.
+    const legacy = [
+      'https://www.googleapis.com/auth/calendar',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/contacts',
+      'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/tasks',
+    ];
+    for (const feature of ['calendar', 'mail', 'contacts', 'drive', 'tasks']) {
+      expect(hasFeatureScope(legacy, feature), feature).toBe(true);
+    }
+    // Але звірка лишається суворою: ширший скоуп - усе одно зайвий.
+    expect(auditScopes(legacy).ok).toBe(false);
+  });
+
+  it('стан прод-токена етапу 0 (calendar.readonly + events, contacts.readonly) - усе працює', () => {
+    const stage0 = [
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/contacts.readonly',
+      'https://www.googleapis.com/auth/contacts',
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/tasks',
+    ];
+    for (const feature of ['calendar', 'mail', 'contacts', 'drive', 'tasks']) {
+      expect(hasFeatureScope(stage0, feature), feature).toBe(true);
+    }
+    const audit = auditScopes(stage0);
+    expect(audit.missing).toEqual([]);
+    expect(audit.extra).toEqual([
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/contacts.readonly',
+      'https://www.googleapis.com/auth/drive.readonly',
+    ]);
   });
 
   it('ширший скоуп замість вужчого теж зайвий (drive проти drive.file)', () => {
@@ -158,9 +202,12 @@ describe('барʼєр можливості (S-8-7)', () => {
 });
 
 describe('adapters/tasks', () => {
-  it('due нормалізується до дати; сміття - без строку', () => {
+  it('due нормалізується до КИЇВСЬКОЇ дати; сміття - без строку', () => {
     expect(taskDueRfc3339('2026-09-10')).toBe('2026-09-10T00:00:00.000Z');
     expect(taskDueRfc3339('2026-09-10T18:30:00.000Z')).toBe('2026-09-10T00:00:00.000Z');
+    // 21:30 UTC = 00:30 наступної київської доби: зріз UTC-рядка ставив би
+    // задачу на день раніше (ревʼю етапу 7).
+    expect(taskDueRfc3339('2026-09-10T21:30:00.000Z')).toBe('2026-09-11T00:00:00.000Z');
     expect(taskDueRfc3339('завтра')).toBeNull();
     expect(taskDueRfc3339(null)).toBeNull();
   });
@@ -283,14 +330,20 @@ describe('виконавці етапу 7 у policy', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('calendar.delete без валідного event_id не йде в URL', async () => {
-    const { env } = makeEnv(ALL);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    await expect(
-      approve(env, 'calendar.delete', { event_id: 'a/../../secret' }),
-    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining('потрібен event_id') });
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
+  it.each(['a/../../secret', '..', '.', '.hidden'])(
+    'calendar.delete з id «%s» не йде в URL',
+    async (id) => {
+      // `..` проходив старий фільтр, а WHATWG-URL згортав сегмент - і запит
+      // прилітав у ресурс КАЛЕНДАРЯ замість події (ревʼю етапу 7).
+      const { env } = makeEnv(ALL);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      await expect(approve(env, 'calendar.delete', { event_id: id })).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining('потрібен event_id'),
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it('drive.write кладе нотатку в «Світанок/нотатки» і чистить назву', async () => {
     const { env } = makeEnv(ALL);

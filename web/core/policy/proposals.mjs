@@ -971,7 +971,10 @@ async function createEventFromPayload(env, payload, requireAttendees) {
 
 /** id події їде в ШЛЯХ URL (google.mjs calendarEventUrl не екранує - «валідує
  *  викликач»), тож формат перевіряється тут, до будь-якої мережі. */
-const EVENT_ID_RE = /^[A-Za-z0-9_@.-]{1,1024}$/;
+// Мусить ПОЧИНАТИСЬ з букви/цифри: інакше `..` проходив фільтр, а WHATWG-URL
+// згортав сегмент - і PATCH прилітав у ресурс КАЛЕНДАРЯ замість події
+// (ревʼю етапу 7).
+const EVENT_ID_RE = /^[A-Za-z0-9_@][A-Za-z0-9_@.-]{0,1023}$/;
 /** Той самий грубий фільтр, що в google.mjs: People API все одно перевірить. */
 const CONTACT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -1024,6 +1027,8 @@ async function buildEventPatch(env, payload) {
  * @returns {{ seconds: number, model: 'veo' | 'lite' }}
  */
 function videoParams(payload) {
+  // Основний clamp живе в sanitizeGeminiPayload (щоб ціна й витрата рахувались
+  // з ОДНОГО числа); тут він лишається страховкою для шляхів повз санітизацію.
   const raw = Number(payload.seconds);
   const seconds = Number.isFinite(raw)
     ? Math.min(Math.max(Math.round(raw), 1), VIDEO_MAX_SECONDS)

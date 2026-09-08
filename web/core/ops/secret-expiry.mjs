@@ -9,7 +9,7 @@
 
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
-import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
+import { runFactsSet } from '../tools/facts.mjs';
 import { googleGrantedScopes } from '../../google.mjs';
 import { auditScopes, extraScopesAlertText } from '../google-scopes.mjs';
 import {
@@ -115,14 +115,32 @@ async function unknownDue(settings, nowMs) {
   return nowMs - at >= UNKNOWN_REPEAT_DAYS * 86_400_000;
 }
 
-/** Усі facts.setting одним читанням. @param {Env} env */
+/**
+ * Налаштування задачі одним читанням.
+ *
+ * ⚠️ ПРЯМИЙ ЗАПИТ, не `runFactsGet` (ревʼю етапу 7). Той має LIMIT 100 з
+ * `ORDER BY kind, key`, а всі наші ключі починаються на `secret_` - тобто
+ * стоять у хвості алфавіту. Щойно власних setting-фактів стало б понад сотню,
+ * задача перестала б бачити дати ротації МОВЧКИ: щомісяця «не знаю дати» про
+ * оновлені секрети, а разом зі станом порогів - ще й щоденні повтори.
+ * @param {Env} env
+ */
 async function readSettings(env) {
   /** @type {Record<string, unknown>} */
   const out = {};
+  if (!env.DB) return out;
   try {
-    const { result } = await runFactsGet(env, { kind: 'setting' });
-    for (const row of /** @type {{ key: string, value: unknown }[]} */ (result)) {
-      out[row.key] = row.value;
+    const { results } = await env.DB.prepare(
+      `SELECT key, value_json FROM facts WHERE kind = 'setting' AND key LIKE 'secret_%'`,
+    )
+      .bind()
+      .all();
+    for (const row of /** @type {{ key: string, value_json: string }[]} */ (results ?? [])) {
+      try {
+        out[row.key] = JSON.parse(row.value_json);
+      } catch {
+        // Битий факт - не привід валити задачу; він просто «невідомий».
+      }
     }
   } catch (/** @type {any} */ e) {
     console.error('secret-expiry: facts не прочитались', e?.message);

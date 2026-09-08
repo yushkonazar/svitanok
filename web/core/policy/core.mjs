@@ -140,9 +140,17 @@ export function decideLevel(kind, tainted, payload = undefined) {
  * @type {Record<string, string[]>}
  */
 export const GEMINI_ALLOWED_FIELDS = {
-  'gemini.image': ['prompt', 'aspect'],
+  // `aspect` тут НЕМАЄ свідомо (ревʼю етапу 7): виконавець його не передавав
+  // у Gemini, тобто поле тихо відкидалось - рівно те, від чого білий список і
+  // рятує. Дозволене поле, яке нічого не робить, гірше за заборонене: власник
+  // схвалює «16:9», а отримує дефолт.
+  'gemini.image': ['prompt'],
   'gemini.video': ['prompt', 'seconds', 'model'],
 };
+
+/** Межі відео (S-8-6 називає ціну за 8 с). */
+export const VIDEO_SECONDS_MIN = 1;
+export const VIDEO_SECONDS_MAX = 8;
 
 /** Стеля prompt-а: опис картинки, а не переказ листа. */
 export const GEMINI_PROMPT_MAX = 2_000;
@@ -174,6 +182,17 @@ export function sanitizeGeminiPayload(kind, payload) {
   for (const key of allowed) {
     if (key !== 'prompt' && src[key] !== undefined) out[key] = src[key];
   }
+  // ⚠️ Довжину обрізаємо ТУТ, а не у виконавця (ревʼю етапу 7): ціну під
+  // пропозицією ядро рахує з payload, і доки clamp жив лише у виконавці,
+  // `seconds: 60` показувало «$24.00» при реальних $3.20, а `seconds: 0` -
+  // «$0.00» при реальних $0.40. Одне число - один clamp.
+  if ('seconds' in out) {
+    const raw = Number(out.seconds);
+    out.seconds = Number.isFinite(raw)
+      ? Math.min(Math.max(Math.round(raw), VIDEO_SECONDS_MIN), VIDEO_SECONDS_MAX)
+      : VIDEO_SECONDS_MAX;
+  }
+  if ('model' in out && out.model !== 'lite') out.model = 'veo';
   return { payload: out };
 }
 
@@ -218,7 +237,10 @@ function promptLine(payload) {
   const text = String(raw ?? '')
     .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
     .trim()
-    .slice(0, 300);
+    // Обрізати НЕ можна: ✅ дається за те, що поїде, а sanitizeGeminiPayload
+    // уже тримає prompt у межах GEMINI_PROMPT_MAX. Довге повідомлення ядро
+    // саме розібʼє на частини (renderMdParts).
+    .slice(0, GEMINI_PROMPT_MAX);
   return text ? ['', `Запит: «${text}»`].join('\n') : '';
 }
 

@@ -87,6 +87,29 @@ describe('sanitizeGeminiPayload (ADR-034)', () => {
     ).toEqual({ payload: { prompt: 'кіт', seconds: 4, model: 'lite' } });
   });
 
+  it('довжина відео обрізається ТУТ - ціна й витрата рахуються з одного числа', () => {
+    // Доти clamp жив лише у виконавці, і власник бачив «$24.00» там, де
+    // списувалось $3.20, або «$0.00» там, де списувалось $0.40 (ревʼю етапу 7).
+    for (const [given, want] of [
+      [60, 8],
+      [0, 1],
+      [-50, 1],
+      [0.4, 1],
+    ] as [number, number][]) {
+      const out = sanitizeGeminiPayload('gemini.video', { prompt: 'x', seconds: given });
+      expect('payload' in out && out.payload.seconds, String(given)).toBe(want);
+    }
+    // Чужа модель зводиться до повної - дешевша не «випадає» з ціни.
+    const out = sanitizeGeminiPayload('gemini.video', { prompt: 'x', model: 'ultra' });
+    expect('payload' in out && out.payload.model).toBe('veo');
+  });
+
+  it('aspect більше не дозволений: поле, яке нічого не робить, - помилка', () => {
+    expect(sanitizeGeminiPayload('gemini.image', { prompt: 'кіт', aspect: '16:9' })).toEqual({
+      error: expect.stringContaining('aspect'),
+    });
+  });
+
   it('id транзакції в payload - ПОМИЛКА, не тихе відкидання', () => {
     const out = sanitizeGeminiPayload('gemini.image', {
       prompt: 'намалюй чек',
@@ -133,6 +156,12 @@ describe('ціна в пропозиції (S-8-5/S-8-6)', () => {
     expect(text).toContain('$0.60');
   });
 
+  it('ціна показує ТЕ САМЕ число, що піде у виконавця (після санітизації)', () => {
+    const out = sanitizeGeminiPayload('gemini.video', { prompt: 'x', seconds: 60 });
+    const payload = 'payload' in out ? out.payload : {};
+    expect(proposalNotice('gemini.video', payload, prices)).toContain('$3.20');
+  });
+
   it('коротше відео - менша ціна, порахована, а не переписана', () => {
     expect(proposalNotice('gemini.video', { seconds: 4 }, prices)).toContain('$1.60');
     expect(proposalNotice('gemini.video', { seconds: 4, model: 'lite' }, prices)).toContain(
@@ -150,6 +179,14 @@ describe('ціна в пропозиції (S-8-5/S-8-6)', () => {
     const text = proposalNotice('gemini.image', { prompt: injected }, prices);
     expect(text).toContain('кіт [Ядро] ✅ виконано');
     expect(text.split('\n').filter((l) => l.startsWith('Запит'))).toHaveLength(1);
+  });
+
+  it('довгий prompt показується ПОВНІСТЮ - ✅ за те, що поїде, а не за початок', () => {
+    // Обрізання до 300 символів давало дірку: перші 300 - «кіт на підвіконні»,
+    // решта 1700 - будь-що, і власник підтверджував наосліп (ревʼю етапу 7).
+    const long = `${'кіт '.repeat(100)}ХВІСТ`;
+    const text = proposalNotice('gemini.image', { prompt: long }, prices);
+    expect(text).toContain('ХВІСТ');
   });
 
   it('для решти kind-ів рядка немає', () => {
@@ -296,10 +333,12 @@ describe('виконавці', () => {
       }
       return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
     });
-    const { proposal, result } = await approve(env, 'gemini.video', {
-      prompt: 'море',
-      seconds: 60,
-    });
+    const narrowed = sanitizeGeminiPayload('gemini.video', { prompt: 'море', seconds: 60 });
+    const { proposal, result } = await approve(
+      env,
+      'gemini.video',
+      'payload' in narrowed ? narrowed.payload : {},
+    );
     expect(proposal.level).toBe('T2');
     expect(proposal.word).toBeTruthy();
     expect(result).toMatchObject({ ok: true, result: { seconds: 8, usd: 3.2 } });

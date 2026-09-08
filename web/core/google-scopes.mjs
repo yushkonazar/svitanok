@@ -13,9 +13,11 @@
 // Без мережі й привʼязок: чисті функції, вичерпно тестуються.
 
 /**
- * Рівно ті скоупи, якими користується ядро. Кожен рядок - із конкретного
- * виклику, не «про запас»:
- *   calendar        - readCalendarRange / create / patch / delete (google.mjs)
+ * Рівно ті скоупи, якими користується ядро - і НАЙВУЖЧІ з можливих. Кожен
+ * рядок - із конкретного виклику, не «про запас»:
+ *   calendar.events - readCalendarRange / create / patch / delete (google.mjs);
+ *                     повний `auth/calendar` дає ще й керування списками
+ *                     календарів, чого ядро не робить ніде
  *   gmail.readonly  - mail.search / mail.read + задача mail-triage
  *   contacts        - searchContact (читання) і createContact (запис, PR-13)
  *   drive.file      - бекапи, документи працівників, експорт (лише свої файли)
@@ -25,7 +27,7 @@
  * @type {readonly string[]}
  */
 export const CORE_SCOPES = Object.freeze([
-  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/contacts',
   'https://www.googleapis.com/auth/drive.file',
@@ -33,12 +35,30 @@ export const CORE_SCOPES = Object.freeze([
 ]);
 
 /**
+ * Ширші скоупи, які ВКЛЮЧАЮТЬ потрібний. Потрібне для барʼєра можливостей:
+ * токен, виданий процедурою етапу 0, має `calendar.readonly` +
+ * `calendar.events`, а не єдиний `auth/calendar`, і вимагати дослівного
+ * збігу означало б вимкнути календар у той самий день, коли код виїде в
+ * прод - до перевидання токена. Звірка `auditScopes` при цьому лишається
+ * СУВОРОЮ: ширший скоуп там і далі рахується зайвим, бо він і є зайвим.
+ * @type {Record<string, readonly string[]>}
+ */
+export const SCOPE_INCLUDED_IN = Object.freeze({
+  'https://www.googleapis.com/auth/calendar.events': ['https://www.googleapis.com/auth/calendar'],
+  'https://www.googleapis.com/auth/drive.file': ['https://www.googleapis.com/auth/drive'],
+  'https://www.googleapis.com/auth/gmail.readonly': [
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://mail.google.com/',
+  ],
+});
+
+/**
  * Можливість → скоуп, без якого вона не працює. Потрібне для S-8-7: власник
  * має чути «Tasks ще не підключено», а не «HTTP 403».
  * @type {Record<string, string>}
  */
 export const SCOPE_BY_FEATURE = Object.freeze({
-  calendar: 'https://www.googleapis.com/auth/calendar',
+  calendar: 'https://www.googleapis.com/auth/calendar.events',
   mail: 'https://www.googleapis.com/auth/gmail.readonly',
   contacts: 'https://www.googleapis.com/auth/contacts',
   drive: 'https://www.googleapis.com/auth/drive.file',
@@ -96,7 +116,11 @@ export function hasFeatureScope(granted, feature) {
   const scope = SCOPE_BY_FEATURE[feature];
   if (!scope) throw new Error(`google-scopes: невідома можливість «${feature}»`);
   if (!granted) return true;
-  return granted.includes(scope);
+  if (granted.includes(scope)) return true;
+  // Ширший виданий скоуп покриває вужчий потрібний - інакше токен, у якому
+  // замість `calendar.events` стоїть повний `auth/calendar`, вимкнув би
+  // календар, хоч прав у нього більше, ніж треба.
+  return (SCOPE_INCLUDED_IN[scope] ?? []).some((wider) => granted.includes(wider));
 }
 
 /**

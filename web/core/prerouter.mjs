@@ -355,8 +355,11 @@ async function resolveT2Word(env, target, threadKey, text, nowMs) {
   try {
     id = await takeT2(env, threadKey, word, nowMs);
   } catch (/** @type {any} */ e) {
+    // Сховище не відповіло - слово НЕ йде далі в модель як звичайний текст
+    // (ревʼю етапу 7): другий фактор не має перетворюватись на репліку в чаті.
     console.error('prerouter: памʼять слова T2 не прочиталась', e?.message);
-    return false;
+    await reply(env, target, 'Не дістав, чого саме стосується слово - напиши ще раз.', nowMs);
+    return true;
   }
   if (!id) return false;
   const res = await resolveProposal(env, { id, choice: 'ok', word }, nowMs);
@@ -794,8 +797,20 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
     // T2 після ✅: слово називає ЯДРО (модель його більше не бачить) і тут же
     // запамʼятовує, до якої саме пропозиції воно належить.
     if (!res.ok && res.error === 'word-required' && policy.choice === 'ok') {
-      const word = await askT2Word(env, parsed, policy.id, nowMs);
-      return word ? `Це T2: напиши слово ${word}` : proposalToast(res);
+      const asked = await askT2Word(env, parsed, policy.id, nowMs);
+      if (!asked) return proposalToast(res);
+      // ⚠️ У ТРЕД, не лише тостом (ревʼю етапу 7). Тост зникає за секунди й в
+      // історію не потрапляє, а слово тепер знає лише ядро - без цього рядка
+      // власник не мав би де його прочитати. Тут же ЯДРО називає саму дію:
+      // модель у своєму тексті може написати що завгодно, а стерти базу
+      // безповоротно можна рівно одним словом.
+      await reply(
+        env,
+        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+        `⚠️ Це T2: ${describeProposal(asked.kind, asked.payload)}. Щоб виконати, напиши слово: ${asked.word} (діє 10 хв).`,
+        nowMs,
+      );
+      return `Це T2: напиши слово ${asked.word}`;
     }
     if (res.ok && 'status' in res) {
       await clearKeyboard(env, parsed);
@@ -1287,13 +1302,15 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
  * @param {Env} env
  * @param {{ chatId?: number | null, threadId?: number | string | null }} parsed
  * @param {string} id @param {number} nowMs
- * @returns {Promise<string | null>} слово або null
+ * @returns {Promise<{ word: string, kind: string, payload: unknown } | null>}
  */
 async function askT2Word(env, parsed, id, nowMs) {
   if (!env.DB) return null;
   try {
-    const row = /** @type {{ word?: string } | null} */ (
-      await env.DB.prepare("SELECT word FROM proposals WHERE id = ? AND status = 'open'")
+    const row = /** @type {{ word?: string, kind?: string, payload_json?: string } | null} */ (
+      await env.DB.prepare(
+        "SELECT word, kind, payload_json FROM proposals WHERE id = ? AND status = 'open'",
+      )
         .bind(id)
         .first()
     );
@@ -1301,7 +1318,14 @@ async function askT2Word(env, parsed, id, nowMs) {
     if (!word) return null;
     const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
     await rememberT2(env, threadKey, { id, word }, nowMs);
-    return word;
+    /** @type {unknown} */
+    let payload = null;
+    try {
+      payload = JSON.parse(String(row?.payload_json ?? 'null'));
+    } catch {
+      // кривий payload - опишемо саму дію без деталей
+    }
+    return { word, kind: String(row?.kind ?? ''), payload };
   } catch (/** @type {any} */ e) {
     console.error('prerouter: слово T2 не дістали', e?.message);
     return null;

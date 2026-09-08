@@ -43,10 +43,17 @@ function parseMap(raw) {
   return out;
 }
 
-/** @param {Env} env @returns {Promise<PendingMap>} */
+/**
+ * ⚠️ Збій СХОВИЩА кидається далі, а битий JSON - ні. Різниця несуча: биття
+ * означає «нічого не чекали» (і слово піде в модель як звичайний текст, що
+ * нешкідливо), а недоступний KV означає «не знаю» - і тоді слово мовчки
+ * поїхало б у модель замість того, щоб виконати дію (ревʼю етапу 7).
+ * @param {Env} env @returns {Promise<PendingMap>}
+ */
 async function readMap(env) {
+  const raw = await env.BRIEFING.get(T2_PENDING_KEY);
   try {
-    return parseMap(JSON.parse((await env.BRIEFING.get(T2_PENDING_KEY)) ?? 'null'));
+    return parseMap(JSON.parse(raw ?? 'null'));
   } catch {
     return {};
   }

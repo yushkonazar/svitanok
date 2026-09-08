@@ -8,6 +8,7 @@
 // два: у першому випадку власник чекає сигналу, якого не буде.
 
 import { googleAccessToken, assertGoogleScope } from '../../google.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 
 const TASKS_API = 'https://tasks.googleapis.com/tasks/v1';
 /** Список за замовчуванням: власник веде один, окремих списків не просив. */
@@ -27,7 +28,10 @@ export function taskDueRfc3339(raw) {
   if (!s) return null;
   const ms = /^\d{4}-\d{2}-\d{2}$/.test(s) ? Date.parse(`${s}T00:00:00Z`) : Date.parse(s);
   if (!Number.isFinite(ms)) return null;
-  return `${new Date(ms).toISOString().slice(0, 10)}T00:00:00.000Z`;
+  // ⚠️ Дата - КИЇВСЬКА (ревʼю етапу 7). Модель дає час у UTC ISO, тож
+  // «завтра о 00:30» - це 21:30 UTC попередньої доби, і зріз UTC-рядка ставив
+  // би задачу на день раніше. Вікно помилки - щоночі з 21:00 UTC.
+  return `${kyivDateKey(new Date(ms))}T00:00:00.000Z`;
 }
 
 /**

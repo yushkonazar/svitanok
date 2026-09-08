@@ -123,7 +123,14 @@ describe('реєстр секретів і документ', () => {
     const onlyInExport = SECRET_ENV_NAMES.filter(
       (n) => !registry.has(n) && n !== 'GOOGLE_CLIENT_ID' && n !== 'BRAIN_ACCESS_CLIENT_ID',
     );
-    expect(onlyInExport).toEqual(['WEATHER_API_KEY', 'NEWSDATA_API_KEY', 'INTERNAL_HMAC_KEY_NEXT']);
+    // Ті, що чистяться в експорті, але строку ротації не мають: ключі погоди
+    // й новин (міняються за подією) та другий HMAC/легасі-хост.
+    expect(onlyInExport).toEqual([
+      'WEATHER_API_KEY',
+      'NEWSDATA_API_KEY',
+      'INTERNAL_HMAC_KEY_NEXT',
+      'LLM_HOST_SECRET',
+    ]);
   });
 });
 
@@ -262,8 +269,15 @@ describe('quota-check', () => {
     expect(early).toEqual([]);
   });
 
-  it('безкоштовні лічильники сюди не входять', () => {
-    expect(PAID_KEYS).toEqual(['gemini_usd', 'deepgram_min']);
+  it('до перевірки входить лише gemini_usd', () => {
+    // deepgram_min - ЖИТТЄВИЙ кредит $200 (46 500 хв), а лічильники живуть
+    // київським місяцем: щоб перетнути 80 % за 30 діб, треба 620 годин аудіо -
+    // більше, ніж хвилин у місяці. Щоденна перевірка не сказала б про нього
+    // нічого ніколи (ревʼю етапу 7).
+    expect(PAID_KEYS).toEqual(['gemini_usd']);
+    expect(
+      quotaFindings([{ key: 'deepgram_min', value: 46_000, limit_value: 46_500 }], month),
+    ).toEqual([]);
     expect(quotaFindings([{ key: 'places_text', value: 4900, limit_value: 5000 }], month)).toEqual(
       [],
     );

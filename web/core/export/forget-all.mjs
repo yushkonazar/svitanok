@@ -18,16 +18,33 @@
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
 
+/**
+ * Таблиці, які «забудь усе» НЕ чіпає, і чому.
+ *   instructions / instruction_history - конфіг застосунку з репозиторію
+ *     (ADR-016): без персони прогін не стартує, і «забудь усе» стало б
+ *     «вимкни асистента».
+ *   counters - службовий лічильник номерів ідей (міграція 0011). ⚠️ DELETE
+ *     звідти прибирає САМ РЯДОК, і `ideas.create` після цього назавжди падає
+ *     з «лічильник ideas відсутній - міграція 0011 не застосована»: власник
+ *     дістав би брехливу помилку про міграцію й непрацездатні ідеї. Рядок
+ *     лишається, а значення обнуляється (нижче) - нумерація починається з
+ *     нуля, як і має бути після забуття.
+ */
+export const FORGET_ALL_KEEP = ['instructions', 'instruction_history', 'counters'];
+
 /** Таблиці, які «забудь усе» очищає. */
-export const FORGET_ALL_TABLES = BACKUP_TABLES.filter(
-  (t) => t !== 'instructions' && t !== 'instruction_history',
-);
+export const FORGET_ALL_TABLES = BACKUP_TABLES.filter((t) => !FORGET_ALL_KEEP.includes(t));
 
 /** FTS-індекси (ADR-036 standalone): чистяться окремо, інакше пошук ще довго
  *  знаходив би стерте. */
 export const FORGET_ALL_FTS = ['ideas_fts', 'records_fts', 'inbox_fts'];
 
-/** Власні KV-ключі даних - зникають цілком. */
+/**
+ * Власні KV-ключі даних - зникають цілком. Список звіряється тестом із
+ * переліком ключів, які проєкт узагалі пише: інакше «стерто все» лишало б
+ * позаду те, чого ніхто не помітив, - як от координати власника
+ * (`ownerGeo`), що переживали стирання й далі відповідали на «де я».
+ */
 export const FORGET_ALL_KV_KEYS = [
   'stats',
   'statsArchive',
@@ -36,6 +53,14 @@ export const FORGET_ALL_KV_KEYS = [
   'levers',
   'latest',
   'assistantHistory',
+  'ownerGeo',
+  'ownerGeoManual',
+  'sentMessages',
+  'weatherLive',
+  'assistantPending',
+  't2Pending',
+  'backupState',
+  'monoReconcile',
 ];
 
 /** Поля даних усередині блоба `state` (сам ключ лишається живим). */
@@ -63,6 +88,14 @@ export async function forgetAll(env) {
     const res = await db.prepare(`DELETE FROM ${table}`).bind().run();
     rows += Number(res?.meta?.changes ?? 0);
   }
+  // Лічильники не видаляємо, а обнуляємо: рядок потрібен коду, значення - ні.
+  await db
+    .prepare('UPDATE counters SET value = 0')
+    .bind()
+    .run()
+    .catch((/** @type {any} */ e) => {
+      console.error('forget: лічильники не обнулено', e?.message);
+    });
   for (const fts of FORGET_ALL_FTS) {
     // Індекс міг не існувати на старій базі - його відсутність не привід
     // лишити стерті рядки «наполовину стертими».

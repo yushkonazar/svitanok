@@ -305,6 +305,33 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(String(msg.text)).toBe('Готово');
   });
 
+  it('збій бази на читанні ціни - відмова доставки, а не мовчазна доставка без ціни', async () => {
+    // Інакше транзієнтний збій D1 давав би робочу кнопку ✅ на $3.20 без
+    // жодної ціни поруч - рівно те, проти чого рядок і заведено.
+    const { env } = setup();
+    stubTelegram();
+    const broken = {
+      ...env,
+      DB: {
+        prepare: () => ({
+          bind: () => ({
+            first: async () => {
+              throw new Error('D1 лежить');
+            },
+            all: async () => ({ results: [] }),
+            run: async () => ({ meta: { changes: 0 } }),
+          }),
+        }),
+      },
+    } as unknown as Env;
+    const res = await post(broken, '/internal/deliver', 'r1', {
+      text: 'Зробити?',
+      buttons: [[{ text: '✅ Так', callback_data: 'p:zzz:ok' }]],
+    });
+    expect(res.status).toBe(400);
+    expect(String(((await res.json()) as { error: string }).error)).toContain('ціну пропозиції');
+  });
+
   it('для звичайної пропозиції рядка ціни немає', async () => {
     const { env, db } = setup();
     const { tg } = stubTelegram();

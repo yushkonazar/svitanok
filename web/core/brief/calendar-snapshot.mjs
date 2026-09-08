@@ -28,12 +28,19 @@ export const CALENDAR_SNAPSHOT_KEY = 'calendarToday';
 export const CALENDAR_SNAPSHOT_HOUR = 7;
 /** Скільки спроб за добу, перш ніж сказати вголос і замовкнути до завтра. */
 export const CALENDAR_SNAPSHOT_MAX_ATTEMPTS = 4;
+/**
+ * Пауза між спробами. ⚠️ Без неї весь денний бюджет згорав за 15 хвилин:
+ * `brief-dispatch` тікає щопʼять, тож чотири спроби припадали на 07:00-07:15,
+ * і двадцятихвилинне блимання Google лишало брифінг без блоку, хоч до 08:00
+ * було ще девʼять безкоштовних тіків. Тепер спроби розкладені на годину.
+ */
+export const CALENDAR_SNAPSHOT_RETRY_MS = 15 * 60_000;
 /** Стеля подій у знімку: довший блок у брифінгу однаково не читається. */
 export const CALENDAR_SNAPSHOT_CAP = 30;
 
 /**
  * @typedef {{ date: string, ready: boolean, events: { title: string, time: string | null }[],
- *   updatedAt: string, attempts: number, alerted: boolean }} CalendarSnapshot
+ *   updatedAt: string, attempts: number, attemptAt: number, alerted: boolean }} CalendarSnapshot
  */
 
 /** Знімок із блоба; чужа/побита форма - null. @param {unknown} raw
@@ -47,6 +54,7 @@ export function parseSnapshot(raw) {
     events: Array.isArray(o.events) ? o.events : [],
     updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : '',
     attempts: Number.isFinite(o.attempts) ? Number(o.attempts) : 0,
+    attemptAt: Number.isFinite(o.attemptAt) ? Number(o.attemptAt) : 0,
     alerted: o.alerted === true,
   };
 }
@@ -66,7 +74,13 @@ export async function refreshBriefCalendar(env, nowMs = Date.now()) {
   if (sameDay && current?.ready) return { skipped: 'done' };
   const attempts = sameDay ? /** @type {CalendarSnapshot} */ (current).attempts : 0;
   if (attempts >= CALENDAR_SNAPSHOT_MAX_ATTEMPTS) return { skipped: 'attempts' };
+  const attemptAt = sameDay ? /** @type {CalendarSnapshot} */ (current).attemptAt : 0;
+  if (attempts > 0 && nowMs - attemptAt < CALENDAR_SNAPSHOT_RETRY_MS) return { skipped: 'wait' };
 
+  // Без секретів Google знімка не буде ніколи - алертувати про це щодня
+  // означало б плутати «не налаштовано» зі «зламалось» (той самий гейт, що в
+  // mail-triage).
+  if (!env.GOOGLE_REFRESH_TOKEN) return { skipped: 'no-google' };
   if (!hasFeatureScope(await googleGrantedScopes(env), 'calendar')) {
     return writeFailure(env, today, attempts, 'скоуп calendar не виданий', nowMs);
   }
@@ -87,6 +101,7 @@ export async function refreshBriefCalendar(env, nowMs = Date.now()) {
     events: trimmed,
     updatedAt: new Date(nowMs).toISOString(),
     attempts: attempts + 1,
+    attemptAt: nowMs,
     alerted: false,
   });
   return { written: trimmed.length };
@@ -105,6 +120,7 @@ async function writeFailure(env, today, attempts, reason, nowMs) {
     events: [],
     updatedAt: '',
     attempts: next,
+    attemptAt: nowMs,
     alerted,
   });
   console.error(`calendar-snapshot: ${reason} (спроба ${next})`);

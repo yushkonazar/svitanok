@@ -19,12 +19,14 @@ import {
   MAIL_CANDIDATE_TTL_MS,
   MAIL_CANDIDATES_CAP,
   MAIL_FAIL_ALERT_AT,
+  MAIL_META_PER_TICK,
 } from '../web/core/brief/mail-triage.mjs';
 import {
   refreshBriefCalendar,
   parseSnapshot,
   CALENDAR_SNAPSHOT_KEY,
   CALENDAR_SNAPSHOT_MAX_ATTEMPTS,
+  CALENDAR_SNAPSHOT_RETRY_MS,
 } from '../web/core/brief/calendar-snapshot.mjs';
 import { CORE_SCOPES } from '../web/core/google-scopes.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -211,6 +213,62 @@ describe('mail-triage', () => {
     expect(urls.some((u) => u.includes('/messages?'))).toBe(false);
   });
 
+  it('сплеск понад стелю: курсор НЕ рухається, доки все не розібрано', async () => {
+    // Доти historyId писався завжди, а метадані бралися лише для перших N -
+    // решта листів зникала назавжди, бо наступна поява питала історію вже ВІД
+    // нового курсора (ревʼю етапу 7).
+    const ids = Array.from({ length: MAIL_META_PER_TICK + 5 }, (_, i) => `m${i}`);
+    const meta = Object.fromEntries(
+      ids.map((id) => [id, { subject: `Тема ${id}`, from: 'a@b' }]),
+    ) as Record<string, { subject: string; from: string }>;
+    const { impl } = gmailFetch({ historyIds: ids, meta, profileHistoryId: '999' });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env, readState } = makeEnv({
+      [MAIL_TRIAGE_KEY]: { historyId: '100', lastRunMs: 0, fails: 0, candidates: [] },
+    });
+    const first = await mailTriageTask(env, NOW);
+    expect(first).toMatchObject({ added: MAIL_META_PER_TICK, pending: 5 });
+    // Gmail віддає історію за ЗРОСТАННЯМ, а брифінг бере найсвіжіші - тож із
+    // хвоста, не з голови: інакше при сплеску власник бачив би найстаріші.
+    const firstBatch = normalizeTriageState(readState()[MAIL_TRIAGE_KEY]).candidates.map(
+      (c) => c.id,
+    );
+    expect(firstBatch).toContain(`m${ids.length - 1}`);
+    expect(firstBatch).not.toContain('m0');
+    // Курсор лишився старим - недочитане не втрачене.
+    expect(normalizeTriageState(readState()[MAIL_TRIAGE_KEY]).historyId).toBe('100');
+    // Наступна поява добирає решту й аж тоді рухає курсор.
+    const second = await mailTriageTask(env, NOW + MAIL_TRIAGE_PERIOD_MS);
+    expect(second).toMatchObject({ added: 5, pending: 0 });
+    expect(normalizeTriageState(readState()[MAIL_TRIAGE_KEY]).historyId).toBe('999');
+  });
+
+  it('токен читається РАЗ на прохід, не на кожен лист (бюджет підзапитів)', async () => {
+    const { impl } = gmailFetch({
+      historyIds: ['m1', 'm2', 'm3'],
+      meta: {
+        m1: { subject: 'a', from: 'x@y' },
+        m2: { subject: 'b', from: 'x@y' },
+        m3: { subject: 'c', from: 'x@y' },
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env, store } = makeEnv({
+      [MAIL_TRIAGE_KEY]: { historyId: '100', lastRunMs: 0, fails: 0, candidates: [] },
+    });
+    let tokenReads = 0;
+    const real = store.get.bind(store);
+    vi.spyOn(store, 'get').mockImplementation((k: string) => {
+      if (k === 'googleToken') tokenReads += 1;
+      return real(k);
+    });
+    await mailTriageTask(env, NOW);
+    // Три сталі читання (звірка скоупів, історія, токен проходу) - і ЖОДНОГО
+    // на лист: інакше 15 листів коштували б 15 зайвих підзапитів із 50,
+    // доступних усьому тіку планувальника.
+    expect(tokenReads).toBe(3);
+  });
+
   it('404 на history (точка відліку застаріла) - НЕ збій, а пересинхронізація', async () => {
     const { impl, telegram } = gmailFetch({
       historyStatus: 404,
@@ -322,16 +380,41 @@ describe('знімок календаря', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('спроби РОЗКЛАДЕНІ в часі: тік через пʼять хвилин бюджету не палить', async () => {
+    // Інакше чотири спроби згорали за 15 хв о 07:00-07:15, і двадцятихвилинне
+    // блимання Google лишало брифінг без блоку, хоч до 08:00 було ще девʼять
+    // безкоштовних тіків (ревʼю етапу 7).
+    const { impl } = calendarFetch(null);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env } = makeEnv();
+    await refreshBriefCalendar(env, NOW);
+    expect(await refreshBriefCalendar(env, NOW + 300_000)).toEqual({ skipped: 'wait' });
+    expect(await refreshBriefCalendar(env, NOW + CALENDAR_SNAPSHOT_RETRY_MS)).toMatchObject({
+      attempts: 2,
+    });
+  });
+
   it('після стелі спроб - алерт і тиша до завтра', async () => {
     const { impl, telegram } = calendarFetch(null);
     vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
     const { env } = makeEnv();
     for (let i = 0; i < CALENDAR_SNAPSHOT_MAX_ATTEMPTS; i++) {
-      await refreshBriefCalendar(env, NOW + i * 300_000);
+      await refreshBriefCalendar(env, NOW + i * CALENDAR_SNAPSHOT_RETRY_MS);
     }
     expect(telegram).toHaveLength(1);
     expect(telegram[0]).toContain('Календар на 2026-09-08 не прочитався');
-    expect(await refreshBriefCalendar(env, NOW + 3_600_000)).toEqual({ skipped: 'attempts' });
+    expect(await refreshBriefCalendar(env, NOW + 5 * CALENDAR_SNAPSHOT_RETRY_MS)).toEqual({
+      skipped: 'attempts',
+    });
+  });
+
+  it('без секретів Google знімка немає - і алерту теж (це не збій)', async () => {
+    const { impl, telegram } = calendarFetch(null);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(impl as unknown as typeof fetch);
+    const { env } = makeEnv({}, ALL);
+    const noGoogle = { ...env, GOOGLE_REFRESH_TOKEN: undefined } as Env;
+    expect(await refreshBriefCalendar(noGoogle, NOW)).toEqual({ skipped: 'no-google' });
+    expect(telegram).toHaveLength(0);
   });
 
   it('вчорашній знімок не рахується зробленим - ядро перечитує календар', async () => {

@@ -54,6 +54,8 @@ export const SECRET_ENV_NAMES = [
   'BACKUP_ENC_KEY',
   'GH_DISPATCH_TOKEN',
   'REPO_READ_PAT',
+  // Легасі-хост ще живий (agent-runtime.mjs) - його секрет теж не має поїхати.
+  'LLM_HOST_SECRET',
 ];
 
 /** Коротші за це не шукаємо: випадковий збіг зіпсував би дані власника. */

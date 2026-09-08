@@ -26,6 +26,7 @@ import {
   gmailHistoryAdded,
   gmailSearchIds,
   gmailMessageMeta,
+  googleAccessToken,
 } from '../../google.mjs';
 
 /** Ключ у блобі `state`, який читає брифінг (src/modules/mail.ts). */
@@ -40,8 +41,15 @@ export const MAIL_TRIAGE_PERIOD_MS = 15 * 60_000;
 export const MAIL_TRIAGE_QUERY = 'in:inbox newer_than:3d -category:promotions -category:social';
 /** Скільки кандидатів тягнемо на холодному старті (= maxCandidates брифінгу). */
 export const MAIL_COLD_START_LIMIT = 15;
-/** Стеля метаданих за одну появу: 50 підзапитів на виклик (Workers Free). */
-export const MAIL_META_PER_TICK = 20;
+/**
+ * Стеля метаданих за одну появу. Рахунок підзапитів (Workers Free: 50 на
+ * ВИКЛИК, і в тому ж виклику планувальник виконує решту прострочених задач):
+ * стан 1 + скоупи/токен 1 + історія 1-2 + N листів + запис стану 3. При
+ * N = 15 виходить ~21 - лишається запас на сусідні задачі тіка. Токен
+ * читається РАЗ на прохід і передається в gmailMessageMeta, інакше кожен лист
+ * коштував би вдвічі.
+ */
+export const MAIL_META_PER_TICK = 15;
 /** Скільки живе кандидат: стільки ж, скільки вікно `newer_than:3d`. */
 export const MAIL_CANDIDATE_TTL_MS = 3 * 86_400_000;
 /** Стеля списку - блоб `state` не має рости від пошти. */
@@ -115,10 +123,28 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
     return { failed: sync.reason };
   }
 
+  // ⚠️ КУРСОР РУХАЄТЬСЯ, ЛИШЕ КОЛИ ВСЕ РОЗІБРАНО (ревʼю етапу 7). Доти
+  // historyId записувався завжди, а метадані бралися лише для перших 20 id -
+  // тобто при сплеску («тридцять листів за чверть години») решта зникала
+  // назавжди: наступна поява питала історію вже ВІД нового курсора.
+  const blobNow = await readState(env);
+  const shownNow =
+    blobNow.shownMail && typeof blobNow.shownMail === 'object' ? blobNow.shownMail : {};
+  const known = new Set([
+    ...state.candidates.map((c) => c.id),
+    ...Object.keys(/** @type {Record<string, unknown>} */ (shownNow)),
+  ]);
+  const pending = sync.ids.filter((id) => !known.has(id));
+  // Найновіші вперед: брифінг бере 15 найсвіжіших, а Gmail віддає історію за
+  // зростанням - без цього при сплеску власник бачив би найстаріші листи.
+  const batch = pending.slice(-MAIL_META_PER_TICK);
+  const drained = !sync.truncated && pending.length <= MAIL_META_PER_TICK;
+
+  const token = await googleAccessToken(env);
   /** @type {MailCandidate[]} */
   const fresh = [];
-  for (const id of sync.ids.slice(0, MAIL_META_PER_TICK)) {
-    const meta = await gmailMessageMeta(env, id);
+  for (const id of batch) {
+    const meta = await gmailMessageMeta(env, id, token);
     if (!meta) continue;
     if (meta.labels.some((l) => SKIP_LABELS.includes(l))) continue;
     fresh.push({
@@ -136,7 +162,9 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
     return {
       ...blob,
       [MAIL_TRIAGE_KEY]: {
-        historyId: sync.historyId,
+        // Не дочитали - лишаємо СТАРИЙ курсор: наступна поява перепитає те
+        // саме вікно, а дедуп за id не дасть дублів.
+        historyId: drained ? sync.historyId : (prev.historyId ?? state.historyId),
         lastRunMs: nowMs,
         fails: 0,
         alerted: false,
@@ -145,20 +173,33 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
     };
   });
   const saved = normalizeTriageState(store[MAIL_TRIAGE_KEY]);
-  return { added: fresh.length, candidates: saved.candidates.length, cold: sync.cold };
+  return {
+    added: fresh.length,
+    candidates: saved.candidates.length,
+    cold: sync.cold,
+    pending: pending.length - batch.length,
+  };
 }
 
 /**
  * Які листи розглядати цієї появи: інкремент від historyId або холодний
  * старт (перший запуск / історія застаріла).
  * @param {Env} env @param {MailTriageState} state
- * @returns {Promise<{ ok: true, ids: string[], historyId: string | null, cold: boolean }
- *   | { ok: false, reason: string }>}
+ * @returns {Promise<{ ok: true, ids: string[], historyId: string | null, cold: boolean,
+ *   truncated: boolean } | { ok: false, reason: string }>}
  */
 async function collectIds(env, state) {
   if (state.historyId) {
     const hist = await gmailHistoryAdded(env, { startHistoryId: state.historyId });
-    if (hist.ok) return { ok: true, ids: hist.ids, historyId: hist.historyId, cold: false };
+    if (hist.ok) {
+      return {
+        ok: true,
+        ids: hist.ids,
+        historyId: hist.historyId,
+        cold: false,
+        truncated: hist.truncated,
+      };
+    }
     // 404 - точка відліку застаріла (історія Gmail живе ~тиждень). Це не
     // збій: пересинхронізовуємось пошуком, як на першому запуску.
     if (hist.status !== 404) return { ok: false, reason: `history HTTP ${hist.status}` };
@@ -175,6 +216,9 @@ async function collectIds(env, state) {
     ids: search.ids,
     historyId: profile.ok ? profile.historyId : null,
     cold: true,
+    // Холодний старт бере рівно maxCandidates найсвіжіших - «недочитаного»
+    // тут не буває за визначенням.
+    truncated: false,
   };
 }
 

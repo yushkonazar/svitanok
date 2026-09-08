@@ -944,6 +944,13 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       NOW,
     );
     expect(String(toast)).toContain('ЗГОДЕН');
+    // Рядок у ТРЕД, і дію в ньому називає ЯДРО: тост зникає за секунди, а
+    // текст моделі поруч може обіцяти що завгодно (ревʼю етапу 7).
+    const asked = tg.find(
+      (c) => c.method === 'sendMessage' && String(c.body.text).includes('Це T2'),
+    );
+    expect(String(asked?.body.text)).toContain('forget');
+    expect(String(asked?.body.text)).toContain('ЗГОДЕН');
     tg.length = 0;
     await prerouteMessage(env, parsedMsg('ЗГОДЕН'), NOW + 1000);
     const statuses = Object.fromEntries(

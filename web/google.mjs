@@ -175,7 +175,9 @@ export async function gmailProfileHistoryId(env) {
  * status 404 - historyId застарів (Gmail тримає історію ~тиждень).
  * @param {Env} env
  * @param {{ startHistoryId: string, maxPages?: number }} input
- * @returns {Promise<{ ok: true, ids: string[], historyId: string }
+ * `truncated` - сторінки лишились недочитаними (стеля maxPages): курсор тоді
+ * рухати НЕ можна, інакше недочитане зникне назавжди.
+ * @returns {Promise<{ ok: true, ids: string[], historyId: string, truncated: boolean }
  *   | { ok: false, status: number }>}
  */
 export async function gmailHistoryAdded(env, input) {
@@ -213,7 +215,7 @@ export async function gmailHistoryAdded(env, input) {
       pageToken = typeof json?.nextPageToken === 'string' ? json.nextPageToken : undefined;
       if (!pageToken) break;
     }
-    return { ok: true, ids: [...new Set(ids)], historyId };
+    return { ok: true, ids: [...new Set(ids)], historyId, truncated: Boolean(pageToken) };
   } catch (/** @type {any} */ err) {
     console.error('gmail history failed', err.message);
     return { ok: false, status: 0 };
@@ -252,12 +254,15 @@ export async function gmailSearchIds(env, input) {
 /**
  * Метадані одного листа для тріажу: заголовки, сніпет, мітки й дата.
  * Формат metadata - тіла НЕ читаємо (та сама мінімізація, що в readMail).
- * @param {Env} env @param {string} id
+ * @param {Env} env @param {string} id @param {string | null} [accessToken]
  * @returns {Promise<{ id: string, from: string, subject: string, snippet: string,
  *   labels: string[], atMs: number } | null>}
  */
-export async function gmailMessageMeta(env, id) {
-  const token = await googleAccessToken(env);
+export async function gmailMessageMeta(env, id, accessToken = null) {
+  // Токен приймається ззовні: задача тріажу читає його РАЗ на прохід. Інакше
+  // кожен лист коштував би ще одне читання KV, і 20 листів зʼїдали б 40
+  // підзапитів із 50, доступних виклику на Workers Free.
+  const token = accessToken ?? (await googleAccessToken(env));
   if (!token) return null;
   try {
     const url = new URL(

@@ -22,6 +22,7 @@ import {
   FORGET_ALL_TABLES,
   FORGET_ALL_KV_KEYS,
   FORGET_ALL_STATE_FIELDS,
+  FORGET_ALL_KEEP,
 } from '../web/core/export/forget-all.mjs';
 import { BACKUP_TABLES } from '../web/core/backup/core.mjs';
 import { CORE_SCOPES } from '../web/core/google-scopes.mjs';
@@ -340,10 +341,42 @@ describe('forget target=all', () => {
 
   it('перелік таблиць виводиться зі знімка бекапу - нова таблиця не переживе «усе»', () => {
     const missing = BACKUP_TABLES.filter(
-      (t) => !FORGET_ALL_TABLES.includes(t) && t !== 'instructions' && t !== 'instruction_history',
+      (t) => !FORGET_ALL_TABLES.includes(t) && !FORGET_ALL_KEEP.includes(t),
     );
     expect(missing).toEqual([]);
-    expect(FORGET_ALL_TABLES).not.toContain('instructions');
+    expect(FORGET_ALL_KEEP).toEqual(['instructions', 'instruction_history', 'counters']);
+  });
+
+  it('лічильник ідей ОБНУЛЯЄТЬСЯ, а не зникає - інакше ideas.create падає назавжди', async () => {
+    // `DELETE FROM counters` прибирає сам рядок, і `UPDATE … RETURNING` після
+    // цього віддає null: власник дістав би «міграція 0011 не застосована» на
+    // кожній новій ідеї, і полагодити можна було б лише руками в базі.
+    const { env, d1 } = makeEnv();
+    d1.db.exec(
+      `INSERT INTO ideas (id, number, title, body_md, domain, status, priority, next_action, tags_json, source_msg_id, created_at, updated_at)
+       VALUES ('i1', 7, 'Тема', '', 'побут', 'нова', 2, '', '[]', NULL, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')`,
+    );
+    d1.db.exec(`UPDATE counters SET value = 7 WHERE name = 'ideas'`);
+    await forgetAll(env);
+    expect(d1.db.prepare("SELECT value FROM counters WHERE name = 'ideas'").get()).toEqual({
+      value: 0,
+    });
+    expect(d1.db.prepare('SELECT count(*) AS n FROM ideas').get()).toEqual({ n: 0 });
+  });
+
+  it('KV-список накриває дані, які власник вважає своїми (координати, збережене)', async () => {
+    const { env, store } = makeEnv({
+      ownerGeo: '{"lat":49.8,"lon":24,"name":"Львів"}',
+      saved: '[]',
+      lastUpdateId: '42',
+    });
+    await forgetAll(env);
+    // Локація власника - теж його дані: доти вона переживала «стерто все», і
+    // асистент далі відповідав на «де я».
+    expect(store.get('ownerGeo')).toBeUndefined();
+    expect(store.get('saved')).toBeUndefined();
+    // А службовий ключ - лишається: інакше зламався б сам бот.
+    expect(store.get('lastUpdateId')).toBe('42');
   });
 
   it('поля даних у `state` перелічені явно', () => {
