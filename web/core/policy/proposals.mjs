@@ -28,6 +28,7 @@ import {
 import { restoreReminder } from '../reminders/store.mjs';
 import { plural } from '../tg/phrase.mjs';
 import { followUpButtons } from '../links.mjs';
+import { collectOwnStyle } from '../style/corpus.mjs';
 import {
   runIdeasCreate,
   runIdeasUpdate,
@@ -587,6 +588,15 @@ export const EXECUTORS = {
     async undo(env, snapshot) {
       if (!snapshot?.task_id) return;
       await deleteTask(env, String(snapshot.task_id));
+    },
+  },
+  // Корпус стилю (PR-8 §6A): збір власних текстів власника. Відкоту немає -
+  // корпус можна перезібрати будь-коли, а «↩» на читання власних же
+  // повідомлень нічого не означає.
+  'style.collect': {
+    async execute(env, payload, nowMs) {
+      void payload; // параметрів немає: беруться ВСІ власні тексти
+      return await collectOwnStyle(env, nowMs);
     },
   },
   'collection.export': {

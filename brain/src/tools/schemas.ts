@@ -214,6 +214,12 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     write: true,
   }),
   tool({
+    coreName: 'style.samples',
+    description:
+      'Зразки ВЛАСНИХ текстів власника - його голос. Клич ПЕРЕД delegate до Копірайтера або Редактора і вклади результат у task окремим блоком: без нього вони пишуть базовим стилем. Порожній корпус - так і є, збирається він командою «збери мій стиль».',
+    args: z.object({ limit: z.number().int().min(1).max(30).optional() }),
+  }),
+  tool({
     coreName: 'data.search',
     description:
       'Пошук по ВСІХ власних даних одним викликом: ідеї, записи колекцій, місця, транзакції. Питання «коли я востаннє був у X», «де я це записував», «чи є в мене щось про Y» - це ОДИН data.search, а не перебір інструментів. scopes звужує джерела (ideas·records·places·money); чати шукає окремий inbox.search.',
@@ -247,7 +253,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'proposals.create',
     description:
-      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, forget, data.export, gemini.video. payload - поля дії: calendar.event/invite {title, startIso, endIso, location?, attendees?, reminderMinutes?}; calendar.update {event_id, title?, startIso+endIso разом, location?, attendees?}; calendar.delete {event_id}; contact {name, email}; tasks.create {title, notes?, due? - Tasks зберігає лише ДАТУ, години не буде: для сигналу о годині став reminders.create}; collection.export {collection, to?: "sheets" - Google Таблиця в Drive, інакше .csv документом}; drive.write {name, content_md}; gemini.image {prompt} і gemini.video {prompt, seconds? (до 8), model? "veo"|"lite"} - ЛИШЕ prompt власника: будь-яке інше поле policy відкидає, і в заплямованій сесії (після пошти/чатів) генерація недоступна взагалі. Ціну ядро дописує саме - не називай її. Рівень вирішує ЯДРО: задача, нотатка, експорт колекції і подія БЕЗ гостей робляться одразу й лишають «↩» на 10 хв - не обіцяй по них підтвердження; подія з гостями, invite, контакт, налаштування й зображення чекають ✅, а стирання, експорт даних і відео - ✅ зі словом. Після рішення ядро зробить запис саме.',
+      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, style.collect, forget, data.export, gemini.video. payload - поля дії: calendar.event/invite {title, startIso, endIso, location?, attendees?, reminderMinutes?}; calendar.update {event_id, title?, startIso+endIso разом, location?, attendees?}; calendar.delete {event_id}; contact {name, email}; tasks.create {title, notes?, due? - Tasks зберігає лише ДАТУ, години не буде: для сигналу о годині став reminders.create}; collection.export {collection, to?: "sheets" - Google Таблиця в Drive, інакше .csv документом}; drive.write {name, content_md}; gemini.image {prompt} і gemini.video {prompt, seconds? (до 8), model? "veo"|"lite"} - ЛИШЕ prompt власника: будь-яке інше поле policy відкидає, і в заплямованій сесії (після пошти/чатів) генерація недоступна взагалі. Ціну ядро дописує саме - не називай її. Рівень вирішує ЯДРО: задача, нотатка, експорт колекції і подія БЕЗ гостей робляться одразу й лишають «↩» на 10 хв - не обіцяй по них підтвердження; подія з гостями, invite, контакт, налаштування й зображення чекають ✅, а стирання, експорт даних і відео - ✅ зі словом. Після рішення ядро зробить запис саме.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),

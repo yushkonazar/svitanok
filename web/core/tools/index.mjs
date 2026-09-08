@@ -23,6 +23,7 @@ import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
 import { runIdeasList, runIdeasSearch } from './ideas.mjs';
 import { runDataSearch } from './search.mjs';
+import { runStyleSamples } from '../style/corpus.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 import { runFinanceQuery } from './finance.mjs';
@@ -324,6 +325,15 @@ export const TOOLS = {
       },
     },
     run: (env, args) => runDataSearch(env, args),
+  },
+  // Зразки голосу власника для Копірайтера й Редактора (PR-8 §6A). Читання:
+  // корпус - ВЛАСНІ тексти власника, не зовнішній вміст, тож не tainting.
+  'style.samples': {
+    args: {
+      type: 'object',
+      properties: { limit: { type: 'number', minimum: 1, maximum: 30 } },
+    },
+    run: (env, args) => runStyleSamples(env, args),
   },
   'ideas.search': {
     args: {

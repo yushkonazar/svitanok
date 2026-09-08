@@ -1,0 +1,137 @@
+// Корпус стилю власника (релізний блок PR-8, §6 варіант A).
+//
+// ІДЕЯ. Своєї моделі ми не тренуємо - це дорого, повільно й дає гіршу мову,
+// ніж чужа модель із гарними прикладами. Замість цього беремо ВЛАСНІ тексти
+// власника й показуємо їх Копірайтеру та Редактору як зразок голосу. Шар
+// поверх чужої моделі, а не своя модель.
+//
+// ⚠️ ЗВІДКИ ТЕКСТИ. Лише те, що написав САМ власник: його вихідні
+// повідомлення з `inbox_messages` (from_id = TELEGRAM_OWNER_USER_ID). Чужі
+// повідомлення не беруться ніколи - інакше «його голосом» писалося б чуже, а
+// в корпус потрапляв би зовнішній вміст, який потім ішов би в чужий сервіс
+// (модель) без жодної позначки.
+//
+// ⚠️ ЗБІР - ДІЯ T1. Це рішення канону (07 §1, `style_corpus`): корпус свого
+// голосу власник дає СВІДОМО, а не збирається сам собою фоном.
+
+const OWN_MIN_CHARS = 60;
+const OWN_MAX_CHARS = 600;
+/** Скільки зразків тримаємо в корпусі всього. */
+export const CORPUS_CAP = 200;
+/** Скільки зразків іде працівнику: більше - це вже переказ корпусу, не зразок. */
+export const SAMPLES_DEFAULT = 12;
+export const SAMPLES_MAX = 30;
+
+/** @param {Env} env */
+function db(env) {
+  if (!env.DB) throw new Error('привʼязки DB немає');
+  return env.DB;
+}
+
+/**
+ * Зібрати власні тексти в корпус. Ідемпотентно: той самий текст удруге не
+ * лягає (ключ рядка - хеш тексту, а не id повідомлення: те саме власник міг
+ * написати в двох чатах, і як зразок голосу воно одне).
+ * @param {Env} env
+ * @param {number} nowMs
+ * @returns {Promise<{ result: { added: number, total: number, scanned: number } }>}
+ */
+export async function collectOwnStyle(env, nowMs) {
+  const owner = String(env.TELEGRAM_OWNER_USER_ID ?? '').trim();
+  if (!owner) throw new Error('стиль: TELEGRAM_OWNER_USER_ID не заданий - нема кого впізнавати');
+  const { results } = await db(env)
+    .prepare(
+      `SELECT id, text, at FROM inbox_messages
+       WHERE from_id = ? AND text IS NOT NULL
+         AND length(text) BETWEEN ? AND ?
+       ORDER BY at DESC LIMIT ?`,
+    )
+    .bind(owner, OWN_MIN_CHARS, OWN_MAX_CHARS, CORPUS_CAP)
+    .all();
+  const rows = /** @type {{ id: string, text: string, at: string }[]} */ (results ?? []);
+
+  let added = 0;
+  for (const r of rows) {
+    const text = String(r.text ?? '').trim();
+    if (!text) continue;
+    const id = await textKey(text);
+    const res = await db(env)
+      .prepare(
+        `INSERT INTO style_corpus (id, msg_id, at, text, kind, approved)
+         VALUES (?, ?, ?, ?, 'message', 1)
+         ON CONFLICT (id) DO NOTHING`,
+      )
+      .bind(id, r.id, r.at ?? new Date(nowMs).toISOString(), text)
+      .run();
+    if ((res.meta?.changes ?? 0) === 1) added += 1;
+  }
+  await trimCorpus(env);
+  const total = await corpusSize(env);
+  return { result: { added, total, scanned: rows.length } };
+}
+
+/**
+ * Зразки голосу для працівника. Найсвіжіші: голос змінюється, і рік тому
+ * власник писав інакше.
+ * @param {Env} env
+ * @param {{ limit?: unknown }} [args]
+ * @returns {Promise<{ result: { samples: string[], total: number } }>}
+ */
+export async function runStyleSamples(env, args = {}) {
+  const asked = Number(args.limit);
+  const limit =
+    Number.isInteger(asked) && asked > 0 ? Math.min(asked, SAMPLES_MAX) : SAMPLES_DEFAULT;
+  const { results } = await db(env)
+    .prepare(
+      `SELECT text FROM style_corpus WHERE approved = 1 AND text IS NOT NULL
+       ORDER BY at DESC LIMIT ?`,
+    )
+    .bind(limit)
+    .all();
+  const samples = (results ?? []).map((/** @type {any} */ r) => String(r.text));
+  return { result: { samples, total: await corpusSize(env) } };
+}
+
+/**
+ * Блок для `task` працівника. Порожній корпус - порожній рядок, а не
+ * заглушка: працівник має відрізняти «зразків немає» від «ось нуль зразків».
+ * @param {string[]} samples
+ */
+export function styleBlock(samples) {
+  if (samples.length === 0) return '';
+  return [
+    'Приклади голосу власника (його власні тексти, не переказувати й не цитувати - лише наслідувати манеру):',
+    ...samples.map((s) => `— ${s.replace(/\s+/g, ' ').trim()}`),
+  ].join(String.fromCharCode(10));
+}
+
+/** Розмір корпусу - і для звіту власнику, і щоб не вгадувати. @param {Env} env */
+async function corpusSize(env) {
+  const row = /** @type {any} */ (
+    await db(env).prepare('SELECT COUNT(*) AS n FROM style_corpus').bind().first()
+  );
+  return Number(row?.n) || 0;
+}
+
+/** Стеля корпусу: найстаріші зайві - геть. @param {Env} env */
+async function trimCorpus(env) {
+  await db(env)
+    .prepare(
+      `DELETE FROM style_corpus WHERE id IN (
+         SELECT id FROM style_corpus ORDER BY at DESC LIMIT -1 OFFSET ?
+       )`,
+    )
+    .bind(CORPUS_CAP)
+    .run();
+}
+
+/** Ключ рядка - хеш тексту: той самий текст двічі в корпусі не потрібен.
+ *  @param {string} text */
+async function textKey(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .slice(0, 16)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}

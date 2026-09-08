@@ -421,6 +421,7 @@ describe('реєстр TOOLS', () => {
       'reminders.update',
       'routes.eta',
       'runs.query',
+      'style.samples',
       'subscriptions.update',
       'wishes.create',
       'wishes.delete',

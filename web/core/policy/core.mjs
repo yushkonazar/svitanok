@@ -61,6 +61,9 @@ export const ACTION_LEVELS = {
   'ideas.delete': 'T1',
   'wishes.delete': 'T1',
   'gemini.image': 'T1',
+  // Збір корпусу свого голосу власник дає СВІДОМО (07 §1 style_corpus), а не
+  // фоном: це його тексти, і рішення про них - його.
+  'style.collect': 'T1',
   // T2 - ✅ + слово, TTL 10 хв
   forget: 'T2',
   'data.export': 'T2',
