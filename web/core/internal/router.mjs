@@ -152,7 +152,8 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
       }
       const info = await registryRunInfo(env, auth.runId);
       const threadId = info?.threadId ?? null;
-      const tainted = await readThreadTainted(env, threadId, nowMs);
+      const taint = await readThreadTaint(env, threadId, nowMs);
+      const tainted = taint.active;
       /** @type {Awaited<ReturnType<typeof applyPolicy>>} */
       let policyOut;
       try {
@@ -171,6 +172,10 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
             // (нагадування): її задає ядро, не модель (security-ревʼю PR-6).
             chatId: info?.chatId ?? null,
             tainted,
+            // «Колись читала зовнішнє з часу /new» - окремо від 10-хвилинного
+            // taint: сесія мозку переживає прогін і несе вміст листа далі
+            // (security-ревʼю етапу 7). Для gemini.* це і є барʼєр.
+            taintedEver: taint.ever,
             viaProposal: Boolean(tool.write.kindFrom),
           },
           nowMs,
@@ -198,7 +203,15 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
           tool: name,
           tainted,
           mode: 'proposed',
-          proposal: policyOut.proposal,
+          // ⚠️ БЕЗ `word` (security-ревʼю етапу 7). Слово T2 - другий фактор
+          // власника, і модель не має його бачити: маючи слово, вона могла
+          // створити кілька T2 поспіль, доки одній не випаде те саме, і
+          // підсунути під напис власника іншу дію. Слово називає ядро після
+          // ✅ - і саме тій пропозиції, про яку спитало.
+          proposal: {
+            ...policyOut.proposal,
+            word: policyOut.proposal.word ? '(скаже ядро)' : null,
+          },
         });
       }
       return json({
@@ -322,7 +335,13 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // схвалення; довіряти їй же назвати ціну означало б дозволити просити $3.20,
   // написавши «безкоштовно». Тому текст дописується тут, за kind і payload
   // самої пропозиції, і зникнути з повідомлення не може.
-  const notice = await proposalNoticeFor(env, body.buttons ?? []);
+  /** @type {string} */
+  let notice;
+  try {
+    notice = await proposalNoticeFor(env, body.buttons ?? []);
+  } catch (/** @type {any} */ e) {
+    return json({ ok: false, error: `contract: ${String(e?.message ?? '')}` }, 400);
+  }
   const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
   const buttons = [...(body.buttons ?? []), ...(saved ? workerButtons(saved.id, !longWorker) : [])];
@@ -709,19 +728,24 @@ async function handleSession(env, body, nowMs) {
 
 /**
  * Прапорець taint треду з D1 sessions - джерело істини для policy (01 §4.2).
- * Позначка - epoch-ms останнього зовнішнього читання; діє TAINT_TTL_MS
- * (policy/core). FAIL-SAFE: невідомий тред / збій D1 = вважаємо tainted
- * (ескалація до пропозиції) - помилка інфраструктури не сміє відчиняти
- * T0-запис.
+ * Позначка - epoch-ms останнього зовнішнього читання. Повертає ДВА стани:
+ *   active - діє TAINT_TTL_MS (10 хв): звичайна ескалація T0 → T1;
+ *   ever   - сесія читала зовнішнє хоч раз від `/new`. Потрібен там, де 10
+ *            хвилин замало: сесія мозку переживає прогін і несе вміст листа
+ *            далі, тож для gemini.* (єдиний канал у чужий сервіс) барʼєром
+ *            є саме `ever` (security-ревʼю етапу 7).
+ * FAIL-SAFE: невідомий тред / збій D1 = вважаємо tainted (ескалація до
+ * пропозиції) - помилка інфраструктури не сміє відчиняти T0-запис.
  * @param {Env} env
  * @param {string | number | null} threadId
  * @param {number} nowMs
  */
-async function readThreadTainted(env, threadId, nowMs) {
-  if (threadId == null) return true;
+async function readThreadTaint(env, threadId, nowMs) {
+  const dirty = { active: true, ever: true };
+  if (threadId == null) return dirty;
   if (!env.DB) {
     console.error('internal: привʼязки DB немає - taint вважаємо true (fail-safe)');
-    return true;
+    return dirty;
   }
   try {
     const { results } = await env.DB.prepare('SELECT tainted FROM sessions WHERE thread_id = ?')
@@ -729,10 +753,11 @@ async function readThreadTainted(env, threadId, nowMs) {
       .all();
     const row = /** @type {{ tainted?: number } | undefined} */ (results?.[0]);
     // Треду ще немає в sessions = зовнішнього не читали = чиста сесія.
-    return row ? isTaintActive(row.tainted, nowMs) : false;
+    if (!row) return { active: false, ever: false };
+    return { active: isTaintActive(row.tainted, nowMs), ever: Number(row.tainted) > 0 };
   } catch (/** @type {any} */ e) {
     console.error('internal: читання taint впало - вважаємо true (fail-safe)', e?.message);
-    return true;
+    return dirty;
   }
 }
 
@@ -784,14 +809,30 @@ async function markRunThreadTainted(env, runId, nowMs) {
  * @returns {Promise<string>}
  */
 async function proposalNoticeFor(env, buttons) {
-  const id = buttons
-    .flat()
-    .map((b) => b.callback_data.match(/^p:([A-Za-z0-9-]{1,40}):ok$/)?.[1])
-    .find(Boolean);
+  // ⚠️ РІВНО ОДНА пропозиція на повідомлення (security-ревʼю етапу 7). Доти
+  // брався ПЕРШИЙ `p:<id>:ok`, а рядок ціни дописувався один - і модель могла
+  // покласти в те саме повідомлення дешеву пропозицію першою, а дорогу під
+  // кнопкою «✅ Так»: власник бачив «$0.04», а підтверджував $3.20. Дві
+  // пропозиції під одним текстом не потрібні нікому, тож це відмова, а не
+  // спроба вгадати правильну.
+  const ids = [
+    ...new Set(
+      buttons
+        .flat()
+        .map((b) => b.callback_data.match(/^p:([A-Za-z0-9-]{1,40}):(?:ok|no)$/)?.[1])
+        .filter(Boolean),
+    ),
+  ];
+  if (ids.length > 1) throw new Error(`у повідомленні ${ids.length} різних пропозицій`);
+  const id = ids[0];
   if (!id || !env.DB) return '';
   try {
     const row = /** @type {{ kind: string, payload_json: string } | null} */ (
-      await env.DB.prepare('SELECT kind, payload_json FROM proposals WHERE id = ?').bind(id).first()
+      await env.DB.prepare(
+        "SELECT kind, payload_json FROM proposals WHERE id = ? AND status = 'open'",
+      )
+        .bind(id)
+        .first()
     );
     if (!row) return '';
     /** @type {Record<string, unknown> | null} */

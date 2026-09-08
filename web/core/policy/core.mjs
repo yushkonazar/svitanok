@@ -187,7 +187,9 @@ export function sanitizeGeminiPayload(kind, payload) {
  *   defaultSeconds: number }} prices
  */
 export function proposalNotice(kind, payload, prices) {
-  if (kind === 'gemini.image') return `💵 Генерація зображення ≈ $${prices.imageUsd.toFixed(2)}.`;
+  if (kind === 'gemini.image') {
+    return `💵 Генерація зображення ≈ $${prices.imageUsd.toFixed(2)}.${promptLine(payload)}`;
+  }
   if (kind === 'gemini.video') {
     const o = payload && typeof payload === 'object' ? payload : {};
     const seconds = Number.isFinite(Number(o.seconds))
@@ -199,9 +201,25 @@ export function proposalNotice(kind, payload, prices) {
       model === 'veo'
         ? ` Дешевше - Lite ≈ $${prices.videoUsd(seconds, 'lite').toFixed(2)} або Flow у застосунку Gemini вручну.`
         : '';
-    return `💵 Відео ${seconds} с ≈ $${cost.toFixed(2)}.${alt}`;
+    return `💵 Відео ${seconds} с ≈ $${cost.toFixed(2)}.${alt}${promptLine(payload)}`;
   }
   return '';
+}
+
+/**
+ * Сам prompt під ціною (security-ревʼю етапу 7): ✅ має даватись за ТЕ, що
+ * поїде в чужий сервіс, а не за напис моделі поруч. Керівні символи геть -
+ * рядок пише модель, і «
+[Ядро] …» у ньому підробив би повідомлення.
+ * @param {Record<string, unknown> | null | undefined} payload
+ */
+function promptLine(payload) {
+  const raw = payload && typeof payload === 'object' ? payload.prompt : null;
+  const text = String(raw ?? '')
+    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    .trim()
+    .slice(0, 300);
+  return text ? ['', `Запит: «${text}»`].join('\n') : '';
 }
 
 /**

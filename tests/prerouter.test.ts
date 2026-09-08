@@ -913,6 +913,67 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(sent?.body.text).toBe('✅ Виконано: facts.set «setting.k».');
   });
 
+  it('слово T2 виконує РІВНО ту пропозицію, про яку ядро спитало', async () => {
+    // ⚠️ Головна знахідка security-ревʼю етапу 7. Слів усього чотири, і доти
+    // слово шукало «останню відкриту T2 з таким словом у треді» - тож модель
+    // могла створити кілька T2 поспіль, показати власнику невинну, а під його
+    // напис підставити іншу, аж до forget=all. Тепер слово діє лише для тієї,
+    // про яку ядро САМЕ щойно спитало.
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, {
+      id: 'safe',
+      level: 'T2',
+      kind: 'forget',
+      word: 'ЗГОДЕН',
+      payload_json: JSON.stringify({ target: 'collection', collection: 'Сервіси' }),
+      created_at: new Date(NOW - 1000).toISOString(),
+    });
+    // Пропозиція-«тінь»: створена ПІЗНІШЕ, те саме слово, той самий тред.
+    seedProposal(db, {
+      id: 'shadow',
+      level: 'T2',
+      kind: 'forget',
+      word: 'ЗГОДЕН',
+      payload_json: JSON.stringify({ target: 'all' }),
+      created_at: new Date(NOW).toISOString(),
+    });
+    // Власник тисне ✅ під ТІЄЮ, що бачив: ядро називає слово й запамʼятовує id.
+    const toast = await handleBrainCallback(
+      env,
+      { data: 'p:safe:ok', chatId: 555, messageId: 42 },
+      NOW,
+    );
+    expect(String(toast)).toContain('ЗГОДЕН');
+    tg.length = 0;
+    await prerouteMessage(env, parsedMsg('ЗГОДЕН'), NOW + 1000);
+    const statuses = Object.fromEntries(
+      (
+        db.prepare('SELECT id, status FROM proposals').all() as {
+          id: string;
+          status: string;
+        }[]
+      ).map((r) => [r.id, r.status]),
+    );
+    expect(statuses.safe).toBe('approved');
+    // Найновіша однослівна пропозиція лишилась відкритою - її ніхто не просив.
+    expect(statuses.shadow).toBe('open');
+  });
+
+  it('слово без питання ядра нічого не виконує', async () => {
+    const { env, db } = cbEnv();
+    seedProposal(db, {
+      id: 'lone',
+      level: 'T2',
+      kind: 'forget',
+      word: 'ЗГОДЕН',
+      payload_json: JSON.stringify({ target: 'all' }),
+    });
+    await prerouteMessage(env, parsedMsg('ЗГОДЕН'), NOW);
+    expect(db.prepare("SELECT status FROM proposals WHERE id = 'lone'").get()).toEqual({
+      status: 'open',
+    });
+  });
+
   it('p:no - у тред іде «❌ Відхилено: …»', async () => {
     const { env, db, tg } = cbEnv();
     // Назва з payload писалась моделлю: керівні символи (у т.ч. «\n[Ядро] …»)

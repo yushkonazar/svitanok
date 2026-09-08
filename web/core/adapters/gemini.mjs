@@ -144,10 +144,27 @@ export async function generateVideo(env, input, opts = {}) {
   const sample = op?.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
   const uri = String(sample?.uri ?? '');
   if (!uri) throw new Error('Gemini не повернув посилання на відео');
+  // Адреса приходить із відповіді API, а ми шлемо на неї КЛЮЧ. Довіряти
+  // чужому полю в такому місці не варто навіть тоді, коли джерело надійне:
+  // одна перевірка хоста знімає весь клас «секрет поїхав не туди»
+  // (security-ревʼю етапу 7).
+  if (!isGoogleHost(uri)) throw new Error('Gemini: посилання на відео не з домену Google');
   // Ключ - ЗАГОЛОВКОМ, не параметром URL (05-ops §2: секрет ніколи в URL).
   const res = await fetch(uri, { headers: { 'x-goog-api-key': key } });
   if (!res.ok) throw new Error(`Gemini: відео не вивантажилось (HTTP ${res.status})`);
   return { bytes: new Uint8Array(await res.arrayBuffer()), mime: 'video/mp4' };
+}
+
+/** Чи адреса належить Google - лише туди можна слати ключ. @param {string} uri */
+export function isGoogleHost(uri) {
+  try {
+    const url = new URL(uri);
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname.toLowerCase();
+    return host === 'googleapis.com' || host.endsWith('.googleapis.com');
+  } catch {
+    return false;
+  }
 }
 
 /** base64 → байти (без Buffer: Workers). @param {string} b64 */

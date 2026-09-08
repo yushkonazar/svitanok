@@ -1102,7 +1102,7 @@ function db(env) {
  * @param {Env} env
  * @param {{ kind: string, payload: Record<string, unknown>,
  *   threadId?: string | number | null, chatId?: number | string | null,
- *   tainted: boolean, viaProposal?: boolean }} action - viaProposal: дію
+ *   tainted: boolean, taintedEver?: boolean, viaProposal?: boolean }} action - viaProposal: дію
  *   просить обгортка proposals.create (тоді T0 заборонений)
  * @param {number} nowMs
  * @returns {Promise<
@@ -1146,10 +1146,15 @@ export async function applyPolicy(env, action, nowMs) {
   //   2. Білий список полів: усе, крім prompt (і двох параметрів формату), -
   //      помилка, тож id транзакції чи чату просто не має куди поїхати.
   if (action.kind === 'gemini.image' || action.kind === 'gemini.video') {
-    if (action.tainted) {
+    // ⚠️ Не 10-хвилинний taint, а «читала зовнішнє ХОЧ РАЗ від /new»
+    // (security-ревʼю етапу 7): сесія мозку переживає межу прогону, і через
+    // 15 хвилин після листа його вміст усе ще в контексті - а звичайний taint
+    // уже прострочений. `taintedEver` не задано (виклики повз router) -
+    // падаємо на `tainted`, тобто барʼєр не слабший за попередній.
+    if (action.taintedEver ?? action.tainted) {
       return {
         mode: 'error',
-        error: `${action.kind}: сесія читала зовнішній вміст (пошта/чати) - у Gemini з неї нічого не йде. Почни /new і повтори запит.`,
+        error: `${action.kind}: сесія вже читала зовнішній вміст (пошта/чати) - у Gemini з неї нічого не йде. Почни /new і повтори запит.`,
       };
     }
     const narrowed = sanitizeGeminiPayload(action.kind, action.payload);

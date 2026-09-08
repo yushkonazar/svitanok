@@ -17,6 +17,7 @@
 //   wrangler secret put GOOGLE_REFRESH_TOKEN --name svitanok
 
 import { createServer } from 'node:http';
+import { createHash, randomBytes } from 'node:crypto';
 import { CORE_SCOPES, auditScopes } from '../web/core/google-scopes.mjs';
 
 const PORT = Number(process.env.GOOGLE_AUTH_PORT ?? 8765);
@@ -29,6 +30,17 @@ if (!clientId || !clientSecret) {
   process.exit(1);
 }
 
+// ⚠️ STATE + PKCE (security-ревʼю етапу 7). Доти локальний сервер приймав
+// БУДЬ-ЯКИЙ `?code=` з будь-якого запиту на 127.0.0.1: поки власник проходить
+// консент, довільна відкрита в браузері сторінка могла зробити
+// `<img src="http://127.0.0.1:8765/?code=…">` зі своїм кодом - і власник
+// поклав би в Cloudflare refresh-токен ЧУЖОГО акаунта. Далі бекапи й експорт
+// їхали б у чужий Drive, а тріаж читав би чужу скриньку. Тепер код без
+// нашого `state` відкидається, а PKCE звʼязує обмін із цим самим запуском.
+const STATE = randomBytes(24).toString('base64url');
+const VERIFIER = randomBytes(48).toString('base64url');
+const CHALLENGE = createHash('sha256').update(VERIFIER).digest('base64url');
+
 /** Дочекатись `?code=` на локальному редиректі. @returns {Promise<string>} */
 function waitForCode() {
   return new Promise((resolve, reject) => {
@@ -36,10 +48,22 @@ function waitForCode() {
       const url = new URL(req.url ?? '/', REDIRECT);
       const code = url.searchParams.get('code');
       const error = url.searchParams.get('error');
-      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end(code ? 'Готово. Повертайся в термінал.' : `Помилка: ${error ?? 'без коду'}`);
+      const stateOk = url.searchParams.get('state') === STATE;
+      const pathOk = url.pathname === '/';
+      const ok = Boolean(code) && stateOk && pathOk;
+      res.writeHead(ok ? 200 : 400, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(
+        ok
+          ? 'Готово. Повертайся в термінал.'
+          : `Помилка: ${error ?? (code ? 'чужий state або шлях' : 'без коду')}`,
+      );
+      if (!ok && code) {
+        // Не закриваємо сервер: справжній редирект власника ще попереду.
+        console.error('⚠️ Прийшов code із чужим state або шляхом - проігноровано.');
+        return;
+      }
       server.close();
-      if (code) resolve(code);
+      if (ok) resolve(/** @type {string} */ (code));
       else reject(new Error(error ?? 'консент не повернув code'));
     });
     server.listen(PORT, '127.0.0.1', () => {
@@ -52,6 +76,9 @@ function waitForCode() {
       // ПЕРШОМУ консенті, і повторне перевидання мовчки дає токен без нього.
       auth.searchParams.set('access_type', 'offline');
       auth.searchParams.set('prompt', 'consent');
+      auth.searchParams.set('state', STATE);
+      auth.searchParams.set('code_challenge', CHALLENGE);
+      auth.searchParams.set('code_challenge_method', 'S256');
       console.log('\nВідкрий у браузері й дай доступ:\n');
       console.log(auth.toString());
       console.log('\nЧекаю на редирект…');
@@ -69,6 +96,7 @@ const res = await fetch('https://oauth2.googleapis.com/token', {
     client_secret: clientSecret,
     redirect_uri: REDIRECT,
     grant_type: 'authorization_code',
+    code_verifier: VERIFIER,
   }).toString(),
 });
 if (!res.ok) {

@@ -29,6 +29,7 @@ import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
 import { parsePolicyCallback, T2_WORDS, isTaintActive } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
+import { rememberT2, takeT2 } from './policy/t2-word.mjs';
 import {
   transcribeVoice,
   savePendingVoice,
@@ -345,24 +346,20 @@ async function resolveT2Word(env, target, threadKey, text, nowMs) {
   if (!env.DB) return false;
   const word = text.trim().toUpperCase();
   // Лише відомі слова T2 (їх чотири): «дякую» чи «привіт» не мають ходити в
-  // D1 перед кожним прогоном.
+  // сховище перед кожним прогоном.
   if (!T2_WORDS.includes(word)) return false;
-  let row;
+  // ⚠️ id - лише з памʼяті треду, НЕ пошуком «остання T2 з таким словом»
+  // (security-ревʼю етапу 7). Слів чотири, і пошук дозволяв моделі підсунути
+  // під слово власника іншу, ним не бачену пропозицію - аж до forget=all.
+  let id;
   try {
-    row = /** @type {any} */ (
-      await env.DB.prepare(
-        `SELECT id FROM proposals WHERE status = 'open' AND level = 'T2' AND word = ?
-         AND thread_id = ? ORDER BY created_at DESC LIMIT 1`,
-      )
-        .bind(word, threadKey)
-        .first()
-    );
+    id = await takeT2(env, threadKey, word, nowMs);
   } catch (/** @type {any} */ e) {
-    console.error('prerouter: пошук T2-слова впав', e?.message);
+    console.error('prerouter: памʼять слова T2 не прочиталась', e?.message);
     return false;
   }
-  if (!row) return false;
-  const res = await resolveProposal(env, { id: String(row.id), choice: 'ok', word }, nowMs);
+  if (!id) return false;
+  const res = await resolveProposal(env, { id, choice: 'ok', word }, nowMs);
   const erased =
     res.ok && 'status' in res && res.status === 'approved' && res.executed
       ? String(/** @type {any} */ (res.result)?.erased ?? 'готово')
@@ -794,6 +791,12 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       return undoToast(await resolveUndo(env, policy.id, nowMs));
     }
     const res = await resolveProposal(env, { id: policy.id, choice: policy.choice }, nowMs);
+    // T2 після ✅: слово називає ЯДРО (модель його більше не бачить) і тут же
+    // запамʼятовує, до якої саме пропозиції воно належить.
+    if (!res.ok && res.error === 'word-required' && policy.choice === 'ok') {
+      const word = await askT2Word(env, parsed, policy.id, nowMs);
+      return word ? `Це T2: напиши слово ${word}` : proposalToast(res);
+    }
     if (res.ok && 'status' in res) {
       await clearKeyboard(env, parsed);
       // Тост Telegram зникає за секунди й не лишається в історії - рішення й
@@ -955,6 +958,12 @@ async function forgetMenuToast(env, parsed, pick, nowMs) {
   );
   if (out.mode !== 'proposed')
     return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
+  await rememberT2(
+    env,
+    threadKey,
+    { id: out.proposal.id, word: String(out.proposal.word ?? '') },
+    nowMs,
+  );
   await clearKeyboard(env, parsed);
   const what = pick.all
     ? 'УСІ дані власника - факти, ідеї, гроші, чати, плани, памʼять'
@@ -1268,6 +1277,35 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
   // Розсинхрон kind↔choice (не трапляється зі своїх кнопок) - чесна відмова.
   await finishPendingVoice(env, id, true);
   return 'Застаріло - надішли голосове ще раз.';
+}
+
+/**
+ * Прочитати слово пропозиції з бази й запамʼятати її як «тред чекає слово».
+ * Слово живе в `proposals`, і показує його ЯДРО - у відповіді інструмента
+ * мозку його немає (security-ревʼю етапу 7: доки модель бачила слово, вона
+ * могла підбирати колізію й підміняти пропозицію під написом власника).
+ * @param {Env} env
+ * @param {{ chatId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} id @param {number} nowMs
+ * @returns {Promise<string | null>} слово або null
+ */
+async function askT2Word(env, parsed, id, nowMs) {
+  if (!env.DB) return null;
+  try {
+    const row = /** @type {{ word?: string } | null} */ (
+      await env.DB.prepare("SELECT word FROM proposals WHERE id = ? AND status = 'open'")
+        .bind(id)
+        .first()
+    );
+    const word = String(row?.word ?? '');
+    if (!word) return null;
+    const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+    await rememberT2(env, threadKey, { id, word }, nowMs);
+    return word;
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: слово T2 не дістали', e?.message);
+    return null;
+  }
 }
 
 /** Зняти інлайн-клавіатуру - best-effort: тост важливіший за косметику.

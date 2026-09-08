@@ -260,6 +260,51 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(String(msg.text)).toContain('$3.20');
   });
 
+  it('дві РІЗНІ пропозиції в одному повідомленні - відмова доставки', async () => {
+    // Знахідка security-ревʼю: рядок ціни один, а кнопок може бути дві. Модель
+    // клала дешеву пропозицію першою (її ціну й показувало ядро), а під «✅
+    // Так» - дорогу. Вгадувати «правильну» тут нема сенсу: двох пропозицій під
+    // одним текстом не потребує ніхто.
+    const { env, db } = setup();
+    stubTelegram();
+    const pair: [string, string][] = [
+      ['g1', 'gemini.image'],
+      ['g2', 'gemini.video'],
+    ];
+    for (const [id, kind] of pair) {
+      db.prepare(
+        `INSERT INTO proposals (id, level, kind, payload_json, thread_id, msg_id, word, expires_at, status, created_at)
+         VALUES (?, 'T1', ?, '{"prompt":"x"}', '99', NULL, NULL, ?, 'open', ?)`,
+      ).run(id, kind, new Date(NOW + 600_000).toISOString(), new Date(NOW).toISOString());
+    }
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'Одне з двох?',
+      buttons: [
+        [
+          { text: '❌ Ні', callback_data: 'p:g1:ok' },
+          { text: '✅ Так', callback_data: 'p:g2:ok' },
+        ],
+      ],
+    });
+    expect(res.status).toBe(400);
+    expect(String(((await res.json()) as { error: string }).error)).toContain('різних пропозицій');
+  });
+
+  it('пропозиція вже вирішена - ціну не дописуємо', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, msg_id, word, expires_at, status, created_at)
+       VALUES ('g9', 'T2', 'gemini.video', '{"prompt":"море"}', '99', NULL, 'ВИКОНАТИ', ?, 'approved', ?)`,
+    ).run(new Date(NOW + 600_000).toISOString(), new Date(NOW).toISOString());
+    await post(env, '/internal/deliver', 'r1', {
+      text: 'Готово',
+      buttons: [[{ text: '✅ Так', callback_data: 'p:g9:ok' }]],
+    });
+    const msg = tg.find((c) => c.method === 'sendMessage')!.form as Record<string, unknown>;
+    expect(String(msg.text)).toBe('Готово');
+  });
+
   it('для звичайної пропозиції рядка ціни немає', async () => {
     const { env, db } = setup();
     const { tg } = stubTelegram();
