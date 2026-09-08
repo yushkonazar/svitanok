@@ -1,10 +1,15 @@
 // InboxExport (07 §6, S-2-6, S-2-7): власник надсилає `result.json` з
 // Telegram Desktop → історія чату лягає у `inbox_messages`.
 //
-// Навіщо Workflow, якщо подій тут немає: розбір і вставка десятків тисяч
-// рядків не влазять у бюджет одного запиту, а кроки дають і продовження, і
-// повтор після збою мережі. Тому кроки нарізані по батчах, а не «усе одним
-// do».
+// Навіщо Workflow, якщо подій тут немає: два платформні бюджети на Workers
+// Free - 50 ПІДЗАПИТІВ і 10 мс CPU на виклик - не дають зробити імпорт одним
+// запитом, а кожен крок Workflow має власний бюджет. Тому кроки нарізані по
+// шматках повідомлень.
+//
+// ⚠️ Через межу кроку не можна передавати розібраний експорт: стеля стану
+// кроку - 1 МіБ. Тому кожен крок сам завантажує й розбирає файл, а повертає
+// лише невеликий підсумок. Ціна - повторне завантаження на крок; вона й
+// диктує стелю розміру файлу нижче.
 //
 // ⚠️ Вміст файлу - НЕДОВІРЕНИЙ (це чужі повідомлення) і чужий формат: жодного
 // поля не беремо на віру, `text` буває і рядком, і масивом обʼєктів. Рядки
@@ -17,15 +22,21 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { chainTarget, db, patchChainState, postChainMessage } from './state.mjs';
-import { saveInboxMessage } from '../inbox/store.mjs';
+import { saveInboxBatch } from '../inbox/store.mjs';
 
 export const CHAIN_KIND = 'inbox-export';
-/** Стеля файлу - та сама, що в Telegram getFile. */
-export const FILE_MAX_BYTES = 20 * 1024 * 1024;
+/**
+ * Стеля розміру файлу. Telegram віддає ботам до 20 МБ, але тут вирішує НЕ
+ * Telegram: кожен крок розбирає файл заново, а на Workers Free крок має 10 мс
+ * CPU. `JSON.parse` мегабайта - вже на межі цього бюджету, тож більший експорт
+ * ми чесно відмовляємось читати замість того, щоб гинути на «Exceeded CPU».
+ * Це видима межа безкоштовного плану, а не властивість формату.
+ */
+export const FILE_MAX_BYTES = 1024 * 1024;
 /** Скільки повідомлень імпортуємо за один файл. */
-export const IMPORT_MAX = 20_000;
-/** Скільки рядків в одному кроці Workflow. */
-export const BATCH = 500;
+export const IMPORT_MAX = 5_000;
+/** Скільки повідомлень бере один крок (2 підзапити на завантаження + 2 на пачку). */
+export const MESSAGES_PER_STEP = 500;
 /** Скільки чатів приймаємо в одному файлі (експорт «усіх чатів» - інший формат). */
 export const HINT_WRONG_FORMAT =
   'Це не експорт Telegram (очікую result.json з Telegram Desktop → Експорт історії чату).';
@@ -124,7 +135,8 @@ function exportMedia(m) {
 
 /**
  * @typedef {{ now: () => number, download: (fileId: string) => Promise<unknown>,
- *   save: (msg: import('../inbox/store.mjs').InboxInput) => Promise<{ saved: boolean }>,
+ *   saveMany: (msgs: import('../inbox/store.mjs').InboxInput[])
+ *     => Promise<{ inserted: number, present: number }>,
  *   send: (text: string) => Promise<void> }} ExportIo
  */
 
@@ -136,37 +148,22 @@ function exportMedia(m) {
  */
 export async function runInboxExport(env, params, step, io) {
   const { chainId } = params;
-  // ⚠️ ОДИН крок на завантаження, розбір і вставку - і повертає він лише
-  // ПІДСУМОК. Workflows зберігає значення, яке повернув крок, як стан кроку, а
-  // стеля цього стану - 1 МіБ: розібраний експорт (до 20 МБ) через межу кроку
-  // не пролізе, і ланцюг падав би на серіалізації, а не на даних. Ідемпотентність
-  // при повторі кроку дає дедуп за `chat_id:msg_id` у `saveInboxMessage`.
-  const summary =
-    /** @type {{ ok: boolean, imported?: number, skipped?: number,
-     *   chatId?: string, title?: string, years?: string }} */ (
-      await step.do('import', async () => {
-        const parsed = parseExport(await io.download(params.fileId));
-        if (!parsed) return { ok: false };
-        const take = parsed.messages.slice(0, IMPORT_MAX);
-        let imported = 0;
-        for (let i = 0; i < take.length; i += BATCH) {
-          for (const msg of take.slice(i, i + BATCH)) {
-            const out = await io.save(msg);
-            if (out.saved) imported += 1;
-          }
-        }
-        return {
-          ok: true,
-          imported,
-          skipped: parsed.messages.length - take.length,
-          chatId: parsed.chatId,
-          title: parsed.title,
-          years: yearsOf(take),
-        };
-      })
-    );
+  // Перший крок - розвідка: розбирає файл і каже, СКІЛЬКИ там повідомлень.
+  // Повертає лише числа й назву, тож стеля стану кроку (1 МіБ) недосяжна.
+  const head = /** @type {{ ok: boolean, total?: number, chatId?: string, title?: string }} */ (
+    await step.do('probe', async () => {
+      const parsed = parseExport(await io.download(params.fileId));
+      if (!parsed) return { ok: false };
+      return {
+        ok: true,
+        total: parsed.messages.length,
+        chatId: parsed.chatId,
+        title: parsed.title,
+      };
+    })
+  );
 
-  if (!summary.ok) {
+  if (!head.ok) {
     await step.do('reject', async () => {
       await io.send(HINT_WRONG_FORMAT);
       await patchChainState(env, chainId, 'failed', { awaiting: null, reason: 'bad-format' });
@@ -174,20 +171,41 @@ export async function runInboxExport(env, params, step, io) {
     return { ok: false, reason: 'bad-format' };
   }
 
-  const imported = Number(summary.imported ?? 0);
-  const skipped = Number(summary.skipped ?? 0);
+  const total = Number(head.total ?? 0);
+  const take = Math.min(total, IMPORT_MAX);
+  const skipped = total - take;
+  let stored = 0;
+  let years = '';
+  for (let from = 0; from < take; from += MESSAGES_PER_STEP) {
+    const slice = /** @type {{ stored: number, years: string }} */ (
+      await step.do(`import-${from / MESSAGES_PER_STEP}`, async () => {
+        // Розбираємо заново: передати сюди готовий масив через межу кроку
+        // не можна (1 МіБ), а тримати його в памʼяті між кроками - нічим.
+        const parsed = parseExport(await io.download(params.fileId));
+        if (!parsed) return { stored: 0, years: '' };
+        const chunk = parsed.messages.slice(from, from + MESSAGES_PER_STEP);
+        const out = await io.saveMany(chunk);
+        // `present` теж рахуємо: повтор кроку після збою мусить дати власнику
+        // «скільки повідомлень тепер у базі», а не «скільки додав саме цей раз».
+        return { stored: out.inserted + out.present, years: yearsOf(chunk) };
+      })
+    );
+    stored += slice.stored;
+    if (!years) years = slice.years;
+  }
+
   await step.do('done', async () => {
     const tail = skipped ? ` Перші ${IMPORT_MAX} - решту (${skipped}) не брав.` : '';
     await io.send(
-      `Завантажив ${imported} ${messagesWord(imported)} чату «${summary.title}»${summary.years}.${tail} Що шукати?`,
+      `Завантажив ${stored} ${messagesWord(stored)} чату «${head.title}»${years}.${tail} Що шукати?`,
     );
     await patchChainState(env, chainId, 'done', {
       awaiting: null,
-      chat_id_import: summary.chatId,
-      imported,
+      chat_id_import: head.chatId,
+      imported: stored,
     });
   });
-  return { ok: true, imported, skipped, chatId: summary.chatId };
+  return { ok: true, imported: stored, skipped, chatId: head.chatId };
 }
 
 /** « за 2024-2026» або порожньо. @param {import('../inbox/store.mjs').InboxInput[]} rows */
@@ -267,10 +285,10 @@ export function productionIo(env, params) {
   return {
     now: () => Date.now(),
     download: (fileId) => downloadTelegramJson(env, fileId),
-    // `viaImport` вимикає ДОБОВУ стелю вхідних: вона захищає від чужого
-    // потоку, а імпорт - свідома дія власника, і 5 000 рядків архіву не мають
-    // «зʼїсти» ліміт живих повідомлень.
-    save: (msg) => saveInboxMessage(env, { ...msg, viaImport: true }, Date.now()),
+    // Пачками, а не поштучно: на Free 50 підзапитів на крок, а поштучний
+    // запис коштує два. Добова стеля вхідних тут не діє взагалі - вона
+    // захищає від чужого потоку, а імпорт це свідома дія власника.
+    saveMany: (msgs) => saveInboxBatch(env, msgs, Date.now()),
     send: (text) =>
       postChainMessage(env, target, {
         kind: 'send',
@@ -302,7 +320,7 @@ export async function downloadTelegramJson(env, fileId) {
   }
   const size = Number(info.result.file_size);
   if (Number.isFinite(size) && size > FILE_MAX_BYTES) {
-    throw new Error(`Файл ${Math.round(size / 1024 / 1024)} МБ - більше за стелю 20 МБ`);
+    throw new Error(tooBig(size));
   }
   const fileRes = await fetch(
     `https://api.telegram.org/file/bot${token}/${info.result.file_path}`,
@@ -310,13 +328,18 @@ export async function downloadTelegramJson(env, fileId) {
   );
   if (!fileRes.ok) throw new Error(`Telegram file: HTTP ${fileRes.status}`);
   const text = await fileRes.text();
-  if (text.length > FILE_MAX_BYTES) throw new Error('Файл більший за стелю 20 МБ');
+  if (text.length > FILE_MAX_BYTES) throw new Error(tooBig(text.length));
   try {
     return JSON.parse(text);
   } catch {
     // Не JSON - це вже відповідь S-2-7, і машина станів скаже її словами.
     return null;
   }
+}
+
+/** Текст відмови по розміру - з причиною і з тим, що робити. @param {number} size */
+export function tooBig(size) {
+  return `Файл ${Math.round(size / 1024)} КБ, а я читаю до ${Math.round(FILE_MAX_BYTES / 1024)} КБ - експортуй коротший період (без медіа).`;
 }
 
 /** Workflow-клас (wrangler.jsonc `workflows`, worker.js export). */

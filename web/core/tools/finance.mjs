@@ -228,14 +228,19 @@ export async function runFinanceRule(env, args) {
  * Відкат `finance.rule` для «↩»: і рядок правила, і КОЖНА перекладена
  * транзакція назад у свою стару категорію.
  * @param {Env} env
- * @param {{ rule: any, pattern: string, categories?: Record<string, string[]> }} snapshot
+ * @param {{ rule?: any, snapshot?: any, pattern: string,
+ *   categories?: Record<string, string[]> }} snapshot
  */
 export async function restoreRule(env, snapshot) {
   const pattern = String(snapshot?.pattern ?? '');
-  if (snapshot?.rule) {
+  // `snapshot.snapshot` - форма знімка до цього релізу. Рядок «↩» живе 10 хв,
+  // тож у вікні деплою може трапитись саме така: без цієї гілки відкат
+  // ВИДАЛИВ би правило, яке існувало ще до дії.
+  const rule = snapshot?.rule ?? snapshot?.snapshot ?? null;
+  if (rule) {
     await db(env)
       .prepare('UPDATE merchant_rules SET category = ?, is_subscription = ? WHERE pattern = ?')
-      .bind(snapshot.rule.category, snapshot.rule.is_subscription, snapshot.rule.pattern)
+      .bind(rule.category, rule.is_subscription, rule.pattern)
       .run();
   } else if (pattern) {
     await db(env).prepare('DELETE FROM merchant_rules WHERE pattern = ?').bind(pattern).run();

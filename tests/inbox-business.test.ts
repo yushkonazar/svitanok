@@ -483,6 +483,32 @@ describe('inbox.search (S-2-3, S-2-4)', () => {
     expect(month.result.messages).toHaveLength(2);
   });
 
+  it('збіг у надто багатьох чатах - кажемо про це, а не мовчки беремо перші', async () => {
+    const { env } = setup();
+    for (let i = 1; i <= 60; i += 1) {
+      await saveInboxMessage(
+        env,
+        {
+          chatId: -i,
+          chatTitle: `Робота ${i}`,
+          fromId: 1,
+          fromName: 'Хтось',
+          messageId: i,
+          dateS: Math.floor(NOON / 1000),
+          text: 'текст',
+          mediaKind: null,
+          replyTo: null,
+        },
+        NOON,
+      );
+    }
+    const { result } = (await runInboxSearch(env, { chat: 'Робота' }, NOON)) as {
+      result: { note?: string };
+    };
+    expect(result.note).toContain('60 чатів');
+    expect(result.note).toContain('перших 50');
+  });
+
   it('невідомий чат - чесна відповідь, а не порожній список', async () => {
     const { env } = setup();
     await seedChat(env);
@@ -565,8 +591,8 @@ describe('«забудь чат» (S-2-8, база для T2)', () => {
       },
       NOON,
     );
-    expect(await resolveChats(env, 'робота')).toEqual(['-100']);
-    expect(await resolveChats(env, '-100')).toEqual(['-100']);
+    expect(await resolveChats(env, 'робота')).toEqual({ ids: ['-100'], total: 1 });
+    expect(await resolveChats(env, '-100')).toEqual({ ids: ['-100'], total: 1 });
   });
 });
 

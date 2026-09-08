@@ -153,7 +153,6 @@ export async function ingestTransaction(env, input) {
       amountUah,
       currency: item.currency,
       accountCurrency,
-      converted: item.operationAmount !== item.amount,
       isSpending: item.amount < 0,
       knownMerchant: known,
       duplicate: dupAt != null,
