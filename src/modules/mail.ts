@@ -1,10 +1,15 @@
-// mail (producer, Блок P2c). Gmail тріаж read-only: важливі листи (відповіді
-// на заявки, запрошення на співбесіду) -> «N листів про вакансії» у брифінгу.
-// Metadata-only fetch (subject+from+snippet, НІКОЛИ format=full/тіло листа) —
-// мінімізація приватності. LLM-класифікація (claude -p, plain-text відповідь
-// — той самий стиль, що jobs.ts buildScorePrompt/parseScores, БЕЗ json-schema
-// на цьому боці). Дедуп проти shownMail. Деградує тихо (§6): без GOOGLE_*
-// секретів чи при 401/мережевій помилці -> null, не валить брифінг.
+// mail (producer, Блок P2c). «N листів про вакансії» у брифінгу.
+//
+// ⚠️ GMAIL ТУТ БІЛЬШЕ НЕМАЄ (ADR-027, етап 7 редизайну). Листи збирає ядро
+// (задача mail-triage кожні 15 хв) і кладе метадані в KV `state.mailTriage`;
+// цей модуль лише читає готових кандидатів і виносить вирок LLM. Причина -
+// не краса: доки брифінг ходив у Gmail сам, у GitHub Secrets мусив лежати
+// GOOGLE_REFRESH_TOKEN, тобто повний доступ до пошти власника мав ще й
+// раннер Actions. Тепер токен живе в одному місці - у Cloudflare.
+//
+// Немає ключа `mailTriage` -> null із попередженням (той самий тихий шлях,
+// що раніше при відсутніх GOOGLE_*): брифінг не валиться, а про мовчання
+// тріажу власнику каже саме ядро (алерт після трьох невдалих появ).
 //
 // /briefing.json тепер під owner-auth (H1, web/worker.js checkOwnerRead), але
 // Block тут ВСЕ ОДНО не несе subject/from/snippet у `data`, лише агрегований
@@ -12,12 +17,6 @@
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
-import {
-  googleCreds,
-  googleAccessToken,
-  fetchJsonWithTimeout,
-  type GoogleOAuthCreds,
-} from '../core/google-auth.js';
 import { kyivLocalToUtcMs } from '../core/tz.js';
 import { escapeHtml } from '../core/telegram.js';
 
@@ -40,17 +39,21 @@ export interface MailProposalItem {
 
 type ShownMail = Record<string, string>; // Gmail message id -> ISO дата, коли розглянуто
 
+/** Ключ у блобі `state`, який пише ядро (web/core/brief/mail-triage.mjs). */
+export const MAIL_TRIAGE_KEY = 'mailTriage';
+
+/** Форма того ключа - рівно те, що читає цей модуль. */
+export interface MailTriageState {
+  candidates?: { id: string; from?: string; subject?: string; snippet?: string; atMs?: number }[];
+  lastRunMs?: number;
+  historyId?: string | null;
+}
+
 interface MailCandidate {
   id: string;
   subject: string;
   from: string;
   snippet: string;
-}
-
-export interface MailModuleOptions {
-  fetchImpl?: typeof fetch;
-  env?: Record<string, string | undefined>;
-  timeoutMs?: number;
 }
 
 /** Українське відмінювання "лист/листи/листів" за числом. */
@@ -188,77 +191,36 @@ export function formatMailProposalMessage(items: MailProposalItem[]): string {
   return lines.join('\n');
 }
 
-export function createMailModule(opts: MailModuleOptions = {}): Module<AppConfig> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const env = opts.env ?? process.env;
-  const timeoutMs = opts.timeoutMs ?? 30000;
-
-  async function listMessageIds(
-    token: string,
-    query: string,
-    maxResults: number,
-  ): Promise<string[]> {
-    const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
-    url.searchParams.set('q', query);
-    url.searchParams.set('maxResults', String(maxResults));
-    const res = await fetchJsonWithTimeout<{ messages?: { id: string }[] }>(
-      fetchImpl,
-      url.toString(),
-      { headers: { Authorization: `Bearer ${token}` } },
-      timeoutMs,
-    );
-    if (!res.ok) throw new Error(`Gmail list HTTP ${res.status}`);
-    return (res.body?.messages ?? []).map((m) => m.id);
-  }
-
-  /** Metadata-only (subject+from+snippet) — НІКОЛИ format=full (без тіла листа). */
-  async function fetchCandidate(token: string, id: string): Promise<MailCandidate | null> {
-    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
-    url.searchParams.set('format', 'metadata');
-    url.searchParams.append('metadataHeaders', 'Subject');
-    url.searchParams.append('metadataHeaders', 'From');
-    const res = await fetchJsonWithTimeout<{
-      snippet?: string;
-      payload?: { headers?: { name: string; value: string }[] };
-    }>(fetchImpl, url.toString(), { headers: { Authorization: `Bearer ${token}` } }, timeoutMs);
-    if (!res.ok) return null; // одиничний лист не вдався -> пропустити, не валити весь тріаж
-    const json = res.body ?? {};
-    const headers = json.payload?.headers ?? [];
-    const subject = headers.find((h) => h.name === 'Subject')?.value ?? '(без теми)';
-    const from = headers.find((h) => h.name === 'From')?.value ?? '';
-    return { id, subject, from, snippet: json.snippet ?? '' };
-  }
-
+export function createMailModule(): Module<AppConfig> {
   return {
     id: 'mail',
     kind: 'producer',
     enabled: (config) => config.modules.mail.enabled,
     async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
       const cfg = ctx.config.modules.mail;
-      const c: GoogleOAuthCreds | null = googleCreds(env);
-      if (!c) {
-        ctx.log.warn('GOOGLE_* секрети відсутні — mail пропущено');
-        return null;
-      }
-
       const shown = ctx.state.get<ShownMail>('shownMail') ?? {};
       const cutoff = ctx.clock.now().getTime() - cfg.dedupDays * 86400_000;
 
-      let candidates: MailCandidate[];
-      try {
-        const token = await googleAccessToken(c, { fetchImpl, timeoutMs });
-        const ids = await listMessageIds(token, cfg.query, cfg.maxCandidates);
-        const freshIds = ids.filter((id) => {
-          const at = shown[id] ? Date.parse(shown[id]!) : 0;
-          return !(at && at >= cutoff);
-        });
-        const settled = await Promise.allSettled(freshIds.map((id) => fetchCandidate(token, id)));
-        candidates = settled.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
-      } catch (e) {
-        // Деградуємо тихо (§6): не валимо брифінг.
-        ctx.log.warn(`mail недоступний: ${e instanceof Error ? e.message : String(e)}`);
+      // Кандидатів збирає ЯДРО (задача mail-triage, ADR-027): у брифінгу
+      // більше немає GOOGLE_*-секретів, тож і Gmail він не питає. Тут
+      // лишається рівно те, чого в ядрі немає, - вирок LLM.
+      const triage = ctx.state.get<MailTriageState>(MAIL_TRIAGE_KEY);
+      if (!triage) {
+        ctx.log.warn('mailTriage у стані немає — тріаж пошти в ядрі ще не робив прогону');
         return null;
       }
+      const candidates: MailCandidate[] = (triage.candidates ?? [])
+        .filter((c) => {
+          const at = shown[c.id] ? Date.parse(shown[c.id]!) : 0;
+          return !(at && at >= cutoff);
+        })
+        .slice(0, cfg.maxCandidates)
+        .map((c) => ({
+          id: c.id,
+          subject: c.subject || '(без теми)',
+          from: c.from ?? '',
+          snippet: c.snippet ?? '',
+        }));
 
       if (candidates.length === 0) return null;
 

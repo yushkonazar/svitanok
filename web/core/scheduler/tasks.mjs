@@ -42,6 +42,8 @@ import { subscriptionRemindTask } from '../finance/subscriptions.mjs';
 import { inboxDigestTask } from '../inbox/digest.mjs';
 import { retentionCleanupTask } from '../retention/cleanup.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
+import { mailTriageTask } from '../brief/mail-triage.mjs';
+import { refreshBriefCalendar } from '../brief/calendar-snapshot.mjs';
 
 /**
  * @typedef {{
@@ -114,7 +116,25 @@ export const SCHEDULER_TASKS = {
       }
     },
   },
-  'brief-dispatch': { periodMin: 5, run: autoBriefDispatch },
+  // Брифінг (ADR-026: логіка лишається в Actions). Ядро перед відправкою
+  // кладе в KV знімок календаря на добу - з етапу 7 PR-2 брифінг не має
+  // Google-токена й читає готовий список звідти (05-ops §2).
+  'brief-dispatch': {
+    periodMin: 5,
+    run: async (env) => {
+      try {
+        await refreshBriefCalendar(env);
+      } catch (/** @type {any} */ e) {
+        // Календар не має права зірвати саму відправку брифінгу.
+        console.error('brief-dispatch: знімок календаря впав', e?.message);
+      }
+      return autoBriefDispatch(env);
+    },
+  },
+  // Тріаж пошти в ядрі (07 §7, ADR-027, етап 7 PR-2): кожні 15 хв - нові
+  // листи в KV `state.mailTriage`, звідки їх бере брифінг. Гейт періоду -
+  // усередині задачі (планувальник тікає щопʼять).
+  'mail-triage': { periodMin: 5, run: async (env) => mailTriageTask(env) },
   'dead-man': { periodMin: 5, run: deadMansCheck },
   'checkin-nudge': { periodMin: 5, run: checkinNudgeCheck },
   'sleep-nudge': { periodMin: 5, run: sleepNudgeCheck },

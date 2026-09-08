@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { load } from 'js-yaml';
-import { fetchJsonWithTimeout, googleAccessToken } from '../src/core/google-auth.js';
+import { fetchJsonWithTimeout } from '../src/core/google-auth.js';
 import { createFetcher } from '../src/core/fetcher.js';
 import { createKvStateStore, readKvJson, writeKvJson } from '../src/core/state-kv.js';
 
@@ -89,22 +89,6 @@ describe('fetchJsonWithTimeout — тіло читається ПІД тим с�
     );
     expect(r).toEqual({ ok: false, status: 503, body: null });
     expect(json).not.toHaveBeenCalled();
-  });
-});
-
-describe('googleAccessToken — зависле тіло token-обміну', () => {
-  it('не підвішує прогін', async () => {
-    const fetchImpl = vi.fn(async (_u: string, init?: RequestInit) =>
-      headersThenHangingBody(init?.signal ?? undefined),
-    );
-    const outcome = await raceHang(
-      googleAccessToken(
-        { clientId: 'a', clientSecret: 'b', refreshToken: 'c' },
-        { fetchImpl: fetchImpl as unknown as typeof fetch, timeoutMs: TIMEOUT_MS },
-      ),
-    );
-    expect(outcome).not.toBe('hang');
-    expect(outcome).toHaveProperty('err');
   });
 });
 

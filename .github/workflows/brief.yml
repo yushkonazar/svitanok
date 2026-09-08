@@ -145,9 +145,14 @@ jobs:
           # `translate: true` були на місці, а сам секрет до рану не доїжджав.
           GOOGLE_TRANSLATE_API_KEY: ${{ secrets.GOOGLE_TRANSLATE_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          # ⚠️ GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN
+          # ТУТ БІЛЬШЕ НЕМАЄ І НЕ МАЄ ЗʼЯВИТИСЬ (ADR-027, етап 7 редизайну).
+          # Блоки «Пошта» і «Сьогодні в календарі» тепер приходять із KV
+          # `state` (ключі mailTriage і calendarToday) - їх наповнює Worker,
+          # у якого той самий токен уже є. Доки рядки стояли тут, повний
+          # доступ до пошти й календаря власника мав ще й раннер Actions:
+          # третя копія найпотужнішого секрета заради двох блоків тексту.
+          # Повернути їх - означає повернути ту копію.
         run: npx tsx src/orchestrator.ts ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force-send' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.force_window) && '--force-window' || '' }}
       # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
       # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
