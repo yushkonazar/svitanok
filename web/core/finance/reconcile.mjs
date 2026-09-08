@@ -37,10 +37,13 @@ export const RECONCILE_STATE_KEY = 'monoReconcile';
 export const INITIAL_DAYS = 31;
 /** Скільки пропущених покупок називаємо поштучно; решта - одним рядком. */
 export const ANNOUNCE_MAX = 3;
+/** Скільки живе сеанс звірки: досить, щоб дійти до останнього рахунку. */
+export const SESSION_MAX_MS = 4 * 3_600_000;
 
 /**
  * @typedef {{ date: string, phase: 'client' | 'statement' | 'done', idx: number,
- *   initial: boolean, fromS: number, toS: number, imported: number, loud: number }} ReconcileState
+ *   initial: boolean, fromS: number, toS: number, imported: number, loud: number,
+ *   startedMs: number, alerted: boolean }} ReconcileState
  */
 
 /** Стан сеансу з KV; null - сеансу ще не було. @param {Env} env
@@ -63,11 +66,13 @@ async function readState(env) {
     toS: Number(saved.toS) || 0,
     imported: Number(saved.imported) || 0,
     loud: Number(saved.loud) || 0,
+    startedMs: Number(saved.startedMs) || 0,
+    alerted: saved.alerted === true,
   };
 }
 
-/** @param {string} today @returns {ReconcileState} */
-function freshState(today) {
+/** @param {string} today @param {number} nowMs @returns {ReconcileState} */
+function freshState(today, nowMs) {
   return {
     date: today,
     phase: 'client',
@@ -77,6 +82,8 @@ function freshState(today) {
     toS: 0,
     imported: 0,
     loud: 0,
+    startedMs: nowMs,
+    alerted: false,
   };
 }
 
@@ -115,12 +122,28 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   const running = state != null && state.phase !== 'done';
   const startNew = dueByClock && state?.date !== today;
   // Списку рахунків немає - вебхук відмовляє всім транзакціям (S-4-12), тож
-  // не чекаємо 23:30, а йдемо по нього одразу.
-  const startNow = !accounts.length && !running;
+  // не чекаємо 23:30, а йдемо по нього одразу. Але РІВНО РАЗ на добу: якщо
+  // Mono взагалі не віддає рахунків, список так і лишиться порожнім, і без
+  // цієї умови фаза client-info крутилася б щопʼять хвилин разом з алертом.
+  const startNow = !accounts.length && !running && state?.date !== today;
   if (!running && !startNew && !startNow) {
     return { skipped: state?.date === today ? 'done' : 'not-due' };
   }
-  const live = running ? /** @type {ReconcileState} */ (state) : freshState(today);
+  const live = running ? /** @type {ReconcileState} */ (state) : freshState(today, nowMs);
+  // Сеанс не вічний. Продовження після опівночі потрібне, щоб дійти до
+  // останнього рахунку; але якщо Mono лежить, кожен тік ловив би виняток - і
+  // без цієї стелі власник діставав би 288 однакових скарг на добу.
+  if (live.startedMs && nowMs - live.startedMs > SESSION_MAX_MS) {
+    await writeState(env, { ...live, phase: 'done' });
+    if (!live.alerted) {
+      await sendSystemAlert(
+        env,
+        '⚠️ Звірка Mono не дійшла до кінця за ніч - спробую завтра.',
+        nowMs,
+      );
+    }
+    return { skipped: 'session-expired' };
+  }
 
   try {
     if (live.phase === 'client') return await phaseClient(env, live, nowMs);
@@ -132,8 +155,12 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
       return { skipped: 'too-soon' };
     }
     console.error(`mono-reconcile: фаза ${live.phase} впала`, e?.message);
-    await sendSystemAlert(env, `⚠️ Звірка Mono впала: ${String(e?.message ?? e)}`, nowMs);
-    // Мітка дня НЕ ставиться: наступний тік спробує ту саму фазу ще раз.
+    // Скаржимось РАЗ на сеанс: наступні тіки повторюють ту саму фазу, і
+    // повторювати той самий алерт кожні пʼять хвилин - не інформація, а шум.
+    if (!live.alerted) {
+      await sendSystemAlert(env, `⚠️ Звірка Mono впала: ${String(e?.message ?? e)}`, nowMs);
+      await writeState(env, { ...live, alerted: true });
+    }
     return { failed: live.phase };
   }
 }

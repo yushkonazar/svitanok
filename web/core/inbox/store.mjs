@@ -24,6 +24,10 @@ export const TEXT_MAX = 4000;
 export const RETENTION_DAYS = 30;
 /** Стеля звʼязаних параметрів на один запит D1 - платформна, не наша. */
 export const SQL_PARAMS_MAX = 100;
+/** Скільки чатів беремо в один `IN (...)` (половина стелі - решта під інші поля). */
+export const CHATS_MAX = 50;
+/** Скільки повідомлень в одній пачці імпорту (50 id у SELECT + до 150 тверджень). */
+export const BATCH_ROWS = 50;
 
 /** @param {Env} env */
 function db(env) {
@@ -54,10 +58,7 @@ export function inboxId(chatId, messageId) {
 export async function saveInboxMessage(env, msg, nowMs) {
   const id = inboxId(msg.chatId, msg.messageId);
   const at = new Date(msg.dateS ? msg.dateS * 1000 : nowMs).toISOString();
-  const text = String(msg.text ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, TEXT_MAX);
+  const text = normalizeText(msg.text);
 
   if (msg.edited) {
     const { meta } = await db(env)
@@ -96,6 +97,79 @@ export async function saveInboxMessage(env, msg, nowMs) {
   if (!meta?.changes) return { saved: false, duplicate: true };
   if (text) await reindex(env, id, text);
   return { saved: true, id };
+}
+
+/**
+ * Пакетна вставка (InboxExport): на Workers Free - 50 ПІДЗАПИТІВ на виклик, а
+ * `saveInboxMessage` коштує два (INSERT + реіндекс FTS). Півтисячі повідомлень
+ * поштучно не пролізли б у жоден крок Workflow, тож імпорт іде пачками:
+ * один SELECT «що вже є» + один `batch` на пачку = два підзапити на 50 рядків.
+ *
+ * Повертає `inserted` (нових) і `present` (уже були). Друге - не дрібниця:
+ * крок Workflow може повторитись, і тоді власнику треба сказати, скільки
+ * повідомлень ТЕПЕР у базі, а не скільки з них додав саме цей прогін.
+ * @param {Env} env @param {InboxInput[]} msgs @param {number} nowMs
+ * @returns {Promise<{ inserted: number, present: number }>}
+ */
+export async function saveInboxBatch(env, msgs, nowMs) {
+  let inserted = 0;
+  let present = 0;
+  for (let i = 0; i < msgs.length; i += BATCH_ROWS) {
+    const chunk = msgs.slice(i, i + BATCH_ROWS);
+    const ids = chunk.map((m) => inboxId(m.chatId, m.messageId));
+    const marks = ids.map(() => '?').join(', ');
+    const { results } = await db(env)
+      .prepare(`SELECT id FROM inbox_messages WHERE id IN (${marks})`)
+      .bind(...ids)
+      .all();
+    const known = new Set((results ?? []).map((r) => String(r.id)));
+    /** @type {any[]} */
+    const statements = [];
+    for (const msg of chunk) {
+      const id = inboxId(msg.chatId, msg.messageId);
+      if (known.has(id)) {
+        present += 1;
+        continue;
+      }
+      const text = normalizeText(msg.text);
+      statements.push(
+        db(env)
+          .prepare(
+            `INSERT INTO inbox_messages
+               (id, chat_id, chat_title, from_name, from_id, at, text, media_kind, reply_to, tainted)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          )
+          .bind(
+            id,
+            String(msg.chatId),
+            String(msg.chatTitle ?? '').slice(0, 120),
+            String(msg.fromName ?? '').slice(0, 120),
+            msg.fromId == null ? null : String(msg.fromId),
+            new Date(msg.dateS ? msg.dateS * 1000 : nowMs).toISOString(),
+            text,
+            msg.mediaKind,
+            msg.replyTo == null ? null : String(msg.replyTo),
+          ),
+      );
+      if (text) {
+        statements.push(db(env).prepare('DELETE FROM inbox_fts WHERE id = ?').bind(id));
+        statements.push(
+          db(env).prepare('INSERT INTO inbox_fts (id, text) VALUES (?, ?)').bind(id, text),
+        );
+      }
+      inserted += 1;
+    }
+    if (statements.length) await db(env).batch(statements);
+  }
+  return { inserted, present };
+}
+
+/** Текст повідомлення під капом бази. @param {unknown} raw */
+function normalizeText(raw) {
+  return String(raw ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, TEXT_MAX);
 }
 
 /** FTS standalone: синхронізацію веде код (ADR-036). @param {Env} env @param {string} id @param {string} text */
@@ -192,7 +266,7 @@ export async function deleteInboxMessages(env, chatId, messageIds) {
 export async function forgetChat(env, chat) {
   const needle = String(chat ?? '').trim();
   if (!needle) throw new Error('forget: не сказано, який чат стерти');
-  const chats = await resolveChats(env, needle);
+  const { ids: chats } = await resolveChats(env, needle);
   if (!chats.length) throw new Error(`forget: чату «${needle}» у вхідних немає`);
   let messages = 0;
   for (const chatId of chats) {
@@ -239,7 +313,12 @@ export async function listInboxChats(env, limit = 10) {
   }));
 }
 
-/** Чати за назвою (без регістру) або за id. @param {Env} env @param {string} needle */
+/**
+ * Чати за назвою (без регістру) або за id. Повертає й ЗАГАЛЬНУ кількість
+ * збігів - щоб викликач міг сказати, що список урізано.
+ * @param {Env} env @param {string} needle
+ * @returns {Promise<{ ids: string[], total: number }>}
+ */
 export async function resolveChats(env, needle) {
   const { results } = await db(env)
     .prepare('SELECT DISTINCT chat_id, chat_title FROM inbox_messages LIMIT 500')
@@ -254,7 +333,9 @@ export async function resolveChats(env, needle) {
         .includes(low),
   );
   // Стеля - та сама, платформна: список іде далі в `IN (...)` (inbox.search).
-  return hits.map((r) => String(r.chat_id)).slice(0, SQL_PARAMS_MAX / 2);
+  // Урізання видиме викликачу: мовчазний пошук «по перших 50» гірший за
+  // чесний рядок про те, що збігів більше.
+  return { ids: hits.map((r) => String(r.chat_id)).slice(0, CHATS_MAX), total: hits.length };
 }
 
 /** @param {Env} env @param {string[]} chatIds */

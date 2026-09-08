@@ -125,7 +125,6 @@ export function looksPeriodic(atMs, prevMs) {
  *   amountUah: number | null,   // гривневий еквівалент у копійках (модуль)
  *   currency: string,           // валюта операції за Mono (currencyCode)
  *   accountCurrency: string,    // валюта рахунку (типово UAH)
- *   converted: boolean,         // сума операції ≠ сума у валюті рахунку
  *   isSpending: boolean,        // списання (Mono: amount < 0)
  *   knownMerchant: boolean,     // мерчант траплявся за HISTORY_MONTHS
  *   duplicate: boolean,         // той самий мерчант і сума за DUPLICATE_WINDOW_MS
@@ -155,10 +154,11 @@ export function computeFlags(input) {
   // Контракт Фінансиста (agents/finance.md крок 3): «foreign - валюта не
   // UAH». Саме так, а не «валюта операції ≠ валюта рахунку»: купівля доларами
   // з доларового рахунку - теж не гривня, і у звіт вона мусить потрапити.
-  // Друга умова - страховка на неоднозначність Mono: якщо `currencyCode`
-  // виявиться кодом РАХУНКУ, а не операції, різниця `amount`/`operationAmount`
-  // усе одно видасть закордонну покупку.
-  if (input.currency !== 'UAH' || input.converted) flags.push('foreign');
+  // Різницю `amount`/`operationAmount` сюди НЕ додаємо: Mono кладе в неї ще й
+  // комісію за зняття, тож гривнева операція діставала б ярлик «у чужій
+  // валюті». Чи є `currencyCode` валютою операції - вирішить перша реальна
+  // закордонна покупка на прийманні (п. 9 чекліста), а не здогад у коді.
+  if (input.currency !== 'UAH') flags.push('foreign');
   if (input.inSubscriptions || input.ruleSubscription || input.periodic) {
     flags.push('subscription');
   }

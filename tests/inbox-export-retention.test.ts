@@ -6,7 +6,10 @@ import {
   parseExport,
   flattenText,
   runInboxExport,
+  tooBig,
+  FILE_MAX_BYTES,
   IMPORT_MAX,
+  MESSAGES_PER_STEP,
   HINT_WRONG_FORMAT,
 } from '../web/core/chains/inbox-export.mjs';
 import {
@@ -23,7 +26,7 @@ import {
   RETENTION,
   CLEANUP_MARKER_KEY,
 } from '../web/core/retention/cleanup.mjs';
-import { saveInboxMessage, listInboxChats } from '../web/core/inbox/store.mjs';
+import { saveInboxMessage, saveInboxBatch, listInboxChats } from '../web/core/inbox/store.mjs';
 import { handleBusinessConnection } from '../web/core/inbox/connection.mjs';
 import { applyPolicy, resolveProposal } from '../web/core/policy/proposals.mjs';
 import { runFactsSet } from '../web/core/tools/facts.mjs';
@@ -113,9 +116,9 @@ function fakeIo(overrides: Partial<Record<string, unknown>> = {}) {
     io: {
       now: () => NOON,
       download: async () => exportFile(),
-      save: async (msg: unknown) => {
-        saved.push(msg);
-        return { saved: true };
+      saveMany: async (msgs: unknown[]) => {
+        saved.push(...msgs);
+        return { inserted: msgs.length, present: 0 };
       },
       send: async (text: string) => {
         sent.push(text);
@@ -232,30 +235,32 @@ describe('машина станів InboxExport', () => {
     expect(sent[0]).toContain('решту (3) не брав');
   });
 
-  it('через межу кроку Workflow їде лише ПІДСУМОК, не розібраний експорт', async () => {
+  it('через межу кроку їде лише ПІДСУМОК, а крок влазить у бюджет Free', async () => {
     const { env, db } = setup();
     db.prepare(
       `INSERT INTO chains (id, kind, state_json, status, created_at, updated_at)
        VALUES ('c1', 'inbox-export', '{}', 'running', '2026-09-07T00:00:00Z', '2026-09-07T00:00:00Z')`,
     ).run();
-    // Стеля стану кроку Workflows - 1 МіБ: якщо крок поверне сам експорт,
-    // будь-який реальний файл не пролізе. Тут пінимо РОЗМІР того, що крок
-    // повертає, а не лише результат ланцюга.
+    // Дві платформні межі Workers Free одночасно: стан кроку 1 МіБ і 50
+    // підзапитів на виклик. Пінимо обидві - розмір того, що крок ПОВЕРТАЄ, і
+    // кількість зовнішніх дій усередині одного кроку.
     const returned: unknown[] = [];
+    let calls = 0;
+    const perStep: number[] = [];
     const sizedStep = {
       do: async (_name: string, fn: () => Promise<unknown>) => {
+        calls = 0;
         const out = await fn();
+        perStep.push(calls);
         returned.push(out);
         return out;
       },
     };
-    // Файл навмисно великий: на двох повідомленнях різниця між «підсумок» і
-    // «увесь експорт» непомітна, і проба нічого не доводила б.
     const big = {
       name: 'Великий',
       id: 5,
       type: 'personal_chat',
-      messages: Array.from({ length: 500 }, (_, i) => ({
+      messages: Array.from({ length: 1200 }, (_, i) => ({
         id: i + 1,
         type: 'message',
         date_unixtime: String(Math.floor(NOON / 1000) - i),
@@ -263,12 +268,114 @@ describe('машина станів InboxExport', () => {
         text: `рядок ${i} ${'х'.repeat(80)}`,
       })),
     };
-    const { io } = fakeIo({ download: async () => big });
+    const { io } = fakeIo({
+      download: async () => {
+        calls += 2; // getFile + сам файл
+        return big;
+      },
+      saveMany: async (msgs: unknown[]) => {
+        calls += Math.ceil(msgs.length / 50) * 2; // SELECT «що вже є» + batch
+        return { inserted: msgs.length, present: 0 };
+      },
+    });
     await runInboxExport(env, { chainId: 'c1', fileId: 'f1' }, sizedStep, io as never);
     expect(returned).not.toHaveLength(0);
     for (const value of returned) {
       expect(JSON.stringify(value ?? null).length).toBeLessThan(1000);
     }
+    expect(Math.max(...perStep)).toBeLessThan(50);
+    // 1 200 повідомлень - три кроки імпорту по MESSAGES_PER_STEP.
+    expect(Math.ceil(1200 / MESSAGES_PER_STEP)).toBe(3);
+  });
+
+  it('повтор кроку не бреше числом: показуємо, скільки ТЕПЕР у базі', async () => {
+    const { env, db } = setup();
+    db.prepare(
+      `INSERT INTO chains (id, kind, state_json, status, created_at, updated_at)
+       VALUES ('c1', 'inbox-export', '{}', 'running', '2026-09-07T00:00:00Z', '2026-09-07T00:00:00Z')`,
+    ).run();
+    // Справжній io поверх D1: перший прогін вставляє, другий - бачить дублі.
+    const sent: string[] = [];
+    const realIo = {
+      now: () => NOON,
+      download: async () => exportFile(),
+      saveMany: (msgs: never[]) => saveInboxBatch(env, msgs, NOON),
+      send: async (text: string) => {
+        sent.push(text);
+      },
+    };
+    await runInboxExport(env, { chainId: 'c1', fileId: 'f1' }, step, realIo as never);
+    expect(sent[0]).toContain('Завантажив 2 повідомлення');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_messages').get()).toMatchObject({ n: 2 });
+    // Повтор ланцюга (крок Workflow міг упасти й піти на другий раунд).
+    await runInboxExport(env, { chainId: 'c1', fileId: 'f1' }, step, realIo as never);
+    expect(sent[1]).toContain('Завантажив 2 повідомлення');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_messages').get()).toMatchObject({ n: 2 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM inbox_fts').get()).toMatchObject({ n: 2 });
+  });
+
+  it('пачкова вставка: два звернення до D1 на 50 рядків, а не два на рядок', async () => {
+    const { d1 } = setup();
+    // На Workers Free - 50 підзапитів на виклик, тож поштучний запис (INSERT +
+    // реіндекс FTS на кожне повідомлення) не проліз би в крок узагалі.
+    let roundTrips = 0;
+    // Стаб емулює `batch`, викликаючи кожне твердження окремо, - тож рахуємо
+    // лише ЗОВНІШНІ звернення, інакше вийшло б число тверджень, а не round-trip.
+    let inBatch = false;
+    const inner = d1.stub.prepare;
+    const env = workerEnv({
+      DB: {
+        prepare: (sql: string) => {
+          const st = inner(sql);
+          return {
+            bind: (...args: unknown[]) => {
+              const bound = st.bind(...args);
+              return {
+                run: async () => {
+                  if (!inBatch) roundTrips += 1;
+                  return bound.run();
+                },
+                all: async () => {
+                  if (!inBatch) roundTrips += 1;
+                  return bound.all();
+                },
+                first: async () => bound.first(),
+              };
+            },
+          };
+        },
+        batch: async (statements: { all: () => Promise<unknown> }[]) => {
+          roundTrips += 1;
+          inBatch = true;
+          try {
+            return await d1.stub.batch(statements as never);
+          } finally {
+            inBatch = false;
+          }
+        },
+      },
+      BRIEFING: memoryKv(new Map()),
+    });
+    const msgs = Array.from({ length: 100 }, (_, i) => ({
+      chatId: -100,
+      chatTitle: 'Робота',
+      fromId: 1,
+      fromName: 'Хтось',
+      messageId: i + 1,
+      dateS: Math.floor(NOON / 1000),
+      text: `рядок ${i}`,
+      mediaKind: null,
+      replyTo: null,
+    }));
+    const out = await saveInboxBatch(env, msgs as never, NOON);
+    expect(out).toMatchObject({ inserted: 100, present: 0 });
+    // Дві пачки по 50: SELECT «що вже є» + batch на кожну.
+    expect(roundTrips).toBe(4);
+  });
+
+  it('файл понад стелю - причина і що робити, ще до завантаження', () => {
+    expect(tooBig(FILE_MAX_BYTES + 1)).toContain('експортуй коротший період');
+    expect(tooBig(3 * 1024 * 1024)).toContain('3072 КБ');
   });
 
   it('імпорт НЕ витрачає добову стелю вхідних', async () => {

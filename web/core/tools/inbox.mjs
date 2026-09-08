@@ -37,14 +37,20 @@ export async function runInboxSearch(env, args, nowMs) {
   const since = resolveSince(args.since, nowMs);
   /** @type {string[] | null} */
   let chatIds = null;
+  /** @type {string | null} */
+  let note = null;
   if (args.chat) {
-    chatIds = await resolveChats(env, String(args.chat));
+    const found = await resolveChats(env, String(args.chat));
+    chatIds = found.ids;
     // Чесна відмова: «нічого не знайшов» і «такого чату немає» - різні
     // відповіді, і власник має бачити другу.
     if (!chatIds.length) {
       return {
         result: { chats: [], messages: [], note: `Чату «${String(args.chat)}» у вхідних немає.` },
       };
+    }
+    if (found.total > chatIds.length) {
+      note = `Під «${String(args.chat)}» підходить ${found.total} чатів - шукав у перших ${chatIds.length}. Уточни назву.`;
     }
   }
 
@@ -76,6 +82,7 @@ export async function runInboxSearch(env, args, nowMs) {
   return {
     result: {
       since,
+      ...(note ? { note } : {}),
       chats: [...new Set(rows.map((r) => safeLabel(r.chat_title)))].filter(Boolean),
       messages: rows.map((r) => ({
         id: String(r.id),

@@ -29,7 +29,7 @@ import {
   financeEveningTask,
   EVENING_MARKER_KEY,
 } from '../web/core/finance/evening.mjs';
-import { runFinanceQuery, runFinanceRule } from '../web/core/tools/finance.mjs';
+import { runFinanceQuery, runFinanceRule, restoreRule } from '../web/core/tools/finance.mjs';
 import { applyPolicy, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { ingestTransaction, writeMonoAccounts } from '../web/core/finance/store.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -449,6 +449,21 @@ describe('finance.rule (T0 з «↩»)', () => {
       result: { rule: unknown };
     };
     expect(result.rule).toBeNull();
+  });
+
+  it('«↩» на знімку СТАРОГО формату відкочує, а не видаляє правило', async () => {
+    const { env, db } = setup();
+    db.prepare(
+      `INSERT INTO merchant_rules (id, pattern, category, is_subscription) VALUES ('r1', 'Comfy', 'техніка', 0)`,
+    ).run();
+    // Форма, у якій знімок лежав до цього релізу (вікно «↩» - 10 хв).
+    await restoreRule(env, {
+      snapshot: { pattern: 'Comfy', category: 'техніка', is_subscription: 0 },
+      pattern: 'Comfy',
+    } as never);
+    expect(
+      db.prepare('SELECT category FROM merchant_rules WHERE pattern = ?').get('Comfy'),
+    ).toMatchObject({ category: 'техніка' });
   });
 
   it('порожній pattern і правило без змісту - чесна відмова', async () => {

@@ -52,7 +52,7 @@ import {
   CANCEL_TEXT_RE,
 } from './chains/registry.mjs';
 import { softWaitingLine } from './chains/nudge.mjs';
-import { startInboxExport, FILE_MAX_BYTES } from './chains/inbox-export.mjs';
+import { startInboxExport, tooBig, FILE_MAX_BYTES } from './chains/inbox-export.mjs';
 import { listInboxChats } from './inbox/store.mjs';
 
 export const THREAD_DM = 'dm';
@@ -1023,12 +1023,7 @@ async function handleExportDocument(env, target, doc, nowMs) {
   const json = /\.json$/i.test(doc.fileName) || doc.mimeType === 'application/json';
   if (!json) return false;
   if (doc.fileSize != null && doc.fileSize > FILE_MAX_BYTES) {
-    await reply(
-      env,
-      target,
-      `Файл ${Math.round(doc.fileSize / 1024 / 1024)} МБ - Telegram віддає ботам не більше 20 МБ. Виріж коротший період в експорті.`,
-      nowMs,
-    );
+    await reply(env, target, tooBig(doc.fileSize), nowMs);
     return true;
   }
   try {

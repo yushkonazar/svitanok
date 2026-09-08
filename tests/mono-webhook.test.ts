@@ -192,7 +192,6 @@ describe('прапорці «незвичного»', () => {
     inSubscriptions: false,
     periodic: false,
     ruleSubscription: false,
-    converted: false,
     threshold: THRESHOLD_DEFAULT,
   };
 
@@ -220,10 +219,9 @@ describe('прапорці «незвичного»', () => {
   it('foreign - «не гривня» за контрактом Фінансиста, а не «≠ валюта рахунку»', () => {
     // Долари з ДОЛАРОВОГО рахунку - теж не гривня: у звіт мусять потрапити.
     expect(computeFlags({ ...base, currency: 'USD', accountCurrency: 'USD' })).toEqual(['foreign']);
-    // Страховка на неоднозначність Mono: якщо currencyCode виявиться кодом
-    // рахунку, різниця сум усе одно видасть закордонну покупку.
-    expect(computeFlags({ ...base, currency: 'UAH', converted: true })).toEqual(['foreign']);
-    expect(computeFlags({ ...base, currency: 'UAH', converted: false })).toEqual([]);
+    // А гривнева операція лишається без ярлика, хоч би яка була комісія:
+    // різниця amount/operationAmount тут ні до чого.
+    expect(computeFlags({ ...base, currency: 'UAH' })).toEqual([]);
   });
 
   it('підписка: облік, правило власника або періодичність (S-4-6)', () => {
@@ -757,6 +755,27 @@ describe('звірка mono-reconcile', () => {
     expect(outboxTexts(db).some((m) => m.text.includes('«Comfy»'))).toBe(false);
     expect(outboxTexts(db).some((m) => m.text.includes('Завантажив історію Mono'))).toBe(true);
     expect(await hasAnyTransaction(env)).toBe(true);
+  });
+
+  it('Mono без рахунків - ОДИН алерт на добу, а не щопʼять хвилин', async () => {
+    const { env, db } = setup();
+    routeFetch([{ match: 'client-info', body: { name: 'Назар', webHookUrl: null, accounts: [] } }]);
+    expect(await monoReconcileTask(env, NIGHT)).toEqual({ skipped: 'no-accounts' });
+    for (let i = 1; i <= 4; i += 1) await monoReconcileTask(env, NIGHT + i * 300_000);
+    expect(outboxTexts(db).filter((m) => m.text.includes('жодного рахунку'))).toHaveLength(1);
+  });
+
+  it('сеанс, що падає, скаржиться раз і завершується за стелею часу', async () => {
+    const { env, db } = setup();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    routeFetch([{ match: 'client-info', body: {}, status: 500 }]);
+    expect(await monoReconcileTask(env, NIGHT)).toMatchObject({ failed: 'client' });
+    // Наступні тіки - та сама фаза, але вже мовчки.
+    for (let i = 1; i <= 5; i += 1) await monoReconcileTask(env, NIGHT + i * 300_000);
+    expect(outboxTexts(db).filter((m) => m.text.includes('Звірка Mono впала'))).toHaveLength(1);
+    // За стелею сеансу - завершення, і наступної доби все почнеться заново.
+    const late = NIGHT + 5 * 3_600_000;
+    expect(await monoReconcileTask(env, late)).toEqual({ skipped: 'session-expired' });
   });
 
   it('429 від Mono - не збій: крок не зсувається, алерту немає', async () => {
