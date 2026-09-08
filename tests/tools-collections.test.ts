@@ -417,7 +417,9 @@ describe('policy: рівні й виконавці колекцій', () => {
     );
     if (out.mode !== 'proposed') throw new Error('очікувалась пропозиція');
     expect(out.proposal.level).toBe('T2');
-    expect(out.proposal.word).toMatch(/^[А-ЯІЇЄҐ-]+$/u);
+    // Слово несе випадковий суфікс: саме він робить його ідентифікатором
+    // ПРОПОЗИЦІЇ, а не типом підтвердження (security-ревʼю етапу 7).
+    expect(out.proposal.word).toMatch(/^[А-ЯІЇЄҐ-]+-[A-Z0-9]{3}$/u);
     expect(await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1)).toEqual({
       ok: false,
       error: 'word-required',

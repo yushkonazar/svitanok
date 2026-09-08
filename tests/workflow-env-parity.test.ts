@@ -78,4 +78,26 @@ describe('brief.yml — секрети доїжджають до оркестр�
     expect(env.has('TELEGRAM_BOT_TOKEN')).toBe(true);
     expect(env.has('TELEGRAM_CHAT_ID')).toBe(true);
   });
+
+  /* Зворотний бік тієї самої звірки (ADR-027, етап 7 PR-2): є секрети, яких
+     тут НЕ МАЄ БУТИ. Пошта й календар брифінгу приходять із KV, які наповнює
+     Worker, тож Google-токен у раннері Actions - це третя копія найпотужнішого
+     секрета власника без жодного споживача. Повернути рядок легко й тихо:
+     хтось «полагодить» блок «Пошта», додавши секрет назад, і доступ
+     відновиться разом із ним. Тому межу тримає тест, а не лише коментар. */
+  it.each(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN'])(
+    '%s НЕ передається в Actions (доступ до пошти й календаря лишився в ядрі)',
+    (name) => {
+      expect(env.has(name)).toBe(false);
+      expect(readFileSync(WORKFLOW, 'utf8')).not.toContain(`secrets.${name}`);
+    },
+  );
+
+  it('жоден модуль брифінгу більше не читає GOOGLE_*-креденшели', () => {
+    // src/core/google-auth.ts лишився як таймаут-обгортка; сам OAuth пішов.
+    for (const file of walkFiles(join(ROOT, 'src'), { exts: ['.ts'] })) {
+      const src = readFileSync(file, 'utf8');
+      expect(src, file).not.toMatch(/optionalSecret\(\s*'GOOGLE_(CLIENT|REFRESH)/);
+    }
+  });
 });

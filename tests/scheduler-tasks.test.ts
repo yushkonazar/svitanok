@@ -9,7 +9,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker, { CRON_TASKS } from '../web/worker.js';
 import { SCHEDULER_TASKS } from '../web/core/scheduler/tasks.mjs';
 import {
-  autoBriefDispatch,
   deadMansCheck,
   checkinNudgeCheck,
   sleepNudgeCheck,
@@ -21,13 +20,14 @@ import { agentRunWatchdog } from '../web/agent-runtime.mjs';
 import { workerEnv } from './helpers/env.js';
 
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
-  it('канонічні kind-и: heartbeat + десять крон-задач + sweeper outbox + memory-summarize (етап 2 PR-2) + weekly-review (етап 3 PR-3)', () => {
+  it('канонічні kind-и: heartbeat + десять крон-задач + sweeper outbox + memory-summarize (етап 2 PR-2) + weekly-review (етап 3 PR-3) + mail-triage / secret-expiry / quota-check (етап 7)', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
       'heartbeat',
       'reminder',
       'run-watchdog',
       'brain-health',
       'brief-dispatch',
+      'mail-triage',
       'dead-man',
       'checkin-nudge',
       'sleep-nudge',
@@ -48,6 +48,8 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'subscription-remind',
       'inbox-digest',
       'retention-cleanup',
+      'secret-expiry',
+      'quota-check',
     ]);
   });
 
@@ -58,7 +60,9 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'run-watchdog': agentRunWatchdog,
       // brain-health - композит (легасі-хост + handshake нового мозку, PR-9),
       // тотожність там неможлива; його склад перевіряє окремий тест нижче.
-      'brief-dispatch': autoBriefDispatch,
+      // brief-dispatch теж став композитом (етап 7 PR-2): перед відправкою
+      // ядро кладе знімок календаря в KV, бо в Actions більше немає
+      // Google-токена. Його склад - окремий тест нижче.
       'dead-man': deadMansCheck,
       'checkin-nudge': checkinNudgeCheck,
       'sleep-nudge': sleepNudgeCheck,
@@ -128,6 +132,34 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
 
     vi.doUnmock('../web/cron.mjs');
     vi.doUnmock('../web/core/reminders/deliver.mjs');
+    vi.resetModules();
+  });
+
+  it('brief-dispatch: знімок календаря РАНІШЕ за відправку, і його збій не блокує брифінг', async () => {
+    // Порядок тут - не косметика: брифінг читає state.calendarToday, тож
+    // знімок мусить лягти ДО того, як воркфлоу стартує. А впасти знімок не
+    // має права взагалі: без нього брифінг лишається без одного блоку, з
+    // ним-падінням - без усього брифінгу.
+    const calls: string[] = [];
+    vi.doMock('../web/core/brief/calendar-snapshot.mjs', () => ({
+      refreshBriefCalendar: async () => {
+        calls.push('calendar');
+        throw new Error('Google лежить');
+      },
+    }));
+    vi.doMock('../web/cron.mjs', async (orig) => ({
+      ...(await orig<Record<string, unknown>>()),
+      autoBriefDispatch: async () => {
+        calls.push('dispatch');
+        return { dispatched: false };
+      },
+    }));
+    vi.resetModules();
+    const { SCHEDULER_TASKS: fresh } = await import('../web/core/scheduler/tasks.mjs');
+    await expect(fresh['brief-dispatch']!.run(workerEnv({}))).resolves.not.toThrow();
+    expect(calls).toEqual(['calendar', 'dispatch']);
+    vi.doUnmock('../web/core/brief/calendar-snapshot.mjs');
+    vi.doUnmock('../web/cron.mjs');
     vi.resetModules();
   });
 

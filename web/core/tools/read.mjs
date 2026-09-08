@@ -15,7 +15,13 @@ import {
   formatDriveForPrompt,
   OWN_DATA_SCOPES,
 } from '../../assistant-data-core.mjs';
-import { readMail, readMailBody, searchDrive, readCalendarRange } from '../../google.mjs';
+import {
+  readMail,
+  readMailBody,
+  searchDrive,
+  readCalendarRange,
+  assertGoogleScope,
+} from '../../google.mjs';
 import { formatEventsForPrompt, formatRangeEventsForPrompt } from '../../calendar-core.mjs';
 import { geocodeAddress } from '../adapters/maps.mjs';
 import {
@@ -203,6 +209,7 @@ async function readD1Reminders(env) {
  */
 export async function runCalendarRead(env, args, nowMs) {
   if (!Number.isInteger(args.days)) throw new Error('days має бути цілим 0-7');
+  await assertGoogleScope(env, 'calendar');
   const today = kyivDateKey(new Date(nowMs));
   const endKey = addDaysToDateKey(today, args.days);
   const events = await readCalendarRange(env, today, endKey);
@@ -220,6 +227,7 @@ export async function runCalendarRead(env, args, nowMs) {
  * @param {{ q: string }} args
  */
 export async function runMailSearch(env, args) {
+  await assertGoogleScope(env, 'mail');
   const q = String(args.q ?? '').trim();
   let messages = await readMail(env, q);
   // Gmail шукає кілька слів як AND, тож природна фраза («лист від Steam»)
@@ -289,6 +297,7 @@ export function broadenMailQuery(q) {
  */
 export async function runMailRead(env, args) {
   if (!MAIL_ID_RE.test(args.id)) throw new Error('невалідний id листа');
+  await assertGoogleScope(env, 'mail');
   const text = formatMailBodyForPrompt(await readMailBody(env, args.id));
   return { result: wrapExternal('mail', text, args.id) };
 }
@@ -300,6 +309,7 @@ export async function runMailRead(env, args) {
  * @param {{ q: string }} args
  */
 export async function runDriveSearch(env, args) {
+  await assertGoogleScope(env, 'drive');
   const text = formatDriveForPrompt(await searchDrive(env, args.q));
   return { result: wrapExternal('drive', text) };
 }

@@ -26,6 +26,11 @@ import {
   buildCreateEventBody,
 } from './calendar-core.mjs';
 import { sanitizeMailQuery } from './assistant-data-core.mjs';
+import {
+  parseGrantedScopes,
+  hasFeatureScope,
+  featureNotConnectedText,
+} from './core/google-scopes.mjs';
 
 /**
  * OAuth access token через refresh_token grant (Google) — порт
@@ -35,13 +40,29 @@ import { sanitizeMailQuery } from './assistant-data-core.mjs';
  * і callLlmHost — виклик іде далі без календаря, не валить обробку апдейту).
  */
 export async function googleAccessToken(/** @type {Env} */ env) {
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
+  return (await googleTokenInfo(env)).token;
+}
+
+/**
+ * Той самий обмін, але з ПЕРЕЛІКОМ виданих скоупів (етап 7 PR-1): Google
+ * повертає `scope` у відповіді на refresh, і саме він - єдине джерело правди
+ * про права токена. `scopes: null` означає «невідомо» (кеш без поля або
+ * токена немає) і НЕ дорівнює «жодного»: див. auditScopes.
+ * @param {Env} env
+ * @returns {Promise<{ token: string | null, scopes: string[] | null }>}
+ */
+export async function googleTokenInfo(env) {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) {
+    return { token: null, scopes: null };
+  }
   // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
   // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
   // KV-namespace — прийнятно. Биття кешу -> перевидати.
   try {
     const cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
-    if (isAccessTokenFresh(cached, Date.now())) return cached.token;
+    if (isAccessTokenFresh(cached, Date.now())) {
+      return { token: cached.token, scopes: parseGrantedScopes(cached.scope) };
+    }
   } catch {
     /* биття -> перевидати нижче */
   }
@@ -59,7 +80,7 @@ export async function googleAccessToken(/** @type {Env} */ env) {
     });
     if (!res.ok) {
       console.error('google token HTTP', res.status, await res.text().catch(() => ''));
-      return null;
+      return { token: null, scopes: null };
     }
     const json = await res.json();
     const token = typeof json.access_token === 'string' ? json.access_token : null;
@@ -86,9 +107,189 @@ export async function googleAccessToken(/** @type {Env} */ env) {
         console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
       }
     }
-    return token;
+    return { token, scopes: parseGrantedScopes(json.scope) };
   } catch (/** @type {any} */ err) {
     console.error('google token failed', err.message);
+    return { token: null, scopes: null };
+  }
+}
+
+/**
+ * Скоупи, видані токену (етап 7 PR-1). `null` - невідомо (немає секретів,
+ * мережа лягла або кеш без поля `scope`).
+ * @param {Env} env
+ */
+export async function googleGrantedScopes(env) {
+  return (await googleTokenInfo(env)).scopes;
+}
+
+/**
+ * Барʼєр можливості (S-8-7): скоуп не виданий → чесний виняток із текстом
+ * для власника, а не 403 з надр Google. Невідомі скоупи пропускаємо: див.
+ * hasFeatureScope.
+ * @param {Env} env @param {string} feature
+ */
+export async function assertGoogleScope(env, feature) {
+  const scopes = await googleGrantedScopes(env);
+  if (!hasFeatureScope(scopes, feature)) throw new Error(featureNotConnectedText(feature));
+}
+
+/* ── Інкрементальна синхронізація Gmail (ADR-027, етап 7 PR-2) ─────────────
+   Задача `mail-triage` у ядрі щочверть години питає, ЩО НОВОГО, а не «дай
+   останні N за запитом»: history.list від збереженого historyId повертає
+   рівно доданi листи, тож 96 появ на добу коштують 96 дешевих запитів
+   замість 96 пошуків із розбором.
+
+   ⚠️ ІНШИЙ КОНТРАКТ ПОМИЛОК, ніж у решти файла. Тут `null` не годиться:
+   404 від history.list («historyId застарів, синхронізуйся заново») - це
+   не збій, а окремий стан, і задача мусить його розрізнити. Тому
+   {ok:false, status} - не виняток (інваріант файла лишається) і не null. */
+
+/**
+ * Поточний historyId скриньки - точка відліку для першої синхронізації.
+ * @param {Env} env
+ * @returns {Promise<{ ok: true, historyId: string } | { ok: false, status: number }>}
+ */
+export async function gmailProfileHistoryId(env) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false, status: 0 };
+  try {
+    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      console.error('gmail profile HTTP', res.status, await res.text().catch(() => ''));
+      return { ok: false, status: res.status };
+    }
+    const json = /** @type {any} */ (await res.json());
+    const historyId = json?.historyId == null ? '' : String(json.historyId);
+    return historyId ? { ok: true, historyId } : { ok: false, status: 0 };
+  } catch (/** @type {any} */ err) {
+    console.error('gmail profile failed', err.message);
+    return { ok: false, status: 0 };
+  }
+}
+
+/**
+ * Додані листи від `startHistoryId`. Повертає id листів і новий historyId.
+ * status 404 - historyId застарів (Gmail тримає історію ~тиждень).
+ * @param {Env} env
+ * @param {{ startHistoryId: string, maxPages?: number }} input
+ * `truncated` - сторінки лишились недочитаними (стеля maxPages): курсор тоді
+ * рухати НЕ можна, інакше недочитане зникне назавжди.
+ * @returns {Promise<{ ok: true, ids: string[], historyId: string, truncated: boolean }
+ *   | { ok: false, status: number }>}
+ */
+export async function gmailHistoryAdded(env, input) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false, status: 0 };
+  /** @type {string[]} */
+  const ids = [];
+  let historyId = input.startHistoryId;
+  /** @type {string | undefined} */
+  let pageToken;
+  const maxPages = input.maxPages ?? 3;
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/history');
+      url.searchParams.set('startHistoryId', input.startHistoryId);
+      url.searchParams.set('historyTypes', 'messageAdded');
+      url.searchParams.set('labelId', 'INBOX');
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
+      const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) {
+        // 404 логуємо тихо: це нормальний стан «синхронізуйся заново».
+        if (res.status !== 404) {
+          console.error('gmail history HTTP', res.status, await res.text().catch(() => ''));
+        }
+        return { ok: false, status: res.status };
+      }
+      const json = /** @type {any} */ (await res.json());
+      for (const h of json?.history ?? []) {
+        for (const added of h?.messagesAdded ?? []) {
+          const id = added?.message?.id;
+          if (typeof id === 'string') ids.push(id);
+        }
+      }
+      if (json?.historyId != null) historyId = String(json.historyId);
+      pageToken = typeof json?.nextPageToken === 'string' ? json.nextPageToken : undefined;
+      if (!pageToken) break;
+    }
+    return { ok: true, ids: [...new Set(ids)], historyId, truncated: Boolean(pageToken) };
+  } catch (/** @type {any} */ err) {
+    console.error('gmail history failed', err.message);
+    return { ok: false, status: 0 };
+  }
+}
+
+/**
+ * Id листів за запитом - холодний старт синхронізації (історії ще немає або
+ * вона застаріла).
+ * @param {Env} env @param {{ q: string, limit: number }} input
+ * @returns {Promise<{ ok: true, ids: string[] } | { ok: false, status: number }>}
+ */
+export async function gmailSearchIds(env, input) {
+  const token = await googleAccessToken(env);
+  if (!token) return { ok: false, status: 0 };
+  try {
+    const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+    url.searchParams.set('q', input.q);
+    url.searchParams.set('maxResults', String(input.limit));
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      console.error('gmail list HTTP', res.status, await res.text().catch(() => ''));
+      return { ok: false, status: res.status };
+    }
+    const json = /** @type {any} */ (await res.json());
+    const ids = (json?.messages ?? [])
+      .map((/** @type {any} */ m) => m?.id)
+      .filter((/** @type {unknown} */ id) => typeof id === 'string');
+    return { ok: true, ids };
+  } catch (/** @type {any} */ err) {
+    console.error('gmail search failed', err.message);
+    return { ok: false, status: 0 };
+  }
+}
+
+/**
+ * Метадані одного листа для тріажу: заголовки, сніпет, мітки й дата.
+ * Формат metadata - тіла НЕ читаємо (та сама мінімізація, що в readMail).
+ * @param {Env} env @param {string} id @param {string | null} [accessToken]
+ * @returns {Promise<{ id: string, from: string, subject: string, snippet: string,
+ *   labels: string[], atMs: number } | null>}
+ */
+export async function gmailMessageMeta(env, id, accessToken = null) {
+  // Токен приймається ззовні: задача тріажу читає його РАЗ на прохід. Інакше
+  // кожен лист коштував би ще одне читання KV, і 20 листів зʼїдали б 40
+  // підзапитів із 50, доступних виклику на Workers Free.
+  const token = accessToken ?? (await googleAccessToken(env));
+  if (!token) return null;
+  try {
+    const url = new URL(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}`,
+    );
+    url.searchParams.set('format', 'metadata');
+    for (const h of ['From', 'Subject', 'Date']) url.searchParams.append('metadataHeaders', h);
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    // Один лист не дістався - мінус один кандидат, не збій усього тріажу.
+    if (!res.ok) return null;
+    const json = /** @type {any} */ (await res.json());
+    const headers = json?.payload?.headers ?? [];
+    const get = (/** @type {string} */ name) =>
+      String(
+        headers.find((/** @type {any} */ h) => String(h?.name).toLowerCase() === name)?.value ?? '',
+      );
+    const internal = Number(json?.internalDate);
+    return {
+      id,
+      from: get('from'),
+      subject: get('subject') || '(без теми)',
+      snippet: String(json?.snippet ?? ''),
+      labels: (json?.labelIds ?? []).map((/** @type {unknown} */ l) => String(l)),
+      atMs: Number.isFinite(internal) ? internal : Date.parse(get('date')) || 0,
+    };
+  } catch (/** @type {any} */ err) {
+    console.error('gmail meta failed', err.message);
     return null;
   }
 }

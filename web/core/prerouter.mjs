@@ -27,7 +27,7 @@ import {
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
 import { readExpected } from './brain/health.mjs';
-import { parsePolicyCallback, T2_WORDS, isTaintActive } from './policy/core.mjs';
+import { parsePolicyCallback, T2_WORD_RE, isTaintActive } from './policy/core.mjs';
 import { resolveProposal, resolveUndo } from './policy/proposals.mjs';
 import {
   transcribeVoice,
@@ -310,10 +310,9 @@ async function sendForgetMenu(env, target, nowMs) {
     console.error('prerouter: список чатів для /forget не зібрано', e?.message);
     return [];
   });
-  if (collections.length === 0 && chats.length === 0) {
-    await reply(env, target, 'Забувати поки нічого: ані колекцій, ані збережених чатів.', nowMs);
-    return;
-  }
+  // «Усе» (етап 7 PR-4) є ЗАВЖДИ - навіть коли ні колекцій, ні чатів немає:
+  // забути можна ще й факти, ідеї, гроші, плани, памʼять. Тому меню більше
+  // не буває порожнім, і рядок «забувати нічого» пішов разом із ним.
   const rows = [
     ...collections
       .slice(0, 10)
@@ -321,10 +320,18 @@ async function sendForgetMenu(env, target, nowMs) {
     ...chats.map((c) => [
       { text: `🗑 чат ${c.title} (${c.messages})`, callback_data: `m:fgc:${c.id}` },
     ]),
+    [{ text: '☠️ УСЕ - стерти всі мої дані', callback_data: 'm:fga' }],
   ];
-  await reply(env, target, 'Що забути? Це T2 - після кнопки попрошу слово.', nowMs, {
-    reply_markup: { inline_keyboard: rows },
-  });
+  await reply(
+    env,
+    target,
+    [
+      'Що забути? Це T2 - після кнопки попрошу слово.',
+      '«Усе» стирає всі дані власника безповоротно; спершу варто попросити експорт.',
+    ].join('\n'),
+    nowMs,
+    { reply_markup: { inline_keyboard: rows } },
+  );
 }
 
 /**
@@ -337,12 +344,17 @@ async function sendForgetMenu(env, target, nowMs) {
 async function resolveT2Word(env, target, threadKey, text, nowMs) {
   if (!env.DB) return false;
   const word = text.trim().toUpperCase();
-  // Лише відомі слова T2 (їх чотири): «дякую» чи «привіт» не мають ходити в
-  // D1 перед кожним прогоном.
-  if (!T2_WORDS.includes(word)) return false;
+  // Дешевий відсів за формою слова («ВИКОНАТИ-7K3»): «дякую» чи «привіт» не
+  // мають ходити в базу перед кожним прогоном.
+  if (!T2_WORD_RE.test(word)) return false;
+  // ⚠️ Слово - це ІДЕНТИФІКАТОР пропозиції, а не її тип (security-ревʼю етапу
+  // 7). Доти запит брав «останню відкриту T2 з таким словом», а слів було
+  // чотири - модель могла створити кілька пропозицій поспіль, показати
+  // власнику невинну й підсунути під його напис іншу, аж до forget=all.
+  // Випадковий суфікс робить збіг непідбірним, а сама модель слова не бачить.
   let row;
   try {
-    row = /** @type {any} */ (
+    row = /** @type {{ id: string } | null} */ (
       await env.DB.prepare(
         `SELECT id FROM proposals WHERE status = 'open' AND level = 'T2' AND word = ?
          AND thread_id = ? ORDER BY created_at DESC LIMIT 1`,
@@ -351,8 +363,11 @@ async function resolveT2Word(env, target, threadKey, text, nowMs) {
         .first()
     );
   } catch (/** @type {any} */ e) {
+    // База не відповіла - слово НЕ йде далі в модель як звичайний текст:
+    // другий фактор не має перетворюватись на репліку в чаті.
     console.error('prerouter: пошук T2-слова впав', e?.message);
-    return false;
+    await reply(env, target, 'Не дістав, чого стосується слово - напиши ще раз.', nowMs);
+    return true;
   }
   if (!row) return false;
   const res = await resolveProposal(env, { id: String(row.id), choice: 'ok', word }, nowMs);
@@ -787,6 +802,35 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       return undoToast(await resolveUndo(env, policy.id, nowMs));
     }
     const res = await resolveProposal(env, { id: policy.id, choice: policy.choice }, nowMs);
+    // T2 після ✅: слово називає ЯДРО (модель його більше не бачить) і тут же
+    // запамʼятовує, до якої саме пропозиції воно належить.
+    if (!res.ok && res.error === 'word-required' && policy.choice === 'ok') {
+      const asked = await askT2Word(env, parsed, policy.id);
+      if (!asked) {
+        // Слово не дістали - але тиша в треді тут неприпустима: тост зникає
+        // за секунди, і власник лишився б із враженням «нічого не сталося»
+        // (той самий дефект, що фіксували на прийманні 05.09).
+        await reply(
+          env,
+          { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+          `⚠️ ${proposalToast(res)}`,
+          nowMs,
+        );
+        return proposalToast(res);
+      }
+      // ⚠️ У ТРЕД, не лише тостом (ревʼю етапу 7). Тост зникає за секунди й в
+      // історію не потрапляє, а слово тепер знає лише ядро - без цього рядка
+      // власник не мав би де його прочитати. Тут же ЯДРО називає саму дію:
+      // модель у своєму тексті може написати що завгодно, а стерти базу
+      // безповоротно можна рівно одним словом.
+      await reply(
+        env,
+        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+        `⚠️ Це T2: ${describeProposal(asked.kind, asked.payload)}. Щоб виконати, напиши слово: ${asked.word} (діє 10 хв).`,
+        nowMs,
+      );
+      return `Це T2: напиши слово ${asked.word}`;
+    }
     if (res.ok && 'status' in res) {
       await clearKeyboard(env, parsed);
       // Тост Telegram зникає за секунди й не лишається в історії - рішення й
@@ -846,6 +890,8 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // m:fgc:<chatId> - те саме для чату з Business (S-2-8): та сама T2 зі словом.
   const fgc = data.match(/^m:fgc:(-?[A-Za-z0-9_]{1,40})$/);
   if (fgc) return forgetMenuToast(env, parsed, { chat: /** @type {string} */ (fgc[1]) }, nowMs);
+  // m:fga - «усе» (S-0-5, етап 7 PR-4): та сама T2 зі словом, ціль all.
+  if (data === 'm:fga') return forgetMenuToast(env, parsed, { all: true }, nowMs);
   // m:fx:<txId>:<choice> - кнопки під незвичною покупкою (S-4-2, S-4-4, етап 6
   // PR-1). Повідомлення будує ядро без моделі; модель вмикається лише тут,
   // коли власник САМ попросив («Перевірити ціни», «Категорія»).
@@ -921,16 +967,18 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
  * - тред кнопки, щоб слово з того ж треду її знайшло.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {{ collection?: string, chat?: string }} pick
+ * @param {{ collection?: string, chat?: string, all?: boolean }} pick
  * @param {number} nowMs
  */
 async function forgetMenuToast(env, parsed, pick, nowMs) {
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
-  const payload = pick.chat
-    ? { target: 'chat', chat: pick.chat }
-    : { target: 'collection', collection: pick.collection };
+  const payload = pick.all
+    ? { target: 'all' }
+    : pick.chat
+      ? { target: 'chat', chat: pick.chat }
+      : { target: 'collection', collection: pick.collection };
   const out = await applyPolicy(
     env,
     {
@@ -945,9 +993,11 @@ async function forgetMenuToast(env, parsed, pick, nowMs) {
   if (out.mode !== 'proposed')
     return `Не вийшло: ${out.mode === 'error' ? out.error : 'без пропозиції'}`;
   await clearKeyboard(env, parsed);
-  const what = pick.chat
-    ? 'усі збережені повідомлення чату і дайджести про нього'
-    : 'колекцію з усіма записами';
+  const what = pick.all
+    ? 'УСІ дані власника - факти, ідеї, гроші, чати, плани, памʼять'
+    : pick.chat
+      ? 'усі збережені повідомлення чату і дайджести про нього'
+      : 'колекцію з усіма записами';
   await reply(
     env,
     target,
@@ -1255,6 +1305,42 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
   // Розсинхрон kind↔choice (не трапляється зі своїх кнопок) - чесна відмова.
   await finishPendingVoice(env, id, true);
   return 'Застаріло - надішли голосове ще раз.';
+}
+
+/**
+ * Прочитати слово пропозиції з бази й запамʼятати її як «тред чекає слово».
+ * Слово живе в `proposals`, і показує його ЯДРО - у відповіді інструмента
+ * мозку його немає (security-ревʼю етапу 7: доки модель бачила слово, вона
+ * могла підбирати колізію й підміняти пропозицію під написом власника).
+ * @param {Env} env
+ * @param {{ chatId?: number | null, threadId?: number | string | null }} parsed
+ * @param {string} id
+ * @returns {Promise<{ word: string, kind: string, payload: unknown } | null>}
+ */
+async function askT2Word(env, parsed, id) {
+  if (!env.DB) return null;
+  try {
+    const row = /** @type {{ word?: string, kind?: string, payload_json?: string } | null} */ (
+      await env.DB.prepare(
+        "SELECT word, kind, payload_json FROM proposals WHERE id = ? AND status = 'open'",
+      )
+        .bind(id)
+        .first()
+    );
+    const word = String(row?.word ?? '');
+    if (!word) return null;
+    /** @type {unknown} */
+    let payload = null;
+    try {
+      payload = JSON.parse(String(row?.payload_json ?? 'null'));
+    } catch {
+      // кривий payload - опишемо саму дію без деталей
+    }
+    return { word, kind: String(row?.kind ?? ''), payload };
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: слово T2 не дістали', e?.message);
+    return null;
+  }
 }
 
 /** Зняти інлайн-клавіатуру - best-effort: тост важливіший за косметику.

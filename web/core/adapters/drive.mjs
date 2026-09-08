@@ -6,18 +6,25 @@
 // drive.file бачить ЛИШЕ файли, створені цим застосунком, тож тека
 // «Світанок» шукається серед своїх і створюється, якщо її ще немає.
 
-import { googleAccessToken } from '../../google.mjs';
+import { googleTokenInfo } from '../../google.mjs';
+import { hasFeatureScope, featureNotConnectedText } from '../google-scopes.mjs';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
+/** MIME Google Таблиці: Drive конвертує завантажений CSV у неї сам, тож
+ *  окремий скоуп `spreadsheets` ядру не потрібен (етап 7 PR-1, S-N4-4). */
+export const SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 /** Таймаут одного HTTP-виклику: бекап у кілька мегабайт має встигнути. */
 const DRIVE_TIMEOUT_MS = 60_000;
 
 /** @param {Env} env */
 async function tokenOrThrow(env) {
-  const token = await googleAccessToken(env);
+  // Токен і скоупи - з ОДНОГО читання (googleTokenInfo): барʼєр можливості
+  // (S-8-7) не має коштувати другого звернення до KV на кожен виклик Drive.
+  const { token, scopes } = await googleTokenInfo(env);
   if (!token) throw new Error('Google OAuth недоступний (секрети або мережа)');
+  if (!hasFeatureScope(scopes, 'drive')) throw new Error(featureNotConnectedText('drive'));
   return token;
 }
 
@@ -144,4 +151,41 @@ export async function uploadFile(env, file) {
   });
   if (typeof json?.id !== 'string') throw new Error('Drive: файл завантажено без id');
   return { id: json.id, name: String(json.name ?? file.name), size: Number(json.size ?? 0) };
+}
+
+/**
+ * CSV → Google Таблиця (S-N4-4, етап 7 PR-1). Конверсію робить сам Drive за
+ * цільовим `mimeType` у метаданих - тому ядру НЕ потрібен скоуп
+ * `spreadsheets`, а створена таблиця лишається в межах `drive.file` (файл
+ * створив застосунок, отже він його й бачить).
+ * @param {Env} env
+ * @param {{ name: string, parentId: string, csv: string }} file
+ * @returns {Promise<{ id: string, name: string, link: string | null }>}
+ */
+export async function uploadCsvAsSheet(env, file) {
+  const token = await tokenOrThrow(env);
+  const form = new FormData();
+  form.set(
+    'metadata',
+    new Blob(
+      [JSON.stringify({ name: file.name, parents: [file.parentId], mimeType: SHEET_MIME })],
+      {
+        type: 'application/json',
+      },
+    ),
+  );
+  // charset=utf-8 обовʼязковий: без нього Drive читає CSV як latin-1, і
+  // кожен український заголовок колонки приїжджає кракозябрами.
+  form.set('file', new Blob([file.csv], { type: 'text/csv;charset=utf-8' }));
+  const json = await driveFetch(`${DRIVE_UPLOAD}&fields=id,name,webViewLink`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (typeof json?.id !== 'string') throw new Error('Drive: таблицю створено без id');
+  return {
+    id: json.id,
+    name: String(json.name ?? file.name),
+    link: typeof json.webViewLink === 'string' ? json.webViewLink : null,
+  };
 }

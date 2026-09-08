@@ -131,8 +131,10 @@ export async function runBackup(env, nowMs, today) {
   return { sha256, bytes: bytes.length, driveId: uploaded.id, ...summary };
 }
 
-/** @param {Env} env */
-async function dumpTables(env) {
+/** Знімок усіх таблиць - спільний для бекапу (нд 03:00) і експорту даних
+ *  (S-0-6): один список і один читач, інакше вони розійдуться.
+ *  @param {Env} env */
+export async function dumpTables(env) {
   const db = /** @type {NonNullable<Env['DB']>} */ (env.DB);
   /** @type {Record<string, Record<string, unknown>[]>} */
   const out = {};
@@ -158,7 +160,7 @@ async function dumpTables(env) {
  * кінця; ключів у неймспейсі - десятки.
  * @param {Env} env
  */
-async function dumpKv(env) {
+export async function dumpKv(env) {
   /** @type {Record<string, string>} */
   const out = {};
   /** @type {string | undefined} */
