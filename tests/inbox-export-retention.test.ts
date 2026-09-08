@@ -340,6 +340,9 @@ describe('машина станів InboxExport', () => {
                   return bound.all();
                 },
                 first: async () => bound.first(),
+                // batch спільного стаба кличе саме once() - без нього обгортка
+                // ламає пачкову вставку (яку цей тест і міряє).
+                once: async () => bound.once(),
               };
             },
           };

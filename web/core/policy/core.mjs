@@ -38,20 +38,32 @@ export const ACTION_LEVELS = {
   'plan.accept': 'T0',
   'plan.update': 'T0',
   'plan.review': 'T0',
+  // ⚠️ ПЕРЕЇХАЛИ З T1 (реліз 08.09, скарга 6: «деякі стандартні дії постійно
+  // вимагають підтвердження»). Правило, за яким їх пересунуто: ✅ потрібне
+  // лише там, де дія (а) незворотна, (б) видима ІНШИМ людям або (в) коштує
+  // грошей. Задача у власному списку, нотатка у власній теці й вивантаження
+  // власної колекції в його ж чат - жодне з трьох, і «↩» знімає їх за 10 хв.
+  'tasks.create': 'T0',
+  'drive.write': 'T0',
+  // Експорт нікуди не виходить, окрім чату власника, і відкочувати в ньому
+  // нічого - тому T0 без «↩».
+  'collection.export': 'T0',
+  // Подія В КАЛЕНДАРІ - T0 з «↩», але З ГОСТЯМИ вона стає листом іншій
+  // людині й лишається T1: рівень вирішує decideLevel за payload.
+  'calendar.event': 'T0',
   // T1 - одне ✅/❌, TTL 30 хв
-  'calendar.event': 'T1',
   'calendar.update': 'T1',
   'calendar.delete': 'T1',
   invite: 'T1',
-  'drive.write': 'T1',
-  'tasks.create': 'T1',
   settings: 'T1',
   contact: 'T1',
-  'collection.export': 'T1',
   'records.delete': 'T1',
   'ideas.delete': 'T1',
   'wishes.delete': 'T1',
   'gemini.image': 'T1',
+  // Збір корпусу свого голосу власник дає СВІДОМО (07 §1 style_corpus), а не
+  // фоном: це його тексти, і рішення про них - його.
+  'style.collect': 'T1',
   // T2 - ✅ + слово, TTL 10 хв
   forget: 'T2',
   'data.export': 'T2',
@@ -75,20 +87,65 @@ export const UNDO_WINDOW_MS = 10 * 60_000;
 export const TAINT_TTL_MS = 10 * 60_000;
 
 /**
- * T0-дії, які taint НЕ ескалює: читання/перерахунок власного плану без
- * зовнішнього ефекту (приймання 05.09, B3: «що там з планом» під taint
- * просило ✅, а результат після ✅ не показувався). plan.review - лише БЕЗ
- * carry: з carry він переносить пункти (запис без «↩»), і інʼєкція з листа
- * «перенеси все на завтра» мусить упертись у ✅ (security-ревʼю 05.09).
+ * Дії, ЯКІ TAINT ЕСКАЛЮЄ, - білий список, а не чорний (реліз 08.09).
+ *
+ * ⚠️ ЩО ЗМІНИЛОСЬ І ЧОМУ. Доти taint підіймав до T1 БУДЬ-ЯКИЙ T0: після
+ * читання пошти власник мусив тиснути ✅ навіть на «запиши ідею». Ціна
+ * захисту виявилась завищеною (скарга 7 прогону 08.09). Але зняти taint
+ * зовсім не можна: інʼєкція приходить із легітимного домену, а шкідливе - у
+ * СЛОВАХ листа, тож «глибша перевірка джерела» від неї не рятує.
+ *
+ * Тому барʼєр звужено до того, де ціна помилки не своя: усе, що ВИХОДИТЬ
+ * НАЗОВНІ - у чужі сервіси, чужі списки, чужі очі - або коштує грошей.
+ * Інʼєкція, що записала власнику зайве нагадування, - прикро й відкочується
+ * одним тапом; інʼєкція, що створила подію в його календарі чи виклала файл
+ * у Drive, - ні.
+ *
+ * Локальне (нагадування, факти, ідеї, бажання, колекції, план, гроші-правила)
+ * лишається T0 з «↩» навіть у забрудненій сесії.
+ */
+export const TAINT_ESCALATES = Object.freeze([
+  'calendar.event',
+  'tasks.create',
+  'drive.write',
+  'collection.export',
+  // ⚠️ Не «назовні», але й не відкотне: `plan.review` з carry переносить
+  // пункти плану ПАЧКОЮ і «↩» не має. Інʼєкція «перенеси все на завтра» з
+  // листа мусить упертись у ✅ (security-ревʼю 05.09) - те саме правило
+  // «незворотне потребує підтвердження», лише без слова «назовні». БЕЗ carry
+  // це читання власного плану, і воно ескалації не потребує.
+  'plan.review',
+  // ⚠️ `plan.accept` з calendar=true СТВОРЮЄ події в календарі (від 08.09 це
+  // T0), тобто виходить назовні тим самим шляхом, що `calendar.event`. Без
+  // цього рядка лист «постав блоки й закинь у календар» клав би чужі назви в
+  // календар власника без жодного ✅ (security-ревʼю релізу). Без calendar -
+  // це власний план дня, і барʼєр там зайвий.
+  'plan.accept',
+  // Бажання-покупка з url стартує щоденний обхід тієї адреси Дослідником
+  // (WebFetch): інʼєкція так робить собі маячок. Без url це просто запис.
+  'wishes.create',
+  // Аналіз ідеї по коду - 40-хвилинний прогін GitHub Actions, тобто гроші.
+  'ideas.analyze',
+  // Ланцюги виходять назовні: столик шле контакт і місце, поїздка - чеклісти,
+  // ціна - щоденний обхід чужої сторінки.
+  'chain.start',
+]);
+
+/**
+ * Чи ескалює taint цю дію.
  * @param {string} kind @param {Record<string, unknown> | undefined} payload
  */
-export function isTaintExempt(kind, payload) {
-  if (kind === 'plan.draft') return true;
+export function taintEscalates(kind, payload) {
+  if (!TAINT_ESCALATES.includes(kind)) return false;
   if (kind === 'plan.review') {
     const carry = payload?.carry;
-    return !(Array.isArray(carry) && carry.length > 0);
+    return Array.isArray(carry) && carry.length > 0;
   }
-  return false;
+  // План дня сам собою локальний; назовні його виводить лише calendar=true.
+  if (kind === 'plan.accept') return payload?.calendar === true;
+  // Бажання без посилання нікуди не ходить.
+  if (kind === 'wishes.create') return typeof payload?.url === 'string' && payload.url !== '';
+  return true;
 }
 
 /**
@@ -139,7 +196,7 @@ export const T2_WORD_RE = new RegExp(
  * @returns {{ level: 'T0' | 'T1' | 'T2' } | { error: string }}
  */
 export function decideLevel(kind, tainted, payload = undefined) {
-  const base = ACTION_LEVELS[kind];
+  const base = levelFor(kind, payload);
   // Невідомий kind - НЕ дефолт-рівень, а відмова: дія без рядка в таблиці
   // не має права існувати (та сама логіка, що «помилка видима»).
   if (!base) {
@@ -150,8 +207,29 @@ export function decideLevel(kind, tainted, payload = undefined) {
       error: `невідомий kind дії "${kind}"; дозволені: ${Object.keys(ACTION_LEVELS).join(', ')}`,
     };
   }
-  if (base === 'T0' && tainted && !isTaintExempt(kind, payload)) return { level: 'T1' };
+  if (base === 'T0' && tainted && taintEscalates(kind, payload)) return { level: 'T1' };
   return { level: base };
+}
+
+/**
+ * Базовий рівень із урахуванням payload. Єдина дія, чий рівень залежить від
+ * аргументів, - подія в календарі: без гостей це запис у власному календарі
+ * (T0 з «↩», бо «↩» подію видаляє), з гостями - лист іншій людині, а лист
+ * назад не забереш (T1). Розрізняти їх у самій таблиці неможливо: там ключ -
+ * kind, а не payload.
+ * @param {string} kind @param {Record<string, unknown> | undefined} payload
+ * @returns {'T0' | 'T1' | 'T2' | undefined}
+ */
+function levelFor(kind, payload) {
+  const base = ACTION_LEVELS[kind];
+  if (kind === 'calendar.event' && hasAttendees(payload)) return 'T1';
+  return base;
+}
+
+/** Чи в payload є хоч один гість. @param {Record<string, unknown> | undefined} payload */
+export function hasAttendees(payload) {
+  const a = payload?.attendees;
+  return Array.isArray(a) && a.some((x) => String(x ?? '').trim() !== '');
 }
 
 /**

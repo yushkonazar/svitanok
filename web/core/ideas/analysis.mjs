@@ -40,6 +40,20 @@ import { logIdeaEvent } from '../tools/ideas.mjs';
 
 export { IDEA_REPOS, DISPATCH_INPUTS, DISPATCH_IDEA_MAX, JOB_TIMEOUT_MIN };
 
+/**
+ * Текст ідеї для inputs воркфлоу: тіло, а без тіла - заголовок.
+ *
+ * ⚠️ GitHub відповідає 422 «Required input 'idea' not provided» на ПОРОЖНІЙ
+ * рядок в обовʼязковому вході - тобто ідея, записана одним заголовком (а це
+ * звичайна річ: «ТЕСТ - додати темну тему»), ламала аналіз по коду ще до
+ * старту раннера. Прогін 08.09.
+ * @param {{ title?: unknown, body_md?: unknown }} idea
+ */
+export function ideaTextForDispatch(idea) {
+  const body = String(idea.body_md ?? '').trim();
+  return body || String(idea.title ?? '').trim();
+}
+
 export const CHAIN_KIND = 'idea';
 export const ANALYSIS_PROFILE = 'idea-analysis';
 /** Очікування артефакту: стеля job + запас на чергу раннера (ревʼю PR-2: 2 хв
@@ -310,6 +324,14 @@ export function targetOf(env, ctx) {
  */
 export async function startIdeaAnalysis(env, idea, args, nowMs, ctx) {
   const repo = resolveRepo(idea, args.repo);
+  // Порожня ідея - відмова ДО запуску job'а: інакше 40-хвилинний раннер
+  // стартував би заради тексту, якого немає, а GitHub і зовсім відповів би
+  // 422 на порожній обовʼязковий вхід (прогін 08.09).
+  if (!ideaTextForDispatch(idea)) {
+    throw new Error(
+      `в ідеї #${idea.number} немає тексту - додай опис, інакше аналізувати нема чого`,
+    );
+  }
   const running = await findRunningAnalysis(env, idea.id);
   if (running) {
     return {
@@ -506,7 +528,11 @@ export async function runIdeaAnalysisChain(env, params, step, io) {
         repo,
         sha,
         title: String(idea.title ?? '').slice(0, 200),
-        idea: String(idea.body_md ?? '').slice(0, DISPATCH_IDEA_MAX),
+        // ⚠️ `idea` у воркфлоу - required, а GitHub вважає ПОРОЖНІЙ рядок
+        // ненаданим входом і відповідає 422 «Required input 'idea' not
+        // provided» (прогін 08.09: ідея без опису). Тому текст = тіло, а якщо
+        // тіла немає - заголовок; порожнечу відсіює перевірка вище.
+        idea: ideaTextForDispatch(idea).slice(0, DISPATCH_IDEA_MAX),
       }),
     );
   } catch (/** @type {any} */ e) {

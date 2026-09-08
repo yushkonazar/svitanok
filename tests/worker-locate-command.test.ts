@@ -190,7 +190,7 @@ describe('скасування (LOCATE_CANCEL_LABEL)', () => {
     expect(kv.get('ownerGeoManual')).toBeUndefined();
     expect(lastSendText()).toContain('без змін');
     const markup = lastSend()?.body.reply_markup as { keyboard: string[][] };
-    expect(markup.keyboard[0]?.[0]).toBe('📅 Сьогодні'); // REPLY_KEYBOARD, не locate-клавіатура
+    expect(markup.keyboard[0]?.[0]).toBe('🧭 План дня'); // REPLY_KEYBOARD, не locate-клавіатура
   });
 });
 

@@ -162,9 +162,11 @@ export async function runTelegramSetup(/** @type {Env} */ env, /** @type {string
   // потребує окремої теми «Команди» для пояснення «що це».
   await tgCall(env, 'setMyDescription', { description: BOT_DESCRIPTION });
   await tgCall(env, 'setMyShortDescription', { short_description: BOT_SHORT_DESCRIPTION });
-  await tgCall(env, 'setChatMenuButton', {
-    menu_button: { type: 'web_app', text: 'Mini App', web_app: { url: origin } },
-  });
+  // ⚠️ Кнопка-меню показує КОМАНДИ, не Mini App (побажання власника 08.09:
+  // «основні команди додай у Menu Button, для швидкого доступу»). Mini App не
+  // загубилась: вона в закріпленому повідомленні (ensureAppWelcomePin нижче) і
+  // під /settings.
+  await tgCall(env, 'setChatMenuButton', { menu_button: { type: 'commands' } });
   await ensureAppWelcomePin(env, origin);
   return res.ok;
 }

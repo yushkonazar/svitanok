@@ -198,14 +198,14 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'reminders.create',
     description:
-      'Створити нагадування. when - природний текст часу («через 20 хв», «завтра о 9»); text - про що нагадати (можна лишити порожнім, якщо зміст уже в when).',
+      'Створити нагадування. when - природний текст часу («через 20 хв», «завтра о 9»); text - про що нагадати (можна лишити порожнім, якщо зміст уже в when). У підтвердженні називай час із deliver_at - це коли нагадування СПРАВДІ піде; «через 20 хв» без часу власнику нічого не каже.',
     args: z.object({ when: z.string().max(120), text: z.string().max(200).optional() }),
     write: true,
   }),
   tool({
     coreName: 'reminders.update',
     description:
-      'Змінити активне нагадування за id: новий текст і/або новий час (природним текстом). id бери зі списку нагадувань.',
+      'Змінити активне нагадування за id: новий текст і/або новий час (природним текстом). id бери зі списку нагадувань. У підтвердженні називай час із deliver_at.',
     args: z.object({
       id: z.string().max(64),
       when: z.string().max(120).optional(),
@@ -214,9 +214,30 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     write: true,
   }),
   tool({
+    coreName: 'style.samples',
+    description:
+      'Зразки ВЛАСНИХ текстів власника - його голос. Клич ПЕРЕД delegate до Копірайтера або Редактора і вклади результат у task окремим блоком: без нього вони пишуть базовим стилем. Порожній корпус - так і є, збирається він командою «збери мій стиль».',
+    args: z.object({ limit: z.number().int().min(1).max(30).optional() }),
+  }),
+  tool({
+    coreName: 'data.search',
+    description:
+      'Пошук по ВСІХ власних даних одним викликом: ідеї, записи колекцій, місця, транзакції. Питання «коли я востаннє був у X», «де я це записував», «чи є в мене щось про Y» - це ОДИН data.search, а не перебір інструментів. scopes звужує джерела (ideas·records·places·money); чати шукає окремий inbox.search. Пошук ПЛЯМУЄ сесію (назви місць пише Google, описи покупок - мерчант), тож після нього дії назовні просять ✅.',
+    args: z.object({
+      q: z.string().min(2).max(120),
+      scopes: z.array(z.string().max(16)).max(4).optional(),
+    }),
+    // Назви місць пише Google, описи покупок - мерчант: чужий текст.
+    tainting: true,
+  }),
+  tool({
     coreName: 'reminders.cancel',
-    description: 'Скасувати активне нагадування за id зі списку.',
-    args: z.object({ id: z.string().max(64) }),
+    description:
+      'Скасувати активне нагадування за id зі списку. Кілька одразу - ids списком (до 20): «скасуй усі три» це ОДИН виклик, не три.',
+    args: z.object({
+      id: z.string().max(64).optional(),
+      ids: z.array(z.string().max(64)).max(20).optional(),
+    }),
     write: true,
   }),
   tool({
@@ -234,7 +255,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'proposals.create',
     description:
-      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, forget, data.export, gemini.video. payload - поля дії: calendar.event/invite {title, startIso, endIso, location?, attendees?, reminderMinutes?}; calendar.update {event_id, title?, startIso+endIso разом, location?, attendees?}; calendar.delete {event_id}; contact {name, email}; tasks.create {title, notes?, due? - Tasks зберігає лише ДАТУ, години не буде: для сигналу о годині став reminders.create}; collection.export {collection, to?: "sheets" - Google Таблиця в Drive, інакше .csv документом}; drive.write {name, content_md}; gemini.image {prompt} і gemini.video {prompt, seconds? (до 8), model? "veo"|"lite"} - ЛИШЕ prompt власника: будь-яке інше поле policy відкидає, і в заплямованій сесії (після пошти/чатів) генерація недоступна взагалі. Ціну ядро дописує саме - не називай її. Нічого не виконується без підтвердження власника; після ✅ ядро зробить запис саме.',
+      'Запропонувати дію назовні. kind - РІВНО одне з: calendar.event, calendar.update, calendar.delete, invite, drive.write, tasks.create, settings, contact, collection.export, records.delete, ideas.delete, wishes.delete, gemini.image, style.collect, forget, data.export, gemini.video. payload - поля дії: calendar.event/invite {title, startIso, endIso, location?, attendees?, reminderMinutes?}; calendar.update {event_id, title?, startIso+endIso разом, location?, attendees?}; calendar.delete {event_id}; contact {name, email}; tasks.create {title, notes?, due? - Tasks зберігає лише ДАТУ, години не буде: для сигналу о годині став reminders.create}; collection.export {collection, to?: "sheets" - Google Таблиця в Drive, інакше .csv документом}; drive.write {name, content_md}; gemini.image {prompt} і gemini.video {prompt, seconds? (до 8), model? "veo"|"lite"} - ЛИШЕ prompt власника: будь-яке інше поле policy відкидає, і в заплямованій сесії (після пошти/чатів) генерація недоступна взагалі. Ціну ядро дописує саме - не називай її. Рівень вирішує ЯДРО: задача, нотатка, експорт колекції і подія БЕЗ гостей робляться одразу й лишають «↩» на 10 хв - не обіцяй по них підтвердження; подія з гостями, invite, контакт, налаштування й зображення чекають ✅, а стирання, експорт даних і відео - ✅ зі словом. Після рішення ядро зробить запис саме.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),

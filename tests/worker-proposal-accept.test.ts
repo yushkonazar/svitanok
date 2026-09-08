@@ -924,6 +924,27 @@ describe('CRUD: rc:all — пакетне скасування (extra c)', () =>
     expect(state.reminders[0].id).toBe('r1'); // спрацьоване лишилось
   });
 
+  it('понад стелю за тап - решта лишається, і про це сказано', async () => {
+    // ⚠️ Кожне скасування - запит у D1, а їх на виклик Worker'а ~50. Без межі
+    // 45 активних упирались би в стелю ПОСЕРЕД циклу: частина скасована,
+    // тост не пішов (другий прохід ревʼю).
+    kv.set(
+      'state',
+      JSON.stringify({
+        reminders: Array.from({ length: 25 }, (_, i) => ({
+          id: `r${i}`,
+          text: 'X',
+          whenMs: Date.now() + 1000,
+          firedTs: null,
+        })),
+      }),
+    );
+    await tapCallback('rc:all');
+    expect(toast()).toContain('ще 5');
+    const left = JSON.parse(kv.get('state')!).reminders as { id: string }[];
+    expect(left).toHaveLength(5);
+  });
+
   it('нема активних -> чесний toast, KV не чіпається', async () => {
     kv.set('state', JSON.stringify({ reminders: [] }));
     await tapCallback('rc:all');

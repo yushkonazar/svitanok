@@ -16,6 +16,7 @@ import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
+import { memoryKv } from './helpers/kv.js';
 
 const NOW = Date.parse('2026-08-28T10:00:00.000Z');
 const KEY = 'proposals-test-key';
@@ -80,11 +81,11 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('proposals.create: рівень бере kind з аргументів', () => {
-  it('T1-дія (подія календаря) стає пропозицією з кнопками, нічого не виконано', async () => {
+  it('T1-дія (контакт) стає пропозицією з кнопками, нічого не виконано', async () => {
     const { env } = makeEnv();
     const { status, body } = await callTool(env, 'proposals.create', {
-      kind: 'calendar.event',
-      payload: { title: 'Зустріч', at: '2026-08-29T09:00:00Z' },
+      kind: 'contact',
+      payload: { name: 'Оля', email: 'olya@x.ua' },
     });
 
     expect(status).toBe(200);
@@ -92,6 +93,38 @@ describe('proposals.create: рівень бере kind з аргументів',
     const proposal = body.proposal as { level: string; word: string | null };
     expect(proposal.level).toBe('T1');
     expect(proposal.word).toBeNull(); // слово - лише для T2
+  });
+
+  // ⚠️ Від 08.09 подія БЕЗ гостей - T0, і власного інструмента в неї немає:
+  // proposals.create для неї єдиний шлях. Гейт «T0 через обгортку - відмова»
+  // тут не діє (TOOLLESS_KINDS), інакше дія просто перестала б працювати.
+  it('подія без гостей іде через обгортку й виконується з «↩»', async () => {
+    const { env } = makeEnv({
+      BRIEFING: memoryKv(
+        // ⚠️ Date.now(), не NOW: expMs у минулому змусив би ядро йти по новий
+        // токен у мережу, і стаб віддав би йому подію замість токена.
+        new Map([['googleToken', JSON.stringify({ token: 'tok', expMs: Date.now() + 3_600_000 })]]),
+      ),
+      GOOGLE_CLIENT_ID: 'c',
+      GOOGLE_CLIENT_SECRET: 's',
+      GOOGLE_REFRESH_TOKEN: 'r',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'ev-9' }), { status: 200 })),
+    );
+    const { status, body } = await callTool(env, 'proposals.create', {
+      kind: 'calendar.event',
+      payload: {
+        title: 'Своя справа',
+        startIso: '2026-08-29T09:00:00Z',
+        endIso: '2026-08-29T10:00:00Z',
+      },
+    });
+    expect(status).toBe(200);
+    expect(body.mode).toBe('executed');
+    expect((body.undo as { id?: string } | undefined)?.id).toBeTruthy();
+    vi.unstubAllGlobals();
   });
 
   it('T2-дія (forget) вимагає слова-підтвердження', async () => {
@@ -124,6 +157,9 @@ describe('proposals.create: рівень бере kind з аргументів',
     // і дія виконалась би миттєво, повз схему самого інструмента, хоча опис
     // у мозку обіцяє власнику протилежне (security-ревʼю PR-6).
     const { env } = makeEnv();
+    // ⚠️ Перелік - лише ті T0, у яких Є власний інструмент. Задача, нотатка,
+    // експорт і подія без гостей теж T0, але інструмента не мають, і для них
+    // обгортка легітимна (TOOLLESS_KINDS у policy/proposals.mjs).
     for (const kind of ['record', 'reminders.create', 'facts.set']) {
       const { status, body } = await callTool(env, 'proposals.create', {
         kind,
@@ -141,18 +177,18 @@ describe('proposals.create: рівень бере kind з аргументів',
     // і ламався б на кожному новому виконавці (так і сталось тричі).
     const { env } = makeEnv();
     const { body } = await callTool(env, 'proposals.create', {
-      kind: 'calendar.event',
-      payload: { title: 'Зустріч' },
+      kind: 'contact',
+      payload: { name: 'Оля', email: 'olya@x.ua' },
     });
     const proposal = body.proposal as { id: string };
-    const saved = EXECUTORS['calendar.event']!;
-    delete EXECUTORS['calendar.event'];
+    const saved = EXECUTORS['contact']!;
+    delete EXECUTORS['contact'];
     const decided = await resolveProposal(
       env,
       { id: proposal.id, choice: 'ok' },
       NOW + 1000,
     ).finally(() => {
-      EXECUTORS['calendar.event'] = saved;
+      EXECUTORS['contact'] = saved;
     });
     expect(decided).toMatchObject({ ok: false });
     expect(String((decided as { error: string }).error)).toContain('no-executor');

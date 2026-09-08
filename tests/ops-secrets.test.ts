@@ -240,7 +240,7 @@ describe('secret-expiry', () => {
     expect(await secretExpiryTask(env, NOW)).toMatchObject({ scopes: 'extra' });
     // Наступна доба: мітка інша, скоупи ті самі - тиша.
     expect(await secretExpiryTask(env, NOW + DAY)).toMatchObject({ scopes: 'extra-quiet' });
-    expect(sent.filter((t) => t.includes('зайвих скоупів'))).toHaveLength(1);
+    expect(sent.filter((t) => t.includes('зайвих прав'))).toHaveLength(1);
   });
 
   it('поза годиною і вдруге за добу - нічого', async () => {

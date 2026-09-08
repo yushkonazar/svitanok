@@ -384,6 +384,7 @@ describe('реєстр TOOLS', () => {
       'collections.list',
       'collections.update',
       'data.read',
+      'data.search',
       'drive.search',
       'facts.get',
       'facts.set',
@@ -420,6 +421,7 @@ describe('реєстр TOOLS', () => {
       'reminders.update',
       'routes.eta',
       'runs.query',
+      'style.samples',
       'subscriptions.update',
       'wishes.create',
       'wishes.delete',
@@ -491,5 +493,16 @@ describe('реєстр TOOLS', () => {
       // роутер позначає тред і на write-шляху (етап 5 PR-5).
       'wishes.import',
     ]);
+    // ⚠️ data.search плямує ЗА АРГУМЕНТАМИ, а не завжди: назви місць пише
+    // Google, описи покупок - мерчант, а власні ідеї й записи чужого тексту
+    // не несуть. Безумовна позначка робила б із «де я це записував» причину
+    // просити ✅ на наступну дію назовні (другий прохід ревʼю).
+    const byArgs = TOOLS['data.search']?.tainting;
+    expect(typeof byArgs).toBe('function');
+    if (typeof byArgs !== 'function') return;
+    expect(byArgs({})).toBe(true); // без scopes шукаємо всюди
+    expect(byArgs({ scopes: ['places'] })).toBe(true);
+    expect(byArgs({ scopes: ['money'] })).toBe(true);
+    expect(byArgs({ scopes: ['ideas', 'records'] })).toBe(false);
   });
 });

@@ -26,6 +26,9 @@ import {
   readActiveReminders,
 } from '../tools/reminders.mjs';
 import { restoreReminder } from '../reminders/store.mjs';
+import { plural } from '../tg/phrase.mjs';
+import { followUpButtons } from '../links.mjs';
+import { collectOwnStyle } from '../style/corpus.mjs';
 import {
   runIdeasCreate,
   runIdeasUpdate,
@@ -64,7 +67,7 @@ import {
   resolveAttendees,
   assertGoogleScope,
 } from '../../google.mjs';
-import { createTask } from '../adapters/tasks.mjs';
+import { createTask, deleteTask } from '../adapters/tasks.mjs';
 import {
   generateImage,
   generateVideo,
@@ -75,7 +78,7 @@ import {
 } from '../adapters/gemini.mjs';
 import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
 import { sendMediaBytes } from '../tg/media.mjs';
-import { ensureFolderPath, uploadCsvAsSheet, uploadFile } from '../adapters/drive.mjs';
+import { ensureFolderPath, uploadCsvAsSheet, uploadFile, trashFile } from '../adapters/drive.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import {
@@ -133,7 +136,8 @@ function driveNoteName(raw) {
  * відкочувати нічого, undo-кнопки не буде). undo приймає той знімок.
  * @type {Record<string, {
  *   execute: (env: Env, payload: any, nowMs: number,
- *     ctx?: { chatId?: number | string | null, threadId?: number | string | null })
+ *     ctx?: { chatId?: number | string | null, threadId?: number | string | null,
+ *       internal?: Record<string, any> })
  *     => Promise<{ prev?: unknown, result?: unknown }>,
  *   undo?: (env: Env, prev: any, nowMs: number) => Promise<void>,
  * }>}
@@ -152,7 +156,13 @@ export const EXECUTORS = {
         env,
         { text: payload.text, when: payload.when },
         nowMs,
-        { chatId: ctx?.chatId, threadId: ctx?.threadId },
+        {
+          chatId: ctx?.chatId,
+          threadId: ctx?.threadId,
+          // dueAtMs - лише з ядра (ctx.internal), не з payload моделі: інакше
+          // через proposals.create можна було б обійти парсер часу.
+          ...(typeof ctx?.internal?.dueAtMs === 'number' ? { dueAtMs: ctx.internal.dueAtMs } : {}),
+        },
       );
       return { prev: { id: result.id }, result };
     },
@@ -186,21 +196,36 @@ export const EXECUTORS = {
   'reminders.cancel': {
     // nowMs не потрібен: скасування не рахує часу, лише прибирає рядок.
     async execute(env, payload) {
-      const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
-      const { result } = await runRemindersCancel(env, { id: payload.id });
-      return { prev: before ?? null, result };
+      // ⚠️ `ids` теж передаємо (ревʼю релізу): без нього пачкове скасування
+      // існувало лише в інструменті й через policy падало на «id обовʼязковий».
+      const { result } = await runRemindersCancel(env, { id: payload.id, ids: payload.ids });
+      // ⚠️ ЗНІМОК - ЗА РЕЗУЛЬТАТОМ, не за payload (другий прохід ревʼю).
+      // Раніше він шукав `payload.id`, і для пачки `{ids:[…]}` виходив
+      // `null`: policy бачила «prev не undefined», малювала «↩», а відкат
+      // мовчки нічого не повертав - тобто кнопка брехала.
+      const ids = Array.isArray(result.cancelled)
+        ? result.cancelled.map((/** @type {any} */ r) => String(r.id))
+        : result.id
+          ? [String(result.id)]
+          : [];
+      return { prev: ids.length > 0 ? { ids } : undefined, result };
     },
     async undo(env, snapshot) {
-      if (!snapshot) return;
+      const ids = Array.isArray(snapshot?.ids) ? snapshot.ids : [];
+      if (ids.length === 0) return;
       // Рядок нікуди не зник - у D1 він лежить зі статусом cancelled, тож
       // «↩» просто повертає його в гру: id, текст, час і адреса ті самі, і
       // жодного шансу створити дубль.
-      const restored = await restoreReminder(env, snapshot.id);
-      if (!restored) {
-        // Рядок уже не cancelled (власник устиг створити знову або статус
-        // змінили): мовчазний «успіх» тут показав би тост «Відкочено ↩» після
+      /** @type {string[]} */
+      const missed = [];
+      for (const id of ids) {
+        if (!(await restoreReminder(env, id))) missed.push(id);
+      }
+      if (missed.length === ids.length) {
+        // Жодне не повернулось (власник устиг створити заново або статус
+        // змінили): мовчазний «успіх» показав би тост «Відкочено ↩» після
         // нульової дії (ревʼю PR-7).
-        throw new Error(`нагадування ${snapshot.id} не відновлено - воно вже не скасоване`);
+        throw new Error(`нагадування ${missed.join(', ')} не відновлено - вони вже не скасовані`);
       }
     },
   },
@@ -453,10 +478,12 @@ export const EXECUTORS = {
       return { result: out };
     },
   },
-  // Нотатка в Drive (S-8-3, 07 §4 drive.write): T1, тека «Світанок/нотатки».
+  // Нотатка в Drive (S-8-3, 07 §4 drive.write): від 08.09 T0 з «↩» - тека
+  // ВЛАСНА, і «↩» кладе файл у кошик Drive (не «назавжди»: відкат має бути
+  // так само зворотним, як і сама дія).
   // Тут - НЕ uploadMarkdown: той best-effort і віддає null при збої, бо
-  // документ у власника вже є. Після ✅ такої підстраховки немає, тож збій
-  // мусить бути винятком.
+  // документ у власника вже є. Після рішення такої підстраховки немає, тож
+  // збій мусить бути винятком.
   'drive.write': {
     async execute(env, payload) {
       const name = driveNoteName(payload.name);
@@ -472,7 +499,20 @@ export const EXECUTORS = {
         bytes: new TextEncoder().encode(content),
         mimeType: 'text/markdown',
       });
-      return { result: { file_id: file.id, name: file.name, folder: DRIVE_NOTES_PATH.join('/') } };
+      return {
+        prev: { file_id: file.id },
+        result: {
+          file_id: file.id,
+          name: file.name,
+          folder: DRIVE_NOTES_PATH.join('/'),
+          // Лінк - щоб модель дала СПРАВЖНЄ посилання, а не назву файла.
+          link: file.link,
+        },
+      };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.file_id) return;
+      await trashFile(env, String(snapshot.file_id));
     },
   },
   // Налаштування Mini App (07 §4 kind=settings, T1): той самий блоб KV, що
@@ -549,6 +589,8 @@ export const EXECUTORS = {
   // Google Tasks (S-8-4, етап 7 PR-1): T1, без «↩» - видалити чужу задачу
   // одним рухом Tasks API не дає без окремого скоупа на видалення, а
   // «відкотив» без реального видалення було б брехнею.
+  // T0 з «↩» від 08.09 (реліз): задача у ВЛАСНОМУ списку - не незворотна, не
+  // видима іншим і не платна. «↩» видаляє її з Tasks.
   'tasks.create': {
     async execute(env, payload) {
       const { id, title, due, link } = await createTask(env, {
@@ -556,7 +598,20 @@ export const EXECUTORS = {
         notes: payload.notes,
         due: payload.due ?? payload.date ?? null,
       });
-      return { result: { task_id: id, title, due, link } };
+      return { prev: { task_id: id }, result: { task_id: id, title, due, link } };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.task_id) return;
+      await deleteTask(env, String(snapshot.task_id));
+    },
+  },
+  // Корпус стилю (PR-8 §6A): збір власних текстів власника. Відкоту немає -
+  // корпус можна перезібрати будь-коли, а «↩» на читання власних же
+  // повідомлень нічого не означає.
+  'style.collect': {
+    async execute(env, payload, nowMs) {
+      void payload; // параметрів немає: беруться ВСІ власні тексти
+      return await collectOwnStyle(env, nowMs);
     },
   },
   'collection.export': {
@@ -849,9 +904,29 @@ export const EXECUTORS = {
   },
   // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -
   // етап 7): після ✅ подія створюється справді, а не «виконавця ще немає».
+  // T0 з «↩» від 08.09 (реліз) - але ЛИШЕ без гостей: подія з гостями лишається
+  // T1, бо це вже лист іншій людині (див. levelFor у policy/core.mjs).
+  // «↩» видаляє подію з календаря.
   'calendar.event': {
     async execute(env, payload) {
-      return { result: await createEventFromPayload(env, payload, false) };
+      const result = await createEventFromPayload(env, payload, false);
+      // У знімку - не лише event_id: із нього ж ядро рахує «коли виходити»
+      // (PR-6 §2.1), і другого сховища для цього не треба.
+      return {
+        prev: {
+          event_id: result.event_id ?? null,
+          startIso: String(payload.startIso ?? ''),
+          location: typeof payload.location === 'string' ? payload.location : '',
+          title: result.title,
+        },
+        result,
+      };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.event_id) return;
+      await assertGoogleScope(env, 'calendar');
+      const res = await deleteCalendarEvent(env, { eventId: String(snapshot.event_id) });
+      if (!res.ok) throw new Error('calendar: Google не видалив подію (лог)');
     },
   },
   invite: {
@@ -1101,13 +1176,24 @@ function db(env) {
 }
 
 /**
+ * Дії, які живуть ЛИШЕ через proposals.create: власного інструмента в мозку в
+ * них немає (07 §4). Для них T0 через обгортку легітимний - див. гейт нижче.
+ */
+const TOOLLESS_KINDS = ['calendar.event', 'tasks.create', 'drive.write', 'collection.export'];
+
+/** Наскільки давню дію ще дістає «відміни останнє»: доба. Далі це вже не
+ *  «останнє», а археологія - і власник має назвати дію словами. */
+const UNDO_LAST_MAX_AGE_MS = 24 * 60 * 60_000;
+
+/**
  * Виконати ДІЮ за політикою: T0 (у чистій сесії) - одразу + undo-рядок;
  * T1/T2 (і будь-що в tainted) - пропозиція з кнопками. Це єдиний вхід для
  * write-шляхів router'а.
  * @param {Env} env
  * @param {{ kind: string, payload: Record<string, unknown>,
  *   threadId?: string | number | null, chatId?: number | string | null,
- *   tainted: boolean, taintedEver?: boolean, viaProposal?: boolean }} action - viaProposal: дію
+ *   tainted: boolean, taintedEver?: boolean, viaProposal?: boolean,
+ *   internal?: Record<string, unknown> }} action - viaProposal: дію
  *   просить обгортка proposals.create (тоді T0 заборонений)
  * @param {number} nowMs
  * @returns {Promise<
@@ -1133,7 +1219,14 @@ export async function applyPolicy(env, action, nowMs) {
   // неї модель виконувала б T0-дії миттєво й повз схему самого інструмента,
   // хоча опис у мозку обіцяє власнику протилежне. Дія, яку ескалювали до
   // T1 (напр. facts.set із source=owner), через обгортку легітимна.
-  if (action.viaProposal && level === 'T0') {
+  //
+  // ⚠️ ВИНЯТОК від 08.09. Чотири дії переїхали з T1 у T0 (задача, нотатка,
+  // експорт, подія без гостей), а власного інструмента в мозку в них немає -
+  // proposals.create для них ЄДИНИЙ шлях. Заборонити їм T0 означало б, що
+  // після зниження рівня вони перестали працювати взагалі. Мотив гейта тут
+  // не діє: «повз схему свого інструмента» неможливо обійти те, чого нема, а
+  // payload кожної з них перевіряє її ж виконавець.
+  if (action.viaProposal && level === 'T0' && !TOOLLESS_KINDS.includes(action.kind)) {
     return {
       mode: 'error',
       error: `direct-tool: ${action.kind} - це T0, клич інструмент напряму, не proposals.create`,
@@ -1188,6 +1281,14 @@ export async function applyPolicy(env, action, nowMs) {
     const { prev, result } = await executor.execute(env, action.payload, nowMs, {
       chatId: action.chatId ?? null,
       threadId: action.threadId ?? null,
+      // ⚠️ ЛИШЕ ЯДРО. Поле не входить у payload, який складає модель: action
+      // збирає router із явних полів, тож сюди модель дописати нічого не може.
+      // Потрібне там, де час/адресу рахує саме ядро - наприклад «коли
+      // виходити» (PR-6 §2.1) знає точний момент у мс, а не фразу.
+      // `tainted` тут ЗАВЖДИ: виконавці, що самі кличуть applyPolicy
+      // (plan.accept → calendarizeBlocks), мусять нести позначку сесії далі,
+      // інакше вкладена дія виконується так, ніби сесія чиста.
+      internal: { ...(action.internal ?? {}), tainted: action.tainted === true },
     });
     if (prev === undefined || !executor.undo) return { mode: 'executed', result };
     try {
@@ -1202,7 +1303,10 @@ export async function applyPolicy(env, action, nowMs) {
         expiresAt: new Date(nowMs + UNDO_WINDOW_MS).toISOString(),
         nowMs,
       });
-      return { mode: 'executed', result, undo: { id: undoId, buttons: undoButton(undoId) } };
+      // Місток у наступний крок стоїть ПЕРЕД «↩» (PR-6 §2): перше - куди
+      // йти далі, друге - відмова від того, що вже сталось.
+      const buttons = [...followUpButtons(action.kind, prev, undoId), ...undoButton(undoId)];
+      return { mode: 'executed', result, undo: { id: undoId, buttons } };
     } catch (/** @type {any} */ e) {
       // Дію ВЖЕ виконано - збій undo-рядка не сміє звітувати «не виконано»
       // (мозок повторив би запис). Просто без кнопки «↩», зі слідом у логах.
@@ -1303,6 +1407,80 @@ export async function resolveProposal(env, input, nowMs) {
 }
 
 /**
+ * «Відміни останнє» (PR-7 §3.5): відкат ОСТАННЬОЇ дії треду словом, а не
+ * кнопкою - і навіть після того, як десятихвилинне вікно «↩» минуло.
+ *
+ * ⚠️ ЧОМУ ПІСЛЯ ВІКНА ЦЕ НЕ ТЕ САМЕ. Кнопка «↩» - частина самої дії: вона
+ * стоїть у повідомленні, і поки вікно живе, відкат виглядає як «нічого не
+ * було». Через годину це вже КОМПЕНСАЦІЯ: подія встигла показатись у чужому
+ * календарі, задача - у списку. Тому ядро робить відкат, але каже вголос, що
+ * вікно минуло, - щоб різницю було видно.
+ *
+ * Клейм такий самий, як у resolveUndo (CAS на статус), лише дозволяє ще й
+ * `expired`: подвійне «відміни останнє» не робить подвійного відкату.
+ * @param {Env} env
+ * @param {string | number | null} threadId
+ * @param {number} nowMs
+ * @returns {Promise<{ ok: true, kind: string, late: boolean }
+ *   | { ok: false, reason: 'none' | 'no-undo' | 'failed', error?: string }>}
+ */
+export async function undoLastInThread(env, threadId, nowMs) {
+  if (!env.DB) return { ok: false, reason: 'failed', error: 'D1 недоступна' };
+  const thread = threadId == null ? null : String(threadId);
+  // ⚠️ Нижня межа часу (ревʼю релізу): без неї «відміни останнє» діставало б
+  // дію тижневої давності, про яку власник давно забув, - і мовчки її знімало.
+  const floor = new Date(nowMs - UNDO_LAST_MAX_AGE_MS).toISOString();
+  const row = /** @type {ProposalRow | null} */ (
+    await env.DB.prepare(
+      `SELECT * FROM proposals
+       WHERE kind LIKE 'undo:%' AND status IN ('open', 'expired')
+         AND (thread_id IS ? OR thread_id = ?) AND created_at >= ?
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+      .bind(thread, thread, floor)
+      .first()
+  );
+  if (!row) return { ok: false, reason: 'none' };
+  const baseKind = row.kind.slice('undo:'.length);
+  const executor = EXECUTORS[baseKind];
+  if (!executor?.undo) return { ok: false, reason: 'no-undo' };
+  /** @type {any} */
+  let snapshot;
+  try {
+    snapshot = JSON.parse(row.payload_json);
+  } catch {
+    return { ok: false, reason: 'failed', error: 'знімок дії побитий' };
+  }
+  const late = Date.parse(row.expires_at) <= nowMs;
+  const claimed = await db(env)
+    .prepare(
+      `UPDATE proposals SET status = 'approved', decided_at = ?
+       WHERE id = ? AND status IN ('open', 'expired')`,
+    )
+    .bind(new Date(nowMs).toISOString(), row.id)
+    .run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return { ok: false, reason: 'none' };
+  try {
+    await executor.undo(env, snapshot, nowMs);
+  } catch (/** @type {any} */ e) {
+    // ⚠️ КЛЕЙМ ПОВЕРТАЄМО (ревʼю релізу). Клейм стоїть ДО відкату - інакше два
+    // одночасні «відміни останнє» відкотили б двічі. Але якщо Google відмовив,
+    // рядок мусить лишитись відкочуваним: без цього повтор давав би «нема чого
+    // відкочувати», а подія так і висіла б у календарі.
+    await db(env)
+      .prepare(`UPDATE proposals SET status = ?, decided_at = NULL WHERE id = ?`)
+      .bind(row.status, row.id)
+      .run()
+      .catch((/** @type {any} */ e2) =>
+        console.error('policy: клейм пізнього відкату не знято', e2?.message),
+      );
+    console.error(`policy: пізній відкат ${row.kind} впав`, e?.message);
+    return { ok: false, reason: 'failed', error: String(e?.message ?? '') };
+  }
+  return { ok: true, kind: baseKind, late };
+}
+
+/**
  * «↩» по T0 (callback `u:`): відкат у вікні 10 хв, ідемпотентно.
  * @param {Env} env
  * @param {string} id
@@ -1383,14 +1561,4 @@ async function setStatus(env, id, status, nowMs) {
     .bind(status, new Date(nowMs).toISOString(), id)
     .run();
   return (res.meta?.changes ?? 0) === 1;
-}
-
-/** Число + форма слова (одна / дві / пʼять). @param {number} n
- *  @param {string} one @param {string} few @param {string} many */
-function plural(n, one, few, many) {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
 }

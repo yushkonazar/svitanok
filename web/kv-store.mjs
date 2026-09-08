@@ -22,6 +22,7 @@
 //      власник побачив би 500 замість дашборда.
 
 import { normalizeSettings } from './settings-core.mjs';
+import { mergeSentMessages } from './tg-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
 
 /**
@@ -67,21 +68,82 @@ export async function loadState(env) {
   return readJson(env, 'state', {});
 }
 
+// ⚠️ ЛУНА ЧИТАЧА для sentMessages. KV не дає read-your-writes: `get` одразу
+// після `put` може повернути СТАРЕ значення. Для цього ключа це не теорія -
+// кожна репліка бота робить read-modify-write того самого блоба, і за сплеск
+// відповідей (статусник + кілька повідомлень черги за одну обробку) у KV
+// доживали одиниці id. Наслідок бачив власник: «/clear 10 видалив два»
+// (прогін 08.09) - решту просто не було чого видаляти, id загубились.
+//
+// Луна прив'язана до САМОГО обʼєкта прив'язки (WeakMap), а не до модуля:
+// інакше вона пережила б і той env, якому належала. Між ізолятами це не
+// рятує (там і лишається старий merge-before-flush), але сплеск в одній
+// обробці тепер не втрачається.
+//
+// ⚠️ ЩО САМЕ ЗАБУТО - КАЖЕ ВИКЛИКАЧ, а не здогад (ревʼю релізу). Перша
+// редакція рахувала «зникло між знімками» - і записувала в забуті ще й те,
+// що просто випало зі стелі ring-buffer'а на 51-му повідомленні. За добу
+// активного чату множина забивалась цим сміттям, FIFO витісняв справжні
+// /clear-ові id, і застаріле читання KV повертало їх назад - тобто рівно той
+// дефект, проти якого луна й будувалась.
+//
+// ⚠️ І ПО ЧАТАХ ОКРЕМО: message_id унікальний лише в межах чату, тож пласка
+// множина викидала з DM повідомлення з тим самим номером, що стерли в групі.
+/** @type {WeakMap<object, { echo: KvBlob, forgotten: Map<string, Set<number>> }>} */
+const sentEcho = new WeakMap();
+/** Стеля забутих id НА ЧАТ. */
+const SENT_FORGOTTEN_CAP = 200;
+/** І стеля на кількість чатів, за якими взагалі щось памʼятаємо. */
+const SENT_FORGOTTEN_KEYS = 20;
+
+/** @param {Env} env */
+function echoSlot(env) {
+  const key = /** @type {object} */ (/** @type {unknown} */ (env.BRIEFING));
+  let slot = sentEcho.get(key);
+  if (!slot) {
+    slot = { echo: {}, forgotten: new Map() };
+    sentEcho.set(key, slot);
+  }
+  return slot;
+}
+
 /** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
  *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
  *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state').
  *  @param {Env} env
  *  @returns {Promise<KvBlob>} */
 export async function loadSentMessages(env) {
-  return readJson(env, 'sentMessages', {});
+  const fromKv = await readJson(env, 'sentMessages', {});
+  const slot = echoSlot(env);
+  slot.echo = mergeSentMessages(fromKv, slot.echo, slot.forgotten);
+  return slot.echo;
 }
 
 /** Писар того самого ring-buffer. Окремо від читача, бо писарів двоє (репліки
  *  бота й вхідні повідомлення власника) — і обидва мусять merge-before-flush
  *  через recordSentMessage, а не класти сирий обʼєкт.
  *  @param {Env} env
- *  @param {KvBlob} sentMessages */
-export async function putSentMessages(env, sentMessages) {
+ *  @param {KvBlob} sentMessages
+ *  @param {{ key: string, ids: number[] }} [forget] - що саме ЗНЯТО назавжди
+ *    (лише /clear: він єдиний видаляє повідомлення, а не додає) */
+export async function putSentMessages(env, sentMessages, forget = undefined) {
+  const slot = echoSlot(env);
+  if (forget && forget.ids.length > 0) {
+    const set = slot.forgotten.get(forget.key) ?? new Set();
+    for (const id of forget.ids) set.add(id);
+    // Стеля на чат: множина живе стільки, скільки прив'язка.
+    while (set.size > SENT_FORGOTTEN_CAP) {
+      set.delete(/** @type {number} */ (set.values().next().value));
+    }
+    slot.forgotten.set(forget.key, set);
+    // ⚠️ Стеля і на КІЛЬКІСТЬ чатів (другий прохід ревʼю): id обмежені в
+    // межах чату, а самих ключів ніщо не тримало. Практично їх одиниці, але
+    // інваріант має бути, а не «практично».
+    while (slot.forgotten.size > SENT_FORGOTTEN_KEYS) {
+      slot.forgotten.delete(/** @type {string} */ (slot.forgotten.keys().next().value));
+    }
+  }
+  slot.echo = sentMessages;
   await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
 }
 

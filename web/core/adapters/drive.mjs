@@ -132,7 +132,7 @@ export async function uploadMarkdown(env, folderPath, name, text, logPrefix) {
  * Завантажити файл (multipart: метадані + вміст) у теку.
  * @param {Env} env
  * @param {{ name: string, parentId: string, bytes: Uint8Array, mimeType?: string }} file
- * @returns {Promise<{ id: string, name: string, size: number }>}
+ * @returns {Promise<{ id: string, name: string, size: number, link: string | null }>}
  */
 export async function uploadFile(env, file) {
   const token = await tokenOrThrow(env);
@@ -144,13 +144,21 @@ export async function uploadFile(env, file) {
     }),
   );
   form.set('file', new Blob([file.bytes], { type: file.mimeType ?? 'application/octet-stream' }));
-  const json = await driveFetch(`${DRIVE_UPLOAD}&fields=id,name,size`, {
+  // webViewLink - НЕ косметика: без нього виконавець віддавав саму назву, і
+  // модель робила «посиланням» рядок «ТЕСТ-нотатка.md» (прогін 08.09:
+  // «Немає звʼязку із сайтом»).
+  const json = await driveFetch(`${DRIVE_UPLOAD}&fields=id,name,size,webViewLink`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
   if (typeof json?.id !== 'string') throw new Error('Drive: файл завантажено без id');
-  return { id: json.id, name: String(json.name ?? file.name), size: Number(json.size ?? 0) };
+  return {
+    id: json.id,
+    name: String(json.name ?? file.name),
+    size: Number(json.size ?? 0),
+    link: typeof json.webViewLink === 'string' ? json.webViewLink : null,
+  };
 }
 
 /**
@@ -188,4 +196,27 @@ export async function uploadCsvAsSheet(env, file) {
     name: String(json.name ?? file.name),
     link: typeof json.webViewLink === 'string' ? json.webViewLink : null,
   };
+}
+
+/**
+ * Видалити файл Drive - «↩» після T0 (реліз 08.09: drive.write переїхала з
+ * T1). Кошик, а не назавжди (`trashed`), - «↩» має бути так само зворотним,
+ * як і сама дія; 404 - успіх, файла вже немає.
+ * @param {Env} env
+ * @param {string} fileId
+ */
+export async function trashFile(env, fileId) {
+  const id = String(fileId ?? '').trim();
+  // Той самий алфавіт, що й у Tasks: id іде в ШЛЯХ, і «..» тут змінив би адресата.
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(id)) throw new Error(`drive: id «${id}» не схожий на файл`);
+  const token = await tokenOrThrow(env);
+  await driveFetch(`${DRIVE_API}/files/${id}?supportsAllDrives=true`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  }).catch((/** @type {any} */ e) => {
+    // Файла вже немає - «↩» саме цього й домагався.
+    if (/HTTP 40[34]/.test(String(e?.message ?? ''))) return null;
+    throw e;
+  });
 }

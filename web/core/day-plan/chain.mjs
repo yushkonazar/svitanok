@@ -21,8 +21,7 @@ import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { setChainState, waitOrNull } from '../chains/state.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
-import { applyPolicy } from '../policy/proposals.mjs';
-import { calendarProposalText } from '../tools/plan.mjs';
+import { calendarizeBlocks } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
 import {
   readDayPlanConfig,
@@ -413,43 +412,24 @@ export function morningText(date, rows, events) {
 }
 
 /**
- * «У календар» (S-P-12): пропозиція T1 на кожен блок із часом. rows - те, що
- * acceptPlan щойно прочитав (без другого SELECT).
+ * «У календар» (S-P-12): блоки з часом їдуть у календар. Від 08.09 подія без
+ * гостей - T0, тож це вже не пропозиція, а дія з «↩»; логіка спільна з
+ * plan.accept (tools/plan.mjs), щоб текст і поведінка не розходились.
  * @param {Env} env @param {string} date @param {{ title: string, window_start: string | null, window_end: string | null }[]} rows @param {number} nowMs
  * @param {ChainIo} io
  */
 async function proposeCalendar(env, date, rows, nowMs, io) {
-  for (const r of rows.filter((x) => x.window_start && x.window_end)) {
-    const startMs = kyivMs(date, String(r.window_start));
-    const endMs = kyivMs(date, String(r.window_end));
-    if (startMs == null || endMs == null) continue;
-    const out = await applyPolicy(
-      env,
-      {
-        kind: 'calendar.event',
-        payload: {
-          title: r.title,
-          startIso: new Date(startMs).toISOString(),
-          endIso: new Date(endMs).toISOString(),
-        },
-        threadId: env.TOPIC_ASSISTANT ?? 'dm',
-        tainted: false,
-      },
-      nowMs,
-    );
-    // Кнопки ✅/❌ шле ланцюг сам - пропозицію створило ядро, а не модель
-    // (приймання 05.09, B2: без цього вона лежала open без сліду в чаті).
-    if (out.mode === 'proposed') {
-      await io.send(
-        calendarProposalText({
-          title: r.title,
-          date,
-          start: String(r.window_start),
-          end: String(r.window_end),
-        }),
-        /** @type {{ text: string, callback_data: string }[][]} */ (out.proposal.buttons),
-      );
-    }
+  const out = await calendarizeBlocks(
+    env,
+    date,
+    rows,
+    nowMs,
+    { chatId: null, threadId: env.TOPIC_ASSISTANT ?? 'dm' },
+    (text, buttons) =>
+      io.send(text, /** @type {{ text: string, callback_data: string }[][]} */ (buttons ?? [])),
+  );
+  if (out.failed.length) {
+    await io.send(`⚠️ У календар не пішли: ${out.failed.join(', ')}.`, []);
   }
 }
 

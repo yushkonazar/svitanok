@@ -14,7 +14,7 @@ import {
   readActiveReminders,
 } from '../web/core/tools/reminders.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
-import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
+import { applyPolicy, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 import { memoryKv } from './helpers/kv.js';
@@ -280,7 +280,10 @@ describe('нагадування через policy (PR-8 × PR-6)', () => {
     });
   });
 
-  it('у tainted-сесії - ПРОПОЗИЦІЯ, база не чіпається до ✅', async () => {
+  it('у tainted-сесії нагадування ставиться одразу з «↩» (звуження 08.09)', async () => {
+    // Раніше тут була пропозиція T1. Ціна виявилась завищеною: після читання
+    // пошти власник мусив тиснути ✅ навіть на «нагадай забрати посилку».
+    // Нагадування нікуди не виходить, і «↩» знімає його за 10 хв.
     const { d1, env } = makeEnv();
     const res = await applyPolicy(
       env,
@@ -291,13 +294,12 @@ describe('нагадування через policy (PR-8 × PR-6)', () => {
       },
       NOW,
     );
-    if (res.mode !== 'proposed') throw new Error(`очікували proposed, отримали ${res.mode}`);
-    expect(res.proposal.level).toBe('T1');
-    expect(rows(d1)).toHaveLength(0);
-
-    const approved = await resolveProposal(env, { id: res.proposal.id, choice: 'ok' }, NOW + 1000);
-    expect(approved).toMatchObject({ ok: true, status: 'approved', executed: true });
+    if (res.mode !== 'executed') throw new Error(`очікували executed, отримали ${res.mode}`);
+    expect(res.undo?.id).toBeTruthy();
     expect(active(d1)).toHaveLength(1);
+
+    await resolveUndo(env, String(res.undo?.id), NOW + 1000);
+    expect(active(d1)).toHaveLength(0);
   });
 
   it('невалідні дані відхиляє САМ інструмент, а не policy мовчки', async () => {

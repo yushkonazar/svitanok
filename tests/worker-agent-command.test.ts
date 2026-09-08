@@ -84,16 +84,30 @@ describe('/agent — перелік можливостей асистента (P
     expect(tg[0]?.body.parse_mode).toBe('HTML');
   });
 
-  it('COMMANDS реєструє /agent (setMyCommands бере звідси)', () => {
-    expect(COMMANDS.some((c: { command: string }) => c.command === 'agent')).toBe(true);
+  // ⚠️ Від 08.09 /agent у меню немає (реліз, скарга 2): «що вміє асистент» -
+  // це /help, а обробник /agent лишився для тих, хто набере руками.
+  it('COMMANDS реєструє рівно вісім команд плюс /start', () => {
+    expect(COMMANDS.map((c: { command: string }) => c.command)).toEqual([
+      'start',
+      'help',
+      'plan',
+      'remind',
+      'brief',
+      'status',
+      'clear',
+      'new',
+      'forget',
+    ]);
   });
 });
 
-describe('/help — /agenda і /agent НЕ дрейфують від COMMANDS (регресія, знайдена дослідженням)', () => {
-  it('текст /help згадує /agenda і /agent (раніше /agenda випав зі списку)', async () => {
+describe('/help не дрейфує від COMMANDS (регресія, знайдена дослідженням)', () => {
+  it('текст /help перелічує рівно те, що в меню', async () => {
     await sendCommand('/help');
     const text = sentText();
-    expect(text).toContain('/agenda');
-    expect(text).toContain('/agent');
+    for (const c of COMMANDS as { command: string }[]) {
+      if (c.command === 'start') continue;
+      expect(text, c.command).toContain(`/${c.command}`);
+    }
   });
 });

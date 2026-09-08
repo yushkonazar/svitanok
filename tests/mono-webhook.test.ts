@@ -494,7 +494,12 @@ describe('вебхук: шлях транзакції', () => {
           { text: '🔎 Перевірити ціни', callback_data: 'm:fx:tx-1:price' },
           { text: 'Ок', callback_data: 'm:fx:tx-1:ok' },
         ],
-        [{ text: '✏️ Категорія', callback_data: 'm:fx:tx-1:cat' }],
+        [
+          { text: '✏️ Категорія', callback_data: 'm:fx:tx-1:cat' },
+          // PR-6 §2.2: великий чек у транспорті чи готелі - типовий початок
+          // поїздки, і питати про це варто там, де воно видно.
+          { text: '🧳 Це поїздка', callback_data: 'm:fx:tx-1:trip' },
+        ],
       ],
     });
   });

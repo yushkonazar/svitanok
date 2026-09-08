@@ -71,7 +71,10 @@ describe('SchedulerDO — сівба реєстру і сторож', () => {
     const jobs = await jobsOf(scheduler);
     // Не пінимо перелік — він росте з реєстром; контракт: усі види посіяні.
     expect(jobs.map((j) => j.kind).sort()).toEqual(Object.keys(SCHEDULER_TASKS).sort());
-    expect(ctx.alarm).toBe(T0 + MIN5);
+    // Найближча поява — не «через пʼять хвилин», а найкоротший період реєстру
+    // (з 08.09 це нагадування, раз на хвилину).
+    const shortest = Math.min(...Object.values(SCHEDULER_TASKS).map((d) => d.periodMin));
+    expect(ctx.alarm).toBe(T0 + shortest * 60_000);
   });
 
   it('живий alarm сторож не чіпає', async () => {

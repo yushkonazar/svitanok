@@ -365,7 +365,9 @@ describe('runPriceTrack', () => {
       '🎯 «Philips HD9200» - 2 990 грн, не дорожче цільових 2 999 грн (Comfy: https://comfy.ua/x).',
       'Зупинив відстеження «Philips HD9200».',
     ]);
-    expect(sent[0]!.buttons).toEqual(['c:c1:stop']);
+    // «Купив» поруч зі «Стоп» (PR-6 §2.6): падіння ціни - момент, коли
+    // бажання найчастіше стає покупкою, і закривати його потім ніхто не йде.
+    expect(sent[0]!.buttons).toEqual(['m:buy:w1', 'c:c1:stop']);
     // Allo дешевше, але немає в наявності - пишемо ціну Comfy.
     expect(db.prepare('SELECT price, is_low, source FROM price_points ORDER BY at').all()).toEqual([
       { price: 349900, is_low: 1, source: 'Comfy' },

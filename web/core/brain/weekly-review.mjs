@@ -17,13 +17,16 @@ export const WEEKLY_NOW_RE = /^звіт\s+зараз[.!]?$/i;
 export const PREVIOUS_REPORT_MAX_CHARS = 6_000;
 
 /**
- * Вхідний текст прогону weekly-review (§0 інструкції). Хеш інструкції
- * приходить від викликача: він уже завантажив її з D1 для тіла /run.
+ * Вхідний текст прогону weekly-review (§0 інструкції).
+ *
+ * ⚠️ ХЕША ІНСТРУКЦІЇ ТУТ НЕМА (прогін 08.09). Він приходив у вхідному тексті,
+ * і модель слухняно ставила його в підпис звіту - власник бачив у чаті
+ * «weekly-review@849bfbb…». Ядро пише хеш у `reports.instruction_hash` саме,
+ * тож моделі він не потрібен узагалі.
  * @param {Env} env
  * @param {number} nowMs
- * @param {string} instructionHashHex
  */
-export async function buildWeeklyReviewInput(env, nowMs, instructionHashHex) {
+export async function buildWeeklyReviewInput(env, nowMs) {
   const today = kyivDateKey(new Date(nowMs));
   const { from, to } = weekBounds(today);
   const dayOfMonth = Number(today.slice(8, 10));
@@ -35,7 +38,6 @@ export async function buildWeeklyReviewInput(env, nowMs, instructionHashHex) {
     `period_to: ${to}`,
     `today: ${today}`,
     `first_sunday_of_month: ${firstSunday}`,
-    `instruction_hash: ${instructionHashHex}`,
     '',
     previous
       ? `Попередній тижневий звіт (${previous.period}), щоб не повторюватись:\n${clip(previous.text, PREVIOUS_REPORT_MAX_CHARS)}`
