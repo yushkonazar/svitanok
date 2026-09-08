@@ -169,9 +169,12 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     await SCHEDULER_TASKS['brain-health']?.run(workerEnv() as never); // не кидає
   });
 
-  it('усі появи 5-хвилинні; shadowSafe — лише heartbeat', () => {
+  it('появи 5-хвилинні (крім нагадувань — щохвилини); shadowSafe — лише heartbeat', () => {
     for (const [kind, def] of Object.entries(SCHEDULER_TASKS)) {
-      expect(def.periodMin, kind).toBe(5);
+      // reminder — єдиний виняток: 5 хв означали до пʼяти хвилин запізнення
+      // на очах у власника (прогін 08.09), а планувальник живе на alarm'ах,
+      // тож період цієї задачі ні від кого не залежить.
+      expect(def.periodMin, kind).toBe(kind === 'reminder' ? 1 : 5);
       // Десять перенесених задач мають побічні ефекти (Telegram, KV, GitHub) —
       // у shadow вони мусять лише логуватись, інакше кожен ефект подвоївся б.
       expect(def.shadowSafe === true, kind).toBe(kind === 'heartbeat');

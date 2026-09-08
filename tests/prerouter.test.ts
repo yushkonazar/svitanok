@@ -916,6 +916,42 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(sent?.body.text).toBe('✅ Виконано: facts.set «setting.k».');
   });
 
+  it('«↩» знімає клавіатуру й лишає слід у треді (прогін 08.09)', async () => {
+    // Скарга власника: після «Скасувати» стан повідомлення не змінився -
+    // кнопка лишилась живою, хоч відкочувати вже нічого.
+    const { env, db, tg } = cbEnv();
+    db.prepare(
+      `INSERT INTO facts (key, kind, value_json, source, created_at, updated_at)
+       VALUES ('k', 'setting', '1', 'owner', 'x', 'x')`,
+    ).run();
+    seedProposal(db, {
+      id: 'u1',
+      level: 'T0',
+      kind: 'undo:facts.set',
+      payload_json: JSON.stringify({ kind: 'setting', key: 'k', existed: false }),
+    });
+    const toast = await handleBrainCallback(env, { data: 'u:u1', chatId: 555, messageId: 42 }, NOW);
+    expect(toast).toBe('Відкочено ↩');
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe('↩ Відкотив.');
+  });
+
+  it('«↩» поза вікном: клавіатура знята, у тред НЕ пишемо', async () => {
+    const { env, db, tg } = cbEnv();
+    seedProposal(db, {
+      id: 'u2',
+      level: 'T0',
+      kind: 'undo:facts.set',
+      payload_json: JSON.stringify({ kind: 'setting', key: 'k', existed: false }),
+      expires_at: new Date(NOW - 1).toISOString(),
+    });
+    expect(await handleBrainCallback(env, { data: 'u:u2', chatId: 555, messageId: 42 }, NOW)).toBe(
+      'Вікно скасування минуло (10 хв).',
+    );
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+    expect(tg.some((c) => c.method === 'sendMessage')).toBe(false);
+  });
+
   it('слово T2 виконує РІВНО ту пропозицію, про яку ядро спитало', async () => {
     // ⚠️ Головна знахідка security-ревʼю етапу 7. Слів усього чотири, і доти
     // слово шукало «останню відкриту T2 з таким словом у треді» - тож модель

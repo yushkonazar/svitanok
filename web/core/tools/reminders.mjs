@@ -93,7 +93,26 @@ export async function runRemindersCreate(env, args, nowMs, internal = {}) {
     chatId: internal.chatId ?? null,
     threadId: internal.threadId ?? null,
   });
-  return { result: { id: created.id, text: created.text, when: created.dueAt } };
+  return {
+    result: {
+      id: created.id,
+      text: created.text,
+      when: created.dueAt,
+      deliver_at: deliverAt(dueAtMs),
+    },
+  };
+}
+
+/**
+ * Коли нагадування СПРАВДІ піде. Планувальник тікає раз на хвилину, тож
+ * секунди всередині хвилини нічого не означають: округляємо вгору до межі
+ * хвилини й називаємо власнику цей час. Обіцяти «о 14:41:37» було б
+ * неправдою (скарга власника 08.09: «нагадування прийшло пізно»).
+ * @param {number} dueAtMs
+ * @returns {string} ISO
+ */
+export function deliverAt(dueAtMs) {
+  return new Date(Math.ceil(dueAtMs / 60_000) * 60_000).toISOString();
 }
 
 /**
@@ -128,6 +147,7 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
       id: args.id,
       text: patch.text ?? before.text,
       when: patch.dueAtMs != null ? new Date(patch.dueAtMs).toISOString() : before.dueAt,
+      deliver_at: deliverAt(patch.dueAtMs ?? Date.parse(before.dueAt)),
     },
   };
 }

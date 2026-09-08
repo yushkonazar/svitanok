@@ -345,18 +345,26 @@ describe('виконавці етапу 7 у policy', () => {
     },
   );
 
-  it('drive.write кладе нотатку в «Світанок/нотатки» і чистить назву', async () => {
+  it('drive.write кладе нотатку в «Світанок/нотатки», чистить назву й вертає лінк', async () => {
     const { env } = makeEnv(ALL);
     let uploadedName = '';
+    let uploadUrl = '';
     const folders: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
       const u = String(url);
       if (u.includes('/upload/')) {
+        uploadUrl = u;
         const form = (init as RequestInit).body as FormData;
         uploadedName = JSON.parse(await (form.get('metadata') as Blob).text()).name;
-        return new Response(JSON.stringify({ id: 'n1', name: uploadedName, size: 10 }), {
-          status: 200,
-        });
+        return new Response(
+          JSON.stringify({
+            id: 'n1',
+            name: uploadedName,
+            size: 10,
+            webViewLink: 'https://drive.google.com/file/d/n1/view',
+          }),
+          { status: 200 },
+        );
       }
       if ((init as RequestInit)?.method === 'POST') {
         folders.push(JSON.parse(String((init as RequestInit).body)).name);
@@ -368,7 +376,14 @@ describe('виконавці етапу 7 у policy', () => {
       name: '../../секрети/нотатка',
       content_md: '# Думка',
     });
-    expect(res).toMatchObject({ ok: true, result: { file_id: 'n1' } });
+    // ⚠️ link, не лише назва: без нього модель робила «посиланням» рядок
+    // «ТЕСТ-нотатка.md», і власник діставав «Немає звʼязку із сайтом»
+    // (прогін 08.09).
+    expect(res).toMatchObject({
+      ok: true,
+      result: { file_id: 'n1', link: 'https://drive.google.com/file/d/n1/view' },
+    });
+    expect(uploadUrl).toContain('webViewLink');
     expect(folders).toEqual(['Світанок', 'нотатки']);
     // Роздільники шляху не лишаються в імені файла Drive.
     expect(uploadedName).toBe('..-..-секрети-нотатка.md');

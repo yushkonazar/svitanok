@@ -472,7 +472,15 @@ export const EXECUTORS = {
         bytes: new TextEncoder().encode(content),
         mimeType: 'text/markdown',
       });
-      return { result: { file_id: file.id, name: file.name, folder: DRIVE_NOTES_PATH.join('/') } };
+      return {
+        result: {
+          file_id: file.id,
+          name: file.name,
+          folder: DRIVE_NOTES_PATH.join('/'),
+          // Лінк - щоб модель дала СПРАВЖНЄ посилання, а не назву файла.
+          link: file.link,
+        },
+      };
     },
   },
   // Налаштування Mini App (07 §4 kind=settings, T1): той самий блоб KV, що

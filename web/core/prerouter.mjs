@@ -799,7 +799,22 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   const policy = parsePolicyCallback(data);
   if (policy) {
     if (policy.kind === 'undo') {
-      return undoToast(await resolveUndo(env, policy.id, nowMs));
+      const undone = await resolveUndo(env, policy.id, nowMs);
+      // ⚠️ Клавіатуру знімаємо на БУДЬ-якому вирішеному результаті: кнопка
+      // витрачена (прогін 08.09 - після «↩» вона лишалась живою). У тред
+      // пишемо лише коли справді відкотили: тост зникає за секунди.
+      if (undone.ok) {
+        await clearKeyboard(env, parsed);
+        if ('status' in undone && undone.status === 'undone') {
+          await reply(
+            env,
+            { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+            '↩ Відкотив.',
+            nowMs,
+          );
+        }
+      }
+      return undoToast(undone);
     }
     const res = await resolveProposal(env, { id: policy.id, choice: policy.choice }, nowMs);
     // T2 після ✅: слово називає ЯДРО (модель його більше не бачить) і тут же

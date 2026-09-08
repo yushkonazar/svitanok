@@ -22,6 +22,7 @@
 //      власник побачив би 500 замість дашборда.
 
 import { normalizeSettings } from './settings-core.mjs';
+import { mergeSentMessages, trackedMessages } from './tg-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
 
 /**
@@ -67,13 +68,42 @@ export async function loadState(env) {
   return readJson(env, 'state', {});
 }
 
+// ⚠️ ЛУНА ЧИТАЧА для sentMessages. KV не дає read-your-writes: `get` одразу
+// після `put` може повернути СТАРЕ значення. Для цього ключа це не теорія -
+// кожна репліка бота робить read-modify-write того самого блоба, і за сплеск
+// відповідей (статусник + кілька повідомлень черги за одну обробку) у KV
+// доживали одиниці id. Наслідок бачив власник: «/clear 10 видалив два»
+// (прогін 08.09) - решту просто не було чого видаляти, id загубились.
+//
+// Луна прив'язана до САМОГО обʼєкта прив'язки (WeakMap), а не до модуля:
+// інакше вона пережила б і той env, якому належала. Між ізолятами це не
+// рятує (там і лишається старий merge-before-flush), але сплеск в одній
+// обробці тепер не втрачається.
+/** @type {WeakMap<object, { echo: KvBlob, forgotten: Set<number> }>} */
+const sentEcho = new WeakMap();
+const SENT_FORGOTTEN_CAP = 200;
+
+/** @param {Env} env */
+function echoSlot(env) {
+  const key = /** @type {object} */ (/** @type {unknown} */ (env.BRIEFING));
+  let slot = sentEcho.get(key);
+  if (!slot) {
+    slot = { echo: {}, forgotten: new Set() };
+    sentEcho.set(key, slot);
+  }
+  return slot;
+}
+
 /** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
  *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
  *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state').
  *  @param {Env} env
  *  @returns {Promise<KvBlob>} */
 export async function loadSentMessages(env) {
-  return readJson(env, 'sentMessages', {});
+  const fromKv = await readJson(env, 'sentMessages', {});
+  const slot = echoSlot(env);
+  slot.echo = mergeSentMessages(fromKv, slot.echo, slot.forgotten);
+  return slot.echo;
 }
 
 /** Писар того самого ring-buffer. Окремо від читача, бо писарів двоє (репліки
@@ -82,7 +112,28 @@ export async function loadSentMessages(env) {
  *  @param {Env} env
  *  @param {KvBlob} sentMessages */
 export async function putSentMessages(env, sentMessages) {
+  const slot = echoSlot(env);
+  rememberForgotten(slot, sentMessages);
+  slot.echo = sentMessages;
   await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+}
+
+/** Що зникло між попереднім знімком і новим - те /clear зняв назавжди, і луна
+ *  не сміє повернути його із застарілого KV-читання.
+ *  @param {{ echo: KvBlob, forgotten: Set<number> }} slot @param {KvBlob} after */
+function rememberForgotten(slot, after) {
+  const kept = new Set(
+    Object.values(after).flatMap((list) => trackedMessages(list).map((e) => e.id)),
+  );
+  for (const list of Object.values(slot.echo)) {
+    for (const e of trackedMessages(list)) {
+      if (!kept.has(e.id)) slot.forgotten.add(e.id);
+    }
+  }
+  // Стеля: множина живе стільки, скільки прив'язка, і рости без краю не має.
+  while (slot.forgotten.size > SENT_FORGOTTEN_CAP) {
+    slot.forgotten.delete(/** @type {number} */ (slot.forgotten.values().next().value));
+  }
 }
 
 /** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data

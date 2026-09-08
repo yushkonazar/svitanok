@@ -132,7 +132,7 @@ export async function uploadMarkdown(env, folderPath, name, text, logPrefix) {
  * Завантажити файл (multipart: метадані + вміст) у теку.
  * @param {Env} env
  * @param {{ name: string, parentId: string, bytes: Uint8Array, mimeType?: string }} file
- * @returns {Promise<{ id: string, name: string, size: number }>}
+ * @returns {Promise<{ id: string, name: string, size: number, link: string | null }>}
  */
 export async function uploadFile(env, file) {
   const token = await tokenOrThrow(env);
@@ -144,13 +144,21 @@ export async function uploadFile(env, file) {
     }),
   );
   form.set('file', new Blob([file.bytes], { type: file.mimeType ?? 'application/octet-stream' }));
-  const json = await driveFetch(`${DRIVE_UPLOAD}&fields=id,name,size`, {
+  // webViewLink - НЕ косметика: без нього виконавець віддавав саму назву, і
+  // модель робила «посиланням» рядок «ТЕСТ-нотатка.md» (прогін 08.09:
+  // «Немає звʼязку із сайтом»).
+  const json = await driveFetch(`${DRIVE_UPLOAD}&fields=id,name,size,webViewLink`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
   if (typeof json?.id !== 'string') throw new Error('Drive: файл завантажено без id');
-  return { id: json.id, name: String(json.name ?? file.name), size: Number(json.size ?? 0) };
+  return {
+    id: json.id,
+    name: String(json.name ?? file.name),
+    size: Number(json.size ?? 0),
+    link: typeof json.webViewLink === 'string' ? json.webViewLink : null,
+  };
 }
 
 /**

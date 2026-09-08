@@ -50,12 +50,43 @@ const DELETE_CHUNK_SIZE = 10;
 import { tgCall, sendTo } from './telegram-client.mjs';
 import { agentHostUrl } from './llm-host.mjs';
 import { isPrimaryOwner } from './auth-core.mjs';
+import { listActiveReminders } from './core/reminders/store.mjs';
+
 import { runAssistantAgent } from './agent-runtime.mjs';
 import { createReminderFromText } from './reminders-actions.mjs';
 import { handleLocationShare, sendLocatePrompt } from './weather-geo.mjs';
 import { readUpcomingWeek } from './callbacks.mjs';
 import { dispatchBrief, loadBriefDispatch, recordBriefDispatch } from './cron.mjs';
 import { UNKNOWN_REPLY } from './agent-core.mjs';
+
+/**
+ * Активні нагадування для списку у формі, яку чекає легасі-форматер
+ * (`whenMs`/`firedTs`). Джерело - D1: з етапу 2 усе, що створює мозок, лежить
+ * там, і читання самого KV показувало порожньо (прогін 08.09). KV-записи
+ * домерджуються за id: у вікні до чистки той самий запис лежить в обох
+ * сховищах, і показати його двічі було б гірше, ніж не показати легасі.
+ * @param {Env} env
+ */
+export async function activeRemindersForList(env) {
+  const fromKv = (await loadState(env)).reminders ?? [];
+  /** @type {Map<string, any>} */
+  const byId = new Map();
+  for (const r of Array.isArray(fromKv) ? fromKv : []) byId.set(String(r?.id), r);
+  try {
+    for (const r of await listActiveReminders(env)) {
+      byId.set(String(r.id), {
+        id: r.id,
+        text: r.text,
+        whenMs: Date.parse(r.dueAt),
+        firedTs: null,
+      });
+    }
+  } catch (/** @type {any} */ e) {
+    // D1 недоступна - показуємо хоч KV, і слід у лозі.
+    console.error('список нагадувань: D1 не прочиталась', e?.message);
+  }
+  return [...byId.values()].sort((a, b) => (a?.whenMs ?? 0) - (b?.whenMs ?? 0));
+}
 
 // Фаза C3: /start (онбординг+keyboard) і /help (повний реєстр команд) розділено —
 // раніше /start і показував список, і переспамлював reply-keyboard в одному.
@@ -311,7 +342,11 @@ export async function handleCommand(
         onUnparsed: () => runAssistantAgent(env, parsed, cmd.args),
       });
     case 'reminders': {
-      const reminders = (await loadState(env)).reminders ?? [];
+      // ⚠️ ДЖЕРЕЛО - D1, не KV (прогін 08.09: список був порожній, хоч
+      // нагадування щойно створене). З етапу 2 (ASSISTANT_V2=on) усе, що
+      // створює мозок, лежить у D1, а KV-гілка мовчить; читати самий KV
+      // означало показувати лише легасі-записи.
+      const reminders = await activeRemindersForList(env);
       const keyboard = buildRemindersKeyboard(reminders);
       return sendText(formatRemindersListMessage(reminders), {
         parse_mode: 'HTML',
