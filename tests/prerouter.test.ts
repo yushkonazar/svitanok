@@ -922,12 +922,13 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     );
   });
 
-  it('✅ без виконавця (tasks.create) - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
+  it('✅ без виконавця (gemini.image) - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
     const { env, db, tg } = cbEnv();
-    // calendar.event має виконавця з етапу 5; без виконавця лишається tasks.create (етап 7).
+    // calendar.event має виконавця з етапу 5, tasks.create - з етапу 7 PR-1;
+    // без виконавця лишається gemini.image (етап 7 PR-3).
     seedProposal(db, {
-      kind: 'tasks.create',
-      payload_json: JSON.stringify({ title: 'Зустріч' }),
+      kind: 'gemini.image',
+      payload_json: JSON.stringify({ prompt: 'кіт у скафандрі' }),
     });
     const toast = await handleBrainCallback(
       env,

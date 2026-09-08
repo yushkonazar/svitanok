@@ -135,10 +135,13 @@ describe('proposals.create: рівень бере kind з аргументів',
   });
 
   it('після ✅ без виконавця - ЧЕСНЕ «no-executor», а не «прийнято і забуто»', async () => {
+    // gemini.image - останній kind без виконавця (приїде на етапі 7 PR-3);
+    // contact/tasks.create/drive.write/settings свої виконавці отримали в
+    // PR-1 «Google-ревізії», тож на них ця гілка вже не спрацьовує.
     const { env } = makeEnv();
     const { body } = await callTool(env, 'proposals.create', {
-      kind: 'contact',
-      payload: { name: 'Олена' },
+      kind: 'gemini.image',
+      payload: { prompt: 'кіт у скафандрі' },
     });
     const proposal = body.proposal as { id: string };
     const decided = await resolveProposal(env, { id: proposal.id, choice: 'ok' }, NOW + 1000);

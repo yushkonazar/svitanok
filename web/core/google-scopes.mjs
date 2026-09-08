@@ -1,0 +1,120 @@
+// Скоупи Google, потрібні ядру (05-ops §2, етап 7 PR-1) - і звірка того, що
+// власник справді видав, із тим, що ядро використовує.
+//
+// ЧОМУ ЦЕ ОКРЕМИЙ МОДУЛЬ І ЧОМУ СПИСОК ТУТ. Скоуп у токені - це права, які
+// має ядро. Їх дві помилки, і дзеркальні: БРАК скоупа ламає одну можливість
+// (Tasks мовчки віддає 403), а ЗАЙВИЙ скоуп мовчки розширює наслідки будь-
+// якого багу чи інʼєкції - `gmail.send` у токені означає, що «надіслати лист
+// неможливо» перестає бути правдою про систему й стає правдою лише про
+// поточний код. Тому перевіряються обидві сторони, і список живе в одному
+// місці: його ж читає scripts/google-auth.mjs, який токен і видає, тож
+// «видане» і «потрібне» не можуть розійтися через людську копію.
+//
+// Без мережі й привʼязок: чисті функції, вичерпно тестуються.
+
+/**
+ * Рівно ті скоупи, якими користується ядро. Кожен рядок - із конкретного
+ * виклику, не «про запас»:
+ *   calendar        - readCalendarRange / create / patch / delete (google.mjs)
+ *   gmail.readonly  - mail.search / mail.read + задача mail-triage
+ *   contacts        - searchContact (читання) і createContact (запис, PR-13)
+ *   drive.file      - бекапи, документи працівників, експорт (лише свої файли)
+ *   tasks           - proposals.create(kind=tasks.create), S-8-4
+ * `gmail.send` НЕМАЄ свідомо (ADR-019): запрошення шле Google з події
+ * `attendees`, а «надіслати лист» лишається неможливим на рівні прав.
+ * @type {readonly string[]}
+ */
+export const CORE_SCOPES = Object.freeze([
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/contacts',
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/tasks',
+]);
+
+/**
+ * Можливість → скоуп, без якого вона не працює. Потрібне для S-8-7: власник
+ * має чути «Tasks ще не підключено», а не «HTTP 403».
+ * @type {Record<string, string>}
+ */
+export const SCOPE_BY_FEATURE = Object.freeze({
+  calendar: 'https://www.googleapis.com/auth/calendar',
+  mail: 'https://www.googleapis.com/auth/gmail.readonly',
+  contacts: 'https://www.googleapis.com/auth/contacts',
+  drive: 'https://www.googleapis.com/auth/drive.file',
+  tasks: 'https://www.googleapis.com/auth/tasks',
+});
+
+/** Людська назва можливості для повідомлення власнику.
+ *  @type {Record<string, string>} */
+const FEATURE_TITLE = Object.freeze({
+  calendar: 'Календар',
+  mail: 'Пошта',
+  contacts: 'Контакти',
+  drive: 'Drive',
+  tasks: 'Tasks',
+});
+
+/**
+ * Рядок `scope` з відповіді OAuth → набір скоупів. Google віддає їх через
+ * пробіл; порожній рядок/не рядок → null («невідомо»), і це НЕ те саме, що
+ * порожній набір («не видано жодного»): невідоме не має права нічого
+ * блокувати, бо кеш токена пишеться best-effort і поля могло просто не бути.
+ * @param {unknown} raw
+ * @returns {string[] | null}
+ */
+export function parseGrantedScopes(raw) {
+  if (typeof raw !== 'string') return null;
+  const parts = raw.split(/\s+/).filter(Boolean);
+  return parts.length ? [...new Set(parts)].sort() : null;
+}
+
+/**
+ * Звірка виданого з потрібним. `extra` - не косметика: будь-що поза
+ * CORE_SCOPES означає, що токен дає більше, ніж ядро вміє й має право
+ * робити.
+ * @param {readonly string[] | null | undefined} granted
+ * @returns {{ known: boolean, ok: boolean, missing: string[], extra: string[] }}
+ */
+export function auditScopes(granted) {
+  if (!granted) return { known: false, ok: true, missing: [], extra: [] };
+  const have = new Set(granted);
+  const need = new Set(CORE_SCOPES);
+  const missing = CORE_SCOPES.filter((s) => !have.has(s));
+  const extra = [...have].filter((s) => !need.has(s)).sort();
+  return { known: true, ok: missing.length === 0 && extra.length === 0, missing, extra };
+}
+
+/**
+ * Чи видано скоуп для можливості. `granted === null` (невідомо) → true:
+ * блокувати за відсутністю доказу означало б вимкнути календар щоразу, коли
+ * запис кешу токена не вдався.
+ * @param {readonly string[] | null | undefined} granted
+ * @param {string} feature
+ */
+export function hasFeatureScope(granted, feature) {
+  const scope = SCOPE_BY_FEATURE[feature];
+  if (!scope) throw new Error(`google-scopes: невідома можливість «${feature}»`);
+  if (!granted) return true;
+  return granted.includes(scope);
+}
+
+/**
+ * Текст відмови для власника (S-8-7). Іменем можливості, не скоупом: рядок
+ * читає людина в чаті.
+ * @param {string} feature
+ */
+export function featureNotConnectedText(feature) {
+  const title = FEATURE_TITLE[feature] ?? feature;
+  return `${title} ще не підключено - у токені Google немає скоупа ${SCOPE_BY_FEATURE[feature] ?? feature}. Перевидай токен (05-ops §3, scripts/google-auth.mjs).`;
+}
+
+/**
+ * Текст алерту про зайві скоупи - у системну тему. Окремо від missing: брак
+ * ламає можливість (це побачить власник сам), а зайве не ламає нічого й тому
+ * не буде помічене ніколи, якщо про нього не сказати.
+ * @param {string[]} extra
+ */
+export function extraScopesAlertText(extra) {
+  return `⚠️ Токен Google має ${extra.length} зайвих скоупів понад потрібні ядру: ${extra.join(', ')}. Перевидай токен зі списком 05-ops §2 - зайві права діють і тоді, коли код ними не користується.`;
+}

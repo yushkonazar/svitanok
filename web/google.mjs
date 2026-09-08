@@ -26,6 +26,11 @@ import {
   buildCreateEventBody,
 } from './calendar-core.mjs';
 import { sanitizeMailQuery } from './assistant-data-core.mjs';
+import {
+  parseGrantedScopes,
+  hasFeatureScope,
+  featureNotConnectedText,
+} from './core/google-scopes.mjs';
 
 /**
  * OAuth access token через refresh_token grant (Google) — порт
@@ -35,13 +40,29 @@ import { sanitizeMailQuery } from './assistant-data-core.mjs';
  * і callLlmHost — виклик іде далі без календаря, не валить обробку апдейту).
  */
 export async function googleAccessToken(/** @type {Env} */ env) {
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) return null;
+  return (await googleTokenInfo(env)).token;
+}
+
+/**
+ * Той самий обмін, але з ПЕРЕЛІКОМ виданих скоупів (етап 7 PR-1): Google
+ * повертає `scope` у відповіді на refresh, і саме він - єдине джерело правди
+ * про права токена. `scopes: null` означає «невідомо» (кеш без поля або
+ * токена немає) і НЕ дорівнює «жодного»: див. auditScopes.
+ * @param {Env} env
+ * @returns {Promise<{ token: string | null, scopes: string[] | null }>}
+ */
+export async function googleTokenInfo(env) {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) {
+    return { token: null, scopes: null };
+  }
   // Кеш access-токена в KV (SL3): N раундів агента (кожен читає календар) НЕ
   // роблять N окремих OAuth-обмінів. Токен короткоживучий (~1год), у власному
   // KV-namespace — прийнятно. Биття кешу -> перевидати.
   try {
     const cached = JSON.parse((await env.BRIEFING.get('googleToken')) ?? 'null');
-    if (isAccessTokenFresh(cached, Date.now())) return cached.token;
+    if (isAccessTokenFresh(cached, Date.now())) {
+      return { token: cached.token, scopes: parseGrantedScopes(cached.scope) };
+    }
   } catch {
     /* биття -> перевидати нижче */
   }
@@ -59,7 +80,7 @@ export async function googleAccessToken(/** @type {Env} */ env) {
     });
     if (!res.ok) {
       console.error('google token HTTP', res.status, await res.text().catch(() => ''));
-      return null;
+      return { token: null, scopes: null };
     }
     const json = await res.json();
     const token = typeof json.access_token === 'string' ? json.access_token : null;
@@ -86,11 +107,31 @@ export async function googleAccessToken(/** @type {Env} */ env) {
         console.error('googleToken cache write failed (best-effort, токен усе одно віддаємо)', e);
       }
     }
-    return token;
+    return { token, scopes: parseGrantedScopes(json.scope) };
   } catch (/** @type {any} */ err) {
     console.error('google token failed', err.message);
-    return null;
+    return { token: null, scopes: null };
   }
+}
+
+/**
+ * Скоупи, видані токену (етап 7 PR-1). `null` - невідомо (немає секретів,
+ * мережа лягла або кеш без поля `scope`).
+ * @param {Env} env
+ */
+export async function googleGrantedScopes(env) {
+  return (await googleTokenInfo(env)).scopes;
+}
+
+/**
+ * Барʼєр можливості (S-8-7): скоуп не виданий → чесний виняток із текстом
+ * для власника, а не 403 з надр Google. Невідомі скоупи пропускаємо: див.
+ * hasFeatureScope.
+ * @param {Env} env @param {string} feature
+ */
+export async function assertGoogleScope(env, feature) {
+  const scopes = await googleGrantedScopes(env);
+  if (!hasFeatureScope(scopes, feature)) throw new Error(featureNotConnectedText(feature));
 }
 
 // Gmail (B3, дія readMail). Той самий OAuth-токен, що й календар: скоуп
