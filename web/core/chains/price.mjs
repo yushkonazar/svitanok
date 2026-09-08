@@ -23,6 +23,7 @@ import { renderMdParts } from '../tg/markdown.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
 import { formatMoney, cleanSource } from '../format.mjs';
+import { boughtButton } from '../links.mjs';
 import {
   chainTarget,
   db,
@@ -453,7 +454,15 @@ export function priceVerdict(title, target, best, stats) {
 export async function runPriceTrack(env, params, step, io) {
   const { chainId } = params;
   const state = params.state ?? (await step.do('state', () => loadPriceState(env, chainId)));
-  const stopBtn = [[{ text: '⏹ Стоп', callback_data: `c:${chainId}:stop` }]];
+  // «Купив» поруч зі «Стоп» (PR-6 §2.6): падіння ціни - найчастіший момент,
+  // коли бажання перетворюється на покупку, і закривати його руками потім
+  // ніхто не йде.
+  const stopBtn = [
+    [
+      ...boughtButton(String(state.wish_id ?? '')),
+      { text: '⏹ Стоп', callback_data: `c:${chainId}:stop` },
+    ],
+  ];
   /** Запис стану, що шанує cancelled (зупинка без доставленої події). @param {string} label @param {'running' | 'waiting'} status @param {Record<string, unknown>} patch */
   const write = async (label, status, patch) => {
     const ok = await step.do(label, () =>

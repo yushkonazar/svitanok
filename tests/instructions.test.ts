@@ -283,6 +283,23 @@ describe('CANON_TOOLS проти живого реєстру ядра', () => {
 // weekly-review v2 (етап 3 PR-1): структура звіту - контракт між інструкцією
 // і приймальним чеклистом. Блок, що зник із файлу, інакше виявився б лише в
 // неділю о 09:00 - і мовчки.
+// Розділ «Строки» - контракт між Секретарем-пошти і власником (PR-6 §2.4):
+// саме з нього беруться дати, під які ядро пропонує нагадування. Зник із
+// формату - зникли б і пропозиції, мовчки.
+describe('mail-secretary.md - розділ «Строки»', () => {
+  const mail = files.find((f) => f.path === 'agents/mail-secretary.md');
+
+  it('формат має «Строки», і приклад його показує', () => {
+    const parsed = parseInstruction(mail?.raw ?? '');
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.body).toContain('## Строки');
+    // Двічі: у формі відповіді та в прикладі - інакше модель бачить розділ,
+    // якого ніколи не бачила заповненим.
+    expect(parsed.body.match(/## Строки/g)?.length).toBe(2);
+    expect(parsed.body).toContain('вигадувати дати не можна');
+  });
+});
+
 describe('weekly-review.md - блоки звіту', () => {
   const weekly = files.find((f) => f.path === 'weekly-review.md');
 

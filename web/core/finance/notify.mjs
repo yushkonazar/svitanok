@@ -43,7 +43,12 @@ export function transactionButtons(txId, duplicate) {
       { text: '🔎 Перевірити ціни', callback_data: `${FX_CB}${txId}:price` },
       { text: 'Ок', callback_data: `${FX_CB}${txId}:ok` },
     ],
-    [{ text: '✏️ Категорія', callback_data: `${FX_CB}${txId}:cat` }],
+    // «Це поїздка?» (PR-6 §2.2): великий чек у транспорті чи готелі - типовий
+    // початок поїздки, і питати про це варто там, де воно видно, а не потім.
+    [
+      { text: '✏️ Категорія', callback_data: `${FX_CB}${txId}:cat` },
+      { text: '🧳 Це поїздка', callback_data: `${FX_CB}${txId}:trip` },
+    ],
   ];
 }
 

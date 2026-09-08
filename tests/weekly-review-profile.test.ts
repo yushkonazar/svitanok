@@ -245,12 +245,18 @@ describe('вхід прогону (§0) і reports', () => {
         `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-c', 'chat', 'chat', '2026-09-06T06:10:00Z')`,
       )
       .run();
+    /** @type {Record<string, unknown>[]} */
+    const sends: Record<string, unknown>[] = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }),
-      ),
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith('/sendMessage') && init?.body) {
+          sends.push(JSON.parse(String(init.body)));
+        }
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+        });
+      }),
     );
     const env = workerEnv({
       ...base,
@@ -304,6 +310,13 @@ describe('вхід прогону (§0) і reports', () => {
     expect(await c.json()).not.toHaveProperty('report_id');
     const rows = d1.db.prepare('SELECT text_md FROM reports').all() as { text_md: string }[];
     expect(rows.map((r) => r.text_md)).toEqual(['📊 Тиждень 31.08 - 06.09']);
+    // ⚠️ Під звітом - кнопки «що з цим робити» (PR-6 §2.5): блок «ЩО ЗРОБИТИ»
+    // без жодної кнопки лишав би дії на памʼять власника. Під звичайною
+    // відповіддю їх бути не має.
+    const weekly = sends.find((b) => String(b.text ?? '').includes('Тиждень'))!;
+    expect(JSON.stringify(weekly.reply_markup)).toContain('m:wr:carry');
+    const plain = sends.find((b) => String(b.text ?? '').includes('звичайна відповідь'))!;
+    expect(JSON.stringify(plain.reply_markup ?? null)).not.toContain('m:wr:');
   });
 });
 

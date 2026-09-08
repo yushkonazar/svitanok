@@ -46,6 +46,11 @@ import { activeRemindersForList } from '../commands.mjs';
 import { buildRemindersKeyboard, formatRemindersListMessage } from '../reminders-core.mjs';
 import { actionPhrase, actionIcon } from './tg/phrase.mjs';
 import { proposalVolume } from './policy/volume.mjs';
+import { LINK_FOLLOWUPS } from './links.mjs';
+import { resolveWaypoint } from './tools/places.mjs';
+import { routesEta } from './adapters/maps.mjs';
+import { findIdea } from './tools/ideas.mjs';
+import { kyivClock } from '../kyiv-time.mjs';
 import { renderMdParts } from './tg/markdown.mjs';
 import { loadWorkerResult, sendWorkerDocument, WORKER_FOLLOWUPS } from './brain/worker-results.mjs';
 import {
@@ -77,6 +82,9 @@ const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
 /** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
 const DECISIONS_MAX = 8;
+/** Запас до початку події поверх ETA і фолбек, коли маршрут не порахувався. */
+const DEPARTURE_BUFFER_MIN = 10;
+const DEPARTURE_FALLBACK_MIN = 30;
 
 const MODELS = {
   chat: 'claude-sonnet-5',
@@ -994,6 +1002,17 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // Містки між можливостями (PR-6 §2): один тап веде з дії в наступну.
+  const dep = data.match(/^m:dep:([A-Za-z0-9-]{1,40})$/);
+  if (dep) return departureToast(env, parsed, /** @type {string} */ (dep[1]), nowMs, defer);
+  const it = data.match(/^m:it:([A-Za-z0-9-]{1,40})$/);
+  if (it) return ideaTaskToast(env, parsed, /** @type {string} */ (it[1]), nowMs);
+  const wr = data.match(/^m:wr:(carry|idea)$/);
+  if (wr) {
+    return linkFollowupToast(env, parsed, /** @type {'carry' | 'idea'} */ (wr[1]), nowMs, defer);
+  }
+  const buy = data.match(/^m:buy:([A-Za-z0-9-]{1,40})$/);
+  if (buy) return boughtToast(env, parsed, /** @type {string} */ (buy[1]), nowMs, defer);
   // m:done - чип на місці знятої клавіатури (скарга 14): тапати нема куди,
   // але Telegram однаково шле callback, і мовчати на нього не можна.
   if (data === 'm:done') return 'Це вже вирішено.';
@@ -1013,7 +1032,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // m:fx:<txId>:<choice> - кнопки під незвичною покупкою (S-4-2, S-4-4, етап 6
   // PR-1). Повідомлення будує ядро без моделі; модель вмикається лише тут,
   // коли власник САМ попросив («Перевірити ціни», «Категорія»).
-  const fx = data.match(/^m:fx:([A-Za-z0-9_=-]{1,44}):(price|ok|cat|dupy)$/);
+  const fx = data.match(/^m:fx:([A-Za-z0-9_=-]{1,44}):(price|ok|cat|dupy|trip)$/);
   if (fx) {
     return financeCallbackToast(
       env,
@@ -1078,6 +1097,220 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
   if (ev.keep) return 'Відмітив.';
   await clearKeyboard(env, parsed);
   return 'Прийняв.';
+}
+
+/**
+ * Знімок дії з рядка undo - джерело для містків (PR-6). null - рядка немає
+ * або він побитий; кнопка тоді чесно каже, що вже пізно.
+ * @param {Env} env @param {string} undoId
+ */
+async function undoSnapshot(env, undoId) {
+  if (!env.DB) return null;
+  try {
+    const row = /** @type {{ payload_json?: string } | null} */ (
+      await env.DB.prepare('SELECT payload_json FROM proposals WHERE id = ?').bind(undoId).first()
+    );
+    return row ? JSON.parse(String(row.payload_json ?? '{}')) : null;
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: знімок дії не прочитано', e?.message);
+    return null;
+  }
+}
+
+/**
+ * 2.1 «Коли виходити»: ETA від останньої локації власника до місця події,
+ * плюс запас - і нагадування на цей час.
+ *
+ * ⚠️ Маршрут може не порахуватись (немає свіжої локації, Maps мовчить, місце
+ * не розпізнане). Тоді ставимо нагадування за пів години до початку і КАЖЕМО
+ * про це: мовчазний фолбек на кругле число виглядав би як порахований ETA.
+ * @param {Env} env
+ * @param {CallbackParsed} parsed
+ * @param {string} undoId @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function departureToast(env, parsed, undoId, nowMs, defer) {
+  const snap = await undoSnapshot(env, undoId);
+  const startMs = Date.parse(String(snap?.startIso ?? ''));
+  const place = String(snap?.location ?? '').trim();
+  if (!Number.isFinite(startMs) || !place) return 'Про цю подію я вже не памʼятаю деталей.';
+  if (startMs <= nowMs) return 'Подія вже почалась.';
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  await clearKeyboard(env, parsed);
+  const work = async () => {
+    /** @type {number | null} */
+    let etaMin = null;
+    try {
+      const from = await resolveWaypoint(env, 'here', nowMs);
+      const eta = await routesEta(
+        env,
+        { from, to: { address: place }, mode: 'transit', departAtMs: null },
+        nowMs,
+      );
+      etaMin = eta?.duration_min ?? null;
+    } catch (/** @type {any} */ e) {
+      console.error('prerouter: ETA до події не порахувався', e?.message);
+    }
+    const leadMin = etaMin == null ? DEPARTURE_FALLBACK_MIN : etaMin + DEPARTURE_BUFFER_MIN;
+    const whenMs = startMs - leadMin * 60_000;
+    if (whenMs <= nowMs) {
+      await reply(env, target, `Виходити треба вже зараз - дорога ~${leadMin} хв.`, nowMs);
+      return;
+    }
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'reminders.create',
+        // when лишаємо порожнім: точний момент рахує ЯДРО і передає його
+        // окремим каналом (internal), а не фразою через парсер.
+        payload: { text: `Виходити: ${snap?.title ?? place}` },
+        internal: { dueAtMs: whenMs },
+        threadId: parsed.threadId ?? null,
+        chatId: parsed.chatId ?? null,
+        tainted: false,
+      },
+      nowMs,
+    );
+    const how =
+      etaMin == null
+        ? 'маршрут не порахувався, тож за пів години до початку'
+        : `дорога ~${etaMin} хв плюс ${DEPARTURE_BUFFER_MIN} хв запасу`;
+    await reply(
+      env,
+      target,
+      `⏰ Нагадаю о ${kyivClock(whenMs)} - ${how}.`,
+      nowMs,
+      out.mode === 'executed' && out.undo
+        ? { reply_markup: { inline_keyboard: out.undo.buttons } }
+        : undefined,
+    );
+  };
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: нагадування про вихід впало', e?.message),
+      ),
+    );
+  } else await work();
+  return 'Рахую дорогу';
+}
+
+/**
+ * 2.3 «У задачі»: ідея їде в Google Tasks заголовком. T0 з «↩», як і сама
+ * ідея - другого підтвердження на власний список задач не треба.
+ * @param {Env} env @param {CallbackParsed} parsed
+ * @param {string} undoId @param {number} nowMs
+ */
+async function ideaTaskToast(env, parsed, undoId, nowMs) {
+  const snap = await undoSnapshot(env, undoId);
+  const ideaId = String(snap?.id ?? '');
+  if (!ideaId) return 'Про цю ідею я вже не памʼятаю деталей.';
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  const idea = await findIdea(env, ideaId).catch((/** @type {any} */ e) => {
+    console.error('prerouter: ідея для задачі не прочиталась', e?.message);
+    return null;
+  });
+  if (!idea) return 'Ідеї вже немає.';
+  await clearKeyboard(env, parsed);
+  /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
+  const out = await applyPolicy(
+    env,
+    {
+      kind: 'tasks.create',
+      payload: { title: idea.title, notes: idea.next_action ?? undefined },
+      threadId: parsed.threadId ?? null,
+      chatId: parsed.chatId ?? null,
+      tainted: false,
+    },
+    nowMs,
+  ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
+  if (out.mode !== 'executed') {
+    await reply(env, target, `⚠️ Задача не створилась: ${out.error ?? out.mode}.`, nowMs);
+    return 'Не вийшло';
+  }
+  await reply(
+    env,
+    target,
+    `📋 Поставив задачу «${idea.title}».`,
+    nowMs,
+    out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : undefined,
+  );
+  return 'Поставив';
+}
+
+/**
+ * 2.5 Кнопки під тижневим звітом: підказка йде в тред тим самим шляхом, що
+ * текст власника - модель бачить її як звичайне прохання.
+ * @param {Env} env @param {CallbackParsed} parsed
+ * @param {'carry' | 'idea'} choice @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function linkFollowupToast(env, parsed, choice, nowMs, defer) {
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  await clearKeyboard(env, parsed);
+  const work = () =>
+    startOrQueueThreadText(env, target, threadKey, LINK_FOLLOWUPS[choice], 'chat', nowMs).then(
+      () => undefined,
+    );
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: кнопка звіту впала', e?.message),
+      ),
+    );
+  } else await work();
+  return choice === 'carry' ? 'Переношу' : 'Роблю ідею';
+}
+
+/**
+ * 2.6 «Купив»: бажання закрите, відстеження ціни зупинено, а сама покупка
+ * прийде в гроші звичайним шляхом Mono - вигадувати транзакцію ядро не буде.
+ * @param {Env} env @param {CallbackParsed} parsed
+ * @param {string} wishId @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function boughtToast(env, parsed, wishId, nowMs, defer) {
+  /** @type {ThreadTarget} */
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  await clearKeyboard(env, parsed);
+  const work = async () => {
+    /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'wishes.update',
+        payload: { id: wishId, status: 'done' },
+        threadId: parsed.threadId ?? null,
+        chatId: parsed.chatId ?? null,
+        tainted: false,
+      },
+      nowMs,
+    ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
+    if (out.mode !== 'executed') {
+      await reply(env, target, '⚠️ Бажання не закрилось - подивись у списку.', nowMs);
+      return;
+    }
+    await reply(
+      env,
+      target,
+      '🎁 Закрив бажання. Покупку побачу в Mono сам - записувати руками не треба.',
+      nowMs,
+      out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : undefined,
+    );
+  };
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: кнопка «Купив» впала', e?.message),
+      ),
+    );
+  } else await work();
+  return 'Вітаю';
 }
 
 /**
@@ -1270,7 +1503,7 @@ async function subscriptionCancelToast(env, parsed, subscriptionId, nowMs) {
  * сам через finance.query і за своїми правилами).
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {string} txId @param {'price' | 'ok' | 'cat' | 'dupy'} choice @param {number} nowMs
+ * @param {string} txId @param {'price' | 'ok' | 'cat' | 'dupy' | 'trip'} choice @param {number} nowMs
  * @param {((work: () => Promise<void>) => void) | null} defer
  */
 async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
@@ -1283,7 +1516,11 @@ async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
   if (target.chatId == null) return 'Невідомий чат.';
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   const text =
-    choice === 'price' ? `перевір ціни по покупці ${txId}` : `зміни категорію покупки ${txId}`;
+    choice === 'price'
+      ? `перевір ціни по покупці ${txId}`
+      : choice === 'trip'
+        ? `ця покупка ${txId} - частина поїздки; спитай про дати й заведи поїздку`
+        : `зміни категорію покупки ${txId}`;
   const work = () =>
     startOrQueueThreadText(env, target, threadKey, text, 'chat', nowMs).then(() => undefined);
   await clearKeyboard(env, parsed);
@@ -1294,7 +1531,11 @@ async function financeCallbackToast(env, parsed, txId, choice, nowMs, defer) {
       ),
     );
   } else await work();
-  return choice === 'price' ? 'Шукаю ціни' : 'Слухаю категорію';
+  return choice === 'price'
+    ? 'Шукаю ціни'
+    : choice === 'trip'
+      ? 'Питаю про поїздку'
+      : 'Слухаю категорію';
 }
 
 /** Тост під кожну кнопку працівника - щоб власник бачив, що саме прийнято.
@@ -1718,6 +1959,10 @@ function undoToast(res) {
 }
 
 /** @typedef {{ chatId: number | null, threadId: number | string | null }} ThreadTarget */
+
+/** Розібраний callback: те, що дає parseUpdate для тапу по кнопці.
+ *  @typedef {{ chatId?: number | null, messageId?: number | null,
+ *    threadId?: number | string | null, data?: unknown, replyMarkup?: unknown }} CallbackParsed */
 
 /** «стоп» (S-0-3): очистити чергу, абортнути активний прогін, чесний підпис.
  *  @param {Env} env @param {ThreadTarget} parsed @param {string} threadKey @param {number} nowMs */

@@ -27,6 +27,7 @@ import {
 } from '../tools/reminders.mjs';
 import { restoreReminder } from '../reminders/store.mjs';
 import { plural } from '../tg/phrase.mjs';
+import { followUpButtons } from '../links.mjs';
 import {
   runIdeasCreate,
   runIdeasUpdate,
@@ -134,7 +135,8 @@ function driveNoteName(raw) {
  * відкочувати нічого, undo-кнопки не буде). undo приймає той знімок.
  * @type {Record<string, {
  *   execute: (env: Env, payload: any, nowMs: number,
- *     ctx?: { chatId?: number | string | null, threadId?: number | string | null })
+ *     ctx?: { chatId?: number | string | null, threadId?: number | string | null,
+ *       internal?: Record<string, any> })
  *     => Promise<{ prev?: unknown, result?: unknown }>,
  *   undo?: (env: Env, prev: any, nowMs: number) => Promise<void>,
  * }>}
@@ -153,7 +155,13 @@ export const EXECUTORS = {
         env,
         { text: payload.text, when: payload.when },
         nowMs,
-        { chatId: ctx?.chatId, threadId: ctx?.threadId },
+        {
+          chatId: ctx?.chatId,
+          threadId: ctx?.threadId,
+          // dueAtMs - лише з ядра (ctx.internal), не з payload моделі: інакше
+          // через proposals.create можна було б обійти парсер часу.
+          ...(typeof ctx?.internal?.dueAtMs === 'number' ? { dueAtMs: ctx.internal.dueAtMs } : {}),
+        },
       );
       return { prev: { id: result.id }, result };
     },
@@ -877,7 +885,17 @@ export const EXECUTORS = {
   'calendar.event': {
     async execute(env, payload) {
       const result = await createEventFromPayload(env, payload, false);
-      return { prev: { event_id: result.event_id ?? null }, result };
+      // У знімку - не лише event_id: із нього ж ядро рахує «коли виходити»
+      // (PR-6 §2.1), і другого сховища для цього не треба.
+      return {
+        prev: {
+          event_id: result.event_id ?? null,
+          startIso: String(payload.startIso ?? ''),
+          location: typeof payload.location === 'string' ? payload.location : '',
+          title: result.title,
+        },
+        result,
+      };
     },
     async undo(env, snapshot) {
       if (!snapshot?.event_id) return;
@@ -1145,7 +1163,8 @@ const TOOLLESS_KINDS = ['calendar.event', 'tasks.create', 'drive.write', 'collec
  * @param {Env} env
  * @param {{ kind: string, payload: Record<string, unknown>,
  *   threadId?: string | number | null, chatId?: number | string | null,
- *   tainted: boolean, taintedEver?: boolean, viaProposal?: boolean }} action - viaProposal: дію
+ *   tainted: boolean, taintedEver?: boolean, viaProposal?: boolean,
+ *   internal?: Record<string, unknown> }} action - viaProposal: дію
  *   просить обгортка proposals.create (тоді T0 заборонений)
  * @param {number} nowMs
  * @returns {Promise<
@@ -1233,6 +1252,11 @@ export async function applyPolicy(env, action, nowMs) {
     const { prev, result } = await executor.execute(env, action.payload, nowMs, {
       chatId: action.chatId ?? null,
       threadId: action.threadId ?? null,
+      // ⚠️ ЛИШЕ ЯДРО. Поле не входить у payload, який складає модель: action
+      // збирає router із явних полів, тож сюди модель дописати нічого не може.
+      // Потрібне там, де час/адресу рахує саме ядро - наприклад «коли
+      // виходити» (PR-6 §2.1) знає точний момент у мс, а не фразу.
+      internal: action.internal ?? {},
     });
     if (prev === undefined || !executor.undo) return { mode: 'executed', result };
     try {
@@ -1247,7 +1271,10 @@ export async function applyPolicy(env, action, nowMs) {
         expiresAt: new Date(nowMs + UNDO_WINDOW_MS).toISOString(),
         nowMs,
       });
-      return { mode: 'executed', result, undo: { id: undoId, buttons: undoButton(undoId) } };
+      // Місток у наступний крок стоїть ПЕРЕД «↩» (PR-6 §2): перше - куди
+      // йти далі, друге - відмова від того, що вже сталось.
+      const buttons = [...followUpButtons(action.kind, prev, undoId), ...undoButton(undoId)];
+      return { mode: 'executed', result, undo: { id: undoId, buttons } };
     } catch (/** @type {any} */ e) {
       // Дію ВЖЕ виконано - збій undo-рядка не сміє звітувати «не виконано»
       // (мозок повторив би запис). Просто без кнопки «↩», зі слідом у логах.

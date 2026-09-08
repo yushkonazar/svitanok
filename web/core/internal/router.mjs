@@ -22,6 +22,7 @@ import { isTaintActive, proposalNotice } from '../policy/core.mjs';
 import { IMAGE_USD, VIDEO_DEFAULT_SECONDS, videoUsd } from '../adapters/gemini.mjs';
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
+import { reportButtons } from '../links.mjs';
 import { saveInboxDigest } from '../inbox/digest.mjs';
 import { sendChainEvent } from '../chains/registry.mjs';
 import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
@@ -344,9 +345,13 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   }
   const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
+  // Профіль читаємо ДО відправки: під тижневим звітом мають стояти кнопки
+  // «що з цим робити» (PR-6 §2.5), а прикріпити їх можна лише разом із текстом.
+  const profile = await readRunProfile(env, runId).catch(() => null);
   const buttons = [
     ...(body.buttons ?? []),
     ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),
+    ...(profile === 'weekly-review' ? reportButtons() : []),
   ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
   // спершу покаже обірваний шматок і лише потім фінал.
@@ -385,7 +390,6 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // інструкції. ПІСЛЯ enqueue: власник має отримати звіт, навіть якщо запис у
   // базу впав, - тоді про це скаже лог і рядок у відповіді, а не тиша в темі.
   let reportId = null;
-  const profile = await readRunProfile(env, runId).catch(() => null);
   if (profile === 'weekly-review') {
     try {
       reportId = (await saveWeeklyReport(env, body.text, nowMs)).id;
