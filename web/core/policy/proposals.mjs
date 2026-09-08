@@ -197,7 +197,9 @@ export const EXECUTORS = {
     // nowMs не потрібен: скасування не рахує часу, лише прибирає рядок.
     async execute(env, payload) {
       const before = (await readActiveReminders(env)).find((r) => r.id === payload.id);
-      const { result } = await runRemindersCancel(env, { id: payload.id });
+      // ⚠️ `ids` теж передаємо (ревʼю релізу): без нього пачкове скасування
+      // існувало лише в інструменті й через policy падало на «id обовʼязковий».
+      const { result } = await runRemindersCancel(env, { id: payload.id, ids: payload.ids });
       return { prev: before ?? null, result };
     },
     async undo(env, snapshot) {
@@ -1166,6 +1168,10 @@ function db(env) {
  */
 const TOOLLESS_KINDS = ['calendar.event', 'tasks.create', 'drive.write', 'collection.export'];
 
+/** Наскільки давню дію ще дістає «відміни останнє»: доба. Далі це вже не
+ *  «останнє», а археологія - і власник має назвати дію словами. */
+const UNDO_LAST_MAX_AGE_MS = 24 * 60 * 60_000;
+
 /**
  * Виконати ДІЮ за політикою: T0 (у чистій сесії) - одразу + undo-рядок;
  * T1/T2 (і будь-що в tainted) - пропозиція з кнопками. Це єдиний вхід для
@@ -1266,7 +1272,10 @@ export async function applyPolicy(env, action, nowMs) {
       // збирає router із явних полів, тож сюди модель дописати нічого не може.
       // Потрібне там, де час/адресу рахує саме ядро - наприклад «коли
       // виходити» (PR-6 §2.1) знає точний момент у мс, а не фразу.
-      internal: action.internal ?? {},
+      // `tainted` тут ЗАВЖДИ: виконавці, що самі кличуть applyPolicy
+      // (plan.accept → calendarizeBlocks), мусять нести позначку сесії далі,
+      // інакше вкладена дія виконується так, ніби сесія чиста.
+      internal: { ...(action.internal ?? {}), tainted: action.tainted === true },
     });
     if (prev === undefined || !executor.undo) return { mode: 'executed', result };
     try {
@@ -1405,14 +1414,17 @@ export async function resolveProposal(env, input, nowMs) {
 export async function undoLastInThread(env, threadId, nowMs) {
   if (!env.DB) return { ok: false, reason: 'failed', error: 'D1 недоступна' };
   const thread = threadId == null ? null : String(threadId);
+  // ⚠️ Нижня межа часу (ревʼю релізу): без неї «відміни останнє» діставало б
+  // дію тижневої давності, про яку власник давно забув, - і мовчки її знімало.
+  const floor = new Date(nowMs - UNDO_LAST_MAX_AGE_MS).toISOString();
   const row = /** @type {ProposalRow | null} */ (
     await env.DB.prepare(
       `SELECT * FROM proposals
        WHERE kind LIKE 'undo:%' AND status IN ('open', 'expired')
-         AND (thread_id IS ? OR thread_id = ?)
+         AND (thread_id IS ? OR thread_id = ?) AND created_at >= ?
        ORDER BY created_at DESC LIMIT 1`,
     )
-      .bind(thread, thread)
+      .bind(thread, thread, floor)
       .first()
   );
   if (!row) return { ok: false, reason: 'none' };
@@ -1438,6 +1450,17 @@ export async function undoLastInThread(env, threadId, nowMs) {
   try {
     await executor.undo(env, snapshot, nowMs);
   } catch (/** @type {any} */ e) {
+    // ⚠️ КЛЕЙМ ПОВЕРТАЄМО (ревʼю релізу). Клейм стоїть ДО відкату - інакше два
+    // одночасні «відміни останнє» відкотили б двічі. Але якщо Google відмовив,
+    // рядок мусить лишитись відкочуваним: без цього повтор давав би «нема чого
+    // відкочувати», а подія так і висіла б у календарі.
+    await db(env)
+      .prepare(`UPDATE proposals SET status = ?, decided_at = NULL WHERE id = ?`)
+      .bind(row.status, row.id)
+      .run()
+      .catch((/** @type {any} */ e2) =>
+        console.error('policy: клейм пізнього відкату не знято', e2?.message),
+      );
     console.error(`policy: пізній відкат ${row.kind} впав`, e?.message);
     return { ok: false, reason: 'failed', error: String(e?.message ?? '') };
   }

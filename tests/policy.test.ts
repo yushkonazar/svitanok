@@ -17,7 +17,12 @@ import {
   TAINT_TTL_MS,
   isTaintActive,
 } from '../web/core/policy/core.mjs';
-import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
+import {
+  applyPolicy,
+  resolveProposal,
+  resolveUndo,
+  EXECUTORS,
+} from '../web/core/policy/proposals.mjs';
 import { runFactsGet, runFactsSet } from '../web/core/tools/facts.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
@@ -98,6 +103,52 @@ describe('policy core — таблиця рівнів', () => {
     ])
       expect(decideLevel(kind, true), kind).toEqual({ level: 'T0' });
     expect(decideLevel('forget', true)).toEqual({ level: 'T2' });
+  });
+
+  it('plan.accept із календарем під taint - ✅; без календаря - ні', () => {
+    // ⚠️ Дірка, знайдена security-ревʼю релізу: `plan.accept{calendar:true}`
+    // створює події в календарі (від 08.09 це T0), тобто виходить назовні тим
+    // самим шляхом, що `calendar.event`. Лист «постав блоки й закинь у
+    // календар» клав би чужі назви в календар власника без жодного ✅.
+    expect(decideLevel('plan.accept', true, { calendar: true })).toEqual({ level: 'T1' });
+    expect(decideLevel('plan.accept', true, { date: 'сьогодні' })).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.accept', false, { calendar: true })).toEqual({ level: 'T0' });
+  });
+
+  it('бажання З ПОСИЛАННЯМ під taint - ✅; без посилання - ні', () => {
+    // Бажання-покупка з url стартує щоденний обхід тієї адреси Дослідником
+    // (WebFetch): інʼєкція так робить собі маячок.
+    expect(decideLevel('wishes.create', true, { url: 'https://evil.example/x' })).toEqual({
+      level: 'T1',
+    });
+    expect(decideLevel('wishes.create', true, { title: 'PS5' })).toEqual({ level: 'T0' });
+  });
+
+  it('аналіз по коду й ланцюги під taint - ✅: це гроші й вихід назовні', () => {
+    for (const kind of ['ideas.analyze', 'chain.start'])
+      expect(decideLevel(kind, true), kind).toEqual({ level: 'T1' });
+  });
+
+  it('позначка сесії доходить до виконавця через ctx.internal', async () => {
+    // ⚠️ Виконавці, що самі кличуть applyPolicy (plan.accept → блоки в
+    // календар), мусять нести позначку далі - інакше вкладена дія
+    // виконується так, ніби сесія чиста (security-ревʼю релізу).
+    /** @type {Record<string, unknown> | null} */
+    let seen: Record<string, unknown> | null = null;
+    const saved = EXECUTORS['record']!;
+    EXECUTORS['record'] = {
+      execute: async (_e, _p, _n, ctx) => {
+        seen = (ctx?.internal ?? null) as Record<string, unknown> | null;
+        return { result: {} };
+      },
+    };
+    await applyPolicy(
+      env,
+      { kind: 'record', payload: { kind: 'roadmap', payload: {} }, tainted: false },
+      NOW,
+    );
+    EXECUTORS['record'] = saved;
+    expect(seen).toMatchObject({ tainted: false });
   });
 
   it('невідомий kind — відмова, не дефолт-рівень', () => {

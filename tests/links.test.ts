@@ -172,6 +172,45 @@ describe('подія → вихід (2.1)', () => {
 });
 
 describe('ідея → задача (2.3)', () => {
+  it('містком зникає ЛИШЕ натиснута кнопка, сусідні лишаються живими', async () => {
+    // ⚠️ Під подією календаря стоять «🚶 Коли виходити» і «↩»: зняття всієї
+    // клавіатури забирало б і відкат (ревʼю релізу).
+    const { env, tg } = setup();
+    stubNet(tg);
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'calendar.event',
+        payload: {
+          title: 'Кава',
+          startIso: '2026-09-08T12:00:00.000Z',
+          endIso: '2026-09-08T13:00:00.000Z',
+          location: 'Креденс',
+        },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW,
+    );
+    if (out.mode !== 'executed') throw new Error('mode');
+    const rows = out.undo?.buttons as { text: string; callback_data: string }[][];
+    await handleBrainCallback(
+      env,
+      {
+        data: rows[0]![0]!.callback_data,
+        chatId: 555,
+        messageId: 7,
+        replyMarkup: { inline_keyboard: rows },
+      },
+      NOW,
+    );
+    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup')!;
+    const left = (edit.body.reply_markup as { inline_keyboard: { callback_data: string }[][] })
+      .inline_keyboard;
+    expect(left.flat().map((b) => b.callback_data.split(':')[0])).toEqual(['u']);
+  });
+
   it('тап створює задачу в Tasks і лишає «↩»', async () => {
     const { env, db, tg } = setup();
     stubNet(tg);
@@ -189,7 +228,7 @@ describe('ідея → задача (2.3)', () => {
     if (out.mode !== 'executed') throw new Error(`mode ${out.mode}`);
     const undoId = String(out.undo?.id);
     expect(await handleBrainCallback(env, { data: `m:it:${undoId}`, chatId: 555 }, NOW)).toBe(
-      'Поставив',
+      'Ставлю задачу',
     );
     expect(tg.some((c) => String(c.body.text ?? '').includes('Поставив задачу «Профіль»'))).toBe(
       true,
@@ -198,6 +237,54 @@ describe('ідея → задача (2.3)', () => {
     expect(
       db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'undo:tasks.create'`).get(),
     ).toEqual({ n: 1 });
+  });
+
+  it('у ЗАБРУДНЕНІЙ сесії місток просить ✅, а не робить мовчки', async () => {
+    // ⚠️ Кнопку `m:it:` модель може намалювати сама - простір `m:` для неї
+    // відкритий. Жорсткий tainted:false робив би з неї шлях повз
+    // `tasks.create ∈ TAINT_ESCALATES` (security-ревʼю релізу).
+    const { env, db, tg } = setup();
+    stubNet(tg);
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'ideas.create',
+        payload: { title: 'Профіль' },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW,
+    );
+    if (out.mode !== 'executed') throw new Error('mode');
+    db.prepare(
+      `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count)
+       VALUES ('dm', 'x', 'x', ?, 0)`,
+    ).run(NOW);
+    await handleBrainCallback(env, { data: `m:it:${String(out.undo?.id)}`, chatId: 555 }, NOW);
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'tasks.create'`).get(),
+    ).toEqual({ n: 1 });
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'undo:tasks.create'`).get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it('id не від рядка «↩» місток не бере', async () => {
+    // ⚠️ id у callback приходить від моделі: без умови `kind LIKE 'undo:%'`
+    // місток читав би payload будь-якої пропозиції (ревʼю релізу).
+    const { env, db, tg } = setup();
+    stubNet(tg);
+    db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, word, expires_at, status, created_at)
+       VALUES ('p9', 'T1', 'contact', ?, 'dm', NULL, ?, 'open', 'x')`,
+    ).run(JSON.stringify({ id: 'i1', startIso: '2030-01-01T10:00:00Z', location: 'X' }), 'x');
+    expect(await handleBrainCallback(env, { data: 'm:it:p9', chatId: 555 }, NOW)).toBe(
+      'Про цю ідею я вже не памʼятаю деталей.',
+    );
+    expect(await handleBrainCallback(env, { data: 'm:dep:p9', chatId: 555 }, NOW)).toBe(
+      'Про цю подію я вже не памʼятаю деталей.',
+    );
   });
 
   it('ідею вже видалили - чесно, без задачі', async () => {

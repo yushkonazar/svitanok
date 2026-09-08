@@ -78,6 +78,17 @@ describe('parseNewCommand', () => {
     expect(parseNewCommand('🔄 Брифінг')).toBeNull();
   });
 
+  it('лейбл легасі-команди ПАДАЄ в легасі, а не в мозок', async () => {
+    // ⚠️ Раніше «🔄 Брифінг» не збігався з parseNewCommand, не починався зі
+    // «/» - і йшов у мозок текстом, тобто прогін заради команди, яку легасі
+    // виконує миттєво (ревʼю релізу).
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    expect(await prerouteMessage(env, parsedMsg('🔄 Брифінг'), NOW)).toBe(false);
+    expect(brain).toHaveLength(0);
+  });
+
   it('реєстр /help і меню Telegram - один список', () => {
     expect(NEW_COMMANDS.map((c) => c.command)).toEqual([
       'help',
@@ -89,11 +100,16 @@ describe('parseNewCommand', () => {
       'new',
       'forget',
     ]);
-    // Кожна команда меню або обробляється новим шляхом, або лишається в
-    // легасі (/brief, /clear) - «мертвих» рядків у меню бути не має.
-    for (const c of NEW_COMMANDS) {
-      const parsed = parseNewCommand(`/${c.command}`);
-      expect(parsed === null || parsed.cmd === c.command, c.command).toBe(true);
+    // ⚠️ Поіменно, а не «null або збіг» (ревʼю релізу: та умова була істинна
+    // завжди й лишалась би зеленою, навіть якби новий шлях перестав обробляти
+    // все). Тут прямо сказано, ЩО обробляє новий шлях, а що лишилось у легасі.
+    const byNewPath = NEW_COMMANDS.filter((c) => parseNewCommand(`/${c.command}`) !== null).map(
+      (c) => c.command,
+    );
+    expect(byNewPath).toEqual(['help', 'plan', 'remind', 'status', 'new', 'forget']);
+    // /brief і /clear лишились у легасі - там у них уже є робочі обробники.
+    for (const legacyOnly of ['brief', 'clear']) {
+      expect(parseNewCommand(`/${legacyOnly}`), legacyOnly).toBeNull();
     }
   });
 });

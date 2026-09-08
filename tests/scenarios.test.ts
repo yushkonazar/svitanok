@@ -124,6 +124,28 @@ describe('data.search - один запит по всіх власних дже�
     const { env } = seeded();
     await expect(runDataSearch(env, { q: '   ' })).rejects.toThrow(/хоч одне слово/);
   });
+
+  it('«%» у запиті шукає символ, а не «будь-що»', async () => {
+    const { env, d1 } = seeded();
+    d1.db
+      .prepare(
+        `INSERT INTO transactions (id, at, amount, currency, amount_uah, description)
+         VALUES ('t2', '2026-09-06T11:00:00Z', -100, 'UAH', -100, 'Знижка 50% у Сільпо')`,
+      )
+      .run();
+    const hit = await runDataSearch(env, { q: '50%', scopes: ['money'] });
+    expect((hit.result.hits as { title: string }[]).map((h) => h.title)).toEqual([
+      'Знижка 50% у Сільпо',
+    ]);
+    // Без екранування «50%» знайшло б і «500 грн» - результат ширший за питання.
+    const miss = await runDataSearch(env, { q: 'Креденс%', scopes: ['money'] });
+    expect(miss.result.hits).toEqual([]);
+  });
+
+  it('бази немає - ОДНА чесна помилка, а не чотири «джерело впало»', async () => {
+    const env = workerEnv({ BRIEFING: memoryKv(new Map()) });
+    await expect(runDataSearch(env, { q: 'будь-що' })).rejects.toThrow(/DB/);
+  });
 });
 
 describe('пакетне скасування нагадувань (§3.4)', () => {
@@ -245,6 +267,70 @@ describe('«відміни останнє» (§3.5)', () => {
       undoLastInThread(env, 'dm', NOW + 1001),
     ]);
     expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('назвав ПРЕДМЕТ - у мозок, а не в сліпий відкат', async () => {
+    // ⚠️ Ширший шаблон пускав будь-яке слово після «останнє», і «скасуй
+    // останнє нагадування» відкочувало останню дію треду - нею могла бути
+    // подія в календарі (ревʼю релізу).
+    const { env, tg } = setup();
+    await idea(env, 'єдина', NOW);
+    for (const phrase of ['скасуй останнє нагадування', 'скасуй останню зустріч']) {
+      tg.length = 0;
+      await prerouteMessage(env, msg(phrase), NOW + 1000);
+      expect(
+        tg.some((c) => String(c.body.text ?? '').includes('Відкотив')),
+        phrase,
+      ).toBe(false);
+    }
+  });
+
+  it('відкат упав - рядок лишається відкочуваним, а не закритим назавжди', async () => {
+    // ⚠️ Клейм стоїть ДО відкату (щоб два одночасні не відкотили двічі), тож
+    // при збої його треба ПОВЕРНУТИ: інакше повтор давав би «нема чого
+    // відкочувати», а дія лишалась зробленою (ревʼю релізу).
+    const { env } = setup();
+    await idea(env, 'єдина', NOW);
+    const executors = (await import('../web/core/policy/proposals.mjs')).EXECUTORS;
+    const real = executors['ideas.create']!.undo!;
+    executors['ideas.create']!.undo = async () => {
+      throw new Error('Google відмовив');
+    };
+    const failed = await undoLastInThread(env, 'dm', NOW + 1000);
+    executors['ideas.create']!.undo = real;
+    expect(failed).toMatchObject({ ok: false, reason: 'failed' });
+    // Друга спроба - уже зі справжнім виконавцем - має спрацювати.
+    expect(await undoLastInThread(env, 'dm', NOW + 2000)).toMatchObject({ ok: true });
+  });
+
+  it('дуже стара дія «останнім» не вважається', async () => {
+    const { env } = setup();
+    await idea(env, 'позавчорашня', NOW);
+    const twoDays = NOW + 2 * 24 * 60 * 60_000;
+    expect(await undoLastInThread(env, 'dm', twoDays)).toEqual({ ok: false, reason: 'none' });
+  });
+
+  it('пачкове скасування доходить і через policy, не лише інструментом', async () => {
+    const { env, db } = setup();
+    for (const id of ['r1', 'r2'])
+      db.prepare(
+        `INSERT INTO reminders (id, due_at, text, status, snooze_count) VALUES (?,?,?,'pending',0)`,
+      ).run(id, '2026-09-09T09:00:00.000Z', `справа ${id}`);
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'reminders.cancel',
+        payload: { ids: ['r1', 'r2'] },
+        threadId: 'dm',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(out.mode).toBe('executed');
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM reminders WHERE status = 'cancelled'`).get(),
+    ).toEqual({ n: 2 });
   });
 
   it('порожній тред - чесна відмова, не виняток', async () => {

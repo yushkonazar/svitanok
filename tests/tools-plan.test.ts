@@ -4,10 +4,10 @@
 // підмінено (readCalendarRange), решта - реальні міграції у node:sqlite.
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { applyPolicy, resolveUndo } from '../web/core/policy/proposals.mjs';
+import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { ACTION_LEVELS } from '../web/core/policy/core.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
-import { resolvePlanDate } from '../web/core/tools/plan.mjs';
+import { resolvePlanDate, runPlanAccept } from '../web/core/tools/plan.mjs';
 import { getDayPlan, listItems } from '../web/core/day-plan/store.mjs';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
@@ -249,6 +249,97 @@ describe('plan.* через policy', () => {
     expect(out.mode).toBe('executed');
     if (out.mode !== 'executed') return;
     expect(out.result).toMatchObject({ calendar_added: 1, calendar_failed: ['Презентація'] });
+    vi.unstubAllGlobals();
+  });
+
+  it('під taint блоки в календар ПРОПОНУЮТЬСЯ, і «додано» лишається 0', async () => {
+    // ⚠️ Позначка сесії йде наскрізь (security-ревʼю релізу): доти
+    // calendarizeBlocks ставив жорсткий tainted:false, і лист «закинь план у
+    // календар» клав чужі назви в календар власника повз білий список taint.
+    // Заразом: `added` рахує лише виконане - пропозиція ще не подія.
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'ev-9' }), { status: 200 })),
+    );
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'plan.accept',
+        payload: { date: DATE, calendar: true },
+        threadId: '99',
+        chatId: 555,
+        tainted: true,
+      },
+      NOW + 7000,
+    );
+    // Сам plan.accept під taint із календарем теж просить ✅.
+    expect(out).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
+    if (out.mode !== 'proposed') return;
+    const res = await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 7100);
+    expect(res).toMatchObject({ ok: true, status: 'approved' });
+    // Після ✅ сесія вже не заплямована для вкладеної дії - події створено.
+    expect((res as { result: { calendar_added: number } }).result.calendar_added).toBe(2);
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'plan.accept'`).get(),
+    ).toEqual({ n: 1 });
+    vi.unstubAllGlobals();
+  });
+
+  it('позначка сесії доходить до вкладеної дії: блоки ПРОПОНУЮТЬСЯ, added=0', async () => {
+    // ⚠️ Другий шар захисту (security-ревʼю релізу). Зовнішній - ескалація
+    // самого plan.accept; цей - те, що навіть коли виконавця покликали
+    // напряму із забрудненим контекстом, вкладений calendar.event однаково
+    // просить ✅. Без нього тут стояв жорсткий tainted:false.
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'ev-9' }), { status: 200 })),
+    );
+    const out = await runPlanAccept(env, { date: DATE, calendar: true }, NOW + 11_000, {
+      chatId: 555,
+      threadId: '99',
+      internal: { tainted: true },
+    });
+    expect(out.result).toMatchObject({ calendar_added: 0, calendar_failed: [] });
+    expect(
+      db.prepare(`SELECT count(*) AS n FROM proposals WHERE kind = 'calendar.event'`).get(),
+    ).toEqual({ n: 2 });
+    vi.unstubAllGlobals();
+  });
+
+  it('нерозібраний час блока - у failed, не мовчазний пропуск', async () => {
+    // ⚠️ hhmmToMin відкидає «24:00» і «9.00»: доти такий блок просто зникав, а
+    // модель звітувала «переніс план у календар» (ревʼю релізу).
+    const { env, db } = setup();
+    db.prepare(
+      `INSERT INTO day_plans (date, status, intent_text, created_at)
+       VALUES (?, 'draft', 'x', 'x')`,
+    ).run(DATE);
+    db.prepare(
+      `INSERT INTO plan_items (id, date, title, kind, window_start, window_end, status)
+       VALUES ('p1', ?, 'Кривий час', 'deep', '24:00', '25:00', 'planned')`,
+    ).run(DATE);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'ev-9' }), { status: 200 })),
+    );
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'plan.accept',
+        payload: { date: DATE, calendar: true },
+        threadId: '99',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW + 9000,
+    );
+    expect(out.mode).toBe('executed');
+    if (out.mode !== 'executed') return;
+    expect(out.result).toMatchObject({ calendar_added: 0, calendar_failed: ['Кривий час'] });
     vi.unstubAllGlobals();
   });
 

@@ -454,10 +454,13 @@ export function recordSentMessage(sentMessages, chatId, threadId, messageId, own
   const at = list.findIndex((e) => e.id === messageId);
   const next =
     at >= 0
-      ? list.map((e, i) => (i === at ? { id: e.id, own: e.own || own } : e))
+      ? list.map((e, i) => (i === at ? { id: e.id, own: Boolean(e.own || own) } : e))
       : [...list, { id: messageId, own }];
   return { ...store, [key]: next.slice(-SENT_MESSAGES_CAP) };
 }
+
+/** Спільна порожня множина - щоб не створювати нову на кожен ключ. */
+const EMPTY_FORGOTTEN = /** @type {ReadonlySet<number>} */ (new Set());
 
 /**
  * Злити два знімки ring-buffer'а (KV ↔ луна ізоляту, див. kv-store).
@@ -466,19 +469,24 @@ export function recordSentMessage(sentMessages, chatId, threadId, messageId, own
  * Telegram message_id росте в межах чату, тож це і є хронологія.
  * @param {KvBlob|null|undefined} a
  * @param {KvBlob|null|undefined} b
- * @param {ReadonlySet<number>} [forgotten] id, які /clear уже зняв назавжди
+ * @param {ReadonlyMap<string, ReadonlySet<number>>} [forgotten] id, які /clear зняв,
+ *   за ключем чату
  * @returns {KvBlob}
  */
-export function mergeSentMessages(a, b, forgotten = new Set()) {
+export function mergeSentMessages(a, b, forgotten = new Map()) {
   const src = [a, b].filter((x) => x && typeof x === 'object');
   /** @type {KvBlob} */
   const out = {};
   for (const key of new Set(src.flatMap((x) => Object.keys(/** @type {KvBlob} */ (x))))) {
+    // ⚠️ Забуті - ПО ЧАТАХ: message_id унікальний лише в межах чату, і пласка
+    // множина викидала б із DM повідомлення з тим самим номером, що стерли в
+    // групі (ревʼю релізу).
+    const gone = forgotten.get(key) ?? EMPTY_FORGOTTEN;
     /** @type {Map<number, TrackedMessage>} */
     const byId = new Map();
     for (const blob of src) {
       for (const e of trackedMessages(/** @type {any} */ (blob)[key])) {
-        if (forgotten.has(e.id)) continue;
+        if (gone.has(e.id)) continue;
         const prev = byId.get(e.id);
         byId.set(e.id, { id: e.id, own: Boolean(prev?.own) || e.own });
       }

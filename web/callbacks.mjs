@@ -18,7 +18,6 @@
 import { parseCallbackData, resolveCallback, markButtonDone, escapeHtml } from './tg-core.mjs';
 import {
   cancelReminder,
-  listActive,
   snoozeReminder,
   snoozeReminderPreset,
   SNOOZE_MINUTES,
@@ -56,6 +55,7 @@ import {
 import { applyEvent } from './api-dashboard.mjs';
 import { readCalendarRange, getCalendarEvent } from './google.mjs';
 import { tgCall, sendTo } from './telegram-client.mjs';
+import { activeRemindersForList } from './commands.mjs';
 import { rememberAssistantQuestion } from './assistant-memory.mjs';
 import { stageItemEdit, stageItemDelete } from './proposals.mjs';
 import { ID_RE } from './agent-core.mjs';
@@ -283,32 +283,42 @@ export async function resolveReminderCancelAll(
   /** @type {Env} */ env,
   /** @type {KvBlob} */ parsed,
 ) {
-  const state = await loadState(env);
-  const active = listActive(state.reminders);
+  // ⚠️ СПИСОК ТОЙ САМИЙ, ЩО ПОКАЗАЛИ (ревʼю релізу). Кнопка «Скасувати всі
+  // (N)» малюється за списком із D1+KV, а скасовувала вона доти лише KV: два
+  // нагадування від мозку давали «Нема що скасовувати», а мікс - гірше, бо
+  // повідомлення переписувалось KV-списком і власник читав «Активних немає»
+  // при живих нагадуваннях.
+  const active = await activeRemindersForList(env);
   if (active.length === 0) return 'Нема що скасовувати.';
 
+  const ids = active.map((/** @type {KvBlob} */ r) => String(r.id));
   // Скасовуємо ПОІМЕННО, а не «перезаписуємо список»: на свіжішій копії міг
   // зʼявитись новий пункт, і пакетне скасування не має його зачепити.
-  const ids = active.map((/** @type {KvBlob} */ r) => r.id);
-  const next = await updateState(env, (s) => ({
+  await updateState(env, (s) => ({
     ...s,
     reminders: ids.reduce(
       (rs, id) => cancelReminder(rs, id),
       Array.isArray(s.reminders) ? s.reminders : [],
     ),
   }));
+  for (const id of ids) {
+    await d1Cancel(env, id).catch((/** @type {any} */ e) => {
+      console.error('rc:all: D1-скасування впало', e?.message);
+    });
+  }
 
+  const left = await activeRemindersForList(env);
   if (parsed.chatId != null && parsed.messageId != null) {
-    const keyboard = buildRemindersKeyboard(next.reminders);
+    const keyboard = buildRemindersKeyboard(left);
     await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
-      text: formatRemindersListMessage(next.reminders),
+      text: formatRemindersListMessage(left),
       parse_mode: 'HTML',
       ...(keyboard.inline_keyboard.length ? { reply_markup: keyboard } : {}),
     });
   }
-  return `🗑 Скасовано ${active.length}`;
+  return `🗑 Скасовано ${active.length - left.length}`;
 }
 
 /** Київський DD.MM HH:MM — для питань редагування нагадування (людський час,

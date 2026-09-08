@@ -21,6 +21,16 @@ export const CORPUS_CAP = 200;
 /** Скільки зразків іде працівнику: більше - це вже переказ корпусу, не зразок. */
 export const SAMPLES_DEFAULT = 12;
 export const SAMPLES_MAX = 30;
+/** Скільки INSERT-ів в одному batch: із запасом під ~50 підзапитів Worker'а. */
+const BATCH_SIZE = 50;
+
+/** @template T @param {T[]} arr @param {number} size @returns {T[][]} */
+function chunks(arr, size) {
+  /** @type {T[][]} */
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
 /** @param {Env} env */
 function db(env) {
@@ -50,20 +60,26 @@ export async function collectOwnStyle(env, nowMs) {
     .all();
   const rows = /** @type {{ id: string, text: string, at: string }[]} */ (results ?? []);
 
-  let added = 0;
+  // ⚠️ BATCH, не цикл із await (ревʼю релізу): запит до D1 - це підзапит
+  // Worker'а, а їх на виклик ~50. Двісті окремих INSERT-ів валили б КОЖЕН
+  // збір приблизно на пʼятдесятому рядку, лишаючи корпус наполовину
+  // записаним. batch() відправляє їх одним запитом.
+  const insert = db(env).prepare(
+    `INSERT INTO style_corpus (id, msg_id, at, text, kind, approved)
+     VALUES (?, ?, ?, ?, 'message', 1)
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  /** @type {ReturnType<typeof insert.bind>[]} */
+  const stmts = [];
   for (const r of rows) {
     const text = String(r.text ?? '').trim();
     if (!text) continue;
-    const id = await textKey(text);
-    const res = await db(env)
-      .prepare(
-        `INSERT INTO style_corpus (id, msg_id, at, text, kind, approved)
-         VALUES (?, ?, ?, ?, 'message', 1)
-         ON CONFLICT (id) DO NOTHING`,
-      )
-      .bind(id, r.id, r.at ?? new Date(nowMs).toISOString(), text)
-      .run();
-    if ((res.meta?.changes ?? 0) === 1) added += 1;
+    stmts.push(insert.bind(await textKey(text), r.id, r.at ?? new Date(nowMs).toISOString(), text));
+  }
+  let added = 0;
+  for (const chunk of chunks(stmts, BATCH_SIZE)) {
+    const res = await db(env).batch(chunk);
+    added += res.reduce((n, one) => n + (one.meta?.changes ?? 0), 0);
   }
   await trimCorpus(env);
   const total = await corpusSize(env);

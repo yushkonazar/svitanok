@@ -43,9 +43,13 @@ describe('«/clear 10 видалив два» — луна читача прот
     expect(many.dm[0]).toEqual({ id: 11, own: false }); // зрізано найстаріші
   });
 
-  it('злиття не тягне назад те, що /clear уже зняв', () => {
-    const merged = mergeSentMessages({ dm: [{ id: 7, own: false }] }, {}, new Set([7]));
+  it('злиття не тягне назад те, що /clear зняв - і лише в ЙОГО чаті', () => {
+    const blob = { dm: [{ id: 7, own: false }], 'g:99': [{ id: 7, own: false }] };
+    const merged = mergeSentMessages(blob, {}, new Map([['dm', new Set([7])]]));
     expect(merged.dm).toEqual([]);
+    // ⚠️ message_id унікальний лише в межах чату: пласка множина викидала б із
+    // групи повідомлення з тим самим номером, що стерли в DM.
+    expect(merged['g:99']).toEqual([{ id: 7, own: false }]);
   });
 
   it('put → load бачить свій запис навіть коли KV віддає старе', async () => {
@@ -76,13 +80,33 @@ describe('«/clear 10 видалив два» — луна читача прот
     let store = recordSentMessage(await loadSentMessages(env), -100, 77, 5);
     store = recordSentMessage(store, -100, 77, 6);
     await putSentMessages(env, store);
-    // /clear зняв 5: пише блоб БЕЗ нього.
+    // /clear зняв 5: пише блоб БЕЗ нього і КАЖЕ, що саме зняв. Здогад «зникло
+    // між знімками» тут не годиться - під нього підпадає й природне
+    // витіснення зі стелі ring-buffer'а (ревʼю релізу).
     const after = { '-100:77': [{ id: 6, own: false }] };
-    await putSentMessages(env, after);
+    await putSentMessages(env, after, { key: '-100:77', ids: [5] });
     // KV навмисно відкочуємо до стану «до /clear» — саме так виглядає
     // застаріле читання, через яке 5 повернувся б у буфер.
     kv.set('sentMessages', JSON.stringify(store));
     expect((await loadSentMessages(env))['-100:77']).toEqual([{ id: 6, own: false }]);
+  });
+
+  it('запис коротшого блоба БЕЗ заяви не робить із id забутого', async () => {
+    // ⚠️ Пастка першої редакції: вона рахувала забутим усе, чого немає в
+    // новому блобі. Але блоб коротшає й сам собою - recordSentMessage зрізає
+    // найстаріший на 51-му повідомленні. За добу активного чату множина
+    // забивалась цим сміттям і витісняла справжні /clear-ові id.
+    const kv = new Map<string, string>();
+    const env = workerEnv({ BRIEFING: memoryKv(kv) });
+    let store = recordSentMessage(await loadSentMessages(env), -100, 77, 1);
+    store = recordSentMessage(store, -100, 77, 2);
+    await putSentMessages(env, store);
+    // Блоб покоротшав (як від стелі), але НІХТО не казав, що id 1 знято.
+    await putSentMessages(env, { '-100:77': [{ id: 2, own: false }] });
+    // KV віддає старий знімок, де 1 ще є - луна не сміє його викидати.
+    kv.set('sentMessages', JSON.stringify(store));
+    const ids = ((await loadSentMessages(env))['-100:77'] as { id: number }[]).map((e) => e.id);
+    expect(ids).toEqual([1, 2]);
   });
 
   it('повторний запис того самого id не дублює рядок', () => {

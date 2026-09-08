@@ -52,23 +52,42 @@ describe('словник дій', () => {
 });
 
 describe('посилання - у тексті, не голим URL', () => {
-  it('drive.write з лінком дає підпис-посилання', () => {
-    expect(
-      humanAction('drive.write', {
-        name: 'ТЕСТ-нотатка.md',
-        link: 'https://drive.google.com/file/d/n1/view',
-      }),
-    ).toBe('Зберіг нотатку «[ТЕСТ-нотатка.md](https://drive.google.com/file/d/n1/view)»');
+  it('drive.write з лінком дає підпис-посилання - але ЛИШЕ з результату', () => {
+    const obj = { name: 'ТЕСТ-нотатка.md', link: 'https://drive.google.com/file/d/n1/view' };
+    expect(humanAction('drive.write', obj, 'done', true)).toBe(
+      'Зберіг нотатку «[ТЕСТ-нотатка.md](https://drive.google.com/file/d/n1/view)»',
+    );
+    // ⚠️ Той самий обʼєкт як PAYLOAD моделі посилання не дає: інакше ядро
+    // своїм голосом ставило б клікабельний лінк, який склала модель
+    // (security-ревʼю релізу).
+    expect(humanAction('drive.write', obj)).toBe('Зберіг нотатку «ТЕСТ-нотатка.md»');
+  });
+
+  it('https-лінк ІЗ PAYLOAD не стає посиланням - його склала модель', () => {
+    // ⚠️ Саме цей випадок ревʼю назвало дірою: перевірка схеми його пускала,
+    // бо схема правильна. Відсікає його джерело, не вигляд.
+    const model = { name: 'Підтвердити акаунт', link: 'https://evil.example/phish' };
+    expect(humanAction('calendar.delete', model)).toBe('Видалив подію «Підтвердити акаунт»');
+    expect(humanAction('calendar.delete', model, 'ask')).toBe(
+      'Видалити подію «Підтвердити акаунт»',
+    );
   });
 
   it('не-https або не з результату - лінка немає (payload пише модель)', () => {
     for (const link of ['javascript:alert(1)', 'http://x/y', 'drive.google.com/f', 42]) {
-      expect(humanAction('drive.write', { name: 'н', link })).toBe('Зберіг нотатку «н»');
+      expect(humanAction('drive.write', { name: 'н', link }, 'done', true)).toBe(
+        'Зберіг нотатку «н»',
+      );
     }
   });
 
   it('дужки в назві не рвуть підпис', () => {
-    const out = humanAction('drive.write', { name: 'а [b] c', link: 'https://x.example/f' });
+    const out = humanAction(
+      'drive.write',
+      { name: 'а [b] c', link: 'https://x.example/f' },
+      'done',
+      true,
+    );
     expect(out).toBe('Зберіг нотатку «[а  b  c](https://x.example/f)»');
   });
 });
@@ -162,6 +181,19 @@ describe('кнопки за працівником і слід вибору', ()
       'm:w:w2:short',
       'm:w:w2:tone',
     ]);
+  });
+
+  it('імʼя з прототипу не валить доставку («constructor» проходить NAME_RE)', () => {
+    // ⚠️ Імʼя працівника приходить від моделі: індексація звичайного обʼєкта
+    // резолвила `constructor` в Object, у якого немає .map, і фінальна
+    // відповідь прогону не доходила взагалі (security-ревʼю релізу).
+    for (const evil of ['constructor', 'toString', 'valueOf']) {
+      expect(() => workerButtons('w9', false, evil), evil).not.toThrow();
+      expect(workerButtons('w9', false, evil)[0]!.map((b) => b.callback_data)).toEqual([
+        'm:w:w9:short',
+        'm:w:w9:tone',
+      ]);
+    }
   });
 
   it('довгий результат - без «.md» у рядку (він уже пішов файлом)', () => {

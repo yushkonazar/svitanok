@@ -87,6 +87,59 @@ describe('збір корпусу', () => {
     await expect(collectOwnStyle(env, NOW)).rejects.toThrow(/TELEGRAM_OWNER_USER_ID/);
   });
 
+  it('двісті рядків - НЕ двісті запитів: збір іде пачками', async () => {
+    // ⚠️ Запит до D1 - підзапит Worker'а, а їх на виклик ~50. Цикл із await
+    // валив би КОЖЕН збір приблизно на пʼятдесятому рядку, лишаючи корпус
+    // наполовину записаним (ревʼю релізу). Тестовий стаб стелі не моделює,
+    // тож міряємо саме кількість звернень.
+    const { env, add, db } = setup();
+    for (let i = 0; i < CORPUS_CAP; i += 1) {
+      add(
+        `m${i}`,
+        OWNER,
+        long(`текст ${i}`),
+        `2026-09-01T10:${String(i % 60).padStart(2, '0')}:00Z`,
+      );
+    }
+    let single = 0;
+    let batched = 0;
+    const inner = env.DB as unknown as {
+      prepare: (sql: string) => unknown;
+      batch: (s: unknown[]) => Promise<unknown>;
+    };
+    const realPrepare = inner.prepare.bind(inner);
+    const realBatch = inner.batch.bind(inner);
+    (env as { DB?: unknown }).DB = {
+      prepare: (sql: string) => {
+        const st = realPrepare(sql) as { bind: (...a: unknown[]) => Record<string, unknown> };
+        return {
+          bind: (...a: unknown[]) => {
+            const b = st.bind(...a);
+            return {
+              ...b,
+              run: async () => (single += 1) && (b.run as () => Promise<unknown>)(),
+              all: async () => (single += 1) && (b.all as () => Promise<unknown>)(),
+              first: async () => (single += 1) && (b.first as () => Promise<unknown>)(),
+              once: b.once,
+            };
+          },
+        };
+      },
+      batch: async (sts: unknown[]) => {
+        batched += 1;
+        return realBatch(sts);
+      },
+    };
+    const { result } = await collectOwnStyle(env, NOW);
+    expect(result.added).toBe(CORPUS_CAP);
+    // Один batch на 50 - не двісті окремих звернень.
+    expect(batched).toBeLessThanOrEqual(Math.ceil(CORPUS_CAP / 50));
+    expect(batched).toBeGreaterThan(0);
+    // SELECT + trim + COUNT - одиниці, не сотні.
+    expect(single).toBeLessThan(10);
+    expect(db.prepare('SELECT count(*) AS n FROM style_corpus').get()).toEqual({ n: CORPUS_CAP });
+  });
+
   it('стеля корпусу тримається між ЗБОРАМИ, найстаріші зайві зникають', async () => {
     // ⚠️ Двома заходами навмисно: сама вибірка вже має LIMIT, тож за один
     // збір стеля не перевищується ніколи, і тест перевіряв би нічого. Корпус

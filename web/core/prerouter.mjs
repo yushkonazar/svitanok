@@ -80,9 +80,16 @@ const VOICE_PREVIEW_MAX_CHARS = 700;
 const STATUS_DRAFT = '▸ Беруся…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
-/** «Відміни останнє» (PR-7 §3.5) - і кілька природних варіантів того самого. */
+/** «Відміни останнє» (PR-7 §3.5) - лише УЗАГАЛЬНЕНІ форми.
+ *
+ * ⚠️ Навмисно вузько (ревʼю релізу). Ширший шаблон пускав будь-яке слово
+ * після «останнє», і «скасуй останнє нагадування» перехоплювалось тут, а
+ * відкочувався останній рядок `undo:%` треду - ним могла бути подія в
+ * календарі. Прохання зняти нагадування видаляло подію. Усе, що називає
+ * ПРЕДМЕТ, тепер іде в мозок: він знає, що саме шукати.
+ */
 const UNDO_LAST_RE =
-  /^(?:відмін(?:и|ити)|скасуй|скасувати|відкоти(?:и|ти)?)\s+(?:останн\S*(?:\s+\S+)?|це)\s*[.!]?$/i;
+  /^(?:відмін(?:и|ити)|скасуй|скасувати|відкоти)\s+(?:останн(?:є|ю\s+дію|ій\s+запис)|це)\s*[.!]?$/i;
 /** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
 const DECISIONS_MAX = 8;
 /** Запас до початку події поверх ETA і фолбек, коли маршрут не порахувався. */
@@ -251,6 +258,13 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
 
   const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
   const send = (/** @type {string} */ body) => reply(env, target, body, nowMs);
+
+  // ⚠️ Лейбл пада, що веде в ЛЕГАСІ (напр. «🔄 Брифінг»), новий шлях НЕ бере
+  // (ревʼю релізу). Інакше він не збігався б із parseNewCommand, не починався
+  // б зі «/», і йшов би в мозок текстом - тобто прогін заради команди, яку
+  // легасі виконує миттєво.
+  const legacy = parseCommand(text);
+  if (legacy && !NEW_COMMAND_NAMES.has(legacy.cmd)) return false;
 
   const cmd = parseNewCommand(text);
   if (cmd) {
@@ -1047,7 +1061,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   const dep = data.match(/^m:dep:([A-Za-z0-9-]{1,40})$/);
   if (dep) return departureToast(env, parsed, /** @type {string} */ (dep[1]), nowMs, defer);
   const it = data.match(/^m:it:([A-Za-z0-9-]{1,40})$/);
-  if (it) return ideaTaskToast(env, parsed, /** @type {string} */ (it[1]), nowMs);
+  if (it) return ideaTaskToast(env, parsed, /** @type {string} */ (it[1]), nowMs, defer);
   const wr = data.match(/^m:wr:(carry|idea)$/);
   if (wr) {
     return linkFollowupToast(env, parsed, /** @type {'carry' | 'idea'} */ (wr[1]), nowMs, defer);
@@ -1141,6 +1155,29 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
 }
 
 /**
+ * Позначка сесії треду для дій, які запускає ТАП, а не прогін.
+ *
+ * ⚠️ Навіщо (security-ревʼю релізу). Містки (`m:dep:`, `m:it:`, `m:buy:`)
+ * кличуть applyPolicy, а кнопку з таким `callback_data` модель може
+ * намалювати сама - простір `m:` для неї відкритий. Жорсткий `tainted:false`
+ * робив би з такої кнопки шлях повз білий список taint. FAIL-SAFE той самий,
+ * що в router.readThreadTaint: збій - вважаємо забрудненою.
+ * @param {Env} env
+ * @param {{ threadId?: number | string | null }} parsed
+ * @param {number} nowMs
+ */
+async function threadTainted(env, parsed, nowMs) {
+  const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
+  try {
+    const sess = await readSession(env, threadKey, nowMs);
+    return sess.tainted === true;
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: taint треду не прочитано - вважаємо забрудненим', e?.message);
+    return true;
+  }
+}
+
+/**
  * Знімок дії з рядка undo - джерело для містків (PR-6). null - рядка немає
  * або він побитий; кнопка тоді чесно каже, що вже пізно.
  * @param {Env} env @param {string} undoId
@@ -1149,7 +1186,11 @@ async function undoSnapshot(env, undoId) {
   if (!env.DB) return null;
   try {
     const row = /** @type {{ payload_json?: string } | null} */ (
-      await env.DB.prepare('SELECT payload_json FROM proposals WHERE id = ?').bind(undoId).first()
+      // ⚠️ Лише рядки `undo:` (ревʼю релізу): id у callback приходить від
+      // моделі, і без цієї умови місток читав би payload будь-якої пропозиції.
+      await env.DB.prepare("SELECT payload_json FROM proposals WHERE id = ? AND kind LIKE 'undo:%'")
+        .bind(undoId)
+        .first()
     );
     return row ? JSON.parse(String(row.payload_json ?? '{}')) : null;
   } catch (/** @type {any} */ e) {
@@ -1178,7 +1219,7 @@ async function departureToast(env, parsed, undoId, nowMs, defer) {
   if (startMs <= nowMs) return 'Подія вже почалась.';
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
-  await clearKeyboard(env, parsed);
+  await dropTappedButton(env, parsed);
   const work = async () => {
     /** @type {number | null} */
     let etaMin = null;
@@ -1209,7 +1250,7 @@ async function departureToast(env, parsed, undoId, nowMs, defer) {
         internal: { dueAtMs: whenMs },
         threadId: parsed.threadId ?? null,
         chatId: parsed.chatId ?? null,
-        tainted: false,
+        tainted: await threadTainted(env, parsed, nowMs),
       },
       nowMs,
     );
@@ -1242,8 +1283,9 @@ async function departureToast(env, parsed, undoId, nowMs, defer) {
  * ідея - другого підтвердження на власний список задач не треба.
  * @param {Env} env @param {CallbackParsed} parsed
  * @param {string} undoId @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
  */
-async function ideaTaskToast(env, parsed, undoId, nowMs) {
+async function ideaTaskToast(env, parsed, undoId, nowMs, defer) {
   const snap = await undoSnapshot(env, undoId);
   const ideaId = String(snap?.id ?? '');
   if (!ideaId) return 'Про цю ідею я вже не памʼятаю деталей.';
@@ -1254,31 +1296,46 @@ async function ideaTaskToast(env, parsed, undoId, nowMs) {
     return null;
   });
   if (!idea) return 'Ідеї вже немає.';
-  await clearKeyboard(env, parsed);
-  /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
-  const out = await applyPolicy(
-    env,
-    {
-      kind: 'tasks.create',
-      payload: { title: idea.title, notes: idea.next_action ?? undefined },
-      threadId: parsed.threadId ?? null,
-      chatId: parsed.chatId ?? null,
-      tainted: false,
-    },
-    nowMs,
-  ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
-  if (out.mode !== 'executed') {
-    await reply(env, target, `⚠️ Задача не створилась: ${out.error ?? out.mode}.`, nowMs);
-    return 'Не вийшло';
-  }
-  await reply(
-    env,
-    target,
-    `📋 Поставив задачу «${idea.title}».`,
-    nowMs,
-    out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : undefined,
-  );
-  return 'Поставив';
+  await dropTappedButton(env, parsed);
+  // ⚠️ У defer, як решта містків (ревʼю релізу): до відповіді тут інакше
+  // встигали б OAuth-токен і POST у Google Tasks, а callback_query Telegram
+  // інвалідує за секунди - власник бачив би тап без жодної реакції.
+  const work = async () => {
+    /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'tasks.create',
+        payload: { title: idea.title, notes: idea.next_action ?? undefined },
+        threadId: parsed.threadId ?? null,
+        chatId: parsed.chatId ?? null,
+        // ⚠️ Позначка сесії, не false (security-ревʼю релізу): кнопку `m:it:`
+        // модель може намалювати сама, і жорстке false робило б із неї шлях
+        // повз `tasks.create ∈ TAINT_ESCALATES`.
+        tainted: await threadTainted(env, parsed, nowMs),
+      },
+      nowMs,
+    ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
+    if (out.mode !== 'executed') {
+      await reply(env, target, `⚠️ Задача не створилась: ${out.error ?? out.mode}.`, nowMs);
+      return;
+    }
+    await reply(
+      env,
+      target,
+      `📋 Поставив задачу «${idea.title}».`,
+      nowMs,
+      out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : undefined,
+    );
+  };
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: задача з ідеї впала', e?.message),
+      ),
+    );
+  } else await work();
+  return 'Ставлю задачу';
 }
 
 /**
@@ -1318,7 +1375,7 @@ async function linkFollowupToast(env, parsed, choice, nowMs, defer) {
 async function boughtToast(env, parsed, wishId, nowMs, defer) {
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
-  await clearKeyboard(env, parsed);
+  await dropTappedButton(env, parsed);
   const work = async () => {
     /** @type {{ mode: string, error?: string, undo?: { buttons: unknown } }} */
     const out = await applyPolicy(
@@ -1328,7 +1385,7 @@ async function boughtToast(env, parsed, wishId, nowMs, defer) {
         payload: { id: wishId, status: 'done' },
         threadId: parsed.threadId ?? null,
         chatId: parsed.chatId ?? null,
-        tainted: false,
+        tainted: await threadTainted(env, parsed, nowMs),
       },
       nowMs,
     ).catch((/** @type {any} */ e) => ({ mode: 'error', error: String(e?.message ?? '') }));
@@ -1788,6 +1845,34 @@ async function clearKeyboard(env, parsed) {
   }).catch(() => {});
 }
 
+/**
+ * Прибрати РІВНО натиснуту кнопку, лишивши решту живими.
+ *
+ * ⚠️ Навіщо окремо від clearKeyboard (ревʼю релізу). Під подією календаря
+ * стоять «🚶 Коли виходити» і «↩». Зняття всієї клавіатури після містка
+ * забирало б і «↩» - тобто відкотити подію кнопкою вже нема як. Тут зникає
+ * лише та кнопка, що вже спрацювала; коли живих не лишилось, кладемо чип із
+ * її написом, як і clearKeyboard.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, data?: unknown,
+ *   replyMarkup?: unknown }} parsed
+ */
+async function dropTappedButton(env, parsed) {
+  if (parsed.messageId == null || parsed.chatId == null) return;
+  const data = String(parsed.data ?? '');
+  const rows = /** @type {any} */ (parsed.replyMarkup)?.inline_keyboard;
+  if (!Array.isArray(rows)) return clearKeyboard(env, parsed);
+  const left = rows
+    .map((row) => (Array.isArray(row) ? row.filter((b) => b?.callback_data !== data) : []))
+    .filter((row) => row.length > 0);
+  if (left.length === 0) return clearKeyboard(env, parsed);
+  await tgCall(env, 'editMessageReplyMarkup', {
+    chat_id: parsed.chatId,
+    message_id: parsed.messageId,
+    reply_markup: { inline_keyboard: left },
+  }).catch(() => {});
+}
+
 /** Напис натиснутої кнопки з розмітки самого повідомлення - Telegram присилає
  *  її в callback_query. Не знайшли - null: вигадувати підпис не будемо.
  *  @param {{ data?: unknown, replyMarkup?: unknown }} parsed */
@@ -1838,7 +1923,7 @@ function decisionText(res) {
   // простроченому - статусне, інакше в рядку опинялись би два підряд.
   if (res.status === 'approved') {
     const icon = actionIcon(res.kind);
-    const body = humanAction(res.kind, source, 'done');
+    const body = humanAction(res.kind, source, 'done', Boolean(fromResult));
     return icon ? `${icon} ${body}.` : `${body}.`;
   }
   const what = lowerFirst(humanAction(res.kind, source, 'ask'));
@@ -1874,8 +1959,11 @@ function proposalLabel(kind, obj) {
   // payload писала модель (можливо, з листа): керівні символи геть, інакше
   // «\n[Ядро] …» у назві підробив би рядок дайджесту (security-ревʼю 05.09).
   // kind не санітизуємо - невідомий kind applyPolicy відкидає ще до запису.
+  // `\s` тут не для краси: U+2028/U+2029 у \p{Cc}\p{Cf} НЕ входять, а рядок
+  // рвуть так само - і саме ними підробляють повідомлення (той самий висновок,
+  // що в promptLine; ревʼю релізу знайшло розбіжність).
   const clean = String(label ?? '')
-    .replace(/\p{Cc}+/gu, ' ')
+    .replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ')
     .trim()
     .slice(0, 80);
   // Гості з РЕЗУЛЬТАТУ виконавця (calendar.event/invite, етап 5): власник
@@ -1915,9 +2003,15 @@ export function describeProposal(kind, obj) {
  * бути не має - скарга власника 08.09: «мені не потрібно бачити внутрішню
  * кухню» («✅ Виконано: collection.export «ТЕСТ-Сервіси»»).
  * @param {string} kind @param {unknown} obj @param {'done' | 'ask'} [mode]
+ * @param {boolean} [fromResult] - obj прийшов із РЕЗУЛЬТАТУ виконавця, не з payload
  */
-export function humanAction(kind, obj, mode = 'done') {
-  const { label, guests, link } = proposalLabel(kind, obj);
+export function humanAction(kind, obj, mode = 'done', fromResult = false) {
+  const { label, guests, link: raw } = proposalLabel(kind, obj);
+  // ⚠️ Посилання - ЛИШЕ з результату виконавця (security-ревʼю релізу).
+  // Доти `proposalLabel` брав `link` із будь-чого, а `decisionText` для ❌/⌛
+  // передавав туди PAYLOAD моделі - і ядро своїм голосом ставило клікабельне
+  // посилання, яке склала модель.
+  const link = fromResult ? raw : null;
   const tail = guests.length ? ` (гості: ${guests.join(', ')})` : '';
   // Посилання - у тексті, не голим URL і не назвою файла (скарги 5 і 16
   // прогону 08.09). Дужки в назві екрануємо: інакше «]» закрив би підпис

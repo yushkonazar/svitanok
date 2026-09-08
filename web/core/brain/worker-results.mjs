@@ -75,7 +75,11 @@ function db(env) {
 /** Кнопки під відповіддю (07 §9 `m:w:<id>:<choice>`), набір - за працівником.
  *  @param {string} id @param {boolean} withMd @param {string} [worker] */
 export function workerButtons(id, withMd, worker = '') {
-  const row = (WORKER_ACTIONS[worker] ?? WORKER_ACTIONS_DEFAULT).map((a) => ({
+  // ⚠️ hasOwn, не просто індексація (security-ревʼю релізу): імʼя працівника
+  // приходить від моделі, і `constructor` проходив би NAME_RE, резолвився в
+  // Object і валив доставку відповіді на `.map`.
+  const set = Object.hasOwn(WORKER_ACTIONS, worker) ? WORKER_ACTIONS[worker] : undefined;
+  const row = (set ?? WORKER_ACTIONS_DEFAULT).map((a) => ({
     text: a.text,
     callback_data: `m:w:${id}:${a.key}`,
   }));

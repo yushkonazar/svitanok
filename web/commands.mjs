@@ -36,6 +36,7 @@ import {
   classifyReminderIntent,
   buildRemindersKeyboard,
   formatRemindersListMessage,
+  listActive,
 } from './reminders-core.mjs';
 import { aggregateStats } from './stats-core.mjs';
 import { masteryTopics } from './mastery-core.mjs';
@@ -43,7 +44,7 @@ import { formatStatsMessage, formatJobsMessage, formatSavedMessage } from './tg-
 import { formatAgendaMessage, buildAgendaKeyboard } from './calendar-core.mjs';
 import { formatRootMessage, buildRootKeyboard } from './roadmap-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
-import { loadState, loadStats, loadSentMessages } from './kv-store.mjs';
+import { loadState, loadStats, loadSentMessages, putSentMessages } from './kv-store.mjs';
 
 /** /clear (§C5): скільки deleteMessage-викликів паралельно за раз — компроміс
  *  між швидкістю й обережністю до rate-limit Telegram/Cloudflare. */
@@ -69,10 +70,13 @@ import { UNKNOWN_REPLY } from './agent-core.mjs';
  * @param {Env} env
  */
 export async function activeRemindersForList(env) {
-  const fromKv = (await loadState(env)).reminders ?? [];
+  // ⚠️ listActive, не сирий масив (ревʼю релізу): у KV лежать і спрацьовані
+  // (`firedTs`), і без фільтра «Скасувати всі» знімало б їх теж - тобто
+  // чіпало те, чого в показаному списку не було.
+  const fromKv = listActive((await loadState(env)).reminders);
   /** @type {Map<string, any>} */
   const byId = new Map();
-  for (const r of Array.isArray(fromKv) ? fromKv : []) byId.set(String(r?.id), r);
+  for (const r of fromKv) byId.set(String(r?.id), r);
   try {
     for (const r of await listActiveReminders(env)) {
       byId.set(String(r.id), {
@@ -420,7 +424,10 @@ export async function handleCommand(
       const key = sentMessagesKey(parsed.chatId, parsed.threadId);
       const fresh = await loadSentMessages(env);
       fresh[key] = trackedMessages(fresh[key]).filter((e) => !forget.includes(e.id));
-      await env.BRIEFING.put('sentMessages', JSON.stringify(fresh));
+      // ⚠️ Через putSentMessages, і зі СПИСКОМ забутих: інакше луна читача
+      // повертала б щойно зняті id із застарілого KV-читання, і наступний
+      // /clear намагався б видалити їх знову (ревʼю релізу).
+      await putSentMessages(env, fresh, { key, ids: forget });
       return sendText(formatClearResult(deleted, ids.length, exchanges));
     }
     case 'whereami': {

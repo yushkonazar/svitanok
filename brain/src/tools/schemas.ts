@@ -222,11 +222,13 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'data.search',
     description:
-      'Пошук по ВСІХ власних даних одним викликом: ідеї, записи колекцій, місця, транзакції. Питання «коли я востаннє був у X», «де я це записував», «чи є в мене щось про Y» - це ОДИН data.search, а не перебір інструментів. scopes звужує джерела (ideas·records·places·money); чати шукає окремий inbox.search.',
+      'Пошук по ВСІХ власних даних одним викликом: ідеї, записи колекцій, місця, транзакції. Питання «коли я востаннє був у X», «де я це записував», «чи є в мене щось про Y» - це ОДИН data.search, а не перебір інструментів. scopes звужує джерела (ideas·records·places·money); чати шукає окремий inbox.search. Пошук ПЛЯМУЄ сесію (назви місць пише Google, описи покупок - мерчант), тож після нього дії назовні просять ✅.',
     args: z.object({
       q: z.string().min(2).max(120),
       scopes: z.array(z.string().max(16)).max(4).optional(),
     }),
+    // Назви місць пише Google, описи покупок - мерчант: чужий текст.
+    tainting: true,
   }),
   tool({
     coreName: 'reminders.cancel',

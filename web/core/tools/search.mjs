@@ -61,6 +61,10 @@ export async function runDataSearch(env, args) {
   if (scopes.length === 0) {
     throw new Error(`scopes: жодного відомого джерела; дозволені: ${SEARCH_SOURCES.join(', ')}`);
   }
+  // ⚠️ Перевірка привʼязки - ДО циклу (ревʼю релізу): усередині вона падала б
+  // у catch кожного скоупа й давала чотири рядки «джерело впало» замість
+  // однієї чесної помилки «бази немає».
+  db(env);
 
   /** @type {unknown[]} */
   const hits = [];
@@ -130,11 +134,11 @@ async function searchOne(env, scope, match, q) {
     // кирилиці - рівно для тих даних, які тут і лежать. Тому підрядок беремо
     // як власник написав: ASCII LIKE однаково зіставить без регістру, а
     // кирилицю власник пише так само, як вона записана.
-    const like = `%${q}%`;
+    const like = likePattern(q);
     const { results } = await db(env)
       .prepare(
         `SELECT place_id, name, address, visits, fetched_at FROM places
-         WHERE name LIKE ? OR address LIKE ?
+         WHERE name LIKE ? ESCAPE '\\' OR address LIKE ? ESCAPE '\\'
          ORDER BY visits DESC, fetched_at DESC LIMIT ${SEARCH_PER_SOURCE}`,
       )
       .bind(like, like)
@@ -150,11 +154,11 @@ async function searchOne(env, scope, match, q) {
   }
   // money: опис мерчанта - зовнішній текст, але він уже нормалізований при
   // записі (finance/store.mjs), тож tainting тут не потрібен.
-  const like = `%${q}%`; // без lower() - див. коментар про кирилицю вище
+  const like = likePattern(q); // без lower() - див. коментар про кирилицю вище
   const { results } = await db(env)
     .prepare(
       `SELECT id, description, amount, currency, amount_uah, at FROM transactions
-       WHERE description LIKE ? ORDER BY at DESC LIMIT ${SEARCH_PER_SOURCE}`,
+       WHERE description LIKE ? ESCAPE '\\' ORDER BY at DESC LIMIT ${SEARCH_PER_SOURCE}`,
     )
     .bind(like)
     .all();
@@ -166,6 +170,18 @@ async function searchOne(env, scope, match, q) {
     currency: r.amount_uah == null ? r.currency : 'UAH',
     at: r.at,
   }));
+}
+
+/**
+ * Підрядок для LIKE з екранованими `%` і `_`.
+ * ⚠️ Не інʼєкція (значення звʼязане), але без цього запит «50%» тихо
+ * розширювався до «50 і будь-що» - тобто результат ширший за питання.
+ * Екран - зворотний слеш, і саме він оголошений в ESCAPE кожного запиту.
+ * @param {string} q
+ */
+function likePattern(q) {
+  const esc = String.fromCharCode(92);
+  return `%${q.replace(/[\\%_]/g, (c) => esc + c)}%`;
 }
 
 /** Перше непорожнє значення запису - підпис для власника. @param {unknown} raw */

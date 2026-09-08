@@ -137,7 +137,8 @@ export async function runPlanDraft(env, args, nowMs) {
  * @param {Env} env
  * @param {{ date?: string, calendar?: boolean }} args
  * @param {number} nowMs
- * @param {{ chatId?: number | string | null, threadId?: number | string | null }} [ctx]
+ * @param {{ chatId?: number | string | null, threadId?: number | string | null,
+ *   internal?: { tainted?: boolean } }} [ctx] - internal заповнює ЛИШЕ ядро
  */
 export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   const date = resolvePlanDate(args.date, nowMs);
@@ -170,6 +171,8 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
           buttons,
           nowMs,
         ),
+      // Позначка сесії йде наскрізь: під taint блоки в календар просять ✅.
+      ctx.internal?.tainted === true,
     );
   }
   return {
@@ -255,16 +258,23 @@ export function calendarProposalText(b) {
  * @param {number} nowMs
  * @param {{ chatId: number | string | null, threadId: number | string | null }} to
  * @param {(text: string, buttons: unknown) => Promise<void>} send
+ * @param {boolean} [tainted] - позначка сесії, з якої прийшов plan.accept
  * @returns {Promise<{ added: number, failed: string[] }>}
  */
-export async function calendarizeBlocks(env, date, rows, nowMs, to, send) {
+export async function calendarizeBlocks(env, date, rows, nowMs, to, send, tainted = false) {
   let added = 0;
   /** @type {string[]} */
   const failed = [];
   for (const r of rows.filter((x) => x.window_start && x.window_end)) {
     const startMs = kyivMs(date, String(r.window_start));
     const endMs = kyivMs(date, String(r.window_end));
-    if (startMs == null || endMs == null) continue;
+    // ⚠️ Нерозібраний час - НЕ мовчазний пропуск (ревʼю релізу): блок просто
+    // не поїхав би в календар, а модель звітувала б «переніс план». Тепер він
+    // у `failed`, і про нього скажуть уголос.
+    if (startMs == null || endMs == null) {
+      failed.push(r.title);
+      continue;
+    }
     /** @type {Awaited<ReturnType<typeof applyPolicy>>} */
     let out;
     try {
@@ -279,7 +289,10 @@ export async function calendarizeBlocks(env, date, rows, nowMs, to, send) {
           },
           threadId: to.threadId ?? null,
           chatId: to.chatId ?? null,
-          tainted: false,
+          // ⚠️ Позначка сесії йде НАСКРІЗЬ (security-ревʼю релізу). Доти тут
+          // стояло жорстке false, і лист «закинь план у календар» клав чужі
+          // назви в календар власника повз `calendar.event ∈ TAINT_ESCALATES`.
+          tainted,
         },
         nowMs,
       );
@@ -292,7 +305,9 @@ export async function calendarizeBlocks(env, date, rows, nowMs, to, send) {
       failed.push(r.title);
       continue;
     }
-    added += 1;
+    // Рахуємо ЛИШЕ те, що справді сталось: пропозиція - ще не подія в
+    // календарі, і звітувати про неї як про додану було б неправдою.
+    if (out.mode === 'executed') added += 1;
     const block = {
       title: r.title,
       date,

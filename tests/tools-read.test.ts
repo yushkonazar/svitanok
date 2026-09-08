@@ -481,6 +481,10 @@ describe('реєстр TOOLS', () => {
       .map(([name]) => name)
       .sort();
     expect(tainting).toEqual([
+      // data.search дістає назви місць (пише Google Places) і описи покупок
+      // (пише мерчант) - той самий чужий текст, через який tainting стоїть на
+      // places.search. Без позначки інʼєкція в назві закладу проходила б далі.
+      'data.search',
       'drive.search',
       // inbox.search віддає текст, який писали ІНШІ люди (Telegram Business,
       // етап 6 PR-3) - головний шлях, яким чужий текст входить у контекст.

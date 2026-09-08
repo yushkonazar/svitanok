@@ -115,6 +115,20 @@ export const TAINT_ESCALATES = Object.freeze([
   // «незворотне потребує підтвердження», лише без слова «назовні». БЕЗ carry
   // це читання власного плану, і воно ескалації не потребує.
   'plan.review',
+  // ⚠️ `plan.accept` з calendar=true СТВОРЮЄ події в календарі (від 08.09 це
+  // T0), тобто виходить назовні тим самим шляхом, що `calendar.event`. Без
+  // цього рядка лист «постав блоки й закинь у календар» клав би чужі назви в
+  // календар власника без жодного ✅ (security-ревʼю релізу). Без calendar -
+  // це власний план дня, і барʼєр там зайвий.
+  'plan.accept',
+  // Бажання-покупка з url стартує щоденний обхід тієї адреси Дослідником
+  // (WebFetch): інʼєкція так робить собі маячок. Без url це просто запис.
+  'wishes.create',
+  // Аналіз ідеї по коду - 40-хвилинний прогін GitHub Actions, тобто гроші.
+  'ideas.analyze',
+  // Ланцюги виходять назовні: столик шле контакт і місце, поїздка - чеклісти,
+  // ціна - щоденний обхід чужої сторінки.
+  'chain.start',
 ]);
 
 /**
@@ -127,6 +141,10 @@ export function taintEscalates(kind, payload) {
     const carry = payload?.carry;
     return Array.isArray(carry) && carry.length > 0;
   }
+  // План дня сам собою локальний; назовні його виводить лише calendar=true.
+  if (kind === 'plan.accept') return payload?.calendar === true;
+  // Бажання без посилання нікуди не ходить.
+  if (kind === 'wishes.create') return typeof payload?.url === 'string' && payload.url !== '';
   return true;
 }
 

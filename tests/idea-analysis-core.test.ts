@@ -538,7 +538,7 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     expect(again.result).toMatchObject({ started: true });
   });
 
-  it('policy: T0 з «↩»; «↩» повертає статус і repo, скасовує ланцюг подією; tainted теж T0', async () => {
+  it('policy: T0 з «↩»; «↩» повертає статус і repo, скасовує ланцюг подією; tainted → ✅', async () => {
     const { env, db, wf } = setup();
     stubFetch();
     const idea = await createIdea(env, { domain: 'інше' });
@@ -574,8 +574,9 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       { id: wf.created[0]!.id, ev: { type: 'artifact', payload: { status: 'cancelled' } } },
     ]);
     expect(await findRunningAnalysis(env, idea.id)).toBeNull();
-    // ⚠️ Звуження taint 08.09: аналіз власної ідеї по власному репо назовні
-    // нічого не виносить, тож у забрудненій сесії він теж іде одразу.
+    // ⚠️ Аналіз по коду - 40-хвилинний прогін GitHub Actions, тобто ГРОШІ, і
+    // під taint він просить ✅ (security-ревʼю релізу: інʼєкція з листа
+    // інакше палила б хвилини Actions мовчки).
     const tainted = await applyPolicy(
       env,
       {
@@ -587,7 +588,7 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       },
       NOW,
     );
-    expect(tainted.mode).toBe('executed');
+    expect(tainted.mode).toBe('proposed');
   });
 });
 
