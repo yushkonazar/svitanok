@@ -7,9 +7,15 @@
 // чесна відмова там краща за мовчазне «зрозумів інакше». Формат лишається
 // стандартним, щоб рядок у базі читався без словника:
 //   FREQ=DAILY|WEEKLY|MONTHLY[;INTERVAL=n][;BYDAY=MO,TU][;BYMONTHDAY=n]
+//   [;BYHOUR=h;BYMINUTE=m]
 //
 // ⚠️ ЧАС РАХУЄ ЯДРО, не модель (той самий інваріант, що для одноразових):
 // модель дає природний текст, парсер тут дістає і правило, і першу появу.
+//
+// ⚠️ ГОДИНА ЖИВЕ В ПРАВИЛІ (BYHOUR/BYMINUTE), а не вичитується з попередньої
+// появи. Інакше весняне переведення годинника ламало б ряд назавжди: 29.03
+// київської 03:30 не існує, момент лягає на 04:30 - і наступна поява, читаючи
+// годину з нього, лишалась би о 04:30 до кінця ряду.
 //
 // ⚠️ НАСТУПНА ПОЯВА РАХУЄТЬСЯ ВІД ПОПЕРЕДНЬОЇ, а не «now + період»: інакше
 // нагадування щодня о 9:00 повзло б уперед на секунди затримки планувальника
@@ -20,18 +26,19 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 /** Дні тижня в порядку RFC 5545 (SU=0, як у Date#getUTCDay). */
 const RFC_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
-/** Українські назви днів → RFC. Ключ - основа, щоб ловити відмінки.
+/** Українська літера. ⚠️ Не `\w`: у JS це [A-Za-z0-9_], і «щопонеділка» такий
+ *  шаблон обривав на «щопонеділ», лишаючи «ка» в тексті часу. */
+const L = "[а-яіїєґА-ЯІЇЄҐ'ʼ]";
+
+/** Основи назв днів → RFC. Ловлять відмінки: «понеділка», «понеділках».
+ *  ⚠️ `серед(?!ин)` - інакше «по середині дня» читалось би як «по середах».
  *  @type {[string, string][]} */
 const DAY_WORDS = [
   ['понеділ', 'MO'],
   ['вівтор', 'TU'],
-  ['середу', 'WE'],
-  ['середа', 'WE'],
-  ['серед', 'WE'],
+  ['серед(?!ин)', 'WE'],
   ['четвер', 'TH'],
-  ['пʼятниц', 'FR'],
-  ["п'ятниц", 'FR'],
-  ['пятниц', 'FR'],
+  ["(?:пʼятниц|п'ятниц|пятниц)", 'FR'],
   ['субот', 'SA'],
   ['неділ', 'SU'],
 ];
@@ -50,17 +57,34 @@ const DAY_HUMAN = {
 /** Числівники, які трапляються в «раз на два тижні». @type {Record<string, number>} */
 const NUM_WORDS = { два: 2, дві: 2, три: 3, чотири: 4 };
 
-/** Українська літера. ⚠️ Не `\w`: у JS це [A-Za-z0-9_], і «щопонеділка» такий
- *  шаблон обривав на «щопонеділ», лишаючи «ка» в тексті часу. */
-const L = "[а-яіїєґА-ЯІЇЄҐ'ʼ]";
-
 /** Стеля інтервалу: більше - це вже не побутовий повтор, а планування року. */
 const MAX_INTERVAL = 12;
 
+/** Одиниця періоду. */
+const UNIT = `(день|дні|днів|доб${L}*|тижн${L}*|місяц${L}*)`;
+
+/** «раз на два тижні», «кожні 3 дні», «кожного місяця». */
 const EVERY_RE = new RegExp(
-  `(?:раз\\s+на|кожн[іи]|що)\\s*(\\d+|два|дві|три|чотири)?\\s*(день|дні|днів|доб[ауи]|тижн${L}*|місяц${L}*)`,
+  `(?:раз\\s+на|кожн${L}+)\\s+(\\d+|два|дві|три|чотири)?\\s*${UNIT}`,
   'i',
 );
+
+/**
+ * «щодня», «щотижня», «щомісяця» - «що» ЗЛИТЕ з одиницею.
+ *
+ * ⚠️ Пробіл після «що» заборонений навмисно (ревʼю): доти шаблон приймав
+ * `що\s*(день|дні|…)`, і звичайне речення «нагадай, що дні здачі звіту вже
+ * завтра» ставало вічним щоденним рядом - зі з'їденим словом «дні» на додачу.
+ */
+const GLUED_RE = /(?<![а-яіїєґ])що(дня|денно|ранку|вечора|ночі|доби|тижня|місяця)(?![а-яіїєґ])/i;
+
+/** Одиниця (у будь-якому відмінку) → частота. @param {string} unit */
+function freqOfUnit(unit) {
+  const u = unit.toLowerCase();
+  if (u.startsWith('тижн')) return 'WEEKLY';
+  if (u.startsWith('місяц')) return 'MONTHLY';
+  return 'DAILY';
+}
 
 /**
  * Дістати правило повтору з фрази. Повертає `rrule` і текст БЕЗ слів про
@@ -76,59 +100,57 @@ export function parseRecurrence(raw) {
   const text = String(raw ?? '');
   if (!text.trim()) return null;
 
-  /** @type {string[]} */
-  const eaten = [];
+  /** Вирізані шматки - ПОЗИЦІЯМИ, не підрядками. ⚠️ `replace(m, ' ')` шукав
+   *  ПЕРШЕ входження рядка, а не те, що збіглося, і при повторі слова різав не
+   *  ту копію (ревʼю). @type {[number, number][]} */
+  const cuts = [];
 
-  // «раз на два тижні», «раз на 3 дні», «кожні два тижні», «щотижня»
   let interval = 1;
   /** @type {'DAILY' | 'WEEKLY' | 'MONTHLY' | null} */
   let freq = null;
-  const every = text.match(EVERY_RE);
+
+  const every = EVERY_RE.exec(text);
   if (every) {
-    eaten.push(every[0]);
+    cuts.push([every.index, every.index + every[0].length]);
     const n = every[1];
     if (n) interval = /^\d+$/.test(n) ? Number(n) : (NUM_WORDS[n.toLowerCase()] ?? 1);
-    const unit = (every[2] ?? '').toLowerCase();
-    freq = unit.startsWith('тижн') ? 'WEEKLY' : unit.startsWith('місяц') ? 'MONTHLY' : 'DAILY';
+    freq = freqOfUnit(every[2] ?? '');
   }
 
-  // «щодня», «щовечора», «щоранку» - завжди DAILY
-  const daily = text.match(/(?<![а-яіїєґ])(щодня|щоденно|щоранку|щовечора|щоночі)(?![а-яіїєґ])/i);
-  if (daily) {
-    eaten.push(daily[0]);
-    freq = 'DAILY';
-  }
-
-  // «щомісяця» окремим словом
-  const monthly = text.match(/(?<![а-яіїєґ])щомісяця(?![а-яіїєґ])/i);
-  if (monthly) {
-    eaten.push(monthly[0]);
-    freq = 'MONTHLY';
+  const glued = GLUED_RE.exec(text);
+  if (glued) {
+    cuts.push([glued.index, glued.index + glued[0].length]);
+    freq = freqOfUnit(glued[1] ?? '');
   }
 
   // «щопонеділка», «по понеділках», «кожного вівторка».
-  // ⚠️ Голе «понеділок» без «що/по/кожного» - це КОНКРЕТНИЙ день, не повтор:
-  // «нагадай у понеділок» не має раптом стати щотижневим рядом.
+  // ⚠️ Голе «понеділок» без префікса - це КОНКРЕТНИЙ день, не повтор: «нагадай
+  // у понеділок» не має раптом стати щотижневим рядом. Виняток - коли тижневе
+  // правило ВЖЕ знайдене: у «раз на два тижні в пʼятницю» день називає саме
+  // його, і без цього пʼятниця тихо губилась (ревʼю).
+  const prefix =
+    freq === 'WEEKLY' ? `(що|по\\s+|кожн${L}+\\s+|[ву]\\s+)` : `(що|по\\s+|кожн${L}+\\s+)`;
   /** @type {string[]} */
   const days = [];
   for (const pair of DAY_WORDS) {
-    const re = new RegExp(`(що|по\\s+|кожн${L}+\\s+)?${pair[0]}${L}*`, 'i');
-    const m = text.match(re);
-    if (!m || !m[1]) continue;
+    const m = new RegExp(`${prefix}${pair[0]}${L}*`, 'i').exec(text);
+    if (!m) continue;
     if (!days.includes(pair[1])) days.push(pair[1]);
-    eaten.push(m[0]);
+    cuts.push([m.index, m.index + m[0].length]);
   }
   if (days.length > 0 && freq !== 'MONTHLY') freq = 'WEEKLY';
 
   // Число місяця - лише для місячного правила («1-го», «15 числа»).
+  // 29-31 приймаємо: у коротких місяцях воно підтягується до останнього дня
+  // (див. monthKey), тож «щомісяця 31-го» не мовчить і не пропускає лютий.
   let monthDay = null;
   if (freq === 'MONTHLY') {
-    const md = text.match(/(\d{1,2})\s*(?:-?го|числа)/i);
+    const md = /(\d{1,2})\s*(?:-?го|числа)/i.exec(text);
     if (md) {
       const n = Number(md[1]);
-      if (n >= 1 && n <= 28) {
+      if (n >= 1 && n <= 31) {
         monthDay = n;
-        eaten.push(md[0]);
+        cuts.push([md.index, md.index + md[0].length]);
       }
     }
   }
@@ -141,10 +163,40 @@ export function parseRecurrence(raw) {
   if (freq === 'WEEKLY' && days.length > 0) parts.push(`BYDAY=${days.join(',')}`);
   if (freq === 'MONTHLY' && monthDay != null) parts.push(`BYMONTHDAY=${monthDay}`);
 
-  let rest = text;
-  for (const m of eaten) rest = rest.replace(m, ' ');
-  rest = rest.replace(/\s{2,}/g, ' ').trim();
+  let rest = '';
+  let pos = 0;
+  for (const [s, e] of cuts.sort((a, b) => a[0] - b[0])) {
+    if (s < pos) continue; // перекриття - перший виграв
+    rest += `${text.slice(pos, s)} `;
+    pos = e;
+  }
+  rest = (rest + text.slice(pos)).replace(/\s{2,}/g, ' ').trim();
   return { rrule: parts.join(';'), rest };
+}
+
+/**
+ * Прибити правило до конкретного моменту першої появи: година, хвилина і - для
+ * місячного - число, якщо власник його не назвав.
+ *
+ * ⚠️ НАВІЩО. Без цього наступна поява читала б годину з попередньої, і будь-який
+ * зсув (весняне переведення годинника, коли названої години просто не існує)
+ * лишався б у ряді назавжди. Якір робить правило самодостатнім.
+ * @param {string} rrule
+ * @param {number} atMs
+ * @returns {string}
+ */
+export function anchorRrule(rrule, atMs) {
+  const rule = parseRrule(rrule);
+  if (!rule) return rrule;
+  const { dateKey, hh, mm } = kyivParts(atMs);
+  const parts = [`FREQ=${rule.freq}`];
+  if (rule.interval > 1) parts.push(`INTERVAL=${rule.interval}`);
+  if (rule.freq === 'WEEKLY' && rule.days.length > 0) parts.push(`BYDAY=${rule.days.join(',')}`);
+  if (rule.freq === 'MONTHLY') {
+    parts.push(`BYMONTHDAY=${rule.monthDay ?? Number(dateKey.slice(8, 10))}`);
+  }
+  parts.push(`BYHOUR=${hh}`, `BYMINUTE=${mm}`);
+  return parts.join(';');
 }
 
 /**
@@ -171,16 +223,11 @@ export function alignFirst(rrule, baseMs) {
     return baseMs;
   }
   if (rule.freq === 'MONTHLY' && rule.monthDay != null) {
-    if (Number(dateKey.slice(8, 10)) === rule.monthDay) return baseMs;
     const [y, m] = dateKey.split('-').map(Number);
     const at = (/** @type {number} */ yy, /** @type {number} */ mo) =>
-      kyivHm(
-        `${yy}-${String(mo).padStart(2, '0')}-${String(rule.monthDay).padStart(2, '0')}`,
-        hh,
-        mm,
-      );
+      kyivHm(monthKey(yy, mo, rule.monthDay ?? 1), hh, mm);
     const thisMonth = at(y ?? 0, m ?? 1);
-    if (thisMonth > baseMs) return thisMonth;
+    if (thisMonth >= baseMs) return thisMonth;
     const total = (y ?? 0) * 12 + ((m ?? 1) - 1) + 1;
     return at(Math.floor(total / 12), (total % 12) + 1);
   }
@@ -192,7 +239,8 @@ export function alignFirst(rrule, baseMs) {
  * зупинити повтор, ніж повторювати за здогадом.
  * @param {unknown} raw
  * @returns {{ freq: 'DAILY'|'WEEKLY'|'MONTHLY', interval: number,
- *   days: string[], monthDay: number | null } | null}
+ *   days: string[], monthDay: number | null, hour: number | null,
+ *   minute: number | null } | null}
  */
 export function parseRrule(raw) {
   const text = String(raw ?? '').trim();
@@ -207,20 +255,27 @@ export function parseRrule(raw) {
   if (freq !== 'DAILY' && freq !== 'WEEKLY' && freq !== 'MONTHLY') return null;
   const interval = kv.INTERVAL ? Number(kv.INTERVAL) : 1;
   if (!Number.isInteger(interval) || interval < 1 || interval > MAX_INTERVAL) return null;
-  const days = kv.BYDAY ? kv.BYDAY.split(',').filter((d) => RFC_DAYS.includes(d)) : [];
+  // ⚠️ Невідомий день - null, а не тихий відсів (ревʼю): «BYDAY=XX» інакше
+  // давало б звичайний тижневий ряд із підписом «щотижня», тобто здогад.
+  const days = kv.BYDAY ? kv.BYDAY.split(',') : [];
+  if (days.some((d) => !RFC_DAYS.includes(d))) return null;
   const monthDay = kv.BYMONTHDAY ? Number(kv.BYMONTHDAY) : null;
-  if (monthDay != null && (!Number.isInteger(monthDay) || monthDay < 1 || monthDay > 28)) {
+  if (monthDay != null && (!Number.isInteger(monthDay) || monthDay < 1 || monthDay > 31)) {
     return null;
   }
-  return { freq, interval, days, monthDay };
+  const hour = kv.BYHOUR ? Number(kv.BYHOUR) : null;
+  const minute = kv.BYMINUTE ? Number(kv.BYMINUTE) : null;
+  if (hour != null && (!Number.isInteger(hour) || hour < 0 || hour > 23)) return null;
+  if (minute != null && (!Number.isInteger(minute) || minute < 0 || minute > 59)) return null;
+  return { freq, interval, days, monthDay, hour, minute };
 }
 
 /**
  * Коли повтор спрацює НАСТУПНОГО разу після `prevMs`.
  *
- * Година й хвилина беруться з `prevMs` за Києвом і переносяться на нову дату
- * тим самим шляхом, що й у парсері часу: інакше перехід на зимовий час зсував
- * би нагадування на годину назавжди.
+ * Година й хвилина беруться з правила (BYHOUR/BYMINUTE), а якщо їх там немає -
+ * з попередньої появи за Києвом. Дата збирається київським «dateKey HH:MM», тож
+ * переведення годинника не зсуває ряд.
  * @param {unknown} rrule
  * @param {number} prevMs
  * @returns {number | null} null = правило нечитабельне
@@ -229,13 +284,15 @@ export function nextOccurrence(rrule, prevMs) {
   const rule = parseRrule(rrule);
   if (!rule) return null;
   const { dateKey, hh, mm } = kyivParts(prevMs);
+  const H = rule.hour ?? hh;
+  const M = rule.minute ?? mm;
 
   if (rule.freq === 'DAILY') {
-    return kyivHm(addDaysToDateKey(dateKey, rule.interval), hh, mm);
+    return kyivHm(addDaysToDateKey(dateKey, rule.interval), H, M);
   }
   if (rule.freq === 'WEEKLY') {
     if (rule.days.length === 0) {
-      return kyivHm(addDaysToDateKey(dateKey, 7 * rule.interval), hh, mm);
+      return kyivHm(addDaysToDateKey(dateKey, 7 * rule.interval), H, M);
     }
     // Найближчий наступний день зі списку. У межах того самого тижня -
     // інтервал не застосовується (він рахує ТИЖНІ, а не появи).
@@ -245,19 +302,18 @@ export function nextOccurrence(rrule, prevMs) {
       if (wanted.has(RFC_DAYS[weekdayOf(key)] ?? '')) {
         // Перескочили на новий тиждень - додаємо решту інтервалу.
         const extra = rule.interval > 1 && weekStarted(dateKey, key) ? 7 * (rule.interval - 1) : 0;
-        return kyivHm(addDaysToDateKey(key, extra), hh, mm);
+        return kyivHm(addDaysToDateKey(key, extra), H, M);
       }
     }
     return null;
   }
-  // MONTHLY: те саме число наступного місяця (BYMONTHDAY ≤ 28, тож
-  // «31 лютого» не буває за побудовою).
+  // MONTHLY: те саме число наступного місяця. Число, якого в місяці немає
+  // (31-ше в лютому), підтягується до останнього дня - і НЕ ратчетиться, бо
+  // береться з правила, а не з попередньої появи.
   const [y, m] = dateKey.split('-').map(Number);
   const day = rule.monthDay ?? Number(dateKey.slice(8, 10));
   const total = (y ?? 0) * 12 + ((m ?? 1) - 1) + rule.interval;
-  const ny = Math.floor(total / 12);
-  const nm = (total % 12) + 1;
-  return kyivHm(`${ny}-${String(nm).padStart(2, '0')}-${String(day).padStart(2, '0')}`, hh, mm);
+  return kyivHm(monthKey(Math.floor(total / 12), (total % 12) + 1, day), H, M);
 }
 
 /**
@@ -279,6 +335,17 @@ export function recurrenceText(rrule) {
   }
   const day = rule.monthDay != null ? ` ${rule.monthDay}-го` : '';
   return rule.interval > 1 ? `${every}місяці${day}` : `щомісяця${day}`;
+}
+
+/** Скільки днів у місяці (григоріанський, із високосними). */
+function daysInMonth(/** @type {number} */ y, /** @type {number} */ m) {
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/** Київський dateKey місяця з числом, підтягнутим до довжини місяця. */
+function monthKey(/** @type {number} */ y, /** @type {number} */ m, /** @type {number} */ day) {
+  const d = Math.min(day, daysInMonth(y, m));
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
 /** Київські дата/година/хвилина моменту. @param {number} ms */

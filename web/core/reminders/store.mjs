@@ -45,14 +45,18 @@ function toReminder(row) {
  * природний текст через парсер ядра) - сюди не потрапляє нічого, що треба
  * інтерпретувати.
  * @param {Env} env
+ * `ifAbsent` - INSERT OR IGNORE: рядок із таким id уже є, і це НЕ помилка.
+ * Потрібно рівно одному місцю - плануванню наступної появи повтору, де id
+ * детермінований, а виклик може повторитись (відкладене «+10 хв» повертає ту
+ * саму строку в доставку). Без цього повторна спроба створювала б ДРУГИЙ ряд.
  * @param {{ id: string, text: string, dueAtMs: number,
  *   chatId?: string | number | null, threadId?: string | number | null,
- *   rrule?: string | null, recurCount?: number }} input
+ *   rrule?: string | null, recurCount?: number, ifAbsent?: boolean }} input
  */
 export async function createReminder(env, input) {
   await db(env)
     .prepare(
-      `INSERT INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
+      `INSERT ${input.ifAbsent ? 'OR IGNORE ' : ''}INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
        VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
     )
     .bind(
@@ -78,7 +82,7 @@ export async function createReminder(env, input) {
  * (там зміна whenMs обнуляла firedTs): нагадування знову «на видачу».
  * @param {Env} env
  * @param {string} id
- * @param {{ text?: string, dueAtMs?: number }} patch
+ * @param {{ text?: string, dueAtMs?: number, rrule?: string | null }} patch
  * @returns {Promise<boolean>} false = нема такого активного
  */
 export async function updateReminder(env, id, patch) {
@@ -91,6 +95,11 @@ export async function updateReminder(env, id, patch) {
   if (patch.dueAtMs != null) {
     sets.push('due_at = ?', "status = 'pending'");
     binds.push(new Date(patch.dueAtMs).toISOString());
+  }
+  // `undefined` = не чіпаємо правило; явний `null` = знімаємо повтор.
+  if (patch.rrule !== undefined) {
+    sets.push('rrule = ?');
+    binds.push(patch.rrule);
   }
   if (sets.length === 0) return false;
   binds.push(id);

@@ -107,19 +107,24 @@ export async function deliverDueReminders(env, nowMs = Date.now()) {
 async function scheduleNext(env, r, nowMs) {
   try {
     const prevMs = Date.parse(r.dueAt);
-    const nextMs = nextOccurrence(r.rrule, Number.isFinite(prevMs) ? prevMs : nowMs);
-    if (nextMs == null || !Number.isFinite(nextMs)) {
+    const nextMs = nextAfterNow(r.rrule, Number.isFinite(prevMs) ? prevMs : nowMs, nowMs);
+    if (nextMs == null) {
       console.error(`reminders: правило «${r.rrule}» не читається - ряд ${r.id} закінчено`);
       return;
     }
     await createReminder(env, {
-      id: crypto.randomUUID().slice(0, 8),
+      // ⚠️ ДЕТЕРМІНОВАНИЙ id, не випадковий (security-ревʼю). Якщо ту саму
+      // строку доставили вдруге (відкладене «+10 хв» повертає її в чергу, а
+      // зняття правила не пройшло), спадкоємець вийде з тим самим id - і
+      // `ifAbsent` перетворить другу спробу на нуль-дію замість ДРУГОГО ряду.
+      id: seriesId(r.id, nextMs),
       text: r.text,
       dueAtMs: nextMs,
       chatId: r.chatId == null ? null : String(r.chatId),
       threadId: r.threadId == null ? null : String(r.threadId),
       rrule: r.rrule,
       recurCount: r.recurCount + 1,
+      ifAbsent: true,
     });
     // Естафету передано - ця строка більше не є носієм правила. Порядок саме
     // такий: спадкоємець уже існує, тож навіть якщо зняття не пройде, ряд не
@@ -130,4 +135,43 @@ async function scheduleNext(env, r, nowMs) {
     // тут не така, як утрата самого нагадування. Слід у лозі обовʼязковий.
     console.error(`reminders: наступну появу ${r.id} не заплановано`, e?.message);
   }
+}
+
+/** Скільки появ поспіль дозволено пропустити, наздоганяючи простій. Стеля -
+ *  щоб зіпсоване правило («наступна поява дорівнює попередній») не крутило
+ *  цикл у воркері з 10 мс CPU. 400 днів покривають будь-який реальний простій. */
+const CATCH_UP_MAX = 400;
+
+/**
+ * Перша поява СУВОРО після `nowMs`.
+ *
+ * ⚠️ НАВІЩО (ревʼю). Гола `nextOccurrence` рахує від попередньої появи, тож
+ * після простою воркера на три доби щоденний ряд віддав би прострочену появу,
+ * її ж доставили б наступним тіком, і власник дістав би три повідомлення
+ * поспіль замість одного. Пропущене - пропущене: ряд наздоганяє мовчки.
+ * @param {unknown} rrule @param {number} prevMs @param {number} nowMs
+ * @returns {number | null} null = правило нечитабельне або не рухається вперед
+ */
+function nextAfterNow(rrule, prevMs, nowMs) {
+  let at = prevMs;
+  for (let i = 0; i < CATCH_UP_MAX; i += 1) {
+    const next = nextOccurrence(rrule, at);
+    if (next == null || !Number.isFinite(next) || next <= at) return null;
+    at = next;
+    if (at > nowMs) return at;
+  }
+  return null;
+}
+
+/** Детермінований id появи: та сама ланка ряду завжди дає той самий рядок.
+ *  FNV-1a - тут не треба криптостійкості, треба стабільність і 8 символів.
+ *  @param {string} prevId @param {number} atMs */
+function seriesId(prevId, atMs) {
+  let h = 0x811c9dc5;
+  const src = `${prevId}:${atMs}`;
+  for (let i = 0; i < src.length; i += 1) {
+    h ^= src.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
 }

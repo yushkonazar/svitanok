@@ -15,7 +15,12 @@
 // двічі, з обох сховищ.
 
 import { parseReminderTime } from '../../reminders-core.mjs';
-import { parseRecurrence, recurrenceText, alignFirst } from '../reminders/recurrence.mjs';
+import {
+  parseRecurrence,
+  recurrenceText,
+  alignFirst,
+  anchorRrule,
+} from '../reminders/recurrence.mjs';
 import {
   createReminder,
   updateReminder,
@@ -93,6 +98,9 @@ export async function runRemindersCreate(env, args, nowMs, internal = {}) {
       // вівторок, парсер часу дав би на завтра - найближчий момент із такою
       // годиною. Власник просив понеділок.
       dueAtMs = alignFirst(rrule, dueAtMs);
+      // Годину (і число для місячного) прибиваємо до першої появи: далі ряд
+      // рахується від ПРАВИЛА, а не від того, що вийшло минулого разу.
+      rrule = anchorRrule(rrule, dueAtMs);
     }
   }
   // remainder НІКОЛИ не буває порожнім: cleanRemainder віддає підпис-заглушку
@@ -156,7 +164,7 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
   }
   const before = await findActive(env, args.id);
 
-  /** @type {{ text?: string, dueAtMs?: number }} */
+  /** @type {{ text?: string, dueAtMs?: number, rrule?: string | null }} */
   const patch = {};
   if (args.text != null) {
     const text = String(args.text).trim();
@@ -165,7 +173,24 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
     patch.text = text;
   }
   if (typeof internal.dueAtMs === 'number') patch.dueAtMs = internal.dueAtMs;
-  else if (args.when != null) patch.dueAtMs = resolveWhen(args.when, nowMs).whenMs;
+  else if (args.when != null) {
+    // ⚠️ ПОВТОР ТУТ ТЕЖ (ревʼю): доти `update` правила не бачив, і «перенеси на
+    // щовівторка» мовчки лишало старий графік. Два випадки:
+    //   новий повтор у фразі - беремо його;
+    //   просто новий час у ряді, що вже повторюється - переприбиваємо годину,
+    //   інакше правило показувало б стару (BYHOUR), а рядок - нову.
+    const rec = parseRecurrence(args.when);
+    const whenText = rec ? rec.rest : String(args.when);
+    if (rec && !whenText.trim()) {
+      throw new Error(
+        `повтор зрозумів, а час - ні: додай годину («${recurrenceText(rec.rrule)} о 9:00»)`,
+      );
+    }
+    patch.dueAtMs = resolveWhen(whenText, nowMs).whenMs;
+    if (rec) patch.dueAtMs = alignFirst(rec.rrule, patch.dueAtMs);
+    const rule = rec ? rec.rrule : before.rrule;
+    if (rule) patch.rrule = anchorRrule(rule, patch.dueAtMs);
+  }
 
   const ok = await updateReminder(env, args.id, patch);
   if (!ok) throw new Error(`нагадування ${args.id} не оновилось - перечитай список`);
@@ -175,6 +200,9 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
       text: patch.text ?? before.text,
       when: patch.dueAtMs != null ? new Date(patch.dueAtMs).toISOString() : before.dueAt,
       deliver_at: deliverAt(patch.dueAtMs ?? Date.parse(before.dueAt)),
+      ...((patch.rrule ?? before.rrule)
+        ? { repeat: recurrenceText(patch.rrule ?? before.rrule) }
+        : {}),
     },
   };
 }

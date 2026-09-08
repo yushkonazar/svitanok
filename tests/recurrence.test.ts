@@ -10,7 +10,12 @@ import {
   nextOccurrence,
   recurrenceText,
 } from '../web/core/reminders/recurrence.mjs';
-import { runRemindersCreate, runRemindersCancel } from '../web/core/tools/reminders.mjs';
+import {
+  runRemindersCreate,
+  runRemindersCancel,
+  runRemindersUpdate,
+} from '../web/core/tools/reminders.mjs';
+import { decideLevel } from '../web/core/policy/core.mjs';
 import { deliverDueReminders } from '../web/core/reminders/deliver.mjs';
 import { listActiveReminders, snoozeReminder } from '../web/core/reminders/store.mjs';
 import { activeRemindersForList } from '../web/commands.mjs';
@@ -73,10 +78,44 @@ describe('розбір фрази', () => {
       expect(parseRecurrence(phrase), phrase).toBeNull();
   });
 
+  it('звичайне речення зі словом «що» повтором НЕ стає', () => {
+    // ⚠️ Найдорожча помилка парсера: сполучник «що» + слово про час робив із
+    // одноразового наміру вічний ряд, ще й з'їдав слово з тексту нагадування.
+    for (const phrase of [
+      'нагадай, що дні здачі звіту вже завтра о 9',
+      'нагадай, що день народження в Олі завтра о 9',
+      'нагадай, що місяць закінчується, завтра о 9',
+      'нагадай по середині дня о 14',
+    ])
+      expect(parseRecurrence(phrase), phrase).toBeNull();
+  });
+
+  it('день тижня після інтервалу: «раз на два тижні в пʼятницю»', () => {
+    expect(parseRecurrence('раз на два тижні в пʼятницю о 9')).toMatchObject({
+      rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR',
+      rest: 'о 9',
+    });
+    // Без тижневого правила голий день лишається конкретною датою.
+    expect(parseRecurrence('в пʼятницю о 9')).toBeNull();
+  });
+
+  it('«кожного тижня» і «кожного місяця» - як «щотижня» і «щомісяця»', () => {
+    expect(parseRecurrence('кожного тижня о 9')?.rrule).toBe('FREQ=WEEKLY');
+    expect(parseRecurrence('кожного місяця о 9')?.rrule).toBe('FREQ=MONTHLY');
+  });
+
+  it('число 29-31 приймається (у короткому місяці підтягнеться)', () => {
+    expect(parseRecurrence('щомісяця 31-го о 9')?.rrule).toBe('FREQ=MONTHLY;BYMONTHDAY=31');
+  });
+
   it('криве правило - null, а не здогад', () => {
     expect(parseRrule('FREQ=YEARLY')).toBeNull();
     expect(parseRrule('FREQ=DAILY;INTERVAL=99')).toBeNull();
-    expect(parseRrule('FREQ=MONTHLY;BYMONTHDAY=31')).toBeNull(); // 31 лютого не буває
+    expect(parseRrule('FREQ=MONTHLY;BYMONTHDAY=32')).toBeNull();
+    // ⚠️ Невідомий день - null, а не тихий відсів: інакше вийшов би звичайний
+    // тижневий ряд із підписом «щотижня», тобто здогад замість відмови.
+    expect(parseRrule('FREQ=WEEKLY;BYDAY=XX')).toBeNull();
+    expect(parseRrule('FREQ=DAILY;BYHOUR=25')).toBeNull();
     expect(parseRrule('')).toBeNull();
     expect(parseRrule(null)).toBeNull();
   });
@@ -89,11 +128,50 @@ describe('наступна поява', () => {
     expect(next - NOW).toBe(24 * 60 * 60_000);
   });
 
-  it('щопонеділка з вівторка - наступний понеділок, не через тиждень від вівторка', () => {
-    const mondayNine = Date.parse('2026-09-07T06:00:00.000Z'); // пн 07.09 09:00
-    const next = nextOccurrence('FREQ=WEEKLY;BYDAY=MO', mondayNine)!;
+  it('щопонеділка з вівторка - найближчий понеділок, а не через тиждень', () => {
+    // NOW - вівторок 08.09: наступна поява має бути 14.09, тобто через 6 днів.
+    const next = nextOccurrence('FREQ=WEEKLY;BYDAY=MO', NOW)!;
     expect(kyiv(next)).toContain('14.09');
     expect(kyiv(next)).toContain('09:00');
+    // З самого понеділка - рівно через тиждень.
+    const monday = Date.parse('2026-09-07T06:00:00.000Z');
+    expect(kyiv(nextOccurrence('FREQ=WEEKLY;BYDAY=MO', monday)!)).toContain('14.09');
+  });
+
+  it('щомісяця 31-го: короткий місяць підтягується, але ряд не зʼїжджає', () => {
+    // ⚠️ Пастка: 31 лютого Date.parse НЕ відкидає, а перекочує на 3 березня -
+    // і ряд, читаючи число з попередньої появи, назавжди їхав би на 3-тє.
+    let at = Date.parse('2026-01-31T07:00:00.000Z'); // 31.01 09:00 Київ
+    const rule = 'FREQ=MONTHLY;BYMONTHDAY=31;BYHOUR=9;BYMINUTE=0';
+    const chain: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      at = nextOccurrence(rule, at)!;
+      chain.push(kyiv(at));
+    }
+    expect(chain).toEqual([
+      expect.stringContaining('28.02'),
+      expect.stringContaining('31.03'),
+      expect.stringContaining('30.04'),
+      expect.stringContaining('31.05'),
+    ]);
+    expect(chain.every((c) => c.includes('09:00'))).toBe(true);
+  });
+
+  it('весняне переведення: ряд повертається на свою годину', () => {
+    // ⚠️ 29.03.2026 київської 03:30 не існує - той день з'їде на 04:30. Але
+    // година живе в ПРАВИЛІ (BYHOUR), тож 30.03 ряд знову о 03:30.
+    const rule = 'FREQ=DAILY;BYHOUR=3;BYMINUTE=30';
+    let at = Date.parse('2026-03-28T01:30:00.000Z'); // 28.03 03:30 Київ
+    const chain: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      at = nextOccurrence(rule, at)!;
+      chain.push(kyiv(at));
+    }
+    expect(chain).toEqual([
+      expect.stringContaining('04:30'),
+      expect.stringContaining('03:30'),
+      expect.stringContaining('03:30'),
+    ]);
   });
 
   it('кілька днів: із понеділка - найближчий четвер, а не наступний понеділок', () => {
@@ -184,8 +262,13 @@ describe('наскрізь: створення, спрацювання, скас
     expect(result.repeat).toBe('щопонеділка');
     // Перша поява - найближчий понеділок 14.09, а не «через тиждень від зараз».
     expect(kyiv(Date.parse(String(result.when)))).toContain('14.09');
+    // Годину прибито до правила: далі ряд рахується від НЕЇ, а не від того,
+    // що вийшло минулого разу.
     const row = db.prepare('SELECT rrule, recur_count FROM reminders').get();
-    expect(row).toEqual({ rrule: 'FREQ=WEEKLY;BYDAY=MO', recur_count: 0 });
+    expect(row).toEqual({
+      rrule: 'FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0',
+      recur_count: 0,
+    });
   });
 
   it('повтор без часу - чесна відмова з підказкою, а не вигадана година', async () => {
@@ -272,6 +355,86 @@ describe('наскрізь: створення, спрацювання, скас
     db.prepare(`UPDATE reminders SET rrule = 'ЩОСЬ'`).run();
     await deliverDueReminders(env, NOW + 24 * 60 * 60_000);
     expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 1 });
+  });
+
+  it('простій воркера: одна поява, а не черга прострочених', async () => {
+    const { env, db, sent } = setup();
+    await runRemindersCreate(env, { text: 'зарядка', when: 'щодня о 09:00' }, NOW, {
+      chatId: 555,
+      threadId: null,
+    });
+    // Воркер мовчав три доби. Пропущене - пропущене: наступна поява має бути
+    // В МАЙБУТНЬОМУ, інакше кожен тік доставляв би ще одну прострочену.
+    const late = NOW + 3.5 * 24 * 60 * 60_000;
+    expect(await deliverDueReminders(env, late)).toMatchObject({ sent: 1 });
+    expect(sent.filter((b) => String(b.text ?? '').includes('зарядка'))).toHaveLength(1);
+    const active = await listActiveReminders(env);
+    expect(active).toHaveLength(1);
+    expect(Date.parse(active[0]!.dueAt)).toBeGreaterThan(late);
+    // Наступний тік нічого не доставляє - черги прострочених немає.
+    expect(await deliverDueReminders(env, late + 60_000)).toMatchObject({ sent: 0 });
+    expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 2 });
+  });
+
+  it('повторна доставка тієї самої ланки не створює ДРУГОГО ряду', async () => {
+    const { env, db } = setup();
+    await runRemindersCreate(env, { text: 'зарядка', when: 'щодня о 09:00' }, NOW, {
+      chatId: 555,
+      threadId: null,
+    });
+    const fired = NOW + 24 * 60 * 60_000;
+    await deliverDueReminders(env, fired);
+    const row = db.prepare(`SELECT id, rrule FROM reminders WHERE status = 'sent'`).get() as {
+      id: string;
+      rrule: string | null;
+    };
+    expect(row.rrule).toBeNull(); // естафету передано - правило знято
+    // ⚠️ Моделюємо збій між INSERT і зняттям правила: строка лишилась носієм
+    // правила й повернулась у доставку через «+10 хв». Другого ряду бути не
+    // має - id наступної ланки детермінований.
+    db.prepare(`UPDATE reminders SET rrule = 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0' WHERE id = ?`).run(
+      row.id,
+    );
+    await snoozeReminder(env, row.id, fired + 10 * 60_000);
+    await deliverDueReminders(env, fired + 10 * 60_000);
+    expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 2 });
+  });
+
+  it('повтор у tainted-сесії просить ✅, одноразове - ні', () => {
+    // ⚠️ «↩» живе 10 хв, а перша поява буває й через тиждень: інʼєкція з листа
+    // не має ставити власнику вічний ряд без підтвердження.
+    expect(decideLevel('reminders.create', true, { when: 'щодня о 3:00', text: 'x' })).toEqual({
+      level: 'T1',
+    });
+    expect(decideLevel('reminders.create', true, { when: 'завтра о 9', text: 'x' })).toEqual({
+      level: 'T0',
+    });
+    expect(decideLevel('reminders.create', false, { when: 'щодня о 3:00', text: 'x' })).toEqual({
+      level: 'T0',
+    });
+  });
+
+  it('правку теж розуміє: новий повтор і новий час у наявному ряді', async () => {
+    const { env, db } = setup();
+    const { result } = await runRemindersCreate(
+      env,
+      { text: 'зарядка', when: 'щодня о 09:00' },
+      NOW,
+      { chatId: 555, threadId: null },
+    );
+    const id = String(result.id);
+    // Новий графік з фрази.
+    const upd = await runRemindersUpdate(env, { id, when: 'щовівторка о 8:00' }, NOW);
+    expect(upd.result.repeat).toBe('щовівторка');
+    expect(db.prepare(`SELECT rrule FROM reminders WHERE id = ?`).get(id)).toEqual({
+      rrule: 'FREQ=WEEKLY;BYDAY=TU;BYHOUR=8;BYMINUTE=0',
+    });
+    // Просто новий час - повтор лишається, але година в правилі оновлюється.
+    const moved = await runRemindersUpdate(env, { id, when: 'о 10:30' }, NOW);
+    expect(moved.result.repeat).toBe('щовівторка');
+    expect(db.prepare(`SELECT rrule FROM reminders WHERE id = ?`).get(id)).toEqual({
+      rrule: 'FREQ=WEEKLY;BYDAY=TU;BYHOUR=10;BYMINUTE=30',
+    });
   });
 
   it('у списку видно, що це повтор', async () => {

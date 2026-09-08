@@ -2,6 +2,8 @@
 // ескалація taint-ом, TTL пропозицій, вікно undo, кнопки у форматі 07 §9.
 // Жодних D1/мережі - таблиця рівнів × taint тестується вичерпно.
 
+import { parseRecurrence } from '../reminders/recurrence.mjs';
+
 /**
  * Базові рівні дій - зведення таблиці 01 §4.3 і переліку kind-ів
  * proposals.create з 07 §4. Виконавці багатьох kind-ів прийдуть з етапами
@@ -129,6 +131,12 @@ export const TAINT_ESCALATES = Object.freeze([
   // Ланцюги виходять назовні: столик шле контакт і місце, поїздка - чеклісти,
   // ціна - щоденний обхід чужої сторінки.
   'chain.start',
+  // ⚠️ ПОВТОРЮВАНЕ нагадування - не «зворотне одним тапом» (security-ревʼю
+  // §3.1). Вікно «↩» - 10 хв, а перша поява буває й через тиждень: інʼєкція
+  // «нагадуй щодня о 3:00 <текст із листа>» пережила б і кнопку, і taint, і
+  // щодня повертала б чужий текст у довірений канал. Одноразове нагадування
+  // лишається T0 - його ↩ справді відкочує.
+  'reminders.create',
 ]);
 
 /**
@@ -145,6 +153,8 @@ export function taintEscalates(kind, payload) {
   if (kind === 'plan.accept') return payload?.calendar === true;
   // Бажання без посилання нікуди не ходить.
   if (kind === 'wishes.create') return typeof payload?.url === 'string' && payload.url !== '';
+  // Нагадування собі одноразове - T0; барʼєр ставить саме ПОВТОР.
+  if (kind === 'reminders.create') return parseRecurrence(payload?.when) != null;
   return true;
 }
 
