@@ -153,42 +153,35 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
     chatId,
     threadId: ctx.threadId ?? env.TOPIC_ASSISTANT ?? null,
   });
-  /** @type {string[]} */
-  const proposals = [];
+  /** @type {{ added: number, failed: string[] }} */
+  let calendar = { added: 0, failed: [] };
   if (args.calendar === true) {
-    for (const r of res.items.filter((x) => x.window_start && x.window_end)) {
-      const startMs = kyivMs(date, String(r.window_start));
-      const endMs = kyivMs(date, String(r.window_end));
-      if (startMs == null || endMs == null) continue;
-      const out = await applyPolicy(
-        env,
-        {
-          kind: 'calendar.event',
-          payload: {
-            title: r.title,
-            startIso: new Date(startMs).toISOString(),
-            endIso: new Date(endMs).toISOString(),
-          },
-          threadId: ctx.threadId ?? null,
-          tainted: false,
-        },
-        nowMs,
-      );
-      if (out.mode !== 'proposed') continue;
-      proposals.push(out.proposal.id);
-      // Пропозицію створило ядро, не модель - кнопки ✅/❌ шле теж ядро, інакше
-      // вона лежить open без сліду в чаті (приймання 05.09, B2).
-      await sendCalendarProposal(
-        env,
-        { chatId, threadId: ctx.threadId ?? null },
-        { title: r.title, date, start: String(r.window_start), end: String(r.window_end) },
-        out.proposal.buttons,
-        nowMs,
-      );
-    }
+    calendar = await calendarizeBlocks(
+      env,
+      date,
+      res.items,
+      nowMs,
+      { chatId, threadId: ctx.threadId ?? null },
+      (text, buttons) =>
+        sendCalendarProposalRaw(
+          env,
+          { chatId, threadId: ctx.threadId ?? null },
+          text,
+          buttons,
+          nowMs,
+        ),
+    );
   }
   return {
-    result: { date, status: 'accepted', reminders: res.reminders, calendar_proposals: proposals },
+    result: {
+      date,
+      status: 'accepted',
+      reminders: res.reminders,
+      calendar_added: calendar.added,
+      // Названо вголос: мовчазний пропуск блока лишав би план наполовину
+      // перенесеним, і власник дізнався б про це лише з календаря.
+      calendar_failed: calendar.failed,
+    },
     prev: { date, reminderIds: res.reminderIds, status: plan.status },
   };
 }
@@ -242,26 +235,89 @@ export async function runPlanReview(env, args, nowMs) {
 }
 
 /**
- * Текст пропозиції «блок у календар» - спільний для plan.accept і ланцюга.
+ * Текст під блоком, що поїхав у календар - спільний для plan.accept і ланцюга.
+ * ⚠️ Від 08.09 подія без гостей створюється ОДРАЗУ (T0 з «↩»), тож це вже не
+ * питання «додати?», а звіт «додав» із кнопкою відкату.
  * @param {{ title: string, date: string, start: string, end: string }} b
  */
 export function calendarProposalText(b) {
   const [, m, d] = b.date.split('-');
-  return `🗓 «${b.title}» ${d}.${m} ${b.start}-${b.end} - додати в календар?`;
+  return `🗓 «${b.title}» ${d}.${m} ${b.start}-${b.end} - у календарі.`;
 }
 
 /**
- * Надіслати пропозицію з кнопками в тред (T1 виконавець календаря - етап 7,
- * до того після ✅ буде чесне «виконавця ще немає»).
+ * Блоки плану в календар. Одна дія на блок, кожна зі своїм «↩»; збій одного
+ * блока НЕ зупиняє решту - інакше одна відмова Google лишала б план
+ * наполовину перенесеним і без жодного слова власнику.
+ * @param {Env} env
+ * @param {string} date
+ * @param {{ title: string, window_start: string | null, window_end: string | null }[]} rows
+ * @param {number} nowMs
+ * @param {{ chatId: number | string | null, threadId: number | string | null }} to
+ * @param {(text: string, buttons: unknown) => Promise<void>} send
+ * @returns {Promise<{ added: number, failed: string[] }>}
+ */
+export async function calendarizeBlocks(env, date, rows, nowMs, to, send) {
+  let added = 0;
+  /** @type {string[]} */
+  const failed = [];
+  for (const r of rows.filter((x) => x.window_start && x.window_end)) {
+    const startMs = kyivMs(date, String(r.window_start));
+    const endMs = kyivMs(date, String(r.window_end));
+    if (startMs == null || endMs == null) continue;
+    /** @type {Awaited<ReturnType<typeof applyPolicy>>} */
+    let out;
+    try {
+      out = await applyPolicy(
+        env,
+        {
+          kind: 'calendar.event',
+          payload: {
+            title: r.title,
+            startIso: new Date(startMs).toISOString(),
+            endIso: new Date(endMs).toISOString(),
+          },
+          threadId: to.threadId ?? null,
+          chatId: to.chatId ?? null,
+          tainted: false,
+        },
+        nowMs,
+      );
+    } catch (/** @type {any} */ e) {
+      console.error(`plan: блок «${r.title}» у календар не пішов`, e?.message);
+      failed.push(r.title);
+      continue;
+    }
+    if (out.mode === 'error') {
+      failed.push(r.title);
+      continue;
+    }
+    added += 1;
+    const block = {
+      title: r.title,
+      date,
+      start: String(r.window_start),
+      end: String(r.window_end),
+    };
+    // Кнопку шле ЯДРО: дію зробило воно, і без рядка в чаті власник не мав би
+    // ані сліду, ані «↩» (приймання 05.09, B2).
+    const buttons = out.mode === 'executed' ? (out.undo?.buttons ?? null) : out.proposal.buttons;
+    await send(calendarProposalText(block), buttons);
+  }
+  return { added, failed };
+}
+
+/**
+ * Рядок про блок у календарі з кнопкою («↩» для T0, ✅/❌ для події з гостями).
  * @param {Env} env
  * @param {{ chatId: number | string | null, threadId: number | string | null }} to
- * @param {{ title: string, date: string, start: string, end: string }} block
+ * @param {string} text
  * @param {unknown} buttons
  * @param {number} nowMs
  */
-async function sendCalendarProposal(env, to, block, buttons, nowMs) {
+export async function sendCalendarProposalRaw(env, to, text, buttons, nowMs) {
   if (to.chatId == null) {
-    console.error('plan.accept: чат для пропозиції календаря невідомий');
+    console.error('plan.accept: чат для рядка про календар невідомий');
     return;
   }
   const threadKey = to.threadId == null ? null : String(to.threadId);
@@ -271,11 +327,11 @@ async function sendCalendarProposal(env, to, block, buttons, nowMs) {
       chatId: to.chatId,
       threadId: threadKey == null || threadKey === 'dm' ? null : Number(threadKey),
       kind: 'send',
-      payload: { text: calendarProposalText(block), reply_markup: { inline_keyboard: buttons } },
+      payload: { text, ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}) },
     },
     nowMs,
   );
   await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) => {
-    console.error('plan.accept: драйн пропозиції календаря впав, доставить sweeper', e?.message);
+    console.error('plan.accept: драйн рядка про календар впав, доставить sweeper', e?.message);
   });
 }

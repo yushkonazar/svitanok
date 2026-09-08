@@ -256,9 +256,10 @@ describe('pickHint - пріоритет і mute', () => {
     await expect(
       muteHintTopic(env, 'погода', { threadId: 'dm', tainted: false }, AT_1010),
     ).rejects.toThrow(/невідома тема/);
-    // tainted - пропозиція T1, не запис.
+    // ⚠️ Звуження taint 08.09: приглушення теми - локальний запис, і в
+    // забрудненій сесії воно виконується так само одразу.
     const tainted = await muteHintTopic(env, 'trips', { threadId: 'dm', tainted: true }, AT_1010);
-    expect(tainted.mode).toBe('proposed');
+    expect(tainted.mode).toBe('executed');
   });
 
   it('formatHint екранує HTML у тексті кандидата', () => {

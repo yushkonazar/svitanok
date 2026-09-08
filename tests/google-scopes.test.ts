@@ -269,10 +269,20 @@ describe('Sheets через конверсію Drive (S-N4-4)', () => {
 
 describe('виконавці етапу 7 у policy', () => {
   /** Пропозиція → ✅ → результат виконавця. */
+  /**
+   * Дія за політикою в однаковій формі, який би рівень вона не мала.
+   * ⚠️ Від 08.09 задача, нотатка й експорт - T0 (одразу, з «↩»), тож тест
+   * перевіряє ВИКОНАВЦЯ, а не рівень; рівні перевіряє tests/policy.test.ts.
+   * Помилка на шляху T0 летить винятком - зводимо її до тієї ж форми {ok:false}.
+   */
   async function approve(env: Env, kind: string, payload: Record<string, unknown>) {
-    const decided = await applyPolicy(env, { kind, payload, tainted: false }, NOW);
-    if (decided.mode !== 'proposed')
-      throw new Error(`очікувалась пропозиція, а не ${decided.mode}`);
+    const decided = await applyPolicy(env, { kind, payload, tainted: false }, NOW).catch(
+      (e: Error) => ({ mode: 'threw' as const, error: e.message }),
+    );
+    if (decided.mode === 'threw') return { ok: false, error: decided.error };
+    if (decided.mode === 'error') return { ok: false, error: decided.error };
+    if (decided.mode === 'executed')
+      return { ok: true, status: 'approved', executed: true, result: decided.result };
     return resolveProposal(
       env,
       { id: decided.proposal.id, choice: 'ok', word: decided.proposal.word ?? undefined },
@@ -280,7 +290,7 @@ describe('виконавці етапу 7 у policy', () => {
     );
   }
 
-  it('tasks.create - T1, після ✅ задача справді створена', async () => {
+  it('tasks.create - після рішення задача справді створена', async () => {
     const { env } = makeEnv(ALL);
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ id: 't9', title: 'молоко', due: '2026-09-10T00:00:00.000Z' }), {

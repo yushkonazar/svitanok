@@ -5,7 +5,7 @@
 // «виконана» пропозиція.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { applyPolicy, resolveProposal } from '../web/core/policy/proposals.mjs';
+import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
@@ -59,10 +59,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** T1: пропозиція → ✅ → виконавець. */
+/**
+ * Дія за політикою в однаковій формі, який би рівень вона не мала.
+ * ⚠️ Від 08.09 подія БЕЗ гостей - T0 (виконується одразу, «↩» її видаляє), а з
+ * гостями лишається T1 (це вже лист іншій людині). Тест має перевіряти
+ * ВИКОНАВЦЯ, а не рівень, тож обидві гілки зводяться до одного результату;
+ * сам рівень перевіряється окремим тестом нижче.
+ */
 async function approve(env: Env, kind: string, payload: Record<string, unknown>) {
   const out = await applyPolicy(env, { kind, payload, threadId: '99', tainted: false }, NOW);
-  if (out.mode !== 'proposed') throw new Error(`mode ${out.mode}`);
+  if (out.mode === 'error') return { ok: false, error: out.error };
+  if (out.mode === 'executed')
+    return { ok: true, status: 'approved', executed: true, result: out.result };
   return resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1000);
 }
 
@@ -107,16 +115,18 @@ describe('calendar.event', () => {
     }
   });
 
-  it('кривий payload (без title / кінець до початку) - execute-failed без походу в Google', async () => {
+  // ⚠️ Помилка на шляху T0 ЛЕТИТЬ назовні, а не вертається полем: applyPolicy
+  // виконує T0 без перехоплення, і ловить її вже router (502 tool-failed із
+  // причиною). Тиша тут була б гіршою за виняток - модель мусить знати, що
+  // події немає.
+  it('кривий payload (без title / кінець до початку) - помилка без походу в Google', async () => {
     const { env, calls } = setup();
-    const res = await approve(env, 'calendar.event', {
-      startIso: '2026-09-07T16:00:00.000Z',
-      endIso: '2026-09-07T15:00:00.000Z',
-    });
-    expect(res).toMatchObject({
-      ok: false,
-      error: expect.stringContaining('потрібні title, startIso, endIso'),
-    });
+    await expect(
+      approve(env, 'calendar.event', {
+        startIso: '2026-09-07T16:00:00.000Z',
+        endIso: '2026-09-07T15:00:00.000Z',
+      }),
+    ).rejects.toThrow(/потрібні title, startIso, endIso/);
     expect(calls.filter((c) => c.url.includes('googleapis.com/calendar'))).toHaveLength(0);
   });
 
@@ -126,15 +136,13 @@ describe('calendar.event', () => {
       'fetch',
       vi.fn(async () => new Response('{"error":"x"}', { status: 403 })),
     );
-    const res = await approve(env, 'calendar.event', {
-      title: 'X',
-      startIso: '2026-09-07T15:00:00.000Z',
-      endIso: '2026-09-07T16:00:00.000Z',
-    });
-    expect(res).toMatchObject({
-      ok: false,
-      error: expect.stringContaining('Google не створив подію'),
-    });
+    await expect(
+      approve(env, 'calendar.event', {
+        title: 'X',
+        startIso: '2026-09-07T15:00:00.000Z',
+        endIso: '2026-09-07T16:00:00.000Z',
+      }),
+    ).rejects.toThrow(/Google не створив подію/);
   });
 });
 
@@ -170,5 +178,74 @@ describe('invite', () => {
       attendees: ['Хтось'],
     });
     expect(none).toMatchObject({ ok: false, error: expect.stringContaining('жодного email') });
+  });
+});
+
+describe('рівень події - за гостями (реліз 08.09)', () => {
+  it('без гостей - T0 одразу з «↩»; «↩» видаляє подію з календаря', async () => {
+    const { env, calls } = setup();
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'calendar.event',
+        payload: {
+          title: 'Своя справа',
+          startIso: '2026-09-07T15:00:00.000Z',
+          endIso: '2026-09-07T16:00:00.000Z',
+        },
+        threadId: '99',
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(out.mode).toBe('executed');
+    const undoId = out.mode === 'executed' ? out.undo?.id : undefined;
+    expect(undoId).toBeTruthy();
+    expect(await resolveUndo(env, String(undoId), NOW + 1000)).toMatchObject({
+      ok: true,
+      status: 'undone',
+    });
+    const del = calls.find((c) => c.url.includes('/events/ev-1'));
+    expect(del).toBeDefined();
+  });
+
+  it('З ГОСТЯМИ - T1: лист іншій людині назад не забереш', async () => {
+    const { env } = setup();
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'calendar.event',
+        payload: {
+          title: 'Зустріч',
+          startIso: '2026-09-07T15:00:00.000Z',
+          endIso: '2026-09-07T16:00:00.000Z',
+          attendees: ['olya@x.ua'],
+        },
+        threadId: '99',
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(out).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
+  });
+
+  it('порожній список гостей - це «без гостей», не T1', async () => {
+    const { env } = setup();
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'calendar.event',
+        payload: {
+          title: 'Х',
+          startIso: '2026-09-07T15:00:00.000Z',
+          endIso: '2026-09-07T16:00:00.000Z',
+          attendees: ['  '],
+        },
+        threadId: '99',
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(out.mode).toBe('executed');
   });
 });

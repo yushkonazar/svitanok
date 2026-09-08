@@ -79,3 +79,35 @@ export async function createTask(env, input) {
     clearTimeout(timer);
   }
 }
+
+/**
+ * Видалити задачу - «↩» після T0 (реліз 08.09: tasks.create переїхала з T1).
+ * 404/410 - успіх: задачі вже немає, а саме цього «↩» і домагався.
+ * @param {Env} env
+ * @param {string} taskId
+ */
+export async function deleteTask(env, taskId) {
+  await assertGoogleScope(env, 'tasks');
+  const token = await googleAccessToken(env);
+  if (!token) throw new Error('Google OAuth недоступний (секрети або мережа)');
+  const id = String(taskId ?? '').trim();
+  // Ідентифікатор іде В ШЛЯХ URL: усе, крім безпечного алфавіту Google, -
+  // відмова, а не encodeURIComponent. Різниця принципова: «..» після
+  // кодування лишається «..», а шлях від нього змінює адресата.
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(id)) throw new Error(`tasks: id «${id}» не схожий на задачу`);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TASKS_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${TASKS_API}/lists/${DEFAULT_TASKLIST}/tasks/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: ctrl.signal,
+    });
+    if (!res.ok && res.status !== 404 && res.status !== 410) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Tasks DELETE HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}

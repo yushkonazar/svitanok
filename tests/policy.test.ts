@@ -27,7 +27,7 @@ const NOW = Date.parse('2026-08-28T10:00:00.000Z');
 
 function d1() {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_base.sql', '0002_assistant.sql']) {
+  for (const f of ['0001_base.sql', '0002_assistant.sql', '0010_reminders_address.sql']) {
     db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', f), 'utf8'));
   }
   return {
@@ -60,13 +60,43 @@ beforeEach(() => {
 describe('policy core — таблиця рівнів', () => {
   it('канонічні рядки: T0 виконується, T1 питає, T2 питає зі словом', () => {
     expect(decideLevel('facts.set', false)).toEqual({ level: 'T0' });
-    expect(decideLevel('calendar.event', false)).toEqual({ level: 'T1' });
+    expect(decideLevel('contact', false)).toEqual({ level: 'T1' });
     expect(decideLevel('forget', false)).toEqual({ level: 'T2' });
   });
 
-  it('taint ескалює ЛИШЕ T0 → T1; T1/T2 не рухаються', () => {
-    expect(decideLevel('facts.set', true)).toEqual({ level: 'T1' });
-    expect(decideLevel('calendar.event', true)).toEqual({ level: 'T1' });
+  // ⚠️ Правило рівня від 08.09: ✅ потрібне ЛИШЕ там, де дія незворотна,
+  // видима іншим людям або коштує грошей. Задача у власному списку, нотатка
+  // у власній теці й подія у власному календарі - жодне з трьох.
+  it('своє - T0 з «↩»; чуже й платне - T1', () => {
+    for (const kind of ['tasks.create', 'drive.write', 'collection.export', 'calendar.event'])
+      expect(decideLevel(kind, false), kind).toEqual({ level: 'T0' });
+    for (const kind of ['invite', 'contact', 'settings', 'gemini.image', 'calendar.delete'])
+      expect(decideLevel(kind, false), kind).toEqual({ level: 'T1' });
+  });
+
+  it('подія З ГОСТЯМИ - T1: лист іншій людині назад не забереш', () => {
+    expect(decideLevel('calendar.event', false, { attendees: ['x@y.ua'] })).toEqual({
+      level: 'T1',
+    });
+    expect(decideLevel('calendar.event', false, { attendees: [] })).toEqual({ level: 'T0' });
+  });
+
+  // ⚠️ Звуження від 08.09: taint підіймає рівень ЛИШЕ для дій НАЗОВНІ.
+  // Інʼєкція з листа, що записала зайве нагадування, - прикро й відкочується
+  // тапом; інʼєкція, що створила подію в календарі чи виклала файл у Drive, - ні.
+  it('taint ескалює лише дії назовні; локальні лишаються T0', () => {
+    for (const kind of ['calendar.event', 'tasks.create', 'drive.write', 'collection.export'])
+      expect(decideLevel(kind, true), kind).toEqual({ level: 'T1' });
+    for (const kind of [
+      'facts.set',
+      'reminders.create',
+      'ideas.create',
+      'wishes.create',
+      'records.create',
+      'plan.accept',
+      'finance.rule',
+    ])
+      expect(decideLevel(kind, true), kind).toEqual({ level: 'T0' });
     expect(decideLevel('forget', true)).toEqual({ level: 'T2' });
   });
 
@@ -154,16 +184,22 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
 });
 
 describe('T1/T2: пропозиції', () => {
-  it('tainted facts.set → пропозиція T1; ✅ виконує, повторний ✅ — already', async () => {
+  // ⚠️ Джерело T1 тут - source=owner, а НЕ taint: від 08.09 taint більше не
+  // підіймає локальні записи (див. «taint ескалює лише дії назовні»).
+  it('facts.set(source=owner) → пропозиція T1; ✅ виконує, повторний ✅ — already', async () => {
     const out = await applyPolicy(
       env,
-      { kind: 'facts.set', payload: { kind: 'contact', key: 'np', value: 'x' }, tainted: true },
+      {
+        kind: 'facts.set',
+        payload: { kind: 'contact', key: 'np', value: 'x', source: 'owner' },
+        tainted: false,
+      },
       NOW,
     );
     expect(out.mode).toBe('proposed');
     const id = out.mode === 'proposed' ? out.proposal.id : '';
     expect(out.mode === 'proposed' && out.proposal.level).toBe('T1');
-    // ДО ✅ факту немає - у tainted нічого не пишеться одразу.
+    // ДО ✅ факту немає - пропозиція нічого не пише одразу.
     expect((await runFactsGet(env, { kind: 'contact', key: 'np' })).result).toHaveLength(0);
 
     const ok = await resolveProposal(env, { id, choice: 'ok' }, NOW + 60_000);
@@ -175,20 +211,31 @@ describe('T1/T2: пропозиції', () => {
   });
 
   // Сценарій приймання етапу 2 (пункт 6): після листа сесія брудна, і
-  // «нагадай завтра забрати» мусить прийти ПРОПОЗИЦІЄЮ з ✅, а не відмовою.
-  // Мозок власного барʼєра більше не має - рішення тут.
-  it('tainted reminders.create → пропозиція T1, а не відмова (01 §4.3)', async () => {
+  // «нагадай завтра забрати» мусить спрацювати, а не впертись у відмову.
+  // ⚠️ Від 08.09 воно не просить навіть ✅: нагадування - запис у ВЛАСНІЙ базі,
+  // і ціна інʼєкції тут - один зайвий рядок, що знімається «↩». Барʼєр
+  // лишився там, де дія виходить назовні (tainted-тест нижче).
+  it('tainted reminders.create виконується одразу з «↩» (звуження 08.09)', async () => {
     const out = await applyPolicy(
       env,
       {
         kind: 'reminders.create',
         payload: { text: 'забрати посилку', when: 'завтра о 10' },
         tainted: true,
+        chatId: 555,
       },
       NOW,
     );
-    expect(out.mode).toBe('proposed');
-    expect(out.mode === 'proposed' && out.proposal.level).toBe('T1');
+    expect(out.mode).toBe('executed');
+  });
+
+  it('tainted tasks.create - ПРОПОЗИЦІЯ: задача йде в чужий сервіс', async () => {
+    const out = await applyPolicy(
+      env,
+      { kind: 'tasks.create', payload: { title: 'з листа' }, tainted: true },
+      NOW,
+    );
+    expect(out).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
   });
 
   // Приймання 01.09: модель тричі вгадувала kind для календаря
@@ -210,7 +257,11 @@ describe('T1/T2: пропозиції', () => {
   it('❌ — rejected без виконання; прострочена — expired', async () => {
     const a = await applyPolicy(
       env,
-      { kind: 'facts.set', payload: { kind: 'place', key: 'дім', value: 1 }, tainted: true },
+      {
+        kind: 'facts.set',
+        payload: { kind: 'place', key: 'дім', value: 1, source: 'owner' },
+        tainted: false,
+      },
       NOW,
     );
     const idA = a.mode === 'proposed' ? a.proposal.id : '';
@@ -221,7 +272,11 @@ describe('T1/T2: пропозиції', () => {
 
     const b = await applyPolicy(
       env,
-      { kind: 'facts.set', payload: { kind: 'place', key: 'дача', value: 1 }, tainted: true },
+      {
+        kind: 'facts.set',
+        payload: { kind: 'place', key: 'дача', value: 1, source: 'owner' },
+        tainted: false,
+      },
       NOW,
     );
     const idB = b.mode === 'proposed' ? b.proposal.id : '';
@@ -286,7 +341,11 @@ describe('T1/T2: пропозиції', () => {
   it('подвійний тап ✅ (конкурентні resolve) — виконання рівно одне', async () => {
     const out = await applyPolicy(
       env,
-      { kind: 'facts.set', payload: { kind: 'setting', key: 'dbl', value: 1 }, tainted: true },
+      {
+        kind: 'facts.set',
+        payload: { kind: 'setting', key: 'dbl', value: 1, source: 'owner' },
+        tainted: true,
+      },
       NOW,
     );
     const id = out.mode === 'proposed' ? out.proposal.id : '';
@@ -357,14 +416,18 @@ describe('router: write-інструмент через policy', () => {
     expect(body.undo?.id).toBeTruthy();
   });
 
-  it('tainted-сесія (позначка 5 хв тому): mode=proposed, факт НЕ записано', async () => {
+  // ⚠️ Від 08.09 taint підіймає лише дії НАЗОВНІ, тож сам факт-налаштування під
+  // taint виконується одразу; пропозицію тут робить source=owner (привласнення
+  // слів власника). Що taint ескалює, а що ні - перевіряє «taint ескалює лише
+  // дії назовні» вище.
+  it('tainted-сесія: привласнення слів власника - пропозиція, факт НЕ записано', async () => {
     store.raw
       .prepare(
         `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count) VALUES ('thr-1', '', '', ?, 0)`,
       )
       .run(NOW - 5 * 60_000);
     const res = await handleInternal(
-      await signedRequest({ args: { kind: 'setting', key: 'x', value: 1 } }, 'n2'),
+      await signedRequest({ args: { kind: 'setting', key: 'x', value: 1, source: 'owner' } }, 'n2'),
       routerEnv(),
       NOW,
     );
@@ -414,8 +477,9 @@ describe('router: write-інструмент через policy', () => {
     expect(decideLevel('plan.review', true, { carry: ['all'] })).toEqual({ level: 'T1' });
     expect(decideLevel('plan.review', false, { carry: ['all'] })).toEqual({ level: 'T0' });
     expect(decideLevel('plan.draft', true)).toEqual({ level: 'T0' });
-    expect(decideLevel('plan.accept', true)).toEqual({ level: 'T1' });
-    expect(decideLevel('facts.set', true)).toEqual({ level: 'T1' });
+    // Від 08.09 локальні записи taint не підіймає - лише масовий carry вище.
+    expect(decideLevel('plan.accept', true)).toEqual({ level: 'T0' });
+    expect(decideLevel('facts.set', true)).toEqual({ level: 'T0' });
   });
 
   // Приймання 05.09, B1: kind факту звіряється ДО пропозиції, не у виконавці

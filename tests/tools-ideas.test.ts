@@ -319,13 +319,15 @@ describe('policy: рівні й виконавці ідей', () => {
     await expect(runIdeasUpdate(env, { id: '1', title: null }, NOW)).rejects.toThrow(/title/);
   });
 
-  it('tainted-сесія: create стає пропозицією T1, а не записом', async () => {
+  it('tainted-сесія: create виконується з «↩» (звуження 08.09)', async () => {
+    // Ідея - запис у ВЛАСНІЙ базі; інʼєкція з листа тут коштує один рядок,
+    // який знімається тапом. Барʼєр лишився для дій назовні (policy.test.ts).
     const out = await applyPolicy(
       env,
       { kind: 'ideas.create', payload: { title: 'З листа' }, tainted: true },
       NOW,
     );
-    expect(out.mode).toBe('proposed');
-    expect(count('SELECT COUNT(*) AS n FROM ideas')).toBe(0);
+    expect(out.mode).toBe('executed');
+    expect(count('SELECT COUNT(*) AS n FROM ideas')).toBe(1);
   });
 });

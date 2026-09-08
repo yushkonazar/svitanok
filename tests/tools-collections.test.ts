@@ -351,11 +351,13 @@ describe('collections + records наскрізь (D1 0006 + FTS 0008)', () => {
 });
 
 describe('policy: рівні й виконавці колекцій', () => {
-  it('рівні за 01 §4.3: create/update T0, records.delete T1, collection.export T1, forget T2; collections.delete = forget', () => {
+  it('рівні: create/update/export T0, records.delete T1, forget T2; collections.delete = forget', () => {
     expect(ACTION_LEVELS['collections.create']).toBe('T0');
     expect(ACTION_LEVELS['records.update']).toBe('T0');
     expect(ACTION_LEVELS['records.delete']).toBe('T1');
-    expect(ACTION_LEVELS['collection.export']).toBe('T1');
+    // ⚠️ Від 08.09 експорт - T0: файл не виходить нікуди, крім чату власника,
+    // і відкочувати в ньому нічого (тому й без «↩»).
+    expect(ACTION_LEVELS['collection.export']).toBe('T0');
     expect(ACTION_LEVELS['forget']).toBe('T2');
     expect(TOOLS['collections.delete']?.write?.kind).toBe('forget');
     expect(TOOLS['records.list']?.write).toBeUndefined();
@@ -455,7 +457,7 @@ describe('policy: рівні й виконавці колекцій', () => {
     });
   });
 
-  it('collection.export (T1): після ✅ документ .csv іде в outbox треду пропозиції', async () => {
+  it('collection.export (T0): документ .csv іде в outbox треду одразу', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(
@@ -475,13 +477,8 @@ describe('policy: рівні й виконавці колекцій', () => {
       },
       NOW,
     );
-    if (out.mode !== 'proposed') throw new Error('очікувалась пропозиція T1');
-    const res = await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1);
-    expect(res).toMatchObject({
-      ok: true,
-      executed: true,
-      result: { filename: 'Сервіси.csv', rows: 1 },
-    });
+    // T0 від 08.09: документ іде одразу, без ✅.
+    expect(out).toMatchObject({ mode: 'executed', result: { filename: 'Сервіси.csv', rows: 1 } });
     const doc = d1.db
       .prepare(`SELECT chat_id, thread_id, kind, payload_json FROM outbox`)
       .get() as {

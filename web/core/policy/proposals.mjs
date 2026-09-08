@@ -65,7 +65,7 @@ import {
   resolveAttendees,
   assertGoogleScope,
 } from '../../google.mjs';
-import { createTask } from '../adapters/tasks.mjs';
+import { createTask, deleteTask } from '../adapters/tasks.mjs';
 import {
   generateImage,
   generateVideo,
@@ -76,7 +76,7 @@ import {
 } from '../adapters/gemini.mjs';
 import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
 import { sendMediaBytes } from '../tg/media.mjs';
-import { ensureFolderPath, uploadCsvAsSheet, uploadFile } from '../adapters/drive.mjs';
+import { ensureFolderPath, uploadCsvAsSheet, uploadFile, trashFile } from '../adapters/drive.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import {
@@ -454,10 +454,12 @@ export const EXECUTORS = {
       return { result: out };
     },
   },
-  // Нотатка в Drive (S-8-3, 07 §4 drive.write): T1, тека «Світанок/нотатки».
+  // Нотатка в Drive (S-8-3, 07 §4 drive.write): від 08.09 T0 з «↩» - тека
+  // ВЛАСНА, і «↩» кладе файл у кошик Drive (не «назавжди»: відкат має бути
+  // так само зворотним, як і сама дія).
   // Тут - НЕ uploadMarkdown: той best-effort і віддає null при збої, бо
-  // документ у власника вже є. Після ✅ такої підстраховки немає, тож збій
-  // мусить бути винятком.
+  // документ у власника вже є. Після рішення такої підстраховки немає, тож
+  // збій мусить бути винятком.
   'drive.write': {
     async execute(env, payload) {
       const name = driveNoteName(payload.name);
@@ -474,6 +476,7 @@ export const EXECUTORS = {
         mimeType: 'text/markdown',
       });
       return {
+        prev: { file_id: file.id },
         result: {
           file_id: file.id,
           name: file.name,
@@ -482,6 +485,10 @@ export const EXECUTORS = {
           link: file.link,
         },
       };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.file_id) return;
+      await trashFile(env, String(snapshot.file_id));
     },
   },
   // Налаштування Mini App (07 §4 kind=settings, T1): той самий блоб KV, що
@@ -558,6 +565,8 @@ export const EXECUTORS = {
   // Google Tasks (S-8-4, етап 7 PR-1): T1, без «↩» - видалити чужу задачу
   // одним рухом Tasks API не дає без окремого скоупа на видалення, а
   // «відкотив» без реального видалення було б брехнею.
+  // T0 з «↩» від 08.09 (реліз): задача у ВЛАСНОМУ списку - не незворотна, не
+  // видима іншим і не платна. «↩» видаляє її з Tasks.
   'tasks.create': {
     async execute(env, payload) {
       const { id, title, due, link } = await createTask(env, {
@@ -565,7 +574,11 @@ export const EXECUTORS = {
         notes: payload.notes,
         due: payload.due ?? payload.date ?? null,
       });
-      return { result: { task_id: id, title, due, link } };
+      return { prev: { task_id: id }, result: { task_id: id, title, due, link } };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.task_id) return;
+      await deleteTask(env, String(snapshot.task_id));
     },
   },
   'collection.export': {
@@ -858,9 +871,19 @@ export const EXECUTORS = {
   },
   // Календар (етап 5 PR-2 - мінімум для S-1-9/S-1-10; повна Google-ревізія -
   // етап 7): після ✅ подія створюється справді, а не «виконавця ще немає».
+  // T0 з «↩» від 08.09 (реліз) - але ЛИШЕ без гостей: подія з гостями лишається
+  // T1, бо це вже лист іншій людині (див. levelFor у policy/core.mjs).
+  // «↩» видаляє подію з календаря.
   'calendar.event': {
     async execute(env, payload) {
-      return { result: await createEventFromPayload(env, payload, false) };
+      const result = await createEventFromPayload(env, payload, false);
+      return { prev: { event_id: result.event_id ?? null }, result };
+    },
+    async undo(env, snapshot) {
+      if (!snapshot?.event_id) return;
+      await assertGoogleScope(env, 'calendar');
+      const res = await deleteCalendarEvent(env, { eventId: String(snapshot.event_id) });
+      if (!res.ok) throw new Error('calendar: Google не видалив подію (лог)');
     },
   },
   invite: {
@@ -1110,6 +1133,12 @@ function db(env) {
 }
 
 /**
+ * Дії, які живуть ЛИШЕ через proposals.create: власного інструмента в мозку в
+ * них немає (07 §4). Для них T0 через обгортку легітимний - див. гейт нижче.
+ */
+const TOOLLESS_KINDS = ['calendar.event', 'tasks.create', 'drive.write', 'collection.export'];
+
+/**
  * Виконати ДІЮ за політикою: T0 (у чистій сесії) - одразу + undo-рядок;
  * T1/T2 (і будь-що в tainted) - пропозиція з кнопками. Це єдиний вхід для
  * write-шляхів router'а.
@@ -1142,7 +1171,14 @@ export async function applyPolicy(env, action, nowMs) {
   // неї модель виконувала б T0-дії миттєво й повз схему самого інструмента,
   // хоча опис у мозку обіцяє власнику протилежне. Дія, яку ескалювали до
   // T1 (напр. facts.set із source=owner), через обгортку легітимна.
-  if (action.viaProposal && level === 'T0') {
+  //
+  // ⚠️ ВИНЯТОК від 08.09. Чотири дії переїхали з T1 у T0 (задача, нотатка,
+  // експорт, подія без гостей), а власного інструмента в мозку в них немає -
+  // proposals.create для них ЄДИНИЙ шлях. Заборонити їм T0 означало б, що
+  // після зниження рівня вони перестали працювати взагалі. Мотив гейта тут
+  // не діє: «повз схему свого інструмента» неможливо обійти те, чого нема, а
+  // payload кожної з них перевіряє її ж виконавець.
+  if (action.viaProposal && level === 'T0' && !TOOLLESS_KINDS.includes(action.kind)) {
     return {
       mode: 'error',
       error: `direct-tool: ${action.kind} - це T0, клич інструмент напряму, не proposals.create`,

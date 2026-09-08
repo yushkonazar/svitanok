@@ -51,7 +51,15 @@ function setup() {
   const d1 = d1FromSqlite(MIGRATIONS);
   const env = workerEnv({
     DB: d1.stub,
-    BRIEFING: memoryKv(new Map()),
+    // Токен свіжий (Date.now(), не NOW: інакше ядро пішло б по новий у мережу)
+    // - блоки в календар тепер створюються одразу, і без нього тест міряв би
+    // лише відмову OAuth.
+    BRIEFING: memoryKv(
+      new Map([['googleToken', JSON.stringify({ token: 'tok', expMs: Date.now() + 3_600_000 })]]),
+    ),
+    GOOGLE_CLIENT_ID: 'c',
+    GOOGLE_CLIENT_SECRET: 's',
+    GOOGLE_REFRESH_TOKEN: 'r',
     TELEGRAM_CHAT_ID: '555',
     TOPIC_ASSISTANT: '99',
   });
@@ -128,7 +136,7 @@ describe('plan.* через policy', () => {
       expect((out.result as { placed: unknown[] }).placed).toHaveLength(2);
   });
 
-  it('plan.accept: нагадування на блоки, «↩» скасовує; calendar=true - пропозиції T1 calendar.event', async () => {
+  it('plan.accept: нагадування на блоки, «↩» скасовує; calendar=true - події одразу з «↩»', async () => {
     const { env, db, act } = setup();
     await act('plan.intent', { date: DATE, items: ITEMS });
     const out = await act('plan.accept', { date: DATE });
@@ -138,7 +146,7 @@ describe('plan.* через policy', () => {
       date: DATE,
       status: 'accepted',
       reminders: 2,
-      calendar_proposals: [],
+      calendar_added: 0,
     });
     expect(out.undo).toBeDefined();
     expect(
@@ -153,20 +161,23 @@ describe('plan.* через policy', () => {
     ).toEqual({ n: 2 });
     expect((await getDayPlan(env, DATE))?.status).toBe('draft');
 
+    // ⚠️ Від 08.09 подія без гостей - T0: блоки їдуть у календар ОДРАЗУ, а в
+    // тред іде рядок із «↩» на кожен. Пропозицій ✅/❌ тут більше немає.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'ev-1' }), { status: 200 })),
+    );
     const withCal = await act('plan.accept', { date: DATE, calendar: true }, NOW + 2000);
     expect(withCal.mode).toBe('executed');
     if (withCal.mode !== 'executed') return;
-    const ids = (withCal.result as { calendar_proposals: string[] }).calendar_proposals;
-    expect(ids).toHaveLength(2);
-    const props = db
-      .prepare(`SELECT kind, level, status FROM proposals WHERE kind = 'calendar.event'`)
+    expect(withCal.result).toMatchObject({ calendar_added: 2, calendar_failed: [] });
+    const undos = db
+      .prepare(`SELECT kind, level, status FROM proposals WHERE kind = 'undo:calendar.event'`)
       .all();
-    expect(props).toEqual([
-      { kind: 'calendar.event', level: 'T1', status: 'open' },
-      { kind: 'calendar.event', level: 'T1', status: 'open' },
+    expect(undos).toEqual([
+      { kind: 'undo:calendar.event', level: 'T0', status: 'open' },
+      { kind: 'undo:calendar.event', level: 'T0', status: 'open' },
     ]);
-    // Пропозиції створило ядро - кнопки ✅/❌ теж шле ядро в тред (приймання
-    // 05.09, B2: інакше вони лежали open без сліду в чаті).
     const sent = (
       db.prepare(`SELECT thread_id, payload_json FROM outbox WHERE kind = 'send'`).all() as {
         thread_id: string;
@@ -175,8 +186,8 @@ describe('plan.* через policy', () => {
     ).map((r) => ({ thread: r.thread_id, p: JSON.parse(r.payload_json) }));
     expect(sent).toHaveLength(2);
     expect(sent[0]?.thread).toBe('99');
-    expect(sent[0]?.p.text).toBe('🗓 «Презентація» 07.09 08:00-09:20 - додати в календар?');
-    expect(JSON.stringify(sent[0]?.p.reply_markup)).toContain(`"p:${ids[0]}:ok"`);
+    expect(sent[0]?.p.text).toBe('🗓 «Презентація» 07.09 08:00-09:20 - у календарі.');
+    expect(JSON.stringify(sent[0]?.p.reply_markup)).toContain('"u:');
     expect(sent[1]?.p.text).toContain('«Банк»');
 
     await expect(act('plan.accept', { date: '2026-09-09' })).rejects.toThrow('немає чернетки');
@@ -206,6 +217,39 @@ describe('plan.* через policy', () => {
       { chat_id: '777', thread_id: null },
       { chat_id: '777', thread_id: null },
     ]);
+    vi.unstubAllGlobals();
+  });
+
+  it('один блок не пішов у календар - решта йде, і провал названо вголос', async () => {
+    // ⚠️ Без ізоляції одна відмова Google лишала б план наполовину
+    // перенесеним, і власник дізнався б про це лише з календаря.
+    const { env, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    let n = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        n += 1;
+        return n === 1
+          ? new Response('{"error":"x"}', { status: 403 })
+          : new Response(JSON.stringify({ id: 'ev-2' }), { status: 200 });
+      }),
+    );
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'plan.accept',
+        payload: { date: DATE, calendar: true },
+        threadId: '99',
+        chatId: 555,
+        tainted: false,
+      },
+      NOW + 5000,
+    );
+    expect(out.mode).toBe('executed');
+    if (out.mode !== 'executed') return;
+    expect(out.result).toMatchObject({ calendar_added: 1, calendar_failed: ['Презентація'] });
+    vi.unstubAllGlobals();
   });
 
   it('plan.update: done/moves/drop за назвою з «↩»; plan.review - огляд і перенос ["all"]', async () => {

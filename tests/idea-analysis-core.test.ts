@@ -538,7 +538,7 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
     expect(again.result).toMatchObject({ started: true });
   });
 
-  it('policy: T0 з «↩»; «↩» повертає статус і repo, скасовує ланцюг подією; tainted → пропозиція', async () => {
+  it('policy: T0 з «↩»; «↩» повертає статус і repo, скасовує ланцюг подією; tainted теж T0', async () => {
     const { env, db, wf } = setup();
     stubFetch();
     const idea = await createIdea(env, { domain: 'інше' });
@@ -574,6 +574,8 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       { id: wf.created[0]!.id, ev: { type: 'artifact', payload: { status: 'cancelled' } } },
     ]);
     expect(await findRunningAnalysis(env, idea.id)).toBeNull();
+    // ⚠️ Звуження taint 08.09: аналіз власної ідеї по власному репо назовні
+    // нічого не виносить, тож у забрудненій сесії він теж іде одразу.
     const tainted = await applyPolicy(
       env,
       {
@@ -585,7 +587,7 @@ describe('startIdeaAnalysis (виконавець ideas.analyze mode=code)', () 
       },
       NOW,
     );
-    expect(tainted.mode).toBe('proposed');
+    expect(tainted.mode).toBe('executed');
   });
 });
 

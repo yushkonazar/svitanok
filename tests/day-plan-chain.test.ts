@@ -66,7 +66,14 @@ function setup() {
   const wf = fakeWorkflow();
   const env = workerEnv({
     DB: d1.stub,
-    BRIEFING: memoryKv(new Map()),
+    // Свіжий токен (Date.now(), не NOW): блоки в календар тепер створюються
+    // одразу, і без нього тест міряв би лише відмову OAuth.
+    BRIEFING: memoryKv(
+      new Map([['googleToken', JSON.stringify({ token: 'tok', expMs: Date.now() + 3_600_000 })]]),
+    ),
+    GOOGLE_CLIENT_ID: 'c',
+    GOOGLE_CLIENT_SECRET: 's',
+    GOOGLE_REFRESH_TOKEN: 'r',
     TELEGRAM_CHAT_ID: '555',
     TOPIC_ASSISTANT: '99',
     DAY_PLAN: wf.binding,
@@ -286,7 +293,7 @@ describe('runDayPlanChain', () => {
 
   // Приймання 05.09, B2: «🗓 У календар» створює пропозиції T1 - і ланцюг сам
   // шле кожну з кнопками ✅/❌, інакше вони лежать open без сліду в чаті.
-  it('«🗓 У календар»: план прийнято, кожна пропозиція calendar.event іде в тред із кнопками p:', async () => {
+  it('«🗓 У календар»: план прийнято, кожен блок іде в календар із «↩» у треді', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
     const noQuestions = {
@@ -302,14 +309,23 @@ describe('runDayPlanChain', () => {
       carry: [{ payload: { choice: 'carry_none' } }],
     });
     const { io, sent } = fakeIo(db, chainId);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'ev-1' }), { status: 200 })),
+    );
     await runDayPlanChain(env, { chainId, date: DATE }, step, io);
+    // ⚠️ Від 08.09 подія без гостей - T0: блок їде в календар одразу, а в тред
+    // іде рядок із «↩», не пропозиція ✅/❌.
     const cal = sent.find((s) => s.text.startsWith('🗓 «Банк» 07.09 '));
-    expect(cal?.text).toBe('🗓 «Банк» 07.09 08:00-09:20 - додати в календар?');
-    expect(cal?.buttons.some((b) => /^p:[0-9a-f-]{36}:ok$/.test(b))).toBe(true);
+    expect(cal?.text).toBe('🗓 «Банк» 07.09 08:00-09:20 - у календарі.');
+    expect(cal?.buttons.some((b) => b.startsWith('u:'))).toBe(true);
     expect(
-      db.prepare(`SELECT kind, level, status FROM proposals WHERE kind = 'calendar.event'`).all(),
-    ).toEqual([{ kind: 'calendar.event', level: 'T1', status: 'open' }]);
+      db
+        .prepare(`SELECT kind, level, status FROM proposals WHERE kind = 'undo:calendar.event'`)
+        .all(),
+    ).toEqual([{ kind: 'undo:calendar.event', level: 'T0', status: 'open' }]);
     expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
+    vi.unstubAllGlobals();
   });
 
   it('«Не питай сьогодні» - день skipped, ланцюг done, більше нічого не шле', async () => {

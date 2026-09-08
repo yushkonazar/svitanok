@@ -197,3 +197,26 @@ export async function uploadCsvAsSheet(env, file) {
     link: typeof json.webViewLink === 'string' ? json.webViewLink : null,
   };
 }
+
+/**
+ * Видалити файл Drive - «↩» після T0 (реліз 08.09: drive.write переїхала з
+ * T1). Кошик, а не назавжди (`trashed`), - «↩» має бути так само зворотним,
+ * як і сама дія; 404 - успіх, файла вже немає.
+ * @param {Env} env
+ * @param {string} fileId
+ */
+export async function trashFile(env, fileId) {
+  const id = String(fileId ?? '').trim();
+  // Той самий алфавіт, що й у Tasks: id іде в ШЛЯХ, і «..» тут змінив би адресата.
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(id)) throw new Error(`drive: id «${id}» не схожий на файл`);
+  const token = await tokenOrThrow(env);
+  await driveFetch(`${DRIVE_API}/files/${id}?supportsAllDrives=true`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  }).catch((/** @type {any} */ e) => {
+    // Файла вже немає - «↩» саме цього й домагався.
+    if (/HTTP 40[34]/.test(String(e?.message ?? ''))) return null;
+    throw e;
+  });
+}

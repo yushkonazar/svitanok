@@ -2,7 +2,7 @@
 // Словник дій, обсяг T2, посилання в тексті, статуси прогону - усе, що власник
 // читає очима і де технічна назва була б внутрішньою кухнею.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ACTION_PHRASE, actionPhrase, actionIcon, plural } from '../web/core/tg/phrase.mjs';
 import { ACTION_LEVELS } from '../web/core/policy/core.mjs';
 import { describeProposal, humanAction } from '../web/core/prerouter.mjs';
@@ -11,6 +11,19 @@ import { toolStatusWord } from '../brain/src/tools/status-words.js';
 import { workerButtons } from '../web/core/brain/worker-results.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
+import { memoryKv } from './helpers/kv.js';
+
+/** Env із живим токеном Google (Date.now(), не фіксована мітка - інакше ядро
+ *  пішло б по новий токен у мережу і стаб віддав би йому не те). */
+const googleEnv = () =>
+  workerEnv({
+    BRIEFING: memoryKv(
+      new Map([['googleToken', JSON.stringify({ token: 'tok', expMs: Date.now() + 3_600_000 })]]),
+    ),
+    GOOGLE_CLIENT_ID: 'c',
+    GOOGLE_CLIENT_SECRET: 's',
+    GOOGLE_REFRESH_TOKEN: 'r',
+  });
 
 describe('словник дій', () => {
   it('кожен kind із ACTION_LEVELS має людську назву', () => {
@@ -156,5 +169,98 @@ describe('кнопки за працівником і слід вибору', ()
       'm:w:w3:src',
       'm:w:w3:short',
     ]);
+  });
+});
+
+describe('«↩» для дій, що переїхали з T1 (реліз 08.09)', () => {
+  it('deleteTask: 404 - успіх (задачі вже немає, чого «↩» і домагався)', async () => {
+    const { deleteTask } = await import('../web/core/adapters/tasks.mjs');
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method} ${String(url)}`);
+        return new Response('', { status: 404 });
+      }),
+    );
+    const env = googleEnv();
+    await expect(deleteTask(env, 't9')).resolves.toBeUndefined();
+    expect(calls[0]).toContain('DELETE');
+    expect(calls[0]).toContain('/tasks/t9');
+    vi.unstubAllGlobals();
+  });
+
+  it('deleteTask: id поза алфавітом Google - відмова ДО мережі («..» міняє адресата)', async () => {
+    const { deleteTask } = await import('../web/core/adapters/tasks.mjs');
+    const spy = vi.fn();
+    vi.stubGlobal('fetch', spy);
+    const env = googleEnv();
+    for (const bad of ['../lists/@default/tasks/x', 'a/b', '', 'x'.repeat(300)]) {
+      await expect(deleteTask(env, bad)).rejects.toThrow(/не схожий на задачу/);
+    }
+    expect(spy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('trashFile: id поза алфавітом - відмова ДО мережі', async () => {
+    const { trashFile } = await import('../web/core/adapters/drive.mjs');
+    const spy = vi.fn();
+    vi.stubGlobal('fetch', spy);
+    for (const bad of ['../files/x', 'a/b', '', 'x'.repeat(300)]) {
+      await expect(trashFile(googleEnv(), bad)).rejects.toThrow(/не схожий на файл/);
+    }
+    expect(spy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('«↩» після tasks.create справді видаляє задачу з Tasks', async () => {
+    const { applyPolicy, resolveUndo } = await import('../web/core/policy/proposals.mjs');
+    const d1 = d1FromSqlite(['0001_base.sql', '0002_assistant.sql']);
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${String(url)}`);
+        return new Response(JSON.stringify({ id: 't9', title: 'молоко' }), { status: 200 });
+      }),
+    );
+    const env = workerEnv({
+      DB: d1.stub,
+      BRIEFING: memoryKv(
+        new Map([['googleToken', JSON.stringify({ token: 'tok', expMs: Date.now() + 3_600_000 })]]),
+      ),
+      GOOGLE_CLIENT_ID: 'c',
+      GOOGLE_CLIENT_SECRET: 's',
+      GOOGLE_REFRESH_TOKEN: 'r',
+    });
+    const NOW = Date.parse('2026-09-08T10:00:00.000Z');
+    const out = await applyPolicy(
+      env,
+      { kind: 'tasks.create', payload: { title: 'молоко' }, threadId: 'dm', tainted: false },
+      NOW,
+    );
+    expect(out.mode).toBe('executed');
+    const undoId = out.mode === 'executed' ? out.undo?.id : undefined;
+    expect(undoId).toBeTruthy();
+    await expect(resolveUndo(env, String(undoId), NOW + 1000)).resolves.toMatchObject({
+      status: 'undone',
+    });
+    expect(calls.some((c) => c.startsWith('DELETE') && c.includes('/tasks/t9'))).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('trashFile: у кошик (trashed:true), не «назавжди»', async () => {
+    const { trashFile } = await import('../web/core/adapters/drive.mjs');
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response('{}', { status: 200 });
+      }),
+    );
+    await trashFile(googleEnv(), 'n1');
+    expect(bodies).toEqual([{ trashed: true }]);
+    vi.unstubAllGlobals();
   });
 });
