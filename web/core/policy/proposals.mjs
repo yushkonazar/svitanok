@@ -26,6 +26,7 @@ import {
   readActiveReminders,
 } from '../tools/reminders.mjs';
 import { restoreReminder } from '../reminders/store.mjs';
+import { plural } from '../tg/phrase.mjs';
 import {
   runIdeasCreate,
   runIdeasUpdate,
@@ -1391,14 +1392,4 @@ async function setStatus(env, id, status, nowMs) {
     .bind(status, new Date(nowMs).toISOString(), id)
     .run();
   return (res.meta?.changes ?? 0) === 1;
-}
-
-/** Число + форма слова (одна / дві / пʼять). @param {number} n
- *  @param {string} one @param {string} few @param {string} many */
-function plural(n, one, few, many) {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
 }

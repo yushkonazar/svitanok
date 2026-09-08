@@ -41,6 +41,9 @@ import { WEEKLY_NOW_RE, buildWeeklyReviewInput } from './brain/weekly-review.mjs
 import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
+import { actionPhrase, actionIcon } from './tg/phrase.mjs';
+import { proposalVolume } from './policy/volume.mjs';
+import { renderMdParts } from './tg/markdown.mjs';
 import { loadWorkerResult, sendWorkerDocument, WORKER_FOLLOWUPS } from './brain/worker-results.mjs';
 import {
   findAwaitingChain,
@@ -62,7 +65,11 @@ export const THREAD_DM = 'dm';
 const VOICE_PREVIEW_MAX_CHARS = 700;
 // Не експортуються свідомо (ревʼю PR-3): споживачів назовні немає, а export
 // сигналив би «на це хтось спирається».
-const STATUS_DRAFT = '▸ Думаю…';
+// Перший статус - до того, як модель зробила хоч крок: ядро ще не знає, про
+// що запит, і «Думаю…» тут не інформація, а заповнювач (скарга власника
+// 08.09). «Беруся» каже правду: запит прийнято, робота почалась. Далі його
+// заміняє мозок - назвою того, що САМЕ ЗАРАЗ робить (brain/tools/status-words).
+const STATUS_DRAFT = '▸ Беруся…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
 /** Скільки найновіших рішень по пропозиціях іде в дайджест входу моделі. */
@@ -416,7 +423,7 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
  * @returns {Promise<string | null>}
  */
 export async function startOrQueueThreadText(env, target, threadKey, text, route, nowMs) {
-  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «▸ Думаю…»
+  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «▸ Беруся…»
   // прогону, при черзі - редагованим «▸ Черга: N» (не вічним повідомленням-
   // сиротою), а його id поїде в queue-entry для reuse при підйомі.
   const statusMessageId = await sendStatusDraft(env, target);
@@ -431,7 +438,9 @@ export async function startOrQueueThreadText(env, target, threadKey, text, route
   const claim = await registryThreadClaim(env, threadKey, entry);
   if ('queued' in claim) {
     const note =
-      claim.queued === -1 ? 'Черга повна - спробуй трохи пізніше.' : `▸ Черга: ${claim.queued}`;
+      claim.queued === -1
+        ? 'Черга повна - спробуй трохи пізніше.'
+        : `▸ Дійду за ${claim.queued} - зараз зайнятий`;
     if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
     else await reply(env, target, note, nowMs);
     return null;
@@ -597,7 +606,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
   const decisions = route === 'chat' ? await recentDecisions(env, threadKey, nowMs) : '';
   const inputText =
     route === 'weekly-review'
-      ? (await buildWeeklyReviewInput(env, nowMs, instruction.version_hash)).text
+      ? (await buildWeeklyReviewInput(env, nowMs)).text
       : decisions
         ? `${decisions}\n\n${entry.text}`
         : entry.text;
@@ -723,7 +732,7 @@ export async function registryThreadFinishAndKick(env, parsed, threadKey, runId,
   const { next } = await registryThreadFinish(env, threadKey, runId);
   if (!next) return;
   const target = next.chatId != null ? { ...parsed, chatId: next.chatId } : parsed;
-  // «▸ Черга: N» цього запису стає «▸ Думаю…» його прогону.
+  // «▸ Черга: N» цього запису стає першим статусом його прогону.
   if (next.statusMessageId != null) {
     await editStatus(env, target, next.statusMessageId, STATUS_DRAFT, nowMs);
   }
@@ -838,13 +847,23 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       // власник не мав би де його прочитати. Тут же ЯДРО називає саму дію:
       // модель у своєму тексті може написати що завгодно, а стерти базу
       // безповоротно можна рівно одним словом.
+      // Обсяг рахуємо ДО слова: «стерти все» і «стерти 1 240 рядків» - два
+      // різні рішення, і власник має право ухвалювати друге (A2 прогону 08.09).
+      const volume = await proposalVolume(
+        env,
+        asked.kind,
+        /** @type {Record<string, unknown>} */ (asked.payload ?? {}),
+      );
       await reply(
         env,
         { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
-        `⚠️ Це T2: ${describeProposal(asked.kind, asked.payload)}. Щоб виконати, напиши слово: ${asked.word} (діє 10 хв).`,
+        [
+          `⚠️ ${humanAction(asked.kind, asked.payload, 'ask')}${volume ? ` - ${volume}` : ''}.`,
+          `Це незворотно. Щоб виконати, напиши слово: ${asked.word} (діє 10 хв).`,
+        ].join(String.fromCharCode(10)),
         nowMs,
       );
-      return `Це T2: напиши слово ${asked.word}`;
+      return `Напиши слово ${asked.word}`;
     }
     if (res.ok && 'status' in res) {
       await clearKeyboard(env, parsed);
@@ -857,6 +876,8 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
         { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
         decisionText(res),
         nowMs,
+        undefined,
+        true,
       );
     } else if (!res.ok && res.error !== 'unknown-proposal') {
       // Збій після ✅ (виконавця ще немає, виконання впало, слово T2, кривий
@@ -1391,19 +1412,31 @@ function decisionText(res) {
   // Підпис із результату виконавця; без назви там - із payload пропозиції
   // (export віддає {filename, rows}, accept - {date}; приймання 05.09, B4).
   const payload = 'payload' in res ? res.payload : null;
-  const fromResult = res.status === 'approved' ? describeProposal(res.kind, res.result) : res.kind;
-  const what = fromResult !== res.kind ? fromResult : describeProposal(res.kind, payload);
-  if (res.status === 'approved') return `✅ Виконано: ${what}.`;
-  if (res.status === 'rejected') return `❌ Відхилено: ${what}.`;
-  return `⌛ Прострочено: ${what} - попроси ще раз, якщо ще актуально.`;
+  // Підпис із результату виконавця, а без назви там - із payload пропозиції.
+  const result = 'result' in res ? res.result : null;
+  const fromResult = res.status === 'approved' ? proposalLabel(res.kind, result).label : '';
+  const source = fromResult ? result : payload;
+  // Одне емодзі на рядок (персона): у виконаному воно тематичне, у відмові й
+  // простроченому - статусне, інакше в рядку опинялись би два підряд.
+  if (res.status === 'approved') {
+    const icon = actionIcon(res.kind);
+    const body = humanAction(res.kind, source, 'done');
+    return icon ? `${icon} ${body}.` : `${body}.`;
+  }
+  const what = lowerFirst(humanAction(res.kind, source, 'ask'));
+  if (res.status === 'rejected') return `❌ Не буду: ${what}.`;
+  return `⌛ Час вийшов: ${what} - попроси ще раз, якщо ще актуально.`;
 }
 
 /**
- * Коротко про дію для власника: kind + впізнаваний ключ із payload/result
- * (назва, текст, ключ факту). Без JSON у чаті.
- * @param {string} kind @param {unknown} obj
+ * Впізнаваний ключ дії з payload/result: назва, дата, файл, короткий текст.
+ * Спільна основа і для дайджесту МОДЕЛІ (describeProposal), і для рядка
+ * ВЛАСНИКУ (humanAction) - щоб одна дія не звалась у двох місцях по-різному.
+ * @param {unknown} obj
+ * @param {string} kind
+ * @returns {{ label: string, guests: string[], link: string | null }}
  */
-export function describeProposal(kind, obj) {
+function proposalLabel(kind, obj) {
   const o = /** @type {Record<string, unknown>} */ (obj && typeof obj === 'object' ? obj : {});
   // Порядок: назва → дата (plan.*) → файл (export) → короткий текст → колекція
   // → номер → id. Довгий text (чернетка плану) - не підпис (приймання 05.09, B4).
@@ -1440,8 +1473,45 @@ export function describeProposal(kind, obj) {
         .filter(Boolean)
         .slice(0, 10)
     : [];
+  // Адреса результату (Drive: webViewLink) - лише http(s) і лише з РЕЗУЛЬТАТУ
+  // виконавця: payload пише модель, і «посилання» звідти вело б куди завгодно.
+  const raw = typeof o.link === 'string' ? o.link : '';
+  const link = /^https:\/\/[\w.-]+\//.test(raw) ? raw : null;
+  return { label: clean, guests, link };
+}
+
+/**
+ * Коротко про дію ДЛЯ МОДЕЛІ: технічний kind + впізнаваний ключ. Саме kind
+ * тут і потрібен - дайджест рішень читає модель, і їй треба знати, яку саме
+ * дію ядро вже виконало, щоб не повторювати.
+ * @param {string} kind @param {unknown} obj
+ */
+export function describeProposal(kind, obj) {
+  const { label, guests } = proposalLabel(kind, obj);
   const tail = guests.length ? ` (гості: ${guests.join(', ')})` : '';
-  return clean ? `${kind} «${clean}»${tail}` : `${kind}${tail}`;
+  return label ? `${kind} «${label}»${tail}` : `${kind}${tail}`;
+}
+
+/**
+ * Те саме ДЛЯ ВЛАСНИКА: людською назвою й з емодзі теми. Технічного kind тут
+ * бути не має - скарга власника 08.09: «мені не потрібно бачити внутрішню
+ * кухню» («✅ Виконано: collection.export «ТЕСТ-Сервіси»»).
+ * @param {string} kind @param {unknown} obj @param {'done' | 'ask'} [mode]
+ */
+export function humanAction(kind, obj, mode = 'done') {
+  const { label, guests, link } = proposalLabel(kind, obj);
+  const tail = guests.length ? ` (гості: ${guests.join(', ')})` : '';
+  // Посилання - у тексті, не голим URL і не назвою файла (скарги 5 і 16
+  // прогону 08.09). Дужки в назві екрануємо: інакше «]» закрив би підпис
+  // раніше часу й адреса поїхала б у видимий текст.
+  const shown = link ? `[${label.replace(/[[\]]/g, ' ')}](${link})` : label;
+  return `${actionPhrase(kind, shown, mode)}${tail}`;
+}
+
+/** З малої: фраза словника стоїть після двокрапки, а не на початку речення.
+ *  @param {string} s */
+function lowerFirst(s) {
+  return s ? s.charAt(0).toLowerCase() + s.slice(1) : s;
 }
 
 /**
@@ -1631,11 +1701,16 @@ export function parsedForThread(env, threadKey, chatId = null) {
 }
 
 /** Відповідь новим шляхом - через outbox (порядок і 429 як у deliver).
- *  extra - додаткові поля payload (reply_markup кнопок v:, ADR-040).
+ *  extra - додаткові поля payload (reply_markup кнопок v:, ADR-040);
+ *  md - текст із розміткою ядра (посилання, жирний).
  *  @param {Env} env @param {ThreadTarget} parsed @param {string} text
  *  @param {number} nowMs @param {Record<string, unknown>} [extra] */
-async function reply(env, parsed, text, nowMs, extra = undefined) {
+async function reply(env, parsed, text, nowMs, extra = undefined, md = false) {
   if (parsed.chatId == null) return;
+  // md=true - рядок склало ЯДРО і в ньому є розмітка (посилання, жирний).
+  // За замовчуванням false: більшість службових рядків - голий текст, і
+  // проганяти їх через конвертер означало б ловити випадкові «_» і «*».
+  const parts = md ? renderMdParts(text) : undefined;
   await enqueueOutbox(
     env,
     {
@@ -1643,6 +1718,7 @@ async function reply(env, parsed, text, nowMs, extra = undefined) {
       threadId: parsed.threadId == null ? null : parsed.threadId,
       kind: 'send',
       payload: { text, ...(extra ?? {}) },
+      ...(parts ? { parts } : {}),
     },
     nowMs,
   );

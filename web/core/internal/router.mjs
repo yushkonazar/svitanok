@@ -590,7 +590,7 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
         : null;
     const continueThread = async () => {
       if (esc && escText) {
-        // S-N3-6: статус «думаю довше…», той самий текст у chat, той самий
+        // S-N3-6: статус «копаю глибше…», той самий текст у chat, той самий
         // статусник; тред НЕ звільняється - ескалація є продовженням.
         if (escStatusId != null && target.chatId != null) {
           await enqueueOutbox(
@@ -598,7 +598,7 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
             {
               chatId: target.chatId,
               kind: 'edit',
-              payload: { message_id: escStatusId, text: '▸ Думаю довше…' },
+              payload: { message_id: escStatusId, text: '▸ Копаю глибше…' },
             },
             nowMs,
           );

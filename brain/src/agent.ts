@@ -22,6 +22,7 @@ import {
 } from './profiles.js';
 import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME, type BrainToolDef } from './tools/schemas.js';
+import { toolStatusWord } from './tools/status-words.js';
 import {
   DELEGATE_WORKERS,
   QUICK_WORKER,
@@ -190,6 +191,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         );
       }
       toolCalls += 1;
+      pushToolStatus(def.coreName);
       if (toolCalls > profile.maxToolCalls) {
         // Стеля профілю (07 §4): далі інструментів не буде. Хід не рвемо -
         // моделі лишається шанс відповісти з наявного; страхує таймаут профілю.
@@ -428,6 +430,21 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         // 400 разом з усією відповіддю (ревʼю PR-3).
         worker: { name: worker, text: clipHead(text, DELIVER_WORKER_MAX_CHARS) },
       };
+    };
+
+    /** Статус «що я зараз роблю» - за інструментом, який модель викликає.
+     *  Троттлиться тим самим таймером, що й часткова відповідь: після нього
+     *  однаково піде текст, і два edit-и підряд у ту саму секунду - зайві. */
+    const pushToolStatus = (coreName: string): void => {
+      if (req.status_message_id == null) return;
+      const word = toolStatusWord(coreName);
+      if (!word) return; // невідомий інструмент - лишаємо попередній статус
+      const t = now();
+      if (t - lastStatusMs < statusIntervalMs) return;
+      lastStatusMs = t;
+      // lastStatusLen НЕ чіпаємо: він міряє довжину ЧАСТКОВОЇ ВІДПОВІДІ, і
+      // статус інструмента не має скидати її поріг приросту.
+      void deps.client.status(req.run_id, req.status_message_id, `▸ ${word}…`);
     };
 
     const onPartialText = (text: string): void => {

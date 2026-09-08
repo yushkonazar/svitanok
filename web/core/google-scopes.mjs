@@ -75,6 +75,16 @@ const FEATURE_TITLE = Object.freeze({
   tasks: 'Tasks',
 });
 
+/** Закінчення прикметника під рід назви можливості («недоступн-а/-е/-і»).
+ *  @type {Record<string, string>} */
+const FEATURE_ENDING = Object.freeze({
+  calendar: 'ий',
+  mail: 'а',
+  contacts: 'і',
+  drive: 'ий',
+  tasks: 'і',
+});
+
 /**
  * Рядок `scope` з відповіді OAuth → набір скоупів. Google віддає їх через
  * пробіл; порожній рядок/не рядок → null («невідомо»), і це НЕ те саме, що
@@ -130,7 +140,13 @@ export function hasFeatureScope(granted, feature) {
  */
 export function featureNotConnectedText(feature) {
   const title = FEATURE_TITLE[feature] ?? feature;
-  return `${title} ще не підключено - у токені Google немає скоупа ${SCOPE_BY_FEATURE[feature] ?? feature}. Перевидай токен (05-ops §3, scripts/google-auth.mjs).`;
+  // Два рядки, не один (A2 прогону 08.09): що сталось - і що з цим робити.
+  // Технічна причина в дужках, бо власнику вона потрібна лише як довідка,
+  // коли він дійде до перевидання токена.
+  return [
+    `⚠️ ${title} зараз недоступн${FEATURE_ENDING[feature] ?? 'е'} - Google не дав на це права.`,
+    `Що зробити: перевидати токен - node scripts/google-auth.mjs (потрібен скоуп ${SCOPE_BY_FEATURE[feature] ?? feature}; покрокове - docs/ops/secrets.md).`,
+  ].join(String.fromCharCode(10));
 }
 
 /**
@@ -140,5 +156,8 @@ export function featureNotConnectedText(feature) {
  * @param {string[]} extra
  */
 export function extraScopesAlertText(extra) {
-  return `⚠️ Токен Google має ${extra.length} зайвих скоупів понад потрібні ядру: ${extra.join(', ')}. Перевидай токен зі списком 05-ops §2 - зайві права діють і тоді, коли код ними не користується.`;
+  return [
+    `⚠️ Токен Google має ${extra.length} зайвих прав понад те, що потрібне асистенту.`,
+    `Що зробити: перевидати токен - node scripts/google-auth.mjs (зайве: ${extra.join(', ')}; зайві права діють і тоді, коли код ними не користується).`,
+  ].join(String.fromCharCode(10));
 }

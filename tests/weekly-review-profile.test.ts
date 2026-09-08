@@ -157,16 +157,20 @@ describe('вхід прогону (§0) і reports', () => {
     expect(WEEKLY_NOW_RE.test('звіт')).toBe(false);
   });
 
-  it('період пн-нд за Києвом, перша неділя місяця, попередній звіт, хеш; без звітів - «перший»', async () => {
+  it('період пн-нд за Києвом, перша неділя місяця, попередній звіт; хеша у вході НЕМА', async () => {
     const { d1, env } = withDb();
-    const first = await buildWeeklyReviewInput(env, SUNDAY_0910, 'a'.repeat(64));
+    const first = await buildWeeklyReviewInput(env, SUNDAY_0910);
     expect(first).toMatchObject({
       periodFrom: '2026-08-31',
       periodTo: '2026-09-06',
       firstSunday: true,
     });
     expect(first.text).toContain('first_sunday_of_month: true');
-    expect(first.text).toContain(`instruction_hash: ${'a'.repeat(64)}`);
+    // ⚠️ Хеша у вході бути НЕ має: модель ставила його в підпис звіту, і
+    // власник бачив у чаті «weekly-review@849bfbb…» (прогін 08.09). У D1 його
+    // пише ядро саме - див. saveWeeklyReport нижче.
+    expect(first.text).not.toContain('instruction_hash');
+
     expect(first.text).toContain('Попереднього тижневого звіту немає');
 
     d1.db
@@ -175,7 +179,7 @@ describe('вхід прогону (§0) і reports', () => {
          VALUES ('rep-1', 'weekly', '2026-08-24', '2026-08-30', 'минулий звіт про сон', 'h', '2026-08-30T06:00:00Z')`,
       )
       .run();
-    const second = await buildWeeklyReviewInput(env, WEDNESDAY, 'b'.repeat(64));
+    const second = await buildWeeklyReviewInput(env, WEDNESDAY);
     expect(second).toMatchObject({
       periodFrom: '2026-08-31',
       periodTo: '2026-09-06',
@@ -192,7 +196,7 @@ describe('вхід прогону (§0) і reports', () => {
          VALUES ('rep-2', 'weekly', '2026-08-31', '2026-09-06', 'цьоготижневий', 'h', '2026-09-06T06:00:00Z')`,
       )
       .run();
-    const third = await buildWeeklyReviewInput(env, WEDNESDAY, 'c'.repeat(64));
+    const third = await buildWeeklyReviewInput(env, WEDNESDAY);
     expect(third.text).toContain('минулий звіт про сон');
     expect(third.text).not.toContain('цьоготижневий');
   });

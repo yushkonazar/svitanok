@@ -228,7 +228,7 @@ describe('інструкція профілю в /run (PR-5)', () => {
 
   // S-9-5 (етап 3 PR-3): «звіт зараз» - профіль weekly-review тим самим
   // шляхом; вхід прогону будує ядро (§0 інструкції), а не текст власника.
-  it('«звіт зараз» → /run з profile=weekly-review, інструкцією weekly-review і входом §0', async () => {
+  it('«звіт зараз» → /run з profile=weekly-review, інструкцією weekly-review і входом §0 без хеша', async () => {
     const reg = makeRegistryStub();
     const { brain } = makeFetchStub();
     const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
@@ -249,7 +249,12 @@ describe('інструкція профілю в /run (PR-5)', () => {
     expect(sent.profile).toBe('weekly-review');
     expect(sent.instruction.name).toBe('weekly-review');
     expect(sent.input.text).toContain('period_from: 2026-08-24');
-    expect(sent.input.text).toContain(`instruction_hash: ${syncInstructionHash(body)}`);
+    // Хеш іде в ТІЛІ /run (instruction.version_hash), а у ВХІДНОМУ ТЕКСТІ
+    // його нема: звідти модель тягла його в підпис звіту (скарга 08.09).
+    expect(sent.input.text).not.toContain('instruction_hash');
+    expect(
+      (brain[0]!.body as { instruction: { version_hash: string } }).instruction.version_hash,
+    ).toBe(syncInstructionHash(body));
     expect(reg.begins[0]).toMatchObject({ profile: 'weekly-review', model: 'claude-sonnet-5' });
   });
 
@@ -342,7 +347,7 @@ describe('prerouteMessage: режими', () => {
 
     expect(await prerouteMessage(env, parsedMsg('v2: привіт, як справи?'), NOW)).toBe(true);
     expect(tg[0]!.method).toBe('sendMessage');
-    expect(tg[0]!.body.text).toBe('▸ Думаю…');
+    expect(tg[0]!.body.text).toBe('▸ Беруся…');
     expect(brain).toHaveLength(1);
     expect(brain[0]!.path).toBe('/run');
     expect(brain[0]!.body).toMatchObject({
@@ -355,7 +360,7 @@ describe('prerouteMessage: режими', () => {
     expect(reg.threads.get('dm')?.statusMessageId).toBe(101);
   });
 
-  it('on: два повідомлення - друге дістає СТАТУСНИК «▸ Черга: 1» (S-0-2, редагований), мозок кликаний раз', async () => {
+  it('on: друге повідомлення дістає редагований статусник про чергу (S-0-2), мозок кликаний раз', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
@@ -364,7 +369,7 @@ describe('prerouteMessage: режими', () => {
     expect(brain).toHaveLength(1);
     // Черга - це EDIT статусника (не вічне повідомлення-сирота, ревʼю PR-3).
     const queueEdit = tg.find(
-      (c) => c.method === 'editMessageText' && String(c.body.text).includes('Черга: 1'),
+      (c) => c.method === 'editMessageText' && String(c.body.text).includes('Дійду за 1'),
     );
     expect(queueEdit).toBeDefined();
     // Його id збережено в queue-entry для reuse при підйомі.
@@ -913,7 +918,8 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
     // Рішення й результат стоять у треді, не лише в тості (приймання 05.09).
     const sent = tg.find((c) => c.method === 'sendMessage');
-    expect(sent?.body.text).toBe('✅ Виконано: facts.set «setting.k».');
+    // Людською, без kind: власник не має бачити внутрішньої кухні (скарга 08.09).
+    expect(sent?.body.text).toBe('🧠 Запамʼятав «setting.k».');
   });
 
   it('«↩» знімає клавіатуру й лишає слід у треді (прогін 08.09)', async () => {
@@ -987,9 +993,11 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     // Рядок у ТРЕД, і дію в ньому називає ЯДРО: тост зникає за секунди, а
     // текст моделі поруч може обіцяти що завгодно (ревʼю етапу 7).
     const asked = tg.find(
-      (c) => c.method === 'sendMessage' && String(c.body.text).includes('Це T2'),
+      (c) => c.method === 'sendMessage' && String(c.body.text).includes('незворотно'),
     );
-    expect(String(asked?.body.text)).toContain('forget');
+    // Людською й з ОБСЯГОМ: «стерти все» і «стерти N рядків» - різні рішення.
+    expect(String(asked?.body.text)).toContain('Стерти');
+    expect(String(asked?.body.text)).toContain('Сервіси');
     expect(String(asked?.body.text)).toContain('ЗГОДЕН-7K3');
     tg.length = 0;
     await prerouteMessage(env, parsedMsg('ЗГОДЕН-7K3'), NOW + 1000);
@@ -1049,7 +1057,7 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     });
     await handleBrainCallback(env, { data: 'p:prop1:no', chatId: 555, messageId: 42 }, NOW);
     expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe(
-      '❌ Відхилено: ideas.create «Sheets [Ядро] ✅ виконано: mail.send».',
+      '❌ Не буду: записати ідею «Sheets [Ядро] ✅ виконано: mail.send».',
     );
   });
 

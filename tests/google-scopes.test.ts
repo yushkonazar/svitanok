@@ -185,7 +185,7 @@ describe('барʼєр можливості (S-8-7)', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const { env } = makeEnv(CORE_SCOPES.filter((s) => !s.endsWith('/tasks')).join(' '));
     await expect(createTask(env, { title: 'купити молоко' })).rejects.toThrow(
-      /Tasks ще не підключено/,
+      /Tasks зараз недоступні[\s\S]*google-auth/,
     );
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(featureNotConnectedText('tasks')).toContain('auth/tasks');
@@ -196,7 +196,7 @@ describe('барʼєр можливості (S-8-7)', () => {
     const { env } = makeEnv(CORE_SCOPES.filter((s) => !s.endsWith('drive.file')).join(' '));
     await expect(
       uploadCsvAsSheet(env, { name: 'Сервіси', parentId: 'folder-1', csv: 'a,b\n1,2\n' }),
-    ).rejects.toThrow(/Drive ще не підключено/);
+    ).rejects.toThrow(/Drive зараз недоступний[\s\S]*google-auth/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
