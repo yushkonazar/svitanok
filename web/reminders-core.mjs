@@ -19,9 +19,11 @@ import { escapeHtml } from './tg-core.mjs';
  * Нагадування у state.reminders. `chatId`/`threadId` опційні НАВМИСНО (B12):
  * запис без них означає «адреси не знаємо», і доставка чесно йде у фолбек,
  * а не в «null-чат».
+ * `repeat` НЕ зберігається у стані: це людський опис rrule, який /reminders
+ * підмішує на льоту (§3.1), щоб рядок списку не був схожий на одноразовий.
  * @typedef {{ id: string, text: string, whenMs: number, createdMs?: number,
  *             firedTs?: number|null, chatId?: string|number,
- *             threadId?: string|number|null }} Reminder
+ *             threadId?: string|number|null, repeat?: string }} Reminder
  */
 
 const MINUTE = 60_000;
@@ -755,7 +757,10 @@ export function formatRemindersListMessage(reminders) {
   });
   const lines = ['⏰ <b>Нагадування</b>', ''];
   active.forEach((r, i) => {
-    lines.push(`${i + 1}. ${fmt.format(new Date(r.whenMs))} — ${escapeHtml(r.text)}`);
+    // Повтор видно прямо в рядку (§3.1): інакше «щопонеділка о 9» у списку
+    // не відрізнити від одноразового на найближчий понеділок.
+    const repeat = r.repeat ? ` · ${escapeHtml(String(r.repeat))}` : '';
+    lines.push(`${i + 1}. ${fmt.format(new Date(r.whenMs))} — ${escapeHtml(r.text)}${repeat}`);
   });
   return lines.join('\n');
 }

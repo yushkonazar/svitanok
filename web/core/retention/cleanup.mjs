@@ -54,12 +54,14 @@ export const RETENTION = [
   { table: 'memory_chunks', column: 'at', ms: 90 * DAY },
   { table: 'proposals', column: 'created_at', ms: 30 * DAY },
   // Нагадування - 12 місяців ПІСЛЯ виконання: активні не чіпаємо, хоч би
-  // скільки їх відкладали.
+  // скільки їх відкладали. `sent` тут теж (ревʼю повторів): доставлене
+  // нагадування лишається в `sent`, і ряд «щодня» додавав би 365 вічних рядків
+  // на рік - доти під ретенцію потрапляли тільки done/cancelled.
   {
     table: 'reminders',
     column: 'due_at',
     ms: 12 * MONTH,
-    where: "status IN ('done', 'cancelled')",
+    where: "status IN ('done', 'cancelled', 'sent')",
   },
   // Черга відправок - 7 діб: доставлене й провалене; те, що ще чекає
   // (pending/sending), лишається сміттям видимим, а не стертим мовчки.

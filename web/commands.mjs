@@ -53,6 +53,7 @@ import { tgCall, sendTo } from './telegram-client.mjs';
 import { agentHostUrl } from './llm-host.mjs';
 import { isPrimaryOwner } from './auth-core.mjs';
 import { listActiveReminders } from './core/reminders/store.mjs';
+import { recurrenceText } from './core/reminders/recurrence.mjs';
 
 import { runAssistantAgent } from './agent-runtime.mjs';
 import { createReminderFromText } from './reminders-actions.mjs';
@@ -84,6 +85,9 @@ export async function activeRemindersForList(env) {
         text: r.text,
         whenMs: Date.parse(r.dueAt),
         firedTs: null,
+        // Людський підпис повтору - щоб список показував «щопонеділка», а не
+        // ховав ряд за датою найближчої появи (§3.1).
+        ...(r.rrule ? { repeat: recurrenceText(r.rrule) } : {}),
       });
     }
   } catch (/** @type {any} */ e) {

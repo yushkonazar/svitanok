@@ -20,7 +20,8 @@ const MAX_LIST = 20;
 
 /**
  * @typedef {{ id: string, text: string, dueAt: string, status: string,
- *   chatId: string | null, threadId: string | null, snoozeCount: number }} ReminderRow
+ *   chatId: string | null, threadId: string | null, snoozeCount: number,
+ *   rrule: string | null, recurCount: number }} ReminderRow
  */
 
 /** @param {any} row */
@@ -33,6 +34,9 @@ function toReminder(row) {
     chatId: row.chat_id ?? null,
     threadId: row.thread_id ?? null,
     snoozeCount: Number(row.snooze_count) || 0,
+    // Повтор (0012): null = одноразове, тобто вся чинна поведінка.
+    rrule: row.rrule ? String(row.rrule) : null,
+    recurCount: Number(row.recur_count) || 0,
   };
 }
 
@@ -42,13 +46,14 @@ function toReminder(row) {
  * інтерпретувати.
  * @param {Env} env
  * @param {{ id: string, text: string, dueAtMs: number,
- *   chatId?: string | number | null, threadId?: string | number | null }} input
+ *   chatId?: string | number | null, threadId?: string | number | null,
+ *   rrule?: string | null, recurCount?: number }} input
  */
 export async function createReminder(env, input) {
   await db(env)
     .prepare(
-      `INSERT INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id)
-       VALUES (?, ?, ?, 'pending', 0, ?, ?)`,
+      `INSERT INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
+       VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
     )
     .bind(
       input.id,
@@ -56,9 +61,16 @@ export async function createReminder(env, input) {
       input.text,
       input.chatId == null ? null : String(input.chatId),
       input.threadId == null ? null : String(input.threadId),
+      input.rrule ?? null,
+      input.recurCount ?? 0,
     )
     .run();
-  return { id: input.id, text: input.text, dueAt: new Date(input.dueAtMs).toISOString() };
+  return {
+    id: input.id,
+    text: input.text,
+    dueAt: new Date(input.dueAtMs).toISOString(),
+    rrule: input.rrule ?? null,
+  };
 }
 
 /**
@@ -66,7 +78,7 @@ export async function createReminder(env, input) {
  * (там зміна whenMs обнуляла firedTs): нагадування знову «на видачу».
  * @param {Env} env
  * @param {string} id
- * @param {{ text?: string, dueAtMs?: number }} patch
+ * @param {{ text?: string, dueAtMs?: number, rrule?: string | null }} patch
  * @returns {Promise<boolean>} false = нема такого активного
  */
 export async function updateReminder(env, id, patch) {
@@ -79,6 +91,11 @@ export async function updateReminder(env, id, patch) {
   if (patch.dueAtMs != null) {
     sets.push('due_at = ?', "status = 'pending'");
     binds.push(new Date(patch.dueAtMs).toISOString());
+  }
+  // `undefined` = не чіпаємо правило; явний `null` = знімаємо повтор.
+  if (patch.rrule !== undefined) {
+    sets.push('rrule = ?');
+    binds.push(patch.rrule);
   }
   if (sets.length === 0) return false;
   binds.push(id);
@@ -177,6 +194,46 @@ export async function claimReminderSent(env, id) {
     .bind(id)
     .run();
   return (res.meta?.changes ?? 0) === 1;
+}
+
+/**
+ * Передати естафету ряду: створити наступну появу і зняти правило з поточної.
+ *
+ * ⚠️ ОДНИМ БАТЧЕМ, а не двома викликами (ревʼю релізу). D1-запит - це підзапит
+ * Worker'а, а їх ~50 на виклик; доставка повторюваного коштувала чотири
+ * (claim + INSERT + UPDATE + черга) замість двох, і тік із двадцятьма рядами
+ * упирався в стелю. `batch` - один підзапит і одна транзакція: спадкоємець і
+ * зняте правило або є разом, або немає разом.
+ *
+ * `INSERT OR IGNORE` навмисно: id спадкоємця детермінований, тож повторна
+ * доставка тієї самої ланки має бути нуль-дією, а не ДРУГИМ рядом.
+ * @param {Env} env
+ * @param {string} prevId - строка, що вже спрацювала
+ * @param {{ id: string, text: string, dueAtMs: number, chatId: string | null,
+ *   threadId: string | null, rrule: string, recurCount: number }} next
+ * @returns {Promise<boolean>} false = спадкоємець уже існував (ряд не роздвоєно)
+ */
+export async function handOffRecurrence(env, prevId, next) {
+  const d = db(env);
+  const [ins] = await d.batch([
+    d
+      .prepare(
+        `INSERT OR IGNORE INTO reminders
+           (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
+         VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+      )
+      .bind(
+        next.id,
+        new Date(next.dueAtMs).toISOString(),
+        next.text,
+        next.chatId,
+        next.threadId,
+        next.rrule,
+        next.recurCount,
+      ),
+    d.prepare(`UPDATE reminders SET rrule = NULL WHERE id = ?`).bind(prevId),
+  ]);
+  return (ins?.meta?.changes ?? 0) > 0;
 }
 
 /**

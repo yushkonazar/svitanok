@@ -180,9 +180,15 @@ export const EXECUTORS = {
         { id: payload.id, text: payload.text, when: payload.when },
         nowMs,
       );
-      // Знімок ДО правки: undo кладе назад і текст, і час.
+      // Знімок ДО правки: undo кладе назад текст, час І ПРАВИЛО ПОВТОРУ.
+      // ⚠️ `rrule` тут обовʼязковий (ревʼю релізу): без нього «↩» повертало час,
+      // а щойно поставлений повтор лишався назавжди - тобто кнопка брехала, і
+      // заразом падав аргумент «одноразове можна лишити T0, бо ↩ відкочує».
+      // `?? null` - саме null, а не undefined: undefined означає «не чіпати».
       return {
-        prev: before ? { id: before.id, text: before.text, dueAt: before.dueAt } : null,
+        prev: before
+          ? { id: before.id, text: before.text, dueAt: before.dueAt, rrule: before.rrule ?? null }
+          : null,
         result,
       };
     },
@@ -190,6 +196,7 @@ export const EXECUTORS = {
       if (!snapshot) return;
       await runRemindersUpdate(env, { id: snapshot.id, text: snapshot.text }, nowMs, {
         dueAtMs: Date.parse(snapshot.dueAt),
+        rrule: snapshot.rrule ?? null,
       });
     },
   },

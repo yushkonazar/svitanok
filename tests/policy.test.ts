@@ -32,7 +32,12 @@ const NOW = Date.parse('2026-08-28T10:00:00.000Z');
 
 function d1() {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_base.sql', '0002_assistant.sql', '0010_reminders_address.sql']) {
+  for (const f of [
+    '0001_base.sql',
+    '0002_assistant.sql',
+    '0010_reminders_address.sql',
+    '0012_reminders_recurrence.sql',
+  ]) {
     db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', f), 'utf8'));
   }
   return {
