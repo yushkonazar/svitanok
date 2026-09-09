@@ -78,6 +78,11 @@ export async function runPlacesDetails(env, args, nowMs) {
       place_id: p.place_id,
       source: out.source,
       has_phone: p.phone != null,
+      // ⚠️ Сайт - ОКРЕМИМ полем, не лише рядком усередині `<external>`
+      // (ідея №3). Адреса сайту потрібна ядру й Дослідникові як дані; змушувати
+      // модель вигрібати URL із плямованого тексту означало б покладатись на
+      // те, що вона його не перебреше.
+      site: p.site ?? null,
       is_favorite: p.is_favorite,
       rating_owner: p.rating_owner,
       details: wrapExternal('places', lines.join('\n'), p.place_id),

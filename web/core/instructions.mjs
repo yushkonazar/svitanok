@@ -44,6 +44,7 @@ export const CANON_TOOLS = [
   'inbox.search',
   'places.search',
   'places.details',
+  'places.menu',
   'routes.eta',
   'geo.geocode',
   'geo.last',

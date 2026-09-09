@@ -25,7 +25,7 @@ import { ftsQuery } from './ideas.mjs';
  * середині фрази вона розмиває пошук до сміття.
  * @param {string} q
  */
-function prefixFtsQuery(q) {
+export function prefixFtsQuery(q) {
   const exact = ftsQuery(q);
   if (!exact) return '';
   const parts = exact.split(' ');
