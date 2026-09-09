@@ -37,6 +37,7 @@ import { totalProgress } from '../../roadmap-core.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { ARCHIVE_KEY, WEEKLY_ARCHIVE_KEY } from '../../stats-archive.mjs';
 import { listActiveReminders } from '../reminders/store.mjs';
+import { recurrenceText } from '../reminders/recurrence.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { wrapExternal } from './markup.mjs';
 import {
@@ -193,6 +194,9 @@ async function readD1Reminders(env) {
       text: r.text,
       whenMs: Date.parse(r.dueAt),
       firedTs: null,
+      // Повтор людською - інакше модель бачить ряд як разове нагадування і не
+      // може виконати власну ж інструкцію «щоб припинити повтор - скасуй».
+      ...(r.rrule ? { repeat: recurrenceText(r.rrule) } : {}),
     }));
   } catch (/** @type {any} */ e) {
     console.error('data.read: нагадування з D1 не прочитались', e?.message);

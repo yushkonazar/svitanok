@@ -75,9 +75,13 @@ function kyivDayTime(/** @type {number} */ ms) {
 export function digestReminders(/** @type {any[]|null|undefined} */ reminders) {
   const active = listActive(reminders).slice(0, MAX_LIST_ITEMS);
   if (active.length === 0) return 'Нагадування: активних немає.';
-  const items = active.map(
-    (r, i) => `${i + 1}) ${kyivDayTime(r.whenMs)} ${clip(r.text, MAX_REMINDER_LEN)}`,
-  );
+  const items = active.map((r, i) => {
+    // Повтор у дайджесті (§3.1): без нього модель бачить ряд як разове
+    // нагадування - і не може ні назвати графік, ні виконати власну
+    // інструкцію «щоб припинити повтор, скасуй нагадування».
+    const repeat = r.repeat ? ` (${clip(String(r.repeat), MAX_REMINDER_LEN)})` : '';
+    return `${i + 1}) ${kyivDayTime(r.whenMs)} ${clip(r.text, MAX_REMINDER_LEN)}${repeat}`;
+  });
   return `Нагадування (активні): ${items.join('; ')}.`;
 }
 
