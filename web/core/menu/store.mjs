@@ -108,6 +108,38 @@ function stemFtsQuery(raw) {
 }
 
 /**
+ * Чи стосується значення поля того, про що спитали.
+ *
+ * Кожне слово запиту має знайтись у полі - як ціле слово або як його початок
+ * («сирник» ↔ «сирники»). Це та сама поблажливість, що й у пошуку, але
+ * застосована до ПОТРІБНОГО поля, а не до всього запису.
+ * @param {unknown} value @param {string} query
+ */
+function fieldMatches(value, query) {
+  const words = (/** @type {string} */ raw) =>
+    String(raw ?? '')
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length > 1);
+  const hay = words(String(value ?? ''));
+  const need = words(query);
+  if (hay.length === 0 || need.length === 0) return false;
+  return need.every((n) =>
+    hay.some((h) => {
+      const short = n.length <= h.length ? n : h;
+      const long = n.length <= h.length ? h : n;
+      // ⚠️ СУВОРО: коротше слово має бути ПОЧАТКОМ довшого, і різниця - не
+      // більше трьох літер. Це ловить відмінок («Креденс» ↔ «Креденсі»,
+      // «сирник» ↔ «сирники») і НЕ ловить різні слова зі спільним коренем
+      // («сирники» проти «сирний суп») чи чужий заклад («Кредо» ↔ «Креденс»).
+      // Помилитись убік «не знайшов» тут дешево - підемо в мережу; помилитись
+      // убік «знайшов» означає впевнено збрехати власнику.
+      return long.startsWith(short) && long.length - short.length <= 3;
+    }),
+  );
+}
+
+/**
  * Знайти в колекції записи про страву в закладі.
  * @param {Env} env
  * @param {{ place: string, dish: string }} q
@@ -128,13 +160,21 @@ export async function findMenuNotes(env, q, nowMs) {
     )
     .bind(match, col.id)
     .all();
-  const items = /** @type {any[]} */ (results ?? []).map((r) => {
+  const all = /** @type {any[]} */ (results ?? []).map((r) => {
     try {
       return JSON.parse(String(r.data_json));
     } catch {
       return {};
     }
   });
+  // ⚠️ FTS - це лише ВІДБІР кандидатів, не відповідь (ревʼю). MATCH б'є по
+  // всьому `data_text` (там і місто, і URL, і назва колекції), а вкорочена
+  // основа збігається з чим завгодно близьким: питання «чи є в КРЕДО сирники»
+  // діставало запис «КРЕДЕНС / сирний СУП» і віддавало його як відповідь. Тому
+  // тут - звірка по конкретних полях, і обидва мусять збігтися.
+  const items = all.filter(
+    (it) => fieldMatches(it?.['заклад'], q.place) && fieldMatches(it?.['страва'], q.dish),
+  );
   const edge = nowMs - MENU_FRESH_DAYS * DAY_MS;
   const fresh = items.filter((it) => {
     const at = Date.parse(String(it?.['перевірено'] ?? ''));

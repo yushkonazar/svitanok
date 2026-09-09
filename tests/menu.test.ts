@@ -111,7 +111,12 @@ describe('порядок пошуку', () => {
     const calls = stubFetch();
     const { result } = await runPlacesMenu(env, { place: 'Креденс', dish: 'сирники' }, NOW);
     expect(result.next).toBe('answer');
-    expect(result.found).toHaveLength(1);
+    expect(result.found_count).toBe(1);
+    // ⚠️ Вміст записів приїхав колись зі сторінки закладу через Дослідника -
+    // тож у моделі він має зʼявитись позначеним, інакше колекція стає каналом,
+    // яким чужий текст знімає з себе позначку (security-ревʼю).
+    expect(String(result.found)).toContain('<external source="collection:menu"');
+    expect(String(result.found)).toContain('Креденс');
     expect(calls).toHaveLength(0); // ⚠️ саме заради цього все й будувалось
   });
 
@@ -129,8 +134,9 @@ describe('порядок пошуку', () => {
     const calls = stubFetch();
     const { result } = await runPlacesMenu(env, { place: 'Креденс', dish: 'сирники' }, NOW);
     expect(result.next).toBe('online');
-    expect(result.found).toHaveLength(0);
-    expect(result.stale).toHaveLength(1);
+    expect(result.found_count).toBe(0);
+    expect(result.stale_count).toBe(1);
+    expect(String(result.stale)).toContain('<external source="collection:menu"');
     expect(calls).toHaveLength(0);
   });
 
@@ -156,7 +162,15 @@ describe('порядок пошуку', () => {
     expect(result.next).toBe('delegate');
     // Модель має куди записати знахідку - без вигадування назв.
     expect(result.collection).toBe(MENU_COLLECTION);
-    expect(result.fields).toContain('перевірено');
+    // ⚠️ Типи й обовʼязковість, а не самі імена: без них `records.create`
+    // падав на діапазоні цін, голому домені й забутій даті - і знахідка не
+    // кешувалась, тобто мета «щоб удруге не шукати» не досягалась.
+    expect(result.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'перевірено', type: 'date', required: true }),
+        expect.objectContaining({ name: 'ціна', type: 'money' }),
+      ]),
+    );
   });
 
   it('сайту немає - кажемо прямо, а не шлемо шукати навмання', async () => {
@@ -207,6 +221,73 @@ describe('порядок пошуку', () => {
     expect(result.next).toBe('no_site');
   });
 
+  it('ІНШИЙ заклад чи ІНША страва - не відповідь', async () => {
+    const { env } = setup();
+    await note(env, 3, 'сирний суп');
+    stubFetch();
+    // ⚠️ FTS шукає за основами по всьому запису, тож у кандидати потрапляє й
+    // «Креденс / сирний суп». Без звірки ПОЛІВ асистент упевнено відповідав про
+    // інший заклад і про іншу страву - тобто брехав.
+    const other = await runPlacesMenu(env, { place: 'Кредо', dish: 'сирники' }, NOW);
+    expect(other.result.next).toBe('online');
+    const dish = await runPlacesMenu(env, { place: 'Креденс', dish: 'сирники' }, NOW);
+    expect(dish.result.next).toBe('online');
+    // А той самий заклад і та сама страва у відмінку - знаходяться.
+    const hit = await runPlacesMenu(env, { place: 'Креденсі', dish: 'сирний' }, NOW);
+    expect(hit.result.next).toBe('answer');
+  });
+
+  it('читання НЕ створює колекції, а запис - створює', async () => {
+    const { env, db } = setup();
+    stubFetch(SEARCH_OK, DETAILS_OK);
+    await runPlacesMenu(env, { place: 'Креденс', dish: 'сирники' }, NOW);
+    // ⚠️ Видалення колекції - це T2 (✅ і слово). Безшумне відродження на
+    // кожне питання відкочувало б рішення власника читанням.
+    expect(db.prepare(`SELECT count(*) AS n FROM collections`).get()).toEqual({ n: 0 });
+    // А ось коли є що писати - колекція має бути, інакше `records.create` впаде.
+    await runPlacesMenu(env, { place: 'Креденс', dish: 'сирники', online: true }, NOW);
+    expect(db.prepare(`SELECT count(*) AS n FROM collections`).get()).toEqual({ n: 1 });
+  });
+
+  it('внутрішня адреса не доїжджає до Дослідника', async () => {
+    for (const site of [
+      'http://127.0.0.1:8787/menu',
+      'http://169.254.169.254/latest/meta-data',
+      'http://10.0.0.5/menu',
+      'http://192.168.1.1/menu',
+      'https://user:pass@kredens.example/menu',
+      'http://router.internal/menu',
+      'http://[::1]/menu',
+      'http://intranet/menu',
+    ]) {
+      // ⚠️ Свіже середовище на КОЖНУ адресу: `placeDetails` кешує картку в D1
+      // на 7 днів, і спільний env віддавав би результат ПЕРШОЇ ітерації - тобто
+      // решта адрес не перевірялась би взагалі (знайдено пробою).
+      const { env } = setup();
+      stubFetch(SEARCH_OK, { ...DETAILS_OK, websiteUri: site });
+      const { result } = await runPlacesMenu(
+        env,
+        { place: 'Креденс', dish: 'сирники', online: true },
+        NOW,
+      );
+      expect(result.site, site).toBeNull();
+      expect(result.next, site).toBe('no_site');
+    }
+  });
+
+  it('звичайний сайт проходить - фільтр не глушить усе підряд', async () => {
+    // Калібрування: без цього попередній тест був би зеленим і на фільтрі,
+    // що ріже геть усе.
+    const { env } = setup();
+    stubFetch(SEARCH_OK, DETAILS_OK);
+    const { result } = await runPlacesMenu(
+      env,
+      { place: 'Креденс', dish: 'сирники', online: true },
+      NOW,
+    );
+    expect(result.site).toBe('https://kredens.example/menu');
+  });
+
   it('порожні аргументи - чесна помилка', async () => {
     const { env } = setup();
     await expect(runPlacesMenu(env, { place: '', dish: 'x' }, NOW)).rejects.toThrow(/place/);
@@ -240,5 +321,22 @@ describe('records.search', () => {
     // FTS промахувався: власник чув «немає» про власний же запис.
     const { result } = await runRecordsSearch(env, { q: 'Креденс' });
     expect(result).toHaveLength(1);
+  });
+
+  it('однолітерний запит не вигрібає все підряд', async () => {
+    const { env } = setup();
+    await ensureMenuCollection(env, NOW);
+    await runRecordsCreate(
+      env,
+      {
+        collection: MENU_COLLECTION,
+        data: { заклад: 'Креденс', страва: 'сирники', перевірено: '2026-09-01' },
+      },
+      NOW,
+    );
+    // ⚠️ `"к"*` збігається з усім, що починається на «к»: фікс відмінків мовчки
+    // розширював поверхню читання до 20 випадкових записів у контекст моделі.
+    expect((await runRecordsSearch(env, { q: 'к' })).result).toHaveLength(0);
+    expect((await runRecordsSearch(env, { q: 'Кред' })).result).toHaveLength(1);
   });
 });

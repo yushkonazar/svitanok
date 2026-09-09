@@ -697,7 +697,9 @@ describe('машина станів', () => {
     expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain('3 год 20 хв');
     // ⚠️ Погода САМЕ тут (ідея №4, п.7): у момент виходу вона ще може змінити
     // рішення, а на T-7 прогнозу на день виїзду часто просто немає.
-    expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain('12…19');
+    expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain(
+      'Погода: 10.09: 12…19',
+    );
     expect(sent.at(-1)?.text).toContain('Записав витрати: 4 200 грн');
     // Стан у базі: питання підсумку ставилось у 'waiting' з awaiting=spent.
     expect(sent.find((s) => s.text.startsWith('Як пройшла'))).toMatchObject({
@@ -925,6 +927,8 @@ describe('старт, перенос і скасування з чату', () =>
             date_from: '2026-10-12',
             date_to: '2026-10-15',
             from_city: 'Львів',
+            purpose: 'дозвілля',
+            participants: 'Марко',
           },
         },
         threadId: '99',
@@ -936,6 +940,15 @@ describe('старт, перенос і скасування з чату', () =>
     if (out.mode !== 'executed') throw new Error(`mode ${out.mode}`);
     expect(out.result).toMatchObject({ checklist: 'abroad-car' });
     expect(String((out.result as { text: string }).text)).toContain('Поїздка створена');
+    // ⚠️ Учасників ВИДНО у відповіді: питати про них і мовчки класти в JSON -
+    // рівно той клас зайвих питань, який ідея №4 мала прибрати.
+    expect(String((out.result as { text: string }).text)).toContain('Їдете: ти і Марко');
+    // Мета лягає в стан ланцюга, а не в колонку trips (щоб не тягти міграцію).
+    const chain = db.prepare('SELECT state_json FROM chains').get() as { state_json: string };
+    expect(JSON.parse(chain.state_json)).toMatchObject({
+      purpose: 'дозвілля',
+      participants: 'Марко',
+    });
     const trip = db.prepare('SELECT * FROM trips').get() as Record<string, string>;
     expect(trip).toMatchObject({
       to_text: 'Краків',

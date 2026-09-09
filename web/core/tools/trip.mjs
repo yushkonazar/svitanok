@@ -62,7 +62,10 @@ export async function runTripBrief(env, args) {
     question: 'О котрій виїзд?',
     default: DEFAULT_DEPART,
   });
-  if (!home) ask.push({ field: 'from_city', question: 'Звідки виїзд (місто)?' });
+  // ⚠️ Питаємо ЛИШЕ якщо дім не відомий у жодній формі (ревʼю). Ланцюг і сам
+  // резолвить 'home' через координати, тож питання про місто виїзду при
+  // відомому домі - рівно та зайвина, яку цей інструмент мав прибрати.
+  if (!home.known) ask.push({ field: 'from_city', question: 'Звідки виїзд (місто)?' });
   ask.push({ field: 'country', question: 'Це закордон? Якщо так - яка країна?' });
   if (!purpose) {
     ask.push({ field: 'purpose', question: 'Мета поїздки?', options: TRIP_PURPOSES });
@@ -74,7 +77,7 @@ export async function runTripBrief(env, args) {
       to,
       ask,
       known: {
-        from_city: home,
+        from_city: home.city,
         vehicles: vehicles.map((v) => ({ key: v.key, name: v.name, per100: v.per100 })),
         fuel_price: price,
         depart_at: DEFAULT_DEPART,
@@ -90,15 +93,33 @@ export async function runTripBrief(env, args) {
 }
 
 /**
- * Місто виїзду з фактів. Тільки назва: координати ланцюг візьме сам через
- * `resolveWaypoint('home')`, і дублювати їх сюди немає потреби.
+ * Дім: чи відомий узагалі і як він зветься.
+ *
+ * ⚠️ Форм три, і ядро знає всі (ревʼю): `{city}` / `{name}`, канонічна
+ * `{lat, lon}` (саме її радить `resolveHome`) і фолбек `OWNER_LOCATIONS`. Дві
+ * останні дому НЕ називають - і це нормально: ланцюг усе одно бере координати
+ * сам. Повну адресу як «місто» не віддаємо: вона поїхала б у `chain.start` і
+ * рендерилась як «вул. Франка 24, Львів → Івано-Франківськ».
  * @param {Env} env
- * @returns {Promise<string | null>}
+ * @returns {Promise<{ known: boolean, city: string | null }>}
  */
 async function homeCity(env) {
   const { result } = await runFactsGet(env, { kind: 'place', key: 'home' });
   const value = /** @type {any} */ (result[0])?.value;
-  if (value == null) return null;
-  const city = value.city ?? value.name ?? value.address ?? null;
-  return city == null ? null : String(city).slice(0, 60);
+  if (value != null) {
+    const named = value.city ?? value.name ?? null;
+    const located = Number.isFinite(Number(value.lat)) && Number.isFinite(Number(value.lon));
+    if (named != null) return { known: true, city: String(named).slice(0, 60) };
+    if (located || value.address != null) return { known: true, city: null };
+  }
+  try {
+    const list = JSON.parse(String(env.OWNER_LOCATIONS ?? '[]'));
+    const first = Array.isArray(list) ? list[0] : null;
+    if (first)
+      return { known: true, city: first.name == null ? null : String(first.name).slice(0, 60) };
+  } catch {
+    // Зіпсований OWNER_LOCATIONS - не привід валити опитувальник: просто
+    // спитаємо місто, як і без нього.
+  }
+  return { known: false, city: null };
 }

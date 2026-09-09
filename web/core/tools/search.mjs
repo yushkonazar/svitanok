@@ -29,8 +29,13 @@ export function prefixFtsQuery(q) {
   const exact = ftsQuery(q);
   if (!exact) return '';
   const parts = exact.split(' ');
-  const last = parts.pop();
-  return [...parts, `${last}*`].join(' ');
+  const last = String(parts.pop());
+  // ⚠️ Префікс лише від трьох літер (ревʼю). `"к"*` збігається з усім, що
+  // починається на «к», і однолітерний запит вигрібав у контекст моделі до 20
+  // випадкових записів із БУДЬ-ЯКОЇ колекції власника - тобто фікс відмінків
+  // мовчки розширював поверхню читання.
+  const word = last.replace(/"/g, '');
+  return [...parts, word.length >= 3 ? `${last}*` : last].join(' ');
 }
 
 /** Скільки рядків максимум з КОЖНОГО джерела - щоб відповідь лишалась відповіддю. */

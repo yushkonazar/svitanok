@@ -59,6 +59,31 @@ describe('trip.brief', () => {
     expect(result.known.fuel_price).toBe(58.4);
   });
 
+  it('дім у координатах теж вважається відомим', async () => {
+    const { env } = setup();
+    // ⚠️ Канонічна форма дому - саме {lat, lon} (її радить resolveHome). Ланцюг
+    // бере координати сам, тож питати місто виїзду при відомому домі - рівно та
+    // зайвина, яку цей інструмент мав прибрати.
+    await runFactsSet(env, { kind: 'place', key: 'home', value: { lat: 49.84, lon: 24.03 } }, NOW);
+    const { result } = await runTripBrief(env, { to: 'Карпати' });
+    expect(fields(result)).not.toContain('from_city');
+    expect(result.known.from_city).toBeNull();
+  });
+
+  it('повна адреса дому не видається за «місто»', async () => {
+    const { env } = setup();
+    await runFactsSet(
+      env,
+      { kind: 'place', key: 'home', value: { address: 'вул. Франка 24, Львів' } },
+      NOW,
+    );
+    const { result } = await runTripBrief(env, { to: 'Карпати' });
+    // Інакше вона поїхала б у chain.start і рендерилась як
+    // «вул. Франка 24, Львів → Карпати».
+    expect(result.known.from_city).toBeNull();
+    expect(fields(result)).not.toContain('from_city');
+  });
+
   it('авта ядро не знає - питає разом з рештою, а не окремим заходом', async () => {
     const { env } = setup();
     const { result } = await runTripBrief(env, { to: 'Карпати' });

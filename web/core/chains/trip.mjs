@@ -292,7 +292,10 @@ export async function startTripChain(env, payload, nowMs, ctx) {
       text:
         `Поїздка створена: ${ddmm(dateFrom)}${dateTo ? `-${ddmm(dateTo)}` : ''}, ` +
         `${state.from_city ? `${state.from_city} → ` : ''}${to}, ${way}. ` +
-        `Чекліст ${checklistKey}: ${left >= 30 ? `перший блок - за ${daysWord(left - 30)}` : 'перший блок надішлю зараз'}.`,
+        `Чекліст ${checklistKey}: ${left >= 30 ? `перший блок - за ${daysWord(left - 30)}` : 'перший блок надішлю зараз'}.` +
+        // ⚠️ Учасників ВИДНО (ревʼю): питати про них і мовчки класти в JSON -
+        // рівно той клас зайвих питань, який ідея №4 мала прибрати.
+        (state.participants ? ` Їдете: ти і ${state.participants}.` : ''),
       note: 'ланцюг далі веде ядро кнопками; власнику скажи саме text',
     },
     prev: { chain_id: chainId, trip_id: tripId, wish_id: wishId },
@@ -508,7 +511,7 @@ export async function runTripChain(env, params, step, io) {
       });
       await step.do(`${rk}-leave-send`, () =>
         io.send(
-          `Пора виходити: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` ${leaveWeather}.` : ''} Дорожній чекліст - нижче.`,
+          `Пора виходити: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Дорожній чекліст - нижче.`,
           [
             [
               { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },

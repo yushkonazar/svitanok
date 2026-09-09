@@ -9,6 +9,7 @@ import { configuredLocations } from '../../weather-geo.mjs';
 import { runFactsGet } from './facts.mjs';
 import { runGeoLast } from './read.mjs';
 import { wrapExternal } from './markup.mjs';
+import { safeHttpUrl } from './url.mjs';
 
 const LATLON_RE = /^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/;
 /** ISO-8601 зі зсувом або Z: без зони Date.parse у Workers читає як UTC, а власник живе в Києві. */
@@ -81,8 +82,9 @@ export async function runPlacesDetails(env, args, nowMs) {
       // ⚠️ Сайт - ОКРЕМИМ полем, не лише рядком усередині `<external>`
       // (ідея №3). Адреса сайту потрібна ядру й Дослідникові як дані; змушувати
       // модель вигрібати URL із плямованого тексту означало б покладатись на
-      // те, що вона його не перебреше.
-      site: p.site ?? null,
+      // те, що вона його не перебреше. Через той самий фільтр, що й у
+      // `places.menu` (ревʼю): непослідовність тут була б дірою, а не стилем.
+      site: safeHttpUrl(p.site),
       is_favorite: p.is_favorite,
       rating_owner: p.rating_owner,
       details: wrapExternal('places', lines.join('\n'), p.place_id),
