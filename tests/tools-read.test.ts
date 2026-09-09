@@ -403,6 +403,7 @@ describe('реєстр TOOLS', () => {
       'mail.search',
       'memory.search',
       'places.details',
+      'places.menu',
       'places.search',
       'plan.accept',
       'plan.draft',
@@ -423,6 +424,7 @@ describe('реєстр TOOLS', () => {
       'runs.query',
       'style.samples',
       'subscriptions.update',
+      'trip.brief',
       'wishes.create',
       'wishes.delete',
       'wishes.import',
@@ -493,6 +495,15 @@ describe('реєстр TOOLS', () => {
       // роутер позначає тред і на write-шляху (етап 5 PR-5).
       'wishes.import',
     ]);
+    // ⚠️ places.menu плямує ЗА АРГУМЕНТАМИ: перший крок читає ВЛАСНУ колекцію
+    // і в мережу не йде взагалі, тож питання з кешу не має коштувати ✅ на
+    // наступну дію (ідея №3).
+    const menuByArgs = TOOLS['places.menu']?.tainting;
+    expect(typeof menuByArgs).toBe('function');
+    expect((menuByArgs as (a: unknown) => boolean)({ place: 'a', dish: 'b' })).toBe(false);
+    expect((menuByArgs as (a: unknown) => boolean)({ place: 'a', dish: 'b', online: true })).toBe(
+      true,
+    );
     // ⚠️ data.search плямує ЗА АРГУМЕНТАМИ, а не завжди: назви місць пише
     // Google, описи покупок - мерчант, а власні ідеї й записи чужого тексту
     // не несуть. Безумовна позначка робила б із «де я це записував» причину
