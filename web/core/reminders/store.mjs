@@ -45,18 +45,14 @@ function toReminder(row) {
  * природний текст через парсер ядра) - сюди не потрапляє нічого, що треба
  * інтерпретувати.
  * @param {Env} env
- * `ifAbsent` - INSERT OR IGNORE: рядок із таким id уже є, і це НЕ помилка.
- * Потрібно рівно одному місцю - плануванню наступної появи повтору, де id
- * детермінований, а виклик може повторитись (відкладене «+10 хв» повертає ту
- * саму строку в доставку). Без цього повторна спроба створювала б ДРУГИЙ ряд.
  * @param {{ id: string, text: string, dueAtMs: number,
  *   chatId?: string | number | null, threadId?: string | number | null,
- *   rrule?: string | null, recurCount?: number, ifAbsent?: boolean }} input
+ *   rrule?: string | null, recurCount?: number }} input
  */
 export async function createReminder(env, input) {
   await db(env)
     .prepare(
-      `INSERT ${input.ifAbsent ? 'OR IGNORE ' : ''}INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
+      `INSERT INTO reminders (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
        VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
     )
     .bind(
@@ -201,17 +197,43 @@ export async function claimReminderSent(env, id) {
 }
 
 /**
- * Зняти правило зі строки, яка вже породила наступну появу.
+ * Передати естафету ряду: створити наступну появу і зняти правило з поточної.
  *
- * ⚠️ НАВІЩО. Відкладене «+10 хв» повертає ТУ САМУ строку в доставку. Без цього
- * вона на другому спрацюванні запланувала б ще одну наступну появу - і ряд
- * роздвоювався б на кожне відкладення. Правило живе рівно в тій строці, що ще
- * не передала естафету.
+ * ⚠️ ОДНИМ БАТЧЕМ, а не двома викликами (ревʼю релізу). D1-запит - це підзапит
+ * Worker'а, а їх ~50 на виклик; доставка повторюваного коштувала чотири
+ * (claim + INSERT + UPDATE + черга) замість двох, і тік із двадцятьма рядами
+ * упирався в стелю. `batch` - один підзапит і одна транзакція: спадкоємець і
+ * зняте правило або є разом, або немає разом.
+ *
+ * `INSERT OR IGNORE` навмисно: id спадкоємця детермінований, тож повторна
+ * доставка тієї самої ланки має бути нуль-дією, а не ДРУГИМ рядом.
  * @param {Env} env
- * @param {string} id
+ * @param {string} prevId - строка, що вже спрацювала
+ * @param {{ id: string, text: string, dueAtMs: number, chatId: string | null,
+ *   threadId: string | null, rrule: string, recurCount: number }} next
+ * @returns {Promise<boolean>} false = спадкоємець уже існував (ряд не роздвоєно)
  */
-export async function clearRecurrence(env, id) {
-  await db(env).prepare(`UPDATE reminders SET rrule = NULL WHERE id = ?`).bind(id).run();
+export async function handOffRecurrence(env, prevId, next) {
+  const d = db(env);
+  const [ins] = await d.batch([
+    d
+      .prepare(
+        `INSERT OR IGNORE INTO reminders
+           (id, due_at, text, status, snooze_count, chat_id, thread_id, rrule, recur_count)
+         VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+      )
+      .bind(
+        next.id,
+        new Date(next.dueAtMs).toISOString(),
+        next.text,
+        next.chatId,
+        next.threadId,
+        next.rrule,
+        next.recurCount,
+      ),
+    d.prepare(`UPDATE reminders SET rrule = NULL WHERE id = ?`).bind(prevId),
+  ]);
+  return (ins?.meta?.changes ?? 0) > 0;
 }
 
 /**

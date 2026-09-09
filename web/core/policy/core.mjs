@@ -137,6 +137,10 @@ export const TAINT_ESCALATES = Object.freeze([
   // щодня повертала б чужий текст у довірений канал. Одноразове нагадування
   // лишається T0 - його ↩ справді відкочує.
   'reminders.create',
+  // ⚠️ І update ТЕЖ (ревʼю релізу): він уміє задати повтор тією самою фразою,
+  // тож без цього рядка барʼєр обходився двома кроками - створити одноразове
+  // (T0, повтору немає) і одразу «оновити» його на «щодня о 3:00» (теж T0).
+  'reminders.update',
 ]);
 
 /**
@@ -154,7 +158,9 @@ export function taintEscalates(kind, payload) {
   // Бажання без посилання нікуди не ходить.
   if (kind === 'wishes.create') return typeof payload?.url === 'string' && payload.url !== '';
   // Нагадування собі одноразове - T0; барʼєр ставить саме ПОВТОР.
-  if (kind === 'reminders.create') return parseRecurrence(payload?.when) != null;
+  if (kind === 'reminders.create' || kind === 'reminders.update') {
+    return parseRecurrence(payload?.when) != null;
+  }
   return true;
 }
 

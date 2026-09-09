@@ -15,14 +15,8 @@ import { isQuietMinute } from '../../settings-core.mjs';
 import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { formatReminderFired, buildSnoozeRow } from '../../reminders-core.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
-import {
-  dueReminders,
-  claimReminderSent,
-  releaseSentClaim,
-  createReminder,
-  clearRecurrence,
-} from './store.mjs';
-import { nextOccurrence } from './recurrence.mjs';
+import { dueReminders, claimReminderSent, releaseSentClaim, handOffRecurrence } from './store.mjs';
+import { nextOccurrence, parseRrule } from './recurrence.mjs';
 
 /**
  * Надіслати те, що вже мало спрацювати. Повертає скільки відправлено -
@@ -107,29 +101,43 @@ export async function deliverDueReminders(env, nowMs = Date.now()) {
 async function scheduleNext(env, r, nowMs) {
   try {
     const prevMs = Date.parse(r.dueAt);
-    const nextMs = nextAfterNow(r.rrule, Number.isFinite(prevMs) ? prevMs : nowMs, nowMs);
-    if (nextMs == null) {
+    const from = Number.isFinite(prevMs) ? prevMs : nowMs;
+    const rule = parseRrule(r.rrule);
+    if (!rule) {
       console.error(`reminders: правило «${r.rrule}» не читається - ряд ${r.id} закінчено`);
       return;
     }
-    await createReminder(env, {
+    const nextMs = nextAfterNow(r.rrule, from, nowMs);
+    if (nextMs == null) {
+      // ⚠️ Окремий рядок логу, а не «не читається» (ревʼю): правило валідне,
+      // просто пропущених появ більше за стелю наздоганяння. Причина в лозі
+      // має збігатися з причиною насправді, інакше слід шкодить.
+      console.error(
+        `reminders: ряд ${r.id} відстав більше ніж на ${CATCH_UP_MAX} появ - закінчено`,
+      );
+      return;
+    }
+    const created = await handOffRecurrence(env, r.id, {
       // ⚠️ ДЕТЕРМІНОВАНИЙ id, не випадковий (security-ревʼю). Якщо ту саму
-      // строку доставили вдруге (відкладене «+10 хв» повертає її в чергу, а
-      // зняття правила не пройшло), спадкоємець вийде з тим самим id - і
-      // `ifAbsent` перетворить другу спробу на нуль-дію замість ДРУГОГО ряду.
+      // строку доставили вдруге (відкладене «+10 хв» повертає її в чергу), в
+      // межах тієї самої доби спадкоємець вийде з тим самим id - і
+      // `INSERT OR IGNORE` зробить другу спробу нуль-дією замість ДРУГОГО ряду.
       id: seriesId(r.id, nextMs),
       text: r.text,
       dueAtMs: nextMs,
       chatId: r.chatId == null ? null : String(r.chatId),
       threadId: r.threadId == null ? null : String(r.threadId),
-      rrule: r.rrule,
+      // String(): вище вже доведено, що правило читається (parseRrule != null),
+      // але тип цього не звужує.
+      rrule: String(r.rrule),
       recurCount: r.recurCount + 1,
-      ifAbsent: true,
     });
-    // Естафету передано - ця строка більше не є носієм правила. Порядок саме
-    // такий: спадкоємець уже існує, тож навіть якщо зняття не пройде, ряд не
-    // урветься (гірший наслідок - зайва поява після відкладення).
-    await clearRecurrence(env, r.id);
+    if (!created) {
+      // Не помилка, але й не мовчанка: або це повторна доставка тієї самої
+      // ланки (штатно), або 32-бітний id збігся з чужим рядком (і тоді ряд
+      // щойно тихо закінчився - без сліду це не діагностується).
+      console.error(`reminders: спадкоємець ${r.id} уже існував - нового рядка не створено`);
+    }
   } catch (/** @type {any} */ e) {
     // Ряд обірвався - але власник ЦЮ появу вже отримав, тож мовчазна втрата
     // тут не така, як утрата самого нагадування. Слід у лозі обовʼязковий.

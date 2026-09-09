@@ -22,25 +22,35 @@
 // і за місяць з'їхало б на іншу годину.
 
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { plural } from '../tg/phrase.mjs';
 
 /** Дні тижня в порядку RFC 5545 (SU=0, як у Date#getUTCDay). */
 const RFC_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
 /** Українська літера. ⚠️ Не `\w`: у JS це [A-Za-z0-9_], і «щопонеділка» такий
- *  шаблон обривав на «щопонеділ», лишаючи «ка» в тексті часу. */
-const L = "[а-яіїєґА-ЯІЇЄҐ'ʼ]";
+ *  шаблон обривав на «щопонеділ», лишаючи «ка» в тексті часу.
+ *  Три апострофи навмисно: ʼ (U+02BC), ' (U+0027) і ’ (U+2019) - останній
+ *  ставить автозаміна iOS та Telegram, і без нього «щоп’ятниці» мовчки
+ *  ставало одноразовим (ревʼю). */
+const L = "[а-яіїєґА-ЯІЇЄҐ'ʼ’]";
 
-/** Основи назв днів → RFC. Ловлять відмінки: «понеділка», «понеділках».
- *  ⚠️ `серед(?!ин)` - інакше «по середині дня» читалось би як «по середах».
- *  @type {[string, string][]} */
-const DAY_WORDS = [
-  ['понеділ', 'MO'],
-  ['вівтор', 'TU'],
-  ['серед(?!ин)', 'WE'],
-  ['четвер', 'TH'],
-  ["(?:пʼятниц|п'ятниц|пятниц)", 'FR'],
-  ['субот', 'SA'],
-  ['неділ', 'SU'],
+/**
+ * Дні тижня ПОВНИМИ формами: основа + перелік закінчень.
+ *
+ * ⚠️ НЕ «основа + будь-які літери» (ревʼю). Жадібний хвіст робив із «по
+ * середині дня» середу, а з «в четвертому розділі» четвер, ще й вигризав ці
+ * слова з тексту нагадування. Закінчення перелічені, а `(?![а-яіїєґ])` не дає
+ * зачепити довше слово.
+ * @type {[string, string][]}
+ */
+const DAY_FORMS = [
+  ['MO', 'понеділ(?:ок|ка|ку|ки|ках|кам)'],
+  ['TU', 'вівтор(?:ок|ка|ку|ки|ках|кам)'],
+  ['WE', 'серед(?:а|у|и|і|ах|ам)'],
+  ['TH', 'четвер(?:га|гу|ги|гах|гам)?'],
+  ['FR', "(?:пʼятниц|п'ятниц|п’ятниц|пятниц)(?:я|ю|і|ях|ям|и)"],
+  ['SA', 'субот(?:а|у|и|і|ах|ам)'],
+  ['SU', 'неділ(?:я|ю|і|ях|ям)'],
 ];
 
 /** Людські назви для показу власнику. @type {Record<string, string>} */
@@ -60,14 +70,24 @@ const NUM_WORDS = { два: 2, дві: 2, три: 3, чотири: 4 };
 /** Стеля інтервалу: більше - це вже не побутовий повтор, а планування року. */
 const MAX_INTERVAL = 12;
 
-/** Одиниця періоду. */
-const UNIT = `(день|дні|днів|доб${L}*|тижн${L}*|місяц${L}*)`;
+/** Одиниця періоду. ⚠️ Довші форми ПЕРШИМИ: альтернація в JS не жадібна, і
+ *  «дні» перед «днів» лишало хвіст «в» у тексті нагадування (ревʼю). */
+const UNIT = `(днів|дні|дня|день|доб${L}*|тижден${L}*|тижн${L}*|місяц${L}*)`;
 
-/** «раз на два тижні», «кожні 3 дні», «кожного місяця». */
+/** «раз на два тижні», «кожні 3 дні», «кожного місяця», «кожен день». */
 const EVERY_RE = new RegExp(
-  `(?:раз\\s+на|кожн${L}+)\\s+(\\d+|два|дві|три|чотири)?\\s*${UNIT}`,
+  `(?:раз\\s+на|кож(?:ен|н${L}+))\\s+(\\d+|два|дві|три|чотири)?\\s*${UNIT}`,
   'i',
 );
+
+/**
+ * «що два тижні», «що три дні» - «що» ОКРЕМО, але ЛИШЕ з числом.
+ *
+ * ⚠️ Число тут обовʼязкове, і це не примха: саме безумовне `що\\s*(одиниця)`
+ * робило з речення «нагадай, що дні здачі звіту вже завтра» вічний ряд. З
+ * числом фраза однозначна - звичайний текст «що два тижні» не містить.
+ */
+const SPACED_RE = new RegExp(`(?<![а-яіїєґ])що\\s+(\\d+|два|дві|три|чотири)\\s+${UNIT}`, 'i');
 
 /**
  * «щодня», «щотижня», «щомісяця» - «що» ЗЛИТЕ з одиницею.
@@ -75,13 +95,22 @@ const EVERY_RE = new RegExp(
  * ⚠️ Пробіл після «що» заборонений навмисно (ревʼю): доти шаблон приймав
  * `що\s*(день|дні|…)`, і звичайне речення «нагадай, що дні здачі звіту вже
  * завтра» ставало вічним щоденним рядом - зі з'їденим словом «дні» на додачу.
+ * ⚠️ «денно», а не «денн…»: інакше «купити щоденник» теж ставало б повтором.
  */
-const GLUED_RE = /(?<![а-яіїєґ])що(дня|денно|ранку|вечора|ночі|доби|тижня|місяця)(?![а-яіїєґ])/i;
+const GLUED_RE =
+  /(?<![а-яіїєґ])що(дня|дні|днів|денно|ранку|вечора|ночі|доб[а-яіїєґ]*|тижден[а-яіїєґ]*|тижн[а-яіїєґ]*|місяц[а-яіїєґ]*)(?![а-яіїєґ])/i;
+
+/** Префікси, що РОБЛЯТЬ день тижня повтором. */
+const DAY_ANCHOR = `(?:що|по\\s+|кожн${L}+\\s+)`;
+/** «в пʼятницю» - день називає вже знайдене тижневе правило, сам собою не повтор. */
+const DAY_WEAK = `(?:[ву]\\s+)`;
+/** «і четвергах», «, щосереди» - продовження переліку днів. */
+const DAY_LIST = `(?:[,;]?\\s*(?:і|й|та)\\s+)`;
 
 /** Одиниця (у будь-якому відмінку) → частота. @param {string} unit */
 function freqOfUnit(unit) {
   const u = unit.toLowerCase();
-  if (u.startsWith('тижн')) return 'WEEKLY';
+  if (u.startsWith('тижн') || u.startsWith('тижден')) return 'WEEKLY';
   if (u.startsWith('місяц')) return 'MONTHLY';
   return 'DAILY';
 }
@@ -102,7 +131,8 @@ export function parseRecurrence(raw) {
 
   /** Вирізані шматки - ПОЗИЦІЯМИ, не підрядками. ⚠️ `replace(m, ' ')` шукав
    *  ПЕРШЕ входження рядка, а не те, що збіглося, і при повторі слова різав не
-   *  ту копію (ревʼю). @type {[number, number][]} */
+   *  ту копію (ревʼю). `day` - щоб склеїти сусідні дні разом зі сполучником.
+   *  @type {{ s: number, e: number, day: boolean }[]} */
   const cuts = [];
 
   let interval = 1;
@@ -111,46 +141,44 @@ export function parseRecurrence(raw) {
 
   const every = EVERY_RE.exec(text);
   if (every) {
-    cuts.push([every.index, every.index + every[0].length]);
+    cuts.push({ s: every.index, e: every.index + every[0].length, day: false });
     const n = every[1];
     if (n) interval = /^\d+$/.test(n) ? Number(n) : (NUM_WORDS[n.toLowerCase()] ?? 1);
     freq = freqOfUnit(every[2] ?? '');
   }
 
+  const spaced = SPACED_RE.exec(text);
+  if (spaced) {
+    cuts.push({ s: spaced.index, e: spaced.index + spaced[0].length, day: false });
+    const n = spaced[1] ?? '';
+    interval = /^\d+$/.test(n) ? Number(n) : (NUM_WORDS[n.toLowerCase()] ?? 1);
+    freq = freqOfUnit(spaced[2] ?? '');
+  }
+
   const glued = GLUED_RE.exec(text);
   if (glued) {
-    cuts.push([glued.index, glued.index + glued[0].length]);
+    cuts.push({ s: glued.index, e: glued.index + glued[0].length, day: false });
     freq = freqOfUnit(glued[1] ?? '');
   }
 
-  // «щопонеділка», «по понеділках», «кожного вівторка».
-  // ⚠️ Голе «понеділок» без префікса - це КОНКРЕТНИЙ день, не повтор: «нагадай
-  // у понеділок» не має раптом стати щотижневим рядом. Виняток - коли тижневе
-  // правило ВЖЕ знайдене: у «раз на два тижні в пʼятницю» день називає саме
-  // його, і без цього пʼятниця тихо губилась (ревʼю).
-  const prefix =
-    freq === 'WEEKLY' ? `(що|по\\s+|кожн${L}+\\s+|[ву]\\s+)` : `(що|по\\s+|кожн${L}+\\s+)`;
-  /** @type {string[]} */
-  const days = [];
-  for (const pair of DAY_WORDS) {
-    const m = new RegExp(`${prefix}${pair[0]}${L}*`, 'i').exec(text);
-    if (!m) continue;
-    if (!days.includes(pair[1])) days.push(pair[1]);
-    cuts.push([m.index, m.index + m[0].length]);
-  }
-  if (days.length > 0 && freq !== 'MONTHLY') freq = 'WEEKLY';
+  // ⚠️ МІСЯЧНЕ ПРАВИЛО ДНІВ ТИЖНЯ НЕ БЕРЕ: «щомісяця по понеділках» - це не
+  // наша підмножина RFC. Слова лишаються в тексті, тож власник побачить, що
+  // його зрозуміли інакше, замість тихого «щомісяця 10-го» (ревʼю).
+  const days = freq === 'MONTHLY' ? [] : collectDays(text, freq === 'WEEKLY', cuts);
+  if (days.length > 0) freq = 'WEEKLY';
 
   // Число місяця - лише для місячного правила («1-го», «15 числа»).
   // 29-31 приймаємо: у коротких місяцях воно підтягується до останнього дня
   // (див. monthKey), тож «щомісяця 31-го» не мовчить і не пропускає лютий.
+  // ⚠️ `(?<!\d)` - інакше «за 2026-го» давало BYMONTHDAY=26 і калічило текст.
   let monthDay = null;
   if (freq === 'MONTHLY') {
-    const md = /(\d{1,2})\s*(?:-?го|числа)/i.exec(text);
+    const md = /(?<!\d)(\d{1,2})\s*(?:-?го|числа)(?![а-яіїєґ])/i.exec(text);
     if (md) {
       const n = Number(md[1]);
       if (n >= 1 && n <= 31) {
         monthDay = n;
-        cuts.push([md.index, md.index + md[0].length]);
+        cuts.push({ s: md.index, e: md.index + md[0].length, day: false });
       }
     }
   }
@@ -163,15 +191,71 @@ export function parseRecurrence(raw) {
   if (freq === 'WEEKLY' && days.length > 0) parts.push(`BYDAY=${days.join(',')}`);
   if (freq === 'MONTHLY' && monthDay != null) parts.push(`BYMONTHDAY=${monthDay}`);
 
-  let rest = '';
-  let pos = 0;
-  for (const [s, e] of cuts.sort((a, b) => a[0] - b[0])) {
-    if (s < pos) continue; // перекриття - перший виграв
-    rest += `${text.slice(pos, s)} `;
-    pos = e;
+  return { rrule: parts.join(';'), rest: cutOut(text, cuts) };
+}
+
+/**
+ * Дні тижня з фрази. Повертає коди RFC і ДОПИСУЄ вирізані шматки в `cuts`.
+ *
+ * ⚠️ Голий день тижня повтором НЕ стає: «нагадай у понеділок» - це конкретний
+ * день. Приймається він у двох випадках: сам має префікс повторюваності
+ * («щопонеділка», «по понеділках»), або тижневе правило вже знайдене чи задане
+ * сусіднім днем - тоді «раз на два тижні в пʼятницю» і «по понеділках і
+ * четвергах» читаються цілком. Доти виживав лише ПЕРШИЙ день, а решта разом зі
+ * сполучником текла в текст нагадування (ревʼю).
+ * @param {string} text
+ * @param {boolean} weeklyKnown - правило вже тижневе («раз на два тижні …»)
+ * @param {{ s: number, e: number, day: boolean }[]} cuts
+ * @returns {string[]}
+ */
+function collectDays(text, weeklyKnown, cuts) {
+  /** @type {{ s: number, e: number, code: string, kind: string }[]} */
+  const hits = [];
+  for (const [code, form] of DAY_FORMS) {
+    const re = new RegExp(`(${DAY_ANCHOR}|${DAY_WEAK}|${DAY_LIST})(?:${form})(?![а-яіїєґ])`, 'gi');
+    for (let m = re.exec(text); m; m = re.exec(text)) {
+      const pre = (m[1] ?? '').toLowerCase();
+      const kind = /^(?:що|по\s|кожн)/.test(pre) ? 'anchor' : /^[ву]\s/.test(pre) ? 'weak' : 'list';
+      hits.push({ s: m.index, e: m.index + m[0].length, code, kind });
+    }
   }
-  rest = (rest + text.slice(pos)).replace(/\s{2,}/g, ' ').trim();
-  return { rrule: parts.join(';'), rest };
+  hits.sort((a, b) => a.s - b.s);
+  if (!hits.some((h) => h.kind === 'anchor') && !weeklyKnown) return [];
+
+  /** @type {string[]} */
+  const days = [];
+  let taken = false;
+  for (const h of hits) {
+    // «і четвер» без попереднього дня - це не перелік, а звичайний текст.
+    if (h.kind === 'list' && !taken) continue;
+    if (!days.includes(h.code)) days.push(h.code);
+    cuts.push({ s: h.s, e: h.e, day: true });
+    taken = true;
+  }
+  return days;
+}
+
+/**
+ * Прибрати з фрази вирізані шматки. Проміжок між двома ДНЯМИ, у якому лишився
+ * тільки сполучник або кома, зникає разом із ними: «щовівторка і щочетверга о
+ * 8 зарядка» має дати текст «зарядка», а не «і зарядка» (ревʼю).
+ * @param {string} text
+ * @param {{ s: number, e: number, day: boolean }[]} cuts
+ */
+function cutOut(text, cuts) {
+  const sorted = [...cuts].sort((a, b) => a.s - b.s);
+  let out = '';
+  let pos = 0;
+  let prevDay = false;
+  for (const c of sorted) {
+    if (c.s < pos) continue; // перекриття - перший виграв
+    const gap = text.slice(pos, c.s);
+    const glue = prevDay && c.day && /^[\s,;]*(?:і|й|та)?[\s,;]*$/i.test(gap);
+    out += glue ? '' : `${gap} `;
+    pos = c.e;
+    prevDay = c.day;
+  }
+  return (out + text.slice(pos)).replace(/\s{2,}/g, ' ').trim();
 }
 
 /**
@@ -227,7 +311,10 @@ export function alignFirst(rrule, baseMs) {
     const at = (/** @type {number} */ yy, /** @type {number} */ mo) =>
       kyivHm(monthKey(yy, mo, rule.monthDay ?? 1), hh, mm);
     const thisMonth = at(y ?? 0, m ?? 1);
-    if (thisMonth >= baseMs) return thisMonth;
+    // ⚠️ Порівняння з точністю до ХВИЛИНИ (ревʼю). База від відносної фрази
+    // («через 2 години») несе секунди, а `kyivHm` їх обнуляє - і «щомісяця
+    // 15-го», сказане 15-го о 10:00:37, перестрибувало цілий місяць.
+    if (thisMonth >= Math.floor(baseMs / 60_000) * 60_000) return thisMonth;
     const total = (y ?? 0) * 12 + ((m ?? 1) - 1) + 1;
     return at(Math.floor(total / 12), (total % 12) + 1);
   }
@@ -324,17 +411,23 @@ export function nextOccurrence(rrule, prevMs) {
 export function recurrenceText(rrule) {
   const rule = parseRrule(rrule);
   if (!rule) return '';
-  const every = rule.interval > 1 ? `раз на ${rule.interval} ` : '';
-  if (rule.freq === 'DAILY') return rule.interval > 1 ? `${every}дні` : 'щодня';
+  // ⚠️ Через `plural`, а не голим відмінком (ревʼю): доти виходило «раз на 5
+  // дні», «раз на 5 тижні», «раз на 5 місяці» - і цей підпис іде і власнику в
+  // /reminders, і моделі в `repeat`.
+  const n = rule.interval;
+  const every = n > 1 ? `раз на ${n} ` : '';
+  const days = plural(n, 'день', 'дні', 'днів');
+  const weeks = plural(n, 'тиждень', 'тижні', 'тижнів');
+  if (rule.freq === 'DAILY') return n > 1 ? `${every}${days}` : 'щодня';
   if (rule.freq === 'WEEKLY') {
-    if (rule.days.length === 0) return rule.interval > 1 ? `${every}тижні` : 'щотижня';
+    if (rule.days.length === 0) return n > 1 ? `${every}${weeks}` : 'щотижня';
     const names = rule.days.map((d) => DAY_HUMAN[d] ?? d);
     // «щопонеділка і щочетверга», а не «щопонеділка, четверга»: підпис має
     // читатись так само, як власник це сказав.
-    return rule.interval > 1 ? `${every}тижні: ${names.join(', ')}` : `що${names.join(' і що')}`;
+    return n > 1 ? `${every}${weeks}: ${names.join(', ')}` : `що${names.join(' і що')}`;
   }
   const day = rule.monthDay != null ? ` ${rule.monthDay}-го` : '';
-  return rule.interval > 1 ? `${every}місяці${day}` : `щомісяця${day}`;
+  return n > 1 ? `${every}${plural(n, 'місяць', 'місяці', 'місяців')}${day}` : `щомісяця${day}`;
 }
 
 /** Скільки днів у місяці (григоріанський, із високосними). */
@@ -348,17 +441,33 @@ function monthKey(/** @type {number} */ y, /** @type {number} */ m, /** @type {n
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
+/**
+ * Форматери - НА РІВНІ МОДУЛЯ, а не на кожен виклик (ревʼю релізу).
+ *
+ * ⚠️ `new Intl.DateTimeFormat` коштує ~0.09 мс (замір із калібруванням), а
+ * `nextOccurrence` кличе обидва по кілька разів. При стелі `dueReminders` у 20
+ * рядків тік доставки витрачав ~6 мс лише на арифметику повторів - при бюджеті
+ * Worker'а ~10 мс CPU, ще ДО D1 і черги. Той самий прийом уже вжито в
+ * agent-core.mjs і calendar-core.mjs.
+ */
+const KYIV_PARTS_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Kyiv',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+const KYIV_OFFSET_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Europe/Kyiv',
+  timeZoneName: 'longOffset',
+});
+
 /** Київські дата/година/хвилина моменту. @param {number} ms */
 function kyivParts(ms) {
-  const f = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Kyiv',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(ms));
+  const f = KYIV_PARTS_FMT.formatToParts(new Date(ms));
   const get = (/** @type {string} */ t) => f.find((p) => p.type === t)?.value ?? '';
   return {
     dateKey: `${get('year')}-${get('month')}-${get('day')}`,
@@ -383,12 +492,9 @@ function kyivHm(dateKey, hh, mm) {
 
 /** Зсув Києва у хвилинах на момент ms. @param {number} ms */
 function kyivOffsetMin(ms) {
-  const name = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Europe/Kyiv',
-    timeZoneName: 'longOffset',
-  })
-    .formatToParts(new Date(ms))
-    .find((p) => p.type === 'timeZoneName')?.value;
+  const name = KYIV_OFFSET_FMT.formatToParts(new Date(ms)).find(
+    (p) => p.type === 'timeZoneName',
+  )?.value;
   const m = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(name ?? '');
   if (!m) return 0;
   return (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] || 0));

@@ -155,7 +155,7 @@ export function deliverAt(dueAtMs) {
  * @param {Env} env
  * @param {{ id: string, text?: string, when?: string }} args
  * @param {number} nowMs
- * @param {{ dueAtMs?: number }} [internal] - лише ядро (undo)
+ * @param {{ dueAtMs?: number, rrule?: string | null }} [internal] - лише ядро (undo)
  */
 export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
   if (!args.id) throw new Error('id обовʼязковий');
@@ -172,8 +172,11 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
     if (text.length > MAX_TEXT) throw new Error(`text довший за ${MAX_TEXT} символів`);
     patch.text = text;
   }
-  if (typeof internal.dueAtMs === 'number') patch.dueAtMs = internal.dueAtMs;
-  else if (args.when != null) {
+  if (typeof internal.dueAtMs === 'number') {
+    patch.dueAtMs = internal.dueAtMs;
+    // Відкат кладе назад і правило: undefined = не чіпати, null = зняти повтор.
+    if (internal.rrule !== undefined) patch.rrule = internal.rrule;
+  } else if (args.when != null) {
     // ⚠️ ПОВТОР ТУТ ТЕЖ (ревʼю): доти `update` правила не бачив, і «перенеси на
     // щовівторка» мовчки лишало старий графік. Два випадки:
     //   новий повтор у фразі - беремо його;
@@ -187,9 +190,14 @@ export async function runRemindersUpdate(env, args, nowMs, internal = {}) {
       );
     }
     patch.dueAtMs = resolveWhen(whenText, nowMs).whenMs;
-    if (rec) patch.dueAtMs = alignFirst(rec.rrule, patch.dueAtMs);
+    // ⚠️ Вирівнювати треба і за НАЯВНИМ правилом (ревʼю релізу): «о 10:30» у
+    // ряді BYDAY=TU парсер часу клав на найближчу добу з такою годиною - тобто
+    // на суботу, - а модель звітувала «щовівторка». Тепер дата йде за графіком.
     const rule = rec ? rec.rrule : before.rrule;
-    if (rule) patch.rrule = anchorRrule(rule, patch.dueAtMs);
+    if (rule) {
+      patch.dueAtMs = alignFirst(rule, patch.dueAtMs);
+      patch.rrule = anchorRrule(rule, patch.dueAtMs);
+    }
   }
 
   const ok = await updateReminder(env, args.id, patch);
