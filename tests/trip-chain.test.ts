@@ -21,6 +21,7 @@ import {
   likeRef,
   failTripChain,
   blocksTitle,
+  blockExtras,
   daysWord,
   tripModeWord,
   productionIo,
@@ -229,6 +230,34 @@ function fakeStep(queue: (Record<string, unknown> | null)[], clock: { now: numbe
   };
   return { step, log };
 }
+
+describe('мета поїздки (ідея №4)', () => {
+  const io = {
+    route: async () => ({ distance_m: 250_000, duration_min: 200 }),
+    carCost: async () => 'Пальне: 2 336,00 ₴.',
+    weather: async () => ({ lines: ['10.09: 12…19 °, ясно'], reason: null }),
+  } as unknown as Io;
+  const state = (purpose: string | null) =>
+    ({ to_text: 'Карпати', date_from: '2026-09-10', date_to: '2026-09-12', purpose }) as never;
+
+  it('дозвілля - пропозиція закладів; ділова й транзит - ні', async () => {
+    // ⚠️ Не самочинний пошук, а пропозиція: підбір і бронювання коштують квоти
+    // й часу, і для ділової поїздки власник їх не просив.
+    const fun = await blockExtras(io, state('дозвілля'), 't7');
+    expect(fun.join(' ')).toContain('підберу заклади');
+    for (const p of ['ділова', 'транзит', null]) {
+      const other = await blockExtras(io, state(p), 't7');
+      expect(other.join(' '), String(p)).not.toContain('підберу заклади');
+    }
+  });
+
+  it('погода в блоці лишається для будь-якої мети', async () => {
+    for (const p of ['дозвілля', 'ділова']) {
+      const extra = await blockExtras(io, state(p), 't7');
+      expect(extra.join(' '), p).toContain('12…19');
+    }
+  });
+});
 
 function fakeIo(
   db: ReturnType<typeof setup>['db'],
@@ -666,6 +695,9 @@ describe('машина станів', () => {
     expect(sent[0]?.text).toContain('10.09: 12…19 °, ясно');
     expect(sent.some((s) => s.text.startsWith('Пора виходити'))).toBe(true);
     expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain('3 год 20 хв');
+    // ⚠️ Погода САМЕ тут (ідея №4, п.7): у момент виходу вона ще може змінити
+    // рішення, а на T-7 прогнозу на день виїзду часто просто немає.
+    expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain('12…19');
     expect(sent.at(-1)?.text).toContain('Записав витрати: 4 200 грн');
     // Стан у базі: питання підсумку ставилось у 'waiting' з awaiting=spent.
     expect(sent.find((s) => s.text.startsWith('Як пройшла'))).toMatchObject({

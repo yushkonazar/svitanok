@@ -19,6 +19,7 @@ import {
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
 import { runPlacesMenu } from './menu.mjs';
+import { runTripBrief } from './trip.mjs';
 import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
@@ -159,6 +160,21 @@ export const TOOLS = {
       },
     },
     run: (env, args, nowMs) => runPlacesMenu(env, args, nowMs),
+  },
+  // Опитувальник поїздки (ідея №4). Читання власних фактів - ні мережі, ні
+  // плями: перелік полів рахує ядро з того самого джерела, що й валідація
+  // `chain.start(trip)`.
+  'trip.brief': {
+    args: {
+      type: 'object',
+      required: ['to'],
+      properties: {
+        to: { type: 'string', minLength: 1, maxLength: 120 },
+        date_from: { type: 'string', maxLength: 10 },
+        purpose: { type: 'string', maxLength: 20 },
+      },
+    },
+    run: (env, args) => runTripBrief(env, args),
   },
   'routes.eta': {
     args: {

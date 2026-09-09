@@ -171,6 +171,18 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     tainting: true,
   }),
   tool({
+    coreName: 'trip.brief',
+    description:
+      'ПЕРШЕ, що робиш на «їдемо в X» / «поїздка в X». Ядро повертає ask - усі поля, яких бракує для старту поїздки, і known - те, що вже знає саме (авто з фактів, місто виїзду, ціна пального). ' +
+      'Склади з ask ОДНЕ повідомлення і спитай усе разом; питати по одному - пряма скарга власника. ' +
+      'Отримав відповіді - поклич chain.start(trip) ОДИН раз, разом із purpose і participants.',
+    args: z.object({
+      to: z.string().min(1).max(120),
+      date_from: z.string().max(10).optional(),
+      purpose: z.string().max(20).optional(),
+    }),
+  }),
+  tool({
     coreName: 'places.menu',
     description:
       'Чи є страва в меню закладу («чи є в Креденсі сирники»). ЗАВЖДИ починай із цього інструмента, не з places.search. ' +
@@ -291,7 +303,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.start',
     description:
-      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip («їдемо в Карпати 12-15 жовтня автом»): payload {to - куди, date_from і date_to? - YYYY-MM-DD, mode - car·bus·train·plane, from_city? - звідки, country? - країна (не Україна → кордонний чекліст), vehicle_key? - ключ facts.vehicle, depart_at? - година виїзду «HH:MM», trip_id? - ТІЛЬКИ щоб перенести наявну поїздку на нові дати}. Ядро веде чекліст T-30/T-7/T-1, «пора виходити» і підсумок витрат.',
+      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip («їдемо в Карпати 12-15 жовтня автом»): payload {to - куди, date_from і date_to? - YYYY-MM-DD, mode - car·bus·train·plane, from_city? - звідки, country? - країна (не Україна → кордонний чекліст), vehicle_key? - ключ facts.vehicle, depart_at? - година виїзду «HH:MM», purpose? - ділова·транзит·дозвілля (від неї залежить глибина підготовки), participants? - хто їде, trip_id? - ТІЛЬКИ щоб перенести наявну поїздку на нові дати}. Поля бери з trip.brief і питай їх ОДНИМ повідомленням. Ядро веде чекліст T-30/T-7/T-1, «пора виходити» (з погодою) і підсумок витрат.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),

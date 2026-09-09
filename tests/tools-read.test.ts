@@ -424,6 +424,7 @@ describe('реєстр TOOLS', () => {
       'runs.query',
       'style.samples',
       'subscriptions.update',
+      'trip.brief',
       'wishes.create',
       'wishes.delete',
       'wishes.import',
