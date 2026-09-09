@@ -13,7 +13,7 @@
 // FTS (records_fts, ADR-036): data_text = назва колекції + усі значення;
 // синхронізується кодом разом із записом у базову таблицю.
 
-import { ftsQuery } from './ideas.mjs';
+import { prefixFtsQuery } from './search.mjs';
 
 /** Типи полів - дослівно 07 §2. */
 export const FIELD_TYPES = ['text', 'number', 'date', 'bool', 'choice', 'url', 'money'];
@@ -509,7 +509,10 @@ export async function runRecordsList(env, args) {
  * @param {{ q: string, collection?: unknown }} args
  */
 export async function runRecordsSearch(env, args) {
-  const match = ftsQuery(args.q);
+  // ⚠️ ПРЕФІКСНИЙ пошук, як у `data.search` (ідея №3). Точний FTS промахувався
+  // на відмінках: «Креденсу» не знаходило «Креденс», і власник чув «немає» про
+  // запис, який лежить у нього ж у колекції.
+  const match = prefixFtsQuery(args.q);
   if (!match) throw new Error('q має містити хоч одне слово');
   /** @type {unknown[]} */
   const binds = [match];

@@ -41,6 +41,8 @@ import { resolveWaypoint } from '../tools/places.mjs';
 
 export const CHAIN_KIND = 'trip';
 export const TRIP_MODES = ['car', 'bus', 'train', 'plane'];
+/** Мета поїздки (ідея №4): від неї залежить глибина підготовки ланцюга. */
+export const TRIP_PURPOSES = ['ділова', 'транзит', 'дозвілля'];
 /** Час блоків за Києвом (07 §6). */
 const BLOCK_AT = { t30: '10:00', t7: '10:00', t1: '19:00' };
 /** Виїзд, якщо власник не назвав години. */
@@ -77,7 +79,8 @@ const EVENTS_PER_WINDOW = 12;
  * @typedef {{ trip_id: string, to_text: string, from_city: string | null, country: string | null,
  *   date_from: string, date_to: string | null, mode: string, vehicle_key: string | null,
  *   checklist_key: string, depart_at: string | null, chat_id: number | string | null,
- *   thread_id: string | null, awaiting: string | null }} TripState
+ *   thread_id: string | null, awaiting: string | null,
+ *   purpose: string | null, participants: string | null }} TripState
  * @typedef {{ chainId: string, state?: TripState }} TripParams
  */
 
@@ -251,6 +254,14 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     vehicle_key: payload.vehicle_key == null ? null : String(payload.vehicle_key),
     checklist_key: checklistKey,
     depart_at: payload.depart_at == null ? null : String(payload.depart_at).slice(0, 5),
+    // ⚠️ Мета й учасники живуть у стані ЛАНЦЮГА, не в таблиці `trips` (ідея
+    // №4). Причина технічна й важлива: Workers Builds деплоїть у прод кожен
+    // push, а міграції їдуть лише на мержі в main - код, що читає нову
+    // колонку, у вікні між ними падав би на живих поїздках. `state_json` -
+    // уже JSON, тож нових колонок не треба взагалі.
+    purpose: TRIP_PURPOSES.includes(String(payload.purpose ?? '')) ? String(payload.purpose) : null,
+    participants:
+      payload.participants == null ? null : String(payload.participants).trim().slice(0, 200),
     chat_id: ctx.chatId ?? null,
     thread_id: ctx.threadId == null ? null : String(ctx.threadId),
     awaiting: null,
@@ -281,7 +292,10 @@ export async function startTripChain(env, payload, nowMs, ctx) {
       text:
         `Поїздка створена: ${ddmm(dateFrom)}${dateTo ? `-${ddmm(dateTo)}` : ''}, ` +
         `${state.from_city ? `${state.from_city} → ` : ''}${to}, ${way}. ` +
-        `Чекліст ${checklistKey}: ${left >= 30 ? `перший блок - за ${daysWord(left - 30)}` : 'перший блок надішлю зараз'}.`,
+        `Чекліст ${checklistKey}: ${left >= 30 ? `перший блок - за ${daysWord(left - 30)}` : 'перший блок надішлю зараз'}.` +
+        // ⚠️ Учасників ВИДНО (ревʼю): питати про них і мовчки класти в JSON -
+        // рівно той клас зайвих питань, який ідея №4 мала прибрати.
+        (state.participants ? ` Їдете: ти і ${state.participants}.` : ''),
       note: 'ланцюг далі веде ядро кнопками; власнику скажи саме text',
     },
     prev: { chain_id: chainId, trip_id: tripId, wish_id: wishId },
@@ -488,9 +502,16 @@ export async function runTripChain(env, params, step, io) {
       const departWord = state.depart_at
         ? `виїзд о ${kyivClock(departMs)}`
         : `виїзд орієнтовно о ${kyivClock(departMs)} (скажи точний час - переставлю)`;
+      // ⚠️ Погода ТУТ, а не лише в блоці T-7 (ідея №4, п.7): у момент «пора
+      // виходити» вона ще може змінити рішення - вдягтися інакше, виїхати
+      // раніше. На T-7 прогнозу на день виїзду часто просто немає.
+      const leaveWeather = await step.do(`${rk}-leave-weather`, async () => {
+        const { lines } = await io.weather(state.to_text, [state.date_from]);
+        return lines[0] ?? null;
+      });
       await step.do(`${rk}-leave-send`, () =>
         io.send(
-          `Пора виходити: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''} Дорожній чекліст - нижче.`,
+          `Пора виходити: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Дорожній чекліст - нижче.`,
           [
             [
               { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
@@ -687,7 +708,7 @@ async function safeRoute(io, state, mode) {
  * @param {TripIo} io @param {TripState} state @param {string} block
  * @returns {Promise<string[]>}
  */
-async function blockExtras(io, state, block) {
+export async function blockExtras(io, state, block) {
   /** @type {string[]} */
   const extra = [];
   if (block === 't30' && state.mode === 'car') {
@@ -698,6 +719,13 @@ async function blockExtras(io, state, block) {
     const dates = tripDates(state.date_from, state.date_to);
     const { lines, reason } = await io.weather(state.to_text, dates);
     extra.push(lines.length ? `Погода: ${lines.join('; ')}` : weatherNote(reason, state.date_from));
+    // ⚠️ ГІЛКУВАННЯ ЗА МЕТОЮ (ідея №4, п.2 і п.6). Ділова поїздка й транзит
+    // рекомендацій закладів не потребують - пропонувати їх там означає
+    // витрачати увагу власника на те, чого він не просив. Це пропозиція, а не
+    // самочинний пошук: підбір і бронювання коштують квоти й часу.
+    if (state.purpose === 'дозвілля') {
+      extra.push(`Скажи - підберу заклади в ${state.to_text} або забронюю столик.`);
+    }
   }
   return extra;
 }

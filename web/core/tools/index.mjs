@@ -18,6 +18,8 @@ import {
   runGeoGeocode,
 } from './read.mjs';
 import { runFactsGet } from './facts.mjs';
+import { runPlacesMenu } from './menu.mjs';
+import { runTripBrief } from './trip.mjs';
 import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
@@ -141,6 +143,38 @@ export const TOOLS = {
     },
     tainting: true,
     run: (env, args, nowMs) => runPlacesDetails(env, args, nowMs),
+  },
+  // Меню закладу (ідея №3). Порядок «своя колекція → довідник → мережа»
+  // тримає ЯДРО: перший виклик безкоштовний і чистий, і лише повторний з
+  // `online: true` іде в Places - тому й плямує лише він.
+  'places.menu': {
+    tainting: (/** @type {any} */ args) => args?.online === true,
+    args: {
+      type: 'object',
+      required: ['place', 'dish'],
+      properties: {
+        place: { type: 'string', minLength: 1, maxLength: 120 },
+        dish: { type: 'string', minLength: 1, maxLength: 120 },
+        city: { type: 'string', maxLength: 60 },
+        online: { type: 'boolean' },
+      },
+    },
+    run: (env, args, nowMs) => runPlacesMenu(env, args, nowMs),
+  },
+  // Опитувальник поїздки (ідея №4). Читання власних фактів - ні мережі, ні
+  // плями: перелік полів рахує ядро з того самого джерела, що й валідація
+  // `chain.start(trip)`.
+  'trip.brief': {
+    args: {
+      type: 'object',
+      required: ['to'],
+      properties: {
+        to: { type: 'string', minLength: 1, maxLength: 120 },
+        date_from: { type: 'string', maxLength: 10 },
+        purpose: { type: 'string', maxLength: 20 },
+      },
+    },
+    run: (env, args) => runTripBrief(env, args),
   },
   'routes.eta': {
     args: {
