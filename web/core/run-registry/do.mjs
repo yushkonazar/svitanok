@@ -16,6 +16,10 @@ import { DurableObject } from 'cloudflare:workers';
 /** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null, chatId: number | null, staleMs?: number }} ActiveRun */
 
 const ACTIVE_KEY = 'active';
+/** Нещодавно завершені run: дозволяють delivery telemetry retry, але не
+ * повертають право викликати tools після фінішу. */
+const COMPLETED_KEY = 'completed';
+const COMPLETED_TTL_MS = 30 * 60_000;
 
 /** Спожиті nonce internal API: {`runId:nonce` -> expiresMs}. Окремий ключ від
  *  активних прогонів — інший життєвий цикл і інший писар (router, не агент). */
@@ -36,8 +40,24 @@ export class RunRegistryDO extends DurableObject {
     );
   }
 
-  /** Телеметрія без D1 неможлива — і це мусить бути видно, а не тихо зникати
-   *  (клієнт зловить виняток і залишить слід у логах). */
+  /** @returns {Promise<Record<string, { entry: ActiveRun, expiresMs: number }>>} */
+  async #completed(nowMs = Date.now()) {
+    const completed = /** @type {Record<string, { entry: ActiveRun, expiresMs: number }>} */ (
+      (await this.ctx.storage.get(COMPLETED_KEY)) ?? {}
+    );
+    let dirty = false;
+    for (const [id, value] of Object.entries(completed)) {
+      if (value.expiresMs <= nowMs) {
+        delete completed[id];
+        dirty = true;
+      }
+    }
+    if (dirty) await this.ctx.storage.put(COMPLETED_KEY, completed);
+    return completed;
+  }
+
+  /** D1 — telemetry/audit projection. Відмова D1 не має лишати активний run
+   * без можливості завершитися у control plane DO. */
   #db() {
     const db = /** @type {Env} */ (this.env).DB;
     if (!db) throw new Error('привʼязки DB немає — телеметрія runs неможлива');
@@ -52,34 +72,37 @@ export class RunRegistryDO extends DurableObject {
    */
   async begin(run) {
     const active = await this.#active();
-    active[run.id] = {
-      startedMs: run.startedMs,
-      trigger: run.trigger,
-      profile: run.profile ?? null,
-      threadId: run.threadId ?? null,
-      // chatId прогону (ревʼю PR-3): без нього deliver DM-прогону летів у
-      // супергрупу - TELEGRAM_CHAT_ID не єдиний чат системи.
-      chatId: run.chatId ?? null,
-      // Власна стеля сторожа (етап 4): прогін в Actions живе до 40 хв, а
-      // загальна RUN_STALE_MS (6 хв) закрила б його ДО артефакту - і підпис
-      // з його run_id дістав би 403 run-unknown.
-      ...(Number.isFinite(run.staleMs) ? { staleMs: Number(run.staleMs) } : {}),
-    };
-    await this.ctx.storage.put(ACTIVE_KEY, active);
-    await this.#db()
-      .prepare(
-        `INSERT INTO runs (id, trigger, profile, thread_id, model, started_at)
-         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
-      )
-      .bind(
-        run.id,
-        run.trigger,
-        run.profile ?? null,
-        run.threadId == null ? null : String(run.threadId),
-        run.model ?? null,
-        new Date(run.startedMs).toISOString(),
-      )
-      .run();
+    if (!active[run.id]) {
+      active[run.id] = {
+        startedMs: run.startedMs,
+        trigger: run.trigger,
+        profile: run.profile ?? null,
+        threadId: run.threadId ?? null,
+        // chatId прогону: TELEGRAM_CHAT_ID не єдиний чат системи.
+        chatId: run.chatId ?? null,
+        ...(Number.isFinite(run.staleMs) ? { staleMs: Number(run.staleMs) } : {}),
+      };
+      // Це authoritative write: якщо він впаде, клієнт не стартує brain.
+      await this.ctx.storage.put(ACTIVE_KEY, active);
+    }
+    try {
+      await this.#db()
+        .prepare(
+          `INSERT INTO runs (id, trigger, profile, thread_id, model, started_at)
+           VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+        )
+        .bind(
+          run.id,
+          run.trigger,
+          run.profile ?? null,
+          run.threadId == null ? null : String(run.threadId),
+          run.model ?? null,
+          new Date(run.startedMs).toISOString(),
+        )
+        .run();
+    } catch (/** @type {any} */ e) {
+      console.error(`run-registry: D1 telemetry begin ${run.id} впав`, e?.message);
+    }
     return { active: Object.keys(active).length };
   }
 
@@ -94,32 +117,53 @@ export class RunRegistryDO extends DurableObject {
    */
   async finish(id, patch) {
     const active = await this.#active();
-    const entry = active[id];
+    const completed = await this.#completed(patch.finishedMs);
+    const entry = active[id] ?? completed[id]?.entry;
+    const newlyFinished = Boolean(active[id]);
     const startedMs = entry?.startedMs;
-    delete active[id];
-    await this.ctx.storage.put(ACTIVE_KEY, active);
-    await this.#db()
-      .prepare(
-        `UPDATE runs SET finished_at = ?, duration_ms = ?, error = ?, steps = COALESCE(?, steps)
-         WHERE id = ? AND finished_at IS NULL`,
-      )
-      .bind(
-        new Date(patch.finishedMs).toISOString(),
-        Number.isFinite(startedMs) ? patch.finishedMs - /** @type {number} */ (startedMs) : null,
-        patch.error ?? null,
-        patch.steps ?? null,
-        id,
-      )
-      .run();
+    if (newlyFinished) {
+      completed[id] = {
+        entry: /** @type {ActiveRun} */ (entry),
+        expiresMs: patch.finishedMs + COMPLETED_TTL_MS,
+      };
+      // Спочатку лишаємо retriable completion record, потім забираємо право
+      // на tools. Обидва записи серіалізує один DO.
+      await this.ctx.storage.put(COMPLETED_KEY, completed);
+      delete active[id];
+      await this.ctx.storage.put(ACTIVE_KEY, active);
+    }
+    try {
+      await this.#db()
+        .prepare(
+          `UPDATE runs SET finished_at = ?, duration_ms = ?, error = ?, steps = COALESCE(?, steps)
+           WHERE id = ? AND finished_at IS NULL`,
+        )
+        .bind(
+          new Date(patch.finishedMs).toISOString(),
+          Number.isFinite(startedMs) ? patch.finishedMs - /** @type {number} */ (startedMs) : null,
+          patch.error ?? null,
+          patch.steps ?? null,
+          id,
+        )
+        .run();
+    } catch (/** @type {any} */ e) {
+      console.error(`run-registry: D1 telemetry finish ${id} впав`, e?.message);
+    }
     // Дані щойно закритого прогону - викликачу (handleRuns продовжує тред без
     // окремого runInfo-виклику; ревʼю PR-3, efficiency).
-    return entry ? { threadId: entry.threadId, chatId: entry.chatId ?? null } : null;
+    return entry ? { threadId: entry.threadId, chatId: entry.chatId ?? null, newlyFinished } : null;
   }
 
   /** Чи прогін зараз активний — перевірка run_id для internal API (PR-5).
    *  @param {string} id */
   async has(id) {
     return Boolean((await this.#active())[id]);
+  }
+
+  /** Для idempotent final report: завершений run відомий лише вузький TTL.
+   * @param {string} id @param {number} [nowMs] */
+  async hasOrCompleted(id, nowMs = Date.now()) {
+    return Boolean((await this.#active())[id]) || Boolean((await this.#completed(nowMs))[id]);
   }
 
   /** Дані активного прогону (threadId для taint-запису, chatId для deliver,

@@ -767,7 +767,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
 
   const statusMessageId = reuseStatusId ?? (await sendStatusDraft(env, parsed));
   const runId = crypto.randomUUID();
-  await registryBegin(env, {
+  const registered = await registryBegin(env, {
     id: runId,
     trigger: route,
     profile: route,
@@ -776,6 +776,13 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     model: MODELS[route] ?? null,
     startedMs: nowMs,
   });
+  if (!registered) {
+    await retryOrGiveUp(env, parsed, threadKey, entry, nowMs, statusMessageId, {
+      retry: 'Реєстр асистента тимчасово недоступний - спробую ще раз за ~5 хв.',
+      giveUp: 'Реєстр асистента недоступний - скажи, коли полагодимо.',
+    });
+    return null;
+  }
   const { claimed } = await registryThreadSetRun(env, threadKey, runId, statusMessageId, nowMs);
   if (!claimed) {
     // «стоп» устиг у вікні pending (ревʼю PR-3): тред зник - мозок НЕ кличемо,
@@ -2208,7 +2215,7 @@ async function shadowClassifyLog(env, parsed, text, nowMs) {
   // trigger='shadow' (ревʼю PR-3): інакше класифікація була б невідрізненна
   // від бойових прогонів у runs і забруднила б статистику назавжди; profile
   // лишається route - саме його порівнює приймання.
-  await registryBegin(env, {
+  const registered = await registryBegin(env, {
     id: runId,
     trigger: 'shadow',
     profile: route,
@@ -2216,6 +2223,7 @@ async function shadowClassifyLog(env, parsed, text, nowMs) {
     model: null,
     startedMs: nowMs,
   });
+  if (!registered) return;
   await registryFinish(env, runId, { finishedMs: nowMs, steps: 0 });
 }
 

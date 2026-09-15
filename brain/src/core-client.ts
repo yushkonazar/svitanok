@@ -193,20 +193,23 @@ export class CoreClient {
     }
   }
 
-  /** Телеметрія кроків (run_steps + закриття прогону в реєстрі) + опційний
-   *  керівний outcome (ескалація, ADR-039: контракт, не журнальний крок);
-   *  best-effort - журнал не сміє валити прогін. 501 терпимо: ядро до PR-2. */
+  /** Завершення run + telemetry. Ядро спершу закриває control plane, тому цей
+   * виклик ретраїться при транзієнтній мережевій/5xx відмові. `/internal/runs`
+   * ідемпотентний для короткого completion TTL, отже retry не створить другу
+   * дію чи другий queue advance. */
   async reportRuns(runId: string, steps: object[], outcome?: RunOutcome): Promise<void> {
-    try {
-      const res = await this.post('/internal/runs', runId, {
-        steps,
-        ...(outcome ? { outcome } : {}),
-      });
-      if (res.status !== 501 && (res.status < 200 || res.status >= 300)) {
+    const body = { steps, ...(outcome ? { outcome } : {}) };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const res = await this.post('/internal/runs', runId, body);
+        if (res.status === 501 || (res.status >= 200 && res.status < 300)) return;
+        const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
         console.warn(`core-client: /internal/runs ${res.status}`);
+        if (!retryable) return;
+      } catch (err) {
+        console.warn(`core-client: /internal/runs недоступний: ${String(err)}`);
       }
-    } catch (err) {
-      console.warn(`core-client: /internal/runs недоступний: ${String(err)}`);
+      if (attempt < 2) await delay(250 * 2 ** attempt);
     }
   }
 
@@ -239,6 +242,10 @@ export class CoreClient {
     const parsed: unknown = await res.json().catch(() => null);
     return { status: res.status, body: parsed };
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

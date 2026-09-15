@@ -10,6 +10,7 @@ import { json, readCappedBody } from '../../http-core.mjs';
 import { verifyInternalRequest, INTERNAL_SIG_TTL_MS } from './auth.mjs';
 import {
   registryHas,
+  registryHasOrCompleted,
   registryConsumeNonce,
   registryRunInfo,
   registryFinish,
@@ -104,9 +105,15 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
   });
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  // Прогін мусить бути живим у RunRegistry (07 §3): підпис доводить «хто»,
-  // run_id - «навіщо саме зараз». Збій реєстру = відмова, не пропуск.
-  if (!(await registryHas(env, auth.runId))) {
+  // Усі internal routes, крім idempotent final report, вимагають активний
+  // run. `/internal/runs` може повторитися після фінішу: він більше не дає
+  // доступу до tools, але дозволяє brain підтвердити completion після мережевої
+  // невизначеності й дописати telemetry.
+  const isRunCompletion = path === '/internal/runs';
+  const known = isRunCompletion
+    ? await registryHasOrCompleted(env, auth.runId)
+    : await registryHas(env, auth.runId);
+  if (!known) {
     return json({ ok: false, error: 'run-unknown' }, 403);
   }
   // Nonce споживається ПІСЛЯ підпису й run_id (інакше атакер без ключа міг би
@@ -511,11 +518,9 @@ async function scheduleDrain(env, ctx, nowMs) {
 }
 
 /**
- * Телеметрія прогону від мозку (07 §3, дротування - етап 2 PR-2): кроки в
- * run_steps + закриття прогону в RunRegistry (ідемпотентність фіналу тримає
- * сам реєстр: finished_at IS NULL). Поля кроків коерсяться дбайливо - контракт
- * RUNS_SCHEMA гарантує лише «масив обʼєктів», а телеметрія не сміє валити
- * прогін через криве поле.
+ * Завершення прогону від мозку: спочатку authoritative control-plane finish,
+ * потім best-effort telemetry у run_steps. Поля кроків коерсяться дбайливо;
+ * журнал не може заблокувати thread queue або workflow continuation.
  * Після закриття прогону тут же живе продовження треду (ADR-039): ескалація
  * quick→chat (крок name='escalate' з текстом у note) або наступний запис
  * черги; обидва - у waitUntil, щоб відповідь мозку не чекала нового прогону.
@@ -526,20 +531,30 @@ async function scheduleDrain(env, ctx, nowMs) {
  * @param {number} nowMs
  */
 async function handleRuns(env, ctx, runId, body, nowMs) {
-  if (!env.DB) return json({ ok: false, error: 'db-not-configured' }, 500);
   const steps = body.steps;
+  const failed = steps.some((s) => s && s.kind === 'error');
+  const info = await registryFinish(env, runId, {
+    finishedMs: nowMs,
+    error: failed ? 'brain-error' : null,
+    steps: steps.length,
+  });
+
+  let telemetryPersisted = Boolean(env.DB);
   try {
+    if (!env.DB) throw new Error('db-not-configured');
     for (let i = 0; i < steps.length; i += 1) {
       const s = steps[i] ?? {};
       const ms = Number(s.ms);
+      const n = Number.isFinite(Number(s.n)) ? Number(s.n) : i + 1;
       await env.DB.prepare(
         `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO NOTHING`,
       )
         .bind(
-          crypto.randomUUID(),
+          `${runId}:${n}`,
           runId,
-          Number.isFinite(Number(s.n)) ? Number(s.n) : i + 1,
+          n,
           typeof s.at === 'string' ? s.at : new Date(nowMs).toISOString(),
           typeof s.kind === 'string' ? s.kind : 'tool',
           s.name != null ? String(s.name).slice(0, 128) : null,
@@ -551,16 +566,19 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     }
   } catch (/** @type {any} */ e) {
     console.error('internal: запис run_steps впав', e?.message);
-    return json({ ok: false, error: 'steps-not-persisted' }, 500);
+    telemetryPersisted = false;
   }
-  const failed = steps.some((s) => s && s.kind === 'error');
-  // finish повертає threadId/chatId щойно закритого прогону - окремий
-  // runInfo-виклик до фінішу більше не потрібен (ревʼю PR-3, efficiency).
-  const info = await registryFinish(env, runId, {
-    finishedMs: nowMs,
-    error: failed ? 'brain-error' : null,
-    steps: steps.length,
-  });
+
+  // Повтор фінального report може дописати telemetry, але не має вдруге
+  // запускати chain event чи наступний запит у thread.
+  if (info?.newlyFinished === false) {
+    return json({
+      ok: true,
+      steps: steps.length,
+      telemetry: telemetryPersisted ? 'persisted' : 'deferred',
+      retried: true,
+    });
+  }
 
   // Подія в ланцюг від працівника (етап 3 PR-8): доставляється ДО продовження
   // треду і незалежно від нього; збій sendEvent - у лог, ланцюг дочекається
@@ -634,7 +652,11 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     if (ctx?.waitUntil) ctx.waitUntil(cont);
     else await cont;
   }
-  return json({ ok: true, steps: steps.length });
+  return json({
+    ok: true,
+    steps: steps.length,
+    telemetry: telemetryPersisted ? 'persisted' : 'deferred',
+  });
 }
 
 /**

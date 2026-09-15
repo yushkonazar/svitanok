@@ -26,7 +26,7 @@ export async function startChainWorkerRun(env, req, nowMs) {
   }
   const runId = crypto.randomUUID();
   const threadId = env.TOPIC_ASSISTANT ? String(env.TOPIC_ASSISTANT) : 'dm';
-  await registryBegin(env, {
+  const registered = await registryBegin(env, {
     id: runId,
     trigger: 'workflow',
     profile: req.profile,
@@ -36,6 +36,10 @@ export async function startChainWorkerRun(env, req, nowMs) {
     startedMs: nowMs,
     ...(req.staleMs ? { staleMs: req.staleMs } : {}),
   });
+  if (!registered) {
+    console.error(`${req.log}: RunRegistry недоступний — працівник не стартував`);
+    return false;
+  }
   const res = await callBrainRun(
     env,
     { instruction, runId, profile: req.profile, threadId, inputText: JSON.stringify(req.input) },

@@ -405,7 +405,7 @@ export async function startIdeaAnalysis(env, idea, args, nowMs, ctx) {
       iso,
     )
     .run();
-  await registryBegin(env, {
+  const registered = await registryBegin(env, {
     id: runId,
     trigger: 'actions',
     profile: ANALYSIS_PROFILE,
@@ -415,6 +415,10 @@ export async function startIdeaAnalysis(env, idea, args, nowMs, ctx) {
     startedMs: nowMs,
     staleMs: ANALYSIS_RUN_STALE_MS,
   });
+  if (!registered) {
+    await markAnalysisCrashed(env, params, 'RunRegistry недоступний', nowMs, false);
+    throw new Error('RunRegistry недоступний — аналіз ідеї не стартував');
+  }
   await db(env)
     .prepare(`UPDATE ideas SET status = 'в аналізі', repo = ?, updated_at = ? WHERE id = ?`)
     .bind(repo, iso, idea.id)

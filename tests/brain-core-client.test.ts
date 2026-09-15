@@ -149,7 +149,7 @@ describe('CoreClient: політика помилок', () => {
     expect(String((outcome as { error: string }).error)).toMatch(/^network:/);
   });
 
-  it('status і reportRuns мовчать на збоях мережі та не-2xx; runs терпить 501', async () => {
+  it('status і reportRuns не кидають на збоях; runs терпить 501', async () => {
     const boom = vi.fn(async () => {
       throw new Error('мережа впала');
     }) as unknown as typeof fetch;
@@ -159,6 +159,25 @@ describe('CoreClient: політика помилок', () => {
 
     const { fetchFn } = captureFetch(501, { ok: false, error: 'not-implemented' });
     await expect(makeClient(fetchFn).reportRuns('run-1', [{ n: 1 }])).resolves.toBeUndefined();
+  });
+
+  it('reportRuns повторює транзієнтний 5xx з новим signed request і зупиняється на успіху', async () => {
+    const calls: RequestInit[] = [];
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push(init ?? {});
+      return calls.length === 1
+        ? jsonResponse(503, { ok: false, error: 'temporary' })
+        : jsonResponse(200, { ok: true, telemetry: 'persisted' });
+    }) as unknown as typeof fetch;
+
+    await makeClient(fetchFn).reportRuns('run-1', [{ n: 1 }]);
+
+    expect(calls).toHaveLength(2);
+    const nonces = calls.map((call) =>
+      new Headers(call.headers as Record<string, string>).get('X-Internal-Nonce'),
+    );
+    expect(nonces[0]).toBeTruthy();
+    expect(nonces[0]).not.toBe(nonces[1]);
   });
 
   it('session: true на 2xx; false (не виняток) на відмову ядра і мережу', async () => {

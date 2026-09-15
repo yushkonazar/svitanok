@@ -1,8 +1,7 @@
-// Тонкий клієнт RunRegistry для коду Worker'а (етап 1, PR-4). Телеметрія —
-// best-effort з обох боків: гейт за прапорцем (при off реєстр не існує для
-// коду взагалі), а будь-який збій DO — console.error і далі, бо запис у
-// журнал не сміє валити чи гальмувати сам прогін (той самий принцип, що в
-// markRunStarted: «марка потрібна лише сторожу»).
+// Тонкий клієнт RunRegistry для коду Worker'а. Реєстр — control plane, не
+// просто журнал: brain не стартує без успішного begin, а internal API пускає
+// лише відомий run. D1 telemetry всередині DO може деградувати, але збій самого
+// DO fail-closed для старту, щоб не створювати run-сиріт.
 //
 // Файл платформно-чистий (без cloudflare:workers): його можна імпортувати
 // звідусіль, включно з кодом, який тести ганяють без заглушки workerd.
@@ -21,11 +20,13 @@ const enabled = (/** @type {Env} */ env) =>
  */
 export async function registryBegin(env, run) {
   const ns = registryNs(env);
-  if (!ns) return;
+  if (!ns) return false;
   try {
     await ns.getByName(RUN_REGISTRY_DO_NAME).begin(run);
+    return true;
   } catch (/** @type {any} */ e) {
-    console.error('run-registry: begin впав (прогін не зачеплено)', e?.message);
+    console.error('run-registry: begin впав — прогін не стартує', e?.message);
+    return false;
   }
 }
 
@@ -35,7 +36,8 @@ export async function registryBegin(env, run) {
  * @param {Env} env
  * @param {string} id
  * @param {{ finishedMs: number, error?: string | null, steps?: number | null }} patch
- * @returns {Promise<{ threadId: string | number | null, chatId: number | null } | null>}
+ * @returns {Promise<{ threadId: string | number | null, chatId: number | null,
+ *   newlyFinished?: boolean } | null>}
  */
 export async function registryFinish(env, id, patch) {
   const ns = registryNs(env);
@@ -62,6 +64,27 @@ export async function registryHas(env, id) {
     return Boolean(await ns.getByName(RUN_REGISTRY_DO_NAME).has(id));
   } catch (/** @type {any} */ e) {
     console.error('run-registry: has впав - трактуємо як невідомий прогін', e?.message);
+    return false;
+  }
+}
+
+/**
+ * `/internal/runs` може безпечно ретраїтися після фінішу: підпис усе ще
+ * перевіряється, але DO пам'ятає недавно завершений run. Для всіх інших
+ * internal маршрутів потрібен саме активний run.
+ * @param {Env} env
+ * @param {string} id
+ */
+export async function registryHasOrCompleted(env, id) {
+  const ns = registryNs(env);
+  if (!ns) return false;
+  try {
+    const stub = ns.getByName(RUN_REGISTRY_DO_NAME);
+    if (typeof stub.hasOrCompleted === 'function') return Boolean(await stub.hasOrCompleted(id));
+    // Сумісність із короткими тестовими/старими заглушками під час rollout.
+    return Boolean(await stub.has(id));
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: hasOrCompleted впав - трактуємо як невідомий прогін', e?.message);
     return false;
   }
 }

@@ -395,7 +395,7 @@ describe('handleInternal — маршрутизатор', () => {
     expect(await res.json()).toMatchObject({ error: 'bad-json' });
   });
 
-  it('deliver/status бойові (без TG-конфігу — явний 500); runs без DB — явний 500', async () => {
+  it('deliver/status бойові (без TG-конфігу — явний 500); runs без DB завершує control plane', async () => {
     const post = (path: string, body: unknown, nonce: string) =>
       request(path, body, { nonce }).then((r) => handleInternal(r, env, NOW));
     // Повні сценарії доставки — tests/outbox.test.ts; тут лише межа роутера.
@@ -404,7 +404,9 @@ describe('handleInternal — маршрутизатор', () => {
     expect((await post('/internal/status', { message_id: 5, text: '▸ думаю' }, 'b')).status).toBe(
       500,
     );
-    expect((await post('/internal/runs', { steps: [] }, 'c')).status).toBe(500);
+    const runs = await post('/internal/runs', { steps: [] }, 'c');
+    expect(runs.status).toBe(200);
+    expect(await runs.json()).toMatchObject({ ok: true, telemetry: 'deferred' });
     expect((await post('/internal/deliver', { no: 'text' }, 'd')).status).toBe(400);
     expect((await post('/internal/status', { text: 'без message_id' }, 'e')).status).toBe(400);
   });

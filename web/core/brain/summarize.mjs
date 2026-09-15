@@ -46,7 +46,7 @@ export async function memorySummarize(env, nowMs = Date.now()) {
   let started = 0;
   for (const row of rows) {
     const runId = crypto.randomUUID();
-    await registryBegin(env, {
+    const registered = await registryBegin(env, {
       id: runId,
       trigger: 'scheduler',
       profile: 'summarize',
@@ -54,6 +54,10 @@ export async function memorySummarize(env, nowMs = Date.now()) {
       model: 'claude-haiku-4-5',
       startedMs: nowMs,
     });
+    if (!registered) {
+      console.error(`memory-summarize: ${row.thread_id}: RunRegistry недоступний`);
+      continue;
+    }
     const res = await callBrainRun(
       env,
       {

@@ -113,11 +113,25 @@ describe('RunRegistryDO', () => {
     expect(await registry.consumeNonce('r1', 'n1', T0 + 21 * 60_000, 20 * 60_000)).toBe(true);
   });
 
-  it('без привʼязки DB — гучний виняток, не тихий пропуск', async () => {
+  it('без привʼязки DB control-plane begin лишається доступним', async () => {
     const { registry } = makeRegistry(null);
-    await expect(registry.begin({ id: 'r1', trigger: 'chat', startedMs: T0 })).rejects.toThrow(
-      /DB/,
-    );
+    await expect(registry.begin({ id: 'r1', trigger: 'chat', startedMs: T0 })).resolves.toEqual({
+      active: 1,
+    });
+    expect(await registry.has('r1')).toBe(true);
+  });
+
+  it('finish залишає короткий completion window для idempotent report, але не для tools', async () => {
+    const { registry } = makeRegistry();
+    await registry.begin({ id: 'r1', trigger: 'chat', startedMs: T0 });
+    expect(await registry.finish('r1', { finishedMs: T0 + 1 })).toMatchObject({
+      newlyFinished: true,
+    });
+    expect(await registry.has('r1')).toBe(false);
+    expect(await registry.hasOrCompleted('r1', T0 + 2)).toBe(true);
+    expect(await registry.finish('r1', { finishedMs: T0 + 3 })).toMatchObject({
+      newlyFinished: false,
+    });
   });
 });
 
@@ -205,7 +219,7 @@ describe('registryBegin/registryFinish — клієнт', () => {
     expect(finishes).toEqual([['r1', expect.objectContaining({ error: 'timeout' })]]);
   });
 
-  it('збій DO не пробивається до викликача', async () => {
+  it('збій DO повертає false для fail-closed старту', async () => {
     const env = workerEnv({
       ASSISTANT_V2: 'on',
       RUN_REGISTRY: {
@@ -219,9 +233,9 @@ describe('registryBegin/registryFinish — клієнт', () => {
         }),
       },
     });
-    await expect(
-      registryBegin(env, { id: 'r', trigger: 'chat', startedMs: T0 }),
-    ).resolves.toBeUndefined();
+    await expect(registryBegin(env, { id: 'r', trigger: 'chat', startedMs: T0 })).resolves.toBe(
+      false,
+    );
     // finish тепер повертає інфо прогону; збій DO - чесний null, не виняток.
     await expect(registryFinish(env, 'r', { finishedMs: T0 })).resolves.toBeNull();
     expect(errors.join('\n')).toContain('begin впав');

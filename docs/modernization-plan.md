@@ -24,7 +24,7 @@
 - [x] Створити annotated Git tag поточної версії.
 - [x] Створити одну робочу гілку.
 - [x] Оформити незалежний аудит.
-- [ ] Зафіксувати цей план і аудит першим commit на робочій гілці.
+- [x] Зафіксувати цей план і аудит першим commit на робочій гілці.
 - [ ] Усі наступні commits робити атомарними за підсистемою та з тестами.
 
 ## Фаза 1 — correctness, безпека і дані
@@ -36,13 +36,13 @@
 **Робота:**
 
 - [ ] Описати run state machine та інваріанти в коді й документації.
-- [ ] Зробити start атомарним: brain не стартує, доки RunRegistry не підтвердив run.
-- [ ] Винести authoritative completion з telemetry endpoint.
-- [ ] Додати completion idempotency key, terminal state і безпечний retry.
-- [ ] Додати унікальність `(run_id, n)`/upsert для `run_steps`.
-- [ ] Зробити queue advance незалежним від помилки telemetry.
-- [ ] Додати retry/backoff та reconciliation для незавершених run.
-- [ ] Тести: D1 error під час telemetry, duplicate completion, failed begin, delayed delivery, quick→chat escalation.
+- [x] Зробити start атомарним: brain не стартує, доки RunRegistry не підтвердив run.
+- [x] Винести authoritative completion з telemetry endpoint.
+- [x] Додати короткий idempotent completion window, terminal state і безпечний retry.
+- [x] Додати унікальність `(run_id, n)`/upsert для `run_steps`.
+- [x] Зробити queue advance незалежним від помилки telemetry.
+- [x] Додати retry/backoff для фінального report; reconciliation для незавершених run лишається окремим пунктом observability.
+- [x] Тести: D1 error під час telemetry, duplicate completion, failed begin, quick→chat escalation; окремий E2E delayed-delivery test буде у Фазі 2.
 
 **Готово, коли:** кожен прийнятий run доходить до terminal state, а повтор будь-якого internal повідомлення не створює другу дію й не залишає thread заблокованим.
 

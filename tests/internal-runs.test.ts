@@ -108,7 +108,7 @@ describe('POST /internal/runs', () => {
     expect(String(row.note)).toHaveLength(500);
   });
 
-  it('збій D1 - явний 500 steps-not-persisted; порожні steps - ok, лише finish', async () => {
+  it('збій D1 не блокує completion: telemetry позначена deferred; порожні steps - ok', async () => {
     const empty = await handleInternal(await request({ steps: [] }), env, NOW);
     expect(await empty.json()).toMatchObject({ ok: true, steps: 0 });
     expect(finishes).toHaveLength(1);
@@ -123,8 +123,9 @@ describe('POST /internal/runs', () => {
       }),
     };
     const broken = await handleInternal(await request({ steps: [{ n: 1 }] }), env, NOW);
-    expect(broken.status).toBe(500);
-    expect(await broken.json()).toMatchObject({ error: 'steps-not-persisted' });
+    expect(broken.status).toBe(200);
+    expect(await broken.json()).toMatchObject({ ok: true, telemetry: 'deferred' });
+    expect(finishes).toHaveLength(2);
   });
 
   // Етап 3 PR-8: outcome.chain - подія від працівника в DayPlanChain.

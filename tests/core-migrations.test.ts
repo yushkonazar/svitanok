@@ -253,7 +253,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   chains: [{ cols: ['status'] }],
   outbox: [{ cols: ['status', 'next_at'] }],
   runs: [{ cols: ['started_at'] }, { cols: ['profile'] }],
-  run_steps: [{ cols: ['run_id', 'n'] }],
+  run_steps: [{ cols: ['run_id', 'n'] }, { cols: ['run_id', 'n'], unique: true }],
   places: [{ cols: ['name'] }],
   ideas: [{ cols: ['status'] }, { cols: ['domain'] }, { cols: ['number'], unique: true }],
   idea_events: [{ cols: ['idea_id', 'at'] }],
@@ -314,7 +314,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('дванадцять файлів 0001–0012, нумерація без дірок', () => {
+  it('тринадцять файлів 0001–0013, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -328,6 +328,7 @@ describe('міграції D1 — файли', () => {
       '0010',
       '0011',
       '0012',
+      '0013',
     ]);
   });
 });
