@@ -243,7 +243,7 @@ describe('pickHint - пріоритет і mute', () => {
     expect(kv.get(DAILY_HINT_MARKER_KEY)).toBeUndefined();
   });
 
-  it('muteHintTopic: додає тему до hint_mute_json через policy (T0 з «↩»), невідома тема - помилка', async () => {
+  it('muteHintTopic: у чистій сесії додає тему T0 з «↩», у tainted — лише пропозиція', async () => {
     const { d1, env } = setup();
     const out = await muteHintTopic(env, 'ideas', { threadId: 'dm', tainted: false }, AT_1010);
     expect(out.mode).toBe('executed');
@@ -256,10 +256,10 @@ describe('pickHint - пріоритет і mute', () => {
     await expect(
       muteHintTopic(env, 'погода', { threadId: 'dm', tainted: false }, AT_1010),
     ).rejects.toThrow(/невідома тема/);
-    // ⚠️ Звуження taint 08.09: приглушення теми - локальний запис, і в
-    // забрудненій сесії воно виконується так само одразу.
+    // Зовнішній контекст не може сам змінити довготривале налаштування.
     const tainted = await muteHintTopic(env, 'trips', { threadId: 'dm', tainted: true }, AT_1010);
-    expect(tainted.mode).toBe('executed');
+    expect(tainted.mode).toBe('proposed');
+    expect(JSON.parse(fact.value_json)).toEqual({ topics: ['ideas', 'security'] });
   });
 
   it('formatHint екранує HTML у тексті кандидата', () => {

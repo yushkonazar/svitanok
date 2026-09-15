@@ -91,14 +91,18 @@ describe('policy core — таблиця рівнів', () => {
     expect(decideLevel('calendar.event', false, { attendees: [] })).toEqual({ level: 'T0' });
   });
 
-  // ⚠️ Звуження від 08.09: taint підіймає рівень ЛИШЕ для дій НАЗОВНІ.
-  // Інʼєкція з листа, що записала зайве нагадування, - прикро й відкочується
-  // тапом; інʼєкція, що створила подію в календарі чи виклала файл у Drive, - ні.
-  it('taint ескалює лише дії назовні; локальні лишаються T0', () => {
-    for (const kind of ['calendar.event', 'tasks.create', 'drive.write', 'collection.export'])
-      expect(decideLevel(kind, true), kind).toEqual({ level: 'T1' });
+  // Taint підіймає дії назовні та довготривалу пам'ять: зовнішній текст не
+  // може непомітно перетворитися на персональний факт.
+  it('taint ескалює дії назовні та facts.set; решта локальних лишається T0', () => {
     for (const kind of [
       'facts.set',
+      'calendar.event',
+      'tasks.create',
+      'drive.write',
+      'collection.export',
+    ])
+      expect(decideLevel(kind, true), kind).toEqual({ level: 'T1' });
+    for (const kind of [
       'reminders.create',
       'ideas.create',
       'wishes.create',
@@ -194,11 +198,11 @@ describe('policy core — таблиця рівнів', () => {
 
 describe('T0: виконати одразу + «↩» 10 хв', () => {
   it('facts.set у чистій сесії пишеться одразу, undo повертає ЯК БУЛО', async () => {
-    // Було value=uk (owner) — сід напряму, як шлях команд власника (поза
-    // мозком): через applyPolicy source=owner тепер ескалюється (тест нижче).
+    // Було value=uk (inferred): у чистій сесії можна виправити його T0 з
+    // «↩». Owner fact перевіряється окремо нижче й завжди вимагає ✅.
     await runFactsSet(
       env,
-      { kind: 'setting', key: 'lang', value: 'uk', source: 'owner' },
+      { kind: 'setting', key: 'lang', value: 'uk', source: 'inferred' },
       NOW - 1000,
     );
     const out = await applyPolicy(
@@ -213,7 +217,7 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
     const undone = await resolveUndo(env, String(undoId), NOW + 60_000);
     expect(undone).toMatchObject({ ok: true, status: 'undone' });
     const after = await runFactsGet(env, { kind: 'setting', key: 'lang' });
-    expect(after.result[0]).toMatchObject({ value: 'uk', source: 'owner' }); // відкат зберіг source
+    expect(after.result[0]).toMatchObject({ value: 'uk', source: 'inferred' }); // відкат зберіг source
 
     // Другий тап «↩» - ідемпотентний, не другий відкат.
     expect(await resolveUndo(env, String(undoId), NOW + 61_000)).toMatchObject({
@@ -245,8 +249,8 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
 });
 
 describe('T1/T2: пропозиції', () => {
-  // ⚠️ Джерело T1 тут - source=owner, а НЕ taint: від 08.09 taint більше не
-  // підіймає локальні записи (див. «taint ескалює лише дії назовні»).
+  // Джерело T1 для facts — source=owner, tainted external context або спроба
+  // перезаписати вже підтверджений owner fact.
   it('facts.set(source=owner) → пропозиція T1; ✅ виконує, повторний ✅ — already', async () => {
     const out = await applyPolicy(
       env,
@@ -268,6 +272,31 @@ describe('T1/T2: пропозиції', () => {
     expect((await runFactsGet(env, { kind: 'contact', key: 'np' })).result).toHaveLength(1);
     expect(await resolveProposal(env, { id, choice: 'ok' }, NOW + 61_000)).toMatchObject({
       already: 'approved',
+    });
+  });
+
+  it('inferred update не перезаписує owner fact без ✅ і після ✅ зберігає owner provenance', async () => {
+    await runFactsSet(
+      env,
+      { kind: 'setting', key: 'lang', value: 'uk', source: 'owner' },
+      NOW - 1_000,
+    );
+    const out = await applyPolicy(
+      env,
+      { kind: 'facts.set', payload: { kind: 'setting', key: 'lang', value: 'en' }, tainted: false },
+      NOW,
+    );
+    expect(out.mode).toBe('proposed');
+    const id = out.mode === 'proposed' ? out.proposal.id : '';
+    // До ✅ model inference не змінює підтверджене значення.
+    expect((await runFactsGet(env, { kind: 'setting', key: 'lang' })).result[0]).toMatchObject({
+      value: 'uk',
+      source: 'owner',
+    });
+    await resolveProposal(env, { id, choice: 'ok' }, NOW + 1_000);
+    expect((await runFactsGet(env, { kind: 'setting', key: 'lang' })).result[0]).toMatchObject({
+      value: 'en',
+      source: 'owner',
     });
   });
 
@@ -477,18 +506,15 @@ describe('router: write-інструмент через policy', () => {
     expect(body.undo?.id).toBeTruthy();
   });
 
-  // ⚠️ Від 08.09 taint підіймає лише дії НАЗОВНІ, тож сам факт-налаштування під
-  // taint виконується одразу; пропозицію тут робить source=owner (привласнення
-  // слів власника). Що taint ескалює, а що ні - перевіряє «taint ескалює лише
-  // дії назовні» вище.
-  it('tainted-сесія: привласнення слів власника - пропозиція, факт НЕ записано', async () => {
+  // Дані з не довіреного джерела не можуть тихо потрапити до довготривалої пам'яті.
+  it('tainted-сесія: навіть inferred факт стає пропозицією, факт НЕ записано', async () => {
     store.raw
       .prepare(
         `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count) VALUES ('thr-1', '', '', ?, 0)`,
       )
       .run(NOW - 5 * 60_000);
     const res = await handleInternal(
-      await signedRequest({ args: { kind: 'setting', key: 'x', value: 1, source: 'owner' } }, 'n2'),
+      await signedRequest({ args: { kind: 'setting', key: 'x', value: 1 } }, 'n2'),
       routerEnv(),
       NOW,
     );
@@ -528,7 +554,7 @@ describe('router: write-інструмент через policy', () => {
   });
 
   // Приймання 05.09, B3: читання/перерахунок власного плану taint не ескалює.
-  it('plan.review без carry і plan.draft під taint лишаються T0; review з carry і решта T0 → T1', () => {
+  it('plan.review без carry і plan.draft під taint лишаються T0; review з carry та facts → T1', () => {
     expect(decideLevel('plan.review', true)).toEqual({ level: 'T0' });
     expect(decideLevel('plan.review', true, { date: 'сьогодні', carry: [] })).toEqual({
       level: 'T0',
@@ -538,9 +564,9 @@ describe('router: write-інструмент через policy', () => {
     expect(decideLevel('plan.review', true, { carry: ['all'] })).toEqual({ level: 'T1' });
     expect(decideLevel('plan.review', false, { carry: ['all'] })).toEqual({ level: 'T0' });
     expect(decideLevel('plan.draft', true)).toEqual({ level: 'T0' });
-    // Від 08.09 локальні записи taint не підіймає - лише масовий carry вище.
+    // Локальна пам'ять — виняток: external content не має ставати фактом T0.
     expect(decideLevel('plan.accept', true)).toEqual({ level: 'T0' });
-    expect(decideLevel('facts.set', true)).toEqual({ level: 'T0' });
+    expect(decideLevel('facts.set', true)).toEqual({ level: 'T1' });
   });
 
   // Приймання 05.09, B1: kind факту звіряється ДО пропозиції, не у виконавці

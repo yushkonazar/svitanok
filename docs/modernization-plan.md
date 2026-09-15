@@ -68,8 +68,9 @@
 
 - [ ] Розділити `owner assertion`, `observed event`, `model hypothesis` у схемі та API.
 - [ ] Додати `source`, `confidence`, `observed_at`, `expires_at/review_at`, `supersedes`.
-- [ ] Заборонити inference overwrite owner fact без T1 proposal.
-- [ ] Пропускати provenance/taint від tool output до tool arguments; persistent write із external/inferred data — через policy escalation.
+- [x] Заборонити inference overwrite owner fact без T1 proposal.
+- [x] Ескалювати `facts.set` із tainted external context до T1 proposal.
+- [ ] Пропускати provenance/taint від tool output до tool arguments для всіх persistent write.
 - [ ] Перетворити Vectorize на rebuildable projection: pending → indexed → ready, versioned rows, reconciliation.
 - [ ] Додати owner-facing memory ledger: why/source/edit/delete.
 - [ ] Tests: prompt injection з email/web, owner precedence, stale fact, partial vector failure, rebuild.

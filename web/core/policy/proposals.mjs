@@ -1214,6 +1214,27 @@ export async function applyPolicy(env, action, nowMs) {
   if ('error' in decision) return { mode: 'error', error: decision.error };
   let level = decision.level;
 
+  // Власник уже підтвердив цей факт. Модель не може понизити його provenance
+  // до inferred або замінити значення без нового ✅. Нормалізація source тут,
+  // у trusted core, гарантує: після схвалення факт лишається owner-attributed,
+  // навіть коли викликач передав дефолтний inferred.
+  // Перевірку contract помилки лишаємо після direct-tool gate нижче: обгортка
+  // мусить одержати саме його відмову для чистого T0-виклику.
+  if (
+    action.kind === 'facts.set' &&
+    FACT_KINDS.includes(String(action.payload?.kind)) &&
+    String(action.payload.key ?? '')
+  ) {
+    const current = await runFactsGet(env, {
+      kind: String(action.payload.kind),
+      key: String(action.payload.key),
+    });
+    if (current.result[0]?.source === 'owner' && action.payload.source !== 'owner') {
+      action = { ...action, payload: { ...action.payload, source: 'owner' } };
+      level = 'T1';
+    }
+  }
+
   // source='owner' - привласнення слів власника, і воно потребує ЙОГО ✅:
   // 07 §4 дозволяє виводу моделі лише inferred, тож T0-шлях із owner
   // ескалюється до пропозиції (після ✅ attribution легітимний).
@@ -1238,6 +1259,19 @@ export async function applyPolicy(env, action, nowMs) {
       mode: 'error',
       error: `direct-tool: ${action.kind} - це T0, клич інструмент напряму, не proposals.create`,
     };
+  }
+
+  // kind факту звіряємо до виконання чи proposal, але після direct-tool gate:
+  // інструмент-обгортка не має маскувати свою контрактну відмову помилкою
+  // вкладеного payload.
+  if (action.kind === 'facts.set' && !FACT_KINDS.includes(String(action.payload?.kind))) {
+    return {
+      mode: 'error',
+      error: `facts.set: невідомий kind "${String(action.payload?.kind)}"; дозволені: ${FACT_KINDS.join(', ')}`,
+    };
+  }
+  if (action.kind === 'facts.set' && !String(action.payload.key ?? '')) {
+    return { mode: 'error', error: 'facts.set: key не може бути порожнім' };
   }
 
   // Gemini (ADR-034): у чужий сервіс їде РІВНО prompt власника.
@@ -1269,17 +1303,6 @@ export async function applyPolicy(env, action, nowMs) {
     // упертись у квоту означало б витратити рішення власника даремно.
     const guard = await geminiQuotaGuard(env, action.kind, narrowed.payload, nowMs);
     if (guard) return { mode: 'error', error: guard };
-  }
-
-  // kind факту звіряємо ДО виконання чи пропозиції (приймання 05.09, B1):
-  // модель обрала «preference», перевірка стояла лише у виконавці, і помилка
-  // вилізла вже після ✅ власника. Тепер модель дістає відмову з переліком
-  // одразу. Гейт ПІСЛЯ direct-tool: той висновок важливіший за деталі payload.
-  if (action.kind === 'facts.set' && !FACT_KINDS.includes(String(action.payload?.kind))) {
-    return {
-      mode: 'error',
-      error: `facts.set: невідомий kind "${String(action.payload?.kind)}"; дозволені: ${FACT_KINDS.join(', ')}`,
-    };
   }
 
   if (level === 'T0') {
