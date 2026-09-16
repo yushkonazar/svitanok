@@ -15,6 +15,7 @@ import {
   kickPendingThreads,
   dayPlanChoiceEvent,
   describeProposal,
+  systemStatusLine,
 } from '../web/core/prerouter.mjs';
 import { EXECUTORS } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -482,7 +483,7 @@ describe('prerouteMessage: нові команди', () => {
     // /help веде вільним текстом, а не переліком екранів Mini App.
     expect(tg.some((c) => String(c.body.text).includes('нагадай через 20 хв'))).toBe(true);
     // /status - людською, і в ньому ж адреса чату (сюди переїхав /whereami).
-    const status = tg.find((c) => String(c.body.text).includes('режим on'))!;
+    const status = tg.find((c) => String(c.body.text).includes('Режим асистента: on'))!;
     expect(String(status.body.text)).toContain('Чат: 555');
     // /forget більше не буває порожнім: «усе» є завжди (етап 7 PR-4) - забути
     // можна ще й факти, гроші, плани й памʼять, навіть коли колекцій немає.
@@ -492,6 +493,26 @@ describe('prerouteMessage: нові команди', () => {
       .inline_keyboard;
     expect(kb.at(-1)![0]!.callback_data).toBe('m:fga');
     expect(brain).toHaveLength(0);
+  });
+
+  it('/status показує останню health-пробу, а не плутає expected deploy із healthy', async () => {
+    const reg = makeRegistryStub();
+    const kv = new Map([
+      ['brainExpected', JSON.stringify({ version: '1.0.0', gitSha: 'expected-sha' })],
+      [
+        'brainHealthState',
+        JSON.stringify({ state: 'down', detail: 'health HTTP 502', checkedAtMs: NOW }),
+      ],
+    ]);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    (env as { BRIEFING: unknown }).BRIEFING = {
+      get: async (key: string) => kv.get(key) ?? null,
+    };
+
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).toContain('Мозок: ❌ недоступний');
+    expect(line).not.toContain('✅ Усе живе.');
+    expect(line).toContain('Режим асистента: on');
   });
 
   it('/remind без аргументів - список нагадувань, без прогону мозку', async () => {

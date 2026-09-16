@@ -13,7 +13,10 @@ import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 
 /** KV-ключ очікуваних версій - пише deploy-host.yml після вдалого деплою. */
 export const BRAIN_EXPECTED_KEY = 'brainExpected';
-const STATE_KEY = 'brainHealthState';
+/** Остання жива проба; не плутати з BRAIN_EXPECTED_KEY (це лише конфіг deploy). */
+export const BRAIN_HEALTH_STATE_KEY = 'brainHealthState';
+/** Три пропущені 5-хвилинні тики = дані health вже не можна називати живими. */
+export const BRAIN_HEALTH_STALE_MS = 15 * 60_000;
 const HEALTH_TIMEOUT_MS = 8_000;
 
 /**
@@ -64,7 +67,7 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
     observed = await probeHealth(env, url, clientId, clientSecret);
   }
 
-  const prev = await readState(env);
+  const prev = await readBrainHealthState(env);
   // down-стан порівнюємо ЛИШЕ за станом: текст мережевої помилки мінливий
   // (timeout ↔ refused), і алерт на кожну зміну формулювання - той самий спам,
   // від якого дедуп і рятує. Для desync detail значущий (інший sha = інший
@@ -91,9 +94,16 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
       );
       alerted = true;
     }
-    await env.BRIEFING.put(STATE_KEY, JSON.stringify(observed));
     if (alerted) await drainOutbox(env, { nowMs }).catch(() => {});
   }
+  // Мітку оновлюємо НА КОЖНІЙ пробі, не лише на переході. Інакше KV містив би
+  // вічне «ok» з першого тіку, а /status не зміг би відрізнити живий мозок від
+  // зупиненого scheduler-а. Відмова запису тут чесніша за стару мітку: status
+  // покаже її застарілою через BRAIN_HEALTH_STALE_MS.
+  await env.BRIEFING.put(
+    BRAIN_HEALTH_STATE_KEY,
+    JSON.stringify({ ...observed, checkedAtMs: nowMs }),
+  );
   return { state: observed.state, alerted };
 }
 
@@ -138,14 +148,59 @@ export async function readExpected(env) {
   }
 }
 
-/** @param {Env} env @returns {Promise<{ state: string, detail: string } | null>} */
-async function readState(env) {
+/**
+ * Останній запис проби. Легасі-запис без checkedAtMs повертаємо як є: snapshot
+ * нижче позначить його stale, а не скаже «ok» лише тому, що старий ключ існує.
+ * @param {Env} env
+ * @returns {Promise<{ state: 'ok' | 'desync' | 'down', detail: string, checkedAtMs?: number } | null>}
+ */
+export async function readBrainHealthState(env) {
   try {
-    const parsed = JSON.parse((await env.BRIEFING.get(STATE_KEY)) ?? 'null');
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    const parsed = JSON.parse((await env.BRIEFING.get(BRAIN_HEALTH_STATE_KEY)) ?? 'null');
+    if (!parsed || typeof parsed !== 'object') return null;
+    const state = /** @type {any} */ (parsed).state;
+    const detail = /** @type {any} */ (parsed).detail;
+    if (!['ok', 'desync', 'down'].includes(state) || typeof detail !== 'string') return null;
+    const checkedAtMs = Number(/** @type {any} */ (parsed).checkedAtMs);
+    return Number.isFinite(checkedAtMs) ? { state, detail, checkedAtMs } : { state, detail };
   } catch {
     return null;
   }
+}
+
+/**
+ * Поточна правда для owner-facing status. `BRAIN_URL` означає лише
+ * «налаштовано»; до свіжої проби мозок лишається unknown, а не healthy.
+ * @param {Env} env
+ * @param {number} [nowMs]
+ * @returns {Promise<
+ *   | { state: 'not-configured', detail: string }
+ *   | { state: 'unknown', detail: string }
+ *   | { state: 'stale', detail: string, checkedAtMs?: number, ageMs?: number }
+ *   | { state: 'ok' | 'desync' | 'down', detail: string, checkedAtMs: number, ageMs: number }
+ * >}
+ */
+export async function brainHealthSnapshot(env, nowMs = Date.now()) {
+  if (!String(env.BRAIN_URL ?? '').trim()) {
+    return { state: 'not-configured', detail: 'BRAIN_URL не задано' };
+  }
+  const observed = await readBrainHealthState(env);
+  if (!observed) return { state: 'unknown', detail: 'ще немає результату health-проби' };
+  if (observed.checkedAtMs == null) {
+    return { state: 'stale', detail: 'старий запис health без мітки часу' };
+  }
+  const ageMs = nowMs - observed.checkedAtMs;
+  // Сильно майбутня мітка теж не може підтверджувати здоров'я: це або clock
+  // skew, або пошкоджений запис, і обидва випадки треба показати власнику.
+  if (ageMs > BRAIN_HEALTH_STALE_MS || ageMs < -BRAIN_HEALTH_STALE_MS) {
+    return {
+      state: 'stale',
+      detail: observed.detail,
+      checkedAtMs: observed.checkedAtMs,
+      ageMs,
+    };
+  }
+  return { ...observed, checkedAtMs: observed.checkedAtMs, ageMs };
 }
 
 /**

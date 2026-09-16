@@ -10,6 +10,9 @@ import {
   compareBrainVersions,
   checkBrainHandshake,
   BRAIN_EXPECTED_KEY,
+  BRAIN_HEALTH_STATE_KEY,
+  BRAIN_HEALTH_STALE_MS,
+  brainHealthSnapshot,
 } from '../web/core/brain/health.mjs';
 import { workerEnv } from './helpers/env.js';
 
@@ -140,6 +143,32 @@ describe('checkBrainHandshake', () => {
     expect(res).toMatchObject({ state: 'ok', alerted: false });
     expect(seenHeaders['cf-access-client-id']).toBe('cid');
     expect(seenHeaders['cf-access-client-secret']).toBe('csec');
+  });
+
+  it('оновлює мітку кожної health-проби; старий запис не може вдавати healthy', async () => {
+    kv.set(BRAIN_EXPECTED_KEY, JSON.stringify({ version: '1.0.0', gitSha: 'same-sha' }));
+    setFetch(
+      async () =>
+        new Response(JSON.stringify({ version: '1.0.0', gitSha: 'same-sha' }), { status: 200 }),
+    );
+
+    await checkBrainHandshake(env, NOW);
+    expect(JSON.parse(kv.get(BRAIN_HEALTH_STATE_KEY) ?? '{}')).toMatchObject({
+      state: 'ok',
+      checkedAtMs: NOW,
+    });
+
+    await checkBrainHandshake(env, NOW + 300_000);
+    expect(JSON.parse(kv.get(BRAIN_HEALTH_STATE_KEY) ?? '{}')).toMatchObject({
+      state: 'ok',
+      checkedAtMs: NOW + 300_000,
+    });
+    expect(await brainHealthSnapshot(env, NOW + 300_000)).toMatchObject({ state: 'ok' });
+    expect(await brainHealthSnapshot(env, NOW + 300_000 + BRAIN_HEALTH_STALE_MS + 1)).toMatchObject(
+      {
+        state: 'stale',
+      },
+    );
   });
 
   it('down → алерт; відновлення → «знову в нормі»', async () => {

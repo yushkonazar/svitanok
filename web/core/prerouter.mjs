@@ -27,7 +27,7 @@ import {
   registrySweep,
 } from './run-registry/client.mjs';
 import { callBrainRun, callBrainAbort } from './brain/run-client.mjs';
-import { readExpected } from './brain/health.mjs';
+import { brainHealthSnapshot } from './brain/health.mjs';
 import { parsePolicyCallback, T2_WORD_RE, isTaintActive } from './policy/core.mjs';
 import { resolveProposal, resolveUndo, undoLastInThread } from './policy/proposals.mjs';
 import {
@@ -2251,24 +2251,47 @@ async function resetThreadSession(env, threadKey, nowMs) {
  * @param {Env} env
  * @param {{ chatId?: number | null, threadId?: number | string | null }} [where]
  */
-async function systemStatusLine(env, where = {}) {
+export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   const threads = await registryThreadsSnapshot(env);
   const active = Object.values(threads).filter((t) => t.activeRunId != null).length;
   const queued = Object.values(threads).reduce((n, t) => n + t.queue.length, 0);
-  const expected = await readExpected(env);
+  const brain = await brainHealthSnapshot(env, nowMs);
   const instructions = await instructionsStatusLine(env);
-  const brainOk = Boolean(expected?.gitSha);
-  const alive = brainOk && !instructions.includes('НЕМАЄ') && env.ASSISTANT_V2 === 'on';
+  const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
+  const alive = brain.state === 'ok' && instructionsReady && env.ASSISTANT_V2 === 'on';
   const lines = [
     alive ? '✅ Усе живе.' : '⚠️ Щось не так - подробиці нижче.',
     active || queued ? `Зараз роблю: ${active}, чекає: ${queued}` : 'Черга порожня.',
     instructions,
-    `Мозок: ${brainOk ? String(expected?.gitSha).slice(0, 8) : 'не відповідає'} · режим ${env.ASSISTANT_V2}`,
+    formatBrainStatus(brain),
+    `Режим асистента: ${env.ASSISTANT_V2}`,
   ];
   if (where.chatId != null) {
     lines.push(`Чат: ${where.chatId}${where.threadId != null ? ` · тема ${where.threadId}` : ''}`);
   }
   return lines.join(String.fromCharCode(10));
+}
+
+/** @param {{ state: string, detail: string, checkedAtMs?: number, ageMs?: number }} brain */
+function formatBrainStatus(brain) {
+  const detail = String(brain.detail ?? 'без деталей')
+    .replace(/\s+/g, ' ')
+    .slice(0, 180);
+  const age = brain.ageMs == null ? '' : ` · перевірено ${formatProbeAge(brain.ageMs)}`;
+  if (brain.state === 'ok') return `Мозок: ✅ доступний, версії збігаються (${detail})${age}`;
+  if (brain.state === 'desync')
+    return `Мозок: ⚠️ доступний, але версії не збігаються — ${detail}${age}`;
+  if (brain.state === 'down') return `Мозок: ❌ недоступний — ${detail}${age}`;
+  if (brain.state === 'stale') return `Мозок: ⚠️ остання health-проба застаріла — ${detail}${age}`;
+  if (brain.state === 'unknown') return `Мозок: ⚪ налаштовано, але ще не перевірено — ${detail}`;
+  return `Мозок: ⚪ не налаштовано — ${detail}`;
+}
+
+/** @param {number} ageMs */
+function formatProbeAge(ageMs) {
+  if (ageMs < 0) return 'годинник попереду';
+  const minutes = Math.floor(ageMs / 60_000);
+  return minutes === 0 ? 'щойно' : `${minutes} хв тому`;
 }
 
 /** @param {Env} env */

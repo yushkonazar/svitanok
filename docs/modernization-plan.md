@@ -96,7 +96,8 @@
 
 **Робота:**
 
-- [ ] `/status` показує окремо configured/reachable/ready/version match/active runs/last success.
+- [x] `/status` показує окремо configured/reachable/version match/freshness health-проби/active runs; configured не видається за healthy.
+- [ ] Додати до `/status` model readiness і час останнього успішного run.
 - [ ] Brain має drain/readiness, version endpoint і deploy-safe graceful shutdown.
 - [ ] Деплой переходить на immutable release directory + atomic switch.
 - [ ] Ввести expand/contract D1 migrations і release manifest для Worker/brain/instructions/tool schema.
