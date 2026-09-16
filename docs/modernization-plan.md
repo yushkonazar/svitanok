@@ -35,7 +35,7 @@
 
 **Робота:**
 
-- [ ] Описати run state machine та інваріанти в коді й документації.
+- [x] Описати run state machine та інваріанти в `docs/run-lifecycle.md`.
 - [x] Зробити start атомарним: brain не стартує, доки RunRegistry не підтвердив run.
 - [x] Винести authoritative completion з telemetry endpoint.
 - [x] Додати короткий idempotent completion window, terminal state і безпечний retry.

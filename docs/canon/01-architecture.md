@@ -74,7 +74,7 @@
 1. Telegram → `gateway`: 200 за ≤ 50 мс; `ctx.waitUntil`.
 2. `prerouter`: не команда/callback/тривіальне → `chat`. `thread-queue`: якщо прогін у треді активний - у чергу.
 3. `run-registry`: слот; `runs` insert; статус-повідомлення «▸ …» (Rich draft).
-4. `POST /run` мозку через Tunnel (202).
+4. `POST /run` мозку через Tunnel (202). Authoritative transitions `new → active → completed → terminal`, права internal API та retry описані в [`run-lifecycle.md`](../run-lifecycle.md).
 5. Мозок: `resume` сесії; системний промпт; `query()`; інструменти → `/internal/tool/*` (ядро маркує зовнішнє, веде taint у `sessions.tainted`); стрімінг → `/internal/status`.
 6. Фінал → `/internal/deliver` → `tg` (Rich message + кнопки) → `runs` update → слот вільний → наступне з черги треду.
 7. Таймінги (INFERRED): 5-9 с; перший токен 2-4 с.
