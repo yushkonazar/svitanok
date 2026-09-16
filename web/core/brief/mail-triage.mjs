@@ -1,5 +1,6 @@
 // Задача `mail-triage` (07 §7, ADR-027, етап 7 PR-2): ядро само тримає
-// звʼязок із Gmail і кладе кандидатів у KV `state`, звідки їх бере брифінг.
+// звʼязок із Gmail і кладе кандидатів у canonical `state` (StateStoreDO;
+// KV лишається сумісним snapshot-ом), звідки їх бере брифінг.
 // Після цього GOOGLE_* зникають із GitHub Secrets - Actions більше не має
 // доступу до пошти власника взагалі.
 //
@@ -12,12 +13,10 @@
 // мозку і новий канал результату останнім етапом - тобто ризикнути єдиним,
 // що власник бачить щоранку, заради архітектурної симетрії.
 //
-// ⚠️ ОДИН ПИСАР НА КЛЮЧ. Ядро пише `mailTriage`, брифінг - `shownMail`.
-// Обидва - через мерж по ключах (updateState тут, `changed` у брифінгу), і
-// саме тому ядро НЕ чіпає shownMail, а брифінг НЕ чіпає mailTriage: у KV
-// немає CAS, і два писарі на один ключ рано чи пізно стирають один одного.
+// `mailTriage` і `shownMail` живуть у versioned StateStoreDO. Кожен patch
+// змінює лише своє поле, тож конкурентні проходи не затирають один одного.
 
-import { updateState } from '../../kv-store.mjs';
+import { loadState, updateState } from '../../kv-store.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { googleGrantedScopes } from '../../google.mjs';
 import { hasFeatureScope } from '../google-scopes.mjs';
@@ -291,10 +290,5 @@ async function noteFailure(env, nowMs, reason) {
 
 /** @param {Env} env @returns {Promise<Record<string, unknown>>} */
 async function readState(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
+  return loadState(env);
 }

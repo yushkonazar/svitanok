@@ -2,8 +2,8 @@
 //
 // Брифінг доти сам ходив у Google Calendar - і саме тому в GitHub Secrets
 // лежав GOOGLE_REFRESH_TOKEN. Тепер події на добу читає ядро (у нього токен
-// і так є) і кладе їх у KV `state.calendarToday`; модуль брифінгу лише
-// читає готовий список.
+// і так є) і кладе їх у canonical `state.calendarToday`; legacy KV бачить
+// лише compatibility snapshot, модуль брифінгу читає готовий список.
 //
 // ⚠️ ЗНІМОК ЖИВЕ РІВНО ОДНУ ДОБУ. Він несе дату, за яку зроблений, і брифінг
 // НЕ показує його, якщо дата не сьогоднішня. Це навмисно: вчорашній список
@@ -17,7 +17,7 @@
 // наживо.
 
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
-import { updateState } from '../../kv-store.mjs';
+import { loadState, updateState } from '../../kv-store.mjs';
 import { readCalendarRange, googleGrantedScopes } from '../../google.mjs';
 import { hasFeatureScope } from '../google-scopes.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
@@ -145,10 +145,5 @@ async function writeSnapshot(env, snapshot) {
 
 /** @param {Env} env @returns {Promise<Record<string, unknown>>} */
 async function readStateBlob(env) {
-  try {
-    const parsed = JSON.parse((await env.BRIEFING.get('state')) ?? '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
+  return loadState(env);
 }

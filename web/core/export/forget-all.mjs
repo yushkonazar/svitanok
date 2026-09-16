@@ -11,12 +11,13 @@
 //   наступної синхронізації, і «забудь усе» перетворилось би на «вимкни».
 //   `migrations_meta` - службовий журнал схеми; без нього наступна міграція
 //   пішла б заново.
-//   KV: `state` цілком не чіпаємо - у ньому живе робоче листування з
+//   StateStore `state` цілком не чіпаємо - у ньому живе робоче листування з
 //   Telegram (lastUpdateId, адреси вебхука, мітки задач), і його обнулення
 //   зламало б бота, а не забуло б власника. Стираються ПОЛЯ даних усередині
 //   нього і власні ключі даних (перелік нижче).
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
+import { updateState, updateStats } from '../../kv-store.mjs';
 
 /**
  * Таблиці, які «забудь усе» НЕ чіпає, і чому.
@@ -72,7 +73,7 @@ export const FORGET_ALL_KV_KEYS = [
  * Усі три - службовий стан, а не дані власника.
  */
 
-/** Поля даних усередині блоба `state` (сам ключ лишається живим). */
+/** Поля даних усередині canonical `state` (службовий ключ лишається живим). */
 export const FORGET_ALL_STATE_FIELDS = [
   'reminders',
   'shownMail',
@@ -128,27 +129,27 @@ export async function forgetAll(env) {
       console.error(`forget: ключ ${key} не стерто`, e?.message);
     }
   }
+  // У новому rollout `stats` вже authoritative у StateStoreDO, а KV-ключ
+  // лише сумісний snapshot. У legacy fallback він щойно видалений вище і
+  // чіпати його не можна (інакше повернемо порожній ключ назад).
+  if (typeof env.STATE_STORE?.getByName === 'function') {
+    await updateStats(env, () => ({}));
+  }
   await clearStateFields(env);
   return { tables: FORGET_ALL_TABLES.length, rows, kvKeys };
 }
 
 /** @param {Env} env */
 async function clearStateFields(env) {
-  const raw = (await env.BRIEFING.get('state')) ?? '{}';
-  /** @type {Record<string, unknown>} */
-  let blob;
-  try {
-    blob = JSON.parse(raw);
-  } catch {
-    return; // побитий блоб - не наша справа тут
-  }
-  if (!blob || typeof blob !== 'object' || Array.isArray(blob)) return;
-  let touched = false;
-  for (const field of FORGET_ALL_STATE_FIELDS) {
-    if (field in blob) {
-      delete blob[field];
-      touched = true;
+  await updateState(env, (current) => {
+    const blob = { ...current };
+    let touched = false;
+    for (const field of FORGET_ALL_STATE_FIELDS) {
+      if (field in blob) {
+        delete blob[field];
+        touched = true;
+      }
     }
-  }
-  if (touched) await env.BRIEFING.put('state', JSON.stringify(blob));
+    return touched ? blob : current;
+  });
 }

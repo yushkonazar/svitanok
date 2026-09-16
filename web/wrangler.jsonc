@@ -73,12 +73,16 @@
       // Реєстр прогонів (етап 1, PR-4): активний набір + телеметрія в D1 runs;
       // поки лише запис для старого агента, слоти/handshake - етап 2.
       { "name": "RUN_REGISTRY", "class_name": "RunRegistryDO" },
+      // Канонічний mutable state (модернізація 2026-09): versions/CAS для
+      // legacy `state` і `stats`, які KV не здатний оновлювати атомарно.
+      { "name": "STATE_STORE", "class_name": "StateStoreDO" },
     ],
   },
   "exports": {
     "AgentRun": { "type": "durable-object", "storage": "sqlite" },
     "SchedulerDO": { "type": "durable-object", "storage": "sqlite" },
     "RunRegistryDO": { "type": "durable-object", "storage": "sqlite" },
+    "StateStoreDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
   // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і

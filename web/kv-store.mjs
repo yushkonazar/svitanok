@@ -12,11 +12,10 @@
 //      записом мовчки губить дані — це вже ламало прод (19.07: писар `state`
 //      затирав пропозицію асистента, і кожен ✅ падав у «Застаріла»). Звідси
 //      окремі sentMessages/agentRuns/assistantHistory/assistantPending.
-//   2. Де писарів у ключа все одно кілька (`stats` і `state`) — читання-запис
-//      іде через updateStats/updateState з одним retry, а не наївним put.
-//      ⚠️ Додаєш писаря в один із цих ключів — бери update*, не put: наївний
-//      load -> mutate -> put повертає рівно той клас утрат, який ці функції
-//      й закривають.
+//   2. `stats` і `state` — виняток із legacy-сумісності. Їхній source of truth
+//      тепер StateStoreDO (версійний CAS), а KV — лише snapshot для старого
+//      ранкового briefing-а та backup. Без привʼязки DO (локальні тести або
+//      старий rollback) лишається чітко позначений compatibility fallback.
 //   3. Биття JSON НІКОЛИ не валить запит: кожен читач має свій нейтральний
 //      дефолт. Порожній стан гірший за помилку лише в теорії; на практиці
 //      власник побачив би 500 замість дашборда.
@@ -24,6 +23,7 @@
 import { normalizeSettings } from './settings-core.mjs';
 import { mergeSentMessages } from './tg-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
+import { STATE_STORE_DO_NAME } from './core/state-store/contract.mjs';
 
 /**
  * Спільний читач: JSON із ключа або дефолт. Биття/відсутність -> дефолт.
@@ -57,7 +57,7 @@ export async function loadSettings(env) {
  *  @param {Env} env
  *  @returns {Promise<KvBlob>} */
 export async function loadStats(env) {
-  return readJson(env, 'stats', {});
+  return loadMutableJson(env, 'stats');
 }
 
 /**
@@ -65,7 +65,46 @@ export async function loadStats(env) {
  * @returns {Promise<KvBlob>}
  */
 export async function loadState(env) {
-  return readJson(env, 'state', {});
+  return loadMutableJson(env, 'state');
+}
+
+/** @param {unknown} value @returns {KvBlob} */
+function mutableBlob(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? /** @type {KvBlob} */ (value)
+    : {};
+}
+
+/** StateStoreDO не потрібен у локальних unit tests і на rollback-версії.
+ * @param {Env} env @returns {any | null} */
+function stateStoreStub(env) {
+  const ns = env.STATE_STORE;
+  return typeof ns?.getByName === 'function' ? ns.getByName(STATE_STORE_DO_NAME) : null;
+}
+
+/** Authoritative read з одноразовим seed із legacy KV. @param {Env} env
+ * @param {'state'|'stats'} key @returns {Promise<KvBlob>} */
+async function loadMutableJson(env, key) {
+  const legacy = mutableBlob(await readJson(env, key, {}));
+  const stub = stateStoreStub(env);
+  if (!stub) return legacy;
+  const record = await stub.read(key, legacy);
+  return mutableBlob(record?.value);
+}
+
+/**
+ * Canonical snapshot для backup/export. `null` означає legacy rollout, де KV
+ * ще є source of truth і `dumpKv` already містить обидва ключі.
+ * @param {Env} env
+ * @returns {Promise<{ state: KvBlob, stats: KvBlob } | null>}
+ */
+export async function mutableStateSnapshot(env) {
+  if (!stateStoreStub(env)) return null;
+  const [state, stats] = await Promise.all([
+    loadMutableJson(env, 'state'),
+    loadMutableJson(env, 'stats'),
+  ]);
+  return { state, stats };
 }
 
 // ⚠️ ЛУНА ЧИТАЧА для sentMessages. KV не дає read-your-writes: `get` одразу
@@ -305,11 +344,38 @@ export async function updateState(env, patch) {
  * означає, що між читаннями хтось писав, і цього досить, щоб не ризикувати.
  *
  * @param {Env} env
- * @param {string} key
+ * @param {'state'|'stats'} key
  * @param {(store: KvBlob) => KvBlob} patch
  * @returns {Promise<KvBlob>}
  */
 async function updateJson(env, key, patch) {
+  const stub = stateStoreStub(env);
+  if (!stub) return updateJsonLegacy(env, key, patch);
+
+  // Перший read сіє DO старим KV значенням; надалі саме record.version, а не
+  // cache KV, визначає свіжість. patch лишається локальною pure-функцією, бо
+  // Durable Object не приймає код через RPC.
+  let record = await stub.read(key, mutableBlob(await readJson(env, key, {})));
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const next = patch(mutableBlob(record?.value));
+    const result = await stub.compareAndSet(key, Number(record?.version), next);
+    if (result?.ok) return mutableBlob(result.record?.value);
+    record = result?.record;
+  }
+  // Вісім реальних CAS-конфліктів поспіль означають pathological writer, а не
+  // «можна тихо втратити patch». Викликач отримає retry/error замість брехні.
+  throw new Error(`state-store: ${key} надто конкурентний, повтори операцію`);
+}
+
+/**
+ * Compatibility fallback для тестів/rollback без STATE_STORE. Він лишається
+ * best-effort retry, але production конфіг завжди має Durable Object.
+ * @param {Env} env
+ * @param {'state'|'stats'} key
+ * @param {(store: KvBlob) => KvBlob} patch
+ * @returns {Promise<KvBlob>}
+ */
+async function updateJsonLegacy(env, key, patch) {
   const raw1 = (await env.BRIEFING.get(key)) ?? '{}';
   const result1 = patch(parseBlob(raw1));
   const json1 = JSON.stringify(result1);

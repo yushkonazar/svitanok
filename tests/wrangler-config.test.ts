@@ -50,11 +50,13 @@ describe('web/wrangler.jsonc', () => {
       { name: 'AGENT_RUN', class_name: 'AgentRun' },
       { name: 'SCHEDULER', class_name: 'SchedulerDO' },
       { name: 'RUN_REGISTRY', class_name: 'RunRegistryDO' },
+      { name: 'STATE_STORE', class_name: 'StateStoreDO' },
     ]);
     expect(cfg.exports).toEqual({
       AgentRun: { type: 'durable-object', storage: 'sqlite' },
       SchedulerDO: { type: 'durable-object', storage: 'sqlite' },
       RunRegistryDO: { type: 'durable-object', storage: 'sqlite' },
+      StateStoreDO: { type: 'durable-object', storage: 'sqlite' },
     });
     // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
     expect(cfg.migrations).toBeUndefined();
@@ -62,6 +64,7 @@ describe('web/wrangler.jsonc', () => {
     expect(worker).toContain('export { AgentRun }');
     expect(worker).toContain('export { SchedulerDO }');
     expect(worker).toContain('export { RunRegistryDO }');
+    expect(worker).toContain('export { StateStoreDO }');
   });
 
   it('немає ключа routes — маршрути веде дашборд, wrangler їх не перезаписує', () => {

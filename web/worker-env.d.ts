@@ -63,6 +63,14 @@ interface Env {
   RUN_REGISTRY?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/run-registry/do.mjs').RunRegistryDO
   >;
+  /**
+   * Канонічний state/stats store. На відміну від KV, цей singleton дає
+   * versioned compare-and-set для конкурентних webhook/cron/Mini App writes.
+   * Опційний лише для локальних тестів та rollback-коду без нового binding.
+   */
+  STATE_STORE?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/state-store/do.mjs').StateStoreDO
+  >;
 
   /**
    * Vectorize-індекс памʼяті (ADR-038, етап 2 PR-2): svitanok-memory,
