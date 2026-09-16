@@ -322,13 +322,13 @@ describe('facts.* на справжній міграції 0001', () => {
     await runFactsSet(env, { kind: 'setting', key: 'lang', value: 'en' }, NOW + 1_000);
     const { result } = await runFactsGet(env, { kind: 'setting', key: 'lang' });
     expect(result).toHaveLength(1); // upsert, не дубль
-    // Дефолт БЕЗ source - inferred: викликач цього шляху - модель (07 §4);
+    // Дефолт БЕЗ source - model_hypothesis: викликач цього шляху - модель;
     // owner - лише явний opt-in (гейт - policy у PR-8).
     expect(result[0]).toMatchObject({
       kind: 'setting',
       key: 'lang',
       value: 'en',
-      source: 'inferred',
+      source: 'model_hypothesis',
     });
     await runFactsSet(
       env,
@@ -336,7 +336,7 @@ describe('facts.* на справжній міграції 0001', () => {
       NOW + 2_000,
     );
     const owned = await runFactsGet(env, { kind: 'setting', key: 'lang' });
-    expect(owned.result[0]).toMatchObject({ source: 'owner' });
+    expect(owned.result[0]).toMatchObject({ source: 'owner_assertion' });
   });
 
   it('порожній key - виняток і на set, і на get', async () => {
@@ -352,7 +352,7 @@ describe('facts.* на справжній міграції 0001', () => {
     );
     await expect(
       runFactsSet(env, { kind: 'habit', key: 'k', value: 1, source: 'model' }, NOW),
-    ).rejects.toThrow(/owner\|inferred/);
+    ).rejects.toThrow(/provenance source/);
     await expect(runFactsGet(env, { kind: 'nope' })).rejects.toThrow(/невідомий kind/);
   });
 

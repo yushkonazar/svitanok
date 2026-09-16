@@ -67,7 +67,7 @@
 
 **Робота:**
 
-- [ ] Розділити `owner assertion`, `observed event`, `model hypothesis` у схемі та API.
+- [x] Розділити `owner assertion`, `observed event`, `model hypothesis` у схемі та API; legacy `owner`/`inferred` нормалізуються сумісно.
 - [ ] Додати `source`, `confidence`, `observed_at`, `expires_at/review_at`, `supersedes`.
 - [x] Заборонити inference overwrite owner fact без T1 proposal.
 - [x] Ескалювати `facts.set` із tainted external context до T1 proposal.

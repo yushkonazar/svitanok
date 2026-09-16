@@ -217,7 +217,7 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
     const undone = await resolveUndo(env, String(undoId), NOW + 60_000);
     expect(undone).toMatchObject({ ok: true, status: 'undone' });
     const after = await runFactsGet(env, { kind: 'setting', key: 'lang' });
-    expect(after.result[0]).toMatchObject({ value: 'uk', source: 'inferred' }); // відкат зберіг source
+    expect(after.result[0]).toMatchObject({ value: 'uk', source: 'model_hypothesis' });
 
     // Другий тап «↩» - ідемпотентний, не другий відкат.
     expect(await resolveUndo(env, String(undoId), NOW + 61_000)).toMatchObject({
@@ -291,12 +291,12 @@ describe('T1/T2: пропозиції', () => {
     // До ✅ model inference не змінює підтверджене значення.
     expect((await runFactsGet(env, { kind: 'setting', key: 'lang' })).result[0]).toMatchObject({
       value: 'uk',
-      source: 'owner',
+      source: 'owner_assertion',
     });
     await resolveProposal(env, { id, choice: 'ok' }, NOW + 1_000);
     expect((await runFactsGet(env, { kind: 'setting', key: 'lang' })).result[0]).toMatchObject({
       value: 'en',
-      source: 'owner',
+      source: 'owner_assertion',
     });
   });
 
@@ -424,7 +424,7 @@ describe('T1/T2: пропозиції', () => {
     await resolveProposal(env, { id, choice: 'ok' }, NOW + 1000);
     // ПІСЛЯ ✅ власника owner-attribution легітимний.
     expect((await runFactsGet(env, { kind: 'contact', key: 'мама' })).result[0]).toMatchObject({
-      source: 'owner',
+      source: 'owner_assertion',
     });
   });
 

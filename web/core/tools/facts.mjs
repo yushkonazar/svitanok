@@ -13,6 +13,23 @@ export const FACT_KINDS = [
   'inferred',
 ];
 
+/** Canonical provenance classes. `owner`/`inferred` are compatibility aliases. */
+export const FACT_SOURCES = ['owner_assertion', 'observed_event', 'model_hypothesis'];
+
+/** @param {unknown} source */
+export function normalizeFactSource(source) {
+  if (source === 'owner' || source === 'owner_assertion') return 'owner_assertion';
+  if (source === 'inferred' || source === 'model_hypothesis' || source == null)
+    return 'model_hypothesis';
+  if (source === 'observed_event') return 'observed_event';
+  return null;
+}
+
+/** @param {unknown} source */
+export function isOwnerAssertion(source) {
+  return normalizeFactSource(source) === 'owner_assertion';
+}
+
 const MAX_FACTS_LIST = 100;
 
 /** @param {Env} env */
@@ -55,7 +72,7 @@ export async function runFactsGet(env, args) {
       kind: r.kind,
       key: r.key,
       value: safeParse(String(r.value_json)),
-      source: r.source,
+      source: normalizeFactSource(r.source) ?? 'model_hypothesis',
       updated_at: r.updated_at,
     })),
   };
@@ -63,8 +80,8 @@ export async function runFactsGet(env, args) {
 
 /**
  * facts.set: upsert за (kind, key). value - будь-який JSON-сумісний; source
- * лише owner|inferred (07 §4: вивід моделі - тільки inferred; це правило
- * дотисне policy у PR-8, контракт поля - вже тут).
+ * has canonical provenance. Legacy owner|inferred aliases are accepted only
+ * for compatibility; model output defaults to model_hypothesis.
  * @param {Env} env
  * @param {{ kind: string, key: string, value: unknown, source?: string }} args
  * @param {number} nowMs
@@ -72,14 +89,8 @@ export async function runFactsGet(env, args) {
 export async function runFactsSet(env, args, nowMs) {
   if (!FACT_KINDS.includes(args.kind)) throw new Error(`невідомий kind "${args.kind}"`);
   if (!args.key) throw new Error('key не може бути порожнім');
-  // Дефолт - inferred, НЕ owner: викликач цього інструмента - модель, а канон
-  // 07 §4 дозволяє її виводу лише source=inferred. owner - явний opt-in, який
-  // policy (PR-8) гейтитиме; без цього промпт-інʼєкція з листа записувала б
-  // факт від імені власника, і він пережив би прогін.
-  const source = args.source ?? 'inferred';
-  if (source !== 'owner' && source !== 'inferred') {
-    throw new Error(`source лише owner|inferred, не "${source}"`);
-  }
+  const source = normalizeFactSource(args.source);
+  if (!source) throw new Error(`невідоме provenance source: "${String(args.source)}"`);
   const iso = new Date(nowMs).toISOString();
   await db(env)
     .prepare(

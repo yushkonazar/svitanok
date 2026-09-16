@@ -17,7 +17,7 @@ import {
   PROPOSAL_TTL_MS,
   UNDO_WINDOW_MS,
 } from './core.mjs';
-import { runFactsSet, runFactsGet, FACT_KINDS } from '../tools/facts.mjs';
+import { runFactsSet, runFactsGet, FACT_KINDS, isOwnerAssertion } from '../tools/facts.mjs';
 import { runRecord } from '../tools/record.mjs';
 import {
   runRemindersCreate,
@@ -1239,16 +1239,16 @@ export async function applyPolicy(env, action, nowMs) {
       kind: String(action.payload.kind),
       key: String(action.payload.key),
     });
-    if (current.result[0]?.source === 'owner' && action.payload.source !== 'owner') {
-      action = { ...action, payload: { ...action.payload, source: 'owner' } };
+    if (isOwnerAssertion(current.result[0]?.source) && !isOwnerAssertion(action.payload.source)) {
+      action = { ...action, payload: { ...action.payload, source: 'owner_assertion' } };
       level = 'T1';
     }
   }
 
-  // source='owner' - привласнення слів власника, і воно потребує ЙОГО ✅:
+  // owner_assertion - привласнення слів власника, і воно потребує ЙОГО ✅:
   // 07 §4 дозволяє виводу моделі лише inferred, тож T0-шлях із owner
   // ескалюється до пропозиції (після ✅ attribution легітимний).
-  if (level === 'T0' && action.kind === 'facts.set' && action.payload.source === 'owner') {
+  if (level === 'T0' && action.kind === 'facts.set' && isOwnerAssertion(action.payload.source)) {
     level = 'T1';
   }
 
