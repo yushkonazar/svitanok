@@ -1,22 +1,15 @@
-import { useEffect, useLayoutEffect } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
 import { inTelegram, haptic, startParam, setBackButton } from './telegram.ts';
 import { demoBadge } from './lib/demoBadge.ts';
 import { ErrorBoundary } from './components/ui/ErrorBoundary.tsx';
-import { postEvent } from './api/client.ts';
+import { isSessionExpired, postEvent } from './api/client.ts';
 import { useTheme } from './theme.tsx';
 import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
 import { useBriefing, useStats } from './api/hooks.ts';
 import { Fog } from './components/ui/Fog.tsx';
-import { StatsScreen } from './components/stats/StatsScreen.tsx';
-import { TodayScreen } from './components/today/TodayScreen.tsx';
-import { NewsScreen } from './components/news/NewsScreen.tsx';
-import { JobsScreen } from './components/jobs/JobsScreen.tsx';
-import { SettingsScreen } from './components/settings/SettingsScreen.tsx';
-import { SavedScreen } from './components/saved/SavedScreen.tsx';
-import { CheckinScreen } from './components/checkin/CheckinScreen.tsx';
+import { SessionExpired } from './components/ui/SessionExpired.tsx';
 
 // Оболонка дашборда (дизайн v2, Svitanok.dc.html): туман-фон, хедер (лого/дата/
 // тема), скрол-контент, таб-бар-пігулка. Кожен таб = маршрут (deep-link
@@ -44,6 +37,35 @@ type TabId = (typeof TABS)[number]['id'];
 
 const SETTINGS_PATH = '/settings';
 const SAVED_PATH = '/saved';
+
+// Маршрутні екрани ізолюємо в окремі chunks: статистика тягне D3, вакансії —
+// drag UI, чек-ін — великий набір питань. Вони не мають затримувати перший
+// рендер «Сьогодні» в Telegram WebView.
+const TodayScreen = lazy(() =>
+  import('./components/today/TodayScreen.tsx').then((module) => ({ default: module.TodayScreen })),
+);
+const NewsScreen = lazy(() =>
+  import('./components/news/NewsScreen.tsx').then((module) => ({ default: module.NewsScreen })),
+);
+const JobsScreen = lazy(() =>
+  import('./components/jobs/JobsScreen.tsx').then((module) => ({ default: module.JobsScreen })),
+);
+const CheckinScreen = lazy(() =>
+  import('./components/checkin/CheckinScreen.tsx').then((module) => ({
+    default: module.CheckinScreen,
+  })),
+);
+const StatsScreen = lazy(() =>
+  import('./components/stats/StatsScreen.tsx').then((module) => ({ default: module.StatsScreen })),
+);
+const SettingsScreen = lazy(() =>
+  import('./components/settings/SettingsScreen.tsx').then((module) => ({
+    default: module.SettingsScreen,
+  })),
+);
+const SavedScreen = lazy(() =>
+  import('./components/saved/SavedScreen.tsx').then((module) => ({ default: module.SavedScreen })),
+);
 
 /**
  * Повноекранні маршрути — НЕ таби: власний хедер «‹ Назва», без таб-бара.
@@ -117,13 +139,13 @@ export function App() {
   // Дата в хедері — БРИФІНГУ (generatedAt), не пристрою: якщо крон не спрацював
   // і брифінг учорашній, це має бути видно. Черга спільна (кеш), зайвого fetch
   // не буде. Поки вантажиться — дата пристрою як плейсхолдер.
-  const { data: briefData } = useBriefing();
-  const { data: statsData } = useStats();
+  const { data: briefData, error: briefError } = useBriefing();
+  const { data: statsData, error: statsError } = useStats();
+  const sessionExpired = isSessionExpired(briefError) || isSessionExpired(statsError);
   const headerDate = dateLabelFromIso(briefData?.brief.generatedAt) ?? dateLabel();
 
-  // B9: `demo:true` приходить не лише поза Telegram, а й на 401/403 усередині
-  // нього (протухла сесія) — і доти цей другий випадок мовчав, показуючи чужі
-  // стріки як свої. Досить ОДНОГО демо-джерела: екран уже змішаний.
+  // demo:true можливий ЛИШЕ поза Telegram. 401/403 у WebView не маскується
+  // демо-даними: SessionExpired нижче блокує весь персональний UI.
   const badge = demoBadge({
     inTelegram: inTelegram(),
     demo: Boolean(briefData?.demo || statsData?.demo),
@@ -160,13 +182,13 @@ export function App() {
   // Той самий onSettled-патерн, що в решти мутацій (hooks.ts).
   const qc = useQueryClient();
   useEffect(() => {
+    if (sessionExpired) return;
     void postEvent('open', {})
       .then(() => {
         if (inTelegram()) void qc.invalidateQueries({ queryKey: ['stats'] });
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [qc, sessionExpired]);
 
   // Невідомий шлях -> домашня.
   useEffect(() => {
@@ -177,7 +199,7 @@ export function App() {
   // overflow-контейнера, оболонка лише min-h-[100dvh]), тож позиція скролу
   // переживає зміну маршруту: прогорнув «Сьогодні» до «В цей день», тапнув
   // «Новини» — і опинявся посеред стрічки, ніби вже читав її. Ремоунт
-  // motion.main цього не чіпає: він міняє ВМІСТ, а не позицію вьюпорта.
+  // Анімація main цього не чіпає: вона міняє ВМІСТ, а не позицію вьюпорта.
   // useLayoutEffect, а не useEffect: скидання має статись ДО кадру, інакше
   // видно стрибок уже намальованого контенту.
   useLayoutEffect(() => {
@@ -189,6 +211,8 @@ export function App() {
     const onHome = !full && active.path === '/';
     return setBackButton(!onHome, () => navigate('/'));
   }, [active.path, full, navigate]);
+
+  if (sessionExpired) return <SessionExpired />;
 
   return (
     <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-[430px] flex-col">
@@ -360,11 +384,9 @@ export function App() {
         </header>
 
         {/* CONTENT — зміна маршруту ремоунтить секцію -> fadeUp, як у макеті */}
-        <motion.main
+        <main
           key={full ? full.path : active.id}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.32, ease: 'easeOut' }}
+          style={{ animation: 'fadeUp .32s ease-out backwards' }}
           className={full ? 'px-5 pb-10 pt-2.5' : 'px-5 pb-[120px] pt-1.5'}
         >
           {/* Межа помилок — саме ТУТ, навколо вмісту, а не навколо застосунку:
@@ -373,25 +395,31 @@ export function App() {
               іншу вкладку дає чистий старт, щоб одна помилка не залипала на весь
               сеанс. */}
           <ErrorBoundary label={full ? full.title : active.label} resetKey={location.pathname}>
-            {full ? (
-              full.path === SETTINGS_PATH ? (
-                <SettingsScreen />
+            <Suspense
+              fallback={
+                <div className="py-10 text-center text-[13px] text-tx3">Завантажую екран…</div>
+              }
+            >
+              {full ? (
+                full.path === SETTINGS_PATH ? (
+                  <SettingsScreen />
+                ) : (
+                  <SavedScreen />
+                )
+              ) : active.id === 'today' ? (
+                <TodayScreen />
+              ) : active.id === 'news' ? (
+                <NewsScreen />
+              ) : active.id === 'jobs' ? (
+                <JobsScreen />
+              ) : active.id === 'checkin' ? (
+                <CheckinScreen />
               ) : (
-                <SavedScreen />
-              )
-            ) : active.id === 'today' ? (
-              <TodayScreen />
-            ) : active.id === 'news' ? (
-              <NewsScreen />
-            ) : active.id === 'jobs' ? (
-              <JobsScreen />
-            ) : active.id === 'checkin' ? (
-              <CheckinScreen />
-            ) : (
-              <StatsScreen />
-            )}
+                <StatsScreen />
+              )}
+            </Suspense>
           </ErrorBoundary>
-        </motion.main>
+        </main>
       </div>
 
       {/* TAB BAR — пігулка, активний таб розкривається з підписом. У

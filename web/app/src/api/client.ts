@@ -26,6 +26,31 @@ function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
 }
 
+/**
+ * Сервер уже перевірив Telegram initData і відмовив. Це не «дані порожні» і
+ * не звичайна мережева помилка: застосунок мусить заблокувати персональний UI,
+ * а власник — відкрити Mini App заново з чату, щоб отримати новий initData.
+ */
+export class SessionExpiredError extends Error {
+  readonly status: 401 | 403;
+
+  constructor(status: 401 | 403) {
+    super('Сесію Telegram завершено. Відкрий застосунок заново з чату.');
+    this.name = 'SessionExpiredError';
+    this.status = status;
+  }
+}
+
+export const isSessionExpired = (error: unknown): error is SessionExpiredError =>
+  error instanceof SessionExpiredError ||
+  (typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'SessionExpiredError');
+
+function throwIfSessionExpired(res: Response): void {
+  if (res.status === 401 || res.status === 403) throw new SessionExpiredError(res.status);
+}
+
 /* ── Демо-стани (F2) ────────────────────────────────────────────────────────
    Перемикач у налаштуваннях, видимий ЛИШЕ поза Telegram: дає подивитись
    скелетон / порожньо / помилку на реальних екранах, не чіпаючи прод і не
@@ -63,9 +88,8 @@ export interface StatsResult {
 }
 
 /**
- * Завантажити /api/stats. Поза Telegram або при відмові авторизації (401/403) —
- * SAMPLE (demo:true), щоб UI був заповнений. Серверні/мережеві збої (5xx, offline)
- * і дрейф контракту (провал валідації) кидають помилку -> стан помилки з ретраєм.
+ * Завантажити /api/stats. Поза Telegram — явне demo; 401/403 у Telegram —
+ * SessionExpiredError, ніколи не підставні персональні дані.
  */
 export async function fetchStats(): Promise<StatsResult> {
   if (!inTelegram())
@@ -75,10 +99,7 @@ export async function fetchStats(): Promise<StatsResult> {
     );
 
   const res = await fetch('/api/stats', { cache: 'no-store', headers: authHeaders() });
-  if (res.status === 401 || res.status === 403) {
-    // Немає доступу до реальних даних (не власник / бита initData) — показуємо демо.
-    return { stats: SAMPLE_STATS, demo: true };
-  }
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Не вдалося завантажити статистику (${res.status})`);
 
   const parsed = statsSchema.safeParse(await res.json());
@@ -99,7 +120,7 @@ export async function fetchStats(): Promise<StatsResult> {
 export async function fetchArchive(): Promise<ArchiveMonth[]> {
   if (!inTelegram()) return SAMPLE_ARCHIVE;
   const res = await fetch('/api/archive', { cache: 'no-store', headers: authHeaders() });
-  if (res.status === 401 || res.status === 403) return [];
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Не вдалося завантажити історію (${res.status})`);
   const parsed = archiveSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат історії змінився — оновіть застосунок');
@@ -109,9 +130,9 @@ export async function fetchArchive(): Promise<ArchiveMonth[]> {
 /**
  * Шар звʼязків «Важелі» (GET /api/levers).
  *
- * ⚠️ 401/403 -> `levers: null`, а не порожній список рядків. Порожній список
- * означав би «перевірили й звʼязків немає» — твердження, якого ми не робили.
- * Немає доступу — немає й відповіді.
+ * ⚠️ 401/403 -> SessionExpiredError, а не порожній список рядків. Порожній
+ * список означав би «перевірили й звʼязків немає» — твердження, якого ми не
+ * робили. Немає доступу — застосунок чесно зупиняє персональний UI.
  *
  * ⚠️ Поза Telegram демо показує ОБИДВА стани через demoGate, і «замало даних»
  * тут не менш важливий за заповнений: саме його видно на екрані місяцями.
@@ -123,19 +144,7 @@ export async function fetchLevers(): Promise<LeversResult> {
       () => EMPTY_LEVERS,
     );
   const res = await fetch('/api/levers', { cache: 'no-store', headers: authHeaders() });
-  // ⚠️ Порожній результат збирає САМА схема, а не літерали тут: інакше число
-  // гейта жило б у трьох місцях клієнта (схема, цей фолбек, компонент) і
-  // мовчки розійшлося б зі `GATE_WEEKS` на сервері — а видно його саме в
-  // стані «потрібно ще N тижнів», де воно і є всім змістом екрана.
-  //
-  // safeParse, а не parse: одне нове обовʼязкове поле у схемі перетворило б
-  // відмову в доступі на ВИКИНУТИЙ ВИНЯТОК усередині фетчера, і блок показав
-  // би помилку замість чесного порожнього стану. Числа у фолбеку недосяжні —
-  // гейт читається лише коли payload існує, а тут він null.
-  if (res.status === 401 || res.status === 403) {
-    const empty = leversSchema.safeParse({});
-    return empty.success ? empty.data : { levers: null, features: {}, gate: 0, useful: 0 };
-  }
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Не вдалося завантажити важелі (${res.status})`);
   const parsed = leversSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат важелів змінився — оновіть застосунок');
@@ -149,8 +158,8 @@ export interface BriefResult {
 }
 
 /**
- * Завантажити briefing.json (щоденний знімок). Поза Telegram/401/403 — SAMPLE;
- * 5xx/мережа/дрейф контракту — помилка з ретраєм.
+ * Завантажити briefing.json. Поза Telegram — SAMPLE; 401/403 у Telegram
+ * переходить у blocking SessionExpired state, а не в псевдо-брифінг.
  */
 export async function fetchBriefing(): Promise<BriefResult> {
   if (!inTelegram())
@@ -161,7 +170,7 @@ export async function fetchBriefing(): Promise<BriefResult> {
     );
 
   const res = await fetch('/briefing.json', { cache: 'no-store', headers: authHeaders() });
-  if (res.status === 401 || res.status === 403) return { brief: SAMPLE_BRIEF, demo: true };
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Не вдалося завантажити брифінг (${res.status})`);
 
   const parsed = briefSchema.safeParse(await res.json());
@@ -310,8 +319,8 @@ const DEMO_SETTINGS: SettingsResponse = {
 };
 
 /**
- * GET /api/settings. Політика та сама, що у fetchStats: поза Telegram / 401 /
- * 403 -> демо; 5xx і дрейф контракту -> помилка з ретраєм.
+ * GET /api/settings. Поза Telegram — demo; 401/403 у Telegram зупиняє весь
+ * персональний UI через SessionExpiredError, не маскується DEMO_SETTINGS.
  *
  * СВІДОМО повз demoGate: перемикач демо-стану живе на екрані налаштувань, тож
  * якби цей запит теж підкорявся demoState, вибір «Помилка» завалив би сам екран
@@ -322,7 +331,7 @@ export async function fetchSettings(): Promise<SettingsResponse> {
   if (!inTelegram()) return DEMO_SETTINGS;
 
   const res = await fetch('/api/settings', { cache: 'no-store', headers: authHeaders() });
-  if (res.status === 401 || res.status === 403) return DEMO_SETTINGS;
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Не вдалося завантажити налаштування (${res.status})`);
 
   const parsed = settingsResponseSchema.safeParse(await res.json());
@@ -378,12 +387,7 @@ export async function fetchSaved(offset: number, limit: number = SAVED_PAGE): Pr
     cache: 'no-store',
     headers: authHeaders(),
   });
-  if (res.status === 401 || res.status === 403) {
-    return {
-      items: SAMPLE_SAVED_ARCHIVE.slice(offset, offset + limit),
-      total: SAMPLE_SAVED_ARCHIVE.length,
-    };
-  }
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Не вдалося завантажити збережене (${res.status})`);
 
   const parsed = savedPageSchema.safeParse(await res.json());

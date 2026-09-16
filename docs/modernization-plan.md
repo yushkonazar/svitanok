@@ -107,10 +107,11 @@
 
 ### 1F. Безпечний Mini App failure UX і delivery performance
 
-- [ ] Замість sample personal data на 401/403 показувати blocking session-expired state.
-- [ ] Залишити demo лише в явному dev/demo маршруті.
-- [ ] Додати route-level code splitting, bundle budget і Telegram WebView performance test.
-- [ ] Перевірити focus/accessibility/error state після зміни auth flow.
+- [x] Замість sample personal data на 401/403 показувати blocking session-expired state.
+- [x] Лишити demo тільки поза Telegram через явний demo switch; ніколи як auth fallback.
+- [x] Додати route-level code splitting і build-enforced bundle budget (300 KB minified на JS chunk).
+- [ ] Зробити runtime smoke/performance test у реальному Telegram WebView після контрольного деплою.
+- [x] Перевірити focus/accessibility/error state після зміни auth flow.
 
 ## Фаза 2 — тестування, observability і документація
 

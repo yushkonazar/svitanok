@@ -27,6 +27,10 @@ const {
   setWeatherLocationExact,
   clearWeatherLocation,
   requestLocatePrompt,
+  fetchStats,
+  fetchBriefing,
+  fetchSettings,
+  fetchSaved,
 } = await import('./client.ts');
 
 const SETTINGS = {
@@ -100,6 +104,23 @@ describe('M3 — мутації клієнта автентифікуються 
       await run();
       const { body } = lastCall();
       expect(body === undefined || !(body as Record<string, unknown>).initData).toBe(true);
+    });
+  }
+});
+
+describe('401/403 у Telegram — не демо, а blocking session-expired сигнал', () => {
+  for (const status of [401, 403] as const) {
+    it.each([
+      ['stats', () => fetchStats()],
+      ['briefing', () => fetchBriefing()],
+      ['settings', () => fetchSettings()],
+      ['saved', () => fetchSaved(0)],
+    ])('%s: HTTP ' + status + ' не підставляє sample-дані', async (_name, run) => {
+      fetchMock.mockResolvedValueOnce(new Response('', { status }));
+      await expect(run()).rejects.toMatchObject({
+        name: 'SessionExpiredError',
+        status,
+      });
     });
   }
 });
