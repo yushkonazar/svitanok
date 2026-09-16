@@ -15,7 +15,20 @@ const MIGRATIONS_DIR = join(__dirname, '..', 'web', 'core', 'migrations');
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
-  facts: ['id', 'kind', 'key', 'value_json', 'source', 'confidence', 'created_at', 'updated_at'],
+  facts: [
+    'id',
+    'kind',
+    'key',
+    'value_json',
+    'source',
+    'confidence',
+    'created_at',
+    'updated_at',
+    'observed_at',
+    'expires_at',
+    'review_at',
+    'supersedes',
+  ],
   sessions: [
     'thread_id',
     'sdk_session_id',
@@ -246,7 +259,11 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
-  facts: [{ cols: ['kind', 'key'], unique: true }],
+  facts: [
+    { cols: ['kind', 'key'], unique: true },
+    { cols: ['expires_at'] },
+    { cols: ['review_at'] },
+  ],
   memory_chunks: [{ cols: ['thread_id', 'at'] }],
   reminders: [{ cols: ['status', 'due_at'] }],
   proposals: [{ cols: ['status', 'expires_at'] }],
@@ -314,7 +331,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тринадцять файлів 0001–0013, нумерація без дірок', () => {
+  it('чотирнадцять файлів 0001–0014, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -329,6 +346,7 @@ describe('міграції D1 — файли', () => {
       '0011',
       '0012',
       '0013',
+      '0014',
     ]);
   });
 });
