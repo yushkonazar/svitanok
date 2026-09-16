@@ -515,6 +515,55 @@ describe('prerouteMessage: нові команди', () => {
     expect(line).toContain('Режим асистента: on');
   });
 
+  it('/status показує готовність моделей і останній успішний model run, не shadow', async () => {
+    const reg = makeRegistryStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, profile, model, started_at, finished_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        'real',
+        'chat',
+        'chat',
+        'claude-sonnet-5',
+        new Date(NOW - 90_000).toISOString(),
+        new Date(NOW - 60_000).toISOString(),
+      );
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, profile, model, started_at, finished_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        'shadow',
+        'shadow',
+        'quick',
+        null,
+        new Date(NOW - 20_000).toISOString(),
+        new Date(NOW - 10_000).toISOString(),
+      );
+    const kv = new Map([
+      [
+        'brainHealthState',
+        JSON.stringify({
+          state: 'ok',
+          detail: '1.0.0 @ same-sha',
+          checkedAtMs: NOW,
+          modelReadiness: { state: 'ready', detail: 'моделі: claude-sonnet-5' },
+        }),
+      ],
+    ]);
+    const env = makeEnv(reg, d1.stub);
+    (env as { BRIEFING: unknown }).BRIEFING = { get: async (key: string) => kv.get(key) ?? null };
+
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).toContain('✅ Усе живе.');
+    expect(line).toContain('Моделі: ✅ готові');
+    expect(line).toContain('Останній успішний run: 1 хв тому (chat, claude-sonnet-5)');
+  });
+
   it('/remind без аргументів - список нагадувань, без прогону мозку', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();

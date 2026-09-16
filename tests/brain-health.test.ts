@@ -149,13 +149,24 @@ describe('checkBrainHandshake', () => {
     kv.set(BRAIN_EXPECTED_KEY, JSON.stringify({ version: '1.0.0', gitSha: 'same-sha' }));
     setFetch(
       async () =>
-        new Response(JSON.stringify({ version: '1.0.0', gitSha: 'same-sha' }), { status: 200 }),
+        new Response(
+          JSON.stringify({
+            version: '1.0.0',
+            gitSha: 'same-sha',
+            sdkVersion: '0.1.0',
+            claudeVersion: '1.2.3',
+            limits: { models: ['claude-sonnet-5'] },
+            internalApiProbe: 'ok',
+          }),
+          { status: 200 },
+        ),
     );
 
     await checkBrainHandshake(env, NOW);
     expect(JSON.parse(kv.get(BRAIN_HEALTH_STATE_KEY) ?? '{}')).toMatchObject({
       state: 'ok',
       checkedAtMs: NOW,
+      modelReadiness: { state: 'ready' },
     });
 
     await checkBrainHandshake(env, NOW + 300_000);

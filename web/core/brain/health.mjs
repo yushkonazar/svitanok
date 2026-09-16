@@ -20,6 +20,37 @@ export const BRAIN_HEALTH_STALE_MS = 15 * 60_000;
 const HEALTH_TIMEOUT_MS = 8_000;
 
 /**
+ * Health доводить, що HTTP-сервер відповідає, але це ще не доказ готового
+ * модельного рантайму: потрібні і profile models, і Claude SDK/CLI, і жива
+ * внутрішня адреса core. Це лише readiness конфігурації, не synthetic LLM
+ * prompt: health-check не повинен витрачати токени або створювати сесію.
+ * @param {any} actual
+ * @returns {{ state: 'ready' | 'degraded' | 'unready', detail: string }}
+ */
+function modelReadinessFromHealth(actual) {
+  const rawModels = /** @type {unknown[]} */ (
+    Array.isArray(actual?.limits?.models) ? actual.limits.models : []
+  );
+  const models = [...new Set(rawModels.filter((m) => typeof m === 'string' && m.length <= 128))]
+    .slice(0, 8)
+    .map((m) => String(m).replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (models.length === 0) {
+    return { state: 'unready', detail: 'health не містить жодної profile-моделі' };
+  }
+  if (!actual?.sdkVersion || !actual?.claudeVersion) {
+    return { state: 'unready', detail: 'Claude SDK або CLI не підтверджено health-пробою' };
+  }
+  if (actual.internalApiProbe !== 'ok') {
+    return {
+      state: 'degraded',
+      detail: `моделі: ${models.join(', ')}; внутрішній API: ${String(actual.internalApiProbe ?? 'невідомо')}`,
+    };
+  }
+  return { state: 'ready', detail: `моделі: ${models.join(', ')}` };
+}
+
+/**
  * Порівняти канонічний /health з очікуваним (чиста функція).
  * @param {{ version?: string, gitSha?: string } | null} expected
  * @param {{ version?: string, gitSha?: string } | null} actual
@@ -58,7 +89,7 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
 
   const clientId = String(env.BRAIN_ACCESS_CLIENT_ID ?? '').trim();
   const clientSecret = String(env.BRAIN_ACCESS_CLIENT_SECRET ?? '').trim();
-  /** @type {{ state: 'ok' | 'desync' | 'down', detail: string }} */
+  /** @type {{ state: 'ok' | 'desync' | 'down', detail: string, modelReadiness?: { state: 'ready' | 'degraded' | 'unready', detail: string } }} */
   let observed;
   if (!clientId || !clientSecret) {
     // URL заданий, а креденшлів Access немає - це ВЖЕ misconfig, кажемо як down.
@@ -112,7 +143,7 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
  * @param {string} url
  * @param {string} clientId
  * @param {string} clientSecret
- * @returns {Promise<{ state: 'ok' | 'desync' | 'down', detail: string }>}
+ * @returns {Promise<{ state: 'ok' | 'desync' | 'down', detail: string, modelReadiness?: { state: 'ready' | 'degraded' | 'unready', detail: string } }>}
  */
 async function probeHealth(env, url, clientId, clientSecret) {
   const ctrl = new AbortController();
@@ -128,7 +159,10 @@ async function probeHealth(env, url, clientId, clientSecret) {
     if (!res.ok) return { state: 'down', detail: `health HTTP ${res.status}` };
     const actual = /** @type {any} */ (await res.json().catch(() => null));
     const expected = await readExpected(env);
-    return compareBrainVersions(expected, actual);
+    return {
+      ...compareBrainVersions(expected, actual),
+      modelReadiness: modelReadinessFromHealth(actual),
+    };
   } catch (/** @type {any} */ e) {
     return { state: 'down', detail: `health недосяжний: ${String(e?.message ?? 'мережа')}` };
   } finally {
@@ -152,7 +186,7 @@ export async function readExpected(env) {
  * Останній запис проби. Легасі-запис без checkedAtMs повертаємо як є: snapshot
  * нижче позначить його stale, а не скаже «ok» лише тому, що старий ключ існує.
  * @param {Env} env
- * @returns {Promise<{ state: 'ok' | 'desync' | 'down', detail: string, checkedAtMs?: number } | null>}
+ * @returns {Promise<{ state: 'ok' | 'desync' | 'down', detail: string, checkedAtMs?: number, modelReadiness?: { state: 'ready' | 'degraded' | 'unready', detail: string } } | null>}
  */
 export async function readBrainHealthState(env) {
   try {
@@ -162,7 +196,16 @@ export async function readBrainHealthState(env) {
     const detail = /** @type {any} */ (parsed).detail;
     if (!['ok', 'desync', 'down'].includes(state) || typeof detail !== 'string') return null;
     const checkedAtMs = Number(/** @type {any} */ (parsed).checkedAtMs);
-    return Number.isFinite(checkedAtMs) ? { state, detail, checkedAtMs } : { state, detail };
+    const readiness = /** @type {any} */ (parsed).modelReadiness;
+    const modelReadiness =
+      readiness &&
+      ['ready', 'degraded', 'unready'].includes(readiness.state) &&
+      typeof readiness.detail === 'string'
+        ? { state: readiness.state, detail: readiness.detail }
+        : undefined;
+    return Number.isFinite(checkedAtMs)
+      ? { state, detail, checkedAtMs, modelReadiness }
+      : { state, detail, modelReadiness };
   } catch {
     return null;
   }
@@ -174,10 +217,10 @@ export async function readBrainHealthState(env) {
  * @param {Env} env
  * @param {number} [nowMs]
  * @returns {Promise<
- *   | { state: 'not-configured', detail: string }
- *   | { state: 'unknown', detail: string }
- *   | { state: 'stale', detail: string, checkedAtMs?: number, ageMs?: number }
- *   | { state: 'ok' | 'desync' | 'down', detail: string, checkedAtMs: number, ageMs: number }
+ *   | { state: 'not-configured', detail: string, modelReadiness?: { state: string, detail: string } }
+ *   | { state: 'unknown', detail: string, modelReadiness?: { state: string, detail: string } }
+ *   | { state: 'stale', detail: string, checkedAtMs?: number, ageMs?: number, modelReadiness?: { state: string, detail: string } }
+ *   | { state: 'ok' | 'desync' | 'down', detail: string, checkedAtMs: number, ageMs: number, modelReadiness?: { state: string, detail: string } }
  * >}
  */
 export async function brainHealthSnapshot(env, nowMs = Date.now()) {
@@ -198,6 +241,7 @@ export async function brainHealthSnapshot(env, nowMs = Date.now()) {
       detail: observed.detail,
       checkedAtMs: observed.checkedAtMs,
       ageMs,
+      modelReadiness: observed.modelReadiness,
     };
   }
   return { ...observed, checkedAtMs: observed.checkedAtMs, ageMs };

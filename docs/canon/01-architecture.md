@@ -51,7 +51,7 @@
   - стрімінг `includePartialMessages` → `/internal/status` (ядро троттлить до 1/с).
 - Авторизація: `CLAUDE_CODE_OAUTH_TOKEN` (setup-token, 1 рік - VERIFIED) у `.env` 600; `--bare` не використовується (не читає OAuth - VERIFIED).
 - Без ключів Google/Mono/Gemini/Telegram. На VPS лише три секрети: Claude OAuth, Access service token, `INTERNAL_HMAC_KEY`. Без Bash/Write/Edit.
-- `health` віддає канонічний JSON з 07 §3 (`version`, `gitSha`, `sdkVersion`, `claudeVersion`, `limits`, `uptime`); ядро порівнює `version` і `gitSha` з очікуваними після деплою - розсинхрон = алерт (закриває сліпоту чинного health-check).
+- `health` віддає канонічний JSON з 07 §3 (`version`, `gitSha`, `sdkVersion`, `claudeVersion`, `limits`, `uptime`, `internalApiProbe`); ядро порівнює `version` і `gitSha` з очікуваними після деплою, а `/status` окремо показує свіжість проби, readiness модельного рантайму й останній успішний non-shadow run. Відсутня readiness не прирівнюється до healthy.
 
 ### 2.3 Сторонні
 

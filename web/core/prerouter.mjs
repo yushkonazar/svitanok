@@ -2258,12 +2258,16 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   const brain = await brainHealthSnapshot(env, nowMs);
   const instructions = await instructionsStatusLine(env);
   const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
-  const alive = brain.state === 'ok' && instructionsReady && env.ASSISTANT_V2 === 'on';
+  const modelReady = brain.modelReadiness?.state === 'ready';
+  const alive =
+    brain.state === 'ok' && modelReady && instructionsReady && env.ASSISTANT_V2 === 'on';
   const lines = [
     alive ? '✅ Усе живе.' : '⚠️ Щось не так - подробиці нижче.',
     active || queued ? `Зараз роблю: ${active}, чекає: ${queued}` : 'Черга порожня.',
     instructions,
     formatBrainStatus(brain),
+    formatModelReadiness(brain),
+    await lastSuccessfulRunStatusLine(env, nowMs),
     `Режим асистента: ${env.ASSISTANT_V2}`,
   ];
   if (where.chatId != null) {
@@ -2285,6 +2289,48 @@ function formatBrainStatus(brain) {
   if (brain.state === 'stale') return `Мозок: ⚠️ остання health-проба застаріла — ${detail}${age}`;
   if (brain.state === 'unknown') return `Мозок: ⚪ налаштовано, але ще не перевірено — ${detail}`;
   return `Мозок: ⚪ не налаштовано — ${detail}`;
+}
+
+/** Модельна готовність є окремою від HTTP/версії: стара KV-проба без цього
+ * поля не дає права сказати «усе живе». @param {{ modelReadiness?: { state: string, detail: string } }} brain */
+function formatModelReadiness(brain) {
+  const readiness = brain.modelReadiness;
+  if (!readiness) return 'Моделі: ⚪ готовність не підтверджена health-пробою';
+  const detail = String(readiness.detail ?? 'без деталей')
+    .replace(/\s+/g, ' ')
+    .slice(0, 180);
+  if (readiness.state === 'ready') return `Моделі: ✅ готові (${detail})`;
+  if (readiness.state === 'degraded') return `Моделі: ⚠️ частково готові — ${detail}`;
+  return `Моделі: ❌ неготові — ${detail}`;
+}
+
+/** Останній завершений без помилки модельний run. Shadow-класифікацію не
+ * плутаємо з відповіддю моделі власнику. @param {Env} env @param {number} nowMs */
+async function lastSuccessfulRunStatusLine(env, nowMs) {
+  if (!env.DB) return 'Останній успішний run: невідомо (немає DB)';
+  try {
+    const row =
+      /** @type {{ finished_at?: string, profile?: string | null, model?: string | null } | null} */ (
+        await env.DB.prepare(
+          `SELECT finished_at, profile, model FROM runs
+             WHERE finished_at IS NOT NULL AND error IS NULL AND trigger <> 'shadow'
+             ORDER BY finished_at DESC LIMIT 1`,
+        )
+          .bind()
+          .first()
+      );
+    if (!row?.finished_at) return 'Останній успішний run: ще не було';
+    const finishedMs = Date.parse(row.finished_at);
+    if (!Number.isFinite(finishedMs)) return 'Останній успішний run: час у telemetry пошкоджено';
+    const profile = String(row.profile ?? 'профіль не записано')
+      .replace(/\s+/g, ' ')
+      .slice(0, 64);
+    const model = row.model ? `, ${String(row.model).replace(/\s+/g, ' ').slice(0, 96)}` : '';
+    return `Останній успішний run: ${formatProbeAge(nowMs - finishedMs)} (${profile}${model})`;
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: читання останнього успішного run для /status', e?.message);
+    return 'Останній успішний run: невідомо (telemetry недоступна)';
+  }
 }
 
 /** @param {number} ageMs */
