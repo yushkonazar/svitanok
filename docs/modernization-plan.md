@@ -1,6 +1,6 @@
 # План модернізації Svitanok
 
-**Гілка:** `codex/svitanok-modernization`  
+**Гілка:** `feature/svitanok-modernization`
 **Baseline tag:** `svitanok-pre-modernization-2026-09-16` (`02d8372`)  
 **Статус:** виконується
 
