@@ -107,6 +107,8 @@ export interface BrainHandler {
   handle: (req: PlainRequest) => Promise<PlainResponse>;
   /** Активні прогони (для тестів і graceful-зупинки). */
   activeRuns: () => number;
+  /** Перестати приймати нові /run, не обриваючи вже прийняті. */
+  beginDrain: () => void;
 }
 
 export function createHandler(deps: ServerDeps): BrainHandler {
@@ -115,6 +117,18 @@ export function createHandler(deps: ServerDeps): BrainHandler {
   const nonces = new NonceCache(2 * INTERNAL_SIG_TTL_MS);
   const startedAt = now();
   let active = 0;
+  let draining = false;
+
+  /** /ready — навмисно вужчий за /health: процес може відповідати на health,
+   * але ще не мати готового Claude runtime або адреси core. */
+  function readiness() {
+    if (draining) return { ok: false, error: 'draining' };
+    if (!deps.sdkVersion || !deps.claudeVersion)
+      return { ok: false, error: 'sdk-or-cli-unavailable' };
+    if (deps.limits.models.length === 0) return { ok: false, error: 'no-profile-models' };
+    if (deps.internalApiProbe() !== 'ok') return { ok: false, error: 'internal-api-not-ready' };
+    return { ok: true };
+  }
 
   async function handle(req: PlainRequest): Promise<PlainResponse> {
     if (req.path === '/health') {
@@ -130,6 +144,22 @@ export function createHandler(deps: ServerDeps): BrainHandler {
           internalApiProbe: deps.internalApiProbe(),
         }),
       };
+    }
+
+    if (req.path === '/ready') {
+      if (req.method !== 'GET') return err(405, 'method-not-allowed');
+      const ready = readiness();
+      return ready.ok
+        ? {
+            status: 200,
+            body: {
+              ok: true,
+              version: deps.buildInfo.version,
+              gitSha: deps.buildInfo.gitSha,
+              activeRuns: active,
+            },
+          }
+        : err(503, ready.error ?? 'not-ready');
     }
 
     if (req.path === '/abort') {
@@ -229,6 +259,11 @@ export function createHandler(deps: ServerDeps): BrainHandler {
     // одного прогону запускав би інший.
     if (run.data.run_id !== verdict.runId) return err(400, 'run-mismatch');
 
+    // SIGTERM починає drain до server.close(): socket міг уже прийняти /run,
+    // але цей run не має опинитися в процесі, який ось-ось буде зупинений.
+    // Відмова до consume nonce дозволяє ядру ретраїти той самий запит на новому
+    // release без подвійного start.
+    if (draining) return err(503, 'draining');
     if (active >= maxConcurrent) return err(429, 'busy');
     if (!nonces.consume(verdict.runId, verdict.nonce, now())) return err(401, 'replayed');
     active += 1;
@@ -244,7 +279,13 @@ export function createHandler(deps: ServerDeps): BrainHandler {
     return { status: 202, body: { ok: true, run_id: run.data.run_id } };
   }
 
-  return { handle, activeRuns: () => active };
+  return {
+    handle,
+    activeRuns: () => active,
+    beginDrain: () => {
+      draining = true;
+    },
+  };
 }
 
 function err(status: number, error: string): PlainResponse {

@@ -38,7 +38,7 @@
 
 ### 2.2 Мозок - `brain/` на VPS CX23 (TypeScript, systemd, окремий користувач)
 
-- HTTP лише на `127.0.0.1:8788`; назовні - `cloudflared` Tunnel. Ендпоїнти: `POST /run`, `GET /health`.
+- HTTP лише на `127.0.0.1:8788`; назовні - `cloudflared` Tunnel. Ендпоїнти: `POST /run`, `GET /health`, `GET /ready`.
 - На `/run`: перевірка Access JWT + HMAC; профіль з тіла; `query()` Agent SDK з:
   - `systemPrompt`: персона (з D1 `instructions`, хеш перевірено) + дата/час Київ + локація (`geo.last`) + `facts` (компактно, ≤ 3 000 симв.) + згортка треду;
   - `resume: sessions.sdk_session_id` для профілю `chat`; нові сесії для інших профілів;
@@ -52,6 +52,7 @@
 - Авторизація: `CLAUDE_CODE_OAUTH_TOKEN` (setup-token, 1 рік - VERIFIED) у `.env` 600; `--bare` не використовується (не читає OAuth - VERIFIED).
 - Без ключів Google/Mono/Gemini/Telegram. На VPS лише три секрети: Claude OAuth, Access service token, `INTERNAL_HMAC_KEY`. Без Bash/Write/Edit.
 - `health` віддає канонічний JSON з 07 §3 (`version`, `gitSha`, `sdkVersion`, `claudeVersion`, `limits`, `uptime`, `internalApiProbe`); ядро порівнює `version` і `gitSha` з очікуваними після деплою, а `/status` окремо показує свіжість проби, readiness модельного рантайму й останній успішний non-shadow run. Відсутня readiness не прирівнюється до healthy.
+- `/ready` віддає 200 лише коли є Claude SDK/CLI, хоча б одна profile-модель, успішна проба внутрішнього API і процес не draining. На `SIGTERM` brain спершу переходить у drain (нові `/run` отримують retriable 503 без споживання nonce), а чинні чекає до 85 секунд.
 
 ### 2.3 Сторонні
 

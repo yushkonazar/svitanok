@@ -132,6 +132,7 @@ server.listen(config.port, config.host, () => {
 // логом, скільки прогонів утрачено.
 process.on('SIGTERM', () => {
   console.log(`SIGTERM: закриваю сервер, активних прогонів: ${handler.activeRuns()}`);
+  handler.beginDrain();
   server.close();
   const startedAt = Date.now();
   const drain = setInterval(() => {

@@ -98,7 +98,7 @@
 
 - [x] `/status` показує окремо configured/reachable/version match/freshness health-проби/active runs; configured не видається за healthy.
 - [x] Додати до `/status` model readiness і час останнього успішного non-shadow run.
-- [ ] Brain має drain/readiness, version endpoint і deploy-safe graceful shutdown.
+- [x] Brain має `/ready`, drain, versioned `/health` і deploy-safe graceful shutdown.
 - [ ] Деплой переходить на immutable release directory + atomic switch.
 - [ ] Ввести expand/contract D1 migrations і release manifest для Worker/brain/instructions/tool schema.
 - [ ] Прибрати legacy health probes і, після soak/rollback checkpoint, legacy host path.

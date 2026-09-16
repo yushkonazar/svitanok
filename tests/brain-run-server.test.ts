@@ -107,6 +107,18 @@ describe('/health', () => {
     });
     expect(other).toMatchObject({ status: 404, body: { error: 'not-found' } });
   });
+
+  it('/ready підтверджує готовий runtime, а health без Claude CLI лишається лише живим процесом', async () => {
+    const ready = makeHandler({ claudeVersion: '1.2.3' }).handler;
+    await expect(
+      ready.handle({ method: 'GET', path: '/ready', getHeader: () => null, bodyText: '' }),
+    ).resolves.toMatchObject({ status: 200, body: { ok: true, gitSha: SHA } });
+
+    const notReady = makeHandler().handler;
+    await expect(
+      notReady.handle({ method: 'GET', path: '/ready', getHeader: () => null, bodyText: '' }),
+    ).resolves.toMatchObject({ status: 503, body: { error: 'sdk-or-cli-unavailable' } });
+  });
 });
 
 describe('/run: сходинка відмов', () => {
@@ -224,6 +236,22 @@ describe('/run: сходинка відмов', () => {
     // 429 не спалює нонс (знахідка ревʼю).
     const retry = await handler.handle(thirdReq);
     expect(retry).toMatchObject({ status: 202, body: { run_id: 'r3' } });
+  });
+
+  it('drain не приймає новий run і не спалює nonce для retry після нового release', async () => {
+    const { handler } = makeHandler();
+    const req = signedReq(runBody(), { nonce: 'drain-n' });
+    handler.beginDrain();
+    await expect(handler.handle(req)).resolves.toMatchObject({
+      status: 503,
+      body: { error: 'draining' },
+    });
+
+    const fresh = makeHandler().handler;
+    await expect(fresh.handle(req)).resolves.toMatchObject({
+      status: 202,
+      body: { run_id: 'run-1' },
+    });
   });
 
   it('400 contract не спалює нонс: після відмови той самий нонс із валідним тілом проходить', async () => {
