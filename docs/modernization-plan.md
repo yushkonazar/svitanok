@@ -84,11 +84,11 @@
 
 **Робота:**
 
-- [ ] Створити data inventory і retention matrix для D1/KV/Vectorize/VPS/Drive/queues/logs.
-- [ ] Зробити T2 deletion job з durable manifest і receipt.
-- [ ] Реалізувати 90-day brain transcript cleanup та testable dry-run.
-- [ ] Визначити policy для encrypted backups: retention, purge або crypto-erasure.
-- [ ] Додати reconciliation/report, який показує scope й помилки видалення.
+- [x] Створити data inventory і retention matrix для D1/KV/Vectorize/VPS/Drive/queues/logs (`docs/data-retention.md`).
+- [x] Зробити T2 deletion workflow з durable KV-receipt, abort активних run і scheduler reconcile без другого підтвердження.
+- [x] Реалізувати 90-day cleanup VPS SDK-транскриптів та Vectorize → D1 порядок із інтеграційними тестами.
+- [x] Визначити policy encrypted backups: точні app-owned файли зберігаються 90 діб, далі та при T2 — безповоротний Drive purge.
+- [ ] Додати read-only UI/status report історії квитанцій і помилок видалення.
 
 **Готово, коли:** UI/API може чесно показати, що саме видалено, що ще зберігається і до якої дати.
 

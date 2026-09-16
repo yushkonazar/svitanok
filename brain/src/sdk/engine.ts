@@ -8,6 +8,7 @@
 
 import {
   createSdkMcpServer,
+  deleteSession,
   getSessionMessages,
   query,
   tool,
@@ -33,6 +34,38 @@ const SDK_BUILTIN_TOOLS_OFF = [
   'Task',
   'TodoWrite',
 ];
+
+/**
+ * Фізично прибрати локальні транскрипти SDK. `deleteSession` кидає для
+ * відсутнього файла, а повтор T2 мусить бути ідемпотентним, тому «already
+ * missing» — успіх. Будь-яка інша помилка залишає D1-посилання неочищеним і
+ * змушує ядро повторити всю пачку.
+ */
+export async function deleteSdkSessions(
+  sessionIds: string[],
+): Promise<{ deleted: number; alreadyMissing: number }> {
+  let deleted = 0;
+  let alreadyMissing = 0;
+  for (const sessionId of [...new Set(sessionIds)]) {
+    try {
+      await deleteSession(sessionId);
+      deleted += 1;
+    } catch (e) {
+      if (isMissingSessionError(e)) {
+        alreadyMissing += 1;
+        continue;
+      }
+      throw new Error(`SDK session cleanup failed: ${String(e)}`, { cause: e });
+    }
+  }
+  return { deleted, alreadyMissing };
+}
+
+/** SDK не експортує власний клас помилки: стабільний для file-store текст. */
+function isMissingSessionError(e: unknown) {
+  const text = String(e instanceof Error ? e.message : e).toLowerCase();
+  return /not found|enoent|no such file|does not exist/.test(text);
+}
 
 export function createSdkEngine(): RunEngine {
   return {

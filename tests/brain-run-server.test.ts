@@ -331,3 +331,61 @@ describe('POST /abort (ADR-039)', () => {
     expect(await handler.handle(first)).toMatchObject({ status: 401, body: { error: 'replayed' } });
   });
 });
+
+describe('POST /sessions/delete', () => {
+  function deleteReq(body: string, nonce = `delete-${Math.random()}`) {
+    const headers = buildSignedHeaders(KEY, {
+      method: 'POST',
+      path: '/sessions/delete',
+      runId: 'deletion-1',
+      rawBody: body,
+      nowMs: NOW,
+      nonce,
+    });
+    return {
+      method: 'POST',
+      path: '/sessions/delete',
+      getHeader: (n: string) => headers[n] ?? null,
+      bodyText: body,
+    };
+  }
+
+  it('підписаний cleanup видаляє лише передані SDK-сесії й не повертає їх у відповідь', async () => {
+    const received: string[][] = [];
+    const { handler } = makeHandler({
+      deleteSessions: async (ids) => {
+        received.push(ids);
+        return { deleted: ids.length, alreadyMissing: 0 };
+      },
+    });
+    const body = JSON.stringify({ run_id: 'deletion-1', session_ids: ['s-1', 's-2'] });
+    const out = await handler.handle(deleteReq(body, 'delete-once'));
+    expect(out).toEqual({ status: 200, body: { ok: true, deleted: 2, alreadyMissing: 0 } });
+    expect(received).toEqual([['s-1', 's-2']]);
+    expect(await handler.handle(deleteReq(body, 'delete-once'))).toMatchObject({
+      status: 401,
+      body: { error: 'replayed' },
+    });
+  });
+
+  it('active model run блокує cleanup без спалювання nonce', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { handler } = makeHandler({
+      runner: () => gate,
+      deleteSessions: async () => ({ deleted: 1, alreadyMissing: 0 }),
+    });
+    await handler.handle(signedReq(runBody()));
+    const body = JSON.stringify({ run_id: 'deletion-1', session_ids: ['s-1'] });
+    const req = deleteReq(body, 'delete-busy');
+    expect(await handler.handle(req)).toMatchObject({
+      status: 409,
+      body: { error: 'active-runs' },
+    });
+    release();
+    await vi.waitFor(() => expect(handler.activeRuns()).toBe(0));
+    expect(await handler.handle(req)).toMatchObject({ status: 200, body: { deleted: 1 } });
+  });
+});

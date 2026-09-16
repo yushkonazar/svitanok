@@ -86,7 +86,7 @@ Dev-цикл без staging: `wrangler dev --remote` для локального
 
 ## 6. Бекапи і відновлення
 
-- Нд 03:00 (`backup`): `wrangler d1 export` еквівалент через REST (або `SELECT` по таблицях у JSON) + KV-знімок (усі ключі) → архів → шифрування (`age`-сумісний AES-256-GCM, ключ `BACKUP_ENC_KEY`) → Drive «Світанок/backups/YYYY-MM-DD/svitanok-<env>.enc`через`drive.file`. Без ротації (рішення R16).
+- Нд 03:00 (`backup`): `wrangler d1 export` еквівалент через REST (або `SELECT` по таблицях у JSON) + KV-знімок (усі ключі) → AES-256-GCM → Drive `Світанок/backups/svitanok-YYYY-MM-DD.enc` через `drive.file`. Файли зберігаються 90 діб; `retention-cleanup` видаляє лише цей точний app-owned шаблон безповоротним Drive `DELETE`. Без ротації (рішення R16).
 - Перевірка: хеш файлу в `facts.setting.last_backup` + повідомлення в TOPIC_SYSTEM лише при помилці.
 - Відновлення: `scripts/restore.mjs --file <enc> --dry-run` (показує, що зміниться) → без `--dry-run` → розшифрувати → `wrangler d1 execute` (таблиці truncate+insert у транзакції) → KV put → smoke. Раз на квартал - тестове відновлення у локальну D1 (`wrangler d1 --local`) (задача `backup` кожної 13-ї неділі шле нагадування).
 - D1 Time Travel (30 днів на Paid) - для відкату помилкової міграції: `wrangler d1 time-travel restore --timestamp`.

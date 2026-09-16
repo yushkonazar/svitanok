@@ -106,3 +106,30 @@ export async function callBrainAbort(env, runId, nowMs) {
   if (res.status === 200) return { ok: true, aborted: Boolean(res.body?.aborted) };
   return { ok: false, status: res.status, detail: String(res.body?.error ?? `HTTP ${res.status}`) };
 }
+
+/**
+ * T2/retention: прибрати транскрипти Claude SDK з VPS. Це окремий control
+ * plane, а не модельний run: `runId` — лише кореляційний id квитанції.
+ * @param {Env} env
+ * @param {{ runId: string, sessionIds: string[] }} req
+ * @param {number} nowMs
+ * @returns {Promise<{ ok: true, deleted: number, alreadyMissing: number } | { ok: false, status: number, detail: string }>}
+ */
+export async function callBrainDeleteSessions(env, req, nowMs) {
+  const ids = [...new Set(req.sessionIds.map((id) => String(id).trim()).filter(Boolean))];
+  if (ids.length === 0) return { ok: true, deleted: 0, alreadyMissing: 0 };
+  if (ids.length > 100) {
+    return { ok: false, status: 400, detail: 'забагато SDK-сесій в одній пачці' };
+  }
+  const rawBody = JSON.stringify({ run_id: req.runId, session_ids: ids });
+  const res = await signedBrainPost(env, '/sessions/delete', req.runId, rawBody, nowMs);
+  if ('misconfig' in res) return { ok: false, status: 0, detail: res.misconfig };
+  if (res.status === 200) {
+    return {
+      ok: true,
+      deleted: Number(res.body?.deleted ?? 0),
+      alreadyMissing: Number(res.body?.alreadyMissing ?? 0),
+    };
+  }
+  return { ok: false, status: res.status, detail: String(res.body?.error ?? `HTTP ${res.status}`) };
+}

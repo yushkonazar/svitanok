@@ -10,7 +10,7 @@ import { loadConfig } from './config.js';
 import { CoreClient } from './core-client.js';
 import { createHandler } from './server.js';
 import { makeRunner } from './agent.js';
-import { createSdkEngine } from './sdk/engine.js';
+import { createSdkEngine, deleteSdkSessions } from './sdk/engine.js';
 import { probeInternalApi, type BuildInfo } from './health.js';
 import { PROFILES, PROFILE_MODELS } from './profiles.js';
 import { BRAIN_TOOLS } from './tools/schemas.js';
@@ -68,6 +68,7 @@ const handler = createHandler({
     maxSteps: PROFILES.chat.maxToolCalls,
   },
   runner: makeRunner({ client, engine: createSdkEngine(), aborts }),
+  deleteSessions: deleteSdkSessions,
   sdkVersion: sdkPkg.version ?? null,
   claudeVersion: sdkPkg.claudeCodeVersion ?? null,
   internalApiProbe: () => internalApiProbe,

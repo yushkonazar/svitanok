@@ -107,6 +107,64 @@ export async function ensureFolderPath(env, path) {
 }
 
 /**
+ * Знайти вже наявну теку, не створюючи її. Cleanup ніколи не має породити
+ * порожню «Світанок/backups» лише тому, що власник попросив стерти дані.
+ * @param {Env} env
+ * @param {string[]} path
+ * @returns {Promise<string | null>}
+ */
+export async function findExistingFolderPath(env, path) {
+  /** @type {string | null} */
+  let parent = null;
+  for (const name of path) {
+    parent = await findFolder(env, name, parent);
+    if (!parent) return null;
+  }
+  return parent;
+}
+
+/**
+ * Лише зашифровані weekly-backup файли, створені цим застосунком. `drive.file`
+ * не дає бачити чуже, а точна назва не дозволяє cleanup торкнутись документів
+ * поруч у теці.
+ * @param {Env} env
+ * @param {string[]} folderPath
+ * @returns {Promise<{ id: string, name: string, createdAt: string | null }[]>}
+ */
+export async function listManagedBackupFiles(env, folderPath) {
+  const folderId = await findExistingFolderPath(env, folderPath);
+  if (!folderId) return [];
+  const token = await tokenOrThrow(env);
+  /** @type {{ id: string, name: string, createdAt: string | null }[]} */
+  const out = [];
+  /** @type {string | undefined} */
+  let pageToken;
+  do {
+    const url = new URL(`${DRIVE_API}/files`);
+    url.searchParams.set('q', `'${q(folderId)}' in parents and trashed = false`);
+    url.searchParams.set('fields', 'nextPageToken,files(id,name,createdTime)');
+    url.searchParams.set('pageSize', '100');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const json = await driveFetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    for (const file of json?.files ?? []) {
+      const id = String(file?.id ?? '');
+      const name = String(file?.name ?? '');
+      if (!/^[A-Za-z0-9_-]{1,256}$/.test(id)) continue;
+      if (!/^svitanok-\d{4}-\d{2}-\d{2}\.enc$/.test(name)) continue;
+      out.push({
+        id,
+        name,
+        createdAt: typeof file?.createdTime === 'string' ? file.createdTime : null,
+      });
+    }
+    pageToken = typeof json?.nextPageToken === 'string' ? json.nextPageToken : undefined;
+  } while (pageToken);
+  return out;
+}
+
+/**
  * Markdown-файл у теку за шляхом - best-effort: null = не збережено (у лог
  * із префіксом), бо документ у чаті власник уже має (аналіз ідеї, результат
  * працівника).
@@ -219,4 +277,32 @@ export async function trashFile(env, fileId) {
     if (/HTTP 40[34]/.test(String(e?.message ?? ''))) return null;
     throw e;
   });
+}
+
+/**
+ * Безповоротно видалити файл, який ми вже ідентифікували як власний backup.
+ * Це навмисно окремо від `trashFile`: T0-дії мають «↩», а 90-day retention і
+ * підтверджене «забудь усе» не повинні залишати ще одну копію у кошику Drive.
+ * 404 успішний — повтор cleanup ідемпотентний.
+ * @param {Env} env
+ * @param {string} fileId
+ */
+export async function deleteFilePermanently(env, fileId) {
+  const id = String(fileId ?? '').trim();
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(id)) throw new Error(`drive: id «${id}» не схожий на файл`);
+  const token = await tokenOrThrow(env);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), DRIVE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${DRIVE_API}/files/${id}?supportsAllDrives=true`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: ctrl.signal,
+    });
+    if (res.ok || res.status === 404) return;
+    const body = await res.text().catch(() => '');
+    throw new Error(`Drive HTTP ${res.status}: ${body.slice(0, 200)}`);
+  } finally {
+    clearTimeout(timer);
+  }
 }

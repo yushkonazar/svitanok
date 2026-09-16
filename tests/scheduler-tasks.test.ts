@@ -48,6 +48,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'subscription-remind',
       'inbox-digest',
       'retention-cleanup',
+      'deletion-reconcile',
       'secret-expiry',
       'quota-check',
     ]);

@@ -228,6 +228,24 @@ export async function registryThreadClear(env, threadId) {
   }
 }
 
+/**
+ * T2 «забудь усе»: однією серіалізованою операцією прибрати всі черги тредів.
+ * Активні id — не дані квитанції, а короткоживучий control-plane результат для
+ * негайного abort; при збої не вдаємо, що чергу очищено.
+ * @param {Env} env
+ */
+export async function registryClearAllThreads(env) {
+  const ns = registryNs(env);
+  if (!ns) return { activeRunIds: [], cleared: 0 };
+  try {
+    return await ns.getByName(RUN_REGISTRY_DO_NAME).clearAllThreads();
+  } catch (/** @type {any} */ e) {
+    throw new Error(`run-registry: clearAllThreads впав: ${String(e?.message ?? e)}`, {
+      cause: e,
+    });
+  }
+}
+
 /** @param {Env} env @param {string} threadId
  *  @param {{ text: string, route: string, attempts: number, atMs: number, statusMessageId?: number | null }} entry */
 export async function registryThreadRetry(env, threadId, entry) {

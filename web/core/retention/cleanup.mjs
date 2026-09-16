@@ -15,6 +15,11 @@
 
 import { kyivDateKey, kyivHour } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
+import {
+  eraseExpiredManagedBackups,
+  eraseExpiredMemoryChunks,
+  eraseExpiredSdkSessions,
+} from './external.mjs';
 
 /** Година прибирання за Києвом (07 §7). */
 export const CLEANUP_HOUR = 4;
@@ -51,7 +56,6 @@ export const RETENTION = [
   { table: 'transactions', column: 'at', ms: 24 * MONTH },
   { table: 'price_points', column: 'at', ms: 24 * MONTH },
   { table: 'runs', column: 'started_at', ms: 90 * DAY },
-  { table: 'memory_chunks', column: 'at', ms: 90 * DAY },
   { table: 'proposals', column: 'created_at', ms: 30 * DAY },
   // Нагадування - 12 місяців ПІСЛЯ виконання: активні не чіпаємо, хоч би
   // скільки їх відкладали. `sent` тут теж (ревʼю повторів): доставлене
@@ -150,6 +154,24 @@ export async function retentionCleanupTask(env, nowMs = Date.now()) {
       // планувальнику (B11).
       console.error(`retention-cleanup: таблиця ${rule.table} не прибрана`, e?.message);
       failed.push(rule.table);
+    }
+  }
+  // D1 не може підтвердити, що Vectorize/VPS/Drive справді очистились. Ці
+  // три кроки тримають порядок «зовнішнє → D1» у external.mjs; збій одного
+  // не ховається за success іншого й не блокує звичайну ретенцію таблиць.
+  /** @type {[string, () => Promise<number>][]} */
+  const external = [
+    ['memory_chunks', () => eraseExpiredMemoryChunks(env, nowMs)],
+    ['sessions', () => eraseExpiredSdkSessions(env, nowMs)],
+    ['drive_backups', () => eraseExpiredManagedBackups(env, nowMs)],
+  ];
+  for (const [name, run] of external) {
+    try {
+      const n = await run();
+      if (n) removed[name] = n;
+    } catch (/** @type {any} */ e) {
+      console.error(`retention-cleanup: зовнішній scope ${name} не прибрано`, e?.message);
+      failed.push(name);
     }
   }
   // Мітка стоїть у будь-якому разі: часткове прибирання довершить завтрашній

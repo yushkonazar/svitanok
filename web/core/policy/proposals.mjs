@@ -459,14 +459,24 @@ export const EXECUTORS = {
           },
         };
       }
-      // S-0-5 «усе»: T2 зі словом. Експорт спершу - це порада в самому
-      // повідомленні меню, а не гейт у коді: вимагати доказу експорту
-      // означало б, що власник не може стерти дані, доки Drive недоступний.
+      // S-0-5 «усе»: T2 зі словом. Експорт перед стиранням лишається порадою,
+      // а не гейтом. Водночас уже відомі керовані backup-файли повинні бути
+      // підтверджено знищені — інакше не можна чесно назвати стирання повним.
       if (target === 'all') {
-        const { tables, rows, kvKeys } = await forgetAll(env);
+        const erased = await forgetAll(env);
+        if ('pending' in erased) {
+          return {
+            result: {
+              erased: `Стирання прийнято. Активний прогін зупиняється; cleanup автоматично продовжиться за кілька хвилин. Квитанція: ${erased.receiptId}.`,
+              receiptId: erased.receiptId,
+              pending: true,
+            },
+          };
+        }
+        const { tables, rows, kvKeys, receiptId, external } = erased;
         return {
           result: {
-            erased: `${rows} ${plural(rows, 'рядок', 'рядки', 'рядків')} у ${tables} таблицях і ${kvKeys} ${plural(kvKeys, 'ключ', 'ключі', 'ключів')} KV`,
+            erased: `${rows} ${plural(rows, 'рядок', 'рядки', 'рядків')} у ${tables} таблицях і ${kvKeys} ${plural(kvKeys, 'ключ', 'ключі', 'ключів')} KV; зовнішньо: ${external.queues} черг, ${external.sdkSessions} SDK-сесій, ${external.vectors} векторів, ${external.backups} backup-файлів. Квитанція: ${receiptId}.`,
             rows,
             tables,
             kvKeys,

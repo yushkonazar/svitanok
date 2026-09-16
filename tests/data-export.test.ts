@@ -327,6 +327,7 @@ describe('forget target=all', () => {
        VALUES ('persona', 'persona', 'h', 'текст', 100, '2026-09-01T00:00:00Z')`,
     );
     const out = await forgetAll(env);
+    if ('pending' in out) throw new Error('cleanup не мав чекати активний run');
     expect(out.rows).toBeGreaterThan(0);
     expect(d1.db.prepare('SELECT count(*) AS n FROM facts').get()).toEqual({ n: 0 });
     // Персона лишилась: без неї прогін не стартує, і «забудь усе» стало б
@@ -368,6 +369,8 @@ describe('forget target=all', () => {
     const { env, store } = makeEnv({
       ownerGeo: '{"lat":49.8,"lon":24,"name":"Львів"}',
       saved: '[]',
+      settings: '{"quiet":{"enabled":true}}',
+      agentRuns: '{"r1":{"text":"особисте"}}',
       lastUpdateId: '42',
     });
     await forgetAll(env);
@@ -375,6 +378,8 @@ describe('forget target=all', () => {
     // асистент далі відповідав на «де я».
     expect(store.get('ownerGeo')).toBeUndefined();
     expect(store.get('saved')).toBeUndefined();
+    expect(store.get('settings')).toBeUndefined();
+    expect(store.get('agentRuns')).toBeUndefined();
     // А службовий ключ - лишається: інакше зламався б сам бот.
     expect(store.get('lastUpdateId')).toBe('42');
   });

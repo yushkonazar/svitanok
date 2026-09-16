@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RunRegistryDO } from '../web/core/run-registry/do.mjs';
 import {
   registryBegin,
+  registryClearAllThreads,
   registryFinish,
   RUN_REGISTRY_DO_NAME,
 } from '../web/core/run-registry/client.mjs';
@@ -133,6 +134,22 @@ describe('RunRegistryDO', () => {
       newlyFinished: false,
     });
   });
+
+  it('clearAllThreads прибирає queued-тексти і повертає тільки реальні active run id', async () => {
+    const { registry } = makeRegistry();
+    await registry.threadClaim('one', { text: 'активний', route: 'chat', attempts: 0, atMs: T0 });
+    await registry.threadSetRun('one', 'r-active', null, T0);
+    await registry.threadClaim('one', { text: 'черга 1', route: 'chat', attempts: 0, atMs: T0 });
+    await registry.threadClaim('two', { text: 'pending', route: 'chat', attempts: 0, atMs: T0 });
+
+    await expect(registry.clearAllThreads()).resolves.toEqual({
+      activeRunIds: ['r-active'],
+      cleared: 1,
+    });
+    expect(
+      await registry.threadClaim('one', { text: 'нова', route: 'chat', attempts: 0, atMs: T0 }),
+    ).toEqual({ start: true });
+  });
 });
 
 describe('registryBegin/registryFinish — клієнт', () => {
@@ -184,6 +201,20 @@ describe('registryBegin/registryFinish — клієнт', () => {
     const env = workerEnv({ ASSISTANT_V2: 'shadow' });
     await registryBegin(env, { id: 'r', trigger: 'chat', startedMs: T0 });
     expect(errors.join('\n')).toContain('RUN_REGISTRY не привʼязано');
+  });
+
+  it('clearAllThreads зберігає fail-closed семантику: збій DO кидає', async () => {
+    const env = workerEnv({
+      ASSISTANT_V2: 'on',
+      RUN_REGISTRY: {
+        getByName: () => ({
+          clearAllThreads: async () => {
+            throw new Error('DO впав');
+          },
+        }),
+      },
+    });
+    await expect(registryClearAllThreads(env)).rejects.toThrow('clearAllThreads впав');
   });
 
   it('сторож старого агента закриває прогін у реєстрі з явною причиною', async () => {

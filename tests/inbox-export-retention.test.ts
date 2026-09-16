@@ -570,7 +570,6 @@ describe('ретенція (07 §1)', () => {
     const tables = RETENTION.map((r) => r.table).sort();
     expect(tables).toEqual([
       'inbox_messages',
-      'memory_chunks',
       'outbox',
       'price_points',
       'proposals',
@@ -580,7 +579,10 @@ describe('ретенція (07 §1)', () => {
       'transactions',
       'voice_pending',
     ]);
-    // Дайджести, підписки, ідеї й колекції - «безстроково» (07 §1).
+    // memory_chunks має зовнішній індекс, тому йде окремим порядком
+    // Vectorize → D1 у external.mjs, а не generic DELETE вище. Дайджести,
+    // підписки, ідеї й колекції - «безстроково» (07 §1).
+    expect(tables).not.toContain('memory_chunks');
     expect(tables).not.toContain('inbox_digests');
     expect(tables).not.toContain('subscriptions');
     expect(tables).not.toContain('ideas');

@@ -41,6 +41,7 @@ import { financeEveningTask } from '../finance/evening.mjs';
 import { subscriptionRemindTask } from '../finance/subscriptions.mjs';
 import { inboxDigestTask } from '../inbox/digest.mjs';
 import { retentionCleanupTask } from '../retention/cleanup.mjs';
+import { resumePendingForgetAll } from '../export/forget-all.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 import { mailTriageTask } from '../brief/mail-triage.mjs';
 import { refreshBriefCalendar } from '../brief/calendar-snapshot.mjs';
@@ -191,6 +192,10 @@ export const SCHEDULER_TASKS = {
   // Ретенція (етап 6 PR-4, 07 §1): 04:00 Києва - вхідні 30 діб, транзакції
   // 24 міс, телеметрія 90 діб і решта строків зі схеми.
   'retention-cleanup': { periodMin: 5, run: async (env) => retentionCleanupTask(env) },
+  // Після T2 «забудь усе», поданого з активного model run: сам прогін спершу
+  // abort-иться, а цей 5-хвилинний reconcile фізично прибирає SDK-сесію та
+  // решту копій. Receipt зберігає право/стан, тож повторного слова не треба.
+  'deletion-reconcile': { periodMin: 5, run: async (env) => resumePendingForgetAll(env) },
   // Строки секретів (етап 7 PR-5, 05-ops §3): 10:00 Києва - нагадування за 30
   // і 7 днів + щоденна звірка скоупів Google. Дати - з facts, не з памʼяті.
   'secret-expiry': { periodMin: 5, run: async (env) => secretExpiryTask(env) },

@@ -393,6 +393,25 @@ export class RunRegistryDO extends DurableObject {
   }
 
   /**
+   * T2 «забудь усе»: прибрати ВСІ тексти, що ще чекають у тред-чергах. Активні
+   * run_id повертаємо окремо — викликач спершу просить мозок їх перервати й
+   * лише у наступному такті стирає SDK-сесії, коли вони вже не пишуть файли.
+   */
+  async clearAllThreads() {
+    const threads = await this.#threads();
+    const activeRunIds = [];
+    let cleared = 0;
+    for (const thread of Object.values(threads)) {
+      cleared += thread.queue.length;
+      if (thread.activeRunId != null && thread.activeRunId !== RUN_PENDING) {
+        activeRunIds.push(thread.activeRunId);
+      }
+    }
+    await this.ctx.storage.put(THREADS_KEY, {});
+    return { activeRunIds, cleared };
+  }
+
+  /**
    * Сторож тредів (ревʼю PR-3: раніше best-effort звіт мозку був ЄДИНИМ
    * знімачем claim-у - один мережевий збій блокував тред назавжди). Тред,
    * чий activeRunId не значиться в активних (або вічний pending) довше за

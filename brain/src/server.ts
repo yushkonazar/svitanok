@@ -55,14 +55,32 @@ export const RUN_REQUEST_SCHEMA = z.object({
 });
 export type RunRequest = z.infer<typeof RUN_REQUEST_SCHEMA>;
 
+/**
+ * Контракт стирання SDK-транскриптів. Це не є прогоном моделі: ядро надсилає
+ * лише ідентифікатори вже відомих йому сесій, а мозок фізично прибирає їх зі
+ * свого локального сховища. Стеля 100 тримає тіло й одну операцію SDK
+ * обмеженими; ядро розбиває більші черги на пачки.
+ */
+export const DELETE_SESSIONS_SCHEMA = z.object({
+  run_id: z.string().min(1).max(64),
+  session_ids: z.array(z.string().min(1).max(128)).min(1).max(100),
+});
+export type DeleteSessionsRequest = z.infer<typeof DELETE_SESSIONS_SCHEMA>;
+
 /** Виконавець прогону. Кидати не сміє - всі збої логує сам. */
 export type Runner = (req: RunRequest) => Promise<void>;
+/** Повертає лише лічильники: id сесій не мають потрапляти у логи чи квитанцію. */
+export type DeleteSessions = (
+  sessionIds: string[],
+) => Promise<{ deleted: number; alreadyMissing: number }>;
 
 export interface ServerDeps {
   config: BrainConfig;
   buildInfo: BuildInfo;
   limits: HealthLimits;
   runner: Runner;
+  /** Реальне видалення локальних транскриптів Claude SDK на VPS. */
+  deleteSessions?: DeleteSessions;
   sdkVersion: string | null;
   claudeVersion: string | null;
   internalApiProbe: () => string;
@@ -140,6 +158,46 @@ export function createHandler(deps: ServerDeps): BrainHandler {
       if (!nonces.consume(verdict.runId, verdict.nonce, now())) return err(401, 'replayed');
       const aborted = deps.abortRun ? deps.abortRun(runId) : false;
       return { status: 200, body: { ok: true, aborted } };
+    }
+
+    if (req.path === '/sessions/delete') {
+      // Той самий підписаний control-plane, що /run та /abort. Не стираємо
+      // session під живим SDK-прогоном: у такому разі ядро отримає чесний 409
+      // і повторить T2 пізніше, замість гонки з файлом транскрипту.
+      if (req.method !== 'POST') return err(405, 'method-not-allowed');
+      const verdict = verifySignedRequest({
+        method: req.method,
+        path: req.path,
+        getHeader: req.getHeader,
+        bodyText: req.bodyText,
+        nowMs: now(),
+        keys: deps.config.hmacKeys,
+      });
+      if (!verdict.ok) return err(verdict.status, verdict.error);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.bodyText);
+      } catch {
+        return err(400, 'bad-json');
+      }
+      const deletion = DELETE_SESSIONS_SCHEMA.safeParse(parsed);
+      if (!deletion.success) {
+        const first = deletion.error.issues[0];
+        const where = first ? `$.${first.path.join('.')}: ${first.message}` : 'невалідне тіло';
+        return err(400, `contract: ${where}`);
+      }
+      if (deletion.data.run_id !== verdict.runId) return err(400, 'run-mismatch');
+      if (active > 0) return err(409, 'active-runs');
+      if (!deps.deleteSessions) return err(501, 'session-delete-not-configured');
+      if (!nonces.consume(verdict.runId, verdict.nonce, now())) return err(401, 'replayed');
+      try {
+        const result = await deps.deleteSessions(deletion.data.session_ids);
+        return { status: 200, body: { ok: true, ...result } };
+      } catch (e: unknown) {
+        // Не включаємо session id чи текст транскрипту в HTTP-відповідь.
+        console.error(`session cleanup ${deletion.data.run_id}: ${String(e)}`);
+        return err(502, 'session-delete-failed');
+      }
     }
 
     if (req.path !== '/run') return err(404, 'not-found');
