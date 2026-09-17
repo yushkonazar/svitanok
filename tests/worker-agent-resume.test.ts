@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
 import { mintRunToken } from '../web/agent-run-core.mjs';
 import { ASSISTANT_RESUME_TTL_MS } from '../web/agent-core.mjs';
+import { runAssistantAgent } from '../web/agent-runtime.mjs';
 import { memoryKv } from './helpers/kv.js';
 import { workerEnv } from './helpers/env.js';
 
@@ -135,6 +136,36 @@ beforeEach(() => {
 });
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe('RunRegistry — legacy host-run у shadow', () => {
+  it('реєструє active run разом із delivery context і не пише primary KV-блоб', async () => {
+    const begins: Record<string, unknown>[] = [];
+    await runAssistantAgent(
+      env({
+        ASSISTANT_V2: 'shadow',
+        RUN_REGISTRY: {
+          getByName: () => ({
+            begin: async (run: Record<string, unknown>) => void begins.push(run),
+          }),
+        },
+      }),
+      { chatId: OWNER, threadId: null },
+      'привіт',
+    );
+
+    expect(agentRuns).toHaveLength(1);
+    expect(begins).toEqual([
+      expect.objectContaining({
+        trigger: 'chat',
+        chatId: OWNER,
+        threadId: null,
+        progressMsgId: 1000,
+        watchdog: 'legacy-agent',
+      }),
+    ]);
+    expect(kv.has('agentRuns')).toBe(false);
+  });
+});
 
 describe('ask — Worker питає й лишає слот продовження (U3)', () => {
   it('питання доходить до власника, прогін закривається, слот несе нотатку', async () => {

@@ -10,13 +10,19 @@
  *  імені означав би тихий другий інстанс із порожнім журналом. */
 export const RUN_REGISTRY_DO_NAME = 'run-registry';
 
+/** Маркер окремого watchdog для legacy host-run. Не вільний рядок у
+ * викликача: інакше загальний sweep міг би тихо забрати прогін, який ще має
+ * прибрати власне Telegram-повідомлення. */
+export const LEGACY_AGENT_WATCHDOG = 'legacy-agent';
+
 const enabled = (/** @type {Env} */ env) =>
   env.ASSISTANT_V2 === 'shadow' || env.ASSISTANT_V2 === 'on';
 
 /**
- * Прогін почався. run: {id, trigger, profile?, threadId?, chatId?, model?, startedMs, staleMs?}.
+ * Прогін почався. run: {id, trigger, profile?, threadId?, chatId?, progressMsgId?,
+ * watchdog?, model?, startedMs, staleMs?}.
  * @param {Env} env
- * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number, staleMs?: number }} run
+ * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, progressMsgId?: number | null, watchdog?: string | null, model?: string | null, startedMs: number, staleMs?: number }} run
  */
 export async function registryBegin(env, run) {
   const ns = registryNs(env);
@@ -207,6 +213,40 @@ export async function registrySweep(env, nowMs) {
   } catch (/** @type {any} */ e) {
     console.error('run-registry: sweep впав', e?.message);
     return { staleRuns: [], freedThreads: [] };
+  }
+}
+
+/**
+ * Закрити лише legacy host-run і повернути рівно той контекст, який потрібен
+ * для delivery timeout. `available:false` означає: control plane не відповів
+ * або це старий rollback-конфіг, тому викликачу дозволено перейти на
+ * compatibility KV ledger. За успішного empty sweep fallback НЕ потрібен.
+ * @param {Env} env
+ * @param {number} nowMs
+ * @returns {Promise<{ available: boolean, runs: { id: string, startedMs: number, threadId: string | number | null, chatId: number | null, progressMsgId: number | null }[] }>}
+ */
+export async function registrySweepLegacyAgent(env, nowMs) {
+  const ns = registryNs(env);
+  if (!ns) return { available: false, runs: [] };
+  try {
+    const stub = ns.getByName(RUN_REGISTRY_DO_NAME);
+    if (typeof stub.sweepStaleLegacyAgent !== 'function') return { available: false, runs: [] };
+    const raw = (await stub.sweepStaleLegacyAgent(nowMs, RUN_STALE_MS)) ?? [];
+    const runs = Array.isArray(raw)
+      ? raw
+          .filter((run) => run && typeof run.id === 'string' && Number.isFinite(run.startedMs))
+          .map((run) => ({
+            id: run.id,
+            startedMs: Number(run.startedMs),
+            threadId: run.threadId ?? null,
+            chatId: Number.isFinite(run.chatId) ? Number(run.chatId) : null,
+            progressMsgId: Number.isFinite(run.progressMsgId) ? Number(run.progressMsgId) : null,
+          }))
+      : [];
+    return { available: true, runs };
+  } catch (/** @type {any} */ e) {
+    console.error('run-registry: legacy-agent sweep впав', e?.message);
+    return { available: false, runs: [] };
   }
 }
 

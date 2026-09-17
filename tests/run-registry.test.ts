@@ -104,6 +104,35 @@ describe('RunRegistryDO', () => {
     expect(await registry.sweepStale(T0 + 46 * 60_000, 6 * 60_000)).toEqual(['long']);
   });
 
+  it('legacy-agent watchdog зберігає delivery context і не перетинається із загальним sweep', async () => {
+    const { registry } = makeRegistry();
+    await registry.begin({
+      id: 'host-old',
+      trigger: 'chat',
+      threadId: 44,
+      chatId: 555,
+      progressMsgId: 900,
+      watchdog: 'legacy-agent',
+      startedMs: T0,
+    });
+    await registry.begin({ id: 'brain-old', trigger: 'chat', startedMs: T0 });
+
+    // Інший сторож не сміє забрати legacy run: він не знає, яке «⏳» прибрати.
+    expect(await registry.sweepStale(T0 + 6 * 60_000 + 1, 6 * 60_000)).toEqual(['brain-old']);
+    expect(await registry.has('host-old')).toBe(true);
+
+    await expect(registry.sweepStaleLegacyAgent(T0 + 6 * 60_000 + 1, 6 * 60_000)).resolves.toEqual([
+      {
+        id: 'host-old',
+        startedMs: T0,
+        threadId: 44,
+        chatId: 555,
+        progressMsgId: 900,
+      },
+    ]);
+    expect(await registry.has('host-old')).toBe(false);
+  });
+
   it('consumeNonce: перший раз true, повтор false, старі чистяться за віком', async () => {
     const { registry } = makeRegistry();
     expect(await registry.consumeNonce('r1', 'n1', T0, 20 * 60_000)).toBe(true);
@@ -248,6 +277,53 @@ describe('registryBegin/registryFinish — клієнт', () => {
       vi.unstubAllGlobals();
     }
     expect(finishes).toEqual([['r1', expect.objectContaining({ error: 'timeout' })]]);
+  });
+
+  it('сторож доставляє timeout із DO-контексту без KV RMW', async () => {
+    const puts: unknown[] = [];
+    const telegram: unknown[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        telegram.push({ url, body: JSON.parse(String(init?.body ?? '{}')) });
+        return new Response('{}', { status: 200 });
+      }),
+    );
+    const env = workerEnv({
+      ASSISTANT_V2: 'on',
+      RUN_REGISTRY: {
+        getByName: () => ({
+          sweepStaleLegacyAgent: async () => [
+            { id: 'r1', startedMs: T0 - 10 * 60_000, chatId: 555, threadId: 44, progressMsgId: 9 },
+          ],
+        }),
+      },
+      TELEGRAM_BOT_TOKEN: 't',
+      BRIEFING: {
+        get: async () => null,
+        put: async (...args: unknown[]) => void puts.push(args),
+        list: async () => ({ keys: [] }),
+      },
+    });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(T0));
+    try {
+      await agentRunWatchdog(env);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+    expect(puts).toEqual([]);
+    expect(telegram).toEqual([
+      expect.objectContaining({
+        url: expect.stringContaining('/deleteMessage'),
+        body: { chat_id: 555, message_id: 9 },
+      }),
+      expect.objectContaining({
+        url: expect.stringContaining('/sendMessage'),
+        body: expect.objectContaining({ chat_id: 555, message_thread_id: 44 }),
+      }),
+    ]);
   });
 
   it('збій DO повертає false для fail-closed старту', async () => {

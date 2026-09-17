@@ -13,7 +13,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
-/** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null, chatId: number | null, staleMs?: number }} ActiveRun */
+/** @typedef {{ startedMs: number, trigger: string, profile: string | null, threadId: string | number | null, chatId: number | null, progressMsgId?: number | null, watchdog?: string | null, staleMs?: number }} ActiveRun */
 
 const ACTIVE_KEY = 'active';
 /** Нещодавно завершені run: дозволяють delivery telemetry retry, але не
@@ -68,7 +68,7 @@ export class RunRegistryDO extends DurableObject {
    * Прогін почався: у активний набір + рядок у D1 `runs`. ON CONFLICT DO
    * NOTHING — повторний begin того самого id (ретрай викликача) не падає і
    * не дублює рядок.
-   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, model?: string | null, startedMs: number, staleMs?: number }} run
+   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, progressMsgId?: number | null, watchdog?: string | null, model?: string | null, startedMs: number, staleMs?: number }} run
    */
   async begin(run) {
     const active = await this.#active();
@@ -80,6 +80,11 @@ export class RunRegistryDO extends DurableObject {
         threadId: run.threadId ?? null,
         // chatId прогону: TELEGRAM_CHAT_ID не єдиний чат системи.
         chatId: run.chatId ?? null,
+        // Legacy-агент не має ThreadState: його «⏳» належить саме прогону.
+        progressMsgId: Number.isFinite(run.progressMsgId) ? Number(run.progressMsgId) : null,
+        // Власний сторож дозволяє не змішати старий host-run із brain/Actions
+        // під час поетапного rollout. Значення - не користувацький ввід.
+        watchdog: typeof run.watchdog === 'string' ? run.watchdog : null,
         ...(Number.isFinite(run.staleMs) ? { staleMs: Number(run.staleMs) } : {}),
       };
       // Це authoritative write: якщо він впаде, клієнт не стартує brain.
@@ -210,26 +215,58 @@ export class RunRegistryDO extends DurableObject {
   }
 
   /**
-   * Сторож обірваних: активні понад staleMs закриваються з error='timeout'.
-   * Повертає закриті id — викликач вирішує, чи алертити.
+   * Спільне атомарне ядро сторожів. Контекст копіюється ДО finish(), бо після
+   * terminal transition active-запис уже недоступний; саме він потрібен, щоб
+   * старий агент міг прибрати своє «⏳» і надіслати чесний timeout.
+   * @param {number} nowMs
+   * @param {number} staleMs
+   * @param {(run: ActiveRun) => boolean} matches
+   */
+  async #sweepStale(nowMs, staleMs, matches) {
+    const active = await this.#active();
+    const stale = Object.entries(active)
+      .filter(([, r]) => matches(r) && nowMs - r.startedMs > (r.staleMs ?? staleMs))
+      .map(([id, r]) => ({
+        id,
+        startedMs: r.startedMs,
+        threadId: r.threadId,
+        chatId: r.chatId ?? null,
+        progressMsgId: r.progressMsgId ?? null,
+      }));
+    /** @type {typeof stale} */
+    const closed = [];
+    for (const run of stale) {
+      try {
+        const finished = await this.finish(run.id, { finishedMs: nowMs, error: 'timeout' });
+        if (finished?.newlyFinished) closed.push(run);
+      } catch (/** @type {any} */ e) {
+        // Збій D1 на одному id не сміє обірвати решту прибирання (той самий
+        // інваріант ізоляції, що в тіку планувальника).
+        console.error(`run-registry: sweep не закрив ${run.id}`, e?.message);
+      }
+    }
+    return closed;
+  }
+
+  /**
+   * Загальний сторож для brain/Actions. Legacy host-run має власний сторож,
+   * який ще й доставляє пояснення в Telegram, тому цей sweep його не забирає.
    * @param {number} nowMs
    * @param {number} staleMs
    */
   async sweepStale(nowMs, staleMs) {
-    const active = await this.#active();
-    const stale = Object.entries(active)
-      .filter(([, r]) => nowMs - r.startedMs > (r.staleMs ?? staleMs))
-      .map(([id]) => id);
-    for (const id of stale) {
-      try {
-        await this.finish(id, { finishedMs: nowMs, error: 'timeout' });
-      } catch (/** @type {any} */ e) {
-        // Збій D1 на одному id не сміє обірвати решту прибирання (той самий
-        // інваріант ізоляції, що в тіку планувальника).
-        console.error(`run-registry: sweep не закрив ${id}`, e?.message);
-      }
-    }
-    return stale;
+    const closed = await this.#sweepStale(nowMs, staleMs, (run) => run.watchdog !== 'legacy-agent');
+    return closed.map((run) => run.id);
+  }
+
+  /**
+   * Сторож legacy host-run. Повертає мінімальний delivery context щойно
+   * закритих прогонів; інший код не повинен вгадувати його з KV після finish.
+   * @param {number} nowMs
+   * @param {number} staleMs
+   */
+  async sweepStaleLegacyAgent(nowMs, staleMs) {
+    return this.#sweepStale(nowMs, staleMs, (run) => run.watchdog === 'legacy-agent');
   }
 
   /** Стан для /status. */

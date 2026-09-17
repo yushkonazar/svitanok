@@ -21,7 +21,12 @@
 // реалізована — вони живуть у proposals/reminders-actions/api-dashboard. Цей
 // модуль — диспетчер між ними й протокол прогону.
 
-import { registryBegin, registryFinish } from './core/run-registry/client.mjs';
+import {
+  LEGACY_AGENT_WATCHDOG,
+  registryBegin,
+  registryFinish,
+  registrySweepLegacyAgent,
+} from './core/run-registry/client.mjs';
 import {
   ASSISTANT_WORKING_REPLY,
   ASSISTANT_FALLBACK_REPLY,
@@ -100,9 +105,10 @@ const MAX_USER_TEXT = 500;
 
 const RECORD_CHECKIN_SLOT_LABEL = { morning: 'ранок', afternoon: 'день', evening: 'вечір' };
 
-/** Марки активних прогонів (сторож у scheduled()). Окремий KV-ключ від `state`
- *  з того самого мотиву, що sentMessages: писар на кожен запит не має ділити
- *  гонку з reminders/roadmapProgress. */
+/** Аварійний rollback-ledger legacy-прогонів. У нормальній конфігурації
+ *  authoritative active state живе у RunRegistryDO; цей KV-блоб лишається
+ *  тільки для ASSISTANT_V2=off, локальних тестів або тимчасової відмови DO.
+ *  Його не можна знову використати як primary state. */
 const AGENT_RUNS_KEY = 'agentRuns';
 
 /** Прогін вважається обірваним, коли токен уже мертвий, а фінішу так і не було. */
@@ -271,6 +277,22 @@ async function markRunStarted(
   /** @type {string} */ runId,
   /** @type {KvBlob} */ info,
 ) {
+  // У shadow/on реєстр серіалізує active set. Контекст прогрес-повідомлення
+  // записується разом із run, щоб watchdog не шукав його в конкурентному KV.
+  const registered = await registryBegin(env, {
+    id: runId,
+    trigger: 'chat',
+    threadId: info.threadId ?? null,
+    chatId: Number.isFinite(info.chatId) ? Number(info.chatId) : null,
+    progressMsgId: Number.isFinite(info.progressMsgId) ? Number(info.progressMsgId) : null,
+    watchdog: LEGACY_AGENT_WATCHDOG,
+    model: ASSISTANT_MODEL,
+    startedMs: info.startedMs,
+  });
+  if (registered) return;
+
+  // Без реєстру лишається попередня поведінка, аби rollback/локальний запуск
+  // не перетворювався на вічне «⏳». Це ЄДИНИЙ writer agentRuns після міграції.
   try {
     const runs = await loadAgentRuns(env);
     runs[runId] = info;
@@ -279,16 +301,6 @@ async function markRunStarted(
     // Best-effort: марка потрібна лише сторожу. Збій KV не сміє зірвати запит.
     console.error('agentRuns mark start failed (не блокує прогін)', e);
   }
-  // Телеметрія редизайну (етап 1, PR-4): рядок у D1 runs через RunRegistry.
-  // Чокпойнт саме тут - усі старти прогону проходять через цю марку. Клієнт
-  // сам гейтиться прапорцем і сам ковтає збої (запис не блокує прогін).
-  await registryBegin(env, {
-    id: runId,
-    trigger: 'chat',
-    threadId: info.threadId ?? null,
-    model: ASSISTANT_MODEL,
-    startedMs: info.startedMs,
-  });
 }
 
 /* ── Клейм кроку (Фаза 4) ─────────────────────────────────────────────────
@@ -326,7 +338,7 @@ async function claimAgentStep(
 }
 
 /** Надгробок у DO — парний до claimAgentStep і best-effort із того самого
- *  мотиву: KV-марку (її читає сторож) ставить markRunFinished окремо. */
+ *  мотиву. */
 async function finishAgentRunDo(
   /** @type {Env} */ env,
   /** @type {import('./agent-run-core.mjs').RunClaims} */ claims,
@@ -344,7 +356,7 @@ async function finishAgentRunDo(
 /**
  * Позначити прогін завершеним.
  *
- * ⚠️ НЕ видаляємо запис, а ставимо `finishedMs`-надгробок. KV не має
+ * ⚠️ У rollback-KV НЕ видаляємо запис, а ставимо `finishedMs`-надгробок. KV не має
  * read-your-writes: читання тут цілком може ще не бачити марки, покладеної
  * 5 секунд тому на старті. Видалення в такому разі було б no-op -> марка
  * лишалась би «незавершеною» -> сторож через 6 хвилин слав би ХИБНИЙ алерт про
@@ -358,6 +370,11 @@ async function markRunFinished(
   /** @type {number|null} */ steps = null,
 ) {
   if (!runId) return;
+  // Нормальний шлях не торкається KV: finish повертає entry для відомого
+  // прогону навіть з completion window. null означає legacy/failure і лише
+  // тоді вмикає compatibility ledger.
+  const finished = await registryFinish(env, runId, { finishedMs: nowMs, steps });
+  if (finished) return;
   try {
     const runs = await loadAgentRuns(env);
     runs[runId] = { ...(runs[runId] ?? {}), finishedMs: nowMs };
@@ -365,9 +382,6 @@ async function markRunFinished(
   } catch (/** @type {any} */ e) {
     console.error('agentRuns mark finish failed', e);
   }
-  // Парний чокпойнт до registryBegin у markRunStarted (обидва шляхи фінішу -
-  // відповідь хоста і відмова старту - проходять тут; сторож закриває окремо).
-  await registryFinish(env, runId, { finishedMs: nowMs, steps });
 }
 
 /** message_id щойно надісланого повідомлення; null, якщо Telegram не дав. */
@@ -847,33 +861,63 @@ export async function handleAgentStep(/** @type {Request} */ request, /** @type 
  * OOM, рестарт systemd, впав VPS — і тоді власник лишився б із вічним «⏳
  * Працюю…». Саме тією мовчанкою, заради усунення якої й робився перехід.
  *
- * Алармуємо лише на записах зі `startedMs` без `finishedMs`, старших за
- * AGENT_RUN_STALE_MS (тобто вже й токен мертвий — прогін не міг би продовжитись).
+ * У нормальному режимі джерело — RunRegistryDO: він атомарно вибирає й закриває
+ * лише legacy host-run, а тут лишається delivery. `agentRuns` читається після
+ * цього тільки як rollback ledger або щоб акуратно прибрати записи, створені
+ * старою версією Worker у вікні rollout.
  */
 export async function agentRunWatchdog(/** @type {Env} */ env) {
   const nowMs = Date.now();
   const runs = await loadAgentRuns(env);
+  let runsDirty = false;
+
+  /** Надіслати рівно один чесний timeout для щойно закритого прогону. */
+  const alert = async (/** @type {string} */ runId, /** @type {any} */ run) => {
+    console.error(
+      `assistant: прогін ${runId} обірвався (${Math.round((nowMs - run.startedMs) / 1000)}с)`,
+    );
+    await deleteProgressMessage(env, run.chatId, run.progressMsgId);
+    // Запис без chatId не є legacy Telegram-run (наприклад, старе сміття),
+    // тож не шлемо некоректний API-виклик із undefined.
+    if (run.chatId == null) return;
+    await tgCall(env, 'sendMessage', {
+      chat_id: run.chatId,
+      message_thread_id: run.threadId ?? undefined,
+      text: ASSISTANT_STALLED_REPLY,
+    });
+  };
+
+  const registry = await registrySweepLegacyAgent(env, nowMs);
+  const registryHandled = new Set();
+  for (const run of registry.runs) {
+    registryHandled.add(run.id);
+    const fallback = runs[run.id];
+    // Версія до міграції писала в обидва місця. Закриваємо її KV-копію без
+    // другого алерту, щоб після rollout вона вже не жила окремим race-state.
+    if (fallback && !fallback.finishedMs) {
+      runs[run.id] = { ...fallback, finishedMs: nowMs };
+      runsDirty = true;
+    }
+    // Фініш міг пройти в Telegram, але впасти на registryFinish; fallback
+    // tombstone означає «не лякати власника вдруге».
+    if (fallback?.finishedMs) continue;
+    await alert(run.id, run);
+  }
+
   const stale = Object.entries(runs).filter(
     ([, r]) =>
       Number.isFinite(r?.startedMs) && !r?.finishedMs && nowMs - r.startedMs > AGENT_RUN_STALE_MS,
   );
-  if (stale.length === 0) return;
-
   for (const [runId, r] of stale) {
-    console.error(
-      `assistant: прогін ${runId} обірвався (${Math.round((nowMs - r.startedMs) / 1000)}с)`,
-    );
-    await deleteProgressMessage(env, r.chatId, r.progressMsgId);
-    await tgCall(env, 'sendMessage', {
-      chat_id: r.chatId,
-      message_thread_id: r.threadId ?? undefined,
-      text: ASSISTANT_STALLED_REPLY,
-    });
+    if (registryHandled.has(runId)) continue;
+    await alert(runId, r);
     runs[runId] = { ...r, finishedMs: nowMs };
+    runsDirty = true;
     // Закриття сторожем - це теж фініш, але з явною причиною в телеметрії.
-    // Мітка та сама, що в sweepStale реєстру: одне явище - одне слово.
+    // Тут run був fallback-записом або залишком старої версії Worker.
     await registryFinish(env, runId, { finishedMs: nowMs, error: 'timeout' });
   }
+  if (!runsDirty) return;
   try {
     await env.BRIEFING.put(AGENT_RUNS_KEY, JSON.stringify(pruneAgentRuns(runs, nowMs)));
   } catch (/** @type {any} */ e) {
