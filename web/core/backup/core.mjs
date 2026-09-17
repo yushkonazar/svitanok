@@ -24,6 +24,7 @@ export const BACKUP_DOC_VERSION = 1;
  */
 export const BACKUP_TABLES = [
   'facts',
+  'fact_ledger',
   'sessions',
   'memory_chunks',
   'memory_projection_versions',

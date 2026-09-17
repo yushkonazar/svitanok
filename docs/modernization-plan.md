@@ -71,10 +71,10 @@
 - [x] Додати `source`, `confidence`, `observed_at`, `expires_at/review_at`, `supersedes`; зберегти metadata при legacy upsert/undo та не дозволяти моделі видавати гіпотезу за `observed_event`.
 - [x] Заборонити inference overwrite owner fact без T1 proposal.
 - [x] Ескалювати `facts.set` із tainted external context до T1 proposal.
-- [ ] Пропускати provenance/taint від tool output до tool arguments для всіх persistent write.
+- [x] Пропускати provenance/taint від tool output до tool arguments для всіх persistent write (trusted `policy` context, що переживає proposal).
 - [x] Перетворити Vectorize на rebuildable projection: `pending → indexed → ready`, versioned rows, scheduler reconciliation, rebuild із D1 та cleanup retired vectors ([contract](memory-projection.md)).
-- [ ] Додати owner-facing memory ledger: why/source/edit/delete.
-- [ ] Tests: prompt injection з email/web, owner precedence, stale fact, partial vector failure, rebuild.
+- [x] Додати owner-facing memory ledger: why/source/edit/delete ([contract](fact-ledger.md)).
+- [x] Tests: prompt injection з email/web, owner precedence, stale fact, partial vector failure, rebuild.
 
 **Готово, коли:** модель не може непомітно погіршити факти, а семантичний індекс можна відновити без втрати D1 truth.
 

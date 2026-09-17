@@ -47,6 +47,14 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
   if (files.includes('0001_base.sql') && !files.includes('0015_memory_projection.sql')) {
     files.push('0015_memory_projection.sql');
   }
+  if (files.includes('0001_base.sql') && !files.includes('0016_fact_ledger.sql')) {
+    files.push('0016_fact_ledger.sql');
+  }
+  // 0017 expands proposals (from 0002), unlike the independent facts schema
+  // above. Narrow fixtures may intentionally omit that subsystem.
+  if (files.includes('0002_assistant.sql') && !files.includes('0017_proposal_provenance.sql')) {
+    files.push('0017_proposal_provenance.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

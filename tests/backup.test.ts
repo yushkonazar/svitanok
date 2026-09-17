@@ -47,6 +47,8 @@ const ALL_MIGRATIONS = [
   '0013_run_steps_idempotency.sql',
   '0014_fact_provenance.sql',
   '0015_memory_projection.sql',
+  '0016_fact_ledger.sql',
+  '0017_proposal_provenance.sql',
 ];
 const SECRET = 'backup-secret-for-tests-32-chars!!';
 // Неділя 06.09.2026 03:10 Києва = 00:10Z; 04:10 = 01:10Z.

@@ -223,8 +223,19 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   }),
   tool({
     coreName: 'facts.get',
-    description: 'Факти про власника; kind і key - необовʼязкові фільтри.',
+    description:
+      'Факти про власника; kind і key - необовʼязкові фільтри. stale=true означає, що expires_at минув: назви це й попроси оновити, не подавай як поточну істину. review_due=true так само потребує перевірки.',
     args: z.object({ kind: z.string().max(32).optional(), key: z.string().max(128).optional() }),
+  }),
+  tool({
+    coreName: 'facts.ledger',
+    description:
+      'Історія фактів для власника: за kind/key показує create, edit, delete і restore, значення на той момент, source, why та taint. Це лише читання: current truth бери facts.get.',
+    args: z.object({
+      kind: z.string().max(32).optional(),
+      key: z.string().max(128).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    }),
   }),
   // Нагадування (PR-6). `when` - природний текст («через 20 хв», «завтра о
   // 9»): час рахує ядро тим самим парсером, що обслуговує /remind, тож моделі
@@ -605,6 +616,18 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       expires_at: z.string().max(40).optional(),
       review_at: z.string().max(40).optional(),
       supersedes: z.string().max(64).optional(),
+      why: z.string().max(500).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'facts.delete',
+    description:
+      'Видалити current факт за kind і key. Це T1: ядро завжди попросить ✅; попереднє значення та підстава лишаться в facts.ledger. why - коротка підстава для журналу, лише якщо власник її сформулював.',
+    args: z.object({
+      kind: z.string().max(32),
+      key: z.string().min(1).max(128),
+      why: z.string().max(500).optional(),
     }),
     write: true,
   }),

@@ -18,7 +18,13 @@ import {
   runGeoGeocode,
   DATA_READ_DEFAULT_CAP,
 } from '../web/core/tools/read.mjs';
-import { runFactsGet, runFactsSet, FACT_KINDS } from '../web/core/tools/facts.mjs';
+import {
+  runFactsGet,
+  runFactsSet,
+  runFactsLedger,
+  runFactsDelete,
+  FACT_KINDS,
+} from '../web/core/tools/facts.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite as d1Migrated } from './helpers/d1.js';
@@ -292,7 +298,13 @@ describe('geo.*', () => {
 describe('facts.* на поточній схемі facts', () => {
   const d1FromSqlite = () => {
     const db = new DatabaseSync(':memory:');
-    for (const migration of ['0001_base.sql', '0014_fact_provenance.sql']) {
+    for (const migration of [
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0014_fact_provenance.sql',
+      '0016_fact_ledger.sql',
+      '0017_proposal_provenance.sql',
+    ]) {
       db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', migration), 'utf8'));
     }
     return {
@@ -397,6 +409,53 @@ describe('facts.* на поточній схемі facts', () => {
     });
   });
 
+  it('ledger тримає create/edit/delete зі сталим fact_id, source, why і taint', async () => {
+    await runFactsSet(
+      env,
+      { kind: 'setting', key: 'lang', value: 'uk', source: 'owner', why: 'Власник сказав у чаті' },
+      NOW,
+      { actor: 'owner', tainted: true },
+    );
+    const current = (await runFactsGet(env, { kind: 'setting', key: 'lang' })).result[0]!;
+    await runFactsSet(env, { kind: 'setting', key: 'lang', value: 'en' }, NOW + 1_000, {
+      actor: 'model',
+    });
+    await runFactsDelete(
+      env,
+      { kind: 'setting', key: 'lang', why: 'Власник попросив прибрати' },
+      NOW + 2_000,
+      { actor: 'owner' },
+    );
+
+    expect((await runFactsGet(env, { kind: 'setting', key: 'lang' })).result).toEqual([]);
+    const ledger = await runFactsLedger(env, { kind: 'setting', key: 'lang', limit: 10 });
+    expect(ledger.result).toHaveLength(3);
+    expect(ledger.result.map((row) => row.operation)).toEqual(['deleted', 'updated', 'created']);
+    expect(ledger.result.map((row) => row.fact_id)).toEqual([current.id, current.id, current.id]);
+    expect(ledger.result[2]).toMatchObject({
+      source: 'owner_assertion',
+      actor: 'owner',
+      tainted: true,
+      why: 'Власник сказав у чаті',
+    });
+    expect(ledger.result[0]).toMatchObject({
+      value: 'en',
+      actor: 'owner',
+      why: 'Власник попросив прибрати',
+    });
+  });
+
+  it('конкурентні перші upsert-и не лишають ledger із програним random id', async () => {
+    await Promise.all([
+      runFactsSet(env, { kind: 'setting', key: 'race', value: 1 }, NOW),
+      runFactsSet(env, { kind: 'setting', key: 'race', value: 2 }, NOW + 1),
+    ]);
+    const current = (await runFactsGet(env, { kind: 'setting', key: 'race' })).result[0]!;
+    const ledger = await runFactsLedger(env, { kind: 'setting', key: 'race', limit: 10 });
+    expect(ledger.result).toHaveLength(2);
+    expect(ledger.result.every((row) => row.fact_id === current.id)).toBe(true);
+  });
+
   it('відкидає некоректні provenance metadata', async () => {
     await expect(
       runFactsSet(env, { kind: 'setting', key: 'x', value: 1, confidence: 1.01 }, NOW),
@@ -417,6 +476,28 @@ describe('facts.* на поточній схемі facts', () => {
         NOW,
       ),
     ).rejects.toThrow(/expires_at.*observed_at/);
+  });
+
+  it('протермінований або review-due факт видно, але він явно не current truth', async () => {
+    await runFactsSet(
+      env,
+      {
+        kind: 'setting',
+        key: 'fuel_price',
+        value: 59,
+        observed_at: '2026-08-20T00:00:00Z',
+        expires_at: '2026-08-26T00:00:00Z',
+        review_at: '2026-08-27T11:00:00Z',
+      },
+      NOW,
+    );
+    expect(
+      (await runFactsGet(env, { kind: 'setting', key: 'fuel_price' }, NOW)).result[0],
+    ).toMatchObject({
+      value: 59,
+      stale: true,
+      review_due: true,
+    });
   });
 
   it('без привʼязки DB — гучний виняток', async () => {
@@ -449,7 +530,9 @@ describe('реєстр TOOLS', () => {
       'data.read',
       'data.search',
       'drive.search',
+      'facts.delete',
       'facts.get',
+      'facts.ledger',
       'facts.set',
       'finance.query',
       'finance.rule',
@@ -513,6 +596,7 @@ describe('реєстр TOOLS', () => {
       ['collections.create', 'collections.create'],
       ['collections.delete', 'forget'],
       ['collections.update', 'collections.update'],
+      ['facts.delete', 'facts.delete'],
       ['facts.set', 'facts.set'],
       ['finance.rule', 'finance.rule'],
       ['ideas.analyze', 'ideas.analyze'],

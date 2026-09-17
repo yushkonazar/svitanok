@@ -43,6 +43,7 @@ export const DOMAIN_ICON = {
  */
 export const ACTION_PHRASE = {
   'facts.set': { icon: DOMAIN_ICON.memory, done: 'Запамʼятав', ask: 'Запамʼятати' },
+  'facts.delete': { icon: DOMAIN_ICON.memory, done: 'Видалив факт', ask: 'Видалити факт' },
   record: { icon: DOMAIN_ICON.collection, done: 'Записав', ask: 'Записати' },
   'reminders.create': { icon: DOMAIN_ICON.reminder, done: 'Нагадаю', ask: 'Нагадати' },
   'reminders.update': {

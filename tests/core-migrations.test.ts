@@ -100,6 +100,25 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'status',
     'created_at',
     'decided_at',
+    'context_json',
+  ],
+  fact_ledger: [
+    'id',
+    'fact_id',
+    'kind',
+    'key',
+    'operation',
+    'value_json',
+    'source',
+    'confidence',
+    'observed_at',
+    'expires_at',
+    'review_at',
+    'supersedes',
+    'actor',
+    'tainted',
+    'why',
+    'created_at',
   ],
   chains: ['id', 'kind', 'workflow_id', 'state_json', 'status', 'created_at', 'updated_at'],
   outbox: ['id', 'chat_id', 'thread_id', 'kind', 'payload_json', 'attempts', 'next_at', 'status'],
@@ -285,6 +304,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
     { cols: ['expires_at'] },
     { cols: ['review_at'] },
   ],
+  fact_ledger: [{ cols: ['fact_id', 'created_at'] }, { cols: ['kind', 'key', 'created_at'] }],
   memory_chunks: [{ cols: ['thread_id', 'at'] }, { cols: ['projection_status', 'thread_id'] }],
   memory_projection_versions: [{ cols: ['status', 'created_at'] }],
   reminders: [{ cols: ['status', 'due_at'] }],
@@ -353,7 +373,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('пʼятнадцять файлів 0001–0015, нумерація без дірок', () => {
+  it('сімнадцять файлів 0001–0017, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -370,6 +390,8 @@ describe('міграції D1 — файли', () => {
       '0013',
       '0014',
       '0015',
+      '0016',
+      '0017',
     ]);
   });
 });

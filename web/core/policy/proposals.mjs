@@ -20,6 +20,7 @@ import {
 import {
   runFactsSet,
   runFactsGet,
+  runFactsDelete,
   restoreFactsSnapshot,
   FACT_KINDS,
   isOwnerAssertion,
@@ -136,7 +137,7 @@ function driveNoteName(raw) {
   return /\.[A-Za-z0-9]{1,8}$/.test(base) ? base : `${base}.md`;
 }
 
-/** @typedef {{ id: string, level: string, kind: string, payload_json: string, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
+/** @typedef {{ id: string, level: string, kind: string, payload_json: string, context_json: string | null, thread_id: string | null, msg_id: number | null, word: string | null, expires_at: string, status: string, created_at: string, decided_at: string | null }} ProposalRow */
 
 /**
  * Виконавці записів. execute повертає {prev} - знімок для undo (undefined =
@@ -144,7 +145,8 @@ function driveNoteName(raw) {
  * @type {Record<string, {
  *   execute: (env: Env, payload: any, nowMs: number,
  *     ctx?: { chatId?: number | string | null, threadId?: number | string | null,
- *       internal?: Record<string, any> })
+ *       internal?: Record<string, any>, policy?: { actor?: 'model' | 'owner' | 'trusted_server' | 'undo', tainted?: boolean,
+ *       why?: string } })
  *     => Promise<{ prev?: unknown, result?: unknown }>,
  *   undo?: (env: Env, prev: any, nowMs: number) => Promise<void>,
  * }>}
@@ -999,22 +1001,27 @@ export const EXECUTORS = {
     },
   },
   'facts.set': {
-    async execute(env, payload, nowMs) {
+    async execute(env, payload, nowMs, ctx) {
       const before = await runFactsGet(env, { kind: payload.kind, key: payload.key });
       const prev = before.result[0] ?? null; // null = факту не існувало
-      const { result } = await runFactsSet(env, payload, nowMs);
+      const { result } = await runFactsSet(env, payload, nowMs, ctx?.policy);
       return { prev: { key: payload.key, kind: payload.kind, prev }, result };
     },
     async undo(env, snapshot, nowMs) {
       if (snapshot.prev == null) {
         // Факту не було - відкат = видалення.
-        if (!env.DB) throw new Error('привʼязки DB немає');
-        await env.DB.prepare('DELETE FROM facts WHERE kind = ? AND key = ?')
-          .bind(snapshot.kind, snapshot.key)
-          .run();
+        await runFactsDelete(env, { kind: snapshot.kind, key: snapshot.key }, nowMs, {
+          actor: 'undo',
+        });
         return;
       }
       await restoreFactsSnapshot(env, snapshot.prev, nowMs);
+    },
+  },
+  'facts.delete': {
+    async execute(env, payload, nowMs, ctx) {
+      const { result } = await runFactsDelete(env, payload, nowMs, ctx?.policy);
+      return { result };
     },
   },
 };
@@ -1300,6 +1307,17 @@ export async function applyPolicy(env, action, nowMs) {
     }
     action = { ...action, payload: { ...action.payload, source } };
   }
+  if (action.kind === 'facts.delete') {
+    if (!FACT_KINDS.includes(String(action.payload?.kind))) {
+      return {
+        mode: 'error',
+        error: `facts.delete: невідомий kind "${String(action.payload?.kind)}"; дозволені: ${FACT_KINDS.join(', ')}`,
+      };
+    }
+    if (!String(action.payload?.key ?? '')) {
+      return { mode: 'error', error: 'facts.delete: key не може бути порожнім' };
+    }
+  }
 
   // Gemini (ADR-034): у чужий сервіс їде РІВНО prompt власника.
   //
@@ -1335,6 +1353,7 @@ export async function applyPolicy(env, action, nowMs) {
   if (level === 'T0') {
     const executor = EXECUTORS[action.kind];
     if (!executor) return { mode: 'error', error: `no-executor: ${action.kind}` };
+    const policy = executionPolicyContext(action, 'model');
     const { prev, result } = await executor.execute(env, action.payload, nowMs, {
       chatId: action.chatId ?? null,
       threadId: action.threadId ?? null,
@@ -1346,6 +1365,10 @@ export async function applyPolicy(env, action, nowMs) {
       // (plan.accept → calendarizeBlocks), мусять нести позначку сесії далі,
       // інакше вкладена дія виконується так, ніби сесія чиста.
       internal: { ...(action.internal ?? {}), tainted: action.tainted === true },
+      // Provenance/taint існує поза payload моделі. Кожен persistent
+      // executor одержує однаковий trusted context, навіть якщо сам він
+      // використовує лише частину полів.
+      policy,
     });
     if (prev === undefined || !executor.undo) return { mode: 'executed', result };
     try {
@@ -1355,6 +1378,7 @@ export async function applyPolicy(env, action, nowMs) {
         level: 'T0',
         kind: `undo:${action.kind}`,
         payloadJson: JSON.stringify(prev),
+        contextJson: JSON.stringify(policy),
         threadId: action.threadId,
         word: null,
         expiresAt: new Date(nowMs + UNDO_WINDOW_MS).toISOString(),
@@ -1381,6 +1405,7 @@ export async function applyPolicy(env, action, nowMs) {
     level,
     kind: action.kind,
     payloadJson: JSON.stringify(action.payload),
+    contextJson: JSON.stringify(executionPolicyContext(action, 'model')),
     threadId: action.threadId,
     word,
     expiresAt,
@@ -1454,6 +1479,9 @@ export async function resolveProposal(env, input, nowMs) {
     const { result } = await executor.execute(env, payload, nowMs, {
       chatId: null,
       threadId: row.thread_id,
+      // The context was persisted when the model requested the action. An
+      // approved proposal changes actor, not the original taint provenance.
+      policy: { ...proposalExecutionContext(row), actor: 'owner' },
     });
     return { ok: true, status: 'approved', executed: true, kind: row.kind, payload, result };
   } catch (/** @type {any} */ e) {
@@ -1572,27 +1600,60 @@ export async function resolveUndo(env, id, nowMs) {
 
 /**
  * @param {Env} env
- * @param {{ id: string, level: string, kind: string, payloadJson: string,
+ * @param {{ id: string, level: string, kind: string, payloadJson: string, contextJson?: string,
  *   threadId?: string | number | null, word: string | null, expiresAt: string,
  *   nowMs: number }} row
  */
 async function insertRow(env, row) {
   await db(env)
     .prepare(
-      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, word, expires_at, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+      `INSERT INTO proposals (id, level, kind, payload_json, context_json, thread_id, word, expires_at, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
     )
     .bind(
       row.id,
       row.level,
       row.kind,
       row.payloadJson,
+      row.contextJson ?? null,
       row.threadId == null ? null : String(row.threadId),
       row.word,
       row.expiresAt,
       new Date(row.nowMs).toISOString(),
     )
     .run();
+}
+
+/** Trusted metadata that is never accepted from model payload.
+ * @param {{ tainted?: boolean, taintedEver?: boolean }} action
+ * @param {'model' | 'owner' | 'trusted_server' | 'undo'} actor
+ */
+function executionPolicyContext(action, actor) {
+  return {
+    actor,
+    tainted: action.tainted === true,
+    tainted_ever: action.taintedEver === true,
+  };
+}
+
+/** Parse old proposal rows safely: absence means provenance was not recorded.
+ * @param {ProposalRow} row
+ */
+function proposalExecutionContext(row) {
+  try {
+    const parsed = JSON.parse(String(row.context_json ?? ''));
+    if (parsed && typeof parsed === 'object') {
+      return {
+        tainted: parsed.tainted === true,
+        tainted_ever: parsed.tainted_ever === true,
+      };
+    }
+  } catch {
+    // Legacy proposal, not a malformed action payload. It remains executable;
+    // its ledger calls out the lack of taint context as false rather than
+    // inventing provenance.
+  }
+  return { tainted: false, tainted_ever: false };
 }
 
 /** Payload для тексту рішення власнику; кривий JSON - null, не помилка. @param {ProposalRow} row */

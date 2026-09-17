@@ -17,7 +17,7 @@ import {
   runGeoLast,
   runGeoGeocode,
 } from './read.mjs';
-import { runFactsGet } from './facts.mjs';
+import { runFactsGet, runFactsLedger } from './facts.mjs';
 import { runPlacesMenu } from './menu.mjs';
 import { runTripBrief } from './trip.mjs';
 import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
@@ -211,7 +211,20 @@ export const TOOLS = {
         key: { type: 'string', maxLength: 128 },
       },
     },
-    run: (env, args) => runFactsGet(env, args),
+    run: (env, args, nowMs) => runFactsGet(env, args, nowMs),
+  },
+  // Історія current truth: read-only, включає старі й видалені значення з
+  // append-only ledger, щоб власник бачив джерело і підставу змін.
+  'facts.ledger': {
+    args: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        key: { type: 'string', maxLength: 128 },
+        limit: { type: 'number', minimum: 1, maximum: 50 },
+      },
+    },
+    run: (env, args) => runFactsLedger(env, args),
   },
   // Нагадування (PR-6). Час приходить ПРИРОДНИМ текстом: рахує його parser
   // ядра, не модель - інакше вона сама переводила б київські години й
@@ -819,6 +832,7 @@ export const TOOLS = {
         expires_at: { type: 'string', maxLength: 40 },
         review_at: { type: 'string', maxLength: 40 },
         supersedes: { type: 'string', maxLength: 64 },
+        why: { type: 'string', maxLength: 500 },
       },
     },
     // Write-інструмент: виконує НЕ run, а policy (PR-8) - T0 у чистій сесії
@@ -826,6 +840,21 @@ export const TOOLS = {
     write: { kind: 'facts.set' },
     run: () => {
       throw new Error('facts.set виконується через policy, не напряму');
+    },
+  },
+  'facts.delete': {
+    args: {
+      type: 'object',
+      required: ['kind', 'key'],
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        key: { type: 'string', minLength: 1, maxLength: 128 },
+        why: { type: 'string', maxLength: 500 },
+      },
+    },
+    write: { kind: 'facts.delete' },
+    run: () => {
+      throw new Error('facts.delete виконується через policy, не напряму');
     },
   },
 };

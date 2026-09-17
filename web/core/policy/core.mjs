@@ -54,6 +54,9 @@ export const ACTION_LEVELS = {
   // людині й лишається T1: рівень вирішує decideLevel за payload.
   'calendar.event': 'T0',
   // T1 - одне ✅/❌, TTL 30 хв
+  // Видалення факту прибирає current truth; історія лишається в ledger, але
+  // рішення власника все одно потрібне.
+  'facts.delete': 'T1',
   'calendar.update': 'T1',
   'calendar.delete': 'T1',
   invite: 'T1',
