@@ -84,6 +84,10 @@ interface Env {
   ASSISTANT_HISTORY?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/assistant-history/do.mjs').AssistantHistoryDO
   >;
+  /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
+  BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/brief-dispatch/do.mjs').BriefDispatchDO
+  >;
 
   /**
    * Vectorize-індекс памʼяті (ADR-038, етап 2 PR-2): svitanok-memory,

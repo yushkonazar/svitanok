@@ -85,6 +85,9 @@
       // Short assistant context: callback questions and completed agent runs
       // append atomically and expire together after 30 days of silence.
       { "name": "ASSISTANT_HISTORY", "class_name": "AssistantHistoryDO" },
+      // External GitHub briefing dispatch is a side effect: reserve it
+      // atomically so manual /brief and a cron tick cannot both invoke it.
+      { "name": "BRIEF_DISPATCH", "class_name": "BriefDispatchDO" },
     ],
   },
   "exports": {
@@ -95,6 +98,7 @@
     "PendingProposalsDO": { "type": "durable-object", "storage": "sqlite" },
     "SentMessagesDO": { "type": "durable-object", "storage": "sqlite" },
     "AssistantHistoryDO": { "type": "durable-object", "storage": "sqlite" },
+    "BriefDispatchDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
   // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і

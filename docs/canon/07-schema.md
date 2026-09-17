@@ -167,7 +167,7 @@ Front-matter працівника → `AgentDefinition` SDK: `description` = п�
 
 ## 8. KV і control planes
 
-KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, `statsArchiveWeekly`, `levers`, `weatherLive`, `publicStatus`) та compatibility mirror під rollback/старий backup. Canonical structured state живе в singleton Durable Objects: `StateStoreDO` (`state`, `stats`, `settings`), `RunRegistryDO` (active runs), `PendingProposalsDO` (pending proposal), `SentMessagesDO` (`/clear` ring buffer) і `AssistantHistoryDO` (короткий chat context, 30 діб тиші через alarm). `saved` лишається в KV, бо Mini App читає повний immutable snapshot напряму; змінні domain records і далі мігрують у D1 на етапі 2.
+KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, `statsArchiveWeekly`, `levers`, `weatherLive`, `publicStatus`) та compatibility mirror під rollback/старий backup. Canonical structured state живе в singleton Durable Objects: `StateStoreDO` (`state`, `stats`, `settings`), `RunRegistryDO` (active runs), `PendingProposalsDO` (pending proposal), `SentMessagesDO` (`/clear` ring buffer), `AssistantHistoryDO` (короткий chat context, 30 діб тиші через alarm) і `BriefDispatchDO` (claim/release перед незворотним GitHub workflow dispatch). `saved` лишається в KV, бо Mini App читає повний immutable snapshot напряму; змінні domain records і далі мігрують у D1 на етапі 2.
 
 ## 9. Повідомлення: формат callback-даних
 

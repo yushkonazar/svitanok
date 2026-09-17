@@ -47,11 +47,18 @@ import {
   WEEKLY_ARCHIVE_KEY,
 } from './stats-archive.mjs';
 import { isQuietMinute } from './settings-core.mjs';
-import { shouldAutoDispatchBrief } from './tg-core.mjs';
+import { MIN_DISPATCH_GAP_MS, shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
 import { loadState, loadStats, loadSettings, updateStats, updateState } from './kv-store.mjs';
 import { loadLevers, putLevers } from './kv-store.mjs';
 import { tgCall, trackSentMessage } from './telegram-client.mjs';
+import {
+  briefDispatchClaim,
+  briefDispatchComplete,
+  briefDispatchRead,
+  briefDispatchRelease,
+} from './core/brief-dispatch/client.mjs';
+import { BRIEF_DISPATCH_KEY } from './core/brief-dispatch/contract.mjs';
 
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
 // END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
@@ -468,37 +475,59 @@ export async function dispatchBrief(env, { forceWindow = false } = {}) {
 }
 
 /**
- * Мітки dispatch брифінгу — ОКРЕМИЙ KV-ключ, не блоб 'state' (ревʼю A; той самий
- * привід, що й у sentMessages вище). Було: recordBriefDispatch робив
- * read-modify-write усього 'state', тож конкурентний писар того ж блоба
- * (checkReminders на тому ж тіку крону, вебхук, багатохвилинний flush
- * оркестратора) міг просто затерти щойно поставлену денну мітку — і наступний
- * 5-хвилинний тік вистрілив би ДРУГИЙ workflow_dispatch. Тепер мітки живуть самі:
- *   {lastMs: <коли будь-який dispatch>, lastAutoDate: 'YYYY-MM-DD' | null}
- * Після деплою ключа ще немає -> кулдаун /brief один раз стартує «з нуля»
- * (нешкідливо: максимум один зайвий ручний запуск).
+ * `briefDispatch` — compatibility KV marker, який одноразово сіє singleton
+ * BriefDispatchDO і надалі дзеркалиться лише після підтвердженого dispatch.
+ * Це суттєво сильніше за старий KV read-check-write: ручний `/brief` і
+ * п'ятихвилинний cron спершу беруть одну атомарну lease, а вже потім торкаються
+ * зовнішнього GitHub workflow.
  */
-export async function loadBriefDispatch(/** @type {Env} */ env) {
+async function loadLegacyBriefDispatch(/** @type {Env} */ env) {
   try {
-    const parsed = JSON.parse((await env.BRIEFING.get('briefDispatch')) ?? '{}');
+    const parsed = JSON.parse((await env.BRIEFING.get(BRIEF_DISPATCH_KEY)) ?? '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
   }
 }
 
-/** Записати мітку dispatch — ЛИШЕ після підтвердженого workflow_dispatch (SL2).
- *  autoDate (A2) ставиться тільки з авто-гілки: ручний /brief може бути й поза
- *  вікном, тож «сьогодні вже диспатчили» — не про нього. Від дубля відразу після
- *  ручного /brief захищає lastMs (MIN_DISPATCH_GAP_MS, tg-core.mjs). */
-export async function recordBriefDispatch(
-  /** @type {Env} */ env,
-  /** @type {string|null} */ autoDate = null,
-) {
-  const cur = await loadBriefDispatch(env);
-  const next = { ...cur, lastMs: Date.now() };
+/** Read canonical dispatch marker when the binding exists; KV is seed/mirror. */
+export async function loadBriefDispatch(/** @type {Env} */ env) {
+  const legacy = await loadLegacyBriefDispatch(env);
+  return (await briefDispatchRead(env, legacy)).state;
+}
+
+/**
+ * Reserve exactly one external GitHub workflow dispatch. In production a
+ * failing DO is fail-closed; without the optional binding local rollback keeps
+ * the previous KV behavior until a deployment activates it.
+ * @param {Env} env
+ * @param {{ autoDate?: string|null, minGapMs: number, nowMs?: number }} options
+ */
+export async function claimBriefDispatch(env, { autoDate = null, minGapMs, nowMs = Date.now() }) {
+  return briefDispatchClaim(env, await loadLegacyBriefDispatch(env), nowMs, autoDate, minGapMs);
+}
+
+/** Persist the acknowledged dispatch and release its atomic reservation.
+ * @param {Env} env @param {{ canonical: boolean, token?: string|null }} claim
+ * @param {string|null} autoDate @param {number} [nowMs] */
+export async function completeBriefDispatch(env, claim, autoDate = null, nowMs = Date.now()) {
+  if (claim.canonical) {
+    const completed = await briefDispatchComplete(env, claim.token ?? null, nowMs, autoDate);
+    if (!completed) console.error('brief-dispatch: success without matching reservation');
+    return completed;
+  }
+  // Compatibility path only: the binding is absent in old/local deployments.
+  const cur = await loadLegacyBriefDispatch(env);
+  const next = { ...cur, lastMs: nowMs };
   if (autoDate) next.lastAutoDate = autoDate;
-  await env.BRIEFING.put('briefDispatch', JSON.stringify(next));
+  await env.BRIEFING.put(BRIEF_DISPATCH_KEY, JSON.stringify(next));
+  return true;
+}
+
+/** Release an unsuccessful external dispatch reservation immediately.
+ * @param {Env} env @param {{ canonical: boolean, token?: string|null }} claim */
+export async function releaseBriefDispatch(env, claim) {
+  if (claim.canonical) await briefDispatchRelease(env, claim.token ?? null);
 }
 
 /**
@@ -523,7 +552,13 @@ export async function autoBriefDispatch(/** @type {Env} */ env) {
   // masteryFocus — ДО dispatch: брифінг (і можливий mock-батч) читає свіжу
   // «тему тижня» цього ж ранку (важливо на межі тижня — понеділок).
   await updateMasteryFocus(env);
-  if (await dispatchBrief(env)) await recordBriefDispatch(env, today);
+  const claim = await claimBriefDispatch(env, { autoDate: today, minGapMs: MIN_DISPATCH_GAP_MS });
+  if (!claim.ok) return;
+  if (await dispatchBrief(env)) {
+    await completeBriefDispatch(env, claim, today);
+  } else {
+    await releaseBriefDispatch(env, claim);
+  }
 }
 
 /**

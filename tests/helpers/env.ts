@@ -40,6 +40,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'PENDING_PROPOSALS'
     | 'SENT_MESSAGES'
     | 'ASSISTANT_HISTORY'
+    | 'BRIEF_DISPATCH'
     | 'DB'
     | 'AI'
     | 'VECTORIZE'
@@ -54,6 +55,7 @@ export interface WorkerEnvOverrides extends Partial<
   PENDING_PROPOSALS?: unknown;
   SENT_MESSAGES?: unknown;
   ASSISTANT_HISTORY?: unknown;
+  BRIEF_DISPATCH?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві
   // операції, а не імітація повного інтерфейсу Workers AI/Vectorize.

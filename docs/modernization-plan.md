@@ -59,6 +59,7 @@
 - [x] Перенести `assistantPending` у PendingProposalsDO: CAS для циклічних кнопок і атомарний claim перед Calendar/People write; KV — лише seed/mirror для rollback.
 - [x] Перенести `sentMessages` у SentMessagesDO: atomic `record`/`forget` для webhook, cron, outbox і `/clear`; KV — лише seed/mirror для rollback та старого backup формату.
 - [x] Перенести `assistantHistory` у AssistantHistoryDO: callback-питання й agent exchange дописуються atomic batches; 30-денний TTL виконує DO alarm, KV — seed/mirror для rollback та старого export формату.
+- [x] Перенести `briefDispatch` у BriefDispatchDO: manual `/brief` і п'ятихвилинний cron беруть atomic lease до зовнішнього GitHub workflow; KV — лише compatibility seed/mirror після підтвердженого dispatch.
 - [ ] Перенести решту structured concurrent state у D1 transactions/event tables або окремий single-writer Durable Object.
 - [ ] Залишити KV тільки для cache/latest briefing/config/immutable snapshot після повного inventory всіх ключів.
 - [x] Ввести одноразовий seed із legacy KV, canonical read та compatibility fallback для rollback/local tests.

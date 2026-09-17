@@ -59,7 +59,13 @@ import { runAssistantAgent } from './agent-runtime.mjs';
 import { createReminderFromText } from './reminders-actions.mjs';
 import { handleLocationShare, sendLocatePrompt } from './weather-geo.mjs';
 import { readUpcomingWeek } from './callbacks.mjs';
-import { dispatchBrief, loadBriefDispatch, recordBriefDispatch } from './cron.mjs';
+import {
+  claimBriefDispatch,
+  completeBriefDispatch,
+  dispatchBrief,
+  loadBriefDispatch,
+  releaseBriefDispatch,
+} from './cron.mjs';
 import { UNKNOWN_REPLY } from './agent-core.mjs';
 
 /**
@@ -307,13 +313,22 @@ export async function handleCommand(
       // транзієнтний збій GitHub блокував би повтор на годину + брехливе «Запустив».
       // forceWindow: ручний /brief — «хочу зараз, поза вікном». Ідемпотентність
       // за добу лишається живою (див. блок вище).
+      const claim = await claimBriefDispatch(env, { minGapMs: 60 * 60_000 });
+      if (!claim.ok) {
+        return sendText(
+          claim.reason === 'pending'
+            ? '⏳ Генерація брифінгу вже запускається. Зачекай кілька хвилин.'
+            : '⏳ Брифінг нещодавно запускався. Спробуй трохи пізніше.',
+        );
+      }
       const ok = await dispatchBrief(env, { forceWindow: true });
       if (!ok) {
+        await releaseBriefDispatch(env, claim);
         return sendText(
           '⚠️ Не вдалося запустити генерацію (тимчасова помилка GitHub). Спробуй ще раз за хвилину.',
         );
       }
-      await recordBriefDispatch(env);
+      await completeBriefDispatch(env, claim);
       return sendText('🔄 Запустив генерацію брифінгу — прийде за кілька хвилин.');
     }
     case 'stats': {

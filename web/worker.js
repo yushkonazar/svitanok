@@ -33,6 +33,7 @@ export { StateStoreDO } from './core/state-store/do.mjs';
 export { PendingProposalsDO } from './core/pending-proposals/do.mjs';
 export { SentMessagesDO } from './core/sent-messages/do.mjs';
 export { AssistantHistoryDO } from './core/assistant-history/do.mjs';
+export { BriefDispatchDO } from './core/brief-dispatch/do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';

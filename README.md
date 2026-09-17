@@ -258,7 +258,7 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 | `agentRuns` / `agentHostHealth` | rollback-ledger прогонів / стан здоров'я VPS; active runs — `RunRegistryDO` |
 | `googleToken`                   | кешований Google access-токен (~1год TTL)                                   |
 | `sentMessages`                  | compatibility snapshot; atomic `/clear` ring buffer — `SentMessagesDO`      |
-| `briefDispatch`                 | дедуп ранкового автозапуску                                                 |
+| `briefDispatch`                 | compatibility marker; atomic GitHub dispatch claim — `BriefDispatchDO`      |
 
 ---
 
