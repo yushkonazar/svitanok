@@ -247,18 +247,18 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 прод (пропозиції асистента губились під затиранням `state`) — з того часу
 кожен новий тип даних, що пишеться незалежно, отримує власний ключ.
 
-| Ключ                            | Зміст                                                                         |
-| ------------------------------- | ----------------------------------------------------------------------------- |
-| `state`                         | compatibility snapshot; canonical mutable state — `StateStoreDO`              |
-| `stats`                         | compatibility snapshot; canonical статистика — `StateStoreDO`                 |
-| `settings`                      | тумблери модулів, тихі години, заглушені теми — читає і Worker, і оркестратор |
-| `latest` / `briefing:<дата>`    | останній опублікований брифінг + історія по датах                             |
-| `assistantPending`              | compatibility seed/mirror; atomic pending slot — `PendingProposalsDO`         |
-| `assistantHistory`              | історія розмови з асистентом за темою/чатом                                   |
-| `agentRuns` / `agentHostHealth` | rollback-ledger прогонів / стан здоров'я VPS; active runs — `RunRegistryDO`   |
-| `googleToken`                   | кешований Google access-токен (~1год TTL)                                     |
-| `sentMessages`                  | кільцевий буфер id повідомлень бота (для `/clear`)                            |
-| `briefDispatch`                 | дедуп ранкового автозапуску                                                   |
+| Ключ                            | Зміст                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| `state`                         | compatibility snapshot; canonical mutable state — `StateStoreDO`            |
+| `stats`                         | compatibility snapshot; canonical статистика — `StateStoreDO`               |
+| `settings`                      | compatibility snapshot; canonical налаштування — `StateStoreDO`             |
+| `latest` / `briefing:<дата>`    | останній опублікований брифінг + історія по датах                           |
+| `assistantPending`              | compatibility seed/mirror; atomic pending slot — `PendingProposalsDO`       |
+| `assistantHistory`              | історія розмови з асистентом за темою/чатом                                 |
+| `agentRuns` / `agentHostHealth` | rollback-ledger прогонів / стан здоров'я VPS; active runs — `RunRegistryDO` |
+| `googleToken`                   | кешований Google access-токен (~1год TTL)                                   |
+| `sentMessages`                  | кільцевий буфер id повідомлень бота (для `/clear`)                          |
+| `briefDispatch`                 | дедуп ранкового автозапуску                                                 |
 
 ---
 

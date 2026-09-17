@@ -53,12 +53,50 @@ export async function readJson(env, key, fallback) {
   }
 }
 
-/** Налаштування власника (ключ `settings`, F2) — ОКРЕМИЙ блоб від 'state' (той
- *  ділять кілька писарів; тут пише лише власник із Mini App). Биття -> дефолти.
- *  Цей самий ключ читає оркестратор (src/core/settings-overrides.ts).
- *  @param {Env} env */
+/** Налаштування власника (F2). Canonical structured blob живе у
+ * StateStoreDO; KV `settings` — compatibility mirror для оркестратора та
+ * rollback. Биття legacy-сnapshot -> дефолти.
+ * @param {Env} env */
 export async function loadSettings(env) {
-  return normalizeSettings(await readJson(env, 'settings', null));
+  return normalizeSettings(await loadMutableJson(env, 'settings'));
+}
+
+/** Повна заміна settings (PUT-семантика). Серіалізований CAS прибирає вікно
+ * між читанням і записом, але сам payload лишається свідомим «останній
+ * підтверджений повний snapshot перемагає». @param {Env} env
+ * @param {KvBlob|null|undefined} settings */
+export async function putSettings(env, settings) {
+  const next = normalizeSettings(settings);
+  return normalizeSettings(await updateJson(env, 'settings', () => next));
+}
+
+/** Застосувати pure patch до найсвіжішого canonical settings і зберегти
+ * точний preimage для undo. Патч може бути викликаний повторно після CAS
+ * конфлікту, тому побічні ефекти тут заборонені.
+ * @param {Env} env
+ * @param {(settings: ReturnType<typeof normalizeSettings>) => KvBlob} patch
+ * @returns {Promise<{ previous: ReturnType<typeof normalizeSettings>, settings: ReturnType<typeof normalizeSettings> }>}
+ */
+export async function updateSettings(env, patch) {
+  /** @type {ReturnType<typeof normalizeSettings>} */
+  let previous = normalizeSettings(null);
+  const settings = normalizeSettings(
+    await updateJson(env, 'settings', (current) => {
+      previous = normalizeSettings(current);
+      return normalizeSettings(patch(previous));
+    }),
+  );
+  return { previous, settings };
+}
+
+/** T2 скидає canonical owner settings без віддзеркалення їх назад у вже
+ * видалений KV. Відсутній binding — безпечний legacy path, де ключ очищено
+ * FORGET_ALL_KV_KEYS. @param {Env} env */
+export async function clearSettings(env) {
+  const stub = stateStoreStub(env);
+  if (!stub) return false;
+  await stub.clear('settings');
+  return true;
 }
 
 /** Прочитати стор статистики з KV (ключ `stats`); биття -> {}.
@@ -91,7 +129,7 @@ function stateStoreStub(env) {
 }
 
 /** Authoritative read з одноразовим seed із legacy KV. @param {Env} env
- * @param {'state'|'stats'} key @returns {Promise<KvBlob>} */
+ * @param {'state'|'stats'|'settings'} key @returns {Promise<KvBlob>} */
 async function loadMutableJson(env, key) {
   const legacy = mutableBlob(await readJson(env, key, {}));
   const stub = stateStoreStub(env);
@@ -102,17 +140,18 @@ async function loadMutableJson(env, key) {
 
 /**
  * Canonical snapshot для backup/export. `null` означає legacy rollout, де KV
- * ще є source of truth і `dumpKv` already містить обидва ключі.
+ * ще є source of truth і `dumpKv` already містить усі structured keys.
  * @param {Env} env
- * @returns {Promise<{ state: KvBlob, stats: KvBlob } | null>}
+ * @returns {Promise<{ state: KvBlob, stats: KvBlob, settings: KvBlob } | null>}
  */
 export async function mutableStateSnapshot(env) {
   if (!stateStoreStub(env)) return null;
-  const [state, stats] = await Promise.all([
+  const [state, stats, settings] = await Promise.all([
     loadMutableJson(env, 'state'),
     loadMutableJson(env, 'stats'),
+    loadMutableJson(env, 'settings'),
   ]);
-  return { state, stats };
+  return { state, stats, settings: normalizeSettings(settings) };
 }
 
 // ⚠️ ЛУНА ЧИТАЧА для sentMessages. KV не дає read-your-writes: `get` одразу
@@ -344,7 +383,7 @@ export async function updateState(env, patch) {
 }
 
 /**
- * Спільне ядро updateStats/updateState: прочитати, застосувати patch,
+ * Спільне ядро updateStats/updateState/updateSettings: прочитати, застосувати patch,
  * перечитати; якщо сирий рядок змінився — застосувати patch до свіжішої копії
  * замість того, щоб покласти зверху свою застарілу.
  *
@@ -352,7 +391,7 @@ export async function updateState(env, patch) {
  * означає, що між читаннями хтось писав, і цього досить, щоб не ризикувати.
  *
  * @param {Env} env
- * @param {'state'|'stats'} key
+ * @param {'state'|'stats'|'settings'} key
  * @param {(store: KvBlob) => KvBlob} patch
  * @returns {Promise<KvBlob>}
  */
@@ -379,7 +418,7 @@ async function updateJson(env, key, patch) {
  * Compatibility fallback для тестів/rollback без STATE_STORE. Він лишається
  * best-effort retry, але production конфіг завжди має Durable Object.
  * @param {Env} env
- * @param {'state'|'stats'} key
+ * @param {'state'|'stats'|'settings'} key
  * @param {(store: KvBlob) => KvBlob} patch
  * @returns {Promise<KvBlob>}
  */

@@ -46,6 +46,7 @@ import { normalizeSettings } from './settings-core.mjs';
 import {
   loadState,
   loadSettings,
+  putSettings,
   loadAssistantPending,
   putAssistantPending,
   updateAssistantPending,
@@ -526,7 +527,7 @@ export async function resolveProposalCallback(
       // Повторна нормалізація тут НАВМИСНО (item.settings уже нормалізований у
       // sanitizeProposal) — той самий "не довіряй нічому, що пролежало в KV/
       // пройшло через мережу" рефлекс, що й решта accept-циклу.
-      await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(item.settings)));
+      await putSettings(env, normalizeSettings(item.settings));
       results.push({ ok: true });
     } else if (item.kind === 'contact') {
       const res = await createContact(env, { name: item.title, email: item.email });

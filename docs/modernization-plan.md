@@ -54,6 +54,7 @@
 
 - [x] Інвентаризувати `state`/`stats`: обидва мали конкурентних writers і стали першим міграційним зрізом.
 - [x] Перенести `state` і `stats` у single-writer `StateStoreDO` із versioned CAS; KV лишити compatibility snapshot-ом.
+- [x] Перенести `settings` у StateStoreDO: Mini App, Telegram-пропозиції й policy-патчі мають CAS; KV лишився mirror для оркестратора.
 - [x] Перенести active `agentRuns` у RunRegistryDO: delivery context зберігається поруч із run; KV-blob лишився лише для rollback/старої конфігурації та очищення rollout-решток.
 - [x] Перенести `assistantPending` у PendingProposalsDO: CAS для циклічних кнопок і атомарний claim перед Calendar/People write; KV — лише seed/mirror для rollback.
 - [ ] Перенести решту structured concurrent state у D1 transactions/event tables або окремий single-writer Durable Object.

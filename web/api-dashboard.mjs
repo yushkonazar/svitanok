@@ -14,7 +14,14 @@
 
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
-import { loadStats, loadState, loadSettings, updateStats, updateState } from './kv-store.mjs';
+import {
+  loadStats,
+  loadState,
+  loadSettings,
+  putSettings,
+  updateStats,
+  updateState,
+} from './kv-store.mjs';
 import { applyVote, applyUrlVote, updateJobPrefs, updateMockWeight } from './prefs-core.mjs';
 import {
   kyivDateKey,
@@ -219,13 +226,10 @@ async function googleConnectors(/** @type {Env} */ env) {
  * GET /api/settings -> налаштування власника + статус конекторів.
  * POST /api/settings {settings} -> ЗАМІНИТИ блоб цілком (PUT-семантика).
  *
- * Свідомо БЕЗ read-modify-write. Спокуса «прочитати + накласти патч» тут
- * оманлива: KV не має ні CAS, ні гарантії read-your-writes (~до 60с), а екран
- * шле окрему мутацію НА КОЖЕН тумблер — два швидкі тапи, і обидва запити
- * читають той самий базовий блоб, після чого другий PUT тихо затирає перший.
- * Тому: єдиний писар (власник) шле ПОВНИЙ стан, який у нього вже є в кеші, а
- * сервер лише валідує й кладе. Клієнт серіалізує запити (scope у
- * useSaveSettings), тож останній тап = останній PUT.
+ * Клієнт шле повний snapshot, а Worker кладе його через versioned CAS у
+ * StateStoreDO. Клієнт теж серіалізує запити (scope у useSaveSettings), тож
+ * два швидкі тапи зберігають один локальний порядок; між незалежними авторами
+ * повна PUT-семантика лишається свідомим «останній підтверджений snapshot».
  *
  * Тижнева ціль подач тут СВІДОМО відсутня: вона живе у блобі `stats`
  * (goal.weeklyTarget агрегується поруч із weeklyApplied) і виставляється подією
@@ -257,7 +261,7 @@ export async function handleSettings(/** @type {Request} */ request, /** @type {
     return json({ ok: false, error: 'bad-params' }, 400);
   }
   const next = normalizeSettings(raw);
-  await env.BRIEFING.put('settings', JSON.stringify(next));
+  await putSettings(env, next);
   const connectors = await googleConnectors(env);
   return json({ ok: true, settings: next, connectors });
 }

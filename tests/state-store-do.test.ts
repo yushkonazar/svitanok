@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { StateStoreDO } from '../web/core/state-store/do.mjs';
 import { STATE_STORE_DO_NAME } from '../web/core/state-store/contract.mjs';
-import { loadState, loadStats, mutableStateSnapshot, updateState } from '../web/kv-store.mjs';
+import {
+  clearSettings,
+  loadSettings,
+  loadState,
+  loadStats,
+  mutableStateSnapshot,
+  updateSettings,
+  updateState,
+} from '../web/kv-store.mjs';
 import { memoryKv } from './helpers/kv.js';
 import { workerEnv } from './helpers/env.js';
 
@@ -46,18 +54,66 @@ describe('StateStoreDO — canonical mutable state', () => {
     });
   });
 
+  it('settings одноразово сіються з KV, а паралельні patch-и не затирають один одного', async () => {
+    const { env, kv } = setup({ settings: JSON.stringify({ modules: { news: true } }) });
+    expect((await loadSettings(env)).modules).toEqual({ news: true });
+    kv.set('settings', JSON.stringify({ modules: { jobs: true } }));
+
+    await Promise.all([
+      updateSettings(env, (settings) => ({
+        ...settings,
+        modules: { ...settings.modules, news: false },
+      })),
+      updateSettings(env, (settings) => ({
+        ...settings,
+        quiet: { ...settings.quiet, enabled: true },
+      })),
+    ]);
+
+    expect(await loadSettings(env)).toMatchObject({
+      modules: { news: false },
+      quiet: { enabled: true, from: '22:00', to: '08:00' },
+    });
+    expect(JSON.parse(kv.get('settings') ?? '{}')).toMatchObject({
+      modules: { news: false },
+      quiet: { enabled: true },
+    });
+  });
+
+  it('T2 чистить canonical settings без повторного запису в уже видалений KV', async () => {
+    const { env, kv } = setup({ settings: JSON.stringify({ modules: { news: false } }) });
+    await loadSettings(env); // seed canonical DO
+    kv.delete('settings'); // FORGET_ALL_KV_KEYS уже пройдено
+
+    await expect(clearSettings(env)).resolves.toBe(true);
+    expect(await loadSettings(env)).toEqual({
+      quiet: { enabled: false, from: '22:00', to: '08:00' },
+      modules: {},
+      mutedTopics: [],
+    });
+    expect(kv.has('settings')).toBe(false);
+  });
+
   it('backup snapshot бере canonical state/stats, а не змінений legacy KV', async () => {
     const { env, kv } = setup({
       state: JSON.stringify({ stateV: 1 }),
       stats: JSON.stringify({ statsV: 1 }),
+      settings: JSON.stringify({ modules: { news: false } }),
     });
     await loadState(env);
     await loadStats(env);
+    await loadSettings(env);
     kv.set('state', JSON.stringify({ stale: true }));
     kv.set('stats', JSON.stringify({ stale: true }));
+    kv.set('settings', JSON.stringify({ stale: true }));
     await expect(mutableStateSnapshot(env)).resolves.toEqual({
       state: { stateV: 1 },
       stats: { statsV: 1 },
+      settings: {
+        quiet: { enabled: false, from: '22:00', to: '08:00' },
+        modules: { news: false },
+        mutedTopics: [],
+      },
     });
   });
 

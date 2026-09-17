@@ -1,4 +1,4 @@
-// Durable Object для mutable legacy-blob'ів `state` і `stats`.
+// Durable Object для structured legacy-blob'ів `state`, `stats` і `settings`.
 //
 // KV не має CAS і може повертати кешовану копію після чужого запису. Тут
 // зберігається authoritative value + version у SQLite-backed DO; Worker
@@ -31,13 +31,13 @@ export class StateStoreDO extends DurableObject {
    * KV I/O може відкрити input gate DO. Ланцюжок гарантує, що compatibility
    * snapshots підуть у version order навіть тоді, коли наступний CAS уже
    * встиг записати canonical SQLite state.
-   * @type {Map<'state'|'stats', Promise<void>>}
+   * @type {Map<'state'|'stats'|'settings', Promise<void>>}
    */
   #legacyMirrors = new Map();
 
   /** @param {string} key */
   #assertKey(key) {
-    if (!MUTABLE_STATE_KEYS.includes(/** @type {'state'|'stats'} */ (key))) {
+    if (!MUTABLE_STATE_KEYS.includes(/** @type {'state'|'stats'|'settings'} */ (key))) {
       throw new Error(`state-store: невідомий ключ ${key}`);
     }
   }
@@ -56,7 +56,7 @@ export class StateStoreDO extends DurableObject {
    * Прочитати canonical snapshot. Перший виклик одноразово сіє DO значенням
    * старого KV-ключа; усі наступні ігнорують legacy snapshot, тому застарілий
    * KV read більше не може повернути state назад у часі.
-   * @param {'state'|'stats'} key
+   * @param {'state'|'stats'|'settings'} key
    * @param {unknown} legacyValue
    * @returns {Promise<MutableRecord>}
    */
@@ -64,7 +64,7 @@ export class StateStoreDO extends DurableObject {
     return this.#serial(() => this.#read(key, legacyValue));
   }
 
-  /** @param {'state'|'stats'} key @param {unknown} legacyValue
+  /** @param {'state'|'stats'|'settings'} key @param {unknown} legacyValue
    * @returns {Promise<MutableRecord>} */
   async #read(key, legacyValue) {
     this.#assertKey(key);
@@ -81,7 +81,7 @@ export class StateStoreDO extends DurableObject {
    * Атомарний CAS усередині одного DO. Коли версія не збігається, повертаємо
    * поточний snapshot — викликач повторно застосує ТУ САМУ чисту мутацію без
    * втрати паралельної зміни.
-   * @param {'state'|'stats'} key
+   * @param {'state'|'stats'|'settings'} key
    * @param {number} expectedVersion
    * @param {unknown} nextValue
    * @returns {Promise<{ ok: true, record: MutableRecord } | { ok: false, record: MutableRecord }>}
@@ -101,7 +101,24 @@ export class StateStoreDO extends DurableObject {
     });
   }
 
-  /** @param {'state'|'stats'} key @param {Record<string, unknown>} value */
+  /** Очистити canonical slot без compatibility mirror. Це потрібно T2: KV
+   * видаляється окремо й не має воскреснути дефолтним snapshot-ом.
+   * @param {'state'|'stats'|'settings'} key */
+  async clear(key) {
+    return this.#serial(async () => {
+      this.#assertKey(key);
+      const existing = /** @type {MutableRecord | undefined} */ (await this.ctx.storage.get(key));
+      const version =
+        existing && Number.isInteger(existing.version) && existing.version >= 0
+          ? existing.version + 1
+          : 0;
+      const record = { version, value: {} };
+      await this.ctx.storage.put(key, record);
+      return record;
+    });
+  }
+
+  /** @param {'state'|'stats'|'settings'} key @param {Record<string, unknown>} value */
   async #mirrorLegacy(key, value) {
     const kv = /** @type {Env} */ (this.env).BRIEFING;
     if (!kv || typeof kv.put !== 'function') return;

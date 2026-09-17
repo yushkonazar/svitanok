@@ -14,10 +14,10 @@
 //   StateStore `state` цілком не чіпаємо - у ньому живе робоче листування з
 //   Telegram (lastUpdateId, адреси вебхука, мітки задач), і його обнулення
 //   зламало б бота, а не забуло б власника. Стираються ПОЛЯ даних усередині
-//   нього і власні ключі даних (перелік нижче).
+//   нього, а окремий canonical `settings` slot очищується цілком.
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
-import { updateState, updateStats } from '../../kv-store.mjs';
+import { clearSettings, updateState, updateStats } from '../../kv-store.mjs';
 import { pendingClear } from '../pending-proposals/client.mjs';
 import {
   ActiveBrainRunsError,
@@ -329,6 +329,9 @@ async function eraseLocalData(env) {
       kvKeys += 1;
     }
   }
+  // `settings` уже canonical у StateStoreDO. Не дзеркалимо дефолти назад у
+  // KV: T2 має лишити ключ видаленим, а DO-запис — порожнім.
+  await clearSettings(env);
   // У новому rollout `stats` вже authoritative у StateStoreDO, а KV-ключ
   // лише сумісний snapshot. У legacy fallback він щойно видалений вище і
   // чіпати його не можна (інакше повернемо порожній ключ назад).

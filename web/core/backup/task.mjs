@@ -102,13 +102,14 @@ export async function runBackup(env, nowMs, today) {
 
   const tables = await dumpTables(env);
   const kv = await dumpKv(env);
-  // `state`/`stats` могли бути вже новішими за legacy KV mirror. Під час
-  // rollout саме StateStoreDO є canonical, тому бекап підміняє лише ці два
-  // ключі його snapshot-ом; решта KV лишається як є.
+  // Structured state (`state`/`stats`/`settings`) може бути новішим за legacy
+  // KV mirror. Під час rollout StateStoreDO є canonical, тому бекап
+  // підміняє ці ключі його snapshot-ом; решта KV лишається як є.
   const mutable = await mutableStateSnapshot(env);
   if (mutable) {
     kv.state = JSON.stringify(mutable.state);
     kv.stats = JSON.stringify(mutable.stats);
+    kv.settings = JSON.stringify(mutable.settings);
   }
   const doc = buildBackupDocument({
     createdMs: nowMs,

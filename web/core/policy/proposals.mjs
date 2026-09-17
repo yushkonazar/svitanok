@@ -87,7 +87,7 @@ import {
 import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
 import { sendMediaBytes } from '../tg/media.mjs';
 import { ensureFolderPath, uploadCsvAsSheet, uploadFile, trashFile } from '../adapters/drive.mjs';
-import { loadSettings } from '../../kv-store.mjs';
+import { putSettings, updateSettings } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import {
   runCollectionsCreate,
@@ -541,27 +541,27 @@ export const EXECUTORS = {
       await trashFile(env, String(snapshot.file_id));
     },
   },
-  // Налаштування Mini App (07 §4 kind=settings, T1): той самий блоб KV, що
-  // пише /api/settings, і та сама нормалізація - інакше модель могла б
-  // покласти туди форму, якої фронт не читає.
+  // Налаштування Mini App (07 §4 kind=settings, T1): той самий canonical
+  // StateStore slot, що пише /api/settings, і та сама нормалізація - інакше
+  // модель могла б покласти форму, якої фронт не читає.
   settings: {
     async execute(env, payload) {
       const patch = payload.patch ?? payload.settings ?? payload;
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
         throw new Error('settings: потрібен обʼєкт із полями quiet/modules/mutedTopics');
       }
-      const current = await loadSettings(env);
-      const next = normalizeSettings({
-        ...current,
-        ...patch,
-        quiet: { ...current.quiet, ...(patch.quiet ?? {}) },
-        modules: { ...current.modules, ...(patch.modules ?? {}) },
-      });
-      await env.BRIEFING.put('settings', JSON.stringify(next));
-      return { prev: current, result: next };
+      const { previous, settings } = await updateSettings(env, (current) =>
+        normalizeSettings({
+          ...current,
+          ...patch,
+          quiet: { ...current.quiet, ...(patch.quiet ?? {}) },
+          modules: { ...current.modules, ...(patch.modules ?? {}) },
+        }),
+      );
+      return { prev: previous, result: settings };
     },
     async undo(env, snapshot) {
-      await env.BRIEFING.put('settings', JSON.stringify(normalizeSettings(snapshot)));
+      await putSettings(env, normalizeSettings(snapshot));
     },
   },
   // Gemini (ADR-012/ADR-034, S-8-5/S-8-6, етап 7 PR-3). Ціну власник бачить у
