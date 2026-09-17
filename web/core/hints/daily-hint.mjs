@@ -77,7 +77,14 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
     if (hint.topic === 'security') {
       await runFactsSet(
         env,
-        { kind: 'setting', key: SECURITY_HINT_KEY, value: today, source: 'inferred' },
+        {
+          kind: 'setting',
+          key: SECURITY_HINT_KEY,
+          value: today,
+          source: 'observed_event',
+          confidence: 1,
+          observed_at: new Date(nowMs).toISOString(),
+        },
         nowMs,
       );
     }

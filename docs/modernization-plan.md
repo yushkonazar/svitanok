@@ -68,7 +68,7 @@
 **Робота:**
 
 - [x] Розділити `owner assertion`, `observed event`, `model hypothesis` у схемі та API; legacy `owner`/`inferred` нормалізуються сумісно.
-- [ ] Додати `source`, `confidence`, `observed_at`, `expires_at/review_at`, `supersedes`.
+- [x] Додати `source`, `confidence`, `observed_at`, `expires_at/review_at`, `supersedes`; зберегти metadata при legacy upsert/undo та не дозволяти моделі видавати гіпотезу за `observed_event`.
 - [x] Заборонити inference overwrite owner fact без T1 proposal.
 - [x] Ескалювати `facts.set` із tainted external context до T1 proposal.
 - [ ] Пропускати provenance/taint від tool output до tool arguments для всіх persistent write.

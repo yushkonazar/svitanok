@@ -161,12 +161,21 @@ async function readSettings(env) {
 
 /** @param {Env} env @param {string} key @param {unknown} value @param {number} nowMs */
 async function writeSetting(env, key, value, nowMs) {
-  // source=inferred: це запис системи, а не слово власника (07 §4).
-  await runFactsSet(env, { kind: 'setting', key, value, source: 'inferred' }, nowMs).catch(
-    (/** @type {any} */ e) => {
-      console.error(`secret-expiry: ${key} не записано`, e?.message);
+  // Це виміряний server-side стан, а не слово власника чи гіпотеза моделі.
+  await runFactsSet(
+    env,
+    {
+      kind: 'setting',
+      key,
+      value,
+      source: 'observed_event',
+      confidence: 1,
+      observed_at: new Date(nowMs).toISOString(),
     },
-  );
+    nowMs,
+  ).catch((/** @type {any} */ e) => {
+    console.error(`secret-expiry: ${key} не записано`, e?.message);
+  });
 }
 
 /** @param {unknown} raw @returns {Record<string, number>} */

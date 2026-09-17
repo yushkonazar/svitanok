@@ -23,6 +23,7 @@ const MIGRATIONS = [
   '0004_ideas_travel.sql',
   '0005_finance.sql',
   '0011_ideas_number.sql',
+  '0014_fact_provenance.sql',
 ];
 // Пʼятниця 04.09.2026 10:10 Києва = 07:10Z.
 const AT_1010 = Date.parse('2026-09-04T07:10:00.000Z');

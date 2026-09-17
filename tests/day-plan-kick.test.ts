@@ -14,6 +14,7 @@ const MIGRATIONS = [
   '0002_assistant.sql',
   '0004_ideas_travel.sql',
   '0007_instructions_plans.sql',
+  '0014_fact_provenance.sql',
 ];
 // Неділя 06.09.2026 00:10 Києва = сб 05.09 21:10Z; завтра - понеділок 07.09.
 const SUN_0010 = Date.parse('2026-09-05T21:10:00.000Z');

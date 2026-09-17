@@ -45,6 +45,7 @@ const MIGRATIONS = [
   '0007_instructions_plans.sql',
   '0008_fts.sql',
   '0009_voice.sql',
+  '0014_fact_provenance.sql',
 ];
 
 const CONN = 'conn-abc';

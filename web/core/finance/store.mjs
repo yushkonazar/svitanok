@@ -72,7 +72,14 @@ export async function readMonoAccounts(env) {
 export async function writeMonoAccounts(env, accounts, nowMs) {
   await runFactsSet(
     env,
-    { kind: 'setting', key: ACCOUNTS_FACT_KEY, value: accounts, source: 'owner' },
+    {
+      kind: 'setting',
+      key: ACCOUNTS_FACT_KEY,
+      value: accounts,
+      source: 'observed_event',
+      confidence: 1,
+      observed_at: new Date(nowMs).toISOString(),
+    },
     nowMs,
   );
 }

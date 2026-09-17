@@ -24,6 +24,7 @@ const MIGRATIONS = [
   '0002_assistant.sql',
   '0003_telemetry.sql',
   '0004_ideas_travel.sql',
+  '0014_fact_provenance.sql',
 ];
 
 function setup(kv: Record<string, string> = {}) {

@@ -592,7 +592,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'facts.set',
     description:
-      'Записати факт про власника. kind - РІВНО одне з: profile (про власника: імʼя, уподобання, звички смаку), habit (розпорядок: day_start, lunch_at, estimate_bias), contact, place, vehicle, setting (налаштування асистента), inferred (твій висновок). key - коротко латиницею/укр без пробілів, value - будь-який JSON. Виконує ядро за policy: у чистій сесії - одразу з «↩», у tainted - як пропозиція.',
+      'Записати факт про власника. kind - РІВНО одне з: profile (про власника: імʼя, уподобання, звички смаку), habit (розпорядок: day_start, lunch_at, estimate_bias), contact, place, vehicle, setting (налаштування асистента), inferred (твій висновок). key - коротко латиницею/укр без пробілів, value - будь-який JSON. source типово model_hypothesis; owner/owner_assertion потребує ✅. confidence 0..1 та observed_at/expires_at/review_at (ISO-8601) додавай лише коли вони явно відомі; supersedes - id факту, який замінюється. Виконує ядро за policy: у чистій сесії - одразу з «↩», у tainted - як пропозиція.',
     args: z.object({
       kind: z.string().max(32),
       key: z.string().max(128),
@@ -600,6 +600,11 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       // JSON не має undefined, тож refine еквівалентний перевірці `'value' in args`.
       value: z.unknown().refine((v) => v !== undefined, 'бракує value'),
       source: z.string().max(16).optional(),
+      confidence: z.number().finite().min(0).max(1).optional(),
+      observed_at: z.string().max(40).optional(),
+      expires_at: z.string().max(40).optional(),
+      review_at: z.string().max(40).optional(),
+      supersedes: z.string().max(64).optional(),
     }),
     write: true,
   }),

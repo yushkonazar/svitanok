@@ -814,6 +814,11 @@ export const TOOLS = {
         kind: { type: 'string', maxLength: 32 },
         key: { type: 'string', maxLength: 128 },
         source: { type: 'string', maxLength: 16 },
+        confidence: { type: 'number', minimum: 0, maximum: 1 },
+        observed_at: { type: 'string', maxLength: 40 },
+        expires_at: { type: 'string', maxLength: 40 },
+        review_at: { type: 'string', maxLength: 40 },
+        supersedes: { type: 'string', maxLength: 64 },
       },
     },
     // Write-інструмент: виконує НЕ run, а policy (PR-8) - T0 у чистій сесії

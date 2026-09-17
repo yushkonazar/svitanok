@@ -17,7 +17,14 @@ import {
   PROPOSAL_TTL_MS,
   UNDO_WINDOW_MS,
 } from './core.mjs';
-import { runFactsSet, runFactsGet, FACT_KINDS, isOwnerAssertion } from '../tools/facts.mjs';
+import {
+  runFactsSet,
+  runFactsGet,
+  restoreFactsSnapshot,
+  FACT_KINDS,
+  isOwnerAssertion,
+  normalizeFactSource,
+} from '../tools/facts.mjs';
 import { runRecord } from '../tools/record.mjs';
 import {
   runRemindersCreate,
@@ -1007,16 +1014,7 @@ export const EXECUTORS = {
           .run();
         return;
       }
-      await runFactsSet(
-        env,
-        {
-          kind: snapshot.kind,
-          key: snapshot.key,
-          value: snapshot.prev.value,
-          source: snapshot.prev.source,
-        },
-        nowMs,
-      );
+      await restoreFactsSnapshot(env, snapshot.prev, nowMs);
     },
   },
 };
@@ -1282,6 +1280,25 @@ export async function applyPolicy(env, action, nowMs) {
   }
   if (action.kind === 'facts.set' && !String(action.payload.key ?? '')) {
     return { mode: 'error', error: 'facts.set: key не може бути порожнім' };
+  }
+  if (action.kind === 'facts.set') {
+    const source = normalizeFactSource(action.payload.source);
+    if (!source) {
+      return {
+        mode: 'error',
+        error: `facts.set: невідоме provenance source "${String(action.payload.source)}"`,
+      };
+    }
+    // Модель не є trusted observer: зовнішній доказ має пройти через
+    // конкретний server-side writer (Mono, backup, scheduler тощо). Інакше
+    // вона могла б видати власну гіпотезу за перевірену подію.
+    if (source === 'observed_event') {
+      return {
+        mode: 'error',
+        error: 'facts.set: observed_event доступний лише trusted server-side writers',
+      };
+    }
+    action = { ...action, payload: { ...action.payload, source } };
   }
 
   // Gemini (ADR-034): у чужий сервіс їде РІВНО prompt власника.

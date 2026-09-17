@@ -126,14 +126,16 @@ export async function runBackup(env, nowMs, today) {
   });
   const summary = summarizeBackup(doc);
   // Відбиток - у facts (05-ops §перевірка): дата, хеш, розмір, id у Drive.
-  // Джерело inferred: це запис системи, не слово власника.
+  // Це перевірена подія server-side, не слово власника й не висновок моделі.
   await runFactsSet(
     env,
     {
       kind: 'setting',
       key: 'last_backup',
       value: { date: today, sha256, bytes: bytes.length, drive_id: uploaded.id, ...summary },
-      source: 'inferred',
+      source: 'observed_event',
+      confidence: 1,
+      observed_at: new Date(nowMs).toISOString(),
     },
     nowMs,
   );

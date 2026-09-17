@@ -68,7 +68,9 @@ export async function handleBusinessConnection(env, parsed, nowMs) {
         user_id: parsed.fromId == null ? null : String(parsed.fromId),
         at: new Date(nowMs).toISOString(),
       },
-      source: 'owner',
+      source: 'owner_assertion',
+      confidence: 1,
+      observed_at: new Date(nowMs).toISOString(),
     },
     nowMs,
   );

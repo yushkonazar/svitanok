@@ -42,6 +42,7 @@ const MIGRATIONS = [
   '0009_voice.sql',
   '0010_reminders_address.sql',
   '0012_reminders_recurrence.sql',
+  '0014_fact_provenance.sql',
 ];
 // Неділя 06.09.2026 18:00 Києва.
 const NOW = Date.parse('2026-09-06T15:00:00.000Z');

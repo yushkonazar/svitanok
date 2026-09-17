@@ -15,7 +15,12 @@ import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
 const NOW = Date.parse('2026-09-10T07:00:00.000Z');
-const MIGRATIONS = ['0001_base.sql', '0002_assistant.sql', '0004_ideas_travel.sql'];
+const MIGRATIONS = [
+  '0001_base.sql',
+  '0002_assistant.sql',
+  '0004_ideas_travel.sql',
+  '0014_fact_provenance.sql',
+];
 
 function setup() {
   const d1 = d1FromSqlite(MIGRATIONS);

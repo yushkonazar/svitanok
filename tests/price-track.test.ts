@@ -49,6 +49,7 @@ const MIGRATIONS = [
   '0003_telemetry.sql',
   '0004_ideas_travel.sql',
   '0007_instructions_plans.sql',
+  '0014_fact_provenance.sql',
 ];
 const NOW = Date.parse('2026-09-07T07:00:00.000Z');
 const URL_HD = 'https://rozetka.com.ua/ua/philips_hd9200/p1/';

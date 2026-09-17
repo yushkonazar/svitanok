@@ -289,12 +289,12 @@ describe('geo.*', () => {
   });
 });
 
-describe('facts.* на справжній міграції 0001', () => {
+describe('facts.* на поточній схемі facts', () => {
   const d1FromSqlite = () => {
     const db = new DatabaseSync(':memory:');
-    db.exec(
-      readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0001_base.sql'), 'utf8'),
-    );
+    for (const migration of ['0001_base.sql', '0014_fact_provenance.sql']) {
+      db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', migration), 'utf8'));
+    }
     return {
       prepare: (sql: string) => ({
         bind: (...args: unknown[]) => ({
@@ -354,6 +354,69 @@ describe('facts.* на справжній міграції 0001', () => {
       runFactsSet(env, { kind: 'habit', key: 'k', value: 1, source: 'model' }, NOW),
     ).rejects.toThrow(/provenance source/);
     await expect(runFactsGet(env, { kind: 'nope' })).rejects.toThrow(/невідомий kind/);
+  });
+
+  it('зберігає provenance metadata, нормалізує час і не стирає їх legacy-upsert-ом', async () => {
+    await runFactsSet(
+      env,
+      {
+        kind: 'setting',
+        key: 'fuel_price',
+        value: { A95: 58.4 },
+        source: 'observed_event',
+        confidence: 0.9,
+        observed_at: '2026-08-27T11:55:00+00:00',
+        expires_at: '2026-08-28T11:55:00Z',
+        review_at: '2026-08-27T17:55:00Z',
+        supersedes: 'fact-before-1',
+      },
+      NOW,
+    );
+    const first = (await runFactsGet(env, { kind: 'setting', key: 'fuel_price' })).result[0]!;
+    expect(first).toMatchObject({
+      source: 'observed_event',
+      confidence: 0.9,
+      observed_at: '2026-08-27T11:55:00.000Z',
+      expires_at: '2026-08-28T11:55:00.000Z',
+      review_at: '2026-08-27T17:55:00.000Z',
+      supersedes: 'fact-before-1',
+    });
+    expect(first.id).toEqual(expect.any(String));
+
+    await runFactsSet(env, { kind: 'setting', key: 'fuel_price', value: { A95: 59 } }, NOW + 1);
+    expect(
+      (await runFactsGet(env, { kind: 'setting', key: 'fuel_price' })).result[0],
+    ).toMatchObject({
+      value: { A95: 59 },
+      source: 'model_hypothesis',
+      confidence: 0.9,
+      observed_at: '2026-08-27T11:55:00.000Z',
+      expires_at: '2026-08-28T11:55:00.000Z',
+      review_at: '2026-08-27T17:55:00.000Z',
+      supersedes: 'fact-before-1',
+    });
+  });
+
+  it('відкидає некоректні provenance metadata', async () => {
+    await expect(
+      runFactsSet(env, { kind: 'setting', key: 'x', value: 1, confidence: 1.01 }, NOW),
+    ).rejects.toThrow(/confidence/);
+    await expect(
+      runFactsSet(env, { kind: 'setting', key: 'x', value: 1, observed_at: 'не дата' }, NOW),
+    ).rejects.toThrow(/observed_at/);
+    await expect(
+      runFactsSet(
+        env,
+        {
+          kind: 'setting',
+          key: 'x',
+          value: 1,
+          observed_at: '2026-08-27T12:00:00Z',
+          expires_at: '2026-08-27T11:59:59Z',
+        },
+        NOW,
+      ),
+    ).rejects.toThrow(/expires_at.*observed_at/);
   });
 
   it('без привʼязки DB — гучний виняток', async () => {

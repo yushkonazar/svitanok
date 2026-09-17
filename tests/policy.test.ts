@@ -37,6 +37,7 @@ function d1() {
     '0002_assistant.sql',
     '0010_reminders_address.sql',
     '0012_reminders_recurrence.sql',
+    '0014_fact_provenance.sql',
   ]) {
     db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', f), 'utf8'));
   }
@@ -202,7 +203,16 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
     // «↩». Owner fact перевіряється окремо нижче й завжди вимагає ✅.
     await runFactsSet(
       env,
-      { kind: 'setting', key: 'lang', value: 'uk', source: 'inferred' },
+      {
+        kind: 'setting',
+        key: 'lang',
+        value: 'uk',
+        source: 'inferred',
+        confidence: 0.6,
+        observed_at: '2026-08-28T09:00:00Z',
+        review_at: '2026-09-01T09:00:00Z',
+        supersedes: 'lang-before-1',
+      },
       NOW - 1000,
     );
     const out = await applyPolicy(
@@ -217,7 +227,14 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
     const undone = await resolveUndo(env, String(undoId), NOW + 60_000);
     expect(undone).toMatchObject({ ok: true, status: 'undone' });
     const after = await runFactsGet(env, { kind: 'setting', key: 'lang' });
-    expect(after.result[0]).toMatchObject({ value: 'uk', source: 'model_hypothesis' });
+    expect(after.result[0]).toMatchObject({
+      value: 'uk',
+      source: 'model_hypothesis',
+      confidence: 0.6,
+      observed_at: '2026-08-28T09:00:00.000Z',
+      review_at: '2026-09-01T09:00:00.000Z',
+      supersedes: 'lang-before-1',
+    });
 
     // Другий тап «↩» - ідемпотентний, не другий відкат.
     expect(await resolveUndo(env, String(undoId), NOW + 61_000)).toMatchObject({
@@ -246,6 +263,41 @@ describe('T0: виконати одразу + «↩» 10 хв', () => {
     await resolveUndo(env, undo2, NOW + 1000);
     expect((await runFactsGet(env, { kind: 'habit', key: 'чай' })).result).toHaveLength(0);
   });
+
+  it('undo повертає null provenance-поля, додані пізнішим записом', async () => {
+    await runFactsSet(
+      env,
+      { kind: 'setting', key: 'currency', value: 'UAH', source: 'inferred' },
+      NOW - 1_000,
+    );
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'facts.set',
+        payload: {
+          kind: 'setting',
+          key: 'currency',
+          value: 'EUR',
+          confidence: 0.8,
+          observed_at: '2026-08-28T10:00:00Z',
+          expires_at: '2026-09-01T10:00:00Z',
+          supersedes: 'currency-before-1',
+        },
+        tainted: false,
+      },
+      NOW,
+    );
+    const undoId = out.mode === 'executed' ? String(out.undo?.id) : '';
+    await resolveUndo(env, undoId, NOW + 1_000);
+    expect((await runFactsGet(env, { kind: 'setting', key: 'currency' })).result[0]).toMatchObject({
+      value: 'UAH',
+      confidence: null,
+      observed_at: null,
+      expires_at: null,
+      review_at: null,
+      supersedes: null,
+    });
+  });
 });
 
 describe('T1/T2: пропозиції', () => {
@@ -273,6 +325,21 @@ describe('T1/T2: пропозиції', () => {
     expect(await resolveProposal(env, { id, choice: 'ok' }, NOW + 61_000)).toMatchObject({
       already: 'approved',
     });
+  });
+
+  it('модель не може назвати свою гіпотезу observed_event', async () => {
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'facts.set',
+        payload: { kind: 'setting', key: 'rate', value: 58, source: 'observed_event' },
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(out).toMatchObject({ mode: 'error' });
+    expect(out.mode === 'error' && out.error).toMatch(/observed_event.*trusted/);
+    expect((await runFactsGet(env, { kind: 'setting', key: 'rate' })).result).toHaveLength(0);
   });
 
   it('inferred update не перезаписує owner fact без ✅ і після ✅ зберігає owner provenance', async () => {
