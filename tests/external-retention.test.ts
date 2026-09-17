@@ -73,6 +73,11 @@ function seedExternalRows(db: ReturnType<typeof setup>['db'], withBackup = false
      VALUES ('mem-1', 'dm', ?, 'зміст', 'vec-1')`,
   ).run(OLD);
   db.prepare(
+    `INSERT INTO memory_projection_versions
+     (thread_id, version, status, chunk_count, embedding_model, created_at, ready_at)
+     VALUES ('dm', 'legacy-v0', 'ready', 1, '@cf/baai/bge-m3', ?, ?)`,
+  ).run(OLD, OLD);
+  db.prepare(
     `INSERT INTO facts (id, kind, key, value_json, source, confidence, created_at, updated_at)
      VALUES ('f-owner', 'setting', 'owner_data', '"так"', 'owner', 1, ?, ?)`,
   ).run(OLD, OLD);
@@ -218,12 +223,18 @@ describe('зовнішня retention і T2 deletion', () => {
 
     const out = await retentionCleanupTask(env, NOW);
 
-    expect(out).toMatchObject({ removed: { memory_chunks: 1, sessions: 1 }, failed: [] });
+    expect(out).toMatchObject({
+      removed: { memory_chunks: 1, memory_projection_versions: 1, sessions: 1 },
+      failed: [],
+    });
     expect(deletedVectors).toEqual([['vec-1']]);
     expect(db.prepare('SELECT sdk_session_id, summary_md FROM sessions').get()).toEqual({
       sdk_session_id: null,
       summary_md: 'коротка згортка',
     });
     expect(db.prepare('SELECT COUNT(*) AS n FROM memory_chunks').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_projection_versions').get()).toEqual({
+      n: 0,
+    });
   });
 });

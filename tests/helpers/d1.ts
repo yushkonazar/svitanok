@@ -33,17 +33,20 @@ export interface D1Stub {
 
 /** In-memory D1 зі СПРАВЖНІМИ міграціями (імена файлів з web/core/migrations).
  *
- * Виробничі reader/writer-и facts працюють уже з expand-only provenance
- * колонками. Більшість старих fixture-ів називали лише залежності свого
- * модуля, тому додаємо безпечну expand-міграцію, коли вони починаються з
+ * Виробничі reader/writer-и facts і memory projection працюють уже з
+ * expand-only колонками. Більшість старих fixture-ів називали лише залежності
+ * свого модуля, тому додаємо безпечні expand-міграції, коли вони починаються з
  * базової схеми. Тести порядку/складу міграцій використовують raw DatabaseSync
  * і лишаються точними. */
 export function d1FromSqlite(migrations: string[]): D1Stub {
   const db = new DatabaseSync(':memory:');
-  const files =
-    migrations.includes('0001_base.sql') && !migrations.includes('0014_fact_provenance.sql')
-      ? [...migrations, '0014_fact_provenance.sql']
-      : migrations;
+  const files = [...migrations];
+  if (files.includes('0001_base.sql') && !files.includes('0014_fact_provenance.sql')) {
+    files.push('0014_fact_provenance.sql');
+  }
+  if (files.includes('0001_base.sql') && !files.includes('0015_memory_projection.sql')) {
+    files.push('0015_memory_projection.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

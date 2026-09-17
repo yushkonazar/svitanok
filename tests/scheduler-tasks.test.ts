@@ -20,7 +20,7 @@ import { agentRunWatchdog } from '../web/agent-runtime.mjs';
 import { workerEnv } from './helpers/env.js';
 
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
-  it('канонічні kind-и: heartbeat + десять крон-задач + sweeper outbox + memory-summarize (етап 2 PR-2) + weekly-review (етап 3 PR-3) + mail-triage / secret-expiry / quota-check (етап 7)', () => {
+  it('канонічні kind-и: heartbeat + крон-задачі + rebuildable memory projection + weekly-review та operational tasks', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
       'heartbeat',
       'reminder',
@@ -36,6 +36,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'levers-weekly',
       'outbox-drain',
       'memory-summarize',
+      'memory-projection-reconcile',
       'weekly-review',
       'backup',
       'daily-hint',
@@ -168,6 +169,14 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     // Легасі-перевірка рано виходить без LLM_HOST_*, handshake — без BRAIN_URL;
     // жоден із них не сміє валити задачу (ізоляція всередині композита).
     await SCHEDULER_TASKS['brain-health']?.run(workerEnv() as never); // не кидає
+  });
+
+  it('memory-projection-reconcile тихо пропускається без AI/Vectorize bindings', async () => {
+    await expect(
+      SCHEDULER_TASKS['memory-projection-reconcile']?.run(workerEnv() as never),
+    ).resolves.toEqual({
+      skipped: 'not-configured',
+    });
   });
 
   it('появи 5-хвилинні (крім нагадувань — щохвилини); shadowSafe — лише heartbeat', () => {

@@ -18,6 +18,7 @@ import { sendSystemAlert } from '../tg/outbox.mjs';
 import {
   eraseExpiredManagedBackups,
   eraseExpiredMemoryChunks,
+  eraseExpiredMemoryProjectionVersions,
   eraseExpiredSdkSessions,
 } from './external.mjs';
 
@@ -162,6 +163,7 @@ export async function retentionCleanupTask(env, nowMs = Date.now()) {
   /** @type {[string, () => Promise<number>][]} */
   const external = [
     ['memory_chunks', () => eraseExpiredMemoryChunks(env, nowMs)],
+    ['memory_projection_versions', () => eraseExpiredMemoryProjectionVersions(env, nowMs)],
     ['sessions', () => eraseExpiredSdkSessions(env, nowMs)],
     ['drive_backups', () => eraseExpiredManagedBackups(env, nowMs)],
   ];

@@ -72,7 +72,7 @@
 - [x] Заборонити inference overwrite owner fact без T1 proposal.
 - [x] Ескалювати `facts.set` із tainted external context до T1 proposal.
 - [ ] Пропускати provenance/taint від tool output до tool arguments для всіх persistent write.
-- [ ] Перетворити Vectorize на rebuildable projection: pending → indexed → ready, versioned rows, reconciliation.
+- [x] Перетворити Vectorize на rebuildable projection: `pending → indexed → ready`, versioned rows, scheduler reconciliation, rebuild із D1 та cleanup retired vectors ([contract](memory-projection.md)).
 - [ ] Додати owner-facing memory ledger: why/source/edit/delete.
 - [ ] Tests: prompt injection з email/web, owner precedence, stale fact, partial vector failure, rebuild.
 

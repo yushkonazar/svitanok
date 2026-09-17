@@ -47,6 +47,7 @@ import { mailTriageTask } from '../brief/mail-triage.mjs';
 import { refreshBriefCalendar } from '../brief/calendar-snapshot.mjs';
 import { secretExpiryTask } from '../ops/secret-expiry.mjs';
 import { quotaCheckTask } from '../ops/quota-check.mjs';
+import { reconcileMemoryProjection } from '../memory.mjs';
 
 /**
  * @typedef {{
@@ -154,6 +155,15 @@ export const SCHEDULER_TASKS = {
   // Згортки памʼяті (етап 2 PR-2, ADR-038): 04:00 Києва, гейт усередині
   // задачі; без shadowSafe - у shadow лише лог, бойово з ASSISTANT_V2=on.
   'memory-summarize': { periodMin: 5, run: async (env) => memorySummarize(env) },
+  // Pending/failed D1 → Vectorize generations are recoverable: this retry is
+  // idempotent by stable vector ids and never makes a partial version visible.
+  'memory-projection-reconcile': {
+    periodMin: 5,
+    run: async (env) => {
+      if (!env.DB || !env.AI || !env.VECTORIZE) return { skipped: 'not-configured' };
+      return reconcileMemoryProjection(env, Date.now());
+    },
+  },
   // Тижневий звіт (етап 3 PR-3, S-9-1/S-9-4): неділя 09:00 Києва, повтор о
   // 12:00 при збої; гейти й стан тижня - усередині задачі.
   'weekly-review': { periodMin: 5, run: async (env) => weeklyReviewTask(env) },

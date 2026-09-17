@@ -43,6 +43,10 @@ const ALL_MIGRATIONS = [
   '0009_voice.sql',
   '0010_reminders_address.sql',
   '0011_ideas_number.sql',
+  '0012_reminders_recurrence.sql',
+  '0013_run_steps_idempotency.sql',
+  '0014_fact_provenance.sql',
+  '0015_memory_projection.sql',
 ];
 const SECRET = 'backup-secret-for-tests-32-chars!!';
 // Неділя 06.09.2026 03:10 Києва = 00:10Z; 04:10 = 01:10Z.

@@ -38,7 +38,27 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'summary_md',
     'turn_count',
   ],
-  memory_chunks: ['id', 'thread_id', 'at', 'text', 'vector_id'],
+  memory_chunks: [
+    'id',
+    'thread_id',
+    'at',
+    'text',
+    'vector_id',
+    'projection_version',
+    'projection_status',
+    'indexed_at',
+  ],
+  memory_projection_versions: [
+    'thread_id',
+    'version',
+    'status',
+    'chunk_count',
+    'embedding_model',
+    'created_at',
+    'indexed_at',
+    'ready_at',
+    'error',
+  ],
   migrations_meta: ['name', 'applied_at'],
   voice_pending: [
     'id',
@@ -249,6 +269,7 @@ const EXPECTED_PK: Record<string, string[]> = {
   // Рядок на місяць — інакше ретенція «12 міс» із 07 §1 недосяжна.
   quota_counters: ['key', 'period'],
   counters: ['name'],
+  memory_projection_versions: ['thread_id', 'version'],
 };
 
 type IndexSpec = { cols: string[]; unique?: boolean };
@@ -264,7 +285,8 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
     { cols: ['expires_at'] },
     { cols: ['review_at'] },
   ],
-  memory_chunks: [{ cols: ['thread_id', 'at'] }],
+  memory_chunks: [{ cols: ['thread_id', 'at'] }, { cols: ['projection_status', 'thread_id'] }],
+  memory_projection_versions: [{ cols: ['status', 'created_at'] }],
   reminders: [{ cols: ['status', 'due_at'] }],
   proposals: [{ cols: ['status', 'expires_at'] }],
   chains: [{ cols: ['status'] }],
@@ -331,7 +353,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('чотирнадцять файлів 0001–0014, нумерація без дірок', () => {
+  it('пʼятнадцять файлів 0001–0015, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -347,6 +369,7 @@ describe('міграції D1 — файли', () => {
       '0012',
       '0013',
       '0014',
+      '0015',
     ]);
   });
 });

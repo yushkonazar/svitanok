@@ -1,7 +1,7 @@
 // Памʼять (ADR-038): чанкування згорток, ембединги bge-m3 (стаб AI), запис
-// memory_chunks (справжня міграція 0001) + Vectorize (стаб), пошук з датами,
-// явні відмови без привʼязок, і дротування в /internal/session (чанки пишуться;
-// збій памʼяті не відкочує сесію - чесне поле memory:'failed').
+// D1 truth + rebuildable Vectorize projection, пошук з датами, явні відмови
+// без привʼязок, і дротування в /internal/session (збій індексу не відкочує
+// сесію - memory:'failed', а reconciliation підбирає D1-версію).
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,6 +11,8 @@ import {
   MEMORY_CHUNK_MAX_CHARS,
   chunkSummary,
   embedTexts,
+  rebuildMemoryProjection,
+  reconcileMemoryProjection,
   runMemorySearch,
   searchMemory,
   writeMemoryChunks,
@@ -25,9 +27,9 @@ const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 
 const d1FromSqlite = () => {
   const db = new DatabaseSync(':memory:');
-  db.exec(
-    readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0001_base.sql'), 'utf8'),
-  );
+  for (const migration of ['0001_base.sql', '0015_memory_projection.sql']) {
+    db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', migration), 'utf8'));
+  }
   return {
     db,
     stub: {
@@ -157,6 +159,64 @@ describe('writeMemoryChunks + searchMemory', () => {
     // Чужий тред не зачеплено.
     await writeMemoryChunks(env, 'інший', 'його згортка', NOW);
     expect(db.prepare('SELECT COUNT(*) c FROM memory_chunks').get()).toMatchObject({ c: 2 });
+  });
+
+  it('збій Vectorize лишає failed версію в D1, а стара ready версія лишається для пошуку', async () => {
+    await writeMemoryChunks(env, 'dm', 'стара згортка', NOW);
+    const old = db
+      .prepare("SELECT id FROM memory_chunks WHERE projection_status = 'ready'")
+      .get() as {
+      id: string;
+    };
+    vec.stub.upsert = vi.fn(async () => {
+      throw new Error('vectorize down');
+    });
+    await expect(writeMemoryChunks(env, 'dm', 'нова згортка', NOW + 1_000)).rejects.toThrow(
+      /vectorize down/,
+    );
+    expect(
+      db
+        .prepare(
+          'SELECT status FROM memory_projection_versions WHERE thread_id = ? ORDER BY created_at DESC',
+        )
+        .all('dm'),
+    ).toContainEqual({ status: 'failed' });
+    vec.stub.query = vi.fn(async () => ({ matches: [{ id: old.id, score: 0.9 }] }));
+    expect(await searchMemory(env, 'q', 5)).toContain('стара згортка');
+  });
+
+  it('reconciliation повторно індексує failed D1-версію та атомарно перемикає пошук', async () => {
+    await writeMemoryChunks(env, 'dm', 'стара згортка', NOW);
+    vec.stub.upsert = vi.fn(async () => {
+      throw new Error('тимчасовий збій');
+    });
+    await expect(writeMemoryChunks(env, 'dm', 'нова згортка', NOW + 1_000)).rejects.toThrow(
+      /тимчасовий збій/,
+    );
+    vec.stub.upsert = vi.fn(async (rows: unknown[]) => void vec.upserts.push(rows));
+    const repaired = await reconcileMemoryProjection(env, NOW + 2_000);
+    expect(repaired).toMatchObject({ repaired: 1, failed: 0, retired: 1 });
+    const rows = db
+      .prepare('SELECT text, projection_status FROM memory_chunks WHERE thread_id = ?')
+      .all('dm') as { text: string; projection_status: string }[];
+    expect(rows).toEqual([{ text: 'нова згортка', projection_status: 'ready' }]);
+  });
+
+  it('manual rebuild працює лише з D1 truth та не змінює тексти чи vector id', async () => {
+    await writeMemoryChunks(env, 'dm', 'стабільна згортка', NOW);
+    const before = db.prepare('SELECT id, text FROM memory_chunks').get() as {
+      id: string;
+      text: string;
+    };
+    const out = await rebuildMemoryProjection(env, NOW + 1_000, 'dm');
+    expect(out).toMatchObject({ repaired: 1, failed: 0 });
+    expect(db.prepare('SELECT id, text, projection_status FROM memory_chunks').get()).toMatchObject(
+      {
+        id: before.id,
+        text: before.text,
+        projection_status: 'ready',
+      },
+    );
   });
 
   it('searchMemory: цитати з датами в порядку релевантності; сироти-вектори не вигадуються', async () => {

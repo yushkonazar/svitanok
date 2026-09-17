@@ -116,6 +116,51 @@ export async function eraseExpiredMemoryChunks(env, nowMs, limit = EXTERNAL_SCAN
 }
 
 /**
+ * Memory projection rows contain only repair metadata, but thread ids are
+ * still personal data. Remove a version once all of its D1 chunks are gone;
+ * this runs after `eraseExpiredMemoryChunks`, so no rebuildable text is lost.
+ * @param {Env} env @param {number} nowMs @param {number} [limit]
+ */
+export async function eraseExpiredMemoryProjectionVersions(
+  env,
+  nowMs,
+  limit = EXTERNAL_SCAN_BATCH,
+) {
+  const before = new Date(nowMs - EXTERNAL_RETENTION_MS).toISOString();
+  const { results } = await db(env)
+    .prepare(
+      `SELECT thread_id, version FROM memory_projection_versions
+       WHERE created_at < ?
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_chunks c
+           WHERE c.thread_id = memory_projection_versions.thread_id
+             AND c.projection_version = memory_projection_versions.version
+         )
+       LIMIT ?`,
+    )
+    .bind(before, limit)
+    .all();
+  const rows = /** @type {{ thread_id: string, version: string }[]} */ (results ?? []);
+  let removed = 0;
+  for (const row of rows) {
+    const out = await db(env)
+      .prepare(
+        `DELETE FROM memory_projection_versions
+         WHERE thread_id = ? AND version = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM memory_chunks c
+             WHERE c.thread_id = memory_projection_versions.thread_id
+               AND c.projection_version = memory_projection_versions.version
+           )`,
+      )
+      .bind(row.thread_id, row.version)
+      .run();
+    removed += Number(out.meta?.changes ?? 0);
+  }
+  return removed;
+}
+
+/**
  * Фізично стерти всі VPS SDK-транскрипти, що ще мають D1-посилання. D1 не
  * змінюється: `forgetAll` робить це лише після успіху КОЖНОГО зовнішнього
  * кроку, тож невдалий cleanup можна повторити без втрати адресатів.

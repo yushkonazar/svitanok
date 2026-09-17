@@ -26,6 +26,7 @@ export const BACKUP_TABLES = [
   'facts',
   'sessions',
   'memory_chunks',
+  'memory_projection_versions',
   'reminders',
   'proposals',
   'chains',
