@@ -11,8 +11,9 @@
 //   1. Кожен НЕЗАЛЕЖНИЙ писар має ВЛАСНИЙ ключ. Спільний блоб під конкурентним
 //      записом мовчки губить дані — це вже ламало прод (19.07: писар `state`
 //      затирав пропозицію асистента, і кожен ✅ падав у «Застаріла»). Звідси
-//      окремі assistantHistory; active `agentRuns`, `assistantPending` і
-//      `sentMessages` уже переїхали у свої Durable Object control planes.
+//      окремі короткоживучі ключі; active `agentRuns`, `assistantPending`,
+//      `sentMessages` і `assistantHistory` уже переїхали у свої Durable
+//      Object control planes.
 //   2. `state`, `stats` і `settings` — виняток із legacy-сумісності. Їхній source of truth
 //      тепер StateStoreDO (версійний CAS), а KV — лише snapshot для старого
 //      ранкового briefing-а та backup. Без привʼязки DO (локальні тести або
@@ -22,6 +23,7 @@
 //      власник побачив би 500 замість дашборда.
 
 import { normalizeSettings } from './settings-core.mjs';
+import { appendTurn } from './assistant-memory-core.mjs';
 import {
   mergeSentMessages,
   recordSentMessage,
@@ -45,6 +47,13 @@ import {
   sentMessagesReplace,
 } from './core/sent-messages/client.mjs';
 import { SENT_MESSAGES_KEY } from './core/sent-messages/contract.mjs';
+import {
+  historyAppend,
+  historyClear,
+  historyRead,
+  historyReplace,
+} from './core/assistant-history/client.mjs';
+import { ASSISTANT_HISTORY_KEY } from './core/assistant-history/contract.mjs';
 
 /**
  * Спільний читач: JSON із ключа або дефолт. Биття/відсутність -> дефолт.
@@ -324,7 +333,27 @@ export async function loadBriefingForDate(env, dateKey) {
  *  @param {Env} env
  *  @returns {Promise<KvBlob>} */
 export async function loadAssistantHistory(env) {
-  return readJson(env, 'assistantHistory', {});
+  const legacy = await readJson(env, ASSISTANT_HISTORY_KEY, {});
+  return (await historyRead(env, legacy)).history;
+}
+
+/** Atomically append an ordered batch to one assistant thread. Production
+ * writers must use this instead of load → appendTurn → put whole history.
+ * @param {Env} env
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
+ * @param {{ role: string, text: string }[]} turns
+ * @returns {Promise<KvBlob>} */
+export async function appendAssistantHistory(env, chatId, threadId, turns) {
+  const legacy = await readJson(env, ASSISTANT_HISTORY_KEY, {});
+  const canonical = await historyAppend(env, legacy, chatId, threadId, turns);
+  if (canonical.canonical) return canonical.history;
+  let history = await loadAssistantHistory(env);
+  for (const turn of turns) {
+    history = appendTurn(history, chatId, threadId, turn.role, turn.text);
+  }
+  await putAssistantHistory(env, history);
+  return history;
 }
 
 /**
@@ -338,9 +367,24 @@ export async function loadAssistantHistory(env) {
  * @param {KvBlob} history
  */
 export async function putAssistantHistory(env, history) {
-  await env.BRIEFING.put('assistantHistory', JSON.stringify(history), {
+  if (await historyReplace(env, history)) return;
+  await env.BRIEFING.put(ASSISTANT_HISTORY_KEY, JSON.stringify(history), {
     expirationTtl: ASSISTANT_HISTORY_TTL_S,
   });
+}
+
+/** Canonical snapshot for backup/export. @param {Env} env
+ * @returns {Promise<KvBlob|null>} */
+export async function assistantHistorySnapshot(env) {
+  const legacy = await readJson(env, ASSISTANT_HISTORY_KEY, {});
+  const result = await historyRead(env, legacy);
+  return result.canonical ? result.history : null;
+}
+
+/** T2 canonical cleanup; KV mirror is deleted by FORGET_ALL_KV_KEYS.
+ * @param {Env} env */
+export async function clearAssistantHistory(env) {
+  return historyClear(env);
 }
 
 /**

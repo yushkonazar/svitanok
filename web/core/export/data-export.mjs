@@ -17,7 +17,11 @@
 // на env із упізнаваними значеннями.
 
 import { dumpTables, dumpKv } from '../backup/task.mjs';
-import { mutableStateSnapshot, sentMessagesSnapshot } from '../../kv-store.mjs';
+import {
+  assistantHistorySnapshot,
+  mutableStateSnapshot,
+  sentMessagesSnapshot,
+} from '../../kv-store.mjs';
 import { BACKUP_TABLES, BACKUP_KV_EXCLUDE } from '../backup/core.mjs';
 import { ensureFolderPath, uploadFile } from '../adapters/drive.mjs';
 import { buildZip } from './zip.mjs';
@@ -151,11 +155,12 @@ export function exportStamp(nowMs) {
  */
 export async function runDataExport(env, nowMs) {
   if (!env.DB) throw new Error('привʼязки DB немає - експорт неможливий');
-  const [tables, kv, mutable, sentMessages] = await Promise.all([
+  const [tables, kv, mutable, sentMessages, assistantHistory] = await Promise.all([
     dumpTables(env),
     dumpKv(env),
     mutableStateSnapshot(env),
     sentMessagesSnapshot(env),
+    assistantHistorySnapshot(env),
   ]);
   if (mutable) {
     kv.state = JSON.stringify(mutable.state);
@@ -163,6 +168,7 @@ export async function runDataExport(env, nowMs) {
     kv.settings = JSON.stringify(mutable.settings);
   }
   if (sentMessages) kv.sentMessages = JSON.stringify(sentMessages);
+  if (assistantHistory) kv.assistantHistory = JSON.stringify(assistantHistory);
   const files = buildExportFiles({ tables, kv, secrets: secretValues(env), nowMs });
   const zip = await buildZip(files, { dateMs: nowMs });
   const name = `svitanok-export-${exportStamp(nowMs)}.zip`;

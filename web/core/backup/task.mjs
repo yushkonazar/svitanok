@@ -14,7 +14,11 @@ import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { runFactsSet } from '../tools/facts.mjs';
 import { ensureFolderPath, uploadFile } from '../adapters/drive.mjs';
-import { mutableStateSnapshot, sentMessagesSnapshot } from '../../kv-store.mjs';
+import {
+  assistantHistorySnapshot,
+  mutableStateSnapshot,
+  sentMessagesSnapshot,
+} from '../../kv-store.mjs';
 import {
   buildBackupDocument,
   encryptBackup,
@@ -105,9 +109,10 @@ export async function runBackup(env, nowMs, today) {
   // Structured state (`state`/`stats`/`settings`) може бути новішим за legacy
   // KV mirror. Під час rollout StateStoreDO є canonical, тому бекап
   // підміняє ці ключі його snapshot-ом; решта KV лишається як є.
-  const [mutable, sentMessages] = await Promise.all([
+  const [mutable, sentMessages, assistantHistory] = await Promise.all([
     mutableStateSnapshot(env),
     sentMessagesSnapshot(env),
+    assistantHistorySnapshot(env),
   ]);
   if (mutable) {
     kv.state = JSON.stringify(mutable.state);
@@ -115,6 +120,7 @@ export async function runBackup(env, nowMs, today) {
     kv.settings = JSON.stringify(mutable.settings);
   }
   if (sentMessages) kv.sentMessages = JSON.stringify(sentMessages);
+  if (assistantHistory) kv.assistantHistory = JSON.stringify(assistantHistory);
   const doc = buildBackupDocument({
     createdMs: nowMs,
     envName: String(env.ASSISTANT_V2 ?? 'unknown'),

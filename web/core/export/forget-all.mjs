@@ -17,7 +17,13 @@
 //   нього, а окремий canonical `settings` slot очищується цілком.
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
-import { clearSentMessages, clearSettings, updateState, updateStats } from '../../kv-store.mjs';
+import {
+  clearAssistantHistory,
+  clearSentMessages,
+  clearSettings,
+  updateState,
+  updateStats,
+} from '../../kv-store.mjs';
 import { pendingClear } from '../pending-proposals/client.mjs';
 import {
   ActiveBrainRunsError,
@@ -323,6 +329,7 @@ async function eraseLocalData(env) {
   await pendingClear(env);
   // /clear ring buffer має окремий canonical DO, тож KV delete недостатній.
   await clearSentMessages(env);
+  await clearAssistantHistory(env);
 
   let kvKeys = 0;
   for (const key of FORGET_ALL_KV_KEYS) {

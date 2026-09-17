@@ -82,6 +82,9 @@
       // Atomic /clear ring buffer: webhook, cron і outbox не гублять id між
       // окремими Worker isolates.
       { "name": "SENT_MESSAGES", "class_name": "SentMessagesDO" },
+      // Short assistant context: callback questions and completed agent runs
+      // append atomically and expire together after 30 days of silence.
+      { "name": "ASSISTANT_HISTORY", "class_name": "AssistantHistoryDO" },
     ],
   },
   "exports": {
@@ -91,6 +94,7 @@
     "StateStoreDO": { "type": "durable-object", "storage": "sqlite" },
     "PendingProposalsDO": { "type": "durable-object", "storage": "sqlite" },
     "SentMessagesDO": { "type": "durable-object", "storage": "sqlite" },
+    "AssistantHistoryDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
   // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і

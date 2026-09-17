@@ -176,11 +176,19 @@ describe('зовнішня retention і T2 deletion', () => {
           },
         }),
       },
+      ASSISTANT_HISTORY: {
+        getByName: (name: string) => ({
+          clear: async () => {
+            clears.push(name);
+            return { cleared: true };
+          },
+        }),
+      },
     });
     successTransport();
 
     await expect(forgetAll(env)).resolves.toMatchObject({ external: { queues: 0 } });
-    expect(clears).toEqual(['pending-proposals', 'sent-messages']);
+    expect(clears).toEqual(['pending-proposals', 'sent-messages', 'assistant-history']);
   });
 
   it('помилка VPS залишає локальні дані й квитанцію failed — «все стерто» не повертається', async () => {

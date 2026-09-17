@@ -11,10 +11,9 @@
 //     ляже поверх («ПРОДОВЖЕННЯ РОЗМОВИ» у системному промпті вже навчена
 //     трактувати його як відповідь).
 //
-// Обидві best-effort: збій KV не сміє з'їсти відповідь власнику.
+// Обидві best-effort: збій control plane не сміє з'їсти відповідь власнику.
 
-import { appendTurn } from './assistant-memory-core.mjs';
-import { loadAssistantHistory, putAssistantHistory } from './kv-store.mjs';
+import { appendAssistantHistory } from './kv-store.mjs';
 
 /** @typedef {import('./agent-run-core.mjs').RunClaims} RunClaims */
 
@@ -29,10 +28,10 @@ import { loadAssistantHistory, putAssistantHistory } from './kv-store.mjs';
  */
 export async function rememberExchange(env, claims, assistantSummary) {
   try {
-    let h = await loadAssistantHistory(env);
-    h = appendTurn(h, claims.chatId, claims.threadId, 'user', claims.userText);
-    h = appendTurn(h, claims.chatId, claims.threadId, 'assistant', assistantSummary);
-    await putAssistantHistory(env, h);
+    await appendAssistantHistory(env, claims.chatId, claims.threadId, [
+      { role: 'user', text: claims.userText },
+      { role: 'assistant', text: assistantSummary },
+    ]);
   } catch (e) {
     console.error('assistantHistory write failed (не блокує відповідь)', e);
   }
@@ -50,9 +49,9 @@ export async function rememberExchange(env, claims, assistantSummary) {
  */
 export async function rememberAssistantQuestion(env, parsed, text) {
   try {
-    let h = await loadAssistantHistory(env);
-    h = appendTurn(h, parsed.chatId, parsed.threadId, 'assistant', text);
-    await putAssistantHistory(env, h);
+    await appendAssistantHistory(env, parsed.chatId, parsed.threadId, [
+      { role: 'assistant', text },
+    ]);
   } catch (e) {
     console.error('assistantHistory (question) write failed (не блокує відповідь)', e);
   }

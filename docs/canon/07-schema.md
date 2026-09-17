@@ -165,9 +165,9 @@ Front-matter працівника → `AgentDefinition` SDK: `description` = п�
 
 Види: `reminder`, `checkin-nudge`, `sleep-nudge`, `brief-dispatch`, `dead-man`, `run-watchdog`, `brain-health`, `archive-monthly`, `levers-weekly`, `tg-setup`, `mail-triage` (15 хв), `weekly-review`, `steam-check`, `price-track-kick`, `mono-reconcile`, `finance-evening`, `subscription-remind`, `inbox-digest`, `backup`, `secret-expiry`, `retention-cleanup`, `quota-check`, `chain-nudge`, `day-plan-kick` (00:05: створити `DayPlanChain` на сьогодні, якщо увімкнено і день робочий), `memory-summarize` (04:00: згортки тредів з активністю + ембединги), `daily-hint` (10:00: один кандидат із `trips`/`subscriptions`/`chains`/`ideas`/`facts` за пріоритетом; dedupe на добу; `facts.setting.hint_mute_json` вимикає теми; якщо того дня є вечірній рядок - підказка додається до нього), `usage-retry` (повтор профілю після скидання ліміту).
 
-## 8. KV (лишається)
+## 8. KV і control planes
 
-Ключі без змін: `state`, `stats` (чек-ін - єдиний власник), `settings`, `saved`, `statsArchive`, `statsArchiveWeekly`, `levers`, `weatherLive`, `publicStatus`. Мігрують у D1 на етапі 2 і далі не використовуються: `reminders` (→ `reminders`), `assistantPending` (→ `proposals`), `assistantHistory` (не мігрує; памʼять з нуля). `saved` лишається в KV (Mini App читає його як є).
+KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, `statsArchiveWeekly`, `levers`, `weatherLive`, `publicStatus`) та compatibility mirror під rollback/старий backup. Canonical structured state живе в singleton Durable Objects: `StateStoreDO` (`state`, `stats`, `settings`), `RunRegistryDO` (active runs), `PendingProposalsDO` (pending proposal), `SentMessagesDO` (`/clear` ring buffer) і `AssistantHistoryDO` (короткий chat context, 30 діб тиші через alarm). `saved` лишається в KV, бо Mini App читає повний immutable snapshot напряму; змінні domain records і далі мігрують у D1 на етапі 2.
 
 ## 9. Повідомлення: формат callback-даних
 

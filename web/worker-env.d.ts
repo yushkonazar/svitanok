@@ -80,6 +80,10 @@ interface Env {
   SENT_MESSAGES?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/sent-messages/do.mjs').SentMessagesDO
   >;
+  /** Short per-thread assistant context, canonical with a 30-day DO alarm TTL. */
+  ASSISTANT_HISTORY?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/assistant-history/do.mjs').AssistantHistoryDO
+  >;
 
   /**
    * Vectorize-індекс памʼяті (ADR-038, етап 2 PR-2): svitanok-memory,
