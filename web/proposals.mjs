@@ -46,8 +46,9 @@ import { normalizeSettings } from './settings-core.mjs';
 import {
   loadState,
   loadSettings,
-  ASSISTANT_PENDING_KEY,
   loadAssistantPending,
+  putAssistantPending,
+  updateAssistantPending,
   claimAssistantPending,
   markProposalExecuted,
   updateState,
@@ -78,10 +79,7 @@ export async function stageProposalItem(
   /** @type {KvBlob} */ item,
 ) {
   const id = crypto.randomUUID().slice(0, 8);
-  await env.BRIEFING.put(
-    ASSISTANT_PENDING_KEY,
-    JSON.stringify({ id, items: [item], createdMs: Date.now() }),
-  );
+  await putAssistantPending(env, { id, items: [item], createdMs: Date.now() });
   return sendTo(env, parsed)(formatProposalMessage([item]), {
     parse_mode: 'HTML',
     reply_markup: buildProposalKeyboard(id, [item], {}),
@@ -224,10 +222,7 @@ export async function proposeCalendarChanges(
   // cfg = доналаштування (циклери ⏳/⏰, create-режим). null = «як є»: тривалість
   // від моделі, сповіщення за дефолтом календаря (поведінка до цієї фічі).
   const cfg = { durMin: null, leadMin: null };
-  await env.BRIEFING.put(
-    ASSISTANT_PENDING_KEY,
-    JSON.stringify({ id, items, createdMs: Date.now(), cfg }),
-  );
+  await putAssistantPending(env, { id, items, createdMs: Date.now(), cfg });
 
   const warnings = await computeOverlapWarnings(env, items);
   const droppedNote = droppedCount > 0 ? `\n\n⚠️ пропущено ${droppedCount} — незрозумілий час` : '';
@@ -318,16 +313,21 @@ export async function resolveProposalCallback(
      місці. Текст тут від cfg не залежить -> досить editMessageReplyMarkup. */
   if (cb.action === 'd' || cb.action === 'l') {
     if (mode !== 'create') return '⚠️ Застаріла пропозиція.';
-    const next =
-      cb.action === 'd'
-        ? { ...cfg, durMin: cycleProposalDuration(cfg.durMin) }
-        : { ...cfg, leadMin: cycleProposalLead(cfg.leadMin) };
-    await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify({ ...pending, cfg: next }));
+    const updated = await updateAssistantPending(env, cb.id, (current) => {
+      const currentCfg = current.cfg ?? { durMin: null, leadMin: null };
+      const next =
+        cb.action === 'd'
+          ? { ...currentCfg, durMin: cycleProposalDuration(currentCfg.durMin) }
+          : { ...currentCfg, leadMin: cycleProposalLead(currentCfg.leadMin) };
+      return { ...current, cfg: next };
+    });
+    if (!updated.ok || !updated.pending) return '⚠️ Застаріла пропозиція.';
+    const next = updated.pending.cfg ?? { durMin: null, leadMin: null };
     if (parsed.chatId != null && parsed.messageId != null) {
       await tgCall(env, 'editMessageReplyMarkup', {
         chat_id: parsed.chatId,
         message_id: parsed.messageId,
-        reply_markup: buildProposalKeyboard(cb.id, pending.items, next),
+        reply_markup: buildProposalKeyboard(cb.id, updated.pending.items, next),
       });
     }
     return cb.action === 'd'
@@ -345,22 +345,32 @@ export async function resolveProposalCallback(
     const isCreateReminder =
       mode === 'create' && pending.items.length === 1 && pending.items[0]?.kind === 'reminder';
     if (mode !== 'edit' && !isCreateReminder) return '⚠️ Застаріла пропозиція.';
-    const item = pending.items[0];
-    const anchorMs = isCreateReminder
-      ? (item.baseWhenMs ?? item.whenMs ?? 0)
-      : (item.base?.whenMs ?? 0);
-    const nextShift = cycleEventShift(item.shiftMin ?? 0);
-    const nextItems = [
-      { ...item, shiftMin: nextShift, whenMs: anchorMs + (nextShift ?? 0) * 60_000 },
-    ];
-    await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify({ ...pending, items: nextItems }));
+    const updated = await updateAssistantPending(env, cb.id, (current) => {
+      // `pendingUpdate` відкидає інший id, а tap-и того самого slot-а не
+      // змінюють його форму. Тому retry застосовує shift до свіжого item, не
+      // гублячи паралельний циклер тривалості чи lead.
+      const item = current.items[0];
+      const anchorMs = isCreateReminder
+        ? (item.baseWhenMs ?? item.whenMs ?? 0)
+        : (item.base?.whenMs ?? 0);
+      const nextShift = cycleEventShift(item.shiftMin ?? 0);
+      const items = [
+        { ...item, shiftMin: nextShift, whenMs: anchorMs + (nextShift ?? 0) * 60_000 },
+      ];
+      return { ...current, items };
+    });
+    if (!updated.ok || !updated.pending) return '⚠️ Застаріла пропозиція.';
+    const nextItems = updated.pending.items;
+    const nextItem = nextItems[0];
+    const nextShift = nextItem?.shiftMin ?? null;
+    const nextCfg = updated.pending.cfg ?? cfg;
     if (parsed.chatId != null && parsed.messageId != null) {
       await tgCall(env, 'editMessageText', {
         chat_id: parsed.chatId,
         message_id: parsed.messageId,
         text: formatProposalMessage(nextItems),
         parse_mode: 'HTML',
-        reply_markup: buildProposalKeyboard(cb.id, nextItems, cfg),
+        reply_markup: buildProposalKeyboard(cb.id, nextItems, nextCfg),
       });
     }
     return `🕐 ${formatShiftLabel(nextShift)}`;
@@ -576,10 +586,7 @@ export async function stageItemEdit(
   };
   const item = { kind: 'updateEvent', eventId, shiftMin: 0, whenMs: base.whenMs, base };
   const id = crypto.randomUUID().slice(0, 8);
-  await env.BRIEFING.put(
-    ASSISTANT_PENDING_KEY,
-    JSON.stringify({ id, items: [item], createdMs: Date.now() }),
-  );
+  await putAssistantPending(env, { id, items: [item], createdMs: Date.now() });
   await sendTo(env, parsed)(formatProposalMessage([item]), {
     parse_mode: 'HTML',
     reply_markup: buildProposalKeyboard(id, [item], {}),
@@ -600,10 +607,7 @@ export async function stageItemDelete(
   const base = { title: fresh.title, whenMs: fresh.startMs };
   const item = { kind: 'deleteEvent', eventId, base };
   const id = crypto.randomUUID().slice(0, 8);
-  await env.BRIEFING.put(
-    ASSISTANT_PENDING_KEY,
-    JSON.stringify({ id, items: [item], createdMs: Date.now() }),
-  );
+  await putAssistantPending(env, { id, items: [item], createdMs: Date.now() });
   await sendTo(env, parsed)(formatProposalMessage([item]), {
     parse_mode: 'HTML',
     reply_markup: buildProposalKeyboard(id, [item], {}),

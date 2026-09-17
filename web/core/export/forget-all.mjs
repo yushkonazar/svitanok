@@ -18,6 +18,7 @@
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
 import { updateState, updateStats } from '../../kv-store.mjs';
+import { pendingClear } from '../pending-proposals/client.mjs';
 import {
   ActiveBrainRunsError,
   eraseAllManagedBackups,
@@ -316,6 +317,10 @@ async function eraseLocalData(env) {
   for (const fts of FORGET_ALL_FTS) {
     await db.prepare(`DELETE FROM ${fts}`).bind().run();
   }
+
+  // Canonical pending-proposal slot не є KV-копією: T2 має стерти його ДО
+  // legacy mirror, інакше старе ✅ могло б пережити «забудь усе» у DO.
+  await pendingClear(env);
 
   let kvKeys = 0;
   for (const key of FORGET_ALL_KV_KEYS) {

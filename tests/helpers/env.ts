@@ -37,6 +37,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'SCHEDULER'
     | 'RUN_REGISTRY'
     | 'STATE_STORE'
+    | 'PENDING_PROPOSALS'
     | 'DB'
     | 'AI'
     | 'VECTORIZE'
@@ -48,6 +49,7 @@ export interface WorkerEnvOverrides extends Partial<
   SCHEDULER?: unknown;
   RUN_REGISTRY?: unknown;
   STATE_STORE?: unknown;
+  PENDING_PROPOSALS?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві
   // операції, а не імітація повного інтерфейсу Workers AI/Vectorize.

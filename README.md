@@ -239,7 +239,7 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 
 ---
 
-## Дані та стан (Cloudflare KV)
+## Дані та стан (Cloudflare KV + Durable Objects)
 
 Один namespace `BRIEFING`. Замість одного великого блоба — **окремі ключі для
 кожного незалежного писаря**, свідомо: спільний блоб під конкурентним записом
@@ -249,13 +249,13 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 
 | Ключ                            | Зміст                                                                         |
 | ------------------------------- | ----------------------------------------------------------------------------- |
-| `state`                         | нагадування, прогрес роадмепу, ваги новин/моку, голоси, преференції вакансій  |
-| `stats`                         | вся статистика дашборда: воронка, чек-іни, інтереси, мастерність, надійність  |
+| `state`                         | compatibility snapshot; canonical mutable state — `StateStoreDO`              |
+| `stats`                         | compatibility snapshot; canonical статистика — `StateStoreDO`                 |
 | `settings`                      | тумблери модулів, тихі години, заглушені теми — читає і Worker, і оркестратор |
 | `latest` / `briefing:<дата>`    | останній опублікований брифінг + історія по датах                             |
-| `assistantPending`              | застейджена пропозиція асистента (окремий ключ саме через інцидент вище)      |
+| `assistantPending`              | compatibility seed/mirror; atomic pending slot — `PendingProposalsDO`         |
 | `assistantHistory`              | історія розмови з асистентом за темою/чатом                                   |
-| `agentRuns` / `agentHostHealth` | службові: сторож обірваних прогонів, стан здоров'я VPS-хоста                  |
+| `agentRuns` / `agentHostHealth` | rollback-ledger прогонів / стан здоров'я VPS; active runs — `RunRegistryDO`   |
 | `googleToken`                   | кешований Google access-токен (~1год TTL)                                     |
 | `sentMessages`                  | кільцевий буфер id повідомлень бота (для `/clear`)                            |
 | `briefDispatch`                 | дедуп ранкового автозапуску                                                   |

@@ -71,6 +71,11 @@ interface Env {
   STATE_STORE?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/state-store/do.mjs').StateStoreDO
   >;
+  /** Один атомарний slot pending-пропозиції: claim перед Calendar/Contacts
+   * має бути серіалізований, бо KV не здатний гарантувати single-consumer. */
+  PENDING_PROPOSALS?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/pending-proposals/do.mjs').PendingProposalsDO
+  >;
 
   /**
    * Vectorize-індекс памʼяті (ADR-038, етап 2 PR-2): svitanok-memory,

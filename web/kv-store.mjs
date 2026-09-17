@@ -11,7 +11,8 @@
 //   1. Кожен НЕЗАЛЕЖНИЙ писар має ВЛАСНИЙ ключ. Спільний блоб під конкурентним
 //      записом мовчки губить дані — це вже ламало прод (19.07: писар `state`
 //      затирав пропозицію асистента, і кожен ✅ падав у «Застаріла»). Звідси
-//      окремі sentMessages/agentRuns/assistantHistory/assistantPending.
+//      окремі sentMessages/assistantHistory; active `agentRuns` і
+//      `assistantPending` уже переїхали у свої Durable Object control planes.
 //   2. `stats` і `state` — виняток із legacy-сумісності. Їхній source of truth
 //      тепер StateStoreDO (версійний CAS), а KV — лише snapshot для старого
 //      ранкового briefing-а та backup. Без привʼязки DO (локальні тести або
@@ -24,6 +25,13 @@ import { normalizeSettings } from './settings-core.mjs';
 import { mergeSentMessages } from './tg-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
 import { STATE_STORE_DO_NAME } from './core/state-store/contract.mjs';
+import {
+  ASSISTANT_PENDING_KEY as PENDING_KEY,
+  pendingClaim,
+  pendingRead,
+  pendingReplace,
+  pendingUpdate,
+} from './core/pending-proposals/client.mjs';
 
 /**
  * Спільний читач: JSON із ключа або дефолт. Биття/відсутність -> дефолт.
@@ -408,7 +416,7 @@ function parseBlob(raw) {
   }
 }
 
-/** ВЛАСНИЙ KV-ключ пропозиції — НЕ в блобі 'state'.
+/** Single-slot pending-пропозиція — НЕ в блобі 'state'.
  *
  *  Причина історична й лишається чинною. Блоб 'state' пишуть кілька незалежних
  *  писарів (lastUpdateId у вебхуку, крон checkReminders, дашборд applyEvent), і
@@ -416,12 +424,10 @@ function parseBlob(raw) {
  *  до запису пропозиції, затирав її назад — кожен ✅ падав у «Застаріла
  *  пропозиція» (баг, знайдений на проді 19.07).
  *
- *  ⚠️ Відтоді всі вони ходять через updateState (C4), тож САМЕ ЦЕЙ сценарій
- *  закрито. Ключ лишається окремим свідомо: updateState звужує вікно, але не
- *  прибирає його (це не CAS), а пропозиція — стан, де програна гонка коштує
- *  власнику дії, яку він щойно підтвердив. Той самий мотив, що
- *  [sentMessages]/[agentRuns]/[assistantHistory]. */
-export const ASSISTANT_PENDING_KEY = 'assistantPending';
+ *  `PendingProposalsDO` тепер дає цьому slot-у CAS і атомарний claim перед
+ *  зовнішньою дією. KV нижче — одноразовий seed і compatibility mirror, не
+ *  джерело рішення. */
+export const ASSISTANT_PENDING_KEY = PENDING_KEY;
 
 /**
  * Прочитати активну пропозицію -> pending|null.
@@ -432,22 +438,45 @@ export const ASSISTANT_PENDING_KEY = 'assistantPending';
  * @returns {Promise<KvBlob|null>}
  */
 export async function loadAssistantPending(env) {
-  return readJson(env, ASSISTANT_PENDING_KEY, null);
+  const legacy = await readJson(env, ASSISTANT_PENDING_KEY, null);
+  return (await pendingRead(env, legacy)).pending;
+}
+
+/** Поставити новий pending slot. Нова пропозиція свідомо замінює стару; її id
+ * не дає кнопці старого повідомлення виконати нову дію.
+ * @param {Env} env @param {KvBlob|null} pending */
+export async function putAssistantPending(env, pending) {
+  if (await pendingReplace(env, pending)) return;
+  await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify(pending));
+}
+
+/**
+ * Змінити active pending лише якщо id досі той самий. У DO patch повторюється
+ * через CAS на свіжій версії, тож два циклічні тапи не гублять один одного.
+ * @param {Env} env
+ * @param {string} id
+ * @param {(pending: KvBlob) => KvBlob} patch
+ * @returns {Promise<{ ok: boolean, pending: KvBlob|null }>}
+ */
+export async function updateAssistantPending(env, id, patch) {
+  const canonical = await pendingUpdate(env, id, patch);
+  if (canonical.canonical) return { ok: canonical.ok, pending: canonical.pending };
+
+  // Rollback/local compatibility: точна поведінка старого KV-шляху. Тут CAS
+  // неможливий, тому production binding не може непомітно сюди потрапити.
+  const pending = await readJson(env, ASSISTANT_PENDING_KEY, null);
+  if (!pending || pending.id !== id) return { ok: false, pending: null };
+  const next = patch(pending);
+  await env.BRIEFING.put(ASSISTANT_PENDING_KEY, JSON.stringify(next));
+  return { ok: true, pending: next };
 }
 
 /**
  * Списати пропозицію: лише якщо це ДОСІ той самий id.
  *
- * ⚠️ НЕ АТОМАРНО, і доти цей коментар обіцяв протилежне («double-tap-safe»).
- * Це read-check-write, а KV не має CAS: два конкурентні виклики можуть обидва
- * прочитати той самий pending, обидва пройти перевірку id і обидва повернути
- * true. Коментар, що перебільшує, гірший за його відсутність — тим паче тут,
- * де за ним стоять НЕЗВОРОТНІ зовнішні записи (подія в календарі, контакт).
- *
- * Ідемпотентність тепер тримається не на цій функції, а на рівні ЕФЕКТУ —
- * markProposalExecuted нижче + зняття клавіатури одразу після claim
- * (web/proposals.mjs). Справжня серіалізація — Durable Object, він у проєкті
- * уже є (AGENT_RUN), і це стратегічний фікс, а не сьогоднішній.
+ * PendingProposalsDO робить read-check-tombstone одним serializable рішенням:
+ * з двох одночасних callback-ів рівно один поверне true. Без binding лишається
+ * legacy fallback для rollback/local tests; production-конфіг тримає binding.
  *
  * Put-null тумбстоун, а не delete: KV не має read-your-writes, тож видалений
  * ключ ще якийсь час читається як наявний, а покладений `null` — як `null`
@@ -460,8 +489,12 @@ export async function loadAssistantPending(env) {
  * @param {string} id
  */
 export async function claimAssistantPending(env, id) {
+  // Спершу read: саме він одноразово сіє DO з legacy KV під час rollout.
+  // Ухвала все одно нижче, у serializable `claim`, а не в цьому read-check.
   const pending = await loadAssistantPending(env);
   if (!pending || pending.id !== id) return false;
+  const claimed = await pendingClaim(env, id);
+  if (claimed !== null) return claimed;
   await env.BRIEFING.put(ASSISTANT_PENDING_KEY, 'null');
   return true;
 }
@@ -476,16 +509,9 @@ const executedKey = (/** @type {string} */ id) => `assistantExecuted:${id}`;
  * Позначити пропозицію ВИКОНАНОЮ. true — цей виклик перший, можна робити
  * зовнішні записи; false — хтось уже зробив, треба тихо вийти.
  *
- * ⚠️ ЧОМУ ЦЕ, А НЕ «АТОМАРНИЙ CLAIM». Атомарного claim у Workers KV не буває —
- * CAS немає. Тому ідемпотентність переїхала туди, де вона справді потрібна: не
- * «хто списав пропозицію», а «чи вже створено подію». Вікно гонки при цьому
- * скорочується з тривалості ВСЬОГО обробника (claim -> кілька раундтріпів до
- * Google -> перепис повідомлення) до одного GET->PUT, тобто на два порядки.
- *
- * Це НЕ робить операцію атомарною, і робити вигляд, що робить, — та сама
- * помилка, за яку виправлено коментар вище. Разом зі зняттям клавіатури одразу
- * після claim цього досить, щоб подвійний тап людини не створював другої події;
- * гарантію дає лише Durable Object.
+ * Це другий, короткоживучий захист сумісності після atomic DO-claim. У
+ * production паралельний callback вже не доходить сюди; KV-маркер лишається
+ * для rollback і ретраю доставки без повторного зовнішнього ефекту.
  * @param {Env} env
  * @param {string|null|undefined} id
  */

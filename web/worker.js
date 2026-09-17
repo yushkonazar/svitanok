@@ -30,6 +30,7 @@ export { AgentRun } from './agent-run-do.mjs';
 export { SchedulerDO } from './core/scheduler/do.mjs';
 export { RunRegistryDO } from './core/run-registry/do.mjs';
 export { StateStoreDO } from './core/state-store/do.mjs';
+export { PendingProposalsDO } from './core/pending-proposals/do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';

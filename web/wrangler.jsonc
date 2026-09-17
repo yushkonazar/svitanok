@@ -76,6 +76,9 @@
       // Канонічний mutable state (модернізація 2026-09): versions/CAS для
       // legacy `state` і `stats`, які KV не здатний оновлювати атомарно.
       { "name": "STATE_STORE", "class_name": "StateStoreDO" },
+      // Один pending-proposal slot: CAS/claim до незворотного Calendar/People
+      // write замість best-effort KV read-check-write.
+      { "name": "PENDING_PROPOSALS", "class_name": "PendingProposalsDO" },
     ],
   },
   "exports": {
@@ -83,6 +86,7 @@
     "SchedulerDO": { "type": "durable-object", "storage": "sqlite" },
     "RunRegistryDO": { "type": "durable-object", "storage": "sqlite" },
     "StateStoreDO": { "type": "durable-object", "storage": "sqlite" },
+    "PendingProposalsDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
   // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і

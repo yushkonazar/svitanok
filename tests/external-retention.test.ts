@@ -157,6 +157,24 @@ describe('зовнішня retention і T2 deletion', () => {
     expect(receipt).not.toContain('vec-1');
   });
 
+  it('T2 очищає canonical pending-proposal slot, а не лише його KV-mirror', async () => {
+    const clears: string[] = [];
+    const { env } = setup({
+      PENDING_PROPOSALS: {
+        getByName: (name: string) => ({
+          clear: async () => {
+            clears.push(name);
+            return { cleared: true };
+          },
+        }),
+      },
+    });
+    successTransport();
+
+    await expect(forgetAll(env)).resolves.toMatchObject({ external: { queues: 0 } });
+    expect(clears).toEqual(['pending-proposals']);
+  });
+
   it('помилка VPS залишає локальні дані й квитанцію failed — «все стерто» не повертається', async () => {
     const { env, db, store } = setup();
     seedExternalRows(db);

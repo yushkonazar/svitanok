@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../web/worker.js';
+import { PendingProposalsDO } from '../web/core/pending-proposals/do.mjs';
 import { memoryKv } from './helpers/kv.js';
 import { workerEnv } from './helpers/env.js';
 
@@ -31,6 +32,24 @@ function env() {
     GOOGLE_CLIENT_SECRET: 'gsecret',
     GOOGLE_REFRESH_TOKEN: 'grefresh',
   });
+}
+
+/** Один справжній singleton DO на тестовий Env: callback-и заходять через
+ * Worker паралельно, тож Map-KV не може випадково підмінити atomic claim. */
+function pendingNamespace(e: Env) {
+  const storage = new Map<string, unknown>();
+  const pending = new PendingProposalsDO(
+    {
+      storage: {
+        get: async (key: string) => storage.get(key),
+        put: async (key: string, value: unknown) => void storage.set(key, value),
+        deleteAll: async () => void storage.clear(),
+        setAlarm: async () => {},
+      },
+    },
+    e,
+  );
+  return { getByName: () => pending };
 }
 
 /** CTX, чий waitUntil РЕАЛЬНО тримає проміси — вебхук обробляє апдейт у фоні. */
@@ -257,34 +276,22 @@ describe('accept пропозиції — власний KV-ключ переж�
   });
 
   /* ── Подвійний тап ✅ ──────────────────────────────────────────────────
-     claim НЕ атомарний: KV не має CAS, тож два тапи цілком можуть обидва
-     прочитати той самий pending, обидва пройти перевірку id і обидва піти в
-     цикл. Доти це означало ДВІ події в календарі — незворотний зовнішній
-     запис. Тут гонка емулюється чесно: pending повертається на місце перед
-     другим тапом, тобто claim пропускає обидва. */
-  it('подвійний тап (claim пройшов ДВІЧІ) -> подія створюється РІВНО ОДИН раз', async () => {
+     Два різні Telegram update_id справді доходять до callback-а одночасно;
+     atomic claim у PendingProposalsDO має пропустити лише один до Calendar. */
+  it('паралельний подвійний тап -> подія створюється РІВНО ОДИН раз', async () => {
     kv.set(
       'assistantPending',
       JSON.stringify(eventPending('dbl00001', { durMin: null, leadMin: null })),
     );
-    await postAccept('dbl00001');
+    const e = env();
+    Object.assign(e, { PENDING_PROPOSALS: pendingNamespace(e) });
     const creates = () => cal.filter((c) => !c._method).length;
-    expect(creates()).toBe(1);
 
-    // ⚠️ ІНШИЙ update_id — інакше тест брехав би: воркер відсікає повтор за
-    // update_id (worker.js), і другий виклик просто не дійшов би до обробника.
-    // Це захист від РЕТРАЮ Telegram; подвійний тап людини дає ДВА різні
-    // update_id і цим захистом не покривається взагалі.
-    kv.set(
-      'assistantPending',
-      JSON.stringify(eventPending('dbl00001', { durMin: null, leadMin: null })),
-    );
-    await postAccept('dbl00001', env(), 1001);
-    expect(creates()).toBe(1); // ← ГОЛОВНА АСЕРЦІЯ: другої події немає
-    // toast() бере ПЕРШИЙ answerCallbackQuery — тобто відповідь першого тапу.
-    // Тут потрібен останній: саме він каже, що другий нічого не зробив.
+    await Promise.all([postAccept('dbl00001', e, 1000), postAccept('dbl00001', e, 1001)]);
+
+    expect(creates()).toBe(1);
     const toasts = tg.filter((c) => c.method === 'answerCallbackQuery');
-    expect(toasts.at(-1)!.body.text).toContain('Уже виконано');
+    expect(toasts.some((toast) => String(toast.body.text).includes('Застаріла'))).toBe(true);
   });
 
   /* Друга половина фіксу: кнопки знімаються ОДРАЗУ після claim, а не разом із
