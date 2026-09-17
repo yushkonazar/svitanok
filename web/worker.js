@@ -60,6 +60,7 @@ import {
 import { handleStatus } from './api-status.mjs';
 import { handleArchiveRequest } from './api-archive.mjs';
 import { handleLeversRequest } from './api-levers.mjs';
+import { handleDeletionsRequest } from './api-deletions.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -442,6 +443,11 @@ export default {
       // заради блоку, який дивляться раз на тиждень, не має коштувати на
       // кожному відкритті дашборда.
       return handleLeversRequest(request, env);
+    }
+    if (url.pathname === '/api/deletions') {
+      // T2-receipts — приватна історія видалень. Це окреме lazy-read, щоб
+      // відкриття звичайної статистики не платило KV-list за рідкісний екран.
+      return handleDeletionsRequest(request, env);
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);

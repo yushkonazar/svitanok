@@ -25,7 +25,11 @@ export function memoryKv(store: Map<string, string>, opts: MemoryKvOptions = {})
     get: async (k: string) => store.get(k) ?? null,
     put: async (k: string, v: string) => void store.set(k, v),
     delete: async (k: string) => void store.delete(k),
-    list: async () => ({ keys: (opts.listKeys?.() ?? []).map((name) => ({ name })) }),
+    list: async (options?: { prefix?: string }) => {
+      const prefix = options?.prefix;
+      const keys = (opts.listKeys?.() ?? []).filter((name) => !prefix || name.startsWith(prefix));
+      return { keys: keys.map((name) => ({ name })) };
+    },
   };
   // ⚠️ ЄДИНЕ приведення на весь тестовий шар, і воно тут навмисно. KVNamespace
   // має ще getWithMetadata і перевантаження get за типом значення; код проєкту

@@ -29,6 +29,7 @@ const {
   requestLocatePrompt,
   fetchStats,
   fetchBriefing,
+  fetchDeletionReceipts,
   fetchSettings,
   fetchSaved,
 } = await import('./client.ts');
@@ -113,6 +114,7 @@ describe('401/403 у Telegram — не демо, а blocking session-expired с�
     it.each([
       ['stats', () => fetchStats()],
       ['briefing', () => fetchBriefing()],
+      ['deletions', () => fetchDeletionReceipts()],
       ['settings', () => fetchSettings()],
       ['saved', () => fetchSaved(0)],
     ])('%s: HTTP ' + status + ' не підставляє sample-дані', async (_name, run) => {
@@ -123,4 +125,42 @@ describe('401/403 у Telegram — не демо, а blocking session-expired с�
       });
     });
   }
+});
+
+describe('GET /api/deletions — приватна read-only квитанція', () => {
+  it('їде з Telegram auth-заголовком, парситься вузько й не пропускає server id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          retentionDays: 90,
+          receipts: [
+            {
+              id: 'server-private-id',
+              requestedAt: '2026-09-16T10:00:00.000Z',
+              updatedAt: '2026-09-16T10:02:00.000Z',
+              retainedUntil: '2026-12-15T10:00:00.000Z',
+              status: 'completed',
+              scope: 'all',
+              error: null,
+              stages: {
+                queues: { status: 'completed', count: 2 },
+                sdkSessions: { status: 'completed', count: 3 },
+                vectors: { status: 'completed', count: 4 },
+                backups: { status: 'completed', count: 1 },
+                local: { status: 'completed', count: 0, rows: 10, kvKeys: 5 },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    const result = await fetchDeletionReceipts();
+
+    expect(lastCall().url).toBe('/api/deletions');
+    expect(lastCall().headers['x-telegram-init-data']).toBe(tg.initData);
+    expect(JSON.stringify(result)).not.toContain('server-private-id');
+    expect(result.receipts[0]?.stages.local).toMatchObject({ rows: 10, kvKeys: 5 });
+  });
 });

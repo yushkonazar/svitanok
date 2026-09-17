@@ -23,6 +23,7 @@ import { LoadingSkeleton, ErrorState, SkeletonBar } from '../ui/states.tsx';
 import { Switch, Chip, Stepper, SettingRow } from '../ui/controls.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { useQueryClient } from '@tanstack/react-query';
+import { DeletionReceiptsBlock } from './DeletionReceiptsBlock.tsx';
 
 // Екран «Налаштування» (дизайн v2, Svitanok.dc.html; роадмеп v3, F2).
 //
@@ -347,6 +348,8 @@ export function SettingsScreen() {
           </p>
         </Section>
       )}
+
+      <DeletionReceiptsBlock />
 
       <Section title="ТЕМА">
         <div className="flex gap-2" role="radiogroup" aria-label="Тема">

@@ -1,6 +1,6 @@
 import { tg, inTelegram } from '../telegram.ts';
-import { statsSchema, archiveSchema, leversSchema } from './schema.ts';
-import type { Stats, ArchiveMonth, LeversResult } from './schema.ts';
+import { statsSchema, archiveSchema, deletionsSchema, leversSchema } from './schema.ts';
+import type { Stats, ArchiveMonth, DeletionReceipts, LeversResult } from './schema.ts';
 import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE, SAMPLE_ARCHIVE } from './sample.ts';
 import { SAMPLE_LEVERS, EMPTY_LEVERS } from './sample.ts';
 import {
@@ -125,6 +125,20 @@ export async function fetchArchive(): Promise<ArchiveMonth[]> {
   const parsed = archiveSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат історії змінився — оновіть застосунок');
   return parsed.data.months;
+}
+
+/**
+ * Історія T2 «забудь усе» (GET /api/deletions). Поза Telegram навмисно
+ * порожня: вигадана квитанція виглядала б як доказ реального стирання.
+ */
+export async function fetchDeletionReceipts(): Promise<DeletionReceipts> {
+  if (!inTelegram()) return { receipts: [], retentionDays: 90 };
+  const res = await fetch('/api/deletions', { cache: 'no-store', headers: authHeaders() });
+  throwIfSessionExpired(res);
+  if (!res.ok) throw new Error(`Не вдалося завантажити квитанції видалення (${res.status})`);
+  const parsed = deletionsSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Формат квитанцій видалення змінився — оновіть застосунок');
+  return parsed.data;
 }
 
 /**

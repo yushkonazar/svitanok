@@ -955,6 +955,40 @@ export const archiveMonthSchema = z.object({
 
 export const archiveSchema = z.object({ months: z.array(archiveMonthSchema).default([]) });
 export type ArchiveMonth = z.infer<typeof archiveMonthSchema>;
+
+/**
+ * Приватний, read-only звіт T2 deletion. Це свідомо ВУЗЬКИЙ контракт: API
+ * ніколи не везе id квитанції, зовнішні адресати, stack чи текст даних. Якщо
+ * сервер колись спробує додати їх як зайві поля, zod їх відкине ще до рендера.
+ */
+const deletionStageStatusSchema = z.enum(['pending', 'running', 'completed']);
+export const deletionStageSchema = z.object({
+  status: deletionStageStatusSchema,
+  count: int.default(0),
+  rows: int.optional(),
+  kvKeys: int.optional(),
+});
+export const deletionReceiptSchema = z.object({
+  requestedAt: z.string(),
+  updatedAt: z.string(),
+  retainedUntil: z.string(),
+  status: z.enum(['running', 'completed', 'failed', 'waiting_for_active_runs']),
+  scope: z.literal('all'),
+  stages: z.object({
+    queues: deletionStageSchema,
+    sdkSessions: deletionStageSchema,
+    vectors: deletionStageSchema,
+    backups: deletionStageSchema,
+    local: deletionStageSchema,
+  }),
+  error: z.string().nullable().default(null),
+});
+export const deletionsSchema = z.object({
+  receipts: z.array(deletionReceiptSchema).default([]),
+  retentionDays: int.default(90),
+});
+export type DeletionReceipt = z.infer<typeof deletionReceiptSchema>;
+export type DeletionReceipts = z.infer<typeof deletionsSchema>;
 export type AppliedWeek = z.infer<typeof appliedWeekSchema>;
 export type Interest = z.infer<typeof interestSchema>;
 export type InterestsTrend = z.infer<typeof interestsTrendSchema>;

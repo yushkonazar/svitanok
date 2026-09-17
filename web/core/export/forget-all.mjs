@@ -86,6 +86,23 @@ export const FORGET_ALL_KV_KEYS = [
 export const DELETION_RECEIPT_KEY = 'dataDeletionReceipt';
 
 /**
+ * Історія квитанцій не є одним JSON-масивом у KV. Кілька T2 можуть завершуватись
+ * близько в часі (наприклад, retry після тимчасового збою), а read-modify-write
+ * масиву в KV загубив би один із записів. Кожна квитанція має власний ключ;
+ * поточний ключ вище лишається канонічним джерелом для scheduler-resume.
+ */
+export const DELETION_RECEIPT_HISTORY_PREFIX = 'dataDeletionReceipt:';
+export const DELETION_RECEIPT_RETENTION_DAYS = 90;
+export const DELETION_RECEIPT_HISTORY_LIMIT = 20;
+const DELETION_RECEIPT_RETENTION_MS = DELETION_RECEIPT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const RECEIPT_STATUSES = new Set(['running', 'completed', 'failed', 'waiting_for_active_runs']);
+const STAGE_STATUSES = new Set(['pending', 'running', 'completed']);
+const DELETION_STAGE_KEYS = ['queues', 'sdkSessions', 'vectors', 'backups', 'local'];
+
+/** @typedef {{ status: string, count: number, rows?: number, kvKeys?: number }} DeletionStageReport */
+/** @typedef {{ fingerprint: string, requestedAt: string, updatedAt: string, retainedUntil: string, status: string, scope: 'all', stages: Record<string, DeletionStageReport>, error: string|null }} DeletionReceiptReport */
+
+/**
  * ⚠️ ЩО СЮДИ НЕ ПОТРАПИЛО І ЧОМУ (ревʼю виправлень).
  *   `sentMessages` - ring-buffer id повідомлень бота для `/clear`. Стерши
  *     його, «забудь усе» прибрало б ЄДИНИЙ інструмент прибирання: старі
@@ -161,6 +178,63 @@ export async function resumePendingForgetAll(env) {
   return continueForgetAll(env, receipt);
 }
 
+/**
+ * Безпечний owner-facing зріз історії T2. Він не повертає ні внутрішній id
+ * квитанції, ні зовнішні адресати/stack/error detail: власнику потрібен чесний
+ * стан cleanup, а не нова копія потенційно приватних даних у Mini App.
+ *
+ * Старий одиничний ключ додається як fallback, тому rollout не втрачає
+ * квитанцію, записану до появи історії.
+ * @param {Env} env
+ * @param {number} [nowMs]
+ */
+export async function readDeletionReceiptHistory(env, nowMs = Date.now()) {
+  /** @type {Record<string, any>[]} */
+  const rawReceipts = [];
+  try {
+    for (const key of await listDeletionReceiptKeys(env)) {
+      try {
+        const parsed = JSON.parse((await env.BRIEFING.get(key.name)) ?? 'null');
+        if (parsed && typeof parsed === 'object') rawReceipts.push(parsed);
+      } catch {
+        // Один битий запис не має ховати решту історії.
+      }
+    }
+  } catch {
+    // KV list може бути тимчасово недоступний; нижче ще спробуємо current receipt.
+  }
+
+  try {
+    const current = JSON.parse((await env.BRIEFING.get(DELETION_RECEIPT_KEY)) ?? 'null');
+    if (current && typeof current === 'object') rawReceipts.push(current);
+  } catch {
+    // Порожній/битий current receipt означає лише відсутню історію, не 500.
+  }
+
+  const seen = new Set();
+  const reports = rawReceipts
+    .map((receipt) => shapeDeletionReceiptReport(receipt, nowMs))
+    .filter(isDeletionReceiptReport)
+    .filter((receipt) => !seen.has(receipt.fingerprint) && seen.add(receipt.fingerprint));
+  return reports
+    .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))
+    .slice(0, DELETION_RECEIPT_HISTORY_LIMIT)
+    .map((receipt) => ({
+      requestedAt: receipt.requestedAt,
+      updatedAt: receipt.updatedAt,
+      retainedUntil: receipt.retainedUntil,
+      status: receipt.status,
+      scope: receipt.scope,
+      stages: receipt.stages,
+      error: receipt.error,
+    }));
+}
+
+/** @param {DeletionReceiptReport|null} receipt @returns {receipt is DeletionReceiptReport} */
+function isDeletionReceiptReport(receipt) {
+  return receipt !== null;
+}
+
 /** @param {Env} env @param {Record<string, any>} receipt */
 async function continueForgetAll(env, receipt) {
   const nowMs = Date.now();
@@ -218,7 +292,7 @@ async function continueForgetAll(env, receipt) {
     receipt.status = 'failed';
     receipt.failedAt = new Date(Date.now()).toISOString();
     // Без stack/id/текстів: receipt — не нове сховище приватного вмісту.
-    receipt.error = String(e?.message ?? 'невідомий збій').slice(0, 240);
+    receipt.error = deletionErrorSummary(e);
     try {
       await writeDeletionReceipt(env, receipt);
     } catch (writeError) {
@@ -275,7 +349,144 @@ async function clearStateFields(env) {
   });
 }
 
-/** @param {Env} env @param {Record<string, unknown>} receipt */
+/** @param {unknown} value */
+function safeIso(value) {
+  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) return null;
+  return value;
+}
+
+/** @param {unknown} value */
+function safeCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * Коротка категорія збою замість сирого повідомлення адаптера. Останнє може
+ * містити URL, id сесії чи діагностику стороннього сервісу, а квитанція — не
+ * діагностичний лог. Локальні дані у всіх цих станах лишаються на місці.
+ * @param {unknown} error
+ */
+function deletionErrorSummary(error) {
+  const text = String(/** @type {any} */ (error)?.message ?? error ?? '');
+  if (/active.*run|активн.*прогон/i.test(text)) {
+    return 'Очікую завершення активного прогону; cleanup буде повторено автоматично.';
+  }
+  if (/VPS|SDK/i.test(text)) return 'VPS SDK не підтвердив видалення; локальні дані збережено.';
+  if (/VECTORIZE|вектор/i.test(text)) {
+    return 'Vectorize не підтвердив видалення; локальні дані збережено.';
+  }
+  if (/Drive|backup|OAuth/i.test(text)) {
+    return 'Drive backup не підтвердив видалення; локальні дані збережено.';
+  }
+  if (/D1|DB|баз/i.test(text)) return 'Локальне стирання не завершилось; дані збережено.';
+  return 'Крок видалення завершився помилкою; локальні дані збережено.';
+}
+
+/** @param {Record<string, any>} receipt @param {number} nowMs @returns {DeletionReceiptReport|null} */
+function shapeDeletionReceiptReport(receipt, nowMs) {
+  const requestedAt = safeIso(receipt.requestedAt);
+  if (!requestedAt || receipt.scope !== 'all' || !RECEIPT_STATUSES.has(receipt.status)) return null;
+  const requestedMs = Date.parse(requestedAt);
+  if (nowMs - requestedMs > DELETION_RECEIPT_RETENTION_MS) return null;
+  /** @type {Record<string, DeletionStageReport>} */
+  const stages = {};
+  for (const key of DELETION_STAGE_KEYS) {
+    const stage = receipt.stages?.[key] ?? {};
+    stages[key] = {
+      status: STAGE_STATUSES.has(stage.status) ? stage.status : 'pending',
+      count: safeCount(stage.count),
+      ...(key === 'local' ? { rows: safeCount(stage.rows), kvKeys: safeCount(stage.kvKeys) } : {}),
+    };
+  }
+  // fingerprint живе лише всередині функції: id може бути legacy/malformed,
+  // тому дедуплікуємо за безпечним набором полів і НІКОЛИ не віддаємо його UI.
+  const fingerprint = `${receipt.id ?? ''}:${requestedAt}`;
+  return {
+    fingerprint,
+    requestedAt,
+    updatedAt: safeIso(receipt.updatedAt) ?? requestedAt,
+    retainedUntil: new Date(requestedMs + DELETION_RECEIPT_RETENTION_MS).toISOString(),
+    status: receipt.status,
+    scope: 'all',
+    stages,
+    error: receipt.status === 'failed' ? deletionErrorSummary(receipt.error) : null,
+  };
+}
+
+/** @param {Record<string, any>} receipt */
+function deletionReceiptHistoryKey(receipt) {
+  // requestedAt створює сам код. Fallback потрібен лише для legacy receipt,
+  // який scheduler може продовжити після rollout.
+  const stamp = String(receipt.requestedAt ?? receipt.id ?? 'legacy').replace(/[^0-9A-Za-z]/g, '');
+  return `${DELETION_RECEIPT_HISTORY_PREFIX}${stamp}-${String(receipt.id ?? 'legacy').slice(0, 64)}`;
+}
+
+/** @param {Env} env */
+async function listDeletionReceiptKeys(env) {
+  /** @type {{ name: string }[]} */
+  const keys = [];
+  /** @type {string|undefined} */
+  let cursor;
+  do {
+    const page = await env.BRIEFING.list({
+      prefix: DELETION_RECEIPT_HISTORY_PREFIX,
+      ...(cursor ? { cursor } : {}),
+    });
+    keys.push(...page.keys);
+    // Старі локальні стаби не мають list_complete/cursor. Відсутній cursor
+    // коректно означає останню (і єдину) сторінку, як у реальному KV.
+    cursor = page.list_complete === false ? page.cursor : undefined;
+  } while (cursor);
+  return keys;
+}
+
+/** @param {Env} env @param {Record<string, any>} receipt */
 async function writeDeletionReceipt(env, receipt) {
-  await env.BRIEFING.put(DELETION_RECEIPT_KEY, JSON.stringify(receipt));
+  const next = { ...receipt, updatedAt: new Date().toISOString() };
+  Object.assign(receipt, next);
+  // current спершу: якщо другий write впаде, scheduler все ще бачить незавершену
+  // T2 і наступний tick зможе повторити запис без втрати адресатів для cleanup.
+  await env.BRIEFING.put(DELETION_RECEIPT_KEY, JSON.stringify(next));
+  const requestedMs = Date.parse(String(receipt.requestedAt));
+  // Історичний ключ реально зникає з KV, а не лише фільтрується з відповіді.
+  // TTL рахуємо від requestedAt: повторний scheduler tick не має непомітно
+  // продовжувати retention одного й того самого T2 ще на 90 діб.
+  const ttlSec = Math.max(
+    60,
+    Math.ceil((requestedMs + DELETION_RECEIPT_RETENTION_MS - Date.now()) / 1000),
+  );
+  await env.BRIEFING.put(deletionReceiptHistoryKey(next), JSON.stringify(next), {
+    expirationTtl: ttlSec,
+  });
+  // Cleanup не бере участі в доказі поточного кроку: якщо KV list тимчасово
+  // впав, уже записана квитанція лишається читабельною, а наступне T2/retry
+  // повторить maintenance. Окремі ключі роблять цей best-effort безпечним для
+  // паралельних записів — тут немає RMW спільного масиву.
+  await pruneDeletionReceiptHistory(env, Date.now()).catch((error) =>
+    console.error('forget: не вдалося прибрати старі квитанції', error),
+  );
+}
+
+/** @param {Env} env @param {number} nowMs */
+async function pruneDeletionReceiptHistory(env, nowMs) {
+  const rows = await Promise.all(
+    (await listDeletionReceiptKeys(env)).map(async (key) => {
+      try {
+        const receipt = JSON.parse((await env.BRIEFING.get(key.name)) ?? 'null');
+        return { key: key.name, requestedAt: safeIso(receipt?.requestedAt) };
+      } catch {
+        return { key: key.name, requestedAt: null };
+      }
+    }),
+  );
+  const expired = rows.filter(
+    (row) =>
+      !row.requestedAt || nowMs - Date.parse(row.requestedAt) > DELETION_RECEIPT_RETENTION_MS,
+  );
+  const fresh = rows
+    .filter((row) => row.requestedAt && !expired.includes(row))
+    .sort((a, b) => String(b.requestedAt).localeCompare(String(a.requestedAt)));
+  const excess = fresh.slice(DELETION_RECEIPT_HISTORY_LIMIT);
+  await Promise.all([...expired, ...excess].map((row) => env.BRIEFING.delete(row.key)));
 }

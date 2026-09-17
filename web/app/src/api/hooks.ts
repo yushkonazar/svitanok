@@ -3,6 +3,7 @@ import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
   fetchArchive,
+  fetchDeletionReceipts,
   fetchLevers,
   fetchBriefing,
   fetchLiveWeather,
@@ -49,6 +50,20 @@ export function useArchive(enabled = true) {
     queryFn: fetchArchive,
     enabled,
     staleTime: 60 * 60 * 1000,
+  });
+}
+
+/**
+ * Квитанції T2 тягнемо лише на розгортанні. Це рідкісний KV-list, а не дані,
+ * які мають навантажувати кожне відкриття налаштувань; 5 хвилин staleTime
+ * достатньо, бо scheduler перевіряє відкладене cleanup раз на 5 хвилин.
+ */
+export function useDeletionReceipts(enabled = true) {
+  return useQuery({
+    queryKey: ['deletionReceipts'],
+    queryFn: fetchDeletionReceipts,
+    enabled,
+    staleTime: 5 * 60 * 1000,
   });
 }
 

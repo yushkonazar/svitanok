@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   forgetAll,
   DELETION_RECEIPT_KEY,
+  DELETION_RECEIPT_HISTORY_PREFIX,
+  DELETION_RECEIPT_HISTORY_LIMIT,
   resumePendingForgetAll,
 } from '../web/core/export/forget-all.mjs';
 import { retentionCleanupTask } from '../web/core/retention/cleanup.mjs';
@@ -50,7 +52,7 @@ function setup(over: Record<string, unknown> = {}) {
   const deletedVectors: string[][] = [];
   const env = workerEnv({
     DB: d1.stub,
-    BRIEFING: memoryKv(store),
+    BRIEFING: memoryKv(store, { listKeys: () => [...store.keys()] }),
     ASSISTANT_V2: 'on',
     BRAIN_URL: 'https://brain.example',
     INTERNAL_HMAC_KEY: 'test-hmac-key',
@@ -214,6 +216,49 @@ describe('зовнішня retention і T2 deletion', () => {
     expect(done.external.queues).toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM memory_chunks').get()).toEqual({ n: 0 });
+  });
+
+  it('нова квитанція прибирає застарілі й тримає історію максимум у заданій межі', async () => {
+    const { env, store } = setup();
+    successTransport();
+    const put = vi.spyOn(env.BRIEFING, 'put');
+    const now = Date.now();
+    for (let i = 0; i < DELETION_RECEIPT_HISTORY_LIMIT; i++) {
+      const requestedAt = new Date(now - 60_000 - i).toISOString();
+      store.set(
+        `${DELETION_RECEIPT_HISTORY_PREFIX}fresh-${i}`,
+        JSON.stringify({
+          id: `old-${i}`,
+          requestedAt,
+          scope: 'all',
+          status: 'completed',
+          stages: {},
+        }),
+      );
+    }
+    store.set(
+      `${DELETION_RECEIPT_HISTORY_PREFIX}expired`,
+      JSON.stringify({
+        id: 'expired',
+        requestedAt: new Date(now - 91 * 24 * 60 * 60 * 1000).toISOString(),
+        scope: 'all',
+        status: 'completed',
+        stages: {},
+      }),
+    );
+
+    await forgetAll(env);
+
+    const keys = [...store.keys()].filter((key) => key.startsWith(DELETION_RECEIPT_HISTORY_PREFIX));
+    expect(keys).toHaveLength(DELETION_RECEIPT_HISTORY_LIMIT);
+    expect(keys).not.toContain(`${DELETION_RECEIPT_HISTORY_PREFIX}expired`);
+    const writes = put.mock.calls as unknown as Array<
+      [string, string, { expirationTtl?: number } | undefined]
+    >;
+    const historyTtl = writes.find(([key]) => key.startsWith(DELETION_RECEIPT_HISTORY_PREFIX))?.[2]
+      ?.expirationTtl;
+    expect(historyTtl).toBeGreaterThan(0);
+    expect(historyTtl).toBeLessThanOrEqual(90 * 24 * 60 * 60);
   });
 
   it('нічна ретенція очищає старі SDK-транскрипт і вектор перед D1, а summary лишається', async () => {
