@@ -79,6 +79,9 @@
       // Один pending-proposal slot: CAS/claim до незворотного Calendar/People
       // write замість best-effort KV read-check-write.
       { "name": "PENDING_PROPOSALS", "class_name": "PendingProposalsDO" },
+      // Atomic /clear ring buffer: webhook, cron і outbox не гублять id між
+      // окремими Worker isolates.
+      { "name": "SENT_MESSAGES", "class_name": "SentMessagesDO" },
     ],
   },
   "exports": {
@@ -87,6 +90,7 @@
     "RunRegistryDO": { "type": "durable-object", "storage": "sqlite" },
     "StateStoreDO": { "type": "durable-object", "storage": "sqlite" },
     "PendingProposalsDO": { "type": "durable-object", "storage": "sqlite" },
+    "SentMessagesDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
   // вечірнього «Що завтра?» до вечірнього огляду з waitForEvent на кнопки і

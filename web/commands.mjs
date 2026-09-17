@@ -44,7 +44,7 @@ import { formatStatsMessage, formatJobsMessage, formatSavedMessage } from './tg-
 import { formatAgendaMessage, buildAgendaKeyboard } from './calendar-core.mjs';
 import { formatRootMessage, buildRootKeyboard } from './roadmap-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
-import { loadState, loadStats, loadSentMessages, putSentMessages } from './kv-store.mjs';
+import { forgetTrackedMessages, loadState, loadStats, loadSentMessages } from './kv-store.mjs';
 
 /** /clear (§C5): скільки deleteMessage-викликів паралельно за раз — компроміс
  *  між швидкістю й обережністю до rate-limit Telegram/Cloudflare. */
@@ -419,19 +419,10 @@ export async function handleCommand(
           // 429 -> НЕ forget: спробувати цей id ще раз наступного /clear.
         });
       }
-      // Merge-before-flush (той самий патерн, що src/core/state-kv.ts): цикл
-      // видалення міг тривати секунди — перечитуємо ЗАРАЗ і прибираємо ЛИШЕ
-      // forget із ЦЬОГО ключа, а не перезаписуємо весь блоб застарілим
-      // знімком (інакше конкурентний sendTo()/checkReminders() запис у ті ж
-      // секунди був би мовчки затертий — саме той H2-клас гонки, заради
-      // якого sentMessages узагалі живе в окремому ключі від 'state').
-      const key = sentMessagesKey(parsed.chatId, parsed.threadId);
-      const fresh = await loadSentMessages(env);
-      fresh[key] = trackedMessages(fresh[key]).filter((e) => !forget.includes(e.id));
-      // ⚠️ Через putSentMessages, і зі СПИСКОМ забутих: інакше луна читача
-      // повертала б щойно зняті id із застарілого KV-читання, і наступний
-      // /clear намагався б видалити їх знову (ревʼю релізу).
-      await putSentMessages(env, fresh, { key, ids: forget });
+      // Atomic DO-mutation застосовується до найсвіжішого ring buffer, тому
+      // паралельні sendTo()/cron записи не губляться під cleanup після довгих
+      // Telegram deleteMessage round-trip-ів.
+      await forgetTrackedMessages(env, parsed.chatId, parsed.threadId, forget);
       return sendText(formatClearResult(deleted, ids.length, exchanges));
     }
     case 'whereami': {

@@ -17,7 +17,7 @@
 //   нього, а окремий canonical `settings` slot очищується цілком.
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
-import { clearSettings, updateState, updateStats } from '../../kv-store.mjs';
+import { clearSentMessages, clearSettings, updateState, updateStats } from '../../kv-store.mjs';
 import { pendingClear } from '../pending-proposals/client.mjs';
 import {
   ActiveBrainRunsError,
@@ -321,6 +321,8 @@ async function eraseLocalData(env) {
   // Canonical pending-proposal slot не є KV-копією: T2 має стерти його ДО
   // legacy mirror, інакше старе ✅ могло б пережити «забудь усе» у DO.
   await pendingClear(env);
+  // /clear ring buffer має окремий canonical DO, тож KV delete недостатній.
+  await clearSentMessages(env);
 
   let kvKeys = 0;
   for (const key of FORGET_ALL_KV_KEYS) {

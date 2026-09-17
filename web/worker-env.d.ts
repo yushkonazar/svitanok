@@ -76,6 +76,10 @@ interface Env {
   PENDING_PROPOSALS?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/pending-proposals/do.mjs').PendingProposalsDO
   >;
+  /** Atomic per-chat ring buffer для /clear; KV mirror не є source of truth. */
+  SENT_MESSAGES?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/sent-messages/do.mjs').SentMessagesDO
+  >;
 
   /**
    * Vectorize-індекс памʼяті (ADR-038, етап 2 PR-2): svitanok-memory,

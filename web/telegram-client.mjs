@@ -10,12 +10,11 @@
 // виняток посеред мутації стану.
 //
 // ІНВАРІАНТ ТРЕКІНГУ: у ring-buffer `sentMessages` (§C5, /clear) потрапляють і
-// репліки бота, і вхідні повідомлення власника — тому обидва писарі merge-
-// before-flush через kv-store, а не пишуть ключ напряму. Збій трекінгу теж
-// нікого не валить: не вдалось запамʼятати id — просто /clear його не зачепить.
+// репліки бота, і вхідні повідомлення власника — тому обидва писарі йдуть
+// через atomic `recordTrackedMessage`, а не пишуть KV напряму. Збій трекінгу
+// теж нікого не валить: не вдалось запамʼятати id — просто /clear його не зачепить.
 
-import { recordSentMessage } from './tg-core.mjs';
-import { loadSentMessages, putSentMessages } from './kv-store.mjs';
+import { recordTrackedMessage } from './kv-store.mjs';
 
 /** @typedef {import('./tg-core.mjs').SendTarget} SendTarget */
 
@@ -52,10 +51,7 @@ export async function trackSentMessage(env, res, chatId, threadId) {
     const json = /** @type {any} */ (await res.clone().json());
     const messageId = json?.result?.message_id;
     if (typeof messageId === 'number') {
-      await putSentMessages(
-        env,
-        recordSentMessage(await loadSentMessages(env), chatId, threadId, messageId),
-      );
+      await recordTrackedMessage(env, chatId, threadId, messageId);
     }
   } catch (e) {
     console.error('sentMessages tracking failed (не блокує відповідь)', e);
@@ -72,16 +68,7 @@ export async function trackSentMessage(env, res, chatId, threadId) {
 export async function trackIncomingMessage(env, parsed) {
   if (typeof parsed.messageId !== 'number') return;
   try {
-    await putSentMessages(
-      env,
-      recordSentMessage(
-        await loadSentMessages(env),
-        parsed.chatId,
-        parsed.threadId,
-        parsed.messageId,
-        true,
-      ),
-    );
+    await recordTrackedMessage(env, parsed.chatId, parsed.threadId, parsed.messageId, true);
   } catch (e) {
     console.error('incoming message tracking failed (не блокує обробку)', e);
   }

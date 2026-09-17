@@ -434,9 +434,9 @@ async function editProgressMessage(
    buildResumePrefix).
 
    ОКРЕМИЙ ключ на (чат, тему), не поле в блобі `state` — той самий мотив, що
-   assistantPending/sentMessages/agentRuns: наївні read-modify-write писарі
-   `state` затирали б слот назад. Ключ той самий, що в історії розмови, тож
-   тема з темою не змішуються. */
+   assistantPending/agentRuns: окремі control planes не дають writers `state`
+   затерти слот назад. Ключ той самий, що в історії розмови, тож тема з темою
+   не змішуються. */
 function assistantResumeKey(
   /** @type {string|number|null|undefined} */ chatId,
   /** @type {string|number|null|undefined} */ threadId,

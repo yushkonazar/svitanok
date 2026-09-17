@@ -13,7 +13,7 @@ import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
-describe('«/clear 10 видалив два» — луна читача проти втрат KV', () => {
+describe('legacy rollback: «/clear 10 видалив два» — луна читача проти втрат KV', () => {
   it('злиття: обʼєднання за id, own виграє, порядок за id, стеля 50', () => {
     const merged = mergeSentMessages(
       {

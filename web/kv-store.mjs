@@ -11,9 +11,9 @@
 //   1. Кожен НЕЗАЛЕЖНИЙ писар має ВЛАСНИЙ ключ. Спільний блоб під конкурентним
 //      записом мовчки губить дані — це вже ламало прод (19.07: писар `state`
 //      затирав пропозицію асистента, і кожен ✅ падав у «Застаріла»). Звідси
-//      окремі sentMessages/assistantHistory; active `agentRuns` і
-//      `assistantPending` уже переїхали у свої Durable Object control planes.
-//   2. `stats` і `state` — виняток із legacy-сумісності. Їхній source of truth
+//      окремі assistantHistory; active `agentRuns`, `assistantPending` і
+//      `sentMessages` уже переїхали у свої Durable Object control planes.
+//   2. `state`, `stats` і `settings` — виняток із legacy-сумісності. Їхній source of truth
 //      тепер StateStoreDO (версійний CAS), а KV — лише snapshot для старого
 //      ранкового briefing-а та backup. Без привʼязки DO (локальні тести або
 //      старий rollback) лишається чітко позначений compatibility fallback.
@@ -22,7 +22,12 @@
 //      власник побачив би 500 замість дашборда.
 
 import { normalizeSettings } from './settings-core.mjs';
-import { mergeSentMessages } from './tg-core.mjs';
+import {
+  mergeSentMessages,
+  recordSentMessage,
+  sentMessagesKey,
+  trackedMessages,
+} from './tg-core.mjs';
 import { ASSISTANT_HISTORY_TTL_S } from './assistant-memory-core.mjs';
 import { STATE_STORE_DO_NAME } from './core/state-store/contract.mjs';
 import {
@@ -32,6 +37,14 @@ import {
   pendingReplace,
   pendingUpdate,
 } from './core/pending-proposals/client.mjs';
+import {
+  sentMessagesClear,
+  sentMessagesForget,
+  sentMessagesRead,
+  sentMessagesRecord,
+  sentMessagesReplace,
+} from './core/sent-messages/client.mjs';
+import { SENT_MESSAGES_KEY } from './core/sent-messages/contract.mjs';
 
 /**
  * Спільний читач: JSON із ключа або дефолт. Биття/відсутність -> дефолт.
@@ -154,17 +167,14 @@ export async function mutableStateSnapshot(env) {
   return { state, stats, settings: normalizeSettings(settings) };
 }
 
-// ⚠️ ЛУНА ЧИТАЧА для sentMessages. KV не дає read-your-writes: `get` одразу
-// після `put` може повернути СТАРЕ значення. Для цього ключа це не теорія -
-// кожна репліка бота робить read-modify-write того самого блоба, і за сплеск
-// відповідей (статусник + кілька повідомлень черги за одну обробку) у KV
-// доживали одиниці id. Наслідок бачив власник: «/clear 10 видалив два»
-// (прогін 08.09) - решту просто не було чого видаляти, id загубились.
+// ⚠️ ЛУНА ЧИТАЧА для legacy sentMessages fallback. KV не дає read-your-writes:
+// `get` одразу після `put` може повернути СТАРЕ значення. Production binding
+// іде через SentMessagesDO нижче; ця луна зберігає rollback/local поведінку,
+// де ще лишився whole-blob KV path.
 //
 // Луна прив'язана до САМОГО обʼєкта прив'язки (WeakMap), а не до модуля:
-// інакше вона пережила б і той env, якому належала. Між ізолятами це не
-// рятує (там і лишається старий merge-before-flush), але сплеск в одній
-// обробці тепер не втрачається.
+// інакше вона пережила б і той env, якому належала. Між ізолятами вона не
+// гарантує цілісність, саме тому canonical path не користується нею.
 //
 // ⚠️ ЩО САМЕ ЗАБУТО - КАЖЕ ВИКЛИКАЧ, а не здогад (ревʼю релізу). Перша
 // редакція рахувала «зникло між знімками» - і записувала в забуті ще й те,
@@ -193,13 +203,14 @@ function echoSlot(env) {
   return slot;
 }
 
-/** Ring-buffer message_id надісланих ботом (§C5, /clear) — ОКРЕМИЙ KV-ключ
- *  від 'state', щоб трекінг на КОЖНУ відповідь бота не ділив гонку писарів
- *  з reminders/roadmapProgress/mockWeights/... (той самий блоб 'state').
+/** Legacy compatibility writer ring-buffer-а. Production callers мають
+ *  користуватися atomic recordTrackedMessage/forgetTrackedMessages нижче.
  *  @param {Env} env
  *  @returns {Promise<KvBlob>} */
 export async function loadSentMessages(env) {
-  const fromKv = await readJson(env, 'sentMessages', {});
+  const fromKv = await readJson(env, SENT_MESSAGES_KEY, {});
+  const canonical = await sentMessagesRead(env, fromKv);
+  if (canonical.canonical) return canonical.value;
   const slot = echoSlot(env);
   slot.echo = mergeSentMessages(fromKv, slot.echo, slot.forgotten);
   return slot.echo;
@@ -213,6 +224,9 @@ export async function loadSentMessages(env) {
  *  @param {{ key: string, ids: number[] }} [forget] - що саме ЗНЯТО назавжди
  *    (лише /clear: він єдиний видаляє повідомлення, а не додає) */
 export async function putSentMessages(env, sentMessages, forget = undefined) {
+  // New production writers use recordTrackedMessage/forgetTrackedMessages.
+  // This whole-blob path stays only for rollback and local unit tests.
+  if (await sentMessagesReplace(env, sentMessages)) return;
   const slot = echoSlot(env);
   if (forget && forget.ids.length > 0) {
     const set = slot.forgotten.get(forget.key) ?? new Set();
@@ -230,7 +244,61 @@ export async function putSentMessages(env, sentMessages, forget = undefined) {
     }
   }
   slot.echo = sentMessages;
-  await env.BRIEFING.put('sentMessages', JSON.stringify(sentMessages));
+  await env.BRIEFING.put(SENT_MESSAGES_KEY, JSON.stringify(sentMessages));
+}
+
+/** Додати повідомлення atomically. Саме цією функцією мусять ходити Worker
+ * writers: `load -> recordSentMessage -> put` не є безпечним між ізолятами.
+ * @param {Env} env
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId
+ * @param {number} messageId @param {boolean} [own]
+ * @returns {Promise<KvBlob>} */
+export async function recordTrackedMessage(env, chatId, threadId, messageId, own = false) {
+  const legacy = await readJson(env, SENT_MESSAGES_KEY, {});
+  const canonical = await sentMessagesRecord(env, legacy, chatId, threadId, messageId, own);
+  if (canonical.canonical) return canonical.value;
+
+  // Rollback/local compatibility. Production binding never silently reaches
+  // this branch; only old workers still rely on best-effort KV RMW.
+  const next = recordSentMessage(await loadSentMessages(env), chatId, threadId, messageId, own);
+  await putSentMessages(env, next);
+  return next;
+}
+
+/** Прибрати саме ті id, які /clear вже успішно або остаточно відхилено
+ * Telegram. Нові паралельні записи не губляться.
+ * @param {Env} env
+ * @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId @param {number[]} ids
+ * @returns {Promise<KvBlob>} */
+export async function forgetTrackedMessages(env, chatId, threadId, ids) {
+  const legacy = await readJson(env, SENT_MESSAGES_KEY, {});
+  const canonical = await sentMessagesForget(env, legacy, chatId, threadId, ids);
+  if (canonical.canonical) return canonical.value;
+  const key = sentMessagesKey(chatId, threadId);
+  const forgotten = new Set(ids);
+  const fresh = await loadSentMessages(env);
+  const next = {
+    ...fresh,
+    [key]: trackedMessages(fresh[key]).filter((entry) => !forgotten.has(entry.id)),
+  };
+  await putSentMessages(env, next, { key, ids });
+  return next;
+}
+
+/** Canonical snapshot for backup/export. @param {Env} env
+ * @returns {Promise<KvBlob|null>} */
+export async function sentMessagesSnapshot(env) {
+  const legacy = await readJson(env, SENT_MESSAGES_KEY, {});
+  const result = await sentMessagesRead(env, legacy);
+  return result.canonical ? result.value : null;
+}
+
+/** T2 canonical cleanup. Legacy KV is deleted by FORGET_ALL_KV_KEYS.
+ * @param {Env} env */
+export async function clearSentMessages(env) {
+  return sentMessagesClear(env);
 }
 
 /** Прочитати останній опублікований брифінг (ключ `latest`) — для own-data
@@ -251,8 +319,8 @@ export async function loadBriefingForDate(env, dateKey) {
 }
 
 /** Історія діалогу асистента per-thread (ключ `assistantHistory`, CM) — ОКРЕМИЙ
- *  KV-ключ від 'state' (як sentMessages: запис на кожен обмін не ділить гонку
- *  писарів state-блоба). Биття -> {}.
+ *  KV-ключ від 'state', тож запис на кожен обмін не ділить гонку писарів
+ *  state-блоба. Биття -> {}.
  *  @param {Env} env
  *  @returns {Promise<KvBlob>} */
 export async function loadAssistantHistory(env) {

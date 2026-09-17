@@ -257,7 +257,7 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 | `assistantHistory`              | історія розмови з асистентом за темою/чатом                                 |
 | `agentRuns` / `agentHostHealth` | rollback-ledger прогонів / стан здоров'я VPS; active runs — `RunRegistryDO` |
 | `googleToken`                   | кешований Google access-токен (~1год TTL)                                   |
-| `sentMessages`                  | кільцевий буфер id повідомлень бота (для `/clear`)                          |
+| `sentMessages`                  | compatibility snapshot; atomic `/clear` ring buffer — `SentMessagesDO`      |
 | `briefDispatch`                 | дедуп ранкового автозапуску                                                 |
 
 ---

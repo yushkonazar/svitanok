@@ -10,8 +10,7 @@
 
 import { tgCall } from '../telegram-client.mjs';
 import { parseCommand } from '../tg-core.mjs';
-import { loadSentMessages, putSentMessages } from '../kv-store.mjs';
-import { recordSentMessage } from '../tg-core.mjs';
+import { recordTrackedMessage } from '../kv-store.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
 import {
@@ -2413,10 +2412,7 @@ async function sendStatusDraft(env, parsed) {
     // Чернетка стає самою відповіддю (фікс 30.08), тож /clear мусить знати про
     // неї - інакше відповіді асистента переживають очищення.
     try {
-      await putSentMessages(
-        env,
-        recordSentMessage(await loadSentMessages(env), parsed.chatId, parsed.threadId, id),
-      );
+      await recordTrackedMessage(env, parsed.chatId, parsed.threadId, id);
     } catch (/** @type {any} */ e) {
       console.error('prerouter: трекінг чернетки для /clear не вдався', e?.message);
     }

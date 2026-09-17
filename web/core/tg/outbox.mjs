@@ -10,8 +10,7 @@
 // Rich Message = send з parse_mode HTML + кнопки; фолбек - той самий текст
 // без розмітки (isParseEntitiesError).
 
-import { loadSentMessages, putSentMessages } from '../../kv-store.mjs';
-import { recordSentMessage } from '../../tg-core.mjs';
+import { recordTrackedMessage } from '../../kv-store.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -413,10 +412,7 @@ async function trackOutboxSend(env, row, res) {
   try {
     const id = JSON.parse(res.text)?.result?.message_id;
     if (typeof id !== 'number') return;
-    await putSentMessages(
-      env,
-      recordSentMessage(await loadSentMessages(env), row.chat_id, row.thread_id, id),
-    );
+    await recordTrackedMessage(env, row.chat_id, row.thread_id, id);
   } catch (/** @type {any} */ e) {
     console.error('outbox: трекінг для /clear не вдався', e?.message);
   }
