@@ -20,6 +20,9 @@ import {
 } from './stats-core.mjs';
 import { normalizeSettings } from './settings-core.mjs';
 import { buildMapsUrl } from './calendar-core.mjs';
+import { ASSISTANT_RESUME_TTL_MS } from './core/assistant-resume/contract.mjs';
+
+export { ASSISTANT_RESUME_TTL_MS };
 
 export const MAX_PROPOSAL_ITEMS = 8;
 const MAX_TITLE_LEN = 120;
@@ -713,13 +716,6 @@ export function extractAssistantNote(/** @type {any} */ structured) {
   const flat = raw.replace(/\s*[\r\n]+\s*/g, ' ').trim();
   return flat.length > MAX_NOTE_LEN ? `${flat.slice(0, MAX_NOTE_LEN - 1).trimEnd()}…` : flat;
 }
-
-/**
- * Скільки живе слот «я перепитав» (U3). Півгодини — це «власник відійшов і
- * відповів», а не «наступного ранку написав щось інше»: підхоплювати вчорашню
- * нотатку до свіжого запиту гірше, ніж не підхопити нічого.
- */
-export const ASSISTANT_RESUME_TTL_MS = 30 * 60_000;
 
 /**
  * Префікс транскрипту для ПРОДОВЖЕНОГО прогону (U3) або ''.

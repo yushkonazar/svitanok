@@ -60,7 +60,12 @@ import {
 } from './agent-run-core.mjs';
 import { verifyWebhookSecret } from './tg-core.mjs';
 import { mdToTelegramHtml } from './core/tg/markdown.mjs';
-import { historyKey, renderHistoryForPrompt } from './assistant-memory-core.mjs';
+import { renderHistoryForPrompt } from './assistant-memory-core.mjs';
+import { assistantResumeSave, assistantResumeTake } from './core/assistant-resume/client.mjs';
+import {
+  assistantResumeLegacyKey,
+  assistantResumeSlot,
+} from './core/assistant-resume/contract.mjs';
 import {
   buildOwnDataDigest,
   formatMailForPrompt,
@@ -432,17 +437,7 @@ async function editProgressMessage(
    холодним стартом, а з тим, що модель уже знала. Це «те, що знала» — її
    блокнот (U2); повний транскрипт лишається на хості й сюди не приїжджає (див.
    buildResumePrefix).
-
-   ОКРЕМИЙ ключ на (чат, тему), не поле в блобі `state` — той самий мотив, що
-   assistantPending/agentRuns: окремі control planes не дають writers `state`
-   затерти слот назад. Ключ той самий, що в історії розмови, тож тема з темою
-   не змішуються. */
-function assistantResumeKey(
-  /** @type {string|number|null|undefined} */ chatId,
-  /** @type {string|number|null|undefined} */ threadId,
-) {
-  return `assistantResume:${historyKey(chatId, threadId)}`;
-}
+*/
 
 /** Покласти слот. Без нотатки не кладемо: продовжувати не було б чим, а
  *  порожній слот лише плутав би наступний запит. Збій KV не блокує питання —
@@ -454,14 +449,16 @@ async function saveAssistantResume(
   /** @type {number} */ nowMs,
 ) {
   if (!note) return;
+  // Tainted note is an input-derived summary, so it travels with its taint on
+  // the one atomic save/take path as well as in the legacy rollback mirror.
+  const resume = { note, tainted: claims.tainted === true, atMs: nowMs };
   try {
+    if (await assistantResumeSave(env, claims.chatId, claims.threadId, resume, nowMs)) return;
+    // Binding is absent only in rollback/local runtime, or an ambiguous save
+    // failed. Mirroring the identical note is safe; a healthy DO can seed it.
     await env.BRIEFING.put(
-      assistantResumeKey(claims.chatId, claims.threadId),
-      // tainted: нотатка складена ПІСЛЯ читання пошти/Drive — це переказ
-      // тексту, який пише стороння людина. Якби продовжений прогін стартував
-      // чистим, інʼєкція з листа дістала б рівно те, чого їй бракує: прямий
-      // запис наступним кроком. Тож пляма (S2) їде разом із нотаткою.
-      JSON.stringify({ note, tainted: claims.tainted === true, atMs: nowMs }),
+      assistantResumeLegacyKey(assistantResumeSlot(claims.chatId, claims.threadId)),
+      JSON.stringify(resume),
       { expirationTtl: Math.round(ASSISTANT_RESUME_TTL_MS / 1000) },
     );
   } catch (/** @type {any} */ e) {
@@ -476,13 +473,15 @@ async function takeAssistantResume(
   /** @type {string|number|null|undefined} */ chatId,
   /** @type {string|number|null|undefined} */ threadId,
 ) {
-  const key = assistantResumeKey(chatId, threadId);
+  const key = assistantResumeLegacyKey(assistantResumeSlot(chatId, threadId));
   let rec = null;
   try {
     rec = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
   } catch {
     /* биття JSON -> продовження просто не буде */
   }
+  const taken = await assistantResumeTake(env, chatId, threadId, rec);
+  if (taken.canonical) return taken.resume;
   if (!rec) return null;
   try {
     await env.BRIEFING.delete(key);

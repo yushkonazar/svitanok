@@ -255,6 +255,7 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 | `latest` / `briefing:<дата>`    | останній опублікований брифінг + історія по датах                           |
 | `assistantPending`              | compatibility seed/mirror; atomic pending slot — `PendingProposalsDO`       |
 | `assistantHistory`              | compatibility snapshot; atomic short context — `AssistantHistoryDO`         |
+| `assistantResume:*`             | compatibility mirror; atomic 30-minute continuation — `AssistantResumeDO`   |
 | `agentRuns` / `agentHostHealth` | rollback-ledger прогонів / стан здоров'я VPS; active runs — `RunRegistryDO` |
 | `googleToken`                   | кешований Google access-токен (~1год TTL)                                   |
 | `sentMessages`                  | compatibility snapshot; atomic `/clear` ring buffer — `SentMessagesDO`      |

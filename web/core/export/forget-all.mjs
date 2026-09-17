@@ -25,6 +25,7 @@ import {
   updateStats,
 } from '../../kv-store.mjs';
 import { pendingClear } from '../pending-proposals/client.mjs';
+import { assistantResumeClear } from '../assistant-resume/client.mjs';
 import {
   ActiveBrainRunsError,
   eraseAllManagedBackups,
@@ -330,6 +331,7 @@ async function eraseLocalData(env) {
   // /clear ring buffer має окремий canonical DO, тож KV delete недостатній.
   await clearSentMessages(env);
   await clearAssistantHistory(env);
+  await assistantResumeClear(env);
 
   let kvKeys = 0;
   for (const key of FORGET_ALL_KV_KEYS) {
