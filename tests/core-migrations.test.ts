@@ -13,6 +13,18 @@ import { describe, it, expect, beforeAll } from 'vitest';
 
 const MIGRATIONS_DIR = join(__dirname, '..', 'web', 'core', 'migrations');
 
+it('кожна D1-міграція явно оголошує expand або contract release phase', () => {
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((file) => /^\d{4}_.+\.sql$/.test(file))
+    .sort();
+  expect(files.length).toBeGreaterThan(0);
+  for (const file of files) {
+    expect(readFileSync(join(MIGRATIONS_DIR, file), 'utf8')).toMatch(
+      /^-- release-phase: (expand|contract)$/m,
+    );
+  }
+});
+
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
   facts: [

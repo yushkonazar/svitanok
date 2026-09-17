@@ -22,6 +22,16 @@ on:
     paths:
       - 'web/core/migrations/**'
       - 'web/wrangler.jsonc'
+  workflow_dispatch:
+    inputs:
+      allow_contract:
+        description: 'Введи allow-contract лише після зафіксованого restore drill'
+        required: false
+        default: ''
+      restore_evidence:
+        description: 'Посилання або ID успішного clean restore drill'
+        required: false
+        default: ''
 
 permissions: {}
 
@@ -41,6 +51,8 @@ jobs:
     steps:
       # Сторонні Actions пінено по commit SHA, як у ci.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
@@ -48,8 +60,25 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          BEFORE_SHA: ${{ github.event.before }}
+          ALLOW_CONTRACT: ${{ inputs.allow_contract }}
+          RESTORE_EVIDENCE: ${{ inputs.restore_evidence }}
         # Захисне обрізання пробілів — секрет уже колись містив зайвий \r\n.
         run: |
           export CLOUDFLARE_API_TOKEN=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]')
           export CLOUDFLARE_ACCOUNT_ID=$(printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')
+          BASE="$BEFORE_SHA"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then BASE="HEAD^"; fi
+          contract_files=""
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            if grep -qx -- '-- release-phase: contract' "$file"; then
+              contract_files="${contract_files}${file}\n"
+            fi
+          done < <(git diff --name-only "$BASE" HEAD -- 'web/core/migrations/*.sql')
+          if [ -n "$contract_files" ]; then
+            [ "$ALLOW_CONTRACT" = "allow-contract" ] || { echo "contract migration requires manual allow_contract confirmation"; exit 1; }
+            [ -n "$RESTORE_EVIDENCE" ] || { echo "contract migration requires restore drill evidence"; exit 1; }
+            printf 'approved contract migrations:\n%b' "$contract_files"
+          fi
           npx wrangler@4.126.0 d1 migrations apply svitanok --remote --config web/wrangler.jsonc

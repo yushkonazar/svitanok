@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Конвенції (07-schema §1): id TEXT PRIMARY KEY (ulid), час — ISO-8601 UTC у
 -- TEXT, гроші — INTEGER у мінімальних одиницях + currency TEXT, JSON — TEXT
 -- (json_valid перевіряє код). Без FOREIGN KEY: цілісність веде код ядра, а

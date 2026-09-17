@@ -57,11 +57,11 @@ Dev-цикл без staging: `wrangler dev --remote` для локального
 
 **Ядро:** push у `develop`/`main` → Cloudflare Git-інтеграція (як зараз; `wrangler.jsonc` з env). Міграції D1 - крок CI перед деплоєм (`wrangler d1 migrations apply --env …`); міграція, що не пройшла, блокує деплой. Після деплою - smoke з CI: `GET /status` + `brain-health` очікуваної версії.
 
-**Мозок:** `deploy-host.yml` (paths `brain/**`): `appleboy/ssh-action` → `cd /opt/svitanok-brain && git fetch && git checkout <sha> && npm ci --omit=dev && npm run build && sudo systemctl restart svitanok-brain` → `curl 127.0.0.1:8788/health` → версія = sha. sudoers: `brain ALL=(root) NOPASSWD: /bin/systemctl restart svitanok-brain`. Відкат: `git checkout <попередній sha>` тією ж дією (`workflow_dispatch` з параметром sha).
+**Мозок:** `deploy-host.yml` (paths `brain/**`) будує окремий `git worktree` у `/opt/svitanok-brain-releases/<sha>`, звіряє `release-manifest.json`, атомарно перемикає `/opt/svitanok-brain-current` і перевіряє `/ready` з тим самим SHA. Якщо readiness не пройшла, скрипт повертає попередній symlink і рестартує попередній release. Одноразовий VPS bootstrap та contract розписані в [release-compatibility.md](../release-compatibility.md); до marker-файлу production не змінюється. sudoers: `brain ALL=(root) NOPASSWD: /bin/systemctl restart svitanok-brain`.
 
 **Інструкції:** `sync-instructions.yml` (paths `docs/assistant/**`): перевірка front-matter і `max_chars` → хеш → `PUT` у D1 (з `main`) → тест парності в `ci.yml`.
 
-**VPS одноразово (етап 1):** користувач `brain` без sudo (крім restart), `/opt/svitanok-brain` (git clone, deploy-ключ read-only), Node LTS, `cloudflared` як сервіс з одним hostname, systemd-юніти з `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `PrivateTmp=true`, `ReadWritePaths=/opt/svitanok-brain/data` (сесії SDK), `EnvironmentFile=/opt/svitanok-brain/.env`; ufw: лише SSH; Caddy і 443 вимкнути після переходу на Tunnel; `unattended-upgrades` увімкнено; journald 30 днів.
+**VPS одноразово (етап 1):** користувач `brain` без sudo (крім restart), `/opt/svitanok-brain` (git clone, deploy-ключ read-only), immutable `/opt/svitanok-brain-releases/<sha>`, symlink `/opt/svitanok-brain-current` і shared `/opt/svitanok-brain-shared/{brain.env,data}`, Node LTS, `cloudflared` як сервіс з одним hostname, systemd-юніти з `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `PrivateTmp=true`, `ReadWritePaths=/opt/svitanok-brain-shared/data`; ufw: лише SSH; Caddy і 443 вимкнути після переходу на Tunnel; `unattended-upgrades` увімкнено; journald 30 днів.
 
 ## 5. Моніторинг і алерти
 

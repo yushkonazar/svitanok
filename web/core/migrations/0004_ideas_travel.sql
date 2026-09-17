@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Кеш закладів, ідеї, бажання, ціни, поїздки.
 
 CREATE TABLE places (

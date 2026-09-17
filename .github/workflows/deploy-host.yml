@@ -8,7 +8,7 @@
 # «accept-new» відчиняв би MITM при першому конекті з нового раннера (тобто
 # ЗАВЖДИ - раннери ефемерні).
 #
-# Handshake версій (01 §2.2): після рестарту юніта скрипт чекає /health і
+# Handshake версій (01 §2.2): після atomic symlink switch скрипт чекає /ready і
 # ЗВІРЯЄ gitSha з задеплоєним комітом - розбіжність валить джоб; потім
 # очікувані version+gitSha їдуть у KV `brainExpected`, і задача brain-health
 # ядра щопʼять хвилин порівнює їх із живим /health (розсинхрон = алерт у
@@ -78,24 +78,11 @@ jobs:
             "$VPS_USER@$VPS_HOST" 'bash -seuo pipefail' <<SCRIPT
           cd /opt/svitanok-brain
           git fetch origin
-          git checkout --detach "$SHA"
-          # /opt/svitanok-brain - клон УСЬОГО репо; сервіс живе в brain/ зі
-          # своїм package.json (провізіонінг 27.08; кореневий npm ci тут падав
-          # би на husky з prepare). Збірка без devDeps - tsc у dependencies.
-          cd brain
-          npm ci --omit=dev
-          npm run build
-          sudo systemctl restart svitanok-brain
-          # Health з ретраями: юніту треба секунди на старт.
-          for i in \$(seq 1 10); do
-            sleep 2
-            HEALTH=\$(curl -sf http://127.0.0.1:8788/health) && break || HEALTH=""
-          done
-          [ -n "\$HEALTH" ] || { echo "health не піднявся"; exit 1; }
-          echo "\$HEALTH"
-          # Handshake на місці: живий gitSha = щойно задеплоєний коміт.
-          # Контракт /health (07 §3): gitSha - ПОВНИЙ 40-символьний sha.
-          echo "\$HEALTH" | grep -q "$SHA" || { echo "health віддає ІНШИЙ gitSha"; exit 1; }
+          git cat-file -e "$SHA^{commit}"
+          # Скрипт береться рівно з target SHA, тож ручний rollback не залежить
+          # від того, який deploy helper лежить у поточному main checkout.
+          export SHA="$SHA"
+          git show "$SHA:.github/scripts/deploy-brain-release.sh" | bash
           SCRIPT
       - name: publish expected versions to KV (brainExpected)
         env:

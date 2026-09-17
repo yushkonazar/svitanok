@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Інструкції (синк з репозиторію), звіти, корпус стилю, план дня v2.
 
 CREATE TABLE instructions (

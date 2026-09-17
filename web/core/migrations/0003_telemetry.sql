@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Телеметрія прогонів і лічильники квот.
 
 CREATE TABLE runs (

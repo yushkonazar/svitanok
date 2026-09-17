@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Rebuildable D1 → Vectorize projection for memory. D1 keeps every staging
 -- state; Vectorize is never the source of truth. A failed upsert therefore
 -- leaves a repairable pending/failed version while the last ready version

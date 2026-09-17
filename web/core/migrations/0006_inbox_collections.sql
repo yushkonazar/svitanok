@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Business-чати (вхідні) і колекції власника.
 
 CREATE TABLE inbox_messages (

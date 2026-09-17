@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Нагадування, пропозиції (T1/T2), ланцюги, вихідна черга Telegram.
 
 CREATE TABLE reminders (

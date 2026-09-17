@@ -1,0 +1,25 @@
+# Immutable-release unit for Svitanok brain. Install once from the VPS bootstrap
+# runbook; deploy-host.yml only swaps the `current` symlink and restarts it.
+[Unit]
+Description=Svitanok brain (immutable release)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brain
+Group=brain
+WorkingDirectory=/opt/svitanok-brain-current/brain
+EnvironmentFile=/opt/svitanok-brain-shared/brain.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/svitanok-brain-shared/data
+
+[Install]
+WantedBy=multi-user.target

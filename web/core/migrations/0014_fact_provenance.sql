@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Expand-only provenance for facts. Existing facts retain their historic
 -- source/value; code migrates writers and owner-facing ledger in later slices.
 -- Nullable columns keep this deploy compatible with Workers that still write

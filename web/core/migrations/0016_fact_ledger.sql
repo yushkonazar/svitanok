@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Owner-facing fact history. Facts remain the current truth; this append-only
 -- ledger explains every create, edit, deletion and restoration without making
 -- a stale value active again.

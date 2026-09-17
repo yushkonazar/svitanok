@@ -1,3 +1,4 @@
+-- release-phase: expand
 -- Гроші: транзакції Mono, підписки, правила мерчантів.
 
 CREATE TABLE transactions (
