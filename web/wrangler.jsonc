@@ -94,6 +94,9 @@
       // Business-message writes need an atomic cap before their D1 insert;
       // otherwise parallel webhooks can each pass the old KV counter.
       { "name": "INBOX_QUOTA", "class_name": "InboxQuotaDO" },
+      // A health transition also gates an owner alert, so concurrent probes
+      // must derive it from one canonical previous state.
+      { "name": "AGENT_HOST_HEALTH", "class_name": "AgentHostHealthDO" },
       // External GitHub briefing dispatch is a side effect: reserve it
       // atomically so manual /brief and a cron tick cannot both invoke it.
       { "name": "BRIEF_DISPATCH", "class_name": "BriefDispatchDO" },
@@ -110,6 +113,7 @@
     "AssistantResumeDO": { "type": "durable-object", "storage": "sqlite" },
     "WeatherQuotaDO": { "type": "durable-object", "storage": "sqlite" },
     "InboxQuotaDO": { "type": "durable-object", "storage": "sqlite" },
+    "AgentHostHealthDO": { "type": "durable-object", "storage": "sqlite" },
     "BriefDispatchDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від

@@ -62,6 +62,8 @@ import { verifyWebhookSecret } from './tg-core.mjs';
 import { mdToTelegramHtml } from './core/tg/markdown.mjs';
 import { renderHistoryForPrompt } from './assistant-memory-core.mjs';
 import { assistantResumeSave, assistantResumeTake } from './core/assistant-resume/client.mjs';
+import { agentHostHealthTransition } from './core/agent-host-health/client.mjs';
+import { AGENT_HOST_HEALTH_KEY } from './core/agent-host-health/contract.mjs';
 import {
   assistantResumeLegacyKey,
   assistantResumeSlot,
@@ -151,9 +153,6 @@ const TAINTED_WRITE_REPLY =
 const AGENT_LAST_STEP_NUDGE =
   '\n\nЦе ОСТАННІЙ крок: більше читати не можна. Дай ФІНАЛЬНУ дію ' +
   '(proposeCalendarChanges / createReminder / reply) з тим, що вже маєш.';
-
-/** KV-марка останнього відомого стану здоров'я хоста (для дедуплікації алертів). */
-const AGENT_HOST_HEALTH_KEY = 'agentHostHealth';
 
 /**
  * Обробити recordAction (PR-8, Категорія A) — прямий термінал, як createReminder/
@@ -963,14 +962,24 @@ export async function agentHostHealthCheck(/** @type {Env} */ env) {
   }
 
   const current = classifyHostProbe(probe);
+  /** @type {unknown} */
+  let legacy = null;
   let prev = 'ok';
   try {
-    prev = JSON.parse((await env.BRIEFING.get(AGENT_HOST_HEALTH_KEY)) ?? '{}')?.state ?? 'ok';
+    legacy = JSON.parse((await env.BRIEFING.get(AGENT_HOST_HEALTH_KEY)) ?? '{}');
+    prev = /** @type {any} */ (legacy)?.state ?? 'ok';
   } catch {
     /* биття JSON -> 'ok' (щоб перший справжній 404 дав алерт) */
   }
 
-  const { next, alert } = hostHealthTransition(prev, current);
+  const transition = await agentHostHealthTransition(env, legacy, current, Date.now());
+  // Без нового binding підтримуємо поточний KV fallback. Якщо binding є, але
+  // недоступний, client повертає canonical=true без next: alert тоді свідомо
+  // приглушений, аби дві паралельні проби не заспамили власника.
+  if (transition.canonical && !transition.next) return;
+  const next = transition.canonical ? transition.next : hostHealthTransition(prev, current).next;
+  const alert = transition.canonical ? transition.alert : hostHealthTransition(prev, current).alert;
+  if (transition.canonical) prev = transition.previous ?? prev;
   if (alert) {
     console.error(`host health: ${prev} -> ${current} (${alert})`);
     await tgCall(env, 'sendMessage', {
@@ -979,7 +988,7 @@ export async function agentHostHealthCheck(/** @type {Env} */ env) {
       text: alert === 'warn' ? HOST_DESYNC_ALERT : HOST_RECOVERED_ALERT,
     });
   }
-  if (next !== prev) {
+  if (!transition.canonical && next !== prev) {
     try {
       await env.BRIEFING.put(
         AGENT_HOST_HEALTH_KEY,

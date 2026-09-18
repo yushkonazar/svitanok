@@ -96,6 +96,10 @@ interface Env {
   INBOX_QUOTA?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/inbox-quota/do.mjs').InboxQuotaDO
   >;
+  /** Atomic VPS health transition before owner-facing alert delivery. */
+  AGENT_HOST_HEALTH?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/agent-host-health/do.mjs').AgentHostHealthDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO
