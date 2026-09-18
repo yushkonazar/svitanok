@@ -47,6 +47,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'MONO_RECONCILE'
     | 'BACKUP_STATE'
     | 'WEEKLY_REVIEW_STATE'
+    | 'MONO_ALERT_GATE'
     | 'BRIEF_DISPATCH'
     | 'DB'
     | 'AI'
@@ -69,6 +70,7 @@ export interface WorkerEnvOverrides extends Partial<
   MONO_RECONCILE?: unknown;
   BACKUP_STATE?: unknown;
   WEEKLY_REVIEW_STATE?: unknown;
+  MONO_ALERT_GATE?: unknown;
   BRIEF_DISPATCH?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві

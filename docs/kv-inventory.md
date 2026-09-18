@@ -22,6 +22,7 @@ source of truth» у `modernization-plan.md`.
 | multi-tick Mono reconciliation      | `MonoReconcileDO`       | `monoReconcile`              |
 | weekly encrypted backup             | `BackupStateDO`         | `backupState`                |
 | weekly brain-review delivery        | `WeeklyReviewStateDO`   | `weeklyReviewState`          |
+| unknown Mono account alert throttle | `MonoAlertGateDO`       | `monoUnknownAlert`           |
 
 Кожен рядок вище має одноразовий legacy seed і canonical read за наявного
 binding. Для зовнішньої дії canonical binding або fail-closed (погода,
@@ -60,7 +61,6 @@ workflow id або downstream idempotency. Їх не слід перетворю
 | Ключ                                 | Поточна функція                                | Умова завершення міграції                                                  |
 | ------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------- |
 | `steamCheckMisses`, `steamSaleShare` | anomaly streak та derived Steam price state    | або scheduler DO, або D1 event/projection після одночасного Steam workload |
-| `monoUnknownAlert`                   | one-alert throttle для невідомого Mono account | atomic rate gate, якщо webhook може паралелитися                           |
 
 `INBOX_COUNT_KEY`/`WEATHER_LIVE_COUNTER_KEY` більше не належать цій групі:
 їхні concurrency tests перевіряють точне резервування. `agentHostHealth` також

@@ -26,13 +26,18 @@ import { parseStatementItem } from '../adapters/mono.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { ingestTransaction, readMonoAccounts } from './store.mjs';
 import { announceTransaction } from './notify.mjs';
+import { monoAlertClaim } from '../mono-alert-gate/client.mjs';
+import {
+  MONO_UNKNOWN_ALERT_KEY,
+  MONO_UNKNOWN_ALERT_WINDOW_MS,
+} from '../mono-alert-gate/contract.mjs';
 
 /** Префікс маршруту; далі в шляху - секрет. */
 export const MONO_WEBHOOK_PREFIX = '/api/mono/';
 /** Стеля тіла: один StatementItem - сотні байтів. */
 export const MAX_MONO_BODY_BYTES = 8 * 1024;
 /** Скільки алертів «чужий рахунок» на добу: далі лише лог (не робимо самі собі флуд). */
-export const UNKNOWN_ALERT_KEY = 'monoUnknownAlert';
+export { MONO_UNKNOWN_ALERT_KEY as UNKNOWN_ALERT_KEY };
 
 /**
  * Адреса вебхука для цього воркера. Джерело - той самий origin, що обслуговує
@@ -125,13 +130,14 @@ export async function handleMonoWebhook(request, env, ctx = undefined, nowMs = D
  * @param {Env} env @param {string} text @param {number} nowMs
  */
 async function alertOncePerDay(env, text, nowMs) {
+  let last = 0;
   try {
-    const last = Number((await env.BRIEFING.get(UNKNOWN_ALERT_KEY)) ?? 0);
-    if (nowMs - last < 86_400_000) return false;
-    await env.BRIEFING.put(UNKNOWN_ALERT_KEY, String(nowMs));
+    last = Number((await env.BRIEFING.get(MONO_UNKNOWN_ALERT_KEY)) ?? 0);
   } catch (/** @type {any} */ e) {
     console.error('mono: мітка алерту не записана', e?.message);
   }
+  const claim = await monoAlertClaim(env, last, nowMs, MONO_UNKNOWN_ALERT_WINDOW_MS);
+  if (!claim.ok) return false;
   return sendSystemAlert(env, `⚠️ ${text}`, nowMs);
 }
 

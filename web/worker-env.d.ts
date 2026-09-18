@@ -110,6 +110,9 @@ interface Env {
   WEEKLY_REVIEW_STATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/weekly-review-state/do.mjs').WeeklyReviewStateDO
   >;
+  MONO_ALERT_GATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/mono-alert-gate/do.mjs').MonoAlertGateDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO
