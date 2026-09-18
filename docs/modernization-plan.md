@@ -53,6 +53,7 @@
 **Робота:**
 
 - [x] Інвентаризувати `state`/`stats`: обидва мали конкурентних writers і стали першим міграційним зрізом.
+- [x] Зафіксувати повний [KV inventory](kv-inventory.md): кожен ключ класифікований як canonical control plane, cache/config, idempotency marker або окрема scheduler-only state machine з умовою міграції.
 - [x] Перенести `state` і `stats` у single-writer `StateStoreDO` із versioned CAS; KV лишити compatibility snapshot-ом.
 - [x] Перенести `settings` у StateStoreDO: Mini App, Telegram-пропозиції й policy-патчі мають CAS; KV лишився mirror для оркестратора.
 - [x] Перенести active `agentRuns` у RunRegistryDO: delivery context зберігається поруч із run; KV-blob лишився лише для rollback/старої конфігурації та очищення rollout-решток.

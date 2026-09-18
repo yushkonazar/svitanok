@@ -169,6 +169,8 @@ Front-matter працівника → `AgentDefinition` SDK: `description` = п�
 
 KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, `statsArchiveWeekly`, `levers`, `weatherLive`, `publicStatus`) та compatibility mirror під rollback/старий backup. Canonical structured state живе в singleton Durable Objects: `StateStoreDO` (`state`, `stats`, `settings`), `RunRegistryDO` (active runs), `PendingProposalsDO` (pending proposal), `SentMessagesDO` (`/clear` ring buffer), `AssistantHistoryDO` (короткий chat context, 30 діб тиші через alarm), `AssistantResumeDO` (одноразовий 30-хвилинний continuation slot), `BriefDispatchDO` (claim/release перед незворотним GitHub workflow dispatch), `WeatherQuotaDO` (atomic reservation спільної OpenWeather квоти), `InboxQuotaDO` (atomic admission перед D1 inbox write) і `AgentHostHealthDO` (atomic VPS health transition перед alert). `saved` лишається в KV, бо Mini App читає повний immutable snapshot напряму; змінні domain records і далі мігрують у D1 на етапі 2.
 
+Повна класифікація кожного KV ключа, його retention і незакритих scheduler-only state machines живе в [KV inventory](../kv-inventory.md); новий KV record не можна додати без відповідного рядка там і T2 scope в `data-retention.md`.
+
 ## 9. Повідомлення: формат callback-даних
 
 `<kind>:<id>:<choice>` ≤ 64 байт, де kind ∈ {`p` пропозиція, `c` ланцюг, `r` нагадування, `a` ask, `u` undo, `m` меню, `v` голос (ADR-040: ok·edit·go, обробляє prerouter, стан у `voice_pending`)}; `id` - ulid у base32 (≤ 26), `choice` - коротке слово. Усе інше - у D1.
