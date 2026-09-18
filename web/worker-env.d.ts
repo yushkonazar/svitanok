@@ -100,6 +100,10 @@ interface Env {
   AGENT_HOST_HEALTH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/agent-host-health/do.mjs').AgentHostHealthDO
   >;
+  /** Atomic lease and progress state for a multi-tick Mono reconciliation. */
+  MONO_RECONCILE?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/mono-reconcile/do.mjs').MonoReconcileDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO

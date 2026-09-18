@@ -19,6 +19,7 @@ source of truth» у `modernization-plan.md`.
 | live OpenWeather budget             | `WeatherQuotaDO`        | `weatherLiveCounter`         |
 | daily Business inbox admission      | `InboxQuotaDO`          | `inboxDayCount`              |
 | VPS health transition / owner alert | `AgentHostHealthDO`     | `agentHostHealth`            |
+| multi-tick Mono reconciliation      | `MonoReconcileDO`       | `monoReconcile`              |
 
 Кожен рядок вище має одноразовий legacy seed і canonical read за наявного
 binding. Для зовнішньої дії canonical binding або fail-closed (погода,
@@ -54,13 +55,12 @@ workflow id або downstream idempotency. Їх не слід перетворю
 але це саме structured progression, а не cache. Вони лишаються відкритими
 пунктами 1B до переходу на D1 event rows або окремий lease-based DO:
 
-| Ключ                                 | Поточна функція                                         | Умова завершення міграції                                                  |
-| ------------------------------------ | ------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `monoReconcile`                      | фази Mono client-info/statement між 5-хвилинними тіками | atomic lease + progress completion до зовнішніх Mono calls                 |
-| `backupState`                        | weekly encrypted-backup progress                        | idempotent backup run record та atomic claim                               |
-| `weeklyReviewState`                  | weekly brain-review continuation                        | durable lease/state with retry-safe delivery                               |
-| `steamCheckMisses`, `steamSaleShare` | anomaly streak та derived Steam price state             | або scheduler DO, або D1 event/projection після одночасного Steam workload |
-| `monoUnknownAlert`                   | one-alert throttle для невідомого Mono account          | atomic rate gate, якщо webhook може паралелитися                           |
+| Ключ                                 | Поточна функція                                | Умова завершення міграції                                                  |
+| ------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------- |
+| `backupState`                        | weekly encrypted-backup progress               | idempotent backup run record та atomic claim                               |
+| `weeklyReviewState`                  | weekly brain-review continuation               | durable lease/state with retry-safe delivery                               |
+| `steamCheckMisses`, `steamSaleShare` | anomaly streak та derived Steam price state    | або scheduler DO, або D1 event/projection після одночасного Steam workload |
+| `monoUnknownAlert`                   | one-alert throttle для невідомого Mono account | atomic rate gate, якщо webhook може паралелитися                           |
 
 `INBOX_COUNT_KEY`/`WEATHER_LIVE_COUNTER_KEY` більше не належать цій групі:
 їхні concurrency tests перевіряють точне резервування. `agentHostHealth` також

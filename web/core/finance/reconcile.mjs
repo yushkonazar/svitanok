@@ -22,6 +22,12 @@ import { isLoud } from './rules.mjs';
 import { announceTransaction } from './notify.mjs';
 import { monoWebhookUrl } from './webhook.mjs';
 import {
+  monoReconcileClaim,
+  monoReconcileComplete,
+  monoReconcileRelease,
+} from '../mono-reconcile/client.mjs';
+import { MONO_RECONCILE_LEASE_MS } from '../mono-reconcile/contract.mjs';
+import {
   hasAnyTransaction,
   ingestTransaction,
   readMonoAccounts,
@@ -31,7 +37,7 @@ import {
 /** Година й хвилина звірки за Києвом (07 §7). */
 export const RECONCILE_HOUR = 23;
 export const RECONCILE_MINUTE = 30;
-/** Ключ стану машини в KV. */
+/** Compatibility mirror key; canonical state belongs to MonoReconcileDO. */
 export const RECONCILE_STATE_KEY = 'monoReconcile';
 /** Вікно первинного завантаження (S-4-11: ліміт вікна Mono - 31 доба). */
 export const INITIAL_DAYS = 31;
@@ -56,18 +62,24 @@ async function readState(env) {
   } catch (/** @type {any} */ e) {
     console.error('mono-reconcile: стан не читається, починаю з нуля', e?.message);
   }
-  if (!saved?.date) return null;
+  return normalizeState(saved);
+}
+
+/** @param {unknown} saved @returns {ReconcileState | null} */
+function normalizeState(saved) {
+  const raw = /** @type {any} */ (saved);
+  if (!raw?.date) return null;
   return {
-    date: String(saved.date),
-    phase: saved.phase === 'statement' || saved.phase === 'done' ? saved.phase : 'client',
-    idx: Number.isInteger(saved.idx) ? saved.idx : 0,
-    initial: saved.initial === true,
-    fromS: Number(saved.fromS) || 0,
-    toS: Number(saved.toS) || 0,
-    imported: Number(saved.imported) || 0,
-    loud: Number(saved.loud) || 0,
-    startedMs: Number(saved.startedMs) || 0,
-    alerted: saved.alerted === true,
+    date: String(raw.date),
+    phase: raw.phase === 'statement' || raw.phase === 'done' ? raw.phase : 'client',
+    idx: Number.isInteger(raw.idx) ? raw.idx : 0,
+    initial: raw.initial === true,
+    fromS: Number(raw.fromS) || 0,
+    toS: Number(raw.toS) || 0,
+    imported: Number(raw.imported) || 0,
+    loud: Number(raw.loud) || 0,
+    startedMs: Number(raw.startedMs) || 0,
+    alerted: raw.alerted === true,
   };
 }
 
@@ -85,11 +97,6 @@ function freshState(today, nowMs) {
     startedMs: nowMs,
     alerted: false,
   };
-}
-
-/** @param {Env} env @param {ReconcileState} state */
-async function writeState(env, state) {
-  await env.BRIEFING.put(RECONCILE_STATE_KEY, JSON.stringify(state));
 }
 
 /**
@@ -114,7 +121,10 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   const accounts = await readMonoAccounts(env);
   const dueByClock = kyivHour(now) === RECONCILE_HOUR && minute % 60 >= RECONCILE_MINUTE;
 
-  const state = await readState(env);
+  const legacyState = await readState(env);
+  const claim = await monoReconcileClaim(env, legacyState, nowMs, MONO_RECONCILE_LEASE_MS);
+  if (!claim.ok) return { skipped: claim.reason ?? 'busy' };
+  const state = normalizeState(claim.state);
   // Незакінчений сеанс ПРОДОВЖУЄМО в будь-яку годину. Вікно [23:30, 24:00) -
   // це лише шість тіків, тобто пʼять рахунків після фази client-info; шостий
   // не звірявся б ніколи, бо опівночі змінюється київська доба. Тепер доба
@@ -127,14 +137,22 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   // цієї умови фаза client-info крутилася б щопʼять хвилин разом з алертом.
   const startNow = !accounts.length && !running && state?.date !== today;
   if (!running && !startNew && !startNow) {
+    if (claim.canonical) await monoReconcileRelease(env, claim.token);
     return { skipped: state?.date === today ? 'done' : 'not-due' };
   }
   const live = running ? /** @type {ReconcileState} */ (state) : freshState(today, nowMs);
+  let completed = false;
+  /** @param {ReconcileState} next */
+  const writeState = async (next) => {
+    const ok = await monoReconcileComplete(env, claim.token, next);
+    if (!ok) throw new Error('mono-reconcile lease втрачено під час commit');
+    completed = true;
+  };
   // Сеанс не вічний. Продовження після опівночі потрібне, щоб дійти до
   // останнього рахунку; але якщо Mono лежить, кожен тік ловив би виняток - і
   // без цієї стелі власник діставав би 288 однакових скарг на добу.
   if (live.startedMs && nowMs - live.startedMs > SESSION_MAX_MS) {
-    await writeState(env, { ...live, phase: 'done' });
+    await writeState({ ...live, phase: 'done' });
     if (!live.alerted) {
       await sendSystemAlert(
         env,
@@ -146,8 +164,8 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
   }
 
   try {
-    if (live.phase === 'client') return await phaseClient(env, live, nowMs);
-    return await phaseStatement(env, live, accounts, nowMs);
+    if (live.phase === 'client') return await phaseClient(env, live, nowMs, writeState);
+    return await phaseStatement(env, live, accounts, nowMs, writeState);
   } catch (/** @type {any} */ e) {
     if (e instanceof MonoTooSoonError) {
       // Не збій: наступний тік через 5 хв - Mono вже пустить.
@@ -159,17 +177,20 @@ export async function monoReconcileTask(env, nowMs = Date.now()) {
     // повторювати той самий алерт кожні пʼять хвилин - не інформація, а шум.
     if (!live.alerted) {
       await sendSystemAlert(env, `⚠️ Звірка Mono впала: ${String(e?.message ?? e)}`, nowMs);
-      await writeState(env, { ...live, alerted: true });
+      await writeState({ ...live, alerted: true });
     }
     return { failed: live.phase };
+  } finally {
+    if (!completed && claim.canonical) await monoReconcileRelease(env, claim.token);
   }
 }
 
 /**
  * Фаза 1: client-info - рахунки власника і чинна адреса вебхука (S-4-9).
  * @param {Env} env @param {ReconcileState} state @param {number} nowMs
+ * @param {(state: ReconcileState) => Promise<void>} writeState
  */
-async function phaseClient(env, state, nowMs) {
+async function phaseClient(env, state, nowMs, writeState) {
   const info = await clientInfo(env);
   const accounts = info.accounts.map((a) => ({
     id: a.id,
@@ -178,7 +199,7 @@ async function phaseClient(env, state, nowMs) {
   }));
   if (!accounts.length) {
     await sendSystemAlert(env, '⚠️ Mono не віддав жодного рахунку - звірка без цілі.', nowMs);
-    await writeState(env, { ...state, phase: 'done' });
+    await writeState({ ...state, phase: 'done' });
     return { skipped: 'no-accounts' };
   }
   await writeMonoAccounts(env, accounts, nowMs);
@@ -206,7 +227,7 @@ async function phaseClient(env, state, nowMs) {
   const initial = !(await hasAnyTransaction(env));
   const toS = Math.floor(nowMs / 1000);
   const fromS = initial ? toS - INITIAL_DAYS * 86_400 : dayStartS(nowMs);
-  await writeState(env, { ...state, phase: 'statement', idx: 0, initial, fromS, toS });
+  await writeState({ ...state, phase: 'statement', idx: 0, initial, fromS, toS });
   return { accounts: accounts.length, rearmed, initial };
 }
 
@@ -214,11 +235,12 @@ async function phaseClient(env, state, nowMs) {
  * Фаза 2: виписка одного рахунку за тік.
  * @param {Env} env @param {ReconcileState} state
  * @param {import('./store.mjs').StoredAccount[]} accounts @param {number} nowMs
+ * @param {(state: ReconcileState) => Promise<void>} writeState
  */
-async function phaseStatement(env, state, accounts, nowMs) {
+async function phaseStatement(env, state, accounts, nowMs, writeState) {
   const account = accounts[state.idx];
   if (!account) {
-    await writeState(env, { ...state, phase: 'done' });
+    await writeState({ ...state, phase: 'done' });
     return await finish(env, state, nowMs);
   }
   const items = await statement(env, {
@@ -253,10 +275,10 @@ async function phaseStatement(env, state, accounts, nowMs) {
     loud,
   };
   if (next.idx >= accounts.length) {
-    await writeState(env, { ...next, phase: 'done' });
+    await writeState({ ...next, phase: 'done' });
     return await finish(env, next, nowMs);
   }
-  await writeState(env, next);
+  await writeState(next);
   return { account: account.id, imported, pending: accounts.length - next.idx };
 }
 
