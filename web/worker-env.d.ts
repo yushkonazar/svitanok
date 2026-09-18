@@ -104,6 +104,9 @@ interface Env {
   MONO_RECONCILE?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/mono-reconcile/do.mjs').MonoReconcileDO
   >;
+  BACKUP_STATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/backup-state/do.mjs').BackupStateDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO

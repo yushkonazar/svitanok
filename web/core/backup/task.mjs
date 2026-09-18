@@ -12,6 +12,12 @@
 
 import { kyivHour, kyivDateKey } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
+import {
+  backupStateClaim,
+  backupStateComplete,
+  backupStateRelease,
+} from '../backup-state/client.mjs';
+import { BACKUP_LEASE_MS, BACKUP_STATE_KEY } from '../backup-state/contract.mjs';
 import { runFactsSet } from '../tools/facts.mjs';
 import { ensureFolderPath, uploadFile } from '../adapters/drive.mjs';
 import {
@@ -27,7 +33,7 @@ import {
   BACKUP_TABLES,
 } from './core.mjs';
 
-export const BACKUP_STATE_KEY = 'backupState';
+export { BACKUP_STATE_KEY };
 export const BACKUP_HOUR = 3;
 export const BACKUP_DEADLINE_HOUR = 4;
 export const BACKUP_MAX_ATTEMPTS = 3;
@@ -51,26 +57,48 @@ export async function backupTask(env, nowMs = Date.now()) {
   const hour = kyivHour(now);
   if (hour < BACKUP_HOUR) return { skipped: 'hour' };
 
-  const state = await readState(env, today);
-  if (state.done) return { skipped: 'done' };
+  const legacy = await readState(env, today);
+  const claim = await backupStateClaim(env, legacy, nowMs, BACKUP_LEASE_MS);
+  if (!claim.ok) return { skipped: claim.reason ?? 'busy' };
+  const state = normalizeState(claim.state, today);
+  let completed = false;
+  /** @param {BackupState} next */
+  const writeState = async (next) => {
+    const ok = await backupStateComplete(env, claim.token, next);
+    if (!ok) throw new Error('backup lease втрачено під час commit');
+    completed = true;
+  };
+  const release = async () => {
+    if (!completed && claim.canonical) await backupStateRelease(env, claim.token);
+  };
+  if (state.done) {
+    await release();
+    return { skipped: 'done' };
+  }
 
   if (hour >= BACKUP_DEADLINE_HOUR) {
     // Вікно минуло без файлу: один алерт «не зроблено», далі - тиша до
     // наступної неділі (ручний запуск - scripts/backup.mjs у 05-ops).
-    if (state.alertedMissing) return { skipped: 'missed' };
+    if (state.alertedMissing) {
+      await release();
+      return { skipped: 'missed' };
+    }
     await sendSystemAlert(
       env,
       `Бекап ${today} не зроблено (спроб: ${state.attempts}) - перевір Drive/ключ.`,
       nowMs,
     );
-    await writeState(env, { ...state, alertedMissing: true });
+    await writeState({ ...state, alertedMissing: true });
     return { alertedMissing: true };
   }
-  if (state.attempts >= BACKUP_MAX_ATTEMPTS) return { skipped: 'attempts' };
+  if (state.attempts >= BACKUP_MAX_ATTEMPTS) {
+    await release();
+    return { skipped: 'attempts' };
+  }
 
   try {
     const result = await runBackup(env, nowMs, today);
-    await writeState(env, { ...state, attempts: state.attempts + 1, done: true });
+    await writeState({ ...state, attempts: state.attempts + 1, done: true });
     if (isQuarterlySunday(today)) {
       await sendSystemAlert(
         env,
@@ -87,7 +115,7 @@ export async function backupTask(env, nowMs = Date.now()) {
       `Бекап ${today}: спроба ${attempts} впала - ${String(e?.message ?? 'збій').slice(0, 200)}.`,
       nowMs,
     );
-    await writeState(env, { ...state, attempts });
+    await writeState({ ...state, attempts });
     return { failed: true, attempts };
   }
 }
@@ -220,19 +248,21 @@ async function readState(env, today) {
   try {
     const raw = await env.BRIEFING.get(BACKUP_STATE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    if (!parsed || parsed.date !== today) return fresh;
-    return {
-      date: today,
-      attempts: Number(parsed.attempts) || 0,
-      done: Boolean(parsed.done),
-      alertedMissing: Boolean(parsed.alertedMissing),
-    };
+    return normalizeState(parsed, today);
   } catch {
     return fresh;
   }
 }
 
-/** @param {Env} env @param {BackupState} state */
-async function writeState(env, state) {
-  await env.BRIEFING.put(BACKUP_STATE_KEY, JSON.stringify(state));
+/** @param {unknown} value @param {string} today @returns {BackupState} */
+function normalizeState(value, today) {
+  const fresh = { date: today, attempts: 0, done: false, alertedMissing: false };
+  const parsed = /** @type {any} */ (value);
+  if (!parsed || parsed.date !== today) return fresh;
+  return {
+    date: today,
+    attempts: Number(parsed.attempts) || 0,
+    done: Boolean(parsed.done),
+    alertedMissing: Boolean(parsed.alertedMissing),
+  };
 }

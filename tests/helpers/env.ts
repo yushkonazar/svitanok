@@ -45,6 +45,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'INBOX_QUOTA'
     | 'AGENT_HOST_HEALTH'
     | 'MONO_RECONCILE'
+    | 'BACKUP_STATE'
     | 'BRIEF_DISPATCH'
     | 'DB'
     | 'AI'
@@ -65,6 +66,7 @@ export interface WorkerEnvOverrides extends Partial<
   INBOX_QUOTA?: unknown;
   AGENT_HOST_HEALTH?: unknown;
   MONO_RECONCILE?: unknown;
+  BACKUP_STATE?: unknown;
   BRIEF_DISPATCH?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві

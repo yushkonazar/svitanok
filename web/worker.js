@@ -39,6 +39,7 @@ export { WeatherQuotaDO } from './core/weather-quota/do.mjs';
 export { InboxQuotaDO } from './core/inbox-quota/do.mjs';
 export { AgentHostHealthDO } from './core/agent-host-health/do.mjs';
 export { MonoReconcileDO } from './core/mono-reconcile/do.mjs';
+export { BackupStateDO } from './core/backup-state/do.mjs';
 // Workflow плану дня (етап 3 PR-8) - той самий контракт деплою, що й DO.
 export { DayPlanChain } from './core/day-plan/chain.mjs';
 export { IdeaAnalysis } from './core/ideas/analysis.mjs';

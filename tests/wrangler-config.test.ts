@@ -59,6 +59,7 @@ describe('web/wrangler.jsonc', () => {
       { name: 'INBOX_QUOTA', class_name: 'InboxQuotaDO' },
       { name: 'AGENT_HOST_HEALTH', class_name: 'AgentHostHealthDO' },
       { name: 'MONO_RECONCILE', class_name: 'MonoReconcileDO' },
+      { name: 'BACKUP_STATE', class_name: 'BackupStateDO' },
       { name: 'BRIEF_DISPATCH', class_name: 'BriefDispatchDO' },
     ]);
     expect(cfg.exports).toEqual({
@@ -74,6 +75,7 @@ describe('web/wrangler.jsonc', () => {
       InboxQuotaDO: { type: 'durable-object', storage: 'sqlite' },
       AgentHostHealthDO: { type: 'durable-object', storage: 'sqlite' },
       MonoReconcileDO: { type: 'durable-object', storage: 'sqlite' },
+      BackupStateDO: { type: 'durable-object', storage: 'sqlite' },
       BriefDispatchDO: { type: 'durable-object', storage: 'sqlite' },
     });
     // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
@@ -91,6 +93,7 @@ describe('web/wrangler.jsonc', () => {
     expect(worker).toContain('export { InboxQuotaDO }');
     expect(worker).toContain('export { AgentHostHealthDO }');
     expect(worker).toContain('export { MonoReconcileDO }');
+    expect(worker).toContain('export { BackupStateDO }');
     expect(worker).toContain('export { BriefDispatchDO }');
   });
 
