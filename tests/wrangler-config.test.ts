@@ -62,6 +62,7 @@ describe('web/wrangler.jsonc', () => {
       { name: 'BACKUP_STATE', class_name: 'BackupStateDO' },
       { name: 'WEEKLY_REVIEW_STATE', class_name: 'WeeklyReviewStateDO' },
       { name: 'MONO_ALERT_GATE', class_name: 'MonoAlertGateDO' },
+      { name: 'STEAM_CHECK_STATE', class_name: 'SteamCheckStateDO' },
       { name: 'BRIEF_DISPATCH', class_name: 'BriefDispatchDO' },
     ]);
     expect(cfg.exports).toEqual({
@@ -80,6 +81,7 @@ describe('web/wrangler.jsonc', () => {
       BackupStateDO: { type: 'durable-object', storage: 'sqlite' },
       WeeklyReviewStateDO: { type: 'durable-object', storage: 'sqlite' },
       MonoAlertGateDO: { type: 'durable-object', storage: 'sqlite' },
+      SteamCheckStateDO: { type: 'durable-object', storage: 'sqlite' },
       BriefDispatchDO: { type: 'durable-object', storage: 'sqlite' },
     });
     // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
@@ -100,6 +102,7 @@ describe('web/wrangler.jsonc', () => {
     expect(worker).toContain('export { BackupStateDO }');
     expect(worker).toContain('export { WeeklyReviewStateDO }');
     expect(worker).toContain('export { MonoAlertGateDO }');
+    expect(worker).toContain('export { SteamCheckStateDO }');
     expect(worker).toContain('export { BriefDispatchDO }');
   });
 

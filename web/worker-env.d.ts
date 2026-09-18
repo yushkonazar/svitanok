@@ -113,6 +113,10 @@ interface Env {
   MONO_ALERT_GATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/mono-alert-gate/do.mjs').MonoAlertGateDO
   >;
+  /** One lease owns the daily Steam price check and its anomaly/sale state. */
+  STEAM_CHECK_STATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/steam-check-state/do.mjs').SteamCheckStateDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO

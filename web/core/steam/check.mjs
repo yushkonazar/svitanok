@@ -20,6 +20,18 @@ import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
 import { formatMoney, cleanSource } from '../format.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
 import {
+  readSteamCheckLegacy,
+  steamCheckClaim,
+  steamCheckComplete,
+  steamCheckRelease,
+} from '../steam-check-state/client.mjs';
+import {
+  STEAM_CHECK_LEASE_MS,
+  STEAM_MARKER_KEY,
+  STEAM_MISS_KEY,
+  STEAM_SALE_KEY,
+} from '../steam-check-state/contract.mjs';
+import {
   itadLookup,
   itadPrices,
   steamAppDetails,
@@ -30,10 +42,8 @@ import {
 /** Година перевірки за Києвом (07 §7). */
 export const STEAM_CHECK_HOUR = 10;
 /** Мітка «сьогодні вже перевіряли» і лічильник збоїв поспіль. */
-export const STEAM_MARKER_KEY = 'steamCheckDay';
-export const STEAM_MISS_KEY = 'steamCheckMisses';
+export { STEAM_MARKER_KEY, STEAM_MISS_KEY, STEAM_SALE_KEY };
 /** Частка знижок у списку, за якою це вже схоже на розпродаж (S-5-4). */
-export const STEAM_SALE_KEY = 'steamSaleShare';
 export const SALE_SHARE = 0.6;
 export const SALE_QUIET_SHARE = 0.3;
 /** Скільки днів поспіль без цін терпимо мовчки (S-5-12). */
@@ -333,14 +343,19 @@ export function discountLine(wish, best, stats) {
 /**
  * Пропуск дня: лічильник, алерт на третій раз і мітка (щоб не крутитись).
  * До кінця вікна 10:00 збій НЕ спалює добу - тік через 5 хв спробує ще раз.
- * @param {Env} env @param {string} today @param {string} reason @param {number} nowMs
+ * @param {Env} env @param {{completedDay: string, misses: number, saleShare: number}} state
+ * @param {string|null|undefined} token @param {string} today @param {string} reason @param {number} nowMs
  */
-async function missDay(env, today, reason, nowMs) {
+async function missDay(env, state, token, today, reason, nowMs) {
   const lastChance = kyivMinuteOfDay(new Date(nowMs)) % 60 >= LAST_MINUTE;
-  if (!lastChance) return { skipped: reason, retry: true };
-  const misses = Number((await env.BRIEFING.get(STEAM_MISS_KEY)) ?? 0) + 1;
-  await env.BRIEFING.put(STEAM_MISS_KEY, String(misses));
-  await env.BRIEFING.put(STEAM_MARKER_KEY, today);
+  if (!lastChance) return { result: { skipped: reason, retry: true }, terminal: false };
+  const misses = state.misses + 1;
+  const committed = await steamCheckComplete(env, token, {
+    ...state,
+    completedDay: today,
+    misses,
+  });
+  if (!committed) throw new Error('steam-check: добовий стан утратив lease');
   if (misses === MISS_ALERT) {
     await sendSystemAlert(
       env,
@@ -348,7 +363,7 @@ async function missDay(env, today, reason, nowMs) {
       nowMs,
     );
   }
-  return { skipped: reason, misses };
+  return { result: { skipped: reason, misses }, terminal: true };
 }
 
 /**
@@ -359,155 +374,204 @@ export async function steamCheckTask(env, nowMs = Date.now()) {
   const now = new Date(nowMs);
   if (kyivHour(now) !== STEAM_CHECK_HOUR) return { skipped: 'hour' };
   const today = kyivDateKey(now);
-  if ((await env.BRIEFING.get(STEAM_MARKER_KEY)) === today) return { skipped: 'done' };
-  if (!env.DB) {
-    console.error('steam-check: привʼязки DB немає - знижки не перевіряються');
-    return { skipped: 'no-db' };
-  }
-  if (!env.TELEGRAM_CHAT_ID) {
-    console.error('steam-check: TELEGRAM_CHAT_ID немає - нікуди слати знижки');
-    return { skipped: 'no-chat' };
-  }
-  if (!env.ITAD_API_KEY) {
-    // Тиха деградація заборонена: власнику обіцяли говорити про знижки.
-    console.error('steam-check: ITAD_API_KEY не заданий - знижки не перевіряються');
-    return missDay(env, today, 'ITAD_API_KEY не заданий', nowMs);
-  }
-  // Тиха зона власника - та сама, що для підказок і нагадувань.
-  if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
-
-  const wishes = await listGameWishes(env);
-  if (!wishes.length) {
-    await env.BRIEFING.put(STEAM_MARKER_KEY, today);
-    return { skipped: 'no-wishes' };
-  }
-  // Бажанням без itad_id шукаємо id - але не частіше, ніж раз на тиждень для
-  // тих, кого ITAD не знає, і зі стелею на прогін (після імпорту сотні ігор
-  // перший ранок не має стати сотнею послідовних зовнішніх викликів).
-  const retryBefore = new Date(nowMs - LOOKUP_RETRY_DAYS * 86_400_000).toISOString();
-  const pending = wishes
-    .filter((w) => !w.itad_id && w.appid)
-    .filter((w) => w.itad_missing_at == null || w.itad_missing_at < retryBefore)
-    .slice(0, LOOKUPS_PER_RUN);
-  for (const wish of pending) {
-    try {
-      const found = await itadLookup(env, /** @type {number} */ (wish.appid));
-      if (found) {
-        wish.itad_id = found.id;
-        await patchWishPayload(env, wish.id, { itad_id: found.id, itad_missing_at: null });
-      } else {
-        await patchWishPayload(env, wish.id, { itad_missing_at: new Date(nowMs).toISOString() });
-      }
-    } catch (/** @type {any} */ e) {
-      console.error(`steam-check: lookup ${wish.appid} впав`, e?.message);
-    }
-  }
-  const tracked = wishes.filter((w) => w.itad_id).slice(0, TRACKED_MAX);
-  if (!tracked.length) {
-    await env.BRIEFING.put(STEAM_MARKER_KEY, today);
-    return { skipped: 'no-itad-ids' };
-  }
-
-  /** @type {Map<string, any>} */
-  let prices;
+  const claim = await steamCheckClaim(
+    env,
+    await readSteamCheckLegacy(env),
+    today,
+    nowMs,
+    STEAM_CHECK_LEASE_MS,
+  );
+  if (!claim.ok) return { skipped: claim.reason };
+  const state = /** @type {{completedDay: string, misses: number, saleShare: number}} */ (
+    claim.state
+  );
+  let terminal = false;
   try {
-    prices = await itadPrices(
-      env,
-      tracked.map((w) => /** @type {string} */ (w.itad_id)),
-    );
-  } catch (/** @type {any} */ e) {
-    // S-5-12: пропуск дня з логом; три поспіль - алерт.
-    console.error('steam-check: ціни ITAD не отримані', e?.message);
-    return missDay(env, today, String(e?.message ?? e).slice(0, 160), nowMs);
-  }
+    if (!env.DB) {
+      console.error('steam-check: привʼязки DB немає - знижки не перевіряються');
+      return { skipped: 'no-db' };
+    }
+    if (!env.TELEGRAM_CHAT_ID) {
+      console.error('steam-check: TELEGRAM_CHAT_ID немає - нікуди слати знижки');
+      return { skipped: 'no-chat' };
+    }
+    if (!env.ITAD_API_KEY) {
+      // Тиха деградація заборонена: власнику обіцяли говорити про знижки.
+      console.error('steam-check: ITAD_API_KEY не заданий - знижки не перевіряються');
+      const missed = await missDay(
+        env,
+        state,
+        claim.token,
+        today,
+        'ITAD_API_KEY не заданий',
+        nowMs,
+      );
+      terminal = missed.terminal;
+      return missed.result;
+    }
+    // Тиха зона власника - та сама, що для підказок і нагадувань.
+    if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
 
-  /** @type {string[]} */
-  const lines = [];
-  /** @type {{ wishId: string, point: { price: number, currency: string, source: string, url: string, isLow: boolean } }[]} */
-  const points = [];
-  const dayStartIso = `${today}T00:00:00.000Z`;
-  let withPrice = 0;
-  let discounted = 0;
-  for (const wish of tracked) {
-    const row = prices.get(/** @type {string} */ (wish.itad_id));
-    const best = row?.best ?? null;
-    if (!best) continue;
-    withPrice += 1;
-    if (best.cut > 0) discounted += 1;
-    const stats = await readPriceStats(env, wish.id, best.currency, dayStartIso);
-    const ourLow = stats.min == null || best.price_minor <= stats.min;
-    const atLow =
-      row.low_currency === best.currency &&
-      ((row.low_all != null && best.price_minor <= row.low_all) ||
-        (row.low_year != null && best.price_minor <= row.low_year));
-    // S-5-3: кажемо лише про знижку або мінімум - і лише коли ціна змінилась
-    // проти ПОПЕРЕДНЬОГО дня (сьогоднішній запис на це не впливає).
-    if ((best.cut > 0 || atLow) && (stats.prev == null || best.price_minor < stats.prev)) {
-      lines.push(
-        discountLine(wish, best, {
-          low_year: row.low_year,
-          low_all: row.low_all,
-          low_currency: row.low_currency,
-          ourLow,
-        }),
+    const wishes = await listGameWishes(env);
+    if (!wishes.length) {
+      terminal = await steamCheckComplete(env, claim.token, { ...state, completedDay: today });
+      if (!terminal) throw new Error('steam-check: добовий стан утратив lease');
+      return { skipped: 'no-wishes' };
+    }
+    // Бажанням без itad_id шукаємо id - але не частіше, ніж раз на тиждень для
+    // тих, кого ITAD не знає, і зі стелею на прогін (після імпорту сотні ігор
+    // перший ранок не має стати сотнею послідовних зовнішніх викликів).
+    const retryBefore = new Date(nowMs - LOOKUP_RETRY_DAYS * 86_400_000).toISOString();
+    const pending = wishes
+      .filter((w) => !w.itad_id && w.appid)
+      .filter((w) => w.itad_missing_at == null || w.itad_missing_at < retryBefore)
+      .slice(0, LOOKUPS_PER_RUN);
+    for (const wish of pending) {
+      try {
+        const found = await itadLookup(env, /** @type {number} */ (wish.appid));
+        if (found) {
+          wish.itad_id = found.id;
+          await patchWishPayload(env, wish.id, { itad_id: found.id, itad_missing_at: null });
+        } else {
+          await patchWishPayload(env, wish.id, { itad_missing_at: new Date(nowMs).toISOString() });
+        }
+      } catch (/** @type {any} */ e) {
+        console.error(`steam-check: lookup ${wish.appid} впав`, e?.message);
+      }
+    }
+    const tracked = wishes.filter((w) => w.itad_id).slice(0, TRACKED_MAX);
+    if (!tracked.length) {
+      terminal = await steamCheckComplete(env, claim.token, { ...state, completedDay: today });
+      if (!terminal) throw new Error('steam-check: добовий стан утратив lease');
+      return { skipped: 'no-itad-ids' };
+    }
+
+    /** @type {Map<string, any>} */
+    let prices;
+    try {
+      prices = await itadPrices(
+        env,
+        tracked.map((w) => /** @type {string} */ (w.itad_id)),
+      );
+    } catch (/** @type {any} */ e) {
+      // S-5-12: пропуск дня з логом; три поспіль - алерт.
+      console.error('steam-check: ціни ITAD не отримані', e?.message);
+      const missed = await missDay(
+        env,
+        state,
+        claim.token,
+        today,
+        String(e?.message ?? e).slice(0, 160),
+        nowMs,
+      );
+      terminal = missed.terminal;
+      return missed.result;
+    }
+
+    /** @type {string[]} */
+    const lines = [];
+    /** @type {{ wishId: string, point: { price: number, currency: string, source: string, url: string, isLow: boolean } }[]} */
+    const points = [];
+    const dayStartIso = `${today}T00:00:00.000Z`;
+    let withPrice = 0;
+    let discounted = 0;
+    for (const wish of tracked) {
+      const row = prices.get(/** @type {string} */ (wish.itad_id));
+      const best = row?.best ?? null;
+      if (!best) continue;
+      withPrice += 1;
+      if (best.cut > 0) discounted += 1;
+      const stats = await readPriceStats(env, wish.id, best.currency, dayStartIso);
+      const ourLow = stats.min == null || best.price_minor <= stats.min;
+      const atLow =
+        row.low_currency === best.currency &&
+        ((row.low_all != null && best.price_minor <= row.low_all) ||
+          (row.low_year != null && best.price_minor <= row.low_year));
+      // S-5-3: кажемо лише про знижку або мінімум - і лише коли ціна змінилась
+      // проти ПОПЕРЕДНЬОГО дня (сьогоднішній запис на це не впливає).
+      if ((best.cut > 0 || atLow) && (stats.prev == null || best.price_minor < stats.prev)) {
+        lines.push(
+          discountLine(wish, best, {
+            low_year: row.low_year,
+            low_all: row.low_all,
+            low_currency: row.low_currency,
+            ourLow,
+          }),
+        );
+      }
+      // Точка на добу одна: повторний прогін після збою не псує базу порівняння.
+      if (stats.today === 0) {
+        points.push({
+          wishId: wish.id,
+          point: {
+            price: best.price_minor,
+            currency: best.currency,
+            source: cleanSource(best.shop),
+            url: best.url,
+            isLow: ourLow,
+          },
+        });
+      }
+    }
+    const missing = tracked.length - withPrice;
+    if (missing) console.error(`steam-check: без цін лишились ${missing} з ${tracked.length} ігор`);
+    // Більшість списку без цін - це той самий «недоступний», що й помилка.
+    if (withPrice === 0 || missing > tracked.length / 2) {
+      const missed = await missDay(
+        env,
+        state,
+        claim.token,
+        today,
+        `ITAD віддав ціни лише для ${withPrice} з ${tracked.length}`,
+        nowMs,
+      );
+      terminal = missed.terminal;
+      return missed.result;
+    }
+
+    const share = discounted / withPrice;
+    const saleLine = salePrefixFromPrevious(state.saleShare, share, withPrice, discounted);
+    const shown = lines.slice(0, MAX_LINES);
+    const rest = lines.length - shown.length;
+    const text = lines.length
+      ? [saleLine, 'Знижки:', ...shown, rest > 0 ? `…і ще ${gamesWord(rest)} зі знижкою.` : '']
+          .filter(Boolean)
+          .join('\n')
+      : saleLine;
+    if (text) {
+      await enqueueOutbox(
+        env,
+        {
+          chatId: env.TELEGRAM_CHAT_ID,
+          threadId: env.TOPIC_ASSISTANT ?? null,
+          kind: 'send',
+          payload: { text },
+        },
+        nowMs,
+      );
+      await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
+        console.error('steam-check: драйн outbox впав, добере sweeper', e?.message),
       );
     }
-    // Точка на добу одна: повторний прогін після збою не псує базу порівняння.
-    if (stats.today === 0) {
-      points.push({
-        wishId: wish.id,
-        point: {
-          price: best.price_minor,
-          currency: best.currency,
-          source: cleanSource(best.shop),
-          url: best.url,
-          isLow: ourLow,
-        },
-      });
-    }
+    // Точки пишемо ПІСЛЯ відправки: якщо збій станеться раніше, наступний тік
+    // повторить прогін із тією самою базою порівняння і скаже про знижку.
+    for (const p of points) await insertPricePoint(env, p.wishId, p.point, nowMs);
+    terminal = await steamCheckComplete(env, claim.token, {
+      ...state,
+      completedDay: today,
+      misses: 0,
+      saleShare: Math.round(share * 100) / 100,
+    });
+    if (!terminal) throw new Error('steam-check: добовий стан утратив lease');
+    return {
+      sent: lines.length > 0 || Boolean(saleLine),
+      games: tracked.length,
+      priced: withPrice,
+      lines: lines.length,
+    };
+  } finally {
+    if (!terminal) await steamCheckRelease(env, claim.token);
   }
-  const missing = tracked.length - withPrice;
-  if (missing) console.error(`steam-check: без цін лишились ${missing} з ${tracked.length} ігор`);
-  // Більшість списку без цін - це той самий «недоступний», що й помилка.
-  if (withPrice === 0 || missing > tracked.length / 2) {
-    return missDay(env, today, `ITAD віддав ціни лише для ${withPrice} з ${tracked.length}`, nowMs);
-  }
-  await env.BRIEFING.put(STEAM_MISS_KEY, '0');
-
-  const share = discounted / withPrice;
-  const saleLine = await salePrefix(env, share, withPrice, discounted);
-  const shown = lines.slice(0, MAX_LINES);
-  const rest = lines.length - shown.length;
-  const text = lines.length
-    ? [saleLine, 'Знижки:', ...shown, rest > 0 ? `…і ще ${gamesWord(rest)} зі знижкою.` : '']
-        .filter(Boolean)
-        .join('\n')
-    : saleLine;
-  if (text) {
-    await enqueueOutbox(
-      env,
-      {
-        chatId: env.TELEGRAM_CHAT_ID,
-        threadId: env.TOPIC_ASSISTANT ?? null,
-        kind: 'send',
-        payload: { text },
-      },
-      nowMs,
-    );
-    await drainOutbox(env, { nowMs }).catch((/** @type {any} */ e) =>
-      console.error('steam-check: драйн outbox впав, добере sweeper', e?.message),
-    );
-  }
-  // Точки пишемо ПІСЛЯ відправки: якщо збій станеться раніше, наступний тік
-  // повторить прогін із тією самою базою порівняння і скаже про знижку.
-  for (const p of points) await insertPricePoint(env, p.wishId, p.point, nowMs);
-  await env.BRIEFING.put(STEAM_MARKER_KEY, today);
-  return {
-    sent: lines.length > 0 || Boolean(saleLine),
-    games: tracked.length,
-    priced: withPrice,
-    lines: lines.length,
-  };
 }
 
 /**
@@ -519,6 +583,11 @@ export async function steamCheckTask(env, nowMs = Date.now()) {
 export async function salePrefix(env, share, total, discounted) {
   const prev = Number((await env.BRIEFING.get(STEAM_SALE_KEY)) ?? 0);
   await env.BRIEFING.put(STEAM_SALE_KEY, String(Math.round(share * 100) / 100));
+  return salePrefixFromPrevious(prev, share, total, discounted);
+}
+
+/** @param {number} prev @param {number} share @param {number} total @param {number} discounted */
+export function salePrefixFromPrevious(prev, share, total, discounted) {
   if (total < 5 || share < SALE_SHARE || prev >= SALE_QUIET_SHARE) return '';
   return `Схоже, у Steam великий розпродаж: знижки на ${discounted} з ${total} ігор зі списку.`;
 }

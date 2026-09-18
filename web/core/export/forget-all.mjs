@@ -85,7 +85,6 @@ export const FORGET_ALL_KV_KEYS = [
   'publicStatus',
   'weeklyReviewState',
   'security_hint_at',
-  'steamSaleShare',
 ];
 
 /**

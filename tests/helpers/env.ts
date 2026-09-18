@@ -48,6 +48,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'BACKUP_STATE'
     | 'WEEKLY_REVIEW_STATE'
     | 'MONO_ALERT_GATE'
+    | 'STEAM_CHECK_STATE'
     | 'BRIEF_DISPATCH'
     | 'DB'
     | 'AI'
@@ -71,6 +72,7 @@ export interface WorkerEnvOverrides extends Partial<
   BACKUP_STATE?: unknown;
   WEEKLY_REVIEW_STATE?: unknown;
   MONO_ALERT_GATE?: unknown;
+  STEAM_CHECK_STATE?: unknown;
   BRIEF_DISPATCH?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві

@@ -69,8 +69,9 @@
 - [x] Перенести `backupState` у BackupStateDO: один lease володіє weekly Drive backup attempt, а retryable збій звільняє його для наступного tick; KV лишається rollback mirror.
 - [x] Перенести `weeklyReviewState` у WeeklyReviewStateDO: lease серіалізує старт, retry та фінальний alert weekly report; KV лишається rollback mirror.
 - [x] Перенести `monoUnknownAlert` у MonoAlertGateDO: паралельні Mono webhooks атомарно беруть добове право на owner alert; KV лишається compatibility mirror.
-- [ ] Перенести решту structured concurrent state у D1 transactions/event tables або окремий single-writer Durable Object.
-- [ ] Залишити KV тільки для cache/latest briefing/config/immutable snapshot після повного inventory всіх ключів.
+- [x] Перенести Steam daily check у SteamCheckStateDO: один lease володіє зовнішнім ITAD run, failure streak і sale transition; KV лишається compatibility mirror.
+- [x] Перенести решту structured concurrent state у D1 transactions/event tables або окремий single-writer Durable Object.
+- [x] Залишити KV тільки для cache/latest briefing/config/immutable snapshot або compatibility mirror після повного inventory всіх ключів.
 - [x] Ввести одноразовий seed із legacy KV, canonical read та compatibility fallback для rollback/local tests.
 - [x] Concurrency tests із паралельними writers і retry для `state`/`stats`; додати такі тести до кожної наступної міграції.
 
