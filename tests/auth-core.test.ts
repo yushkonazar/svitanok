@@ -105,7 +105,9 @@ describe('validateInitData — підпис Telegram', () => {
   it('дата з далекого майбутнього -> null, а не вічний перепустк', async () => {
     expect(await validateInitData(withSkew(10 * 365 * 86_400), BOT_TOKEN)).toBeNull();
     expect(await validateInitData(withSkew(3600), BOT_TOKEN)).toBeNull();
-    expect(await validateInitData(withSkew(301), BOT_TOKEN)).toBeNull();
+    // +301 залежав від секунди, що могла минути між підписом і перевіркою
+    // під час повного паралельного набору. +360 однозначно поза допуском.
+    expect(await validateInitData(withSkew(360), BOT_TOKEN)).toBeNull();
   });
 
   it('розбіжність годинників у межах допуску проходить', async () => {
