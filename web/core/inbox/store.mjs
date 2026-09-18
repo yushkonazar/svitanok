@@ -13,11 +13,13 @@
 
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
+import { inboxQuotaTake } from '../inbox-quota/client.mjs';
+import { INBOX_COUNT_KEY } from '../inbox-quota/contract.mjs';
 
 /** Добова стеля повідомлень (S-2-2). */
 export const DAILY_CAP = 5000;
 /** Лічильник доби у KV: {date, n, alerted}. */
-export const INBOX_COUNT_KEY = 'inboxDayCount';
+export { INBOX_COUNT_KEY };
 /** Стеля тексту одного повідомлення в базі. */
 export const TEXT_MAX = 4000;
 /** Ретенція вхідних (07 §1). */
@@ -189,45 +191,25 @@ async function reindex(env, id, text) {
 async function takeDailyRoom(env, nowMs) {
   const today = kyivDateKey(new Date(nowMs));
   /** @type {any} */
-  let state;
+  let legacyState;
   try {
-    state = JSON.parse((await env.BRIEFING.get(INBOX_COUNT_KEY)) ?? 'null');
+    legacyState = JSON.parse((await env.BRIEFING.get(INBOX_COUNT_KEY)) ?? 'null');
   } catch {
-    // Битий лічильник - починаємо добу з нуля, а не глушимо запис.
-    state = null;
+    // Битий compatibility mirror не має глушити запис; canonical DO, якщо
+    // увімкнений, все одно вже має свій власний стан.
+    legacyState = null;
   }
-  const n = state?.date === today ? Number(state.n) || 0 : 0;
-  const alerted = state?.date === today ? state.alerted === true : false;
-  if (n >= DAILY_CAP) {
-    if (!alerted) {
-      console.error(`inbox: добова стеля ${DAILY_CAP} вичерпана - нові повідомлення не пишу`);
-      await putCount(env, { date: today, n, alerted: true });
-      await sendSystemAlert(
-        env,
-        `⚠️ Вхідних із чатів за добу більше ${DAILY_CAP} - решту сьогодні не зберігаю.`,
-        nowMs,
-      );
-    }
-    return false;
+  const reservation = await inboxQuotaTake(env, legacyState, today, DAILY_CAP);
+  if (reservation.allowed) return true;
+  if (reservation.alert) {
+    console.error(`inbox: добова стеля ${DAILY_CAP} вичерпана - нові повідомлення не пишу`);
+    await sendSystemAlert(
+      env,
+      `⚠️ Вхідних із чатів за добу більше ${DAILY_CAP} - решту сьогодні не зберігаю.`,
+      nowMs,
+    );
   }
-  await putCount(env, { date: today, n: n + 1, alerted });
-  return true;
-}
-
-/**
- * Лічильник - НЕ барʼєр безпеки, а страховка від росту бази, тому й
- * рахується приблизно: кожне повідомлення - окремий інвокейшн, тож пара
- * «читання-запис» під потоком губить частину інкрементів. Головне тут -
- * що збій KV не забирає з собою саме повідомлення: воно важливіше за
- * точність лічильника.
- * @param {Env} env @param {{ date: string, n: number, alerted: boolean }} value
- */
-async function putCount(env, value) {
-  try {
-    await env.BRIEFING.put(INBOX_COUNT_KEY, JSON.stringify(value));
-  } catch (/** @type {any} */ e) {
-    console.error('inbox: лічильник доби не записано (повідомлення зберігаю)', e?.message);
-  }
+  return false;
 }
 
 /**

@@ -27,6 +27,7 @@ import {
 import { pendingClear } from '../pending-proposals/client.mjs';
 import { assistantResumeClear } from '../assistant-resume/client.mjs';
 import { weatherQuotaClear } from '../weather-quota/client.mjs';
+import { inboxQuotaClear } from '../inbox-quota/client.mjs';
 import {
   ActiveBrainRunsError,
   eraseAllManagedBackups,
@@ -334,6 +335,7 @@ async function eraseLocalData(env) {
   await clearAssistantHistory(env);
   await assistantResumeClear(env);
   await weatherQuotaClear(env);
+  await inboxQuotaClear(env);
 
   let kvKeys = 0;
   for (const key of FORGET_ALL_KV_KEYS) {

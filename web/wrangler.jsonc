@@ -91,6 +91,9 @@
       // Live weather remains a KV cache; only its shared API-call budget is
       // atomic, so concurrent cache misses cannot overrun the daily limit.
       { "name": "WEATHER_QUOTA", "class_name": "WeatherQuotaDO" },
+      // Business-message writes need an atomic cap before their D1 insert;
+      // otherwise parallel webhooks can each pass the old KV counter.
+      { "name": "INBOX_QUOTA", "class_name": "InboxQuotaDO" },
       // External GitHub briefing dispatch is a side effect: reserve it
       // atomically so manual /brief and a cron tick cannot both invoke it.
       { "name": "BRIEF_DISPATCH", "class_name": "BriefDispatchDO" },
@@ -106,6 +109,7 @@
     "AssistantHistoryDO": { "type": "durable-object", "storage": "sqlite" },
     "AssistantResumeDO": { "type": "durable-object", "storage": "sqlite" },
     "WeatherQuotaDO": { "type": "durable-object", "storage": "sqlite" },
+    "InboxQuotaDO": { "type": "durable-object", "storage": "sqlite" },
     "BriefDispatchDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від

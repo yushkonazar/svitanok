@@ -261,6 +261,7 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 | `sentMessages`                  | compatibility snapshot; atomic `/clear` ring buffer — `SentMessagesDO`      |
 | `briefDispatch`                 | compatibility marker; atomic GitHub dispatch claim — `BriefDispatchDO`      |
 | `weatherLiveCounter`            | compatibility marker; atomic daily API budget — `WeatherQuotaDO`            |
+| `inboxDayCount`                 | compatibility marker; atomic daily inbound cap — `InboxQuotaDO`             |
 
 ---
 

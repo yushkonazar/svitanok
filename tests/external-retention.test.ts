@@ -200,6 +200,14 @@ describe('зовнішня retention і T2 deletion', () => {
           },
         }),
       },
+      INBOX_QUOTA: {
+        getByName: (name: string) => ({
+          clear: async () => {
+            clears.push(name);
+            return { cleared: true };
+          },
+        }),
+      },
     });
     successTransport();
 
@@ -210,6 +218,7 @@ describe('зовнішня retention і T2 deletion', () => {
       'assistant-history',
       'assistant-resume',
       'weather-quota',
+      'inbox-quota',
     ]);
   });
 

@@ -92,6 +92,10 @@ interface Env {
   WEATHER_QUOTA?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/weather-quota/do.mjs').WeatherQuotaDO
   >;
+  /** Atomic admission control before persisting an inbound Business message. */
+  INBOX_QUOTA?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/inbox-quota/do.mjs').InboxQuotaDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO
