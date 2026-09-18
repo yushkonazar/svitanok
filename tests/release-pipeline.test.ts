@@ -11,6 +11,7 @@ describe('immutable brain release pipeline', () => {
   const script = read('.github', 'scripts', 'deploy-brain-release.sh');
   const unit = read('brain', 'svitanok-brain.service');
   const stamp = read('brain', 'scripts', 'stamp-build.mjs');
+  const drill = read('scripts', 'restore-drill.mjs');
 
   it('deploy workflow executes the helper from the exact requested commit', () => {
     expect(workflow).toContain('git show "$SHA:.github/scripts/deploy-brain-release.sh" | bash');
@@ -48,5 +49,12 @@ describe('immutable brain release pipeline', () => {
     expect(migrations).toContain('restore_evidence');
     expect(migrations).toContain('-- release-phase: contract');
     expect(migrations).toContain('contract migration requires restore drill evidence');
+  });
+
+  it('has a non-destructive clean restore drill for the recorded evidence', () => {
+    expect(drill).toContain("new DatabaseSync(':memory:')");
+    expect(drill).toContain('restoreSql(doc)');
+    expect(drill).toContain('BACKUP_TABLES');
+    expect(drill).not.toContain('--remote');
   });
 });

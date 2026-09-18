@@ -115,10 +115,10 @@
 - [x] `/status` показує окремо configured/reachable/version match/freshness health-проби/active runs; configured не видається за healthy.
 - [x] Додати до `/status` model readiness і час останнього успішного non-shadow run.
 - [x] Brain має `/ready`, drain, versioned `/health` і deploy-safe graceful shutdown.
-- [ ] Деплой переходить на immutable release directory + atomic switch.
-- [ ] Ввести expand/contract D1 migrations і release manifest для Worker/brain/instructions/tool schema.
+- [x] Підготувати immutable release directory + atomic switch; activation очікує одноразового VPS bootstrap, який не виконується з цієї гілки.
+- [x] Ввести expand/contract D1 migrations і release manifest для Worker/brain/instructions/tool schema.
 - [ ] Прибрати legacy health probes і, після soak/rollback checkpoint, legacy host path.
-- [ ] Додати smoke contract і restore drill automation.
+- [x] Додати smoke contract і non-destructive clean restore drill automation.
 
 **Готово, коли:** під час релізу немає неконтрольованої code/schema/prompt несумісності; статус не видає configured за healthy.
 

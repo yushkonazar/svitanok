@@ -19,6 +19,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "restore:drill": "node scripts/restore-drill.mjs",
     "dry-run": "tsx src/orchestrator.ts --dry-run",
     "start": "tsx src/orchestrator.ts",
     "prepare": "husky"

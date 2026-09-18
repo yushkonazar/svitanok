@@ -52,3 +52,14 @@ the previous symlink back and restarts the previous release before failing.
 
 No release directory is pruned automatically. Cleanup is a separate operational
 action after a rollback checkpoint and backup/restore evidence.
+
+## Clean restore drill
+
+Run `BACKUP_ENC_KEY=... npm run restore:drill -- --file <backup.enc>` before a
+contract migration or at the scheduled recovery check. The command decrypts
+the selected backup, applies all current migrations to a fresh in-memory SQLite
+database, restores the document, rebuilds FTS and semantically compares every
+backed-up row. It cannot reach Cloudflare, write KV, or apply a remote restore;
+its successful output is suitable evidence for the `restore_evidence` workflow
+input. A production restoration remains a separately authorized operational
+action.
