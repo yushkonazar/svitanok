@@ -55,6 +55,7 @@ describe('web/wrangler.jsonc', () => {
       { name: 'SENT_MESSAGES', class_name: 'SentMessagesDO' },
       { name: 'ASSISTANT_HISTORY', class_name: 'AssistantHistoryDO' },
       { name: 'ASSISTANT_RESUME', class_name: 'AssistantResumeDO' },
+      { name: 'WEATHER_QUOTA', class_name: 'WeatherQuotaDO' },
       { name: 'BRIEF_DISPATCH', class_name: 'BriefDispatchDO' },
     ]);
     expect(cfg.exports).toEqual({
@@ -66,6 +67,7 @@ describe('web/wrangler.jsonc', () => {
       SentMessagesDO: { type: 'durable-object', storage: 'sqlite' },
       AssistantHistoryDO: { type: 'durable-object', storage: 'sqlite' },
       AssistantResumeDO: { type: 'durable-object', storage: 'sqlite' },
+      WeatherQuotaDO: { type: 'durable-object', storage: 'sqlite' },
       BriefDispatchDO: { type: 'durable-object', storage: 'sqlite' },
     });
     // Легасі-масив `migrations` і `exports` взаємовиключні — тримаємо лише другий.
@@ -79,6 +81,7 @@ describe('web/wrangler.jsonc', () => {
     expect(worker).toContain('export { SentMessagesDO }');
     expect(worker).toContain('export { AssistantHistoryDO }');
     expect(worker).toContain('export { AssistantResumeDO }');
+    expect(worker).toContain('export { WeatherQuotaDO }');
     expect(worker).toContain('export { BriefDispatchDO }');
   });
 

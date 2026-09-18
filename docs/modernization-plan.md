@@ -61,6 +61,7 @@
 - [x] Перенести `assistantHistory` у AssistantHistoryDO: callback-питання й agent exchange дописуються atomic batches; 30-денний TTL виконує DO alarm, KV — seed/mirror для rollback та старого export формату.
 - [x] Перенести `assistantResume:*` у AssistantResumeDO: паралельні повідомлення можуть списати continuation slot лише раз; 30-хвилинний alarm і T2 не дозволяють legacy mirror воскресити контекст.
 - [x] Перенести `briefDispatch` у BriefDispatchDO: manual `/brief` і п'ятихвилинний cron беруть atomic lease до зовнішнього GitHub workflow; KV — лише compatibility seed/mirror після підтвердженого dispatch.
+- [x] Перенести `weatherLiveCounter` у WeatherQuotaDO: повна пачка OpenWeather calls резервується до fetch, тому concurrent cache miss не перевищує денну квоту; `weatherLive` лишається KV cache.
 - [ ] Перенести решту structured concurrent state у D1 transactions/event tables або окремий single-writer Durable Object.
 - [ ] Залишити KV тільки для cache/latest briefing/config/immutable snapshot після повного inventory всіх ключів.
 - [x] Ввести одноразовий seed із legacy KV, canonical read та compatibility fallback для rollback/local tests.

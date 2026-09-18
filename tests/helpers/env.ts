@@ -41,6 +41,7 @@ export interface WorkerEnvOverrides extends Partial<
     | 'SENT_MESSAGES'
     | 'ASSISTANT_HISTORY'
     | 'ASSISTANT_RESUME'
+    | 'WEATHER_QUOTA'
     | 'BRIEF_DISPATCH'
     | 'DB'
     | 'AI'
@@ -57,6 +58,7 @@ export interface WorkerEnvOverrides extends Partial<
   SENT_MESSAGES?: unknown;
   ASSISTANT_HISTORY?: unknown;
   ASSISTANT_RESUME?: unknown;
+  WEATHER_QUOTA?: unknown;
   BRIEF_DISPATCH?: unknown;
   DB?: unknown;
   // AI/VECTORIZE (памʼять, ADR-038) - та сама доктрина, що DB: стаб на одну-дві

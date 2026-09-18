@@ -260,6 +260,7 @@ refresh-токеном (`GOOGLE_REFRESH_TOKEN`) — один консент по
 | `googleToken`                   | кешований Google access-токен (~1год TTL)                                   |
 | `sentMessages`                  | compatibility snapshot; atomic `/clear` ring buffer — `SentMessagesDO`      |
 | `briefDispatch`                 | compatibility marker; atomic GitHub dispatch claim — `BriefDispatchDO`      |
+| `weatherLiveCounter`            | compatibility marker; atomic daily API budget — `WeatherQuotaDO`            |
 
 ---
 

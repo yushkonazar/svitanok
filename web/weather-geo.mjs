@@ -23,6 +23,8 @@ import { parseOneCall, mergeAqi } from './weather-core.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
 import { tgCall } from './telegram-client.mjs';
 import { locateKeyboard, normalKeyboard } from './tg-core.mjs';
+import { weatherQuotaConsume } from './core/weather-quota/client.mjs';
+import { WEATHER_LIVE_COUNTER_KEY } from './core/weather-quota/contract.mjs';
 
 /**
  * ⚠️ ТУТ ЛИШЕ ПУБЛІЧНІ ЗНАЧЕННЯ, і це другий бік того самого виправлення, що в
@@ -98,6 +100,16 @@ const WEATHER_LIVE_DAILY_LIMIT = 150;
 // точки можуть дати трохи різні координати без жодного реального переїзду —
 // тонший поріг спричиняв би зайві «геопозиції відрізняються» і зайві KV-записи.
 const GEO_MATCH_TOLERANCE = 0.02;
+
+/** Read only the compatibility seed; an enabled WeatherQuotaDO is authoritative. */
+async function loadLegacyWeatherQuota(/** @type {Env} */ env) {
+  try {
+    const parsed = JSON.parse((await env.BRIEFING.get(WEATHER_LIVE_COUNTER_KEY)) ?? 'null');
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 function roundGeo(/** @type {number} */ n) {
   return Math.round(n * 100) / 100;
@@ -276,24 +288,19 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
   }
 
   const today = kyivDateKey();
-  let counter;
-  try {
-    counter = JSON.parse((await env.BRIEFING.get('weatherLiveCounter')) ?? 'null');
-  } catch {
-    counter = null;
-  }
-  if (!counter || counter.date !== today) counter = { date: today, count: 0 };
-  if (counter.count >= WEATHER_LIVE_DAILY_LIMIT) {
+  const quotaOrCached = async (/** @type {number} */ amount) => {
+    const reservation = await weatherQuotaConsume(
+      env,
+      await loadLegacyWeatherQuota(env),
+      today,
+      amount,
+      WEATHER_LIVE_DAILY_LIMIT,
+    );
+    if (reservation.ok) return null;
     // Ліміт вичерпано -> віддати наявний кеш, АЛЕ ЛИШЕ якщо він усе ще під
     // ТУ САМУ позицію (протухлий за TTL — можна, іншої позиції — ні).
-    //
-    // ⚠️ Регресія, знайдена фідбеком власника (06.08): обрав нову ручну
-    // локацію (Рівне замість Сарни), POST успішно зберіг ownerGeoManual —
-    // але денний лічильник тоді вже був вичерпаний, і цей блок віддавав
-    // СТАРИЙ кеш Сарни як є, без перевірки geo. Виглядало як «нічого не
-    // змінилось»: інтерфейс показував чужу погоду під виглядом свіжої.
-    // Позиція розійшлась -> чесна 429, клієнт фолбекає на снапшот брифінгу
-    // (WeatherBlock), а не бреше живими на вигляд даними чужого міста.
+    // Позиція розійшлась -> чесна 429, клієнт фолбекає на снапшот брифінгу,
+    // а не бреше живими на вигляд даними чужого міста.
     if (cached && sameGeo(cached.geo ?? null, effectiveGeo))
       return json({
         ok: true,
@@ -302,11 +309,10 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
         manualGeo: manualGeoOut,
       });
     return json({ ok: false, error: 'rate-limited' }, 429);
-  }
+  };
 
   const todayKey = today;
   const fetchLocation = async (/** @type {KvBlob} */ loc) => {
-    counter.count++;
     const oneCallUrl = new URL('https://api.openweathermap.org/data/3.0/onecall');
     oneCallUrl.searchParams.set('lat', String(loc.lat));
     oneCallUrl.searchParams.set('lon', String(loc.lon));
@@ -320,7 +326,6 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
     const parsed = /** @type {KvBlob} */ (parseOneCall(await res.json(), loc.name, todayKey));
     if (!parsed) throw new Error(`порожній onecall для ${loc.name}`);
 
-    counter.count++;
     try {
       const aqiUrl = new URL('https://api.openweathermap.org/data/2.5/air_pollution');
       aqiUrl.searchParams.set('lat', String(loc.lat));
@@ -345,7 +350,8 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
     // повернути ІНШУ назву (напр. район замість міста), ніж очікує власник.
     let name = manualGeo?.name ?? null;
     if (!name) {
-      counter.count++; // геокодування — теж запит проти спільної OpenWeather-квоти
+      const quotaResponse = await quotaOrCached(1); // reverse geocoding теж рахується у квоту
+      if (quotaResponse) return quotaResponse;
       name = await reverseGeocodeCity(effectiveGeo.lat, effectiveGeo.lon, env.WEATHER_API_KEY);
       // ⚠️ Назву ЗБЕРІГАЄМО в ownerGeo — заради РАНКОВОГО БРИФІНГУ, не заради
       // цього запиту. Оркестратор читає той самий ключ (applyOwnerGeo у
@@ -375,8 +381,12 @@ export async function handleLiveWeather(/** @type {Request} */ request, /** @typ
     ];
   }
 
+  // OneCall + AQI для кожної локації. Резервуємо всю пачку ПЕРЕД fetch:
+  // два одночасних cache miss не можуть обидва побачити старий KV counter і
+  // перевищити спільну OpenWeather квоту.
+  const quotaResponse = await quotaOrCached(targetLocations.length * 2);
+  if (quotaResponse) return quotaResponse;
   const results = await Promise.allSettled(targetLocations.map(fetchLocation));
-  await env.BRIEFING.put('weatherLiveCounter', JSON.stringify(counter));
 
   /** @type {KvBlob[]} */
   const locations = [];

@@ -88,6 +88,10 @@ interface Env {
   ASSISTANT_RESUME?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/assistant-resume/do.mjs').AssistantResumeDO
   >;
+  /** Atomic daily reservation before live OpenWeather calls. */
+  WEATHER_QUOTA?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/weather-quota/do.mjs').WeatherQuotaDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO

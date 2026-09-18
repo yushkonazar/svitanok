@@ -192,6 +192,14 @@ describe('зовнішня retention і T2 deletion', () => {
           },
         }),
       },
+      WEATHER_QUOTA: {
+        getByName: (name: string) => ({
+          clear: async () => {
+            clears.push(name);
+            return { cleared: true };
+          },
+        }),
+      },
     });
     successTransport();
 
@@ -201,6 +209,7 @@ describe('зовнішня retention і T2 deletion', () => {
       'sent-messages',
       'assistant-history',
       'assistant-resume',
+      'weather-quota',
     ]);
   });
 

@@ -88,6 +88,9 @@
       // A follow-up answer may arrive twice at once; only one may consume the
       // agent's short clarification note.
       { "name": "ASSISTANT_RESUME", "class_name": "AssistantResumeDO" },
+      // Live weather remains a KV cache; only its shared API-call budget is
+      // atomic, so concurrent cache misses cannot overrun the daily limit.
+      { "name": "WEATHER_QUOTA", "class_name": "WeatherQuotaDO" },
       // External GitHub briefing dispatch is a side effect: reserve it
       // atomically so manual /brief and a cron tick cannot both invoke it.
       { "name": "BRIEF_DISPATCH", "class_name": "BriefDispatchDO" },
@@ -102,6 +105,7 @@
     "SentMessagesDO": { "type": "durable-object", "storage": "sqlite" },
     "AssistantHistoryDO": { "type": "durable-object", "storage": "sqlite" },
     "AssistantResumeDO": { "type": "durable-object", "storage": "sqlite" },
+    "WeatherQuotaDO": { "type": "durable-object", "storage": "sqlite" },
     "BriefDispatchDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від
