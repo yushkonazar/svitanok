@@ -101,6 +101,7 @@
       // claim its exact state so two ticks cannot execute one phase twice.
       { "name": "MONO_RECONCILE", "class_name": "MonoReconcileDO" },
       { "name": "BACKUP_STATE", "class_name": "BackupStateDO" },
+      { "name": "WEEKLY_REVIEW_STATE", "class_name": "WeeklyReviewStateDO" },
       // External GitHub briefing dispatch is a side effect: reserve it
       // atomically so manual /brief and a cron tick cannot both invoke it.
       { "name": "BRIEF_DISPATCH", "class_name": "BriefDispatchDO" },
@@ -120,6 +121,7 @@
     "AgentHostHealthDO": { "type": "durable-object", "storage": "sqlite" },
     "MonoReconcileDO": { "type": "durable-object", "storage": "sqlite" },
     "BackupStateDO": { "type": "durable-object", "storage": "sqlite" },
+    "WeeklyReviewStateDO": { "type": "durable-object", "storage": "sqlite" },
     "BriefDispatchDO": { "type": "durable-object", "storage": "sqlite" },
   },
   // Workflows (07 §6): перший - DayPlanChain (етап 3 PR-8, ADR-035): живе від

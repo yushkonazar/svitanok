@@ -67,6 +67,7 @@
 - [x] Перенести `agentHostHealth` у AgentHostHealthDO: конкурентні VPS health probe можуть прийняти перехід і owner alert лише один раз; KV лишається status mirror.
 - [x] Перенести `monoReconcile` у MonoReconcileDO: lease охоплює один зовнішній Mono-крок, а progress commit належить лише власнику lease; KV лишається rollback mirror.
 - [x] Перенести `backupState` у BackupStateDO: один lease володіє weekly Drive backup attempt, а retryable збій звільняє його для наступного tick; KV лишається rollback mirror.
+- [x] Перенести `weeklyReviewState` у WeeklyReviewStateDO: lease серіалізує старт, retry та фінальний alert weekly report; KV лишається rollback mirror.
 - [ ] Перенести решту structured concurrent state у D1 transactions/event tables або окремий single-writer Durable Object.
 - [ ] Залишити KV тільки для cache/latest briefing/config/immutable snapshot після повного inventory всіх ключів.
 - [x] Ввести одноразовий seed із legacy KV, canonical read та compatibility fallback для rollback/local tests.

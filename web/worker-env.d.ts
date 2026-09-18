@@ -107,6 +107,9 @@ interface Env {
   BACKUP_STATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/backup-state/do.mjs').BackupStateDO
   >;
+  WEEKLY_REVIEW_STATE?: import('@cloudflare/workers-types').DurableObjectNamespace<
+    import('./core/weekly-review-state/do.mjs').WeeklyReviewStateDO
+  >;
   /** Atomic claim/release gate before manual or scheduled GitHub briefing dispatch. */
   BRIEF_DISPATCH?: import('@cloudflare/workers-types').DurableObjectNamespace<
     import('./core/brief-dispatch/do.mjs').BriefDispatchDO

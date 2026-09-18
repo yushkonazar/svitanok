@@ -21,6 +21,7 @@ source of truth» у `modernization-plan.md`.
 | VPS health transition / owner alert | `AgentHostHealthDO`     | `agentHostHealth`            |
 | multi-tick Mono reconciliation      | `MonoReconcileDO`       | `monoReconcile`              |
 | weekly encrypted backup             | `BackupStateDO`         | `backupState`                |
+| weekly brain-review delivery        | `WeeklyReviewStateDO`   | `weeklyReviewState`          |
 
 Кожен рядок вище має одноразовий legacy seed і canonical read за наявного
 binding. Для зовнішньої дії canonical binding або fail-closed (погода,
@@ -58,7 +59,6 @@ workflow id або downstream idempotency. Їх не слід перетворю
 
 | Ключ                                 | Поточна функція                                | Умова завершення міграції                                                  |
 | ------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------- |
-| `weeklyReviewState`                  | weekly brain-review continuation               | durable lease/state with retry-safe delivery                               |
 | `steamCheckMisses`, `steamSaleShare` | anomaly streak та derived Steam price state    | або scheduler DO, або D1 event/projection після одночасного Steam workload |
 | `monoUnknownAlert`                   | one-alert throttle для невідомого Mono account | atomic rate gate, якщо webhook може паралелитися                           |
 

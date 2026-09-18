@@ -14,8 +14,13 @@
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { startOrQueueThreadText, THREAD_DM } from '../prerouter.mjs';
+import { weeklyClaim, weeklyComplete, weeklyRelease } from '../weekly-review-state/client.mjs';
+import {
+  WEEKLY_REVIEW_LEASE_MS,
+  WEEKLY_REVIEW_STATE_KEY,
+} from '../weekly-review-state/contract.mjs';
 
-export const WEEKLY_REVIEW_STATE_KEY = 'weeklyReviewState';
+export { WEEKLY_REVIEW_STATE_KEY };
 export const WEEKLY_REVIEW_HOUR = 9;
 export const WEEKLY_REVIEW_RETRY_HOUR = 12;
 /** Скільки спроб на тиждень: перша о 09:00 і один повтор о 12:00. */
@@ -36,48 +41,63 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
   const hour = kyivHour(now);
   if (hour < WEEKLY_REVIEW_HOUR) return { skipped: 'hour' };
 
-  const state = await readState(env, today);
-  if (state.attempts === 0) return start(env, state, nowMs);
+  const legacy = await readState(env, today);
+  const claim = await weeklyClaim(env, legacy, nowMs, WEEKLY_REVIEW_LEASE_MS);
+  if (!claim.ok) return { skipped: claim.reason ?? 'busy' };
+  const state = normalizeState(claim.state, today);
+  let completed = false;
+  /** @param {WeeklyState} next */
+  const writeState = async (next) => {
+    const ok = await weeklyComplete(env, claim.token, next);
+    if (!ok) throw new Error('weekly-review lease втрачено під час commit');
+    completed = true;
+  };
+  try {
+    if (state.attempts === 0) return start(env, state, nowMs, writeState);
 
-  // Київська північ сьогодні в ISO: звіт, доставлений сьогодні, і є успіх.
-  const dayStartIso = new Date(nowMs - kyivMinuteOfDay(now) * 60_000).toISOString();
+    // Київська північ сьогодні в ISO: звіт, доставлений сьогодні, і є успіх.
+    const dayStartIso = new Date(nowMs - kyivMinuteOfDay(now) * 60_000).toISOString();
 
-  if (state.attempts === 1) {
-    if (hour < WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-first' };
-    if (await reportExistsSince(env, dayStartIso)) return { skipped: 'ok' };
-    const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[0]));
-    if (verdict === 'running') return { skipped: 'running' };
-    await sendSystemAlert(
-      env,
-      `weekly-review о 09:00 не дав звіту (${verdict}) - повторюю о 12:00.`,
-      nowMs,
-    );
-    return start(env, state, nowMs);
+    if (state.attempts === 1) {
+      if (hour < WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-first' };
+      if (await reportExistsSince(env, dayStartIso)) return { skipped: 'ok' };
+      const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[0]));
+      if (verdict === 'running') return { skipped: 'running' };
+      await sendSystemAlert(
+        env,
+        `weekly-review о 09:00 не дав звіту (${verdict}) - повторюю о 12:00.`,
+        nowMs,
+      );
+      return start(env, state, nowMs, writeState);
+    }
+
+    // Обидві спроби зроблено: лишилось перевірити другу і сказати вголос.
+    if (state.alerted) return { skipped: 'done' };
+    if (hour <= WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-retry' };
+    const delivered = await reportExistsSince(env, dayStartIso);
+    if (!delivered) {
+      const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[1]));
+      if (verdict === 'running') return { skipped: 'running' };
+      await sendSystemAlert(
+        env,
+        `Тижневий звіт не вдався двічі (${verdict}) - цього тижня без нього.`,
+        nowMs,
+      );
+    }
+    await writeState({ ...state, alerted: true });
+    return { alerted: !delivered };
+  } finally {
+    if (!completed && claim.canonical) await weeklyRelease(env, claim.token);
   }
-
-  // Обидві спроби зроблено: лишилось перевірити другу і сказати вголос.
-  if (state.alerted) return { skipped: 'done' };
-  if (hour <= WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-retry' };
-  const delivered = await reportExistsSince(env, dayStartIso);
-  if (!delivered) {
-    const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[1]));
-    if (verdict === 'running') return { skipped: 'running' };
-    await sendSystemAlert(
-      env,
-      `Тижневий звіт не вдався двічі (${verdict}) - цього тижня без нього.`,
-      nowMs,
-    );
-  }
-  await writeState(env, { ...state, alerted: true });
-  return { alerted: !delivered };
 }
 
 /**
  * @param {Env} env
  * @param {WeeklyState} state
  * @param {number} nowMs
+ * @param {(state: WeeklyState) => Promise<void>} writeState
  */
-async function start(env, state, nowMs) {
+async function start(env, state, nowMs, writeState) {
   if (!env.TELEGRAM_CHAT_ID) {
     console.error('weekly-review: TELEGRAM_CHAT_ID відсутній - нікуди слати звіт');
     return { skipped: 'no-chat' };
@@ -96,7 +116,7 @@ async function start(env, state, nowMs) {
   // runId null = запит став у чергу треду (власник саме розмовляє) і стартує
   // після поточного прогону зі своїм id. Спробу рахуємо: успіх о 12:00
   // читається з reports, а не з runs, тож черга - не збій.
-  await writeState(env, {
+  await writeState({
     ...state,
     attempts: state.attempts + 1,
     runIds: [...state.runIds, runId ?? 'queued'],
@@ -147,19 +167,21 @@ async function readState(env, today) {
   try {
     const raw = await env.BRIEFING.get(WEEKLY_REVIEW_STATE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    if (!parsed || parsed.date !== today) return fresh;
-    return {
-      date: today,
-      attempts: Number(parsed.attempts) || 0,
-      runIds: Array.isArray(parsed.runIds) ? parsed.runIds.map(String) : [],
-      alerted: Boolean(parsed.alerted),
-    };
+    return normalizeState(parsed, today);
   } catch {
     return fresh;
   }
 }
 
-/** @param {Env} env @param {WeeklyState} state */
-async function writeState(env, state) {
-  await env.BRIEFING.put(WEEKLY_REVIEW_STATE_KEY, JSON.stringify(state));
+/** @param {unknown} value @param {string} today @returns {WeeklyState} */
+function normalizeState(value, today) {
+  const fresh = { date: today, attempts: 0, runIds: [], alerted: false };
+  const parsed = /** @type {any} */ (value);
+  if (!parsed || parsed.date !== today) return fresh;
+  return {
+    date: today,
+    attempts: Number(parsed.attempts) || 0,
+    runIds: Array.isArray(parsed.runIds) ? parsed.runIds.map(String) : [],
+    alerted: Boolean(parsed.alerted),
+  };
 }
