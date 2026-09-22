@@ -41,10 +41,19 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
   const hour = kyivHour(now);
   if (hour < WEEKLY_REVIEW_HOUR) return { skipped: 'hour' };
 
+  // Стан у DO є канонічним, але він не може бути єдиним запобіжником від
+  // повторного зовнішнього ефекту. Якщо старий стан пошкоджено/втрачено під
+  // час деплою, журнал runs вже знає про старт цього тижневого звіту. Без
+  // такого звіряння кожен 5-хвилинний тік вважав би себе «першою» спробою і
+  // знову викликав би модель. Відновлюємо лічильник з durable D1 перед будь-
+  // яким новим стартом; максимум дві спроби лишається тим самим.
+  const dayStartIso = new Date(nowMs - kyivMinuteOfDay(now) * 60_000).toISOString();
+  const persistedRuns = await weeklyRunsSince(env, dayStartIso);
+
   const legacy = await readState(env, today);
   const claim = await weeklyClaim(env, legacy, nowMs, WEEKLY_REVIEW_LEASE_MS);
   if (!claim.ok) return { skipped: claim.reason ?? 'busy' };
-  const state = normalizeState(claim.state, today);
+  const state = reconcileState(normalizeState(claim.state, today), today, persistedRuns);
   let completed = false;
   /** @param {WeeklyState} next */
   const writeState = async (next) => {
@@ -53,16 +62,32 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
     completed = true;
   };
   try {
+    // Записати відновлений стан одразу. Це зупиняє цикл навіть коли наступний
+    // крок нижче повернеться раннім `skipped`.
+    if (!sameState(state, normalizeState(claim.state, today))) {
+      await writeState(state);
+      // `complete` навмисно відпускає lease. Не можна після цього в тому ж
+      // тіку перейти до start() і вдруге комітити старим token: наступний
+      // 5-хвилинний тік уже побачить відновлений стан і діятиме один раз.
+      return { skipped: 'state-reconciled' };
+    }
     if (state.attempts === 0) return start(env, state, nowMs, writeState);
 
     // Київська північ сьогодні в ISO: звіт, доставлений сьогодні, і є успіх.
-    const dayStartIso = new Date(nowMs - kyivMinuteOfDay(now) * 60_000).toISOString();
-
     if (state.attempts === 1) {
       if (hour < WEEKLY_REVIEW_RETRY_HOUR) return { skipped: 'wait-first' };
       if (await reportExistsSince(env, dayStartIso)) return { skipped: 'ok' };
       const verdict = await runVerdict(env, /** @type {string} */ (state.runIds[0]));
       if (verdict === 'running') return { skipped: 'running' };
+      if (await isPermanentModelAccessFailure(env, /** @type {string} */ (state.runIds[0]))) {
+        await sendSystemAlert(
+          env,
+          'Тижневий звіт зупинено: доступ Claude Code вимкнено. Повторювати не буду, доки доступ не відновлять.',
+          nowMs,
+        );
+        await writeState({ ...state, attempts: WEEKLY_REVIEW_MAX_ATTEMPTS, alerted: true });
+        return { skipped: 'model-access-disabled' };
+      }
       await sendSystemAlert(
         env,
         `weekly-review о 09:00 не дав звіту (${verdict}) - повторюю о 12:00.`,
@@ -155,6 +180,85 @@ async function runVerdict(env, runId) {
   if (row.error) return String(row.error);
   if (!row.finished_at) return 'running';
   return 'завершився без звіту';
+}
+
+/**
+ * Два незалежні джерела стану: DO захищає звичайний хід, а D1 переживає
+ * втрату/міграцію DO. Беремо лише два перші старти дня — саме стільки дозволяє
+ * контракт weekly-review; старі зайві рядки не можуть відкрити третю спробу.
+ * @param {Env} env
+ * @param {string} sinceIso
+ * @returns {Promise<{ id: string }[]>}
+ */
+async function weeklyRunsSince(env, sinceIso) {
+  if (!env.DB) return [];
+  try {
+    const result = await env.DB.prepare(
+      `SELECT id FROM runs
+       WHERE profile = 'weekly-review' AND started_at >= ?
+       ORDER BY started_at ASC
+       LIMIT ?`,
+    )
+      .bind(sinceIso, WEEKLY_REVIEW_MAX_ATTEMPTS)
+      .all();
+    return Array.isArray(result.results)
+      ? result.results
+          .filter((row) => row && typeof row.id === 'string')
+          .map((row) => ({ id: /** @type {string} */ (row.id) }))
+      : [];
+  } catch (/** @type {any} */ error) {
+    // D1 лишається додатковим safety net: збій журналу не має блокувати
+    // штатний тижневий звіт, DO/KV усе ще тримає його звичайний стан.
+    console.error('weekly-review: не вдалося звірити запуски дня', error?.message);
+    return [];
+  }
+}
+
+/** @param {WeeklyState} state @param {string} today @param {{ id: string }[]} runs */
+function reconcileState(state, today, runs) {
+  if (runs.length <= state.attempts) return state;
+  return {
+    date: today,
+    attempts: Math.min(runs.length, WEEKLY_REVIEW_MAX_ATTEMPTS),
+    runIds: runs.map((run) => run.id),
+    alerted: state.alerted,
+  };
+}
+
+/** @param {WeeklyState} left @param {WeeklyState} right */
+function sameState(left, right) {
+  return (
+    left.date === right.date &&
+    left.attempts === right.attempts &&
+    left.alerted === right.alerted &&
+    left.runIds.join('\u0000') === right.runIds.join('\u0000')
+  );
+}
+
+/**
+ * Це не тимчасовий збій моделі: Anthropic прямо вимкнув доступ організації.
+ * Повтор через п'ять хвилин гарантовано дасть той самий результат, тому
+ * weekly-review завершується після одного повідомлення замість другого запуску.
+ * @param {Env} env
+ * @param {string} runId
+ */
+async function isPermanentModelAccessFailure(env, runId) {
+  if (!env.DB || !runId || runId === 'queued') return false;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT note FROM run_steps
+       WHERE run_id = ? AND kind = 'error'
+       ORDER BY n DESC
+       LIMIT 1`,
+    )
+      .bind(runId)
+      .first();
+    const note = String(row?.note ?? '');
+    return /disabled\s+claude\s+subscription\s+access|use\s+an\s+anthropic\s+api\s+key/i.test(note);
+  } catch (/** @type {any} */ error) {
+    console.error('weekly-review: не вдалося класифікувати помилку моделі', error?.message);
+    return false;
+  }
 }
 
 /**
