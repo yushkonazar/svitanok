@@ -135,11 +135,11 @@
 - [x] Workerd/Miniflare integration tests для DO alarms, D1, KV, Workflows, `waitUntil`, assets.
 - [x] Fake Telegram/Google/Mono E2E tests.
 - [x] Fault injection для timeout, duplicate delivery, D1/Vectorize/API failures.
-- [ ] Run dashboard: terminal state, retry, queue wait, tool latency, policy decision, model/version, cost.
-- [ ] Reminder and briefing delivery SLOs.
-- [ ] Backup → clean restore → semantic comparison drill.
-- [ ] Генерований tool/policy/schema contract або contract tests, що не дають docs розійтися з кодом.
-- [ ] Оновити canonical docs після кожної завершеної підсистеми.
+- [x] Run dashboard: terminal state, retry, queue wait, tool latency, policy decision, model/version, cost.
+- [x] Reminder and briefing delivery SLOs.
+- [x] Backup → clean restore → semantic comparison drill.
+- [x] Генерований tool/policy/schema contract або contract tests, що не дають docs розійтися з кодом.
+- [x] Оновити canonical docs після кожної завершеної підсистеми.
 
 ## Фаза 3 — provider-neutral AI runtime і OpenAI Responses
 

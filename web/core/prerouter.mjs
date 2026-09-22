@@ -774,6 +774,8 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
     chatId: parsed.chatId,
     model: MODELS[route] ?? null,
     startedMs: nowMs,
+    queueWaitMs: nowMs - entry.atMs,
+    retryAttempt: entry.attempts,
   });
   if (!registered) {
     await retryOrGiveUp(env, parsed, threadKey, entry, nowMs, statusMessageId, {
