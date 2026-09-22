@@ -449,6 +449,46 @@ describe('задача weekly-review (нд 09:00, повтор 12:00, алерт
     expect(start).toHaveBeenCalledTimes(1);
   });
 
+  it('втрата стану weekly-review не перетворює кожен 5-хвилинний тік на новий запуск', async () => {
+    // Реальний захист від циклу: state могло не зберегтися, але два запуски
+    // дня вже незворотно є в D1. Без звіряння з runs третя помилка Claude
+    // приходила б через наступні п'ять хвилин.
+    const { env, kv } = taskEnv([
+      { id: 'run-w1', error: 'brain-error', finished: true },
+      { id: 'run-w2', error: 'brain-error', finished: true },
+    ]);
+    expect(await weeklyReviewTask(env, SUNDAY_1210)).toEqual({ skipped: 'state-reconciled' });
+    expect(start).not.toHaveBeenCalled();
+    expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}')).toMatchObject({
+      date: '2026-09-06',
+      attempts: 2,
+      runIds: ['run-w1', 'run-w2'],
+    });
+  });
+
+  it('вимкнений доступ Claude Code не ретраїться о 12:00', async () => {
+    const { env, kv, d1 } = taskEnv([{ id: 'run-w1', error: 'brain-error', finished: true }]);
+    d1.db
+      .prepare(
+        `INSERT INTO run_steps (id, run_id, n, at, kind, name, note)
+         VALUES ('run-w1:1', 'run-w1', 1, '2026-09-06T06:12:00Z', 'error', 'weekly-review', ?)`,
+      )
+      .run(
+        'Claude Code returned an error result: Your organization has disabled Claude subscription access for Claude Code',
+      );
+    kv.set(
+      WEEKLY_REVIEW_STATE_KEY,
+      JSON.stringify({ date: '2026-09-06', attempts: 1, runIds: ['run-w1'], alerted: false }),
+    );
+
+    expect(await weeklyReviewTask(env, SUNDAY_1210)).toEqual({ skipped: 'model-access-disabled' });
+    expect(start).not.toHaveBeenCalled();
+    expect(JSON.parse(kv.get(WEEKLY_REVIEW_STATE_KEY) ?? '{}')).toMatchObject({
+      attempts: 2,
+      alerted: true,
+    });
+  });
+
   it('прогін у черзі треду (runId null): звіту о 12:00 нема - повтор; звіт з черги ДОСТАВЛЕНО - без повтору (ревʼю: дубль звіту)', async () => {
     start.mockResolvedValueOnce(null);
     const { env, kv } = taskEnv();
