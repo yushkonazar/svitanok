@@ -19,6 +19,12 @@ export class DurableObject<Env = unknown> {
   }
 }
 
+// Існують лише у workerd. Експортуємо нейтральні заглушки, аби worker-runtime
+// integration tests могли компілюватися поруч із Node unit-тестами; останні
+// ними не користуються.
+export const env: unknown = undefined;
+export const exports: unknown = undefined;
+
 /** Базовий клас Workflow (етап 3 PR-8, DayPlanChain): так само лише ctx/env
  *  на this. Машина станів ланцюга тестується напряму (runDayPlanChain) з
  *  фейковим step - клас потрібен тесту лише щоб імпорт worker.js не впав. */

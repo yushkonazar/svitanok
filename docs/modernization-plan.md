@@ -132,9 +132,9 @@
 
 ## Фаза 2 — тестування, observability і документація
 
-- [ ] Workerd/Miniflare integration tests для DO alarms, D1, KV, Workflows, `waitUntil`, assets.
-- [ ] Fake Telegram/Google/Mono E2E tests.
-- [ ] Fault injection для timeout, duplicate delivery, D1/Vectorize/API failures.
+- [x] Workerd/Miniflare integration tests для DO alarms, D1, KV, Workflows, `waitUntil`, assets.
+- [x] Fake Telegram/Google/Mono E2E tests.
+- [x] Fault injection для timeout, duplicate delivery, D1/Vectorize/API failures.
 - [ ] Run dashboard: terminal state, retry, queue wait, tool latency, policy decision, model/version, cost.
 - [ ] Reminder and briefing delivery SLOs.
 - [ ] Backup → clean restore → semantic comparison drill.

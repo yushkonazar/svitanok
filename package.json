@@ -14,6 +14,7 @@
     "typecheck:web": "tsc -p web",
     "build:web": "npm --prefix web/app ci && npm --prefix web/app run build",
     "test": "vitest run",
+    "test:workers": "vitest run --config vitest.workers.config.ts",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "lint": "eslint .",

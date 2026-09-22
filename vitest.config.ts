@@ -18,6 +18,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // workerd-only imports (`cloudflare:test`) мають власний runtime і конфіг.
+    // Без виключення Node-suite намагається виконати їх під заглушкою й дає
+    // хибне падіння всього регресу.
+    exclude: ['tests/workers/**'],
     // Явні імпорти з 'vitest' (без globals) — щоб не розширювати tsconfig types
     globals: false,
     /**
