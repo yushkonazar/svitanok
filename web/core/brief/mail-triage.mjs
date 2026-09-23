@@ -59,7 +59,39 @@ export const MAIL_FAIL_ALERT_AT = 3;
 export const SKIP_LABELS = ['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL'];
 
 /**
- * @typedef {{ id: string, from: string, subject: string, snippet: string, atMs: number }} MailCandidate
+ * Narrow deterministic attention gate. It intentionally does not interpret a
+ * mail's truthfulness, infer a calendar event, or call an LLM: those actions
+ * need the normal taint/policy path. The returned reason codes are suitable
+ * for an owner-facing explanation without persisting the raw message body.
+ * @param {{ subject?: unknown, snippet?: unknown }} candidate
+ * @returns {{ level: 'critical' | 'attention', reasons: string[] } | null}
+ */
+export function classifyMailAttention(candidate) {
+  const text =
+    `${String(candidate.subject ?? '')}\n${String(candidate.snippet ?? '')}`.toLowerCase();
+  /** @type {string[]} */
+  const critical = [];
+  if (
+    /\b(interview|technical\s+task|offer|deadline)\b|співбес|тестов.{0,12}завдан|офер|дедлайн/i.test(
+      text,
+    )
+  ) {
+    critical.push('interview_or_deadline');
+  }
+  if (/\b(today|tomorrow|сьогодні|завтра)\b/i.test(text)) critical.push('time_sensitive');
+  if (critical.length) return { level: 'critical', reasons: critical };
+
+  /** @type {string[]} */
+  const attention = [];
+  if (/\b(application|recruiter|recruitment|vacancy|job)\b|заявк|рекрутер|ваканс/i.test(text)) {
+    attention.push('job_signal');
+  }
+  return attention.length ? { level: 'attention', reasons: attention } : null;
+}
+
+/**
+ * @typedef {{ id: string, from: string, subject: string, snippet: string, atMs: number,
+ *   attention?: { level: 'critical' | 'attention', reasons: string[] } }} MailCandidate
  * @typedef {{ historyId: string | null, lastRunMs: number, fails: number,
  *   alerted: boolean, candidates: MailCandidate[], seen: string[] }} MailTriageState
  */
@@ -169,13 +201,15 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
     // це не давало курсору застигнути.
     seenNow.push(meta.id);
     if (meta.labels.some((l) => SKIP_LABELS.includes(l))) continue;
-    fresh.push({
+    const candidate = {
       id: meta.id,
       from: meta.from,
       subject: meta.subject,
       snippet: meta.snippet,
       atMs: meta.atMs,
-    });
+    };
+    const attention = classifyMailAttention(candidate);
+    fresh.push({ ...candidate, ...(attention ? { attention } : {}) });
   }
   // Курсор рухається, лише коли ВСЕ пройдено успішно: недочитані сторінки,
   // залишок понад стелю або жоден збій метаданих - усе лишає стару точку.

@@ -44,7 +44,14 @@ export const MAIL_TRIAGE_KEY = 'mailTriage';
 
 /** Форма того ключа - рівно те, що читає цей модуль. */
 export interface MailTriageState {
-  candidates?: { id: string; from?: string; subject?: string; snippet?: string; atMs?: number }[];
+  candidates?: {
+    id: string;
+    from?: string;
+    subject?: string;
+    snippet?: string;
+    atMs?: number;
+    attention?: { level?: 'critical' | 'attention'; reasons?: string[] };
+  }[];
   lastRunMs?: number;
   historyId?: string | null;
 }
@@ -214,6 +221,10 @@ export function createMailModule(): Module<AppConfig> {
           const at = shown[c.id] ? Date.parse(shown[c.id]!) : 0;
           return !(at && at >= cutoff);
         })
+        // Deterministic attention signals are a ranking aid, never a claim
+        // about message content. LLM classification still receives the same
+        // tainted candidate set and may not initiate a mail action.
+        .sort((a, b) => attentionRank(b.attention?.level) - attentionRank(a.attention?.level))
         .slice(0, cfg.maxCandidates)
         .map((c) => ({
           id: c.id,
@@ -303,4 +314,8 @@ export function createMailModule(): Module<AppConfig> {
       };
     },
   };
+}
+
+function attentionRank(level: 'critical' | 'attention' | undefined): number {
+  return level === 'critical' ? 2 : level === 'attention' ? 1 : 0;
 }
