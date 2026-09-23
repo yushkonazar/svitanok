@@ -21,8 +21,13 @@ const CONFIG: BrainConfig = {
   accessClientSecret: null,
   aiProvider: 'claude',
   openAiApiKey: null,
-  openAiModel: null,
+  openAiModels: null,
   openAiReasoningEffort: null,
+  openAiRollout: null,
+  openAiCanaryThreadIds: [],
+  openAiCanaryProfiles: [],
+  openAiShadowThreadIds: [],
+  openAiShadowProfiles: [],
 };
 
 function makeHandler(over: Partial<ServerDeps> = {}) {

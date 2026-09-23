@@ -30,8 +30,13 @@ describe('loadConfig: обовʼязкові змінні', () => {
       accessClientSecret: null,
       aiProvider: 'claude',
       openAiApiKey: null,
-      openAiModel: null,
+      openAiModels: null,
       openAiReasoningEffort: null,
+      openAiRollout: null,
+      openAiCanaryThreadIds: [],
+      openAiCanaryProfiles: [],
+      openAiShadowThreadIds: [],
+      openAiShadowProfiles: [],
     });
   });
 });
@@ -51,12 +56,18 @@ describe('loadConfig: OpenAI Responses provider', () => {
         INTERNAL_API_URL: 'https://svitanok.example',
         AI_PROVIDER: 'openai',
         OPENAI_API_KEY: ' openai-key ',
+        OPENAI_ROLLOUT: 'full',
       }),
     ).toMatchObject({
       aiProvider: 'openai',
       openAiApiKey: 'openai-key',
-      openAiModel: 'gpt-6-astra',
+      openAiModels: {
+        fast: 'gpt-6-luna',
+        standard: 'gpt-6-sol',
+        advanced: 'gpt-6-astra',
+      },
       openAiReasoningEffort: 'high',
+      openAiRollout: 'full',
     });
   });
 
@@ -71,8 +82,26 @@ describe('loadConfig: OpenAI Responses provider', () => {
       }),
     ).toThrow(/OPENAI_REASONING_EFFORT/);
     expect(() =>
-      loadConfig({ ...FULL, AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_MODEL: ' ' }),
-    ).toThrow(/OPENAI_MODEL/);
+      loadConfig({ ...FULL, AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_ROLLOUT: 'canary' }),
+    ).toThrow(/OPENAI_ROLLOUT/);
+  });
+
+  it('shadow вимагає явно названі thread і profile та обидва runtimes', () => {
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_THREAD_IDS: 't1' })).toThrow(/OPENAI_SHADOW/);
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_PROFILES: 'quick' })).toThrow(/OPENAI_SHADOW/);
+    expect(
+      loadConfig({
+        ...FULL,
+        OPENAI_API_KEY: 'key',
+        OPENAI_SHADOW_THREAD_IDS: 't1',
+        OPENAI_SHADOW_PROFILES: 'quick',
+      }),
+    ).toMatchObject({
+      aiProvider: 'claude',
+      openAiShadowThreadIds: ['t1'],
+      openAiShadowProfiles: ['quick'],
+      openAiApiKey: 'key',
+    });
   });
 });
 

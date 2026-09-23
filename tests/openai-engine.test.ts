@@ -52,12 +52,12 @@ describe('OpenAI Responses runtime', () => {
     }) as unknown as typeof fetch;
     const engine = createOpenAiEngine({
       apiKey: 'test-key',
-      model: 'gpt-6-astra',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
       reasoningEffort: 'high',
       fetchFn,
       now: () => 100,
     });
-    const opts = options();
+    const opts = options({ openAiModelTier: 'advanced', maxOutputTokens: 777 });
 
     await expect(engine.run(opts, 'Що в календарі?')).resolves.toMatchObject({
       finalText: 'У календарі вільно.',
@@ -76,6 +76,7 @@ describe('OpenAI Responses runtime', () => {
       parallel_tool_calls: false,
       tool_choice: 'auto',
       reasoning: { effort: 'high' },
+      max_output_tokens: 777,
     });
     expect(payloads[0]?.safety_identifier).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(payloads[0])).not.toContain('telegram-owner-42');
@@ -99,14 +100,64 @@ describe('OpenAI Responses runtime', () => {
     expect(tool.parameters.properties).toMatchObject({ period: { type: ['string', 'null'] } });
   });
 
-  it('refuses provider built-ins so external access never bypasses Cloudflare core', async () => {
+  it('allows hosted web search only for the isolated no-Core-tool researcher surface', async () => {
+    const fetchSpy = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({
+        id: 'resp_research',
+        model: 'gpt-6-sol',
+        status: 'completed',
+        output_text: 'Знайшов джерела.',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'Знайшов джерела.' }] }],
+      }),
+    );
+    const fetchFn = fetchSpy as unknown as typeof fetch;
     const engine = createOpenAiEngine({
       apiKey: 'test-key',
-      model: 'gpt-6-astra',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+      fetchFn,
+      reasoningEffort: 'high',
+    });
+    await expect(
+      engine.run(options({ toolNames: [], builtinTools: ['WebSearch', 'WebFetch'] }), 'досліди'),
+    ).resolves.toMatchObject({ finalText: 'Знайшов джерела.' });
+    const payload = JSON.parse(String(fetchSpy.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+    expect(payload.tools).toEqual([{ type: 'web_search', search_context_size: 'medium' }]);
+  });
+
+  it('refuses every provider builtin on a run that has Core tools', async () => {
+    const engine = createOpenAiEngine({
+      apiKey: 'test-key',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
       reasoningEffort: 'high',
     });
     await expect(engine.run(options({ builtinTools: ['WebSearch'] }), 'досліди')).rejects.toThrow(
       /provider built-in tools заборонені/,
     );
+  });
+
+  it('retries a retryable first request but never repeats a request after a tool result', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 429 }))
+      .mockResolvedValueOnce(
+        Response.json({
+          id: 'resp_ok',
+          model: 'gpt-6-sol',
+          status: 'completed',
+          output_text: 'готово',
+          output: [],
+        }),
+      ) as unknown as typeof fetch;
+    const sleep = vi.fn(async () => undefined);
+    const engine = createOpenAiEngine({
+      apiKey: 'test-key',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+      reasoningEffort: 'low',
+      fetchFn,
+      sleep,
+    });
+    await expect(engine.run(options(), 'привіт')).resolves.toMatchObject({ finalText: 'готово' });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
   });
 });

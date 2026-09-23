@@ -27,7 +27,11 @@ const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 
 const d1FromSqlite = () => {
   const db = new DatabaseSync(':memory:');
-  for (const migration of ['0001_base.sql', '0015_memory_projection.sql']) {
+  for (const migration of [
+    '0001_base.sql',
+    '0015_memory_projection.sql',
+    '0018_openai_transcripts.sql',
+  ]) {
     db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', migration), 'utf8'));
   }
   return {

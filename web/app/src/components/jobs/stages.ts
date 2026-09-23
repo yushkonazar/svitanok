@@ -49,7 +49,7 @@ export const STAGE_LABEL: Record<FunnelStage, string> = {
   failed: 'Провал співбесіди',
 };
 
-/** Колір/тло/рамка бейджа fit% — пороги з макета: ≥85 / ≥70 / решта. */
+/** Колір/тло/рамка ранжування заголовка — не fit повної вакансії. */
 export function fitStyle(score: number): { tx: string; bg: string; brd: string; label: string } {
   if (score < 0)
     return {
@@ -63,19 +63,19 @@ export function fitStyle(score: number): { tx: string; bg: string; brd: string; 
       tx: 'var(--color-pos)',
       bg: 'rgba(120,220,160,.14)',
       brd: 'var(--color-pos)',
-      label: `${score}% fit`,
+      label: `${score}% заголовок`,
     };
   if (score >= 70)
     return {
       tx: 'var(--color-a2)',
       bg: 'rgba(255,164,92,.14)',
       brd: 'rgba(255,164,92,.4)',
-      label: `${score}% fit`,
+      label: `${score}% заголовок`,
     };
   return {
     tx: 'var(--color-tx2)',
     bg: 'var(--color-glass)',
     brd: 'var(--color-glassb)',
-    label: `${score}% fit`,
+    label: `${score}% заголовок`,
   };
 }

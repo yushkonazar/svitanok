@@ -7,7 +7,7 @@ import type { StageEvent } from '../../api/schema.ts';
 import type { KanbanCard } from './KanbanBoard.tsx';
 
 // Шторка вакансії (дизайн v2, Svitanok.dc.html): затемнення + панель знизу
-// (sheetUp), бейдж fit%, назва, домен, ІСТОРІЯ переходів, перевід на стадію.
+// (sheetUp), ранжування заголовка, назва, домен, ІСТОРІЯ переходів, перевід на стадію.
 //
 // «Історія» з макета тепер справжня (F1): stats-core веде журнал переходів, і
 // список тут — його пряме відображення, без домальовування. Легасі-вакансії
@@ -73,7 +73,7 @@ export function JobSheet({ card, onClose }: { card: KanbanCard; onClose: () => v
             className="rounded-full border px-[9px] py-[3px] font-mono text-[10px] font-bold"
             style={{ color: fit.tx, background: fit.bg, borderColor: fit.brd }}
           >
-            {card.score}% fit
+            {card.score}% за заголовком
           </span>
         ) : (
           <span className="rounded-full border border-glassb bg-glass px-[9px] py-[3px] font-mono text-[10px] font-bold text-tx2">

@@ -150,7 +150,7 @@
 - [x] Не передавати credentials у Responses; кожен tool call повертається до Cloudflare core.
 - [x] Зберігати власну session/memory truth у D1; не робити provider conversation source of truth.
 - [x] Записувати response ID, model snapshot, usage, latency, tool calls у run telemetry без персональних prompt dumps.
-- [ ] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict.
+- [x] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict (`npm run eval:openai`; явний read-only запуск, без PII або ключа в repo).
 - [ ] Запустити shadow mode лише для read-only cases; порівняти quality, tool correctness, latency, cost.
 - [ ] Canary fast lane, потім chat/reasoning lane; rollback через config.
 - [ ] Prototype Cloudflare Workflow orchestration для одного profile; переносити VPS workloads лише після вимірювання.
@@ -170,7 +170,7 @@
 
 ### 4B. Smart Job Hunter
 
-- [ ] Rename current title-only number to relevance, until evidence is available.
+- [x] Rename current title-only number to explicit title relevance, until evidence is available (UI now says `за заголовком`, not fit; model prompt prohibits claims about missing description fields).
 - [ ] Fetch/store permitted job descriptions with source/freshness.
 - [ ] Evidence dimensions: stack, level, location, language, salary, dealbreakers, missing skills, confidence.
 - [ ] Funnel: seen → saved → applied → interview → offer; learn only from explicit outcomes.

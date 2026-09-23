@@ -16,6 +16,7 @@
     "test": "npm run contract:tools && vitest run",
     "test:workers": "vitest run --config vitest.workers.config.ts",
     "test:coverage": "vitest run --coverage",
+    "eval:openai": "tsx scripts/openai-eval.mts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",

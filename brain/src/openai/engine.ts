@@ -15,13 +15,17 @@ const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
 export interface OpenAiRuntimeConfig {
   apiKey: string;
-  model: string;
+  models: { fast: string; standard: string; advanced: string };
   reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   fetchFn?: typeof fetch;
   now?: () => number;
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 type OutputItem = { type?: unknown; name?: unknown; arguments?: unknown; call_id?: unknown };
+type ResponsesTool =
+  | ReturnType<typeof openAiFunctionTools>[number]
+  | { type: 'web_search'; search_context_size: 'medium' };
 type ResponsesPayload = {
   id?: unknown;
   model?: unknown;
@@ -36,20 +40,19 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
   const now = config.now ?? Date.now;
   return {
     async run(opts: EngineRunOptions, inputText: string): Promise<EngineOutcome> {
-      if (opts.builtinTools?.length) {
-        throw new Error('OpenAI runtime: provider built-in tools заборонені; використай core tool');
-      }
       const tools = openAiFunctionTools(opts.toolNames);
+      const hostedTools = allowedHostedTools(opts, tools);
       const encoded = new Map(tools.map((tool) => [tool.name, tool.encodedArguments]));
       const input: unknown[] = [{ role: 'user', content: inputText }];
       let apiMs = 0;
-      let last: ResponsesPayload | null = null;
 
       for (let turn = 0; turn < opts.maxTurns; turn += 1) {
         const started = now();
-        const response = await createResponse(fetchFn, config, opts, input, tools);
+        const response = await createResponse(fetchFn, config, opts, input, [
+          ...tools,
+          ...hostedTools,
+        ]);
         apiMs += Math.max(0, now() - started);
-        last = response;
         if (response.status !== 'completed') {
           throw new EngineStopError(`response-${String(response.status ?? 'unknown')}`, '');
         }
@@ -66,7 +69,7 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
             sessionId: null,
             apiMs,
             provider: 'openai',
-            model: typeof response.model === 'string' ? response.model : config.model,
+            model: typeof response.model === 'string' ? response.model : modelFor(config, opts),
             responseId: typeof response.id === 'string' ? response.id : null,
             usage: usage(response.usage),
           };
@@ -109,31 +112,105 @@ async function createResponse(
   config: OpenAiRuntimeConfig,
   opts: EngineRunOptions,
   input: unknown[],
-  tools: ReturnType<typeof openAiFunctionTools>,
+  tools: ResponsesTool[],
 ): Promise<ResponsesPayload> {
-  const res = await fetchFn(RESPONSES_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
-    signal: opts.abortSignal,
-    body: JSON.stringify({
-      model: config.model,
-      instructions: opts.systemPrompt,
-      input,
-      tools: tools.map(({ encodedArguments: _encodedArguments, ...tool }) => tool),
-      tool_choice: 'auto',
-      parallel_tool_calls: false,
-      store: false,
-      safety_identifier: hashSafetyIdentifier(opts.safetyIdentifier),
-      reasoning: { effort: opts.effort ?? config.reasoningEffort },
+  const body = JSON.stringify({
+    model: modelFor(config, opts),
+    instructions: opts.systemPrompt,
+    input,
+    tools: tools.map((tool) => {
+      if ('encodedArguments' in tool) {
+        const { encodedArguments: _encodedArguments, ...wire } = tool;
+        return wire;
+      }
+      return tool;
     }),
+    tool_choice: 'auto',
+    parallel_tool_calls: false,
+    store: false,
+    safety_identifier: hashSafetyIdentifier(opts.safetyIdentifier),
+    reasoning: { effort: opts.effort ?? config.reasoningEffort },
+    ...(opts.maxOutputTokens ? { max_output_tokens: opts.maxOutputTokens } : {}),
   });
-  const body: unknown = await res.json().catch(() => null);
-  if (!res.ok || !isRecord(body)) {
+  // Повторюємо лише перший запит run. Повтор після function_call може вдруге
+  // породити write-tool, тому там правильніше завершити run чесною помилкою.
+  const mayRetry = input.length === 1 && (input[0] as { role?: unknown }).role === 'user';
+  for (let attempt = 0; ; attempt += 1) {
+    let res: Response;
+    try {
+      res = await fetchFn(RESPONSES_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
+        signal: opts.abortSignal,
+        body,
+      });
+    } catch (error) {
+      if (mayRetry && attempt < 2 && !opts.abortSignal.aborted) {
+        await waitBeforeRetry(config, attempt, opts.abortSignal);
+        continue;
+      }
+      throw error;
+    }
+    const parsed: unknown = await res.json().catch(() => null);
+    if (res.ok && isRecord(parsed)) return parsed as ResponsesPayload;
+    if (mayRetry && attempt < 2 && retryableStatus(res.status) && !opts.abortSignal.aborted) {
+      await waitBeforeRetry(config, attempt, opts.abortSignal, res.headers.get('retry-after'));
+      continue;
+    }
     // Provider error payloads may contain request fragments. Keep diagnostics
     // to a status only; users get the normal runner failure, never secrets.
     throw new Error(`OpenAI Responses HTTP ${res.status}`);
   }
-  return body as ResponsesPayload;
+}
+
+/** OpenAI hosted web search is the sole provider-native exception. It is
+ * available only to isolated researcher runs with no Core tools, so fetched
+ * text cannot immediately trigger a write. Delegate output is tainted before
+ * it returns to chat; price-check has no write-capable tool surface. */
+function allowedHostedTools(
+  opts: EngineRunOptions,
+  functionTools: ReturnType<typeof openAiFunctionTools>,
+): ResponsesTool[] {
+  const builtin = opts.builtinTools ?? [];
+  if (builtin.length === 0) return [];
+  const onlyResearch = builtin.every((name) => name === 'WebSearch' || name === 'WebFetch');
+  if (!onlyResearch || functionTools.length !== 0) {
+    throw new Error('OpenAI runtime: provider built-in tools заборонені; використай core tool');
+  }
+  return [{ type: 'web_search', search_context_size: 'medium' }];
+}
+
+function modelFor(config: OpenAiRuntimeConfig, opts: EngineRunOptions): string {
+  return config.models[opts.openAiModelTier ?? 'standard'];
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+async function waitBeforeRetry(
+  config: OpenAiRuntimeConfig,
+  attempt: number,
+  signal: AbortSignal,
+  retryAfter: string | null = null,
+): Promise<void> {
+  const seconds = Number(retryAfter);
+  const ms =
+    Number.isFinite(seconds) && seconds > 0
+      ? Math.min(seconds * 1_000, 10_000)
+      : 500 * 2 ** attempt;
+  if (config.sleep) return config.sleep(ms, signal);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error('aborted'));
+      },
+      { once: true },
+    );
+  });
 }
 
 function isFunctionCall(

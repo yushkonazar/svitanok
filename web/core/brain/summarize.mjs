@@ -28,20 +28,26 @@ export async function memorySummarize(env, nowMs = Date.now()) {
     return { skipped: 'no-db' };
   }
 
-  // Без sdk_session_id згортати нема чого: транскрипт живе в сесії SDK на VPS.
+  // Claude бере локальний sdk transcript; stateless OpenAI — bounded first-
+  // party transcript у D1. Обидва джерела згортаються лише для clean session.
   // tainted=0 - ОБОВʼЯЗКОВО (security-ревʼю PR-2): згортка брудного треду
   // занесла б у memory_chunks зовнішній вміст (лист/чат), а memory.search
   // віддає його БЕЗ маркування й НЕ позначає сесію - інструкція з листа
   // «відмилась» би в довірену памʼять і обійшла подвійний барʼєр 01 §4.2.
   const since = new Date(nowMs - 24 * 3_600_000).toISOString();
   const { results } = await env.DB.prepare(
-    `SELECT thread_id, sdk_session_id FROM sessions
-     WHERE last_at > ?1 AND sdk_session_id IS NOT NULL AND tainted = 0
+    `SELECT thread_id, sdk_session_id, transcript_md FROM sessions
+     WHERE last_at > ?1
+       AND (sdk_session_id IS NOT NULL OR transcript_md IS NOT NULL)
+       AND tainted = 0
      ORDER BY last_at DESC LIMIT ?2`,
   )
     .bind(since, SUMMARIZE_MAX_THREADS)
     .all();
-  const rows = /** @type {{ thread_id: string, sdk_session_id: string }[]} */ (results ?? []);
+  const rows =
+    /** @type {{ thread_id: string, sdk_session_id: string|null, transcript_md: string|null }[]} */ (
+      results ?? []
+    );
 
   let started = 0;
   for (const row of rows) {
@@ -51,7 +57,7 @@ export async function memorySummarize(env, nowMs = Date.now()) {
       trigger: 'scheduler',
       profile: 'summarize',
       threadId: row.thread_id,
-      model: 'claude-haiku-4-5',
+      model: 'summarize',
       startedMs: nowMs,
     });
     if (!registered) {
@@ -65,7 +71,11 @@ export async function memorySummarize(env, nowMs = Date.now()) {
         profile: 'summarize',
         threadId: row.thread_id,
         inputText: 'згорни розмову',
-        session: { sdk_session_id: row.sdk_session_id, summary_md: null },
+        session: {
+          sdk_session_id: row.sdk_session_id,
+          summary_md: null,
+          ...(row.transcript_md ? { transcript_md: row.transcript_md } : {}),
+        },
       },
       nowMs,
     );

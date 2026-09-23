@@ -164,10 +164,12 @@ weekly review. Модулі (`src/modules/`), кожен незалежний (�
 Повний перелік можливостей - [docs/capabilities.md](docs/capabilities.md).
 
 Пишеш звичайним текстом (у темі «🤖Асистент» чи в DM). Запит іде в **мозок**
-(Claude Agent SDK на VPS, `brain/`), який ходить в інструменти ядра через
-підписані виклики `/internal/*`; ядро (`web/core/`) вирішує рівень дії,
-виконує її і відповідає власнику. Модель не має ані прямого доступу до
-Telegram, ані права виконати дію повз політику.
+на VPS (`brain/`): runtime може бути Claude Agent SDK, OpenAI Responses або
+безпечний hybrid-canary. Він ходить в інструменти ядра через підписані виклики
+`/internal/*`; ядро (`web/core/`) вирішує рівень дії, виконує її і відповідає
+власнику. Модель не має ані прямого доступу до Telegram, ані права виконати
+дію повз політику. OpenAI ключ зберігається лише у VPS EnvironmentFile; точна
+схема rollout — у [OpenAI Responses rollout](docs/openai-responses-rollout.md).
 
 **Рівні підтвердження** (`web/core/policy/core.mjs`, `ACTION_LEVELS`):
 

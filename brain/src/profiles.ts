@@ -36,6 +36,10 @@ export const INBOX_DIGEST_TOOL_NAMES = ['inbox_search'] as const;
 export interface RunProfile {
   name: ProfileName;
   model: string;
+  /** Клас моделі OpenAI. Claude `model` лишається для сумісного runtime. */
+  openAiModelTier: 'fast' | 'standard' | 'advanced';
+  /** Межа одного Responses-виклику: незалежна від стелі ходів профілю. */
+  maxOutputTokens: number;
   /** MCP-імена дозволених інструментів (порожньо = без інструментів). */
   toolNames: string[];
   maxToolCalls: number;
@@ -52,6 +56,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   chat: {
     name: 'chat',
     model: 'claude-sonnet-5',
+    openAiModelTier: 'standard',
+    maxOutputTokens: 2_400,
     toolNames: BRAIN_TOOLS.map((t) => t.mcpName),
     maxToolCalls: 12,
     maxTurns: 30,
@@ -64,6 +70,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   quick: {
     name: 'quick',
     model: WORKER_MODEL_IDS[QUICK_WORKER.model],
+    openAiModelTier: 'fast',
+    maxOutputTokens: 500,
     toolNames: QUICK_WORKER.toolNames,
     maxToolCalls: 0,
     maxTurns: workerMaxTurns(QUICK_WORKER.maxSteps),
@@ -74,6 +82,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   summarize: {
     name: 'summarize',
     model: 'claude-haiku-4-5',
+    openAiModelTier: 'fast',
+    maxOutputTokens: 1_200,
     toolNames: [],
     maxToolCalls: 0,
     maxTurns: 1,
@@ -89,6 +99,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   'weekly-review': {
     name: 'weekly-review',
     model: 'claude-sonnet-5',
+    openAiModelTier: 'advanced',
+    maxOutputTokens: 3_000,
     toolNames: WEEKLY_REVIEW_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
     maxToolCalls: 6,
     maxTurns: 30,
@@ -101,6 +113,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   'day-planner': {
     name: 'day-planner',
     model: 'claude-sonnet-5',
+    openAiModelTier: 'standard',
+    maxOutputTokens: 2_000,
     toolNames: DAY_PLANNER_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
     maxToolCalls: 6,
     maxTurns: 12,
@@ -113,6 +127,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   'inbox-digest': {
     name: 'inbox-digest',
     model: 'claude-haiku-4-5',
+    openAiModelTier: 'fast',
+    maxOutputTokens: 1_000,
     toolNames: INBOX_DIGEST_TOOL_NAMES.filter((n) => TOOL_BY_MCP_NAME.has(n)),
     maxToolCalls: 3,
     maxTurns: 8,
@@ -125,6 +141,8 @@ export const PROFILES: Record<ProfileName, RunProfile> = {
   'price-check': {
     name: 'price-check',
     model: WORKER_MODEL_IDS[RESEARCHER_WORKER.model],
+    openAiModelTier: 'advanced',
+    maxOutputTokens: 3_000,
     toolNames: RESEARCHER_WORKER.toolNames,
     builtinTools: [...RESEARCHER_WORKER.builtinTools],
     maxToolCalls: 0,

@@ -12,6 +12,7 @@ import { createHandler } from './server.js';
 import { makeRunner } from './agent.js';
 import { createSdkEngine, deleteSdkSessions } from './sdk/engine.js';
 import { createOpenAiEngine } from './openai/engine.js';
+import { createRuntimeRouter } from './runtime-router.js';
 import { probeInternalApi, type BuildInfo } from './health.js';
 import { PROFILES, PROFILE_MODELS } from './profiles.js';
 import { BRAIN_TOOLS } from './tools/schemas.js';
@@ -44,15 +45,30 @@ const client = new CoreClient({
   accessClientSecret: config.accessClientSecret,
 });
 
-const engine =
-  config.aiProvider === 'openai'
-    ? createOpenAiEngine({
+const claudeEngine =
+  config.aiProvider === 'openai' && config.openAiShadowThreadIds.length === 0
+    ? undefined
+    : createSdkEngine();
+const openAiEngine =
+  config.aiProvider === 'claude' && config.openAiShadowThreadIds.length === 0
+    ? undefined
+    : createOpenAiEngine({
         apiKey: config.openAiApiKey as string,
-        model: config.openAiModel as string,
+        models: config.openAiModels as { fast: string; standard: string; advanced: string },
         reasoningEffort: config.openAiReasoningEffort as
           'low' | 'medium' | 'high' | 'xhigh' | 'max',
-      })
-    : createSdkEngine();
+      });
+const engine = createRuntimeRouter(
+  {
+    provider: config.aiProvider,
+    rollout: config.openAiRollout,
+    canaryThreadIds: config.openAiCanaryThreadIds,
+    canaryProfiles: config.openAiCanaryProfiles,
+    shadowThreadIds: config.openAiShadowThreadIds,
+    shadowProfiles: config.openAiShadowProfiles,
+  },
+  { claude: claudeEngine, openai: openAiEngine },
+);
 
 // Проба «401-не-404» (інцидент 24.08): результат видно в /health, а не-ok -
 // гучний лог одразу на старті. З Access-парою очікування - строго 401 від
