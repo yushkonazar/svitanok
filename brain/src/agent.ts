@@ -41,6 +41,8 @@ export interface ToolExecution {
 export interface EngineRunOptions {
   systemPrompt: string;
   model: string;
+  /** Стабільний внутрішній ідентифікатор власника; provider хешує його сам. */
+  safetyIdentifier: string;
   maxTurns: number;
   toolNames: string[];
   /** Вбудовані інструменти SDK, дозволені цьому прогону (лише працівники:
@@ -66,6 +68,11 @@ export interface EngineOutcome {
   /** Час у API моделі (duration_api_ms результату SDK); решта ms кроку -
    *  накладні CLI/сесії. Не задано - рушій не звітує. */
   apiMs?: number | null;
+  /** Runtime називає себе, але не повертає credentials чи повний API-вивід. */
+  provider?: 'claude' | 'openai';
+  model?: string | null;
+  responseId?: string | null;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null;
 }
 
 /** «api 12.3 с» для нотатки кроку; undefined - без нотатки (JSON її відкине). */
@@ -89,18 +96,21 @@ export class EngineStopError extends Error {
 }
 
 /** Рушій прогону: бойовий - Agent SDK (sdk/engine.ts), у тестах - мок. */
-export interface RunEngine {
+export interface ModelRuntime {
   run: (opts: EngineRunOptions, inputText: string) => Promise<EngineOutcome>;
   /** Транскрипт сесії з локального сховища SDK (для згортки); null - нема. */
   readTranscript: (sessionId: string) => Promise<string | null>;
 }
+
+/** Сумісний псевдонім для поступової міграції існуючих Claude-викликів. */
+export type RunEngine = ModelRuntime;
 
 export interface RunnerDeps {
   client: Pick<
     CoreClient,
     'callTool' | 'deliver' | 'status' | 'reportRuns' | 'session' | 'instruction' | 'taint'
   >;
-  engine: RunEngine;
+  engine: ModelRuntime;
   now?: () => number;
   /** Мін. інтервал оновлень статусу; ядро й так троттлить (07 §3). */
   statusIntervalMs?: number;
@@ -136,7 +146,7 @@ const ESCALATE_PREFIX = 'ESCALATE:';
 interface Step {
   n: number;
   at: string;
-  kind: 'tool' | 'subagent' | 'reply' | 'error';
+  kind: 'tool' | 'subagent' | 'reply' | 'error' | 'model';
   name: string;
   ms: number;
   ok: boolean;
@@ -542,6 +552,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
               {
                 systemPrompt,
                 model: profile.model,
+                safetyIdentifier: req.thread_id,
                 maxTurns: profile.maxTurns,
                 toolNames: profile.toolNames,
                 ...(profile.builtinTools?.length
@@ -556,6 +567,19 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
             );
 
       const finalText = (outcome.finalText ?? '').trim();
+
+      // Provider-telemetry is deliberately a tiny allowlist, not an API dump:
+      // it lets D1 show response/model/usage/latency while keeping prompts,
+      // outputs and function arguments out of operational logs.
+      if (outcome.provider === 'openai') {
+        pushStep({
+          kind: 'model',
+          name: `openai:${safeTelemetry(outcome.model, 96) ?? 'unknown'}`,
+          ms: outcome.apiMs ?? now() - startedMs,
+          ok: true,
+          note: openAiTelemetryNote(outcome),
+        });
+      }
 
       if (profile.name === 'summarize') {
         // Вихід - у sessions.summary_md, НЕ власнику. Втрачена згортка не сміє
@@ -713,6 +737,20 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       await deps.client.reportRuns(req.run_id, steps, escalateOutcome);
     }
   };
+}
+
+function openAiTelemetryNote(outcome: EngineOutcome): string {
+  const parts = [
+    `response=${safeTelemetry(outcome.responseId, 100) ?? 'unknown'}`,
+    `input_tokens=${outcome.usage?.inputTokens ?? 'unknown'}`,
+    `output_tokens=${outcome.usage?.outputTokens ?? 'unknown'}`,
+    `total_tokens=${outcome.usage?.totalTokens ?? 'unknown'}`,
+  ];
+  return parts.join(' ');
+}
+
+function safeTelemetry(value: string | null | undefined, max: number): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]+$/.test(value) ? value.slice(0, max) : null;
 }
 
 /**

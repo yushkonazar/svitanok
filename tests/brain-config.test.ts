@@ -28,7 +28,51 @@ describe('loadConfig: обовʼязкові змінні', () => {
       hmacKeys: ['key-1'],
       accessClientId: null,
       accessClientSecret: null,
+      aiProvider: 'claude',
+      openAiApiKey: null,
+      openAiModel: null,
+      openAiReasoningEffort: null,
     });
+  });
+});
+
+describe('loadConfig: OpenAI Responses provider', () => {
+  it('вимагає окремий API key лише в режимі openai та не вимагає Claude token', () => {
+    expect(() =>
+      loadConfig({
+        INTERNAL_HMAC_KEY: 'key',
+        INTERNAL_API_URL: 'https://svitanok.example',
+        AI_PROVIDER: 'openai',
+      }),
+    ).toThrow(/OPENAI_API_KEY/);
+    expect(
+      loadConfig({
+        INTERNAL_HMAC_KEY: 'key',
+        INTERNAL_API_URL: 'https://svitanok.example',
+        AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: ' openai-key ',
+      }),
+    ).toMatchObject({
+      aiProvider: 'openai',
+      openAiApiKey: 'openai-key',
+      openAiModel: 'gpt-6-astra',
+      openAiReasoningEffort: 'high',
+    });
+  });
+
+  it('відхиляє невідомого provider-а, effort або порожню model', () => {
+    expect(() => loadConfig({ ...FULL, AI_PROVIDER: 'other' })).toThrow(/AI_PROVIDER/);
+    expect(() =>
+      loadConfig({
+        ...FULL,
+        AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'k',
+        OPENAI_REASONING_EFFORT: 'none',
+      }),
+    ).toThrow(/OPENAI_REASONING_EFFORT/);
+    expect(() =>
+      loadConfig({ ...FULL, AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_MODEL: ' ' }),
+    ).toThrow(/OPENAI_MODEL/);
   });
 });
 

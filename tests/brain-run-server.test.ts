@@ -19,6 +19,10 @@ const CONFIG: BrainConfig = {
   hmacKeys: [KEY],
   accessClientId: null,
   accessClientSecret: null,
+  aiProvider: 'claude',
+  openAiApiKey: null,
+  openAiModel: null,
+  openAiReasoningEffort: null,
 };
 
 function makeHandler(over: Partial<ServerDeps> = {}) {

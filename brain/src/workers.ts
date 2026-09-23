@@ -166,6 +166,7 @@ export function runWorker(
     {
       systemPrompt: def.prompt,
       model: WORKER_MODEL_IDS[def.model],
+      safetyIdentifier: 'worker',
       maxTurns: workerMaxTurns(def.maxSteps),
       toolNames: def.toolNames,
       ...(def.builtinTools.length ? { builtinTools: [...def.builtinTools] } : {}),

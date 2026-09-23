@@ -12,12 +12,32 @@ export interface BrainConfig {
   hmacKeys: string[];
   accessClientId: string | null;
   accessClientSecret: string | null;
+  /** Провайдер runtime; Claude лишається сумісним дефолтом до контрольного cutover. */
+  aiProvider: 'claude' | 'openai';
+  /** Є лише при aiProvider=openai; ніколи не логується і не їде в Responses. */
+  openAiApiKey: string | null;
+  /** Явна модель Responses, не псевдонім профілю Claude. */
+  openAiModel: string | null;
+  openAiReasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
 }
 
-const REQUIRED = ['CLAUDE_CODE_OAUTH_TOKEN', 'INTERNAL_HMAC_KEY', 'INTERNAL_API_URL'] as const;
+const REQUIRED = ['INTERNAL_HMAC_KEY', 'INTERNAL_API_URL'] as const;
+const OPENAI_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 export function loadConfig(env: Record<string, string | undefined>): BrainConfig {
-  const missing = REQUIRED.filter((name) => !String(env[name] ?? '').trim());
+  const missing: string[] = REQUIRED.filter((name) => !String(env[name] ?? '').trim());
+  const configuredProvider = String(env.AI_PROVIDER ?? 'claude')
+    .trim()
+    .toLowerCase();
+  if (configuredProvider !== 'claude' && configuredProvider !== 'openai') {
+    throw new Error('конфігурація: AI_PROVIDER має бути claude або openai');
+  }
+  const aiProvider = configuredProvider;
+  if (aiProvider === 'claude' && !String(env.CLAUDE_CODE_OAUTH_TOKEN ?? '').trim()) {
+    missing.unshift('CLAUDE_CODE_OAUTH_TOKEN');
+  }
+  const openAiApiKey = String(env.OPENAI_API_KEY ?? '').trim();
+  if (aiProvider === 'openai' && !openAiApiKey) missing.unshift('OPENAI_API_KEY');
   if (missing.length > 0) {
     throw new Error(`конфігурація: не задано ${missing.join(', ')}`);
   }
@@ -59,6 +79,17 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
     throw new Error('конфігурація: PORT не є портом');
   }
 
+  const configuredEffort = String(env.OPENAI_REASONING_EFFORT ?? 'high')
+    .trim()
+    .toLowerCase();
+  if (aiProvider === 'openai' && !OPENAI_EFFORTS.has(configuredEffort)) {
+    throw new Error('конфігурація: OPENAI_REASONING_EFFORT має бути low|medium|high|xhigh|max');
+  }
+  const openAiModel = String(env.OPENAI_MODEL ?? 'gpt-6-astra').trim();
+  if (aiProvider === 'openai' && !openAiModel) {
+    throw new Error('конфігурація: OPENAI_MODEL порожня');
+  }
+
   return {
     host: String(env.HOST ?? '127.0.0.1').trim(),
     port,
@@ -66,5 +97,12 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
     hmacKeys,
     accessClientId: accessClientId || null,
     accessClientSecret: accessClientSecret || null,
+    aiProvider,
+    openAiApiKey: aiProvider === 'openai' ? openAiApiKey : null,
+    openAiModel: aiProvider === 'openai' ? openAiModel : null,
+    openAiReasoningEffort:
+      aiProvider === 'openai'
+        ? (configuredEffort as 'low' | 'medium' | 'high' | 'xhigh' | 'max')
+        : null,
   };
 }

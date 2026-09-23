@@ -59,4 +59,30 @@ describe('run dashboard', () => {
       cost: null,
     });
   });
+
+  it('exposes only allowlisted OpenAI model telemetry, never a provider payload', async () => {
+    const d1 = d1FromSqlite(['0003_telemetry.sql']);
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, started_at) VALUES ('r-openai', 'chat', '2026-09-23T08:00:00.000Z')`,
+      )
+      .run();
+    d1.db
+      .prepare(
+        `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
+         VALUES ('r-openai:model', 'r-openai', 1, '2026-09-23T08:00:01.000Z', 'model',
+                 'openai:gpt-6-astra-2026-09-03', 850, 1,
+                 'response=resp_abc input_tokens=123 output_tokens=45 total_tokens=168 prompt=must-not-parse')`,
+      )
+      .run();
+
+    const dashboard = await readRunDashboard(workerEnv({ DB: d1.stub }));
+    expect(dashboard.recent[0]).toMatchObject({
+      model: 'openai:gpt-6-astra-2026-09-03',
+      model_version: 'openai:gpt-6-astra-2026-09-03',
+      response_id: 'resp_abc',
+      usage: { input_tokens: 123, output_tokens: 45, total_tokens: 168 },
+    });
+    expect(JSON.stringify(dashboard)).not.toContain('must-not-parse');
+  });
 });

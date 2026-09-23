@@ -162,7 +162,7 @@ export function createSdkEngine(): RunEngine {
       } finally {
         opts.abortSignal.removeEventListener('abort', onAbort);
       }
-      return { finalText, sessionId, apiMs };
+      return { finalText, sessionId, apiMs, provider: 'claude', model: opts.model };
     },
 
     // Транскрипт із локального сховища SDK (HOME=data на VPS) - для згортки

@@ -33,7 +33,7 @@ export async function readRunDashboard(env) {
     const marks = ids.map(() => '?').join(', ');
     const { results: stepRows } = await db(env)
       .prepare(
-        `SELECT run_id, n, kind, name, ms, ok FROM run_steps
+        `SELECT run_id, n, kind, name, ms, ok, note FROM run_steps
          WHERE run_id IN (${marks}) ORDER BY run_id, n`,
       )
       .bind(...ids)
@@ -65,6 +65,8 @@ function shapeRun(row, steps) {
   const queue = steps.find((step) => step.kind === 'queue');
   const retries = steps.filter((step) => step.kind === 'retry').length;
   const policy = steps.find((step) => step.kind === 'policy');
+  const modelStep = steps.find((step) => step.kind === 'model');
+  const modelTelemetry = parseModelTelemetry(modelStep?.note);
   const finished = typeof row.finished_at === 'string' && row.finished_at.length > 0;
   const error = compact(row.error, 120);
   return {
@@ -85,14 +87,40 @@ function shapeRun(row, steps) {
       latency_max_ms: toolMs.length ? Math.max(...toolMs) : null,
     },
     policy_decision: policy ? compact(policy.name, 80) : null,
-    model: compact(row.model, 120),
-    // `model` - зафіксований конфіг конкретного run. Окремого provider
-    // snapshot старий Claude-host не повертає, тому це чесно null до Phase 3.
-    model_version: null,
+    model: modelStep ? compact(modelStep.name, 120) : compact(row.model, 120),
+    model_version: modelStep ? compact(modelStep.name, 120) : null,
+    response_id: modelTelemetry.response_id,
+    usage: modelTelemetry.usage,
     // cost_note - лише заздалегідь санітизований технічний cost producer-а;
     // якщо producer не звітує вартість, `null`, не «$0».
     cost: compact(row.cost_note, 160),
     error,
+  };
+}
+
+/** Малі allowlisted token-метрики з model step, без читання довільної note. */
+/** @param {unknown} note */
+function parseModelTelemetry(note) {
+  const text = typeof note === 'string' ? note : '';
+  /** @param {string} key */
+  const field = (key) => {
+    const match = new RegExp(`(?:^|\\s)${key}=([A-Za-z0-9_.:-]+)`).exec(text);
+    return match?.[1] ?? null;
+  };
+  /** @param {string} key */
+  const count = (key) => {
+    const raw = field(key);
+    if (raw == null) return null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  };
+  return {
+    response_id: field('response'),
+    usage: {
+      input_tokens: count('input_tokens'),
+      output_tokens: count('output_tokens'),
+      total_tokens: count('total_tokens'),
+    },
   };
 }
 

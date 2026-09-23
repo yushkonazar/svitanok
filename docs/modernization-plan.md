@@ -145,11 +145,11 @@
 
 **Контракт:** `ToolSpec`, input/output schema, policy level, provenance rules, profile, timeout, max tool calls, cost/latency budget створюються один раз і адаптуються до Claude/OpenAI.
 
-- [ ] Виділити provider-neutral `ModelRuntime` та canonical tool registry без зміни поточної policy boundary.
-- [ ] Додати OpenAI Responses adapter із `store:false`, hashed `safety_identifier`, strict custom function tools і явним model config.
-- [ ] Не передавати credentials у Responses; кожен tool call повертається до Cloudflare core.
-- [ ] Зберігати власну session/memory truth у D1; не робити provider conversation source of truth.
-- [ ] Записувати response ID, model snapshot, usage, latency, tool calls у run telemetry без персональних prompt dumps.
+- [x] Виділити provider-neutral `ModelRuntime` та canonical tool registry без зміни поточної policy boundary.
+- [x] Додати OpenAI Responses adapter із `store:false`, hashed `safety_identifier`, strict custom function tools і явним model config.
+- [x] Не передавати credentials у Responses; кожен tool call повертається до Cloudflare core.
+- [x] Зберігати власну session/memory truth у D1; не робити provider conversation source of truth.
+- [x] Записувати response ID, model snapshot, usage, latency, tool calls у run telemetry без персональних prompt dumps.
 - [ ] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict.
 - [ ] Запустити shadow mode лише для read-only cases; порівняти quality, tool correctness, latency, cost.
 - [ ] Canary fast lane, потім chat/reasoning lane; rollback через config.
