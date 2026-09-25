@@ -555,6 +555,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // стеля ходів із front-matter файлу. Так шлях працівника перевіряється
       // в проді щодня, а не вперше на етапі 4.
       // Спільне для обох гілок: канал інструментів, статусу і скасування.
+      const safetyIdentifier = req.chat_id
+        ? `${req.chat_id}:${req.thread_id === 'dm' ? 'default' : req.thread_id}`
+        : `internal:${req.thread_id}`;
       const runCtx = {
         abortSignal: abort.signal,
         onToolCall,
@@ -564,12 +567,10 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       };
       const outcome =
         profile.name === 'quick'
-          ? await runWorker(
-              deps.engine,
-              { ...QUICK_WORKER, prompt: systemPrompt },
-              inputText,
-              runCtx,
-            )
+          ? await runWorker(deps.engine, { ...QUICK_WORKER, prompt: systemPrompt }, inputText, {
+              ...runCtx,
+              safetyIdentifier,
+            })
           : await deps.engine.run(
               {
                 systemPrompt,
@@ -579,9 +580,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
                 // Topic ID сам по собі не унікальний між супергрупами, а `dm`
                 // спільний для всіх чатів без topics. Router бачить лише цей
                 // складений, підписаний Core-ом Telegram target.
-                safetyIdentifier: req.chat_id
-                  ? `${req.chat_id}:${req.thread_id === 'dm' ? 'default' : req.thread_id}`
-                  : `internal:${req.thread_id}`,
+                safetyIdentifier,
                 maxTurns: profile.maxTurns,
                 toolNames: profile.toolNames,
                 ...(profile.builtinTools?.length

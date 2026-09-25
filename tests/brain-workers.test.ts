@@ -131,6 +131,7 @@ describe('runWorker', () => {
       // Працівник не продовжує розмову власника - resume для нього немає.
       resumeSessionId: null,
       streamPartials: false,
+      safetyIdentifier: 'worker',
     });
   });
 
@@ -185,6 +186,16 @@ describe('профіль quick як працівник', () => {
     );
 
     expect(seen[0]!.resumeSessionId).toBeNull();
+  });
+
+  it('передає точний Telegram chat+topic у canary-router, а не службовий worker', async () => {
+    const client = makeClient();
+    const { engine, seen } = scriptedEngine(async () => ({ finalText: '2' }));
+    await makeRunner({ client, engine })(
+      req({ profile: 'quick', chat_id: '-1003928454733', thread_id: '6' }),
+    );
+
+    expect(seen[0]!.safetyIdentifier).toBe('-1003928454733:6');
   });
 });
 
