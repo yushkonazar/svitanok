@@ -21,7 +21,8 @@ describe('immutable brain release pipeline', () => {
   it('builds off-line, atomically switches only after a manifest, and rolls back on failed readiness', () => {
     expect(script).toContain('git worktree add --detach');
     expect(script).toContain('release-manifest.json');
-    expect(script).toContain('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"');
+    // /opt is root-owned; only the final symlink movement needs elevation.
+    expect(script).toContain('sudo mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"');
     expect(script).toContain('curl -sf http://127.0.0.1:8788/ready');
     expect(script).toContain('rollback');
     expect(script).not.toMatch(/\brm\s+-rf\b/);

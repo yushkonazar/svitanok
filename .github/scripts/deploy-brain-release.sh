@@ -51,14 +51,17 @@ if [ -L "$CURRENT_LINK" ]; then previous="$(readlink -f "$CURRENT_LINK")"; fi
 rollback() {
   if [ -n "$previous" ] && [ -d "$previous/brain" ]; then
     echo "deploy-brain-release: readiness failed; rolling back to $previous" >&2
-    ln -s "$previous" "$CURRENT_LINK.next"
-    mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
+    # /opt належить root, а SSH-деплой навмисно працює від непривілейованого
+    # `brain`. Симлінк - єдина root-мутація релізу; сам worktree/збірка лишаються
+    # від brain. Без sudo тут rollback не зміг би повернути робочий реліз.
+    sudo ln -s "$previous" "$CURRENT_LINK.next"
+    sudo mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
     sudo systemctl restart "$SERVICE" || true
   fi
 }
 
-ln -s "$RELEASE_DIR" "$CURRENT_LINK.next"
-mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
+sudo ln -s "$RELEASE_DIR" "$CURRENT_LINK.next"
+sudo mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
 sudo systemctl restart "$SERVICE"
 
 health=""
