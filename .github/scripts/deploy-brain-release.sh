@@ -10,8 +10,8 @@ REPO_ROOT="${BRAIN_REPO_ROOT:-/opt/svitanok-brain}"
 RELEASE_ROOT="${BRAIN_RELEASE_ROOT:-/opt/svitanok-brain-releases}"
 CURRENT_LINK="${BRAIN_CURRENT_LINK:-/opt/svitanok-brain-current}"
 LAYOUT_MARKER="${BRAIN_SHARED_ROOT:-/opt/svitanok-brain-shared}/release-layout-v1"
-SERVICE="${BRAIN_SERVICE:-svitanok-brain}"
 RELEASE_DIR="$RELEASE_ROOT/$SHA"
+RELEASE_SWITCHER="/usr/local/sbin/svitanok-switch-release"
 
 fail() {
   echo "deploy-brain-release: $*" >&2
@@ -20,6 +20,14 @@ fail() {
 
 [ -f "$LAYOUT_MARKER" ] || fail "immutable layout not bootstrapped; see docs/release-compatibility.md"
 [ -d "$REPO_ROOT/.git" ] || fail "missing repository at $REPO_ROOT"
+[ -x "$RELEASE_SWITCHER" ] || fail "missing privileged release switcher: $RELEASE_SWITCHER"
+
+switch_release() {
+  # The deploy account never receives broad root access. The root-owned helper
+  # validates the SHA, checks the built artifact, atomically changes only this
+  # symlink, and restarts only this service.
+  sudo -n "$RELEASE_SWITCHER" "$1"
+}
 
 cd "$REPO_ROOT"
 git fetch --quiet origin
@@ -47,22 +55,17 @@ node --input-type=module -e '
 
 previous=""
 if [ -L "$CURRENT_LINK" ]; then previous="$(readlink -f "$CURRENT_LINK")"; fi
+previous_sha=""
+if [ -n "$previous" ]; then previous_sha="$(basename "$previous")"; fi
 
 rollback() {
   if [ -n "$previous" ] && [ -d "$previous/brain" ]; then
     echo "deploy-brain-release: readiness failed; rolling back to $previous" >&2
-    # /opt належить root, а SSH-деплой навмисно працює від непривілейованого
-    # `brain`. Симлінк - єдина root-мутація релізу; сам worktree/збірка лишаються
-    # від brain. Без sudo тут rollback не зміг би повернути робочий реліз.
-    sudo ln -s "$previous" "$CURRENT_LINK.next"
-    sudo mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
-    sudo systemctl restart "$SERVICE" || true
+    switch_release "$previous_sha" || true
   fi
 }
 
-sudo ln -s "$RELEASE_DIR" "$CURRENT_LINK.next"
-sudo mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
-sudo systemctl restart "$SERVICE"
+switch_release "$SHA"
 
 health=""
 for _ in $(seq 1 20); do
