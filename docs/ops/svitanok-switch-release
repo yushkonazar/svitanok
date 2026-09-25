@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Install as root:root, mode 0755 at /usr/local/sbin/svitanok-switch-release.
+# It is deliberately the only privileged operation granted to the VPS deploy
+# account. Keep this source-controlled copy identical to the installed helper.
+set -euo pipefail
+
+if [ "$#" -ne 1 ] || ! [[ "$1" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Expected one 40-character lowercase Git SHA." >&2
+  exit 64
+fi
+
+sha="$1"
+release="/opt/svitanok-brain-releases/$sha"
+current="/opt/svitanok-brain-current"
+next="/opt/svitanok-brain-current.next"
+
+if [ ! -f "$release/brain/dist/index.js" ]; then
+  echo "Release is absent or not built: $sha" >&2
+  exit 65
+fi
+
+rm -f "$next"
+ln -s "$release" "$next"
+mv -Tf "$next" "$current"
+systemctl restart svitanok-brain

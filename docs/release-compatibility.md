@@ -32,8 +32,12 @@ is green:
 3. Install [svitanok-brain.service](../brain/svitanok-brain.service) as
    `/etc/systemd/system/svitanok-brain.service`, run `systemctl daemon-reload`,
    and create `/opt/svitanok-brain-current` as a symlink to the known-good
-   release. The service user needs write access only to the two release/shared
-   directories and permission to restart this one unit.
+   release. Install the root-owned
+   [`svitanok-switch-release`](ops/svitanok-switch-release) helper at
+   `/usr/local/sbin/svitanok-switch-release` and allow `brain` passwordless
+   access to that helper only. It validates a 40-character SHA, verifies the
+   built artifact, changes only the current-release symlink, and restarts only
+   `svitanok-brain`; do not grant the deploy account generic `sudo` access.
 4. Verify `curl -sf http://127.0.0.1:8788/ready`, then create the marker file
    `/opt/svitanok-brain-shared/release-layout-v1`.
 

@@ -9,6 +9,7 @@ describe('immutable brain release pipeline', () => {
   const workflow = read('.github', 'workflows', 'deploy-host.yml');
   const migrations = read('.github', 'workflows', 'migrate.yml');
   const script = read('.github', 'scripts', 'deploy-brain-release.sh');
+  const switcher = read('docs', 'ops', 'svitanok-switch-release');
   const unit = read('brain', 'svitanok-brain.service');
   const stamp = read('brain', 'scripts', 'stamp-build.mjs');
   const drill = read('scripts', 'restore-drill.mjs');
@@ -21,11 +22,18 @@ describe('immutable brain release pipeline', () => {
   it('builds off-line, atomically switches only after a manifest, and rolls back on failed readiness', () => {
     expect(script).toContain('git worktree add --detach');
     expect(script).toContain('release-manifest.json');
-    // /opt is root-owned; only the final symlink movement needs elevation.
-    expect(script).toContain('sudo mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"');
+    // /opt is root-owned; the only elevation is a narrowly-scoped root helper.
+    expect(script).toContain('RELEASE_SWITCHER="/usr/local/sbin/svitanok-switch-release"');
+    expect(script).toContain('sudo -n "$RELEASE_SWITCHER" "$1"');
     expect(script).toContain('curl -sf http://127.0.0.1:8788/ready');
     expect(script).toContain('rollback');
     expect(script).not.toMatch(/\brm\s+-rf\b/);
+  });
+
+  it('keeps the privileged release switcher narrowly scoped to built SHA releases', () => {
+    expect(switcher).toContain('^[0-9a-f]{40}$');
+    expect(switcher).toContain('"$release/brain/dist/index.js"');
+    expect(switcher).toContain('systemctl restart svitanok-brain');
   });
 
   it('service runs only through the immutable current symlink and keeps writable state outside releases', () => {
