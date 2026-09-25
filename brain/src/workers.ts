@@ -151,6 +151,9 @@ export interface WorkerRunContext {
   streamPartials: boolean;
   /** quick має окремий route, делегати — `worker`; це потрібно canary-router-у. */
   profileName?: string;
+  /** Справжня межа Telegram chat+topic для quick canary. Делегати не
+   * успадковують її і лишаються у службовому `worker`-контексті. */
+  safetyIdentifier?: string;
 }
 
 /**
@@ -171,7 +174,7 @@ export function runWorker(
       profileName: ctx.profileName ?? 'worker',
       openAiModelTier: def.model === 'haiku' ? 'fast' : 'standard',
       maxOutputTokens: def.model === 'haiku' ? 1_000 : 2_000,
-      safetyIdentifier: 'worker',
+      safetyIdentifier: ctx.safetyIdentifier ?? 'worker',
       maxTurns: workerMaxTurns(def.maxSteps),
       toolNames: def.toolNames,
       ...(def.builtinTools.length ? { builtinTools: [...def.builtinTools] } : {}),
