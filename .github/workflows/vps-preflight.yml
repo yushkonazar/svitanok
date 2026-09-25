@@ -1,0 +1,51 @@
+name: VPS preflight
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: inspect release prerequisites without secrets
+        env:
+          DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for v in DEPLOY_KEY VPS_HOST VPS_USER VPS_KNOWN_HOSTS; do
+            [ -n "$(eval echo "\$$v")" ] || { echo "missing $v"; exit 1; }
+          done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -seuo pipefail' <<'SCRIPT'
+          present() { test -e "$1" && printf yes || printf no; }
+          readable() { test -r "$1" && printf yes || printf no; }
+          configured() {
+            test -r /opt/svitanok-brain-shared/brain.env && \
+              grep -q "^$1=.\\+" /opt/svitanok-brain-shared/brain.env && printf yes || printf no
+          }
+          echo "repo=$(present /opt/svitanok-brain/.git)"
+          echo "release_marker=$(present /opt/svitanok-brain-shared/release-layout-v1)"
+          echo "shared_env_readable=$(readable /opt/svitanok-brain-shared/brain.env)"
+          echo "legacy_env_readable=$(readable /opt/svitanok-brain/brain/.env)"
+          echo "current_link=$(present /opt/svitanok-brain-current)"
+          echo "service=$(systemctl is-active svitanok-brain || true)"
+          echo "openai_key_configured=$(configured OPENAI_API_KEY)"
+          echo "shadow_thread_configured=$(configured OPENAI_SHADOW_THREAD_IDS)"
+          echo "shadow_profile_configured=$(configured OPENAI_SHADOW_PROFILES)"
+          if curl -sf --max-time 5 http://127.0.0.1:8788/ready >/dev/null; then
+            echo "ready=yes"
+          else
+            echo "ready=no"
+          fi
+          SCRIPT
