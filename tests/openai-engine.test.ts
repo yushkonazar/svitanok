@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenAiEngine } from '../brain/src/openai/engine.js';
-import { openAiFunctionTool } from '../brain/src/openai/tools.js';
+import { decodeOpenAiArguments, openAiFunctionTool } from '../brain/src/openai/tools.js';
 import { TOOL_BY_MCP_NAME } from '../brain/src/tools/schemas.js';
 
 function options(over: Partial<Parameters<ReturnType<typeof createOpenAiEngine>['run']>[0]> = {}) {
@@ -98,6 +98,25 @@ describe('OpenAI Responses runtime', () => {
     expect(tool.parameters).toMatchObject({ type: 'object', additionalProperties: false });
     expect(tool.parameters.required).toContain('period');
     expect(tool.parameters.properties).toMatchObject({ period: { type: ['string', 'null'] } });
+  });
+
+  it('encodes an unconstrained JSON value so every strict tool property has a schema', () => {
+    const tool = openAiFunctionTool(TOOL_BY_MCP_NAME.get('facts_set')!);
+    expect(tool.encodedArguments).toBe(true);
+    expect(tool.parameters).toEqual({
+      type: 'object',
+      properties: { arguments_json: { type: 'string' } },
+      required: ['arguments_json'],
+      additionalProperties: false,
+    });
+    expect(
+      decodeOpenAiArguments(
+        JSON.stringify({
+          arguments_json: JSON.stringify({ kind: 'setting', key: 'k', value: { n: 1 } }),
+        }),
+        true,
+      ),
+    ).toEqual({ kind: 'setting', key: 'k', value: { n: 1 } });
   });
 
   it('allows hosted web search only for the isolated no-Core-tool researcher surface', async () => {
