@@ -67,6 +67,10 @@ function invalidEncodedArguments(): never {
 function hasDynamicObject(value: Json): boolean {
   if (Array.isArray(value)) return value.some(hasDynamicObject);
   if (!isObject(value)) return false;
+  // z.unknown() becomes `{}` in JSON Schema. OpenAI strict function
+  // parameters require a concrete schema at every property, so preserve an
+  // unconstrained owner value through the existing JSON-string envelope.
+  if (Object.keys(value).length === 0) return true;
   const objectLike = value.type === 'object' || 'properties' in value;
   if (objectLike && value.additionalProperties !== false && !('properties' in value)) return true;
   return Object.values(value).some(hasDynamicObject);
