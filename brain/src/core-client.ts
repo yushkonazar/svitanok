@@ -134,6 +134,8 @@ export class CoreClient {
       thread_id: string;
       sdk_session_id?: string;
       summary_md?: string;
+      transcript_append?: string;
+      clear_transcript?: boolean;
       turns_inc?: number;
     },
   ): Promise<boolean> {

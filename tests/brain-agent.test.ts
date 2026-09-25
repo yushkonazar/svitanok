@@ -105,6 +105,8 @@ function scriptedEngine(
           finalText: out.finalText ?? null,
           sessionId: out.sessionId ?? null,
           apiMs: out.apiMs,
+          provider: out.provider,
+          model: out.model,
         };
       },
       readTranscript,
@@ -458,13 +460,13 @@ describe('makeRunner: сесії (chat)', () => {
     });
   });
 
-  it('без session - свіжа сесія, без згортки; без sessionId від рушія - session не кличеться', async () => {
+  it('без session - свіжа сесія, без згортки; chat все одно інкрементує first-party state', async () => {
     const client = makeClient();
     const { engine, seen } = scriptedEngine(async () => ({ finalText: 'Готово' }));
     await makeRunner({ client, engine })(req());
     expect(seen[0]!.resumeSessionId).toBeNull();
     expect(seen[0]!.systemPrompt).not.toContain('Згортка попередніх');
-    expect(client.session).not.toHaveBeenCalled();
+    expect(client.session).toHaveBeenCalledWith('run-1', { thread_id: 'dm', turns_inc: 1 });
   });
 
   it('quick НЕ звітує сесію навіть із sessionId (сесії - лише chat)', async () => {
@@ -472,6 +474,21 @@ describe('makeRunner: сесії (chat)', () => {
     const { engine } = scriptedEngine(async () => ({ finalText: '42', sessionId: 's' }));
     await makeRunner({ client, engine })(req({ profile: 'quick' }));
     expect(client.session).not.toHaveBeenCalled();
+  });
+
+  it('OpenAI chat зберігає лише bounded owner/input-output transcript', async () => {
+    const client = makeClient();
+    const { engine } = scriptedEngine(async () => ({
+      finalText: 'Вітаю!',
+      provider: 'openai',
+      model: 'gpt-6-sol',
+    }));
+    await makeRunner({ client, engine })(req({ input: { text: '  Привіт\nСвіт  ' } }));
+    expect(client.session).toHaveBeenCalledWith('run-1', {
+      thread_id: 'dm',
+      transcript_append: 'Власник: Привіт Світ\nСвітанок: Вітаю!\n',
+      turns_inc: 1,
+    });
   });
 });
 

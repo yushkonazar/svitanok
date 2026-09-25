@@ -156,6 +156,9 @@ export const jobItemSchema = z.object({
   url: z.string(),
   score: z.number().default(-1),
   why: z.string().default(''),
+  // Поки джерела дають лише title/RSS, число є ранжуванням заголовка, а не
+  // «відсотком відповідності» повної вакансії. Дефолт тримає старі брифінги.
+  evidence: z.enum(['title_only']).default('title_only'),
   funnelStage: z.enum(['saved', 'applied', 'interview', 'offer']).optional(),
 });
 

@@ -104,6 +104,28 @@ describe('POST /internal/session', () => {
     expect(String(sessionRow('dm')?.last_at)).toBe(new Date(NOW + 2000).toISOString());
   });
 
+  it('обмежено додає first-party transcript і чистить його лише після успішної згортки', async () => {
+    await handleInternal(
+      await request({ thread_id: 'dm', transcript_append: 'Власник: привіт\nСвітанок: вітаю\n' }),
+      env,
+      NOW,
+    );
+    await handleInternal(
+      await request({ thread_id: 'dm', transcript_append: 'Власник: далі\nСвітанок: так\n' }),
+      env,
+      NOW + 1000,
+    );
+    expect(sessionRow('dm')?.transcript_md).toBe(
+      'Власник: привіт\nСвітанок: вітаю\nВласник: далі\nСвітанок: так\n',
+    );
+    await handleInternal(
+      await request({ thread_id: 'dm', summary_md: 'Згортка', clear_transcript: true }),
+      env,
+      NOW + 2000,
+    );
+    expect(sessionRow('dm')).toMatchObject({ summary_md: 'Згортка', transcript_md: null });
+  });
+
   it('tainted НЕ чіпається: прапорець, поставлений ядром, переживає будь-який виклик мозку', async () => {
     db.prepare(
       `INSERT INTO sessions (thread_id, started_at, last_at, tainted, turn_count)

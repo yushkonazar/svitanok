@@ -149,6 +149,8 @@ export interface WorkerRunContext {
   /** Чи є куди стрімити частковий текст: у профілю quick є статусник, у
    *  працівника всередині chat його немає. */
   streamPartials: boolean;
+  /** quick має окремий route, делегати — `worker`; це потрібно canary-router-у. */
+  profileName?: string;
 }
 
 /**
@@ -166,6 +168,10 @@ export function runWorker(
     {
       systemPrompt: def.prompt,
       model: WORKER_MODEL_IDS[def.model],
+      profileName: ctx.profileName ?? 'worker',
+      openAiModelTier: def.model === 'haiku' ? 'fast' : 'standard',
+      maxOutputTokens: def.model === 'haiku' ? 1_000 : 2_000,
+      safetyIdentifier: 'worker',
       maxTurns: workerMaxTurns(def.maxSteps),
       toolNames: def.toolNames,
       ...(def.builtinTools.length ? { builtinTools: [...def.builtinTools] } : {}),

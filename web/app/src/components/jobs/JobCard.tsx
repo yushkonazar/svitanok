@@ -6,7 +6,7 @@ import { openLink, haptic } from '../../telegram.ts';
 import { FUNNEL_STAGES, STAGE_LABEL, TRIAGE_STAGES, fitStyle, type FunnelStage } from './stages.ts';
 
 // Картка вакансії (дизайн v2, Svitanok.dc.html): скляна картка — рядок бейджа
-// fit% + назва стадії праворуч; заголовок + домен; кнопки стадій + «Не цікавить».
+// ранжування заголовка + назва стадії праворуч; заголовок + домен; кнопки стадій + «Не цікавить».
 //
 // «Не цікавить» (job_dismiss) — персистентне (stats.dismissedUrls): негативний
 // сигнал скореру + постійне видалення зі списку. Термінальна «Відмова» (F1) —

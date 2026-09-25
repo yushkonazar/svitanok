@@ -20,9 +20,9 @@ const enabled = (/** @type {Env} */ env) =>
 
 /**
  * Прогін почався. run: {id, trigger, profile?, threadId?, chatId?, progressMsgId?,
- * watchdog?, model?, startedMs, staleMs?}.
+ * watchdog?, model?, startedMs, queueWaitMs?, retryAttempt?, staleMs?}.
  * @param {Env} env
- * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, progressMsgId?: number | null, watchdog?: string | null, model?: string | null, startedMs: number, staleMs?: number }} run
+ * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, progressMsgId?: number | null, watchdog?: string | null, model?: string | null, startedMs: number, queueWaitMs?: number | null, retryAttempt?: number | null, staleMs?: number }} run
  */
 export async function registryBegin(env, run) {
   const ns = registryNs(env);

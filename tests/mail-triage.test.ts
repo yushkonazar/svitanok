@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   mailTriageTask,
+  classifyMailAttention,
   mergeCandidates,
   normalizeTriageState,
   MAIL_TRIAGE_KEY,
@@ -40,6 +41,20 @@ const NOW = Date.parse('2026-09-08T09:00:00.000Z'); // 12:00 Києва
 // пополудні.
 const TOKEN_EXP = () => Date.now() + 3_600_000;
 const ALL = CORE_SCOPES.join(' ');
+
+describe('deterministic mail attention', () => {
+  it('raises only explainable job/interview/deadline signals', () => {
+    expect(classifyMailAttention({ subject: 'Interview tomorrow', snippet: '' })).toEqual({
+      level: 'critical',
+      reasons: ['interview_or_deadline', 'time_sensitive'],
+    });
+    expect(classifyMailAttention({ subject: 'Відповідь на заявку', snippet: '' })).toEqual({
+      level: 'attention',
+      reasons: ['job_signal'],
+    });
+    expect(classifyMailAttention({ subject: 'Щотижнева добірка', snippet: 'привіт' })).toBeNull();
+  });
+});
 
 function makeEnv(state: Record<string, unknown> = {}, scopes = ALL) {
   const store = new Map<string, string>();

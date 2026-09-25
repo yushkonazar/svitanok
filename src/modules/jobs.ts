@@ -1,5 +1,6 @@
 // jobs (consumer). Вакансії з DOU + Djinni RSS. Збирає пул найсвіжіших,
-// LLM-скоринг релевантності під профіль (fit %), сортує, бере top-perRun.
+// LLM ранжує релевантність ЛИШЕ за заголовком під профіль, сортує, бере
+// top-perRun. Це не є оцінкою повного опису вакансії: опис ще не завантажується.
 // Заголовок, бейдж % і «чому» — у data.items для дашборда; у короткий рядок
 // дня йдуть лише топ-MESSAGE_ITEMS заголовків.
 // Скоринг не вдався -> фолбек на свіжість (score=-1). Дедуп проти shownJobs.
@@ -59,8 +60,10 @@ interface Candidate {
   url: string;
 }
 interface ScoredJob extends Candidate {
-  score: number; // 0..100; -1 = без скорингу (фолбек)
+  /** Ранжування за заголовком, не «fit» і не перевірка повної вакансії. */
+  score: number; // 0..100; -1 = без ранжування (фолбек)
   why: string;
+  evidence: 'title_only';
 }
 
 // --- jobPrefs (памʼять скорера з живої воронки: dismiss/applied→interview→offer) ---
@@ -153,8 +156,8 @@ export function buildScorePrompt(
     'Ти — кар’єрний асистент. Профіль кандидата:',
     profile,
     ...prefLines,
-    'Оціни релевантність КОЖНОЇ вакансії профілю від 0 до 100',
-    '(рівень trainee/junior, збіг стеку, junior-дружність).',
+    'Оціни лише релевантність ЗАГОЛОВКА кожної вакансії профілю від 0 до 100.',
+    'Не роби висновків про вимоги, зарплату, локацію чи опис: їх тут немає.',
     'Вакансії:',
     ...candidates.map((c, i) => `${i + 1}. ${c.title}`),
     'Поверни ЛИШЕ JSON-масив без прози:',
@@ -221,7 +224,7 @@ export const jobsModule: Module<AppConfig> = {
     const pool = collectPool(lists, shown, cutoff);
     if (pool.length === 0) return null;
 
-    // LLM-скоринг релевантності; збій -> фолбек на свіжість (порядок пулу).
+    // LLM-ранжування заголовків; збій -> фолбек на свіжість (порядок пулу).
     // jobPrefs — памʼять із живої воронки (dismiss/applied→interview→offer), §D2.
     const jobPrefs = ctx.state.get<JobPrefs>('jobPrefs');
     let ranked: ScoredJob[];
@@ -237,13 +240,14 @@ export const jobsModule: Module<AppConfig> = {
           ...c,
           score: scores.get(i + 1)?.score ?? 0,
           why: scores.get(i + 1)?.why ?? '',
+          evidence: 'title_only' as const,
         }))
         .sort((a, b) => b.score - a.score);
     } catch (e) {
       ctx.log.warn(
         `jobs: скоринг не вдався (фолбек на свіжість): ${e instanceof Error ? e.message : String(e)}`,
       );
-      ranked = pool.map((c) => ({ ...c, score: -1, why: '' }));
+      ranked = pool.map((c) => ({ ...c, score: -1, why: '', evidence: 'title_only' as const }));
     }
 
     const picked = ranked.slice(0, cfg.perRun);

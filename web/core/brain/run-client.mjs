@@ -69,7 +69,7 @@ async function signedBrainPost(env, path, runId, rawBody, nowMs) {
  *   inputText: string,
  *   tainted?: boolean,
  *   statusMessageId?: number,
- *   session?: { sdk_session_id: string | null, summary_md: string | null },
+ *   session?: { sdk_session_id: string | null, summary_md: string | null, transcript_md?: string },
  *   instruction?: { name: string, version_hash: string, body_md: string },
  * }} req
  * @param {number} nowMs

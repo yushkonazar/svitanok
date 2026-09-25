@@ -147,6 +147,10 @@ export const SESSION_SCHEMA = /** @type {InternalSchema} */ ({
     thread_id: { type: 'string', maxLength: 64 },
     sdk_session_id: { type: 'string', maxLength: 128 },
     summary_md: { type: 'string', maxLength: 20_000 },
+    // First-party OpenAI transcript: only chat input/output, capped again by
+    // the DB writer. It is not a provider response id or tool payload.
+    transcript_append: { type: 'string', maxLength: 6_000 },
+    clear_transcript: { type: 'boolean' },
     turns_inc: { type: 'number', minimum: 0, maximum: 1000 },
   },
 });

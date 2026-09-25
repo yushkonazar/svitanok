@@ -9,6 +9,8 @@ import { checkOwnerRead } from '../auth-core.mjs';
 import { SCHEDULER_DO_NAME } from './scheduler/do.mjs';
 import { RUN_REGISTRY_DO_NAME } from './run-registry/client.mjs';
 import { readQuotas } from './quota/quota.mjs';
+import { readRunDashboard } from './ops/run-dashboard.mjs';
+import { readDeliverySlo } from './ops/delivery-slo.mjs';
 
 /**
  * @param {Request} request
@@ -23,7 +25,7 @@ export async function handleAssistantStatus(request, env) {
 
   // Кожен блок збирається окремо: відсутня привʼязка чи збій одного не має
   // ховати решту картини - у блоці буде явний error замість даних.
-  const [scheduler, registry, quotas] = await Promise.all([
+  const [scheduler, registry, quotas, dashboard, delivery] = await Promise.all([
     section(() => {
       const ns = env.SCHEDULER;
       if (typeof ns?.getByName !== 'function') throw new Error('SCHEDULER не привʼязано');
@@ -35,9 +37,19 @@ export async function handleAssistantStatus(request, env) {
       return ns.getByName(RUN_REGISTRY_DO_NAME).snapshot();
     }),
     section(() => readQuotas(env)),
+    section(() => readRunDashboard(env)),
+    section(() => readDeliverySlo(env)),
   ]);
 
-  return json({ ok: true, mode: env.ASSISTANT_V2, scheduler, registry, quotas });
+  return json({
+    ok: true,
+    mode: env.ASSISTANT_V2,
+    scheduler,
+    registry,
+    quotas,
+    dashboard,
+    delivery,
+  });
 }
 
 /** @param {() => Promise<unknown> | unknown} fn */

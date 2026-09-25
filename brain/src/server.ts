@@ -39,6 +39,7 @@ export const RUN_REQUEST_SCHEMA = z.object({
     .object({
       sdk_session_id: z.string().max(128).nullable(),
       summary_md: z.string().max(20_000).nullable(),
+      transcript_md: z.string().max(24_000).nullable().optional(),
     })
     .optional(),
   /** Інструкція профілю з D1 ядра (PR-5): тіло + хеш, який мозок звіряє сам.

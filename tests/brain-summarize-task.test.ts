@@ -148,17 +148,29 @@ describe('memorySummarize', () => {
   let env: Env;
   let kv: Map<string, string>;
 
-  const seedSession = (threadId: string, lastAt: string, sid: string | null, tainted = 0) => {
+  const seedSession = (
+    threadId: string,
+    lastAt: string,
+    sid: string | null,
+    tainted = 0,
+    transcript: string | null = null,
+  ) => {
     db.prepare(
-      `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, turn_count)
-       VALUES (?, ?, ?, ?, ?, 1)`,
-    ).run(threadId, sid, lastAt, lastAt, tainted);
+      `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, turn_count, transcript_md)
+       VALUES (?, ?, ?, ?, ?, 1, ?)`,
+    ).run(threadId, sid, lastAt, lastAt, tainted, transcript);
   };
 
   beforeEach(() => {
     db = new DatabaseSync(':memory:');
     db.exec(
       readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0001_base.sql'), 'utf8'),
+    );
+    db.exec(
+      readFileSync(
+        join(__dirname, '..', 'web', 'core', 'migrations', '0018_openai_transcripts.sql'),
+        'utf8',
+      ),
     );
     begins = [];
     finishes = [];
@@ -226,6 +238,25 @@ describe('memorySummarize', () => {
     const again = await memorySummarize(env, NOW_04 + 5 * 60_000);
     expect(again).toEqual({ skipped: 'done' });
     expect(begins).toHaveLength(1);
+  });
+
+  it('OpenAI first-party transcript запускає ту саму згортку без Claude sdk_session_id', async () => {
+    const calls = captureFetch();
+    seedSession(
+      'openai-dm',
+      new Date(NOW_04 - 3_600_000).toISOString(),
+      null,
+      0,
+      'Власник: привіт',
+    );
+    const res = await memorySummarize(env, NOW_04);
+    expect(res).toEqual({ started: 1, threads: 1 });
+    const body = JSON.parse(String(calls[0]!.init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      profile: 'summarize',
+      thread_id: 'openai-dm',
+      session: { sdk_session_id: null, transcript_md: 'Власник: привіт' },
+    });
   });
 
   it('відмова мозку: мітка НЕ ставиться (наступна поява повторить), реєстр закривається самі', async () => {

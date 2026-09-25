@@ -13,12 +13,16 @@
     "typecheck": "tsc --noEmit && tsc -p web",
     "typecheck:web": "tsc -p web",
     "build:web": "npm --prefix web/app ci && npm --prefix web/app run build",
-    "test": "vitest run",
+    "test": "npm run contract:tools && vitest run",
+    "test:workers": "vitest run --config vitest.workers.config.ts",
     "test:coverage": "vitest run --coverage",
+    "eval:openai": "tsx scripts/openai-eval.mts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "contract:tools": "node --experimental-loader ./scripts/cloudflare-stub-loader.mjs scripts/generate-tool-contract.mjs",
+    "contract:tools:write": "node --experimental-loader ./scripts/cloudflare-stub-loader.mjs scripts/generate-tool-contract.mjs --write",
     "restore:drill": "node scripts/restore-drill.mjs",
     "dry-run": "tsx src/orchestrator.ts --dry-run",
     "start": "tsx src/orchestrator.ts",
@@ -41,6 +45,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.12",
     "@cloudflare/workers-types": "5.20260820.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.13.3",
@@ -54,6 +59,7 @@
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.125.0"
   }
 }

@@ -54,6 +54,12 @@ export const SECRETS = [
   { name: 'BRAIN_ACCESS_CLIENT_SECRET', where: 'CF', periodDays: 365 },
   { name: 'INTERNAL_HMAC_KEY', where: 'CF + brain/.env', periodDays: 365 },
   {
+    name: 'OPENAI_API_KEY',
+    where: 'brain.env',
+    periodDays: 365,
+    note: 'тільки `/opt/svitanok-brain-shared/brain.env`',
+  },
+  {
     name: 'BACKUP_ENC_KEY',
     where: 'CF + офлайн-копія',
     periodDays: null,

@@ -68,7 +68,7 @@ export class RunRegistryDO extends DurableObject {
    * Прогін почався: у активний набір + рядок у D1 `runs`. ON CONFLICT DO
    * NOTHING — повторний begin того самого id (ретрай викликача) не падає і
    * не дублює рядок.
-   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, progressMsgId?: number | null, watchdog?: string | null, model?: string | null, startedMs: number, staleMs?: number }} run
+   * @param {{ id: string, trigger: string, profile?: string | null, threadId?: string | number | null, chatId?: number | null, progressMsgId?: number | null, watchdog?: string | null, model?: string | null, startedMs: number, queueWaitMs?: number | null, retryAttempt?: number | null, staleMs?: number }} run
    */
   async begin(run) {
     const active = await this.#active();
@@ -105,6 +105,37 @@ export class RunRegistryDO extends DurableObject {
           new Date(run.startedMs).toISOString(),
         )
         .run();
+      // Черга й повтор - технічна телеметрія. Їх пишемо як спеціальні step-и
+      // до кроків мозку (n < 0), щоб схема 0003 лишалась append-only і
+      // dashboard міг чесно показати шлях run-а без тексту запиту.
+      if (Number.isFinite(run.queueWaitMs)) {
+        await this.#db()
+          .prepare(
+            `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
+             VALUES (?, ?, -2, ?, 'queue', 'wait', ?, 1, NULL) ON CONFLICT (id) DO NOTHING`,
+          )
+          .bind(
+            `${run.id}:queue`,
+            run.id,
+            new Date(run.startedMs).toISOString(),
+            Math.max(0, Number(run.queueWaitMs)),
+          )
+          .run();
+      }
+      if (Number(run.retryAttempt ?? 0) > 0) {
+        await this.#db()
+          .prepare(
+            `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
+             VALUES (?, ?, -1, ?, 'retry', 'start', ?, 1, NULL) ON CONFLICT (id) DO NOTHING`,
+          )
+          .bind(
+            `${run.id}:retry`,
+            run.id,
+            new Date(run.startedMs).toISOString(),
+            Number(run.retryAttempt),
+          )
+          .run();
+      }
     } catch (/** @type {any} */ e) {
       console.error(`run-registry: D1 telemetry begin ${run.id} впав`, e?.message);
     }

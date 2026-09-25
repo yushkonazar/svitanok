@@ -132,25 +132,25 @@
 
 ## Фаза 2 — тестування, observability і документація
 
-- [ ] Workerd/Miniflare integration tests для DO alarms, D1, KV, Workflows, `waitUntil`, assets.
-- [ ] Fake Telegram/Google/Mono E2E tests.
-- [ ] Fault injection для timeout, duplicate delivery, D1/Vectorize/API failures.
-- [ ] Run dashboard: terminal state, retry, queue wait, tool latency, policy decision, model/version, cost.
-- [ ] Reminder and briefing delivery SLOs.
-- [ ] Backup → clean restore → semantic comparison drill.
-- [ ] Генерований tool/policy/schema contract або contract tests, що не дають docs розійтися з кодом.
-- [ ] Оновити canonical docs після кожної завершеної підсистеми.
+- [x] Workerd/Miniflare integration tests для DO alarms, D1, KV, Workflows, `waitUntil`, assets.
+- [x] Fake Telegram/Google/Mono E2E tests.
+- [x] Fault injection для timeout, duplicate delivery, D1/Vectorize/API failures.
+- [x] Run dashboard: terminal state, retry, queue wait, tool latency, policy decision, model/version, cost.
+- [x] Reminder and briefing delivery SLOs.
+- [x] Backup → clean restore → semantic comparison drill.
+- [x] Генерований tool/policy/schema contract або contract tests, що не дають docs розійтися з кодом.
+- [x] Оновити canonical docs після кожної завершеної підсистеми.
 
 ## Фаза 3 — provider-neutral AI runtime і OpenAI Responses
 
 **Контракт:** `ToolSpec`, input/output schema, policy level, provenance rules, profile, timeout, max tool calls, cost/latency budget створюються один раз і адаптуються до Claude/OpenAI.
 
-- [ ] Виділити provider-neutral `ModelRuntime` та canonical tool registry без зміни поточної policy boundary.
-- [ ] Додати OpenAI Responses adapter із `store:false`, hashed `safety_identifier`, strict custom function tools і явним model config.
-- [ ] Не передавати credentials у Responses; кожен tool call повертається до Cloudflare core.
-- [ ] Зберігати власну session/memory truth у D1; не робити provider conversation source of truth.
-- [ ] Записувати response ID, model snapshot, usage, latency, tool calls у run telemetry без персональних prompt dumps.
-- [ ] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict.
+- [x] Виділити provider-neutral `ModelRuntime` та canonical tool registry без зміни поточної policy boundary.
+- [x] Додати OpenAI Responses adapter із `store:false`, hashed `safety_identifier`, strict custom function tools і явним model config.
+- [x] Не передавати credentials у Responses; кожен tool call повертається до Cloudflare core.
+- [x] Зберігати власну session/memory truth у D1; не робити provider conversation source of truth.
+- [x] Записувати response ID, model snapshot, usage, latency, tool calls у run telemetry без персональних prompt dumps.
+- [x] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict (`npm run eval:openai`; явний read-only запуск, без PII або ключа в repo).
 - [ ] Запустити shadow mode лише для read-only cases; порівняти quality, tool correctness, latency, cost.
 - [ ] Canary fast lane, потім chat/reasoning lane; rollback через config.
 - [ ] Prototype Cloudflare Workflow orchestration для одного profile; переносити VPS workloads лише після вимірювання.
@@ -170,7 +170,7 @@
 
 ### 4B. Smart Job Hunter
 
-- [ ] Rename current title-only number to relevance, until evidence is available.
+- [x] Rename current title-only number to explicit title relevance, until evidence is available (UI now says `за заголовком`, not fit; model prompt prohibits claims about missing description fields).
 - [ ] Fetch/store permitted job descriptions with source/freshness.
 - [ ] Evidence dimensions: stack, level, location, language, salary, dealbreakers, missing skills, confidence.
 - [ ] Funnel: seen → saved → applied → interview → offer; learn only from explicit outcomes.

@@ -41,6 +41,14 @@ export interface ToolExecution {
 export interface EngineRunOptions {
   systemPrompt: string;
   model: string;
+  /** Назва профілю для provider-router-а та безпечного canary. */
+  profileName?: string;
+  /** Клас OpenAI-моделі; Claude runtime його ігнорує. */
+  openAiModelTier?: 'fast' | 'standard' | 'advanced';
+  /** Стеля відповіді одного Responses-виклику; не замінює maxTurns. */
+  maxOutputTokens?: number;
+  /** Стабільний внутрішній ідентифікатор власника; provider хешує його сам. */
+  safetyIdentifier: string;
   maxTurns: number;
   toolNames: string[];
   /** Вбудовані інструменти SDK, дозволені цьому прогону (лише працівники:
@@ -66,6 +74,23 @@ export interface EngineOutcome {
   /** Час у API моделі (duration_api_ms результату SDK); решта ms кроку -
    *  накладні CLI/сесії. Не задано - рушій не звітує. */
   apiMs?: number | null;
+  /** Runtime називає себе, але не повертає credentials чи повний API-вивід. */
+  provider?: 'claude' | 'openai';
+  model?: string | null;
+  responseId?: string | null;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null;
+  /** Read-only OpenAI comparison. It never contains generated text, prompts,
+   * arguments, or Core results and is present only when the owner enabled an
+   * explicitly scoped shadow lane. */
+  shadow?: {
+    provider: 'openai';
+    model?: string | null;
+    responseId?: string | null;
+    apiMs?: number | null;
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null;
+    toolCalls: number;
+    error?: string;
+  } | null;
 }
 
 /** «api 12.3 с» для нотатки кроку; undefined - без нотатки (JSON її відкине). */
@@ -89,18 +114,21 @@ export class EngineStopError extends Error {
 }
 
 /** Рушій прогону: бойовий - Agent SDK (sdk/engine.ts), у тестах - мок. */
-export interface RunEngine {
+export interface ModelRuntime {
   run: (opts: EngineRunOptions, inputText: string) => Promise<EngineOutcome>;
   /** Транскрипт сесії з локального сховища SDK (для згортки); null - нема. */
   readTranscript: (sessionId: string) => Promise<string | null>;
 }
+
+/** Сумісний псевдонім для поступової міграції існуючих Claude-викликів. */
+export type RunEngine = ModelRuntime;
 
 export interface RunnerDeps {
   client: Pick<
     CoreClient,
     'callTool' | 'deliver' | 'status' | 'reportRuns' | 'session' | 'instruction' | 'taint'
   >;
-  engine: RunEngine;
+  engine: ModelRuntime;
   now?: () => number;
   /** Мін. інтервал оновлень статусу; ядро й так троттлить (07 §3). */
   statusIntervalMs?: number;
@@ -136,7 +164,7 @@ const ESCALATE_PREFIX = 'ESCALATE:';
 interface Step {
   n: number;
   at: string;
-  kind: 'tool' | 'subagent' | 'reply' | 'error';
+  kind: 'tool' | 'subagent' | 'reply' | 'error' | 'model';
   name: string;
   ms: number;
   ok: boolean;
@@ -381,6 +409,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
             // Partials потрібні не для статусу, а щоб на стелі ходів лишився
             // частковий текст (EngineStopError.partialText).
             streamPartials: true,
+            profileName: 'worker',
           },
         );
         text = (out.finalText ?? '').trim();
@@ -494,12 +523,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       let inputText = req.input.text;
       if (profile.name === 'summarize') {
         const sid = req.session?.sdk_session_id;
-        if (!sid) {
+        const firstPartyTranscript = req.session?.transcript_md?.trim() ?? '';
+        if (!sid && !firstPartyTranscript) {
           pushStep({ kind: 'error', name: 'summarize', ms: 0, ok: false, note: 'no-session' });
-          console.error(`run ${req.run_id}: summarize без sdk_session_id`);
+          console.error(`run ${req.run_id}: summarize без transcript`);
           return;
         }
-        const transcript = await deps.engine.readTranscript(sid);
+        const transcript =
+          firstPartyTranscript || (sid ? await deps.engine.readTranscript(sid) : null);
         if (!transcript) {
           pushStep({
             kind: 'error',
@@ -529,6 +560,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         onToolCall,
         onPartialText,
         streamPartials: req.status_message_id != null,
+        profileName: profile.name,
       };
       const outcome =
         profile.name === 'quick'
@@ -542,6 +574,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
               {
                 systemPrompt,
                 model: profile.model,
+                openAiModelTier: profile.openAiModelTier,
+                maxOutputTokens: profile.maxOutputTokens,
+                safetyIdentifier: req.thread_id,
                 maxTurns: profile.maxTurns,
                 toolNames: profile.toolNames,
                 ...(profile.builtinTools?.length
@@ -556,6 +591,28 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
             );
 
       const finalText = (outcome.finalText ?? '').trim();
+
+      // Provider-telemetry is deliberately a tiny allowlist, not an API dump:
+      // it lets D1 show response/model/usage/latency while keeping prompts,
+      // outputs and function arguments out of operational logs.
+      if (outcome.provider === 'openai') {
+        pushStep({
+          kind: 'model',
+          name: `openai:${safeTelemetry(outcome.model, 96) ?? 'unknown'}`,
+          ms: outcome.apiMs ?? now() - startedMs,
+          ok: true,
+          note: openAiTelemetryNote(outcome),
+        });
+      }
+      if (outcome.shadow) {
+        pushStep({
+          kind: 'model',
+          name: `shadow:openai:${safeTelemetry(outcome.shadow.model, 96) ?? 'unknown'}`,
+          ms: outcome.shadow.apiMs ?? now() - startedMs,
+          ok: !outcome.shadow.error && outcome.shadow.toolCalls === 0,
+          note: `${openAiTelemetryNote(outcome.shadow)} shadow_tools=${outcome.shadow.toolCalls}${outcome.shadow.error ? ` error=${safeTelemetry(outcome.shadow.error, 80) ?? 'unknown'}` : ''}`,
+        });
+      }
 
       if (profile.name === 'summarize') {
         // Вихід - у sessions.summary_md, НЕ власнику. Втрачена згортка не сміє
@@ -574,6 +631,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           thread_id: req.thread_id,
           // Кап схеми ядра 20 000; модель просили ≤1500, зріз - страховка.
           summary_md: clipHead(finalText, 19_000),
+          // Після успішного запису summary first-party transcript уже не
+          // потрібен. Старі Claude SDK sessions не чіпаємо цим прапорцем.
+          ...(req.session?.transcript_md ? { clear_transcript: true } : {}),
         });
         pushStep({
           kind: 'reply',
@@ -676,12 +736,16 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         note: apiNote(outcome.apiMs),
       });
 
-      // Сесія для наступного resume (chat): best-effort - невдача означає лише
-      // свіжу сесію наступного разу, і про це скаже warn клієнта.
-      if (profile.name === 'chat' && outcome.sessionId) {
+      // Сесія для Claude resume та короткий first-party transcript для
+      // stateless OpenAI. Transcript містить лише власний input і відданий
+      // текст, ніколи не tool outputs; tainted threads scheduler не згортає.
+      if (profile.name === 'chat') {
         await deps.client.session(req.run_id, {
           thread_id: req.thread_id,
-          sdk_session_id: outcome.sessionId,
+          ...(outcome.sessionId ? { sdk_session_id: outcome.sessionId } : {}),
+          ...(outcome.provider === 'openai'
+            ? { transcript_append: transcriptAppend(req.input.text, finalText) }
+            : {}),
           turns_inc: 1,
         });
       }
@@ -713,6 +777,20 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       await deps.client.reportRuns(req.run_id, steps, escalateOutcome);
     }
   };
+}
+
+function openAiTelemetryNote(outcome: Pick<EngineOutcome, 'responseId' | 'usage'>): string {
+  const parts = [
+    `response=${safeTelemetry(outcome.responseId, 100) ?? 'unknown'}`,
+    `input_tokens=${outcome.usage?.inputTokens ?? 'unknown'}`,
+    `output_tokens=${outcome.usage?.outputTokens ?? 'unknown'}`,
+    `total_tokens=${outcome.usage?.totalTokens ?? 'unknown'}`,
+  ];
+  return parts.join(' ');
+}
+
+function safeTelemetry(value: string | null | undefined, max: number): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]+$/.test(value) ? value.slice(0, max) : null;
 }
 
 /**
@@ -754,6 +832,14 @@ export function clipHead(text: string, max: number): string {
   const code = text.charCodeAt(end - 1);
   if (code >= 0xd800 && code <= 0xdbff) end -= 1;
   return `${text.slice(0, end)}…`;
+}
+
+/** Rolling OpenAI transcript payload for Core. The Core keeps the final 24k
+ * characters; this per-turn cap protects the signed internal body as well. */
+export function transcriptAppend(input: string, output: string): string {
+  const compact = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const turn = `Власник: ${compact(input)}\nСвітанок: ${compact(output || '(порожня відповідь)')}\n`;
+  return clipTail(turn, 5_900);
 }
 
 /**

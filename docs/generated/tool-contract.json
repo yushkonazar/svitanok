@@ -1,0 +1,736 @@
+{
+  "contract_version": 1,
+  "tools": {
+    "calendar.read": {
+      "args": {
+        "properties": {
+          "days": { "maximum": 7, "minimum": 0, "type": "number" }
+        },
+        "required": ["days"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "chain.cancel": {
+      "args": {
+        "properties": {
+          "chain_id": { "maxLength": 64, "type": "string" },
+          "kind": { "maxLength": 32, "type": "string" },
+          "trip_id": { "maxLength": 120, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "chain.cancel" }
+    },
+    "chain.start": {
+      "args": {
+        "properties": {
+          "kind": { "maxLength": 32, "type": "string" },
+          "payload": { "type": "object" }
+        },
+        "required": ["kind"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "chain.start" }
+    },
+    "collections.create": {
+      "args": {
+        "properties": {
+          "description": { "maxLength": 500, "type": "string" },
+          "fields": { "items": { "type": "object" }, "type": "array" },
+          "name": { "maxLength": 64, "minLength": 1, "type": "string" },
+          "sort_by": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["name", "fields"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "collections.create" }
+    },
+    "collections.delete": {
+      "args": {
+        "properties": { "collection": { "maxLength": 64, "type": "string" } },
+        "required": ["collection"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "forget" }
+    },
+    "collections.list": {
+      "args": { "type": "object" },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "collections.update": {
+      "args": {
+        "properties": {
+          "collection": { "maxLength": 64, "type": "string" },
+          "description": { "maxLength": 500, "type": "string" },
+          "fields": { "items": { "type": "object" }, "type": "array" },
+          "name": { "maxLength": 64, "type": "string" },
+          "sort_by": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["collection"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "collections.update" }
+    },
+    "data.read": {
+      "args": {
+        "properties": {
+          "cap": { "type": "number" },
+          "period": { "maxLength": 16, "type": "string" },
+          "scope": { "maxLength": 32, "type": "string" }
+        },
+        "required": ["scope"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "data.search": {
+      "args": {
+        "properties": {
+          "q": { "maxLength": 120, "minLength": 2, "type": "string" },
+          "scopes": {
+            "items": { "maxLength": 16, "type": "string" },
+            "type": "array"
+          }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "conditional",
+      "execution": { "route": "core" }
+    },
+    "drive.search": {
+      "args": {
+        "properties": { "q": { "maxLength": 120, "type": "string" } },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "facts.delete": {
+      "args": {
+        "properties": {
+          "key": { "maxLength": 128, "minLength": 1, "type": "string" },
+          "kind": { "maxLength": 32, "type": "string" },
+          "why": { "maxLength": 500, "type": "string" }
+        },
+        "required": ["kind", "key"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "facts.delete" }
+    },
+    "facts.get": {
+      "args": {
+        "properties": {
+          "key": { "maxLength": 128, "type": "string" },
+          "kind": { "maxLength": 32, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "facts.ledger": {
+      "args": {
+        "properties": {
+          "key": { "maxLength": 128, "type": "string" },
+          "kind": { "maxLength": 32, "type": "string" },
+          "limit": { "maximum": 50, "minimum": 1, "type": "number" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "facts.set": {
+      "args": {
+        "properties": {
+          "confidence": { "maximum": 1, "minimum": 0, "type": "number" },
+          "expires_at": { "maxLength": 40, "type": "string" },
+          "key": { "maxLength": 128, "type": "string" },
+          "kind": { "maxLength": 32, "type": "string" },
+          "observed_at": { "maxLength": 40, "type": "string" },
+          "review_at": { "maxLength": 40, "type": "string" },
+          "source": { "maxLength": 16, "type": "string" },
+          "supersedes": { "maxLength": 64, "type": "string" },
+          "why": { "maxLength": 500, "type": "string" }
+        },
+        "required": ["kind", "key", "value"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "facts.set" }
+    },
+    "finance.query": {
+      "args": {
+        "properties": {
+          "category": { "maxLength": 40, "type": "string" },
+          "flags": {
+            "items": { "maxLength": 20, "type": "string" },
+            "type": "array"
+          },
+          "id": { "maxLength": 64, "type": "string" },
+          "merchant": { "maxLength": 60, "type": "string" },
+          "period": { "maxLength": 32, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "finance.rule": {
+      "args": {
+        "properties": {
+          "category": { "maxLength": 40, "type": "string" },
+          "is_subscription": { "type": "boolean" },
+          "pattern": { "maxLength": 60, "minLength": 2, "type": "string" }
+        },
+        "required": ["pattern"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "finance.rule" }
+    },
+    "geo.geocode": {
+      "args": {
+        "properties": { "text": { "maxLength": 200, "type": "string" } },
+        "required": ["text"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "geo.last": {
+      "args": { "type": "object" },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "ideas.analyze": {
+      "args": {
+        "properties": {
+          "force": { "type": "boolean" },
+          "id": { "maxLength": 64, "type": "string" },
+          "mode": { "maxLength": 8, "type": "string" },
+          "repo": { "maxLength": 32, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "ideas.analyze" }
+    },
+    "ideas.create": {
+      "args": {
+        "properties": {
+          "body_md": { "maxLength": 20000, "type": "string" },
+          "domain": { "maxLength": 16, "type": "string" },
+          "effort": { "maxLength": 1, "type": "string" },
+          "next_action": { "maxLength": 300, "type": "string" },
+          "priority": { "maximum": 3, "minimum": 1, "type": "number" },
+          "tags": {
+            "items": { "maxLength": 32, "type": "string" },
+            "type": "array"
+          },
+          "title": { "maxLength": 200, "minLength": 1, "type": "string" }
+        },
+        "required": ["title"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "ideas.create" }
+    },
+    "ideas.delete": {
+      "args": {
+        "properties": { "id": { "maxLength": 64, "type": "string" } },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "ideas.delete" }
+    },
+    "ideas.list": {
+      "args": {
+        "properties": {
+          "domain": { "maxLength": 16, "type": "string" },
+          "limit": { "maximum": 10, "minimum": 1, "type": "number" },
+          "status": { "maxLength": 16, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "ideas.search": {
+      "args": {
+        "properties": {
+          "q": { "maxLength": 120, "minLength": 2, "type": "string" }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "ideas.update": {
+      "args": {
+        "properties": {
+          "analysis_md": { "maxLength": 20000, "type": "string" },
+          "body_md": { "maxLength": 20000, "type": "string" },
+          "domain": { "maxLength": 16, "type": "string" },
+          "effort": { "maxLength": 1, "type": "string" },
+          "id": { "maxLength": 64, "type": "string" },
+          "next_action": { "maxLength": 300, "type": "string" },
+          "plan_md": { "maxLength": 20000, "type": "string" },
+          "priority": { "maximum": 3, "minimum": 1, "type": "number" },
+          "status": { "maxLength": 16, "type": "string" },
+          "tags": {
+            "items": { "maxLength": 32, "type": "string" },
+            "type": "array"
+          },
+          "title": { "maxLength": 200, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "ideas.update" }
+    },
+    "inbox.search": {
+      "args": {
+        "properties": {
+          "chat": { "maxLength": 120, "type": "string" },
+          "limit": { "maximum": 30, "minimum": 1, "type": "number" },
+          "q": { "maxLength": 120, "type": "string" },
+          "since": { "maxLength": 32, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "mail.read": {
+      "args": {
+        "properties": { "id": { "maxLength": 128, "type": "string" } },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "mail.search": {
+      "args": {
+        "properties": {
+          "q": { "maxLength": 120, "minLength": 2, "type": "string" }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "memory.search": {
+      "args": {
+        "properties": {
+          "limit": { "maximum": 10, "minimum": 1, "type": "number" },
+          "q": { "maxLength": 200, "type": "string" }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "places.details": {
+      "args": {
+        "properties": {
+          "place_id": { "maxLength": 300, "minLength": 1, "type": "string" }
+        },
+        "required": ["place_id"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "places.menu": {
+      "args": {
+        "properties": {
+          "city": { "maxLength": 60, "type": "string" },
+          "dish": { "maxLength": 120, "minLength": 1, "type": "string" },
+          "online": { "type": "boolean" },
+          "place": { "maxLength": 120, "minLength": 1, "type": "string" }
+        },
+        "required": ["place", "dish"],
+        "type": "object"
+      },
+      "tainting": "conditional",
+      "execution": { "route": "core" }
+    },
+    "places.search": {
+      "args": {
+        "properties": {
+          "city": { "maxLength": 60, "type": "string" },
+          "limit": { "maximum": 8, "minimum": 1, "type": "number" },
+          "near": {
+            "properties": {
+              "lat": { "type": "number" },
+              "lon": { "type": "number" }
+            },
+            "required": ["lat", "lon"],
+            "type": "object"
+          },
+          "query": { "maxLength": 120, "minLength": 1, "type": "string" }
+        },
+        "required": ["query"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "plan.accept": {
+      "args": {
+        "properties": {
+          "calendar": { "type": "boolean" },
+          "date": { "maxLength": 16, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "plan.accept" }
+    },
+    "plan.draft": {
+      "args": {
+        "properties": { "date": { "maxLength": 16, "type": "string" } },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "plan.draft" }
+    },
+    "plan.intent": {
+      "args": {
+        "properties": {
+          "date": { "maxLength": 16, "type": "string" },
+          "items": { "items": { "type": "object" }, "type": "array" }
+        },
+        "required": ["items"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "plan.intent" }
+    },
+    "plan.review": {
+      "args": {
+        "properties": {
+          "carry": {
+            "items": { "maxLength": 80, "type": "string" },
+            "type": "array"
+          },
+          "date": { "maxLength": 16, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "plan.review" }
+    },
+    "plan.update": {
+      "args": {
+        "properties": {
+          "date": { "maxLength": 16, "type": "string" },
+          "done": {
+            "items": { "maxLength": 80, "type": "string" },
+            "type": "array"
+          },
+          "drop": {
+            "items": { "maxLength": 80, "type": "string" },
+            "type": "array"
+          },
+          "moves": {
+            "items": {
+              "properties": {
+                "id": { "maxLength": 80, "type": "string" },
+                "to": { "maxLength": 5, "type": "string" }
+              },
+              "required": ["id", "to"],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "plan.update" }
+    },
+    "proposals.create": {
+      "args": {
+        "properties": {
+          "kind": { "maxLength": 32, "type": "string" },
+          "payload": { "type": "object" }
+        },
+        "required": ["kind"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kindFrom": "kind" }
+    },
+    "record": {
+      "args": {
+        "properties": {
+          "kind": { "maxLength": 16, "type": "string" },
+          "payload": { "type": "object" }
+        },
+        "required": ["kind"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "record" }
+    },
+    "records.create": {
+      "args": {
+        "properties": {
+          "collection": { "maxLength": 64, "type": "string" },
+          "data": { "type": "object" }
+        },
+        "required": ["collection", "data"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "records.create" }
+    },
+    "records.delete": {
+      "args": {
+        "properties": {
+          "collection": { "maxLength": 64, "type": "string" },
+          "id": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["collection", "id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "records.delete" }
+    },
+    "records.list": {
+      "args": {
+        "properties": {
+          "collection": { "maxLength": 64, "type": "string" },
+          "desc": { "type": "boolean" },
+          "limit": { "maximum": 20, "minimum": 1, "type": "number" },
+          "sort": { "maxLength": 64, "type": "string" },
+          "where": { "items": { "type": "object" }, "type": "array" }
+        },
+        "required": ["collection"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "records.search": {
+      "args": {
+        "properties": {
+          "collection": { "maxLength": 64, "type": "string" },
+          "q": { "maxLength": 120, "minLength": 2, "type": "string" }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "records.update": {
+      "args": {
+        "properties": {
+          "collection": { "maxLength": 64, "type": "string" },
+          "data": { "type": "object" },
+          "id": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["collection", "id", "data"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "records.update" }
+    },
+    "reminders.cancel": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 64, "type": "string" },
+          "ids": {
+            "items": { "maxLength": 64, "type": "string" },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "reminders.cancel" }
+    },
+    "reminders.create": {
+      "args": {
+        "properties": {
+          "text": { "maxLength": 200, "type": "string" },
+          "when": { "maxLength": 120, "type": "string" }
+        },
+        "required": ["when"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "reminders.create" }
+    },
+    "reminders.update": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 64, "type": "string" },
+          "text": { "maxLength": 200, "type": "string" },
+          "when": { "maxLength": 120, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "reminders.update" }
+    },
+    "routes.eta": {
+      "args": {
+        "properties": {
+          "depart_at": { "maxLength": 40, "type": "string" },
+          "from": { "maxLength": 300, "minLength": 1, "type": "string" },
+          "mode": { "maxLength": 8, "minLength": 3, "type": "string" },
+          "to": { "maxLength": 300, "minLength": 1, "type": "string" }
+        },
+        "required": ["from", "to", "mode"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "runs.query": {
+      "args": {
+        "properties": { "period": { "maxLength": 16, "type": "string" } },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "style.samples": {
+      "args": {
+        "properties": {
+          "limit": { "maximum": 30, "minimum": 1, "type": "number" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "subscriptions.update": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 64, "type": "string" },
+          "next_at": { "maxLength": 32, "type": "string" },
+          "status": { "maxLength": 16, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "subscriptions.update" }
+    },
+    "trip.brief": {
+      "args": {
+        "properties": {
+          "date_from": { "maxLength": 10, "type": "string" },
+          "purpose": { "maxLength": 20, "type": "string" },
+          "to": { "maxLength": 120, "minLength": 1, "type": "string" }
+        },
+        "required": ["to"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "wishes.create": {
+      "args": {
+        "properties": {
+          "currency": { "maxLength": 3, "type": "string" },
+          "steam_appid": { "minimum": 1, "type": "number" },
+          "target_price": { "minimum": 0, "type": "number" },
+          "title": { "maxLength": 200, "minLength": 1, "type": "string" },
+          "type": { "maxLength": 16, "type": "string" },
+          "url": { "maxLength": 500, "type": "string" }
+        },
+        "required": ["type", "title"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "wishes.create" }
+    },
+    "wishes.delete": {
+      "args": {
+        "properties": { "id": { "maxLength": 200, "type": "string" } },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "wishes.delete" }
+    },
+    "wishes.import": {
+      "args": {
+        "properties": {
+          "limit": { "maximum": 200, "minimum": 1, "type": "number" },
+          "source": { "maxLength": 16, "type": "string" },
+          "steam_id": { "maxLength": 20, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "policy", "kind": "wishes.import" }
+    },
+    "wishes.list": {
+      "args": {
+        "properties": {
+          "limit": { "maximum": 20, "minimum": 1, "type": "number" },
+          "status": { "maxLength": 16, "type": "string" },
+          "type": { "maxLength": 16, "type": "string" }
+        },
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "wishes.search": {
+      "args": {
+        "properties": {
+          "q": { "maxLength": 120, "minLength": 2, "type": "string" }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "core" }
+    },
+    "wishes.update": {
+      "args": {
+        "properties": {
+          "currency": { "maxLength": 3, "type": "string" },
+          "id": { "maxLength": 200, "type": "string" },
+          "status": { "maxLength": 16, "type": "string" },
+          "target_price": { "minimum": 0, "type": "number" },
+          "title": { "maxLength": 200, "type": "string" },
+          "url": { "maxLength": 500, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "wishes.update" }
+    }
+  }
+}

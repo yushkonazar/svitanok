@@ -711,7 +711,7 @@ async function handleArtifact(env, runId, body) {
  * сесію наступного дня без жодного сліду чому.
  * @param {Env} env
  * @param {{ thread_id: string, sdk_session_id?: string, summary_md?: string,
- *   turns_inc?: number }} body
+ *   transcript_append?: string, clear_transcript?: boolean, turns_inc?: number }} body
  * @param {number} nowMs
  */
 async function handleSession(env, body, nowMs) {
@@ -719,11 +719,17 @@ async function handleSession(env, body, nowMs) {
   const iso = new Date(nowMs).toISOString();
   try {
     await env.DB.prepare(
-      `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
-       VALUES (?1, ?2, ?3, ?3, 0, ?4, ?5)
+      `INSERT INTO sessions
+         (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count, transcript_md)
+       VALUES (?1, ?2, ?3, ?3, 0, ?4, ?5, ?6)
        ON CONFLICT (thread_id) DO UPDATE SET
          sdk_session_id = COALESCE(excluded.sdk_session_id, sessions.sdk_session_id),
          summary_md = COALESCE(excluded.summary_md, sessions.summary_md),
+         transcript_md = CASE
+           WHEN ?7 = 1 THEN NULL
+           WHEN excluded.transcript_md IS NULL THEN sessions.transcript_md
+           ELSE substr(COALESCE(sessions.transcript_md, '') || excluded.transcript_md, -24000)
+         END,
          last_at = excluded.last_at,
          turn_count = sessions.turn_count + ?5`,
     )
@@ -733,6 +739,8 @@ async function handleSession(env, body, nowMs) {
         iso,
         body.summary_md ?? null,
         body.turns_inc ?? 0,
+        body.transcript_append ?? null,
+        body.clear_transcript === true ? 1 : 0,
       )
       .run();
   } catch (/** @type {any} */ e) {

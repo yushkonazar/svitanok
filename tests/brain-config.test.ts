@@ -28,6 +28,79 @@ describe('loadConfig: обовʼязкові змінні', () => {
       hmacKeys: ['key-1'],
       accessClientId: null,
       accessClientSecret: null,
+      aiProvider: 'claude',
+      openAiApiKey: null,
+      openAiModels: null,
+      openAiReasoningEffort: null,
+      openAiRollout: null,
+      openAiCanaryThreadIds: [],
+      openAiCanaryProfiles: [],
+      openAiShadowThreadIds: [],
+      openAiShadowProfiles: [],
+    });
+  });
+});
+
+describe('loadConfig: OpenAI Responses provider', () => {
+  it('вимагає окремий API key лише в режимі openai та не вимагає Claude token', () => {
+    expect(() =>
+      loadConfig({
+        INTERNAL_HMAC_KEY: 'key',
+        INTERNAL_API_URL: 'https://svitanok.example',
+        AI_PROVIDER: 'openai',
+      }),
+    ).toThrow(/OPENAI_API_KEY/);
+    expect(
+      loadConfig({
+        INTERNAL_HMAC_KEY: 'key',
+        INTERNAL_API_URL: 'https://svitanok.example',
+        AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: ' openai-key ',
+        OPENAI_ROLLOUT: 'full',
+      }),
+    ).toMatchObject({
+      aiProvider: 'openai',
+      openAiApiKey: 'openai-key',
+      openAiModels: {
+        fast: 'gpt-6-luna',
+        standard: 'gpt-6-sol',
+        advanced: 'gpt-6-astra',
+      },
+      openAiReasoningEffort: 'high',
+      openAiRollout: 'full',
+    });
+  });
+
+  it('відхиляє невідомого provider-а, effort або порожню model', () => {
+    expect(() => loadConfig({ ...FULL, AI_PROVIDER: 'other' })).toThrow(/AI_PROVIDER/);
+    expect(() =>
+      loadConfig({
+        ...FULL,
+        AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'k',
+        OPENAI_REASONING_EFFORT: 'none',
+      }),
+    ).toThrow(/OPENAI_REASONING_EFFORT/);
+    expect(() =>
+      loadConfig({ ...FULL, AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_ROLLOUT: 'canary' }),
+    ).toThrow(/OPENAI_ROLLOUT/);
+  });
+
+  it('shadow вимагає явно названі thread і profile та обидва runtimes', () => {
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_THREAD_IDS: 't1' })).toThrow(/OPENAI_SHADOW/);
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_PROFILES: 'quick' })).toThrow(/OPENAI_SHADOW/);
+    expect(
+      loadConfig({
+        ...FULL,
+        OPENAI_API_KEY: 'key',
+        OPENAI_SHADOW_THREAD_IDS: 't1',
+        OPENAI_SHADOW_PROFILES: 'quick',
+      }),
+    ).toMatchObject({
+      aiProvider: 'claude',
+      openAiShadowThreadIds: ['t1'],
+      openAiShadowProfiles: ['quick'],
+      openAiApiKey: 'key',
     });
   });
 });

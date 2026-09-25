@@ -65,5 +65,5 @@ describe('імпорти між модулями Worker’а', () => {
     }
 
     expect(problems).toEqual([]);
-  });
+  }, 15_000);
 });

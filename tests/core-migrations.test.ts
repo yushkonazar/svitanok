@@ -49,6 +49,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'tainted',
     'summary_md',
     'turn_count',
+    'transcript_md',
   ],
   memory_chunks: [
     'id',
@@ -385,7 +386,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('сімнадцять файлів 0001–0017, нумерація без дірок', () => {
+  it('вісімнадцять файлів 0001–0018, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -404,6 +405,7 @@ describe('міграції D1 — файли', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
   });
 });
