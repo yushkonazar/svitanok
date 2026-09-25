@@ -24,9 +24,9 @@ const CONFIG: BrainConfig = {
   openAiModels: null,
   openAiReasoningEffort: null,
   openAiRollout: null,
-  openAiCanaryThreadIds: [],
+  openAiCanaryTargets: [],
   openAiCanaryProfiles: [],
-  openAiShadowThreadIds: [],
+  openAiShadowTargets: [],
   openAiShadowProfiles: [],
 };
 
@@ -133,13 +133,16 @@ describe('/health', () => {
 describe('/run: сходинка відмов', () => {
   it('валідний підписаний запит - 202, runner отримує розібране тіло', async () => {
     const { handler, runs } = makeHandler();
-    const res = await handler.handle(signedReq(runBody({ status_message_id: 7 })));
+    const res = await handler.handle(
+      signedReq(runBody({ chat_id: '-100123', status_message_id: 7 })),
+    );
     expect(res).toMatchObject({ status: 202, body: { ok: true, run_id: 'run-1' } });
     await vi.waitFor(() => expect(runs).toHaveLength(1));
     expect(runs[0]).toMatchObject({
       run_id: 'run-1',
       profile: 'chat',
       thread_id: 'dm',
+      chat_id: '-100123',
       input: { text: 'привіт' },
       status_message_id: 7,
     });

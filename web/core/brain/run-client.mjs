@@ -66,6 +66,7 @@ async function signedBrainPost(env, path, runId, rawBody, nowMs) {
  *   profile: 'chat' | 'quick' | 'summarize' | 'weekly-review' | 'day-planner' | 'price-check'
  *     | 'inbox-digest',
  *   threadId: string,
+ *   chatId?: number | string | null,
  *   inputText: string,
  *   tainted?: boolean,
  *   statusMessageId?: number,
@@ -80,6 +81,7 @@ export async function callBrainRun(env, req, nowMs) {
     run_id: req.runId,
     profile: req.profile,
     thread_id: req.threadId,
+    ...(req.chatId != null ? { chat_id: String(req.chatId) } : {}),
     input: { text: req.inputText },
     ...(req.tainted != null ? { tainted: req.tainted } : {}),
     ...(req.statusMessageId != null ? { status_message_id: req.statusMessageId } : {}),

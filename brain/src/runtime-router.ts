@@ -7,9 +7,9 @@ import type { EngineRunOptions, EngineOutcome, ModelRuntime } from './agent.js';
 export interface RuntimeRouterConfig {
   provider: 'claude' | 'openai' | 'hybrid';
   rollout: 'canary' | 'full' | null;
-  canaryThreadIds: readonly string[];
+  canaryTargets: readonly string[];
   canaryProfiles: readonly string[];
-  shadowThreadIds: readonly string[];
+  shadowTargets: readonly string[];
   shadowProfiles: readonly string[];
 }
 
@@ -25,19 +25,19 @@ export function createRuntimeRouter(
   const useOpenAi = (opts: EngineRunOptions) => {
     if (config.provider === 'openai') return true;
     if (config.provider !== 'hybrid' || config.rollout !== 'canary') return false;
-    const threadOk = config.canaryThreadIds.includes(opts.safetyIdentifier);
+    const targetOk = config.canaryTargets.includes(opts.safetyIdentifier);
     const profileOk =
       config.canaryProfiles.length === 0 || config.canaryProfiles.includes(opts.profileName ?? '');
-    return threadOk && profileOk;
+    return targetOk && profileOk;
   };
   const useShadow = (opts: EngineRunOptions) => {
     // Shadow is deliberately narrower than canary: a second provider may see
     // only a named private thread, a named profile and a tool-free request.
     // There is no synthetic Core call, therefore it cannot read/write data or
     // produce an external effect even if a future profile changes by mistake.
-    if (config.provider === 'openai' || config.shadowThreadIds.length === 0) return false;
+    if (config.provider === 'openai' || config.shadowTargets.length === 0) return false;
     return (
-      config.shadowThreadIds.includes(opts.safetyIdentifier) &&
+      config.shadowTargets.includes(opts.safetyIdentifier) &&
       config.shadowProfiles.includes(opts.profileName ?? '') &&
       opts.toolNames.length === 0 &&
       (opts.builtinTools?.length ?? 0) === 0

@@ -13,7 +13,7 @@ export interface BrainConfig {
   accessClientId: string | null;
   accessClientSecret: string | null;
   /** Провайдер runtime; hybrid лишає production на Claude, а OpenAI вмикає
-   * лише для явно названих canary-тредів. */
+   * лише для явно названих Telegram-цілей (chat + forum topic). */
   aiProvider: 'claude' | 'openai' | 'hybrid';
   /** Є лише при aiProvider=openai; ніколи не логується і не їде в Responses. */
   openAiApiKey: string | null;
@@ -22,11 +22,11 @@ export interface BrainConfig {
   openAiReasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
   /** Безпечний cutover: `canary` можливий лише разом із Claude fallback. */
   openAiRollout: 'canary' | 'full' | null;
-  openAiCanaryThreadIds: readonly string[];
+  openAiCanaryTargets: readonly string[];
   openAiCanaryProfiles: readonly string[];
   /** Explicitly scoped, tool-free OpenAI comparison while Claude still
    * delivers the answer. Empty means shadow traffic is impossible. */
-  openAiShadowThreadIds: readonly string[];
+  openAiShadowTargets: readonly string[];
   openAiShadowProfiles: readonly string[];
 }
 
@@ -47,16 +47,30 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
       .split(',')
       .map((item) => item.trim())
       .filter(Boolean);
-  const openAiCanaryThreadIds = csv(env.OPENAI_CANARY_THREAD_IDS);
-  const openAiCanaryProfiles = csv(env.OPENAI_CANARY_PROFILES);
-  const openAiShadowThreadIds = csv(env.OPENAI_SHADOW_THREAD_IDS);
-  const openAiShadowProfiles = csv(env.OPENAI_SHADOW_PROFILES);
-  if (Boolean(openAiShadowThreadIds.length) !== Boolean(openAiShadowProfiles.length)) {
+  if (env.OPENAI_CANARY_THREAD_IDS || env.OPENAI_SHADOW_THREAD_IDS) {
     throw new Error(
-      'конфігурація: OPENAI_SHADOW_THREAD_IDS і OPENAI_SHADOW_PROFILES задаються парою',
+      'конфігурація: OPENAI_*_THREAD_IDS застаріли; використовуй OPENAI_*_TARGETS=chat_id:thread_id',
     );
   }
-  const shadowEnabled = openAiShadowThreadIds.length > 0;
+  const target = (name: string) => {
+    const values = csv(env[name]);
+    for (const value of values) {
+      if (!/^-?\d+:(?:\d+|default)$/.test(value)) {
+        throw new Error(
+          `конфігурація: ${name} має містити Telegram chat_id:thread_id або chat_id:default`,
+        );
+      }
+    }
+    return values;
+  };
+  const openAiCanaryTargets = target('OPENAI_CANARY_TARGETS');
+  const openAiCanaryProfiles = csv(env.OPENAI_CANARY_PROFILES);
+  const openAiShadowTargets = target('OPENAI_SHADOW_TARGETS');
+  const openAiShadowProfiles = csv(env.OPENAI_SHADOW_PROFILES);
+  if (Boolean(openAiShadowTargets.length) !== Boolean(openAiShadowProfiles.length)) {
+    throw new Error('конфігурація: OPENAI_SHADOW_TARGETS і OPENAI_SHADOW_PROFILES задаються парою');
+  }
+  const shadowEnabled = openAiShadowTargets.length > 0;
   const needsClaude = aiProvider === 'claude' || aiProvider === 'hybrid' || shadowEnabled;
   const needsOpenAi = aiProvider === 'openai' || aiProvider === 'hybrid' || shadowEnabled;
   if (needsClaude && !String(env.CLAUDE_CODE_OAUTH_TOKEN ?? '').trim()) {
@@ -134,9 +148,9 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
   if (
     aiProvider === 'hybrid' &&
     configuredRollout === 'canary' &&
-    openAiCanaryThreadIds.length === 0
+    openAiCanaryTargets.length === 0
   ) {
-    throw new Error('конфігурація: OPENAI_CANARY_THREAD_IDS потрібен для hybrid canary');
+    throw new Error('конфігурація: OPENAI_CANARY_TARGETS потрібен для hybrid canary');
   }
 
   return {
@@ -153,9 +167,9 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
       ? (configuredEffort as 'low' | 'medium' | 'high' | 'xhigh' | 'max')
       : null,
     openAiRollout: needsOpenAi ? (configuredRollout as 'canary' | 'full') : null,
-    openAiCanaryThreadIds,
+    openAiCanaryTargets,
     openAiCanaryProfiles,
-    openAiShadowThreadIds,
+    openAiShadowTargets,
     openAiShadowProfiles,
   };
 }

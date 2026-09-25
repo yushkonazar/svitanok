@@ -806,6 +806,7 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       runId,
       profile: route,
       threadId: threadKey,
+      chatId: parsed.chatId,
       inputText,
       tainted: sess?.tainted ?? false,
       ...(statusMessageId != null ? { statusMessageId } : {}),

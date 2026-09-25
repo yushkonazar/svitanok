@@ -46,11 +46,11 @@ const client = new CoreClient({
 });
 
 const claudeEngine =
-  config.aiProvider === 'openai' && config.openAiShadowThreadIds.length === 0
+  config.aiProvider === 'openai' && config.openAiShadowTargets.length === 0
     ? undefined
     : createSdkEngine();
 const openAiEngine =
-  config.aiProvider === 'claude' && config.openAiShadowThreadIds.length === 0
+  config.aiProvider === 'claude' && config.openAiShadowTargets.length === 0
     ? undefined
     : createOpenAiEngine({
         apiKey: config.openAiApiKey as string,
@@ -62,9 +62,9 @@ const engine = createRuntimeRouter(
   {
     provider: config.aiProvider,
     rollout: config.openAiRollout,
-    canaryThreadIds: config.openAiCanaryThreadIds,
+    canaryTargets: config.openAiCanaryTargets,
     canaryProfiles: config.openAiCanaryProfiles,
-    shadowThreadIds: config.openAiShadowThreadIds,
+    shadowTargets: config.openAiShadowTargets,
     shadowProfiles: config.openAiShadowProfiles,
   },
   { claude: claudeEngine, openai: openAiEngine },

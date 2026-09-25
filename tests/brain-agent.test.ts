@@ -126,6 +126,7 @@ describe('makeRunner: щасливий шлях', () => {
     await makeRunner({ client, engine })(req());
 
     expect(seen[0]!.model).toBe(PROFILES.chat.model);
+    expect(seen[0]!.safetyIdentifier).toBe('internal:dm');
     expect(seen[0]!.systemPrompt).toContain('Зараз у Києві');
     expect(seen[0]!.toolNames).toEqual(BRAIN_TOOLS.map((t) => t.mcpName));
     expect(client.callTool).toHaveBeenCalledWith('run-1', 'data.read', { scope: 'briefing' });
@@ -135,6 +136,13 @@ describe('makeRunner: щасливий шлях', () => {
     // Час у моделі з результату SDK - у нотатці кроку deliver (замір швидкості).
     expect(steps[1]).toMatchObject({ name: 'deliver', note: 'api 0.5 с' });
     expect(steps[0]).toMatchObject({ n: 1, name: 'data.read', ok: true });
+  });
+
+  it('складає rollout-ідентифікатор із Telegram chat і topic, не лише topic', async () => {
+    const client = makeClient();
+    const { engine, seen } = scriptedEngine(async () => ({ finalText: 'Готово' }));
+    await makeRunner({ client, engine })(req({ chat_id: '-1001234567890', thread_id: '42' }));
+    expect(seen[0]!.safetyIdentifier).toBe('-1001234567890:42');
   });
 
   it('порожній фінал доставляється явно, а не тишею', async () => {

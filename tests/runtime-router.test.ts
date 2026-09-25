@@ -33,23 +33,25 @@ describe('runtime router', () => {
       {
         provider: 'hybrid',
         rollout: 'canary',
-        canaryThreadIds: ['thread-1'],
+        canaryTargets: ['-100123:42'],
         canaryProfiles: ['chat'],
-        shadowThreadIds: [],
+        shadowTargets: [],
         shadowProfiles: [],
       },
       { claude, openai },
     );
-    await expect(router.run(options({ profileName: 'chat' }), 'hi')).resolves.toMatchObject({
+    await expect(
+      router.run(options({ safetyIdentifier: '-100123:42', profileName: 'chat' }), 'hi'),
+    ).resolves.toMatchObject({
       finalText: 'openai',
     });
     await expect(
-      router.run(options({ profileName: 'weekly-review' }), 'hi'),
+      router.run(options({ safetyIdentifier: '-100123:42', profileName: 'weekly-review' }), 'hi'),
     ).resolves.toMatchObject({
       finalText: 'claude',
     });
     await expect(
-      router.run(options({ safetyIdentifier: 'other', profileName: 'chat' }), 'hi'),
+      router.run(options({ safetyIdentifier: '-100999:42', profileName: 'chat' }), 'hi'),
     ).resolves.toMatchObject({
       finalText: 'claude',
     });
@@ -62,9 +64,9 @@ describe('runtime router', () => {
       {
         provider: 'openai',
         rollout: 'full',
-        canaryThreadIds: [],
+        canaryTargets: [],
         canaryProfiles: [],
-        shadowThreadIds: [],
+        shadowTargets: [],
         shadowProfiles: [],
       },
       { claude, openai },
@@ -80,14 +82,17 @@ describe('runtime router', () => {
       {
         provider: 'claude',
         rollout: null,
-        canaryThreadIds: [],
+        canaryTargets: [],
         canaryProfiles: [],
-        shadowThreadIds: ['thread-1'],
+        shadowTargets: ['-100123:42'],
         shadowProfiles: ['quick'],
       },
       { claude, openai },
     );
-    const outcome = await router.run(options({ profileName: 'quick' }), '2 + 2');
+    const outcome = await router.run(
+      options({ safetyIdentifier: '-100123:42', profileName: 'quick' }),
+      '2 + 2',
+    );
     expect(outcome.finalText).toBe('claude');
     expect(outcome.shadow).toMatchObject({ provider: 'openai', toolCalls: 0 });
     expect(openai.run).toHaveBeenCalledWith(
