@@ -2,13 +2,16 @@
 
 The brain has two provider runtimes behind the same `ModelRuntime` and
 canonical tool registry. `hybrid` is the safe first mode: Claude stays default
-and only explicitly listed private threads/profiles run on OpenAI. `openai`
+and only explicitly listed Telegram targets/profiles run on OpenAI. A target is
+the exact `chat_id:thread_id` pair (or `chat_id:default` for a chat without
+forum topics), so matching a topic number cannot accidentally include another
+supergroup. `openai`
 is an explicit full-cutover decision, not a Worker code deploy.
 
 ## Runtime guarantees
 
 - `AI_PROVIDER=hybrid` requires both provider credentials and
-  `OPENAI_CANARY_THREAD_IDS`; `AI_PROVIDER=openai` requires
+  `OPENAI_CANARY_TARGETS`; `AI_PROVIDER=openai` requires
   `OPENAI_ROLLOUT=full` and OpenAI credentials only.
 - Models are selected per task class: `OPENAI_MODEL_FAST`,
   `OPENAI_MODEL_STANDARD`, and `OPENAI_MODEL_ADVANCED`. Every profile also has
@@ -35,7 +38,9 @@ is an explicit full-cutover decision, not a Worker code deploy.
 
 1. Copy `brain/.env.example` to `/opt/svitanok-brain-shared/brain.env`, set
    `brain:brain` ownership and mode `0600`. Start with `AI_PROVIDER=hybrid`,
-   `OPENAI_ROLLOUT=canary`, one private thread ID, and only `chat,quick`.
+   `OPENAI_ROLLOUT=canary`, one explicitly named Telegram target, and only
+   `chat,quick`. Run `/whereami` in the assistant topic to receive its exact
+   `chat_id` and `thread_id`.
    Do not add the key to Worker bindings, GitHub Actions, D1, or logs.
 2. Deploy the already-tested brain release, restart the service, then verify
    `/ready` and the private assistant status endpoint.
@@ -54,8 +59,8 @@ is an explicit full-cutover decision, not a Worker code deploy.
 ### Optional shadow lane
 
 Before a canary, `AI_PROVIDER=claude` may set both
-`OPENAI_SHADOW_THREAD_IDS` and `OPENAI_SHADOW_PROFILES=quick`. The router
-accepts only a named thread and a tool-free profile; it runs Claude and OpenAI
+`OPENAI_SHADOW_TARGETS` and `OPENAI_SHADOW_PROFILES=quick`. The router accepts
+only a named Telegram chat+topic and a tool-free profile; it runs Claude and OpenAI
 in parallel, delivers only Claude's answer, gives OpenAI no Core or hosted
 tools, and discards OpenAI text. The run dashboard records only sanitized
 model/response ID/token/latency metadata as `shadow:openai:*`. Empty settings

@@ -29,6 +29,12 @@ export const RUN_REQUEST_SCHEMA = z.object({
     'inbox-digest',
   ]),
   thread_id: z.string().min(1).max(64),
+  /** Telegram chat_id. Він разом із thread_id формує ізольовану rollout-ціль. */
+  chat_id: z
+    .string()
+    .regex(/^-?\d+$/)
+    .max(32)
+    .optional(),
   input: z.object({ text: z.string().min(1).max(30_000) }),
   tainted: z.boolean().optional(),
   /** message_id статус-повідомлення «▸ …» - куди стрімити прогрес. */

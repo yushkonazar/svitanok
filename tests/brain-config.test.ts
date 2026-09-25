@@ -33,9 +33,9 @@ describe('loadConfig: обовʼязкові змінні', () => {
       openAiModels: null,
       openAiReasoningEffort: null,
       openAiRollout: null,
-      openAiCanaryThreadIds: [],
+      openAiCanaryTargets: [],
       openAiCanaryProfiles: [],
-      openAiShadowThreadIds: [],
+      openAiShadowTargets: [],
       openAiShadowProfiles: [],
     });
   });
@@ -86,19 +86,25 @@ describe('loadConfig: OpenAI Responses provider', () => {
     ).toThrow(/OPENAI_ROLLOUT/);
   });
 
-  it('shadow вимагає явно названі thread і profile та обидва runtimes', () => {
-    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_THREAD_IDS: 't1' })).toThrow(/OPENAI_SHADOW/);
+  it('shadow вимагає явно названі Telegram target і profile та обидва runtimes', () => {
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_TARGETS: '-1001:42' })).toThrow(
+      /OPENAI_SHADOW/,
+    );
     expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_PROFILES: 'quick' })).toThrow(/OPENAI_SHADOW/);
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_TARGETS: 'thread-1' })).toThrow(
+      /OPENAI_SHADOW_TARGETS/,
+    );
+    expect(() => loadConfig({ ...FULL, OPENAI_SHADOW_THREAD_IDS: '42' })).toThrow(/застаріли/);
     expect(
       loadConfig({
         ...FULL,
         OPENAI_API_KEY: 'key',
-        OPENAI_SHADOW_THREAD_IDS: 't1',
+        OPENAI_SHADOW_TARGETS: '-1001:42',
         OPENAI_SHADOW_PROFILES: 'quick',
       }),
     ).toMatchObject({
       aiProvider: 'claude',
-      openAiShadowThreadIds: ['t1'],
+      openAiShadowTargets: ['-1001:42'],
       openAiShadowProfiles: ['quick'],
       openAiApiKey: 'key',
     });

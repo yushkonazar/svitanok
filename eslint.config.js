@@ -8,7 +8,7 @@ export default tseslint.config(
   // кореневий eslint (node-globals, лише **/*.ts) його не покриває (роадмеп v3 E).
   // web/app — React-дашборд із власним toolchain (Vite/TSX, свій tsc -b у CI);
   // web/public/app — його зібраний артефакт (не лінтимо мініфікований бандл).
-  { ignores: ['node_modules/', 'dist/', 'coverage/', 'web/app/', 'web/public/app/'] },
+  { ignores: ['node_modules/', '**/dist/', 'coverage/', 'web/app/', 'web/public/app/'] },
   {
     files: ['**/*.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

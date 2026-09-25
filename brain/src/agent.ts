@@ -576,7 +576,12 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
                 model: profile.model,
                 openAiModelTier: profile.openAiModelTier,
                 maxOutputTokens: profile.maxOutputTokens,
-                safetyIdentifier: req.thread_id,
+                // Topic ID сам по собі не унікальний між супергрупами, а `dm`
+                // спільний для всіх чатів без topics. Router бачить лише цей
+                // складений, підписаний Core-ом Telegram target.
+                safetyIdentifier: req.chat_id
+                  ? `${req.chat_id}:${req.thread_id === 'dm' ? 'default' : req.thread_id}`
+                  : `internal:${req.thread_id}`,
                 maxTurns: profile.maxTurns,
                 toolNames: profile.toolNames,
                 ...(profile.builtinTools?.length

@@ -42,7 +42,14 @@ export async function startChainWorkerRun(env, req, nowMs) {
   }
   const res = await callBrainRun(
     env,
-    { instruction, runId, profile: req.profile, threadId, inputText: JSON.stringify(req.input) },
+    {
+      instruction,
+      runId,
+      profile: req.profile,
+      threadId,
+      chatId: env.TELEGRAM_CHAT_ID ?? null,
+      inputText: JSON.stringify(req.input),
+    },
     nowMs,
   );
   if (res.ok) return true;
