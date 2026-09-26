@@ -281,6 +281,32 @@ export async function searchKnowledge(env, input) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
     throw new Error('база знань: limit має бути від 1 до 10');
   }
+  // Production is semantic. The lexical fallback is intentionally limited to
+  // environments without Workers AI/Vectorize (local setup and recovery), not
+  // a second source of truth or a wider Drive search.
+  if (env.AI && env.VECTORIZE && typeof /** @type {any} */ (env.VECTORIZE).query === 'function') {
+    const [vector] = await embedTexts(env, [q]);
+    if (!vector) throw new Error('база знань: бракує ембедингу запиту');
+    const queried = await env.VECTORIZE.query(vector, { topK: Math.min(limit * 8, 50) });
+    const ids = (queried?.matches ?? []).map((match) => String(match.id));
+    if (ids.length === 0) return [];
+    const placeholders = ids.map((_, index) => `?${index + 1}`).join(', ');
+    const { results } = await db(env)
+      .prepare(
+        `SELECT c.id, c.text, c.section, c.page, c.ordinal,
+                d.title, d.kind, v.source_version
+         FROM knowledge_chunks c
+         JOIN knowledge_document_versions v ON v.id = c.document_version_id
+         JOIN knowledge_documents d ON d.id = v.document_id
+         WHERE c.id IN (${placeholders}) AND d.status = 'active'
+           AND d.access_scope = 'owner' AND v.status = 'ready'
+           AND c.projection_status = 'ready'`,
+      )
+      .bind(...ids)
+      .all();
+    const byId = new Map((results ?? []).map((row) => [String(row.id), row]));
+    return formatKnowledgeHits(ids.map((id) => byId.get(id)).filter(Boolean));
+  }
   const { results } = await db(env)
     .prepare(
       `SELECT c.id, c.text, c.section, c.page, c.ordinal,
@@ -295,7 +321,12 @@ export async function searchKnowledge(env, input) {
     )
     .bind(like(q), limit)
     .all();
-  return (results ?? []).map((row) => ({
+  return formatKnowledgeHits(results ?? []);
+}
+
+/** @param {any[]} rows */
+function formatKnowledgeHits(rows) {
+  return rows.map((row) => ({
     excerpt: String(row.text),
     citation: {
       document: String(row.title),

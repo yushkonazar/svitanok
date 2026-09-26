@@ -57,7 +57,13 @@ function d1() {
   };
 }
 
-function indexedEnv(store: ReturnType<typeof d1>, vectorize?: { upsert: (rows: unknown[]) => Promise<void> }) {
+function indexedEnv(
+  store: ReturnType<typeof d1>,
+  vectorize?: {
+    upsert: (rows: unknown[]) => Promise<void>;
+    query?: () => Promise<{ matches: { id: string }[] }>;
+  },
+) {
   return workerEnv({
     DB: store.stub,
     AI: {
@@ -230,5 +236,27 @@ describe('narrow knowledge base', () => {
     await expect(reconcileKnowledgeProjection(repairedEnv)).resolves.toEqual({ indexed: 1, failed: 0 });
     expect(upserts[0]).toHaveLength(1);
     await expect(searchKnowledge(repairedEnv, { q: 'Текст' })).resolves.toHaveLength(1);
+  });
+
+  it('uses Vectorize match order for semantic retrieval and filters foreign vector ids in D1', async () => {
+    const store = d1();
+    const ids: string[] = [];
+    const env = indexedEnv(store, {
+      upsert: async (rows: unknown[]) => {
+        ids.push(...rows.map((row) => String((row as { id: string }).id)));
+      },
+      query: async () => ({ matches: [{ id: 'memory-vector' }, { id: ids[0] ?? '' }] }),
+    });
+    await ingestKnowledgeDocument(env, {
+      sourceType: 'upload',
+      sourceRef: 'semantic',
+      title: 'Підготовка',
+      kind: 'job_preparation',
+      sourceVersion: '1',
+      content: 'CAR-підхід допомагає структуровано відповідати на співбесіді.',
+    });
+    await expect(searchKnowledge(env, { q: 'Як відповідати на інтервʼю?' })).resolves.toMatchObject([
+      { citation: { document: 'Підготовка', kind: 'job_preparation', chunk: 1 } },
+    ]);
   });
 });
