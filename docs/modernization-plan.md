@@ -163,7 +163,7 @@
 
 ### 4A. Decision-centred daily briefing
 
-- [ ] Critical deterministic layer: reminders, calendar conflicts, important email/job signal, time-sensitive weather.
+- [x] Critical deterministic layer: reminders, calendar conflicts, important email/job signal, time-sensitive weather. Worker snapshots both reminder stores and calendar intervals before dispatch; the briefing emits only dated, source/freshness/reason-tagged signals and never promotes an incomplete production snapshot.
 - [ ] AI summary/ranking as non-critical enhancement with source/freshness/reason.
 - [ ] Per-block feedback: useful / less / hide.
 - [ ] Measure open, action, save, dismiss; remove noisy blocks.
@@ -196,6 +196,12 @@
 - [x] Retrieval answers cite document/version/page; explicit delete/revoke.
 - [x] Explicit one-file Drive import: inspect metadata → T1 → repeated version/MIME check → bounded UTF-8 text extraction. No search/list/crawl route, and Google Docs/.txt/.md only.
 - [ ] Compare managed file search only as an isolated, privacy-reviewed experiment.
+
+**Зафіксована production-дія перед першим живим імпортом:** після деплою
+перевидати Google OAuth refresh token через `node scripts/google-auth.mjs`,
+погодивши новий вузький scope `drive.readonly`, і оновити лише
+`GOOGLE_REFRESH_TOKEN` у Cloudflare. Без цього `knowledge.inspect/import`
+чесно відмовляться, а не читатимуть Drive за старим токеном.
 
 ### Deferred
 

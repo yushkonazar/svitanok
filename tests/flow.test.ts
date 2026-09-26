@@ -321,6 +321,40 @@ describe('runBriefing — короткий рядок дня (Фаза B3)', () 
   });
 });
 
+describe('runBriefing — deterministic critical headline (4A)', () => {
+  it('writes explainable signals to briefing data and only a bounded critical headline to Telegram', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        state: memState({
+          remindersToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            source: 'd1',
+            reminders: [{ id: 'r1', text: 'Подати CV', dueAt: '2026-06-29T08:00:00.000Z' }],
+          },
+          calendarToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            events: [
+              { title: 'A', time: '10:00', startMs: 100, endMs: 200 },
+              { title: 'B', time: '10:30', startMs: 150, endMs: 250 },
+            ],
+          },
+        }),
+      }),
+    );
+    expect(notifier.sent[0]![0]).toBe(
+      '<b>Понеділок, 29 червня</b>\n⚠️ Сьогодні: нагадування · перетин у календарі',
+    );
+    expect(res.briefing.decision?.signals.map((s) => s.source)).toEqual(['reminders', 'calendar']);
+  });
+});
+
 describe('runBriefing — dry-run', () => {
   it('не шле, повертає повідомлення', async () => {
     const notifier = fakeNotifier();

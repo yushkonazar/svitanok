@@ -2,6 +2,7 @@
 // всі блоки, кожен зі своїм `data`. Сторінка читає це й рендерить.
 
 import type { Block } from './types.js';
+import type { DecisionBrief } from './decision-brief.js';
 
 export interface BriefingBlock {
   id: string;
@@ -16,12 +17,16 @@ export interface BriefingData {
   generatedAt: string; // ISO
   dateLabel: string; // «Вівторок, 30 червня» (uk-UA)
   blocks: BriefingBlock[];
+  // Нова top-level секція. Поточний Mini App її ігнорує, тому контракт UI не
+  // змінюється; Telegram уже показує стислий critical headline.
+  decision?: DecisionBrief;
 }
 
 export function buildBriefingData(
   blocks: Block[],
   dateLabel: string,
   generatedAt: string,
+  decision?: DecisionBrief,
 ): BriefingData {
   return {
     generatedAt,
@@ -36,5 +41,6 @@ export function buildBriefingData(
         ...(b.data !== undefined ? { data: b.data } : {}),
         priority: b.priority,
       })),
+    ...(decision && decision.signals.length > 0 ? { decision } : {}),
   };
 }

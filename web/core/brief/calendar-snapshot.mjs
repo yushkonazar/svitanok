@@ -43,7 +43,8 @@ export const CALENDAR_SNAPSHOT_RETRY_MS = 10 * 60_000;
 export const CALENDAR_SNAPSHOT_CAP = 30;
 
 /**
- * @typedef {{ date: string, ready: boolean, events: { title: string, time: string | null }[],
+ * @typedef {{ date: string, ready: boolean, events: { title: string, time: string | null,
+ *   startMs: number | null, endMs: number | null }[],
  *   updatedAt: string, attempts: number, attemptAt: number, alerted: boolean }} CalendarSnapshot
  */
 
@@ -55,7 +56,21 @@ export function parseSnapshot(raw) {
   return {
     date: o.date,
     ready: o.ready === true,
-    events: Array.isArray(o.events) ? o.events : [],
+    // Знімок є межою між Worker і ранковим Actions-run. Нормалізуємо тут, а
+    // не передаємо довільний JSON далі: лише title/time та точні межі події
+    // потрібні для відображення й детермінованої перевірки конфліктів.
+    events: Array.isArray(o.events)
+      ? o.events
+          .filter(
+            (/** @type {any} */ e) => e && typeof e === 'object' && typeof e.title === 'string',
+          )
+          .map((/** @type {any} */ e) => ({
+            title: e.title,
+            time: typeof e.time === 'string' ? e.time : null,
+            startMs: Number.isFinite(e.startMs) ? Number(e.startMs) : null,
+            endMs: Number.isFinite(e.endMs) ? Number(e.endMs) : null,
+          }))
+      : [],
     updatedAt: typeof o.updatedAt === 'string' ? o.updatedAt : '',
     attempts: Number.isFinite(o.attempts) ? Number(o.attempts) : 0,
     attemptAt: Number.isFinite(o.attemptAt) ? Number(o.attemptAt) : 0,
@@ -98,6 +113,8 @@ export async function refreshBriefCalendar(env, nowMs = Date.now()) {
   const trimmed = events.slice(0, CALENDAR_SNAPSHOT_CAP).map((e) => ({
     title: String(e.title ?? ''),
     time: typeof e.time === 'string' ? e.time : null,
+    startMs: Number.isFinite(e.startMs) ? Number(e.startMs) : null,
+    endMs: Number.isFinite(e.endMs) ? Number(e.endMs) : null,
   }));
   await writeSnapshot(env, {
     date: today,

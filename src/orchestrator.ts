@@ -42,6 +42,11 @@ import {
   type WeeklyReviewData,
 } from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
+import {
+  buildDecisionBrief,
+  formatDecisionHeadline,
+  type ReminderSnapshotForDecision,
+} from './core/decision-brief.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
 import { requireCriticalSecrets, optionalSecret, MissingSecretsError } from './core/secrets.js';
@@ -56,7 +61,13 @@ import type {
   Logger,
 } from './core/types.js';
 import { createWeatherModule, signed, type WeatherToday } from './modules/weather.js';
-import { createCalendarModule, CALENDAR_BUS_KEY, type CalendarEvent } from './modules/calendar.js';
+import {
+  createCalendarModule,
+  CALENDAR_BUS_KEY,
+  CALENDAR_SNAPSHOT_KEY,
+  type CalendarEvent,
+  type CalendarSnapshot,
+} from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
@@ -68,9 +79,11 @@ import { createOnThisDayModule } from './modules/onthisday.js';
 import {
   createMailModule,
   MAIL_PROPOSAL_BUS_KEY,
+  MAIL_TRIAGE_KEY,
   formatMailProposalMessage,
   pluralizeLysty,
   type MailProposalItem,
+  type MailTriageState,
 } from './modules/mail.js';
 import { buildPruners } from './core/prune.js';
 
@@ -212,16 +225,11 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // йде в чат, тож на рендер сповіщення вже не впливає.
   const quiet = isQuietDay(config, producedIds) && !clock.isSunday();
   const header = formatKyivDateHeader(clock.now());
-  const briefing = buildBriefingData(
-    blocks,
-    formatKyivDateLabel(clock.now()),
-    clock.now().toISOString(),
-  );
 
-  // Короткий рядок дня (Фаза B3): погода (перша локація) + перша подія
-  // календаря сьогодні + «N листів» — усі блоки вже прораховані (Фаза
-  // producers+consumers вище), реордеринг не потрібен. Кожен сегмент
-  // опційний (graceful — відсутній блок просто не додає сегмент).
+  // Короткий рядок дня + детермінований decision layer: погода (перша
+  // локація), календарний snapshot, D1/KV snapshot нагадувань і mail-triage
+  // вже прораховані. Кожен сегмент опційний: застарілий/відсутній snapshot
+  // не стає вигаданим фактом у повідомленні.
   // blockData — одна точка небезпечного каста Block.data (тип навмисно
   // unknown, §core/types.ts) замість дубльованого inline-каста на кожен блок.
   const blockData = <T>(id: string): T | undefined =>
@@ -229,6 +237,22 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   const weatherLoc = blockData<{ locations?: WeatherToday[] }>('weather')?.locations?.[0];
   const firstEvent = ctx.bus.get<CalendarEvent[]>(CALENDAR_BUS_KEY)?.[0];
   const mailCount = blockData<{ count?: number }>('mail')?.count;
+  const generatedAt = clock.now().toISOString();
+  const decisionBrief = buildDecisionBrief({
+    todayKey: clock.todayKey(),
+    generatedAt,
+    calendar: state.get<CalendarSnapshot>(CALENDAR_SNAPSHOT_KEY),
+    reminders: state.get<ReminderSnapshotForDecision>('remindersToday'),
+    mail: state.get<MailTriageState>(MAIL_TRIAGE_KEY),
+    weather: weatherLoc,
+  });
+  const briefing = buildBriefingData(
+    blocks,
+    formatKyivDateLabel(clock.now()),
+    generatedAt,
+    decisionBrief,
+  );
+  const decisionHeadline = formatDecisionHeadline(decisionBrief);
   const summaryLine = joinSummarySegments([
     weatherLoc
       ? `${weatherLoc.emoji} ${escapeHtml(weatherLoc.name)} ${signed(weatherLoc.tempC)}`
@@ -240,7 +264,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
       ? `📧 ${mailCount} ${pluralizeLysty(mailCount)}`
       : null,
   ]);
-  const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
+  const headerFull = [header, decisionHeadline, summaryLine].filter(Boolean).join('\n');
 
   // Щоденне сповіщення в чат: дата(+рядок дня), БЕЗ inline-кнопки апки (фідбек
   // власника, п.2) — постійний вхід у Mini App тепер ОКРЕМЕ закріплене вітальне
