@@ -34,6 +34,21 @@ describe('interactive tool routing', () => {
     expect(collect).not.toContain('calendar_read');
   });
 
+  it('keeps the tool surface complete for documented assistant scenarios', () => {
+    expect(routeChatTools('Склади план на день', all)).toEqual(
+      expect.arrayContaining(['plan_intent', 'plan_review']),
+    );
+    expect(routeChatTools('Увімкни план дня лише пн-пт', all)).toEqual(
+      expect.arrayContaining(['facts_get', 'facts_set']),
+    );
+    expect(routeChatTools('Куди пішли гроші за місяць?', all)).toEqual(
+      expect.arrayContaining(['finance_query', 'delegate']),
+    );
+    expect(routeChatTools('Постав задачу купити молоко', all)).toContain('proposals_create');
+    expect(routeChatTools('Нотатка: підготувати презентацію', all)).toContain('proposals_create');
+    expect(routeChatTools('Намалюй світанок над Києвом', all)).toContain('proposals_create');
+  });
+
   it('keeps a deliberate multi-domain request complete rather than silently omitting tools', () => {
     expect(routeChatTools('Перевір пошту, а потім додай зустріч у календар', all)).toEqual(all);
   });

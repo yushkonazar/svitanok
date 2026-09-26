@@ -10,7 +10,18 @@ type Route = { words: readonly string[]; tools: readonly string[] };
 
 const ROUTES: readonly Route[] = [
   {
-    words: ['календар', 'зустріч', 'поді', 'вільн', 'слот', 'розклад'],
+    words: [
+      'календар',
+      'зустріч',
+      'поді',
+      'вільн',
+      'слот',
+      'розклад',
+      'план на день',
+      'план дня',
+      'перебудуй план',
+      'розплануй',
+    ],
     tools: [
       'calendar_read',
       'plan_intent',
@@ -39,12 +50,27 @@ const ROUTES: readonly Route[] = [
     tools: ['style_samples', 'delegate', 'proposals_create'],
   },
   {
+    // Налаштування плану дня - це факт-setting, не новий план і не worker.
+    words: ['увімкни план дня', 'вимкни план дня', 'план лише', 'глибоких'],
+    tools: ['facts_get', 'facts_set'],
+  },
+  {
     words: ['диск', 'drive', 'файл', 'документ', 'таблиц'],
     tools: ['drive_search', 'data_search', 'delegate'],
   },
   {
     words: ['грош', 'витрат', 'бюджет', 'платіж', 'підписк', 'фінанс'],
-    tools: ['finance_query', 'finance_rule', 'subscriptions_update', 'data_read'],
+    tools: ['finance_query', 'finance_rule', 'subscriptions_update', 'data_read', 'delegate'],
+  },
+  {
+    // Google Tasks і Drive-нотатки проходять policy як proposal, тому це не
+    // write-доступ моделі, а можливість скласти контрольовану T0/T1 дію.
+    words: ['задач', 'task'],
+    tools: ['proposals_create'],
+  },
+  {
+    words: ['намалюй', 'зображенн', 'зніми відео', 'відео'],
+    tools: ['proposals_create'],
   },
   {
     words: ['маршрут', 'їхати', 'дорог', 'місц', 'ресторан', 'кафе', 'меню', 'подорож'],
@@ -94,6 +120,7 @@ const ROUTES: readonly Route[] = [
       'collections_create',
       'collections_update',
       'collections_delete',
+      'proposals_create',
     ],
   },
   {
