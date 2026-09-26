@@ -40,6 +40,7 @@ import { listActiveReminders } from '../reminders/store.mjs';
 import { recurrenceText } from '../reminders/recurrence.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { formatBriefingEngagementDigest } from '../brief/engagement.mjs';
+import { buildAnalyticsSnapshot, serializeAnalyticsSnapshot } from '../../analytics-core.mjs';
 import { wrapExternal } from './markup.mjs';
 import {
   buildWeeklyDigest,
@@ -112,6 +113,18 @@ export async function runDataRead(env, args, nowMs) {
       cap,
     });
     return { result: digest.text };
+  }
+
+  // 4D — окремий від звичайного own-data digest: асистент отримує лише
+  // детерміновані агрегати та вже порахований weekly levers snapshot, ніколи
+  // сирі check-in-и або можливість «домалювати» статистику своїм текстом.
+  if (args.scope === 'analytics') {
+    const [stats, levers] = await Promise.all([loadStats(env), loadLevers(env)]);
+    const snapshot = buildAnalyticsSnapshot({
+      agg: aggregateStats(stats, todayKey),
+      levers,
+    });
+    return { result: serializeAnalyticsSnapshot(snapshot, cap) };
   }
 
   const [state, stats, latest, settings, fromD1] = await Promise.all([

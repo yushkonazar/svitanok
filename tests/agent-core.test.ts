@@ -586,6 +586,37 @@ describe('extractAssistantAction — recordAction (PR-8, Категорія A)',
       }),
     ).toBeNull();
   });
+
+  it('learningAttempt: приймає лише явний outcome і коротку назву теми', () => {
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'learningAttempt',
+        learningTopic: '  HTTP   статуси ',
+        learningOutcome: 'incorrect',
+      }),
+    ).toEqual({
+      action: 'recordAction',
+      kind: 'learningAttempt',
+      learningTopic: 'HTTP статуси',
+      learningOutcome: 'incorrect',
+    });
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'learningAttempt',
+        learningTopic: 'HTTP',
+        learningOutcome: 'guessed',
+      }),
+    ).toBeNull();
+    expect(
+      extractAssistantAction({
+        action: 'recordAction',
+        recordKind: 'learningAttempt',
+        learningOutcome: 'correct',
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('sanitizeProposal', () => {

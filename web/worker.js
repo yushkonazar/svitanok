@@ -73,6 +73,7 @@ import {
 import { handleStatus } from './api-status.mjs';
 import { handleArchiveRequest } from './api-archive.mjs';
 import { handleLeversRequest } from './api-levers.mjs';
+import { handleAnalyticsRequest } from './api-analytics.mjs';
 import { handleDeletionsRequest } from './api-deletions.mjs';
 import { handleMailAttention } from './api-mail-attention.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
@@ -521,6 +522,11 @@ export default {
       // заради блоку, який дивляться раз на тиждень, не має коштувати на
       // кожному відкритті дашборда.
       return handleLeversRequest(request, env);
+    }
+    if (url.pathname === '/api/analytics') {
+      // Окремий, owner-only контракт 4D. Frozen Mini App його не викликає;
+      // так новий шар не змінює її стабільний /api/stats payload.
+      return handleAnalyticsRequest(request, env);
     }
     if (url.pathname === '/api/deletions') {
       // T2-receipts — приватна історія видалень. Це окреме lazy-read, щоб

@@ -494,6 +494,26 @@ describe('/api/agent-step — термінальні дії', () => {
       const state2 = JSON.parse(kv.get('state')!);
       expect(state2.roadmapProgress['frontend.html']).toBeTruthy(); // досі є
     });
+
+    it('learningAttempt: записує лише явно переданий результат з id поточного run', async () => {
+      const res = await authed({
+        token: await token({ runId: 'learn-5678' }),
+        structured: {
+          action: 'recordAction',
+          recordKind: 'learningAttempt',
+          learningTopic: 'HTTP',
+          learningOutcome: 'incorrect',
+        },
+      });
+      expect(await res.json()).toMatchObject({ done: true });
+      expect(sentTexts()[0]).toContain('HTTP');
+      expect(sentTexts()[0]).toContain('помилка');
+      const stats = JSON.parse(kv.get('stats')!);
+      expect(stats.learningAttempts['agent-learn-5678']).toMatchObject({
+        topic: 'HTTP',
+        outcome: 'incorrect',
+      });
+    });
   });
 });
 

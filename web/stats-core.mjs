@@ -34,6 +34,7 @@ import {
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
 //   appliedLog:[ { url, ts, fit? } ]                         // подачі (дедуп по url) — лічильник тижня + fit
 //   jobSeen:   { '<url>': { title, ts } }                    // переглянуті власником public вакансії (30 діб)
+//   learningAttempts:{ '<id>': { at, outcome, topic } }      // явно повідомлені результати навчання (90 діб)
 //   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 //   checkins:  { 'YYYY-MM-DD': { morning?, afternoon?, evening? } }  // чек-ін (кап 365)
 //   briefingEngagement: { days } // тільки агреговані open/action/save/dismiss блоків briefing-а
@@ -77,6 +78,16 @@ const HISTORY_PER_JOB = 12;
 // поточний briefing, а не коли вакансію згенерували чи показали в Telegram.
 const JOB_SEEN_WINDOW_DAYS = 30;
 const JOB_SEEN_CAP = 250;
+
+// Телеметрія навчання потрібна ДО будь-якого адаптивного коуча: він не має
+// права «вгадувати помилку» з вільного тексту або з оцінки моделі. Кожен запис
+// тут з'являється лише після явного повідомлення власника про результат.
+export const LEARNING_ATTEMPT_OUTCOMES = ['correct', 'incorrect', 'unsure'];
+const LEARNING_ATTEMPT_OUTCOME_SET = new Set(LEARNING_ATTEMPT_OUTCOMES);
+const LEARNING_ATTEMPT_WINDOW_DAYS = 90;
+const LEARNING_ATTEMPT_CAP = 180;
+const LEARNING_ATTEMPT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const LEARNING_TOPIC_MAX_LEN = 48;
 
 // Тижнева ціль подач (F2): діапазон слайдера в Mini App. Клампимо і на записі
 // (set_goal), і на читанні (normalize) — щоб биті/легасі значення в KV
@@ -696,6 +707,7 @@ export function emptyStore() {
     opensMin: [],
     appliedLog: [],
     jobSeen: {},
+    learningAttempts: {},
     reliability: { onTime: 0, total: 0, deadman: 0, days: {} },
     checkins: {},
     sleepLog: {},
@@ -733,6 +745,10 @@ export function normalize(rawStore) {
     opensMin: Array.isArray(s.opensMin) ? s.opensMin : e.opensMin,
     appliedLog: Array.isArray(s.appliedLog) ? s.appliedLog : e.appliedLog,
     jobSeen: s.jobSeen && typeof s.jobSeen === 'object' ? s.jobSeen : e.jobSeen,
+    learningAttempts:
+      s.learningAttempts && typeof s.learningAttempts === 'object'
+        ? s.learningAttempts
+        : e.learningAttempts,
     reliability: {
       onTime: Number(s.reliability?.onTime) || 0,
       total: Number(s.reliability?.total) || 0,
@@ -866,6 +882,37 @@ function capJobSeen(/** @type {KvBlob} */ s, /** @type {string} */ todayKey) {
   }
 }
 
+/** Коротка назва теми, не текст завдання/відповіді. */
+function cleanLearningTopic(/** @type {unknown} */ value) {
+  if (typeof value !== 'string') return null;
+  const topic = value.replace(/\s+/g, ' ').trim();
+  if (!topic || topic.length > LEARNING_TOPIC_MAX_LEN) return null;
+  // Призначення цього поля — зріз за темою, не довільний нотатник. Контрольні
+  // символи та службові розділювачі тут не мають семантики й відсіюються.
+  if ([...topic].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) return null;
+  return topic;
+}
+
+/** Прибрати прострочене/бите й втримати bounded telemetry за датою й id. */
+function capLearningAttempts(/** @type {KvBlob} */ s, /** @type {string} */ todayKey) {
+  const cutoff = addDays(todayKey, -(LEARNING_ATTEMPT_WINDOW_DAYS - 1));
+  const rows = Object.entries(s.learningAttempts)
+    .filter(
+      ([id, row]) =>
+        LEARNING_ATTEMPT_ID_RE.test(id) &&
+        row &&
+        typeof row === 'object' &&
+        isDateKey(row.at) &&
+        row.at >= cutoff &&
+        LEARNING_ATTEMPT_OUTCOME_SET.has(row.outcome) &&
+        cleanLearningTopic(row.topic),
+    )
+    .sort(
+      ([aId, a], [bId, b]) => String(a.at).localeCompare(String(b.at)) || aId.localeCompare(bId),
+    );
+  s.learningAttempts = Object.fromEntries(rows.slice(-LEARNING_ATTEMPT_CAP));
+}
+
 /** Понеділок тижня, що містить dateKey (ключ тижневих кошиків/трендів). */
 export function weekStartKey(/** @type {string} */ dateKey) {
   const d = new Date(dateKey + 'T00:00:00Z');
@@ -895,7 +942,7 @@ const bumpInterest = (
 /**
  * Застосувати подію до стору (мутує й повертає його). `ev.type`:
  *  open · news_click · save_news · unsave_news · save_item · unsave_item ·
- *  job_seen · job_stage · job_dismiss · mock_answer · step_done · vote.
+ *  job_seen · job_stage · job_dismiss · mock_answer · learning_attempt · step_done · vote.
  *  `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
  *  @param {KvBlob|null|undefined} store
  *  @param {any} ev сира подія з POST /api/event: ні схеми, ні гарантії форми
@@ -1160,6 +1207,23 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       }
       break;
     }
+    case 'learning_attempt': {
+      // Це НЕ оцінка моделі й не «правильність», виведена з тексту відповіді.
+      // Зберігаємо тільки явно поданий власником outcome; id робить повтор
+      // ідемпотентним, щоб ретрай мережі не множив спроби.
+      const id = typeof ev.attemptId === 'string' ? ev.attemptId : '';
+      const outcome = ev.outcome;
+      const topic = cleanLearningTopic(ev.topic);
+      if (
+        LEARNING_ATTEMPT_ID_RE.test(id) &&
+        LEARNING_ATTEMPT_OUTCOME_SET.has(outcome) &&
+        topic &&
+        !s.learningAttempts[id]
+      ) {
+        s.learningAttempts[id] = { at: dateKey, outcome, topic };
+      }
+      break;
+    }
     case 'set_goal': {
       // F2, слайдер «Тижнева ціль подач». Ціль ЖИВЕ в цьому сторі (goal.weeklyTarget
       // тут же й агрегується з weeklyApplied), тож їй не треба ні окремого
@@ -1259,6 +1323,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
   // Exposure має власне 30-денне вікно. Викликаємо не лише в `job_seen`, щоб
   // давній запис фізично зникав і після будь-якої наступної owner-події.
   capJobSeen(s, dateKey);
+  capLearningAttempts(s, dateKey);
   capDays(s);
   return s;
 }
@@ -2751,6 +2816,52 @@ function buildJobFunnel(/** @type {KvBlob} */ s, /** @type {string} */ todayKey)
   return out;
 }
 
+/**
+ * Стисла, суто агрегована телеметрія явно повідомлених результатів навчання.
+ * `incorrect` означає «власник так сказав», а не машинний вердикт; ні відповіді
+ * на питання, ні текст помилки в цю форму не проходять.
+ */
+function buildLearningTelemetry(/** @type {KvBlob} */ s, /** @type {string} */ todayKey) {
+  const cutoff = addDays(todayKey, -(LEARNING_ATTEMPT_WINDOW_DAYS - 1));
+  /** @type {KvBlob} */
+  const totals = { correct: 0, incorrect: 0, unsure: 0 };
+  /** @type {Map<string, { topic: string, correct: number, incorrect: number, unsure: number }>} */
+  const byTopic = new Map();
+  for (const [id, row] of Object.entries(s.learningAttempts)) {
+    if (
+      !LEARNING_ATTEMPT_ID_RE.test(id) ||
+      !row ||
+      typeof row !== 'object' ||
+      !isDateKey(row.at) ||
+      row.at < cutoff ||
+      !LEARNING_ATTEMPT_OUTCOME_SET.has(row.outcome)
+    ) {
+      continue;
+    }
+    const topic = cleanLearningTopic(row.topic);
+    if (!topic) continue;
+    totals[row.outcome] += 1;
+    if (!byTopic.has(topic)) byTopic.set(topic, { topic, correct: 0, incorrect: 0, unsure: 0 });
+    const total = byTopic.get(topic);
+    if (total) {
+      if (row.outcome === 'correct') total.correct += 1;
+      else if (row.outcome === 'incorrect') total.incorrect += 1;
+      else total.unsure += 1;
+    }
+  }
+  const attempts = totals.correct + totals.incorrect + totals.unsure;
+  return {
+    windowDays: LEARNING_ATTEMPT_WINDOW_DAYS,
+    attempts,
+    outcomes: totals,
+    byTopic: [...byTopic.values()]
+      .map((row) => ({ ...row, attempts: row.correct + row.incorrect + row.unsure }))
+      .sort((a, b) => b.attempts - a.attempts || a.topic.localeCompare(b.topic))
+      .slice(0, 8),
+    source: 'owner_reported',
+  };
+}
+
 /** Один запис збереженого у формі контракту (спільна для прев'ю і сторінок). */
 function savedRow(/** @type {KvBlob} */ x) {
   return {
@@ -2921,6 +3032,10 @@ export function aggregateStats(/** @type {KvBlob} */ store, /** @type {string} *
     // додаткове поле, зате assistant/data.read отримує повну 30-денну
     // воронку на фактичних переглядах без зміни UI-контракту.
     jobFunnel: buildJobFunnel(s, todayKey),
+    // Явні результати навчання, потрібні до адаптивного коуча. Це окремий
+    // aggregate: `mock_answer` (easy/hard) лишається самооцінкою складності
+    // й не маскується під correct/incorrect.
+    learningTelemetry: buildLearningTelemetry(s, todayKey),
     goal: { weeklyTarget: s.goal.weeklyTarget, weeklyApplied },
     // F1: конверсії — з «дійшов до» (reachedCounts), а НЕ з поточних стадій.
     // Стара формула рахувала живі стадії, тож відмова прибирала вакансію зі

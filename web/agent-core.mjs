@@ -311,13 +311,16 @@ export const ASSISTANT_ACTION_SCHEMA = {
     // зрізав би неоголошене поле, і «перенеси нагадування на 18:00» приходило б
     // без часу (B7). Формат — канонічний рядок, час рахує worker (parseReminderTime).
     when: { type: 'string' },
-    // recordAction (PR-8, Категорія A) — ОДНА дія-парасолька для 4 дрібних
-    // локальних записів (замість 4 top-level дій — кожна нова top-level дія
+    // recordAction (PR-8, Категорія A) — ОДНА дія-парасолька для локальних
+    // записів (замість окремих top-level дій — кожна нова top-level дія
     // коштує буллет системного промпту, а МІСЦЕ там майже вичерпано). kind->
     // поля пояснено в буллеті buildAssistantSystemPrompt (recordAction), тому
     // тут НАВМИСНО без `description` (description теж рахується в бюджет
     // MAX_SCHEMA_LEN хоста — дублювати той самий текст двічі дорого).
-    recordKind: { type: 'string', enum: ['checkin', 'voteNews', 'jobStage', 'roadmapDone'] },
+    recordKind: {
+      type: 'string',
+      enum: ['checkin', 'voteNews', 'jobStage', 'roadmapDone', 'learningAttempt'],
+    },
     energy: { type: 'number' }, // checkin, 1-5, усі слоти
     sleepH: { type: 'number' }, // checkin/ранок, годин сну 0-14
     bedtime: { type: 'string', enum: ['e23', 'e00', 'e01', 'e02', 'late'] }, // checkin/ранок
@@ -342,6 +345,10 @@ export const ASSISTANT_ACTION_SCHEMA = {
     jobStage: { type: 'string', enum: STAGES },
     roadmapTopicId: { type: 'string' },
     roadmapSubtopicId: { type: 'string' },
+    // learningAttempt: лише ЯВНО названий власником результат, не оцінка
+    // моделі. topic — коротка назва предмета, не текст питання/відповіді.
+    learningTopic: { type: 'string' },
+    learningOutcome: { type: 'string', enum: ['correct', 'incorrect', 'unsure'] },
     proposal: {
       type: 'array',
       items: {
@@ -409,7 +416,7 @@ export function buildAssistantSystemPrompt(/** @type {number} */ nowMs) {
     `- {"action":"readCalendar","calendarStartDay":0,"calendarEndDay":0} — календар, N днів наперед ` +
     `(0=сьогодні,1=завтра…7=тиждень); один день: Start=End; період: різні.\n` +
     `- {"action":"readOwnData","dataScope":"all"} — ВЛАСНІ дані: briefing(погода/новини/курс/факт), ` +
-    `jobs, progress, reminders, checkin, saved, news(newsIndex), settings, all.\n` +
+    `analytics(факти/патерни/гіпотези/рекомендації), jobs, progress, reminders, checkin, saved, news(newsIndex), settings, all.\n` +
     `- {"action":"readMail","mailQuery":"..."} — пошук у Gmail (лише читання: від/тема/дата/` +
     `уривок+id), синтаксис напр. "kontramarka"; доступ є.\n` +
     `- {"action":"readMailBody","mailId":"..."} — повний текст листа за id readMail, лише як ` +
@@ -437,7 +444,8 @@ export function buildAssistantSystemPrompt(/** @type {number} */ nowMs) {
     `повернеться до тебе з відповіддю, решта прочитаного пропаде.\n` +
     `- {"action":"recordAction","recordKind":"checkin"} — локально, БЕЗ підтвердження: ` +
     `checkin (лише поля АКТИВНОГО слоту з розмови, частково ОК), voteNews(newsIndex), ` +
-    `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId).\n` +
+    `jobStage(jobIndex,jobStage), roadmapDone(roadmapTopicId,roadmapSubtopicId), ` +
+    `learningAttempt(learningTopic,learningOutcome=correct|incorrect|unsure) ЛИШЕ коли власник прямо назвав результат; не вгадуй його.\n` +
     `"note":"..." — твій блокнот (до ${MAX_NOTE_LEN} символів, до будь-якої дії): що вже зʼясував ` +
     `і що ЛИШИЛОСЬ. Повернеться тобі наступним кроком — веди його на складному запиті.\n` +
     `Зараз у Києві: ${kyivNow}. Бракує даних — спершу readCalendar/readOwnData/readMail/readDrive, ` +
@@ -491,7 +499,15 @@ const MAX_ECHO_PARAM = 60;
  *  тож розростатись йому нема куди — це план на кілька рядків, не переказ. */
 export const MAX_NOTE_LEN = 200;
 
-const RECORD_ACTION_KINDS = new Set(['checkin', 'voteNews', 'jobStage', 'roadmapDone']);
+const RECORD_ACTION_KINDS = new Set([
+  'checkin',
+  'voteNews',
+  'jobStage',
+  'roadmapDone',
+  'learningAttempt',
+]);
+const LEARNING_OUTCOMES = new Set(['correct', 'incorrect', 'unsure']);
+const LEARNING_TOPIC_MAX_LEN = 48;
 // ⚠️ ЦЕ — справжній валідатор полів чек-іну від моделі (ASSISTANT_ACTION_SCHEMA
 // нижче лише підказує моделі формат і впирається в MAX_SCHEMA_LEN). Тож новий
 // перелік значень треба тримати ТУТ; у схемі enum-и лишаються короткими.
@@ -625,6 +641,23 @@ export function extractAssistantAction(structured) {
       if (!Number.isFinite(idx) || idx < 1) return null;
       if (typeof stage !== 'string' || !STAGES.includes(stage)) return null;
       return { action, kind, jobIndex: Math.round(idx), jobStage: stage };
+    }
+    if (kind === 'learningAttempt') {
+      const outcome = structured.learningOutcome;
+      const topic =
+        typeof structured.learningTopic === 'string'
+          ? structured.learningTopic.replace(/\s+/g, ' ').trim()
+          : '';
+      if (
+        typeof outcome !== 'string' ||
+        !LEARNING_OUTCOMES.has(outcome) ||
+        !topic ||
+        topic.length > LEARNING_TOPIC_MAX_LEN ||
+        [...topic].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+      ) {
+        return null;
+      }
+      return { action, kind, learningOutcome: outcome, learningTopic: topic };
     }
     // roadmapDone
     const topicId =

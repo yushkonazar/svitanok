@@ -128,6 +128,40 @@ describe('data.read', () => {
       .find((line) => line.startsWith('Залучення'));
     expect(engagementLine).not.toContain('private briefing text');
   });
+
+  it('scope=analytics віддає структуровані агрегати, а не raw check-in або інструкції з KV', async () => {
+    const { stub } = kvBriefing({
+      stats: JSON.stringify({
+        checkins: { '2026-08-27': { morning: { privateNote: 'не потрапити в LLM' } } },
+        learningAttempts: {
+          a1: { at: '2026-08-27', topic: 'HTTP', outcome: 'incorrect' },
+        },
+      }),
+      levers: JSON.stringify({ weekOf: '2026-08-24', ready: true, weeks: 30, rows: [] }),
+    });
+    const { result } = await runDataRead(
+      workerEnv({ BRIEFING: stub }),
+      { scope: 'analytics' },
+      NOW,
+    );
+    const body = JSON.parse(String(result)) as {
+      facts: { id: string; value: number }[];
+      patterns: unknown[];
+    };
+    expect(body.facts.find((x) => x.id === 'reported_learning_outcomes')).toMatchObject({
+      value: 1,
+    });
+    expect(body.patterns).toEqual([]);
+    expect(String(result)).not.toContain('не потрапити в LLM');
+
+    const capped = await runDataRead(
+      workerEnv({ BRIEFING: stub }),
+      { scope: 'analytics', cap: 500 },
+      NOW,
+    );
+    expect(() => JSON.parse(String(capped.result))).not.toThrow();
+    expect(JSON.parse(String(capped.result))).toMatchObject({ truncated: true });
+  });
 });
 
 describe('calendar.read', () => {

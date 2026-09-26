@@ -30,6 +30,45 @@ describe('stats-core — recordEvent', () => {
     expect(s.interests['Наука']).toBe(2);
   });
 
+  it('learning_attempt — лише явний валідний результат, дедуп за id і bounded 90-денний зріз', () => {
+    let s = emptyStore();
+    s = recordEvent(
+      s,
+      { type: 'learning_attempt', attemptId: 'a-1', topic: ' HTTP ', outcome: 'incorrect' },
+      '2026-09-01',
+    );
+    // Ретрай не множить спробу й не переписує результат заднім числом.
+    s = recordEvent(
+      s,
+      { type: 'learning_attempt', attemptId: 'a-1', topic: 'HTTP', outcome: 'correct' },
+      '2026-09-01',
+    );
+    // Без id/outcome/topic — не телеметрія, не пишемо нічого.
+    s = recordEvent(
+      s,
+      { type: 'learning_attempt', attemptId: '../bad', outcome: 'correct' },
+      '2026-09-01',
+    );
+    expect(s.learningAttempts).toEqual({
+      'a-1': { at: '2026-09-01', topic: 'HTTP', outcome: 'incorrect' },
+    });
+    const telemetry = aggregateStats(s, '2026-09-02').learningTelemetry;
+    expect(telemetry).toMatchObject({
+      windowDays: 90,
+      attempts: 1,
+      outcomes: { correct: 0, incorrect: 1, unsure: 0 },
+      source: 'owner_reported',
+    });
+    expect(telemetry.byTopic).toEqual([
+      { topic: 'HTTP', correct: 0, incorrect: 1, unsure: 0, attempts: 1 },
+    ]);
+
+    // Наступна звичайна подія запускає retention, тож прострочений запис
+    // фізично зникає зі store, а не тільки ховається в READ.
+    s = recordEvent(s, { type: 'open' }, '2026-12-01');
+    expect(s.learningAttempts).toEqual({});
+  });
+
   it('job_stage applied -> воронка + лог подачі з fit у записі', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'job_stage', url: 'j1', stage: 'applied', fit: 80 }, '2026-07-07');

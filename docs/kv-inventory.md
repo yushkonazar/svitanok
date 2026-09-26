@@ -55,6 +55,15 @@ description, профіль власника чи LLM-висновок. На й�
 рахує `seen → saved → applied → interview → offer`; exposure не навчає
 `jobPrefs`, а T2 стирає весь canonical `stats`.
 
+Поле `stats.learningAttempts` належить тому самому canonical `stats`: максимум
+180 записів за 90 діб з attempt id (для асистента — від його run id),
+київською датою, короткою темою та тільки явно повідомленим власником
+`correct` / `incorrect` / `unsure`. Це не текст
+завдання, відповідь моделі чи автоматичний verdict. `aggregateStats` віддає
+лише підсумки й топ тем; owner-only `GET /api/analytics` та
+`data.read(scope=analytics)` не читають сирі записи. T2 стирає його разом із
+canonical `stats`.
+
 Поле `state.jobDescriptions` також canonical у `StateStoreDO`: до 60
 нормалізованих уривків **public** вакансій, кожен із exact source route та
 `fetchedAt`, не довше 14 діб. HTML не зберігається, а текст не стає payload

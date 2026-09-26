@@ -74,6 +74,7 @@ import {
   formatMailBodyForPrompt,
   formatDriveForPrompt,
 } from './assistant-data-core.mjs';
+import { buildAnalyticsSnapshot } from './analytics-core.mjs';
 import { formatEventsForPrompt, formatRangeEventsForPrompt } from './calendar-core.mjs';
 import { addDaysToDateKey } from './reminders-core.mjs';
 import { aggregateStats, recordEvent, checkinSlot } from './stats-core.mjs';
@@ -87,6 +88,7 @@ import {
   loadSettings,
   loadLatest,
   loadAssistantHistory,
+  loadLevers,
   updateStats,
   updateState,
 } from './kv-store.mjs';
@@ -232,6 +234,24 @@ export async function runRecordAction(
       title: item.title,
     });
     return sendText(`✅ «${item.title || item.url}» → ${action.jobStage}.`);
+  }
+
+  if (action.kind === 'learningAttempt') {
+    // id прив'язаний до одного agent run: повтор того самого кроку вже ріже
+    // DO, а навіть у legacy fallback цей запис лишається ідемпотентним.
+    await applyEvent(env, {
+      type: 'learning_attempt',
+      attemptId: `agent-${parsed.runId ?? 'unknown'}`,
+      topic: action.learningTopic,
+      outcome: action.learningOutcome,
+    });
+    const label =
+      action.learningOutcome === 'correct'
+        ? 'правильно'
+        : action.learningOutcome === 'incorrect'
+          ? 'помилка'
+          : 'не впевнений';
+    return sendText(`✅ Зафіксував результат навчання: ${action.learningTopic} — ${label}.`);
   }
 
   // roadmapDone
@@ -611,6 +631,12 @@ async function runReadAction(
     return formatDriveForPrompt(await searchDrive(env, action.driveQuery));
   }
   if (action.action === 'readOwnData') {
+    const todayKey = kyivDateKey(new Date(nowMs));
+    if (action.dataScope === 'analytics') {
+      const [stats, levers] = await Promise.all([loadStats(env), loadLevers(env)]);
+      const analytics = buildAnalyticsSnapshot({ agg: aggregateStats(stats, todayKey), levers });
+      return `Твої дані: ${buildOwnDataDigest({ scope: 'analytics', analytics })}`;
+    }
     // Читаємо всі чотири блоби завжди (KV-читання дешеві; buildOwnDataDigest бере
     // лише потрібне за scope) — простіше за розгалуження по scope.
     const [state, stats, latest, settings] = await Promise.all([
@@ -619,7 +645,6 @@ async function runReadAction(
       loadLatest(env),
       loadSettings(env),
     ]);
-    const todayKey = kyivDateKey(new Date(nowMs));
     const digest = buildOwnDataDigest({
       scope: action.dataScope,
       reminders: state.reminders,
@@ -697,7 +722,7 @@ export async function handleAgentStep(/** @type {Request} */ request, /** @type 
     return json({ ok: false, error: claim.error, done: true }, 409);
   }
 
-  const parsed = { chatId: claims.chatId, threadId: claims.threadId };
+  const parsed = { chatId: claims.chatId, threadId: claims.threadId, runId: claims.runId };
 
   /** Спільний фінал: прибрати «⏳», віддати відповідь, записати памʼять, зняти
    *  марку (KV — для сторожа, DO — щоб наступний крок цього прогону не пройшов). */

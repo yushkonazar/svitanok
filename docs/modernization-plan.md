@@ -215,9 +215,25 @@
 
 ### 4D. Personal Analytics and learning
 
-- [ ] Separate facts, statistical patterns, hypotheses and recommendations in UI/API.
-- [ ] Start with deterministic metric queries; AI explains only provided aggregates.
-- [ ] Instrument learning attempts/errors before adaptive coach.
+- [x] Separate facts, statistical patterns, hypotheses and recommendations in API.
+      `GET /api/analytics` is owner-only, `no-store`, and deliberately separate
+      from frozen Mini App `/api/stats`: a future screen can consume it without
+      changing the current Mini App contract. A statistical pattern is always
+      marked `association_not_causation`; a pre-registered hypothesis without a
+      shown row is `not_shown`, never a fabricated negative conclusion.
+- [x] Start with deterministic metric queries; AI explains only provided aggregates.
+      `data.read(scope=analytics)` and legacy `readOwnData(analytics)` receive
+      the same bounded snapshot built from `aggregateStats` plus the weekly
+      `levers` cache. There is no analytics LLM call, raw check-in, or automatic
+      plan mutation; recommendations can only ask the owner to continue one
+      week of measurement.
+- [x] Instrument learning attempts/errors before adaptive coach. Explicit owner
+      reports only (`correct|incorrect|unsure`) are idempotent by attempt id
+      (the assistant derives it from its run id), retain a short topic label and
+      date for 90 days (max 180), and aggregate by topic.
+      `mock_answer` remains a self-reported difficulty signal, never silently
+      converted into correct/incorrect. No adaptive coach or automatic learning
+      intervention is enabled by this instrumentation.
 
 ### 4E. Narrow Personal Knowledge Base
 
