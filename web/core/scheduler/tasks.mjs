@@ -48,6 +48,7 @@ import { refreshBriefCalendar } from '../brief/calendar-snapshot.mjs';
 import { secretExpiryTask } from '../ops/secret-expiry.mjs';
 import { quotaCheckTask } from '../ops/quota-check.mjs';
 import { reconcileMemoryProjection } from '../memory.mjs';
+import { reconcileKnowledgeProjection } from '../knowledge-base.mjs';
 
 /**
  * @typedef {{
@@ -163,6 +164,12 @@ export const SCHEDULER_TASKS = {
       if (!env.DB || !env.AI || !env.VECTORIZE) return { skipped: 'not-configured' };
       return reconcileMemoryProjection(env, Date.now());
     },
+  },
+  // Документи з allowlist мають незалежну проєкцію: не змішуємо її з
+  // memory_chunks і не перечитуємо Drive під час retry.
+  'knowledge-projection-reconcile': {
+    periodMin: 5,
+    run: async (env) => reconcileKnowledgeProjection(env),
   },
   // Тижневий звіт (етап 3 PR-3, S-9-1/S-9-4): неділя 09:00 Києва, повтор о
   // 12:00 при збої; гейти й стан тижня - усередині задачі.

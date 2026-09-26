@@ -37,6 +37,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'outbox-drain',
       'memory-summarize',
       'memory-projection-reconcile',
+      'knowledge-projection-reconcile',
       'weekly-review',
       'backup',
       'daily-hint',
@@ -177,6 +178,12 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     ).resolves.toEqual({
       skipped: 'not-configured',
     });
+  });
+
+  it('knowledge-projection-reconcile тихо пропускається без AI/Vectorize bindings', async () => {
+    await expect(
+      SCHEDULER_TASKS['knowledge-projection-reconcile']?.run(workerEnv() as never),
+    ).resolves.toEqual({ skipped: 'not-configured' });
   });
 
   it('появи 5-хвилинні (крім нагадувань — щохвилини); shadowSafe — лише heartbeat', () => {

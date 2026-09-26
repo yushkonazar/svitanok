@@ -1,11 +1,15 @@
 // Вузька база знань: D1 зберігає документ, його незмінні версії та фрагменти.
 // Це не є пам'яттю діалогу і не має права автоматично читати Drive. Зовнішній
 // адаптер мусить одержати явний дозвіл на ОДИН source_ref, а сюди передає вже
-// витягнутий текст. Векторна проєкція додасться поверх цих стабільних рядків.
+// витягнутий текст. Vectorize є rebuildable projection поверх цих стабільних
+// D1-рядків і ніколи не стає окремим джерелом правди.
+
+import { embedTexts } from './memory.mjs';
 
 export const KNOWLEDGE_KINDS = ['cv', 'job_preparation', 'learning'];
 export const KNOWLEDGE_CHUNK_MAX_CHARS = 1_200;
 export const KNOWLEDGE_SEARCH_DEFAULT_LIMIT = 5;
+export const KNOWLEDGE_PROJECTION_RECONCILE_LIMIT = 10;
 
 /** @param {Env} env */
 function db(env) {
@@ -120,7 +124,7 @@ export async function ingestKnowledgeDocument(env, input, nowMs = Date.now()) {
       .prepare(
         `INSERT INTO knowledge_document_versions
          (id, document_id, source_version, content_sha256, status, extracted_at, error)
-         VALUES (?, ?, ?, ?, 'ready', ?, NULL)`,
+         VALUES (?, ?, ?, ?, 'pending', ?, NULL)`,
       )
       .bind(versionId, documentId, sourceVersion, hash, at),
     ...chunks.map((chunk, ordinal) =>
@@ -133,7 +137,130 @@ export async function ingestKnowledgeDocument(env, input, nowMs = Date.now()) {
         .bind(crypto.randomUUID(), versionId, ordinal, section, rawPage, chunk, at),
     ),
   ]);
-  return { documentId, versionId, added: true, chunks: chunks.length };
+  let indexed = false;
+  if (env.AI && env.VECTORIZE) {
+    try {
+      await indexKnowledgeVersion(env, versionId);
+      indexed = true;
+    } catch (error) {
+      await markKnowledgeVersionFailed(
+        env,
+        versionId,
+        error instanceof Error ? error.message : 'index failed',
+      );
+    }
+  }
+  return { documentId, versionId, added: true, chunks: chunks.length, indexed };
+}
+
+/** D1 rows -> Vectorize. The chunk id is a stable, retry-safe vector id.
+ * @param {Env} env @param {string} versionId */
+export async function indexKnowledgeVersion(env, versionId) {
+  if (!env.AI) throw new Error('база знань: привʼязки AI немає');
+  if (!env.VECTORIZE) throw new Error('база знань: привʼязки VECTORIZE немає');
+  const { results } = await db(env)
+    .prepare(
+      `SELECT c.id, c.text, c.ordinal, v.document_id
+       FROM knowledge_chunks c JOIN knowledge_document_versions v ON v.id = c.document_version_id
+       WHERE c.document_version_id = ? AND c.projection_status IN ('pending', 'failed')
+       ORDER BY c.ordinal`,
+    )
+    .bind(versionId)
+    .all();
+  const chunks = results ?? [];
+  if (chunks.length === 0) throw new Error('база знань: версія не має pending-чанків');
+  const vectors = await embedTexts(
+    env,
+    chunks.map((chunk) => String(chunk.text)),
+  );
+  const vectorRows = chunks.map((chunk, index) => {
+    const values = vectors[index];
+    if (!values) throw new Error('база знань: бракує ембедингу для чанка');
+    return {
+      id: String(chunk.id),
+      values,
+      metadata: {
+        source: 'knowledge',
+        document_id: String(chunk.document_id),
+        document_version_id: versionId,
+        ordinal: Number(chunk.ordinal),
+      },
+    };
+  });
+  await env.VECTORIZE.upsert(vectorRows);
+  const documentId = String(chunks[0]?.document_id ?? '');
+  await db(env).batch([
+    // The last ready generation stays available until this upsert succeeds.
+    db(env)
+      .prepare(
+        `UPDATE knowledge_document_versions SET status = 'retired'
+         WHERE document_id = ? AND status = 'ready' AND id <> ?`,
+      )
+      .bind(documentId, versionId),
+    db(env)
+      .prepare(
+        `UPDATE knowledge_chunks SET projection_status = 'retired'
+         WHERE document_version_id IN (
+           SELECT id FROM knowledge_document_versions WHERE document_id = ? AND status = 'retired'
+         )`,
+      )
+      .bind(documentId),
+    db(env)
+      .prepare(`UPDATE knowledge_document_versions SET status = 'ready', error = NULL WHERE id = ?`)
+      .bind(versionId),
+    ...chunks.map((chunk) =>
+      db(env)
+        .prepare(
+          `UPDATE knowledge_chunks SET vector_id = ?, projection_status = 'ready'
+           WHERE id = ? AND projection_status IN ('pending', 'failed')`,
+        )
+        .bind(String(chunk.id), String(chunk.id)),
+    ),
+  ]);
+  return { indexed: chunks.length };
+}
+
+/** @param {Env} env @param {string} versionId @param {string} error */
+async function markKnowledgeVersionFailed(env, versionId, error) {
+  await db(env).batch([
+    db(env)
+      .prepare(`UPDATE knowledge_document_versions SET status = 'failed', error = ? WHERE id = ?`)
+      .bind(error.slice(0, 500), versionId),
+    db(env)
+      .prepare(
+        `UPDATE knowledge_chunks SET projection_status = 'failed'
+         WHERE document_version_id = ? AND projection_status = 'pending'`,
+      )
+      .bind(versionId),
+  ]);
+}
+
+/** Repair a pending/failed projection without rereading its source document.
+ * @param {Env} env @param {number} [limit] */
+export async function reconcileKnowledgeProjection(env, limit = KNOWLEDGE_PROJECTION_RECONCILE_LIMIT) {
+  if (!env.DB || !env.AI || !env.VECTORIZE) return { skipped: 'not-configured' };
+  const { results } = await db(env)
+    .prepare(
+      `SELECT id FROM knowledge_document_versions
+       WHERE status IN ('pending', 'failed') ORDER BY extracted_at LIMIT ?`,
+    )
+    .bind(limit)
+    .all();
+  let indexed = 0;
+  let failed = 0;
+  for (const row of results ?? []) {
+    try {
+      indexed += (await indexKnowledgeVersion(env, String(row.id))).indexed;
+    } catch (error) {
+      failed += 1;
+      await markKnowledgeVersionFailed(
+        env,
+        String(row.id),
+        error instanceof Error ? error.message : 'index failed',
+      );
+    }
+  }
+  return { indexed, failed };
 }
 
 /** Escape LIKE wildcards; bound values alone do not preserve query meaning.
@@ -162,6 +289,7 @@ export async function searchKnowledge(env, input) {
        JOIN knowledge_document_versions v ON v.id = c.document_version_id
        JOIN knowledge_documents d ON d.id = v.document_id
        WHERE d.status = 'active' AND d.access_scope = 'owner' AND v.status = 'ready'
+         AND c.projection_status = 'ready'
          AND c.text LIKE ? ESCAPE '\\'
        ORDER BY d.created_at DESC, c.ordinal ASC LIMIT ?`,
     )

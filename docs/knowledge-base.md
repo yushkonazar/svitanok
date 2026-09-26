@@ -18,8 +18,9 @@ file search. Він існує, щоб асистент міг відповід�
 `knowledge_documents` зберігає allowlist та статус. Кожна зміна створює
 `knowledge_document_versions` з хешем вмісту; `knowledge_chunks` належать рівно
 одній версії та несуть номер фрагмента, необов'язкові section/page і стан
-проєкції. D1 — truth. Векторний індекс, коли буде увімкнений, є лише
-rebuildable projection за стабільними `vector_id`.
+проєкції. D1 — truth. Vectorize є rebuildable projection за стабільними
+`vector_id`: `pending/failed → upsert → ready`; стара версія ховається лише
+після успішного upsert нової.
 
 Відповідь асистента з бази знань мусить містити назву документа, версію та
 section/page кожного використаного фрагмента. Якщо evidence немає — відповідь
@@ -28,9 +29,9 @@ section/page кожного використаного фрагмента. Як�
 Поточний lifecycle уже має вузькі операції `ingestKnowledgeDocument`,
 `searchKnowledge` і `revokeKnowledgeDocument`. Ingest приймає тільки текст,
 який передав окремий authorizing adapter, та є ідемпотентним за
-`(source_ref, source_version)`. Поточний пошук є обмеженим D1-пошуком для
-приймального зрізу; Vectorize приєднається як rebuildable projection, не як
-друге джерело правди.
+`(source_ref, source_version)`. Пошук бачить тільки `ready`-фрагменти;
+планувальник безпечно повторює індексування pending/failed версій з D1, не
+читаючи файл повторно.
 
 ## Відкликання та видалення
 

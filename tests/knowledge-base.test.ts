@@ -7,6 +7,7 @@ import {
   chunkKnowledgeText,
   deleteKnowledgeDocument,
   ingestKnowledgeDocument,
+  reconcileKnowledgeProjection,
   revokeKnowledgeDocument,
   runKnowledgeSearch,
   searchKnowledge,
@@ -56,6 +57,23 @@ function d1() {
   };
 }
 
+function indexedEnv(store: ReturnType<typeof d1>, vectorize?: { upsert: (rows: unknown[]) => Promise<void> }) {
+  return workerEnv({
+    DB: store.stub,
+    AI: {
+      run: async (_model: string, input: { text: string[] }) => ({
+        data: input.text.map((value) => [value.length, 1, 0]),
+      }),
+    },
+    VECTORIZE:
+      vectorize ??
+      {
+        upsert: async () => {},
+        deleteByIds: async () => {},
+      },
+  });
+}
+
 describe('narrow knowledge base', () => {
   it('chunks on paragraphs without losing text or exceeding the limit', () => {
     const chunks = chunkKnowledgeText(`Перший абзац\n\n${'а'.repeat(KNOWLEDGE_CHUNK_MAX_CHARS + 5)}`);
@@ -66,7 +84,7 @@ describe('narrow knowledge base', () => {
 
   it('accepts only an explicit allowlisted source and returns versioned citations', async () => {
     const store = d1();
-    const env = workerEnv({ DB: store.stub });
+    const env = indexedEnv(store);
     const added = await ingestKnowledgeDocument(
       env,
       {
@@ -109,7 +127,7 @@ describe('narrow knowledge base', () => {
 
   it('is idempotent per source version and revoke immediately removes it from retrieval', async () => {
     const store = d1();
-    const env = workerEnv({ DB: store.stub });
+    const env = indexedEnv(store);
     const input = {
       sourceType: 'upload',
       sourceRef: 'manual-learning-1',
@@ -130,7 +148,7 @@ describe('narrow knowledge base', () => {
 
   it('is a tainting read-only core tool with citations, not a Drive crawler', async () => {
     const store = d1();
-    const env = workerEnv({ DB: store.stub });
+    const env = indexedEnv(store);
     await ingestKnowledgeDocument(env, {
       sourceType: 'upload',
       sourceRef: 'learning-2',
@@ -182,5 +200,35 @@ describe('narrow knowledge base', () => {
       /VECTORIZE/,
     );
     expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({ n: 1 });
+  });
+
+  it('leaves an interrupted projection hidden, then rebuilds exactly its D1 chunks', async () => {
+    const store = d1();
+    const failedEnv = indexedEnv(store, {
+      upsert: async () => {
+        throw new Error('Vectorize down');
+      },
+    });
+    const added = await ingestKnowledgeDocument(failedEnv, {
+      sourceType: 'upload',
+      sourceRef: 'retryable',
+      title: 'Retryable note',
+      kind: 'learning',
+      sourceVersion: '1',
+      content: 'Текст існує в D1 до того, як готовий індекс.',
+    });
+    expect(added).toMatchObject({ indexed: false });
+    expect(await searchKnowledge(failedEnv, { q: 'Текст' })).toEqual([]);
+    expect(store.database.prepare('SELECT status FROM knowledge_document_versions').get()).toEqual({
+      status: 'failed',
+    });
+
+    const upserts: unknown[][] = [];
+    const repairedEnv = indexedEnv(store, {
+      upsert: async (rows) => void upserts.push(rows),
+    });
+    await expect(reconcileKnowledgeProjection(repairedEnv)).resolves.toEqual({ indexed: 1, failed: 0 });
+    expect(upserts[0]).toHaveLength(1);
+    await expect(searchKnowledge(repairedEnv, { q: 'Текст' })).resolves.toHaveLength(1);
   });
 });
