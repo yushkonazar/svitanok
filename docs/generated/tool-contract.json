@@ -318,6 +318,39 @@
       "tainting": "always",
       "execution": { "route": "core" }
     },
+    "knowledge.delete": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 80, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "knowledge.delete" }
+    },
+    "knowledge.list": {
+      "args": {
+        "properties": {
+          "kind": { "maxLength": 32, "type": "string" },
+          "limit": { "maximum": 50, "minimum": 1, "type": "number" }
+        },
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "knowledge.revoke": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 80, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "knowledge.revoke" }
+    },
     "knowledge.search": {
       "args": {
         "properties": {

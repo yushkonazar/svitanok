@@ -28,7 +28,7 @@ import { runDataSearch, SEARCH_SOURCES } from './search.mjs';
 import { runStyleSamples } from '../style/corpus.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
-import { runKnowledgeSearch } from '../knowledge-base.mjs';
+import { runKnowledgeList, runKnowledgeSearch } from '../knowledge-base.mjs';
 import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
 
@@ -117,6 +117,40 @@ export const TOOLS = {
     },
     tainting: true,
     run: (env, args) => runKnowledgeSearch(env, args),
+  },
+  'knowledge.list': {
+    args: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', maxLength: 32 },
+        limit: { type: 'number', minimum: 1, maximum: 50 },
+      },
+    },
+    // Назва файла - зовнішні метадані, не інструкція моделі.
+    tainting: true,
+    run: (env, args) => runKnowledgeList(env, args),
+  },
+  'knowledge.revoke': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', minLength: 1, maxLength: 80 } },
+    },
+    write: { kind: 'knowledge.revoke' },
+    run: () => {
+      throw new Error('knowledge.revoke виконується через policy, не напряму');
+    },
+  },
+  'knowledge.delete': {
+    args: {
+      type: 'object',
+      required: ['id'],
+      properties: { id: { type: 'string', minLength: 1, maxLength: 80 } },
+    },
+    write: { kind: 'knowledge.delete' },
+    run: () => {
+      throw new Error('knowledge.delete виконується через policy, не напряму');
+    },
   },
   'geo.last': {
     args: { type: 'object' },

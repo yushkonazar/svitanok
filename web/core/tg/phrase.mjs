@@ -126,6 +126,8 @@ export const ACTION_PHRASE = {
   'gemini.image': { icon: DOMAIN_ICON.image, done: 'Намалював', ask: 'Намалювати' },
   'gemini.video': { icon: DOMAIN_ICON.video, done: 'Зняв відео', ask: 'Зняти відео' },
   'style.collect': { icon: '✍️', done: 'Зібрав твої тексти', ask: 'Зібрати твої тексти' },
+  'knowledge.revoke': { icon: '📄', done: 'Відкликав документ', ask: 'Відкликати документ' },
+  'knowledge.delete': { icon: '🧹', done: 'Видалив документ', ask: 'Видалити документ' },
   forget: { icon: '🧹', done: 'Стер', ask: 'Стерти' },
   'data.export': {
     icon: DOMAIN_ICON.archive,

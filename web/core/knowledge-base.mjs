@@ -103,10 +103,13 @@ export async function ingestKnowledgeDocument(env, input, nowMs = Date.now()) {
     .all();
   const documentId = String(results?.[0]?.id ?? crypto.randomUUID());
   const { results: versions } = await db(env)
-    .prepare('SELECT id FROM knowledge_document_versions WHERE document_id = ? AND source_version = ? LIMIT 1')
+    .prepare(
+      'SELECT id FROM knowledge_document_versions WHERE document_id = ? AND source_version = ? LIMIT 1',
+    )
     .bind(documentId, sourceVersion)
     .all();
-  if (versions?.[0]?.id) return { documentId, versionId: String(versions[0].id), added: false, chunks: 0 };
+  if (versions?.[0]?.id)
+    return { documentId, versionId: String(versions[0].id), added: false, chunks: 0 };
 
   const versionId = crypto.randomUUID();
   const hash = await sha256(content);
@@ -237,7 +240,10 @@ async function markKnowledgeVersionFailed(env, versionId, error) {
 
 /** Repair a pending/failed projection without rereading its source document.
  * @param {Env} env @param {number} [limit] */
-export async function reconcileKnowledgeProjection(env, limit = KNOWLEDGE_PROJECTION_RECONCILE_LIMIT) {
+export async function reconcileKnowledgeProjection(
+  env,
+  limit = KNOWLEDGE_PROJECTION_RECONCILE_LIMIT,
+) {
   if (!env.DB || !env.AI || !env.VECTORIZE) return { skipped: 'not-configured' };
   const { results } = await db(env)
     .prepare(
@@ -284,7 +290,7 @@ export async function searchKnowledge(env, input) {
   // Production is semantic. The lexical fallback is intentionally limited to
   // environments without Workers AI/Vectorize (local setup and recovery), not
   // a second source of truth or a wider Drive search.
-  if (env.AI && env.VECTORIZE && typeof /** @type {any} */ (env.VECTORIZE).query === 'function') {
+  if (env.AI && env.VECTORIZE && typeof (/** @type {any} */ (env.VECTORIZE).query) === 'function') {
     const [vector] = await embedTexts(env, [q]);
     if (!vector) throw new Error('база знань: бракує ембедингу запиту');
     const queried = await env.VECTORIZE.query(vector, { topK: Math.min(limit * 8, 50) });
@@ -343,6 +349,37 @@ function formatKnowledgeHits(rows) {
  * @param {Env} env @param {{q: unknown, limit?: unknown}} input */
 export async function runKnowledgeSearch(env, input) {
   return { result: await searchKnowledge(env, input) };
+}
+
+/** Safe metadata only: no text, source_ref, Drive URL, or vector id leaks.
+ * @param {Env} env @param {{kind?: unknown, limit?: unknown}} input */
+export async function runKnowledgeList(env, input) {
+  const limit = input.limit == null ? 20 : Number(input.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new Error('база знань: limit має бути від 1 до 50');
+  }
+  const kind = input.kind == null ? null : text(input.kind, 'kind', 32);
+  if (kind != null && !KNOWLEDGE_KINDS.includes(kind)) {
+    throw new Error(`база знань: kind має бути одним із ${KNOWLEDGE_KINDS.join(', ')}`);
+  }
+  const { results } = await db(env)
+    .prepare(
+      `SELECT id, title, kind, status, created_at, revoked_at
+       FROM knowledge_documents
+       WHERE (? IS NULL OR kind = ?) ORDER BY created_at DESC LIMIT ?`,
+    )
+    .bind(kind, kind, limit)
+    .all();
+  return {
+    result: (results ?? []).map((row) => ({
+      id: String(row.id),
+      title: String(row.title),
+      kind: String(row.kind),
+      status: String(row.status),
+      added_at: String(row.created_at),
+      ...(row.revoked_at == null ? {} : { revoked_at: String(row.revoked_at) }),
+    })),
+  };
 }
 
 /** Open revoke: retrieval stops immediately; physical purge is a later job. */

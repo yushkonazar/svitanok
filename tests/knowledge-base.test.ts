@@ -9,6 +9,7 @@ import {
   ingestKnowledgeDocument,
   reconcileKnowledgeProjection,
   revokeKnowledgeDocument,
+  runKnowledgeList,
   runKnowledgeSearch,
   searchKnowledge,
 } from '../web/core/knowledge-base.mjs';
@@ -20,7 +21,10 @@ const NOW = Date.parse('2026-09-26T09:00:00.000Z');
 function d1() {
   const database = new DatabaseSync(':memory:');
   database.exec(
-    readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', '0019_knowledge_base.sql'), 'utf8'),
+    readFileSync(
+      join(__dirname, '..', 'web', 'core', 'migrations', '0019_knowledge_base.sql'),
+      'utf8',
+    ),
   );
   return {
     database,
@@ -71,18 +75,18 @@ function indexedEnv(
         data: input.text.map((value) => [value.length, 1, 0]),
       }),
     },
-    VECTORIZE:
-      vectorize ??
-      {
-        upsert: async () => {},
-        deleteByIds: async () => {},
-      },
+    VECTORIZE: vectorize ?? {
+      upsert: async () => {},
+      deleteByIds: async () => {},
+    },
   });
 }
 
 describe('narrow knowledge base', () => {
   it('chunks on paragraphs without losing text or exceeding the limit', () => {
-    const chunks = chunkKnowledgeText(`Перший абзац\n\n${'а'.repeat(KNOWLEDGE_CHUNK_MAX_CHARS + 5)}`);
+    const chunks = chunkKnowledgeText(
+      `Перший абзац\n\n${'а'.repeat(KNOWLEDGE_CHUNK_MAX_CHARS + 5)}`,
+    );
     expect(chunks).toHaveLength(3);
     expect(chunks[0]).toBe('Перший абзац');
     expect(chunks.every((chunk) => chunk.length <= KNOWLEDGE_CHUNK_MAX_CHARS)).toBe(true);
@@ -99,7 +103,8 @@ describe('narrow knowledge base', () => {
         title: 'CV Назара',
         kind: 'cv',
         sourceVersion: 'drive-v3',
-        content: 'TypeScript, Cloudflare Workers і OpenAI Responses.\n\nДосвід керування продуктом.',
+        content:
+          'TypeScript, Cloudflare Workers і OpenAI Responses.\n\nДосвід керування продуктом.',
         section: 'Навички',
         page: 2,
       },
@@ -108,7 +113,8 @@ describe('narrow knowledge base', () => {
     expect(added).toMatchObject({ added: true, chunks: 1 });
     expect(await searchKnowledge(env, { q: 'Cloudflare' })).toEqual([
       {
-        excerpt: 'TypeScript, Cloudflare Workers і OpenAI Responses.\n\nДосвід керування продуктом.',
+        excerpt:
+          'TypeScript, Cloudflare Workers і OpenAI Responses.\n\nДосвід керування продуктом.',
         citation: {
           document: 'CV Назара',
           kind: 'cv',
@@ -145,11 +151,15 @@ describe('narrow knowledge base', () => {
     const first = await ingestKnowledgeDocument(env, input, NOW);
     const duplicate = await ingestKnowledgeDocument(env, input, NOW + 1_000);
     expect(duplicate).toMatchObject({ documentId: first.documentId, added: false, chunks: 0 });
-    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_chunks').get()).toEqual({ n: 1 });
+    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_chunks').get()).toEqual({
+      n: 1,
+    });
 
     await revokeKnowledgeDocument(env, first.documentId, NOW + 2_000);
     await expect(searchKnowledge(env, { q: 'докази' })).resolves.toEqual([]);
-    expect(store.database.prepare("SELECT status FROM knowledge_documents").get()).toEqual({ status: 'revoked' });
+    expect(store.database.prepare('SELECT status FROM knowledge_documents').get()).toEqual({
+      status: 'revoked',
+    });
   });
 
   it('is a tainting read-only core tool with citations, not a Drive crawler', async () => {
@@ -173,6 +183,38 @@ describe('narrow knowledge base', () => {
     });
   });
 
+  it('lists only safe document metadata and reserves revoke/delete for policy', async () => {
+    const store = d1();
+    const env = indexedEnv(store);
+    const added = await ingestKnowledgeDocument(
+      env,
+      {
+        sourceType: 'drive',
+        sourceRef: 'private-drive-file-id',
+        title: 'CV Назара',
+        kind: 'cv',
+        sourceVersion: 'v1',
+        content: 'Контактні дані й досвід мають лишатися в документі, а не в списку.',
+      },
+      NOW,
+    );
+
+    await expect(runKnowledgeList(env, {})).resolves.toEqual({
+      result: [
+        {
+          id: added.documentId,
+          title: 'CV Назара',
+          kind: 'cv',
+          status: 'active',
+          added_at: new Date(NOW).toISOString(),
+        },
+      ],
+    });
+    expect(TOOLS['knowledge.list']?.tainting).toBe(true);
+    expect(TOOLS['knowledge.revoke']?.write).toEqual({ kind: 'knowledge.revoke' });
+    expect(TOOLS['knowledge.delete']?.write).toEqual({ kind: 'knowledge.delete' });
+  });
+
   it('deletes vector projection before local chunks and preserves truth on a vector failure', async () => {
     const store = d1();
     const vectorDeletes: string[][] = [];
@@ -191,7 +233,9 @@ describe('narrow knowledge base', () => {
     store.database.prepare("UPDATE knowledge_chunks SET vector_id = 'kb-vector-1'").run();
     await expect(deleteKnowledgeDocument(env, added.documentId)).resolves.toEqual({ vectorIds: 1 });
     expect(vectorDeletes).toEqual([['kb-vector-1']]);
-    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({ n: 0 });
+    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({
+      n: 0,
+    });
 
     const second = await ingestKnowledgeDocument(env, {
       sourceType: 'upload',
@@ -202,10 +246,12 @@ describe('narrow knowledge base', () => {
       content: 'Текст лишається, коли індекс не можна прибрати.',
     });
     store.database.prepare("UPDATE knowledge_chunks SET vector_id = 'kb-vector-2'").run();
-    await expect(deleteKnowledgeDocument(workerEnv({ DB: store.stub }), second.documentId)).rejects.toThrow(
-      /VECTORIZE/,
-    );
-    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({ n: 1 });
+    await expect(
+      deleteKnowledgeDocument(workerEnv({ DB: store.stub }), second.documentId),
+    ).rejects.toThrow(/VECTORIZE/);
+    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({
+      n: 1,
+    });
   });
 
   it('leaves an interrupted projection hidden, then rebuilds exactly its D1 chunks', async () => {
@@ -233,7 +279,10 @@ describe('narrow knowledge base', () => {
     const repairedEnv = indexedEnv(store, {
       upsert: async (rows) => void upserts.push(rows),
     });
-    await expect(reconcileKnowledgeProjection(repairedEnv)).resolves.toEqual({ indexed: 1, failed: 0 });
+    await expect(reconcileKnowledgeProjection(repairedEnv)).resolves.toEqual({
+      indexed: 1,
+      failed: 0,
+    });
     expect(upserts[0]).toHaveLength(1);
     await expect(searchKnowledge(repairedEnv, { q: 'Текст' })).resolves.toHaveLength(1);
   });
@@ -255,8 +304,8 @@ describe('narrow knowledge base', () => {
       sourceVersion: '1',
       content: 'CAR-підхід допомагає структуровано відповідати на співбесіді.',
     });
-    await expect(searchKnowledge(env, { q: 'Як відповідати на інтервʼю?' })).resolves.toMatchObject([
-      { citation: { document: 'Підготовка', kind: 'job_preparation', chunk: 1 } },
-    ]);
+    await expect(searchKnowledge(env, { q: 'Як відповідати на інтервʼю?' })).resolves.toMatchObject(
+      [{ citation: { document: 'Підготовка', kind: 'job_preparation', chunk: 1 } }],
+    );
   });
 });

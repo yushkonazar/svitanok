@@ -41,6 +41,12 @@ export const CANON_TOOLS = [
   'mail.read',
   'drive.search',
   'drive.write',
+  // Вузька база знань: лише окремо дозволені документи, не весь Drive.
+  // `list` показує лише metadata; revoke/delete завжди проходять policy.
+  'knowledge.search',
+  'knowledge.list',
+  'knowledge.revoke',
+  'knowledge.delete',
   'inbox.search',
   'places.search',
   'places.details',

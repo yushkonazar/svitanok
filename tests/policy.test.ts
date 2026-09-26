@@ -24,6 +24,7 @@ import {
   EXECUTORS,
 } from '../web/core/policy/proposals.mjs';
 import { runFactsGet, runFactsSet, runFactsLedger } from '../web/core/tools/facts.mjs';
+import { ingestKnowledgeDocument } from '../web/core/knowledge-base.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
@@ -41,6 +42,7 @@ function d1() {
     '0014_fact_provenance.sql',
     '0016_fact_ledger.sql',
     '0017_proposal_provenance.sql',
+    '0019_knowledge_base.sql',
   ]) {
     db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', f), 'utf8'));
   }
@@ -48,6 +50,8 @@ function d1() {
     raw: db,
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
+        sql,
+        args,
         run: async () => {
           // @ts-expect-error node:sqlite приймає біндинги варіативно
           const info = db.prepare(sql).run(...args);
@@ -59,6 +63,20 @@ function d1() {
         }),
       }),
     }),
+    batch: async (statements: { sql: string; args: unknown[] }[]) => {
+      db.exec('BEGIN');
+      try {
+        for (const statement of statements) {
+          // @ts-expect-error node:sqlite accepts variadic bindings.
+          db.prepare(statement.sql).run(...statement.args);
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      return statements.map(() => ({ success: true }));
+    },
   };
 }
 
@@ -77,6 +95,8 @@ describe('policy core — таблиця рівнів', () => {
     expect(decideLevel('facts.delete', false)).toEqual({ level: 'T1' });
     expect(decideLevel('contact', false)).toEqual({ level: 'T1' });
     expect(decideLevel('forget', false)).toEqual({ level: 'T2' });
+    expect(decideLevel('knowledge.revoke', false)).toEqual({ level: 'T1' });
+    expect(decideLevel('knowledge.delete', false)).toEqual({ level: 'T2' });
   });
 
   // ⚠️ Правило рівня від 08.09: ✅ потрібне ЛИШЕ там, де дія незворотна,
@@ -476,6 +496,78 @@ describe('T1/T2: пропозиції', () => {
       status: string;
     };
     expect(row.status).toBe('approved');
+  });
+
+  it('документ знань відкликається через T1, а остаточно стирається лише через T2', async () => {
+    const revoked = await ingestKnowledgeDocument(
+      env,
+      {
+        sourceType: 'upload',
+        sourceRef: 'policy-revoke',
+        title: 'Навчальний конспект',
+        kind: 'learning',
+        sourceVersion: '1',
+        content: 'Цей текст перестане бути доступним після підтвердження.',
+      },
+      NOW,
+    );
+    const revoke = await applyPolicy(
+      env,
+      { kind: 'knowledge.revoke', payload: { id: revoked.documentId }, tainted: false },
+      NOW + 1,
+    );
+    expect(revoke).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
+    if (revoke.mode !== 'proposed') throw new Error('відкликання має бути T1');
+    await expect(
+      resolveProposal(env, { id: revoke.proposal.id, choice: 'ok' }, NOW + 2),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: 'approved',
+      kind: 'knowledge.revoke',
+      result: { id: revoked.documentId, status: 'revoked' },
+    });
+    expect(
+      store.raw
+        .prepare('SELECT status FROM knowledge_documents WHERE id = ?')
+        .get(revoked.documentId),
+    ).toEqual({
+      status: 'revoked',
+    });
+
+    const deleted = await ingestKnowledgeDocument(
+      env,
+      {
+        sourceType: 'upload',
+        sourceRef: 'policy-delete',
+        title: 'Тимчасовий конспект',
+        kind: 'learning',
+        sourceVersion: '1',
+        content: 'Цей документ треба остаточно стерти.',
+      },
+      NOW + 3,
+    );
+    const remove = await applyPolicy(
+      env,
+      { kind: 'knowledge.delete', payload: { id: deleted.documentId }, tainted: false },
+      NOW + 4,
+    );
+    expect(remove).toMatchObject({ mode: 'proposed', proposal: { level: 'T2' } });
+    if (remove.mode !== 'proposed') throw new Error('видалення має бути T2');
+    expect(
+      await resolveProposal(
+        env,
+        { id: remove.proposal.id, choice: 'ok', word: String(remove.proposal.word).toLowerCase() },
+        NOW + 5,
+      ),
+    ).toMatchObject({
+      ok: true,
+      status: 'approved',
+      kind: 'knowledge.delete',
+      result: { id: deleted.documentId, vectorIds: 0 },
+    });
+    expect(store.raw.prepare('SELECT count(*) AS count FROM knowledge_documents').get()).toEqual({
+      count: 1,
+    });
   });
 
   it('source=owner з T0-шляху ескалюється до пропозиції: attribution потребує ✅', async () => {
