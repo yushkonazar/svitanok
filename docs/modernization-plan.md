@@ -153,7 +153,14 @@
 - [x] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict (`npm run eval:openai`; явний read-only запуск, без PII або ключа в repo).
 - [ ] Запустити shadow mode лише для read-only cases; порівняти quality, tool correctness, latency, cost.
 - [ ] Canary fast lane, потім chat/reasoning lane; rollback через config.
-- [ ] Prototype Cloudflare Workflow orchestration для одного profile; переносити VPS workloads лише після вимірювання.
+- [x] Prototype Cloudflare Workflow orchestration для одного profile.
+      `DayPlanChain` is a declared Worker Workflow binding with durable chain
+      state, idempotent named steps, bounded event waits and an isolated
+      `day-planner` worker run; unit and workerd runtime tests cover the chain
+      rather than treating a Workflow declaration as evidence. This proves one
+      controlled profile only. No VPS workload is moved until a separately
+      reviewed production measurement establishes reliability, latency and
+      cost.
 
 **API policy:** current official OpenAI documentation says Responses supports custom functions, built-in tools, structured outputs, streaming and background mode; `store` defaults to true, so personal runs set it explicitly to false. Built-in web/file tools are opt-in and follow Svitanok's taint/citation rules. Source: [Create a response](https://developers.openai.com/api/reference/cli/resources/responses/methods/create).
 
