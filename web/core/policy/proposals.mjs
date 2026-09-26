@@ -87,7 +87,7 @@ import {
 import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
 import { sendMediaBytes } from '../tg/media.mjs';
 import { ensureFolderPath, uploadCsvAsSheet, uploadFile, trashFile } from '../adapters/drive.mjs';
-import { putSettings, updateSettings } from '../../kv-store.mjs';
+import { putSettings, updateSettings, updateState } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import {
   runCollectionsCreate,
@@ -115,6 +115,11 @@ import {
   importKnowledgeDocumentFromDrive,
   revokeKnowledgeDocument,
 } from '../knowledge-base.mjs';
+import {
+  applyBriefingFeedback,
+  BRIEFING_FEEDBACK_KEY,
+  briefingBlockPreference,
+} from '../brief/feedback.mjs';
 
 /** Тека експортів у Drive (S-0-6, S-N4-4): одна на всі види вивантажень. */
 export const EXPORT_FOLDER_PATH = ['Світанок', 'export'];
@@ -302,6 +307,43 @@ export const EXECUTORS = {
         nowMs,
       );
       return { result };
+    },
+  },
+  // Власний фідбек до блока briefing-а. В executor ще раз діє allowlist, бо
+  // `proposals.create` може обійти JSON-схему прямого інструмента.
+  'briefing.feedback': {
+    async execute(env, payload, nowMs) {
+      /** @type {unknown} */
+      let before = undefined;
+      const stored = await updateState(env, (current) => {
+        before = current[BRIEFING_FEEDBACK_KEY];
+        const applied = applyBriefingFeedback(
+          before,
+          { blockId: payload?.block_id, verdict: payload?.verdict },
+          nowMs,
+        );
+        return { ...current, [BRIEFING_FEEDBACK_KEY]: applied.next };
+      });
+      const blockId = String(payload?.block_id ?? '');
+      const verdict = String(payload?.verdict ?? '');
+      return {
+        prev: { existed: before !== undefined, value: before },
+        result: {
+          block_id: blockId,
+          verdict,
+          preference: briefingBlockPreference(stored[BRIEFING_FEEDBACK_KEY], blockId),
+        },
+      };
+    },
+    async undo(env, snapshot) {
+      await updateState(env, (current) => {
+        if (snapshot?.existed === true) {
+          return { ...current, [BRIEFING_FEEDBACK_KEY]: snapshot.value };
+        }
+        const withoutFeedback = { ...current };
+        delete withoutFeedback[BRIEFING_FEEDBACK_KEY];
+        return withoutFeedback;
+      });
     },
   },
   // Ідеї (етап 3 PR-4): create/update/analyze - T0 з «↩», delete - T1 без

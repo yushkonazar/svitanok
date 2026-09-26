@@ -66,6 +66,38 @@ export const TOOLS = {
     },
     run: (env, args, nowMs) => runRunsQuery(env, args, nowMs),
   },
+  // Явний feedback власника, не телеметрія й не вільний текст. `hide` ховає
+  // лише блок повного briefing-а; critical decision headline лишається, щоб
+  // особиста preference не приховала сигнал безпеки/терміновості.
+  'briefing.feedback': {
+    args: {
+      type: 'object',
+      required: ['block_id', 'verdict'],
+      properties: {
+        block_id: {
+          type: 'string',
+          enum: [
+            'weather',
+            'calendar',
+            'mail',
+            'stoic',
+            'fact',
+            'news',
+            'jobs',
+            'mock',
+            'currency',
+            'onthisday',
+            'weekly-review',
+          ],
+        },
+        verdict: { type: 'string', enum: ['useful', 'less', 'hide'] },
+      },
+    },
+    write: { kind: 'briefing.feedback' },
+    run: () => {
+      throw new Error('briefing.feedback виконується через policy, не напряму');
+    },
+  },
   'calendar.read': {
     args: {
       type: 'object',

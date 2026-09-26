@@ -10,6 +10,10 @@ type Route = { words: readonly string[]; tools: readonly string[] };
 
 const ROUTES: readonly Route[] = [
   {
+    words: ['брифінг', 'зведенн', 'корисн', 'менше такого', 'сховай', 'приховай', 'покажи знов'],
+    tools: ['briefing_feedback'],
+  },
+  {
     words: [
       'календар',
       'зустріч',

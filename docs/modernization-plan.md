@@ -165,7 +165,11 @@
 
 - [x] Critical deterministic layer: reminders, calendar conflicts, important email/job signal, time-sensitive weather. Worker snapshots both reminder stores and calendar intervals before dispatch; the briefing emits only dated, source/freshness/reason-tagged signals and never promotes an incomplete production snapshot.
 - [x] AI summary/ranking as non-critical enhancement with source/freshness/reason. It sees only bounded deterministic signal records, must return valid existing IDs, and is silently omitted on timeout/error/malformed output.
-- [ ] Per-block feedback: useful / less / hide.
+- [x] Per-block feedback: useful / less / hide. Власник може сказати це
+      асистенту для allowlisted блока; `hide` прибирає лише повний блок, не
+      critical decision headline, `less` стабільно опускає блок нижче, а
+      `useful` повертає його. Запис T0 має undo, після tainted external content
+      ескалується до T1. Mini App не змінювалась.
 - [ ] Measure open, action, save, dismiss; remove noisy blocks.
 
 ### 4B. Smart Job Hunter
@@ -197,7 +201,7 @@
 - [x] Explicit one-file Drive import: inspect metadata → T1 → repeated version/MIME check → bounded UTF-8 text extraction. No search/list/crawl route, and Google Docs/.txt/.md only.
 - [ ] Compare managed file search only as an isolated, privacy-reviewed experiment.
 
-**Зафіксована production-дія перед першим живим імпортом:** після деплою
+**Памʼять / production-дія перед першим живим імпортом:** після деплою
 перевидати Google OAuth refresh token через `node scripts/google-auth.mjs`,
 погодивши новий вузький scope `drive.readonly`, і оновити лише
 `GOOGLE_REFRESH_TOKEN` у Cloudflare. Без цього `knowledge.inspect/import`

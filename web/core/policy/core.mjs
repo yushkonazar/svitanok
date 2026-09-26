@@ -28,6 +28,9 @@ export const ACTION_LEVELS = {
   'collections.update': 'T0',
   'records.create': 'T0',
   'records.update': 'T0',
+  // Власна перевага до блока briefing-а. `hide` не вимикає critical decision
+  // layer, лише прибирає сам інформаційний блок; усі зміни мають «↩».
+  'briefing.feedback': 'T0',
   'chain.start': 'T0',
   'chain.cancel': 'T0',
   // Гроші (етап 6 PR-2, 07 §4): правило категорії й облік підписок - записи в
@@ -121,6 +124,9 @@ export const TAINT_ESCALATES = Object.freeze([
   // Факт переживає поточний контекст і впливає на наступні рішення. Зовнішній
   // текст може лише запропонувати його, але не записати автоматично.
   'facts.set',
+  // Після читання листа зовнішній текст не може непомітно сховати частину
+  // ранкового briefing-а. У чистому діалозі це локальна T0-перевага з «↩».
+  'briefing.feedback',
   'calendar.event',
   'tasks.create',
   'drive.write',

@@ -10,7 +10,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TOOLS } from '../web/core/tools/index.mjs';
-import { applyPolicy, resolveProposal, EXECUTORS } from '../web/core/policy/proposals.mjs';
+import {
+  applyPolicy,
+  resolveProposal,
+  resolveUndo,
+  EXECUTORS,
+} from '../web/core/policy/proposals.mjs';
 import { ACTION_LEVELS } from '../web/core/policy/core.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
@@ -214,6 +219,47 @@ describe('proposals.create: рівень бере kind з аргументів',
     };
     expect(row).toMatchObject({ key: 'мова' });
     expect(JSON.parse(row.value_json)).toBe('укр');
+  });
+});
+
+describe('briefing.feedback: прямий policy-шлях', () => {
+  it('зберігає allowlisted preference, дає ↩ і відновлює стан через той самий router', async () => {
+    const state = new Map<string, string>([['state', JSON.stringify({ keep: 'yes' })]]);
+    const { env } = makeEnv({ BRIEFING: memoryKv(state) });
+    const { status, body } = await callTool(env, 'briefing.feedback', {
+      block_id: 'news',
+      verdict: 'hide',
+    });
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      tool: 'briefing.feedback',
+      mode: 'executed',
+      result: { block_id: 'news', verdict: 'hide', preference: 'hidden' },
+    });
+    const undoId = (body.undo as { id?: string } | undefined)?.id;
+    expect(undoId).toBeTruthy();
+    expect(JSON.parse(state.get('state') ?? '{}')).toMatchObject({
+      keep: 'yes',
+      briefingFeedback: { blocks: { news: { hidden: true } } },
+    });
+
+    await expect(resolveUndo(env, String(undoId), NOW + 1)).resolves.toEqual({
+      ok: true,
+      status: 'undone',
+    });
+    expect(JSON.parse(state.get('state') ?? '{}')).toEqual({ keep: 'yes' });
+  });
+
+  it('rejects an invented block id at the internal contract boundary', async () => {
+    const { env } = makeEnv();
+    const { status, body } = await callTool(env, 'briefing.feedback', {
+      block_id: 'invented',
+      verdict: 'hide',
+    });
+    expect(status).toBe(400);
+    expect(String(body.error)).toContain('contract:');
   });
 });
 

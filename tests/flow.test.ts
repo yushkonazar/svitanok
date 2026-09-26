@@ -410,6 +410,62 @@ describe('runBriefing — deterministic critical headline (4A)', () => {
   });
 });
 
+describe('runBriefing — per-block feedback (4A)', () => {
+  it('hides only the requested full block, keeps the critical decision signal, and lowers a less-preferred block', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        state: memState({
+          briefingFeedback: {
+            version: 1,
+            blocks: {
+              weather: { useful: 0, less: 0, hidden: true, updatedAt: '2026-06-29T06:00:00.000Z' },
+              news: { useful: 0, less: 1, hidden: false, updatedAt: '2026-06-29T06:00:00.000Z' },
+            },
+          },
+        }),
+        modules: [
+          mod('weather', 'producer', async () => ({
+            id: 'weather',
+            title: 'Погода',
+            summary: 'Сильний вітер',
+            priority: 10,
+            data: {
+              locations: [
+                {
+                  name: 'Львів',
+                  tempC: 12,
+                  minC: 9,
+                  maxC: 13,
+                  feelsLikeC: 10,
+                  windMps: 5,
+                  condition: 'вітер',
+                  emoji: '💨',
+                  willRain: false,
+                  willBeCold: false,
+                  popPercent: 0,
+                  sunrise: 1,
+                  sunset: 2,
+                  alerts: ['Штормове попередження'],
+                },
+              ],
+            },
+          })),
+          mod('news', 'consumer', async () => block('news', 20)),
+          mod('stoic', 'consumer', async () => block('stoic', 30)),
+        ],
+      }),
+    );
+    expect(res.briefing.blocks.map((b) => [b.id, b.priority])).toEqual([
+      ['stoic', 30],
+      ['news', 120],
+    ]);
+    expect(res.briefing.decision?.signals.map((s) => s.source)).toContain('weather');
+    expect(notifier.sent[0]![0]).toContain('⚠️ Сьогодні: попередження про погоду');
+  });
+});
+
 describe('runBriefing — dry-run', () => {
   it('не шле, повертає повідомлення', async () => {
     const notifier = fakeNotifier();

@@ -42,6 +42,7 @@ import {
   type WeeklyReviewData,
 } from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
+import { BRIEFING_FEEDBACK_KEY, briefingBlockPreference } from '../web/core/brief/feedback.mjs';
 import {
   buildDecisionBrief,
   buildDecisionSummaryPrompt,
@@ -215,6 +216,11 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     log,
   };
 
+  // Feedback діє лише на presentation повного briefing-а, а не на producer-и:
+  // прихована «Погода» все одно має дати critical weather signal, прихований
+  // «Календар» — перевірку перетинів. Інакше preference могла б тихо
+  // вимкнути safety/decision layer замість одного інформаційного блока.
+  const briefingFeedback = state.get<unknown>(BRIEFING_FEEDBACK_KEY);
   const enabled = deps.modules.filter((m) => m.enabled(config));
   const { producers, consumers } = partitionModules(enabled);
 
@@ -268,8 +274,17 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
       );
     }
   }
+  const visibleBlocks = blocks
+    .filter((block) => briefingBlockPreference(briefingFeedback, block.id) !== 'hidden')
+    .map((block) => ({
+      ...block,
+      // «Менше такого» не змінює правдивість даних і не додає випадкову
+      // частоту: блок лишається доступним, але стабільно опускається нижче.
+      priority:
+        block.priority + (briefingBlockPreference(briefingFeedback, block.id) === 'less' ? 100 : 0),
+    }));
   const briefing = buildBriefingData(
-    blocks,
+    visibleBlocks,
     formatKyivDateLabel(clock.now()),
     generatedAt,
     decisionBrief,

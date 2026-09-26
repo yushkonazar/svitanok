@@ -62,6 +62,28 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       'Телеметрія системи за період (типово тиждень; «30d», «місяць»): прогони за профілями (кількість, медіана і p90 тривалості, помилки, кроки), останні помилки, квоти місяця з лімітами. Для блоку СИСТЕМА звіту.',
     args: z.object({ period: z.string().max(16).optional() }),
   }),
+  tool({
+    coreName: 'briefing.feedback',
+    description:
+      'Зафіксувати явний feedback власника до ОДНОГО блока ранкового briefing-а: block_id (weather·calendar·mail·stoic·fact·news·jobs·mock·currency·onthisday·weekly-review), verdict useful («корисно», також повертає прихований блок)·less («менше такого», опускає блок нижче)·hide («сховай»). Це змінює лише повний briefing; critical headline не приховується. T0 з «↩», а після зовнішнього тексту ядро попросить ✅.',
+    args: z.object({
+      block_id: z.enum([
+        'weather',
+        'calendar',
+        'mail',
+        'stoic',
+        'fact',
+        'news',
+        'jobs',
+        'mock',
+        'currency',
+        'onthisday',
+        'weekly-review',
+      ]),
+      verdict: z.enum(['useful', 'less', 'hide']),
+    }),
+    write: true,
+  }),
   // Чужі чати через Telegram Business (етап 6 PR-3, ADR-013). tainting: текст
   // пишуть інші люди - він приходить у <external source="inbox">, і після
   // цього виклику будь-який запис у треді стає пропозицією з ✅.
