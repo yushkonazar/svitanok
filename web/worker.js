@@ -74,6 +74,7 @@ import { handleStatus } from './api-status.mjs';
 import { handleArchiveRequest } from './api-archive.mjs';
 import { handleLeversRequest } from './api-levers.mjs';
 import { handleDeletionsRequest } from './api-deletions.mjs';
+import { handleMailAttention } from './api-mail-attention.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -464,6 +465,9 @@ export default {
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
+    }
+    if (url.pathname === '/api/mail/attention' && request.method === 'GET') {
+      return handleMailAttention(request, env);
     }
     if (url.pathname === '/api/weather') {
       return handleLiveWeather(request, env);
