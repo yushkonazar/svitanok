@@ -180,9 +180,12 @@
 ### 4B. Smart Job Hunter
 
 - [x] Rename current title-only number to explicit title relevance, until evidence is available (UI now says `за заголовком`, not fit; model prompt prohibits claims about missing description fields).
-- [ ] Fetch/store permitted job descriptions with source/freshness. RSS-витяги вже
-      санітизуються та дають UI підтверджені сигнали й дату; окреме завантаження
-      сторінок вакансій лишається після source-specific allowlist/retention policy.
+- [x] Fetch/store permitted job descriptions with source/freshness. Лише URL із
+      configured RSS, які збіглися з точними `https` host+pathPrefix правилами,
+      можуть бути page-fetched; кожен redirect перевіряється повторно. У state
+      лишається максимум 60 нормалізованих public excerpts на 14 діб із source і
+      fetchedAt; HTML і текст не йдуть у LLM чи Mini App. Title relevance ще не
+      перетворюється на оцінку повного опису.
 - [ ] Evidence dimensions: stack, level, location, language, salary, dealbreakers, missing skills, confidence.
 - [ ] Funnel: seen → saved → applied → interview → offer; learn only from explicit outcomes.
 

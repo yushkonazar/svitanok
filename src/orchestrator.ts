@@ -468,8 +468,9 @@ async function applyOwnerGeoFromKv(
   return next;
 }
 
-/** Хости allowlist для SourceFetcher — з jobs.sources (§8). Новини тепер через
- *  фіксований NewsData API (прямий fetch, не allowlisted). */
+/** Хости allowlist для SourceFetcher — з jobs.sources і вузьких routes
+ * descriptions (§8). Новини тепер через фіксований NewsData API (прямий
+ * fetch, не allowlisted). */
 function fetchAllowlist(config: AppConfig): string[] {
   const hosts = new Set<string>();
   const add = (url: string) => {
@@ -480,6 +481,9 @@ function fetchAllowlist(config: AppConfig): string[] {
     }
   };
   config.modules.jobs.sources.forEach(add);
+  for (const source of config.modules.jobs.descriptions?.sources ?? []) {
+    add(`https://${source.host}${source.pathPrefix}`);
+  }
   return [...hosts];
 }
 

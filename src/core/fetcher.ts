@@ -13,6 +13,20 @@ export interface FetcherOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface FetchRoute {
+  host: string;
+  pathPrefix: string;
+}
+
+export interface FetchRequestOptions {
+  /**
+   * Лише для вузьких page-fetchів, які вже отримали policy в config. Кожен
+   * redirect перевіряється так само; `undefined` лишає стандартний RSS/API
+   * режим, де URL має буквально походити з config.
+   */
+  allowedRoutes?: FetchRoute[];
+}
+
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const backoffMs = (attempt: number) => Math.min(500 * 2 ** attempt, 5000);
 const MAX_REDIRECTS = 5;
@@ -31,10 +45,23 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
   const allow = new Set(opts.allowlist.map((h) => h.toLowerCase()));
   const fetchImpl = opts.fetchImpl ?? fetch;
 
-  const ensureAllowed = (u: string): string => {
-    const host = new URL(u).hostname.toLowerCase();
+  const ensureAllowed = (u: string, allowedRoutes?: FetchRoute[]): string => {
+    const parsed = new URL(u);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) {
+      throw new Error('fetch заблоковано: URL має бути чистим https без auth/port');
+    }
+    const host = parsed.hostname.toLowerCase();
     if (!allow.has(host)) {
       throw new Error(`fetch заблоковано (не в allowlist): ${host}`);
+    }
+    if (
+      allowedRoutes &&
+      !allowedRoutes.some(
+        (route) =>
+          host === route.host.toLowerCase() && parsed.pathname.startsWith(route.pathPrefix),
+      )
+    ) {
+      throw new Error(`fetch заблоковано (не в allowlisted route): ${host}${parsed.pathname}`);
     }
     return host;
   };
@@ -42,10 +69,10 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
   // Ручне слідування редиректам: КОЖЕН хоп звіряємо з allowlist (анти-SSRF §8).
   // `redirect: 'follow'` йшов би куди завгодно поза allowlist — це послаблювало
   // б задекларовану гарантію (M3). У Node (undici) `manual` віддає 3xx+Location.
-  async function once(startUrl: string): Promise<string> {
+  async function once(startUrl: string, requestOpts?: FetchRequestOptions): Promise<string> {
     let url = startUrl;
     for (let hop = 0; ; hop++) {
-      ensureAllowed(url);
+      ensureAllowed(url, requestOpts?.allowedRoutes);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
       let res: Response;
@@ -83,14 +110,14 @@ export function createFetcher(opts: FetcherOptions): SourceFetcher {
   }
 
   return {
-    async fetch(url: string): Promise<string> {
+    async fetch(url: string, requestOpts?: FetchRequestOptions): Promise<string> {
       // Швидкий відсів заблокованого хоста ДО ретрай-циклу (кожен хоп once()
       // теж перевіряє — редиректи).
-      ensureAllowed(url);
+      ensureAllowed(url, requestOpts?.allowedRoutes);
       let lastErr: unknown;
       for (let attempt = 0; attempt <= opts.retries; attempt++) {
         try {
-          return await once(url);
+          return await once(url, requestOpts);
         } catch (e) {
           lastErr = e;
           const why = e instanceof Error ? e.message : String(e);

@@ -403,6 +403,7 @@ describe('forget target=all', () => {
   it('поля даних у `state` перелічені явно', () => {
     expect(FORGET_ALL_STATE_FIELDS).toContain('mailTriage');
     expect(FORGET_ALL_STATE_FIELDS).toContain('calendarToday');
+    expect(FORGET_ALL_STATE_FIELDS).toContain('jobDescriptions');
     expect(FORGET_ALL_KV_KEYS).toContain('stats');
   });
 

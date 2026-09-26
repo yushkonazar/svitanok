@@ -1,6 +1,7 @@
 // jobs (consumer). Вакансії з DOU + Djinni RSS. Збирає пул найсвіжіших,
 // LLM ранжує релевантність ЛИШЕ за заголовком під профіль, сортує, бере
-// top-perRun. Це не є оцінкою повного опису вакансії: опис ще не завантажується.
+// top-perRun. Дозволені public-сторінки вакансій можуть дати ДЕТЕРМІНОВАНІ
+// сигнали (стек/мова/формат), але ніколи не потрапляють у prompt скорингу.
 // Заголовок, бейдж % і «чому» — у data.items для дашборда; у короткий рядок
 // дня йдуть лише топ-MESSAGE_ITEMS заголовків.
 // Скоринг не вдався -> фолбек на свіжість (score=-1). Дедуп проти shownJobs.
@@ -15,11 +16,21 @@ const MAX_ITEMS_PER_FEED = 12;
 const POOL_SIZE = 20; // кандидатів на скоринг (перRun 3->7 підняв потребу в ширшому пулі)
 const MESSAGE_ITEMS = 2; // у Telegram — лише топ-збіги; повний список у дашборді
 const WORKUA_BASE = 'https://www.work.ua';
+const DESCRIPTION_TEXT_MAX = 6000;
+const DESCRIPTION_CACHE_CAP = 60;
 
 type ShownJobs = Record<string, string>; // canonicalUrl -> ISO date
 
 function decodeEntities(s: string): string {
   return s
+    .replace(/&#x([0-9a-f]+);?/gi, (_all, hex: string) => {
+      const point = Number.parseInt(hex, 16);
+      return Number.isFinite(point) && point <= 0x10ffff ? String.fromCodePoint(point) : '';
+    })
+    .replace(/&#(\d+);?/g, (_all, decimal: string) => {
+      const point = Number.parseInt(decimal, 10);
+      return Number.isFinite(point) && point <= 0x10ffff ? String.fromCodePoint(point) : '';
+    })
     .replace(/&#0?39;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/&mdash;/g, '—')
@@ -60,6 +71,8 @@ interface Candidate {
   url: string;
   /** Короткий опис з already-allowed RSS, лише для детермінованих фактів. */
   description?: string;
+  /** Санітизований public text з вузько дозволеної сторінки; ніколи не LLM input. */
+  pageDescription?: string;
   publishedAt?: string;
 }
 interface ScoredJob extends Candidate {
@@ -78,6 +91,198 @@ export interface JobSignals {
   workMode?: 'remote' | 'hybrid' | 'onsite';
   languages?: string[];
   salary?: string;
+}
+
+type JobDescriptionRule = AppConfig['modules']['jobs']['descriptions']['sources'][number];
+
+/** Лише санітизований, обмежений уривок public-вакансії. HTML не зберігаємо. */
+export interface JobDescriptionCacheEntry {
+  source: { host: string; pathPrefix: string };
+  fetchedAt: string;
+  text: string;
+}
+type JobDescriptionCache = Record<string, JobDescriptionCacheEntry>;
+
+function cleanRule(rule: JobDescriptionRule): { host: string; pathPrefix: string } {
+  return { host: rule.host.toLowerCase(), pathPrefix: rule.pathPrefix };
+}
+
+/** URL приходить лише з RSS. Перед page-fetch ще раз звіряємо точний route. */
+export function descriptionSourceFor(
+  url: string,
+  rules: readonly JobDescriptionRule[],
+): { host: string; pathPrefix: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port)
+    return null;
+  const host = parsed.hostname.toLowerCase();
+  for (const rawRule of rules) {
+    const rule = cleanRule(rawRule);
+    if (host === rule.host && parsed.pathname.startsWith(rule.pathPrefix)) return rule;
+  }
+  return null;
+}
+
+/**
+ * Витягти рівно текст: без script/style/noscript/comments/тегів, без HTML у
+ * state та без неконтрольованого росту. Це не HTML sanitizer для рендерингу —
+ * текст ніколи не віддається клієнту, лише проходить через signal extractor.
+ */
+export function normalizeJobDescription(html: string): string {
+  return decodeEntities(
+    html
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\p{Cc}/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  ).slice(0, DESCRIPTION_TEXT_MAX);
+}
+
+function freshCachedDescription(
+  value: unknown,
+  rule: { host: string; pathPrefix: string },
+  cutoff: number,
+): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as Partial<JobDescriptionCacheEntry>;
+  const fetchedAt = Date.parse(String(entry.fetchedAt ?? ''));
+  if (!Number.isFinite(fetchedAt) || fetchedAt < cutoff) return null;
+  if (!entry.source || typeof entry.source !== 'object') return null;
+  const source = entry.source as Partial<JobDescriptionCacheEntry['source']>;
+  if (source.host?.toLowerCase() !== rule.host || source.pathPrefix !== rule.pathPrefix)
+    return null;
+  if (
+    typeof entry.text !== 'string' ||
+    entry.text.length === 0 ||
+    entry.text.length > DESCRIPTION_TEXT_MAX
+  ) {
+    return null;
+  }
+  return entry.text;
+}
+
+/** Під час `state.update` ще раз звужуємо довільний старий blob до контракту. */
+function boundedDescriptionCache(value: unknown, cutoff: number): JobDescriptionCache {
+  if (!value || typeof value !== 'object') return {};
+  const valid: Array<[string, JobDescriptionCacheEntry]> = [];
+  for (const [url, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Partial<JobDescriptionCacheEntry>;
+    const fetchedAt = Date.parse(String(entry.fetchedAt ?? ''));
+    const source = entry.source;
+    if (
+      !url ||
+      !Number.isFinite(fetchedAt) ||
+      fetchedAt < cutoff ||
+      typeof entry.text !== 'string' ||
+      entry.text.length === 0 ||
+      entry.text.length > DESCRIPTION_TEXT_MAX ||
+      !source ||
+      typeof source !== 'object' ||
+      typeof source.host !== 'string' ||
+      typeof source.pathPrefix !== 'string'
+    ) {
+      continue;
+    }
+    valid.push([
+      url,
+      {
+        source: { host: source.host.toLowerCase(), pathPrefix: source.pathPrefix },
+        fetchedAt: new Date(fetchedAt).toISOString(),
+        text: entry.text,
+      },
+    ]);
+  }
+  valid.sort(([, a], [, b]) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt));
+  return Object.fromEntries(valid.slice(0, DESCRIPTION_CACHE_CAP));
+}
+
+/**
+ * Page-fetch не є загальним crawler-ом: беруться лише URLs already отримані з
+ * configured RSS, максимум N за run. Кожен виклик несе рівно один route, тому
+ * навіть redirect не може «перестрибнути» на іншу вакансійну зону.
+ */
+async function loadJobDescriptions(
+  ctx: Ctx<AppConfig>,
+  candidates: Candidate[],
+): Promise<Map<string, string>> {
+  const cfg = ctx.config.modules.jobs.descriptions;
+  if (!cfg?.enabled || cfg.sources.length === 0) return new Map();
+
+  const now = ctx.clock.now().getTime();
+  const cutoff = now - cfg.retentionDays * 86400_000;
+  const current = ctx.state.get<JobDescriptionCache>('jobDescriptions') ?? {};
+  const descriptions = new Map<string, string>();
+  const fetchedEntries: JobDescriptionCache = {};
+  const toFetch: Array<{ candidate: Candidate; rule: { host: string; pathPrefix: string } }> = [];
+
+  for (const candidate of candidates) {
+    const rule = descriptionSourceFor(candidate.url, cfg.sources);
+    if (!rule) continue;
+    const cached = freshCachedDescription(current[candidate.url], rule, cutoff);
+    if (cached) {
+      descriptions.set(candidate.url, cached);
+      continue;
+    }
+    if (toFetch.length < cfg.maxPerRun) toFetch.push({ candidate, rule });
+  }
+
+  const fetched = await Promise.allSettled(
+    toFetch.map(async ({ candidate, rule }) => {
+      const html = await ctx.fetcher.fetch(candidate.url, { allowedRoutes: [rule] });
+      const text = normalizeJobDescription(html);
+      if (!text) throw new Error('порожній опис після нормалізації');
+      return { url: candidate.url, rule, text };
+    }),
+  );
+
+  let changed = false;
+  for (const result of fetched) {
+    if (result.status === 'rejected') {
+      ctx.log.warn(
+        `jobs: опис вакансії не завантажено: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+      );
+      continue;
+    }
+    const { url, rule, text } = result.value;
+    descriptions.set(url, text);
+    fetchedEntries[url] = { source: rule, fetchedAt: new Date(now).toISOString(), text };
+    changed = true;
+  }
+
+  const boundedCurrent = boundedDescriptionCache(current, cutoff);
+  const needsCompaction =
+    Object.keys(boundedCurrent).length !== Object.keys(current).length ||
+    Object.entries(boundedCurrent).some(([url, entry]) => {
+      const old = current[url];
+      return (
+        old?.fetchedAt !== entry.fetchedAt ||
+        old?.text !== entry.text ||
+        old?.source?.host !== entry.source.host ||
+        old?.source?.pathPrefix !== entry.source.pathPrefix
+      );
+    });
+  if (changed || needsCompaction) {
+    // `set` із snapshot раннього run-а міг би знищити опис, який записав інший
+    // run. `update` перераховує merge на свіжому StateStoreDO/KV blob під час
+    // flush: додає лише щойно fetched entries, бере новіший запис при колізії.
+    ctx.state.update<JobDescriptionCache>('jobDescriptions', (latest) => {
+      const merged = { ...(latest ?? {}) };
+      for (const [url, entry] of Object.entries(fetchedEntries)) {
+        const oldAt = Date.parse(String(merged[url]?.fetchedAt ?? ''));
+        if (!Number.isFinite(oldAt) || oldAt <= Date.parse(entry.fetchedAt)) merged[url] = entry;
+      }
+      return boundedDescriptionCache(merged, cutoff);
+    });
+  }
+  return descriptions;
 }
 
 const STACK_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
@@ -107,7 +312,9 @@ const STACK_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
 
 /** Витягнути лише явно названі факти з заголовка та RSS-excerpt. */
 export function extractJobSignals(candidate: Candidate): JobSignals | undefined {
-  const text = `${candidate.title}\n${candidate.description ?? ''}`;
+  const text = [candidate.title, candidate.description, candidate.pageDescription]
+    .filter((part): part is string => Boolean(part))
+    .join('\n');
   const stack = STACK_PATTERNS.filter(([, re]) => re.test(text)).map(([name]) => name);
   const level = /\btrainee\b|\bintern(?:ship)?\b|\bстаж(?:ерування|ер)?\b/i.test(text)
     ? 'trainee'
@@ -312,26 +519,41 @@ export const jobsModule: Module<AppConfig> = {
     const pool = collectPool(lists, shown, cutoff);
     if (pool.length === 0) return null;
 
+    // Сигнали з page description суто детерміновані. В LLM і публічний payload
+    // текст не потрапляє; buildScorePrompt нижче бере тільки title.
+    const pageDescriptions = await loadJobDescriptions(ctx, pool);
+    const observedPool = pool.map((candidate) => ({
+      ...candidate,
+      ...(pageDescriptions.has(candidate.url)
+        ? { pageDescription: pageDescriptions.get(candidate.url)! }
+        : {}),
+    }));
+
     // LLM-ранжування заголовків; збій -> фолбек на свіжість (порядок пулу).
     // jobPrefs — памʼять із живої воронки (dismiss/applied→interview→offer), §D2.
     const jobPrefs = ctx.state.get<JobPrefs>('jobPrefs');
     let ranked: ScoredJob[];
     try {
-      const out = await ctx.llm.complete(buildScorePrompt(cfg.profile, pool, jobPrefs), {
+      const out = await ctx.llm.complete(buildScorePrompt(cfg.profile, observedPool, jobPrefs), {
         timeoutMs: ctx.config.llm.timeoutMs,
         tag: 'jobs',
       });
       const scores = parseScores(out);
       if (scores.size === 0) throw new Error('порожній скоринг');
-      ranked = pool
+      ranked = observedPool
         .map((c, i) => {
           const signals = extractJobSignals(c);
-          const { description: _description, ...visible } = c;
+          const { description: _description, pageDescription: _pageDescription, ...visible } = c;
           return {
             ...visible,
             score: scores.get(i + 1)?.score ?? 0,
             why: scores.get(i + 1)?.why ?? '',
-            evidence: c.description ? ('listing_excerpt' as const) : ('title_only' as const),
+            // Сумісний з Mini App enum: observed non-title source може бути
+            // RSS excerpt або bounded page excerpt. Сам score лишається title-only.
+            evidence:
+              c.description || c.pageDescription
+                ? ('listing_excerpt' as const)
+                : ('title_only' as const),
             ...(signals ? { signals } : {}),
           };
         })
@@ -340,14 +562,17 @@ export const jobsModule: Module<AppConfig> = {
       ctx.log.warn(
         `jobs: скоринг не вдався (фолбек на свіжість): ${e instanceof Error ? e.message : String(e)}`,
       );
-      ranked = pool.map((c) => {
+      ranked = observedPool.map((c) => {
         const signals = extractJobSignals(c);
-        const { description: _description, ...visible } = c;
+        const { description: _description, pageDescription: _pageDescription, ...visible } = c;
         return {
           ...visible,
           score: -1,
           why: '',
-          evidence: c.description ? ('listing_excerpt' as const) : ('title_only' as const),
+          evidence:
+            c.description || c.pageDescription
+              ? ('listing_excerpt' as const)
+              : ('title_only' as const),
           ...(signals ? { signals } : {}),
         };
       });

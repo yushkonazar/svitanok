@@ -81,16 +81,22 @@ describe('buildPruners', () => {
     },
   } as AppConfig;
 
-  it('чистить старі shownNews, shownMail і shownJobs', () => {
+  it('чистить старі shownNews, shownMail, shownJobs і page-cache вакансій', () => {
     const data: Record<string, unknown> = {
       shownNews: { recent: iso(2), old: iso(40) },
       shownMail: { recent: iso(1), old: iso(10) },
       shownJobs: { recent: iso(3), old: iso(30) },
+      jobDescriptions: {
+        recent: { fetchedAt: iso(2), text: 'public text' },
+        old: { fetchedAt: iso(30), text: 'public text' },
+        broken: { fetchedAt: 'not-a-date', text: 'public text' },
+      },
     };
     for (const p of buildPruners(config, Date.now())) p(data);
     expect(Object.keys(data.shownNews as object)).toEqual(['recent']);
     expect(Object.keys(data.shownMail as object)).toEqual(['recent']);
     expect(Object.keys(data.shownJobs as object)).toEqual(['recent']);
+    expect(Object.keys(data.jobDescriptions as object)).toEqual(['recent']);
   });
 
   /* B20/F4: shownJobs був єдиною з чотирьох dedup-мап без прунера — по запису
@@ -108,6 +114,22 @@ describe('buildPruners', () => {
     for (const key of ['shownNews', 'shownMail', 'shownJobs']) {
       expect(Object.keys(data[key] as object)).toEqual([]);
     }
+  });
+
+  it('page-cache вакансій лишається bounded навіть за несподівано великого state', () => {
+    const jobDescriptions: Record<string, unknown> = {};
+    const now = Date.now();
+    for (let i = 0; i < 65; i++) {
+      jobDescriptions[`https://jobs.example/${i}`] = {
+        // Всі записи свіжі: ізолюємо саме cap=60 від перевірки ретенції вище.
+        fetchedAt: new Date(now + i).toISOString(),
+        text: 'public text',
+      };
+    }
+    const data: Record<string, unknown> = { jobDescriptions };
+    for (const p of buildPruners(config, now)) p(data);
+    expect(Object.keys(data.jobDescriptions as object)).toHaveLength(60);
+    expect(data.jobDescriptions).not.toHaveProperty('https://jobs.example/0');
   });
 
   it('відсутня мапа й биті дати не валять прунер', () => {

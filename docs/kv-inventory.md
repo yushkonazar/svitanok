@@ -48,6 +48,11 @@ dispatch, health alert), або зберігає попередню гарант
 `exposed`, `action`, `save`, `dismiss`). У ньому немає тексту брифінгу, URL,
 назв, тем або іншого контенту. Це не новий KV ключ і не окрема подія доставки.
 
+Поле `state.jobDescriptions` також canonical у `StateStoreDO`: до 60
+нормалізованих уривків **public** вакансій, кожен із exact source route та
+`fetchedAt`, не довше 14 діб. HTML не зберігається, а текст не стає payload
+Mini App або LLM input. Це поле входить до T2 `forget all`.
+
 ## Scheduler markers
 
 `dayPlanKickDay`, `memorySummarizedDay`, `subscriptionRemindDay`,

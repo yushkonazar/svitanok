@@ -5,6 +5,8 @@ import {
   buildScorePrompt,
   parseWorkUa,
   extractJobSignals,
+  descriptionSourceFor,
+  normalizeJobDescription,
   updateJobPrefs,
   JOB_PREFS_CAP,
   type JobPrefs,
@@ -91,6 +93,41 @@ describe('jobs — observed listing signals', () => {
     expect(extractJobSignals({ title: 'Software Engineer', url: 'https://jobs.example/1' })).toBe(
       undefined,
     );
+  });
+
+  it('може читати лише нормалізований page excerpt, не змінюючи title-only score', () => {
+    expect(
+      extractJobSignals({
+        title: 'Software Engineer',
+        url: 'https://jobs.example/1',
+        pageDescription: 'Remote role. Node.js, Docker. English required.',
+      }),
+    ).toEqual({ stack: ['Node.js', 'Docker'], workMode: 'remote', languages: ['English'] });
+  });
+});
+
+describe('jobs — bounded page descriptions', () => {
+  const rules = [
+    { host: 'jobs.dou.ua', pathPrefix: '/companies/' },
+    { host: 'djinni.co', pathPrefix: '/jobs/' },
+  ];
+
+  it('приймає тільки точний public route, без credentials/port', () => {
+    expect(descriptionSourceFor('https://jobs.dou.ua/companies/acme/vacancies/42', rules)).toEqual(
+      rules[0],
+    );
+    expect(descriptionSourceFor('https://jobs.dou.ua/vacancies/42', rules)).toBeNull();
+    expect(descriptionSourceFor('https://user:pass@jobs.dou.ua/companies/acme', rules)).toBeNull();
+    expect(descriptionSourceFor('https://jobs.dou.ua:8443/companies/acme', rules)).toBeNull();
+  });
+
+  it('зберігає тільки plain text — script/style/comments/HTML не проходять', () => {
+    const text = normalizeJobDescription(
+      '<!-- hidden --><style>.x{}</style><script>secret()</script><p>Node.js &amp; <b>Remote</b></p>',
+    );
+    expect(text).toBe('Node.js & Remote');
+    expect(text).not.toContain('secret');
+    expect(normalizeJobDescription('x'.repeat(7000))).toHaveLength(6000);
   });
 });
 
@@ -238,6 +275,106 @@ describe('jobs — скоринг і сортування', () => {
       signals: { stack: ['TypeScript', 'React'], level: 'junior', workMode: 'remote' },
     });
     expect(item).not.toHaveProperty('description');
+  });
+
+  it('фетчить лише дозволений page route, кешує public plain text і не віддає його клієнту', async () => {
+    const jobUrl = 'https://jobs.dou.ua/companies/acme/vacancies/42';
+    const fetch = vi.fn(async (url: string, opts?: { allowedRoutes?: unknown[] }) => {
+      if (url === 'https://jobs.dou.ua/feed') {
+        return feed([['Software Engineer', jobUrl]]);
+      }
+      expect(url).toBe(jobUrl);
+      expect(opts).toEqual({ allowedRoutes: [{ host: 'jobs.dou.ua', pathPrefix: '/companies/' }] });
+      return '<script>PRIVATE_MARKER</script><p>Remote Node.js role. English. $2000</p>';
+    });
+    const state = memState();
+    const update = vi.spyOn(state, 'update');
+    const set = vi.spyOn(state, 'set');
+    const ctx = makeCtx({
+      state,
+      fetcher: { fetch },
+      llm: { complete: vi.fn(async () => '[{"i":1,"score":80,"why":"title"}]') },
+    });
+    Object.assign(ctx.config.modules.jobs, {
+      perRun: 1,
+      sources: ['https://jobs.dou.ua/feed'],
+      descriptions: {
+        enabled: true,
+        maxPerRun: 4,
+        retentionDays: 14,
+        sources: [{ host: 'jobs.dou.ua', pathPrefix: '/companies/' }],
+      },
+    });
+
+    const block = await jobsModule.run(ctx);
+    const item = (block!.data as { items: Record<string, unknown>[] }).items[0]!;
+    const stored =
+      ctx.state.get<Record<string, { text: string; fetchedAt: string; source: unknown }>>(
+        'jobDescriptions',
+      )![jobUrl]!;
+    expect(fetch).toHaveBeenCalledTimes(2); // RSS + one exact page
+    expect(stored).toMatchObject({
+      source: { host: 'jobs.dou.ua', pathPrefix: '/companies/' },
+      text: 'Remote Node.js role. English. $2000',
+    });
+    expect(stored.fetchedAt).toBe('2026-07-01T05:00:00.000Z');
+    expect(item).toMatchObject({
+      evidence: 'listing_excerpt',
+      signals: { stack: ['Node.js'], workMode: 'remote', languages: ['English'], salary: '$2000' },
+    });
+    expect(JSON.stringify(item)).not.toContain('PRIVATE_MARKER');
+    expect(JSON.stringify(item)).not.toContain('Node.js role');
+    expect((ctx.llm.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0]).not.toContain(
+      'PRIVATE_MARKER',
+    );
+    expect(update).toHaveBeenCalledWith('jobDescriptions', expect.any(Function));
+    expect(set).not.toHaveBeenCalledWith('jobDescriptions', expect.anything());
+  });
+
+  it('використовує свіжий кеш без page-fetch і не відкриває URL поза route', async () => {
+    const allowed = 'https://jobs.dou.ua/companies/acme/vacancies/42';
+    const denied = 'https://jobs.dou.ua/private/43';
+    const state = memState({
+      jobDescriptions: {
+        [allowed]: {
+          source: { host: 'jobs.dou.ua', pathPrefix: '/companies/' },
+          fetchedAt: '2026-06-30T05:00:00.000Z',
+          text: 'Docker remote role',
+        },
+      },
+    });
+    const fetch = vi.fn(async (url: string) => {
+      expect(url).toBe('https://jobs.dou.ua/feed');
+      return feed([
+        ['Allowed', allowed],
+        ['Denied', denied],
+      ]);
+    });
+    const ctx = makeCtx({
+      state,
+      fetcher: { fetch },
+      llm: {
+        complete: vi.fn(
+          async () => '[{"i":1,"score":80,"why":"title"},{"i":2,"score":70,"why":"title"}]',
+        ),
+      },
+    });
+    Object.assign(ctx.config.modules.jobs, {
+      perRun: 2,
+      sources: ['https://jobs.dou.ua/feed'],
+      descriptions: {
+        enabled: true,
+        maxPerRun: 4,
+        retentionDays: 14,
+        sources: [{ host: 'jobs.dou.ua', pathPrefix: '/companies/' }],
+      },
+    });
+
+    const block = await jobsModule.run(ctx);
+    expect(fetch).toHaveBeenCalledTimes(1); // only RSS: cache hit + denied route
+    const items = (block!.data as { items: Record<string, unknown>[] }).items;
+    expect(items[0]).toMatchObject({ signals: { stack: ['Docker'], workMode: 'remote' } });
+    expect(JSON.stringify(items)).not.toContain('Docker remote role');
   });
 
   it('дедуп: показана вакансія не потрапляє в пул', async () => {

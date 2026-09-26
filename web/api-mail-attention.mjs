@@ -9,7 +9,7 @@ const MAX_TEXT = 180;
 /** @param {unknown} value */
 const safe = (value) =>
   String(value ?? '')
-    .replace(/[\u0000-\u001f]/g, ' ')
+    .replace(/\p{Cc}/gu, ' ')
     .trim()
     .slice(0, MAX_TEXT);
 

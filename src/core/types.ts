@@ -71,8 +71,16 @@ export interface LLMClient {
 }
 
 export interface SourceFetcher {
-  /** Тільки allowlist; таймаут; ретрай з бекофом. Лінки з контенту не відкриваємо (SSRF). */
-  fetch(url: string): Promise<string>;
+  /**
+   * Тільки allowlist; таймаут; ретрай з бекофом. Звичайні лінки з контенту
+   * server-side не відкриваємо. Єдиний вузький виняток — вакансія з already
+   * allowed RSS, коли caller дає `allowedRoutes`; і старт, і КОЖЕН redirect
+   * тоді мусять збігтися з точною парою host+pathPrefix (анти-SSRF).
+   */
+  fetch(
+    url: string,
+    opts?: { allowedRoutes?: Array<{ host: string; pathPrefix: string }> },
+  ): Promise<string>;
 }
 
 export interface Logger {
