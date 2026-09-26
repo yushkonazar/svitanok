@@ -143,6 +143,45 @@ describe('OpenAI Responses runtime', () => {
     expect(payload.tools).toEqual([{ type: 'web_search', search_context_size: 'medium' }]);
   });
 
+  it('keeps provider web citations visible and estimates cost only from configured prices', async () => {
+    const fetchFn = vi.fn(async () =>
+      Response.json({
+        id: 'resp_sources',
+        model: 'gpt-6-sol',
+        status: 'completed',
+        output_text: 'Ось короткий висновок.',
+        output: [
+          {
+            type: 'message',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Ось короткий висновок.',
+                annotations: [
+                  { type: 'url_citation', title: 'Офіційне джерело', url: 'https://example.com/a' },
+                  { type: 'url_citation', title: 'bad', url: 'javascript:alert(1)' },
+                ],
+              },
+            ],
+          },
+        ],
+        usage: { input_tokens: 1_000, output_tokens: 500, total_tokens: 1_500 },
+      }),
+    ) as unknown as typeof fetch;
+    const engine = createOpenAiEngine({
+      apiKey: 'test-key',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+      reasoningEffort: 'low',
+      fetchFn,
+      pricing: { standard: { inputPerMillionUsd: 2, outputPerMillionUsd: 8 } },
+    });
+
+    await expect(engine.run(options({ toolNames: [] }), 'досліди')).resolves.toMatchObject({
+      finalText: 'Ось короткий висновок.\n\nДжерела:\n1. Офіційне джерело — https://example.com/a',
+      estimatedCostUsd: 0.006,
+    });
+  });
+
   it('refuses every provider builtin on a run that has Core tools', async () => {
     const engine = createOpenAiEngine({
       apiKey: 'test-key',

@@ -23,6 +23,7 @@ import {
 import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME, type BrainToolDef } from './tools/schemas.js';
 import { toolStatusWord } from './tools/status-words.js';
+import { routeChatTools } from './tool-routing.js';
 import {
   DELEGATE_WORKERS,
   QUICK_WORKER,
@@ -79,6 +80,8 @@ export interface EngineOutcome {
   model?: string | null;
   responseId?: string | null;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null;
+  /** Estimated only when the deployment configured its own model prices. */
+  estimatedCostUsd?: number | null;
   /** Read-only OpenAI comparison. It never contains generated text, prompts,
    * arguments, or Core results and is present only when the owner enabled an
    * explicitly scoped shadow lane. */
@@ -195,6 +198,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     let lastStatusMs = 0;
     let lastStatusLen = 0;
     let escalateOutcome: RunOutcome | undefined;
+    // `chat` gets a deterministic minimum surface for this particular turn;
+    // service profiles retain their reviewed static allowlists. Core's static
+    // profile gate below remains defence in depth for malformed/test engines.
 
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort('timeout'), profile.timeoutMs);
@@ -558,6 +564,8 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       const safetyIdentifier = req.chat_id
         ? `${req.chat_id}:${req.thread_id === 'dm' ? 'default' : req.thread_id}`
         : `internal:${req.thread_id}`;
+      const activeToolNames =
+        profile.name === 'chat' ? routeChatTools(inputText, profile.toolNames) : profile.toolNames;
       const runCtx = {
         abortSignal: abort.signal,
         onToolCall,
@@ -582,7 +590,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
                 // складений, підписаний Core-ом Telegram target.
                 safetyIdentifier,
                 maxTurns: profile.maxTurns,
-                toolNames: profile.toolNames,
+                toolNames: activeToolNames,
                 ...(profile.builtinTools?.length
                   ? { builtinTools: [...profile.builtinTools] }
                   : {}),
@@ -783,13 +791,18 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
   };
 }
 
-function openAiTelemetryNote(outcome: Pick<EngineOutcome, 'responseId' | 'usage'>): string {
+function openAiTelemetryNote(
+  outcome: Pick<EngineOutcome, 'responseId' | 'usage' | 'estimatedCostUsd'>,
+): string {
   const parts = [
     `response=${safeTelemetry(outcome.responseId, 100) ?? 'unknown'}`,
     `input_tokens=${outcome.usage?.inputTokens ?? 'unknown'}`,
     `output_tokens=${outcome.usage?.outputTokens ?? 'unknown'}`,
     `total_tokens=${outcome.usage?.totalTokens ?? 'unknown'}`,
   ];
+  if (typeof outcome.estimatedCostUsd === 'number') {
+    parts.push(`cost_usd=${outcome.estimatedCostUsd.toFixed(8)}`);
+  }
   return parts.join(' ');
 }
 

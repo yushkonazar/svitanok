@@ -564,6 +564,32 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
         )
         .run();
     }
+    // The brain sends only an allowlisted telemetry note, never prompts or
+    // generated text. Project it onto `runs` as well: runs.query and the
+    // Mini App can aggregate real OpenAI token use without scraping logs.
+    const model = steps.find(
+      (step) => step?.kind === 'model' && String(step?.name).startsWith('openai:'),
+    );
+    const modelTelemetry = readOpenAiTelemetry(model?.note);
+    if (modelTelemetry) {
+      await env.DB.prepare(
+        `UPDATE runs SET model = COALESCE(?, model),
+                         tokens_in = COALESCE(?, tokens_in),
+                         tokens_out = COALESCE(?, tokens_out),
+                         cost_note = COALESCE(?, cost_note)
+         WHERE id = ?`,
+      )
+        .bind(
+          typeof model?.name === 'string' ? model.name.slice(0, 128) : null,
+          modelTelemetry.inputTokens,
+          modelTelemetry.outputTokens,
+          modelTelemetry.costUsd == null
+            ? null
+            : `openai_estimate_usd=${modelTelemetry.costUsd.toFixed(8)}`,
+          runId,
+        )
+        .run();
+    }
   } catch (/** @type {any} */ e) {
     console.error('internal: запис run_steps впав', e?.message);
     telemetryPersisted = false;
@@ -657,6 +683,23 @@ async function handleRuns(env, ctx, runId, body, nowMs) {
     steps: steps.length,
     telemetry: telemetryPersisted ? 'persisted' : 'deferred',
   });
+}
+
+/** Parse only numeric, allowlisted fields written by brain/agent.ts.
+ * @param {unknown} note */
+function readOpenAiTelemetry(note) {
+  if (typeof note !== 'string') return null;
+  /** @param {string} key */
+  const number = (key) => {
+    const found = new RegExp(`(?:^|\\s)${key}=([0-9]+(?:\\.[0-9]+)?)`).exec(note)?.[1];
+    const value = Number(found);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  };
+  const inputTokens = number('input_tokens');
+  const outputTokens = number('output_tokens');
+  const costUsd = number('cost_usd');
+  if (inputTokens == null && outputTokens == null && costUsd == null) return null;
+  return { inputTokens, outputTokens, costUsd };
 }
 
 /**

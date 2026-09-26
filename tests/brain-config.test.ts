@@ -31,6 +31,7 @@ describe('loadConfig: обовʼязкові змінні', () => {
       aiProvider: 'claude',
       openAiApiKey: null,
       openAiModels: null,
+      openAiPricing: null,
       openAiReasoningEffort: null,
       openAiRollout: null,
       openAiCanaryTargets: [],
