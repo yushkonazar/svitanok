@@ -202,9 +202,16 @@
 
 ### 4C. Email Attention
 
-- [ ] Read-only attention view built from deterministic urgency signals plus constrained summary.
-- [ ] Keep mail content tainted; citations/message links and no automatic send.
-- [ ] User confirmation for every reply/archive/external effect.
+- [x] Read-only attention view built from deterministic urgency signals plus a
+      bounded aggregate summary. It exposes at most 20 owner-visible headers,
+      never body/snippet, and explicitly reports its read-only/tainted mode.
+- [x] Keep mail content tainted; each item has a validated Gmail message
+      citation/link, while assistant mail reads use external taint markup.
+      `gmail.send`/`gmail.modify` are absent from scopes and there is no send,
+      reply, archive, or external-effect endpoint.
+- [x] User confirmation for every reply/archive/external effect: these mail
+      effects are currently unavailable by capability; any future write must
+      enter the existing T1 proposal policy rather than bypass it.
 
 ### 4D. Personal Analytics and learning
 

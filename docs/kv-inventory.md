@@ -60,6 +60,13 @@ description, профіль власника чи LLM-висновок. На й�
 `fetchedAt`, не довше 14 діб. HTML не зберігається, а текст не стає payload
 Mini App або LLM input. Це поле входить до T2 `forget all`.
 
+Поле `state.mailTriage` — canonical cache Gmail для детермінованого тріажу:
+до 60 кандидатів не довше 3 діб. Воно може містити зовнішні mail headers і
+snippet, тому є tainted; `GET /api/mail/attention` повертає максимум 20
+owner-only записів без snippet/body, лише з bounded header metadata та
+валідуваним Gmail citation. Усі mail write-effects відсутні і на рівні API, і
+на рівні Google scopes; `mailTriage` входить до T2 `forget all`.
+
 ## Scheduler markers
 
 `dayPlanKickDay`, `memorySummarizedDay`, `subscriptionRemindDay`,

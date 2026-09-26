@@ -105,16 +105,27 @@ export function classifyMailAttention(candidate) {
  */
 export const MAIL_SEEN_CAP = 300;
 
-/** @param {unknown} raw @returns {MailTriageState} */
-export function normalizeTriageState(raw) {
+/**
+ * Нормалізувати cache тріажу. Коли відомий `nowMs`, заодно прибрати старі
+ * кандидати: навіть за вимкненого Gmail або серії помилок raw headers/snippet
+ * не мають лежати довше нашого триденного вікна.
+ * @param {unknown} raw @param {number|null} [nowMs] @returns {MailTriageState}
+ */
+export function normalizeTriageState(raw, nowMs = null) {
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {any} */ (raw) : {};
+  const cutoff = Number.isFinite(nowMs) ? Number(nowMs) - MAIL_CANDIDATE_TTL_MS : null;
   return {
     historyId: typeof o.historyId === 'string' && o.historyId ? o.historyId : null,
     lastRunMs: Number.isFinite(o.lastRunMs) ? Number(o.lastRunMs) : 0,
     fails: Number.isFinite(o.fails) ? Number(o.fails) : 0,
     alerted: o.alerted === true,
     candidates: Array.isArray(o.candidates)
-      ? o.candidates.filter((/** @type {any} */ c) => c && typeof c.id === 'string')
+      ? o.candidates.filter(
+          (/** @type {any} */ c) =>
+            c &&
+            typeof c.id === 'string' &&
+            (cutoff == null || (Number.isFinite(c.atMs) && Number(c.atMs) >= cutoff)),
+        )
       : [],
     seen: Array.isArray(o.seen)
       ? o.seen.filter((/** @type {unknown} */ id) => typeof id === 'string').slice(0, MAIL_SEEN_CAP)
@@ -150,7 +161,7 @@ export function mergeCandidates(previous, fresh, ctx) {
  * @param {number} [nowMs]
  */
 export async function mailTriageTask(env, nowMs = Date.now()) {
-  const state = normalizeTriageState((await readState(env))[MAIL_TRIAGE_KEY]);
+  const state = normalizeTriageState((await readState(env))[MAIL_TRIAGE_KEY], nowMs);
   if (nowMs - state.lastRunMs < MAIL_TRIAGE_PERIOD_MS) return { skipped: 'period' };
   if (!env.GOOGLE_REFRESH_TOKEN) return { skipped: 'no-google' };
   if (!hasFeatureScope(await googleGrantedScopes(env), 'mail')) {
@@ -222,7 +233,7 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
   }
 
   const store = await updateState(env, (blob) => {
-    const prev = normalizeTriageState(blob[MAIL_TRIAGE_KEY]);
+    const prev = normalizeTriageState(blob[MAIL_TRIAGE_KEY], nowMs);
     const shown = blob.shownMail && typeof blob.shownMail === 'object' ? blob.shownMail : {};
     return {
       ...blob,
@@ -238,7 +249,7 @@ export async function mailTriageTask(env, nowMs = Date.now()) {
       },
     };
   });
-  const saved = normalizeTriageState(store[MAIL_TRIAGE_KEY]);
+  const saved = normalizeTriageState(store[MAIL_TRIAGE_KEY], nowMs);
   return {
     added: fresh.length,
     candidates: saved.candidates.length,
@@ -299,7 +310,7 @@ async function collectIds(env, state) {
 async function noteFailure(env, nowMs, reason) {
   let shouldAlert = false;
   await updateState(env, (blob) => {
-    const prev = normalizeTriageState(blob[MAIL_TRIAGE_KEY]);
+    const prev = normalizeTriageState(blob[MAIL_TRIAGE_KEY], nowMs);
     const fails = prev.fails + 1;
     shouldAlert = fails >= MAIL_FAIL_ALERT_AT && !prev.alerted;
     return {

@@ -212,6 +212,33 @@ describe('mergeCandidates', () => {
   });
 });
 
+describe('normalizeTriageState retention', () => {
+  it('prunes candidate headers and snippets after the three-day window when a task runs', () => {
+    const state = normalizeTriageState(
+      {
+        candidates: [
+          {
+            id: 'old',
+            from: 'old@example.com',
+            subject: 'old',
+            snippet: 'old private',
+            atMs: NOW - MAIL_CANDIDATE_TTL_MS - 1,
+          },
+          {
+            id: 'fresh',
+            from: 'fresh@example.com',
+            subject: 'fresh',
+            snippet: 'fresh private',
+            atMs: NOW - MAIL_CANDIDATE_TTL_MS,
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(state.candidates.map((candidate) => candidate.id)).toEqual(['fresh']);
+  });
+});
+
 describe('mail-triage', () => {
   it('холодний старт: пошук + метадані → кандидати і historyId у KV', async () => {
     const { impl } = gmailFetch({

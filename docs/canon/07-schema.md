@@ -190,6 +190,13 @@ KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, 
 вподобання: `jobPrefs` навчається лише від явних `dismiss`/`applied`/
 `interview`/`offer`, а не від `seen`, `rejected` чи `failed`.
 
+`GET /api/mail/attention` — owner-only, tainted і `read_only`: повертає
+`lastRunMs`, deterministic `summary` та не більше 20 `{ id, from, subject,
+atMs, level, reasons, citation }` без body/snippet. `citation` є лише
+`{ source: 'gmail_message', messageId, url }` із валідованого id. Немає route
+для reply/archive/send, а Google token не має `gmail.send` чи `gmail.modify`;
+майбутній mail write може існувати тільки як T1 proposal.
+
 Повна класифікація кожного KV ключа, його retention і незакритих scheduler-only state machines живе в [KV inventory](../kv-inventory.md); новий KV record не можна додати без відповідного рядка там і T2 scope в `data-retention.md`.
 
 ## 9. Повідомлення: формат callback-даних
