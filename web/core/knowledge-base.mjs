@@ -203,3 +203,40 @@ export async function revokeKnowledgeDocument(env, documentId, nowMs = Date.now(
       .bind(id),
   ]);
 }
+
+/**
+ * Фізичне видалення після revoke. Зовнішня проєкція завжди йде першою: D1
+ * лишається truth про те, які vector_id треба прибрати, а невдалий delete не
+ * стирає цей список. `forget` зможе викликати цю ж функцію без особливого
+ * шляху для документів.
+ * @param {Env} env @param {unknown} documentId
+ */
+export async function deleteKnowledgeDocument(env, documentId) {
+  const id = text(documentId, 'documentId', 80);
+  const { results } = await db(env)
+    .prepare(
+      `SELECT c.vector_id FROM knowledge_chunks c
+       JOIN knowledge_document_versions v ON v.id = c.document_version_id
+       WHERE v.document_id = ? AND c.vector_id IS NOT NULL`,
+    )
+    .bind(id)
+    .all();
+  const vectorIds = (results ?? []).map((row) => String(row.vector_id)).filter(Boolean);
+  if (vectorIds.length > 0) {
+    if (!env.VECTORIZE) throw new Error('база знань: VECTORIZE потрібен для видалення проєкції');
+    await env.VECTORIZE.deleteByIds(vectorIds);
+  }
+  await db(env).batch([
+    db(env)
+      .prepare(
+        `DELETE FROM knowledge_chunks
+         WHERE document_version_id IN (
+           SELECT id FROM knowledge_document_versions WHERE document_id = ?
+         )`,
+      )
+      .bind(id),
+    db(env).prepare('DELETE FROM knowledge_document_versions WHERE document_id = ?').bind(id),
+    db(env).prepare('DELETE FROM knowledge_documents WHERE id = ?').bind(id),
+  ]);
+  return { vectorIds: vectorIds.length };
+}

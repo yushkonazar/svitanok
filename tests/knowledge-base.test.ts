@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   KNOWLEDGE_CHUNK_MAX_CHARS,
   chunkKnowledgeText,
+  deleteKnowledgeDocument,
   ingestKnowledgeDocument,
   revokeKnowledgeDocument,
   runKnowledgeSearch,
@@ -146,5 +147,40 @@ describe('narrow knowledge base', () => {
         },
       ],
     });
+  });
+
+  it('deletes vector projection before local chunks and preserves truth on a vector failure', async () => {
+    const store = d1();
+    const vectorDeletes: string[][] = [];
+    const env = workerEnv({
+      DB: store.stub,
+      VECTORIZE: { deleteByIds: async (ids: string[]) => void vectorDeletes.push(ids) },
+    });
+    const added = await ingestKnowledgeDocument(env, {
+      sourceType: 'upload',
+      sourceRef: 'learning-delete',
+      title: 'Конспект для видалення',
+      kind: 'learning',
+      sourceVersion: '1',
+      content: 'Цей документ треба видалити повністю.',
+    });
+    store.database.prepare("UPDATE knowledge_chunks SET vector_id = 'kb-vector-1'").run();
+    await expect(deleteKnowledgeDocument(env, added.documentId)).resolves.toEqual({ vectorIds: 1 });
+    expect(vectorDeletes).toEqual([['kb-vector-1']]);
+    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({ n: 0 });
+
+    const second = await ingestKnowledgeDocument(env, {
+      sourceType: 'upload',
+      sourceRef: 'learning-delete-2',
+      title: 'Другий конспект',
+      kind: 'learning',
+      sourceVersion: '1',
+      content: 'Текст лишається, коли індекс не можна прибрати.',
+    });
+    store.database.prepare("UPDATE knowledge_chunks SET vector_id = 'kb-vector-2'").run();
+    await expect(deleteKnowledgeDocument(workerEnv({ DB: store.stub }), second.documentId)).rejects.toThrow(
+      /VECTORIZE/,
+    );
+    expect(store.database.prepare('SELECT count(*) AS n FROM knowledge_documents').get()).toEqual({ n: 1 });
   });
 });
