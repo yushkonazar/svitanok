@@ -108,6 +108,40 @@ describe('POST /internal/runs', () => {
     expect(String(row.note)).toHaveLength(500);
   });
 
+  it('OpenAI model step проєктується в runs, замінюючи стартову legacy-модель', async () => {
+    // `registryBegin` може знати лише дефолт старого профілю. Після відповіді
+    // authoritative значенням для owner-facing status є allowlisted model step
+    // від GPT, а не ця стартова підказка.
+    db.prepare(
+      `INSERT INTO runs (id, trigger, profile, model, started_at)
+       VALUES ('r1', 'quick', 'quick', 'claude-haiku-4-5', '2026-08-27T11:59:00.000Z')`,
+    ).run();
+    await handleInternal(
+      await request({
+        steps: [
+          {
+            n: 1,
+            kind: 'model',
+            name: 'openai:gpt-6-luna',
+            ms: 420,
+            ok: true,
+            note: 'response=resp_safe input_tokens=1466 output_tokens=36 total_tokens=1502',
+          },
+        ],
+      }),
+      env,
+      NOW,
+    );
+    expect(
+      db.prepare('SELECT model, tokens_in, tokens_out, cost_note FROM runs WHERE id = ?').get('r1'),
+    ).toEqual({
+      model: 'openai:gpt-6-luna',
+      tokens_in: 1466,
+      tokens_out: 36,
+      cost_note: null,
+    });
+  });
+
   it('збій D1 не блокує completion: telemetry позначена deferred; порожні steps - ok', async () => {
     const empty = await handleInternal(await request({ steps: [] }), env, NOW);
     expect(await empty.json()).toMatchObject({ ok: true, steps: 0 });
