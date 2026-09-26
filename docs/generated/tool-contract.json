@@ -318,6 +318,18 @@
       "tainting": "always",
       "execution": { "route": "core" }
     },
+    "knowledge.search": {
+      "args": {
+        "properties": {
+          "limit": { "maximum": 10, "minimum": 1, "type": "number" },
+          "q": { "maxLength": 160, "minLength": 1, "type": "string" }
+        },
+        "required": ["q"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
     "mail.read": {
       "args": {
         "properties": { "id": { "maxLength": 128, "type": "string" } },

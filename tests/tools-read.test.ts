@@ -545,6 +545,7 @@ describe('реєстр TOOLS', () => {
       'ideas.search',
       'ideas.update',
       'inbox.search',
+      'knowledge.search',
       'mail.read',
       'mail.search',
       'memory.search',
@@ -634,6 +635,9 @@ describe('реєстр TOOLS', () => {
       // inbox.search віддає текст, який писали ІНШІ люди (Telegram Business,
       // етап 6 PR-3) - головний шлях, яким чужий текст входить у контекст.
       'inbox.search',
+      // Explicitly allowed documents still carry file text and may contain
+      // hostile instructions; only their citations are trusted metadata.
+      'knowledge.search',
       'mail.read',
       'mail.search',
       'places.details',

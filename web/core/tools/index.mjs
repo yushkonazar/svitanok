@@ -28,6 +28,7 @@ import { runDataSearch, SEARCH_SOURCES } from './search.mjs';
 import { runStyleSamples } from '../style/corpus.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
+import { runKnowledgeSearch } from '../knowledge-base.mjs';
 import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
 
@@ -102,6 +103,20 @@ export const TOOLS = {
     },
     tainting: true,
     run: (env, args) => runDriveSearch(env, args),
+  },
+  // База знань читає лише явно дозволені документи. Навіть CV або конспект
+  // можуть містити чужі інструкції, тому відповідь завжди tainted.
+  'knowledge.search': {
+    args: {
+      type: 'object',
+      required: ['q'],
+      properties: {
+        q: { type: 'string', minLength: 1, maxLength: 160 },
+        limit: { type: 'number', minimum: 1, maximum: 10 },
+      },
+    },
+    tainting: true,
+    run: (env, args) => runKnowledgeSearch(env, args),
   },
   'geo.last': {
     args: { type: 'object' },

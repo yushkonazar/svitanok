@@ -180,6 +180,12 @@ export async function searchKnowledge(env, input) {
   }));
 }
 
+/** Internal tool adapter: permitted documents are still external content.
+ * @param {Env} env @param {{q: unknown, limit?: unknown}} input */
+export async function runKnowledgeSearch(env, input) {
+  return { result: await searchKnowledge(env, input) };
+}
+
 /** Open revoke: retrieval stops immediately; physical purge is a later job. */
 /** @param {Env} env @param {unknown} documentId @param {number} [nowMs] */
 export async function revokeKnowledgeDocument(env, documentId, nowMs = Date.now()) {

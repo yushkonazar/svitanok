@@ -7,9 +7,11 @@ import {
   chunkKnowledgeText,
   ingestKnowledgeDocument,
   revokeKnowledgeDocument,
+  runKnowledgeSearch,
   searchKnowledge,
 } from '../web/core/knowledge-base.mjs';
 import { workerEnv } from './helpers/env.js';
+import { TOOLS } from '../web/core/tools/index.mjs';
 
 const NOW = Date.parse('2026-09-26T09:00:00.000Z');
 
@@ -123,5 +125,26 @@ describe('narrow knowledge base', () => {
     await revokeKnowledgeDocument(env, first.documentId, NOW + 2_000);
     await expect(searchKnowledge(env, { q: 'докази' })).resolves.toEqual([]);
     expect(store.database.prepare("SELECT status FROM knowledge_documents").get()).toEqual({ status: 'revoked' });
+  });
+
+  it('is a tainting read-only core tool with citations, not a Drive crawler', async () => {
+    const store = d1();
+    const env = workerEnv({ DB: store.stub });
+    await ingestKnowledgeDocument(env, {
+      sourceType: 'upload',
+      sourceRef: 'learning-2',
+      title: 'Нотатки з архітектури',
+      kind: 'learning',
+      sourceVersion: '2',
+      content: 'Durable Objects серіалізують критичний mutable state.',
+    });
+    expect(TOOLS['knowledge.search']?.tainting).toBe(true);
+    await expect(runKnowledgeSearch(env, { q: 'Durable' })).resolves.toMatchObject({
+      result: [
+        {
+          citation: { document: 'Нотатки з архітектури', version: '2', chunk: 1 },
+        },
+      ],
+    });
   });
 });

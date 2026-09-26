@@ -59,6 +59,10 @@ const ROUTES: readonly Route[] = [
     tools: ['drive_search', 'data_search', 'delegate'],
   },
   {
+    words: ['резюме', 'cv', 'співбесід', 'навчальн', 'конспект', 'база знань'],
+    tools: ['knowledge_search'],
+  },
+  {
     words: ['грош', 'витрат', 'бюджет', 'платіж', 'підписк', 'фінанс'],
     tools: ['finance_query', 'finance_rule', 'subscriptions_update', 'data_read', 'delegate'],
   },
