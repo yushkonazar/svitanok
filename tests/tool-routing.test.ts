@@ -17,6 +17,13 @@ describe('interactive tool routing', () => {
     expect(tools.length).toBeLessThan(all.length);
   });
 
+  it('keeps the mail secretary available for a mail draft without exposing the full catalogue', () => {
+    const tools = routeChatTools('Переглянь листи та склади чернетку відповіді', all);
+    expect(tools).toEqual(expect.arrayContaining(['mail_search', 'mail_read', 'delegate']));
+    expect(tools).not.toContain('calendar_read');
+    expect(tools.length).toBeLessThan(all.length);
+  });
+
   it('keeps a deliberate multi-domain request complete rather than silently omitting tools', () => {
     expect(routeChatTools('Перевір пошту, а потім додай зустріч у календар', all)).toEqual(all);
   });

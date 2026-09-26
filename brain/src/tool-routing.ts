@@ -27,7 +27,10 @@ const ROUTES: readonly Route[] = [
   },
   {
     words: ['пошт', 'лист', 'gmail', 'email', 'імейл'],
-    tools: ['mail_search', 'mail_read', 'inbox_search', 'proposals_create'],
+    // Чернетка відповіді потребує mail-secretary. Він має лише mail.search /
+    // mail.read та не може надсилати або змінювати листи, тому delegate тут
+    // не розширює права, а повертає заявлений сценарій у досяжний стан.
+    tools: ['mail_search', 'mail_read', 'inbox_search', 'proposals_create', 'delegate'],
   },
   {
     words: ['диск', 'drive', 'файл', 'документ', 'таблиц'],
