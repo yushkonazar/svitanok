@@ -164,7 +164,7 @@
 ### 4A. Decision-centred daily briefing
 
 - [x] Critical deterministic layer: reminders, calendar conflicts, important email/job signal, time-sensitive weather. Worker snapshots both reminder stores and calendar intervals before dispatch; the briefing emits only dated, source/freshness/reason-tagged signals and never promotes an incomplete production snapshot.
-- [ ] AI summary/ranking as non-critical enhancement with source/freshness/reason.
+- [x] AI summary/ranking as non-critical enhancement with source/freshness/reason. It sees only bounded deterministic signal records, must return valid existing IDs, and is silently omitted on timeout/error/malformed output.
 - [ ] Per-block feedback: useful / less / hide.
 - [ ] Measure open, action, save, dismiss; remove noisy blocks.
 

@@ -34,6 +34,7 @@ export function isUsageLimitError(text: string): boolean {
 const MODULE_LABELS: Record<string, string> = {
   jobs: 'вакансії (скоринг релевантності)',
   mail: 'пошта (тріаж + пропозиції співбесід)',
+  'decision-summary': 'ранжування сигналів дня',
   fact: 'факт дня',
   mock: 'питання дня',
 };

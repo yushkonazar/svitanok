@@ -44,7 +44,9 @@ import {
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
 import {
   buildDecisionBrief,
+  buildDecisionSummaryPrompt,
   formatDecisionHeadline,
+  parseDecisionAiSummary,
   type ReminderSnapshotForDecision,
 } from './core/decision-brief.js';
 import { partitionModules } from './core/registry.js';
@@ -238,7 +240,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   const firstEvent = ctx.bus.get<CalendarEvent[]>(CALENDAR_BUS_KEY)?.[0];
   const mailCount = blockData<{ count?: number }>('mail')?.count;
   const generatedAt = clock.now().toISOString();
-  const decisionBrief = buildDecisionBrief({
+  const deterministicDecision = buildDecisionBrief({
     todayKey: clock.todayKey(),
     generatedAt,
     calendar: state.get<CalendarSnapshot>(CALENDAR_SNAPSHOT_KEY),
@@ -246,6 +248,26 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     mail: state.get<MailTriageState>(MAIL_TRIAGE_KEY),
     weather: weatherLoc,
   });
+  // LLM є лише надбудовою над уже зафіксованими фактами: вона отримує
+  // обмежений список signal IDs і може дати короткий порядок/виклад. Помилка
+  // або малформат не змінюють ані Telegram headline, ані детерміновані дані.
+  let decisionBrief = deterministicDecision;
+  if (deterministicDecision.signals.length > 0) {
+    try {
+      const aiText = await ctx.llm.complete(buildDecisionSummaryPrompt(deterministicDecision), {
+        maxTokens: 180,
+        timeoutMs: ctx.config.llm.timeoutMs,
+        tag: 'decision-summary',
+      });
+      const ai = parseDecisionAiSummary(aiText, deterministicDecision.signals);
+      if (ai) decisionBrief = { ...deterministicDecision, ai };
+      else ctx.log.warn('decision-summary: LLM повернула невалідний strict JSON — пропущено');
+    } catch (error) {
+      ctx.log.warn(
+        `decision-summary: необов'язкове ранжування пропущено: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   const briefing = buildBriefingData(
     blocks,
     formatKyivDateLabel(clock.now()),

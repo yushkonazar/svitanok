@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildDecisionBrief,
+  buildDecisionSummaryPrompt,
   findCalendarConflicts,
   formatDecisionHeadline,
+  parseDecisionAiSummary,
 } from '../src/core/decision-brief.js';
 import type { CalendarEvent } from '../src/modules/calendar.js';
 import type { WeatherToday } from '../src/modules/weather.js';
@@ -117,5 +119,34 @@ describe('decision brief — exact deterministic facts only', () => {
       ['weather', 'attention'],
     ]);
     expect(formatDecisionHeadline(decision)).toBeNull();
+  });
+
+  it('accepts an AI enhancement only when it cites existing IDs and is bounded', () => {
+    const decision = buildDecisionBrief({
+      todayKey: TODAY,
+      generatedAt: GENERATED,
+      reminders: {
+        date: TODAY,
+        ready: true,
+        updatedAt: GENERATED,
+        reminders: [{ id: 'r1', text: 'CV', dueAt: '2026-09-08T06:00:00.000Z' }],
+      },
+    });
+    expect(buildDecisionSummaryPrompt(decision)).toContain('SIGNALS_JSON=');
+    expect(
+      parseDecisionAiSummary(
+        '{"rankedSignalIds":["reminders-today"],"summary":"Спершу перевірити нагадування."}',
+        decision.signals,
+      ),
+    ).toEqual({
+      rankedSignalIds: ['reminders-today'],
+      summary: 'Спершу перевірити нагадування.',
+    });
+    expect(
+      parseDecisionAiSummary(
+        '{"rankedSignalIds":["invented"],"summary":"Вигаданий факт"}',
+        decision.signals,
+      ),
+    ).toBeNull();
   });
 });

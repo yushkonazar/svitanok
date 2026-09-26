@@ -353,6 +353,61 @@ describe('runBriefing — deterministic critical headline (4A)', () => {
     );
     expect(res.briefing.decision?.signals.map((s) => s.source)).toEqual(['reminders', 'calendar']);
   });
+
+  it('keeps an optional strict AI ranking in briefing data without changing deterministic Telegram text', async () => {
+    const notifier = fakeNotifier();
+    const seenPrompts: string[] = [];
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        llm: {
+          complete: async (prompt) => {
+            seenPrompts.push(prompt);
+            return '{"rankedSignalIds":["reminders-today"],"summary":"Нагадування є першим пріоритетом."}';
+          },
+        },
+        state: memState({
+          remindersToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            source: 'd1',
+            reminders: [{ id: 'r1', text: 'Подати CV', dueAt: '2026-06-29T08:00:00.000Z' }],
+          },
+        }),
+      }),
+    );
+    expect(seenPrompts).toHaveLength(1);
+    expect(res.briefing.decision?.ai).toEqual({
+      rankedSignalIds: ['reminders-today'],
+      summary: 'Нагадування є першим пріоритетом.',
+    });
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>\n⚠️ Сьогодні: нагадування');
+  });
+
+  it('sends the deterministic briefing when optional AI ranking fails', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        llm: { complete: async () => Promise.reject(new Error('тимчасовий збій')) },
+        state: memState({
+          remindersToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            source: 'd1',
+            reminders: [{ id: 'r1', text: 'Подати CV', dueAt: '2026-06-29T08:00:00.000Z' }],
+          },
+        }),
+      }),
+    );
+    expect(res.status).toBe('sent');
+    expect(res.briefing.decision?.ai).toBeUndefined();
+    expect(notifier.sent[0]![0]).toContain('⚠️ Сьогодні: нагадування');
+  });
 });
 
 describe('runBriefing — dry-run', () => {
