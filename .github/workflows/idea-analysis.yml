@@ -9,13 +9,12 @@
 # ширший токен у Worker'і заради тієї самої дії.
 #
 # Ізоляція: job бачить ЛИШЕ checkout цільового репо на sha (read-only PAT)
-# і цей репозиторій заради інструкції та скрипта. claude -p дістає Read/Grep/
-# Glob і нічого більше, налаштування лише користувача раннера (--setting-
-# sources user --strict-mcp-config: хуки й MCP-сервери з .claude/ цільового
-# репо не вантажаться, а самі файли лишаються доступними для Read як дані),
-# env дочірнього процесу - лише PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN. Результат
-# їде в ядро POST /internal/artifact з підписом ADR-037 (HMAC + Access
-# service token) - ядро кладе його в ideas.analysis_md і шле документ у тему.
+# і цей репозиторій заради інструкції та скрипта. OpenAI Responses отримує
+# тільки обмежений текстовий зріз вихідного коду; інструменти, shell, доступ до
+# файлової системи та мережі для моделі не надаються. Приховані файли, `.env`,
+# `.claude` і залежності не потрапляють у зріз. Результат їде в ядро POST
+# /internal/artifact з підписом ADR-037 (HMAC + Access service token) - ядро
+# кладе його в ideas.analysis_md і шле документ у тему.
 #
 # Стеля 40 хв (07 §6): ядро чекає стільки ж. Збій усередині аналізу скрипт
 # сам шле як status=failed; збій ДО нього (checkout, CLI) - крок
@@ -54,7 +53,7 @@ on:
 
 permissions: {}
 
-# Одна ідея - один аналіз за раз; без cancel: обірваний посеред claude -p job
+# Одна ідея - один аналіз за раз; без cancel: обірваний посеред OpenAI job
 # не віддав би в ядро ані результату, ані failed. Другий аналіз тієї самої
 # ідеї, поки перший іде, ядро не диспатчить (IdeaAnalysis дедуплікує).
 concurrency:
@@ -98,32 +97,17 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-      # Пін версії CLI (як у brief.yml; тут новіша - з --system-prompt).
-      - name: install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.251
-      # Неінтерактивність claude -p: onboarding + довіра до теки checkout-у
-      # (інакше діалог довіри → exit 1, як у brief.yml).
-      - name: preseed claude non-interactive
-        run: |
-          cat > "$HOME/.claude.json" <<JSON
-          {
-            "hasCompletedOnboarding": true,
-            "projects": {
-              "${{ github.workspace }}/target": { "hasTrustDialogAccepted": true }
-            }
-          }
-          JSON
-      # Секрети ядра - лише кроками, що постять артефакт (не в env job):
-      # дочірньому claude скрипт віддає рівно PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN.
+      # Модель отримує лише обмежений текстовий зріз checkout; вона не запускає
+      # CLI, не має filesystem/network tools і не бачить HMAC/Access секретів.
       - id: analyze
         name: analyze idea against code
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
           BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
           BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
         run: node scripts/idea-analysis.mjs run
-      # Збій ДО аналізу (checkout, CLI, preseed) - ядру теж треба сказати
+      # Збій ДО аналізу (checkout, setup) - ядру теж треба сказати
       # (S-3-5): крок analyze при власному збої шле failed сам (усередині
       # скрипта), тож тут лише випадки, коли він не стартував.
       - name: report failure to core
@@ -132,5 +116,5 @@ jobs:
           INTERNAL_HMAC_KEY: ${{ secrets.INTERNAL_HMAC_KEY }}
           BRAIN_ACCESS_CLIENT_ID: ${{ secrets.BRAIN_ACCESS_CLIENT_ID }}
           BRAIN_ACCESS_CLIENT_SECRET: ${{ secrets.BRAIN_ACCESS_CLIENT_SECRET }}
-          IA_REASON: 'job упав до аналізу (checkout або CLI) - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          IA_REASON: 'job упав до аналізу (checkout або setup) - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
         run: node scripts/idea-analysis.mjs failed
