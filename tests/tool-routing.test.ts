@@ -24,6 +24,16 @@ describe('interactive tool routing', () => {
     expect(tools.length).toBeLessThan(all.length);
   });
 
+  it('keeps owner style samples and the reviewed style-collection proposal available for writing', () => {
+    const write = routeChatTools('Напиши пост моїм голосом', all);
+    expect(write).toEqual(expect.arrayContaining(['style_samples', 'delegate']));
+    expect(write).not.toContain('calendar_read');
+
+    const collect = routeChatTools('Збери мій стиль', all);
+    expect(collect).toEqual(expect.arrayContaining(['style_samples', 'proposals_create']));
+    expect(collect).not.toContain('calendar_read');
+  });
+
   it('keeps a deliberate multi-domain request complete rather than silently omitting tools', () => {
     expect(routeChatTools('Перевір пошту, а потім додай зустріч у календар', all)).toEqual(all);
   });

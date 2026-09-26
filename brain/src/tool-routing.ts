@@ -33,6 +33,12 @@ const ROUTES: readonly Route[] = [
     tools: ['mail_search', 'mail_read', 'inbox_search', 'proposals_create', 'delegate'],
   },
   {
+    // Persona вимагає дати Копірайтеру / Редактору власні зразки до delegate.
+    // «Збери мій стиль» є T1-пропозицією style.collect через proposals.create.
+    words: ['пост', 'скороти', 'відредаг', 'переклади', 'переклад', 'стиль', 'голосом'],
+    tools: ['style_samples', 'delegate', 'proposals_create'],
+  },
+  {
     words: ['диск', 'drive', 'файл', 'документ', 'таблиц'],
     tools: ['drive_search', 'data_search', 'delegate'],
   },
