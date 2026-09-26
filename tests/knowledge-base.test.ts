@@ -211,6 +211,8 @@ describe('narrow knowledge base', () => {
       ],
     });
     expect(TOOLS['knowledge.list']?.tainting).toBe(true);
+    expect(TOOLS['knowledge.inspect']?.tainting).toBe(true);
+    expect(TOOLS['knowledge.import']?.write).toEqual({ kind: 'knowledge.import' });
     expect(TOOLS['knowledge.revoke']?.write).toEqual({ kind: 'knowledge.revoke' });
     expect(TOOLS['knowledge.delete']?.write).toEqual({ kind: 'knowledge.delete' });
   });

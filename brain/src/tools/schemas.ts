@@ -159,6 +159,26 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
     tainting: true,
   }),
   tool({
+    coreName: 'knowledge.inspect',
+    description:
+      'Перевірити метадані РІВНО одного файла Google Drive за file_id, який власник явно дав у чаті. Не шукай і не перелічуй Drive. Результат (назва, версія, MIME) — зовнішні дані. ПЕРЕД knowledge.import обов’язково виклич цей інструмент і скопіюй його точні title, source_version та mime_type.',
+    args: z.object({ file_id: z.string().min(1).max(256) }),
+    tainting: true,
+  }),
+  tool({
+    coreName: 'knowledge.import',
+    description:
+      'Додати в базу знань один перевірений файл Drive як cv, job_preparation або learning. Дозволені лише Google Docs та UTF-8 .txt/.md. Спершу ОБОВ’ЯЗКОВО knowledge.inspect; сюди передай без змін file_id, title, source_version, mime_type з його відповіді. Ядро попросить ✅ і перед читанням ще раз звірить версію файла.',
+    args: z.object({
+      file_id: z.string().min(1).max(256),
+      title: z.string().min(1).max(200),
+      source_version: z.string().min(1).max(160),
+      mime_type: z.string().min(1).max(120),
+      kind: z.enum(['cv', 'job_preparation', 'learning']),
+    }),
+    write: true,
+  }),
+  tool({
     coreName: 'knowledge.revoke',
     description:
       'Відкликати документ бази знань за id зі knowledge.list: він негайно зникне з пошуку, але фізично ще зберігається до остаточного видалення. Ядро попросить ✅.',

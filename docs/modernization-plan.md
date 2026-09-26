@@ -194,6 +194,7 @@
 - [x] Allowlist-first foundation: CV, job preparation and chosen learning documents; every source is added explicitly, not discovered from Drive.
 - [x] Versioned extraction/chunking/citations/ACL: D1 truth, rebuildable Vectorize projection і retry pending/failed версій.
 - [x] Retrieval answers cite document/version/page; explicit delete/revoke.
+- [x] Explicit one-file Drive import: inspect metadata → T1 → repeated version/MIME check → bounded UTF-8 text extraction. No search/list/crawl route, and Google Docs/.txt/.md only.
 - [ ] Compare managed file search only as an isolated, privacy-reviewed experiment.
 
 ### Deferred

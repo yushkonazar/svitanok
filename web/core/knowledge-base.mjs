@@ -5,6 +5,7 @@
 // D1-рядків і ніколи не стає окремим джерелом правди.
 
 import { embedTexts } from './memory.mjs';
+import { readKnowledgeDriveFile } from './adapters/knowledge-drive.mjs';
 
 export const KNOWLEDGE_KINDS = ['cv', 'job_preparation', 'learning'];
 export const KNOWLEDGE_CHUNK_MAX_CHARS = 1_200;
@@ -154,6 +155,29 @@ export async function ingestKnowledgeDocument(env, input, nowMs = Date.now()) {
     }
   }
   return { documentId, versionId, added: true, chunks: chunks.length, indexed };
+}
+
+/**
+ * Імпорт рівно одного файла Drive у вузький allowlist. Сам адаптер ще раз
+ * звіряє metadata, що були показані власнику до T1-підтвердження; отже
+ * модель не може підмінити файл, а змінений файл не читається мовчки.
+ * @param {Env} env
+ * @param {{fileId: unknown, title: unknown, sourceVersion: unknown, mimeType: unknown, kind: unknown}} input
+ * @param {number} [nowMs]
+ */
+export async function importKnowledgeDocumentFromDrive(env, input, nowMs = Date.now()) {
+  const kind = text(input.kind, 'kind', 32);
+  if (!KNOWLEDGE_KINDS.includes(kind)) {
+    throw new Error(`база знань: kind має бути одним із ${KNOWLEDGE_KINDS.join(', ')}`);
+  }
+  const file = await readKnowledgeDriveFile(env, {
+    fileId: input.fileId,
+    title: input.title,
+    sourceVersion: input.sourceVersion,
+    mimeType: input.mimeType,
+  });
+  const added = await ingestKnowledgeDocument(env, { ...file, kind }, nowMs);
+  return { ...added, title: file.title, kind };
 }
 
 /** D1 rows -> Vectorize. The chunk id is a stable, retry-safe vector id.

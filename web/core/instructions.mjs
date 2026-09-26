@@ -42,9 +42,12 @@ export const CANON_TOOLS = [
   'drive.search',
   'drive.write',
   // Вузька база знань: лише окремо дозволені документи, не весь Drive.
-  // `list` показує лише metadata; revoke/delete завжди проходять policy.
+  // `inspect` читає metadata рівно одного явно названого файла Drive;
+  // import/revoke/delete завжди проходять policy.
   'knowledge.search',
   'knowledge.list',
+  'knowledge.inspect',
+  'knowledge.import',
   'knowledge.revoke',
   'knowledge.delete',
   'inbox.search',

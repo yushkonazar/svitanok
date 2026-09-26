@@ -546,6 +546,8 @@ describe('реєстр TOOLS', () => {
       'ideas.update',
       'inbox.search',
       'knowledge.delete',
+      'knowledge.import',
+      'knowledge.inspect',
       'knowledge.list',
       'knowledge.revoke',
       'knowledge.search',
@@ -608,6 +610,7 @@ describe('реєстр TOOLS', () => {
       ['ideas.delete', 'ideas.delete'],
       ['ideas.update', 'ideas.update'],
       ['knowledge.delete', 'knowledge.delete'],
+      ['knowledge.import', 'knowledge.import'],
       ['knowledge.revoke', 'knowledge.revoke'],
       ['plan.accept', 'plan.accept'],
       ['plan.draft', 'plan.draft'],
@@ -642,6 +645,7 @@ describe('реєстр TOOLS', () => {
       'inbox.search',
       // Explicitly allowed documents still carry file text and may contain
       // hostile instructions; only their citations are trusted metadata.
+      'knowledge.inspect',
       'knowledge.list',
       'knowledge.search',
       'mail.read',

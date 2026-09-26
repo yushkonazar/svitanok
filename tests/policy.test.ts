@@ -29,6 +29,8 @@ import { TOOLS } from '../web/core/tools/index.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
+import { memoryKv } from './helpers/kv.js';
+import { CORE_SCOPES } from '../web/core/google-scopes.mjs';
 
 const NOW = Date.parse('2026-08-28T10:00:00.000Z');
 
@@ -96,6 +98,7 @@ describe('policy core — таблиця рівнів', () => {
     expect(decideLevel('contact', false)).toEqual({ level: 'T1' });
     expect(decideLevel('forget', false)).toEqual({ level: 'T2' });
     expect(decideLevel('knowledge.revoke', false)).toEqual({ level: 'T1' });
+    expect(decideLevel('knowledge.import', false)).toEqual({ level: 'T1' });
     expect(decideLevel('knowledge.delete', false)).toEqual({ level: 'T2' });
   });
 
@@ -567,6 +570,79 @@ describe('T1/T2: пропозиції', () => {
     });
     expect(store.raw.prepare('SELECT count(*) AS count FROM knowledge_documents').get()).toEqual({
       count: 1,
+    });
+  });
+
+  it('явний файл Drive додається тільки через T1 і повторно перевіряється перед extraction', async () => {
+    const tokenStore = new Map([
+      [
+        'googleToken',
+        JSON.stringify({
+          token: 'access-token',
+          expMs: Date.now() + 3_600_000,
+          scope: CORE_SCOPES.join(' '),
+        }),
+      ],
+    ]);
+    env = workerEnv({
+      DB: store,
+      AI: {
+        run: async (_model: string, input: { text: string[] }) => ({
+          data: input.text.map(() => [1, 0]),
+        }),
+      },
+      VECTORIZE: { upsert: async () => {}, deleteByIds: async () => {} },
+      GOOGLE_CLIENT_ID: 'client',
+      GOOGLE_CLIENT_SECRET: 'secret',
+      GOOGLE_REFRESH_TOKEN: 'refresh',
+      BRIEFING: memoryKv(tokenStore),
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/export'))
+        return new Response('Текст для майбутньої співбесіди.', { status: 200 });
+      return new Response(
+        JSON.stringify({
+          id: 'drive_file_2026',
+          name: 'Конспект співбесіди',
+          mimeType: 'application/vnd.google-apps.document',
+          version: '42',
+          size: '40',
+          trashed: false,
+          capabilities: { canDownload: true },
+        }),
+        { status: 200 },
+      );
+    });
+    const proposed = await applyPolicy(
+      env,
+      {
+        kind: 'knowledge.import',
+        payload: {
+          file_id: 'drive_file_2026',
+          title: 'Конспект співбесіди',
+          source_version: '42',
+          mime_type: 'application/vnd.google-apps.document',
+          kind: 'job_preparation',
+        },
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(proposed).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    if (proposed.mode !== 'proposed') throw new Error('імпорт має бути T1');
+    await expect(
+      resolveProposal(env, { id: proposed.proposal.id, choice: 'ok' }, NOW + 1),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: 'approved',
+      kind: 'knowledge.import',
+      result: { title: 'Конспект співбесіди', kind: 'job_preparation', chunks: 1, added: true },
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(store.raw.prepare('SELECT source_ref FROM knowledge_documents').get()).toEqual({
+      source_ref: 'drive_file_2026',
     });
   });
 

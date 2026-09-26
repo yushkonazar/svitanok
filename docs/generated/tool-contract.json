@@ -329,6 +329,39 @@
       "tainting": "never",
       "execution": { "route": "policy", "kind": "knowledge.delete" }
     },
+    "knowledge.import": {
+      "args": {
+        "properties": {
+          "file_id": { "maxLength": 256, "minLength": 1, "type": "string" },
+          "kind": {
+            "enum": ["cv", "job_preparation", "learning"],
+            "type": "string"
+          },
+          "mime_type": { "maxLength": 120, "minLength": 1, "type": "string" },
+          "source_version": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": { "maxLength": 200, "minLength": 1, "type": "string" }
+        },
+        "required": ["file_id", "title", "source_version", "mime_type", "kind"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "knowledge.import" }
+    },
+    "knowledge.inspect": {
+      "args": {
+        "properties": {
+          "file_id": { "maxLength": 256, "minLength": 1, "type": "string" }
+        },
+        "required": ["file_id"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
     "knowledge.list": {
       "args": {
         "properties": {

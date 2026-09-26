@@ -24,7 +24,7 @@ function sampleFor(schema: CoreSchema | undefined): unknown {
   switch (schema.type) {
     case 'string':
       // Нижню межу теж поважаємо: у mail.search q мусить бути змістовним.
-      return 'x'.repeat(Math.max(1, schema.minLength ?? 1));
+      return schema.enum?.[0] ?? 'x'.repeat(Math.max(1, schema.minLength ?? 1));
     case 'number':
       return schema.minimum ?? 1;
     case 'boolean':

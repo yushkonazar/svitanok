@@ -49,7 +49,13 @@ describe('interactive tool routing', () => {
     expect(routeChatTools('Намалюй світанок над Києвом', all)).toContain('proposals_create');
     expect(routeChatTools('Що в моєму CV про Cloudflare?', all)).toContain('knowledge_search');
     expect(routeChatTools('Покажи базу знань', all)).toEqual(
-      expect.arrayContaining(['knowledge_list', 'knowledge_revoke', 'knowledge_delete']),
+      expect.arrayContaining([
+        'knowledge_list',
+        'knowledge_inspect',
+        'knowledge_import',
+        'knowledge_revoke',
+        'knowledge_delete',
+      ]),
     );
   });
 

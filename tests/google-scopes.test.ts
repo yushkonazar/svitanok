@@ -65,7 +65,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('перелік скоупів ядра', () => {
-  it('рівно пʼять і жодного скоупа на надсилання пошти', () => {
+  it('рівно шість і жодного скоупа на надсилання пошти', () => {
     expect([...CORE_SCOPES]).toEqual([
       // calendar.events, не повний auth/calendar: ядро не керує списками
       // календарів, а вужчий скоуп - менша поверхня при тій самій роботі.
@@ -73,6 +73,7 @@ describe('перелік скоупів ядра', () => {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/contacts',
       'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/drive.readonly',
       'https://www.googleapis.com/auth/tasks',
     ]);
     // ADR-019: «надіслати лист неможливо» має лишатись правдою про ПРАВА, а
@@ -125,7 +126,7 @@ describe('auditScopes', () => {
       'https://www.googleapis.com/auth/drive',
       'https://www.googleapis.com/auth/tasks',
     ];
-    for (const feature of ['calendar', 'mail', 'contacts', 'drive', 'tasks']) {
+    for (const feature of ['calendar', 'mail', 'contacts', 'drive', 'drive_read', 'tasks']) {
       expect(hasFeatureScope(legacy, feature), feature).toBe(true);
     }
     // Але звірка лишається суворою: ширший скоуп - усе одно зайвий.
@@ -143,7 +144,7 @@ describe('auditScopes', () => {
       'https://www.googleapis.com/auth/drive.file',
       'https://www.googleapis.com/auth/tasks',
     ];
-    for (const feature of ['calendar', 'mail', 'contacts', 'drive', 'tasks']) {
+    for (const feature of ['calendar', 'mail', 'contacts', 'drive', 'drive_read', 'tasks']) {
       expect(hasFeatureScope(stage0, feature), feature).toBe(true);
     }
     const audit = auditScopes(stage0);
@@ -151,7 +152,6 @@ describe('auditScopes', () => {
     expect(audit.extra).toEqual([
       'https://www.googleapis.com/auth/calendar.readonly',
       'https://www.googleapis.com/auth/contacts.readonly',
-      'https://www.googleapis.com/auth/drive.readonly',
     ]);
   });
 

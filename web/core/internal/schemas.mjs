@@ -12,6 +12,7 @@
  *   items?: InternalSchema,
  *   maxLength?: number,
  *   minLength?: number,
+ *   enum?: readonly string[],
  *   minimum?: number,
  *   maximum?: number,
  * }} InternalSchema
@@ -201,6 +202,13 @@ export function validateAgainst(schema, value, path = '$') {
     if (/** @type {string} */ (value).length < schema.minLength) {
       return fail(`коротше за ${schema.minLength}`);
     }
+  }
+  if (
+    schema.type === 'string' &&
+    schema.enum != null &&
+    !schema.enum.includes(/** @type {string} */ (value))
+  ) {
+    return fail(`має бути одним із ${schema.enum.join(', ')}`);
   }
   if (schema.type === 'number') {
     const n = /** @type {number} */ (value);

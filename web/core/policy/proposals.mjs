@@ -110,7 +110,11 @@ import {
   undoPlanUpdate,
   runPlanReview,
 } from '../tools/plan.mjs';
-import { deleteKnowledgeDocument, revokeKnowledgeDocument } from '../knowledge-base.mjs';
+import {
+  deleteKnowledgeDocument,
+  importKnowledgeDocumentFromDrive,
+  revokeKnowledgeDocument,
+} from '../knowledge-base.mjs';
 
 /** Тека експортів у Drive (S-0-6, S-N4-4): одна на всі види вивантажень. */
 export const EXPORT_FOLDER_PATH = ['Світанок', 'export'];
@@ -153,6 +157,30 @@ function driveNoteName(raw) {
  * }>}
  */
 export const EXECUTORS = {
+  'knowledge.import': {
+    async execute(env, payload, nowMs) {
+      const result = await importKnowledgeDocumentFromDrive(
+        env,
+        {
+          fileId: payload.file_id,
+          title: payload.title,
+          sourceVersion: payload.source_version,
+          mimeType: payload.mime_type,
+          kind: payload.kind,
+        },
+        nowMs,
+      );
+      return {
+        result: {
+          id: result.documentId,
+          title: result.title,
+          kind: result.kind,
+          chunks: result.chunks,
+          added: result.added,
+        },
+      };
+    },
+  },
   'knowledge.revoke': {
     async execute(env, payload, nowMs) {
       await revokeKnowledgeDocument(env, payload.id, nowMs);

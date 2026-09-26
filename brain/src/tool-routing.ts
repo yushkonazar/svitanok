@@ -60,7 +60,14 @@ const ROUTES: readonly Route[] = [
   },
   {
     words: ['резюме', 'cv', 'співбесід', 'навчальн', 'конспект', 'знан'],
-    tools: ['knowledge_search', 'knowledge_list', 'knowledge_revoke', 'knowledge_delete'],
+    tools: [
+      'knowledge_search',
+      'knowledge_list',
+      'knowledge_inspect',
+      'knowledge_import',
+      'knowledge_revoke',
+      'knowledge_delete',
+    ],
   },
   {
     words: ['грош', 'витрат', 'бюджет', 'платіж', 'підписк', 'фінанс'],

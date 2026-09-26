@@ -29,6 +29,7 @@ import { runStyleSamples } from '../style/corpus.mjs';
 import { runCollectionsList, runRecordsList, runRecordsSearch } from './collections.mjs';
 import { runMemorySearch } from '../memory.mjs';
 import { runKnowledgeList, runKnowledgeSearch } from '../knowledge-base.mjs';
+import { inspectKnowledgeDriveFile } from '../adapters/knowledge-drive.mjs';
 import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
 
@@ -129,6 +130,37 @@ export const TOOLS = {
     // Назва файла - зовнішні метадані, не інструкція моделі.
     tainting: true,
     run: (env, args) => runKnowledgeList(env, args),
+  },
+  // Імпорт ніколи не шукає чи не обходить Drive: inspect приймає тільки id,
+  // який власник явно передав у чаті. Metadata — зовнішній вміст, тож його
+  // назва не може непомітно перейти у write без taint/policy.
+  'knowledge.inspect': {
+    args: {
+      type: 'object',
+      required: ['file_id'],
+      properties: { file_id: { type: 'string', minLength: 1, maxLength: 256 } },
+    },
+    tainting: true,
+    run: async (env, args) => ({
+      result: await inspectKnowledgeDriveFile(env, { fileId: args.file_id }),
+    }),
+  },
+  'knowledge.import': {
+    args: {
+      type: 'object',
+      required: ['file_id', 'title', 'source_version', 'mime_type', 'kind'],
+      properties: {
+        file_id: { type: 'string', minLength: 1, maxLength: 256 },
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        source_version: { type: 'string', minLength: 1, maxLength: 160 },
+        mime_type: { type: 'string', minLength: 1, maxLength: 120 },
+        kind: { type: 'string', enum: ['cv', 'job_preparation', 'learning'] },
+      },
+    },
+    write: { kind: 'knowledge.import' },
+    run: () => {
+      throw new Error('knowledge.import виконується через policy, не напряму');
+    },
   },
   'knowledge.revoke': {
     args: {
