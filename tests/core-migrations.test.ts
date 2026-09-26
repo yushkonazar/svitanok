@@ -72,6 +72,37 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'ready_at',
     'error',
   ],
+  knowledge_documents: [
+    'id',
+    'source_type',
+    'source_ref',
+    'title',
+    'kind',
+    'access_scope',
+    'status',
+    'created_at',
+    'revoked_at',
+  ],
+  knowledge_document_versions: [
+    'id',
+    'document_id',
+    'source_version',
+    'content_sha256',
+    'status',
+    'extracted_at',
+    'error',
+  ],
+  knowledge_chunks: [
+    'id',
+    'document_version_id',
+    'ordinal',
+    'section',
+    'page',
+    'text',
+    'vector_id',
+    'projection_status',
+    'created_at',
+  ],
   migrations_meta: ['name', 'applied_at'],
   voice_pending: [
     'id',
@@ -320,6 +351,18 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   fact_ledger: [{ cols: ['fact_id', 'created_at'] }, { cols: ['kind', 'key', 'created_at'] }],
   memory_chunks: [{ cols: ['thread_id', 'at'] }, { cols: ['projection_status', 'thread_id'] }],
   memory_projection_versions: [{ cols: ['status', 'created_at'] }],
+  knowledge_documents: [
+    { cols: ['source_type', 'source_ref'], unique: true },
+    { cols: ['status', 'kind'] },
+  ],
+  knowledge_document_versions: [
+    { cols: ['document_id', 'source_version'], unique: true },
+    { cols: ['document_id', 'status'] },
+  ],
+  knowledge_chunks: [
+    { cols: ['document_version_id', 'ordinal'], unique: true },
+    { cols: ['document_version_id', 'projection_status'] },
+  ],
   reminders: [{ cols: ['status', 'due_at'] }],
   proposals: [{ cols: ['status', 'expires_at'] }],
   chains: [{ cols: ['status'] }],
@@ -386,7 +429,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('вісімнадцять файлів 0001–0018, нумерація без дірок', () => {
+  it('девʼятнадцять файлів 0001–0019, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -406,6 +449,7 @@ describe('міграції D1 — файли', () => {
       '0016',
       '0017',
       '0018',
+      '0019',
     ]);
   });
 });
