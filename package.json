@@ -17,6 +17,7 @@
     "test:workers": "vitest run --config vitest.workers.config.ts",
     "test:coverage": "vitest run --coverage",
     "eval:openai": "tsx scripts/openai-eval.mts",
+    "eval:file-search": "node scripts/openai-file-search-experiment.mjs",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",

@@ -242,6 +242,11 @@
 - [x] Retrieval answers cite document/version/page; explicit delete/revoke.
 - [x] Explicit one-file Drive import: inspect metadata → T1 → repeated version/MIME check → bounded UTF-8 text extraction. No search/list/crawl route, and Google Docs/.txt/.md only.
 - [ ] Compare managed file search only as an isolated, privacy-reviewed experiment.
+      A synthetic-only, explicitly opt-in harness now verifies hosted API and
+      cleanup semantics without reading owner data; it is not a production
+      integration or a quality result. A real-document comparison still needs
+      a separate owner decision naming the allowed fixture and retention
+      boundary ([contract](managed-file-search-experiment.md)).
 
 **Памʼять / production-дія перед першим живим імпортом:** після деплою
 перевидати Google OAuth refresh token через `node scripts/google-auth.mjs`,
