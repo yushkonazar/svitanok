@@ -101,6 +101,16 @@ export function digestJobs(/** @type {KvBlob|null|undefined} */ agg) {
   if (typeof agg?.avgFitApplied === 'number') {
     parts.push(`середній fit поданих ${agg.avgFitApplied}%`);
   }
+  // `jobFunnel` — окремий серверний зріз реальних переглядів current briefing-а.
+  // Він не є клієнтською stage (frozen Mini App його свідомо ігнорує), але
+  // асистент може чесно сказати, скільки вакансій було побачено за вікно.
+  const seen = agg?.jobFunnel;
+  if (seen && typeof seen === 'object' && Number.isInteger(seen.windowDays)) {
+    parts.push(
+      `за ${seen.windowDays} днів: побачено ${seen.seen ?? 0}, збережено ${seen.saved ?? 0}, ` +
+        `подано ${seen.applied ?? 0}, співбесіда ${seen.interview ?? 0}, оферів ${seen.offer ?? 0}`,
+    );
+  }
   // Індексований список (НЕ сирий url — recordAction/jobStage посилається на
   // ІНДЕКС, worker резолвить у url свіжим читанням funnelList на момент дії).
   const list = Array.isArray(agg?.funnelList) ? agg.funnelList.slice(0, MAX_LIST_ITEMS) : [];

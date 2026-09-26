@@ -193,6 +193,10 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   if (!parsedBody.ok) return json({ ok: false, error: parsedBody.error }, parsedBody.status);
   const body = parsedBody.body;
   if (typeof body?.type !== 'string') return json({ ok: false, error: 'bad-params' }, 400);
+  // `job_seen` — внутрішня телеметрія Worker-а після authenticated GET
+  // current briefing. Приймати її тут означало б дозволити клієнту намалювати
+  // «фактичний перегляд» POST-запитом, тож цей шлях принципово закритий.
+  if (body.type === 'job_seen') return json({ ok: false, error: 'bad-params' }, 400);
   const auth = await checkPrimaryOwner(mutationInitData(request, body), env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 

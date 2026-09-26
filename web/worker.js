@@ -110,11 +110,30 @@ import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent
 import { resolveProposalCallback } from './proposals.mjs';
 import { loadState, updateState, updateStats } from './kv-store.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
+import { recordEvent } from './stats-core.mjs';
 import {
   BRIEFING_ENGAGEMENT_KEY,
   briefingBlockIdsFromSnapshot,
   recordBriefingOpen,
 } from './core/brief/engagement.mjs';
+
+/**
+ * Повертає мінімальні публічні ідентифікатори вакансій із snapshot-а. Жодний
+ * опис вакансії не проходить далі: `job_seen` зберігає тільки URL і title.
+ * @param {any} snapshot
+ * @returns {{ url: string, title: string }[]}
+ */
+function jobsSeenInSnapshot(snapshot) {
+  const blocks = Array.isArray(snapshot?.blocks) ? /** @type {KvBlob[]} */ (snapshot.blocks) : [];
+  const block = blocks.find((/** @type {KvBlob} */ candidate) => candidate?.id === 'jobs');
+  const items = Array.isArray(block?.data?.items) ? /** @type {KvBlob[]} */ (block.data.items) : [];
+  return items
+    .filter((/** @type {KvBlob} */ item) => item && typeof item.url === 'string')
+    .map((/** @type {KvBlob} */ item) => ({
+      url: item.url,
+      title: typeof item.title === 'string' ? item.title : '',
+    }));
+}
 
 /**
  * Телеметрія відкриття поточного briefing-а. Її не можна робити синхронною з
@@ -128,14 +147,25 @@ async function observeCurrentBriefingOpen(env, raw, nowMs) {
   try {
     const snapshot = JSON.parse(raw);
     const blockIds = briefingBlockIdsFromSnapshot(snapshot);
-    await updateStats(env, (stats) => ({
-      ...stats,
-      [BRIEFING_ENGAGEMENT_KEY]: recordBriefingOpen(stats?.[BRIEFING_ENGAGEMENT_KEY], {
-        dateKey: kyivDateKey(new Date(nowMs)),
-        blockIds,
-        nowMs,
-      }),
-    }));
+    const dateKey = kyivDateKey(new Date(nowMs));
+    const jobs = jobsSeenInSnapshot(snapshot);
+    // Навіть якщо в цьому briefing-у немає вакансій, `recordEvent` виконає
+    // bounded-retention cleanup старих jobSeen записів.
+    await updateStats(env, (stats) => {
+      const base = recordEvent(stats, { type: 'job_seen' }, dateKey);
+      return {
+        ...jobs.reduce(
+          (/** @type {KvBlob} */ next, /** @type {{ url: string, title: string }} */ job) =>
+            recordEvent(next, { type: 'job_seen', ...job }, dateKey),
+          base,
+        ),
+        [BRIEFING_ENGAGEMENT_KEY]: recordBriefingOpen(stats?.[BRIEFING_ENGAGEMENT_KEY], {
+          dateKey,
+          blockIds,
+          nowMs,
+        }),
+      };
+    });
   } catch (/** @type {any} */ error) {
     // Невдала метрика — лише лог: приватні дані вже успішно віддані власнику.
     console.error('briefing engagement: open not recorded', error?.message);

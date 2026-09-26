@@ -234,6 +234,15 @@ describe('digestJobs', () => {
     const out = digestJobs({ funnel: {}, goal: {} });
     expect(out).not.toContain('jobIndex');
   });
+
+  it('додає лише агреговану server-side воронку фактично побачених вакансій', () => {
+    const out = digestJobs({
+      funnel: {},
+      goal: {},
+      jobFunnel: { windowDays: 30, seen: 8, saved: 3, applied: 2, interview: 1, offer: 0 },
+    });
+    expect(out).toContain('за 30 днів: побачено 8, збережено 3, подано 2, співбесіда 1, оферів 0');
+  });
 });
 
 describe('digestCheckin (PR-7)', () => {

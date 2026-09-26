@@ -33,6 +33,7 @@ import {
 //   fitApplied:[ int ]                                       // ЛЕГАСІ fit% (до ревʼю D; тепер fit у appliedLog[].fit)
 //   opensMin:  [ int ]                                       // хв після 08:00 до відкриття
 //   appliedLog:[ { url, ts, fit? } ]                         // подачі (дедуп по url) — лічильник тижня + fit
+//   jobSeen:   { '<url>': { title, ts } }                    // переглянуті власником public вакансії (30 діб)
 //   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 //   checkins:  { 'YYYY-MM-DD': { morning?, afternoon?, evening? } }  // чек-ін (кап 365)
 //   briefingEngagement: { days } // тільки агреговані open/action/save/dismiss блоків briefing-а
@@ -69,6 +70,13 @@ const MOCK_RATED_CAP = 60;
 // Скільки переходів тримаємо на вакансію (журнал для «Історії» у шторці).
 // Обмеження — щоб блоб KV не ріс безмежно на вакансії, яку ганяють туди-сюди.
 const HISTORY_PER_JOB = 12;
+
+// Фактичний верх воронки Job Hunter. Це НЕ ще одна клієнтська стадія: frozen
+// Mini App валідовує лише шість наявних stage, тож «seen» живе окремим
+// серверним зрізом `jobFunnel`. Запис з'являється тільки коли власник відкрив
+// поточний briefing, а не коли вакансію згенерували чи показали в Telegram.
+const JOB_SEEN_WINDOW_DAYS = 30;
+const JOB_SEEN_CAP = 250;
 
 // Тижнева ціль подач (F2): діапазон слайдера в Mini App. Клампимо і на записі
 // (set_goal), і на читанні (normalize) — щоб биті/легасі значення в KV
@@ -687,6 +695,7 @@ export function emptyStore() {
     fitApplied: [],
     opensMin: [],
     appliedLog: [],
+    jobSeen: {},
     reliability: { onTime: 0, total: 0, deadman: 0, days: {} },
     checkins: {},
     sleepLog: {},
@@ -723,6 +732,7 @@ export function normalize(rawStore) {
     fitApplied: Array.isArray(s.fitApplied) ? s.fitApplied : e.fitApplied,
     opensMin: Array.isArray(s.opensMin) ? s.opensMin : e.opensMin,
     appliedLog: Array.isArray(s.appliedLog) ? s.appliedLog : e.appliedLog,
+    jobSeen: s.jobSeen && typeof s.jobSeen === 'object' ? s.jobSeen : e.jobSeen,
     reliability: {
       onTime: Number(s.reliability?.onTime) || 0,
       total: Number(s.reliability?.total) || 0,
@@ -805,6 +815,57 @@ const capPush = (/** @type {any[]} */ arr, /** @type {unknown} */ v) => {
   if (arr.length > HISTORY_CAP) arr.splice(0, arr.length - HISTORY_CAP);
 };
 
+/**
+ * `jobSeen` — мінімальний журнал саме побачених вакансій. У store зберігаємо
+ * лише public URL і короткий public title; опис вакансії, профіль власника й
+ * будь-який LLM-висновок сюди принципово не потрапляють.
+ */
+function validJobUrl(/** @type {unknown} */ value) {
+  if (typeof value !== 'string' || !value || value.length > 2048 || !isSafeKey(value)) return null;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+      !parsed.username &&
+      !parsed.password
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function cleanJobTitle(/** @type {unknown} */ value) {
+  return typeof value === 'string'
+    ? value
+        .replace(/\p{Cc}/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 240)
+    : '';
+}
+
+/** Видалити застарілі/биті exposure-записи та обмежити стор. */
+function capJobSeen(/** @type {KvBlob} */ s, /** @type {string} */ todayKey) {
+  const cutoff = addDays(todayKey, -(JOB_SEEN_WINDOW_DAYS - 1));
+  for (const [url, entry] of Object.entries(s.jobSeen)) {
+    if (
+      !validJobUrl(url) ||
+      !entry ||
+      typeof entry !== 'object' ||
+      !isDateKey(entry.ts) ||
+      entry.ts < cutoff
+    ) {
+      delete s.jobSeen[url];
+    }
+  }
+  const oldestFirst = Object.entries(s.jobSeen).sort(
+    ([urlA, a], [urlB, b]) => String(a.ts).localeCompare(String(b.ts)) || urlA.localeCompare(urlB),
+  );
+  for (const [url] of oldestFirst.slice(0, Math.max(0, oldestFirst.length - JOB_SEEN_CAP))) {
+    delete s.jobSeen[url];
+  }
+}
+
 /** Понеділок тижня, що містить dateKey (ключ тижневих кошиків/трендів). */
 export function weekStartKey(/** @type {string} */ dateKey) {
   const d = new Date(dateKey + 'T00:00:00Z');
@@ -834,7 +895,7 @@ const bumpInterest = (
 /**
  * Застосувати подію до стору (мутує й повертає його). `ev.type`:
  *  open · news_click · save_news · unsave_news · save_item · unsave_item ·
- *  job_stage · job_dismiss · mock_answer · step_done · vote.
+ *  job_seen · job_stage · job_dismiss · mock_answer · step_done · vote.
  *  `dateKey`="YYYY-MM-DD" київський, `nowMin`=хв після 08:00.
  *  @param {KvBlob|null|undefined} store
  *  @param {any} ev сира подія з POST /api/event: ні схеми, ні гарантії форми
@@ -974,6 +1035,21 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       const prevCat = ev.prevCategory ?? ev.category;
       if (prevCat && ev.prevDir) bumpInterest(s, dateKey, prevCat, -val(ev.prevDir));
       if (ev.category && ev.dir) bumpInterest(s, dateKey, ev.category, val(ev.dir));
+      break;
+    }
+    case 'job_seen': {
+      // Внутрішня подія GET /briefing.json: фіксуємо лише РЕАЛЬНЕ відкриття
+      // власником. Вона не є вподобанням і ніколи не навчає jobPrefs.
+      const url = validJobUrl(ev.url);
+      if (url) {
+        const prev = s.jobSeen[url];
+        s.jobSeen[url] = {
+          title: cleanJobTitle(ev.title) || cleanJobTitle(prev?.title),
+          // Повторне відкриття продовжує вікно: «побачено за 30 днів» має
+          // означати актуальний перегляд, а не першу появу вакансії назавжди.
+          ts: dateKey,
+        };
+      }
       break;
     }
     case 'job_stage':
@@ -1180,6 +1256,9 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
   // save_*, days — майже в кожній, тож дешевше підрізати один раз на виході.
   // Обидва — no-op, поки межа не перейдена.
   capSaved(s);
+  // Exposure має власне 30-денне вікно. Викликаємо не лише в `job_seen`, щоб
+  // давній запис фізично зникав і після будь-якої наступної owner-події.
+  capJobSeen(s, dateKey);
   capDays(s);
   return s;
 }
@@ -2627,6 +2706,51 @@ export function reachedCounts(/** @type {unknown} */ store) {
   return out;
 }
 
+/**
+ * Серверна верхівка воронки: лише вакансії, які власник реально відкривав у
+ * current briefing за останні 30 діб. Існуючі `funnel`/`funnelList` не
+ * змінюємо: додавання stage `seen` туди зламало б заморожену Mini App.
+ */
+function buildJobFunnel(/** @type {KvBlob} */ s, /** @type {string} */ todayKey) {
+  const cutoff = addDays(todayKey, -(JOB_SEEN_WINDOW_DAYS - 1));
+  const out = /** @type {KvBlob} */ ({ windowDays: JOB_SEEN_WINDOW_DAYS, seen: 0 });
+  for (const stage of LINEAR_STAGES) out[stage] = 0;
+
+  for (const [url, entry] of Object.entries(s.jobSeen)) {
+    if (
+      !validJobUrl(url) ||
+      !entry ||
+      typeof entry !== 'object' ||
+      !isDateKey(entry.ts) ||
+      entry.ts < cutoff
+    ) {
+      continue;
+    }
+    out.seen++;
+    const history = s.funnelMeta[url]?.history;
+    /** @type {Set<string>} */
+    const stages = new Set();
+    if (Array.isArray(history) && history.length) {
+      for (const step of history) {
+        if (!isDateKey(step?.ts) || step.ts < cutoff || STAGE_RANK[step?.stage] == null) continue;
+        for (const stage of LINEAR_STAGES) {
+          if (STAGE_RANK[stage] <= STAGE_RANK[step.stage]) stages.add(stage);
+        }
+      }
+    } else {
+      const stage = s.funnel[url];
+      const entered = s.funnelMeta[url]?.ts;
+      if (STAGE_RANK[stage] != null && isDateKey(entered) && entered >= cutoff) {
+        for (const linear of LINEAR_STAGES) {
+          if (STAGE_RANK[linear] <= STAGE_RANK[stage]) stages.add(linear);
+        }
+      }
+    }
+    for (const stage of stages) out[stage]++;
+  }
+  return out;
+}
+
 /** Один запис збереженого у формі контракту (спільна для прев'ю і сторінок). */
 function savedRow(/** @type {KvBlob} */ x) {
   return {
@@ -2793,6 +2917,10 @@ export function aggregateStats(/** @type {KvBlob} */ store, /** @type {string} *
     flameStats: buildFlameStats(s.checkins, todayKey),
     weekly,
     funnel,
+    // Окремо від `funnel`: після Zod-розбору frozen Mini App відкине це
+    // додаткове поле, зате assistant/data.read отримує повну 30-денну
+    // воронку на фактичних переглядах без зміни UI-контракту.
+    jobFunnel: buildJobFunnel(s, todayKey),
     goal: { weeklyTarget: s.goal.weeklyTarget, weeklyApplied },
     // F1: конверсії — з «дійшов до» (reachedCounts), а НЕ з поточних стадій.
     // Стара формула рахувала живі стадії, тож відмова прибирала вакансію зі

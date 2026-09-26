@@ -192,7 +192,13 @@
       context, `missingSkills` means “not present in profile text”, and a
       dealbreaker is only an explicit mismatch with an explicit profile target.
       The frozen Mini App safely ignores this future-facing snapshot field.
-- [ ] Funnel: seen → saved → applied → interview → offer; learn only from explicit outcomes.
+- [x] Funnel: `seen → saved → applied → interview → offer` is a separate
+      backend `jobFunnel` window: `seen` is written only after the owner opens
+      the current briefing, is capped to 250 public URL/title records for 30
+      days, and never changes `jobPrefs`. Existing Mini App stages stay
+      unchanged; the assistant can read the aggregate. Recommendation learning
+      remains limited to explicit `dismiss`, `applied`, `interview`, and
+      `offer` outcomes — never exposure, `rejected`, or `failed`.
 
 ### 4C. Email Attention
 

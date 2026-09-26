@@ -20,6 +20,7 @@ interface Store {
   funnel: Record<string, string | undefined>;
   funnelMeta: Record<string, FunnelMeta | undefined>;
   appliedLog: Array<{ url: string; ts: string; fit?: number }>;
+  jobSeen: Record<string, { title: string; ts: string } | undefined>;
 }
 interface Agg {
   funnel: Record<string, number>;
@@ -28,11 +29,19 @@ interface Agg {
   reached: Record<string, number>;
   goal: { weeklyApplied: number };
   avgFitApplied: number | null;
+  jobFunnel: {
+    windowDays: number;
+    seen: number;
+    saved: number;
+    applied: number;
+    interview: number;
+    offer: number;
+  };
 }
 
 const rec = (s: KvBlob, ev: Record<string, unknown>, day = '2026-07-01') =>
   recordEvent(s, ev, day) as Store;
-const agg = (s: KvBlob, day: string) => aggregateStats(s, day) as Agg;
+const agg = (s: KvBlob, day: string) => aggregateStats(s, day) as unknown as Agg;
 const stageOf = (s: Store, url: string) => s.funnel[url];
 const meta = (s: Store, url: string) => s.funnelMeta[url]!;
 
@@ -105,6 +114,74 @@ describe('воронка v2 — термінальні стадії', () => {
     let s = rec(emptyStore(), { type: 'job_stage', url: 'u1', stage: 'applied' });
     s = rec(s, { type: 'job_stage', url: 'u1', stage: 'вигадана' }, '2026-07-02');
     expect(stageOf(s, 'u1')).toBeUndefined();
+  });
+});
+
+describe('воронка вакансій — фактично побачено', () => {
+  it('рахує лише owner exposure і явні переходи в одному 30-денному вікні', () => {
+    let s = rec(emptyStore(), {
+      type: 'job_seen',
+      url: 'https://jobs.example/one',
+      title: 'Public role',
+      description: 'PRIVATE VACANCY DESCRIPTION MUST NOT PERSIST',
+    });
+    s = rec(s, { type: 'job_stage', url: 'https://jobs.example/one', stage: 'saved' });
+    s = rec(
+      s,
+      { type: 'job_stage', url: 'https://jobs.example/one', stage: 'applied' },
+      '2026-07-02',
+    );
+    s = rec(
+      s,
+      { type: 'job_stage', url: 'https://jobs.example/one', stage: 'interview' },
+      '2026-07-03',
+    );
+    s = rec(
+      s,
+      { type: 'job_stage', url: 'https://jobs.example/one', stage: 'offer' },
+      '2026-07-04',
+    );
+    s = rec(
+      s,
+      { type: 'job_seen', url: 'https://jobs.example/two', title: 'Second public role' },
+      '2026-07-04',
+    );
+
+    expect(s.jobSeen).toEqual({
+      'https://jobs.example/one': { title: 'Public role', ts: '2026-07-01' },
+      'https://jobs.example/two': { title: 'Second public role', ts: '2026-07-04' },
+    });
+    expect(JSON.stringify(s.jobSeen)).not.toContain('PRIVATE');
+    expect(agg(s, '2026-07-04').jobFunnel).toEqual({
+      windowDays: 30,
+      seen: 2,
+      saved: 1,
+      applied: 1,
+      interview: 1,
+      offer: 1,
+    });
+  });
+
+  it('не вважає старе побачене актуальним і не робить seen клієнтською стадією', () => {
+    let s = rec(emptyStore(), { type: 'job_seen', url: 'https://jobs.example/old', title: 'Old' });
+    s = rec(
+      s,
+      { type: 'job_stage', url: 'https://jobs.example/old', stage: 'applied' },
+      '2026-07-02',
+    );
+
+    expect(agg(s, '2026-07-31').jobFunnel).toEqual({
+      windowDays: 30,
+      seen: 0,
+      saved: 0,
+      applied: 0,
+      interview: 0,
+      offer: 0,
+    });
+    s = rec(s, { type: 'open' }, '2026-07-31');
+    expect(s.jobSeen).toEqual({});
+    // `seen` не пролазить у старий `funnel`, тому не може зламати Zod enum UI.
+    expect(s.funnel['https://jobs.example/old']).toBe('applied');
   });
 });
 

@@ -181,6 +181,15 @@ KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, 
 прямий конфлікт fact вакансії з прямою ціллю профілю. Заморожена Mini App
 ігнорує це додаткове поле до окремого узгодженого оновлення UI.
 
+`aggregateStats(...).jobFunnel` — окремий server-only контракт Job Hunter:
+`{ windowDays: 30, seen, saved, applied, interview, offer }`. `seen` з'являється
+лише після authenticated GET current briefing і базується на bounded
+`stats.jobSeen` (public URL/title, максимум 250, 30 діб). Він не додається до
+`funnel` чи `funnelList`, бо frozen Mini App має закритий enum стадій; її Zod
+парсер безпечно відкидає додаткове верхньорівневе поле. Exposure не є сигналом
+вподобання: `jobPrefs` навчається лише від явних `dismiss`/`applied`/
+`interview`/`offer`, а не від `seen`, `rejected` чи `failed`.
+
 Повна класифікація кожного KV ключа, його retention і незакритих scheduler-only state machines живе в [KV inventory](../kv-inventory.md); новий KV record не можна додати без відповідного рядка там і T2 scope в `data-retention.md`.
 
 ## 9. Повідомлення: формат callback-даних

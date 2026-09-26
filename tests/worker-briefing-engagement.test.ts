@@ -49,6 +49,19 @@ async function getBriefing(path: string) {
   return response;
 }
 
+async function postEvent(body: Record<string, unknown>) {
+  const initData = await buildInitData(OWNER, BOT_TOKEN);
+  return worker.fetch(
+    new Request('https://svitanok.example/api/event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
+      body: JSON.stringify(body),
+    }),
+    env(),
+    { waitUntil: () => undefined },
+  );
+}
+
 describe('GET /briefing.json — engagement telemetry', () => {
   it('records only the owner’s current briefing open and allowlisted block ids', async () => {
     vi.useFakeTimers();
@@ -72,6 +85,48 @@ describe('GET /briefing.json — engagement telemetry', () => {
 
     const response = await getBriefing('/briefing.json?date=2026-09-25');
     expect(response.status).toBe(200);
+    expect(kv.has('stats')).toBe(false);
+  });
+
+  it('records only public job identity after the owner opens the current briefing', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-26T08:00:00.000Z'));
+    kv.set(
+      'latest',
+      JSON.stringify({
+        blocks: [
+          {
+            id: 'jobs',
+            data: {
+              items: [
+                {
+                  url: 'https://jobs.example/public-role',
+                  title: 'Public role',
+                  description: 'PRIVATE FULL VACANCY DESCRIPTION',
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+
+    const response = await getBriefing('/briefing.json');
+    expect(response.status).toBe(200);
+    const stats = JSON.parse(kv.get('stats') ?? '{}');
+    expect(stats.jobSeen).toEqual({
+      'https://jobs.example/public-role': { title: 'Public role', ts: '2026-09-26' },
+    });
+    expect(JSON.stringify(stats.jobSeen)).not.toContain('PRIVATE');
+  });
+
+  it('rejects a forged client job_seen event', async () => {
+    const response = await postEvent({
+      type: 'job_seen',
+      url: 'https://jobs.example/forged',
+      title: 'Forged',
+    });
+    expect(response.status).toBe(400);
     expect(kv.has('stats')).toBe(false);
   });
 });
