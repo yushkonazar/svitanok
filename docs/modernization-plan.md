@@ -186,7 +186,12 @@
       лишається максимум 60 нормалізованих public excerpts на 14 діб із source і
       fetchedAt; HTML і текст не йдуть у LLM чи Mini App. Title relevance ще не
       перетворюється на оцінку повного опису.
-- [ ] Evidence dimensions: stack, level, location, language, salary, dealbreakers, missing skills, confidence.
+- [x] Evidence dimensions: stack, level, location, language, salary,
+      dealbreakers, missing skills, confidence. Backend emits only deterministic
+      facts with source/confidence; `requiredStack` is explicit requirement
+      context, `missingSkills` means “not present in profile text”, and a
+      dealbreaker is only an explicit mismatch with an explicit profile target.
+      The frozen Mini App safely ignores this future-facing snapshot field.
 - [ ] Funnel: seen → saved → applied → interview → offer; learn only from explicit outcomes.
 
 ### 4C. Email Attention

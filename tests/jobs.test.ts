@@ -5,6 +5,7 @@ import {
   buildScorePrompt,
   parseWorkUa,
   extractJobSignals,
+  buildJobEvidence,
   descriptionSourceFor,
   normalizeJobDescription,
   updateJobPrefs,
@@ -128,6 +129,54 @@ describe('jobs — bounded page descriptions', () => {
     expect(text).toBe('Node.js & Remote');
     expect(text).not.toContain('secret');
     expect(normalizeJobDescription('x'.repeat(7000))).toHaveLength(6000);
+  });
+});
+
+describe('jobs — structured evidence', () => {
+  it('віддає лише явні facts, requirements і конфлікти з текстом профілю', () => {
+    expect(
+      buildJobEvidence(
+        {
+          title: 'Senior Node.js Engineer',
+          url: 'https://jobs.dou.ua/companies/acme/vacancies/42',
+          pageDescription:
+            'Requirements: Node.js and Docker. Location: Kyiv, Ukraine. English required. On-site. $2000.',
+        },
+        'Junior React developer, looking for remote work.',
+      ),
+    ).toEqual({
+      sources: ['title', 'page_excerpt'],
+      confidence: 'high',
+      stack: ['Node.js', 'Docker'],
+      level: 'senior',
+      location: 'Kyiv, Ukraine',
+      languages: ['English'],
+      salary: '$2000',
+      requiredStack: ['Node.js', 'Docker'],
+      // Це «немає у профільному тексті», не твердження про реальні вміння.
+      missingSkills: ['Node.js', 'Docker'],
+      dealbreakers: [
+        'Рівень вакансії: Senior; у профілі: Junior',
+        'Формат вакансії: onsite; у профілі: remote',
+      ],
+    });
+  });
+
+  it('не вигадує requirements, missing skills чи dealbreakers з простих згадок', () => {
+    expect(
+      buildJobEvidence(
+        {
+          title: 'React Developer',
+          url: 'https://jobs.example/1',
+          description: 'React and Node.js team.',
+        },
+        'Junior React developer',
+      ),
+    ).toEqual({
+      sources: ['title', 'listing_excerpt'],
+      confidence: 'medium',
+      stack: ['React', 'Node.js'],
+    });
   });
 });
 
@@ -321,6 +370,11 @@ describe('jobs — скоринг і сортування', () => {
     expect(item).toMatchObject({
       evidence: 'listing_excerpt',
       signals: { stack: ['Node.js'], workMode: 'remote', languages: ['English'], salary: '$2000' },
+      evidenceDetails: {
+        sources: ['title', 'page_excerpt'],
+        confidence: 'high',
+        stack: ['Node.js'],
+      },
     });
     expect(JSON.stringify(item)).not.toContain('PRIVATE_MARKER');
     expect(JSON.stringify(item)).not.toContain('Node.js role');

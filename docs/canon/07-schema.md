@@ -174,6 +174,13 @@ Front-matter працівника → `AgentDefinition` SDK: `description` = п�
 
 KV лишається для cache/immutable snapshot (`saved`, `statsArchive`, `statsArchiveWeekly`, `levers`, `weatherLive`, `publicStatus`) та compatibility mirror під rollback/старий backup. Canonical structured state живе в singleton Durable Objects: `StateStoreDO` (`state`, `stats`, `settings`), `RunRegistryDO` (active runs), `PendingProposalsDO` (pending proposal), `SentMessagesDO` (`/clear` ring buffer), `AssistantHistoryDO` (короткий chat context, 30 діб тиші через alarm), `AssistantResumeDO` (одноразовий 30-хвилинний continuation slot), `BriefDispatchDO` (claim/release перед незворотним GitHub workflow dispatch), `WeatherQuotaDO` (atomic reservation спільної OpenWeather квоти), `InboxQuotaDO` (atomic admission перед D1 inbox write), `AgentHostHealthDO` (atomic VPS health transition перед alert), `MonoReconcileDO` (atomic lease/progress між Mono ticks) і `BackupStateDO` (atomic weekly Drive backup attempt). `state.jobDescriptions` — bounded cache (≤60, 14 діб) нормалізованих public vacancy excerpts із exact source+freshness; HTML, Mini App payload і LLM input його не містять. `saved` лишається в KV, бо Mini App читає повний immutable snapshot напряму; змінні domain records і далі мігрують у D1 на етапі 2.
 
+`jobs.data.items[].evidenceDetails` — майбутній backend contract для Job Hunter:
+`sources`, `confidence` і лише спостережувані stack/level/location/language/salary.
+`requiredStack` виникає лише біля явного маркера вимог; `missingSkills` означає
+відсутність у тексті профілю, а не діагноз навичок; `dealbreakers` — лише
+прямий конфлікт fact вакансії з прямою ціллю профілю. Заморожена Mini App
+ігнорує це додаткове поле до окремого узгодженого оновлення UI.
+
 Повна класифікація кожного KV ключа, його retention і незакритих scheduler-only state machines живе в [KV inventory](../kv-inventory.md); новий KV record не можна додати без відповідного рядка там і T2 scope в `data-retention.md`.
 
 ## 9. Повідомлення: формат callback-даних

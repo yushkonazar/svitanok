@@ -81,6 +81,8 @@ interface ScoredJob extends Candidate {
   why: string;
   evidence: 'title_only' | 'listing_excerpt';
   signals?: JobSignals;
+  /** Пояснювані facts, а не висновок моделі про придатність кандидата. */
+  evidenceDetails: JobEvidence;
 }
 
 /** Спостережувані сигнали з title/RSS-excerpt; це НЕ вимоги, fit або висновок
@@ -91,6 +93,27 @@ export interface JobSignals {
   workMode?: 'remote' | 'hybrid' | 'onsite';
   languages?: string[];
   salary?: string;
+}
+
+/**
+ * Контракт evidence для наступного Jobs UI. Поки Mini App заморожена, поле
+ * лишається в briefing snapshot для майбутнього споживача; існуюча UI-схема
+ * безпечно ігнорує невідоме поле. Жоден рядок тут не є LLM висновком.
+ */
+export interface JobEvidence {
+  sources: Array<'title' | 'listing_excerpt' | 'page_excerpt'>;
+  confidence: 'low' | 'medium' | 'high';
+  stack?: string[];
+  level?: JobSignals['level'];
+  location?: string;
+  languages?: string[];
+  salary?: string;
+  /** Навички, явно названі вимогою у RSS/page excerpt (не всі згадки). */
+  requiredStack?: string[];
+  /** Required stack, якої немає в тексті профілю, а не діагноз знань людини. */
+  missingSkills?: string[];
+  /** Тільки явний конфлікт facts вакансії з явно зазначеним профілем. */
+  dealbreakers?: string[];
 }
 
 type JobDescriptionRule = AppConfig['modules']['jobs']['descriptions']['sources'][number];
@@ -310,28 +333,130 @@ const STACK_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['GraphQL', /\bgraphql\b/i],
 ];
 
-/** Витягнути лише явно названі факти з заголовка та RSS-excerpt. */
+type JobLevel = NonNullable<JobSignals['level']>;
+type WorkMode = NonNullable<JobSignals['workMode']>;
+
+const LEVEL_TESTS: ReadonlyArray<readonly [JobLevel, RegExp]> = [
+  ['trainee', /\btrainee\b|\bintern(?:ship)?\b|\bстаж(?:ерування|ер)?\b/i],
+  ['junior', /\bjunior\b|\bджун(?:іор)?\b/i],
+  ['middle', /\bmiddle\b|\bmid[- ]?level\b/i],
+  ['senior', /\bsenior\b|\blead\b|\bсеньйор\b/i],
+];
+const WORK_MODE_TESTS: ReadonlyArray<readonly [WorkMode, RegExp]> = [
+  ['remote', /\bremote\b|\bвіддален(?:о|а|ий)\b/i],
+  ['hybrid', /\bhybrid\b|\bгібридн(?:о|а|ий)\b/i],
+  ['onsite', /\bon[- ]?site\b|\bофіс(?:на|ний|і)?\b/i],
+];
+const LEVEL_LABEL: Record<JobLevel, string> = {
+  trainee: 'Trainee',
+  junior: 'Junior',
+  middle: 'Middle',
+  senior: 'Senior',
+};
+const MODE_LABEL: Record<WorkMode, string> = {
+  remote: 'remote',
+  hybrid: 'hybrid',
+  onsite: 'onsite',
+};
+const REQUIREMENT_MARKER =
+  /\b(?:requirements?|required|must(?:\s+have)?|need(?:ed)?|mandatory)\b|\b(?:вимог(?:и|а)?|потріб(?:но|ні|ен|на)|обов['’]?язков)/i;
+
+function skillsIn(text: string): string[] {
+  return STACK_PATTERNS.filter(([, re]) => re.test(text)).map(([name]) => name);
+}
+
+function firstLevelIn(text: string): JobLevel | undefined {
+  return LEVEL_TESTS.find(([, re]) => re.test(text))?.[0];
+}
+
+function firstWorkModeIn(text: string): WorkMode | undefined {
+  return WORK_MODE_TESTS.find(([, re]) => re.test(text))?.[0];
+}
+
+function allLevelsIn(text: string): JobLevel[] {
+  return LEVEL_TESTS.filter(([, re]) => re.test(text)).map(([level]) => level);
+}
+
+function allWorkModesIn(text: string): WorkMode[] {
+  return WORK_MODE_TESTS.filter(([, re]) => re.test(text)).map(([mode]) => mode);
+}
+
+function locationIn(text: string): string | undefined {
+  const match = text.match(
+    /(?:\blocation\b|\bcity\b|\bмісто\b|\bлокаці[яї]\b)\s*[:—-]\s*([^.;]{2,80})/i,
+  );
+  if (!match?.[1]) return undefined;
+  const location = match[1].replace(/\s+/g, ' ').trim();
+  if (/^(?:remote|hybrid|onsite|віддалено|гібридно|офіс)$/i.test(location)) return undefined;
+  return location;
+}
+
+function requiredSkillsIn(text: string): string[] {
+  // Не ділимо за крапкою: `Node.js`/`Next.js` тоді розпадуться. Беремо
+  // обмежений контекст ПІСЛЯ явного маркера вимоги; це не перетворює просту
+  // згадку технології в «обов'язкову навичку».
+  const matcher = new RegExp(REQUIREMENT_MARKER.source, 'giu');
+  const requirementContexts = Array.from(text.matchAll(matcher)).map((match) =>
+    text.slice(match.index ?? 0, (match.index ?? 0) + 240),
+  );
+  return skillsIn(requirementContexts.join('\n'));
+}
+
+/**
+ * Зіставлення фактів вакансії з ЯВНО записаним профілем. `missingSkills` не
+ * каже, чого людина не вміє: це лише вимоги, яких немає у профільному тексті.
+ */
+export function buildJobEvidence(candidate: Candidate, profile: string): JobEvidence {
+  const text = [candidate.title, candidate.description, candidate.pageDescription]
+    .filter((part): part is string => Boolean(part))
+    .join('\n');
+  const signals = extractJobSignals(candidate);
+  const sources: JobEvidence['sources'] = [
+    'title',
+    ...(candidate.description ? (['listing_excerpt'] as const) : []),
+    ...(candidate.pageDescription ? (['page_excerpt'] as const) : []),
+  ];
+  const requirements = requiredSkillsIn(
+    [candidate.description, candidate.pageDescription].join('\n'),
+  );
+  const profileSkills = skillsIn(profile);
+  const missingSkills = requirements.filter((skill) => !profileSkills.includes(skill));
+  const desiredLevels = allLevelsIn(profile);
+  const desiredModes = allWorkModesIn(profile);
+  const location = locationIn(text);
+  const dealbreakers: string[] = [];
+  if (signals?.level && desiredLevels.length && !desiredLevels.includes(signals.level)) {
+    dealbreakers.push(
+      `Рівень вакансії: ${LEVEL_LABEL[signals.level]}; у профілі: ${desiredLevels.map((level) => LEVEL_LABEL[level]).join('/')}`,
+    );
+  }
+  if (signals?.workMode && desiredModes.length && !desiredModes.includes(signals.workMode)) {
+    dealbreakers.push(
+      `Формат вакансії: ${MODE_LABEL[signals.workMode]}; у профілі: ${desiredModes.map((mode) => MODE_LABEL[mode]).join('/')}`,
+    );
+  }
+  return {
+    sources,
+    confidence: candidate.pageDescription ? 'high' : candidate.description ? 'medium' : 'low',
+    ...(signals?.stack?.length ? { stack: signals.stack } : {}),
+    ...(signals?.level ? { level: signals.level } : {}),
+    ...(location ? { location } : {}),
+    ...(signals?.languages?.length ? { languages: signals.languages } : {}),
+    ...(signals?.salary ? { salary: signals.salary } : {}),
+    ...(requirements.length ? { requiredStack: requirements } : {}),
+    ...(missingSkills.length ? { missingSkills } : {}),
+    ...(dealbreakers.length ? { dealbreakers } : {}),
+  };
+}
+
+/** Витягнути лише явно названі факти з заголовка, RSS- або page-excerpt. */
 export function extractJobSignals(candidate: Candidate): JobSignals | undefined {
   const text = [candidate.title, candidate.description, candidate.pageDescription]
     .filter((part): part is string => Boolean(part))
     .join('\n');
-  const stack = STACK_PATTERNS.filter(([, re]) => re.test(text)).map(([name]) => name);
-  const level = /\btrainee\b|\bintern(?:ship)?\b|\bстаж(?:ерування|ер)?\b/i.test(text)
-    ? 'trainee'
-    : /\bjunior\b|\bджун(?:іор)?\b/i.test(text)
-      ? 'junior'
-      : /\bmiddle\b|\bmid[- ]?level\b/i.test(text)
-        ? 'middle'
-        : /\bsenior\b|\blead\b|\bсеньйор\b/i.test(text)
-          ? 'senior'
-          : undefined;
-  const workMode = /\bremote\b|\bвіддален(?:о|а|ий)\b/i.test(text)
-    ? 'remote'
-    : /\bhybrid\b|\bгібридн(?:о|а|ий)\b/i.test(text)
-      ? 'hybrid'
-      : /\bon[- ]?site\b|\bофіс(?:на|ний|і)?\b/i.test(text)
-        ? 'onsite'
-        : undefined;
+  const stack = skillsIn(text);
+  const level = firstLevelIn(text);
+  const workMode = firstWorkModeIn(text);
   const languages = [
     ...(/\benglish\b|\bанглійськ/i.test(text) ? ['English'] : []),
     ...(/\bukrainian\b|\bукраїнськ/i.test(text) ? ['Ukrainian'] : []),
@@ -543,6 +668,7 @@ export const jobsModule: Module<AppConfig> = {
       ranked = observedPool
         .map((c, i) => {
           const signals = extractJobSignals(c);
+          const evidenceDetails = buildJobEvidence(c, cfg.profile);
           const { description: _description, pageDescription: _pageDescription, ...visible } = c;
           return {
             ...visible,
@@ -555,6 +681,7 @@ export const jobsModule: Module<AppConfig> = {
                 ? ('listing_excerpt' as const)
                 : ('title_only' as const),
             ...(signals ? { signals } : {}),
+            evidenceDetails,
           };
         })
         .sort((a, b) => b.score - a.score);
@@ -564,6 +691,7 @@ export const jobsModule: Module<AppConfig> = {
       );
       ranked = observedPool.map((c) => {
         const signals = extractJobSignals(c);
+        const evidenceDetails = buildJobEvidence(c, cfg.profile);
         const { description: _description, pageDescription: _pageDescription, ...visible } = c;
         return {
           ...visible,
@@ -574,6 +702,7 @@ export const jobsModule: Module<AppConfig> = {
               ? ('listing_excerpt' as const)
               : ('title_only' as const),
           ...(signals ? { signals } : {}),
+          evidenceDetails,
         };
       });
     }
