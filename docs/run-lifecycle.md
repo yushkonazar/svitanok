@@ -1,7 +1,9 @@
 # Життєвий цикл run
 
 Це контракт control plane для одного `run_id`. Він однаково застосовується до
-chat, quick, scheduler і worker-профілів. D1 `runs` — audit-проєкція, але не
+chat, quick, scheduler і worker-профілів. D1 `runs` містить лише
+зареєстровані model/workflow runs — компактні планувальні тiки живуть у стані
+`SchedulerDO`, а не маскуються під user run. D1 — audit-проєкція, але не
 джерело дозволу виконувати інструменти: ним є `RunRegistryDO`.
 
 ## Стани
@@ -50,8 +52,10 @@ chat, quick, scheduler і worker-профілів. D1 `runs` — audit-проє�
 ## Спостережуваність
 
 `/status` показує active/queued треди, свіжість та версійну сумісність brain,
-готовність model runtime і останній успішний non-shadow run. Це діагностика,
-не control plane: доступність у статусі ніколи не замінює registry gate.
+готовність model runtime і останній успішний non-shadow model run. Стан
+планувальника (включно з останнім тiком і станом кожної задачі) читається
+окремо з `SchedulerDO`. Це діагностика, не control plane: доступність у статусі
+ніколи не замінює registry gate.
 
 Пов'язані модулі: `web/core/run-registry/do.mjs`,
 `web/core/run-registry/client.mjs`, `web/core/internal/router.mjs`,

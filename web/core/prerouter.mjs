@@ -2317,7 +2317,8 @@ async function lastSuccessfulRunStatusLine(env, nowMs) {
       /** @type {{ finished_at?: string, profile?: string | null, model?: string | null } | null} */ (
         await env.DB.prepare(
           `SELECT finished_at, profile, model FROM runs
-             WHERE finished_at IS NOT NULL AND error IS NULL AND trigger <> 'shadow'
+             WHERE finished_at IS NOT NULL AND error IS NULL
+               AND trigger <> 'shadow' AND profile IS NOT NULL
              ORDER BY finished_at DESC LIMIT 1`,
         )
           .bind()

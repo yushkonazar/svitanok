@@ -333,7 +333,7 @@ describe('SchedulerDO — прапорець і реєстр', () => {
   });
 });
 
-describe('SchedulerDO — телеметрія тіка в runs (PR-4)', () => {
+describe('SchedulerDO — окрема telemetry тіка', () => {
   const makeDb = () => {
     const calls: { sql: string; args: unknown[] }[] = [];
     return {
@@ -348,7 +348,7 @@ describe('SchedulerDO — телеметрія тіка в runs (PR-4)', () => {
     };
   };
 
-  it('тік із появами пише один рядок runs: outcomes + режим', async () => {
+  it('тік із появами не створює псевдо-run у D1, а лишає компактний status у DO', async () => {
     const db = makeDb();
     const { scheduler } = makeDo(
       { ASSISTANT_V2: 'shadow', DB: db },
@@ -356,29 +356,35 @@ describe('SchedulerDO — телеметрія тіка в runs (PR-4)', () => {
     );
     await scheduler.watchdogTick(T0);
     await scheduler.tick(T0 + MIN5, 'alarm');
-    expect(db.calls).toHaveLength(1);
-    expect(db.calls[0]?.sql).toContain('INSERT INTO runs');
-    const tools = JSON.parse(String(db.calls[0]?.args[4]));
-    // Режим - у tools_json: без нього рядки shadow і on були б нерозрізненні.
-    expect(tools).toEqual({
+    expect(db.calls).toHaveLength(0);
+    expect((await scheduler.status()).lastTick).toEqual({
+      at: new Date(T0 + MIN5).toISOString(),
       source: 'alarm',
       mode: 'shadow',
-      outcomes: [{ kind: 'hb', status: 'ok' }],
+      due: 1,
+      ran: 1,
+      outcomes: { ok: 1, shadow: 0, failed: 0 },
     });
   });
 
-  it('тік без прострочених появ рядка не пише (не шуміти в журналі)', async () => {
+  it('тік без прострочених появ оновлює лише zero-summary, не D1', async () => {
     const db = makeDb();
     const { scheduler } = makeDo(
       { ASSISTANT_V2: 'shadow', DB: db },
       { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
     );
     await scheduler.watchdogTick(T0); // сівба, нічого не прострочено
+    await scheduler.tick(T0 + 1, 'alarm');
     expect(db.calls).toHaveLength(0);
+    expect((await scheduler.status()).lastTick).toMatchObject({
+      source: 'alarm',
+      due: 0,
+      ran: 0,
+      outcomes: { ok: 0, shadow: 0, failed: 0 },
+    });
   });
 
-  it('без привʼязки DB тік не падає — задачі важливіші за журнал', async () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('без привʼязки DB тік не падає — задачі й status не залежать від D1', async () => {
     const { scheduler } = makeDo(
       { ASSISTANT_V2: 'shadow' },
       { hb: { periodMin: 5, shadowSafe: true, run: async () => {} } },
@@ -388,7 +394,10 @@ describe('SchedulerDO — телеметрія тіка в runs (PR-4)', () => {
       ticked: true,
       ran: 1,
     });
-    expect(err.mock.calls.join('\n')).toContain('DB');
-    err.mockRestore();
+    expect((await scheduler.status()).lastTick).toMatchObject({
+      source: 'alarm',
+      due: 1,
+      ran: 1,
+    });
   });
 });

@@ -523,6 +523,20 @@ describe('prerouteMessage: нові команди', () => {
   it('/status показує готовність моделей і останній успішний model run, не shadow', async () => {
     const reg = makeRegistryStub();
     const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
+    // Старі SchedulerDO-тіки не були model runs, але в ранніх релізах
+    // потрапляли в `runs`. Новіший за реальний model run рядок не має права
+    // змінити owner-facing status на «профіль не записано».
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, profile, started_at, finished_at, error)
+         VALUES (?, ?, NULL, ?, ?, NULL)`,
+      )
+      .run(
+        'scheduler-tick',
+        'scheduler',
+        new Date(NOW - 5_000).toISOString(),
+        new Date(NOW - 5_000).toISOString(),
+      );
     d1.db
       .prepare(
         `INSERT INTO runs (id, trigger, profile, model, started_at, finished_at, error)

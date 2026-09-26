@@ -21,7 +21,12 @@ export async function readRunDashboard(env) {
     .prepare(
       `SELECT id, trigger, profile, thread_id, model, started_at, finished_at,
               duration_ms, steps, error, cost_note
-       FROM runs ORDER BY started_at DESC LIMIT ?`,
+       FROM runs
+       -- До цього тік SchedulerDO помилково писав сюди unprofiled рядки.
+       -- Зберігаємо сумісність зі старими даними, але не даємо їм витіснити
+       -- реальні model/workflow runs з owner-facing dashboard.
+       WHERE NOT (trigger = 'scheduler' AND profile IS NULL)
+       ORDER BY started_at DESC LIMIT ?`,
     )
     .bind(RUN_DASHBOARD_LIMIT)
     .all();

@@ -14,6 +14,14 @@ describe('run dashboard', () => {
                  1200, 4, NULL, 'provider reported cost')`,
       )
       .run('2026-09-23T08:00:00.000Z', '2026-09-23T08:00:01.200Z');
+    // Сумісність із забрудненими старими telemetry rows: SchedulerDO-тік не
+    // є model/workflow run і не має витісняти реальний run з dashboard.
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, started_at, finished_at)
+         VALUES ('scheduler-tick', 'scheduler', '2026-09-23T09:00:00.000Z', '2026-09-23T09:00:00.000Z')`,
+      )
+      .run();
     const insertStep = d1.db.prepare(
       `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
        VALUES (?, 'r-1', ?, '2026-09-23T08:00:00.000Z', ?, ?, ?, 1, ?)`,
