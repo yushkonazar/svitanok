@@ -43,6 +43,11 @@ dispatch, health alert), або зберігає попередню гарант
 | `executed:*`                                                | TTL idempotency tombstone                 | create-once marker без JSON merge                                              |
 | `secret_rotated_*`, `secret_expiry_*`, `security_hint_at`   | operational audit marker                  | одноразовий timestamp/flag, не domain record                                   |
 
+Поле `stats.briefingEngagement` належить canonical `stats` у `StateStoreDO`:
+це максимум 120 денних агрегатів для allowlisted id блоків (`opened`,
+`exposed`, `action`, `save`, `dismiss`). У ньому немає тексту брифінгу, URL,
+назв, тем або іншого контенту. Це не новий KV ключ і не окрема подія доставки.
+
 ## Scheduler markers
 
 `dayPlanKickDay`, `memorySummarizedDay`, `subscriptionRemindDay`,

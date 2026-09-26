@@ -87,7 +87,7 @@ import {
 import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
 import { sendMediaBytes } from '../tg/media.mjs';
 import { ensureFolderPath, uploadCsvAsSheet, uploadFile, trashFile } from '../adapters/drive.mjs';
-import { putSettings, updateSettings, updateState } from '../../kv-store.mjs';
+import { putSettings, updateSettings, updateState, updateStats } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import {
   runCollectionsCreate,
@@ -120,6 +120,8 @@ import {
   BRIEFING_FEEDBACK_KEY,
   briefingBlockPreference,
 } from '../brief/feedback.mjs';
+import { BRIEFING_ENGAGEMENT_KEY, recordBriefingInteraction } from '../brief/engagement.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 
 /** Тека експортів у Drive (S-0-6, S-N4-4): одна на всі види вивантажень. */
 export const EXPORT_FOLDER_PATH = ['Світанок', 'export'];
@@ -326,6 +328,26 @@ export const EXECUTORS = {
       });
       const blockId = String(payload?.block_id ?? '');
       const verdict = String(payload?.verdict ?? '');
+      // `hide` — явне відхилення повного блока. Рахуємо його окремо від
+      // загального feedback state: undo повертає видимість, але не переписує
+      // факт взаємодії з історії метрик. `less/useful` не є dismiss.
+      if (verdict === 'hide') {
+        try {
+          await updateStats(env, (stats) => ({
+            ...stats,
+            [BRIEFING_ENGAGEMENT_KEY]: recordBriefingInteraction(stats?.[BRIEFING_ENGAGEMENT_KEY], {
+              dateKey: kyivDateKey(new Date(nowMs)),
+              blockId,
+              event: 'dismiss',
+              nowMs,
+            }),
+          }));
+        } catch (/** @type {any} */ error) {
+          // Preference уже записана у state й не мусить виглядати як failed
+          // через необов'язковий агрегат. Лишаємо видимий слід для ops.
+          console.error('briefing engagement: dismiss not recorded', error?.message);
+        }
+      }
       return {
         prev: { existed: before !== undefined, value: before },
         result: {

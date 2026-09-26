@@ -108,7 +108,39 @@ import {
 } from './weather-geo.mjs';
 import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent-runtime.mjs';
 import { resolveProposalCallback } from './proposals.mjs';
-import { loadState, updateState } from './kv-store.mjs';
+import { loadState, updateState, updateStats } from './kv-store.mjs';
+import { kyivDateKey } from './kyiv-time.mjs';
+import {
+  BRIEFING_ENGAGEMENT_KEY,
+  briefingBlockIdsFromSnapshot,
+  recordBriefingOpen,
+} from './core/brief/engagement.mjs';
+
+/**
+ * Телеметрія відкриття поточного briefing-а. Її не можна робити синхронною з
+ * відповіддю: читання власного briefing-а не має залежати від доступності
+ * stats KV. Історичні `?date=` принципово не рахуються як новий щоденний
+ * показ, щоб перегляд архіву не спотворював рішення про «шум».
+ * @param {Env} env @param {string|null} raw @param {number} nowMs
+ */
+async function observeCurrentBriefingOpen(env, raw, nowMs) {
+  if (!raw) return;
+  try {
+    const snapshot = JSON.parse(raw);
+    const blockIds = briefingBlockIdsFromSnapshot(snapshot);
+    await updateStats(env, (stats) => ({
+      ...stats,
+      [BRIEFING_ENGAGEMENT_KEY]: recordBriefingOpen(stats?.[BRIEFING_ENGAGEMENT_KEY], {
+        dateKey: kyivDateKey(new Date(nowMs)),
+        blockIds,
+        nowMs,
+      }),
+    }));
+  } catch (/** @type {any} */ error) {
+    // Невдала метрика — лише лог: приватні дані вже успішно віддані власнику.
+    console.error('briefing engagement: open not recorded', error?.message);
+  }
+}
 
 /**
  * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
@@ -408,8 +440,10 @@ export default {
       if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
       // ?date=YYYY-MM-DD -> історичний брифінг; інакше — latest.
       const date = url.searchParams.get('date');
-      const key = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? `briefing:${date}` : 'latest';
+      const historical = Boolean(date && /^\d{4}-\d{2}-\d{2}$/.test(date));
+      const key = historical ? `briefing:${date}` : 'latest';
       const data = await env.BRIEFING.get(key);
+      if (!historical) ctx.waitUntil(observeCurrentBriefingOpen(env, data, Date.now()));
       return new Response(data ?? '{}', {
         headers: {
           'content-type': 'application/json; charset=utf-8',

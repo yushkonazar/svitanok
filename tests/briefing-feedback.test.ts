@@ -74,6 +74,10 @@ describe('briefing.feedback policy executor', () => {
     const stored = JSON.parse(kv.get('state') ?? '{}');
     expect(stored.unrelated).toEqual({ keep: true });
     expect(briefingBlockPreference(stored.briefingFeedback, 'mail')).toBe('hidden');
+    // hide — це explicit dismiss повного блока, тому лягає в окремий
+    // агрегований audit. Сам текст briefing-а чи назва нічого сюди не їдуть.
+    const engagement = JSON.parse(kv.get('stats') ?? '{}').briefingEngagement;
+    expect(engagement.days['2026-09-26'].blocks.mail).toMatchObject({ dismiss: 1 });
 
     await executor.undo?.(env, out.prev, NOW + 1);
     expect(JSON.parse(kv.get('state') ?? '{}')).toEqual({ unrelated: { keep: true } });

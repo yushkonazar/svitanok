@@ -101,13 +101,15 @@ describe('stats-core — recordEvent', () => {
     expect(s.dismissedUrls).toEqual([{ url: 'j9', ts: '2026-07-07' }]);
 
     // Інша вакансія -> додається окремим записом; решта стору незачеплена.
-    const before = JSON.stringify({ ...s, dismissedUrls: [] });
+    // briefingEngagement — окремий audit нового explicit dismiss, тому не є
+    // частиною старої інваріанти «лише dismissedUrls».
+    const before = JSON.stringify({ ...s, dismissedUrls: [], briefingEngagement: {} });
     s = recordEvent(s, { type: 'job_dismiss', url: 'j10' }, '2026-07-08');
     expect(s.dismissedUrls).toEqual([
       { url: 'j9', ts: '2026-07-07' },
       { url: 'j10', ts: '2026-07-08' },
     ]);
-    expect(JSON.stringify({ ...s, dismissedUrls: [] })).toBe(before);
+    expect(JSON.stringify({ ...s, dismissedUrls: [], briefingEngagement: {} })).toBe(before);
   });
 
   it('mock_answer hard -> слабка тема; vote -> інтерес', () => {

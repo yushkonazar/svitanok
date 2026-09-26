@@ -13,6 +13,12 @@ import {
   welchP,
   sleepHoursOf,
 } from './checkin-model.mjs';
+import {
+  BRIEFING_ENGAGEMENT_KEY,
+  briefingInteractionFromEvent,
+  normalizeBriefingEngagement,
+  recordBriefingInteraction,
+} from './core/brief/engagement.mjs';
 //
 // Форма стору (усе опційне, defaults у emptyStore):
 //   days:      { 'YYYY-MM-DD': { opens, mock, step, news } }  // денна активність
@@ -29,6 +35,7 @@ import {
 //   appliedLog:[ { url, ts, fit? } ]                         // подачі (дедуп по url) — лічильник тижня + fit
 //   reliability:{ onTime, total, deadman, lastCheckDate? }   // облік доставки (dead-man, 10:00 Київ)
 //   checkins:  { 'YYYY-MM-DD': { morning?, afternoon?, evening? } }  // чек-ін (кап 365)
+//   briefingEngagement: { days } // тільки агреговані open/action/save/dismiss блоків briefing-а
 
 const UA_DAYS = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 
@@ -685,6 +692,7 @@ export function emptyStore() {
     sleepLog: {},
     checkinNudgeDates: {},
     dismissedUrls: [],
+    briefingEngagement: normalizeBriefingEngagement(null),
   };
 }
 
@@ -731,6 +739,7 @@ export function normalize(rawStore) {
         ? s.checkinNudgeDates
         : e.checkinNudgeDates,
     dismissedUrls: Array.isArray(s.dismissedUrls) ? s.dismissedUrls : e.dismissedUrls,
+    briefingEngagement: normalizeBriefingEngagement(s[BRIEFING_ENGAGEMENT_KEY]),
   };
 }
 
@@ -837,6 +846,9 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
   const s = normalize(store);
   if (!isDateKey(dateKey)) return s; // без валідної дати подію не приймаємо (не валимо)
   const t = ev?.type;
+  // Успішна подія ≠ завжди нова взаємодія: retry уже збереженого/відхиленого
+  // елемента має бути business no-op і не може накручувати engagement.
+  let briefingInteraction = briefingInteractionFromEvent(ev);
   switch (t) {
     case 'open': {
       const day = dayBucket(s, dateKey);
@@ -923,7 +935,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
           ts: dateKey,
         });
         if (ev.category) bumpInterest(s, dateKey, ev.category, 2);
-      }
+      } else briefingInteraction = null;
       break;
     case 'unsave_news':
       s.saved = s.saved.filter((/** @type {KvBlob} */ x) => x.url !== ev.url);
@@ -938,7 +950,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       ) {
         s.saved.unshift({ kind: ev.kind, id: ev.id, title: ev.title || '', ts: dateKey });
         if (ev.topic) bumpInterest(s, dateKey, ev.topic, 2);
-      }
+      } else briefingInteraction = null;
       break;
     case 'unsave_item':
       s.saved = s.saved.filter(
@@ -1027,7 +1039,7 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
         !s.dismissedUrls.some((/** @type {KvBlob} */ d) => d.url === ev.url)
       ) {
         capPush(s.dismissedUrls, { url: ev.url, ts: dateKey });
-      }
+      } else briefingInteraction = null;
       break;
     case 'mock_answer': {
       // F4: оцінка привʼязана до ПИТАННЯ (qId), а не до дня.
@@ -1152,6 +1164,17 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
     // ігноруються (без міграції).
     default:
       break; // невідома подія — ігноруємо (не валимо)
+  }
+  // Усі чинні шляхи (Mini App, кнопки Telegram і legacy agent-runtime) вже
+  // сходяться в recordEvent. Додаємо агрегат тут, а не в окремий HTTP-хендлер,
+  // щоб один шлях не забув інший. Невалідні події дають null і нічого не пишуть.
+  if (briefingInteraction) {
+    const parsedNow = nowIso ? Date.parse(nowIso) : Date.now();
+    s[BRIEFING_ENGAGEMENT_KEY] = recordBriefingInteraction(s[BRIEFING_ENGAGEMENT_KEY], {
+      dateKey,
+      ...briefingInteraction,
+      nowMs: Number.isFinite(parsedNow) ? parsedNow : Date.now(),
+    });
   }
   // Кепи, що не привʼязані до конкретної гілки (S3): saved росте лише в
   // save_*, days — майже в кожній, тож дешевше підрізати один раз на виході.

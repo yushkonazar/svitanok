@@ -39,6 +39,7 @@ import { ARCHIVE_KEY, WEEKLY_ARCHIVE_KEY } from '../../stats-archive.mjs';
 import { listActiveReminders } from '../reminders/store.mjs';
 import { recurrenceText } from '../reminders/recurrence.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
+import { formatBriefingEngagementDigest } from '../brief/engagement.mjs';
 import { wrapExternal } from './markup.mjs';
 import {
   buildWeeklyDigest,
@@ -136,7 +137,14 @@ export async function runDataRead(env, args, nowMs) {
     todayKey,
     settings,
   });
-  return { result: digest.slice(0, cap) };
+  // Агрегат зберігає лише ідентифікатори блоків та лічильники. Він не йде у
+  // scope=all, щоб звичайна відповідь не отримувала зайвий шум; у briefing
+  // допомагає чесно запропонувати «менше такого» без автоматичної зміни UI.
+  const engagement =
+    args.scope === 'briefing'
+      ? formatBriefingEngagementDigest(stats.briefingEngagement, { todayKey })
+      : '';
+  return { result: [digest, engagement].filter(Boolean).join('\n').slice(0, cap) };
 }
 
 /**

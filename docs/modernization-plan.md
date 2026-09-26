@@ -170,7 +170,12 @@
       critical decision headline, `less` стабільно опускає блок нижче, а
       `useful` повертає його. Запис T0 має undo, після tainted external content
       ескалується до T1. Mini App не змінювалась.
-- [ ] Measure open, action, save, dismiss; remove noisy blocks.
+- [x] Measure open, action, save, dismiss; remove noisy blocks. Backend keeps
+      only bounded daily aggregates per allowlisted block (no briefing text,
+      URLs or titles): latest-briefing open, existing action/save/dismiss
+      events and explicit `hide`. `data.read(scope=briefing)` exposes 30-day
+      candidates for `less` after at least seven shown days without interaction;
+      it never changes visibility automatically. Mini App is unchanged.
 
 ### 4B. Smart Job Hunter
 

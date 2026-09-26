@@ -103,6 +103,31 @@ describe('data.read', () => {
     // weekly і archive з етапу 3 - чинні; невідомий - вигаданий.
     await expect(runDataRead(env, { scope: 'unknown' }, NOW)).rejects.toThrow(/невідомий scope/);
   });
+
+  it('scope=briefing повертає лише агреговану engagement-підказку без контенту блока', async () => {
+    const { stub } = kvBriefing({
+      state: JSON.stringify({ reminders: [] }),
+      stats: JSON.stringify({
+        briefingEngagement: {
+          days: {
+            '2026-08-27': {
+              opened: true,
+              blocks: { news: { exposed: 1, action: 1, save: 0, dismiss: 0 } },
+            },
+          },
+        },
+      }),
+      latest: JSON.stringify({ blocks: [{ id: 'news', summary: 'private briefing text' }] }),
+      settings: JSON.stringify({}),
+    });
+    const { result } = await runDataRead(workerEnv({ BRIEFING: stub }), { scope: 'briefing' }, NOW);
+    expect(String(result)).toContain('Залучення до брифінгу');
+    expect(String(result)).toContain('news: показано 1 дн., дії 1');
+    const engagementLine = String(result)
+      .split('\n')
+      .find((line) => line.startsWith('Залучення'));
+    expect(engagementLine).not.toContain('private briefing text');
+  });
 });
 
 describe('calendar.read', () => {
