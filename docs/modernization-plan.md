@@ -192,7 +192,7 @@
 ### 4E. Narrow Personal Knowledge Base
 
 - [x] Allowlist-first foundation: CV, job preparation and chosen learning documents; every source is added explicitly, not discovered from Drive.
-- [ ] Versioned extraction/chunking/citations/ACL, D1 truth and Vectorize projection.
+- [~] Versioned D1 extraction/chunking/citations/ACL готові; rebuildable Vectorize projection лишається наступним кроком.
 - [ ] Retrieval answers cite document/version/page; explicit delete/revoke.
 - [ ] Compare managed file search only as an isolated, privacy-reviewed experiment.
 

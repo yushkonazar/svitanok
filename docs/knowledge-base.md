@@ -25,6 +25,13 @@ rebuildable projection за стабільними `vector_id`.
 section/page кожного використаного фрагмента. Якщо evidence немає — відповідь
 має прямо це сказати, а не домислювати.
 
+Поточний lifecycle уже має вузькі операції `ingestKnowledgeDocument`,
+`searchKnowledge` і `revokeKnowledgeDocument`. Ingest приймає тільки текст,
+який передав окремий authorizing adapter, та є ідемпотентним за
+`(source_ref, source_version)`. Поточний пошук є обмеженим D1-пошуком для
+приймального зрізу; Vectorize приєднається як rebuildable projection, не як
+друге джерело правди.
+
 ## Відкликання та видалення
 
 `revoked` негайно прибирає документ і всі його версії з retrieval. Видалення
