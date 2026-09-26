@@ -118,7 +118,7 @@ describe('/health', () => {
     expect(other).toMatchObject({ status: 404, body: { error: 'not-found' } });
   });
 
-  it('/ready підтверджує готовий runtime, а health без Claude CLI лишається лише живим процесом', async () => {
+  it('/ready підтверджує Claude runtime, коли він потрібен', async () => {
     const ready = makeHandler({ claudeVersion: '1.2.3' }).handler;
     await expect(
       ready.handle({ method: 'GET', path: '/ready', getHeader: () => null, bodyText: '' }),
@@ -128,6 +128,37 @@ describe('/health', () => {
     await expect(
       notReady.handle({ method: 'GET', path: '/ready', getHeader: () => null, bodyText: '' }),
     ).resolves.toMatchObject({ status: 503, body: { error: 'sdk-or-cli-unavailable' } });
+  });
+
+  it('/ready для GPT-only не вимагає Claude CLI й health описує runtime', async () => {
+    const openAiConfig: BrainConfig = {
+      ...CONFIG,
+      aiProvider: 'openai',
+      openAiApiKey: 'test-key',
+      openAiModels: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+      openAiReasoningEffort: 'medium',
+      openAiRollout: 'full',
+    };
+    const { handler } = makeHandler({
+      config: openAiConfig,
+      sdkVersion: null,
+      claudeVersion: null,
+    });
+    await expect(
+      handler.handle({ method: 'GET', path: '/ready', getHeader: () => null, bodyText: '' }),
+    ).resolves.toMatchObject({ status: 200, body: { ok: true, gitSha: SHA } });
+    await expect(
+      handler.handle({ method: 'GET', path: '/health', getHeader: () => null, bodyText: '' }),
+    ).resolves.toMatchObject({
+      status: 200,
+      body: {
+        runtime: {
+          provider: 'openai',
+          requiresClaudeRuntime: false,
+          requiresOpenAiRuntime: true,
+        },
+      },
+    });
   });
 });
 

@@ -193,8 +193,10 @@ export const NEW_COMMANDS = [
   { command: 'forget', description: 'Стерти дані' },
 ];
 
-/** Швидкий відсів для parseNewCommand: рівно ті, що обробляє новий шлях. */
-const NEW_COMMAND_NAMES = new Set(['help', 'plan', 'remind', 'status', 'new', 'forget']);
+/** Швидкий відсів для parseNewCommand. `/ready` - непублічний сумісний alias
+ * `/status`: люди природно вводять його після curl /ready на VPS, але в
+ * Telegram він має показати діагностику системи, а не стару заглушку. */
+const NEW_COMMAND_NAMES = new Set(['help', 'plan', 'remind', 'status', 'ready', 'new', 'forget']);
 
 const HELP_TEXT = [
   'Пиши як людині - командою майже нічого не треба.',
@@ -294,7 +296,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       await send('Почали з чистого аркуша. Факти й памʼять розмов лишились - зникла лише нитка.');
       return true;
     }
-    if (cmd.cmd === 'status') {
+    if (cmd.cmd === 'status' || cmd.cmd === 'ready') {
       await send(await systemStatusLine(env, target));
       return true;
     }

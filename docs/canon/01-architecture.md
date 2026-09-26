@@ -51,8 +51,8 @@
   - стрімінг `includePartialMessages` → `/internal/status` (ядро троттлить до 1/с).
 - Авторизація: `CLAUDE_CODE_OAUTH_TOKEN` (setup-token, 1 рік - VERIFIED) у `.env` 600; `--bare` не використовується (не читає OAuth - VERIFIED).
 - Без ключів Google/Mono/Gemini/Telegram. На VPS лише три секрети: Claude OAuth, Access service token, `INTERNAL_HMAC_KEY`. Без Bash/Write/Edit.
-- `health` віддає канонічний JSON з 07 §3 (`version`, `gitSha`, `sdkVersion`, `claudeVersion`, `limits`, `uptime`, `internalApiProbe`); ядро порівнює `version` і `gitSha` з очікуваними після деплою, а `/status` окремо показує свіжість проби, readiness модельного рантайму й останній успішний non-shadow run. Відсутня readiness не прирівнюється до healthy.
-- `/ready` віддає 200 лише коли є Claude SDK/CLI, хоча б одна profile-модель, успішна проба внутрішнього API і процес не draining. На `SIGTERM` brain спершу переходить у drain (нові `/run` отримують retriable 503 без споживання nonce), а чинні чекає до 85 секунд.
+- `health` віддає канонічний JSON з 07 §3 (`version`, `gitSha`, `sdkVersion`, `claudeVersion`, `limits`, `uptime`, `internalApiProbe`, `runtime`); ядро порівнює `version` і `gitSha` з очікуваними після деплою, а `/status` окремо показує свіжість проби, readiness активного модельного рантайму й останній успішний non-shadow run. Відсутня readiness не прирівнюється до healthy.
+- `/ready` віддає 200 лише коли готові рантайми, потрібні активною конфігурацією (Claude SDK/CLI — для Claude, hybrid або shadow; не для GPT-only), є хоча б одна profile-модель, успішна проба внутрішнього API і процес не draining. На `SIGTERM` brain спершу переходить у drain (нові `/run` отримують retriable 503 без споживання nonce), а чинні чекає до 85 секунд.
 
 ### 2.3 Сторонні
 

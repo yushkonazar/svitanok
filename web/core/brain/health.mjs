@@ -21,7 +21,7 @@ const HEALTH_TIMEOUT_MS = 8_000;
 
 /**
  * Health доводить, що HTTP-сервер відповідає, але це ще не доказ готового
- * модельного рантайму: потрібні і profile models, і Claude SDK/CLI, і жива
+ * модельного рантайму: потрібні profile models, активні рантайми та жива
  * внутрішня адреса core. Це лише readiness конфігурації, не synthetic LLM
  * prompt: health-check не повинен витрачати токени або створювати сесію.
  * @param {any} actual
@@ -38,7 +38,13 @@ function modelReadinessFromHealth(actual) {
   if (models.length === 0) {
     return { state: 'unready', detail: 'health не містить жодної profile-моделі' };
   }
-  if (!actual?.sdkVersion || !actual?.claudeVersion) {
+  // До появи поля runtime вважали Claude обовʼязковим. Це консервативний
+  // fallback для старого мозку; новий GPT-only мозок явно каже, що Claude
+  // runtime йому не потрібен.
+  const runtime = actual?.runtime && typeof actual.runtime === 'object' ? actual.runtime : null;
+  const requiresClaude =
+    typeof runtime?.requiresClaudeRuntime === 'boolean' ? runtime.requiresClaudeRuntime : true;
+  if (requiresClaude && (!actual?.sdkVersion || !actual?.claudeVersion)) {
     return { state: 'unready', detail: 'Claude SDK або CLI не підтверджено health-пробою' };
   }
   if (actual.internalApiProbe !== 'ok') {

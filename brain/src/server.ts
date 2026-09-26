@@ -126,11 +126,25 @@ export function createHandler(deps: ServerDeps): BrainHandler {
   let active = 0;
   let draining = false;
 
+  // Shadow теж запускає Claude як primary runtime, навіть коли основний
+  // provider заданий OpenAI. Тому критерій не можна звести до одного
+  // AI_PROVIDER: він мусить збігатися з loadConfig() та wiring у index.ts.
+  const requiresClaudeRuntime =
+    deps.config.aiProvider === 'claude' ||
+    deps.config.aiProvider === 'hybrid' ||
+    deps.config.openAiShadowTargets.length > 0;
+  const requiresOpenAiRuntime =
+    deps.config.aiProvider === 'openai' ||
+    deps.config.aiProvider === 'hybrid' ||
+    deps.config.openAiShadowTargets.length > 0;
+
   /** /ready — навмисно вужчий за /health: процес може відповідати на health,
-   * але ще не мати готового Claude runtime або адреси core. */
+   * але ще не мати готового активного runtime або адреси core. */
   function readiness() {
     if (draining) return { ok: false, error: 'draining' };
-    if (!deps.sdkVersion || !deps.claudeVersion)
+    // Для GPT-only інсталяції Claude SDK/CLI не є частиною шляху виконання.
+    // Вимагати їх тут означало б хибний 503 після успішної міграції на GPT.
+    if (requiresClaudeRuntime && (!deps.sdkVersion || !deps.claudeVersion))
       return { ok: false, error: 'sdk-or-cli-unavailable' };
     if (deps.limits.models.length === 0) return { ok: false, error: 'no-profile-models' };
     if (deps.internalApiProbe() !== 'ok') return { ok: false, error: 'internal-api-not-ready' };
@@ -149,6 +163,11 @@ export function createHandler(deps: ServerDeps): BrainHandler {
           limits: deps.limits,
           uptimeSec: Math.floor((now() - startedAt) / 1000),
           internalApiProbe: deps.internalApiProbe(),
+          runtime: {
+            provider: deps.config.aiProvider,
+            requiresClaudeRuntime,
+            requiresOpenAiRuntime,
+          },
         }),
       };
     }

@@ -58,9 +58,10 @@ describe('classifyRoute (N3)', () => {
 });
 
 describe('parseNewCommand', () => {
-  it('вісім команд ловляться (і з @botname), решта - ні', () => {
+  it('вісім команд і сумісний /ready ловляться (і з @botname), решта - ні', () => {
     expect(parseNewCommand('/new')).toEqual({ cmd: 'new', args: '' });
     expect(parseNewCommand('/status@svitanok_bot')).toEqual({ cmd: 'status', args: '' });
+    expect(parseNewCommand('/ready')).toEqual({ cmd: 'ready', args: '' });
     expect(parseNewCommand('/remind через 20 хв полити квіти')).toEqual({
       cmd: 'remind',
       args: 'через 20 хв полити квіти',
@@ -108,6 +109,8 @@ describe('parseNewCommand', () => {
       (c) => c.command,
     );
     expect(byNewPath).toEqual(['help', 'plan', 'remind', 'status', 'new', 'forget']);
+    // /ready - alias /status, навмисно не засмічує меню і /help.
+    expect(parseNewCommand('/ready')).toEqual({ cmd: 'ready', args: '' });
     // /brief і /clear лишились у легасі - там у них уже є робочі обробники.
     for (const legacyOnly of ['brief', 'clear']) {
       expect(parseNewCommand(`/${legacyOnly}`), legacyOnly).toBeNull();
@@ -469,7 +472,7 @@ describe('prerouteMessage: нові команди', () => {
     expect(tg.some((c) => String(c.body.text).includes('чистого аркуша'))).toBe(true);
   });
 
-  it('/help, /status і /forget відповідають без прогону мозку', async () => {
+  it('/help, /status, /ready і /forget відповідають без прогону мозку', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
     const env = makeEnv(
@@ -479,12 +482,14 @@ describe('prerouteMessage: нові команди', () => {
     );
     await prerouteMessage(env, parsedMsg('/help'), NOW);
     await prerouteMessage(env, parsedMsg('/status'), NOW);
+    await prerouteMessage(env, parsedMsg('/ready'), NOW);
     await prerouteMessage(env, parsedMsg('/forget'), NOW);
     // /help веде вільним текстом, а не переліком екранів Mini App.
     expect(tg.some((c) => String(c.body.text).includes('нагадай через 20 хв'))).toBe(true);
     // /status - людською, і в ньому ж адреса чату (сюди переїхав /whereami).
     const status = tg.find((c) => String(c.body.text).includes('Режим асистента: on'))!;
     expect(String(status.body.text)).toContain('Чат: 555');
+    expect(tg.filter((c) => String(c.body.text).includes('Режим асистента: on'))).toHaveLength(2);
     // /forget більше не буває порожнім: «усе» є завжди (етап 7 PR-4) - забути
     // можна ще й факти, гроші, плани й памʼять, навіть коли колекцій немає.
     const forgetMsg = tg.find((c) => String(c.body.text).includes('Що забути?'))!;

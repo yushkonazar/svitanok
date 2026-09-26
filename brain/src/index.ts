@@ -92,7 +92,14 @@ const handler = createHandler({
   buildInfo,
   limits: {
     tools: BRAIN_TOOLS.map((t) => t.coreName),
-    models: PROFILE_MODELS,
+    // /health має називати моделі, якими цей процес може відповідати. Лише
+    // Claude-імена у GPT-only режимі вводили owner-facing /status в оману.
+    models:
+      config.aiProvider === 'openai'
+        ? [...new Set(Object.values(config.openAiModels ?? {}))]
+        : config.openAiModels
+          ? [...new Set([...PROFILE_MODELS, ...Object.values(config.openAiModels)])]
+          : PROFILE_MODELS,
     maxSteps: PROFILES.chat.maxToolCalls,
   },
   runner: makeRunner({ client, engine, aborts }),

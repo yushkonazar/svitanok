@@ -462,10 +462,11 @@ describe('buildOwnDataDigest', () => {
     expect(buildOwnDataDigest({ scope: 'settings', ...withExtra })).toContain('Налаштування');
   });
 
-  it('OWN_DATA_SCOPES включає всі 9 областей (PR-7)', () => {
+  it('OWN_DATA_SCOPES включає всі 10 областей, зокрема analytics', () => {
     expect(OWN_DATA_SCOPES).toEqual([
       'all',
       'briefing',
+      'analytics',
       'jobs',
       'progress',
       'reminders',

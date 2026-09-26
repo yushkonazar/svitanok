@@ -182,6 +182,34 @@ describe('checkBrainHandshake', () => {
     );
   });
 
+  it('GPT-only runtime готовий без Claude CLI, якщо brain явно це підтверджує', async () => {
+    setFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            version: '1.0.0',
+            gitSha: 'same-sha',
+            sdkVersion: null,
+            claudeVersion: null,
+            limits: { models: ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'] },
+            internalApiProbe: 'ok',
+            runtime: {
+              provider: 'openai',
+              requiresClaudeRuntime: false,
+              requiresOpenAiRuntime: true,
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+
+    await checkBrainHandshake(env, NOW);
+    expect(JSON.parse(kv.get(BRAIN_HEALTH_STATE_KEY) ?? '{}')).toMatchObject({
+      state: 'ok',
+      modelReadiness: { state: 'ready', detail: expect.stringContaining('gpt-6-sol') },
+    });
+  });
+
   it('down → алерт; відновлення → «знову в нормі»', async () => {
     setFetch(async () => new Response('gateway error', { status: 502 }));
     expect(await checkBrainHandshake(env, NOW)).toMatchObject({ state: 'down', alerted: true });

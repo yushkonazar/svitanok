@@ -14,6 +14,18 @@ export interface HealthLimits {
   maxSteps: number;
 }
 
+/**
+ * Які рантайми потрібні саме цій інсталяції. Це не містить секретів: ядру
+ * треба лише не плутати GPT-only мозок із мозком, що справді потребує Claude
+ * CLI. Старі версії /health цього поля не мають, тож ядро лишається сумісним
+ * із ними через безпечний Claude-first fallback.
+ */
+export interface RuntimeHealth {
+  provider: 'claude' | 'openai' | 'hybrid';
+  requiresClaudeRuntime: boolean;
+  requiresOpenAiRuntime: boolean;
+}
+
 export interface HealthInput {
   buildInfo: BuildInfo;
   sdkVersion: string | null;
@@ -22,6 +34,7 @@ export interface HealthInput {
   uptimeSec: number;
   /** Результат стартової проби internal API ('ok' | 'unexpected-404' | …). */
   internalApiProbe: string;
+  runtime: RuntimeHealth;
 }
 
 export function buildHealthPayload(i: HealthInput): Record<string, unknown> {
@@ -33,6 +46,7 @@ export function buildHealthPayload(i: HealthInput): Record<string, unknown> {
     limits: i.limits,
     uptime: i.uptimeSec,
     internalApiProbe: i.internalApiProbe,
+    runtime: i.runtime,
   };
 }
 
