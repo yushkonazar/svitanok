@@ -90,7 +90,7 @@ jobs:
     # Остання сітка безпеки під зависання (B14): типовий прогін — хвилини, а
     # дефолтні 360 хв означали б, що завислий на тілі відповіді HTTP-виклик
     # палить пів дня runner-часу й тримає concurrency-групу зайнятою. 25 хв —
-    # із запасом більше за найдовший реальний ран (claude -p таймаут 150с × 5).
+    # із запасом більше за найдовший реальний ран Responses API (90с × 5).
     timeout-minutes: 25
     permissions:
       contents: read # стан у KV -> запис у репо не потрібен (least privilege)
@@ -101,22 +101,6 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      # claude CLI потрібен модулю news (llm.ts: spawn 'claude -p'). Пін версії (§2.1, §8).
-      - name: install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.195
-      # Неінтерактивність claude -p (§2.1): onboarding + ДОВІРА до теки.
-      # Свіжий checkout не «довірений» -> діалог довіри -> claude -p exit 1.
-      # hasTrustDialogAccepted per-project знімає це.
-      - name: preseed claude non-interactive
-        run: |
-          cat > "$HOME/.claude.json" <<JSON
-          {
-            "hasCompletedOnboarding": true,
-            "projects": {
-              "${{ github.workspace }}": { "hasTrustDialogAccepted": true }
-            }
-          }
-          JSON
       - name: run briefing
         env:
           # Стан у KV: orchestrator читає/пише namespace BRIEFING, ключ `state`.
@@ -144,7 +128,7 @@ jobs:
           # (28f35d3, 04.08) жодного разу не спрацювала в проді — код і теми
           # `translate: true` були на місці, а сам секрет до рану не доїжджав.
           GOOGLE_TRANSLATE_API_KEY: ${{ secrets.GOOGLE_TRANSLATE_API_KEY }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # ⚠️ GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN
           # ТУТ БІЛЬШЕ НЕМАЄ І НЕ МАЄ ЗʼЯВИТИСЬ (ADR-027, етап 7 редизайну).
           # Блоки «Пошта» і «Сьогодні в календарі» тепер приходять із KV

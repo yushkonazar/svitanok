@@ -27,8 +27,8 @@ function regexLiteral(file: string, name: string): string {
 }
 
 describe('M2 — паритет дубльованих регулярок', () => {
-  it('USAGE_LIMIT_RE однаковий у всіх трьох деплоях', () => {
-    const files = ['src/core/llm.ts', 'host/llm-host-core.mjs', 'web/agent-core.mjs'];
+  it('USAGE_LIMIT_RE однаковий у двох legacy Claude-деплоях', () => {
+    const files = ['host/llm-host-core.mjs', 'web/agent-core.mjs'];
     const [first, ...rest] = files.map((f) => regexLiteral(f, 'USAGE_LIMIT_RE'));
     for (const [i, literal] of rest.entries()) {
       expect(literal, `${files[i + 1]} розійшовся з ${files[0]}`).toBe(first);

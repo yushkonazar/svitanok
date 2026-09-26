@@ -73,7 +73,9 @@ import {
 import { handleStatus } from './api-status.mjs';
 import { handleArchiveRequest } from './api-archive.mjs';
 import { handleLeversRequest } from './api-levers.mjs';
+import { handleAnalyticsRequest } from './api-analytics.mjs';
 import { handleDeletionsRequest } from './api-deletions.mjs';
+import { handleMailAttention } from './api-mail-attention.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -107,7 +109,69 @@ import {
 } from './weather-geo.mjs';
 import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent-runtime.mjs';
 import { resolveProposalCallback } from './proposals.mjs';
-import { loadState, updateState } from './kv-store.mjs';
+import { loadState, updateState, updateStats } from './kv-store.mjs';
+import { kyivDateKey } from './kyiv-time.mjs';
+import { recordEvent } from './stats-core.mjs';
+import {
+  BRIEFING_ENGAGEMENT_KEY,
+  briefingBlockIdsFromSnapshot,
+  recordBriefingOpen,
+} from './core/brief/engagement.mjs';
+
+/**
+ * Повертає мінімальні публічні ідентифікатори вакансій із snapshot-а. Жодний
+ * опис вакансії не проходить далі: `job_seen` зберігає тільки URL і title.
+ * @param {any} snapshot
+ * @returns {{ url: string, title: string }[]}
+ */
+function jobsSeenInSnapshot(snapshot) {
+  const blocks = Array.isArray(snapshot?.blocks) ? /** @type {KvBlob[]} */ (snapshot.blocks) : [];
+  const block = blocks.find((/** @type {KvBlob} */ candidate) => candidate?.id === 'jobs');
+  const items = Array.isArray(block?.data?.items) ? /** @type {KvBlob[]} */ (block.data.items) : [];
+  return items
+    .filter((/** @type {KvBlob} */ item) => item && typeof item.url === 'string')
+    .map((/** @type {KvBlob} */ item) => ({
+      url: item.url,
+      title: typeof item.title === 'string' ? item.title : '',
+    }));
+}
+
+/**
+ * Телеметрія відкриття поточного briefing-а. Її не можна робити синхронною з
+ * відповіддю: читання власного briefing-а не має залежати від доступності
+ * stats KV. Історичні `?date=` принципово не рахуються як новий щоденний
+ * показ, щоб перегляд архіву не спотворював рішення про «шум».
+ * @param {Env} env @param {string|null} raw @param {number} nowMs
+ */
+async function observeCurrentBriefingOpen(env, raw, nowMs) {
+  if (!raw) return;
+  try {
+    const snapshot = JSON.parse(raw);
+    const blockIds = briefingBlockIdsFromSnapshot(snapshot);
+    const dateKey = kyivDateKey(new Date(nowMs));
+    const jobs = jobsSeenInSnapshot(snapshot);
+    // Навіть якщо в цьому briefing-у немає вакансій, `recordEvent` виконає
+    // bounded-retention cleanup старих jobSeen записів.
+    await updateStats(env, (stats) => {
+      const base = recordEvent(stats, { type: 'job_seen' }, dateKey);
+      return {
+        ...jobs.reduce(
+          (/** @type {KvBlob} */ next, /** @type {{ url: string, title: string }} */ job) =>
+            recordEvent(next, { type: 'job_seen', ...job }, dateKey),
+          base,
+        ),
+        [BRIEFING_ENGAGEMENT_KEY]: recordBriefingOpen(stats?.[BRIEFING_ENGAGEMENT_KEY], {
+          dateKey,
+          blockIds,
+          nowMs,
+        }),
+      };
+    });
+  } catch (/** @type {any} */ error) {
+    // Невдала метрика — лише лог: приватні дані вже успішно віддані власнику.
+    console.error('briefing engagement: open not recorded', error?.message);
+  }
+}
 
 /**
  * Фактична обробка апдейту (callback-резолв або handleCommand) + запис
@@ -407,8 +471,10 @@ export default {
       if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
       // ?date=YYYY-MM-DD -> історичний брифінг; інакше — latest.
       const date = url.searchParams.get('date');
-      const key = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? `briefing:${date}` : 'latest';
+      const historical = Boolean(date && /^\d{4}-\d{2}-\d{2}$/.test(date));
+      const key = historical ? `briefing:${date}` : 'latest';
       const data = await env.BRIEFING.get(key);
+      if (!historical) ctx.waitUntil(observeCurrentBriefingOpen(env, data, Date.now()));
       return new Response(data ?? '{}', {
         headers: {
           'content-type': 'application/json; charset=utf-8',
@@ -457,6 +523,11 @@ export default {
       // кожному відкритті дашборда.
       return handleLeversRequest(request, env);
     }
+    if (url.pathname === '/api/analytics') {
+      // Окремий, owner-only контракт 4D. Frozen Mini App його не викликає;
+      // так новий шар не змінює її стабільний /api/stats payload.
+      return handleAnalyticsRequest(request, env);
+    }
     if (url.pathname === '/api/deletions') {
       // T2-receipts — приватна історія видалень. Це окреме lazy-read, щоб
       // відкриття звичайної статистики не платило KV-list за рідкісний екран.
@@ -464,6 +535,9 @@ export default {
     }
     if (url.pathname === '/api/stats') {
       return handleStats(request, env);
+    }
+    if (url.pathname === '/api/mail/attention' && request.method === 'GET') {
+      return handleMailAttention(request, env);
     }
     if (url.pathname === '/api/weather') {
       return handleLiveWeather(request, env);

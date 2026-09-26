@@ -1,7 +1,8 @@
 // Pruner-и стану (§6 weekly-review, §8). Тримають state.json і коміти стрункими:
 //  - shownNews: за max(dedupDays, retentionDays);
 //  - shownMail: за mail.dedupDays;
-//  - shownJobs: за jobs.dedupDays.
+//  - shownJobs: за jobs.dedupDays;
+//  - jobDescriptions: bounded public page excerpts за jobs.descriptions.retentionDays.
 // Передаються у createStateStore; orchestrator викликає state.prune() перед flush.
 //
 // ⚠️ Інваріант: КОЖНА dedup-мапа має мати тут свій прунер. shownJobs його не мала
@@ -20,6 +21,7 @@ export function buildPruners(config: AppConfig, now: number): Pruner[] {
     now - Math.max(config.modules.news.dedupDays, config.modules.news.retentionDays) * DAY_MS;
   const mailCutoff = now - config.modules.mail.dedupDays * DAY_MS;
   const jobsCutoff = now - config.modules.jobs.dedupDays * DAY_MS;
+  const descriptionsCutoff = now - (config.modules.jobs.descriptions?.retentionDays ?? 14) * DAY_MS;
 
   const pruneShownNews: Pruner = (data) => {
     const shown = data['shownNews'] as Record<string, string> | undefined;
@@ -52,5 +54,31 @@ export function buildPruners(config: AppConfig, now: number): Pruner[] {
     }
   };
 
-  return [pruneShownNews, pruneShownMail, pruneShownJobs];
+  // Повні сторінки вакансій — найважчий запис у state. Тримаємо лише свіжі,
+  // валідні та не більше 60 найновіших; це межа навіть коли maxPerRun/доба
+  // помножиться на весь retention. Текст не аналізуємо тут — тільки форма й час.
+  const pruneJobDescriptions: Pruner = (data) => {
+    const cache = data['jobDescriptions'] as
+      Record<string, { fetchedAt?: unknown; text?: unknown }> | undefined;
+    if (!cache || typeof cache !== 'object') return;
+    for (const [url, entry] of Object.entries(cache)) {
+      const at = Date.parse(String(entry?.fetchedAt ?? ''));
+      if (
+        !url ||
+        !Number.isFinite(at) ||
+        at < descriptionsCutoff ||
+        typeof entry?.text !== 'string'
+      ) {
+        delete cache[url];
+      }
+    }
+    const oldestFirst = Object.entries(cache)
+      .map(([url, entry]) => ({ url, at: Date.parse(String(entry?.fetchedAt ?? '')) }))
+      .sort((a, b) => a.at - b.at);
+    for (const { url } of oldestFirst.slice(0, Math.max(0, oldestFirst.length - 60))) {
+      delete cache[url];
+    }
+  };
+
+  return [pruneShownNews, pruneShownMail, pruneShownJobs, pruneJobDescriptions];
 }

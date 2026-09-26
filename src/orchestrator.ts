@@ -42,6 +42,14 @@ import {
   type WeeklyReviewData,
 } from './core/render.js';
 import { buildBriefingData, type BriefingData } from './core/briefing.js';
+import { BRIEFING_FEEDBACK_KEY, briefingBlockPreference } from '../web/core/brief/feedback.mjs';
+import {
+  buildDecisionBrief,
+  buildDecisionSummaryPrompt,
+  formatDecisionHeadline,
+  parseDecisionAiSummary,
+  type ReminderSnapshotForDecision,
+} from './core/decision-brief.js';
 import { partitionModules } from './core/registry.js';
 import { sendGuard } from './core/guard.js';
 import { requireCriticalSecrets, optionalSecret, MissingSecretsError } from './core/secrets.js';
@@ -56,7 +64,13 @@ import type {
   Logger,
 } from './core/types.js';
 import { createWeatherModule, signed, type WeatherToday } from './modules/weather.js';
-import { createCalendarModule, CALENDAR_BUS_KEY, type CalendarEvent } from './modules/calendar.js';
+import {
+  createCalendarModule,
+  CALENDAR_BUS_KEY,
+  CALENDAR_SNAPSHOT_KEY,
+  type CalendarEvent,
+  type CalendarSnapshot,
+} from './modules/calendar.js';
 import { stoicModule } from './modules/stoic.js';
 import { createNewsModule } from './modules/news.js';
 import { jobsModule } from './modules/jobs.js';
@@ -68,9 +82,11 @@ import { createOnThisDayModule } from './modules/onthisday.js';
 import {
   createMailModule,
   MAIL_PROPOSAL_BUS_KEY,
+  MAIL_TRIAGE_KEY,
   formatMailProposalMessage,
   pluralizeLysty,
   type MailProposalItem,
+  type MailTriageState,
 } from './modules/mail.js';
 import { buildPruners } from './core/prune.js';
 
@@ -200,6 +216,11 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
     log,
   };
 
+  // Feedback діє лише на presentation повного briefing-а, а не на producer-и:
+  // прихована «Погода» все одно має дати critical weather signal, прихований
+  // «Календар» — перевірку перетинів. Інакше preference могла б тихо
+  // вимкнути safety/decision layer замість одного інформаційного блока.
+  const briefingFeedback = state.get<unknown>(BRIEFING_FEEDBACK_KEY);
   const enabled = deps.modules.filter((m) => m.enabled(config));
   const { producers, consumers } = partitionModules(enabled);
 
@@ -212,16 +233,11 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   // йде в чат, тож на рендер сповіщення вже не впливає.
   const quiet = isQuietDay(config, producedIds) && !clock.isSunday();
   const header = formatKyivDateHeader(clock.now());
-  const briefing = buildBriefingData(
-    blocks,
-    formatKyivDateLabel(clock.now()),
-    clock.now().toISOString(),
-  );
 
-  // Короткий рядок дня (Фаза B3): погода (перша локація) + перша подія
-  // календаря сьогодні + «N листів» — усі блоки вже прораховані (Фаза
-  // producers+consumers вище), реордеринг не потрібен. Кожен сегмент
-  // опційний (graceful — відсутній блок просто не додає сегмент).
+  // Короткий рядок дня + детермінований decision layer: погода (перша
+  // локація), календарний snapshot, D1/KV snapshot нагадувань і mail-triage
+  // вже прораховані. Кожен сегмент опційний: застарілий/відсутній snapshot
+  // не стає вигаданим фактом у повідомленні.
   // blockData — одна точка небезпечного каста Block.data (тип навмисно
   // unknown, §core/types.ts) замість дубльованого inline-каста на кожен блок.
   const blockData = <T>(id: string): T | undefined =>
@@ -229,6 +245,51 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
   const weatherLoc = blockData<{ locations?: WeatherToday[] }>('weather')?.locations?.[0];
   const firstEvent = ctx.bus.get<CalendarEvent[]>(CALENDAR_BUS_KEY)?.[0];
   const mailCount = blockData<{ count?: number }>('mail')?.count;
+  const generatedAt = clock.now().toISOString();
+  const deterministicDecision = buildDecisionBrief({
+    todayKey: clock.todayKey(),
+    generatedAt,
+    calendar: state.get<CalendarSnapshot>(CALENDAR_SNAPSHOT_KEY),
+    reminders: state.get<ReminderSnapshotForDecision>('remindersToday'),
+    mail: state.get<MailTriageState>(MAIL_TRIAGE_KEY),
+    weather: weatherLoc,
+  });
+  // LLM є лише надбудовою над уже зафіксованими фактами: вона отримує
+  // обмежений список signal IDs і може дати короткий порядок/виклад. Помилка
+  // або малформат не змінюють ані Telegram headline, ані детерміновані дані.
+  let decisionBrief = deterministicDecision;
+  if (deterministicDecision.signals.length > 0) {
+    try {
+      const aiText = await ctx.llm.complete(buildDecisionSummaryPrompt(deterministicDecision), {
+        maxTokens: 180,
+        timeoutMs: ctx.config.llm.timeoutMs,
+        tag: 'decision-summary',
+      });
+      const ai = parseDecisionAiSummary(aiText, deterministicDecision.signals);
+      if (ai) decisionBrief = { ...deterministicDecision, ai };
+      else ctx.log.warn('decision-summary: LLM повернула невалідний strict JSON — пропущено');
+    } catch (error) {
+      ctx.log.warn(
+        `decision-summary: необов'язкове ранжування пропущено: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const visibleBlocks = blocks
+    .filter((block) => briefingBlockPreference(briefingFeedback, block.id) !== 'hidden')
+    .map((block) => ({
+      ...block,
+      // «Менше такого» не змінює правдивість даних і не додає випадкову
+      // частоту: блок лишається доступним, але стабільно опускається нижче.
+      priority:
+        block.priority + (briefingBlockPreference(briefingFeedback, block.id) === 'less' ? 100 : 0),
+    }));
+  const briefing = buildBriefingData(
+    visibleBlocks,
+    formatKyivDateLabel(clock.now()),
+    generatedAt,
+    decisionBrief,
+  );
+  const decisionHeadline = formatDecisionHeadline(decisionBrief);
   const summaryLine = joinSummarySegments([
     weatherLoc
       ? `${weatherLoc.emoji} ${escapeHtml(weatherLoc.name)} ${signed(weatherLoc.tempC)}`
@@ -240,7 +301,7 @@ export async function runBriefing(deps: RunDeps, opts: RunOptions = {}): Promise
       ? `📧 ${mailCount} ${pluralizeLysty(mailCount)}`
       : null,
   ]);
-  const headerFull = summaryLine ? `${header}\n${summaryLine}` : header;
+  const headerFull = [header, decisionHeadline, summaryLine].filter(Boolean).join('\n');
 
   // Щоденне сповіщення в чат: дата(+рядок дня), БЕЗ inline-кнопки апки (фідбек
   // власника, п.2) — постійний вхід у Mini App тепер ОКРЕМЕ закріплене вітальне
@@ -407,8 +468,9 @@ async function applyOwnerGeoFromKv(
   return next;
 }
 
-/** Хости allowlist для SourceFetcher — з jobs.sources (§8). Новини тепер через
- *  фіксований NewsData API (прямий fetch, не allowlisted). */
+/** Хости allowlist для SourceFetcher — з jobs.sources і вузьких routes
+ * descriptions (§8). Новини тепер через фіксований NewsData API (прямий
+ * fetch, не allowlisted). */
 function fetchAllowlist(config: AppConfig): string[] {
   const hosts = new Set<string>();
   const add = (url: string) => {
@@ -419,6 +481,9 @@ function fetchAllowlist(config: AppConfig): string[] {
     }
   };
   config.modules.jobs.sources.forEach(add);
+  for (const source of config.modules.jobs.descriptions?.sources ?? []) {
+    add(`https://${source.host}${source.pathPrefix}`);
+  }
   return [...hosts];
 }
 

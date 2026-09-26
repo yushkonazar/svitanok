@@ -351,10 +351,9 @@ describe('llm-host-core — звірка версії claude CLI', () => {
     expect(claudeVersionWarning(null)).toContain('локдаун');
   });
 
-  /* ⚠️ Пін мусить збігатись із тим, що ставить CI. Розійдуться — і хост
-     попереджатиме про «розбіжність» на кожному старті, хоча все правильно. */
-  it('константа збігається з версією, яку ставить brief.yml', () => {
+  it('brief.yml більше не тягне Claude CLI: host лишається окремим legacy шляхом', () => {
     const wf = readFileSync('.github/workflows/brief.yml', 'utf8');
-    expect(wf).toContain(`@anthropic-ai/claude-code@${PINNED_CLAUDE_VERSION}`);
+    expect(wf).not.toContain('@anthropic-ai/claude-code');
+    expect(wf).toContain('OPENAI_API_KEY');
   });
 });

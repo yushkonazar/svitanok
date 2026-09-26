@@ -158,7 +158,19 @@ export const jobItemSchema = z.object({
   why: z.string().default(''),
   // Поки джерела дають лише title/RSS, число є ранжуванням заголовка, а не
   // «відсотком відповідності» повної вакансії. Дефолт тримає старі брифінги.
-  evidence: z.enum(['title_only']).default('title_only'),
+  evidence: z.enum(['title_only', 'listing_excerpt']).default('title_only'),
+  // Лише явно знайдені у заголовку/RSS-витягу факти. Відсутність поля — не
+  // негативний висновок, а відсутність підтвердження у доступному джерелі.
+  signals: z
+    .object({
+      stack: z.array(z.string()).default([]),
+      level: z.enum(['trainee', 'junior', 'middle', 'senior']).optional(),
+      workMode: z.enum(['remote', 'hybrid', 'onsite']).optional(),
+      languages: z.array(z.string()).default([]),
+      salary: z.string().optional(),
+    })
+    .optional(),
+  publishedAt: z.string().datetime().optional(),
   funnelStage: z.enum(['saved', 'applied', 'interview', 'offer']).optional(),
 });
 

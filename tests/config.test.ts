@@ -45,6 +45,11 @@ describe('config — валідний конфіг', () => {
     expect(() => parseConfig({ ...valid, sendHour: 1, sendWindowHours: 22 })).not.toThrow();
   });
 
+  it('page descriptions вакансій opt-in: старий конфіг лишається вимкненим із безпечними межами', () => {
+    const descriptions = parseConfig(valid).modules.jobs.descriptions;
+    expect(descriptions).toEqual({ enabled: false, maxPerRun: 4, retentionDays: 14, sources: [] });
+  });
+
   // Теми новин: кожна мусить уміти сказати, ЩО саме тягне. rss — стрічкою (url),
   // newsdata — категорією або пошуком. Тема без цього звелась би до «віддай усе».
   it('кожна тема новин у config.yml має url (rss) або category/q (newsdata)', () => {
@@ -80,6 +85,27 @@ describe('config — невалідний падає гучно', () => {
 
   it('sendHour поза 0–23 — відхиляється', () => {
     expect(() => parseConfig({ ...valid, sendHour: 24, sendWindowHours: 0 })).toThrow();
+  });
+
+  it('jobs description route не приймає URL, wildcard чи path без /', () => {
+    const withRoute = (host: string, pathPrefix: string) => ({
+      ...valid,
+      modules: {
+        ...valid.modules,
+        jobs: {
+          ...valid.modules.jobs,
+          descriptions: {
+            enabled: true,
+            maxPerRun: 1,
+            retentionDays: 14,
+            sources: [{ host, pathPrefix }],
+          },
+        },
+      },
+    });
+    expect(() => parseConfig(withRoute('https://jobs.dou.ua', '/companies/'))).toThrow();
+    expect(() => parseConfig(withRoute('jobs.dou.ua', '*'))).toThrow();
+    expect(() => parseConfig(withRoute('jobs.dou.ua', 'companies/'))).toThrow();
   });
 });
 

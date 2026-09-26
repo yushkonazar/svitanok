@@ -1,7 +1,7 @@
 {
   "name": "svitanok",
   "version": "0.1.0",
-  "description": "Персональний ранковий брифінг-бот у Telegram (GitHub Actions + claude -p)",
+  "description": "Персональний AI-асистент у Telegram (GitHub Actions + OpenAI Responses)",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -17,6 +17,7 @@
     "test:workers": "vitest run --config vitest.workers.config.ts",
     "test:coverage": "vitest run --coverage",
     "eval:openai": "tsx scripts/openai-eval.mts",
+    "eval:file-search": "node scripts/openai-file-search-experiment.mjs",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",

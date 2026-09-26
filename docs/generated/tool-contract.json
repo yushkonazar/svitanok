@@ -1,6 +1,33 @@
 {
   "contract_version": 1,
   "tools": {
+    "briefing.feedback": {
+      "args": {
+        "properties": {
+          "block_id": {
+            "enum": [
+              "weather",
+              "calendar",
+              "mail",
+              "stoic",
+              "fact",
+              "news",
+              "jobs",
+              "mock",
+              "currency",
+              "onthisday",
+              "weekly-review"
+            ],
+            "type": "string"
+          },
+          "verdict": { "enum": ["useful", "less", "hide"], "type": "string" }
+        },
+        "required": ["block_id", "verdict"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "briefing.feedback" }
+    },
     "calendar.read": {
       "args": {
         "properties": {
@@ -313,6 +340,84 @@
           "q": { "maxLength": 120, "type": "string" },
           "since": { "maxLength": 32, "type": "string" }
         },
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "knowledge.delete": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 80, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "knowledge.delete" }
+    },
+    "knowledge.import": {
+      "args": {
+        "properties": {
+          "file_id": { "maxLength": 256, "minLength": 1, "type": "string" },
+          "kind": {
+            "enum": ["cv", "job_preparation", "learning"],
+            "type": "string"
+          },
+          "mime_type": { "maxLength": 120, "minLength": 1, "type": "string" },
+          "source_version": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": { "maxLength": 200, "minLength": 1, "type": "string" }
+        },
+        "required": ["file_id", "title", "source_version", "mime_type", "kind"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "knowledge.import" }
+    },
+    "knowledge.inspect": {
+      "args": {
+        "properties": {
+          "file_id": { "maxLength": 256, "minLength": 1, "type": "string" }
+        },
+        "required": ["file_id"],
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "knowledge.list": {
+      "args": {
+        "properties": {
+          "kind": { "maxLength": 32, "type": "string" },
+          "limit": { "maximum": 50, "minimum": 1, "type": "number" }
+        },
+        "type": "object"
+      },
+      "tainting": "always",
+      "execution": { "route": "core" }
+    },
+    "knowledge.revoke": {
+      "args": {
+        "properties": {
+          "id": { "maxLength": 80, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "knowledge.revoke" }
+    },
+    "knowledge.search": {
+      "args": {
+        "properties": {
+          "limit": { "maximum": 10, "minimum": 1, "type": "number" },
+          "q": { "maxLength": 160, "minLength": 1, "type": "string" }
+        },
+        "required": ["q"],
         "type": "object"
       },
       "tainting": "always",

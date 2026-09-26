@@ -15,6 +15,7 @@
 // відповідь LLM, не сам дайджест).
 
 import { listActive } from './reminders-core.mjs';
+import { formatAnalyticsForAssistant } from './analytics-core.mjs';
 
 // Сумарний кап дайджесту. Стеля хоста тут давно НЕ вузьке місце (MAX_PROMPT_LEN
 // підняли 11.08.2026), і кап лишається тісним з іншої причини: дайджест не
@@ -100,6 +101,16 @@ export function digestJobs(/** @type {KvBlob|null|undefined} */ agg) {
   if (g.weeklyTarget) parts.push(`ціль тижня ${g.weeklyApplied ?? 0}/${g.weeklyTarget} подач`);
   if (typeof agg?.avgFitApplied === 'number') {
     parts.push(`середній fit поданих ${agg.avgFitApplied}%`);
+  }
+  // `jobFunnel` — окремий серверний зріз реальних переглядів current briefing-а.
+  // Він не є клієнтською stage (frozen Mini App його свідомо ігнорує), але
+  // асистент може чесно сказати, скільки вакансій було побачено за вікно.
+  const seen = agg?.jobFunnel;
+  if (seen && typeof seen === 'object' && Number.isInteger(seen.windowDays)) {
+    parts.push(
+      `за ${seen.windowDays} днів: побачено ${seen.seen ?? 0}, збережено ${seen.saved ?? 0}, ` +
+        `подано ${seen.applied ?? 0}, співбесіда ${seen.interview ?? 0}, оферів ${seen.offer ?? 0}`,
+    );
   }
   // Індексований список (НЕ сирий url — recordAction/jobStage посилається на
   // ІНДЕКС, worker резолвить у url свіжим читанням funnelList на момент дії).
@@ -337,6 +348,7 @@ export function formatMailBodyForPrompt(/** @type {KvBlob|null|undefined} */ mes
 export const OWN_DATA_SCOPES = [
   'all',
   'briefing',
+  'analytics',
   'jobs',
   'progress',
   'reminders',
@@ -358,15 +370,25 @@ export function normalizeScope(/** @type {any} */ scope) {
  */
 /**
  * @param {{ scope?: unknown, reminders?: any[]|null, agg?: KvBlob, roadmap?: KvBlob,
- *           latest?: KvBlob, todayKey?: string, settings?: KvBlob }} opts
+ *           latest?: KvBlob, todayKey?: string, settings?: KvBlob, analytics?: KvBlob }} opts
  */
-export function buildOwnDataDigest({ scope, reminders, agg, roadmap, latest, todayKey, settings }) {
+export function buildOwnDataDigest({
+  scope,
+  reminders,
+  agg,
+  roadmap,
+  latest,
+  todayKey,
+  settings,
+  analytics,
+}) {
   const s = normalizeScope(scope);
   const sections = [];
   if (s === 'all' || s === 'briefing') sections.push(digestBriefing(latest, todayKey));
   if (s === 'all' || s === 'jobs') sections.push(digestJobs(agg));
   if (s === 'all' || s === 'progress') sections.push(digestProgress(agg, roadmap));
   if (s === 'all' || s === 'reminders') sections.push(digestReminders(reminders));
+  if (s === 'analytics') sections.push(formatAnalyticsForAssistant(analytics));
   if (s === 'checkin') sections.push(digestCheckin(agg?.checkinToday));
   if (s === 'saved') sections.push(digestSaved(agg));
   if (s === 'news') sections.push(digestNews(latest));

@@ -57,6 +57,7 @@ const openAiEngine =
         models: config.openAiModels as { fast: string; standard: string; advanced: string },
         reasoningEffort: config.openAiReasoningEffort as
           'low' | 'medium' | 'high' | 'xhigh' | 'max',
+        pricing: config.openAiPricing ?? undefined,
       });
 const engine = createRuntimeRouter(
   {

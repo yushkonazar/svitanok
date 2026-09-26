@@ -24,10 +24,13 @@ import {
   EXECUTORS,
 } from '../web/core/policy/proposals.mjs';
 import { runFactsGet, runFactsSet, runFactsLedger } from '../web/core/tools/facts.mjs';
+import { ingestKnowledgeDocument } from '../web/core/knowledge-base.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
 import { handleInternal } from '../web/core/internal/router.mjs';
 import { signInternal } from '../web/core/internal/auth.mjs';
 import { workerEnv } from './helpers/env.js';
+import { memoryKv } from './helpers/kv.js';
+import { CORE_SCOPES } from '../web/core/google-scopes.mjs';
 
 const NOW = Date.parse('2026-08-28T10:00:00.000Z');
 
@@ -41,6 +44,7 @@ function d1() {
     '0014_fact_provenance.sql',
     '0016_fact_ledger.sql',
     '0017_proposal_provenance.sql',
+    '0019_knowledge_base.sql',
   ]) {
     db.exec(readFileSync(join(__dirname, '..', 'web', 'core', 'migrations', f), 'utf8'));
   }
@@ -48,6 +52,8 @@ function d1() {
     raw: db,
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
+        sql,
+        args,
         run: async () => {
           // @ts-expect-error node:sqlite приймає біндинги варіативно
           const info = db.prepare(sql).run(...args);
@@ -59,6 +65,20 @@ function d1() {
         }),
       }),
     }),
+    batch: async (statements: { sql: string; args: unknown[] }[]) => {
+      db.exec('BEGIN');
+      try {
+        for (const statement of statements) {
+          // @ts-expect-error node:sqlite accepts variadic bindings.
+          db.prepare(statement.sql).run(...statement.args);
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      return statements.map(() => ({ success: true }));
+    },
   };
 }
 
@@ -77,6 +97,9 @@ describe('policy core — таблиця рівнів', () => {
     expect(decideLevel('facts.delete', false)).toEqual({ level: 'T1' });
     expect(decideLevel('contact', false)).toEqual({ level: 'T1' });
     expect(decideLevel('forget', false)).toEqual({ level: 'T2' });
+    expect(decideLevel('knowledge.revoke', false)).toEqual({ level: 'T1' });
+    expect(decideLevel('knowledge.import', false)).toEqual({ level: 'T1' });
+    expect(decideLevel('knowledge.delete', false)).toEqual({ level: 'T2' });
   });
 
   // ⚠️ Правило рівня від 08.09: ✅ потрібне ЛИШЕ там, де дія незворотна,
@@ -476,6 +499,151 @@ describe('T1/T2: пропозиції', () => {
       status: string;
     };
     expect(row.status).toBe('approved');
+  });
+
+  it('документ знань відкликається через T1, а остаточно стирається лише через T2', async () => {
+    const revoked = await ingestKnowledgeDocument(
+      env,
+      {
+        sourceType: 'upload',
+        sourceRef: 'policy-revoke',
+        title: 'Навчальний конспект',
+        kind: 'learning',
+        sourceVersion: '1',
+        content: 'Цей текст перестане бути доступним після підтвердження.',
+      },
+      NOW,
+    );
+    const revoke = await applyPolicy(
+      env,
+      { kind: 'knowledge.revoke', payload: { id: revoked.documentId }, tainted: false },
+      NOW + 1,
+    );
+    expect(revoke).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
+    if (revoke.mode !== 'proposed') throw new Error('відкликання має бути T1');
+    await expect(
+      resolveProposal(env, { id: revoke.proposal.id, choice: 'ok' }, NOW + 2),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: 'approved',
+      kind: 'knowledge.revoke',
+      result: { id: revoked.documentId, status: 'revoked' },
+    });
+    expect(
+      store.raw
+        .prepare('SELECT status FROM knowledge_documents WHERE id = ?')
+        .get(revoked.documentId),
+    ).toEqual({
+      status: 'revoked',
+    });
+
+    const deleted = await ingestKnowledgeDocument(
+      env,
+      {
+        sourceType: 'upload',
+        sourceRef: 'policy-delete',
+        title: 'Тимчасовий конспект',
+        kind: 'learning',
+        sourceVersion: '1',
+        content: 'Цей документ треба остаточно стерти.',
+      },
+      NOW + 3,
+    );
+    const remove = await applyPolicy(
+      env,
+      { kind: 'knowledge.delete', payload: { id: deleted.documentId }, tainted: false },
+      NOW + 4,
+    );
+    expect(remove).toMatchObject({ mode: 'proposed', proposal: { level: 'T2' } });
+    if (remove.mode !== 'proposed') throw new Error('видалення має бути T2');
+    expect(
+      await resolveProposal(
+        env,
+        { id: remove.proposal.id, choice: 'ok', word: String(remove.proposal.word).toLowerCase() },
+        NOW + 5,
+      ),
+    ).toMatchObject({
+      ok: true,
+      status: 'approved',
+      kind: 'knowledge.delete',
+      result: { id: deleted.documentId, vectorIds: 0 },
+    });
+    expect(store.raw.prepare('SELECT count(*) AS count FROM knowledge_documents').get()).toEqual({
+      count: 1,
+    });
+  });
+
+  it('явний файл Drive додається тільки через T1 і повторно перевіряється перед extraction', async () => {
+    const tokenStore = new Map([
+      [
+        'googleToken',
+        JSON.stringify({
+          token: 'access-token',
+          expMs: Date.now() + 3_600_000,
+          scope: CORE_SCOPES.join(' '),
+        }),
+      ],
+    ]);
+    env = workerEnv({
+      DB: store,
+      AI: {
+        run: async (_model: string, input: { text: string[] }) => ({
+          data: input.text.map(() => [1, 0]),
+        }),
+      },
+      VECTORIZE: { upsert: async () => {}, deleteByIds: async () => {} },
+      GOOGLE_CLIENT_ID: 'client',
+      GOOGLE_CLIENT_SECRET: 'secret',
+      GOOGLE_REFRESH_TOKEN: 'refresh',
+      BRIEFING: memoryKv(tokenStore),
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/export'))
+        return new Response('Текст для майбутньої співбесіди.', { status: 200 });
+      return new Response(
+        JSON.stringify({
+          id: 'drive_file_2026',
+          name: 'Конспект співбесіди',
+          mimeType: 'application/vnd.google-apps.document',
+          version: '42',
+          size: '40',
+          trashed: false,
+          capabilities: { canDownload: true },
+        }),
+        { status: 200 },
+      );
+    });
+    const proposed = await applyPolicy(
+      env,
+      {
+        kind: 'knowledge.import',
+        payload: {
+          file_id: 'drive_file_2026',
+          title: 'Конспект співбесіди',
+          source_version: '42',
+          mime_type: 'application/vnd.google-apps.document',
+          kind: 'job_preparation',
+        },
+        tainted: false,
+      },
+      NOW,
+    );
+    expect(proposed).toMatchObject({ mode: 'proposed', proposal: { level: 'T1' } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    if (proposed.mode !== 'proposed') throw new Error('імпорт має бути T1');
+    await expect(
+      resolveProposal(env, { id: proposed.proposal.id, choice: 'ok' }, NOW + 1),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: 'approved',
+      kind: 'knowledge.import',
+      result: { title: 'Конспект співбесіди', kind: 'job_preparation', chunks: 1, added: true },
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(store.raw.prepare('SELECT source_ref FROM knowledge_documents').get()).toEqual({
+      source_ref: 'drive_file_2026',
+    });
   });
 
   it('source=owner з T0-шляху ескалюється до пропозиції: attribution потребує ✅', async () => {

@@ -333,7 +333,7 @@ modules:
     # кандидатів під новий perRun.
     perRun: 7
     dedupDays: 7
-    # Профіль для LLM-скорингу релевантності вакансій (fit %).
+    # Профіль для LLM-скорингу релевантності ЗАГОЛОВКА вакансії (не fit %).
     profile: >-
       Full Stack веброзробник (Frontend + Backend), рівень Trainee/Junior.
       Стек: JavaScript/TypeScript, React, Node.js, HTML/CSS.
@@ -358,14 +358,23 @@ modules:
       - 'https://djinni.co/jobs/rss/?primary_keyword=JavaScript&exp_level=no_exp&exp_level=1y'
       - 'https://djinni.co/jobs/rss/?primary_keyword=Node.js&exp_level=no_exp&exp_level=1y'
       - 'https://djinni.co/jobs/rss/?primary_keyword=React.js&exp_level=no_exp&exp_level=1y'
+    # ПОВНІ описи вакансій — лише з точних public routes already-allowed RSS
+    # джерел. Кожен redirect ще раз проходить host+pathPrefix policy; це не
+    # дозвіл фетчити довільні URL з опису чи відповіді моделі.
+    descriptions:
+      enabled: true
+      maxPerRun: 4
+      retentionDays: 14
+      sources:
+        - { host: 'jobs.dou.ua', pathPrefix: '/companies/' }
+        - { host: 'djinni.co', pathPrefix: '/jobs/' }
 
 llm:
-  # Haiku для курації: Opus/Sonnet через extended thinking зависали на claude -p
-  # (>120с таймаут), Haiku завершує надійно. Латентність claude -p різко росте з
-  # розміром промпта, тож тримаємо мало кандидатів (MAX_ITEMS_PER_FEED). Звірено (§0).
-  model: 'claude-haiku-4-5'
+  # Недорогий окремий клас для фонового скорингу/курації. Інтерактивний brain
+  # має власний router моделей; цей клієнт працює лише через Responses API.
+  model: 'gpt-6-luna'
   maxCallsPerRun: 5 # jobs-скоринг + mail-тріаж (1/день кожен) + fact/mock (батч-кеш, зрідка) + запас
-  timeoutMs: 150000 # запас під latency claude -p у CI
+  timeoutMs: 90000
 
 fetch:
   timeoutMs: 30000

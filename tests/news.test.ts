@@ -64,6 +64,13 @@ describe('news — buildNewsUrl (category / q)', () => {
 });
 
 describe('news — parseRss', () => {
+  it('санітизує та обмежує опис RSS, не переносячи HTML до споживачів', () => {
+    const xml = `<rss><channel><item><title>Role</title><link>https://x.com/1</link><description><![CDATA[<b>React</b> &amp; TypeScript]]></description></item></channel></rss>`;
+    expect(parseRss(xml)).toEqual([
+      { title: 'Role', url: 'https://x.com/1', description: 'React & TypeScript' },
+    ]);
+  });
+
   it('RSS 2.0 item з CDATA та сутностями', () => {
     const xml = `<rss><channel>
       <item><title><![CDATA[Заголовок & теж]]></title><link>https://x.com/a</link></item>

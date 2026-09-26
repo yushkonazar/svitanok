@@ -130,6 +130,7 @@ export const FORGET_ALL_STATE_FIELDS = [
   'shownMail',
   'shownNews',
   'shownJobs',
+  'jobDescriptions',
   'mailTriage',
   'calendarToday',
   'roadmapProgress',

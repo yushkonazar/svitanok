@@ -153,7 +153,14 @@
 - [x] Створити redacted eval suite: intent, tool selection, policy, injection, Ukrainian response quality, refusal/uncertainty, memory conflict (`npm run eval:openai`; явний read-only запуск, без PII або ключа в repo).
 - [ ] Запустити shadow mode лише для read-only cases; порівняти quality, tool correctness, latency, cost.
 - [ ] Canary fast lane, потім chat/reasoning lane; rollback через config.
-- [ ] Prototype Cloudflare Workflow orchestration для одного profile; переносити VPS workloads лише після вимірювання.
+- [x] Prototype Cloudflare Workflow orchestration для одного profile.
+      `DayPlanChain` is a declared Worker Workflow binding with durable chain
+      state, idempotent named steps, bounded event waits and an isolated
+      `day-planner` worker run; unit and workerd runtime tests cover the chain
+      rather than treating a Workflow declaration as evidence. This proves one
+      controlled profile only. No VPS workload is moved until a separately
+      reviewed production measurement establishes reliability, latency and
+      cost.
 
 **API policy:** current official OpenAI documentation says Responses supports custom functions, built-in tools, structured outputs, streaming and background mode; `store` defaults to true, so personal runs set it explicitly to false. Built-in web/file tools are opt-in and follow Svitanok's taint/citation rules. Source: [Create a response](https://developers.openai.com/api/reference/cli/resources/responses/methods/create).
 
@@ -163,36 +170,96 @@
 
 ### 4A. Decision-centred daily briefing
 
-- [ ] Critical deterministic layer: reminders, calendar conflicts, important email/job signal, time-sensitive weather.
-- [ ] AI summary/ranking as non-critical enhancement with source/freshness/reason.
-- [ ] Per-block feedback: useful / less / hide.
-- [ ] Measure open, action, save, dismiss; remove noisy blocks.
+- [x] Critical deterministic layer: reminders, calendar conflicts, important email/job signal, time-sensitive weather. Worker snapshots both reminder stores and calendar intervals before dispatch; the briefing emits only dated, source/freshness/reason-tagged signals and never promotes an incomplete production snapshot.
+- [x] AI summary/ranking as non-critical enhancement with source/freshness/reason. It sees only bounded deterministic signal records, must return valid existing IDs, and is silently omitted on timeout/error/malformed output.
+- [x] Per-block feedback: useful / less / hide. Власник може сказати це
+      асистенту для allowlisted блока; `hide` прибирає лише повний блок, не
+      critical decision headline, `less` стабільно опускає блок нижче, а
+      `useful` повертає його. Запис T0 має undo, після tainted external content
+      ескалується до T1. Mini App не змінювалась.
+- [x] Measure open, action, save, dismiss; remove noisy blocks. Backend keeps
+      only bounded daily aggregates per allowlisted block (no briefing text,
+      URLs or titles): latest-briefing open, existing action/save/dismiss
+      events and explicit `hide`. `data.read(scope=briefing)` exposes 30-day
+      candidates for `less` after at least seven shown days without interaction;
+      it never changes visibility automatically. Mini App is unchanged.
 
 ### 4B. Smart Job Hunter
 
 - [x] Rename current title-only number to explicit title relevance, until evidence is available (UI now says `за заголовком`, not fit; model prompt prohibits claims about missing description fields).
-- [ ] Fetch/store permitted job descriptions with source/freshness.
-- [ ] Evidence dimensions: stack, level, location, language, salary, dealbreakers, missing skills, confidence.
-- [ ] Funnel: seen → saved → applied → interview → offer; learn only from explicit outcomes.
+- [x] Fetch/store permitted job descriptions with source/freshness. Лише URL із
+      configured RSS, які збіглися з точними `https` host+pathPrefix правилами,
+      можуть бути page-fetched; кожен redirect перевіряється повторно. У state
+      лишається максимум 60 нормалізованих public excerpts на 14 діб із source і
+      fetchedAt; HTML і текст не йдуть у LLM чи Mini App. Title relevance ще не
+      перетворюється на оцінку повного опису.
+- [x] Evidence dimensions: stack, level, location, language, salary,
+      dealbreakers, missing skills, confidence. Backend emits only deterministic
+      facts with source/confidence; `requiredStack` is explicit requirement
+      context, `missingSkills` means “not present in profile text”, and a
+      dealbreaker is only an explicit mismatch with an explicit profile target.
+      The frozen Mini App safely ignores this future-facing snapshot field.
+- [x] Funnel: `seen → saved → applied → interview → offer` is a separate
+      backend `jobFunnel` window: `seen` is written only after the owner opens
+      the current briefing, is capped to 250 public URL/title records for 30
+      days, and never changes `jobPrefs`. Existing Mini App stages stay
+      unchanged; the assistant can read the aggregate. Recommendation learning
+      remains limited to explicit `dismiss`, `applied`, `interview`, and
+      `offer` outcomes — never exposure, `rejected`, or `failed`.
 
 ### 4C. Email Attention
 
-- [ ] Read-only attention view built from deterministic urgency signals plus constrained summary.
-- [ ] Keep mail content tainted; citations/message links and no automatic send.
-- [ ] User confirmation for every reply/archive/external effect.
+- [x] Read-only attention view built from deterministic urgency signals plus a
+      bounded aggregate summary. It exposes at most 20 owner-visible headers,
+      never body/snippet, and explicitly reports its read-only/tainted mode.
+- [x] Keep mail content tainted; each item has a validated Gmail message
+      citation/link, while assistant mail reads use external taint markup.
+      `gmail.send`/`gmail.modify` are absent from scopes and there is no send,
+      reply, archive, or external-effect endpoint.
+- [x] User confirmation for every reply/archive/external effect: these mail
+      effects are currently unavailable by capability; any future write must
+      enter the existing T1 proposal policy rather than bypass it.
 
 ### 4D. Personal Analytics and learning
 
-- [ ] Separate facts, statistical patterns, hypotheses and recommendations in UI/API.
-- [ ] Start with deterministic metric queries; AI explains only provided aggregates.
-- [ ] Instrument learning attempts/errors before adaptive coach.
+- [x] Separate facts, statistical patterns, hypotheses and recommendations in API.
+      `GET /api/analytics` is owner-only, `no-store`, and deliberately separate
+      from frozen Mini App `/api/stats`: a future screen can consume it without
+      changing the current Mini App contract. A statistical pattern is always
+      marked `association_not_causation`; a pre-registered hypothesis without a
+      shown row is `not_shown`, never a fabricated negative conclusion.
+- [x] Start with deterministic metric queries; AI explains only provided aggregates.
+      `data.read(scope=analytics)` and legacy `readOwnData(analytics)` receive
+      the same bounded snapshot built from `aggregateStats` plus the weekly
+      `levers` cache. There is no analytics LLM call, raw check-in, or automatic
+      plan mutation; recommendations can only ask the owner to continue one
+      week of measurement.
+- [x] Instrument learning attempts/errors before adaptive coach. Explicit owner
+      reports only (`correct|incorrect|unsure`) are idempotent by attempt id
+      (the assistant derives it from its run id), retain a short topic label and
+      date for 90 days (max 180), and aggregate by topic.
+      `mock_answer` remains a self-reported difficulty signal, never silently
+      converted into correct/incorrect. No adaptive coach or automatic learning
+      intervention is enabled by this instrumentation.
 
 ### 4E. Narrow Personal Knowledge Base
 
-- [ ] Allowlist first: CV, job preparation and chosen learning documents.
-- [ ] Versioned extraction/chunking/citations/ACL, D1 truth and Vectorize projection.
-- [ ] Retrieval answers cite document/version/page; explicit delete/revoke.
+- [x] Allowlist-first foundation: CV, job preparation and chosen learning documents; every source is added explicitly, not discovered from Drive.
+- [x] Versioned extraction/chunking/citations/ACL: D1 truth, rebuildable Vectorize projection і retry pending/failed версій.
+- [x] Retrieval answers cite document/version/page; explicit delete/revoke.
+- [x] Explicit one-file Drive import: inspect metadata → T1 → repeated version/MIME check → bounded UTF-8 text extraction. No search/list/crawl route, and Google Docs/.txt/.md only.
 - [ ] Compare managed file search only as an isolated, privacy-reviewed experiment.
+      A synthetic-only, explicitly opt-in harness now verifies hosted API and
+      cleanup semantics without reading owner data; it is not a production
+      integration or a quality result. A real-document comparison still needs
+      a separate owner decision naming the allowed fixture and retention
+      boundary ([contract](managed-file-search-experiment.md)).
+
+**Памʼять / production-дія перед першим живим імпортом:** після деплою
+перевидати Google OAuth refresh token через `node scripts/google-auth.mjs`,
+погодивши новий вузький scope `drive.readonly`, і оновити лише
+`GOOGLE_REFRESH_TOKEN` у Cloudflare. Без цього `knowledge.inspect/import`
+чесно відмовляться, а не читатимуть Drive за старим токеном.
 
 ### Deferred
 

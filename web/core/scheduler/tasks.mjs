@@ -45,9 +45,11 @@ import { resumePendingForgetAll } from '../export/forget-all.mjs';
 import { kickPendingThreads } from '../prerouter.mjs';
 import { mailTriageTask } from '../brief/mail-triage.mjs';
 import { refreshBriefCalendar } from '../brief/calendar-snapshot.mjs';
+import { refreshBriefReminders } from '../brief/reminder-snapshot.mjs';
 import { secretExpiryTask } from '../ops/secret-expiry.mjs';
 import { quotaCheckTask } from '../ops/quota-check.mjs';
 import { reconcileMemoryProjection } from '../memory.mjs';
+import { reconcileKnowledgeProjection } from '../knowledge-base.mjs';
 
 /**
  * @typedef {{
@@ -125,8 +127,8 @@ export const SCHEDULER_TASKS = {
     },
   },
   // Брифінг (ADR-026: логіка лишається в Actions). Ядро перед відправкою
-  // кладе в KV знімок календаря на добу - з етапу 7 PR-2 брифінг не має
-  // Google-токена й читає готовий список звідти (05-ops §2).
+  // кладе в KV знімки календаря й активних нагадувань на добу - Actions не
+  // має ані Google-токена, ані D1 credentials і читає лише готові дані.
   'brief-dispatch': {
     periodMin: 5,
     run: async (env) => {
@@ -135,6 +137,14 @@ export const SCHEDULER_TASKS = {
       } catch (/** @type {any} */ e) {
         // Календар не має права зірвати саму відправку брифінгу.
         console.error('brief-dispatch: знімок календаря впав', e?.message);
+      }
+      try {
+        await refreshBriefReminders(env);
+      } catch (/** @type {any} */ e) {
+        // Знімок не має права забрати весь брифінг. Нагадування все одно
+        // доставляє окрема щохвилинна задача, цей шар лише для ранкового
+        // decision context.
+        console.error('brief-dispatch: знімок нагадувань впав', e?.message);
       }
       return autoBriefDispatch(env);
     },
@@ -163,6 +173,12 @@ export const SCHEDULER_TASKS = {
       if (!env.DB || !env.AI || !env.VECTORIZE) return { skipped: 'not-configured' };
       return reconcileMemoryProjection(env, Date.now());
     },
+  },
+  // Документи з allowlist мають незалежну проєкцію: не змішуємо її з
+  // memory_chunks і не перечитуємо Drive під час retry.
+  'knowledge-projection-reconcile': {
+    periodMin: 5,
+    run: async (env) => reconcileKnowledgeProjection(env),
   },
   // Тижневий звіт (етап 3 PR-3, S-9-1/S-9-4): неділя 09:00 Києва, повтор о
   // 12:00 при збої; гейти й стан тижня - усередині задачі.

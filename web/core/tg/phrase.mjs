@@ -45,6 +45,11 @@ export const ACTION_PHRASE = {
   'facts.set': { icon: DOMAIN_ICON.memory, done: 'Запамʼятав', ask: 'Запамʼятати' },
   'facts.delete': { icon: DOMAIN_ICON.memory, done: 'Видалив факт', ask: 'Видалити факт' },
   record: { icon: DOMAIN_ICON.collection, done: 'Записав', ask: 'Записати' },
+  'briefing.feedback': {
+    icon: DOMAIN_ICON.settings,
+    done: 'Оновив налаштування брифінгу',
+    ask: 'Оновити налаштування брифінгу',
+  },
   'reminders.create': { icon: DOMAIN_ICON.reminder, done: 'Нагадаю', ask: 'Нагадати' },
   'reminders.update': {
     icon: DOMAIN_ICON.reminder,
@@ -126,6 +131,13 @@ export const ACTION_PHRASE = {
   'gemini.image': { icon: DOMAIN_ICON.image, done: 'Намалював', ask: 'Намалювати' },
   'gemini.video': { icon: DOMAIN_ICON.video, done: 'Зняв відео', ask: 'Зняти відео' },
   'style.collect': { icon: '✍️', done: 'Зібрав твої тексти', ask: 'Зібрати твої тексти' },
+  'knowledge.import': {
+    icon: '📄',
+    done: 'Додав документ до бази знань',
+    ask: 'Додати документ до бази знань',
+  },
+  'knowledge.revoke': { icon: '📄', done: 'Відкликав документ', ask: 'Відкликати документ' },
+  'knowledge.delete': { icon: '🧹', done: 'Видалив документ', ask: 'Видалити документ' },
   forget: { icon: '🧹', done: 'Стер', ask: 'Стерти' },
   'data.export': {
     icon: DOMAIN_ICON.archive,

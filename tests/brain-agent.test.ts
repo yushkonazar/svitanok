@@ -22,6 +22,7 @@ import type { RunRequest } from '../brain/src/server.js';
 import { PROFILES } from '../brain/src/profiles.js';
 import { instructionHash } from '../brain/src/instructions.js';
 import { BRAIN_TOOLS } from '../brain/src/tools/schemas.js';
+import { routeChatTools } from '../brain/src/tool-routing.js';
 import { parsePolicyCallback } from '../web/core/policy/core.mjs';
 
 interface ClientMock {
@@ -115,7 +116,7 @@ function scriptedEngine(
 }
 
 describe('makeRunner: щасливий шлях', () => {
-  it('chat: системний промпт з Києвом, усі інструменти, deliver фіналу, steps у reportRuns', async () => {
+  it('chat: системний промпт з Києвом, routed інструменти, deliver фіналу, steps у reportRuns', async () => {
     const client = makeClient();
     const { engine, seen } = scriptedEngine(async (opts) => {
       const out = await opts.onToolCall('data_read', { scope: 'briefing' });
@@ -128,7 +129,12 @@ describe('makeRunner: щасливий шлях', () => {
     expect(seen[0]!.model).toBe(PROFILES.chat.model);
     expect(seen[0]!.safetyIdentifier).toBe('internal:dm');
     expect(seen[0]!.systemPrompt).toContain('Зараз у Києві');
-    expect(seen[0]!.toolNames).toEqual(BRAIN_TOOLS.map((t) => t.mcpName));
+    expect(seen[0]!.toolNames).toEqual(
+      routeChatTools(
+        'привіт',
+        BRAIN_TOOLS.map((t) => t.mcpName),
+      ),
+    );
     expect(client.callTool).toHaveBeenCalledWith('run-1', 'data.read', { scope: 'briefing' });
     expect(client.deliver).toHaveBeenCalledWith('run-1', 'Готово');
     const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;

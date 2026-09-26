@@ -1,11 +1,9 @@
-// Аналіз ідеї по коду в Actions (етап 4 PR-1): підпис артефакту - спільний
-// збирач ядра (verifyInternalRequest приймає те, що підписав скрипт),
-// аргументи claude -p з front-matter code-reviewer.md (стеля ходів, модель,
-// лише Read/Grep/Glob, налаштування лише користувача), розбір виводу
-// (частковий звіт на стелі ходів), кап у байтах, контекст із env (failed-режим
-// лінійний), повтор POST; парність воркфлоу: inputs = WORKFLOW_INPUTS, секрети
-// доїжджають до кроків (той самий клас дефекту, що workflow-env-parity),
-// стеля 40 хв, пін checkout той самий, що в ci.yml.
+// Аналіз ідеї по коду в Actions: підпис артефакту - спільний збирач ядра
+// (verifyInternalRequest приймає те, що підписав скрипт), OpenAI Responses
+// отримує обмежений зріз без інструментів, капи в байтах, контекст із env
+// (failed-режим лінійний), повтор POST; парність воркфлоу: inputs =
+// WORKFLOW_INPUTS, секрети доїжджають лише до відповідного кроку, стеля 40 хв,
+// пін checkout той самий, що в ci.yml.
 
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -13,28 +11,22 @@ import { join } from 'node:path';
 import { load } from 'js-yaml';
 import {
   buildTaskPrompt,
-  claudeArgs,
-  parseClaudeOutput,
   artifactBody,
   clipToBytes,
   readContext,
   postArtifact,
-  redact,
-  childEnv,
   WORKFLOW_INPUTS,
   REQUIRED_ENV,
   RUN_REQUIRED_ENV,
   IDEA_REPOS,
-  ALLOWED_TOOLS,
-  DISALLOWED_TOOLS,
   ARTIFACT_MD_MAX_BYTES,
   IDEA_TEXT_MAX,
   ARTIFACT_PATH,
   INSTRUCTION_FILE,
-  CHILD_ENV_KEYS,
+  readCodeContext,
+  runOpenAiReview,
 } from '../scripts/idea-analysis.mjs';
 import { verifyInternalRequest, signedInternalHeaders } from '../web/core/internal/auth.mjs';
-import { parseInstruction } from '../web/core/instructions.mjs';
 
 const ROOT = join(__dirname, '..');
 const KEY = 'hmac-test-key';
@@ -54,7 +46,7 @@ const baseEnv = () => ({
   INTERNAL_HMAC_KEY: KEY,
   BRAIN_ACCESS_CLIENT_ID: 'cid',
   BRAIN_ACCESS_CLIENT_SECRET: 'csecret',
-  CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token',
+  OPENAI_API_KEY: 'openai-test-key',
 });
 const ctxOf = (env = baseEnv()) => readContext(env, 'run');
 const noSleep = async () => undefined;
@@ -96,63 +88,6 @@ describe('signedInternalHeaders (auth.mjs) - те, чим підписує ск�
   });
 });
 
-describe('claude -p: аргументи з code-reviewer.md', () => {
-  const args = claudeArgs({ instructionRaw: INSTRUCTION_RAW, prompt: 'task' });
-  const parsed = parseInstruction(INSTRUCTION_RAW);
-  if (!parsed.ok) throw new Error(parsed.error);
-  const at = (flag: string) => args[args.indexOf(flag) + 1];
-  const listAfter = (flag: string) => {
-    const from = args.indexOf(flag) + 1;
-    const out: string[] = [];
-    for (let i = from; i < args.length && !String(args[i]).startsWith('--'); i += 1) {
-      out.push(String(args[i]));
-    }
-    return out;
-  };
-
-  it('системний промпт = тіло інструкції, стеля ходів і модель - з front-matter', () => {
-    expect(at('--system-prompt')).toBe(parsed.body);
-    expect(at('--max-turns')).toBe(String(parsed.front.max_steps));
-    expect(parsed.front.model).toBe('sonnet');
-    expect(at('--model')).toBe('claude-sonnet-5');
-    expect(at('--output-format')).toBe('json');
-    expect(at('-p')).toBe('task');
-  });
-
-  it('дозволені лише Read/Grep/Glob (= tools у front-matter), решта в денайлисті', () => {
-    expect(listAfter('--allowedTools')).toEqual([...ALLOWED_TOOLS]);
-    expect([...ALLOWED_TOOLS].sort()).toEqual([...(parsed.front.tools as string[])].sort());
-    const denied = listAfter('--disallowedTools');
-    expect(denied).toEqual([...DISALLOWED_TOOLS]);
-    for (const t of ['Bash', 'Write', 'Edit', 'WebSearch', 'WebFetch', 'Task']) {
-      expect(denied).toContain(t);
-    }
-    expect(denied.some((t) => ALLOWED_TOOLS.includes(t))).toBe(false);
-  });
-
-  it('налаштування лише користувача раннера і strict MCP (хуки/сервери чужого репо не вантажаться)', () => {
-    expect(at('--setting-sources')).toBe('user');
-    expect(args).toContain('--strict-mcp-config');
-  });
-
-  it('дочірній claude дістає лише PATH/HOME/CLAUDE_CODE_OAUTH_TOKEN - секрети ядра ні', () => {
-    const env = { ...baseEnv(), PATH: '/usr/bin', HOME: '/home/r' };
-    const child = childEnv(env);
-    expect(Object.keys(child).sort()).toEqual([...CHILD_ENV_KEYS].sort());
-    expect(child).not.toHaveProperty('INTERNAL_HMAC_KEY');
-    expect(child).not.toHaveProperty('BRAIN_ACCESS_CLIENT_SECRET');
-    expect(childEnv({ PATH: '/x' })).toEqual({ PATH: '/x' });
-  });
-
-  it('зламаний front-matter - гучна помилка, не дефолти', () => {
-    expect(() => claudeArgs({ instructionRaw: 'без front-matter', prompt: 'x' })).toThrow(
-      /front-matter/,
-    );
-    const noSteps = INSTRUCTION_RAW.replace(/^max_steps:.*$/m, 'max_steps: abc');
-    expect(() => claudeArgs({ instructionRaw: noSteps, prompt: 'x' })).toThrow(/max_steps/);
-  });
-});
-
 describe('задача Код-оглядачу', () => {
   it('task = {idea, repo, sha}, format md; назва попереду тексту', () => {
     const p = buildTaskPrompt({
@@ -174,55 +109,6 @@ describe('задача Код-оглядачу', () => {
       sha: SHA,
     });
     expect(JSON.parse(p.split('\n').slice(1, -2).join('\n')).idea.length).toBe(IDEA_TEXT_MAX);
-  });
-});
-
-describe('вивід claude -p --output-format json', () => {
-  it('обʼєкт result → md + meta', () => {
-    const ok = parseClaudeOutput(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'success',
-        result: '## Коротко\n- є',
-        num_turns: 12,
-        duration_ms: 90,
-      }),
-    );
-    expect(ok).toEqual({
-      ok: true,
-      md: '## Коротко\n- є',
-      meta: { num_turns: 12, duration_ms: 90 },
-    });
-  });
-
-  it('стеля ходів із текстом - частковий звіт з позначкою, не збій (S-7-5)', () => {
-    const out = parseClaudeOutput(
-      JSON.stringify({
-        type: 'result',
-        subtype: 'error_max_turns',
-        result: '## Коротко\n- частина',
-      }),
-    );
-    expect(out.ok).toBe(true);
-    if (!out.ok) return;
-    expect(out.md.startsWith('> Не вклався')).toBe(true);
-    expect(out.md).toContain('## Коротко');
-    expect(out.meta.partial).toBe(true);
-    expect(out.meta.num_turns).toBeNull();
-  });
-
-  it('is_error / стеля без тексту / не JSON / масив / порожньо - чесна відмова з причиною', () => {
-    expect(
-      parseClaudeOutput(JSON.stringify({ type: 'result', is_error: true, subtype: 'error' })),
-    ).toEqual({ ok: false, reason: 'claude: error' });
-    expect(
-      parseClaudeOutput(JSON.stringify({ type: 'result', subtype: 'error_max_turns', result: '' })),
-    ).toEqual({ ok: false, reason: 'claude: error_max_turns' });
-    expect(parseClaudeOutput('not json')).toMatchObject({ ok: false, reason: /JSON/ });
-    expect(parseClaudeOutput('[]')).toMatchObject({ ok: false, reason: 'без result' });
-    expect(
-      parseClaudeOutput(JSON.stringify({ type: 'result', subtype: 'success', result: '  ' })),
-    ).toMatchObject({ ok: false, reason: 'порожній звіт' });
   });
 });
 
@@ -346,12 +232,61 @@ describe('postArtifact', () => {
   });
 });
 
-describe('redact', () => {
-  it('значення токена в stderr дитини - ***', () => {
-    expect(redact('auth failed for oauth-token at x', 'oauth-token')).toBe(
-      'auth failed for *** at x',
+describe('OpenAI code-review runtime', () => {
+  it('uses Responses store:false with no tools and returns only output text', async () => {
+    const fetchSpy = vi.fn(async () => Response.json({ output_text: '# План\nГотово' }));
+    await expect(
+      runOpenAiReview({
+        apiKey: 'test-key',
+        model: 'gpt-6-astra',
+        instructionRaw: INSTRUCTION_RAW,
+        task: 'task',
+        codeContext: '--- src/x.ts ---\nexport const x = 1;',
+        fetchFn: fetchSpy as never,
+      }),
+    ).resolves.toBe('# План\nГотово');
+    const request = fetchSpy.mock.calls[0] as unknown as [unknown, RequestInit];
+    const payload = JSON.parse(String(request[1].body)) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      model: 'gpt-6-astra',
+      store: false,
+      max_output_tokens: 6_000,
+    });
+    expect(payload).not.toHaveProperty('tools');
+    expect(JSON.stringify(payload)).not.toContain('test-key');
+  });
+
+  it('builds a bounded source snapshot of this repository without hidden configuration', () => {
+    const snapshot = readCodeContext(ROOT);
+    expect(snapshot).toContain('--- package.json ---');
+    expect(snapshot).not.toContain('--- .env ---');
+    expect(Buffer.byteLength(snapshot, 'utf8')).toBeLessThanOrEqual(120_000);
+  });
+
+  it('fails without forwarding an API error body or accepting an empty response', async () => {
+    const failed = vi.fn(
+      async () => new Response('{"error":"secret-like detail"}', { status: 429 }),
     );
-    expect(redact('text', '')).toBe('text');
+    await expect(
+      runOpenAiReview({
+        apiKey: 'test-key',
+        model: 'gpt-6-astra',
+        instructionRaw: INSTRUCTION_RAW,
+        task: 'task',
+        codeContext: 'code',
+        fetchFn: failed as never,
+      }),
+    ).rejects.toThrow('OpenAI Responses HTTP 429');
+    await expect(
+      runOpenAiReview({
+        apiKey: 'test-key',
+        model: 'gpt-6-astra',
+        instructionRaw: INSTRUCTION_RAW,
+        task: 'task',
+        codeContext: 'code',
+        fetchFn: (async () => Response.json({ output: [] })) as never,
+      }),
+    ).rejects.toThrow('порожній звіт');
   });
 });
 
@@ -403,12 +338,12 @@ describe('idea-analysis.yml - парність зі скриптом і ci.yml',
       'INTERNAL_HMAC_KEY',
       'BRAIN_ACCESS_CLIENT_ID',
       'BRAIN_ACCESS_CLIENT_SECRET',
-      'CLAUDE_CODE_OAUTH_TOKEN',
+      'OPENAI_API_KEY',
     ]) {
       expect(jobEnv.has(secret)).toBe(false);
     }
-    expect(analyze?.env?.CLAUDE_CODE_OAUTH_TOKEN).toContain('secrets.CLAUDE_CODE_OAUTH_TOKEN');
-    expect(failedEnv.has('CLAUDE_CODE_OAUTH_TOKEN')).toBe(false);
+    expect(analyze?.env?.OPENAI_API_KEY).toContain('secrets.OPENAI_API_KEY');
+    expect(failedEnv.has('OPENAI_API_KEY')).toBe(false);
     expect(job.env.INTERNAL_API_URL).toContain('vars.INTERNAL_API_URL');
     expect(analyze?.run).toBe('node scripts/idea-analysis.mjs run');
   });

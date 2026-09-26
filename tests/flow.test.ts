@@ -321,6 +321,151 @@ describe('runBriefing — короткий рядок дня (Фаза B3)', () 
   });
 });
 
+describe('runBriefing — deterministic critical headline (4A)', () => {
+  it('writes explainable signals to briefing data and only a bounded critical headline to Telegram', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        state: memState({
+          remindersToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            source: 'd1',
+            reminders: [{ id: 'r1', text: 'Подати CV', dueAt: '2026-06-29T08:00:00.000Z' }],
+          },
+          calendarToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            events: [
+              { title: 'A', time: '10:00', startMs: 100, endMs: 200 },
+              { title: 'B', time: '10:30', startMs: 150, endMs: 250 },
+            ],
+          },
+        }),
+      }),
+    );
+    expect(notifier.sent[0]![0]).toBe(
+      '<b>Понеділок, 29 червня</b>\n⚠️ Сьогодні: нагадування · перетин у календарі',
+    );
+    expect(res.briefing.decision?.signals.map((s) => s.source)).toEqual(['reminders', 'calendar']);
+  });
+
+  it('keeps an optional strict AI ranking in briefing data without changing deterministic Telegram text', async () => {
+    const notifier = fakeNotifier();
+    const seenPrompts: string[] = [];
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        llm: {
+          complete: async (prompt) => {
+            seenPrompts.push(prompt);
+            return '{"rankedSignalIds":["reminders-today"],"summary":"Нагадування є першим пріоритетом."}';
+          },
+        },
+        state: memState({
+          remindersToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            source: 'd1',
+            reminders: [{ id: 'r1', text: 'Подати CV', dueAt: '2026-06-29T08:00:00.000Z' }],
+          },
+        }),
+      }),
+    );
+    expect(seenPrompts).toHaveLength(1);
+    expect(res.briefing.decision?.ai).toEqual({
+      rankedSignalIds: ['reminders-today'],
+      summary: 'Нагадування є першим пріоритетом.',
+    });
+    expect(notifier.sent[0]![0]).toBe('<b>Понеділок, 29 червня</b>\n⚠️ Сьогодні: нагадування');
+  });
+
+  it('sends the deterministic briefing when optional AI ranking fails', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        modules: [],
+        llm: { complete: async () => Promise.reject(new Error('тимчасовий збій')) },
+        state: memState({
+          remindersToday: {
+            date: '2026-06-29',
+            ready: true,
+            updatedAt: '2026-06-29T06:00:00.000Z',
+            source: 'd1',
+            reminders: [{ id: 'r1', text: 'Подати CV', dueAt: '2026-06-29T08:00:00.000Z' }],
+          },
+        }),
+      }),
+    );
+    expect(res.status).toBe('sent');
+    expect(res.briefing.decision?.ai).toBeUndefined();
+    expect(notifier.sent[0]![0]).toContain('⚠️ Сьогодні: нагадування');
+  });
+});
+
+describe('runBriefing — per-block feedback (4A)', () => {
+  it('hides only the requested full block, keeps the critical decision signal, and lowers a less-preferred block', async () => {
+    const notifier = fakeNotifier();
+    const res = await runBriefing(
+      deps({
+        notifier,
+        state: memState({
+          briefingFeedback: {
+            version: 1,
+            blocks: {
+              weather: { useful: 0, less: 0, hidden: true, updatedAt: '2026-06-29T06:00:00.000Z' },
+              news: { useful: 0, less: 1, hidden: false, updatedAt: '2026-06-29T06:00:00.000Z' },
+            },
+          },
+        }),
+        modules: [
+          mod('weather', 'producer', async () => ({
+            id: 'weather',
+            title: 'Погода',
+            summary: 'Сильний вітер',
+            priority: 10,
+            data: {
+              locations: [
+                {
+                  name: 'Львів',
+                  tempC: 12,
+                  minC: 9,
+                  maxC: 13,
+                  feelsLikeC: 10,
+                  windMps: 5,
+                  condition: 'вітер',
+                  emoji: '💨',
+                  willRain: false,
+                  willBeCold: false,
+                  popPercent: 0,
+                  sunrise: 1,
+                  sunset: 2,
+                  alerts: ['Штормове попередження'],
+                },
+              ],
+            },
+          })),
+          mod('news', 'consumer', async () => block('news', 20)),
+          mod('stoic', 'consumer', async () => block('stoic', 30)),
+        ],
+      }),
+    );
+    expect(res.briefing.blocks.map((b) => [b.id, b.priority])).toEqual([
+      ['stoic', 30],
+      ['news', 120],
+    ]);
+    expect(res.briefing.decision?.signals.map((s) => s.source)).toContain('weather');
+    expect(notifier.sent[0]![0]).toContain('⚠️ Сьогодні: попередження про погоду');
+  });
+});
+
 describe('runBriefing — dry-run', () => {
   it('не шле, повертає повідомлення', async () => {
     const notifier = fakeNotifier();

@@ -98,6 +98,30 @@ const ConfigSchema = z
         dedupDays: z.number().int().nonnegative().default(7),
         profile: z.string().default(''), // для LLM-скорингу релевантності
         sources: z.array(z.string()).default([]),
+        // Детальні сторінки — ЯВНИЙ opt-in, окремий від RSS: кожне правило
+        // задає точний host+pathPrefix. Це не «дозволити читати весь сайт».
+        descriptions: z
+          .object({
+            enabled: z.boolean().default(false),
+            maxPerRun: z.number().int().min(1).max(8).default(4),
+            retentionDays: z.number().int().min(1).max(30).default(14),
+            sources: z
+              .array(
+                z.object({
+                  host: z
+                    .string()
+                    .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i)
+                    .max(253),
+                  pathPrefix: z
+                    .string()
+                    .regex(/^\/[A-Za-z0-9_./-]*$/)
+                    .min(1)
+                    .max(160),
+                }),
+              )
+              .default([]),
+          })
+          .default({ enabled: false, maxPerRun: 4, retentionDays: 14, sources: [] }),
       }),
       currency: z.object({ enabled: z.boolean() }),
       onthisday: z.object({ enabled: z.boolean() }),

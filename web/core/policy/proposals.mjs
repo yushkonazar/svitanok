@@ -87,7 +87,7 @@ import {
 import { bumpQuota, quotaLimitOf, quotaUsed } from '../quota/quota.mjs';
 import { sendMediaBytes } from '../tg/media.mjs';
 import { ensureFolderPath, uploadCsvAsSheet, uploadFile, trashFile } from '../adapters/drive.mjs';
-import { putSettings, updateSettings } from '../../kv-store.mjs';
+import { putSettings, updateSettings, updateState, updateStats } from '../../kv-store.mjs';
 import { normalizeSettings } from '../../settings-core.mjs';
 import {
   runCollectionsCreate,
@@ -110,6 +110,18 @@ import {
   undoPlanUpdate,
   runPlanReview,
 } from '../tools/plan.mjs';
+import {
+  deleteKnowledgeDocument,
+  importKnowledgeDocumentFromDrive,
+  revokeKnowledgeDocument,
+} from '../knowledge-base.mjs';
+import {
+  applyBriefingFeedback,
+  BRIEFING_FEEDBACK_KEY,
+  briefingBlockPreference,
+} from '../brief/feedback.mjs';
+import { BRIEFING_ENGAGEMENT_KEY, recordBriefingInteraction } from '../brief/engagement.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 
 /** Тека експортів у Drive (S-0-6, S-N4-4): одна на всі види вивантажень. */
 export const EXPORT_FOLDER_PATH = ['Світанок', 'export'];
@@ -152,6 +164,43 @@ function driveNoteName(raw) {
  * }>}
  */
 export const EXECUTORS = {
+  'knowledge.import': {
+    async execute(env, payload, nowMs) {
+      const result = await importKnowledgeDocumentFromDrive(
+        env,
+        {
+          fileId: payload.file_id,
+          title: payload.title,
+          sourceVersion: payload.source_version,
+          mimeType: payload.mime_type,
+          kind: payload.kind,
+        },
+        nowMs,
+      );
+      return {
+        result: {
+          id: result.documentId,
+          title: result.title,
+          kind: result.kind,
+          chunks: result.chunks,
+          added: result.added,
+        },
+      };
+    },
+  },
+  'knowledge.revoke': {
+    async execute(env, payload, nowMs) {
+      await revokeKnowledgeDocument(env, payload.id, nowMs);
+      return { result: { id: String(payload.id), status: 'revoked' } };
+    },
+  },
+  'knowledge.delete': {
+    async execute(env, payload) {
+      return {
+        result: { id: String(payload.id), ...(await deleteKnowledgeDocument(env, payload.id)) },
+      };
+    },
+  },
   // Нагадування (PR-6). undo вертає ТОЙ САМИЙ id: власник бачить у списку той
   // самий рядок, що й до «↩», а не новий - інакше друге «↩» після ручної
   // правки скасувало б чуже нагадування.
@@ -260,6 +309,63 @@ export const EXECUTORS = {
         nowMs,
       );
       return { result };
+    },
+  },
+  // Власний фідбек до блока briefing-а. В executor ще раз діє allowlist, бо
+  // `proposals.create` може обійти JSON-схему прямого інструмента.
+  'briefing.feedback': {
+    async execute(env, payload, nowMs) {
+      /** @type {unknown} */
+      let before = undefined;
+      const stored = await updateState(env, (current) => {
+        before = current[BRIEFING_FEEDBACK_KEY];
+        const applied = applyBriefingFeedback(
+          before,
+          { blockId: payload?.block_id, verdict: payload?.verdict },
+          nowMs,
+        );
+        return { ...current, [BRIEFING_FEEDBACK_KEY]: applied.next };
+      });
+      const blockId = String(payload?.block_id ?? '');
+      const verdict = String(payload?.verdict ?? '');
+      // `hide` — явне відхилення повного блока. Рахуємо його окремо від
+      // загального feedback state: undo повертає видимість, але не переписує
+      // факт взаємодії з історії метрик. `less/useful` не є dismiss.
+      if (verdict === 'hide') {
+        try {
+          await updateStats(env, (stats) => ({
+            ...stats,
+            [BRIEFING_ENGAGEMENT_KEY]: recordBriefingInteraction(stats?.[BRIEFING_ENGAGEMENT_KEY], {
+              dateKey: kyivDateKey(new Date(nowMs)),
+              blockId,
+              event: 'dismiss',
+              nowMs,
+            }),
+          }));
+        } catch (/** @type {any} */ error) {
+          // Preference уже записана у state й не мусить виглядати як failed
+          // через необов'язковий агрегат. Лишаємо видимий слід для ops.
+          console.error('briefing engagement: dismiss not recorded', error?.message);
+        }
+      }
+      return {
+        prev: { existed: before !== undefined, value: before },
+        result: {
+          block_id: blockId,
+          verdict,
+          preference: briefingBlockPreference(stored[BRIEFING_FEEDBACK_KEY], blockId),
+        },
+      };
+    },
+    async undo(env, snapshot) {
+      await updateState(env, (current) => {
+        if (snapshot?.existed === true) {
+          return { ...current, [BRIEFING_FEEDBACK_KEY]: snapshot.value };
+        }
+        const withoutFeedback = { ...current };
+        delete withoutFeedback[BRIEFING_FEEDBACK_KEY];
+        return withoutFeedback;
+      });
     },
   },
   // Ідеї (етап 3 PR-4): create/update/analyze - T0 з «↩», delete - T1 без

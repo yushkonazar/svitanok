@@ -46,6 +46,47 @@ describe('fetcher — allowlist (анти-SSRF)', () => {
     });
     await expect(f.fetch('https://x.com/a')).rejects.toThrow(/allowlist.*evil\.com/);
   });
+
+  it('page-fetch вимагає точного host+pathPrefix, не лише allowlist хоста', async () => {
+    const fetchImpl = vi.fn(async () => new Response('PAGE', { status: 200 }));
+    const f = mk(fetchImpl as unknown as typeof fetch, 0);
+    const route = { host: 'x.com', pathPrefix: '/jobs/' };
+    await expect(f.fetch('https://x.com/jobs/42', { allowedRoutes: [route] })).resolves.toBe(
+      'PAGE',
+    );
+    await expect(f.fetch('https://x.com/admin', { allowedRoutes: [route] })).rejects.toThrow(
+      /allowlisted route/,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('page-fetch блокує redirect поза його exact route', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('', { status: 302, headers: { location: 'https://x.com/private' } }),
+    );
+    const f = mk(fetchImpl as unknown as typeof fetch, 0);
+    await expect(
+      f.fetch('https://x.com/jobs/42', {
+        allowedRoutes: [{ host: 'x.com', pathPrefix: '/jobs/' }],
+      }),
+    ).rejects.toThrow(/allowlisted route.*private/);
+  });
+
+  it('page-fetch відкидає http, credentials і нестандартний port до мережі', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const f = mk(fetchImpl, 0);
+    const route = { host: 'x.com', pathPrefix: '/jobs/' };
+    await expect(f.fetch('http://x.com/jobs/42', { allowedRoutes: [route] })).rejects.toThrow(
+      /https/,
+    );
+    await expect(
+      f.fetch('https://user:pass@x.com/jobs/42', { allowedRoutes: [route] }),
+    ).rejects.toThrow(/auth/);
+    await expect(f.fetch('https://x.com:8443/jobs/42', { allowedRoutes: [route] })).rejects.toThrow(
+      /port/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('fetcher — ретрай з бекофом', () => {

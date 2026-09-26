@@ -17,6 +17,10 @@ export const CALENDAR_BUS_KEY = 'calendar.today';
 export interface CalendarEvent {
   title: string;
   time: string | null; // "HH:MM" Київ, або null для подій на весь день
+  // Зберігаються у snapshot лише для детермінованого пошуку перетинів у
+  // ранковому decision layer; старий форматер читає й далі тільки time/title.
+  startMs?: number | null;
+  endMs?: number | null;
 }
 
 /** Ключ у блобі `state`, який пише ядро (web/core/brief/calendar-snapshot.mjs). */
@@ -27,6 +31,7 @@ export interface CalendarSnapshot {
   date?: string;
   ready?: boolean;
   events?: CalendarEvent[];
+  updatedAt?: string;
 }
 
 /**

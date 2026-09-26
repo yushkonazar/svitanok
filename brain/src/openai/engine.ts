@@ -20,6 +20,14 @@ export interface OpenAiRuntimeConfig {
   fetchFn?: typeof fetch;
   now?: () => number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Optional deployment-owned price table. If absent, cost stays unknown
+   * instead of inventing a price that may no longer match billing. */
+  pricing?: Partial<Record<'fast' | 'standard' | 'advanced', OpenAiModelPricing>>;
+}
+
+export interface OpenAiModelPricing {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
 }
 
 type OutputItem = { type?: unknown; name?: unknown; arguments?: unknown; call_id?: unknown };
@@ -72,6 +80,10 @@ export function createOpenAiEngine(config: OpenAiRuntimeConfig): ModelRuntime {
             model: typeof response.model === 'string' ? response.model : modelFor(config, opts),
             responseId: typeof response.id === 'string' ? response.id : null,
             usage: usage(response.usage),
+            estimatedCostUsd: estimateCost(
+              usage(response.usage),
+              config.pricing?.[opts.openAiModelTier ?? 'standard'],
+            ),
           };
         }
         for (const call of calls) {
@@ -226,7 +238,7 @@ function isFunctionCall(
 }
 
 function responseText(response: ResponsesPayload, output: unknown[]): string | null {
-  if (typeof response.output_text === 'string') return response.output_text;
+  if (typeof response.output_text === 'string') return withCitations(response.output_text, output);
   for (const item of output) {
     if (!isRecord(item) || item.type !== 'message' || !Array.isArray(item.content)) continue;
     const text = item.content
@@ -235,9 +247,43 @@ function responseText(response: ResponsesPayload, output: unknown[]): string | n
       )
       .map((part) => (typeof part.text === 'string' ? part.text : ''))
       .join('');
-    if (text) return text;
+    if (text) return withCitations(text, output);
   }
   return null;
+}
+
+/** Telegram does not render Responses API annotations, so make provider-native
+ * web citations visible as a compact, sanitized sources list. */
+function withCitations(text: string, output: unknown[]): string {
+  const citations = output.flatMap((item) => {
+    if (!isRecord(item) || !Array.isArray(item.content)) return [];
+    return item.content.flatMap((part) => {
+      if (!isRecord(part) || !Array.isArray(part.annotations)) return [];
+      return part.annotations.flatMap((annotation) => citation(annotation));
+    });
+  });
+  const unique = [...new Map(citations.map((item) => [item.url, item])).values()].slice(0, 6);
+  if (unique.length === 0) return text;
+  const lines = unique.map((item, index) => `${index + 1}. ${item.title} — ${item.url}`);
+  return `${text.trim()}\n\nДжерела:\n${lines.join('\n')}`;
+}
+
+function citation(value: unknown): Array<{ title: string; url: string }> {
+  if (!isRecord(value) || value.type !== 'url_citation' || typeof value.url !== 'string') return [];
+  let url: URL;
+  try {
+    url = new URL(value.url);
+  } catch {
+    return [];
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return [];
+  const rawTitle = typeof value.title === 'string' ? value.title : url.hostname;
+  const title = rawTitle
+    .replace(/[\r\n<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return [{ title: title || url.hostname, url: url.toString() }];
 }
 
 function usage(value: unknown): EngineOutcome['usage'] {
@@ -248,6 +294,17 @@ function usage(value: unknown): EngineOutcome['usage'] {
     outputTokens: number('output_tokens'),
     totalTokens: number('total_tokens'),
   };
+}
+
+function estimateCost(
+  value: EngineOutcome['usage'],
+  pricing: OpenAiModelPricing | undefined,
+): number | null {
+  if (!pricing || value?.inputTokens == null || value.outputTokens == null) return null;
+  const total =
+    (value.inputTokens / 1_000_000) * pricing.inputPerMillionUsd +
+    (value.outputTokens / 1_000_000) * pricing.outputPerMillionUsd;
+  return Number.isFinite(total) && total >= 0 ? total : null;
 }
 
 function hashSafetyIdentifier(value: string): string {

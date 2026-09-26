@@ -21,6 +21,8 @@
  *   gmail.readonly  - mail.search / mail.read + задача mail-triage
  *   contacts        - searchContact (читання) і createContact (запис, PR-13)
  *   drive.file      - бекапи, документи працівників, експорт (лише свої файли)
+ *   drive.readonly  - один ЯВНО названий файл для вузької бази знань; код не
+ *                     має шляху обходу або масового індексування Drive
  *   tasks           - proposals.create(kind=tasks.create), S-8-4
  * `gmail.send` НЕМАЄ свідомо (ADR-019): запрошення шле Google з події
  * `attendees`, а «надіслати лист» лишається неможливим на рівні прав.
@@ -31,6 +33,7 @@ export const CORE_SCOPES = Object.freeze([
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/contacts',
   'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/tasks',
 ]);
 
@@ -46,6 +49,7 @@ export const CORE_SCOPES = Object.freeze([
 export const SCOPE_INCLUDED_IN = Object.freeze({
   'https://www.googleapis.com/auth/calendar.events': ['https://www.googleapis.com/auth/calendar'],
   'https://www.googleapis.com/auth/drive.file': ['https://www.googleapis.com/auth/drive'],
+  'https://www.googleapis.com/auth/drive.readonly': ['https://www.googleapis.com/auth/drive'],
   'https://www.googleapis.com/auth/gmail.readonly': [
     'https://www.googleapis.com/auth/gmail.modify',
     'https://mail.google.com/',
@@ -62,6 +66,7 @@ export const SCOPE_BY_FEATURE = Object.freeze({
   mail: 'https://www.googleapis.com/auth/gmail.readonly',
   contacts: 'https://www.googleapis.com/auth/contacts',
   drive: 'https://www.googleapis.com/auth/drive.file',
+  drive_read: 'https://www.googleapis.com/auth/drive.readonly',
   tasks: 'https://www.googleapis.com/auth/tasks',
 });
 
@@ -72,6 +77,7 @@ const FEATURE_TITLE = Object.freeze({
   mail: 'Пошта',
   contacts: 'Контакти',
   drive: 'Drive',
+  drive_read: 'читання Drive',
   tasks: 'Tasks',
 });
 
@@ -82,6 +88,7 @@ const FEATURE_ENDING = Object.freeze({
   mail: 'а',
   contacts: 'і',
   drive: 'ий',
+  drive_read: 'е',
   tasks: 'і',
 });
 

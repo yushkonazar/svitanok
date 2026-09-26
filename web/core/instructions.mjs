@@ -31,6 +31,9 @@ const BUILTIN_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'];
  */
 export const CANON_TOOLS = [
   'data.read',
+  // Явна перевага власника до повного ранкового briefing-а: лише allowlisted
+  // block id + verdict useful/less/hide, без контенту або вільного тексту.
+  'briefing.feedback',
   // Пошук по всіх власних джерелах одним викликом - реліз 08.09 (PR-7 §3.2);
   // у 07 §4 його не було, бо на час канону джерела шукались нарізно.
   'data.search',
@@ -41,6 +44,15 @@ export const CANON_TOOLS = [
   'mail.read',
   'drive.search',
   'drive.write',
+  // Вузька база знань: лише окремо дозволені документи, не весь Drive.
+  // `inspect` читає metadata рівно одного явно названого файла Drive;
+  // import/revoke/delete завжди проходять policy.
+  'knowledge.search',
+  'knowledge.list',
+  'knowledge.inspect',
+  'knowledge.import',
+  'knowledge.revoke',
+  'knowledge.delete',
   'inbox.search',
   'places.search',
   'places.details',

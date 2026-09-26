@@ -37,6 +37,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'outbox-drain',
       'memory-summarize',
       'memory-projection-reconcile',
+      'knowledge-projection-reconcile',
       'weekly-review',
       'backup',
       'daily-hint',
@@ -137,7 +138,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     vi.resetModules();
   });
 
-  it('brief-dispatch: знімок календаря РАНІШЕ за відправку, і його збій не блокує брифінг', async () => {
+  it('brief-dispatch: знімки календаря й нагадувань РАНІШЕ за відправку, і їх збій не блокує брифінг', async () => {
     // Порядок тут - не косметика: брифінг читає state.calendarToday, тож
     // знімок мусить лягти ДО того, як воркфлоу стартує. А впасти знімок не
     // має права взагалі: без нього брифінг лишається без одного блоку, з
@@ -147,6 +148,12 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       refreshBriefCalendar: async () => {
         calls.push('calendar');
         throw new Error('Google лежить');
+      },
+    }));
+    vi.doMock('../web/core/brief/reminder-snapshot.mjs', () => ({
+      refreshBriefReminders: async () => {
+        calls.push('reminders');
+        throw new Error('D1 лежить');
       },
     }));
     vi.doMock('../web/cron.mjs', async (orig) => ({
@@ -159,8 +166,9 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     vi.resetModules();
     const { SCHEDULER_TASKS: fresh } = await import('../web/core/scheduler/tasks.mjs');
     await expect(fresh['brief-dispatch']!.run(workerEnv({}))).resolves.not.toThrow();
-    expect(calls).toEqual(['calendar', 'dispatch']);
+    expect(calls).toEqual(['calendar', 'reminders', 'dispatch']);
     vi.doUnmock('../web/core/brief/calendar-snapshot.mjs');
+    vi.doUnmock('../web/core/brief/reminder-snapshot.mjs');
     vi.doUnmock('../web/cron.mjs');
     vi.resetModules();
   });
@@ -177,6 +185,12 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     ).resolves.toEqual({
       skipped: 'not-configured',
     });
+  });
+
+  it('knowledge-projection-reconcile тихо пропускається без AI/Vectorize bindings', async () => {
+    await expect(
+      SCHEDULER_TASKS['knowledge-projection-reconcile']?.run(workerEnv() as never),
+    ).resolves.toEqual({ skipped: 'not-configured' });
   });
 
   it('появи 5-хвилинні (крім нагадувань — щохвилини); shadowSafe — лише heartbeat', () => {

@@ -39,6 +39,8 @@ import { ARCHIVE_KEY, WEEKLY_ARCHIVE_KEY } from '../../stats-archive.mjs';
 import { listActiveReminders } from '../reminders/store.mjs';
 import { recurrenceText } from '../reminders/recurrence.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
+import { formatBriefingEngagementDigest } from '../brief/engagement.mjs';
+import { buildAnalyticsSnapshot, serializeAnalyticsSnapshot } from '../../analytics-core.mjs';
 import { wrapExternal } from './markup.mjs';
 import {
   buildWeeklyDigest,
@@ -113,6 +115,18 @@ export async function runDataRead(env, args, nowMs) {
     return { result: digest.text };
   }
 
+  // 4D — окремий від звичайного own-data digest: асистент отримує лише
+  // детерміновані агрегати та вже порахований weekly levers snapshot, ніколи
+  // сирі check-in-и або можливість «домалювати» статистику своїм текстом.
+  if (args.scope === 'analytics') {
+    const [stats, levers] = await Promise.all([loadStats(env), loadLevers(env)]);
+    const snapshot = buildAnalyticsSnapshot({
+      agg: aggregateStats(stats, todayKey),
+      levers,
+    });
+    return { result: serializeAnalyticsSnapshot(snapshot, cap) };
+  }
+
   const [state, stats, latest, settings, fromD1] = await Promise.all([
     loadState(env),
     loadStats(env),
@@ -136,7 +150,14 @@ export async function runDataRead(env, args, nowMs) {
     todayKey,
     settings,
   });
-  return { result: digest.slice(0, cap) };
+  // Агрегат зберігає лише ідентифікатори блоків та лічильники. Він не йде у
+  // scope=all, щоб звичайна відповідь не отримувала зайвий шум; у briefing
+  // допомагає чесно запропонувати «менше такого» без автоматичної зміни UI.
+  const engagement =
+    args.scope === 'briefing'
+      ? formatBriefingEngagementDigest(stats.briefingEngagement, { todayKey })
+      : '';
+  return { result: [digest, engagement].filter(Boolean).join('\n').slice(0, cap) };
 }
 
 /**

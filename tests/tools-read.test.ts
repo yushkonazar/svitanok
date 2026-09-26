@@ -103,6 +103,65 @@ describe('data.read', () => {
     // weekly і archive з етапу 3 - чинні; невідомий - вигаданий.
     await expect(runDataRead(env, { scope: 'unknown' }, NOW)).rejects.toThrow(/невідомий scope/);
   });
+
+  it('scope=briefing повертає лише агреговану engagement-підказку без контенту блока', async () => {
+    const { stub } = kvBriefing({
+      state: JSON.stringify({ reminders: [] }),
+      stats: JSON.stringify({
+        briefingEngagement: {
+          days: {
+            '2026-08-27': {
+              opened: true,
+              blocks: { news: { exposed: 1, action: 1, save: 0, dismiss: 0 } },
+            },
+          },
+        },
+      }),
+      latest: JSON.stringify({ blocks: [{ id: 'news', summary: 'private briefing text' }] }),
+      settings: JSON.stringify({}),
+    });
+    const { result } = await runDataRead(workerEnv({ BRIEFING: stub }), { scope: 'briefing' }, NOW);
+    expect(String(result)).toContain('Залучення до брифінгу');
+    expect(String(result)).toContain('news: показано 1 дн., дії 1');
+    const engagementLine = String(result)
+      .split('\n')
+      .find((line) => line.startsWith('Залучення'));
+    expect(engagementLine).not.toContain('private briefing text');
+  });
+
+  it('scope=analytics віддає структуровані агрегати, а не raw check-in або інструкції з KV', async () => {
+    const { stub } = kvBriefing({
+      stats: JSON.stringify({
+        checkins: { '2026-08-27': { morning: { privateNote: 'не потрапити в LLM' } } },
+        learningAttempts: {
+          a1: { at: '2026-08-27', topic: 'HTTP', outcome: 'incorrect' },
+        },
+      }),
+      levers: JSON.stringify({ weekOf: '2026-08-24', ready: true, weeks: 30, rows: [] }),
+    });
+    const { result } = await runDataRead(
+      workerEnv({ BRIEFING: stub }),
+      { scope: 'analytics' },
+      NOW,
+    );
+    const body = JSON.parse(String(result)) as {
+      facts: { id: string; value: number }[];
+      patterns: unknown[];
+    };
+    expect(body.facts.find((x) => x.id === 'reported_learning_outcomes')).toMatchObject({
+      value: 1,
+    });
+    expect(body.patterns).toEqual([]);
+    expect(String(result)).not.toContain('не потрапити в LLM');
+
+    const capped = await runDataRead(
+      workerEnv({ BRIEFING: stub }),
+      { scope: 'analytics', cap: 500 },
+      NOW,
+    );
+    expect(() => JSON.parse(String(capped.result))).not.toThrow();
+    expect(JSON.parse(String(capped.result))).toMatchObject({ truncated: true });
+  });
 });
 
 describe('calendar.read', () => {
@@ -520,6 +579,7 @@ describe('facts.* на поточній схемі facts', () => {
 describe('реєстр TOOLS', () => {
   it('склад: читання + write-інструменти етапу 2 + runs.query етапу 3; drive.write свідомо відсутній до адаптерів Google', () => {
     expect(Object.keys(TOOLS).sort()).toEqual([
+      'briefing.feedback',
       'calendar.read',
       'chain.cancel',
       'chain.start',
@@ -545,6 +605,12 @@ describe('реєстр TOOLS', () => {
       'ideas.search',
       'ideas.update',
       'inbox.search',
+      'knowledge.delete',
+      'knowledge.import',
+      'knowledge.inspect',
+      'knowledge.list',
+      'knowledge.revoke',
+      'knowledge.search',
       'mail.read',
       'mail.search',
       'memory.search',
@@ -590,6 +656,7 @@ describe('реєстр TOOLS', () => {
     // ним, і розсинхрон тут мовчки змінив би рівень підтвердження. Виняток -
     // proposals.create: він не дія, а обгортка, тож kind приходить у args.
     expect(writes).toEqual([
+      ['briefing.feedback', 'briefing.feedback'],
       ['chain.cancel', 'chain.cancel'],
       ['chain.start', 'chain.start'],
       // Видалення колекції з записами - T2 forget (07 §4): інструмент є, kind - forget.
@@ -603,6 +670,9 @@ describe('реєстр TOOLS', () => {
       ['ideas.create', 'ideas.create'],
       ['ideas.delete', 'ideas.delete'],
       ['ideas.update', 'ideas.update'],
+      ['knowledge.delete', 'knowledge.delete'],
+      ['knowledge.import', 'knowledge.import'],
+      ['knowledge.revoke', 'knowledge.revoke'],
       ['plan.accept', 'plan.accept'],
       ['plan.draft', 'plan.draft'],
       ['plan.intent', 'plan.intent'],
@@ -634,6 +704,11 @@ describe('реєстр TOOLS', () => {
       // inbox.search віддає текст, який писали ІНШІ люди (Telegram Business,
       // етап 6 PR-3) - головний шлях, яким чужий текст входить у контекст.
       'inbox.search',
+      // Explicitly allowed documents still carry file text and may contain
+      // hostile instructions; only their citations are trusted metadata.
+      'knowledge.inspect',
+      'knowledge.list',
+      'knowledge.search',
       'mail.read',
       'mail.search',
       'places.details',

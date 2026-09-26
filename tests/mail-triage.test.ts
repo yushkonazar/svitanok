@@ -56,6 +56,27 @@ describe('deterministic mail attention', () => {
   });
 });
 
+describe('calendar snapshot interval preservation', () => {
+  it('retains only finite interval bounds for downstream conflict detection', () => {
+    const parsed = parseSnapshot({
+      date: '2026-09-08',
+      ready: true,
+      events: [
+        { title: 'A', time: '10:00', startMs: 100, endMs: 200 },
+        { title: 'B', time: null, startMs: 'not-a-number', endMs: 300 },
+      ],
+      updatedAt: '2026-09-08T04:00:00.000Z',
+      attempts: 1,
+      attemptAt: NOW,
+      alerted: false,
+    });
+    expect(parsed?.events).toEqual([
+      { title: 'A', time: '10:00', startMs: 100, endMs: 200 },
+      { title: 'B', time: null, startMs: null, endMs: 300 },
+    ]);
+  });
+});
+
 function makeEnv(state: Record<string, unknown> = {}, scopes = ALL) {
   const store = new Map<string, string>();
   store.set('googleToken', JSON.stringify({ token: 'tok', expMs: TOKEN_EXP(), scope: scopes }));
@@ -188,6 +209,33 @@ describe('mergeCandidates', () => {
     const merged = mergeCandidates([], many, { nowMs: NOW, shown: {} });
     expect(merged).toHaveLength(MAIL_CANDIDATES_CAP);
     expect(merged[0]?.id).toBe('m0');
+  });
+});
+
+describe('normalizeTriageState retention', () => {
+  it('prunes candidate headers and snippets after the three-day window when a task runs', () => {
+    const state = normalizeTriageState(
+      {
+        candidates: [
+          {
+            id: 'old',
+            from: 'old@example.com',
+            subject: 'old',
+            snippet: 'old private',
+            atMs: NOW - MAIL_CANDIDATE_TTL_MS - 1,
+          },
+          {
+            id: 'fresh',
+            from: 'fresh@example.com',
+            subject: 'fresh',
+            snippet: 'fresh private',
+            atMs: NOW - MAIL_CANDIDATE_TTL_MS,
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(state.candidates.map((candidate) => candidate.id)).toEqual(['fresh']);
   });
 });
 

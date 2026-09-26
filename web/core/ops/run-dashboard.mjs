@@ -91,6 +91,7 @@ function shapeRun(row, steps) {
     model_version: modelStep ? compact(modelStep.name, 120) : null,
     response_id: modelTelemetry.response_id,
     usage: modelTelemetry.usage,
+    estimated_cost_usd: modelTelemetry.estimated_cost_usd,
     // cost_note - лише заздалегідь санітизований технічний cost producer-а;
     // якщо producer не звітує вартість, `null`, не «$0».
     cost: compact(row.cost_note, 160),
@@ -114,6 +115,12 @@ function parseModelTelemetry(note) {
     const value = Number(raw);
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
   };
+  /** @param {string} key */
+  const decimal = (key) => {
+    const raw = field(key);
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  };
   return {
     response_id: field('response'),
     usage: {
@@ -121,6 +128,7 @@ function parseModelTelemetry(note) {
       output_tokens: count('output_tokens'),
       total_tokens: count('total_tokens'),
     },
+    estimated_cost_usd: decimal('cost_usd'),
   };
 }
 

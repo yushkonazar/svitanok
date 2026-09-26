@@ -19,6 +19,14 @@ export interface BrainConfig {
   openAiApiKey: string | null;
   /** Моделі Responses за класом задачі. Значення ніколи не є секретами. */
   openAiModels: { fast: string; standard: string; advanced: string } | null;
+  /** Optional, deployment-owned per-million-token prices for transparent
+   * estimates. They are configuration, never a provider secret. */
+  openAiPricing: Partial<
+    Record<
+      'fast' | 'standard' | 'advanced',
+      { inputPerMillionUsd: number; outputPerMillionUsd: number }
+    >
+  > | null;
   openAiReasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
   /** Безпечний cutover: `canary` можливий лише разом із Claude fallback. */
   openAiRollout: 'canary' | 'full' | null;
@@ -136,6 +144,35 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
   if (needsOpenAi && Object.values(openAiModels).some((model) => !model)) {
     throw new Error('конфігурація: OPENAI_MODEL_FAST/STANDARD/ADVANCED не можуть бути порожніми');
   }
+  const priceFor = (tier: 'fast' | 'standard' | 'advanced') => {
+    const prefix = `OPENAI_PRICE_${tier.toUpperCase()}`;
+    const inputRaw = String(env[`${prefix}_INPUT_USD_PER_1M`] ?? '').trim();
+    const outputRaw = String(env[`${prefix}_OUTPUT_USD_PER_1M`] ?? '').trim();
+    if (!inputRaw && !outputRaw) return undefined;
+    const input = Number(inputRaw);
+    const output = Number(outputRaw);
+    if (
+      !inputRaw ||
+      !outputRaw ||
+      !Number.isFinite(input) ||
+      !Number.isFinite(output) ||
+      input < 0 ||
+      output < 0
+    ) {
+      throw new Error(
+        `конфігурація: ${prefix}_INPUT/OUTPUT_USD_PER_1M мають бути парними числами >= 0`,
+      );
+    }
+    return { inputPerMillionUsd: input, outputPerMillionUsd: output };
+  };
+  const fastPricing = priceFor('fast');
+  const standardPricing = priceFor('standard');
+  const advancedPricing = priceFor('advanced');
+  const openAiPricing = {
+    ...(fastPricing ? { fast: fastPricing } : {}),
+    ...(standardPricing ? { standard: standardPricing } : {}),
+    ...(advancedPricing ? { advanced: advancedPricing } : {}),
+  };
   const configuredRollout = String(env.OPENAI_ROLLOUT ?? 'canary')
     .trim()
     .toLowerCase();
@@ -163,6 +200,7 @@ export function loadConfig(env: Record<string, string | undefined>): BrainConfig
     aiProvider,
     openAiApiKey: needsOpenAi ? openAiApiKey : null,
     openAiModels: needsOpenAi ? openAiModels : null,
+    openAiPricing: needsOpenAi ? openAiPricing : null,
     openAiReasoningEffort: needsOpenAi
       ? (configuredEffort as 'low' | 'medium' | 'high' | 'xhigh' | 'max')
       : null,
