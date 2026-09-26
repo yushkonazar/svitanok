@@ -141,7 +141,20 @@ function decodeXml(s: string): string {
 export interface RssItem {
   title: string;
   url: string;
+  /** Санітизований короткий опис із фіду, якщо джерело його дає. */
+  description?: string;
   publishedAt?: string;
+}
+
+/** Текст з RSS/Atom не є HTML для UI: прибираємо теги й обмежуємо його ще на
+ * межі даних. Споживачі самі вирішують, чи використовувати це як доказ. */
+function parseFeedDescription(block: string): string | undefined {
+  const raw = block.match(/<(description|summary|content)[^>]*>([\s\S]*?)<\/\1>/i)?.[2] ?? '';
+  const text = decodeXml(stripCdata(raw))
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text ? text.slice(0, 4_000) : undefined;
 }
 
 /** RSS <pubDate> чи Atom <published>/<updated> -> ISO, або undefined на непарсибельне/відсутнє. */
@@ -161,7 +174,16 @@ export function parseRss(xml: string): RssItem[] {
     if (!url) url = b.match(/<link[^>]*href=["']([^"']+)["']/i)?.[1] ?? ''; // Atom
     const title = decodeXml(stripCdata(rawTitle)).trim();
     url = decodeXml(stripCdata(url)).trim();
-    if (title && url && isHttpUrl(url)) out.push({ title, url, publishedAt: parseFeedDate(b) }); // лише http(s) (M2)
+    if (title && url && isHttpUrl(url)) {
+      const description = parseFeedDescription(b);
+      const publishedAt = parseFeedDate(b);
+      out.push({
+        title,
+        url,
+        ...(description ? { description } : {}),
+        ...(publishedAt ? { publishedAt } : {}),
+      }); // лише http(s) (M2)
+    }
   }
   return out;
 }

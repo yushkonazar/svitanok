@@ -1,7 +1,7 @@
 {
   "name": "svitanok",
   "version": "0.1.0",
-  "description": "Персональний ранковий брифінг-бот у Telegram (GitHub Actions + claude -p)",
+  "description": "Персональний AI-асистент у Telegram (GitHub Actions + OpenAI Responses)",
   "license": "MIT",
   "type": "module",
   "private": true,

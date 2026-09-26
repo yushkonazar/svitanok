@@ -58,12 +58,95 @@ function parseSource(url: string, body: string): RssItem[] {
 interface Candidate {
   title: string;
   url: string;
+  /** Короткий опис з already-allowed RSS, лише для детермінованих фактів. */
+  description?: string;
+  publishedAt?: string;
 }
 interface ScoredJob extends Candidate {
   /** Ранжування за заголовком, не «fit» і не перевірка повної вакансії. */
   score: number; // 0..100; -1 = без ранжування (фолбек)
   why: string;
-  evidence: 'title_only';
+  evidence: 'title_only' | 'listing_excerpt';
+  signals?: JobSignals;
+}
+
+/** Спостережувані сигнали з title/RSS-excerpt; це НЕ вимоги, fit або висновок
+ * про кандидата. Відсутнє поле означає «джерело цього не підтвердило». */
+export interface JobSignals {
+  stack?: string[];
+  level?: 'trainee' | 'junior' | 'middle' | 'senior';
+  workMode?: 'remote' | 'hybrid' | 'onsite';
+  languages?: string[];
+  salary?: string;
+}
+
+const STACK_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
+  ['TypeScript', /\btypescript\b|\bts\b/i],
+  ['JavaScript', /\bjavascript\b|\becmascript\b/i],
+  ['React', /\breact(?:\.js)?\b/i],
+  ['Next.js', /\bnext(?:\.js)?\b/i],
+  ['Node.js', /\bnode(?:\.js)?\b/i],
+  ['NestJS', /\bnest(?:js)?\b/i],
+  ['Express', /\bexpress(?:\.js)?\b/i],
+  ['Vue', /\bvue(?:\.js)?\b/i],
+  ['Angular', /\bangular\b/i],
+  ['Python', /\bpython\b/i],
+  ['Java', /\bjava\b/i],
+  ['PHP', /\bphp\b/i],
+  ['Laravel', /\blaravel\b/i],
+  ['Symfony', /\bsymfony\b/i],
+  ['C#/.NET', /\bc#\b|\b\.net\b|\bdotnet\b/i],
+  ['SQL', /\bsql\b|\bpostgres(?:ql)?\b|\bmysql\b/i],
+  ['MongoDB', /\bmongodb\b/i],
+  ['Redis', /\bredis\b/i],
+  ['Docker', /\bdocker\b/i],
+  ['Kubernetes', /\bkubernetes\b|\bk8s\b/i],
+  ['AWS', /\baws\b|\bamazon web services\b/i],
+  ['GraphQL', /\bgraphql\b/i],
+];
+
+/** Витягнути лише явно названі факти з заголовка та RSS-excerpt. */
+export function extractJobSignals(candidate: Candidate): JobSignals | undefined {
+  const text = `${candidate.title}\n${candidate.description ?? ''}`;
+  const stack = STACK_PATTERNS.filter(([, re]) => re.test(text)).map(([name]) => name);
+  const level = /\btrainee\b|\bintern(?:ship)?\b|\bстаж(?:ерування|ер)?\b/i.test(text)
+    ? 'trainee'
+    : /\bjunior\b|\bджун(?:іор)?\b/i.test(text)
+      ? 'junior'
+      : /\bmiddle\b|\bmid[- ]?level\b/i.test(text)
+        ? 'middle'
+        : /\bsenior\b|\blead\b|\bсеньйор\b/i.test(text)
+          ? 'senior'
+          : undefined;
+  const workMode = /\bremote\b|\bвіддален(?:о|а|ий)\b/i.test(text)
+    ? 'remote'
+    : /\bhybrid\b|\bгібридн(?:о|а|ий)\b/i.test(text)
+      ? 'hybrid'
+      : /\bon[- ]?site\b|\bофіс(?:на|ний|і)?\b/i.test(text)
+        ? 'onsite'
+        : undefined;
+  const languages = [
+    ...(/\benglish\b|\bанглійськ/i.test(text) ? ['English'] : []),
+    ...(/\bukrainian\b|\bукраїнськ/i.test(text) ? ['Ukrainian'] : []),
+  ];
+  const salaryMatch = text.match(
+    /(?:\$|€|₴|usd\b|eur\b|uah\b)\s?\d[\d\s,.]*(?:\s?(?:-|–|—|to)\s?(?:\$|€|₴|usd\b|eur\b|uah\b)?\s?\d[\d\s,.]*)?/i,
+  );
+  const signals: JobSignals = {
+    ...(stack.length ? { stack } : {}),
+    ...(level ? { level } : {}),
+    ...(workMode ? { workMode } : {}),
+    ...(languages.length ? { languages } : {}),
+    ...(salaryMatch?.[0]
+      ? {
+          salary: salaryMatch[0]
+            .replace(/\s+/g, ' ')
+            .replace(/[.,;:]+$/, '')
+            .trim(),
+        }
+      : {}),
+  };
+  return Object.keys(signals).length ? signals : undefined;
 }
 
 // --- jobPrefs (памʼять скорера з живої воронки: dismiss/applied→interview→offer) ---
@@ -136,7 +219,12 @@ function collectPool(lists: RssItem[][], shown: ShownJobs, cutoff: number): Cand
       const at = shown[canon] ? Date.parse(shown[canon]!) : 0;
       if (at && at >= cutoff) continue; // показували в вікні
       seen.add(canon);
-      pool.push({ title: item.title, url: canon });
+      pool.push({
+        title: item.title,
+        url: canon,
+        ...(item.description ? { description: item.description } : {}),
+        ...(item.publishedAt ? { publishedAt: item.publishedAt } : {}),
+      });
     }
   }
   return pool;
@@ -236,18 +324,33 @@ export const jobsModule: Module<AppConfig> = {
       const scores = parseScores(out);
       if (scores.size === 0) throw new Error('порожній скоринг');
       ranked = pool
-        .map((c, i) => ({
-          ...c,
-          score: scores.get(i + 1)?.score ?? 0,
-          why: scores.get(i + 1)?.why ?? '',
-          evidence: 'title_only' as const,
-        }))
+        .map((c, i) => {
+          const signals = extractJobSignals(c);
+          const { description: _description, ...visible } = c;
+          return {
+            ...visible,
+            score: scores.get(i + 1)?.score ?? 0,
+            why: scores.get(i + 1)?.why ?? '',
+            evidence: c.description ? ('listing_excerpt' as const) : ('title_only' as const),
+            ...(signals ? { signals } : {}),
+          };
+        })
         .sort((a, b) => b.score - a.score);
     } catch (e) {
       ctx.log.warn(
         `jobs: скоринг не вдався (фолбек на свіжість): ${e instanceof Error ? e.message : String(e)}`,
       );
-      ranked = pool.map((c) => ({ ...c, score: -1, why: '', evidence: 'title_only' as const }));
+      ranked = pool.map((c) => {
+        const signals = extractJobSignals(c);
+        const { description: _description, ...visible } = c;
+        return {
+          ...visible,
+          score: -1,
+          why: '',
+          evidence: c.description ? ('listing_excerpt' as const) : ('title_only' as const),
+          ...(signals ? { signals } : {}),
+        };
+      });
     }
 
     const picked = ranked.slice(0, cfg.perRun);

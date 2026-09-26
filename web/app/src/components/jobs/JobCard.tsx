@@ -5,6 +5,22 @@ import { hostOf } from '../../lib/jobTitle.ts';
 import { openLink, haptic } from '../../telegram.ts';
 import { FUNNEL_STAGES, STAGE_LABEL, TRIAGE_STAGES, fitStyle, type FunnelStage } from './stages.ts';
 
+const LEVEL_LABEL = { trainee: 'стажування', junior: 'junior', middle: 'middle', senior: 'senior' };
+const MODE_LABEL = { remote: 'віддалено', hybrid: 'гібрид', onsite: 'офіс' };
+
+function signalLine(item: JobItem): string | null {
+  const signals = item.signals;
+  if (!signals) return null;
+  const parts = [
+    ...(signals.stack?.slice(0, 5) ?? []),
+    ...(signals.level ? [LEVEL_LABEL[signals.level]] : []),
+    ...(signals.workMode ? [MODE_LABEL[signals.workMode]] : []),
+    ...(signals.languages ?? []),
+    ...(signals.salary ? [signals.salary] : []),
+  ];
+  return parts.length ? parts.join(' · ') : null;
+}
+
 // Картка вакансії (дизайн v2, Svitanok.dc.html): скляна картка — рядок бейджа
 // ранжування заголовка + назва стадії праворуч; заголовок + домен; кнопки стадій + «Не цікавить».
 //
@@ -35,6 +51,7 @@ export function JobCard({
   const dismissMut = useJobDismiss();
   const fit = fitStyle(item.score);
   const host = hostOf(item.url);
+  const signals = signalLine(item);
 
   const setStage = (key: FunnelStage) => {
     haptic('light');
@@ -108,6 +125,16 @@ export function JobCard({
         {host && <div className="font-mono text-[11px] font-medium text-tx2">{host}</div>}
         {has(item.why) && (
           <div className="mt-1 text-[11.5px] leading-[1.45] text-tx3">{item.why}</div>
+        )}
+        {signals && (
+          <div className="mt-1 text-[11px] leading-[1.45] text-tx2">
+            {item.evidence === 'listing_excerpt' ? 'У джерелі:' : 'У заголовку:'} {signals}
+          </div>
+        )}
+        {item.publishedAt && (
+          <time className="mt-0.5 font-mono text-[10px] text-tx3" dateTime={item.publishedAt}>
+            Джерело: {item.publishedAt.slice(0, 10)}
+          </time>
         )}
       </div>
 

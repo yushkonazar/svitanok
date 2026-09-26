@@ -4,6 +4,7 @@ import {
   parseScores,
   buildScorePrompt,
   parseWorkUa,
+  extractJobSignals,
   updateJobPrefs,
   JOB_PREFS_CAP,
   type JobPrefs,
@@ -69,6 +70,30 @@ describe('jobs — buildScorePrompt', () => {
   });
 });
 
+describe('jobs — observed listing signals', () => {
+  it('витягує лише явно названі сигнали з title/RSS-витягу', () => {
+    expect(
+      extractJobSignals({
+        title: 'Junior React Developer',
+        url: 'https://jobs.example/1',
+        description: 'Remote. TypeScript, Node.js, Docker. English B1. $1200–1800.',
+      }),
+    ).toEqual({
+      stack: ['TypeScript', 'React', 'Node.js', 'Docker'],
+      level: 'junior',
+      workMode: 'remote',
+      languages: ['English'],
+      salary: '$1200–1800',
+    });
+  });
+
+  it('не вигадує факти, якщо їх немає', () => {
+    expect(extractJobSignals({ title: 'Software Engineer', url: 'https://jobs.example/1' })).toBe(
+      undefined,
+    );
+  });
+});
+
 describe('jobs — updateJobPrefs', () => {
   it('dismiss -> токени тайтла в disliked; стоп-слова відфільтровані', () => {
     const prefs = updateJobPrefs(
@@ -111,9 +136,12 @@ describe('jobs — updateJobPrefs', () => {
   });
 });
 
-const feed = (items: [string, string][]) =>
+const feed = (items: [string, string, string?][]) =>
   `<rss><channel>${items
-    .map(([t, u]) => `<item><title>${t}</title><link>${u}</link></item>`)
+    .map(
+      ([t, u, d]) =>
+        `<item><title>${t}</title><link>${u}</link>${d ? `<description>${d}</description>` : ''}</item>`,
+    )
     .join('')}</channel>`;
 
 const FS = feed([
@@ -193,6 +221,23 @@ describe('jobs — скоринг і сортування', () => {
     expect(block!.summary).toContain('Full Stack A');
     const items = (block!.data as { items: { score: number }[] }).items;
     expect(items.every((i) => i.score === -1)).toBe(true); // -1 = без скорингу
+  });
+
+  it('видає лише санітизовані сигнали, а не сирий опис вакансії', async () => {
+    const ctx = makeCtx({
+      fetcher: {
+        fetch: async () =>
+          feed([['Junior React', 'https://jobs.dou.ua/react', 'Remote · React · TypeScript']]),
+      },
+      llm: { complete: vi.fn(async () => '[{"i":1,"score":80,"why":"заголовок"}]') },
+    });
+    const block = await jobsModule.run(ctx);
+    const item = (block!.data as { items: Record<string, unknown>[] }).items[0]!;
+    expect(item).toMatchObject({
+      evidence: 'listing_excerpt',
+      signals: { stack: ['TypeScript', 'React'], level: 'junior', workMode: 'remote' },
+    });
+    expect(item).not.toHaveProperty('description');
   });
 
   it('дедуп: показана вакансія не потрапляє в пул', async () => {
