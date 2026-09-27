@@ -14,7 +14,7 @@ import { recordFtsText } from '../tools/collections.mjs';
 /** Магія формату - версія 1. */
 export const BACKUP_MAGIC = 'SVB1';
 /** Версія документа всередині (структура JSON). */
-export const BACKUP_DOC_VERSION = 1;
+export const BACKUP_DOC_VERSION = 2;
 
 /**
  * Таблиці D1 у знімку - усе з міграцій 0001-0010, крім FTS (віртуальні,
@@ -58,6 +58,21 @@ export const BACKUP_TABLES = [
   'counters',
 ];
 
+/**
+ * Телеметрія не є даними власника, потрібними для відновлення роботи: це
+ * короткоживучий operational trail. Вона живе в D1 90 діб і доступна в
+ * telemetry, але не входить у щотижневий recovery snapshot. Інакше один
+ * активний чат може зупинити резервування всіх нагадувань, планів і фактів
+ * рівно в момент, коли резервна копія найбільше потрібна.
+ *
+ * Документ v2 називає це явно через `omitted_d1`; restore не очищує ці
+ * таблиці, тож відновлення поверх живої D1 не стирає новішу діагностику.
+ */
+export const BACKUP_TELEMETRY_TABLES = ['runs', 'run_steps'];
+export const BACKUP_SNAPSHOT_TABLES = BACKUP_TABLES.filter(
+  (table) => !BACKUP_TELEMETRY_TABLES.includes(table),
+);
+
 /** FTS-таблиці, які restore перебудовує з базових (ADR-036: standalone). */
 export const BACKUP_FTS = {
   ideas_fts: { from: 'ideas', columns: ['id', 'title', 'body_md'] },
@@ -76,12 +91,13 @@ export const BACKUP_KV_EXCLUDE = new Set(['googleToken']);
  *   env: string,
  *   d1: Record<string, Record<string, unknown>[]>,
  *   kv: Record<string, string>,
+ *   omitted_d1?: string[],
  * }} BackupDocument
  */
 
 /**
  * Зібрати документ бекапу з уже прочитаних рядків і KV.
- * @param {{ createdMs: number, envName: string, tables: Record<string, Record<string, unknown>[]>, kv: Record<string, string> }} input
+ * @param {{ createdMs: number, envName: string, tables: Record<string, Record<string, unknown>[]>, kv: Record<string, string>, omittedTables?: string[] }} input
  * @returns {BackupDocument}
  */
 export function buildBackupDocument(input) {
@@ -99,6 +115,9 @@ export function buildBackupDocument(input) {
     env: input.envName,
     d1,
     kv,
+    ...(input.omittedTables?.length
+      ? { omitted_d1: input.omittedTables.filter((table) => BACKUP_TABLES.includes(table)) }
+      : {}),
   };
 }
 
@@ -108,7 +127,13 @@ export function summarizeBackup(doc) {
   const nonEmpty = Object.entries(doc.d1)
     .filter(([, t]) => t.length > 0)
     .map(([name, t]) => `${name}=${t.length}`);
-  return { tables: Object.keys(doc.d1).length, rows, kvKeys: Object.keys(doc.kv).length, nonEmpty };
+  return {
+    tables: Object.keys(doc.d1).length,
+    rows,
+    kvKeys: Object.keys(doc.kv).length,
+    nonEmpty,
+    omittedD1: Array.isArray(doc.omitted_d1) ? doc.omitted_d1.length : 0,
+  };
 }
 
 // ── Крипто ─────────────────────────────────────────────────────────────────
@@ -162,7 +187,7 @@ export async function decryptBackup(secret, bytes) {
     throw new Error('розшифрувати не вдалося: чужий ключ або пошкоджений файл');
   }
   const doc = JSON.parse(new TextDecoder().decode(plain));
-  if (doc?.version !== BACKUP_DOC_VERSION || typeof doc.d1 !== 'object') {
+  if (![1, BACKUP_DOC_VERSION].includes(Number(doc?.version)) || typeof doc.d1 !== 'object') {
     throw new Error(`невідома версія документа бекапу (${String(doc?.version)})`);
   }
   return /** @type {BackupDocument} */ (doc);
@@ -189,7 +214,15 @@ export async function sha256Hex(bytes) {
 export function restoreSql(doc) {
   /** @type {string[]} */
   const lines = ['BEGIN TRANSACTION;'];
+  const omitted = new Set(
+    Array.isArray(doc.omitted_d1)
+      ? doc.omitted_d1.filter((table) => BACKUP_TABLES.includes(String(table)))
+      : [],
+  );
   for (const table of BACKUP_TABLES) {
+    // v2 recovery snapshots deliberately omit hot telemetry. It is not owner
+    // state and must not be erased when a backup is restored over a live DB.
+    if (omitted.has(table)) continue;
     const rows = doc.d1[table] ?? [];
     lines.push(`DELETE FROM ${table};`);
     for (const row of rows) {

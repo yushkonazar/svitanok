@@ -1,9 +1,11 @@
 // Задача планувальника `backup` (07 §7, 05-ops §«Бекапи», етап 3 PR-6):
-// неділя 03:00 Києва - знімок D1 (усі таблиці) + KV (усі ключі, крім кешу
-// токена) → JSON → AES-256-GCM (BACKUP_ENC_KEY) → Drive «Світанок/backups/
+// неділя 03:00 Києва - recovery-знімок даних власника з D1 + KV (усі ключі,
+// крім кешу токена); короткоживучі runs/run_steps лишаються в D1 telemetry і
+// явно виключені з документа → JSON → AES-256-GCM (BACKUP_ENC_KEY) → Drive «Світанок/backups/
 // svitanok-YYYY-MM-DD.enc» через drive.file. Успіх тихий: хеш і розмір у
-// facts.setting.last_backup. Збій - алерт у TOPIC_SYSTEM одразу; о 04:00 без
-// файлу - ще один алерт «бекап не зроблено» (05-ops §алерти). Кожної 13-ї
+// facts.setting.last_backup. Збій - один зрозумілий алерт у TOPIC_SYSTEM;
+// transient failure ще раз підсумовується о 04:00, permanent не ретраїться.
+// Кожної 13-ї
 // неділі - нагадування про тестове відновлення в локальну D1.
 //
 // Відхилення від 05-ops названо: тека «backups/svitanok-<дата>.enc» замість
@@ -31,6 +33,8 @@ import {
   sha256Hex,
   summarizeBackup,
   BACKUP_TABLES,
+  BACKUP_SNAPSHOT_TABLES,
+  BACKUP_TELEMETRY_TABLES,
 } from './core.mjs';
 
 export { BACKUP_STATE_KEY };
@@ -38,12 +42,14 @@ export const BACKUP_HOUR = 3;
 export const BACKUP_DEADLINE_HOUR = 4;
 export const BACKUP_MAX_ATTEMPTS = 3;
 export const BACKUP_FOLDER_PATH = ['Світанок', 'backups'];
-/** Стеля рядків на таблицю у знімку - страховка від розростання (runs за 90
- *  днів - сотні, outbox чиститься; більше - привід подивитись, не мовчати). */
+/** Стеля рядків на таблицю recovery-знімку - страховка від розростання.
+ * Hot telemetry сюди не входить; перевищення для даних власника потребує
+ * окремої міграції, а не трьох однакових retry. */
 export const BACKUP_ROWS_PER_TABLE = 50_000;
 
 /**
- * @typedef {{ date: string, attempts: number, done: boolean, alertedMissing: boolean }} BackupState
+ * @typedef {{ date: string, attempts: number, done: boolean, alertedMissing: boolean,
+ *   blocked?: boolean, lastError?: string | null }} BackupState
  */
 
 /**
@@ -76,6 +82,14 @@ export async function backupTask(env, nowMs = Date.now()) {
     return { skipped: 'done' };
   }
 
+  // Permanent configuration/capacity errors cannot be repaired by retrying in
+  // five minutes. Keep the one actionable alert, preserve the cause for
+  // /status, and do not turn a deterministic failure into a notification loop.
+  if (state.blocked) {
+    await release();
+    return { skipped: 'blocked' };
+  }
+
   if (hour >= BACKUP_DEADLINE_HOUR) {
     // Вікно минуло без файлу: один алерт «не зроблено», далі - тиша до
     // наступної неділі (ручний запуск - scripts/backup.mjs у 05-ops).
@@ -85,7 +99,7 @@ export async function backupTask(env, nowMs = Date.now()) {
     }
     await sendSystemAlert(
       env,
-      `Бекап ${today} не зроблено (спроб: ${state.attempts}) - перевір Drive/ключ.`,
+      `⚠️ Бекап ${today} не зроблено після ${state.attempts} спроб. ${state.lastError ?? 'Останню причину не збережено.'}`,
       nowMs,
     );
     await writeState({ ...state, alertedMissing: true });
@@ -109,15 +123,56 @@ export async function backupTask(env, nowMs = Date.now()) {
     return { done: true, ...result };
   } catch (/** @type {any} */ e) {
     const attempts = state.attempts + 1;
-    console.error(`backup: спроба ${attempts} впала`, e?.message);
-    await sendSystemAlert(
-      env,
-      `Бекап ${today}: спроба ${attempts} впала - ${String(e?.message ?? 'збій').slice(0, 200)}.`,
-      nowMs,
-    );
-    await writeState({ ...state, attempts });
+    const reason = backupErrorReason(e);
+    console.error(`backup: спроба ${attempts} впала`, reason);
+    if (isPermanentBackupError(e)) {
+      await sendSystemAlert(
+        env,
+        [
+          `⚠️ Бекап ${today} заблоковано: ${reason}.`,
+          'Повтори зупинено: причина не тимчасова.',
+          'Вплив: нової зашифрованої копії цього тижня немає.',
+        ].join('\n'),
+        nowMs,
+      );
+      await writeState({
+        ...state,
+        attempts,
+        blocked: true,
+        alertedMissing: true,
+        lastError: reason,
+      });
+      return { failed: true, blocked: true, attempts };
+    }
+    // Тимчасовий збій повідомляємо лише на першій спробі. Далі retry тихий,
+    // а після дедлайну буде один підсумок із збереженою реальною причиною.
+    if (attempts === 1) {
+      await sendSystemAlert(
+        env,
+        `⚠️ Бекап ${today}: спроба 1 впала — ${reason}. Повторю автоматично.`,
+        nowMs,
+      );
+    }
+    await writeState({ ...state, attempts, lastError: reason });
     return { failed: true, attempts };
   }
+}
+
+/** Помилка, яку retry ніколи не виправить без зміни конфігурації/даних. */
+export class PermanentBackupError extends Error {}
+
+/** @param {unknown} error */
+export function isPermanentBackupError(error) {
+  return error instanceof PermanentBackupError;
+}
+
+/** Не віддаємо у Telegram сирий response/body стороннього сервісу. @param {unknown} error */
+export function backupErrorReason(error) {
+  return String(error instanceof Error ? error.message : (error ?? 'невідомий збій'))
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220);
 }
 
 /**
@@ -128,11 +183,14 @@ export async function backupTask(env, nowMs = Date.now()) {
  * @param {string} today
  */
 export async function runBackup(env, nowMs, today) {
-  if (!env.DB) throw new Error('привʼязки DB немає');
+  if (!env.DB) throw new PermanentBackupError('привʼязки DB немає');
   const secret = String(env.BACKUP_ENC_KEY ?? '');
-  if (!secret) throw new Error('BACKUP_ENC_KEY не задано');
+  if (!secret) throw new PermanentBackupError('BACKUP_ENC_KEY не задано');
 
-  const tables = await dumpTables(env);
+  // User state is the recovery contract. Hot telemetry (`runs`, `run_steps`)
+  // has its own 90-day retention but is intentionally excluded from the
+  // encrypted recovery snapshot so it cannot block all backups when it grows.
+  const tables = await dumpTables(env, BACKUP_SNAPSHOT_TABLES);
   const kv = await dumpKv(env);
   // Structured state (`state`/`stats`/`settings`) може бути новішим за legacy
   // KV mirror. Під час rollout StateStoreDO є canonical, тому бекап
@@ -154,6 +212,7 @@ export async function runBackup(env, nowMs, today) {
     envName: String(env.ASSISTANT_V2 ?? 'unknown'),
     tables,
     kv,
+    omittedTables: BACKUP_TELEMETRY_TABLES,
   });
   const bytes = await encryptBackup(secret, doc);
   const sha256 = await sha256Hex(bytes);
@@ -184,21 +243,23 @@ export async function runBackup(env, nowMs, today) {
 /** Знімок усіх таблиць - спільний для бекапу (нд 03:00) і експорту даних
  *  (S-0-6): один список і один читач, інакше вони розійдуться.
  *  @param {Env} env */
-export async function dumpTables(env) {
+export async function dumpTables(env, tables = BACKUP_TABLES) {
   const db = /** @type {NonNullable<Env['DB']>} */ (env.DB);
   /** @type {Record<string, Record<string, unknown>[]>} */
   const out = {};
   // Один batch замість 30 послідовних запитів: імена таблиць - з константного
   // списку, не з вводу.
   const pages = await db.batch(
-    BACKUP_TABLES.map((table) =>
+    tables.map((table) =>
       db.prepare(`SELECT * FROM ${table} LIMIT ${BACKUP_ROWS_PER_TABLE + 1}`).bind(),
     ),
   );
-  BACKUP_TABLES.forEach((table, i) => {
+  tables.forEach((table, i) => {
     const rows = /** @type {Record<string, unknown>[]} */ (pages[i]?.results ?? []);
     if (rows.length > BACKUP_ROWS_PER_TABLE) {
-      throw new Error(`таблиця ${table} понад ${BACKUP_ROWS_PER_TABLE} рядків - бекап зупинено`);
+      throw new PermanentBackupError(
+        `таблиця ${table} понад ${BACKUP_ROWS_PER_TABLE} рядків — потрібна окрема міграція даних`,
+      );
     }
     out[table] = rows;
   });
@@ -244,7 +305,14 @@ export function isQuarterlySunday(dateKey) {
  * @returns {Promise<BackupState>}
  */
 async function readState(env, today) {
-  const fresh = { date: today, attempts: 0, done: false, alertedMissing: false };
+  const fresh = {
+    date: today,
+    attempts: 0,
+    done: false,
+    alertedMissing: false,
+    blocked: false,
+    lastError: null,
+  };
   try {
     const raw = await env.BRIEFING.get(BACKUP_STATE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
@@ -256,7 +324,14 @@ async function readState(env, today) {
 
 /** @param {unknown} value @param {string} today @returns {BackupState} */
 function normalizeState(value, today) {
-  const fresh = { date: today, attempts: 0, done: false, alertedMissing: false };
+  const fresh = {
+    date: today,
+    attempts: 0,
+    done: false,
+    alertedMissing: false,
+    blocked: false,
+    lastError: null,
+  };
   const parsed = /** @type {any} */ (value);
   if (!parsed || parsed.date !== today) return fresh;
   return {
@@ -264,5 +339,7 @@ function normalizeState(value, today) {
     attempts: Number(parsed.attempts) || 0,
     done: Boolean(parsed.done),
     alertedMissing: Boolean(parsed.alertedMissing),
+    blocked: Boolean(parsed.blocked),
+    lastError: typeof parsed.lastError === 'string' ? parsed.lastError.slice(0, 240) : null,
   };
 }

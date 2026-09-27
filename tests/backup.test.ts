@@ -17,6 +17,8 @@ import {
   sha256Hex,
   summarizeBackup,
   BACKUP_TABLES,
+  BACKUP_SNAPSHOT_TABLES,
+  BACKUP_TELEMETRY_TABLES,
   BACKUP_KV_EXCLUDE,
   BACKUP_MAGIC,
 } from '../web/core/backup/core.mjs';
@@ -84,9 +86,25 @@ describe('документ і крипто', () => {
     });
     expect(doc.kv).toEqual({ stats: '{"a":1}' });
     expect(BACKUP_KV_EXCLUDE.has('googleToken')).toBe(true);
+    expect(BACKUP_TELEMETRY_TABLES).toEqual(['runs', 'run_steps']);
+    expect(BACKUP_SNAPSHOT_TABLES).not.toContain('runs');
     expect(doc.d1.facts).toEqual([{ id: 'f1' }]);
     expect(doc.d1.ideas).toEqual([]);
     expect(summarizeBackup(doc)).toMatchObject({ rows: 1, kvKeys: 1, nonEmpty: ['facts=1'] });
+  });
+
+  it('recovery snapshot явно позначає omitted telemetry, а restore не стирає її поверх живої D1', () => {
+    const doc = buildBackupDocument({
+      createdMs: SUNDAY_0310,
+      envName: 'on',
+      tables: { facts: [{ id: 'f1' }] },
+      kv: {},
+      omittedTables: BACKUP_TELEMETRY_TABLES,
+    });
+    expect(doc.omitted_d1).toEqual(BACKUP_TELEMETRY_TABLES);
+    const sql = restoreSql(doc);
+    expect(sql).not.toContain('DELETE FROM runs;');
+    expect(sql).not.toContain('DELETE FROM run_steps;');
   });
 
   it('encrypt → decrypt round-trip; чужий ключ і чужа магія - явні помилки; короткий ключ - помилка', async () => {
@@ -336,14 +354,16 @@ describe('задача backup (нд 03:00)', () => {
     expect(await backupTask(env, SUNDAY_0410 + 60_000)).toEqual({ skipped: 'missed' });
   });
 
-  it('без BACKUP_ENC_KEY - збій із назвою змінної, не тихий бекап відкритим текстом', async () => {
+  it('без BACKUP_ENC_KEY - один зрозумілий permanent alert і без циклу повторів', async () => {
     driveStub();
     const { env, d1 } = taskEnv({ BACKUP_ENC_KEY: undefined });
-    expect(await backupTask(env, SUNDAY_0310)).toMatchObject({ failed: true });
+    expect(await backupTask(env, SUNDAY_0310)).toMatchObject({ failed: true, blocked: true });
     const texts = (
       d1.db.prepare('SELECT payload_json FROM outbox').all() as { payload_json: string }[]
     ).map((r) => JSON.parse(r.payload_json).text as string);
     expect(texts.some((t) => t.includes('BACKUP_ENC_KEY'))).toBe(true);
+    expect(texts).toHaveLength(1);
+    expect(await backupTask(env, SUNDAY_0310 + 5 * 60_000)).toEqual({ skipped: 'blocked' });
   });
 
   it('KV читається сторінками (list_complete=false + cursor): жоден ключ не губиться', async () => {

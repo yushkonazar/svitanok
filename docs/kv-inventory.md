@@ -32,16 +32,16 @@ dispatch, health alert), або зберігає попередню гарант
 
 ## Допустимий KV: snapshot, cache, конфігурація або immutable receipt
 
-| Ключ / префікс                                              | Роль                                      | Чому не потребує RMW control plane                                             |
-| ----------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------ |
-| `saved`, `latest`                                           | останній immutable briefing snapshot      | новіший цілісний snapshot замінює старий                                       |
-| `statsArchive`, `statsArchiveWeekly`, `levers`              | derived analytics cache                   | обчислюється детерміновано з canonical state/D1                                |
-| `weatherLive`, `calendarToday`, `mailTriage`, `googleToken` | TTL cache зовнішнього read                | stale cache деградує read, не створює дію                                      |
-| `publicStatus`, `brainExpected`, `brainHealthState`         | status/release projection                 | display/config projection, не owner transition                                 |
-| `ownerGeo`, `ownerGeoManual`                                | latest owner location / explicit override | last-write-wins configuration, без field-level RMW                             |
-| `dataDeletionReceipt`, `dataDeletionReceipt:*`              | immutable T2 receipt і bounded history    | кожна історична квитанція має власний ключ; current receipt лише resume marker |
-| `executed:*`                                                | TTL idempotency tombstone                 | create-once marker без JSON merge                                              |
-| `secret_rotated_*`, `secret_expiry_*`, `security_hint_at`   | operational audit marker                  | одноразовий timestamp/flag, не domain record                                   |
+| Ключ / префікс                                                         | Роль                                      | Чому не потребує RMW control plane                                                                         |
+| ---------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `saved`, `latest`                                                      | останній immutable briefing snapshot      | новіший цілісний snapshot замінює старий                                                                   |
+| `statsArchive`, `statsArchiveWeekly`, `levers`                         | derived analytics cache                   | обчислюється детерміновано з canonical state/D1                                                            |
+| `weatherLive`, `calendarToday`, `mailTriage`, `googleToken`            | TTL cache зовнішнього read                | stale cache деградує read, не створює дію                                                                  |
+| `publicStatus`, `brainExpected`, `brainHealthState`, `briefingRuntime` | status/release projection                 | display/config projection, не owner transition; `briefingRuntime` містить лише verdict runner-а, не секрет |
+| `ownerGeo`, `ownerGeoManual`                                           | latest owner location / explicit override | last-write-wins configuration, без field-level RMW                                                         |
+| `dataDeletionReceipt`, `dataDeletionReceipt:*`                         | immutable T2 receipt і bounded history    | кожна історична квитанція має власний ключ; current receipt лише resume marker                             |
+| `executed:*`                                                           | TTL idempotency tombstone                 | create-once marker без JSON merge                                                                          |
+| `secret_rotated_*`, `secret_expiry_*`, `security_hint_at`              | operational audit marker                  | одноразовий timestamp/flag, не domain record                                                               |
 
 Поле `stats.briefingEngagement` належить canonical `stats` у `StateStoreDO`:
 це максимум 120 денних агрегатів для allowlisted id блоків (`opened`,

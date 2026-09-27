@@ -667,7 +667,7 @@ async function runToEnd(
 }
 
 describe('машина станів', () => {
-  it('повний прогін: блоки, ✅ пункт, «пора виходити», підсумок із витратами', async () => {
+  it('повний прогін: блоки, ✅ пункт, попередження за 2 год, підсумок із витратами', async () => {
     const { env, db } = setup();
     seedTrip(db, 'c1');
     seedChain(db, 'c1');
@@ -693,11 +693,13 @@ describe('машина станів', () => {
     expect(sent[0]?.text).toContain('за тиждень');
     expect(sent[0]?.text).toContain('Пальне:');
     expect(sent[0]?.text).toContain('10.09: 12…19 °, ясно');
-    expect(sent.some((s) => s.text.startsWith('Пора виходити'))).toBe(true);
-    expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain('3 год 20 хв');
+    expect(sent.some((s) => s.text.startsWith('🚗 Виїзд за ~2 год'))).toBe(true);
+    expect(sent.find((s) => s.text.startsWith('🚗 Виїзд за ~2 год'))?.text).toContain(
+      '3 год 20 хв',
+    );
     // ⚠️ Погода САМЕ тут (ідея №4, п.7): у момент виходу вона ще може змінити
     // рішення, а на T-7 прогнозу на день виїзду часто просто немає.
-    expect(sent.find((s) => s.text.startsWith('Пора виходити'))?.text).toContain(
+    expect(sent.find((s) => s.text.startsWith('🚗 Виїзд за ~2 год'))?.text).toContain(
       'Погода: 10.09: 12…19',
     );
     expect(sent.at(-1)?.text).toContain('Записав витрати: 4 200 грн');
@@ -714,7 +716,7 @@ describe('машина станів', () => {
     expect(log.filter((l) => l.startsWith('do:')).length).toBeGreaterThan(5);
   });
 
-  it('відтворення тіла: блоки у свої дні, ✅ між блоками не губиться, «пора виходити» за 2 год', async () => {
+  it('відтворення тіла: блоки у свої дні, ✅ між блоками не губиться, попередження за 2 год', async () => {
     const { env, db } = setup();
     // Виїзд 17.09 о 08:00 Києва, сьогодні 07.09 - блоки T-30 (зараз), T-7, T-1.
     seedTrip(db, 'c1', { date_from: '2026-09-17', date_to: '2026-09-19' });
@@ -754,7 +756,7 @@ describe('машина станів', () => {
       '2026-09-16T16:00:00.000Z', // T-1 о 19:00 Києва
       '2026-09-17T03:00:00.000Z', // дорожній блок - разом із «пора виходити»
     ]);
-    const leave = sent.find((m) => m.text.startsWith('Пора виходити'));
+    const leave = sent.find((m) => m.text.startsWith('🚗 Виїзд за ~2 год'));
     // Виїзд 08:00 Києва = 05:00Z, повідомлення - за 2 год до нього.
     expect(new Date(leave!.at).toISOString()).toBe('2026-09-17T03:00:00.000Z');
   });

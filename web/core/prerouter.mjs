@@ -71,6 +71,7 @@ import {
   formatFocusUntil,
   parseFocusRequest,
 } from './assistant-controls.mjs';
+import { BACKUP_STATE_KEY } from './backup-state/contract.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -198,6 +199,7 @@ export const NEW_COMMANDS = [
   { command: 'status', description: 'Чи все живе' },
   { command: 'focus', description: 'Не турбувати певний час' },
   { command: 'digest', description: 'Важливе зараз' },
+  { command: 'chains', description: 'Незавершені сценарії' },
   { command: 'clear', description: 'Прибрати останні повідомлення' },
   { command: 'new', description: 'Почати розмову з чистого аркуша' },
   { command: 'forget', description: 'Стерти дані' },
@@ -214,6 +216,7 @@ const NEW_COMMAND_NAMES = new Set([
   'ready',
   'focus',
   'digest',
+  'chains',
   'new',
   'forget',
 ]);
@@ -353,6 +356,10 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       await send(await actionDigest(env, nowMs));
       return true;
     }
+    if (cmd.cmd === 'chains') {
+      await send(await activeChainsLine(env));
+      return true;
+    }
     // /plan і /remind - той самий шлях, що вільний текст: інакше вони жили б
     // у легасі й відповідали не тим, чим асистент (скарга 12 прогону 08.09).
     if (cmd.cmd === 'plan') {
@@ -380,6 +387,14 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   }
   // Інші /-команди - легасі (07 §10: «лишаються як є»).
   if (text.startsWith('/')) return false;
+
+  // Це запит до локального реєстру, а не відповідь на питання сценарію.
+  // Перевіряємо ДО findAwaitingChain: інакше «покажи незавершені сценарії»
+  // могло піти як текст у поїздку або бронювання.
+  if (looksLikeChainsRequest(text)) {
+    await send(await activeChainsLine(env));
+    return true;
+  }
 
   // «Відміни останнє» (PR-7 §3.5): відкат словом, без кнопки - і після того,
   // як вікно «↩» минуло. Детерміновано, без прогону: модель не мусить
@@ -2315,16 +2330,27 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   const brain = await brainHealthSnapshot(env, nowMs);
   const instructions = await instructionsStatusLine(env);
   const focus = await focusUntil(env, nowMs);
+  const [backup, briefing] = await Promise.all([
+    backupStatusLine(env),
+    briefingRuntimeStatusLine(env, nowMs),
+  ]);
   const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
   const modelReady = brain.modelReadiness?.state === 'ready';
   const alive =
-    brain.state === 'ok' && modelReady && instructionsReady && env.ASSISTANT_V2 === 'on';
+    brain.state === 'ok' &&
+    modelReady &&
+    instructionsReady &&
+    backup.healthy &&
+    briefing.healthy &&
+    env.ASSISTANT_V2 === 'on';
   const lines = [
     alive ? '✅ Усе живе.' : '⚠️ Щось не так - подробиці нижче.',
     active || queued ? `Зараз роблю: ${active}, чекає: ${queued}` : 'Черга порожня.',
     instructions,
     formatBrainStatus(brain),
     formatModelReadiness(brain),
+    backup.line,
+    briefing.line,
     await lastSuccessfulRunStatusLine(env, nowMs),
     focus == null
       ? 'Фокус: вимкнено.'
@@ -2352,21 +2378,19 @@ export async function actionDigest(env, nowMs = Date.now()) {
   const soon = reminders
     .filter((r) => Number.isFinite(Number(r?.whenMs)) && Number(r.whenMs) <= horizonMs)
     .slice(0, 3);
-  /** @type {{ chains: number, proposals: number }} */
-  let pending = { chains: 0, proposals: 0 };
+  /** @type {{ chains: { label: string, waiting: string }[], proposals: number }} */
+  let pending = { chains: [], proposals: 0 };
   if (env.DB) {
     try {
       const [chains, proposals] = await Promise.all([
-        env.DB.prepare(
-          "SELECT count(*) AS n FROM chains WHERE status IN ('running', 'waiting')",
-        ).first(),
+        activeChainsSnapshot(env),
         env.DB.prepare(
           "SELECT count(*) AS n FROM proposals WHERE status = 'open' AND expires_at > ?",
         )
           .bind(new Date(nowMs).toISOString())
           .first(),
       ]);
-      pending = { chains: Number(chains?.n ?? 0), proposals: Number(proposals?.n ?? 0) };
+      pending = { chains, proposals: Number(proposals?.n ?? 0) };
     } catch (/** @type {any} */ e) {
       // Старий rollback без однієї з таблиць не робить /digest брехнею: він
       // просто показує те, що зміг прочитати (нагадування).
@@ -2382,10 +2406,133 @@ export async function actionDigest(env, nowMs = Date.now()) {
       );
     }
   }
-  if (pending.chains > 0) lines.push(`🔗 Незавершені сценарії: ${pending.chains}.`);
+  if (pending.chains.length) {
+    lines.push('', '🔗 Незавершені сценарії:');
+    for (const chain of pending.chains) lines.push(`• ${chain.label} — ${chain.waiting}.`);
+  }
   if (pending.proposals > 0) lines.push(`✅ Чекають твого підтвердження: ${pending.proposals}.`);
   if (lines.length === 1) lines.push('', 'Термінових або незавершених дій зараз немає.');
   return lines.join('\n');
+}
+
+/** Не даємо життєвим сценаріям перехопити природне прохання показати їх.
+ * @param {string} text */
+function looksLikeChainsRequest(text) {
+  const normalized = text
+    .toLocaleLowerCase('uk')
+    .replace(/[.!?]+$/g, '')
+    .trim();
+  return /(?:незавершен|активн).{0,24}(?:сценар|ланцюг)|(?:сценар|ланцюг).{0,24}(?:незавершен|активн)/u.test(
+    normalized,
+  );
+}
+
+/** @param {Env} env */
+async function activeChainsSnapshot(env) {
+  if (!env.DB) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT kind, status, state_json, updated_at
+       FROM chains WHERE status IN ('running', 'waiting')
+       ORDER BY COALESCE(json_extract(state_json, '$.awaiting_since'), updated_at) DESC LIMIT 5`,
+  ).all();
+  return (results ?? []).map((row) => describeActiveChain(row));
+}
+
+/** @param {any} row */
+function describeActiveChain(row) {
+  /** @type {Record<string, any>} */
+  let state;
+  try {
+    state = row?.state_json ? JSON.parse(String(row.state_json)) : {};
+  } catch {
+    state = {};
+  }
+  const kind = String(row?.kind ?? '');
+  const awaiting = String(state?.awaiting ?? 'працює');
+  /** @type {Record<string, string>} */
+  const labels = {
+    'day-plan': `🗓 План на ${String(state?.date ?? 'день')}`,
+    trip: `🚗 Поїздка${state?.to_text ? ` «${compactDigestText(String(state.to_text))}»` : ''}`,
+    table: `🍽 Столик${state?.venue ? ` у ${compactDigestText(String(state.venue))}` : ''}`,
+    price: `🏷 Відстеження ціни${state?.title ? ` «${compactDigestText(String(state.title))}»` : ''}`,
+    idea: '💡 Аналіз ідеї',
+    'inbox-export': '✉️ Експорт пошти',
+  };
+  /** @type {Record<string, string>} */
+  const waiting = {
+    intent: 'чекаю твої плани',
+    answer: 'чекаю уточнення',
+    spent: 'чекаю підсумок витрат',
+    checklist: 'чекаю відмітку чекліста',
+    venue: 'чекаю вибір закладу',
+    venue_text: 'чекаю назву закладу',
+    contact: 'чекаю контакт',
+    phone: 'чекаю номер телефону',
+    time: 'чекаю час',
+    invitees: 'чекаю гостей',
+    next: 'чекаю наступний крок',
+  };
+  return {
+    label: labels[kind] ?? '🔗 Сценарій',
+    waiting: waiting[awaiting] ?? (row?.status === 'running' ? 'працює' : 'чекаю дію'),
+  };
+}
+
+/** @param {Env} env */
+/** @param {Env} env */
+async function activeChainsLine(env) {
+  const chains = await activeChainsSnapshot(env).catch((/** @type {any} */ e) => {
+    console.error('prerouter: /chains не прочитав реєстр', e?.message);
+    return [];
+  });
+  if (!chains.length) return '🔗 Незавершених сценаріїв зараз немає.';
+  return [
+    '🔗 Незавершені сценарії',
+    ...chains.map((chain) => `• ${chain.label} — ${chain.waiting}.`),
+  ].join('\n');
+}
+
+/** Стан recovery backup. Немає запису не є помилкою: новий інстанс ще не
+ * дійшов до першої неділі. `blocked`, навпаки, означає production incident.
+ * @param {Env} env */
+async function backupStatusLine(env) {
+  try {
+    const raw = await env.BRIEFING.get(BACKUP_STATE_KEY);
+    const state = raw ? JSON.parse(raw) : null;
+    if (state?.blocked) {
+      const reason = compactDigestText(String(state.lastError ?? 'потрібна ручна дія'));
+      return { healthy: false, line: `Бекап: ❌ заблоковано — ${reason}.` };
+    }
+    if (state?.done && state?.date) return { healthy: true, line: `Бекап: ✅ ${state.date}.` };
+    if (state?.attempts > 0)
+      return {
+        healthy: false,
+        line: `Бекап: ⚠️ триває відновлення після збою (${state.attempts} спроб).`,
+      };
+    return { healthy: true, line: 'Бекап: ⚪ ще не було контрольного запуску.' };
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: /status не прочитав backup state', e?.message);
+    return { healthy: false, line: 'Бекап: ⚠️ стан недоступний.' };
+  }
+}
+
+/** Status від GitHub briefing workflow. У KV лежить лише результат preflight,
+ * не ключ та не будь-який інший секрет. @param {Env} env @param {number} nowMs */
+async function briefingRuntimeStatusLine(env, nowMs) {
+  try {
+    const raw = await env.BRIEFING.get('briefingRuntime');
+    const state = raw ? JSON.parse(raw) : null;
+    if (!state) return { healthy: true, line: 'Брифінг: ⚪ ще не було перевірки раннера.' };
+    const detail = compactDigestText(String(state.detail ?? 'без деталей'));
+    const checkedMs = Date.parse(String(state.checkedAt ?? ''));
+    const age = Number.isFinite(checkedMs) ? ` · ${formatProbeAge(nowMs - checkedMs)}` : '';
+    if (state.state === 'ready')
+      return { healthy: true, line: `Брифінг: ✅ раннер готовий${age}.` };
+    return { healthy: false, line: `Брифінг: ⚠️ потребує дії — ${detail}${age}.` };
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: /status не прочитав briefing runtime', e?.message);
+    return { healthy: false, line: 'Брифінг: ⚠️ стан раннера недоступний.' };
+  }
 }
 
 /** @param {string} text */

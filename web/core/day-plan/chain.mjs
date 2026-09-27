@@ -102,6 +102,17 @@ export async function runDayPlanChain(env, params, step, io) {
     });
     return { outcome: 'skipped' };
   }
+  // Мовчання не є «порожнім планом». Раніше таймаут о 23:30 проходив далі,
+  // створював нуль пунктів і все одно надсилав власнику план, якого він не
+  // просив. Закриваємо саме цей запуск; наступного вечора питання з'явиться
+  // знову, а перенесені пункти не губляться в базі.
+  if (intent == null) {
+    await step.do('no-intent', async () => {
+      await upsertDayPlan(env, date, { status: 'skipped', workflow_id: chainId }, io.now());
+      await setChainState(env, chainId, { status: 'done', awaiting: null });
+    });
+    return { outcome: 'no-input' };
+  }
   const intentText = typeof intent?.text === 'string' ? intent.text.trim() : '';
 
   // 2. Намір → пункти (Денний, mode=intent) з уточненнями (S-P-10).

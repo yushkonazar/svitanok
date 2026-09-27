@@ -101,6 +101,35 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # GitHub Actions has a separate secret store from the VPS. Record only
+      # the readiness verdict (never a key) so `/status` can distinguish a
+      # broken morning briefing from a healthy Worker. Missing key deliberately
+      # skips this LLM-dependent run: repeating a known configuration error
+      # every morning is not a useful briefing or an actionable alert.
+      - name: record briefing runtime readiness
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NAMESPACE_ID: '389ff22c124a476bb18d2f5e6a5334c0'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          state=ready
+          detail='OpenAI key is available to the briefing runner'
+          if [ -z "$OPENAI_API_KEY" ]; then
+            state=needs_openai_key
+            detail='OPENAI_API_KEY is missing in GitHub Actions secrets'
+          fi
+          if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo 'Cannot publish briefing runtime readiness: Cloudflare credentials are missing.'
+            exit 0
+          fi
+          payload=$(jq -cn --arg state "$state" --arg detail "$detail" --arg checkedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{state:$state, detail:$detail, checkedAt:$checkedAt}')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_NAMESPACE_ID}/values/briefingRuntime" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data-binary "$payload")
+          echo "briefing runtime state stored: HTTP $code"
       - name: run briefing
         env:
           # Стан у KV: orchestrator читає/пише namespace BRIEFING, ключ `state`.
@@ -137,7 +166,12 @@ jobs:
           # доступ до пошти й календаря власника мав ще й раннер Actions:
           # третя копія найпотужнішого секрета заради двох блоків тексту.
           # Повернути їх - означає повернути ту копію.
-        run: npx tsx src/orchestrator.ts ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force-send' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.force_window) && '--force-window' || '' }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo 'OPENAI_API_KEY is missing; LLM-dependent briefing was skipped. See /status in Svitanok.'
+            exit 0
+          fi
+          npx tsx src/orchestrator.ts ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force-send' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.force_window) && '--force-window' || '' }}
       # Публікація briefing.json у Cloudflare KV -> дашборд показує живі дані
       # (Worker віддає /briefing.json із KV; без щоденного редеплою). Не валить ран.
       # Прямий виклик CF API замість wrangler: скоуплений токен ламає wrangler-

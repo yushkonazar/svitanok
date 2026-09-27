@@ -102,6 +102,7 @@ describe('parseNewCommand', () => {
       'status',
       'focus',
       'digest',
+      'chains',
       'clear',
       'new',
       'forget',
@@ -119,6 +120,7 @@ describe('parseNewCommand', () => {
       'status',
       'focus',
       'digest',
+      'chains',
       'new',
       'forget',
     ]);
@@ -614,6 +616,44 @@ describe('prerouteMessage: нові команди', () => {
     expect(line).toContain('Останній успішний run: 1 хв тому (chat, claude-sonnet-5)');
   });
 
+  it('/status не каже «усе живе», коли recovery backup або briefing runner потребує дії', async () => {
+    const reg = makeRegistryStub();
+    const kv = new Map([
+      [
+        'brainHealthState',
+        JSON.stringify({
+          state: 'ok',
+          detail: '1.0.0 @ same-sha',
+          checkedAtMs: NOW,
+          modelReadiness: { state: 'ready', detail: 'моделі: gpt-6-sol' },
+        }),
+      ],
+      [
+        'backupState',
+        JSON.stringify({
+          date: '2026-09-27',
+          blocked: true,
+          lastError: 'таблиця facts понад ліміт',
+        }),
+      ],
+      [
+        'briefingRuntime',
+        JSON.stringify({
+          state: 'needs_openai_key',
+          detail: 'OPENAI_API_KEY is missing in GitHub Actions secrets',
+          checkedAt: new Date(NOW).toISOString(),
+        }),
+      ],
+    ]);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    (env as { BRIEFING: unknown }).BRIEFING = { get: async (key: string) => kv.get(key) ?? null };
+
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).not.toContain('✅ Усе живе.');
+    expect(line).toContain('Бекап: ❌ заблоковано');
+    expect(line).toContain('Брифінг: ⚠️ потребує дії');
+  });
+
   it('/remind без аргументів - список нагадувань, без прогону мозку', async () => {
     const reg = makeRegistryStub();
     const { tg, brain } = makeFetchStub();
@@ -681,6 +721,13 @@ describe('prerouteMessage: нові команди', () => {
          VALUES ('ch-1', 'day-plan', 'ch-1', '{"date":"2026-09-07","awaiting":"intent"}', 'waiting', '2026-09-06T17:30:00Z', '2026-09-06T17:30:00Z')`,
       )
       .run();
+    // Natural wording must be handled locally before the waiting scenario can
+    // consume it as an arbitrary answer (the reported trip/chain regression).
+    expect(
+      await prerouteMessage(env, parsedMsg('Покажи незавершені сценарії', { threadId: 99 }), NOW),
+    ).toBe(true);
+    expect(events).toHaveLength(0);
+    expect(brain).toHaveLength(0);
     expect(await prerouteMessage(env, parsedMsg('презентація і банк', { threadId: 99 }), NOW)).toBe(
       true,
     );

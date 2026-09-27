@@ -488,7 +488,7 @@ export async function runTripChain(env, params, step, io) {
         state = await waitWindow(step, io, env, chainId, `${key}-w`, until, state);
       }
 
-      // День виїзду: «пора виходити» за 2 год + перерахунок ETA (07 §6).
+      // День виїзду: попередження за 2 год + перерахунок ETA (07 §6).
       if (leaveMs > io.now()) {
         await step.sleepUntil(`${rk}-leave-sleep`, leaveMs);
       }
@@ -502,7 +502,7 @@ export async function runTripChain(env, params, step, io) {
       const departWord = state.depart_at
         ? `виїзд о ${kyivClock(departMs)}`
         : `виїзд орієнтовно о ${kyivClock(departMs)} (скажи точний час - переставлю)`;
-      // ⚠️ Погода ТУТ, а не лише в блоці T-7 (ідея №4, п.7): у момент «пора
+      // ⚠️ Погода ТУТ, а не лише в блоці T-7 (ідея №4, п.7): за дві години до
       // виходити» вона ще може змінити рішення - вдягтися інакше, виїхати
       // раніше. На T-7 прогнозу на день виїзду часто просто немає.
       const leaveWeather = await step.do(`${rk}-leave-weather`, async () => {
@@ -511,7 +511,7 @@ export async function runTripChain(env, params, step, io) {
       });
       await step.do(`${rk}-leave-send`, () =>
         io.send(
-          `Пора виходити: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Дорожній чекліст - нижче.`,
+          `🚗 Виїзд за ~2 год: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Дорожній чекліст — наступним повідомленням.`,
           [
             [
               { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },

@@ -566,9 +566,9 @@ export async function autoBriefDispatch(/** @type {Env} */ env) {
  * П'ятихвилинний крон-гейт: вікно слоту (matchCheckinNudgeWindow) -> зібрати
  * три прапорці з KV (тихі години/вже нагадали/слот заповнено) -> чиста
  * shouldSendCheckinNudge (stats-core.mjs, тестована без KV/fetch) вирішує.
- * Ідемпотентно за добу — store.checkinNudgeDates[slot] (той самий "останню
- * дату записав" ідіом, що dispatch.lastAutoDate/reliability.lastCheckDate —
- * не зростаючий журнал, один рядок на слот).
+ * Ідемпотентно за добу — не більше одного check-in ping незалежно від слоту.
+ * Три окремі слоти лишаються для самого журналу, але не означають три
+ * автоматичні нагадування в один день.
  */
 export async function checkinNudgeCheck(/** @type {Env} */ env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
@@ -585,7 +585,7 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   const dateKey = checkinDateKey(today, kyivHour());
   const due = shouldSendCheckinNudge({
     quiet: isQuietMinute(settings, minuteOfDay),
-    alreadyNudgedToday: store.checkinNudgeDates?.[win.slot] === today,
+    alreadyNudgedToday: Object.values(store.checkinNudgeDates ?? {}).includes(today),
     // ⚠️ НЕ Boolean(...): порожній обʼєкт істинний. Саме на цьому нагадування
     // й ламалось — відмітив відповідь, зняв повторним тапом, слот лишився як
     // `{}`, і нудж на добу зникав. Тепер предикат ОДИН на весь проєкт.
@@ -656,7 +656,12 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
     ]);
     const due = shouldSendSleepNudge({
       quiet: isQuietMinute(settings, minuteOfDay),
-      alreadySentTonight: store.sleepLog?.[nightKey]?.nudgeMsgId != null,
+      // Один щоденний check-in already asked the owner for attention. Do not
+      // append a second generic "як день?" card just before sleep; explicit
+      // sleep logging still remains available in the Mini App and by command.
+      alreadySentTonight:
+        store.sleepLog?.[nightKey]?.nudgeMsgId != null ||
+        Object.values(store.checkinNudgeDates ?? {}).includes(nightKey),
     });
     if (due && attention.deliver) {
       const res = await tgCall(env, 'sendMessage', {

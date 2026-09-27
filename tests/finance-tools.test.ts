@@ -713,6 +713,8 @@ describe('вечірній рядок (S-4-7)', () => {
     );
     // Одна покупка - без «найбільшої»: вона ж і єдина.
     expect(eveningText(summarize(rows.slice(0, 1)))).toBe('Сьогодні 1 340 грн · 1 покупка.');
+    // Дрібна одинична покупка не варта окремого автоматичного ping.
+    expect(eveningText(summarize([{ ...rows[3]!, amount_uah: -5_000 }]))).toBeNull();
     // Валютна без еквівалента видима окремо, а не мовчки пропущена.
     const withUsd = [...rows.slice(0, 1), { ...rows[1]!, amount_uah: null }];
     expect(eveningText(summarize(withUsd))).toContain('Ще 1 у валюті');

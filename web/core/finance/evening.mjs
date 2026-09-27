@@ -18,6 +18,11 @@ import { kyivDayStartMs, selectSpending, summarize } from './query.mjs';
 export const EVENING_HOUR = 21;
 /** Мітка «сьогодні вже писали». */
 export const EVENING_MARKER_KEY = 'financeEveningDay';
+/** Дрібні витрати не заслуговують окремого вечірнього ping. 200 грн або три
+ * покупки — уже корисний підсумок; важливіший фінансовий запит завжди можна
+ * написати вручну, без порогу. Усі суми тут у копійках. */
+export const EVENING_MIN_TOTAL_UAH_MINOR = 20_000;
+export const EVENING_MIN_PURCHASES = 3;
 
 /**
  * Текст рядка за зведенням дня; null - писати нема про що.
@@ -26,6 +31,7 @@ export const EVENING_MARKER_KEY = 'financeEveningDay';
  */
 export function eveningText(sum) {
   if (!sum.n) return null;
+  if (sum.total_uah < EVENING_MIN_TOTAL_UAH_MINOR && sum.n < EVENING_MIN_PURCHASES) return null;
   const parts = [`Сьогодні ${formatMoney(sum.total_uah, 'UAH')}`, purchasesWord(sum.n)];
   const top = sum.by_merchant[0];
   if (top && sum.n > 1) {

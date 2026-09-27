@@ -677,6 +677,7 @@ export const COMMANDS = [
   { command: 'status', description: 'Чи все живе' },
   { command: 'focus', description: 'Не турбувати певний час' },
   { command: 'digest', description: 'Важливе зараз' },
+  { command: 'chains', description: 'Незавершені сценарії' },
   { command: 'clear', description: 'Прибрати останні повідомлення' },
   { command: 'new', description: 'Почати розмову з чистого аркуша' },
   { command: 'forget', description: 'Стерти дані' },

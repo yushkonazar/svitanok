@@ -343,15 +343,20 @@ describe('runDayPlanChain', () => {
     expect(db.prepare(`SELECT status FROM chains`).get()).toEqual({ status: 'done' });
   });
 
-  it('тиша на вечірнє питання: план лише з перенесеного/календаря; без відкритих - «усе закрито», без кнопок', async () => {
+  it('тиша на вечірнє питання: без небажаного порожнього плану, ланцюг чесно закрито', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
     const { step } = fakeStep({});
     const { io, sent, startWorker } = fakeIo(db, chainId);
-    await runDayPlanChain(env, { chainId, date: DATE }, step, io);
-    expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['explain']);
-    expect(sent.at(-1)).toMatchObject({ text: 'З плану 0/0 ✅ - усе закрито.', buttons: [] });
-    expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
+    expect(await runDayPlanChain(env, { chainId, date: DATE }, step, io)).toEqual({
+      outcome: 'no-input',
+    });
+    expect(startWorker).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect((await getDayPlan(env, DATE))?.status).toBe('skipped');
+    expect(db.prepare(`SELECT status FROM chains WHERE id = ?`).get(chainId)).toEqual({
+      status: 'done',
+    });
   });
 });
 

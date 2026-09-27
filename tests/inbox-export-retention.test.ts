@@ -576,6 +576,7 @@ describe('ретенція (07 §1)', () => {
       'proposals',
       'quota_counters',
       'reminders',
+      'run_steps',
       'runs',
       'transactions',
       'voice_pending',
