@@ -15,6 +15,7 @@
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
+import { shouldDeliverProactive } from '../assistant-controls.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
@@ -59,6 +60,9 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
   // Тиха зона власника (та сама, що для нагадувань): підказка чекає
   // наступного тіку у вікні 10:00, а після вікна - тиша до завтра.
   if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
+  // Focus - коротке ручне «не відволікати». Це не тихі години: після його
+  // завершення створені власником нагадування не наздоганяються пачкою.
+  if (!(await shouldDeliverProactive(env, 'nudge', nowMs)).deliver) return { skipped: 'focus' };
 
   const muted = await readMuted(env);
   const hint = await pickHint(env, today, nowMs, muted);

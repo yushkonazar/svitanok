@@ -9,6 +9,7 @@
 import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
+import { shouldDeliverProactive } from '../assistant-controls.mjs';
 import { cleanSource, formatMoney } from '../format.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { kyivDayStartMs, selectSpending, summarize } from './query.mjs';
@@ -63,6 +64,7 @@ export async function financeEveningTask(env, nowMs = Date.now()) {
   }
   // Тиха зона власника - та сама, що для підказок і нагадувань.
   if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
+  if (!(await shouldDeliverProactive(env, 'digest', nowMs)).deliver) return { skipped: 'focus' };
 
   const rows = await selectSpending(env, {
     from: new Date(kyivDayStartMs(nowMs)).toISOString(),

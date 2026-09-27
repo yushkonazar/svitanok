@@ -119,7 +119,7 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
 
   // ⚠️ Побажання власника 08.09: «основні команди додай у Menu Button».
   // Доти кнопка відкривала Mini App, і команди були лише за «/» у полі вводу.
-  it('кнопка-меню показує КОМАНДИ, а меню - рівно вісім плюс /start', async () => {
+  it('кнопка-меню показує КОМАНДИ, включно з керуванням фокусом і digest', async () => {
     await tick();
     expect(bodies.get('setChatMenuButton')).toEqual({ menu_button: { type: 'commands' } });
     const cmds = (bodies.get('setMyCommands') as { commands: { command: string }[] }).commands;
@@ -130,6 +130,8 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
       'remind',
       'brief',
       'status',
+      'focus',
+      'digest',
       'clear',
       'new',
       'forget',

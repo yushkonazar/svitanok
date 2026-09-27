@@ -660,7 +660,7 @@ export function shouldAutoDispatchBrief({
 /**
  * Реєстр для Telegram "/" меню (setMyCommands) — команда без "/" + опис.
  *
- * ⚠️ ВІСІМ, не шістнадцять (реліз 08.09, скарги 2 і 12). Реєстр розрісся, і
+ * ⚠️ Короткий реєстр, не шістнадцять (реліз 08.09, скарги 2 і 12). Реєстр розрісся, і
  * половина рядків дублювала або Mini App (`/stats`, `/jobs`, `/save`,
  * `/roadmap`, `/settings`), або вільний текст (`/agenda`, `/reminders`,
  * `/idea`, `/agent`), або була діагностикою для одного дня (`/whereami`).
@@ -675,6 +675,8 @@ export const COMMANDS = [
   { command: 'remind', description: 'Нагадування: список або нове' },
   { command: 'brief', description: 'Ранковий брифінг зараз' },
   { command: 'status', description: 'Чи все живе' },
+  { command: 'focus', description: 'Не турбувати певний час' },
+  { command: 'digest', description: 'Важливе зараз' },
   { command: 'clear', description: 'Прибрати останні повідомлення' },
   { command: 'new', description: 'Почати розмову з чистого аркуша' },
   { command: 'forget', description: 'Стерти дані' },

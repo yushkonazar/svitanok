@@ -5,7 +5,7 @@
 // дублюють відправки. Збій - ретрай з бекофом до MAX_ATTEMPTS, далі failed
 // (видимий у таблиці, не вічний цикл).
 //
-// kind (07 §1): send · edit · document · contact · venue (два останні -
+// kind (07 §1): send · edit · delete · document · contact · venue (два останні -
 // ланцюг столика, етап 5: sendContact/sendVenue з JSON-тілом як sendMessage).
 // Rich Message = send з parse_mode HTML + кнопки; фолбек - той самий текст
 // без розмітки (isParseEntitiesError).
@@ -17,6 +17,7 @@ import {
   isParseEntitiesError,
   isNotModifiedError,
   isEditTargetGone,
+  isDeleteTargetGone,
   THROTTLE_MS,
   DRAIN_BATCH_LIMIT,
   MAX_ATTEMPTS,
@@ -49,14 +50,14 @@ function db(env) {
  * `parts` - готові частини send (tg/markdown.mjs: текст уже порізано, кожна
  * частина сама несе parse_mode і plain_text для фолбеку; лягають поверх payload).
  * @param {{ chatId: string | number, threadId?: string | number | null,
- *   kind: 'send' | 'edit' | 'document' | 'contact' | 'venue',
+ *   kind: 'send' | 'edit' | 'delete' | 'document' | 'contact' | 'venue',
  *   payload: Record<string, unknown>, editFirstMessageId?: number | null,
  *   parts?: import('./markdown.mjs').MdPart[] }} item
  * @param {number} nowMs
  * @returns {Promise<{ queued: number }>}
  */
 export async function enqueueOutbox(env, item, nowMs) {
-  /** @type {{ kind: 'send' | 'edit' | 'document' | 'contact' | 'venue', payload: Record<string, unknown> }[]} */
+  /** @type {{ kind: 'send' | 'edit' | 'delete' | 'document' | 'contact' | 'venue', payload: Record<string, unknown> }[]} */
   let rows = [{ kind: item.kind, payload: item.payload }];
   if (item.kind === 'send') {
     // Готові частини (deliver: Markdown порізано ДО конвертації в HTML) або
@@ -312,18 +313,22 @@ async function sendRow(env, row) {
     chat_id: row.chat_id,
     // editMessageText адресує повідомлення за message_id; тема йому не
     // потрібна, і статусний шлях її ніколи не передавав.
-    ...(row.kind === 'edit' ? {} : { message_thread_id: row.thread_id ?? undefined }),
+    ...(row.kind === 'edit' || row.kind === 'delete'
+      ? {}
+      : { message_thread_id: row.thread_id ?? undefined }),
   };
   const attempt = (/** @type {Record<string, unknown>} */ body) => {
     if (row.kind === 'document') return tgApi(env, 'sendDocument', documentForm(row, body));
     const method =
-      row.kind === 'edit'
-        ? 'editMessageText'
-        : row.kind === 'contact'
-          ? 'sendContact'
-          : row.kind === 'venue'
-            ? 'sendVenue'
-            : 'sendMessage';
+      row.kind === 'delete'
+        ? 'deleteMessage'
+        : row.kind === 'edit'
+          ? 'editMessageText'
+          : row.kind === 'contact'
+            ? 'sendContact'
+            : row.kind === 'venue'
+              ? 'sendVenue'
+              : 'sendMessage';
     return tgApi(env, method, { ...base, ...body });
   };
 
@@ -350,6 +355,7 @@ async function sendRow(env, row) {
   // isNotModifiedError): інакше ряд пішов би в ретраї й failed на відповіді,
   // яку власник давно бачить.
   if (row.kind === 'edit' && isNotModifiedError(res.status, res.text)) return { ok: true };
+  if (row.kind === 'delete' && isDeleteTargetGone(res.status, res.text)) return { ok: true };
   // Чернетки вже немає (власник стер статусник) - відповідь не сміє зникнути
   // разом із нею: шлемо її новим повідомленням, як робив би deliver без
   // чернетки. Для статусних партіалів прапорця немає, і вони тихо гаснуть -

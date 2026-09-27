@@ -64,6 +64,13 @@ import {
 import { softWaitingLine } from './chains/nudge.mjs';
 import { startInboxExport, tooBig, FILE_MAX_BYTES } from './chains/inbox-export.mjs';
 import { listInboxChats } from './inbox/store.mjs';
+import {
+  disableFocus,
+  enableFocus,
+  focusUntil,
+  formatFocusUntil,
+  parseFocusRequest,
+} from './assistant-controls.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -165,7 +172,8 @@ export function classifyRoute(text) {
  *
  * ⚠️ ЗВІДКИ ЦЕЙ СПИСОК (реліз 08.09, скарги 2 і 12). Реєстр розрісся до
  * шістнадцяти команд, половина з яких дублювала Mini App або вільний текст, а
- * `/plan` узагалі ходив старим шляхом і відповідав не те. Лишились вісім - ті,
+ * `/plan` узагалі ходив старим шляхом і відповідав не те. Лишився короткий
+ * реєстр - ті,
  * що або роблять щось, чого текстом не скажеш (`/clear`, `/new`), або є
  * входом у небезпечне (`/forget`), або відповідають швидше за прогін
  * (`/status`, `/help`). Решта живе вільним текстом і в Mini App.
@@ -181,13 +189,15 @@ export function parseNewCommand(text) {
   return { cmd: parsed.cmd, args: parsed.args.trim() };
 }
 
-/** Вісім команд і те, що вони роблять - джерело і для /help, і для меню Telegram. */
+/** Команди і те, що вони роблять - джерело для /help і меню Telegram. */
 export const NEW_COMMANDS = [
   { command: 'help', description: 'Що я вмію' },
   { command: 'plan', description: 'План на день' },
   { command: 'remind', description: 'Нагадування: список або нове' },
   { command: 'brief', description: 'Ранковий брифінг зараз' },
   { command: 'status', description: 'Чи все живе' },
+  { command: 'focus', description: 'Не турбувати певний час' },
+  { command: 'digest', description: 'Важливе зараз' },
   { command: 'clear', description: 'Прибрати останні повідомлення' },
   { command: 'new', description: 'Почати розмову з чистого аркуша' },
   { command: 'forget', description: 'Стерти дані' },
@@ -196,7 +206,17 @@ export const NEW_COMMANDS = [
 /** Швидкий відсів для parseNewCommand. `/ready` - непублічний сумісний alias
  * `/status`: люди природно вводять його після curl /ready на VPS, але в
  * Telegram він має показати діагностику системи, а не стару заглушку. */
-const NEW_COMMAND_NAMES = new Set(['help', 'plan', 'remind', 'status', 'ready', 'new', 'forget']);
+const NEW_COMMAND_NAMES = new Set([
+  'help',
+  'plan',
+  'remind',
+  'status',
+  'ready',
+  'focus',
+  'digest',
+  'new',
+  'forget',
+]);
 
 const HELP_TEXT = [
   'Пиши як людині - командою майже нічого не треба.',
@@ -298,6 +318,39 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     }
     if (cmd.cmd === 'status' || cmd.cmd === 'ready') {
       await send(await systemStatusLine(env, target));
+      return true;
+    }
+    if (cmd.cmd === 'focus') {
+      const request = parseFocusRequest(cmd.args, nowMs);
+      if (request.kind === 'error') {
+        await send(`🎯 ${request.message}`);
+        return true;
+      }
+      try {
+        if (request.kind === 'off') {
+          const changed = await disableFocus(env, nowMs);
+          await send(
+            changed
+              ? '🎯 Фокус вимкнено. Автоматичні корисні повідомлення знову надходитимуть.'
+              : '🎯 Фокус уже був вимкнений.',
+          );
+          return true;
+        }
+        const untilMs = await enableFocus(env, request.untilMs, nowMs);
+        await send(
+          [
+            `🎯 Фокус до ${formatFocusUntil(untilMs)}.`,
+            'Некритичні автоматичні повідомлення призупинено. Твої нагадування й аварійні алерти залишаються.',
+          ].join('\n'),
+        );
+      } catch (/** @type {any} */ e) {
+        console.error('prerouter: /focus не збережено', e?.message);
+        await send('⚠️ Не вдалося змінити фокус. Спробуй ще раз трохи пізніше.');
+      }
+      return true;
+    }
+    if (cmd.cmd === 'digest') {
+      await send(await actionDigest(env, nowMs));
       return true;
     }
     // /plan і /remind - той самий шлях, що вільний текст: інакше вони жили б
@@ -2261,6 +2314,7 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   const queued = Object.values(threads).reduce((n, t) => n + t.queue.length, 0);
   const brain = await brainHealthSnapshot(env, nowMs);
   const instructions = await instructionsStatusLine(env);
+  const focus = await focusUntil(env, nowMs);
   const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
   const modelReady = brain.modelReadiness?.state === 'ready';
   const alive =
@@ -2272,12 +2326,88 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
     formatBrainStatus(brain),
     formatModelReadiness(brain),
     await lastSuccessfulRunStatusLine(env, nowMs),
+    focus == null
+      ? 'Фокус: вимкнено.'
+      : `Фокус: 🎯 до ${formatFocusUntil(focus)} · некритичні авто-повідомлення призупинено.`,
     `Режим асистента: ${env.ASSISTANT_V2}`,
   ];
   if (where.chatId != null) {
     lines.push(`Чат: ${where.chatId}${where.threadId != null ? ` · тема ${where.threadId}` : ''}`);
   }
   return lines.join(String.fromCharCode(10));
+}
+
+/**
+ * Ручне «що важливе зараз». Це не LLM-дайджест і не читає вміст чужих чатів:
+ * показує тільки власні незавершені дії, тому приходить одразу і працює навіть
+ * коли модель зайнята. Автоматичний inbox digest лишається окремим сценарієм.
+ * @param {Env} env @param {number} nowMs
+ */
+export async function actionDigest(env, nowMs = Date.now()) {
+  const horizonMs = nowMs + 24 * 60 * 60_000;
+  const reminders = await activeRemindersForList(env).catch((/** @type {any} */ e) => {
+    console.error('prerouter: /digest не прочитав нагадування', e?.message);
+    return [];
+  });
+  const soon = reminders
+    .filter((r) => Number.isFinite(Number(r?.whenMs)) && Number(r.whenMs) <= horizonMs)
+    .slice(0, 3);
+  /** @type {{ chains: number, proposals: number }} */
+  let pending = { chains: 0, proposals: 0 };
+  if (env.DB) {
+    try {
+      const [chains, proposals] = await Promise.all([
+        env.DB.prepare(
+          "SELECT count(*) AS n FROM chains WHERE status IN ('running', 'waiting')",
+        ).first(),
+        env.DB.prepare(
+          "SELECT count(*) AS n FROM proposals WHERE status = 'open' AND expires_at > ?",
+        )
+          .bind(new Date(nowMs).toISOString())
+          .first(),
+      ]);
+      pending = { chains: Number(chains?.n ?? 0), proposals: Number(proposals?.n ?? 0) };
+    } catch (/** @type {any} */ e) {
+      // Старий rollback без однієї з таблиць не робить /digest брехнею: він
+      // просто показує те, що зміг прочитати (нагадування).
+      console.error('prerouter: /digest не прочитав черги дій', e?.message);
+    }
+  }
+  const lines = ['📬 Важливе зараз'];
+  if (soon.length) {
+    lines.push('', `⏰ Нагадування найближчої доби (${soon.length}):`);
+    for (const reminder of soon) {
+      lines.push(
+        `• ${compactDigestText(String(reminder?.text ?? 'Нагадування'))} — ${digestWhen(Number(reminder.whenMs), nowMs)}`,
+      );
+    }
+  }
+  if (pending.chains > 0) lines.push(`🔗 Незавершені сценарії: ${pending.chains}.`);
+  if (pending.proposals > 0) lines.push(`✅ Чекають твого підтвердження: ${pending.proposals}.`);
+  if (lines.length === 1) lines.push('', 'Термінових або незавершених дій зараз немає.');
+  return lines.join('\n');
+}
+
+/** @param {string} text */
+function compactDigestText(text) {
+  const clean = text
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clean.length > 90 ? `${clean.slice(0, 87).trimEnd()}…` : clean || 'Нагадування';
+}
+
+/** @param {number} atMs @param {number} nowMs */
+function digestWhen(atMs, nowMs) {
+  if (atMs <= nowMs) return 'прострочено';
+  const minutes = Math.ceil((atMs - nowMs) / 60_000);
+  if (minutes < 60) return `за ${minutes} хв`;
+  const time = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(atMs));
+  return minutes < 24 * 60 ? `сьогодні о ${time}` : `завтра о ${time}`;
 }
 
 /** @param {{ state: string, detail: string, checkedAtMs?: number, ageMs?: number }} brain */

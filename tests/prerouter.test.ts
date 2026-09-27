@@ -58,7 +58,7 @@ describe('classifyRoute (N3)', () => {
 });
 
 describe('parseNewCommand', () => {
-  it('вісім команд і сумісний /ready ловляться (і з @botname), решта - ні', () => {
+  it('команди керування й сумісний /ready ловляться (і з @botname), решта - ні', () => {
     expect(parseNewCommand('/new')).toEqual({ cmd: 'new', args: '' });
     expect(parseNewCommand('/status@svitanok_bot')).toEqual({ cmd: 'status', args: '' });
     expect(parseNewCommand('/ready')).toEqual({ cmd: 'ready', args: '' });
@@ -66,6 +66,8 @@ describe('parseNewCommand', () => {
       cmd: 'remind',
       args: 'через 20 хв полити квіти',
     });
+    expect(parseNewCommand('/focus 2 год')).toEqual({ cmd: 'focus', args: '2 год' });
+    expect(parseNewCommand('/digest')).toEqual({ cmd: 'digest', args: '' });
     // Прибрані команди падають у легасі, а не мовчать (скарги 2 і 12).
     for (const gone of ['/idea щось', '/wish', '/money', '/inbox', '/agenda', '/reminders'])
       expect(parseNewCommand(gone), gone).toBeNull();
@@ -98,6 +100,8 @@ describe('parseNewCommand', () => {
       'remind',
       'brief',
       'status',
+      'focus',
+      'digest',
       'clear',
       'new',
       'forget',
@@ -108,7 +112,16 @@ describe('parseNewCommand', () => {
     const byNewPath = NEW_COMMANDS.filter((c) => parseNewCommand(`/${c.command}`) !== null).map(
       (c) => c.command,
     );
-    expect(byNewPath).toEqual(['help', 'plan', 'remind', 'status', 'new', 'forget']);
+    expect(byNewPath).toEqual([
+      'help',
+      'plan',
+      'remind',
+      'status',
+      'focus',
+      'digest',
+      'new',
+      'forget',
+    ]);
     // /ready - alias /status, навмисно не засмічує меню і /help.
     expect(parseNewCommand('/ready')).toEqual({ cmd: 'ready', args: '' });
     // /brief і /clear лишились у легасі - там у них уже є робочі обробники.
@@ -497,6 +510,24 @@ describe('prerouteMessage: нові команди', () => {
     const kb = (forgetMsg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] })
       .inline_keyboard;
     expect(kb.at(-1)![0]!.callback_data).toBe('m:fga');
+    expect(brain).toHaveLength(0);
+  });
+
+  it('/focus пише тимчасове налаштування, а /digest дає локальне зведення без прогону моделі', async () => {
+    const reg = makeRegistryStub();
+    const { tg, brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+
+    expect(await prerouteMessage(env, parsedMsg('/focus 30 хв'), NOW)).toBe(true);
+    const focus = d1.db
+      .prepare("SELECT value_json FROM facts WHERE kind = 'setting' AND key = 'assistant_focus'")
+      .get() as { value_json: string };
+    expect(JSON.parse(focus.value_json)).toEqual({ until_ms: NOW + 30 * 60_000 });
+    expect(tg.some((c) => String(c.body.text).includes('Фокус до'))).toBe(true);
+
+    expect(await prerouteMessage(env, parsedMsg('/digest'), NOW + 1)).toBe(true);
+    expect(tg.some((c) => String(c.body.text).includes('Важливе зараз'))).toBe(true);
     expect(brain).toHaveLength(0);
   });
 

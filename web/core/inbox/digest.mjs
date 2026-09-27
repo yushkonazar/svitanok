@@ -17,6 +17,7 @@ import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
 import { startOrQueueThreadText, THREAD_DM } from '../prerouter.mjs';
 import { readBusinessState } from './connection.mjs';
+import { shouldDeliverProactive } from '../assistant-controls.mjs';
 
 /** Ключ налаштування-вимикача (07 §5). */
 export const DIGEST_SETTING_KEY = 'inbox_digest';
@@ -77,6 +78,9 @@ export async function inboxDigestTask(env, nowMs = Date.now()) {
   if (minuteOfDay < target || minuteOfDay > target + WINDOW_MIN) return { skipped: 'window' };
   const today = kyivDateKey(now);
   if ((await env.BRIEFING.get(DIGEST_MARKER_KEY)) === today) return { skipped: 'done' };
+  // Ранковий дайджест - автоматичний, тому поважає тимчасовий focus. Ручна
+  // команда /digest працює окремо й ніколи не проходить цей гейт.
+  if (!(await shouldDeliverProactive(env, 'digest', nowMs)).deliver) return { skipped: 'focus' };
 
   const state = await readBusinessState(env);
   if (!state?.enabled) {

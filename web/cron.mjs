@@ -47,6 +47,7 @@ import {
   WEEKLY_ARCHIVE_KEY,
 } from './stats-archive.mjs';
 import { isQuietMinute } from './settings-core.mjs';
+import { shouldDeliverProactive } from './core/assistant-controls.mjs';
 import { MIN_DISPATCH_GAP_MS, shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
 import { loadState, loadStats, loadSettings, updateStats, updateState } from './kv-store.mjs';
@@ -575,7 +576,11 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   const win = matchCheckinNudgeWindow(minuteOfDay);
   if (!win) return;
 
-  const [settings, store] = await Promise.all([loadSettings(env), loadStats(env)]);
+  const [settings, store, attention] = await Promise.all([
+    loadSettings(env),
+    loadStats(env),
+    shouldDeliverProactive(env, 'nudge'),
+  ]);
   const today = kyivDateKey();
   const dateKey = checkinDateKey(today, kyivHour());
   const due = shouldSendCheckinNudge({
@@ -586,7 +591,7 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
     // `{}`, і нудж на добу зникав. Тепер предикат ОДИН на весь проєкт.
     slotFilled: isCheckinSlotFilled(store.checkins?.[dateKey], win.slot),
   });
-  if (!due) return;
+  if (!due || !attention.deliver) return;
 
   await tgCall(env, 'sendMessage', {
     chat_id: env.TELEGRAM_CHAT_ID,
@@ -645,12 +650,15 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
   // 2) Нове нагадування — лише у вікні (23:00–02:00) і лише раз за ніч.
   let newNudge = null;
   if (inSleepNudgeWindow(minuteOfDay)) {
-    const settings = await loadSettings(env);
+    const [settings, attention] = await Promise.all([
+      loadSettings(env),
+      shouldDeliverProactive(env, 'nudge'),
+    ]);
     const due = shouldSendSleepNudge({
       quiet: isQuietMinute(settings, minuteOfDay),
       alreadySentTonight: store.sleepLog?.[nightKey]?.nudgeMsgId != null,
     });
-    if (due) {
+    if (due && attention.deliver) {
       const res = await tgCall(env, 'sendMessage', {
         chat_id: env.TELEGRAM_CHAT_ID,
         message_thread_id: env.TOPIC_ASSISTANT ?? undefined,

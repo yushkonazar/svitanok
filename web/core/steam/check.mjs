@@ -16,6 +16,7 @@
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
+import { shouldDeliverProactive } from '../assistant-controls.mjs';
 import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
 import { formatMoney, cleanSource } from '../format.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
@@ -411,6 +412,7 @@ export async function steamCheckTask(env, nowMs = Date.now()) {
     }
     // Тиха зона власника - та сама, що для підказок і нагадувань.
     if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
+    if (!(await shouldDeliverProactive(env, 'action', nowMs)).deliver) return { skipped: 'focus' };
 
     const wishes = await listGameWishes(env);
     if (!wishes.length) {

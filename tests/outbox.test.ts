@@ -10,6 +10,7 @@ import {
   splitMessage,
   nextAttemptAt,
   isParseEntitiesError,
+  isDeleteTargetGone,
   TG_TEXT_LIMIT,
   MAX_ATTEMPTS,
 } from '../web/core/tg/outbox-core.mjs';
@@ -42,6 +43,10 @@ function d1() {
           // @ts-expect-error те саме для all
           results: db.prepare(sql).all(...args),
         }),
+        first: async () => {
+          // @ts-expect-error те саме для first
+          return db.prepare(sql).get(...args) ?? null;
+        },
       }),
     }),
   };
@@ -84,6 +89,12 @@ describe('outbox-core — чиста логіка', () => {
     expect(isParseEntitiesError(400, "Bad Request: can't parse entities")).toBe(true);
     expect(isParseEntitiesError(400, 'Bad Request: chat not found')).toBe(false);
     expect(isParseEntitiesError(429, "can't parse entities")).toBe(false);
+  });
+
+  it('isDeleteTargetGone: чернетку вже стерли - це успішний desired state', () => {
+    expect(isDeleteTargetGone(400, 'Bad Request: message to delete not found')).toBe(true);
+    expect(isDeleteTargetGone(400, 'Bad Request: chat not found')).toBe(false);
+    expect(isDeleteTargetGone(429, 'message to delete not found')).toBe(false);
   });
 });
 
@@ -294,6 +305,18 @@ describe('outbox — enqueue і drain', () => {
     expect(rowsOf(store).map((r) => r.status)).toEqual(['sent', 'sent']);
   });
 
+  it('delete прибирає службову чернетку через deleteMessage без thread id', async () => {
+    vi.stubGlobal('fetch', tgOk());
+    await enqueueOutbox(
+      env,
+      { chatId: '-100', threadId: '99', kind: 'delete', payload: { message_id: 42 } },
+      NOW,
+    );
+    await drainOutbox(env, { nowMs: NOW + 100, sleep: noSleep });
+    expect(String(calls[0]?.url)).toContain('/deleteMessage');
+    expect(calls[0]?.body).toEqual({ chat_id: '-100', message_id: 42 });
+  });
+
   it('документ іде multipart-ом на sendDocument', async () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, body: init?.body ?? null });
@@ -474,6 +497,20 @@ describe('deliver/status через router', () => {
     // editMessageText адресує повідомлення за id: тема тут зайва (той самий
     // виклик, що робить статусник).
     expect(sends[0]?.body.message_thread_id).toBeUndefined();
+  });
+
+  it('порожній автоматичний inbox digest прибирає чернетку й не пише «нічого важливого»', async () => {
+    store.raw.exec('CREATE TABLE runs (id TEXT PRIMARY KEY, profile TEXT)');
+    store.raw.prepare("INSERT INTO runs (id, profile) VALUES ('r1', 'inbox-digest')").run();
+    const res = await handleInternal(
+      await signedRequest('/internal/deliver', { text: 'нічого важливого' }, 'n-empty-digest'),
+      envWithDraft(634),
+      NOW,
+    );
+    expect(await res.json()).toMatchObject({ ok: true, suppressed: 'nothing-important' });
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.url).toContain('/deleteMessage');
+    expect(sends[0]?.body).toEqual({ chat_id: '-100', message_id: 634 });
   });
 
   it('деліверу довшого за 4096: перша частина в чернетку, решта - окремі повідомлення', async () => {

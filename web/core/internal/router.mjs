@@ -24,7 +24,7 @@ import { IMAGE_USD, VIDEO_DEFAULT_SECONDS, videoUsd } from '../adapters/gemini.m
 import { writeMemoryChunks } from '../memory.mjs';
 import { readRunProfile, saveWeeklyReport } from '../brain/weekly-review.mjs';
 import { reportButtons } from '../links.mjs';
-import { saveInboxDigest } from '../inbox/digest.mjs';
+import { NOTHING_RE, saveInboxDigest } from '../inbox/digest.mjs';
 import { sendChainEvent } from '../chains/registry.mjs';
 import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
 import { loadInstruction } from '../instructions.mjs';
@@ -333,6 +333,27 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // шматок («2 494,24 (14 672») плюс повну відповідь окремо. Розбиття довгої
   // відповіді й порядок частин лишаються в enqueueOutbox.
   const draftId = info?.statusMessageId ?? null;
+  // Профіль читаємо до доставки: inbox-digest за контрактом сам відповідає
+  // «нічого важливого», коли повідомляти нема про що. Це транспортний маркер,
+  // а не результат для власника: прибираємо чернетку «Беруся…» і не створюємо
+  // автоматичний шум. Ручні відповіді власника цим правилом не зачіпаються.
+  const profile = await readRunProfile(env, runId).catch(() => null);
+  if (profile === 'inbox-digest' && NOTHING_RE.test(body.text)) {
+    if (draftId != null) {
+      await dropPendingEdits(env, target.chatId, draftId);
+      await enqueueOutbox(
+        env,
+        {
+          chatId: target.chatId,
+          kind: 'delete',
+          payload: { message_id: draftId },
+        },
+        nowMs,
+      );
+      await scheduleDrain(env, ctx, nowMs);
+    }
+    return json({ ok: true, queued: draftId == null ? 0 : 1, suppressed: 'nothing-important' });
+  }
   // Результат працівника (S-7-1): рядок у reports ДО відправки, бо кнопки
   // несуть його id; довгий - файлом одразу (кнопки .md тоді немає) + Drive.
   /** @type {{ id: string, name: string, text: string } | null} */
@@ -357,9 +378,8 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   }
   const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
-  // Профіль читаємо ДО відправки: під тижневим звітом мають стояти кнопки
+  // Профіль уже прочитано до відправки: під тижневим звітом мають стояти кнопки
   // «що з цим робити» (PR-6 §2.5), а прикріпити їх можна лише разом із текстом.
-  const profile = await readRunProfile(env, runId).catch(() => null);
   const buttons = [
     ...(body.buttons ?? []),
     ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),

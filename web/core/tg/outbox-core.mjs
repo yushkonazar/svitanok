@@ -101,3 +101,16 @@ export function isNotModifiedError(status, description) {
 export function isEditTargetGone(status, description) {
   return status === 400 && /message to edit not found|message can't be edited/i.test(description);
 }
+
+/**
+ * Видалення службової чернетки ідемпотентне для нас: якщо власник уже стер
+ * її сам, бажаний стан («чернетки нема») досягнуто. Без цього косметичний
+ * delete займав би вісім ретраїв і лишав false-positive failed row.
+ * @param {number} status
+ * @param {string} description
+ */
+export function isDeleteTargetGone(status, description) {
+  return (
+    status === 400 && /message to delete not found|message can't be deleted/i.test(description)
+  );
+}

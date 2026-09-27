@@ -86,7 +86,7 @@ describe('/agent — перелік можливостей асистента (P
 
   // ⚠️ Від 08.09 /agent у меню немає (реліз, скарга 2): «що вміє асистент» -
   // це /help, а обробник /agent лишився для тих, хто набере руками.
-  it('COMMANDS реєструє рівно вісім команд плюс /start', () => {
+  it('COMMANDS реєструє коротке меню, включно з /focus і /digest', () => {
     expect(COMMANDS.map((c: { command: string }) => c.command)).toEqual([
       'start',
       'help',
@@ -94,6 +94,8 @@ describe('/agent — перелік можливостей асистента (P
       'remind',
       'brief',
       'status',
+      'focus',
+      'digest',
       'clear',
       'new',
       'forget',

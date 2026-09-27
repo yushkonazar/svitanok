@@ -11,6 +11,7 @@ import { kyivDateKey } from '../../kyiv-time.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { chainTarget, db } from './state.mjs';
 import { CHAIN_KIND, NUDGE_SECOND_MS, NUDGES_MAX } from './table.mjs';
+import { shouldDeliverProactive } from '../assistant-controls.mjs';
 
 /** @typedef {{ id: string, venue: string, n: number, awaiting: string | null, chat_id: string | null, thread_id: string | null }} DueNudge */
 
@@ -83,6 +84,10 @@ function askOf(awaiting) {
  */
 export async function chainNudgeTask(env, nowMs = Date.now()) {
   if (!env.DB) return { sent: 0, skipped: 'no-db' };
+  // Перевірка ПЕРЕД claim: інакше focus з'їв би одну з двох спроб нагадати.
+  if (!(await shouldDeliverProactive(env, 'nudge', nowMs)).deliver) {
+    return { sent: 0, skipped: 'focus' };
+  }
   const due = await dueNudges(env, nowMs);
   if (due.length === 0) return { sent: 0 };
   const taken = await claimNudges(env, due, nowMs);
