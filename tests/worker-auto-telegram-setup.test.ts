@@ -10,8 +10,8 @@ import { workerEnv } from './helpers/env.js';
  * Гейт на env.MINI_APP_URL (Worker-секрет, той самий origin, що вже є в
  * оркестраторі) — поза HTTP-запитом (тут — крон) немає request.url, звідки
  * інакше береться origin. Усі кроки runTelegramSetup ідемпотентні, тож
- * щоденний повтор безпечний (self-healing) — перевіряємо саме це: перший тік
- * дня реєструє, другий тік того самого дня — no-op, наступний день — знову.
+ * щоденний повтор безпечний (self-healing). Версія setup також змушує перший
+ * тік після зміни меню зареєструвати його одразу, не чекаючи нової доби.
  *
  * Той самий стиль, що worker-agenda.test.ts: справжній worker.scheduled,
  * стаб fetch, ФІКСОВАНИЙ годинник (vi.useFakeTimers) — інакше тест сам стане
@@ -104,7 +104,7 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
     expect(setupCalls()).toHaveLength(0);
   });
 
-  it('перший тік дня — реєструє вебхук/меню/профіль/кнопку і ставить дату', async () => {
+  it('перший тік дня — реєструє вебхук/меню/профіль/кнопку і ставить маркер', async () => {
     const e = await tick();
     expect(setupCalls()).toEqual([
       'setWebhook',
@@ -113,28 +113,31 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
       'setMyShortDescription',
       'setChatMenuButton',
     ]);
-    expect(JSON.parse(kv.get('state') ?? '{}').telegramSetupDate).toBe('2026-07-27');
+    expect(JSON.parse(kv.get('state') ?? '{}')).toMatchObject({
+      telegramSetupDate: '2026-07-27',
+      telegramSetupVersion: '2026-09-28-command-menu-v2',
+    });
     void e;
   });
 
   // ⚠️ Побажання власника 08.09: «основні команди додай у Menu Button».
   // Доти кнопка відкривала Mini App, і команди були лише за «/» у полі вводу.
-  it('кнопка-меню показує КОМАНДИ, включно з фокусом, digest і сценаріями', async () => {
+  it('кнопка-меню показує актуальні команди, включно з digest, сценаріями й /ready', async () => {
     await tick();
     expect(bodies.get('setChatMenuButton')).toEqual({ menu_button: { type: 'commands' } });
     const cmds = (bodies.get('setMyCommands') as { commands: { command: string }[] }).commands;
     expect(cmds.map((c) => c.command)).toEqual([
       'start',
       'help',
+      'digest',
       'plan',
       'remind',
-      'brief',
-      'status',
-      'focus',
-      'digest',
       'chains',
-      'clear',
+      'focus',
+      'ready',
+      'brief',
       'new',
+      'clear',
       'forget',
     ]);
   });
@@ -146,12 +149,27 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
     expect(setupCalls()).toHaveLength(0);
   });
 
+  it('після зміни версії того самого дня — оновлює меню один раз', async () => {
+    kv.set(
+      'state',
+      JSON.stringify({ telegramSetupDate: '2026-07-27', telegramSetupVersion: 'old-command-menu' }),
+    );
+    await tick();
+    expect(setupCalls()).toHaveLength(5);
+    expect(JSON.parse(kv.get('state') ?? '{}').telegramSetupVersion).toBe(
+      '2026-09-28-command-menu-v2',
+    );
+  });
+
   it('наступний день — реєструє знову (щоденний self-healing)', async () => {
     await tick();
     vi.setSystemTime(new Date('2026-07-28T09:00:00Z'));
     calls.length = 0;
     await tick();
     expect(setupCalls()).toHaveLength(5);
-    expect(JSON.parse(kv.get('state') ?? '{}').telegramSetupDate).toBe('2026-07-28');
+    expect(JSON.parse(kv.get('state') ?? '{}')).toMatchObject({
+      telegramSetupDate: '2026-07-28',
+      telegramSetupVersion: '2026-09-28-command-menu-v2',
+    });
   });
 });

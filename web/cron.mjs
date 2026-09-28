@@ -192,15 +192,25 @@ export async function runTelegramSetup(/** @type {Env} */ env, /** @type {string
  * пропускається — ручний curl (README) лишається робочим фолбеком.
  *
  * Раз на добу — той самий "остання дата" ідіом, що dispatch.lastAutoDate.
+ * Версія setup дає змозі новому релізу відразу оновити Telegram-команди й
+ * клавіатуру, не чекаючи наступної календарної доби. Після цього знову
+ * працює щоденний self-healing.
  */
+export const TELEGRAM_SETUP_VERSION = '2026-09-28-command-menu-v2';
+
 export async function autoTelegramSetup(/** @type {Env} */ env) {
   if (!env.MINI_APP_URL || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) return;
   const today = kyivDateKey();
   const state = await loadState(env);
-  if (state.telegramSetupDate === today) return;
+  if (state.telegramSetupDate === today && state.telegramSetupVersion === TELEGRAM_SETUP_VERSION)
+    return;
   const origin = env.MINI_APP_URL.replace(/\/+$/, '');
   await runTelegramSetup(env, origin);
-  await updateState(env, (s) => ({ ...s, telegramSetupDate: today }));
+  await updateState(env, (s) => ({
+    ...s,
+    telegramSetupDate: today,
+    telegramSetupVersion: TELEGRAM_SETUP_VERSION,
+  }));
 }
 
 /**

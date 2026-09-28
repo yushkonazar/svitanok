@@ -75,8 +75,10 @@ describe('parseNewCommand', () => {
     expect(parseNewCommand('текст /new усередині')).toBeNull();
     // Лейбли reply-клавіатури - ті самі команди: інакше тап по паду йшов би в
     // мозок вільним текстом і коштував прогону там, де є готова відповідь.
+    expect(parseNewCommand('📋 Важливе зараз')).toEqual({ cmd: 'digest', args: '' });
     expect(parseNewCommand('⏰ Нагадування')).toEqual({ cmd: 'remind', args: '' });
     expect(parseNewCommand('🧭 План дня')).toEqual({ cmd: 'plan', args: '' });
+    expect(parseNewCommand('🔗 Сценарії')).toEqual({ cmd: 'chains', args: '' });
     expect(parseNewCommand('❓ Що я вмію')).toEqual({ cmd: 'help', args: '' });
     // «Брифінг» лишився в легасі - новий шлях його не перехоплює.
     expect(parseNewCommand('🔄 Брифінг')).toBeNull();
@@ -96,15 +98,15 @@ describe('parseNewCommand', () => {
   it('реєстр /help і меню Telegram - один список', () => {
     expect(NEW_COMMANDS.map((c) => c.command)).toEqual([
       'help',
+      'digest',
       'plan',
       'remind',
-      'brief',
-      'status',
-      'focus',
-      'digest',
       'chains',
-      'clear',
+      'focus',
+      'ready',
+      'brief',
       'new',
+      'clear',
       'forget',
     ]);
     // ⚠️ Поіменно, а не «null або збіг» (ревʼю релізу: та умова була істинна
@@ -115,17 +117,18 @@ describe('parseNewCommand', () => {
     );
     expect(byNewPath).toEqual([
       'help',
+      'digest',
       'plan',
       'remind',
-      'status',
-      'focus',
-      'digest',
       'chains',
+      'focus',
+      'ready',
       'new',
       'forget',
     ]);
-    // /ready - alias /status, навмисно не засмічує меню і /help.
+    // /status - сумісний alias /ready; він навмисно не дублює меню і /help.
     expect(parseNewCommand('/ready')).toEqual({ cmd: 'ready', args: '' });
+    expect(parseNewCommand('/status')).toEqual({ cmd: 'status', args: '' });
     // /brief і /clear лишились у легасі - там у них уже є робочі обробники.
     for (const legacyOnly of ['brief', 'clear']) {
       expect(parseNewCommand(`/${legacyOnly}`), legacyOnly).toBeNull();

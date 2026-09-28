@@ -192,22 +192,21 @@ export function parseNewCommand(text) {
 
 /** Команди і те, що вони роблять - джерело для /help і меню Telegram. */
 export const NEW_COMMANDS = [
-  { command: 'help', description: 'Що я вмію' },
-  { command: 'plan', description: 'План на день' },
-  { command: 'remind', description: 'Нагадування: список або нове' },
-  { command: 'brief', description: 'Ранковий брифінг зараз' },
-  { command: 'status', description: 'Чи все живе' },
-  { command: 'focus', description: 'Не турбувати певний час' },
-  { command: 'digest', description: 'Важливе зараз' },
-  { command: 'chains', description: 'Незавершені сценарії' },
-  { command: 'clear', description: 'Прибрати останні повідомлення' },
+  { command: 'help', description: 'Приклади запитів і можливості' },
+  { command: 'digest', description: 'Важливі незавершені справи' },
+  { command: 'plan', description: 'Скласти план на день' },
+  { command: 'remind', description: 'Список або нове нагадування' },
+  { command: 'chains', description: 'Активні поїздки й сценарії' },
+  { command: 'focus', description: 'Тиша для некритичних повідомлень' },
+  { command: 'ready', description: 'Готовність системи й підключень' },
+  { command: 'brief', description: 'Зібрати брифінг зараз' },
   { command: 'new', description: 'Почати розмову з чистого аркуша' },
+  { command: 'clear', description: 'Прибрати останні повідомлення' },
   { command: 'forget', description: 'Стерти дані' },
 ];
 
-/** Швидкий відсів для parseNewCommand. `/ready` - непублічний сумісний alias
- * `/status`: люди природно вводять його після curl /ready на VPS, але в
- * Telegram він має показати діагностику системи, а не стару заглушку. */
+/** Швидкий відсів для parseNewCommand. `/ready` - публічна коротка перевірка
+ * готовності; `/status` лишається сумісним ручним alias, але не дублює меню. */
 const NEW_COMMAND_NAMES = new Set([
   'help',
   'plan',
