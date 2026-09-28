@@ -177,7 +177,10 @@ describe('invite', () => {
       endIso: '2026-09-07T18:00:00.000Z',
       attendees: ['Хтось'],
     });
-    expect(none).toMatchObject({ ok: false, error: expect.stringContaining('жодного email') });
+    expect(none).toMatchObject({
+      ok: false,
+      error: 'Не бачу жодної адреси email для запрошення.',
+    });
   });
 });
 

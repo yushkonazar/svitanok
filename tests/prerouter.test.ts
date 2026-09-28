@@ -418,7 +418,7 @@ describe('prerouteMessage: режими', () => {
 
     expect(await prerouteMessage(env, parsedMsg('v2: привіт, як справи?'), NOW)).toBe(true);
     expect(tg[0]!.method).toBe('sendMessage');
-    expect(tg[0]!.body.text).toBe('▸ Беруся…');
+    expect(tg[0]!.body.text).toBe('⏳ Запит прийняв — беруся…');
     expect(brain).toHaveLength(1);
     expect(brain[0]!.path).toBe('/run');
     expect(brain[0]!.body).toMatchObject({
@@ -440,7 +440,8 @@ describe('prerouteMessage: режими', () => {
     expect(brain).toHaveLength(1);
     // Черга - це EDIT статусника (не вічне повідомлення-сирота, ревʼю PR-3).
     const queueEdit = tg.find(
-      (c) => c.method === 'editMessageText' && String(c.body.text).includes('Дійду за 1'),
+      (c) =>
+        c.method === 'editMessageText' && String(c.body.text).includes('У черзі: перед тобою 1'),
     );
     expect(queueEdit).toBeDefined();
     // Його id збережено в queue-entry для reuse при підйомі.
@@ -654,7 +655,36 @@ describe('prerouteMessage: нові команди', () => {
     const line = await systemStatusLine(env, {}, NOW);
     expect(line).not.toContain('✅ Усе живе.');
     expect(line).toContain('Бекап: ❌ заблоковано');
-    expect(line).toContain('Брифінг: ⚠️ потребує дії');
+    expect(line).toContain('Брифінг: ⚠️ потрібен GitHub Actions secret OPENAI_API_KEY');
+  });
+
+  it('/status називає старий telemetry-ліміт історичною причиною, а не вдає нескінченне відновлення', async () => {
+    const reg = makeRegistryStub();
+    const kv = new Map([
+      [
+        'brainHealthState',
+        JSON.stringify({
+          state: 'ok',
+          detail: '1.0.0 @ same-sha',
+          checkedAtMs: NOW,
+          modelReadiness: { state: 'ready', detail: 'моделі: gpt-6-sol' },
+        }),
+      ],
+      [
+        'backupState',
+        JSON.stringify({
+          date: '2026-09-27',
+          blocked: true,
+          lastError: 'таблиця runs понад 50000 рядків — потрібна окрема міграція даних',
+        }),
+      ],
+    ]);
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    (env as { BRIEFING: unknown }).BRIEFING = { get: async (key: string) => kv.get(key) ?? null };
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).toContain('старий telemetry-ліміт');
+    expect(line).toContain('наступна планова спроба');
+    expect(line).not.toContain('триває відновлення');
   });
 
   it('/remind без аргументів - список нагадувань, без прогону мозку', async () => {
@@ -1118,6 +1148,45 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     const env = makeEnv(makeRegistryStub(), d1.stub);
     return { env, db: d1.db, tg };
   };
+
+  it('m:q:60 підтверджує вибір чипом і продовжує цей самий тред без нового тексту від власника', async () => {
+    const { env, tg } = cbEnv();
+    const deferred: (() => Promise<void>)[] = [];
+    const toast = await handleBrainCallback(
+      env,
+      {
+        data: 'm:q:60',
+        chatId: 555,
+        messageId: 42,
+        threadId: 99,
+        replyMarkup: {
+          inline_keyboard: [[{ text: '🕐 1 год', callback_data: 'm:q:60' }]],
+        },
+      },
+      NOW,
+      (work) => deferred.push(work),
+    );
+    expect(toast).toBe('Обрано: 1 год');
+    expect(deferred).toHaveLength(1);
+    expect(tg.find((c) => c.method === 'editMessageReplyMarkup')?.body.reply_markup).toEqual({
+      inline_keyboard: [[{ text: '✅ 🕐 1 год', callback_data: 'm:done' }]],
+    });
+  });
+
+  it('m:q:custom лишає явний запит на свою тривалість і не стартує діалог навмання', async () => {
+    const { env, tg } = cbEnv();
+    const deferred: (() => Promise<void>)[] = [];
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:q:custom', chatId: 555, messageId: 42, threadId: 99 },
+        NOW,
+        (work) => deferred.push(work),
+      ),
+    ).toBe('Напиши свій варіант');
+    expect(deferred).toHaveLength(0);
+    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toContain('Напиши тривалість');
+  });
   const seedProposal = (
     db: InstanceType<typeof import('node:sqlite').DatabaseSync>,
     over: Record<string, unknown> = {},

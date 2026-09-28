@@ -574,7 +574,9 @@ describe('handleBrainCallback: v:-тапи', () => {
     });
     // Клавіатуру прибрано, перший статусник надіслано.
     expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
-    expect(tg.some((c) => c.method === 'sendMessage' && c.body.text === '▸ Беруся…')).toBe(true);
+    expect(
+      tg.some((c) => c.method === 'sendMessage' && c.body.text === '⏳ Запит прийняв — беруся…'),
+    ).toBe(true);
 
     expect(await handleBrainCallback(env, { data: `v:${id}:ok`, chatId: 555 }, NOW)).toBe(
       'Застаріло - надішли голосове ще раз.',

@@ -734,7 +734,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         finalText === ''
           ? '(порожня відповідь моделі)'
           : clipDeliver(finalText, DELIVER_MAX_BYTES - reserve);
-      const buttons = confirmButtons(proposalId, undoId);
+      const actionButtons = confirmButtons(proposalId, undoId);
+      // Короткі передбачувані уточнення не змушують власника друкувати окреме
+      // повідомлення. Не змішуємо їх із діями policy: у пропозиції її власні
+      // ✅/❌ завжди важливіші за допоміжні варіанти.
+      const buttons = [
+        ...actionButtons,
+        ...contextualQuickReplyButtons(delivered, actionButtons.length > 0),
+      ];
       // Додаткові аргументи лише коли є що показати: deliver без кнопок і без
       // працівника лишається тим самим викликом, що й був.
       if (lastWorker) await deps.client.deliver(req.run_id, delivered, buttons, lastWorker);
@@ -928,6 +935,34 @@ export function confirmButtons(
   }
   if (undoId) rows.push([{ text: '↩ Скасувати', callback_data: `u:${undoId}` }]);
   return rows;
+}
+
+/**
+ * Кнопки лише для питання, де відповідь має невеликий і безпечний набір
+ * очевидних варіантів. Вони не підміняють вільний текст: «Інше» лишає людині
+ * можливість написати точну тривалість. Callback `m:q:*` обробляє ядро й
+ * кладе відповідь у той самий діалоговий контекст.
+ */
+export function contextualQuickReplyButtons(
+  text: string,
+  hasActionButtons = false,
+): Array<Array<{ text: string; callback_data: string }>> {
+  if (hasActionButtons) return [];
+  const normalized = text.toLowerCase().replace(/\s+/g, ' ');
+  const asksDuration =
+    /(?:на скільки|скільки) часу/.test(normalized) || /(?:яка|вкажи) тривалість/.test(normalized);
+  const isCalendarContext = /(?:поді[яї]|зустріч|запрошенн|календар|запланув)/.test(normalized);
+  if (!asksDuration || !isCalendarContext) return [];
+  return [
+    [
+      { text: '🕐 30 хв', callback_data: 'm:q:30' },
+      { text: '🕐 1 год', callback_data: 'm:q:60' },
+    ],
+    [
+      { text: '🕐 1,5 год', callback_data: 'm:q:90' },
+      { text: '✏️ Інше', callback_data: 'm:q:custom' },
+    ],
+  ];
 }
 
 /** Запит пошукового інструмента - у нотатку кроку. Без цього неможливо

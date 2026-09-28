@@ -374,7 +374,9 @@ export function buildMiniAppButton(text, url, chatId, botUsername) {
   return isGroup ? { text, url } : { text, web_app: { url } };
 }
 
-/** Позначити натиснуту кнопку галкою (✓) у reply_markup — легкий зворотний звʼязок.
+/** Позначити натиснуту кнопку єдиним чітким чипом ✅ у reply_markup.
+ *  Різні ✓/колір фону Telegram не є надійним сигналом виконання, тому текст
+ *  самого повідомлення завжди несе однакове підтвердження.
  *  @param {KvBlob|null|undefined} replyMarkup
  *  @param {string} tappedData */
 export function markButtonDone(replyMarkup, tappedData) {
@@ -383,14 +385,39 @@ export function markButtonDone(replyMarkup, tappedData) {
   return {
     inline_keyboard: rows.map((/** @type {unknown} */ row) =>
       Array.isArray(row)
-        ? row.map((/** @type {KvBlob} */ btn) =>
-            btn && btn.callback_data === tappedData && !String(btn.text).startsWith('✓')
-              ? { ...btn, text: `✓ ${btn.text}` }
-              : btn,
-          )
+        ? row.map((/** @type {KvBlob} */ btn) => {
+            if (!btn || btn.callback_data !== tappedData) return btn;
+            const label = String(btn.text ?? '').replace(/^(?:✓|✅)\s*/, '');
+            return { ...btn, text: `✅ ${label}`.slice(0, 64) };
+          })
         : row,
     ),
   };
+}
+
+/**
+ * Для одноразових дій (скасувати/відкласти нагадування) стара клавіатура не
+ * повинна лишати живі альтернативи. Замість неї показуємо такий самий
+ * підтверджувальний чип, як V2-прерутер. `m:done` безпечно відповідає, що дія
+ * вже вирішена, якщо його натиснути повторно.
+ * @param {KvBlob|null|undefined} replyMarkup
+ * @param {string} tappedData
+ */
+export function buttonReceiptMarkup(replyMarkup, tappedData) {
+  const rows = replyMarkup?.inline_keyboard;
+  if (!Array.isArray(rows)) return replyMarkup;
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue;
+    for (const btn of row) {
+      if (!btn || btn.callback_data !== tappedData) continue;
+      const label = String(btn.text ?? '')
+        .replace(/^(?:✓|✅)\s*/, '')
+        .trim();
+      if (!label) return undefined;
+      return { inline_keyboard: [[{ text: `✅ ${label}`.slice(0, 64), callback_data: 'm:done' }]] };
+    }
+  }
+  return replyMarkup;
 }
 
 /* ══════════════════════════════════════════════════════════════════════

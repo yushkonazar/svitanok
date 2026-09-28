@@ -9,6 +9,12 @@ describe('interactive tool routing', () => {
     expect(routeChatTools('Привіт!', all)).toEqual([]);
   });
 
+  it('keeps facts available for a saved-word question after /new', () => {
+    const tools = routeChatTools('Яке слово використовувати для тестових нагадувань?', all);
+    expect(tools).toContain('facts_get');
+    expect(tools).toContain('memory_search');
+  });
+
   it('limits a calendar request to the calendar and plan surface', () => {
     const tools = routeChatTools('Що в мене в календарі завтра?', all);
     expect(tools).toContain('calendar_read');

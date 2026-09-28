@@ -9,6 +9,7 @@ import {
   clipHead,
   clipTail,
   confirmButtons,
+  contextualQuickReplyButtons,
   searchNote,
   STATUS_MIN_CHARS,
   STATUS_MIN_GROWTH,
@@ -339,6 +340,23 @@ describe('makeRunner: барʼєри', () => {
     expect(callbackId({ id: 'a'.repeat(41) })).toBeNull();
     expect(callbackId({})).toBeNull();
     expect(callbackId({ id: 'ok-1' })).toBe('ok-1');
+  });
+
+  it('дає варіанти тривалості лише для уточнення календарної події', () => {
+    expect(
+      contextualQuickReplyButtons('На скільки часу запланувати зустріч із гостем завтра?'),
+    ).toEqual([
+      [
+        { text: '🕐 30 хв', callback_data: 'm:q:30' },
+        { text: '🕐 1 год', callback_data: 'm:q:60' },
+      ],
+      [
+        { text: '🕐 1,5 год', callback_data: 'm:q:90' },
+        { text: '✏️ Інше', callback_data: 'm:q:custom' },
+      ],
+    ]);
+    expect(contextualQuickReplyButtons('Скільки часу готувати пасту?')).toEqual([]);
+    expect(contextualQuickReplyButtons('Яка тривалість події?', true)).toEqual([]);
   });
 
   it('запит пошуку лишається в телеметрії - інакше не зрозуміти, ЧОМУ не знайшлось', () => {

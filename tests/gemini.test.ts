@@ -401,7 +401,7 @@ describe('виконавці', () => {
     const { result } = await approve(env, 'gemini.video', { prompt: 'море' });
     expect(result).toMatchObject({
       ok: false,
-      error: expect.stringContaining('не з домену Google'),
+      error: 'Відеофайл повернув непідтверджене джерело, тому нічого не завантажував.',
     });
     expect(seen.some((u) => u.includes('evil.example'))).toBe(false);
   });
@@ -415,7 +415,10 @@ describe('виконавці', () => {
       ),
     );
     const { result } = await approve(env, 'gemini.image', { prompt: 'x' });
-    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('політика') });
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'Генератор не повернув зображення. Спробуй змінити опис.',
+    });
   });
 
   it('у запит до Gemini їде РІВНО prompt і нічого більше', async () => {

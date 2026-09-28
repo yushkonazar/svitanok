@@ -22,6 +22,7 @@ import {
   resolveProposal,
   resolveUndo,
   EXECUTORS,
+  proposalExecutionError,
 } from '../web/core/policy/proposals.mjs';
 import { runFactsGet, runFactsSet, runFactsLedger } from '../web/core/tools/facts.mjs';
 import { ingestKnowledgeDocument } from '../web/core/knowledge-base.mjs';
@@ -33,6 +34,24 @@ import { memoryKv } from './helpers/kv.js';
 import { CORE_SCOPES } from '../web/core/google-scopes.mjs';
 
 const NOW = Date.parse('2026-08-28T10:00:00.000Z');
+
+describe('proposalExecutionError', () => {
+  it('не віддає користувачу сирий Gemini billing JSON', () => {
+    expect(
+      proposalExecutionError(
+        new Error('Gemini HTTP 402: {"message":"Your prepayment credits are depleted"}'),
+      ),
+    ).toBe(
+      'Генерація зображення тимчасово недоступна: у Gemini немає доступних коштів. Поповни billing потрібного Gemini-проєкту й повтори запит.',
+    );
+  });
+
+  it('перекладає безпечну валідаційну підказку без внутрішнього префікса', () => {
+    expect(proposalExecutionError(new Error('calendar: час міняється парою startIso+endIso'))).toBe(
+      'Початок і завершення події потрібно змінювати разом.',
+    );
+  });
+});
 
 function d1() {
   const db = new DatabaseSync(':memory:');
@@ -493,7 +512,7 @@ describe('T1/T2: пропозиції', () => {
         { id, choice: 'ok', word: ` ${String(word).toLowerCase()} ` },
         NOW + 2000,
       ),
-    ).toMatchObject({ ok: false, error: expect.stringContaining('не сказано, який чат') });
+    ).toMatchObject({ ok: false, error: 'Укажи, який саме чат потрібно стерти.' });
     // Клейм стоїть: повторний тап не переграє виконання.
     const row = store.raw.prepare('SELECT status FROM proposals WHERE id = ?').get(id) as {
       status: string;

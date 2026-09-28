@@ -1593,8 +1593,58 @@ export async function resolveProposal(env, input, nowMs) {
   } catch (/** @type {any} */ e) {
     // Клейм уже стоїть (повтор не переграє) - збій виконання кажемо вголос.
     console.error(`policy: виконання ${row.kind} після ✅ впало`, e?.message);
-    return { ok: false, error: `execute-failed: ${String(e?.message ?? '')}` };
+    return { ok: false, error: proposalExecutionError(e) };
   }
+}
+
+/**
+ * Деталі провайдера корисні в server logs, але не в чаті: користувачеві не
+ * треба бачити сирий JSON, назву кредитного акаунта чи URL billing-консолі.
+ * @param {unknown} error
+ */
+export function proposalExecutionError(error) {
+  const raw = String(/** @type {any} */ (error)?.message ?? error ?? '');
+  if (/gemini/i.test(raw) && /(?:\b402\b|prepayment|credit|billing|quota)/i.test(raw)) {
+    return 'Генерація зображення тимчасово недоступна: у Gemini немає доступних коштів. Поповни billing потрібного Gemini-проєкту й повтори запит.';
+  }
+  if (/(?:\b429\b|rate.?limit|temporarily unavailable|timeout)/i.test(raw)) {
+    return 'Сервіс тимчасово перевантажений. Спробуй повторити дію трохи пізніше.';
+  }
+  // Контрольовані валідаційні помилки ядра повинні бути конкретними, але
+  // технічні префікси executor-ів (`calendar:`, `Gemini:`) не є мовою чату.
+  // Мапимо лише заздалегідь відомі причини; решта, як і раніше, лишається
+  // безпечною загальною відмовою.
+  if (/^forget: ціль .+ невідома/i.test(raw)) {
+    return 'Вкажи, що саме стерти: поточну розмову, колекцію чи всі дані.';
+  }
+  if (/^forget: не сказано, який чат/i.test(raw)) {
+    return 'Укажи, який саме чат потрібно стерти.';
+  }
+  if (/^calendar: час міняється парою/i.test(raw)) {
+    return 'Початок і завершення події потрібно змінювати разом.';
+  }
+  if (/^calendar: у патчі немає жодного поля/i.test(raw)) {
+    return 'Не бачу, що саме змінити в події.';
+  }
+  if (/^calendar: потрібен event_id/i.test(raw)) {
+    return 'Не бачу коректної події для цієї дії.';
+  }
+  if (/^contact: .+ не схоже на email/i.test(raw)) {
+    return 'Адреса контакту не схожа на email.';
+  }
+  if (/^invite: жодного email/i.test(raw)) {
+    return 'Не бачу жодної адреси email для запрошення.';
+  }
+  if (/^Gemini: посилання на відео не з домену Google/i.test(raw)) {
+    return 'Відеофайл повернув непідтверджене джерело, тому нічого не завантажував.';
+  }
+  if (/^Gemini: .*(?:політика|заборон)/i.test(raw)) {
+    return 'Генератор відхилив запит через правила вмісту. Спробуй змінити опис.';
+  }
+  if (/^Gemini не повернув зображення/i.test(raw)) {
+    return 'Генератор не повернув зображення. Спробуй змінити опис.';
+  }
+  return 'Дію не виконано через технічну помилку. Спробуй ще раз; якщо повториться — повідом мені час і що саме робив.';
 }
 
 /**

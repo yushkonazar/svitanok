@@ -15,6 +15,7 @@ import {
   autoTelegramSetup,
   archiveMonthly,
   computeLevers,
+  routineNudgeValueEnabled,
 } from '../web/cron.mjs';
 import { agentRunWatchdog } from '../web/agent-runtime.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -203,6 +204,20 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       // у shadow вони мусять лише логуватись, інакше кожен ефект подвоївся б.
       expect(def.shadowSafe === true, kind).toBe(kind === 'heartbeat');
     }
+  });
+});
+
+describe('routineNudgeValueEnabled — лише важливе за замовчуванням', () => {
+  it('не вмикає некритичні пінги без явного true', () => {
+    expect(routineNudgeValueEnabled(undefined, 'checkins')).toBe(false);
+    expect(routineNudgeValueEnabled({ checkins: 'true' }, 'checkins')).toBe(false);
+    expect(routineNudgeValueEnabled(['checkins'], 'checkins')).toBe(false);
+  });
+
+  it('незалежно вмикає лише обрану рутину', () => {
+    const saved = { checkins: true, sleep: false };
+    expect(routineNudgeValueEnabled(saved, 'checkins')).toBe(true);
+    expect(routineNudgeValueEnabled(saved, 'sleep')).toBe(false);
   });
 });
 

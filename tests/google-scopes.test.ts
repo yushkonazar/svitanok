@@ -332,10 +332,13 @@ describe('виконавці етапу 7 у policy', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     await expect(
       approve(env, 'calendar.update', { event_id: 'abc', startIso: '2026-09-10T10:00:00Z' }),
-    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining('парою') });
+    ).resolves.toMatchObject({
+      ok: false,
+      error: 'Початок і завершення події потрібно змінювати разом.',
+    });
     await expect(approve(env, 'calendar.update', { event_id: 'abc' })).resolves.toMatchObject({
       ok: false,
-      error: expect.stringContaining('немає жодного поля'),
+      error: 'Не бачу, що саме змінити в події.',
     });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -349,7 +352,7 @@ describe('виконавці етапу 7 у policy', () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch');
       await expect(approve(env, 'calendar.delete', { event_id: id })).resolves.toMatchObject({
         ok: false,
-        error: expect.stringContaining('потрібен event_id'),
+        error: 'Не бачу коректної події для цієї дії.',
       });
       expect(fetchSpy).not.toHaveBeenCalled();
     },
@@ -433,7 +436,7 @@ describe('виконавці етапу 7 у policy', () => {
     await expect(approve(env, 'contact', { name: 'Марко', email: 'марко' })).resolves.toMatchObject(
       {
         ok: false,
-        error: expect.stringContaining('не схоже на email'),
+        error: 'Адреса контакту не схожа на email.',
       },
     );
   });

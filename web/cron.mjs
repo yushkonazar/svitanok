@@ -60,6 +60,7 @@ import {
   briefDispatchRelease,
 } from './core/brief-dispatch/client.mjs';
 import { BRIEF_DISPATCH_KEY } from './core/brief-dispatch/contract.mjs';
+import { runFactsGet } from './core/tools/facts.mjs';
 
 // Dead-man перевіряє день ПІСЛЯ того, як вікно ретраїв закрилось (BRIEF_WINDOW_
 // END_HOUR=11 + кілька хвилин на сам ран). Раніше стояв о 10:00 — тепер це було б
@@ -585,6 +586,11 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   const minuteOfDay = kyivMinuteOfDay(new Date());
   const win = matchCheckinNudgeWindow(minuteOfDay);
   if (!win) return;
+  // «Ще не заповнив чек-ін» - корисний, але не критичний пінг. За обраним
+  // власником режимом «лише важливе» він вимкнений, доки власник явно не
+  // попросить routine_nudges.checkins=true. Особисті нагадування й аварійні
+  // алерти цим гейтом не зачіпаються.
+  if (!(await routineNudgeEnabled(env, 'checkins'))) return;
 
   const [settings, store, attention] = await Promise.all([
     loadSettings(env),
@@ -673,7 +679,7 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
         store.sleepLog?.[nightKey]?.nudgeMsgId != null ||
         Object.values(store.checkinNudgeDates ?? {}).includes(nightKey),
     });
-    if (due && attention.deliver) {
+    if (due && attention.deliver && (await routineNudgeEnabled(env, 'sleep'))) {
       const res = await tgCall(env, 'sendMessage', {
         chat_id: env.TELEGRAM_CHAT_ID,
         message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
@@ -709,6 +715,34 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
     }
     return next;
   });
+}
+
+/**
+ * Некритичні рутини - opt-in через owner setting. Факт тримає налаштування
+ * поза Mini App, тож перемикач доступний природним текстом у Telegram, а
+ * падіння D1 ніколи не перетворює тишу на шум.
+ * @param {Env} env
+ * @param {'checkins' | 'sleep'} kind
+ */
+export async function routineNudgeEnabled(env, kind) {
+  try {
+    const row = (await runFactsGet(env, { kind: 'setting', key: 'routine_nudges' })).result[0];
+    return routineNudgeValueEnabled(row?.value, kind);
+  } catch (/** @type {any} */ e) {
+    console.error('cron: routine_nudges не прочитано; некритичний пінг пропускаю', e?.message);
+    return false;
+  }
+}
+
+/**
+ * Чистий предикат окремо від D1: за замовчуванням тиша, а випадкове або
+ * пошкоджене значення факту не може увімкнути некритичну автоматику.
+ * @param {unknown} value
+ * @param {'checkins' | 'sleep'} kind
+ */
+export function routineNudgeValueEnabled(value, kind) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return /** @type {Record<string, unknown>} */ (value)[kind] === true;
 }
 
 /** Dead-man's-switch: KV не оновлено сьогодні -> алерт у Telegram.

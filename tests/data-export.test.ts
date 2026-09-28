@@ -446,7 +446,7 @@ describe('forget target=all', () => {
     );
     expect(res).toMatchObject({
       ok: false,
-      error: expect.stringContaining('chat | collection | all'),
+      error: 'Вкажи, що саме стерти: поточну розмову, колекцію чи всі дані.',
     });
   });
 });

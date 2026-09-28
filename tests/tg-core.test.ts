@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as tg from '../web/tg-core.mjs';
 // Конвертер живе в core/tg/markdown.mjs (єдина реалізація для легасі й deliver).
-import { mdToTelegramHtml } from '../web/core/tg/markdown.mjs';
+import { flattenMarkdownTables, mdToTelegramHtml } from '../web/core/tg/markdown.mjs';
 const {
   textHash,
   verifyWebhookSecret,
@@ -14,6 +14,7 @@ const {
   parseCallbackData,
   resolveCallback,
   markButtonDone,
+  buttonReceiptMarkup,
   parseCommand,
   formatStatsMessage,
   formatJobsMessage,
@@ -276,7 +277,7 @@ describe('tg-core — resolveCallback', () => {
 });
 
 describe('tg-core — markButtonDone', () => {
-  it('додає ✓ лише натиснутій кнопці; ідемпотентно', () => {
+  it('додає ✅ лише натиснутій кнопці; ідемпотентно', () => {
     const rm = {
       inline_keyboard: [
         [
@@ -286,12 +287,22 @@ describe('tg-core — markButtonDone', () => {
       ],
     };
     const out = markButtonDone(rm, 'v1:2026-07-09:js:0');
-    expect(out!.inline_keyboard[0][0].text).toBe('✓ 💾 Зберегти');
+    expect(out!.inline_keyboard[0][0].text).toBe('✅ 💾 Зберегти');
     expect(out!.inline_keyboard[0][1].text).toBe('✅ Подав');
-    // повторно — без подвійного ✓
+    // повторно — без подвійного ✅
     expect(markButtonDone(out!, 'v1:2026-07-09:js:0')!.inline_keyboard[0][0].text!).toBe(
-      '✓ 💾 Зберегти',
+      '✅ 💾 Зберегти',
     );
+  });
+
+  it('одноразова дія замінює клавіатуру на один підтверджувальний чип', () => {
+    const receipt = buttonReceiptMarkup(
+      { inline_keyboard: [[{ text: '↩ Скасувати', callback_data: 'r:1:cancel' }]] },
+      'r:1:cancel',
+    );
+    expect(receipt).toEqual({
+      inline_keyboard: [[{ text: '✅ ↩ Скасувати', callback_data: 'm:done' }]],
+    });
   });
 });
 
@@ -753,6 +764,20 @@ describe('mdToTelegramHtml — Markdown моделі -> HTML Telegram', () => {
 
   it('списки стають буллетами', () => {
     expect(mdToTelegramHtml('- перший\n- другий')).toBe('• перший\n• другий');
+  });
+
+  it('перетворює справжню Markdown-таблицю на короткі підписані рядки', () => {
+    const table = [
+      '| | Список справ | Календарні блоки |',
+      '|---|---|---|',
+      '| Показує | Що треба зробити | Коли цим зайнятися |',
+      '| Найкраще для | Гнучких задач | Важливих справ |',
+    ].join('\n');
+    expect(flattenMarkdownTables(table)).toBe(
+      '• Показує: Список справ — Що треба зробити; Календарні блоки — Коли цим зайнятися\n' +
+        '• Найкраще для: Список справ — Гнучких задач; Календарні блоки — Важливих справ',
+    );
+    expect(mdToTelegramHtml(table)).not.toContain('|');
   });
 
   it('⚠️ сторонній текст екранується ДО того, як зʼявляються наші теги', () => {

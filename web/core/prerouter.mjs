@@ -72,6 +72,7 @@ import {
   parseFocusRequest,
 } from './assistant-controls.mjs';
 import { BACKUP_STATE_KEY } from './backup-state/contract.mjs';
+import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -84,7 +85,7 @@ const VOICE_PREVIEW_MAX_CHARS = 700;
 // що запит, і «Думаю…» тут не інформація, а заповнювач (скарга власника
 // 08.09). «Беруся» каже правду: запит прийнято, робота почалась. Далі його
 // заміняє мозок - назвою того, що САМЕ ЗАРАЗ робить (brain/tools/status-words).
-const STATUS_DRAFT = '▸ Беруся…';
+const STATUS_DRAFT = '⏳ Запит прийняв — беруся…';
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
 /** «Відміни останнє» (PR-7 §3.5) - лише УЗАГАЛЬНЕНІ форми.
@@ -645,8 +646,8 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
  * @returns {Promise<string | null>}
  */
 export async function startOrQueueThreadText(env, target, threadKey, text, route, nowMs) {
-  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «▸ Беруся…»
-  // прогону, при черзі - редагованим «▸ Черга: N» (не вічним повідомленням-
+  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «Запит прийняв»
+  // прогону, при черзі - редагованим «У черзі: N» (не вічним повідомленням-
   // сиротою), а його id поїде в queue-entry для reuse при підйомі.
   const statusMessageId = await sendStatusDraft(env, target);
   const entry = {
@@ -662,7 +663,7 @@ export async function startOrQueueThreadText(env, target, threadKey, text, route
     const note =
       claim.queued === -1
         ? 'Черга повна - спробуй трохи пізніше.'
-        : `▸ Дійду за ${claim.queued} - зараз зайнятий`;
+        : `⏳ У черзі: перед тобою ${claim.queued}.`;
     if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
     else await reply(env, target, note, nowMs);
     return null;
@@ -964,7 +965,7 @@ export async function registryThreadFinishAndKick(env, parsed, threadKey, runId,
   const { next } = await registryThreadFinish(env, threadKey, runId);
   if (!next) return;
   const target = next.chatId != null ? { ...parsed, chatId: next.chatId } : parsed;
-  // «▸ Черга: N» цього запису стає першим статусом його прогону.
+  // Черговий статус цього запису стає першим статусом його прогону.
   if (next.statusMessageId != null) {
     await editStatus(env, target, next.statusMessageId, STATUS_DRAFT, nowMs);
   }
@@ -1039,6 +1040,8 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
 export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer = null) {
   if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
   const data = String(parsed.data ?? '');
+  const quickReply = parseQuickReplyCallback(data);
+  if (quickReply) return quickReplyToast(env, parsed, quickReply, nowMs, defer);
   const policy = parsePolicyCallback(data);
   if (policy) {
     if (policy.kind === 'undo') {
@@ -1217,6 +1220,59 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
     a: 'Відповіді на питання прогону - пізніше цим етапом.',
     m: 'Меню - пізніше.',
   }[/** @type {'c' | 'r' | 'a' | 'm'} */ (stub)];
+}
+
+/**
+ * Відповіді на передбачуване питання мозку. Не передаємо callback як текст
+ * моделі: йому відповідає зрозуміле людське формулювання, яке продовжує ту
+ * саму сесію й не може випадково створити нагадування замість події.
+ * @param {string} data
+ * @returns {{ text: string | null, label: string } | null}
+ */
+export function parseQuickReplyCallback(data) {
+  const choice = String(data).match(/^m:q:(30|60|90|custom)$/)?.[1];
+  if (!choice) return null;
+  if (choice === '30') return { text: '30 хвилин', label: '✅ 30 хв' };
+  if (choice === '60') return { text: '1 година', label: '✅ 1 год' };
+  if (choice === '90') return { text: '1 година 30 хвилин', label: '✅ 1,5 год' };
+  return { text: null, label: '✅ Інше' };
+}
+
+/**
+ * Кнопка має дати одразу два видимі сигнали: тост і незмінний чип на місці
+ * дії. Для типових тривалостей ми автоматично продовжуємо поточний діалог;
+ * «Інше» чесно просить ввести свій варіант, не вгадуючи його.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null, data?: unknown,
+ *   threadId?: number | string | null, replyMarkup?: unknown }} parsed
+ * @param {{ text: string | null, label: string }} choice
+ * @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function quickReplyToast(env, parsed, choice, nowMs, defer) {
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  await clearKeyboard(env, parsed);
+  if (choice.text == null) {
+    await reply(env, target, '✏️ Напиши тривалість: наприклад, «45 хвилин» або «2 години».', nowMs);
+    return 'Напиши свій варіант';
+  }
+  const continuationText = /** @type {string} */ (choice.text);
+  const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
+  const work = () =>
+    startOrQueueThreadText(env, target, threadKey, continuationText, 'chat', nowMs).then(
+      () => undefined,
+    );
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: quick reply не стартував', e?.message),
+      ),
+    );
+  } else {
+    await work();
+  }
+  return `Обрано: ${choice.label.replace(/^✅\s*/, '')}`;
 }
 
 // Мапа кнопок плану дня живе в chains/registry.mjs; реекспорт заради тестів.
@@ -2499,14 +2555,37 @@ async function backupStatusLine(env) {
     const raw = await env.BRIEFING.get(BACKUP_STATE_KEY);
     const state = raw ? JSON.parse(raw) : null;
     if (state?.blocked) {
+      // До того як telemetry винесли зі snapshot, `runs` могла перерости
+      // recovery-ліміт. Такий історичний запис не означає, що теперішній
+      // бекап знову повторює три невдалі спроби: новий snapshot не читає
+      // runs/run_steps. Лишається чесне попередження до наступного запуску.
+      if (/таблиця\s+(?:runs|run_steps)\s+понад\s+\d+/i.test(String(state.lastError ?? ''))) {
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(state.date ?? ''))
+          ? String(state.date)
+          : 'попередній запуск';
+        return {
+          healthy: false,
+          line: `Бекап: ⚠️ ${date} не зроблено через старий telemetry-ліміт; виправлення застосовано, наступна планова спроба — неділя о 03:00.`,
+        };
+      }
       const reason = compactDigestText(String(state.lastError ?? 'потрібна ручна дія'));
       return { healthy: false, line: `Бекап: ❌ заблоковано — ${reason}.` };
     }
     if (state?.done && state?.date) return { healthy: true, line: `Бекап: ✅ ${state.date}.` };
+    // Старий стан до поділу snapshot/telemetry міг залишити attempts=3 без
+    // `blocked`. Не називаємо це «відновленням»: повторів більше не буде й
+    // власник має зрозуміти, що потрібна ручна перевірка, а не чекати.
+    if (Number(state?.attempts ?? 0) >= BACKUP_MAX_ATTEMPTS) {
+      const reason = compactDigestText(String(state?.lastError ?? 'вичерпано спроби'));
+      return {
+        healthy: false,
+        line: `Бекап: ❌ потрібна ручна дія — ${reason}.`,
+      };
+    }
     if (state?.attempts > 0)
       return {
         healthy: false,
-        line: `Бекап: ⚠️ триває відновлення після збою (${state.attempts} спроб).`,
+        line: `Бекап: ⚠️ буде повторна спроба (${state.attempts}/${BACKUP_MAX_ATTEMPTS}).`,
       };
     return { healthy: true, line: 'Бекап: ⚪ ще не було контрольного запуску.' };
   } catch (/** @type {any} */ e) {
@@ -2527,6 +2606,12 @@ async function briefingRuntimeStatusLine(env, nowMs) {
     const age = Number.isFinite(checkedMs) ? ` · ${formatProbeAge(nowMs - checkedMs)}` : '';
     if (state.state === 'ready')
       return { healthy: true, line: `Брифінг: ✅ раннер готовий${age}.` };
+    if (state.state === 'needs_openai_key') {
+      return {
+        healthy: false,
+        line: `Брифінг: ⚠️ потрібен GitHub Actions secret OPENAI_API_KEY${age}.`,
+      };
+    }
     return { healthy: false, line: `Брифінг: ⚠️ потребує дії — ${detail}${age}.` };
   } catch (/** @type {any} */ e) {
     console.error('prerouter: /status не прочитав briefing runtime', e?.message);
@@ -2677,7 +2762,7 @@ async function reply(env, parsed, text, nowMs, extra = undefined, md = false) {
   );
 }
 
-/** Статусник «▸ Думаю…» - ПРЯМИЙ sendMessage (потрібен message_id для
+/** Статусник «Запит прийняв» - ПРЯМИЙ sendMessage (потрібен message_id для
  *  стрімінгу, outbox його не повертає). Збій - null: прогін піде без статусу.
  *  @param {Env} env @param {ThreadTarget} parsed */
 async function sendStatusDraft(env, parsed) {

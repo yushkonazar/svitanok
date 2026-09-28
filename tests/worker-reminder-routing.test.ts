@@ -116,7 +116,7 @@ describe('роутинг «нагад» — складний намір дохо
 
     expect(agentCalls).toHaveLength(1);
     expect(remindersInKv()).toHaveLength(0); // головне: НЕ створили ще одне
-    expect(sentTexts().some((t) => t.includes('Працюю'))).toBe(true);
+    expect(sentTexts().some((t) => t.includes('Запит прийняв — беруся'))).toBe(true);
   });
 
   it('«Перенеси нагадування … на 20:00» -> агент (updateReminder досяжний)', async () => {

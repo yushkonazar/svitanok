@@ -82,7 +82,7 @@ export const ASSISTANT_ROUNDS_REPLY =
  * тривати десятки секунд, і мовчазний чат у цей час читається як «зламалось».
  * Прибираємо це повідомлення, коли приходить справжня відповідь.
  */
-export const ASSISTANT_WORKING_REPLY = '⏳ Працюю…';
+export const ASSISTANT_WORKING_REPLY = '⏳ Запит прийняв — беруся…';
 
 /**
  * Сторож (scheduled() у worker.js): прогін позначено початим, але хост так і не

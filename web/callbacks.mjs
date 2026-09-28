@@ -15,7 +15,13 @@
 // answerCallbackQuery, і мовчазна кнопка виглядає як зависла — тому навіть
 // «застаріло» й «не вдалось» мають свій текст.
 
-import { parseCallbackData, resolveCallback, markButtonDone, escapeHtml } from './tg-core.mjs';
+import {
+  parseCallbackData,
+  resolveCallback,
+  markButtonDone,
+  buttonReceiptMarkup,
+  escapeHtml,
+} from './tg-core.mjs';
 import {
   cancelReminder,
   snoozeReminder,
@@ -96,7 +102,7 @@ export async function resolveCallbackToast(/** @type {Env} */ env, /** @type {Kv
 /**
  * Спільна логіка snooze/cancel (§C4): завантажити стан, перевірити існування
  * нагадування, мутувати (mutate — snoozeReminder чи cancelReminder), зберегти,
- * тікнути кнопку (markButtonDone+editMessageReplyMarkup — одноразовий статус-
+ * замінити клавіатуру на підтверджувальний чип — одноразовий статус-
  * тік, не перерендер усього повідомлення, на відміну від roadmap, де
  * editMessageText доречний для навігації меню). Розрізняються лише mutate-
  * функцією й текстом тосту.
@@ -139,14 +145,14 @@ async function resolveReminderAction(env, parsed, reminderId, mutate, successToa
   return successToast;
 }
 
-/** Позначити натиснуту кнопку галкою - однаково для KV- і D1-нагадувань.
+/** Закрити одноразову дію чітким чипом - однаково для KV- і D1-нагадувань.
  *  @param {Env} env @param {KvBlob} parsed */
 async function clearReminderKeyboard(env, parsed) {
   if (parsed.chatId == null || parsed.messageId == null || !parsed.replyMarkup) return;
   await tgCall(env, 'editMessageReplyMarkup', {
     chat_id: parsed.chatId,
     message_id: parsed.messageId,
-    reply_markup: markButtonDone(parsed.replyMarkup, parsed.data),
+    reply_markup: buttonReceiptMarkup(parsed.replyMarkup, parsed.data),
   });
 }
 

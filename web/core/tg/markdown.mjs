@@ -51,14 +51,79 @@ const BARE_URL_RE = /https?:\/\/(?:[^\s<()]|\([^\s()]*\))+/g;
  *  рядок інакше втрачав би вміст (мова зʼїдала його цілком). */
 const FENCE_RE = /```(?:[\w+-]*\n)?([\s\S]*?)```/g;
 
+/** @param {string} line */
+function tableCells(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+/** @param {string} line */
+function isTableRow(line) {
+  return /^\s*\|?.+\|.+\|?\s*$/.test(line);
+}
+
+/** @param {string} line */
+function isTableDivider(line) {
+  const cells = tableCells(line);
+  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+/**
+ * Telegram does not render Markdown tables. A raw pipe grid costs an entire
+ * phone screen and hides the conclusion, so convert only real header+divider
+ * tables to compact labelled bullets. Code fences are left byte-for-byte
+ * intact. This is presentation-only: links and emphasis are still handled by
+ * the normal Markdown renderer afterwards.
+ * @param {string} source
+ */
+export function flattenMarkdownTables(source) {
+  const lines = source.split('\n');
+  /** @type {string[]} */
+  const out = [];
+  let inFence = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+    if (inFence || !isTableRow(line) || !isTableDivider(lines[i + 1] ?? '')) {
+      out.push(line);
+      continue;
+    }
+    const header = tableCells(line);
+    i += 2; // header + divider; the loop will consume only actual body rows.
+    for (; i < lines.length && isTableRow(lines[i] ?? ''); i += 1) {
+      const cells = tableCells(lines[i] ?? '');
+      if (cells.length < 2) break;
+      const rowLabel = header[0] ? '' : cells[0] ? `${cells[0]}: ` : '';
+      const pairs = [];
+      for (let n = header[0] ? 0 : 1; n < Math.min(header.length, cells.length); n += 1) {
+        const label = header[n] || `Поле ${n + 1}`;
+        const value = cells[n];
+        if (value) pairs.push(`${label} — ${value}`);
+      }
+      if (pairs.length) out.push(`• ${rowLabel}${pairs.join('; ')}`);
+    }
+    i -= 1;
+  }
+  return out.join('\n');
+}
+
 /**
  * @param {unknown} md
  * @returns {string} HTML для parse_mode HTML; порожній рядок для порожнього входу
  */
 export function mdToTelegramHtml(md) {
-  const src = String(md ?? '')
-    .replace(/\r\n/g, '\n')
-    .replace(HOLD_STRIP, '');
+  const src = flattenMarkdownTables(String(md ?? '').replace(/\r\n/g, '\n')).replace(
+    HOLD_STRIP,
+    '',
+  );
   /** @type {string[]} */
   const held = [];
   const hold = (/** @type {string} */ html) => {
