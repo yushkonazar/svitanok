@@ -49,9 +49,14 @@ import { LINK_FOLLOWUPS } from './links.mjs';
 import { resolveWaypoint } from './tools/places.mjs';
 import { routesEta } from './adapters/maps.mjs';
 import { findIdea } from './tools/ideas.mjs';
-import { kyivClock } from '../kyiv-time.mjs';
+import { kyivClock, kyivDateKey } from '../kyiv-time.mjs';
 import { renderMdParts } from './tg/markdown.mjs';
-import { loadWorkerResult, sendWorkerDocument, WORKER_FOLLOWUPS } from './brain/worker-results.mjs';
+import {
+  loadWorkerResult,
+  sendWorkerDocument,
+  WORKER_FOLLOWUPS,
+  priceShopOptions,
+} from './brain/worker-results.mjs';
 import {
   findAwaitingChain,
   sendChainEvent,
@@ -79,13 +84,26 @@ export const THREAD_DM = 'dm';
  *  (Telegram ріже на 4096, а клавіатура лишається лише на останній частині).
  *  У прогін іде ПОВНИЙ текст із voice_pending. */
 const VOICE_PREVIEW_MAX_CHARS = 700;
-// Не експортуються свідомо (ревʼю PR-3): споживачів назовні немає, а export
-// сигналив би «на це хтось спирається».
-// Перший статус - до того, як модель зробила хоч крок: ядро ще не знає, про
-// що запит, і «Думаю…» тут не інформація, а заповнювач (скарга власника
-// 08.09). «Беруся» каже правду: запит прийнято, робота почалась. Далі його
-// заміняє мозок - назвою того, що САМЕ ЗАРАЗ робить (brain/tools/status-words).
-const STATUS_DRAFT = '⏳ Запит прийняв — беруся…';
+// Перший статус - до того, як модель зробила хоч крок. «Думаю…» не каже, що
+// відбувається, а одна й та сама фраза на кожен запит швидко звучить як
+// системний лог. Кілька коротких, рівнозначних формулювань дають живий старт;
+// далі мозок замінює їх конкретною дією (пошта, календар, Drive тощо).
+const STATUS_DRAFTS = ['✦ Взяв у роботу.', '✦ Стартую.', '✦ Розбираю запит.', '✦ Починаю обробку.'];
+
+/** Короткий, але не одноманітний стартовий статус для конкретного треду.
+ * Не використовуємо Math.random(): повторна доставка того самого апдейту має
+ * виглядати так само, а різні секунди природно оберуть різні варіанти. */
+/** @param {{ chatId?: number | string | null, threadId?: number | string | null } | null | undefined} target
+ * @param {number} nowMs */
+function statusDraft(target, nowMs) {
+  const key = `${target?.chatId ?? ''}:${target?.threadId ?? ''}`;
+  let hash = 0;
+  for (const ch of key) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return (
+    STATUS_DRAFTS[(hash + Math.floor(nowMs / 1000)) % STATUS_DRAFTS.length] ?? '✦ Взяв у роботу.'
+  );
+}
+
 const START_MAX_ATTEMPTS = 3;
 const STOP_RE = /^стоп[.!]?$/i;
 /** «Відміни останнє» (PR-7 §3.5) - лише УЗАГАЛЬНЕНІ форми.
@@ -643,13 +661,35 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
  * @param {string} text
  * @param {RunRoute} route
  * @param {number} nowMs
+ * @param {number | null} [reuseStatusMessageId] - повідомлення кнопки, яке
+ *   стає статусом і фінальною відповіддю замість створення дубля в треді
+ * @param {string | null} [initialStatusText] - конкретний стан вибору, якщо
+ *   він важливіший за загальне «Взяв у роботу»
  * @returns {Promise<string | null>}
  */
-export async function startOrQueueThreadText(env, target, threadKey, text, route, nowMs) {
-  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стане «Запит прийняв»
-  // прогону, при черзі - редагованим «У черзі: N» (не вічним повідомленням-
+export async function startOrQueueThreadText(
+  env,
+  target,
+  threadKey,
+  text,
+  route,
+  nowMs,
+  reuseStatusMessageId = null,
+  initialStatusText = null,
+) {
+  // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стає коротким живим
+  // статусом прогону, при черзі - редагованим «У черзі: N» (не вічним повідомленням-
   // сиротою), а його id поїде в queue-entry для reuse при підйомі.
-  const statusMessageId = await sendStatusDraft(env, target);
+  const statusMessageId = reuseStatusMessageId ?? (await sendStatusDraft(env, target));
+  if (reuseStatusMessageId != null) {
+    await editStatus(
+      env,
+      target,
+      reuseStatusMessageId,
+      initialStatusText ?? statusDraft(target, nowMs),
+      nowMs,
+    );
+  }
   const entry = {
     text,
     route,
@@ -967,7 +1007,7 @@ export async function registryThreadFinishAndKick(env, parsed, threadKey, runId,
   const target = next.chatId != null ? { ...parsed, chatId: next.chatId } : parsed;
   // Черговий статус цього запису стає першим статусом його прогону.
   if (next.statusMessageId != null) {
-    await editStatus(env, target, next.statusMessageId, STATUS_DRAFT, nowMs);
+    await editStatus(env, target, next.statusMessageId, statusDraft(target, nowMs), nowMs);
   }
   await startClaimedRun(env, target, threadKey, next, nowMs, next.statusMessageId ?? null);
 }
@@ -1007,7 +1047,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
       if (!next) continue;
       const parsed = parsedForThread(env, threadKey, next.chatId ?? null);
       if (next.statusMessageId != null) {
-        await editStatus(env, parsed, next.statusMessageId, STATUS_DRAFT, nowMs);
+        await editStatus(env, parsed, next.statusMessageId, statusDraft(parsed, nowMs), nowMs);
       }
       await startClaimedRun(env, parsed, threadKey, next, nowMs, next.statusMessageId ?? null);
       kicked += 1;
@@ -1031,8 +1071,7 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * `defer` робота виконується інлайн (тести, майбутні викликачі).
  * @param {Env} env
  * @param {{ data?: unknown, chatId?: number | null, messageId?: number | null,
- *   threadId?: number | string | null, replyMarkup?: unknown }} parsed - replyMarkup
- *   потрібен, щоб на місці знятих кнопок лишити напис натиснутої
+ *   threadId?: number | string | null, replyMarkup?: unknown, messageText?: string | null }} parsed
  * @param {number} [nowMs]
  * @param {((work: () => Promise<void>) => void) | null} [defer]
  * @returns {Promise<string | null>}
@@ -1050,14 +1089,21 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       // витрачена (прогін 08.09 - після «↩» вона лишалась живою). У тред
       // пишемо лише коли справді відкотили: тост зникає за секунди.
       if (undone.ok) {
-        await clearKeyboard(env, parsed);
         if ('status' in undone && undone.status === 'undone') {
-          await reply(
-            env,
-            { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
-            '↩ Відкотив.',
-            nowMs,
-          );
+          // Одноразова дія має завершити те саме повідомлення. Друге «↩
+          // Відкотив» у треді лише дублювало натискання і виглядало як ще
+          // одна, неочевидна дія.
+          const updated = await replaceCallbackMessage(env, parsed, '↩ Скасовано.');
+          if (!updated) {
+            await reply(
+              env,
+              { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+              '↩ Скасовано.',
+              nowMs,
+            );
+          }
+        } else {
+          await clearKeyboard(env, parsed);
         }
       }
       return undoToast(undone);
@@ -1103,28 +1149,33 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       return `Напиши слово ${asked.word}`;
     }
     if (res.ok && 'status' in res) {
-      await clearKeyboard(env, parsed);
-      // Тост Telegram зникає за секунди й не лишається в історії - рішення й
-      // результат мусять стояти в треді (приймання 05.09: «після ✅ нічого не
-      // відбувається»). Модель дізнається про нього дайджестом у наступному
-      // прогоні (recentDecisions).
-      await reply(
-        env,
-        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
-        decisionText(res),
-        nowMs,
-        undefined,
-        true,
-      );
+      // Рішення має бути видиме в історії, але не окремим «системним» рядком:
+      // замінюємо пропозицію зрозумілим підсумком і прибираємо обидві кнопки.
+      // Модель однаково отримає decision digest перед наступним прогоном.
+      const text = decisionText(res);
+      const updated = await replaceCallbackMessage(env, parsed, text);
+      if (!updated) {
+        await reply(
+          env,
+          { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+          text,
+          nowMs,
+          undefined,
+          true,
+        );
+      }
     } else if (!res.ok && res.error !== 'unknown-proposal') {
       // Збій після ✅ (виконавця ще немає, виконання впало, слово T2, кривий
       // payload) - теж у тред, інакше та сама тиша, що й до фіксу (ревʼю 05.09).
-      await reply(
-        env,
-        { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
-        `⚠️ ${proposalToast(res)}`,
-        nowMs,
-      );
+      const text = `⚠️ ${proposalToast(res)}`;
+      if (!(await replaceCallbackMessage(env, parsed, text))) {
+        await reply(
+          env,
+          { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+          text,
+          nowMs,
+        );
+      }
     }
     return proposalToast(res);
   }
@@ -1139,6 +1190,11 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
       defer,
     );
   }
+  // m:ps:<report>:<index> — власник обрав конкретну сторінку товару з
+  // результату Дослідника. URL не йде з callback_data: дістаємо його лише з
+  // нашого збереженого, allowlisted результату.
+  const ps = data.match(/^m:ps:([A-Za-z0-9-]{1,40}):(\d)$/);
+  if (ps) return priceShopChoiceToast(env, parsed, ps[1] ?? '', Number(ps[2] ?? -1), nowMs, defer);
   // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
   // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
   const wm = data.match(
@@ -1223,9 +1279,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
 }
 
 /**
- * Відповіді на передбачуване питання мозку. Не передаємо callback як текст
- * моделі: йому відповідає зрозуміле людське формулювання, яке продовжує ту
- * саму сесію й не може випадково створити нагадування замість події.
+ * Відповіді на передбачуване питання мозку.
  * @param {string} data
  * @returns {{ text: string | null, label: string } | null}
  */
@@ -1239,12 +1293,12 @@ export function parseQuickReplyCallback(data) {
 }
 
 /**
- * Кнопка має дати одразу два видимі сигнали: тост і незмінний чип на місці
- * дії. Для типових тривалостей ми автоматично продовжуємо поточний діалог;
- * «Інше» чесно просить ввести свій варіант, не вгадуючи його.
+ * Вибір тривалості завершує саме те питання, в якому натиснули кнопку. У
+ * продовження передаємо і текст того питання: голе «1 година» не має права
+ * губити назву події або перетворюватись на окреме нагадування.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, data?: unknown,
- *   threadId?: number | string | null, replyMarkup?: unknown }} parsed
+ *   threadId?: number | string | null, replyMarkup?: unknown, messageText?: string | null }} parsed
  * @param {{ text: string | null, label: string }} choice
  * @param {number} nowMs
  * @param {((work: () => Promise<void>) => void) | null} defer
@@ -1252,17 +1306,43 @@ export function parseQuickReplyCallback(data) {
 async function quickReplyToast(env, parsed, choice, nowMs, defer) {
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
   if (target.chatId == null) return 'Невідомий чат.';
-  await clearKeyboard(env, parsed);
+  const eventTitle = eventTitleFromDurationQuestion(parsed.messageText);
   if (choice.text == null) {
-    await reply(env, target, '✏️ Напиши тривалість: наприклад, «45 хвилин» або «2 години».', nowMs);
+    const text = eventTitle
+      ? `✏️ Для «${eventTitle}» вкажи іншу тривалість текстом: наприклад, «45 хвилин».`
+      : '✏️ Вкажи іншу тривалість текстом: наприклад, «45 хвилин» або «2 години».';
+    if (!(await replaceCallbackMessage(env, parsed, text))) await reply(env, target, text, nowMs);
     return 'Напиши свій варіант';
   }
-  const continuationText = /** @type {string} */ (choice.text);
+  const duration = /** @type {string} */ (choice.text);
+  const selectedText = eventTitle
+    ? `🕐 Для «${eventTitle}» обрано: ${duration}.`
+    : `🕐 Обрано тривалість: ${duration}.`;
+  const resultText = `${selectedText}\nПродовжую той самий сценарій.`;
+  const continuationText = durationContinuation(parsed.messageText, duration);
   const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
-  const work = () =>
-    startOrQueueThreadText(env, target, threadKey, continuationText, 'chat', nowMs).then(
-      () => undefined,
-    );
+  // Видимий результат потрібен ДО deferred роботи: тост швидко зникає, а
+  // Telegram може відкласти waitUntil на кілька секунд.
+  if (parsed.messageId != null) await replaceCallbackMessage(env, parsed, selectedText);
+  const work = () => {
+    // Коли Telegram віддав id питання, це повідомлення стає і коротким
+    // статусом, і фінальною відповіддю: тап не плодить окремий «Обрано».
+    if (parsed.messageId != null) {
+      return startOrQueueThreadText(
+        env,
+        target,
+        threadKey,
+        continuationText,
+        'chat',
+        nowMs,
+        parsed.messageId,
+        resultText,
+      ).then(() => undefined);
+    }
+    return reply(env, target, resultText, nowMs)
+      .then(() => startOrQueueThreadText(env, target, threadKey, continuationText, 'chat', nowMs))
+      .then(() => undefined);
+  };
   if (defer) {
     defer(() =>
       work().catch((/** @type {any} */ e) =>
@@ -1273,6 +1353,95 @@ async function quickReplyToast(env, parsed, choice, nowMs, defer) {
     await work();
   }
   return `Обрано: ${choice.label.replace(/^✅\s*/, '')}`;
+}
+
+/** Назва події з нашого попереднього короткого питання або null.
+ * @param {unknown} messageText */
+function eventTitleFromDurationQuestion(messageText) {
+  const text = typeof messageText === 'string' ? messageText : '';
+  const patterns = [
+    /(?:поді[яї]|зустріч)[^«\n]{0,40}«([^»\n]{1,120})»/iu,
+    /(?:запланувати|тривалість)[^«\n]{0,80}«([^»\n]{1,120})»/iu,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const title = match ? String(match[1]).replace(SANITIZE_RE, ' ').trim() : '';
+    if (title) return title;
+  }
+  return null;
+}
+
+/**
+ * Внутрішнє продовження того ж діалогу. Текст питання належить боту, а не
+ * зовнішньому джерелу; його все одно стисло обмежуємо, щоб callback не міг
+ * роздути наступний prompt. @param {unknown} messageText @param {string} duration
+ */
+function durationContinuation(messageText, duration) {
+  const question =
+    typeof messageText === 'string' && messageText.trim()
+      ? messageText.replace(SANITIZE_RE, ' ').trim().slice(0, 700)
+      : 'Ти щойно уточнив тривалість календарної події.';
+  return [
+    'Власник обрав варіант кнопкою у твоєму попередньому питанні.',
+    `Твоє питання: ${question}`,
+    `Обрана тривалість: ${duration}.`,
+    'Продовж той самий сценарій для цієї події. Не проси повторно назву події чи тривалість і не створюй нагадування замість календарної події.',
+  ].join('\n');
+}
+
+/**
+ * Вибір магазину з підбору ціни. Натискання є явною згодою власника саме на
+ * цю сторінку; сам запуск відстеження все одно проходить policy, якщо сесія
+ * ще tainted результатом веб-пошуку. Так не втрачається ні вибір, ні барʼєр.
+ * @param {Env} env @param {CallbackParsed} parsed @param {string} reportId
+ * @param {number} index @param {number} nowMs
+ * @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function priceShopChoiceToast(env, parsed, reportId, index, nowMs, defer) {
+  const report = await loadWorkerResult(env, reportId).catch(() => null);
+  if (!report || report.name !== 'price-search')
+    return 'Цей підбір уже недоступний — надішли товар ще раз.';
+  const option = priceShopOptions(report.text)[index] ?? null;
+  if (!option) return 'Цей варіант уже недоступний — надішли товар ще раз.';
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
+  const selected = `🎁 Обрано ${option.shop}.`;
+  const status = `${selected}\nГотую відстеження цієї сторінки.`;
+  const continuation = [
+    'Власник обрав магазин кнопкою після твого підбору ціни.',
+    `Обраний магазин: ${option.shop}.`,
+    `Обрана сторінка товару: ${option.url}`,
+    'Продовж саме попередній запит власника на відстеження ціни: використай цю сторінку, а назву товару, цільову ціну й валюту візьми з його попереднього повідомлення. Якщо їх немає в сесії, постав одне коротке уточнення. Не проси посилання і не вигадуй інший товар. Обрана кнопкою сторінка авторизована власником.',
+  ].join('\n');
+  const work = () => {
+    if (parsed.messageId != null) {
+      return startOrQueueThreadText(
+        env,
+        target,
+        threadKey,
+        continuation,
+        'chat',
+        nowMs,
+        parsed.messageId,
+        status,
+      ).then(() => undefined);
+    }
+    return reply(env, target, status, nowMs)
+      .then(() => startOrQueueThreadText(env, target, threadKey, continuation, 'chat', nowMs))
+      .then(() => undefined);
+  };
+  if (parsed.messageId != null) await replaceCallbackMessage(env, parsed, selected);
+  if (defer) {
+    defer(() =>
+      work().catch((/** @type {any} */ e) =>
+        console.error('prerouter: вибір магазину для ціни не стартував', e?.message),
+      ),
+    );
+  } else {
+    await work();
+  }
+  return `Обрано: ${option.shop}`;
 }
 
 // Мапа кнопок плану дня живе в chains/registry.mjs; реекспорт заради тестів.
@@ -1903,7 +2072,7 @@ export function rerunText(r) {
  * збої «Розпізнати» його повертають у гру разом із живою кнопкою - інакше
  * file_id зникав би назавжди на першій же мережевій невдачі (ревʼю PR-4).
  * @param {Env} env
- * @param {{ chatId?: number | null, messageId?: number | null }} parsed
+ * @param {CallbackParsed} parsed
  * @param {string} id
  * @param {'ok' | 'edit' | 'go'} choice
  * @param {number} nowMs
@@ -1920,7 +2089,9 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
 
   if (choice === 'edit') {
     await finishPendingVoice(env, id, true);
-    await clearKeyboard(env, parsed);
+    if (!(await replaceCallbackMessage(env, parsed, '✏️ Добре — напиши текстом.'))) {
+      await clearKeyboard(env, parsed);
+    }
     return 'Ок - напиши текстом.';
   }
 
@@ -1933,14 +2104,37 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
   if (choice === 'ok' && row.kind === 'transcript' && row.text) {
     const threadKey = row.threadId == null ? THREAD_DM : String(row.threadId);
     const text = row.text;
-    // Рішення власника прийнято - кнопки зайві незалежно від долі прогону.
-    await clearKeyboard(env, parsed);
+    const accepted = '🎙 Голосове прийнято.\nПочинаю обробку.';
     await run(async () => {
       try {
-        await routeThreadText(env, target, threadKey, text, nowMs);
+        if (STOP_RE.test(text)) {
+          await stopThread(env, target, threadKey, nowMs);
+          await replaceCallbackMessage(env, parsed, '🎙 Голосове прийнято.\nЗупинив.');
+        } else if (parsed.messageId != null) {
+          const route = WEEKLY_NOW_RE.test(text) ? 'weekly-review' : classifyRoute(text);
+          await startOrQueueThreadText(
+            env,
+            target,
+            threadKey,
+            text,
+            route,
+            nowMs,
+            parsed.messageId,
+            accepted,
+          );
+        } else {
+          await reply(env, target, accepted, nowMs);
+          await routeThreadText(env, target, threadKey, text, nowMs);
+        }
       } catch (/** @type {any} */ e) {
         console.error('prerouter: підтверджений транскрипт не поїхав', e?.message);
-        await reply(env, target, 'Не вдалося запустити - напиши ще раз.', nowMs).catch(() => {});
+        if (
+          !(await replaceCallbackMessage(env, parsed, '⚠️ Не вдалося запустити — спробуй ще раз.'))
+        ) {
+          await reply(env, target, '⚠️ Не вдалося запустити — спробуй ще раз.', nowMs).catch(
+            () => {},
+          );
+        }
       }
       await finishPendingVoice(env, id, true);
     });
@@ -1958,9 +2152,9 @@ async function voiceCallbackToast(env, parsed, id, choice, nowMs, defer) {
         },
       );
       await finishPendingVoice(env, id, ok);
-      // Кнопку знімаємо ЛИШЕ при успіху: інакше повторний тап - єдиний спосіб
-      // дістати те саме аудіо, і він має лишитись.
-      if (ok) await clearKeyboard(env, parsed);
+      // За успіху зрозуміло завершуємо первинне повідомлення. За збою не
+      // чіпаємо його взагалі: кнопка лишається для повторного розпізнання.
+      if (ok) await replaceCallbackMessage(env, parsed, '🎙 Розпізнано. Перевір текст нижче.');
     });
     return 'Розпізнаю…';
   }
@@ -2003,6 +2197,32 @@ async function askT2Word(env, parsed, id) {
   } catch (/** @type {any} */ e) {
     console.error('prerouter: слово T2 не дістали', e?.message);
     return null;
+  }
+}
+
+/**
+ * Завершити одноразову взаємодію прямо в тому повідомленні, де була дія.
+ * Telegram не дає надійного «зеленого стану» inline-кнопки на всіх клієнтах,
+ * тому джерелом правди є короткий текст результату, а не колір чи галочка.
+ * Повертає false лише якщо редагувати вже неможливо (старе/видалене
+ * повідомлення); тоді викликач чесно надсилає запасний рядок у тред.
+ * @param {Env} env
+ * @param {{ chatId?: number | null, messageId?: number | null }} parsed
+ * @param {string} text
+ */
+async function replaceCallbackMessage(env, parsed, text) {
+  if (parsed.messageId == null || parsed.chatId == null) return false;
+  try {
+    const res = await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: String(text).slice(0, 3_900),
+    });
+    if (!res.ok) return false;
+    const body = await res.json().catch(() => null);
+    return body?.ok !== false;
+  } catch {
+    return false;
   }
 }
 
@@ -2118,6 +2338,10 @@ function decisionText(res) {
   // Підпис із результату виконавця; без назви там - із payload пропозиції
   // (export віддає {filename, rows}, accept - {date}; приймання 05.09, B4).
   const payload = 'payload' in res ? res.payload : null;
+  // `facts.set` має внутрішній key (наприклад setting.test_word), але це не
+  // назва для людини. Значення є в proposal payload, тоді як результат
+  // виконавця навмисно містить тільки службовий {saved, kind, key}.
+  if (res.kind === 'facts.set') return factDecisionText(payload, res.status);
   const result = 'result' in res ? res.result : null;
   const fromResult = res.status === 'approved' ? proposalLabel(res.kind, result).label : '';
   const source = fromResult ? result : payload;
@@ -2131,6 +2355,30 @@ function decisionText(res) {
   const what = lowerFirst(humanAction(res.kind, source, 'ask'));
   if (res.status === 'rejected') return `❌ Не буду: ${what}.`;
   return `⌛ Час вийшов: ${what} - попроси ще раз, якщо ще актуально.`;
+}
+
+/** Людський підсумок збереження факту: без ключів D1, provenance чи JSON.
+ * @param {unknown} payload @param {'approved' | 'rejected' | 'expired'} status */
+function factDecisionText(payload, status) {
+  const fact = /** @type {Record<string, unknown>} */ (
+    payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+  );
+  const key = String(fact.key ?? '').replace(/^setting\./, '');
+  const value = factValueForDisplay(fact.value);
+  if (status === 'rejected') return '↩ Не зберігав.';
+  if (status === 'expired') return '⌛ Підтвердження прострочене — нічого не зберігав.';
+  if (key === 'test_word' && value) return `🧠 Готово — для тестів використовуватиму «${value}».`;
+  if (key === 'routine_nudges') return '🧠 Готово — налаштування регулярних нагадувань оновлено.';
+  if (key === 'day_plan') return '🧠 Готово — налаштування плану дня оновлено.';
+  if (key === 'price_shops') return '🧠 Готово — магазини для відстеження цін оновлено.';
+  return value ? `🧠 Готово — запамʼятав «${value}».` : '🧠 Готово — запамʼятав.';
+}
+
+/** Значення факту для короткого підтвердження, лише простий видимий текст.
+ * @param {unknown} value */
+function factValueForDisplay(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(SANITIZE_RE, ' ').replace(/[«»]/g, '').trim().slice(0, 120);
 }
 
 /**
@@ -2299,7 +2547,8 @@ function undoToast(res) {
 
 /** Розібраний callback: те, що дає parseUpdate для тапу по кнопці.
  *  @typedef {{ chatId?: number | null, messageId?: number | null,
- *    threadId?: number | string | null, data?: unknown, replyMarkup?: unknown }} CallbackParsed */
+ *    threadId?: number | string | null, data?: unknown, replyMarkup?: unknown,
+ *    messageText?: string | null }} CallbackParsed */
 
 /** «стоп» (S-0-3): очистити чергу, абортнути активний прогін, чесний підпис.
  *  @param {Env} env @param {ThreadTarget} parsed @param {string} threadKey @param {number} nowMs */
@@ -2576,6 +2825,18 @@ async function backupStatusLine(env) {
     // `blocked`. Не називаємо це «відновленням»: повторів більше не буде й
     // власник має зрозуміти, що потрібна ручна перевірка, а не чекати.
     if (Number(state?.attempts ?? 0) >= BACKUP_MAX_ATTEMPTS) {
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(state?.date ?? ''))
+        ? String(state.date)
+        : null;
+      // Попередня доба з вичерпаними спробами не блокує наступний плановий
+      // запуск: стан привʼязано до дати. Не лякаємо «ручна дія», коли саме
+      // черговий запуск є перевіркою вже задеплоєного виправлення.
+      if (date && date < kyivDateKey(new Date())) {
+        return {
+          healthy: false,
+          line: `Бекап: ⚠️ ${date} не завершився; наступний плановий запуск перевірить оновлений шлях.`,
+        };
+      }
       const reason = compactDigestText(String(state?.lastError ?? 'вичерпано спроби'));
       return {
         healthy: false,
@@ -2609,7 +2870,7 @@ async function briefingRuntimeStatusLine(env, nowMs) {
     if (state.state === 'needs_openai_key') {
       return {
         healthy: false,
-        line: `Брифінг: ⚠️ потрібен GitHub Actions secret OPENAI_API_KEY${age}.`,
+        line: `Брифінг: ⚠️ останній preflight GitHub Actions не бачив OPENAI_API_KEY — перевір секрет і перезапусти workflow${age}.`,
       };
     }
     return { healthy: false, line: `Брифінг: ⚠️ потребує дії — ${detail}${age}.` };
@@ -2771,7 +3032,7 @@ async function sendStatusDraft(env, parsed) {
     const res = await tgCall(env, 'sendMessage', {
       chat_id: parsed.chatId,
       ...(parsed.threadId != null ? { message_thread_id: Number(parsed.threadId) } : {}),
-      text: STATUS_DRAFT,
+      text: statusDraft(parsed, Date.now()),
     });
     const body = /** @type {any} */ (await res.json().catch(() => null));
     const id = body?.result?.message_id;

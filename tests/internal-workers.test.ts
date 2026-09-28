@@ -21,6 +21,9 @@ import {
   workerFilename,
   saveWorkerResult,
   loadWorkerResult,
+  priceShopOptions,
+  priceShopCard,
+  priceShopButtons,
 } from '../web/core/brain/worker-results.mjs';
 import { isTaintActive } from '../web/core/policy/core.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -262,6 +265,28 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(String(msg.text)).toContain('$3.20');
   });
 
+  it('facts.set T1 має людську картку без setting.* і дублювання кнопки', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    db.prepare(
+      `INSERT INTO proposals (id, level, kind, payload_json, thread_id, msg_id, word, expires_at, status, created_at)
+       VALUES ('fact1', 'T1', 'facts.set', ?, '99', NULL, NULL, ?, 'open', ?)`,
+    ).run(
+      JSON.stringify({ kind: 'setting', key: 'setting.test_word', value: 'лимон' }),
+      new Date(NOW + 600_000).toISOString(),
+      new Date(NOW).toISOString(),
+    );
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'Запамʼятаю setting.test_word після твого ✅.',
+      buttons: [[{ text: '✅ Так', callback_data: 'p:fact1:ok' }]],
+    });
+    expect(res.status).toBe(200);
+    const msg = tg.find((c) => c.method === 'sendMessage')!.form as Record<string, unknown>;
+    expect(msg.text).toBe('🧠 Зберегти для тестів слово «лимон»?');
+    expect(String(msg.text)).not.toContain('setting.');
+    expect(String(msg.text)).not.toContain('після твого');
+  });
+
   it('дві РІЗНІ пропозиції в одному повідомленні - відмова доставки', async () => {
     // Знахідка security-ревʼю: рядок ціни один, а кнопок може бути дві. Модель
     // клала дешеву пропозицію першою (її ціну й показувало ядро), а під «✅
@@ -378,6 +403,45 @@ describe('deliver з результатом працівника (S-7-1)', () =>
         name: 'ok-name',
       },
     );
+  });
+});
+
+describe('підбір магазину для відстеження ціни', () => {
+  it('показує лише перевірені https-магазини, посилання й окремі кнопки вибору', () => {
+    const options = priceShopOptions(
+      [
+        '## Ціни',
+        '- Rozetka — 14 999 грн — https://rozetka.com.ua/ua/sony-wh-1000xm6/p123',
+        '- підробка — 1 грн — https://evil.example/sony',
+        '- Allo — 15 499 грн — https://www.allo.ua/ua/naushniki/sony-wh-1000xm6/',
+        '## Джерела',
+        '- ця секція вже не є добіркою цін — https://comfy.ua/ua/nope',
+      ].join('\n'),
+    );
+    expect(options).toEqual([
+      {
+        shop: 'Rozetka',
+        detail: 'Rozetka — 14 999 грн',
+        url: 'https://rozetka.com.ua/ua/sony-wh-1000xm6/p123',
+      },
+      {
+        shop: 'Allo',
+        detail: 'Allo — 15 499 грн',
+        url: 'https://www.allo.ua/ua/naushniki/sony-wh-1000xm6/',
+      },
+    ]);
+    expect(priceShopCard(options)).toContain(
+      '[Rozetka](https://rozetka.com.ua/ua/sony-wh-1000xm6/p123)',
+    );
+    expect(priceShopCard(options)).not.toContain('evil.example');
+    expect(priceShopButtons('r-price', options)).toEqual([
+      [{ text: '🎁 Rozetka', callback_data: 'm:ps:r-price:0' }],
+      [{ text: '🎁 Allo', callback_data: 'm:ps:r-price:1' }],
+    ]);
+  });
+
+  it('price-search не отримує непотрібних кнопок переписування тексту', () => {
+    expect(workerButtons('r-price', true, 'price-search')).toEqual([]);
   });
 });
 

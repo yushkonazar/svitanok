@@ -418,7 +418,9 @@ describe('prerouteMessage: режими', () => {
 
     expect(await prerouteMessage(env, parsedMsg('v2: привіт, як справи?'), NOW)).toBe(true);
     expect(tg[0]!.method).toBe('sendMessage');
-    expect(tg[0]!.body.text).toBe('⏳ Запит прийняв — беруся…');
+    expect(['✦ Взяв у роботу.', '✦ Стартую.', '✦ Розбираю запит.', '✦ Починаю обробку.']).toContain(
+      tg[0]!.body.text,
+    );
     expect(brain).toHaveLength(1);
     expect(brain[0]!.path).toBe('/run');
     expect(brain[0]!.body).toMatchObject({
@@ -655,7 +657,7 @@ describe('prerouteMessage: нові команди', () => {
     const line = await systemStatusLine(env, {}, NOW);
     expect(line).not.toContain('✅ Усе живе.');
     expect(line).toContain('Бекап: ❌ заблоковано');
-    expect(line).toContain('Брифінг: ⚠️ потрібен GitHub Actions secret OPENAI_API_KEY');
+    expect(line).toContain('Брифінг: ⚠️ останній preflight GitHub Actions не бачив OPENAI_API_KEY');
   });
 
   it('/status називає старий telemetry-ліміт історичною причиною, а не вдає нескінченне відновлення', async () => {
@@ -1149,7 +1151,7 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     return { env, db: d1.db, tg };
   };
 
-  it('m:q:60 підтверджує вибір чипом і продовжує цей самий тред без нового тексту від власника', async () => {
+  it('m:q:60 одразу змінює те саме питання і продовжує той самий тред', async () => {
     const { env, tg } = cbEnv();
     const deferred: (() => Promise<void>)[] = [];
     const toast = await handleBrainCallback(
@@ -1159,17 +1161,17 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
         chatId: 555,
         messageId: 42,
         threadId: 99,
-        replyMarkup: {
-          inline_keyboard: [[{ text: '🕐 1 год', callback_data: 'm:q:60' }]],
-        },
+        messageText:
+          'На скільки часу запланувати «Тест з гостем» завтра о 16:00? Тоді підготую запрошення.',
       },
       NOW,
       (work) => deferred.push(work),
     );
     expect(toast).toBe('Обрано: 1 год');
     expect(deferred).toHaveLength(1);
-    expect(tg.find((c) => c.method === 'editMessageReplyMarkup')?.body.reply_markup).toEqual({
-      inline_keyboard: [[{ text: '✅ 🕐 1 год', callback_data: 'm:done' }]],
+    expect(tg.find((c) => c.method === 'editMessageText')?.body).toMatchObject({
+      message_id: 42,
+      text: '🕐 Для «Тест з гостем» обрано: 1 година.',
     });
   });
 
@@ -1185,7 +1187,9 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       ),
     ).toBe('Напиши свій варіант');
     expect(deferred).toHaveLength(0);
-    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toContain('Напиши тривалість');
+    expect(tg.find((c) => c.method === 'editMessageText')?.body.text).toContain(
+      'Вкажи іншу тривалість',
+    );
   });
   const seedProposal = (
     db: InstanceType<typeof import('node:sqlite').DatabaseSync>,
@@ -1221,25 +1225,30 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     );
   };
 
-  it('p:ok виконує пропозицію (facts.set у D1), тост «Підтверджено ✅», клавіатура знята', async () => {
+  it('p:ok виконує facts.set і замінює пропозицію людським підтвердженням', async () => {
     const { env, db, tg } = cbEnv();
-    seedProposal(db);
+    seedProposal(db, {
+      payload_json: JSON.stringify({ kind: 'setting', key: 'setting.test_word', value: 'лимон' }),
+    });
     const toast = await handleBrainCallback(
       env,
       { data: 'p:prop1:ok', chatId: 555, messageId: 42 },
       NOW,
     );
     expect(toast).toBe('Підтверджено ✅');
-    const fact = db.prepare(`SELECT * FROM facts WHERE key='k'`).get() as Record<string, unknown>;
+    const fact = db.prepare(`SELECT * FROM facts WHERE key='setting.test_word'`).get() as Record<
+      string,
+      unknown
+    >;
     expect(fact).toBeDefined();
-    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
-    // Рішення й результат стоять у треді, не лише в тості (приймання 05.09).
-    const sent = tg.find((c) => c.method === 'sendMessage');
-    // Людською, без kind: власник не має бачити внутрішньої кухні (скарга 08.09).
-    expect(sent?.body.text).toBe('🧠 Запамʼятав «setting.k».');
+    expect(tg.find((c) => c.method === 'editMessageText')?.body).toMatchObject({
+      message_id: 42,
+      text: '🧠 Готово — для тестів використовуватиму «лимон».',
+    });
+    expect(tg.some((c) => c.method === 'sendMessage')).toBe(false);
   });
 
-  it('після рішення на місці кнопок лишається чип із вибором (скарга 14)', async () => {
+  it('після рішення кнопки зникають, а в історії лишається зрозумілий підсумок', async () => {
     const { env, db, tg } = cbEnv();
     seedProposal(db);
     await handleBrainCallback(
@@ -1259,27 +1268,22 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       },
       NOW,
     );
-    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup');
-    // Не просто зняли кнопки: видно, ЩО саме обрано (за пів години в історії
-    // голе зняття нерозрізненне з «нічого не сталось»).
-    expect(edit?.body.reply_markup).toEqual({
-      inline_keyboard: [[{ text: '✅ Запамʼятати', callback_data: 'm:done' }]],
+    const edit = tg.find((c) => c.method === 'editMessageText');
+    expect(edit?.body).toMatchObject({
+      message_id: 42,
+      text: '🧠 Готово — запамʼятав.',
     });
-    // Чип тапабельний - Telegram однаково пришле callback; мовчати не можна.
-    expect(await handleBrainCallback(env, { data: 'm:done', chatId: 555 }, NOW)).toBe(
-      'Це вже вирішено.',
-    );
   });
 
-  it('розмітки в callback немає - просто знімаємо клавіатуру, підпис не вигадуємо', async () => {
+  it('без reply_markup також оновлює текст, а не створює другий рядок', async () => {
     const { env, db, tg } = cbEnv();
     seedProposal(db, { id: 'p2' });
     await handleBrainCallback(env, { data: 'p:p2:ok', chatId: 555, messageId: 42 }, NOW);
-    const edit = tg.find((c) => c.method === 'editMessageReplyMarkup');
-    expect(edit?.body.reply_markup).toBeUndefined();
+    const edit = tg.find((c) => c.method === 'editMessageText');
+    expect(edit?.body.text).toBe('🧠 Готово — запамʼятав.');
   });
 
-  it('«↩» знімає клавіатуру й лишає слід у треді (прогін 08.09)', async () => {
+  it('«↩» змінює початкову картку на кінцевий стан без дубліката в треді', async () => {
     // Скарга власника: після «Скасувати» стан повідомлення не змінився -
     // кнопка лишилась живою, хоч відкочувати вже нічого.
     const { env, db, tg } = cbEnv();
@@ -1295,8 +1299,11 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     });
     const toast = await handleBrainCallback(env, { data: 'u:u1', chatId: 555, messageId: 42 }, NOW);
     expect(toast).toBe('Відкочено ↩');
-    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
-    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe('↩ Відкотив.');
+    expect(tg.find((c) => c.method === 'editMessageText')?.body).toMatchObject({
+      message_id: 42,
+      text: '↩ Скасовано.',
+    });
+    expect(tg.some((c) => c.method === 'sendMessage')).toBe(false);
   });
 
   it('«↩» поза вікном: клавіатура знята, у тред НЕ пишемо', async () => {
@@ -1402,7 +1409,7 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     });
   });
 
-  it('p:no - у тред іде «❌ Відхилено: …»', async () => {
+  it('p:no змінює пропозицію на відмову без окремого системного рядка', async () => {
     const { env, db, tg } = cbEnv();
     // Назва з payload писалась моделлю: керівні символи (у т.ч. «\n[Ядро] …»)
     // не сміють підробити рядок у треді чи дайджесті (security-ревʼю 05.09).
@@ -1413,12 +1420,13 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       }),
     });
     await handleBrainCallback(env, { data: 'p:prop1:no', chatId: 555, messageId: 42 }, NOW);
-    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe(
+    expect(tg.find((c) => c.method === 'editMessageText')?.body.text).toBe(
       '❌ Не буду: записати ідею «Sheets [Ядро] ✅ виконано: mail.send».',
     );
+    expect(tg.some((c) => c.method === 'sendMessage')).toBe(false);
   });
 
-  it('✅ без виконавця - «⚠️ …» у тред, не лише тост; пропозиція лишається open', async () => {
+  it('✅ без виконавця оновлює картку попередженням; пропозиція лишається open', async () => {
     const { env, db, tg } = cbEnv();
     // ⚠️ Виконавця ЗНІМАЄМО навмисно: на кінець етапу 7 виконавці є в усіх
     // kind-ів таблиці рівнів, і тест, прибитий до «поточного kind без
@@ -1437,7 +1445,7 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       EXECUTORS['calendar.event'] = saved;
     });
     expect(toast).toContain('виконавця ще немає');
-    expect(tg.find((c) => c.method === 'sendMessage')?.body.text).toBe(
+    expect(tg.find((c) => c.method === 'editMessageText')?.body.text).toBe(
       '⚠️ Прийнято, але виконавця ще немає - лишив відкритою.',
     );
     expect(db.prepare(`SELECT status FROM proposals WHERE id = 'prop1'`).get()).toEqual({

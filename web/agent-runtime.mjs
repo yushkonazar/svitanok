@@ -28,7 +28,7 @@ import {
   registrySweepLegacyAgent,
 } from './core/run-registry/client.mjs';
 import {
-  ASSISTANT_WORKING_REPLY,
+  assistantWorkingReply,
   ASSISTANT_FALLBACK_REPLY,
   ASSISTANT_EMPTY_REPLY,
   ASSISTANT_ROUNDS_REPLY,
@@ -547,7 +547,7 @@ export async function runAssistantAgent(
   // «⏳» ПЕРЕД стартом: ланцюжок може тривати десятки секунд, і мовчазний чат у
   // цей час читається як «зламалось». message_id запамʼятовуємо в токені, щоб
   // прибрати повідомлення, коли прийде справжня відповідь.
-  const progressMsgId = await messageIdOf(await sendText(ASSISTANT_WORKING_REPLY));
+  const progressMsgId = await messageIdOf(await sendText(assistantWorkingReply()));
 
   const runId = crypto.randomUUID().slice(0, 8);
   const token = await mintRunToken(env.TELEGRAM_WEBHOOK_SECRET, {

@@ -555,7 +555,7 @@ describe('handleBrainCallback: v:-тапи', () => {
       .get()!.id;
   }
 
-  it('✅ → транскрипт іде в тред як текст (статусник + /run мозку), подвійний тап - «Застаріло»', async () => {
+  it('✅ → транскрипт іде в тред, а сама картка голосового стає явним статусом', async () => {
     const { tg, brain } = makeFlowFetchStub();
     const { env, db } = makeFlowEnv();
     const id = await present(env, db);
@@ -572,11 +572,17 @@ describe('handleBrainCallback: v:-тапи', () => {
       profile: 'chat',
       input: { text: 'нагадай про зустріч' },
     });
-    // Клавіатуру прибрано, перший статусник надіслано.
-    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(true);
+    // Результат видимий у початковій картці; немає окремого «прийняв» чи
+    // залежності від кольору inline-кнопки в різних Telegram-клієнтах.
     expect(
-      tg.some((c) => c.method === 'sendMessage' && c.body.text === '⏳ Запит прийняв — беруся…'),
+      tg.some(
+        (c) =>
+          c.method === 'editMessageText' &&
+          c.body.message_id === 101 &&
+          String(c.body.text).includes('Голосове прийнято'),
+      ),
     ).toBe(true);
+    expect(tg.some((c) => c.method === 'editMessageReplyMarkup')).toBe(false);
 
     expect(await handleBrainCallback(env, { data: `v:${id}:ok`, chatId: 555 }, NOW)).toBe(
       'Застаріло - надішли голосове ще раз.',
@@ -641,16 +647,20 @@ describe('handleBrainCallback: v:-тапи', () => {
     expect(row.text).toBe(long);
   });
 
-  it('✏️ → «напиши текстом», прогін не стартує, pending знищено', async () => {
-    const { brain } = makeFlowFetchStub();
+  it('✏️ → картка каже «напиши текстом», прогін не стартує, pending знищено', async () => {
+    const { brain, tg } = makeFlowFetchStub();
     const { env, db } = makeFlowEnv();
     const id = await present(env, db);
 
-    expect(await handleBrainCallback(env, { data: `v:${id}:edit`, chatId: 555 }, NOW)).toBe(
-      'Ок - напиши текстом.',
-    );
+    expect(
+      await handleBrainCallback(env, { data: `v:${id}:edit`, chatId: 555, messageId: 101 }, NOW),
+    ).toBe('Ок - напиши текстом.');
     expect(brain).toHaveLength(0);
     expect(db.prepare(`SELECT count(*) AS n FROM voice_pending`).get()).toEqual({ n: 0 });
+    expect(tg.find((c) => c.method === 'editMessageText')?.body).toMatchObject({
+      message_id: 101,
+      text: '✏️ Добре — напиши текстом.',
+    });
   });
 
   it('✅ на транскрипті «стоп» → шлях abort, а не прогін (спільний routeThreadText)', async () => {

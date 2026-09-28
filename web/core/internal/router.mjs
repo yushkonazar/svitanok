@@ -34,6 +34,9 @@ import {
   sendWorkerDocument,
   uploadWorkerResult,
   workerButtons,
+  priceShopOptions,
+  priceShopCard,
+  priceShopButtons,
 } from '../brain/worker-results.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
@@ -376,12 +379,23 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   } catch (/** @type {any} */ e) {
     return json({ ok: false, error: `contract: ${String(e?.message ?? '')}` }, 400);
   }
-  const deliverText = notice ? [body.text, '', notice].join('\n') : body.text;
+  // Price search is a deliberate two-step owner flow: show inspectable links
+  // first, then let a short button select exactly one allowlisted product page.
+  // The worker's web text is never used as markup or callback data directly.
+  // Facts are a special case: the model's natural-language draft must not leak
+  // `setting.*` or repeat the already rendered confirmation controls.
+  const factProposalPrompt = await factProposalPromptFor(env, body.buttons ?? []);
+  const shopOptions = saved?.name === 'price-search' ? priceShopOptions(saved.text) : [];
+  const shopCard = priceShopCard(shopOptions);
+  const deliverText = [factProposalPrompt ?? body.text, notice, shopCard]
+    .filter(Boolean)
+    .join('\n\n');
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
   // Профіль уже прочитано до відправки: під тижневим звітом мають стояти кнопки
   // «що з цим робити» (PR-6 §2.5), а прикріпити їх можна лише разом із текстом.
   const buttons = [
     ...(body.buttons ?? []),
+    ...(saved ? priceShopButtons(saved.id, shopOptions) : []),
     ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),
     ...(profile === 'weekly-review' ? reportButtons() : []),
   ];
@@ -971,5 +985,54 @@ async function proposalNoticeFor(env, buttons) {
     // Краще не доставити повідомлення (мозок побачить 400 і скаже вголос),
     // ніж доставити його без того, заради чого воно існує.
     throw new Error(`ціну пропозиції не прочитано: ${String(e?.message ?? '')}`, { cause: e });
+  }
+}
+
+/**
+ * Власний текст картки для `facts.set` із T1. Цей шлях не довіряє фразі
+ * моделі: ключ на кшталт `setting.test_word` і «після твого ✅» - це деталі
+ * реалізації, тоді як кнопки вже однозначно показують сам вибір.
+ * @param {Env} env
+ * @param {{ text: string, callback_data: string }[][]} buttons
+ * @returns {Promise<string | null>}
+ */
+async function factProposalPromptFor(env, buttons) {
+  const ids = [
+    ...new Set(
+      buttons
+        .flat()
+        .map((b) => b.callback_data.match(/^p:([A-Za-z0-9-]{1,40}):(?:ok|no)$/)?.[1])
+        .filter(Boolean),
+    ),
+  ];
+  if (ids.length !== 1 || !env.DB) return null;
+  try {
+    const row = /** @type {{ kind: string, payload_json: string } | null} */ (
+      await env.DB.prepare(
+        "SELECT kind, payload_json FROM proposals WHERE id = ? AND status = 'open'",
+      )
+        .bind(ids[0])
+        .first()
+    );
+    if (!row || row.kind !== 'facts.set') return null;
+    const fact = JSON.parse(row.payload_json);
+    if (!fact || typeof fact !== 'object' || Array.isArray(fact))
+      return '🧠 Зберегти це в памʼяті?';
+    const key = String(fact.key ?? '').replace(/^setting\./, '');
+    const value =
+      typeof fact.value === 'string'
+        ? fact.value
+            .replace(/[«»\r\n]/g, ' ')
+            .trim()
+            .slice(0, 120)
+        : '';
+    if (key === 'test_word' && value) return `🧠 Зберегти для тестів слово «${value}»?`;
+    if (key === 'routine_nudges') return '🧠 Оновити регулярні нагадування?';
+    if (key === 'day_plan') return '🧠 Оновити налаштування плану дня?';
+    if (key === 'price_shops') return '🧠 Оновити магазини для відстеження цін?';
+    return '🧠 Зберегти це в памʼяті?';
+  } catch (/** @type {any} */ e) {
+    console.error('internal: факт-пропозицію не прочитано; лишаю текст моделі', e?.message);
+    return null;
   }
 }

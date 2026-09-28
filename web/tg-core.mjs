@@ -10,7 +10,8 @@ export const CB_VERSION = 'v1';
  * Апдейт Telegram після нормалізації — розрізняльний союз за `kind`.
  * @typedef {{ kind: 'callback', updateId: number|null, callbackId: string|null,
  *             fromId: number|null, chatId: number|null, messageId: number|null,
- *             threadId: number|null, data: string, replyMarkup: KvBlob|null }} ParsedCallback
+ *             threadId: number|null, data: string, replyMarkup: KvBlob|null,
+ *             messageText: string|null }} ParsedCallback
  * @typedef {{ kind: 'message', updateId: number|null, fromId: number|null,
  *             chatId: number|null, messageId: number|null, threadId: number|null,
  *             text: string, location: { latitude: number, longitude: number }|null,
@@ -112,6 +113,16 @@ export function parseUpdate(update) {
       threadId: cq.message?.message_thread_id ?? null,
       data: typeof cq.data === 'string' ? cq.data : '',
       replyMarkup: cq.message?.reply_markup ?? null,
+      // Callback належить конкретному повідомленню бота. Текст потрібен лише
+      // для продовження короткого уточнення (наприклад, вибору тривалості),
+      // щоб «1 година» не втратила назву події. Це наш попередній текст, не
+      // зовнішній вміст; обрізаємо його так само, як інші Telegram-поля.
+      messageText:
+        typeof cq.message?.text === 'string'
+          ? cq.message.text.slice(0, 3_500)
+          : typeof cq.message?.caption === 'string'
+            ? cq.message.caption.slice(0, 3_500)
+            : null,
     };
   }
   if (update.message) {

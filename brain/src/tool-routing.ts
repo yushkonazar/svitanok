@@ -130,6 +130,9 @@ const ROUTES: readonly Route[] = [
       'wishes_import',
       'wishes_update',
       'wishes_delete',
+      // URL не повинен бути ручною умовою для початку: Дослідник знайде
+      // кілька перевірених сторінок, а власник вибере магазин кнопкою.
+      'delegate',
     ],
   },
   {

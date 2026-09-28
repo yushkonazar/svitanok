@@ -32,6 +32,9 @@ export const WORKER_FOLLOWUPS = {
  * @type {Record<string, { key: keyof typeof WORKER_FOLLOWUPS, text: string }[]>}
  */
 const WORKER_ACTIONS = {
+  // Вибір магазину — основна дія під підбором ціни; загальні «Коротше» й
+  // «Інший тон» тут лише заважали б зробити наступний крок.
+  'price-search': [],
   'mail-secretary': [
     { key: 'draft', text: '✍️ Чернетка відповіді' },
     { key: 'next', text: '✉️ Наступні листи' },
@@ -79,12 +82,92 @@ export function workerButtons(id, withMd, worker = '') {
   // приходить від моделі, і `constructor` проходив би NAME_RE, резолвився в
   // Object і валив доставку відповіді на `.map`.
   const set = Object.hasOwn(WORKER_ACTIONS, worker) ? WORKER_ACTIONS[worker] : undefined;
-  const row = (set ?? WORKER_ACTIONS_DEFAULT).map((a) => ({
+  const actions = set ?? WORKER_ACTIONS_DEFAULT;
+  if (actions.length === 0) return [];
+  const row = actions.map((a) => ({
     text: a.text,
     callback_data: `m:w:${id}:${a.key}`,
   }));
   if (withMd) row.push({ text: '📎 .md', callback_data: `m:w:${id}:md` });
   return [row];
+}
+
+/** Дозволені магазини для початкового вибору товару. Це не обмежує вже
+ * доданий власником URL, але не перетворює пошуковий результат на кнопку до
+ * довільного домену. */
+/** @type {Record<string, string>} */
+const PRICE_SHOP_NAMES = {
+  'rozetka.com.ua': 'Rozetka',
+  'comfy.ua': 'Comfy',
+  'allo.ua': 'Allo',
+  'foxtrot.com.ua': 'Foxtrot',
+  'eldorado.ua': 'Eldorado',
+};
+
+/** @typedef {{ shop: string, detail: string, url: string }} PriceShopOption */
+
+/**
+ * Витягує з контрольованого формату Дослідника конкретні сторінки товару.
+ * У кнопки й посилання потрапляють тільки https-URL від allowlisted магазинів;
+ * текст веб-сторінки ніколи не задає callback_data чи HTML.
+ * @param {string} text @returns {PriceShopOption[]}
+ */
+export function priceShopOptions(text) {
+  /** @type {PriceShopOption[]} */
+  const options = [];
+  let prices = false;
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const heading = rawLine.match(/^\s*##\s*(.+)$/);
+    if (heading) {
+      // `\b` у JavaScript працює лише з ASCII `\w`, тому після українського
+      // «ціни» межі слова немає. Явний розділювач тримає формат контрольованим
+      // і водночас не губить локалізований заголовок.
+      prices = /^ціни(?:\s|$|[—:-])/i.test(String(heading[1] ?? '').trim());
+      continue;
+    }
+    if (!prices || !/^\s*[-*]\s+/.test(rawLine)) continue;
+    const urlMatch = rawLine.match(/https:\/\/[^\s)\]>]+/i);
+    if (!urlMatch) continue;
+    let url;
+    try {
+      url = new URL(urlMatch[0]);
+    } catch {
+      continue;
+    }
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const shop = PRICE_SHOP_NAMES[host];
+    if (!shop) continue;
+    const detail = rawLine
+      .replace(/^\s*[-*]\s*/, '')
+      .replace(urlMatch[0], '')
+      .replace(/\s+[-—–]\s*$/, '')
+      .replace(/[[\]<>`*_]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 150);
+    if (options.some((o) => o.url === url.toString())) continue;
+    options.push({ shop, detail, url: url.toString() });
+    if (options.length >= 4) break;
+  }
+  return options;
+}
+
+/** Картка варіантів: посилання видно до натискання кнопки, тож вибір магазину
+ * є усвідомленим. @param {PriceShopOption[]} options */
+export function priceShopCard(options) {
+  if (!options.length) return '';
+  const lines = options.map((o) => {
+    const label = o.shop.replace(/[[\]]/g, ' ');
+    return `• [${label}](${o.url})${o.detail ? ` — ${o.detail}` : ''}`;
+  });
+  return ['🎁 Обери магазин для відстеження:', ...lines].join('\n');
+}
+
+/** @param {string} reportId @param {PriceShopOption[]} options */
+export function priceShopButtons(reportId, options) {
+  return options.map((o, index) => [
+    { text: `🎁 ${o.shop}`, callback_data: `m:ps:${reportId}:${index}` },
+  ]);
 }
 
 /** @param {string} name @param {number} nowMs */

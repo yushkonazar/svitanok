@@ -80,7 +80,13 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
         id: 'cb1',
         from: { id: 111 },
         data: 'v1:2026-07-09:ja:0',
-        message: { message_id: 7, chat: { id: 111 }, message_thread_id: 3, reply_markup: { x: 1 } },
+        message: {
+          message_id: 7,
+          chat: { id: 111 },
+          message_thread_id: 3,
+          text: 'Яка тривалість події «Тест з гостем»?',
+          reply_markup: { x: 1 },
+        },
       },
     });
     expect(p).toMatchObject({
@@ -91,6 +97,7 @@ describe('tg-core — parseUpdate / isOwner / isDuplicate', () => {
       messageId: 7,
       threadId: 3,
       data: 'v1:2026-07-09:ja:0',
+      messageText: 'Яка тривалість події «Тест з гостем»?',
     });
   });
 

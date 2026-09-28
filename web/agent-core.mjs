@@ -82,7 +82,24 @@ export const ASSISTANT_ROUNDS_REPLY =
  * тривати десятки секунд, і мовчазний чат у цей час читається як «зламалось».
  * Прибираємо це повідомлення, коли приходить справжня відповідь.
  */
-export const ASSISTANT_WORKING_REPLY = '⏳ Запит прийняв — беруся…';
+export const ASSISTANT_WORKING_REPLIES = [
+  '✦ Взяв у роботу.',
+  '✦ Стартую.',
+  '✦ Розбираю запит.',
+  '✦ Починаю обробку.',
+];
+// Compatibility export for integrations that import the old constant. Actual
+// starts use assistantWorkingReply(), so the chat does not repeat one log-like
+// phrase forever.
+export const ASSISTANT_WORKING_REPLY = ASSISTANT_WORKING_REPLIES[0] ?? '✦ Взяв у роботу.';
+
+/** @param {number} [seed] */
+export function assistantWorkingReply(seed = Date.now()) {
+  return (
+    ASSISTANT_WORKING_REPLIES[Math.floor(seed / 1000) % ASSISTANT_WORKING_REPLIES.length] ??
+    ASSISTANT_WORKING_REPLY
+  );
+}
 
 /**
  * Сторож (scheduled() у worker.js): прогін позначено початим, але хост так і не

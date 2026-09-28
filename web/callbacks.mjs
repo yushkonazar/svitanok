@@ -102,10 +102,9 @@ export async function resolveCallbackToast(/** @type {Env} */ env, /** @type {Kv
 /**
  * Спільна логіка snooze/cancel (§C4): завантажити стан, перевірити існування
  * нагадування, мутувати (mutate — snoozeReminder чи cancelReminder), зберегти,
- * замінити клавіатуру на підтверджувальний чип — одноразовий статус-
- * тік, не перерендер усього повідомлення, на відміну від roadmap, де
- * editMessageText доречний для навігації меню). Розрізняються лише mutate-
- * функцією й текстом тосту.
+ * завершити саме повідомлення коротким результатом. Колір/галочка inline-
+ * кнопки різняться між клієнтами Telegram, тому не можуть бути єдиним
+ * сигналом того, що дія справді відбулась.
  */
 /**
  * @param {Env} env
@@ -115,8 +114,17 @@ export async function resolveCallbackToast(/** @type {Env} */ env, /** @type {Kv
  * @param {string} successToast
  * @param {(env: Env, id: string, nowMs: number) => Promise<boolean>} [d1Fallback]
  *   те саме для нагадувань нового шляху (D1); без нього - лише KV
+ * @param {string} [completionText] - текст, на який оновлюємо саму картку
  */
-async function resolveReminderAction(env, parsed, reminderId, mutate, successToast, d1Fallback) {
+async function resolveReminderAction(
+  env,
+  parsed,
+  reminderId,
+  mutate,
+  successToast,
+  d1Fallback,
+  completionText = successToast,
+) {
   const state = await loadState(env);
   const reminders = Array.isArray(state.reminders) ? state.reminders : [];
   if (!reminders.some((/** @type {KvBlob} */ r) => r.id === reminderId)) {
@@ -129,7 +137,7 @@ async function resolveReminderAction(env, parsed, reminderId, mutate, successToa
         return false;
       });
       if (done) {
-        await clearReminderKeyboard(env, parsed);
+        await finishReminderMessage(env, parsed, completionText);
         return successToast;
       }
     }
@@ -141,19 +149,35 @@ async function resolveReminderAction(env, parsed, reminderId, mutate, successToa
     ...s,
     reminders: mutate(Array.isArray(s.reminders) ? s.reminders : [], reminderId, nowMs),
   }));
-  await clearReminderKeyboard(env, parsed);
+  await finishReminderMessage(env, parsed, completionText);
   return successToast;
 }
 
-/** Закрити одноразову дію чітким чипом - однаково для KV- і D1-нагадувань.
- *  @param {Env} env @param {KvBlob} parsed */
-async function clearReminderKeyboard(env, parsed) {
-  if (parsed.chatId == null || parsed.messageId == null || !parsed.replyMarkup) return;
-  await tgCall(env, 'editMessageReplyMarkup', {
-    chat_id: parsed.chatId,
-    message_id: parsed.messageId,
-    reply_markup: buttonReceiptMarkup(parsed.replyMarkup, parsed.data),
-  });
+/** Закрити одноразову дію зрозумілим повідомленням - однаково для KV- і
+ * D1-нагадувань. Якщо Telegram уже не дає редагувати картку, лишаємо
+ * безпечний fallback-чип, а тост все одно повідомить результат.
+ *  @param {Env} env @param {KvBlob} parsed @param {string} text */
+async function finishReminderMessage(env, parsed, text) {
+  if (parsed.chatId == null || parsed.messageId == null) return;
+  try {
+    const res = await tgCall(env, 'editMessageText', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      text: escapeHtml(text),
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (!res.ok) throw new Error(`Telegram editMessageText HTTP ${res.status}`);
+    const body = await res.json().catch(() => null);
+    if (body?.ok === false) throw new Error('Telegram editMessageText rejected');
+  } catch {
+    if (!parsed.replyMarkup) return;
+    await tgCall(env, 'editMessageReplyMarkup', {
+      chat_id: parsed.chatId,
+      message_id: parsed.messageId,
+      reply_markup: buttonReceiptMarkup(parsed.replyMarkup, parsed.data),
+    }).catch(() => {});
+  }
 }
 
 /** Обробити snooze-callback (`rm:<id>`, окремий простір від v1:<dateKey>:... з P1). */
@@ -174,6 +198,7 @@ export async function resolveReminderSnooze(
     snoozeReminder,
     `😴 Відкладено на ${SNOOZE_MINUTES} хв`,
     (env2, id, nowMs) => d1Snooze(env2, id, nowMs + SNOOZE_MINUTES * 60_000),
+    `😴 Відкладено на ${SNOOZE_MINUTES} хв.`,
   );
 }
 
@@ -196,6 +221,7 @@ export async function resolveReminderSnoozePreset(
       if (!preset) return Promise.resolve(false);
       return d1Snooze(env2, id, nowMs + preset.minutes * 60_000);
     },
+    `😴 Відкладено на ${SNOOZE_PRESETS[presetIdx]?.minutes ?? 0} хв.`,
   );
 }
 
@@ -212,6 +238,7 @@ export async function resolveReminderCancel(
     cancelReminder,
     '🗑 Нагадування скасовано',
     (env2, id) => d1Cancel(env2, id),
+    '🗑 Нагадування скасовано.',
   );
 }
 

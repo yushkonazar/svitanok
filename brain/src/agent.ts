@@ -463,7 +463,16 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         isError: false,
         // Під кап DELIVER_SCHEMA.worker.text: довший результат ядро відкинуло б
         // 400 разом з усією відповіддю (ревʼю PR-3).
-        worker: { name: worker, text: clipHead(text, DELIVER_WORKER_MAX_CHARS) },
+        // Результат Дослідника з явною задачею про ціну має окремий UI: ядро
+        // витягне лише allowlisted сторінки магазинів і додасть кнопки вибору.
+        // Це не довіра до назви з вебу, а тип нашого внутрішнього сценарію.
+        worker: {
+          name:
+            worker === 'researcher' && /(?:ціна|цін[ауиі]|магазин|товар|грн|відстеж)/iu.test(task)
+              ? 'price-search'
+              : worker,
+          text: clipHead(text, DELIVER_WORKER_MAX_CHARS),
+        },
       };
     };
 

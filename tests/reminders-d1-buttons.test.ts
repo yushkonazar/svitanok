@@ -65,6 +65,15 @@ describe('кнопки D1-нагадування', () => {
     // Час зсунувся приблизно на SNOOZE_MINUTES від «зараз».
     const shift = Date.parse(row!.dueAt) - Date.now();
     expect(shift).toBeGreaterThan((SNOOZE_MINUTES - 1) * 60_000);
+    const editCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) =>
+      String(call[0]).includes('/editMessageText'),
+    );
+    expect(editCall).toBeDefined();
+    expect(JSON.parse(String(editCall![1]?.body))).toMatchObject({
+      message_id: 7,
+      text: `😴 Відкладено на ${SNOOZE_MINUTES} хв.`,
+      reply_markup: { inline_keyboard: [] },
+    });
     expect(d1).toBeDefined();
   });
 

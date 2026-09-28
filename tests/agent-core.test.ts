@@ -1252,6 +1252,8 @@ describe('тексти станів агента', () => {
     ASSISTANT_ROUNDS_REPLY,
     ASSISTANT_EMPTY_REPLY,
     ASSISTANT_WORKING_REPLY,
+    ASSISTANT_WORKING_REPLIES,
+    assistantWorkingReply,
     ASSISTANT_STALLED_REPLY,
   } = agent;
 
@@ -1274,6 +1276,14 @@ describe('тексти станів агента', () => {
 
   it('«працюю» коротке — воно висить у чаті, поки йде ланцюжок', () => {
     expect(ASSISTANT_WORKING_REPLY.length).toBeLessThan(40);
+    expect(ASSISTANT_WORKING_REPLIES).toHaveLength(4);
+    for (const text of ASSISTANT_WORKING_REPLIES) expect(text.length).toBeLessThan(40);
+  });
+
+  it('початковий статус називає дію і змінюється, а не вічно каже «думаю»', () => {
+    expect(assistantWorkingReply(0)).toBe('✦ Взяв у роботу.');
+    expect(assistantWorkingReply(1_000)).toBe('✦ Стартую.');
+    expect(assistantWorkingReply(2_000)).toBe('✦ Розбираю запит.');
   });
 
   it('текст обірваного прогону підказує ДІЮ, а не лише констатує', () => {
