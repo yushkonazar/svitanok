@@ -55,9 +55,9 @@ export const SECRETS = [
   { name: 'INTERNAL_HMAC_KEY', where: 'CF + brain/.env', periodDays: 365 },
   {
     name: 'OPENAI_API_KEY',
-    where: 'brain.env',
+    where: 'brain.env + GitHub Secrets',
     periodDays: 365,
-    note: 'тільки `/opt/svitanok-brain-shared/brain.env`',
+    note: 'VPS runtime + Actions (brief, idea-analysis); ніколи CF/D1/Mini App',
   },
   {
     name: 'BACKUP_ENC_KEY',
