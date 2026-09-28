@@ -46,7 +46,25 @@ jobs:
           echo "unit_exec_start=$(systemctl show -p ExecStart --value svitanok-brain)"
           echo "repo_env_readable=$(readable /opt/svitanok-brain/.env)"
           echo "openai_key_configured=$(configured OPENAI_API_KEY)"
-          echo "shadow_thread_configured=$(configured OPENAI_SHADOW_THREAD_IDS)"
+          # Лише allowlisted, не-секретні значення. Не друкуємо довільний
+          # вміст EnvironmentFile: помилка в назві змінної не повинна
+          # випадково винести секрет у log Actions.
+          enum_setting() {
+            local name="$1"
+            local value
+            value="$(sed -n -E "s/^${name}=([A-Za-z0-9_-]+)[[:space:]]*$/\\1/p" /opt/svitanok-brain-shared/brain.env | tail -n 1)"
+            case "$name:$value" in
+              AI_PROVIDER:claude|AI_PROVIDER:openai|AI_PROVIDER:hybrid|OPENAI_ROLLOUT:canary|OPENAI_ROLLOUT:full)
+                printf '%s' "$value"
+                ;;
+              *) printf 'unset-or-invalid' ;;
+            esac
+          }
+          echo "ai_provider=$(enum_setting AI_PROVIDER)"
+          echo "openai_rollout=$(enum_setting OPENAI_ROLLOUT)"
+          echo "canary_target_configured=$(configured OPENAI_CANARY_TARGETS)"
+          echo "canary_profile_configured=$(configured OPENAI_CANARY_PROFILES)"
+          echo "shadow_target_configured=$(configured OPENAI_SHADOW_TARGETS)"
           echo "shadow_profile_configured=$(configured OPENAI_SHADOW_PROFILES)"
           if curl -sf --max-time 5 http://127.0.0.1:8788/ready >/dev/null; then
             echo "ready=yes"

@@ -13,6 +13,7 @@ describe('immutable brain release pipeline', () => {
   const unit = read('brain', 'svitanok-brain.service');
   const stamp = read('brain', 'scripts', 'stamp-build.mjs');
   const drill = read('scripts', 'restore-drill.mjs');
+  const preflight = read('.github', 'workflows', 'vps-preflight.yml');
 
   it('deploy workflow executes the helper from the exact requested commit', () => {
     expect(workflow).toContain('git show "$SHA:.github/scripts/deploy-brain-release.sh" | bash');
@@ -65,5 +66,13 @@ describe('immutable brain release pipeline', () => {
     expect(drill).toContain('restoreSql(doc)');
     expect(drill).toContain('BACKUP_TABLES');
     expect(drill).not.toContain('--remote');
+  });
+
+  it('VPS preflight reports the current OpenAI rollout names without exposing configuration values', () => {
+    expect(preflight).toContain('OPENAI_CANARY_TARGETS');
+    expect(preflight).toContain('OPENAI_SHADOW_TARGETS');
+    expect(preflight).toContain('ai_provider=$(enum_setting AI_PROVIDER)');
+    expect(preflight).toContain('openai_rollout=$(enum_setting OPENAI_ROLLOUT)');
+    expect(preflight).not.toContain('OPENAI_SHADOW_THREAD_IDS');
   });
 });
