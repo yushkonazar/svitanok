@@ -325,7 +325,7 @@ async function resolveReminderDraftAnswer(env, target, text, nowMs, callback = n
       nowMs,
     );
     const whenMs =
-      out.mode === 'executed' && typeof /** @type {any} */ (out.result)?.when === 'string'
+      out.mode === 'executed' && typeof (/** @type {any} */ (out.result)?.when) === 'string'
         ? Date.parse(String(/** @type {any} */ (out.result).when))
         : NaN;
     const summary = Number.isFinite(whenMs)
