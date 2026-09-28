@@ -43,6 +43,11 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # Runtime-залежності — частина production surface. Падаємо на moderate+
+      # у root, brain і dashboard; dev-only інструменти не блокують реліз,
+      # але лишаються під Dependabot і окремим review.
+      - name: audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
@@ -88,6 +93,8 @@ jobs:
           cache: npm
           cache-dependency-path: brain/package-lock.json
       - run: npm ci
+      - name: audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
       - run: npm run typecheck
       - run: npm run build
 
@@ -106,6 +113,8 @@ jobs:
           cache: npm
           cache-dependency-path: web/app/package-lock.json
       - run: npm ci
+      - name: audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
       - run: npm run lint
       - run: npm test
       - run: npm run build

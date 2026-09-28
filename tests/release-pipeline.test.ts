@@ -7,6 +7,7 @@ const read = (...parts: string[]) => readFileSync(join(ROOT, ...parts), 'utf8');
 
 describe('immutable brain release pipeline', () => {
   const workflow = read('.github', 'workflows', 'deploy-host.yml');
+  const ci = read('.github', 'workflows', 'ci.yml');
   const migrations = read('.github', 'workflows', 'migrate.yml');
   const script = read('.github', 'scripts', 'deploy-brain-release.sh');
   const switcher = read('docs', 'ops', 'svitanok-switch-release');
@@ -74,5 +75,10 @@ describe('immutable brain release pipeline', () => {
     expect(preflight).toContain('ai_provider=$(enum_setting AI_PROVIDER)');
     expect(preflight).toContain('openai_rollout=$(enum_setting OPENAI_ROLLOUT)');
     expect(preflight).not.toContain('OPENAI_SHADOW_THREAD_IDS');
+  });
+
+  it('blocks moderate-or-higher vulnerabilities in every production dependency tree', () => {
+    const productionAudits = ci.match(/npm audit --omit=dev --audit-level=moderate/g) ?? [];
+    expect(productionAudits).toHaveLength(3);
   });
 });
