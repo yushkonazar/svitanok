@@ -288,7 +288,9 @@ describe('інструкція профілю в /run (PR-5)', () => {
       };
     };
 
-    const chat = await runInstruction('нагадай про зустріч'); // якір N3 → chat
+    // Коротке «нагадай про…» тепер завершує код (питає час), тому для
+    // перевірки саме chat-профілю лишаємо звичайний неструктурований запит.
+    const chat = await runInstruction('допоможи визначити пріоритети');
     expect(chat.name).toBe('persona');
     expect(chat.body_md).toBe(TEST_PERSONA);
     expect(chat.version_hash).toBe(syncInstructionHash(TEST_PERSONA));
@@ -867,9 +869,11 @@ describe('prerouteMessage: нові команди', () => {
       await prerouteMessage(makeEnv(reg, d1.stub), parsedMsg(text), NOW);
       return brain[0]!.body.tainted;
     };
-    expect(await seedAndRun(NOW - 5 * 60_000, 'нагадай про зустріч')).toBe(true);
-    expect(await seedAndRun(NOW - 31 * 60_000, 'нагадай про зустріч')).toBe(false);
-    expect(await seedAndRun(1, 'нагадай про зустріч')).toBe(false);
+    // «нагадай про…» без часу тепер завершується детермінованим уточненням,
+    // тож тут потрібен звичайний chat-запит, який справді доходить до /run.
+    expect(await seedAndRun(NOW - 5 * 60_000, 'допоможи визначити пріоритети')).toBe(true);
+    expect(await seedAndRun(NOW - 31 * 60_000, 'допоможи визначити пріоритети')).toBe(false);
+    expect(await seedAndRun(1, 'допоможи визначити пріоритети')).toBe(false);
   });
 
   // Приймання 05.09: після ✅ модель казала «колекція ще не створена» - вона

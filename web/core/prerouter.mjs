@@ -10,7 +10,7 @@
 
 import { tgCall } from '../telegram-client.mjs';
 import { parseCommand } from '../tg-core.mjs';
-import { recordTrackedMessage } from '../kv-store.mjs';
+import { recordTrackedMessage, updateState } from '../kv-store.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
 import {
@@ -42,7 +42,14 @@ import { runCollectionsList } from './tools/collections.mjs';
 import { applyPolicy } from './policy/proposals.mjs';
 import { muteHintTopic, HINT_TOPICS } from './hints/daily-hint.mjs';
 import { activeRemindersForList } from '../commands.mjs';
-import { buildRemindersKeyboard, formatRemindersListMessage } from '../reminders-core.mjs';
+import {
+  addDaysToDateKey,
+  buildRemindersKeyboard,
+  formatRemindersListMessage,
+  matchDayPartRange,
+  parseReminderTime,
+  pickDayPartSlot,
+} from '../reminders-core.mjs';
 import { actionPhrase, actionIcon } from './tg/phrase.mjs';
 import { proposalVolume } from './policy/volume.mjs';
 import { LINK_FOLLOWUPS } from './links.mjs';
@@ -50,6 +57,7 @@ import { resolveWaypoint } from './tools/places.mjs';
 import { routesEta } from './adapters/maps.mjs';
 import { findIdea } from './tools/ideas.mjs';
 import { kyivClock, kyivDateKey } from '../kyiv-time.mjs';
+import { readCalendarRange } from '../google.mjs';
 import { renderMdParts } from './tg/markdown.mjs';
 import {
   loadWorkerResult,
@@ -125,6 +133,232 @@ const DECISIONS_MAX = 8;
 /** Запас до початку події поверх ETA і фолбек, коли маршрут не порахувався. */
 const DEPARTURE_BUFFER_MIN = 10;
 const DEPARTURE_FALLBACK_MIN = 30;
+
+/* ── Коротке уточнення нагадування ───────────────────────────────────────
+   «Нагадай про тест» → «Завтра о 9» не потребує моделі: вона вже має всі
+   дані, окрім часу. Раніше обидві репліки йшли окремими прогонами, тож навіть
+   добра модель могла прочитати другу як нову команду й перепитати, ЩО саме
+   робити. Чернетка живе лише 20 хв і прив'язана до chat+thread; take через
+   StateStore CAS не дає двом дубльованим апдейтам створити два нагадування. */
+const REMINDER_DRAFTS_KEY = 'pendingReminderDrafts';
+const REMINDER_DRAFT_TTL_MS = 20 * 60_000;
+const REMINDER_DRAFT_MAX = 24;
+const REMINDER_TEXT_MAX = 200;
+const REMINDER_OPEN_RE = /^\s*нагад(?:ай|ати|уй)(?:\s+мені)?(?:\s+про)?\s*/i;
+const REMINDER_TIME_CHOICES = {
+  morning: 'Завтра вранці',
+  nine: 'Завтра о 09:00',
+};
+
+/** @param {string} draftId */
+function reminderDraftKeyboard(draftId) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '🌅 Завтра вранці', callback_data: `m:rt:${draftId}:morning` },
+          { text: '🕘 Завтра о 09:00', callback_data: `m:rt:${draftId}:nine` },
+        ],
+      ],
+    },
+  };
+}
+
+/** @param {ThreadTarget} target */
+function reminderDraftSlot(target) {
+  return `${target.chatId ?? ''}:${target.threadId ?? ''}`;
+}
+
+/** @param {unknown} raw @param {number} nowMs */
+function asReminderDraft(raw, nowMs) {
+  const item =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {KvBlob} */ (raw) : {};
+  const title = typeof item.title === 'string' ? item.title.trim() : '';
+  const id = typeof item.id === 'string' ? item.id : '';
+  const atMs = Number(item.atMs);
+  if (
+    !title ||
+    title.length > REMINDER_TEXT_MAX ||
+    !/^[a-f0-9]{10}$/.test(id) ||
+    !Number.isFinite(atMs)
+  )
+    return null;
+  if (atMs + REMINDER_DRAFT_TTL_MS <= nowMs) return null;
+  return { id, title, atMs };
+}
+
+/** @param {unknown} raw @param {number} nowMs */
+function liveReminderDrafts(raw, nowMs) {
+  const source =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {KvBlob} */ (raw) : {};
+  /** @type {Record<string, { id: string, title: string, atMs: number }>} */
+  const drafts = {};
+  for (const [slot, value] of Object.entries(source)) {
+    const draft = asReminderDraft(value, nowMs);
+    if (draft) drafts[slot] = draft;
+  }
+  return drafts;
+}
+
+/** Взяти з початкової фрази лише предмет нагадування, але тільки коли часу
+ * справді бракує. Час/частину доби на старті лишаємо звичайному маршруту.
+ * @param {string} text @param {number} nowMs */
+function incompleteReminderTitle(text, nowMs) {
+  const open = REMINDER_OPEN_RE.exec(text);
+  if (!open || parseReminderTime(text, nowMs) || matchDayPartRange(text)) return null;
+  const title = text
+    .slice(open[0].length)
+    .replace(/[.!?]+$/u, '')
+    .trim();
+  return title && title.length <= REMINDER_TEXT_MAX ? title : null;
+}
+
+/** @param {Env} env @param {ThreadTarget} target @param {string} title @param {number} nowMs */
+async function saveReminderDraft(env, target, title, nowMs) {
+  const slot = reminderDraftSlot(target);
+  // Ідентифікатор в callback не дає старій кнопці завершити новішу чернетку
+  // в тому самому чаті або треді.
+  const id = crypto.randomUUID().replaceAll('-', '').slice(0, 10);
+  await updateState(env, (state) => {
+    const drafts = liveReminderDrafts(state[REMINDER_DRAFTS_KEY], nowMs);
+    drafts[slot] = { id, title, atMs: nowMs };
+    const excess = Object.entries(drafts)
+      .sort(([, a], [, b]) => a.atMs - b.atMs)
+      .slice(0, Math.max(0, Object.keys(drafts).length - REMINDER_DRAFT_MAX));
+    for (const [oldSlot] of excess) delete drafts[oldSlot];
+    return { ...state, [REMINDER_DRAFTS_KEY]: drafts };
+  });
+  return id;
+}
+
+/** Забрати чернетку рівно раз. Змінна скидається на кожній CAS-спробі: якщо
+ * інший апдейт уже забрав її між retry, ми не повернемо застаріле значення. */
+/** @param {Env} env @param {ThreadTarget} target @param {number} nowMs @param {string|null} [expectedId] */
+async function takeReminderDraft(env, target, nowMs, expectedId = null) {
+  const slot = reminderDraftSlot(target);
+  const result = {
+    taken: /** @type {{ id: string, title: string, atMs: number } | null} */ (null),
+  };
+  await updateState(env, (state) => {
+    result.taken = null;
+    const raw = state[REMINDER_DRAFTS_KEY];
+    const drafts = liveReminderDrafts(raw, nowMs);
+    const draft = drafts[slot] ?? null;
+    if (draft && (!expectedId || draft.id === expectedId)) {
+      result.taken = draft;
+      delete drafts[slot];
+    }
+    const rawCount =
+      raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw).length : 0;
+    if (!draft && rawCount === Object.keys(drafts).length) return state;
+    return { ...state, [REMINDER_DRAFTS_KEY]: drafts };
+  });
+  return result.taken;
+}
+
+/** @param {number} whenMs @param {number} nowMs */
+function humanReminderWhen(whenMs, nowMs) {
+  const date = kyivDateKey(new Date(whenMs));
+  const today = kyivDateKey(new Date(nowMs));
+  const tomorrow = addDaysToDateKey(today, 1);
+  const day =
+    date === today
+      ? 'сьогодні'
+      : date === tomorrow
+        ? 'завтра'
+        : date.split('-').reverse().join('.');
+  return `${day} о ${kyivClock(whenMs)}`;
+}
+
+/** Частина доби має стати конкретною годиною, але не вигаданою: дивимось
+ * календар і беремо першу вільну годину того самого діапазону. */
+/** @param {Env} env @param {{ forcedDay: string|null, startHour: number, endHour: number }} part @param {number} nowMs */
+async function dayPartReminderWhen(env, part, nowMs) {
+  const today = kyivDateKey(new Date(nowMs));
+  const tomorrow = addDaysToDateKey(today, 1);
+  /** @param {string} dateKey */
+  const read = async (dateKey) =>
+    readCalendarRange(env, dateKey, dateKey).catch((/** @type {any} */ error) => {
+      console.error('prerouter: календар для частини доби не прочитано', error?.message);
+      return null;
+    });
+  /** @type {{ dateKey: string, events: any, nowMs: number, isToday: boolean }[]} */
+  let days;
+  if (part.forcedDay === 'tomorrow') {
+    days = [{ dateKey: tomorrow, events: await read(tomorrow), nowMs: 0, isToday: false }];
+  } else if (part.forcedDay === 'today') {
+    days = [{ dateKey: today, events: await read(today), nowMs, isToday: true }];
+  } else {
+    const [todayEvents, tomorrowEvents] = await Promise.all([read(today), read(tomorrow)]);
+    days = [
+      { dateKey: today, events: todayEvents, nowMs, isToday: true },
+      { dateKey: tomorrow, events: tomorrowEvents, nowMs: 0, isToday: false },
+    ];
+  }
+  const slot = pickDayPartSlot(days, part.startHour, part.endHour);
+  return `${slot.isToday ? 'сьогодні' : 'завтра'} о ${String(slot.hour).padStart(2, '0')}:00`;
+}
+
+/** Якщо відповідь містить час, прив'язуємо її до щойно запитаного предмета
+ * без LLM. Якщо відповіді-часу нема, взагалі не чіпаємо чернетку: новий
+ * повноцінний запит не має випадково стати відповіддю на старе питання. */
+/** @param {Env} env @param {ThreadTarget} target @param {string} text @param {number} nowMs
+ * @param {{ chatId?: number|null, messageId?: number|null, draftId?: string|null }|null} [callback] */
+async function resolveReminderDraftAnswer(env, target, text, nowMs, callback = null) {
+  const parsed = parseReminderTime(text, nowMs);
+  const dayPart = parsed ? null : matchDayPartRange(text);
+  if (!parsed && !dayPart) return false;
+  const draft = await takeReminderDraft(env, target, nowMs, callback?.draftId ?? null);
+  if (!draft) return false;
+
+  try {
+    const when = dayPart ? await dayPartReminderWhen(env, dayPart, nowMs) : text;
+    const out = await applyPolicy(
+      env,
+      {
+        kind: 'reminders.create',
+        payload: { text: draft.title, when },
+        chatId: target.chatId,
+        threadId: target.threadId,
+        tainted: await threadTainted(env, target, nowMs),
+      },
+      nowMs,
+    );
+    const whenMs =
+      out.mode === 'executed' && typeof /** @type {any} */ (out.result)?.when === 'string'
+        ? Date.parse(String(/** @type {any} */ (out.result).when))
+        : NaN;
+    const summary = Number.isFinite(whenMs)
+      ? `⏰ Нагадаю ${humanReminderWhen(whenMs, nowMs)}: ${draft.title}.`
+      : `⏰ Нагадати ${draft.title}?`;
+    const deliver = async (
+      /** @type {string} */ body,
+      /** @type {Record<string, unknown>|undefined} */ extra = undefined,
+    ) => {
+      if (callback && (await replaceCallbackMessage(env, callback, body, extra))) return;
+      await reply(env, target, body, nowMs, extra);
+    };
+    if (out.mode === 'proposed') {
+      await deliver(`${summary} Потрібне ✅.`, {
+        reply_markup: { inline_keyboard: out.proposal.buttons },
+      });
+    } else if (out.mode === 'executed') {
+      await deliver(
+        summary,
+        out.undo ? { reply_markup: { inline_keyboard: out.undo.buttons } } : undefined,
+      );
+    } else {
+      await deliver(`⚠️ Не вдалося поставити нагадування: ${out.error}.`);
+    }
+  } catch (/** @type {any} */ error) {
+    console.error('prerouter: уточнене нагадування не створено', error?.message);
+    const body = '⚠️ Не вдалося поставити нагадування. Спробуй ще раз трохи пізніше.';
+    if (!(callback && (await replaceCallbackMessage(env, callback, body)))) {
+      await reply(env, target, body, nowMs);
+    }
+  }
+  return true;
+}
 /**
  * Що зрізати з назви дії, яку писала модель: керівні символи, форматні й
  * роздільники рядка - саме ними підробляють повідомлення (U+2028/U+2029 у
@@ -396,6 +630,18 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
         await sendRemindersList(env, target, nowMs);
         return true;
       }
+      const title = incompleteReminderTitle(`Нагадай ${cmd.args}`, nowMs);
+      if (title) {
+        const draftId = await saveReminderDraft(env, target, title, nowMs);
+        await reply(
+          env,
+          target,
+          `⏰ Коли нагадати про «${title}»? Можеш обрати варіант або написати свій час.`,
+          nowMs,
+          reminderDraftKeyboard(draftId),
+        );
+        return true;
+      }
       await startOrQueueThreadText(env, target, threadKey, `Нагадай ${cmd.args}`, 'quick', nowMs);
       return true;
     }
@@ -425,6 +671,24 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // Слово-підтвердження T2 (01 §4.3): відкрита пропозиція цього треду з таким
   // словом - це рішення власника, а не повідомлення для моделі.
   if (await resolveT2Word(env, target, threadKey, text, nowMs)) return true;
+
+  // Коротке продовження нагадування живе окремо від розмовної пам'яті: тут
+  // саме код знає, що «завтра о 9» є часом для попереднього «нагадай про…».
+  // Завдяки цьому відповідь не потрапляє у свіжий LLM-прогін без предмета.
+  if (await resolveReminderDraftAnswer(env, target, text, nowMs)) return true;
+
+  const reminderTitle = incompleteReminderTitle(text, nowMs);
+  if (reminderTitle) {
+    const draftId = await saveReminderDraft(env, target, reminderTitle, nowMs);
+    await reply(
+      env,
+      target,
+      `⏰ Коли нагадати про «${reminderTitle}»? Можеш обрати варіант або написати свій час.`,
+      nowMs,
+      reminderDraftKeyboard(draftId),
+    );
+    return true;
+  }
 
   // «Не нагадуй про X» (S-0-16): тема підказок вимикається детерміновано,
   // без прогону - модель не мусить угадувати ключ і форму факту.
@@ -1081,6 +1345,37 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   const data = String(parsed.data ?? '');
   const quickReply = parseQuickReplyCallback(data);
   if (quickReply) return quickReplyToast(env, parsed, quickReply, nowMs, defer);
+  // Швидкий вибір часу під «Коли нагадати…». Тап обробляємо поза моделлю:
+  // саме повідомлення питання перетвориться на підсумок з «↩», тому в чаті
+  // немає ані дубля, ані сумніву, чи кнопка вже спрацювала.
+  const reminderTime = data.match(/^m:rt:([a-f0-9]{10}):(morning|nine)$/);
+  if (reminderTime) {
+    const choice = REMINDER_TIME_CHOICES[/** @type {'morning'|'nine'} */ (reminderTime[2])];
+    const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+    const work = async () => {
+      const resolved = await resolveReminderDraftAnswer(env, target, choice, nowMs, {
+        ...parsed,
+        draftId: reminderTime[1],
+      });
+      if (!resolved) {
+        await replaceCallbackMessage(
+          env,
+          parsed,
+          '⌛ Це уточнення вже неактуальне. Надішли «нагадай про…» ще раз.',
+        );
+      }
+    };
+    if (defer) {
+      defer(() =>
+        work().catch((/** @type {any} */ error) =>
+          console.error('prerouter: вибір часу нагадування впав', error?.message),
+        ),
+      );
+      return 'Ставлю нагадування…';
+    }
+    await work();
+    return 'Готово.';
+  }
   const policy = parsePolicyCallback(data);
   if (policy) {
     if (policy.kind === 'undo') {
@@ -2208,15 +2503,16 @@ async function askT2Word(env, parsed, id) {
  * повідомлення); тоді викликач чесно надсилає запасний рядок у тред.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null }} parsed
- * @param {string} text
+ * @param {string} text @param {Record<string, unknown>} [extra]
  */
-async function replaceCallbackMessage(env, parsed, text) {
+async function replaceCallbackMessage(env, parsed, text, extra = undefined) {
   if (parsed.messageId == null || parsed.chatId == null) return false;
   try {
     const res = await tgCall(env, 'editMessageText', {
       chat_id: parsed.chatId,
       message_id: parsed.messageId,
       text: String(text).slice(0, 3_900),
+      ...(extra ?? {}),
     });
     if (!res.ok) return false;
     const body = await res.json().catch(() => null);
