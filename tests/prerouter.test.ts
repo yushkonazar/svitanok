@@ -412,8 +412,8 @@ describe('prerouteMessage: режими', () => {
     const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
     d1.db
       .prepare(
-        `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, turn_count)
-         VALUES ('dm', 'sess-9', '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z', 0, 'Згортка', 3)`,
+        `INSERT INTO sessions (thread_id, sdk_session_id, started_at, last_at, tainted, summary_md, transcript_md, turn_count)
+         VALUES ('dm', 'sess-9', '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z', 0, 'Згортка', 'Власник: План дня\nСвітанок: До котрої працювати?', 3)`,
       )
       .run();
     const env = makeEnv(reg, d1.stub, 'shadow');
@@ -429,7 +429,11 @@ describe('prerouteMessage: режими', () => {
       profile: 'chat',
       thread_id: 'dm',
       input: { text: 'привіт, як справи?' },
-      session: { sdk_session_id: 'sess-9', summary_md: 'Згортка' },
+      session: {
+        sdk_session_id: 'sess-9',
+        summary_md: 'Згортка',
+        transcript_md: 'Власник: План дня\nСвітанок: До котрої працювати?',
+      },
       status_message_id: 101,
     });
     expect(reg.threads.get('dm')?.statusMessageId).toBe(101);

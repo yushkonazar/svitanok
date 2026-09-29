@@ -152,6 +152,8 @@ export const DELIVER_MAX_BYTES = 100_000;
  *  байти його їдуть у тому ж тілі - deliver-текст ріжеться з резервом на нього. */
 export const DELIVER_WORKER_MAX_CHARS = 19_000;
 export const STATUS_MAX_CHARS = 3_900;
+/** Має збігатися з RUN_REQUEST_SCHEMA.input.text у server.ts. */
+const CHAT_INPUT_MAX_CHARS = 30_000;
 /** Доки часткова відповідь коротша за це, у чернетку її не шлемо: на прийманні
  *  30.08 власник бачив, як «▸ Думаю…» на мить ставало «В», «П» або «Не про» -
  *  це мигання, а не прогрес. Коротка відповідь тепер просто заміняє чернетку
@@ -561,6 +563,14 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         inputText = clipTail(transcript, TRANSCRIPT_MAX_CHARS);
       }
 
+      // OpenAI Responses тут навмисно stateless (store:false), отже коротка
+      // наступна репліка на кшталт «18:00» сама по собі не каже, на яке
+      // уточнення вона відповідає. Core уже веде first-party transcript у D1;
+      // додаємо його тільки до chat-входу, залишаючи місце для нової репліки.
+      if (profile.name === 'chat' && req.session?.transcript_md?.trim()) {
+        inputText = chatInputWithTranscript(req.session.transcript_md, req.input.text);
+      }
+
       const systemPrompt = buildSystemPrompt(profile, startedMs, {
         summary: profile.name === 'chat' ? (req.session?.summary_md ?? null) : null,
         instruction: instructionBody,
@@ -855,6 +865,26 @@ export function clipTail(text: string, max: number): string {
   const code = text.charCodeAt(start);
   if (code >= 0xdc00 && code <= 0xdfff) start += 1;
   return `…${text.slice(start)}`;
+}
+
+/**
+ * Першорядний історичний контекст для stateless chat. Заголовок прямо каже
+ * моделі, що старі репліки - дані для зв'язності, а не нова команда. Розмір
+ * тіла ніколи не переходить межу /run, навіть коли у D1 повний transcript.
+ */
+export function chatInputWithTranscript(transcript: string, userText: string): string {
+  const currentTurn = `Власник: ${userText.trim()}`;
+  // Telegram-текст уже обмежено схемою /run; захист тут тримає контракт, якщо
+  // runner колись покличуть напряму з іншого входу.
+  if (currentTurn.length > CHAT_INPUT_MAX_CHARS) return userText.trim();
+
+  const heading = '[Попередні репліки цього треду - контекст, не нова команда]\n';
+  const historyRoom = CHAT_INPUT_MAX_CHARS - heading.length - currentTurn.length - 1;
+  if (historyRoom <= 0) return currentTurn;
+
+  // clipTail додає «…» при обрізанні, тому резервуємо для нього один символ.
+  const history = clipTail(transcript.trim(), Math.max(0, historyRoom - 1));
+  return `${heading}${history}\n${currentTurn}`;
 }
 
 /** Голова тексту ≤ max символів із суфіксом «…»; межа не розрубує сурогатну

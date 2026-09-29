@@ -1185,7 +1185,13 @@ export async function startClaimedRun(env, parsed, threadKey, entry, nowMs, reus
       tainted: sess?.tainted ?? false,
       ...(statusMessageId != null ? { statusMessageId } : {}),
       ...(sess
-        ? { session: { sdk_session_id: sess.sdkSessionId, summary_md: sess.summaryMd } }
+        ? {
+            session: {
+              sdk_session_id: sess.sdkSessionId,
+              summary_md: sess.summaryMd,
+              ...(sess.transcriptMd ? { transcript_md: sess.transcriptMd } : {}),
+            },
+          }
         : {}),
     },
     nowMs,
@@ -3366,23 +3372,24 @@ async function editStatus(env, parsed, messageId, text, nowMs) {
  *  (свіжа сесія) з fail-safe tainted=true, як у router.readThreadTainted.
  *  @param {Env} env @param {string} threadKey @param {number} nowMs */
 async function readSession(env, threadKey, nowMs) {
-  if (!env.DB) return { sdkSessionId: null, summaryMd: null, tainted: true };
+  if (!env.DB) return { sdkSessionId: null, summaryMd: null, transcriptMd: null, tainted: true };
   try {
     const { results } = await env.DB.prepare(
-      'SELECT sdk_session_id, summary_md, tainted FROM sessions WHERE thread_id = ?',
+      'SELECT sdk_session_id, summary_md, transcript_md, tainted FROM sessions WHERE thread_id = ?',
     )
       .bind(threadKey)
       .all();
     const row = /** @type {any} */ (results?.[0]);
-    if (!row) return { sdkSessionId: null, summaryMd: null, tainted: false };
+    if (!row) return { sdkSessionId: null, summaryMd: null, transcriptMd: null, tainted: false };
     return {
       sdkSessionId: row.sdk_session_id ?? null,
       summaryMd: row.summary_md ?? null,
+      transcriptMd: row.transcript_md ?? null,
       // Позначка - epoch-ms останнього зовнішнього читання, діє TAINT_TTL_MS.
       tainted: isTaintActive(row.tainted, nowMs),
     };
   } catch (/** @type {any} */ e) {
     console.error('prerouter: читання сесії впало - свіжа сесія, tainted fail-safe', e?.message);
-    return { sdkSessionId: null, summaryMd: null, tainted: true };
+    return { sdkSessionId: null, summaryMd: null, transcriptMd: null, tainted: true };
   }
 }

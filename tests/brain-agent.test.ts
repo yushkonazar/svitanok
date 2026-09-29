@@ -472,6 +472,41 @@ describe('makeRunner: quick і збої', () => {
 });
 
 describe('makeRunner: сесії (chat)', () => {
+  it('передає D1-транскрипт для короткої відповіді на уточнення, а не втрачає її контекст', async () => {
+    const client = makeClient();
+    const { engine, inputs } = scriptedEngine(async () => ({
+      finalText: 'Робота до 18:00, далі - дорога додому.',
+      provider: 'openai',
+    }));
+    await makeRunner({ client, engine })(
+      req({
+        input: { text: '18:00' },
+        session: {
+          sdk_session_id: null,
+          summary_md: null,
+          transcript_md:
+            'Власник: План дня: робота до 17-19, потім Mate academy і книжка.\nСвітанок: Роботу планувати до 17:00 чи до 19:00?',
+        },
+      }),
+    );
+    expect(inputs[0]).toContain('Роботу планувати до 17:00 чи до 19:00?');
+    expect(inputs[0]).toContain('Власник: 18:00');
+    expect(inputs[0]).toContain('контекст, не нова команда');
+  });
+
+  it('обмежує chat-вхід разом з історією межами /run', async () => {
+    const client = makeClient();
+    const { engine, inputs } = scriptedEngine(async () => ({ finalText: 'Готово' }));
+    await makeRunner({ client, engine })(
+      req({
+        input: { text: 'б'.repeat(7_000) },
+        session: { sdk_session_id: null, summary_md: null, transcript_md: 'а'.repeat(24_000) },
+      }),
+    );
+    expect(inputs[0]!.length).toBeLessThanOrEqual(30_000);
+    expect(inputs[0]).toContain(`Власник: ${'б'.repeat(7_000)}`);
+  });
+
   it('resume і згортка з req.session; після deliver сесія звітується з turns_inc=1', async () => {
     const client = makeClient();
     const { engine, seen } = scriptedEngine(async () => ({
