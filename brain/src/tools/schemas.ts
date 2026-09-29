@@ -631,7 +631,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'plan.intent',
     description:
-      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM»), deadline?, place?, priority?}. Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
+      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM», точний старт), hard_end? («HH:MM», «до цього часу»), not_before? («HH:MM», «після цього часу»), deadline?, place?, priority?}. Зберігай часову семантику: «до 18:00» = hard_end, «після роботи» = not_before від відомого кінця роботи, «увечері» = not_before «18:00». Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
     args: z.object({
       date: z.string().max(16).optional(),
       // Порожній список і >6 пунктів відкидає ядро (runPlanIntent/ITEMS_MAX):

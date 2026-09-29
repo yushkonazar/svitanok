@@ -66,6 +66,7 @@ async function draftFor(env, date, items, nowMs) {
     settings: config.settings,
     habits: config.habits,
     energy: energyBySlot(stats.checkins ?? {}),
+    nowMin: date === kyivDateKey(new Date(nowMs)) ? kyivMinuteOfDay(new Date(nowMs)) : null,
   });
   await replaceItems(env, date, slots, items);
   await upsertDayPlan(
@@ -120,6 +121,8 @@ export async function runPlanDraft(env, args, nowMs) {
         kind: r.kind,
         est_min: r.est_min,
         hard_at: r.hard_at,
+        hard_end: r.hard_end,
+        not_before: r.not_before,
         deadline: r.deadline,
         place: r.place,
         priority: r.priority,

@@ -43,6 +43,7 @@ const MIGRATIONS = [
   '0010_reminders_address.sql',
   '0012_reminders_recurrence.sql',
   '0014_fact_provenance.sql',
+  '0020_plan_item_time_constraints.sql',
 ];
 // Неділя 06.09.2026 18:00 Києва.
 const NOW = Date.parse('2026-09-06T15:00:00.000Z');
@@ -141,12 +142,27 @@ describe('день і пункти', () => {
     );
   });
 
-  it('normalizeItem: kind зі списку, title ≤ 60, est ≥ 5, hard_at HH:MM, порожня назва - помилка', () => {
+  it('normalizeItem: kind зі списку, title ≤ 60, часові межі HH:MM, порожня назва - помилка', () => {
     const it1 = normalizeItem(
-      { title: ' Презентація ', kind: 'deep', est_min: '90', hard_at: '9:00', deadline: 'скоро' },
+      {
+        title: ' Презентація ',
+        kind: 'deep',
+        est_min: '90',
+        hard_at: '9:00',
+        hard_end: '11:00',
+        not_before: '8:00',
+        deadline: 'скоро',
+      },
       0,
     );
-    expect(it1).toMatchObject({ title: 'Презентація', kind: 'deep', est_min: 90, hard_at: '9:00' });
+    expect(it1).toMatchObject({
+      title: 'Презентація',
+      kind: 'deep',
+      est_min: 90,
+      hard_at: '9:00',
+      hard_end: '11:00',
+      not_before: '8:00',
+    });
     expect(it1.deadline).toBeNull();
     expect(normalizeItem({ title: 'x', kind: 'дивне', est_min: 2 }, 0)).toMatchObject({
       kind: 'routine',
@@ -163,7 +179,10 @@ describe('день і пункти', () => {
       `INSERT INTO plan_items (id, date, title, status, reminder_id) VALUES ('keep', ?, 'Зі старим нагадуванням', 'planned', 'rem-1')`,
     ).run(DATE);
     const items = [
-      normalizeItem({ title: 'Презентація', kind: 'deep', est_min: 60 }, 0),
+      normalizeItem(
+        { title: 'Презентація', kind: 'deep', est_min: 60, hard_end: '18:00', not_before: '09:00' },
+        0,
+      ),
       normalizeItem({ title: 'Марафон', kind: 'deep', est_min: 600 }, 1),
     ];
     const slots = computeSlots({ date: DATE, items, events: [] });
@@ -176,9 +195,11 @@ describe('день і пункти', () => {
     ]);
     expect(rows.find((r) => r.title === 'Презентація')).toMatchObject({
       window_start: '08:00',
-      window_end: '09:20',
+      window_end: '18:00',
       flexible: 0,
       status: 'planned',
+      hard_end: '18:00',
+      not_before: '09:00',
     });
     expect(rows.find((r) => r.title === 'Марафон')).toMatchObject({
       window_start: null,

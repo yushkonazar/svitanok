@@ -50,8 +50,9 @@ export const ENERGY_WINDOWS = {
 
 /**
  * @typedef {{ id: string, title: string, kind: string, est_min: number | null,
- *   hard_at: string | null, deadline: string | null, place: string | null,
- *   flexible: boolean, priority: number, carried_from?: string | null }} PlanItemInput
+ *   hard_at: string | null, hard_end?: string | null, not_before?: string | null,
+ *   deadline: string | null, place: string | null, flexible: boolean, priority: number,
+ *   carried_from?: string | null }} PlanItemInput
  * @typedef {{ id: string, title: string, kind: string, est_min: number,
  *   window_start: string, window_end: string, why: string }} PlacedItem
  * @typedef {{ start: number, end: number, title: string }} Busy
@@ -154,6 +155,7 @@ export function estimateMin(item, bias) {
  *   settings?: Partial<typeof DAY_PLAN_DEFAULTS>,
  *   habits?: Partial<typeof HABIT_DEFAULTS>,
  *   energy?: { morning: number, afternoon: number, evening: number } | null,
+ *   nowMin?: number | null,
  * }} input
  * @returns {{ placed: PlacedItem[], flexible: (PlanItemInput & { why: string })[],
  *   freeMin: number, usedMin: number, capacityMin: number, busy: Busy[] }}
@@ -166,6 +168,14 @@ export function computeSlots(input) {
   const bias = Number(habits.estimate_bias) > 0 ? Number(habits.estimate_bias) : 1.3;
   const fillRatio = clamp(Number(settings.fill_ratio), 0.1, 1);
   const maxDeep = Math.max(0, Math.trunc(Number(settings.max_deep)));
+  // План, складений у середині поточного дня, не має заповнювати вже минулі
+  // години. Для майбутньої дати nowMin не передається, тож старт лишається
+  // звичним day_start.
+  const rawNow = Number(input.nowMin);
+  const nowMin =
+    Number.isFinite(rawNow) && rawNow >= dayStart && rawNow < dayEnd
+      ? Math.ceil(rawNow / ROUND_MIN) * ROUND_MIN
+      : dayStart;
 
   /** @type {Busy[]} */
   const busy = [];
@@ -188,11 +198,26 @@ export function computeSlots(input) {
 
   // 1. Жорсткі за часом - першими, у свій час (навіть поверх події - це
   //    рішення власника; перетин лише позначаємо в why).
-  const hard = input.items.filter((i) => hhmmToMin(i.hard_at) != null);
+  const hard = input.items.filter(
+    (i) => hhmmToMin(i.hard_at) != null || hhmmToMin(i.hard_end) != null,
+  );
   for (const item of hard) {
-    const start = /** @type {number} */ (hhmmToMin(item.hard_at));
-    const est = estimateMin(item, bias);
-    const overlap = busy.find((b) => start < b.end && start + est > b.start);
+    const hardAt = hhmmToMin(item.hard_at);
+    const hardEnd = hhmmToMin(item.hard_end);
+    const start = hardAt ?? nowMin;
+    if (start < nowMin || (hardEnd != null && hardEnd <= start)) {
+      flexible.push({
+        ...item,
+        why: hardEnd != null ? `час до ${minToHhmm(hardEnd)} уже минув` : 'жорсткий час уже минув',
+      });
+      continue;
+    }
+    const est = hardEnd == null ? estimateMin(item, bias) : hardEnd - start;
+    // «До 18:00» резервує робочий відрізок, у якому обід уже очікуваний, а
+    // не є конфліктом. Події календаря й інші жорсткі блоки лишаються
+    // справжнім перетином, про який треба сказати.
+    const overlap = busy.find((b) => b.title !== 'обід' && start < b.end && start + est > b.start);
+    const timingWhy = hardAt == null ? `до ${minToHhmm(hardEnd ?? start + est)}` : 'жорсткий час';
     placed.push({
       id: item.id,
       title: item.title,
@@ -200,17 +225,17 @@ export function computeSlots(input) {
       est_min: est,
       window_start: minToHhmm(start),
       window_end: minToHhmm(start + est),
-      why: overlap ? `жорсткий час; перетин з «${overlap.title}»` : 'жорсткий час',
+      why: overlap ? `${timingWhy}; перетин з «${overlap.title}»` : timingWhy,
     });
     busy.push({ start, end: start + est, title: item.title });
   }
 
-  const freeMin = freeMinutes(dayStart, dayEnd, busy);
+  const freeMin = freeMinutes(nowMin, dayEnd, busy);
   const capacityMin = Math.floor(freeMin * fillRatio);
 
   // 2. Решта - за пріоритетом: дедлайн сьогодні/завтра → перенесені → порядок власника.
   const rest = input.items
-    .filter((i) => hhmmToMin(i.hard_at) == null)
+    .filter((i) => hhmmToMin(i.hard_at) == null && hhmmToMin(i.hard_end) == null)
     .map((i, idx) => ({ i, idx }))
     .sort((a, b) => rank(a.i, input.date) - rank(b.i, input.date) || a.idx - b.idx)
     .map((x) => x.i);
@@ -231,8 +256,9 @@ export function computeSlots(input) {
       flexible.push({ ...item, why: `не влізло в ${Math.round(fillRatio * 100)} % вільного часу` });
       continue;
     }
+    const notBefore = hhmmToMin(item.not_before);
     const preferred = item.kind === 'deep' ? energyOrder(energy) : null;
-    const slot = findSlot(dayStart, dayEnd, busy, est, preferred);
+    const slot = findSlot(Math.max(nowMin, notBefore ?? nowMin), dayEnd, busy, est, preferred);
     if (!slot) {
       flexible.push({ ...item, why: 'немає вікна потрібної довжини' });
       continue;
@@ -244,7 +270,7 @@ export function computeSlots(input) {
       est_min: est,
       window_start: minToHhmm(slot.start),
       window_end: minToHhmm(slot.start + est),
-      why:
+      why: `${notBefore == null ? '' : `після ${minToHhmm(notBefore)} · `}${
         item.kind === 'deep'
           ? energy
             ? `глибокий блок · енергія ${slot.window} вища`
@@ -253,7 +279,8 @@ export function computeSlots(input) {
             ? `перенесено з ${item.carried_from}`
             : item.deadline
               ? `дедлайн ${item.deadline}`
-              : 'за порядком',
+              : 'за порядком'
+      }`,
     });
     busy.push({ start: slot.start, end: slot.start + est, title: item.title });
     used += est;

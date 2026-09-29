@@ -68,6 +68,48 @@ describe('computeSlots - правила S-P-11', () => {
     expect(afternoon.placed[0]?.why).toContain('енергія');
   });
 
+  it('зберігає «до вечора» і «увечері», а сьогодні не ставить блоки у минуле', () => {
+    const out = computeSlots({
+      date: DATE,
+      nowMin: 9 * 60 + 3,
+      items: [
+        item({ id: 'work', title: 'Робота', hard_end: '18:00' }),
+        item({ id: 'home', title: 'Додому', kind: 'move', est_min: 30, not_before: '18:00' }),
+        item({
+          id: 'study',
+          title: 'Mate academy',
+          kind: 'deep',
+          est_min: 60,
+          not_before: '18:00',
+        }),
+        item({ id: 'book', title: 'Книжка', est_min: 30, not_before: '18:00' }),
+      ],
+      events: [],
+      settings: { fill_ratio: 1 },
+    });
+    expect(out.placed.find((p) => p.id === 'work')).toMatchObject({
+      window_start: '09:05',
+      window_end: '18:00',
+      why: 'до 18:00',
+    });
+    for (const id of ['home', 'study', 'book']) {
+      expect(hhmmToMin(out.placed.find((p) => p.id === id)?.window_start)).toBeGreaterThanOrEqual(
+        18 * 60,
+      );
+    }
+    expect(out.placed.find((p) => p.id === 'study')?.why).toContain('після 18:00');
+  });
+
+  it('план на сьогодні починає наступний блок з найближчого кроку, не в минулому', () => {
+    const out = computeSlots({
+      date: DATE,
+      nowMin: 10 * 60 + 2,
+      items: [item({ id: 'today', title: 'Пошта', est_min: 30 })],
+      events: [],
+    });
+    expect(out.placed[0]).toMatchObject({ window_start: '10:05', window_end: '10:45' });
+  });
+
   it('заповнення ≤ fill_ratio вільного часу: 4-й блок - гнучкий із причиною', () => {
     const items = [1, 2, 3, 4].map((i) =>
       item({ id: `i${i}`, title: `Блок ${i}`, kind: 'routine', est_min: 120 }),

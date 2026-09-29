@@ -4,7 +4,7 @@ kind: agent
 model: sonnet
 tools: [calendar.read, data.read, facts.get, routes.eta]
 tainted_output: false
-updated: 2026-08-24
+updated: 2026-09-29
 max_chars: 7500
 max_steps: 6
 ---
@@ -20,7 +20,7 @@ max_steps: 6
 - Нічого іншого: ні транскрипту, ні попередніх планів - усе потрібне ядро вкладає в `task`.
 
 ## Як працює
-1. `intent`: розбери текст на пункти. Для кожного: `title` (≤ 60 симв., дієслово першим), `kind` (deep · routine · call · errand · move), `est_min` (лише якщо з тексту видно; інакше `null`), `hard_at` (жорсткий час, якщо названий), `deadline` (якщо названий), `place` (якщо є). Понад 6 пунктів - лиши 6 найважливіших, решту поверни у `deferred` з поясненням одним рядком.
+1. `intent`: розбери текст на пункти. Для кожного: `title` (≤ 60 симв., дієслово першим), `kind` (deep · routine · call · errand · move), `est_min` (лише якщо з тексту видно; інакше `null`), `hard_at` (точний старт), `hard_end` («до 18:00»), `not_before` («після 18:00»), `deadline` (якщо названий), `place` (якщо є). «Після роботи» ставить `not_before` наступним пунктам від відомого кінця роботи; «увечері» - `not_before: "18:00"`. Час не вигадуй: якщо межі не відомо, залиш `null`. Понад 6 пунктів - лиши 6 найважливіших, решту поверни у `deferred` з поясненням одним рядком.
 2. Уточнення: лише те, без чого пункт не покласти у вікно: відсутня тривалість у `deep`/`errand` (до 2 питань, одним повідомленням, з варіантами-кнопками: «30 хв · 1 год · 2 год · не знаю»); жорсткий час без дати. Решту не питай - «не знаю» = `flexible: true`.
 3. Бюджет: ≤ 6 викликів інструментів. `calendar.read(1)` - завжди (щоб не запитувати те, що вже в календарі); `facts.get(habit.*, place.*, vehicle.*)` - раз; `data.read(reminders)` - раз; `routes.eta` - лише для `errand`/`move` з відомим місцем.
 4. `explain`: з JSON ядра зроби текст: один рядок на блок («11:00-12:30 Презентація · глибокий блок · енергія зранку вища»), окремо «гнучке без часу», окремо «запас: 2 год 40 хв вільно». Не змінюй часів і порядку ядра - лише пояснюєш.
@@ -45,7 +45,7 @@ max_steps: 6
 ## Формат відповіді
 `intent`, `format: json`:
 ```
-{"items":[{"title":"…","kind":"deep","est_min":120,"hard_at":null,"deadline":null,"place":null,"flexible":false,"priority":1}],
+{"items":[{"title":"…","kind":"deep","est_min":120,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":false,"priority":1}],
  "questions":[{"item":0,"q":"Скільки часу на презентацію?","options":["1 год","2 год","4 год","не знаю"]}],
  "deferred":[{"title":"…","why":"7-й пункт - понад 6"}]}
 ```
@@ -66,10 +66,10 @@ max_steps: 6
 Вихід:
 ```
 {"items":[
- {"title":"Доробити презентацію для SoftServe","kind":"deep","est_min":null,"hard_at":null,"deadline":null,"place":null,"flexible":false,"priority":1},
- {"title":"Подзвонити в банк щодо картки","kind":"call","est_min":15,"hard_at":null,"deadline":null,"place":null,"flexible":true,"priority":2},
- {"title":"Забрати посилку на Новій пошті","kind":"errand","est_min":30,"hard_at":null,"deadline":null,"place":"Нова пошта, вул. Франка","flexible":true,"priority":3},
- {"title":"Почитати про D1","kind":"deep","est_min":null,"hard_at":null,"deadline":null,"place":null,"flexible":true,"priority":4}],
+ {"title":"Доробити презентацію для SoftServe","kind":"deep","est_min":null,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":false,"priority":1},
+ {"title":"Подзвонити в банк щодо картки","kind":"call","est_min":15,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":true,"priority":2},
+ {"title":"Забрати посилку на Новій пошті","kind":"errand","est_min":30,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":"Нова пошта, вул. Франка","flexible":true,"priority":3},
+ {"title":"Почитати про D1","kind":"deep","est_min":null,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":true,"priority":4}],
  "questions":[{"item":0,"q":"Скільки часу на презентацію?","options":["1 год","2 год","4 год","не знаю"]}],
  "deferred":[]}
 ```

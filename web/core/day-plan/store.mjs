@@ -87,7 +87,7 @@ function validHhmm(v) {
  * @typedef {{ date: string, status: string, intent_text: string | null, fill_ratio: number | null,
  *   workflow_id: string | null, created_at: string, reviewed_at: string | null }} DayPlanRow
  * @typedef {{ id: string, date: string, title: string, kind: string | null, est_min: number | null,
- *   hard_at: string | null, deadline: string | null, place: string | null, flexible: number | null,
+ *   hard_at: string | null, hard_end: string | null, not_before: string | null, deadline: string | null, place: string | null, flexible: number | null,
  *   priority: number | null, window_start: string | null, window_end: string | null, status: string,
  *   done_at: string | null, reminder_id: string | null, event_id: string | null, carried_from: string | null }} PlanItemRow
  */
@@ -152,7 +152,7 @@ export async function listItems(env, date) {
 
 /**
  * Нормалізувати пункт наміру (від працівника або з plan.intent): kind зі
- * списку, title ≤ 60, est_min ≥ 5 або null, hard_at «HH:MM» або null.
+ * списку, title ≤ 60, est_min ≥ 5 або null, часові межі «HH:MM» або null.
  * @param {Record<string, unknown>} raw
  * @param {number} index
  */
@@ -164,6 +164,8 @@ export function normalizeItem(raw, index) {
   const kind = ITEM_KINDS.includes(String(raw.kind)) ? String(raw.kind) : 'routine';
   const est = Number(raw.est_min);
   const hard = hhmmToMin(raw.hard_at) == null ? null : String(raw.hard_at);
+  const hardEnd = hhmmToMin(raw.hard_end) == null ? null : String(raw.hard_end);
+  const notBefore = hhmmToMin(raw.not_before) == null ? null : String(raw.not_before);
   const deadline = /^\d{4}-\d{2}-\d{2}$/.test(String(raw.deadline ?? ''))
     ? String(raw.deadline)
     : null;
@@ -173,6 +175,8 @@ export function normalizeItem(raw, index) {
     kind,
     est_min: Number.isFinite(est) && est >= 5 ? Math.round(est) : null,
     hard_at: hard,
+    hard_end: hardEnd,
+    not_before: notBefore,
     deadline,
     place: raw.place == null ? null : String(raw.place).slice(0, 120),
     flexible: raw.flexible === true,
@@ -217,9 +221,9 @@ export async function replaceItems(env, date, slots, items) {
     stmts.push(
       d
         .prepare(
-          `INSERT OR REPLACE INTO plan_items (id, date, title, kind, est_min, hard_at, deadline, place, flexible,
+          `INSERT OR REPLACE INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, deadline, place, flexible,
              priority, window_start, window_end, status, carried_from)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
         )
         .bind(
           r.id,
@@ -228,6 +232,8 @@ export async function replaceItems(env, date, slots, items) {
           r.kind ?? null,
           r.est_min ?? null,
           r.hard_at ?? null,
+          r.hard_end ?? null,
+          r.not_before ?? null,
           r.deadline ?? null,
           r.place ?? null,
           r.flexible ? 1 : 0,
@@ -438,8 +444,8 @@ export async function carryItems(env, from, to, ids, nowMs) {
     stmts.push(
       d
         .prepare(
-          `INSERT INTO plan_items (id, date, title, kind, est_min, hard_at, deadline, place, flexible, priority, status, carried_from)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, 'planned', ?)`,
+          `INSERT INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, deadline, place, flexible, priority, status, carried_from)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 1, ?, 'planned', ?)`,
         )
         .bind(
           crypto.randomUUID(),
