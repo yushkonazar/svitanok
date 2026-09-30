@@ -87,7 +87,7 @@ function validHhmm(v) {
  * @typedef {{ date: string, status: string, intent_text: string | null, fill_ratio: number | null,
  *   workflow_id: string | null, created_at: string, reviewed_at: string | null }} DayPlanRow
  * @typedef {{ id: string, date: string, title: string, kind: string | null, est_min: number | null,
- *   hard_at: string | null, hard_end: string | null, not_before: string | null, deadline: string | null, place: string | null, flexible: number | null,
+ *   hard_at: string | null, hard_end: string | null, not_before: string | null, after_item_id: string | null, deadline: string | null, place: string | null, flexible: number | null,
  *   priority: number | null, window_start: string | null, window_end: string | null, status: string,
  *   done_at: string | null, reminder_id: string | null, event_id: string | null, carried_from: string | null }} PlanItemRow
  */
@@ -177,12 +177,33 @@ export function normalizeItem(raw, index) {
     hard_at: hard,
     hard_end: hardEnd,
     not_before: notBefore,
+    after_item_id: typeof raw.after_item_id === 'string' ? raw.after_item_id : null,
     deadline,
     place: raw.place == null ? null : String(raw.place).slice(0, 120),
     flexible: raw.flexible === true,
     priority: Number.isInteger(Number(raw.priority)) ? Number(raw.priority) : index + 1,
     carried_from: typeof raw.carried_from === 'string' ? raw.carried_from : null,
   };
+}
+
+/** Resolve a model's local `after` index only against the same submitted list.
+ * IDs supplied by the model are ignored, including dependency IDs.
+ * @param {Record<string, unknown>[]} raw
+ */
+export function normalizePlanItems(raw) {
+  const items = raw.map((r, index) =>
+    normalizeItem({ ...r, id: undefined, after_item_id: undefined }, index),
+  );
+  for (let index = 0; index < raw.length; index += 1) {
+    const reference = raw[index]?.after;
+    const predecessor = typeof reference === 'number' ? reference : Number.NaN;
+    if (Number.isInteger(predecessor) && predecessor >= 0 && predecessor < index) {
+      const item = items[index];
+      const previous = items[predecessor];
+      if (item && previous) item.after_item_id = previous.id;
+    }
+  }
+  return items;
 }
 
 /**
@@ -221,9 +242,9 @@ export async function replaceItems(env, date, slots, items) {
     stmts.push(
       d
         .prepare(
-          `INSERT OR REPLACE INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, deadline, place, flexible,
+          `INSERT OR REPLACE INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, after_item_id, deadline, place, flexible,
              priority, window_start, window_end, status, carried_from)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
         )
         .bind(
           r.id,
@@ -234,6 +255,7 @@ export async function replaceItems(env, date, slots, items) {
           r.hard_at ?? null,
           r.hard_end ?? null,
           r.not_before ?? null,
+          r.after_item_id ?? null,
           r.deadline ?? null,
           r.place ?? null,
           r.flexible ? 1 : 0,
@@ -348,7 +370,7 @@ export function resolveItemRef(items, ref, where) {
 export async function updateItems(env, date, changes, nowMs) {
   const items = await listItems(env, date);
   const resolve = (/** @type {string} */ ref) => resolveItemRef(items, ref, `у плані ${date}`);
-  /** @type {{ id: string, status: string, done_at: string | null, window_start: string | null, window_end: string | null }[]} */
+  /** @type {ReturnType<typeof snapshot>[]} */
   const prev = [];
   const iso = new Date(nowMs).toISOString();
   const d = db(env);
@@ -373,9 +395,9 @@ export async function updateItems(env, date, changes, nowMs) {
     stmts.push(
       d
         .prepare(
-          `UPDATE plan_items SET window_start = ?, window_end = ?, flexible = 0 WHERE id = ?`,
+          `UPDATE plan_items SET window_start = ?, window_end = ?, hard_at = ?, hard_end = NULL, not_before = NULL, flexible = 0 WHERE id = ?`,
         )
-        .bind(minToHhmm(start), minToHhmm(start + len), it.id),
+        .bind(minToHhmm(start), minToHhmm(start + len), minToHhmm(start), it.id),
     );
   }
   for (const ref of changes.drop ?? []) {
@@ -395,9 +417,19 @@ export async function undoUpdateItems(env, snap) {
     snap.prev.map((p) =>
       d
         .prepare(
-          `UPDATE plan_items SET status = ?, done_at = ?, window_start = ?, window_end = ? WHERE id = ?`,
+          `UPDATE plan_items SET status = ?, done_at = ?, window_start = ?, window_end = ?, hard_at = ?, hard_end = ?, not_before = ?, flexible = ? WHERE id = ?`,
         )
-        .bind(p.status, p.done_at, p.window_start, p.window_end, p.id),
+        .bind(
+          p.status,
+          p.done_at,
+          p.window_start,
+          p.window_end,
+          p.hard_at,
+          p.hard_end,
+          p.not_before,
+          p.flexible,
+          p.id,
+        ),
     ),
   );
 }
@@ -494,6 +526,10 @@ function snapshot(it) {
     done_at: it.done_at,
     window_start: it.window_start,
     window_end: it.window_end,
+    hard_at: it.hard_at,
+    hard_end: it.hard_end,
+    not_before: it.not_before,
+    flexible: it.flexible,
   };
 }
 

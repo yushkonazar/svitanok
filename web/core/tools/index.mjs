@@ -114,7 +114,10 @@ export const TOOLS = {
       // «знайди лист від Steam» власник діставав список свіжих розсилок -
       // тиха підміна пошуку переглядом (приймання 01.09). Тепер це чесна
       // помилка контракту, і модель мусить сказати, ЩО шукає.
-      properties: { q: { type: 'string', minLength: 2, maxLength: 120 } },
+      properties: {
+        q: { type: 'string', minLength: 2, maxLength: 120 },
+        pageToken: { type: 'string', minLength: 1, maxLength: 512 },
+      },
     },
     tainting: true,
     run: (env, args) => runMailSearch(env, args),

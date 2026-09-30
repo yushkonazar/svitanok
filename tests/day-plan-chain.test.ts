@@ -199,7 +199,7 @@ describe('runDayPlanChain', () => {
     const items = await listItems(env, DATE);
     const bank = items.find((i) => i.title === 'Банк');
     expect(bank).toMatchObject({ est_min: 60, kind: 'errand' });
-    expect((hhmmToMin(bank?.window_end) ?? 0) - (hhmmToMin(bank?.window_start) ?? 0)).toBe(80);
+    expect((hhmmToMin(bank?.window_end) ?? 0) - (hhmmToMin(bank?.window_start) ?? 0)).toBe(60);
     expect(items.filter((i) => i.window_start)).toHaveLength(3);
     expect(startWorker.mock.calls[1]?.[0]).toBe('explain');
     expect(startWorker.mock.calls[1]?.[1]).toMatchObject({ date: DATE });
@@ -319,7 +319,7 @@ describe('runDayPlanChain', () => {
     // ⚠️ Від 08.09 подія без гостей - T0: блок їде в календар одразу, а в тред
     // іде рядок із «↩», не пропозиція ✅/❌.
     const cal = sent.find((s) => s.text.startsWith('🗓 «Банк» 07.09 '));
-    expect(cal?.text).toBe('🗓 «Банк» 07.09 08:00-09:20 - у календарі.');
+    expect(cal?.text).toBe('🗓 «Банк» 07.09 08:00-09:00 - у календарі.');
     expect(cal?.buttons.some((b) => b.startsWith('u:'))).toBe(true);
     expect(
       db

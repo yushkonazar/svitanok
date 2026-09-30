@@ -21,6 +21,7 @@ import { EXECUTORS } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 import { d1WithInstructions, syncInstructionHash, TEST_PERSONA } from './helpers/instructions.js';
+import { readTutorSession, saveTutorWorkerResult } from '../web/core/brain/learning-session.mjs';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'prerouter-test-key';
@@ -479,6 +480,250 @@ describe('prerouteMessage: режими', () => {
 });
 
 describe('prerouteMessage: нові команди', () => {
+  it('відповідь після кнопки привʼязана до збереженого питання, навіть після /new', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question =
+      '🎓 SQL індекси\nЯкий індекс допоможе пошуку за містом?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:tu:q1:answer', chatId: 555, messageId: 11 },
+        NOW + 1,
+      ),
+    ).toBe('Чекаю твою відповідь');
+    await prerouteMessage(env, parsedMsg('/new'), NOW + 2);
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('awaiting_answer');
+    expect(await prerouteMessage(env, parsedMsg('Індекс за містом.'), NOW + 3)).toBe(true);
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('answer_submitted');
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body as { input: { text: string } }).input.text).toContain(
+      JSON.stringify(question),
+    );
+  });
+
+  it('навчальні кнопки: підказка запускається один раз і не губить питання', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question = '🎓 SQL\nЯкий індекс обрати?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    const parsed = { data: 'm:tu:q1:hint', chatId: 555, messageId: 11 };
+    expect(await handleBrainCallback(env, parsed, NOW + 1)).toBe('Готую підказку');
+    expect(await handleBrainCallback(env, parsed, NOW + 2)).toContain('вже готував');
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body as { input: { text: string } }).input.text).toContain(
+      JSON.stringify(question),
+    );
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('question');
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:answer' }, NOW + 3)).toBe(
+      'Чекаю твою відповідь',
+    );
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:cancel' }, NOW + 4)).toBe(
+      'Повернув питання',
+    );
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('question');
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:skip' }, NOW + 5)).toBe(
+      'Пропустив',
+    );
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:skip' }, NOW + 6)).toContain(
+      'вже завершено',
+    );
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('skipped');
+  });
+
+  it('навчальні кнопки: самооцінка лише після розбору й тільки один раз', async () => {
+    const reg = makeRegistryStub();
+    makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question = '🎓 SQL\nЯкий індекс обрати?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    const parsed = { data: 'm:tu:q1:easy', chatId: 555, messageId: 11 };
+    expect(await handleBrainCallback(env, parsed, NOW + 1)).toContain('ще не розібрано');
+    d1.db.prepare("UPDATE learning_sessions SET status = 'reviewed' WHERE id = 'q1'").run();
+    expect(await handleBrainCallback(env, parsed, NOW + 2)).toBe('Самооцінку збережено');
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:hard' }, NOW + 3)).toContain(
+      'вже оцінено',
+    );
+    expect((await readTutorSession(env, 'q1'))?.rating).toBe('easy');
+    expect(
+      await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:finish' }, NOW + 4),
+    ).toContain('вже завершено');
+  });
+
+  it('навчальні кнопки не приймають чужий чат або неіснуюче питання', async () => {
+    const reg = makeRegistryStub();
+    makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question = '🎓 SQL\nЯкий індекс обрати?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:tu:q1:finish', chatId: 777, messageId: 11 },
+        NOW + 1,
+      ),
+    ).toContain('недоступне');
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:tu:missing:finish', chatId: 555, messageId: 11 },
+        NOW + 1,
+      ),
+    ).toContain('недоступне');
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('question');
+  });
+
+  it('навчальний приклад і завершення працюють без id повідомлення; повторний тап безпечний', async () => {
+    const reg = makeRegistryStub();
+    const { brain, tg } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question = '🎓 SQL\nЯкий індекс обрати?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    const parsed = { data: 'm:tu:q1:example', chatId: 555 };
+    expect(await handleBrainCallback(env, parsed, NOW + 1)).toBe('Готую приклад');
+    expect(await handleBrainCallback(env, parsed, NOW + 2)).toContain('уже готував');
+    expect(brain).toHaveLength(1);
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:finish' }, NOW + 3)).toBe(
+      'Завершив',
+    );
+    expect(
+      await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:answer' }, NOW + 4),
+    ).toContain('вже почата');
+    expect(
+      tg.some(
+        (call) =>
+          call.method === 'sendMessage' && String(call.body.text).includes('сесію завершено'),
+      ),
+    ).toBe(true);
+  });
+
+  it('скасування очікуваної текстової відповіді повертає сесію до питання', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question = '🎓 SQL\nЯкий індекс обрати?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    await handleBrainCallback(env, { data: 'm:tu:q1:answer', chatId: 555, messageId: 11 }, NOW + 1);
+    expect(await prerouteMessage(env, parsedMsg('скасувати відповідь'), NOW + 2)).toBe(true);
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('question');
+    expect(brain).toHaveLength(0);
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:tu:q1:cancel', chatId: 555, messageId: 11 },
+        NOW + 3,
+      ),
+    ).toContain('не очікується');
+  });
+
+  it('навчальні кнопки дають видимий запасний відгук без редагованого повідомлення', async () => {
+    const reg = makeRegistryStub();
+    const { tg } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question = '🎓 SQL\nЯкий індекс обрати?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    const parsed = { chatId: 555 };
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:answer' }, NOW + 1)).toBe(
+      'Чекаю твою відповідь',
+    );
+    expect(
+      tg.some(
+        (call) =>
+          call.method === 'sendMessage' && String(call.body.text).includes('Напиши відповідь'),
+      ),
+    ).toBe(true);
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:cancel' }, NOW + 2)).toBe(
+      'Повернув питання',
+    );
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:answer' }, NOW + 3)).toBe(
+      'Чекаю твою відповідь',
+    );
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:finish' }, NOW + 4)).toBe(
+      'Завершив',
+    );
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q1:hint' }, NOW + 5)).toContain(
+      'не чекає',
+    );
+    await saveTutorWorkerResult(env, {
+      id: 'q2',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW + 4,
+    });
+    d1.db.prepare("UPDATE learning_sessions SET status = 'reviewed' WHERE id = 'q2'").run();
+    expect(await handleBrainCallback(env, { ...parsed, data: 'm:tu:q2:hard' }, NOW + 5)).toBe(
+      'Самооцінку збережено',
+    );
+    expect(
+      tg.some(
+        (call) => call.method === 'sendMessage' && String(call.body.text).includes('було складно'),
+      ),
+    ).toBe(true);
+    expect(await handleBrainCallback(env, { data: 'm:tu:q2:hint', chatId: null }, NOW + 6)).toBe(
+      'Невідомий чат.',
+    );
+    expect(
+      await handleBrainCallback(
+        makeEnv(reg, undefined),
+        { ...parsed, data: 'm:tu:q2:hint' },
+        NOW + 7,
+      ),
+    ).toContain('тимчасово недоступна');
+  });
+
   it('/new: sdk-сесія скинута, taint 0, згортка ЛИШАЄТЬСЯ (S-0-4)', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();

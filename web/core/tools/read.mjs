@@ -10,13 +10,12 @@
 
 import {
   buildOwnDataDigest,
-  formatMailForPrompt,
   formatMailBodyForPrompt,
   formatDriveForPrompt,
   OWN_DATA_SCOPES,
 } from '../../assistant-data-core.mjs';
 import {
-  readMail,
+  readMailPage,
   readMailBody,
   searchDrive,
   readCalendarRange,
@@ -41,6 +40,8 @@ import { recurrenceText } from '../reminders/recurrence.mjs';
 import { kyivDateKey } from '../../kyiv-time.mjs';
 import { formatBriefingEngagementDigest } from '../brief/engagement.mjs';
 import { buildAnalyticsSnapshot, serializeAnalyticsSnapshot } from '../../analytics-core.mjs';
+import { buildCheckinPeriod } from './checkin-period.mjs';
+import { buildLearningContext } from './learning-context.mjs';
 import { wrapExternal } from './markup.mjs';
 import {
   buildWeeklyDigest,
@@ -65,8 +66,8 @@ const MAIL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/; // той самий контрак
 
 /**
  * data.read: дайджест власних даних за scope. `period` (07 §4: «30d», «12w»)
- * звужує сирі серії у weekly; для чинних скоупів він не має сенсу і
- * ігнорується. Кап - профільний: weekly 50k, решта 12k, якщо модель не
+ * звужує сирі серії у weekly або рахує періодні агрегати checkin; для інших
+ * скоупів він не має сенсу. Кап - профільний: weekly 50k, решта 12k, якщо модель не
  * попросила менше.
  * @param {Env} env
  * @param {{ scope: string, cap?: number, period?: string }} args
@@ -76,7 +77,9 @@ export async function runDataRead(env, args, nowMs) {
   if (!DATA_READ_SCOPES.includes(args.scope)) {
     throw new Error(`невідомий scope "${args.scope}" (чинні: ${DATA_READ_SCOPES.join(', ')})`);
   }
-  const defaultCap = args.scope === 'weekly' ? DATA_READ_WEEKLY_CAP : DATA_READ_DEFAULT_CAP;
+  const defaultCap = ['weekly', 'progress'].includes(args.scope)
+    ? DATA_READ_WEEKLY_CAP
+    : DATA_READ_DEFAULT_CAP;
   const cap = Math.min(Math.max(Math.trunc(args.cap ?? defaultCap), 500), DATA_READ_MAX_CAP);
   // period звіряється ДО читань: крива форма - помилка контракту, а не
   // тихий дефолт після того, як KV уже прочитано.
@@ -125,6 +128,28 @@ export async function runDataRead(env, args, nowMs) {
       levers,
     });
     return { result: serializeAnalyticsSnapshot(snapshot, cap) };
+  }
+
+  // A period request is for historical analysis, while the ordinary checkin
+  // digest describes only today's slots for write assistance.
+  if (args.scope === 'checkin' && periodDays != null) {
+    const stats = await loadStats(env);
+    const report = buildCheckinPeriod(stats.checkins ?? {}, todayKey, periodDays);
+    const serialized = JSON.stringify(report);
+    if (serialized.length > cap) throw new Error('чек-ін: звіт не вмістився у cap');
+    return { result: serialized };
+  }
+
+  if (args.scope === 'progress') {
+    const [state, stats] = await Promise.all([loadState(env), loadStats(env)]);
+    const report = buildLearningContext(
+      state.roadmapProgress ?? {},
+      stats.mockRated ?? {},
+      stats.mockTopics ?? {},
+    );
+    const serialized = JSON.stringify(report);
+    if (serialized.length > cap) throw new Error('навчання: звіт не вмістився у cap');
+    return { result: serialized };
   }
 
   const [state, stats, latest, settings, fromD1] = await Promise.all([
@@ -249,21 +274,32 @@ export async function runCalendarRead(env, args, nowMs) {
 /**
  * mail.search: заголовки листів за запитом. Вміст - зовнішній (tainted).
  * @param {Env} env
- * @param {{ q: string }} args
+ * @param {{ q: string, pageToken?: string }} args
  */
 export async function runMailSearch(env, args) {
   await assertGoogleScope(env, 'mail');
   const q = String(args.q ?? '').trim();
-  let messages = await readMail(env, q);
+  let effectiveQuery = q;
+  let page = await readMailPage(env, effectiveQuery, String(args.pageToken ?? ''));
   // Gmail шукає кілька слів як AND, тож природна фраза («лист від Steam»)
   // не знаходить нічого, хоч лист є - саме це сталось на прийманні 30.08.
   // Якщо в запиті немає операторів Gmail і видача порожня, пробуємо ще раз
   // зі значущими словами через OR. Один додатковий запит, не цикл.
-  if (Array.isArray(messages) && messages.length === 0) {
+  if (!args.pageToken && page && page.messages.length === 0) {
     const broadened = broadenMailQuery(q);
-    if (broadened) messages = await readMail(env, broadened);
+    if (broadened) {
+      effectiveQuery = broadened;
+      page = await readMailPage(env, effectiveQuery);
+    }
   }
-  return { result: wrapExternal('mail', formatMailForPrompt(messages)) };
+  if (!page)
+    return { result: wrapExternal('mail', 'Пошта недоступна. Це не означає, що листів немає.') };
+  const lines = page.messages.map(
+    (m, i) =>
+      `${i + 1}) id=${String(m.id).slice(0, 128)}; від=${String(m.from).slice(0, 100)}; тема=${String(m.subject).slice(0, 160)}; дата=${String(m.date).slice(0, 50)}; фрагмент=${String(m.snippet).slice(0, 140)}`,
+  );
+  const status = `Пошта: запит=${JSON.stringify(effectiveQuery)}; показано ${page.messages.length} з ${page.requested} запитаних на цій сторінці; не прочитано через збій: ${page.failed}. Наступна сторінка: ${page.nextPageToken ?? 'немає'}. Для наступної сторінки повтори саме цей запит.`;
+  return { result: wrapExternal('mail', [status, ...lines].join('\n')) };
 }
 
 /** Слова, що несуть нуль пошукового сенсу в запиті до пошти. */

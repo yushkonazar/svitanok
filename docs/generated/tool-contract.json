@@ -435,6 +435,7 @@
     "mail.search": {
       "args": {
         "properties": {
+          "pageToken": { "maxLength": 512, "minLength": 1, "type": "string" },
           "q": { "maxLength": 120, "minLength": 2, "type": "string" }
         },
         "required": ["q"],

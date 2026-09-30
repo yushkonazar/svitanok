@@ -1,6 +1,6 @@
 // Розкладка дня (етап 3 PR-8, ADR-035, S-P-11): чистий модуль без D1 і
 // мережі. Пінимо правила: жорсткі першими; deep - у вікно з вищою енергією,
-// без даних - ранок; оцінка × estimate_bias з округленням до 5 хв; стеля
+// без даних - ранок; типовим оцінкам додається bias, названим - ні; стеля
 // fill_ratio і max_deep; буфер навколо подій; errand за місцем підряд;
 // що не влізло - «гнучке без часу» з причиною.
 
@@ -44,17 +44,16 @@ describe('computeSlots - правила S-P-11', () => {
       events: [{ title: 'Зустріч', startMin: 15 * 60 + 30, endMin: 16 * 60 }],
     });
     const hard = out.placed.find((p) => p.id === 'h');
-    // 60 × 1,3 = 78 → 80 хв.
-    expect(hard).toMatchObject({ window_start: '15:00', window_end: '16:20', est_min: 80 });
+    expect(hard).toMatchObject({ window_start: '15:00', window_end: '16:00', est_min: 60 });
     expect(hard?.why).toBe('жорсткий час; перетин з «Зустріч»');
     expect(out.placed.map((p) => p.id)).toEqual(['r', 'h']);
-    expect(out.placed[0]).toMatchObject({ window_start: '08:00', window_end: '08:40' });
+    expect(out.placed[0]).toMatchObject({ window_start: '08:00', window_end: '08:30' });
   });
 
   it('deep без даних енергії - ранок; з енергією (≥ 14 діб) - вікно з вищою енергією', () => {
     const deep = item({ id: 'd', title: 'Презентація', kind: 'deep', est_min: 60 });
     const noEnergy = computeSlots({ date: DATE, items: [deep], events: [] });
-    expect(noEnergy.placed[0]).toMatchObject({ window_start: '08:00', window_end: '09:20' });
+    expect(noEnergy.placed[0]).toMatchObject({ window_start: '08:00', window_end: '09:00' });
     expect(noEnergy.placed[0]?.why).toContain('ранок');
 
     const afternoon = computeSlots({
@@ -107,7 +106,38 @@ describe('computeSlots - правила S-P-11', () => {
       items: [item({ id: 'today', title: 'Пошта', est_min: 30 })],
       events: [],
     });
-    expect(out.placed[0]).toMatchObject({ window_start: '10:05', window_end: '10:45' });
+    expect(out.placed[0]).toMatchObject({ window_start: '10:05', window_end: '10:35' });
+  });
+
+  it('після завершення дня не повертає справи на ранок того самого дня', () => {
+    const out = computeSlots({
+      date: DATE,
+      nowMin: 23 * 60,
+      items: [item({ id: 'late', title: 'Прочитати книгу', est_min: 30 })],
+      events: [],
+    });
+    expect(out.placed).toHaveLength(0);
+    expect(out.flexible[0]?.id).toBe('late');
+  });
+
+  it('явний порядок після роботи зберігається попри зайняті вечірні вікна', () => {
+    const out = computeSlots({
+      date: DATE,
+      nowMin: 9 * 60,
+      items: [
+        item({ id: 'work', title: 'Робота', hard_end: '18:00' }),
+        item({ id: 'home', title: 'Додому', kind: 'move', est_min: 30, after_item_id: 'work' }),
+        item({ id: 'study', title: 'Навчання', kind: 'deep', est_min: 60, after_item_id: 'home' }),
+        item({ id: 'book', title: 'Книжка', est_min: 30, after_item_id: 'study' }),
+      ],
+      events: [{ title: 'Подія', startMin: 18 * 60 + 45, endMin: 19 * 60 + 15 }],
+      settings: { fill_ratio: 1 },
+    });
+    const study = out.placed.find((p) => p.id === 'study');
+    const book = out.placed.find((p) => p.id === 'book');
+    expect(study).toBeDefined();
+    expect(book).toBeDefined();
+    expect(hhmmToMin(book?.window_start)).toBeGreaterThanOrEqual(hhmmToMin(study?.window_end)!);
   });
 
   it('заповнення ≤ fill_ratio вільного часу: 4-й блок - гнучкий із причиною', () => {
@@ -115,9 +145,9 @@ describe('computeSlots - правила S-P-11', () => {
       item({ id: `i${i}`, title: `Блок ${i}`, kind: 'routine', est_min: 120 }),
     );
     const out = computeSlots({ date: DATE, items, events: [] });
-    // 08:00-22:00 = 840 − обід 60 = 780; 60 % = 468; 120 × 1,3 = 156 → 155,
-    // 3 × 155 = 465 влазить, четвертий - ні.
-    expect(out).toMatchObject({ freeMin: 780, capacityMin: 468, usedMin: 465 });
+    // 08:00-22:00 = 840 − обід 60 = 780; 60 % = 468; точні 120-хв
+    // блоки не розширюються, тому три входять у ліміт, четвертий ні.
+    expect(out).toMatchObject({ freeMin: 780, capacityMin: 468, usedMin: 360 });
     expect(out.placed).toHaveLength(3);
     expect(out.flexible.map((f) => [f.id, f.why])).toEqual([
       ['i4', 'не влізло в 60 % вільного часу'],
@@ -141,8 +171,7 @@ describe('computeSlots - правила S-P-11', () => {
       items: [item({ id: 'd', title: 'Дизайн', kind: 'deep', est_min: 90 })],
       events: [{ title: 'Стендап', startMin: 8 * 60, endMin: 9 * 60 }],
     });
-    // 90 × 1,3 = 117 → 115; після події + буфер: 09:15.
-    expect(out.placed[0]).toMatchObject({ window_start: '09:15', window_end: '11:10' });
+    expect(out.placed[0]).toMatchObject({ window_start: '09:15', window_end: '10:45' });
 
     const long = computeSlots({
       date: DATE,
@@ -193,7 +222,7 @@ describe('computeSlots - правила S-P-11', () => {
     });
     const text = formatDraft(DATE, slots, [{ title: 'Зустріч', startMin: 10 * 60 }]);
     expect(text.split('\n')[0]).toBe('План на 07.09');
-    expect(text).toContain('• 08:00-09:20 Презентація · deep · глибокий блок');
+    expect(text).toContain('• 08:00-09:00 Презентація · deep · глибокий блок');
     expect(text).toContain('• 10:00 Зустріч (календар)');
     expect(text).toContain('Гнучке, без часу: Марафон');
     expect(text).toMatch(/Запас: \d+ год \d+ хв вільно/);
@@ -201,13 +230,14 @@ describe('computeSlots - правила S-P-11', () => {
 });
 
 describe('помічники', () => {
-  it('estimateMin: типова тривалість за видом × bias, крок 5 хв, мінімум 15', () => {
+  it('estimateMin: bias лише для типової оцінки, названий час лишається точним', () => {
     expect(estimateMin(item({ id: 'c', title: 'x', kind: 'call' }), 1.3)).toBe(20);
     expect(estimateMin(item({ id: 'r', title: 'x', kind: 'routine' }), 1.3)).toBe(40);
     expect(estimateMin(item({ id: 'd', title: 'x', kind: 'deep' }), 1.3)).toBe(115);
     expect(estimateMin(item({ id: 's', title: 'x', kind: 'call', est_min: 5 }), 1)).toBe(15);
     // Названу власником тривалість bias не «ламає» - лише додає запас.
     expect(estimateMin(item({ id: 'o', title: 'x', kind: 'deep', est_min: 100 }), 1)).toBe(100);
+    expect(estimateMin(item({ id: 'o2', title: 'x', est_min: 30 }), 1.3)).toBe(30);
   });
 
   it('energyBySlot: середні по вікнах лише з ≥ 14 діб, інакше null', () => {

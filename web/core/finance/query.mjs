@@ -18,6 +18,8 @@ import { NOT_TEST_SQL } from './store.mjs';
 export const LIST_MAX = 40;
 /** Скільки розрізів за категоріями/мерчантами. */
 export const BREAKDOWN_MAX = 12;
+const PAGE_SIZE = 1_000;
+const MAX_SCAN_ROWS = 20_000;
 
 /** @param {Env} env */
 function db(env) {
@@ -158,21 +160,31 @@ function monthKeyStartMs(ym, months) {
  * @returns {Promise<QueryTx[]>}
  */
 export async function selectSpending(env, q) {
-  const { results } = await db(env)
-    .prepare(
-      `SELECT id, at, amount, currency, amount_uah, mcc, description, category, flags_json, note
-       FROM transactions
-       WHERE at >= ? AND at < ? AND amount < 0 AND ${NOT_TEST_SQL}
-       ORDER BY at DESC LIMIT 5000`,
-    )
-    .bind(q.from, q.to)
-    .all();
+  /** @type {any[]} */
+  const rows = [];
+  for (let offset = 0; offset <= MAX_SCAN_ROWS; offset += PAGE_SIZE) {
+    const { results } = await db(env)
+      .prepare(
+        `SELECT id, at, amount, currency, amount_uah, mcc, description, category, flags_json, note
+         FROM transactions
+         WHERE at >= ? AND at < ? AND amount < 0 AND ${NOT_TEST_SQL}
+         ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .bind(q.from, q.to, PAGE_SIZE, offset)
+      .all();
+    const page = results ?? [];
+    if (offset === MAX_SCAN_ROWS && page.length) {
+      throw new Error('фінансовий зріз завеликий для повної перевірки; звузь період');
+    }
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
   const catKey = q.category ? String(q.category).trim().toLowerCase() : null;
   const merKey = q.merchant ? merchantKey(q.merchant) : null;
   const want = (q.flags ?? []).filter(Boolean);
   /** @type {QueryTx[]} */
   const out = [];
-  for (const r of results ?? []) {
+  for (const r of rows) {
     const category = String(r.category ?? '');
     if (catKey && category.toLowerCase() !== catKey) continue;
     const merchant = String(r.description ?? '');

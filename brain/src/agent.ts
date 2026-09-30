@@ -422,6 +422,17 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         );
         text = (out.finalText ?? '').trim();
         workerApi = apiNote(out.apiMs);
+        // Each delegated model call has its own latency and usage. Keep only
+        // allowlisted provider metadata; never log the task or output.
+        if (out.provider === 'openai') {
+          pushStep({
+            kind: 'model',
+            name: `worker:${worker}:openai:${safeTelemetry(out.model, 96) ?? 'unknown'}`,
+            ms: out.apiMs ?? now() - t0,
+            ok: true,
+            note: openAiTelemetryNote(out),
+          });
+        }
       } catch (e) {
         // Стеля ходів із текстом - частковий результат (S-7-5), решта - збій.
         if (

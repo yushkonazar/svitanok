@@ -37,7 +37,11 @@ import {
   priceShopOptions,
   priceShopCard,
   priceShopButtons,
+  mailCardItems,
+  mailReportButtons,
+  mailNextPageInfo,
 } from '../brain/worker-results.mjs';
+import { saveTutorWorkerResult, tutorButtons } from '../brain/learning-session.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
@@ -368,6 +372,22 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       return json({ ok: false, error: `contract: ${String(e?.message ?? '')}` }, 400);
     }
   }
+  let tutorSession = null;
+  if (saved?.name === 'tutor') {
+    try {
+      tutorSession = await saveTutorWorkerResult(env, {
+        id: saved.id,
+        text: saved.text,
+        threadId: String(threadKey ?? 'dm'),
+        chatId: String(target.chatId),
+        nowMs,
+      });
+    } catch (/** @type {any} */ e) {
+      // The answer must still reach the owner, but no session controls may
+      // claim persistence when the D1 write failed.
+      console.error('internal: навчальну сесію не збережено', e?.message);
+    }
+  }
   // Ціна під пропозицією (S-8-5/S-8-6) - рядок ЯДРА, не моделі. Модель просить
   // схвалення; довіряти їй же назвати ціну означало б дозволити просити $3.20,
   // написавши «безкоштовно». Тому текст дописується тут, за kind і payload
@@ -387,7 +407,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const factProposalPrompt = await factProposalPromptFor(env, body.buttons ?? []);
   const shopOptions = saved?.name === 'price-search' ? priceShopOptions(saved.text) : [];
   const shopCard = priceShopCard(shopOptions);
-  const deliverText = [factProposalPrompt ?? body.text, notice, shopCard]
+  const mailItems = saved?.name === 'mail-secretary' ? mailCardItems(saved.text) : [];
+  const mailNextPage = saved?.name === 'mail-secretary' ? mailNextPageInfo(saved.text) : null;
+  const mailHint = mailItems.length ? '✉️ Обери лист нижче, щоб дія стосувалася саме його.' : '';
+  const deliverText = [factProposalPrompt ?? body.text, notice, shopCard, mailHint]
     .filter(Boolean)
     .join('\n\n');
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
@@ -396,7 +419,18 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const buttons = [
     ...(body.buttons ?? []),
     ...(saved ? priceShopButtons(saved.id, shopOptions) : []),
-    ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),
+    ...(saved?.name === 'mail-secretary'
+      ? mailReportButtons(saved.id, mailItems, !longWorker, mailNextPage != null)
+      : saved?.name === 'tutor'
+        ? tutorSession && ['question', 'awaiting_answer', 'reviewed'].includes(tutorSession.status)
+          ? tutorButtons(
+              tutorSession.id,
+              /** @type {'question'|'awaiting_answer'|'reviewed'} */ (tutorSession.status),
+            )
+          : []
+        : saved
+          ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '')
+          : []),
     ...(profile === 'weekly-review' ? reportButtons() : []),
   ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга
