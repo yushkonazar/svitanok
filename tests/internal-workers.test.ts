@@ -18,6 +18,7 @@ import { tutorButtons } from '../web/core/brain/learning-session.mjs';
 import {
   WORKER_CHAT_MAX,
   WORKER_FOLLOWUPS,
+  workerFollowupText,
   workerButtons,
   workerFilename,
   saveWorkerResult,
@@ -519,6 +520,33 @@ describe('підбір магазину для відстеження ціни',
     ).toEqual([]);
   });
 
+  it('бере не більш як чотири унікальні картки товарів лише з секції цін', () => {
+    const lines = [
+      '## Пояснення',
+      '- Rozetka — 900 грн — https://rozetka.com.ua/ua/wrong/p0',
+      '## Ціни',
+      '- Rozetka — 1000 грн — https://rozetka.com.ua/ua/item/p1',
+      '- Rozetka — 1000 грн — https://rozetka.com.ua/ua/item/p1',
+      '- Comfy — 1100 грн — https://comfy.ua/ua/item/p2',
+      '- Allo — 1200 грн — https://allo.ua/ua/item/p3',
+      '- Foxtrot — 1300 грн — https://foxtrot.com.ua/ua/item/p4',
+      '- Eldorado — 1400 грн — https://eldorado.ua/ua/item/p5',
+    ];
+    const options = priceShopOptions(lines.join('\n'));
+    expect(options.map((option) => option.shop)).toEqual(['Rozetka', 'Comfy', 'Allo', 'Foxtrot']);
+    expect(priceShopCard(options)).toContain('🎁 Обери магазин');
+    expect(priceShopButtons('r1', options)).toHaveLength(4);
+    expect(priceShopCard([])).toBe('');
+    expect(priceShopOptions('## Інше\n- Comfy — 1000 грн — https://comfy.ua/ua/item/p2')).toEqual(
+      [],
+    );
+    expect(priceShopOptions(null as unknown as string)).toEqual([]);
+    expect(priceShopOptions('## Ціни\n- без посилання 1000 грн')).toEqual([]);
+    expect(priceShopOptions('## Ціни\n- товар — 1000 грн — https://unknown.example/p')).toEqual([]);
+    expect(priceShopOptions('## Ціни\n- товар — 1000 грн — https://comfy.ua:8443/p')).toEqual([]);
+    expect(priceShopOptions('## Ціни\n- товар — 1000 грн — https://%')).toEqual([]);
+  });
+
   it('подвійний вибір магазину не запускає другий прогін або іншу сторінку', async () => {
     const { env, db } = setup();
     const { brain } = stubTelegram();
@@ -612,6 +640,42 @@ describe('картки пошти', () => {
         '🔴 Важливо\n- від: a@example.com - Тема - id a1\n- від: a@example.com - Тема - id a1',
       ),
     ).toHaveLength(1);
+    expect(mailCardItems('')).toEqual([]);
+    expect(mailCardItems(null as unknown as string)).toEqual([]);
+    expect(mailCardItems('## Чернетки\n- від: a@example.com - Тема - id a1')).toEqual([]);
+    expect(
+      mailCardItems('🔴 Важливо\n- від: a@example.com - id a1\n- від: - Тема - id a2'),
+    ).toEqual([]);
+    expect(
+      mailCardItems(
+        '🔴 Важливо\n- від: a@example.com - Тема - id a1\n## Строки\n- від: b@example.com - Інше - id b2',
+      ),
+    ).toHaveLength(1);
+    expect(
+      mailCardItems(
+        `🔴 Важливо\n${Array.from({ length: 12 }, (_, index) => `- від: a@example.com - Тема ${index} - id a${index}`).join('\n')}`,
+      ),
+    ).toHaveLength(10);
+    expect(mailNextPageInfo('Охоплення: запит x; наступна сторінка null')).toBeNull();
+    expect(mailNextPageInfo(null as unknown as string)).toBeNull();
+    expect(mailNextPageInfo('Охоплення: запит x; наступна сторінка cursor-3')).toEqual({
+      query: 'x',
+      cursor: 'cursor-3',
+    });
+    expect(
+      mailReportButtons('r1', [], true, true)
+        .flat()
+        .map((button) => button.callback_data),
+    ).toEqual(['m:w:r1:next', 'm:w:r1:md']);
+  });
+
+  it('відхиляє невідому кнопку працівника й не стверджує збереження без D1', async () => {
+    expect(() =>
+      workerFollowupText({ id: 'r1', name: 'editor', text: 'Текст' }, 'unknown' as 'short'),
+    ).toThrow('Невідома дія');
+    await expect(
+      saveWorkerResult(workerEnv({ DB: undefined }), { name: 'editor', text: 'Текст' }, NOW),
+    ).rejects.toThrow('DB');
   });
 
   it('картка одного листа відкривається в тому самому повідомленні, а дія стартує один раз', async () => {

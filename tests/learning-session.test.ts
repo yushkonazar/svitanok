@@ -26,6 +26,16 @@ describe('збережена навчальна сесія', () => {
   it('визначає лише формальне питання і дає кнопки, привʼязані до id', () => {
     expect(tutorQuestion(QUESTION)).toEqual({ topic: 'SQL індекси', question: QUESTION });
     expect(tutorQuestion('🎓 SQL індекси\nЦе пояснення, а не питання.')).toBeNull();
+    expect(tutorQuestion('')).toBeNull();
+    expect(tutorQuestion(null as unknown as string)).toBeNull();
+    expect(tutorQuestion('🎓 Тема\nМожеш відповісти або попросити підказку.')).toEqual({
+      topic: 'Тема',
+      question: '🎓 Тема\nМожеш відповісти або попросити підказку.',
+    });
+    expect(tutorQuestion(`${QUESTION}${'x'.repeat(3_500)}`)).toBeNull();
+    expect(
+      tutorQuestion(`🎓 Тема\n${'x'.repeat(3_500)}\nМожеш відповісти або попросити підказку.`),
+    ).toBeNull();
     expect(
       tutorButtons('q1', 'question')
         .flat()
@@ -37,6 +47,65 @@ describe('збережена навчальна сесія', () => {
       'm:tu:q1:skip',
       'm:tu:q1:finish',
     ]);
+    expect(tutorButtons('q1', 'awaiting_answer').flat()).toHaveLength(2);
+    expect(tutorButtons('q1', 'reviewed').flat()).toHaveLength(3);
+  });
+
+  it('звичайне пояснення не створює сесії, а запізніла підказка не оживляє закриту', async () => {
+    const { env } = setup();
+    expect(
+      await saveTutorWorkerResult(env, {
+        id: 'plain',
+        text: 'Це лише пояснення.',
+        threadId: '99',
+        chatId: '555',
+        nowMs: NOW,
+      }),
+    ).toBeNull();
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: QUESTION,
+      threadId: '99',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    expect(
+      (
+        await saveTutorWorkerResult(env, {
+          id: 'hint',
+          text: '💡 Подумай про фільтр.',
+          threadId: '99',
+          chatId: '555',
+          nowMs: NOW + 1,
+        })
+      )?.id,
+    ).toBe('q1');
+    expect(await changeTutorStatus(env, 'q1', '555', '99', 'question', 'closed', NOW + 2)).toBe(
+      true,
+    );
+    expect(
+      await saveTutorWorkerResult(env, {
+        id: 'late',
+        text: '💡 Запізніла підказка.',
+        threadId: '99',
+        chatId: '555',
+        nowMs: NOW + 3,
+      }),
+    ).toBeNull();
+  });
+
+  it('без D1 не обіцяє збереженої навчальної сесії', async () => {
+    const env = workerEnv({ DB: undefined });
+    await expect(readTutorSession(env, 'missing')).rejects.toThrow('DB');
+    await expect(
+      saveTutorWorkerResult(env, {
+        id: 'q1',
+        text: QUESTION,
+        threadId: '99',
+        chatId: '555',
+        nowMs: NOW,
+      }),
+    ).rejects.toThrow('DB');
   });
 
   it('зберігає питання, відповідь, розбір і самооцінку крізь нові запити', async () => {
