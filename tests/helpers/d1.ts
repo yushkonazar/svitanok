@@ -64,6 +64,12 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
   ) {
     files.push('0021_plan_item_dependencies.sql');
   }
+  if (
+    files.includes('0007_instructions_plans.sql') &&
+    !files.includes('0022_worker_card_actions.sql')
+  ) {
+    files.push('0022_worker_card_actions.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

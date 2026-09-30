@@ -46,6 +46,10 @@
 
 FTS: D1 підтримує FTS5 (VERIFIED 26.08.2026, проба на бойовій D1: unicode-токенізатор знаходить українські слова). Віртуальні таблиці `ideas_fts(id UNINDEXED, title, body_md)`, `inbox_fts(id UNINDEXED, text)`, `records_fts(id UNINDEXED, data_text)` - колонка `id` звʼязує рядок FTS із TEXT-ключем базової таблиці (rowid FTS із ним не повʼязаний); синхронізацію веде код разом із записом у базову таблицю (ADR-036).
 
+`worker_card_actions(report_id, action_key, created_at)` має складений PK
+`(report_id, action_key)`. Це одноразовий claim кнопок листа й вибору магазину;
+рядок привʼязаний до незмінного `reports.id`, а не до останньої розмови.
+
 `runs` містить лише зареєстровані model/workflow виконання. Технічний тiк
 `SchedulerDO` зберігає компактний status у власному durable state і не створює
 рядок у `runs`; інакше щохвилинні перевірки спотворювали б модельну telemetry.

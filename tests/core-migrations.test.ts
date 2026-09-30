@@ -286,6 +286,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   instructions: ['name', 'kind', 'version_hash', 'body_md', 'max_chars', 'deployed_at'],
   instruction_history: ['name', 'version_hash', 'body_md', 'deployed_at'],
   reports: ['id', 'kind', 'period_from', 'period_to', 'text_md', 'instruction_hash', 'created_at'],
+  worker_card_actions: ['report_id', 'action_key', 'created_at'],
   style_corpus: ['id', 'msg_id', 'at', 'text', 'kind', 'approved'],
   day_plans: [
     'date',
@@ -336,6 +337,7 @@ const EXPECTED_PK: Record<string, string[]> = {
   quota_counters: ['key', 'period'],
   counters: ['name'],
   memory_projection_versions: ['thread_id', 'version'],
+  worker_card_actions: ['report_id', 'action_key'],
 };
 
 type IndexSpec = { cols: string[]; unique?: boolean };
@@ -455,6 +457,7 @@ describe('міграції D1 — файли', () => {
       '0019',
       '0020',
       '0021',
+      '0022',
     ]);
   });
 });

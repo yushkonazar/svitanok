@@ -37,6 +37,9 @@ import {
   priceShopOptions,
   priceShopCard,
   priceShopButtons,
+  mailCardItems,
+  mailReportButtons,
+  mailNextPageInfo,
 } from '../brain/worker-results.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
@@ -387,7 +390,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const factProposalPrompt = await factProposalPromptFor(env, body.buttons ?? []);
   const shopOptions = saved?.name === 'price-search' ? priceShopOptions(saved.text) : [];
   const shopCard = priceShopCard(shopOptions);
-  const deliverText = [factProposalPrompt ?? body.text, notice, shopCard]
+  const mailItems = saved?.name === 'mail-secretary' ? mailCardItems(saved.text) : [];
+  const mailNextPage = saved?.name === 'mail-secretary' ? mailNextPageInfo(saved.text) : null;
+  const mailHint = mailItems.length ? '✉️ Обери лист нижче, щоб дія стосувалася саме його.' : '';
+  const deliverText = [factProposalPrompt ?? body.text, notice, shopCard, mailHint]
     .filter(Boolean)
     .join('\n\n');
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
@@ -396,7 +402,11 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const buttons = [
     ...(body.buttons ?? []),
     ...(saved ? priceShopButtons(saved.id, shopOptions) : []),
-    ...(saved ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '') : []),
+    ...(saved?.name === 'mail-secretary'
+      ? mailReportButtons(saved.id, mailItems, !longWorker, mailNextPage != null)
+      : saved
+        ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '')
+        : []),
     ...(profile === 'weekly-review' ? reportButtons() : []),
   ];
   // Незіслані партіали цієї ж чернетки більше не потрібні: інакше черга

@@ -65,6 +65,16 @@ import {
   WORKER_FOLLOWUPS,
   workerFollowupText,
   priceShopOptions,
+  mailCardItems,
+  mailReportButtons,
+  mailItemButtons,
+  mailItemCard,
+  mailListCard,
+  mailItemFollowup,
+  mailNextPageInfo,
+  claimWorkerCardAction,
+  releaseWorkerCardAction,
+  WORKER_CHAT_MAX,
 } from './brain/worker-results.mjs';
 import {
   findAwaitingChain,
@@ -1497,6 +1507,22 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // нашого збереженого, allowlisted результату.
   const ps = data.match(/^m:ps:([A-Za-z0-9-]{1,40}):(\d)$/);
   if (ps) return priceShopChoiceToast(env, parsed, ps[1] ?? '', Number(ps[2] ?? -1), nowMs, defer);
+  const mailItem = data.match(/^m:mi:([A-Za-z0-9-]{1,40}):(\d)$/);
+  if (mailItem)
+    return mailItemChoiceToast(env, parsed, mailItem[1] ?? '', Number(mailItem[2] ?? -1), nowMs);
+  const mailAction = data.match(/^m:ma:([A-Za-z0-9-]{1,40}):(\d):(brief|draft|remind)$/);
+  if (mailAction)
+    return mailActionToast(
+      env,
+      parsed,
+      mailAction[1] ?? '',
+      Number(mailAction[2] ?? -1),
+      /** @type {'brief'|'draft'|'remind'} */ (mailAction[3]),
+      nowMs,
+      defer,
+    );
+  const mailList = data.match(/^m:ml:([A-Za-z0-9-]{1,40})$/);
+  if (mailList) return mailListToast(env, parsed, mailList[1] ?? '', nowMs);
   // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
   // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
   const wm = data.match(
@@ -1707,6 +1733,16 @@ async function priceShopChoiceToast(env, parsed, reportId, index, nowMs, defer) 
   if (!option) return 'Цей варіант уже недоступний — надішли товар ще раз.';
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
   if (target.chatId == null) return 'Невідомий чат.';
+  // One report can select only one shop. Claim before deferring any network
+  // work: two rapid taps must not create two price-tracking proposals.
+  let claimed;
+  try {
+    claimed = await claimWorkerCardAction(env, reportId, 'price-choice', nowMs);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: вибір магазину не зареєстровано', e?.message);
+    return 'Не вдалося зафіксувати вибір магазину — спробуй пізніше.';
+  }
+  if (!claimed) return 'Магазин із цього підбору вже обрано.';
   const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
   const selected = `🎁 Обрано ${option.shop}.`;
   const status = `${selected}\nГотую відстеження цієї сторінки.`;
@@ -1736,14 +1772,177 @@ async function priceShopChoiceToast(env, parsed, reportId, index, nowMs, defer) 
   if (parsed.messageId != null) await replaceCallbackMessage(env, parsed, selected);
   if (defer) {
     defer(() =>
-      work().catch((/** @type {any} */ e) =>
-        console.error('prerouter: вибір магазину для ціни не стартував', e?.message),
-      ),
+      work().catch(async (/** @type {any} */ e) => {
+        console.error('prerouter: вибір магазину для ціни не стартував', e?.message);
+        await replaceCallbackMessage(
+          env,
+          parsed,
+          '⚠️ Не вдалося підтвердити запуск відстеження. Перевір /chains або напиши про товар ще раз; повторний тап не створить дубль.',
+        );
+      }),
     );
   } else {
     await work();
   }
   return `Обрано: ${option.shop}`;
+}
+
+/** @param {Env} env @param {string} reportId */
+async function loadMailCard(env, reportId) {
+  const report = await loadWorkerResult(env, reportId);
+  if (!report || report.name !== 'mail-secretary') return null;
+  return { report, items: mailCardItems(report.text) };
+}
+
+/** @param {Env} env @param {CallbackParsed} parsed @param {string} reportId
+ * @param {number} index @param {number} nowMs */
+async function mailItemChoiceToast(env, parsed, reportId, index, nowMs) {
+  let card;
+  try {
+    card = await loadMailCard(env, reportId);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: картку листа не прочитано', e?.message);
+    return 'Пошта тимчасово недоступна — спробуй пізніше.';
+  }
+  if (!card) return 'Цього листа вже немає в результаті.';
+  const item = card.items[index];
+  if (!item) return 'Цього листа вже немає в результаті.';
+  const text = mailItemCard(item, index, card.items.length);
+  const keyboard = { reply_markup: { inline_keyboard: mailItemButtons(reportId, index) } };
+  if (!(await replaceCallbackMessage(env, parsed, text, keyboard))) {
+    await reply(
+      env,
+      { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+      text,
+      nowMs,
+      keyboard,
+    );
+  }
+  return 'Картку відкрито';
+}
+
+/** @param {Env} env @param {CallbackParsed} parsed @param {string} reportId
+ * @param {number} nowMs */
+async function mailListToast(env, parsed, reportId, nowMs) {
+  let card;
+  try {
+    card = await loadMailCard(env, reportId);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: список листів не прочитано', e?.message);
+    return 'Пошта тимчасово недоступна — спробуй пізніше.';
+  }
+  if (!card?.items.length) return 'Листів у цьому результаті немає.';
+  const text = mailListCard(card.items);
+  const keyboard = {
+    reply_markup: {
+      inline_keyboard: mailReportButtons(
+        reportId,
+        card.items,
+        card.report.text.length <= WORKER_CHAT_MAX,
+        mailNextPageInfo(card.report.text) != null,
+      ),
+    },
+  };
+  if (!(await replaceCallbackMessage(env, parsed, text, keyboard))) {
+    await reply(
+      env,
+      { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+      text,
+      nowMs,
+      keyboard,
+    );
+  }
+  return 'Повернув список';
+}
+
+/** @param {Env} env @param {CallbackParsed} parsed @param {string} reportId
+ * @param {number} index @param {'brief'|'draft'|'remind'} action
+ * @param {number} nowMs @param {((work: () => Promise<void>) => void) | null} defer */
+async function mailActionToast(env, parsed, reportId, index, action, nowMs, defer) {
+  let card;
+  try {
+    card = await loadMailCard(env, reportId);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: дію листа не прочитано', e?.message);
+    return 'Пошта тимчасово недоступна — спробуй пізніше.';
+  }
+  if (!card) return 'Цього листа вже немає в результаті.';
+  const item = card.items[index];
+  if (!item) return 'Цього листа вже немає в результаті.';
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  const key = `mail:${item.id}:${action}`;
+  let claimed;
+  try {
+    claimed = await claimWorkerCardAction(
+      env,
+      reportId,
+      key,
+      nowMs,
+      action === 'remind' ? REMINDER_DRAFT_TTL_MS : 0,
+    );
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: дію листа не зареєстровано', e?.message);
+    return 'Не вдалося запустити дію з листом — спробуй пізніше.';
+  }
+  if (!claimed) return 'Цю дію для листа вже запущено.';
+  if (action === 'remind') {
+    try {
+      const title = `лист «${item.subject}» від ${item.sender}`.slice(0, REMINDER_TEXT_MAX);
+      const draftId = await saveReminderDraft(env, target, title, nowMs);
+      const question = `⏰ Коли нагадати про ${title}? Обери варіант або напиши свій час.`;
+      const keyboard = reminderDraftKeyboard(draftId);
+      if (!(await replaceCallbackMessage(env, parsed, question, keyboard))) {
+        await reply(env, target, question, nowMs, keyboard);
+      }
+      return 'Обери час нагадування';
+    } catch (/** @type {any} */ e) {
+      await releaseWorkerCardAction(env, reportId, key);
+      console.error('prerouter: час нагадування для листа не запитано', e?.message);
+      return 'Не вдалося підготувати нагадування — спробуй ще раз.';
+    }
+  }
+  const status = {
+    brief: '🔎 Читаю вибраний лист…',
+    draft: '✍️ Готую чернетку для вибраного листа…',
+    remind: '⏰ Уточнюю час нагадування про вибраний лист…',
+  }[action];
+  const reuseId =
+    parsed.messageId != null && (await replaceCallbackMessage(env, parsed, status))
+      ? parsed.messageId
+      : null;
+  const work = async () => {
+    try {
+      await startOrQueueThreadText(
+        env,
+        target,
+        target.threadId == null ? THREAD_DM : String(target.threadId),
+        mailItemFollowup(card.report, item, action),
+        'chat',
+        nowMs,
+        reuseId,
+        status,
+      );
+    } catch (/** @type {any} */ e) {
+      await releaseWorkerCardAction(env, reportId, key);
+      console.error('prerouter: дія листа не стартувала', e?.message);
+      if (
+        !(await replaceCallbackMessage(
+          env,
+          parsed,
+          '⚠️ Не вдалося запустити дію. Спробуй кнопку ще раз.',
+          {
+            reply_markup: { inline_keyboard: mailItemButtons(reportId, index) },
+          },
+        ))
+      ) {
+        await reply(env, target, '⚠️ Не вдалося запустити дію з листом — спробуй ще раз.', nowMs);
+      }
+    }
+  };
+  if (defer) defer(work);
+  else await work();
+  return 'Взяв вибраний лист у роботу';
 }
 
 // Мапа кнопок плану дня живе в chains/registry.mjs; реекспорт заради тестів.
@@ -2343,7 +2542,17 @@ async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
     return 'Файл у треді';
   }
   if (!Object.hasOwn(WORKER_FOLLOWUPS, choice)) return 'Невідома дія.';
-  const followup = workerFollowupText(result, choice);
+  const page =
+    choice === 'next' && result.name === 'mail-secretary' ? mailNextPageInfo(result.text) : null;
+  if (choice === 'next' && result.name === 'mail-secretary' && !page)
+    return 'Наступної сторінки листів немає.';
+  const followup = page
+    ? [
+        `Продовж рівно цей поштовий пошук зі звіту ${result.id}.`,
+        `Виклич mail.search з q=${JSON.stringify(page.query)} і pageToken=${JSON.stringify(page.cursor)}.`,
+        'Не починай новий пошук і не називай огляд повним, якщо є ще курсор або пропущені метадані.',
+      ].join('\n')
+    : workerFollowupText(result, choice);
   if (followup.length > 4_000)
     return 'Звіт завеликий для цієї кнопки. Попроси правку текстом або відкрий отриманий файл.';
   const work = () =>

@@ -24,6 +24,11 @@ import {
   priceShopOptions,
   priceShopCard,
   priceShopButtons,
+  mailCardItems,
+  mailReportButtons,
+  mailItemButtons,
+  mailItemFollowup,
+  mailNextPageInfo,
 } from '../web/core/brain/worker-results.mjs';
 import { isTaintActive } from '../web/core/policy/core.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -442,6 +447,209 @@ describe('підбір магазину для відстеження ціни',
 
   it('price-search не отримує непотрібних кнопок переписування тексту', () => {
     expect(workerButtons('r-price', true, 'price-search')).toEqual([]);
+  });
+
+  it('не пропонує домашню сторінку, URL з обліковими даними чи ціну без валюти', () => {
+    expect(
+      priceShopOptions(
+        [
+          '## Ціни',
+          '- Rozetka — 14 999 грн — https://rozetka.com.ua/',
+          '- Rozetka — 14 999 грн — https://name:password@rozetka.com.ua/ua/sony/p123',
+          '- Rozetka — 14 999 — https://rozetka.com.ua/ua/sony/p123',
+        ].join('\n'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('подвійний вибір магазину не запускає другий прогін або іншу сторінку', async () => {
+    const { env, db } = setup();
+    const { brain } = stubTelegram();
+    const { id } = await saveWorkerResult(
+      env,
+      {
+        name: 'price-search',
+        text: '## Ціни\n- Rozetka — 14 999 грн — https://rozetka.com.ua/ua/sony-wh-1000xm6/p123\n- Allo — 15 499 грн — https://allo.ua/ua/sony-wh-1000xm6/',
+      },
+      NOW,
+    );
+    const first = await handleBrainCallback(
+      env,
+      { data: `m:ps:${id}:0`, chatId: 555, messageId: 11, threadId: 99 },
+      NOW,
+    );
+    const second = await handleBrainCallback(
+      env,
+      { data: `m:ps:${id}:1`, chatId: 555, messageId: 11, threadId: 99 },
+      NOW + 1,
+    );
+    expect(first).toBe('Обрано: Rozetka');
+    expect(second).toBe('Магазин із цього підбору вже обрано.');
+    expect(brain).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 1 });
+  });
+});
+
+describe('картки пошти', () => {
+  const report = [
+    '## Вхідні сьогодні — 2 листи',
+    '🔴 Важливо',
+    '- від: a@example.com - Тест з гостем - відповісти сьогодні - id a1b2',
+    '🟡 Дія',
+    '- від: b@example.com - Рахунок - перевірити оплату - id b2c3',
+    '## Чернетки',
+    '### Re: Тест з гостем - до a@example.com - id a1b2',
+    '## Строки',
+    '- оплатити завтра - id b2c3',
+  ].join('\n');
+
+  it('бере id лише зі списків листів, не з чернеток і строків', () => {
+    const items = mailCardItems(report);
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.id)).toEqual(['a1b2', 'b2c3']);
+    expect(mailReportButtons('report1', items, false).map((row) => row[0]?.callback_data)).toEqual([
+      'm:mi:report1:0',
+      'm:mi:report1:1',
+    ]);
+    expect(
+      mailItemButtons('report1', 0)
+        .flat()
+        .map((b) => b.callback_data),
+    ).toEqual([
+      'm:ma:report1:0:brief',
+      'm:ma:report1:0:draft',
+      'm:ma:report1:0:remind',
+      'm:ml:report1',
+    ]);
+    expect(mailItemFollowup({ id: 'report1' }, items[0]!, 'draft')).toContain('ID листа: a1b2');
+    expect(mailItemFollowup({ id: 'report1' }, items[0]!, 'draft')).not.toContain('b2c3');
+  });
+
+  it('доставляє кнопки конкретних листів і наступну сторінку лише за наявності курсора', async () => {
+    const { env } = setup();
+    const { tg } = stubTelegram();
+    const body = `Охоплення: запит from:example.com; наступна сторінка cursor-2; пропущено метаданих 0\n${report}`;
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'Знайшов два листи.',
+      worker: { name: 'mail-secretary', text: body },
+    });
+    expect(res.status).toBe(200);
+    const id = ((await res.json()) as { worker_result_id: string }).worker_result_id;
+    const msg = tg.find((call) => call.method === 'sendMessage')!.form as Record<string, unknown>;
+    const buttons = (msg.reply_markup as { inline_keyboard: { callback_data: string }[][] })
+      .inline_keyboard;
+    expect(buttons.flat().map((b) => b.callback_data)).toEqual([
+      `m:mi:${id}:0`,
+      `m:mi:${id}:1`,
+      `m:w:${id}:next`,
+      `m:w:${id}:md`,
+    ]);
+    expect(mailNextPageInfo(body)).toEqual({ query: 'from:example.com', cursor: 'cursor-2' });
+    expect(mailNextPageInfo(body.replace('cursor-2', 'немає'))).toBeNull();
+  });
+
+  it('не створює кнопку з некоректного або дубльованого id', () => {
+    expect(mailCardItems('🔴 Важливо\n- від: a@example.com - Тема - id a/b')).toEqual([]);
+    expect(
+      mailCardItems(
+        '🔴 Важливо\n- від: a@example.com - Тема - id a1\n- від: a@example.com - Тема - id a1',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('картка одного листа відкривається в тому самому повідомленні, а дія стартує один раз', async () => {
+    const { env, db } = setup();
+    const { tg, brain } = stubTelegram();
+    const { id } = await saveWorkerResult(env, { name: 'mail-secretary', text: report }, NOW);
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:mi:${id}:0`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW,
+      ),
+    ).toBe('Картку відкрито');
+    const edit = tg.find((call) => call.method === 'editMessageText')?.form as Record<
+      string,
+      unknown
+    >;
+    expect(String(edit.text)).toContain('Тест з гостем');
+    expect(JSON.stringify(edit.reply_markup)).toContain(`m:ma:${id}:0:draft`);
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:ma:${id}:0:draft`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW + 1,
+      ),
+    ).toBe('Взяв вибраний лист у роботу');
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:ma:${id}:0:draft`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW + 2,
+      ),
+    ).toBe('Цю дію для листа вже запущено.');
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body.input as { text: string }).text).toContain('ID листа: a1b2');
+    expect((brain[0]!.body.input as { text: string }).text).not.toContain('ID листа: b2c3');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 1 });
+  });
+
+  it('нагадування з картки зберігає предмет і показує варіанти часу без нового модельного прогону', async () => {
+    const { env, db } = setup();
+    const { tg, brain } = stubTelegram();
+    const { id } = await saveWorkerResult(env, { name: 'mail-secretary', text: report }, NOW);
+    const toast = await handleBrainCallback(
+      env,
+      { data: `m:ma:${id}:1:remind`, chatId: 555, messageId: 11, threadId: 99 },
+      NOW,
+    );
+    expect(toast).toBe('Обери час нагадування');
+    const edit = tg.find((call) => call.method === 'editMessageText')?.form as Record<
+      string,
+      unknown
+    >;
+    expect(String(edit.text)).toContain('Рахунок');
+    expect(JSON.stringify(edit.reply_markup)).toContain('m:rt:');
+    expect(brain).toHaveLength(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 1 });
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:ma:${id}:1:remind`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW + 1,
+      ),
+    ).toBe('Цю дію для листа вже запущено.');
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:ma:${id}:1:remind`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW + 21 * 60_000,
+      ),
+    ).toBe('Обери час нагадування');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 1 });
+  });
+
+  it('наступна сторінка привʼязана до запиту й курсора конкретного результату', async () => {
+    const { env } = setup();
+    const { brain } = stubTelegram();
+    const { id } = await saveWorkerResult(
+      env,
+      {
+        name: 'mail-secretary',
+        text: `Охоплення: запит from:example.com; наступна сторінка cursor-2; пропущено метаданих 0\n${report}`,
+      },
+      NOW,
+    );
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:w:${id}:next`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW,
+      ),
+    ).toBe('Дивлюсь далі');
+    const input = (brain[0]!.body.input as { text: string }).text;
+    expect(input).toContain('q="from:example.com"');
+    expect(input).toContain('pageToken="cursor-2"');
   });
 });
 
