@@ -28,6 +28,7 @@ import {
   upsertDayPlan,
   replaceItems,
   normalizeItem,
+  normalizePlanItems,
   acceptPlan,
   updateItems,
   reviewPlan,
@@ -55,7 +56,7 @@ export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
  *   now: () => number,
  *   send: (text: string, buttons?: { text: string, callback_data: string }[][]) => Promise<void>,
  *   startWorker: (mode: 'intent' | 'explain' | 'replan', task: Record<string, unknown>) => Promise<boolean>,
- *   readCalendar: (date: string) => Promise<{ title: string, startMin: number | null, endMin: number | null }[]>,
+ *   readCalendar: (date: string) => Promise<{ title: string, startMin: number | null, endMin: number | null }[] | null>,
  *   readEnergy: () => Promise<{ morning: number, afternoon: number, evening: number } | null>,
  * }} ChainIo
  * @typedef {{
@@ -138,9 +139,10 @@ export async function runDayPlanChain(env, params, step, io) {
       ? parsed.output.questions.slice(0, 2)
       : [];
     if (questions.length) {
-      await step.do('ask-questions', async () => {
-        await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
-        for (const [qi, q] of questions.entries()) {
+      for (let qi = 0; qi < questions.length; qi += 1) {
+        const q = questions[qi];
+        await step.do(`ask-question-${qi}`, async () => {
+          await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
           /** @type {unknown[]} */
           const options = Array.isArray(q.options) ? q.options.slice(0, 4) : ['не знаю'];
           await io.send(
@@ -150,9 +152,7 @@ export async function runDayPlanChain(env, params, step, io) {
               options.map((o, oi) => /** @type {[string, string]} */ ([String(o), `a${qi}_${oi}`])),
             ),
           );
-        }
-      });
-      for (let qi = 0; qi < questions.length; qi += 1) {
+        });
         const answer = await waitOrNull(step, `wait-answer-${qi}`, 'answer', WAIT_ANSWER_MS);
         items = applyAnswer(items, questions, answer, qi);
       }
@@ -187,11 +187,15 @@ export async function runDayPlanChain(env, params, step, io) {
     const slots = computeSlots({
       date,
       items: items.slice(0, ITEMS_MAX),
-      events,
+      events: events ?? [],
       settings: config.settings,
       habits: config.habits,
       energy,
+      nowMin: date === kyivDateKey(new Date(io.now())) ? kyivMinuteOfDay(new Date(io.now())) : null,
     });
+    for (const item of items.slice(ITEMS_MAX)) {
+      slots.flexible.push({ ...item, why: 'поза першими шістьма пунктами' });
+    }
     await replaceItems(env, date, slots, items);
     await upsertDayPlan(
       env,
@@ -199,13 +203,13 @@ export async function runDayPlanChain(env, params, step, io) {
       { status: 'draft', fill_ratio: config.settings.fill_ratio },
       io.now(),
     );
-    return { slots, events };
+    return { slots, events: events ?? [], calendarUnavailable: events == null };
   });
   const explained = await explain(step, io, date, draft, 'explain');
   await step.do('send-draft', async () => {
     await setChainState(env, chainId, { status: 'waiting', awaiting: 'accept' });
     await io.send(
-      explained,
+      `${draft.calendarUnavailable ? '⚠️ Календар недоступний; зайнятість не перевірив.\n' : ''}${explained}`,
       buttons(chainId, [
         ['✅ Так', 'accept'],
         ['✏️ Змінити', 'edit'],
@@ -264,7 +268,9 @@ export async function runDayPlanChain(env, params, step, io) {
   await step.do('morning', async () => {
     await setChainState(env, chainId, { status: 'running', awaiting: null });
     const [events, rows] = await Promise.all([io.readCalendar(date), listItems(env, date)]);
-    await io.send(morningText(date, rows, events));
+    await io.send(
+      `${events == null ? '⚠️ Календар недоступний.\n' : ''}${morningText(date, rows, events ?? [])}`,
+    );
   });
 
   // 5. Вечірній огляд (S-P-15).
@@ -335,7 +341,14 @@ async function explain(step, io, date, draft, mode) {
 export function normalizeIntent(output, intentText) {
   /** @type {Record<string, unknown>[]} */
   const raw = Array.isArray(output?.items)
-    ? output.items
+    ? [
+        ...output.items,
+        ...(Array.isArray(output?.deferred)
+          ? output.deferred
+              .filter((/** @type {any} */ r) => r && typeof r.title === 'string' && r.title.trim())
+              .map((/** @type {any} */ r) => ({ ...r, flexible: true }))
+          : []),
+      ]
     : intentText
         .split(/[\n;,]|\s+і\s+/)
         .map((s) => s.trim())
@@ -343,7 +356,7 @@ export function normalizeIntent(output, intentText) {
         .map((title) => ({ title, kind: 'routine' }));
   // id від працівника не приймаємо: replaceItems робить INSERT OR REPLACE за
   // id, і чужий id «перетягнув» би рядок іншої дати разом із reminder_id.
-  return raw.slice(0, ITEMS_MAX).map((r, i) => normalizeItem({ ...r, id: undefined }, i));
+  return normalizePlanItems(raw.slice(0, 20));
 }
 
 /**
@@ -376,7 +389,8 @@ export function replanChanges(out) {
 }
 
 /**
- * Відповідь на уточнення: варіант «1 год»/«30 хв»/«2 год» → est_min пункту.
+ * Apply an answer to the field named by the question. A time answer must not
+ * be mistaken for a duration or discarded as an unknown answer.
  * Кнопка несе {item, option}; текст із prerouter - лише {text}, тоді пункт -
  * той, чиє питання зараз чекає відповіді (qiDefault).
  * @param {ReturnType<typeof normalizeItem>[]} items
@@ -394,6 +408,12 @@ export function applyAnswer(items, questions, answer, qiDefault = 0) {
     typeof answer.option === 'number'
       ? String(q?.options?.[answer.option] ?? '')
       : String(answer.text ?? '');
+  const field = String(q?.field ?? 'duration');
+  if (field === 'hard_end' || field === 'hard_at' || field === 'not_before') {
+    const time = /(?:^|\D)(\d{1,2}:\d{2})(?:\D|$)/.exec(option)?.[1] ?? option.trim();
+    if (hhmmToMin(time) != null) target[field] = time;
+    return items;
+  }
   const min = parseDurationMin(option);
   if (min != null) target.est_min = min;
   else target.flexible = true;
@@ -553,7 +573,8 @@ export function productionIo(env, chainId, date) {
       if (events == null) {
         console.error(`day-plan ${chainId}: календар недоступний, розкладка без подій`);
       }
-      return (events ?? []).map((e) => ({
+      if (events == null) return null;
+      return events.map((e) => ({
         title: String(e.title ?? ''),
         startMin: typeof e.startMs === 'number' ? kyivMinuteOfDay(new Date(e.startMs)) : null,
         endMin: typeof e.endMs === 'number' ? kyivMinuteOfDay(new Date(e.endMs)) : null,

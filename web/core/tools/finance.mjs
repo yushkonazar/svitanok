@@ -58,6 +58,16 @@ export async function runFinanceQuery(env, args, nowMs) {
   });
   const sum = summarize(rows);
   const prev = summarize(prevRows);
+  const oldestRows = await db(env)
+    .prepare(`SELECT at FROM transactions WHERE ${NOT_TEST_SQL} ORDER BY at ASC LIMIT 1`)
+    .bind()
+    .all();
+  const oldest = /** @type {{ at: string } | null} */ (oldestRows.results?.[0] ?? null);
+  const previousCoverage = !oldest
+    ? 'no_imported_transactions'
+    : String(oldest.at) > period.prevFrom
+      ? 'starts_after_previous_period'
+      : 'history_starts_before_previous_period';
   const truncated = rows.length > LIST_MAX;
   return {
     result: {
@@ -67,6 +77,12 @@ export async function runFinanceQuery(env, args, nowMs) {
       total_text: formatMoney(sum.total_uah, 'UAH'),
       list: rows.slice(0, LIST_MAX).map(compact),
       truncated,
+      list_truncated: truncated,
+      coverage: {
+        complete_within_query_limit: true,
+        oldest_transaction_at: oldest?.at ?? null,
+        previous: previousCoverage,
+      },
       previous: {
         period: { from: period.prevFrom, to: period.prevTo },
         n: prev.n,

@@ -316,6 +316,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'carried_from',
     'hard_end',
     'not_before',
+    'after_item_id',
   ],
 };
 
@@ -431,7 +432,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('двадцять файлів 0001–0020, нумерація без дірок', () => {
+  it('двадцять один файл 0001–0021, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -453,6 +454,7 @@ describe('міграції D1 — файли', () => {
       '0018',
       '0019',
       '0020',
+      '0021',
     ]);
   });
 });

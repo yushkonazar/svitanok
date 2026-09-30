@@ -469,7 +469,9 @@ describe('кнопки m:w: (prerouter)', () => {
     expect(short).toBe('Скорочую');
     expect(brain).toHaveLength(1);
     expect(brain[0]!.path).toBe('/run');
-    expect((brain[0]!.body.input as { text: string }).text).toBe(WORKER_FOLLOWUPS.short);
+    expect((brain[0]!.body.input as { text: string }).text).toContain(WORKER_FOLLOWUPS.short);
+    expect((brain[0]!.body.input as { text: string }).text).toContain(id);
+    expect((brain[0]!.body.input as { text: string }).text).toContain('Пост.');
     expect(brain[0]!.body.thread_id).toBe('99');
   });
 

@@ -213,6 +213,29 @@ describe('зведення витрат', () => {
 });
 
 describe('finance.query', () => {
+  it('рахує всі сторінки після першої тисячі, а список окремо позначає скороченим', async () => {
+    const { env, db } = setup();
+    for (let i = 0; i < 1001; i += 1) {
+      seedTx(db, {
+        id: `page-${i}`,
+        at: '2026-09-07T08:00:00.000Z',
+        amount: -100,
+        amount_uah: -100,
+      });
+    }
+    const { result } = (await runFinanceQuery(env, { period: 'день' }, NOON)) as {
+      result: {
+        n: number;
+        total_uah: number;
+        list_truncated: boolean;
+        coverage: { complete_within_query_limit: boolean };
+      };
+    };
+    expect(result.n).toBe(1001);
+    expect(result.total_uah).toBe(100100);
+    expect(result.list_truncated).toBe(true);
+    expect(result.coverage.complete_within_query_limit).toBe(true);
+  });
   it('період: суми, розрізи, список і порівняння з попереднім', async () => {
     const { env, db } = setup();
     seedTx(db, { at: '2026-09-07T08:00:00.000Z', amount: -18_000, description: 'Сільпо' });

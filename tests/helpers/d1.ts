@@ -58,6 +58,12 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
   if (files.includes('0002_assistant.sql') && !files.includes('0017_proposal_provenance.sql')) {
     files.push('0017_proposal_provenance.sql');
   }
+  if (
+    files.includes('0007_instructions_plans.sql') &&
+    !files.includes('0021_plan_item_dependencies.sql')
+  ) {
+    files.push('0021_plan_item_dependencies.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

@@ -261,6 +261,46 @@ describe('mail.* і зовнішнє маркування', () => {
     expect(queries).toEqual(['from:steam newer_than:7d']);
   });
 
+  it('mail.search: nextPageToken advances the same query and reports incomplete metadata', async () => {
+    const tokens: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const parsed = new URL(url);
+        if (parsed.pathname.endsWith('/messages')) {
+          tokens.push(parsed.searchParams.get('pageToken') ?? '');
+          return new Response(
+            JSON.stringify(
+              tokens.length === 1
+                ? { messages: [{ id: 'm1' }], nextPageToken: 'cursor_2' }
+                : { messages: [{ id: 'm2' }] },
+            ),
+            { status: 200 },
+          );
+        }
+        if (parsed.pathname.endsWith('/m1')) return new Response('{}', { status: 503 });
+        return new Response(
+          JSON.stringify({
+            payload: {
+              headers: [
+                { name: 'From', value: 'Ada' },
+                { name: 'Subject', value: 'Next' },
+              ],
+            },
+            snippet: 'Hello',
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+    const first = await runMailSearch(gmailEnv(), { q: 'from:ada' });
+    expect(String(first.result)).toContain('не прочитано через збій: 1');
+    expect(String(first.result)).toContain('cursor_2');
+    const second = await runMailSearch(gmailEnv(), { q: 'from:ada', pageToken: 'cursor_2' });
+    expect(String(second.result)).toContain('id=m2');
+    expect(tokens).toEqual(['', 'cursor_2']);
+  });
+
   it('mail.read: невалідний id — виняток ДО будь-якого fetch', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);

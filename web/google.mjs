@@ -305,14 +305,24 @@ export async function gmailMessageMeta(env, id, accessToken = null) {
 const MAIL_MAX_RESULTS = 10;
 const MAIL_HEADERS = ['From', 'Subject', 'Date'];
 
-/** Пошук у Gmail -> [{from,subject,date,snippet}] | [] (нічого) | null (немає доступу/збій). */
+/** Сумісний шлях для короткого пошуку без пагінації. */
 export async function readMail(/** @type {Env} */ env, /** @type {unknown} */ rawQuery) {
+  const page = await readMailPage(env, rawQuery);
+  return page?.messages ?? null;
+}
+
+/** Пошук сторінки Gmail із курсором. null означає недоступне джерело, не порожню пошту.
+ * @param {Env} env @param {unknown} rawQuery @param {string} [pageToken] */
+export async function readMailPage(env, rawQuery, pageToken = '') {
+  if (pageToken && !/^[A-Za-z0-9_+/.=-]{1,512}$/.test(pageToken))
+    throw new Error('невалідний курсор сторінки пошти');
   const token = await googleAccessToken(env);
   if (!token) return null;
   const auth = { Authorization: `Bearer ${token}` };
   const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
   listUrl.searchParams.set('q', sanitizeMailQuery(rawQuery));
   listUrl.searchParams.set('maxResults', String(MAIL_MAX_RESULTS));
+  if (pageToken) listUrl.searchParams.set('pageToken', pageToken);
   try {
     const res = await fetch(listUrl.toString(), { headers: auth });
     if (!res.ok) {
@@ -326,7 +336,7 @@ export async function readMail(/** @type {Env} */ env, /** @type {unknown} */ ra
     const ids = (list.messages ?? [])
       .slice(0, MAIL_MAX_RESULTS)
       .map((/** @type {KvBlob} */ m) => m.id);
-    if (ids.length === 0) return [];
+    if (ids.length === 0) return { messages: [], nextPageToken: null, requested: 0, failed: 0 };
     const msgs = await Promise.all(
       ids.map(async (/** @type {string} */ id) => {
         // Try/catch НАВКОЛО кожного листа (ревʼю B): кинутий fetch (транзієнтна
@@ -357,7 +367,12 @@ export async function readMail(/** @type {Env} */ env, /** @type {unknown} */ ra
         }
       }),
     );
-    return msgs.filter(Boolean);
+    return {
+      messages: msgs.filter(Boolean),
+      nextPageToken: typeof list.nextPageToken === 'string' ? list.nextPageToken : null,
+      requested: ids.length,
+      failed: ids.length - msgs.filter(Boolean).length,
+    };
   } catch (/** @type {any} */ err) {
     console.error('gmail read failed', err.message);
     return null;

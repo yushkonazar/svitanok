@@ -63,6 +63,7 @@ import {
   loadWorkerResult,
   sendWorkerDocument,
   WORKER_FOLLOWUPS,
+  workerFollowupText,
   priceShopOptions,
 } from './brain/worker-results.mjs';
 import {
@@ -2341,10 +2342,12 @@ async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
     await sendWorkerDocument(env, /** @type {any} */ (target), result, nowMs);
     return 'Файл у треді';
   }
+  if (!Object.hasOwn(WORKER_FOLLOWUPS, choice)) return 'Невідома дія.';
+  const followup = workerFollowupText(result, choice);
+  if (followup.length > 4_000)
+    return 'Звіт завеликий для цієї кнопки. Попроси правку текстом або відкрий отриманий файл.';
   const work = () =>
-    startOrQueueThreadText(env, target, threadKey, WORKER_FOLLOWUPS[choice], 'chat', nowMs).then(
-      () => undefined,
-    );
+    startOrQueueThreadText(env, target, threadKey, followup, 'chat', nowMs).then(() => undefined);
   if (defer) {
     defer(() =>
       work().catch((/** @type {any} */ e) =>

@@ -89,7 +89,7 @@ export function buildTaskPrompt({ idea, title, repo, sha }) {
     'task:',
     JSON.stringify({ idea: ideaText, repo, sha }, null, 2),
     'format: md',
-    'Робоча тека - checkout repo на sha. Відповідь - лише звіт за «Формат відповіді».',
+    'Нижче надійде обмежений зріз checkout на sha. Відповідь - звіт лише за перевіреними фрагментами.',
   ].join('\n');
 }
 
@@ -227,16 +227,23 @@ export function readContext(env, mode) {
 }
 
 /**
- * Read a bounded, source-only snapshot of the checked-out repository. This is
- * intentionally not an agent tool: no shell, Git config, hidden files, env
- * files or repository-local Claude/MCP hooks can execute or influence access.
- * @param {string} targetDir
+ * Read a bounded, relevance-ranked source snapshot. The model receives a
+ * coverage manifest and numbered lines, including safe workflow files.
+ * No repository code or hooks are executed.
+ * @param {string} targetDir @param {string} [idea]
  */
-export function readCodeContext(targetDir) {
+export function readCodeContext(targetDir, idea = '') {
   const root = resolve(targetDir);
-  /** @type {string[]} */
-  const files = [];
-  let bytes = 0;
+  const terms = [
+    ...new Set(
+      String(idea)
+        .toLowerCase()
+        .match(/[\p{L}\p{N}_-]{4,}/gu) ?? [],
+    ),
+  ].slice(0, 24);
+  /** @type {{path: string, lines: string[], score: number, size: number}[]} */
+  const candidates = [];
+  let omittedLarge = 0;
   /** @param {string} dir */
   const visit = (dir) => {
     const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
@@ -246,25 +253,82 @@ export function readCodeContext(targetDir) {
       if (!entry.isFile() || !REVIEW_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue;
       const full = join(dir, entry.name);
       const size = statSync(full).size;
-      if (size <= 0 || size > OPENAI_REVIEW_FILE_MAX_BYTES) continue;
+      if (size <= 0) continue;
+      if (size > 1_000_000) {
+        omittedLarge += 1;
+        continue;
+      }
       const path = relative(root, full).replaceAll('\\', '/');
-      if (path.startsWith('.') || /(^|\/)\.env(?:\.|$)/.test(path)) continue;
-      const text = readFileSync(full, 'utf8');
-      const chunk = `--- ${path} ---\n${text}`;
-      const separator = files.length === 0 ? '' : '\n\n';
-      const chunkBytes = Buffer.byteLength(`${separator}${chunk}`, 'utf8');
-      if (bytes + chunkBytes > OPENAI_REVIEW_CONTEXT_MAX_BYTES) continue;
-      files.push(chunk);
-      bytes += chunkBytes;
+      if (/(^|\/)\.env(?:\.|$)/.test(path)) continue;
+      if (path.startsWith('.') && !path.startsWith('.github/workflows/')) continue;
+      const lines = readFileSync(full, 'utf8').split(/\r?\n/);
+      const lowerPath = path.toLowerCase();
+      const lowerText = lines.join('\n').toLowerCase();
+      const baseline = /^(package\.json|readme\.md|\.github\/workflows\/[^/]+\.ya?ml)$/.test(
+        lowerPath,
+      )
+        ? 20
+        : 0;
+      const score =
+        baseline +
+        terms.reduce(
+          (sum, term) =>
+            sum + (lowerPath.includes(term) ? 8 : 0) + (lowerText.includes(term) ? 2 : 0),
+          0,
+        );
+      candidates.push({ path, lines, score, size });
     }
     for (const entry of entries.filter((entry) => entry.isDirectory())) {
-      if (!REVIEW_IGNORED_DIRS.has(entry.name)) visit(join(dir, entry.name));
+      if (
+        !REVIEW_IGNORED_DIRS.has(entry.name) &&
+        (!entry.name.startsWith('.') ||
+          (dir === root && entry.name === '.github') ||
+          (relative(root, dir).replaceAll('\\', '/') === '.github' && entry.name === 'workflows'))
+      )
+        visit(join(dir, entry.name));
     }
   };
   visit(root);
-  if (files.length === 0)
+  if (candidates.length === 0)
     throw new Error('checkout не містить доступного вихідного коду для аналізу');
-  return files.join('\n\n');
+  candidates.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  /** @type {string[]} */
+  const selected = [];
+  let bytes = 0;
+  for (const candidate of candidates) {
+    const matching = candidate.lines.flatMap((line, index) =>
+      terms.some((term) => line.toLowerCase().includes(term)) ? [index] : [],
+    );
+    const visible = new Set();
+    if (candidate.size <= OPENAI_REVIEW_FILE_MAX_BYTES) {
+      candidate.lines.forEach((_, index) => visible.add(index));
+    } else {
+      // Large files are not silently skipped: show the head and relevant
+      // windows, retaining the original line numbers.
+      for (let index = 0; index < Math.min(20, candidate.lines.length); index += 1)
+        visible.add(index);
+      for (const hit of matching.slice(0, 12)) {
+        for (
+          let index = Math.max(0, hit - 8);
+          index <= Math.min(candidate.lines.length - 1, hit + 8);
+          index += 1
+        )
+          visible.add(index);
+      }
+    }
+    let body = [...visible]
+      .sort((a, b) => a - b)
+      .map((index) => `${index + 1}| ${candidate.lines[index]}`)
+      .join('\n');
+    body = clipToBytes(body, OPENAI_REVIEW_FILE_MAX_BYTES);
+    const chunk = `--- ${candidate.path} (${candidate.size} bytes; ${visible.size < candidate.lines.length ? 'excerpts' : 'complete'}) ---\n${body}`;
+    const cost = Buffer.byteLength(chunk, 'utf8') + 2;
+    if (bytes + cost > OPENAI_REVIEW_CONTEXT_MAX_BYTES - 1_000) continue;
+    selected.push(chunk);
+    bytes += cost;
+  }
+  const coverage = `Зріз: ${selected.length}/${candidates.length} файлів; великих поза межею читання: ${omittedLarge}. Не роби висновків про відсутність коду поза включеними файлами.`;
+  return `${coverage}\n\n${selected.join('\n\n')}`;
 }
 
 /** OpenAI text-only code review. The model receives a fixed snapshot, not a
@@ -333,7 +397,7 @@ async function main() {
       model: String(env.IDEA_ANALYSIS_OPENAI_MODEL ?? 'gpt-6-astra'),
       instructionRaw,
       task: buildTaskPrompt(ctx),
-      codeContext: readCodeContext(ctx.targetDir),
+      codeContext: readCodeContext(ctx.targetDir, ctx.idea),
     });
     console.log(
       `OpenAI Responses: ${Math.round((Date.now() - started) / 1000)} с, звіт ${md.length} симв.`,

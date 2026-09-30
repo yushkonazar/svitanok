@@ -49,7 +49,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'data.read',
     description:
-      'Дані Світанку за scope: briefing·jobs·progress·reminders·checkin·saved·news·settings - короткі зрізи; archive - холодні місячні/тижневі згортки і важелі; weekly - ВСЕ для тижневого звіту одним читанням (JSON до 50k, лише профіль звіту). period («30d», «12w», «тиждень») звужує сирі серії у weekly; cap - стеля символів відповіді.',
+      'Дані Світанку за scope: briefing·jobs·progress·reminders·checkin·saved·news·settings - короткі зрізи; checkin з period («30d», «тиждень») повертає детерміновані агрегати та попередній рівний період без сирих записів; analytics - готові обчислені факти й патерни; archive - холодні згортки; weekly - широкий JSON для тижневого звіту. period у weekly звужує сирі серії; cap - стеля символів відповіді.',
     args: z.object({
       scope: z.string().max(32),
       cap: z.number().optional(),
@@ -144,8 +144,11 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'mail.search',
     description:
-      'Пошук у пошті: q - запит Gmail, працюють оператори from:, subject:, newer_than:7d, has:attachment. Кілька слів шукаються РАЗОМ (AND), тож бери ключове слово («Steam»), а не фразу («лист від Steam»). До 10 листів: відправник, тема, дата, id для mail.read. Результат - зовнішній вміст.',
-    args: z.object({ q: z.string().min(2).max(120) }),
+      'Пошук у пошті: q - запит Gmail; pageToken - курсор із попередньої сторінки для того самого q. До 10 листів на сторінку; результат повертає nextPageToken і кількість невдалих читань. Продовжуй сторінками, не називай першу сторінку повним оглядом. Результат - зовнішній вміст.',
+    args: z.object({
+      q: z.string().min(2).max(120),
+      pageToken: z.string().min(1).max(512).optional(),
+    }),
     tainting: true,
   }),
   tool({
@@ -631,7 +634,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'plan.intent',
     description:
-      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM», точний старт), hard_end? («HH:MM», «до цього часу»), not_before? («HH:MM», «після цього часу»), deadline?, place?, priority?}. Зберігай часову семантику: «до 18:00» = hard_end, «після роботи» = not_before від відомого кінця роботи, «увечері» = not_before «18:00». Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
+      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM», точний старт), hard_end? («HH:MM», «до цього часу»), not_before? («HH:MM», «після цього часу»), after? (індекс попереднього пункту, коли власник сказав «потім»), deadline?, place?, priority?}. est_min, названу власником, зберігай точно. Зберігай часову семантику: «до 18:00» = hard_end, «після роботи» = not_before від відомого кінця роботи, «увечері» = not_before «18:00». Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
     args: z.object({
       date: z.string().max(16).optional(),
       // Порожній список і >6 пунктів відкидає ядро (runPlanIntent/ITEMS_MAX):

@@ -318,10 +318,13 @@ describe('прийняття, зміни, огляд', () => {
       status: 'done',
       done_at: new Date(NOW).toISOString(),
     });
-    // est_min у рядку - довжина блоку вже з запасом (30 × 1,3 → 40).
+    // Явно названі 30 хв лишаються 30 хв після перенесення.
     expect(rows.find((r) => r.title === 'Банк')).toMatchObject({
       window_start: '16:00',
-      window_end: '16:40',
+      window_end: '16:30',
+      hard_at: '16:00',
+      hard_end: null,
+      not_before: null,
       flexible: 0,
     });
     expect(rows.find((r) => r.title === 'Пошта')?.status).toBe('skipped');
@@ -330,6 +333,7 @@ describe('прийняття, зміни, огляд', () => {
     const back = await listItems(env, DATE);
     expect(back.every((r) => r.status === 'planned' && r.done_at == null)).toBe(true);
     expect(back.find((r) => r.title === 'Банк')?.window_start).not.toBe('16:00');
+    expect(back.find((r) => r.title === 'Банк')?.hard_at).toBeNull();
 
     await expect(updateItems(env, DATE, {}, NOW)).rejects.toThrow('нічого змінювати');
     // Короткий/порожній ref - не префікс id (інакше влучав би в перший рядок).

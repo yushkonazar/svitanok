@@ -188,7 +188,7 @@ describe('plan.* через policy', () => {
     ).map((r) => ({ thread: r.thread_id, p: JSON.parse(r.payload_json) }));
     expect(sent).toHaveLength(2);
     expect(sent[0]?.thread).toBe('99');
-    expect(sent[0]?.p.text).toBe('🗓 «Презентація» 07.09 08:00-09:20 - у календарі.');
+    expect(sent[0]?.p.text).toBe('🗓 «Презентація» 07.09 08:00-09:00 - у календарі.');
     expect(JSON.stringify(sent[0]?.p.reply_markup)).toContain('"u:');
     expect(sent[1]?.p.text).toContain('«Банк»');
 

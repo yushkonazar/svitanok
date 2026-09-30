@@ -52,6 +52,7 @@ export const ENERGY_WINDOWS = {
  * @typedef {{ id: string, title: string, kind: string, est_min: number | null,
  *   hard_at: string | null, hard_end?: string | null, not_before?: string | null,
  *   deadline: string | null, place: string | null, flexible: boolean, priority: number,
+ *   after_item_id?: string | null,
  *   carried_from?: string | null }} PlanItemInput
  * @typedef {{ id: string, title: string, kind: string, est_min: number,
  *   window_start: string, window_end: string, why: string }} PlacedItem
@@ -134,15 +135,17 @@ export function energyBySlot(checkins) {
 }
 
 /**
- * Оцінка блоку з множником запасу, округлена до 5 хв.
+ * Explicit duration is a constraint. Apply the estimate bias only when using
+ * a default estimate, and keep any optional buffer outside the visible block.
  * @param {PlanItemInput} item @param {number} bias
  */
 export function estimateMin(item, bias) {
+  if (typeof item.est_min === 'number' && item.est_min > 0) {
+    return Math.max(MIN_BLOCK_MIN, Math.round(item.est_min));
+  }
   const base =
-    typeof item.est_min === 'number' && item.est_min > 0
-      ? item.est_min
-      : (DEFAULT_EST_MIN[/** @type {keyof typeof DEFAULT_EST_MIN} */ (item.kind)] ??
-        DEFAULT_EST_MIN.routine);
+    DEFAULT_EST_MIN[/** @type {keyof typeof DEFAULT_EST_MIN} */ (item.kind)] ??
+    DEFAULT_EST_MIN.routine;
   return Math.max(MIN_BLOCK_MIN, Math.round((base * bias) / ROUND_MIN) * ROUND_MIN);
 }
 
@@ -171,10 +174,10 @@ export function computeSlots(input) {
   // План, складений у середині поточного дня, не має заповнювати вже минулі
   // години. Для майбутньої дати nowMin не передається, тож старт лишається
   // звичним day_start.
-  const rawNow = Number(input.nowMin);
+  const rawNow = input.nowMin == null ? null : Number(input.nowMin);
   const nowMin =
-    Number.isFinite(rawNow) && rawNow >= dayStart && rawNow < dayEnd
-      ? Math.ceil(rawNow / ROUND_MIN) * ROUND_MIN
+    rawNow != null && Number.isFinite(rawNow)
+      ? Math.min(dayEnd, Math.max(dayStart, Math.ceil(rawNow / ROUND_MIN) * ROUND_MIN))
       : dayStart;
 
   /** @type {Busy[]} */
@@ -241,13 +244,31 @@ export function computeSlots(input) {
     .map((x) => x.i);
 
   // Errand групуються за місцем: ті самі place - підряд.
-  const ordered = groupErrands(rest);
+  const grouped = groupErrands(rest);
+  /** @type {PlanItemInput[]} */
+  const ordered = [];
+  const waiting = [...grouped];
+  // Dependencies override ranking and grouping, but retain their order where
+  // there is no explicit dependency. Cycles are left flexible below.
+  while (waiting.length) {
+    const index = waiting.findIndex(
+      (item) => !item.after_item_id || !waiting.some((other) => other.id === item.after_item_id),
+    );
+    if (index < 0) break;
+    ordered.push(...waiting.splice(index, 1));
+  }
+  ordered.push(...waiting);
 
   const energy = input.energy;
   let used = 0;
   let deepCount = 0;
   for (const item of ordered) {
     const est = estimateMin(item, bias);
+    const predecessor = item.after_item_id ? placed.find((p) => p.id === item.after_item_id) : null;
+    if (item.after_item_id && !predecessor) {
+      flexible.push({ ...item, why: 'попередній пункт ще не заплановано' });
+      continue;
+    }
     if (item.kind === 'deep' && deepCount >= maxDeep) {
       flexible.push({ ...item, why: `понад ${maxDeep} глибоких блоків` });
       continue;
@@ -258,7 +279,14 @@ export function computeSlots(input) {
     }
     const notBefore = hhmmToMin(item.not_before);
     const preferred = item.kind === 'deep' ? energyOrder(energy) : null;
-    const slot = findSlot(Math.max(nowMin, notBefore ?? nowMin), dayEnd, busy, est, preferred);
+    const afterEnd = predecessor ? hhmmToMin(predecessor.window_end) : null;
+    const slot = findSlot(
+      Math.max(nowMin, notBefore ?? nowMin, afterEnd ?? nowMin),
+      dayEnd,
+      busy,
+      est,
+      preferred,
+    );
     if (!slot) {
       flexible.push({ ...item, why: 'немає вікна потрібної довжини' });
       continue;
@@ -312,7 +340,7 @@ export function formatDraft(date, slots, events) {
   }
   const free = slots.freeMin - slots.usedMin;
   lines.push(`Запас: ${Math.floor(free / 60)} год ${free % 60} хв вільно`);
-  return lines.slice(0, 14).join('\n');
+  return lines.join('\n');
 }
 
 // ── Внутрішнє ──────────────────────────────────────────────────────────────

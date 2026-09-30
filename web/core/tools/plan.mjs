@@ -19,6 +19,7 @@ import {
   getDayPlan,
   listItems,
   normalizeItem,
+  normalizePlanItems,
   replaceItems,
   upsertDayPlan,
   acceptPlan,
@@ -68,6 +69,9 @@ async function draftFor(env, date, items, nowMs) {
     energy: energyBySlot(stats.checkins ?? {}),
     nowMin: date === kyivDateKey(new Date(nowMs)) ? kyivMinuteOfDay(new Date(nowMs)) : null,
   });
+  for (const item of items.slice(ITEMS_MAX)) {
+    slots.flexible.push({ ...item, why: 'поза першими шістьма пунктами' });
+  }
   await replaceItems(env, date, slots, items);
   await upsertDayPlan(
     env,
@@ -96,11 +100,9 @@ export async function runPlanIntent(env, args, nowMs) {
   // id від моделі не приймаємо (те саме, що normalizeIntent у ланцюзі):
   // replaceItems робить INSERT OR REPLACE за глобальним id, і чужий id
   // перетягнув би рядок іншої дати разом із reminder_id.
-  const items = args.items
-    .slice(0, ITEMS_MAX)
-    .map((r, i) =>
-      normalizeItem({ .../** @type {Record<string, unknown>} */ (r ?? {}), id: undefined }, i),
-    );
+  const items = normalizePlanItems(
+    args.items.slice(0, 20).map((r) => /** @type {Record<string, unknown>} */ (r ?? {})),
+  );
   await upsertDayPlan(env, date, { status: 'intent' }, nowMs);
   return { result: await draftFor(env, date, items, nowMs) };
 }
@@ -123,6 +125,7 @@ export async function runPlanDraft(env, args, nowMs) {
         hard_at: r.hard_at,
         hard_end: r.hard_end,
         not_before: r.not_before,
+        after_item_id: r.after_item_id,
         deadline: r.deadline,
         place: r.place,
         priority: r.priority,

@@ -258,7 +258,7 @@ describe('OpenAI code-review runtime', () => {
 
   it('builds a bounded source snapshot of this repository without hidden configuration', () => {
     const snapshot = readCodeContext(ROOT);
-    expect(snapshot).toContain('--- package.json ---');
+    expect(snapshot).toMatch(/--- package\.json \(/);
     expect(snapshot).not.toContain('--- .env ---');
     expect(Buffer.byteLength(snapshot, 'utf8')).toBeLessThanOrEqual(120_000);
   });
