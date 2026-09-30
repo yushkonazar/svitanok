@@ -77,6 +77,15 @@ import {
   WORKER_CHAT_MAX,
 } from './brain/worker-results.mjs';
 import {
+  awaitingTutorAnswer,
+  changeTutorStatus,
+  readTutorSession,
+  rateTutorSession,
+  submitTutorAnswer,
+  tutorAnswerFollowup,
+  tutorButtons,
+} from './brain/learning-session.mjs';
+import {
   findAwaitingChain,
   sendChainEvent,
   readChainKind,
@@ -687,6 +696,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // саме код знає, що «завтра о 9» є часом для попереднього «нагадай про…».
   // Завдяки цьому відповідь не потрапляє у свіжий LLM-прогін без предмета.
   if (await resolveReminderDraftAnswer(env, target, text, nowMs)) return true;
+  if (await resolveTutorAnswer(env, target, threadKey, text, nowMs)) return true;
 
   const reminderTitle = incompleteReminderTitle(text, nowMs);
   if (reminderTitle) {
@@ -918,11 +928,68 @@ async function routeThreadText(env, target, threadKey, text, nowMs) {
     await stopThread(env, target, threadKey, nowMs);
     return;
   }
+  if (await resolveTutorAnswer(env, target, threadKey, text, nowMs)) return;
 
   // «звіт зараз» (S-9-5) - профіль weekly-review за запитом: той самий шлях
   // (черга, статусник, ретраї), інша інструкція й модель.
   const route = WEEKLY_NOW_RE.test(text) ? 'weekly-review' : classifyRoute(text);
   await startOrQueueThreadText(env, target, threadKey, text, route, nowMs);
+}
+
+/**
+ * The next text after an explicit «Відповісти» tap belongs to that saved
+ * question, including after /new or a process restart. A normal unrelated
+ * message is never captured unless the owner first entered answer mode.
+ * @param {Env} env @param {ThreadTarget} target @param {string} threadKey
+ * @param {string} text @param {number} nowMs
+ */
+async function resolveTutorAnswer(env, target, threadKey, text, nowMs) {
+  if (!env.DB || target.chatId == null || !text.trim() || text.startsWith('/')) return false;
+  let session;
+  try {
+    session = await awaitingTutorAnswer(env, threadKey, String(target.chatId));
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: навчальне питання не прочитано', e?.message);
+    return false;
+  }
+  if (!session) return false;
+  if (/^скасувати відповідь\.?$/iu.test(text.trim())) {
+    await changeTutorStatus(
+      env,
+      session.id,
+      session.chat_id,
+      threadKey,
+      'awaiting_answer',
+      'question',
+      nowMs,
+    );
+    await reply(env, target, '↩ Відповідь скасовано. Питання лишилося в картці.', nowMs);
+    return true;
+  }
+  if (!(await submitTutorAnswer(env, session, text, nowMs))) return false;
+  try {
+    await startOrQueueThreadText(
+      env,
+      target,
+      threadKey,
+      tutorAnswerFollowup(session, text),
+      'chat',
+      nowMs,
+    );
+  } catch (/** @type {any} */ e) {
+    await changeTutorStatus(
+      env,
+      session.id,
+      session.chat_id,
+      threadKey,
+      'answer_submitted',
+      'awaiting_answer',
+      nowMs,
+    );
+    console.error('prerouter: навчальну відповідь не запущено', e?.message);
+    await reply(env, target, '⚠️ Не вдалося розібрати відповідь. Надішли її ще раз.', nowMs);
+  }
+  return true;
 }
 
 /**
@@ -1523,6 +1590,18 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
     );
   const mailList = data.match(/^m:ml:([A-Za-z0-9-]{1,40})$/);
   if (mailList) return mailListToast(env, parsed, mailList[1] ?? '', nowMs);
+  const tutor = data.match(
+    /^m:tu:([A-Za-z0-9-]{1,40}):(hint|example|answer|cancel|skip|finish|easy|hard)$/,
+  );
+  if (tutor)
+    return tutorActionToast(
+      env,
+      parsed,
+      tutor[1] ?? '',
+      /** @type {'hint'|'example'|'answer'|'cancel'|'skip'|'finish'|'easy'|'hard'} */ (tutor[2]),
+      nowMs,
+      defer,
+    );
   // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
   // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
   const wm = data.match(
@@ -1943,6 +2022,147 @@ async function mailActionToast(env, parsed, reportId, index, action, nowMs, defe
   if (defer) defer(work);
   else await work();
   return 'Взяв вибраний лист у роботу';
+}
+
+/**
+ * Tutor controls always address one persisted question. The model may create
+ * hints and reviews, but only the owner can submit an answer or difficulty
+ * rating; no button silently marks an answer correct.
+ * @param {Env} env @param {CallbackParsed} parsed @param {string} id
+ * @param {'hint'|'example'|'answer'|'cancel'|'skip'|'finish'|'easy'|'hard'} action
+ * @param {number} nowMs @param {((work: () => Promise<void>) => void) | null} defer
+ */
+async function tutorActionToast(env, parsed, id, action, nowMs, defer) {
+  const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
+  if (target.chatId == null) return 'Невідомий чат.';
+  const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
+  let session;
+  try {
+    session = await readTutorSession(env, id);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: навчальну сесію не прочитано', e?.message);
+    return 'Навчальна сесія тимчасово недоступна.';
+  }
+  if (!session || session.chat_id !== String(target.chatId) || session.thread_id !== threadKey)
+    return 'Це питання вже недоступне в цьому чаті.';
+  if (action === 'answer') {
+    if (session.status !== 'question') return 'Відповідь на це питання вже почата або завершена.';
+    if (
+      !(await changeTutorStatus(
+        env,
+        id,
+        session.chat_id,
+        threadKey,
+        'question',
+        'awaiting_answer',
+        nowMs,
+      ))
+    )
+      return 'Відповідь уже почата.';
+    const prompt = `${session.question_text}\n\n✍️ Напиши відповідь наступним повідомленням. Іншу задачу почни після «Скасувати відповідь».`;
+    const keyboard = { reply_markup: { inline_keyboard: tutorButtons(id, 'awaiting_answer') } };
+    if (!(await replaceCallbackMessage(env, parsed, prompt, keyboard))) {
+      await reply(env, target, prompt, nowMs, keyboard);
+    }
+    return 'Чекаю твою відповідь';
+  }
+  if (action === 'cancel') {
+    if (
+      !(await changeTutorStatus(
+        env,
+        id,
+        session.chat_id,
+        threadKey,
+        'awaiting_answer',
+        'question',
+        nowMs,
+      ))
+    )
+      return 'Відповідь уже не очікується.';
+    const keyboard = { reply_markup: { inline_keyboard: tutorButtons(id, 'question') } };
+    if (!(await replaceCallbackMessage(env, parsed, session.question_text, keyboard))) {
+      await reply(env, target, session.question_text, nowMs, keyboard);
+    }
+    return 'Повернув питання';
+  }
+  if (action === 'easy' || action === 'hard') {
+    if (session.status !== 'reviewed') return 'Це питання вже оцінено або ще не розібрано.';
+    const due = await rateTutorSession(env, session, action, nowMs);
+    if (!due) return 'Оцінку вже записано.';
+    const when = kyivDateKey(new Date(due));
+    const result = `🎓 Самооцінку збережено: ${action === 'easy' ? 'було легко' : 'було складно'}. Повернутися до питання варто ${when}. Автоматичне нагадування не створював.`;
+    if (!(await replaceCallbackMessage(env, parsed, result)))
+      await reply(env, target, result, nowMs);
+    return 'Самооцінку збережено';
+  }
+  if (action === 'skip' || action === 'finish') {
+    if (!['question', 'awaiting_answer', 'answer_submitted', 'reviewed'].includes(session.status))
+      return 'Цю навчальну сесію вже завершено.';
+    const changed = await changeTutorStatus(
+      env,
+      id,
+      session.chat_id,
+      threadKey,
+      /** @type {'question'|'awaiting_answer'|'answer_submitted'|'reviewed'} */ (session.status),
+      action === 'skip' ? 'skipped' : 'closed',
+      nowMs,
+    );
+    if (!changed) return 'Цю навчальну сесію вже завершено.';
+    const result =
+      action === 'skip'
+        ? '⏭ Питання пропущено. Можеш попросити інше.'
+        : '🎓 Навчальну сесію завершено.';
+    if (!(await replaceCallbackMessage(env, parsed, result)))
+      await reply(env, target, result, nowMs);
+    return action === 'skip' ? 'Пропустив' : 'Завершив';
+  }
+  if (session.status !== 'question') return 'Це питання вже не чекає підказки.';
+  const key = `tutor:${action}`;
+  if (!(await claimWorkerCardAction(env, id, key, nowMs)))
+    return action === 'hint' ? 'Підказку вже готував.' : 'Приклад уже готував.';
+  const status =
+    action === 'hint'
+      ? '💡 Готую підказку до цього питання…'
+      : '🧪 Готую приклад до цього питання…';
+  const reuseId =
+    parsed.messageId != null && (await replaceCallbackMessage(env, parsed, status))
+      ? parsed.messageId
+      : null;
+  const followup = [
+    `Продовж збережену навчальну сесію ${id}. Делегуй tutor.`,
+    `Питання: ${JSON.stringify(session.question_text)}`,
+    action === 'hint'
+      ? 'Дай один крок міркування без розвʼязку. Не змінюй тему й не став нове питання.'
+      : 'Дай короткий аналогічний приклад, але не розвʼязуй саме це питання.',
+  ].join('\n\n');
+  const work = async () => {
+    try {
+      await startOrQueueThreadText(
+        env,
+        target,
+        threadKey,
+        followup,
+        'chat',
+        nowMs,
+        reuseId,
+        status,
+      );
+    } catch (/** @type {any} */ e) {
+      await releaseWorkerCardAction(env, id, key);
+      console.error('prerouter: навчальну підказку не запущено', e?.message);
+      await replaceCallbackMessage(
+        env,
+        parsed,
+        '⚠️ Підказка не запустилася. Спробуй кнопку ще раз.',
+        {
+          reply_markup: { inline_keyboard: tutorButtons(id, 'question') },
+        },
+      );
+    }
+  };
+  if (defer) defer(work);
+  else await work();
+  return action === 'hint' ? 'Готую підказку' : 'Готую приклад';
 }
 
 // Мапа кнопок плану дня живе в chains/registry.mjs; реекспорт заради тестів.

@@ -50,6 +50,12 @@ FTS: D1 підтримує FTS5 (VERIFIED 26.08.2026, проба на бойов
 `(report_id, action_key)`. Це одноразовий claim кнопок листа й вибору магазину;
 рядок привʼязаний до незмінного `reports.id`, а не до останньої розмови.
 
+`learning_sessions(id, thread_id, chat_id, topic, question_text, answer_text,
+review_text, status, rating, due_at, created_at, updated_at)` зберігає питання
+Навчального, явну відповідь і самооцінку власника. Індекс
+`(thread_id, chat_id, status, updated_at)` знаходить активне уточнення;
+`rating` не є оцінкою правильності, а `due_at` не створює нагадування сам по собі.
+
 `runs` містить лише зареєстровані model/workflow виконання. Технічний тiк
 `SchedulerDO` зберігає компактний status у власному durable state і не створює
 рядок у `runs`; інакше щохвилинні перевірки спотворювали б модельну telemetry.

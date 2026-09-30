@@ -226,6 +226,11 @@ describe('delegate (етап 4): працівник з інструкцією з
             finalText: out.finalText ?? null,
             sessionId: out.sessionId ?? null,
             apiMs: out.apiMs,
+            provider: out.provider,
+            model: out.model,
+            responseId: out.responseId,
+            usage: out.usage,
+            estimatedCostUsd: out.estimatedCostUsd,
           };
         },
         readTranscript: vi.fn(async () => null),
@@ -274,6 +279,40 @@ describe('delegate (етап 4): працівник з інструкцією з
       // «api» - час у моделі з результату SDK: різниця з ms кроку = накладні.
       note: '5 симв., 0 інстр., api 1.2 с',
     });
+  });
+
+  it('пише окрему allowlisted OpenAI telemetry працівника без тексту задачі або відповіді', async () => {
+    const client = makeClient();
+    client.instruction.mockResolvedValue(instructionOk('editor'));
+    const { engine } = twoStageEngine(
+      async (opts) => {
+        await opts.onToolCall('delegate', {
+          worker: 'editor',
+          task: 'приватна задача',
+          format: 'chat',
+        });
+        return { finalText: 'готово' };
+      },
+      async () => ({
+        finalText: 'приватна відповідь',
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        responseId: 'resp_123',
+        apiMs: 450,
+        usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      }),
+    );
+    await makeRunner({ client, engine })(req());
+    const step = steps(client).find(
+      (item) => item.kind === 'model' && String(item.name).startsWith('worker:'),
+    );
+    expect(step).toMatchObject({
+      name: 'worker:editor:openai:gpt-6-luna',
+      ms: 450,
+      ok: true,
+      note: 'response=resp_123 input_tokens=12 output_tokens=8 total_tokens=20',
+    });
+    expect(JSON.stringify(step)).not.toContain('приватна');
   });
 
   it('Дослідник: вбудовані WebSearch/WebFetch у рушій, вихід tainted → /internal/taint і <external>', async () => {

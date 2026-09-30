@@ -287,6 +287,20 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   instruction_history: ['name', 'version_hash', 'body_md', 'deployed_at'],
   reports: ['id', 'kind', 'period_from', 'period_to', 'text_md', 'instruction_hash', 'created_at'],
   worker_card_actions: ['report_id', 'action_key', 'created_at'],
+  learning_sessions: [
+    'id',
+    'thread_id',
+    'chat_id',
+    'topic',
+    'question_text',
+    'answer_text',
+    'review_text',
+    'status',
+    'rating',
+    'due_at',
+    'created_at',
+    'updated_at',
+  ],
   style_corpus: ['id', 'msg_id', 'at', 'text', 'kind', 'approved'],
   day_plans: [
     'date',
@@ -387,6 +401,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   collections: [{ cols: ['name'], unique: true }],
   records: [{ cols: ['collection_id', 'created_at'] }],
   reports: [{ cols: ['kind', 'created_at'] }],
+  learning_sessions: [{ cols: ['thread_id', 'chat_id', 'status', 'updated_at'] }],
   style_corpus: [{ cols: ['at'] }],
   // Понад 07 §1 (там «-»): пошук історії за імʼям — єдиний спосіб її читати.
   instruction_history: [{ cols: ['name', 'deployed_at'] }],
@@ -458,6 +473,7 @@ describe('міграції D1 — файли', () => {
       '0020',
       '0021',
       '0022',
+      '0023',
     ]);
   });
 });

@@ -70,6 +70,12 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
   ) {
     files.push('0022_worker_card_actions.sql');
   }
+  if (
+    files.includes('0007_instructions_plans.sql') &&
+    !files.includes('0023_learning_sessions.sql')
+  ) {
+    files.push('0023_learning_sessions.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

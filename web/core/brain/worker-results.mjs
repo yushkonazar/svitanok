@@ -72,10 +72,7 @@ const WORKER_ACTIONS = {
     { key: 'spend', text: '💸 Куди пішли' },
     { key: 'short', text: '✏️ Коротше' },
   ],
-  tutor: [
-    { key: 'more', text: '🎓 Ще питань' },
-    { key: 'short', text: '✏️ Коротше' },
-  ],
+  tutor: [], // Stateful controls live in learning-session.mjs.
 };
 
 /** Базовий набір - для тексту, який просять переписати (копірайтер, редактор). */

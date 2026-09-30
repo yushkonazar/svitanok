@@ -21,6 +21,7 @@ import { EXECUTORS } from '../web/core/policy/proposals.mjs';
 import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 import { d1WithInstructions, syncInstructionHash, TEST_PERSONA } from './helpers/instructions.js';
+import { readTutorSession, saveTutorWorkerResult } from '../web/core/brain/learning-session.mjs';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'prerouter-test-key';
@@ -479,6 +480,37 @@ describe('prerouteMessage: режими', () => {
 });
 
 describe('prerouteMessage: нові команди', () => {
+  it('відповідь після кнопки привʼязана до збереженого питання, навіть після /new', async () => {
+    const reg = makeRegistryStub();
+    const { brain } = makeFetchStub();
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const question =
+      '🎓 SQL індекси\nЯкий індекс допоможе пошуку за містом?\nМожеш відповісти або попросити підказку.';
+    await saveTutorWorkerResult(env, {
+      id: 'q1',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:tu:q1:answer', chatId: 555, messageId: 11 },
+        NOW + 1,
+      ),
+    ).toBe('Чекаю твою відповідь');
+    await prerouteMessage(env, parsedMsg('/new'), NOW + 2);
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('awaiting_answer');
+    expect(await prerouteMessage(env, parsedMsg('Індекс за містом.'), NOW + 3)).toBe(true);
+    expect((await readTutorSession(env, 'q1'))?.status).toBe('answer_submitted');
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body as { input: { text: string } }).input.text).toContain(
+      JSON.stringify(question),
+    );
+  });
+
   it('/new: sdk-сесія скинута, taint 0, згортка ЛИШАЄТЬСЯ (S-0-4)', async () => {
     const reg = makeRegistryStub();
     const { tg } = makeFetchStub();

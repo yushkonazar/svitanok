@@ -14,6 +14,7 @@ import {
   validateAgainst,
 } from '../web/core/internal/schemas.mjs';
 import { handleBrainCallback } from '../web/core/prerouter.mjs';
+import { tutorButtons } from '../web/core/brain/learning-session.mjs';
 import {
   WORKER_CHAT_MAX,
   WORKER_FOLLOWUPS,
@@ -202,6 +203,62 @@ describe('POST /internal/taint', () => {
 });
 
 describe('deliver з результатом працівника (S-7-1)', () => {
+  it('навчальне питання доставляється з кнопками сесії, повторна відповідь не змінює стан', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    const question =
+      '🎓 SQL індекси\nЯкий індекс допоможе пошуку за містом?\nМожеш відповісти або попросити підказку.';
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: question,
+      worker: { name: 'tutor', text: question },
+    });
+    expect(res.status).toBe(200);
+    const { worker_result_id: id } = (await res.json()) as { worker_result_id: string };
+    const row = db.prepare('SELECT status, topic FROM learning_sessions WHERE id = ?').get(id);
+    expect(row).toEqual({ status: 'question', topic: 'SQL індекси' });
+    const msg = tg.find((call) => call.method === 'sendMessage')?.form as Record<string, unknown>;
+    expect((msg.reply_markup as { inline_keyboard: unknown }).inline_keyboard).toEqual(
+      tutorButtons(id, 'question'),
+    );
+    const first = await handleBrainCallback(
+      env,
+      {
+        data: `m:tu:${id}:answer`,
+        chatId: 555,
+        threadId: 99,
+        messageId: 11,
+      },
+      NOW + 1,
+    );
+    const second = await handleBrainCallback(
+      env,
+      {
+        data: `m:tu:${id}:answer`,
+        chatId: 555,
+        threadId: 99,
+        messageId: 11,
+      },
+      NOW + 2,
+    );
+    expect(first).toBe('Чекаю твою відповідь');
+    expect(second).toContain('вже почата');
+    expect(db.prepare('SELECT status FROM learning_sessions WHERE id = ?').get(id)).toEqual({
+      status: 'awaiting_answer',
+    });
+    expect(
+      await handleBrainCallback(
+        env,
+        {
+          data: `m:tu:${id}:finish`,
+          chatId: 777,
+          threadId: 99,
+          messageId: 11,
+        },
+        NOW + 3,
+      ),
+    ).toContain('недоступне');
+  });
+
   it('короткий: рядок у reports(kind=worker:<name>), кнопки Коротше/Інший тон/.md під відповіддю', async () => {
     const { env, db } = setup();
     const { tg } = stubTelegram();
