@@ -1467,6 +1467,46 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(deferred).toHaveLength(0);
   });
 
+  it('після недоступної черги кнопка тривалості лишає питання й дозволяє повторити', async () => {
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0022_worker_card_actions.sql',
+    ]);
+    const reg = makeRegistryStub();
+    reg.ns.getByName().threadClaim = async () => {
+      throw new Error('registry down');
+    };
+    const { tg, brain } = makeFetchStub();
+    const env = makeEnv(reg, d1.stub);
+    const question = 'Яка тривалість події «Тест з гостем» завтра о 16:00?';
+    const deferred: (() => Promise<void>)[] = [];
+    const callback = { data: 'm:q:60', chatId: 555, messageId: 42, threadId: 99 };
+    expect(
+      await handleBrainCallback(env, { ...callback, messageText: question }, NOW, (work) =>
+        deferred.push(work),
+      ),
+    ).toBe('Обрано: 1 год');
+    await deferred[0]!();
+    expect(brain).toHaveLength(0);
+    expect(d1.db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 0 });
+    const retry = tg.findLast(
+      (call) =>
+        call.method === 'editMessageText' &&
+        String(call.body.text).includes('Не вдалося продовжити'),
+    );
+    expect(retry?.body.text).toContain(question);
+    expect(JSON.stringify(retry?.body.reply_markup)).toContain('m:q:60');
+    expect(
+      await handleBrainCallback(
+        env,
+        { ...callback, messageText: String(retry?.body.text) },
+        NOW + 1,
+        (work) => deferred.push(work),
+      ),
+    ).toBe('Обрано: 1 год');
+  });
+
   it('m:q:custom лишає явний запит на свою тривалість і не стартує діалог навмання', async () => {
     const { env, tg } = cbEnv();
     const deferred: (() => Promise<void>)[] = [];

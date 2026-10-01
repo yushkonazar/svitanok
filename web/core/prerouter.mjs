@@ -1009,6 +1009,8 @@ async function resolveTutorAnswer(env, target, threadKey, text, nowMs) {
  *   стає статусом і фінальною відповіддю замість створення дубля в треді
  * @param {string | null} [initialStatusText] - конкретний стан вибору, якщо
  *   він важливіший за загальне «Взяв у роботу»
+ * @param {boolean} [rejectOnFull] - одноразова кнопка знімає свій claim, якщо
+ *   реєстр не зміг навіть поставити продовження в чергу
  * @returns {Promise<string | null>}
  */
 export async function startOrQueueThreadText(
@@ -1020,6 +1022,7 @@ export async function startOrQueueThreadText(
   nowMs,
   reuseStatusMessageId = null,
   initialStatusText = null,
+  rejectOnFull = false,
 ) {
   // Статусник ДО claim (S-0-2, ревʼю PR-3): при старті стає коротким живим
   // статусом прогону, при черзі - редагованим «У черзі: N» (не вічним повідомленням-
@@ -1050,6 +1053,7 @@ export async function startOrQueueThreadText(
         : `⏳ У черзі: перед тобою ${claim.queued}.`;
     if (statusMessageId != null) await editStatus(env, target, statusMessageId, note, nowMs);
     else await reply(env, target, note, nowMs);
+    if (claim.queued === -1 && rejectOnFull) throw new Error('thread-queue-unavailable');
     return null;
   }
   return startClaimedRun(env, target, threadKey, entry, nowMs, statusMessageId);
@@ -1780,14 +1784,23 @@ async function quickReplyToast(env, parsed, choice, nowMs, defer) {
         nowMs,
         parsed.messageId,
         resultText,
+        true,
       ).then(() => undefined);
     }
     // If Telegram refused to edit the old card, the new run creates one fresh
     // status card and later replaces it with the answer. Do not add a second
     // standalone "selected" message that would remain in the chat.
-    return startOrQueueThreadText(env, target, threadKey, continuationText, 'chat', nowMs).then(
-      () => undefined,
-    );
+    return startOrQueueThreadText(
+      env,
+      target,
+      threadKey,
+      continuationText,
+      'chat',
+      nowMs,
+      null,
+      null,
+      true,
+    ).then(() => undefined);
   };
   const launch = async () => {
     try {
@@ -1795,9 +1808,17 @@ async function quickReplyToast(env, parsed, choice, nowMs, defer) {
     } catch (/** @type {any} */ e) {
       await releaseWorkerCardAction(env, claimId, 'duration-choice').catch(() => {});
       console.error('prerouter: quick reply не стартував', e?.message);
-      const failure = '⚠️ Не вдалося продовжити. Спробуй ще раз.';
-      if (!(await replaceCallbackMessage(env, parsed, failure)))
-        await reply(env, target, failure, nowMs);
+      if (e?.message === 'thread-queue-unavailable' && !edited) return;
+      // Keep the original question on the retry card: the callback validates
+      // its context instead of treating a bare time as a new reminder.
+      const failure = `⚠️ Не вдалося продовжити. Спробуй ще раз.\n${String(parsed.messageText).slice(0, 280)}`;
+      const retry = {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔁 Повторити', callback_data: String(parsed.data) }]],
+        },
+      };
+      if (!(await replaceCallbackMessage(env, parsed, failure, retry)))
+        await reply(env, target, failure, nowMs, retry);
     }
   };
   if (defer) {
@@ -1910,8 +1931,9 @@ async function priceShopChoiceToast(env, parsed, reportId, index, nowMs, defer) 
     `Обрана сторінка товару: ${option.url}`,
     'Продовж саме попередній запит власника на відстеження ціни: використай цю сторінку, а назву товару, цільову ціну й валюту візьми з його попереднього повідомлення. Якщо їх немає в сесії, постав одне коротке уточнення. Не проси посилання і не вигадуй інший товар. Обрана кнопкою сторінка авторизована власником.',
   ].join('\n');
+  const edited = await replaceCallbackMessage(env, parsed, selected);
   const work = () => {
-    if (parsed.messageId != null) {
+    if (edited) {
       return startOrQueueThreadText(
         env,
         target,
@@ -1921,26 +1943,46 @@ async function priceShopChoiceToast(env, parsed, reportId, index, nowMs, defer) 
         nowMs,
         parsed.messageId,
         status,
+        true,
       ).then(() => undefined);
     }
-    return reply(env, target, status, nowMs)
-      .then(() => startOrQueueThreadText(env, target, threadKey, continuation, 'chat', nowMs))
-      .then(() => undefined);
+    // A failed edit cannot be reused as a live status. The run will create
+    // exactly one fresh status card and replace that card with its answer.
+    return startOrQueueThreadText(
+      env,
+      target,
+      threadKey,
+      continuation,
+      'chat',
+      nowMs,
+      null,
+      null,
+      true,
+    ).then(() => undefined);
   };
-  if (parsed.messageId != null) await replaceCallbackMessage(env, parsed, selected);
+  const launch = async () => {
+    try {
+      await work();
+    } catch (/** @type {any} */ e) {
+      await releaseWorkerCardAction(env, reportId, 'price-choice').catch(() => {});
+      console.error('prerouter: вибір магазину для ціни не стартував', e?.message);
+      // If the old card was not editable, the new status already says the
+      // queue is unavailable. Do not create a second error card beside it.
+      if (e?.message === 'thread-queue-unavailable' && !edited) return;
+      const failure = '⚠️ Не вдалося запустити відстеження. Можеш повторити вибір.';
+      const retry = {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔁 Повторити', callback_data: `m:ps:${reportId}:${index}` }]],
+        },
+      };
+      if (!(await replaceCallbackMessage(env, parsed, failure, retry)))
+        await reply(env, target, failure, nowMs, retry);
+    }
+  };
   if (defer) {
-    defer(() =>
-      work().catch(async (/** @type {any} */ e) => {
-        console.error('prerouter: вибір магазину для ціни не стартував', e?.message);
-        await replaceCallbackMessage(
-          env,
-          parsed,
-          '⚠️ Не вдалося підтвердити запуск відстеження. Перевір /chains або напиши про товар ще раз; повторний тап не створить дубль.',
-        );
-      }),
-    );
+    defer(launch);
   } else {
-    await work();
+    await launch();
   }
   return `Обрано: ${option.shop}`;
 }

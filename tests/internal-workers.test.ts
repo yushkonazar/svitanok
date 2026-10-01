@@ -48,7 +48,7 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
-function stubTelegram() {
+function stubTelegram(options: { failEditMessageId?: number } = {}) {
   const tg: { method: string; form: FormData | Record<string, unknown> }[] = [];
   const brain: { path: string; body: Record<string, unknown> }[] = [];
   vi.stubGlobal(
@@ -62,6 +62,17 @@ function stubTelegram() {
             ? init.body
             : (JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
         tg.push({ method, form });
+        if (
+          method === 'editMessageText' &&
+          Number((form as Record<string, unknown>).message_id) === options.failEditMessageId
+        ) {
+          return new Response(
+            JSON.stringify({ ok: false, description: 'message cannot be edited' }),
+            {
+              status: 400,
+            },
+          );
+        }
         return new Response(JSON.stringify({ ok: true, result: { message_id: 9 } }), {
           status: 200,
         });
@@ -572,6 +583,75 @@ describe('підбір магазину для відстеження ціни',
     expect(second).toBe('Магазин із цього підбору вже обрано.');
     expect(brain).toHaveLength(1);
     expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 1 });
+  });
+
+  it('якщо картку магазину не можна змінити, створює лише один новий статус для відповіді', async () => {
+    const { env } = setup();
+    const { tg, brain } = stubTelegram({ failEditMessageId: 11 });
+    const { id } = await saveWorkerResult(
+      env,
+      {
+        name: 'price-search',
+        text: '## Ціни\n- Rozetka — 14 999 грн — https://rozetka.com.ua/ua/sony-wh-1000xm6/p123',
+      },
+      NOW,
+    );
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:ps:${id}:0`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW,
+      ),
+    ).toBe('Обрано: Rozetka');
+    expect(brain).toHaveLength(1);
+    expect(tg.filter(({ method }) => method === 'sendMessage')).toHaveLength(1);
+    expect(
+      tg.filter(
+        ({ method, form }) =>
+          method === 'editMessageText' &&
+          Number((form as Record<string, unknown>).message_id) === 9,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('після збою запуску показує помилку на картці та дозволяє повторний вибір', async () => {
+    const { env, db } = setup({
+      RUN_REGISTRY: {
+        getByName: () => ({
+          threadClaim: async () => {
+            throw new Error('registry down');
+          },
+        }),
+      } as unknown as NonNullable<Env['RUN_REGISTRY']>,
+    });
+    const { tg, brain } = stubTelegram();
+    const { id } = await saveWorkerResult(
+      env,
+      {
+        name: 'price-search',
+        text: '## Ціни\n- Rozetka — 14 999 грн — https://rozetka.com.ua/ua/sony-wh-1000xm6/p123',
+      },
+      NOW,
+    );
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:ps:${id}:0`, chatId: 555, messageId: 11, threadId: 99 },
+        NOW,
+      ),
+    ).toBe('Обрано: Rozetka');
+    expect(brain).toHaveLength(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 0 });
+    expect(
+      tg.some(
+        ({ method, form }) =>
+          method === 'editMessageText' &&
+          String((form as Record<string, unknown>).text).includes(
+            'Не вдалося запустити відстеження',
+          ) &&
+          JSON.stringify((form as Record<string, unknown>).reply_markup).includes(`m:ps:${id}:0`),
+      ),
+    ).toBe(true);
   });
 });
 
