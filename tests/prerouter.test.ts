@@ -957,13 +957,20 @@ describe('prerouteMessage: нові команди', () => {
     expect(tg.some((c) => String(c.body.text).includes('полити квіти'))).toBe(true);
   });
 
-  it('/remind з текстом і /plan ідуть у мозок, а не в легасі', async () => {
+  it('/plan запускає інтерактивне планування без одноразового прогону мозку', async () => {
     const reg = makeRegistryStub();
     const { brain } = makeFetchStub();
-    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const env = makeEnv(reg, d1.stub);
+    const created: Record<string, unknown>[] = [];
+    (env as { DAY_PLAN?: unknown }).DAY_PLAN = {
+      create: async (request: Record<string, unknown>) => void created.push(request),
+    };
     expect(await prerouteMessage(env, parsedMsg('/plan'), NOW)).toBe(true);
-    expect(brain).toHaveLength(1);
-    expect((brain[0]!.body as { input: { text: string } }).input.text).toBe('Склади план на день.');
+    expect(brain).toHaveLength(0);
+    expect(created).toHaveLength(1);
+    expect(created[0]?.params).toMatchObject({ oneShot: true });
+    expect(d1.db.prepare(`SELECT kind FROM chains`).all()).toEqual([{ kind: 'day-plan' }]);
   });
 
   // S-0-16 (етап 3 PR-7): «не нагадуй про X» - детерміновано у facts, без прогону.
@@ -1004,7 +1011,7 @@ describe('prerouteMessage: нові команди', () => {
     d1.db
       .prepare(
         `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
-         VALUES ('ch-1', 'day-plan', 'ch-1', '{"date":"2026-09-07","awaiting":"intent"}', 'waiting', '2026-09-06T17:30:00Z', '2026-09-06T17:30:00Z')`,
+         VALUES ('ch-1', 'day-plan', 'ch-1', '{"date":"2026-09-07","awaiting":"intent","thread_id":"99"}', 'waiting', '2026-09-06T17:30:00Z', '2026-09-06T17:30:00Z')`,
       )
       .run();
     // Natural wording must be handled locally before the waiting scenario can
@@ -1407,6 +1414,15 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     const env = makeEnv(makeRegistryStub(), d1.stub);
     return { env, db: d1.db, tg };
   };
+
+  it('неактивний receipt-chip має безпечну відповідь навіть після вимкнення V2', async () => {
+    const { env, tg } = cbEnv();
+    (env as { ASSISTANT_V2?: string }).ASSISTANT_V2 = 'off';
+    expect(await handleBrainCallback(env, { data: 'm:done', chatId: 555 }, NOW)).toBe(
+      'Це вже вирішено.',
+    );
+    expect(tg).toHaveLength(0);
+  });
 
   it('m:q:60 одразу змінює те саме питання і продовжує той самий тред', async () => {
     const { env, tg } = cbEnv();
@@ -1925,9 +1941,9 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(dayPlanChoiceEvent('ok')).toBeNull();
   });
 
-  // Етап 5 PR-4: у блоці чекліста поїздки кілька пунктів - клавіатура після
-  // ✅ лишається, інакше решту пунктів не відмітити.
-  it('c:<id>:d<block>_<idx> - тост «Відмітив.», клавіатура блоку НЕ знімається', async () => {
+  // У блоці чекліста поїздки лишаються інші пункти, але вибраний стає
+  // неактивним чипом із тим самим видимим станом, що й в інших картках.
+  it('c:<id>:d<block>_<idx> - чип позначено, решта кнопок чекліста лишається', async () => {
     const { env, db, tg } = cbEnv();
     db.prepare(
       `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at)
@@ -1939,12 +1955,40 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       get: async () => ({ sendEvent: async (ev: unknown) => void events.push(ev) }),
     };
     const tap = (data: string) =>
-      handleBrainCallback(env, { data, chatId: 555, messageId: 7, threadId: 99 }, NOW);
+      handleBrainCallback(
+        env,
+        {
+          data,
+          chatId: 555,
+          messageId: 7,
+          threadId: 99,
+          replyMarkup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Документи', callback_data: 'c:tr-1:dt7_2' },
+                { text: '✅ Аптечка', callback_data: 'c:tr-1:dt7_3' },
+              ],
+              [{ text: '✖ Скасувати', callback_data: 'c:tr-1:cancel' }],
+            ],
+          },
+        },
+        NOW,
+      );
     expect(await tap('c:tr-1:dt7_2')).toBe('Відмітив.');
-    expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(0);
+    expect(events).toEqual([{ type: 'trip', payload: { action: 'done', item: 't7:2' } }]);
+    const changed = tg.find((c) => c.method === 'editMessageReplyMarkup')?.body as {
+      reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
+    expect(changed.reply_markup.inline_keyboard).toEqual([
+      [
+        { text: '✅ Документи', callback_data: 'm:done' },
+        { text: '✅ Аптечка', callback_data: 'c:tr-1:dt7_3' },
+      ],
+      [{ text: '✖ Скасувати', callback_data: 'c:tr-1:cancel' }],
+    ]);
     // Кнопки «Змінити дати» і «Скасувати» - одноразові, клавіатуру знімають.
     expect(await tap('c:tr-1:newdate')).toBe('Прийняв.');
-    expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(1);
+    expect(tg.filter((c) => c.method === 'editMessageReplyMarkup')).toHaveLength(2);
     expect(events).toEqual([
       { type: 'trip', payload: { action: 'done', item: 't7:2' } },
       { type: 'trip', payload: { action: 'ask-date' } },

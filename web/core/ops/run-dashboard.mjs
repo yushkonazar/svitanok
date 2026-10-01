@@ -52,6 +52,7 @@ export async function readRunDashboard(env) {
   }
 
   const recent = rows.map((row) => shapeRun(row, stepsByRun.get(String(row.id ?? '')) ?? []));
+  const workerQuality = await readWorkerQuality(env);
   return {
     recent,
     summary: {
@@ -60,7 +61,89 @@ export async function readRunDashboard(env) {
       failed: recent.filter((run) => run.terminal === 'failed').length,
       completed: recent.filter((run) => run.terminal === 'completed').length,
     },
+    worker_quality: workerQuality,
   };
+}
+
+/** Aggregate only allowlisted worker model-step metadata and explicit votes. */
+/** @param {Env} env */
+async function readWorkerQuality(env) {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
+  const { results } = await db(env)
+    .prepare(
+      `SELECT name, COUNT(*) AS calls,
+              SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS succeeded,
+              SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failed,
+              AVG(ms) AS avg_ms, MAX(ms) AS max_ms
+       FROM run_steps
+       WHERE kind = 'model' AND name GLOB 'worker:*:openai:*' AND at >= ?
+       GROUP BY name`,
+    )
+    .bind(since)
+    .all();
+  /** @type {Map<string, {calls:number,succeeded:number,failed:number,totalMs:number,maxMs:number|null}>} */
+  const totals = new Map();
+  for (const row of /** @type {Record<string, unknown>[]} */ (results ?? [])) {
+    const name = String(row.name ?? '');
+    const match = name.match(/^worker:([a-z][a-z0-9-]{1,31}):openai:/);
+    if (!match?.[1]) continue;
+    const worker = match[1];
+    const calls = integer(row.calls);
+    const item = totals.get(worker) ?? {
+      calls: 0,
+      succeeded: 0,
+      failed: 0,
+      totalMs: 0,
+      maxMs: null,
+    };
+    item.calls += calls;
+    item.succeeded += integer(row.succeeded);
+    item.failed += integer(row.failed);
+    const avgMs = finite(row.avg_ms);
+    const maxMs = finite(row.max_ms);
+    if (avgMs != null) item.totalMs += avgMs * calls;
+    if (maxMs != null) item.maxMs = Math.max(item.maxMs ?? 0, maxMs);
+    totals.set(worker, item);
+  }
+  /** @type {Record<string, unknown>[]} */
+  let votes = [];
+  try {
+    const { results: voteRows } = await db(env)
+      .prepare(
+        `SELECT r.kind, a.action_key, COUNT(*) AS votes
+         FROM worker_card_actions a JOIN reports r ON r.id = a.report_id
+         WHERE r.kind LIKE 'worker:%' AND a.action_key IN ('quality:good','quality:bad')
+           AND a.created_at >= ?
+         GROUP BY r.kind, a.action_key`,
+      )
+      .bind(since)
+      .all();
+    votes = /** @type {Record<string, unknown>[]} */ (voteRows ?? []);
+  } catch {
+    // Older/rollback schemas may not have the optional feedback table contract.
+  }
+  /** @type {Map<string, { good: number, bad: number }>} */
+  const ratings = new Map();
+  for (const row of votes) {
+    const worker = String(row.kind ?? '').replace(/^worker:/, '');
+    if (!/^[a-z][a-z0-9-]{1,31}$/.test(worker)) continue;
+    const rating = ratings.get(worker) ?? { good: 0, bad: 0 };
+    if (row.action_key === 'quality:good') rating.good += integer(row.votes);
+    if (row.action_key === 'quality:bad') rating.bad += integer(row.votes);
+    ratings.set(worker, rating);
+  }
+  return [...totals.entries()]
+    .map(([worker, item]) => ({
+      worker,
+      sample_size: item.calls,
+      succeeded: item.succeeded,
+      failed: item.failed,
+      success_rate_pct: item.calls ? Math.round((100 * item.succeeded) / item.calls) : null,
+      avg_latency_ms: item.calls ? Math.round(item.totalMs / item.calls) : null,
+      max_latency_ms: item.maxMs,
+      feedback: ratings.get(worker) ?? { good: 0, bad: 0 },
+    }))
+    .sort((a, b) => b.sample_size - a.sample_size || a.worker.localeCompare(b.worker));
 }
 
 /** @param {Record<string, unknown>} row @param {Record<string, unknown>[]} steps */
@@ -141,6 +224,12 @@ function parseModelTelemetry(note) {
 function finite(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/** @param {unknown} value */
+function integer(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
 }
 
 /** @param {unknown} value @param {number} max */

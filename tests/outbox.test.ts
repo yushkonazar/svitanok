@@ -647,7 +647,7 @@ describe('deliver/status через router', () => {
       'editMessageText',
       'sendMessage',
     ]);
-    expect(calls[2]?.body).toMatchObject({ text: '**відповідь**' });
+    expect(calls[2]?.body).toMatchObject({ text: 'відповідь' });
     expect(calls[2]?.body.parse_mode).toBeUndefined();
     expect(store.raw.prepare('SELECT status FROM outbox').all()[0]).toMatchObject({
       status: 'sent',

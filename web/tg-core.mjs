@@ -385,9 +385,10 @@ export function buildMiniAppButton(text, url, chatId, botUsername) {
   return isGroup ? { text, url } : { text, web_app: { url } };
 }
 
-/** Позначити натиснуту кнопку єдиним чітким чипом ✅ у reply_markup.
- *  Різні ✓/колір фону Telegram не є надійним сигналом виконання, тому текст
- *  самого повідомлення завжди несе однакове підтвердження.
+/** Позначити натиснуту кнопку єдиним чітким і неактивним чипом ✅.
+ *  Різні ✓/колір фону Telegram не є надійним сигналом виконання. Заміна
+ *  callback_data на m:done додатково блокує повторний tap, але залишає інші
+ *  кнопки картки доступними.
  *  @param {KvBlob|null|undefined} replyMarkup
  *  @param {string} tappedData */
 export function markButtonDone(replyMarkup, tappedData) {
@@ -399,7 +400,7 @@ export function markButtonDone(replyMarkup, tappedData) {
         ? row.map((/** @type {KvBlob} */ btn) => {
             if (!btn || btn.callback_data !== tappedData) return btn;
             const label = String(btn.text ?? '').replace(/^(?:✓|✅)\s*/, '');
-            return { ...btn, text: `✅ ${label}`.slice(0, 64) };
+            return { ...btn, text: `✅ ${label}`.slice(0, 64), callback_data: 'm:done' };
           })
         : row,
     ),

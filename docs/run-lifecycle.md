@@ -57,6 +57,14 @@ chat, quick, scheduler і worker-профілів. D1 `runs` містить ли
 окремо з `SchedulerDO`. Це діагностика, не control plane: доступність у статусі
 ніколи не замінює registry gate.
 
+Owner dashboard доповнює це безпечними 30-денними метриками працівників:
+кількість завершених модельних кроків, успішність, середня/максимальна
+затримка та явні 👍/👎 оцінки. Тексти запитів і відповідей не входять у зріз.
+Оцінки показують сприйняту користь, а не істину; при малій вибірці їх треба
+читати як сигнал для перегляду прикладів, не як рейтинг. Delivery SLO також
+показує кількість pending/failed/stuck повідомлень outbox, без тексту payload
+чи адреси чату.
+
 Пов'язані модулі: `web/core/run-registry/do.mjs`,
 `web/core/run-registry/client.mjs`, `web/core/internal/router.mjs`,
 `web/core/prerouter.mjs` і `brain/src/server.ts`.

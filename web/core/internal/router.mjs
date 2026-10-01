@@ -31,6 +31,7 @@ import { findAnalysisByRun, sendAnalysisEvent } from '../ideas/analysis.mjs';
 import { loadInstruction } from '../instructions.mjs';
 import {
   WORKER_CHAT_MAX,
+  WORKER_MD_MIN,
   saveWorkerResult,
   sendWorkerDocument,
   uploadWorkerResult,
@@ -38,9 +39,12 @@ import {
   priceShopOptions,
   priceShopCard,
   priceShopButtons,
+  placeOptions,
+  placeSearchButtons,
   mailCardItems,
   mailReportButtons,
   mailNextPageInfo,
+  readMailItemIds,
 } from '../brain/worker-results.mjs';
 import {
   saveTutorWorkerResult,
@@ -412,11 +416,19 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const factProposalPrompt = await factProposalPromptFor(env, body.buttons ?? []);
   const shopOptions = saved?.name === 'price-search' ? priceShopOptions(saved.text) : [];
   const shopCard = priceShopCard(shopOptions);
+  const placeOptionsFound = saved?.name === 'place-search' ? placeOptions(saved.text) : [];
+  const placeHint = placeOptionsFound.length
+    ? '📍 Обери заклад, щоб відкрити маршрут, меню або спосіб бронювання.'
+    : '';
   const mailItems = saved?.name === 'mail-secretary' ? mailCardItems(saved.text) : [];
   const mailNextPage = saved?.name === 'mail-secretary' ? mailNextPageInfo(saved.text) : null;
+  const mailReadIds =
+    saved?.name === 'mail-secretary'
+      ? await readMailItemIds(env, saved.id).catch(() => new Set())
+      : new Set();
   const mailHint = mailItems.length ? '✉️ Обери лист нижче, щоб дія стосувалася саме його.' : '';
   const userText = saved?.name === 'tutor' ? renderTutorWorkerText(body.text) : body.text;
-  const deliverText = [factProposalPrompt ?? userText, notice, shopCard, mailHint]
+  const deliverText = [factProposalPrompt ?? userText, notice, shopCard, placeHint, mailHint]
     .filter(Boolean)
     .join('\n\n');
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
@@ -425,8 +437,15 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const buttons = [
     ...(body.buttons ?? []),
     ...(saved ? priceShopButtons(saved.id, shopOptions) : []),
+    ...(saved ? placeSearchButtons(saved.id, placeOptionsFound) : []),
     ...(saved?.name === 'mail-secretary'
-      ? mailReportButtons(saved.id, mailItems, !longWorker, mailNextPage != null)
+      ? mailReportButtons(
+          saved.id,
+          mailItems,
+          !longWorker && saved.text.length >= WORKER_MD_MIN,
+          mailNextPage != null,
+          mailReadIds,
+        )
       : saved?.name === 'tutor'
         ? tutorSession && ['question', 'awaiting_answer', 'reviewed'].includes(tutorSession.status)
           ? tutorButtons(
@@ -435,7 +454,11 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
             )
           : []
         : saved
-          ? workerButtons(saved.id, !longWorker, body.worker?.name ?? '')
+          ? workerButtons(
+              saved.id,
+              !longWorker && saved.text.length >= WORKER_MD_MIN,
+              body.worker?.name ?? '',
+            )
           : []),
     ...(profile === 'weekly-review' ? reportButtons() : []),
   ];
@@ -452,7 +475,14 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
       // Markdown моделі → HTML Telegram частинами (tg/markdown.mjs); текст у
       // reports/сесії лишається Markdown.
       parts: renderMdParts(deliverText),
-      payload: buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {},
+      payload: {
+        ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
+        // Research summaries often contain source URLs; previews can obscure
+        // the actual choices (for example, restaurant results).
+        ...(['researcher', 'place-search'].includes(saved?.name ?? '')
+          ? { link_preview_options: { is_disabled: true } }
+          : {}),
+      },
     },
     nowMs,
   );

@@ -111,6 +111,27 @@ export class AssistantResumeDO extends DurableObject {
     });
   }
 
+  /** Restore a consumed note only when no newer clarification has replaced it.
+   * Used if the model host definitively refuses the follow-up run.
+   * @param {string} slot @param {unknown} value @param {number} [nowMs] */
+  async restoreIfEmpty(slot, value, nowMs = Date.now()) {
+    return this.#serial(async () => {
+      const current = await this.#read(nowMs);
+      if (asResume(current.values[slot], nowMs)) return false;
+      const resume = asResume(value, nowMs);
+      if (!resume) return false;
+      const next = {
+        ...current,
+        version: current.version + 1,
+        values: { ...current.values, [slot]: resume },
+      };
+      await this.ctx.storage.put(STATE_KEY, next);
+      await this.#schedule(next, nowMs);
+      await this.#mirror(slot, resume);
+      return true;
+    });
+  }
+
   /** Atomically consume a continuation note once. A KV value may seed only an
    * untouched slot; tombstones block its stale resurrection after consumption.
    * @param {string} slot @param {unknown} legacyValue @param {number} [nowMs]

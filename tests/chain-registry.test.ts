@@ -161,19 +161,28 @@ describe('D1 + привʼязки', () => {
       thread_id: '99',
       awaiting_since: '2026-09-01T09:00:00Z',
     });
-    seed('d-intent', 'day-plan', { awaiting: 'intent', awaiting_since: '2026-09-01T08:00:00Z' });
+    seed('d-intent', 'day-plan', {
+      awaiting: 'intent',
+      thread_id: 'dm',
+      awaiting_since: '2026-09-01T08:00:00Z',
+    });
     expect(await findAwaitingChain(env)).toEqual({ id: 't-time', kind: 'table', awaiting: 'time' });
-    // Тред DM - столик із теми 99 не підходить, план (без thread_id) підходить.
+    // Кожен тред бачить лише свій ланцюг.
     expect(await findAwaitingChain(env, 'dm')).toEqual({
       id: 'd-intent',
       kind: 'day-plan',
       awaiting: 'intent',
     });
+    expect(await findAwaitingChain(env, '99')).toEqual({
+      id: 't-time',
+      kind: 'table',
+      awaiting: 'time',
+    });
     // План спитав пізніше (setChainState ставить awaiting_since) - він перший,
     // навіть якщо chain-nudge потім оновить updated_at столика.
     await setChainState(env, 'd-intent', { status: 'waiting', awaiting: 'intent' });
     db.prepare(`UPDATE chains SET updated_at = '2099-01-01T00:00:00Z' WHERE id = 't-time'`).run();
-    expect(await findAwaitingChain(env, '99')).toEqual({
+    expect(await findAwaitingChain(env, 'dm')).toEqual({
       id: 'd-intent',
       kind: 'day-plan',
       awaiting: 'intent',

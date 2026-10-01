@@ -66,7 +66,11 @@ import {
   sendWorkerDocument,
   WORKER_FOLLOWUPS,
   workerFollowupText,
+  recordWorkerQualityVote,
   priceShopOptions,
+  placeOptions,
+  placeChoiceCard,
+  placeChoiceButtons,
   mailCardItems,
   mailReportButtons,
   mailItemButtons,
@@ -74,9 +78,12 @@ import {
   mailListCard,
   mailItemFollowup,
   mailNextPageInfo,
+  markMailItemRead,
+  readMailItemIds,
   claimWorkerCardAction,
   releaseWorkerCardAction,
   WORKER_CHAT_MAX,
+  WORKER_MD_MIN,
 } from './brain/worker-results.mjs';
 import {
   awaitingTutorAnswer,
@@ -108,6 +115,7 @@ import {
 } from './assistant-controls.mjs';
 import { BACKUP_STATE_KEY } from './backup-state/contract.mjs';
 import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
+import { startDayPlanChain } from './day-plan/chain.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -465,6 +473,43 @@ export function parseNewCommand(text) {
   return { cmd: parsed.cmd, args: parsed.args.trim() };
 }
 
+/** Explicit day-plan phrasing enters the guided planner, not a one-shot model guess. */
+/** @param {string} text @param {number} nowMs */
+function parseDayPlanRequest(text, nowMs) {
+  const source = String(text ?? '').trim();
+  const match =
+    source.match(
+      /^(?:(?:склади|побудуй|зроби)\s+)?план(?:\s+дня|\s+на\s+(?:день|сьогодні|завтра))(?:\s*[:—-]\s*|\s+)?(.*)$/iu,
+    ) ??
+    source.match(/^розплануй\s+(?:мій\s+)?(?:день|сьогодні|завтра)(?:\s*[:—-]\s*|\s+)?(.*)$/iu) ??
+    source.match(/^склади\s+план(?:\s+(?:сьогодні|завтра))?(?:\s*[:—-]\s*|\s+)?(.*)$/iu);
+  if (!match) return null;
+  const date = /\bзавтра\b/iu.test(source)
+    ? addDaysToDateKey(kyivDateKey(new Date(nowMs)), 1)
+    : kyivDateKey(new Date(nowMs));
+  return {
+    date,
+    intent: String(match[1] ?? '')
+      .replace(/^на\s+(?:сьогодні|завтра)\s*[:—-]?\s*/iu, '')
+      .trim(),
+  };
+}
+
+/** Start the same guided planning workflow for an on-demand request. */
+/** @param {Env} env @param {ThreadTarget} target @param {string} date @param {string} intent @param {number} nowMs */
+async function startInteractiveDayPlan(env, target, date, intent, nowMs) {
+  if (target.chatId == null) throw new Error('Не бачу чату для плану.');
+  await startDayPlanChain(env, date, nowMs, {
+    oneShot: true,
+    ...(intent ? { initialIntent: intent } : {}),
+    target: {
+      chatId: target.chatId,
+      // chainTarget maps this marker back to a Telegram DM (no forum topic id).
+      threadId: target.threadId == null ? THREAD_DM : target.threadId,
+    },
+  });
+}
+
 /** Команди і те, що вони роблять - джерело для /help і меню Telegram. */
 export const NEW_COMMANDS = [
   { command: 'help', description: 'Приклади запитів і можливості' },
@@ -550,6 +595,12 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
 
   let text = String(parsed.text ?? '').trim();
   if (!text) return false;
+
+  // A bare slash is an unfinished command, not a request for the model to improvise.
+  if (text === '/') {
+    await reply(env, target, HELP_TEXT, nowMs);
+    return true;
+  }
 
   const threadKeyEarly = target.threadId == null ? THREAD_DM : String(target.threadId);
   if (mode === 'shadow') {
@@ -637,14 +688,16 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
     // /plan і /remind - той самий шлях, що вільний текст: інакше вони жили б
     // у легасі й відповідали не тим, чим асистент (скарга 12 прогону 08.09).
     if (cmd.cmd === 'plan') {
-      await startOrQueueThreadText(
-        env,
-        target,
-        threadKey,
-        cmd.args ? `План на день: ${cmd.args}` : 'Склади план на день.',
-        'chat',
-        nowMs,
-      );
+      const intent = cmd.args.replace(/^на\s+(?:день|сьогодні|завтра)\s*[:—-]?\s*/iu, '').trim();
+      const date = /\bзавтра\b/iu.test(cmd.args)
+        ? addDaysToDateKey(kyivDateKey(new Date(nowMs)), 1)
+        : kyivDateKey(new Date(nowMs));
+      try {
+        await startInteractiveDayPlan(env, target, date, intent, nowMs);
+      } catch (/** @type {any} */ e) {
+        console.error('prerouter: інтерактивний план не стартував', e?.message);
+        await send('Не вдалося почати планування. Спробуй ще раз трохи пізніше.');
+      }
       return true;
     }
     if (cmd.cmd === 'remind') {
@@ -749,7 +802,7 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
   // власника в темі «Асистент» (намір/уточнення, назва закладу, час, імена)
   // - текст іде подією в Workflow, не в мозок. Інші теми не чіпаємо: питання
   // ставилось саме тут. Збій доставки - у мозок, як звичайне повідомлення.
-  if (threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
+  if (threadKey === THREAD_DM || threadKey === String(env.TOPIC_ASSISTANT ?? '')) {
     const awaiting = await findAwaitingChain(env, threadKey).catch((/** @type {any} */ e) => {
       // Збій D1 тут не блокує повідомлення (воно піде в мозок), але й не мовчить.
       console.error('prerouter: пошук ланцюга впав', e?.message);
@@ -773,6 +826,22 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       });
       if (soft) await reply(env, target, soft, nowMs);
     }
+  }
+
+  const dayPlanRequest = parseDayPlanRequest(text, nowMs);
+  if (dayPlanRequest) {
+    try {
+      await startInteractiveDayPlan(env, target, dayPlanRequest.date, dayPlanRequest.intent, nowMs);
+    } catch (/** @type {any} */ e) {
+      console.error('prerouter: інтерактивний план не стартував', e?.message);
+      await reply(
+        env,
+        target,
+        'Не вдалося почати планування. Спробуй ще раз трохи пізніше.',
+        nowMs,
+      );
+    }
+    return true;
   }
 
   await routeThreadText(env, target, threadKey, text, nowMs);
@@ -1431,8 +1500,11 @@ export async function kickPendingThreads(env, nowMs = Date.now()) {
  * @returns {Promise<string | null>}
  */
 export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer = null) {
-  if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
   const data = String(parsed.data ?? '');
+  // Receipt chips survive feature-mode changes; their safe no-op response
+  // must not depend on whether the V2 router is currently enabled.
+  if (data === 'm:done') return 'Це вже вирішено.';
+  if (env.ASSISTANT_V2 !== 'shadow' && env.ASSISTANT_V2 !== 'on') return null;
   const quickReply = parseQuickReplyCallback(data);
   if (quickReply) return quickReplyToast(env, parsed, quickReply, nowMs, defer);
   // Швидкий вибір часу під «Коли нагадати…». Тап обробляємо поза моделлю:
@@ -1580,6 +1652,8 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // нашого збереженого, allowlisted результату.
   const ps = data.match(/^m:ps:([A-Za-z0-9-]{1,40}):(\d)$/);
   if (ps) return priceShopChoiceToast(env, parsed, ps[1] ?? '', Number(ps[2] ?? -1), nowMs, defer);
+  const place = data.match(/^m:pl:([A-Za-z0-9-]{1,40}):(\d)$/);
+  if (place) return placeChoiceToast(env, parsed, place[1] ?? '', Number(place[2] ?? -1), nowMs);
   const mailItem = data.match(/^m:mi:([A-Za-z0-9-]{1,40}):(\d)$/);
   if (mailItem)
     return mailItemChoiceToast(env, parsed, mailItem[1] ?? '', Number(mailItem[2] ?? -1), nowMs);
@@ -1611,14 +1685,14 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   // m:w:<id>:short|tone|md - кнопки під результатом працівника (S-7-1, етап 4
   // PR-3): підказка в тред тим самим шляхом, що текст власника, або файл.
   const wm = data.match(
-    /^m:w:([A-Za-z0-9-]{1,40}):(short|tone|md|next|draft|src|week|cal|spend|more)$/,
+    /^m:w:([A-Za-z0-9-]{1,40}):(short|tone|md|next|draft|src|week|cal|spend|more|good|bad)$/,
   );
   if (wm) {
     return workerResultToast(
       env,
       parsed,
       /** @type {string} */ (wm[1]),
-      /** @type {keyof typeof WORKER_FOLLOWUPS | 'md'} */ (wm[2]),
+      /** @type {keyof typeof WORKER_FOLLOWUPS | 'md' | 'good' | 'bad'} */ (wm[2]),
       nowMs,
       defer,
     );
@@ -1634,9 +1708,6 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   }
   const buy = data.match(/^m:buy:([A-Za-z0-9-]{1,40})$/);
   if (buy) return boughtToast(env, parsed, /** @type {string} */ (buy[1]), nowMs, defer);
-  // m:done - чип на місці знятої клавіатури (скарга 14): тапати нема куди,
-  // але Telegram однаково шле callback, і мовчати на нього не можна.
-  if (data === 'm:done') return 'Це вже вирішено.';
   // m:ia:<ideaId> - «Все одно запустити» під кешованим аналізом (S-3-4, етап 4
   // PR-2): повторний прогін по коду попри кеш; T0 через policy, як і з чату.
   const ia = data.match(/^m:ia:([A-Za-z0-9-]{1,40})$/);
@@ -1896,6 +1967,31 @@ function quickReplyContinuation(messageText, selected, kind) {
   ].join('\n');
 }
 
+/** Selection is read-only: it opens trusted, query-built map/search links. */
+/** @param {Env} env @param {CallbackParsed} parsed @param {string} reportId @param {number} index @param {number} nowMs */
+async function placeChoiceToast(env, parsed, reportId, index, nowMs) {
+  const report = await loadWorkerResult(env, reportId).catch(() => null);
+  if (!report || report.name !== 'place-search')
+    return 'Ці варіанти вже недоступні — повтори пошук закладів.';
+  const options = placeOptions(report.text);
+  const item = options[index];
+  if (!item) return 'Цей заклад уже недоступний — повтори пошук.';
+  const text = placeChoiceCard(item, index, options.length);
+  const keyboard = {
+    reply_markup: { inline_keyboard: placeChoiceButtons(reportId, index, options) },
+  };
+  if (!(await replaceCallbackMessage(env, parsed, text, keyboard))) {
+    await reply(
+      env,
+      { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null },
+      text,
+      nowMs,
+      keyboard,
+    );
+  }
+  return `Показав дії для «${item.name}»`;
+}
+
 /**
  * Вибір магазину з підбору ціни. Натискання є явною згодою власника саме на
  * цю сторінку; сам запуск відстеження все одно проходить policy, якщо сесія
@@ -2007,8 +2103,16 @@ async function mailItemChoiceToast(env, parsed, reportId, index, nowMs) {
   if (!card) return 'Цього листа вже немає в результаті.';
   const item = card.items[index];
   if (!item) return 'Цього листа вже немає в результаті.';
-  const text = mailItemCard(item, index, card.items.length);
-  const keyboard = { reply_markup: { inline_keyboard: mailItemButtons(reportId, index) } };
+  try {
+    await markMailItemRead(env, reportId, item.id, nowMs);
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: статус листа не збережено', e?.message);
+    return 'Не вдалося оновити список листів — спробуй ще раз.';
+  }
+  const text = mailItemCard(item, index, card.items.length, true);
+  const keyboard = {
+    reply_markup: { inline_keyboard: mailItemButtons(reportId, index, card.items.length) },
+  };
   if (!(await replaceCallbackMessage(env, parsed, text, keyboard))) {
     await reply(
       env,
@@ -2032,14 +2136,16 @@ async function mailListToast(env, parsed, reportId, nowMs) {
     return 'Пошта тимчасово недоступна — спробуй пізніше.';
   }
   if (!card?.items.length) return 'Листів у цьому результаті немає.';
-  const text = mailListCard(card.items);
+  const readIds = await readMailItemIds(env, reportId).catch(() => new Set());
+  const text = mailListCard(card.items, readIds);
   const keyboard = {
     reply_markup: {
       inline_keyboard: mailReportButtons(
         reportId,
         card.items,
-        card.report.text.length <= WORKER_CHAT_MAX,
+        card.report.text.length <= WORKER_CHAT_MAX && card.report.text.length >= WORKER_MD_MIN,
         mailNextPageInfo(card.report.text) != null,
+        readIds,
       ),
     },
   };
@@ -2132,7 +2238,7 @@ async function mailActionToast(env, parsed, reportId, index, action, nowMs, defe
           parsed,
           '⚠️ Не вдалося запустити дію. Спробуй кнопку ще раз.',
           {
-            reply_markup: { inline_keyboard: mailItemButtons(reportId, index) },
+            reply_markup: { inline_keyboard: mailItemButtons(reportId, index, card.items.length) },
           },
         ))
       ) {
@@ -2309,8 +2415,13 @@ async function chainCallbackToast(env, parsed, chainId, choice) {
     return 'Ланцюг не відповідає - напиши текстом.';
   }
   // Кнопка з `keep` (пункт чекліста поїздки) лишає клавіатуру: у блоці
-  // кілька пунктів, і власник відмічає їх один за одним.
-  if (ev.keep) return 'Відмітив.';
+  // кілька пунктів, і власник відмічає їх один за одним. Але обраний пункт
+  // перетворюємо на неактивний чип: видимий стан однаковий з іншими картками,
+  // а повторний tap не надсилає ту саму подію ще раз.
+  if (ev.keep) {
+    await dropTappedButton(env, parsed);
+    return 'Відмітив.';
+  }
   await clearKeyboard(env, parsed);
   return 'Прийняв.';
 }
@@ -2859,7 +2970,7 @@ const WORKER_TOASTS = {
  * файл із бази. Клавіатуру не знімаємо: кнопки можна тиснути кілька разів.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, threadId?: number | string | null }} parsed
- * @param {string} id @param {keyof typeof WORKER_FOLLOWUPS | 'md'} choice @param {number} nowMs
+ * @param {string} id @param {keyof typeof WORKER_FOLLOWUPS | 'md' | 'good' | 'bad'} choice @param {number} nowMs
  * @param {((work: () => Promise<void>) => void) | null} defer - старт прогону довший за
  *   вікно тосту (як у ideaRerunToast)
  */
@@ -2874,6 +2985,17 @@ async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
     return 'База недоступна - спробуй пізніше.';
   }
   if (!result) return 'Результат уже не в базі.';
+  if (choice === 'good' || choice === 'bad') {
+    const saved = await recordWorkerQualityVote(env, id, choice, nowMs).catch(
+      (/** @type {any} */ e) => {
+        console.error('prerouter: оцінку працівника не збережено', e?.message);
+        return false;
+      },
+    );
+    if (!saved) return 'Оцінку вже врахував.';
+    await disableWorkerRatingChoices(env, parsed, id, choice);
+    return choice === 'good' ? 'Дякую, відповідь корисна.' : 'Дякую, врахую оцінку.';
+  }
   const threadKey = parsed.threadId == null ? THREAD_DM : String(parsed.threadId);
   /** @type {ThreadTarget} */
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
@@ -2896,8 +3018,31 @@ async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
     : workerFollowupText(result, choice);
   if (followup.length > 4_000)
     return 'Звіт завеликий для цієї кнопки. Попроси правку текстом або відкрий отриманий файл.';
-  const work = () =>
-    startOrQueueThreadText(env, target, threadKey, followup, 'chat', nowMs).then(() => undefined);
+  const actionKey = `worker:${choice}`;
+  const claimed = await claimWorkerCardAction(env, id, actionKey, nowMs).catch(
+    (/** @type {any} */ e) => {
+      console.error('prerouter: дію картки не зареєстровано', e?.message);
+      return false;
+    },
+  );
+  if (!claimed) return 'Цю дію вже запустив.';
+  await dropTappedButton(env, parsed);
+  const work = async () => {
+    try {
+      await startOrQueueThreadText(env, target, threadKey, followup, 'chat', nowMs);
+    } catch (/** @type {any} */ e) {
+      await releaseWorkerCardAction(env, id, actionKey).catch(() => {});
+      console.error('prerouter: дія з картки не стартувала', e?.message);
+      const failure = '⚠️ Не вдалося запустити дію. Можеш повторити.';
+      const retry = {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔁 Повторити', callback_data: `m:w:${id}:${choice}` }]],
+        },
+      };
+      if (!(await replaceCallbackMessage(env, parsed, failure, retry)))
+        await reply(env, target, failure, nowMs, retry);
+    }
+  };
   if (defer) {
     defer(() =>
       work().catch((/** @type {any} */ e) =>
@@ -2906,6 +3051,42 @@ async function workerResultToast(env, parsed, id, choice, nowMs, defer) {
     );
   } else await work();
   return WORKER_TOASTS[choice] ?? 'Беруся';
+}
+
+/** After a one-shot rating, render the chosen vote and disable both choices.
+ * @param {Env} env
+ * @param {{ chatId?: number|null, messageId?: number|null, data?: unknown, replyMarkup?: unknown }} parsed
+ * @param {string} reportId @param {'good'|'bad'} choice */
+async function disableWorkerRatingChoices(env, parsed, reportId, choice) {
+  if (parsed.messageId == null || parsed.chatId == null) return;
+  const rows = /** @type {any} */ (parsed.replyMarkup)?.inline_keyboard;
+  if (!Array.isArray(rows)) return dropTappedButton(env, parsed);
+  const voteData = new Map([
+    [`m:w:${reportId}:good`, '👍 Корисно'],
+    [`m:w:${reportId}:bad`, '👎 Не те'],
+  ]);
+  const keyboard = rows
+    .map((row) =>
+      Array.isArray(row)
+        ? row.map((button) => {
+            const label = voteData.get(button?.callback_data);
+            if (!label) return button;
+            const selected =
+              (choice === 'good' && button.callback_data.endsWith(':good')) ||
+              (choice === 'bad' && button.callback_data.endsWith(':bad'));
+            return {
+              text: `${selected ? '✅ ' : ''}${label}`.slice(0, 64),
+              callback_data: 'm:done',
+            };
+          })
+        : [],
+    )
+    .filter((row) => row.length > 0);
+  await tgCall(env, 'editMessageReplyMarkup', {
+    chat_id: parsed.chatId,
+    message_id: parsed.messageId,
+    reply_markup: { inline_keyboard: keyboard },
+  }).catch(() => {});
 }
 
 /** Текст у тред після старту заново. @param {Record<string, unknown>} r */

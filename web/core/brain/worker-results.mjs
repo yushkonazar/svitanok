@@ -10,6 +10,8 @@ import { uploadMarkdown } from '../adapters/drive.mjs';
 
 /** Стеля тексту працівника в чаті (S-7-1): довше - файл + Drive. */
 export const WORKER_CHAT_MAX = 3_500;
+/** Short answers do not need a separate file action. */
+export const WORKER_MD_MIN = 1_200;
 export const WORKER_DRIVE_FOLDER = ['Світанок', 'workers'];
 /** Підказки в тред за кнопками - модель дістає їх як текст власника. */
 export const WORKER_FOLLOWUPS = {
@@ -53,25 +55,19 @@ const WORKER_ACTIONS = {
   // Вибір магазину — основна дія під підбором ціни; загальні «Коротше» й
   // «Інший тон» тут лише заважали б зробити наступний крок.
   'price-search': [],
+  'place-search': [],
   // Mail uses per-message cards below. A generic draft button could silently
   // choose the wrong message when a triage report contains several emails.
   'mail-secretary': [],
-  researcher: [
-    { key: 'src', text: '🔎 Джерела' },
-    { key: 'short', text: '✏️ Коротше' },
-  ],
+  researcher: [{ key: 'src', text: '🔎 Джерела' }],
   analyst: [
     { key: 'week', text: '📊 По тижнях' },
     { key: 'short', text: '✏️ Коротше' },
   ],
-  planner: [
-    { key: 'cal', text: '🗓 У календар' },
-    { key: 'short', text: '✏️ Коротше' },
-  ],
-  finance: [
-    { key: 'spend', text: '💸 Куди пішли' },
-    { key: 'short', text: '✏️ Коротше' },
-  ],
+  // Planning and trip flows must own their own stateful controls; a generic
+  // calendar button can schedule the wrong thing from a mixed draft.
+  planner: [],
+  finance: [{ key: 'spend', text: '💸 Куди пішли' }],
   tutor: [], // Stateful controls live in learning-session.mjs.
 };
 
@@ -97,13 +93,33 @@ export function workerButtons(id, withMd, worker = '') {
   // Object і валив доставку відповіді на `.map`.
   const set = Object.hasOwn(WORKER_ACTIONS, worker) ? WORKER_ACTIONS[worker] : undefined;
   const actions = set ?? WORKER_ACTIONS_DEFAULT;
-  if (actions.length === 0) return [];
+  const feedback = [
+    { text: '👍 Корисно', callback_data: `m:w:${id}:good` },
+    { text: '👎 Не те', callback_data: `m:w:${id}:bad` },
+  ];
+  // Mail has its own report/list actions, including its own conditional .md.
+  if (worker === 'mail-secretary') return [feedback];
   const row = actions.map((a) => ({
     text: a.text,
     callback_data: `m:w:${id}:${a.key}`,
   }));
   if (withMd) row.push({ text: '📎 .md', callback_data: `m:w:${id}:md` });
-  return [row];
+  return [...(row.length ? [row] : []), feedback];
+}
+
+/** One explicit quality vote per saved worker result. The unique partial index
+ * makes opposite rapid taps race-safe without retaining any user text.
+ * @param {Env} env @param {string} reportId @param {'good'|'bad'} vote @param {number} nowMs */
+export async function recordWorkerQualityVote(env, reportId, vote, nowMs) {
+  const actionKey = `quality:${vote}`;
+  const result = await db(env)
+    .prepare(
+      `INSERT OR IGNORE INTO worker_card_actions (report_id, action_key, created_at)
+       VALUES (?, ?, ?)`,
+    )
+    .bind(reportId, actionKey, new Date(nowMs).toISOString())
+    .run();
+  return Number(result.meta?.changes ?? 0) === 1;
 }
 
 /** @typedef {{ id: string, sender: string, subject: string, category: string, line: string }} MailCardItem */
@@ -151,15 +167,19 @@ export function mailCardItems(text) {
 }
 
 /** @param {string} reportId @param {MailCardItem[]} items @param {boolean} withMd @param {boolean} [hasNext] */
-export function mailReportButtons(reportId, items, withMd, hasNext = false) {
+export function mailReportButtons(reportId, items, withMd, hasNext = false, readIds = new Set()) {
   const rows = items.map((item, index) => [
     {
-      text: `✉️ ${index + 1}. ${item.subject}`.slice(0, 55),
+      text: `${readIds.has(item.id) ? '✅' : '✉️'} ${index + 1}. ${item.subject}`.slice(0, 55),
       callback_data: `m:mi:${reportId}:${index}`,
     },
   ]);
   if (hasNext) rows.push([{ text: '✉️ Наступні листи', callback_data: `m:w:${reportId}:next` }]);
   if (withMd) rows.push([{ text: '📎 .md', callback_data: `m:w:${reportId}:md` }]);
+  rows.push([
+    { text: '👍 Корисно', callback_data: `m:w:${reportId}:good` },
+    { text: '👎 Не те', callback_data: `m:w:${reportId}:bad` },
+  ]);
   return rows;
 }
 
@@ -180,21 +200,34 @@ export function mailNextPageInfo(text) {
 }
 
 /** @param {string} reportId @param {number} index */
-export function mailItemButtons(reportId, index) {
-  return [
+export function mailItemButtons(reportId, index, count = 0) {
+  const rows = [];
+  if (count > 1) {
+    rows.push([
+      ...(index > 0
+        ? [{ text: '← Попередній', callback_data: `m:mi:${reportId}:${index - 1}` }]
+        : []),
+      ...(index + 1 < count
+        ? [{ text: 'Наступний →', callback_data: `m:mi:${reportId}:${index + 1}` }]
+        : []),
+    ]);
+  }
+  rows.push(
     [
       { text: '🔎 Коротко', callback_data: `m:ma:${reportId}:${index}:brief` },
       { text: '✍️ Чернетка', callback_data: `m:ma:${reportId}:${index}:draft` },
     ],
     [{ text: '⏰ Нагадати', callback_data: `m:ma:${reportId}:${index}:remind` }],
     [{ text: '↩️ До списку', callback_data: `m:ml:${reportId}` }],
-  ];
+  );
+  return rows;
 }
 
 /** @param {MailCardItem} item @param {number} index @param {number} count */
-export function mailItemCard(item, index, count) {
+export function mailItemCard(item, index, count, read = false) {
   return [
     `✉️ Лист ${index + 1} із ${count}`,
+    ...(read ? ['✅ Позначив як відкритий у цьому списку.'] : []),
     `Категорія: ${item.category}`,
     `Від: ${item.sender}`,
     `Тема: ${item.subject}`,
@@ -204,11 +237,36 @@ export function mailItemCard(item, index, count) {
 }
 
 /** @param {MailCardItem[]} items */
-export function mailListCard(items) {
+export function mailListCard(items, readIds = new Set()) {
   return [
     '✉️ Листи в цьому результаті:',
-    ...items.map((item, index) => `${index + 1}. ${item.subject} — ${item.sender}`),
+    ...items.map(
+      (item, index) =>
+        `${readIds.has(item.id) ? '✅' : '✉️'} ${index + 1}. ${item.subject} — ${item.sender}`,
+    ),
   ].join('\n');
+}
+
+/** Mark a mail item as opened in this saved result (does not change Gmail state). */
+/** @param {Env} env @param {string} reportId @param {string} itemId @param {number} nowMs */
+export async function markMailItemRead(env, reportId, itemId, nowMs) {
+  await db(env)
+    .prepare(
+      'INSERT OR IGNORE INTO worker_card_actions (report_id, action_key, created_at) VALUES (?, ?, ?)',
+    )
+    .bind(reportId, `mail-read:${itemId}`, new Date(nowMs).toISOString())
+    .run();
+}
+
+/** @param {Env} env @param {string} reportId @returns {Promise<Set<string>>} */
+export async function readMailItemIds(env, reportId) {
+  const { results } = await db(env)
+    .prepare(
+      "SELECT action_key FROM worker_card_actions WHERE report_id = ? AND action_key LIKE 'mail-read:%'",
+    )
+    .bind(reportId)
+    .all();
+  return new Set((results ?? []).map((row) => String(row.action_key).slice('mail-read:'.length)));
 }
 
 /**
@@ -349,6 +407,89 @@ export function priceShopButtons(reportId, options) {
   ]);
 }
 
+/** @typedef {{ name: string, detail: string }} PlaceOption */
+/** @param {string} text @returns {PlaceOption[]} */
+export function placeOptions(text) {
+  /** @type {PlaceOption[]} */
+  const options = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/u);
+    if (!bullet) continue;
+    let content = String(bullet[1] ?? '').trim();
+    const linked = content.match(/^\[([^\]]{2,90})\]\(https?:\/\/[^)]+\)(?:\s*[—–-]\s*(.*))?$/u);
+    if (linked) content = `${linked[1]} — ${linked[2] ?? ''}`;
+    else content = content.replace(/^\*\*(.+?)\*\*/, '$1');
+    const [rawName, ...rest] = content.split(/\s+[—–-]\s+/u);
+    const name = String(rawName ?? '')
+      .replace(/[[\]`*_]/g, '')
+      .trim()
+      .slice(0, 90);
+    const detail = rest
+      .join(' — ')
+      .replace(/[[\]`*_]/g, '')
+      .trim()
+      .slice(0, 240);
+    if (name.length < 2 || options.some((item) => item.name === name)) continue;
+    options.push({ name, detail });
+    if (options.length >= 5) break;
+  }
+  return options;
+}
+
+/** @param {string} reportId @param {PlaceOption[]} options */
+export function placeSearchButtons(reportId, options) {
+  return options.map((item, index) => [
+    {
+      text: `📍 ${index + 1}. ${item.name}`.slice(0, 55),
+      callback_data: `m:pl:${reportId}:${index}`,
+    },
+  ]);
+}
+
+/** @param {PlaceOption} item @param {number} index @param {number} count */
+export function placeChoiceCard(item, index, count) {
+  return [
+    `📍 ${item.name} · варіант ${index + 1} із ${count}`,
+    ...(item.detail ? [item.detail] : []),
+    '',
+    'Вільний столик не підтверджений; нічого не бронював.',
+  ].join('\n');
+}
+
+/** @param {string} reportId @param {number} index @param {PlaceOption[]} options */
+export function placeChoiceButtons(reportId, index, options) {
+  const item = options[index];
+  if (!item) return [];
+  const query = [item.name, item.detail].filter(Boolean).join(' ');
+  const maps = new URL('https://www.google.com/maps/dir/');
+  maps.searchParams.set('api', '1');
+  maps.searchParams.set('destination', query);
+  const search = (/** @type {string} */ suffix) => {
+    const url = new URL('https://www.google.com/search');
+    url.searchParams.set('q', `${query} ${suffix}`.trim());
+    return url.toString();
+  };
+  return [
+    [
+      { text: '🗺 Маршрут', url: maps.toString() },
+      { text: '📖 Меню й деталі', url: search('офіційний сайт меню') },
+    ],
+    [{ text: '📅 Як забронювати', url: search('бронювання ресторан столик') }],
+    [
+      ...options.flatMap((other, otherIndex) =>
+        otherIndex === index
+          ? []
+          : [
+              {
+                text: `📍 ${otherIndex + 1}. ${other.name}`.slice(0, 55),
+                callback_data: `m:pl:${reportId}:${otherIndex}`,
+              },
+            ],
+      ),
+    ],
+  ].filter((row) => row.length > 0);
+}
+
 /** @param {string} name @param {number} nowMs */
 export function workerFilename(name, nowMs) {
   return `${name}-${new Date(nowMs).toISOString().slice(0, 10)}.md`;
@@ -408,7 +549,7 @@ export async function sendWorkerDocument(env, target, result, nowMs) {
     {
       filename: workerFilename(result.name, nowMs),
       content: result.text,
-      caption: `Результат працівника «${result.name}»`,
+      caption: 'Повний текст відповіді',
     },
     nowMs,
   );
