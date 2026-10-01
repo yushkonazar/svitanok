@@ -228,6 +228,21 @@ describe('reminders-core — parseReminderTime: голе "о HH[:MM]"', () => {
     });
   });
 
+  it('розпізнає час із «в», «у» та «на» і не обрізає прийменник у тексті справи', () => {
+    expect(parseReminderTime('Нагадай в 17 заїхати в Сільпо', SUMMER_NOW)).toEqual({
+      whenMs: Date.parse('2026-07-10T14:00:00Z'),
+      remainder: 'заїхати в Сільпо',
+    });
+    expect(parseReminderTime('нагадай у 17:30 заїхати в Сільпо', SUMMER_NOW)).toEqual({
+      whenMs: Date.parse('2026-07-10T14:30:00Z'),
+      remainder: 'заїхати в Сільпо',
+    });
+    expect(parseReminderTime('нагадай на 17:00 заїхати в Сільпо', SUMMER_NOW)).toEqual({
+      whenMs: Date.parse('2026-07-10T14:00:00Z'),
+      remainder: 'заїхати в Сільпо',
+    });
+  });
+
   it('тригер-фраза "нагадай(ти/уй) [мені] [про]" знімається з початку', () => {
     expect(parseReminderTime('нагадай мені про через 10 хв випити води', SUMMER_NOW)).toEqual({
       whenMs: SUMMER_NOW + 10 * 60_000,
