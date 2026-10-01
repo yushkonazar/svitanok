@@ -1004,16 +1004,38 @@ export function contextualQuickReplyButtons(
   const asksDuration =
     /(?:на скільки|скільки) часу/.test(normalized) || /(?:яка|вкажи) тривалість/.test(normalized);
   const isCalendarContext = /(?:поді[яї]|зустріч|запрошенн|календар|запланув)/.test(normalized);
-  if (!asksDuration || !isCalendarContext) return [];
+  if (asksDuration && isCalendarContext) {
+    return [
+      [
+        { text: '🕐 30 хв', callback_data: 'm:q:30' },
+        { text: '🕐 1 год', callback_data: 'm:q:60' },
+      ],
+      [
+        { text: '🕐 1,5 год', callback_data: 'm:q:90' },
+        { text: '✏️ Інше', callback_data: 'm:q:custom' },
+      ],
+    ];
+  }
+  // A small pair of clock times in a planning question is another case where
+  // typing a separate reply adds no information. Keep an "other" path because
+  // the owner may choose a time between the two suggestions.
+  if (!/(?:робот|план|поді[яї]|зустріч|закінч|почат)/u.test(normalized)) return [];
+  const match = normalized.match(
+    /(?:^|\s)(?:о|до|з|на)?\s*(\d{1,2})(?::([0-5]\d))?\s*(?:чи|або)\s*(?:о|до|з|на)?\s*(\d{1,2})(?::([0-5]\d))?(?=$|[?.!,\s])/u,
+  );
+  if (!match) return [];
+  const firstHour = Number(match[1]);
+  const secondHour = Number(match[3]);
+  if (firstHour > 23 || secondHour > 23) return [];
+  const first = `${String(firstHour).padStart(2, '0')}${match[2] ?? '00'}`;
+  const second = `${String(secondHour).padStart(2, '0')}${match[4] ?? '00'}`;
+  if (first === second) return [];
   return [
-    [
-      { text: '🕐 30 хв', callback_data: 'm:q:30' },
-      { text: '🕐 1 год', callback_data: 'm:q:60' },
-    ],
-    [
-      { text: '🕐 1,5 год', callback_data: 'm:q:90' },
-      { text: '✏️ Інше', callback_data: 'm:q:custom' },
-    ],
+    [first, second].map((time) => ({
+      text: `🕒 ${time.slice(0, 2)}:${time.slice(2)}`,
+      callback_data: `m:qh:${time}`,
+    })),
+    [{ text: '✏️ Інше', callback_data: 'm:qh:custom' }],
   ];
 }
 
