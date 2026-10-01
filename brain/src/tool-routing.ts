@@ -175,9 +175,22 @@ const COMPOUND = /(?:\n|;|\b(?:і|та|потім|далі)\b.{0,30}\b(?:і|та
  * always the profile allowlist, so this function can never grant a tool that
  * the profile itself did not expose.
  */
-export function routeChatTools(input: string, available: readonly string[]): string[] {
+export function routeChatTools(
+  input: string,
+  available: readonly string[],
+  hasConversationContext = false,
+): string[] {
   const text = input.trim().toLocaleLowerCase('uk-UA');
-  if (!text || GREETING.test(text)) return [];
+  if (!text) return hasConversationContext ? [...available] : [];
+  // A terse answer usually supplies a missing slot for the preceding question.
+  // Keeping only keyword-matched tools here loses the pending calendar/reminder
+  // action (e.g. «18:00» after «До котрої працюєш?»).
+  if (
+    hasConversationContext &&
+    (text.length <= 14 || /^(?:так|ні|добре|ок|годин[ауи]?)[.!\s]*$/iu.test(text))
+  )
+    return [...available];
+  if (GREETING.test(text)) return [];
   const selected = new Set<string>();
   let matchedRoutes = 0;
   for (const route of ROUTES) {

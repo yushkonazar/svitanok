@@ -541,11 +541,17 @@ async function main(): Promise<void> {
     : createStateStore({ path: process.env.STATE_FILE ?? 'state.json', log, pruners });
   // TOPIC_BRIEFING — опційний thread_id теми «☀️ Брифінг» forum-супергрупи
   // (Блок «Теми»). Не задано -> дефолтна тема/DM, як і зараз.
-  const topicBriefing = optionalSecret('TOPIC_BRIEFING');
+  const privateHome = process.env.ASSISTANT_HOME === 'dm';
+  const ownerChatId = optionalSecret('TELEGRAM_OWNER_USER_ID');
+  if (privateHome && !/^\d+$/.test(ownerChatId ?? '')) {
+    throw new Error('ASSISTANT_HOME=dm потребує TELEGRAM_OWNER_USER_ID у GitHub Actions');
+  }
+  const destinationChatId = privateHome ? ownerChatId! : (secrets?.chatId ?? null);
+  const topicBriefing = privateHome ? undefined : optionalSecret('TOPIC_BRIEFING');
   const notifier = secrets
     ? createNotifier({
         token: secrets.botToken,
-        chatId: secrets.chatId,
+        chatId: destinationChatId!,
         threadId: topicBriefing,
         log,
       })
@@ -554,19 +560,19 @@ async function main(): Promise<void> {
   // тут orchestrator (Блок P2c, mail.ts) шле СВОЇ (запрошення на співбесіду) тим
   // самим шляхом. Не задано -> пропозиція просто не надсилається (mail.ts і далі
   // рахує "N листів" у брифінг, лише без interactive-кнопок).
-  const topicAssistant = optionalSecret('TOPIC_ASSISTANT');
+  const topicAssistant = privateHome ? undefined : optionalSecret('TOPIC_ASSISTANT');
   const assistantNotifier =
-    secrets && topicAssistant
+    secrets && (privateHome || topicAssistant)
       ? createNotifier({
           token: secrets.botToken,
-          chatId: secrets.chatId,
+          chatId: destinationChatId!,
           threadId: topicAssistant,
           log,
         })
       : null;
   // TOPIC_SYSTEM — тема «⚠️ Система» (Фаза B): fail-notify (нижче) сюди замість
   // завжди-General. Не задано -> лишається стара поведінка (unscoped/General).
-  const topicSystem = optionalSecret('TOPIC_SYSTEM');
+  const topicSystem = privateHome ? undefined : optionalSecret('TOPIC_SYSTEM');
   // MINI_APP_URL — origin розгорнутого Worker/Mini App (напр. https://svitanok.
   // <акаунт>.workers.dev), для кнопки в щоденному сповіщенні. Не задано ->
   // сповіщення йде без кнопки (graceful, не блокує брифінг).
@@ -600,7 +606,7 @@ async function main(): Promise<void> {
     modules: buildModules(),
     notifier,
     assistantNotifier,
-    chatId: secrets?.chatId ?? null,
+    chatId: destinationChatId,
     botUsername,
     miniAppUrl,
     kvEnv: kvEnv ? { ...kvEnv, log } : null,
@@ -648,7 +654,10 @@ async function main(): Promise<void> {
  *  (TOPIC_SYSTEM), якщо задано; інакше unscoped/General. Ніколи не кидає. */
 async function systemNotify(text: string, log: Logger, threadId?: string): Promise<void> {
   const token = optionalSecret('TELEGRAM_BOT_TOKEN');
-  const chatId = optionalSecret('TELEGRAM_CHAT_ID');
+  const chatId =
+    process.env.ASSISTANT_HOME === 'dm'
+      ? optionalSecret('TELEGRAM_OWNER_USER_ID')
+      : optionalSecret('TELEGRAM_CHAT_ID');
   if (!token || !chatId) {
     log.error('system-notify неможливий: немає TELEGRAM_BOT_TOKEN/CHAT_ID');
     return;

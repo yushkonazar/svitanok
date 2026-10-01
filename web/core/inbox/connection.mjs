@@ -14,6 +14,7 @@
 
 import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
 import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { deleteInboxMessages, saveInboxMessage } from './store.mjs';
 
 /** Ключ факту зі станом підключення. */
@@ -135,15 +136,16 @@ export async function handleBusinessDeleted(env, parsed) {
 
 /** @param {Env} env @param {string} text @param {number} nowMs */
 async function say(env, text, nowMs) {
-  if (!env.TELEGRAM_CHAT_ID) {
-    console.error('inbox: TELEGRAM_CHAT_ID немає - нікуди слати підтвердження');
+  const home = assistantHomeTarget(env);
+  if (!home) {
+    console.error('inbox: адреса власника немає - нікуди слати підтвердження');
     return;
   }
   await enqueueOutbox(
     env,
     {
-      chatId: env.TELEGRAM_CHAT_ID,
-      threadId: env.TOPIC_ASSISTANT ?? null,
+      chatId: home.chatId,
+      threadId: home.threadId,
       kind: 'send',
       payload: { text },
     },

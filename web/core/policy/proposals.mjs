@@ -101,6 +101,7 @@ import {
   exportCollectionCsv,
 } from '../tools/collections.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import {
   runPlanIntent,
   runPlanDraft,
@@ -767,15 +768,15 @@ export const EXECUTORS = {
       // пропозиції: тема супергрупи або DM власника.
       const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
       const isDm = threadKey === 'dm';
+      const home = assistantHomeTarget(env);
       const chatId =
-        ctx?.chatId ??
-        (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+        ctx?.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (home?.chatId ?? null));
       if (chatId == null) throw new Error('collection.export: чат для документа невідомий');
       await enqueueOutbox(
         env,
         {
           chatId,
-          threadId: isDm || threadKey == null ? null : Number(threadKey),
+          threadId: isDm ? null : threadKey == null ? (home?.threadId ?? null) : Number(threadKey),
           kind: 'document',
           payload: {
             filename: csv.filename,
@@ -1287,12 +1288,16 @@ async function countGeminiSpend(env, usd, nowMs) {
 async function deliverGenerated(env, ctx, media) {
   const threadKey = ctx?.threadId == null ? null : String(ctx.threadId);
   const isDm = threadKey === 'dm';
+  const home = assistantHomeTarget(env);
   const chatId =
-    ctx?.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+    ctx?.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (home?.chatId ?? null));
   if (chatId == null) throw new Error('gemini: чат для доставки невідомий');
   await sendMediaBytes(
     env,
-    { chatId, threadId: isDm || threadKey == null ? null : Number(threadKey) },
+    {
+      chatId,
+      threadId: isDm ? null : threadKey == null ? (home?.threadId ?? null) : Number(threadKey),
+    },
     media,
   );
 }

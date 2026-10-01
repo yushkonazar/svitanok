@@ -10,6 +10,7 @@
 // їх не читати. Стан живе в KV `brainHealthState`.
 
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 
 /** KV-ключ очікуваних версій - пише deploy-host.yml після вдалого деплою. */
 export const BRAIN_EXPECTED_KEY = 'brainExpected';
@@ -115,15 +116,16 @@ export async function checkBrainHandshake(env, nowMs = Date.now()) {
   let alerted = false;
   if (changed) {
     const text = alertText(prev?.state ?? null, observed);
-    if (text && env.TELEGRAM_CHAT_ID) {
+    const home = assistantHomeTarget(env, 'system');
+    if (text && home) {
       // Enqueue ПЕРЕД записом стану: якщо покласти в чергу не вдалось, стан
       // лишається старим і наступний тік повторить спробу - інакше перехід
       // «згорів» би без алерту назавжди. Drain - best-effort (добере sweeper).
       await enqueueOutbox(
         env,
         {
-          chatId: env.TELEGRAM_CHAT_ID,
-          threadId: env.TOPIC_SYSTEM ?? null,
+          chatId: home.chatId,
+          threadId: home.threadId,
           kind: 'send',
           payload: { text },
         },

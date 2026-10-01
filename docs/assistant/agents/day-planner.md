@@ -4,7 +4,7 @@ kind: agent
 model: sonnet
 tools: [calendar.read, data.read, facts.get, routes.eta]
 tainted_output: false
-updated: 2026-09-29
+updated: 2026-10-01
 max_chars: 7500
 max_steps: 6
 ---
@@ -46,7 +46,7 @@ max_steps: 6
 `intent`, `format: json`:
 ```
 {"items":[{"title":"…","kind":"deep","est_min":120,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":false,"priority":1}],
- "questions":[{"item":0,"q":"Скільки часу на презентацію?","options":["1 год","2 год","4 год","не знаю"]}],
+ "questions":[{"item":0,"field":"duration","q":"Скільки часу на презентацію?","options":["1 год","2 год","4 год","не знаю"]}],
  "deferred":[{"title":"…","why":"7-й пункт - понад 6"}]}
 ```
 `explain`, `format: chat` (≤ 12 рядків):
@@ -67,10 +67,10 @@ max_steps: 6
 ```
 {"items":[
  {"title":"Доробити презентацію для SoftServe","kind":"deep","est_min":null,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":false,"priority":1},
- {"title":"Подзвонити в банк щодо картки","kind":"call","est_min":15,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":true,"priority":2},
- {"title":"Забрати посилку на Новій пошті","kind":"errand","est_min":30,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":"Нова пошта, вул. Франка","flexible":true,"priority":3},
+ {"title":"Подзвонити в банк щодо картки","kind":"call","est_min":null,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":true,"priority":2},
+ {"title":"Забрати посилку на Новій пошті","kind":"errand","est_min":null,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":"Нова пошта, вул. Франка","flexible":true,"priority":3},
  {"title":"Почитати про D1","kind":"deep","est_min":null,"hard_at":null,"hard_end":null,"not_before":null,"deadline":null,"place":null,"flexible":true,"priority":4}],
- "questions":[{"item":0,"q":"Скільки часу на презентацію?","options":["1 год","2 год","4 год","не знаю"]}],
+ "questions":[{"item":0,"field":"duration","q":"Скільки часу на презентацію?","options":["1 год","2 год","4 год","не знаю"]}],
  "deferred":[]}
 ```
-(Тривалість дзвінка і посилки - типові оцінки за `kind`, позначені як `flexible`; «почитати про D1» - без оцінки, бо «якщо буде час».)
+(Тривалість дзвінка, посилки й читання власник не назвав, тому всі оцінки `null`; типову тривалість може обрати тільки ядро.)

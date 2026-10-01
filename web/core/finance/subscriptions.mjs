@@ -15,6 +15,7 @@
 import { kyivDateKey, kyivHour } from '../../kyiv-time.mjs';
 import { formatMoney, cleanSource } from '../format.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { merchantKey } from './rules.mjs';
 
 /** Година нагадування за Києвом (окремо від підказки о 10:00 - S-4-6). */
@@ -204,7 +205,8 @@ export async function subscriptionRemindTask(env, nowMs = Date.now()) {
     console.error('subscription-remind: привʼязки DB немає - нагадувань не буде');
     return { skipped: 'no-db' };
   }
-  if (!env.TELEGRAM_CHAT_ID) {
+  const home = assistantHomeTarget(env);
+  if (!home) {
     console.error('subscription-remind: TELEGRAM_CHAT_ID немає - нікуди слати');
     return { skipped: 'no-chat' };
   }
@@ -232,8 +234,8 @@ export async function subscriptionRemindTask(env, nowMs = Date.now()) {
     await enqueueOutbox(
       env,
       {
-        chatId: env.TELEGRAM_CHAT_ID,
-        threadId: env.TOPIC_ASSISTANT ?? null,
+        chatId: home.chatId,
+        threadId: home.threadId,
         kind: 'send',
         payload: {
           text: `Післязавтра ${cleanSource(String(row.merchant), 40)}${amount}.`,

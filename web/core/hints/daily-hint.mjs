@@ -17,6 +17,7 @@ import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
 import { shouldDeliverProactive } from '../assistant-controls.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget, privateAssistantHome } from '../tg/home.mjs';
 import { runFactsGet, runFactsSet } from '../tools/facts.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
@@ -56,7 +57,8 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
     console.error('daily-hint: привʼязки DB немає - задача не виконується');
     return { skipped: 'no-db' };
   }
-  if (!env.TELEGRAM_CHAT_ID) return { skipped: 'no-chat' };
+  const home = assistantHomeTarget(env);
+  if (!home) return { skipped: 'no-chat' };
   // Тиха зона власника (та сама, що для нагадувань): підказка чекає
   // наступного тіку у вікні 10:00, а після вікна - тиша до завтра.
   if (isQuietMinute(await loadSettings(env), kyivMinuteOfDay(now))) return { skipped: 'quiet' };
@@ -70,8 +72,8 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
     await enqueueOutbox(
       env,
       {
-        chatId: env.TELEGRAM_CHAT_ID,
-        threadId: env.TOPIC_ASSISTANT ?? null,
+        chatId: home.chatId,
+        threadId: home.threadId,
         kind: 'send',
         payload: { text: formatHint(hint), parse_mode: 'HTML' },
       },
@@ -116,6 +118,14 @@ export async function pickHint(env, today, nowMs, muted) {
     ['security', () => securityHint(env, nowMs)],
   ];
   for (const [topic, find] of finders) {
+    // In a private all-in-one chat, keep the default to actionable items.
+    // Idea/chain inspiration is available on demand and can be opted back in.
+    if (
+      privateAssistantHome(env) &&
+      env.ASSISTANT_ROUTINE_DIGESTS !== 'on' &&
+      (topic === 'chains' || topic === 'ideas')
+    )
+      continue;
     if (muted.includes(/** @type {string} */ (topic))) continue;
     const text = await /** @type {() => Promise<string | null>} */ (find)();
     if (text) return { topic: /** @type {string} */ (topic), text };

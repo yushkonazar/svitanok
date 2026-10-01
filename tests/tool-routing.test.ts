@@ -74,4 +74,16 @@ describe('interactive tool routing', () => {
     const tools = routeChatTools('Знайди файл на Google Drive', limited);
     expect(tools.every((tool) => limited.includes(tool))).toBe(true);
   });
+
+  it('keeps pending tools for a short answer to an earlier clarification', () => {
+    expect(routeChatTools('18:00', all, true)).toEqual(all);
+    expect(routeChatTools('1 годину', all, true)).toEqual(all);
+    expect(routeChatTools('18:00', all, false)).not.toEqual(all);
+  });
+
+  it('routes a new explicit request by its latest turn, not old conversation keywords', () => {
+    const latest = routeChatTools('Нагадай завтра о 9 ранку', all, true);
+    expect(latest).toContain('reminders_create');
+    expect(latest).not.toContain('mail_read');
+  });
 });

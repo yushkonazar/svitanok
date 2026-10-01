@@ -967,7 +967,8 @@ export function productionIo(env, chainId, state) {
         {
           kind,
           payload,
-          threadId: state.thread_id ?? env.TOPIC_ASSISTANT ?? null,
+          threadId:
+            threadId ?? (String(chatId) === String(env.TELEGRAM_OWNER_USER_ID) ? 'dm' : null),
           chatId,
           tainted: false,
         },

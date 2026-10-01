@@ -29,6 +29,8 @@ function setup() {
   const env = workerEnv({
     DB: d1.stub,
     BRIEFING: memoryKv(kv),
+    TELEGRAM_CHAT_ID: '-100555',
+    TOPIC_ASSISTANT: '6',
     DAY_PLAN: {
       create: async (o: { id: string; params: unknown }) => void created.push(o),
       get: async () => ({ sendEvent: async () => undefined }),

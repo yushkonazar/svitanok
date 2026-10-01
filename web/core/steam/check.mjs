@@ -18,6 +18,7 @@ import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
 import { shouldDeliverProactive } from '../assistant-controls.mjs';
 import { enqueueOutbox, drainOutbox, sendSystemAlert } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { formatMoney, cleanSource } from '../format.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
 import {
@@ -392,7 +393,8 @@ export async function steamCheckTask(env, nowMs = Date.now()) {
       console.error('steam-check: привʼязки DB немає - знижки не перевіряються');
       return { skipped: 'no-db' };
     }
-    if (!env.TELEGRAM_CHAT_ID) {
+    const home = assistantHomeTarget(env);
+    if (!home) {
       console.error('steam-check: TELEGRAM_CHAT_ID немає - нікуди слати знижки');
       return { skipped: 'no-chat' };
     }
@@ -544,8 +546,8 @@ export async function steamCheckTask(env, nowMs = Date.now()) {
       await enqueueOutbox(
         env,
         {
-          chatId: env.TELEGRAM_CHAT_ID,
-          threadId: env.TOPIC_ASSISTANT ?? null,
+          chatId: home.chatId,
+          threadId: home.threadId,
           kind: 'send',
           payload: { text },
         },

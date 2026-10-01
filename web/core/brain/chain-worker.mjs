@@ -8,6 +8,7 @@
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { callBrainRun } from './run-client.mjs';
 import { loadInstruction } from '../instructions.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 
 /**
  * @param {Env} env
@@ -25,13 +26,15 @@ export async function startChainWorkerRun(env, req, nowMs) {
     return false;
   }
   const runId = crypto.randomUUID();
-  const threadId = env.TOPIC_ASSISTANT ? String(env.TOPIC_ASSISTANT) : 'dm';
+  const target = assistantHomeTarget(env);
+  if (!target) return false;
+  const threadId = target.threadKey;
   const registered = await registryBegin(env, {
     id: runId,
     trigger: 'workflow',
     profile: req.profile,
     threadId,
-    chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null,
+    chatId: target.chatId,
     model: req.model,
     startedMs: nowMs,
     ...(req.staleMs ? { staleMs: req.staleMs } : {}),
@@ -47,7 +50,7 @@ export async function startChainWorkerRun(env, req, nowMs) {
       runId,
       profile: req.profile,
       threadId,
-      chatId: env.TELEGRAM_CHAT_ID ?? null,
+      chatId: String(target.chatId),
       inputText: JSON.stringify(req.input),
     },
     nowMs,

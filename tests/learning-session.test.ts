@@ -9,6 +9,8 @@ import {
   tutorAnswerFollowup,
   tutorButtons,
   tutorQuestion,
+  renderTutorWorkerText,
+  structuredTutorResult,
 } from '../web/core/brain/learning-session.mjs';
 import { d1WithInstructions } from './helpers/instructions.js';
 import { workerEnv } from './helpers/env.js';
@@ -23,6 +25,50 @@ function setup() {
 }
 
 describe('збережена навчальна сесія', () => {
+  it('приймає структурований результат без залежності від дослівної фрази', async () => {
+    const { env } = setup();
+    const question = JSON.stringify({
+      kind: 'question',
+      topic: 'SQL',
+      text: 'Який індекс обереш?',
+    });
+    expect(structuredTutorResult(question)?.kind).toBe('question');
+    expect(tutorQuestion(question)).toEqual({
+      topic: 'SQL',
+      question: '🎓 SQL\nЯкий індекс обереш?',
+    });
+    expect(renderTutorWorkerText(question)).toBe('🎓 SQL\nЯкий індекс обереш?');
+    expect(renderTutorWorkerText('{bad json')).not.toContain('{bad json');
+    await saveTutorWorkerResult(env, {
+      id: 'structured-q',
+      text: question,
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW,
+    });
+    const session = await readTutorSession(env, 'structured-q');
+    expect(session?.status).toBe('question');
+    await changeTutorStatus(
+      env,
+      'structured-q',
+      '555',
+      'dm',
+      'question',
+      'awaiting_answer',
+      NOW + 1,
+    );
+    await submitTutorAnswer(env, session!, 'За містом', NOW + 2);
+    const review = await saveTutorWorkerResult(env, {
+      id: 'structured-r',
+      text: JSON.stringify({ kind: 'review', topic: 'SQL', text: 'Індекс за містом підходить.' }),
+      threadId: 'dm',
+      chatId: '555',
+      nowMs: NOW + 3,
+    });
+    expect(review?.status).toBe('reviewed');
+    expect(review?.review_text).toContain('Індекс за містом підходить.');
+  });
+
   it('визначає лише формальне питання і дає кнопки, привʼязані до id', () => {
     expect(tutorQuestion(QUESTION)).toEqual({ topic: 'SQL індекси', question: QUESTION });
     expect(tutorQuestion('🎓 SQL індекси\nЦе пояснення, а не питання.')).toBeNull();

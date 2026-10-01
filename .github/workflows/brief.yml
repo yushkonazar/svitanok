@@ -45,6 +45,19 @@ jobs:
       send: ${{ steps.g.outputs.send }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: перевірити адресу Assistant Home
+        env:
+          ASSISTANT_HOME: ${{ vars.ASSISTANT_HOME || 'group' }}
+          TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
+        run: |
+          if [[ "${ASSISTANT_HOME}" != "group" && "${ASSISTANT_HOME}" != "dm" ]]; then
+            echo '::error::ASSISTANT_HOME має бути group або dm'
+            exit 1
+          fi
+          if [[ "${ASSISTANT_HOME}" == "dm" && ! "${TELEGRAM_OWNER_USER_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::ASSISTANT_HOME=dm потребує числового GitHub Actions secret TELEGRAM_OWNER_USER_ID'
+            exit 1
+          fi
       # Стан — із KV (ключ `state`), не з git-гілки. guard.mjs читає STATE_FILE;
       # якщо ключа нема (404) або збій — файл із JSON-помилкою/{} -> lastSentDate
       # null -> можливий дубль (прийнятно, at-least-once).
@@ -78,10 +91,20 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
+          ASSISTANT_HOME: ${{ vars.ASSISTANT_HOME || 'group' }}
           TOPIC_SYSTEM: ${{ secrets.TOPIC_SYSTEM }}
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"             -d chat_id="${TELEGRAM_CHAT_ID}"             ${TOPIC_SYSTEM:+-d message_thread_id="${TOPIC_SYSTEM}"}             -d text="❌ brief.yml: джоба '${{ github.job }}' впала — ${RUN_URL}"             -o /dev/null || echo "сповіщення не пішло (не критично)"
+          target="${TELEGRAM_CHAT_ID}"
+          thread="${TOPIC_SYSTEM}"
+          if [[ "${ASSISTANT_HOME}" == "dm" && -n "${TELEGRAM_OWNER_USER_ID}" ]]; then
+            target="${TELEGRAM_OWNER_USER_ID}"
+            thread=""
+          fi
+          args=(-d "chat_id=${target}")
+          if [[ -n "${thread}" ]]; then args+=(-d "message_thread_id=${thread}"); fi
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" "${args[@]}" -d "text=❌ brief.yml: джоба '${{ github.job }}' впала — ${RUN_URL}" -o /dev/null || echo "сповіщення не пішло (не критично)"
 
   brief:
     needs: guard
@@ -139,6 +162,8 @@ jobs:
           BRIEFING_FILE: ${{ github.workspace }}/briefing.json # дані для Mini App
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
+          ASSISTANT_HOME: ${{ vars.ASSISTANT_HOME || 'group' }}
           TOPIC_BRIEFING: ${{ secrets.TOPIC_BRIEFING }} # опційно, Блок «Теми» (forum-супергрупа)
           TOPIC_ASSISTANT: ${{ secrets.TOPIC_ASSISTANT }} # опційно, Блок P2c (пропозиції співбесід)
           TOPIC_SYSTEM: ${{ secrets.TOPIC_SYSTEM }} # опційно, Фаза B (fail-notify окремо від контенту)
@@ -227,7 +252,17 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
+          ASSISTANT_HOME: ${{ vars.ASSISTANT_HOME || 'group' }}
           TOPIC_SYSTEM: ${{ secrets.TOPIC_SYSTEM }}
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"             -d chat_id="${TELEGRAM_CHAT_ID}"             ${TOPIC_SYSTEM:+-d message_thread_id="${TOPIC_SYSTEM}"}             -d text="❌ brief.yml: джоба '${{ github.job }}' впала — ${RUN_URL}"             -o /dev/null || echo "сповіщення не пішло (не критично)"
+          target="${TELEGRAM_CHAT_ID}"
+          thread="${TOPIC_SYSTEM}"
+          if [[ "${ASSISTANT_HOME}" == "dm" && -n "${TELEGRAM_OWNER_USER_ID}" ]]; then
+            target="${TELEGRAM_OWNER_USER_ID}"
+            thread=""
+          fi
+          args=(-d "chat_id=${target}")
+          if [[ -n "${thread}" ]]; then args+=(-d "message_thread_id=${thread}"); fi
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" "${args[@]}" -d "text=❌ brief.yml: джоба '${{ github.job }}' впала — ${RUN_URL}" -o /dev/null || echo "сповіщення не пішло (не критично)"

@@ -62,6 +62,20 @@ function setup() {
 }
 
 describe('dailyHintTask - гейти і дедуп', () => {
+  it('у приватному режимі не надсилає рутинну підказку про стару ідею', async () => {
+    const { d1, env } = setup();
+    env.ASSISTANT_HOME = 'dm';
+    env.TELEGRAM_OWNER_USER_ID = '12345';
+    d1.db
+      .prepare(
+        `INSERT INTO ideas (id, number, title, status, created_at, updated_at) VALUES ('i1', 1, 'Стара', 'нова', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+      )
+      .run();
+    expect((await pickHint(env, TODAY, AT_1010, []))?.topic).not.toBe('ideas');
+    env.ASSISTANT_ROUTINE_DIGESTS = 'on';
+    expect((await pickHint(env, TODAY, AT_1010, []))?.topic).toBe('ideas');
+  });
+
   it('поза 10:00 - пропуск; без кандидатів о 10:10 - тиша, але мітка дня стоїть; другий тік - done', async () => {
     const { env, kv, sentTexts } = setup();
     // Свіжий Security Checkup - інакше саме він був би кандидатом.

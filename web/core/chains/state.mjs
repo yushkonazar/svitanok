@@ -11,6 +11,7 @@
 // стирає ключ), setChainState виражено через нього.
 
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget, privateAssistantHome } from '../tg/home.mjs';
 
 /** @param {Env} env */
 export function db(env) {
@@ -32,12 +33,15 @@ export class Cancelled extends Error {}
  * @returns {{ chatId: string, threadId: string | null }}
  */
 export function chainTarget(env, state) {
-  const isDm = state.thread_id === 'dm';
+  const home = assistantHomeTarget(env);
+  const isDm =
+    state.thread_id === 'dm' ||
+    (state.chat_id == null && state.thread_id == null && privateAssistantHome(env));
   const chatId =
     state.chat_id ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
   if (chatId == null)
     throw new Error('немає чату для ланцюга (TELEGRAM_CHAT_ID / контекст старту)');
-  const threadId = isDm ? null : (state.thread_id ?? env.TOPIC_ASSISTANT ?? null);
+  const threadId = isDm ? null : (state.thread_id ?? home?.threadId ?? null);
   return { chatId: String(chatId), threadId: threadId == null ? null : String(threadId) };
 }
 

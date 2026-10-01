@@ -13,6 +13,7 @@ import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { computeSlots, formatDraft, energyBySlot } from './../day-plan/slots.mjs';
 import {
   readDayPlanConfig,
@@ -154,11 +155,12 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
   // для треду 'dm' і група для теми (ревʼю 05.09: група замість DM - помилка).
   const threadKey = ctx.threadId == null ? null : String(ctx.threadId);
   const isDm = threadKey === 'dm';
+  const home = assistantHomeTarget(env);
   const chatId =
-    ctx.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (env.TELEGRAM_CHAT_ID ?? null));
+    ctx.chatId ?? (isDm ? (env.TELEGRAM_OWNER_USER_ID ?? null) : (home?.chatId ?? null));
   const res = await acceptPlan(env, date, nowMs, {
     chatId,
-    threadId: ctx.threadId ?? env.TOPIC_ASSISTANT ?? null,
+    threadId: ctx.threadId === 'dm' ? null : (ctx.threadId ?? home?.threadId ?? null),
   });
   /** @type {{ added: number, proposed: number, failed: string[] }} */
   let calendar = { added: 0, proposed: 0, failed: [] };
@@ -168,7 +170,7 @@ export async function runPlanAccept(env, args, nowMs, ctx = {}) {
       date,
       res.items,
       nowMs,
-      { chatId, threadId: ctx.threadId ?? null },
+      { chatId, threadId: isDm ? null : (ctx.threadId ?? home?.threadId ?? null) },
       (text, buttons) =>
         sendCalendarProposalRaw(
           env,

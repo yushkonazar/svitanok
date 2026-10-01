@@ -17,6 +17,7 @@ import {
 } from '../run-registry/client.mjs';
 import { TOOLS } from '../tools/index.mjs';
 import { enqueueOutbox, drainOutbox, dropPendingEdits, sendSystemAlert } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { applyPolicy } from '../policy/proposals.mjs';
 import { isTaintActive, proposalNotice } from '../policy/core.mjs';
@@ -41,7 +42,11 @@ import {
   mailReportButtons,
   mailNextPageInfo,
 } from '../brain/worker-results.mjs';
-import { saveTutorWorkerResult, tutorButtons } from '../brain/learning-session.mjs';
+import {
+  saveTutorWorkerResult,
+  tutorButtons,
+  renderTutorWorkerText,
+} from '../brain/learning-session.mjs';
 import { startClaimedRun, registryThreadFinishAndKick, parsedForThread } from '../prerouter.mjs';
 import {
   TOOL_REQUEST_SCHEMA,
@@ -307,7 +312,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
  * @param {number} nowMs
  */
 async function handleDeliver(env, ctx, runId, body, nowMs) {
-  if (!env.TELEGRAM_CHAT_ID) return json({ ok: false, error: 'chat-not-configured' }, 500);
+  const home = assistantHomeTarget(env);
   // Кнопки мозку живуть у ВЛАСНОМУ просторі префіксів 07 §9 (p·c·r·a·u·m):
   // callback_data поза ним міг би адресувати легасі-обробники (rc:, sl:, ev:…)
   // і виконати дію БЕЗ підтвердження - тап власника є згодою на НАПИС кнопки,
@@ -328,10 +333,10 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // Ціль - чат ПРОГОНУ (ревʼю PR-3): без chatId відповідь DM-прогону летіла в
   // супергрупу з нечисловим thread_id 'dm' → Bad Request → failed-ряд outbox.
   const info = await registryRunInfo(env, runId);
-  const threadKey = info?.threadId ?? env.TOPIC_ASSISTANT ?? null;
+  const threadKey = info?.threadId ?? home?.threadKey ?? null;
   const target =
     threadKey == null
-      ? { chatId: env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null, threadId: null }
+      ? { chatId: info?.chatId ?? home?.chatId ?? null, threadId: null }
       : parsedForThread(env, String(threadKey), info?.chatId ?? null);
   if (target.chatId == null) return json({ ok: false, error: 'chat-not-configured' }, 500);
   // Статус-повідомлення - це ЧЕРНЕТКА відповіді (01 §3.1 «Rich draft»), тож
@@ -410,7 +415,8 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   const mailItems = saved?.name === 'mail-secretary' ? mailCardItems(saved.text) : [];
   const mailNextPage = saved?.name === 'mail-secretary' ? mailNextPageInfo(saved.text) : null;
   const mailHint = mailItems.length ? '✉️ Обери лист нижче, щоб дія стосувалася саме його.' : '';
-  const deliverText = [factProposalPrompt ?? body.text, notice, shopCard, mailHint]
+  const userText = saved?.name === 'tutor' ? renderTutorWorkerText(body.text) : body.text;
+  const deliverText = [factProposalPrompt ?? userText, notice, shopCard, mailHint]
     .filter(Boolean)
     .join('\n\n');
   const longWorker = saved != null && saved.text.length > WORKER_CHAT_MAX;
@@ -548,7 +554,7 @@ async function handleStatus(env, ctx, runId, body, nowMs) {
   // Той самий принцип, що в handleDeliver: edit іде в чат ПРОГОНУ, інакше
   // статусник DM-прогону «редагувався» б у чужому чаті (ревʼю PR-3).
   const info = await registryRunInfo(env, runId);
-  const chatId = info?.chatId ?? (env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null);
+  const chatId = info?.chatId ?? assistantHomeTarget(env)?.chatId ?? null;
   if (chatId == null) return json({ ok: false, error: 'chat-not-configured' }, 500);
   await dropPendingEdits(env, chatId, body.message_id);
   const { queued } = await enqueueOutbox(

@@ -6,7 +6,14 @@
 import type { EngineOutcome, EngineRunOptions, ModelRuntime, ToolExecution } from '../agent.js';
 
 export type OpenAiEvalCategory =
-  'intent' | 'tool-selection' | 'policy' | 'injection' | 'ukrainian' | 'refusal' | 'memory';
+  | 'intent'
+  | 'tool-selection'
+  | 'policy'
+  | 'injection'
+  | 'ukrainian'
+  | 'refusal'
+  | 'memory'
+  | 'multi-turn';
 
 export interface OpenAiEvalCase {
   id: string;
@@ -129,6 +136,40 @@ export const OPENAI_EVAL_CASES: readonly OpenAiEvalCase[] = [
       ];
     },
   },
+  {
+    id: 'multi-turn-work-end-time',
+    category: 'multi-turn',
+    prompt:
+      'Контекст розмови: Власник: «Сьогодні працюю до 17-19 години, потім навчання і книжка ввечері». Асистент: «Роботу планувати до 17:00 чи до 19:00?» Нова відповідь власника: «18:00». Одним реченням підтвердь, який час завершення роботи взято; не створюй нову задачу на 18:00.',
+    toolNames: [],
+    assess: (outcome, calls) => {
+      const answer = text(outcome).toLowerCase();
+      return [
+        ...onlyCalls(calls, []),
+        ...hasUkrainianAnswer(outcome),
+        ...(answer.includes('18:00') && /робот/iu.test(answer)
+          ? []
+          : ['втрачено звʼязок часу 18:00 із завершенням роботи']),
+      ];
+    },
+  },
+  {
+    id: 'multi-turn-reminder-followup',
+    category: 'multi-turn',
+    prompt:
+      'Контекст розмови: Власник: «Нагадай про тест». Асистент: «Коли нагадати про тест?» Нова відповідь власника: «Завтра вранці». Коротко продовж цю розмову, не запитуй знову, що саме нагадати.',
+    toolNames: [],
+    assess: (outcome, calls) => {
+      const answer = text(outcome).toLowerCase();
+      return [
+        ...onlyCalls(calls, []),
+        ...hasUkrainianAnswer(outcome),
+        ...(answer.includes('тест') && !/що саме|про що нагад/iu.test(answer)
+          ? []
+          : ['втрачено предмет нагадування під час уточнення часу']),
+      ];
+    },
+  },
 ];
 
 export function assertEvalCorpus(cases: readonly OpenAiEvalCase[] = OPENAI_EVAL_CASES): void {
@@ -149,6 +190,7 @@ export function assertEvalCorpus(cases: readonly OpenAiEvalCase[] = OPENAI_EVAL_
     'ukrainian',
     'refusal',
     'memory',
+    'multi-turn',
   ];
   for (const category of required) {
     if (!categories.has(category)) throw new Error(`eval corpus не містить ${category}`);

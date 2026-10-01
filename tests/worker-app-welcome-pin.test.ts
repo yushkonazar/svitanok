@@ -104,7 +104,7 @@ describe('ensureAppWelcomePin (/api/telegram/setup)', () => {
 
     expect(welcomeSends()).toHaveLength(1);
     expect(welcomeSends()[0]?.body).toMatchObject({
-      chat_id: '-100555',
+      chat_id: -100555,
       parse_mode: 'HTML',
     });
     expect(welcomeSends()[0]?.body.reply_markup).toMatchObject({
@@ -163,5 +163,15 @@ describe('ensureAppWelcomePin (/api/telegram/setup)', () => {
     expect(res.status).toBe(200);
     expect(welcomeSends()).toHaveLength(0);
     expect(pins()).toHaveLength(0);
+  });
+
+  it('у приватному режимі переносить точку входу в DM і не плутає id старого піна', async () => {
+    await callSetup();
+    expect(welcomeSends()[0]?.body.chat_id).toBe(-100555);
+    await callSetup(env({ ASSISTANT_HOME: 'dm', TELEGRAM_OWNER_USER_ID: '12345' }));
+    expect(welcomeSends()).toHaveLength(2);
+    expect(welcomeSends()[1]?.body).toMatchObject({ chat_id: 12345 });
+    expect(welcomeSends()[1]?.body.message_thread_id).toBeUndefined();
+    expect(JSON.parse(kv.get('state') ?? '{}').appWelcomePinChatId).toBe('12345');
   });
 });

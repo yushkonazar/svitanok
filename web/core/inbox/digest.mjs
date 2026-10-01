@@ -15,7 +15,8 @@
 
 import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { runFactsGet } from '../tools/facts.mjs';
-import { startOrQueueThreadText, THREAD_DM } from '../prerouter.mjs';
+import { startOrQueueThreadText } from '../prerouter.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { readBusinessState } from './connection.mjs';
 import { shouldDeliverProactive } from '../assistant-controls.mjs';
 
@@ -99,15 +100,16 @@ export async function inboxDigestTask(env, nowMs = Date.now()) {
   // не було про що.
   await env.BRIEFING.put(DIGEST_MARKER_KEY, today);
   if (!fresh) return { sent: false, reason: 'no-messages' };
-  if (!env.TELEGRAM_CHAT_ID) {
-    console.error('inbox-digest: TELEGRAM_CHAT_ID немає - нікуди слати');
+  const home = assistantHomeTarget(env);
+  if (!home) {
+    console.error('inbox-digest: адреса власника немає - нікуди слати');
     return { skipped: 'no-chat' };
   }
 
-  const threadKey = env.TOPIC_ASSISTANT == null ? THREAD_DM : String(env.TOPIC_ASSISTANT);
+  const threadKey = home.threadKey;
   const target2 = {
-    chatId: Number(env.TELEGRAM_CHAT_ID),
-    threadId: env.TOPIC_ASSISTANT == null ? null : Number(env.TOPIC_ASSISTANT),
+    chatId: home.chatId,
+    threadId: home.threadId,
   };
   const runId = await startOrQueueThreadText(
     env,

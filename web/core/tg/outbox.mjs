@@ -11,6 +11,7 @@
 // без розмітки (isParseEntitiesError).
 
 import { recordTrackedMessage } from '../../kv-store.mjs';
+import { assistantHomeTarget } from './home.mjs';
 import {
   splitMessage,
   nextAttemptAt,
@@ -112,16 +113,17 @@ export async function enqueueOutbox(env, item, nowMs) {
  * @returns {Promise<boolean>} true = покладено в чергу
  */
 export async function sendSystemAlert(env, text, nowMs) {
-  if (!env.TELEGRAM_CHAT_ID) {
-    console.error('alert: TELEGRAM_CHAT_ID відсутній - нікуди слати:', text);
+  const target = assistantHomeTarget(env, 'system');
+  if (!target) {
+    console.error('alert: адреса власника відсутня - нікуди слати:', text);
     return false;
   }
   try {
     await enqueueOutbox(
       env,
       {
-        chatId: env.TELEGRAM_CHAT_ID,
-        threadId: env.TOPIC_SYSTEM ?? null,
+        chatId: target.chatId,
+        threadId: target.threadId,
         kind: 'send',
         payload: { text },
       },

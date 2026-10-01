@@ -595,7 +595,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         ? `${req.chat_id}:${req.thread_id === 'dm' ? 'default' : req.thread_id}`
         : `internal:${req.thread_id}`;
       const activeToolNames =
-        profile.name === 'chat' ? routeChatTools(inputText, profile.toolNames) : profile.toolNames;
+        profile.name === 'chat'
+          ? routeChatTools(req.input.text, profile.toolNames, Boolean(req.session?.transcript_md))
+          : profile.toolNames;
       const runCtx = {
         abortSignal: abort.signal,
         onToolCall,

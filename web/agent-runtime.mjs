@@ -21,6 +21,7 @@
 // реалізована — вони живуть у proposals/reminders-actions/api-dashboard. Цей
 // модуль — диспетчер між ними й протокол прогону.
 
+import { assistantHomeTarget } from './core/tg/home.mjs';
 import {
   LEGACY_AGENT_WATCHDOG,
   registryBegin,
@@ -962,9 +963,10 @@ export async function agentRunWatchdog(/** @type {Env} */ env) {
  */
 export async function agentHostHealthCheck(/** @type {Env} */ env) {
   const url = agentHostUrl(env);
+  const home = assistantHomeTarget(env, 'system');
   // Без URL/секрету асистент свідомо вимкнений — стежити нема за чим. Без
-  // TELEGRAM_CHAT_ID нема куди слати алерт.
-  if (!url || !env.LLM_HOST_SECRET || !env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  // Без налаштованої адреси не можна доставити алерт.
+  if (!url || !env.LLM_HOST_SECRET || !env.TELEGRAM_BOT_TOKEN || !home) return;
 
   let probe = { reached: false, status: 0 };
   const ctrl = new AbortController();
@@ -1008,8 +1010,8 @@ export async function agentHostHealthCheck(/** @type {Env} */ env) {
   if (alert) {
     console.error(`host health: ${prev} -> ${current} (${alert})`);
     await tgCall(env, 'sendMessage', {
-      chat_id: env.TELEGRAM_CHAT_ID,
-      message_thread_id: env.TOPIC_SYSTEM || env.TOPIC_BRIEFING || undefined,
+      chat_id: home.chatId,
+      message_thread_id: home.threadId ?? undefined,
       text: alert === 'warn' ? HOST_DESYNC_ALERT : HOST_RECOVERED_ALERT,
     });
   }

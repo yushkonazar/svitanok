@@ -12,6 +12,7 @@ import { isQuietMinute } from '../../settings-core.mjs';
 import { shouldDeliverProactive } from '../assistant-controls.mjs';
 import { cleanSource, formatMoney } from '../format.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget, privateAssistantHome } from '../tg/home.mjs';
 import { kyivDayStartMs, selectSpending, summarize } from './query.mjs';
 
 /** Година рядка за Києвом (07 §7). */
@@ -60,11 +61,16 @@ export async function financeEveningTask(env, nowMs = Date.now()) {
   if (kyivHour(now) !== EVENING_HOUR) return { skipped: 'hour' };
   const today = kyivDateKey(now);
   if ((await env.BRIEFING.get(EVENING_MARKER_KEY)) === today) return { skipped: 'done' };
+  // Owner chose important-only automatic messages. A routine daily spend line
+  // is still available via a manual query; do not fill the private chat with it.
+  if (privateAssistantHome(env) && env.ASSISTANT_ROUTINE_DIGESTS !== 'on')
+    return { skipped: 'important-only' };
   if (!env.DB) {
     console.error('finance-evening: привʼязки DB немає - рядка не буде');
     return { skipped: 'no-db' };
   }
-  if (!env.TELEGRAM_CHAT_ID) {
+  const home = assistantHomeTarget(env);
+  if (!home) {
     console.error('finance-evening: TELEGRAM_CHAT_ID немає - нікуди слати');
     return { skipped: 'no-chat' };
   }
@@ -83,8 +89,8 @@ export async function financeEveningTask(env, nowMs = Date.now()) {
   await enqueueOutbox(
     env,
     {
-      chatId: env.TELEGRAM_CHAT_ID,
-      threadId: env.TOPIC_ASSISTANT ?? null,
+      chatId: home.chatId,
+      threadId: home.threadId,
       kind: 'send',
       payload: { text },
     },
