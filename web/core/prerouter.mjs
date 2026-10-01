@@ -3674,7 +3674,7 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
     backupStatusLine(env),
     briefingRuntimeStatusLine(env, nowMs),
   ]);
-  const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
+  const instructionsReady = instructions.healthy;
   const modelReady = brain.modelReadiness?.state === 'ready';
   const home = assistantHomeTarget(env);
   const workerVersion = workerVersionStatusLine(env);
@@ -3689,7 +3689,7 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   const lines = [
     alive ? '✅ Усе живе.' : '⚠️ Щось не так - подробиці нижче.',
     active || queued ? `Зараз роблю: ${active}, чекає: ${queued}` : 'Черга порожня.',
-    instructions,
+    instructions.line,
     formatBrainStatus(brain),
     workerVersion,
     formatModelReadiness(brain),
@@ -4032,18 +4032,21 @@ function formatProbeAge(ageMs) {
 
 /** @param {Env} env */
 async function instructionsStatusLine(env) {
-  if (!env.DB) return 'Інструкції: немає DB';
+  if (!env.DB) return { healthy: false, line: 'Інструкції: немає DB' };
   try {
     const { results } = await env.DB.prepare(
       'SELECT count(*) AS n, max(deployed_at) AS last FROM instructions',
     ).all();
     const row = /** @type {any} */ (results?.[0]);
     const n = Number(row?.n ?? 0);
-    if (n === 0) return 'Інструкції: НЕМАЄ (синк не відпрацював)';
-    return `Інструкції: ${n}, оновлені ${String(row?.last ?? '?').slice(0, 10)}`;
+    if (n === 0) return { healthy: false, line: 'Інструкції: НЕМАЄ (синк не відпрацював)' };
+    return {
+      healthy: true,
+      line: `Інструкції: ${n}, оновлені ${String(row?.last ?? '?').slice(0, 10)}`,
+    };
   } catch (/** @type {any} */ e) {
     console.error('prerouter: читання instructions для /status', e?.message);
-    return 'Інструкції: невідомо';
+    return { healthy: false, line: 'Інструкції: невідомо' };
   }
 }
 
