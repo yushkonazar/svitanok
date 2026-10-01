@@ -521,14 +521,23 @@ describe('підбір магазину для відстеження ціни',
     ]);
   });
 
-  it('price-search не отримує непотрібних кнопок переписування тексту', () => {
+  it('операційні картки не отримують зайвий експорт, а текстові — отримують доречні дії', () => {
     expect(workerButtons('r-price', true, 'price-search')).toEqual([
-      [{ text: '📎 .md', callback_data: 'm:w:r-price:md' }],
       [
         { text: '👍 Корисно', callback_data: 'm:w:r-price:good' },
         { text: '👎 Не те', callback_data: 'm:w:r-price:bad' },
       ],
     ]);
+    expect(
+      workerButtons('r-finance', true, 'finance')
+        .flat()
+        .map((button) => button.text),
+    ).toEqual(['💸 Куди пішли', '👍 Корисно', '👎 Не те']);
+    expect(
+      workerButtons('r-copy', true, 'copywriter')
+        .flat()
+        .map((button) => button.text),
+    ).toEqual(['✏️ Коротше', '🔁 Інший тон', '📎 Файл .md', '👍 Корисно', '👎 Не те']);
   });
 
   it('не пропонує домашню сторінку, URL з обліковими даними чи ціну без валюти', () => {
@@ -699,6 +708,16 @@ describe('картки пошти', () => {
       'm:ma:report1:0:draft',
       'm:ma:report1:0:remind',
       'm:ml:report1',
+    ]);
+    expect(mailItemButtons('report1', 0)).toEqual([
+      [
+        { text: '🔎 Коротко', callback_data: 'm:ma:report1:0:brief' },
+        { text: '✍️ Чернетка', callback_data: 'm:ma:report1:0:draft' },
+      ],
+      [
+        { text: '⏰ Нагадати', callback_data: 'm:ma:report1:0:remind' },
+        { text: '↩️ До списку', callback_data: 'm:ml:report1' },
+      ],
     ]);
     expect(mailItemFollowup({ id: 'report1' }, items[0]!, 'draft')).toContain('ID листа: a1b2');
     expect(mailItemFollowup({ id: 'report1' }, items[0]!, 'draft')).not.toContain('b2c3');

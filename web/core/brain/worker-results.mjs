@@ -7,6 +7,7 @@
 
 import { sendDocument } from '../tg/outbox.mjs';
 import { uploadMarkdown } from '../adapters/drive.mjs';
+import { buildActionCardRows } from './action-card.mjs';
 
 /** Стеля тексту працівника в чаті (S-7-1): довше - файл + Drive. */
 export const WORKER_CHAT_MAX = 3_500;
@@ -77,6 +78,10 @@ const WORKER_ACTIONS_DEFAULT = [
   { key: /** @type {const} */ ('tone'), text: '🔁 Інший тон' },
 ];
 
+// Export is a content action, not a default decoration. Avoid offering a file
+// for short operational answers (finance, planning, places, price checks).
+const WORKER_MARKDOWN_EXPORT = new Set(['researcher', 'analyst', 'copywriter', 'editor']);
+
 const NAME_RE = /^[a-z][a-z0-9-]{1,31}$/;
 
 /** @param {Env} env */
@@ -93,18 +98,19 @@ export function workerButtons(id, withMd, worker = '') {
   // Object і валив доставку відповіді на `.map`.
   const set = Object.hasOwn(WORKER_ACTIONS, worker) ? WORKER_ACTIONS[worker] : undefined;
   const actions = set ?? WORKER_ACTIONS_DEFAULT;
-  const feedback = [
-    { text: '👍 Корисно', callback_data: `m:w:${id}:good` },
-    { text: '👎 Не те', callback_data: `m:w:${id}:bad` },
-  ];
   // Mail has its own report/list actions, including its own conditional .md.
-  if (worker === 'mail-secretary') return [feedback];
-  const row = actions.map((a) => ({
+  if (worker === 'mail-secretary') {
+    return buildActionCardRows({ feedbackId: id });
+  }
+  const actionButtons = actions.map((a) => ({
     text: a.text,
     callback_data: `m:w:${id}:${a.key}`,
   }));
-  if (withMd) row.push({ text: '📎 .md', callback_data: `m:w:${id}:md` });
-  return [...(row.length ? [row] : []), feedback];
+  const utilities =
+    withMd && WORKER_MARKDOWN_EXPORT.has(worker)
+      ? [{ text: '📎 Файл .md', callback_data: `m:w:${id}:md` }]
+      : [];
+  return buildActionCardRows({ actions: actionButtons, utilities, feedbackId: id });
 }
 
 /** One explicit quality vote per saved worker result. The unique partial index
@@ -168,19 +174,18 @@ export function mailCardItems(text) {
 
 /** @param {string} reportId @param {MailCardItem[]} items @param {boolean} withMd @param {boolean} [hasNext] */
 export function mailReportButtons(reportId, items, withMd, hasNext = false, readIds = new Set()) {
-  const rows = items.map((item, index) => [
-    {
-      text: `${readIds.has(item.id) ? '✅' : '✉️'} ${index + 1}. ${item.subject}`.slice(0, 55),
-      callback_data: `m:mi:${reportId}:${index}`,
-    },
-  ]);
-  if (hasNext) rows.push([{ text: '✉️ Наступні листи', callback_data: `m:w:${reportId}:next` }]);
-  if (withMd) rows.push([{ text: '📎 .md', callback_data: `m:w:${reportId}:md` }]);
-  rows.push([
-    { text: '👍 Корисно', callback_data: `m:w:${reportId}:good` },
-    { text: '👎 Не те', callback_data: `m:w:${reportId}:bad` },
-  ]);
-  return rows;
+  const choices = items.map((item, index) => ({
+    text: `${readIds.has(item.id) ? '✅' : '✉️'} ${index + 1}. ${item.subject}`.slice(0, 55),
+    callback_data: `m:mi:${reportId}:${index}`,
+  }));
+  return buildActionCardRows({
+    choices,
+    navigation: hasNext
+      ? [{ text: '✉️ Наступні листи', callback_data: `m:w:${reportId}:next` }]
+      : [],
+    utilities: withMd ? [{ text: '📎 Файл .md', callback_data: `m:w:${reportId}:md` }] : [],
+    feedbackId: reportId,
+  });
 }
 
 /** @param {string} text @returns {{ query: string, cursor: string } | null} */
@@ -201,26 +206,26 @@ export function mailNextPageInfo(text) {
 
 /** @param {string} reportId @param {number} index */
 export function mailItemButtons(reportId, index, count = 0) {
-  const rows = [];
-  if (count > 1) {
-    rows.push([
-      ...(index > 0
-        ? [{ text: '← Попередній', callback_data: `m:mi:${reportId}:${index - 1}` }]
-        : []),
-      ...(index + 1 < count
-        ? [{ text: 'Наступний →', callback_data: `m:mi:${reportId}:${index + 1}` }]
-        : []),
-    ]);
-  }
-  rows.push(
-    [
+  const navigation =
+    count > 1
+      ? [
+          ...(index > 0
+            ? [{ text: '← Попередній', callback_data: `m:mi:${reportId}:${index - 1}` }]
+            : []),
+          ...(index + 1 < count
+            ? [{ text: 'Наступний →', callback_data: `m:mi:${reportId}:${index + 1}` }]
+            : []),
+        ]
+      : [];
+  return buildActionCardRows({
+    navigation,
+    actions: [
       { text: '🔎 Коротко', callback_data: `m:ma:${reportId}:${index}:brief` },
       { text: '✍️ Чернетка', callback_data: `m:ma:${reportId}:${index}:draft` },
+      { text: '⏰ Нагадати', callback_data: `m:ma:${reportId}:${index}:remind` },
+      { text: '↩️ До списку', callback_data: `m:ml:${reportId}` },
     ],
-    [{ text: '⏰ Нагадати', callback_data: `m:ma:${reportId}:${index}:remind` }],
-    [{ text: '↩️ До списку', callback_data: `m:ml:${reportId}` }],
-  );
-  return rows;
+  });
 }
 
 /** @param {MailCardItem} item @param {number} index @param {number} count */
@@ -402,9 +407,12 @@ export function priceShopCard(options) {
 
 /** @param {string} reportId @param {PriceShopOption[]} options */
 export function priceShopButtons(reportId, options) {
-  return options.map((o, index) => [
-    { text: `🎁 ${o.shop}`, callback_data: `m:ps:${reportId}:${index}` },
-  ]);
+  return buildActionCardRows({
+    choices: options.map((o, index) => ({
+      text: `🎁 ${o.shop}`,
+      callback_data: `m:ps:${reportId}:${index}`,
+    })),
+  });
 }
 
 /** @typedef {{ name: string, detail: string }} PlaceOption */
@@ -438,12 +446,12 @@ export function placeOptions(text) {
 
 /** @param {string} reportId @param {PlaceOption[]} options */
 export function placeSearchButtons(reportId, options) {
-  return options.map((item, index) => [
-    {
+  return buildActionCardRows({
+    choices: options.map((item, index) => ({
       text: `📍 ${index + 1}. ${item.name}`.slice(0, 55),
       callback_data: `m:pl:${reportId}:${index}`,
-    },
-  ]);
+    })),
+  });
 }
 
 /** @param {PlaceOption} item @param {number} index @param {number} count */
@@ -469,25 +477,25 @@ export function placeChoiceButtons(reportId, index, options) {
     url.searchParams.set('q', `${query} ${suffix}`.trim());
     return url.toString();
   };
-  return [
-    [
-      { text: '🗺 Маршрут', url: maps.toString() },
-      { text: '📖 Меню й деталі', url: search('офіційний сайт меню') },
-    ],
-    [{ text: '📅 Як забронювати', url: search('бронювання ресторан столик') }],
-    [
-      ...options.flatMap((other, otherIndex) =>
-        otherIndex === index
-          ? []
-          : [
-              {
-                text: `📍 ${otherIndex + 1}. ${other.name}`.slice(0, 55),
-                callback_data: `m:pl:${reportId}:${otherIndex}`,
-              },
-            ],
-      ),
-    ],
-  ].filter((row) => row.length > 0);
+  const actions = [
+    { text: '🗺 Маршрут', url: maps.toString() },
+    { text: '📖 Меню й деталі', url: search('офіційний сайт меню') },
+    { text: '📅 Як забронювати', url: search('бронювання ресторан столик') },
+    ...options.flatMap((other, otherIndex) =>
+      otherIndex === index
+        ? []
+        : [
+            {
+              text: `📍 ${otherIndex + 1}. ${other.name}`.slice(0, 55),
+              callback_data: `m:pl:${reportId}:${otherIndex}`,
+            },
+          ],
+    ),
+  ];
+  return buildActionCardRows({
+    navigation: actions.slice(0, 3),
+    choices: actions.slice(3),
+  });
 }
 
 /** @param {string} name @param {number} nowMs */
