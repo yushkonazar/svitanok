@@ -7,7 +7,7 @@ import { ASSISTANT_RESUME_TTL_MS, assistantResumeLegacyKey } from './contract.mj
 
 const STATE_KEY = 'resumes';
 
-/** @typedef {{ note: string, tainted: boolean, atMs: number }} Resume */
+/** @typedef {{ note: string, question?: string, tainted: boolean, atMs: number }} Resume */
 /** @typedef {{ version: number, values: Record<string, Resume|null>, legacySeedEnabled: boolean }} ResumeState */
 
 /** @param {unknown} value @param {number} nowMs @returns {Resume|null} */
@@ -16,9 +16,16 @@ function asResume(value, nowMs) {
     value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   );
   const note = typeof raw.note === 'string' ? raw.note.trim() : '';
+  const question =
+    typeof raw.question === 'string' ? raw.question.replace(/\s+/gu, ' ').trim().slice(0, 240) : '';
   const atMs = Number.isFinite(raw.atMs) ? Number(raw.atMs) : 0;
   if (!note || !atMs || atMs + ASSISTANT_RESUME_TTL_MS <= nowMs) return null;
-  return { note, tainted: raw.tainted === true, atMs };
+  return {
+    note,
+    ...(question ? { question } : {}),
+    tainted: raw.tainted === true,
+    atMs,
+  };
 }
 
 /** @param {unknown} value @returns {ResumeState|null} */
@@ -160,6 +167,21 @@ export class AssistantResumeDO extends DurableObject {
       await this.ctx.storage.put(STATE_KEY, next);
       await this.#deleteMirror(slot);
       return resume;
+    });
+  }
+
+  /** Read a pending clarification without consuming it.
+   * @param {string} slot @param {unknown} legacyValue @param {number} [nowMs]
+   * @returns {Promise<Resume|null>} */
+  async peek(slot, legacyValue, nowMs = Date.now()) {
+    return this.#serial(async () => {
+      const current = await this.#read(nowMs);
+      const known = Object.hasOwn(current.values, slot);
+      return known
+        ? asResume(current.values[slot], nowMs)
+        : current.legacySeedEnabled
+          ? asResume(legacyValue, nowMs)
+          : null;
     });
   }
 

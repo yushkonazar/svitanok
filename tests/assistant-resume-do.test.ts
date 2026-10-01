@@ -8,6 +8,7 @@ import {
 } from '../web/core/assistant-resume/contract.mjs';
 import {
   assistantResumeClear,
+  assistantResumePeek,
   assistantResumeSave,
   assistantResumeTake,
 } from '../web/core/assistant-resume/client.mjs';
@@ -40,6 +41,29 @@ function setup(seed: Record<string, unknown> = {}) {
 }
 
 describe('AssistantResumeDO — atomic short-lived continuation', () => {
+  it('peek keeps the pending question and note available until a real follow-up consumes them', async () => {
+    const { env } = setup();
+    const resume = {
+      note: 'лист знайдено, лишилось створити подію',
+      question: 'На яку годину ставити зустріч?',
+      atMs: 1_000,
+    };
+    await assistantResumeSave(env, CHAT, null, resume, 1_000);
+
+    await expect(assistantResumePeek(env, CHAT, null, null, 1_001)).resolves.toMatchObject({
+      canonical: true,
+      resume,
+    });
+    await expect(assistantResumeTake(env, CHAT, null, null, 1_002)).resolves.toMatchObject({
+      canonical: true,
+      resume,
+    });
+    await expect(assistantResumePeek(env, CHAT, null, null, 1_003)).resolves.toMatchObject({
+      canonical: true,
+      resume: null,
+    });
+  });
+
   it('два одночасних повідомлення списують legacy slot рівно один раз', async () => {
     const { env, kv } = setup({ note: 'створити подію на 15:00', atMs: 1_000 });
     const [first, second] = await Promise.all([

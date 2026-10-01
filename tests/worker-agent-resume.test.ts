@@ -200,13 +200,44 @@ describe('ask — Worker питає й лишає слот продовженн�
 
 describe('наступне повідомлення підхоплює слот (U3)', () => {
   it('команда /new перериває нитку, але не стирає відкрите уточнення', async () => {
-    await agentStep({ action: 'ask', replyText: 'На яку годину?', note: 'подія лишилась' });
+    await agentStep({
+      action: 'ask',
+      replyText: 'На яку годину?',
+      note: 'лист id=abc123, створити подію',
+    });
     await sendMessage('/new', 2);
-    expect(resumeSlot()).toMatchObject({ note: 'подія лишилась' });
+    expect(resumeSlot()).toMatchObject({
+      note: 'лист id=abc123, створити подію',
+      question: 'На яку годину?',
+    });
 
     await sendMessage('на 15:00', 3);
-    expect(startedTranscript()).toContain('подія лишилась');
+    expect(startedTranscript()).toContain('лист id=abc123, створити подію');
+    expect(startedTranscript()).toContain('На яку годину?');
     expect(startedTranscript()).toContain('на 15:00');
+  });
+
+  it('окрема нова задача не краде уточнення; пізніша відповідь продовжує його', async () => {
+    await agentStep(
+      {
+        action: 'ask',
+        replyText: 'На яку годину ставити зустріч?',
+        note: 'лист id=abc123, створити подію',
+      },
+      { tainted: true },
+    );
+
+    await sendMessage('Які мої витрати за останні 7 днів?', 2);
+    expect(startedTranscript()).toContain('ПАУЗА УТОЧНЕННЯ');
+    expect(startedTranscript()).not.toContain('лист id=abc123');
+    expect(startedClaims().x).toBe(1); // taint не губиться разом із відкладеною нотаткою
+    expect(resumeSlot()).toMatchObject({ question: 'На яку годину ставити зустріч?' });
+
+    await sendMessage('завтра о 15:00', 3);
+    expect(startedTranscript()).toContain('лист id=abc123, створити подію');
+    expect(startedTranscript()).toContain('На яку годину ставити зустріч?');
+    expect(startedTranscript()).toContain('завтра о 15:00');
+    expect(kv.has(resumeKey)).toBe(false);
   });
 
   it('повертає уточнення у слот, якщо хост відхилив продовження', async () => {

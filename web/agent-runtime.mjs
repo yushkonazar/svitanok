@@ -42,6 +42,7 @@ import {
   assistantStepLabel,
   buildAssistantSystemPrompt,
   buildResumePrefix,
+  isClarificationInterruption,
   classifyHostProbe,
   clipTranscript,
   extractAssistantAction,
@@ -63,6 +64,7 @@ import { verifyWebhookSecret } from './tg-core.mjs';
 import { mdToTelegramHtml } from './core/tg/markdown.mjs';
 import { renderHistoryForPrompt } from './assistant-memory-core.mjs';
 import {
+  assistantResumePeek,
   assistantResumeRestoreIfEmpty,
   assistantResumeSave,
   assistantResumeTake,
@@ -470,12 +472,18 @@ async function saveAssistantResume(
   /** @type {Env} */ env,
   /** @type {import('./agent-run-core.mjs').RunClaims} */ claims,
   /** @type {string|null|undefined} */ note,
+  /** @type {string|null|undefined} */ question,
   /** @type {number} */ nowMs,
 ) {
   if (!note) return;
   // Tainted note is an input-derived summary, so it travels with its taint on
   // the one atomic save/take path as well as in the legacy rollback mirror.
-  const resume = { note, tainted: claims.tainted === true, atMs: nowMs };
+  const resume = {
+    note,
+    ...(question ? { question: question.replace(/\s+/gu, ' ').trim().slice(0, 240) } : {}),
+    tainted: claims.tainted === true,
+    atMs: nowMs,
+  };
   try {
     if (await assistantResumeSave(env, claims.chatId, claims.threadId, resume, nowMs)) return;
     // Binding is absent only in rollback/local runtime, or an ambiguous save
@@ -515,6 +523,19 @@ async function takeAssistantResume(
   return rec;
 }
 
+/** Read a pending clarification without consuming it. @param {Env} env
+ * @param {string|number|null|undefined} chatId @param {string|number|null|undefined} threadId */
+async function peekAssistantResume(env, chatId, threadId) {
+  const key = assistantResumeLegacyKey(assistantResumeSlot(chatId, threadId));
+  let rec = null;
+  try {
+    rec = JSON.parse((await env.BRIEFING.get(key)) ?? 'null');
+  } catch {
+    /* биття JSON -> продовження просто не буде */
+  }
+  return (await assistantResumePeek(env, chatId, threadId, rec)).resume;
+}
+
 /**
  * Новий вхід у агента: жодного циклу — надіслати «⏳», віддати роботу хосту.
  * Уся тривала частина живе на VPS, тож ця функція завершується за ~300мс.
@@ -541,10 +562,19 @@ export async function runAssistantAgent(
     parsed.threadId,
   );
   const userMsg = userText.length > MAX_USER_TEXT ? userText.slice(0, MAX_USER_TEXT) : userText;
-  // U3: якщо попередній прогін закінчився питанням — це повідомлення є на нього
-  // відповіддю, і модель має почати не з нуля, а зі своєї ж нотатки.
-  const resume = await takeAssistantResume(env, parsed.chatId, parsed.threadId);
-  const resumePrefix = buildResumePrefix(resume, nowMs);
+  // U3: уточнення переживає /new та незалежні запити. Забираємо нотатку лише
+  // для відповіді; нова явна задача або привітання відсуває її, не гасить.
+  const pendingResume = /** @type {KvBlob|null} */ (
+    await peekAssistantResume(env, parsed.chatId, parsed.threadId)
+  );
+  const hasPendingResume = Boolean(buildResumePrefix(pendingResume, nowMs));
+  const pausedPendingResume = hasPendingResume && isClarificationInterruption(userMsg);
+  const resume = pausedPendingResume
+    ? null
+    : await takeAssistantResume(env, parsed.chatId, parsed.threadId);
+  const resumePrefix = pausedPendingResume
+    ? 'ПАУЗА УТОЧНЕННЯ: власник надіслав новий окремий запит. Не вважай його відповіддю на попереднє питання; виконай лише останню репліку. Старе уточнення лишається відкритим.\n'
+    : buildResumePrefix(resume, nowMs);
   const transcript = clipTranscript(
     `${priorContext}${resumePrefix}Користувач написав: "${userMsg}"`,
   );
@@ -563,7 +593,9 @@ export async function runAssistantAgent(
     userText: userMsg,
     // Продовження заплямованого прогону лишається заплямованим (S2): у
     // транскрипті знову переказ стороннього тексту — див. saveAssistantResume.
-    tainted: Boolean(resumePrefix) && resume.tainted === true,
+    tainted:
+      Boolean(resumePrefix) &&
+      (resume?.tainted === true || (pausedPendingResume && pendingResume?.tainted === true)),
     nowMs,
   });
 
@@ -590,7 +622,12 @@ export async function runAssistantAgent(
       env,
       parsed.chatId,
       parsed.threadId,
-      { note: resume.note, tainted: resume.tainted === true, atMs: resume.atMs },
+      {
+        note: resume.note,
+        ...(resume.question ? { question: resume.question } : {}),
+        tainted: resume.tainted === true,
+        atMs: resume.atMs,
+      },
       nowMs,
     );
   }
@@ -806,8 +843,8 @@ export async function handleAgentStep(/** @type {Request} */ request, /** @type 
      памʼять — рівно ті самі, що в reply: для власника це звичайне повідомлення
      від асистента. */
   if (action.action === 'ask') {
-    await saveAssistantResume(env, claims, note, nowMs);
     const text = action.replyText;
+    await saveAssistantResume(env, claims, note, text, nowMs);
     return finish(() => sendText(mdToTelegramHtml(text), { parse_mode: 'HTML' }), text);
   }
   if (action.action === 'reply') {
