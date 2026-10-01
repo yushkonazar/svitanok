@@ -91,6 +91,25 @@ export async function assistantResumeTake(env, chatId, threadId, legacyValue, no
   }
 }
 
+/** Read a pending note without consuming it.
+ * @param {Env} env @param {string|number|null|undefined} chatId
+ * @param {string|number|null|undefined} threadId @param {unknown} legacyValue
+ * @param {number} [nowMs]
+ * @returns {Promise<{ canonical: boolean, resume: unknown }>} */
+export async function assistantResumePeek(env, chatId, threadId, legacyValue, nowMs = Date.now()) {
+  const target = stub(env);
+  if (!target) return { canonical: false, resume: legacyValue };
+  try {
+    return {
+      canonical: true,
+      resume: await target.peek(assistantResumeSlot(chatId, threadId), legacyValue, nowMs),
+    };
+  } catch (/** @type {any} */ error) {
+    console.error('assistant-resume: peek впав', error?.message);
+    return { canonical: true, resume: null };
+  }
+}
+
 /** @param {Env} env */
 export async function assistantResumeClear(env) {
   const target = stub(env);

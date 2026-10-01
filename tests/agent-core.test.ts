@@ -24,6 +24,7 @@ const {
   extractAssistantNote,
   MAX_NOTE_LEN,
   buildResumePrefix,
+  isClarificationInterruption,
   ASSISTANT_RESUME_TTL_MS,
 } = agent;
 
@@ -1794,10 +1795,27 @@ describe('ask — нетермінальне уточнення (U3)', () => {
 
   it('buildResumePrefix віддає нотатку наступному прогонові', () => {
     const now = SUMMER_NOW;
-    const prefix = buildResumePrefix({ note: 'знайшов лист kontramarka', atMs: now - 60_000 }, now);
+    const prefix = buildResumePrefix(
+      {
+        note: 'знайшов лист kontramarka',
+        question: 'На яку годину ставити зустріч?',
+        atMs: now - 60_000,
+      },
+      now,
+    );
     expect(prefix).toContain('знайшов лист kontramarka');
+    expect(prefix).toContain('На яку годину ставити зустріч?');
     expect(prefix).toContain('ПРОДОВЖЕННЯ');
     expect(prefix.endsWith('\n')).toBe(true); // окремий рядок перед запитом
+  });
+
+  it('відрізняє очевидну нову задачу від відповіді на уточнення', () => {
+    expect(isClarificationInterruption('Які мої витрати за останні 7 днів?')).toBe(true);
+    expect(isClarificationInterruption('Знайди в Drive моє резюме.')).toBe(true);
+    expect(isClarificationInterruption('Привіт')).toBe(true);
+    expect(isClarificationInterruption('18:00')).toBe(false);
+    expect(isClarificationInterruption('30 хвилин')).toBe(false);
+    expect(isClarificationInterruption('Виїзд зі Львова, авто Джетта, вранці')).toBe(false);
   });
 
   it('протухлий слот ігнорується — через годину це вже інша розмова', () => {
