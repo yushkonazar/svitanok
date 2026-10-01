@@ -152,6 +152,9 @@ interface Env {
   /* ── Telegram ───────────────────────────────────────────────────────── */
 
   TELEGRAM_BOT_TOKEN?: string;
+  /** Default destination for new proactive assistant messages. */
+  ASSISTANT_HOME?: 'dm' | 'group';
+  ASSISTANT_ROUTINE_DIGESTS?: 'on' | 'off';
   /** Куди слати (в супергрупі — груповий id, НЕ id людини). */
   TELEGRAM_CHAT_ID?: string;
   /** Єдиний головний власник: право ПИСАТИ (`isPrimaryOwner`). */

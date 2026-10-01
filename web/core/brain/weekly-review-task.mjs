@@ -14,6 +14,7 @@
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { startOrQueueThreadText, THREAD_DM } from '../prerouter.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { weeklyClaim, weeklyComplete, weeklyRelease } from '../weekly-review-state/client.mjs';
 import {
   WEEKLY_REVIEW_LEASE_MS,
@@ -123,12 +124,12 @@ export async function weeklyReviewTask(env, nowMs = Date.now()) {
  * @param {(state: WeeklyState) => Promise<void>} writeState
  */
 async function start(env, state, nowMs, writeState) {
-  if (!env.TELEGRAM_CHAT_ID) {
-    console.error('weekly-review: TELEGRAM_CHAT_ID відсутній - нікуди слати звіт');
+  const target = assistantHomeTarget(env);
+  if (!target) {
+    console.error('weekly-review: адреса власника відсутня - нікуди слати звіт');
     return { skipped: 'no-chat' };
   }
-  const chatId = Number(env.TELEGRAM_CHAT_ID);
-  const threadId = env.TOPIC_ASSISTANT ? Number(env.TOPIC_ASSISTANT) : null;
+  const { chatId, threadId } = target;
   const threadKey = threadId == null ? THREAD_DM : String(threadId);
   const runId = await startOrQueueThreadText(
     env,

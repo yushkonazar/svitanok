@@ -15,6 +15,7 @@
 import { cleanSource, formatMoney } from '../format.mjs';
 import { monthStartMs } from './query.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { FLAG_LABELS, isLoud } from './rules.mjs';
 import { categoryMonthTotal } from './store.mjs';
 
@@ -94,7 +95,8 @@ export function transactionText(tx, extra = {}) {
  */
 export async function announceTransaction(env, tx, nowMs) {
   if (!isLoud(tx.flags)) return false;
-  if (!env.TELEGRAM_CHAT_ID) {
+  const home = assistantHomeTarget(env);
+  if (!home) {
     console.error('mono: TELEGRAM_CHAT_ID немає - нікуди слати незвичну покупку');
     return false;
   }
@@ -120,8 +122,8 @@ export async function announceTransaction(env, tx, nowMs) {
   await enqueueOutbox(
     env,
     {
-      chatId: env.TELEGRAM_CHAT_ID,
-      threadId: env.TOPIC_ASSISTANT ?? null,
+      chatId: home.chatId,
+      threadId: home.threadId,
       kind: 'send',
       payload: {
         text: transactionText(tx, { monthTotal, minutesApart }),

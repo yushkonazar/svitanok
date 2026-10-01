@@ -760,4 +760,15 @@ describe('вечірній рядок (S-4-7)', () => {
     expect(outboxTexts(db)).toHaveLength(0);
     expect(await env.BRIEFING.get(EVENING_MARKER_KEY)).toBe('2026-09-07');
   });
+
+  it('не надсилає буденне вечірнє зведення в DM без явного opt-in', async () => {
+    const { env, db } = setup();
+    env.ASSISTANT_HOME = 'dm';
+    env.TELEGRAM_OWNER_USER_ID = '12345';
+    seedTx(db, { at: '2026-09-07T08:00:00.000Z', amount: -134_000, description: 'Comfy' });
+    expect(await financeEveningTask(env, EVENING)).toEqual({ skipped: 'important-only' });
+    expect(outboxTexts(db)).toHaveLength(0);
+    env.ASSISTANT_ROUTINE_DIGESTS = 'on';
+    expect(await financeEveningTask(env, EVENING)).toMatchObject({ sent: true });
+  });
 });

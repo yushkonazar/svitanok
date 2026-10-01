@@ -23,6 +23,7 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { GITHUB_API, ghHeaders, ghOwner, ghRepoSlug } from '../adapters/github.mjs';
 import { enqueueOutbox, drainOutbox, sendDocument, sendSystemAlert } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
 import { registryBegin, registryFinish } from '../run-registry/client.mjs';
 import { uploadMarkdown } from '../adapters/drive.mjs';
@@ -293,6 +294,7 @@ export function ddmm(iso) {
  * @param {Env} env @param {{ chatId?: number | string | null, threadId?: number | string | null }} ctx
  */
 export function targetOf(env, ctx) {
+  const home = assistantHomeTarget(env);
   const key = ctx.threadId == null ? null : String(ctx.threadId);
   const isDm = key === 'dm';
   const chatId =
@@ -302,12 +304,8 @@ export function targetOf(env, ctx) {
         ? env.TELEGRAM_OWNER_USER_ID
           ? Number(env.TELEGRAM_OWNER_USER_ID)
           : null
-        : env.TELEGRAM_CHAT_ID
-          ? Number(env.TELEGRAM_CHAT_ID)
-          : null;
-  const threadId = isDm
-    ? null
-    : (key ?? (env.TOPIC_ASSISTANT == null ? null : String(env.TOPIC_ASSISTANT)));
+        : (home?.chatId ?? null);
+  const threadId = isDm ? null : (key ?? (home?.threadId == null ? null : String(home.threadId)));
   if (chatId == null)
     throw new Error('немає чату для відповіді (TELEGRAM_CHAT_ID / контекст прогону)');
   return { chatId, threadId };

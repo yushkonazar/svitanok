@@ -115,7 +115,7 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
     ]);
     expect(JSON.parse(kv.get('state') ?? '{}')).toMatchObject({
       telegramSetupDate: '2026-07-27',
-      telegramSetupVersion: '2026-09-28-command-menu-v2',
+      telegramSetupVersion: '2026-10-01-private-home-v1',
     });
     void e;
   });
@@ -157,7 +157,7 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
     await tick();
     expect(setupCalls()).toHaveLength(5);
     expect(JSON.parse(kv.get('state') ?? '{}').telegramSetupVersion).toBe(
-      '2026-09-28-command-menu-v2',
+      '2026-10-01-private-home-v1',
     );
   });
 
@@ -169,7 +169,7 @@ describe('autoTelegramSetup (крон, раз на добу)', () => {
     expect(setupCalls()).toHaveLength(5);
     expect(JSON.parse(kv.get('state') ?? '{}')).toMatchObject({
       telegramSetupDate: '2026-07-28',
-      telegramSetupVersion: '2026-09-28-command-menu-v2',
+      telegramSetupVersion: '2026-10-01-private-home-v1',
     });
   });
 });

@@ -16,6 +16,7 @@
 // повтор на цілу добу.
 
 import { COMMANDS, buildMiniAppButton } from './tg-core.mjs';
+import { assistantHomeTarget } from './core/tg/home.mjs';
 import { GITHUB_API, ghRepoSlug } from './core/adapters/github.mjs';
 import {
   dueReminders,
@@ -101,7 +102,8 @@ const APP_WELCOME_TEXT =
   'під рукою.';
 
 export async function checkReminders(/** @type {Env} */ env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const home = assistantHomeTarget(env);
+  if (!env.TELEGRAM_BOT_TOKEN || !home) return;
   const now = Date.now();
   const due = dueReminders((await loadState(env)).reminders, now);
   if (due.length === 0) return;
@@ -119,9 +121,8 @@ export async function checkReminders(/** @type {Env} */ env) {
        чаті — відповідь приходила в тему супергрупи (а якщо тем немає взагалі,
        message_thread_id мовчки ігнорувався). Фолбек лишаємо для legacy-записів,
        створених до цієї зміни, — у них адреси просто немає. */
-    const chatId = r.chatId ?? env.TELEGRAM_CHAT_ID;
-    const threadId =
-      r.chatId != null ? (r.threadId ?? undefined) : (env.TOPIC_ASSISTANT ?? undefined);
+    const chatId = r.chatId ?? home.chatId;
+    const threadId = r.chatId != null ? (r.threadId ?? undefined) : (home.threadId ?? undefined);
     const res = await tgCall(env, 'sendMessage', {
       chat_id: chatId,
       message_thread_id: threadId,
@@ -197,7 +198,7 @@ export async function runTelegramSetup(/** @type {Env} */ env, /** @type {string
  * клавіатуру, не чекаючи наступної календарної доби. Після цього знову
  * працює щоденний self-healing.
  */
-export const TELEGRAM_SETUP_VERSION = '2026-09-28-command-menu-v2';
+export const TELEGRAM_SETUP_VERSION = '2026-10-01-private-home-v1';
 
 export async function autoTelegramSetup(/** @type {Env} */ env) {
   if (!env.MINI_APP_URL || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_BOT_TOKEN) return;
@@ -228,8 +229,9 @@ export async function ensureAppWelcomePin(
   /** @type {Env} */ env,
   /** @type {string} */ miniAppUrl,
 ) {
-  if (!env.TELEGRAM_CHAT_ID) return;
-  const chatId = env.TELEGRAM_CHAT_ID;
+  const home = assistantHomeTarget(env, 'briefing');
+  if (!home) return;
+  const chatId = home.chatId;
 
   // Резонний-за-замовчуванням: пересилаємо/переприкріплюємо ЛИШЕ якщо getChat
   // ПОЗИТИВНО підтвердив, що поточний пін не наш (не збігається зі стором) чи
@@ -248,7 +250,12 @@ export async function ensureAppWelcomePin(
     return;
   }
   const state = await loadState(env);
-  if (typeof state.appWelcomePinMsgId === 'number' && pinnedId === state.appWelcomePinMsgId) {
+  if (
+    (String(state.appWelcomePinChatId ?? '') === String(chatId) ||
+      (state.appWelcomePinChatId == null && env.ASSISTANT_HOME !== 'dm')) &&
+    typeof state.appWelcomePinMsgId === 'number' &&
+    pinnedId === state.appWelcomePinMsgId
+  ) {
     return;
   }
 
@@ -260,7 +267,7 @@ export async function ensureAppWelcomePin(
   );
   const sendRes = await tgCall(env, 'sendMessage', {
     chat_id: chatId,
-    message_thread_id: env.TOPIC_BRIEFING ?? undefined,
+    message_thread_id: home.threadId ?? undefined,
     text: APP_WELCOME_TEXT,
     parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [[button]] },
@@ -277,7 +284,11 @@ export async function ensureAppWelcomePin(
   // Між першим loadState (вище) і цим рядком минуло 2 await Telegram-виклики,
   // тобто конкурентний писар того ж блоба (checkReminders/вебхук на тому самому
   // 5-хвилинному тіку) міг устигнути. updateState перечитує й мержить сам.
-  await updateState(env, (s) => ({ ...s, appWelcomePinMsgId: newId }));
+  await updateState(env, (s) => ({
+    ...s,
+    appWelcomePinMsgId: newId,
+    appWelcomePinChatId: String(chatId),
+  }));
 }
 
 /** A4: перед ранковим dispatch зафіксувати «тему тижня» у state.masteryFocus —
@@ -582,7 +593,8 @@ export async function autoBriefDispatch(/** @type {Env} */ env) {
  * автоматичні нагадування в один день.
  */
 export async function checkinNudgeCheck(/** @type {Env} */ env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const home = assistantHomeTarget(env);
+  if (!env.TELEGRAM_BOT_TOKEN || !home) return;
   const minuteOfDay = kyivMinuteOfDay(new Date());
   const win = matchCheckinNudgeWindow(minuteOfDay);
   if (!win) return;
@@ -610,8 +622,8 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   if (!due || !attention.deliver) return;
 
   await tgCall(env, 'sendMessage', {
-    chat_id: env.TELEGRAM_CHAT_ID,
-    message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+    chat_id: home.chatId,
+    message_thread_id: home.threadId ?? undefined,
     text: win.text,
   });
 
@@ -636,7 +648,8 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
  * самий store, зайвий проліт у KV не потрібен.
  */
 export async function sleepNudgeCheck(/** @type {Env} */ env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const home = assistantHomeTarget(env);
+  if (!env.TELEGRAM_BOT_TOKEN || !home) return;
   const minuteOfDay = kyivMinuteOfDay(new Date());
   const store = await loadStats(env);
   const nightKey = checkinDateKey(kyivDateKey(), kyivHour());
@@ -655,7 +668,7 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
   // означає справді минула, а не просто «перейшли за північ»).
   for (const { dateKey, nudgeMsgId } of staleSleepNudges(store.sleepLog, nightKey)) {
     await tgCall(env, 'editMessageText', {
-      chat_id: env.TELEGRAM_CHAT_ID,
+      chat_id: store.sleepLog?.[dateKey]?.nudgeChatId ?? env.TELEGRAM_CHAT_ID,
       message_id: nudgeMsgId,
       text: '🌙 Не встиг зафіксувати — нічого, вранці вкажеш час сну вручну.',
       reply_markup: { inline_keyboard: [] },
@@ -681,8 +694,8 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
     });
     if (due && attention.deliver && (await routineNudgeEnabled(env, 'sleep'))) {
       const res = await tgCall(env, 'sendMessage', {
-        chat_id: env.TELEGRAM_CHAT_ID,
-        message_thread_id: env.TOPIC_ASSISTANT ?? undefined,
+        chat_id: home.chatId,
+        message_thread_id: home.threadId ?? undefined,
         text: SLEEP_NUDGE_TEXT,
         reply_markup: {
           inline_keyboard: [
@@ -711,6 +724,7 @@ export async function sleepNudgeCheck(/** @type {Env} */ env) {
       next.sleepLog[newNudge.nightKey] = {
         ...next.sleepLog[newNudge.nightKey],
         nudgeMsgId: newNudge.msgId,
+        nudgeChatId: home.chatId,
       };
     }
     return next;
@@ -778,7 +792,8 @@ export async function deadMansCheck(/** @type {Env} */ env) {
     console.error('reliability write failed', e);
   }
   if (fresh) return;
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+  const home = assistantHomeTarget(env, 'system');
+  if (!env.TELEGRAM_BOT_TOKEN || !home) {
     console.error('TELEGRAM_* відсутні — dead-man пропущено');
     return;
   }
@@ -787,14 +802,14 @@ export async function deadMansCheck(/** @type {Env} */ env) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      chat_id: env.TELEGRAM_CHAT_ID,
+      chat_id: home.chatId,
       // Фаза B: тема «⚠️ Система» (операційні алерти окремо від контенту
       // брифінгу). TOPIC_SYSTEM не заведено -> фолбек на стару поведінку
       // (TOPIC_BRIEFING), щоб алерт не «загубився» для власників, які ще
       // не створили нову тему. `||`, не `??` — порожній рядок (Cloudflare-
       // змінна заведена, але лишена пустою) теж має фолбечити, не «зʼїдати»
       // резервну тему мовчки.
-      message_thread_id: env.TOPIC_SYSTEM || env.TOPIC_BRIEFING || undefined,
+      message_thread_id: home.threadId ?? undefined,
       text: '⚠️ Свiтанок: ранковий брифінг сьогодні не доставлено (KV не оновлено). Перевір GitHub Actions → workflow «brief».',
     }),
   });

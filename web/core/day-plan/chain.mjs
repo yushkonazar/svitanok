@@ -18,8 +18,9 @@ import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { readCalendarRange } from '../../google.mjs';
 import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { setChainState, waitOrNull } from '../chains/state.mjs';
+import { setChainState, waitOrNull, readChainState } from '../chains/state.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { calendarizeBlocks } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
@@ -54,6 +55,7 @@ export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
 /**
  * @typedef {{
  *   now: () => number,
+ *   target?: { chatId: number | string | null, threadId: number | string | null },
  *   send: (text: string, buttons?: { text: string, callback_data: string }[][]) => Promise<void>,
  *   startWorker: (mode: 'intent' | 'explain' | 'replan', task: Record<string, unknown>) => Promise<boolean>,
  *   readCalendar: (date: string) => Promise<{ title: string, startMin: number | null, endMin: number | null }[] | null>,
@@ -232,7 +234,7 @@ export async function runDayPlanChain(env, params, step, io) {
     // Мовчання до ранку = план прийнято за замовчуванням: інакше ранок без
     // нагадувань, хоч власник сам назвав пункти (S-P-9: без відповіді - план
     // лише з календаря; тут відповідь була).
-    const res = await acceptPlan(env, date, io.now(), address(env));
+    const res = await acceptPlan(env, date, io.now(), io.target ?? address(env));
     if (decision?.choice === 'calendar') await proposeCalendar(env, date, res.items, io.now(), io);
     return { edit: false, reminders: res.reminders };
   });
@@ -259,7 +261,7 @@ export async function runDayPlanChain(env, params, step, io) {
       } else if (typeof change?.text === 'string') {
         await io.send('Зміни збережу через чат: напиши, коли буде зручно.');
       }
-      await acceptPlan(env, date, io.now(), address(env));
+      await acceptPlan(env, date, io.now(), io.target ?? address(env));
     });
   }
 
@@ -455,7 +457,7 @@ async function proposeCalendar(env, date, rows, nowMs, io) {
     date,
     rows,
     nowMs,
-    { chatId: null, threadId: env.TOPIC_ASSISTANT ?? 'dm' },
+    io.target ?? address(env),
     (text, buttons) =>
       io.send(text, /** @type {{ text: string, callback_data: string }[][]} */ (buttons ?? [])),
   );
@@ -466,9 +468,10 @@ async function proposeCalendar(env, date, rows, nowMs, io) {
 
 /** @param {Env} env */
 function address(env) {
+  const home = assistantHomeTarget(env);
   return {
-    chatId: env.TELEGRAM_CHAT_ID ?? null,
-    threadId: env.TOPIC_ASSISTANT ?? null,
+    chatId: home?.chatId ?? null,
+    threadId: home?.threadId ?? null,
   };
 }
 
@@ -495,10 +498,19 @@ export async function startDayPlanChain(env, date, nowMs) {
   if (!env.DAY_PLAN) throw new Error('привʼязки DAY_PLAN (Workflow) немає');
   const chainId = crypto.randomUUID();
   const iso = new Date(nowMs).toISOString();
+  const home = address(env);
+  if (!home.chatId) throw new Error('чат асистента не налаштовано');
   await env.DB.prepare(
     `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', ?, ?)`,
   )
-    .bind(chainId, CHAIN_KIND, chainId, JSON.stringify({ date, awaiting: null }), iso, iso)
+    .bind(
+      chainId,
+      CHAIN_KIND,
+      chainId,
+      JSON.stringify({ date, awaiting: null, chat_id: home.chatId, thread_id: home.threadId }),
+      iso,
+      iso,
+    )
     .run();
   await env.DAY_PLAN.create({ id: chainId, params: { chainId, date } });
   await upsertDayPlan(env, date, { status: 'intent', workflow_id: chainId }, nowMs);
@@ -539,16 +551,17 @@ export function startDayPlannerRun(env, req, nowMs) {
  * драйну лишає повідомлення в outbox сторожу `outbox-drain`, але в лог іде.
  * @param {Env} env @param {string} chainId @param {string} date
  */
-export function productionIo(env, chainId, date) {
+export function productionIo(env, chainId, date, target = address(env)) {
   return /** @type {ChainIo} */ ({
     now: () => Date.now(),
+    target,
     send: async (text, btns) => {
-      if (!env.TELEGRAM_CHAT_ID) throw new Error('TELEGRAM_CHAT_ID не задано');
+      if (!target.chatId) throw new Error('чат асистента не налаштовано');
       await enqueueOutbox(
         env,
         {
-          chatId: env.TELEGRAM_CHAT_ID,
-          threadId: env.TOPIC_ASSISTANT ?? null,
+          chatId: target.chatId,
+          threadId: target.threadId,
           kind: 'send',
           // Текст плану - Markdown працівника → HTML Telegram, як deliver.
           parts: renderMdParts(text),
@@ -594,7 +607,13 @@ export class DayPlanChain extends WorkflowEntrypoint {
   async run(event, step) {
     const env = /** @type {Env} */ (this.env);
     const params = /** @type {{ chainId: string, date: string }} */ (event.payload);
-    const io = productionIo(env, params.chainId, params.date);
+    const saved = await readChainState(env, params.chainId);
+    const target = saved?.state?.chat_id
+      ? { chatId: saved.state.chat_id, threadId: saved.state.thread_id ?? null }
+      : saved
+        ? { chatId: env.TELEGRAM_CHAT_ID ?? null, threadId: env.TOPIC_ASSISTANT ?? null }
+        : address(env);
+    const io = productionIo(env, params.chainId, params.date, target);
     try {
       return await runDayPlanChain(env, params, step, io);
     } catch (/** @type {any} */ e) {

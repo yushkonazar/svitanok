@@ -15,6 +15,7 @@ import { isQuietMinute } from '../../settings-core.mjs';
 import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import { formatReminderFired, buildSnoozeRow } from '../../reminders-core.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
+import { assistantHomeTarget } from '../tg/home.mjs';
 import { dueReminders, claimReminderSent, releaseSentClaim, handOffRecurrence } from './store.mjs';
 import { nextOccurrence, parseRrule } from './recurrence.mjs';
 
@@ -25,7 +26,8 @@ import { nextOccurrence, parseRrule } from './recurrence.mjs';
  * @param {number} [nowMs]
  */
 export async function deliverDueReminders(env, nowMs = Date.now()) {
-  if (!env.DB || !env.TELEGRAM_CHAT_ID) return { sent: 0 };
+  const home = assistantHomeTarget(env);
+  if (!env.DB || !home) return { sent: 0 };
 
   const settings = await loadSettings(env);
   if (isQuietMinute(settings, kyivMinuteOfDay(new Date(nowMs)))) return { sent: 0, quiet: true };
@@ -41,8 +43,8 @@ export async function deliverDueReminders(env, nowMs = Date.now()) {
     if (!(await claimReminderSent(env, r.id))) continue;
 
     // Адреса створення (B12); без неї - фолбек, як у кроні.
-    const chatId = r.chatId ?? env.TELEGRAM_CHAT_ID;
-    const threadId = r.chatId != null ? r.threadId : (env.TOPIC_ASSISTANT ?? null);
+    const chatId = r.chatId ?? home.chatId;
+    const threadId = r.chatId != null ? r.threadId : home.threadId;
     try {
       await enqueueOutbox(
         env,

@@ -13,6 +13,7 @@ import { parseCommand } from '../tg-core.mjs';
 import { recordTrackedMessage, updateState } from '../kv-store.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
+import { assistantHomeTarget } from './tg/home.mjs';
 import {
   registryBegin,
   registryFinish,
@@ -3374,12 +3375,14 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   ]);
   const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
   const modelReady = brain.modelReadiness?.state === 'ready';
+  const home = assistantHomeTarget(env);
   const alive =
     brain.state === 'ok' &&
     modelReady &&
     instructionsReady &&
     backup.healthy &&
     briefing.healthy &&
+    home != null &&
     env.ASSISTANT_V2 === 'on';
   const lines = [
     alive ? '✅ Усе живе.' : '⚠️ Щось не так - подробиці нижче.',
@@ -3394,6 +3397,13 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
       ? 'Фокус: вимкнено.'
       : `Фокус: 🎯 до ${formatFocusUntil(focus)} · некритичні авто-повідомлення призупинено.`,
     `Режим асистента: ${env.ASSISTANT_V2}`,
+    env.ASSISTANT_HOME === 'dm'
+      ? home
+        ? 'Доставка: ✅ приватний чат.'
+        : 'Доставка: ❌ не задано Telegram ID власника.'
+      : home
+        ? 'Доставка: ✅ супергрупа.'
+        : 'Доставка: ❌ чат не налаштовано.',
   ];
   if (where.chatId != null) {
     lines.push(`Чат: ${where.chatId}${where.threadId != null ? ` · тема ${where.threadId}` : ''}`);
@@ -3724,8 +3734,15 @@ async function instructionsStatusLine(env) {
  *  @param {Env} env @param {string} threadKey @param {number | null} [chatId]
  *  @returns {ThreadTarget} */
 export function parsedForThread(env, threadKey, chatId = null) {
+  const home = assistantHomeTarget(env);
   return {
-    chatId: chatId ?? (env.TELEGRAM_CHAT_ID ? Number(env.TELEGRAM_CHAT_ID) : null),
+    chatId:
+      chatId ??
+      (threadKey === THREAD_DM && home && home.threadId == null
+        ? home.chatId
+        : env.TELEGRAM_CHAT_ID
+          ? Number(env.TELEGRAM_CHAT_ID)
+          : null),
     threadId: threadKey === THREAD_DM ? null : threadKey,
   };
 }

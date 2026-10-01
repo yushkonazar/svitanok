@@ -7,8 +7,48 @@ function db(env) {
   return env.DB;
 }
 
+/** Model output is data, not the state machine. Keep legacy text readable while
+ * accepting an explicit contract for new tutor instructions. @param {string} text */
+export function structuredTutorResult(text) {
+  const source = String(text ?? '').trim();
+  if (!source.startsWith('{') || source.length > 8_000) return null;
+  try {
+    const value = JSON.parse(source);
+    if (!value || !['question', 'review', 'hint', 'explanation'].includes(value.kind)) return null;
+    const topic = typeof value.topic === 'string' ? value.topic.trim() : '';
+    const content = typeof value.text === 'string' ? value.text.trim() : '';
+    if (
+      !content ||
+      content.length > 3_500 ||
+      (value.kind === 'question' && (!topic || topic.length > 100))
+    )
+      return null;
+    return { kind: value.kind, topic, text: content };
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} text */
+export function renderTutorWorkerText(text) {
+  const result = structuredTutorResult(text);
+  if (!result)
+    return String(text ?? '')
+      .trim()
+      .startsWith('{')
+      ? 'Не вдалося підготувати навчальну відповідь. Спробуй ще раз.'
+      : String(text ?? '');
+  return `${result.kind === 'hint' ? '💡' : '🎓'}${result.topic ? ` ${result.topic}\n` : ' '}${result.text}`;
+}
+
 /** @param {string} text */
 export function tutorQuestion(text) {
+  const structured = structuredTutorResult(text);
+  if (structured) {
+    return structured.kind === 'question'
+      ? { topic: structured.topic, question: renderTutorWorkerText(text) }
+      : null;
+  }
   const source = String(text ?? '').trim();
   const first = source.match(/^🎓\s*([^\n]{1,100})\n/u);
   if (!first || !/Можеш відповісти або попросити підказку\.?\s*$/iu.test(source)) return null;
@@ -112,13 +152,17 @@ export async function saveTutorWorkerResult(env, input) {
     // A hint requested just before the answer may finish first. Only the
     // tutor's review format may close the answer; a late hint must not become
     // a false review with difficulty buttons.
-    if (!/(?:^|\n)(?:Є в рішенні:|Потрібно уточнити:|Один робочий варіант:)/u.test(input.text))
+    const structured = structuredTutorResult(input.text);
+    if (
+      structured?.kind !== 'review' &&
+      !/(?:^|\n)(?:Є в рішенні:|Потрібно уточнити:|Один робочий варіант:)/u.test(input.text)
+    )
       return null;
     await db(env)
       .prepare(
         "UPDATE learning_sessions SET review_text = ?, status = 'reviewed', updated_at = ? WHERE id = ? AND status = 'answer_submitted'",
       )
-      .bind(input.text.slice(0, 7_500), now, active.id)
+      .bind(renderTutorWorkerText(input.text).slice(0, 7_500), now, active.id)
       .run();
     return readTutorSession(env, active.id);
   }
