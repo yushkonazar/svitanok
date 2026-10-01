@@ -21,7 +21,7 @@ export function assistantHomeTarget(env, kind = 'assistant') {
   if (!Number.isSafeInteger(id) || id === 0) return null;
   const rawThread =
     kind === 'system'
-      ? (env.TOPIC_SYSTEM ?? null)
+      ? env.TOPIC_SYSTEM || env.TOPIC_BRIEFING || null
       : kind === 'briefing'
         ? (env.TOPIC_BRIEFING ?? null)
         : (env.TOPIC_ASSISTANT ?? null);

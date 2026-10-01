@@ -45,6 +45,19 @@ jobs:
       send: ${{ steps.g.outputs.send }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: перевірити адресу Assistant Home
+        env:
+          ASSISTANT_HOME: ${{ vars.ASSISTANT_HOME || 'group' }}
+          TELEGRAM_OWNER_USER_ID: ${{ secrets.TELEGRAM_OWNER_USER_ID }}
+        run: |
+          if [[ "${ASSISTANT_HOME}" != "group" && "${ASSISTANT_HOME}" != "dm" ]]; then
+            echo '::error::ASSISTANT_HOME має бути group або dm'
+            exit 1
+          fi
+          if [[ "${ASSISTANT_HOME}" == "dm" && ! "${TELEGRAM_OWNER_USER_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::ASSISTANT_HOME=dm потребує числового GitHub Actions secret TELEGRAM_OWNER_USER_ID'
+            exit 1
+          fi
       # Стан — із KV (ключ `state`), не з git-гілки. guard.mjs читає STATE_FILE;
       # якщо ключа нема (404) або збій — файл із JSON-помилкою/{} -> lastSentDate
       # null -> можливий дубль (прийнятно, at-least-once).

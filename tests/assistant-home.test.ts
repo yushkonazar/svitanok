@@ -37,6 +37,10 @@ describe('assistant home address', () => {
     expect(assistantHomeTarget(group)).toEqual({ chatId: -100999, threadId: 6, threadKey: '6' });
     expect(assistantHomeTarget(group, 'system')?.threadId).toBe(9);
     expect(
+      assistantHomeTarget(workerEnv({ TELEGRAM_CHAT_ID: '-100999', TOPIC_BRIEFING: '7' }), 'system')
+        ?.threadId,
+    ).toBe(7);
+    expect(
       assistantHomeTarget(workerEnv({ ASSISTANT_HOME: 'dm', TELEGRAM_CHAT_ID: '-100999' })),
     ).toBeNull();
   });

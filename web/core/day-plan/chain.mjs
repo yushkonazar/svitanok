@@ -20,7 +20,7 @@ import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
-import { setChainState, waitOrNull, readChainState } from '../chains/state.mjs';
+import { setChainState, waitOrNull, readChainState, chainTarget } from '../chains/state.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { calendarizeBlocks } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
@@ -550,6 +550,7 @@ export function startDayPlannerRun(env, req, nowMs) {
  * Доставка - enqueue + best-effort drain (як у підказках/експорті): збій
  * драйну лишає повідомлення в outbox сторожу `outbox-drain`, але в лог іде.
  * @param {Env} env @param {string} chainId @param {string} date
+ * @param {{ chatId: string | number | null, threadId: string | number | null }} [target]
  */
 export function productionIo(env, chainId, date, target = address(env)) {
   return /** @type {ChainIo} */ ({
@@ -608,11 +609,7 @@ export class DayPlanChain extends WorkflowEntrypoint {
     const env = /** @type {Env} */ (this.env);
     const params = /** @type {{ chainId: string, date: string }} */ (event.payload);
     const saved = await readChainState(env, params.chainId);
-    const target = saved?.state?.chat_id
-      ? { chatId: saved.state.chat_id, threadId: saved.state.thread_id ?? null }
-      : saved
-        ? { chatId: env.TELEGRAM_CHAT_ID ?? null, threadId: env.TOPIC_ASSISTANT ?? null }
-        : address(env);
+    const target = saved ? chainTarget(env, saved.state ?? {}) : address(env);
     const io = productionIo(env, params.chainId, params.date, target);
     try {
       return await runDayPlanChain(env, params, step, io);
