@@ -468,7 +468,7 @@ describe('чеклісти з D1', () => {
     });
     expect(full.text).toContain('…і ще 2 пунктів у цьому блоці.');
     expect(
-      full.buttons.flat().filter((b) => b.callback_data.startsWith('c:c1:dt30_')),
+      full.buttons.flat().filter((b) => b.callback_data?.startsWith('c:c1:dt30_')),
     ).toHaveLength(10);
   });
 

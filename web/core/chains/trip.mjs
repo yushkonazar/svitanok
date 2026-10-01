@@ -16,6 +16,7 @@ import { kyivDateKey, kyivClock } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivMs } from '../day-plan/store.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
+import { buildCallbackActionCardRows } from '../tg/action-card.mjs';
 import {
   Cancelled,
   chainTarget,
@@ -512,12 +513,12 @@ export async function runTripChain(env, params, step, io) {
       await step.do(`${rk}-leave-send`, () =>
         io.send(
           `🚗 Виїзд за ~2 год: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Дорожній чекліст — наступним повідомленням.`,
-          [
-            [
+          buildCallbackActionCardRows({
+            actions: [
               { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
               { text: '✖ Скасувати', callback_data: `c:${chainId}:cancel` },
             ],
-          ],
+          }),
         ),
       );
       const roadDone = await step.do(`${rk}-road-done`, () => io.readDone());
