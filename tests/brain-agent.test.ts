@@ -359,6 +359,18 @@ describe('makeRunner: барʼєри', () => {
     expect(contextualQuickReplyButtons('Яка тривалість події?', true)).toEqual([]);
   });
 
+  it('дає два варіанти часу в питанні про план і залишає «Інше»', () => {
+    expect(contextualQuickReplyButtons('Роботу планувати до 17:00 чи до 19:00?')).toEqual([
+      [
+        { text: '🕒 17:00', callback_data: 'm:qh:1700' },
+        { text: '🕒 19:00', callback_data: 'm:qh:1900' },
+      ],
+      [{ text: '✏️ Інше', callback_data: 'm:qh:custom' }],
+    ]);
+    expect(contextualQuickReplyButtons('Додати 17 чи 19 сторінок?')).toEqual([]);
+    expect(contextualQuickReplyButtons('Роботу планувати до 27:00 чи до 19:00?')).toEqual([]);
+  });
+
   it('запит пошуку лишається в телеметрії - інакше не зрозуміти, ЧОМУ не знайшлось', () => {
     expect(searchNote('mail.search', { q: 'Steam' })).toBe('q=Steam');
     expect(searchNote('mail.search', {})).toBe('q=(немає)');

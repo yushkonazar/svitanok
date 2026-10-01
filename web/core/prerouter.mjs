@@ -11,6 +11,7 @@
 import { tgCall } from '../telegram-client.mjs';
 import { parseCommand } from '../tg-core.mjs';
 import { recordTrackedMessage, updateState } from '../kv-store.mjs';
+import { rememberAssistantQuestion } from '../assistant-memory.mjs';
 import { isPrimaryOwner } from '../auth-core.mjs';
 import { enqueueOutbox, drainOutbox } from './tg/outbox.mjs';
 import { assistantHomeTarget } from './tg/home.mjs';
@@ -1689,53 +1690,87 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
 /**
  * Відповіді на передбачуване питання мозку.
  * @param {string} data
- * @returns {{ text: string | null, label: string } | null}
+ * @returns {{ text: string | null, label: string, kind: 'duration' | 'clock' } | null}
  */
 export function parseQuickReplyCallback(data) {
   const choice = String(data).match(/^m:q:(30|60|90|custom)$/)?.[1];
-  if (!choice) return null;
-  if (choice === '30') return { text: '30 хвилин', label: '✅ 30 хв' };
-  if (choice === '60') return { text: '1 година', label: '✅ 1 год' };
-  if (choice === '90') return { text: '1 година 30 хвилин', label: '✅ 1,5 год' };
-  return { text: null, label: '✅ Інше' };
+  if (choice === '30') return { text: '30 хвилин', label: '✅ 30 хв', kind: 'duration' };
+  if (choice === '60') return { text: '1 година', label: '✅ 1 год', kind: 'duration' };
+  if (choice === '90') return { text: '1 година 30 хвилин', label: '✅ 1,5 год', kind: 'duration' };
+  if (choice === 'custom') return { text: null, label: '✅ Інше', kind: 'duration' };
+  const clock = String(data).match(/^m:qh:([0-2]\d[0-5]\d|custom)$/)?.[1];
+  if (!clock) return null;
+  if (clock === 'custom') return { text: null, label: '✅ Інше', kind: 'clock' };
+  if (Number(clock.slice(0, 2)) > 23) return null;
+  const text = `${clock.slice(0, 2)}:${clock.slice(2)}`;
+  return { text, label: `✅ ${text}`, kind: 'clock' };
 }
 
 /**
- * Вибір тривалості завершує саме те питання, в якому натиснули кнопку. У
+ * Швидкий вибір завершує саме те питання, в якому натиснули кнопку. У
  * продовження передаємо і текст того питання: голе «1 година» не має права
  * губити назву події або перетворюватись на окреме нагадування.
  * @param {Env} env
  * @param {{ chatId?: number | null, messageId?: number | null, data?: unknown,
  *   threadId?: number | string | null, replyMarkup?: unknown, messageText?: string | null }} parsed
- * @param {{ text: string | null, label: string }} choice
+ * @param {{ text: string | null, label: string, kind: 'duration' | 'clock' }} choice
  * @param {number} nowMs
  * @param {((work: () => Promise<void>) => void) | null} defer
  */
 async function quickReplyToast(env, parsed, choice, nowMs, defer) {
   const target = { chatId: parsed.chatId ?? null, threadId: parsed.threadId ?? null };
   if (target.chatId == null) return 'Невідомий чат.';
-  const eventTitle = eventTitleFromDurationQuestion(parsed.messageText);
+  // A generic m:q:* payload is not enough to identify a question. Telegram
+  // includes the original message in the callback, so require the same kind
+  // of duration question that created these buttons and claim that message
+  // atomically. Two fast taps (or a delayed old callback) must not start two
+  // calendar runs with different durations.
+  const validQuestion =
+    choice.kind === 'duration'
+      ? isCalendarDurationQuestion(parsed.messageText)
+      : planningTimeChoices(parsed.messageText)?.includes(choice.text ?? 'custom');
+  if (parsed.messageId == null || !validQuestion) {
+    return 'Це уточнення вже неактуальне. Постав питання ще раз.';
+  }
+  const claimId = `quick:${target.chatId}:${parsed.messageId}`;
+  try {
+    if (!(await claimWorkerCardAction(env, claimId, 'duration-choice', nowMs))) {
+      return 'Варіант для цього питання вже обрано.';
+    }
+  } catch (/** @type {any} */ e) {
+    console.error('prerouter: вибір тривалості не зареєстровано', e?.message);
+    return 'Не вдалося обрати тривалість. Спробуй ще раз.';
+  }
+  const eventTitle =
+    choice.kind === 'duration' ? eventTitleFromDurationQuestion(parsed.messageText) : null;
   if (choice.text == null) {
-    const text = eventTitle
-      ? `✏️ Для «${eventTitle}» вкажи іншу тривалість текстом: наприклад, «45 хвилин».`
-      : '✏️ Вкажи іншу тривалість текстом: наприклад, «45 хвилин» або «2 години».';
+    const text =
+      choice.kind === 'clock'
+        ? `✏️ ${String(parsed.messageText).slice(0, 280)}\nНапиши свій час, наприклад «18:00».`
+        : eventTitle
+          ? `✏️ Для «${eventTitle}» вкажи іншу тривалість текстом: наприклад, «45 хвилин».`
+          : '✏️ Вкажи іншу тривалість текстом: наприклад, «45 хвилин» або «2 години».';
     if (!(await replaceCallbackMessage(env, parsed, text))) await reply(env, target, text, nowMs);
+    await rememberAssistantQuestion(env, target, text);
     return 'Напиши свій варіант';
   }
-  const duration = /** @type {string} */ (choice.text);
-  const selectedText = eventTitle
-    ? `🕐 Для «${eventTitle}» обрано: ${duration}.`
-    : `🕐 Обрано тривалість: ${duration}.`;
+  const selected = /** @type {string} */ (choice.text);
+  const selectedText =
+    choice.kind === 'clock'
+      ? `🕒 Обрано час: ${selected}.`
+      : eventTitle
+        ? `🕐 Для «${eventTitle}» обрано: ${selected}.`
+        : `🕐 Обрано тривалість: ${selected}.`;
   const resultText = `${selectedText}\nПродовжую той самий сценарій.`;
-  const continuationText = durationContinuation(parsed.messageText, duration);
+  const continuationText = quickReplyContinuation(parsed.messageText, selected, choice.kind);
   const threadKey = target.threadId == null ? THREAD_DM : String(target.threadId);
   // Видимий результат потрібен ДО deferred роботи: тост швидко зникає, а
   // Telegram може відкласти waitUntil на кілька секунд.
-  if (parsed.messageId != null) await replaceCallbackMessage(env, parsed, selectedText);
+  const edited = await replaceCallbackMessage(env, parsed, selectedText);
   const work = () => {
     // Коли Telegram віддав id питання, це повідомлення стає і коротким
     // статусом, і фінальною відповіддю: тап не плодить окремий «Обрано».
-    if (parsed.messageId != null) {
+    if (edited) {
       return startOrQueueThreadText(
         env,
         target,
@@ -1747,20 +1782,60 @@ async function quickReplyToast(env, parsed, choice, nowMs, defer) {
         resultText,
       ).then(() => undefined);
     }
-    return reply(env, target, resultText, nowMs)
-      .then(() => startOrQueueThreadText(env, target, threadKey, continuationText, 'chat', nowMs))
-      .then(() => undefined);
+    // If Telegram refused to edit the old card, the new run creates one fresh
+    // status card and later replaces it with the answer. Do not add a second
+    // standalone "selected" message that would remain in the chat.
+    return startOrQueueThreadText(env, target, threadKey, continuationText, 'chat', nowMs).then(
+      () => undefined,
+    );
+  };
+  const launch = async () => {
+    try {
+      await work();
+    } catch (/** @type {any} */ e) {
+      await releaseWorkerCardAction(env, claimId, 'duration-choice').catch(() => {});
+      console.error('prerouter: quick reply не стартував', e?.message);
+      const failure = '⚠️ Не вдалося продовжити. Спробуй ще раз.';
+      if (!(await replaceCallbackMessage(env, parsed, failure)))
+        await reply(env, target, failure, nowMs);
+    }
   };
   if (defer) {
-    defer(() =>
-      work().catch((/** @type {any} */ e) =>
-        console.error('prerouter: quick reply не стартував', e?.message),
-      ),
-    );
+    defer(launch);
   } else {
-    await work();
+    await launch();
   }
   return `Обрано: ${choice.label.replace(/^✅\s*/, '')}`;
+}
+
+/** @param {unknown} messageText */
+function isCalendarDurationQuestion(messageText) {
+  const normalized = String(messageText ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  return (
+    (/(?:на скільки|скільки) часу/.test(normalized) ||
+      /(?:яка|вкажи) тривалість/.test(normalized)) &&
+    /(?:поді[яї]|зустріч|запрошенн|календар|запланув)/.test(normalized)
+  );
+}
+
+/** @param {unknown} messageText @returns {string[] | null} */
+function planningTimeChoices(messageText) {
+  const normalized = String(messageText ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!/(?:робот|план|поді[яї]|зустріч|закінч|почат)/u.test(normalized)) return null;
+  const match = normalized.match(
+    /(?:^|\s)(?:о|до|з|на)?\s*(\d{1,2})(?::([0-5]\d))?\s*(?:чи|або)\s*(?:о|до|з|на)?\s*(\d{1,2})(?::([0-5]\d))?(?=$|[?.!,\s])/u,
+  );
+  if (!match) return null;
+  const firstHour = Number(match[1]);
+  const secondHour = Number(match[3]);
+  if (firstHour > 23 || secondHour > 23) return null;
+  const first = `${String(firstHour).padStart(2, '0')}:${match[2] ?? '00'}`;
+  const second = `${String(secondHour).padStart(2, '0')}:${match[4] ?? '00'}`;
+  return first === second ? null : [first, second, 'custom'];
 }
 
 /** Назва події з нашого попереднього короткого питання або null.
@@ -1782,18 +1857,21 @@ function eventTitleFromDurationQuestion(messageText) {
 /**
  * Внутрішнє продовження того ж діалогу. Текст питання належить боту, а не
  * зовнішньому джерелу; його все одно стисло обмежуємо, щоб callback не міг
- * роздути наступний prompt. @param {unknown} messageText @param {string} duration
+ * роздути наступний prompt. @param {unknown} messageText @param {string} selected
+ * @param {string} kind
  */
-function durationContinuation(messageText, duration) {
+function quickReplyContinuation(messageText, selected, kind) {
   const question =
     typeof messageText === 'string' && messageText.trim()
       ? messageText.replace(SANITIZE_RE, ' ').trim().slice(0, 700)
-      : 'Ти щойно уточнив тривалість календарної події.';
+      : 'Ти щойно поставив коротке уточнення.';
   return [
     'Власник обрав варіант кнопкою у твоєму попередньому питанні.',
     `Твоє питання: ${question}`,
-    `Обрана тривалість: ${duration}.`,
-    'Продовж той самий сценарій для цієї події. Не проси повторно назву події чи тривалість і не створюй нагадування замість календарної події.',
+    kind === 'clock' ? `Обраний час: ${selected}.` : `Обрана тривалість: ${selected}.`,
+    kind === 'clock'
+      ? 'Продовж той самий план або подію. Не питай повторно, що планувати: це відповідь на твоє питання, а не нове прохання поставити нагадування.'
+      : 'Продовж той самий сценарій для цієї події. Не проси повторно назву події чи тривалість і не створюй нагадування замість календарної події.',
   ].join('\n');
 }
 

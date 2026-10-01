@@ -1398,7 +1398,11 @@ describe('ревʼю PR-3: класифікатор, стоп-вікно, тра
 
 describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на міграціях)', () => {
   const cbEnv = () => {
-    const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql']);
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0022_worker_card_actions.sql',
+    ]);
     const { tg } = makeFetchStub();
     const env = makeEnv(makeRegistryStub(), d1.stub);
     return { env, db: d1.db, tg };
@@ -1426,6 +1430,41 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       message_id: 42,
       text: '🕐 Для «Тест з гостем» обрано: 1 година.',
     });
+    expect(
+      await handleBrainCallback(
+        env,
+        {
+          data: 'm:q:30',
+          chatId: 555,
+          messageId: 42,
+          threadId: 99,
+          messageText: 'На скільки часу запланувати «Тест з гостем» завтра о 16:00?',
+        },
+        NOW + 1,
+        (work) => deferred.push(work),
+      ),
+    ).toBe('Варіант для цього питання вже обрано.');
+    expect(deferred).toHaveLength(1);
+  });
+
+  it('m:q відхиляє застаріле повідомлення, яке не є питанням про подію', async () => {
+    const { env } = cbEnv();
+    const deferred: (() => Promise<void>)[] = [];
+    expect(
+      await handleBrainCallback(
+        env,
+        {
+          data: 'm:q:60',
+          chatId: 555,
+          messageId: 42,
+          threadId: 99,
+          messageText: '🕐 Для «Тест з гостем» обрано: 1 година.',
+        },
+        NOW,
+        (work) => deferred.push(work),
+      ),
+    ).toContain('неактуальне');
+    expect(deferred).toHaveLength(0);
   });
 
   it('m:q:custom лишає явний запит на свою тривалість і не стартує діалог навмання', async () => {
@@ -1434,15 +1473,77 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
     expect(
       await handleBrainCallback(
         env,
-        { data: 'm:q:custom', chatId: 555, messageId: 42, threadId: 99 },
+        {
+          data: 'm:q:custom',
+          chatId: 555,
+          messageId: 42,
+          threadId: 99,
+          messageText: 'Яка тривалість події «Тест з гостем»?',
+        },
         NOW,
         (work) => deferred.push(work),
       ),
     ).toBe('Напиши свій варіант');
     expect(deferred).toHaveLength(0);
     expect(tg.find((c) => c.method === 'editMessageText')?.body.text).toContain(
-      'Вкажи іншу тривалість',
+      'Для «Тест з гостем» вкажи іншу тривалість',
     );
+  });
+
+  it('m:qh вибирає час для поточного плану один раз, а не створює нове нагадування', async () => {
+    const { env, tg } = cbEnv();
+    const deferred: (() => Promise<void>)[] = [];
+    const question = 'Роботу планувати до 17:00 чи до 19:00?';
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:qh:1700', chatId: 555, messageId: 44, threadId: 99, messageText: question },
+        NOW,
+        (work) => deferred.push(work),
+      ),
+    ).toBe('Обрано: 17:00');
+    expect(tg.find((c) => c.method === 'editMessageText')?.body.text).toBe('🕒 Обрано час: 17:00.');
+    expect(deferred).toHaveLength(1);
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:qh:1900', chatId: 555, messageId: 44, threadId: 99, messageText: question },
+        NOW + 1,
+        (work) => deferred.push(work),
+      ),
+    ).toBe('Варіант для цього питання вже обрано.');
+    expect(deferred).toHaveLength(1);
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: 'm:qh:1800', chatId: 555, messageId: 45, threadId: 99, messageText: question },
+        NOW + 1,
+      ),
+    ).toContain('неактуальне');
+  });
+
+  it('m:qh:custom залишає початкове питання і просить власний час', async () => {
+    const { env, tg } = cbEnv();
+    const deferred: (() => Promise<void>)[] = [];
+    expect(
+      await handleBrainCallback(
+        env,
+        {
+          data: 'm:qh:custom',
+          chatId: 555,
+          messageId: 46,
+          threadId: 99,
+          messageText: 'Роботу планувати до 17:00 чи до 19:00?',
+        },
+        NOW,
+        (work) => deferred.push(work),
+      ),
+    ).toBe('Напиши свій варіант');
+    expect(tg.find((c) => c.method === 'editMessageText')?.body.text).toContain(
+      'Роботу планувати до 17:00 чи до 19:00?\nНапиши свій час',
+    );
+    expect(deferred).toHaveLength(0);
+    expect(classifyRoute('18:00')).toBe('chat');
   });
   const seedProposal = (
     db: InstanceType<typeof import('node:sqlite').DatabaseSync>,
