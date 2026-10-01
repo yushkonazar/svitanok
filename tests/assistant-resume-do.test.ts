@@ -66,6 +66,17 @@ describe('AssistantResumeDO — atomic short-lived continuation', () => {
     expect(kv.has(legacyKey)).toBe(false);
   });
 
+  it('restore після відмови старту не затирає новіше уточнення', async () => {
+    const { env, resume } = setup();
+    const first = { note: 'старе уточнення', atMs: 2_000 };
+    const newer = { note: 'нове уточнення', atMs: 3_000 };
+    await assistantResumeSave(env, CHAT, null, newer, 3_000);
+    await expect(resume.restoreIfEmpty(slot, first, 4_000)).resolves.toBe(false);
+    await expect(assistantResumeTake(env, CHAT, null, null, 4_000)).resolves.toMatchObject({
+      resume: newer,
+    });
+  });
+
   it('T2 clear блокує відновлення зі старого KV mirror', async () => {
     const { env, kv } = setup();
     const nowMs = Date.now();

@@ -76,7 +76,15 @@ export async function transcribeVoice(env, voice, nowMs = Date.now()) {
       limit: /** @type {number} */ (QUOTA_LIMITS.deepgram_min),
       nowMs,
     }).catch((/** @type {any} */ e) => console.error('voice: квота deepgram_min', e?.message));
-    return { ok: true, text: clipVoiceText(dg.text), fallback: false };
+    if (dg.text.trim()) return { ok: true, text: clipVoiceText(dg.text), fallback: false };
+    // A successful empty transcript is still billed, but it should not suppress
+    // the independent fallback: short/noisy voice notes sometimes decode better
+    // in Whisper. If the fallback is unavailable, preserve the honest empty result.
+    const silentFallback = await whisperTranscribe(env, audio);
+    if (silentFallback.ok && silentFallback.text.trim()) {
+      return { ok: true, text: clipVoiceText(silentFallback.text), fallback: true };
+    }
+    return { ok: true, text: '', fallback: false };
   }
   // Битий ключ - НЕ збій сервісу: резерв тут приховав би конфіг назавжди.
   if (dg.error === 'auth') return { ok: false, error: 'misconfigured' };

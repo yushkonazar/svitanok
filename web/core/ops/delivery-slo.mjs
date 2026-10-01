@@ -23,7 +23,11 @@ function db(env) {
  */
 export async function readDeliverySlo(env, nowMs = Date.now()) {
   const now = new Date(nowMs);
-  const [reminders, state] = await Promise.all([readReminderSlo(env, nowMs), loadState(env)]);
+  const [reminders, outbox, state] = await Promise.all([
+    readReminderSlo(env, nowMs),
+    readOutboxSlo(env, nowMs),
+    loadState(env),
+  ]);
   const today = kyivDateKey(now);
   const hour = kyivHour(now);
   const sentToday = state.lastSentDate === today;
@@ -37,7 +41,37 @@ export async function readDeliverySlo(env, nowMs = Date.now()) {
         ? 'pending_window'
         : 'breached',
   };
-  return { reminders, briefing };
+  return { reminders, outbox, briefing };
+}
+
+/** Telegram delivery backlog; payloads and recipient identifiers are never read. */
+/** @param {Env} env @param {number} nowMs */
+async function readOutboxSlo(env, nowMs) {
+  const stuckBefore = new Date(nowMs - 2 * 60_000).toISOString();
+  const row =
+    /** @type {{ pending: number, failed: number, stuck: number, oldest_pending_at: string|null } | null} */ (
+      await db(env)
+        .prepare(
+          `SELECT
+           SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN status = 'sending' AND next_at < ? THEN 1 ELSE 0 END) AS stuck,
+           MIN(CASE WHEN status = 'pending' THEN next_at END) AS oldest_pending_at
+         FROM outbox`,
+        )
+        .bind(stuckBefore)
+        .first()
+    );
+  const pending = Number(row?.pending ?? 0);
+  const failed = Number(row?.failed ?? 0);
+  const stuck = Number(row?.stuck ?? 0);
+  return {
+    pending,
+    failed,
+    stuck,
+    oldest_pending_at: typeof row?.oldest_pending_at === 'string' ? row.oldest_pending_at : null,
+    status: failed || stuck ? 'attention' : pending ? 'pending' : 'ok',
+  };
 }
 
 /** @param {Env} env @param {number} nowMs */

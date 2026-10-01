@@ -93,4 +93,48 @@ describe('run dashboard', () => {
     });
     expect(JSON.stringify(dashboard)).not.toContain('must-not-parse');
   });
+
+  it('показує 30-денні метрики працівників та оцінки без текстів і thread id', async () => {
+    const d1 = d1FromSqlite([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0003_telemetry.sql',
+      '0007_instructions_plans.sql',
+    ]);
+    d1.db
+      .prepare(
+        `INSERT INTO runs (id, trigger, profile, started_at) VALUES ('r-worker', 'chat', 'chat', ?)`,
+      )
+      .run('2026-09-23T08:00:00.000Z');
+    d1.db
+      .prepare(
+        `INSERT INTO run_steps (id, run_id, n, at, kind, name, ms, ok, note)
+         VALUES ('w-1', 'r-worker', 1, ?, 'model', 'worker:planner:openai:gpt-6-sol', 800, 1, 'private output')`,
+      )
+      .run('2026-09-23T08:00:01.000Z');
+    d1.db
+      .prepare(
+        `INSERT INTO reports (id, kind, text_md, created_at) VALUES ('rep-1', 'worker:planner', 'private report', ?)`,
+      )
+      .run('2026-09-23T08:00:00.000Z');
+    d1.db
+      .prepare(
+        `INSERT INTO worker_card_actions (report_id, action_key, created_at) VALUES ('rep-1', 'quality:good', ?)`,
+      )
+      .run('2026-09-23T08:00:02.000Z');
+
+    const dashboard = await readRunDashboard(workerEnv({ DB: d1.stub }));
+    expect(dashboard.worker_quality).toEqual([
+      expect.objectContaining({
+        worker: 'planner',
+        sample_size: 1,
+        succeeded: 1,
+        failed: 0,
+        success_rate_pct: 100,
+        avg_latency_ms: 800,
+        feedback: { good: 1, bad: 0 },
+      }),
+    ]);
+    expect(JSON.stringify(dashboard.worker_quality)).not.toContain('private');
+  });
 });

@@ -29,6 +29,7 @@ type Call = { url: string; body: Record<string, unknown> };
 let kv: Map<string, string>;
 let tg: Call[];
 let agentRuns: Call[];
+let agentStartStatus: number;
 
 function env(over: Record<string, unknown> = {}) {
   return workerEnv({
@@ -116,6 +117,7 @@ beforeEach(() => {
   kv = new Map();
   tg = [];
   agentRuns = [];
+  agentStartStatus = 202;
   let nextMsgId = 1000;
   vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
     const url = String(input);
@@ -129,7 +131,9 @@ beforeEach(() => {
     }
     if (url.endsWith('/agent')) {
       agentRuns.push({ url, body });
-      return new Response(JSON.stringify({ ok: true }), { status: 202 });
+      return new Response(JSON.stringify({ ok: agentStartStatus < 300 }), {
+        status: agentStartStatus,
+      });
     }
     return new Response('{}', { status: 401 }); // Google/решта — недоступні
   });
@@ -195,6 +199,28 @@ describe('ask — Worker питає й лишає слот продовженн�
 });
 
 describe('наступне повідомлення підхоплює слот (U3)', () => {
+  it('команда /new перериває нитку, але не стирає відкрите уточнення', async () => {
+    await agentStep({ action: 'ask', replyText: 'На яку годину?', note: 'подія лишилась' });
+    await sendMessage('/new', 2);
+    expect(resumeSlot()).toMatchObject({ note: 'подія лишилась' });
+
+    await sendMessage('на 15:00', 3);
+    expect(startedTranscript()).toContain('подія лишилась');
+    expect(startedTranscript()).toContain('на 15:00');
+  });
+
+  it('повертає уточнення у слот, якщо хост відхилив продовження', async () => {
+    await agentStep({ action: 'ask', replyText: 'На яку годину?', note: 'подія лишилась' });
+    agentStartStatus = 503;
+    await sendMessage('на 15:00', 2);
+
+    expect(resumeSlot()).toMatchObject({ note: 'подія лишилась' });
+    expect(tg.find((call) => call.url.endsWith('/editMessageText'))?.body.text).toContain(
+      'тимчасово недоступний',
+    );
+    expect(startedTranscript()).toContain('подія лишилась');
+  });
+
   it('нотатка їде в транскрипт нового прогону, слот споживається ОДИН раз', async () => {
     await agentStep({
       action: 'ask',

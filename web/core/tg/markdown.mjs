@@ -115,6 +115,26 @@ export function flattenMarkdownTables(source) {
   return out.join('\n');
 }
 
+/** A parse-mode fallback should remain readable, not expose Markdown syntax. */
+function markdownPlainText(/** @type {string} */ source) {
+  return flattenMarkdownTables(String(source ?? '').replace(/\r\n/g, '\n'))
+    .replace(/```(?:[\w+-]*\n)?([\s\S]*?)```/g, '$1')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)]+)\)/g, '$1 ($2)')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}[-*+]\s+/gm, '• ')
+    .replace(/^\s*&gt;\s?/gm, '')
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/^\s*([-*_])(?:\s*\1){2,}\s*$/gm, '')
+    .replace(/\*\*(.*?)\*\*/gs, '$1')
+    .replace(/__(.*?)__/gs, '$1')
+    .replace(/~~(.*?)~~/gs, '$1')
+    .replace(/(^|[^\p{L}\p{N}])\*([^*\n]+)\*(?![\p{L}\p{N}])/gu, '$1$2')
+    .replace(/(^|[^\p{L}\p{N}])_([^_\n]+)_(?![\p{L}\p{N}])/gu, '$1$2')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /**
  * @param {unknown} md
  * @returns {string} HTML для parse_mode HTML; порожній рядок для порожнього входу
@@ -191,7 +211,8 @@ export function renderMdParts(md) {
   }
   return parts.map((part) => {
     const html = mdToTelegramHtml(part);
-    if (!html || html.length > TG_TEXT_LIMIT) return { text: part };
-    return { text: html, parse_mode: 'HTML', plain_text: part };
+    const plain = markdownPlainText(part);
+    if (!html || html.length > TG_TEXT_LIMIT) return { text: plain };
+    return { text: html, parse_mode: 'HTML', plain_text: plain };
   });
 }

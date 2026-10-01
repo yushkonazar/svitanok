@@ -82,9 +82,9 @@ describe('mdToTelegramHtml', () => {
 });
 
 describe('renderMdParts', () => {
-  it('одна частина: HTML + parse_mode + plain_text оригінал', () => {
+  it('одна частина: HTML + parse_mode + читабельний plain_text для fallback', () => {
     expect(renderMdParts('**a**')).toEqual([
-      { text: '<b>a</b>', parse_mode: 'HTML', plain_text: '**a**' },
+      { text: '<b>a</b>', parse_mode: 'HTML', plain_text: 'a' },
     ]);
   });
 

@@ -401,6 +401,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   collections: [{ cols: ['name'], unique: true }],
   records: [{ cols: ['collection_id', 'created_at'] }],
   reports: [{ cols: ['kind', 'created_at'] }],
+  worker_card_actions: [{ cols: ['report_id'], unique: true }],
   learning_sessions: [{ cols: ['thread_id', 'chat_id', 'status', 'updated_at'] }],
   style_corpus: [{ cols: ['at'] }],
   // Понад 07 §1 (там «-»): пошук історії за імʼям — єдиний спосіб її читати.
@@ -449,7 +450,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('двадцять один файл 0001–0021, нумерація без дірок', () => {
+  it('двадцять чотири файли 0001–0024, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -474,6 +475,7 @@ describe('міграції D1 — файли', () => {
       '0021',
       '0022',
       '0023',
+      '0024',
     ]);
   });
 });

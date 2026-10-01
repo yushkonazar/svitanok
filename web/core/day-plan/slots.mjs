@@ -263,6 +263,12 @@ export function computeSlots(input) {
   let used = 0;
   let deepCount = 0;
   for (const item of ordered) {
+    // «Не знаю» — явный выбор оставить пункт без времени. Не подменяем его
+    // типовой оценкой (которая подходит лишь когда владелец не возражал).
+    if (item.flexible) {
+      flexible.push({ ...item, why: 'тривалість не визначена' });
+      continue;
+    }
     const est = estimateMin(item, bias);
     const predecessor = item.after_item_id ? placed.find((p) => p.id === item.after_item_id) : null;
     if (item.after_item_id && !predecessor) {

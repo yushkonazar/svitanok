@@ -98,8 +98,12 @@ export async function findAwaitingChain(env, threadKey = null) {
   for (const r of results ?? []) {
     const kind = String(r.kind);
     const awaiting = String(r.awaiting);
-    // Ланцюг столика памʼятає тред старту; план дня живе в темі «Асистент».
-    if (threadKey != null && r.thread_id != null && String(r.thread_id) !== threadKey) continue;
+    // Ланцюг памʼятає адресу старту. Старі записи без thread_id належать
+    // темі асистента; вони не мають перехоплювати приватний чат.
+    if (threadKey != null) {
+      if (r.thread_id == null && threadKey === 'dm') continue;
+      if (r.thread_id != null && String(r.thread_id) !== threadKey) continue;
+    }
     if (kind === 'day-plan' && !DAY_PLAN_TEXT_AWAITS.includes(awaiting)) continue;
     if (kind === 'table' && ![...TABLE_TEXT_AWAITS, ...TABLE_BUTTON_AWAITS].includes(awaiting)) {
       continue;

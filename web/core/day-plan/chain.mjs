@@ -76,7 +76,7 @@ function buttons(chainId, pairs) {
 /**
  * Машина станів ланцюга. Повертає підсумок для журналу.
  * @param {Env} env
- * @param {{ chainId: string, date: string }} params
+ * @param {{ chainId: string, date: string, oneShot?: boolean, initialIntent?: string }} params
  * @param {ChainStep} step
  * @param {ChainIo} io
  */
@@ -85,19 +85,31 @@ export async function runDayPlanChain(env, params, step, io) {
   const config = await step.do('config', () => readDayPlanConfig(env));
   const eve = addDaysToDateKey(date, -1);
 
-  // 1. Вечірнє питання (S-P-9) - о intent_at напередодні.
-  await step.sleepUntil('intent-at', kyivMs(eve, config.settings.intent_at) ?? io.now());
-  await step.do('ask-intent', async () => {
-    await setChainState(env, chainId, { status: 'waiting', awaiting: 'intent' });
-    await io.send(
-      `Що завтра (${ddmm(date)})? 1-6 речей текстом або голосом; «нічого особливого» - теж відповідь.`,
-      buttons(chainId, [
-        ['Нічого особливого', 'none'],
-        ['Не питай сьогодні', 'skip'],
-      ]),
-    );
-  });
-  const intent = await waitOrNull(step, 'wait-intent', 'intent', WAIT_INTENT_MS);
+  // 1. Scheduled workflow asks the evening before. A direct /plan or an
+  // explicit free-text day-plan request starts the same workflow immediately.
+  /** @type {{ text?: string, choice?: string } | null} */
+  let intent =
+    typeof params.initialIntent === 'string' && params.initialIntent.trim()
+      ? { text: params.initialIntent.trim() }
+      : null;
+  if (!intent) {
+    if (!params.oneShot)
+      await step.sleepUntil('intent-at', kyivMs(eve, config.settings.intent_at) ?? io.now());
+    await step.do('ask-intent', async () => {
+      await setChainState(env, chainId, { status: 'waiting', awaiting: 'intent' });
+      const question = params.oneShot
+        ? `Що запланувати на ${date === kyivDateKey(new Date(io.now())) ? 'сьогодні' : 'завтра'}, ${ddmm(date)}? Напиши справи, порядок і відомі часи.`
+        : `Що завтра (${ddmm(date)})? 1-6 речей текстом або голосом; «нічого особливого» - теж відповідь.`;
+      await io.send(
+        question,
+        buttons(chainId, [
+          ['Нічого особливого', 'none'],
+          ['Не зараз', 'skip'],
+        ]),
+      );
+    });
+    intent = await waitOrNull(step, 'wait-intent', 'intent', WAIT_INTENT_MS);
+  }
   if (intent?.choice === 'skip') {
     await step.do('skip', async () => {
       await upsertDayPlan(env, date, { status: 'skipped' }, io.now());
@@ -137,9 +149,34 @@ export async function runDayPlanChain(env, params, step, io) {
       ? await waitOrNull(step, 'wait-intent-parsed', 'worker', WAIT_WORKER_MS)
       : null;
     items = await step.do('items', async () => normalizeIntent(parsed?.output, intentText));
+    /** @type {any[]} */
     const questions = Array.isArray(parsed?.output?.questions)
       ? parsed.output.questions.slice(0, 2)
       : [];
+    // Працівник має питати тривалість для глибоких блоків і виїздів. Це
+    // критичне правило дублюємо в ядрі: якщо модель пропустила уточнення,
+    // не дозволяємо типовій оцінці непомітно перетворитися на готовий розклад.
+    const durationAsked = new Set(
+      questions.filter((q) => Number.isInteger(q?.item)).map((q) => q.item),
+    );
+    for (let itemIndex = 0; itemIndex < items.length && questions.length < 2; itemIndex += 1) {
+      const item = items[itemIndex];
+      if (!item) continue;
+      if (
+        item.est_min != null ||
+        item.flexible ||
+        !['deep', 'errand'].includes(item.kind) ||
+        durationAsked.has(itemIndex)
+      )
+        continue;
+      questions.push({
+        item: itemIndex,
+        field: 'duration',
+        q: `Скільки часу закласти на «${item.title}»?`,
+        options: ['30 хв', '1 год', '2 год', 'не знаю'],
+      });
+      durationAsked.add(itemIndex);
+    }
     if (questions.length) {
       for (let qi = 0; qi < questions.length; qi += 1) {
         const q = questions[qi];
@@ -223,8 +260,16 @@ export async function runDayPlanChain(env, params, step, io) {
     step,
     'wait-accept',
     'accept',
-    Math.max(60_000, (kyivMs(date, config.settings.morning_at) ?? io.now()) - io.now()),
+    params.oneShot
+      ? 12 * 60 * 60_000
+      : Math.max(60_000, (kyivMs(date, config.settings.morning_at) ?? io.now()) - io.now()),
   );
+  if (params.oneShot && decision == null) {
+    await step.do('leave-draft', async () => {
+      await setChainState(env, chainId, { status: 'done', awaiting: null });
+    });
+    return { outcome: 'draft-left-for-later', items: items.length };
+  }
   const accepted = await step.do('accept', async () => {
     if (decision?.choice === 'edit') {
       await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
@@ -240,6 +285,12 @@ export async function runDayPlanChain(env, params, step, io) {
   });
   if (accepted.edit) {
     const change = await waitOrNull(step, 'wait-edit', 'answer', WAIT_ANSWER_MS);
+    if (params.oneShot && typeof change?.text !== 'string') {
+      await step.do('edit-timeout-close', async () => {
+        await setChainState(env, chainId, { status: 'done', awaiting: null });
+      });
+      return { outcome: 'draft-left-for-later', items: items.length };
+    }
     const started =
       typeof change?.text === 'string'
         ? await step.do('worker-replan', () =>
@@ -263,6 +314,15 @@ export async function runDayPlanChain(env, params, step, io) {
       }
       await acceptPlan(env, date, io.now(), io.target ?? address(env));
     });
+  }
+
+  // One-off interactive plans end after the owner decides; they must not
+  // continue into the scheduled morning and evening check-ins.
+  if (params.oneShot) {
+    await step.do('finish-one-shot', async () => {
+      await setChainState(env, chainId, { status: 'done', awaiting: null });
+    });
+    return { outcome: 'accepted', items: items.length };
   }
 
   // 4. Ранковий план (S-P-13).
@@ -401,16 +461,19 @@ export function replanChanges(out) {
  * @param {number} [qiDefault]
  */
 export function applyAnswer(items, questions, answer, qiDefault = 0) {
-  if (!answer) return items;
-  const qi = Number.isInteger(answer.item) ? Number(answer.item) : qiDefault;
+  const qi = Number.isInteger(answer?.item) ? Number(answer?.item) : qiDefault;
   const q = questions[qi];
   const target = items[Number(q?.item ?? qi)];
   if (!target) return items;
+  const field = String(q?.field ?? 'duration');
+  if (!answer) {
+    if (field === 'duration') target.flexible = true;
+    return items;
+  }
   const option =
     typeof answer.option === 'number'
       ? String(q?.options?.[answer.option] ?? '')
       : String(answer.text ?? '');
-  const field = String(q?.field ?? 'duration');
   if (field === 'hard_end' || field === 'hard_at' || field === 'not_before') {
     const time = /(?:^|\D)(\d{1,2}:\d{2})(?:\D|$)/.exec(option)?.[1] ?? option.trim();
     if (hhmmToMin(time) != null) target[field] = time;
@@ -492,13 +555,15 @@ export { setChainState };
  * Створити ланцюг на дату: рядок у chains + інстанс Workflow (id = chainId,
  * щоб кнопки й події адресували його без другого ключа).
  * @param {Env} env @param {string} date @param {number} nowMs
+ * @param {{ oneShot?: boolean, initialIntent?: string,
+ *   target?: { chatId: number | string | null, threadId: number | string | null } }} [options]
  */
-export async function startDayPlanChain(env, date, nowMs) {
+export async function startDayPlanChain(env, date, nowMs, options = {}) {
   if (!env.DB) throw new Error('привʼязки DB немає');
   if (!env.DAY_PLAN) throw new Error('привʼязки DAY_PLAN (Workflow) немає');
   const chainId = crypto.randomUUID();
   const iso = new Date(nowMs).toISOString();
-  const home = address(env);
+  const home = options.target ?? address(env);
   if (!home.chatId) throw new Error('чат асистента не налаштовано');
   await env.DB.prepare(
     `INSERT INTO chains (id, kind, workflow_id, state_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', ?, ?)`,
@@ -507,12 +572,26 @@ export async function startDayPlanChain(env, date, nowMs) {
       chainId,
       CHAIN_KIND,
       chainId,
-      JSON.stringify({ date, awaiting: null, chat_id: home.chatId, thread_id: home.threadId }),
+      JSON.stringify({
+        date,
+        awaiting: null,
+        chat_id: home.chatId,
+        thread_id: home.threadId,
+        one_shot: Boolean(options.oneShot),
+      }),
       iso,
       iso,
     )
     .run();
-  await env.DAY_PLAN.create({ id: chainId, params: { chainId, date } });
+  await env.DAY_PLAN.create({
+    id: chainId,
+    params: {
+      chainId,
+      date,
+      ...(options.oneShot ? { oneShot: true } : {}),
+      ...(options.initialIntent ? { initialIntent: options.initialIntent } : {}),
+    },
+  });
   await upsertDayPlan(env, date, { status: 'intent', workflow_id: chainId }, nowMs);
   return chainId;
 }

@@ -31,6 +31,13 @@ import {
   mailItemButtons,
   mailItemFollowup,
   mailNextPageInfo,
+  mailListCard,
+  markMailItemRead,
+  recordWorkerQualityVote,
+  readMailItemIds,
+  placeOptions,
+  placeSearchButtons,
+  placeChoiceButtons,
 } from '../web/core/brain/worker-results.mjs';
 import { isTaintActive } from '../web/core/policy/core.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -287,7 +294,7 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(row).toEqual({ kind: 'worker:copywriter', text_md: 'Привіт, це пост.' });
     const msg = tg.find((c) => c.method === 'sendMessage')!.form as Record<string, unknown>;
     expect((msg.reply_markup as { inline_keyboard: unknown }).inline_keyboard).toEqual(
-      workerButtons(body.worker_result_id, true, 'copywriter'),
+      workerButtons(body.worker_result_id, false, 'copywriter'),
     );
     expect(tg.some((c) => c.method === 'sendDocument')).toBe(false);
     expect(await loadWorkerResult(env, body.worker_result_id)).toMatchObject({
@@ -313,7 +320,7 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(kb[0]![0]!.callback_data).toBe('p:abc:ok');
     // Набір - за працівником (скарга 15 прогону 08.09): Дослідник дістає
     // «Джерела», а не «Інший тон» - переписувати чужі факти нема сенсу.
-    expect(kb[1]!.map((b) => b.callback_data)).toEqual([`m:w:${id}:src`, `m:w:${id}:short`]);
+    expect(kb[1]!.map((b) => b.callback_data)).toEqual([`m:w:${id}:src`]);
     const doc = tg.find((c) => c.method === 'sendDocument')!.form as FormData;
     expect(doc.get('message_thread_id')).toBe('99');
     expect((doc.get('document') as File).name).toBe(workerFilename('researcher', NOW));
@@ -515,7 +522,13 @@ describe('підбір магазину для відстеження ціни',
   });
 
   it('price-search не отримує непотрібних кнопок переписування тексту', () => {
-    expect(workerButtons('r-price', true, 'price-search')).toEqual([]);
+    expect(workerButtons('r-price', true, 'price-search')).toEqual([
+      [{ text: '📎 .md', callback_data: 'm:w:r-price:md' }],
+      [
+        { text: '👍 Корисно', callback_data: 'm:w:r-price:good' },
+        { text: '👎 Не те', callback_data: 'm:w:r-price:bad' },
+      ],
+    ]);
   });
 
   it('не пропонує домашню сторінку, URL з обліковими даними чи ціну без валюти', () => {
@@ -675,6 +688,7 @@ describe('картки пошти', () => {
     expect(mailReportButtons('report1', items, false).map((row) => row[0]?.callback_data)).toEqual([
       'm:mi:report1:0',
       'm:mi:report1:1',
+      'm:w:report1:good',
     ]);
     expect(
       mailItemButtons('report1', 0)
@@ -688,6 +702,46 @@ describe('картки пошти', () => {
     ]);
     expect(mailItemFollowup({ id: 'report1' }, items[0]!, 'draft')).toContain('ID листа: a1b2');
     expect(mailItemFollowup({ id: 'report1' }, items[0]!, 'draft')).not.toContain('b2c3');
+  });
+
+  it('позначає відкриті листи й дає перейти до сусіднього, а потім назад до списку', async () => {
+    const items = mailCardItems(report);
+    const { env } = setup();
+    expect(mailItemButtons('report1', 0, 2)[0]?.map((button) => button.callback_data)).toEqual([
+      'm:mi:report1:1',
+    ]);
+    expect(mailItemButtons('report1', 1, 2)[0]?.map((button) => button.callback_data)).toEqual([
+      'm:mi:report1:0',
+    ]);
+    await markMailItemRead(env, 'report1', items[0]!.id, NOW);
+    const read = await readMailItemIds(env, 'report1');
+    expect(read.has('a1b2')).toBe(true);
+    expect(mailListCard(items, read)).toContain('✅ 1. Тест з гостем');
+    expect(mailListCard(items, read)).toContain('✉️ 2. Рахунок');
+  });
+
+  it('пошук закладів дає вибір і посилання на мапу, меню та бронювання', () => {
+    const options = placeOptions(
+      '- [Grand Cafe](https://example.com/cafe) — пл. Ринок, 1; центр\n- Syrovarnia — вул. Шевченка, 2',
+    );
+    expect(options).toEqual([
+      { name: 'Grand Cafe', detail: 'пл. Ринок, 1; центр' },
+      { name: 'Syrovarnia', detail: 'вул. Шевченка, 2' },
+    ]);
+    expect(placeSearchButtons('r1', options)[0]?.[0]?.callback_data).toBe('m:pl:r1:0');
+    const links = placeChoiceButtons('r1', 0, options)
+      .flat()
+      .filter((button): button is { text: string; url: string } => 'url' in button);
+    expect(links.map((button) => new URL(button.url).hostname)).toEqual([
+      'www.google.com',
+      'www.google.com',
+      'www.google.com',
+    ]);
+    expect(
+      placeChoiceButtons('r1', 0, options)
+        .flat()
+        .some((button) => button.text.includes('Syrovarnia')),
+    ).toBe(true);
   });
 
   it('доставляє кнопки конкретних листів і наступну сторінку лише за наявності курсора', async () => {
@@ -707,7 +761,8 @@ describe('картки пошти', () => {
       `m:mi:${id}:0`,
       `m:mi:${id}:1`,
       `m:w:${id}:next`,
-      `m:w:${id}:md`,
+      `m:w:${id}:good`,
+      `m:w:${id}:bad`,
     ]);
     expect(mailNextPageInfo(body)).toEqual({ query: 'from:example.com', cursor: 'cursor-2' });
     expect(mailNextPageInfo(body.replace('cursor-2', 'немає'))).toBeNull();
@@ -746,7 +801,7 @@ describe('картки пошти', () => {
       mailReportButtons('r1', [], true, true)
         .flat()
         .map((button) => button.callback_data),
-    ).toEqual(['m:w:r1:next', 'm:w:r1:md']);
+    ).toEqual(['m:w:r1:next', 'm:w:r1:md', 'm:w:r1:good', 'm:w:r1:bad']);
   });
 
   it('відхиляє невідому кнопку працівника й не стверджує збереження без D1', async () => {
@@ -792,7 +847,7 @@ describe('картки пошти', () => {
     expect(brain).toHaveLength(1);
     expect((brain[0]!.body.input as { text: string }).text).toContain('ID листа: a1b2');
     expect((brain[0]!.body.input as { text: string }).text).not.toContain('ID листа: b2c3');
-    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM worker_card_actions').get()).toEqual({ n: 2 });
   });
 
   it('нагадування з картки зберігає предмет і показує варіанти часу без нового модельного прогону', async () => {
@@ -855,6 +910,61 @@ describe('картки пошти', () => {
 });
 
 describe('кнопки m:w: (prerouter)', () => {
+  it('конкурентні протилежні оцінки все одно лишають рівно один голос', async () => {
+    const { env, db } = setup();
+    const { id } = await saveWorkerResult(env, { name: 'planner', text: 'План готовий.' }, NOW);
+    const votes = await Promise.all([
+      recordWorkerQualityVote(env, id, 'good', NOW),
+      recordWorkerQualityVote(env, id, 'bad', NOW),
+    ]);
+    expect(votes.filter(Boolean)).toHaveLength(1);
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS n FROM worker_card_actions WHERE action_key LIKE 'quality:%'")
+        .get(),
+    ).toEqual({ n: 1 });
+  });
+
+  it('збирає одну явну оцінку на результат і не враховує повторні натискання', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    const { id } = await saveWorkerResult(env, { name: 'planner', text: 'План готовий.' }, NOW);
+    expect(
+      await handleBrainCallback(
+        env,
+        {
+          data: `m:w:${id}:good`,
+          chatId: 555,
+          messageId: 1,
+          replyMarkup: {
+            inline_keyboard: [
+              [
+                { text: '👍 Корисно', callback_data: `m:w:${id}:good` },
+                { text: '👎 Не те', callback_data: `m:w:${id}:bad` },
+              ],
+            ],
+          },
+        },
+        NOW,
+      ),
+    ).toBe('Дякую, відповідь корисна.');
+    expect(
+      await handleBrainCallback(env, { data: `m:w:${id}:bad`, chatId: 555, messageId: 1 }, NOW + 1),
+    ).toBe('Оцінку вже врахував.');
+    expect(db.prepare('SELECT action_key FROM worker_card_actions').all()).toEqual([
+      { action_key: 'quality:good' },
+    ]);
+    const markup = tg.find((call) => call.method === 'editMessageReplyMarkup')?.form as {
+      reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
+    expect(markup.reply_markup.inline_keyboard).toEqual([
+      [
+        { text: '✅ 👍 Корисно', callback_data: 'm:done' },
+        { text: '👎 Не те', callback_data: 'm:done' },
+      ],
+    ]);
+  });
+
   it('.md - файл із бази у тред; short/tone - підказка в тред тим самим шляхом, що текст (chat-прогін)', async () => {
     const { env, db } = setup();
     const { tg, brain } = stubTelegram();
@@ -868,7 +978,7 @@ describe('кнопки m:w: (prerouter)', () => {
     );
     expect(md).toBe('Файл у треді');
     const doc = tg.find((c) => c.method === 'sendDocument')!.form as FormData;
-    expect(String(doc.get('caption'))).toContain('copywriter');
+    expect(String(doc.get('caption'))).toBe('Повний текст відповіді');
 
     const short = await handleBrainCallback(
       env,
@@ -882,6 +992,14 @@ describe('кнопки m:w: (prerouter)', () => {
     expect((brain[0]!.body.input as { text: string }).text).toContain(id);
     expect((brain[0]!.body.input as { text: string }).text).toContain('Пост.');
     expect(brain[0]!.body.thread_id).toBe('99');
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:w:${id}:short`, chatId: 555, messageId: 1, threadId: 99 },
+        NOW + 2,
+      ),
+    ).toBe('Цю дію вже запустив.');
+    expect(brain).toHaveLength(1);
   });
 
   it('невідомий id - чесний тост, нічого не шлеться', async () => {

@@ -472,7 +472,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         note: `${partial ? 'partial ' : ''}${text.length} симв., ${workerCalls} інстр.${workerApi ? `, ${workerApi}` : ''}`,
       });
       return {
-        text: `${partial ? 'Працівник не вклався у стелю ходів - ось що встиг' : `Результат працівника «${worker}»`}:\n${visible}`,
+        text: `${partial ? 'Частину результату вже підготовлено' : 'Ось підготовлений результат'}:\n${visible}`,
         isError: false,
         // Під кап DELIVER_SCHEMA.worker.text: довший результат ядро відкинуло б
         // 400 разом з усією відповіддю (ревʼю PR-3).
@@ -483,7 +483,10 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           name:
             worker === 'researcher' && /(?:ціна|цін[ауиі]|магазин|товар|грн|відстеж)/iu.test(task)
               ? 'price-search'
-              : worker,
+              : worker === 'researcher' &&
+                  /(?:ресторан|кафе|заклад|столик|місце\s+на\s+вечерю)/iu.test(task)
+                ? 'place-search'
+                : worker,
           text: clipHead(text, DELIVER_WORKER_MAX_CHARS),
         },
       };

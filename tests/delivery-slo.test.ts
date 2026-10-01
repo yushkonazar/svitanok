@@ -32,4 +32,26 @@ describe('delivery SLO', () => {
     expect((await readDeliverySlo(env, beforeDeadline)).briefing.status).toBe('pending_window');
     expect((await readDeliverySlo(env, NOW)).briefing.status).toBe('breached');
   });
+
+  it('показує лише безпечні агрегати черги Telegram та виділяє failed/stuck', async () => {
+    const { d1, env } = setup();
+    const insert = d1.db.prepare(
+      `INSERT INTO outbox (id, chat_id, thread_id, kind, payload_json, attempts, next_at, status)
+       VALUES (?, 'private-chat', NULL, 'send', ?, ?, ?, ?)`,
+    );
+    insert.run(
+      'o-pending',
+      '{"text":"private"}',
+      1,
+      new Date(NOW - 60_000).toISOString(),
+      'pending',
+    );
+    insert.run('o-failed', '{}', 8, new Date(NOW - 60_000).toISOString(), 'failed');
+    insert.run('o-stuck', '{}', 1, new Date(NOW - 180_000).toISOString(), 'sending');
+
+    const slo = await readDeliverySlo(env, NOW);
+    expect(slo.outbox).toMatchObject({ pending: 1, failed: 1, stuck: 1, status: 'attention' });
+    expect(JSON.stringify(slo)).not.toContain('private-chat');
+    expect(JSON.stringify(slo)).not.toContain('private');
+  });
 });

@@ -266,7 +266,7 @@ describe('delegate (етап 4): працівник з інструкцією з
     expect(seen[1]!.systemPrompt).toContain('Зараз у Києві');
     expect(inputs[1]).toBe('Задача:\nпереклади англійською: привіт\n\nФормат: chat');
     expect(out!.isError).toBe(false);
-    expect(out!.text).toBe('Результат працівника «editor»:\nhello');
+    expect(out!.text).toBe('Ось підготовлений результат:\nhello');
     expect(client.taint).not.toHaveBeenCalled();
     // Результат працівника - у deliver, ядро дасть кнопки (S-7-1).
     expect(client.deliver).toHaveBeenCalledWith('run-w', 'Ось переклад: hello', [], {
@@ -538,7 +538,7 @@ describe('delegate (етап 4): працівник з інструкцією з
     );
     await makeRunner({ client, engine })(req());
     expect(outs[0]!.isError).toBe(false);
-    expect(outs[0]!.text).toContain('не вклався у стелю ходів');
+    expect(outs[0]!.text).toContain('Частину результату вже підготовлено');
     expect(outs[0]!.text).toContain('половина тексту');
     expect(outs[1]!.isError).toBe(true);
     expect(outs[2]!.isError).toBe(true);

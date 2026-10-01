@@ -62,7 +62,11 @@ import {
 import { verifyWebhookSecret } from './tg-core.mjs';
 import { mdToTelegramHtml } from './core/tg/markdown.mjs';
 import { renderHistoryForPrompt } from './assistant-memory-core.mjs';
-import { assistantResumeSave, assistantResumeTake } from './core/assistant-resume/client.mjs';
+import {
+  assistantResumeRestoreIfEmpty,
+  assistantResumeSave,
+  assistantResumeTake,
+} from './core/assistant-resume/client.mjs';
 import { agentHostHealthTransition } from './core/agent-host-health/client.mjs';
 import { AGENT_HOST_HEALTH_KEY } from './core/agent-host-health/contract.mjs';
 import {
@@ -578,6 +582,18 @@ export async function runAssistantAgent(
     model: ASSISTANT_MODEL,
   });
   if (started.ok) return; // далі веде хост — відповідь прийде через /api/agent-step
+
+  // Уточнення не має зникати, якщо хост відхилив продовження. Restore
+  // compare-and-set'ом: якщо новіший run уже поставив нове питання, не затираємо.
+  if (resume?.note && resume?.atMs) {
+    await assistantResumeRestoreIfEmpty(
+      env,
+      parsed.chatId,
+      parsed.threadId,
+      { note: resume.note, tainted: resume.tainted === true, atMs: resume.atMs },
+      nowMs,
+    );
+  }
 
   // Хост не взяв запит: марку знімаємо самі (сторожу нема чого чекати), а «⏳»
   // переписуємо на чесну причину замість того, щоб лишити його висіти.

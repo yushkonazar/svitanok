@@ -117,6 +117,18 @@ describe('transcribeVoice: щасливий шлях', () => {
     expect(row.value).toBeCloseTo(20 / 60);
   });
 
+  it('порожній результат Deepgram повторно пробує Whisper і позначає резерв', async () => {
+    makeFetchStub({ deepgramTranscript: '' });
+    const ai = makeAiStub('нагадай купити хліб');
+    const { env } = makeEnv({ AI: ai });
+    expect(await transcribeVoice(env, { fileId: 'F1', durationS: 20 }, NOW)).toEqual({
+      ok: true,
+      text: 'нагадай купити хліб',
+      fallback: true,
+    });
+    expect(ai.run).toHaveBeenCalledOnce();
+  });
+
   it('транскрипт понад стелю ріжеться по код-поїнтах з «…»', async () => {
     makeFetchStub({ deepgramTranscript: '🙂'.repeat(VOICE_TRANSCRIPT_MAX_CHARS) });
     const { env } = makeEnv();

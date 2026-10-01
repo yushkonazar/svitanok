@@ -271,7 +271,7 @@ describe('runDayPlanChain', () => {
         { payload: { mode: 'replan', output: { moves: [{ id: 'Банк', to: '16:00' }] } } },
       ],
       accept: [{ payload: { choice: 'edit' } }],
-      answer: [{ payload: { text: 'банк на 16:00' } }],
+      answer: [{ payload: { text: 'не знаю' } }, { payload: { text: 'банк на 16:00' } }],
       carry: [{ payload: { choice: 'carry_none' } }],
     });
     const { io, sent, startWorker } = fakeIo(db, chainId);
@@ -375,6 +375,84 @@ describe('helpers ланцюга', () => {
     await expect(startDayPlanChain(env, '2026-09-08', NOW)).rejects.toThrow('DAY_PLAN');
   });
 
+  it('може стартувати одноразовий план одразу в приватному чаті', async () => {
+    const { env, wf } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW, {
+      oneShot: true,
+      initialIntent: 'робота до 17:00, потім навчання',
+      target: { chatId: 806352792, threadId: 'dm' },
+    });
+    expect(wf.created).toEqual([
+      {
+        id: chainId,
+        params: {
+          chainId,
+          date: DATE,
+          oneShot: true,
+          initialIntent: 'робота до 17:00, потім навчання',
+        },
+      },
+    ]);
+    const row = (await env
+      .DB!.prepare('SELECT state_json FROM chains WHERE id = ?')
+      .bind(chainId)
+      .first()) as {
+      state_json: string;
+    };
+    expect(JSON.parse(row.state_json)).toMatchObject({
+      chat_id: 806352792,
+      thread_id: 'dm',
+      one_shot: true,
+    });
+  });
+
+  it('ядро саме уточнює невідому тривалість навчання й не ставить вигаданий вечірній блок', async () => {
+    const { env, db } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW, {
+      oneShot: true,
+      initialIntent: 'робота до 17:00, потім навчання',
+      target: { chatId: 806352792, threadId: 'dm' },
+    });
+    const { step } = fakeStep({
+      worker: [
+        {
+          payload: {
+            output: {
+              items: [
+                { title: 'Робота', kind: 'routine', hard_end: '17:00' },
+                { title: 'Навчання', kind: 'deep', not_before: '17:00', after: 0 },
+              ],
+              questions: [],
+            },
+          },
+        },
+        { payload: { output: 'Чернетка з гнучким навчанням' } },
+      ],
+      answer: [{ payload: { text: 'не знаю' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId);
+    await runDayPlanChain(
+      env,
+      {
+        chainId,
+        date: DATE,
+        oneShot: true,
+        initialIntent: 'робота до 17:00, потім навчання',
+      },
+      step,
+      io,
+    );
+
+    expect(sent[0]).toMatchObject({
+      text: 'Скільки часу закласти на «Навчання»?',
+      buttons: [`c:${chainId}:a0_0`, `c:${chainId}:a0_1`, `c:${chainId}:a0_2`, `c:${chainId}:a0_3`],
+      awaiting: 'answer',
+    });
+    const study = (await listItems(env, DATE)).find((item) => item.title === 'Навчання');
+    expect(study).toMatchObject({ est_min: null, flexible: 1 });
+    expect(study?.window_start).toBeNull();
+  });
+
   it('реєстр ланцюгів бачить план лише в waiting intent/answer; подія іде в інстанс DAY_PLAN за id', async () => {
     const { env, wf } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
@@ -421,7 +499,10 @@ describe('helpers ланцюга', () => {
     expect(applyAnswer(mk(), questions, { text: '2 год' }, 0)[1]?.est_min).toBe(120);
     const dunno = applyAnswer(mk(), questions, { text: 'не знаю' }, 0)[1];
     expect(dunno).toMatchObject({ est_min: null, flexible: true });
-    expect(applyAnswer(mk(), questions, null, 0)[1]?.est_min).toBeNull();
+    expect(applyAnswer(mk(), questions, null, 0)[1]).toMatchObject({
+      est_min: null,
+      flexible: true,
+    });
   });
 
   it('replanChanges: лише done/moves/drop з відомою формою, ≤ 3 зміни', () => {

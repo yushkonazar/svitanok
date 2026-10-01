@@ -109,6 +109,19 @@ describe('computeSlots - правила S-P-11', () => {
     expect(out.placed[0]).toMatchObject({ window_start: '10:05', window_end: '10:35' });
   });
 
+  it('не вигадує типовий час після відповіді «не знаю»', () => {
+    const out = computeSlots({
+      date: DATE,
+      items: [
+        item({ id: 'study', title: 'Навчання', kind: 'deep', est_min: null, flexible: true }),
+        item({ id: 'mail', title: 'Пошта', kind: 'routine', est_min: 30 }),
+      ],
+      events: [],
+    });
+    expect(out.placed.map((p) => p.id)).toEqual(['mail']);
+    expect(out.flexible).toMatchObject([{ id: 'study', why: 'тривалість не визначена' }]);
+  });
+
   it('після завершення дня не повертає справи на ранок того самого дня', () => {
     const out = computeSlots({
       date: DATE,

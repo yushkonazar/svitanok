@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 // розбиває на кілька рядків, тож ts-expect-error завжди на рядку помилки).
 import * as tg from '../web/tg-core.mjs';
 // Конвертер живе в core/tg/markdown.mjs (єдина реалізація для легасі й deliver).
-import { flattenMarkdownTables, mdToTelegramHtml } from '../web/core/tg/markdown.mjs';
+import {
+  flattenMarkdownTables,
+  mdToTelegramHtml,
+  renderMdParts,
+} from '../web/core/tg/markdown.mjs';
 const {
   textHash,
   verifyWebhookSecret,
@@ -295,7 +299,9 @@ describe('tg-core — markButtonDone', () => {
     };
     const out = markButtonDone(rm, 'v1:2026-07-09:js:0');
     expect(out!.inline_keyboard[0][0].text).toBe('✅ 💾 Зберегти');
+    expect(out!.inline_keyboard[0][0].callback_data).toBe('m:done');
     expect(out!.inline_keyboard[0][1].text).toBe('✅ Подав');
+    expect(out!.inline_keyboard[0][1].callback_data).toBe('v1:2026-07-09:ja:0');
     // повторно — без подвійного ✅
     expect(markButtonDone(out!, 'v1:2026-07-09:js:0')!.inline_keyboard[0][0].text!).toBe(
       '✅ 💾 Зберегти',
@@ -771,6 +777,12 @@ describe('mdToTelegramHtml — Markdown моделі -> HTML Telegram', () => {
 
   it('списки стають буллетами', () => {
     expect(mdToTelegramHtml('- перший\n- другий')).toBe('• перший\n• другий');
+  });
+
+  it('Markdown-фолбек лишається читабельним і не показує сирі маркери', () => {
+    const part = renderMdParts('**Готово**\n\n- перший пункт\n- [Деталі](https://example.com)')[0];
+    expect(part?.plain_text).toBe('Готово\n• перший пункт\n• Деталі (https://example.com)');
+    expect(part?.plain_text).not.toContain('**');
   });
 
   it('перетворює справжню Markdown-таблицю на короткі підписані рядки', () => {

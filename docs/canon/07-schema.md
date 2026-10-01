@@ -48,7 +48,9 @@ FTS: D1 підтримує FTS5 (VERIFIED 26.08.2026, проба на бойов
 
 `worker_card_actions(report_id, action_key, created_at)` має складений PK
 `(report_id, action_key)`. Це одноразовий claim кнопок листа й вибору магазину;
-рядок привʼязаний до незмінного `reports.id`, а не до останньої розмови.
+рядок привʼязаний до незмінного `reports.id`, а не до останньої розмови. Для
+явної оцінки відповіді діє унікальний partial index на `report_id` для
+`quality:good`/`quality:bad`: одна картка приймає не більше одного голосу.
 
 `learning_sessions(id, thread_id, chat_id, topic, question_text, answer_text,
 review_text, status, rating, due_at, created_at, updated_at)` зберігає питання
