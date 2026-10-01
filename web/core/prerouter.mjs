@@ -3677,6 +3677,7 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
   const instructionsReady = !instructions.toLocaleLowerCase('uk').includes('немає');
   const modelReady = brain.modelReadiness?.state === 'ready';
   const home = assistantHomeTarget(env);
+  const workerVersion = workerVersionStatusLine(env);
   const alive =
     brain.state === 'ok' &&
     modelReady &&
@@ -3690,6 +3691,7 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
     active || queued ? `Зараз роблю: ${active}, чекає: ${queued}` : 'Черга порожня.',
     instructions,
     formatBrainStatus(brain),
+    workerVersion,
     formatModelReadiness(brain),
     backup.line,
     briefing.line,
@@ -3710,6 +3712,22 @@ export async function systemStatusLine(env, where = {}, nowMs = Date.now()) {
     lines.push(`Чат: ${where.chatId}${where.threadId != null ? ` · тема ${where.threadId}` : ''}`);
   }
   return lines.join(String.fromCharCode(10));
+}
+
+/** Показує короткий ID фактичної версії Cloudflare Worker у приватному /ready.
+ * Не використовуємо build vars чи публічний /api/status: ID потрібен лише для
+ * зіставлення production-відповіді з версією в Cloudflare dashboard.
+ * @param {Env} env
+ */
+function workerVersionStatusLine(env) {
+  const id = env.CF_VERSION_METADATA?.id;
+  if (
+    typeof id !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  ) {
+    return 'Worker: ⚪ версія недоступна локально.';
+  }
+  return `Worker: ✅ ${id.replaceAll('-', '').slice(0, 12)}.`;
 }
 
 /**

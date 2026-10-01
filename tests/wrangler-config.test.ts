@@ -26,6 +26,7 @@ describe('web/wrangler.jsonc', () => {
     expect(cfg.name).toBe('svitanok');
     expect(cfg.main).toBe('worker.js');
     expect(Array.isArray(cfg.kv_namespaces)).toBe(true);
+    expect(cfg.version_metadata).toEqual({ binding: 'CF_VERSION_METADATA' });
   });
 
   it('публічні workers.dev і preview-URL вимкнені (S3)', () => {

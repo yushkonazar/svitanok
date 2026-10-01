@@ -2,6 +2,7 @@
   "name": "svitanok",
   "compatibility_date": "2025-06-01",
   "main": "worker.js",
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "assets": { "directory": "./public", "binding": "ASSETS" },
   // Публічні *.workers.dev вимкнені (аудит S3): поки вони відповідають, будь-які
   // налаштування зони yushko.dev — WAF, rate limit на /api/* — обходяться одним

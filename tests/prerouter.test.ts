@@ -869,8 +869,21 @@ describe('prerouteMessage: нові команди', () => {
 
     const line = await systemStatusLine(env, {}, NOW);
     expect(line).toContain('✅ Усе живе.');
+    expect(line).toContain('Worker: ⚪ версія недоступна локально.');
     expect(line).toContain('Моделі: ✅ готові');
     expect(line).toContain('Останній успішний run: 1 хв тому (chat, claude-sonnet-5)');
+  });
+
+  it('/ready показує короткий ID фактичної Cloudflare Worker-версії', async () => {
+    const reg = makeRegistryStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    (env as { CF_VERSION_METADATA?: { id: string } }).CF_VERSION_METADATA = {
+      id: '12345678-abcd-4abc-8def-1234567890ab',
+    };
+
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).toContain('Worker: ✅ 12345678abcd.');
+    expect(line).not.toContain('CF_VERSION_METADATA');
   });
 
   it('/status не каже «усе живе», коли recovery backup або briefing runner потребує дії', async () => {
