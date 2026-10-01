@@ -7,7 +7,7 @@
 
 import { sendDocument } from '../tg/outbox.mjs';
 import { uploadMarkdown } from '../adapters/drive.mjs';
-import { buildActionCardRows } from './action-card.mjs';
+import { buildActionCardRows } from '../tg/action-card.mjs';
 
 /** Стеля тексту працівника в чаті (S-7-1): довше - файл + Drive. */
 export const WORKER_CHAT_MAX = 3_500;

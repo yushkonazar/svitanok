@@ -31,6 +31,8 @@ const HUMAN_TAIL_MAX = 90;
 /** Ознаки, що хвіст пункту написаний для моделі, а не для власника. */
 const MACHINE_TAIL_RE = /[`{}§]/;
 
+import { buildCallbackActionCardRows } from '../tg/action-card.mjs';
+
 /**
  * @typedef {{ label: string, text: string, marker: 'auto' | 'researcher' | 't1' | null }} ChecklistItem
  * @typedef {Record<string, ChecklistItem[]>} ChecklistBlocks
@@ -177,8 +179,8 @@ export function itemId(block, idx) {
  */
 export function renderBlocks(chainId, input) {
   const lines = [input.title];
-  /** @type {{ text: string, callback_data: string }[][]} */
-  const buttons = [];
+  /** @type {{ text: string, callback_data: string }[]} */
+  const checklist = [];
   for (const block of input.blocks) {
     const open = (input.items[block] ?? [])
       .map((item, idx) => ({ item, idx }))
@@ -186,9 +188,10 @@ export function renderBlocks(chainId, input) {
     for (const { item, idx } of open.slice(0, ITEMS_PER_BLOCK)) {
       lines.push(`• ${humanLine(item)}`);
       if (item.marker !== 'auto') {
-        buttons.push([
-          { text: `✅ ${item.label}`, callback_data: `c:${chainId}:d${block}_${idx}` },
-        ]);
+        checklist.push({
+          text: `✅ ${item.label}`,
+          callback_data: `c:${chainId}:d${block}_${idx}`,
+        });
       }
     }
     const rest = open.length - ITEMS_PER_BLOCK;
@@ -196,10 +199,13 @@ export function renderBlocks(chainId, input) {
   }
   for (const line of input.extra ?? []) lines.push(line);
   if (lines.length === 1) lines.push('Усе закрито.');
-  buttons.push([
-    { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
-    { text: '✖ Скасувати', callback_data: `c:${chainId}:cancel` },
-  ]);
+  const buttons = buildCallbackActionCardRows({
+    checklist,
+    actions: [
+      { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
+      { text: '✖ Скасувати', callback_data: `c:${chainId}:cancel` },
+    ],
+  });
   return { text: lines.join('\n'), buttons };
 }
 

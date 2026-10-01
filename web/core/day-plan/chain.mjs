@@ -20,6 +20,7 @@ import { loadStats } from '../../kv-store.mjs';
 import { enqueueOutbox, drainOutbox } from '../tg/outbox.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
+import { buildCallbackActionCardRows } from '../tg/action-card.mjs';
 import { setChainState, waitOrNull, readChainState, chainTarget } from '../chains/state.mjs';
 import { startChainWorkerRun } from '../brain/chain-worker.mjs';
 import { calendarizeBlocks } from '../tools/plan.mjs';
@@ -70,7 +71,9 @@ export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
 
 /** Кнопки ланцюга (07 §9 `c:<id>:<choice>`). @param {string} chainId @param {[string, string][]} pairs */
 function buttons(chainId, pairs) {
-  return [pairs.map(([text, choice]) => ({ text, callback_data: `c:${chainId}:${choice}` }))];
+  return buildCallbackActionCardRows({
+    choicePairs: pairs.map(([text, choice]) => ({ text, callback_data: `c:${chainId}:${choice}` })),
+  });
 }
 
 /**
