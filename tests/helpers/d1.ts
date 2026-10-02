@@ -82,6 +82,18 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
   ) {
     files.push('0024_worker_quality_vote.sql');
   }
+  if (
+    files.includes('0007_instructions_plans.sql') &&
+    !files.includes('0025_plan_flexible_overlap.sql')
+  ) {
+    files.push('0025_plan_flexible_overlap.sql');
+  }
+  if (
+    files.includes('0007_instructions_plans.sql') &&
+    !files.includes('0026_plan_calendar_sync.sql')
+  ) {
+    files.push('0026_plan_calendar_sync.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

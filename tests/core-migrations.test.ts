@@ -332,6 +332,16 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'hard_end',
     'not_before',
     'after_item_id',
+    'overlap_with_item_id',
+    'not_after',
+    'floating',
+    'optional',
+    'notify',
+    'role',
+    'actual_started_at',
+    'calendar_sync_pending',
+    'calendar_sync_pending_at',
+    'calendar_sync_alerted_at',
   ],
 };
 
@@ -406,7 +416,11 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   style_corpus: [{ cols: ['at'] }],
   // Понад 07 §1 (там «-»): пошук історії за імʼям — єдиний спосіб її читати.
   instruction_history: [{ cols: ['name', 'deployed_at'] }],
-  plan_items: [{ cols: ['date'] }, { cols: ['status'] }],
+  plan_items: [
+    { cols: ['date'] },
+    { cols: ['status'] },
+    { cols: ['calendar_sync_pending', 'date'] },
+  ],
   // Прибирання протухлих (lazy expiry + чистка при вставці) шукає за часом.
   voice_pending: [{ cols: ['created_at'] }],
 };
@@ -450,7 +464,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('двадцять чотири файли 0001–0024, нумерація без дірок', () => {
+  it('двадцять шість файлів 0001–0026, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -476,6 +490,8 @@ describe('міграції D1 — файли', () => {
       '0022',
       '0023',
       '0024',
+      '0025',
+      '0026',
     ]);
   });
 });
