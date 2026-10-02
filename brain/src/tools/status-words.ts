@@ -22,7 +22,7 @@ const EXACT: Record<string, string> = {
   'memory.search': 'Пригадую',
   'facts.get': 'Пригадую',
   'weather.get': 'Дивлюсь погоду',
-  delegate: 'Кличу працівника',
+  delegate: 'Підключаю помічника',
   'ideas.analyze': 'Розбираю ідею по коду',
   'proposals.create': 'Готую пропозицію',
   'chain.start': 'Розкладаю по кроках',

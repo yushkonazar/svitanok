@@ -336,6 +336,12 @@ describe('delegate (етап 4): працівник з інструкцією з
     expect(client.taint).toHaveBeenCalledWith('run-w', 'worker:researcher');
     expect(out!.text).toContain('<external source="worker:researcher">');
     expect(out!.text).toContain('Ціна 10 EUR');
+    expect(client.deliver).toHaveBeenCalledWith(
+      'run-w',
+      'Знайшов',
+      [],
+      expect.objectContaining({ name: 'price-search', context: 'price-search' }),
+    );
   });
 
   it('taint не персистовано - результат НЕ видається (fail-closed, S-7-2)', async () => {
@@ -542,7 +548,8 @@ describe('delegate (етап 4): працівник з інструкцією з
     expect(outs[0]!.text).toContain('половина тексту');
     expect(outs[1]!.isError).toBe(true);
     expect(outs[2]!.isError).toBe(true);
-    expect(outs[2]!.text).toContain('впав');
+    expect(outs[2]!.text).toContain('Не вдалося завершити запит');
+    expect(outs[2]!.text).not.toContain('SDK: error_during_execution');
     const sub = steps(client).filter((s) => s.kind === 'subagent');
     expect(sub[0]).toMatchObject({ ok: true, note: expect.stringMatching(/^partial /) });
     expect(sub[1]).toMatchObject({ ok: false });

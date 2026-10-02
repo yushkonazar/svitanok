@@ -248,17 +248,23 @@ export function decideLevel(kind, tainted, payload = undefined) {
 }
 
 /**
- * Базовий рівень із урахуванням payload. Єдина дія, чий рівень залежить від
- * аргументів, - подія в календарі: без гостей це запис у власному календарі
- * (T0 з «↩», бо «↩» подію видаляє), з гостями - лист іншій людині, а лист
- * назад не забереш (T1). Розрізняти їх у самій таблиці неможливо: там ключ -
- * kind, а не payload.
+ * Базовий рівень із урахуванням payload. Подія з гостями та правка часу/видалення
+ * пункту плану потребують підтвердження: остання може змінити вже опублікований
+ * календарний блок. Розрізняти їх у таблиці неможливо: там ключ - kind.
  * @param {string} kind @param {Record<string, unknown> | undefined} payload
  * @returns {'T0' | 'T1' | 'T2' | undefined}
  */
 function levelFor(kind, payload) {
   const base = ACTION_LEVELS[kind];
   if (kind === 'calendar.event' && hasAttendees(payload)) return 'T1';
+  // A move/drop may touch an already published Calendar event. The owner
+  // approves the complete plan + calendar mutation before either is written.
+  if (
+    kind === 'plan.update' &&
+    ((Array.isArray(payload?.moves) && payload.moves.length) ||
+      (Array.isArray(payload?.drop) && payload.drop.length))
+  )
+    return 'T1';
   return base;
 }
 

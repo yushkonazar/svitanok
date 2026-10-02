@@ -312,7 +312,7 @@ export async function handleInternal(request, env, nowMs = Date.now(), ctx = und
  * @param {Env} env
  * @param {ExecutionContext | undefined} ctx
  * @param {string} runId
- * @param {{ text: string, buttons?: { text: string, callback_data: string }[][], worker?: { name: string, text: string } }} body
+ * @param {{ text: string, buttons?: { text: string, callback_data: string }[][], worker?: { name: string, text: string, context?: 'price-search'|'place-search'|'finance-summary'|'trip-plan' } }} body
  * @param {number} nowMs
  */
 async function handleDeliver(env, ctx, runId, body, nowMs) {
@@ -414,9 +414,12 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
   // Facts are a special case: the model's natural-language draft must not leak
   // `setting.*` or repeat the already rendered confirmation controls.
   const factProposalPrompt = await factProposalPromptFor(env, body.buttons ?? []);
-  const shopOptions = saved?.name === 'price-search' ? priceShopOptions(saved.text) : [];
+  // context класифікує лише картку, а імʼя saved.name лишається справжнім
+  // працівником для історії та оцінювання.
+  const workerContext = body.worker?.context ?? body.worker?.name ?? '';
+  const shopOptions = workerContext === 'price-search' ? priceShopOptions(saved?.text ?? '') : [];
   const shopCard = priceShopCard(shopOptions);
-  const placeOptionsFound = saved?.name === 'place-search' ? placeOptions(saved.text) : [];
+  const placeOptionsFound = workerContext === 'place-search' ? placeOptions(saved?.text ?? '') : [];
   const placeHint = placeOptionsFound.length
     ? '📍 Обери заклад, щоб відкрити маршрут, меню або спосіб бронювання.'
     : '';
@@ -457,7 +460,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
           ? workerButtons(
               saved.id,
               !longWorker && saved.text.length >= WORKER_MD_MIN,
-              body.worker?.name ?? '',
+              workerContext,
             )
           : []),
     ...(profile === 'weekly-review' ? reportButtons() : []),
@@ -479,7 +482,8 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
         ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
         // Research summaries often contain source URLs; previews can obscure
         // the actual choices (for example, restaurant results).
-        ...(['researcher', 'place-search'].includes(saved?.name ?? '')
+        ...(['researcher', 'place-search'].includes(saved?.name ?? '') ||
+        workerContext === 'place-search'
           ? { link_preview_options: { is_disabled: true } }
           : {}),
       },

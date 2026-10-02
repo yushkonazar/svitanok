@@ -34,7 +34,7 @@ function item(over: Partial<Item> & { id: string; title: string }): Item {
 }
 
 describe('computeSlots - правила S-P-11', () => {
-  it('жорсткий час - у свій час навіть поверх події; перетин лише названо в why; placed відсортовано', () => {
+  it('невідомий перетин із подією календаря потребує рішення власника', () => {
     const out = computeSlots({
       date: DATE,
       items: [
@@ -43,11 +43,17 @@ describe('computeSlots - правила S-P-11', () => {
       ],
       events: [{ title: 'Зустріч', startMin: 15 * 60 + 30, endMin: 16 * 60 }],
     });
-    const hard = out.placed.find((p) => p.id === 'h');
-    expect(hard).toMatchObject({ window_start: '15:00', window_end: '16:00', est_min: 60 });
-    expect(hard?.why).toBe('жорсткий час; перетин з «Зустріч»');
-    expect(out.placed.map((p) => p.id)).toEqual(['r', 'h']);
-    expect(out.placed[0]).toMatchObject({ window_start: '08:00', window_end: '08:30' });
+    expect(out.flexible).toMatchObject([{ id: 'h', why: 'перетин з «Зустріч»' }]);
+    expect(out.placed).toMatchObject([{ id: 'r', window_start: '08:00', window_end: '08:30' }]);
+  });
+
+  it('прозорий запис календаря не вважається зайнятим часом', () => {
+    const out = computeSlots({
+      date: DATE,
+      items: [item({ id: 'work', title: 'Робота', hard_at: '07:00', hard_end: '19:00' })],
+      events: [{ title: 'Сніданок', startMin: 9 * 60, endMin: 9 * 60 + 30, transparent: true }],
+    });
+    expect(out.placed).toMatchObject([{ id: 'work', window_start: '07:00', window_end: '19:00' }]);
   });
 
   it('deep без даних енергії - ранок; з енергією (≥ 14 діб) - вікно з вищою енергією', () => {
@@ -62,8 +68,8 @@ describe('computeSlots - правила S-P-11', () => {
       events: [],
       energy: { morning: 2, afternoon: 4, evening: 3 },
     });
-    // Вікно 13:00-18:00, обід 13:00-14:00 зайнятий → 14:00.
-    expect(afternoon.placed[0]).toMatchObject({ window_start: '14:00' });
+    // Обід не резервується автоматично, лише коли його назвав власник.
+    expect(afternoon.placed[0]).toMatchObject({ window_start: '13:00' });
     expect(afternoon.placed[0]?.why).toContain('енергія');
   });
 
@@ -97,6 +103,76 @@ describe('computeSlots - правила S-P-11', () => {
       );
     }
     expect(out.placed.find((p) => p.id === 'study')?.why).toContain('після 18:00');
+  });
+
+  it('робота 07:00–19:00 лишається цілим блоком; плаваючі їжа й кілька вечірніх справ входять у план', () => {
+    const out = computeSlots({
+      date: DATE,
+      items: [
+        item({ id: 'work', title: 'Робота', hard_at: '07:00', hard_end: '19:00' }),
+        item({
+          id: 'breakfast',
+          title: 'Сніданок',
+          est_min: 25,
+          floating: true,
+          overlap_with_item_id: 'work',
+        }),
+        item({
+          id: 'lunch',
+          title: 'Обід',
+          est_min: 35,
+          floating: true,
+          overlap_with_item_id: 'work',
+        }),
+        item({ id: 'project', title: 'Проєкт', kind: 'deep', est_min: 45, after_item_id: 'work' }),
+        item({ id: 'book', title: 'Книжка', est_min: 30, after_item_id: 'project' }),
+      ],
+      events: [],
+    });
+    expect(out.flexible).toHaveLength(0);
+    expect(out.placed.find((p) => p.id === 'work')).toMatchObject({
+      window_start: '07:00',
+      window_end: '19:00',
+    });
+    expect(out.placed.find((p) => p.id === 'breakfast')).toMatchObject({
+      floating: true,
+      est_min: 25,
+      window_start: '08:00',
+      window_end: '11:00',
+    });
+    expect(out.placed.find((p) => p.id === 'lunch')).toMatchObject({
+      floating: true,
+      est_min: 35,
+      window_start: '12:00',
+      window_end: '15:00',
+    });
+    expect(
+      hhmmToMin(out.placed.find((p) => p.id === 'project')?.window_start),
+    ).toBeGreaterThanOrEqual(19 * 60);
+    expect(hhmmToMin(out.placed.find((p) => p.id === 'book')?.window_start)).toBeGreaterThanOrEqual(
+      hhmmToMin(out.placed.find((p) => p.id === 'project')?.window_end)!,
+    );
+  });
+
+  it('стійкий фактичний час старту лише підказує початок роботи, явний час власника має перевагу', () => {
+    const habits = { work_start_at: '08:05', work_start_samples: 6 };
+    const inferred = computeSlots({
+      date: DATE,
+      items: [item({ id: 'work', title: 'Робота', role: 'work', hard_end: '19:00' })],
+      events: [],
+      habits,
+    });
+    expect(inferred.placed[0]).toMatchObject({ window_start: '08:05', window_end: '19:00' });
+    expect(inferred.placed[0]?.why).toContain('6 попередніми днями');
+    const explicit = computeSlots({
+      date: DATE,
+      items: [
+        item({ id: 'work', title: 'Робота', role: 'work', hard_at: '07:00', hard_end: '19:00' }),
+      ],
+      events: [],
+      habits,
+    });
+    expect(explicit.placed[0]?.window_start).toBe('07:00');
   });
 
   it('план на сьогодні починає наступний блок з найближчого кроку, не в минулому', () => {
@@ -153,29 +229,36 @@ describe('computeSlots - правила S-P-11', () => {
     expect(hhmmToMin(book?.window_start)).toBeGreaterThanOrEqual(hhmmToMin(study?.window_end)!);
   });
 
-  it('заповнення ≤ fill_ratio вільного часу: 4-й блок - гнучкий із причиною', () => {
+  it('названі справи не губляться через fill_ratio; межа діє лише для необовʼязкових', () => {
     const items = [1, 2, 3, 4].map((i) =>
       item({ id: `i${i}`, title: `Блок ${i}`, kind: 'routine', est_min: 120 }),
     );
     const out = computeSlots({ date: DATE, items, events: [] });
-    // 08:00-22:00 = 840 − обід 60 = 780; 60 % = 468; точні 120-хв
-    // блоки не розширюються, тому три входять у ліміт, четвертий ні.
-    expect(out).toMatchObject({ freeMin: 780, capacityMin: 468, usedMin: 360 });
-    expect(out.placed).toHaveLength(3);
-    expect(out.flexible.map((f) => [f.id, f.why])).toEqual([
-      ['i4', 'не влізло в 60 % вільного часу'],
-    ]);
+    expect(out).toMatchObject({ freeMin: 840, capacityMin: 672, usedMin: 480 });
+    expect(out.placed).toHaveLength(4);
+    const optional = computeSlots({
+      date: DATE,
+      items: [...items.slice(0, 3), item({ ...items[3]!, optional: true })],
+      events: [],
+      settings: { fill_ratio: 0.4 },
+    });
+    expect(optional.flexible[0]).toMatchObject({ id: 'i4', why: 'не влізло в 40 % вільного часу' });
   });
 
-  it('≤ max_deep глибоких блоків; понад стелю - гнучке', () => {
+  it('max_deep не викреслює названі справи, лише додаткові', () => {
     const items = [1, 2, 3, 4].map((i) =>
       item({ id: `d${i}`, title: `Глибокий ${i}`, kind: 'deep', est_min: 30 }),
     );
     const out = computeSlots({ date: DATE, items, events: [] });
-    expect(out.placed).toHaveLength(3);
-    expect(out.flexible[0]).toMatchObject({ id: 'd4', why: 'понад 3 глибоких блоків' });
-    const one = computeSlots({ date: DATE, items, events: [], settings: { max_deep: 1 } });
-    expect(one.placed).toHaveLength(1);
+    expect(out.placed).toHaveLength(4);
+    const one = computeSlots({
+      date: DATE,
+      items: [...items.slice(0, 3), item({ ...items[3]!, optional: true })],
+      events: [],
+      settings: { max_deep: 1 },
+    });
+    expect(one.placed).toHaveLength(3);
+    expect(one.flexible[0]).toMatchObject({ id: 'd4', why: 'понад 1 глибоких блоків' });
   });
 
   it('буфер 15 хв навколо події календаря; довгий блок без вікна - «немає вікна»', () => {
@@ -188,7 +271,7 @@ describe('computeSlots - правила S-P-11', () => {
 
     const long = computeSlots({
       date: DATE,
-      items: [item({ id: 'l', title: 'Марафон', kind: 'deep', est_min: 600 })],
+      items: [item({ id: 'l', title: 'Марафон', kind: 'deep', est_min: 900 })],
       events: [],
       settings: { fill_ratio: 1 },
     });
@@ -229,15 +312,15 @@ describe('computeSlots - правила S-P-11', () => {
       date: DATE,
       items: [
         item({ id: 'd', title: 'Презентація', kind: 'deep', est_min: 60 }),
-        item({ id: 'x', title: 'Марафон', kind: 'deep', est_min: 600 }),
+        item({ id: 'x', title: 'Марафон', kind: 'deep', est_min: 900 }),
       ],
       events: [{ title: 'Зустріч', startMin: 10 * 60, endMin: 11 * 60 }],
     });
     const text = formatDraft(DATE, slots, [{ title: 'Зустріч', startMin: 10 * 60 }]);
     expect(text.split('\n')[0]).toBe('План на 07.09');
-    expect(text).toContain('• 08:00-09:00 Презентація · deep · глибокий блок');
+    expect(text).toContain('• 08:00-09:00 Презентація · глибокий блок');
     expect(text).toContain('• 10:00 Зустріч (календар)');
-    expect(text).toContain('Гнучке, без часу: Марафон');
+    expect(text).toContain('Потребує рішення: Марафон');
     expect(text).toMatch(/Запас: \d+ год \d+ хв вільно/);
   });
 });

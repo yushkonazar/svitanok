@@ -8,6 +8,7 @@ import {
   fetchBriefing,
   fetchLiveWeather,
   fetchSettings,
+  fetchWorkerQuality,
   fetchSaved,
   postEvent,
   postSettings,
@@ -524,6 +525,16 @@ export function useSavedArchive() {
 /** Налаштування власника + статус конекторів (третя незалежна черга). */
 export function useSettings() {
   return useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
+}
+
+/** Приватна вибірка якості працівників; освіжається раз на пʼять хвилин. */
+export function useWorkerQuality(enabled = true) {
+  return useQuery({
+    queryKey: ['workerQuality'],
+    queryFn: fetchWorkerQuality,
+    enabled: enabled && inTelegram(),
+    staleTime: 5 * 60 * 1000,
+  });
 }
 
 const SETTINGS_SAVE_KEY = ['settings-save'];

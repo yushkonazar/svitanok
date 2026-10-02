@@ -116,6 +116,7 @@ import {
 import { BACKUP_STATE_KEY } from './backup-state/contract.mjs';
 import { BACKUP_MAX_ATTEMPTS } from './backup/task.mjs';
 import { startDayPlanChain } from './day-plan/chain.mjs';
+import { getDayPlan } from './day-plan/store.mjs';
 
 export const THREAD_DM = 'dm';
 /** Скільки транскрипта показуємо в «Я почув»: одне повідомлення з кнопками
@@ -499,9 +500,11 @@ function parseDayPlanRequest(text, nowMs) {
 /** @param {Env} env @param {ThreadTarget} target @param {string} date @param {string} intent @param {number} nowMs */
 async function startInteractiveDayPlan(env, target, date, intent, nowMs) {
   if (target.chatId == null) throw new Error('Не бачу чату для плану.');
+  const resumeDraft = !intent && (await getDayPlan(env, date))?.status === 'draft';
   await startDayPlanChain(env, date, nowMs, {
     oneShot: true,
     ...(intent ? { initialIntent: intent } : {}),
+    ...(resumeDraft ? { resumeDraft: true } : {}),
     target: {
       chatId: target.chatId,
       // chainTarget maps this marker back to a Telegram DM (no forum topic id).
@@ -696,7 +699,14 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
         await startInteractiveDayPlan(env, target, date, intent, nowMs);
       } catch (/** @type {any} */ e) {
         console.error('prerouter: інтерактивний план не стартував', e?.message);
-        await send('Не вдалося почати планування. Спробуй ще раз трохи пізніше.');
+        const reason = String(e?.message ?? '');
+        await send(
+          reason.includes('уже погоджено')
+            ? 'План уже записано в календар. Другий план поверх нього не створюю.'
+            : reason.includes('уже відкритий')
+              ? 'План уже відкритий вище. Заверши його або натисни «Пізніше».'
+              : 'Не вдалося почати планування. Спробуй ще раз трохи пізніше.',
+        );
       }
       return true;
     }
@@ -834,10 +844,15 @@ export async function prerouteMessage(env, parsed, nowMs = Date.now()) {
       await startInteractiveDayPlan(env, target, dayPlanRequest.date, dayPlanRequest.intent, nowMs);
     } catch (/** @type {any} */ e) {
       console.error('prerouter: інтерактивний план не стартував', e?.message);
+      const reason = String(e?.message ?? '');
       await reply(
         env,
         target,
-        'Не вдалося почати планування. Спробуй ще раз трохи пізніше.',
+        reason.includes('уже погоджено')
+          ? 'План уже записано в календар. Другий план поверх нього не створюю.'
+          : reason.includes('уже відкритий')
+            ? 'План уже відкритий вище. Заверши його або натисни «Пізніше».'
+            : 'Не вдалося почати планування. Спробуй ще раз трохи пізніше.',
         nowMs,
       );
     }

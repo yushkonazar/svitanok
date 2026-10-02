@@ -69,6 +69,29 @@ async function seedDraft(env: Env, titles: string[]) {
 }
 
 describe('readDayPlanConfig', () => {
+  it('вчиться лише з пʼяти підтверджених фактичних стартів різних днів, не з обіцянок', async () => {
+    const { env, db } = setup();
+    const times = ['07:50', '08:00', '08:05', '08:10', '09:00'];
+    for (let i = 0; i < times.length; i += 1) {
+      const day = `2026-09-0${i + 1}`;
+      db.prepare(
+        'INSERT INTO plan_items (id, date, title, role, status, actual_started_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(
+        `work-${i}`,
+        day,
+        'Робота',
+        'work',
+        'done',
+        new Date(kyivMs(day, times[i]!)!).toISOString(),
+      );
+    }
+    expect((await readDayPlanConfig(env, NOW)).habits).toMatchObject({
+      work_start_at: '08:05',
+      work_start_samples: 5,
+    });
+    db.prepare("UPDATE plan_items SET actual_started_at = NULL WHERE id = 'work-4'").run();
+    expect((await readDayPlanConfig(env, NOW)).habits.work_start_at).toBeNull();
+  });
   it('без факту day_plan - вимкнено з дефолтами; з фактом - enabled, свої часи, звички', async () => {
     const { env } = setup();
     const off = await readDayPlanConfig(env);
@@ -76,7 +99,7 @@ describe('readDayPlanConfig', () => {
     expect(off.settings).toMatchObject({
       intent_at: '20:30',
       morning_at: '08:30',
-      fill_ratio: 0.6,
+      fill_ratio: 0.8,
     });
     expect([...off.weekdays].sort()).toEqual([1, 2, 3, 4, 5]);
     expect(off.habits).toMatchObject({ day_start: '08:00', estimate_bias: 1.3 });
@@ -170,7 +193,7 @@ describe('день і пункти', () => {
     });
     expect(normalizeItem({ title: 'а'.repeat(80) }, 0).title).toHaveLength(60);
     expect(() => normalizeItem({ title: '  ' }, 2)).toThrow('пункт 3: порожня назва');
-    expect(ITEMS_MAX).toBe(6);
+    expect(ITEMS_MAX).toBe(50);
   });
 
   it('replaceItems: placed із вікнами, flexible без; рядки з reminder_id не чіпає', async () => {
@@ -183,7 +206,7 @@ describe('день і пункти', () => {
         { title: 'Презентація', kind: 'deep', est_min: 60, hard_end: '18:00', not_before: '09:00' },
         0,
       ),
-      normalizeItem({ title: 'Марафон', kind: 'deep', est_min: 600 }, 1),
+      normalizeItem({ title: 'Марафон', kind: 'deep', est_min: 900 }, 1),
     ];
     const slots = computeSlots({ date: DATE, items, events: [] });
     expect(await replaceItems(env, DATE, slots, items)).toBe(2);
@@ -216,9 +239,10 @@ describe('день і пункти', () => {
 });
 
 describe('прийняття, зміни, огляд', () => {
-  it('acceptPlan: нагадування на початок блоків із часом (T0), статус accepted; undoAccept скасовує', async () => {
+  it('acceptPlan: нагадує лише якщо про це просили; undoAccept скасовує', async () => {
     const { env, db } = setup();
     const items = await seedDraft(env, ['Презентація', 'Банк']);
+    db.prepare('UPDATE plan_items SET notify = 1 WHERE id = ?').run(items[0]!.id);
     db.prepare(
       `UPDATE plan_items SET window_start = NULL, window_end = NULL, flexible = 1 WHERE id = ?`,
     ).run(items[1]!.id);
@@ -247,11 +271,12 @@ describe('прийняття, зміни, огляд', () => {
   it('undoAccept другого прийняття не чіпає нагадувань першого; повторний accept не дублює', async () => {
     const { env, db } = setup();
     await seedDraft(env, ['Презентація']);
+    db.prepare("UPDATE plan_items SET notify = 1 WHERE title = 'Презентація'").run();
     const first = await acceptPlan(env, DATE, NOW, { chatId: '555', threadId: '99' });
     expect(first.reminders).toBe(1);
     // Новий пункт зʼявився пізніше - друге прийняття дає нагадування лише йому.
     db.prepare(
-      `INSERT INTO plan_items (id, date, title, kind, est_min, window_start, window_end, status) VALUES ('late', ?, 'Пізній', 'call', 15, '18:00', '18:20', 'planned')`,
+      `INSERT INTO plan_items (id, date, title, kind, est_min, window_start, window_end, status, notify) VALUES ('late', ?, 'Пізній', 'call', 15, '18:00', '18:20', 'planned', 1)`,
     ).run(DATE);
     const second = await acceptPlan(env, DATE, NOW + 1, { chatId: '555', threadId: '99' });
     expect(second.reminders).toBe(1);
@@ -347,6 +372,50 @@ describe('прийняття, зміни, огляд', () => {
     await expect(
       updateItems(env, DATE, { moves: [{ id: items[0]!.id, to: '16' }] }, NOW),
     ).rejects.toThrow('очікую HH:MM');
+  });
+
+  it('фактичний початок не зсуває сам план і відкат відновлює попередній стан', async () => {
+    const { env } = setup();
+    const [work] = await seedDraft(env, ['Робота']);
+    const actual = kyivMs(DATE, '08:00')!;
+    const snap = await updateItems(env, DATE, { starts: [{ id: work!.id, at: '08:00' }] }, actual);
+    expect((await listItems(env, DATE))[0]).toMatchObject({
+      actual_started_at: new Date(actual).toISOString(),
+      window_start: '08:00',
+    });
+    await undoUpdateItems(env, snap);
+    expect((await listItems(env, DATE))[0]?.actual_started_at).toBeNull();
+  });
+
+  it('не розсинхронізовує погоджений блок із подією Google під час переносу чи вилучення', async () => {
+    const { env, db } = setup();
+    const [work] = await seedDraft(env, ['Робота']);
+    db.prepare('UPDATE plan_items SET event_id = ? WHERE id = ?').run('google-1', work!.id);
+    await expect(
+      updateItems(env, DATE, { moves: [{ id: work!.id, to: '10:00' }] }, NOW),
+    ).rejects.toThrow('без зміни події');
+    await expect(updateItems(env, DATE, { drop: [work!.id] }, NOW)).rejects.toThrow(
+      'без зміни події',
+    );
+    expect((await listItems(env, DATE))[0]).toMatchObject({
+      window_start: '08:00',
+      status: 'planned',
+    });
+  });
+
+  it('старий знімок відкату не стирає посилання на подію', async () => {
+    const { env, db } = setup();
+    const [work] = await seedDraft(env, ['Робота']);
+    db.prepare('UPDATE plan_items SET event_id = ? WHERE id = ?').run('google-1', work!.id);
+    const snap = await updateItems(env, DATE, { done: [work!.id] }, NOW);
+    const legacy = {
+      prev: snap.prev.map(({ event_id: _eventId, reminder_id: _reminderId, ...rest }) => rest),
+    };
+    await undoUpdateItems(env, legacy);
+    expect((await listItems(env, DATE))[0]).toMatchObject({
+      status: 'planned',
+      event_id: 'google-1',
+    });
   });
 
   it('reviewPlan + carryItems: відкриті → carried, копії на наступний день із carried_from; третій день - stale', async () => {

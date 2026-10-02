@@ -5,10 +5,21 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { applyPolicy, resolveProposal, resolveUndo } from '../web/core/policy/proposals.mjs';
-import { ACTION_LEVELS } from '../web/core/policy/core.mjs';
+import { ACTION_LEVELS, decideLevel } from '../web/core/policy/core.mjs';
 import { TOOLS } from '../web/core/tools/index.mjs';
-import { resolvePlanDate, runPlanAccept } from '../web/core/tools/plan.mjs';
+import {
+  resolvePlanDate,
+  runPlanAccept,
+  runPlanIntent,
+  runPlanUpdate,
+} from '../web/core/tools/plan.mjs';
 import { getDayPlan, listItems } from '../web/core/day-plan/store.mjs';
+import {
+  getCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+  readCalendarRange,
+} from '../web/google.mjs';
 import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
@@ -24,6 +35,9 @@ vi.mock('../web/google.mjs', async (importOriginal) => {
         endMs: Date.parse('2026-09-07T08:00:00.000Z'),
       },
     ]),
+    getCalendarEvent: vi.fn(),
+    updateCalendarEvent: vi.fn(),
+    deleteCalendarEvent: vi.fn(),
   };
 });
 
@@ -47,6 +61,10 @@ const DATE = '2026-09-07';
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.mocked(getCalendarEvent).mockReset();
+  vi.mocked(updateCalendarEvent).mockReset();
+  vi.mocked(deleteCalendarEvent).mockReset();
 });
 
 function setup() {
@@ -71,8 +89,8 @@ function setup() {
 }
 
 const ITEMS = [
-  { title: 'Презентація', kind: 'deep', est_min: 60 },
-  { title: 'Банк', kind: 'errand', place: 'Центр' },
+  { title: 'Презентація', kind: 'deep', est_min: 60, notify: true },
+  { title: 'Банк', kind: 'errand', place: 'Центр', notify: true },
 ];
 
 describe('plan.* через policy', () => {
@@ -88,6 +106,11 @@ describe('plan.* через policy', () => {
     expect(resolvePlanDate('Завтра', NOW)).toBe(DATE);
     expect(resolvePlanDate('2026-09-09', NOW)).toBe('2026-09-09');
     expect(() => resolvePlanDate('післязавтра', NOW)).toThrow('сьогодні, завтра або YYYY-MM-DD');
+    expect(decideLevel('plan.update', false, { done: ['Робота'] })).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.update', false, { moves: [{ id: 'Робота', to: '11:00' }] })).toEqual({
+      level: 'T1',
+    });
+    expect(decideLevel('plan.update', false, { drop: ['Робота'] })).toEqual({ level: 'T1' });
   });
 
   it('plan.intent: пункти → чернетка з календарем; без «↩»; порожній список - помилка', async () => {
@@ -155,6 +178,8 @@ describe('plan.* через policy', () => {
       db.prepare(`SELECT count(*) AS n FROM reminders WHERE status = 'pending'`).get(),
     ).toEqual({ n: 2 });
     expect((await getDayPlan(env, DATE))?.status).toBe('accepted');
+    await expect(act('plan.intent', { date: DATE, items: ITEMS })).rejects.toThrow('уже погоджено');
+    await expect(act('plan.draft', { date: DATE })).rejects.toThrow('уже погоджено');
 
     const undone = await resolveUndo(env, out.undo!.id, NOW + 1000);
     expect(undone).toEqual({ ok: true, status: 'undone' });
@@ -355,7 +380,7 @@ describe('plan.* через policy', () => {
     vi.unstubAllGlobals();
   });
 
-  it('plan.update: done/moves/drop за назвою з «↩»; plan.review - огляд і перенос ["all"]', async () => {
+  it('plan.update: move чекає підтвердження; done має «↩»; plan.review переносить', async () => {
     const { env, db, act } = setup();
     await act('plan.intent', { date: DATE, items: ITEMS });
     const upd = await act('plan.update', {
@@ -363,16 +388,15 @@ describe('plan.* через policy', () => {
       done: ['Презентація'],
       moves: [{ id: 'Банк', to: '16:00' }],
     });
-    expect(upd.mode).toBe('executed');
-    if (upd.mode !== 'executed') return;
-    expect(upd.result).toEqual({ date: DATE, changed: 2 });
-    let rows = await listItems(env, DATE);
+    expect(upd.mode).toBe('proposed');
+    if (upd.mode !== 'proposed') return;
+    expect((await listItems(env, DATE)).every((r) => r.status === 'planned')).toBe(true);
+    expect(
+      await resolveProposal(env, { id: upd.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: true, status: 'approved', executed: true });
+    const rows = await listItems(env, DATE);
     expect(rows.find((r) => r.title === 'Презентація')?.status).toBe('done');
     expect(rows.find((r) => r.title === 'Банк')?.window_start).toBe('16:00');
-    expect(await resolveUndo(env, upd.undo!.id, NOW + 1)).toEqual({ ok: true, status: 'undone' });
-    rows = await listItems(env, DATE);
-    expect(rows.every((r) => r.status === 'planned')).toBe(true);
-
     await act('plan.update', { date: DATE, done: ['Презентація'] }, NOW + 2);
     const review = await act('plan.review', { date: DATE }, NOW + 3);
     expect(review.mode).toBe('executed');
@@ -398,5 +422,414 @@ describe('plan.* через policy', () => {
     await expect(act('plan.review', { date: DATE, carry: ['Немає'] }, NOW + 5)).rejects.toThrow(
       'серед відкритих немає',
     );
+  });
+
+  it('затверджене перенесення змінює Calendar, план і нагадування разом', async () => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ?, reminder_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-1', 'rem-1', item.id);
+    db.prepare('INSERT INTO reminders (id, due_at, text) VALUES (?, ?, ?)').run(
+      'rem-1',
+      '2026-09-07T06:00:00.000Z',
+      'План: Презентація',
+    );
+    vi.mocked(getCalendarEvent).mockResolvedValue({
+      id: 'cal-1',
+      title: 'Презентація',
+      startMs: Date.parse('2026-09-07T06:00:00Z'),
+      endMs: Date.parse('2026-09-07T07:00:00Z'),
+      transparent: false,
+      hasAttendees: false,
+    } as never);
+    vi.mocked(updateCalendarEvent).mockResolvedValue({ ok: true });
+    const out = await act('plan.update', { date: DATE, moves: [{ id: item.id, to: '11:00' }] });
+    expect(out.mode).toBe('proposed');
+    if (out.mode !== 'proposed') return;
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)?.window_start).toBe('09:00');
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: true, executed: true });
+    expect(updateCalendarEvent).toHaveBeenCalledWith(env, {
+      eventId: 'cal-1',
+      patch: {
+        start: { dateTime: '2026-09-07T08:00:00.000Z', timeZone: 'Europe/Kyiv' },
+        end: { dateTime: '2026-09-07T09:00:00.000Z', timeZone: 'Europe/Kyiv' },
+      },
+    });
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)).toMatchObject({
+      window_start: '11:00',
+      calendar_sync_pending: 0,
+    });
+    expect(db.prepare('SELECT due_at FROM reminders WHERE id = ?').get('rem-1')).toEqual({
+      due_at: '2026-09-07T08:00:00.000Z',
+    });
+  });
+
+  it('вилучення блоку видаляє подію та скасовує його нагадування', async () => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ?, reminder_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-1', 'rem-1', item.id);
+    db.prepare('INSERT INTO reminders (id, due_at, text) VALUES (?, ?, ?)').run(
+      'rem-1',
+      '2026-09-07T06:00:00.000Z',
+      'План: Презентація',
+    );
+    vi.mocked(getCalendarEvent).mockResolvedValue({
+      id: 'cal-1',
+      title: 'Презентація',
+      startMs: Date.parse('2026-09-07T06:00:00Z'),
+      endMs: Date.parse('2026-09-07T07:00:00Z'),
+      transparent: false,
+      hasAttendees: false,
+    } as never);
+    vi.mocked(deleteCalendarEvent).mockResolvedValue({ ok: true });
+    const out = await act('plan.update', { date: DATE, drop: [item.id] });
+    expect(out.mode).toBe('proposed');
+    if (out.mode !== 'proposed') return;
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: true, executed: true });
+    expect(deleteCalendarEvent).toHaveBeenCalledWith(env, { eventId: 'cal-1' });
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)).toMatchObject({
+      status: 'skipped',
+      event_id: null,
+      reminder_id: null,
+      calendar_sync_pending: 0,
+    });
+    expect(db.prepare('SELECT status FROM reminders WHERE id = ?').get('rem-1')).toEqual({
+      status: 'cancelled',
+    });
+  });
+
+  it('збій Calendar відновлює план та нагадування; змінена вручну подія блокує правку', async () => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ?, reminder_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-1', 'rem-1', item.id);
+    db.prepare('INSERT INTO reminders (id, due_at, text) VALUES (?, ?, ?)').run(
+      'rem-1',
+      '2026-09-07T06:00:00.000Z',
+      'План: Презентація',
+    );
+    vi.mocked(getCalendarEvent).mockResolvedValue({
+      id: 'cal-1',
+      title: 'Презентація',
+      startMs: Date.parse('2026-09-07T06:00:00Z'),
+      endMs: Date.parse('2026-09-07T07:00:00Z'),
+      transparent: false,
+      hasAttendees: false,
+    } as never);
+    vi.mocked(updateCalendarEvent).mockResolvedValue({ ok: false });
+    const out = await act('plan.update', { date: DATE, moves: [{ id: item.id, to: '11:00' }] });
+    if (out.mode !== 'proposed') throw new Error('expected proposal');
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: false });
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)).toMatchObject({
+      window_start: '09:00',
+      calendar_sync_pending: 0,
+    });
+    expect(db.prepare('SELECT due_at FROM reminders WHERE id = ?').get('rem-1')).toEqual({
+      due_at: '2026-09-07T06:00:00.000Z',
+    });
+
+    vi.mocked(getCalendarEvent).mockResolvedValue({
+      id: 'cal-1',
+      title: 'Презентація',
+      startMs: Date.parse('2026-09-07T07:00:00Z'),
+      endMs: Date.parse('2026-09-07T08:00:00Z'),
+      transparent: false,
+      hasAttendees: false,
+    } as never);
+    const stale = await act(
+      'plan.update',
+      { date: DATE, moves: [{ id: item.id, to: '12:00' }] },
+      NOW + 2,
+    );
+    if (stale.mode !== 'proposed') throw new Error('expected proposal');
+    expect(
+      await resolveProposal(env, { id: stale.proposal.id, choice: 'ok' }, NOW + 3),
+    ).toMatchObject({ ok: false });
+    expect(updateCalendarEvent).toHaveBeenCalledTimes(1);
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)?.window_start).toBe('09:00');
+  });
+
+  it('збій другої події відкочує і першу календарну зміну', async () => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const rows = await listItems(env, DATE);
+    const first = rows.find((r) => r.title === 'Презентація')!;
+    const second = rows.find((r) => r.title === 'Банк')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-1', first.id);
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run('11:00', '11:30', 'cal-2', second.id);
+    vi.mocked(getCalendarEvent).mockImplementation(
+      async (_env, eventId) =>
+        ({
+          id: eventId,
+          title: eventId === 'cal-1' ? 'Презентація' : 'Банк',
+          startMs: Date.parse(
+            eventId === 'cal-1' ? '2026-09-07T06:00:00Z' : '2026-09-07T08:00:00Z',
+          ),
+          endMs: Date.parse(eventId === 'cal-1' ? '2026-09-07T07:00:00Z' : '2026-09-07T08:30:00Z'),
+          transparent: false,
+          hasAttendees: false,
+        }) as never,
+    );
+    vi.mocked(updateCalendarEvent)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false })
+      .mockResolvedValueOnce({ ok: true });
+    const out = await act('plan.update', {
+      date: DATE,
+      moves: [
+        { id: first.id, to: '12:00' },
+        { id: second.id, to: '14:00' },
+      ],
+    });
+    if (out.mode !== 'proposed') throw new Error('expected proposal');
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: false });
+    expect(updateCalendarEvent).toHaveBeenCalledTimes(3);
+    expect(updateCalendarEvent).toHaveBeenLastCalledWith(env, {
+      eventId: 'cal-1',
+      patch: {
+        start: { dateTime: '2026-09-07T06:00:00.000Z', timeZone: 'Europe/Kyiv' },
+        end: { dateTime: '2026-09-07T07:00:00.000Z', timeZone: 'Europe/Kyiv' },
+      },
+    });
+    expect((await listItems(env, DATE)).find((r) => r.id === first.id)?.window_start).toBe('09:00');
+    expect((await listItems(env, DATE)).find((r) => r.id === second.id)?.window_start).toBe(
+      '11:00',
+    );
+  });
+
+  it('часткове вилучення відтворює вже стерту подію й оновлює її ID у плані', async () => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const rows = await listItems(env, DATE);
+    const first = rows.find((r) => r.title === 'Презентація')!;
+    const second = rows.find((r) => r.title === 'Банк')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-1', first.id);
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run('11:00', '11:30', 'cal-2', second.id);
+    vi.mocked(getCalendarEvent).mockImplementation(
+      async (_env, eventId) =>
+        ({
+          id: eventId,
+          title: eventId === 'cal-1' ? 'Презентація' : 'Банк',
+          startMs: Date.parse(
+            eventId === 'cal-1' ? '2026-09-07T06:00:00Z' : '2026-09-07T08:00:00Z',
+          ),
+          endMs: Date.parse(eventId === 'cal-1' ? '2026-09-07T07:00:00Z' : '2026-09-07T08:30:00Z'),
+          transparent: false,
+          hasAttendees: false,
+        }) as never,
+    );
+    vi.mocked(deleteCalendarEvent)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false });
+    const insert = vi.fn(
+      async () => new Response(JSON.stringify({ id: 'cal-new' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', insert);
+    const out = await act('plan.update', { date: DATE, drop: [first.id, second.id] });
+    if (out.mode !== 'proposed') throw new Error('expected proposal');
+    expect(
+      await resolveProposal(env, { id: out.proposal.id, choice: 'ok' }, NOW + 1),
+    ).toMatchObject({ ok: false });
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect((await listItems(env, DATE)).find((r) => r.id === first.id)).toMatchObject({
+      status: 'planned',
+      event_id: 'cal-new',
+    });
+    expect((await listItems(env, DATE)).find((r) => r.id === second.id)).toMatchObject({
+      status: 'planned',
+      event_id: 'cal-2',
+    });
+  });
+
+  it('не змінює план без підключеної бази', async () => {
+    const { env } = setup();
+    env.DB = undefined;
+    await expect(runPlanUpdate(env, { date: DATE, drop: ['item'] }, NOW)).rejects.toThrow(
+      'база даних не підключена',
+    );
+  });
+
+  it('не застосовує одну справу двічі в межах однієї зміни', async () => {
+    const { env, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE))[0]!;
+    await expect(runPlanUpdate(env, { date: DATE, drop: [item.id, item.id] }, NOW)).rejects.toThrow(
+      'вказано кілька разів',
+    );
+  });
+
+  it('не починає другу зміну до завершення календарної синхронізації', async () => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE))[0]!;
+    db.prepare('UPDATE plan_items SET calendar_sync_pending = 1 WHERE id = ?').run(item.id);
+    await expect(runPlanUpdate(env, { date: DATE, drop: [item.id] }, NOW)).rejects.toThrow(
+      'ще синхронізується',
+    );
+  });
+
+  it.each([
+    ['видалена подія', null, false, 'Не знайшов'],
+    ['гості', 'Презентація', true, 'є гості'],
+    ['чужа назва', 'Інша назва', false, 'уже змінено'],
+  ])('не змінює календарний блок: %s', async (_name, title, hasAttendees, reason) => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-guard', item.id);
+    vi.mocked(getCalendarEvent).mockResolvedValue(
+      title
+        ? ({
+            id: 'cal-guard',
+            title,
+            startMs: Date.parse('2026-09-07T06:00:00Z'),
+            endMs: Date.parse('2026-09-07T07:00:00Z'),
+            hasAttendees,
+          } as never)
+        : null,
+    );
+    await expect(runPlanUpdate(env, { date: DATE, drop: [item.id] }, NOW)).rejects.toThrow(reason);
+    expect(deleteCalendarEvent).not.toHaveBeenCalled();
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)?.status).toBe('planned');
+  });
+
+  it.each([
+    ['завершення поза добою', '23:30'],
+    ['некоректний час', 'завтра'],
+  ])('відхиляє перенесення: %s', async (_name, to) => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run('09:00', '10:00', 'cal-late', item.id);
+    vi.mocked(getCalendarEvent).mockResolvedValue({
+      id: 'cal-late',
+      title: 'Презентація',
+      startMs: Date.parse('2026-09-07T06:00:00Z'),
+      endMs: Date.parse('2026-09-07T07:00:00Z'),
+      hasAttendees: false,
+    } as never);
+    await expect(
+      runPlanUpdate(env, { date: DATE, moves: [{ id: item.id, to }] }, NOW),
+    ).rejects.toThrow();
+    expect(updateCalendarEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'початок події відсутній',
+      '09:00',
+      '10:00',
+      null,
+      Date.parse('2026-09-07T07:00:00Z'),
+      'Не знайшов',
+    ],
+    [
+      'кінець події відсутній',
+      '09:00',
+      '10:00',
+      Date.parse('2026-09-07T06:00:00Z'),
+      null,
+      'Не знайшов',
+    ],
+    [
+      'початок блоку відсутній',
+      null,
+      '10:00',
+      Date.parse('2026-09-07T06:00:00Z'),
+      Date.parse('2026-09-07T07:00:00Z'),
+      'уже змінено',
+    ],
+    [
+      'кінець блоку відсутній',
+      '09:00',
+      null,
+      Date.parse('2026-09-07T06:00:00Z'),
+      Date.parse('2026-09-07T07:00:00Z'),
+      'уже змінено',
+    ],
+  ])('не змінює неузгоджений блок: %s', async (_name, start, end, startMs, endMs, reason) => {
+    const { env, db, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    db.prepare(
+      'UPDATE plan_items SET window_start = ?, window_end = ?, event_id = ? WHERE id = ?',
+    ).run(start, end, 'cal-incomplete', item.id);
+    vi.mocked(getCalendarEvent).mockResolvedValue({
+      id: 'cal-incomplete',
+      title: 'Презентація',
+      startMs,
+      endMs,
+      hasAttendees: false,
+    } as never);
+    await expect(runPlanUpdate(env, { date: DATE, drop: [item.id] }, NOW)).rejects.toThrow(reason);
+    expect(deleteCalendarEvent).not.toHaveBeenCalled();
+  });
+
+  it('дозволяє вилучити ще не записану в календар справу без виклику Google', async () => {
+    const { env, act } = setup();
+    await act('plan.intent', { date: DATE, items: ITEMS });
+    const item = (await listItems(env, DATE)).find((r) => r.title === 'Презентація')!;
+    await runPlanUpdate(env, { date: DATE, drop: [item.id] }, NOW);
+    expect(deleteCalendarEvent).not.toHaveBeenCalled();
+    expect((await listItems(env, DATE)).find((r) => r.id === item.id)?.status).toBe('skipped');
+  });
+
+  it('не складає сліпий розклад, коли календар недоступний', async () => {
+    const { env } = setup();
+    vi.mocked(readCalendarRange).mockResolvedValueOnce(null);
+    await expect(runPlanIntent(env, { date: DATE, items: ITEMS }, NOW)).rejects.toThrow(
+      'календар недоступний',
+    );
+  });
+
+  it('витримує подію календаря без назви й часових полів', async () => {
+    const { env } = setup();
+    vi.mocked(readCalendarRange).mockResolvedValueOnce([{}] as never);
+    const result = await runPlanIntent(env, { date: DATE, items: ITEMS }, NOW);
+    expect(result.result.date).toBe(DATE);
+  });
+
+  it('обмежує завеликий список ще до запису чернетки', async () => {
+    const { env } = setup();
+    await expect(
+      runPlanIntent(
+        env,
+        { date: DATE, items: Array.from({ length: 100 }, (_, i) => ({ title: `Справа ${i}` })) },
+        NOW,
+      ),
+    ).rejects.toThrow('понад');
+  });
+
+  it('складає план на сьогодні з урахуванням поточного часу', async () => {
+    const { env } = setup();
+    const result = await runPlanIntent(env, { date: 'сьогодні', items: ITEMS }, NOW);
+    expect(result.result.date).toBe('2026-09-06');
   });
 });

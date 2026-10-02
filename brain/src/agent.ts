@@ -443,9 +443,10 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           text = e.partialText.trim();
           partial = true;
         } else {
+          const detail = shortError(e);
           return stepFail(
-            `Працівник «${worker}» впав: ${shortError(e)}.`,
-            `worker-failed:${shortError(e).slice(0, 60)}`,
+            `${userFacingError(e, abort.signal.reason)}`,
+            `worker-failed:${detail.slice(0, 60)}`,
           );
         }
       }
@@ -471,6 +472,9 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         ok: true,
         note: `${partial ? 'partial ' : ''}${text.length} симв., ${workerCalls} інстр.${workerApi ? `, ${workerApi}` : ''}`,
       });
+      const cardContext = workerCardContext(worker, task, req.input.text);
+      const cardName =
+        cardContext === 'price-search' || cardContext === 'place-search' ? cardContext : worker;
       return {
         text: `${partial ? 'Частину результату вже підготовлено' : 'Ось підготовлений результат'}:\n${visible}`,
         isError: false,
@@ -480,13 +484,8 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
         // витягне лише allowlisted сторінки магазинів і додасть кнопки вибору.
         // Це не довіра до назви з вебу, а тип нашого внутрішнього сценарію.
         worker: {
-          name:
-            worker === 'researcher' && /(?:ціна|цін[ауиі]|магазин|товар|грн|відстеж)/iu.test(task)
-              ? 'price-search'
-              : worker === 'researcher' &&
-                  /(?:ресторан|кафе|заклад|столик|місце\s+на\s+вечерю)/iu.test(task)
-                ? 'place-search'
-                : worker,
+          name: cardName,
+          ...(cardContext ? { context: cardContext } : {}),
           text: clipHead(text, DELIVER_WORKER_MAX_CHARS),
         },
       };
@@ -821,7 +820,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       console.error(`run ${req.run_id} (${profile.name}): ${reason}`);
       // Помилка видима (00-README п.6): власник має побачити збій, не тишу.
       try {
-        await deps.client.deliver(req.run_id, `Прогін не вдався: ${reason}.`);
+        await deps.client.deliver(req.run_id, `⚠️ ${userFacingError(err, abort.signal.reason)}`);
       } catch (deliverErr) {
         console.error(`run ${req.run_id}: deliver збою теж упав: ${String(deliverErr)}`);
       }
@@ -962,6 +961,52 @@ export function parseJsonOutput(text: string): Record<string, unknown> | null {
 function shortError(err: unknown): string {
   if (err instanceof Error) return err.message.slice(0, 200);
   return String(err).slice(0, 200);
+}
+
+/** Не показуємо власнику відповіді провайдера, статус-коди, ліміти чи білінг.
+ * Сирий опис лишається лише у внутрішньому журналі для діагностики. */
+export function userFacingError(err: unknown, abortReason?: unknown): string {
+  const detail = shortError(err).toLowerCase();
+  if (abortReason === 'timeout' || /timeout|timed out|таймаут/u.test(detail)) {
+    return 'Запит затягнувся. Спробуй ще раз трохи пізніше.';
+  }
+  if (
+    /\b(402|429)\b/u.test(detail) ||
+    /rate.?limit|too many requests|quota|credits? depleted|prepayment|billing|resource_exhausted/u.test(
+      detail,
+    )
+  ) {
+    return 'Сервіс тимчасово обмежив запити. Спробуй трохи пізніше.';
+  }
+  return 'Не вдалося завершити запит. Спробуй ще раз.';
+}
+
+/** Класифікує лише набір кнопок картки; справжнє імʼя працівника лишається
+ * незмінним для оцінювання якості й журналу його запусків. */
+export function workerCardContext(
+  worker: string,
+  task: string,
+  userRequest = '',
+): DeliverWorker['context'] | null {
+  const intent = `${task}\n${userRequest}`;
+  if (worker === 'researcher' && /(?:ціна|цін[ауиі]|магазин|товар|грн|відстеж)/iu.test(intent))
+    return 'price-search';
+  if (
+    worker === 'researcher' &&
+    /(?:ресторан|кафе|заклад|столик|місце\s+на\s+вечерю)/iu.test(intent)
+  )
+    return 'place-search';
+  if (
+    ['analyst', 'finance'].includes(worker) &&
+    /(?:витрат|витратив|списан|платеж|покупк|бюджет)/iu.test(intent)
+  )
+    return 'finance-summary';
+  if (
+    ['planner', 'researcher'].includes(worker) &&
+    /(?:поїзд|подорож|мандрів|готел|туризм|подорожув)/iu.test(intent)
+  )
+    return 'trip-plan';
+  return null;
 }
 
 /** Id для callback-даних 07 §9: рівно те, що приймає parsePolicyCallback ядра.

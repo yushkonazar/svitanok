@@ -33,6 +33,7 @@ import { weeklyReviewTask } from '../brain/weekly-review-task.mjs';
 import { backupTask } from '../backup/task.mjs';
 import { dailyHintTask } from '../hints/daily-hint.mjs';
 import { dayPlanKickTask } from '../day-plan/kick.mjs';
+import { reconcilePlanCalendar } from '../day-plan/calendar-sync.mjs';
 import { chainNudgeTask } from '../chains/nudge.mjs';
 import { priceTrackKickTask } from '../chains/price.mjs';
 import { steamCheckTask } from '../steam/check.mjs';
@@ -97,6 +98,7 @@ export const SCHEDULER_TASKS = {
       await deliverDueReminders(env);
     },
   },
+  'plan-calendar-sync': { periodMin: 5, run: reconcilePlanCalendar },
   'run-watchdog': { periodMin: 5, run: agentRunWatchdog },
   // Обидва мозки під одним канонічним kind: старий хост (agentHostHealthCheck,
   // живе до кінця етапу 2) і handshake нового (checkBrainHandshake - тихий

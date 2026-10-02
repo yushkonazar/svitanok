@@ -749,6 +749,7 @@ export const TOOLS = {
       type: 'object',
       properties: {
         date: { type: 'string', maxLength: 16 },
+        starts: { type: 'array', items: { type: 'object' } },
         done: { type: 'array', items: { type: 'string', maxLength: 80 } },
         moves: {
           type: 'array',

@@ -17,6 +17,8 @@ import {
   type EngineOutcome,
   type EngineRunOptions,
   type ToolExecution,
+  userFacingError,
+  workerCardContext,
 } from '../brain/src/agent.js';
 import type { InstructionOutcome, ToolCallOutcome } from '../brain/src/core-client.js';
 import type { RunRequest } from '../brain/src/server.js';
@@ -458,15 +460,36 @@ describe('makeRunner: quick і збої', () => {
     expect(String(steps[0]!.note)).toContain('розійшовся з тілом');
   });
 
-  it('збій рушія: власник бачить «Прогін не вдався», steps звітуються з error', async () => {
+  it('збій рушія: власник бачить людське повідомлення, технічна причина лишається в журналі', async () => {
     const client = makeClient();
     const { engine } = scriptedEngine(async () => {
       throw new Error('SDK упав');
     });
     await makeRunner({ client, engine })(req());
-    expect(String(client.deliver.mock.calls[0]![1])).toMatch(/^Прогін не вдався: SDK упав/);
+    expect(String(client.deliver.mock.calls[0]![1])).toBe(
+      '⚠️ Не вдалося завершити запит. Спробуй ще раз.',
+    );
+    expect(String(client.deliver.mock.calls[0]![1])).not.toContain('SDK');
     const steps = client.reportRuns.mock.calls[0]![1] as Array<Record<string, unknown>>;
     expect(steps[0]).toMatchObject({ kind: 'error', ok: false });
+  });
+
+  it('429 та вичерпаний білінг не витікають у повідомлення користувачу', () => {
+    const visible = userFacingError(new Error('OpenAI Responses HTTP 429: insufficient_quota'));
+    expect(visible).toBe('Сервіс тимчасово обмежив запити. Спробуй трохи пізніше.');
+    expect(visible).not.toMatch(/OpenAI|429|quota|billing/i);
+    expect(userFacingError(new Error('socket timed out'))).toContain('Запит затягнувся');
+  });
+
+  it('429 під час реального прогону віддає короткий статус без деталей API', async () => {
+    const client = makeClient();
+    const { engine } = scriptedEngine(async () => {
+      throw new Error('OpenAI Responses HTTP 429: insufficient_quota');
+    });
+    await makeRunner({ client, engine })(req());
+    const visible = String(client.deliver.mock.calls[0]![1]);
+    expect(visible).toContain('Сервіс тимчасово обмежив запити');
+    expect(visible).not.toMatch(/OpenAI|HTTP 429|quota/i);
   });
 
   it('збій рушія + збій deliver - без неперехопленого, телеметрія все одно йде', async () => {
@@ -480,6 +503,17 @@ describe('makeRunner: quick і збої', () => {
     });
     await expect(makeRunner({ client, engine })(req())).resolves.toBeUndefined();
     expect(client.reportRuns).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('worker card context', () => {
+  it('підбирає дії за запитом, не змінюючи фактичне імʼя працівника', () => {
+    expect(workerCardContext('analyst', 'Порівняй витрати за останній тиждень')).toBe(
+      'finance-summary',
+    );
+    expect(workerCardContext('researcher', 'Підготуй столики у Львові')).toBe('place-search');
+    expect(workerCardContext('planner', 'Сплануй поїздку до Києва')).toBe('trip-plan');
+    expect(workerCardContext('editor', 'Скороти текст')).toBeNull();
   });
 });
 

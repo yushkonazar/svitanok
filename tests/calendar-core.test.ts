@@ -218,6 +218,16 @@ describe('formatRangeEventsForPrompt (CC1)', () => {
 });
 
 describe('buildCreateEventBody', () => {
+  it('плаваючий блок плану є неблокувальним і не успадковує сповіщення календаря', () => {
+    const body = buildCreateEventBody({
+      title: 'Сніданок',
+      startIso: '2026-09-07T06:00:00Z',
+      endIso: '2026-09-07T06:25:00Z',
+      transparent: true,
+      silent: true,
+    });
+    expect(body).toMatchObject({ transparency: 'transparent', reminders: { useDefault: false } });
+  });
   it('будує тіло events.insert з Europe/Kyiv timeZone', () => {
     expect(
       buildCreateEventBody({

@@ -46,14 +46,17 @@ export const DELIVER_SCHEMA = /** @type {InternalSchema} */ ({
         },
       },
     },
-    // Результат останнього працівника (етап 4, S-7-1): ядро кладе в reports
-    // і додає кнопки «Коротше / Інший тон / .md»; понад 3 500 - файл + Drive.
+    // Картка визначає доречні дії, але не підміняє імʼя працівника в оцінюванні.
     worker: {
       type: 'object',
       required: ['name', 'text'],
       properties: {
         name: { type: 'string', maxLength: 32 },
         text: { type: 'string', maxLength: 20_000 },
+        context: {
+          type: 'string',
+          enum: ['price-search', 'place-search', 'finance-summary', 'trip-plan'],
+        },
       },
     },
   },

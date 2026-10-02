@@ -653,11 +653,12 @@ export async function readCalendarRange(
 /**
  * @param {Env} env
  * @param {{ title: string, startIso: string, endIso: string, reminderMinutes?: number,
- *           location?: string|null, attendees?: string[]|null }} opts
+ *           location?: string|null, attendees?: string[]|null,
+ *           transparent?: boolean, silent?: boolean }} opts
  */
 export async function createCalendarEvent(
   env,
-  { title, startIso, endIso, reminderMinutes, location, attendees },
+  { title, startIso, endIso, reminderMinutes, location, attendees, transparent, silent },
 ) {
   const token = await googleAccessToken(env);
   if (!token) return { ok: false };
@@ -668,7 +669,16 @@ export async function createCalendarEvent(
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(
-        buildCreateEventBody({ title, startIso, endIso, reminderMinutes, location, attendees }),
+        buildCreateEventBody({
+          title,
+          startIso,
+          endIso,
+          reminderMinutes,
+          location,
+          attendees,
+          transparent,
+          silent,
+        }),
       ),
     });
     if (!res.ok) {
@@ -710,7 +720,10 @@ export async function getCalendarEvent(/** @type {Env} */ env, /** @type {string
       return null;
     }
     const json = /** @type {any} */ (await res.json());
-    return parseEvents({ items: [json] })[0] ?? null;
+    const event = parseEvents({ items: [json] })[0];
+    return event
+      ? { ...event, hasAttendees: Array.isArray(json.attendees) && json.attendees.length > 0 }
+      : null;
   } catch (/** @type {any} */ err) {
     console.error('google calendar get failed', err.message);
     return null;

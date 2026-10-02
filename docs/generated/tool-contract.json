@@ -569,7 +569,8 @@
               "type": "object"
             },
             "type": "array"
-          }
+          },
+          "starts": { "items": { "type": "object" }, "type": "array" }
         },
         "type": "object"
       },

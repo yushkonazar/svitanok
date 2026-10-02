@@ -31,6 +31,7 @@ const {
   fetchBriefing,
   fetchDeletionReceipts,
   fetchSettings,
+  fetchWorkerQuality,
   fetchSaved,
 } = await import('./client.ts');
 
@@ -116,6 +117,7 @@ describe('401/403 у Telegram — не демо, а blocking session-expired с�
       ['briefing', () => fetchBriefing()],
       ['deletions', () => fetchDeletionReceipts()],
       ['settings', () => fetchSettings()],
+      ['worker quality', () => fetchWorkerQuality()],
       ['saved', () => fetchSaved(0)],
     ])('%s: HTTP ' + status + ' не підставляє sample-дані', async (_name, run) => {
       fetchMock.mockResolvedValueOnce(new Response('', { status }));
@@ -162,5 +164,39 @@ describe('GET /api/deletions — приватна read-only квитанція',
     expect(lastCall().headers['x-telegram-init-data']).toBe(tg.initData);
     expect(JSON.stringify(result)).not.toContain('server-private-id');
     expect(result.receipts[0]?.stages.local).toMatchObject({ rows: 10, kvKeys: 5 });
+  });
+});
+
+describe('GET /api/assistant-status — безпечний огляд якості працівників', () => {
+  it('надсилає Telegram auth і повертає лише агрегати якості', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          dashboard: {
+            worker_quality: [
+              {
+                worker: 'planner',
+                results: 4,
+                sample_size: 6,
+                succeeded: 6,
+                failed: 0,
+                success_rate_pct: 100,
+                avg_latency_ms: 840,
+                max_latency_ms: 1200,
+                feedback: { good: 2, bad: 1 },
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    const result = await fetchWorkerQuality();
+
+    expect(lastCall().url).toBe('/api/assistant-status');
+    expect(lastCall().headers['x-telegram-init-data']).toBe(tg.initData);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ worker: 'planner', results: 4, sample_size: 6 });
   });
 });
