@@ -810,6 +810,29 @@ describe('prerouteMessage: нові команди', () => {
     expect(line).toContain('Режим асистента: on');
   });
 
+  it('/ready не вважає недоступний реєстр інструкцій здоровим', async () => {
+    const reg = makeRegistryStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    (env as { DB?: unknown }).DB = {
+      prepare: () => ({ all: async () => Promise.reject(new Error('database unavailable')) }),
+    };
+    (env as { BRIEFING: unknown }).BRIEFING = {
+      get: async (key: string) =>
+        key === 'brainHealthState'
+          ? JSON.stringify({
+              state: 'ok',
+              detail: '1.0.0 @ same-sha',
+              checkedAtMs: NOW,
+              modelReadiness: { state: 'ready', detail: 'моделі: gpt-6-sol' },
+            })
+          : null,
+    };
+
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).toContain('Інструкції: невідомо');
+    expect(line).not.toContain('✅ Усе живе.');
+  });
+
   it('/status показує готовність моделей і останній успішний model run, не shadow', async () => {
     const reg = makeRegistryStub();
     const d1 = d1WithInstructions(['0001_base.sql', '0002_assistant.sql', '0003_telemetry.sql']);
@@ -865,12 +888,32 @@ describe('prerouteMessage: нові команди', () => {
       ],
     ]);
     const env = makeEnv(reg, d1.stub);
+    const db = env.DB;
+    (env as { DB?: unknown }).DB = {
+      prepare: (sql: string) =>
+        sql.includes('count(*) AS n, max(deployed_at) AS last')
+          ? { all: async () => ({ results: [{ n: 16, last: '2026-10-01T00:00:00Z' }] }) }
+          : db!.prepare(sql),
+    };
     (env as { BRIEFING: unknown }).BRIEFING = { get: async (key: string) => kv.get(key) ?? null };
 
     const line = await systemStatusLine(env, {}, NOW);
     expect(line).toContain('✅ Усе живе.');
+    expect(line).toContain('Worker: ⚪ версія недоступна локально.');
     expect(line).toContain('Моделі: ✅ готові');
     expect(line).toContain('Останній успішний run: 1 хв тому (chat, claude-sonnet-5)');
+  });
+
+  it('/ready показує короткий ID фактичної Cloudflare Worker-версії', async () => {
+    const reg = makeRegistryStub();
+    const env = makeEnv(reg, d1WithInstructions(['0001_base.sql', '0002_assistant.sql']).stub);
+    (env as { CF_VERSION_METADATA?: { id: string } }).CF_VERSION_METADATA = {
+      id: '12345678-abcd-4abc-8def-1234567890ab',
+    };
+
+    const line = await systemStatusLine(env, {}, NOW);
+    expect(line).toContain('Worker: ✅ 12345678abcd.');
+    expect(line).not.toContain('CF_VERSION_METADATA');
   });
 
   it('/status не каже «усе живе», коли recovery backup або briefing runner потребує дії', async () => {

@@ -22,6 +22,9 @@ type WorkerSecret = string | undefined;
 interface Env {
   /* ── Прив'язки (wrangler.jsonc) ─────────────────────────────────────── */
 
+  /** Ідентифікатор фактичної Cloudflare Worker-версії для приватного /ready. */
+  CF_VERSION_METADATA?: import('@cloudflare/workers-types').WorkerVersionMetadata;
+
   /** KV-неймспейс BRIEFING. Ключі та патерни доступу — `web/kv-store.mjs`. */
   BRIEFING: import('@cloudflare/workers-types').KVNamespace;
   /** Статика React-дашборда (`web/public`), біндинг `assets`. */
