@@ -46,12 +46,18 @@ export function workerFollowupText(result, choice) {
 }
 
 /**
- * ⚠️ КНОПКИ ЗА ПРАЦІВНИКОМ, а не однакові на все (скарга 15 прогону 08.09:
+ * ⚠️ КНОПКИ ЗА КОНТЕКСТОМ, а не однакові на все (скарга 15 прогону 08.09:
  * під тріажем пошти висіли «Коротше / Інший тон» - кнопки для ТЕКСТУ, а не
- * для переліку листів). Ключі - з WORKER_FOLLOWUPS; невідомий працівник
- * дістає базовий набір, бо для довільного тексту він і правильний.
- * @type {Record<string, { key: keyof typeof WORKER_FOLLOWUPS, text: string }[]>}
+ * для переліку листів). Ключі - з WORKER_FOLLOWUPS; невідомий контекст
+ * не отримує дій, доки для нього не визначено безпечну картку.
  */
+/** @type {{ key: keyof typeof WORKER_FOLLOWUPS, text: string }[]} */
+const CONTENT_ACTIONS = [
+  { key: /** @type {const} */ ('short'), text: '✏️ Коротше' },
+  { key: /** @type {const} */ ('tone'), text: '🔁 Інший тон' },
+];
+
+/** @type {Record<string, { key: keyof typeof WORKER_FOLLOWUPS, text: string }[]>} */
 const WORKER_ACTIONS = {
   // Вибір магазину — основна дія під підбором ціни; загальні «Коротше» й
   // «Інший тон» тут лише заважали б зробити наступний крок.
@@ -65,18 +71,16 @@ const WORKER_ACTIONS = {
     { key: 'week', text: '📊 По тижнях' },
     { key: 'short', text: '✏️ Коротше' },
   ],
+  'finance-summary': [{ key: 'spend', text: '💸 Куди пішли' }],
   // Planning and trip flows must own their own stateful controls; a generic
   // calendar button can schedule the wrong thing from a mixed draft.
   planner: [],
+  'trip-plan': [],
   finance: [{ key: 'spend', text: '💸 Куди пішли' }],
   tutor: [], // Stateful controls live in learning-session.mjs.
+  copywriter: CONTENT_ACTIONS,
+  editor: CONTENT_ACTIONS,
 };
-
-/** Базовий набір - для тексту, який просять переписати (копірайтер, редактор). */
-const WORKER_ACTIONS_DEFAULT = [
-  { key: /** @type {const} */ ('short'), text: '✏️ Коротше' },
-  { key: /** @type {const} */ ('tone'), text: '🔁 Інший тон' },
-];
 
 // Export is a content action, not a default decoration. Avoid offering a file
 // for short operational answers (finance, planning, places, price checks).
@@ -97,7 +101,9 @@ export function workerButtons(id, withMd, worker = '') {
   // приходить від моделі, і `constructor` проходив би NAME_RE, резолвився в
   // Object і валив доставку відповіді на `.map`.
   const set = Object.hasOwn(WORKER_ACTIONS, worker) ? WORKER_ACTIONS[worker] : undefined;
-  const actions = set ?? WORKER_ACTIONS_DEFAULT;
+  // Невідомий/відсутній контекст не означає, що потрібне переписування:
+  // краще показати оцінку відповіді, ніж кнопки «Коротше» під маршрутом.
+  const actions = set ?? [];
   // Mail has its own report/list actions, including its own conditional .md.
   if (worker === 'mail-secretary') {
     return buildActionCardRows({ feedbackId: id });

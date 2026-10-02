@@ -27,6 +27,7 @@ import { calendarizeBlocks } from '../tools/plan.mjs';
 import { computeSlots, formatDraft, energyBySlot, hhmmToMin, minToHhmm } from './slots.mjs';
 import {
   readDayPlanConfig,
+  getDayPlan,
   upsertDayPlan,
   replaceItems,
   normalizeItem,
@@ -49,8 +50,8 @@ export const WAIT_INTENT_MS = 3 * 3_600_000;
 export const WAIT_ANSWER_MS = 3_600_000;
 export const WAIT_WORKER_MS = 10 * 60_000;
 export const WAIT_CARRY_MS = 2 * 3_600_000;
-/** Стеля змін від працівника в replan (day-planner.md §5: «не більше 3»). */
-export const REPLAN_MAX_CHANGES = 3;
+/** Захисна стеля змін одного редагування; кілька вечірніх справ допустимі. */
+export const REPLAN_MAX_CHANGES = 20;
 export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
 
 /**
@@ -59,7 +60,7 @@ export const DAY_PLANNER_MODEL = 'claude-sonnet-5';
  *   target?: { chatId: number | string | null, threadId: number | string | null },
  *   send: (text: string, buttons?: { text: string, callback_data: string }[][]) => Promise<void>,
  *   startWorker: (mode: 'intent' | 'explain' | 'replan', task: Record<string, unknown>) => Promise<boolean>,
- *   readCalendar: (date: string) => Promise<{ title: string, startMin: number | null, endMin: number | null }[] | null>,
+ *   readCalendar: (date: string) => Promise<{ title: string, startMin: number | null, endMin: number | null, transparent?: boolean }[] | null>,
  *   readEnergy: () => Promise<{ morning: number, afternoon: number, evening: number } | null>,
  * }} ChainIo
  * @typedef {{
@@ -79,20 +80,26 @@ function buttons(chainId, pairs) {
 /**
  * Машина станів ланцюга. Повертає підсумок для журналу.
  * @param {Env} env
- * @param {{ chainId: string, date: string, oneShot?: boolean, initialIntent?: string }} params
+ * @param {{ chainId: string, date: string, oneShot?: boolean, initialIntent?: string, resumeDraft?: boolean }} params
  * @param {ChainStep} step
  * @param {ChainIo} io
  */
 export async function runDayPlanChain(env, params, step, io) {
   const { chainId, date } = params;
-  const config = await step.do('config', () => readDayPlanConfig(env));
+  const config = await step.do('config', () => readDayPlanConfig(env, io.now()));
   const eve = addDaysToDateKey(date, -1);
+  const savedDraft = params.resumeDraft
+    ? await step.do('load-draft', async () =>
+        (await getDayPlan(env, date))?.status === 'draft' ? await listItems(env, date) : null,
+      )
+    : null;
 
   // 1. Scheduled workflow asks the evening before. A direct /plan or an
   // explicit free-text day-plan request starts the same workflow immediately.
   /** @type {{ text?: string, choice?: string } | null} */
-  let intent =
-    typeof params.initialIntent === 'string' && params.initialIntent.trim()
+  let intent = savedDraft?.length
+    ? { choice: 'resume' }
+    : typeof params.initialIntent === 'string' && params.initialIntent.trim()
       ? { text: params.initialIntent.trim() }
       : null;
   if (!intent) {
@@ -102,7 +109,7 @@ export async function runDayPlanChain(env, params, step, io) {
       await setChainState(env, chainId, { status: 'waiting', awaiting: 'intent' });
       const question = params.oneShot
         ? `Що запланувати на ${date === kyivDateKey(new Date(io.now())) ? 'сьогодні' : 'завтра'}, ${ddmm(date)}? Напиши справи, порядок і відомі часи.`
-        : `Що завтра (${ddmm(date)})? 1-6 речей текстом або голосом; «нічого особливого» - теж відповідь.`;
+        : `Що завтра (${ddmm(date)})? Назви всі справи, роботу й відомі часи текстом або голосом. «Нічого особливого» — теж відповідь.`;
       await io.send(
         question,
         buttons(chainId, [
@@ -135,7 +142,7 @@ export async function runDayPlanChain(env, params, step, io) {
 
   // 2. Намір → пункти (Денний, mode=intent) з уточненнями (S-P-10).
   /** @type {ReturnType<typeof normalizeItem>[]} */
-  let items = [];
+  let items = savedDraft?.map((r, i) => normalizeItem(r, i)) ?? [];
   if (intentText) {
     await step.do('save-intent', () =>
       upsertDayPlan(
@@ -146,7 +153,16 @@ export async function runDayPlanChain(env, params, step, io) {
       ),
     );
     const started = await step.do('worker-intent', () =>
-      io.startWorker('intent', { text: intentText, date }),
+      io.startWorker('intent', {
+        text: intentText,
+        date,
+        ...(config.habits.work_start_at
+          ? {
+              work_start_at: config.habits.work_start_at,
+              work_start_samples: config.habits.work_start_samples,
+            }
+          : {}),
+      }),
     );
     const parsed = started
       ? await waitOrNull(step, 'wait-intent-parsed', 'worker', WAIT_WORKER_MS)
@@ -154,15 +170,24 @@ export async function runDayPlanChain(env, params, step, io) {
     items = await step.do('items', async () => normalizeIntent(parsed?.output, intentText));
     /** @type {any[]} */
     const questions = Array.isArray(parsed?.output?.questions)
-      ? parsed.output.questions.slice(0, 2)
+      ? parsed.output.questions
+          .filter((/** @type {any} */ q) => q && typeof q === 'object')
+          .sort(
+            (/** @type {any} */ a, /** @type {any} */ b) =>
+              Number(b.field === 'choice') - Number(a.field === 'choice'),
+          )
+          .slice(0, 4)
       : [];
+    const excludedIds = new Set();
     // Працівник має питати тривалість для глибоких блоків і виїздів. Це
     // критичне правило дублюємо в ядрі: якщо модель пропустила уточнення,
     // не дозволяємо типовій оцінці непомітно перетворитися на готовий розклад.
     const durationAsked = new Set(
-      questions.filter((q) => Number.isInteger(q?.item)).map((q) => q.item),
+      questions
+        .filter((q) => q?.field !== 'choice' && Number.isInteger(q?.item))
+        .map((q) => q.item),
     );
-    for (let itemIndex = 0; itemIndex < items.length && questions.length < 2; itemIndex += 1) {
+    for (let itemIndex = 0; itemIndex < items.length && questions.length < 4; itemIndex += 1) {
       const item = items[itemIndex];
       if (!item) continue;
       if (
@@ -183,10 +208,16 @@ export async function runDayPlanChain(env, params, step, io) {
     if (questions.length) {
       for (let qi = 0; qi < questions.length; qi += 1) {
         const q = questions[qi];
+        if (Number.isInteger(q?.item) && excludedIds.has(items[q.item]?.id)) continue;
         await step.do(`ask-question-${qi}`, async () => {
           await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
           /** @type {unknown[]} */
-          const options = Array.isArray(q.options) ? q.options.slice(0, 4) : ['не знаю'];
+          const options =
+            q.field === 'choice' && Array.isArray(q.choices)
+              ? q.choices.slice(0, 4).map((/** @type {any} */ c) => c.label)
+              : Array.isArray(q.options)
+                ? q.options.slice(0, 4)
+                : ['не знаю'];
           await io.send(
             String(q.q ?? 'Уточни, будь ласка'),
             buttons(
@@ -196,8 +227,34 @@ export async function runDayPlanChain(env, params, step, io) {
           );
         });
         const answer = await waitOrNull(step, `wait-answer-${qi}`, 'answer', WAIT_ANSWER_MS);
+        if (q.field === 'choice' && Array.isArray(q.choices)) {
+          const alternatives = new Set(
+            q.choices.flatMap((/** @type {any} */ c) =>
+              Array.isArray(c.items) ? c.items.filter(Number.isInteger) : [],
+            ),
+          );
+          const picked =
+            typeof answer?.option === 'number'
+              ? q.choices[answer.option]
+              : q.choices.find(
+                  (/** @type {any} */ c) =>
+                    String(c.label).toLowerCase() ===
+                    String(answer?.text ?? '')
+                      .trim()
+                      .toLowerCase(),
+                );
+          if (picked && Array.isArray(picked.items)) {
+            const kept = new Set(picked.items.filter(Number.isInteger));
+            for (const index of alternatives)
+              if (!kept.has(index) && items[index]) excludedIds.add(items[index].id);
+          } else {
+            for (const index of alternatives) if (items[index]) items[index].flexible = true;
+          }
+          continue;
+        }
         items = applyAnswer(items, questions, answer, qi);
       }
+      if (excludedIds.size) items = items.filter((item) => !excludedIds.has(item.id));
     }
   }
   // Перенесені з учора - у план завжди (S-P-15).
@@ -215,6 +272,10 @@ export async function runDayPlanChain(env, params, step, io) {
             place: c.place,
             carried_from: c.carried_from,
             priority: c.priority,
+            optional: c.optional,
+            floating: c.floating,
+            notify: c.notify,
+            role: c.role,
           },
           items.length,
         ),
@@ -223,21 +284,18 @@ export async function runDayPlanChain(env, params, step, io) {
   }
 
   // 3. Розкладка ядром (S-P-11) і чернетка (S-P-12).
-  const draft = await step.do('slots', async () => {
+  let draft = await step.do('slots', async () => {
     const events = await io.readCalendar(date);
     const energy = await io.readEnergy();
     const slots = computeSlots({
       date,
-      items: items.slice(0, ITEMS_MAX),
+      items,
       events: events ?? [],
       settings: config.settings,
       habits: config.habits,
       energy,
       nowMin: date === kyivDateKey(new Date(io.now())) ? kyivMinuteOfDay(new Date(io.now())) : null,
     });
-    for (const item of items.slice(ITEMS_MAX)) {
-      slots.flexible.push({ ...item, why: 'поза першими шістьма пунктами' });
-    }
     await replaceItems(env, date, slots, items);
     await upsertDayPlan(
       env,
@@ -247,76 +305,97 @@ export async function runDayPlanChain(env, params, step, io) {
     );
     return { slots, events: events ?? [], calendarUnavailable: events == null };
   });
-  const explained = await explain(step, io, date, draft, 'explain');
-  await step.do('send-draft', async () => {
-    await setChainState(env, chainId, { status: 'waiting', awaiting: 'accept' });
-    await io.send(
-      `${draft.calendarUnavailable ? '⚠️ Календар недоступний; зайнятість не перевірив.\n' : ''}${explained}`,
-      buttons(chainId, [
-        ['✅ Так', 'accept'],
-        ['✏️ Змінити', 'edit'],
-        ['🗓 У календар', 'calendar'],
-      ]),
+  let approved = false;
+  for (let revision = 0; revision < 6; revision += 1) {
+    const unresolved = draft.slots.flexible.filter((i) => !i.optional);
+    const canApprove = !draft.calendarUnavailable && unresolved.length === 0;
+    await step.do(`send-draft-${revision}`, async () => {
+      await setChainState(env, chainId, { status: 'waiting', awaiting: 'accept' });
+      await io.send(
+        `${draft.calendarUnavailable ? '⚠️ Календар недоступний; план поки не можна затвердити.\n' : ''}${formatDraft(date, draft.slots, draft.events)}`,
+        buttons(
+          chainId,
+          /** @type {[string, string][]} */ ([
+            ...(canApprove ? [['✅ Затвердити й записати', 'accept']] : []),
+            ['✏️ Змінити', 'edit'],
+            ['🕓 Пізніше', 'later'],
+          ]),
+        ),
+      );
+    });
+    const decision = await waitOrNull(
+      step,
+      `wait-accept-${revision}`,
+      'accept',
+      params.oneShot
+        ? 12 * 60 * 60_000
+        : Math.max(60_000, (kyivMs(date, config.settings.morning_at) ?? io.now()) - io.now()),
     );
-  });
-  const decision = await waitOrNull(
-    step,
-    'wait-accept',
-    'accept',
-    params.oneShot
-      ? 12 * 60 * 60_000
-      : Math.max(60_000, (kyivMs(date, config.settings.morning_at) ?? io.now()) - io.now()),
-  );
-  if (params.oneShot && decision == null) {
+    if (!decision || decision.choice === 'later') {
+      if (decision?.choice === 'later')
+        await io.send('Чернетку збережено. Повернися до неї через «План дня».');
+      break;
+    }
+    if (decision.choice === 'edit') {
+      await step.do(`ask-edit-${revision}`, async () => {
+        await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
+        await io.send(
+          'Що змінити? Можеш пересунути, додати або прибрати кілька справ одним повідомленням.',
+        );
+      });
+      const change = await waitOrNull(step, `wait-edit-${revision}`, 'answer', WAIT_ANSWER_MS);
+      if (typeof change?.text !== 'string' || !change.text.trim()) break;
+      const started = await step.do(`worker-replan-${revision}`, () =>
+        io.startWorker('replan', { text: change.text, date, items }),
+      );
+      const replan = started
+        ? await waitOrNull(step, `wait-replan-${revision}`, 'worker', WAIT_WORKER_MS)
+        : null;
+      const out = replan?.output && typeof replan.output === 'object' ? replan.output : null;
+      if (!out) {
+        await io.send('Зміни не розібрав. Чернетка збережена; спробуй ще раз через «План дня».');
+        break;
+      }
+      const changes = replanChanges(out);
+      await step.do(`replan-${revision}`, async () => {
+        if (changes.done.length || changes.moves.length || changes.drop.length)
+          await updateItems(env, date, changes, io.now());
+        const rows = (await listItems(env, date)).filter((r) => r.status === 'planned');
+        items = [
+          ...rows.map((r, i) => normalizeItem(r, i)),
+          ...changes.add.map((r, i) => normalizeItem(r, rows.length + i)),
+        ];
+        if (items.length > ITEMS_MAX) throw new Error(`понад ${ITEMS_MAX} справ у плані`);
+        const events = await io.readCalendar(date);
+        const slots = computeSlots({
+          date,
+          items,
+          events: events ?? [],
+          settings: config.settings,
+          habits: config.habits,
+          energy: await io.readEnergy(),
+          nowMin:
+            date === kyivDateKey(new Date(io.now())) ? kyivMinuteOfDay(new Date(io.now())) : null,
+        });
+        await replaceItems(env, date, slots, items);
+        draft = { slots, events: events ?? [], calendarUnavailable: events == null };
+      });
+      continue;
+    }
+    if ((decision.choice === 'accept' || decision.choice === 'calendar') && canApprove) {
+      await step.do('accept', async () => {
+        const res = await acceptPlan(env, date, io.now(), io.target ?? address(env));
+        await proposeCalendar(env, date, res.items, io.now(), io);
+      });
+      approved = true;
+      break;
+    }
+  }
+  if (!approved) {
     await step.do('leave-draft', async () => {
       await setChainState(env, chainId, { status: 'done', awaiting: null });
     });
     return { outcome: 'draft-left-for-later', items: items.length };
-  }
-  const accepted = await step.do('accept', async () => {
-    if (decision?.choice === 'edit') {
-      await setChainState(env, chainId, { status: 'waiting', awaiting: 'answer' });
-      await io.send('Напиши, що змінити (наприклад: «презентацію на 16:00», «забери банк»).');
-      return { edit: true };
-    }
-    // Мовчання до ранку = план прийнято за замовчуванням: інакше ранок без
-    // нагадувань, хоч власник сам назвав пункти (S-P-9: без відповіді - план
-    // лише з календаря; тут відповідь була).
-    const res = await acceptPlan(env, date, io.now(), io.target ?? address(env));
-    if (decision?.choice === 'calendar') await proposeCalendar(env, date, res.items, io.now(), io);
-    return { edit: false, reminders: res.reminders };
-  });
-  if (accepted.edit) {
-    const change = await waitOrNull(step, 'wait-edit', 'answer', WAIT_ANSWER_MS);
-    if (params.oneShot && typeof change?.text !== 'string') {
-      await step.do('edit-timeout-close', async () => {
-        await setChainState(env, chainId, { status: 'done', awaiting: null });
-      });
-      return { outcome: 'draft-left-for-later', items: items.length };
-    }
-    const started =
-      typeof change?.text === 'string'
-        ? await step.do('worker-replan', () =>
-            io.startWorker('replan', { text: change.text, date, items }),
-          )
-        : false;
-    // Працівник повертає JSON {done[], moves[{id,to}], drop[]} - застосовуємо
-    // через updateItems ДО прийняття, інакше нагадування стануть на старий час.
-    const replan = started ? await waitOrNull(step, 'wait-replan', 'worker', WAIT_WORKER_MS) : null;
-    await step.do('replan', async () => {
-      const out = replan?.output && typeof replan.output === 'object' ? replan.output : null;
-      if (out) {
-        try {
-          await updateItems(env, date, replanChanges(out), io.now());
-        } catch (/** @type {any} */ e) {
-          console.error(`day-plan ${chainId}: зміни працівника не застосовано`, e?.message);
-          await io.send(`Зміни не застосував (${String(e?.message ?? '')}) - напиши їх у чат.`);
-        }
-      } else if (typeof change?.text === 'string') {
-        await io.send('Зміни збережу через чат: напиши, коли буде зручно.');
-      }
-      await acceptPlan(env, date, io.now(), io.target ?? address(env));
-    });
   }
 
   // One-off interactive plans end after the owner decides; they must not
@@ -329,7 +408,12 @@ export async function runDayPlanChain(env, params, step, io) {
   }
 
   // 4. Ранковий план (S-P-13).
-  await step.sleepUntil('morning-at', kyivMs(date, config.settings.morning_at) ?? io.now());
+  const firstStart = Math.min(
+    ...items.map((i) => hhmmToMin(i.hard_at)).filter((t) => t != null),
+    hhmmToMin(config.settings.morning_at) ?? 8 * 60 + 30,
+  );
+  const morningAt = minToHhmm(Math.max(0, firstStart - 15));
+  await step.sleepUntil('morning-at', kyivMs(date, morningAt) ?? io.now());
   await step.do('morning', async () => {
     await setChainState(env, chainId, { status: 'running', awaiting: null });
     const [events, rows] = await Promise.all([io.readCalendar(date), listItems(env, date)]);
@@ -359,8 +443,7 @@ export async function runDayPlanChain(env, params, step, io) {
   const carry = review.asked ? await waitOrNull(step, 'wait-carry', 'carry', WAIT_CARRY_MS) : null;
   await step.do('carry', async () => {
     const to = nextPlannedDay(date, config.weekdays);
-    if (carry?.choice === 'carry_all' || (carry?.choice == null && review.asked)) {
-      // Без відповіді за 2 год - переносимо (S-P-15: перенесений живе 3 дні).
+    if (carry?.choice === 'carry_all') {
       const res = await carryItems(env, date, to, [], io.now());
       if (res.stale.length) {
         await io.send(
@@ -376,27 +459,6 @@ export async function runDayPlanChain(env, params, step, io) {
 }
 
 // ── Кроки-помічники ────────────────────────────────────────────────────────
-
-/**
- * Пояснений текст чернетки (Денний, mode=explain) або резерв formatDraft.
- * @param {ChainStep} step @param {ChainIo} io @param {string} date
- * @param {{ slots: ReturnType<typeof computeSlots>, events: any[] }} draft
- * @param {'explain'} mode
- */
-async function explain(step, io, date, draft, mode) {
-  const started = await step.do('worker-explain', () =>
-    io.startWorker(mode, {
-      date,
-      schedule: draft.slots.placed,
-      flexible: draft.slots.flexible,
-      events: draft.events,
-      free_min: draft.slots.freeMin - draft.slots.usedMin,
-    }),
-  );
-  const out = started ? await waitOrNull(step, 'wait-explain', 'worker', WAIT_WORKER_MS) : null;
-  const text = typeof out?.output === 'string' ? out.output.trim() : '';
-  return text || formatDraft(date, draft.slots, draft.events);
-}
 
 /**
  * Пункти з JSON працівника; без нього - наївний розбір (кома/крапка з комою/
@@ -421,12 +483,13 @@ export function normalizeIntent(output, intentText) {
         .map((title) => ({ title, kind: 'routine' }));
   // id від працівника не приймаємо: replaceItems робить INSERT OR REPLACE за
   // id, і чужий id «перетягнув» би рядок іншої дати разом із reminder_id.
-  return normalizePlanItems(raw.slice(0, 20));
+  if (raw.length > ITEMS_MAX)
+    throw new Error(`у плані понад ${ITEMS_MAX} справ; не обрізаю їх мовчки`);
+  return normalizePlanItems(raw);
 }
 
 /**
- * Зміни від працівника (mode=replan, day-planner.md §5): {done[], moves[{id,to}],
- * drop[]} → аргументи updateItems; чужі поля відкидаються, ≤ 3 зміни.
+ * Зміни від працівника (mode=replan): done, moves, drop і нові справи.
  * @param {Record<string, unknown>} out
  */
 export function replanChanges(out) {
@@ -439,17 +502,26 @@ export function replanChanges(out) {
         )
         .map((m) => ({ id: String(m.id), to: String(m.to) }))
     : [];
-  const all = [
-    ...strings(out.done).map((id) => ({ kind: 'done', id })),
-    ...moves.map((m) => ({ kind: 'move', ...m })),
-    ...strings(out.drop).map((id) => ({ kind: 'drop', id })),
-  ].slice(0, REPLAN_MAX_CHANGES);
+  const add = Array.isArray(out.add)
+    ? out.add.filter((r) => r && typeof r === 'object' && typeof r.title === 'string')
+    : [];
+  const done = strings(out.done).slice(0, REPLAN_MAX_CHANGES);
+  const selectedMoves = moves.slice(0, REPLAN_MAX_CHANGES - done.length);
+  const drop = strings(out.drop).slice(0, REPLAN_MAX_CHANGES - done.length - selectedMoves.length);
+  const selectedAdd = add.slice(
+    0,
+    REPLAN_MAX_CHANGES - done.length - selectedMoves.length - drop.length,
+  );
   return {
-    done: all.filter((c) => c.kind === 'done').map((c) => c.id),
-    moves: all
-      .filter((c) => c.kind === 'move')
-      .map((c) => ({ id: c.id, to: String(/** @type {any} */ (c).to) })),
-    drop: all.filter((c) => c.kind === 'drop').map((c) => c.id),
+    done,
+    moves: selectedMoves,
+    drop,
+    add: selectedAdd.map((item) => ({
+      ...item,
+      id: undefined,
+      after_item_id: undefined,
+      overlap_with_item_id: undefined,
+    })),
   };
 }
 
@@ -477,7 +549,12 @@ export function applyAnswer(items, questions, answer, qiDefault = 0) {
     typeof answer.option === 'number'
       ? String(q?.options?.[answer.option] ?? '')
       : String(answer.text ?? '');
-  if (field === 'hard_end' || field === 'hard_at' || field === 'not_before') {
+  if (
+    field === 'hard_end' ||
+    field === 'hard_at' ||
+    field === 'not_before' ||
+    field === 'not_after'
+  ) {
     const time = /(?:^|\D)(\d{1,2}:\d{2})(?:\D|$)/.exec(option)?.[1] ?? option.trim();
     if (hhmmToMin(time) != null) target[field] = time;
     return items;
@@ -503,7 +580,15 @@ export function morningText(date, rows, events) {
   const timed = rows.filter((r) => r.window_start && r.status === 'planned');
   for (const r of timed) lines.push(`• ${r.window_start}-${r.window_end} ${r.title}`);
   for (const e of events) {
-    if (e.startMin != null) lines.push(`• ${minToHhmm(e.startMin)} ${e.title} (календар)`);
+    if (
+      e.startMin != null &&
+      !timed.some(
+        (r) =>
+          (r.title === e.title || (r.floating && e.title.startsWith(`${r.title} · ≈`))) &&
+          hhmmToMin(r.window_start) === e.startMin,
+      )
+    )
+      lines.push(`• ${minToHhmm(e.startMin)} ${e.title} (календар)`);
   }
   const flex = rows.filter((r) => !r.window_start && r.status === 'planned');
   if (flex.length) lines.push(`Гнучке: ${flex.map((f) => f.title).join(', ')}`);
@@ -511,25 +596,31 @@ export function morningText(date, rows, events) {
 }
 
 /**
- * «У календар» (S-P-12): блоки з часом їдуть у календар. Від 08.09 подія без
- * гостей - T0, тож це вже не пропозиція, а дія з «↩»; логіка спільна з
- * plan.accept (tools/plan.mjs), щоб текст і поведінка не розходились.
- * @param {Env} env @param {string} date @param {{ title: string, window_start: string | null, window_end: string | null }[]} rows @param {number} nowMs
+ * Після схвалення всі блоки з часом їдуть у календар. Підсумок - один;
+ * окремі картки лишаються тільки для дій, що ще потребують підтвердження.
+ * @param {Env} env @param {string} date @param {{ id?: string, event_id?: string | null, title: string, window_start: string | null, window_end: string | null }[]} rows @param {number} nowMs
  * @param {ChainIo} io
  */
 async function proposeCalendar(env, date, rows, nowMs, io) {
+  const existing = rows.filter((r) => r.event_id).length;
   const out = await calendarizeBlocks(
     env,
     date,
     rows,
     nowMs,
     io.target ?? address(env),
-    (text, buttons) =>
-      io.send(text, /** @type {{ text: string, callback_data: string }[][]} */ (buttons ?? [])),
+    (text, actionButtons) => {
+      const pending = /** @type {{ text: string, callback_data: string }[][]} */ (
+        actionButtons ?? []
+      );
+      return pending.flat().some((b) => b.callback_data.startsWith('p:'))
+        ? io.send(text, pending)
+        : Promise.resolve();
+    },
   );
-  if (out.failed.length) {
-    await io.send(`⚠️ У календар не пішли: ${out.failed.join(', ')}.`, []);
-  }
+  await io.send(
+    `🗓 План погоджено. У календарі: ${out.added + existing} блоків.${out.proposed ? ` Ще ${out.proposed} чекають підтвердження.` : ''}${out.failed.length ? ` Не записано: ${out.failed.join(', ')}.` : ''}`,
+  );
 }
 
 /** @param {Env} env */
@@ -558,12 +649,24 @@ export { setChainState };
  * Створити ланцюг на дату: рядок у chains + інстанс Workflow (id = chainId,
  * щоб кнопки й події адресували його без другого ключа).
  * @param {Env} env @param {string} date @param {number} nowMs
- * @param {{ oneShot?: boolean, initialIntent?: string,
+ * @param {{ oneShot?: boolean, initialIntent?: string, resumeDraft?: boolean,
  *   target?: { chatId: number | string | null, threadId: number | string | null } }} [options]
  */
 export async function startDayPlanChain(env, date, nowMs, options = {}) {
   if (!env.DB) throw new Error('привʼязки DB немає');
   if (!env.DAY_PLAN) throw new Error('привʼязки DAY_PLAN (Workflow) немає');
+  const prior = await getDayPlan(env, date);
+  if (prior?.status === 'accepted')
+    throw new Error('План на цей день уже погоджено й записано в календар. Не створюю дубль.');
+  if (prior?.workflow_id) {
+    const active = await env.DB.prepare(
+      "SELECT id FROM chains WHERE id = ? AND status IN ('running', 'waiting')",
+    )
+      .bind(prior.workflow_id)
+      .first();
+    if (active)
+      throw new Error('План на цей день уже відкритий. Заверши або відклади поточну чернетку.');
+  }
   const chainId = crypto.randomUUID();
   const iso = new Date(nowMs).toISOString();
   const home = options.target ?? address(env);
@@ -593,9 +696,15 @@ export async function startDayPlanChain(env, date, nowMs, options = {}) {
       date,
       ...(options.oneShot ? { oneShot: true } : {}),
       ...(options.initialIntent ? { initialIntent: options.initialIntent } : {}),
+      ...(options.resumeDraft ? { resumeDraft: true } : {}),
     },
   });
-  await upsertDayPlan(env, date, { status: 'intent', workflow_id: chainId }, nowMs);
+  await upsertDayPlan(
+    env,
+    date,
+    { status: options.resumeDraft ? 'draft' : 'intent', workflow_id: chainId },
+    nowMs,
+  );
   return chainId;
 }
 
@@ -674,6 +783,7 @@ export function productionIo(env, chainId, date, target = address(env)) {
         title: String(e.title ?? ''),
         startMin: typeof e.startMs === 'number' ? kyivMinuteOfDay(new Date(e.startMs)) : null,
         endMin: typeof e.endMs === 'number' ? kyivMinuteOfDay(new Date(e.endMs)) : null,
+        transparent: e.transparent,
       }));
     },
     readEnergy: async () => energyBySlot((await loadStats(env)).checkins ?? {}),

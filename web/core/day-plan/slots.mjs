@@ -4,18 +4,16 @@
 // часом, «гнучке без часу» і запас. Денний працівник розкладку не робить
 // (day-planner.md «Чого не робити»), інакше план не тестується і не вчиться.
 //
-// Правила S-P-11: вільні вікна = день − сон/їжа − події календаря (з буфером)
-// − ланцюги/нагадування; жорсткі пункти першими; deep-блоки у вікна з
-// найвищою енергією (≥ 14 діб даних, інакше ранок); оцінка × estimate_bias
-// (типово 1,3); заповнення ≤ fill_ratio вільного часу; ≤ max_deep глибоких;
-// errand групуються за місцем; що не влізло - «гнучке без часу».
+// Власноруч названі справи розміщуємо, якщо для них фізично є вікно;
+// fill_ratio та max_deep обмежують лише необовʼязкові справи. Плаваючі
+// перерви можуть накладатися на вказаний робочий блок, не розбиваючи його.
 
 /** Дефолти налаштувань плану (S-P-8 `facts.setting.day_plan`). */
 export const DAY_PLAN_DEFAULTS = {
   intent_at: '20:30',
   morning_at: '08:30',
   review_at: '21:00',
-  fill_ratio: 0.6,
+  fill_ratio: 0.8,
   max_deep: 3,
   weekdays: 'пн-пт',
 };
@@ -27,6 +25,8 @@ export const HABIT_DEFAULTS = {
   lunch_at: '13:00',
   lunch_min: 60,
   estimate_bias: 1.3,
+  work_start_at: /** @type {string | null} */ (null),
+  work_start_samples: 0,
 };
 
 /** Типова тривалість за видом, коли власник її не назвав (день-planner.md §4.6). */
@@ -51,12 +51,14 @@ export const ENERGY_WINDOWS = {
 /**
  * @typedef {{ id: string, title: string, kind: string, est_min: number | null,
  *   hard_at: string | null, hard_end?: string | null, not_before?: string | null,
+ *   not_after?: string | null, overlap_with_item_id?: string | null,
+ *   floating?: boolean, optional?: boolean, notify?: boolean, role?: string | null,
  *   deadline: string | null, place: string | null, flexible: boolean, priority: number,
  *   after_item_id?: string | null,
  *   carried_from?: string | null }} PlanItemInput
  * @typedef {{ id: string, title: string, kind: string, est_min: number,
- *   window_start: string, window_end: string, why: string }} PlacedItem
- * @typedef {{ start: number, end: number, title: string }} Busy
+ *   window_start: string, window_end: string, why: string, floating?: boolean }} PlacedItem
+ * @typedef {{ start: number, end: number, title: string, id?: string }} Busy
  */
 
 /** «HH:MM» → хвилини від опівночі; крива форма - null. @param {unknown} s */
@@ -154,7 +156,7 @@ export function estimateMin(item, bias) {
  * @param {{
  *   date: string,
  *   items: PlanItemInput[],
- *   events: { title: string, startMin: number | null, endMin: number | null }[],
+ *   events: { title: string, startMin: number | null, endMin: number | null, transparent?: boolean }[],
  *   settings?: Partial<typeof DAY_PLAN_DEFAULTS>,
  *   habits?: Partial<typeof HABIT_DEFAULTS>,
  *   energy?: { morning: number, afternoon: number, evening: number } | null,
@@ -166,8 +168,12 @@ export function estimateMin(item, bias) {
 export function computeSlots(input) {
   const settings = { ...DAY_PLAN_DEFAULTS, ...(input.settings ?? {}) };
   const habits = { ...HABIT_DEFAULTS, ...(input.habits ?? {}) };
-  const dayStart = hhmmToMin(habits.day_start) ?? hhmmToMin(HABIT_DEFAULTS.day_start) ?? 480;
-  const dayEnd = hhmmToMin(habits.day_end) ?? hhmmToMin(HABIT_DEFAULTS.day_end) ?? 1320;
+  const defaultStart = hhmmToMin(habits.day_start) ?? hhmmToMin(HABIT_DEFAULTS.day_start) ?? 480;
+  const defaultEnd = hhmmToMin(habits.day_end) ?? hhmmToMin(HABIT_DEFAULTS.day_end) ?? 1320;
+  const fixedStarts = input.items.map((i) => hhmmToMin(i.hard_at)).filter((v) => v != null);
+  const fixedEnds = input.items.map((i) => hhmmToMin(i.hard_end)).filter((v) => v != null);
+  const dayStart = Math.min(defaultStart, ...fixedStarts);
+  const dayEnd = Math.max(defaultEnd, ...fixedEnds);
   const bias = Number(habits.estimate_bias) > 0 ? Number(habits.estimate_bias) : 1.3;
   const fillRatio = clamp(Number(settings.fill_ratio), 0.1, 1);
   const maxDeep = Math.max(0, Math.trunc(Number(settings.max_deep)));
@@ -182,11 +188,10 @@ export function computeSlots(input) {
 
   /** @type {Busy[]} */
   const busy = [];
-  const lunchAt = hhmmToMin(habits.lunch_at);
-  if (lunchAt != null)
-    busy.push({ start: lunchAt, end: lunchAt + habits.lunch_min, title: 'обід' });
+  // Їжа зʼявляється у плані лише за словами власника. Звичка допомагає
+  // обрати приблизне вікно, але сама по собі не резервує годину щодня.
   for (const e of input.events) {
-    if (e.startMin == null || e.endMin == null) continue;
+    if (e.startMin == null || e.endMin == null || e.transparent) continue;
     busy.push({
       start: Math.max(dayStart, e.startMin - EVENT_BUFFER_MIN),
       end: Math.min(dayEnd, e.endMin + EVENT_BUFFER_MIN),
@@ -199,15 +204,16 @@ export function computeSlots(input) {
   /** @type {(PlanItemInput & { why: string })[]} */
   const flexible = [];
 
-  // 1. Жорсткі за часом - першими, у свій час (навіть поверх події - це
-  //    рішення власника; перетин лише позначаємо в why).
+  // 1. Жорсткі за часом - першими. Незапрошений перетин із календарем
+  //    зупиняє затвердження; лише явно паралельна справа може накладатися.
   const hard = input.items.filter(
     (i) => hhmmToMin(i.hard_at) != null || hhmmToMin(i.hard_end) != null,
   );
   for (const item of hard) {
     const hardAt = hhmmToMin(item.hard_at);
     const hardEnd = hhmmToMin(item.hard_end);
-    const start = hardAt ?? nowMin;
+    const learned = item.role === 'work' && hardAt == null ? hhmmToMin(habits.work_start_at) : null;
+    const start = hardAt ?? Math.max(nowMin, learned ?? nowMin);
     if (start < nowMin || (hardEnd != null && hardEnd <= start)) {
       flexible.push({
         ...item,
@@ -219,8 +225,20 @@ export function computeSlots(input) {
     // «До 18:00» резервує робочий відрізок, у якому обід уже очікуваний, а
     // не є конфліктом. Події календаря й інші жорсткі блоки лишаються
     // справжнім перетином, про який треба сказати.
-    const overlap = busy.find((b) => b.title !== 'обід' && start < b.end && start + est > b.start);
-    const timingWhy = hardAt == null ? `до ${minToHhmm(hardEnd ?? start + est)}` : 'жорсткий час';
+    const overlap = busy.find(
+      (b) =>
+        start < b.end &&
+        start + est > b.start &&
+        (!item.overlap_with_item_id || b.id !== item.overlap_with_item_id),
+    );
+    const timingWhy =
+      hardAt == null
+        ? `${learned != null ? `старт за ${habits.work_start_samples} попередніми днями · ` : ''}до ${minToHhmm(hardEnd ?? start + est)}`
+        : 'жорсткий час';
+    if (overlap) {
+      flexible.push({ ...item, why: `перетин з «${overlap.title}»` });
+      continue;
+    }
     placed.push({
       id: item.id,
       title: item.title,
@@ -228,17 +246,67 @@ export function computeSlots(input) {
       est_min: est,
       window_start: minToHhmm(start),
       window_end: minToHhmm(start + est),
-      why: overlap ? `${timingWhy}; перетин з «${overlap.title}»` : timingWhy,
+      why: timingWhy,
+      floating: Boolean(item.floating),
     });
-    busy.push({ start, end: start + est, title: item.title });
+    busy.push({ start, end: start + est, title: item.title, id: item.id });
   }
 
   const freeMin = freeMinutes(nowMin, dayEnd, busy);
   const capacityMin = Math.floor(freeMin * fillRatio);
 
-  // 2. Решта - за пріоритетом: дедлайн сьогодні/завтра → перенесені → порядок власника.
+  // 2. Паралельні пункти - тільки всередині явно названого батьківського
+  // блоку. Вони займають власний орієнтовний слот і не розрізають роботу.
+  const parallel = input.items.filter(
+    (i) => i.overlap_with_item_id && hhmmToMin(i.hard_at) == null && hhmmToMin(i.hard_end) == null,
+  );
+  for (const item of parallel) {
+    const parent = placed.find((p) => p.id === item.overlap_with_item_id);
+    if (!parent) {
+      flexible.push({ ...item, why: 'паралельний блок не має запланованої основної справи' });
+      continue;
+    }
+    const parentStart = hhmmToMin(parent.window_start) ?? dayStart;
+    const parentEnd = hhmmToMin(parent.window_end) ?? dayEnd;
+    const est = estimateMin(item, bias);
+    const suggested = item.floating ? floatingWindow(item.title, habits) : null;
+    const start = Math.max(
+      nowMin,
+      parentStart,
+      hhmmToMin(item.not_before) ?? suggested?.start ?? parentStart,
+    );
+    const end = Math.min(parentEnd, hhmmToMin(item.not_after) ?? suggested?.end ?? parentEnd);
+    const slot = findSlot(
+      start,
+      end,
+      busy.filter((b) => b.id !== parent.id),
+      est,
+      null,
+    );
+    if (!slot) {
+      flexible.push({ ...item, why: `немає вікна під час «${parent.title}»` });
+      continue;
+    }
+    placed.push({
+      id: item.id,
+      title: item.title,
+      kind: item.kind,
+      est_min: est,
+      window_start: minToHhmm(item.floating ? start : slot.start),
+      window_end: minToHhmm(item.floating ? end : slot.start + est),
+      why: `паралельно з «${parent.title}»${item.floating ? ` · ≈${est} хв у цьому вікні` : ''}`,
+      floating: Boolean(item.floating),
+    });
+    if (!item.floating)
+      busy.push({ start: slot.start, end: slot.start + est, title: item.title, id: item.id });
+  }
+
+  // 3. Решта - за пріоритетом: дедлайн сьогодні/завтра → перенесені → порядок власника.
   const rest = input.items
-    .filter((i) => hhmmToMin(i.hard_at) == null && hhmmToMin(i.hard_end) == null)
+    .filter(
+      (i) =>
+        !i.overlap_with_item_id && hhmmToMin(i.hard_at) == null && hhmmToMin(i.hard_end) == null,
+    )
     .map((i, idx) => ({ i, idx }))
     .sort((a, b) => rank(a.i, input.date) - rank(b.i, input.date) || a.idx - b.idx)
     .map((x) => x.i);
@@ -275,11 +343,11 @@ export function computeSlots(input) {
       flexible.push({ ...item, why: 'попередній пункт ще не заплановано' });
       continue;
     }
-    if (item.kind === 'deep' && deepCount >= maxDeep) {
+    if (item.optional && item.kind === 'deep' && deepCount >= maxDeep) {
       flexible.push({ ...item, why: `понад ${maxDeep} глибоких блоків` });
       continue;
     }
-    if (used + est > capacityMin) {
+    if (item.optional && used + est > capacityMin) {
       flexible.push({ ...item, why: `не влізло в ${Math.round(fillRatio * 100)} % вільного часу` });
       continue;
     }
@@ -288,7 +356,7 @@ export function computeSlots(input) {
     const afterEnd = predecessor ? hhmmToMin(predecessor.window_end) : null;
     const slot = findSlot(
       Math.max(nowMin, notBefore ?? nowMin, afterEnd ?? nowMin),
-      dayEnd,
+      Math.min(dayEnd, hhmmToMin(item.not_after) ?? dayEnd),
       busy,
       est,
       preferred,
@@ -315,8 +383,9 @@ export function computeSlots(input) {
               ? `дедлайн ${item.deadline}`
               : 'за порядком'
       }`,
+      floating: Boolean(item.floating),
     });
-    busy.push({ start: slot.start, end: slot.start + est, title: item.title });
+    busy.push({ start: slot.start, end: slot.start + est, title: item.title, id: item.id });
     used += est;
     if (item.kind === 'deep') deepCount += 1;
   }
@@ -336,13 +405,15 @@ export function formatDraft(date, slots, events) {
   const [, m, d] = date.split('-');
   const lines = [`План на ${d}.${m}`];
   for (const p of slots.placed) {
-    lines.push(`• ${p.window_start}-${p.window_end} ${p.title} · ${p.kind} · ${p.why}`);
+    lines.push(`• ${p.floating ? '≈' : ''}${p.window_start}-${p.window_end} ${p.title} · ${p.why}`);
   }
   for (const e of events) {
     if (e.startMin != null) lines.push(`• ${minToHhmm(e.startMin)} ${e.title} (календар)`);
   }
   if (slots.flexible.length) {
-    lines.push(`Гнучке, без часу: ${slots.flexible.map((f) => f.title).join(', ')}`);
+    lines.push(
+      `Потребує рішення: ${slots.flexible.map((f) => `${f.title} (${f.why})`).join('; ')}`,
+    );
   }
   const free = slots.freeMin - slots.usedMin;
   lines.push(`Запас: ${Math.floor(free / 60)} год ${free % 60} хв вільно`);
@@ -356,6 +427,18 @@ function rank(item, date) {
   if (item.deadline && item.deadline <= date) return 0;
   if (item.carried_from) return 1;
   return 2 + Math.max(0, Math.min(9, Number(item.priority) || 5));
+}
+
+/** Підказка для плаваючого вікна, а не твердження про фактичний час їжі.
+ * @param {string} title @param {typeof HABIT_DEFAULTS} habits */
+function floatingWindow(title, habits) {
+  if (/снідан/u.test(title.toLowerCase())) return { start: 8 * 60, end: 11 * 60 };
+  if (/обід/u.test(title.toLowerCase())) {
+    const center = hhmmToMin(habits.lunch_at) ?? 13 * 60;
+    return { start: center - 60, end: center + 120 };
+  }
+  if (/вечер/u.test(title.toLowerCase())) return { start: 18 * 60, end: 21 * 60 };
+  return null;
 }
 
 /** @param {PlanItemInput[]} items */

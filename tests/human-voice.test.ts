@@ -160,6 +160,7 @@ describe('статуси прогону - що я роблю, а не «Дума
   it('точні збіги й префікси', () => {
     expect(toolStatusWord('mail.search')).toBe('Читаю пошту');
     expect(toolStatusWord('routes.matrix')).toBe('Рахую маршрут');
+    expect(toolStatusWord('delegate')).toBe('Підключаю помічника');
     expect(toolStatusWord('wishes.create')).toBe('Дивлюсь бажання'); // за префіксом
   });
 
@@ -188,10 +189,10 @@ describe('кнопки за працівником і слід вибору', ()
     ]);
   });
 
-  it('невідомий працівник - базовий набір (для довільного тексту він і правильний)', () => {
+  it('невідомий працівник - лише оцінка, без нерелевантних дій переписування', () => {
     expect(workerButtons('w2', false, 'нема-такого')[0]!.map((b) => b.callback_data)).toEqual([
-      'm:w:w2:short',
-      'm:w:w2:tone',
+      'm:w:w2:good',
+      'm:w:w2:bad',
     ]);
   });
 
@@ -202,8 +203,8 @@ describe('кнопки за працівником і слід вибору', ()
     for (const evil of ['constructor', 'toString', 'valueOf']) {
       expect(() => workerButtons('w9', false, evil), evil).not.toThrow();
       expect(workerButtons('w9', false, evil)[0]!.map((b) => b.callback_data)).toEqual([
-        'm:w:w9:short',
-        'm:w:w9:tone',
+        'm:w:w9:good',
+        'm:w:w9:bad',
       ]);
     }
   });

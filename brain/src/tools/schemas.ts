@@ -634,10 +634,10 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'plan.intent',
     description:
-      'План дня з пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), est_min?, hard_at? («HH:MM», точний старт), hard_end? («HH:MM», «до цього часу»), not_before? («HH:MM», «після цього часу»), after? (індекс попереднього пункту, коли власник сказав «потім»), deadline?, place?, priority?}. est_min, названу власником, зберігай точно. Зберігай часову семантику: «до 18:00» = hard_end, «після роботи» = not_before від відомого кінця роботи, «увечері» = not_before «18:00». Ядро розкладе по вільних вікнах календаря і поверне чернетку текстом. T0 з «↩».',
+      'План дня з усіх пунктів власника: date (сьогодні·завтра·YYYY-MM-DD), items - список {title, kind (deep·routine·call·errand·move), role? (work для роботи, meal для їжі), est_min?, hard_at?, hard_end?, not_before?, not_after?, after? (індекс попереднього пункту), parallel_with? (індекс справи, з якою можна робити одночасно), floating? (час приблизний), optional? («якщо встигну»), notify? (лише якщо власник просив нагадати), deadline?, place?, priority?}. Сніданок/обід під час роботи можна класти окремо поверх цілого робочого блоку; не розрізай роботу. «Проєкт і курс» — обидва, «проєкт або курс» — уточни. Названу тривалість зберігай точно; не обрізай список після шести пунктів. Ядро поверне чернетку, яка потребує окремого затвердження. T0.',
     args: z.object({
       date: z.string().max(16).optional(),
-      // Порожній список і >6 пунктів відкидає ядро (runPlanIntent/ITEMS_MAX):
+      // Порожній список і >50 пунктів відкидає ядро (runPlanIntent/ITEMS_MAX):
       // валідатор ядра не має minItems, а парність тримає обидва боки рівними.
       items: z.array(z.record(z.string(), z.unknown())),
     }),
@@ -653,16 +653,19 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'plan.accept',
     description:
-      'Прийняти план на date: нагадування на початок кожного блоку (T0 з «↩»); calendar=true - додатково пропозиції T1 створити події в календарі.',
+      'Прийняти лише явно затверджений власником план на date. Нагадування — тільки для пунктів із notify:true; calendar=true записує блоки в календар. Плаваючі блоки не позначають час зайнятим. T0 з «↩».',
     args: z.object({ date: z.string().max(16).optional(), calendar: z.boolean().optional() }),
     write: true,
   }),
   tool({
     coreName: 'plan.update',
     description:
-      'Зміни вдень: done - id або назви зроблених пунктів; moves - [{id, to:"HH:MM"}]; drop - пропустити. T0 з «↩».',
+      'Зміни вдень: starts - [{id, at?:"HH:MM"}] фіксує фактичний початок (не зсуває план автоматично); done - id або назви зроблених пунктів; moves - [{id, to:"HH:MM"}]; drop - пропустити. Назви або id — лише пунктів на дату. T0 з «↩».',
     args: z.object({
       date: z.string().max(16).optional(),
+      starts: z
+        .array(z.object({ id: z.string().max(80), at: z.string().max(5).optional() }))
+        .optional(),
       done: z.array(z.string().max(80)).optional(),
       moves: z.array(z.object({ id: z.string().max(80), to: z.string().max(5) })).optional(),
       drop: z.array(z.string().max(80)).optional(),

@@ -25,6 +25,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
       'heartbeat',
       'reminder',
+      'plan-calendar-sync',
       'run-watchdog',
       'brain-health',
       'brief-dispatch',

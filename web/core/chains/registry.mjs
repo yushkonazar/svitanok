@@ -183,7 +183,7 @@ export function choiceEvent(kind, choice) {
 /** План дня (етап 3 PR-8). @param {string} choice */
 export function dayPlanChoiceEvent(choice) {
   if (choice === 'none' || choice === 'skip') return { type: 'intent', payload: { choice } };
-  if (choice === 'accept' || choice === 'edit' || choice === 'calendar') {
+  if (choice === 'accept' || choice === 'edit' || choice === 'calendar' || choice === 'later') {
     return { type: 'accept', payload: { choice } };
   }
   if (choice === 'carry_all' || choice === 'carry_none')

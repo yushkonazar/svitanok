@@ -536,7 +536,13 @@ export const EXECUTORS = {
     async execute(env, payload, nowMs) {
       const { result, prev } = await runPlanUpdate(
         env,
-        { date: payload.date, done: payload.done, moves: payload.moves, drop: payload.drop },
+        {
+          date: payload.date,
+          starts: payload.starts,
+          done: payload.done,
+          moves: payload.moves,
+          drop: payload.drop,
+        },
         nowMs,
       );
       return { prev, result };
@@ -1057,9 +1063,34 @@ export const EXECUTORS = {
     },
     async undo(env, snapshot) {
       if (!snapshot?.event_id) return;
+      if (env.DB) {
+        try {
+          const pending = await env.DB.prepare(
+            'SELECT calendar_sync_pending FROM plan_items WHERE event_id = ? LIMIT 1',
+          )
+            .bind(String(snapshot.event_id))
+            .first();
+          if (pending?.calendar_sync_pending)
+            throw new Error('calendar: цей блок плану ще синхронізується');
+        } catch (/** @type {any} */ e) {
+          if (
+            !/no such (?:table: plan_items|column: calendar_sync_pending)/i.test(String(e?.message))
+          )
+            throw e;
+        }
+      }
       await assertGoogleScope(env, 'calendar');
       const res = await deleteCalendarEvent(env, { eventId: String(snapshot.event_id) });
       if (!res.ok) throw new Error('calendar: Google не видалив подію (лог)');
+      if (env.DB) {
+        try {
+          await env.DB.prepare('UPDATE plan_items SET event_id = NULL WHERE event_id = ?')
+            .bind(String(snapshot.event_id))
+            .run();
+        } catch (/** @type {any} */ e) {
+          if (!/no such table: plan_items/i.test(String(e?.message))) throw e;
+        }
+      }
     },
   },
   invite: {
@@ -1075,6 +1106,7 @@ export const EXECUTORS = {
     async execute(env, payload) {
       await assertGoogleScope(env, 'calendar');
       const eventId = calendarEventId(payload);
+      await assertNotPlanEvent(env, eventId);
       const patch = await buildEventPatch(env, payload);
       const res = await updateCalendarEvent(env, { eventId, patch });
       if (!res.ok) throw new Error('calendar: Google не змінив подію (лог)');
@@ -1085,6 +1117,7 @@ export const EXECUTORS = {
     async execute(env, payload) {
       await assertGoogleScope(env, 'calendar');
       const eventId = calendarEventId(payload);
+      await assertNotPlanEvent(env, eventId);
       const res = await deleteCalendarEvent(env, { eventId });
       if (!res.ok) throw new Error('calendar: Google не видалив подію (лог)');
       return { result: { event_id: eventId, deleted: true } };
@@ -1168,6 +1201,8 @@ async function createEventFromPayload(env, payload, requireAttendees) {
     reminderMinutes,
     location: typeof payload.location === 'string' ? payload.location : null,
     attendees: emails.length ? emails : null,
+    transparent: payload.transparent === true,
+    silent: payload.silent === true,
   });
   if (!created.ok) throw new Error('calendar: Google не створив подію (лог)');
   return { title, event_id: created.id, attendees: emails, notes };
@@ -1187,6 +1222,22 @@ function calendarEventId(payload) {
   const id = String(payload.event_id ?? payload.eventId ?? payload.id ?? '').trim();
   if (!EVENT_ID_RE.test(id)) throw new Error('calendar: потрібен event_id події');
   return id;
+}
+
+/** A generic Calendar edit cannot bypass the plan's paired D1/Google update. */
+async function assertNotPlanEvent(/** @type {Env} */ env, /** @type {string} */ eventId) {
+  if (!env.DB) return;
+  let item;
+  try {
+    item = await env.DB.prepare('SELECT id FROM plan_items WHERE event_id = ? LIMIT 1')
+      .bind(eventId)
+      .first();
+  } catch (/** @type {any} */ e) {
+    // Legacy installs without the day-plan migration cannot own a plan event.
+    if (/no such table: plan_items/i.test(String(e?.message))) return;
+    throw e;
+  }
+  if (item) throw new Error('calendar: це блок плану дня — змінюй його через план');
 }
 
 /**
@@ -1609,6 +1660,18 @@ export async function resolveProposal(env, input, nowMs) {
  */
 export function proposalExecutionError(error) {
   const raw = String(/** @type {any} */ (error)?.message ?? error ?? '');
+  if (/^Не знайшов «.+» у календарі\./u.test(raw))
+    return 'Подію плану не знайдено в календарі. Нічого не змінено — перевір календар і повтори.';
+  if (/^«.+» уже змінено в календарі\./u.test(raw))
+    return 'Подію в календарі вже змінено окремо від плану. Нічого не змінено — звір обидва записи.';
+  if (/^У «.+» є гості\./u.test(raw))
+    return 'У події є гості. План дня не змінював їхнє запрошення; змінюй цю подію окремо.';
+  if (/^«.+» ще синхронізується з календарем\./u.test(raw))
+    return 'Цей блок ще синхронізується з календарем. Дочекайся підтвердження або перевір його трохи пізніше.';
+  if (/^Google Calendar не прийняв зміну/u.test(raw) && /План і календар повернуто/u.test(raw))
+    return 'Календар не прийняв зміну. План і нагадування повернуто до попереднього стану.';
+  if (/^(?:Не вдалося узгодити план і календар|Не вдалося повністю повернути календар)/u.test(raw))
+    return 'Зміна виконалася не повністю. Перевір план і календар перед повтором; потрібна ручна звірка.';
   if (/gemini/i.test(raw) && /(?:\b402\b|prepayment|credit|billing|quota)/i.test(raw)) {
     return 'Генерація зображення тимчасово недоступна: у Gemini немає доступних коштів. Поповни billing потрібного Gemini-проєкту й повтори запит.';
   }
@@ -1633,6 +1696,9 @@ export function proposalExecutionError(error) {
   }
   if (/^calendar: потрібен event_id/i.test(raw)) {
     return 'Не бачу коректної події для цієї дії.';
+  }
+  if (/^calendar: це блок плану дня/i.test(raw)) {
+    return 'Це блок плану дня. Перенеси або прибери його через план — тоді календар і нагадування оновляться разом.';
   }
   if (/^contact: .+ не схоже на email/i.test(raw)) {
     return 'Адреса контакту не схожа на email.';

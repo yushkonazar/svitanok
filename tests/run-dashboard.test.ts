@@ -127,6 +127,7 @@ describe('run dashboard', () => {
     expect(dashboard.worker_quality).toEqual([
       expect.objectContaining({
         worker: 'planner',
+        results: 1,
         sample_size: 1,
         succeeded: 1,
         failed: 0,
@@ -136,5 +137,30 @@ describe('run dashboard', () => {
       }),
     ]);
     expect(JSON.stringify(dashboard.worker_quality)).not.toContain('private');
+  });
+
+  it('рахує збережені результати окремо від модельних викликів', async () => {
+    const d1 = d1FromSqlite([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0003_telemetry.sql',
+      '0007_instructions_plans.sql',
+    ]);
+    d1.db
+      .prepare(
+        `INSERT INTO reports (id, kind, text_md, created_at) VALUES ('rep-1', 'worker:editor', 'private report', ?)`,
+      )
+      .run('2026-09-23T08:00:00.000Z');
+
+    const dashboard = await readRunDashboard(workerEnv({ DB: d1.stub }));
+    expect(dashboard.worker_quality).toEqual([
+      expect.objectContaining({
+        worker: 'editor',
+        results: 1,
+        sample_size: 0,
+        success_rate_pct: null,
+        feedback: { good: 0, bad: 0 },
+      }),
+    ]);
   });
 });

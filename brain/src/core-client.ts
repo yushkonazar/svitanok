@@ -18,9 +18,13 @@ export type RunOutcome = {
   chain?: { id: string; event: string; payload: Record<string, unknown> };
 };
 
-/** Результат працівника до deliver (етап 4, S-7-1): ядро кладе його в базу і
- *  додає кнопки «Коротше / Інший тон / .md» під відповіддю. */
-export type DeliverWorker = { name: string; text: string };
+/** Результат працівника до deliver. `context` задає лише доречну картку,
+ * не змінюючи імʼя працівника, за яким рахується якість. */
+export type DeliverWorker = {
+  name: string;
+  text: string;
+  context?: 'price-search' | 'place-search' | 'finance-summary' | 'trip-plan';
+};
 
 export interface CoreClientConfig {
   /** База internal API без хвостового слеша (config.internalApiUrl). */

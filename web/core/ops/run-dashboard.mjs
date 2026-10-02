@@ -81,7 +81,7 @@ async function readWorkerQuality(env) {
     )
     .bind(since)
     .all();
-  /** @type {Map<string, {calls:number,succeeded:number,failed:number,totalMs:number,maxMs:number|null}>} */
+  /** @type {Map<string, {calls:number,succeeded:number,failed:number,totalMs:number,maxMs:number|null,results:number}>} */
   const totals = new Map();
   for (const row of /** @type {Record<string, unknown>[]} */ (results ?? [])) {
     const name = String(row.name ?? '');
@@ -95,6 +95,7 @@ async function readWorkerQuality(env) {
       failed: 0,
       totalMs: 0,
       maxMs: null,
+      results: 0,
     };
     item.calls += calls;
     item.succeeded += integer(row.succeeded);
@@ -103,6 +104,39 @@ async function readWorkerQuality(env) {
     const maxMs = finite(row.max_ms);
     if (avgMs != null) item.totalMs += avgMs * calls;
     if (maxMs != null) item.maxMs = Math.max(item.maxMs ?? 0, maxMs);
+    totals.set(worker, item);
+  }
+  // Кількість збережених відповідей — окремий знаменник від викликів моделі:
+  // один результат може містити кілька кроків або не викликати модель узагалі.
+  /** @type {Record<string, unknown>[]} */
+  let reportRows = [];
+  try {
+    const { results } = await db(env)
+      .prepare(
+        `SELECT kind, COUNT(*) AS results
+         FROM reports
+         WHERE kind GLOB 'worker:*' AND created_at >= ?
+         GROUP BY kind`,
+      )
+      .bind(since)
+      .all();
+    reportRows = /** @type {Record<string, unknown>[]} */ (results ?? []);
+  } catch {
+    // Старі/відновлені схеми без reports усе одно мають показати telemetry.
+  }
+  for (const row of reportRows) {
+    const match = String(row.kind ?? '').match(/^worker:([a-z][a-z0-9-]{1,31})$/);
+    if (!match?.[1]) continue;
+    const worker = match[1];
+    const item = totals.get(worker) ?? {
+      calls: 0,
+      succeeded: 0,
+      failed: 0,
+      totalMs: 0,
+      maxMs: null,
+      results: 0,
+    };
+    item.results = integer(row.results);
     totals.set(worker, item);
   }
   /** @type {Record<string, unknown>[]} */
@@ -135,6 +169,7 @@ async function readWorkerQuality(env) {
   return [...totals.entries()]
     .map(([worker, item]) => ({
       worker,
+      results: item.results,
       sample_size: item.calls,
       succeeded: item.succeeded,
       failed: item.failed,

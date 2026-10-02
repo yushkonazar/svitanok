@@ -12,7 +12,8 @@ import { escapeHtml } from './tg-core.mjs';
  * Подія календаря після parseEvents — саме ця форма ходить між усіма
  * функціями нижче, а не сирий JSON Google.
  * @typedef {{ id: string|null, title: string, time: string|null, date: string|null,
- *             startMs: number|null, endMs: number|null, location: string|null }} CalEvent
+ *             startMs: number|null, endMs: number|null, location: string|null,
+ *             transparent: boolean }} CalEvent
  */
 
 /**
@@ -170,6 +171,7 @@ export function parseEvents(json) {
     startMs: eventInstantMs(e.start),
     endMs: eventInstantMs(e.end),
     location: cleanLocation(e.location), // PR-12: null, якщо немає — Maps-лінк лише коли є що показати
+    transparent: e.transparency === 'transparent',
   }));
 }
 
@@ -183,7 +185,8 @@ export function parseEvents(json) {
  * email, не потрапляє.
  * @param {{ title: string, startIso: string, endIso: string,
  *           reminderMinutes?: number|null, location?: string|null,
- *           attendees?: string[]|null }} opts
+ *           attendees?: string[]|null, transparent?: boolean,
+ *           silent?: boolean }} opts
  * @returns {KvBlob}
  */
 export function buildCreateEventBody({
@@ -193,6 +196,8 @@ export function buildCreateEventBody({
   reminderMinutes,
   location,
   attendees,
+  transparent,
+  silent,
 }) {
   /** @type {KvBlob} */
   const body = {
@@ -200,13 +205,15 @@ export function buildCreateEventBody({
     start: { dateTime: startIso, timeZone: 'Europe/Kyiv' },
     end: { dateTime: endIso, timeZone: 'Europe/Kyiv' },
   };
-  if (Number.isFinite(reminderMinutes)) {
+  if (silent) body.reminders = { useDefault: false };
+  else if (Number.isFinite(reminderMinutes)) {
     body.reminders = {
       useDefault: false,
       overrides: [{ method: 'popup', minutes: reminderMinutes }],
     };
   }
   if (typeof location === 'string' && location) body.location = location;
+  if (transparent) body.transparency = 'transparent';
   if (Array.isArray(attendees) && attendees.length) {
     body.attendees = attendees.map((email) => ({ email }));
   }

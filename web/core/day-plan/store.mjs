@@ -6,7 +6,7 @@
 import { runFactsGet } from '../tools/facts.mjs';
 import { runRemindersCreate, runRemindersCancel } from '../tools/reminders.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
-import { kyivMinuteOfDay } from '../../kyiv-time.mjs';
+import { kyivDateKey, kyivMinuteOfDay } from '../../kyiv-time.mjs';
 import {
   DAY_PLAN_DEFAULTS,
   HABIT_DEFAULTS,
@@ -18,8 +18,8 @@ import {
 
 /** Статуси дня - дослівно 07 §1. */
 export const PLAN_STATUSES = ['intent', 'draft', 'accepted', 'reviewed', 'skipped'];
-/** Стеля пунктів на день (день-planner.md: «понад 6 - лиши 6»). */
-export const ITEMS_MAX = 6;
+/** Захист від надмірного вводу; звичайні багатосправні дні не обрізаємо. */
+export const ITEMS_MAX = 50;
 /** Перенесений пункт живе 3 дні, далі «забути чи в ідеї?» (S-P-15). */
 export const CARRY_MAX_DAYS = 3;
 /** Мінімум символів, щоб префікс id рахувався посиланням на пункт (короткий
@@ -35,9 +35,9 @@ function db(env) {
 /**
  * Налаштування плану дня (S-P-8 `facts.setting.day_plan`) + звички (S-P-6
  * `facts.habit.*`). Вимкнено, якщо факту немає або enabled=false.
- * @param {Env} env
+ * @param {Env} env @param {number} [nowMs]
  */
-export async function readDayPlanConfig(env) {
+export async function readDayPlanConfig(env, nowMs = Date.now()) {
   const [setting, habits] = await Promise.all([
     runFactsGet(env, { kind: 'setting', key: 'day_plan' }),
     runFactsGet(env, { kind: 'habit' }),
@@ -51,6 +51,27 @@ export async function readDayPlanConfig(env) {
   /** @type {Record<string, unknown>} */
   const habitMap = {};
   for (const f of habits.result) habitMap[String(f.key)] = f.value;
+  // Підказка, а не автоматична правка факту: тільки фактичні старти роботи
+  // за різні дні останнього місяця. Медіана стійка до випадкового запізнення.
+  const starts = await db(env)
+    .prepare(
+      `SELECT date, actual_started_at FROM plan_items
+      WHERE role = 'work' AND actual_started_at IS NOT NULL AND date >= ?
+      ORDER BY date DESC LIMIT 60`,
+    )
+    .bind(addDaysToDateKey(kyivDateKey(new Date(nowMs)), -30))
+    .all();
+  const perDay = new Map();
+  for (const row of starts.results ?? []) {
+    const day = String(row.date ?? '');
+    const stamp = Date.parse(String(row.actual_started_at ?? ''));
+    if (!day || !Number.isFinite(stamp)) continue;
+    const minute = kyivMinuteOfDay(new Date(stamp));
+    perDay.set(day, Math.min(perDay.get(day) ?? minute, minute));
+  }
+  const observed = [...perDay.values()].sort((a, b) => a - b);
+  const learnedWorkStart =
+    observed.length >= 5 ? minToHhmm(observed[Math.floor(observed.length / 2)]) : null;
   const settings = {
     intent_at: validHhmm(raw.intent_at) ?? DAY_PLAN_DEFAULTS.intent_at,
     morning_at: validHhmm(raw.morning_at) ?? DAY_PLAN_DEFAULTS.morning_at,
@@ -74,6 +95,8 @@ export async function readDayPlanConfig(env) {
         Number(habitMap.estimate_bias) > 0
           ? Number(habitMap.estimate_bias)
           : HABIT_DEFAULTS.estimate_bias,
+      work_start_at: learnedWorkStart,
+      work_start_samples: observed.length,
     },
   };
 }
@@ -87,9 +110,14 @@ function validHhmm(v) {
  * @typedef {{ date: string, status: string, intent_text: string | null, fill_ratio: number | null,
  *   workflow_id: string | null, created_at: string, reviewed_at: string | null }} DayPlanRow
  * @typedef {{ id: string, date: string, title: string, kind: string | null, est_min: number | null,
- *   hard_at: string | null, hard_end: string | null, not_before: string | null, after_item_id: string | null, deadline: string | null, place: string | null, flexible: number | null,
+ *   hard_at: string | null, hard_end: string | null, not_before: string | null, not_after: string | null,
+ *   after_item_id: string | null, overlap_with_item_id: string | null, deadline: string | null,
+ *   place: string | null, flexible: number | null, floating: number | null,
+ *   optional: number | null, notify: number | null, role: string | null,
  *   priority: number | null, window_start: string | null, window_end: string | null, status: string,
- *   done_at: string | null, reminder_id: string | null, event_id: string | null, carried_from: string | null }} PlanItemRow
+ *   done_at: string | null, actual_started_at: string | null, reminder_id: string | null,
+ *   event_id: string | null, calendar_sync_pending: number, calendar_sync_pending_at: string | null,
+ *   calendar_sync_alerted_at: string | null, carried_from: string | null }} PlanItemRow
  */
 
 /** @param {Env} env @param {string} date @returns {Promise<DayPlanRow | null>} */
@@ -166,6 +194,7 @@ export function normalizeItem(raw, index) {
   const hard = hhmmToMin(raw.hard_at) == null ? null : String(raw.hard_at);
   const hardEnd = hhmmToMin(raw.hard_end) == null ? null : String(raw.hard_end);
   const notBefore = hhmmToMin(raw.not_before) == null ? null : String(raw.not_before);
+  const notAfter = hhmmToMin(raw.not_after) == null ? null : String(raw.not_after);
   const deadline = /^\d{4}-\d{2}-\d{2}$/.test(String(raw.deadline ?? ''))
     ? String(raw.deadline)
     : null;
@@ -177,11 +206,21 @@ export function normalizeItem(raw, index) {
     hard_at: hard,
     hard_end: hardEnd,
     not_before: notBefore,
+    not_after: notAfter,
     after_item_id: typeof raw.after_item_id === 'string' ? raw.after_item_id : null,
+    overlap_with_item_id:
+      typeof raw.overlap_with_item_id === 'string' ? raw.overlap_with_item_id : null,
     deadline,
     place: raw.place == null ? null : String(raw.place).slice(0, 120),
-    flexible: raw.flexible === true,
-    priority: Number.isInteger(Number(raw.priority)) ? Number(raw.priority) : index + 1,
+    flexible: raw.flexible === true || raw.flexible === 1,
+    floating: raw.floating === true || raw.floating === 1,
+    optional: raw.optional === true || raw.optional === 1,
+    notify: raw.notify === true || raw.notify === 1,
+    role: ['work', 'meal'].includes(String(raw.role)) ? String(raw.role) : null,
+    priority:
+      raw.priority != null && Number.isInteger(Number(raw.priority))
+        ? Number(raw.priority)
+        : index + 1,
     carried_from: typeof raw.carried_from === 'string' ? raw.carried_from : null,
   };
 }
@@ -192,7 +231,10 @@ export function normalizeItem(raw, index) {
  */
 export function normalizePlanItems(raw) {
   const items = raw.map((r, index) =>
-    normalizeItem({ ...r, id: undefined, after_item_id: undefined }, index),
+    normalizeItem(
+      { ...r, id: undefined, after_item_id: undefined, overlap_with_item_id: undefined },
+      index,
+    ),
   );
   for (let index = 0; index < raw.length; index += 1) {
     const reference = raw[index]?.after;
@@ -201,6 +243,13 @@ export function normalizePlanItems(raw) {
       const item = items[index];
       const previous = items[predecessor];
       if (item && previous) item.after_item_id = previous.id;
+    }
+    const parallel = raw[index]?.parallel_with;
+    const parent = typeof parallel === 'number' ? parallel : Number.NaN;
+    if (Number.isInteger(parent) && parent >= 0 && parent < raw.length && parent !== index) {
+      const item = items[index];
+      const enclosing = items[parent];
+      if (item && enclosing) item.overlap_with_item_id = enclosing.id;
     }
   }
   return items;
@@ -242,9 +291,10 @@ export async function replaceItems(env, date, slots, items) {
     stmts.push(
       d
         .prepare(
-          `INSERT OR REPLACE INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, after_item_id, deadline, place, flexible,
-             priority, window_start, window_end, status, carried_from)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
+          `INSERT OR REPLACE INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, not_after,
+             after_item_id, overlap_with_item_id, deadline, place, flexible, floating, optional, notify,
+             role, priority, window_start, window_end, status, carried_from)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
         )
         .bind(
           r.id,
@@ -255,10 +305,16 @@ export async function replaceItems(env, date, slots, items) {
           r.hard_at ?? null,
           r.hard_end ?? null,
           r.not_before ?? null,
+          r.not_after ?? null,
           r.after_item_id ?? null,
+          r.overlap_with_item_id ?? null,
           r.deadline ?? null,
           r.place ?? null,
           r.flexible ? 1 : 0,
+          r.floating ? 1 : 0,
+          r.optional ? 1 : 0,
+          r.notify ? 1 : 0,
+          r.role ?? null,
           r.priority ?? null,
           r.window_start ?? null,
           r.window_end ?? null,
@@ -286,7 +342,7 @@ export async function acceptPlan(env, date, nowMs, address) {
   const reminderIds = [];
   const stmts = [];
   for (const it of items) {
-    if (!it.window_start || it.reminder_id) continue;
+    if (!it.window_start || it.reminder_id || !it.notify) continue;
     const dueAtMs = kyivMs(date, it.window_start);
     if (dueAtMs == null || dueAtMs <= nowMs) continue;
     // Послідовно: кожне створення повертає id, потрібний для UPDATE нижче.
@@ -360,21 +416,38 @@ export function resolveItemRef(items, ref, where) {
 
 /**
  * Зміни вдень (S-P-14): done[] - позначити зробленим (done_at = зараз),
- * moves[] - новий час блоку ({id, to:'HH:MM'}), drop[] - пропустити.
+ * starts[] - фактичний початок ({id, at?:'HH:MM'}), moves[] - новий час
+ * блоку ({id, to:'HH:MM'}), drop[] - пропустити.
  * Повертає знімок попередніх станів для «↩».
  * @param {Env} env
  * @param {string} date
- * @param {{ done?: string[], moves?: { id: string, to: string }[], drop?: string[] }} changes
+ * @param {{ starts?: { id: string, at?: string }[], done?: string[], moves?: { id: string, to: string }[], drop?: string[] }} changes
  * @param {number} nowMs
  */
-export async function updateItems(env, date, changes, nowMs) {
+export async function updateItems(env, date, changes, nowMs, calendarSynced = false) {
   const items = await listItems(env, date);
   const resolve = (/** @type {string} */ ref) => resolveItemRef(items, ref, `у плані ${date}`);
-  /** @type {ReturnType<typeof snapshot>[]} */
+  /** @type {(ReturnType<typeof snapshot> & { reminder?: { id: string, status: string, due_at: string } | null })[]} */
   const prev = [];
   const iso = new Date(nowMs).toISOString();
   const d = db(env);
   const stmts = [];
+  for (const start of changes.starts ?? []) {
+    const it = resolve(start.id);
+    if (start.at == null && date !== kyivDateKey(new Date(nowMs)))
+      throw new Error('для іншого дня вкажи фактичний час початку HH:MM');
+    const atMs = start.at == null ? nowMs : kyivMs(date, start.at);
+    if (atMs == null || !Number.isFinite(atMs))
+      throw new Error(`час початку «${start.at}» - очікую HH:MM`);
+    if (atMs > nowMs + 60_000) throw new Error('фактичний початок не може бути в майбутньому');
+    const before = snapshot(it);
+    prev.push(before);
+    stmts.push(
+      d
+        .prepare('UPDATE plan_items SET actual_started_at = ? WHERE id = ?')
+        .bind(new Date(atMs).toISOString(), it.id),
+    );
+  }
   for (const ref of changes.done ?? []) {
     const it = resolve(ref);
     prev.push(snapshot(it));
@@ -384,26 +457,99 @@ export async function updateItems(env, date, changes, nowMs) {
   }
   for (const mv of changes.moves ?? []) {
     const it = resolve(mv.id);
+    if (it.event_id && !calendarSynced)
+      throw new Error(
+        `«${it.title}» уже в календарі. Не зсуваю лише локальний план без зміни події.`,
+      );
     const start = hhmmToMin(mv.to);
     if (start == null) throw new Error(`час «${mv.to}» - очікую HH:MM`);
-    // Довжина блоку - з наявного вікна (уже з запасом); без вікна - сира
-    // оцінка або 30 хв. Кінець клемпиться до 23:59 (minToHhmm).
+    // Довжина блоку - з наявного вікна; без вікна - оцінка або 30 хв.
+    // Опубліковану подію не обрізаємо мовчки на межі дня.
     const ws = hhmmToMin(it.window_start);
     const we = hhmmToMin(it.window_end);
     const len = ws != null && we != null && we > ws ? we - ws : (it.est_min ?? 30);
-    prev.push(snapshot(it));
+    if (it.event_id && start + len >= 24 * 60)
+      throw new Error(`«${it.title}» не вміщується в цей день — обери раніший час`);
+    /** @type {ReturnType<typeof snapshot> & { reminder?: { id: string, status: string, due_at: string } | null }} */
+    const before = snapshot(it);
+    prev.push(before);
     stmts.push(
       d
         .prepare(
-          `UPDATE plan_items SET window_start = ?, window_end = ?, hard_at = ?, hard_end = NULL, not_before = NULL, flexible = 0 WHERE id = ?`,
+          `UPDATE plan_items SET window_start = ?, window_end = ?, hard_at = ?, hard_end = NULL, not_before = NULL, flexible = 0, calendar_sync_pending = ?, calendar_sync_pending_at = ?, calendar_sync_alerted_at = NULL WHERE id = ?`,
         )
-        .bind(minToHhmm(start), minToHhmm(start + len), minToHhmm(start), it.id),
+        .bind(
+          minToHhmm(start),
+          minToHhmm(start + len),
+          minToHhmm(start),
+          calendarSynced && it.event_id ? 1 : 0,
+          calendarSynced && it.event_id ? iso : null,
+          it.id,
+        ),
     );
+    if (it.reminder_id) {
+      const reminder = await d
+        .prepare('SELECT status, due_at FROM reminders WHERE id = ?')
+        .bind(it.reminder_id)
+        .first();
+      before.reminder = reminder
+        ? { id: it.reminder_id, status: String(reminder.status), due_at: String(reminder.due_at) }
+        : null;
+      if (reminder && ['pending', 'snoozed'].includes(String(reminder.status))) {
+        const dueAt = kyivMs(date, minToHhmm(start));
+        if (dueAt == null) throw new Error(`час «${mv.to}» не вдалося визначити`);
+        stmts.push(
+          d
+            .prepare(
+              `UPDATE reminders SET due_at = ?, status = ? WHERE id = ? AND status IN ('pending', 'snoozed')`,
+            )
+            .bind(
+              new Date(dueAt).toISOString(),
+              dueAt > nowMs ? 'pending' : 'cancelled',
+              it.reminder_id,
+            ),
+        );
+      }
+    }
   }
   for (const ref of changes.drop ?? []) {
     const it = resolve(ref);
-    prev.push(snapshot(it));
-    stmts.push(d.prepare(`UPDATE plan_items SET status = 'skipped' WHERE id = ?`).bind(it.id));
+    if (it.event_id && !calendarSynced)
+      throw new Error(
+        `«${it.title}» уже в календарі. Не прибираю лише локальний план без зміни події.`,
+      );
+    /** @type {ReturnType<typeof snapshot> & { reminder?: { id: string, status: string, due_at: string } | null }} */
+    const before = snapshot(it);
+    prev.push(before);
+    stmts.push(
+      d
+        .prepare(
+          `UPDATE plan_items SET status = 'skipped', event_id = ?, reminder_id = NULL, calendar_sync_pending = ?, calendar_sync_pending_at = ?, calendar_sync_alerted_at = NULL WHERE id = ?`,
+        )
+        .bind(
+          calendarSynced ? it.event_id : null,
+          calendarSynced && it.event_id ? 1 : 0,
+          calendarSynced && it.event_id ? iso : null,
+          it.id,
+        ),
+    );
+    if (it.reminder_id) {
+      const reminder = await d
+        .prepare('SELECT status, due_at FROM reminders WHERE id = ?')
+        .bind(it.reminder_id)
+        .first();
+      before.reminder = reminder
+        ? { id: it.reminder_id, status: String(reminder.status), due_at: String(reminder.due_at) }
+        : null;
+      if (reminder && ['pending', 'snoozed'].includes(String(reminder.status)))
+        stmts.push(
+          d
+            .prepare(
+              `UPDATE reminders SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'snoozed')`,
+            )
+            .bind(it.reminder_id),
+        );
+    }
   }
   if (stmts.length === 0) throw new Error('нічого змінювати');
   await d.batch(stmts);
@@ -413,25 +559,49 @@ export async function updateItems(env, date, changes, nowMs) {
 /** Відкат updateItems. @param {Env} env @param {{ prev: any[] }} snap */
 export async function undoUpdateItems(env, snap) {
   const d = db(env);
-  await d.batch(
-    snap.prev.map((p) =>
-      d
-        .prepare(
-          `UPDATE plan_items SET status = ?, done_at = ?, window_start = ?, window_end = ?, hard_at = ?, hard_end = ?, not_before = ?, flexible = ? WHERE id = ?`,
-        )
-        .bind(
-          p.status,
-          p.done_at,
-          p.window_start,
-          p.window_end,
-          p.hard_at,
-          p.hard_end,
-          p.not_before,
-          p.flexible,
-          p.id,
-        ),
-    ),
-  );
+  await d.batch([
+    ...snap.prev.map((p) => {
+      const old = [
+        p.status,
+        p.done_at,
+        p.actual_started_at,
+        p.window_start,
+        p.window_end,
+        p.hard_at,
+        p.hard_end,
+        p.not_before,
+        p.flexible,
+      ];
+      // Undo cards created before this release have no event/reminder IDs in
+      // their snapshots. Preserve the current links instead of clearing them.
+      return 'event_id' in p
+        ? d
+            .prepare(
+              `UPDATE plan_items SET status = ?, done_at = ?, actual_started_at = ?, window_start = ?, window_end = ?, hard_at = ?, hard_end = ?, not_before = ?, flexible = ?, event_id = ?, reminder_id = ?, calendar_sync_pending = ?, calendar_sync_pending_at = ?, calendar_sync_alerted_at = ? WHERE id = ?`,
+            )
+            .bind(
+              ...old,
+              p.event_id,
+              p.reminder_id,
+              p.calendar_sync_pending ?? 0,
+              p.calendar_sync_pending_at ?? null,
+              p.calendar_sync_alerted_at ?? null,
+              p.id,
+            )
+        : d
+            .prepare(
+              `UPDATE plan_items SET status = ?, done_at = ?, actual_started_at = ?, window_start = ?, window_end = ?, hard_at = ?, hard_end = ?, not_before = ?, flexible = ? WHERE id = ?`,
+            )
+            .bind(...old, p.id);
+    }),
+    ...snap.prev
+      .filter((p) => p.reminder)
+      .map((p) =>
+        d
+          .prepare('UPDATE reminders SET status = ?, due_at = ? WHERE id = ?')
+          .bind(p.reminder.status, p.reminder.due_at, p.reminder.id),
+      ),
+  ]);
 }
 
 /**
@@ -476,8 +646,8 @@ export async function carryItems(env, from, to, ids, nowMs) {
     stmts.push(
       d
         .prepare(
-          `INSERT INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, deadline, place, flexible, priority, status, carried_from)
-           VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 1, ?, 'planned', ?)`,
+          `INSERT INTO plan_items (id, date, title, kind, est_min, hard_at, hard_end, not_before, deadline, place, flexible, priority, status, carried_from, role, optional, notify)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 1, ?, 'planned', ?, ?, ?, ?)`,
         )
         .bind(
           crypto.randomUUID(),
@@ -489,6 +659,9 @@ export async function carryItems(env, from, to, ids, nowMs) {
           it.place,
           it.priority,
           origin,
+          it.role,
+          it.optional ?? 0,
+          it.notify ?? 0,
         ),
     );
   }
@@ -524,12 +697,18 @@ function snapshot(it) {
     id: it.id,
     status: it.status,
     done_at: it.done_at,
+    actual_started_at: it.actual_started_at,
     window_start: it.window_start,
     window_end: it.window_end,
     hard_at: it.hard_at,
     hard_end: it.hard_end,
     not_before: it.not_before,
     flexible: it.flexible,
+    event_id: it.event_id,
+    reminder_id: it.reminder_id,
+    calendar_sync_pending: it.calendar_sync_pending,
+    calendar_sync_pending_at: it.calendar_sync_pending_at,
+    calendar_sync_alerted_at: it.calendar_sync_alerted_at,
   };
 }
 

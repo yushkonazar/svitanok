@@ -108,6 +108,7 @@ import {
   handleWeatherLocatePrompt,
 } from './weather-geo.mjs';
 import { handleAgentStep, agentRunWatchdog, agentHostHealthCheck } from './agent-runtime.mjs';
+import { reconcilePlanCalendar } from './core/day-plan/calendar-sync.mjs';
 import { resolveProposalCallback } from './proposals.mjs';
 import { loadState, updateState, updateStats } from './kv-store.mjs';
 import { kyivDateKey } from './kyiv-time.mjs';
@@ -396,6 +397,7 @@ async function handleTelegramSetup(/** @type {Request} */ request, /** @type {En
  */
 export const CRON_TASKS = [
   { name: 'checkReminders', run: checkReminders }, // будь-яка хвилина
+  { name: 'reconcilePlanCalendar', run: reconcilePlanCalendar }, // обірвані зміни плану/Google
   { name: 'agentRunWatchdog', run: agentRunWatchdog }, // обірвані прогони агента
   { name: 'agentHostHealthCheck', run: agentHostHealthCheck }, // розсинхрон версій хоста
   { name: 'autoBriefDispatch', run: autoBriefDispatch }, // [08:00, 11:00) Київ, раз на добу

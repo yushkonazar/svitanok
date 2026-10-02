@@ -15,6 +15,7 @@ import {
 import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 import { savedPageSchema, type SavedPage } from './schema.ts';
+import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
 // origin), тож шляхи абсолютні (/api/...); у dev Vite проксі /api -> wrangler :8787.
@@ -139,6 +140,17 @@ export async function fetchDeletionReceipts(): Promise<DeletionReceipts> {
   const parsed = deletionsSchema.safeParse(await res.json());
   if (!parsed.success) throw new Error('Формат квитанцій видалення змінився — оновіть застосунок');
   return parsed.data;
+}
+
+/** Приватний технічний огляд якості працівників за 30 днів. */
+export async function fetchWorkerQuality(): Promise<WorkerQuality[]> {
+  if (!inTelegram()) return [];
+  const res = await fetch('/api/assistant-status', { cache: 'no-store', headers: authHeaders() });
+  throwIfSessionExpired(res);
+  if (!res.ok) throw new Error(`Не вдалося завантажити огляд працівників (${res.status})`);
+  const parsed = workerQualityResponseSchema.safeParse(await res.json());
+  if (!parsed.success) throw new Error('Огляд працівників тимчасово недоступний');
+  return parsed.data.dashboard.worker_quality;
 }
 
 /**

@@ -64,6 +64,12 @@ function fakeWorkflow() {
 }
 
 function setup() {
+  // План після схвалення записується в календар; тести ніколи не звертаються
+  // до реального Google навіть за наявності тестового OAuth-токена.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify({ id: 'ev-test' }), { status: 200 })),
+  );
   const d1 = d1FromSqlite(MIGRATIONS);
   const wf = fakeWorkflow();
   const env = workerEnv({
@@ -148,15 +154,13 @@ const WORKER_INTENT = {
     },
   },
 };
-const WORKER_EXPLAIN = { payload: { mode: 'explain', output: 'Пояснення дня від Денного' } };
-
 describe('runDayPlanChain', () => {
-  it('повний шлях: питання → намір → уточнення → чернетка з поясненням → ✅ → ранок → огляд → перенос', async () => {
+  it('повний шлях: питання → намір → уточнення → чернетка → ✅ з календарем → ранок → огляд', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
     const { step, log } = fakeStep({
       intent: [{ payload: { text: 'презентація 2 год, банк, зателефонувати Олені' } }],
-      worker: [WORKER_INTENT, WORKER_EXPLAIN],
+      worker: [WORKER_INTENT],
       answer: [{ payload: { item: 0, option: 1 } }],
       accept: [{ payload: { choice: 'accept' } }],
       carry: [{ payload: { choice: 'carry_all' } }],
@@ -170,7 +174,7 @@ describe('runDayPlanChain', () => {
 
     // 1. Вечірнє питання - зі станом waiting/intent і двома кнопками c:.
     expect(sent[0]).toMatchObject({
-      text: 'Що завтра (07.09)? 1-6 речей текстом або голосом; «нічого особливого» - теж відповідь.',
+      text: 'Що завтра (07.09)? Назви всі справи, роботу й відомі часи текстом або голосом. «Нічого особливого» — теж відповідь.',
       buttons: [`c:${chainId}:none`, `c:${chainId}:skip`],
       awaiting: 'intent',
       status: 'waiting',
@@ -195,34 +199,32 @@ describe('runDayPlanChain', () => {
       'презентація 2 год, банк, зателефонувати Олені',
     );
     // 3. Розкладка ядром: відповідь «1 год» → Банк est_min 60 (сира оцінка),
-    //    блок із запасом 60 × 1,3 = 80 хв у вікні; explain - працівником.
+    //    названі 60 хв не множаться на запас; чернетку формує ядро.
     const items = await listItems(env, DATE);
     const bank = items.find((i) => i.title === 'Банк');
     expect(bank).toMatchObject({ est_min: 60, kind: 'errand' });
     expect((hhmmToMin(bank?.window_end) ?? 0) - (hhmmToMin(bank?.window_start) ?? 0)).toBe(60);
     expect(items.filter((i) => i.window_start)).toHaveLength(3);
-    expect(startWorker.mock.calls[1]?.[0]).toBe('explain');
-    expect(startWorker.mock.calls[1]?.[1]).toMatchObject({ date: DATE });
     expect(sent[2]).toMatchObject({
-      text: 'Пояснення дня від Денного',
-      buttons: [`c:${chainId}:accept`, `c:${chainId}:edit`, `c:${chainId}:calendar`],
+      buttons: [`c:${chainId}:accept`, `c:${chainId}:edit`, `c:${chainId}:later`],
       awaiting: 'accept',
     });
-    // 4. ✅ → нагадування на кожен блок із часом, ранковий план.
+    expect(sent[2]?.text).toContain('План на 07.09');
+    // 4. ✅ → блоки в календар, але без навʼязаних нагадувань.
     expect(
       db.prepare(`SELECT count(*) AS n FROM reminders WHERE status = 'pending'`).get(),
     ).toEqual({
-      n: 3,
+      n: 0,
     });
-    expect(sent[3]?.text).toContain('Презентація');
-    expect(sent[3]?.awaiting).toBeNull();
+    expect(sent[3]?.text).toContain('План погоджено. У календарі: 3 блоків');
+    expect(sent[4]?.text).toContain('Презентація');
     // 5. Огляд: нічого не зроблено → питання про перенос → carry_all.
-    expect(sent[4]).toMatchObject({
+    expect(sent[5]).toMatchObject({
       buttons: [`c:${chainId}:carry_all`, `c:${chainId}:carry_none`],
       awaiting: 'carry',
     });
-    expect(sent[4]?.text).toContain('З плану 0/3 ✅ · перенести');
-    expect(sent).toHaveLength(5);
+    expect(sent[5]?.text).toContain('З плану 0/3 ✅ · перенести');
+    expect(sent).toHaveLength(6);
     const nextDay = await listItems(env, '2026-09-08');
     expect(nextDay.map((i) => i.carried_from)).toEqual([DATE, DATE, DATE]);
     expect((await listItems(env, DATE)).every((i) => i.status === 'carried')).toBe(true);
@@ -235,27 +237,172 @@ describe('runDayPlanChain', () => {
     });
   });
 
-  it('без працівника: наївний розбір наміру, чернетка resеrve formatDraft; тиша власника = прийнято і перенесено', async () => {
+  it('без працівника: резервний розбір, тиша залишає чернетку без запису', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
     const { step } = fakeStep({ intent: [{ payload: { text: 'презентація, банк' } }] });
     const { io, sent, startWorker } = fakeIo(db, chainId, { workerOk: false });
 
-    await runDayPlanChain(env, { chainId, date: DATE }, step, io);
+    expect(await runDayPlanChain(env, { chainId, date: DATE }, step, io)).toMatchObject({
+      outcome: 'draft-left-for-later',
+    });
 
-    expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['intent', 'explain']);
+    expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['intent']);
     // Без уточнень - одразу чернетка.
     expect(sent[1]?.text.split('\n')[0]).toBe('План на 07.09');
-    expect(sent[1]?.text).toContain('• 08:00-08:40 презентація · routine · за порядком');
+    expect(sent[1]?.text).toContain('• 08:00-08:40 презентація · за порядком');
     expect(sent[1]?.text).toContain('• 10:00 Зустріч (календар)');
-    // accept без відповіді - план прийнято за замовчуванням: нагадування є.
-    expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 2 });
-    // carry без відповіді за 2 год - перенесено.
-    expect(await listItems(env, '2026-09-08')).toHaveLength(2);
-    expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
+    expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 0 });
+    expect(await listItems(env, '2026-09-08')).toHaveLength(0);
+    expect((await getDayPlan(env, DATE))?.status).toBe('draft');
   });
 
-  it('✏️ Змінити: питання «що змінити», текст → працівник replan, план прийнято', async () => {
+  it('відкладений план відкривається повторно без нового опитування й записується лише після ✅', async () => {
+    const { db, env } = setup();
+    const firstId = await startDayPlanChain(env, DATE, NOW, {
+      oneShot: true,
+      initialIntent: 'пошта',
+    });
+    await expect(startDayPlanChain(env, DATE, NOW, { oneShot: true })).rejects.toThrow(
+      'уже відкритий',
+    );
+    const firstStep = fakeStep({});
+    const firstIo = fakeIo(db, firstId, { workerOk: false });
+    expect(
+      await runDayPlanChain(
+        env,
+        { chainId: firstId, date: DATE, oneShot: true, initialIntent: 'пошта' },
+        firstStep.step,
+        firstIo.io,
+      ),
+    ).toMatchObject({ outcome: 'draft-left-for-later' });
+    const resumedId = await startDayPlanChain(env, DATE, NOW, { oneShot: true, resumeDraft: true });
+    const resumedStep = fakeStep({ accept: [{ payload: { choice: 'accept' } }] });
+    const resumedIo = fakeIo(db, resumedId);
+    expect(
+      await runDayPlanChain(
+        env,
+        { chainId: resumedId, date: DATE, oneShot: true, resumeDraft: true },
+        resumedStep.step,
+        resumedIo.io,
+      ),
+    ).toMatchObject({ outcome: 'accepted' });
+    expect(resumedIo.startWorker).not.toHaveBeenCalled();
+    expect(resumedIo.sent[0]?.text).toContain('пошта');
+    expect((await getDayPlan(env, DATE))?.status).toBe('accepted');
+    expect(db.prepare('SELECT count(*) AS n FROM reminders').get()).toEqual({ n: 0 });
+    await expect(
+      startDayPlanChain(env, DATE, NOW, { oneShot: true, initialIntent: 'новий план' }),
+    ).rejects.toThrow('Не створюю дубль');
+  });
+
+  it('схвалює роботу без розриву, сніданок поверх неї та дві вечірні справи; Google не надсилає нагадування', async () => {
+    const { db, env } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW, {
+      oneShot: true,
+      initialIntent: 'робота 7–19, сніданок під час роботи, курс і книжка ввечері',
+    });
+    const { step } = fakeStep({
+      worker: [
+        {
+          payload: {
+            output: {
+              items: [
+                { title: 'Робота', hard_at: '07:00', hard_end: '19:00' },
+                { title: 'Сніданок', est_min: 25, floating: true, parallel_with: 0 },
+                { title: 'Курс', kind: 'deep', est_min: 45, after: 0 },
+                { title: 'Книжка', est_min: 30, after: 2 },
+              ],
+            },
+          },
+        },
+      ],
+      accept: [{ payload: { choice: 'accept' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId, { readCalendar: async () => [] });
+    expect(
+      await runDayPlanChain(
+        env,
+        {
+          chainId,
+          date: DATE,
+          oneShot: true,
+          initialIntent: 'робота 7–19, сніданок під час роботи, курс і книжка ввечері',
+        },
+        step,
+        io,
+      ),
+    ).toMatchObject({ outcome: 'accepted', items: 4 });
+    const rows = await listItems(env, DATE);
+    expect(rows.find((r) => r.title === 'Робота')).toMatchObject({
+      window_start: '07:00',
+      window_end: '19:00',
+    });
+    expect(rows.find((r) => r.title === 'Сніданок')).toMatchObject({
+      floating: 1,
+      window_start: '08:00',
+      window_end: '11:00',
+    });
+    expect(sent[0]?.text).toContain('≈08:00-11:00 Сніданок');
+    const requests = vi
+      .mocked(fetch)
+      .mock.calls.map(
+        ([, init]) => JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      );
+    expect(requests).toHaveLength(4);
+    const meal = requests.find((body) => String(body.summary).startsWith('Сніданок · ≈25 хв'));
+    expect(meal).toMatchObject({ transparency: 'transparent', reminders: { useDefault: false } });
+    expect(db.prepare('SELECT count(*) AS n FROM reminders').get()).toEqual({ n: 0 });
+  });
+
+  it('«проєкт або курс» питає вибір і не записує відхилений варіант', async () => {
+    const { db, env } = setup();
+    const chainId = await startDayPlanChain(env, DATE, NOW, {
+      oneShot: true,
+      initialIntent: 'проєкт або курс',
+    });
+    const { step } = fakeStep({
+      worker: [
+        {
+          payload: {
+            output: {
+              items: [
+                { title: 'Проєкт', kind: 'deep', est_min: 45 },
+                { title: 'Курс', kind: 'deep', est_min: 45 },
+              ],
+              questions: [
+                {
+                  field: 'choice',
+                  item: 0,
+                  q: 'Що обрати?',
+                  choices: [
+                    { label: 'Проєкт', items: [0] },
+                    { label: 'Курс', items: [1] },
+                    { label: 'Обидва', items: [0, 1] },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      answer: [{ payload: { item: 0, option: 1 } }],
+      accept: [{ payload: { choice: 'accept' } }],
+    });
+    const { io, sent } = fakeIo(db, chainId, { readCalendar: async () => [] });
+    expect(
+      await runDayPlanChain(
+        env,
+        { chainId, date: DATE, oneShot: true, initialIntent: 'проєкт або курс' },
+        step,
+        io,
+      ),
+    ).toMatchObject({ items: 1, outcome: 'accepted' });
+    expect(sent[0]?.buttons).toHaveLength(3);
+    expect((await listItems(env, DATE)).map((r) => r.title)).toEqual(['Курс']);
+  });
+
+  it('✏️ Змінити: нова чернетка й друге явне підтвердження', async () => {
     const { db, env } = setup();
     const chainId = await startDayPlanChain(env, DATE, NOW);
     const noQuestions = {
@@ -265,12 +412,11 @@ describe('runDayPlanChain', () => {
       intent: [{ payload: { text: 'банк' } }],
       worker: [
         noQuestions,
-        WORKER_EXPLAIN,
         // Працівник replan повертає зміни за назвою; ланцюг застосовує їх ДО
         // прийняття - нагадування стає на новий час.
         { payload: { mode: 'replan', output: { moves: [{ id: 'Банк', to: '16:00' }] } } },
       ],
-      accept: [{ payload: { choice: 'edit' } }],
+      accept: [{ payload: { choice: 'edit' } }, { payload: { choice: 'accept' } }],
       answer: [{ payload: { text: 'не знаю' } }, { payload: { text: 'банк на 16:00' } }],
       carry: [{ payload: { choice: 'carry_none' } }],
     });
@@ -279,15 +425,14 @@ describe('runDayPlanChain', () => {
     await runDayPlanChain(env, { chainId, date: DATE }, step, io);
 
     expect(sent.map((s) => s.text)).toContain(
-      'Напиши, що змінити (наприклад: «презентацію на 16:00», «забери банк»).',
+      'Що змінити? Можеш пересунути, додати або прибрати кілька справ одним повідомленням.',
     );
-    expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['intent', 'explain', 'replan']);
-    expect(startWorker.mock.calls[2]?.[1]).toMatchObject({ text: 'банк на 16:00', date: DATE });
+    expect(startWorker.mock.calls.map((c) => c[0])).toEqual(['intent', 'replan']);
+    expect(startWorker.mock.calls[1]?.[1]).toMatchObject({ text: 'банк на 16:00', date: DATE });
     const bank = (await listItems(env, DATE)).find((i) => i.title === 'Банк');
     expect(bank).toMatchObject({ window_start: '16:00', flexible: 0 });
-    const rem = db.prepare(`SELECT due_at FROM reminders`).all() as { due_at: string }[];
-    expect(rem).toHaveLength(1);
-    expect(Date.parse(rem[0]!.due_at)).toBe(Date.parse('2026-09-07T13:00:00.000Z'));
+    expect(sent.filter((s) => s.text.startsWith('План на 07.09'))).toHaveLength(2);
+    expect(db.prepare(`SELECT count(*) AS n FROM reminders`).get()).toEqual({ n: 0 });
     // «Ні» на перенос - нічого не переїхало, день reviewed.
     expect(await listItems(env, '2026-09-08')).toHaveLength(0);
     expect((await getDayPlan(env, DATE))?.status).toBe('reviewed');
@@ -306,7 +451,7 @@ describe('runDayPlanChain', () => {
     };
     const { step } = fakeStep({
       intent: [{ payload: { text: 'банк' } }],
-      worker: [noQuestions, WORKER_EXPLAIN],
+      worker: [noQuestions],
       accept: [{ payload: { choice: 'calendar' } }],
       carry: [{ payload: { choice: 'carry_none' } }],
     });
@@ -316,11 +461,8 @@ describe('runDayPlanChain', () => {
       vi.fn(async () => new Response(JSON.stringify({ id: 'ev-1' }), { status: 200 })),
     );
     await runDayPlanChain(env, { chainId, date: DATE }, step, io);
-    // ⚠️ Від 08.09 подія без гостей - T0: блок їде в календар одразу, а в тред
-    // іде рядок із «↩», не пропозиція ✅/❌.
-    const cal = sent.find((s) => s.text.startsWith('🗓 «Банк» 07.09 '));
-    expect(cal?.text).toBe('🗓 «Банк» 07.09 08:00-09:00 - у календарі.');
-    expect(cal?.buttons.some((b) => b.startsWith('u:'))).toBe(true);
+    const cal = sent.find((s) => s.text.startsWith('🗓 План погоджено.'));
+    expect(cal?.text).toContain('У календарі: 1 блоків');
     expect(
       db
         .prepare(`SELECT kind, level, status FROM proposals WHERE kind = 'undo:calendar.event'`)
@@ -426,7 +568,6 @@ describe('helpers ланцюга', () => {
             },
           },
         },
-        { payload: { output: 'Чернетка з гнучким навчанням' } },
       ],
       answer: [{ payload: { text: 'не знаю' } }],
     });
@@ -505,7 +646,7 @@ describe('helpers ланцюга', () => {
     });
   });
 
-  it('replanChanges: лише done/moves/drop з відомою формою, ≤ 3 зміни', () => {
+  it('replanChanges: done/moves/drop/add з відомою формою, ≤ 20 змін', () => {
     expect(
       replanChanges({
         done: ['a', 7],
@@ -513,9 +654,9 @@ describe('helpers ланцюга', () => {
         drop: ['c', 'd', 'e'],
         extra: 'ignored',
       }),
-    ).toEqual({ done: ['a'], moves: [{ id: 'b', to: '16:00' }], drop: ['c'] });
-    expect(REPLAN_MAX_CHANGES).toBe(3);
-    expect(replanChanges({})).toEqual({ done: [], moves: [], drop: [] });
+    ).toEqual({ done: ['a'], moves: [{ id: 'b', to: '16:00' }], drop: ['c', 'd', 'e'], add: [] });
+    expect(REPLAN_MAX_CHANGES).toBe(20);
+    expect(replanChanges({})).toEqual({ done: [], moves: [], drop: [], add: [] });
   });
 
   it('startDayPlannerRun: інструкція day-planner з D1 → /run профілю day-planner із JSON-задачею; без інструкції - false і без мережі', async () => {

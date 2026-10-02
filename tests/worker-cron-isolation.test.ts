@@ -89,6 +89,7 @@ describe('runCronTasks — збій однієї задачі не забира�
   it('CRON_TASKS — усі задачі, кожна з назвою для логів', () => {
     expect(CRON_TASKS.map((t: { name: string }) => t.name)).toEqual([
       'checkReminders',
+      'reconcilePlanCalendar',
       'agentRunWatchdog',
       'agentHostHealthCheck',
       'autoBriefDispatch',

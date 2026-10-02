@@ -24,6 +24,7 @@ import { Switch, Chip, Stepper, SettingRow } from '../ui/controls.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { useQueryClient } from '@tanstack/react-query';
 import { DeletionReceiptsBlock } from './DeletionReceiptsBlock.tsx';
+import { WorkerQualityBlock } from './WorkerQualityBlock.tsx';
 
 // Екран «Налаштування» (дизайн v2, Svitanok.dc.html; роадмеп v3, F2).
 //
@@ -301,6 +302,8 @@ export function SettingsScreen() {
           </p>
         )}
       </Section>
+
+      <WorkerQualityBlock />
 
       <Section title="МОДУЛІ БРИФІНГУ">
         {MODULES.map((m, i) => {

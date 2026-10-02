@@ -478,6 +478,18 @@ describe('deliver з результатом працівника (S-7-1)', () =>
     expect(
       validateAgainst(DELIVER_SCHEMA, { text: 'x', worker: { name: 'a', text: 'b' } }).ok,
     ).toBe(true);
+    expect(
+      validateAgainst(DELIVER_SCHEMA, {
+        text: 'x',
+        worker: { name: 'analyst', text: 'b', context: 'finance-summary' },
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateAgainst(DELIVER_SCHEMA, {
+        text: 'x',
+        worker: { name: 'analyst', text: 'b', context: 'irrelevant' },
+      }).ok,
+    ).toBe(false);
     expect(validateAgainst(DELIVER_SCHEMA, { text: 'x', worker: { name: 'a' } }).ok).toBe(false);
     await expect(saveWorkerResult(env, { name: 'ok-name', text: 'т' }, NOW)).resolves.toMatchObject(
       {
@@ -538,6 +550,89 @@ describe('підбір магазину для відстеження ціни',
         .flat()
         .map((button) => button.text),
     ).toEqual(['✏️ Коротше', '🔁 Інший тон', '📎 Файл .md', '👍 Корисно', '👎 Не те']);
+    expect(
+      workerButtons('r-finance-summary', true, 'finance-summary')
+        .flat()
+        .map((button) => button.text),
+    ).toEqual(['💸 Куди пішли', '👍 Корисно', '👎 Не те']);
+    expect(
+      workerButtons('r-trip', true, 'trip-plan')
+        .flat()
+        .map((button) => button.text),
+    ).toEqual(['👍 Корисно', '👎 Не те']);
+    expect(
+      workerButtons('r-unknown', true, '')
+        .flat()
+        .map((button) => button.text),
+    ).toEqual(['👍 Корисно', '👎 Не те']);
+  });
+
+  it('картка аналізу витрат зберігає імʼя аналітика й показує лише доречну дію', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'За тиждень витрачено 1 200 грн.',
+      worker: {
+        name: 'analyst',
+        context: 'finance-summary',
+        text: 'За тиждень витрачено 1 200 грн.',
+      },
+    });
+    expect(res.status).toBe(200);
+    const { worker_result_id: id } = (await res.json()) as { worker_result_id: string };
+    expect(db.prepare('SELECT kind FROM reports WHERE id = ?').get(id)).toEqual({
+      kind: 'worker:analyst',
+    });
+    const msg = tg.find((call) => call.method === 'sendMessage')!.form as Record<string, unknown>;
+    const buttons = (msg.reply_markup as { inline_keyboard: { text: string }[][] }).inline_keyboard
+      .flat()
+      .map((button) => button.text);
+    expect(buttons).toEqual(['💸 Куди пішли', '👍 Корисно', '👎 Не те']);
+    expect(String(msg.text)).not.toContain('**');
+  });
+
+  it('картка закладів дає вибір ресторану без кнопок переписування', async () => {
+    const { env, db } = setup();
+    const { tg } = stubTelegram();
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'Знайшов два варіанти. Обери заклад нижче.',
+      worker: {
+        name: 'researcher',
+        context: 'place-search',
+        text: '- Grand Cafe — пл. Ринок, 1\n- Syrovarnia — вул. Шевченка, 2',
+      },
+    });
+    expect(res.status).toBe(200);
+    const { worker_result_id: id } = (await res.json()) as { worker_result_id: string };
+    expect(db.prepare('SELECT kind FROM reports WHERE id = ?').get(id)).toEqual({
+      kind: 'worker:researcher',
+    });
+    const msg = tg.find((call) => call.method === 'sendMessage')!.form as Record<string, unknown>;
+    const keyboard = (msg.reply_markup as { inline_keyboard: { text: string }[][] })
+      .inline_keyboard;
+    const labels = keyboard.flat().map((button) => button.text);
+    expect(labels).toEqual(['📍 1. Grand Cafe', '📍 2. Syrovarnia', '👍 Корисно', '👎 Не те']);
+    expect(String(msg.text)).toContain('Обери заклад');
+    expect(String(msg.text)).not.toContain('**');
+  });
+
+  it('чернетка поїздки не отримує чужих кнопок календаря чи експорту', async () => {
+    const { env } = setup();
+    const { tg } = stubTelegram();
+    const res = await post(env, '/internal/deliver', 'r1', {
+      text: 'Чернетка поїздки до Києва на 14–16 листопада.',
+      worker: {
+        name: 'planner',
+        context: 'trip-plan',
+        text: 'Чернетка маршруту й бюджету.',
+      },
+    });
+    expect(res.status).toBe(200);
+    const msg = tg.find((call) => call.method === 'sendMessage')!.form as Record<string, unknown>;
+    const labels = (msg.reply_markup as { inline_keyboard: { text: string }[][] }).inline_keyboard
+      .flat()
+      .map((button) => button.text);
+    expect(labels).toEqual(['👍 Корисно', '👎 Не те']);
   });
 
   it('не пропонує домашню сторінку, URL з обліковими даними чи ціну без валюти', () => {

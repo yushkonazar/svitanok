@@ -262,12 +262,16 @@ describe('CoreClient: instruction / taint / deliver з працівником (�
     expect(await makeClient(boom).taint('run-1', 'w')).toBe(false);
   });
 
-  it('deliver з працівником шле {text, buttons?, worker}; без кнопок - buttons відсутній', async () => {
+  it('deliver передає контекст картки, не змінюючи імʼя працівника', async () => {
     const { fetchFn, calls } = captureFetch(200, { ok: true, queued: 1 });
-    await makeClient(fetchFn).deliver('run-1', 'готово', [], { name: 'editor', text: 'hello' });
+    await makeClient(fetchFn).deliver('run-1', 'готово', [], {
+      name: 'analyst',
+      text: 'hello',
+      context: 'finance-summary',
+    });
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
       text: 'готово',
-      worker: { name: 'editor', text: 'hello' },
+      worker: { name: 'analyst', text: 'hello', context: 'finance-summary' },
     });
   });
 });
