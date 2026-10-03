@@ -94,6 +94,9 @@ export function d1FromSqlite(migrations: string[]): D1Stub {
   ) {
     files.push('0026_plan_calendar_sync.sql');
   }
+  if (files.includes('0004_ideas_travel.sql') && !files.includes('0027_trip_briefs.sql')) {
+    files.push('0027_trip_briefs.sql');
+  }
   for (const file of files) {
     db.exec(readFileSync(join(__dirname, '..', '..', 'web', 'core', 'migrations', file), 'utf8'));
   }

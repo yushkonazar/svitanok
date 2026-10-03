@@ -46,6 +46,7 @@ import {
 import { cancelAnalysis, restoreIdeaRepo } from '../ideas/analysis.mjs';
 import { startTableChain, cancelTableChain, findActiveTableChain } from '../chains/table.mjs';
 import { startTripChain, cancelTripChain } from '../chains/trip.mjs';
+import { runTripExpense, undoTripExpense } from '../tools/trip-expenses.mjs';
 import { importSteamWishlist } from '../steam/check.mjs';
 import {
   startPriceTrack,
@@ -111,6 +112,7 @@ import {
   undoPlanUpdate,
   runPlanReview,
 } from '../tools/plan.mjs';
+import { runTripBrief } from '../tools/trip.mjs';
 import {
   deleteKnowledgeDocument,
   importKnowledgeDocumentFromDrive,
@@ -165,6 +167,30 @@ function driveNoteName(raw) {
  * }>}
  */
 export const EXECUTORS = {
+  'trip.expense': {
+    execute: (env, payload, nowMs, ctx) => runTripExpense(env, payload, nowMs, ctx),
+    undo: (env, snapshot) => undoTripExpense(env, snapshot),
+  },
+  'trip.brief': {
+    async execute(env, payload, nowMs, ctx) {
+      if (ctx?.chatId == null) throw new Error('Не вдалося визначити чат для чернетки поїздки');
+      const { result } = await runTripBrief(
+        env,
+        {
+          to: payload.to,
+          date_from: payload.date_from,
+          purpose: payload.purpose,
+          draft_id: payload.draft_id,
+          restart: payload.restart,
+          skip_optional: payload.skip_optional,
+          answers: payload.answers,
+        },
+        nowMs,
+        ctx,
+      );
+      return { result };
+    },
+  },
   'knowledge.import': {
     async execute(env, payload, nowMs) {
       const result = await importKnowledgeDocumentFromDrive(

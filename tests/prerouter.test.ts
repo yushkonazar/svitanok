@@ -22,6 +22,7 @@ import { workerEnv } from './helpers/env.js';
 import { d1FromSqlite } from './helpers/d1.js';
 import { d1WithInstructions, syncInstructionHash, TEST_PERSONA } from './helpers/instructions.js';
 import { readTutorSession, saveTutorWorkerResult } from '../web/core/brain/learning-session.mjs';
+import { runTripBrief } from '../web/core/tools/trip.mjs';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'prerouter-test-key';
@@ -1465,6 +1466,98 @@ describe('handleBrainCallback (p:/u: - борг PR-8; реальна policy на
       'Це вже вирішено.',
     );
     expect(tg).toHaveLength(0);
+  });
+
+  it('вибір у брифі зберігає відповідь у своєму чаті й замінює картку наступним питанням', async () => {
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0004_ideas_travel.sql',
+      '0014_fact_provenance.sql',
+      '0022_worker_card_actions.sql',
+      '0027_trip_briefs.sql',
+    ]);
+    const { tg } = makeFetchStub();
+    const env = makeEnv(makeRegistryStub(), d1.stub);
+    const { result } = await runTripBrief(
+      env,
+      {
+        answers: {
+          to: 'Київ',
+          date_from: '2026-11-14',
+          return_type: 'one_way',
+          from_city: 'Львів',
+          participants: 'дві людини',
+          purpose: 'відпочинок',
+          international: false,
+        },
+      },
+      NOW,
+      { chatId: 555, threadId: 99 },
+    );
+    expect(result.ask[0]?.field).toBe('mode');
+    const button = {
+      data: result.question_card!.buttons[0]![0]!.callback_data,
+      chatId: 555,
+      threadId: 99,
+      messageId: 42,
+    };
+    const deferred: (() => Promise<void>)[] = [];
+    expect(await handleBrainCallback(env, button, NOW + 1, (work) => deferred.push(work))).toBe(
+      'Обрано: 🚗 Авто',
+    );
+    expect(await handleBrainCallback(env, button, NOW + 1, (work) => deferred.push(work))).toBe(
+      'Цей варіант уже обрано.',
+    );
+    expect(deferred).toHaveLength(1);
+    await deferred[0]!();
+    const row = d1.db
+      .prepare('SELECT answers_json FROM trip_briefs WHERE id = ?')
+      .get(result.draft_id) as { answers_json: string };
+    expect(JSON.parse(row.answers_json).mode).toBe('car');
+    expect(tg.find((call) => call.method === 'editMessageText')?.body).toMatchObject({
+      message_id: 42,
+      text: expect.stringContaining('Яке авто'),
+    });
+    expect(await handleBrainCallback(env, button, NOW + 2)).toContain('неактуальний');
+    expect(await handleBrainCallback(env, { ...button, chatId: 556 }, NOW + 3)).toContain(
+      'недоступна',
+    );
+  });
+
+  it('trip categories bind to one active trip, preserve the menu and reject foreign or cancelled cards', async () => {
+    const d1 = d1WithInstructions([
+      '0001_base.sql',
+      '0002_assistant.sql',
+      '0004_ideas_travel.sql',
+      '0022_worker_card_actions.sql',
+    ]);
+    const { brain, tg } = makeFetchStub();
+    const env = makeEnv(makeRegistryStub(), d1.stub);
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    d1.db
+      .prepare(
+        "INSERT INTO chains(id,kind,state_json,status,created_at,updated_at) VALUES (?,'trip',?,'running','x','x')",
+      )
+      .run(
+        id,
+        JSON.stringify({ trip_id: 'trip-1', to_text: 'Київ', chat_id: 555, thread_id: '99' }),
+      );
+    const button = { data: `m:ta:${id}:nature`, chatId: 555, threadId: 99, messageId: 42 };
+    expect(await handleBrainCallback(env, { ...button, chatId: 556 }, NOW)).toContain(
+      'іншому чату',
+    );
+    expect(brain).toHaveLength(0);
+    expect(await handleBrainCallback(env, button, NOW)).toContain('Краєвиди');
+    expect(brain).toHaveLength(1);
+    expect(JSON.stringify(brain[0]!.body)).toContain('trip_id=trip-1');
+    expect(tg.filter((call) => call.method === 'editMessageText')).toHaveLength(0);
+    expect(await handleBrainCallback(env, button, NOW + 1)).toContain('уже прийнято');
+    d1.db.prepare("UPDATE chains SET status='cancelled' WHERE id=?").run(id);
+    expect(
+      await handleBrainCallback(env, { ...button, data: `m:ta:${id}:food` }, NOW + 2),
+    ).toContain('неактивний');
+    expect(brain).toHaveLength(1);
   });
 
   it('m:q:60 одразу змінює те саме питання і продовжує той самий тред', async () => {

@@ -65,6 +65,17 @@ describe('interactive tool routing', () => {
     );
   });
 
+  it('opens the trip brief for natural travel requests, not only the word подорож', () => {
+    for (const request of [
+      'Планую поїздку до Києва',
+      'Хочу мандрівку в гори',
+      'Допоможи з готелем для відпустки',
+    ]) {
+      expect(routeChatTools(request, all)).toContain('trip_brief');
+      expect(routeChatTools(request, all)).toContain('trip_context');
+    }
+  });
+
   it('keeps a deliberate multi-domain request complete rather than silently omitting tools', () => {
     expect(routeChatTools('Перевір пошту, а потім додай зустріч у календар', all)).toEqual(all);
   });

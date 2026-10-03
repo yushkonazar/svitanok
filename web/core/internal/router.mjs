@@ -461,6 +461,7 @@ async function handleDeliver(env, ctx, runId, body, nowMs) {
               saved.id,
               !longWorker && saved.text.length >= WORKER_MD_MIN,
               workerContext,
+              saved.text,
             )
           : []),
     ...(profile === 'weekly-review' ? reportButtons() : []),

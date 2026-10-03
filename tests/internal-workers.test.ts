@@ -38,6 +38,7 @@ import {
   placeOptions,
   placeSearchButtons,
   placeChoiceButtons,
+  tripOptionNumbers,
 } from '../web/core/brain/worker-results.mjs';
 import { isTaintActive } from '../web/core/policy/core.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -565,6 +566,18 @@ describe('підбір магазину для відстеження ціни',
         .flat()
         .map((button) => button.text),
     ).toEqual(['👍 Корисно', '👎 Не те']);
+  });
+
+  it('план поїздки показує лише наявні варіанти й не додає загальні кнопки', () => {
+    const report =
+      '🧳 Київ 14–16 листопада\nВаріант 1: потяг, час перевірено.\nВаріант 3: авто, ціна пального ще невідома.';
+    expect(tripOptionNumbers(report)).toEqual([1, 3]);
+    expect(tripOptionNumbers('Три можливості, варіант 2 може бути зручним.')).toEqual([]);
+    expect(
+      workerButtons('r-trip', true, 'trip-plan', report)
+        .flat()
+        .map((b) => b.text),
+    ).toEqual(['🧳 Варіант 1', '🧳 Варіант 3', '👍 Корисно', '👎 Не те']);
   });
 
   it('картка аналізу витрат зберігає імʼя аналітика й показує лише доречну дію', async () => {
@@ -1114,6 +1127,33 @@ describe('кнопки m:w: (prerouter)', () => {
       ),
     ).toBe('Цю дію вже запустив.');
     expect(brain).toHaveLength(1);
+  });
+
+  it('кнопка варіанта поїздки дає чіткий тост і привʼязується до збереженого результату', async () => {
+    const { env } = setup();
+    const { brain } = stubTelegram();
+    const { id } = await saveWorkerResult(
+      env,
+      {
+        name: 'planner',
+        text: 'Варіант 1: потяг.\nВаріант 2: авто.',
+      },
+      NOW,
+    );
+    expect(
+      await handleBrainCallback(env, { data: `m:w:${id}:trip3`, chatId: 555, messageId: 1 }, NOW),
+    ).toBe('Цього варіанта немає в збереженому плані.');
+    expect(brain).toHaveLength(0);
+    expect(
+      await handleBrainCallback(
+        env,
+        { data: `m:w:${id}:trip2`, chatId: 555, messageId: 1 },
+        NOW + 1,
+      ),
+    ).toBe('Варіант 2 обрано');
+    expect(brain).toHaveLength(1);
+    expect((brain[0]!.body.input as { text: string }).text).toContain(WORKER_FOLLOWUPS.trip2);
+    expect((brain[0]!.body.input as { text: string }).text).toContain(id);
   });
 
   it('невідомий id - чесний тост, нічого не шлеться', async () => {

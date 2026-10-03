@@ -15,6 +15,8 @@ const EXACT: Record<string, string> = {
   'places.search': 'Шукаю місце',
   'places.details': 'Уточнюю місце',
   'routes.matrix': 'Рахую маршрут',
+  'trip.brief': 'Уточнюю поїздку',
+  'trip.context': 'Перевіряю план поїздки',
   'drive.search': 'Шукаю в Drive',
   'finance.query': 'Рахую гроші',
   'data.read': 'Піднімаю твої дані',

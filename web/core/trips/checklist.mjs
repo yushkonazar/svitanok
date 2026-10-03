@@ -8,6 +8,7 @@
 // окремого файлу немає, тож ядро зшиває два, а не вигадує третій.
 
 import { loadInstruction } from '../instructions.mjs';
+import { outdoorChecklist } from './support.mjs';
 
 /** Порядок і заголовки блоків у файлі чекліста. */
 export const BLOCKS = /** @type {const} */ ([
@@ -43,6 +44,7 @@ import { buildCallbackActionCardRows } from '../tg/action-card.mjs';
  * @param {{ mode: string, abroad: boolean }} trip
  */
 export function pickChecklistKey(trip) {
+  if (trip.mode === 'walk' || trip.mode === 'hike') return 'outdoor';
   if (trip.mode === 'car') return trip.abroad ? 'abroad-car' : 'ua-car';
   if (trip.abroad) return 'abroad-plane-bus';
   return trip.mode === 'plane' ? 'abroad-plane-bus' : 'ua-train-bus';
@@ -133,6 +135,8 @@ export function humanLine(item) {
  * @returns {Promise<ChecklistBlocks>}
  */
 export async function loadChecklist(env, key) {
+  const outdoor = outdoorChecklist(key);
+  if (outdoor) return outdoor;
   const files = filesOf(key);
   /** @type {ChecklistBlocks} */
   const merged = {};
