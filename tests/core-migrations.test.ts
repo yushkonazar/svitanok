@@ -242,6 +242,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'workflow_id',
     'status',
   ],
+  trip_briefs: ['id', 'scope_key', 'answers_json', 'status', 'created_at', 'updated_at'],
   transactions: [
     'id',
     'at',
@@ -404,6 +405,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
   wishes: [{ cols: ['type', 'status'] }],
   price_points: [{ cols: ['wish_id', 'at'] }],
   trips: [{ cols: ['date_from'] }],
+  trip_briefs: [{ cols: ['scope_key', 'status', 'updated_at'] }],
   transactions: [{ cols: ['at'] }, { cols: ['category'] }],
   subscriptions: [{ cols: ['next_at'] }],
   inbox_messages: [{ cols: ['chat_id', 'at'] }],
@@ -464,7 +466,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('двадцять шість файлів 0001–0026, нумерація без дірок', () => {
+  it('двадцять сім файлів 0001–0027, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -492,6 +494,7 @@ describe('міграції D1 — файли', () => {
       '0024',
       '0025',
       '0026',
+      '0027',
     ]);
   });
 });
