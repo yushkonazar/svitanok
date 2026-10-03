@@ -7,6 +7,8 @@ import { listVehicles, fuelPrice } from '../trips/cost.mjs';
 import { runFactsGet } from './facts.mjs';
 import { tripBriefCard } from './trip-card.mjs';
 import { tripExpenseSummary } from './trip-expenses.mjs';
+import { tripWorkspaceView } from './trip-workspace.mjs';
+import { tripZone, tripLocalParts } from '../trips/time.mjs';
 
 const DRAFT_TTL_MS = 30 * 86_400_000;
 /** Registry uses 'dm', Telegram callbacks use null for the same private chat.
@@ -56,6 +58,8 @@ const TEXT_FIELDS = {
   equipment: 160,
   food_preference: 160,
   travel_pace: 120,
+  timezone: 80,
+  departure_timezone: 80,
 };
 
 /** @param {unknown} value */
@@ -85,6 +89,7 @@ export function normalizeTripAnswers(patch) {
     }
     if (field in TEXT_FIELDS && typeof raw === 'string') {
       const value = raw.trim().slice(0, TEXT_FIELDS[field] ?? 0);
+      if (value && (field === 'timezone' || field === 'departure_timezone')) tripZone(value);
       if (value) out[field] = value;
     } else if (field in ENUMS && ENUMS[field]?.includes(raw)) {
       out[field] = raw;
@@ -289,6 +294,10 @@ export function tripQuestions(a, home, vehicles, nowMs) {
   } else if (a.mode === 'compare') {
     add('trip_priorities', 'Що важливіше при виборі дороги: ціна, час чи зручність?');
   }
+  if (a.international) {
+    add('timezone', 'Який місцевий часовий пояс у місці призначення? Наприклад Europe/Vienna.');
+    add('departure_timezone', 'Який часовий пояс у місці виїзду? Наприклад Europe/Kyiv.');
+  }
   if (a.international)
     add(
       'citizenship',
@@ -433,6 +442,20 @@ export async function runTripBrief(env, args, nowMs = Date.now(), ctx = {}) {
   const [vehicles, home] = await Promise.all([listVehicles(env), homeCity(env)]);
   const price = await fuelPrice(env, vehicles[0]?.fuel ?? null);
   const questions = tripQuestions(answers, home, vehicles, nowMs);
+  let approvedPattern = null;
+  if (scope && env.DB) {
+    const { results } = await env.DB.prepare(
+      `SELECT t.cost_json,c.state_json FROM trips t JOIN chains c ON c.id=t.workflow_id WHERE json_extract(t.cost_json,'$.travel.pattern.confirmed')=1 ORDER BY t.date_from DESC LIMIT 100`,
+    )
+      .bind()
+      .all();
+    const candidate = (results ?? []).find((item) => {
+      const state = JSON.parse(String(item.state_json ?? '{}'));
+      return tripScopeKey({ chatId: state?.chat_id, threadId: state?.thread_id }) === scope;
+    });
+    if (candidate)
+      approvedPattern = JSON.parse(String(candidate.cost_json)).travel?.pattern ?? null;
+  }
   const result = {
     draft_id: draftId,
     persisted,
@@ -445,6 +468,7 @@ export async function runTripBrief(env, args, nowMs = Date.now(), ctx = {}) {
       from_city: answers.from_city ?? home.city,
       vehicles: vehicles.map((v) => ({ key: v.key, name: v.name, per100: v.per100 })),
       fuel_price: price,
+      approved_pattern: approvedPattern,
     },
     purposes: TRIP_PURPOSES,
     then:
@@ -486,22 +510,24 @@ export async function runTripContext(env, args = {}, nowMs = Date.now()) {
       } catch {
         // Старий/пошкоджений стан не приховує сам запис поїздки.
       }
+      const localToday = tripLocalParts(nowMs, state.preferences?.timezone ?? 'Europe/Kyiv').date;
       const from = String(row.date_from);
       const to = row.date_to == null ? null : String(row.date_to);
       const phase =
-        today < from
+        localToday < from
           ? 'upcoming'
           : to == null
-            ? today === from
+            ? localToday === from
               ? 'departure_day'
               : 'return_unknown'
-            : today > to
+            : localToday > to
               ? 'awaiting_summary'
               : 'travel_day';
       const dayNumber =
         phase === 'travel_day' && to
           ? Math.round(
-              (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000,
+              (Date.parse(`${localToday}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) /
+                86_400_000,
             ) + 1
           : null;
       return {
@@ -522,6 +548,9 @@ export async function runTripContext(env, args = {}, nowMs = Date.now()) {
         preferences: normalizeTripAnswers(state.preferences),
         recorded_costs: recordedCosts(row.cost_json),
         expense_ledger: tripExpenseSummary(row.cost_json),
+        workspace: tripWorkspaceView(row.cost_json),
+        local_today: tripLocalParts(nowMs, state.preferences?.timezone ?? 'Europe/Kyiv').date,
+        timezone: state.preferences?.timezone ?? 'Europe/Kyiv',
       };
     })
     .sort((a, b) => {

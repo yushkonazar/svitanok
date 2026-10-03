@@ -745,6 +745,34 @@
       "tainting": "never",
       "execution": { "route": "policy", "kind": "trip.expense" }
     },
+    "trip.workspace": {
+      "args": {
+        "properties": {
+          "data": { "type": "object" },
+          "expected_revision": { "minimum": 0, "type": "number" },
+          "op": {
+            "enum": [
+              "get",
+              "leg",
+              "remove_leg",
+              "restore_revision",
+              "place",
+              "review",
+              "monitor",
+              "link_transaction",
+              "unlink_transaction",
+              "learn"
+            ],
+            "type": "string"
+          },
+          "trip_id": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["trip_id", "op"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "trip.workspace" }
+    },
     "wishes.create": {
       "args": {
         "properties": {

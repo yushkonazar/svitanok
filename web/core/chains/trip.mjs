@@ -12,7 +12,7 @@
 // відтворює код із початку після кожного пробудження.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { kyivDateKey, kyivClock } from '../../kyiv-time.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivMs } from '../day-plan/store.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
@@ -39,7 +39,13 @@ import { listVehicles, fuelPrice, carCostLine } from '../trips/cost.mjs';
 import { routesEta, geocodeAddress } from '../adapters/maps.mjs';
 import { forecastForDates, forecastLine, FORECAST_DAYS } from '../adapters/weather.mjs';
 import { resolveWaypoint } from '../tools/places.mjs';
-import { tripDaySchedule, tripSupportButtons, packingItems } from '../trips/support.mjs';
+import {
+  tripDaySchedule,
+  tripLocalSchedule,
+  tripSupportButtons,
+  packingItems,
+} from '../trips/support.mjs';
+import { tripSlot, tripZone, tripLocalParts } from '../trips/time.mjs';
 
 export const CHAIN_KIND = 'trip';
 export const TRIP_MODES = ['car', 'bus', 'train', 'plane', 'mixed', 'walk', 'hike'];
@@ -104,9 +110,9 @@ export function tripDates(from, to) {
   return dates;
 }
 
-/** Скільки діб до виїзду (київські дати). @param {string} dateFrom @param {number} nowMs */
-export function daysUntil(dateFrom, nowMs) {
-  const today = kyivDateKey(new Date(nowMs));
+/** Скільки діб до виїзду. @param {string} dateFrom @param {number} nowMs @param {string|null} zone */
+export function daysUntil(dateFrom, nowMs, zone = null) {
+  const today = zone ? tripLocalParts(nowMs, zone).date : kyivDateKey(new Date(nowMs));
   const a = Date.parse(`${today}T00:00:00Z`);
   const b = Date.parse(`${dateFrom}T00:00:00Z`);
   return Math.round((b - a) / 86_400_000);
@@ -115,14 +121,14 @@ export function daysUntil(dateFrom, nowMs) {
 /**
  * Розклад повідомлень (07 §6): [{at, blocks}] - перший може бути «зараз»
  * (поїздка близько), далі T-7 і T-1 у свій час.
- * @param {string} dateFrom @param {number} nowMs
+ * @param {string} dateFrom @param {number} nowMs @param {string|null} zone
  */
-export function schedule(dateFrom, nowMs) {
-  const left = daysUntil(dateFrom, nowMs);
+export function schedule(dateFrom, nowMs, zone = null) {
+  const left = daysUntil(dateFrom, nowMs, zone);
   /** @type {{ at: number, blocks: string[] }[]} */
   const out = [];
   const at = (/** @type {string} */ date, /** @type {string} */ hhmm) =>
-    kyivMs(date, hhmm) ?? nowMs;
+    (zone ? tripSlot(date, hhmm, zone) : kyivMs(date, hhmm)) ?? nowMs;
   const t30 = at(addDaysToDateKey(dateFrom, -30), BLOCK_AT.t30);
   const t7 = at(addDaysToDateKey(dateFrom, -7), BLOCK_AT.t7);
   const t1 = at(addDaysToDateKey(dateFrom, -1), BLOCK_AT.t1);
@@ -215,7 +221,7 @@ export async function startTripChain(env, payload, nowMs, ctx) {
       'Час виїзду має бути HH:MM. Якщо власник назвав лише «вранці», не перетворюй це на точну годину.',
     );
   }
-  const country = payload.country == null ? null : String(payload.country).trim().slice(0, 60);
+  let country = payload.country == null ? null : String(payload.country).trim().slice(0, 60);
   /** @type {Record<string, any>} */
   let preferences = {};
   if (payload.brief_id) {
@@ -229,10 +235,21 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     if (
       preferences.to !== to ||
       preferences.date_from !== dateFrom ||
-      (preferences.date_to ?? null) !== dateTo
+      (preferences.date_to ?? null) !== dateTo ||
+      (preferences.mode && preferences.mode !== mode && preferences.mode !== 'compare')
     )
       throw new Error('Обраний бриф має інше місце або дати. Спершу онови його.');
   }
+  for (const key of ['timezone', 'departure_timezone']) {
+    if (payload[key] != null) preferences[key] = tripZone(payload[key]);
+  }
+  if (country == null && preferences.country) country = String(preferences.country).slice(0, 60);
+  const fromCity = payload.from_city ?? preferences.from_city ?? null;
+  const departAt =
+    payload.depart_at ??
+    (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(preferences.depart_at))
+      ? preferences.depart_at
+      : null);
   const abroad = isAbroad(country);
   const checklistKey = (await import('../trips/checklist.mjs')).pickChecklistKey({ mode, abroad });
   const tripId = crypto.randomUUID();
@@ -257,7 +274,7 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     .bind(
       tripId,
       wishId,
-      payload.from_city == null ? null : String(payload.from_city).trim().slice(0, 60),
+      fromCity == null ? null : String(fromCity).trim().slice(0, 60),
       to,
       country,
       dateFrom,
@@ -273,14 +290,14 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   const state = {
     trip_id: tripId,
     to_text: to,
-    from_city: payload.from_city == null ? null : String(payload.from_city),
+    from_city: fromCity == null ? null : String(fromCity),
     country,
     date_from: dateFrom,
     date_to: dateTo,
     mode,
     vehicle_key: payload.vehicle_key == null ? null : String(payload.vehicle_key),
     checklist_key: checklistKey,
-    depart_at: payload.depart_at == null ? null : String(payload.depart_at).slice(0, 5),
+    depart_at: departAt == null ? null : String(departAt).slice(0, 5),
     // ⚠️ Мета й учасники живуть у стані ЛАНЦЮГА, не в таблиці `trips` (ідея
     // №4). Причина технічна й важлива: Workers Builds деплоїть у прод кожен
     // push, а міграції їдуть лише на мержі в main - код, що читає нову
@@ -292,7 +309,7 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     chat_id: ctx.chatId ?? null,
     thread_id: ctx.threadId == null ? null : String(ctx.threadId),
     awaiting: null,
-    support_version: 1,
+    support_version: 2,
     brief_id: payload.brief_id == null ? null : String(payload.brief_id),
     preferences,
   };
@@ -499,9 +516,17 @@ export async function runTripChain(env, params, step, io) {
       // початку після кожного пробудження, і `schedule` від «зараз» дав би
       // іншу кількість точок, а з нею - інші імена кроків (мемоїзований крок
       // повернувся б замість нового очікування). Імена далі - з КЛЮЧІВ блоків.
-      const plan = await step.do(`${rk}-plan`, async () => schedule(state.date_from, io.now()));
+      const departureZone =
+        state.support_version === 2 ? tripZone(state.preferences?.departure_timezone) : null;
+      const plan = await step.do(`${rk}-plan`, async () =>
+        schedule(state.date_from, io.now(), departureZone),
+      );
       // Невідомий час не перетворюємо на вигаданий виїзд о 09:00.
-      const departMs = state.depart_at ? kyivMs(state.date_from, state.depart_at) : null;
+      const departMs = state.depart_at
+        ? departureZone
+          ? tripSlot(state.date_from, state.depart_at, departureZone)
+          : kyivMs(state.date_from, state.depart_at)
+        : null;
       const leaveMs = departMs == null ? null : departMs - LEAVE_BEFORE_MS;
       for (const [bi, point] of plan.entries()) {
         const key = `${rk}-${point.blocks.join('_')}`;
@@ -555,7 +580,10 @@ export async function runTripChain(env, params, step, io) {
             state.mode
           ] ?? '🧳';
         const timeLeft = Math.max(1, Math.round((departMs - io.now()) / 60_000));
-        const when = timeLeft >= 110 && timeLeft <= 130 ? 'за ~2 год' : `о ${kyivClock(departMs)}`;
+        const when =
+          timeLeft >= 110 && timeLeft <= 130
+            ? 'за ~2 год'
+            : `о ${state.depart_at}${departureZone ? ` (${departureZone})` : ''}`;
         await step.do(`${rk}-leave-send`, () =>
           io.send(
             `${modeIcon} Виїзд ${when}: ${state.to_text}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Список перед дорогою — нижче.`,
@@ -579,7 +607,7 @@ export async function runTripChain(env, params, step, io) {
 
       // Only new chains opt into new durable steps; replay of an existing
       // Workflow must retain its original step sequence and names.
-      if (state.support_version === 1) {
+      if (state.support_version === 1 || state.support_version === 2) {
         await step.do(`${rk}-support-home`, () =>
           io.send(
             '🧳 Розділи поїздки — під рукою. Обирай потрібний; нічого не бронюю автоматично.',
@@ -587,13 +615,23 @@ export async function runTripChain(env, params, step, io) {
           ),
         );
         const days = await step.do(`${rk}-support-plan`, async () =>
-          tripDaySchedule(state, io.now()),
+          state.support_version === 2
+            ? tripLocalSchedule(state, io.now())
+            : tripDaySchedule(state, io.now()),
         );
         for (const point of days) {
-          const key = `${rk}-day-${point.day}`;
+          const evening = 'kind' in point && point.kind === 'evening';
+          const key = `${rk}-day-${point.day}${evening ? '-evening' : ''}`;
           state = await waitWindow(step, io, env, chainId, `${key}-wait`, point.at, state);
           await await_(`${key}-check`, null);
           await step.do(`${key}-send`, async () => {
+            if (evening) {
+              await io.send(
+                `📖 Як пройшов день у «${state.to_text}»? Що відвідав, що сподобалось і що залишити на завтра? Можеш відповісти текстом — збережу після твого прохання.`,
+                tripSupportButtons(chainId),
+              );
+              return;
+            }
             const weather = await io.weather(state.to_text, [point.day]);
             const lines = [`🧭 ${state.to_text} · ${ddmm(point.day)}`];
             lines.push(
@@ -605,7 +643,9 @@ export async function runTripChain(env, params, step, io) {
               lines.push(
                 'За планом сьогодні повернення. Час і маршрут можна уточнити кнопкою «Дорога».',
               );
-            lines.push('Місця, їжа, речі й бюджет — нижче. Твою поточну локацію не відстежую.');
+            lines.push(
+              `Місця, їжа, речі й бюджет — нижче.${state.support_version === 2 ? ` Час — ${tripZone(state.preferences?.timezone)}.` : ''} Твою поточну локацію не відстежую.`,
+            );
             await io.send(lines.join('\n'), tripSupportButtons(chainId));
           });
         }
@@ -613,7 +653,13 @@ export async function runTripChain(env, params, step, io) {
 
       // Після повернення (S-5-10): «як пройшло, скільки витратив».
       const backMs =
-        kyivMs(addDaysToDateKey(state.date_to ?? state.date_from, 1), AFTER_AT) ?? io.now();
+        (state.support_version === 2
+          ? tripSlot(
+              addDaysToDateKey(state.date_to ?? state.date_from, 1),
+              AFTER_AT,
+              tripZone(state.preferences?.timezone),
+            )
+          : kyivMs(addDaysToDateKey(state.date_to ?? state.date_from, 1), AFTER_AT)) ?? io.now();
       state = await waitWindow(step, io, env, chainId, `${rk}-trip-w`, backMs, state);
       await await_(`${rk}-back-ask`, 'spent');
       await step.do(`${rk}-back-say`, async () => {
@@ -931,7 +977,12 @@ export function productionIo(env, chainId, state) {
       try {
         const geo = await geocodeAddress(env, place, Date.now());
         if (!geo.found) return { lines: [], reason: 'no-geo' };
-        const { days, reason } = await forecastForDates(env, { lat: geo.lat, lon: geo.lon }, dates);
+        const { days, reason } = await forecastForDates(
+          env,
+          { lat: geo.lat, lon: geo.lon },
+          dates,
+          state.support_version === 2 ? tripZone(state.preferences?.timezone) : null,
+        );
         return { lines: days.map(forecastLine), reason };
       } catch (/** @type {any} */ e) {
         console.error(`trip-chain ${chainId}: погода не отримана`, e?.message);

@@ -1023,7 +1023,7 @@ describe('старт, перенос і скасування з чату', () =>
       .get(out.result.chain_id) as { state_json: string };
     expect(JSON.parse(chain.state_json)).toMatchObject({
       checklist_key: 'outdoor',
-      support_version: 1,
+      support_version: 2,
       preferences: { interests: 'краєвиди', constraints: 'без бронювань' },
     });
   });

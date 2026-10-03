@@ -1528,7 +1528,7 @@ export async function handleBrainCallback(env, parsed, nowMs = Date.now(), defer
   const tripChoice = data.match(/^m:tb:([0-9a-f-]{36}):([a-z_]{2,20}):([0-7]):([0-9a-f]{5})$/i);
   if (tripChoice) return tripBriefChoiceToast(env, parsed, tripChoice, nowMs, defer);
   const tripAction = data.match(
-    /^m:ta:([0-9a-f-]{36}):(sights|nature|local|food|road|packing|budget)$/i,
+    /^m:ta:([0-9a-f-]{36}):(sights|nature|local|food|road|packing|budget|itinerary|journal)$/i,
   );
   if (tripAction) return tripSupportToast(env, parsed, tripAction, nowMs, defer);
   const quickReply = parseQuickReplyCallback(data);
@@ -1917,7 +1917,10 @@ async function tripSupportToast(env, parsed, match, nowMs, defer) {
   const type = await env.DB?.prepare('SELECT kind FROM chains WHERE id = ?').bind(id).first();
   if (type?.kind !== 'trip') return 'Картка поїздки недоступна.';
   const chain = await readChainState(env, id);
-  if (!chain || !['running', 'waiting'].includes(chain.status) || !chain.state?.trip_id)
+  const allowedStatuses = ['budget', 'journal', 'itinerary'].includes(action)
+    ? ['running', 'waiting', 'done']
+    : ['running', 'waiting'];
+  if (!chain || !allowedStatuses.includes(chain.status) || !chain.state?.trip_id)
     return 'Супровід цієї поїздки вже неактивний.';
   const state = chain.state;
   const destination = chainTarget(env, state);
@@ -1935,7 +1938,7 @@ async function tripSupportToast(env, parsed, match, nowMs, defer) {
     try {
       // Re-check after queueing: an owner cancellation must stop deferred work.
       const live = await readChainState(env, id);
-      if (!live || !['running', 'waiting'].includes(live.status)) return;
+      if (!live || !allowedStatuses.includes(live.status)) return;
       const prompt = [
         `Дія для конкретної поїздки ${String(state.trip_id)}: ${task[1]}`,
         `Спочатку виклич trip.context з trip_id=${String(state.trip_id)}. Не підмінюй її іншою поїздкою.`,

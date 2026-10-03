@@ -35,6 +35,7 @@ export const ACTION_LEVELS = {
   'chain.cancel': 'T0',
   'trip.brief': 'T0',
   'trip.expense': 'T0',
+  'trip.workspace': 'T0',
   // Гроші (етап 6 PR-2, 07 §4): правило категорії й облік підписок - записи в
   // ВЛАСНУ базу, тож T0 з «↩», як facts.set.
   'finance.rule': 'T0',
@@ -130,6 +131,7 @@ export const TAINT_ESCALATES = Object.freeze([
   // Після зовнішнього пошуку не записуємо сторонній текст як намір власника без ✅.
   'trip.brief',
   'trip.expense',
+  'trip.workspace',
   // Після читання листа зовнішній текст не може непомітно сховати частину
   // ранкового briefing-а. У чистому діалозі це локальна T0-перевага з «↩».
   'briefing.feedback',

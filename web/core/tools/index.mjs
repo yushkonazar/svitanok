@@ -32,6 +32,7 @@ import { inspectKnowledgeDriveFile } from '../adapters/knowledge-drive.mjs';
 import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
 import { runTripContext } from './trip.mjs';
+import { TRIP_WORKSPACE_OPS } from './trip-workspace.mjs';
 
 /**
  * @typedef {{
@@ -325,6 +326,22 @@ export const TOOLS = {
     write: { kind: 'trip.expense' },
     run: () => {
       throw new Error('trip.expense виконується через policy');
+    },
+  },
+  'trip.workspace': {
+    args: {
+      type: 'object',
+      required: ['trip_id', 'op'],
+      properties: {
+        trip_id: { type: 'string', maxLength: 64 },
+        op: { type: 'string', enum: TRIP_WORKSPACE_OPS },
+        expected_revision: { type: 'number', minimum: 0 },
+        data: { type: 'object' },
+      },
+    },
+    write: { kind: 'trip.workspace' },
+    run: () => {
+      throw new Error('trip.workspace виконується через policy');
     },
   },
   'routes.eta': {

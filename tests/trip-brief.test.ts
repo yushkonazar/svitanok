@@ -246,7 +246,7 @@ describe('trip.brief', () => {
     expect(await askFor('hike')).toContain('route_profile');
     expect(await askFor('compare')).toContain('trip_priorities');
     expect(await askFor('mixed')).toContain('legs');
-    expect(await askFor('plane')).toContain('citizenship');
+    expect(await askFor('plane')).toContain('timezone');
   });
 
   it('не маскує хибні дати і не зберігає довільні технічні поля', async () => {

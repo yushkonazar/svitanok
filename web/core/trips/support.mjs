@@ -1,5 +1,6 @@
 import { kyivMs } from '../day-plan/store.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
+import { tripSlot } from './time.mjs';
 
 /** Read-only trip navigation. No button here authorizes a booking or a write. */
 export const TRIP_SUPPORT_ACTIONS = {
@@ -18,6 +19,14 @@ export const TRIP_SUPPORT_ACTIONS = {
   budget: [
     '💰 Бюджет',
     'Покажи підтверджені витрати цієї поїздки й невідомі складники окремо. Не віднось усі транзакції за ці дати до поїздки.',
+  ],
+  itinerary: [
+    '🗺 Маршрут',
+    'Покажи збережені етапи й місцевий час через trip.workspace op=get; перевір запас на пересадки. Не змінюй маршрут без прохання.',
+  ],
+  journal: [
+    '📖 Місця й враження',
+    'Прочитай trip.workspace op=get: покажи відвідані/збережені місця, враження та незакриті бажання. Запитай, що власник хоче додати; сам нічого не записуй.',
   ],
 };
 
@@ -43,6 +52,27 @@ export function tripDaySchedule(state, nowMs) {
   for (let i = 0; i < 30 && day <= state.date_to; i += 1) {
     const at = kyivMs(day, '09:00');
     if (at != null && at > nowMs) points.push({ day, at, returnDay: day === state.date_to });
+    day = addDaysToDateKey(day, 1);
+  }
+  return points;
+}
+
+/** Version 2 uses explicit local time and adds a quiet evening review. Version 1 unchanged.
+ * @param {{date_from:string,date_to:string|null,preferences?:Record<string,any>}} state @param {number} nowMs */
+export function tripLocalSchedule(state, nowMs) {
+  if (!state.date_to) return [];
+  const points = [];
+  const zone = state.preferences?.timezone ?? 'Europe/Kyiv';
+  let day = state.date_from;
+  for (let i = 0; i < 30 && day <= state.date_to; i++) {
+    for (const { kind, clock } of [
+      { kind: 'morning', clock: '09:00' },
+      { kind: 'evening', clock: '20:30' },
+    ]) {
+      const at = tripSlot(day, clock, zone);
+      if (at != null && at > nowMs)
+        points.push({ day, at, kind, zone, returnDay: day === state.date_to });
+    }
     day = addDaysToDateKey(day, 1);
   }
   return points;

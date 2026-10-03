@@ -255,7 +255,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
       'ПЕРШЕ на запит про нову поїздку та КОЖНЕ наступне уточнення. T0: ядро зберігає чернетку поїздки в чаті, повертає phase, ask (до 4 доречних питань), answers і ready_for_research. ' +
       'Передай нові відповіді у answers; draft_id з попереднього результату, якщо він є. Якщо власник починає іншу поїздку, передай restart:true. ' +
       'Ключі answers: to, date_from/date_to (YYYY-MM-DD), return_type (round_trip|one_way|undecided), from_city, mode (car|bus|train|plane|mixed|walk|hike|compare), participants, purpose, international (boolean), country; за гілкою — vehicle_key/vehicle_description/depart_at, departure_window/ticket_status, departure_airport/arrival_airport/baggage, route_profile, legs, budget_type (limit|flexible|no_limit), budget_total, lodging_needed (yes|no|undecided), interests, constraints, trip_priorities, citizenship, documents_status, parking_preference, flight_transfers, equipment, food_preference, travel_pace. Передавай лише явно сказане власником; не вигадуй. ' +
-      'Спитай лише найближче поле ask; відомі відповіді не перепитуй. Не питай про авто, доки mode не car; не вигадуй бюджет, квитки, бронювання чи країну. ' +
+      'Спитай лише найближче поле ask; відомі відповіді не перепитуй. Часові пояси: answers.timezone для цілі, departure_timezone для старту (IANA). known.approved_pattern — явно погоджений повторюваний шаблон, врахуй його при пропозиції без заміни нових обмежень; він не підтверджує дати/квитки. Не питай про авто, доки mode не car; не вигадуй бюджет, квитки, бронювання чи країну. ' +
       'Після ready підготуй варіанти з джерелами. chain.start(trip), календар і бронювання — ЛИШЕ після явного вибору власника; сам бриф їх не запускає.',
     args: z.object({
       to: z.string().min(1).max(120).optional(),
@@ -271,7 +271,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'trip.context',
     description:
-      'Прочитати активну поїздку: дати, спосіб, етап (підготовка/день виїзду/в дорозі/після), названу годину виїзду й мету. Викликай перед порадами «що сьогодні в поїздці», «куди піти», «коли повертатись», щоб не губити контекст. Це НЕ жива геолокація, не перевірені квитки чи погода. to необовʼязкове для вибору конкретної поїздки.',
+      'Прочитати поїздку: дати, спосіб, етап за місцевим часом, workspace (маршрут з версіями, місця, враження, сповіщення, шаблон) і журнал витрат. Завершену — за trip_id/to. Викликай перед порадами «що сьогодні в поїздці», «куди піти», «коли повертатись», щоб не губити контекст. Це НЕ жива геолокація, не перевірені квитки чи погода.',
     args: z.object({ to: z.string().max(80).optional(), trip_id: z.string().max(64).optional() }),
   }),
   tool({
@@ -287,6 +287,35 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
         .optional(),
       note: z.string().max(160).optional(),
       entry_id: z.string().min(8).max(64).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'trip.workspace',
+    description:
+      'Збережений маршрут і журнал конкретної поїздки: спочатку trip.context для trip_id. ' +
+      'op=get читає; leg зберігає етап: data {id? (UUID),kind:travel|activity|stay,title,mode?,from?,to?,start,end (YYYY-MM-DDTHH:MM),start_zone,end_zone (IANA),transfer_minutes?,parallel?,booked?,operator?,service?,source_url?,note?}. ' +
+      'Перевір і явно уточни місцеві часові пояси, не виводь їх з країни; для паралельної справи parallel:true лише зі слів власника. Маршрут не означає бронювання. expected_revision з поточного результату захищає редагування. remove_leg: data {id}. restore_revision: data {revision} відновлює одну з останніх 10 версій маршруту. ' +
+      'place: data {id?,title?,category?,status:saved|visited|favorite|skipped,url?,note?}; review: data {date:YYYY-MM-DD,note,unfinished?}. ' +
+      'monitor: data {enabled,consent:true,timezone?,interval_hours:6..24,weather?,road?,service?}, лише за явною згодою: до 4 перевірок/2 сигналів на добу, тихі години 22–08. service — нагадування перевірити перевізника, НЕ live-статус рейсу. ' +
+      'link_transaction: data {transaction_id,entry_id?,separate?} привʼязує конкретну банківську витрату, а entry_id звіряє її з ручною без дубля. separate:true лише коли власник явно підтвердив, що це інша витрата з тією ж сумою. Не вибирай по самих датах. unlink_transaction: data {transaction_id}. ' +
+      'learn: data {consent:true} лише після явної згоди на узагальнення історії: мінімум 3 завершені поїздки, стійка більшість, не створює факт з одного випадку. Це власні записи з відкатом; після зовнішнього вмісту потрібне підтвердження.',
+    args: z.object({
+      trip_id: z.string().max(64),
+      op: z.enum([
+        'get',
+        'leg',
+        'remove_leg',
+        'restore_revision',
+        'place',
+        'review',
+        'monitor',
+        'link_transaction',
+        'unlink_transaction',
+        'learn',
+      ]),
+      expected_revision: z.number().int().min(0).optional(),
+      data: z.record(z.string(), z.unknown()).optional(),
     }),
     write: true,
   }),

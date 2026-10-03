@@ -4,6 +4,7 @@
 // горизонт 8 діб: далі API не дає, і ланцюг чесно каже «ближче до дати».
 
 import { kyivDateKey } from '../../kyiv-time.mjs';
+import { tripLocalParts } from '../trips/time.mjs';
 
 const ONECALL = 'https://api.openweathermap.org/data/3.0/onecall';
 const TIMEOUT_MS = 10_000;
@@ -18,9 +19,10 @@ const DESC_MAX = 40;
  * (дати просто поза горизонтом) - викликач каже власнику саме її, а не
  * «прогноз буде ближче до дати» на кожен випадок.
  * @param {Env} env @param {{ lat: number, lon: number }} at @param {string[]} dateKeys
+ * @param {string|null} zone
  * @returns {Promise<{ days: { date: string, min: number, max: number, desc: string }[], reason: 'no-key' | 'failed' | null }>}
  */
-export async function forecastForDates(env, at, dateKeys) {
+export async function forecastForDates(env, at, dateKeys, zone = null) {
   if (!env.WEATHER_API_KEY) return { days: [], reason: 'no-key' };
   const url = new URL(ONECALL);
   url.searchParams.set('lat', String(at.lat));
@@ -43,7 +45,9 @@ export async function forecastForDates(env, at, dateKeys) {
   const out = [];
   for (const d of daily) {
     if (!Number.isFinite(Number(d?.dt))) continue;
-    const date = kyivDateKey(new Date(Number(d.dt) * 1000));
+    const date = zone
+      ? tripLocalParts(Number(d.dt) * 1000, zone).date
+      : kyivDateKey(new Date(Number(d.dt) * 1000));
     if (!dateKeys.includes(date)) continue;
     const min = Number(d.temp?.min);
     const max = Number(d.temp?.max);

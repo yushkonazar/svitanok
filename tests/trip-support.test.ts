@@ -38,7 +38,7 @@ describe('trip support cycle', () => {
   });
   it('builds category navigation within Telegram callback limits', () => {
     const buttons = tripSupportButtons(id).flat();
-    expect(buttons).toHaveLength(7);
+    expect(buttons).toHaveLength(9);
     expect(buttons.every((b) => Buffer.byteLength(b.callback_data) <= 64)).toBe(true);
     expect(tripSupportButtons('invalid')).toEqual([]);
   });

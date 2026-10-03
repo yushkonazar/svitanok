@@ -60,6 +60,7 @@ export const CANON_TOOLS = [
   'trip.brief',
   'trip.context',
   'trip.expense',
+  'trip.workspace',
   'routes.eta',
   'geo.geocode',
   'geo.last',
