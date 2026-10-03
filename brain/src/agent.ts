@@ -24,6 +24,7 @@ import { verifyInstruction } from './instructions.js';
 import { TOOL_BY_MCP_NAME, type BrainToolDef } from './tools/schemas.js';
 import { toolStatusWord } from './tools/status-words.js';
 import { routeChatTools } from './tool-routing.js';
+import { tripBriefCard } from './trip-card.js';
 import {
   DELEGATE_WORKERS,
   QUICK_WORKER,
@@ -196,7 +197,10 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
     // Результат останнього працівника - у deliver (S-7-1: кнопки «Коротше /
     // Інший тон / .md» будує ядро, бо воно ж тримає текст у базі).
     // Обʼєкт, не let: присвоєння йде з колбека, і TS звузив би let до null.
-    const last: { worker: DeliverWorker | null } = { worker: null };
+    const last: { worker: DeliverWorker | null; tripBrief: unknown } = {
+      worker: null,
+      tripBrief: null,
+    };
     let lastStatusMs = 0;
     let lastStatusLen = 0;
     let escalateOutcome: RunOutcome | undefined;
@@ -255,6 +259,13 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       const r = await callCore(def, args, { okName: def.coreName, failName: mcpName, t0 });
       if (r.proposalId) proposalId = r.proposalId;
       if (r.undoId) undoId = r.undoId;
+      if (def.coreName === 'trip.brief' && !r.isError && !r.proposalId) {
+        try {
+          last.tripBrief = JSON.parse(r.text);
+        } catch {
+          last.tripBrief = null;
+        }
+      }
       return { text: r.text, isError: r.isError };
     };
 
@@ -764,21 +775,26 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       // ріжеться з резервом на його байти, інакше 128 KiB ядра рвалися б.
       const lastWorker = last.worker;
       const reserve = lastWorker ? Buffer.byteLength(lastWorker.text, 'utf8') + 256 : 0;
-      const delivered =
+      const generated =
         finalText === ''
           ? '(порожня відповідь моделі)'
           : clipDeliver(finalText, DELIVER_MAX_BYTES - reserve);
       const actionButtons = confirmButtons(proposalId, undoId);
+      // Для контрольованого питання з варіантами показуємо одну стійку
+      // картку з брифу. Вільний текст моделі не може змінити callback_data.
+      const tripCard = actionButtons.length === 0 ? tripBriefCard(last.tripBrief) : null;
+      const delivered = tripCard?.text ?? generated;
       // Короткі передбачувані уточнення не змушують власника друкувати окреме
       // повідомлення. Не змішуємо їх із діями policy: у пропозиції її власні
       // ✅/❌ завжди важливіші за допоміжні варіанти.
       const buttons = [
         ...actionButtons,
-        ...contextualQuickReplyButtons(delivered, actionButtons.length > 0),
+        ...(tripCard?.buttons ?? contextualQuickReplyButtons(delivered, actionButtons.length > 0)),
       ];
       // Додаткові аргументи лише коли є що показати: deliver без кнопок і без
       // працівника лишається тим самим викликом, що й був.
-      if (lastWorker) await deps.client.deliver(req.run_id, delivered, buttons, lastWorker);
+      if (lastWorker && !tripCard)
+        await deps.client.deliver(req.run_id, delivered, buttons, lastWorker);
       else if (buttons.length > 0) await deps.client.deliver(req.run_id, delivered, buttons);
       else await deps.client.deliver(req.run_id, delivered);
       pushStep({
@@ -797,7 +813,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
           thread_id: req.thread_id,
           ...(outcome.sessionId ? { sdk_session_id: outcome.sessionId } : {}),
           ...(outcome.provider === 'openai'
-            ? { transcript_append: transcriptAppend(req.input.text, finalText) }
+            ? { transcript_append: transcriptAppend(req.input.text, delivered) }
             : {}),
           turns_inc: 1,
         });

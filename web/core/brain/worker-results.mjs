@@ -26,6 +26,12 @@ export const WORKER_FOLLOWUPS = {
   cal: 'Постав це в календар - запропонуй подію з часом.',
   spend: 'Куди саме пішли ці гроші: розклади по категоріях.',
   more: 'Дай ще питань на цю тему.',
+  trip1:
+    'Обираю варіант 1 саме з цього плану поїздки. Покажи стисло остаточний маршрут, перевірені й неперевірені витрати та що ще треба погодити. Нічого не бронюй і не запускай супровід без окремого рішення.',
+  trip2:
+    'Обираю варіант 2 саме з цього плану поїздки. Покажи стисло остаточний маршрут, перевірені й неперевірені витрати та що ще треба погодити. Нічого не бронюй і не запускай супровід без окремого рішення.',
+  trip3:
+    'Обираю варіант 3 саме з цього плану поїздки. Покажи стисло остаточний маршрут, перевірені й неперевірені витрати та що ще треба погодити. Нічого не бронюй і не запускай супровід без окремого рішення.',
 };
 
 /**
@@ -94,9 +100,19 @@ function db(env) {
   return env.DB;
 }
 
+/** Лише явно пронумеровані варіанти стають кнопками; вільний текст не створює дій. @param {string} text */
+export function tripOptionNumbers(text) {
+  const found = new Set();
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:[-*]\s*)?(?:\*\*)?Варіант\s+([1-3])(?:\*\*)?\s*[:—–-]\s*\S/iu);
+    if (match) found.add(Number(match[1]));
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
 /** Кнопки під відповіддю (07 §9 `m:w:<id>:<choice>`), набір - за працівником.
- *  @param {string} id @param {boolean} withMd @param {string} [worker] */
-export function workerButtons(id, withMd, worker = '') {
+ *  @param {string} id @param {boolean} withMd @param {string} [worker] @param {string} [text] */
+export function workerButtons(id, withMd, worker = '', text = '') {
   // ⚠️ hasOwn, не просто індексація (security-ревʼю релізу): імʼя працівника
   // приходить від моделі, і `constructor` проходив би NAME_RE, резолвився в
   // Object і валив доставку відповіді на `.map`.
@@ -116,7 +132,14 @@ export function workerButtons(id, withMd, worker = '') {
     withMd && WORKER_MARKDOWN_EXPORT.has(worker)
       ? [{ text: '📎 Файл .md', callback_data: `m:w:${id}:md` }]
       : [];
-  return buildActionCardRows({ actions: actionButtons, utilities, feedbackId: id });
+  const choices =
+    worker === 'trip-plan'
+      ? tripOptionNumbers(text).map((n) => ({
+          text: `🧳 Варіант ${n}`,
+          callback_data: `m:w:${id}:trip${n}`,
+        }))
+      : [];
+  return buildActionCardRows({ choices, actions: actionButtons, utilities, feedbackId: id });
 }
 
 /** One explicit quality vote per saved worker result. The unique partial index

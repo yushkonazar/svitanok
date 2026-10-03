@@ -119,6 +119,46 @@ function scriptedEngine(
 }
 
 describe('makeRunner: щасливий шлях', () => {
+  it('питання брифу поїздки стає однією карткою з кнопками й тим самим текстом у памʼяті розмови', async () => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const client = makeClient({
+      callTool: vi.fn(async () => ({
+        ok: true as const,
+        tool: 'trip.brief',
+        tainted: false,
+        result: {
+          draft_id: id,
+          phase: 'scope',
+          ask: [{ field: 'mode', question: 'Чим їдеш?', options: ['car', 'train'] }],
+          question_card: {
+            text: '🧳 Чим їдеш?',
+            buttons: [
+              [
+                { text: '🚗 Авто', callback_data: `m:tb:${id}:mode:0:123ab` },
+                { text: '🚆 Потяг', callback_data: `m:tb:${id}:mode:1:123ab` },
+              ],
+            ],
+          },
+        },
+      })),
+    });
+    const { engine } = scriptedEngine(async (opts) => {
+      await opts.onToolCall('trip_brief', { to: 'Київ' });
+      return { finalText: 'Питаю, чим плануєш їхати, та ще три деталі.', provider: 'openai' };
+    });
+    await makeRunner({ client, engine })(req({ input: { text: 'Планую поїздку до Києва' } }));
+    expect(client.deliver).toHaveBeenCalledWith(
+      'run-1',
+      '🧳 Чим їдеш?',
+      expect.arrayContaining([
+        expect.arrayContaining([
+          expect.objectContaining({ callback_data: `m:tb:${id}:mode:0:123ab` }),
+        ]),
+      ]),
+    );
+    expect(client.session.mock.calls[0]?.[1].transcript_append).toContain('🧳 Чим їдеш?');
+  });
+
   it('chat: системний промпт з Києвом, routed інструменти, deliver фіналу, steps у reportRuns', async () => {
     const client = makeClient();
     const { engine, seen } = scriptedEngine(async (opts) => {

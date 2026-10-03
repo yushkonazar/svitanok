@@ -41,6 +41,7 @@ export const BACKUP_TABLES = [
   'wishes',
   'price_points',
   'trips',
+  'trip_briefs',
   'transactions',
   'subscriptions',
   'merchant_rules',

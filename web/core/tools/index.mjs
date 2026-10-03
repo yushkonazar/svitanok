@@ -19,7 +19,6 @@ import {
 } from './read.mjs';
 import { runFactsGet, runFactsLedger } from './facts.mjs';
 import { runPlacesMenu } from './menu.mjs';
-import { runTripBrief } from './trip.mjs';
 import { runPlacesSearch, runPlacesDetails, runRoutesEta } from './places.mjs';
 import { runWishesList, runWishesSearch } from './wishes.mjs';
 import { runRunsQuery } from './runs.mjs';
@@ -32,6 +31,8 @@ import { runKnowledgeList, runKnowledgeSearch } from '../knowledge-base.mjs';
 import { inspectKnowledgeDriveFile } from '../adapters/knowledge-drive.mjs';
 import { runFinanceQuery } from './finance.mjs';
 import { runInboxSearch } from './inbox.mjs';
+import { runTripContext } from './trip.mjs';
+import { TRIP_WORKSPACE_OPS } from './trip-workspace.mjs';
 
 /**
  * @typedef {{
@@ -277,20 +278,71 @@ export const TOOLS = {
     },
     run: (env, args, nowMs) => runPlacesMenu(env, args, nowMs),
   },
-  // Опитувальник поїздки (ідея №4). Читання власних фактів - ні мережі, ні
-  // плями: перелік полів рахує ядро з того самого джерела, що й валідація
-  // `chain.start(trip)`.
+  // Чернетка поїздки — власний T0-запис через policy; зовнішніх джерел немає.
   'trip.brief': {
     args: {
       type: 'object',
-      required: ['to'],
       properties: {
         to: { type: 'string', minLength: 1, maxLength: 120 },
         date_from: { type: 'string', maxLength: 10 },
-        purpose: { type: 'string', maxLength: 20 },
+        purpose: { type: 'string', maxLength: 120 },
+        draft_id: { type: 'string', maxLength: 64 },
+        restart: { type: 'boolean' },
+        skip_optional: { type: 'boolean' },
+        answers: { type: 'object' },
       },
     },
-    run: (env, args) => runTripBrief(env, args),
+    write: { kind: 'trip.brief' },
+    run: () => {
+      throw new Error('trip.brief виконується через policy, не напряму');
+    },
+  },
+  'trip.context': {
+    args: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', maxLength: 80 },
+        trip_id: { type: 'string', maxLength: 64 },
+      },
+    },
+    run: (env, args, nowMs) => runTripContext(env, args, nowMs),
+  },
+  'trip.expense': {
+    args: {
+      type: 'object',
+      required: ['trip_id', 'amount'],
+      properties: {
+        trip_id: { type: 'string', maxLength: 64 },
+        amount: { type: 'number', minimum: 0.01, maximum: 100000000 },
+        currency: { type: 'string', minLength: 3, maxLength: 3 },
+        category: {
+          type: 'string',
+          enum: ['transport', 'lodging', 'food', 'activities', 'shopping', 'other'],
+        },
+        note: { type: 'string', maxLength: 160 },
+        entry_id: { type: 'string', minLength: 8, maxLength: 64 },
+      },
+    },
+    write: { kind: 'trip.expense' },
+    run: () => {
+      throw new Error('trip.expense виконується через policy');
+    },
+  },
+  'trip.workspace': {
+    args: {
+      type: 'object',
+      required: ['trip_id', 'op'],
+      properties: {
+        trip_id: { type: 'string', maxLength: 64 },
+        op: { type: 'string', enum: TRIP_WORKSPACE_OPS },
+        expected_revision: { type: 'number', minimum: 0 },
+        data: { type: 'object' },
+      },
+    },
+    write: { kind: 'trip.workspace' },
+    run: () => {
+      throw new Error('trip.workspace виконується через policy');
+    },
   },
   'routes.eta': {
     args: {

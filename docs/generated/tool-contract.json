@@ -30,9 +30,7 @@
     },
     "calendar.read": {
       "args": {
-        "properties": {
-          "days": { "maximum": 7, "minimum": 0, "type": "number" }
-        },
+        "properties": { "days": { "maximum": 7, "minimum": 0, "type": "number" } },
         "required": ["days"],
         "type": "object"
       },
@@ -123,10 +121,7 @@
       "args": {
         "properties": {
           "q": { "maxLength": 120, "minLength": 2, "type": "string" },
-          "scopes": {
-            "items": { "maxLength": 16, "type": "string" },
-            "type": "array"
-          }
+          "scopes": { "items": { "maxLength": 16, "type": "string" }, "type": "array" }
         },
         "required": ["q"],
         "type": "object"
@@ -202,10 +197,7 @@
       "args": {
         "properties": {
           "category": { "maxLength": 40, "type": "string" },
-          "flags": {
-            "items": { "maxLength": 20, "type": "string" },
-            "type": "array"
-          },
+          "flags": { "items": { "maxLength": 20, "type": "string" }, "type": "array" },
           "id": { "maxLength": 64, "type": "string" },
           "merchant": { "maxLength": 60, "type": "string" },
           "period": { "maxLength": 32, "type": "string" }
@@ -264,10 +256,7 @@
           "effort": { "maxLength": 1, "type": "string" },
           "next_action": { "maxLength": 300, "type": "string" },
           "priority": { "maximum": 3, "minimum": 1, "type": "number" },
-          "tags": {
-            "items": { "maxLength": 32, "type": "string" },
-            "type": "array"
-          },
+          "tags": { "items": { "maxLength": 32, "type": "string" }, "type": "array" },
           "title": { "maxLength": 200, "minLength": 1, "type": "string" }
         },
         "required": ["title"],
@@ -299,9 +288,7 @@
     },
     "ideas.search": {
       "args": {
-        "properties": {
-          "q": { "maxLength": 120, "minLength": 2, "type": "string" }
-        },
+        "properties": { "q": { "maxLength": 120, "minLength": 2, "type": "string" } },
         "required": ["q"],
         "type": "object"
       },
@@ -320,10 +307,7 @@
           "plan_md": { "maxLength": 20000, "type": "string" },
           "priority": { "maximum": 3, "minimum": 1, "type": "number" },
           "status": { "maxLength": 16, "type": "string" },
-          "tags": {
-            "items": { "maxLength": 32, "type": "string" },
-            "type": "array"
-          },
+          "tags": { "items": { "maxLength": 32, "type": "string" }, "type": "array" },
           "title": { "maxLength": 200, "type": "string" }
         },
         "required": ["id"],
@@ -347,9 +331,7 @@
     },
     "knowledge.delete": {
       "args": {
-        "properties": {
-          "id": { "maxLength": 80, "minLength": 1, "type": "string" }
-        },
+        "properties": { "id": { "maxLength": 80, "minLength": 1, "type": "string" } },
         "required": ["id"],
         "type": "object"
       },
@@ -360,16 +342,9 @@
       "args": {
         "properties": {
           "file_id": { "maxLength": 256, "minLength": 1, "type": "string" },
-          "kind": {
-            "enum": ["cv", "job_preparation", "learning"],
-            "type": "string"
-          },
+          "kind": { "enum": ["cv", "job_preparation", "learning"], "type": "string" },
           "mime_type": { "maxLength": 120, "minLength": 1, "type": "string" },
-          "source_version": {
-            "maxLength": 160,
-            "minLength": 1,
-            "type": "string"
-          },
+          "source_version": { "maxLength": 160, "minLength": 1, "type": "string" },
           "title": { "maxLength": 200, "minLength": 1, "type": "string" }
         },
         "required": ["file_id", "title", "source_version", "mime_type", "kind"],
@@ -380,9 +355,7 @@
     },
     "knowledge.inspect": {
       "args": {
-        "properties": {
-          "file_id": { "maxLength": 256, "minLength": 1, "type": "string" }
-        },
+        "properties": { "file_id": { "maxLength": 256, "minLength": 1, "type": "string" } },
         "required": ["file_id"],
         "type": "object"
       },
@@ -402,9 +375,7 @@
     },
     "knowledge.revoke": {
       "args": {
-        "properties": {
-          "id": { "maxLength": 80, "minLength": 1, "type": "string" }
-        },
+        "properties": { "id": { "maxLength": 80, "minLength": 1, "type": "string" } },
         "required": ["id"],
         "type": "object"
       },
@@ -458,9 +429,7 @@
     },
     "places.details": {
       "args": {
-        "properties": {
-          "place_id": { "maxLength": 300, "minLength": 1, "type": "string" }
-        },
+        "properties": { "place_id": { "maxLength": 300, "minLength": 1, "type": "string" } },
         "required": ["place_id"],
         "type": "object"
       },
@@ -487,10 +456,7 @@
           "city": { "maxLength": 60, "type": "string" },
           "limit": { "maximum": 8, "minimum": 1, "type": "number" },
           "near": {
-            "properties": {
-              "lat": { "type": "number" },
-              "lon": { "type": "number" }
-            },
+            "properties": { "lat": { "type": "number" }, "lon": { "type": "number" } },
             "required": ["lat", "lon"],
             "type": "object"
           },
@@ -514,10 +480,7 @@
       "execution": { "route": "policy", "kind": "plan.accept" }
     },
     "plan.draft": {
-      "args": {
-        "properties": { "date": { "maxLength": 16, "type": "string" } },
-        "type": "object"
-      },
+      "args": { "properties": { "date": { "maxLength": 16, "type": "string" } }, "type": "object" },
       "tainting": "never",
       "execution": { "route": "policy", "kind": "plan.draft" }
     },
@@ -536,10 +499,7 @@
     "plan.review": {
       "args": {
         "properties": {
-          "carry": {
-            "items": { "maxLength": 80, "type": "string" },
-            "type": "array"
-          },
+          "carry": { "items": { "maxLength": 80, "type": "string" }, "type": "array" },
           "date": { "maxLength": 16, "type": "string" }
         },
         "type": "object"
@@ -551,14 +511,8 @@
       "args": {
         "properties": {
           "date": { "maxLength": 16, "type": "string" },
-          "done": {
-            "items": { "maxLength": 80, "type": "string" },
-            "type": "array"
-          },
-          "drop": {
-            "items": { "maxLength": 80, "type": "string" },
-            "type": "array"
-          },
+          "done": { "items": { "maxLength": 80, "type": "string" }, "type": "array" },
+          "drop": { "items": { "maxLength": 80, "type": "string" }, "type": "array" },
           "moves": {
             "items": {
               "properties": {
@@ -669,10 +623,7 @@
       "args": {
         "properties": {
           "id": { "maxLength": 64, "type": "string" },
-          "ids": {
-            "items": { "maxLength": 64, "type": "string" },
-            "type": "array"
-          }
+          "ids": { "items": { "maxLength": 64, "type": "string" }, "type": "array" }
         },
         "required": [],
         "type": "object"
@@ -729,9 +680,7 @@
     },
     "style.samples": {
       "args": {
-        "properties": {
-          "limit": { "maximum": 30, "minimum": 1, "type": "number" }
-        },
+        "properties": { "limit": { "maximum": 30, "minimum": 1, "type": "number" } },
         "type": "object"
       },
       "tainting": "never",
@@ -753,15 +702,76 @@
     "trip.brief": {
       "args": {
         "properties": {
+          "answers": { "type": "object" },
           "date_from": { "maxLength": 10, "type": "string" },
-          "purpose": { "maxLength": 20, "type": "string" },
+          "draft_id": { "maxLength": 64, "type": "string" },
+          "purpose": { "maxLength": 120, "type": "string" },
+          "restart": { "type": "boolean" },
+          "skip_optional": { "type": "boolean" },
           "to": { "maxLength": 120, "minLength": 1, "type": "string" }
         },
-        "required": ["to"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "trip.brief" }
+    },
+    "trip.context": {
+      "args": {
+        "properties": {
+          "to": { "maxLength": 80, "type": "string" },
+          "trip_id": { "maxLength": 64, "type": "string" }
+        },
         "type": "object"
       },
       "tainting": "never",
       "execution": { "route": "core" }
+    },
+    "trip.expense": {
+      "args": {
+        "properties": {
+          "amount": { "maximum": 100000000, "minimum": 0.01, "type": "number" },
+          "category": {
+            "enum": ["transport", "lodging", "food", "activities", "shopping", "other"],
+            "type": "string"
+          },
+          "currency": { "maxLength": 3, "minLength": 3, "type": "string" },
+          "entry_id": { "maxLength": 64, "minLength": 8, "type": "string" },
+          "note": { "maxLength": 160, "type": "string" },
+          "trip_id": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["trip_id", "amount"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "trip.expense" }
+    },
+    "trip.workspace": {
+      "args": {
+        "properties": {
+          "data": { "type": "object" },
+          "expected_revision": { "minimum": 0, "type": "number" },
+          "op": {
+            "enum": [
+              "get",
+              "leg",
+              "remove_leg",
+              "restore_revision",
+              "place",
+              "review",
+              "monitor",
+              "link_transaction",
+              "unlink_transaction",
+              "learn"
+            ],
+            "type": "string"
+          },
+          "trip_id": { "maxLength": 64, "type": "string" }
+        },
+        "required": ["trip_id", "op"],
+        "type": "object"
+      },
+      "tainting": "never",
+      "execution": { "route": "policy", "kind": "trip.workspace" }
     },
     "wishes.create": {
       "args": {
@@ -814,9 +824,7 @@
     },
     "wishes.search": {
       "args": {
-        "properties": {
-          "q": { "maxLength": 120, "minLength": 2, "type": "string" }
-        },
+        "properties": { "q": { "maxLength": 120, "minLength": 2, "type": "string" } },
         "required": ["q"],
         "type": "object"
       },

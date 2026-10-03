@@ -12,7 +12,7 @@
 // відтворює код із початку після кожного пробудження.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { kyivDateKey, kyivClock } from '../../kyiv-time.mjs';
+import { kyivDateKey } from '../../kyiv-time.mjs';
 import { addDaysToDateKey } from '../../reminders-core.mjs';
 import { kyivMs } from '../day-plan/store.mjs';
 import { renderMdParts } from '../tg/markdown.mjs';
@@ -39,15 +39,20 @@ import { listVehicles, fuelPrice, carCostLine } from '../trips/cost.mjs';
 import { routesEta, geocodeAddress } from '../adapters/maps.mjs';
 import { forecastForDates, forecastLine, FORECAST_DAYS } from '../adapters/weather.mjs';
 import { resolveWaypoint } from '../tools/places.mjs';
+import {
+  tripDaySchedule,
+  tripLocalSchedule,
+  tripSupportButtons,
+  packingItems,
+} from '../trips/support.mjs';
+import { tripSlot, tripZone, tripLocalParts } from '../trips/time.mjs';
 
 export const CHAIN_KIND = 'trip';
-export const TRIP_MODES = ['car', 'bus', 'train', 'plane'];
+export const TRIP_MODES = ['car', 'bus', 'train', 'plane', 'mixed', 'walk', 'hike'];
 /** Мета поїздки (ідея №4): від неї залежить глибина підготовки ланцюга. */
 export const TRIP_PURPOSES = ['ділова', 'транзит', 'дозвілля'];
 /** Час блоків за Києвом (07 §6). */
 const BLOCK_AT = { t30: '10:00', t7: '10:00', t1: '19:00' };
-/** Виїзд, якщо власник не назвав години. */
-const DEFAULT_DEPART = '09:00';
 /** «Пора виходити» - за стільки до виїзду (07 §6). */
 const LEAVE_BEFORE_MS = 2 * 3_600_000;
 /** Підсумок - наступного дня після повернення о 10:00. */
@@ -81,7 +86,8 @@ const EVENTS_PER_WINDOW = 12;
  *   date_from: string, date_to: string | null, mode: string, vehicle_key: string | null,
  *   checklist_key: string, depart_at: string | null, chat_id: number | string | null,
  *   thread_id: string | null, awaiting: string | null,
- *   purpose: string | null, participants: string | null }} TripState
+ *   purpose: string | null, participants: string | null, support_version?:number,
+ *   brief_id?:string|null, preferences?:Record<string,any> }} TripState
  * @typedef {{ chainId: string, state?: TripState }} TripParams
  */
 
@@ -104,9 +110,9 @@ export function tripDates(from, to) {
   return dates;
 }
 
-/** Скільки діб до виїзду (київські дати). @param {string} dateFrom @param {number} nowMs */
-export function daysUntil(dateFrom, nowMs) {
-  const today = kyivDateKey(new Date(nowMs));
+/** Скільки діб до виїзду. @param {string} dateFrom @param {number} nowMs @param {string|null} zone */
+export function daysUntil(dateFrom, nowMs, zone = null) {
+  const today = zone ? tripLocalParts(nowMs, zone).date : kyivDateKey(new Date(nowMs));
   const a = Date.parse(`${today}T00:00:00Z`);
   const b = Date.parse(`${dateFrom}T00:00:00Z`);
   return Math.round((b - a) / 86_400_000);
@@ -115,14 +121,14 @@ export function daysUntil(dateFrom, nowMs) {
 /**
  * Розклад повідомлень (07 §6): [{at, blocks}] - перший може бути «зараз»
  * (поїздка близько), далі T-7 і T-1 у свій час.
- * @param {string} dateFrom @param {number} nowMs
+ * @param {string} dateFrom @param {number} nowMs @param {string|null} zone
  */
-export function schedule(dateFrom, nowMs) {
-  const left = daysUntil(dateFrom, nowMs);
+export function schedule(dateFrom, nowMs, zone = null) {
+  const left = daysUntil(dateFrom, nowMs, zone);
   /** @type {{ at: number, blocks: string[] }[]} */
   const out = [];
   const at = (/** @type {string} */ date, /** @type {string} */ hhmm) =>
-    kyivMs(date, hhmm) ?? nowMs;
+    (zone ? tripSlot(date, hhmm, zone) : kyivMs(date, hhmm)) ?? nowMs;
   const t30 = at(addDaysToDateKey(dateFrom, -30), BLOCK_AT.t30);
   const t7 = at(addDaysToDateKey(dateFrom, -7), BLOCK_AT.t7);
   const t1 = at(addDaysToDateKey(dateFrom, -1), BLOCK_AT.t1);
@@ -177,7 +183,9 @@ export function isAbroad(country) {
 /** Дата у форматі YYYY-MM-DD? @param {unknown} v */
 function dateKeyOf(v) {
   const s = String(v ?? '').trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const ms = Date.parse(`${s}T00:00:00Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === s ? s : null;
 }
 
 /**
@@ -192,6 +200,8 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   const dateFrom = dateKeyOf(payload.date_from);
   if (!dateFrom) throw new Error('date_from обовʼязковий у форматі YYYY-MM-DD');
   const dateTo = dateKeyOf(payload.date_to);
+  if (payload.date_to != null && !dateTo)
+    throw new Error('Уточни дату повернення: такої календарної дати немає.');
   if (dateTo && dateTo < dateFrom) throw new Error('date_to раніше за date_from');
   // Дата в минулому прогнала б увесь ланцюг одним залпом (усі блоки, платний
   // Routes і питання про витрати) - краще перепитати рік/місяць.
@@ -206,7 +216,40 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   if (!TRIP_MODES.includes(mode)) {
     throw new Error(`невідомий mode «${mode}» (чинні: ${TRIP_MODES.join(', ')})`);
   }
-  const country = payload.country == null ? null : String(payload.country).trim().slice(0, 60);
+  if (payload.depart_at != null && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(payload.depart_at))) {
+    throw new Error(
+      'Час виїзду має бути HH:MM. Якщо власник назвав лише «вранці», не перетворюй це на точну годину.',
+    );
+  }
+  let country = payload.country == null ? null : String(payload.country).trim().slice(0, 60);
+  /** @type {Record<string, any>} */
+  let preferences = {};
+  if (payload.brief_id) {
+    const { normalizeTripAnswers, tripScopeKey } = await import('../tools/trip.mjs');
+    const row = await db(env)
+      .prepare('SELECT answers_json FROM trip_briefs WHERE id = ? AND scope_key = ? AND status = ?')
+      .bind(String(payload.brief_id), tripScopeKey(ctx), 'draft')
+      .first();
+    if (!row) throw new Error('Бриф для супроводу не знайдено в цьому чаті.');
+    preferences = normalizeTripAnswers(JSON.parse(String(row.answers_json)));
+    if (
+      preferences.to !== to ||
+      preferences.date_from !== dateFrom ||
+      (preferences.date_to ?? null) !== dateTo ||
+      (preferences.mode && preferences.mode !== mode && preferences.mode !== 'compare')
+    )
+      throw new Error('Обраний бриф має інше місце або дати. Спершу онови його.');
+  }
+  for (const key of ['timezone', 'departure_timezone']) {
+    if (payload[key] != null) preferences[key] = tripZone(payload[key]);
+  }
+  if (country == null && preferences.country) country = String(preferences.country).slice(0, 60);
+  const fromCity = payload.from_city ?? preferences.from_city ?? null;
+  const departAt =
+    payload.depart_at ??
+    (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(preferences.depart_at))
+      ? preferences.depart_at
+      : null);
   const abroad = isAbroad(country);
   const checklistKey = (await import('../trips/checklist.mjs')).pickChecklistKey({ mode, abroad });
   const tripId = crypto.randomUUID();
@@ -231,7 +274,7 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     .bind(
       tripId,
       wishId,
-      payload.from_city == null ? null : String(payload.from_city).trim().slice(0, 60),
+      fromCity == null ? null : String(fromCity).trim().slice(0, 60),
       to,
       country,
       dateFrom,
@@ -247,14 +290,14 @@ export async function startTripChain(env, payload, nowMs, ctx) {
   const state = {
     trip_id: tripId,
     to_text: to,
-    from_city: payload.from_city == null ? null : String(payload.from_city),
+    from_city: fromCity == null ? null : String(fromCity),
     country,
     date_from: dateFrom,
     date_to: dateTo,
     mode,
     vehicle_key: payload.vehicle_key == null ? null : String(payload.vehicle_key),
     checklist_key: checklistKey,
-    depart_at: payload.depart_at == null ? null : String(payload.depart_at).slice(0, 5),
+    depart_at: departAt == null ? null : String(departAt).slice(0, 5),
     // ⚠️ Мета й учасники живуть у стані ЛАНЦЮГА, не в таблиці `trips` (ідея
     // №4). Причина технічна й важлива: Workers Builds деплоїть у прод кожен
     // push, а міграції їдуть лише на мержі в main - код, що читає нову
@@ -266,6 +309,9 @@ export async function startTripChain(env, payload, nowMs, ctx) {
     chat_id: ctx.chatId ?? null,
     thread_id: ctx.threadId == null ? null : String(ctx.threadId),
     awaiting: null,
+    support_version: 2,
+    brief_id: payload.brief_id == null ? null : String(payload.brief_id),
+    preferences,
   };
   await db(env)
     .prepare(
@@ -293,10 +339,10 @@ export async function startTripChain(env, payload, nowMs, ctx) {
       text:
         `Поїздка створена: ${ddmm(dateFrom)}${dateTo ? `-${ddmm(dateTo)}` : ''}, ` +
         `${state.from_city ? `${state.from_city} → ` : ''}${to}, ${way}. ` +
-        `Чекліст ${checklistKey}: ${left >= 30 ? `перший блок - за ${daysWord(left - 30)}` : 'перший блок надішлю зараз'}.` +
+        `Підготовка: ${left >= 30 ? `перший список - за ${daysWord(left - 30)}` : 'перший список надішлю зараз'}.` +
         // ⚠️ Учасників ВИДНО (ревʼю): питати про них і мовчки класти в JSON -
         // рівно той клас зайвих питань, який ідея №4 мала прибрати.
-        (state.participants ? ` Їдете: ти і ${state.participants}.` : ''),
+        (state.participants ? ` Учасники: ${state.participants}.` : ''),
       note: 'ланцюг далі веде ядро кнопками; власнику скажи саме text',
     },
     prev: { chain_id: chainId, trip_id: tripId, wish_id: wishId },
@@ -318,7 +364,17 @@ async function vehicleTitle(env, key) {
 
 /** Спосіб поїздки словом (у tools/places.mjs своє modeWord - про транспорт маршруту). @param {string} mode */
 export function tripModeWord(mode) {
-  return { car: 'авто', bus: 'автобус', train: 'потяг', plane: 'літак' }[mode] ?? mode;
+  return (
+    {
+      car: 'авто',
+      bus: 'автобус',
+      train: 'потяг',
+      plane: 'літак',
+      mixed: 'змішаний маршрут',
+      walk: 'пішки',
+      hike: 'похід',
+    }[mode] ?? mode
+  );
 }
 
 /**
@@ -460,9 +516,18 @@ export async function runTripChain(env, params, step, io) {
       // початку після кожного пробудження, і `schedule` від «зараз» дав би
       // іншу кількість точок, а з нею - інші імена кроків (мемоїзований крок
       // повернувся б замість нового очікування). Імена далі - з КЛЮЧІВ блоків.
-      const plan = await step.do(`${rk}-plan`, async () => schedule(state.date_from, io.now()));
-      const departMs = kyivMs(state.date_from, state.depart_at ?? DEFAULT_DEPART) ?? io.now();
-      const leaveMs = departMs - LEAVE_BEFORE_MS;
+      const departureZone =
+        state.support_version === 2 ? tripZone(state.preferences?.departure_timezone) : null;
+      const plan = await step.do(`${rk}-plan`, async () =>
+        schedule(state.date_from, io.now(), departureZone),
+      );
+      // Невідомий час не перетворюємо на вигаданий виїзд о 09:00.
+      const departMs = state.depart_at
+        ? departureZone
+          ? tripSlot(state.date_from, state.depart_at, departureZone)
+          : kyivMs(state.date_from, state.depart_at)
+        : null;
+      const leaveMs = departMs == null ? null : departMs - LEAVE_BEFORE_MS;
       for (const [bi, point] of plan.entries()) {
         const key = `${rk}-${point.blocks.join('_')}`;
         if (point.at > io.now()) await step.sleepUntil(`${key}-sleep`, point.at);
@@ -485,42 +550,52 @@ export async function runTripChain(env, params, step, io) {
         await step.do(`${key}-send`, () => io.send(view.text, view.buttons));
         // Останнє вікно тримається до «пора виходити» (за 2 год до виїзду), а
         // не до самого виїзду - інакше нагадування прийшло б навздогін.
-        const until = plan[bi + 1]?.at ?? leaveMs;
+        const until = plan[bi + 1]?.at ?? leaveMs ?? io.now();
         state = await waitWindow(step, io, env, chainId, `${key}-w`, until, state);
       }
 
-      // День виїзду: попередження за 2 год + перерахунок ETA (07 §6).
-      if (leaveMs > io.now()) {
+      // День виїзду: попередження за 2 год тільки за названої години.
+      if (leaveMs != null && leaveMs > io.now()) {
         await step.sleepUntil(`${rk}-leave-sleep`, leaveMs);
       }
       // Прокинулись зі сну - спершу переконатись, що поїздку не скасували:
       // інакше платний Routes і «Пора виходити» полетіли б у скасовану.
       await await_(`${rk}-leave-run`, null);
-      const leave = await step.do(`${rk}-leave-eta`, () => safeRoute(io, state, state.mode));
-      const eta = leave.eta;
-      // Години виїзду власник міг не називати - тоді це припущення, і воно
-      // називається припущенням: на ньому стоїть увесь розклад дня виїзду.
-      const departWord = state.depart_at
-        ? `виїзд о ${kyivClock(departMs)}`
-        : `виїзд орієнтовно о ${kyivClock(departMs)} (скажи точний час - переставлю)`;
-      // ⚠️ Погода ТУТ, а не лише в блоці T-7 (ідея №4, п.7): за дві години до
-      // виходити» вона ще може змінити рішення - вдягтися інакше, виїхати
-      // раніше. На T-7 прогнозу на день виїзду часто просто немає.
-      const leaveWeather = await step.do(`${rk}-leave-weather`, async () => {
-        const { lines } = await io.weather(state.to_text, [state.date_from]);
-        return lines[0] ?? null;
-      });
-      await step.do(`${rk}-leave-send`, () =>
-        io.send(
-          `🚗 Виїзд за ~2 год: ${departWord}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Дорожній чекліст — наступним повідомленням.`,
-          buildCallbackActionCardRows({
-            actions: [
-              { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
-              { text: '✖ Скасувати', callback_data: `c:${chainId}:cancel` },
-            ],
-          }),
-        ),
-      );
+      if (departMs == null) {
+        await step.do(`${rk}-leave-unknown`, () =>
+          io.send(
+            '🧳 Час виїзду не вказаний, тому нагадування за 2 години не ставив. Список перед дорогою — нижче.',
+          ),
+        );
+      } else if (departMs > io.now()) {
+        const leave = await step.do(`${rk}-leave-eta`, () => safeRoute(io, state, state.mode));
+        const eta = leave.eta;
+        // Прогноз ближче до виїзду корисніший за ранній T-7.
+        const leaveWeather = await step.do(`${rk}-leave-weather`, async () => {
+          const { lines } = await io.weather(state.to_text, [state.date_from]);
+          return lines[0] ?? null;
+        });
+        const modeIcon =
+          { car: '🚗', plane: '✈️', train: '🚆', bus: '🚌', walk: '🚶', hike: '🥾', mixed: '🔀' }[
+            state.mode
+          ] ?? '🧳';
+        const timeLeft = Math.max(1, Math.round((departMs - io.now()) / 60_000));
+        const when =
+          timeLeft >= 110 && timeLeft <= 130
+            ? 'за ~2 год'
+            : `о ${state.depart_at}${departureZone ? ` (${departureZone})` : ''}`;
+        await step.do(`${rk}-leave-send`, () =>
+          io.send(
+            `${modeIcon} Виїзд ${when}: ${state.to_text}${eta ? `, у дорозі ~${hoursWord(eta.duration_min)} (${Math.round(eta.distance_m / 1000)} км)` : ''}.${leave.note ? ` ${leave.note}` : ''}${leaveWeather ? ` Погода: ${leaveWeather}.` : ''} Список перед дорогою — нижче.`,
+            buildCallbackActionCardRows({
+              actions: [
+                { text: '🗓 Змінити дати', callback_data: `c:${chainId}:newdate` },
+                { text: '✖ Скасувати', callback_data: `c:${chainId}:cancel` },
+              ],
+            }),
+          ),
+        );
+      }
       const roadDone = await step.do(`${rk}-road-done`, () => io.readDone());
       const road = renderBlocks(chainId, {
         blocks: ['road'],
@@ -530,14 +605,68 @@ export async function runTripChain(env, params, step, io) {
       });
       await step.do(`${rk}-road-send`, () => io.send(road.text, road.buttons));
 
+      // Only new chains opt into new durable steps; replay of an existing
+      // Workflow must retain its original step sequence and names.
+      if (state.support_version === 1 || state.support_version === 2) {
+        await step.do(`${rk}-support-home`, () =>
+          io.send(
+            '🧳 Розділи поїздки — під рукою. Обирай потрібний; нічого не бронюю автоматично.',
+            tripSupportButtons(chainId),
+          ),
+        );
+        const days = await step.do(`${rk}-support-plan`, async () =>
+          state.support_version === 2
+            ? tripLocalSchedule(state, io.now())
+            : tripDaySchedule(state, io.now()),
+        );
+        for (const point of days) {
+          const evening = 'kind' in point && point.kind === 'evening';
+          const key = `${rk}-day-${point.day}${evening ? '-evening' : ''}`;
+          state = await waitWindow(step, io, env, chainId, `${key}-wait`, point.at, state);
+          await await_(`${key}-check`, null);
+          await step.do(`${key}-send`, async () => {
+            if (evening) {
+              await io.send(
+                `📖 Як пройшов день у «${state.to_text}»? Що відвідав, що сподобалось і що залишити на завтра? Можеш відповісти текстом — збережу після твого прохання.`,
+                tripSupportButtons(chainId),
+              );
+              return;
+            }
+            const weather = await io.weather(state.to_text, [point.day]);
+            const lines = [`🧭 ${state.to_text} · ${ddmm(point.day)}`];
+            lines.push(
+              weather.lines.length
+                ? `Погода: ${weather.lines.join('; ')}`
+                : weatherNote(weather.reason, point.day),
+            );
+            if (point.returnDay)
+              lines.push(
+                'За планом сьогодні повернення. Час і маршрут можна уточнити кнопкою «Дорога».',
+              );
+            lines.push(
+              `Місця, їжа, речі й бюджет — нижче.${state.support_version === 2 ? ` Час — ${tripZone(state.preferences?.timezone)}.` : ''} Твою поточну локацію не відстежую.`,
+            );
+            await io.send(lines.join('\n'), tripSupportButtons(chainId));
+          });
+        }
+      }
+
       // Після повернення (S-5-10): «як пройшло, скільки витратив».
       const backMs =
-        kyivMs(addDaysToDateKey(state.date_to ?? state.date_from, 1), AFTER_AT) ?? io.now();
+        (state.support_version === 2
+          ? tripSlot(
+              addDaysToDateKey(state.date_to ?? state.date_from, 1),
+              AFTER_AT,
+              tripZone(state.preferences?.timezone),
+            )
+          : kyivMs(addDaysToDateKey(state.date_to ?? state.date_from, 1), AFTER_AT)) ?? io.now();
       state = await waitWindow(step, io, env, chainId, `${rk}-trip-w`, backMs, state);
       await await_(`${rk}-back-ask`, 'spent');
       await step.do(`${rk}-back-say`, async () => {
         await io.send(
-          `Як пройшла поїздка «${state.to_text}»? Скільки витратив? (напиши сумою, напр. «3 500»)`,
+          state.date_to
+            ? `Як пройшла поїздка «${state.to_text}»? Скільки витратив? (напиши сумою, напр. «3 500»)`
+            : `Як пройшла дорога до «${state.to_text}»? Скільки витратив у дорозі? Дату повернення не припускаю.`,
         );
       });
       const answer = await waitOrNull(step, `${rk}-back-wait`, 'trip', 3 * 86_400_000);
@@ -663,6 +792,17 @@ async function waitWindow(step, io, env, chainId, label, untilMs, state) {
       }
     }
   }
+  if (io.now() < untilMs) {
+    // Event cap is a workload bound, not permission to send a timed block early.
+    await step.sleepUntil(`${label}-bounded-sleep`, untilMs);
+    const live = await readChainState(env, chainId);
+    if (!live || live.status === 'cancelled') throw new Cancelled();
+    if (
+      live.state.date_from !== state.date_from ||
+      (live.state.date_to ?? null) !== (state.date_to ?? null)
+    )
+      throw new Rescheduled();
+  }
   return state;
 }
 
@@ -695,6 +835,15 @@ export function moneyOf(text) {
  * @returns {Promise<{ eta: { distance_m: number, duration_min: number } | null, note: string | null }>}
  */
 async function safeRoute(io, state, mode) {
+  // Maps transit is not the booked train, bus or flight. Showing its duration
+  // as an arrival estimate would be confidently wrong.
+  if (mode !== 'car')
+    return {
+      eta: null,
+      note: ['train', 'bus', 'plane'].includes(mode)
+        ? 'Час прибуття звір із квитком; дорожній маршрут його не визначає.'
+        : 'Час прибуття залежить від етапів маршруту й умов; автомобільний час не використовую.',
+    };
   try {
     return { eta: await io.route(state.from_city ?? 'home', state.to_text, mode), note: null };
   } catch (/** @type {any} */ e) {
@@ -716,7 +865,7 @@ export async function blockExtras(io, state, block) {
     const { eta, note } = await safeRoute(io, state, 'car');
     extra.push(note ?? (await io.carCost(state.vehicle_key, eta?.distance_m ?? null)));
   }
-  if (block === 't7') {
+  if (block === 't7' || block === 't1') {
     const dates = tripDates(state.date_from, state.date_to);
     const { lines, reason } = await io.weather(state.to_text, dates);
     extra.push(lines.length ? `Погода: ${lines.join('; ')}` : weatherNote(reason, state.date_from));
@@ -724,10 +873,18 @@ export async function blockExtras(io, state, block) {
     // рекомендацій закладів не потребують - пропонувати їх там означає
     // витрачати увагу власника на те, чого він не просив. Це пропозиція, а не
     // самочинний пошук: підбір і бронювання коштують квоти й часу.
-    if (state.purpose === 'дозвілля') {
-      extra.push(`Скажи - підберу заклади в ${state.to_text} або забронюю столик.`);
+    if (block === 't7' && state.purpose === 'дозвілля') {
+      extra.push(
+        `Якщо хочеш, підберу заклади в ${state.to_text}. Нічого не бронюю без окремого рішення.`,
+      );
     }
   }
+  if (block === 't1')
+    extra.push(
+      `Перед дорогою:\n${packingItems(state)
+        .map((line) => `• ${line}`)
+        .join('\n')}`,
+    );
   return extra;
 }
 
@@ -737,8 +894,10 @@ export async function blockExtras(io, state, block) {
  * @param {string | null} reason @param {string} dateFrom
  */
 export function weatherNote(reason, dateFrom) {
-  if (reason === 'no-key') return 'Погода: WEATHER_API_KEY не заданий - прогноз недоступний.';
-  if (reason === 'failed') return 'Погода: сервіс прогнозу не відповів, спробую на T-1.';
+  if (reason === 'no-key')
+    return 'Погода: прогноз зараз недоступний — немає підключення до сервісу.';
+  if (reason === 'failed')
+    return 'Погода: сервіс прогнозу не відповів — актуального прогнозу немає.';
   if (reason === 'no-geo') return 'Погода: не знайшов координат місця призначення.';
   if (reason === 'quota') return 'Погода: геокодування тимчасово недоступне (квота).';
   return `Погода на ${ddmm(dateFrom)} буде ближче до дати (прогноз - ${FORECAST_DAYS} діб).`;
@@ -809,9 +968,8 @@ export function productionIo(env, chainId, state) {
     },
     carCost: async (vehicleKey, distanceM) => {
       const vehicles = await listVehicles(env);
-      const vehicle = vehicleKey
-        ? (vehicles.find((v) => v.key === vehicleKey) ?? null)
-        : (vehicles[0] ?? null);
+      // A saved default car is not evidence that this trip uses it.
+      const vehicle = vehicleKey ? (vehicles.find((v) => v.key === vehicleKey) ?? null) : null;
       const price = await fuelPrice(env, vehicle?.fuel ?? null);
       return carCostLine({ vehicle, price, distanceM });
     },
@@ -819,7 +977,12 @@ export function productionIo(env, chainId, state) {
       try {
         const geo = await geocodeAddress(env, place, Date.now());
         if (!geo.found) return { lines: [], reason: 'no-geo' };
-        const { days, reason } = await forecastForDates(env, { lat: geo.lat, lon: geo.lon }, dates);
+        const { days, reason } = await forecastForDates(
+          env,
+          { lat: geo.lat, lon: geo.lon },
+          dates,
+          state.support_version === 2 ? tripZone(state.preferences?.timezone) : null,
+        );
         return { lines: days.map(forecastLine), reason };
       } catch (/** @type {any} */ e) {
         console.error(`trip-chain ${chainId}: погода не отримана`, e?.message);
@@ -854,6 +1017,7 @@ export function productionIo(env, chainId, state) {
  * @param {Env} env @param {string} chainId @param {any} err
  */
 export async function failTripChain(env, chainId, err) {
+  console.error(`trip-chain ${chainId}: workflow failed`, err);
   await patchChainState(env, chainId, 'failed', { awaiting: null });
   const row = await readChainState(env, chainId);
   const state = /** @type {TripState | undefined} */ (row?.state);
@@ -863,7 +1027,7 @@ export async function failTripChain(env, chainId, err) {
     .bind(state.trip_id)
     .run();
   await productionIo(env, chainId, state).send(
-    `Ланцюг поїздки «${state.to_text}» зупинився через помилку (${String(err?.message ?? err).slice(0, 120)}). Скажи «поїздка …», щоб почати заново.`,
+    `Супровід поїздки «${state.to_text}» зупинився. Запис поїздки збережений; попроси мене перевірити його стан.`,
   );
 }
 

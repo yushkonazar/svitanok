@@ -93,6 +93,9 @@ export const ACTION_PHRASE = {
   },
   'chain.start': { icon: DOMAIN_ICON.chain, done: 'Веду', ask: 'Взятися за' },
   'chain.cancel': { icon: DOMAIN_ICON.chain, done: 'Зупинив', ask: 'Зупинити' },
+  'trip.brief': { icon: '🧳', done: 'Уточнюю поїздку', ask: 'Уточнити поїздку' },
+  'trip.expense': { icon: '💰', done: 'Записав витрату поїздки', ask: 'Записати витрату поїздки' },
+  'trip.workspace': { icon: '🧳', done: 'Поїздку оновлено', ask: 'Оновити поїздку' },
   'finance.rule': {
     icon: DOMAIN_ICON.money,
     done: 'Запамʼятав правило',

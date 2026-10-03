@@ -51,6 +51,7 @@ import { secretExpiryTask } from '../ops/secret-expiry.mjs';
 import { quotaCheckTask } from '../ops/quota-check.mjs';
 import { reconcileMemoryProjection } from '../memory.mjs';
 import { reconcileKnowledgeProjection } from '../knowledge-base.mjs';
+import { tripMonitorTask } from '../trips/monitor.mjs';
 
 /**
  * @typedef {{
@@ -99,6 +100,7 @@ export const SCHEDULER_TASKS = {
     },
   },
   'plan-calendar-sync': { periodMin: 5, run: reconcilePlanCalendar },
+  'trip-monitor': { periodMin: 30, run: tripMonitorTask },
   'run-watchdog': { periodMin: 5, run: agentRunWatchdog },
   // Обидва мозки під одним канонічним kind: старий хост (agentHostHealthCheck,
   // живе до кінця етапу 2) і handshake нового (checkBrainHandshake - тихий

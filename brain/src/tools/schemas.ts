@@ -252,14 +252,72 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'trip.brief',
     description:
-      'ПЕРШЕ, що робиш на «їдемо в X» / «поїздка в X». Ядро повертає ask - усі поля, яких бракує для старту поїздки, і known - те, що вже знає саме (авто з фактів, місто виїзду, ціна пального). ' +
-      'Склади з ask ОДНЕ повідомлення і спитай усе разом; питати по одному - пряма скарга власника. ' +
-      'Отримав відповіді - поклич chain.start(trip) ОДИН раз, разом із purpose і participants.',
+      'ПЕРШЕ на запит про нову поїздку та КОЖНЕ наступне уточнення. T0: ядро зберігає чернетку поїздки в чаті, повертає phase, ask (до 4 доречних питань), answers і ready_for_research. ' +
+      'Передай нові відповіді у answers; draft_id з попереднього результату, якщо він є. Якщо власник починає іншу поїздку, передай restart:true. ' +
+      'Ключі answers: to, date_from/date_to (YYYY-MM-DD), return_type (round_trip|one_way|undecided), from_city, mode (car|bus|train|plane|mixed|walk|hike|compare), participants, purpose, international (boolean), country; за гілкою — vehicle_key/vehicle_description/depart_at, departure_window/ticket_status, departure_airport/arrival_airport/baggage, route_profile, legs, budget_type (limit|flexible|no_limit), budget_total, lodging_needed (yes|no|undecided), interests, constraints, trip_priorities, citizenship, documents_status, parking_preference, flight_transfers, equipment, food_preference, travel_pace. Передавай лише явно сказане власником; не вигадуй. ' +
+      'Спитай лише найближче поле ask; відомі відповіді не перепитуй. Часові пояси: answers.timezone для цілі, departure_timezone для старту (IANA). known.approved_pattern — явно погоджений повторюваний шаблон, врахуй його при пропозиції без заміни нових обмежень; він не підтверджує дати/квитки. Не питай про авто, доки mode не car; не вигадуй бюджет, квитки, бронювання чи країну. ' +
+      'Після ready підготуй варіанти з джерелами. chain.start(trip), календар і бронювання — ЛИШЕ після явного вибору власника; сам бриф їх не запускає.',
     args: z.object({
-      to: z.string().min(1).max(120),
+      to: z.string().min(1).max(120).optional(),
       date_from: z.string().max(10).optional(),
-      purpose: z.string().max(20).optional(),
+      purpose: z.string().max(120).optional(),
+      draft_id: z.string().max(64).optional(),
+      restart: z.boolean().optional(),
+      skip_optional: z.boolean().optional(),
+      answers: z.record(z.string(), z.unknown()).optional(),
     }),
+    write: true,
+  }),
+  tool({
+    coreName: 'trip.context',
+    description:
+      'Прочитати поїздку: дати, спосіб, етап за місцевим часом, workspace (маршрут з версіями, місця, враження, сповіщення, шаблон) і журнал витрат. Завершену — за trip_id/to. Викликай перед порадами «що сьогодні в поїздці», «куди піти», «коли повертатись», щоб не губити контекст. Це НЕ жива геолокація, не перевірені квитки чи погода.',
+    args: z.object({ to: z.string().max(80).optional(), trip_id: z.string().max(64).optional() }),
+  }),
+  tool({
+    coreName: 'trip.expense',
+    description:
+      'Записати явно названу власником витрату конкретної поїздки (T0 з відкатом). Спершу trip.context для точного trip_id. amount в основних одиницях; currency три літери, типово UAH. Не віднось банківські транзакції до подорожі лише через дати. Не записуй кошторис як фактичну витрату. entry_id для безпечного повторення того самого запису; нова реальна витрата має новий id.',
+    args: z.object({
+      trip_id: z.string().max(64),
+      amount: z.number().min(0.01).max(100000000),
+      currency: z.string().length(3).optional(),
+      category: z
+        .enum(['transport', 'lodging', 'food', 'activities', 'shopping', 'other'])
+        .optional(),
+      note: z.string().max(160).optional(),
+      entry_id: z.string().min(8).max(64).optional(),
+    }),
+    write: true,
+  }),
+  tool({
+    coreName: 'trip.workspace',
+    description:
+      'Збережений маршрут і журнал конкретної поїздки: спочатку trip.context для trip_id. ' +
+      'op=get читає; leg зберігає етап: data {id? (UUID),kind:travel|activity|stay,title,mode?,from?,to?,start,end (YYYY-MM-DDTHH:MM),start_zone,end_zone (IANA),transfer_minutes?,parallel?,booked?,operator?,service?,source_url?,note?}. ' +
+      'Перевір і явно уточни місцеві часові пояси, не виводь їх з країни; для паралельної справи parallel:true лише зі слів власника. Маршрут не означає бронювання. expected_revision з поточного результату захищає редагування. remove_leg: data {id}. restore_revision: data {revision} відновлює одну з останніх 10 версій маршруту. ' +
+      'place: data {id?,title?,category?,status:saved|visited|favorite|skipped,url?,note?}; review: data {date:YYYY-MM-DD,note,unfinished?}. ' +
+      'monitor: data {enabled,consent:true,timezone?,interval_hours:6..24,weather?,road?,service?}, лише за явною згодою: до 4 перевірок/2 сигналів на добу, тихі години 22–08. service — нагадування перевірити перевізника, НЕ live-статус рейсу. ' +
+      'link_transaction: data {transaction_id,entry_id?,separate?} привʼязує конкретну банківську витрату, а entry_id звіряє її з ручною без дубля. separate:true лише коли власник явно підтвердив, що це інша витрата з тією ж сумою. Не вибирай по самих датах. unlink_transaction: data {transaction_id}. ' +
+      'learn: data {consent:true} лише після явної згоди на узагальнення історії: мінімум 3 завершені поїздки, стійка більшість, не створює факт з одного випадку. Це власні записи з відкатом; після зовнішнього вмісту потрібне підтвердження.',
+    args: z.object({
+      trip_id: z.string().max(64),
+      op: z.enum([
+        'get',
+        'leg',
+        'remove_leg',
+        'restore_revision',
+        'place',
+        'review',
+        'monitor',
+        'link_transaction',
+        'unlink_transaction',
+        'learn',
+      ]),
+      expected_revision: z.number().int().min(0).optional(),
+      data: z.record(z.string(), z.unknown()).optional(),
+    }),
+    write: true,
   }),
   tool({
     coreName: 'places.menu',
@@ -393,7 +451,7 @@ export const BRAIN_TOOLS: readonly BrainToolDef[] = [
   tool({
     coreName: 'chain.start',
     description:
-      'Почати багатокроковий ланцюг, який далі веде ядро кнопками. kind=table («нагадай забронювати столик у X о 14:00»): payload {venue - назва закладу, at - час нагадування природним текстом («о 14:00», «завтра о 12»), city? - місто з тексту, candidates? - place_id з places.search (спершу geo.last → places.search, якщо локація свіжа або місто відоме), participants? - імена, booking_at? - час броні}. Ядро само нагадає, дасть кнопки закладів, контакт, маршрут, вихід, запрошення й «Як було?». kind=price («відстежуй ціну <url>»): payload {url, title, target_price?} або {wish_id} наявного бажання - ядро щодня перевіряє ціну Дослідником і пише при −5 % або ≤ target (те саме робить wishes.create type=purchase з url). Відповідь містить text - скажи власнику саме його. kind=trip («їдемо в Карпати 12-15 жовтня автом»): payload {to - куди, date_from і date_to? - YYYY-MM-DD, mode - car·bus·train·plane, from_city? - звідки, country? - країна (не Україна → кордонний чекліст), vehicle_key? - ключ facts.vehicle, depart_at? - година виїзду «HH:MM», purpose? - ділова·транзит·дозвілля (від неї залежить глибина підготовки), participants? - хто їде, trip_id? - ТІЛЬКИ щоб перенести наявну поїздку на нові дати}. Поля бери з trip.brief і питай їх ОДНИМ повідомленням. Ядро веде чекліст T-30/T-7/T-1, «пора виходити» (з погодою) і підсумок витрат.',
+      'Почати багатокроковий ланцюг із кнопками. kind=table: payload {venue,at - час нагадування природним текстом,city?,candidates? - place_id з places.search,participants?,booking_at?}. kind=price: payload {url,title,target_price?} або {wish_id}; скажи власнику саме result.text. kind=trip лише після вибору плану й окремої згоди на супровід: payload {to,date_from,date_to?,mode - car|bus|train|plane|mixed|walk|hike,from_city?,country?,vehicle_key?,depart_at? - тільки названа HH:MM у поясі старту,timezone? - IANA цілі,departure_timezone? - IANA старту (Київ, якщо інший не названий),purpose? - ділова|транзит|дозвілля,participants?,brief_id? - draft_id погодженого брифу,trip_id? - перенесення наявної поїздки}. Пояси й побажання брифу зберігаються; compare спершу потребує вибору способу. Підготовка, список речей, ранковий/вечірній цикл до 30 днів і підсумок; структурований маршрут зберігай через trip.workspace після погодження. Невідома дата повернення означає супровід дороги, не вигаданий строк перебування. Жодних автоматичних бронювань.',
     args: z.object({
       kind: z.string().max(32),
       payload: z.record(z.string(), z.unknown()).optional(),
