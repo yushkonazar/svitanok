@@ -86,6 +86,7 @@ it('records the bank installment schedule with the selectable purchase-in-parts 
 it('calculates the new card installment balance and permits an exact bank override', async () => {
   const { close } = open({ kind: 'payment' });
   fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'card-installment' } });
+  fireEvent.change(screen.getByLabelText('Як додати борг'), { target: { value: 'schedule' } });
   fireEvent.change(screen.getByLabelText('Назва платежу'), {
     target: { value: 'Розстрочка Mono' },
   });
@@ -117,6 +118,39 @@ it('calculates the new card installment balance and permits an exact bank overri
         installmentsLeft: 10,
         anchorDay: 9,
         category: 'розстрочка',
+      }),
+    }),
+  );
+});
+it('creates the 550 purchase plus 125 total surcharge with a 56.25 monthly payment', async () => {
+  const { close } = open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'card-installment' } });
+  fireEvent.change(screen.getByLabelText('Назва платежу'), { target: { value: 'Розстрочка 550' } });
+  fireEvent.change(screen.getByLabelText('Сума покупки / отриманого кредиту, ₴'), {
+    target: { value: '550' },
+  });
+  fireEvent.change(screen.getByLabelText('Загальна переплата за весь термін, ₴'), {
+    target: { value: '125' },
+  });
+  fireEvent.change(screen.getByLabelText('Термін розстрочки, місяців'), {
+    target: { value: '12' },
+  });
+  expect(screen.getByText(/56,25.*місяць/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment',
+      payload: expect.objectContaining({
+        amountMinor: 5625,
+        totalMinor: 55000,
+        remainingMinor: 55000,
+        overpaymentTotalMinor: 12500,
+        overpaymentRemainingMinor: 12500,
+        termMonths: 12,
+        installmentsLeft: 12,
+        rateBps: 0,
+        feeMinor: 0,
       }),
     }),
   );

@@ -1,5 +1,6 @@
 import { financeSchema, type Finance, type FinanceCommand } from './finance-schema.ts';
 import { financeCategories } from '../../../core/finance/categories.mjs';
+import { fixedDebtPayment } from '../../../core/finance/payments.mjs';
 import {
   calculateTaxiWeek,
   kyivInstant,
@@ -531,6 +532,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       break;
     }
     case 'payment': {
+      const previous = f.payments.find((s) => s.id === p.paymentId);
       if (
         p.totalMinor != null &&
         p.remainingMinor != null &&
@@ -561,6 +563,16 @@ export function writeFinanceDemo(command: FinanceCommand) {
           feeMinor: num('feeMinor'),
           lender: str('lender'),
           note: str('note'),
+          overpaymentTotalMinor:
+            p.overpaymentTotalMinor == null ? null : num('overpaymentTotalMinor'),
+          overpaymentRemainingMinor:
+            p.overpaymentTotalMinor == null ? null : num('overpaymentRemainingMinor'),
+          overpaymentPaidMinor:
+            previous?.overpaymentPaidMinor ??
+            (p.overpaymentTotalMinor == null
+              ? 0
+              : num('overpaymentTotalMinor') - num('overpaymentRemainingMinor')),
+          termMonths: p.overpaymentTotalMinor == null ? null : num('termMonths'),
         },
       ];
       break;
@@ -579,7 +591,10 @@ export function writeFinanceDemo(command: FinanceCommand) {
         throw new Error('Вкажи погашення тіла кредиту');
       const principal =
         p.principalMinor == null
-          ? Math.max(0, amount - (pay.feeMinor ?? 0))
+          ? p.close === true && pay.overpaymentRemainingMinor != null
+            ? (pay.remainingMinor ?? 0)
+            : (fixedDebtPayment(pay, amount)?.principalMinor ??
+              Math.max(0, amount - (pay.feeMinor ?? 0)))
           : num('principalMinor');
       if (principal > amount || (pay.remainingMinor != null && principal > pay.remainingMinor))
         throw new Error('Перевір частину платежу на погашення тіла');
@@ -591,6 +606,12 @@ export function writeFinanceDemo(command: FinanceCommand) {
           principal !== pay.remainingMinor)
       )
         throw new Error('Для дострокового закриття потрібно погасити весь залишок тіла боргу');
+      if (
+        pay.overpaymentRemainingMinor != null &&
+        p.close !== true &&
+        amount - principal > pay.overpaymentRemainingMinor
+      )
+        throw new Error('Переплата перевищує погоджений залишок');
       const bankTx = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
       if (
         p.transactionId &&
@@ -610,11 +631,17 @@ export function writeFinanceDemo(command: FinanceCommand) {
       transaction.description = pay.name;
       if (pay.remainingMinor != null)
         pay.remainingMinor = Math.max(0, pay.remainingMinor - principal);
-      if (pay.remainingMinor === 0) pay.installmentsLeft = 0;
+      if (pay.overpaymentRemainingMinor != null) {
+        pay.overpaymentRemainingMinor =
+          p.close === true ? 0 : pay.overpaymentRemainingMinor - (amount - principal);
+        pay.overpaymentPaidMinor = (pay.overpaymentPaidMinor ?? 0) + amount - principal;
+      }
+      const fullyPaid = pay.remainingMinor === 0 && (pay.overpaymentRemainingMinor ?? 0) === 0;
+      if (fullyPaid) pay.installmentsLeft = 0;
       else if (pay.installmentsLeft != null)
         pay.installmentsLeft = Math.max(0, pay.installmentsLeft - 1);
       if (
-        pay.remainingMinor === 0 ||
+        fullyPaid ||
         (pay.remainingMinor == null && (pay.recurrence === 'once' || pay.installmentsLeft === 0))
       )
         pay.status = 'done';

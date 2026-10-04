@@ -1,6 +1,7 @@
 // Persistent claims survive outbox retention. Queue and claim commit together;
 // the existing outbox sweeper owns Telegram delivery and retries.
 import { kyivParts } from './planning.mjs';
+import { fixedDebtPayment } from './payments.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
@@ -66,7 +67,7 @@ export async function miniAppPaymentRemindTask(env, nowMs = Date.now()) {
   if (isQuietMinute(settings, time.hour * 60 + time.minute) || !attention.deliver)
     return { skipped: 'quiet' };
   const { results } = await env.DB.prepare(
-    "SELECT id,name,amount_minor,next_date,remind_days FROM finance_payments WHERE status='active' ORDER BY next_date LIMIT 200",
+    "SELECT * FROM finance_payments WHERE status='active' ORDER BY next_date LIMIT 200",
   )
     .bind()
     .all();
@@ -83,10 +84,20 @@ export async function miniAppPaymentRemindTask(env, nowMs = Date.now()) {
       .map((char) => (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? ' ' : char))
       .join('')
       .slice(0, 100);
-    const amount = (Number(row.amount_minor) / 100).toLocaleString('uk-UA', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+    const nextPayment = fixedDebtPayment({
+      amountMinor: Number(row.amount_minor),
+      remainingMinor: row.remaining_minor == null ? null : Number(row.remaining_minor),
+      overpaymentRemainingMinor:
+        row.overpayment_remaining_minor == null ? null : Number(row.overpayment_remaining_minor),
+      installmentsLeft: row.installments_left == null ? null : Number(row.installments_left),
     });
+    const amount = ((nextPayment?.amountMinor ?? Number(row.amount_minor)) / 100).toLocaleString(
+      'uk-UA',
+      {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      },
+    );
     if (
       await queueMiniAppNotice(
         env,

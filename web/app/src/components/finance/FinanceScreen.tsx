@@ -84,7 +84,10 @@ export function FinanceScreen() {
   const today = kyivParts(nowMs).date,
     until = shiftDate(today, days - 1);
   const unplanned = f.payments.some(
-    (p) => p.status === 'active' && p.installmentsLeft === 0 && (p.remainingMinor ?? 0) > 0,
+    (p) =>
+      p.status === 'active' &&
+      p.installmentsLeft === 0 &&
+      (p.remainingMinor ?? 0) + (p.overpaymentRemainingMinor ?? 0) > 0,
   );
   const obligations = sumMoney(
     f.payments

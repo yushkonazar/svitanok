@@ -51,4 +51,46 @@ describe('finance preview uses the real money rules', () => {
       before.transactions.filter((t) => t.kind === 'income').length,
     );
   });
+  it('tracks the exact agreed overpayment through the last installment', () => {
+    const before = readFinanceDemo();
+    writeFinanceDemo({
+      id: 'preview-extra-create',
+      version: before.version,
+      type: 'payment',
+      payload: {
+        name: 'Розстрочка 550',
+        kind: 'card-installment',
+        totalMinor: 55000,
+        remainingMinor: 55000,
+        overpaymentTotalMinor: 12500,
+        overpaymentRemainingMinor: 12500,
+        termMonths: 12,
+        installmentsLeft: 12,
+        amountMinor: 5625,
+        rateBps: 0,
+        feeMinor: 0,
+        nextDate: '2026-10-09',
+        anchorDay: 9,
+        recurrence: 'month',
+        category: 'розстрочка',
+      },
+    });
+    for (let n = 0; n < 12; n++)
+      writeFinanceDemo({
+        id: `preview-extra-pay-${n}`,
+        version: readFinanceDemo().version,
+        type: 'payment-paid',
+        payload: { paymentId: 'preview-extra-create', amountMinor: 5625, accountId: 'cash' },
+      });
+    const after = readFinanceDemo();
+    expect(after.payments.find((p) => p.id === 'preview-extra-create')).toMatchObject({
+      status: 'done',
+      remainingMinor: 0,
+      overpaymentRemainingMinor: 0,
+      overpaymentPaidMinor: 12500,
+    });
+    expect(after.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(
+      before.accounts.find((a) => a.id === 'cash')!.balanceMinor! - 67500,
+    );
+  });
 });

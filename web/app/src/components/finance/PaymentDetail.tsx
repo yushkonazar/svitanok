@@ -4,7 +4,7 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { shiftDate } from '../../../../core/finance/planning.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
-import { isDebtKind } from '../../../../core/finance/payments.mjs';
+import { isDebtKind, fixedDebtPayment } from '../../../../core/finance/payments.mjs';
 export function PaymentDetail({
   payment: p,
   onBack,
@@ -33,7 +33,23 @@ export function PaymentDetail({
       <PageHeading eyebrow="ЗОБОВ’ЯЗАННЯ" title={p.name} accent="крок за кроком." />
       <section className="renewal-card renewal-money-hero">
         <span className="renewal-eyebrow">ЗАЛИШИЛОСЬ СПЛАТИТИ</span>
-        <div className="renewal-big mt-3">{left == null ? '—' : moneyLabel(left)}</div>
+        <div className="renewal-big mt-3">
+          {left == null ? '—' : moneyLabel(left + (p.overpaymentRemainingMinor ?? 0))}
+        </div>
+        {p.overpaymentTotalMinor != null && (
+          <div className="renewal-inset mt-3">
+            <p>Сума покупки: {moneyLabel(total ?? 0)}</p>
+            <p>Переплата за договором: {moneyLabel(p.overpaymentTotalMinor)}</p>
+            <p>Разом за договором: {moneyLabel((total ?? 0) + p.overpaymentTotalMinor)}</p>
+            <p className="renewal-muted mt-2">
+              Залишок тіла {moneyLabel(left ?? 0)} · переплати{' '}
+              {moneyLabel(p.overpaymentRemainingMinor ?? 0)}
+            </p>
+            <p className="renewal-muted">
+              Сплачено переплати: {moneyLabel(p.overpaymentPaidMinor ?? 0)}
+            </p>
+          </div>
+        )}
         <p className="renewal-muted">
           {p.installmentsLeft == null ? 'За твоїм графіком' : `${p.installmentsLeft} платежів`} ·{' '}
           {p.status === 'done' ? 'Завершено' : p.status === 'paused' ? 'Призупинено' : 'Активний'}
@@ -44,7 +60,7 @@ export function PaymentDetail({
               <span style={{ width: `${percentage}%` }} />
             </div>
             <p className="renewal-muted mt-3">
-              Погашено {moneyLabel(total! - left!)} із {moneyLabel(total!)} ·{' '}
+              Погашено тіла {moneyLabel(total! - left!)} із {moneyLabel(total!)} ·{' '}
               {percentage.toFixed(0)}%
             </p>
           </>
@@ -52,15 +68,25 @@ export function PaymentDetail({
         <div className="renewal-metrics">
           <div className="renewal-metric">
             <span className="renewal-muted">Повний платіж</span>
-            <strong>{moneyLabel(p.amountMinor)}</strong>
+            <strong>{moneyLabel(fixedDebtPayment(p)?.amountMinor ?? p.amountMinor)}</strong>
           </div>
           <div className="renewal-metric">
-            <span className="renewal-muted">Річна ставка</span>
-            <strong>{((p.rateBps ?? 0) / 100).toLocaleString('uk-UA')}%</strong>
+            <span className="renewal-muted">
+              {p.overpaymentTotalMinor != null ? 'Початковий термін' : 'Річна ставка'}
+            </span>
+            <strong>
+              {p.overpaymentTotalMinor != null
+                ? `${p.termMonths} міс.`
+                : `${((p.rateBps ?? 0) / 100).toLocaleString('uk-UA')}%`}
+            </strong>
           </div>
           <div className="renewal-metric">
-            <span className="renewal-muted">Комісія в платежі</span>
-            <strong>{moneyLabel(p.feeMinor ?? 0)}</strong>
+            <span className="renewal-muted">
+              {p.overpaymentTotalMinor != null
+                ? 'Переплата наступного платежу'
+                : 'Комісія в платежі'}
+            </span>
+            <strong>{moneyLabel(fixedDebtPayment(p)?.overpaymentMinor ?? p.feeMinor ?? 0)}</strong>
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">Наступна дата</span>
@@ -101,7 +127,7 @@ export function PaymentDetail({
         <section className="renewal-card">
           <h2 className="text-lg font-semibold mb-4">Як зменшуватиметься борг</h2>
           <ObservationChart
-            label="Плановий залишок боргу"
+            label="Плановий залишок тіла боргу"
             unit="₴"
             points={[
               { date: shiftDate(p.nextDate, -1), value: left / 100 },
@@ -116,7 +142,7 @@ export function PaymentDetail({
       )}
       <section className="renewal-card">
         <h2 className="text-lg font-semibold">Календар платежів</h2>
-        {p.installmentsLeft === 0 && (left ?? 0) > 0 && (
+        {p.installmentsLeft === 0 && (left ?? 0) + (p.overpaymentRemainingMinor ?? 0) > 0 && (
           <p className="renewal-inset renewal-muted mt-3">
             Планові платежі закінчились, але є залишок боргу. Уточни графік у договорі та онови
             кількість платежів. Борг зберігається в обліку.
@@ -136,7 +162,12 @@ export function PaymentDetail({
                 month: 'long',
                 year: 'numeric',
               })}
-              {r.remaining != null && <small>Після оплати: {moneyLabel(r.remaining)}</small>}
+              {r.remaining != null && (
+                <small>Після оплати: {moneyLabel(r.remaining + (r.extraRemaining ?? 0))}</small>
+              )}
+              {r.overpayment != null && (
+                <small>З платежу переплата: {moneyLabel(r.overpayment)}</small>
+              )}
             </span>
             <strong>{moneyLabel(r.payment)}</strong>
           </div>

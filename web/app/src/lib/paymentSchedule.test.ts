@@ -18,6 +18,24 @@ const base: Finance['payments'][number] = {
   feeMinor: 50,
 };
 describe('contract payment schedule', () => {
+  it('projects the whole surcharge without changing the 550 UAH principal', () => {
+    const rows = paymentSchedule({
+      ...base,
+      amountMinor: 5625,
+      remainingMinor: 55000,
+      totalMinor: 55000,
+      feeMinor: 0,
+      installmentsLeft: 12,
+      overpaymentTotalMinor: 12500,
+      overpaymentRemainingMinor: 12500,
+      overpaymentPaidMinor: 0,
+      termMonths: 12,
+    });
+    expect(rows).toHaveLength(12);
+    expect(rows.reduce((sum, r) => sum + r.payment, 0)).toBe(67500);
+    expect(rows.reduce((sum, r) => sum + (r.overpayment ?? 0), 0)).toBe(12500);
+    expect(rows.at(-1)).toMatchObject({ remaining: 0, extraRemaining: 0, payment: 5625 });
+  });
   it('preserves the 31st anchor and kopecks, reducing only principal', () => {
     expect(paymentSchedule(base)).toEqual([
       { date: '2027-01-31', payment: 10050, remaining: 15001 },

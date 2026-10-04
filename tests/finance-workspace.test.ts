@@ -15,6 +15,7 @@ function setup() {
     '0028_mini_app_finance.sql',
     '0029_finance_credit_limits.sql',
     '0030_finance_card_installment.sql',
+    '0031_finance_installment_overpayment.sql',
   ]);
   const originalBatch = d1.stub.batch;
   d1.stub.batch = async (statements) => {
@@ -31,6 +32,169 @@ function setup() {
   return { d1, env: workerEnv({ DB: d1.stub }) };
 }
 describe('finance workspace · real migration and SQLite transactions', () => {
+  it('records total overpayment separately and charges exactly 675 UAH across twelve installments', async () => {
+    const { env } = setup();
+    const payload = {
+      name: 'Розстрочка 550',
+      kind: 'card-installment',
+      totalMinor: 55000,
+      remainingMinor: 55000,
+      overpaymentTotalMinor: 12500,
+      overpaymentRemainingMinor: 12500,
+      termMonths: 12,
+      installmentsLeft: 12,
+      amountMinor: 5625,
+      nextDate: '2026-10-09',
+      anchorDay: 9,
+      recurrence: 'month',
+      category: 'розстрочка',
+    };
+    await executeFinanceCommand(
+      env,
+      { id: 'extra-create-550', version: 0, type: 'payment', payload },
+      NOW,
+    );
+    expect((await readFinanceWorkspace(env, NOW)).accounts[0]!.balanceMinor).toBe(0);
+    for (let n = 1; n <= 12; n++)
+      await executeFinanceCommand(
+        env,
+        {
+          id: `extra-payment-${n}`,
+          version: n,
+          type: 'payment-paid',
+          payload: { paymentId: 'extra-create-550', amountMinor: 5625, accountId: 'cash' },
+        },
+        NOW,
+      );
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({
+      status: 'done',
+      remainingMinor: 0,
+      overpaymentRemainingMinor: 0,
+      overpaymentPaidMinor: 12500,
+      overpaymentTotalMinor: 12500,
+      installmentsLeft: 0,
+      totalMinor: 55000,
+    });
+    expect(state.transactions).toHaveLength(12);
+    expect(state.accounts[0]!.balanceMinor).toBe(-67500);
+    expect(state.transactions.reduce((sum, t) => sum - t.amountMinor, 0)).toBe(67500);
+  });
+  it('records actual early payoff fees and stops the remaining planned surcharge without charging it', async () => {
+    const { env } = setup();
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'extra-early-create',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Достроково',
+          kind: 'card-installment',
+          totalMinor: 55000,
+          remainingMinor: 55000,
+          overpaymentTotalMinor: 12500,
+          overpaymentRemainingMinor: 12500,
+          termMonths: 12,
+          installmentsLeft: 12,
+          amountMinor: 5625,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'розстрочка',
+        },
+      },
+      NOW,
+    );
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'extra-early-paid',
+        version: 1,
+        type: 'payment-paid',
+        payload: {
+          paymentId: 'extra-early-create',
+          amountMinor: 58000,
+          principalMinor: 55000,
+          close: true,
+          accountId: 'cash',
+        },
+      },
+      NOW,
+    );
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({
+      status: 'done',
+      remainingMinor: 0,
+      overpaymentRemainingMinor: 0,
+      overpaymentPaidMinor: 3000,
+    });
+    expect(state.accounts[0]!.balanceMinor).toBe(-58000);
+    expect(state.transactions).toHaveLength(1);
+  });
+  it('initializes an already-started installment without inventing past expenses', async () => {
+    const { env } = setup();
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'extra-historical',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Уже сплачую',
+          kind: 'card-installment',
+          totalMinor: 55000,
+          remainingMinor: 27500,
+          overpaymentTotalMinor: 12500,
+          overpaymentRemainingMinor: 6250,
+          termMonths: 12,
+          installmentsLeft: 6,
+          amountMinor: 5625,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'розстрочка',
+        },
+      },
+      NOW,
+    );
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({
+      remainingMinor: 27500,
+      overpaymentRemainingMinor: 6250,
+      overpaymentPaidMinor: 6250,
+      installmentsLeft: 6,
+    });
+    expect(state.accounts[0]!.balanceMinor).toBe(0);
+    expect(state.transactions).toHaveLength(0);
+    await expect(
+      executeFinanceCommand(
+        env,
+        {
+          id: 'extra-invalid-term',
+          version: 1,
+          type: 'payment',
+          payload: {
+            paymentId: 'extra-historical',
+            name: 'Уже сплачую',
+            kind: 'card-installment',
+            totalMinor: 55000,
+            remainingMinor: 27500,
+            overpaymentTotalMinor: 12500,
+            overpaymentRemainingMinor: 6250,
+            termMonths: 3,
+            installmentsLeft: 6,
+            amountMinor: 5625,
+            nextDate: '2026-10-09',
+            anchorDay: 9,
+            recurrence: 'month',
+            category: 'розстрочка',
+          },
+        },
+        NOW,
+      ),
+    ).rejects.toThrow('термін');
+  });
   it('closes a card installment early exactly once and removes all future reminders', async () => {
     const { env, d1 } = setup();
     const payload = {

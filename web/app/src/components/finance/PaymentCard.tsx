@@ -1,6 +1,10 @@
 import type { Finance } from '../../api/finance-schema.ts';
 import { moneyLabel } from '../../lib/financeView.ts';
-import { PAYMENT_KIND_LABELS, isDebtKind } from '../../../../core/finance/payments.mjs';
+import {
+  PAYMENT_KIND_LABELS,
+  isDebtKind,
+  fixedDebtPayment,
+} from '../../../../core/finance/payments.mjs';
 
 export function PaymentCard({
   payment: p,
@@ -30,15 +34,23 @@ export function PaymentCard({
         </button>
         <p className="renewal-payment-meta">{PAYMENT_KIND_LABELS[p.kind]}</p>
       </div>
-      <strong className="renewal-payment-amount">{moneyLabel(p.amountMinor)}</strong>
+      <strong className="renewal-payment-amount">
+        {moneyLabel(fixedDebtPayment(p)?.amountMinor ?? p.amountMinor)}
+      </strong>
       <div className="renewal-payment-summary">
         <p className="renewal-muted">
           {date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' })}
         </p>
         {p.remainingMinor != null && (
           <p className="renewal-muted">
-            Залишок {moneyLabel(p.remainingMinor)}
+            Залишок {moneyLabel(p.remainingMinor + (p.overpaymentRemainingMinor ?? 0))}
             {p.installmentsLeft != null ? ` · ${p.installmentsLeft} платежів` : ''}
+          </p>
+        )}
+        {p.overpaymentRemainingMinor != null && (
+          <p className="renewal-muted">
+            Тіло {moneyLabel(p.remainingMinor ?? 0)} · переплата{' '}
+            {moneyLabel(p.overpaymentRemainingMinor)}
           </p>
         )}
       </div>

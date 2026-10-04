@@ -91,6 +91,10 @@ export const financePaymentSchema = z.object({
   feeMinor: money.optional(),
   lender: z.string().optional(),
   note: z.string().optional(),
+  overpaymentTotalMinor: money.nullable().optional(),
+  overpaymentRemainingMinor: money.nullable().optional(),
+  overpaymentPaidMinor: money.optional(),
+  termMonths: z.number().int().nullable().optional(),
 });
 export const financeSchema = z.object({
   ok: z.literal(true),

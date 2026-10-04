@@ -1,9 +1,47 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { estimateRemaining } from '../web/core/finance/payments.mjs';
+import {
+  estimateRemaining,
+  installmentQuote,
+  fixedDebtPayment,
+} from '../web/core/finance/payments.mjs';
 import { d1FromSqlite } from './helpers/d1.js';
 
 describe('payment balances and schema expansion', () => {
+  it('keeps a 550 plus 125 installment exact across all twelve monthly payments', () => {
+    const quote = installmentQuote(55000, 12500, 12)!;
+    expect(quote).toEqual({ totalMinor: 67500, amountMinor: 5625, lastAmountMinor: 5625 });
+    const state = {
+      amountMinor: quote.amountMinor,
+      remainingMinor: 55000,
+      overpaymentRemainingMinor: 12500,
+      installmentsLeft: 12,
+    };
+    let principal = 0,
+      extra = 0,
+      total = 0;
+    while (state.installmentsLeft > 0) {
+      const pay = fixedDebtPayment(state)!;
+      expect(pay.amountMinor).toBe(5625);
+      state.remainingMinor -= pay.principalMinor;
+      state.overpaymentRemainingMinor -= pay.overpaymentMinor;
+      state.installmentsLeft--;
+      principal += pay.principalMinor;
+      extra += pay.overpaymentMinor;
+      total += pay.amountMinor;
+    }
+    expect({ principal, extra, total }).toEqual({ principal: 55000, extra: 12500, total: 67500 });
+    expect(state.remainingMinor + state.overpaymentRemainingMinor).toBe(0);
+    expect(installmentQuote(55000, 12501, 12)!.lastAmountMinor).toBe(5626);
+    expect(installmentQuote(55000, -1, 12)).toBeNull();
+    expect(installmentQuote(55000, 12500, 12.5)).toBeNull();
+    expect(
+      fixedDebtPayment(
+        { ...state, remainingMinor: 55000, overpaymentRemainingMinor: 12500 },
+        67501,
+      ),
+    ).toBeNull();
+  });
   it('computes kopecks without including fees as principal or inventing interest', () => {
     expect(estimateRemaining(5000, 12)).toBe(60000);
     expect(estimateRemaining(9070, 12)).toBe(108840);

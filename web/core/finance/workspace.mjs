@@ -1,4 +1,5 @@
 import { financeCategories } from './categories.mjs';
+import { fixedDebtPayment, isDebtKind } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
 import {
   minor,
@@ -322,6 +323,12 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       feeMinor: Number(r.fee_minor ?? 0),
       lender: String(r.lender ?? ''),
       note: String(r.note ?? ''),
+      overpaymentTotalMinor:
+        r.overpayment_total_minor == null ? null : Number(r.overpayment_total_minor),
+      overpaymentRemainingMinor:
+        r.overpayment_remaining_minor == null ? null : Number(r.overpayment_remaining_minor),
+      overpaymentPaidMinor: Number(r.overpayment_paid_minor ?? 0),
+      termMonths: r.term_months == null ? null : Number(r.term_months),
     })),
     detectedSubscriptions: rows(10).map((r) => ({
       id: String(r.id),
@@ -960,6 +967,57 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
             ? text(payload.note, 500)
             : '',
     };
+    const extraTotal =
+      payload.overpaymentTotalMinor === undefined
+        ? (previous?.overpaymentTotalMinor ?? null)
+        : payload.overpaymentTotalMinor == null
+          ? null
+          : minor(payload.overpaymentTotalMinor);
+    const extraLeft =
+      extraTotal == null
+        ? null
+        : minor(
+            payload.overpaymentRemainingMinor ?? previous?.overpaymentRemainingMinor ?? extraTotal,
+          );
+    if (payload.overpaymentTotalMinor !== undefined || previous?.overpaymentTotalMinor != null) {
+      const term = extraTotal == null ? null : (payload.termMonths ?? previous?.termMonths);
+      if (
+        extraTotal != null &&
+        (!isDebtKind(kind) ||
+          values.remaining_minor == null ||
+          values.total_minor == null ||
+          values.total_minor <= 0 ||
+          !Number.isInteger(term) ||
+          term < 1 ||
+          term > 1200 ||
+          left == null ||
+          left > term ||
+          (extraLeft ?? 0) > extraTotal ||
+          values.rate_bps !== 0 ||
+          values.fee_minor !== 0 ||
+          values.recurrence !== 'month')
+      )
+        throw new FinanceValidation(
+          'Перевір суму покупки, переплату та місячний термін розстрочки',
+        );
+      if (
+        extraTotal != null &&
+        (!Number.isSafeInteger((values.remaining_minor ?? 0) + (extraLeft ?? 0)) ||
+          !Number.isSafeInteger((values.total_minor ?? 0) + extraTotal))
+      )
+        throw new FinanceValidation('Некоректна загальна сума розстрочки');
+      Object.assign(values, {
+        overpayment_total_minor: extraTotal,
+        overpayment_remaining_minor: extraLeft,
+        overpayment_paid_minor:
+          previous?.overpaymentTotalMinor != null
+            ? previous.overpaymentPaidMinor
+            : extraTotal == null
+              ? 0
+              : extraTotal - (extraLeft ?? 0),
+        term_months: term,
+      });
+    }
     if (!Number.isInteger(values.rate_bps) || values.rate_bps < 0 || values.rate_bps > 30000)
       throw new FinanceValidation('Некоректна річна ставка');
     if (
@@ -972,7 +1030,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (values.fee_minor >= values.amount_minor)
       throw new FinanceValidation('Комісія має бути меншою за повний платіж');
     if (['loan', 'installment', 'card-installment'].includes(kind)) {
-      if (values.remaining_minor === 0) {
+      if (values.remaining_minor === 0 && (extraLeft ?? 0) === 0) {
         values.status = 'done';
         values.installments_left = 0;
       } else if (values.status === 'done')
@@ -1015,9 +1073,12 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       );
     if (payment.remainingMinor != null && payment.rateBps > 0 && payload.principalMinor == null)
       throw new FinanceValidation('Вкажи частину платежу, яка погашає тіло кредиту за договором');
+    const fixed = fixedDebtPayment(payment, amount);
     const principal =
       payload.principalMinor == null
-        ? Math.max(0, amount - payment.feeMinor)
+        ? payload.close === true && payment.overpaymentRemainingMinor != null
+          ? (payment.remainingMinor ?? 0)
+          : (fixed?.principalMinor ?? Math.max(0, amount - payment.feeMinor))
         : minor(payload.principalMinor);
     if (
       principal > amount ||
@@ -1038,14 +1099,28 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       throw new FinanceValidation('Некоректне підтвердження закриття');
     const remaining =
       payment.remainingMinor == null ? null : Math.max(0, payment.remainingMinor - principal);
-    const count =
-      remaining === 0
-        ? 0
-        : payment.installmentsLeft == null
-          ? null
-          : Math.max(0, payment.installmentsLeft - 1);
-    const done =
-      remaining === 0 || (remaining == null && (payment.recurrence === 'once' || count === 0));
+    const extraPaid = amount - principal;
+    if (
+      payment.overpaymentRemainingMinor != null &&
+      payload.close !== true &&
+      extraPaid > payment.overpaymentRemainingMinor
+    )
+      throw new FinanceValidation(
+        'Переплата перевищує погоджений залишок — звір розстрочку з банком',
+      );
+    const extraRemaining =
+      payment.overpaymentRemainingMinor == null
+        ? null
+        : payload.close === true
+          ? 0
+          : payment.overpaymentRemainingMinor - extraPaid;
+    const fullyPaid = remaining === 0 && (extraRemaining ?? 0) === 0;
+    const count = fullyPaid
+      ? 0
+      : payment.installmentsLeft == null
+        ? null
+        : Math.max(0, payment.installmentsLeft - 1);
+    const done = fullyPaid || (remaining == null && (payment.recurrence === 'once' || count === 0));
     const next =
       done || payment.recurrence === 'once'
         ? payment.nextDate
@@ -1063,6 +1138,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
             financeKind: 'expense',
             financeReference: payment.id,
             financePrincipalMinor: principal,
+            financeOverpaymentMinor: extraPaid,
           }),
           existingTx.id,
         ],
@@ -1080,7 +1156,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         payment.id,
       );
       update('UPDATE transactions SET raw_json = json_patch(raw_json, ?) WHERE id = ?', [
-        JSON.stringify({ financePrincipalMinor: principal }),
+        JSON.stringify({ financePrincipalMinor: principal, financeOverpaymentMinor: extraPaid }),
         `payment:${id}`,
       ]);
     }
@@ -1088,6 +1164,11 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       'UPDATE finance_payments SET remaining_minor = ?, installments_left = ?, next_date = ?, status = ? WHERE id = ?',
       [remaining, count, next, done ? 'done' : 'active', payment.id],
     );
+    if (extraRemaining != null)
+      update(
+        'UPDATE finance_payments SET overpayment_remaining_minor = ?, overpayment_paid_minor = ? WHERE id = ?',
+        [extraRemaining, (payment.overpaymentPaidMinor ?? 0) + extraPaid, payment.id],
+      );
   } else if (type === 'classify') {
     const tx = state.transactions.find((t) => t.id === payload.transactionId);
     if (!tx) throw new FinanceValidation('Операція не знайдена у доступному періоді');
