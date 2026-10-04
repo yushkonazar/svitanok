@@ -1,3 +1,5 @@
+import { loadSettings } from '../../kv-store.mjs';
+import { checkinClock } from '../checkin/catalog.mjs';
 // record (07-schema §4): один інструмент - чотири види локальних записів у
 // чинні KV-сховища: чек-ін, голос за новину, стадія вакансії, роадмеп.
 // Рівень T0 (власні дані, не назовні); у tainted policy підіймає до T1.
@@ -49,7 +51,10 @@ export async function runRecord(env, args, nowMs) {
 /** Чек-ін: слот рахує КОД за київською годиною - модель його не задає.
  *  @param {Env} env @param {Record<string, any>} payload @param {Date} now */
 async function recordCheckin(env, payload, now) {
-  const slot = checkinSlot(kyivHour(now));
+  const preferences = (await loadSettings(env)).checkin;
+  const slot = preferences
+    ? checkinClock(kyivHour(now) * 60 + now.getUTCMinutes(), preferences).slot
+    : checkinSlot(kyivHour(now));
   if (!slot) throw new Error('зараз тиха зона (02:00-08:00) - чек-ін не пишемо');
   // ⚠️ `type` ОСТАННІЙ і поверх payload (security-ревʼю PR-6): при
   // `{ type: 'checkin', ...payload }` ключ `type` усередині payload перекривав
@@ -62,6 +67,15 @@ async function recordCheckin(env, payload, now) {
     // модель мусить сказати власнику правду, а не «записав».
     return { result: { kind: 'checkin', slot, written: false, reason: 'slot-locked' } };
   }
+  if (result?.expired || result?.incomplete)
+    return {
+      result: {
+        kind: 'checkin',
+        slot,
+        written: false,
+        reason: result.expired ? 'slot-expired' : 'incomplete-core',
+      },
+    };
   return { result: { kind: 'checkin', slot, written: true } };
 }
 

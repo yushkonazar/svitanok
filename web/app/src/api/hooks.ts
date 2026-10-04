@@ -584,6 +584,9 @@ export function useSaveSettings() {
           ? {
               ...old,
               settings: {
+                ...((patch.checkin ?? old.settings.checkin)
+                  ? { checkin: patch.checkin ?? old.settings.checkin }
+                  : {}),
                 quiet: { ...old.settings.quiet, ...(patch.quiet ?? {}) },
                 modules: { ...old.settings.modules, ...(patch.modules ?? {}) },
                 // mutedTopics — ПОВНА заміна, не мердж: патч несе весь новий
@@ -606,6 +609,7 @@ export function useSaveSettings() {
       // зараз показав би проміжний стан сервера замість останнього тапу.
       if (inTelegram() && qc.isMutating({ mutationKey: SETTINGS_SAVE_KEY }) === 1) {
         qc.invalidateQueries({ queryKey: ['settings'] });
+        qc.invalidateQueries({ queryKey: ['stats'] });
       }
     },
   });

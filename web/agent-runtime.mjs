@@ -88,7 +88,8 @@ import { aggregateStats, recordEvent, checkinSlot } from './stats-core.mjs';
 import { totalProgress, toggleProgress, progressKey } from './roadmap-core.mjs';
 import { applyUrlVote } from './prefs-core.mjs';
 import { json, readJsonBody } from './http-core.mjs';
-import { kyivDateKey, kyivHour } from './kyiv-time.mjs';
+import { kyivDateKey, kyivHour, kyivMinuteOfDay } from './kyiv-time.mjs';
+import { checkinClock } from './core/checkin/catalog.mjs';
 import {
   loadState,
   loadStats,
@@ -181,12 +182,15 @@ export async function runRecordAction(
   const sendText = sendTo(env, parsed);
 
   if (action.kind === 'checkin') {
-    const slot = checkinSlot(kyivHour());
+    const prefs = (await loadSettings(env)).checkin;
+    const slot = prefs ? checkinClock(kyivMinuteOfDay(), prefs).slot : checkinSlot(kyivHour());
     if (!slot) return sendText('🌙 Зараз тиха зона (02:00–08:00) — чек-ін не пишемо.');
     const result = await applyEvent(env, { type: 'checkin', ...action.checkin });
     if (result?.locked) {
       return sendText(`🔒 ${RECORD_CHECKIN_SLOT_LABEL[slot]} уже підтверджено — змінити не можна.`);
     }
+    if (result?.expired || result?.incomplete)
+      return sendText('Чек-ін не підтверджено: вікно змінилось або ядро ще не завершене.');
     return sendText(`✅ Записав чек-ін (${RECORD_CHECKIN_SLOT_LABEL[slot]}).`);
   }
 

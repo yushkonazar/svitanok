@@ -150,8 +150,8 @@ describe('контракт /api/stats — справжній вихід aggregat
     expect(r.success).toBe(true);
     if (!r.success) return;
     const raw = r.data.checkinRaw;
-    expect(raw.days).toBe(90);
-    expect(raw.from).toBe(back(89));
+    expect(raw.days).toBe(180);
+    expect(raw.from).toBe(back(179));
     expect(raw.to).toBe(TODAY);
     expect(Object.keys(raw.records).length).toBe(40);
     // Саме те, чого немає в checkinSeries — теги, з яких будуються причини.

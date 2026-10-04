@@ -245,7 +245,82 @@ const multi = <T extends z.ZodType>(s: T) =>
     .transform((v) => (Array.isArray(v) ? v : [v]))
     .optional()
     .catch(undefined);
+const checkinV2Fields = {
+  questionVersion: z.literal(2).optional(),
+  answeredAtV2: z.string().optional(),
+  timezoneV2: z.literal('Europe/Kyiv').optional(),
+  answerTimesV2: z.record(z.string(), z.string()).optional(),
+  answerPeriodsV2: z.record(z.string(), z.string()).optional(),
+  activityLabelsV2: z.record(z.string(), z.string()).optional(),
+  activityGroupsV2: z.record(z.string(), z.string()).optional(),
+  habitLabelsV2: z.record(z.string(), z.string()).optional(),
+  habitDueV2: z.array(z.string()).optional(),
+  sleepMinutesV2: num.optional().catch(undefined),
+  sleepQualityV2: num.optional().catch(undefined),
+  tensionV2: num.optional().catch(undefined),
+  sleepinessV2: num.optional().catch(undefined),
+  physicalV2: num.optional().catch(undefined),
+  discomfortStrengthV2: num.optional().catch(undefined),
+  expectedPleasantV2: num.optional().catch(undefined),
+  expectedChoiceV2: num.optional().catch(undefined),
+  expectedLoadV2: num.optional().catch(undefined),
+  timePressureV2: num.optional().catch(undefined),
+  satisfactionV2: num.optional().catch(undefined),
+  movementMinutesV2: num.optional().catch(undefined),
+  learningMinutesV2: num.optional().catch(undefined),
+  effortV2: num.optional().catch(undefined),
+  resultV2: num.optional().catch(undefined),
+  repeatingThoughtsV2: num.optional().catch(undefined),
+  timeChoiceV2: num.optional().catch(undefined),
+  napMinutesV2: num.optional().catch(undefined),
+  leisureScreenMinutesV2: num.optional().catch(undefined),
+  caffeineCountV2: num.optional().catch(undefined),
+  sleepModeV2: z.string().max(300).optional().catch(undefined),
+  sleepPrecisionV2: z.string().max(300).optional().catch(undefined),
+  priorityV2: z.string().max(300).optional().catch(undefined),
+  priorityStepV2: z.string().max(300).optional().catch(undefined),
+  extraPriorityV2: z.string().max(300).optional().catch(undefined),
+  discomfortV2: z.string().max(300).optional().catch(undefined),
+  discomfortAreaV2: z.string().max(300).optional().catch(undefined),
+  sleepLatencyV2: z.string().max(300).optional().catch(undefined),
+  sleepAttemptV2: z.string().max(300).optional().catch(undefined),
+  sleepWakeV2: z.string().max(300).optional().catch(undefined),
+  lateSleepReasonV2: z.string().max(300).optional().catch(undefined),
+  priorityPaceV2: z.string().max(300).optional().catch(undefined),
+  priorityStageV2: z.string().max(300).optional().catch(undefined),
+  currentActivityV2: z.string().max(300).optional().catch(undefined),
+  interruptionsV2: z.string().max(300).optional().catch(undefined),
+  contactV2: z.string().max(300).optional().catch(undefined),
+  supportV2: z.string().max(300).optional().catch(undefined),
+  priorityOutcomeV2: z.string().max(300).optional().catch(undefined),
+  movementRangeV2: z.string().max(300).optional().catch(undefined),
+  learningPrecisionV2: z.string().max(300).optional().catch(undefined),
+  effortContextV2: z.string().max(300).optional().catch(undefined),
+  detachmentV2: z.string().max(300).optional().catch(undefined),
+  recoveryV2: z.string().max(300).optional().catch(undefined),
+  outdoorRangeV2: z.string().max(300).optional().catch(undefined),
+  workoutV2: z.string().max(300).optional().catch(undefined),
+  extraNapV2: z.string().max(300).optional().catch(undefined),
+  napStartV2: z.string().max(300).optional().catch(undefined),
+  leisureScreenIntentV2: z.string().max(300).optional().catch(undefined),
+  lastCaffeineV2: z.string().max(300).optional().catch(undefined),
+  momentCategoryV2: z.string().max(300).optional().catch(undefined),
+  momentNoteV2: z.string().max(300).optional().catch(undefined),
+  weeklyHelpV2: z.string().max(300).optional().catch(undefined),
+  weeklyChangeV2: z.string().max(300).optional().catch(undefined),
+  weeklyStepV2: z.string().max(300).optional().catch(undefined),
+  awakeningsV2: z.union([num, z.string()]).optional().catch(undefined),
+  comprehensionV2: z.union([num, z.string()]).optional().catch(undefined),
+  focusV2: z.union([num, z.string()]).optional().catch(undefined),
+  activitiesV2: z.array(z.string()).max(20).optional().catch(undefined),
+  sleepReasonsV2: z.array(z.string()).max(20).optional().catch(undefined),
+  blockersV2: z.array(z.string()).max(20).optional().catch(undefined),
+  helpersV2: z.array(z.string()).max(20).optional().catch(undefined),
+  habitsV2: z.array(z.string()).max(20).optional().catch(undefined),
+};
+
 export const checkinMorningSchema = z.object({
+  ...checkinV2Fields,
   /** Режим ночі. Гейтить sleepH/sleepQ у чек-іні; значення для моделі виводить
    *  flattenCheckinDay, тож пропуск двох питань НЕ обнуляє RECOVERY. */
   sleepKind: lenient(z.enum(['none', 'naps', 'slept'])),
@@ -293,6 +368,7 @@ export const checkinMorningSchema = z.object({
   confirmed: z.boolean().optional(),
 });
 export const checkinAfternoonSchema = z.object({
+  ...checkinV2Fields,
   pace: lenient(z.enum(['on', 'off', 'behind', 'other', 'overload', 'better'])),
   energy: int.optional(),
   mood: int.optional(),
@@ -305,6 +381,7 @@ export const checkinAfternoonSchema = z.object({
   confirmed: z.boolean().optional(),
 });
 export const checkinEveningSchema = z.object({
+  ...checkinV2Fields,
   dayScore: int.optional(),
   kept: lenient(z.enum(['yes', 'partly', 'no', 'changed'])),
   applied: int.optional(),
@@ -830,6 +907,9 @@ export const statsSchema = z.object({
   checkinNextIn: int.optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
+  checkinReflections: z
+    .record(z.string(), z.object({ help: z.string(), change: z.string(), step: z.string() }))
+    .optional(),
   // Глибини агрегації, оголошені сервером (STATS_WINDOWS у stats-core.mjs).
   // Підписи «за N діб / N тижнів» малюються ЗВІДСИ, а не з памʼяті клієнта:
   // доти «8 ТИЖНІВ» стояло зашитим рядком у RhythmBlock окремо від серверної
@@ -942,6 +1022,15 @@ export type MasteryTopic = z.infer<typeof masteryTopicSchema>;
  * поле, якого тоді ще не існувало.
  */
 export const archiveMonthSchema = z.object({
+  observationsV2: z
+    .object({
+      days: int,
+      confirmedSlots: int,
+      metrics: z.record(z.string(), z.object({ sum: num, n: int, average: num.nullable() })),
+      priorityOutcomes: z.record(z.string(), int),
+      activities: z.record(z.string(), int),
+    })
+    .optional(),
   month: z.string(),
   checkinDays: int.default(0),
   sleepAvg: num.nullable().default(null),

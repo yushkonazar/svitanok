@@ -30,15 +30,14 @@ import {
   kyivMinuteOfDay,
   bedtimeBucketForHour,
 } from './kyiv-time.mjs';
-import {
-  recordEvent,
-  aggregateStats,
-  pageSaved,
-  checkinSlot,
-  checkinSlotEndsInMin,
-  checkinDateKey,
-} from './stats-core.mjs';
+import { recordEvent, aggregateStats, pageSaved, checkinDateKey } from './stats-core.mjs';
 import { normalizeSettings, connectorStatus } from './settings-core.mjs';
+import {
+  checkinClock,
+  coreCompleteV2,
+  cleanCheckinV2,
+  clearHiddenV2,
+} from './core/checkin/catalog.mjs';
 import { totalProgress, roadmapWeekly } from './roadmap-core.mjs';
 import { masteryHints, themeOfWeek, mockMaterials, masteryTopics } from './mastery-core.mjs';
 
@@ -143,7 +142,7 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   }
 
   const nowMin = body.type === 'open' ? kyivMinAfter8() : null;
-  // Сон (wokeAt, case 'open') і тап «Ліг спати» (startedAt, case 'sleepStart')
+  // Відкриття після позначки сну й тап «Ліг спати» (startedAt, case 'sleepStart')
   // обидва потребують ТОЧНОГО часу — recordEvent чистий (без Date.now() всередині),
   // тож рахуємо тут і передаємо явним аргументом, як і nowMin.
   const nowIso = new Date().toISOString();
@@ -155,11 +154,17 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     // надіслати опівночі, перевівши годинник на телефоні. Клієнтський body.slot
     // ігноруємо свідомо — він тут лише підказка для UI.
     const h = kyivHour();
-    const slot = checkinSlot(h);
+    const prefs = (await loadSettings(env)).checkin;
+    const clock = checkinClock(kyivMinuteOfDay(), prefs);
+    const slot = clock.slot;
     // Тиха зона (02:00–07:59) — жоден блок не відкритий, писати нічого.
     if (!slot) return body.dateKey ? { locked: false, expired: true } : undefined;
-    ev = { ...body, slot };
-    dateKey = checkinDateKey(dateKey, h);
+    ev = { ...body, slot, checkinPreferencesV2: prefs };
+    dateKey = prefs
+      ? clock.previousDay
+        ? checkinDateKey(dateKey, 0)
+        : dateKey
+      : checkinDateKey(dateKey, h);
     if (body.dateKey && (body.dateKey !== dateKey || body.slot !== slot))
       return { locked: false, expired: true };
   } else if (body.type === 'sleepStart') {
@@ -181,6 +186,17 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
   if (checkinLocked) return { locked: true, expired: false }; // нічого не зміниться — не палимо KV-запис даремно
+  if (
+    body.type === 'checkin' &&
+    body.confirmed &&
+    (body.questionVersion === 2 || loaded.checkins?.[dateKey]?.[ev.slot]?.questionVersion === 2)
+  ) {
+    const cleaned = cleanCheckinV2(ev.slot, ev);
+    const candidate = { ...loaded.checkins?.[dateKey]?.[ev.slot], ...cleaned.set };
+    for (const key of cleaned.clear) delete candidate[key];
+    if (!coreCompleteV2(ev.slot, clearHiddenV2(ev.slot, candidate)))
+      return { locked: false, expired: false, incomplete: true };
+  }
   await updateStats(env, (curStore) => recordEvent(curStore, ev, dateKey, nowMin, nowIso));
   if (body.type === 'checkin') return { locked: false, expired: false };
 }
@@ -205,6 +221,11 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   const result = await applyEvent(env, body);
   if (result?.expired)
     return json({ ok: false, error: 'Вікно чек-іну змінилося. Онови екран.' }, 409);
+  if (result?.incomplete)
+    return json(
+      { ok: false, error: 'Дай відповіді на основні питання перед підтвердженням.' },
+      422,
+    );
   return json({ ok: true, locked: result?.locked ?? false });
 }
 
@@ -347,20 +368,16 @@ export async function handleStats(/** @type {Request} */ request, /** @type {Env
   // інакше «ранковий» блок відкривався б опівночі). Не в aggregateStats, бо той
   // чистий і години не знає; тут же — щоб клієнт не мав власної копії меж.
   const h = kyivHour();
-  stats.checkinSlot = checkinSlot(h);
-  // Скільки блоку лишилось жити. Клієнт тикає від цього якоря локально, а коли
-  // той добігає нуля — перепитує сервер замість того, щоб вирішувати самому.
-  stats.checkinSlotEndsIn = checkinSlotEndsInMin(kyivMinuteOfDay());
-  stats.checkinDate = checkinDateKey(kyivDateKey(), h);
-  const minute = kyivMinuteOfDay();
-  stats.checkinNextIn =
-    minute < 480
-      ? 480 - minute
-      : minute < 840
-        ? 840 - minute
-        : minute < 1200
-          ? 1200 - minute
-          : 1440 + 480 - minute;
+  const prefs = (await loadSettings(env)).checkin;
+  const clock = checkinClock(kyivMinuteOfDay(), prefs);
+  stats.checkinSlot = clock.slot;
+  stats.checkinSlotEndsIn = clock.endsIn;
+  stats.checkinNextIn = clock.nextIn;
+  stats.checkinDate = prefs
+    ? clock.previousDay
+      ? checkinDateKey(kyivDateKey(), 0)
+      : kyivDateKey()
+    : checkinDateKey(kyivDateKey(), h);
   // ⚠️ checkinToday мусить читатись за КЛЮЧЕМ ЧЕК-ІНУ (як пише applyEvent через
   // checkinDateKey), а не за сирим календарним днем. aggregateStats не знає
   // години, тож дає checkins[kyivDateKey()]; але о 00:00–01:59 вечірній блок
@@ -369,6 +386,6 @@ export async function handleStats(/** @type {Request} */ request, /** @type {Env
   // календарний день -> «ЗАПОВНЕНО 0 З 3», ранок/післяобід «пропущено», хоча
   // всі три заповнені (Статистика показує правильно — вона сканує вікно днів).
   // Удень (h>=6) ключі збігаються, тож поведінка не міняється.
-  stats.checkinToday = store.checkins?.[checkinDateKey(kyivDateKey(), h)] ?? null;
+  stats.checkinToday = store.checkins?.[stats.checkinDate] ?? null;
   return json(stats);
 }

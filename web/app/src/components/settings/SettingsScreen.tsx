@@ -1,3 +1,4 @@
+import { CheckinPreferences } from '../checkin/CheckinPreferences.tsx';
 import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { usePresentation, savePresentation } from '../../lib/presentation.ts';
@@ -203,6 +204,7 @@ export function SettingsScreen() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeading eyebrow="ТВІЙ СВІТАНОК" title="Підлаштувати" accent="під себе." />
+      <CheckinPreferences />
       <section className="renewal-card">
         <h2 className="text-lg font-semibold mb-4">Вигляд і відчуття</h2>
         {(

@@ -7,6 +7,14 @@
 // специфікацією-оракулом, і держати JS-порт в одному місці з однією назвою
 // файлу простіше звіряти з golden-векторами (tests/checkin-model.test.ts).
 import {
+  cleanCheckinV2,
+  clearHiddenV2,
+  coreCompleteV2,
+  normalizeCheckinPreferences,
+  ACTIVITIES,
+  CHECKIN_CARDS,
+} from './core/checkin/catalog.mjs';
+import {
   analyzeCheckinModel,
   flattenCheckinDay,
   cohensD,
@@ -400,9 +408,11 @@ export function asList(v) {
  * `confirmed` НЕ рахується сам по собі: підтвердити порожній блок неможливо
  * (recordEvent це відсікає), тож ключ ніколи не буває там наодинці.
  */
-export function isCheckinSlotFilled(/** @type {unknown} */ rec, /** @type {string} */ slot) {
-  const v = /** @type {KvBlob|null|undefined} */ (rec)?.[slot];
-  return !!v && typeof v === 'object' && Object.keys(v).length > 0;
+export function isCheckinSlotFilled(
+  /** @type {KvBlob|null|undefined} */ day,
+  /** @type {string} */ slot,
+) {
+  return day?.[slot]?.confirmed === true;
 }
 
 /** Кінець вечірнього блоку — 02:00 наступної доби (та сама межа, що `h < 2`). */
@@ -588,6 +598,7 @@ export function staleSleepNudges(
  * обʼєкт), `clear` — ключі, які треба ВИДАЛИТИ з існуючого блоку.
  */
 function cleanCheckin(/** @type {string} */ slot, /** @type {KvBlob} */ ev) {
+  if (ev.questionVersion === 2) return cleanCheckinV2(slot, ev);
   // Приведення CHECKIN_FIELDS до блоба: точна форма реєстру потрібна тестам
   // (enum ⊆ levels), а тут по ньому ходять довільним рядком-слотом.
   const spec = /** @type {KvBlob} */ (CHECKIN_FIELDS)[slot];
@@ -710,6 +721,7 @@ export function emptyStore() {
     learningAttempts: {},
     reliability: { onTime: 0, total: 0, deadman: 0, days: {} },
     checkins: {},
+    checkinReflections: {},
     sleepLog: {},
     checkinNudgeDates: {},
     dismissedUrls: [],
@@ -759,6 +771,8 @@ export function normalize(rawStore) {
         : {}),
     },
     checkins: s.checkins && typeof s.checkins === 'object' ? s.checkins : e.checkins,
+    checkinReflections:
+      s.checkinReflections && typeof s.checkinReflections === 'object' ? s.checkinReflections : {},
     sleepLog: s.sleepLog && typeof s.sleepLog === 'object' ? s.sleepLog : e.sleepLog,
     checkinNudgeDates:
       s.checkinNudgeDates && typeof s.checkinNudgeDates === 'object'
@@ -966,65 +980,18 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       const firstOpenToday = !(day.opens > 0);
       if (firstOpenToday && typeof nowMin === 'number' && nowMin >= 0)
         capPush(s.opensMin, Math.round(nowMin));
-      // Сон: перше відкриття ПІСЛЯ реального сну — безкоштовний проксі
-      // «прокинувся». Закриває БУДЬ-ЯКУ ще не закриту МИНУЛУ ніч (ключ !=
-      // поточна дата) — не лише вчорашню: якщо застосунок не відкривали
-      // кілька днів, перше ж відкриття закриває найдавнішу відкриту ніч теж.
-      //
-      // ⚠️ Регресія (фідбек власника): раніше цей блок гейтився firstOpenToday
-      // — тим самим прапорцем, що й opensMin вище. Пізній передсонний тап
-      // (Kyiv-доба вже перевалила північ, до тапу «Ліг спати») з'їдав «перше
-      // відкриття дня» ще ДО сну; РЕАЛЬНЕ ранкове відкриття того ж
-      // календарного дня більше не було «першим», і автозаповнення чек-іну
-      // мовчки не спрацьовувало. Замість дня — поріг мінімального часу від
-      // старту сну: підстраховує від миттєвого повторного відкриття одразу
-      // після тапу «Ліг спати» (той самий edge case, що раніше прикривав
-      // firstOpenToday), але не залежить від календарної доби.
-      const MIN_HOURS_BEFORE_WAKE = 1;
+      // Opening is not waking. Keep only a proposed bedtime for explicit confirmation.
       if (typeof nowIso === 'string' && nowIso) {
-        let touchedCheckins = false;
-        for (const [k, night] of Object.entries(s.sleepLog)) {
-          const hours = night?.startedAt
-            ? (Date.parse(nowIso) - Date.parse(night.startedAt)) / 3_600_000
-            : NaN;
+        for (const night of Object.values(s.sleepLog)) {
           if (
             night?.startedAt &&
             !night.wokeAt &&
-            k !== dateKey &&
-            hours >= MIN_HOURS_BEFORE_WAKE
+            !night.firstOpenedAfterAt &&
+            Date.parse(nowIso) - Date.parse(night.startedAt) >= 3_600_000
           ) {
-            night.wokeAt = nowIso;
-            // Авто-заповнення ранкового чек-іну точними даними (власник,
-            // Блок «Сон»: без цього ранкові sleepH/bedtime лишались
-            // окремим, розбіжним джерелом від точних тапу+пробудження).
-            // ЛИШЕ якщо ще НЕ відповіли самі — undefined, не == null: явне
-            // очищення (null) теж НЕ перезаписуємо, той самий контракт, що
-            // cleanCheckin.
-            const morningDay = addDays(k, 1);
-            if (!s.checkins[morningDay] || typeof s.checkins[morningDay] !== 'object') {
-              s.checkins[morningDay] = {};
-            }
-            const morning = { ...(s.checkins[morningDay].morning ?? {}) };
-            let filled = false;
-            // Той самий діапазон, що CHECKIN_FIELDS.morning.sleepH (num [0,14]) —
-            // поза ним тиша зона/кількаденна перерва дала б абсурдне число.
-            if (morning.sleepH === undefined && hours > 0 && hours <= 14) {
-              // Бакет UI, а не точне число — інакше варіант не підсвітиться
-              // (див. snapSleepHours: сувора рівність у CheckinScreen).
-              morning.sleepH = snapSleepHours(hours);
-              filled = true;
-            }
-            if (morning.bedtime === undefined && night.bedtimeBucket) {
-              morning.bedtime = night.bedtimeBucket;
-              filled = true;
-            }
-            if (filled) {
-              s.checkins[morningDay].morning = morning;
-              touchedCheckins = true;
-            }
+            night.firstOpenedAfterAt = nowIso;
           }
         }
-        if (touchedCheckins) capCheckins(s);
       }
       bump(day, 'opens');
       break;
@@ -1235,6 +1202,19 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       }
       break;
     }
+    case 'checkin_reflection': {
+      /** @type {KvBlob} */
+      const value = {};
+      for (const key of ['help', 'change', 'step'])
+        if (typeof ev[key] === 'string') value[key] = ev[key].trim().slice(0, 500);
+      if (Object.values(value).some(Boolean)) {
+        s.checkinReflections[dateKey] = { help: '', change: '', step: '', ...value };
+        const keys = Object.keys(s.checkinReflections).sort();
+        for (const key of keys.slice(0, Math.max(0, keys.length - 52)))
+          delete s.checkinReflections[key];
+      }
+      break;
+    }
     case 'checkin': {
       // Слот і дату рахує ВОРКЕР (див. checkinSlot/checkinDateKey) — сюди вони
       // вже приходять готовими в ev.slot і dateKey.
@@ -1259,13 +1239,69 @@ export function recordEvent(store, ev, dateKey, nowMin = null, nowIso = null) {
       // знищувало б добу).
       if (!hasClean && !hasClear && !confirming) break;
 
-      const merged = { ...existing, ...(clean ?? {}) };
+      let merged = { ...existing, ...(clean ?? {}) };
       // Явне очищення (null/[] від клієнта) — ВИДАЛЯЄ ключ, а не залишає старе
       // значення. Саме цього не було раніше: {...existing, ...clean} умів лише
       // додавати/перезаписувати, ніколи не прибирав — «повторний тап знімає»
       // (questions.ts) працювало тільки локально, до першого дебаунсу.
       for (const k of clear) delete merged[k];
+      if (merged.questionVersion === 2) {
+        merged = clearHiddenV2(ev.slot, merged);
+        merged.timezoneV2 = 'Europe/Kyiv';
+        const preferences = normalizeCheckinPreferences(ev.checkinPreferencesV2);
+        const activities = [...ACTIVITIES, ...preferences.categories];
+        merged.activityLabelsV2 = { ...existing?.activityLabelsV2 };
+        merged.activityGroupsV2 = { ...existing?.activityGroupsV2 };
+        for (const field of (CHECKIN_CARDS[ev.slot] ?? []).flatMap((card) => card.fields)) {
+          if (field.type !== 'categories') continue;
+          for (const id of asList(merged[field.id])) {
+            const activity = activities.find((c) => c.id === id);
+            if (activity) {
+              merged.activityLabelsV2[id] = activity.name;
+              merged.activityGroupsV2[id] = activity.group;
+            }
+          }
+        }
+        if (ev.slot === 'evening') {
+          const weekday = new Date(dateKey + 'T12:00:00Z').getUTCDay();
+          merged.habitDueV2 = preferences.habits
+            .filter((h) => h.days.includes(weekday))
+            .map((h) => h.id);
+          merged.habitLabelsV2 = Object.fromEntries(preferences.habits.map((h) => [h.id, h.name]));
+        }
+        if (nowIso) {
+          merged.answeredAtV2 = nowIso;
+          merged.answerTimesV2 = { ...(existing?.answerTimesV2 ?? {}) };
+          merged.answerPeriodsV2 = { ...(existing?.answerPeriodsV2 ?? {}) };
+          for (const [key, value] of Object.entries(clean ?? {})) {
+            if (
+              key !== 'questionVersion' &&
+              JSON.stringify(existing?.[key]) !== JSON.stringify(value)
+            ) {
+              merged.answerTimesV2[key] = nowIso;
+              const field = (CHECKIN_CARDS[ev.slot] ?? [])
+                .flatMap((c) => c.fields)
+                .find((f) => f.id === key);
+              merged.answerPeriodsV2[key] =
+                field?.period ??
+                (key.startsWith('sleep') || key === 'awakeningsV2'
+                  ? 'sleep_episode'
+                  : ev.slot === 'morning'
+                    ? 'upcoming_day'
+                    : ev.slot === 'evening'
+                      ? 'whole_day'
+                      : 'since_previous');
+            }
+          }
+          for (const key of Object.keys(merged.answerTimesV2))
+            if (merged[key] === undefined) {
+              delete merged.answerTimesV2[key];
+              delete merged.answerPeriodsV2[key];
+            }
+        }
+      }
       if (confirming) {
+        if (merged.questionVersion === 2 && !coreCompleteV2(ev.slot, merged)) break;
         // Підтверджувати ПОРОЖНІЙ блок нема сенсу — це замкнуло б добу, де
         // жодної відповіді ще нема, назавжди без жодних даних усередині.
         if (!Object.keys(merged).length) break;
@@ -1482,6 +1518,7 @@ export const STATS_WINDOWS = {
    * розширенням цього числа.
    */
   checkinDeep: 90,
+  checkinRaw: 180,
   /** Тренди подач і fit% — тижневі стовпчики. */
   trendWeeks: 8,
   /** Тижневий розбір чек-іну. */
@@ -3133,7 +3170,8 @@ export function aggregateStats(/** @type {KvBlob} */ store, /** @type {string} *
     // Сирі записи за гаряче вікно — джерело для «деталей клітинки» карти
     // станів (які саме доби й що в них було). Рол-апи нижче лишаються: вони
     // відповідають на інше питання й дешевші для решти блоків.
-    checkinRaw: buildCheckinRaw(s.checkins, todayKey),
+    checkinRaw: buildCheckinRaw(s.checkins, todayKey, STATS_WINDOWS.checkinRaw),
+    checkinReflections: s.checkinReflections,
     // Сон (Блок «Сон») — точні таймстемпи замість ранкового бакета, коли є:
     // тап «Ліг спати» + автоматичне «прокинувся» з першого відкриття наступного дня.
     sleepLog: buildSleepLog(s.sleepLog),

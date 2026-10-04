@@ -1,4 +1,5 @@
 import { DEFAULT_NEWS_SOURCES, NEWS_SOURCE_IDS } from './core/brief/news-catalog.mjs';
+import { normalizeCheckinPreferences } from './core/checkin/catalog.mjs';
 // Чиста логіка налаштувань власника (роадмеп v3, F2). Worker читає/пише
 // canonical `settings` через StateStoreDO; KV mirror лишається оркестратору
 // (src/orchestrator.ts), щоб накладати тумблери модулів на config.yml. Тут —
@@ -36,7 +37,7 @@ export const TOGGLEABLE_MODULE_IDS = [
  * Форма блоба `settings`.
  * @typedef {{ enabled: boolean, from: string, to: string }} QuietHours
  * @typedef {{ quiet: QuietHours, modules: Record<string, boolean>,
- *             mutedTopics: string[], news?: {sources: string[], intervalHours: number} }} Settings
+ *             mutedTopics: string[], checkin?: import('./core/checkin/catalog.mjs').CheckinPreferences, news?: {sources: string[], intervalHours: number} }} Settings
  */
 
 const DEFAULT_QUIET = { enabled: false, from: '22:00', to: '08:00' };
@@ -114,6 +115,7 @@ export function normalizeSettings(rawSettings) {
     },
     modules,
     mutedTopics,
+    ...(raw.checkin ? { checkin: normalizeCheckinPreferences(raw.checkin) } : {}),
     ...(raw.news && typeof raw.news === 'object'
       ? {
           news: {

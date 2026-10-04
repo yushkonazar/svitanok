@@ -92,6 +92,48 @@ export function HistoryBlock() {
       </button>
 
       {open && isLoading && <div className="text-[11px] text-tx3">Завантажую…</div>}
+      {open && months?.some((m) => m.observationsV2) && (
+        <section className="renewal-card">
+          <h3 className="font-semibold">Архів нових спостережень</h3>
+          <p className="renewal-chart-note mt-2">
+            Окремі шкали v2 з кількістю відповідей. Ці згортки зберігаються після завершення
+            гарячого вікна.
+          </p>
+          {months
+            .filter((m) => m.observationsV2)
+            .map((m) => (
+              <details className="renewal-inset mt-3" key={m.month}>
+                <summary className="cursor-pointer font-semibold">
+                  {monthLabel(m.month)} · {m.observationsV2!.days} днів
+                </summary>
+                <div className="mt-3 flex flex-col gap-3">
+                  {[
+                    ['sleepHours', 'Сон, год'],
+                    ['sleepQuality', 'Якість сну /5'],
+                    ['satisfaction', 'Задоволення днем /5'],
+                    ['learningMinutes', 'Навчання, хв'],
+                    ['morning.energy', 'Ранкова енергія /5'],
+                    ['afternoon.energy', 'Денна енергія /5'],
+                    ['evening.energy', 'Вечірня енергія /5'],
+                    ['evening.mood', 'Вечірній настрій /5'],
+                    ['afternoon.tensionV2', 'Денне напруження /4'],
+                  ].map(([key, label]) => {
+                    const metric = m.observationsV2!.metrics[key];
+                    return (
+                      <div className="flex justify-between gap-3 text-sm" key={key}>
+                        <span>{label}</span>
+                        <b>
+                          {metric?.average ?? '—'}{' '}
+                          <small className="font-normal text-tx3">({metric?.n ?? 0} відп.)</small>
+                        </b>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            ))}
+        </section>
+      )}
 
       {open && isError && (
         <div className="text-[11px] leading-[1.5] text-tx3">

@@ -124,9 +124,10 @@ describe('updateStats — конкурентний запис між двома 
 
     const stats = JSON.parse(kv.get('stats')!);
     // Авто-заповнення сну (з ранкового 'open') НЕ загублено...
-    expect(stats.sleepLog['2026-08-04'].wokeAt).toBeTruthy();
-    expect(stats.checkins['2026-08-05'].morning.sleepH).toBeGreaterThan(0);
-    expect(stats.checkins['2026-08-05'].morning.bedtime).toBe('e23');
+    expect(stats.sleepLog['2026-08-04'].firstOpenedAfterAt).toBeTruthy();
+    expect(stats.sleepLog['2026-08-04'].wokeAt).toBeUndefined();
+    expect(stats.checkins['2026-08-05']?.morning?.sleepH).toBeUndefined();
+    expect(stats.checkins['2026-08-05']?.morning?.bedtime).toBeUndefined();
     // ...і конкурентна зміна крону теж НЕ загублена (обидві сторони гонки
     // збереглись — це й є суть retry «застосувати patch ще раз до свіжішого»).
     expect(stats.sleepLog['2026-08-04'].nudgeCleared).toBe(true);
@@ -152,8 +153,9 @@ describe('updateStats — конкурентний запис між двома 
     expect(res.status).toBe(200);
 
     const stats = JSON.parse(kv.get('stats')!);
-    expect(stats.sleepLog['2026-08-04'].wokeAt).toBeTruthy();
-    expect(stats.checkins['2026-08-05'].morning.sleepH).toBeGreaterThan(0);
+    expect(stats.sleepLog['2026-08-04'].firstOpenedAfterAt).toBeTruthy();
+    expect(stats.sleepLog['2026-08-04'].wokeAt).toBeUndefined();
+    expect(stats.checkins['2026-08-05']?.morning?.sleepH).toBeUndefined();
   });
 });
 

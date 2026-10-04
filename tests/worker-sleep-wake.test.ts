@@ -83,7 +83,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('sleepStart -> open: повний цикл через worker.fetch, дві ночі поспіль', () => {
-  it('Ніч 1 (звичайний сценарій, 8.0 год) і Ніч 2 (РЕГРЕСІЯ: передсонний open того ж календарного дня, 5.0 год) — обидві коректно підставляють sleepH+bedtime', async () => {
+  it('Ніч 1 (звичайний сценарій, 8.0 год) і Ніч 2 (РЕГРЕСІЯ: передсонний open того ж календарного дня, 5.0 год) — обидві зберігають час відкриття окремо, не підставляють відповіді сну', async () => {
     // ── Ніч 1: 23:00 Київ 04.08 -> 07:00 Київ 05.08 (рівно 8 год) ──────────
     let res = await at('2026-08-04T20:00:00Z', 'sleepStart'); // Kyiv 23:00
     expect(res.status).toBe(200);
@@ -95,12 +95,12 @@ describe('sleepStart -> open: повний цикл через worker.fetch, д�
     expect(stats.sleepLog['2026-08-04']).toEqual({
       startedAt: '2026-08-04T20:00:00.000Z',
       bedtimeBucket: 'e00', // тап о 23:00 Київ
-      wokeAt: '2026-08-05T04:00:00.000Z',
+      firstOpenedAfterAt: '2026-08-05T04:00:00.000Z',
     });
     // 8.0 год -> бакет «8–9» (8.5), НЕ голе 8: UI знає лише середини
     // діапазонів (SLEEP_H_BUCKETS) і звіряє їх суворою рівністю, тож 8
     // рендерилось би як «нічого не обрано» — саме цей баг ловив власник.
-    expect(stats.checkins['2026-08-05'].morning).toEqual({ sleepH: 8.5, bedtime: 'e00' });
+    expect(stats.checkins['2026-08-05']).toBeUndefined();
 
     // ── Ніч 2: РЕГРЕСІЯ. Спершу пізній передсонний open ТОГО Ж календарного
     //    дня (Kyiv 01:00 06.08 — вже після півночі, ДО тапу «Ліг спати»),
@@ -125,24 +125,23 @@ describe('sleepStart -> open: повний цикл через worker.fetch, д�
     expect(stats.sleepLog['2026-08-05']).toEqual({
       startedAt: '2026-08-05T22:15:00.000Z',
       bedtimeBucket: 'e02', // тап о 01:15 Київ
-      wokeAt: '2026-08-06T03:15:00.000Z',
+      firstOpenedAfterAt: '2026-08-06T03:15:00.000Z',
     });
-    expect(stats.checkins['2026-08-06'].morning).toEqual({ sleepH: 5.5, bedtime: 'e02' }); // 5.0 -> «5–6»
+    expect(stats.checkins['2026-08-06']).toBeUndefined(); // 5.0 -> «5–6»
 
     // Ніч 1 лишилась незачепленою другим циклом.
-    expect(stats.checkins['2026-08-05'].morning).toEqual({ sleepH: 8.5, bedtime: 'e00' });
+    expect(stats.checkins['2026-08-05']).toBeUndefined();
   });
 
-  it('РЕГРЕСІЯ (фідбек власника: «досі не працює автоматична підстановка часу сну»): підставлене значення ЗАВЖДИ з набору бакетів UI, а не точне число', async () => {
+  it('РЕГРЕСІЯ (фідбек власника: «досі не працює автоматична підстановка часу сну»): відкриття не створює виміряну тривалість сну', async () => {
     // 7 год 36 хв — саме той «некруглий» сон, що давав 7.6 і не підсвічувався
     // (UI звіряє суворою рівністю з SLEEP_H_BUCKETS).
     await at('2026-08-04T20:00:00Z', 'sleepStart'); // Kyiv 23:00
     await at('2026-08-05T03:36:00Z', 'open'); // Kyiv 06:36 -> 7.6 год
 
     const stats = JSON.parse(kv.get('stats')!);
-    const { sleepH } = stats.checkins['2026-08-05'].morning;
-    expect(sleepH).toBe(7.5); // бакет «7–8», не 7.6
-    expect(SLEEP_H_BUCKETS).toContain(sleepH);
+    expect(stats.checkins['2026-08-05']).toBeUndefined();
+    expect(stats.sleepLog['2026-08-04'].wokeAt).toBeUndefined();
   });
 
   it('snapSleepHours: межі діапазонів і клемп по краях', () => {

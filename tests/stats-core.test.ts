@@ -300,13 +300,13 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     expect(s.sleepLog['2026-07-10'].startedAt).toBe('2026-07-10T23:47:00.000Z');
   });
 
-  it('open (перше за добу) закриває МИНУЛУ ніч — проставляє wokeAt, не чіпає startedAt', () => {
+  it('open (перше за добу) зберігає перше відкриття після початку сну, не називає його пробудженням, не чіпає startedAt', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'sleepStart' }, '2026-07-10', null, '2026-07-10T23:47:00.000Z');
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:52:00.000Z');
     expect(s.sleepLog['2026-07-10']).toEqual({
       startedAt: '2026-07-10T23:47:00.000Z',
-      wokeAt: '2026-07-11T07:52:00.000Z',
+      firstOpenedAfterAt: '2026-07-11T07:52:00.000Z',
     });
   });
 
@@ -316,7 +316,7 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:52:00.000Z');
     // Друге відкриття того самого дня — wokeAt не зсувається (вже проставлено).
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 300, '2026-07-11T12:00:00.000Z');
-    expect(s.sleepLog['2026-07-10'].wokeAt).toBe('2026-07-11T07:52:00.000Z');
+    expect(s.sleepLog['2026-07-10'].firstOpenedAfterAt).toBe('2026-07-11T07:52:00.000Z');
   });
 
   it('РЕГРЕСІЯ (фідбек власника): пізній передсонний open того ж календарного дня БІЛЬШЕ НЕ блокує ранкове закриття ночі', () => {
@@ -331,22 +331,22 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     s = recordEvent(s, { type: 'open' }, '2026-08-06', 98, '2026-08-06T01:38:00.000Z');
     s = recordEvent(s, { type: 'sleepStart' }, '2026-08-05', null, '2026-08-06T01:54:00.000Z');
     s = recordEvent(s, { type: 'open' }, '2026-08-06', 600, '2026-08-06T10:00:00.000Z');
-    expect(s.sleepLog['2026-08-05'].wokeAt).toBe('2026-08-06T10:00:00.000Z');
+    expect(s.sleepLog['2026-08-05'].firstOpenedAfterAt).toBe('2026-08-06T10:00:00.000Z');
   });
 
   it('open ОДРАЗУ після sleepStart (<1 год) НЕ закриває щойно розпочату ніч — захист від миттєвого повторного відкриття', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'sleepStart' }, '2026-07-10', null, '2026-07-10T23:47:00.000Z');
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 3, '2026-07-10T23:50:00.000Z');
-    expect(s.sleepLog['2026-07-10'].wokeAt).toBeUndefined();
+    expect(s.sleepLog['2026-07-10'].firstOpenedAfterAt).toBeUndefined();
   });
 
-  it('open закриває НАЙДАВНІШУ відкриту ніч теж, коли застосунок не відкривали кілька днів', () => {
+  it('open відмічає перше відкриття після старого запису сну, коли застосунок не відкривали кілька днів', () => {
     let s = emptyStore();
     s = recordEvent(s, { type: 'sleepStart' }, '2026-07-08', null, '2026-07-08T23:00:00.000Z');
     // Проґав 09.07 і 10.07 повністю — перше відкриття лише 11.07.
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T08:00:00.000Z');
-    expect(s.sleepLog['2026-07-08'].wokeAt).toBe('2026-07-11T08:00:00.000Z');
+    expect(s.sleepLog['2026-07-08'].firstOpenedAfterAt).toBe('2026-07-11T08:00:00.000Z');
   });
 
   it('немає startedAt -> open нічого не проставляє (нема що закривати)', () => {
@@ -366,8 +366,8 @@ describe('stats-core — сон (Блок «Сон»)', () => {
       {
         d: '2026-07-10',
         startedAt: '2026-07-10T23:00:00.000Z',
-        wokeAt: '2026-07-11T07:30:00.000Z',
-        durationMin: 510,
+        wokeAt: null,
+        durationMin: null,
       },
       { d: '2026-07-11', startedAt: '2026-07-11T23:30:00.000Z', wokeAt: null, durationMin: null },
     ]);
@@ -395,7 +395,7 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     expect(s2.sleepLog['2026-07-10'].bedtimeBucket).toBeUndefined();
   });
 
-  it('open авто-заповнює sleepH+bedtime НАСТУПНОГО ранку, коли ще не відповіли самі', () => {
+  it('open не заповнює sleepH чи bedtime без явного підтвердження', () => {
     let s = emptyStore();
     s = recordEvent(
       s,
@@ -405,7 +405,7 @@ describe('stats-core — сон (Блок «Сон»)', () => {
       '2026-07-10T23:47:00.000Z',
     );
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:17:00.000Z');
-    expect(s.checkins['2026-07-11'].morning).toEqual({ sleepH: 7.5, bedtime: 'e00' });
+    expect(s.checkins['2026-07-11']).toBeUndefined();
   });
 
   it('open НЕ перезаписує sleepH, якщо вже відповіли самі (ручна відповідь важливіша)', () => {
@@ -420,7 +420,7 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     );
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:17:00.000Z');
     expect(s.checkins['2026-07-11'].morning.sleepH).toBe(6); // ручне лишається
-    expect(s.checkins['2026-07-11'].morning.bedtime).toBe('e00'); // це поле НЕ відповідали -> заповнилось
+    expect(s.checkins['2026-07-11'].morning.bedtime).toBeUndefined(); // це поле НЕ відповідали -> заповнилось
   });
 
   it('open НЕ перезаписує ЯВНО очищене поле (null) — той самий контракт, що cleanCheckin', () => {
@@ -438,10 +438,10 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T07:17:00.000Z');
     // Ключ ВІДСУТНІЙ (не null) після clear -> auto-fill таки заповнює: явне
     // очищення означало «не такий, як записано», не «ніколи не заповнюй».
-    expect(s.checkins['2026-07-11'].morning.sleepH).toBe(7.5);
+    expect(s.checkins['2026-07-11'].morning.sleepH).toBeUndefined();
   });
 
-  it('open пропускає auto-fill sleepH при абсурдній тривалості (>14год), але bedtime все одно заповнює', () => {
+  it('багатоденна перерва не створює відповіді сну', () => {
     let s = emptyStore();
     s = recordEvent(
       s,
@@ -452,8 +452,7 @@ describe('stats-core — сон (Блок «Сон»)', () => {
     );
     // Застосунок не відкривали кілька днів -> перше відкриття лише 11.07, ~57 год потому.
     s = recordEvent(s, { type: 'open' }, '2026-07-11', 30, '2026-07-11T08:00:00.000Z');
-    expect(s.checkins['2026-07-09'].morning.sleepH).toBeUndefined();
-    expect(s.checkins['2026-07-09'].morning.bedtime).toBe('e00');
+    expect(s.checkins['2026-07-09']).toBeUndefined();
   });
 });
 

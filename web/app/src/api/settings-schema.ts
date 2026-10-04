@@ -12,8 +12,18 @@ export const quietSchema = z.object({
   from: hhmm.default('22:00'),
   to: hhmm.default('08:00'),
 });
+export const checkinPreferencesSchema = z.object({
+  modules: z.array(z.string()),
+  schedule: z.object({ morning: hhmm, afternoon: hhmm, evening: hhmm, end: hhmm }),
+  habits: z.array(
+    z.object({ id: z.string(), name: z.string(), days: z.array(z.number().int().min(0).max(6)) }),
+  ),
+  categories: z.array(z.object({ id: z.string(), name: z.string(), group: z.string() })),
+  hiddenCategories: z.array(z.string()),
+});
 
 export const settingsSchema = z.object({
+  checkin: checkinPreferencesSchema.optional(),
   quiet: quietSchema.default({ enabled: false, from: '22:00', to: '08:00' }),
   /** Лише ЯВНІ оверрайди; відсутній id = дефолт config.yml (для перемикних — увімкнено). */
   // zod 4: обидві схеми обовʼязкові (див. коментар у schema.ts). Ключ — id модуля.
@@ -45,6 +55,7 @@ export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
 
 /** Частковий патч, який шле екран; у повний блоб його зводить useSaveSettings. */
 export interface SettingsPatch {
+  checkin?: Settings['checkin'];
   news?: Settings['news'];
   quiet?: Partial<Settings['quiet']>;
   modules?: Record<string, boolean>;

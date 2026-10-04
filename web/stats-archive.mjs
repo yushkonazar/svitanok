@@ -16,6 +16,50 @@
 // спершу має бути що читати. Тут закривається саме втрата.
 
 import { isDateKey, dayKey, weekStartKey } from './stats-core.mjs';
+import { observationDay } from './core/checkin/observations.mjs';
+
+/** Store v2 means with their denominators, separately from legacy scales.
+ * @param {KvBlob} target @param {string} date @param {KvBlob} rec */
+function appendObservations(target, date, rec) {
+  const d = observationDay(date, rec);
+  const count = ['morning', 'afternoon', 'evening'].filter(
+    (slot) => /** @type {KvBlob} */ (d)[slot].confirmed,
+  ).length;
+  if (!count) return;
+  const v = target.observationsV2 ?? {
+    days: 0,
+    confirmedSlots: 0,
+    metrics: {},
+    priorityOutcomes: {},
+    activities: {},
+  };
+  v.days++;
+  v.confirmedSlots += count;
+  /** @type {Record<string,unknown>} */ const values = {
+    sleepHours: d.sleepHours,
+    sleepQuality: d.sleepQuality,
+    satisfaction: d.satisfaction,
+    learningMinutes: d.learningMinutes,
+  };
+  for (const slot of ['morning', 'afternoon', 'evening'])
+    for (const key of ['energy', 'mood', 'tensionV2'])
+      values[`${slot}.${key}`] = /** @type {KvBlob} */ (d)[slot][key];
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const metric = v.metrics[key] ?? { sum: 0, n: 0, average: null };
+    metric.sum += value;
+    metric.n++;
+    metric.average = round1(metric.sum / metric.n);
+    v.metrics[key] = metric;
+  }
+  if (d.evening.priorityOutcomeV2) {
+    const key = d.evening.priorityOutcomeV2;
+    v.priorityOutcomes[key] = (v.priorityOutcomes[key] ?? 0) + 1;
+  }
+  for (const id of Array.isArray(d.evening.activitiesV2) ? d.evening.activitiesV2 : [])
+    v.activities[id] = (v.activities[id] ?? 0) + 1;
+  target.observationsV2 = v;
+}
 
 /** Ключ у тому самому KV-неймспейсі, що `stats`/`state`. */
 export const ARCHIVE_KEY = 'statsArchive';
@@ -64,6 +108,7 @@ export function monthlyRollup(/** @type {KvBlob} */ store, /** @type {string} */
   for (const [d, rec] of Object.entries(checkins)) {
     if (!isDateKey(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
     const m = monthOf(d);
+    appendObservations(bucket(out, m), d, rec);
     bucket(out, m).checkinDays++;
     if (!acc[m]) acc[m] = { sleep: [], energy: [], mood: [], score: [] };
     const a = acc[m];
@@ -197,6 +242,7 @@ export function weeklyRollup(/** @type {KvBlob} */ store, /** @type {string} */ 
   for (const [d, rec] of Object.entries(checkins)) {
     if (!isDateKey(d) || d > todayKey || !rec || typeof rec !== 'object') continue;
     const w = weekOf(d);
+    appendObservations(bucket(out, w), d, rec);
     bucket(out, w).checkinDays++;
     if (!acc[w]) acc[w] = { sleep: [], energy: [], mood: [], score: [] };
     const a = acc[w];

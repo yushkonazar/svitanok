@@ -113,8 +113,8 @@ describe('оголошене вікно = справжня межа даних',
     expect(aggregateStats(withCheckins([edge + 1], {}), TODAY).socialContext.tops.length).toBe(0);
   });
 
-  it('checkinRaw обрізає рівно на checkinDeep', () => {
-    const edge = STATS_WINDOWS.checkinDeep - 1;
+  it('checkinRaw включає два періоди по 90 днів', () => {
+    const edge = STATS_WINDOWS.checkinRaw - 1;
     const rec = (o: number) => aggregateStats(withCheckins([o], {}), TODAY).checkinRaw.records;
     expect(Object.keys(rec(edge))).toHaveLength(1);
     expect(Object.keys(rec(edge + 1))).toHaveLength(0);

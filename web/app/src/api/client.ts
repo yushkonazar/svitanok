@@ -1,3 +1,4 @@
+import { demoObservations, shiftCheckinDate } from '../../../core/checkin/observations.mjs';
 import { tg, inTelegram } from '../telegram.ts';
 import { statsSchema, archiveSchema, deletionsSchema, leversSchema } from './schema.ts';
 import { readCheckinDemo, writeCheckinDemo } from './checkin-demo.ts';
@@ -166,13 +167,13 @@ function demoStats(): Stats {
   ];
   const values = energyCurve.filter((v): v is number => v != null),
     saved = readSavedDemo();
-  const records = { ...SAMPLE_STATS.checkinRaw.records, [today]: checkinToday };
+  const records = { ...demoObservations(today), [today]: checkinToday };
   return {
     ...SAMPLE_STATS,
     checkinToday,
     savedList: saved.slice(0, 8),
     savedCount: saved.length,
-    checkinRaw: { ...SAMPLE_STATS.checkinRaw, records },
+    checkinRaw: { days: 180, from: shiftCheckinDate(today, -179), to: today, records },
     checkinSeries: [
       ...SAMPLE_STATS.checkinSeries.filter((p) => p.d !== today),
       {
@@ -419,10 +420,17 @@ export async function postEvent(type: string, payload: Record<string, unknown>):
     body: JSON.stringify({ type, ...payload }),
   });
   throwIfSessionExpired(res);
-  if (!res.ok) throw new Error(`Подію не збережено (${res.status})`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      typeof body?.error === 'string' ? body.error : `Подію не збережено (${res.status})`,
+    );
+  }
   if (type === 'checkin') {
     const result = await res.json();
     if (result.locked) throw new Error('Цей чек-ін уже підтверджений. Онови екран.');
+    if (result.expired) throw new Error('Вікно чек-іну вже закрилось. Онови екран.');
+    if (result.incomplete) throw new Error('Для підтвердження дай відповіді на основні питання.');
   }
 }
 

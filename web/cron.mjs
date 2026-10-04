@@ -1,3 +1,4 @@
+import { checkinReminder, checkinClock } from './core/checkin/catalog.mjs';
 // Крон-задачі Worker'а (Фаза 5, модуляризація worker.js, план A2 §5).
 //
 // ОДИН крон раз на 5 хвилин — і десяток задач усередині. Кожна САМА вирішує, чи
@@ -597,7 +598,10 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   const home = assistantHomeTarget(env);
   if (!env.TELEGRAM_BOT_TOKEN || !home) return;
   const minuteOfDay = kyivMinuteOfDay(new Date());
-  const win = matchCheckinNudgeWindow(minuteOfDay);
+  const checkinSettings = await loadSettings(env);
+  const win = checkinSettings.checkin
+    ? checkinReminder(minuteOfDay, checkinSettings.checkin)
+    : matchCheckinNudgeWindow(minuteOfDay);
   if (!win) return;
   // «Ще не заповнив чек-ін» - корисний, але не критичний пінг. За обраним
   // власником режимом «лише важливе» він вимкнений, доки власник явно не
@@ -607,12 +611,17 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   if (miniApp ? !miniApp.checkin_reminders : !(await routineNudgeEnabled(env, 'checkins'))) return;
 
   const [settings, store, attention] = await Promise.all([
-    loadSettings(env),
+    Promise.resolve(checkinSettings),
     loadStats(env),
     shouldDeliverProactive(env, 'nudge'),
   ]);
   const today = kyivDateKey();
-  const dateKey = checkinDateKey(today, kyivHour());
+  const clock = checkinClock(minuteOfDay, settings.checkin);
+  const dateKey = settings.checkin
+    ? clock.previousDay
+      ? checkinDateKey(today, 0)
+      : today
+    : checkinDateKey(today, kyivHour());
   const due = shouldSendCheckinNudge({
     quiet: isQuietMinute(settings, minuteOfDay),
     alreadyNudgedToday: miniApp

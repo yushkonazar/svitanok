@@ -137,17 +137,17 @@ describe('buildWeeklyDigest', () => {
     expect(doc.truncated).toBeUndefined();
   });
 
-  it('period глибший за джерело: заявлена глибина = фактична (90), не запитана', () => {
+  it('period глибший за джерело: заявлена глибина = фактична (180), не запитана', () => {
     const { text } = buildWeeklyDigest({
       agg,
       plans: { days: [], items: [] },
       todayKey: TODAY,
-      rawDays: 120,
+      rawDays: 240,
       cap: DATA_READ_WEEKLY_CAP,
     });
     const raw = JSON.parse(text).checkin.raw;
-    expect(raw.days).toBe(WEEKLY_RAW_DAYS);
-    expect(Object.keys(raw.records)).toHaveLength(WEEKLY_RAW_DAYS);
+    expect(raw.days).toBe(180);
+    expect(Object.keys(raw.records)).toHaveLength(Object.keys(agg.checkinRaw.records).length);
   });
 
   it('драбина не мутує вхідний агрегат: history рядків воронки лишається у викликача', () => {

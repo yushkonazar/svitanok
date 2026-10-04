@@ -56,6 +56,64 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('POST /api/event — checkin, locked-контракт', () => {
+  it('v2 refuses partial confirmation and round-trips a complete explicit core', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-04T08:00:00Z'));
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const incomplete = await postCheckin({
+      type: 'checkin',
+      slot: 'morning',
+      dateKey: '2026-10-04',
+      questionVersion: 2,
+      energy: 4,
+      confirmed: true,
+      initData,
+    });
+    expect(incomplete.status).toBe(422);
+    expect(putCalls).toHaveLength(0);
+    const response = await postCheckin({
+      type: 'checkin',
+      slot: 'morning',
+      dateKey: '2026-10-04',
+      questionVersion: 2,
+      energy: 4,
+      mood: 3,
+      sleepModeV2: 'none',
+      priorityV2: 'noplan',
+      confirmed: true,
+      initData,
+    });
+    expect(response.status).toBe(200);
+    const m = JSON.parse(kv.get('stats')!).checkins['2026-10-04'].morning;
+    expect(m.confirmed).toBe(true);
+    expect(m.mood).toBe(3);
+    expect(m.sleepQualityV2).toBeUndefined();
+    expect(m.answeredAtV2).toBe('2026-10-04T08:00:00.000Z');
+  });
+  it('uses configured minutes, assigns after-midnight evening to the preceding day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-04T23:30:00Z'));
+    kv.set(
+      'settings',
+      JSON.stringify({
+        checkin: {
+          schedule: { morning: '09:30', afternoon: '15:00', evening: '21:00', end: '03:00' },
+        },
+      }),
+    );
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const response = await postCheckin({
+      type: 'checkin',
+      slot: 'evening',
+      dateKey: '2026-10-04',
+      questionVersion: 2,
+      energy: 3,
+      initData,
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(kv.get('stats')!).checkins['2026-10-04'].evening.energy).toBe(3);
+    expect(JSON.parse(kv.get('stats')!).checkins['2026-10-05']).toBeUndefined();
+  });
   it('a draft from yesterday cannot write into today’s matching slot', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-10T08:00:00Z'));

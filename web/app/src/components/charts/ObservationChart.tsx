@@ -3,6 +3,7 @@ import { useId, useState } from 'react';
 export interface Observation {
   date: string;
   value: number;
+  approx?: boolean;
 }
 export function ObservationChart({
   points,
@@ -10,12 +11,16 @@ export function ObservationChart({
   unit = '',
   color = 'var(--color-a2)',
   maxGapDays,
+  domain,
+  onSelect,
 }: {
   points: Observation[];
   label: string;
   unit?: string;
   color?: string;
   maxGapDays?: number;
+  domain?: [number, number];
+  onSelect?: (date: string) => void;
 }) {
   const uid = useId();
   const [selected, setSelected] = useState<number | null>(null);
@@ -30,8 +35,8 @@ export function ObservationChart({
   const lo = Math.min(...values),
     hi = Math.max(...values);
   const pad = Math.max((hi - lo) * 0.2, Math.abs(hi) * 0.0005, 0.00001);
-  const min = lo - pad,
-    max = hi + pad;
+  const min = domain?.[0] ?? lo - pad,
+    max = domain?.[1] ?? hi + pad;
   const timestamps = valid.map((p) => Date.parse(p.date));
   const first = Math.min(...timestamps),
     last = Math.max(...timestamps);
@@ -59,6 +64,7 @@ export function ObservationChart({
       <div className="flex items-baseline justify-between gap-2" aria-live="polite">
         <span className="text-xs text-tx2">{date(point.date)}</span>
         <b className="font-mono text-sm">
+          {point.approx ? '≈ ' : ''}
           {fmt(point.value)} {unit}
         </b>
       </div>
@@ -77,6 +83,12 @@ export function ObservationChart({
         {[32, 72, 110].map((h) => (
           <line key={h} x1="12" x2="348" y1={h} y2={h} stroke="var(--color-hair)" />
         ))}
+        {domain &&
+          [min, (min + max) / 2, max].map((v) => (
+            <text key={v} x="12" y={y(v) - 4} fill="var(--color-tx3)" fontSize="9">
+              {fmt(v)}
+            </text>
+          ))}
         {valid.length > 1 && !hasGap && (
           <path d={`${path} L${x(valid.length - 1)} 122 L${x(0)} 122 Z`} fill={`url(#${uid})`} />
         )}
@@ -103,7 +115,9 @@ export function ObservationChart({
             cx={x(i)}
             cy={y(p.value)}
             r={i === index ? 5 : 2}
-            fill={color}
+            fill={p.approx ? 'var(--color-bg2)' : color}
+            stroke={color}
+            strokeWidth={p.approx ? 2 : 0}
           />
         ))}
       </svg>
@@ -113,9 +127,13 @@ export function ObservationChart({
         min={0}
         max={valid.length - 1}
         value={index}
-        onChange={(e) => setSelected(Number(e.target.value))}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          setSelected(n);
+          onSelect?.(valid[n].date);
+        }}
         aria-label={`Дата: ${label}`}
-        aria-valuetext={`${date(point.date)}: ${fmt(point.value)} ${unit}`}
+        aria-valuetext={`${date(point.date)}: ${point.approx ? 'приблизно ' : ''}${fmt(point.value)} ${unit}`}
       />
       <div className="flex justify-between text-[11px] text-tx3">
         <span>{date(valid[0].date)}</span>

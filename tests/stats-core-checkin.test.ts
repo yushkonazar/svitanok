@@ -319,9 +319,9 @@ describe('aggregateStats — чек-ін', () => {
   });
 
   it('явка по блоках рахує пропуски — вони теж сигнал', () => {
-    let s = recordEvent(emptyStore(), ck('morning', MORNING), '2026-07-17');
-    s = recordEvent(s, ck('morning', MORNING), '2026-07-16');
-    s = recordEvent(s, ck('evening', { dayScore: 4 }), '2026-07-16');
+    let s = recordEvent(emptyStore(), ck('morning', { ...MORNING, confirmed: true }), '2026-07-17');
+    s = recordEvent(s, ck('morning', { ...MORNING, confirmed: true }), '2026-07-16');
+    s = recordEvent(s, ck('evening', { dayScore: 4, confirmed: true }), '2026-07-16');
     const f = aggregateStats(s, '2026-07-17').checkinFill;
     expect(f.morning).toBe(2);
     expect(f.evening).toBe(1);
@@ -428,29 +428,29 @@ describe('aggregateStats — гаряче вікно сирих чек-інів'
   });
 
   it('доба поза вікном не потрапляє', () => {
-    let s = recordEvent(emptyStore(), ck('evening', { dayScore: 5 }), back(89));
-    s = recordEvent(s, ck('evening', { dayScore: 1 }), back(90));
+    let s = recordEvent(emptyStore(), ck('evening', { dayScore: 5 }), back(179));
+    s = recordEvent(s, ck('evening', { dayScore: 1 }), back(180));
     const rec = aggregateStats(s, TODAY).checkinRaw.records;
-    expect(rec[back(89)]).toBeDefined();
-    expect(rec[back(90)]).toBeUndefined();
+    expect(rec[back(179)]).toBeDefined();
+    expect(rec[back(180)]).toBeUndefined();
   });
 
-  it('незаповнені доби не займають місця (розріджено, не 90 дірок)', () => {
+  it('незаповнені доби не займають місця (розріджено, не 180 дірок)', () => {
     const s = recordEvent(emptyStore(), ck('morning', MORNING), back(5));
     expect(Object.keys(aggregateStats(s, TODAY).checkinRaw.records)).toEqual([back(5)]);
   });
 
   it('from/to описують РЕАЛЬНЕ вікно — підпис глибини не має брехати', () => {
     const raw = aggregateStats(emptyStore(), TODAY).checkinRaw;
-    expect(raw.days).toBe(90);
+    expect(raw.days).toBe(180);
     expect(raw.to).toBe(TODAY);
-    expect(raw.from).toBe(back(89)); // 90 діб включно з сьогоднішньою
+    expect(raw.from).toBe(back(179)); // 180 діб включно з сьогоднішньою
   });
 
   it('порожній стор -> порожні records, але метадані на місці', () => {
     const raw = aggregateStats(emptyStore(), TODAY).checkinRaw;
     expect(raw.records).toEqual({});
-    expect(raw.days).toBe(90);
+    expect(raw.days).toBe(180);
   });
 
   it('легасі-стор без checkins не валить агрегат', () => {
@@ -1113,8 +1113,9 @@ describe('staleSleepNudges — завислі кнопки з МИНУЛИХ н�
  * Два визначення одного поняття, які розʼїхались. Тепер визначення ОДНЕ, і ці
  * тести стережуть саме його. */
 describe('isCheckinSlotFilled — одне визначення «слот заповнено»', () => {
-  it('слот із відповіддю — заповнений', () => {
-    expect(isCheckinSlotFilled({ morning: { sleepQ: 4 } }, 'morning')).toBe(true);
+  it('відповідь без підтвердження — чернетка', () => {
+    expect(isCheckinSlotFilled({ morning: { sleepQ: 4 } }, 'morning')).toBe(false);
+    expect(isCheckinSlotFilled({ morning: { sleepQ: 4, confirmed: true } }, 'morning')).toBe(true);
   });
 
   it('ПОРОЖНІЙ обʼєкт — НЕ заповнений (саме тут ламалось)', () => {
@@ -1148,7 +1149,7 @@ describe('isCheckinSlotFilled — одне визначення «слот за�
 
   it('справді заповнений слот нагадування НЕ отримує', () => {
     let s = emptyStore();
-    s = recordEvent(s, ck('morning', { sleepQ: 4 }), '2026-08-16');
+    s = recordEvent(s, ck('morning', { sleepQ: 4, confirmed: true }), '2026-08-16');
     expect(
       shouldSendCheckinNudge({
         quiet: false,
