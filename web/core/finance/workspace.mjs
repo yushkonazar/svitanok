@@ -1,4 +1,4 @@
-import { MCC_CATEGORIES } from './mcc.mjs';
+import { financeCategories } from './categories.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
 import {
   minor,
@@ -55,6 +55,15 @@ function jsonObject(value) {
     return x && typeof x === 'object' && !Array.isArray(x) ? x : {};
   } catch {
     return {};
+  }
+}
+/** @param {unknown} value @returns {string[]} */
+function categoryArray(value) {
+  try {
+    const parsed = JSON.parse(String(value ?? '[]'));
+    return Array.isArray(parsed) ? parsed.filter((c) => typeof c === 'string') : [];
+  } catch {
+    return [];
   }
 }
 /** @param {KvBlob} row */
@@ -258,17 +267,12 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       paymentReminders: Boolean(settings.payment_reminders),
       checkinReminders: Boolean(settings.checkin_reminders),
     },
-    categories: [
-      ...new Set([
-        ...MCC_CATEGORIES,
-        'дохід',
-        'зарплата',
-        'таксі',
-        'таксі · особисте',
-        'чайові',
-        ...custom,
-      ]),
-    ],
+    categories: financeCategories([
+      ...custom,
+      ...transactions.map((t) => t.category),
+      ...rows(7).flatMap((b) => categoryArray(b.categories_json)),
+      ...rows(8).map((p) => String(p.category)),
+    ]),
     accounts,
     transactions,
     policies,

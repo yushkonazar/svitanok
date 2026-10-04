@@ -45,6 +45,51 @@ it('submits the complete credit limit, not spent credit, and refreshes all finan
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: FINANCE_QUERY });
 });
+it('records the bank installment schedule with the selectable purchase-in-parts category', async () => {
+  const { close } = open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'installment' } });
+  const values = {
+    'Назва платежу': 'Proove',
+    'Сума одного платежу, ₴': '90,70',
+    'Ще залишилось сплатити, ₴': '1088,40',
+    'Кількість платежів': '12',
+    'Початкова сума боргу, ₴': '1814',
+    'Наступна дата списання': '2026-10-09',
+    'Фіксований день списання (1–31)': '9',
+    Категорія: 'покупка частинами',
+  };
+  for (const [label, value] of Object.entries(values)) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  }
+  expect(screen.getByRole('option', { name: 'Покупка частинами' })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: 'Комуналка та інтернет' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment',
+      payload: expect.objectContaining({
+        amountMinor: 9070,
+        remainingMinor: 108840,
+        totalMinor: 181400,
+        installmentsLeft: 12,
+        nextDate: '2026-10-09',
+        anchorDay: 9,
+        category: 'покупка частинами',
+      }),
+    }),
+  );
+});
+it('displays the bank label without changing the historical grocery category value', async () => {
+  const { close } = open({ kind: 'expense' });
+  expect(screen.getByRole('option', { name: 'Продукти та супермаркети' })).toHaveValue('продукти');
+  fireEvent.change(screen.getByLabelText('Сума, ₴'), { target: { value: '20' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({ payload: expect.objectContaining({ category: 'продукти' }) }),
+  );
+});
 it('records a quick personal cash income as a separate command, without any shift totals', async () => {
   const { close } = open({ kind: 'taxi-personal' });
   fireEvent.change(screen.getByLabelText('Що сталося'), { target: { value: 'cash-tip' } });

@@ -30,6 +30,58 @@ function setup() {
   return { d1, env: workerEnv({ DB: d1.stub }) };
 }
 describe('finance workspace · real migration and SQLite transactions', () => {
+  it('offers bank purchase categories and accounts for installment payments without duplicating debt or cash', async () => {
+    const { env } = setup();
+    const before = await readFinanceWorkspace(env, NOW);
+    expect(before.categories).toEqual(
+      expect.arrayContaining(['покупка частинами', 'розстрочка', 'кіно', 'комуналка та інтернет']),
+    );
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'parts-proove',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Proove',
+          kind: 'installment',
+          amountMinor: 9070,
+          remainingMinor: 108840,
+          totalMinor: 181400,
+          installmentsLeft: 12,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'покупка частинами',
+        },
+      },
+      NOW,
+    );
+    const scheduled = await readFinanceWorkspace(env, NOW);
+    expect(scheduled.accounts[0]?.balanceMinor).toBe(before.accounts[0]?.balanceMinor);
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'parts-proove-paid',
+        version: 1,
+        type: 'payment-paid',
+        payload: { paymentId: 'parts-proove', amountMinor: 9070, accountId: 'cash' },
+      },
+      NOW,
+    );
+    const after = await readFinanceWorkspace(env, NOW);
+    expect(after.payments[0]).toMatchObject({
+      remainingMinor: 99770,
+      installmentsLeft: 11,
+      nextDate: '2026-11-09',
+      category: 'покупка частинами',
+    });
+    expect(after.accounts[0]?.balanceMinor).toBe(-9070);
+    expect(after.transactions[0]).toMatchObject({
+      category: 'покупка частинами',
+      amountMinor: -9070,
+    });
+  });
   it('payment reminders are persistent, configurable and never send directly', async () => {
     const { env, d1 } = setup();
     env.TELEGRAM_CHAT_ID = '123';

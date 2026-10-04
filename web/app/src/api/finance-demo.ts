@@ -1,4 +1,5 @@
 import { financeSchema, type Finance, type FinanceCommand } from './finance-schema.ts';
+import { financeCategories } from '../../../core/finance/categories.mjs';
 import {
   calculateTaxiWeek,
   kyivInstant,
@@ -12,36 +13,14 @@ import {
 const KEY = 'svitanok:finance-demo:v1';
 let memory: Finance | null = null;
 const applied = new Set<string>();
-const categories = [
-  'продукти',
-  'кафе й ресторани',
-  'транспорт',
-  'авто',
-  'подорожі',
-  'дім',
-  'звʼязок та інтернет',
-  'здоровʼя',
-  'краса',
-  'одяг і взуття',
-  'техніка',
-  'розваги',
-  'спорт',
-  'освіта',
-  'книги й преса',
-  'цифрові сервіси',
-  'фінанси',
-  'перекази й готівка',
-  'подарунки й квіти',
-  'тварини',
-  'благодійність',
-  'інше',
-  'дохід',
-  'зарплата',
-  'таксі',
-  'таксі · особисте',
-  'чайові',
-];
+const categories = financeCategories();
 function rebuild(f: Finance) {
+  f.categories = financeCategories([
+    ...f.categories,
+    ...f.transactions.map((t) => t.category),
+    ...f.budgets.flatMap((b) => b.categories),
+    ...f.payments.map((p) => p.category),
+  ]);
   const keys = [...new Set(f.taxiEntries.map((e) => taxiWeek(Date.parse(e.at)).key))]
     .sort()
     .reverse();

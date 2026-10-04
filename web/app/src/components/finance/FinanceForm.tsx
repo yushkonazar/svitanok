@@ -12,6 +12,7 @@ import {
 import { haptic } from '../../telegram.ts';
 import { Sheet } from '../ui/Sheet.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 
 export type FinanceFormKind =
   | 'expense'
@@ -223,7 +224,7 @@ export function FinanceForm({
     select(
       'category',
       'Категорія',
-      f.categories.map((c) => [c, c]),
+      f.categories.map((c) => [c, financeCategoryLabel(c)]),
     );
   const account = () => select('accountId', 'Рахунок', accountOptions);
   const inputMoney = (key: string, optional = false, signed = false) =>
@@ -745,7 +746,7 @@ export function FinanceForm({
                             }
                           >
                             {selected ? '✓ ' : ''}
-                            {c}
+                            {financeCategoryLabel(c)}
                           </button>
                         );
                       })}
