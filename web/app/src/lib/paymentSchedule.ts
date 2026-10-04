@@ -1,6 +1,6 @@
 import type { Finance } from '../api/finance-schema.ts';
 import { nextPaymentDate } from '../../../core/finance/planning.mjs';
-import { fixedDebtPayment } from '../../../core/finance/payments.mjs';
+import { fixedDebtPayment, interestDebtPayment } from '../../../core/finance/payments.mjs';
 export function paymentSchedule(p: Finance['payments'][number], cap = 24) {
   const result: {
     date: string;
@@ -17,6 +17,24 @@ export function paymentSchedule(p: Finance['payments'][number], cap = 24) {
     fee = p.feeMinor ?? 0;
   for (let i = 0; i < Math.min(cap, count); i++) {
     if (remaining === 0 && (extra ?? 0) === 0) break;
+    const calculated = interestDebtPayment({
+      ...p,
+      remainingMinor: remaining,
+      installmentsLeft: count - i,
+    });
+    if (calculated && remaining != null) {
+      remaining -= calculated.principalMinor;
+      result.push({
+        date,
+        payment: calculated.amountMinor,
+        remaining,
+        overpayment: calculated.overpaymentMinor,
+      });
+      if (p.recurrence === 'once') break;
+      date = nextPaymentDate(date, p.anchorDay, p.recurrence);
+      continue;
+    }
+    if (p.interestMethod) break;
     const fixed = fixedDebtPayment({
       ...p,
       remainingMinor: remaining,

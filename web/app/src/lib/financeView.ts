@@ -1,4 +1,5 @@
 import type { Finance } from '../api/finance-schema.ts';
+import { interestDebtPayment, fixedDebtPayment } from '../../../core/finance/payments.mjs';
 import {
   share,
   sumMoney,
@@ -77,11 +78,17 @@ export function financeView(f: Finance, days: number, nowMs = Date.now()) {
     );
     return { date, value: -sumMoney(expenses.map((t) => t.amountUah!)) / 100 };
   });
-  const reminders = f.payments.filter(
-    (p) =>
-      p.status === 'active' &&
-      Date.parse(p.nextDate) - Date.parse(today) <= p.remindDays * 86400000,
-  );
+  const reminders = f.payments
+    .filter(
+      (p) =>
+        p.status === 'active' &&
+        Date.parse(p.nextDate) - Date.parse(today) <= p.remindDays * 86400000,
+    )
+    .map((p) => ({
+      ...p,
+      amountMinor:
+        interestDebtPayment(p)?.amountMinor ?? fixedDebtPayment(p)?.amountMinor ?? p.amountMinor,
+    }));
   return {
     txs,
     income,

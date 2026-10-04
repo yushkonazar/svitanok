@@ -1,6 +1,6 @@
 import { financeSchema, type Finance, type FinanceCommand } from './finance-schema.ts';
 import { financeCategories } from '../../../core/finance/categories.mjs';
-import { fixedDebtPayment } from '../../../core/finance/payments.mjs';
+import { fixedDebtPayment, interestDebtPayment } from '../../../core/finance/payments.mjs';
 import {
   calculateTaxiWeek,
   kyivInstant,
@@ -572,7 +572,10 @@ export function writeFinanceDemo(command: FinanceCommand) {
             (p.overpaymentTotalMinor == null
               ? 0
               : num('overpaymentTotalMinor') - num('overpaymentRemainingMinor')),
-          termMonths: p.overpaymentTotalMinor == null ? null : num('termMonths'),
+          termMonths:
+            p.overpaymentTotalMinor == null && !p.interestMethod ? null : num('termMonths'),
+          interestMethod: (p.interestMethod ??
+            null) as Finance['payments'][number]['interestMethod'],
         },
       ];
       break;
@@ -587,13 +590,26 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const pay = f.payments.find((s) => s.id === p.paymentId);
       if (!pay || pay.status !== 'active') throw new Error('Активний платіж не знайдено');
       const amount = num('amountMinor');
-      if (pay.remainingMinor != null && (pay.rateBps ?? 0) > 0 && p.principalMinor == null)
+      if (
+        pay.interestMethod &&
+        p.close !== true &&
+        p.principalMinor == null &&
+        !interestDebtPayment(pay, amount)
+      )
+        throw new Error('Платіж має покривати відсотки й комісію; уточни тіло за банком');
+      if (
+        pay.remainingMinor != null &&
+        (pay.rateBps ?? 0) > 0 &&
+        !pay.interestMethod &&
+        p.principalMinor == null
+      )
         throw new Error('Вкажи погашення тіла кредиту');
       const principal =
         p.principalMinor == null
-          ? p.close === true && pay.overpaymentRemainingMinor != null
+          ? p.close === true && (pay.overpaymentRemainingMinor != null || pay.interestMethod)
             ? (pay.remainingMinor ?? 0)
             : (fixedDebtPayment(pay, amount)?.principalMinor ??
+              interestDebtPayment(pay, amount)?.principalMinor ??
               Math.max(0, amount - (pay.feeMinor ?? 0)))
           : num('principalMinor');
       if (principal > amount || (pay.remainingMinor != null && principal > pay.remainingMinor))

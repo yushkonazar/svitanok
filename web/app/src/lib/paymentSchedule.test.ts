@@ -18,6 +18,24 @@ const base: Finance['payments'][number] = {
   feeMinor: 50,
 };
 describe('contract payment schedule', () => {
+  it('amortizes a selected annual-interest method and corrects the final rounded payment', () => {
+    const rows = paymentSchedule({
+      ...base,
+      kind: 'loan',
+      amountMinor: 10662,
+      remainingMinor: 120000,
+      totalMinor: 120000,
+      installmentsLeft: 12,
+      feeMinor: 0,
+      rateBps: 1200,
+      interestMethod: 'annuity',
+    });
+    expect(rows).toHaveLength(12);
+    expect(rows[0]).toMatchObject({ payment: 10662, remaining: 110538, overpayment: 1200 });
+    expect(rows.at(-1)).toMatchObject({ payment: 10660, remaining: 0 });
+    expect(rows.reduce((sum, r) => sum + r.payment, 0)).toBe(127942);
+    expect(rows.reduce((sum, r) => sum + (r.overpayment ?? 0), 0)).toBe(7942);
+  });
   it('projects the whole surcharge without changing the 550 UAH principal', () => {
     const rows = paymentSchedule({
       ...base,

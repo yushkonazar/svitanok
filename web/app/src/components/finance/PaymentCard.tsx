@@ -4,6 +4,7 @@ import {
   PAYMENT_KIND_LABELS,
   isDebtKind,
   fixedDebtPayment,
+  interestDebtPayment,
 } from '../../../../core/finance/payments.mjs';
 
 export function PaymentCard({
@@ -35,7 +36,9 @@ export function PaymentCard({
         <p className="renewal-payment-meta">{PAYMENT_KIND_LABELS[p.kind]}</p>
       </div>
       <strong className="renewal-payment-amount">
-        {moneyLabel(fixedDebtPayment(p)?.amountMinor ?? p.amountMinor)}
+        {moneyLabel(
+          interestDebtPayment(p)?.amountMinor ?? fixedDebtPayment(p)?.amountMinor ?? p.amountMinor,
+        )}
       </strong>
       <div className="renewal-payment-summary">
         <p className="renewal-muted">

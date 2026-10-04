@@ -29,6 +29,42 @@ function open(request: FinanceFormRequest) {
   );
   return { invalidate, close };
 }
+it('fills payment, total and overpayment from the selected annual rate, amount and term', async () => {
+  const { close } = open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'loan' } });
+  for (const [label, value] of Object.entries({
+    'Назва платежу': 'Автопідрахунок',
+    'Початкова сума боргу, ₴': '1 200,00',
+    'Річна ставка, %': '12',
+    'Термін кредиту, місяців': '12',
+  }))
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  expect(screen.getByLabelText('Розрахований найближчий платіж, ₴')).toHaveValue('106,62');
+  expect(screen.getByLabelText('Розраховано всього до сплати, ₴')).toHaveValue('1279,42');
+  fireEvent.change(screen.getByLabelText('Як нараховуються відсотки'), {
+    target: { value: 'flat' },
+  });
+  expect(screen.getByLabelText('Розрахована переплата, ₴')).toHaveValue('144,00');
+  fireEvent.change(screen.getByLabelText('Річна ставка, %'), { target: { value: '24' } });
+  expect(screen.getByLabelText('Розрахований найближчий платіж, ₴')).toHaveValue('124,00');
+  expect(screen.getByLabelText('Розраховано всього до сплати, ₴')).toHaveValue('1488,00');
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment',
+      payload: expect.objectContaining({
+        interestMethod: 'flat',
+        rateBps: 2400,
+        totalMinor: 120000,
+        remainingMinor: 120000,
+        installmentsLeft: 12,
+        termMonths: 12,
+        amountMinor: 12400,
+      }),
+    }),
+  );
+});
 it('submits the complete credit limit, not spent credit, and refreshes all finance readers', async () => {
   const { invalidate, close } = open({ kind: 'credit-limit', id: 'mono:demo' });
   fireEvent.change(screen.getByLabelText('Як визначати ліміт'), { target: { value: 'manual' } });
@@ -158,6 +194,7 @@ it('creates the 550 purchase plus 125 total surcharge with a 56.25 monthly payme
 it('requires bank principal for an interest-bearing loan instead of estimating it', async () => {
   open({ kind: 'payment' });
   fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'loan' } });
+  fireEvent.change(screen.getByLabelText('Як додати борг'), { target: { value: 'schedule' } });
   fireEvent.change(screen.getByLabelText('Назва платежу'), { target: { value: 'Кредит' } });
   fireEvent.change(screen.getByLabelText('Сума одного платежу, ₴'), { target: { value: '50' } });
   fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '10' } });

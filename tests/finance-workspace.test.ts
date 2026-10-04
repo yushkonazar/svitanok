@@ -6,6 +6,7 @@ import { handleFinance } from '../web/api-finance.mjs';
 import { applyRule, RETENTION } from '../web/core/retention/cleanup.mjs';
 import { runFinanceQuery } from '../web/core/tools/finance.mjs';
 import { queueMiniAppNotice, miniAppPaymentRemindTask } from '../web/core/finance/reminders.mjs';
+import { interestDebtPayment } from '../web/core/finance/payments.mjs';
 
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 function setup() {
@@ -16,6 +17,7 @@ function setup() {
     '0029_finance_credit_limits.sql',
     '0030_finance_card_installment.sql',
     '0031_finance_installment_overpayment.sql',
+    '0032_finance_interest_method.sql',
   ]);
   const originalBatch = d1.stub.batch;
   d1.stub.batch = async (statements) => {
@@ -32,6 +34,156 @@ function setup() {
   return { d1, env: workerEnv({ DB: d1.stub }) };
 }
 describe('finance workspace · real migration and SQLite transactions', () => {
+  it('uses the saved interest method for each real payment without requiring manual principal', async () => {
+    const { env } = setup();
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'annual-plan-create',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Кредит за ставкою',
+          kind: 'loan',
+          amountMinor: 10662,
+          totalMinor: 120000,
+          remainingMinor: 120000,
+          rateBps: 1200,
+          feeMinor: 0,
+          interestMethod: 'annuity',
+          termMonths: 12,
+          installmentsLeft: 12,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'кредити',
+        },
+      },
+      NOW,
+    );
+    expect((await readFinanceWorkspace(env, NOW)).transactions).toHaveLength(0);
+    for (let n = 1; n <= 12; n++) {
+      const state = await readFinanceWorkspace(env, NOW);
+      const pay = interestDebtPayment(state.payments[0]!)!;
+      await executeFinanceCommand(
+        env,
+        {
+          id: `annual-pay-${n}`,
+          version: n,
+          type: 'payment-paid',
+          payload: {
+            paymentId: 'annual-plan-create',
+            accountId: 'cash',
+            amountMinor: pay.amountMinor,
+          },
+        },
+        NOW,
+      );
+    }
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({
+      remainingMinor: 0,
+      installmentsLeft: 0,
+      status: 'done',
+      interestMethod: 'annuity',
+    });
+    expect(state.transactions).toHaveLength(12);
+    expect(state.accounts[0]!.balanceMinor).toBe(-127942);
+  });
+  it('rejects invalid interest plans and permits the actual bank principal and early payoff', async () => {
+    const { env } = setup();
+    const payload = {
+      name: 'Кредит',
+      kind: 'loan',
+      amountMinor: 10662,
+      totalMinor: 120000,
+      remainingMinor: 120000,
+      rateBps: 1200,
+      feeMinor: 0,
+      interestMethod: 'annuity',
+      termMonths: 12,
+      installmentsLeft: 12,
+      nextDate: '2026-10-09',
+      anchorDay: 9,
+      recurrence: 'month',
+      category: 'кредити',
+    };
+    await expect(
+      executeFinanceCommand(
+        env,
+        {
+          id: 'bad-method',
+          version: 0,
+          type: 'payment',
+          payload: { ...payload, interestMethod: 'invented' },
+        },
+        NOW,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      executeFinanceCommand(
+        env,
+        {
+          id: 'bad-amount',
+          version: 0,
+          type: 'payment',
+          payload: { ...payload, amountMinor: 100 },
+        },
+        NOW,
+      ),
+    ).rejects.toThrow(/покривати/);
+    await executeFinanceCommand(
+      env,
+      { id: 'annual-manual', version: 0, type: 'payment', payload },
+      NOW,
+    );
+    await expect(
+      executeFinanceCommand(
+        env,
+        {
+          id: 'too-small',
+          version: 1,
+          type: 'payment-paid',
+          payload: { paymentId: 'annual-manual', accountId: 'cash', amountMinor: 1000 },
+        },
+        NOW,
+      ),
+    ).rejects.toThrow(/покривати/);
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'bank-exact',
+        version: 1,
+        type: 'payment-paid',
+        payload: {
+          paymentId: 'annual-manual',
+          accountId: 'cash',
+          amountMinor: 10662,
+          principalMinor: 9500,
+        },
+      },
+      NOW,
+    );
+    expect((await readFinanceWorkspace(env, NOW)).payments[0]!.remainingMinor).toBe(110500);
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'annual-close',
+        version: 2,
+        type: 'payment-paid',
+        payload: {
+          paymentId: 'annual-manual',
+          accountId: 'cash',
+          amountMinor: 111000,
+          close: true,
+        },
+      },
+      NOW,
+    );
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({ remainingMinor: 0, status: 'done' });
+    expect(state.accounts[0]!.balanceMinor).toBe(-121662);
+  });
   it('records total overpayment separately and charges exactly 675 UAH across twelve installments', async () => {
     const { env } = setup();
     const payload = {

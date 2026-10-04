@@ -1,7 +1,7 @@
 // Persistent claims survive outbox retention. Queue and claim commit together;
 // the existing outbox sweeper owns Telegram delivery and retries.
 import { kyivParts } from './planning.mjs';
-import { fixedDebtPayment } from './payments.mjs';
+import { fixedDebtPayment, interestDebtPayment } from './payments.mjs';
 import { assistantHomeTarget } from '../tg/home.mjs';
 import { loadSettings } from '../../kv-store.mjs';
 import { isQuietMinute } from '../../settings-core.mjs';
@@ -84,13 +84,18 @@ export async function miniAppPaymentRemindTask(env, nowMs = Date.now()) {
       .map((char) => (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? ' ' : char))
       .join('')
       .slice(0, 100);
-    const nextPayment = fixedDebtPayment({
+    const payment = {
       amountMinor: Number(row.amount_minor),
       remainingMinor: row.remaining_minor == null ? null : Number(row.remaining_minor),
       overpaymentRemainingMinor:
         row.overpayment_remaining_minor == null ? null : Number(row.overpayment_remaining_minor),
       installmentsLeft: row.installments_left == null ? null : Number(row.installments_left),
-    });
+      totalMinor: row.total_minor == null ? null : Number(row.total_minor),
+      interestMethod: row.interest_method == null ? null : String(row.interest_method),
+      rateBps: Number(row.rate_bps ?? 0),
+      feeMinor: Number(row.fee_minor ?? 0),
+    };
+    const nextPayment = interestDebtPayment(payment) ?? fixedDebtPayment(payment);
     const amount = ((nextPayment?.amountMinor ?? Number(row.amount_minor)) / 100).toLocaleString(
       'uk-UA',
       {

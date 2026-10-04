@@ -4,10 +4,65 @@ import {
   estimateRemaining,
   installmentQuote,
   fixedDebtPayment,
+  interestQuote,
+  interestDebtPayment,
 } from '../web/core/finance/payments.mjs';
 import { d1FromSqlite } from './helpers/d1.js';
 
 describe('payment balances and schema expansion', () => {
+  it('distinguishes annuity, declining principal and flat nominal annual interest', () => {
+    expect(interestQuote(120000, 12, 1200, 'annuity')).toEqual({
+      amountMinor: 10662,
+      totalMinor: 127942,
+      overpaymentMinor: 7942,
+      lastAmountMinor: 10660,
+    });
+    expect(interestQuote(120000, 12, 1200, 'declining')).toEqual({
+      amountMinor: 11200,
+      totalMinor: 127800,
+      overpaymentMinor: 7800,
+      lastAmountMinor: 10100,
+    });
+    expect(interestQuote(120000, 12, 1200, 'flat')).toEqual({
+      amountMinor: 11200,
+      totalMinor: 134400,
+      overpaymentMinor: 14400,
+      lastAmountMinor: 11200,
+    });
+    expect(interestQuote(120000, 12, 0, 'annuity', 100)).toEqual({
+      amountMinor: 10100,
+      totalMinor: 121200,
+      overpaymentMinor: 1200,
+      lastAmountMinor: 10100,
+    });
+  });
+  it('recalculates from outstanding principal and refuses incomplete or non-amortizing input', () => {
+    expect(interestQuote(60000, 6, 1200, 'flat', 0, 120000)?.totalMinor).toBe(67200);
+    for (const [principal, months, rate, method] of [
+      [0, 12, 1200, 'annuity'],
+      [120000, 0, 1200, 'annuity'],
+      [120000, 12, 30001, 'annuity'],
+      [120000, 12, 1200, 'guess'],
+      [120000, 1.5, 1200, 'flat'],
+    ] as const)
+      expect(interestQuote(principal, months, rate, method)).toBeNull();
+    const pay = {
+      amountMinor: 10662,
+      remainingMinor: 120000,
+      totalMinor: 120000,
+      installmentsLeft: 12,
+      rateBps: 1200,
+      interestMethod: 'annuity',
+    };
+    expect(interestDebtPayment(pay)).toMatchObject({ principalMinor: 9462, interestMinor: 1200 });
+    expect(interestDebtPayment(pay, 1200)).toBeNull();
+    expect(interestDebtPayment({ ...pay, installmentsLeft: 1 })).toMatchObject({
+      amountMinor: 121200,
+      principalMinor: 120000,
+    });
+    expect(interestDebtPayment({ ...pay, interestMethod: null })).toBeNull();
+    expect(interestQuote(Number.MAX_SAFE_INTEGER, 12, 1200, 'flat')).toBeNull();
+  });
   it('keeps a 550 plus 125 installment exact across all twelve monthly payments', () => {
     const quote = installmentQuote(55000, 12500, 12)!;
     expect(quote).toEqual({ totalMinor: 67500, amountMinor: 5625, lastAmountMinor: 5625 });

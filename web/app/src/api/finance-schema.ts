@@ -95,6 +95,7 @@ export const financePaymentSchema = z.object({
   overpaymentRemainingMinor: money.nullable().optional(),
   overpaymentPaidMinor: money.optional(),
   termMonths: z.number().int().nullable().optional(),
+  interestMethod: z.enum(['annuity', 'declining', 'flat']).nullable().optional(),
 });
 export const financeSchema = z.object({
   ok: z.literal(true),

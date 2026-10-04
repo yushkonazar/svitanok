@@ -4,7 +4,12 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { shiftDate } from '../../../../core/finance/planning.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
-import { isDebtKind, fixedDebtPayment } from '../../../../core/finance/payments.mjs';
+import {
+  isDebtKind,
+  fixedDebtPayment,
+  interestDebtPayment,
+  INTEREST_METHOD_LABELS,
+} from '../../../../core/finance/payments.mjs';
 export function PaymentDetail({
   payment: p,
   onBack,
@@ -25,6 +30,8 @@ export function PaymentDetail({
     left = p.remainingMinor;
   const percentage =
     total && left != null ? Math.max(0, Math.min(100, ((total - left) / total) * 100)) : null;
+  const projectedRows = p.interestMethod ? paymentSchedule(p, 1200) : [];
+  const projectedTotal = projectedRows.reduce((sum, row) => sum + row.payment, 0);
   return (
     <div className="flex flex-col gap-5">
       <button className="renewal-link self-start" onClick={onBack}>
@@ -50,6 +57,21 @@ export function PaymentDetail({
             </p>
           </div>
         )}
+        {p.interestMethod && (
+          <div className="renewal-inset mt-3">
+            <p>{INTEREST_METHOD_LABELS[p.interestMethod]}</p>
+            <p className="renewal-muted">
+              Показаний залишок — тіло боргу. Відсотки розраховуються щомісяця за номінальною
+              ставкою ÷ 12.
+            </p>
+            {projectedRows.length > 0 && projectedRows.at(-1)?.remaining === 0 && (
+              <p className="renewal-muted mt-2">
+                Прогноз до сплати: {moneyLabel(projectedTotal)} · відсотки й комісії:{' '}
+                {moneyLabel(projectedTotal - (left ?? 0))}.
+              </p>
+            )}
+          </div>
+        )}
         <p className="renewal-muted">
           {p.installmentsLeft == null ? 'За твоїм графіком' : `${p.installmentsLeft} платежів`} ·{' '}
           {p.status === 'done' ? 'Завершено' : p.status === 'paused' ? 'Призупинено' : 'Активний'}
@@ -68,7 +90,13 @@ export function PaymentDetail({
         <div className="renewal-metrics">
           <div className="renewal-metric">
             <span className="renewal-muted">Повний платіж</span>
-            <strong>{moneyLabel(fixedDebtPayment(p)?.amountMinor ?? p.amountMinor)}</strong>
+            <strong>
+              {moneyLabel(
+                interestDebtPayment(p)?.amountMinor ??
+                  fixedDebtPayment(p)?.amountMinor ??
+                  p.amountMinor,
+              )}
+            </strong>
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">
@@ -84,9 +112,18 @@ export function PaymentDetail({
             <span className="renewal-muted">
               {p.overpaymentTotalMinor != null
                 ? 'Переплата наступного платежу'
-                : 'Комісія в платежі'}
+                : p.interestMethod
+                  ? 'Відсотки й комісія'
+                  : 'Комісія в платежі'}
             </span>
-            <strong>{moneyLabel(fixedDebtPayment(p)?.overpaymentMinor ?? p.feeMinor ?? 0)}</strong>
+            <strong>
+              {moneyLabel(
+                interestDebtPayment(p)?.overpaymentMinor ??
+                  fixedDebtPayment(p)?.overpaymentMinor ??
+                  p.feeMinor ??
+                  0,
+              )}
+            </strong>
           </div>
           <div className="renewal-metric">
             <span className="renewal-muted">Наступна дата</span>
@@ -123,7 +160,7 @@ export function PaymentDetail({
           )}
         </div>
       </section>
-      {left != null && (p.rateBps ?? 0) === 0 && rows.length > 0 && (
+      {left != null && ((p.rateBps ?? 0) === 0 || p.interestMethod) && rows.length > 0 && (
         <section className="renewal-card">
           <h2 className="text-lg font-semibold mb-4">Як зменшуватиметься борг</h2>
           <ObservationChart
@@ -135,7 +172,7 @@ export function PaymentDetail({
             ].filter((r, i, a) => i === 0 || r.date !== a[i - 1].date)}
           />
           <p className="renewal-chart-note mt-3">
-            Прогноз за фіксованим платежем, без дострокових оплат. Залишок зміниться в обліку лише
+            Прогноз за обраним графіком, без дострокових оплат. Залишок зміниться в обліку лише
             після підтвердження фактичної оплати.
           </p>
         </section>
@@ -148,7 +185,7 @@ export function PaymentDetail({
             кількість платежів. Борг зберігається в обліку.
           </p>
         )}
-        {(p.rateBps ?? 0) > 0 && (
+        {(p.rateBps ?? 0) > 0 && !p.interestMethod && (
           <p className="renewal-muted mt-3">
             Показуємо повні платежі за введеним договором. Погашення тіла потрібно вказувати при
             оплаті; точний банківський графік із самої ставки визначити не можна.

@@ -115,6 +115,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'overpayment_remaining_minor',
     'overpayment_paid_minor',
     'term_months',
+    'interest_method',
   ],
   finance_commands: ['id', 'payload_hash', 'at'],
   finance_notices: ['id', 'claim', 'at'],
@@ -566,7 +567,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять один файл 0001–0031, нумерація без дірок', () => {
+  it('тридцять два файли 0001–0032, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -599,6 +600,7 @@ describe('міграції D1 — файли', () => {
       '0029',
       '0030',
       '0031',
+      '0032',
     ]);
   });
 });

@@ -1,5 +1,5 @@
 import { financeCategories } from './categories.mjs';
-import { fixedDebtPayment, isDebtKind } from './payments.mjs';
+import { fixedDebtPayment, isDebtKind, interestDebtPayment, interestQuote } from './payments.mjs';
 import { NOT_TEST_SQL, readMonoAccounts } from './store.mjs';
 import {
   minor,
@@ -328,6 +328,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       overpaymentRemainingMinor:
         r.overpayment_remaining_minor == null ? null : Number(r.overpayment_remaining_minor),
       overpaymentPaidMinor: Number(r.overpayment_paid_minor ?? 0),
+      interestMethod: r.interest_method == null ? null : String(r.interest_method),
       termMonths: r.term_months == null ? null : Number(r.term_months),
     })),
     detectedSubscriptions: rows(10).map((r) => ({
@@ -1018,6 +1019,50 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         term_months: term,
       });
     }
+    const interestMethod =
+      payload.interestMethod === undefined
+        ? (previous?.interestMethod ?? null)
+        : payload.interestMethod;
+    if (payload.interestMethod !== undefined || previous?.interestMethod != null) {
+      if (interestMethod != null) {
+        const term = payload.termMonths ?? previous?.termMonths;
+        const estimate = interestQuote(
+          values.remaining_minor ?? 0,
+          left ?? 0,
+          values.rate_bps,
+          interestMethod,
+          values.fee_minor,
+          values.total_minor ?? 0,
+        );
+        if (
+          !isDebtKind(kind) ||
+          extraTotal != null ||
+          values.recurrence !== 'month' ||
+          !estimate ||
+          !Number.isInteger(term) ||
+          term < 1 ||
+          term > 1200 ||
+          left > term
+        )
+          throw new FinanceValidation(
+            'Перевір суму, річну ставку, спосіб нарахування і місячний термін',
+          );
+        Object.assign(values, { term_months: term });
+        if (
+          !interestDebtPayment({
+            amountMinor: values.amount_minor,
+            remainingMinor: values.remaining_minor,
+            totalMinor: values.total_minor,
+            installmentsLeft: left,
+            rateBps: values.rate_bps,
+            feeMinor: values.fee_minor,
+            interestMethod,
+          })
+        )
+          throw new FinanceValidation('Платіж має покривати відсотки, комісію та частину тіла');
+      }
+      Object.assign(values, { interest_method: interestMethod });
+    }
     if (!Number.isInteger(values.rate_bps) || values.rate_bps < 0 || values.rate_bps > 30000)
       throw new FinanceValidation('Некоректна річна ставка');
     if (
@@ -1071,14 +1116,32 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       throw new FinanceValidation(
         'Обери завершений непов’язаний банківський платіж із відповідною сумою',
       );
-    if (payment.remainingMinor != null && payment.rateBps > 0 && payload.principalMinor == null)
+    if (
+      payment.remainingMinor != null &&
+      payment.rateBps > 0 &&
+      !payment.interestMethod &&
+      payload.principalMinor == null
+    )
       throw new FinanceValidation('Вкажи частину платежу, яка погашає тіло кредиту за договором');
     const fixed = fixedDebtPayment(payment, amount);
+    const calculated = interestDebtPayment(payment, amount);
+    if (
+      payment.interestMethod &&
+      payload.close !== true &&
+      payload.principalMinor == null &&
+      !calculated
+    )
+      throw new FinanceValidation(
+        'Платіж має покривати відсотки й комісію; для іншого графіка вкажи тіло за банком',
+      );
     const principal =
       payload.principalMinor == null
-        ? payload.close === true && payment.overpaymentRemainingMinor != null
+        ? payload.close === true &&
+          (payment.overpaymentRemainingMinor != null || payment.interestMethod)
           ? (payment.remainingMinor ?? 0)
-          : (fixed?.principalMinor ?? Math.max(0, amount - payment.feeMinor))
+          : (fixed?.principalMinor ??
+            calculated?.principalMinor ??
+            Math.max(0, amount - payment.feeMinor))
         : minor(payload.principalMinor);
     if (
       principal > amount ||
