@@ -12,6 +12,37 @@ const HISTORY_DAYS = 14;
 interface NbuRate {
   cc?: string;
   rate?: number;
+  txt?: string;
+  exchangedate?: string;
+}
+
+export interface CatalogRate {
+  code: string;
+  name: string;
+  rate: number;
+  asOf?: string;
+}
+export function pickCatalog(json: unknown): CatalogRate[] {
+  if (!Array.isArray(json)) return [];
+  const unique = new Map<string, CatalogRate>();
+  for (const row of json as NbuRate[]) {
+    if (
+      !row ||
+      !/^[A-Z]{3}$/.test(row.cc ?? '') ||
+      !Number.isFinite(row.rate) ||
+      (row.rate ?? 0) <= 0
+    )
+      continue;
+    if (['XAU', 'XAG', 'XPT', 'XPD'].includes(row.cc!)) continue;
+    const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(row.exchangedate ?? '');
+    unique.set(row.cc!, {
+      code: row.cc!,
+      name: row.txt || row.cc!,
+      rate: row.rate!,
+      ...(m ? { asOf: `${m[3]}-${m[2]}-${m[1]}` } : {}),
+    });
+  }
+  return [...unique.values()].sort((a, b) => a.code.localeCompare(b.code));
 }
 
 export interface Rates {
@@ -28,7 +59,8 @@ interface HistEntry extends Rates {
 /** Витягти USD/EUR (обов'язкові) + PLN/GBP (опційні), округлити до копійок. */
 export function pickRates(json: unknown): Rates | null {
   if (!Array.isArray(json)) return null;
-  const r2 = (v: unknown) => (typeof v === 'number' ? Math.round(v * 100) / 100 : undefined);
+  const r2 = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : undefined;
   const find = (cc: string) => r2((json as NbuRate[]).find((x) => x?.cc === cc)?.rate);
   const usd = find('USD');
   const eur = find('EUR');
@@ -61,8 +93,10 @@ export function createCurrencyModule(opts: CurrencyModuleOptions = {}): Module<A
       try {
         const res = await fetchImpl(NBU_URL, { signal: ctrl.signal });
         if (!res.ok) throw new Error(`НБУ HTTP ${res.status}`);
-        const rates = pickRates(await res.json());
+        const raw = await res.json();
+        const rates = pickRates(raw);
         if (!rates) return null;
+        const catalog = pickCatalog(raw);
 
         // Історія в стані: додаємо сьогодні (дедуп за датою), тримаємо останні 14 днів.
         const today = ctx.clock.todayKey();
@@ -71,6 +105,22 @@ export function createCurrencyModule(opts: CurrencyModuleOptions = {}): Module<A
           -HISTORY_DAYS,
         );
         ctx.state.set('currencyHistory', hist);
+        // One shared request already contains every supported currency. Keep
+        // dated observations; no network request on search or chart gestures.
+        const old =
+          ctx.state.get<Array<{ date: string; rates: Record<string, number> }>>(
+            'currencyCatalogHistory',
+          ) ?? [];
+        const observations = [
+          ...old.filter((h) => h.date < today),
+          {
+            date: today,
+            rates: Object.fromEntries(catalog.map((r) => [r.code, r.rate])),
+          },
+        ]
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .slice(-90);
+        ctx.state.set('currencyCatalogHistory', observations);
 
         const series = (k: keyof Rates) =>
           hist.map((h) => h[k]).filter((v): v is number => typeof v === 'number');
@@ -82,6 +132,8 @@ export function createCurrencyModule(opts: CurrencyModuleOptions = {}): Module<A
           summary: `USD ${rates.usd} · EUR ${rates.eur}`,
           data: {
             ...rates,
+            catalog,
+            observations,
             usdHistory: series('usd'),
             eurHistory: series('eur'),
             plnHistory: series('pln'),

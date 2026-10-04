@@ -88,6 +88,8 @@ describe('runCronTasks — збій однієї задачі не забира�
      кожним додаванням, і три коментарі поруч уже показували 'вісім'. */
   it('CRON_TASKS — усі задачі, кожна з назвою для логів', () => {
     expect(CRON_TASKS.map((t: { name: string }) => t.name)).toEqual([
+      'refreshNewsSnapshot',
+      'miniAppPaymentRemindTask',
       'checkReminders',
       'reconcilePlanCalendar',
       'agentRunWatchdog',
@@ -99,6 +101,7 @@ describe('runCronTasks — збій однієї задачі не забира�
       'autoTelegramSetup',
       'archiveMonthly',
       'computeLevers',
+      'drainOutbox',
     ]);
   });
 });

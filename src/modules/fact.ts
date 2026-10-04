@@ -1,70 +1,41 @@
-// fact (consumer). «Факт дня» через LLM, але ЕКОНОМНО — батч-кеш: коли
-// state.factCache порожній, ОДИН виклик генерує batchSize фактів; далі щодня
-// беремо один без LLM. Тобто ~1 виклик на batchSize днів (нуль квоти решту часу).
-
+// Source-reviewed editorial catalog. Never publish unverified legacy LLM strings.
+// One stable item per Kyiv calendar day; retries do not consume another fact.
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
+import catalog from '../data/verified-facts.json' with { type: 'json' };
 
-const FACT_PRIORITY = 20; // слот колишнього «На сьогодні», під стоїком
-
-/** Витягти JSON-масив рядків із виводу LLM (можлива проза навколо). */
-export function parseFacts(text: string): string[] {
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start === -1 || end <= start) return [];
-  try {
-    const arr: unknown = JSON.parse(text.slice(start, end + 1));
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((x): x is string => typeof x === 'string')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+export interface VerifiedFact {
+  id: string;
+  fact: string;
+  sourceUrl: string;
+  sourceName: string;
+  verifiedAt: string;
 }
-
-export function buildFactsPrompt(n: number): string {
-  return [
-    `Згенеруй рівно ${n} коротких цікавих фактів українською мовою`,
-    '(наука, історія, космос, природа, технології, мова).',
-    'Кожен факт — одне-два речення, самодостатній, без нумерації та без повторів.',
-    'Поверни ЛИШЕ валідний JSON-масив рядків, без прози: ["факт", "факт", ...]',
-  ].join(' ');
+export function resolveFact(todayKey: string): VerifiedFact | null {
+  const day = Date.parse(`${todayKey}T00:00:00Z`);
+  if (!Number.isFinite(day) || !catalog.length) return null;
+  const offset = Math.floor((day - Date.parse('2026-10-04T00:00:00Z')) / 86400000);
+  return catalog[((offset % catalog.length) + catalog.length) % catalog.length] ?? null;
 }
-
 export const factModule: Module<AppConfig> = {
   id: 'fact',
   kind: 'consumer',
   enabled: (config) => config.modules.fact.enabled,
-
   async run(ctx: Ctx<AppConfig>): Promise<Block | null> {
-    const cfg = ctx.config.modules.fact;
-    let cache = ctx.state.get<string[]>('factCache') ?? [];
-
-    if (cache.length === 0) {
-      try {
-        const out = await ctx.llm.complete(buildFactsPrompt(cfg.batchSize), {
-          timeoutMs: ctx.config.llm.timeoutMs,
-          tag: 'fact',
-        });
-        cache = parseFacts(out);
-      } catch (e) {
-        ctx.log.warn(`fact: генерація не вдалася: ${e instanceof Error ? e.message : String(e)}`);
-        return null;
-      }
-      if (cache.length === 0) return null;
-    }
-
-    const fact = cache.shift()!;
-    ctx.state.set('factCache', cache);
+    const date = ctx.clock.todayKey();
+    const saved = ctx.state.get<{ date: string; id: string }>('verifiedFactDay');
+    const fact =
+      (saved?.date === date ? catalog.find((item) => item.id === saved.id) : null) ??
+      resolveFact(date);
+    if (!fact) return null;
+    ctx.state.set('verifiedFactDay', { date, id: fact.id });
     return {
       id: 'fact',
       title: 'Факт дня',
       icon: '🧠',
-      summary: fact,
-      data: { fact },
-      priority: FACT_PRIORITY,
+      summary: fact.fact,
+      data: fact,
+      priority: 20,
     };
   },
 };

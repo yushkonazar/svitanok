@@ -17,6 +17,7 @@
 //   нього, а окремий canonical `settings` slot очищується цілком.
 
 import { BACKUP_TABLES } from '../backup/core.mjs';
+import { FINANCE_DEFAULT_SQL } from '../finance/defaults.mjs';
 import {
   clearAssistantHistory,
   clearSentMessages,
@@ -70,6 +71,7 @@ export const FORGET_ALL_KV_KEYS = [
   'saved',
   'levers',
   'latest',
+  'miniAppNewsSnapshot',
   'assistantHistory',
   'ownerGeo',
   'ownerGeoManual',
@@ -316,11 +318,12 @@ async function continueForgetAll(env, receipt) {
 async function eraseLocalData(env) {
   const db = /** @type {NonNullable<Env['DB']>} */ (env.DB);
   let rows = 0;
-  for (const table of FORGET_ALL_TABLES) {
+  for (const table of [...FORGET_ALL_TABLES].reverse()) {
     // Імена - з константного списку, не з вводу.
     const res = await db.prepare(`DELETE FROM ${table}`).bind().run();
     rows += Number(res?.meta?.changes ?? 0);
   }
+  for (const sql of FINANCE_DEFAULT_SQL) await db.prepare(sql).bind().run();
   // Лічильники не видаляємо, а обнуляємо: рядок потрібен коду, значення - ні.
   await db.prepare('UPDATE counters SET value = 0').bind().run();
   for (const fts of FORGET_ALL_FTS) {

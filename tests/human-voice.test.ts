@@ -114,6 +114,7 @@ describe('обсяг T2 - ДО слова', () => {
     '0009_voice.sql',
     '0010_reminders_address.sql',
     '0011_ideas_number.sql',
+    '0028_mini_app_finance.sql',
   ];
 
   it('forget target=collection - скільки записів і в якій колекції', async () => {
@@ -143,7 +144,7 @@ describe('обсяг T2 - ДО слова', () => {
         .run(key);
     const env = workerEnv({ DB: d1.stub });
     const text = await proposalVolume(env, 'forget', { target: 'all' });
-    expect(text).toMatch(/^2 рядки у \d+ таблицях і \d+ ключів KV$/);
+    expect(text).toMatch(/^5 рядків у \d+ таблицях і \d+ ключів KV$/);
   });
 
   it('рахунок упав - пропозиція лишається без числа, не падає', async () => {

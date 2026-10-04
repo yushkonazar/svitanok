@@ -52,7 +52,17 @@ export const weatherLocationSchema = z.object({
   dayLenDeltaMin: z.number().optional(),
   sunrise: z.number().default(0),
   sunset: z.number().default(0),
-  hourly: z.array(z.object({ h: z.number(), t: z.number() })).optional(),
+  hourly: z
+    .array(
+      z.object({
+        h: z.number(),
+        t: z.number(),
+        at: z.number().optional(),
+        popPercent: z.number().min(0).max(100).optional(),
+        precipMm: z.number().nonnegative().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export const weatherDataSchema = z.object({
@@ -100,6 +110,19 @@ export interface Settlement {
 }
 
 export const currencyDataSchema = z.object({
+  catalog: z
+    .array(
+      z.object({
+        code: z.string(),
+        name: z.string(),
+        rate: z.number().positive(),
+        asOf: z.string().optional(),
+      }),
+    )
+    .optional(),
+  observations: z
+    .array(z.object({ date: z.string(), rates: z.record(z.string(), z.number().positive()) }))
+    .optional(),
   usd: z.number().optional(),
   eur: z.number().optional(),
   pln: z.number().optional(),
@@ -118,14 +141,34 @@ export const mockDataSchema = z.object({
   topic: z.string().optional(),
 });
 
-export const factDataSchema = z.object({ fact: z.string() });
+export const factDataSchema = z.object({
+  fact: z.string(),
+  sourceName: z.string().optional(),
+  verifiedAt: z.string().optional(),
+  sourceUrl: z.string().url().optional(),
+});
 
-export const stoicDataSchema = z.object({ text: z.string(), author: z.string() });
+export const stoicDataSchema = z.object({
+  text: z.string(),
+  author: z.string(),
+  reference: z.string().optional(),
+  translation: z.string().optional(),
+  sourceUrl: z.string().url().optional(),
+});
 
 export const onThisDayEventSchema = z.object({
   year: z.number(),
   text: z.string(),
   url: z.string().optional(),
+  location: z
+    .object({
+      lat: z.number().min(-90).max(90),
+      lon: z.number().min(-180).max(180),
+      label: z.string(),
+      sourceUrl: z.string().url(),
+      kind: z.enum(['associated_article', 'event']),
+    })
+    .optional(),
 });
 
 export const onThisDayDataSchema = z.object({
@@ -133,7 +176,10 @@ export const onThisDayDataSchema = z.object({
 });
 
 export const newsItemSchema = z.object({
+  image: z.string().url().optional(),
   title: z.string(),
+  originalTitle: z.string().optional(),
+  translated: z.boolean().optional(),
   url: z.string(),
   why: z.string().optional(),
   publishedAt: z.string().optional(),
@@ -148,6 +194,12 @@ export const newsGroupSchema = z.object({
 
 export const newsDataSchema = z.object({
   groups: z.array(newsGroupSchema).default([]),
+});
+export const newsSnapshotSchema = newsDataSchema.extend({
+  localization: z.object({ translated: z.number(), total: z.number() }).optional(),
+  generatedAt: z.string().nullable(),
+  attemptedAt: z.string(),
+  sources: z.array(z.object({ name: z.string(), ok: z.boolean() })),
 });
 
 // funnelStage — лише демо-фолбек; реальна стадія завжди зі stats (funnelList).

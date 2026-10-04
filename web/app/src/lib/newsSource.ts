@@ -6,12 +6,14 @@
 // підчищений хостнейм лишається чесним фолбеком.
 
 const LABELS: [RegExp, string][] = [
-  [/bbci\.co\.uk$/i, 'BBC'],
+  [/(^|\.)(?:bbc\.com|bbc\.co\.uk|bbci\.co\.uk)$/i, 'BBC'],
   [/theguardian\.com$/i, 'Guardian'],
   [/tsn\.ua$/i, 'ТСН'],
   [/itc\.ua$/i, 'ITC.ua'],
   [/dotesports\.com$/i, 'Dot Esports'],
   [/hltv\.org$/i, 'HLTV'],
+  [/(^|\.)pravda\.com\.ua$/i, 'Українська правда'],
+  [/(^|\.)skysports\.com$/i, 'Sky Sports'],
   [/(hnrss\.org|news\.ycombinator\.com)$/i, 'Hacker News'],
 ];
 

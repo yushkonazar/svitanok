@@ -9,6 +9,7 @@ import { ToastProvider } from './components/ui/Toast.tsx';
 import { mutationErrorText } from './lib/mutationError.ts';
 import { initTelegram } from './telegram.ts';
 import './index.css';
+import './renewal.css';
 
 initTelegram();
 

@@ -65,8 +65,8 @@ describe('weather-core (Worker-порт) — parseOneCall', () => {
 
   it('вікно дощу + hourly {h,t} за сьогодні', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01');
-    expect(w!.rainWindow).toBe('12:00–16:00');
-    expect(w!.hourly).toEqual([
+    expect(w!.rainWindow).toBe('12:00–13:00, 15:00–16:00');
+    expect(w!.hourly?.map(({ h, t }: { h: number; t: number }) => ({ h, t }))).toEqual([
       { h: 9, t: 10 },
       { h: 12, t: 8 },
       { h: 15, t: 12 },

@@ -3,6 +3,7 @@ import { useStats, useVote, useToggleSaveNews } from '../../api/hooks.ts';
 import { useSaved } from '../../saved.tsx';
 import { postEvent } from '../../api/client.ts';
 import { has } from '../../lib/format.ts';
+import { NewsArt } from './NewsArt.tsx';
 import { openLink, haptic } from '../../telegram.ts';
 import { newsSource } from '../../lib/newsSource.ts';
 import { timeAgo } from '../../lib/timeAgo.ts';
@@ -18,7 +19,17 @@ import { useTick } from '../../lib/useTick.ts';
 // сервер більше не дає їх СТВОРИТИ, але вміє прочитати й відкотити, якщо
 // лайкнути раніше дизлайкнуту новину (див. коментар у web/worker.js).
 
-export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
+export function NewsItem({
+  item,
+  topic,
+  featured = false,
+  onOpen,
+}: {
+  item: NewsItemT;
+  topic: string;
+  featured?: boolean;
+  onOpen?: () => void;
+}) {
   // Живий тик (раз/хв) — «5 хв» саме старіє на екрані, без рефетчу даних.
   useTick(60_000);
   const { data } = useStats();
@@ -31,7 +42,8 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
   const saveMut = useToggleSaveNews();
 
   const openNews = () => {
-    openLink(item.url);
+    if (onOpen) onOpen();
+    else openLink(item.url);
     void postEvent('news_click', { category: topic, url: item.url }).catch(() => {});
   };
 
@@ -48,7 +60,7 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
       aria-label={aria}
       aria-pressed={on}
       onClick={onClick}
-      className="grid h-8 w-8 flex-none place-items-center rounded-[10px] border text-sm transition-colors"
+      className="grid h-11 w-11 flex-none place-items-center rounded-[10px] border text-sm transition-colors"
       style={{
         background: on ? onBg : 'var(--color-glass)',
         borderColor: on ? onBrd : 'var(--color-glassb)',
@@ -73,8 +85,20 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
   const ago = timeAgo(item.publishedAt);
 
   return (
-    <div className="flex items-center gap-2.5">
-      <button type="button" onClick={openNews} className="min-w-0 flex-1 text-left">
+    <div className={`renewal-news-story ${featured ? 'is-featured' : ''}`}>
+      <button
+        type="button"
+        onClick={openNews}
+        className="renewal-news-visual"
+        aria-label={`Відкрити: ${item.title}`}
+      >
+        <NewsArt image={item.image} topic={topic} compact={!featured} />
+      </button>
+      <button
+        type="button"
+        onClick={openNews}
+        className="renewal-news-copy min-w-0 flex-1 text-left"
+      >
         {(source || ago) && (
           <span className="mb-0.5 flex items-center gap-1.5 font-mono text-[9.5px] font-semibold text-tx3">
             {source && (
@@ -83,14 +107,10 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
             {ago && <span>{ago}</span>}
           </span>
         )}
-        <span className="block text-[13.5px] font-semibold leading-[1.35]">{item.title}</span>
-        {has(item.why) && (
-          <span className="mt-0.5 block font-mono text-[10.5px] font-medium text-a2">
-            {item.why}
-          </span>
-        )}
+        <span className="renewal-news-headline">{item.title}</span>
+        {has(item.why) && <span className="renewal-news-excerpt">{item.why}</span>}
       </button>
-      <div className="flex flex-none gap-1.5">
+      <div className="renewal-news-actions flex flex-none gap-1.5">
         {btn(
           '❤️',
           liked,
@@ -119,6 +139,12 @@ export function NewsItem({ item, topic }: { item: NewsItemT; topic: string }) {
           saved ? 'Прибрати зі збереженого' : 'Зберегти',
         )}
       </div>
+      {item.translated && item.originalTitle && (
+        <details className="renewal-news-original">
+          <summary aria-label="Показати оригінальний заголовок">EN</summary>
+          <span>{item.originalTitle}</span>
+        </details>
+      )}
     </div>
   );
 }

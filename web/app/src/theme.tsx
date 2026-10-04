@@ -32,7 +32,7 @@ function readInitialPref(): ThemePref {
   } catch {
     /* localStorage може бути недоступним (приватний режим) — ігноруємо */
   }
-  return 'auto';
+  return 'dark';
 }
 
 /** Поточна «зовнішня» тема: Telegram-клієнт у вебв'ю, інакше системна. */

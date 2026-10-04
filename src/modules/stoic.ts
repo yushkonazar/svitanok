@@ -5,11 +5,15 @@
 
 import type { Module, Block, Ctx } from '../core/types.js';
 import type { AppConfig } from '../core/config.js';
-import quotesData from '../data/stoic.json' with { type: 'json' };
+import quotesData from '../data/verified-stoic.json' with { type: 'json' };
 
 interface Quote {
   text: string;
   author: string;
+  reference: string;
+  sourceUrl: string;
+  translation: string;
+  verifiedAt: string;
 }
 const quotes: Quote[] = quotesData as Quote[];
 
@@ -37,7 +41,7 @@ export const stoicModule: Module<AppConfig> = {
       title: 'Думка дня',
       icon: '🏛',
       summary: `«${q.text}»\n— ${q.author}`,
-      data: { text: q.text, author: q.author },
+      data: q,
       priority: 10, // одразу під заголовком-датою (§5)
     };
   },

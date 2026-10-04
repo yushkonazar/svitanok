@@ -1,0 +1,212 @@
+[
+  {
+    "id": "octopus-hearts",
+    "fact": "У восьминога три серця: два прокачують кров через зябра, а третє — через решту тіла.",
+    "sourceUrl": "https://ocean.si.edu/ocean-life/invertebrates/octopuses-squids-and-relatives",
+    "sourceName": "Smithsonian Ocean",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "venus-rotation",
+    "fact": "Венера обертається навколо осі за 243 земні доби, а навколо Сонця — за 225. Саме обертання довше за рік; цикл від сходу до сходу Сонця там інший.",
+    "sourceUrl": "https://science.nasa.gov/venus/venus-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "web-origin",
+    "fact": "Перший вебсайт був присвячений самому вебу. Тім Бернерс-Лі розмістив його на своєму комп’ютері NeXT у CERN.",
+    "sourceUrl": "https://home.cern/science/computing/the-birth-of-the-web/",
+    "sourceName": "CERN",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "saturn-density",
+    "fact": "Середня густина Сатурна менша за густину води. Це властивість цілого газового гіганта, а не твердої поверхні — її в нього немає.",
+    "sourceUrl": "https://science.nasa.gov/saturn/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "moon-far-side",
+    "fact": "Зворотний бік Місяця не є постійно темним. Він теж отримує сонячне світло; ми не бачимо його через синхронне обертання Місяця.",
+    "sourceUrl": "https://science.nasa.gov/moon/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "mercury-solar-day",
+    "fact": "Від одного сходу Сонця до наступного на Меркурії минає приблизно 176 земних діб — два меркуріанські роки.",
+    "sourceUrl": "https://science.nasa.gov/mercury/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "iss-sunrises",
+    "fact": "На Міжнародній космічній станції за земну добу можна побачити близько 16 сходів і заходів Сонця. Один оберт станції триває приблизно 90 хвилин.",
+    "sourceUrl": "https://www.nasa.gov/international-space-station/space-station-facts-and-figures/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "neptune-prediction",
+    "fact": "Нептун знайшли завдяки математичному прогнозу. У 1846 році Йоганн Галле виявив планету в першу ніч пошуку за координатами, надісланими Урбеном Левер’є.",
+    "sourceUrl": "https://science.nasa.gov/neptune/neptune-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "cephalopod-blue-blood",
+    "fact": "У головоногих молюсків кров блакитна: кисень переносить гемоціанін із міддю. У нашому гемоглобіні цю роль відіграє залізо.",
+    "sourceUrl": "https://ocean.si.edu/ocean-life/invertebrates/octopuses-squids-and-relatives",
+    "sourceName": "Smithsonian Ocean",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "jupiter-spin",
+    "fact": "Юпітер — найбільша планета Сонячної системи, але обертається найшвидше: навколо своєї осі приблизно за 9,9 години.",
+    "sourceUrl": "https://science.nasa.gov/jupiter/jupiter-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "mars-canyons",
+    "fact": "Марсіанська система каньйонів Valles Marineris простягається приблизно на 3 870 кілометрів. Її довжина співмірна з відстанню між Каліфорнією й Нью-Йорком.",
+    "sourceUrl": "https://science.nasa.gov/mars/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "uranus-tilt",
+    "fact": "Вісь Урана нахилена майже на 98 градусів: планета ніби котиться боком по орбіті. Біля полюсів через це можливі роки безперервного світла або темряви.",
+    "sourceUrl": "https://science.nasa.gov/uranus/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "web-public-domain",
+    "fact": "30 квітня 1993 року CERN передав програмне забезпечення World Wide Web у суспільне надбання. Веб став доступним для вільного використання й розвитку.",
+    "sourceUrl": "https://home.cern/science/computing/the-birth-of-the-web/",
+    "sourceName": "CERN",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "venus-sunrise",
+    "fact": "На Венері Сонце сходило б на заході й заходило на сході. Причина — обертання планети у напрямку, протилежному земному.",
+    "sourceUrl": "https://science.nasa.gov/venus/venus-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "saturn-hexagon",
+    "fact": "На північному полюсі Сатурна є атмосферний шестикутник: велетенський хвилястий струменевий потік, уперше помічений апаратами Voyager.",
+    "sourceUrl": "https://science.nasa.gov/saturn/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "moon-distance",
+    "fact": "Між Землею й Місяцем у середньому близько 384 400 кілометрів. У цьому проміжку можна було б розмістити приблизно 30 Земель.",
+    "sourceUrl": "https://science.nasa.gov/moon/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "mercury-sunrise",
+    "fact": "У деяких місцях Меркурія Сонце може зійти, ненадовго зайти й зійти знову. Так взаємодіють повільне обертання планети й змінна швидкість на її витягнутій орбіті.",
+    "sourceUrl": "https://science.nasa.gov/mercury/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "iss-continuous",
+    "fact": "Люди безперервно живуть на Міжнародній космічній станції з листопада 2000 року. Екіпажі змінюються, але станція залишається заселеною.",
+    "sourceUrl": "https://www.nasa.gov/international-space-station/space-station-facts-and-figures/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "triton-retrograde",
+    "fact": "Тритон — великий супутник Нептуна — рухається проти обертання своєї планети. Це одна з ознак того, що Нептун міг захопити його вже сформованим.",
+    "sourceUrl": "https://science.nasa.gov/neptune/neptune-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "nautilus-buoyancy",
+    "fact": "Наутилус регулює плавучість завдяки газу в камерах мушлі. Його мушля працює дещо подібно до баластної системи підводного човна.",
+    "sourceUrl": "https://ocean.si.edu/ocean-life/invertebrates/octopuses-squids-and-relatives",
+    "sourceName": "Smithsonian Ocean",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "jupiter-surface",
+    "fact": "На Юпітері немає твердої поверхні для посадки. У глибині газового гіганта тиск і температура настільки зростають, що апарат не міг би просто пролетіти крізь нього.",
+    "sourceUrl": "https://science.nasa.gov/jupiter/jupiter-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "mars-water",
+    "fact": "На Марсі є давні русла, дельти й мінерали, для утворення яких потрібна рідка вода. Сухий світ зберігає сліди водного минулого.",
+    "sourceUrl": "https://science.nasa.gov/mars/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "uranus-winter",
+    "fact": "Полярна зима на Урані може тривати близько 21 земного року. Майже чверть його довгого року один із полюсів занурений у темряву.",
+    "sourceUrl": "https://science.nasa.gov/uranus/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "web-science",
+    "fact": "Веб задумали для автоматизованого обміну інформацією між науковцями в університетах і дослідницьких установах. Згодом цей інструмент став повсякденним для всього світу.",
+    "sourceUrl": "https://home.cern/science/computing/the-birth-of-the-web/",
+    "sourceName": "CERN",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "venus-phases",
+    "fact": "Венера має фази, подібно до Місяця. Спостереження цих фаз Галілеєм стало важливим доказом того, що планети обертаються навколо Сонця.",
+    "sourceUrl": "https://science.nasa.gov/venus/venus-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "sputnik-beep",
+    "fact": "Перший штучний супутник Землі, запущений 4 жовтня 1957 року, передавав радіосигнали двома передавачами. Його сигнали могли приймати радіоаматори по всьому світу.",
+    "sourceUrl": "https://www.nasa.gov/history/sputnik/sputorig.html",
+    "sourceName": "NASA History",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "moon-synchrony",
+    "fact": "Місяць обертається навколо осі приблизно за той самий час, що й навколо Землі. Тому до нас переважно повернута одна його півкуля.",
+    "sourceUrl": "https://science.nasa.gov/moon/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "mercury-core",
+    "fact": "Металеве ядро Меркурія має радіус близько 85% радіуса всієї планети. Порівняно з розміром планети її кам’яна оболонка дуже тонка.",
+    "sourceUrl": "https://science.nasa.gov/mercury/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "jupiter-year",
+    "fact": "Один рік на Юпітері триває близько 12 земних років. Водночас його доба — лише близько десяти годин: календар там був би зовсім незвичним.",
+    "sourceUrl": "https://science.nasa.gov/jupiter/jupiter-facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  },
+  {
+    "id": "mars-moons",
+    "fact": "Фобос і Деймос, супутники Марса, мають нерівну форму. Фобос повільно наближається до Марса; у далекому майбутньому він може розпастися або впасти на планету.",
+    "sourceUrl": "https://science.nasa.gov/mars/facts/",
+    "sourceName": "NASA",
+    "verifiedAt": "2026-10-04"
+  }
+]

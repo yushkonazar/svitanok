@@ -1,11 +1,9 @@
+import { NEWS_SOURCE_CATALOG, DEFAULT_NEWS_SOURCES } from '../../../../core/brief/news-catalog.mjs';
+import { PageHeading } from '../ui/PageHeading.tsx';
+import { usePresentation, savePresentation } from '../../lib/presentation.ts';
 import { useState, useEffect } from 'react';
-import {
-  useSettings,
-  useSaveSettings,
-  useStats,
-  useSetGoal,
-  useBriefing,
-} from '../../api/hooks.ts';
+import { Link } from 'react-router-dom';
+import { useSettings, useSaveSettings, useBriefing } from '../../api/hooks.ts';
 import { readBlock, newsDataSchema } from '../../api/briefing-schema.ts';
 import { topicEmoji } from '../../lib/topicEmoji.ts';
 import { getDemoState, setDemoState, type DemoState } from '../../api/client.ts';
@@ -18,9 +16,9 @@ import {
   type HomeScreenStatus,
 } from '../../telegram.ts';
 import { useTheme, type ThemePref } from '../../theme.tsx';
-import { SectionLabel, Ph } from '../ui/primitives.tsx';
-import { LoadingSkeleton, ErrorState, SkeletonBar } from '../ui/states.tsx';
-import { Switch, Chip, Stepper, SettingRow } from '../ui/controls.tsx';
+import { SectionLabel } from '../ui/primitives.tsx';
+import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
+import { Switch, Chip, SettingRow } from '../ui/controls.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { useQueryClient } from '@tanstack/react-query';
 import { DeletionReceiptsBlock } from './DeletionReceiptsBlock.tsx';
@@ -40,12 +38,10 @@ import { WorkerQualityBlock } from './WorkerQualityBlock.tsx';
 const MODULES: Array<{ id: string; icon: string; label: string }> = [
   { id: 'weather', icon: '⛅', label: 'Погода' },
   { id: 'currency', icon: '💱', label: 'Курс валют' },
-  { id: 'mock', icon: '❓', label: 'Питання дня' },
   { id: 'fact', icon: '🧠', label: 'Факт дня' },
   { id: 'stoic', icon: '📜', label: 'Думка дня' },
   { id: 'onthisday', icon: '🏛', label: 'У цей день' },
   { id: 'news', icon: '📰', label: 'Новини' },
-  { id: 'jobs', icon: '💼', label: 'Вакансії' },
 ];
 
 const THEMES: Array<{ id: ThemePref; label: string }> = [
@@ -60,9 +56,6 @@ const DEMO_STATES: Array<{ id: DemoState; label: string }> = [
   { id: 'empty', label: 'Порожньо' },
   { id: 'error', label: 'Помилка' },
 ];
-
-const GOAL_MIN = 1;
-const GOAL_MAX = 10;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -143,19 +136,15 @@ function HomeScreenSection() {
 }
 
 export function SettingsScreen() {
+  const view = usePresentation();
   const qc = useQueryClient();
   const { pref, setPref } = useTheme();
   // Демо-стан живе модульною змінною в client.ts (його читають fetch-функції поза
   // React), тож тримаємо дзеркало в стані — інакше активний чіп не перемалювався б.
   const [demo, setDemo] = useState<DemoState>(getDemoState);
   const { data, isLoading, isError, error, refetch } = useSettings();
-  const { data: statsData, isError: statsError } = useStats();
   const { data: briefData } = useBriefing();
   const save = useSaveSettings();
-  const setGoal = useSetGoal();
-
-  // null = ще не знаємо (вантажиться / впало). Свідомо БЕЗ фолбека на число.
-  const goal = statsData?.stats.goal.weeklyTarget ?? null;
 
   if (isLoading) return <LoadingSkeleton />;
   if (isError || !data) {
@@ -213,6 +202,93 @@ export function SettingsScreen() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PageHeading eyebrow="ТВІЙ СВІТАНОК" title="Підлаштувати" accent="під себе." />
+      <section className="renewal-card">
+        <h2 className="text-lg font-semibold mb-4">Вигляд і відчуття</h2>
+        {(
+          [
+            { key: 'calm', title: 'Спокійні анімації', hint: 'Мінімум руху на цьому пристрої' },
+            { key: 'haptics', title: 'Тактильний відгук', hint: 'Вібрації в Telegram' },
+            {
+              key: 'learning',
+              title: 'Навчання на «Сьогодні»',
+              hint: 'План і таймер зосередження',
+            },
+            {
+              key: 'newsPreview',
+              title: 'Подія на головному екрані',
+              hint: 'Одна новина з твоєї стрічки',
+            },
+          ] as const
+        ).map((row) => (
+          <SettingRow key={row.key} title={row.title} hint={row.hint}>
+            <Switch
+              label={row.title}
+              checked={view[row.key]}
+              onChange={(v) => savePresentation({ [row.key]: v })}
+            />
+          </SettingRow>
+        ))}
+      </section>
+      <section className="renewal-card">
+        <h2 className="text-lg font-semibold mb-4">Твої джерела новин</h2>
+        {NEWS_SOURCE_CATALOG.map(({ id: source, hint }) => {
+          const n = settings.news ?? {
+            sources: [...DEFAULT_NEWS_SOURCES],
+            intervalHours: 3 as const,
+          };
+          return (
+            <SettingRow key={source} title={source} hint={hint}>
+              <Switch
+                label={`Джерело ${source}`}
+                checked={n.sources.includes(source)}
+                onChange={(on) =>
+                  save.mutate({
+                    news: {
+                      ...n,
+                      sources: (on
+                        ? [...n.sources, source]
+                        : n.sources.filter((v) => v !== source)) as typeof n.sources,
+                    },
+                  })
+                }
+              />
+            </SettingRow>
+          );
+        })}
+        <label className="renewal-field mt-4">
+          Як часто збирати новини
+          <select
+            value={settings.news?.intervalHours ?? 3}
+            onChange={(e) =>
+              save.mutate({
+                news: {
+                  sources: settings.news?.sources ?? [...DEFAULT_NEWS_SOURCES],
+                  intervalHours: Number(e.target.value) as 3 | 6 | 12,
+                },
+              })
+            }
+          >
+            {[3, 6, 12].map((n) => (
+              <option key={n} value={n}>
+                Кожні {n} {n === 3 ? 'години' : 'годин'}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="renewal-muted mt-3">
+          До 18 матеріалів за збірку. Переклад нових заголовків кешується; відкриття стрічки читає
+          готову збірку. Налаштування джерел і частоти спільні з асистентом.
+        </p>
+        {save.error && (
+          <p role="alert" className="text-neg text-sm mt-3">
+            {save.error.message}
+          </p>
+        )}
+      </section>
+      <Link to="/finance?action=settings" className="renewal-card renewal-link">
+        Фінансовий профіль, категорії та нагадування →
+      </Link>
       <Section title="РОЗКЛАД">
         <SettingRow
           title="Тихі години"
@@ -261,49 +337,24 @@ export function SettingsScreen() {
         </div>
       </Section>
 
-      {/* Ціль живе в іншій черзі (['stats']) — тож і стани в неї свої. Раніше тут
-          стояв фолбек `?? 5`: він малював вигадану пʼятірку, поки статистика ще
-          вантажилась, і тап по слайдеру ЗАТИРАВ би нею справжню ціль. */}
-      <Section title="ТИЖНЕВА ЦІЛЬ ПОДАЧ">
-        {goal === null ? (
-          statsError ? (
-            <Ph>Ціль недоступна — статистика не завантажилась.</Ph>
-          ) : (
-            <SkeletonBar height={30} />
-          )
-        ) : (
-          <>
-            <div className="flex items-center">
-              <span className="text-[13.5px] font-semibold">Відгуків на тиждень</span>
-              <span
-                className="ml-auto font-mono text-[15px] font-bold"
-                style={{ color: 'var(--color-a2)' }}
-              >
-                {goal}
-              </span>
-            </div>
-            <Stepper
-              label="Тижнева ціль подач"
-              value={goal}
-              min={GOAL_MIN}
-              max={GOAL_MAX}
-              onChange={(value) => setGoal.mutate({ value })}
-            />
-          </>
-        )}
-      </Section>
-
       <Section title="КОНЕКТОРИ">
         {connectorRow('📅', 'Calendar', connectors.calendar)}
         {connectorRow('✉️', 'Gmail', connectors.gmail)}
         {!connectors.google && (
           <p className="text-[11.5px] leading-snug text-tx3">
-            Google підключається секретами деплою (GOOGLE_*), не з застосунку.
+            Підключення Google потребує налаштування інтеграції.
           </p>
         )}
       </Section>
 
-      <WorkerQualityBlock />
+      <details className="renewal-card">
+        <summary className="cursor-pointer font-semibold text-sm">
+          Стан сервісів і діагностика
+        </summary>
+        <div className="mt-5">
+          <WorkerQualityBlock />
+        </div>
+      </details>
 
       <Section title="МОДУЛІ БРИФІНГУ">
         {MODULES.map((m, i) => {
@@ -322,7 +373,7 @@ export function SettingsScreen() {
           );
         })}
         <p className="text-[11.5px] leading-snug text-tx3">
-          Вимкнений модуль не потрапляє в завтрашній брифінг.
+          Вимкнений модуль ховається на «Сьогодні» й не потрапляє в наступний брифінг.
         </p>
       </Section>
 
@@ -352,7 +403,14 @@ export function SettingsScreen() {
         </Section>
       )}
 
-      <DeletionReceiptsBlock />
+      <details className="renewal-card">
+        <summary className="cursor-pointer font-semibold text-sm">
+          Дані та історія видалення
+        </summary>
+        <div className="mt-5">
+          <DeletionReceiptsBlock />
+        </div>
+      </details>
 
       <Section title="ТЕМА">
         <div className="flex gap-2" role="radiogroup" aria-label="Тема">
@@ -400,7 +458,7 @@ export function SettingsScreen() {
       )}
 
       <div className="pt-1 text-center font-mono text-[10px] font-medium text-tx3">
-        Svitanok · дизайн v2{!inTelegram() && ' · демо-режим'}
+        Світанок{!inTelegram() && ' · демо-режим'}
       </div>
     </div>
   );

@@ -28,6 +28,7 @@ const MIGRATIONS = [
   '0011_ideas_number.sql',
   '0012_reminders_recurrence.sql',
   '0013_run_steps_idempotency.sql',
+  '0028_mini_app_finance.sql',
 ];
 const NOW = Date.parse('2026-09-16T01:10:00.000Z'); // 04:10 Київ
 const OLD = '2026-01-01T00:00:00.000Z';

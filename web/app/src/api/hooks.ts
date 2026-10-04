@@ -2,6 +2,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { inTelegram } from '../telegram.ts';
 import {
   fetchStats,
+  fetchNewsSnapshot,
   fetchArchive,
   fetchDeletionReceipts,
   fetchLevers,
@@ -36,6 +37,14 @@ import type { FunnelStage } from '../components/jobs/stages.ts';
 
 export function useStats() {
   return useQuery({ queryKey: ['stats'], queryFn: fetchStats });
+}
+export function useNewsSnapshot() {
+  return useQuery({
+    queryKey: ['newsSnapshot'],
+    queryFn: fetchNewsSnapshot,
+    staleTime: 15 * 60000,
+    refetchInterval: 15 * 60000,
+  });
 }
 
 /**
@@ -311,6 +320,7 @@ export function useToggleSaveItem() {
     onError: (_e, _v, ctx) => restoreSaved(qc, ctx),
     onSettled: () => {
       if (inTelegram()) invalidateSaved(qc);
+      else qc.invalidateQueries({ queryKey: ['saved'] });
     },
   });
 }
@@ -409,6 +419,7 @@ export function useToggleSaveNews() {
     onError: (_e, _v, ctx) => restoreSaved(qc, ctx),
     onSettled: () => {
       if (inTelegram()) invalidateSaved(qc);
+      else qc.invalidateQueries({ queryKey: ['saved'] });
     },
   });
 }
@@ -578,6 +589,9 @@ export function useSaveSettings() {
                 // mutedTopics — ПОВНА заміна, не мердж: патч несе весь новий
                 // список, інакше зняти приглушення було б неможливо.
                 mutedTopics: patch.mutedTopics ?? old.settings.mutedTopics,
+                ...((patch.news ?? old.settings.news)
+                  ? { news: patch.news ?? old.settings.news }
+                  : {}),
               },
             }
           : old,
@@ -620,8 +634,8 @@ export function useSaveCheckin() {
   const qc = useQueryClient();
   return useMutation({
     scope: CHECKIN_SCOPE,
-    mutationFn: (vars: { slot: CheckinSlot; answers: Record<string, unknown> }) =>
-      postEvent('checkin', { slot: vars.slot, ...vars.answers }),
+    mutationFn: (vars: { slot: CheckinSlot; dateKey?: string; answers: Record<string, unknown> }) =>
+      postEvent('checkin', { ...vars.answers, slot: vars.slot, dateKey: vars.dateKey }),
     onMutate: async ({ slot, answers }) => {
       await qc.cancelQueries({ queryKey: ['stats'] });
       const prev = qc.getQueryData<StatsResult>(['stats']);
@@ -634,8 +648,8 @@ export function useSaveCheckin() {
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(['stats'], ctx.prev);
     },
-    onSettled: () => {
-      if (inTelegram()) qc.invalidateQueries({ queryKey: ['stats'] });
+    onSettled: (_data, _error, vars) => {
+      if (inTelegram() || vars.answers.confirmed) qc.invalidateQueries({ queryKey: ['stats'] });
     },
   });
 }

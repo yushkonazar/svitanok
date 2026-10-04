@@ -41,6 +41,14 @@ const STARS: Array<[number, number, number, string, string]> = [
   [66, 108, 0.85, '2.9s', '1.5s'],
   [150, 112, 1, '2.5s', '.5s'],
   [22, 138, 0.95, '3.3s', '1s'],
+  [37, 39, 0.7, '4s', '.7s'],
+  [61, 27, 0.8, '3.6s', '1.3s'],
+  [106, 33, 0.65, '4.3s', '.2s'],
+  [131, 51, 0.9, '3.7s', '.9s'],
+  [24, 84, 0.7, '4.1s', '.4s'],
+  [146, 77, 0.65, '3.5s', '1.7s'],
+  [54, 126, 0.6, '4.2s', '.1s'],
+  [91, 138, 0.75, '3.8s', '1.4s'],
 ];
 
 /** Об'єкт (сонце/місяць) кружляє орбітою, ВТЯГНУТОЮ всередину на стільки px:
@@ -158,7 +166,7 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
   const halo = g.isDay ? '255,248,214' : '226,220,255';
 
   return (
-    <div className="relative h-[170px] w-[170px] flex-none">
+    <div className="renewal-sun-dial relative w-[170px] flex-none">
       <svg
         width={SIZE}
         height={SIZE}
@@ -343,11 +351,11 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
           y={t.clockY}
           textAnchor="middle"
           dominantBaseline="middle"
-          style={{ fontSize: 25 * t.scale }}
+          style={{ fontSize: Math.max(20, 25 * t.scale) }}
         >
           {kyivClockNow(now)}
         </text>
-        {g.valid && (
+        {g.valid && t.scale >= 1 && (
           <text
             className="dial-sub"
             x={CX}
@@ -360,6 +368,9 @@ export function SunDial({ sunrise, sunset }: { sunrise: number; sunset: number }
           </text>
         )}
       </svg>
+      {g.valid && t.scale < 1 && (
+        <div className="mt-1 text-center font-mono text-[10px] text-tx2">{subLabel(g, mins)}</div>
+      )}
     </div>
   );
 }

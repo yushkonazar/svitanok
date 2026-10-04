@@ -1,9 +1,8 @@
-import { useBriefing, useLiveWeather } from '../../api/hooks.ts';
+import { useSettings, useBriefing, useLiveWeather } from '../../api/hooks.ts';
 import {
   readBlock,
   weatherDataSchema,
   currencyDataSchema,
-  mockDataSchema,
   factDataSchema,
   stoicDataSchema,
   onThisDayDataSchema,
@@ -13,9 +12,12 @@ import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { WeatherBlock } from './WeatherBlock.tsx';
 import { CurrencyBlock } from './CurrencyBlock.tsx';
-import { QuestionBlock } from './QuestionBlock.tsx';
+import { TodayAttention } from './TodayAttention.tsx';
 import { FactBlock, QuoteBlock } from './FactQuoteBlocks.tsx';
 import { ThisDayBlock } from './ThisDayBlock.tsx';
+import { LearningFocus } from './LearningFocus.tsx';
+import { NewsPreview } from './NewsPreview.tsx';
+import { usePresentation } from '../../lib/presentation.ts';
 
 // Вкладка «Сьогодні» (дизайн v2, Svitanok.dc.html). Порядок макета:
 // погода (з циферблатом і графіком) → горизонт-роздільник → курс → питання →
@@ -55,6 +57,8 @@ function HorizonDivider() {
 }
 
 export function TodayScreen() {
+  const preferences = usePresentation();
+  const { data: ownerSettings } = useSettings();
   const { data, isLoading, isError, error, refetch } = useBriefing();
   // Жива погода (PR-7, фідбек власника) — м'який шар поверх снапшоту брифінгу:
   // `live` відсутній (ще завантажується/поза Telegram/збій) -> просто рендеримо
@@ -73,12 +77,12 @@ export function TodayScreen() {
   }
 
   const blocks = data.brief.blocks;
-  const weather = readBlock(blocks, 'weather', weatherDataSchema);
-  const currency = readBlock(blocks, 'currency', currencyDataSchema);
-  const mock = readBlock(blocks, 'mock', mockDataSchema);
-  const fact = readBlock(blocks, 'fact', factDataSchema);
-  const stoic = readBlock(blocks, 'stoic', stoicDataSchema);
-  const onthisday = readBlock(blocks, 'onthisday', onThisDayDataSchema);
+  const enabled = (id: string) => ownerSettings?.settings.modules[id] !== false;
+  const weather = enabled('weather') && readBlock(blocks, 'weather', weatherDataSchema);
+  const currency = enabled('currency') && readBlock(blocks, 'currency', currencyDataSchema);
+  const fact = enabled('fact') && readBlock(blocks, 'fact', factDataSchema);
+  const stoic = enabled('stoic') && readBlock(blocks, 'stoic', stoicDataSchema);
+  const onthisday = enabled('onthisday') && readBlock(blocks, 'onthisday', onThisDayDataSchema);
 
   // Блок рендериться, лише якщо модуль дав дані: з F2 власник може вимкнути
   // погоду/курс у налаштуваннях, і тоді блока в брифінгу немає взагалі.
@@ -102,18 +106,21 @@ export function TodayScreen() {
       ),
     });
   if (weather && currency) sections.push({ key: 'divider', node: <HorizonDivider /> });
+  if (preferences.learning) sections.push({ key: 'learning', node: <LearningFocus /> });
+  if (preferences.newsPreview && enabled('news'))
+    sections.push({ key: 'news-preview', node: <NewsPreview /> });
   if (currency)
     sections.push({
       key: 'currency',
       node: <CurrencyBlock d={currency} date={shortDateFromIso(data.brief.generatedAt)} />,
     });
-  if (mock) sections.push({ key: 'mock', node: <QuestionBlock d={mock} /> });
   if (fact) sections.push({ key: 'fact', node: <FactBlock d={fact} /> });
   if (stoic) sections.push({ key: 'stoic', node: <QuoteBlock d={stoic} /> });
   if (onthisday) sections.push({ key: 'onthisday', node: <ThisDayBlock d={onthisday} /> });
 
   return (
     <div className="flex flex-col gap-[18px]">
+      <TodayAttention />
       {sections.map((s, i) => (
         <div key={s.key} style={cascade(i, 55, 6)}>
           {s.node}

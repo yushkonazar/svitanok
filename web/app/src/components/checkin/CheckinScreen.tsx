@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStats, useSaveCheckin } from '../../api/hooks.ts';
+import { resetCheckinDemo } from '../../api/checkin-demo.ts';
 import type { CheckinSlot } from '../../api/schema.ts';
 import { haptic, inTelegram } from '../../telegram.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { cascade } from '../ui/Cascade.tsx';
 import { AffectPad } from './AffectPad.tsx';
 import { BrandLogo } from './BrandLogo.tsx';
+import { useTick } from '../../lib/useTick.ts';
+import { PageHeading } from '../ui/PageHeading.tsx';
+import { pluralUk } from '../../lib/plural.ts';
+import { kyivParts, kyivInstant, shiftDate } from '../../../../core/finance/planning.mjs';
 import {
   BLOCKS,
   asList,
@@ -43,6 +48,9 @@ import {
 // але щоденне ядро мусить лишатись коротким — інакше звичка вмирає.
 
 /** Скільки чекаємо після останнього тапу, перш ніж слати блок. */
+const currentQuestion = (q: Question) =>
+  !['planApply', 'applied', 'jobProgress', 'jobConfidence'].includes(q.id);
+
 const DEBOUNCE_MS = 1200;
 
 // null — явний сигнал «зняв відповідь» (не «ще не відповідав»): questions.ts
@@ -53,6 +61,40 @@ type AnswerValue = string | number | Array<string | number> | null;
 // із Answers, а не всередині AnswerValue, щоб isAnswered/asList/питання-цикли
 // й далі не бачили нічого, крім реальних полів чек-іну.
 type Answers = Record<string, AnswerValue> & { confirmed?: boolean };
+const draftMemory = new Map<string, Answers>();
+function readDraft(key: string): Answers {
+  if (draftMemory.has(key)) return draftMemory.get(key)!;
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(key) ?? '{}');
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length < 100) {
+      const valid = Object.fromEntries(
+        Object.entries(raw).filter(
+          ([k, v]) =>
+            k !== 'confirmed' &&
+            (v === null ||
+              typeof v === 'string' ||
+              typeof v === 'number' ||
+              (Array.isArray(v) && v.every((x) => typeof x === 'string' || typeof x === 'number'))),
+        ),
+      );
+      draftMemory.set(key, valid as Answers);
+      return valid as Answers;
+    }
+  } catch {
+    /* Storage unavailable or invalid draft. */
+  }
+  return {};
+}
+function writeDraft(key: string, answers?: Answers) {
+  if (answers) draftMemory.set(key, answers);
+  else draftMemory.delete(key);
+  try {
+    if (answers) sessionStorage.setItem(key, JSON.stringify(answers));
+    else sessionStorage.removeItem(key);
+  } catch {
+    /* Keep memory fallback. */
+  }
+}
 type State = 'locked' | 'open' | 'done' | 'missed';
 
 const ORDER: CheckinSlot[] = ['morning', 'afternoon', 'evening'];
@@ -201,7 +243,6 @@ function BlockCard({
   endsIn: number | null;
   onExpire: () => void;
 }) {
-  const [deepOpen, setDeepOpen] = useState(false);
   // «Записаний» блок можна РОЗГОРНУТИ НАЗАД. Без цього була дірка: isDone
   // рахує лише ЯДРО (не-soft core-питання), тож щойно відповів на основні —
   // блок згортався в «✓ ЗАПИСАНО», а разом із ним ставав недосяжним і розділ
@@ -216,9 +257,9 @@ function BlockCard({
   const [reopened, setReopened] = useState(false);
   const confirmed = !!answers.confirmed;
 
-  const core = coreQuestions(b, workDay, answers);
-  const deep = deepQuestions(b, workDay, answers);
-  const deepFilled = deep.filter((q) => isAnswered(q, answers)).length;
+  const core = coreQuestions(b, workDay, answers).filter(currentQuestion);
+  const deep = deepQuestions(b, workDay, answers).filter(currentQuestion);
+  const deepFilled = deep.filter((q) => currentQuestion(q) && isAnswered(q, answers)).length;
   const deepLeft = deep.length - deepFilled;
   const coreDone = isDone(b, answers);
 
@@ -239,7 +280,8 @@ function BlockCard({
   // надіслане в закрите вікно, сервер тихо відкинув би (той самий гейт, що
   // й звичайні правки), і власник побачив би «підтверджено», яке насправді
   // не зберіглось. Чесніше не показувати кнопку взагалі, ніж брехати нею.
-  const canConfirm = live && !confirmed && coreDone;
+  const [reviewing, setReviewing] = useState(false);
+  const canConfirm = live && !confirmed && coreDone && reviewing;
 
   const label = confirmed
     ? '🔒 ПІДТВЕРДЖЕНО'
@@ -317,56 +359,22 @@ function BlockCard({
 
       {/* grid-rows 0fr->1fr анімує висоту, не знаючи її в px (вона різна в блоках). */}
       <div
+        aria-hidden={!expanded}
+        inert={!expanded}
         className="grid transition-[grid-template-rows] duration-[450ms] ease-[cubic-bezier(.22,1,.36,1)]"
         style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3.5 px-3.5 pb-3.5">
-            {core.map((q) => (
-              <QuestionRow
-                key={q.id}
-                q={q}
-                answers={answers}
-                disabled={disabled}
-                onAnswer={onAnswer}
-                onPad={onPad}
-              />
-            ))}
-
-            {deep.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  tabIndex={disabled ? -1 : 0}
-                  onClick={() => {
-                    haptic('light');
-                    setDeepOpen((v) => !v);
-                  }}
-                  className="flex items-center gap-1.5 self-start rounded-full border border-glassb bg-glass px-3 py-1.5 text-[11px] font-semibold text-tx2"
-                >
-                  <span>{deepOpen ? '−' : '+'} Детальніше</span>
-                  <span className="font-mono text-[9.5px] text-tx3">
-                    {deepFilled
-                      ? `${deepFilled}/${deep.length}`
-                      : `${deep.length} ${pluralizePytannya(deep.length)}`}
-                  </span>
-                </button>
-                {deepOpen && (
-                  <div className="flex flex-col gap-3.5 border-t border-glassb pt-3.5">
-                    {deep.map((q) => (
-                      <QuestionRow
-                        key={q.id}
-                        q={q}
-                        answers={answers}
-                        disabled={disabled}
-                        onAnswer={onAnswer}
-                        onPad={onPad}
-                      />
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
+            <QuestionSteps
+              core={core}
+              deep={deep}
+              onReview={setReviewing}
+              answers={answers}
+              disabled={disabled}
+              onAnswer={onAnswer}
+              onPad={onPad}
+            />
 
             {canConfirm && (
               <div className="flex flex-col gap-1.5 border-t border-glassb pt-3.5">
@@ -377,7 +385,6 @@ function BlockCard({
                 <button
                   type="button"
                   onClick={() => {
-                    haptic('success');
                     onConfirm();
                   }}
                   className="rounded-xl py-2.5 text-center text-[12.5px] font-bold"
@@ -395,6 +402,21 @@ function BlockCard({
           закрилось (не live) і не розгорнуто вручну. Поки вікно живе,
           блок лишається розгорнутим (expanded=true), тож чипи тут не мають
           сенсу — там уже видно самі відповіді. */}
+      {confirmed && (
+        <details className="px-4 pb-4">
+          <summary className="renewal-link">Переглянути відповіді</summary>
+          {visibleQuestions(b, workDay, answers)
+            .filter((q) => currentQuestion(q) && isAnswered(q, answers))
+            .map((q) => (
+              <div className="renewal-list-row" key={q.id}>
+                <span>{q.t}</span>
+                <strong className="text-right text-xs max-w-[55%]">
+                  {answerLabel(q, answers)}
+                </strong>
+              </div>
+            ))}
+        </details>
+      )}
       {(confirmed || (!live && state === 'done' && !reopened)) && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3">
           {/* Чипи підсумку вилітають каскадом, коли блок згорнувся в «записано».
@@ -403,7 +425,7 @@ function BlockCard({
               visibleQuestions, а не b.qs: приховане джоб-число (обрав «Робота»,
               ввів, перемкнув на іншу категорію) не мусить зринати чипом. */}
           {visibleQuestions(b, workDay, answers)
-            .filter((q) => isAnswered(q, answers))
+            .filter((q) => currentQuestion(q) && isAnswered(q, answers))
             .map((q, i) => {
               const text =
                 q.kind === 'pad' && q.pad
@@ -422,6 +444,151 @@ function BlockCard({
               );
             })}
         </div>
+      )}
+    </div>
+  );
+}
+
+function answerLabel(q: Question, answers: Answers) {
+  if (q.kind === 'pad' && q.pad)
+    return `${q.pad.yLabel} ${answers[q.pad.y] ?? '—'} · ${q.pad.xLabel} ${answers[q.pad.x] ?? '—'}`;
+  return (
+    asList(answers[q.id])
+      .map((v) => (q.o ?? []).find(([, ov]) => ov === v)?.[0] ?? String(v))
+      .join(', ') || 'Не заповнено'
+  );
+}
+
+function QuestionSteps({
+  onReview,
+  core,
+  deep,
+  answers,
+  disabled,
+  onAnswer,
+  onPad,
+}: {
+  core: Question[];
+  deep: Question[];
+  onReview: (ready: boolean) => void;
+} & Omit<Parameters<typeof QuestionRow>[0], 'q'>) {
+  const [step, setStep] = useState(0);
+  const [includeDeep, setIncludeDeep] = useState(false);
+  const touch = useRef<{ x: number; y: number } | null>(null);
+  const questions = includeDeep ? [...core, ...deep] : core;
+  const index = Math.min(step, questions.length);
+  const q = questions[index];
+  useEffect(() => onReview(!q), [q, onReview]);
+  const done = questions.filter((p) => isAnswered(p, answers)).length;
+  const next = () => {
+    if (q && !q.soft && !q.deep && !isAnswered(q, answers)) return;
+    const nextIndex = Math.min(index + 1, questions.length);
+    setStep(nextIndex);
+    onReview(nextIndex === questions.length);
+    haptic('light');
+  };
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="renewal-section-head mb-0">
+        <span className="renewal-eyebrow">
+          {q ? `КРОК ${index + 1} ІЗ ${questions.length}` : 'ПЕРЕВІР ВІДПОВІДІ'}
+        </span>
+        <span className="text-xs text-tx2">
+          {done} {pluralUk(done, ['відповідь', 'відповіді', 'відповідей'])}
+        </span>
+      </div>
+      <div className="renewal-progress mt-0">
+        <span
+          style={{ width: `${Math.min(100, (index / Math.max(1, questions.length)) * 100)}%` }}
+        />
+      </div>
+      {q ? (
+        <div
+          key={q.id}
+          className="renewal-question"
+          style={{ animation: 'fadeUp .24s ease' }}
+          onTouchStart={(e) => {
+            const p = e.touches[0];
+            if (p) touch.current = { x: p.clientX, y: p.clientY };
+          }}
+          onTouchEnd={(e) => {
+            const p = e.changedTouches[0],
+              start = touch.current;
+            touch.current = null;
+            if (!p || !start || q.kind === 'pad' || Math.abs(p.clientY - start.y) > 40) return;
+            if (p.clientX - start.x < -70) next();
+            else if (p.clientX - start.x > 70) setStep(Math.max(0, index - 1));
+          }}
+        >
+          <QuestionRow
+            q={q}
+            answers={answers}
+            disabled={disabled}
+            onAnswer={onAnswer}
+            onPad={onPad}
+          />
+          <div className="renewal-form-grid mt-5">
+            <button
+              type="button"
+              className="renewal-secondary"
+              disabled={disabled || index === 0}
+              onClick={() => {
+                setStep(index - 1);
+                onReview(false);
+              }}
+            >
+              ← Назад
+            </button>
+            <button
+              type="button"
+              className="renewal-button"
+              disabled={disabled || (!q.soft && !q.deep && !isAnswered(q, answers))}
+              onClick={next}
+            >
+              {index === questions.length - 1
+                ? 'Перевірити'
+                : isAnswered(q, answers)
+                  ? 'Далі →'
+                  : 'Пропустити →'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {questions.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              className="renewal-list-row w-full text-left"
+              disabled={disabled}
+              onClick={() => {
+                setStep(i);
+                onReview(false);
+              }}
+            >
+              <span>{p.t}</span>
+              <span className={isAnswered(p, answers) ? 'text-pos' : 'text-tx3'}>
+                {isAnswered(p, answers) ? answerLabel(p, answers) : '—'}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {!!deep.length && (
+        <button
+          type="button"
+          className="renewal-link self-start"
+          aria-pressed={includeDeep}
+          onClick={() => {
+            setIncludeDeep(!includeDeep);
+            onReview(false);
+            setStep(Math.min(index, core.length - 1));
+          }}
+        >
+          {includeDeep
+            ? '− Лише основні питання'
+            : `+ Ще ${deep.length} ${pluralizePytannya(deep.length)}`}
+        </button>
       )}
     </div>
   );
@@ -492,9 +659,11 @@ function SlotTimer({ endsIn, onExpire }: { endsIn: number; onExpire: () => void 
 }
 
 export function CheckinScreen() {
-  const { data, isLoading, isError, error, refetch } = useStats();
+  const { data, dataUpdatedAt, isLoading, isError, error, refetch } = useStats();
+  const nowMs = useTick(1000);
   const save = useSaveCheckin();
   const [local, setLocal] = useState<Record<string, Answers>>({});
+  const [previewSlot, setPreviewSlot] = useState<CheckinSlot>('morning');
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // Гасимо таймери на розмонтуванні — інакше пішов би запит з екрана, якого вже
@@ -514,15 +683,27 @@ export function CheckinScreen() {
     );
 
   const s = data?.stats;
-  const active = s?.checkinSlot ?? null;
-  const server = s?.checkinToday ?? {};
-  // Демо (поза Telegram): відкриваємо ВСІ незаповнені блоки, щоб на прев'ю було
-  // видно всі питання одразу. У проді час і далі гейтить блоки (це лише огляд).
   const demo = !inTelegram();
+  const active = demo ? previewSlot : (s?.checkinSlot ?? null);
+  const server = s?.checkinToday ?? {};
+  const dateKey = s?.checkinDate ?? kyivParts(nowMs).date;
+  const keyFor = (slot: CheckinSlot) =>
+    `svitanok:checkin-draft:${demo ? 'demo' : 'private'}:${dateKey}:${slot}`;
+  const slotIndex = BLOCKS.findIndex((b) => b.id === active),
+    nextBlock = BLOCKS[slotIndex + 1] ?? BLOCKS[0];
+  const nextAt = kyivInstant(
+    slotIndex === BLOCKS.length - 1 ? shiftDate(dateKey, 1) : dateKey,
+    nextBlock.from,
+  );
+  const nextSeconds = demo
+    ? Math.max(0, Math.ceil((nextAt - nowMs) / 1000))
+    : s?.checkinNextIn == null
+      ? null
+      : Math.max(0, Math.ceil(s.checkinNextIn * 60 - (nowMs - dataUpdatedAt) / 1000));
 
   const answersFor = (slot: CheckinSlot): Answers => ({
     ...((server[slot] ?? {}) as Answers),
-    ...(local[slot] ?? {}),
+    ...(server[slot]?.confirmed ? {} : (local[keyFor(slot)] ?? readDraft(keyFor(slot)))),
   });
 
   /** Дебаунс: шлемо ВЕСЬ блок одним запитом. Без цього чотири тапи = чотири
@@ -537,10 +718,11 @@ export function CheckinScreen() {
     const b = BLOCKS.find((x) => x.id === slot);
     const gated = b ? clearGatedAnswers(b, answers) : {};
     const next: Answers = Object.keys(gated).length ? { ...answers, ...gated } : answers;
-    setLocal((p) => ({ ...p, [slot]: next }));
+    writeDraft(keyFor(slot), next);
+    setLocal((p) => ({ ...p, [keyFor(slot)]: next }));
     clearTimeout(timers.current[slot]);
     timers.current[slot] = setTimeout(() => {
-      save.mutate({ slot, answers: next });
+      save.mutate({ slot, dateKey: demo ? undefined : dateKey, answers: next });
     }, DEBOUNCE_MS);
   };
 
@@ -595,13 +777,22 @@ export function CheckinScreen() {
    */
   const onConfirm = (slot: CheckinSlot) => {
     clearTimeout(timers.current[slot]);
-    const pending = local[slot] ?? {};
-    save.mutate({ slot, answers: { ...pending, confirmed: true } });
-    setLocal((p) => {
-      const next = { ...p };
-      delete next[slot];
-      return next;
-    });
+    const pending = answersFor(slot);
+    save.mutate(
+      { slot, dateKey: demo ? undefined : dateKey, answers: { ...pending, confirmed: true } },
+      {
+        onSuccess: () => {
+          haptic('success');
+          window.scrollTo(0, 0);
+          writeDraft(keyFor(slot));
+          setLocal((p) => {
+            const next = { ...p };
+            delete next[keyFor(slot)];
+            return next;
+          });
+        },
+      },
+    );
   };
 
   const filled = ORDER.filter((slot) => {
@@ -615,6 +806,78 @@ export function CheckinScreen() {
 
   return (
     <div className="flex flex-col gap-4">
+      <PageHeading
+        eyebrow="ТВІЙ СТАН — БЕЗ ПОСПІХУ"
+        title="Коротка пауза"
+        accent="для себе."
+        description="Знайомі питання, по одному. Можна повертатися й уточнювати."
+      />
+      {demo && (
+        <div className="renewal-inset">
+          <p className="renewal-muted mb-2">
+            Демо розкладу: обери слот для перегляду. У Telegram вони відкриватимуться за київським
+            часом.
+          </p>
+          <div className="renewal-segments">
+            {BLOCKS.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                aria-pressed={previewSlot === b.id}
+                onClick={() => setPreviewSlot(b.id)}
+              >
+                {b.nm}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="renewal-link mt-3"
+            onClick={() => {
+              resetCheckinDemo();
+              BLOCKS.forEach((b) => writeDraft(keyFor(b.id)));
+              setLocal({});
+              void refetch();
+            }}
+          >
+            Скинути демо чек-іну
+          </button>
+        </div>
+      )}
+      {save.error && (
+        <p role="alert" className="renewal-inset text-sm text-neg">
+          {save.error.message}
+        </p>
+      )}
+      {nextSeconds != null && (!active || server[active]?.confirmed) && (
+        <section className="renewal-card text-center">
+          <div className="text-3xl mb-3">✨</div>
+          <span className="renewal-pill">
+            {active ? 'Чек-ін підтверджено' : 'Пауза між чек-інами'}
+          </span>
+          <h2 className="text-xl font-semibold mt-4">Можна повернутися до дня</h2>
+          <p className="renewal-muted mt-2">
+            {active === 'morning'
+              ? 'Наступний — післяобід о 14:00'
+              : active === 'afternoon'
+                ? 'Наступний — вечір о 20:00'
+                : active === 'evening'
+                  ? 'Наступний — завтра о 08:00'
+                  : 'Наступне вікно за розкладом'}
+          </p>
+          <div className="renewal-focus-clock" role="timer">
+            {String(Math.floor(nextSeconds / 3600)).padStart(2, '0')}:
+            {String(Math.floor((nextSeconds % 3600) / 60)).padStart(2, '0')}:
+            {String(nextSeconds % 60).padStart(2, '0')}
+          </div>
+          <p className="renewal-chart-note">До наступного чек-іну</p>
+          {nextSeconds === 0 && (
+            <button className="renewal-button mt-4" onClick={() => refetch()}>
+              Оновити й відкрити
+            </button>
+          )}
+        </section>
+      )}
       <div className="flex items-center gap-2">
         <span className="font-mono text-[10.5px] font-medium text-tx3">
           {active ? `ЗАПОВНЕНО ${filled} З 3` : 'ЗАРАЗ ЖОДЕН БЛОК НЕ ВІДКРИТИЙ'}
@@ -627,24 +890,51 @@ export function CheckinScreen() {
         <div key={b.id} style={cascade(i, 80)}>
           <BlockCard
             b={b}
-            state={
-              demo && !isDone(b, answersFor(b.id)) ? 'open' : stateOf(b, active, answersFor(b.id))
-            }
-            live={demo || active === b.id}
+            state={stateOf(b, active, answersFor(b.id))}
+            live={active === b.id}
             answers={answersFor(b.id)}
             workDay={workDay}
             onAnswer={(q, v, multi) => onAnswer(b.id, q, v, multi)}
             onPad={(xId, x, yId, y) => onPad(b.id, xId, x, yId, y)}
             onConfirm={() => onConfirm(b.id)}
-            // ⚠️ Лише СПРАВЖНЬОМУ активному блоку, навіть у демо: демо
-            // відкриває всі три, і таймер на всіх трьох обіцяв би те, чого
-            // немає — два з них у цю мить закриті.
-            endsIn={active === b.id ? (s?.checkinSlotEndsIn ?? null) : null}
+            // Серверний таймер лише для фактично активного слоту.
+            endsIn={
+              demo && active === b.id
+                ? Math.max(0, Math.ceil((nextAt - nowMs) / 60000))
+                : s?.checkinSlot === b.id && active === b.id
+                  ? (s?.checkinSlotEndsIn ?? null)
+                  : null
+            }
             onExpire={() => void refetch()}
           />
         </div>
       ))}
 
+      <section className="renewal-card">
+        <div className="renewal-section-head">
+          <h2 className="text-lg font-semibold">Ритм тижня</h2>
+          <span className="renewal-chart-note">Дні з відповідями</span>
+        </div>
+        <div className="renewal-week-grid">
+          {Array.from({ length: 7 }, (_, i) => {
+            const d = shiftDate(dateKey, i - 6),
+              point = s?.checkinSeries.find((p) => p.d === d),
+              observed = d === dateKey ? filled > 0 || !!point?.slots : !!point?.slots;
+            return (
+              <div key={d}>
+                <small>
+                  {new Date(d + 'T12:00:00Z').toLocaleDateString('uk-UA', { weekday: 'short' })}
+                </small>
+                <span data-filled={observed}>{observed ? '✓' : '·'}</span>
+                <small>{d.slice(8)}</small>
+              </div>
+            );
+          })}
+        </div>
+        <p className="renewal-chart-note mt-3">
+          Пропуск — місце без даних. Наступний чек-ін завжди можна почати заново.
+        </p>
+      </section>
       {!active && (
         <p className="text-[12.5px] leading-[1.5] text-tx2">
           Блоки живуть за часом: ранок з 08:00, післяобід з 14:00, вечір з 20:00. Пропущений блок

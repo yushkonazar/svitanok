@@ -23,6 +23,7 @@ import { workerEnv } from './helpers/env.js';
 describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
   it('канонічні kind-и: heartbeat + крон-задачі + rebuildable memory projection + weekly-review та operational tasks', () => {
     expect(Object.keys(SCHEDULER_TASKS)).toEqual([
+      'mini-app-news',
       'heartbeat',
       'reminder',
       'plan-calendar-sync',
@@ -33,6 +34,7 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       'mail-triage',
       'dead-man',
       'checkin-nudge',
+      'mini-app-payments',
       'sleep-nudge',
       'tg-setup',
       'archive-monthly',
@@ -201,7 +203,9 @@ describe('SCHEDULER_TASKS — реєстр видів (07 §7)', () => {
       // reminder — єдиний виняток: 5 хв означали до пʼяти хвилин запізнення
       // на очах у власника (прогін 08.09), а планувальник живе на alarm'ах,
       // тож період цієї задачі ні від кого не залежить.
-      expect(def.periodMin, kind).toBe(kind === 'reminder' ? 1 : kind === 'trip-monitor' ? 30 : 5);
+      expect(def.periodMin, kind).toBe(
+        kind === 'reminder' ? 1 : kind === 'trip-monitor' ? 30 : kind === 'mini-app-news' ? 180 : 5,
+      );
       // Десять перенесених задач мають побічні ефекти (Telegram, KV, GitHub) —
       // у shadow вони мусять лише логуватись, інакше кожен ефект подвоївся б.
       expect(def.shadowSafe === true, kind).toBe(kind === 'heartbeat');

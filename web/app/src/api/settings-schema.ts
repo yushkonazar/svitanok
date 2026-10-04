@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { NEWS_SOURCE_IDS } from '../../../core/brief/news-catalog.mjs';
 
 // Контракт /api/settings (роадмеп v3, F2). Форма списана з web/settings-core.mjs
 // (normalizeSettings) + connectorStatus. Сервер уже нормалізує все, що віддає,
@@ -19,6 +20,12 @@ export const settingsSchema = z.object({
   modules: z.record(z.string(), z.boolean()).default({}),
   /** Приглушені теми новин (display-назви). Оркестратор ріже їх ДО запиту. */
   mutedTopics: z.array(z.string()).default([]),
+  news: z
+    .object({
+      sources: z.array(z.enum(NEWS_SOURCE_IDS)),
+      intervalHours: z.union([z.literal(3), z.literal(6), z.literal(12)]),
+    })
+    .optional(),
 });
 
 export const connectorsSchema = z.object({
@@ -38,6 +45,7 @@ export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
 
 /** Частковий патч, який шле екран; у повний блоб його зводить useSaveSettings. */
 export interface SettingsPatch {
+  news?: Settings['news'];
   quiet?: Partial<Settings['quiet']>;
   modules?: Record<string, boolean>;
   /** ПОВНИЙ новий список (не дельта) — тем мало, зводити дельту нема сенсу. */

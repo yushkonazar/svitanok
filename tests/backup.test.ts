@@ -52,6 +52,7 @@ const ALL_MIGRATIONS = [
   '0016_fact_ledger.sql',
   '0017_proposal_provenance.sql',
   '0027_trip_briefs.sql',
+  '0028_mini_app_finance.sql',
 ];
 const SECRET = 'backup-secret-for-tests-32-chars!!';
 // Неділя 06.09.2026 03:10 Києва = 00:10Z; 04:10 = 01:10Z.
@@ -306,8 +307,8 @@ describe('задача backup (нд 03:00)', () => {
     const { uploads, created } = driveStub();
     const { env, d1, kv } = taskEnv();
     const out = await backupTask(env, SUNDAY_0310);
-    // rows: 1 ідея + 1 рядок counters('ideas') з міграції 0011.
-    expect(out).toMatchObject({ done: true, driveId: 'file-1', rows: 2 });
+    // Idea + counter + initial cash account, taxi policy and finance settings.
+    expect(out).toMatchObject({ done: true, driveId: 'file-1', rows: 5 });
     expect(created).toEqual(BACKUP_FOLDER_PATH);
     expect(uploads[0]?.name).toBe('svitanok-2026-09-06.enc');
     const fact = d1.db

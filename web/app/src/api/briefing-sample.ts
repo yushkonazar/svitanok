@@ -1,3 +1,5 @@
+import { SAMPLE_NEWS } from './news-preview.ts';
+import { kyivParts, shiftDate } from '../../../core/finance/planning.mjs';
 import type { Brief } from './briefing-schema.ts';
 
 // Демо-брифінг поза Telegram (роадмеп v3, E2) — перенесено з web/public/index.html
@@ -17,7 +19,13 @@ export const SAMPLE_BRIEF: Brief = {
   blocks: [
     {
       id: 'stoic',
-      data: { text: 'Жоден не зашкодить мені без моєї згоди.', author: 'Марк Аврелій' },
+      data: {
+        text: 'Людей тривожать не самі речі, а їхні уявлення про речі.',
+        author: 'Епіктет · Енхірідіон, 5',
+        sourceUrl: 'https://classics.mit.edu/Epictetus/epicench.html',
+        reference: 'Енхірідіон, 5',
+        translation: 'Власний український переказ',
+      },
     },
     {
       id: 'weather',
@@ -39,17 +47,17 @@ export const SAMPLE_BRIEF: Brief = {
             uv: 6,
             aqi: 2,
             advice: 'Легка куртка на вечір; удень футболка.',
-            rainWindow: '15:00–17:00',
+            rainWindow: '12:00–13:00, 16:00–17:00',
             dayLenDeltaMin: -2,
-            sunrise: demoSun(6, 43),
-            sunset: demoSun(22, 50),
+            sunrise: demoSun(7, 32),
+            sunset: demoSun(18, 53),
             hourly: [
               { h: 6, t: 17 },
               { h: 8, t: 18 },
               { h: 10, t: 20 },
-              { h: 12, t: 22 },
-              { h: 14, t: 24 },
-              { h: 16, t: 25 },
+              { h: 12, t: 22, at: demoSun(12, 0), popPercent: 75, precipMm: 1.2 },
+              { h: 14, t: 24, at: demoSun(14, 0), popPercent: 0, precipMm: 0 },
+              { h: 16, t: 25, at: demoSun(16, 0), popPercent: 65, precipMm: 0.6 },
               { h: 18, t: 24 },
               { h: 20, t: 22 },
               { h: 22, t: 20 },
@@ -94,6 +102,36 @@ export const SAMPLE_BRIEF: Brief = {
     {
       id: 'currency',
       data: {
+        catalog: [
+          { code: 'USD', name: 'Долар США', rate: 44.79, asOf: kyivParts(Date.now()).date },
+          { code: 'EUR', name: 'Євро', rate: 51.03, asOf: kyivParts(Date.now()).date },
+          { code: 'PLN', name: 'Польський злотий', rate: 12.05, asOf: kyivParts(Date.now()).date },
+          { code: 'GBP', name: 'Фунт стерлінгів', rate: 59.4, asOf: kyivParts(Date.now()).date },
+          { code: 'CHF', name: 'Швейцарський франк', rate: 54.8, asOf: kyivParts(Date.now()).date },
+          { code: 'JPY', name: 'Японська єна', rate: 0.31, asOf: kyivParts(Date.now()).date },
+          { code: 'CZK', name: 'Чеська крона', rate: 2.02, asOf: kyivParts(Date.now()).date },
+          { code: 'CAD', name: 'Канадський долар', rate: 32.4, asOf: kyivParts(Date.now()).date },
+          {
+            code: 'AUD',
+            name: 'Австралійський долар',
+            rate: 29.1,
+            asOf: kyivParts(Date.now()).date,
+          },
+        ],
+        observations: Array.from({ length: 60 }, (_, i) => ({
+          date: shiftDate(kyivParts(Date.now()).date, i - 59),
+          rates: {
+            USD: 44.79 + Math.sin(i / 7) * 0.18,
+            EUR: 51.03 + Math.sin(i / 9) * 0.28,
+            PLN: 12.05 + Math.sin(i / 6) * 0.05,
+            GBP: 59.4 + Math.sin(i / 8) * 0.2,
+            CHF: 54.8 + Math.sin(i / 7) * 0.3,
+            JPY: 0.31 + Math.sin(i / 4) * 0.003,
+            CZK: 2.02 + Math.sin(i / 8) * 0.02,
+            CAD: 32.4 + Math.sin(i / 7) * 0.12,
+            AUD: 29.1 + Math.sin(i / 6) * 0.11,
+          },
+        })),
         usd: 44.79,
         eur: 51.03,
         pln: 12.05,
@@ -104,7 +142,15 @@ export const SAMPLE_BRIEF: Brief = {
         gbpHistory: [59.0, 59.1, 59.2, 59.25, 59.35, 59.4],
       },
     },
-    { id: 'fact', data: { fact: 'Медузи бувають біологічно безсмертними.' } },
+    {
+      id: 'fact',
+      data: {
+        fact: 'У восьминога три серця. Два прокачують кров через зябра, а третє забезпечує кровообіг решти тіла.',
+        sourceUrl: 'https://ocean.si.edu/ocean-life/invertebrates/octopuses-squids-and-relatives',
+        sourceName: 'Smithsonian Ocean',
+        verifiedAt: '2026-10-04',
+      },
+    },
     {
       id: 'mock',
       data: {
@@ -116,181 +162,7 @@ export const SAMPLE_BRIEF: Brief = {
         topic: 'Мова',
       },
     },
-    {
-      id: 'news',
-      data: {
-        // Редизайн новин (BBC/Guardian/ТСН/dotesports/HLTV + розширені релізи):
-        // назви/джерела тем відповідають реальному config.yml, щоб демо-режим
-        // (поза Telegram) давав чесний перегляд нового екрана — різний "час
-        // тому" (щойно/години/день) на пробу time-ago, різні хости на пробу
-        // newsSource(), Релізи без `why` (те, чого в реальних GitHub-релізах
-        // немає).
-        groups: [
-          {
-            scope: 'world',
-            topic: 'Світ',
-            items: [
-              {
-                title: 'Wildfire now nine miles from French city of Bordeaux',
-                url: 'https://www.theguardian.com/world/2026/jul/27/bordeaux-wildfire',
-                publishedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
-              },
-              {
-                title: 'Uganda begins emergency food handouts after 19 die from hunger',
-                url: 'https://feeds.bbci.co.uk/news/world/uganda-food',
-                publishedAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
-              },
-            ],
-            more: [
-              {
-                title: 'Two Russian men jailed in Angola for terrorism and spying',
-                url: 'https://feeds.bbci.co.uk/news/world/angola-case',
-                publishedAt: new Date(Date.now() - 26 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'world',
-            topic: 'Тех/IT',
-            items: [
-              {
-                title:
-                  'Warning shot or publicity stunt — how worried should we be about the OpenAI hack?',
-                url: 'https://www.theguardian.com/technology/2026/jul/27/openai-hack',
-                why: 'обговорення "радикальної прозорості" після інциденту',
-                publishedAt: new Date(Date.now() - 45 * 60_000).toISOString(),
-              },
-              {
-                title: 'Self-contained highly-portable Python distributions',
-                url: 'https://news.ycombinator.com/item?id=example',
-                publishedAt: new Date(Date.now() - 5 * 3600_000).toISOString(),
-              },
-            ],
-            more: [
-              {
-                title: 'Chrome прибирає third-party cookies',
-                url: 'https://feeds.bbci.co.uk/news/technology/chrome-cookies',
-                publishedAt: new Date(Date.now() - 30 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'world',
-            topic: 'Наука',
-            items: [
-              {
-                title:
-                  "'It's not rocket science': a day in the life of a Nasa behavioral health scientist",
-                url: 'https://www.theguardian.com/science/2026/jul/27/nasa-scientist',
-                publishedAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'world',
-            topic: 'Кіберспорт',
-            items: [
-              {
-                title: 'Команда оголосила новий ростер перед осіннім сплітом',
-                url: 'https://dotesports.com/news/example-roster',
-                publishedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'world',
-            topic: 'Футбол',
-            items: [
-              {
-                title: 'Chelsea open talks to sign Henderson and Welbeck',
-                url: 'https://www.theguardian.com/football/2026/jul/27/chelsea-talks',
-                publishedAt: new Date(Date.now() - 4 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'world',
-            topic: 'Релізи',
-            // GitHub-релізи — версія+час, БЕЗ `why` (releases.atom не дає опису).
-            items: [
-              {
-                title: '19.2.8',
-                url: 'https://github.com/react/react/releases/tag/19.2.8',
-                publishedAt: new Date(Date.now() - 6 * 3600_000).toISOString(),
-              },
-              {
-                title: 'v5.4.10',
-                url: 'https://github.com/vitejs/vite/releases/tag/v5.4.10',
-                publishedAt: new Date(Date.now() - 20 * 3600_000).toISOString(),
-              },
-              {
-                title: 'wrangler@4.114.0',
-                url: 'https://github.com/cloudflare/workers-sdk/releases/tag/wrangler%404.114.0',
-                publishedAt: new Date(Date.now() - 40 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'ua',
-            topic: 'Загальне',
-            items: [
-              {
-                title:
-                  '"З усією повагою до Сирського і Федорова..." Зеленський — у інтервʼю Sky News',
-                url: 'https://feeds.bbci.co.uk/ukrainian/interview',
-                publishedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
-              },
-              {
-                title: 'У Раді пропонують дозволити полювання у "сезон тиші"',
-                url: 'https://tsn.ua/ukrayina/example',
-                publishedAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'ua',
-            topic: 'Політика',
-            items: [
-              {
-                title: 'Уряд ухвалив IT-пільги',
-                url: 'https://tsn.ua/politika/example-it',
-                why: 'впливає на ринок праці',
-                publishedAt: new Date(Date.now() - 7 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'ua',
-            topic: 'Оборона',
-            items: [
-              {
-                title: 'Ситуація на фронті: зведення Генштабу',
-                url: 'https://tsn.ua/oborona/example-front',
-                publishedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
-              },
-            ],
-            more: [
-              {
-                title: 'Партнери погодили новий пакет постачань на осінь',
-                url: 'https://tsn.ua/oborona/example-supply',
-                publishedAt: new Date(Date.now() - 8 * 3600_000).toISOString(),
-              },
-            ],
-          },
-          {
-            scope: 'ua',
-            topic: 'Технології',
-            items: [
-              {
-                title: 'Мінцифри розширює список послуг у застосунку держави',
-                url: 'https://tsn.ua/nauka_it/example-diia',
-                publishedAt: new Date(Date.now() - 5 * 3600_000).toISOString(),
-              },
-            ],
-          },
-        ],
-      },
-    },
+    { id: 'news', data: { groups: SAMPLE_NEWS } },
     {
       id: 'jobs',
       data: {
@@ -325,21 +197,29 @@ export const SAMPLE_BRIEF: Brief = {
       data: {
         events: [
           {
-            year: 1789,
-            text: 'Демо-подія: стародавня (гарантований слот).',
-            url: 'https://uk.wikipedia.org/wiki/1789',
+            year: 1957,
+            text: '4 жовтня запущено «Супутник-1» — перший штучний супутник Землі. Цей запуск відкрив космічну еру.',
+            url: 'https://www.nasa.gov/history/65-years-ago-sputnik-ushers-in-the-space-age/',
+            location: {
+              lat: 45.92,
+              lon: 63.34,
+              label: 'Байконур, Казахстан · місце запуску',
+              sourceUrl: 'https://www.nasa.gov/history/sputnik/sputorig.html',
+              kind: 'event',
+            },
           },
-          { year: 1863, text: 'Демо-подія: стародавня (гарантований слот).' },
-          { year: 1996, text: 'Демо-подія: XX ст. (найновіша з квоти).' },
-          { year: 1990, text: 'Демо-подія: XX ст.' },
-          { year: 1969, text: 'Демо-подія: XX ст.' },
-          { year: 2022, text: 'Демо-подія: XXI ст.' },
-          { year: 2010, text: 'Демо-подія: XXI ст.' },
-          { year: 2004, text: 'Демо-подія: XXI ст. (під toggle).' },
-          { year: 1961, text: 'Демо-подія: rollover XX ст. (під toggle).' },
-          { year: 1945, text: 'Демо-подія: rollover XX ст. (під toggle).' },
-          { year: 1918, text: 'Демо-подія: резерв (2-й клік «Показати ще»).' },
-          { year: 1905, text: 'Демо-подія: резерв (2-й клік «Показати ще»).' },
+          {
+            year: 2004,
+            text: '4 жовтня SpaceShipOne виконав другий заліковий політ і здобув Ansari XPRIZE. Приватна команда довела, що пілотований суборбітальний політ може бути повторюваним.',
+            url: 'https://www.xprize.org/competitions/ansari',
+            location: {
+              lat: 35.05,
+              lon: -118.15,
+              label: 'Мохаве, Каліфорнія · місце польоту',
+              sourceUrl: 'https://space.xprize.org/prizes/ansari',
+              kind: 'event',
+            },
+          },
         ],
       },
     },

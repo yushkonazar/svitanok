@@ -56,6 +56,20 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('POST /api/event — checkin, locked-контракт', () => {
+  it('a draft from yesterday cannot write into today’s matching slot', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-10T08:00:00Z'));
+    const initData = await buildInitData(OWNER, BOT_TOKEN);
+    const response = await postCheckin({
+      type: 'checkin',
+      dateKey: '2026-07-09',
+      slot: 'morning',
+      energy: 4,
+      initData,
+    });
+    expect(response.status).toBe(409);
+    expect(putCalls).toHaveLength(0);
+  });
   it('звичайний запис -> {ok:true, locked:false}, KV оновлено', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-10T08:00:00Z')); // Київ 11:00 -> ранок

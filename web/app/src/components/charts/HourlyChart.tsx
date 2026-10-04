@@ -1,6 +1,5 @@
 import { useId } from 'react';
 import { useInView } from '../../lib/useInView.ts';
-import { has } from '../../lib/format.ts';
 import { kyivMinutes } from '../../lib/weather.ts';
 
 // Температура по годинах (дизайн v2, Svitanok.dc.html). viewBox 330×88:
@@ -15,13 +14,7 @@ const XR = 330;
 const Y_TOP = 14;
 const Y_BOT = 70;
 
-export function HourlyChart({
-  hourly,
-  rainWindow,
-}: {
-  hourly: { h: number; t: number }[];
-  rainWindow?: string;
-}) {
+export function HourlyChart({ hourly }: { hourly: { h: number; t: number }[] }) {
   const uid = useId();
   // Хук ДО раннього return («недостатньо даних») — порядок хуків сталий.
   const [ref, inView] = useInView<SVGSVGElement>();
@@ -67,10 +60,6 @@ export function HourlyChart({
     [min, Y_BOT],
   ];
 
-  // Вікно опадів «15:00–17:00».
-  const m = has(rainWindow) ? String(rainWindow).match(/(\d{1,2}):\d{2}\D+(\d{1,2}):\d{2}/) : null;
-  const rain = m ? { x0: X(+m[1]), x1: X(+m[2]), label: `ОПАДИ ${m[1]}:00–${m[2]}:00` } : null;
-
   // До 5 міток, рівномірно по РЯДУ (не по годинах): гарантує підписи за
   // будь-якого діапазону — і 8…23 зранку, і 20…23 увечері.
   const LABELS = Math.min(5, pts.length);
@@ -102,7 +91,6 @@ export function HourlyChart({
     <div className="flex flex-col gap-1">
       <div className="flex justify-between font-mono text-[9.5px] font-medium text-tx3">
         <span>ТЕМПЕРАТУРА ПО ГОДИНАХ</span>
-        {rain && <span className="text-info">{rain.label}</span>}
       </div>
       <svg
         ref={ref}
@@ -123,19 +111,6 @@ export function HourlyChart({
             <stop offset="1" stopColor="rgba(255,138,110,0)" />
           </linearGradient>
         </defs>
-
-        {rain && (
-          <rect
-            x={rain.x0.toFixed(1)}
-            y="6"
-            width={Math.max(0, rain.x1 - rain.x0).toFixed(1)}
-            height="72"
-            rx="7"
-            fill="rgba(155,166,255,.13)"
-            stroke="rgba(155,166,255,.28)"
-            strokeDasharray="2 3"
-          />
-        )}
 
         {marks.map(([v, y], i) => (
           <g key={i}>

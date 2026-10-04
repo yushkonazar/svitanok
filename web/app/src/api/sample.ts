@@ -114,45 +114,29 @@ const dayKey = (dt: Date) =>
  * ДОСИТЬ трислотових діб, щоб «Карта станів» (гейт ≥12 пар енергія×настрій,
  * StateMatrix.tsx) реально показала сітку в демо, а не порожню картку.
  */
-function sampleCheckinSeries() {
-  const out: Array<{
-    d: string;
-    sleepH: number | null;
-    energy: number | null;
-    energyCurve: Array<number | null>;
-    moodCurve: Array<number | null>;
-    dayScore: number | null;
-    slots: number;
-  }> = [];
-  const d = new Date();
-  d.setDate(d.getDate() - 23);
-  const sleep = [
-    6.5, 7.5, 5.5, 8.5, 6.5, 7.5, 7.5, 5.5, 6.5, 8.5, 7.5, 6.5, 7.5, 6.5, 7, 6, 8, 7.5, 6.5, 7, 8,
-    5.5, 7, 6.5,
-  ];
-  for (let i = 0; i < 24; i++) {
-    // Кожен 6-й день пропущений — щоб було видно, що дірки це норма, а не збій.
-    if (i % 6 !== 5) {
-      const base = Math.round((sleep[i]! - 3) * 10) / 10;
-      const three = i % 3 !== 2; // 2 із 3 діб — повний трислотовий запис
-      // Форма дня, не лише середнє: у «повні» доби видно спад ранок->вечір,
-      // у неповні — дірка null там, де слот не заповнено.
-      const clamp = (v: number) => Math.max(1, Math.min(5, Math.round(v)));
-      out.push({
-        d: dayKey(d),
-        sleepH: sleep[i]!,
-        energy: base,
-        energyCurve: three
-          ? [clamp(base + 1), clamp(base), clamp(base - 1)]
-          : [clamp(base), null, null],
-        moodCurve: three ? [clamp(base), clamp(base), clamp(base - 1)] : [null, null, clamp(base)],
-        dayScore: i % 3 === 0 ? 4 : 3,
-        slots: three ? 3 : 1,
-      });
-    }
-    d.setDate(d.getDate() + 1);
-  }
-  return out;
+function sampleCheckinSeries(): Stats['checkinSeries'] {
+  return Object.entries(sampleCheckinRaw().records).map(([d, day]) => {
+    const energyCurve = [
+      day.morning?.energy ?? null,
+      day.afternoon?.energy ?? null,
+      day.evening?.energy ?? null,
+    ];
+    const moodCurve = [
+      day.morning?.mood ?? null,
+      day.afternoon?.mood ?? null,
+      day.evening?.mood ?? null,
+    ];
+    const energy = energyCurve.filter((v): v is number => v != null);
+    return {
+      d,
+      sleepH: day.morning?.sleepH ?? null,
+      energy: energy.length ? energy.reduce((a, b) => a + b, 0) / energy.length : null,
+      energyCurve,
+      moodCurve,
+      dayScore: day.evening?.dayScore ?? null,
+      slots: Object.keys(day).length,
+    };
+  });
 }
 
 /**
@@ -184,16 +168,32 @@ function sampleCheckinRaw(): Stats['checkinRaw'] {
           ...(low ? { lateReason: 'scroll' as const } : {}),
           energy: clamp(low ? 2 : 4),
           mood: clamp(low ? 2 : 4),
-          plan: ['work'],
+          plan: ['work', 'learn'],
+          sleepKind: 'slept',
+          bodyFeel: low ? 2 : 4,
+          dayControl: low ? 2 : 4,
+          dayLoad: low ? 4 : 3,
+          worryAM: low ? 4 : 2,
+          movePlan: 'light',
         },
         afternoon: {
           pace: low ? 'behind' : 'on',
+          ate: ['work', 'learn'],
+          mainProgress: low ? 'started' : 'most',
+          rushed: low ? 4 : 2,
+          outdoorNow: low ? 'none' : 'short',
           energy: clamp(low ? 2 : 4),
           mood: clamp(low ? 3 : 4),
           withWhom: i % 4 === 0 ? 'alone' : 'friends',
         },
         evening: {
           dayScore: low ? 2 : 4,
+          effort: low ? 4 : 3,
+          output: low ? 2 : 4,
+          autonomy: low ? 2 : 4,
+          kept: low ? 'partly' : 'yes',
+          detached: low ? 'no' : 'yes',
+          outdoor: low ? 'none' : 'long',
           energy: clamp(low ? 1 : 3),
           mood: clamp(low ? 2 : 4),
           // ⚠️ Теги НАВМИСНО не ідеально розділені. Спершу «важкі» доби мали

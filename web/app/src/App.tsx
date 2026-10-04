@@ -8,6 +8,7 @@ import { isSessionExpired, postEvent } from './api/client.ts';
 import { useTheme } from './theme.tsx';
 import { dateLabel, dateLabelFromIso } from './lib/dateLabel.ts';
 import { useBriefing, useStats } from './api/hooks.ts';
+import { useFinance } from './api/finance-hooks.ts';
 import { Fog } from './components/ui/Fog.tsx';
 import { SessionExpired } from './components/ui/SessionExpired.tsx';
 
@@ -28,9 +29,9 @@ import { SessionExpired } from './components/ui/SessionExpired.tsx';
 const TABS = [
   { id: 'today', path: '/', label: 'Сьогодні' },
   { id: 'news', path: '/news', label: 'Новини' },
-  { id: 'jobs', path: '/jobs', label: 'Вакансії' },
   { id: 'checkin', path: '/checkin', label: 'Чек-ін' },
-  { id: 'stats', path: '/stats', label: 'Статистика' },
+  { id: 'stats', path: '/stats', label: 'Мій стан' },
+  { id: 'finance', path: '/finance', label: 'Фінанси' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -47,8 +48,10 @@ const TodayScreen = lazy(() =>
 const NewsScreen = lazy(() =>
   import('./components/news/NewsScreen.tsx').then((module) => ({ default: module.NewsScreen })),
 );
-const JobsScreen = lazy(() =>
-  import('./components/jobs/JobsScreen.tsx').then((module) => ({ default: module.JobsScreen })),
+const FinanceScreen = lazy(() =>
+  import('./components/finance/FinanceScreen.tsx').then((module) => ({
+    default: module.FinanceScreen,
+  })),
 );
 const CheckinScreen = lazy(() =>
   import('./components/checkin/CheckinScreen.tsx').then((module) => ({
@@ -101,11 +104,11 @@ function TabIcon({ id, active }: { id: TabId; active: boolean }) {
         <path d="M7 9.5h6M7 13h10" />
       </svg>
     );
-  if (id === 'jobs')
+  if (id === 'finance')
     return (
       <svg width="18" height="18" viewBox="0 0 24 24" {...common}>
-        <rect x="3" y="7" width="18" height="13" rx="2.5" />
-        <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
+        <rect x="3" y="5" width="18" height="15" rx="3" />
+        <path d="M16 11h5v5h-5a2.5 2.5 0 0 1 0-5Z" />
       </svg>
     );
   if (id === 'checkin')
@@ -141,7 +144,11 @@ export function App() {
   // не буде. Поки вантажиться — дата пристрою як плейсхолдер.
   const { data: briefData, error: briefError } = useBriefing();
   const { data: statsData, error: statsError } = useStats();
-  const sessionExpired = isSessionExpired(briefError) || isSessionExpired(statsError);
+  const { error: financeError } = useFinance(
+    location.pathname === '/' || location.pathname === '/finance',
+  );
+  const sessionExpired =
+    isSessionExpired(briefError) || isSessionExpired(statsError) || isSessionExpired(financeError);
   const headerDate = dateLabelFromIso(briefData?.brief.generatedAt) ?? dateLabel();
 
   // demo:true можливий ЛИШЕ поза Telegram. 401/403 у WebView не маскується
@@ -215,7 +222,7 @@ export function App() {
   if (sessionExpired) return <SessionExpired />;
 
   return (
-    <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-[430px] flex-col">
+    <div className="renewal-shell relative mx-auto flex min-h-[100dvh] w-full max-w-[480px] flex-col">
       <Fog />
 
       <div className="relative z-[1] flex-1">
@@ -410,8 +417,8 @@ export function App() {
                 <TodayScreen />
               ) : active.id === 'news' ? (
                 <NewsScreen />
-              ) : active.id === 'jobs' ? (
-                <JobsScreen />
+              ) : active.id === 'finance' ? (
+                <FinanceScreen />
               ) : active.id === 'checkin' ? (
                 <CheckinScreen />
               ) : (
@@ -426,10 +433,10 @@ export function App() {
           налаштуваннях сховано (повноекранний режим, як у макеті). */}
       <nav
         hidden={!!full}
-        className="pointer-events-none fixed inset-x-0 bottom-[18px] z-30 flex justify-center"
+        className="renewal-navigation pointer-events-none fixed inset-x-0 bottom-[18px] z-30 flex justify-center"
       >
         <div
-          className="pointer-events-auto flex gap-1 rounded-full border border-glassb bg-bg2 p-1.5 backdrop-blur-[28px]"
+          className="renewal-nav-inner pointer-events-auto flex gap-1 border border-glassb bg-bg2 p-1.5 backdrop-blur-[28px]"
           style={{ boxShadow: '0 12px 40px rgba(0,0,0,.5)' }}
         >
           {TABS.map((t) => {
@@ -447,15 +454,11 @@ export function App() {
                 // sheen — лише на АКТИВНІЙ: вона градієнтна й найбільша на екрані
                 // (≈125px), тож саме на ній відблиск і видно. Пігулка живе в
                 // fixed-таббарі, тобто рух присутній на кожному екрані завжди.
-                className={
-                  on
-                    ? 'sheen flex items-center gap-[7px] rounded-full px-[15px] py-[9px] transition-all duration-[250ms]'
-                    : 'grid h-9 w-[42px] place-items-center rounded-full text-tx3 transition-all duration-[250ms]'
-                }
+                className={on ? 'renewal-nav-tab is-active' : 'renewal-nav-tab text-tx3'}
                 style={on ? { background: 'var(--grad)', color: 'var(--color-onacc)' } : undefined}
               >
                 <TabIcon id={t.id} active={on} />
-                {on && <span className="text-xs font-bold">{t.label}</span>}
+                <span>{t.label}</span>
               </button>
             );
           })}

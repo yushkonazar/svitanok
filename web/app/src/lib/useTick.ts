@@ -5,10 +5,10 @@ import { useEffect, useState } from 'react';
 // день↔ніч), як vanilla tickDials (index.html:1996). Пауза, коли вкладка прихована.
 
 export function useTick(intervalMs: number): number {
-  const [n, setN] = useState(0);
+  const [n, setN] = useState(() => Date.now());
   useEffect(() => {
     const bump = () => {
-      if (!document.hidden) setN((x) => x + 1);
+      if (!document.hidden) setN(Date.now());
     };
     const id = setInterval(bump, intervalMs);
     document.addEventListener('visibilitychange', bump);

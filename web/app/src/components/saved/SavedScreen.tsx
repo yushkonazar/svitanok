@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { PageHeading } from '../ui/PageHeading.tsx';
+import { useReading, markRead } from '../../lib/reading.ts';
 import type { SavedItem } from '../../api/schema.ts';
 import { useSavedArchive, useToggleSaveItem, useToggleSaveNews } from '../../api/hooks.ts';
 import { useSaved } from '../../saved.tsx';
@@ -39,6 +42,8 @@ function shortDate(ts: string): string {
 }
 
 function Row({ item, i }: { item: SavedItem; i: number }) {
+  const reading = useReading();
+  const readKey = item.url || `${item.kind}:${item.id}`;
   const delItem = useToggleSaveItem();
   const delNews = useToggleSaveNews();
   const { setSaved } = useSaved();
@@ -92,24 +97,33 @@ function Row({ item, i }: { item: SavedItem; i: number }) {
         {isLink ? (
           <button
             type="button"
-            onClick={() => openLink(item.url!)}
-            className="block w-full text-left text-[12.5px] font-medium leading-[1.4] text-a2"
+            onClick={() => {
+              markRead(readKey);
+              openLink(item.url!);
+            }}
+            className="block w-full text-left text-[14px] font-medium leading-[1.55] text-a2"
           >
-            {truncate(item.title, 120)}
+            {item.title}
           </button>
         ) : (
-          <span className="block text-[12.5px] font-medium leading-[1.4]">
-            {truncate(item.title, 120)}
-          </span>
+          <span className="block text-[14px] font-medium leading-[1.55]">{item.title}</span>
         )}
         {date && <span className="mt-0.5 block font-mono text-[9.5px] text-tx3">{date}</span>}
       </div>
+      <button
+        className="renewal-secondary !px-2"
+        aria-label={reading.includes(readKey) ? 'Позначити непрочитаним' : 'Позначити прочитаним'}
+        aria-pressed={reading.includes(readKey)}
+        onClick={() => markRead(readKey, !reading.includes(readKey))}
+      >
+        {reading.includes(readKey) ? '✓' : '○'}
+      </button>
       <button
         type="button"
         onClick={remove}
         disabled={busy}
         aria-label={`Прибрати зі збереженого: ${truncate(item.title, 40)}`}
-        className="grid h-7 w-7 flex-none place-items-center rounded-lg border border-glassb bg-glass transition-opacity disabled:opacity-40"
+        className="grid h-11 w-11 flex-none place-items-center rounded-lg border border-glassb bg-glass transition-opacity disabled:opacity-40"
       >
         <svg
           width="13"
@@ -128,6 +142,9 @@ function Row({ item, i }: { item: SavedItem; i: number }) {
 }
 
 export function SavedScreen() {
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('Усе');
+  const read = useReading();
   const {
     data,
     isLoading,
@@ -176,12 +193,52 @@ export function SavedScreen() {
       />
     );
 
+  const visible = items.filter(
+    (item) =>
+      (filter === 'Усе' ||
+        (filter === 'Непрочитане' && !read.includes(item.url || `${item.kind}:${item.id}`)) ||
+        filter === item.kind) &&
+      item.title.toLocaleLowerCase('uk-UA').includes(search.trim().toLocaleLowerCase('uk-UA')),
+  );
   const groups = [...KINDS, OTHER]
-    .map((k) => ({ ...k, list: items.filter((x) => kindOf(x) === k.id) }))
+    .map((k) => ({ ...k, list: visible.filter((x) => kindOf(x) === k.id) }))
     .filter((g) => g.list.length > 0);
 
   return (
     <div className="flex flex-col gap-6">
+      <PageHeading
+        eyebrow="ОСОБИСТА КОЛЕКЦІЯ"
+        title="Зберегти важливе."
+        accent="Повернутися вчасно."
+      />
+      <label className="renewal-field">
+        Пошук у збереженому
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Назва, думка або факт…"
+        />
+      </label>
+      <div className="flex gap-2 overflow-x-auto">
+        {[{ id: 'Усе', label: 'Усе' }, { id: 'Непрочитане', label: 'Непрочитане' }, ...KINDS].map(
+          (k) => (
+            <button
+              key={k.id}
+              className="renewal-secondary whitespace-nowrap"
+              aria-pressed={filter === k.id}
+              onClick={() => setFilter(k.id)}
+            >
+              {k.label}
+            </button>
+          ),
+        )}
+      </div>
+      {!visible.length && (
+        <p className="renewal-muted">
+          Нічого не знайдено серед відкритих записів.
+          {hasNextPage ? ' Завантаж ще записи нижче.' : ''}
+        </p>
+      )}
       <div className="font-mono text-[10.5px] font-medium text-tx3">
         УСЬОГО {total}
         {items.length < total && ` · НАБРАНО ${items.length}`}

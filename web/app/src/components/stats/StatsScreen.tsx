@@ -1,11 +1,12 @@
+import { useState } from 'react';
+import { PageHeading } from '../ui/PageHeading.tsx';
+import { StateStory } from './StateStory.tsx';
 import { useStats } from '../../api/hooks.ts';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
-import { HabitsBlock } from './HabitsBlock.tsx';
+import { PeriodReview } from './PeriodReview.tsx';
 import { CheckinBlock } from './CheckinBlock.tsx';
-import { RhythmBlock } from './RhythmBlock.tsx';
 import { InterestsBlock } from './InterestsBlock.tsx';
 import { ReliabilityBlock } from './ReliabilityBlock.tsx';
-import { MasteryBlock } from './MasteryBlock.tsx';
 import { LeversBlock } from './LeversBlock.tsx';
 import { HistoryBlock } from './HistoryBlock.tsx';
 
@@ -16,6 +17,7 @@ import { HistoryBlock } from './HistoryBlock.tsx';
 // стоїть до воронки, а не між нею й майстерністю.
 
 export function StatsScreen() {
+  const [days, setDays] = useState(7);
   const { data, isLoading, isError, error, refetch } = useStats();
 
   if (isLoading) return <LoadingSkeleton />;
@@ -31,10 +33,29 @@ export function StatsScreen() {
   const s = data.stats;
   return (
     <div className="flex flex-col gap-[26px]">
-      <HabitsBlock s={s} />
-      <CheckinBlock s={s} />
-      <InterestsBlock s={s} />
-      <ReliabilityBlock s={s} />
+      <PageHeading
+        eyebrow="ЩО ЗМІНЮЄТЬСЯ В ТОБІ"
+        title="Не просто числа."
+        accent="Твій ритм."
+        description="Від щоденних відповідей до змін, які можна помітити."
+      />
+      <PeriodReview s={s} days={days} setDays={setDays} />
+      <StateStory s={s} days={days} />
+      <details className="renewal-card">
+        <summary className="cursor-pointer text-sm font-semibold">
+          Глибше: фактори, карта станів і виконання плану
+        </summary>
+        <div className="mt-5">
+          <CheckinBlock s={s} />
+        </div>
+      </details>
+      <details className="renewal-card">
+        <summary className="cursor-pointer text-sm font-bold">Інтереси й робота Світанку</summary>
+        <div className="mt-5 flex flex-col gap-6">
+          <InterestsBlock s={s} />
+          <ReliabilityBlock s={s} />
+        </div>
+      </details>
       {/* Хвіст екрана — ТРИ згорнуті блоки. Усі відповідають на питання, які
           ставлять рідко: «як іде пошук», «що я знаю, а що ні», «що було за
           місяці». Тримати їх розгорнутими посеред щоденних чисел означало б
@@ -50,8 +71,6 @@ export function StatsScreen() {
           (29.07 блок був вимкнений із вердиктом «абсолютно не розумію, що мені
           показується») зробив його зрозумілим, але не щоденним — а це різні
           речі, і саме тому він тепер під кнопкою, а не в потоці. */}
-      <RhythmBlock s={s} />
-      <MasteryBlock s={s} />
       {/* Важелі — четвертий згорнутий. Гейт 26 тижнів даних означає, що
           місяцями блок казатиме лише «потрібно ще N»; тримати таке
           розгорнутим щодня — платити увагою за повідомлення, яке не

@@ -10,10 +10,19 @@ export interface OnThisDayEvent {
   year: number;
   text: string;
   url?: string; // посилання на статтю Вікіпедії (D3, кнопка «Відкрити»)
+  location?: {
+    lat: number;
+    lon: number;
+    label: string;
+    sourceUrl: string;
+    kind: 'associated_article' | 'event';
+  };
 }
 
 interface RawPage {
   content_urls?: { desktop?: { page?: unknown }; mobile?: { page?: unknown } };
+  title?: string;
+  coordinates?: { lat?: number; lon?: number };
 }
 interface RawEvent {
   year?: number;
@@ -40,7 +49,30 @@ export function parseEvents(json: unknown): OnThisDayEvent[] {
     .filter((e) => typeof e.year === 'number' && typeof e.text === 'string' && e.text.trim())
     .map((e) => {
       const url = pageUrl(e);
-      return { year: e.year as number, text: (e.text as string).trim(), ...(url ? { url } : {}) };
+      const page = e.pages?.find(
+        (p) =>
+          Number.isFinite(p.coordinates?.lat) &&
+          Number.isFinite(p.coordinates?.lon) &&
+          typeof p.title === 'string' &&
+          pageUrl({ pages: [p] }),
+      );
+      const coordinates = page?.coordinates;
+      const location =
+        page && coordinates && Math.abs(coordinates.lat!) <= 90 && Math.abs(coordinates.lon!) <= 180
+          ? {
+              lat: coordinates.lat!,
+              lon: coordinates.lon!,
+              label: page.title!.replaceAll('_', ' '),
+              sourceUrl: pageUrl({ pages: [page] })!,
+              kind: 'associated_article' as const,
+            }
+          : undefined;
+      return {
+        year: e.year as number,
+        text: (e.text as string).trim(),
+        ...(url ? { url } : {}),
+        ...(location ? { location } : {}),
+      };
     });
 }
 

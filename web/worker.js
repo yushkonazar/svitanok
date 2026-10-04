@@ -55,6 +55,7 @@ import { handleInternal } from './core/internal/router.mjs';
 import { handleMonoWebhook, handleMonoTest, MONO_WEBHOOK_PREFIX } from './core/finance/webhook.mjs';
 import { prerouteMessage, handleBrainCallback } from './core/prerouter.mjs';
 import { handleAssistantStatus } from './core/assistant-status.mjs';
+import { drainOutbox } from './core/tg/outbox.mjs';
 import {
   handleBusinessConnection,
   handleBusinessMessage,
@@ -76,6 +77,10 @@ import { handleLeversRequest } from './api-levers.mjs';
 import { handleAnalyticsRequest } from './api-analytics.mjs';
 import { handleDeletionsRequest } from './api-deletions.mjs';
 import { handleMailAttention } from './api-mail-attention.mjs';
+import { handleFinance } from './api-finance.mjs';
+import { handleNews } from './api-news.mjs';
+import { refreshNewsSnapshot } from './core/brief/news-snapshot.mjs';
+import { miniAppPaymentRemindTask } from './core/finance/reminders.mjs';
 import { tgCall, trackIncomingMessage } from './telegram-client.mjs';
 import { handleCommand, COOWNER_DENIED_TOAST } from './commands.mjs';
 import {
@@ -396,6 +401,8 @@ async function handleTelegramSetup(/** @type {Request} */ request, /** @type {En
  * впала (B11).
  */
 export const CRON_TASKS = [
+  { name: 'refreshNewsSnapshot', run: refreshNewsSnapshot },
+  { name: 'miniAppPaymentRemindTask', run: miniAppPaymentRemindTask },
   { name: 'checkReminders', run: checkReminders }, // будь-яка хвилина
   { name: 'reconcilePlanCalendar', run: reconcilePlanCalendar }, // обірвані зміни плану/Google
   { name: 'agentRunWatchdog', run: agentRunWatchdog }, // обірвані прогони агента
@@ -407,6 +414,11 @@ export const CRON_TASKS = [
   { name: 'autoTelegramSetup', run: autoTelegramSetup }, // самозапуск setup, раз на добу
   { name: 'archiveMonthly', run: archiveMonthly }, // місячні згортки в холодний ключ
   { name: 'computeLevers', run: computeLevers }, // шар звʼязків «Важелі», раз на тиждень
+  {
+    name: 'drainOutbox',
+    run: async (/** @type {Env} */ env) =>
+      env.DB && env.TELEGRAM_BOT_TOKEN ? drainOutbox(env) : null,
+  },
 ];
 
 /**
@@ -541,6 +553,10 @@ export default {
     if (url.pathname === '/api/mail/attention' && request.method === 'GET') {
       return handleMailAttention(request, env);
     }
+    if (url.pathname === '/api/finance') {
+      return handleFinance(request, env);
+    }
+    if (url.pathname === '/api/news' && request.method === 'GET') return handleNews(request, env);
     if (url.pathname === '/api/weather') {
       return handleLiveWeather(request, env);
     }

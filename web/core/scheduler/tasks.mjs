@@ -40,6 +40,7 @@ import { steamCheckTask } from '../steam/check.mjs';
 import { monoReconcileTask } from '../finance/reconcile.mjs';
 import { financeEveningTask } from '../finance/evening.mjs';
 import { subscriptionRemindTask } from '../finance/subscriptions.mjs';
+import { miniAppPaymentRemindTask } from '../finance/reminders.mjs';
 import { inboxDigestTask } from '../inbox/digest.mjs';
 import { retentionCleanupTask } from '../retention/cleanup.mjs';
 import { resumePendingForgetAll } from '../export/forget-all.mjs';
@@ -52,6 +53,7 @@ import { quotaCheckTask } from '../ops/quota-check.mjs';
 import { reconcileMemoryProjection } from '../memory.mjs';
 import { reconcileKnowledgeProjection } from '../knowledge-base.mjs';
 import { tripMonitorTask } from '../trips/monitor.mjs';
+import { refreshNewsSnapshot } from '../brief/news-snapshot.mjs';
 
 /**
  * @typedef {{
@@ -63,6 +65,7 @@ import { tripMonitorTask } from '../trips/monitor.mjs';
 
 /** @type {Record<string, SchedulerTaskDef>} */
 export const SCHEDULER_TASKS = {
+  'mini-app-news': { periodMin: 180, run: refreshNewsSnapshot },
   // Носій заміру джитера і канарка shadow-режиму: єдина задача, що
   // ВИКОНУЄТЬСЯ (а не логується) і в shadow — без побічних ефектів.
   heartbeat: {
@@ -159,6 +162,7 @@ export const SCHEDULER_TASKS = {
   'mail-triage': { periodMin: 5, run: async (env) => mailTriageTask(env) },
   'dead-man': { periodMin: 5, run: deadMansCheck },
   'checkin-nudge': { periodMin: 5, run: checkinNudgeCheck },
+  'mini-app-payments': { periodMin: 5, run: miniAppPaymentRemindTask },
   'sleep-nudge': { periodMin: 5, run: sleepNudgeCheck },
   'tg-setup': { periodMin: 5, run: autoTelegramSetup },
   'archive-monthly': { periodMin: 5, run: archiveMonthly },

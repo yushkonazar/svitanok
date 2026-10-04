@@ -4,6 +4,7 @@ import { has } from '../../lib/format.ts';
 import { dayLen, fmtClock, signTemp } from '../../lib/weather.ts';
 import { SunDial } from '../charts/SunDial.tsx';
 import { HourlyChart } from '../charts/HourlyChart.tsx';
+import { PrecipitationChart } from '../charts/PrecipitationChart.tsx';
 import { Ph } from '../ui/primitives.tsx';
 import {
   useSetWeatherLocation,
@@ -13,6 +14,7 @@ import {
   useSettlements,
 } from '../../api/hooks.ts';
 import { haptic, closeApp } from '../../telegram.ts';
+import { useTick } from '../../lib/useTick.ts';
 
 // Скільки варіантів показуємо в списку — досить, щоб знайти потрібне місто
 // серед однойменних, не захаращуючи невеликий інлайн-редактор.
@@ -116,6 +118,7 @@ export function WeatherBlock({
   locations: WeatherLocation[];
   manualGeo?: { name: string } | null;
 }) {
+  const nowMs = useTick(30000);
   const setLoc = useSetWeatherLocation();
   const setLocExact = useSetWeatherLocationExact();
   const clearLoc = useClearWeatherLocation();
@@ -211,7 +214,13 @@ export function WeatherBlock({
   const aqi = has(l.aqi) ? AQI_META[l.aqi!] : null;
 
   return (
-    <div className="flex flex-col gap-[18px]">
+    <div
+      className="renewal-weather flex flex-col gap-[18px]"
+      data-night={
+        nowMs < (l.sunrise > 0 ? l.sunrise * 1000 : nowMs) ||
+        nowMs > (l.sunset > 0 ? l.sunset * 1000 : nowMs)
+      }
+    >
       {/* герой */}
       <div className="flex items-end gap-3.5">
         <div className="flex flex-col gap-0.5">
@@ -379,8 +388,8 @@ export function WeatherBlock({
       )}
 
       {/* циферблат між лініями сходу/заходу */}
-      <div className="flex items-center gap-3">
-        <div className="flex flex-1 translate-y-3 flex-col gap-1.5">
+      <div className="renewal-sun-row flex items-center gap-3">
+        <div className="renewal-sun-label flex flex-1 translate-y-3 flex-col gap-1.5">
           <div
             style={{
               height: 1.5,
@@ -392,7 +401,7 @@ export function WeatherBlock({
           </div>
         </div>
         <SunDial sunrise={l.sunrise} sunset={l.sunset} />
-        <div className="flex flex-1 translate-y-3 flex-col items-end gap-1.5">
+        <div className="renewal-sun-label flex flex-1 translate-y-3 flex-col items-end gap-1.5">
           <div
             className="w-full"
             style={{
@@ -445,7 +454,10 @@ export function WeatherBlock({
 
       {/* графік по годинах */}
       {Array.isArray(l.hourly) && l.hourly.length >= 2 && (
-        <HourlyChart hourly={l.hourly} rainWindow={l.rainWindow} />
+        <>
+          <HourlyChart hourly={l.hourly} />
+          <PrecipitationChart hourly={l.hourly} />
+        </>
       )}
     </div>
   );

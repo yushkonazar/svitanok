@@ -157,9 +157,11 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
     const h = kyivHour();
     const slot = checkinSlot(h);
     // Тиха зона (02:00–07:59) — жоден блок не відкритий, писати нічого.
-    if (!slot) return;
+    if (!slot) return body.dateKey ? { locked: false, expired: true } : undefined;
     ev = { ...body, slot };
     dateKey = checkinDateKey(dateKey, h);
+    if (body.dateKey && (body.dateKey !== dateKey || body.slot !== slot))
+      return { locked: false, expired: true };
   } else if (body.type === 'sleepStart') {
     // Той самий зсув, що вечірній чек-ін: тап о 00:47 належить учорашньому
     // вечору, не сьогоднішній календарній добі.
@@ -178,9 +180,9 @@ export async function applyEvent(/** @type {Env} */ env, /** @type {any} */ body
   // updateStats) лежить у recordEvent (case 'checkin' сам ігнорує confirmed).
   const checkinLocked =
     body.type === 'checkin' && !!loaded.checkins?.[dateKey]?.[ev.slot]?.confirmed;
-  if (checkinLocked) return { locked: true }; // нічого не зміниться — не палимо KV-запис даремно
+  if (checkinLocked) return { locked: true, expired: false }; // нічого не зміниться — не палимо KV-запис даремно
   await updateStats(env, (curStore) => recordEvent(curStore, ev, dateKey, nowMin, nowIso));
-  if (body.type === 'checkin') return { locked: false };
+  if (body.type === 'checkin') return { locked: false, expired: false };
 }
 
 /** POST /api/event {type, …} -> записати подію у стор статистики.
@@ -201,6 +203,8 @@ export async function handleEvent(/** @type {Request} */ request, /** @type {Env
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
   const result = await applyEvent(env, body);
+  if (result?.expired)
+    return json({ ok: false, error: 'Вікно чек-іну змінилося. Онови екран.' }, 409);
   return json({ ok: true, locked: result?.locked ?? false });
 }
 
@@ -347,6 +351,16 @@ export async function handleStats(/** @type {Request} */ request, /** @type {Env
   // Скільки блоку лишилось жити. Клієнт тикає від цього якоря локально, а коли
   // той добігає нуля — перепитує сервер замість того, щоб вирішувати самому.
   stats.checkinSlotEndsIn = checkinSlotEndsInMin(kyivMinuteOfDay());
+  stats.checkinDate = checkinDateKey(kyivDateKey(), h);
+  const minute = kyivMinuteOfDay();
+  stats.checkinNextIn =
+    minute < 480
+      ? 480 - minute
+      : minute < 840
+        ? 840 - minute
+        : minute < 1200
+          ? 1200 - minute
+          : 1440 + 480 - minute;
   // ⚠️ checkinToday мусить читатись за КЛЮЧЕМ ЧЕК-ІНУ (як пише applyEvent через
   // checkinDateKey), а не за сирим календарним днем. aggregateStats не знає
   // години, тож дає checkins[kyivDateKey()]; але о 00:00–01:59 вечірній блок

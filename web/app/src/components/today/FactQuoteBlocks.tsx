@@ -10,7 +10,7 @@ import { SaveButton } from './SaveButton.tsx';
 export function FactBlock({ d }: { d: FactData }) {
   const id = textHash(d.fact);
   return (
-    <div className="flex flex-col gap-2">
+    <div className="renewal-card flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <SectionLabel>ФАКТ ДНЯ</SectionLabel>
         <div className="ml-auto">
@@ -18,6 +18,11 @@ export function FactBlock({ d }: { d: FactData }) {
         </div>
       </div>
       <div className="text-[14.5px] font-medium leading-[1.55]">{d.fact}</div>
+      {d.sourceUrl?.startsWith('https://') && (
+        <a className="renewal-link" href={d.sourceUrl} target="_blank" rel="noopener noreferrer">
+          {d.sourceName ?? 'Перевірити джерело'} ↗
+        </a>
+      )}
     </div>
   );
 }
@@ -29,12 +34,12 @@ export function QuoteBlock({ d }: { d: StoicData }) {
   const title = `«${d.text}» — ${d.author}`;
   const id = textHash(title);
   return (
-    <div className="flex flex-col gap-2">
+    <div className="renewal-card flex flex-col gap-2">
       {/* Шапка як у «Факті дня» й «Питанні дня»: підпис секції + 🔖 праворуч.
           Доти цей блок був єдиним без підпису, а кнопка жила внизу в рядку
           автора — через це вона й здавалась зʼїхалою відносно сусідів. */}
       <div className="flex items-center gap-2">
-        <SectionLabel>ДУМКА ДНЯ</SectionLabel>
+        <SectionLabel>ЦИТАТА ДНЯ</SectionLabel>
         <div className="ml-auto">
           <SaveButton kind="quote" id={id} title={title} />
         </div>
@@ -60,6 +65,17 @@ export function QuoteBlock({ d }: { d: StoicData }) {
             {d.author.toUpperCase()}
           </span>
         </div>
+        {d.sourceUrl?.startsWith('https://') && (
+          <a
+            className="renewal-link block"
+            href={d.sourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {d.reference ?? 'Читати оригінал'} ↗
+          </a>
+        )}
+        {d.translation && <p className="renewal-muted mt-1 text-[10px]">{d.translation}</p>}
       </div>
     </div>
   );

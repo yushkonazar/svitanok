@@ -3,6 +3,7 @@
 // деградує на SAMPLE-дані (E1). Тут лише читання/сигнали, жодної логіки авторизації
 // (вона на сервері, §safety: клієнту не довіряємо).
 
+import { presentation } from './lib/presentation.ts';
 export type HomeScreenStatus = 'unsupported' | 'unknown' | 'added' | 'missed';
 
 interface TelegramBackButton {
@@ -94,6 +95,7 @@ export function closeApp(): void {
 
 /** Тактильний відгук (no-op поза Telegram). */
 export function haptic(kind: 'light' | 'success' | 'warning' | 'error' = 'light'): void {
+  if (!inTelegram() || !presentation().haptics) return;
   const hf = tg?.HapticFeedback;
   if (!hf) return;
   if (kind === 'light') hf.impactOccurred?.('light');
@@ -161,7 +163,7 @@ export function setVerticalSwipes(enabled: boolean): void {
  * кнопку «Додати на головний екран» чи ні.
  */
 export function checkHomeScreenStatus(cb: (status: HomeScreenStatus) => void): void {
-  if (!tg?.checkHomeScreenStatus) {
+  if (!inTelegram() || !tg?.isVersionAtLeast?.('8.0') || !tg.checkHomeScreenStatus) {
     cb('unsupported');
     return;
   }
@@ -174,6 +176,7 @@ export function checkHomeScreenStatus(cb: (status: HomeScreenStatus) => void): v
 
 /** Показати системний промпт «Додати Світанок на головний екран» (Bot API 8.0+). */
 export function addToHomeScreen(): void {
+  if (!inTelegram() || !tg?.isVersionAtLeast?.('8.0')) return;
   try {
     tg?.addToHomeScreen?.();
   } catch {

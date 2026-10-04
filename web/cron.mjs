@@ -49,6 +49,7 @@ import {
 } from './stats-archive.mjs';
 import { isQuietMinute } from './settings-core.mjs';
 import { shouldDeliverProactive } from './core/assistant-controls.mjs';
+import { readMiniAppNotificationSettings, queueMiniAppNotice } from './core/finance/reminders.mjs';
 import { MIN_DISPATCH_GAP_MS, shouldAutoDispatchBrief } from './tg-core.mjs';
 import { kyivHour, kyivDateKey, kyivMinuteOfDay } from './kyiv-time.mjs';
 import { loadState, loadStats, loadSettings, updateStats, updateState } from './kv-store.mjs';
@@ -602,7 +603,8 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   // власником режимом «лише важливе» він вимкнений, доки власник явно не
   // попросить routine_nudges.checkins=true. Особисті нагадування й аварійні
   // алерти цим гейтом не зачіпаються.
-  if (!(await routineNudgeEnabled(env, 'checkins'))) return;
+  const miniApp = await readMiniAppNotificationSettings(env);
+  if (miniApp ? !miniApp.checkin_reminders : !(await routineNudgeEnabled(env, 'checkins'))) return;
 
   const [settings, store, attention] = await Promise.all([
     loadSettings(env),
@@ -613,19 +615,26 @@ export async function checkinNudgeCheck(/** @type {Env} */ env) {
   const dateKey = checkinDateKey(today, kyivHour());
   const due = shouldSendCheckinNudge({
     quiet: isQuietMinute(settings, minuteOfDay),
-    alreadyNudgedToday: Object.values(store.checkinNudgeDates ?? {}).includes(today),
+    alreadyNudgedToday: miniApp
+      ? store.checkinNudgeDates?.[win.slot] === today
+      : Object.values(store.checkinNudgeDates ?? {}).includes(today),
     // ⚠️ НЕ Boolean(...): порожній обʼєкт істинний. Саме на цьому нагадування
     // й ламалось — відмітив відповідь, зняв повторним тапом, слот лишився як
     // `{}`, і нудж на добу зникав. Тепер предикат ОДИН на весь проєкт.
-    slotFilled: isCheckinSlotFilled(store.checkins?.[dateKey], win.slot),
+    slotFilled: miniApp
+      ? Boolean(store.checkins?.[dateKey]?.[win.slot]?.confirmed)
+      : isCheckinSlotFilled(store.checkins?.[dateKey], win.slot),
   });
   if (!due || !attention.deliver) return;
 
-  await tgCall(env, 'sendMessage', {
-    chat_id: home.chatId,
-    message_thread_id: home.threadId ?? undefined,
-    text: win.text,
-  });
+  if (miniApp) {
+    await queueMiniAppNotice(env, `checkin:${dateKey}:${win.slot}`, win.text, Date.now());
+  } else
+    await tgCall(env, 'sendMessage', {
+      chat_id: home.chatId,
+      message_thread_id: home.threadId ?? undefined,
+      text: win.text,
+    });
 
   // Позначаємо ПІСЛЯ надсилання, окремим безпечним patch на свіжий stats —
   // не тим самим `store`, що читали для рішення `due` (той міг устигнути

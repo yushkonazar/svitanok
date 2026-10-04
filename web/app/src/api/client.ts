@@ -1,12 +1,14 @@
 import { tg, inTelegram } from '../telegram.ts';
 import { statsSchema, archiveSchema, deletionsSchema, leversSchema } from './schema.ts';
+import { readCheckinDemo, writeCheckinDemo } from './checkin-demo.ts';
 import type { Stats, ArchiveMonth, DeletionReceipts, LeversResult } from './schema.ts';
-import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_SAVED_ARCHIVE, SAMPLE_ARCHIVE } from './sample.ts';
+import { SAMPLE_STATS, EMPTY_STATS, SAMPLE_ARCHIVE } from './sample.ts';
 import { SAMPLE_LEVERS, EMPTY_LEVERS } from './sample.ts';
 import {
   briefSchema,
   liveWeatherResponseSchema,
   settlementsSchema,
+  newsSnapshotSchema,
   type Brief,
   type LiveWeatherResponse,
   type Settlement,
@@ -16,6 +18,10 @@ import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 import { savedPageSchema, type SavedPage } from './schema.ts';
 import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
+import { financeSchema, type FinanceCommand } from './finance-schema.ts';
+import { readFinanceDemo, writeFinanceDemo } from './finance-demo.ts';
+import { readSavedDemo, writeSavedDemo } from './saved-demo.ts';
+import { kyivParts } from '../../../core/finance/planning.mjs';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
 // origin), тож шляхи абсолютні (/api/...); у dev Vite проксі /api -> wrangler :8787.
@@ -25,6 +31,41 @@ import { workerQualityResponseSchema, type WorkerQuality } from './worker-qualit
 /** Заголовки авторизації: initData всередині Telegram, інакше порожньо (демо). */
 function authHeaders(): Record<string, string> {
   return inTelegram() && tg ? { 'X-Telegram-Init-Data': tg.initData } : {};
+}
+export async function fetchNewsSnapshot() {
+  if (!inTelegram()) return null;
+  const res = await fetch('/api/news', { headers: authHeaders() });
+  throwIfSessionExpired(res);
+  if (!res.ok) throw new Error('Не вдалося оновити стрічку. Показано останній брифінг.');
+  return newsSnapshotSchema.parse(await res.json());
+}
+
+export async function fetchFinance() {
+  if (!inTelegram()) return { finance: readFinanceDemo(), demo: true };
+  const res = await fetch('/api/finance', { headers: authHeaders() });
+  throwIfSessionExpired(res);
+  if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
+  return { finance: financeSchema.parse(await res.json()), demo: false };
+}
+export async function postFinance(command: FinanceCommand) {
+  if (!inTelegram()) {
+    writeFinanceDemo(command);
+    return;
+  }
+  const res = await fetch('/api/finance', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(command),
+  });
+  throwIfSessionExpired(res);
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => null);
+    throw new Error(
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : 'Не вдалося зберегти операцію',
+    );
+  }
 }
 
 /**
@@ -95,7 +136,7 @@ export interface StatsResult {
 export async function fetchStats(): Promise<StatsResult> {
   if (!inTelegram())
     return demoGate(
-      () => ({ stats: SAMPLE_STATS, demo: true }),
+      () => ({ stats: demoStats(), demo: true }),
       () => ({ stats: EMPTY_STATS, demo: true }),
     );
 
@@ -108,6 +149,45 @@ export async function fetchStats(): Promise<StatsResult> {
     throw new Error('Формат статистики змінився — оновіть застосунок');
   }
   return { stats: parsed.data, demo: false };
+}
+
+function demoStats(): Stats {
+  const today = kyivParts(Date.now()).date,
+    checkinToday = { ...SAMPLE_STATS.checkinToday, ...readCheckinDemo() };
+  const energyCurve = [
+    checkinToday.morning?.energy ?? null,
+    checkinToday.afternoon?.energy ?? null,
+    checkinToday.evening?.energy ?? null,
+  ];
+  const moodCurve = [
+    checkinToday.morning?.mood ?? null,
+    checkinToday.afternoon?.mood ?? null,
+    checkinToday.evening?.mood ?? null,
+  ];
+  const values = energyCurve.filter((v): v is number => v != null),
+    saved = readSavedDemo();
+  const records = { ...SAMPLE_STATS.checkinRaw.records, [today]: checkinToday };
+  return {
+    ...SAMPLE_STATS,
+    checkinToday,
+    savedList: saved.slice(0, 8),
+    savedCount: saved.length,
+    checkinRaw: { ...SAMPLE_STATS.checkinRaw, records },
+    checkinSeries: [
+      ...SAMPLE_STATS.checkinSeries.filter((p) => p.d !== today),
+      {
+        d: today,
+        energy: values.length ? values.reduce((a, b) => a + b, 0) / values.length : null,
+        moodCurve,
+        energyCurve,
+        sleepH:
+          checkinToday.morning?.sleepH ?? (checkinToday.morning?.sleepKind === 'none' ? 0 : null),
+        dayScore: checkinToday.evening?.dayScore ?? null,
+        slots: Object.values(checkinToday).filter((slot) => slot && Object.keys(slot).length > 0)
+          .length,
+      },
+    ],
+  };
 }
 
 /**
@@ -323,17 +403,27 @@ export async function requestLocatePrompt(): Promise<void> {
 /**
  * Мутація POST /api/event (роадмеп v3, E2). initData їде заголовком — тим самим,
  * що й у GET-читаннях (M3); сервер валідує owner.
- * Поза Telegram — no-op (демо не персиститься; оптимістичне оновлення кешу
- * робить хук-мутація локально).
+ * Поза Telegram чек-ін підтверджується лише в локальному демо; інші події
+ * оновлюють React-кеш, мережевих записів немає.
  */
 export async function postEvent(type: string, payload: Record<string, unknown>): Promise<void> {
-  if (!inTelegram() || !tg) return;
+  if (!inTelegram() || !tg) {
+    if (type === 'checkin') writeCheckinDemo(payload);
+    if (['save_item', 'unsave_item', 'save_news', 'unsave_news'].includes(type))
+      writeSavedDemo(type, payload);
+    return;
+  }
   const res = await fetch('/api/event', {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ type, ...payload }),
   });
+  throwIfSessionExpired(res);
   if (!res.ok) throw new Error(`Подію не збережено (${res.status})`);
+  if (type === 'checkin') {
+    const result = await res.json();
+    if (result.locked) throw new Error('Цей чек-ін уже підтверджений. Онови екран.');
+  }
 }
 
 /* ── Налаштування (F2) ─────────────────────────────────────────────────── */
@@ -354,7 +444,16 @@ const DEMO_SETTINGS: SettingsResponse = {
  * Демо-стани демонструють ЕКРАНИ ДАНИХ, а не пульт керування собою.
  */
 export async function fetchSettings(): Promise<SettingsResponse> {
-  if (!inTelegram()) return DEMO_SETTINGS;
+  if (!inTelegram()) {
+    try {
+      const saved = settingsResponseSchema.safeParse(
+        JSON.parse(localStorage.getItem('svitanok:demo-settings:v1') ?? 'null'),
+      );
+      return saved.success ? saved.data : DEMO_SETTINGS;
+    } catch {
+      return DEMO_SETTINGS;
+    }
+  }
 
   const res = await fetch('/api/settings', { cache: 'no-store', headers: authHeaders() });
   throwIfSessionExpired(res);
@@ -372,7 +471,17 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  * Поза Telegram — null (оптимістичне значення в кеші лишається).
  */
 export async function postSettings(next: Settings): Promise<SettingsResponse | null> {
-  if (!inTelegram() || !tg) return null;
+  if (!inTelegram() || !tg) {
+    try {
+      localStorage.setItem(
+        'svitanok:demo-settings:v1',
+        JSON.stringify({ ...DEMO_SETTINGS, settings: next }),
+      );
+    } catch {
+      /* Current cache still works. */
+    }
+    return null;
+  }
   const res = await fetch('/api/settings', {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
@@ -404,9 +513,10 @@ export const SAVED_PAGE = 50;
  */
 export async function fetchSaved(offset: number, limit: number = SAVED_PAGE): Promise<SavedPage> {
   if (!inTelegram()) {
+    const saved = readSavedDemo();
     return {
-      items: SAMPLE_SAVED_ARCHIVE.slice(offset, offset + limit),
-      total: SAMPLE_SAVED_ARCHIVE.length,
+      items: saved.slice(offset, offset + limit),
+      total: saved.length,
     };
   }
   const res = await fetch(`/api/saved?offset=${offset}&limit=${limit}`, {

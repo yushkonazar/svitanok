@@ -76,9 +76,9 @@ describe('parseOneCall', () => {
     expect(w.maxC).toBe(16); // daily[0].temp.max
   });
 
-  it('вікно дощу з погодинних (перша..остання дощова +1 год)', () => {
+  it('перерви між дощовими годинами не зникають у суцільному вікні', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01')!;
-    expect(w.rainWindow).toBe('12:00–16:00'); // pop≥0.5 о 12:00 і 15:00 Kyiv
+    expect(w.rainWindow).toBe('12:00–13:00, 15:00–16:00');
   });
 
   it('погодинна температура (спарклайн) — денні слоти доби', () => {
@@ -88,12 +88,35 @@ describe('parseOneCall', () => {
 
   it('hourly {година, температура} за сьогодні (для графіка з віссю годин)', () => {
     const w = parseOneCall(oneCall, 'Львів', '2026-07-01')!;
-    expect(w.hourly).toEqual([
+    expect(w.hourly?.map(({ h, t }) => ({ h, t }))).toEqual([
       { h: 9, t: 10 },
       { h: 12, t: 8 },
       { h: 15, t: 12 },
       { h: 18, t: 11 },
     ]);
+  });
+
+  it('кількість опадів не підміняється ймовірністю, невідоме не стає нулем', () => {
+    const w = parseOneCall(
+      {
+        ...oneCall,
+        hourly: [
+          {
+            dt: sec('2026-07-01T09:00:00Z'),
+            temp: 8,
+            pop: 0.8,
+            rain: { '1h': 1.2 },
+            snow: { '1h': 0.3 },
+          },
+          { dt: sec('2026-07-01T10:00:00Z'), temp: 9 },
+        ],
+      },
+      'Львів',
+      '2026-07-01',
+    )!;
+    expect(w.hourly?.[0]).toMatchObject({ popPercent: 80, precipMm: 1.5 });
+    expect(w.hourly?.[1]?.precipMm).toBeUndefined();
+    expect(w.hourly?.[1]?.popPercent).toBeUndefined();
   });
 
   it('advice, alerts, summary, схід/захід з добового запису', () => {

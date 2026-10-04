@@ -10,6 +10,7 @@
 // Ротації ключа немає (R16): втрата ключа = бекапи нечитабельні.
 
 import { recordFtsText } from '../tools/collections.mjs';
+import { FINANCE_DEFAULT_SQL } from '../finance/defaults.mjs';
 
 /** Магія формату - версія 1. */
 export const BACKUP_MAGIC = 'SVB1';
@@ -45,6 +46,17 @@ export const BACKUP_TABLES = [
   'transactions',
   'subscriptions',
   'merchant_rules',
+  'finance_accounts',
+  'finance_settings',
+  'finance_taxi_policies',
+  'finance_taxi_entries',
+  'finance_taxi_settlements',
+  'finance_goals',
+  'finance_goal_moves',
+  'finance_budgets',
+  'finance_payments',
+  'finance_commands',
+  'finance_notices',
   'inbox_messages',
   'inbox_digests',
   'collections',
@@ -220,12 +232,14 @@ export function restoreSql(doc) {
       ? doc.omitted_d1.filter((table) => BACKUP_TABLES.includes(String(table)))
       : [],
   );
+  for (const table of [...BACKUP_TABLES].reverse()) {
+    if (!omitted.has(table)) lines.push(`DELETE FROM ${table};`);
+  }
   for (const table of BACKUP_TABLES) {
     // v2 recovery snapshots deliberately omit hot telemetry. It is not owner
     // state and must not be erased when a backup is restored over a live DB.
     if (omitted.has(table)) continue;
     const rows = doc.d1[table] ?? [];
-    lines.push(`DELETE FROM ${table};`);
     for (const row of rows) {
       const cols = Object.keys(row).filter((c) => /^[a-z_][a-z0-9_]*$/.test(c));
       if (cols.length === 0) continue;
@@ -233,6 +247,7 @@ export function restoreSql(doc) {
       lines.push(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${values.join(', ')});`);
     }
   }
+  for (const sql of FINANCE_DEFAULT_SQL) lines.push(`${sql};`);
   // Бекап до міграції 0011 (ideas без number, без counters): номери - з
   // rowid, лічильник - з максимуму; інакше відновлені ідеї були б «#null»,
   // а create падав би з хибним «міграція не застосована» (ревʼю 05.09).

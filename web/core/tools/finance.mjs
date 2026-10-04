@@ -22,6 +22,8 @@ import {
 } from '../finance/query.mjs';
 import { NOT_TEST_SQL, readTransaction } from '../finance/store.mjs';
 import { findSubscriptionByMerchant, listSubscriptions } from '../finance/subscriptions.mjs';
+import { readFinanceWorkspace } from '../finance/workspace.mjs';
+import { sumMoney } from '../finance/planning.mjs';
 
 /** Скільки рядків історії перекатегоризовуємо за один виклик `finance.rule`. */
 export const RECATEGORIZE_MAX = 2000;
@@ -69,9 +71,40 @@ export async function runFinanceQuery(env, args, nowMs) {
       ? 'starts_after_previous_period'
       : 'history_starts_before_previous_period';
   const truncated = rows.length > LIST_MAX;
+  let workspace = null;
+  const available = await db(env)
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'finance_settings'")
+    .bind()
+    .first();
+  if (available) {
+    const f = await readFinanceWorkspace(env, nowMs);
+    const owned = sumMoney(
+      f.accounts
+        .filter((a) => a.currency === 'UAH' && a.balanceMinor != null)
+        .map((a) => a.balanceMinor ?? 0),
+    );
+    const allocated = sumMoney(f.goalMoves.map((m) => m.amountMinor));
+    const complete =
+      !f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor == null) &&
+      !f.taxiWeeks.some((w) => !w.settled && !w.complete);
+    workspace = {
+      generated_at: f.generatedAt,
+      currency: 'UAH',
+      balances: f.accounts,
+      fleet_reserve_minor: f.reserveMinor,
+      goal_reserve_minor: allocated,
+      available_minor: complete ? sumMoney([owned, -allocated, -f.reserveMinor]) : null,
+      complete,
+      taxi_weeks: f.taxiWeeks.slice(0, 12),
+      goals: f.goals,
+      payments: f.payments.filter((p) => p.status === 'active'),
+      budgets: f.budgets,
+    };
+  }
   return {
     result: {
       mode: 'period',
+      ...(workspace ? { workspace } : {}),
       period: { from: period.from, to: period.to, label: period.label },
       ...sum,
       total_text: formatMoney(sum.total_uah, 'UAH'),

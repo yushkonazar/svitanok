@@ -21,7 +21,7 @@ import { pluralUk } from '../../lib/plural.ts';
 /** Дев'ять життєвих категорій — «головне на сьогодні» і «що зайняло час».
  *  [підпис, значення]; значення дзеркалиться в CHECKIN_FIELDS.plan/ate. */
 export const CATEGORIES: Array<[string, string]> = [
-  ['💼 Робота/пошук', 'work'],
+  ['💼 Робота', 'work'],
   ['📚 Навчання', 'learn'],
   ['🛠 Проєкт', 'project'],
   ['🧭 Дорога', 'travel'],

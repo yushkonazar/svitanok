@@ -1,0 +1,829 @@
+.renewal-card {
+  padding: 20px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 24px;
+  background: linear-gradient(140deg, var(--color-glass), transparent), var(--color-bg2);
+}
+.renewal-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.renewal-link {
+  font-size: 12px;
+  color: var(--color-a2);
+  font-weight: 700;
+  padding: 6px 0;
+}
+.renewal-muted {
+  color: var(--color-tx2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.renewal-eyebrow {
+  font:
+    600 10px 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: 0.1em;
+  color: var(--color-tx2);
+}
+.renewal-inset {
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--color-glassb);
+  background: var(--color-glass);
+}
+.renewal-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.renewal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--color-tx2);
+}
+.renewal-field input,
+.renewal-field select,
+.renewal-field textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 12px;
+  color: var(--color-tx);
+  background: var(--color-bg);
+  font-size: 16px;
+}
+.renewal-field input:focus,
+.renewal-field select:focus,
+.renewal-field textarea:focus {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 2px;
+}
+.renewal-field select option {
+  color: var(--color-tx);
+  background: var(--color-bg2);
+}
+.renewal-currency-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.renewal-currency {
+  border: 1px solid var(--color-glassb);
+  border-radius: 16px;
+  padding: 12px;
+  text-align: left;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--color-glass);
+}
+.renewal-currency strong {
+  font:
+    600 20px 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: -0.04em;
+}
+.renewal-currency small {
+  color: var(--color-tx3);
+  font-size: 11px;
+}
+.renewal-currency.is-selected {
+  border-color: var(--color-a2);
+  background: color-mix(in srgb, var(--color-a2) 8%, transparent);
+}
+.renewal-segments {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--color-glass);
+}
+.renewal-segments button {
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 11px;
+  color: var(--color-tx2);
+}
+.renewal-segments button[aria-pressed='true'] {
+  color: var(--color-a2);
+  background: var(--color-bg);
+}
+.renewal-catalog {
+  max-height: 260px;
+  overflow: auto;
+  margin: 12px 0;
+}
+.renewal-catalog button {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-hair);
+  font-size: 12px;
+}
+.renewal-catalog button[aria-pressed='true'] {
+  color: var(--color-a2);
+}
+.renewal-converted {
+  display: block;
+  font:
+    600 24px 'JetBrains Mono Variable',
+    monospace;
+  color: var(--color-a2);
+  margin: 16px 0 8px;
+  overflow-wrap: anywhere;
+}
+.renewal-rain {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--color-info) 7%, transparent);
+}
+.renewal-rain-bars {
+  height: 90px;
+  display: flex;
+  gap: 3px;
+  align-items: end;
+  margin-top: 10px;
+}
+.renewal-rain-slot {
+  flex: 1;
+  height: 100%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: end;
+  padding-bottom: 24px;
+  min-width: 0;
+}
+.renewal-rain-slot > span {
+  display: block;
+  width: 100%;
+  border-radius: 5px 5px 2px 2px;
+  background: var(--color-info);
+}
+.renewal-rain-slot small {
+  position: absolute;
+  bottom: 4px;
+  width: 100%;
+  font-size: 10px;
+  color: var(--color-tx2);
+}
+.renewal-hero {
+  position: relative;
+  padding: 8px 0 12px;
+  isolation: isolate;
+}
+.renewal-hero::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: -30px -20px;
+  z-index: -1;
+  background: radial-gradient(ellipse at 75% 15%, rgba(255, 164, 92, 0.13), transparent 65%);
+}
+.renewal-hero[data-night='true']::before {
+  background: radial-gradient(ellipse at 75% 15%, rgba(130, 140, 255, 0.14), transparent 65%);
+}
+.renewal-title {
+  font-size: 28px;
+  font-weight: 750;
+  letter-spacing: -0.055em;
+  line-height: 1.2;
+}
+.renewal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 16px 0;
+}
+.renewal-actions a {
+  min-height: 70px;
+  border-radius: 18px;
+  padding: 14px;
+  background: var(--color-glass);
+  border: 1px solid var(--color-glassb);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+.renewal-actions small {
+  color: var(--color-tx2);
+  font-size: 11px;
+  font-weight: 500;
+}
+.renewal-button {
+  min-height: 44px;
+  border-radius: 13px;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 750;
+  background: var(--grad);
+  color: var(--color-onacc);
+}
+.renewal-button:disabled {
+  opacity: 0.45;
+}
+.renewal-secondary {
+  min-height: 44px;
+  border: 1px solid var(--color-glassb);
+  padding: 10px 14px;
+  border-radius: 13px;
+  background: var(--color-glass);
+  font-size: 12px;
+}
+.renewal-big {
+  font:
+    600 32px 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: -0.06em;
+  overflow-wrap: anywhere;
+}
+.renewal-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 18px;
+}
+.renewal-metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.renewal-metric strong {
+  font:
+    600 17px 'JetBrains Mono Variable',
+    monospace;
+  overflow-wrap: anywhere;
+}
+.renewal-list-row {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--color-hair);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.renewal-list-row small {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-tx2);
+  font-size: 11px;
+}
+.renewal-progress {
+  height: 6px;
+  border-radius: 6px;
+  background: var(--color-glassb);
+  margin-top: 12px;
+  overflow: hidden;
+}
+.renewal-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--grad);
+}
+.renewal-sheet-content {
+  max-height: 78dvh;
+  overflow: auto;
+  padding: 0 0 max(16px, env(safe-area-inset-bottom));
+}
+@media (prefers-reduced-motion: reduce) {
+  .renewal-hero::before {
+    animation: none;
+  }
+}
+.renewal-news-original {
+  position: relative;
+  flex: none;
+  font: 10px var(--font-mono, monospace);
+  color: var(--color-tx3);
+}
+.renewal-news-original summary {
+  cursor: pointer;
+  padding: 10px 6px;
+  list-style: none;
+}
+.renewal-news-original[open] > span {
+  position: absolute;
+  right: 0;
+  top: 40px;
+  width: min(270px, 70vw);
+  padding: 14px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 12px;
+  background: var(--color-bg2);
+  color: var(--color-tx);
+  font: 13px/1.5 var(--font-sans, sans-serif);
+  z-index: 2;
+  box-shadow: 0 10px 30px #0008;
+}
+
+/* Approved prerelease: warm editorial hierarchy and consistent surfaces. */
+:root:not([data-theme='light']) {
+  --color-bg: #17121f;
+  --color-bg2: #251e2f;
+  --color-tx: #f2e9ef;
+  --color-tx2: #bbaec0;
+  --color-tx3: #9889a2;
+  --color-a2: #ffc08c;
+  --color-a1: #f08e91;
+  --color-glassb: #4a3a50;
+  --color-glass: rgba(223, 198, 218, 0.045);
+  --grad: linear-gradient(130deg, #ffc08c, #ef9995);
+}
+.renewal-shell {
+  padding-top: 10px;
+}
+.renewal-shell header {
+  margin-bottom: 24px;
+}
+.renewal-page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.renewal-page-heading .renewal-eyebrow {
+  margin-bottom: 12px;
+}
+.renewal-page-heading .renewal-muted {
+  margin-top: 14px;
+  font-size: 13px;
+  max-width: 38ch;
+}
+.renewal-title {
+  font-size: clamp(30px, 8vw, 37px);
+  font-weight: 650;
+  letter-spacing: -1.15px;
+  line-height: 1.13;
+}
+.renewal-title em {
+  font-family: Georgia, serif;
+  font-weight: 400;
+  color: var(--color-a2);
+  letter-spacing: -0.8px;
+}
+.renewal-card {
+  padding: 20px;
+  border-radius: 20px;
+  background: var(--color-bg2);
+}
+.renewal-card h2 {
+  letter-spacing: -0.4px;
+}
+.renewal-muted {
+  font-size: 13px;
+  line-height: 1.65;
+}
+.renewal-section-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 13px;
+  font-size: 14px;
+  font-weight: 650;
+}
+.renewal-pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 5px 9px;
+  border-radius: 99px;
+  border: 1px solid var(--color-glassb);
+  color: var(--color-a2);
+  font-size: 10px;
+  font-weight: 600;
+}
+.renewal-actions a {
+  min-height: 115px;
+  padding: 16px;
+  justify-content: flex-start;
+  gap: 10px;
+  background: var(--color-bg2);
+}
+.renewal-actions strong {
+  font-size: 19px;
+  letter-spacing: -0.7px;
+}
+.renewal-actions a:first-child {
+  background: linear-gradient(135deg, #3b2937, var(--color-bg2));
+}
+.renewal-nav-inner {
+  width: calc(100% - 28px);
+  max-width: 452px;
+  border-radius: 18px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 2px;
+}
+.renewal-nav-tab {
+  min-width: 0;
+  min-height: 54px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  transition: background 0.2s;
+}
+.renewal-nav-tab span {
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.renewal-navigation {
+  bottom: max(12px, env(safe-area-inset-bottom));
+}
+.renewal-button {
+  background: var(--color-a2);
+  color: var(--color-onacc);
+  font-weight: 650;
+}
+.renewal-segments button {
+  min-height: 36px;
+}
+.renewal-hero {
+  padding: 0 0 8px;
+}
+.renewal-weather {
+  padding: 20px 16px;
+  border-radius: 24px;
+  background: radial-gradient(ellipse at 75% 25%, #c2925919, transparent 70%), var(--color-bg2);
+  border: 1px solid var(--color-glassb);
+}
+.renewal-weather[data-night='true'] {
+  background: radial-gradient(ellipse at 60% 25%, #9ba6ff20, transparent 70%), var(--color-bg2);
+}
+.renewal-focus-clock {
+  font: 500 48px var(--font-mono);
+  color: var(--color-a2);
+  letter-spacing: -3px;
+  margin: 12px 0;
+}
+.renewal-money-hero {
+  background: linear-gradient(140deg, #45313a, #2a2336) !important;
+  border-color: #66505b;
+}
+.renewal-money-hero .renewal-big {
+  font-size: clamp(30px, 8vw, 42px);
+  margin: 14px 0;
+}
+.renewal-plan-lane {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  margin-top: 16px;
+}
+.renewal-datebox {
+  min-width: 43px;
+  height: 48px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 12px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  font: 600 17px var(--font-mono);
+}
+.renewal-datebox small {
+  font: 10px var(--font-sans);
+  color: var(--color-tx2);
+}
+.renewal-chart-note {
+  font-size: 11px;
+  color: var(--color-tx3);
+  line-height: 1.6;
+}
+.renewal-question {
+  padding-top: 5px;
+}
+:root[data-calm='true'] *,
+:root[data-calm='true'] *::before,
+:root[data-calm='true'] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+@media (min-width: 900px) {
+  .renewal-shell {
+    max-width: 640px;
+  }
+  .renewal-nav-inner {
+    max-width: 612px;
+  }
+  .renewal-title {
+    font-size: 42px;
+  }
+}
+@media (max-width: 360px) {
+  .renewal-weather {
+    padding: 16px 10px;
+  }
+  .renewal-nav-tab span {
+    font-size: 8px;
+  }
+  .renewal-card {
+    padding: 16px;
+  }
+}
+/* Editorial feed and interactive views share the approved warm night palette. */
+.renewal-news-story {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.renewal-news-visual {
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+}
+.renewal-news-art {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  border-radius: 14px;
+  background:
+    radial-gradient(ellipse at 75% 35%, #9886c260, transparent 55%),
+    radial-gradient(ellipse at 10% 80%, #da906a55, transparent 60%), #201c30;
+}
+.renewal-news-art::before {
+  content: '';
+  position: absolute;
+  width: 180px;
+  height: 180px;
+  border: 1px solid #d1b1dd35;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 32px #d1b1dd10,
+    0 0 0 65px #d1b1dd07;
+  transform: translate(40px, 15px);
+}
+.renewal-news-art > span {
+  font-size: 62px;
+  color: #f8d4bc;
+  z-index: 1;
+}
+.renewal-news-art > small {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  font-size: 10px;
+  color: #d7c5dc;
+}
+.renewal-news-art img {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  inset: 0;
+}
+.renewal-news-art.is-compact {
+  min-height: 82px;
+}
+.renewal-news-art.is-compact > span {
+  font-size: 30px;
+}
+.renewal-news-headline {
+  display: block;
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 700;
+}
+.renewal-news-excerpt {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--color-tx2);
+}
+.renewal-news-actions {
+  grid-column: 2;
+}
+.renewal-news-story.is-featured {
+  grid-template-columns: minmax(0, 1fr);
+}
+.renewal-news-story.is-featured .renewal-news-actions {
+  grid-column: 1;
+}
+.renewal-news-story.is-featured .renewal-news-headline {
+  font-size: 23px;
+  line-height: 1.35;
+}
+.renewal-article-title {
+  font-size: 27px;
+  line-height: 1.35;
+  font-weight: 700;
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+}
+.renewal-news-footer .renewal-news-visual,
+.renewal-news-footer .renewal-news-copy,
+.renewal-news-footer details {
+  display: none;
+}
+.renewal-news-footer .renewal-news-story {
+  display: flex;
+}
+.renewal-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 12px;
+}
+.renewal-chart-legend button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 8px 11px;
+  font-size: 12px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 12px;
+  background: var(--color-glass);
+  opacity: 0.5;
+}
+.renewal-chart-legend button[aria-pressed='true'] {
+  opacity: 1;
+  border-color: var(--color-tx3);
+}
+.renewal-chart-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.renewal-svg-label {
+  fill: var(--color-tx3);
+  font:
+    10px 'Manrope Variable',
+    sans-serif;
+}
+.renewal-calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 18px;
+}
+.renewal-calendar button {
+  aspect-ratio: 1;
+  border-radius: 10px;
+  font-size: 12px;
+  min-height: 32px;
+  border: 1px solid transparent;
+}
+.renewal-calendar button[aria-pressed='true'] {
+  border-color: var(--color-a2);
+  box-shadow: 0 0 0 1px var(--color-a2);
+}
+.renewal-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 18px;
+}
+.renewal-week-grid > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--color-tx3);
+}
+.renewal-week-grid span {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  background: var(--color-glass);
+  font-size: 14px;
+  color: var(--color-tx2);
+}
+.renewal-week-grid [data-filled='true'] strong {
+  background: #93cbb322;
+  color: #aee0c7;
+  border: 1px solid #93cbb348;
+}
+.renewal-shell button:focus-visible,
+.renewal-shell a:focus-visible {
+  outline: 2px solid var(--color-a2);
+  outline-offset: 3px;
+}
+@media (max-width: 350px) {
+  .renewal-news-story {
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 10px;
+  }
+  .renewal-news-headline {
+    font-size: 14px;
+  }
+  .renewal-news-story.is-featured .renewal-news-headline {
+    font-size: 21px;
+  }
+  .renewal-card {
+    padding: 16px;
+  }
+  .renewal-chart-legend {
+    gap: 5px;
+  }
+  .renewal-chart-legend button {
+    padding: 8px;
+  }
+}
+
+.renewal-list-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.renewal-question .renewal-list-row {
+  align-items: flex-start;
+}
+.renewal-question .renewal-list-row > span:first-child {
+  flex: 1;
+}
+.renewal-question .renewal-list-row > span:last-child {
+  max-width: 48%;
+  text-align: right;
+}
+
+.renewal-secondary[aria-pressed='true'] {
+  border-color: var(--color-a2);
+  color: var(--color-a2);
+  background: color-mix(in srgb, var(--color-a2) 8%, transparent);
+}
+.renewal-shell header button {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+@media (max-width: 420px) {
+  .renewal-sun-row {
+    gap: 6px;
+    min-width: 0;
+  }
+  .renewal-sun-label {
+    min-width: 0;
+  }
+  .renewal-sun-label > div:last-child {
+    white-space: normal;
+    font-size: 9px;
+    line-height: 1.5;
+  }
+  .renewal-sun-label:last-child {
+    text-align: right;
+  }
+  .renewal-sun-dial {
+    width: 160px;
+  }
+  .renewal-sun-dial > svg {
+    width: 100%;
+    height: auto;
+  }
+}
+@media (max-width: 360px) {
+  .renewal-sun-dial {
+    width: 150px;
+  }
+}
+
+.renewal-trends {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+.renewal-trend figcaption {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.renewal-trend .renewal-svg-label {
+  font-size: 10px;
+}
+.renewal-disclosure > summary {
+  min-height: 28px;
+}
+.renewal-disclosure[open] > summary {
+  margin-bottom: 18px;
+}

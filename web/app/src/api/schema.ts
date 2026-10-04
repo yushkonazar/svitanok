@@ -826,6 +826,8 @@ export const statsSchema = z.object({
    *  клієнт лише тикає від цього якоря — і по нулю йде перепитати. */
   checkinSlotEndsIn: int.nullable().optional(),
   checkinToday: checkinDaySchema.nullable().optional(),
+  checkinDate: z.string().optional(),
+  checkinNextIn: int.optional(),
   checkinSeries: z.array(checkinPointSchema).default([]),
   checkinRaw: checkinRawSchema.default({ days: 90, from: '', to: '', records: {} }),
   // Глибини агрегації, оголошені сервером (STATS_WINDOWS у stats-core.mjs).

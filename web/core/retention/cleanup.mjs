@@ -54,7 +54,14 @@ export const RETENTION = [
     ms: 30 * DAY,
     fts: { table: 'inbox_fts', idColumn: 'id' },
   },
-  { table: 'transactions', column: 'at', ms: 24 * MONTH },
+  // Manual ledger rows are needed for opening balance + all-time movement.
+  // Deleting them would silently change a cash account after two years.
+  {
+    table: 'transactions',
+    column: 'at',
+    ms: 24 * MONTH,
+    where: "json_extract(raw_json, '$.financeAccount') IS NULL",
+  },
   { table: 'price_points', column: 'at', ms: 24 * MONTH },
   { table: 'runs', column: 'started_at', ms: 90 * DAY },
   // Кроки run не мають окремого FK з cascade, тому строк runs сам по собі

@@ -27,6 +27,91 @@ it('кожна D1-міграція явно оголошує expand або contr
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
+  finance_accounts: [
+    'id',
+    'name',
+    'kind',
+    'currency',
+    'opening_minor',
+    'opening_at',
+    'mono_id',
+    'created_at',
+  ],
+  finance_settings: [
+    'id',
+    'version',
+    'income_period',
+    'taxi_visible',
+    'payment_reminders',
+    'checkin_reminders',
+    'categories_json',
+    'updated_at',
+  ],
+  finance_taxi_policies: [
+    'id',
+    'effective_at',
+    'fare_bps',
+    'commission_bps',
+    'fuel_bps',
+    'threshold_minor',
+    'bonus_fare_bps',
+    'created_at',
+  ],
+  finance_taxi_entries: [
+    'id',
+    'at',
+    'policy_id',
+    'net_cash_minor',
+    'commission_minor',
+    'commission_reported',
+    'cash_reported',
+    'fuel_minor',
+    'tips_minor',
+    'direct_minor',
+    'received_cash_minor',
+    'paid_work_minor',
+    'account_id',
+    'note',
+    'revision',
+    'created_at',
+    'updated_at',
+  ],
+  finance_taxi_settlements: ['id', 'week_key', 'amount_minor', 'account_id', 'at', 'bank_tx_id'],
+  finance_goals: ['id', 'name', 'target_minor', 'deadline', 'status', 'created_at'],
+  finance_goal_moves: ['id', 'goal_id', 'account_id', 'amount_minor', 'at', 'note'],
+  finance_budgets: [
+    'id',
+    'category',
+    'categories_json',
+    'purpose',
+    'period',
+    'limit_minor',
+    'share_bps',
+    'income_base_minor',
+    'created_at',
+  ],
+  finance_payments: [
+    'id',
+    'name',
+    'kind',
+    'amount_minor',
+    'remaining_minor',
+    'installments_left',
+    'next_date',
+    'anchor_day',
+    'recurrence',
+    'category',
+    'remind_days',
+    'status',
+    'total_minor',
+    'rate_bps',
+    'fee_minor',
+    'lender',
+    'note',
+    'created_at',
+  ],
+  finance_commands: ['id', 'payload_hash', 'at'],
+  finance_notices: ['id', 'claim', 'at'],
   facts: [
     'id',
     'kind',
@@ -373,6 +458,15 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  finance_accounts: [{ cols: ['mono_id'], unique: true }],
+  finance_taxi_policies: [{ cols: ['effective_at'], unique: true }],
+  finance_taxi_entries: [{ cols: ['at'] }],
+  finance_taxi_settlements: [
+    { cols: ['week_key'], unique: true },
+    { cols: ['bank_tx_id'], unique: true },
+  ],
+  finance_goal_moves: [{ cols: ['goal_id'] }],
+  finance_budgets: [{ cols: ['category', 'period'], unique: true }],
   facts: [
     { cols: ['kind', 'key'], unique: true },
     { cols: ['expires_at'] },
@@ -466,7 +560,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('двадцять сім файлів 0001–0027, нумерація без дірок', () => {
+  it('двадцять вісім файлів 0001–0028, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -495,6 +589,7 @@ describe('міграції D1 — файли', () => {
       '0025',
       '0026',
       '0027',
+      '0028',
     ]);
   });
 });

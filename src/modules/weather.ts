@@ -63,7 +63,7 @@ export interface WeatherToday {
   sunset: number; // unix сек, захід сонця (0 якщо невідомо)
   dayLenDeltaMin?: number; // зміна довжини дня vs учора, хв (обчислюється в run зі стану)
   hourlyTemp?: number[]; // денна температура по годинах (для спарклайна дашборда)
-  hourly?: { h: number; t: number }[]; // {київська година, температура} за сьогодні (графік)
+  hourly?: { h: number; t: number; at?: number; popPercent?: number; precipMm?: number }[];
   alerts?: string[]; // офіційні попередження негоди (One Call alerts[].event)
   summary?: string; // людиночитне резюме дня (One Call daily[0].summary)
 }
@@ -97,6 +97,8 @@ interface OwHour {
   dt: number;
   temp?: number;
   pop?: number;
+  rain?: { '1h'?: number };
+  snow?: { '1h'?: number };
   weather?: OwWeather[];
 }
 interface OwDay {
@@ -145,9 +147,20 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
 /** «14:00–17:00» з дощових годин (перша..остання+1). Один слот → «14:00–15:00». */
 function formatRainWindow(rainyHours: number[]): string | undefined {
   if (rainyHours.length === 0) return undefined;
-  const first = Math.min(...rainyHours);
-  const last = Math.min(Math.max(...rainyHours) + 1, 24);
-  return `${pad2(first)}:00–${pad2(last)}:00`;
+  const hours = [...new Set(rainyHours)].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  let start = hours[0]!;
+  let end = start;
+  for (const h of hours.slice(1)) {
+    if (h === end + 1) {
+      end = h;
+      continue;
+    }
+    ranges.push(`${pad2(start)}:00–${pad2(Math.min(end + 1, 24))}:00`);
+    start = end = h;
+  }
+  ranges.push(`${pad2(start)}:00–${pad2(Math.min(end + 1, 24))}:00`);
+  return ranges.join(', ');
 }
 
 /** Похідна «одягтися»-підказка за відчутною температурою. */
@@ -237,7 +250,15 @@ export function parseOneCall(json: unknown, name: string, todayKey: string): Wea
   // Погодинний ряд {година, температура} за сьогодні — для графіка з віссю годин.
   const hourlySeries = todayHours
     .filter((h) => isNum(h.temp))
-    .map((h) => ({ h: entryKyiv(h.dt).hour, t: round(h.temp as number) }));
+    .map((h) => ({
+      h: entryKyiv(h.dt).hour,
+      t: round(h.temp as number),
+      at: h.dt,
+      ...(isNum(h.pop) ? { popPercent: round(Math.max(0, Math.min(1, h.pop)) * 100) } : {}),
+      ...(isNum(h.rain?.['1h']) || isNum(h.snow?.['1h'])
+        ? { precipMm: Math.max(0, h.rain?.['1h'] ?? 0) + Math.max(0, h.snow?.['1h'] ?? 0) }
+        : {}),
+    }));
 
   const alerts = (Array.isArray(oc.alerts) ? oc.alerts : [])
     .map((a) => a.event)

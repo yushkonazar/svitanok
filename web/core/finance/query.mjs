@@ -168,6 +168,7 @@ export async function selectSpending(env, q) {
         `SELECT id, at, amount, currency, amount_uah, mcc, description, category, flags_json, note
          FROM transactions
          WHERE at >= ? AND at < ? AND amount < 0 AND ${NOT_TEST_SQL}
+         AND COALESCE(json_extract(raw_json, '$.financeKind'), 'expense') = 'expense'
          ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .bind(q.from, q.to, PAGE_SIZE, offset)

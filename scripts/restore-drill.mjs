@@ -80,6 +80,38 @@ export async function restoreDrill(args, deps) {
     db.exec(restoreSql(doc));
 
     const expected = expectedTables(doc);
+    // Older archives deliberately receive only neutral finance scaffolding.
+    // Verify those invariants before including its generated timestamps.
+    const seeds = [
+      {
+        table: 'finance_accounts',
+        id: 'cash',
+        check: { opening_minor: 0, kind: 'cash', currency: 'UAH' },
+      },
+      {
+        table: 'finance_settings',
+        id: 'owner',
+        check: { version: 0, income_period: 'week', categories_json: '[]' },
+      },
+      {
+        table: 'finance_taxi_policies',
+        id: 'initial',
+        check: {
+          fare_bps: 5000,
+          commission_bps: 5000,
+          fuel_bps: 5000,
+          threshold_minor: 2700000,
+          bonus_fare_bps: 5500,
+        },
+      },
+    ];
+    for (const seed of seeds) {
+      if (expected[seed.table].some((row) => row.id === seed.id)) continue;
+      const actual = db.prepare(`SELECT * FROM ${seed.table} WHERE id=?`).get(seed.id);
+      if (!actual || Object.entries(seed.check).some(([key, value]) => actual[key] !== value))
+        throw new Error(`restore drill: invalid neutral ${seed.table}`);
+      expected[seed.table].push(actual);
+    }
     for (const table of BACKUP_TABLES) {
       const actual = /** @type {Record<string, unknown>[]} */ (
         db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()
