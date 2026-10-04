@@ -46,14 +46,19 @@ export function parseEvents(json: unknown): OnThisDayEvent[] {
   const events = (json as { events?: RawEvent[] })?.events;
   if (!Array.isArray(events)) return [];
   return events
-    .filter((e) => typeof e.year === 'number' && typeof e.text === 'string' && e.text.trim())
+    .filter((e) => e && Number.isInteger(e.year) && typeof e.text === 'string' && e.text.trim())
     .map((e) => {
       const url = pageUrl(e);
-      const page = e.pages?.find(
+      const pages = Array.isArray(e.pages) ? e.pages : [];
+      const page = pages.find(
         (p) =>
+          p &&
           Number.isFinite(p.coordinates?.lat) &&
+          Math.abs(p.coordinates!.lat!) <= 90 &&
           Number.isFinite(p.coordinates?.lon) &&
+          Math.abs(p.coordinates!.lon!) <= 180 &&
           typeof p.title === 'string' &&
+          p.title.trim() &&
           pageUrl({ pages: [p] }),
       );
       const coordinates = page?.coordinates;
@@ -62,7 +67,7 @@ export function parseEvents(json: unknown): OnThisDayEvent[] {
           ? {
               lat: coordinates.lat!,
               lon: coordinates.lon!,
-              label: page.title!.replaceAll('_', ' '),
+              label: page.title!.replaceAll('_', ' ').trim(),
               sourceUrl: pageUrl({ pages: [page] })!,
               kind: 'associated_article' as const,
             }

@@ -5,6 +5,70 @@ import type { Ctx } from '../src/core/types.js';
 import type { AppConfig } from '../src/core/config.js';
 
 describe('onthisday — parseEvents', () => {
+  it('keeps valid article coordinates even after malformed or out-of-range pages', () => {
+    const page = {
+      title: 'Чорне_море',
+      coordinates: { lat: 42, lon: 37 },
+      content_urls: { desktop: { page: 'https://uk.wikipedia.org/wiki/Black_Sea' } },
+    };
+    const events = parseEvents({
+      events: [
+        null,
+        { year: NaN, text: 'invalid' },
+        {
+          year: 2001,
+          text: 'Подія',
+          pages: [null, { ...page, coordinates: { lat: 100, lon: 37 } }, page],
+        },
+        { year: 2002, text: 'Без місця', pages: {} },
+        { year: 2003, text: 'Без назви', pages: [{ ...page, title: ' ' }] },
+        {
+          year: 2004,
+          text: 'Поза Землею',
+          pages: [{ ...page, coordinates: { lat: 0, lon: 200 } }],
+        },
+      ],
+    });
+    expect(events).toHaveLength(4);
+    expect(events[0]?.location).toEqual({
+      lat: 42,
+      lon: 37,
+      label: 'Чорне море',
+      sourceUrl: page.content_urls.desktop.page,
+      kind: 'associated_article',
+    });
+    expect(events.slice(1).every((e) => !e.location)).toBe(true);
+  });
+
+  it('preserves coordinates through the actual module and historical selection', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            events: [
+              {
+                year: 2001,
+                text: 'Подія',
+                pages: [
+                  {
+                    title: 'Місце',
+                    coordinates: { lat: 0, lon: 0 },
+                    content_urls: { desktop: { page: 'https://uk.wikipedia.org/wiki/Place' } },
+                  },
+                ],
+              },
+            ],
+          }),
+        ),
+    );
+    const block = await createOnThisDayModule({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }).run(ctx());
+    expect(block?.data).toMatchObject({
+      events: [{ year: 2001, location: { lat: 0, lon: 0, kind: 'associated_article' } }],
+    });
+  });
+
   it('валідує й тримить, порядок не важливий (сортує/відбирає selectHistoric)', () => {
     const ev = parseEvents({
       events: [
