@@ -16,6 +16,7 @@ function setup() {
     '0002_assistant.sql',
     '0005_finance.sql',
     '0028_mini_app_finance.sql',
+    '0029_finance_credit_limits.sql',
   ]);
   const original = d1.stub.batch;
   d1.stub.batch = async (s) => {

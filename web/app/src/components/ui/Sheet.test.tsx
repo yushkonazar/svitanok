@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Sheet } from './Sheet.tsx';
 
@@ -12,6 +12,37 @@ import { Sheet } from './Sheet.tsx';
  * шторку інакше, ніж мишею. */
 
 describe('Sheet — справжній діалог', () => {
+  it('locks the page, contains horizontal and boundary gestures, and restores scroll after closing', () => {
+    const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    const { unmount } = render(
+      <Sheet onClose={() => {}}>
+        <div data-testid="scroller" style={{ overflowY: 'auto' }}>
+          Content
+        </div>
+      </Sheet>,
+    );
+    expect(document.body.style.position).toBe('fixed');
+    expect(document.documentElement.style.overflow).toBe('hidden');
+    const area = screen.getByTestId('scroller');
+    Object.defineProperties(area, { scrollHeight: { value: 500 }, clientHeight: { value: 100 } });
+    const gesture = (x: number, y: number) => {
+      fireEvent.touchStart(area, { touches: [{ clientX: 50, clientY: 100 }] });
+      const event = new Event('touchmove', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'touches', { value: [{ clientX: x, clientY: y }] });
+      area.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(gesture(100, 100)).toBe(true);
+    expect(gesture(50, 150)).toBe(true);
+    expect(gesture(50, 50)).toBe(false);
+    area.scrollTop = 400;
+    expect(gesture(50, 50)).toBe(true);
+    unmount();
+    expect(document.body.style.position).toBe('');
+    expect(document.documentElement.style.overflow).toBe('');
+    expect(scroll).toHaveBeenCalled();
+    scroll.mockRestore();
+  });
   it('оголошений як модальний діалог із назвою', () => {
     render(
       <Sheet onClose={() => {}} label="Вакансія">

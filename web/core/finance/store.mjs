@@ -44,7 +44,8 @@ function db(env) {
 }
 
 /**
- * @typedef {{ id: string, currency: string, maskedPan: string | null }} StoredAccount
+ * @typedef {{ id: string, currency: string, maskedPan: string | null,
+ * balanceMinor?: number|null, creditLimitMinor?: number|null, asOf?: string }} StoredAccount
  */
 
 /**
@@ -63,6 +64,13 @@ export async function readMonoAccounts(env) {
       id: String(a.id),
       currency: String(a.currency ?? 'UAH'),
       maskedPan: a.maskedPan ? String(a.maskedPan) : null,
+      ...(Number.isSafeInteger(a.balanceMinor) ? { balanceMinor: a.balanceMinor } : {}),
+      ...(Number.isSafeInteger(a.creditLimitMinor) && a.creditLimitMinor >= 0
+        ? { creditLimitMinor: a.creditLimitMinor }
+        : {}),
+      ...(typeof a.asOf === 'string' && Number.isFinite(Date.parse(a.asOf))
+        ? { asOf: a.asOf }
+        : {}),
     }));
 }
 

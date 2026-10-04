@@ -4,6 +4,7 @@ export interface TaxiPolicy {
   fareBps: number;
   commissionBps: number;
   fuelBps: number;
+  tipsBps?: number;
   thresholdMinor: number | null;
   bonusFareBps: number;
 }

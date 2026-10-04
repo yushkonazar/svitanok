@@ -26,6 +26,44 @@ import { createPortal } from 'react-dom';
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
+let scrollLocks = 0;
+let restoreScroll: (() => void) | undefined;
+function lockPageScroll() {
+  if (scrollLocks++ === 0) {
+    const y = window.scrollY;
+    const body = document.body;
+    const root = document.documentElement;
+    const previous = {
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+      overflow: body.style.overflow,
+      rootOverflow: root.style.overflow,
+    };
+    body.style.position = 'fixed';
+    body.style.top = `-${y}px`;
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+    root.style.overflow = 'hidden';
+    restoreScroll = () => {
+      Object.assign(body.style, {
+        position: previous.position,
+        top: previous.top,
+        width: previous.width,
+        overflow: previous.overflow,
+      });
+      root.style.overflow = previous.rootOverflow;
+      window.scrollTo(0, y);
+    };
+  }
+  return () => {
+    if (--scrollLocks === 0) {
+      restoreScroll?.();
+      restoreScroll = undefined;
+    }
+  };
+}
+
 export function Sheet({
   onClose,
   children,
@@ -37,10 +75,54 @@ export function Sheet({
   label?: string;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   // Куди повернути фокус: після закриття він мусить опинитись там, звідки
   // шторку відкрили, інакше читач починає з початку сторінки, а тапальник
   // «губить місце».
   const returnTo = useRef<Element | null>(null);
+
+  useEffect(() => {
+    const unlock = lockPageScroll();
+    const overlay = overlayRef.current!;
+    let x = 0,
+      y = 0;
+    const start = (e: TouchEvent) => {
+      x = e.touches[0]?.clientX ?? 0;
+      y = e.touches[0]?.clientY ?? 0;
+    };
+    const move = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0]!;
+      const dx = touch.clientX - x,
+        dy = touch.clientY - y;
+      x = touch.clientX;
+      y = touch.clientY;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        e.preventDefault();
+        return;
+      }
+      let target = e.target instanceof Element ? e.target : null;
+      while (target && target !== overlay) {
+        const scrollable = /auto|scroll/.test(getComputedStyle(target).overflowY);
+        if (
+          scrollable &&
+          ((dy > 0 && target.scrollTop > 0) ||
+            (dy < 0 && target.scrollTop + target.clientHeight < target.scrollHeight - 1))
+        )
+          return;
+        target = target.parentElement;
+      }
+      // Contain gestures even on iOS versions that ignore overscroll-behavior.
+      e.preventDefault();
+    };
+    overlay.addEventListener('touchstart', start, { passive: true });
+    overlay.addEventListener('touchmove', move, { passive: false });
+    return () => {
+      overlay.removeEventListener('touchstart', start);
+      overlay.removeEventListener('touchmove', move);
+      unlock();
+    };
+  }, []);
 
   const focusables = useCallback(
     () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []),
@@ -52,10 +134,11 @@ export function Sheet({
     // Фокус усередину — на перший інтерактивний елемент, а як його немає, то
     // на саму панель (тому в неї tabIndex={-1}).
     const first = focusables()[0] ?? panelRef.current;
-    first?.focus();
+    first?.focus({ preventScroll: true });
     return () => {
       const back = returnTo.current;
-      if (back instanceof HTMLElement && document.contains(back)) back.focus();
+      if (back instanceof HTMLElement && document.contains(back))
+        back.focus({ preventScroll: true });
     };
   }, [focusables]);
 
@@ -91,8 +174,9 @@ export function Sheet({
 
   return createPortal(
     <div
+      ref={overlayRef}
       onClick={onClose}
-      className="fixed inset-0 z-40 flex items-end"
+      className="fixed inset-0 z-40 flex items-end overflow-hidden overscroll-none"
       style={{ background: 'rgba(6,4,12,.55)', animation: 'fadeIn .2s ease' }}
     >
       <div
@@ -102,7 +186,7 @@ export function Sheet({
         aria-label={label}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        className="w-full px-5 pb-7 pt-2.5 outline-none"
+        className="w-full min-w-0 max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain touch-pan-y px-5 pb-7 pt-2.5 outline-none"
         style={{
           background: 'var(--color-bg2)',
           borderTop: '1px solid var(--color-glassb)',

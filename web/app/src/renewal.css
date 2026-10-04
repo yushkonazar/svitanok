@@ -302,7 +302,11 @@
 }
 .renewal-sheet-content {
   max-height: 78dvh;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   padding: 0 0 max(16px, env(safe-area-inset-bottom));
 }
 @media (prefers-reduced-motion: reduce) {
@@ -823,6 +827,28 @@
 }
 .renewal-disclosure > summary {
   min-height: 28px;
+  list-style: none;
+}
+.renewal-disclosure > summary::-webkit-details-marker,
+.renewal-finance summary::-webkit-details-marker {
+  display: none;
+}
+.renewal-finance summary {
+  list-style: none;
+}
+.renewal-finance-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.renewal-finance-actions > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 48px;
+  line-height: 1.35;
 }
 .renewal-disclosure[open] > summary {
   margin-bottom: 18px;

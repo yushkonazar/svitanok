@@ -51,13 +51,23 @@ describe('personal finance arithmetic', () => {
     expect(over.groups[0]!.fareBps).toBe(5500);
     expect(over.earnedMinor).toBe(1450001);
   });
-  it('tips/direct fares are fully owned and do not trigger a bonus; fuel-only days are supported', () => {
+  it('app tips are split 50/50, legacy direct fares stay personal, and neither triggers the bonus', () => {
     const first = { ...day(100000, 0, 0), tipsMinor: 5000000, directMinor: 20000 };
     const fuel = { ...day(0, 0, 50000), id: 'fuel' };
     const result = calculateTaxiWeek([first, fuel], [policy], now);
     expect(result.grossMinor).toBe(100000);
-    expect(result.earnedMinor).toBe(5045000);
+    expect(result.earnedMinor).toBe(2545000);
     expect(result.groups[0]!.boosted).toBe(false);
+  });
+  it('the 55% fare bonus does not change the tip share, which can be configured for own-car work', () => {
+    const entry = { ...day(400000), tipsMinor: 20000 };
+    expect(calculateTaxiWeek([entry], [{ ...policy, thresholdMinor: 0 }], now).earnedMinor).toBe(
+      183500,
+    );
+    expect(calculateTaxiWeek([entry], [{ ...policy, tipsBps: 10000 }], now).earnedMinor).toBe(
+      170000,
+    );
+    expect(() => calculateTaxiWeek([entry], [{ ...policy, tipsBps: 10001 }], now)).toThrow();
   });
   it('new fixed-50 profile cannot change previous entries', () => {
     const hybrid = {

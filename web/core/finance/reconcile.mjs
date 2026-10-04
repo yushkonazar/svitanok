@@ -196,6 +196,9 @@ async function phaseClient(env, state, nowMs, writeState) {
     id: a.id,
     currency: a.currency,
     maskedPan: a.maskedPan,
+    balanceMinor: a.balanceMinor,
+    creditLimitMinor: a.creditLimitMinor,
+    asOf: new Date(nowMs).toISOString(),
   }));
   if (!accounts.length) {
     await sendSystemAlert(env, '⚠️ Mono не віддав жодного рахунку - звірка без цілі.', nowMs);

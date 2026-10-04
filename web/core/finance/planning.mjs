@@ -96,12 +96,13 @@ export function taxiWeek(ms) {
   if (weekday === 0 && p.hour < 13) key = shiftDate(key, -7);
   return { key, from: kyivInstant(key), to: kyivInstant(shiftDate(key, 7)) };
 }
-/** @typedef {{ id: string, effectiveAt: string, fareBps: number, commissionBps: number, fuelBps: number, thresholdMinor: number|null, bonusFareBps: number }} TaxiPolicy */
+/** @typedef {{ id: string, effectiveAt: string, fareBps: number, commissionBps: number, fuelBps: number, tipsBps?: number, thresholdMinor: number|null, bonusFareBps: number }} TaxiPolicy */
 /** @typedef {{ id: string, at: string, policyId: string, netCashMinor: number, commissionMinor: number, fuelMinor: number, tipsMinor: number, directMinor: number, receivedCashMinor?: number, paidWorkMinor?: number, commissionReported?: boolean, cashReported?: boolean, note?: string }} TaxiEntry */
 /** @param {TaxiPolicy} policy */
 export function validatePolicy(policy) {
   for (const bps of [policy.fareBps, policy.commissionBps, policy.fuelBps, policy.bonusFareBps])
     share(0, bps);
+  share(0, policy.tipsBps ?? 5000);
   if (policy.thresholdMinor !== null) minor(policy.thresholdMinor);
   if (!policy.id || !Number.isFinite(Date.parse(policy.effectiveAt)))
     throw new Error('Некоректні умови таксі');
@@ -124,7 +125,10 @@ export function calculateTaxiWeek(entries, policies, nowMs) {
     const groupGross = sumMoney(rows.map((e) => e.netCashMinor + e.commissionMinor));
     const commission = sumMoney(rows.map((e) => e.commissionMinor));
     const fuel = sumMoney(rows.map((e) => e.fuelMinor));
-    const extras = sumMoney(rows.map((e) => e.tipsMinor + e.directMinor));
+    const extras = sumMoney([
+      share(sumMoney(rows.map((e) => e.tipsMinor)), policy.tipsBps ?? 5000),
+      sumMoney(rows.map((e) => e.directMinor)),
+    ]);
     const boosted = policy.thresholdMinor !== null && gross > policy.thresholdMinor;
     const fareBps = boosted ? policy.bonusFareBps : policy.fareBps;
     // Round shares once per policy/week, not each day: no accumulated penny drift.

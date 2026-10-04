@@ -53,6 +53,7 @@ const ALL_MIGRATIONS = [
   '0017_proposal_provenance.sql',
   '0027_trip_briefs.sql',
   '0028_mini_app_finance.sql',
+  '0029_finance_credit_limits.sql',
 ];
 const SECRET = 'backup-secret-for-tests-32-chars!!';
 // Неділя 06.09.2026 03:10 Києва = 00:10Z; 04:10 = 01:10Z.

@@ -51,6 +51,7 @@ const MIGRATIONS = [
   '0010_reminders_address.sql',
   '0011_ideas_number.sql',
   '0028_mini_app_finance.sql',
+  '0029_finance_credit_limits.sql',
 ];
 
 function makeEnv(kvSeed: Record<string, string> = {}, over: Record<string, unknown> = {}) {

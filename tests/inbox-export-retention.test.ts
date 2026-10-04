@@ -47,6 +47,7 @@ const MIGRATIONS = [
   '0009_voice.sql',
   '0014_fact_provenance.sql',
   '0028_mini_app_finance.sql',
+  '0029_finance_credit_limits.sql',
 ];
 
 const CONN = 'conn-abc';

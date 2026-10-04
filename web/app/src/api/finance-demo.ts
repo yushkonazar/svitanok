@@ -38,6 +38,7 @@ const categories = [
   'дохід',
   'зарплата',
   'таксі',
+  'таксі · особисте',
   'чайові',
 ];
 function rebuild(f: Finance) {
@@ -101,6 +102,19 @@ function seed(): Finance {
         monoId: null,
         source: 'demo',
       },
+      {
+        id: 'mono:demo',
+        name: 'Monobank · кредитна картка (демо)',
+        kind: 'mono',
+        currency: 'UAH',
+        balanceMinor: -190000,
+        availableMinor: 510000,
+        creditLimitMinor: 700000,
+        creditLimitSource: 'bank',
+        asOf: new Date(now).toISOString(),
+        monoId: 'demo',
+        source: 'demo',
+      },
     ],
     policies: [
       {
@@ -109,6 +123,7 @@ function seed(): Finance {
         fareBps: 5000,
         commissionBps: 5000,
         fuelBps: 5000,
+        tipsBps: 5000,
         thresholdMinor: 2700000,
         bonusFareBps: 5500,
       },
@@ -285,6 +300,34 @@ export function writeFinanceDemo(command: FinanceCommand) {
     if (a) a.balanceMinor = (a.balanceMinor ?? 0) + amount;
   };
   switch (command.type) {
+    case 'credit-limit': {
+      if (!account || account.kind !== 'mono') throw new Error('Обери картку Monobank');
+      account.creditLimitMinor = p.creditLimitMinor === null ? 700000 : num('creditLimitMinor');
+      account.creditLimitSource = p.creditLimitMinor === null ? 'bank' : 'manual';
+      account.balanceMinor = (account.availableMinor ?? 0) - account.creditLimitMinor;
+      break;
+    }
+    case 'account-balance': {
+      if (!account || account.kind === 'mono') throw new Error('Обери рахунок ручного обліку');
+      tx(num('balanceMinor') - (account.balanceMinor ?? 0), 'adjustment', account.id);
+      break;
+    }
+    case 'taxi-personal-income': {
+      if (!account || account.kind !== 'cash') throw new Error('Обери готівку');
+      const descriptions: Record<string, string> = {
+        change: 'Клієнт не забрав решту',
+        'cash-tip': 'Готівкові чайові',
+        direct: 'Замовлення поза застосунком',
+        other: 'Інший особистий дохід таксі',
+      };
+      if (!descriptions[str('personalType')] || num('amountMinor') <= 0)
+        throw new Error('Перевір тип і суму');
+      tx(num('amountMinor'), 'income', account.id);
+      f.transactions[0].personalTaxiType = str('personalType');
+      f.transactions[0].category = 'таксі · особисте';
+      f.transactions[0].description = descriptions[str('personalType')];
+      break;
+    }
     case 'transaction': {
       if (!account) throw new Error('Обери рахунок');
       const kind = str('kind'),
@@ -384,6 +427,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
         fareBps: num('fareBps'),
         commissionBps: num('commissionBps'),
         fuelBps: num('fuelBps'),
+        tipsBps: p.tipsBps == null ? 5000 : num('tipsBps'),
         thresholdMinor: p.thresholdMinor == null ? null : num('thresholdMinor'),
         bonusFareBps: num('bonusFareBps'),
       });

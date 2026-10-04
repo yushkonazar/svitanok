@@ -115,6 +115,7 @@ describe('обсяг T2 - ДО слова', () => {
     '0010_reminders_address.sql',
     '0011_ideas_number.sql',
     '0028_mini_app_finance.sql',
+    '0029_finance_credit_limits.sql',
   ];
 
   it('forget target=collection - скільки записів і в якій колекції', async () => {

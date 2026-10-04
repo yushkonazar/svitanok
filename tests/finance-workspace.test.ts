@@ -9,7 +9,12 @@ import { queueMiniAppNotice, miniAppPaymentRemindTask } from '../web/core/financ
 
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 function setup() {
-  const d1 = d1FromSqlite(['0001_base.sql', '0005_finance.sql', '0028_mini_app_finance.sql']);
+  const d1 = d1FromSqlite([
+    '0001_base.sql',
+    '0005_finance.sql',
+    '0028_mini_app_finance.sql',
+    '0029_finance_credit_limits.sql',
+  ]);
   const originalBatch = d1.stub.batch;
   d1.stub.batch = async (statements) => {
     d1.db.exec('BEGIN');

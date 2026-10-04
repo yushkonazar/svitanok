@@ -65,6 +65,7 @@ function policyOf(row) {
     fareBps: Number(row.fare_bps),
     commissionBps: Number(row.commission_bps),
     fuelBps: Number(row.fuel_bps),
+    tipsBps: Number(row.tips_bps ?? 5000),
     thresholdMinor: row.threshold_minor == null ? null : Number(row.threshold_minor),
     bonusFareBps: Number(row.bonus_fare_bps),
   };
@@ -122,6 +123,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
   const rows = (index) => /** @type {KvBlob[]} */ (result[index]?.results ?? []);
   const settings = rows(0)[0];
   if (!settings) throw new Error('Finance migration required');
+  const creditLimits = jsonObject(settings.credit_limits_json);
   // Refuse misleading incomplete arithmetic instead of silently truncating it.
   if (
     rows(3).length > 5000 ||
@@ -183,14 +185,32 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       .bind(bank.id)
       .first();
     const row = accounts.find((a) => a.monoId === bank.id);
-    const balance = latest?.balance == null ? (row?.balanceMinor ?? null) : Number(latest.balance);
+    const accountId = row?.id ?? `mono:${bank.id}`;
+    const override = creditLimits[accountId];
+    const manualLimit = Number.isSafeInteger(override) && override >= 0;
+    const creditLimit = manualLimit ? override : (bank.creditLimitMinor ?? null);
+    const freshSnapshot =
+      bank.asOf && (!latest?.at || Date.parse(bank.asOf) > Date.parse(String(latest.at)));
+    const available = freshSnapshot
+      ? (bank.balanceMinor ?? null)
+      : latest?.balance == null
+        ? (bank.balanceMinor ?? null)
+        : Number(latest.balance);
     const account = {
-      id: row?.id ?? `mono:${bank.id}`,
-      name: row?.name ?? `Monobank ${bank.maskedPan?.[0] ?? bank.currency}`,
+      id: accountId,
+      name: row?.name ?? `Monobank ${bank.maskedPan ?? bank.currency}`,
       kind: 'mono',
       currency: bank.currency,
-      balanceMinor: balance,
-      asOf: latest?.at == null ? (row?.asOf ?? null) : String(latest.at),
+      balanceMinor:
+        available === null || creditLimit === null ? null : sumMoney([available, -creditLimit]),
+      availableMinor: available,
+      creditLimitMinor: creditLimit,
+      creditLimitSource: manualLimit ? 'manual' : creditLimit === null ? 'unknown' : 'bank',
+      asOf: freshSnapshot
+        ? bank.asOf
+        : latest?.at == null
+          ? (bank.asOf ?? null)
+          : String(latest.at),
       monoId: bank.id,
       source: latest ? 'monobank' : 'opening',
     };
@@ -218,6 +238,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       bank: Boolean(raw.account),
       bankHold: Boolean(raw.hold),
       reference: raw.financeReference ?? null,
+      personalTaxiType: raw.financePersonalTaxiType ?? null,
     };
   });
   /** @type {string[]} */ let custom = [];
@@ -238,7 +259,15 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       checkinReminders: Boolean(settings.checkin_reminders),
     },
     categories: [
-      ...new Set([...MCC_CATEGORIES, 'дохід', 'зарплата', 'таксі', 'чайові', ...custom]),
+      ...new Set([
+        ...MCC_CATEGORIES,
+        'дохід',
+        'зарплата',
+        'таксі',
+        'таксі · особисте',
+        'чайові',
+        ...custom,
+      ]),
     ],
     accounts,
     transactions,
@@ -394,7 +423,66 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       }),
     });
 
-  if (type === 'transaction') {
+  if (type === 'credit-limit') {
+    const found = state.accounts.find((a) => a.id === payload.accountId && a.kind === 'mono');
+    if (!found) throw new FinanceValidation('Обери підключену картку Monobank');
+    const row = await db
+      .prepare('SELECT credit_limits_json FROM finance_settings WHERE id = ?')
+      .bind('owner')
+      .first();
+    const limits = jsonObject(row?.credit_limits_json);
+    if (payload.creditLimitMinor === null) delete limits[found.id];
+    else limits[found.id] = minor(payload.creditLimitMinor);
+    update('UPDATE finance_settings SET credit_limits_json = ?, updated_at = ? WHERE id = ?', [
+      JSON.stringify(limits),
+      now,
+      'owner',
+    ]);
+  } else if (type === 'account-balance') {
+    const src = account(payload.accountId, true);
+    if (src.balanceMinor === null) throw new FinanceValidation('Немає залишку рахунку');
+    const target = minor(payload.balanceMinor, true);
+    ledger(
+      `balance:${id}`,
+      sumMoney([target, -src.balanceMinor]),
+      'adjustment',
+      src.id,
+      'корекція',
+      'Уточнення поточного залишку',
+      now,
+    );
+  } else if (type === 'taxi-personal-income') {
+    const src = account(payload.accountId, true);
+    if (src.kind !== 'cash') throw new FinanceValidation('Обери рахунок готівки');
+    const personalType = choice(payload.personalType, ['direct', 'change', 'cash-tip', 'other']);
+    const amount = minor(payload.amountMinor);
+    if (!amount) throw new FinanceValidation('Сума має бути більшою за нуль');
+    const at = iso(payload.at ?? now);
+    if (Date.parse(at) > nowMs + 60000 || Date.parse(at) < Date.parse(src.asOf))
+      throw new FinanceValidation('Перевір дату надходження');
+    /** @type {Record<string, string>} */
+    const descriptions = {
+      direct: 'Замовлення поза застосунком',
+      change: 'Клієнт не забрав решту',
+      'cash-tip': 'Готівкові чайові',
+      other: 'Інший особистий дохід таксі',
+    };
+    insert('transactions', {
+      id: `personal-taxi:${id}`,
+      at,
+      amount,
+      amount_uah: amount,
+      currency: 'UAH',
+      category: 'таксі · особисте',
+      description: descriptions[personalType],
+      flags_json: '[]',
+      raw_json: JSON.stringify({
+        financeKind: 'income',
+        financeAccount: src.id,
+        financePersonalTaxiType: personalType,
+      }),
+    });
+  } else if (type === 'transaction') {
     const kind = choice(payload.kind, ['expense', 'income', 'transfer', 'adjustment']);
     const src = account(payload.accountId, true);
     const amount = minor(payload.amountMinor, kind === 'adjustment');
@@ -512,6 +600,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       fareBps: payload.fareBps,
       commissionBps: payload.commissionBps,
       fuelBps: payload.fuelBps,
+      tipsBps: payload.tipsBps ?? 5000,
       thresholdMinor: payload.thresholdMinor,
       bonusFareBps: payload.bonusFareBps,
     });
@@ -521,6 +610,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       fare_bps: policy.fareBps,
       commission_bps: policy.commissionBps,
       fuel_bps: policy.fuelBps,
+      tips_bps: policy.tipsBps,
       threshold_minor: policy.thresholdMinor,
       bonus_fare_bps: policy.bonusFareBps,
       created_at: now,

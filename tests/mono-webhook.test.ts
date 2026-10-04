@@ -283,7 +283,16 @@ describe('адаптер Mono', () => {
         body: {
           name: 'Назар',
           webHookUrl: 'https://svitanok.yushko.dev/api/mono/x',
-          accounts: [{ id: ACCOUNT, currencyCode: 980, type: 'black', maskedPan: ['44**11'] }],
+          accounts: [
+            {
+              id: ACCOUNT,
+              currencyCode: 980,
+              type: 'black',
+              maskedPan: ['44**11'],
+              balance: 510000,
+              creditLimit: 700000,
+            },
+          ],
         },
       },
       { match: 'statement', body: [item()] },
@@ -297,6 +306,8 @@ describe('адаптер Mono', () => {
         type: 'black',
         maskedPan: '44**11',
         iban: null,
+        balanceMinor: 510000,
+        creditLimitMinor: 700000,
       },
     ]);
     const items = await statement(env, {

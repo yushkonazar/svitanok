@@ -105,7 +105,8 @@ async function call(env, path, init, what) {
 
 /**
  * @typedef {{ id: string, currency: string, currencyCode: number, type: string,
- *   maskedPan: string | null, iban: string | null }} MonoAccount
+ *   maskedPan: string | null, iban: string | null,
+ *   balanceMinor: number | null, creditLimitMinor: number | null }} MonoAccount
  * @typedef {{ name: string, webHookUrl: string | null, accounts: MonoAccount[] }} MonoClientInfo
  */
 
@@ -129,6 +130,9 @@ export async function clientInfo(env) {
         type: typeof a.type === 'string' ? a.type : '',
         maskedPan: Array.isArray(a.maskedPan) && a.maskedPan[0] ? String(a.maskedPan[0]) : null,
         iban: typeof a.iban === 'string' ? a.iban : null,
+        balanceMinor: Number.isSafeInteger(a.balance) ? a.balance : null,
+        creditLimitMinor:
+          Number.isSafeInteger(a.creditLimit) && a.creditLimit >= 0 ? a.creditLimit : null,
       })),
   };
 }

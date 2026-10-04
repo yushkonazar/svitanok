@@ -18,6 +18,9 @@ export type FinanceFormKind =
   | 'income'
   | 'transfer'
   | 'adjustment'
+  | 'account-balance'
+  | 'credit-limit'
+  | 'taxi-personal'
   | 'account'
   | 'taxi'
   | 'policy'
@@ -40,6 +43,9 @@ const TITLES: Record<FinanceFormKind, string> = {
   income: 'Додати надходження',
   transfer: 'Переказ між рахунками',
   adjustment: 'Корекція залишку',
+  'account-balance': 'Вказати поточний залишок',
+  'credit-limit': 'Кредитний ліміт картки',
+  'taxi-personal': 'Особистий дохід таксі',
   account: 'Додати рахунок',
   taxi: 'Записати зміну таксі',
   policy: 'Умови роботи таксі',
@@ -59,10 +65,12 @@ export function FinanceForm({
   request,
   finance: f,
   onClose,
+  onOpenForm,
 }: {
   request: FinanceFormRequest;
   finance: Finance;
   onClose: () => void;
+  onOpenForm?: (request: FinanceFormRequest) => void;
 }) {
   const query = useQueryClient();
   const today = kyivParts(Date.now());
@@ -70,6 +78,7 @@ export function FinanceForm({
   const payment = f.payments.find((p) => p.id === request.id);
   const goal = request.kind === 'goal' ? f.goals.find((g) => g.id === request.id) : undefined;
   const transaction = f.transactions.find((t) => t.id === request.id);
+  const selectedAccount = f.accounts.find((a) => a.id === request.id);
   const entry =
     request.kind === 'taxi' ? f.taxiEntries.find((e) => e.id === request.id) : undefined;
   const entryTime = entry ? kyivParts(Date.parse(entry.at)) : today;
@@ -82,7 +91,18 @@ export function FinanceForm({
         : request.kind === 'edit-transaction' && transaction
           ? String(Math.abs(transaction.amountMinor) / 100)
           : '',
-    accountId: entry?.accountId ?? f.accounts.find((a) => a.kind === 'cash')?.id ?? '',
+    accountId:
+      selectedAccount?.id ??
+      entry?.accountId ??
+      f.accounts.find((a) => a.kind === 'cash')?.id ??
+      '',
+    balance: '',
+    credit:
+      selectedAccount?.creditLimitMinor == null
+        ? ''
+        : String(selectedAccount.creditLimitMinor / 100),
+    creditMode: selectedAccount?.creditLimitSource === 'bank' ? 'bank' : 'manual',
+    personalType: 'change',
     toAccountId: f.accounts.find((a) => a.kind === 'bank')?.id ?? '',
     category: budget?.category ?? transaction?.category ?? payment?.category ?? 'продукти',
     name: goal?.name ?? budget?.category ?? payment?.name ?? '',
@@ -133,6 +153,7 @@ export function FinanceForm({
     fare: String(policy.fareBps / 100),
     feeShare: String(policy.commissionBps / 100),
     fuelShare: String(policy.fuelBps / 100),
+    tipsShare: String(policy.tipsBps / 100),
     threshold: policy.thresholdMinor == null ? '' : String(policy.thresholdMinor / 100),
     bonus: String(policy.bonusFareBps / 100),
     effective: 'now',
@@ -155,6 +176,8 @@ export function FinanceForm({
           [
             'amount',
             'opening',
+            'balance',
+            'credit',
             'cash',
             'commission',
             'fuel',
@@ -211,6 +234,12 @@ export function FinanceForm({
     return n;
   };
   const at = () => {
+    if (
+      !entry &&
+      v.date === today.date &&
+      v.time === `${String(today.hour).padStart(2, '0')}:${String(today.minute).padStart(2, '0')}`
+    )
+      return new Date().toISOString();
     const [h, m] = v.time.split(':').map(Number);
     if (!Number.isInteger(h) || !Number.isInteger(m) || m < 0 || m > 59)
       throw new Error('Вкажи час');
@@ -229,9 +258,29 @@ export function FinanceForm({
           amountMinor: inputMoney('amount', false, request.kind === 'adjustment'),
           category: v.category,
           description: v.description || v.category,
-          at: new Date().toISOString(),
+          at: at(),
         });
         if (request.kind === 'transfer') p.toAccountId = v.toAccountId;
+      } else if (request.kind === 'account-balance') {
+        type = 'account-balance';
+        Object.assign(p, {
+          accountId: v.accountId,
+          balanceMinor: inputMoney('balance', false, true),
+        });
+      } else if (request.kind === 'credit-limit') {
+        type = 'credit-limit';
+        Object.assign(p, {
+          accountId: request.id,
+          creditLimitMinor: v.creditMode === 'bank' ? null : inputMoney('credit'),
+        });
+      } else if (request.kind === 'taxi-personal') {
+        type = 'taxi-personal-income';
+        Object.assign(p, {
+          accountId: v.accountId,
+          amountMinor: inputMoney('amount'),
+          personalType: v.personalType,
+          at: at(),
+        });
       } else if (request.kind === 'edit-transaction') {
         type = 'transaction-edit';
         Object.assign(p, {
@@ -272,6 +321,7 @@ export function FinanceForm({
           fareBps: fixed ? 5000 : bps('fare'),
           commissionBps: fixed ? 5000 : bps('feeShare'),
           fuelBps: fixed ? 5000 : bps('fuelShare'),
+          tipsBps: fixed ? 5000 : bps('tipsShare'),
           thresholdMinor: fixed || !v.threshold ? null : inputMoney('threshold'),
           bonusFareBps: fixed ? 5000 : bps('bonus'),
         });
@@ -399,7 +449,7 @@ export function FinanceForm({
         : TITLES[kind];
   return (
     <Sheet label={title} onClose={close}>
-      <div className="renewal-sheet-content">
+      <div className="renewal-finance renewal-sheet-content">
         <div className="renewal-section-head">
           <h2 className="text-xl font-bold tracking-tight">{title}</h2>
           <button
@@ -432,12 +482,81 @@ export function FinanceForm({
                   ? category()
                   : null}
               {field('description', 'Опис або причина')}
+              <details>
+                <summary className="renewal-link cursor-pointer">Дата й час</summary>
+                <div className="renewal-form-grid mt-3">
+                  {field('date', 'Дата', 'date')}
+                  {field('time', 'Час · Київ', 'time')}
+                </div>
+              </details>
               <p className="renewal-muted">
                 {kind === 'adjustment'
                   ? 'Корекція змінює баланс, але не вважається заробітком.'
                   : kind === 'transfer'
                     ? 'Переказ змінює два залишки, але не збільшує доходи й витрати.'
                     : 'Операції Monobank надходять автоматично. Тут записуються готівка та рахунки ручного обліку.'}
+              </p>
+            </>
+          )}
+          {kind === 'account-balance' && (
+            <>
+              {account()}
+              {field(
+                'balance',
+                'Скільки зараз є на цьому рахунку, ₴',
+                'text',
+                'Повна сума, також зі знаком −',
+              )}
+              <p className="renewal-muted">
+                Вкажи весь фактичний залишок, а не суму поповнення. Це не дохід. Спочатку додай
+                минулі зміни та витрати, потім звір готівку — гроші за ці зміни вже можуть бути в
+                тебе на руках.
+              </p>
+            </>
+          )}
+          {kind === 'credit-limit' && (
+            <>
+              <p className="font-bold">{selectedAccount?.name}</p>
+              {select('creditMode', 'Як визначати ліміт', [
+                ['bank', 'Автоматично з Monobank'],
+                ['manual', 'Вкажу поточний ліміт сам'],
+              ])}
+              {v.creditMode === 'manual' &&
+                field('credit', 'Повний кредитний ліміт, ₴', 'text', 'Наприклад, 7000')}
+              <p className="renewal-muted">
+                Власний баланс = доступний баланс банку мінус повний кредитний ліміт. Наприклад: 5
+                100 − 7 000 = −1 900 ₴. Ліміт не є доходом і не входить у вільні кошти. Ручне
+                значення діє, доки ти його не зміниш або не повернеш автоматичне визначення.
+              </p>
+            </>
+          )}
+          {kind === 'taxi-personal' && (
+            <>
+              {select('personalType', 'Що сталося', [
+                ['change', 'Клієнт не забрав решту'],
+                ['cash-tip', 'Чайові готівкою'],
+                ['direct', 'Замовлення поза застосунком'],
+                ['other', 'Інший особистий дохід'],
+              ])}
+              {field('amount', 'Скільки отримав особисто, ₴')}
+              {select(
+                'accountId',
+                'Куди поклав гроші',
+                f.accounts
+                  .filter((a) => a.kind === 'cash' && a.currency === 'UAH')
+                  .map((a) => [a.id, a.name]),
+              )}
+              <details>
+                <summary className="renewal-link cursor-pointer">Дата й час</summary>
+                <div className="renewal-form-grid mt-3">
+                  {field('date', 'Дата', 'date')}
+                  {field('time', 'Час · Київ', 'time')}
+                </div>
+              </details>
+              <p className="renewal-muted">
+                Це повністю твої гроші: вони додаються до готівки й особистих доходів. Не включай їх
+                повторно в касу, готівку зміни чи чайові в застосунку — розрахунок із парком не
+                змінюється.
               </p>
             </>
           )}
@@ -486,16 +605,24 @@ export function FinanceForm({
               {account()}
               <p className="renewal-muted">
                 Каса й готівка — різні цифри. Комісія та пальне зменшують заробіток за формулою, без
-                окремого списання з особистого рахунку. У готівці вкажи також отримані чайові та
-                прямі замовлення.
+                окремого списання з особистого рахунку. У готівці вкажи лише гроші за поїздки через
+                застосунок. Особисті надходження, записані швидкою кнопкою, сюди повторно не
+                додавай.
               </p>
               <details>
                 <summary className="renewal-link cursor-pointer">
-                  Чайові, прямі замовлення та нотатка +
+                  Чайові в застосунку та додаткові дані
                 </summary>
                 <div className="flex flex-col gap-3 pt-3">
-                  {field('tips', 'Чайові / решта, ₴')}
-                  {field('direct', 'Прямі замовлення поза парком, ₴')}
+                  {field('tips', 'Чайові через застосунок, ₴')}
+                  <p className="renewal-muted">
+                    Лише окремо показані чайові через застосунок. Частка визначається умовами,
+                    чинними на дату зміни. Готівкові чайові записуй швидкою кнопкою «Особистий
+                    дохід».
+                  </p>
+                  {entry &&
+                    entry.directMinor > 0 &&
+                    field('direct', 'Прямі замовлення в старому записі, ₴')}
                   {field('paidWork', 'Робочі витрати, сплачені особисто з обраного рахунку, ₴')}
                   <p className="renewal-muted">
                     Для паливної картки парку залиш порожнім. Це поле списує кошти з ручного рахунку
@@ -524,6 +651,7 @@ export function FinanceForm({
                     {field('fare', 'Моя частка каси, %')}
                     {field('feeShare', 'Моя частка комісії, %')}
                     {field('fuelShare', 'Моя частка пального, %')}
+                    {field('tipsShare', 'Моя частка чайових через застосунок, %')}
                     {field('bonus', 'Частка каси понад поріг, %')}
                   </div>
                   {field('threshold', 'Поріг брудної каси, ₴ (порожньо — вимкнено)')}
@@ -789,6 +917,19 @@ export function FinanceForm({
                 ['false', 'Вимкнено'],
               ])}
               {field('newCategory', 'Додаткова власна категорія')}
+              {f.accounts
+                .filter((a) => a.kind === 'mono')
+                .map((a) => (
+                  <button
+                    type="button"
+                    key={a.id}
+                    className="renewal-secondary"
+                    disabled={pending}
+                    onClick={() => onOpenForm?.({ kind: 'credit-limit', id: a.id })}
+                  >
+                    Кредитний ліміт · {a.name}
+                  </button>
+                ))}
               <p className="renewal-muted">
                 Приховане таксі можна повернути тут. Борг перед парком залишається в обліку.
                 Нагадування враховують тихі години; у демонстрації повідомлення не надсилаються.

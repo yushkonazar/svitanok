@@ -28,7 +28,12 @@ const payment = {
   amountMinor: 30000,
 };
 function setup() {
-  const d1 = d1FromSqlite(['0001_base.sql', '0005_finance.sql', '0028_mini_app_finance.sql']);
+  const d1 = d1FromSqlite([
+    '0001_base.sql',
+    '0005_finance.sql',
+    '0028_mini_app_finance.sql',
+    '0029_finance_credit_limits.sql',
+  ]);
   return {
     d1,
     env: workerEnv({

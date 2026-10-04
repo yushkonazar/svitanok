@@ -105,7 +105,7 @@ export function FinanceScreen() {
       </>
     );
   return (
-    <div className="flex flex-col gap-5">
+    <div className="renewal-finance flex flex-col gap-5">
       <PageHeading
         eyebrow="ГРОШІ БЕЗ ТУМАНУ"
         title="Знати, що є."
@@ -161,8 +161,8 @@ export function FinanceScreen() {
         </div>
         <p className="renewal-muted mt-2">
           {view.unknownBalances
-            ? 'Потрібно підтвердити залишки рахунків або доповнити комісію й готівку змін таксі.'
-            : 'Гроші на рахунках мінус резерв парку та внески на цілі.'}
+            ? 'Потрібно підтвердити залишки й кредитний ліміт картки або доповнити комісію й готівку змін таксі.'
+            : 'Власні кошти на рахунках мінус резерв парку та внески на цілі. Кредитний ліміт не є твоїми грошима.'}
         </p>
         <div className="renewal-metrics">
           <div className="renewal-metric">
@@ -182,12 +182,12 @@ export function FinanceScreen() {
             <strong>{moneyLabel(view.expense)}</strong>
           </div>
         </div>
-        <div className="renewal-actions mb-0">
+        <div className="renewal-finance-actions mt-4">
           <button className="renewal-button" onClick={() => setForm({ kind: 'expense' })}>
-            − Записати витрату
+            Записати витрату
           </button>
           <button className="renewal-secondary" onClick={() => setForm({ kind: 'income' })}>
-            + Надходження
+            Додати дохід
           </button>
         </div>
         {f.accounts.some((a) => a.currency !== 'UAH') && (
@@ -212,7 +212,7 @@ export function FinanceScreen() {
           </div>
           <div className="renewal-metrics mb-3">
             <div className="renewal-metric">
-              <span className="renewal-muted">Твій заробіток</span>
+              <span className="renewal-muted">Заробіток за формулою</span>
               <strong className="text-pos">{moneyLabel(taxi.earnedMinor)}</strong>
             </div>
             <div className="renewal-metric">
@@ -231,6 +231,29 @@ export function FinanceScreen() {
           <button className="renewal-button mt-4 w-full" onClick={() => setForm({ kind: 'taxi' })}>
             + Записати зміну
           </button>
+          <button
+            className="renewal-secondary mt-3 w-full"
+            onClick={() => setForm({ kind: 'taxi-personal' })}
+          >
+            Особистий дохід · решта, чайові, поїздка
+          </button>
+          <p className="renewal-muted mt-2">
+            Додатково особисто за тиждень:{' '}
+            {moneyLabel(
+              sumMoney(
+                f.transactions
+                  .filter(
+                    (t) =>
+                      t.personalTaxiType &&
+                      t.kind === 'income' &&
+                      Date.parse(t.at) >= taxi.from &&
+                      Date.parse(t.at) < taxi.to,
+                  )
+                  .map((t) => t.amountUah ?? 0),
+              ),
+            )}
+            . Уже враховано в готівці та надходженнях.
+          </p>
           <details className="mt-3">
             <summary className="renewal-link cursor-pointer">Каса, умови та розрахунки</summary>
             <button className="renewal-secondary mt-3" onClick={() => setForm({ kind: 'policy' })}>
@@ -636,9 +659,29 @@ export function FinanceScreen() {
                     : 'Ручний облік'}
                 {a.asOf ? ` · ${new Date(a.asOf).toLocaleDateString('uk-UA')}` : ''}
               </small>
+              {a.kind === 'mono' && (
+                <small>
+                  Доступно в банку:{' '}
+                  {a.availableMinor == null ? '—' : moneyLabel(a.availableMinor, a.currency)} ·
+                  Кредитний ліміт:{' '}
+                  {a.creditLimitMinor == null
+                    ? 'не визначено'
+                    : moneyLabel(a.creditLimitMinor, a.currency)}
+                  <button
+                    className="renewal-link block mt-2"
+                    onClick={() => setForm({ kind: 'credit-limit', id: a.id })}
+                  >
+                    Налаштувати кредитний ліміт
+                  </button>
+                </small>
+              )}
             </span>
             <b className="font-mono">
-              {a.balanceMinor == null ? 'Немає залишку' : moneyLabel(a.balanceMinor, a.currency)}
+              {a.balanceMinor == null
+                ? a.kind === 'mono' && a.creditLimitMinor == null
+                  ? 'Вкажи ліміт'
+                  : 'Немає залишку'
+                : moneyLabel(a.balanceMinor, a.currency)}
             </b>
           </div>
         ))}
@@ -646,8 +689,11 @@ export function FinanceScreen() {
           <button className="renewal-secondary" onClick={() => setForm({ kind: 'transfer' })}>
             Переказ
           </button>
-          <button className="renewal-secondary" onClick={() => setForm({ kind: 'adjustment' })}>
-            Корекція / початкові кошти
+          <button
+            className="renewal-secondary"
+            onClick={() => setForm({ kind: 'account-balance' })}
+          >
+            Вказати поточний залишок
           </button>
         </div>
       </details>
@@ -671,6 +717,7 @@ export function FinanceScreen() {
             setForm(null);
             setParams({}, { replace: true });
           }}
+          onOpenForm={setForm}
         />
       )}
     </div>

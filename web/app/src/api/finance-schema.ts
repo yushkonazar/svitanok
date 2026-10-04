@@ -7,6 +7,9 @@ export const financeAccountSchema = z.object({
   kind: z.enum(['cash', 'bank', 'mono']),
   currency: z.string(),
   balanceMinor: money.nullable(),
+  availableMinor: money.nullable().optional(),
+  creditLimitMinor: money.nullable().optional(),
+  creditLimitSource: z.string().optional(),
   asOf: z.string().nullable(),
   monoId: z.string().nullable(),
   source: z.string(),
@@ -24,6 +27,7 @@ export const financeTxSchema = z.object({
   bank: z.boolean(),
   bankHold: z.boolean().optional(),
   reference: z.string().nullable(),
+  personalTaxiType: z.string().nullable().optional(),
 });
 export const taxiPolicySchema = z.object({
   id: z.string(),
@@ -31,6 +35,7 @@ export const taxiPolicySchema = z.object({
   fareBps: z.number().int(),
   commissionBps: z.number().int(),
   fuelBps: z.number().int(),
+  tipsBps: z.number().int().min(0).max(10000).default(5000),
   thresholdMinor: money.nullable(),
   bonusFareBps: z.number().int(),
 });
