@@ -48,6 +48,9 @@ it('submits the complete credit limit, not spent credit, and refreshes all finan
 it('records the bank installment schedule with the selectable purchase-in-parts category', async () => {
   const { close } = open({ kind: 'payment' });
   fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'installment' } });
+  fireEvent.change(screen.getByLabelText('Як визначити залишок боргу'), {
+    target: { value: 'manual' },
+  });
   const values = {
     'Назва платежу': 'Proove',
     'Сума одного платежу, ₴': '90,70',
@@ -78,6 +81,85 @@ it('records the bank installment schedule with the selectable purchase-in-parts 
         category: 'покупка частинами',
       }),
     }),
+  );
+});
+it('calculates the new card installment balance and permits an exact bank override', async () => {
+  const { close } = open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'card-installment' } });
+  fireEvent.change(screen.getByLabelText('Назва платежу'), {
+    target: { value: 'Розстрочка Mono' },
+  });
+  fireEvent.change(screen.getByLabelText('Сума одного платежу, ₴'), { target: { value: '50,25' } });
+  fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '12' } });
+  expect(screen.getByLabelText('Ще залишилось сплатити, ₴')).toHaveValue('603');
+  expect(screen.getByLabelText('Ще залишилось сплатити, ₴')).toHaveAttribute('readonly');
+  fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '10' } });
+  expect(screen.getByLabelText('Ще залишилось сплатити, ₴')).toHaveValue('502.5');
+  fireEvent.change(screen.getByLabelText('Як визначити залишок боргу'), {
+    target: { value: 'manual' },
+  });
+  fireEvent.change(screen.getByLabelText('Ще залишилось сплатити, ₴'), {
+    target: { value: '502,48' },
+  });
+  fireEvent.change(screen.getByLabelText('Наступна дата списання'), {
+    target: { value: '2026-10-09' },
+  });
+  expect(screen.getByLabelText('Фіксований день списання (1–31)')).toHaveValue('9');
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment',
+      payload: expect.objectContaining({
+        kind: 'card-installment',
+        amountMinor: 5025,
+        remainingMinor: 50248,
+        installmentsLeft: 10,
+        anchorDay: 9,
+        category: 'розстрочка',
+      }),
+    }),
+  );
+});
+it('requires bank principal for an interest-bearing loan instead of estimating it', async () => {
+  open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'loan' } });
+  fireEvent.change(screen.getByLabelText('Назва платежу'), { target: { value: 'Кредит' } });
+  fireEvent.change(screen.getByLabelText('Сума одного платежу, ₴'), { target: { value: '50' } });
+  fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '10' } });
+  fireEvent.change(screen.getByLabelText('Річна ставка, %'), { target: { value: '24' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('точний залишок');
+  expect(postFinance).not.toHaveBeenCalled();
+});
+it('confirms an early payoff with the entire principal in one payment command', async () => {
+  const payment = readFinanceDemo().payments.find((p) => p.kind === 'installment')!;
+  const { close } = open({ kind: 'payment-close', id: payment.id });
+  expect(screen.getByLabelText('Погашення тіла боргу, ₴')).toHaveValue(
+    String(payment.remainingMinor! / 100),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment-paid',
+      payload: expect.objectContaining({
+        paymentId: payment.id,
+        principalMinor: payment.remainingMinor,
+        amountMinor: payment.remainingMinor! + (payment.feeMinor ?? 0),
+        close: true,
+      }),
+    }),
+  );
+});
+it('cancels a subscription with no payment amount or account debit', async () => {
+  const payment = readFinanceDemo().payments.find((p) => p.kind === 'subscription')!;
+  const { close } = open({ kind: 'payment-cancel', id: payment.id });
+  expect(screen.getByText(/не відключає підписку/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({ type: 'payment-cancel', payload: { paymentId: payment.id } }),
   );
 });
 it('displays the bank label without changing the historical grocery category value', async () => {

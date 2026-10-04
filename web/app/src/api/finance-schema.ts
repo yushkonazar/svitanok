@@ -76,7 +76,7 @@ export const financeBudgetSchema = z.object({
 export const financePaymentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(['subscription', 'loan', 'installment', 'bill']),
+  kind: z.enum(['subscription', 'loan', 'installment', 'card-installment', 'bill']),
   amountMinor: money,
   remainingMinor: money.nullable(),
   installmentsLeft: z.number().int().nullable(),

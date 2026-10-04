@@ -546,7 +546,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
         {
           id: str('paymentId') || id,
           name: str('name'),
-          kind: str('kind') as 'subscription' | 'loan' | 'installment' | 'bill',
+          kind: str('kind') as Finance['payments'][number]['kind'],
           amountMinor: num('amountMinor'),
           remainingMinor: p.remainingMinor == null ? null : num('remainingMinor'),
           installmentsLeft: p.installmentsLeft == null ? null : num('installmentsLeft'),
@@ -565,9 +565,15 @@ export function writeFinanceDemo(command: FinanceCommand) {
       ];
       break;
     }
+    case 'payment-cancel': {
+      const pay = f.payments.find((s) => s.id === p.paymentId && s.status !== 'done');
+      if (!pay || pay.kind !== 'subscription') throw new Error('Обери незавершену підписку');
+      pay.status = 'done';
+      break;
+    }
     case 'payment-paid': {
       const pay = f.payments.find((s) => s.id === p.paymentId);
-      if (!pay) throw new Error('Платіж не знайдено');
+      if (!pay || pay.status !== 'active') throw new Error('Активний платіж не знайдено');
       const amount = num('amountMinor');
       if (pay.remainingMinor != null && (pay.rateBps ?? 0) > 0 && p.principalMinor == null)
         throw new Error('Вкажи погашення тіла кредиту');
@@ -577,6 +583,14 @@ export function writeFinanceDemo(command: FinanceCommand) {
           : num('principalMinor');
       if (principal > amount || (pay.remainingMinor != null && principal > pay.remainingMinor))
         throw new Error('Перевір частину платежу на погашення тіла');
+      if (
+        p.close === true &&
+        (!['loan', 'installment', 'card-installment'].includes(pay.kind) ||
+          pay.remainingMinor == null ||
+          pay.remainingMinor === 0 ||
+          principal !== pay.remainingMinor)
+      )
+        throw new Error('Для дострокового закриття потрібно погасити весь залишок тіла боргу');
       const bankTx = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
       if (
         p.transactionId &&
@@ -596,7 +610,8 @@ export function writeFinanceDemo(command: FinanceCommand) {
       transaction.description = pay.name;
       if (pay.remainingMinor != null)
         pay.remainingMinor = Math.max(0, pay.remainingMinor - principal);
-      if (pay.installmentsLeft != null)
+      if (pay.remainingMinor === 0) pay.installmentsLeft = 0;
+      else if (pay.installmentsLeft != null)
         pay.installmentsLeft = Math.max(0, pay.installmentsLeft - 1);
       if (
         pay.remainingMinor === 0 ||

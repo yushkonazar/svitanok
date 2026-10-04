@@ -41,6 +41,7 @@
   gap: 12px;
 }
 .renewal-field {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -50,6 +51,9 @@
 .renewal-field input,
 .renewal-field select,
 .renewal-field textarea {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   width: 100%;
   min-height: 44px;
   padding: 11px 12px;
@@ -501,14 +505,101 @@
   margin-top: 16px;
 }
 .renewal-datebox {
-  min-width: 43px;
-  height: 48px;
+  min-width: 52px;
+  min-height: 62px;
+  padding: 10px 8px;
   border: 1px solid var(--color-glassb);
   border-radius: 12px;
   display: grid;
   place-content: center;
+  gap: 4px;
   text-align: center;
   font: 600 17px var(--font-mono);
+}
+.renewal-payment-card {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 16px;
+  margin-top: 14px;
+  border: 1px solid var(--color-glassb);
+  border-radius: 18px;
+  background: var(--color-glass);
+}
+.renewal-payment-info {
+  min-width: 0;
+}
+.renewal-payment-head {
+  align-items: flex-start;
+}
+.renewal-payment-head h2 {
+  min-width: 0;
+}
+.renewal-payment-head button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.renewal-payment-name {
+  text-align: left;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.renewal-payment-meta {
+  color: var(--color-tx2);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.renewal-payment-amount {
+  font: 600 13px var(--font-mono);
+  white-space: nowrap;
+  padding-top: 3px;
+}
+.renewal-payment-summary {
+  grid-column: 2 / -1;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.renewal-payment-actions {
+  display: grid;
+  gap: 8px;
+}
+.renewal-payment-card .renewal-payment-actions {
+  grid-column: 1 / -1;
+}
+.renewal-payment-actions button {
+  width: 100%;
+  min-height: 44px;
+  white-space: normal;
+}
+@media (max-width: 420px) {
+  .renewal-payment-card {
+    grid-template-columns: 52px minmax(0, 1fr);
+    padding: 14px;
+  }
+  .renewal-payment-amount {
+    grid-column: 2;
+    padding-top: 0;
+  }
+  .renewal-payment-summary {
+    grid-column: 2;
+  }
+}
+.renewal-field input[type='date'],
+.renewal-field input[type='time'] {
+  appearance: none;
+  min-width: 0;
+  width: 100%;
+  display: block;
+}
+.renewal-field input::-webkit-date-and-time-value {
+  text-align: left;
+  min-width: 0;
+}
+.renewal-field input[readonly] {
+  color: var(--color-a2);
+  background: var(--color-glass);
 }
 .renewal-datebox small {
   font: 10px var(--font-sans);

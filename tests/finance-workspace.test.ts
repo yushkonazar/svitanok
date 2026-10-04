@@ -14,6 +14,7 @@ function setup() {
     '0005_finance.sql',
     '0028_mini_app_finance.sql',
     '0029_finance_credit_limits.sql',
+    '0030_finance_card_installment.sql',
   ]);
   const originalBatch = d1.stub.batch;
   d1.stub.batch = async (statements) => {
@@ -30,6 +31,279 @@ function setup() {
   return { d1, env: workerEnv({ DB: d1.stub }) };
 }
 describe('finance workspace · real migration and SQLite transactions', () => {
+  it('closes a card installment early exactly once and removes all future reminders', async () => {
+    const { env, d1 } = setup();
+    const payload = {
+      name: 'Розстрочка',
+      kind: 'card-installment',
+      amountMinor: 5000,
+      remainingMinor: 25000,
+      installmentsLeft: 5,
+      nextDate: '2026-10-09',
+      anchorDay: 9,
+      recurrence: 'month',
+      category: 'розстрочка',
+    };
+    await executeFinanceCommand(
+      env,
+      { id: 'card-parts-create', version: 0, type: 'payment', payload },
+      NOW,
+    );
+    await expect(
+      executeFinanceCommand(
+        env,
+        {
+          id: 'card-parts-invalid',
+          version: 1,
+          type: 'payment-paid',
+          payload: {
+            paymentId: 'card-parts-create',
+            amountMinor: 5000,
+            principalMinor: 5000,
+            accountId: 'cash',
+            close: true,
+          },
+        },
+        NOW,
+      ),
+    ).rejects.toThrow('весь залишок');
+    expect((await readFinanceWorkspace(env, NOW)).version).toBe(1);
+    const command = {
+      id: 'card-parts-close',
+      version: 1,
+      type: 'payment-paid',
+      payload: {
+        paymentId: 'card-parts-create',
+        amountMinor: 25000,
+        principalMinor: 25000,
+        accountId: 'cash',
+        close: true,
+      },
+    };
+    await executeFinanceCommand(env, command, NOW);
+    await executeFinanceCommand(env, command, NOW);
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({
+      remainingMinor: 0,
+      installmentsLeft: 0,
+      status: 'done',
+    });
+    expect(state.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(-25000);
+    expect(d1.db.prepare('SELECT COUNT(*) AS n FROM transactions').get()!.n).toBe(1);
+    await expect(
+      executeFinanceCommand(
+        env,
+        { ...command, id: 'card-parts-close-again', version: state.version },
+        NOW,
+      ),
+    ).rejects.toThrow('Активний');
+  });
+  it('links an early bank repayment without a second transaction or cash debit', async () => {
+    const { env, d1 } = setup();
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'early-bank-loan',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Кредит',
+          kind: 'loan',
+          amountMinor: 5000,
+          remainingMinor: 25000,
+          installmentsLeft: 5,
+          rateBps: 2400,
+          feeMinor: 100,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'кредити',
+        },
+      },
+      NOW,
+    );
+    d1.db
+      .prepare(
+        'INSERT INTO transactions(id,at,amount,currency,amount_uah,category,description,raw_json,flags_json) VALUES(?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        'early-bank-pay',
+        '2026-10-08T12:00:00Z',
+        -25500,
+        'UAH',
+        -25500,
+        'інше',
+        'Погашення',
+        JSON.stringify({ account: 'mono-1', hold: false }),
+        '[]',
+      );
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'early-bank-close',
+        version: 1,
+        type: 'payment-paid',
+        payload: {
+          paymentId: 'early-bank-loan',
+          transactionId: 'early-bank-pay',
+          amountMinor: 25500,
+          principalMinor: 25000,
+          close: true,
+        },
+      },
+      NOW,
+    );
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]).toMatchObject({
+      remainingMinor: 0,
+      installmentsLeft: 0,
+      status: 'done',
+    });
+    expect(state.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(0);
+    expect(state.transactions).toHaveLength(1);
+    expect(state.transactions[0]).toMatchObject({
+      amountMinor: -25500,
+      reference: 'early-bank-loan',
+      category: 'кредити',
+    });
+  });
+  it('finishes the final installment but retains a real residual even when the count reaches zero', async () => {
+    const { env } = setup();
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'last-parts-create',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Останній',
+          kind: 'installment',
+          amountMinor: 5256,
+          remainingMinor: 5252,
+          installmentsLeft: 1,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'покупка частинами',
+        },
+      },
+      NOW,
+    );
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'last-parts-paid',
+        version: 1,
+        type: 'payment-paid',
+        payload: { paymentId: 'last-parts-create', amountMinor: 5252, accountId: 'cash' },
+      },
+      NOW,
+    );
+    expect((await readFinanceWorkspace(env, NOW)).payments[0]).toMatchObject({
+      status: 'done',
+      remainingMinor: 0,
+      installmentsLeft: 0,
+    });
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'residual-create',
+        version: 2,
+        type: 'payment',
+        payload: {
+          name: 'Залишок',
+          kind: 'loan',
+          amountMinor: 5000,
+          remainingMinor: 5500,
+          installmentsLeft: 1,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'кредити',
+        },
+      },
+      NOW,
+    );
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'residual-paid',
+        version: 3,
+        type: 'payment-paid',
+        payload: { paymentId: 'residual-create', amountMinor: 5000, accountId: 'cash' },
+      },
+      NOW,
+    );
+    expect(
+      (await readFinanceWorkspace(env, NOW)).payments.find((p) => p.id === 'residual-create'),
+    ).toMatchObject({ status: 'active', remainingMinor: 500, installmentsLeft: 0 });
+  });
+  it('cancels a subscription without making an expense, and rejects cancelling outstanding debt', async () => {
+    const { env } = setup();
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'subscription-create',
+        version: 0,
+        type: 'payment',
+        payload: {
+          name: 'Підписка',
+          kind: 'subscription',
+          amountMinor: 5000,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'підписки',
+        },
+      },
+      NOW,
+    );
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'subscription-cancel',
+        version: 1,
+        type: 'payment-cancel',
+        payload: { paymentId: 'subscription-create' },
+      },
+      NOW,
+    );
+    const state = await readFinanceWorkspace(env, NOW);
+    expect(state.payments[0]!.status).toBe('done');
+    expect(state.transactions).toHaveLength(0);
+    expect(state.accounts[0]!.balanceMinor).toBe(0);
+    await executeFinanceCommand(
+      env,
+      {
+        id: 'debt-not-subscription',
+        version: 2,
+        type: 'payment',
+        payload: {
+          name: 'Кредит',
+          kind: 'loan',
+          amountMinor: 5000,
+          remainingMinor: 25000,
+          nextDate: '2026-10-09',
+          anchorDay: 9,
+          recurrence: 'month',
+          category: 'кредити',
+        },
+      },
+      NOW,
+    );
+    await expect(
+      executeFinanceCommand(
+        env,
+        {
+          id: 'cancel-debt',
+          version: 3,
+          type: 'payment-cancel',
+          payload: { paymentId: 'debt-not-subscription' },
+        },
+        NOW,
+      ),
+    ).rejects.toThrow('підписку');
+  });
   it('offers bank purchase categories and accounts for installment payments without duplicating debt or cash', async () => {
     const { env } = setup();
     const before = await readFinanceWorkspace(env, NOW);

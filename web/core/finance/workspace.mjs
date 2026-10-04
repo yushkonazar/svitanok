@@ -910,7 +910,13 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       ? state.payments.find((p) => p.id === payload.paymentId)
       : null;
     if (payload.paymentId && !previous) throw new FinanceValidation('Платіж не знайдено');
-    const kind = choice(payload.kind, ['subscription', 'loan', 'installment', 'bill']);
+    const kind = choice(payload.kind, [
+      'subscription',
+      'loan',
+      'installment',
+      'card-installment',
+      'bill',
+    ]);
     const nextDate = date(payload.nextDate);
     const anchor = payload.anchorDay ?? Number(nextDate.slice(8));
     if (!Number.isInteger(anchor) || anchor < 1 || anchor > 31)
@@ -965,6 +971,13 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     if (!values.amount_minor) throw new FinanceValidation('Сума платежу має бути більшою за нуль');
     if (values.fee_minor >= values.amount_minor)
       throw new FinanceValidation('Комісія має бути меншою за повний платіж');
+    if (['loan', 'installment', 'card-installment'].includes(kind)) {
+      if (values.remaining_minor === 0) {
+        values.status = 'done';
+        values.installments_left = 0;
+      } else if (values.status === 'done')
+        throw new FinanceValidation('Для закриття боргу підтвердь фактичне погашення залишку');
+    }
     if (previous)
       update(
         `UPDATE finance_payments SET ${Object.keys(values)
@@ -973,6 +986,12 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         [...Object.values(values), previous.id],
       );
     else insert('finance_payments', { id, ...values, created_at: now });
+  } else if (type === 'payment-cancel') {
+    const payment = state.payments.find((p) => p.id === payload.paymentId && p.status !== 'done');
+    if (!payment || payment.kind !== 'subscription')
+      throw new FinanceValidation('Обери незавершену підписку');
+    // Cancelling a subscription stops reminders; it is not a financial operation.
+    update("UPDATE finance_payments SET status = 'done' WHERE id = ?", [payment.id]);
   } else if (type === 'payment-paid') {
     const payment = state.payments.find((p) => p.id === payload.paymentId && p.status === 'active');
     if (!payment) throw new FinanceValidation('Активний платіж не знайдено');
@@ -1005,10 +1024,26 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       (payment.remainingMinor != null && principal > payment.remainingMinor)
     )
       throw new FinanceValidation('Погашення тіла не може перевищувати платіж або залишок боргу');
+    if (
+      payload.close === true &&
+      (!['loan', 'installment', 'card-installment'].includes(payment.kind) ||
+        payment.remainingMinor == null ||
+        payment.remainingMinor === 0 ||
+        principal !== payment.remainingMinor)
+    )
+      throw new FinanceValidation(
+        'Для дострокового закриття потрібно погасити весь залишок тіла боргу',
+      );
+    if (payload.close != null && typeof payload.close !== 'boolean')
+      throw new FinanceValidation('Некоректне підтвердження закриття');
     const remaining =
       payment.remainingMinor == null ? null : Math.max(0, payment.remainingMinor - principal);
     const count =
-      payment.installmentsLeft == null ? null : Math.max(0, payment.installmentsLeft - 1);
+      remaining === 0
+        ? 0
+        : payment.installmentsLeft == null
+          ? null
+          : Math.max(0, payment.installmentsLeft - 1);
     const done =
       remaining === 0 || (remaining == null && (payment.recurrence === 'once' || count === 0));
     const next =

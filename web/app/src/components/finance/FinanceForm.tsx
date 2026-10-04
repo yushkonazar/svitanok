@@ -13,6 +13,11 @@ import { haptic } from '../../telegram.ts';
 import { Sheet } from '../ui/Sheet.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
+import {
+  PAYMENT_KIND_LABELS,
+  isDebtKind,
+  estimateRemaining,
+} from '../../../../core/finance/payments.mjs';
 
 export type FinanceFormKind =
   | 'expense'
@@ -31,6 +36,8 @@ export type FinanceFormKind =
   | 'template'
   | 'payment'
   | 'payment-paid'
+  | 'payment-close'
+  | 'payment-cancel'
   | 'settings'
   | 'classify'
   | 'taxi-settle'
@@ -56,6 +63,8 @@ const TITLES: Record<FinanceFormKind, string> = {
   template: 'План 50 / 30 / 20',
   payment: 'Додати платіж',
   'payment-paid': 'Підтвердити оплату',
+  'payment-close': 'Достроково погасити борг',
+  'payment-cancel': 'Скасувати підписку',
   settings: 'Налаштування фінансів',
   classify: 'Категорія та тип операції',
   'taxi-settle': 'Розрахунок із парком',
@@ -88,7 +97,15 @@ export function FinanceForm({
     amount: goal
       ? String(goal.targetMinor / 100)
       : payment
-        ? String(payment.amountMinor / 100)
+        ? String(
+            (request.kind === 'payment-close' && payment.remainingMinor != null
+              ? payment.remainingMinor + (payment.feeMinor ?? 0)
+              : request.kind === 'payment-paid' &&
+                  payment.remainingMinor != null &&
+                  (payment.rateBps ?? 0) === 0
+                ? Math.min(payment.amountMinor, payment.remainingMinor + (payment.feeMinor ?? 0))
+                : payment.amountMinor) / 100,
+          )
         : request.kind === 'edit-transaction' && transaction
           ? String(Math.abs(transaction.amountMinor) / 100)
           : '',
@@ -135,13 +152,17 @@ export function FinanceForm({
     recurrence: payment?.recurrence ?? 'month',
     anchorDay: String(payment?.anchorDay ?? Number(today.date.slice(8))),
     remaining: payment?.remainingMinor == null ? '' : String(payment.remainingMinor / 100),
+    remainingMode: payment ? 'manual' : 'auto',
     months: payment?.installmentsLeft == null ? '' : String(payment.installmentsLeft),
     total: payment?.totalMinor == null ? '' : String(payment.totalMinor / 100),
     rate: String((payment?.rateBps ?? 0) / 100),
     fee: String((payment?.feeMinor ?? 0) / 100),
     lender: payment?.lender ?? '',
     paymentNote: payment?.note ?? '',
-    principal: '',
+    principal:
+      request.kind === 'payment-close' && payment?.remainingMinor != null
+        ? String(payment.remainingMinor / 100)
+        : '',
     remindDays: String(payment?.remindDays ?? 3),
     paymentStatus: payment?.status ?? 'active',
     paymentMode: 'manual',
@@ -165,7 +186,41 @@ export function FinanceForm({
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const attempt = useRef<{ fingerprint: string; command: FinanceCommand } | null>(null);
-  const set = (key: string, value: string) => setValues((prev) => ({ ...prev, [key]: value }));
+  const set = (key: string, value: string) =>
+    setValues((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === 'nextDate' && request.kind === 'payment' && value)
+        next.anchorDay = String(Number(value.slice(8)));
+      if (key === 'paymentKind' && !payment) {
+        if (value === 'installment') next.category = 'покупка частинами';
+        if (value === 'card-installment') next.category = 'розстрочка';
+      }
+      if (key === 'remainingMode' && value === 'manual' && !prev.remaining) {
+        try {
+          const estimate = estimateRemaining(
+            parseMoney(prev.amount),
+            Number(prev.months),
+            parseMoney(prev.fee || '0'),
+            parseMoney(prev.rate || '0'),
+          );
+          if (estimate != null) next.remaining = String(estimate / 100);
+        } catch {
+          /* Incomplete inputs stay empty. */
+        }
+      }
+      return next;
+    });
+  let automaticRemaining: number | null = null;
+  try {
+    automaticRemaining = estimateRemaining(
+      parseMoney(v.amount),
+      Number(v.months),
+      parseMoney(v.fee || '0'),
+      parseMoney(v.rate || '0'),
+    );
+  } catch {
+    /* Calculation resumes when all numeric inputs are valid. */
+  }
   const field = (key: string, label: string, type = 'text', placeholder = '') => (
     <label className="renewal-field" key={key}>
       {label}
@@ -199,7 +254,14 @@ export function FinanceForm({
             : undefined
         }
         maxLength={type === 'text' ? 300 : undefined}
-        value={v[key]}
+        readOnly={key === 'remaining' && v.remainingMode === 'auto'}
+        value={
+          key === 'remaining' && v.remainingMode === 'auto'
+            ? automaticRemaining == null
+              ? ''
+              : String(automaticRemaining / 100)
+            : v[key]
+        }
         onChange={(e) => set(key, e.target.value)}
         placeholder={placeholder}
       />
@@ -354,14 +416,24 @@ export function FinanceForm({
       else if (request.kind === 'template') {
         type = 'budget-template';
         p.incomeBaseMinor = inputMoney('base');
-      } else if (request.kind === 'payment')
+      } else if (request.kind === 'payment') {
+        if (isDebtKind(v.paymentKind) && v.remainingMode === 'auto' && automaticRemaining == null)
+          throw new Error(
+            'Вкажи платіж і кількість без відсотків або обери точний залишок із банку',
+          );
         Object.assign(p, {
           paymentId: request.id,
           name: v.name,
           kind: v.paymentKind,
           amountMinor: inputMoney('amount'),
-          remainingMinor: v.remaining ? inputMoney('remaining') : null,
-          installmentsLeft: v.months ? Number(v.months) : null,
+          remainingMinor: isDebtKind(v.paymentKind)
+            ? v.remainingMode === 'auto'
+              ? automaticRemaining
+              : v.remaining
+                ? inputMoney('remaining')
+                : null
+            : null,
+          installmentsLeft: isDebtKind(v.paymentKind) && v.months ? Number(v.months) : null,
           nextDate: v.nextDate,
           anchorDay: Number(v.anchorDay),
           recurrence: v.recurrence,
@@ -374,7 +446,10 @@ export function FinanceForm({
           lender: v.lender,
           note: v.paymentNote,
         });
-      else if (request.kind === 'payment-paid') {
+      } else if (request.kind === 'payment-cancel') {
+        Object.assign(p, { paymentId: request.id });
+      } else if (request.kind === 'payment-paid' || request.kind === 'payment-close') {
+        type = 'payment-paid';
         const bank =
           v.paymentMode === 'bank'
             ? f.transactions.find((t) => t.id === v.bankTransactionId)
@@ -386,6 +461,7 @@ export function FinanceForm({
           accountId: v.accountId,
           transactionId: bank?.id,
           principalMinor: v.principal ? inputMoney('principal') : undefined,
+          close: request.kind === 'payment-close',
         });
       } else if (request.kind === 'settings')
         Object.assign(p, {
@@ -790,22 +866,30 @@ export function FinanceForm({
           {kind === 'payment' && (
             <>
               {field('name', 'Назва платежу')}
-              {select('paymentKind', 'Тип', [
-                ['subscription', 'Підписка'],
-                ['loan', 'Кредит'],
-                ['installment', 'Оплата частинами'],
-                ['bill', 'Інший платіж'],
-              ])}
+              {select('paymentKind', 'Тип', Object.entries(PAYMENT_KIND_LABELS))}
               {field('amount', 'Сума одного платежу, ₴')}
-              {['loan', 'installment'].includes(v.paymentKind) && (
-                <div className="renewal-form-grid">
-                  {field('remaining', 'Ще залишилось сплатити, ₴')}
-                  {field('months', 'Кількість платежів')}
-                  {field('total', 'Початкова сума боргу, ₴')}
-                  {field('rate', 'Річна ставка, %')}
-                  {field('fee', 'Комісія в повному платежі, ₴')}
-                  {field('lender', 'Банк / кредитор')}
-                </div>
+              {isDebtKind(v.paymentKind) && (
+                <>
+                  {select('remainingMode', 'Як визначити залишок боргу', [
+                    ['auto', 'Порахувати за платежем і кількістю'],
+                    ['manual', 'Ввести точний залишок із банку'],
+                  ])}
+                  <div className="renewal-form-grid">
+                    {field('months', 'Кількість платежів')}
+                    {field('remaining', 'Ще залишилось сплатити, ₴')}
+                    {field('total', 'Початкова сума боргу, ₴')}
+                    {field('rate', 'Річна ставка, %')}
+                    {field('fee', 'Комісія в повному платежі, ₴')}
+                    {field('lender', 'Банк / кредитор')}
+                  </div>
+                  <p className="renewal-chart-note">
+                    {v.remainingMode === 'auto'
+                      ? Number(v.rate.replace(',', '.')) > 0
+                        ? 'За наявності відсотків обери точний залишок із банку — ставка не визначає тіло боргу.'
+                        : 'Рахуємо платіж × кількість. Якщо є комісія, віднімаємо її з кожного платежу. Для іншого останнього платежу вкажи точний залишок із банку.'
+                      : 'Введений залишок зберігається точно; зміна платежу або кількості його не переписує.'}
+                  </p>
+                </>
               )}
               {field('paymentNote', 'Примітка до договору')}
               <p className="renewal-chart-note">
@@ -824,22 +908,36 @@ export function FinanceForm({
               </div>
               {category()}
               <p className="renewal-muted">
-                Для 29–31 числа в короткому місяці береться останній день; наступний місяць
-                повертається до вибраного дня.
+                Це число місяця: 9 — платіж дев’ятого числа. Світанок веде облік і нагадує, а не
+                списує гроші. Для 29–31 числа в короткому місяці береться останній день; наступний
+                місяць повертається до вибраного дня.
               </p>
               {request.id &&
                 select('paymentStatus', 'Стан', [
                   ['active', 'Активний'],
                   ['paused', 'Призупинити'],
-                  ['done', 'Завершений'],
                 ])}
             </>
           )}
-          {kind === 'payment-paid' && (
+          {kind === 'payment-cancel' && (
+            <p className="renewal-inset renewal-muted">
+              {payment?.name}: приберемо підписку зі списку та зупинимо нагадування. Нової витрати
+              не буде. Скасування в Світанку не відключає підписку в самого сервісу — зроби це також
+              у ньому.
+            </p>
+          )}
+          {(kind === 'payment-paid' || kind === 'payment-close') && (
             <>
               <p className="renewal-muted">
                 {payment?.name} · оновимо залишок боргу та графік платежів після фактичної оплати.
               </p>
+              {kind === 'payment-close' && (
+                <p className="renewal-inset renewal-muted">
+                  Підтверджуй після фактичного погашення. Вкажи повну суму з банку, включно з
+                  остаточними відсотками й комісіями. Тіло боргу має бути погашене повністю; після
+                  збереження цей борг зникне зі списку.
+                </p>
+              )}
               {payment?.remainingMinor != null && (
                 <>
                   <label className="renewal-field">

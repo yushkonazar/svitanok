@@ -4,16 +4,21 @@ import { moneyLabel } from '../../lib/financeView.ts';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { shiftDate } from '../../../../core/finance/planning.mjs';
 import { PageHeading } from '../ui/PageHeading.tsx';
+import { isDebtKind } from '../../../../core/finance/payments.mjs';
 export function PaymentDetail({
   payment: p,
   onBack,
   onEdit,
   onPay,
+  onCloseDebt,
+  onCancel,
 }: {
   payment: Finance['payments'][number];
   onBack: () => void;
   onEdit: () => void;
   onPay: () => void;
+  onCloseDebt: () => void;
+  onCancel: () => void;
 }) {
   const rows = paymentSchedule(p),
     total = p.totalMinor,
@@ -69,13 +74,27 @@ export function PaymentDetail({
         </div>
         {p.lender && <p className="renewal-muted mt-4">Кредитор · {p.lender}</p>}
         {p.note && <p className="renewal-muted mt-2">{p.note}</p>}
-        <div className="renewal-actions mb-0">
+        <div className="renewal-payment-actions mt-4">
           <button disabled={p.status !== 'active'} className="renewal-button" onClick={onPay}>
             Підтвердити оплату
           </button>
           <button className="renewal-secondary" onClick={onEdit}>
             Налаштувати
           </button>
+          {isDebtKind(p.kind) && (
+            <button
+              className="renewal-secondary"
+              onClick={onCloseDebt}
+              disabled={p.status !== 'active' || p.remainingMinor == null || p.remainingMinor === 0}
+            >
+              Достроково погасити
+            </button>
+          )}
+          {p.kind === 'subscription' && p.status !== 'done' && (
+            <button className="renewal-secondary" onClick={onCancel}>
+              Скасувати підписку
+            </button>
+          )}
         </div>
       </section>
       {left != null && (p.rateBps ?? 0) === 0 && rows.length > 0 && (

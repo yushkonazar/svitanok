@@ -11,6 +11,7 @@ import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
+import { PaymentCard } from './PaymentCard.tsx';
 import { paymentSchedule } from '../../lib/paymentSchedule.ts';
 import { kyivParts, shiftDate } from '../../../../core/finance/planning.mjs';
 import { resetFinanceDemo } from '../../api/finance-demo.ts';
@@ -73,6 +74,8 @@ export function FinanceScreen() {
       request={activeForm}
       finance={f}
       onClose={() => {
+        if (['payment-paid', 'payment-close', 'payment-cancel'].includes(activeForm.kind))
+          setDetailId(null);
         setForm(null);
         setParams({}, { replace: true });
       }}
@@ -100,6 +103,8 @@ export function FinanceScreen() {
           onBack={() => setDetailId(null)}
           onEdit={() => setForm({ kind: 'payment', id: detail.id })}
           onPay={() => setForm({ kind: 'payment-paid', id: detail.id })}
+          onCloseDebt={() => setForm({ kind: 'payment-close', id: detail.id })}
+          onCancel={() => setForm({ kind: 'payment-cancel', id: detail.id })}
         />
         {formNode}
       </>
@@ -368,7 +373,7 @@ export function FinanceScreen() {
       )}
 
       <section className="renewal-card">
-        <div className="renewal-section-head">
+        <div className="renewal-section-head renewal-payment-head">
           <h2 className="text-lg font-bold">Платежі, кредити й підписки</h2>
           <button className="renewal-link" onClick={() => setForm({ kind: 'payment' })}>
             Додати +
@@ -378,62 +383,29 @@ export function FinanceScreen() {
           .filter((p) => p.status === 'active')
           .sort((a, b) => a.nextDate.localeCompare(b.nextDate))
           .map((p) => (
-            <div key={p.id} className="renewal-list-row">
-              <span className="renewal-datebox">
-                {p.nextDate.slice(8)}
-                <small>
-                  {new Date(p.nextDate + 'T12:00:00Z').toLocaleDateString('uk-UA', {
-                    month: 'short',
-                  })}
-                </small>
-              </span>
-              <span className="flex-1 min-w-0">
-                <button
-                  className="text-left font-semibold"
-                  onClick={() => {
-                    overviewScroll.current = window.scrollY;
-                    setDetailId(p.id);
-                  }}
-                >
-                  {p.name} ↗
-                </button>
-                <small>
-                  {p.nextDate} ·{' '}
-                  {p.kind === 'installment'
-                    ? 'оплата частинами'
-                    : p.kind === 'loan'
-                      ? 'кредит'
-                      : p.kind === 'subscription'
-                        ? 'підписка'
-                        : 'платіж'}
-                </small>
-                {p.remainingMinor != null && (
-                  <small>
-                    Залишок {moneyLabel(p.remainingMinor)}
-                    {p.installmentsLeft != null ? ` · ${p.installmentsLeft} платежів` : ''}
-                  </small>
-                )}
-                <button
-                  className="renewal-link"
-                  onClick={() => setForm({ kind: 'payment-paid', id: p.id })}
-                >
-                  Підтвердити оплату
-                </button>
-                <button
-                  className="renewal-link ml-3"
-                  onClick={() => setForm({ kind: 'payment', id: p.id })}
-                >
-                  Налаштувати
-                </button>
-              </span>
-              <b className="font-mono text-xs">{moneyLabel(p.amountMinor)}</b>
-            </div>
+            <PaymentCard
+              key={p.id}
+              payment={p}
+              onOpen={() => {
+                overviewScroll.current = window.scrollY;
+                setDetailId(p.id);
+              }}
+              onPay={() => setForm({ kind: 'payment-paid', id: p.id })}
+              onEdit={() => setForm({ kind: 'payment', id: p.id })}
+              onCloseDebt={() => setForm({ kind: 'payment-close', id: p.id })}
+              onCancel={() => setForm({ kind: 'payment-cancel', id: p.id })}
+            />
           ))}
-        {f.payments.some((p) => p.status !== 'active') && (
+        {!f.payments.some((p) => p.status === 'active') && (
+          <p className="renewal-muted mt-3">
+            Активних платежів немає. Додай підписку, кредит або інший платіж.
+          </p>
+        )}
+        {f.payments.some((p) => p.status === 'paused') && (
           <details className="mt-3">
-            <summary className="renewal-link">Завершені та призупинені</summary>
+            <summary className="renewal-link">Призупинені платежі</summary>
             {f.payments
-              .filter((p) => p.status !== 'active')
+              .filter((p) => p.status === 'paused')
               .map((p) => (
                 <button
                   className="renewal-list-row w-full text-left"
@@ -442,7 +414,7 @@ export function FinanceScreen() {
                 >
                   <span>
                     {p.name}
-                    <small>{p.status === 'done' ? 'Завершено' : 'Призупинено'}</small>
+                    <small>Призупинено</small>
                   </span>
                   <span className="renewal-link">Налаштувати</span>
                 </button>
