@@ -17,6 +17,8 @@ import {
   sha256Hex,
   summarizeBackup,
   BACKUP_TABLES,
+  BACKUP_FTS,
+  BACKUP_SCHEMA_EXCLUDE,
   BACKUP_SNAPSHOT_TABLES,
   BACKUP_TELEMETRY_TABLES,
   BACKUP_KV_EXCLUDE,
@@ -33,28 +35,7 @@ import { workerEnv } from './helpers/env.js';
 import { memoryKv } from './helpers/kv.js';
 import { d1FromSqlite } from './helpers/d1.js';
 
-const ALL_MIGRATIONS = [
-  '0001_base.sql',
-  '0002_assistant.sql',
-  '0003_telemetry.sql',
-  '0004_ideas_travel.sql',
-  '0005_finance.sql',
-  '0006_inbox_collections.sql',
-  '0007_instructions_plans.sql',
-  '0008_fts.sql',
-  '0009_voice.sql',
-  '0010_reminders_address.sql',
-  '0011_ideas_number.sql',
-  '0012_reminders_recurrence.sql',
-  '0013_run_steps_idempotency.sql',
-  '0014_fact_provenance.sql',
-  '0015_memory_projection.sql',
-  '0016_fact_ledger.sql',
-  '0017_proposal_provenance.sql',
-  '0027_trip_briefs.sql',
-  '0028_mini_app_finance.sql',
-  '0029_finance_credit_limits.sql',
-];
+import { ALL_MIGRATIONS } from './helpers/migrations.js';
 const SECRET = 'backup-secret-for-tests-32-chars!!';
 // Неділя 06.09.2026 03:10 Києва = 00:10Z; 04:10 = 01:10Z.
 const SUNDAY_0310 = Date.parse('2026-09-06T00:10:00.000Z');
@@ -79,7 +60,14 @@ describe('документ і крипто', () => {
         name: string;
       }[]
     ).map((r) => r.name);
-    const real = names.filter((n) => !/_fts(_|$)/.test(n) && n !== 'migrations_meta');
+    const ftsTables = new Set(
+      Object.keys(BACKUP_FTS).flatMap((name) => [
+        name,
+        ...['data', 'idx', 'content', 'docsize', 'config'].map((suffix) => `${name}_${suffix}`),
+      ]),
+    );
+    const real = names.filter((n) => !ftsTables.has(n) && !BACKUP_SCHEMA_EXCLUDE.includes(n));
+    for (const excluded of BACKUP_SCHEMA_EXCLUDE) expect(names).toContain(excluded);
     expect([...BACKUP_TABLES].sort()).toEqual(real.sort());
     const doc = buildBackupDocument({
       createdMs: SUNDAY_0310,

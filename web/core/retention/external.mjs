@@ -202,13 +202,27 @@ export async function eraseAllSdkTranscripts(env, operationId, nowMs) {
 
 /** @param {Env} env */
 export async function eraseAllMemoryVectors(env) {
+  return (
+    (await eraseTableVectors(env, 'memory_chunks')) +
+    (await eraseTableVectors(env, 'knowledge_chunks'))
+  );
+}
+
+/** Scan both managed projections before any local source row is removed.
+ * Table names come only from this private allowlist, never model input.
+ * @param {Env} env @param {'memory_chunks' | 'knowledge_chunks'} table */
+async function eraseTableVectors(env, table) {
   let afterRowId = 0;
   let erased = 0;
   for (;;) {
+    // Knowledge upserts use the stable chunk id. A crash between upsert and
+    // D1 commit can leave vector_id null while the remote vector already exists.
+    const vector = table === 'knowledge_chunks' ? 'COALESCE(vector_id, id)' : 'vector_id';
+    const filter = table === 'knowledge_chunks' ? '' : 'vector_id IS NOT NULL AND ';
     const { results } = await db(env)
       .prepare(
-        `SELECT rowid AS row_id, vector_id
-         FROM memory_chunks WHERE vector_id IS NOT NULL AND rowid > ? ORDER BY rowid LIMIT ?`,
+        `SELECT rowid AS row_id, ${vector} AS vector_id
+         FROM ${table} WHERE ${filter}rowid > ? ORDER BY rowid LIMIT ?`,
       )
       .bind(afterRowId, EXTERNAL_SCAN_BATCH)
       .all();

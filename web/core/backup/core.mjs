@@ -18,7 +18,7 @@ export const BACKUP_MAGIC = 'SVB1';
 export const BACKUP_DOC_VERSION = 2;
 
 /**
- * Таблиці D1 у знімку - усе з міграцій 0001-0010, крім FTS (віртуальні,
+ * Таблиці D1 у lifecycle - усі прикладні таблиці міграцій, крім FTS (віртуальні,
  * перебудовуються з базових) і migrations_meta (не читається ніким).
  * Порядок - порядок відновлення (без FK у схемі порядок не критичний, але
  * стабільний порядок робить diff двох бекапів читабельним).
@@ -29,6 +29,9 @@ export const BACKUP_TABLES = [
   'sessions',
   'memory_chunks',
   'memory_projection_versions',
+  'knowledge_documents',
+  'knowledge_document_versions',
+  'knowledge_chunks',
   'reminders',
   'proposals',
   'chains',
@@ -64,12 +67,17 @@ export const BACKUP_TABLES = [
   'instructions',
   'instruction_history',
   'reports',
+  'worker_card_actions',
+  'learning_sessions',
   'style_corpus',
   'day_plans',
   'plan_items',
   'voice_pending',
   'counters',
 ];
+
+/** Explicit schema inventory exceptions, checked against ALL migrations. */
+export const BACKUP_SCHEMA_EXCLUDE = ['migrations_meta'];
 
 /**
  * Телеметрія не є даними власника, потрібними для відновлення роботи: це
@@ -212,6 +220,57 @@ export async function sha256Hex(bytes) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Only tables actually present in an archive may replace live data. Older
+ * archives predate newer modules; absence is not an instruction to erase them.
+ * Restored knowledge is D1 truth, not proof that its external index exists.
+ * @param {BackupDocument} doc
+ * @returns {Record<string, Record<string, unknown>[]>}
+ */
+export function prepareRestoreTables(doc) {
+  if (!doc.d1 || typeof doc.d1 !== 'object' || Array.isArray(doc.d1)) {
+    throw new Error('backup d1 має бути обʼєктом таблиць');
+  }
+  const omitted = new Set(Array.isArray(doc.omitted_d1) ? doc.omitted_d1 : []);
+  /** @type {Record<string, Record<string, unknown>[]>} */
+  const tables = {};
+  for (const table of BACKUP_TABLES) {
+    if (omitted.has(table) || !Object.hasOwn(doc.d1, table)) continue;
+    const rows = doc.d1[table];
+    if (
+      !Array.isArray(rows) ||
+      rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))
+    ) {
+      throw new Error(`backup ${table}: очікується масив рядків`);
+    }
+    tables[table] = rows.map((row) => ({ ...row }));
+  }
+  const knowledge = ['knowledge_documents', 'knowledge_document_versions', 'knowledge_chunks'];
+  const present = knowledge.filter((table) => Object.hasOwn(tables, table));
+  if (present.length > 0 && present.length !== knowledge.length) {
+    throw new Error('backup: неповний набір таблиць бази знань');
+  }
+  const active = new Set(
+    (tables.knowledge_documents ?? [])
+      .filter((row) => row.status === 'active')
+      .map((row) => row.id),
+  );
+  const rebuild = new Set();
+  for (const row of tables.knowledge_document_versions ?? []) {
+    if (row.status === 'ready' && active.has(row.document_id)) {
+      rebuild.add(row.id);
+      row.status = 'pending';
+      row.error = null;
+    }
+  }
+  for (const row of tables.knowledge_chunks ?? []) {
+    if (rebuild.has(row.document_version_id) && row.projection_status === 'ready') {
+      row.projection_status = 'pending';
+    }
+  }
+  return tables;
+}
+
 // ── SQL для відновлення ────────────────────────────────────────────────────
 
 /**
@@ -227,19 +286,15 @@ export async function sha256Hex(bytes) {
 export function restoreSql(doc) {
   /** @type {string[]} */
   const lines = ['BEGIN TRANSACTION;'];
-  const omitted = new Set(
-    Array.isArray(doc.omitted_d1)
-      ? doc.omitted_d1.filter((table) => BACKUP_TABLES.includes(String(table)))
-      : [],
-  );
+  const tables = prepareRestoreTables(doc);
   for (const table of [...BACKUP_TABLES].reverse()) {
-    if (!omitted.has(table)) lines.push(`DELETE FROM ${table};`);
+    if (Object.hasOwn(tables, table)) lines.push(`DELETE FROM ${table};`);
   }
   for (const table of BACKUP_TABLES) {
     // v2 recovery snapshots deliberately omit hot telemetry. It is not owner
     // state and must not be erased when a backup is restored over a live DB.
-    if (omitted.has(table)) continue;
-    const rows = doc.d1[table] ?? [];
+    if (!Object.hasOwn(tables, table)) continue;
+    const rows = tables[table] ?? [];
     for (const row of rows) {
       const cols = Object.keys(row).filter((c) => /^[a-z_][a-z0-9_]*$/.test(c));
       if (cols.length === 0) continue;
@@ -258,6 +313,12 @@ export function restoreSql(doc) {
     `INSERT OR IGNORE INTO counters (name, value) SELECT 'ideas', COALESCE(MAX(number), 0) FROM ideas;`,
   );
   for (const [fts, spec] of Object.entries(BACKUP_FTS)) {
+    if (!Object.hasOwn(tables, spec.from)) continue;
+    if (fts === 'records_fts' && !Object.hasOwn(tables, 'collections')) {
+      // A partial archive cannot safely rebuild the offline FTS without names.
+      // Reject it rather than silently dropping collection names from search.
+      throw new Error('backup: records потребують collections для відновлення FTS');
+    }
     lines.push(`DELETE FROM ${fts};`);
     if (fts === 'records_fts') {
       // data_text рахується тією самою формулою, що при записі
