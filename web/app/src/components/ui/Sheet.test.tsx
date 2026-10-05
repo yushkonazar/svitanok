@@ -43,6 +43,23 @@ describe('Sheet — справжній діалог', () => {
     expect(scroll).toHaveBeenCalled();
     scroll.mockRestore();
   });
+  it('starts a new wizard step at the top while keeping the page locked', () => {
+    const { rerender } = render(
+      <Sheet onClose={() => {}} resetKey={0}>
+        <button>Continue</button>
+      </Sheet>,
+    );
+    const panel = screen.getByRole('dialog');
+    panel.scrollTop = 200;
+    rerender(
+      <Sheet onClose={() => {}} resetKey={1}>
+        <button>Confirm</button>
+      </Sheet>,
+    );
+    expect(panel.scrollTop).toBe(0);
+    expect(panel).toHaveFocus();
+    expect(document.body.style.position).toBe('fixed');
+  });
   it('оголошений як модальний діалог із назвою', () => {
     render(
       <Sheet onClose={() => {}} label="Вакансія">

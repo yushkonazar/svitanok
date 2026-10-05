@@ -68,11 +68,14 @@ export function Sheet({
   onClose,
   children,
   label = 'Панель',
+  resetKey,
 }: {
   onClose: () => void;
   children: ReactNode;
   /** Назва діалогу для екранного читача — без неї він читає «діалог» і мовчить далі. */
   label?: string;
+  /** Start each wizard step at the top without unlocking the page behind it. */
+  resetKey?: number;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -80,6 +83,14 @@ export function Sheet({
   // шторку відкрили, інакше читач починає з початку сторінки, а тапальник
   // «губить місце».
   const returnTo = useRef<Element | null>(null);
+  useEffect(() => {
+    if (resetKey === undefined) return;
+    const panel = panelRef.current;
+    if (panel) {
+      panel.scrollTop = 0;
+      panel.focus({ preventScroll: true });
+    }
+  }, [resetKey]);
 
   useEffect(() => {
     const unlock = lockPageScroll();

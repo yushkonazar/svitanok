@@ -12,6 +12,8 @@ import {
 import { haptic } from '../../telegram.ts';
 import { Sheet } from '../ui/Sheet.tsx';
 import { moneyLabel } from '../../lib/financeView.ts';
+import { DebtSetup } from './DebtSetup.tsx';
+import { debtSetup } from '../../lib/debtSetup.ts';
 import { financeCategoryLabel } from '../../../../core/finance/categories.mjs';
 import {
   PAYMENT_KIND_LABELS,
@@ -19,9 +21,8 @@ import {
   estimateRemaining,
   installmentQuote,
   fixedDebtPayment,
-  interestQuote,
   interestDebtPayment,
-  INTEREST_METHOD_LABELS,
+  interestQuote,
 } from '../../../../core/finance/payments.mjs';
 
 export type FinanceFormKind =
@@ -164,6 +165,8 @@ export function FinanceForm({
         ? 'total-cost'
         : 'schedule',
     interestMethod: payment?.interestMethod ?? 'annuity',
+    progressMode: payment ? 'bank' : 'new',
+    paidCount: '',
     overpayment:
       payment?.overpaymentTotalMinor == null ? '' : String(payment.overpaymentTotalMinor / 100),
     extraRemaining:
@@ -171,7 +174,7 @@ export function FinanceForm({
         ? ''
         : String(payment.overpaymentRemainingMinor / 100),
     termMonths: String(payment?.termMonths ?? payment?.installmentsLeft ?? 12),
-    amountOverride: payment?.overpaymentTotalMinor != null ? String(payment.amountMinor / 100) : '',
+    amountOverride: payment ? String(payment.amountMinor / 100) : '',
     nextDate: goal?.deadline ?? payment?.nextDate ?? today.date,
     recurrence: payment?.recurrence ?? 'month',
     anchorDay: String(payment?.anchorDay ?? Number(today.date.slice(8))),
@@ -207,6 +210,7 @@ export function FinanceForm({
     transactionKind:
       transaction?.amountMinor != null && transaction.amountMinor < 0 ? 'expense' : 'income',
   });
+  const [debtStep, setDebtStep] = useState(0);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const attempt = useRef<{ fingerprint: string; command: FinanceCommand } | null>(null);
@@ -216,13 +220,20 @@ export function FinanceForm({
       if (key === 'nextDate' && request.kind === 'payment' && value)
         next.anchorDay = String(Number(value.slice(8)));
       if (key === 'paymentKind' && !payment) {
-        if (value === 'installment') next.category = 'покупка частинами';
+        if (value === 'installment') {
+          next.category = 'покупка частинами';
+          next.paymentSetup = 'schedule';
+        }
         if (value === 'card-installment') next.category = 'розстрочка';
         if (value === 'card-installment') next.paymentSetup = 'total-cost';
         if (value === 'loan') {
           next.paymentSetup = 'interest';
           next.category = 'фінанси';
         }
+      }
+      if (key === 'paymentSetup') {
+        next.amountOverride = '';
+        next.progressMode = payment ? 'bank' : 'new';
       }
       if (key === 'remainingMode' && value === 'manual' && !prev.remaining) {
         try {
@@ -265,28 +276,15 @@ export function FinanceForm({
   } catch {
     /* Incomplete payment amount. */
   }
-  let rateQuote: ReturnType<typeof interestQuote> = null;
-  try {
-    rateQuote = interestQuote(
-      parseMoney(v.remaining || v.total),
-      Number(v.months || v.termMonths),
-      parseMoney(v.rate),
-      v.interestMethod,
-      parseMoney(v.fee || '0'),
-      parseMoney(v.total),
-    );
-  } catch {
-    /* Wait for complete principal, rate and term. */
-  }
-  let quote: ReturnType<typeof installmentQuote> = null;
-  try {
-    quote = installmentQuote(
-      parseMoney(v.total),
-      parseMoney(v.overpayment || '0'),
-      Number(v.termMonths),
-    );
-  } catch {
-    /* Wait for complete purchase and term inputs. */
+  const guidedDebt = request.kind === 'payment' && isDebtKind(v.paymentKind);
+  let plan: ReturnType<typeof debtSetup> | null = null;
+  let planError = '';
+  if (guidedDebt) {
+    try {
+      plan = debtSetup(v);
+    } catch (e) {
+      planError = e instanceof Error ? e.message : 'Перевір дані графіка';
+    }
   }
   const field = (key: string, label: string, type = 'text', placeholder = '') => (
     <label className="renewal-field" key={key}>
@@ -319,6 +317,9 @@ export function FinanceForm({
             'overpayment',
             'extraRemaining',
             'amountOverride',
+            'termMonths',
+            'months',
+            'paidCount',
           ].includes(key)
             ? 'decimal'
             : undefined
@@ -380,6 +381,59 @@ export function FinanceForm({
   };
   const submit = async () => {
     setError('');
+    if (guidedDebt && debtStep < 2) {
+      try {
+        if (debtStep === 0) {
+          if (!v.name.trim()) throw new Error('Вкажи назву платежу');
+          if (
+            costMode &&
+            !installmentQuote(
+              inputMoney('total'),
+              inputMoney('overpayment', true),
+              Number(v.termMonths),
+            )
+          )
+            throw new Error(
+              'Вкажи суму покупки, переплату й цілий повний термін від 1 до 1200 місяців',
+            );
+          if (interestMode) {
+            if (
+              !interestQuote(
+                inputMoney('total'),
+                Number(v.termMonths),
+                inputMoney('rate'),
+                v.interestMethod,
+                inputMoney('fee', true),
+              )
+            )
+              throw new Error('Вкажи суму, річну ставку й цілий повний термін');
+          }
+          if (!calculatedMode && inputMoney('amount') <= 0)
+            throw new Error('Вкажи додатну суму платежу');
+        } else {
+          if (!plan) throw new Error(planError);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(v.nextDate))
+            throw new Error('Вкажи наступну дату платежу');
+          if (
+            !Number.isInteger(Number(v.anchorDay)) ||
+            Number(v.anchorDay) < 1 ||
+            Number(v.anchorDay) > 31
+          )
+            throw new Error('Вкажи день списання від 1 до 31');
+          if (
+            !v.remindDays.trim() ||
+            !Number.isInteger(Number(v.remindDays)) ||
+            Number(v.remindDays) < 0 ||
+            Number(v.remindDays) > 30
+          )
+            throw new Error('Нагадування: вкажи від 0 до 30 днів');
+        }
+        setDebtStep(debtStep + 1);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Перевір дані');
+      }
+      return;
+    }
     let type = request.kind as string;
     const p: Record<string, unknown> = {};
     try {
@@ -487,81 +541,31 @@ export function FinanceForm({
         type = 'budget-template';
         p.incomeBaseMinor = inputMoney('base');
       } else if (request.kind === 'payment') {
-        if (interestMode && !rateQuote)
-          throw new Error(
-            'Вкажи суму, річну ставку від 0 до 300%, цілий термін і спосіб нарахування',
-          );
-        if (costMode && !quote)
-          throw new Error(
-            'Вкажи суму покупки, загальну переплату й цілий термін від 1 до 1200 місяців',
-          );
-        if (
-          !calculatedMode &&
-          isDebtKind(v.paymentKind) &&
-          v.remainingMode === 'auto' &&
-          automaticRemaining == null
-        )
-          throw new Error(
-            'Вкажи платіж і кількість без відсотків або обери точний залишок із банку',
-          );
+        if (guidedDebt && !plan) throw new Error(planError);
         Object.assign(p, {
           paymentId: request.id,
           name: v.name,
           kind: v.paymentKind,
-          amountMinor: interestMode
-            ? rateQuote!.amountMinor
-            : costMode
-              ? v.amountOverride
-                ? inputMoney('amountOverride')
-                : quote!.amountMinor
-              : inputMoney('amount'),
-          remainingMinor: isDebtKind(v.paymentKind)
-            ? calculatedMode
-              ? v.remaining
-                ? inputMoney('remaining')
-                : inputMoney('total')
-              : v.remainingMode === 'auto'
-                ? automaticRemaining
-                : v.remaining
-                  ? inputMoney('remaining')
-                  : null
-            : null,
-          installmentsLeft: calculatedMode
-            ? Number(v.months || v.termMonths)
-            : isDebtKind(v.paymentKind) && v.months
-              ? Number(v.months)
-              : null,
+          amountMinor: guidedDebt ? plan!.amountMinor : inputMoney('amount'),
+          remainingMinor: null,
+          installmentsLeft: null,
+          totalMinor: null,
+          rateBps: 0,
+          feeMinor: 0,
           nextDate: v.nextDate,
           anchorDay: Number(v.anchorDay),
           recurrence: calculatedMode ? 'month' : v.recurrence,
           category: v.category,
           remindDays: Number(v.remindDays),
           status: v.paymentStatus,
-          totalMinor: v.total ? inputMoney('total') : null,
-          rateBps: costMode ? 0 : inputMoney('rate'),
-          feeMinor: costMode ? 0 : inputMoney('fee'),
           lender: v.lender,
           note: v.paymentNote,
-          ...(interestMode
-            ? { interestMethod: v.interestMethod, termMonths: Number(v.termMonths) }
-            : payment?.interestMethod
-              ? { interestMethod: null }
-              : {}),
-          ...(costMode
-            ? {
-                overpaymentTotalMinor: inputMoney('overpayment', true),
-                overpaymentRemainingMinor: v.extraRemaining
-                  ? inputMoney('extraRemaining')
-                  : inputMoney('overpayment', true),
-                termMonths: Number(v.termMonths),
-              }
-            : payment?.overpaymentTotalMinor != null
-              ? {
-                  overpaymentTotalMinor: null,
-                  ...(interestMode ? { termMonths: Number(v.termMonths) } : {}),
-                }
-              : {}),
+          ...(payment?.interestMethod ? { interestMethod: null } : {}),
+          ...(payment?.overpaymentTotalMinor != null ? { overpaymentTotalMinor: null } : {}),
         });
+        if (guidedDebt) {
+          for (const [key, value] of Object.entries(plan!)) if (key !== 'preview') p[key] = value;
+        }
       } else if (request.kind === 'payment-cancel') {
         Object.assign(p, { paymentId: request.id });
       } else if (request.kind === 'payment-paid' || request.kind === 'payment-close') {
@@ -641,8 +645,8 @@ export function FinanceForm({
         ? 'Налаштувати платіж'
         : TITLES[kind];
   return (
-    <Sheet label={title} onClose={close}>
-      <div className="renewal-finance renewal-sheet-content">
+    <Sheet label={title} onClose={close} resetKey={guidedDebt ? debtStep : undefined}>
+      <div className="renewal-finance">
         <div className="renewal-section-head">
           <h2 className="text-xl font-bold tracking-tight">{title}</h2>
           <button
@@ -981,203 +985,79 @@ export function FinanceForm({
           )}
           {kind === 'payment' && (
             <>
-              {field('name', 'Назва платежу')}
-              {select('paymentKind', 'Тип', Object.entries(PAYMENT_KIND_LABELS))}
-              {isDebtKind(v.paymentKind) &&
-                select('paymentSetup', 'Як додати борг', [
-                  ['total-cost', 'Сума покупки + загальна переплата'],
-                  ['interest', 'Сума + ставка + термін · порахувати автоматично'],
-                  ['schedule', 'Платіж і залишок за банком'],
-                ])}
-              {interestMode ? (
+              {guidedDebt && (
+                <ol
+                  className="flex gap-2 text-xs"
+                  aria-label="Кроки додавання боргу"
+                  aria-live="polite"
+                >
+                  {['Умови', 'Уже сплачено', 'Перевірка'].map((label, index) => (
+                    <li
+                      key={label}
+                      className="renewal-inset flex-1 text-center"
+                      aria-current={index === debtStep ? 'step' : undefined}
+                      style={{ color: index === debtStep ? 'var(--color-a2)' : undefined }}
+                    >
+                      {index + 1}. {label}
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {(!guidedDebt || debtStep === 0) && (
                 <>
-                  {field('total', 'Початкова сума боргу, ₴')}
-                  <div className="renewal-form-grid">
-                    {field('rate', 'Річна ставка, %')}
-                    {field('termMonths', 'Термін кредиту, місяців')}
-                  </div>
-                  {select(
-                    'interestMethod',
-                    'Як нараховуються відсотки',
-                    Object.entries(INTEREST_METHOD_LABELS),
-                  )}
-                  {field('fee', 'Щомісячна комісія, ₴', 'text', '0 — без комісії')}
-                  <div className="renewal-inset flex flex-col gap-3" aria-live="polite">
-                    <p className="renewal-muted">Автоматичний розрахунок</p>
-                    {[
-                      ['Розрахований найближчий платіж, ₴', rateQuote?.amountMinor],
-                      ['Розраховано всього до сплати, ₴', rateQuote?.totalMinor],
-                      ['Розрахована переплата, ₴', rateQuote?.overpaymentMinor],
-                    ].map(([label, amount]) => (
-                      <label className="renewal-field" key={String(label)}>
-                        {label}
-                        <input
-                          readOnly
-                          value={
-                            amount == null
-                              ? ''
-                              : (Number(amount) / 100).toFixed(2).replace('.', ',')
-                          }
-                          placeholder="Заповни суму, ставку й термін"
-                        />
-                      </label>
-                    ))}
-                    {rateQuote && <p>Останній платіж: {moneyLabel(rateQuote.lastAmountMinor)}</p>}
-                    <p className="renewal-chart-note">
-                      Номінальна річна ставка ÷ 12, щомісячне нарахування. Це прогноз за обраною
-                      схемою; реальна річна ставка та щоденне нарахування потребують графіка банку.
-                    </p>
-                  </div>
-                  <details className="renewal-inset" open={!!payment}>
-                    <summary className="renewal-link cursor-pointer">
-                      Уже сплачую / уточнити за банком
-                    </summary>
-                    <div className="flex flex-col gap-3 mt-3">
-                      {field(
-                        'remaining',
-                        'Поточний залишок тіла, ₴',
-                        'text',
-                        'За замовчуванням — початкова сума',
-                      )}
-                      {field(
-                        'months',
-                        'Платежів ще залишилося',
-                        'text',
-                        'За замовчуванням — весь термін',
-                      )}
-                      <p className="renewal-chart-note">
-                        Уточнений залишок змінює прогноз, але не створює минулих витрат. Якщо платіж
-                        або графік банку відрізняється, обери режим «Платіж і залишок за банком».
-                      </p>
-                    </div>
-                  </details>
-                  {field('lender', 'Банк / кредитор')}
+                  {field('name', 'Назва платежу')}
+                  {select('paymentKind', 'Тип', Object.entries(PAYMENT_KIND_LABELS))}
                 </>
-              ) : costMode ? (
-                <>
-                  {field('total', 'Сума покупки / отриманого кредиту, ₴')}
-                  <div className="renewal-form-grid">
-                    {field(
-                      'overpayment',
-                      'Загальна переплата за весь термін, ₴',
-                      'text',
-                      'Наприклад, 125',
-                    )}
-                    {field('termMonths', 'Термін розстрочки, місяців')}
-                  </div>
-                  <div className="renewal-inset" aria-live="polite">
-                    <p className="renewal-muted">Разом за договором</p>
-                    <strong className="text-xl text-a2">
-                      {quote ? moneyLabel(quote.totalMinor) : '—'}
-                    </strong>
-                    <p className="mt-2">
-                      {quote
-                        ? `${moneyLabel(quote.amountMinor)} / місяць · ${v.termMonths} платежів`
-                        : 'Введи суму покупки й термін'}
-                    </p>
-                    {quote && quote.lastAmountMinor !== quote.amountMinor && (
-                      <p className="renewal-chart-note mt-2">
-                        Останній платіж {moneyLabel(quote.lastAmountMinor)} — врахували всі копійки.
-                      </p>
-                    )}
-                    <p className="renewal-chart-note mt-2">
-                      Рівний план за введеною загальною переплатою. Якщо графік банку інший, уточни
-                      його нижче.
-                    </p>
-                  </div>
-                  <details className="renewal-inset" open={!!payment}>
-                    <summary className="renewal-link cursor-pointer">
-                      Уже сплачую / уточнити за банком
-                    </summary>
-                    <div className="flex flex-col gap-3 mt-3">
-                      {field(
-                        'amountOverride',
-                        'Щомісячний платіж за банком, ₴',
-                        'text',
-                        'Необов’язково',
-                      )}
-                      <div className="renewal-form-grid">
-                        {field(
-                          'remaining',
-                          'Поточний залишок тіла, ₴',
-                          'text',
-                          'За замовчуванням — сума покупки',
-                        )}
-                        {field(
-                          'extraRemaining',
-                          'Переплати ще залишилося, ₴',
-                          'text',
-                          'За замовчуванням — вся переплата',
-                        )}
-                        {field(
-                          'months',
-                          'Платежів ще залишилося',
-                          'text',
-                          'За замовчуванням — весь термін',
-                        )}
-                      </div>
-                      <p className="renewal-chart-note">
-                        Для наявної розстрочки введи поточні залишки. Це не створює минулих витрат і
-                        не змінює баланс рахунку.
-                      </p>
-                    </div>
-                  </details>
-                  {field('lender', 'Банк / кредитор')}
-                </>
+              )}
+              {guidedDebt ? (
+                <DebtSetup
+                  v={v}
+                  step={debtStep}
+                  field={field}
+                  select={select}
+                  plan={plan}
+                  error={planError}
+                />
               ) : (
                 field('amount', 'Сума одного платежу, ₴')
               )}
-              {!calculatedMode && isDebtKind(v.paymentKind) && (
+              {(!guidedDebt || debtStep === 1) && (
                 <>
-                  {select('remainingMode', 'Як визначити залишок боргу', [
-                    ['auto', 'Порахувати за платежем і кількістю'],
-                    ['manual', 'Ввести точний залишок із банку'],
-                  ])}
+                  {field('nextDate', 'Наступна дата списання', 'date')}
+                  <p className="renewal-chart-note">
+                    Найближчий ще не сплачений платіж із графіка банку, а не дата початку договору.
+                  </p>
+                  {!calculatedMode &&
+                    select('recurrence', 'Повторення', [
+                      ['month', 'Щомісяця'],
+                      ['year', 'Щороку'],
+                      ['once', 'Одноразово'],
+                    ])}
                   <div className="renewal-form-grid">
-                    {field('months', 'Кількість платежів')}
-                    {field('remaining', 'Ще залишилось сплатити, ₴')}
-                    {field('total', 'Початкова сума боргу, ₴')}
-                    {field('rate', 'Річна ставка, %')}
-                    {field('fee', 'Комісія в повному платежі, ₴')}
-                    {field('lender', 'Банк / кредитор')}
+                    {field('anchorDay', 'Фіксований день списання (1–31)')}
+                    {field('remindDays', 'Нагадувати за стільки днів')}
                   </div>
                   <p className="renewal-chart-note">
-                    {v.remainingMode === 'auto'
-                      ? Number(v.rate.replace(',', '.')) > 0
-                        ? 'За наявності відсотків обери точний залишок із банку — ставка не визначає тіло боргу.'
-                        : 'Рахуємо платіж × кількість. Якщо є комісія, віднімаємо її з кожного платежу. Для іншого останнього платежу вкажи точний залишок із банку.'
-                      : 'Введений залишок зберігається точно; зміна платежу або кількості його не переписує.'}
+                    Це число місяця: 9 — платіж дев’ятого числа. Для 29–31 у короткому місяці беремо
+                    останній день; потім повертаємось до вибраного числа.
                   </p>
+                  <details className="renewal-inset">
+                    <summary className="renewal-link cursor-pointer">
+                      Категорія та інші деталі
+                    </summary>
+                    <div className="flex flex-col gap-3 mt-3">
+                      {category()}
+                      {field('lender', 'Банк / кредитор')}
+                      {field('paymentNote', 'Примітка до договору')}
+                      {request.id &&
+                        select('paymentStatus', 'Стан', [
+                          ['active', 'Активний'],
+                          ['paused', 'Призупинити'],
+                        ])}
+                    </div>
+                  </details>
                 </>
               )}
-              {field('paymentNote', 'Примітка до договору')}
-              <p className="renewal-chart-note">
-                {interestMode
-                  ? 'При підтвердженні оплати тіло та відсотки розрахуються за обраною схемою. Фактичні дані банку можна уточнити.'
-                  : 'Сума платежу — повна сума за договором, включно з комісією та відсотками. У режимі «Платіж і залишок за банком» ставка зберігається для довідки.'}
-              </p>
-              {field('nextDate', 'Наступна дата списання', 'date')}
-              {!calculatedMode &&
-                select('recurrence', 'Повторення', [
-                  ['month', 'Щомісяця'],
-                  ['year', 'Щороку'],
-                  ['once', 'Одноразово'],
-                ])}
-              <div className="renewal-form-grid">
-                {field('anchorDay', 'Фіксований день списання (1–31)')}
-                {field('remindDays', 'Нагадувати за стільки днів')}
-              </div>
-              {category()}
-              <p className="renewal-muted">
-                Це число місяця: 9 — платіж дев’ятого числа. Світанок веде облік і нагадує, а не
-                списує гроші. Для 29–31 числа в короткому місяці береться останній день; наступний
-                місяць повертається до вибраного дня.
-              </p>
-              {request.id &&
-                select('paymentStatus', 'Стан', [
-                  ['active', 'Активний'],
-                  ['paused', 'Призупинити'],
-                ])}
             </>
           )}
           {kind === 'payment-cancel' && (
@@ -1378,12 +1258,29 @@ export function FinanceForm({
               {error}
             </p>
           )}
+          {guidedDebt && debtStep > 0 && (
+            <button
+              type="button"
+              className="renewal-secondary"
+              disabled={pending}
+              onClick={() => {
+                setError('');
+                setDebtStep(debtStep - 1);
+              }}
+            >
+              Назад
+            </button>
+          )}
           <button type="submit" className="renewal-button mt-2" disabled={pending}>
             {pending
               ? 'Зберігаю…'
-              : kind === 'policy'
-                ? 'Підтвердити нові умови'
-                : 'Підтвердити й зберегти'}
+              : guidedDebt && debtStep < 2
+                ? debtStep === 0
+                  ? 'Далі: уже сплачені платежі'
+                  : 'Перевірити розрахунок'
+                : kind === 'policy'
+                  ? 'Підтвердити нові умови'
+                  : 'Підтвердити й зберегти'}
           </button>
         </form>
       </div>

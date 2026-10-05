@@ -39,15 +39,13 @@ it('fills payment, total and overpayment from the selected annual rate, amount a
     'Термін кредиту, місяців': '12',
   }))
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
-  expect(screen.getByLabelText('Розрахований найближчий платіж, ₴')).toHaveValue('106,62');
-  expect(screen.getByLabelText('Розраховано всього до сплати, ₴')).toHaveValue('1279,42');
   fireEvent.change(screen.getByLabelText('Як нараховуються відсотки'), {
     target: { value: 'flat' },
   });
-  expect(screen.getByLabelText('Розрахована переплата, ₴')).toHaveValue('144,00');
   fireEvent.change(screen.getByLabelText('Річна ставка, %'), { target: { value: '24' } });
-  expect(screen.getByLabelText('Розрахований найближчий платіж, ₴')).toHaveValue('124,00');
-  expect(screen.getByLabelText('Розраховано всього до сплати, ₴')).toHaveValue('1488,00');
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
+  expect(screen.getByRole('region', { name: 'Перевірка графіка' })).toHaveTextContent('1 488,00');
   fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
   await waitFor(() => expect(close).toHaveBeenCalled());
   expect(postFinance).toHaveBeenCalledWith(
@@ -81,27 +79,30 @@ it('submits the complete credit limit, not spent credit, and refreshes all finan
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: FINANCE_QUERY });
 });
-it('records the bank installment schedule with the selectable purchase-in-parts category', async () => {
+it('records the exact existing bank schedule and purchase-in-parts category', async () => {
   const { close } = open({ kind: 'payment' });
   fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'installment' } });
+  for (const [label, value] of Object.entries({
+    'Назва платежу': 'Proove',
+    'Сума одного платежу, ₴': '90,70',
+    'Початкова сума боргу, ₴': '1814',
+  }))
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
   fireEvent.change(screen.getByLabelText('Як визначити залишок боргу'), {
     target: { value: 'manual' },
   });
-  const values = {
-    'Назва платежу': 'Proove',
-    'Сума одного платежу, ₴': '90,70',
+  for (const [label, value] of Object.entries({
     'Ще залишилось сплатити, ₴': '1088,40',
     'Кількість платежів': '12',
-    'Початкова сума боргу, ₴': '1814',
     'Наступна дата списання': '2026-10-09',
     'Фіксований день списання (1–31)': '9',
     Категорія: 'покупка частинами',
-  };
-  for (const [label, value] of Object.entries(values)) {
+  }))
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
-  }
   expect(screen.getByRole('option', { name: 'Покупка частинами' })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: 'Комуналка та інтернет' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
   fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
   await waitFor(() => expect(close).toHaveBeenCalled());
   expect(postFinance).toHaveBeenCalledWith(
@@ -127,6 +128,7 @@ it('calculates the new card installment balance and permits an exact bank overri
     target: { value: 'Розстрочка Mono' },
   });
   fireEvent.change(screen.getByLabelText('Сума одного платежу, ₴'), { target: { value: '50,25' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
   fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '12' } });
   expect(screen.getByLabelText('Ще залишилось сплатити, ₴')).toHaveValue('603');
   expect(screen.getByLabelText('Ще залишилось сплатити, ₴')).toHaveAttribute('readonly');
@@ -142,6 +144,7 @@ it('calculates the new card installment balance and permits an exact bank overri
     target: { value: '2026-10-09' },
   });
   expect(screen.getByLabelText('Фіксований день списання (1–31)')).toHaveValue('9');
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
   fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
   await waitFor(() => expect(close).toHaveBeenCalled());
   expect(postFinance).toHaveBeenCalledWith(
@@ -171,7 +174,9 @@ it('creates the 550 purchase plus 125 total surcharge with a 56.25 monthly payme
   fireEvent.change(screen.getByLabelText('Термін розстрочки, місяців'), {
     target: { value: '12' },
   });
-  expect(screen.getByText(/56,25.*місяць/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
+  expect(screen.getByRole('region', { name: 'Перевірка графіка' })).toHaveTextContent('56,25');
   fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
   await waitFor(() => expect(close).toHaveBeenCalled());
   expect(postFinance).toHaveBeenCalledWith(
@@ -197,9 +202,10 @@ it('requires bank principal for an interest-bearing loan instead of estimating i
   fireEvent.change(screen.getByLabelText('Як додати борг'), { target: { value: 'schedule' } });
   fireEvent.change(screen.getByLabelText('Назва платежу'), { target: { value: 'Кредит' } });
   fireEvent.change(screen.getByLabelText('Сума одного платежу, ₴'), { target: { value: '50' } });
-  fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '10' } });
   fireEvent.change(screen.getByLabelText('Річна ставка, %'), { target: { value: '24' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
+  fireEvent.change(screen.getByLabelText('Кількість платежів'), { target: { value: '10' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('точний залишок');
   expect(postFinance).not.toHaveBeenCalled();
 });
@@ -277,6 +283,72 @@ it('uses the supplied historical date for a shift and keeps cash tips out of its
         at: '2026-10-01T19:30:00.000Z',
         netCashMinor: 400000,
         directMinor: 0,
+      }),
+    }),
+  );
+});
+
+it('guides an active installment from original terms through paid count to explicit confirmation', async () => {
+  const { close } = open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Тип'), { target: { value: 'card-installment' } });
+  for (const [label, value] of Object.entries({
+    'Назва платежу': 'Діюча розстрочка',
+    'Сума покупки / отриманого кредиту, ₴': '550',
+    'Загальна переплата за весь термін, ₴': '125',
+    'Термін розстрочки, місяців': '12',
+  }))
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  expect(screen.queryByRole('button', { name: 'Підтвердити й зберегти' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
+  fireEvent.change(screen.getByLabelText('Стан розстрочки / кредиту'), {
+    target: { value: 'paid' },
+  });
+  fireEvent.change(screen.getByLabelText('Уже сплачено платежів'), { target: { value: '3' } });
+  fireEvent.change(screen.getByLabelText('Наступна дата списання'), {
+    target: { value: '2026-10-09' },
+  });
+  expect(screen.getByText(/не списують гроші/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
+  const summary = screen.getByRole('region', { name: 'Перевірка графіка' });
+  expect(summary).toHaveTextContent('168,75');
+  expect(summary).toHaveTextContent('506,25');
+  expect(postFinance).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Назад' }));
+  expect(screen.getByLabelText('Уже сплачено платежів')).toHaveValue('3');
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledOnce();
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment',
+      payload: expect.objectContaining({
+        remainingMinor: 41251,
+        overpaymentRemainingMinor: 9374,
+        installmentsLeft: 9,
+        termMonths: 12,
+        amountMinor: 5625,
+        nextDate: '2026-10-09',
+      }),
+    }),
+  );
+});
+it('keeps existing exact bank balances unchanged when editing a debt', async () => {
+  const p = readFinanceDemo().payments.find((p) => p.kind === 'installment')!;
+  const { close } = open({ kind: 'payment', id: p.id });
+  fireEvent.click(screen.getByRole('button', { name: 'Далі: уже сплачені платежі' }));
+  expect(screen.getByLabelText('Ще залишилось сплатити, ₴')).toHaveValue(
+    String(p.remainingMinor! / 100),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Перевірити розрахунок' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      payload: expect.objectContaining({
+        remainingMinor: p.remainingMinor,
+        installmentsLeft: p.installmentsLeft,
+        amountMinor: p.amountMinor,
       }),
     }),
   );
