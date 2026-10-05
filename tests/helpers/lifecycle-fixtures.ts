@@ -5,6 +5,41 @@ const AT = '2026-10-05T10:00:00.000Z';
 /** Synthetic rows only: no production database, credentials or user documents. */
 export function lifecycleRows(): Record<string, Record<string, string | number | null>[]> {
   return {
+    work_contexts: [
+      {
+        id: 'synthetic-context',
+        scope_key: 'synthetic-scope',
+        chat_id: 'test-chat',
+        thread_id: '',
+        work_date: '2026-10-05',
+        opened_at: AT,
+        activated_at: AT,
+        started_at: null,
+        finished_at: AT,
+        confirmation_at: null,
+      },
+    ],
+    context_reminders: [
+      {
+        id: 'synthetic-context-task',
+        context_id: 'synthetic-context',
+        text: 'Тест — лимон',
+        source_key: 'synthetic-message',
+        status: 'notified',
+        created_at: AT,
+        updated_at: AT,
+        delivery_id: 'synthetic-context-delivery',
+        edit_until: null,
+      },
+    ],
+    context_deliveries: [
+      {
+        id: 'synthetic-context-delivery',
+        context_id: 'synthetic-context',
+        snapshot_json: JSON.stringify([{ id: 'synthetic-context-task', text: 'Тест — лимон' }]),
+        created_at: AT,
+      },
+    ],
     knowledge_documents: [
       {
         id: 'kd',

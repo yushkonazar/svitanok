@@ -27,6 +27,30 @@ it('кожна D1-міграція явно оголошує expand або contr
 
 /** Очікувані колонки звичайних таблиць — дослівно з 07-schema §1. */
 const EXPECTED_COLUMNS: Record<string, string[]> = {
+  work_contexts: [
+    'id',
+    'scope_key',
+    'chat_id',
+    'thread_id',
+    'work_date',
+    'opened_at',
+    'activated_at',
+    'started_at',
+    'finished_at',
+    'confirmation_at',
+  ],
+  context_reminders: [
+    'id',
+    'context_id',
+    'text',
+    'source_key',
+    'status',
+    'created_at',
+    'updated_at',
+    'delivery_id',
+    'edit_until',
+  ],
+  context_deliveries: ['id', 'context_id', 'snapshot_json', 'created_at'],
   finance_accounts: [
     'id',
     'name',
@@ -493,6 +517,16 @@ type IndexSpec = { cols: string[]; unique?: boolean };
  * жодного індексу поза PK — звірка точна, зайвий індекс теж провалює тест.
  */
 const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
+  work_contexts: [
+    { cols: ['scope_key'], unique: true },
+    { cols: ['chat_id', 'thread_id', 'opened_at'] },
+  ],
+  context_reminders: [
+    { cols: ['source_key'], unique: true },
+    { cols: ['context_id', 'status'] },
+    { cols: ['delivery_id'] },
+  ],
+  context_deliveries: [{ cols: ['context_id'] }],
   finance_accounts: [{ cols: ['mono_id'], unique: true }],
   finance_taxi_policies: [{ cols: ['effective_at'], unique: true }],
   finance_taxi_entries: [{ cols: ['at'] }],
@@ -595,7 +629,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять три файли 0001–0033, нумерація без дірок', () => {
+  it('тридцять чотири файли 0001–0034, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -630,6 +664,7 @@ describe('міграції D1 — файли', () => {
       '0031',
       '0032',
       '0033',
+      '0034',
     ]);
   });
 });

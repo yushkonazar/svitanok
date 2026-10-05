@@ -48,6 +48,7 @@ const MIGRATIONS = [
   '0014_fact_provenance.sql',
   '0028_mini_app_finance.sql',
   '0029_finance_credit_limits.sql',
+  '0034_context_reminders.sql',
 ];
 
 const CONN = 'conn-abc';
@@ -572,7 +573,10 @@ describe('ретенція (07 §1)', () => {
   it('правила покривають кожну таблицю зі строком - і жодної «безстрокової»', () => {
     const tables = RETENTION.map((r) => r.table).sort();
     expect(tables).toEqual([
+      'context_deliveries',
+      'context_reminders',
       'inbox_messages',
+      'outbox',
       'outbox',
       'price_points',
       'proposals',
@@ -582,6 +586,7 @@ describe('ретенція (07 §1)', () => {
       'runs',
       'transactions',
       'voice_pending',
+      'work_contexts',
     ]);
     // memory_chunks має зовнішній індекс, тому йде окремим порядком
     // Vectorize → D1 у external.mjs, а не generic DELETE вище. Дайджести,

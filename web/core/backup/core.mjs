@@ -33,6 +33,9 @@ export const BACKUP_TABLES = [
   'knowledge_document_versions',
   'knowledge_chunks',
   'reminders',
+  'work_contexts',
+  'context_reminders',
+  'context_deliveries',
   'proposals',
   'chains',
   'outbox',
@@ -249,6 +252,11 @@ export function prepareRestoreTables(doc) {
   const present = knowledge.filter((table) => Object.hasOwn(tables, table));
   if (present.length > 0 && present.length !== knowledge.length) {
     throw new Error('backup: неповний набір таблиць бази знань');
+  }
+  const contextual = ['work_contexts', 'context_reminders', 'context_deliveries'];
+  const coveredContexts = contextual.filter((name) => Object.hasOwn(tables, name));
+  if (coveredContexts.length > 0 && coveredContexts.length !== contextual.length) {
+    throw new Error('backup: неповний набір контекстних нагадувань');
   }
   const active = new Set(
     (tables.knowledge_documents ?? [])

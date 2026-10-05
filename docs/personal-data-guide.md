@@ -79,6 +79,13 @@ FTS-індекси: `ideas_fts`, `inbox_fts`, `records_fts`. Їх внутріш
 
 ## Не все є таблицею D1
 
+Новий локальний блок (міграція `0034`, ще не production): `work_contexts`
+зберігає конкретну робочу зміну й фактичне завершення; `context_reminders` —
+справи без вигаданої години; `context_deliveries` — склад картки й захист
+від повтору. Отримання повідомлення не дорівнює виконанню справи.
+Ці таблиці входять у backup/export/повне забуття; незавершені справи
+не видаляються через вік історії. [Поведінка й межі](ops/context-reminders-checkin.md).
+
 - Чек-іни, статистика й частина налаштувань живуть у canonical
   state/stats/settings Durable Object; KV — кеші й compatibility snapshots.
 - Scheduler має власну SQLite-базу Durable Object.
