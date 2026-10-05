@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
-import { postFinance } from '../../api/client.ts';
+import { fetchFinance, postFinance } from '../../api/client.ts';
 import { readFinanceDemo, resetFinanceDemo } from '../../api/finance-demo.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 
-vi.mock('../../api/client.ts', () => ({ postFinance: vi.fn(async () => ({ ok: true })) }));
+vi.mock('../../api/client.ts', () => ({
+  postFinance: vi.fn(async () => ({ ok: true })),
+  fetchFinance: vi.fn(),
+}));
 vi.mock('../../telegram.ts', () => ({ haptic: vi.fn() }));
 beforeEach(() => {
   resetFinanceDemo();
@@ -493,4 +496,72 @@ it('switches from a virtual bank reserve to a real cash contribution with a vali
       }),
     }),
   );
+});
+
+it('shows a held deposit and refreshes it into a selectable transfer without clearing the form', async () => {
+  const f = readFinanceDemo();
+  const tx = {
+    id: 'held-deposit',
+    at: new Date().toISOString(),
+    amountMinor: 800000,
+    amountUah: 800000,
+    currency: 'UAH',
+    category: 'перекази й готівка',
+    description: 'Термінал mono',
+    kind: 'unclassified' as const,
+    accountId: 'mono:demo',
+    bank: true,
+    bankHold: true,
+    reference: null,
+  };
+  f.transactions.unshift(tx);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(FINANCE_QUERY, { finance: f, demo: true });
+  const close = vi.fn();
+  function LiveForm() {
+    const { data } = useQuery({ queryKey: FINANCE_QUERY, queryFn: fetchFinance, enabled: false });
+    return <FinanceForm request={{ kind: 'transfer' }} finance={data!.finance} onClose={close} />;
+  }
+  render(
+    <QueryClientProvider client={client}>
+      <LiveForm />
+    </QueryClientProvider>,
+  );
+  fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
+  expect(screen.getByRole('region', { name: 'Операції в очікуванні' })).toHaveTextContent(
+    '8 000,00',
+  );
+  expect(
+    screen.getByLabelText('Операція Monobank').querySelector('option[value="held-deposit"]'),
+  ).toBeNull();
+  const refreshed = {
+    demo: true,
+    finance: {
+      ...f,
+      transactions: f.transactions.map((t) => (t.id === tx.id ? { ...t, bankHold: false } : t)),
+    },
+  };
+  vi.mocked(fetchFinance).mockResolvedValueOnce(refreshed);
+  fireEvent.click(screen.getByRole('button', { name: 'Оновити список' }));
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Список оновлено'));
+  expect(screen.getByLabelText('Як обліковуємо переказ?')).toHaveValue('bank');
+  expect(screen.getByLabelText('Другий рахунок · готівка або ручний')).toHaveValue('cash');
+  expect(
+    screen.getByLabelText('Операція Monobank').querySelector('option[value="held-deposit"]'),
+  ).not.toBeNull();
+  expect(close).not.toHaveBeenCalled();
+  expect(postFinance).not.toHaveBeenCalled();
+});
+it('keeps the transfer form open and offers another refresh after a network error', async () => {
+  const { close } = open({ kind: 'transfer' });
+  fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
+  vi.mocked(fetchFinance).mockRejectedValueOnce(new Error('offline'));
+  fireEvent.click(screen.getByRole('button', { name: 'Оновити список' }));
+  await waitFor(() =>
+    expect(screen.getByRole('alert')).toHaveTextContent('Не вдалося оновити список'),
+  );
+  expect(screen.getByRole('button', { name: 'Оновити список' })).toBeEnabled();
+  expect(screen.getByLabelText('Як обліковуємо переказ?')).toHaveValue('bank');
+  expect(close).not.toHaveBeenCalled();
+  expect(postFinance).not.toHaveBeenCalled();
 });

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
-import { postFinance } from '../../api/client.ts';
+import { fetchFinance, postFinance } from '../../api/client.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import {
   parseMoney,
@@ -238,6 +238,35 @@ export function FinanceForm({
   const [debtStep, setDebtStep] = useState(0);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [refreshingBank, setRefreshingBank] = useState(false);
+  const [bankRefreshMessage, setBankRefreshMessage] = useState('');
+  const [bankRefreshError, setBankRefreshError] = useState('');
+  const bankTransfers = f.transactions.filter(
+    (t) =>
+      t.bank &&
+      !t.reference &&
+      t.currency === 'UAH' &&
+      t.amountMinor !== 0 &&
+      ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
+  );
+  const completedTransfers = bankTransfers.filter((t) => !t.bankHold);
+  const heldTransfers = bankTransfers.filter((t) => t.bankHold);
+  const refreshBankList = async () => {
+    if (refreshingBank || pending) return;
+    setRefreshingBank(true);
+    setBankRefreshMessage('');
+    setBankRefreshError('');
+    try {
+      await query.fetchQuery({ queryKey: FINANCE_QUERY, queryFn: fetchFinance, staleTime: 0 });
+      setBankRefreshMessage(
+        'Список оновлено. Операції в очікуванні стануть доступними після підтвердження банком і синхронізації.',
+      );
+    } catch {
+      setBankRefreshError('Не вдалося оновити список. Спробуй ще раз.');
+    } finally {
+      setRefreshingBank(false);
+    }
+  };
   const attempt = useRef<{ fingerprint: string; command: FinanceCommand } | null>(null);
   const set = (key: string, value: string) =>
     setValues((prev) => {
@@ -732,21 +761,58 @@ export function FinanceForm({
             <>
               {select('bankTransactionId', 'Операція Monobank', [
                 ['', 'Обери завершений переказ'],
-                ...f.transactions
-                  .filter(
-                    (t) =>
-                      t.bank &&
-                      !t.bankHold &&
-                      !t.reference &&
-                      t.currency === 'UAH' &&
-                      t.amountMinor !== 0 &&
-                      ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
-                  )
-                  .map((t): [string, string] => [
-                    t.id,
-                    `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
-                  ]),
+                ...completedTransfers.map((t): [string, string] => [
+                  t.id,
+                  `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
+                ]),
               ])}
+              <button
+                type="button"
+                className="renewal-secondary self-start"
+                disabled={refreshingBank || pending}
+                onClick={() => void refreshBankList()}
+              >
+                {refreshingBank ? 'Оновлюємо список…' : 'Оновити список'}
+              </button>
+              {bankRefreshMessage && (
+                <p role="status" className="renewal-muted">
+                  {bankRefreshMessage}
+                </p>
+              )}
+              {bankRefreshError && (
+                <p role="alert" className="renewal-muted">
+                  {bankRefreshError}
+                </p>
+              )}
+              <div className="renewal-inset">
+                <p className="renewal-muted">
+                  Обери поповнення картки або зняття готівки. Тут доступні лише завершені операції,
+                  які ще не пов’язані з іншим записом.
+                </p>
+                {heldTransfers.length > 0 && (
+                  <section aria-label="Операції в очікуванні" className="mt-3">
+                    <h3 className="font-semibold">Очікують підтвердження банку</h3>
+                    <ul className="mt-2 space-y-2">
+                      {heldTransfers.map((t) => (
+                        <li key={t.id} className="renewal-muted break-words">
+                          {t.description} · {moneyLabel(t.amountMinor)} ·{' '}
+                          {kyivParts(Date.parse(t.at)).date}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="renewal-muted mt-2">
+                      Ці операції вже надійшли від Monobank, але поки їх не можна обрати. Після
+                      підтвердження банком і синхронізації натисни «Оновити список».
+                    </p>
+                  </section>
+                )}
+                {completedTransfers.length === 0 && (
+                  <p className="renewal-muted mt-2">Завершених операцій для вибору поки немає.</p>
+                )}
+                <p className="renewal-muted mt-2">
+                  Кнопка завантажує останні дані Світанку. Вона не змінює статус операції в банку.
+                </p>
+              </div>
               {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
               <p className="renewal-inset renewal-muted">
                 Банківська сума вже врахована в залишку картки. Змінимо тільки другий рахунок: при
