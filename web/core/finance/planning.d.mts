@@ -42,6 +42,7 @@ export function calculateTaxiWeek(
   from: number;
   to: number;
   grossMinor: number;
+  netCashMinor: number;
   earnedMinor: number;
   entries: TaxiEntry[];
   groups: {
@@ -58,5 +59,5 @@ export function calculateTaxiWeek(
 export function nextPaymentDate(
   nextDate: string,
   anchorDay: number,
-  period: 'month' | 'year',
+  period: 'day' | 'week' | 'month' | 'year',
 ): string;

@@ -19,9 +19,10 @@ import { SAMPLE_BRIEF } from './briefing-sample.ts';
 import { settingsResponseSchema, type SettingsResponse, type Settings } from './settings-schema.ts';
 import { savedPageSchema, type SavedPage } from './schema.ts';
 import { workerQualityResponseSchema, type WorkerQuality } from './worker-quality-schema.ts';
-import { financeSchema, type FinanceCommand } from './finance-schema.ts';
+import { financeSchema, financeReportSchema, type FinanceCommand } from './finance-schema.ts';
 import { readFinanceDemo, writeFinanceDemo } from './finance-demo.ts';
 import { readSavedDemo, writeSavedDemo } from './saved-demo.ts';
+import { buildFinanceReport } from '../../../core/finance/reporting.mjs';
 import { kyivParts } from '../../../core/finance/planning.mjs';
 
 // API-клієнт дашборда (роадмеп v3, E1). Апка живе на /app, а API — на /api (корінь
@@ -47,6 +48,15 @@ export async function fetchFinance() {
   throwIfSessionExpired(res);
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
   return { finance: financeSchema.parse(await res.json()), demo: false };
+}
+export async function fetchFinanceReport(from: string, to: string) {
+  if (!inTelegram())
+    return financeReportSchema.parse(buildFinanceReport(readFinanceDemo(), from, to));
+  const params = new URLSearchParams({ from, to });
+  const res = await fetch(`/api/finance?${params}`, { headers: authHeaders(), cache: 'no-store' });
+  throwIfSessionExpired(res);
+  if (!res.ok) throw new Error('Не вдалося завантажити звіт. Перевір період і спробуй знову.');
+  return financeReportSchema.parse(await res.json());
 }
 export async function postFinance(command: FinanceCommand) {
   if (!inTelegram()) {

@@ -1,3 +1,4 @@
+import { buildFinanceReport, validateReportRange } from './core/finance/reporting.mjs';
 import { json, readJsonBody } from './http-core.mjs';
 import { checkOwnerRead, checkPrimaryOwner, mutationInitData } from './auth-core.mjs';
 import {
@@ -19,7 +20,21 @@ export async function handleFinance(request, env) {
     : await checkOwnerRead(request, env);
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
   try {
-    const result = body ? await executeFinanceCommand(env, body) : await readFinanceWorkspace(env);
+    const nowMs = Date.now();
+    const url = new URL(request.url);
+    const from = url.searchParams.get('from'),
+      to = url.searchParams.get('to');
+    let result;
+    if (!body && (from != null || to != null)) {
+      if (!from || !to) throw new FinanceValidation('Вкажи початок і кінець періоду');
+      validateReportRange(from, to, nowMs);
+      result = buildFinanceReport(
+        await readFinanceWorkspace(env, nowMs, { from, to }),
+        from,
+        to,
+        nowMs,
+      );
+    } else result = body ? await executeFinanceCommand(env, body) : await readFinanceWorkspace(env);
     const response = json(result);
     response.headers.set('cache-control', 'private, no-store');
     return response;

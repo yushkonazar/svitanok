@@ -54,3 +54,21 @@ it('recalculates available cash, income, category spending, reserves and goals f
   expect(final.accounts.find((a) => a.id === 'cash')!.balanceMinor).toBe(200000);
   expect(financeView(final, 7).income).toBe(income.income);
 });
+
+it('subtracts a real goal transfer once and keeps only virtual goal reserves in available cash', () => {
+  const initial = financeView(readFinanceDemo(), 7);
+  writeFinanceDemo({
+    id: 'external-goal-transfer',
+    version: readFinanceDemo().version,
+    type: 'goal-move',
+    payload: { goalId: 'laptop', accountId: 'cash', amountMinor: 50000, movementKind: 'external' },
+  });
+  const f = readFinanceDemo(),
+    view = financeView(f, 7);
+  expect(view.available).toBe(initial.available - 50000);
+  expect(view.allocated).toBe(initial.allocated);
+  expect(view.expense).toBe(initial.expense);
+  expect(
+    f.goalMoves.filter((m) => m.goalId === 'laptop').reduce((n, m) => n + m.amountMinor, 0),
+  ).toBe(350000);
+});

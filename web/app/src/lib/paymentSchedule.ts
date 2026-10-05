@@ -12,7 +12,7 @@ export function paymentSchedule(p: Finance['payments'][number], cap = 24) {
   let date = p.nextDate,
     remaining = p.remainingMinor;
   let extra = p.overpaymentRemainingMinor ?? null;
-  const count = p.installmentsLeft ?? (p.recurrence === 'once' ? 1 : 12);
+  const count = p.installmentsLeft ?? (p.recurrence === 'once' ? 1 : cap);
   const known = (p.rateBps ?? 0) === 0,
     fee = p.feeMinor ?? 0;
   for (let i = 0; i < Math.min(cap, count); i++) {

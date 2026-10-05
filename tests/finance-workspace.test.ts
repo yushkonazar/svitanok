@@ -18,6 +18,7 @@ function setup() {
     '0030_finance_card_installment.sql',
     '0031_finance_installment_overpayment.sql',
     '0032_finance_interest_method.sql',
+    '0033_finance_history_and_links.sql',
   ]);
   const originalBatch = d1.stub.batch;
   d1.stub.batch = async (statements) => {

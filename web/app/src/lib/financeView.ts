@@ -9,7 +9,11 @@ import {
 } from '../../../core/finance/planning.mjs';
 
 export const moneyLabel = (minor: number, currency = 'UAH') =>
-  (minor / 100).toLocaleString('uk-UA', { style: 'currency', currency, maximumFractionDigits: 2 });
+  ((minor || 0) / 100).toLocaleString('uk-UA', {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 2,
+  });
 export function financeView(f: Finance, days: number, nowMs = Date.now()) {
   const today = kyivParts(nowMs).date;
   const from = kyivInstant(shiftDate(today, -(days - 1)), 0);
@@ -25,7 +29,9 @@ export function financeView(f: Finance, days: number, nowMs = Date.now()) {
       .filter((a) => a.currency === 'UAH' && a.balanceMinor != null)
       .map((a) => a.balanceMinor!),
   );
-  const allocated = sumMoney(f.goalMoves.map((m) => m.amountMinor));
+  const allocated = sumMoney(
+    f.goalMoves.filter((m) => m.movementKind !== 'external').map((m) => m.amountMinor),
+  );
   const available = sumMoney([owned, -allocated, -f.reserveMinor]);
   const unknownBalances =
     f.accounts.some((a) => a.currency === 'UAH' && a.balanceMinor === null) ||

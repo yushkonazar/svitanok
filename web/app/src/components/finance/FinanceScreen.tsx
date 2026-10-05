@@ -4,12 +4,14 @@ import { useSearchParams } from 'react-router-dom';
 import { useFinance } from '../../api/finance-hooks.ts';
 import { isSessionExpired } from '../../api/client.ts';
 import { financeView, moneyLabel } from '../../lib/financeView.ts';
-import { sumMoney, calculateTaxiWeek, taxiWeek } from '../../../../core/finance/planning.mjs';
+import { sumMoney, calculateTaxiWeek } from '../../../../core/finance/planning.mjs';
 import { LoadingSkeleton, ErrorState } from '../ui/states.tsx';
 import { SessionExpired } from '../ui/SessionExpired.tsx';
 import { ObservationChart } from '../charts/ObservationChart.tsx';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
 import { PageHeading } from '../ui/PageHeading.tsx';
+import { TaxiHistory } from './TaxiHistory.tsx';
+import { FinanceReport } from './FinanceReport.tsx';
 import { PaymentDetail } from './PaymentDetail.tsx';
 import { PaymentCard } from './PaymentCard.tsx';
 import { paymentSchedule } from '../../lib/paymentSchedule.ts';
@@ -52,11 +54,13 @@ export function FinanceScreen() {
       /* The list still toggles when browser storage is unavailable. */
     }
   };
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const overviewScroll = useRef(0);
   useLayoutEffect(() => {
-    window.scrollTo(0, detailId ? 0 : overviewScroll.current);
-  }, [detailId]);
+    window.scrollTo(0, detailId || reportOpen ? 0 : overviewScroll.current);
+  }, [detailId, reportOpen]);
   const [dayChoice, setDays] = useState<number | null>(null);
   const days = dayChoice ?? (data?.finance.settings.incomePeriod === 'month' ? 30 : 7);
   const [form, setForm] = useState<FinanceFormRequest | null>(null);
@@ -114,6 +118,7 @@ export function FinanceScreen() {
           .map((r) => r.payment),
       ),
   );
+  if (reportOpen) return <FinanceReport onBack={() => setReportOpen(false)} />;
   if (detail)
     return (
       <>
@@ -186,7 +191,7 @@ export function FinanceScreen() {
         <p className="renewal-muted mt-2">
           {view.unknownBalances
             ? 'Потрібно підтвердити залишки й кредитний ліміт картки або доповнити комісію й готівку змін таксі.'
-            : 'Власні кошти на рахунках мінус резерв парку та внески на цілі. Кредитний ліміт не є твоїми грошима.'}
+            : 'Власні кошти на рахунках мінус резерв парку та зарезервовані кошти на цілі. Кредитний ліміт не є твоїми грошима.'}
         </p>
         <div className="renewal-metrics">
           <div className="renewal-metric">
@@ -236,6 +241,14 @@ export function FinanceScreen() {
           </div>
           <div className="renewal-metrics mb-3">
             <div className="renewal-metric">
+              <span className="renewal-muted">Чиста каса · після комісії</span>
+              <strong>{moneyLabel(taxi.netCashMinor)}</strong>
+            </div>
+            <div className="renewal-metric">
+              <span className="renewal-muted">Брудна каса</span>
+              <strong>{moneyLabel(taxi.grossMinor)}</strong>
+            </div>
+            <div className="renewal-metric">
               <span className="renewal-muted">Заробіток за формулою</span>
               <strong className="text-pos">{moneyLabel(taxi.earnedMinor)}</strong>
             </div>
@@ -278,6 +291,9 @@ export function FinanceScreen() {
             )}
             . Уже враховано в готівці та надходженнях.
           </p>
+          <button className="renewal-secondary mt-3 w-full" onClick={() => setHistoryOpen(true)}>
+            Історія перезмінок
+          </button>
           <details className="mt-3">
             <summary className="renewal-link cursor-pointer">Каса, умови та розрахунки</summary>
             <button className="renewal-secondary mt-3" onClick={() => setForm({ kind: 'policy' })}>
@@ -285,6 +301,10 @@ export function FinanceScreen() {
             </button>
             <p className="renewal-muted">Перезмінка — понеділок о 13:00, Київ.</p>
             <div className="renewal-metrics">
+              <div className="renewal-metric">
+                <span className="renewal-muted">Чиста каса · після комісії</span>
+                <strong>{moneyLabel(taxi.netCashMinor)}</strong>
+              </div>
               <div className="renewal-metric">
                 <span className="renewal-muted">Брудна каса</span>
                 <strong>{moneyLabel(taxi.grossMinor)}</strong>
@@ -322,67 +342,6 @@ export function FinanceScreen() {
                 />
               </div>
             )}
-            <details className="mt-4">
-              <summary className="renewal-link cursor-pointer">
-                Зміни та розрахунки за тижнями
-              </summary>
-              {f.taxiWeeks.map((w) => (
-                <div key={w.key} className="renewal-list-row">
-                  <span>
-                    <b>{w.key}</b>
-                    <small>
-                      Каса {moneyLabel(w.grossMinor)} · заробіток {moneyLabel(w.earnedMinor)}
-                    </small>
-                    <small>
-                      {!w.complete
-                        ? 'Потрібно доповнити зміни'
-                        : w.settled
-                          ? 'Розраховано'
-                          : w.settlementMinor < 0
-                            ? `Повернути ${moneyLabel(-w.settlementMinor)}`
-                            : `Отримати ${moneyLabel(w.settlementMinor)}`}
-                    </small>
-                  </span>
-                  {w.closed && !w.settled && w.complete && (
-                    <button
-                      className="renewal-link"
-                      onClick={() => setForm({ kind: 'taxi-settle', id: w.key })}
-                    >
-                      Розрахуватись
-                    </button>
-                  )}
-                </div>
-              ))}
-              {f.taxiEntries.slice(0, 20).map((e) => (
-                <div key={e.id} className="renewal-list-row">
-                  <span>
-                    {new Date(e.at).toLocaleString('uk-UA', {
-                      timeZone: 'Europe/Kyiv',
-                      day: 'numeric',
-                      month: 'short',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                    <small>
-                      Каса {moneyLabel(e.netCashMinor)} · комісія{' '}
-                      {e.commissionReported ? moneyLabel(e.commissionMinor) : 'не вказана'} · пальне{' '}
-                      {moneyLabel(e.fuelMinor)}
-                    </small>
-                    <small>
-                      Готівка: {e.cashReported ? moneyLabel(e.receivedCashMinor) : 'не вказана'}
-                    </small>
-                  </span>
-                  {!f.taxiWeeks.find((w) => w.key === taxiWeek(Date.parse(e.at)).key)?.settled && (
-                    <button
-                      className="renewal-link"
-                      onClick={() => setForm({ kind: 'taxi', id: e.id })}
-                    >
-                      Уточнити
-                    </button>
-                  )}
-                </div>
-              ))}
-            </details>
             <p className="renewal-muted mt-3">
               Заробіток є розрахунком, не другим надходженням на рахунок. Пальне з паливної картки
               не списується з особистих коштів.
@@ -632,11 +591,36 @@ export function FinanceScreen() {
                 {g.deadline ? ` · до ${g.deadline}` : ''}
               </p>
               <Progress percent={(allocated / g.targetMinor) * 100} />
+              {g.planAmountMinor != null && g.planPeriod && (
+                <p className="renewal-inset renewal-muted mt-3">
+                  План: {moneyLabel(g.planAmountMinor)} / {PERIOD[g.planPeriod]}. У поточному
+                  періоді внесено{' '}
+                  {moneyLabel(
+                    sumMoney(
+                      f.goalMoves
+                        .filter((m) => {
+                          const date = kyivParts(Date.parse(m.at)).date;
+                          const dow = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
+                          const from =
+                            g.planPeriod === 'day'
+                              ? today
+                              : g.planPeriod === 'week'
+                                ? shiftDate(today, -dow)
+                                : `${today.slice(0, 7)}-01`;
+                          return m.goalId === g.id && date >= from && Date.parse(m.at) <= nowMs;
+                        })
+                        .map((m) => m.amountMinor),
+                    ),
+                  )}
+                  . План не створює автоматичного списання.
+                </p>
+              )}
             </div>
           );
         })}
         <p className="renewal-muted">
-          На цілі виділено {moneyLabel(view.allocated)}. Ці кошти вже виключені з вільної суми.
+          На рахунках зарезервовано {moneyLabel(view.allocated)}. Фактичні внески в банки вже
+          зменшили відповідні залишки й повторно з вільної суми не віднімаються.
         </p>
       </section>
 
@@ -712,6 +696,31 @@ export function FinanceScreen() {
         />
         <p className="renewal-muted">Перекази, корекції та готівка парку не входять у витрати.</p>
       </details>
+      <section className="renewal-card">
+        <h2 className="text-lg font-bold">Історія фінансів</h2>
+        <p className="renewal-muted mt-2 mb-4">
+          Витрати, надходження й таксі за минулі періоди — в окремому звіті.
+        </p>
+        <button
+          className="renewal-secondary w-full"
+          onClick={() => {
+            overviewScroll.current = window.scrollY;
+            setReportOpen(true);
+          }}
+        >
+          Фінансові звіти
+        </button>
+      </section>
+      {historyOpen && (
+        <TaxiHistory
+          finance={f}
+          onClose={() => setHistoryOpen(false)}
+          onAction={(r) => {
+            setHistoryOpen(false);
+            setForm(r);
+          }}
+        />
+      )}
       {activeForm && (
         <FinanceForm
           key={`${activeForm.kind}-${activeForm.id ?? ''}`}

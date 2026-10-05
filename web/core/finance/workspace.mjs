@@ -103,8 +103,8 @@ function taxiOf(row) {
 
 /** Read bounded recent detail plus ALL-time balance aggregates. Never sum a
  * paginated transaction list as the account balance.
- * @param {Env} env @param {number} [nowMs] */
-export async function readFinanceWorkspace(env, nowMs = Date.now()) {
+ * @param {Env} env @param {number} [nowMs] @param {{from:string,to:string}} [range] */
+export async function readFinanceWorkspace(env, nowMs = Date.now(), range) {
   const db = database(env);
   const result = await db.batch([
     db.prepare('SELECT * FROM finance_settings WHERE id = ?').bind('owner'),
@@ -122,9 +122,16 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
     db.prepare('SELECT * FROM finance_payments ORDER BY next_date').bind(),
     db
       .prepare(
-        `SELECT id, at, amount, currency, amount_uah, category, description, raw_json, balance FROM transactions WHERE at >= ? AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 20001`,
+        `SELECT id, at, amount, currency, amount_uah, category, description, raw_json, balance FROM transactions WHERE at >= ? AND at < ? AND ${NOT_TEST_SQL} ORDER BY at DESC LIMIT 20001`,
       )
-      .bind(new Date(kyivInstant(shiftDate(kyivParts(nowMs).date, -90), 0)).toISOString()),
+      .bind(
+        new Date(
+          kyivInstant(range?.from ?? shiftDate(kyivParts(nowMs).date, -90), 0),
+        ).toISOString(),
+        range
+          ? new Date(kyivInstant(shiftDate(range.to, 1), 0)).toISOString()
+          : new Date(nowMs + 1).toISOString(),
+      ),
     db
       .prepare('SELECT * FROM subscriptions WHERE status = ? ORDER BY next_at LIMIT 100')
       .bind('active'),
@@ -148,6 +155,9 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
     id: String(r.id),
     weekKey: String(r.week_key),
     amountMinor: Number(r.amount_minor),
+    expectedMinor: r.expected_minor == null ? null : Number(r.expected_minor),
+    note: String(r.note ?? ''),
+    transactionId: r.bank_tx_id == null ? null : String(r.bank_tx_id),
     accountId: String(r.account_id),
     at: String(r.at),
   }));
@@ -163,6 +173,16 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
     return {
       key,
       grossMinor: week.grossMinor,
+      netCashMinor: week.netCashMinor,
+      commissionMinor: sumMoney(week.entries.map((e) => e.commissionMinor)),
+      fuelMinor: sumMoney(week.entries.map((e) => e.fuelMinor)),
+      tipsMinor: sumMoney(week.entries.map((e) => e.tipsMinor)),
+      actualSettlementMinor: settlement?.amountMinor ?? null,
+      expectedSettlementMinor: settlement?.expectedMinor ?? week.earnedMinor - held,
+      settlementDifferenceMinor: settlement
+        ? settlement.amountMinor - (settlement.expectedMinor ?? week.earnedMinor - held)
+        : null,
+      settledAt: settlement?.at ?? null,
       earnedMinor: week.earnedMinor,
       heldMinor: held,
       settlementMinor: week.earnedMinor - held,
@@ -287,12 +307,16 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       targetMinor: Number(r.target_minor),
       deadline: r.deadline == null ? null : String(r.deadline),
       status: String(r.status),
+      planAmountMinor: r.plan_amount_minor == null ? null : Number(r.plan_amount_minor),
+      planPeriod: r.plan_period == null ? null : String(r.plan_period),
     })),
     goalMoves: rows(6).map((r) => ({
       id: String(r.id),
       goalId: String(r.goal_id),
       accountId: String(r.account_id),
       amountMinor: Number(r.amount_minor),
+      movementKind: String(r.movement_kind ?? 'reserve'),
+      transactionId: r.bank_tx_id == null ? null : String(r.bank_tx_id),
       at: String(r.at),
     })),
     budgets: rows(7).map((r) => ({
@@ -314,7 +338,7 @@ export async function readFinanceWorkspace(env, nowMs = Date.now()) {
       installmentsLeft: r.installments_left == null ? null : Number(r.installments_left),
       nextDate: String(r.next_date),
       anchorDay: Number(r.anchor_day),
-      recurrence: String(r.recurrence),
+      recurrence: String(r.interval_period ?? r.recurrence),
       category: String(r.category),
       remindDays: Number(r.remind_days),
       status: String(r.status),
@@ -525,6 +549,60 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         description,
         at,
       );
+  } else if (type === 'bank-transfer') {
+    const bankTx = state.transactions.find((t) => t.id === payload.transactionId);
+    if (
+      !bankTx ||
+      !bankTx.bank ||
+      bankTx.bankHold ||
+      bankTx.reference ||
+      bankTx.currency !== 'UAH' ||
+      !bankTx.amountMinor ||
+      !['income', 'expense', 'unclassified', 'transfer'].includes(bankTx.kind)
+    )
+      throw new FinanceValidation('Обери завершений непов’язаний переказ Monobank');
+    const counterpart = account(payload.accountId, true);
+    if (
+      counterpart.id === bankTx.accountId ||
+      Date.parse(bankTx.at) < Date.parse(counterpart.asOf) ||
+      Date.parse(bankTx.at) > nowMs
+    )
+      throw new FinanceValidation('Перевір другий рахунок і дату переказу');
+    const previousLegId = payload.manualTransactionId;
+    if (previousLegId) {
+      const leg = state.transactions.find((t) => t.id === previousLegId);
+      if (
+        !leg ||
+        leg.bank ||
+        leg.reference ||
+        leg.accountId !== counterpart.id ||
+        leg.kind !== 'transfer' ||
+        leg.amountMinor !== -bankTx.amountMinor
+      )
+        throw new FinanceValidation('Ручна сторона переказу не відповідає операції банку');
+      update("UPDATE transactions SET raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?", [
+        JSON.stringify({ financeReference: id }),
+        leg.id,
+      ]);
+    } else
+      ledger(
+        `bank-transfer:${id}`,
+        -bankTx.amountMinor,
+        'transfer',
+        counterpart.id,
+        'перекази й готівка',
+        'Друга сторона власного переказу Monobank',
+        bankTx.at,
+        id,
+      );
+    update(
+      "UPDATE transactions SET category=?,raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?",
+      [
+        'перекази й готівка',
+        JSON.stringify({ financeKind: 'transfer', financeReference: id }),
+        bankTx.id,
+      ],
+    );
   } else if (type === 'transaction-edit') {
     const transaction = state.transactions.find((t) => t.id === payload.transactionId);
     if (
@@ -707,6 +785,9 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     const week = state.taxiWeeks.find((w) => w.key === key);
     if (!week || !week.closed || week.settled || !week.complete)
       throw new FinanceValidation('Тиждень ще відкритий, неповний або вже розрахований');
+    const actual =
+      payload.amountMinor == null ? week.settlementMinor : minor(payload.amountMinor, true);
+    const note = typeof payload.note === 'string' ? payload.note.trim().slice(0, 500) : '';
     const bankTx = payload.transactionId
       ? state.transactions.find((t) => t.id === payload.transactionId)
       : null;
@@ -717,7 +798,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         bankTx.bankHold ||
         bankTx.reference ||
         bankTx.currency !== 'UAH' ||
-        bankTx.amountMinor !== week.settlementMinor ||
+        bankTx.amountMinor !== actual ||
         !['expense', 'income', 'unclassified', 'taxi-settlement'].includes(bankTx.kind) ||
         Date.parse(bankTx.at) < taxiWeek(kyivInstant(key)).to ||
         Date.parse(bankTx.at) > nowMs)
@@ -729,7 +810,9 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     insert('finance_taxi_settlements', {
       id,
       week_key: key,
-      amount_minor: week.settlementMinor,
+      amount_minor: actual,
+      expected_minor: week.settlementMinor,
+      note,
       account_id: src.id,
       at: now,
       bank_tx_id: bankTx?.id ?? null,
@@ -743,14 +826,43 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
           bankTx.id,
         ],
       );
-    else if (week.settlementMinor)
+    else if (actual)
       ledger(
         `taxi-settlement:${id}`,
-        week.settlementMinor,
+        actual,
         'taxi-settlement',
         src.id,
         'таксі',
         `Розрахунок із парком за ${key}`,
+        now,
+        key,
+      );
+  } else if (type === 'taxi-settlement-edit') {
+    const key = date(payload.weekKey);
+    const previous = state.settlements.find((s) => s.weekKey === key);
+    const week = state.taxiWeeks.find((w) => w.key === key);
+    if (!previous || !week) throw new FinanceValidation('Розрахунок не знайдений');
+    if (previous.transactionId)
+      throw new FinanceValidation(
+        'Банківський розрахунок уже містить фактичну суму операції; його не можна змінювати вручну',
+      );
+    const actual = minor(payload.amountMinor, true);
+    const src = account(previous.accountId, true);
+    const note =
+      typeof payload.note === 'string' ? payload.note.trim().slice(0, 500) : previous.note;
+    update(
+      'UPDATE finance_taxi_settlements SET amount_minor=?,expected_minor=?,note=? WHERE id=?',
+      [actual, previous.expectedMinor ?? week.settlementMinor, note, previous.id],
+    );
+    const delta = sumMoney([actual, -previous.amountMinor]);
+    if (delta)
+      ledger(
+        `taxi-settlement-correction:${id}`,
+        delta,
+        'taxi-settlement',
+        src.id,
+        'таксі',
+        `Уточнення фактичного розрахунку за ${key}`,
         now,
         key,
       );
@@ -766,14 +878,25 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
     ]);
     const name = text(payload.name),
       deadline = payload.deadline ? date(payload.deadline) : null;
+    const planAmount =
+      payload.planAmountMinor === undefined
+        ? (previousGoal?.planAmountMinor ?? null)
+        : payload.planAmountMinor == null
+          ? null
+          : minor(payload.planAmountMinor);
+    const planPeriod =
+      planAmount == null
+        ? null
+        : choice(payload.planPeriod ?? previousGoal?.planPeriod ?? 'week', [
+            'day',
+            'week',
+            'month',
+          ]);
     if (previousGoal)
-      update('UPDATE finance_goals SET name=?,target_minor=?,deadline=?,status=? WHERE id=?', [
-        name,
-        target,
-        deadline,
-        status,
-        previousGoal.id,
-      ]);
+      update(
+        'UPDATE finance_goals SET name=?,target_minor=?,deadline=?,status=?,plan_amount_minor=?,plan_period=? WHERE id=?',
+        [name, target, deadline, status, planAmount, planPeriod, previousGoal.id],
+      );
     else
       insert('finance_goals', {
         id,
@@ -781,28 +904,79 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         target_minor: target,
         deadline,
         status,
+        plan_amount_minor: planAmount,
+        plan_period: planPeriod,
         created_at: now,
       });
   } else if (type === 'goal-move') {
     const goal = state.goals.find((g) => g.id === payload.goalId);
     if (!goal) throw new FinanceValidation('Ціль не знайдена');
-    const src = account(payload.accountId);
+    const bankTx = payload.transactionId
+      ? state.transactions.find((t) => t.id === payload.transactionId)
+      : null;
+    const movementKind = bankTx
+      ? 'external'
+      : choice(payload.movementKind ?? 'reserve', ['reserve', 'external']);
     const amount = minor(payload.amountMinor, true);
+    if (
+      payload.transactionId &&
+      (!bankTx ||
+        !bankTx.bank ||
+        bankTx.bankHold ||
+        bankTx.reference ||
+        bankTx.currency !== 'UAH' ||
+        bankTx.amountMinor !== -amount ||
+        Date.parse(bankTx.at) > nowMs ||
+        !['income', 'expense', 'unclassified', 'transfer'].includes(bankTx.kind))
+    )
+      throw new FinanceValidation(
+        'Обери непов’язану операцію банки з точною сумою внеску або повернення',
+      );
+    const src = account(
+      bankTx ? bankTx.accountId : payload.accountId,
+      movementKind === 'external' && !bankTx,
+    );
     const allocated = sumMoney(
       state.goalMoves
-        .filter((m) => m.goalId === goal.id && m.accountId === src.id)
+        .filter(
+          (m) => m.goalId === goal.id && m.accountId === src.id && m.movementKind === movementKind,
+        )
         .map((m) => m.amountMinor),
     );
     if (!amount || allocated + amount < 0)
-      throw new FinanceValidation('Не можна повернути більше, ніж виділено з цього рахунку');
+      throw new FinanceValidation(
+        'Не можна повернути більше, ніж внесено цим способом із цього рахунку',
+      );
     insert('finance_goal_moves', {
       id,
       goal_id: goal.id,
       account_id: src.id,
       amount_minor: amount,
-      at: now,
+      at: bankTx?.at ?? now,
       note: '',
+      movement_kind: movementKind,
+      bank_tx_id: bankTx?.id ?? null,
     });
+    if (bankTx)
+      update(
+        "UPDATE transactions SET category=?,raw_json=json_patch(COALESCE(raw_json,'{}'),?) WHERE id=?",
+        [
+          'заощадження',
+          JSON.stringify({ financeKind: 'transfer', financeReference: `goal:${goal.id}` }),
+          bankTx.id,
+        ],
+      );
+    else if (movementKind === 'external')
+      ledger(
+        `goal-transfer:${id}`,
+        -amount,
+        'transfer',
+        src.id,
+        'заощадження',
+        `Внесок / повернення: ${goal.name}`,
+        now,
+        `goal:${goal.id}`,
+      );
   } else if (type === 'budget') {
     const category = text(payload.category),
       period = choice(payload.period, ['day', 'week', 'month']);
@@ -943,7 +1117,12 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
       installments_left: left,
       next_date: nextDate,
       anchor_day: anchor,
-      recurrence: choice(payload.recurrence, ['month', 'year', 'once']),
+      recurrence: ['day', 'week'].includes(payload.recurrence)
+        ? 'month'
+        : choice(payload.recurrence, ['month', 'year', 'once']),
+      interval_period: ['day', 'week'].includes(payload.recurrence)
+        ? choice(payload.recurrence, ['day', 'week'])
+        : null,
       category: text(payload.category),
       remind_days: remind,
       status: choice(payload.status ?? 'active', ['active', 'paused', 'done']),
@@ -996,7 +1175,8 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
           (extraLeft ?? 0) > extraTotal ||
           values.rate_bps !== 0 ||
           values.fee_minor !== 0 ||
-          values.recurrence !== 'month')
+          values.recurrence !== 'month' ||
+          values.interval_period != null)
       )
         throw new FinanceValidation(
           'Перевір суму покупки, переплату та місячний термін розстрочки',
@@ -1038,6 +1218,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
           !isDebtKind(kind) ||
           extraTotal != null ||
           values.recurrence !== 'month' ||
+          values.interval_period != null ||
           !estimate ||
           !Number.isInteger(term) ||
           term < 1 ||
@@ -1190,7 +1371,7 @@ export async function executeFinanceCommand(env, command, nowMs = Date.now()) {
         : nextPaymentDate(
             payment.nextDate,
             payment.anchorDay,
-            /** @type {'month'|'year'} */ (payment.recurrence),
+            /** @type {'day'|'week'|'month'|'year'} */ (payment.recurrence),
           );
     if (existingTx)
       update(

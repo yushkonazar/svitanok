@@ -62,6 +62,8 @@ export const financeGoalSchema = z.object({
   targetMinor: money,
   deadline: z.string().nullable(),
   status: z.string(),
+  planAmountMinor: money.nullable().optional(),
+  planPeriod: z.enum(['day', 'week', 'month']).nullable().optional(),
 });
 export const financeBudgetSchema = z.object({
   id: z.string(),
@@ -82,7 +84,7 @@ export const financePaymentSchema = z.object({
   installmentsLeft: z.number().int().nullable(),
   nextDate: z.string(),
   anchorDay: z.number().int(),
-  recurrence: z.enum(['month', 'year', 'once']),
+  recurrence: z.enum(['day', 'week', 'month', 'year', 'once']),
   category: z.string(),
   remindDays: z.number().int(),
   status: z.string(),
@@ -116,6 +118,14 @@ export const financeSchema = z.object({
     z.object({
       key: z.string(),
       grossMinor: money,
+      netCashMinor: money.optional(),
+      commissionMinor: money.optional(),
+      fuelMinor: money.optional(),
+      tipsMinor: money.optional(),
+      actualSettlementMinor: money.nullable().optional(),
+      expectedSettlementMinor: money.optional(),
+      settlementDifferenceMinor: money.nullable().optional(),
+      settledAt: z.string().nullable().optional(),
       earnedMinor: money,
       heldMinor: money,
       settlementMinor: money,
@@ -128,6 +138,9 @@ export const financeSchema = z.object({
     z.object({
       id: z.string(),
       weekKey: z.string(),
+      expectedMinor: money.nullable().optional(),
+      transactionId: z.string().nullable().optional(),
+      note: z.string().optional(),
       amountMinor: money,
       accountId: z.string(),
       at: z.string(),
@@ -142,6 +155,8 @@ export const financeSchema = z.object({
       accountId: z.string(),
       amountMinor: money,
       at: z.string(),
+      movementKind: z.enum(['reserve', 'external']).optional(),
+      transactionId: z.string().nullable().optional(),
     }),
   ),
   budgets: z.array(financeBudgetSchema),
@@ -163,3 +178,41 @@ export interface FinanceCommand {
   type: string;
   payload: Record<string, unknown>;
 }
+
+export const financeReportSchema = z.object({
+  ok: z.literal(true),
+  from: z.string(),
+  to: z.string(),
+  generatedAt: z.string(),
+  otherIncomeMinor: money,
+  expenseMinor: money,
+  taxiEarnedMinor: money,
+  settlementDifferenceMinor: money,
+  resultMinor: money,
+  goalContributionsMinor: money,
+  unclassifiedCount: z.number().int(),
+  unknownCurrencyCount: z.number().int(),
+  bankRetentionDays: z.number().int(),
+  categories: z.array(
+    z.object({ category: z.string(), amountMinor: money, count: z.number().int() }),
+  ),
+  daily: z.array(z.object({ date: z.string(), expenseMinor: money, incomeMinor: money })),
+  taxiWeeks: z.array(
+    z.object({
+      key: z.string(),
+      grossMinor: money,
+      netCashMinor: money,
+      commissionMinor: money,
+      fuelMinor: money,
+      tipsMinor: money,
+      earnedMinor: money,
+      heldMinor: money,
+      expectedMinor: money,
+      actualMinor: money.nullable(),
+      differenceMinor: money.nullable(),
+      complete: z.boolean(),
+      closed: z.boolean(),
+    }),
+  ),
+});
+export type FinanceReport = z.infer<typeof financeReportSchema>;

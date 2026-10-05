@@ -47,6 +47,7 @@ export type FinanceFormKind =
   | 'settings'
   | 'classify'
   | 'taxi-settle'
+  | 'taxi-settlement-edit'
   | 'edit-transaction';
 export interface FinanceFormRequest {
   kind: FinanceFormKind;
@@ -74,6 +75,7 @@ const TITLES: Record<FinanceFormKind, string> = {
   settings: 'Налаштування фінансів',
   classify: 'Категорія та тип операції',
   'taxi-settle': 'Розрахунок із парком',
+  'taxi-settlement-edit': 'Уточнити фактичний розрахунок',
   'edit-transaction': 'Уточнити операцію',
 };
 
@@ -99,6 +101,8 @@ export function FinanceForm({
     request.kind === 'taxi' ? f.taxiEntries.find((e) => e.id === request.id) : undefined;
   const entryTime = entry ? kyivParts(Date.parse(entry.at)) : today;
   const policy = f.policies.filter((p) => Date.parse(p.effectiveAt) <= Date.now()).at(-1)!;
+  const settlement = f.settlements.find((w) => w.weekKey === request.id);
+  const settleWeek = f.taxiWeeks.find((w) => w.key === request.id);
   const [v, setValues] = useState<Record<string, string>>({
     amount: goal
       ? String(goal.targetMinor / 100)
@@ -119,7 +123,15 @@ export function FinanceForm({
             )
         : request.kind === 'edit-transaction' && transaction
           ? String(Math.abs(transaction.amountMinor) / 100)
-          : '',
+          : ['taxi-settle', 'taxi-settlement-edit'].includes(request.kind)
+            ? String(
+                Math.abs(
+                  request.kind === 'taxi-settlement-edit'
+                    ? (settlement?.amountMinor ?? 0)
+                    : (settleWeek?.settlementMinor ?? 0),
+                ) / 100,
+              )
+            : '',
     accountId:
       selectedAccount?.id ??
       entry?.accountId ??
@@ -151,6 +163,19 @@ export function FinanceForm({
     accountKind: 'bank',
     goalId: request.id ?? f.goals[0]?.id ?? '',
     direction: 'add',
+    settlementDirection:
+      (request.kind === 'taxi-settlement-edit'
+        ? (settlement?.amountMinor ?? 0)
+        : (settleWeek?.settlementMinor ?? 0)) < 0
+        ? 'pay'
+        : 'receive',
+    settlementNote: request.kind === 'taxi-settlement-edit' ? (settlement?.note ?? '') : '',
+    transferMode: 'manual',
+    manualTransactionId: '',
+    goalMoveMode: 'reserve',
+    goalPlan: goal?.planAmountMinor != null ? 'true' : 'false',
+    planAmount: goal?.planAmountMinor == null ? '' : String(goal.planAmountMinor / 100),
+    planPeriod: goal?.planPeriod ?? 'week',
     purpose: budget?.purpose ?? 'expense',
     period: budget?.period ?? 'month',
     budgetMode: budget?.shareBps != null ? 'percent' : 'fixed',
@@ -217,6 +242,13 @@ export function FinanceForm({
   const set = (key: string, value: string) =>
     setValues((prev) => {
       const next = { ...prev, [key]: value };
+      if (
+        key === 'goalMoveMode' &&
+        value === 'cash' &&
+        f.accounts.find((a) => a.id === prev.accountId)?.kind === 'mono'
+      )
+        next.accountId =
+          f.accounts.find((a) => a.kind !== 'mono' && a.currency === 'UAH')?.id ?? '';
       if (key === 'nextDate' && request.kind === 'payment' && value)
         next.anchorDay = String(Number(value.slice(8)));
       if (key === 'paymentKind' && !payment) {
@@ -296,6 +328,7 @@ export function FinanceForm({
           type === 'text' &&
           [
             'amount',
+            'planAmount',
             'opening',
             'balance',
             'credit',
@@ -437,7 +470,15 @@ export function FinanceForm({
     let type = request.kind as string;
     const p: Record<string, unknown> = {};
     try {
-      if (['expense', 'income', 'transfer', 'adjustment'].includes(request.kind)) {
+      if (request.kind === 'transfer' && v.transferMode === 'bank') {
+        if (!v.bankTransactionId) throw new Error('Обери банківську операцію');
+        type = 'bank-transfer';
+        Object.assign(p, {
+          transactionId: v.bankTransactionId,
+          accountId: v.accountId,
+          manualTransactionId: v.manualTransactionId || undefined,
+        });
+      } else if (['expense', 'income', 'transfer', 'adjustment'].includes(request.kind)) {
         type = 'transaction';
         Object.assign(p, {
           kind: request.kind,
@@ -519,14 +560,25 @@ export function FinanceForm({
           targetMinor: inputMoney('amount'),
           deadline: v.nextDate || null,
           status: v.goalStatus,
+          planAmountMinor: v.goalPlan === 'true' ? inputMoney('planAmount') : null,
+          planPeriod: v.goalPlan === 'true' ? v.planPeriod : null,
         });
-      else if (request.kind === 'goal-move')
+      else if (request.kind === 'goal-move') {
+        const bank =
+          v.goalMoveMode === 'bank'
+            ? f.transactions.find((t) => t.id === v.bankTransactionId)
+            : null;
+        if (v.goalMoveMode === 'bank' && !bank) throw new Error('Обери банківську операцію');
         Object.assign(p, {
           goalId: v.goalId,
           accountId: v.accountId,
-          amountMinor: inputMoney('amount') * (v.direction === 'return' ? -1 : 1),
+          amountMinor: bank
+            ? -bank.amountMinor
+            : inputMoney('amount') * (v.direction === 'return' ? -1 : 1),
+          movementKind: v.goalMoveMode === 'reserve' ? 'reserve' : 'external',
+          transactionId: bank?.id,
         });
-      else if (request.kind === 'budget')
+      } else if (request.kind === 'budget')
         Object.assign(p, {
           budgetId: request.id,
           category: v.name || v.category,
@@ -599,11 +651,16 @@ export function FinanceForm({
           kind: v.transactionKind,
           category: v.category,
         });
-      else if (request.kind === 'taxi-settle') {
+      else if (['taxi-settle', 'taxi-settlement-edit'].includes(request.kind)) {
         if (v.paymentMode === 'bank' && !v.bankTransactionId)
           throw new Error('Обери банківську операцію');
         Object.assign(p, {
           weekKey: request.id,
+          amountMinor:
+            v.paymentMode === 'bank'
+              ? f.transactions.find((t) => t.id === v.bankTransactionId)!.amountMinor
+              : inputMoney('amount') * (v.settlementDirection === 'pay' ? -1 : 1),
+          note: v.settlementNote,
           accountId: v.accountId,
           transactionId: v.paymentMode === 'bank' ? v.bankTransactionId : undefined,
         });
@@ -666,7 +723,40 @@ export function FinanceForm({
             void submit();
           }}
         >
-          {['expense', 'income', 'transfer', 'adjustment'].includes(kind) && (
+          {kind === 'transfer' &&
+            select('transferMode', 'Як обліковуємо переказ?', [
+              ['manual', 'Між двома ручними рахунками'],
+              ['bank', 'Пов’язати вже імпортовану операцію Monobank'],
+            ])}
+          {kind === 'transfer' && v.transferMode === 'bank' && (
+            <>
+              {select('bankTransactionId', 'Операція Monobank', [
+                ['', 'Обери завершений переказ'],
+                ...f.transactions
+                  .filter(
+                    (t) =>
+                      t.bank &&
+                      !t.bankHold &&
+                      !t.reference &&
+                      t.currency === 'UAH' &&
+                      t.amountMinor !== 0 &&
+                      ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
+                  )
+                  .map((t): [string, string] => [
+                    t.id,
+                    `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
+                  ]),
+              ])}
+              {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
+              <p className="renewal-inset renewal-muted">
+                Банківська сума вже врахована в залишку картки. Змінимо тільки другий рахунок: при
+                поповненні картки готівка зменшиться, при знятті — збільшиться. Повторного запису на
+                картці не буде.
+              </p>
+            </>
+          )}
+          {(['expense', 'income', 'adjustment'].includes(kind) ||
+            (kind === 'transfer' && v.transferMode === 'manual')) && (
             <>
               {field(
                 'amount',
@@ -690,7 +780,7 @@ export function FinanceForm({
                 {kind === 'adjustment'
                   ? 'Корекція змінює баланс, але не вважається заробітком.'
                   : kind === 'transfer'
-                    ? 'Переказ змінює два залишки, але не збільшує доходи й витрати.'
+                    ? 'Для Monobank обери прив’язку до імпортованої операції вище. Ручний переказ доступний лише між рахунками ручного обліку.'
                     : 'Операції Monobank надходять автоматично. Тут записуються готівка та рахунки ручного обліку.'}
               </p>
             </>
@@ -884,6 +974,28 @@ export function FinanceForm({
               )}
             </>
           )}
+          {kind === 'goal' && (
+            <>
+              {select('goalPlan', 'Регулярний внесок', [
+                ['false', 'Без планової суми'],
+                ['true', 'Запланувати внески'],
+              ])}
+              {v.goalPlan === 'true' && (
+                <div className="renewal-form-grid">
+                  {field('planAmount', 'Плановий внесок, ₴')}
+                  {select('planPeriod', 'Як часто?', [
+                    ['day', 'Щодня'],
+                    ['week', 'Щотижня'],
+                    ['month', 'Щомісяця'],
+                  ])}
+                </div>
+              )}
+              <p className="renewal-chart-note">
+                План не списує гроші. Внесок підтверджується окремо; тижневий план рахується від
+                понеділка, 00:00 за Києвом.
+              </p>
+            </>
+          )}
           {kind === 'goal-move' && (
             <>
               {select(
@@ -895,12 +1007,54 @@ export function FinanceForm({
                 ['add', 'Виділити на ціль'],
                 ['return', 'Повернути у вільні кошти'],
               ])}
-              {field('amount', 'Сума, ₴')}
-              {account()}
-              <p className="renewal-muted">
-                Це резерв на твоєму рахунку. Він зменшує вільну суму, але не є витратою або
-                переказом у банк.
-              </p>
+              {select('goalMoveMode', 'Спосіб внеску', [
+                ['reserve', 'Зарезервувати на моєму рахунку'],
+                ['cash', 'Фактично відкласти готівку / переказати з ручного рахунку'],
+                ['bank', 'Поповнення банки · операція Monobank'],
+              ])}
+              {v.goalMoveMode === 'bank' ? (
+                <>
+                  {select('bankTransactionId', 'Операція поповнення / повернення', [
+                    ['', 'Обери операцію'],
+                    ...f.transactions
+                      .filter(
+                        (t) =>
+                          t.bank &&
+                          !t.bankHold &&
+                          !t.reference &&
+                          t.currency === 'UAH' &&
+                          (v.direction === 'return' ? t.amountMinor > 0 : t.amountMinor < 0) &&
+                          ['income', 'expense', 'unclassified', 'transfer'].includes(t.kind),
+                      )
+                      .map((t): [string, string] => [
+                        t.id,
+                        `${t.description} · ${moneyLabel(t.amountMinor)} · ${kyivParts(Date.parse(t.at)).date}`,
+                      ]),
+                  ])}
+                  <p className="renewal-muted">
+                    Суму й дату беремо з банку. Пов’язуємо наявну операцію з ціллю без повторного
+                    списання. Обери саме операцію своєї банки.
+                  </p>
+                </>
+              ) : (
+                <>
+                  {field('amount', 'Сума, ₴')}
+                  {v.goalMoveMode === 'reserve'
+                    ? account()
+                    : select(
+                        'accountId',
+                        'З якого ручного рахунку',
+                        accountOptions.filter(
+                          ([id]) => f.accounts.find((a) => a.id === id)?.kind !== 'mono',
+                        ),
+                      )}
+                  <p className="renewal-muted">
+                    {v.goalMoveMode === 'reserve'
+                      ? 'Гроші залишаються на рахунку, але вилучаються з вільної суми. Це резерв, без фактичного переказу.'
+                      : 'Вкажи вже здійснений внесок. Залишок цього рахунку зменшиться, прогрес цілі зросте. Повернення діє навпаки; внесок не є особистою витратою.'}
+                  </p>
+                </>
+              )}
             </>
           )}
           {kind === 'budget' && (
@@ -1029,17 +1183,21 @@ export function FinanceForm({
                   </p>
                   {!calculatedMode &&
                     select('recurrence', 'Повторення', [
+                      ['day', 'Щодня'],
+                      ['week', 'Щотижня'],
                       ['month', 'Щомісяця'],
                       ['year', 'Щороку'],
                       ['once', 'Одноразово'],
                     ])}
                   <div className="renewal-form-grid">
-                    {field('anchorDay', 'Фіксований день списання (1–31)')}
+                    {!['day', 'week'].includes(v.recurrence) &&
+                      field('anchorDay', 'Фіксований день списання (1–31)')}
                     {field('remindDays', 'Нагадувати за стільки днів')}
                   </div>
                   <p className="renewal-chart-note">
-                    Це число місяця: 9 — платіж дев’ятого числа. Для 29–31 у короткому місяці беремо
-                    останній день; потім повертаємось до вибраного числа.
+                    Для щотижневого платежу наступна дата — через 7 днів, для щоденного — через
+                    день. Фіксований день — число місяця: 9 означає дев’яте число. Для 29–31 у
+                    короткому місяці беремо останній день; потім повертаємось до вибраного числа.
                   </p>
                   <details className="renewal-inset">
                     <summary className="renewal-link cursor-pointer">
@@ -1208,7 +1366,7 @@ export function FinanceForm({
               {category()}
             </>
           )}
-          {kind === 'taxi-settle' && (
+          {['taxi-settle', 'taxi-settlement-edit'].includes(kind) && (
             <>
               <p className="renewal-muted">
                 {request.id} ·{' '}
@@ -1216,13 +1374,14 @@ export function FinanceForm({
                 Позитивна сума — парк доплачує, від’ємна — ти повертаєш парку. Підтверджуй після
                 фактичного розрахунку.
               </p>
-              {select('paymentMode', 'Як розрахувались?', [
-                ['manual', 'Готівка / ручний рахунок'],
-                ['bank', 'Уже імпортована операція Monobank'],
-              ])}
+              {kind === 'taxi-settle' &&
+                select('paymentMode', 'Як розрахувались?', [
+                  ['manual', 'Готівка / ручний рахунок'],
+                  ['bank', 'Уже імпортована операція Monobank'],
+                ])}
               {v.paymentMode === 'bank' ? (
                 <>
-                  {select('bankTransactionId', 'Операція з точною сумою', [
+                  {select('bankTransactionId', 'Фактичний банківський розрахунок', [
                     ['', 'Обери завершений розрахунок'],
                     ...f.transactions
                       .filter(
@@ -1231,8 +1390,7 @@ export function FinanceForm({
                           !t.bankHold &&
                           !t.reference &&
                           t.currency === 'UAH' &&
-                          t.amountMinor ===
-                            f.taxiWeeks.find((w) => w.key === request.id)?.settlementMinor &&
+                          t.amountMinor !== 0 &&
                           ['income', 'expense', 'unclassified', 'taxi-settlement'].includes(
                             t.kind,
                           ) &&
@@ -1249,8 +1407,28 @@ export function FinanceForm({
                   </p>
                 </>
               ) : (
-                account()
+                <>
+                  {select('settlementDirection', 'Напрямок фактичного розрахунку', [
+                    ['pay', 'Я віддав парку'],
+                    ['receive', 'Парк доплатив мені'],
+                  ])}
+                  {field('amount', 'Фактична сума розрахунку, ₴')}
+                  {kind === 'taxi-settle' ? (
+                    account()
+                  ) : (
+                    <p className="renewal-muted">
+                      Уточнення змінює залишок лише на різницю з попереднім записом; повторного
+                      повного списання немає.
+                    </p>
+                  )}
+                </>
               )}
+              <p className="renewal-inset renewal-muted" aria-live="polite">
+                За формулою: {moneyLabel(settleWeek?.settlementMinor ?? 0)}. Фактична сума може
+                відрізнятися; збережемо обидві цифри й покажемо різницю в історії. Від’ємна сума —
+                віддав парку, додатна — отримав.
+              </p>
+              {field('settlementNote', 'Пояснення різниці · необов’язково')}
             </>
           )}
           {error && (

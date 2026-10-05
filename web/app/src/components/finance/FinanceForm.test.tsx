@@ -18,13 +18,13 @@ afterEach(() => {
   vi.clearAllMocks();
   resetFinanceDemo();
 });
-function open(request: FinanceFormRequest) {
+function open(request: FinanceFormRequest, finance = readFinanceDemo()) {
   const client = new QueryClient();
   const invalidate = vi.spyOn(client, 'invalidateQueries');
   const close = vi.fn();
   render(
     <QueryClientProvider client={client}>
-      <FinanceForm request={request} finance={readFinanceDemo()} onClose={close} />
+      <FinanceForm request={request} finance={finance} onClose={close} />
     </QueryClientProvider>,
   );
   return { invalidate, close };
@@ -349,6 +349,147 @@ it('keeps existing exact bank balances unchanged when editing a debt', async () 
         remainingMinor: p.remainingMinor,
         installmentsLeft: p.installmentsLeft,
         amountMinor: p.amountMinor,
+      }),
+    }),
+  );
+});
+
+it('saves a weekly payment without forcing a monthly debit day', async () => {
+  const { close } = open({ kind: 'payment' });
+  fireEvent.change(screen.getByLabelText('Назва платежу'), {
+    target: { value: 'Тижневий рахунок' },
+  });
+  fireEvent.change(screen.getByLabelText('Сума одного платежу, ₴'), { target: { value: '500' } });
+  fireEvent.change(screen.getByLabelText('Повторення'), { target: { value: 'week' } });
+  expect(screen.queryByLabelText('Фіксований день списання (1–31)')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'payment',
+      payload: expect.objectContaining({ amountMinor: 50000, recurrence: 'week' }),
+    }),
+  );
+});
+it('stores a weekly contribution plan without booking an automatic expense', async () => {
+  const { close } = open({ kind: 'goal' });
+  fireEvent.change(screen.getByLabelText('На що збираєш?'), { target: { value: 'Банка' } });
+  fireEvent.change(screen.getByLabelText('Цільова сума, ₴'), { target: { value: '10000' } });
+  fireEvent.change(screen.getByLabelText('Регулярний внесок'), { target: { value: 'true' } });
+  fireEvent.change(screen.getByLabelText('Плановий внесок, ₴'), { target: { value: '500' } });
+  expect(screen.getByLabelText('Як часто?')).toHaveValue('week');
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'goal',
+      payload: expect.objectContaining({ planAmountMinor: 50000, planPeriod: 'week' }),
+    }),
+  );
+});
+it('accepts the actual fleet amount and direction independently of the computed settlement', async () => {
+  const { close } = open({ kind: 'taxi-settle', id: '2026-09-28' });
+  fireEvent.change(screen.getByLabelText('Напрямок фактичного розрахунку'), {
+    target: { value: 'pay' },
+  });
+  fireEvent.change(screen.getByLabelText('Фактична сума розрахунку, ₴'), {
+    target: { value: '886,65' },
+  });
+  fireEvent.change(screen.getByLabelText('Пояснення різниці · необов’язково'), {
+    target: { value: 'Звірив із парком' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'taxi-settle',
+      payload: expect.objectContaining({ amountMinor: -88665, note: 'Звірив із парком' }),
+    }),
+  );
+});
+
+it('links the imported bank transfer to the cash side without sending a new bank posting', async () => {
+  const f = readFinanceDemo();
+  f.transactions.unshift({
+    id: 'imported-transfer',
+    at: new Date().toISOString(),
+    amountMinor: 100000,
+    amountUah: 100000,
+    currency: 'UAH',
+    category: 'перекази й готівка',
+    description: 'Поповнення картки',
+    kind: 'unclassified',
+    accountId: 'mono:demo',
+    bank: true,
+    reference: null,
+  });
+  const { close } = open({ kind: 'transfer' }, f);
+  fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
+  fireEvent.change(screen.getByLabelText('Операція Monobank'), {
+    target: { value: 'imported-transfer' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'bank-transfer',
+      payload: {
+        transactionId: 'imported-transfer',
+        accountId: 'cash',
+        manualTransactionId: undefined,
+      },
+    }),
+  );
+});
+it('takes the actual goal contribution amount from the selected bank operation', async () => {
+  const f = readFinanceDemo();
+  f.transactions.unshift({
+    id: 'imported-jar',
+    at: new Date().toISOString(),
+    amountMinor: -50000,
+    amountUah: -50000,
+    currency: 'UAH',
+    category: 'перекази й готівка',
+    description: 'Поповнення банки',
+    kind: 'unclassified',
+    accountId: 'mono:demo',
+    bank: true,
+    reference: null,
+  });
+  const { close } = open({ kind: 'goal-move', id: 'laptop' }, f);
+  fireEvent.change(screen.getByLabelText('Спосіб внеску'), { target: { value: 'bank' } });
+  fireEvent.change(screen.getByLabelText('Операція поповнення / повернення'), {
+    target: { value: 'imported-jar' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'goal-move',
+      payload: expect.objectContaining({
+        transactionId: 'imported-jar',
+        amountMinor: 50000,
+        movementKind: 'external',
+      }),
+    }),
+  );
+});
+
+it('switches from a virtual bank reserve to a real cash contribution with a valid manual account', async () => {
+  const { close } = open({ kind: 'goal-move', id: 'laptop' });
+  fireEvent.change(screen.getByLabelText('Рахунок'), { target: { value: 'mono:demo' } });
+  fireEvent.change(screen.getByLabelText('Спосіб внеску'), { target: { value: 'cash' } });
+  expect(screen.getByLabelText('З якого ручного рахунку')).toHaveValue('cash');
+  fireEvent.change(screen.getByLabelText('Сума, ₴'), { target: { value: '500' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Підтвердити й зберегти' }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  expect(postFinance).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'goal-move',
+      payload: expect.objectContaining({
+        accountId: 'cash',
+        movementKind: 'external',
+        amountMinor: 50000,
       }),
     }),
   );

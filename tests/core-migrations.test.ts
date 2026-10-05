@@ -78,9 +78,36 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'created_at',
     'updated_at',
   ],
-  finance_taxi_settlements: ['id', 'week_key', 'amount_minor', 'account_id', 'at', 'bank_tx_id'],
-  finance_goals: ['id', 'name', 'target_minor', 'deadline', 'status', 'created_at'],
-  finance_goal_moves: ['id', 'goal_id', 'account_id', 'amount_minor', 'at', 'note'],
+  finance_taxi_settlements: [
+    'id',
+    'week_key',
+    'amount_minor',
+    'account_id',
+    'at',
+    'bank_tx_id',
+    'expected_minor',
+    'note',
+  ],
+  finance_goals: [
+    'id',
+    'name',
+    'target_minor',
+    'deadline',
+    'status',
+    'created_at',
+    'plan_amount_minor',
+    'plan_period',
+  ],
+  finance_goal_moves: [
+    'id',
+    'goal_id',
+    'account_id',
+    'amount_minor',
+    'at',
+    'note',
+    'movement_kind',
+    'bank_tx_id',
+  ],
   finance_budgets: [
     'id',
     'category',
@@ -116,6 +143,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'overpayment_paid_minor',
     'term_months',
     'interest_method',
+    'interval_period',
   ],
   finance_commands: ['id', 'payload_hash', 'at'],
   finance_notices: ['id', 'claim', 'at'],
@@ -472,7 +500,7 @@ const EXPECTED_INDEXES: Record<string, IndexSpec[]> = {
     { cols: ['week_key'], unique: true },
     { cols: ['bank_tx_id'], unique: true },
   ],
-  finance_goal_moves: [{ cols: ['goal_id'] }],
+  finance_goal_moves: [{ cols: ['goal_id'] }, { cols: ['bank_tx_id'], unique: true }],
   finance_budgets: [{ cols: ['category', 'period'], unique: true }],
   facts: [
     { cols: ['kind', 'key'], unique: true },
@@ -567,7 +595,7 @@ const columnsOf = (table: string): { name: string; pk: number }[] =>
   }[];
 
 describe('міграції D1 — файли', () => {
-  it('тридцять два файли 0001–0032, нумерація без дірок', () => {
+  it('тридцять три файли 0001–0033, нумерація без дірок', () => {
     expect(files.map((f) => f.slice(0, 4))).toEqual([
       '0001',
       '0002',
@@ -601,6 +629,7 @@ describe('міграції D1 — файли', () => {
       '0030',
       '0031',
       '0032',
+      '0033',
     ]);
   });
 });

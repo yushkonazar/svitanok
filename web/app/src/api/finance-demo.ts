@@ -30,9 +30,20 @@ function rebuild(f: Finance) {
     const held = sumMoney(
       w.entries.map((e) => (e.receivedCashMinor ?? 0) - (e.paidWorkMinor ?? 0)),
     );
+    const settlement = f.settlements.find((s) => s.weekKey === key);
     return {
       key,
       grossMinor: w.grossMinor,
+      netCashMinor: w.netCashMinor,
+      commissionMinor: sumMoney(w.entries.map((e) => e.commissionMinor)),
+      fuelMinor: sumMoney(w.entries.map((e) => e.fuelMinor)),
+      tipsMinor: sumMoney(w.entries.map((e) => e.tipsMinor)),
+      actualSettlementMinor: settlement?.amountMinor ?? null,
+      expectedSettlementMinor: settlement?.expectedMinor ?? w.earnedMinor - held,
+      settlementDifferenceMinor: settlement
+        ? settlement.amountMinor - (settlement.expectedMinor ?? w.earnedMinor - held)
+        : null,
+      settledAt: settlement?.at ?? null,
       earnedMinor: w.earnedMinor,
       heldMinor: held,
       settlementMinor: w.earnedMinor - held,
@@ -308,6 +319,41 @@ export function writeFinanceDemo(command: FinanceCommand) {
       f.transactions[0].description = descriptions[str('personalType')];
       break;
     }
+    case 'bank-transfer': {
+      const bank = f.transactions.find((t) => t.id === p.transactionId);
+      if (
+        !bank?.bank ||
+        bank.bankHold ||
+        bank.reference ||
+        bank.currency !== 'UAH' ||
+        !bank.amountMinor ||
+        !account ||
+        account.kind === 'mono'
+      )
+        throw new Error('Обери непов’язану операцію банку та ручний рахунок');
+      const old = p.manualTransactionId
+        ? f.transactions.find((t) => t.id === p.manualTransactionId)
+        : null;
+      if (
+        p.manualTransactionId &&
+        (!old ||
+          old.bank ||
+          old.reference ||
+          old.kind !== 'transfer' ||
+          old.accountId !== account.id ||
+          old.amountMinor !== -bank.amountMinor)
+      )
+        throw new Error('Обери протилежну ручну операцію переказу');
+      if (old) old.reference = bank.id;
+      else {
+        tx(-bank.amountMinor, 'transfer', account.id, ':counter', bank.id);
+        f.transactions[0].at = bank.at;
+      }
+      bank.kind = 'transfer';
+      bank.reference = id;
+      bank.category = 'перекази й готівка';
+      break;
+    }
     case 'transaction': {
       if (!account) throw new Error('Обери рахунок');
       const kind = str('kind'),
@@ -417,6 +463,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
       const w = f.taxiWeeks.find((w) => w.key === p.weekKey);
       if (!w || !w.closed || w.settled || !w.complete)
         throw new Error('Тиждень ще відкритий, неповний або вже розрахований');
+      const actual = p.amountMinor == null ? w.settlementMinor : num('amountMinor');
       const bankTx = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
       if (
         p.transactionId &&
@@ -425,13 +472,16 @@ export function writeFinanceDemo(command: FinanceCommand) {
           bankTx.bankHold ||
           bankTx.reference ||
           bankTx.currency !== 'UAH' ||
-          bankTx.amountMinor !== w.settlementMinor)
+          bankTx.amountMinor !== actual)
       )
         throw new Error('Обери непов’язаний банківський розрахунок із точною сумою');
       f.settlements.push({
         id,
         weekKey: w.key,
-        amountMinor: w.settlementMinor,
+        amountMinor: actual,
+        expectedMinor: w.settlementMinor,
+        transactionId: bankTx?.id ?? null,
+        note: str('note'),
         accountId: bankTx?.accountId ?? str('accountId'),
         at: now,
       });
@@ -439,8 +489,24 @@ export function writeFinanceDemo(command: FinanceCommand) {
         bankTx.kind = 'taxi-settlement';
         bankTx.reference = w.key;
         bankTx.category = 'таксі';
-      } else if (w.settlementMinor)
-        tx(w.settlementMinor, 'taxi-settlement', str('accountId'), ':settlement', w.key);
+      } else if (actual) tx(actual, 'taxi-settlement', str('accountId'), ':settlement', w.key);
+      break;
+    }
+    case 'taxi-settlement-edit': {
+      const old = f.settlements.find((w) => w.weekKey === p.weekKey);
+      if (!old || old.transactionId) throw new Error('Обери ручний розрахунок');
+      const actual = num('amountMinor');
+      if (actual !== old.amountMinor)
+        tx(
+          actual - old.amountMinor,
+          'taxi-settlement',
+          old.accountId,
+          ':settlement-correction',
+          old.weekKey,
+        );
+      old.expectedMinor ??= f.taxiWeeks.find((w) => w.key === old.weekKey)!.settlementMinor;
+      old.amountMinor = actual;
+      old.note = str('note');
       break;
     }
     case 'goal': {
@@ -451,26 +517,55 @@ export function writeFinanceDemo(command: FinanceCommand) {
         targetMinor: num('targetMinor'),
         deadline: str('deadline') || null,
         status: str('status') || 'active',
+        planAmountMinor: p.planAmountMinor == null ? null : num('planAmountMinor'),
+        planPeriod: (p.planAmountMinor == null ? null : str('planPeriod')) as
+          'day' | 'week' | 'month' | null,
       };
       if (old) Object.assign(old, values);
       else f.goals.push(values);
       break;
     }
     case 'goal-move': {
+      const bank = p.transactionId ? f.transactions.find((t) => t.id === p.transactionId) : null;
+      const kind = bank || p.movementKind === 'external' ? 'external' : 'reserve';
+      const amount = num('amountMinor');
+      if (
+        p.transactionId &&
+        (!bank?.bank ||
+          bank.bankHold ||
+          bank.reference ||
+          bank.currency !== 'UAH' ||
+          bank.amountMinor !== -amount)
+      )
+        throw new Error('Обери непов’язану операцію банки з точною сумою');
+      const accountId = bank?.accountId ?? str('accountId');
       const allocated = sumMoney(
         f.goalMoves
-          .filter((m) => m.goalId === p.goalId && m.accountId === p.accountId)
+          .filter(
+            (m) =>
+              m.goalId === p.goalId &&
+              m.accountId === accountId &&
+              (m.movementKind ?? 'reserve') === kind,
+          )
           .map((m) => m.amountMinor),
       );
-      if (allocated + num('amountMinor') < 0)
-        throw new Error('Не можна повернути більше, ніж виділено');
+      if (!amount || allocated + amount < 0)
+        throw new Error('Не можна повернути більше, ніж внесено цим способом');
       f.goalMoves.unshift({
         id,
         goalId: str('goalId'),
-        accountId: str('accountId'),
-        amountMinor: num('amountMinor'),
-        at: now,
+        accountId: accountId!,
+        amountMinor: amount,
+        at: bank?.at ?? now,
+        movementKind: kind,
+        transactionId: bank?.id ?? null,
       });
+      if (bank) {
+        bank.kind = 'transfer';
+        bank.reference = `goal:${p.goalId}`;
+        bank.category = 'заощадження';
+      } else if (kind === 'external')
+        tx(-amount, 'transfer', accountId!, ':goal', `goal:${p.goalId}`);
       break;
     }
     case 'budget': {
@@ -554,7 +649,7 @@ export function writeFinanceDemo(command: FinanceCommand) {
           installmentsLeft: p.installmentsLeft == null ? null : num('installmentsLeft'),
           nextDate: str('nextDate'),
           anchorDay: num('anchorDay'),
-          recurrence: str('recurrence') as 'month' | 'year' | 'once',
+          recurrence: str('recurrence') as Finance['payments'][number]['recurrence'],
           category: str('category'),
           remindDays: num('remindDays'),
           status: str('status') || 'active',

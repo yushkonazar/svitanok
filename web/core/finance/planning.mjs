@@ -156,14 +156,17 @@ export function calculateTaxiWeek(entries, policies, nowMs) {
   return {
     ...week,
     grossMinor: gross,
+    netCashMinor: sumMoney(selected.map((e) => e.netCashMinor)),
     earnedMinor: sumMoney(groups.map((g) => g.earnedMinor)),
     groups,
     entries: selected,
   };
 }
-/** @param {string} nextDate @param {number} anchorDay @param {'month'|'year'} period */
+/** @param {string} nextDate @param {number} anchorDay @param {'day'|'week'|'month'|'year'} period */
 export function nextPaymentDate(nextDate, anchorDay, period) {
   shiftDate(nextDate, 0);
+  if (period === 'day' || period === 'week') return shiftDate(nextDate, period === 'day' ? 1 : 7);
+  if (!['month', 'year'].includes(period)) throw new Error('Невідомий період платежу');
   if (!Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 31)
     throw new Error('День списання: від 1 до 31');
   const [year = 0, month = 1] = nextDate.split('-').map(Number);
