@@ -49,6 +49,24 @@ export async function fetchFinance() {
   if (!res.ok) throw new Error('Не вдалося завантажити фінанси. Спробуй знову.');
   return { finance: financeSchema.parse(await res.json()), demo: false };
 }
+export async function refreshFinanceBank(accountId: string) {
+  if (!inTelegram()) return fetchFinance();
+  const res = await fetch('/api/finance', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'bank-refresh', payload: { accountId } }),
+  });
+  throwIfSessionExpired(res);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      typeof body?.error === 'string'
+        ? body.error
+        : 'Не вдалося звірити операції з Monobank. Спробуй ще раз.',
+    );
+  }
+  return { finance: financeSchema.parse(await res.json()), demo: false };
+}
 export async function fetchFinanceReport(from: string, to: string) {
   if (!inTelegram())
     return financeReportSchema.parse(buildFinanceReport(readFinanceDemo(), from, to));

@@ -2,13 +2,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { FinanceForm, type FinanceFormRequest } from './FinanceForm.tsx';
-import { fetchFinance, postFinance } from '../../api/client.ts';
+import { fetchFinance, refreshFinanceBank, postFinance } from '../../api/client.ts';
 import { readFinanceDemo, resetFinanceDemo } from '../../api/finance-demo.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 
 vi.mock('../../api/client.ts', () => ({
   postFinance: vi.fn(async () => ({ ok: true })),
   fetchFinance: vi.fn(),
+  refreshFinanceBank: vi.fn(),
 }));
 vi.mock('../../telegram.ts', () => ({ haptic: vi.fn() }));
 beforeEach(() => {
@@ -541,9 +542,9 @@ it('shows a held deposit and refreshes it into a selectable transfer without cle
       transactions: f.transactions.map((t) => (t.id === tx.id ? { ...t, bankHold: false } : t)),
     },
   };
-  vi.mocked(fetchFinance).mockResolvedValueOnce(refreshed);
+  vi.mocked(refreshFinanceBank).mockResolvedValueOnce(refreshed);
   fireEvent.click(screen.getByRole('button', { name: 'Оновити список' }));
-  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Список оновлено'));
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Виписку звірено'));
   expect(screen.getByLabelText('Як обліковуємо переказ?')).toHaveValue('bank');
   expect(screen.getByLabelText('Другий рахунок · готівка або ручний')).toHaveValue('cash');
   expect(
@@ -555,7 +556,7 @@ it('shows a held deposit and refreshes it into a selectable transfer without cle
 it('keeps the transfer form open and offers another refresh after a network error', async () => {
   const { close } = open({ kind: 'transfer' });
   fireEvent.change(screen.getByLabelText('Як обліковуємо переказ?'), { target: { value: 'bank' } });
-  vi.mocked(fetchFinance).mockRejectedValueOnce(new Error('offline'));
+  vi.mocked(refreshFinanceBank).mockRejectedValueOnce(new Error('Не вдалося оновити список'));
   fireEvent.click(screen.getByRole('button', { name: 'Оновити список' }));
   await waitFor(() =>
     expect(screen.getByRole('alert')).toHaveTextContent('Не вдалося оновити список'),

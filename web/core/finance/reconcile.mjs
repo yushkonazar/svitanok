@@ -1,7 +1,7 @@
 // Звірка з Mono (07 §7 `mono-reconcile`, S-4-9, S-4-11, S-4-12, 01 §3.6).
 //
 // Щодня о 23:30 Києва: перевірити, що вебхук стоїть на нашій адресі, і
-// перечитати виписку за добу - дедуп за id закриває все, що вебхук не доніс
+// перечитати виписку за 31 добу - дедуп за id закриває все, що вебхук не доніс
 // (Mono знімає адресу після кількох невдач і не повторює доставку).
 //
 // ⚠️ Ліміт Mono - один запит на 60 секунд на КОЖЕН читальний ендпоїнт, тому
@@ -15,7 +15,6 @@
 // відмовляв би всім транзакціям до 23:30.
 
 import { kyivDateKey, kyivHour, kyivMinuteOfDay } from '../../kyiv-time.mjs';
-import { kyivDayStartMs } from './query.mjs';
 import { sendSystemAlert } from '../tg/outbox.mjs';
 import { MonoTooSoonError, clientInfo, setWebhook, statement } from '../adapters/mono.mjs';
 import { isLoud } from './rules.mjs';
@@ -26,6 +25,7 @@ import {
   monoReconcileComplete,
   monoReconcileRelease,
 } from '../mono-reconcile/client.mjs';
+import { claimMonoStatementRefresh } from './bank-refresh.mjs';
 import { MONO_RECONCILE_LEASE_MS } from '../mono-reconcile/contract.mjs';
 import {
   hasAnyTransaction,
@@ -229,7 +229,7 @@ async function phaseClient(env, state, nowMs, writeState) {
   // Первинне завантаження (S-4-11) - лише коли транзакцій ще жодної.
   const initial = !(await hasAnyTransaction(env));
   const toS = Math.floor(nowMs / 1000);
-  const fromS = initial ? toS - INITIAL_DAYS * 86_400 : dayStartS(nowMs);
+  const fromS = toS - INITIAL_DAYS * 86_400;
   await writeState({ ...state, phase: 'statement', idx: 0, initial, fromS, toS });
   return { accounts: accounts.length, rearmed, initial };
 }
@@ -246,6 +246,7 @@ async function phaseStatement(env, state, accounts, nowMs, writeState) {
     await writeState({ ...state, phase: 'done' });
     return await finish(env, state, nowMs);
   }
+  await claimMonoStatementRefresh(env, nowMs);
   const items = await statement(env, {
     account: account.id,
     fromS: state.fromS,
@@ -304,10 +305,4 @@ async function finish(env, state, nowMs) {
     );
   }
   return { done: true, imported: state.imported, loud: state.loud };
-}
-
-/** Київська північ сьогодні в unix-секундах (той самий розрахунок, що у
- *  finance.query - разом із зрізаними секундами). @param {number} nowMs */
-function dayStartS(nowMs) {
-  return Math.floor(kyivDayStartMs(nowMs) / 1000);
 }

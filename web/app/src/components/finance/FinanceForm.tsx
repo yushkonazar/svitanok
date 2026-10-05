@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Finance, FinanceCommand } from '../../api/finance-schema.ts';
-import { fetchFinance, postFinance } from '../../api/client.ts';
+import { refreshFinanceBank, postFinance } from '../../api/client.ts';
 import { FINANCE_QUERY } from '../../api/finance-hooks.ts';
 import {
   parseMoney,
@@ -171,6 +171,7 @@ export function FinanceForm({
         : 'receive',
     settlementNote: request.kind === 'taxi-settlement-edit' ? (settlement?.note ?? '') : '',
     transferMode: 'manual',
+    bankRefreshAccountId: f.accounts.find((a) => a.kind === 'mono')?.id ?? '',
     manualTransactionId: '',
     goalMoveMode: 'reserve',
     goalPlan: goal?.planAmountMinor != null ? 'true' : 'false',
@@ -243,6 +244,7 @@ export function FinanceForm({
   const [bankRefreshError, setBankRefreshError] = useState('');
   const bankTransfers = f.transactions.filter(
     (t) =>
+      t.accountId === v.bankRefreshAccountId &&
       t.bank &&
       !t.reference &&
       t.currency === 'UAH' &&
@@ -257,12 +259,15 @@ export function FinanceForm({
     setBankRefreshMessage('');
     setBankRefreshError('');
     try {
-      await query.fetchQuery({ queryKey: FINANCE_QUERY, queryFn: fetchFinance, staleTime: 0 });
+      const refreshed = await refreshFinanceBank(v.bankRefreshAccountId);
+      query.setQueryData(FINANCE_QUERY, refreshed);
       setBankRefreshMessage(
-        'Список оновлено. Операції в очікуванні стануть доступними після підтвердження банком і синхронізації.',
+        'Виписку звірено з Monobank. Підтверджені операції доступні для вибору.',
       );
-    } catch {
-      setBankRefreshError('Не вдалося оновити список. Спробуй ще раз.');
+    } catch (error) {
+      setBankRefreshError(
+        error instanceof Error ? error.message : 'Не вдалося оновити список. Спробуй ще раз.',
+      );
     } finally {
       setRefreshingBank(false);
     }
@@ -271,6 +276,7 @@ export function FinanceForm({
   const set = (key: string, value: string) =>
     setValues((prev) => {
       const next = { ...prev, [key]: value };
+      if (key === 'bankRefreshAccountId') next.bankTransactionId = '';
       if (
         key === 'goalMoveMode' &&
         value === 'cash' &&
@@ -759,6 +765,12 @@ export function FinanceForm({
             ])}
           {kind === 'transfer' && v.transferMode === 'bank' && (
             <>
+              {f.accounts.filter((a) => a.kind === 'mono').length > 1 &&
+                select(
+                  'bankRefreshAccountId',
+                  'Картка Monobank',
+                  f.accounts.filter((a) => a.kind === 'mono').map((a) => [a.id, a.name]),
+                )}
               {select('bankTransactionId', 'Операція Monobank', [
                 ['', 'Обери завершений переказ'],
                 ...completedTransfers.map((t): [string, string] => [
@@ -810,7 +822,8 @@ export function FinanceForm({
                   <p className="renewal-muted mt-2">Завершених операцій для вибору поки немає.</p>
                 )}
                 <p className="renewal-muted mt-2">
-                  Кнопка завантажує останні дані Світанку. Вона не змінює статус операції в банку.
+                  Кнопка звіряє виписку безпосередньо з Monobank. Доступна не частіше одного разу на
+                  хвилину.
                 </p>
               </div>
               {select('accountId', 'Другий рахунок · готівка або ручний', accountOptions)}
