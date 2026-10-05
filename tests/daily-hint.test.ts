@@ -11,6 +11,8 @@ import {
   muteHintTopic,
   DAILY_HINT_MARKER_KEY,
   HINT_TOPICS,
+  resolveSecurityHint,
+  securityHintButtons,
 } from '../web/core/hints/daily-hint.mjs';
 import { runFactsSet } from '../web/core/tools/facts.mjs';
 import { workerEnv } from './helpers/env.js';
@@ -60,6 +62,41 @@ function setup() {
     ).map((r) => ({ thread: r.thread_id, text: JSON.parse(r.payload_json).text as string }));
   return { d1, kv, env, sentTexts };
 }
+
+describe('Security Checkup action card', () => {
+  it('has actionable buttons and makes completion idempotent', async () => {
+    const { env, d1 } = setup();
+    await dailyHintTask(env, AT_1010);
+    expect(
+      securityHintButtons(TODAY)
+        .flat()
+        .map((b) => b.text),
+    ).toEqual(['🔐 Відкрити перевірку', '✅ Пройшов', '🕓 Через тиждень', 'Не нагадувати']);
+    const first = await resolveSecurityHint(env, TODAY, 'done', AT_1010 + 1000);
+    expect(first).toContain('пройшов перевірку');
+    expect(await resolveSecurityHint(env, TODAY, 'mute', AT_1010 + 2000)).toBe(first);
+    expect(await pickHint(env, '2026-09-05', AT_1010 + 86_400_000, [])).toBeNull();
+    expect(
+      d1.db.prepare("SELECT count(*) AS n FROM facts WHERE key='security_checkup_at'").get(),
+    ).toEqual({ n: 1 });
+  });
+  it('a seven-day snooze is not swallowed by monthly throttling', async () => {
+    const { env } = setup();
+    await dailyHintTask(env, AT_1010);
+    await resolveSecurityHint(env, TODAY, 'later', AT_1010);
+    expect(await pickHint(env, '2026-09-10', AT_1010 + 6 * 86_400_000, [])).toBeNull();
+    expect((await pickHint(env, '2026-09-11', AT_1010 + 7 * 86_400_000, []))?.topic).toBe(
+      'security',
+    );
+  });
+  it('rejects stale cards and mutes only security', async () => {
+    const { env } = setup();
+    expect(await resolveSecurityHint(env, '2020-01-01', 'done', AT_1010)).toContain('неактуальна');
+    await dailyHintTask(env, AT_1010);
+    await resolveSecurityHint(env, TODAY, 'mute', AT_1010);
+    expect(await pickHint(env, '2026-12-11', AT_1010 + 98 * 86_400_000, ['security'])).toBeNull();
+  });
+});
 
 describe('dailyHintTask - гейти і дедуп', () => {
   it('у приватному режимі не надсилає рутинну підказку про стару ідею', async () => {

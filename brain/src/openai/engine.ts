@@ -165,13 +165,29 @@ async function createResponse(
     }
     const parsed: unknown = await res.json().catch(() => null);
     if (res.ok && isRecord(parsed)) return parsed as ResponsesPayload;
-    if (mayRetry && attempt < 2 && retryableStatus(res.status) && !opts.abortSignal.aborted) {
+    const errorCode =
+      isRecord(parsed) && isRecord(parsed.error)
+        ? String(parsed.error.code ?? parsed.error.type ?? '')
+            .replace(/[^a-zA-Z0-9_-]/g, '')
+            .slice(0, 80)
+        : '';
+    const billing =
+      /spend_limit_exceeded|usage_limit_exceeded|insufficient_quota|credit_balance_exhausted/.test(
+        errorCode,
+      );
+    if (
+      !billing &&
+      mayRetry &&
+      attempt < 2 &&
+      retryableStatus(res.status) &&
+      !opts.abortSignal.aborted
+    ) {
       await waitBeforeRetry(config, attempt, opts.abortSignal, res.headers.get('retry-after'));
       continue;
     }
     // Provider error payloads may contain request fragments. Keep diagnostics
     // to a status only; users get the normal runner failure, never secrets.
-    throw new Error(`OpenAI Responses HTTP ${res.status}`);
+    throw new Error(`OpenAI Responses HTTP ${res.status}${errorCode ? `: ${errorCode}` : ''}`);
   }
 }
 

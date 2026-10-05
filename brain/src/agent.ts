@@ -202,6 +202,18 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       tripBrief: null,
     };
     let lastStatusMs = 0;
+    let statusesClosed = false;
+    let statusTail: Promise<void> = Promise.resolve();
+    const queueStatus = (text: string): void => {
+      if (statusesClosed || req.status_message_id == null) return;
+      statusTail = statusTail
+        .then(() => deps.client.status(req.run_id, req.status_message_id!, text))
+        .catch(() => undefined);
+    };
+    const finishStatuses = async (): Promise<void> => {
+      statusesClosed = true;
+      await statusTail;
+    };
     let lastStatusLen = 0;
     let escalateOutcome: RunOutcome | undefined;
     // `chat` gets a deterministic minimum surface for this particular turn;
@@ -514,7 +526,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       lastStatusMs = t;
       // lastStatusLen НЕ чіпаємо: він міряє довжину ЧАСТКОВОЇ ВІДПОВІДІ, і
       // статус інструмента не має скидати її поріг приросту.
-      void deps.client.status(req.run_id, req.status_message_id, `▸ ${word}…`);
+      queueStatus(`▸ ${word}…`);
     };
 
     const onPartialText = (text: string): void => {
@@ -527,7 +539,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       lastStatusLen = text.length;
       // Хвіст, не голова: інформативний саме поточний шматок роботи, а голова
       // після 3 900 символів замерзала б у байт-у-байт однакові edit-и.
-      void deps.client.status(req.run_id, req.status_message_id, clipStatusTail(text));
+      queueStatus(clipStatusTail(text));
     };
 
     try {
@@ -647,6 +659,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
               inputText,
             );
 
+      await finishStatuses();
       const finalText = (outcome.finalText ?? '').trim();
 
       // Provider-telemetry is deliberately a tiny allowlist, not an API dump:
@@ -836,6 +849,7 @@ export function makeRunner(deps: RunnerDeps): (req: RunRequest) => Promise<void>
       console.error(`run ${req.run_id} (${profile.name}): ${reason}`);
       // Помилка видима (00-README п.6): власник має побачити збій, не тишу.
       try {
+        await finishStatuses();
         await deps.client.deliver(req.run_id, `⚠️ ${userFacingError(err, abort.signal.reason)}`);
       } catch (deliverErr) {
         console.error(`run ${req.run_id}: deliver збою теж упав: ${String(deliverErr)}`);
@@ -983,6 +997,12 @@ function shortError(err: unknown): string {
  * Сирий опис лишається лише у внутрішньому журналі для діагностики. */
 export function userFacingError(err: unknown, abortReason?: unknown): string {
   const detail = shortError(err).toLowerCase();
+  if (
+    /spend_limit_exceeded|usage_limit_exceeded|insufficient_quota|credit_balance_exhausted/u.test(
+      detail,
+    )
+  )
+    return 'Досягнуто ліміт витрат або вичерпано кредит OpenAI API. Перевір бюджет і баланс проєкту.';
   if (abortReason === 'timeout' || /timeout|timed out|таймаут/u.test(detail)) {
     return 'Запит затягнувся. Спробуй ще раз трохи пізніше.';
   }

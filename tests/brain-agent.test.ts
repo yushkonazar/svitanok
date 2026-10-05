@@ -516,8 +516,8 @@ describe('makeRunner: quick і збої', () => {
 
   it('429 та вичерпаний білінг не витікають у повідомлення користувачу', () => {
     const visible = userFacingError(new Error('OpenAI Responses HTTP 429: insufficient_quota'));
-    expect(visible).toBe('Сервіс тимчасово обмежив запити. Спробуй трохи пізніше.');
-    expect(visible).not.toMatch(/OpenAI|429|quota|billing/i);
+    expect(visible).toContain('ліміт витрат');
+    expect(visible).not.toMatch(/429|quota|billing/i);
     expect(userFacingError(new Error('socket timed out'))).toContain('Запит затягнувся');
   });
 
@@ -528,8 +528,8 @@ describe('makeRunner: quick і збої', () => {
     });
     await makeRunner({ client, engine })(req());
     const visible = String(client.deliver.mock.calls[0]![1]);
-    expect(visible).toContain('Сервіс тимчасово обмежив запити');
-    expect(visible).not.toMatch(/OpenAI|HTTP 429|quota/i);
+    expect(visible).toContain('ліміт витрат');
+    expect(visible).not.toMatch(/HTTP 429|quota/i);
   });
 
   it('збій рушія + збій deliver - без неперехопленого, телеметрія все одно йде', async () => {
@@ -558,6 +558,28 @@ describe('worker card context', () => {
 });
 
 describe('makeRunner: сесії (chat)', () => {
+  it('waits for pending status before final delivery and ignores late partials', async () => {
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const client = makeClient({ status: vi.fn(async () => blocked) });
+    let latePartial = (_text: string) => {};
+    const { engine } = scriptedEngine(async (opts) => {
+      latePartial = opts.onPartialText;
+      opts.onPartialText('Готую план '.repeat(20));
+      return { finalText: 'План готовий' };
+    });
+    const running = makeRunner({ client, engine })(req({ status_message_id: 42 }));
+    await vi.waitFor(() => expect(client.status).toHaveBeenCalledTimes(1));
+    expect(client.deliver).not.toHaveBeenCalled();
+    release();
+    await running;
+    expect(client.deliver).toHaveBeenCalledWith('run-1', 'План готовий');
+    latePartial('Пізній статус '.repeat(30));
+    await Promise.resolve();
+    expect(client.status).toHaveBeenCalledTimes(1);
+  });
   it('передає D1-транскрипт для короткої відповіді на уточнення, а не втрачає її контекст', async () => {
     const client = makeClient();
     const { engine, inputs } = scriptedEngine(async () => ({

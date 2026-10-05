@@ -20,6 +20,24 @@ function options(over: Partial<Parameters<ReturnType<typeof createOpenAiEngine>[
 }
 
 describe('OpenAI Responses runtime', () => {
+  it.each([
+    'project_spend_limit_exceeded',
+    'organization_spend_limit_exceeded',
+    'insufficient_quota',
+    'credit_balance_exhausted',
+  ])('does not retry budget failure %s', async (code) => {
+    const fetchFn = vi.fn(async () =>
+      Response.json({ error: { code, message: 'private diagnostic' } }, { status: 429 }),
+    );
+    const engine = createOpenAiEngine({
+      apiKey: 'test-key',
+      models: { fast: 'gpt-6-luna', standard: 'gpt-6-sol', advanced: 'gpt-6-astra' },
+      reasoningEffort: 'medium',
+      fetchFn: fetchFn as typeof fetch,
+    });
+    await expect(engine.run(options(), 'Привіт')).rejects.toThrow(`HTTP 429: ${code}`);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
   it('uses a stateless strict function loop and sends every tool result back by call_id', async () => {
     const payloads: Array<Record<string, unknown>> = [];
     const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

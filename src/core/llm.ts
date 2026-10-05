@@ -32,9 +32,9 @@ export function isUsageLimitError(text: string): boolean {
 }
 
 const MODULE_LABELS: Record<string, string> = {
-  jobs: 'вакансії (скоринг релевантності)',
-  mail: 'пошта (тріаж + пропозиції співбесід)',
-  'decision-summary': 'ранжування сигналів дня',
+  jobs: 'аналіз вакансій',
+  mail: 'аналіз пошти',
+  'decision-summary': 'пріоритети дня',
   fact: 'факт дня',
   mock: 'питання дня',
 };
@@ -43,16 +43,19 @@ export function formatLlmDegradedMessage(failures: LlmFailure[]): string | null 
   if (failures.length === 0) return null;
   const quota = failures.some((failure) => isUsageLimitError(failure.message));
   const affected = [
-    ...new Set(failures.map((failure) => MODULE_LABELS[failure.tag] ?? failure.tag)),
+    ...new Set(failures.map((failure) => MODULE_LABELS[failure.tag] ?? 'додатковий аналіз')),
   ];
-  const head = quota
-    ? `⚠️ Svitanok: OpenAI тимчасово обмежив запити або бюджет — ${failures.length} LLM-виклик(ів) впало.`
-    : `⚠️ Svitanok: OpenAI LLM недоступний — ${failures.length} виклик(ів) впало.`;
-  return [
-    head,
-    `Брифінг надіслано, але деградували: ${affected.join(', ')}.`,
-    ...failures.slice(0, 2).map((failure) => `• ${failure.tag}: ${failure.message.slice(0, 160)}`),
-  ].join('\n');
+  const billing = failures.some((failure) =>
+    /spend_limit_exceeded|usage_limit_exceeded|insufficient_quota|credit_balance_exhausted/i.test(
+      failure.message,
+    ),
+  );
+  const head = billing
+    ? '⚠️ Досягнуто ліміт витрат або вичерпано кредит OpenAI API. Перевір бюджет і баланс проєкту.'
+    : quota
+      ? '⚠️ OpenAI тимчасово обмежив запити.'
+      : '⚠️ Аналіз OpenAI зараз недоступний.';
+  return [head, `Брифінг надіслано без цих можливостей: ${affected.join(', ')}.`].join('\n');
 }
 
 export function createLLMClient(opts: LLMOptions): RecordingLLMClient {
@@ -60,6 +63,7 @@ export function createLLMClient(opts: LLMOptions): RecordingLLMClient {
   const fetchFn = opts.fetchFn ?? fetch;
   let calls = 0;
   const failed: LlmFailure[] = [];
+  let billingFailure: Error | null = null;
   return {
     async complete(prompt, callOpts): Promise<string> {
       if (calls >= opts.maxCallsPerRun) {
@@ -68,6 +72,7 @@ export function createLLMClient(opts: LLMOptions): RecordingLLMClient {
       calls += 1;
       const timeoutMs = callOpts?.timeoutMs ?? opts.defaultTimeoutMs;
       try {
+        if (billingFailure) throw billingFailure;
         if (!apiKey) throw new Error('OPENAI_API_KEY не задано');
         return await runOpenAi({
           apiKey,
@@ -79,6 +84,12 @@ export function createLLMClient(opts: LLMOptions): RecordingLLMClient {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (
+          /spend_limit_exceeded|usage_limit_exceeded|insufficient_quota|credit_balance_exhausted/i.test(
+            message,
+          )
+        )
+          billingFailure = error instanceof Error ? error : new Error(message);
         opts.log?.warn(`OpenAI Responses: ${message.slice(0, 240)}`);
         failed.push({ tag: callOpts?.tag ?? 'llm', message });
         throw error;

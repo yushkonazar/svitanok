@@ -180,16 +180,26 @@ export async function listItems(env, date) {
 
 /**
  * Нормалізувати пункт наміру (від працівника або з plan.intent): kind зі
- * списку, title ≤ 60, est_min ≥ 5 або null, часові межі «HH:MM» або null.
+ * списку, title ≤ 60, est_min ≥ 5 або null (moment — 1), часові межі «HH:MM» або null.
  * @param {Record<string, unknown>} raw
  * @param {number} index
  */
 export function normalizeItem(raw, index) {
   const title = String(raw.title ?? '')
+    .replace(/\*\*|`/g, '')
+    .replace(
+      /\s+(?:о|об|до|близько|приблизно|орієнтовно)\s+\d{1,2}:\d{2}(?:\s*[–—-]\s*\d{1,2}:\d{2})?\s*$/iu,
+      '',
+    )
     .trim()
     .slice(0, 60);
   if (!title) throw new Error(`пункт ${index + 1}: порожня назва`);
-  const kind = ITEM_KINDS.includes(String(raw.kind)) ? String(raw.kind) : 'routine';
+  const kind =
+    raw.kind === 'moment' || (/^прокин/iu.test(title) && hhmmToMin(raw.hard_at) != null)
+      ? 'moment'
+      : ITEM_KINDS.includes(String(raw.kind))
+        ? String(raw.kind)
+        : 'routine';
   const est = Number(raw.est_min);
   const hard = hhmmToMin(raw.hard_at) == null ? null : String(raw.hard_at);
   const hardEnd = hhmmToMin(raw.hard_end) == null ? null : String(raw.hard_end);
@@ -202,7 +212,7 @@ export function normalizeItem(raw, index) {
     id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
     title,
     kind,
-    est_min: Number.isFinite(est) && est >= 5 ? Math.round(est) : null,
+    est_min: kind === 'moment' ? 1 : Number.isFinite(est) && est >= 5 ? Math.round(est) : null,
     hard_at: hard,
     hard_end: hardEnd,
     not_before: notBefore,
@@ -213,7 +223,7 @@ export function normalizeItem(raw, index) {
     deadline,
     place: raw.place == null ? null : String(raw.place).slice(0, 120),
     flexible: raw.flexible === true || raw.flexible === 1,
-    floating: raw.floating === true || raw.floating === 1,
+    floating: kind === 'moment' || raw.floating === true || raw.floating === 1,
     optional: raw.optional === true || raw.optional === 1,
     notify: raw.notify === true || raw.notify === 1,
     role: ['work', 'meal'].includes(String(raw.role)) ? String(raw.role) : null,

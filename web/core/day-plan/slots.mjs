@@ -30,7 +30,7 @@ export const HABIT_DEFAULTS = {
 };
 
 /** Типова тривалість за видом, коли власник її не назвав (день-planner.md §4.6). */
-export const DEFAULT_EST_MIN = { deep: 90, routine: 30, call: 15, errand: 45, move: 30 };
+export const DEFAULT_EST_MIN = { deep: 90, routine: 30, call: 15, errand: 45, move: 30, moment: 1 };
 export const ITEM_KINDS = Object.keys(DEFAULT_EST_MIN);
 /** Буфер навколо події календаря: дійти/зібратись. */
 export const EVENT_BUFFER_MIN = 15;
@@ -142,6 +142,9 @@ export function energyBySlot(checkins) {
  * @param {PlanItemInput} item @param {number} bias
  */
 export function estimateMin(item, bias) {
+  // Calendar requires end > start. A checkpoint is a transparent one-minute
+  // marker, never a fabricated 30/40-minute activity or a busy reservation.
+  if (item.kind === 'moment') return 1;
   if (typeof item.est_min === 'number' && item.est_min > 0) {
     return Math.max(MIN_BLOCK_MIN, Math.round(item.est_min));
   }
@@ -210,9 +213,21 @@ export function computeSlots(input) {
     (i) => hhmmToMin(i.hard_at) != null || hhmmToMin(i.hard_end) != null,
   );
   for (const item of hard) {
+    if (item.flexible) {
+      flexible.push({ ...item, why: 'час потребує уточнення' });
+      continue;
+    }
     const hardAt = hhmmToMin(item.hard_at);
     const hardEnd = hhmmToMin(item.hard_end);
     const learned = item.role === 'work' && hardAt == null ? hhmmToMin(habits.work_start_at) : null;
+    if (hardAt == null && (item.kind === 'moment' || (item.role === 'work' && learned == null))) {
+      flexible.push({ ...item, why: 'початок потребує уточнення' });
+      continue;
+    }
+    if (item.kind === 'move' && item.est_min == null && hardEnd == null) {
+      flexible.push({ ...item, why: 'тривалість дороги потребує уточнення' });
+      continue;
+    }
     const start = hardAt ?? Math.max(nowMin, learned ?? nowMin);
     if (start < nowMin || (hardEnd != null && hardEnd <= start)) {
       flexible.push({
@@ -221,7 +236,8 @@ export function computeSlots(input) {
       });
       continue;
     }
-    const est = hardEnd == null ? estimateMin(item, bias) : hardEnd - start;
+    const est =
+      item.kind === 'moment' ? 1 : hardEnd == null ? estimateMin(item, bias) : hardEnd - start;
     // «До 18:00» резервує робочий відрізок, у якому обід уже очікуваний, а
     // не є конфліктом. Події календаря й інші жорсткі блоки лишаються
     // справжнім перетином, про який треба сказати.
@@ -235,7 +251,7 @@ export function computeSlots(input) {
       hardAt == null
         ? `${learned != null ? `старт за ${habits.work_start_samples} попередніми днями · ` : ''}до ${minToHhmm(hardEnd ?? start + est)}`
         : 'жорсткий час';
-    if (overlap) {
+    if (overlap && item.kind !== 'moment') {
       flexible.push({ ...item, why: `перетин з «${overlap.title}»` });
       continue;
     }
@@ -247,9 +263,10 @@ export function computeSlots(input) {
       window_start: minToHhmm(start),
       window_end: minToHhmm(start + est),
       why: timingWhy,
-      floating: Boolean(item.floating),
+      floating: item.kind === 'moment' || Boolean(item.floating),
     });
-    busy.push({ start, end: start + est, title: item.title, id: item.id });
+    if (item.kind !== 'moment')
+      busy.push({ start, end: start + est, title: item.title, id: item.id });
   }
 
   const freeMin = freeMinutes(nowMin, dayEnd, busy);
@@ -331,6 +348,16 @@ export function computeSlots(input) {
   let used = 0;
   let deepCount = 0;
   for (const item of ordered) {
+    if (item.kind === 'moment' || (item.kind === 'move' && item.est_min == null)) {
+      flexible.push({
+        ...item,
+        why:
+          item.kind === 'moment'
+            ? 'час потребує уточнення'
+            : 'тривалість дороги потребує уточнення',
+      });
+      continue;
+    }
     // «Не знаю» — явный выбор оставить пункт без времени. Не подменяем его
     // типовой оценкой (которая подходит лишь когда владелец не возражал).
     if (item.flexible) {
@@ -405,7 +432,11 @@ export function formatDraft(date, slots, events) {
   const [, m, d] = date.split('-');
   const lines = [`План на ${d}.${m}`];
   for (const p of slots.placed) {
-    lines.push(`• ${p.floating ? '≈' : ''}${p.window_start}-${p.window_end} ${p.title} · ${p.why}`);
+    lines.push(
+      p.kind === 'moment'
+        ? `• ${p.window_start} — ${p.title}`
+        : `• ${p.floating ? '≈' : ''}${p.window_start}-${p.window_end} ${p.title} · ${p.why}`,
+    );
   }
   for (const e of events) {
     if (e.startMin != null) lines.push(`• ${minToHhmm(e.startMin)} ${e.title} (календар)`);

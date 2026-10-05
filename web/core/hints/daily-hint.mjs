@@ -75,7 +75,16 @@ export async function dailyHintTask(env, nowMs = Date.now()) {
         chatId: home.chatId,
         threadId: home.threadId,
         kind: 'send',
-        payload: { text: formatHint(hint), parse_mode: 'HTML' },
+        payload: {
+          text: formatHint(hint),
+          parse_mode: 'HTML',
+          ...(hint.topic === 'security'
+            ? {
+                reply_markup: { inline_keyboard: securityHintButtons(today) },
+                link_preview_options: { is_disabled: true },
+              }
+            : {}),
+        },
       },
       nowMs,
     );
@@ -232,6 +241,8 @@ async function ideaHint(env, nowMs) {
  * @param {Env} env @param {number} nowMs
  */
 async function securityHint(env, nowMs) {
+  const snooze = await runFactsGet(env, { kind: 'setting', key: 'security_snooze_until' });
+  if (Date.parse(String(snooze.result[0]?.value ?? '')) > nowMs) return null;
   const { result } = await runFactsGet(env, { kind: 'setting', key: 'security_checkup_at' });
   const last = Date.parse(String(result[0]?.value ?? ''));
   if (Number.isFinite(last) && nowMs - last < SECURITY_CHECKUP_DAYS * 86_400_000) return null;
@@ -242,7 +253,86 @@ async function securityHint(env, nowMs) {
   if (Number.isFinite(lastHint) && nowMs - lastHint < SECURITY_HINT_EVERY_DAYS * 86_400_000) {
     return null;
   }
-  return 'Security Checkup Google - раз на квартал (myaccount.google.com/security-checkup). Пройшов - скажи, запишу дату.';
+  return 'Час перевірити безпеку Google-акаунта. Переглянь пристрої, доступи застосунків і способи відновлення.';
+}
+
+/** @param {string} issued */
+export function securityHintButtons(issued) {
+  return [
+    [{ text: '🔐 Відкрити перевірку', url: 'https://myaccount.google.com/security-checkup' }],
+    [
+      { text: '✅ Пройшов', callback_data: `m:sc:${issued}:done` },
+      { text: '🕓 Через тиждень', callback_data: `m:sc:${issued}:later` },
+    ],
+    [{ text: 'Не нагадувати', callback_data: `m:sc:${issued}:mute` }],
+  ];
+}
+
+/** Owner-confirmed completion, not an automated account security assessment.
+ * The operational claim prevents double taps and concurrent choices.
+ * @param {Env} env @param {string} issued @param {'done'|'later'|'mute'} action @param {number} nowMs */
+export async function resolveSecurityHint(env, issued, action, nowMs) {
+  const key = `security_card:${issued}`;
+  const prior = await runFactsGet(env, { kind: 'setting', key });
+  if (prior.result[0]?.value?.status === 'done') return prior.result[0].value.text;
+  const hint = await runFactsGet(env, { kind: 'setting', key: SECURITY_HINT_KEY });
+  if (hint.result[0]?.value !== issued && !prior.result[0]) return 'Ця картка вже неактуальна.';
+  const claimId = crypto.randomUUID();
+  const at = new Date(nowMs).toISOString();
+  const claimed = await db(env)
+    .prepare(
+      `INSERT INTO facts (id,kind,key,value_json,source,confidence,created_at,updated_at)
+     VALUES (?, 'setting', ?, ?, 'observed_event', 1, ?, ?)
+     ON CONFLICT(kind,key) DO UPDATE SET id=excluded.id, value_json=excluded.value_json, updated_at=excluded.updated_at
+     WHERE json_extract(facts.value_json, '$.status')='processing' AND facts.updated_at < ? RETURNING id`,
+    )
+    .bind(
+      claimId,
+      key,
+      JSON.stringify({ action, status: 'processing' }),
+      at,
+      at,
+      new Date(nowMs - 90_000).toISOString(),
+    )
+    .first();
+  if (!claimed) {
+    const prior = await runFactsGet(env, { kind: 'setting', key });
+    return prior.result[0]?.value?.text ?? 'Цю дію вже обробляю.';
+  }
+  const set = (/** @type {string} */ name, /** @type {unknown} */ value) =>
+    runFactsSet(
+      env,
+      { kind: 'setting', key: name, value, source: 'owner', observed_at: at },
+      nowMs,
+      { actor: 'owner' },
+    );
+  try {
+    let text;
+    if (action === 'done') {
+      await set('security_checkup_at', at);
+      text = '✅ Записав, що ти пройшов перевірку Google. Нагадаю через три місяці.';
+    } else if (action === 'later') {
+      await set('security_snooze_until', new Date(nowMs + 7 * 86_400_000).toISOString());
+      // Monthly throttling must not swallow the explicitly requested snooze.
+      await set(
+        SECURITY_HINT_KEY,
+        new Date(nowMs - (SECURITY_HINT_EVERY_DAYS - 7) * 86_400_000).toISOString().slice(0, 10),
+      );
+      text = '🕓 Нагадаю про перевірку Google через тиждень.';
+    } else {
+      const muted = await readMuted(env);
+      await set('hint_mute_json', { topics: [...new Set([...muted, 'security'])] });
+      text = '🔕 Нагадування про перевірку Google вимкнено.';
+    }
+    await db(env)
+      .prepare('UPDATE facts SET value_json = ?, updated_at = ? WHERE id = ?')
+      .bind(JSON.stringify({ action, status: 'done', text }), at, claimId)
+      .run();
+    return text;
+  } catch (error) {
+    await db(env).prepare('DELETE FROM facts WHERE id = ?').bind(claimId).run();
+    throw error;
+  }
 }
 
 /** @param {Env} env @returns {Promise<string[]>} */
@@ -289,6 +379,7 @@ export async function muteHintTopic(env, topic, ctx, nowMs) {
 
 /** @param {Hint} hint */
 export function formatHint(hint) {
+  if (hint.topic === 'security') return `🔐 ${escapeHtml(hint.text)}`;
   return `💡 ${escapeHtml(hint.text)}\n<i>«не нагадуй про ${hint.topic}» - вимкне цю тему</i>`;
 }
 

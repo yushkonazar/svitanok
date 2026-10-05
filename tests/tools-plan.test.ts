@@ -164,7 +164,7 @@ describe('plan.* через policy', () => {
   it('plan.accept: нагадування на блоки, «↩» скасовує; calendar=true - події одразу з «↩»', async () => {
     const { env, db, act } = setup();
     await act('plan.intent', { date: DATE, items: ITEMS });
-    const out = await act('plan.accept', { date: DATE });
+    const out = await act('plan.accept', { date: DATE, calendar: false });
     expect(out.mode).toBe('executed');
     if (out.mode !== 'executed') return;
     expect(out.result).toMatchObject({
@@ -194,7 +194,7 @@ describe('plan.* через policy', () => {
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ id: 'ev-1' }), { status: 200 })),
     );
-    const withCal = await act('plan.accept', { date: DATE, calendar: true }, NOW + 2000);
+    const withCal = await act('plan.accept', { date: DATE }, NOW + 2000);
     expect(withCal.mode).toBe('executed');
     if (withCal.mode !== 'executed') return;
     expect(withCal.result).toMatchObject({ calendar_added: 2, calendar_failed: [] });

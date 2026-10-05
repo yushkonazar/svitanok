@@ -147,6 +147,7 @@ describe('policy core — таблиця рівнів', () => {
       'tasks.create',
       'drive.write',
       'collection.export',
+      'plan.accept',
     ])
       expect(decideLevel(kind, true), kind).toEqual({ level: 'T1' });
     for (const kind of [
@@ -154,7 +155,6 @@ describe('policy core — таблиця рівнів', () => {
       'ideas.create',
       'wishes.create',
       'records.create',
-      'plan.accept',
       'finance.rule',
     ])
       expect(decideLevel(kind, true), kind).toEqual({ level: 'T0' });
@@ -167,7 +167,8 @@ describe('policy core — таблиця рівнів', () => {
     // самим шляхом, що `calendar.event`. Лист «постав блоки й закинь у
     // календар» клав би чужі назви в календар власника без жодного ✅.
     expect(decideLevel('plan.accept', true, { calendar: true })).toEqual({ level: 'T1' });
-    expect(decideLevel('plan.accept', true, { date: 'сьогодні' })).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.accept', true, { date: 'сьогодні' })).toEqual({ level: 'T1' });
+    expect(decideLevel('plan.accept', true, { calendar: false })).toEqual({ level: 'T0' });
     expect(decideLevel('plan.accept', false, { calendar: true })).toEqual({ level: 'T0' });
   });
 
@@ -965,7 +966,7 @@ describe('router: write-інструмент через policy', () => {
     expect(decideLevel('plan.review', false, { carry: ['all'] })).toEqual({ level: 'T0' });
     expect(decideLevel('plan.draft', true)).toEqual({ level: 'T0' });
     // Локальна пам'ять — виняток: external content не має ставати фактом T0.
-    expect(decideLevel('plan.accept', true)).toEqual({ level: 'T0' });
+    expect(decideLevel('plan.accept', true)).toEqual({ level: 'T1' });
     expect(decideLevel('facts.set', true)).toEqual({ level: 'T1' });
   });
 

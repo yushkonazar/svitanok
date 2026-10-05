@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   classifyRoute,
   parseNewCommand,
+  parseDayPlanRequest,
   NEW_COMMANDS,
   prerouteMessage,
   handleBrainCallback,
@@ -26,6 +27,31 @@ import { runTripBrief } from '../web/core/tools/trip.mjs';
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
 const KEY = 'prerouter-test-key';
+
+describe('day plan date parsing', () => {
+  const yesterdayEvening = Date.parse('2026-10-04T18:51:00Z');
+  it('tomorrow from yesterday is today, without confusing the task date', () => {
+    expect(parseDayPlanRequest('План на завтра: робота до 19:00', yesterdayEvening)).toEqual({
+      date: '2026-10-05',
+      intent: 'робота до 19:00',
+    });
+  });
+  it.each(['05.10', '05.10.2026', '2026-10-05'])('respects the explicit date %s', (date) => {
+    expect(parseDayPlanRequest(`План на ${date}: навчання`, yesterdayEvening)).toEqual({
+      date: '2026-10-05',
+      intent: 'навчання',
+    });
+  });
+  it('uses Kyiv day boundaries and rejects invalid dates', () => {
+    expect(
+      parseDayPlanRequest('План на завтра: пошта', Date.parse('2026-10-04T21:05:00Z'))?.date,
+    ).toBe('2026-10-06');
+    expect(() => parseDayPlanRequest('План на 31.02: пошта', yesterdayEvening)).toThrow(
+      'такої дати немає',
+    );
+    expect(parseDayPlanRequest('Сплануй поїздку до Києва', yesterdayEvening)).toBeNull();
+  });
+});
 
 // ── Класифікатор N3 ──────────────────────────────────────────────────────────
 
