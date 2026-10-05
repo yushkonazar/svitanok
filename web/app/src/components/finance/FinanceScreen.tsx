@@ -36,6 +36,22 @@ function Progress({ percent }: { percent: number }) {
 export function FinanceScreen() {
   const { data, isLoading, error, refetch } = useFinance();
   const [allOperations, setAllOperations] = useState(false);
+  const [paymentsExpanded, setPaymentsExpanded] = useState(() => {
+    try {
+      return localStorage.getItem('svitanok.finance.paymentsExpanded') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const togglePayments = () => {
+    const next = !paymentsExpanded;
+    setPaymentsExpanded(next);
+    try {
+      localStorage.setItem('svitanok.finance.paymentsExpanded', String(next));
+    } catch {
+      /* The list still toggles when browser storage is unavailable. */
+    }
+  };
   const [detailId, setDetailId] = useState<string | null>(null);
   const overviewScroll = useRef(0);
   useLayoutEffect(() => {
@@ -382,58 +398,71 @@ export function FinanceScreen() {
             Додати +
           </button>
         </div>
-        {f.payments
-          .filter((p) => p.status === 'active')
-          .sort((a, b) => a.nextDate.localeCompare(b.nextDate))
-          .map((p) => (
-            <PaymentCard
-              key={p.id}
-              payment={p}
-              onOpen={() => {
-                overviewScroll.current = window.scrollY;
-                setDetailId(p.id);
-              }}
-              onPay={() => setForm({ kind: 'payment-paid', id: p.id })}
-              onEdit={() => setForm({ kind: 'payment', id: p.id })}
-              onCloseDebt={() => setForm({ kind: 'payment-close', id: p.id })}
-              onCancel={() => setForm({ kind: 'payment-cancel', id: p.id })}
-            />
-          ))}
-        {!f.payments.some((p) => p.status === 'active') && (
-          <p className="renewal-muted mt-3">
-            Активних платежів немає. Додай підписку, кредит або інший платіж.
-          </p>
-        )}
-        {f.payments.some((p) => p.status === 'paused') && (
-          <details className="mt-3">
-            <summary className="renewal-link">Призупинені платежі</summary>
-            {f.payments
-              .filter((p) => p.status === 'paused')
-              .map((p) => (
-                <button
-                  className="renewal-list-row w-full text-left"
-                  key={p.id}
-                  onClick={() => setForm({ kind: 'payment', id: p.id })}
-                >
-                  <span>
-                    {p.name}
-                    <small>Призупинено</small>
-                  </span>
-                  <span className="renewal-link">Налаштувати</span>
-                </button>
-              ))}
-          </details>
-        )}
-        {!!f.detectedSubscriptions.length && (
-          <details className="mt-3">
-            <summary className="renewal-link">Підписки, виявлені банківським обліком</summary>
-            {f.detectedSubscriptions.map((p) => (
-              <p className="renewal-muted" key={p.id}>
-                {p.merchant} · {moneyLabel(p.amountMinor, p.currency)}
-              </p>
+        <button
+          type="button"
+          className="renewal-secondary w-full"
+          aria-expanded={paymentsExpanded}
+          aria-controls="finance-payment-list"
+          onClick={togglePayments}
+        >
+          {paymentsExpanded
+            ? 'Приховати список'
+            : `Показати список (${f.payments.filter((p) => p.status === 'active' || p.status === 'paused').length})`}
+        </button>
+        <div id="finance-payment-list" hidden={!paymentsExpanded}>
+          {f.payments
+            .filter((p) => p.status === 'active')
+            .sort((a, b) => a.nextDate.localeCompare(b.nextDate))
+            .map((p) => (
+              <PaymentCard
+                key={p.id}
+                payment={p}
+                onOpen={() => {
+                  overviewScroll.current = window.scrollY;
+                  setDetailId(p.id);
+                }}
+                onPay={() => setForm({ kind: 'payment-paid', id: p.id })}
+                onEdit={() => setForm({ kind: 'payment', id: p.id })}
+                onCloseDebt={() => setForm({ kind: 'payment-close', id: p.id })}
+                onCancel={() => setForm({ kind: 'payment-cancel', id: p.id })}
+              />
             ))}
-          </details>
-        )}
+          {!f.payments.some((p) => p.status === 'active') && (
+            <p className="renewal-muted mt-3">
+              Активних платежів немає. Додай підписку, кредит або інший платіж.
+            </p>
+          )}
+          {f.payments.some((p) => p.status === 'paused') && (
+            <details className="mt-3">
+              <summary className="renewal-link">Призупинені платежі</summary>
+              {f.payments
+                .filter((p) => p.status === 'paused')
+                .map((p) => (
+                  <button
+                    className="renewal-list-row w-full text-left"
+                    key={p.id}
+                    onClick={() => setForm({ kind: 'payment', id: p.id })}
+                  >
+                    <span>
+                      {p.name}
+                      <small>Призупинено</small>
+                    </span>
+                    <span className="renewal-link">Налаштувати</span>
+                  </button>
+                ))}
+            </details>
+          )}
+          {!!f.detectedSubscriptions.length && (
+            <details className="mt-3">
+              <summary className="renewal-link">Підписки, виявлені банківським обліком</summary>
+              {f.detectedSubscriptions.map((p) => (
+                <p className="renewal-muted" key={p.id}>
+                  {p.merchant} · {moneyLabel(p.amountMinor, p.currency)}
+                </p>
+              ))}
+            </details>
+          )}
+        </div>
       </section>
 
       <section className="renewal-card">
